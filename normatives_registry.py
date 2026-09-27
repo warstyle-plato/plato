@@ -124,8 +124,178 @@ _READER_SOURCE_NEWS = {
 }
 
 
-def _reader_label(entry: dict[str, Any], check_result: str) -> tuple[str, str]:
-    """Новость от источника — или учтённая редакция. Наша очередь молчит."""
+# Номер акта в том виде, в каком его печатают: «1080-ПП», «774-ПП», «713/30»,
+# «214-ФЗ», «ДИПП-ПР-34/20».
+_ACT_NUMBER_RE = re.compile(r"\b\d+[-/][0-9A-Za-zА-Яа-яЁё]+", re.I)
+
+
+def accounted_numbers(entry: dict[str, Any]) -> set[str]:
+    """Редакции, которые в реестре УЖЕ учтены, — номерами.
+
+    Нужны затем, чтобы находка не светилась вечно. Поиск будет приносить одну и
+    ту же публикацию каждую неделю и после того, как мы её разобрали: «вышла
+    новая редакция» на карточке 713/30 стояло бы всегда, а постоянная приписка
+    перестаёт читаться — и настоящую следующую поправку под ней уже не увидеть.
+    """
+    parts = [str(entry.get("latest_amendment") or "")]
+    parts += [str(x) for x in (entry.get("amendment_history") or [])]
+    # Цепочка — это «какие поправки существуют», и учтённой делает не наличие
+    # акта в ряду, а разбор его содержания: пока он не разобран, находка о нём
+    # остаётся новостью. Читать надо сам ряд, а не второй список рядом с ним.
+    for step in chain_steps(entry):
+        if str(step.get("status") or "").startswith("разобран"):
+            parts.append(str(step.get("number") or ""))
+    return {match.group(0).lower() for match in _ACT_NUMBER_RE.finditer(" ".join(parts))}
+
+
+def chain_steps(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ряд поправок к акту — так, как его объявил сам акт."""
+    steps = entry.get("amendment_chain")
+    return [s for s in steps if isinstance(s, dict)] if isinstance(steps, list) else []
+
+
+def step_in_library(step: dict[str, Any]) -> bool:
+    """Лежит ли поправка у нас — файлом или распознанным текстом.
+
+    Сканы официальных публикаций в репозитории не хранятся (решение владельца
+    27.09.2026): у такой строки есть распознанный текст (`text_file`), ссылка
+    на сам PDF (`file_url`) и его отпечаток. «В библиотеке» — это текст, по
+    которому норму можно прочитать, а не обязательно исходный файл.
+    """
+    return bool(step.get("file") or step.get("text_file"))
+
+
+def cited_numbers(rows: list[dict[str, Any]]) -> set[str]:
+    """Номера актов, на которые реестр отвечает, — строчными.
+
+    Ответ на «этот номер закрыт контуром» один: номер самого акта, все его
+    печатные написания (`cited_as`) и номера поправок его ряда. Второй такой
+    список — у сторожа контура или на странице — разошёлся бы с этим молча, и
+    акт, заведённый в реестр, продолжал бы числиться неопознанным.
+    """
+    numbers: set[str] = set()
+    for row in rows:
+        for name in row.get("cited_as") or []:
+            numbers.add(str(name).strip().lower())
+        own = own_number(row)
+        if own:
+            numbers.add(own.strip().lower())
+        for step in chain_steps(row):
+            number = str(step.get("number") or "").strip().lower()
+            if number:
+                numbers.add(number)
+    return {number for number in numbers if number}
+
+
+def registry_scopes(rows: list[dict[str, Any]]) -> list[str]:
+    """Области реестра — из самих строк, а не списком рядом.
+
+    Список, перечисленный в разметке, отстаёт от данных: строка с новой
+    областью не получила бы ни плитки, ни кнопки отбора и читалась бы как
+    отсутствующая. Порядок задан для тех областей, что были всегда; всё
+    остальное идёт за ними по алфавиту.
+    """
+    order = ["Москва", "Московская область", "Общие для РФ"]
+    seen = [str(row.get("scope") or "").strip() or "Прочее" for row in rows]
+    head = [scope for scope in order if scope in seen]
+    tail = sorted({scope for scope in seen if scope not in order})
+    return head + tail
+
+
+def coverage(rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Чем закрыт контур: акты, сверка и поправки — числом, а не на глаз.
+
+    «Подтверждено» и «требует сверки» — это разные ответы, и один без
+    другого читается как полнота. Поправки считаются по цепочкам: сколько их
+    объявлено и у скольких в библиотеке лежит текст или файл.
+    """
+    steps = [step for row in rows for step in chain_steps(row)]
+    return {
+        "acts": len(rows),
+        "verified": sum(1 for row in rows
+                        if str(row.get("status") or "").startswith(("verified", "current"))),
+        "review": sum(1 for row in rows if str(row.get("status") or "") == "review_required"),
+        "chained": sum(1 for row in rows if chain_steps(row)),
+        "steps": len(steps),
+        "steps_in_library": sum(1 for step in steps if step_in_library(step)),
+    }
+
+
+def chain_counts(entry: dict[str, Any]) -> dict[str, int]:
+    """Сколько поправок в ряду, сколько у нас в библиотеке и сколько не получено.
+
+    Число молчания здесь такое же обязательное, как у сторожа: «29 поправок»
+    без «8 не получено» читается как полная библиотека.
+    """
+    steps = chain_steps(entry)
+    return {
+        "all": len(steps),
+        "in_library": sum(1 for s in steps if step_in_library(s)),
+        "studied": sum(1 for s in steps if str(s.get("status") or "").startswith("разобран")),
+        "missing": sum(1 for s in steps if str(s.get("status") or "") == "не получен"),
+    }
+
+
+def own_number(entry: dict[str, Any]) -> str:
+    """Номер самого акта — первый «№ …» его заголовка."""
+    match = re.search(r"№\s*([0-9][^\s,«»]*)", str(entry.get("title") or ""))
+    return match.group(1).strip().lower().rstrip(".,;") if match else ""
+
+
+def signal_is_accounted(signal: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """Названа ли в находке только та редакция, которую мы уже учли.
+
+    Номер в цитате есть и он наш учтённый — новостью это быть перестало.
+    Номера в цитате нет вовсе — решать нечем, и находка остаётся новостью:
+    «не поняли» безопаснее выдавать за новость, чем за учтённое.
+    """
+    known = accounted_numbers(entry)
+    if not known:
+        return False
+    numbers = {m.group(0).lower() for m in _ACT_NUMBER_RE.finditer(str(signal.get("quote") or ""))}
+    # Собственный номер базового акта ничего не говорит о редакции: он стоит и
+    # в поправке, и в самом акте. Берётся он из заголовка, а не из watch_terms:
+    # там рядом лежат номера УЧТЁННЫХ поправок (мы сами их туда кладём, чтобы
+    # проба узнавала страницу публикатора), и вычитание всего списка глушило бы
+    # ровно те находки, ради которых список и заведён.
+    own = own_number(entry)
+    if own:
+        numbers -= {own}
+    return bool(numbers) and numbers.issubset(known)
+
+
+def source_signals(check: dict[str, Any], entry: dict[str, Any] | None = None,
+                   ) -> list[dict[str, Any]]:
+    """Находки открытых источников о судьбе акта. Отвечает ОДНО место.
+
+    Читателей у находки стало трое — подпись карточки, сама карточка и
+    счётчик сторожа, — и «где они лежат» должно быть объявлено один раз:
+    перечисление в трёх местах расходится молча.
+    """
+    sources = check.get("sources") if isinstance(check, dict) else None
+    if not isinstance(sources, dict):
+        return []
+    signals = [item for item in (sources.get("signals") or []) if isinstance(item, dict)]
+    if entry is None:
+        return signals
+    return [item for item in signals if not signal_is_accounted(item, entry)]
+
+
+def _reader_label(entry: dict[str, Any], check: dict[str, Any]) -> tuple[str, str]:
+    """Новость от источника — или учтённая редакция. Наша очередь молчит.
+
+    Находка открытых источников сильнее отпечатка ссылки: «страницу
+    переписали» — это про страницу, а «акт утратил силу» — про сам акт.
+    Прежде ключи `repealed` и `amended` в этой карте были МЁРТВЫМИ: сюда
+    приходил результат пробы, а она таких значений не возвращает вовсе, и
+    находки поиска не показывались нигде, кроме очереди боту. Ровно это и
+    значило «проверки не выкидывают изменения».
+    """
+    signals = source_signals(check, entry)
+    if signals:
+        worst = "repealed" if any(s.get("kind") == "repealed" for s in signals) else "amended"
+        return _READER_SOURCE_NEWS[worst]
+    check_result = str(check.get("result") or "") if isinstance(check, dict) else ""
     if check_result in _READER_SOURCE_NEWS:
         return _READER_SOURCE_NEWS[check_result]
     stamp = _fmt_date(entry.get("current_as_of"))
@@ -158,11 +328,127 @@ def _decode(body: bytes, content_type: str) -> tuple[str, str]:
     return body.decode("utf-8", errors="ignore"), "utf-8 с потерями"
 
 
+# --- опознание документа по его собственному имени ---------------------------
+#
+# Набор обрывков (`watch_terms`) опознаёт документ ровно до первого падежа:
+# реестр называет акт «Об утверждении НОРМАТИВОВ градостроительного
+# проектирования Московской области», а сам акт и все, кто о нём пишет, —
+# «нормативЫ». Точное совпадение строки не находит такое имя НИКОГДА, и на
+# проде 19.09.2026 это дало пять источников из пятнадцати с «контрольные
+# маркеры документа не найдены» на страницах, где имя акта стоит первой
+# строкой. То же в обратную сторону: поправку к акту ищут по его номеру, а
+# акт, изложивший абзац в новой редакции, номера базового акта в заголовке не
+# называет — он называет ИМЯ («О внесении изменений в нормативы
+# градостроительного проектирования Московской области», 1080-ПП от
+# 01.09.2026, и мы его не увидели).
+#
+# Отсюда сравнение по корням. Стемминг здесь грубый и намеренно свой: снимаем
+# окончание, а не разбираем морфологию — библиотеки в образе нет, а вопрос
+# стоит ровно один: «это то же слово в другом падеже?».
+_NAME_ENDINGS = (
+    "ого", "его", "ому", "ему", "ыми", "ими", "ами", "иями", "ями",
+    "ях", "ах", "ям", "ам", "ов", "ев", "ей", "ой", "ый", "ий", "ая", "яя",
+    "ое", "ее", "ые", "ие", "ую", "юю", "ом", "ем", "ья", "ью", "ия", "ии",
+    "а", "я", "ы", "и", "о", "е", "у", "ю", "ь", "й",
+)
+# Служебные слова в имени не опознают ничего: «о», «в», «и» стоят в любом
+# тексте, и пускать их в сравнение значит считать совпадением предлог.
+_NAME_STOP = {
+    "о", "об", "обо", "и", "в", "во", "на", "по", "для", "при", "с", "со",
+    "из", "к", "не", "или", "от", "до", "за", "том", "числе", "иных", "иные",
+    "а", "также", "город", "города", "городе", "прочие",
+}
+# Сколько имени должно стоять ПОДРЯД. Два разных вопроса — два порога, и это не
+# вкус: 945-ПП Москвы зовётся «Об утверждении нормативов градостроительного
+# проектирования города Москвы в области транспорта…», и с 713/30 области у него
+# совпадают пять слов из шести как МНОЖЕСТВО. Подряд — четыре, потому что на
+# пятом стоит «Москвы» против «Московской». Поэтому находка о судьбе акта
+# требует непрерывного отрезка почти во всё имя, а опознание страницы, которую
+# мы сами и указали, — меньшего.
+NAME_SIGNAL_RUN_SHARE = 0.8
+NAME_RECOGNISE_RUN_SHARE = 0.6
+_WORD_RE = re.compile(r"[а-яёa-z0-9][а-яёa-z0-9./\-]*", re.I)
+
+
+def _stem(word: str) -> str:
+    """Слово без окончания. Короткое слово не трогаем: там снимать нечего."""
+    low = word.lower().replace("ё", "е")
+    if any(ch.isdigit() for ch in low) or len(low) < 5:
+        return low
+    for ending in _NAME_ENDINGS:
+        if low.endswith(ending) and len(low) - len(ending) >= 4:
+            return low[: -len(ending)]
+    return low
+
+
+def _stems(text: str) -> list[str]:
+    """Значимые корни текста по порядку.
+
+    Отсев служебных слов обязан быть ОДИН на имя и на текст: сняв «города» из
+    имени и оставив его в тексте, мы разрываем отрезок ровно там, где он
+    совпадает, и собственное имя акта не находится в собственном заголовке.
+    """
+    out: list[str] = []
+    for word in _WORD_RE.findall(str(text or "")):
+        low = word.lower().replace("ё", "е")
+        if low in _NAME_STOP or len(low) < 4:
+            continue
+        out.append(_stem(low))
+    return out
+
+
+def act_name(entry: dict[str, Any]) -> str:
+    """Собственное имя акта — то, что в заголовке стоит в кавычках.
+
+    Берётся из реестра, а не заводится полем: имя у акта уже есть, и второй
+    его экземпляр разошёлся бы с первым молча.
+    """
+    match = re.search(r"«([^»]+)»", str(entry.get("title") or ""))
+    return match.group(1).strip() if match else ""
+
+
+def name_stems(entry: dict[str, Any]) -> list[str]:
+    """Значимые слова имени по порядку — порядок здесь и есть улика."""
+    return _stems(act_name(entry))
+
+
+def name_run(text: str, words: list[str]) -> int:
+    """Длина самого длинного отрезка имени, стоящего в тексте ПОДРЯД.
+
+    Считаем по строке корней: окно имени либо стоит в тексте, либо нет, и
+    поиск подстроки отвечает на это быстрее, чем обход словами.
+    """
+    if not words:
+        return 0
+    haystack = " " + " ".join(_stems(text)) + " "
+    for size in range(len(words), 0, -1):
+        for start in range(0, len(words) - size + 1):
+            needle = " " + " ".join(words[start:start + size]) + " "
+            if needle in haystack:
+                return size
+    return 0
+
+
+def name_recognised(text: str, entry: dict[str, Any], share: float) -> bool:
+    """Назван ли в тексте сам акт. Имени нет в реестре — ответа нет, а не «да»."""
+    words = name_stems(entry)
+    if not words:
+        return False
+    need = max(1, int(len(words) * share + 0.999))
+    return name_run(text, words) >= need
+
+
 def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     url = str(entry.get("source_url") or "").strip()
     checked_at = _now_iso()
     if not url:
-        return {"checked_at": checked_at, "result": "no_source", "message": "Источник не задан"}
+        # «Адрес забыт» и «адреса нет вовсе» — разные ответы, и второй
+        # называется причиной: у выдержки без реквизитов утверждающего акта
+        # ссылки не существует по построению, и «источник не задан» валило бы
+        # этот пробел на нас. Молча одинаковые, они сливаются в наш недосмотр.
+        absent = str(entry.get("source_absent") or "").strip()
+        return {"checked_at": checked_at, "result": "no_source",
+                "message": absent or "Источник не задан"}
 
     req = urllib.request.Request(
         url,
@@ -193,17 +479,31 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
 
     digest = hashlib.sha256(body).hexdigest()
     old_digest = str(previous.get("sha256") or "")
-    changed = bool(old_digest and old_digest != digest)
+    # Отпечаток — свойство АДРЕСА. Сменили адрес в реестре (редакция 2118-ПП
+    # вместо PDF 2025 года) — прежний отпечаток другого документа, и «содержимое
+    # изменилось» было бы утверждением о смене редакции, которой не было.
+    # Снимок без адреса (до этой правки) сравнивается по-прежнему: пропустить
+    # настоящую смену хуже одного лишнего оповещения.
+    old_url = str(previous.get("source_url") or "")
+    new_source = bool(old_url and old_url != url)
+    changed = bool(old_digest and old_digest != digest and not new_source)
     terms = [str(x).strip() for x in entry.get("watch_terms", []) if str(x).strip()]
     found: list[str] = []
     missing: list[str] = []
     is_text = any(kind in content_type for kind in ("text/", "json", "xml"))
     charset = ""
-    if is_text and terms:
+    named = False
+    words = name_stems(entry)
+    if is_text and (terms or words):
         decoded, charset = _decode(body, content_type)
         low = decoded.lower()
         for term in terms:
             (found if term.lower() in low else missing).append(term)
+        # Документ опознаёт и собственное имя — оно на странице стоит в том
+        # падеже, который ей нужен, а обрывок реестра в своём. Порог здесь
+        # мягче, чем у находки о судьбе акта, и это безопасно: страницу мы
+        # указали сами, чужой сюда не приходит.
+        named = name_recognised(decoded, entry, NAME_RECOGNISE_RUN_SHARE)
 
     # Порядок ответов здесь и есть утверждение. «Содержимое изменилось» — это
     # заявление О ДОКУМЕНТЕ, и делать его, не найдя в теле ни одного его
@@ -215,10 +515,11 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     # себя ни одного своего слова. Хуже того, переход объявляется один раз
     # (`_changes_between`), и застрявший в ложном «изменилось» источник
     # настоящую смену редакции уже не объявит никогда.
-    unrecognised = bool(is_text and terms and not found)
+    unrecognised = bool(is_text and (terms or words) and not found and not named)
     if unrecognised:
         result = "review_required"
-        message = ("Источник доступен, но контрольные маркеры документа не найдены"
+        message = ("Источник доступен, но ни контрольные маркеры, ни имя документа "
+                   "в теле не найдены"
                    + (" — содержимое изменилось, и это похоже не на новую редакцию, "
                       "а на другую страницу" if changed else ""))
     elif changed:
@@ -226,7 +527,9 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
         message = "Содержимое источника изменилось — нужна ревизия редакции"
     else:
         result = "ok"
-        message = ("Источник доступен; содержимое не изменилось с предыдущей проверкой"
+        message = ("Источник сменён в реестре; зафиксирован отпечаток нового источника"
+                   if new_source
+                   else "Источник доступен; содержимое не изменилось с предыдущей проверкой"
                    if old_digest
                    else "Источник доступен; зафиксирован контрольный отпечаток")
 
@@ -238,9 +541,14 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
         "charset": charset,
         "last_modified": last_modified,
         "sha256": digest,
+        "source_url": url,
         "changed": changed,
         "found_terms": found,
         "missing_terms": missing,
+        # Чем опознан документ: своими обрывками или собственным именем. Без
+        # этого «маркеры не найдены, но страница опознана» неотличимо от
+        # «опознали по обрывку».
+        "found_name": named,
         "message": message,
     }
 
@@ -342,11 +650,22 @@ def watch_state() -> dict[str, Any]:
     state = _load_state()
     checks = state.get("checks")
     checks = checks if isinstance(checks, dict) else {}
+    entries = {str(row.get("id") or ""): row for row in _load_registry()}
     results: dict[str, int] = {}
-    for item in checks.values():
+    signals = 0
+    asked = 0
+    for item_id, item in checks.items():
         if isinstance(item, dict):
             key = str(item.get("result") or "unknown")
             results[key] = results.get(key, 0) + 1
+            sources = item.get("sources")
+            if isinstance(sources, dict):
+                if sources.get("asked"):
+                    asked += 1
+                # Считаем то же, что показывает карточка: учтённая редакция в
+                # счётчике находок — это находка, которой на экране нет.
+                if source_signals(item, entries.get(str(item_id) or "")):
+                    signals += 1
     hours = max(1.0, float(os.getenv("NORMATIVES_WATCH_HOURS", "24") or 24))
     search_hours = max(hours, float(os.getenv("NORMATIVES_SEARCH_HOURS", "24") or 24))
     return {
@@ -365,6 +684,12 @@ def watch_state() -> dict[str, Any]:
         # Платный поиск отвечает на «отменён ли акт»: без ключа он не идёт
         # вовсе, и тогда отмена до нас не доедет никаким путём.
         "search_available": _search_client() is not None,
+        # Сколько актов спрошено у открытых источников и у скольких есть
+        # находка о судьбе акта. Ноль находок при нуле спрошенных и ноль
+        # находок при пятнадцати спрошенных — разные ответы, а снаружи оба
+        # выглядели молчанием.
+        "searched": asked,
+        "signals": signals,
         "queued": queued_count(),
     }
 
@@ -382,12 +707,17 @@ def _changes_between(before: dict[str, Any], after: dict[str, Any],
         entry = entries.get(entry_id) or {}
         # Находка открытых источников — новость сама по себе, даже когда ссылка
         # жива и не переписана: акт отменяют, не трогая наш PDF.
-        signals = ((check or {}).get("sources") or {}).get("signals") or []
-        was_signals = ((before.get(entry_id) or {}).get("sources") or {}).get("signals") or []
+        signals = source_signals(check or {}, entry)
+        was_signals = source_signals(before.get(entry_id) or {}, entry)
         def signal_key(item: dict[str, Any]) -> tuple[str, str, str]:
-            return (str(item.get("kind") or ""), str(item.get("url") or "").strip().lower(), re.sub(r"\s+", " ", str(item.get("quote") or "").strip().lower()))
-        was_keys = {signal_key(item) for item in was_signals if isinstance(item, dict)}
-        new_signals = [item for item in signals if isinstance(item, dict) and signal_key(item) not in was_keys]
+            # Находка — это документ и что с ним сделано. У документа с адресом
+            # цитата в ключ не входит: иначе смена выбора цитаты (заголовок
+            # вместо фразы описания) повторно объявит уже известный акт.
+            url = str(item.get("url") or "").strip().lower()
+            quote = "" if url else re.sub(r"\s+", " ", str(item.get("quote") or "").strip().lower())
+            return (str(item.get("kind") or ""), url, quote)
+        was_keys = {signal_key(item) for item in was_signals}
+        new_signals = [item for item in signals if signal_key(item) not in was_keys]
         if new_signals:
             first = new_signals[0]
             changes.append({
@@ -434,7 +764,8 @@ def _changes_between(before: dict[str, Any], after: dict[str, Any],
 
 _REPEAL_MARKERS = (
     "утратил силу", "утратило силу", "утратила силу", "признан утратившим силу",
-    "признано утратившим силу", "недействующая редакция", "не действует",
+    "признано утратившим силу", "признании утратившим силу",
+    "недействующая редакция", "не действует",
     "отменено", "отменён", "прекратил действие",
 )
 # Формы, которыми поправку называет САМ документ, а не пересказ о ней.
@@ -445,7 +776,13 @@ _REPEAL_MARKERS = (
 # здесь: ни один из пяти маркеров в заголовок не попадал. Докстринг
 # `find_repeal_signals` при этом обещал ровно этот случай — обещание
 # расходилось со списком, по которому оно исполняется.
+#
+# «признать утратившим силу» в повелительной форме в набор отмены НЕ идёт
+# намеренно: так отменяют абзац внутри поправки («абзац тринадцатый признать
+# утратившим силу»), а не сам акт, и ложная тревога «акт отменён» — худшая из
+# возможных.
 _AMEND_MARKERS = ("о внесении изменений", "внесении изменений",
+                  "внесении изменения",
                   "изменения вносятся", "вносятся изменения",
                   "внесены изменения", "внесено изменение", "в редакции от",
                   "изложен в новой редакции", "новая редакция")
@@ -466,21 +803,46 @@ def _sentences(text: str) -> list[str]:
     return [part.strip() for part in re.split(r"(?<=[.!?;])\s+|\n", str(text or "")) if part.strip()]
 
 
+def _self_named_markers(entry: dict[str, Any], markers: tuple[str, ...]) -> tuple[str, ...]:
+    """Маркеры, стоящие в САМОМ имени акта: для него они не улика.
+
+    214-ФЗ зовётся «Об участии в долевом строительстве … и о внесении
+    изменений в некоторые законодательные акты Российской Федерации», а
+    1745-ПП области — «О внесении изменений в Порядок…». Процитируй заголовок
+    — и «внесении изменений» найдётся в нём всегда, то есть находка была бы
+    вечной и пустой. Прочие маркеры у таких актов работают: отмену их имя не
+    называет.
+    """
+    name = act_name(entry).lower()
+    return tuple(marker for marker in markers if name and marker in name)
+
+
 def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
                         ) -> list[dict[str, Any]]:
-    """Находки об изменении/отмене акта с привязкой к его номеру.
+    """Находки о судьбе акта — только там, где рядом назван САМ акт.
 
-    Раньше маркер («внесены изменения») и номер базового акта требовались в
-    ОДНОМ предложении. Для официальных карточек поправок это неверно по форме:
-    заголовок говорит «О внесении изменений...», а номер базового акта 713/30
-    стоит уже в первом пункте. Так 1080-ПП от 01.09.2026 был найден поиском,
-    но отброшен парсером. Теперь принимаем и этот строгий двухчастный случай:
-    маркер в заголовке + номер базового акта в тексте того же результата.
+    Иначе сниппет про соседний акт заберёт находку себе: ровно этим у нас уже
+    отдавались чужие адреса и чужие застройщики в модуле рынка.
+
+    Якорь бывает двух видов. Номер — жёсткий, и он обязан стоять в том же
+    предложении, что и слова об изменении или отмене. Для официальных карточек
+    поправок принимается и строгий двухчастный случай: маркер в заголовке +
+    номер базового акта в тексте того же результата (заголовок «О внесении
+    изменений...», а 713/30 — в первом пункте; так 1080-ПП от 01.09.2026 был
+    найден поиском, но отброшен парсером).
+
+    Второй якорь — собственное ИМЯ акта, сверенное по корням и непрерывным
+    отрезком почти во всё имя: акт, переиздающий абзац, номера базового акта в
+    заголовке может не называть вовсе. У 945-ПП Москвы с областным 713/30
+    совпадают пять слов из шести как множество и только четыре подряд, и порог
+    отрезка эту подмену отсекает. Находка по имени слабее находки по номеру и
+    помечена `anchored_by`.
     """
     anchors = [str(term).strip().lower() for term in (entry.get("watch_terms") or [])
                if str(term).strip()]
     anchors = [a for a in anchors if any(ch.isdigit() for ch in a)]
-    if not anchors:
+    words = name_stems(entry)
+    if not anchors and not words:
         return []
 
     # Legal databases spell the same number as 713/30, № 713/30 or N 713/30.
@@ -489,7 +851,20 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
     anchor_numbers = [a for a in anchor_numbers if a]
 
     def has_anchor(text: str) -> bool:
-        return any(anchor in text for anchor in anchor_numbers)
+        return bool(anchor_numbers) and any(anchor in text for anchor in anchor_numbers)
+
+    # Маркер, стоящий в собственном имени акта, для него не улика.
+    self_amend = _self_named_markers(entry, _AMEND_MARKERS)
+    repeal = tuple(m for m in _REPEAL_MARKERS
+                   if m not in _self_named_markers(entry, _REPEAL_MARKERS))
+    amend = tuple(m for m in _AMEND_MARKERS if m not in self_amend)
+
+    def kind_of(low: str) -> str:
+        if any(marker in low for marker in repeal):
+            return "repealed"
+        if any(marker in low for marker in amend):
+            return "amended"
+        return ""
 
     found: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
@@ -497,29 +872,37 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
         title = str(doc.get("title") or "")
         body = " ".join(str(doc.get(key) or "") for key in ("snippet", "text"))
         whole = f"{title} {body}".lower()
-        if not has_anchor(whole):
-            continue
 
-        hit: tuple[str, str] | None = None
+        hit: tuple[str, str, str] | None = None
         for sentence in _sentences(f"{title}\n{body}"):
             low = sentence.lower()
-            if not has_anchor(low):
+            anchored_by = ""
+            if has_anchor(low):
+                anchored_by = "номер"
+            elif words and name_recognised(sentence, entry, NAME_SIGNAL_RUN_SHARE):
+                anchored_by = "имя"
+            if not anchored_by:
                 continue
-            if any(marker in low for marker in _REPEAL_MARKERS):
-                hit = ("repealed", sentence)
-                break
-            if any(marker in low for marker in _AMEND_MARKERS):
-                hit = ("amended", sentence)
+            kind = kind_of(low)
+            if kind:
+                hit = (kind, sentence, anchored_by)
                 break
 
+        title_low = title.lower()
+        title_kind = kind_of(title_low)
+        if (not title_kind and not self_amend
+                and "внесени" in title_low and "изменени" in title_low):
+            title_kind = "amended"
         # Типичная карточка изменяющего акта: действие — в заголовке, номер
         # базового акта — в описании. Оба должны быть в ОДНОМ search result.
-        if hit is None:
-            title_low = title.lower()
-            if any(marker in title_low for marker in _REPEAL_MARKERS):
-                hit = ("repealed", title)
-            elif (any(marker in title_low for marker in _AMEND_MARKERS) or ("внесени" in title_low and "изменени" in title_low)):
-                hit = ("amended", title)
+        if hit is None and title_kind and has_anchor(whole):
+            hit = (title_kind, title, "номер")
+        # Цитата — то, что читает владелец. «Изменения вносятся в … 713/30» из
+        # описания не говорит, КАКИМ актом: номер изменяющего акта стоит в
+        # заголовке карточки. Если заголовок сам говорит о том же действии,
+        # цитируем его. Решение о находке это не расширяет: якорь уже найден.
+        if hit is not None and title_kind == hit[0] and hit[1] != title:
+            hit = (title_kind, title, hit[2])
 
         if hit is None:
             continue
@@ -528,13 +911,17 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
             continue
         if url:
             seen_urls.add(url)
-        kind, quote = hit
+        kind, quote, anchored_by = hit
         found.append({
             "kind": kind,
+            # Чем найдено — часть ответа: находка по имени слабее находки
+            # по номеру, и читатель обязан видеть, какая из двух перед ним.
+            "anchored_by": anchored_by,
             "quote": quote[:400],
             "url": url,
             "source": title[:200],
         })
+    # Отмена важнее правки: если сказано и то и другое, показываем худшее первым.
     found.sort(key=lambda item: 0 if item["kind"] == "repealed" else 1)
     return found[:5]
 
@@ -577,7 +964,14 @@ def _search_signals(entry: dict[str, Any], client: Any) -> dict[str, Any]:
                      "snippet": getattr(doc, "snippet", "") or "",
                      "url": getattr(doc, "url", "") or ""})
     signals = find_repeal_signals(entry, rows)
-    return {"asked": True, "query": query, "checked": len(rows), "signals": signals}
+    # Немой отказ чинить нечем. «Спросили, принесено десять, наш акт не назван
+    # ни в одном» и «поиск не ответил» снаружи выглядят одним нулём находок, а
+    # чинятся по-разному: первое — вопрос к запросу, второе — к поиску. Поэтому
+    # заголовки того, что принесли, лежат рядом с числом; это публичная выдача,
+    # секретов в ней нет.
+    return {"asked": True, "asked_at": _now_iso(), "query": query,
+            "checked": len(rows), "signals": signals,
+            "seen": [{"title": row["title"][:160], "url": row["url"]} for row in rows[:5]]}
 
 
 def _run_check(search: bool = False) -> dict[str, Any]:
@@ -589,7 +983,8 @@ def _run_check(search: bool = False) -> dict[str, Any]:
     for entry in _load_registry():
         entry_id = str(entry.get("id") or "")
         entries[entry_id] = entry
-        checks[entry_id] = _probe(entry, old.get(entry_id) or {})
+        was = old.get(entry_id) or {}
+        checks[entry_id] = _probe(entry, was)
         if search:
             # Два разных вопроса — два разных ответа рядом: «ссылка жива и не
             # переписана» и «что об акте пишут». Свести их в один результат
@@ -624,7 +1019,7 @@ def _li(values: Any) -> str:
 def _card(entry: dict[str, Any], admin: bool = False) -> str:
     check = entry.get("check") if isinstance(entry.get("check"), dict) else {}
     check_result = str(check.get("result") or "")
-    label, badge = _reader_label(entry, check_result)
+    label, badge = _reader_label(entry, check)
     # Наша очередь сверки и HTTP-код источника — рабочий контур, а не сведения
     # для читателя. Показываем их тому, кто может по ним что-то сделать.
     admin_badge = ""
@@ -642,6 +1037,36 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
         for row in entry.get("engine_usage", [])
         if isinstance(row, dict)
     )
+    counts = chain_counts(entry)
+    chain_html = ""
+    if counts["all"]:
+        rows = []
+        for step in chain_steps(entry):
+            if step.get("file"):
+                where = "файл в библиотеке"
+            elif step.get("text_file"):
+                link = str(step.get("file_url") or "")
+                where = "распознанный текст в библиотеке" + (
+                    ' · <a href="%s" target="_blank" rel="noopener">официальный PDF ↗</a>'
+                    % html.escape(link, quote=True) if link.startswith("http") else "")
+            else:
+                where = html.escape(str(step.get("reason") or "файла нет"))
+            rows.append(
+                "%s № %s — %s · %s"
+                % (
+                    html.escape(str(step.get("act_date") or "—")),
+                    html.escape(str(step.get("number") or "—")),
+                    html.escape(str(step.get("status") or "—")),
+                    where,
+                )
+            )
+        chain_html = (
+            "<details class='history'><summary>Ряд поправок — %d, из них в библиотеке %d,"
+            " разобрано %d, не получено %d</summary><ul>%s</ul></details>"
+            % (counts["all"], counts["in_library"], counts["studied"],
+               counts["missing"], "".join("<li>%s</li>" % r for r in rows))
+        )
+
     history = entry.get("amendment_history") or []
     history_html = ""
     if history:
@@ -666,6 +1091,50 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
             "ещё не запускалась.</span></div>"
         )
 
+    # Находка о судьбе акта — новость, и место у неё на карточке, а не только
+    # в очереди боту: сообщение отвечает тому, кто не открывал страницу, а
+    # страницу открывает тот, кто пришёл за основанием под числом.
+    news_html = ""
+    all_signals = source_signals(check)
+    signals = source_signals(check, entry)
+    accounted = [item for item in all_signals if item not in signals]
+    if not signals and accounted:
+        # Молча выброшенная находка читается как её отсутствие, поэтому она
+        # называется — но тоном «это уже учтено», а не тревогой.
+        news_html = ("<div class='news calm'><h3>Что об акте пишут в открытых "
+                     "источниках</h3><ul><li><b>Названа редакция, которая у нас "
+                     "уже учтена</b><span>%s</span></li></ul></div>"
+                     % html.escape(str(accounted[0].get("quote") or ""))[:400])
+    if signals:
+        rows = []
+        for item in signals[:2]:
+            title = ("В источниках: документ утратил силу"
+                     if item.get("kind") == "repealed"
+                     else "В источниках: вышла новая редакция")
+            link = str(item.get("url") or "")
+            # Чем найдено — часть ответа, и сказать это надо по-русски:
+            # значение поля («имя», «номер») в строку не подставляется, у него
+            # своя форма.
+            found_by = {"имя": "по имени акта", "номер": "по номеру акта"}.get(
+                str(item.get("anchored_by") or ""), "")
+            rows.append(
+                "<li><b>%s</b><span>%s</span>%s%s</li>" % (
+                    html.escape(title),
+                    html.escape(str(item.get("quote") or ""))[:400],
+                    (' <em>найдено %s</em>' % html.escape(found_by)) if found_by else "",
+                    (' <a href="%s" target="_blank" rel="noopener">источник ↗</a>'
+                     % html.escape(link, quote=True)) if link.startswith("http") else "",
+                ))
+        asked_at = str((check.get("sources") or {}).get("asked_at") or "")
+        news_html = (
+            "<div class='news'><h3>Что об акте пишут в открытых источниках</h3>"
+            "<ul>%s</ul><small>Это находка поиска, а не решение: реестр правит "
+            "человек после сверки редакции%s.</small></div>" % (
+                "".join(rows),
+                (" · спрошено " + html.escape(_fmt_date(asked_at.split("T")[0])))
+                if asked_at else "",
+            ))
+
     notes = html.escape(str(entry.get("notes") or ""))
     # Ссылка на несуществующее — такая же ложь, как подпись под чужим числом:
     # `href="#"` выглядит источником и никуда не ведёт. Источник бывает и не
@@ -678,6 +1147,17 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
                        f'target="_blank" rel="noopener">{source_label} ↗</a>')
     else:
         source_link = f'<span class="nomuted">{source_label}</span>'
+    # Публикация РЕДАКЦИИ и страница САМОГО акта — разные адреса, и второй
+    # спросили прямо: «сам 713/30 лежит вообще у нас где-то?» (владелец,
+    # 19.09.2026). Публикация поправки заморожена днём выхода и
+    # консолидированного текста не содержит; страница акта на портале региона
+    # ведёт к нему и к приложениям. Пока ссылка была одна, ответить на «где
+    # взять сам акт» карточка не могла.
+    act_page = str(entry.get("act_page_url") or "").strip()
+    if act_page.startswith("http"):
+        act_label = html.escape(str(entry.get("act_page_label") or "Страница акта"))
+        source_link += (f' <a href="{html.escape(act_page, quote=True)}" '
+                        f'target="_blank" rel="noopener">{act_label} ↗</a>')
     # Тринадцать развёрнутых карточек — стена, которую не читают (владелец,
     # 07.09.2026: «вся информация должна быть свернута и при необходимости
     # только открыта из списка»). Свёрнутая строка отвечает на «что это и на
@@ -702,7 +1182,9 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
   </div>
   <div class="amend"><b>Текущая учтённая редакция</b>
     <span>{html.escape(str(entry.get('latest_amendment') or '—'))}</span></div>
+  {news_html}
   {history_html}
+  {chain_html}
   <div class="twocol">
     <section><h3>На что влияет</h3><ul>{_li(entry.get('affects'))}</ul></section>
     <section><h3>Где используется в движке</h3><ul class="usage">{usage}</ul></section>
@@ -791,6 +1273,12 @@ def _watch_note(watch: dict[str, Any]) -> str:
         parts.append("открытые источники спрошены: " + when("last_search_at"))
     else:
         parts.append("открытые источники не спрашиваются — поиск не настроен")
+    signals = int(watch.get("signals") or 0)
+    # Ноль находок при нуле спрошенных и ноль находок при пятнадцати
+    # спрошенных — разные ответы, и оба выглядели молчанием.
+    if int(watch.get("searched") or 0):
+        parts.append(f"находок о судьбе актов: {signals}" if signals
+                     else "находок о судьбе актов нет")
     queued = int(watch.get("queued") or 0)
     # Ноль в очереди — это ответ, а не пустая строка: он и означает «переходов
     # с прошлой проверки не было», то есть сообщать боту нечего.
@@ -814,8 +1302,25 @@ def _legal_footer() -> str:
 def _page(request: Request, core: Any) -> str:
     admin = _is_admin(request, core)
     rows = _merged_registry()
-    scopes = ("Москва", "Московская область", "Общие для РФ")
-    counts = {scope: sum(1 for row in rows if row.get("scope") == scope) for scope in scopes}
+    scopes = registry_scopes(rows)
+    counts = {scope: sum(1 for row in rows
+                         if (str(row.get("scope") or "").strip() or "Прочее") == scope)
+              for scope in scopes}
+    cover = coverage(rows)
+    tiles = "".join("<div><b>%d</b><span>%s</span></div>" % (counts[scope], html.escape(scope))
+                    for scope in scopes)
+    filters = "".join('<button data-filter="%s">%s</button>' % (html.escape(scope), html.escape(scope))
+                      for scope in scopes)
+    # Существительное стоит ПЕРЕД числом: «поправок в ней 54» верно при любом
+    # числе, а «54 поправок» ломается на 1, 2 и 21 — русское склонение здесь
+    # обошлось бы своей функцией, а её негде объявить один раз.
+    cover_line = (
+        "Актов в реестре %d: подтверждено %d, требует сверки %d. "
+        "Актов с объявленной цепочкой поправок %d; поправок в ней %d, "
+        "из них в библиотеке (текстом или файлом) %d."
+        % (cover["acts"], cover["verified"], cover["review"],
+           cover["chained"], cover["steps"], cover["steps_in_library"])
+    )
     cards = "".join(_card(row, admin=admin) for row in rows)
 
     footer = _legal_footer()
@@ -861,7 +1366,8 @@ font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}}a{{color:i
 .brand{{font-weight:800}}.top a{{text-decoration:none;border:1px solid var(--line);
 padding:9px 14px;border-radius:10px;background:#fff}}h1{{font-size:34px;line-height:1.1;margin:0 0 8px}}
 .lead{{color:var(--muted);max-width:900px;margin:0 0 22px}}
-.summary{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:18px 0 24px}}
+.summary{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:18px 0 10px}}
+.coverline{{color:var(--muted);font-size:13px;margin:0 0 20px}}
 .summary div{{background:#fff;border:1px solid var(--line);border-radius:14px;padding:16px}}
 .summary b{{font-size:28px;display:block}}.summary span{{color:var(--muted)}}
 .filters{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px}}
@@ -881,6 +1387,10 @@ h2{{font-size:21px;margin:4px 0 0}}.full-title{{color:#454b55;margin:12px 0 16px
 .meta{{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:12px 0}}
 .meta div,.amend{{border:1px solid var(--line);border-radius:12px;padding:12px}}
 .meta b,.amend b{{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);margin-bottom:4px}}
+.news{{margin:12px 0 0;border:1px solid var(--warn);background:var(--warnbg);border-radius:12px;padding:12px 14px}}
+.news h3{{margin:0 0 6px}}.news li b,.news li span{{display:block}}.news li span{{color:#454b55;font-size:13px}}
+.news small{{display:block;margin-top:8px;color:var(--muted);font-size:12px}}
+.news.calm{{border-color:var(--line);background:#fff}}
 .history{{margin:10px 0 0;border:1px solid var(--line);border-radius:12px;padding:9px 12px}}
 .history summary{{cursor:pointer;font-weight:700;font-size:13px}}
 .twocol{{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:18px}}
@@ -907,13 +1417,10 @@ box-shadow:0 8px 30px rgba(0,0,0,.12)}}.adminbar button{{border:0;border-radius:
 <p class="lead">Рабочая карта нормативных зависимостей: какая редакция учтена,
 на какое правило или число она влияет и в каком модуле DevelopAid применяется.</p>
 {adminbar}
-<div class="summary"><div><b>{counts['Москва']}</b><span>Москва</span></div>
-<div><b>{counts['Московская область']}</b><span>Московская область</span></div>
-<div><b>{counts['Общие для РФ']}</b><span>Общие для РФ</span></div></div>
+<div class="summary">{tiles}</div>
+<p class="coverline">{cover_line}</p>
 <div class="filters"><button class="active" data-filter="all">Все</button>
-<button data-filter="Москва">Москва</button>
-<button data-filter="Московская область">Московская область</button>
-<button data-filter="Общие для РФ">Общие для РФ</button></div>
+{filters}</div>
 <div id="cards">{cards}</div>
 <p class="foot">«Реестр актуален на» — дата содержательной сверки карточки.
 Кнопка администратора проверяет доступность и изменение источника, но не подменяет

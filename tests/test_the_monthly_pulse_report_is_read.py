@@ -169,3 +169,45 @@ def test_a_zero_discount_is_an_answer_and_does_not_speak_for_the_market() -> Non
     )
     assert quiet["current"]["Бизнес"]["disc_projects"] == 0
     assert quiet["current"]["Бизнес"]["disc_median"] is None
+
+
+def test_project_date_accepts_excel_text_and_quarter() -> None:
+    assert imp.date_of(46235) == "2026-08-01"
+    assert imp.date_of("2026-08-15") == "2026-08-15"
+    assert imp.date_of("15.08.2026") == "2026-08-15"
+    assert imp.date_of("08.2026") == "2026-08-01"
+    assert imp.date_of("IV кв. 2027") == "2027-12-01"
+    assert imp.date_of("2028 Q2") == "2028-06-01"
+    assert imp.date_of("2029 г.") == "2029-12-01"
+
+
+def test_project_dates_are_found_by_header_not_fixed_letters(tmp_path, monkeypatch) -> None:
+    """Дата ввода не должна исчезать после вставки колонки в отчёте Пульса."""
+    sheet = [
+        {
+            "A": "ID ЖК",
+            "C": "Название ЖК",
+            "CH": "Дата начала продаж",
+            "CI": "Плановый срок ввода в эксплуатацию",
+        },
+        {
+            "A": "101", "C": "Проба", "CH": "01.08.2026", "CI": "IV кв. 2027",
+        },
+        {
+            "A": "101", "C": "Проба", "CH": "01.10.2026", "CI": "30.06.2028",
+        },
+    ]
+    monkeypatch.setattr(imp, "rows", lambda *_args, **_kwargs: iter(sheet))
+    got = imp.read_projects(tmp_path / "pulse.xlsx")["101"]
+    assert got["sales_start"] == "2026-08-01"
+    assert got["commissioning"] == "2028-06-30"
+
+
+def test_project_date_header_prefers_planned_over_actual() -> None:
+    starts, commissioning = imp._project_date_columns({
+        "M": "Старт продаж",
+        "N": "Фактический ввод в эксплуатацию",
+        "O": "Плановый срок ввода в эксплуатацию",
+    })
+    assert starts[0] == "M"
+    assert commissioning[0] == "O"
