@@ -24,11 +24,10 @@ function confirmAction(title,message){return new Promise(resolve=>{const d=$('#c
 function changed(){state.dirty=true;state.unsaved=true;$('#saveState').textContent='Есть изменения · результат требует пересчёта';renderMetrics();}
 function blockStage(b){return ['site','tep','phasing'].includes(b.kind)?'project':'economics';}
 function navigationOrder(){return ['project','economics'].flatMap(stage=>state.boot.form.blocks.map((b,i)=>({b,i})).filter(({b})=>blockStage(b)===stage).map(({i})=>i));}
-function showTab(tab){state.tab=tab;$('.view').forEach(e=>e.hidden=e.id!==tab);$('[data-tab]').forEach(e=>e.classList.toggle('active',e.dataset.tab===tab));
-  const stage=tab==='inputs'?blockStage(state.boot.form.blocks[state.block]):tab==='commercial'?'economics':['result','cashflow'].includes(tab)?'result':null;
-  $('[data-stage]').forEach(e=>{e.classList.toggle('active',e.dataset.stage===stage);if(e.dataset.stage===stage)e.setAttribute('aria-current','step');else e.removeAttribute('aria-current');});
-  $('#resultTabs').hidden=stage!=='result';$('#economicsTabs').hidden=stage!=='economics';
-  $('#resEconomicsTab').classList.toggle('active',stage==='economics'&&tab==='inputs');$('#commercialEconomicsTab').classList.toggle('active',tab==='commercial');if(tab==='history')renderHistory();}
+function showTab(tab){state.tab=tab;$$('.view').forEach(e=>e.hidden=e.id!==tab);$$('[data-tab]').forEach(e=>e.classList.toggle('active',e.dataset.tab===tab));
+  const stage=tab==='inputs'?blockStage(state.boot.form.blocks[state.block]):['result','cashflow'].includes(tab)?'result':null;
+  $$('[data-stage]').forEach(e=>{e.classList.toggle('active',e.dataset.stage===stage);if(e.dataset.stage===stage)e.setAttribute('aria-current','step');else e.removeAttribute('aria-current');});
+  $('#resultTabs').hidden=stage!=='result';if(tab==='history')renderHistory();}
 function selectBlock(i){state.block=i;$('#fieldSearch').value='';renderBlocks();renderFields();showTab('inputs');}
 function showStage(stage){if(stage==='result'){showTab('result');return;}selectBlock(state.boot.form.blocks.findIndex(b=>blockStage(b)===stage));}
 function renderProjects(){const list=$('#projectList');list.replaceChildren();$('#projectCount').textContent=state.projects.length;
@@ -93,7 +92,7 @@ async function calculate(){await state.pending;if(state.syncError)throw state.sy
 async function save(copy=false){if(state.dirty||!state.snapshot)await calculate();const name=$('#projectName').value.trim()||'Новый проект';state.project=await api('/projects',{name,snapshot_id:state.snapshot.snapshot_id,project_id:copy?null:state.project?.id,revision:copy?0:state.project?.revision||0});state.projects=await api('/projects');state.dirty=false;state.unsaved=false;$('#saveState').textContent=`Сохранено на компьютере · версия ${state.project.revision} · ${stamp(state.project.updated_at)}`;renderProjects();notify('Проект сохранён.');}
 async function exportFile(kind){if(state.dirty||!state.snapshot)throw new Error('Сначала рассчитайте текущие параметры.');const response=await fetch(`/api/snapshots/${state.snapshot.snapshot_id}/export/${kind}`,{headers:{'X-DevelopAid-Token':token}});if(!response.ok){const error=await response.json();throw new Error(error.detail||'Выгрузка не выполнена');}const blob=await response.blob(),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`DevelopAid-${kind==='json'?'project':'report'}.${kind}`;link.click();setTimeout(()=>URL.revokeObjectURL(url),60000);}
 
-async function init(){state.boot=await api('/bootstrap');state.references=state.boot.references;state.projects=state.boot.projects;$('#engineVersion').textContent=`Приложение ${state.boot.desktop_version} · движок ${state.boot.engine_version}`;newProject();await initCommercial();
+async function init(){state.boot=await api('/bootstrap');state.references=state.boot.references;state.projects=state.boot.projects;$('#engineVersion').textContent=`Приложение ${state.boot.desktop_version} · движок ${state.boot.engine_version}`;newProject();
   $('[data-tab]').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));$$('[data-stage]').forEach(b=>b.onclick=()=>showStage(b.dataset.stage));$('#fieldSearch').oninput=renderFields;$('#projectName').oninput=changed;
   $('#previousStep').onclick=()=>{const order=navigationOrder(),i=order.indexOf(state.block);if(i>0)selectBlock(order[i-1]);};
   $('#nextStep').onclick=()=>{const order=navigationOrder(),i=order.indexOf(state.block);if(i<order.length-1)selectBlock(order[i+1]);else showTab('result');};
