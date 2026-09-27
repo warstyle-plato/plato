@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -261,15 +262,29 @@ def test_in_a_real_browser_the_report_names_the_transferred_metres():
         thread.join(timeout=15)
 
     assert not errors, errors
+    head = table[:table.index("</thead>")]
     body = table[table.index("<tbody>"):table.index("</tbody>")]
     foot = table[table.index("<tfoot>"):]
-    # Строка и итог названы порознь: одна приписка на обе половины закрыла бы
-    # проверку второй половины молча.
-    # Слово берётся у движка: получателя модель не знает, и проверка,
-    # державшая «городу», закрепляла бы неверное утверждение о сделке.
-    assert core.TRANSFER_NOTE_WORD in body, (
-        "у строки переданные метры не названы — читается как «продано всё»")
-    assert core.TRANSFER_NOTE_WORD in foot, "итог таблицы молчит о переданном"
+
+    def number(text: str) -> float:
+        return float(text.replace("\xa0", "").replace("&nbsp;", "")
+                     .replace(" ", "").replace(",", "."))
+
+    # С 26.09.2026 переданные метры стоят СВОЕЙ колонкой, а не припиской внутри
+    # «продаваемой»: приписку завели, чтобы про них не забыть, а выходило, что
+    # метры школы напечатаны под заголовком «продаваемая» и читаются им.
+    assert "Передаётся, м²" in head, "колонки переданных метров нет"
+    # Строка и итог проверяются порознь: одно утверждение на обе половины
+    # закрыло бы вторую молча.
+    given = [number(one) for one in
+             re.findall(r"<td>([\d\s&nbsp;\xa0,\.]+?)</td>", body)]
+    assert any(one > 0 for one in given), (
+        "ни у одной строки нет переданных метров — проверять нечего")
+    totals = re.findall(r"<th>([\d\s&nbsp;\xa0,\.]+?)</th>", foot)
+    assert len(totals) >= 4 and number(totals[3]) > 0, (
+        f"итог таблицы молчит о переданном: {totals}")
+    # Получателя модель не знает, и проверка, державшая «городу», закрепляла бы
+    # неверное утверждение о сделке.
     assert "городу" not in body and "городу" not in foot, (
         "получатель назван, а модель его не знает")
 

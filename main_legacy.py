@@ -2661,7 +2661,12 @@ def social_tep_row(inputs: dict[str, Any], kind: str,
     ПРОЕКТА (`social_area_per_place`), а не пересчитывается по ёмкости
     очереди: ступень РНГП идёт от размера здания, а здание одно.
     """
-    zero = {"units": 0.0, "total_area": 0.0, "transfer": 0.0, "gns": 0.0}
+    # Нулевая строка гасит ВСЕ поля, которые ставит живая: строка правится
+    # `update`-ом, и непогашенное поле переживает отмену объекта. Переданные
+    # места, оставшиеся от прежнего режима, показали бы переданный объект там,
+    # где объекта нет вовсе.
+    zero = {"units": 0.0, "total_area": 0.0, "transfer": 0.0, "gns": 0.0,
+            "transfer_units": 0.0}
     keys = SOCIAL_TEP_FIELDS.get(kind)
     if not keys:
         return dict(zero)
@@ -2707,7 +2712,16 @@ def social_tep_row(inputs: dict[str, Any], kind: str,
         gns = area / total_of_gns
     else:
         gns = 0.0
-    return {"units": units, "total_area": area, "transfer": area, "gns": gns}
+    # Соцобъект уходит городу ЦЕЛИКОМ — и метрами, и местами. Переданные метры
+    # строка несла давно, а места оставались «продаваемыми»: `saleable_units`
+    # вычитает переданные штуки, и при нуле в них садик на 350 мест выходил
+    # проданным на все 350 — в одной строке с припиской «передано 5 600 м²».
+    # Признака «продаётся / передаётся» у ДОО, СОШ и поликлиники нет и не
+    # будет (решение владельца 15.09.2026): они безвозвратны по построению,
+    # поэтому переданы всегда все места. Механизм тот же, что у гостевых мест
+    # паркинга, — второго здесь не заводим.
+    return {"units": units, "total_area": area, "transfer": area, "gns": gns,
+            "transfer_units": units}
 
 
 # Строка, объявленная очередью, — требование договора КРТ, и она сильнее
@@ -13014,15 +13028,64 @@ def _telegram_send_photo_bytes(
     return result.get("result")
 
 
-def _territory_image_png(numbers: list[str]) -> tuple[bytes, str] | None:
-    """Картинка территории: контуры ЕГРН поверх подложки НСПД — с подписью.
+# Поле окружения вокруг контура на карте улиц: столько же, сколько у кадра
+# первой страницы полного PDF и у карты на сайте — участок читается только
+# вместе с улицами и кварталами вокруг.
+_MAP_CONTEXT_METRES = 250.0
+_MAP_BASEMAP_CAPTION = {"nspd": "подложка — публичная карта НСПД",
+                        "osm": "подложка — карта улиц OpenStreetMap"}
+
+
+def _map_context_bbox(points: list[Any], target_aspect: float,
+                      context_m: float = _MAP_CONTEXT_METRES) -> tuple[float, float, float, float] | None:
+    """Рамка карты вокруг контура: поле окружения и пропорция слота.
+
+    Один расчёт рамки на тизер и первую страницу PDF: две копии одной
+    геометрии расходятся, и контур ложится рядом с подложкой, а выглядит это
+    как неточность ЕГРН. Поле — не меньше `context_m` и не меньше 22 % от
+    размера контура; затем рамка растягивается до пропорции слота.
+    """
+    if not points:
+        return None
+    xs = [float(p[0]) for p in points]
+    ys = [float(p[1]) for p in points]
+    min_x, max_x, min_y, max_y = min(xs), max(xs), min(ys), max(ys)
+    span_x, span_y = max_x - min_x, max_y - min_y
+    if not (span_x > 0 and span_y > 0):
+        return None
+    pad_x = max(span_x * 0.22, context_m)
+    pad_y = max(span_y * 0.22, context_m)
+    min_x, max_x, min_y, max_y = min_x - pad_x, max_x + pad_x, min_y - pad_y, max_y + pad_y
+    span_x, span_y = max_x - min_x, max_y - min_y
+    aspect = max(float(target_aspect or 1.0), 0.1)
+    if span_x / span_y < aspect:
+        extra = (span_y * aspect - span_x) / 2.0
+        min_x, max_x = min_x - extra, max_x + extra
+    elif span_x / span_y > aspect:
+        extra = (span_x / aspect - span_y) / 2.0
+        min_y, max_y = min_y - extra, max_y + extra
+    return min_x, min_y, max_x, max_y
+
+
+def _territory_image_png(numbers: list[str], basemap: str = "nspd",
+                         aspect: float | None = None) -> tuple[bytes, str] | None:
+    """Картинка территории: контуры ЕГРН поверх подложки — с подписью.
 
     Одна на бота и на тизер: та же картинка, что на сайте в карточке участка.
-    Контуры приходят из /land/lookup (`contour_merc`), подложка — из
-    /land/map-image; оба маршрута на Render пересылают на ядро сами. Нет
-    контура или подложки — `None`: голый контур на белом фоне — шум, а не
-    информация (владелец, 16.08.2026), и расчёт от картинки не зависит.
+    Контуры приходят из /land/lookup (`contour_merc`). Подложек две, и
+    подпись называет, какая стоит:
+    - `nspd` — публичная кадастровая карта крупным планом (/land/map-image),
+      как в боте: видны соседние участки;
+    - `osm` — карта улиц с полем окружения не меньше 250 м (/land/basemap,
+      та же склейка, что у первой страницы полного PDF), в пропорции
+      `aspect`: участок в контексте реальной карты города (владелец,
+      22.09.2026 — «класть контур на карту окружения»).
+    Оба маршрута на Render пересылают на ядро сами. Нет контура или подложки
+    — `None`: голый контур на белом фоне — шум, а не информация (владелец,
+    16.08.2026), и расчёт от картинки не зависит.
     """
+    if basemap not in _MAP_BASEMAP_CAPTION:
+        raise ValueError(f"неизвестная подложка карты: {basemap!r}")
     data = land_lookup(LandLookupRequest(
         query=", ".join(numbers), limit=max(10, len(numbers))))
     found = [item for item in (data.get("results") or [])
@@ -13033,19 +13096,31 @@ def _territory_image_png(numbers: list[str]) -> tuple[bytes, str] | None:
               if isinstance(p, (list, tuple)) and len(p) >= 2]
     if not points:
         return None
-    min_x = min(p[0] for p in points); max_x = max(p[0] for p in points)
-    min_y = min(p[1] for p in points); max_y = max(p[1] for p in points)
-    span = max(max_x - min_x, max_y - min_y, 1.0)
-    pad = max(span * 0.08, 25.0)
-    b_min_x, b_min_y = min_x - pad, min_y - pad
-    b_max_x, b_max_y = max_x + pad, max_y + pad
-    from PIL import Image, ImageDraw
-    try:
-        response = land_map_image(
-            bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}")
-        backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
-    except Exception:
-        return None
+    from PIL import Image, ImageDraw, ImageFont
+    if basemap == "osm":
+        bbox = _map_context_bbox(points, aspect or 1.0)
+        if bbox is None:
+            return None
+        b_min_x, b_min_y, b_max_x, b_max_y = bbox
+        try:
+            response = land_basemap(
+                bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}", width=960)
+            backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
+        except Exception:
+            return None
+    else:
+        min_x = min(p[0] for p in points); max_x = max(p[0] for p in points)
+        min_y = min(p[1] for p in points); max_y = max(p[1] for p in points)
+        span = max(max_x - min_x, max_y - min_y, 1.0)
+        pad = max(span * 0.08, 25.0)
+        b_min_x, b_min_y = min_x - pad, min_y - pad
+        b_max_x, b_max_y = max_x + pad, max_y + pad
+        try:
+            response = land_map_image(
+                bbox=f"{b_min_x:.1f},{b_min_y:.1f},{b_max_x:.1f},{b_max_y:.1f}")
+            backdrop = Image.open(io.BytesIO(bytes(response.body))).convert("RGBA")
+        except Exception:
+            return None
     w, h = backdrop.size
     overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     overlay_draw = ImageDraw.Draw(overlay)
@@ -13069,6 +13144,15 @@ def _territory_image_png(numbers: list[str]) -> tuple[bytes, str] | None:
         # Белая подкладка под тёмной линией: граница читается на пёстрой карте.
         draw.line(closed, fill=(255, 255, 255), width=7, joint="curve")
         draw.line(closed, fill=(180, 35, 24), width=3, joint="curve")
+    if basemap == "osm":
+        # Атрибуция — часть картинки: условие OpenStreetMap, а не украшение.
+        label = "© OpenStreetMap"
+        font = ImageFont.load_default()
+        box = draw.textbbox((0, 0), label, font=font)
+        tw, th = box[2] - box[0], box[3] - box[1]
+        x0, y0 = 8, image.height - th - 8
+        draw.rectangle((x0 - 4, y0 - 3, x0 + tw + 4, y0 + th + 3), fill=(255, 255, 255))
+        draw.text((x0, y0), label, fill=(40, 40, 40), font=font)
     out = io.BytesIO()
     image.save(out, format="PNG")
     listed = ", ".join(str(item.get("cadastral_number") or "") for item in found[:5])
@@ -13076,7 +13160,7 @@ def _territory_image_png(numbers: list[str]) -> tuple[bytes, str] | None:
     caption = (
         f"Контур участка {listed} · границы ЕГРН" if count == 1
         else f"Территория из {count} участков: {listed} · границы ЕГРН")
-    caption += " · подложка — публичная карта НСПД"
+    caption += " · " + _MAP_BASEMAP_CAPTION[basemap]
     return out.getvalue(), caption
 
 
@@ -27330,14 +27414,18 @@ async def report_teaser(request: Request) -> Response:
 def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
                      tep: dict[str, Any], phasing: dict[str, Any] | None,
                      site: dict[str, Any] | None = None,
-                     map_png: bytes | None = None) -> bytes:
+                     map_png: bytes | tuple[bytes, str] | None = None) -> bytes:
     """Тизер из уже посчитанного: модель представления → две страницы.
 
-    `map_png` — картинка участка с контурами ЕГРН (`_territory_image_png`);
-    нет картинки — тизер говорит об этом на её месте, а не молчит."""
+    `map_png` — картинка участка с контурами ЕГРН (`_territory_image_png`),
+    одна или вместе с подписью, называющей подложку; нет картинки — тизер
+    говорит об этом на её месте, а не молчит."""
     presentation = project_presentation(bundle, inputs, tep, phasing, site=site)
+    caption = None
+    if isinstance(map_png, tuple):
+        map_png, caption = map_png
     return _teaser_pdf.build_teaser_pdf(presentation, _pdf_font_names(), _pdf_num,
-                                        map_png=map_png)
+                                        map_png=map_png, map_caption=caption)
 
 
 def _teaser_site(payload: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
@@ -27409,18 +27497,24 @@ def _teaser_site_facts(site: dict[str, Any], gns_sqm: float) -> dict[str, Any]:
     return facts
 
 
-def _teaser_map_png(site: dict[str, Any]) -> bytes | None:
-    """Карта участка для тизера; любой отказ источника — `None`, тизер
-    называет отсутствие карты сам."""
+def _teaser_map_png(site: dict[str, Any]) -> tuple[bytes, str] | None:
+    """Карта участка для тизера: контур на карте улиц с окружением, а нет карты
+    улиц — тот же контур на кадастровой карте, как в боте. Подпись едет
+    вместе с картинкой и называет подложку. Любой отказ источника — `None`,
+    тизер называет отсутствие карты сам."""
     numbers = list(site.get("cadastral_numbers") or [])
     if not numbers:
         return None
-    try:
-        made = _territory_image_png(numbers)
-    except Exception as exc:
-        logging.info("Карта для тизера пропущена: %s", exc)
-        return None
-    return made[0] if made else None
+    for basemap in ("osm", "nspd"):
+        try:
+            made = _territory_image_png(numbers, basemap=basemap,
+                                        aspect=_teaser_pdf.MAP_ASPECT)
+        except Exception as exc:
+            logging.info("Карта для тизера (%s) пропущена: %s", basemap, exc)
+            made = None
+        if made:
+            return made
+    return None
 
 
 @app.post("/telegram/result")
@@ -46814,11 +46908,24 @@ function projectKindDialogHtml(){
  // тогда, когда смотрит на ставку, а не когда переключает тип.
  html+='<p style="margin:0 0 10px"><b>Где теперь задавать метры:</b> вкладка «Экономика», блоки '
   +escapeHtml(groups.map(t=>'«'+t+'»').join(', '))+'. Строки ТЭП у них производные — считаются '
-  +'по долям объекта.</p>'
-  +'<p style="margin:0 0 10px">Нормативный потенциал участка можно положить в '
-  +escapeHtml(NONRES_DENSITY_TARGETS.map(t=>'«'+t[1]+'»').join(' или '))
-  +' кнопкой «Рассчитать ТЭП от площади и плотности» на шаге «ТЭП»: она спросит, куда.</p>'
-  +'<p style="margin:0">Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу '
+  +'по долям объекта.</p>';
+ const area=Number(inputs.site_area_ha||0),density=effectiveSiteDensity();
+ if(area>0&&density>0){
+  const spp=area*density;
+  html+='<div style="margin:12px 0;padding:11px 12px;border:1px solid #d7e1ee;border-radius:8px;background:#f7f9fc">'
+   +'<div><b>Потенциал участка: '+num(spp)+' м².</b> Куда положить ТЭП нежилого проекта?</div>'
+   +'<div style="margin-top:8px">'
+   +NONRES_DENSITY_TARGETS.map(t=>'<button type="button" class="btn" style="margin:0 6px 6px 0" '
+     +'onclick="applyDensityToObjectFromDialog(\''+t[0]+'\')">'+escapeHtml(t[1])+'</button>').join('')
+   +'</div>'
+   +'<div style="font-size:11px;color:#667085">Выбор сразу запишет рассчитанный потенциал в объект. '
+   +'Если метры хотите задать вручную — нажмите «Понятно» и заполните объект на вкладке «Экономика».</div>'
+   +'</div>';
+ }else{
+  html+='<p style="margin:0 0 10px">Площадь участка или плотность пока не заданы, поэтому распределять '
+   +'потенциал нечего. Их можно задать на шаге «ТЭП», а метры объекта — вручную на вкладке «Экономика».</p>';
+ }
+ html+='<p style="margin:0">Финансирование режим не трогает: 214-ФЗ нежильё не исключает, эскроу '
   +'и лестница ставки ПФ те же.</p>';
  return html;
 }
@@ -46834,6 +46941,14 @@ function openProjectKindDialog(){
 function closeProjectKindDialog(){
  const dialog=document.getElementById('projectKindDialog');
  if(dialog)dialog.style.display='none';
+}
+
+function applyDensityToObjectFromDialog(target){
+ // Если человек выбирает нежилой тип на «Экономике», не отправляем его на
+ // другую вкладку ради второго клика: выбор назначения ТЭП делается в том же
+ // окне, которое сообщает последствия переключения.
+ applyDensityToObject(target);
+ closeProjectKindDialog();
 }
 
 // Отмена переключения целиком: тип возвращается ПЕРВЫМ, иначе пересчёт ТЭП,
@@ -49076,6 +49191,12 @@ const KRT_REQUIREMENT_LABELS={kindergarten_places:'места ДОО',school_pla
  social_clinic_norm_sqm:'норматив поликлиники',
  social_compensation_mln:'соцкомпенсация',land_rights_cost_mln:'плата за ВРИ'};
 function krtRequirementEntered(){return String(inputs.social_area_source||'norm')==='manual'}
+// Заперто ли ЭТО поле. Правило одно, читателей два: писатель вводных и
+// отчёт о пересчёте. Пока отчёт выводил причину из расхождения чисел, он
+// называл замком КРТ и то, для чего метод просто не дал числа.
+function krtLocks(key){
+ return krtRequirementEntered()&&KRT_REQUIREMENT_INPUTS.indexOf(key)>=0;
+}
 // В КРТ платы за смену ВРИ нет: вид использования меняется УСЛОВИЕМ ДОГОВОРА
 // о комплексном развитии, а не отдельным платежом городу. Режим «Требование
 // КРТ» её только ЗАПИРАЛ от пересчёта — число, попавшее в поле раньше (из
@@ -49139,10 +49260,32 @@ function clearKrtVriFee(){
 
 // Пишет только незапертое и возвращает подпись о том, чего НЕ тронуло: молча
 // не тронутое поле выглядит так же, как не посчитанное.
+// Строка отчёта про ОДНО поле: что в нём стоит сейчас и почему.
+//
+// Список «подставлено» строился ДО подстановки, а запертое требованием КРТ не
+// подставлялось — и одно поле выходило описанным дважды и противоположно:
+// «Плата за ВРИ: было 18 265,9 → стало 10 166,6», а ниже «Не тронуто —
+// вписано требованием КРТ: … плата за ВРИ» (экран владельца, 26.09.2026).
+// Верхняя строка утверждала подстановку, которой не было, и заголовок над ней
+// говорил «Подставлено».
+//
+// Причина берётся у правила (`krtLocks`) и у того, предлагалось ли число
+// вовсе, а не выводится из того, что числа разошлись: «не тронули, потому что
+// заперто» и «не тронули, потому что метод числа не дал» лечатся разным, а по
+// расхождению они неразличимы.
+function derivedLine(name,key,counted,offered){
+ const kept=Number(inputs[key]||0),now=Number(counted||0);
+ if(krtLocks(key))
+  return name+': осталось '+num(kept)+' — поле заперто требованием КРТ'
+   +(Math.abs(kept-now)<0.001?'':'; метод дал бы '+num(now));
+ if(!offered)
+  return name+': осталось '+num(kept)+' — метод числа не дал, поле не тронуто';
+ return name+': '+num(kept);
+}
 function applyDerivedInputs(values){
- const locked=krtRequirementEntered(),skipped=[];
+ const skipped=[];
  Object.keys(values||{}).forEach(key=>{
-  if(locked&&KRT_REQUIREMENT_INPUTS.indexOf(key)>=0){
+  if(krtLocks(key)){
    skipped.push(KRT_REQUIREMENT_LABELS[key]||key);return;
   }
   inputs[key]=values[key];
@@ -49379,28 +49522,55 @@ async function recalcFromTep(options){
   return;
  }
  const b=d.baseline||{};
- const cmp=(name,was,now)=>name+': было '+num(was)+' → стало '+num(now);
- const lines=[
-  cmp('Плата за ВРИ, млн ₽',b.vri_mln,d.vri_total_mln)
-   +(d.land_right_factor&&d.land_right_factor!==1?' (аренда: делитель 1,001)':''),
-  cmp('Соцкомпенсация, млн ₽',b.compensation_mln,d.compensation_mln),
+ // «Было» — это ВЫГРУЗКА ГлавАПУ, а не состояние до правки: ставки сняты с
+ // неё, и сравнение идёт с ней. Пока строка говорила просто «было», каждая
+ // правка ТЭП показывала весь дрейф с момента импорта как её следствие —
+ // «с чего вдруг поменялось население тоже не ясно» (владелец, 26.09.2026):
+ // доля офисов население не двигает вовсе, оно считается от площади квартир.
+ // Не изменившееся не печатается стрелкой: строка со стрелкой читается как
+ // следствие правки, даже когда числа по обе стороны одинаковы.
+ const cmp=(name,was,now)=>Math.abs(Number(was||0)-Number(now||0))<0.5
+  ? name+': '+num(now)+' — как в выгрузке ГлавАПУ'
+  : name+': в выгрузке ГлавАПУ '+num(was)+' → на нынешнем ТЭП '+num(now);
+ // Половины разные, и смешивать их нельзя. Машино-места и население — это
+ // КОНТЕКСТ: полями они не становятся, и сравнивать их можно только с
+ // выгрузкой. Плата за ВРИ, соцкомпенсация и места соцобъектов — ПОДСТАНОВКА,
+ // и про них честно говорить только после того, как она случилась.
+ const context=[
   cmp('Машино-места',b.parking_total,d.parking.total)
    +' ('+d.parking.permanent+' постоянных + '+d.parking.guest+' гостевых + '
    +d.parking.attached+' приобъектных)',
-  cmp('Население, чел.',b.population,d.population)
-   +' · ДОО '+d.places.kindergarten+' · школа '+d.places.school+' · поликлиника '+d.places.clinic];
- (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
+  // Числа метода по соцобъектам стояли хвостом этой строки — и противоречили
+  // строкам о самих полях: в хвосте «ДОО 412», а поле заперто на 350. Своим
+  // местам они уже сказаны, а второй ответ на тот же вопрос разошёлся бы с
+  // первым молча.
+  cmp('Население, чел.',b.population,d.population)];
+ (d.warnings||[]).forEach(w=>context.push('⚠ '+w));
+ // Вопрос задаётся о НАМЕРЕНИИ: здесь подстановки ещё не было.
+ const proposal=['Плата за ВРИ, млн ₽: по ставке территории '+num(d.vri_total_mln)
+   +(d.land_right_factor&&d.land_right_factor!==1?' (аренда: делитель 1,001)':''),
+  'Соцкомпенсация, млн ₽: по ставке территории '+num(d.compensation_mln)].concat(context);
  // Спрашивать на каждой правке ТЭП нечего: человек уже сказал, чего хочет,
  // изменив метры. Подтверждение осталось у явного нажатия кнопки.
- if(!silent&&!confirm('Пересчёт по параметрам исходного расчёта ГлавАПУ:\n\n'+lines.join('\n')
+ if(!silent&&!confirm('Пересчёт по параметрам исходного расчёта ГлавАПУ:\n\n'+proposal.join('\n')
    +'\n\nПодставить в модель?'))
-  {say(lines.map(escapeHtml).join('<br>'),true);return}
+  {say(proposal.map(escapeHtml).join('<br>'),true);return}
  const derived={kindergarten_places:d.places.kindergarten,school_places:d.places.school,
   clinic_capacity:d.places.clinic};
  if(d.compensation_mln>0)derived.social_compensation_mln=d.compensation_mln;
  if(d.vri_total_mln>0)derived.land_rights_cost_mln=d.vri_total_mln;
- const skipped=applyDerivedInputs(derived);
- if(skipped)lines.push(skipped);
+ applyDerivedInputs(derived);
+ // Отчёт строится ПОСЛЕ подстановки и читает поля: приписка «не тронуто»
+ // здесь больше не нужна — каждая строка сама говорит, что в поле стоит и
+ // почему. Признак «предлагалось ли число» берётся у того же `derived`,
+ // который ушёл в подстановку, а не у второго условия рядом.
+ const lines=[['Плата за ВРИ, млн ₽','land_rights_cost_mln',d.vri_total_mln],
+  ['Соцкомпенсация, млн ₽','social_compensation_mln',d.compensation_mln],
+  ['Места ДОО','kindergarten_places',d.places.kindergarten],
+  ['Места СОШ','school_places',d.places.school],
+  ['Мощность поликлиники','clinic_capacity',d.places.clinic]]
+  .map(x=>derivedLine(x[0],x[1],x[2],Object.prototype.hasOwnProperty.call(derived,x[1])))
+  .concat(context);
  const parkingWas=Number((tep.underground_parking&&tep.underground_parking.units)||0);
  // В подземный гараж идут постоянные и гостевые. Приобъектные — места у входа
  // для посетителей встроенной коммерции, под землю их не кладут: с ними гараж
@@ -49408,9 +49578,17 @@ async function recalcFromTep(options){
  inputs.underground_manual_spaces=d.parking.permanent+d.parking.guest;
  stampSocialBasis('выгрузка ГлавАПУ');
  syncTep(false);renderInputs();renderTep();
- lines.push('Машино-места в ТЭП: было '+parkingWas+', стало '
-   +Number((tep.underground_parking&&tep.underground_parking.units)||0));
- say((silent?'Пересчитано под новый ТЭП: ':'Подставлено: ')+lines.map(escapeHtml).join('<br>')
+ const parkingNow=Number((tep.underground_parking&&tep.underground_parking.units)||0);
+ lines.push(parkingNow===parkingWas
+  ? 'Машино-места в ТЭП: '+parkingNow+' — не изменились'
+  : 'Машино-места в ТЭП: было '+parkingWas+', стало '+parkingNow);
+ // Заголовок отвечает за весь список и обязан быть верен о нём. «Подставлено»
+ // над списком, в котором не подставлено ничего, — то же враньё, что и строка
+ // о подстановке, которой не было, только крупнее.
+ const wrote=Object.keys(derived).some(key=>!krtLocks(key))||parkingNow!==parkingWas;
+ const head=wrote?(silent?'Пересчитано под новый ТЭП: ':'Подставлено: ')
+  :'Подставлять нечего — поля заперты требованием КРТ, а машино-места не изменились: ';
+ say(head+lines.map(escapeHtml).join('<br>')
    +'<br>Ставки территории взяты из исходного расчёта ГлавАПУ и применены к новым метрам. '
    +'Проверено обратным ходом: на исходном ТЭП метод воспроизводит его числа.',true);
  calculate();
@@ -51243,27 +51421,29 @@ function renderResult(){
  const underTotal=Number(r.summary.underground_gns_sqm!==undefined
   ?r.summary.underground_gns_sqm:underGns);
  const dash='<span style="color:#bbb">—</span>';
- // Переданные метры строятся и не продаются: в продаваемой их нет, и
- // без приписки отчёт читается так, будто продано всё построенное — «в отчёте
+ // Переданные метры строятся и не продаются: в продаваемой их нет, и без
+ // указания отчёт читается так, будто продано всё построенное — «в отчёте
  // вообще нет указания на передаваемую! Чтобы не забыть, что вообще-то не всё
- // продал» (владелец, 10.09.2026). Штуки так подписаны с 04.09; метры —
- // соседнее место, и правило до него не дошло.
- const areaNote=x=>Number(x.transfer||0)>0
-  ? `<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(x.transfer)} м²</span>`
-  : '';
+ // продал» (владелец, 10.09.2026).
+ //
+ // Стояло это ПРИПИСКОЙ ВНУТРИ колонки «Продаваемая площадь», и выходило
+ // обратное задуманному: метры школы печатались под заголовком «продаваемая»
+ // — «якобы продаются якобы метры школы и садика» (владелец, 26.09.2026).
+ // Число отвечает на заголовок СВОЕЙ колонки, а не на приписку под собой,
+ // поэтому у переданных метров колонка своя. Ноль в продаваемой при этом
+ // остаётся нулём: «0 тоже сойдут» (владелец, 26.09.2026).
  const transferTotal=r.tep.rows.reduce((sum,x)=>sum+Number(x.transfer||0),0);
  reportTep.innerHTML=
-  `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
+  `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Передаётся, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
   `<tbody>`+
   r.tep.rows.map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
-   +`<td>${num(x.saleable)}${areaNote(x)}</td>`
+   +`<td>${num(x.saleable)}</td><td>${num(x.transfer)}</td>`
    +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
-  +`<th>${num(r.tep.total.saleable)}`
-  +(transferTotal>0?`<span style="display:block;font-size:10px;color:#777">${TRANSFER_NOTE_WORD} ${num(transferTotal)} м²</span>`:'')
-  +`</th><th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
+  +`<th>${num(r.tep.total.saleable)}</th><th>${num(transferTotal)}</th>`
+   +`<th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
   ? `Строительный объём — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная: на нём считаются общие статьи (ИРД, проектирование, подготовка, сети, благоустройство, сдача, содержание). Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
