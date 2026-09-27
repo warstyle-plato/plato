@@ -51937,8 +51937,6 @@ function renderResult(){
  // переданные в натуре (строятся, но отданы). Обе считает движок и обе везёт
  // строкой ТЭП — экран их только показывает, своей арифметики здесь нет.
  const soldUnits=x=>Number(x.saleable_units!==undefined?x.saleable_units:x.units||0);
- const capacityUnits=x=>['kindergarten','school','clinic'].includes(x.key);
- const capacityNote=x=>x.key==='clinic'?'мощность, пос./смену':'мощность, мест';
  const unitNote=x=>{
   const parts=[];
   if(Number(x.guest_units||0)>0)parts.push('гостевых '+num(x.guest_units));
@@ -51947,7 +51945,7 @@ function renderResult(){
    ? `<span style="display:block;font-size:10px;color:#777">из них ${parts.join(' · ')}</span>`
    : '';
  };
- const soldTotal=r.tep.rows.reduce((sum,x)=>sum+(capacityUnits(x)?0:soldUnits(x)),0);
+ const soldTotal=r.tep.rows.reduce((sum,x)=>sum+soldUnits(x),0);
  // ГНС — наземная площадь здания, и у гаража с кладовыми её нет: под землёй
  // наружных стен не бывает, а экономика у подземной части своя — свой метр
  // стройки и продукт, продаваемый местами. Пока обе величины стояли в одной
@@ -51967,7 +51965,6 @@ function renderResult(){
  const underTotal=Number(r.summary.underground_gns_sqm!==undefined
   ?r.summary.underground_gns_sqm:underGns);
  const dash='<span style="color:#bbb">—</span>';
- const soldCell=x=>capacityUnits(x)?dash:num(soldUnits(x));
  // Переданные метры строятся и не продаются: в продаваемой их нет, и без
  // указания отчёт читается так, будто продано всё построенное — «в отчёте
  // вообще нет указания на передаваемую! Чтобы не забыть, что вообще-то не всё
@@ -51987,7 +51984,7 @@ function renderResult(){
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0?num(objUnder(x)):dash)}</td>`
    +`<td>${num(x.saleable)}</td><td>${num(x.transfer)}</td>`
-   +`<td>${num(x.units)}${capacityUnits(x)?'<span style="display:block;font-size:10px;color:#777">'+capacityNote(x)+'</span>':unitNote(x)}</td><td>${soldCell(x)}</td></tr>`).join('')+
+   +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}</th><th>${num(transferTotal)}</th>`
    +`<th>${num(r.tep.total.units)}</th><th>${num(soldTotal)}</th></tr></tfoot>`;

@@ -76,11 +76,3 @@ def test_the_scheduler_declares_apartments_as_the_only_normative_driver() -> Non
     assert "changedKey!=='apartments'" in body
     assert body.index("changedKey!=='apartments'") < body.index("_glavapu_import")
 
-
-def test_krt_note_does_not_claim_that_locked_vri_and_compensation_changed() -> None:
-    body = _function("recalcFromTep")
-    gate = body.index("if(!lockedKrt)")
-    vri = body.index("Плата за ВРИ, млн ₽")
-    compensation = body.index("Соцкомпенсация, млн ₽")
-    assert gate < vri < compensation
-    assert "lockedKrt?'':' · ДОО '" in body

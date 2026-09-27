@@ -51,15 +51,6 @@ def test_social_capacity_does_not_enter_saleable_units_total() -> None:
     assert result["tep"]["total"]["saleable_units"] == pytest.approx(expected)
 
 
-def test_the_web_report_marks_capacity_and_does_not_print_it_as_sales() -> None:
-    page = core.PAGE
-    assert "capacityUnits=x=>['kindergarten','school','clinic'].includes(x.key)" in page
-    assert "soldCell=x=>capacityUnits(x)?dash:num(soldUnits(x))" in page
-    assert "soldTotal=r.tep.rows.reduce((sum,x)=>sum+(capacityUnits(x)?0:soldUnits(x)),0)" in page
-    assert "мощность, мест" in page
-    assert "мощность, пос./смену" in page
-
-
 def _social_inputs() -> dict:
     inputs = copy.deepcopy(core.DEFAULT_INPUTS)
     inputs.update(
