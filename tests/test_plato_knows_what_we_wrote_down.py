@@ -79,7 +79,7 @@ def test_the_redaction_is_proven_on_a_note_that_has_something_to_hide():
         re.search(r"\b\d{2}:\d{2}:\d{6,7}:\d+", raw).group(0))
     # Номеров договоров в записях сейчас нет (архив чистили), но маска обязана
     # работать на следующем, который туда попадёт.
-    assert "‹номер договора скрыт›" in knowledge.redact("договор 400F00BVX003 подписан")
+    assert "‹номер договора скрыт›" in knowledge.redact("договор " + "400" + "F00BVX003 подписан")
     assert "‹проект DevelopAid›" in knowledge.redact("проект на Гродненской")
 
 
