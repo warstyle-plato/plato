@@ -10986,26 +10986,18 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
     размещения паркинга.
     """
     # Книга может вызвать расчёт повторно на той же копии ТЭП. Исходные
-    # площади храним, но кэш не имеет права перебивать более свежий ТЭП:
-    # если между проходами человек/импорт поменял площадь, она становится
-    # новой базой. Только неизменённый результат прошлого прохода
-    # восстанавливается к прежней базе — так первые этажи не вычитаются дважды.
+    # площади храним один раз и перед повторным проходом восстанавливаем:
+    # первые этажи не должны вычитаться дважды.
     for tep_key, _prefix, _enabled_key, _sellable in OBJECT_PARKING_OBJECTS:
         row = (tep or {}).get(tep_key) or None
         if row is None:
             continue
         for field in ("total_area", "useful", "saleable"):
             base_key = f"_object_parking_base_{field}"
-            applied_key = f"_object_parking_applied_{field}"
-            current = n(row, field)
             if base_key not in row:
-                row[base_key] = current
-            elif applied_key in row and abs(current - n(row, applied_key)) <= 1e-7:
-                row[field] = n(row, base_key)
+                row[base_key] = n(row, field)
             else:
-                # Значение изменилось после прошлого прохода — это новый ТЭП,
-                # а не результат паркинга, и старый скрытый кэш больше не силён.
-                row[base_key] = current
+                row[field] = n(row, base_key)
 
     demand = parking_demand(inputs, tep)
     under_per_space = (
@@ -11068,7 +11060,6 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             base = n(row, f"_object_parking_base_{field}")
             adjusted = max(0.0, base * ratio)
             row[field] = adjusted
-            row[f"_object_parking_applied_{field}"] = adjusted
             losses[field] = max(0.0, base - adjusted)
 
         overflow = max(0.0, over_gba - base_gns)

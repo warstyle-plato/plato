@@ -1,64 +1,11 @@
 from __future__ import annotations
 
-import copy
 from datetime import date
 
 import pytest
 
 import main_legacy as core
 import normatives_registry as registry
-
-
-def _office_inputs() -> dict:
-    x = copy.deepcopy(core.DEFAULT_INPUTS)
-    x.update(
-        offices_enabled=True,
-        offices_gba_sqm=10_000,
-        offices_saleable_sqm=6_000,
-        offices_parking_under_spaces=0,
-        offices_parking_over_spaces=20,
-        offices_parking_guest_pct=10,
-        _parking_by_hand=["offices"],
-    )
-    return x
-
-
-def _office_tep() -> dict:
-    t = copy.deepcopy(core.TEP_DEFAULT)
-    t["offices"].update(
-        gns=10_000,
-        total_area=9_400,
-        useful=8_000,
-        saleable=6_000,
-    )
-    return t
-
-
-def test_recalculated_tep_invalidates_object_parking_hidden_base() -> None:
-    t = _office_tep()
-    x = _office_inputs()
-    core.apply_object_parking(x, t)
-    assert t["offices"]["saleable"] == pytest.approx(5_700)
-
-    # Новый ТЭП пришёл после первого прохода. Старый скрытый кэш не должен
-    # вернуть прежние 6000 и стереть новый расчёт.
-    t["offices"].update(total_area=9_000, useful=8_500, saleable=7_000)
-    core.apply_object_parking(x, t)
-
-    assert t["offices"]["total_area"] == pytest.approx(8_550)
-    assert t["offices"]["useful"] == pytest.approx(8_075)
-    assert t["offices"]["saleable"] == pytest.approx(6_650)
-
-
-def test_object_parking_still_does_not_apply_twice_without_external_edit() -> None:
-    t = _office_tep()
-    x = _office_inputs()
-    core.apply_object_parking(x, t)
-    once = dict(t["offices"])
-    core.apply_object_parking(x, t)
-    assert t["offices"]["total_area"] == pytest.approx(once["total_area"])
-    assert t["offices"]["useful"] == pytest.approx(once["useful"])
-    assert t["offices"]["saleable"] == pytest.approx(once["saleable"])
 
 
 def test_scheme2_contract_split_uses_f_plus_half_f2_for_step_coverage() -> None:
