@@ -88,23 +88,33 @@ def test_a_discrete_object_lands_in_one_queue_only(bundle):
 
 # --- экран --------------------------------------------------------------------
 
-def test_the_screen_lists_the_products_under_revenue():
-    page = core.PAGE
-    found = re.search(r"\nfunction renderPhaseComparison\(.*?\n\}", page, re.S)
-    assert found, "функция сравнения очередей на странице не найдена"
-    body = found.group(0)
-    assert "revenue_by_product" in body
-    # Строки продуктов стоят в блоке «Выручка», над удельными показателями;
-    # что они на отрисованной странице там и стоят, меряет
-    # tests/test_the_phase_table_reads_in_blocks.py.
-    revenue = body.index("['revenue','Выручка',revenueRows]")
-    assert body.index("['Цена реализации на м² продаваемой'") > revenue
+def _table_rows(bundle, block):
+    table = bundle["consolidated"]["comparison_table"]
+    return next(b for b in table["blocks"] if b["key"] == block)["rows"]
 
 
-def test_the_screen_hides_products_without_revenue():
+def test_the_screen_lists_the_products_under_revenue(bundle):
+    """Строки продуктов стоят в блоке «Выручка», над удельными.
+
+    Таблицу собирает движок (`phase_comparison_table`), страница и PDF её
+    печатают; что на отрисованной странице строки стоят там же, меряет
+    tests/test_the_phase_table_reads_in_blocks.py.
+    """
+    table = bundle["consolidated"]["comparison_table"]
+    keys = [b["key"] for b in table["blocks"]]
+    assert keys.index("revenue") < keys.index("unit")
+    labels = {p["key"]: p["label"] for p in bundle["consolidated"]["report"]["products"]}
+    shown = [r["label"] for r in _table_rows(bundle, "revenue") if r.get("role") == "part"]
+    for key in ("apartments", "offices", "standalone_retail"):
+        assert labels[key] in shown, (key, shown)
+    assert "revenue_by_product" in __import__("inspect").getsource(core.phase_comparison_table)
+
+
+def test_the_screen_hides_products_without_revenue(bundle):
     """Семь нулевых строк — это шум, а не полнота."""
-    body = re.search(r"\nfunction renderPhaseComparison\(.*?\n\}", core.PAGE, re.S).group(0)
-    assert "keys.filter(k=>c.some(x=>revOf(x,k)>0))" in body
+    for row in _table_rows(bundle, "revenue"):
+        if row.get("role") == "part":
+            assert any(v > 0 for v in row["values"]), row["label"]
 
 
 # --- книга --------------------------------------------------------------------
