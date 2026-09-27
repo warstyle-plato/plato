@@ -100,9 +100,9 @@ def test_the_report_table_names_the_metres_without_a_recipient():
 # запрещают место, а не слово, и исключение обязано стоять в самой проверке.
 _ALLOWED = (
     # ФОК уходит городу или продаётся — признак объекта, решение владельца
-    # 05.09.2026. Слово стоит и в книге (`_V4_SPORTS_TRANSFER_WORD`), и
+    # 05.09.2026. Слово стоит и в книге (`_V4_OBJECT_TRANSFER_WORD`), и
     # вариантом выпадающего списка в `FIELD_GROUPS`.
-    "_V4_SPORTS_TRANSFER_WORD",
+    "_V4_OBJECT_TRANSFER_WORD",
     '["transfer", "Передаётся городу"]',
     "'transfer', 'Передаётся городу'",
 )

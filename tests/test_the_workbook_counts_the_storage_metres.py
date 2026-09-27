@@ -87,9 +87,16 @@ def test_the_storage_row_of_the_tep_sheet_carries_its_metres(with_storage):
 
 
 def test_the_storage_row_of_the_report_carries_its_metres(with_storage):
-    """Строка «Кладовые» структуры продукта в ОТЧЕТе — тоже."""
+    """Строка «Кладовые» структуры продукта в ОТЧЕТе — тоже.
+
+    И в ПОДЗЕМНОЙ колонке: кладовые лежат под землёй, а метры стояли в
+    «ГНС наземная» и складывались её итогом — наземная ГНС книги выходила
+    больше движковой ровно на их площадь (владелец, 26.09.2026: «подземное
+    опять входит в гнс»). Ноль в наземной — ответ, а не пробел.
+    """
     _inputs, _tep, _report, _meta, book = with_storage
-    assert book.cell("ОТЧЕТ", "B49") == pytest.approx(STORAGE_SQM, abs=1.0)
+    assert book.cell("ОТЧЕТ", "B49") == 0
+    assert book.cell("ОТЧЕТ", "G49") == pytest.approx(STORAGE_SQM, abs=1.0)
 
 
 def test_the_underground_area_of_the_book_matches_the_engine(with_storage):
