@@ -58,7 +58,7 @@ def page_state():
             page.evaluate("calculate()")
             page.wait_for_function(
                 "() => lastResult && lastResult.summary "
-                "&& lastResult.summary.landscaping_house_rate_th > 0",
+                "&& lastResult.summary.landscaping_per_gns_th > 0",
                 timeout=60000)
             state = {
                 "errors": errors,
@@ -75,7 +75,7 @@ def page_state():
                 "shown": page.evaluate(
                     "(document.getElementById('f_landscaping_gns_th_per_sqm')||{}).value"),
                 "kept": page.evaluate("Number(inputs.landscaping_gns_th_per_sqm||0)"),
-                "computed": page.evaluate("lastResult.summary.landscaping_house_rate_th"),
+                "computed": page.evaluate("lastResult.summary.landscaping_per_gns_th"),
             }
             # Вписанное руками методику перебивает и в поле остаётся своим.
             page.evaluate("window.__prev=lastResult")
@@ -114,7 +114,7 @@ def page_state():
             state["elite_kept"] = page.evaluate(
                 "Number(inputs.landscaping_gns_th_per_sqm||0)")
             state["elite_computed"] = page.evaluate(
-                "lastResult.summary.landscaping_house_rate_th")
+                "lastResult.summary.landscaping_per_gns_th")
             chromium.close()
     return state
 
@@ -190,7 +190,7 @@ def test_the_field_shows_the_figure_the_settings_produce(page_state):
     # Записанное в состояние число заменило бы методику снимком — смена класса
     # его больше не двигала бы, и поле замерло бы, как замирал паркинг.
     assert page_state["kept"] == 0, page_state["kept"]
-    assert "методикой класса" in page_state["house_note"], page_state["house_note"]
+    assert "методика класса" in page_state["house_note"], page_state["house_note"]
     # Само число подпись не повторяет: оно стоит в поле строкой выше.
     shown_text = str(page_state["shown"]).replace(".", ",")
     assert shown_text not in page_state["house_note"], page_state["house_note"]
@@ -213,7 +213,7 @@ def test_the_hint_names_the_base_and_the_note_names_the_state(page_state):
     """
     hints = {field[0]: field[2] for group in core.FIELD_GROUPS for field in group[1]}
     hint = hints["landscaping_gns_th_per_sqm"]
-    assert "наземной части дома" in hint, hint
+    assert "ГНС" in hint, hint
     # Инструкции в подсказке больше нет — она у подписи, у которой есть состояние.
     assert "перебьёт" not in hint, hint
     assert "очистите" not in hint.lower(), hint

@@ -312,7 +312,7 @@ def test_the_fields_are_declared_once_in_the_engine() -> None:
     by_group = {group[0]: {f[0] for f in group[1]} for group in core.FIELD_GROUPS}
     assert "offices_parking_under_spaces" in by_group["МФОЦ / офисы"]
     assert "retail_parking_under_spaces" in by_group["ТЦ / коммерция ОСЗ"]
-    assert "sports_parking_under_spaces" in by_group["ФОК / спортивный объект"]
+    assert "sports_parking_under_spaces" in by_group[core.TEP_DEFAULT["sports"]["label"]]
 
 
 def test_the_norm_is_not_reimplemented_in_the_engine() -> None:

@@ -1,6 +1,8 @@
 """DevelopAid application entrypoint with persistent Telegram user registry."""
 
 import os
+import threading
+import time
 
 import main as _base
 from auction_search import install as install_auction_search
@@ -118,6 +120,13 @@ def _address_suggest(query: str, limit: int):
 
 market_search.address_suggest = _address_suggest
 
+# Массовый прогон КРТ вызывает геокодирование десятков адресов подряд. Цепочка
+# движка в отсутствие платного геокодера доходит до Nominatim, у которого
+# публичный лимит около одного запроса в секунду. Без общей защёлки даже
+# последовательный рейтинг двух воркеров получал 429 и оставлял строки пустыми.
+_market_geocode_lock = threading.Lock()
+_market_geocode_last = 0.0
+
 
 def _geocode_for_market(query: str):
     """Адрес объекта отчёта — движковой цепочкой: Яндекс, DaData, Nominatim.
@@ -132,7 +141,13 @@ def _geocode_for_market(query: str):
     """
     from market_search.geocoder import GeocodingError, GeoPoint
 
-    found, warnings = core._geocode_address(query, 1)
+    global _market_geocode_last
+    with _market_geocode_lock:
+        wait = 1.10 - (time.monotonic() - _market_geocode_last)
+        if wait > 0:
+            time.sleep(wait)
+        found, warnings = core._geocode_address(query, 1)
+        _market_geocode_last = time.monotonic()
     if not found:
         raise GeocodingError("; ".join(warnings) or f"Адрес «{query}» не найден")
     row = found[0]

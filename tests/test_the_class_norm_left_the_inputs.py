@@ -85,7 +85,13 @@ def test_the_norm_is_not_drawn_in_the_inputs(seen):
 def test_the_norm_keeps_its_label_and_unit_in_the_class_settings(seen):
     """Скрытое из формы — не значит безымянное: подпись и меру берут из FIELD_GROUPS."""
     text = seen["classText"]
-    assert "норматив площади на человека" in text, \
+    # Подпись берётся из `FIELD_GROUPS`, а не пишется здесь второй раз: держать
+    # её словами значит падать на переименовании, то есть на верной правке.
+    label = core.class_field_label(NORM) if hasattr(core, "class_field_label") else None
+    if label is None:
+        label = next(field[1] for _group, fields in core.FIELD_GROUPS
+                     for field in fields if field[0] == NORM)
+    assert label in text, \
         "в настройках класса нет строки норматива — поле негде править"
     assert NORM not in text, \
         "в настройках класса стоит сырой ключ вместо подписи"

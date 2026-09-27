@@ -37,6 +37,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import page_blocks  # noqa: E402
 import main_legacy as core  # noqa: E402
 
 OFFICE_RATE_TH = 200.0      # offices_cost_th_per_sqm — тыс ₽/м² GBA
@@ -163,7 +164,11 @@ def test_the_page_draws_the_sub_rows_with_the_engine_numbers() -> None:
         pytest.skip("node недоступен")
     page = core.PAGE
     start = page.index("expenseStructureTable.innerHTML=expenseRows.map(")
-    end = page.index("}).join('');", start) + len("}).join('');")
+    # Границей служит КОНЕЦ ОПЕРАТОРА, а не соседняя строка: у присваивания
+    # появилось слагаемое (`+landscapingGapRow()`), и срез «до `}).join('');`»
+    # уехал на следующий такой же join ниже по файлу — падение выходило про
+    # стенд, а не про подстроки, ради которых он написан.
+    end = page.index(";", page.index("}).join('')", start)) + 1
     block = page[start:end]
     rows = [{
         "label": "Отдельные объекты", "value": 4.55e9, "share": 0.22,
@@ -182,6 +187,12 @@ def test_the_page_draws_the_sub_rows_with_the_engine_numbers() -> None:
         f"const expenseRows={json.dumps(rows, ensure_ascii=False)};\n"
         "const money=v=>String(Math.round(Number(v)/1e9*100)/100)+' млрд';\n"
         "const num2=v=>String(Math.round(Number(v)*10)/10).replace('.',',');\n"
+        # Названная пустота благоустройства — соседнее слагаемое того же
+        # оператора: её функция берётся со страницы, а не подменяется
+        # заглушкой — заглушка отвечала бы за страницу.
+        "const lastResult={summary:{}};\n"
+        "const escapeHtml=s=>String(s);\n"
+        + page_blocks.function("landscapingGapRow") + "\n"
         + block + "\nprocess.stdout.write(expenseStructureTable.innerHTML);"
     )
     done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)

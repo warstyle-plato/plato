@@ -265,9 +265,13 @@ def enrich_krt_from_official_documents(
                 # Отказ пишется у того вложения, где таблицу искали и не
                 # разобрали. Прежде он писался только у вида «извещение» —
                 # то есть у вида, которого площадка не ставит.
+                # Предел 400, а не 200: решающее слово у этого отказа стоит в
+                # конце («…они стоят на 250 пт. Это наш пробел»), и обрезка по
+                # 200 срезала бы ровно его — та же потеря, что уже ловилась на
+                # диагнозе печатной формы.
                 ledger["skipped"].append({
                     "document": document.title, "url": document.url,
-                    "why": f"состав территории не разобран: {exc}"[:200]})
+                    "why": f"состав территории не разобран: {exc}"[:400]})
             else:
                 krt_territory().remember_notice(
                     key, notice, document=document.title or document.url,
@@ -328,6 +332,33 @@ def enrich_krt_from_official_documents(
     return lot
 
 
+def _table_verdicts(ledger: dict) -> str:
+    """Что сказал читатель состава о КАЖДОМ вложении, где искал таблицу.
+
+    Причины собирались в `ledger["skipped"]` и никем не читались: на экране
+    стояло плоское «таблицы состава территории в них нет» — один ответ на три
+    разных случая (таблицы в документе нет; текста нет вовсе, это скан; таблица
+    есть, но её колонки стоят не там, где их ищут по координатам). Два из трёх —
+    наш пробел, и выданы они были за ответ документа.
+
+    Показываются непохожие причины, а не все подряд: у лота полтора десятка
+    вложений, и пятнадцать раз «кадастровых номеров нет» ничего не добавляют к
+    одному.
+    """
+    said: list[str] = []
+    for item in (ledger.get("skipped") or []):
+        why = str(item.get("why") or "")
+        mark = "состав территории не разобран: "
+        if not why.startswith(mark):
+            continue
+        reason = why[len(mark):].strip()
+        document = str(item.get("document") or "").strip()
+        line = f"{document} — {reason}" if document else reason
+        if not any(reason in one for one in said):
+            said.append(line)
+    return "; ".join(said[:3])
+
+
 def read_notices(by_site: dict[str, Any], *,
                  fetch_lot: Callable[[str], AuctionLot],
                  store_dir: Path | str,
@@ -365,7 +396,9 @@ def read_notices(by_site: dict[str, Any], *,
     out: dict[str, Any] = {
         "at": int(now()), "lots": 0, "asked": 0, "read": 0,
         "already": 0, "waiting": 0, "no_table": 0, "refused": 0,
-        "unsupported": 0,
+        # «Площадка не отдала» и «мы не прочитали» — разные ответы, и счётчик у
+        # каждого свой: сложенные в один, они приписывают площадке наши сканы.
+        "unread": 0, "unsupported": 0,
         # Сколько лотов спрошено заново из-за того, что их выписки разобраны
         # прежними правилами читателя. Молча перечитанный лот неотличим от
         # непрочитанного: число называется, как называется всё прочее.
@@ -480,18 +513,40 @@ def read_notices(by_site: dict[str, Any], *,
                 out["read"] = int(out["read"]) + 1
                 row["state"] = "read"
             elif ledger.get("refused"):
-                # Вложения отданы не все: «таблицы нет» тут утверждать нельзя —
-                # она могла стоять как раз в неотданном.
+                # Вложения прочитаны не все: «таблицы нет» тут утверждать
+                # нельзя — она могла стоять как раз в непрочитанном.
+                #
+                # Но ЧЕЙ это пробел, решает ВИД отказа, а не его наличие.
+                # Виды разведены `_refusal_kind` давно, а причина выбиралась по
+                # `if refused`, и на МКАД, 41 км выходило «площадка не отдала
+                # вложения лота: не отдано вложений: 3» при
+                # `asked 27, fetched 27` — Росэлторг отдал ВСЁ, а три вложения
+                # не прочитали мы: два скана PDF и архив со скриншотами.
+                # Надпись врала дважды: приписывала площадке нашу неудачу и
+                # обещала «спросим снова» там, где второй заход не меняет
+                # ничего — байты уже на складе, лечит распознавание.
+                refused = list(ledger.get("refused") or [])
+                kinds = {str(item.get("kind") or "") for item in refused}
                 why = "; ".join(str(item.get("document") or "")
-                                for item in (ledger.get("refused") or [])[:5])
+                                for item in refused[:5])
+                if kinds <= {"extraction_error"}:
+                    outcome, head = "unread", "не прочитано вложений"
+                else:
+                    outcome, head = "refused", "не отдано вложений"
+                verdicts = _table_verdicts(ledger)
                 territory.remember_attempt(
-                    key, outcome="refused",
-                    why=f"не отдано вложений: {len(ledger['refused'])} ({why})",
+                    key, outcome=outcome,
+                    why=f"{head}: {len(refused)} ({why})"
+                        + (f". О прочитанных читатель состава сказал: {verdicts}"
+                           if verdicts else ""),
                     documents=documents, root=store)
-                out["refused"] = int(out["refused"]) + 1
-                row["state"] = "refused"
+                out[outcome] = int(out.get(outcome) or 0) + 1
+                row["state"] = outcome
             else:
+                # Причина по каждому вложению едет наружу: без неё «таблицы
+                # нет» — один ответ на наш пробел и на ответ документа.
                 territory.remember_attempt(key, outcome="no_table",
+                                           why=_table_verdicts(ledger),
                                            documents=documents, root=store)
                 out["no_table"] = int(out["no_table"]) + 1
                 row["state"] = "no_table"

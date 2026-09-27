@@ -611,7 +611,13 @@ def test_the_form_does_not_lose_a_field(client):
             "rate_normalization_months", "rate_curve_shape",
             # Доли ТЭП правятся в своей панели у таблицы, а не полем формы:
             # строка — их хранилище в проекте, не интерфейс.
-            "tep_ratios_custom"}
+            "tep_ratios_custom",
+            # Тип проекта — селектор шапки, как класс: он решает, ЧТО считаем,
+            # а не задаёт число. Своего переключателя у `/v2` пока нет, и это
+            # не потеря: значение приходит снимком проекта и уезжает обратно
+            # тем же `form.draft.inputs` — поле, которого нет в форме, там не
+            # теряется. Строка стоит в очереди бэклога.
+            "project_kind"}
     missing = {key for key in core.DEFAULT_INPUTS
                if not key.startswith("_") and key not in skip and key not in shown}
 

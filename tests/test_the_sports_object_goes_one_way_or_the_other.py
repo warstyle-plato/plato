@@ -216,12 +216,12 @@ def test_the_workbook_names_the_object_and_not_the_shopping_centre() -> None:
 
     content, _, _ = core.build_project_workbook(_inputs(), _tep(), [], None, project_name="П")
     book = openpyxl.load_workbook(io.BytesIO(content))
-    assert book["ОБЪЕКТЫ"]["A124"].value == "ФОК / СПОРТИВНЫЙ ОБЪЕКТ"
+    assert book["ОБЪЕКТЫ"]["A124"].value == core.TEP_DEFAULT["sports"]["label"].upper()
     params = book[v4_inputs.PARAMS]
     keys = [params[f"M{row}"].value
             for row in range(123, core._V4_SPORTS_RESIDUAL_ROW + 1)]
     assert all(str(key or "").startswith("sports_") for key in keys), keys
-    assert book["ТЭП"]["B34"].value == "ФОК / спортивный объект"
+    assert book["ТЭП"]["B34"].value == core.TEP_DEFAULT["sports"]["label"]
     assert book["ТЭП"]["A35"].value == "ИТОГО ОБЪЕКТЫ"
     assert book["ТЭП"]["G35"].value == "=SUM(G31:G34)"
     assert book["ТЭП"]["G36"].value == "=SUM(G28,G35)"

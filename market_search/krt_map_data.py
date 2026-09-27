@@ -49,6 +49,20 @@ def merc(lon: float, lat: float) -> tuple[float, float]:
     return x, y
 
 
+def wgs84(x: float, y: float) -> tuple[float, float]:
+    """Обратное преобразование Web Mercator: (x, y) -> (lat, lon).
+
+    Центры официальной карты КРТ и контуры из решений хранятся именно в
+    rings_merc/centre_merc. Преобразование живёт рядом с merc: рынок не
+    должен зависеть от случайного приватного helper в финансовом ядре.
+    """
+    x = max(-_LIMIT, min(_LIMIT, float(x)))
+    y = max(-_LIMIT, min(_LIMIT, float(y)))
+    lon = math.degrees(x / _EARTH)
+    lat = math.degrees(2 * math.atan(math.exp(y / _EARTH)) - math.pi / 2)
+    return lat, lon
+
+
 def _number(value: Any) -> float | None:
     try:
         text = str(value).replace(" ", "").replace(",", ".").strip()

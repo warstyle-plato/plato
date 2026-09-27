@@ -43,6 +43,52 @@ def _number(value: Any) -> float:
         return 0.0
 
 
+# Каким полем источник называет объём — объявлено ОДИН раз на всех читателей.
+# Полей у одной величины больше одного: карточка каталога называет жилую СПП,
+# а проект решения — площадь квартир, и это «данные, а не их отсутствие».
+# Гейт расчёта это уже знал (`housing_measure_named`), а отбор каталога на
+# странице держал свою копию вопроса и читал по одному полю: замер прода
+# 21.09.2026 — выбор «Жильё» давал 203 строки из 522 вместо 230, и все 27
+# потерянных это площадки-решения с названной площадью квартир, среди них
+# Рубцовская наб., влд. 3 («фильтр отбрасывал рубцовскую, как будто жилья в
+# ней нет вовсе», владелец). У «Нежилого» то же и шире: 61 против 147.
+MEASURE_FIELDS: dict[str, tuple[str, ...]] = {
+    "housing": ("housing_gfa_sqm", "flats_sqm"),
+    "business": ("business_gfa_sqm",),
+    "nonres": ("nonresidential_gfa_sqm", "nonresidential_ground_sqm"),
+}
+
+
+def measure_named(project: dict[str, Any] | None, kind: str) -> bool:
+    """Назвал ли источник объём этого назначения — любым своим полем."""
+    if not project:
+        return False
+    return any(_number(project.get(key)) > 0
+               for key in MEASURE_FIELDS.get(kind, ()))
+
+
+def housing_measure_named(project: dict[str, Any] | None) -> bool:
+    """Назван ли городом объём жилья, по которому считается модель.
+
+    Ответ ОДИН на двоих. Скрининг умеет считать и по площади квартир — жилую
+    СПП он восстанавливает делением на долю продаваемой и называет это своим
+    пересчётом, — а внешний гейт `auction_search/api.py::_screen_for` держал
+    свою копию вопроса и читал только жилую СПП. Замер прода 20.09.2026: из
+    249 площадок-решений у 27 площадь квартир названа при пустой СПП, и у всех
+    27 есть адрес — 2-й Лихачевский 220 809 м², Братеевская 221 790, Речников
+    136 550, Криворожская 53 500 … и Рубцовская наб. 4 290, та самая, про
+    которую владелец спрашивал 08.09.2026: «как это нет данных и сразу есть?».
+    Гейт возвращал их «жилья в проекте решения нет» — то есть НАШ пробел
+    выдавал за ответ документа, а документ это число называет.
+
+    Правило общее и уже записано: у поля, на которое смотрит гейт, спрашивают,
+    сколько сборок его кладут, — а у вопроса, на который объявлен один ответ,
+    считают читателей. Здесь гейт спрашивает ту же функцию, а не пересказывает
+    её условие.
+    """
+    return measure_named(project, "housing")
+
+
 def _ru_number(value: Any, digits: int = 0) -> str:
     return f"{_number(value):,.{digits}f}".replace(",", " ")
 
@@ -93,7 +139,18 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 # прогоном ПУБЛИКАЦИЙ: он обновил находки и не тронул ни модель, ни цену.
 # Отличить такую строку от свежей было нечем: `computed_at` отвечает «когда», а
 # не «чем».
-SCREENING_RULES_VERSION = 1
+#
+# 3 — 21.09.2026: нежилой объём решения входит в модель (СПП восстанавливается
+# из наземной площади отношением самого города 0,9), а цена нежилого идёт за
+# ценой жилья этой площадки вместо фиксированных 500 тыс ₽/м². Числа
+# посчитанных строк от этого меняются у всех, где нежилое названо: на
+# Рубцовской наб., влд. 3 чистая 257,5 → 429,4 млн ₽, LLCR 1,092 → 1,043.
+#
+# 5 — 24.09.2026: цена окружения берётся только из price_hint — специального
+# числового ориентира, которому нужны минимум три свежих сопоставимых прайса.
+# site_verdict остаётся ответом «что здесь строить», а entry_per_sqm — справкой
+# о входных ценах соседей. Ни одно из них не подменяет отсутствующую цену рынка.
+SCREENING_RULES_VERSION = 5
 
 
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
@@ -109,14 +166,25 @@ def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, st
     """
     verdict = _verdict(report)
     hint = report.get("price_hint") or {}
-    segment = normalize_segment(verdict.get("segment"))
-    market_price = _number(verdict.get("price_per_sqm") or hint.get("price_per_sqm"))
-    entry_price = _number(hint.get("entry_per_sqm"))
-    if market_price > 0:
-        return segment, market_price, market_price, "рекомендация отчёта о рынке — уровень цен сопоставимых проектов"
-    if entry_price > 0:
-        return segment, entry_price, entry_price, "медиана входных цен соседних проектов (уровень рынка отчёт не определил)"
-    return segment, 0.0, 0.0, "цена не определена"
+    segment = normalize_segment(verdict.get("segment") or hint.get("segment"))
+    # price_hint — специально выделенный числовой ориентир для поля модели:
+    # он требует минимум три свежих сопоставимых прайса. site_verdict отвечает
+    # ещё и на качественный вопрос «что здесь строить» и может получить цену
+    # одного доминирующего класса. Подменять им более устойчивый price_hint
+    # нельзя: именно так единичный premium/elite-кластер давал каталогу КРТ
+    # 2,6–3,2 млн ₽/м² как «цену окружения».
+    hint_price = _number(hint.get("price_per_sqm"))
+    if hint_price > 0:
+        return (
+            segment,
+            hint_price,
+            hint_price,
+            "price_hint отчёта — медиана свежих сопоставимых проектов",
+        )
+    # Нет трёх свежих сопоставимых прайсов — цены окружения нет. Не подменяем
+    # её ни site_verdict (он может стоять на одном дорогом проекте выбранного
+    # класса), ни entry_per_sqm (это цена самого дешёвого лота, другой смысл).
+    return segment, 0.0, 0.0, "price_hint не дал достаточной выборки свежих сопоставимых цен"
 
 
 def _phase_configuration(saleable_sqm: float, construction_months: int) -> dict[str, Any]:
@@ -398,6 +466,23 @@ def _programme(
     """
     housing = _number(project.get("housing_gfa_sqm"))
     nonresidential = _number(project.get("nonresidential_gfa_sqm"))
+    # Нежилой объём город называет ДВУМЯ полями, и решение — своим: карточка
+    # даёт нежилую СПП, а проект решения «нежилую наземную площадь». Пока
+    # читалось одно поле, у 86 площадок-решений из 240 нежилое не входило в
+    # модель ВООБЩЕ — 3,59 млн м², которые обязаны построить: ни метров, ни
+    # CAPEX, ни выручки. Молчание при этом оптимистично, а не консервативно:
+    # на Рубцовской наб., влд. 3 экономика стояла на жилой пятой части, и
+    # площадка выглядела прибыльной именно поэтому.
+    #
+    # Доля не выбрана нами — её назвал сам город: на всех трёх площадках, где
+    # решение называет и нежилую СПП, и нежилую наземную, отношение РОВНО
+    # 0,900 (Алтуфьевское ш. пз № 50 — 53 300 и 47 970; Котляково пз № 32 —
+    # 113 490 и 102 140; ТПУ «Кленовый Бульвар» — 68 000 и 61 200). Это та же
+    # «НП = 90% СПП» методики ГлавАПУ, которая у нас уже объявлена.
+    ground = _number(project.get("nonresidential_ground_sqm"))
+    nonresidential_from_ground = nonresidential <= 0 and ground > 0
+    if nonresidential_from_ground:
+        nonresidential = ground / core.CITY_GROUND_OF_SPP
     business = _number(project.get("business_gfa_sqm"))
     total = _number(project.get("total_gfa_sqm"))
     # Карточка каталога сама с собой не сходится: на Варшавском ш., вл. 37 её
@@ -565,6 +650,9 @@ def _programme(
             "total_gfa_sqm": total,
             "housing_gfa_sqm": housing,
             "nonresidential_gfa_sqm": nonresidential,
+            # Наземная площадь остаётся рядом числом города: наш пересчёт без
+            # неё проверить нечем.
+            "nonresidential_ground_sqm": ground,
             "business_gfa_sqm": business,
             # Строка разложения, а не примечание: этот объём город требует
             # построить, и без него сумма не сходится с его же итогом.
@@ -579,6 +667,7 @@ def _programme(
         "social_from_decision": any(row["source"] == "decision" for row in social_rows),
         "commercial_gba_sqm": round(commercial, 1),
         "commercial_negative": commercial < 0,
+        "nonresidential_from_ground": nonresidential_from_ground,
         "offices_gba_sqm": round(business, 1),
         # Чем посчитан объём — карточкой или документом — часть ответа: два
         # источника дают на Варшавском ш., вл. 37 разницу вчетверо, и на
@@ -645,7 +734,7 @@ def build_krt_model_screening(
                        f"{_ru_number(flats_named)} м² больше жилого объёма "
                        f"{_ru_number(housing_gfa)} м² — считать нечем"),
         }
-    if housing_gfa <= 0 and flats_named <= 0:
+    if not housing_measure_named(project):
         return {
             "available": False,
             # Источник называется по имени: у площадки-решения карточки нет
@@ -667,12 +756,28 @@ def build_krt_model_screening(
 
     model_class, class_label, class_note = _CLASS_MAP[segment]
     inputs = copy.deepcopy(core.DEFAULT_INPUTS)
+    # Для раннего сигнала известная оценка изъятия — уже не unknown. Она не
+    # является ценой права КРТ, но это обязательный денежный вход в площадку.
+    # Базовая модель должна нести её, иначе LLCR, маржа и резерв входа выглядят
+    # лучше проекта на миллиарды рублей. Графика платежей в источнике нет —
+    # кладём её в ту же переменную приобретения как консервативный платёж входа.
+    early_fixed_burden_mln = (
+        _number(project.get("seizure_mln")) if project.get("early_unpublished") else 0.0
+    )
     preset = copy.deepcopy(core.PROJECT_CLASS_PRESETS[model_class])
     inputs.update({key: value for key, value in preset.items() if key != "label"})
     inputs.update({
         "project_class": model_class,
         "apartment_price_th": start_price / 1000.0,
-        "purchase_price_mln": 0.0,
+        # Цена нежилого идёт за ценой жилья ЭТОЙ площадки, а не за ценой
+        # пресета: жильё здесь ставит рынок (на Рубцовской 608,2 тыс ₽/м²
+        # против 650 у профиля бизнеса), и оставленное число пресета было бы
+        # ценой другого проекта. Правило одно — движковое.
+        "retail_price_th_per_sqm": core.nonresidential_price_th(
+            start_price / 1000.0),
+        "offices_price_th_per_sqm": core.nonresidential_price_th(
+            start_price / 1000.0),
+        "purchase_price_mln": early_fixed_burden_mln,
         "land_rights_cost_mln": 0.0,
         "vri_required": False,
         "vri_security_cost_mln": 0.0,
@@ -869,20 +974,57 @@ def build_krt_model_screening(
         or duties["unmodelled_construction"]
         or duties["nonhousing_gfa_sqm"] > 0
     )
-    if known_unpriced and traffic["tone"] == "ok":
+    burden_incomplete = bool(
+        known_unpriced
+        or not duties["available"]
+        or (project.get("early_unpublished") and project.get("burden_complete") is not True)
+    )
+    if burden_incomplete and traffic["tone"] == "ok":
         traffic = {
             "tone": "warn",
             "label": "Проходит до неоценённых обязательств",
             "score": 55,
         }
-    entry_capacity = _goal_seek_entry_capacity(core, inputs, tep, phasing, bundle)
+    raw_entry_capacity = _goal_seek_entry_capacity(core, inputs, tep, phasing, bundle)
+    entry_capacity = raw_entry_capacity
+    # Goal-seek знает только посчитанные денежные строки. Когда обязательства
+    # ещё не оценены, его число — НЕ «потолок входа», а лишь верхняя граница до
+    # неизвестных нагрузок. Для ранней площадки из этой границы дополнительно
+    # вычитаем уже известное изъятие: цена права КРТ и изъятие — разные деньги.
+    if raw_entry_capacity and raw_entry_capacity.get("available") and burden_incomplete:
+        gross = _number(raw_entry_capacity.get("amount_mln"))
+        upper_for_right = max(0.0, gross - early_fixed_burden_mln)
+        reasons = []
+        if project.get("early_unpublished") and project.get("burden_complete") is not True:
+            reasons.append("ранний источник не даёт полного денежного стека обязательств")
+        if not duties["available"]:
+            reasons.append("проект решения с обязательствами не прочитан")
+        if known_unpriced:
+            reasons.append("есть опубликованные, но неоценённые обязательства")
+        entry_capacity = {
+            "available": False,
+            "reason": (
+                "Точный потолок входа не публикуется: " + "; ".join(reasons)
+                + ". Показана только верхняя граница до неизвестных нагрузок."
+            ),
+            "upper_bound_mln": round(upper_for_right, 1),
+            "gross_capacity_mln": round(gross, 1),
+            "known_fixed_burden_mln": round(early_fixed_burden_mln, 1),
+            "target_llcr_x": TARGET_LLCR,
+        }
     # Цена названа — считаем по ней. Потолок отвечает «проходит или нет», а
     # человек перед подачей заявки спрашивает, ЧТО выходит по этой цене.
     at_asking: dict[str, Any] | None = None
     asking = _number(asking_price_mln)
     if asking > 0:
         try:
-            at_asking = model_at_asking_price(core, inputs, tep, phasing, asking)
+            model_entry = asking + early_fixed_burden_mln
+            at_asking = model_at_asking_price(core, inputs, tep, phasing, model_entry)
+            if early_fixed_burden_mln > 0:
+                at_asking["auction_price_mln"] = round(asking, 1)
+                at_asking["known_fixed_burden_mln"] = round(early_fixed_burden_mln, 1)
+                at_asking["model_entry_mln"] = round(model_entry, 1)
+                at_asking["price_mln"] = round(asking, 1)
         except Exception as exc:  # noqa: BLE001
             # Отказ называется: молча пропущенный второй прогон неотличим от
             # «цены нет», а цена есть и стоит рядом на экране.
@@ -1036,9 +1178,20 @@ def build_krt_model_screening(
             "скрининг упёрся в штатный предел модели, поэтому средняя очередь крупнее цели."
         )
     exclusions = [
-        "Цена приобретения / входа принята равной нулю.",
+        (
+            f"В базовый прогон включена известная оценка изъятия "
+            f"{_ru_number(early_fixed_burden_mln)} млн ₽; цена права КРТ принята нулевой."
+            if early_fixed_burden_mln > 0
+            else "Цена приобретения / входа принята равной нулю."
+        ),
         "Плата за ВРИ и оформление земельных правоотношений не включены.",
     ]
+    if project.get("early_unpublished") and project.get("burden_complete") is not True:
+        exclusions.append(
+            "Ранний источник не даёт полного денежного стека обязательств. "
+            "Поэтому точный потолок цены права не публикуется: доступна только "
+            "верхняя граница до неизвестных нагрузок."
+        )
     if _volumes.get("taken") and _number(_volumes.get("utility_sqm")) > 0:
         exclusions.append(
             f"Решение обязывает построить не менее {_ru_number(_volumes.get('utility_sqm'))} м² "
@@ -1069,6 +1222,18 @@ def build_krt_model_screening(
             f"{_ru_number(abs(programme['commercial_gba_sqm']))} м²: остатка на ОСЗ и ТЦ нет, "
             "и обнулять его молча нельзя — либо соцобъекты у города учтены вне нежилого "
             "назначения, либо норматив к этой площадке не применяется целиком."
+        )
+    if programme.get("nonresidential_from_ground"):
+        # Восстановленное называется восстановленным: число города рядом с
+        # нашим пересчётом читается как его собственное.
+        exclusions.append(
+            "Нежилой объём решение называет наземной площадью "
+            f"{_ru_number(programme['city']['nonresidential_ground_sqm'])} м², а "
+            "суммарной поэтажной — нет: СПП восстановлена делением на "
+            f"{core.CITY_GROUND_OF_SPP} (отношение самого города, сверено на трёх "
+            "его решениях) и дала "
+            f"{_ru_number(programme['city']['nonresidential_gfa_sqm'])} м². "
+            "Это НАШ пересчёт, а не число города."
         )
     if not programme["balance"]["total_published"]:
         exclusions.append(

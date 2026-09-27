@@ -504,12 +504,6 @@
     "planned_payments_source_total_rub": 225093708.38,
     "note_on_reconciliation": "Справка ТП содержит 225 093 708,38 руб. плановых оплат, включая 16 804 764,11 руб. по теплу стадиона регби. Для underwriting проекта этот платеж исключен из TP cash need, поскольку стадион учитывается как денежная соцнагрузка. Итого TP cash need по текущим договорам в периметре: 208 288 944,27 руб."
   },
-  "transaction": {
-    "seller_indicative_enterprise_value_rub": 7000000000,
-    "price_status": "indicative_approximate",
-    "bridge_included_in_enterprise_value": true,
-    "note": "Рабочее переговорное допущение: продавец предлагает проект ориентировочно за 7 млрд руб. с включенным бриджем. Не трактовать как 7 млрд продавцу плюс погашение бриджа сверху."
-  },
   "economics": {
     "apartment_price_th": 350,
     "commercial_price_th": 350,

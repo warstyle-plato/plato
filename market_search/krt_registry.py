@@ -39,10 +39,18 @@ JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 3
 REQUIREMENTS_CACHE_SCHEMA_VERSION = 3
 # Разбор карточки версионируется отдельно: он меняется чаще требований.
-CARD_FACTS_SCHEMA_VERSION = 1
+# Версия разбора карточки. Поднимается тогда и только тогда, когда меняется
+# ОТВЕТ читателя на те же байты: прочитанное лежит на диске сутками, и без
+# подъёма починка до прочитанных карточек не доезжает вовсе. 2 — карточка
+# понесла свой ТЭП.
+CARD_FACTS_SCHEMA_VERSION = 2
 # ТЭП, вынутый из PDF проекта решения. Своя версия: разбор правится
 # отдельно от разбора карточки, и общая версия обесценивала бы чужое.
-DECISION_TEP_SCHEMA_VERSION = 1
+# 2 — разбор научился слову перечня «включая» и перечню из нескольких строк.
+# Подъём обязателен: у удачного чтения срок месяц, и без него починка до уже
+# прочитанных решений не доехала бы вовсе — те же 20 площадок остались бы с
+# пустым жильём при названных городом метрах.
+DECISION_TEP_SCHEMA_VERSION = 2
 # Обязательства из проекта решения: свой файл и своя версия схемы.
 DECISION_REQUIREMENTS_SCHEMA_VERSION = 1
 # Лоты, привязанные к площадке. Считает их сервер, а хранились они только
@@ -60,6 +68,17 @@ _DECISION_FIELDS = ("id", "title", "url", "address", "okrug", "kind",
                     "published_at", "department")
 _SPACE = re.compile(r"\s+")
 _NUMBER = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
+# Слаг площадки бывает двух видов: каталожный («varshavskoe-shosse-37») и ключ
+# площадки-решения («decision:349135220»). Двоеточие в нём законно: у площадки
+# без карточки слага в реестре нет вовсе, и ключом ей служит номер документа.
+# Образец стоит один на всех, потому что копии, знавшие только каталожный вид,
+# отвечали «слаг площадки не задан» ровно там, где слаг задан.
+_SITE_SLUG = re.compile(r"[a-zA-Z0-9_-]{2,180}|decision:\d{4,20}")
+
+
+def is_site_slug(value: Any) -> bool:
+    """Годится ли строка идентификатором площадки — каталожным или решением."""
+    return bool(_SITE_SLUG.fullmatch(str(value or "").strip()))
 
 
 def _map_name_key(value: Any) -> str:
@@ -320,6 +339,27 @@ def _checked(row: KrtTerritory) -> KrtTerritory:
     return replace(row, parse_problem=parse_problem(row))
 
 
+def tep_from_fields(fields: dict[str, str]) -> dict[str, float | None]:
+    """Какая подпись города какая величина — один ответ на все поверхности.
+
+    Подписи у плитки списка и у карточки проекта одни и те же, кроме единицы
+    в имени площади («Площадь» против «Площадь, га»), поэтому имя режется по
+    запятой. Второй такой карты не заводим: разойдись она, одна поверхность
+    читала бы «общественно-деловое назначение», а соседняя молчала бы о нём,
+    и обе выглядели бы прочитанными.
+    """
+    flat = {str(key).split(",", 1)[0].strip().lower(): value
+            for key, value in (fields or {}).items()}
+    return {
+        "area_ha": _number(flat.get("площадь", "")),
+        "total_gfa_sqm": _number(flat.get("общий объем застройки", "")),
+        "housing_gfa_sqm": _number(flat.get("жилое назначение", "")),
+        "nonresidential_gfa_sqm": _number(flat.get("нежилое назначение", "")),
+        "business_gfa_sqm": _number(flat.get("общественно-деловое назначение", "")),
+        "jobs": _number(flat.get("прирост рабочих мест", "")),
+    }
+
+
 def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
     parser = _CatalogueParser()
     parser.feed(html)
@@ -329,13 +369,8 @@ def parse_catalogue(html: str) -> tuple[list[KrtTerritory], str | None]:
         fields = {p.split(":", 1)[0].strip().lower(): p.split(":", 1)[1].strip() for p in parts}
         rows.append(_checked(KrtTerritory(
             slug=slug, name=name, url=f"{BASE_URL}/projects/{slug}",
-            area_ha=_number(fields.get("площадь", "")),
             okrug=fields.get("округ"), district=fields.get("район"), status=fields.get("статус"),
-            total_gfa_sqm=_number(fields.get("общий объем застройки", "")),
-            housing_gfa_sqm=_number(fields.get("жилое назначение", "")),
-            nonresidential_gfa_sqm=_number(fields.get("нежилое назначение", "")),
-            business_gfa_sqm=_number(fields.get("общественно-деловое назначение", "")),
-            jobs=_number(fields.get("прирост рабочих мест", "")),
+            **tep_from_fields(fields),
         )))
     return rows, parser.next_url
 
@@ -361,13 +396,8 @@ def parse_catalogue_markdown(markdown: str) -> list[KrtTerritory]:
         slug, name = match.group(2), match.group(1).strip()
         rows.append(_checked(KrtTerritory(
             slug=slug, name=name, url=f"{BASE_URL}/projects/{slug}",
-            area_ha=_number(fields.get("площадь", "")),
             okrug=fields.get("округ"), district=fields.get("район"), status=fields.get("статус"),
-            total_gfa_sqm=_number(fields.get("общий объем застройки", "")),
-            housing_gfa_sqm=_number(fields.get("жилое назначение", "")),
-            nonresidential_gfa_sqm=_number(fields.get("нежилое назначение", "")),
-            business_gfa_sqm=_number(fields.get("общественно-деловое назначение", "")),
-            jobs=_number(fields.get("прирост рабочих мест", "")),
+            **tep_from_fields(fields),
         )))
     return rows
 
@@ -692,6 +722,13 @@ class KrtRegistry:
             save_json(path, failure)
             return failure
         out = krt_card_facts.parse(page)
+        # ТЭП карточки — второй ответ города о той же площадке, и он часто НЕ
+        # равен плитке списка, по которой собран каталог: у «Дербеневской ул.
+        # тер. 2» плитка даёт 153 320 м² и ОДН 14 400, карточка — 358 100 без
+        # ОДН (замер 20.09.2026). Величины из подписей собирает общая карта, а
+        # выбирать между двумя числами города мы не вправе — их сверяет и
+        # называет вызывающий.
+        out["tep"] = tep_from_fields(out.pop("tep_fields", {}) or {})
         out.update({"schema_version": CARD_FACTS_SCHEMA_VERSION, "available": True,
                     "slug": clean, "source_url": url})
         save_json(path, out)
@@ -755,6 +792,23 @@ class KrtRegistry:
             "reasons": dict(sorted(reasons.items(), key=lambda pair: -pair[1])),
         }
 
+    def _card_facts_stale(self, slug: str) -> bool:
+        """Дочитать надо и то, что прочитано ПРЕЖНИМ читателем.
+
+        Свежесть файла на этот вопрос не отвечает: разбор карточки меняется
+        чаще, чем сутки срока, и запись вчерашней версии остаётся «свежей»
+        навсегда — починка до прочитанного не доезжает вовсе. Ровно это уже
+        стоило дня на выписках ЕГРН, где версия правил лежит рядом с ответом.
+        """
+        path = self.card_facts_dir / f"{slug}.json"
+        cached = load_json(path)
+        if (not isinstance(cached, dict)
+                or cached.get("schema_version") != CARD_FACTS_SCHEMA_VERSION):
+            return True
+        ttl = (self.ttl_seconds if cached.get("available")
+               else self.card_facts_failure_ttl_seconds)
+        return not fresh(path, ttl)
+
     def fill_card_facts_in_background(self, slugs: list[str] | tuple[str, ...],
                                       *, limit: int = 40) -> bool:
         """Дочитать карточки, которых ещё нет, — фоном и порциями.
@@ -770,7 +824,7 @@ class KrtRegistry:
         clean = [str(slug or "").strip() for slug in slugs]
         missing = [slug for slug in clean
                    if re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", slug or "")
-                   and not fresh(self.card_facts_dir / f"{slug}.json", self.ttl_seconds)]
+                   and self._card_facts_stale(slug)]
         if not missing:
             return False
         with self._cards_lock:
@@ -1183,6 +1237,41 @@ class KrtRegistry:
         save_json(cache_path, result)
         return result
 
+    def requirements_for(self, slug: str, *,
+                         refresh: bool = False) -> dict[str, Any] | None:
+        """Обязательства площадки — одной дверью, каким бы ни был её слаг.
+
+        Документ один и тот же, проект решения о КРТ, а дорога до него разная:
+        у площадки каталога через её слаг, у площадки-решения через номер
+        документа, потому что слага в реестре у неё нет вовсе. Пока выбор двери
+        стоял у каждого вызывающего, часть из них знала только каталожную — и
+        площадка-решение получала «не найдено» там, где документ прочитан.
+        """
+        clean = str(slug or "").strip()
+        if clean.startswith("decision:"):
+            return self.decision_requirements(clean[len("decision:"):], refresh=refresh)
+        return self.requirements(clean, refresh=refresh)
+
+    def decision_meta(self, slug: str,
+                      requirements: dict[str, Any] | None) -> dict[str, Any]:
+        """Подпись документа, из которого собран перечень, — одной формы у обеих дорог.
+
+        У площадки каталога она лежит готовой в `requirements["decision"]`, у
+        площадки-решения под этим ключом стоят сами разобранные факты, а адрес
+        страницы документа знает снимок решений. Без приведения к одной форме
+        контур площадки-решения был бы подписан пустым заголовком — то есть
+        выглядел бы собранным неизвестно откуда.
+        """
+        clean = str(slug or "").strip()
+        if not clean.startswith("decision:"):
+            return dict((requirements or {}).get("decision") or {})
+        if not (requirements or {}).get("available"):
+            return {}
+        row = self.find_decision(clean[len("decision:"):]) or {}
+        return {"title": str(row.get("name") or ""),
+                "page_url": str(row.get("url") or ""),
+                "pdf_url": str((requirements or {}).get("pdf_url") or "")}
+
     def decisions(self, *, refresh: bool = False, max_pages: int = 0,
                   catalogue: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """Решения о КРТ и разложение их на «карточка есть» и «карточки нет».
@@ -1434,8 +1523,15 @@ class KrtRegistry:
         участок читается как «его нет в территории».
         """
         clean = str(slug or "").strip()
-        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
-            return {"rings_merc": [], "centre_merc": None, "problem": "слаг площадки не задан"}
+        if not is_site_slug(clean):
+            # Отказ называет, ЧТО с ним не так. Прежний образец не знал ключа
+            # площадки-решения, и 240 строк каталога из 522 получали «слаг не
+            # задан» при заданном слаге — ровно те, у которых контур собирается
+            # только по решению: карточки в реестре у них нет по построению, и в
+            # файле карты города их тоже нет.
+            problem = ("слаг площадки не задан" if not clean
+                       else f"слаг площадки не похож на слаг: {clean[:60]}")
+            return {"rings_merc": [], "centre_merc": None, "problem": problem}
         cache_path = self.outline_dir / f"{clean}.json"
         cached = load_json(cache_path)
         if not refresh and isinstance(cached, dict) and cached.get("schema_version") == 1:
@@ -1443,13 +1539,16 @@ class KrtRegistry:
                    else self.card_facts_failure_ttl_seconds)
             if fresh(cache_path, ttl):
                 return dict(cached)
-        requirements = self.requirements(clean)
+        requirements = self.requirements_for(clean)
         numbers = list((requirements or {}).get("cadastral_numbers") or [])
-        decision = dict((requirements or {}).get("decision") or {})
+        decision = self.decision_meta(clean, requirements)
         if requirements and requirements.get("skipped"):
             problem = "перечень участков читается из проекта решения, а он есть только у планируемых площадок"
         elif not requirements or not requirements.get("available"):
-            problem = "требования по площадке не читаются"
+            # Причина чтения едет наружу: «не читаются» без неё одинаково
+            # выглядит и когда документа нет, и когда мы не дошли до него.
+            why = str((requirements or {}).get("reason") or "").strip()
+            problem = "требования по площадке не читаются" + (f": {why}" if why else "")
         elif not decision:
             problem = "проект решения о КРТ на mos.ru не найден — перечня участков нет"
         elif not numbers:
@@ -1532,7 +1631,7 @@ class KrtRegistry:
         отсутствующую в реестре.
         """
         clean = str(slug or "").strip()
-        if not re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", clean):
+        if not is_site_slug(clean):
             return None
         cached = load_json(self.outline_dir / f"{clean}.json")
         if isinstance(cached, dict) and cached.get("schema_version") == 1:
@@ -1637,8 +1736,7 @@ class KrtRegistry:
         """
         clean = [str(slug or "").strip() for slug in slugs]
         missing = [slug for slug in clean
-                   if re.fullmatch(r"[a-zA-Z0-9_-]{2,180}", slug or "")
-                   and self.outline_cached(slug) is None]
+                   if is_site_slug(slug) and self.outline_cached(slug) is None]
         if not missing:
             return False
         with self._outlines_lock:

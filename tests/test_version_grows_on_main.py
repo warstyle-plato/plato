@@ -64,11 +64,24 @@ def test_a_lowered_version_fails(tmp_path):
 
 
 def test_an_untouched_engine_needs_no_bump(tmp_path):
-    """Правка документации или тестов выпуском не является."""
+    """Пустая/нерелизная правка выпуском не является."""
     repo = _repo(tmp_path, 'VERSION = "0.18.45"\nx = 1\n', 'VERSION = "0.18.45"\nx = 1\n')
     answer = _run(repo)
     assert answer.returncode == 0
     assert "не менялся" in answer.stdout
+
+
+def test_market_code_with_the_same_version_fails(tmp_path):
+    """market_search/** тоже меняет production-образ и обязан поднять VERSION."""
+    repo = _repo(tmp_path, 'VERSION = "0.18.45"\nx = 1\n', 'VERSION = "0.18.45"\nx = 1\n')
+    market = repo / "market_search"
+    market.mkdir()
+    (market / "price_hint.py").write_text("VALUE = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "market_search/price_hint.py"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "market change"], cwd=repo, check=True)
+    answer = _run(repo)
+    assert answer.returncode == 1
+    assert "Production-код изменился" in answer.stderr
 
 
 def test_the_build_runs_the_check_before_the_tests():
@@ -121,7 +134,35 @@ def test_a_branch_below_its_base_is_caught_before_the_merge(tmp_path: Path):
 
 
 def test_the_guard_runs_on_pull_requests():
-    """Проверка на ветке должна быть заведена в CI, иначе она никогда не идёт."""
+    """Проверка на ветке должна быть заведена в CI, иначе она никогда не идёт.
+
+    Вызов с 21.09.2026 — `--on-branch`: роста в ветке больше не требуется,
+    номер выдаёт слияние. Старый вызов вернул бы требование взять номер
+    заранее и вслепую, то есть само столкновение.
+    """
     guard = (ROOT / ".github" / "workflows" / "version-guard.yml").read_text(encoding="utf-8")
     assert "pull_request" in guard
-    assert "check_version_grows.py --base" in guard
+    assert "check_version_grows.py --on-branch" in guard
+    assert "--base" in guard
+
+
+def test_stale_production_builds_are_cancelled():
+    """Старый main не должен позже переписать prod после более нового."""
+    import yaml as _yaml
+    workflow = _yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "build-yandex.yml").read_text(encoding="utf-8")
+    )
+    concurrency = workflow["concurrency"]
+    assert concurrency["group"] == "build-yandex"
+    assert concurrency["cancel-in-progress"] is True
+
+
+def test_stale_main_build_is_cancelled():
+    """Старый main не должен позже переписать prod поверх более нового."""
+    import yaml as _yaml
+    workflow = _yaml.safe_load(
+        (ROOT / ".github" / "workflows" / "build-yandex.yml").read_text(encoding="utf-8")
+    )
+    concurrency = workflow["concurrency"]
+    assert concurrency["group"] == "build-yandex"
+    assert concurrency["cancel-in-progress"] is True

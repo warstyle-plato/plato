@@ -130,16 +130,33 @@ def test_a_deferred_purchase_needs_less_bridge_at_the_start() -> None:
     assert deferred["report"]["purchase"]["custom"] is True
 
 
+def _object_start_price_th(key: str) -> float:
+    """Стартовая цена объекта — у движка, а не числом в проверке.
+
+    Копию негде обновлять, потому что копии нет: цена нежилого метра идёт за
+    ценой жилья комфорта, и 500 тыс ₽/м², записанные здесь, разошлись бы с
+    реестром молча.
+    """
+    obj = next(o for o in core.STANDALONE_OBJECTS if o.key == key)
+    return float(core.standalone_object_defaults(obj)[obj.rate_price])
+
+
 def test_the_object_sells_by_its_profile_and_prices_by_its_ladder() -> None:
     op = core.build_operating_model(_inputs(
         offices_enabled=True, offices_sales_profile="60%@0; 40%@12",
         offices_growth_stage1_pct=10, offices_growth_stage2_pct=10), _tep(), [])
     qty = {when.isoformat(): round(v, 1) for when, v in sorted(op["quantity_product_schedules"]["offices"].items())}
     rev = {when.isoformat(): round(v / 1e6, 1) for when, v in sorted(op["revenue_product_schedules"]["offices"].items())}
-    # 6 000 м² × 60% по стартовой 500; 40% через год — стройка 24 месяца с
-    # июля 2028, готовность 25% в январе и 50% в июле 2029: 500 × 1,1 × 1,1.
+    # Утверждение здесь про ПРОФИЛЬ и ЛЕСТНИЦУ, а не про уровень цены: 6 000 м²
+    # × 60% по стартовой; 40% через год — стройка 24 месяца с июля 2028,
+    # готовность 25% в январе и 50% в июле 2029, то есть ×1,1 дважды. Саму
+    # стартовую берём у движка: записанная числом, она устаревает вместе с
+    # профилем класса (цена нежилого идёт за ценой жилья), и проверка падает на
+    # верной правке, ничего не сказав о профиле и лестнице.
+    start = _object_start_price_th("offices")
     assert qty == {"2028-07-01": 3600.0, "2029-07-01": 2400.0}
-    assert rev == {"2028-07-01": 1800.0, "2029-07-01": 1452.0}
+    assert rev == {"2028-07-01": round(3600 * start / 1e3, 1),
+                   "2029-07-01": round(2400 * start * 1.1 * 1.1 / 1e3, 1)}
     notes = op["object_schedule_notes"]["offices"]
     assert notes["profile_applied"] and notes["steps_applied"] and not notes["warnings"]
     assert notes["price_ladder"] == "этап 1 · 25% · 01.2029: +10%; этап 2 · 50% · 07.2029: +10%"
@@ -202,9 +219,12 @@ def test_the_book_sells_the_object_by_the_same_profile_and_ladder() -> None:
     x = _inputs(offices_enabled=True, offices_sales_profile="60%@0; 40%@12",
                 offices_growth_stage1_pct=10, offices_growth_stage2_pct=10)
     ev = _book(x)
+    start = _object_start_price_th("offices")
+    first, second = (round(3600 * start / 1e3, 1),
+                     round(2400 * start * 1.1 * 1.1 / 1e3, 1))
     assert _months(ev, "ОБЪЕКТЫ", 22) == {"2028-07-01": 3600.0, "2029-07-01": 2400.0}
-    assert _months(ev, "ОБЪЕКТЫ", 24) == {"2028-07-01": 1800.0, "2029-07-01": 1452.0}
-    assert float(ev.cell("ОБЪЕКТЫ", "B24")) == pytest.approx(3252.0)
+    assert _months(ev, "ОБЪЕКТЫ", 24) == {"2028-07-01": first, "2029-07-01": second}
+    assert float(ev.cell("ОБЪЕКТЫ", "B24")) == pytest.approx(first + second)
 
 
 def test_amounts_in_the_purchase_schedule_reach_the_book_with_the_remainder() -> None:

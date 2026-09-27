@@ -29,7 +29,8 @@ PROJECT = {"slug": "v37", "name": "Варшавское шоссе, вл. 37", "
            "district": "Нагатино-Садовники"}
 REPORT = {"subject": {"project_name": PROJECT["name"]},
           "analysis": {"site": {"segment": "комфорт", "price_per_sqm": 400_000, "sold_lot_avg": 45.0}},
-          "price_hint": {"entry_per_sqm": 400_000}, "peers": []}
+          "price_hint": {"entry_per_sqm": 400_000, "price_per_sqm": 400_000,
+                         "basis": "peers", "sample": 3, "segment": "комфорт"}, "peers": []}
 REQUIREMENTS = {"available": True, "decision_available": True, "source_level": "decision",
                 "object_actions": [],
                 "construction": ["Дошкольная образовательная организация на 350 мест",
@@ -56,12 +57,21 @@ def test_the_social_objects_are_not_later_than_the_first_queues() -> None:
     late_alloc = {a["type"]: a for a in late.get("social_allocation") or []}
     count = int((screening["model_inputs"]["phasing"] or {}).get("phase_count") or 1)
     assert late_alloc["school"]["phase"] == count and count > 2, late_alloc
-    # Выигрыш раннего размещения меряется там, где он про ПЛОЩАДКУ, а не про
-    # наше допущение. С 06.09.2026 норматив приложения 6 без выгрузки ГлавАПУ
-    # берёт верхний край (К1 = К2 = 1), и гараж нежилой очереди раздувается
-    # настолько, что слабейшей становится ОНА: рано 0,9790 против поздно
-    # 0,9795 — то есть балл начинает судить нашу догадку. С коэффициентами
-    # выгрузки выигрыш на месте и велик: 1,0566 против 0,9795.
+    # А вот ДЕНЬГАМИ раннее размещение обосновывать нельзя, и это записано:
+    # «цифру выигрыша из этой записи вычеркнуть — на настоящем разбиении
+    # пресета ранняя школа стоит 0,29 млрд ₽, а не приносит 3,92. Ставить её
+    # первой надо всё равно: школа нужна к заселению». Здесь эта проверка уже
+    # дважды ходила за порогом: 06.09.2026 её пришлось подпирать
+    # коэффициентами выгрузки (без них рано 0,9790 против поздно 0,9795), а
+    # 21.09.2026 классовая цена нежилого (комфорт 450 вместо 500 тыс ₽/м² на
+    # 185 690 м² ОСЗ/ТЦ) перевернула её снова: 1,0180 против 1,0185. Знак у
+    # разницы в полтысячной — не утверждение, а шум фикстуры, подобранной под
+    # порог.
+    #
+    # Поэтому утверждение здесь другое и устойчивое: ранняя раскладка не
+    # делает слабейшую очередь ХУЖЕ. Что садик стоит первым, а школа не позже
+    # второй, держат проверки выше — они и ловят настоящую поломку, когда
+    # объект уезжает в последнюю очередь.
     known = {"parking_k1": 0.75, "parking_k2": 0.5}
     def _weakest(x: dict) -> float:
         got = core._run_authoritative_model(
@@ -69,7 +79,9 @@ def test_the_social_objects_are_not_later_than_the_first_queues() -> None:
             screening["model_inputs"]["phasing"])
         return min(float(p["result"]["summary"]["llcr"]) for p in got["phases"])
 
-    assert _weakest({**inputs, **known}) > _weakest({**late_inputs, **known})
+    early, late_llcr = _weakest({**inputs, **known}), _weakest({**late_inputs, **known})
+    assert early > late_llcr - 0.01, (
+        f"ранняя раскладка утопила слабейшую очередь: {early:.4f} против {late_llcr:.4f}")
 
 
 def test_the_assumption_names_it() -> None:

@@ -43,6 +43,9 @@ _SPACE = re.compile(r"\s+")
 _DESCRIPTION = re.compile(
     r'project-detail__description__main__col">(?P<body>.*?)</div>', re.S)
 _SENTENCE = re.compile(r"[^.!?]*[.!?]")
+# ТЭП карточки — пары «<span>подпись: </span><b>число</b>» в первой колонке
+# описания. Читается он даром: страницу мы уже скачали ради застройщика.
+_PAIR = re.compile(r"<span>(?P<label>[^<]*?):\s*</span>\s*<b>(?P<value>[^<]*)</b>", re.S)
 # Городской застройщик — казённое предприятие или учреждение. Такую площадку
 # город делает сам, и «войти» в неё нельзя: это ответ, а не оттенок.
 _CITY_FORMS = ("кп ", "гку", "гбу", "гуп", "казенное предприятие",
@@ -63,6 +66,7 @@ def parse(page: str) -> dict[str, Any]:
     out: dict[str, Any] = {
         "roles": [], "developers": [], "city_operator": False,
         "renovation": False, "renovation_quote": "", "description": "",
+        "tep_fields": {},
     }
     if not page:
         return out
@@ -81,6 +85,17 @@ def parse(page: str) -> dict[str, Any]:
     # Колонок описания две: в первой ТЭП парами «подпись: <b>число</b>», во
     # второй проза. Различать их по точке нельзя — «Площадь, га: 73.62» тоже с
     # точкой, и у планируемой площадки описанием становился её же ТЭП.
+    # ТЭП живёт в той колонке описания, где стоят пары со значениями. Подписи
+    # у карточки и у плитки списка одни и те же — кроме «Площадь, га» против
+    # «Площадь», — поэтому величины из них собирает ОДНА карта подписей в
+    # krt_registry: вторая разошлась бы с первой молча.
+    for block in _DESCRIPTION.finditer(page):
+        for pair in _PAIR.finditer(block.group("body")):
+            label = _text(pair.group("label")).lower()
+            value = _text(pair.group("value"))
+            if label and value:
+                out["tep_fields"].setdefault(label, value)
+
     described = [_text(block.group("body")) for block in _DESCRIPTION.finditer(page)
                  if "</span><b>" not in block.group("body")]
     prose = [text for text in described if len(text) > 120]

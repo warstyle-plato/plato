@@ -556,6 +556,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         if start_price is None:
             start_price = self._first_lot_money(text, lot_no)
         deposit = self._money_near(text, "Обеспечение заявки")
+        application_start = self._application_start(text)
         deadline = self._deadline(text)
         organizer = self._value(text, "Организатор торгов", ("ФИО", "Телефон", "E-mail", "Способ проведения"))
         seller = self._value(text, "Название организации", ("Юридический адрес продавца", "Почтовый адрес продавца", "Место поставки"))
@@ -596,6 +597,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             start_price_rub=start_price,
             current_price_rub=start_price,
             deposit_rub=deposit,
+            application_start=application_start,
             application_deadline=deadline,
             status=status,
             documents=docs,
@@ -615,6 +617,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             "procedure_type": procedure_method,
             "start_price_rub": str(start_price) if start_price is not None else None,
             "deposit_rub": str(deposit) if deposit is not None else None,
+            "application_start": application_start,
             "application_deadline": deadline,
             "status": status,
         }.items():
@@ -718,6 +721,25 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         return None
 
     @staticmethod
+    def _application_start(text: str):
+        # Росэлторг пишет начало кампании несколькими подписями в зависимости
+        # от секции и версии карточки. Берём только явно подписанную дату:
+        # публикация процедуры сама по себе не означает начало приёма заявок.
+        patterns = (
+            r"Дата и время начала при[её]ма заявок\s*(?:\||с)?\s*(\d{2}\.\d{2}\.\d{2,4}\s+\d{2}:\d{2}(?::\d{2})?)",
+            r"Начало при[её]ма заявок\s*(\d{2}\.\d{2}\.\d{2,4})\s*(?:в|\s)\s*(\d{2}:\d{2}(?::\d{2})?)",
+            r"При[её]м заявок\s*с\s*(\d{2}\.\d{2}\.\d{2,4}\s+\d{2}:\d{2}(?::\d{2})?)",
+            r"Дата и время начала при[её]ма заявок\s*(?:\||с)?\s*(\d{2}\.\d{2}\.\d{2,4})\b",
+            r"Начало при[её]ма заявок\s*(\d{2}\.\d{2}\.\d{2,4})\b",
+            r"При[её]м заявок\s*с\s*(\d{2}\.\d{2}\.\d{2,4})\b",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, text, re.I)
+            if match:
+                return " ".join(group for group in match.groups() if group)
+        return None
+
+    @staticmethod
     def _deadline(text: str):
         patterns = (
             r"Дата и время окончания при[её]ма заявок\s*(?:\||до)?\s*(\d{2}\.\d{2}\.\d{2,4}\s+\d{2}:\d{2}(?::\d{2})?)",
@@ -769,9 +791,41 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         return parse_hectares_sqm(text)
 
     @staticmethod
+    def _own_procedure(base_url: str) -> str:
+        """Номер процедуры, чью страницу мы читаем. По нему отличают свои ссылки."""
+        match = re.search(r"/procedure/(\d{6,})", urlparse(base_url).path)
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _is_attachment(absolute: str, own: str) -> bool:
+        """Вложение лота — ФАЙЛ этого лота, а не карточка соседнего аукциона.
+
+        Страница процедуры Росэлторга несёт блок «похожие торги», и ссылки оттуда
+        проходили отбор по словам: заголовок соседнего лота — «Аукцион на право
+        заключения ДОГОВОРА о комплексном развитии…», а «договор» стоит в
+        маркерах. На МКАД, 41 км из 27 «вложений» настоящими файлами были 15, а
+        одиннадцать — карточки чужих аукционов (замер 21.09.2026). Их качали,
+        разбирали как HTML и засчитывали прочитанными: счёт вложений врал почти
+        вдвое, а состав территории искали в том числе в чужих лотах.
+
+        Отличает их адрес, а не заголовок: файл лежит на `/file/get/`, карточка —
+        на `/procedure/<номер>`, и чужая от своей отличается номером.
+        """
+        parsed = urlparse(absolute)
+        if "/file/get/" in parsed.path:
+            return True
+        found = re.search(r"/procedure/(\d{6,})", parsed.path)
+        if found:
+            # Своя страница остаётся: «Документация по торгам» — это она, и
+            # программа КРТ читается в том числе из её текста.
+            return bool(own) and found.group(1) == own
+        return False
+
+    @staticmethod
     def _documents(base_url: str, links: list[tuple[str, str]], fetched_at: str) -> list[AuctionDocument]:
         out: list[AuctionDocument] = []
         seen: set[str] = set()
+        own = RoseltorgAdapter._own_procedure(base_url)
         markers = (
             "договор",
             "документац",
@@ -791,6 +845,8 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             absolute = urljoin(base_url, href)
             low = (title + " " + href).lower()
             if absolute in seen or not any(m in low for m in markers):
+                continue
+            if not RoseltorgAdapter._is_attachment(absolute, own):
                 continue
             seen.add(absolute)
             dtype = "other"

@@ -391,6 +391,27 @@ def object_roster() -> str:
                        page_const("OBJECT_PARKING_PREFIXES")))
 
 
+def project_kind() -> str:
+    """Тип проекта и всё, что из него на странице считается.
+
+    Форма читает его дважды: надписью над полями (`projectKindNote`) и
+    развилкой «жилое поле в нежилом проекте». Перечислять эти куски у каждого
+    стенда значит завести то же, что уже стоило шести падений: стенд падает на
+    неопределённом имени, и падение выходит про стенд, а не про то, что он
+    проверяет.
+
+    Состав типов и список жилых вводных приезжают на страницу подстановкой из
+    движка — здесь они берутся со СОБРАННОЙ страницы, как реестр объектов.
+    """
+    return "\n".join((page_const("PROJECT_KINDS"),
+                       page_const("NONRESIDENTIAL_CLEARED"),
+                       function("projectKind"),
+                       function("isNonResidential"),
+                       function("projectKindLabel"),
+                       function("projectKindHasSaved"),
+                       function("projectKindNote")))
+
+
 def auctions_function(*names: str) -> str:
     """Те же куски, но со страницы торгов (`auction_search.ui`).
 

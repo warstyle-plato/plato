@@ -45,14 +45,56 @@ def _purchase_price(result: dict[str, Any]) -> float:
     return 0.0
 
 
-def _parcel_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def _lookup_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Всё найденное разбором кадастра: земля, ОКС, помещения."""
     snapshot = (payload.get("inputs") or {}).get("_land_lookup") or {}
     return [
         item for item in (snapshot.get("results") or [])
-        if isinstance(item, dict)
-        and item.get("found")
-        and isinstance(item.get("contour_merc"), list)
+        if isinstance(item, dict) and item.get("found")
     ]
+
+
+def _parcel_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Объекты с геометрией — их рисует схема участка."""
+    return [
+        item for item in _lookup_results(payload)
+        if isinstance(item.get("contour_merc"), list)
+    ]
+
+
+def _land_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Только земля: площадь ЗУ складывается из участков и ни из чего больше.
+
+    Вид решается положительно — ``kind == "land"``, как везде в разборе ЕГРН:
+    перечислять, чем объект не является, бесполезно, реестр заводит десятки
+    видов помещений и сооружений, и любой невнесённый в список просочится.
+
+    Плитка складывала площади ВСЕХ найденных объектов с контуром, то есть
+    метры зданий вставали в «Площадь ЗУ» рядом с метрами земли. На КРТ по
+    ул. Архитектора Власова это дало 4 899 м² при 3 407,02 по ЕГРН
+    (2 227,02 + 1 180,0) — а ровно с 0,3407 га запущен калькулятор ГлавАПУ,
+    то есть число шапки спорило с основанием всего расчёта (владелец,
+    21.09.2026: «то что ОКС в площадь участка идёт это очень плохо»).
+    Правило то же, что в своде территории: земля меряется площадью земли,
+    здание — площадью здания, и сложенные в одну клетку они дают третье
+    число, не сравнимое ни с чем.
+
+    Контур здесь не требуется: участок без геометрии в ЕГРН есть, и выпасть
+    из площади он не должен — геометрия нужна рисунку, а не счёту.
+    """
+    return [item for item in _lookup_results(payload)
+            if item.get("kind") == "land"]
+
+
+def _non_land_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """ОКС и помещения разбора: в площадь ЗУ не идут, но и не пропадают.
+
+    Их контуры рисует схема, поэтому молчание о них читалось бы как «на
+    участке ничего не стоит». Строка рядом с площадью называет число и метры
+    и говорит, что в площадь ЗУ они не входят.
+    """
+    return [item for item in _lookup_results(payload)
+            if item.get("kind") != "land"]
 
 
 def _parcel_drawing(payload: dict[str, Any], core: Any, width: float = 260,
@@ -199,10 +241,18 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
     blocks: list[Any] = [Spacer(1, 1.5 * mm), para("Результаты расчёта", heading), card_table]
     drawing = _parcel_drawing(payload, core)
     if drawing is not None:
-        items = _parcel_items(payload)
-        total_area = sum(_number(item.get("area_sqm")) for item in items)
-        if total_area <= 0:
-            total_area = _number(inputs.get("site_area_ha")) * 10000.0
+        land_area = sum(_number(item.get("area_sqm"))
+                        for item in _land_items(payload))
+        # Три ответа, и слить их нельзя: площадь по ЕГРН, площадь, вписанная
+        # человеком (участка нет в реестре), и «не знаем». Ноль в клетке
+        # читается как посчитанный ноль, а вписанное руками под подписью
+        # «Площадь ЗУ» — как ответ реестра.
+        if land_area > 0:
+            area_text = core._pdf_num(land_area, 0) + " м²"
+        else:
+            manual = _number(inputs.get("site_area_ha")) * 10000.0
+            area_text = (core._pdf_num(manual, 0) + " м² · вписана руками"
+                         if manual > 0 else "—")
         total_tep = ((result.get("tep") or {}).get("total") or {})
         transfer = sum(
             _number(row.get("transfer"))
@@ -210,10 +260,25 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
             if isinstance(row, dict)
         )
         info_rows = [
-            [para("Площадь ЗУ", label_style), para(core._pdf_num(total_area, 0) + " м²")],
+            [para("Площадь ЗУ", label_style), para(area_text)],
+        ]
+        others = _non_land_items(payload)
+        if others:
+            # Имя строки идёт за составом: реестр отдаёт и здания, и
+            # помещения, а «ОКС» поверх помещений — подпись, утверждающая о
+            # документе больше, чем он сказал.
+            others_label = ("ОКС, вне площади ЗУ"
+                            if all(item.get("kind") == "building" for item in others)
+                            else "Объекты ЕГРН, вне площади ЗУ")
+            others_area = sum(_number(item.get("area_sqm")) for item in others)
+            others_text = (f"{len(others)} · " + core._pdf_num(others_area, 0) + " м²"
+                           if others_area > 0
+                           else f"{len(others)} · площадь не названа")
+            info_rows.append([para(others_label, label_style), para(others_text)])
+        info_rows.extend([
             [para("Строит. объём", label_style), para(core._pdf_num(total_tep.get("gns"), 0) + " м²")],
             [para("Продаваемая", label_style), para(core._pdf_num(total_tep.get("saleable"), 0) + " м²")],
-        ]
+        ])
         if transfer > 0:
             info_rows.append([
                 para("Передаваемая бесплатно", label_style),
