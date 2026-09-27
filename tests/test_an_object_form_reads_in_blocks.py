@@ -39,8 +39,20 @@ PROBE = """(groups)=>{
    if(node.classList.contains('field-section')){
     head=node.textContent.trim();
     const box=node.getBoundingClientRect();
-    heads.push({title:head,visible:box.height>0});
-   }else fields.push([node.dataset.field,head]);
+    // Блок — отдельная карточка: заголовок и поля внутри одной рамки с
+    // фоном, заголовок крупнее подписи поля. Мелкая серая строка над общей
+    // сеткой блоком не читалась (владелец, 27.09.2026).
+    const card=node.closest('.field-card');
+    const look=card?getComputedStyle(card):null;
+    const label=det.querySelector('.field label');
+    heads.push({title:head,visible:box.height>0,
+     card:!!card&&card.dataset.section===head,
+     framed:!!look&&(look.backgroundColor!=='rgba(0, 0, 0, 0)'||parseFloat(look.borderTopWidth)>0),
+     bigger:parseFloat(getComputedStyle(node).fontSize)>(label?parseFloat(getComputedStyle(label).fontSize):0)});
+   }else{
+    const card=node.closest('.field-card');
+    fields.push([node.dataset.field,head,card?card.dataset.section:null]);
+   }
   }
   out[name]={heads,fields};
  }
@@ -70,17 +82,23 @@ def _check(name: str, got: dict | None, keys: list[str]) -> None:
     titles = [h["title"] for h in got["heads"]]
     assert titles, f"«{name}»: ни одного заголовка блока — поля идут одной свалкой"
     assert all(h["visible"] for h in got["heads"]), f"«{name}»: заголовок блока не виден"
+    assert all(h["card"] for h in got["heads"]), f"«{name}»: блок не отдельной карточкой"
+    assert all(h["framed"] for h in got["heads"]), f"«{name}»: карточка без фона и рамки"
+    assert all(h["bigger"] for h in got["heads"]), (
+        f"«{name}»: заголовок блока не крупнее подписи поля")
+    outside = [f[0] for f in got["fields"] if f[2] != f[1]]
+    assert not outside, f"«{name}»: поля вне карточки своего блока: {outside}"
     assert len(titles) == len(set(titles)), f"«{name}»: блок разорван надвое: {titles}"
     assert all(t in SECTION_TITLES for t in titles), (
         f"«{name}»: блок вне объявленных — {titles}")
     assert titles == sorted(titles, key=SECTION_TITLES.index), (
         f"«{name}»: блоки не в объявленном порядке: {titles}")
-    seen = [key for key, _ in got["fields"]]
+    seen = [key for key, *_ in got["fields"]]
     assert sorted(seen) == sorted(keys) and len(seen) == len(set(seen)), (
         f"«{name}»: поля на экране не совпали с формой объекта ровно по одному")
-    orphans = [key for key, head in got["fields"] if head is None]
+    orphans = [key for key, head, *_ in got["fields"] if head is None]
     assert not orphans, f"«{name}»: поля вне всякого блока: {orphans}"
-    used = {head for _, head in got["fields"]}
+    used = {head for _, head, *_ in got["fields"]}
     assert used == set(titles), f"«{name}»: заголовок без полей: {set(titles) - used}"
 
 
@@ -129,11 +147,11 @@ def test_the_page_draws_the_blocks_of_every_object() -> None:
         _check(obj.group_label, got[obj.group_label], _expected(obj))
     _check(future[0], got_future[future[0]], _expected(FUTURE))
     # Деньги метров и деньги мест — в разных блоках, как бы ни звалось поле.
-    offices = dict(got["МФОЦ / офисы"]["fields"])
+    offices = {f[0]: f[1] for f in got["МФОЦ / офисы"]["fields"]}
     assert offices["offices_cost_th_per_sqm"] == "Себестоимость"
     assert offices["offices_price_th_per_sqm"] == "Цена и рост цены"
     assert offices["offices_parking_under_spaces"] == "Паркинг объекта"
-    above = dict(got["Наземный паркинг"]["fields"])
+    above = {f[0]: f[1] for f in got["Наземный паркинг"]["fields"]}
     assert above["above_parking_spaces"] == "Объём"
     assert above["above_parking_cost_mln_per_space"] == "Себестоимость"
-    assert dict(got["ФОК / медцентр"]["fields"])["sports_disposition"] == "Судьба объекта"
+    assert {f[0]: f[1] for f in got["ФОК / медцентр"]["fields"]}["sports_disposition"] == "Судьба объекта"
