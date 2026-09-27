@@ -15416,8 +15416,6 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
     strong_num = ParagraphStyle("pc_strong_num", parent=strong, alignment=2)
     head = ParagraphStyle("pc_head", parent=strong, fontSize=6.6)
     muted = ParagraphStyle("pc_muted", parent=cell, textColor=colors.HexColor("#666666"))
-    caption = ParagraphStyle("pc_caption", parent=cell, fontName=bold, fontSize=6.6,
-                             textColor=colors.HexColor("#555555"))
 
     def text(value: Any) -> str:
         return (str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
@@ -15454,11 +15452,8 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
 
     def label(row: dict[str, Any]) -> str:
         out = str(row.get("label") or "")
-        # Единица — один раз: у ставки она уже в заголовке подгруппы.
-        if row.get("kind") == "th" and row.get("rate_input") is None:
+        if row.get("kind") == "th":
             out += ", тыс ₽/м²"
-        if row.get("rate_input") is not None:
-            out += f" (вводная {one(row['rate_input'])})"
         return out
 
     columns = list(table.get("columns") or [])
@@ -15480,10 +15475,6 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
                   ("LINEBELOW", (0, i), (-1, i), 1.0, colors.HexColor("#111111"))]
         for row in block.get("rows") or []:
             i = len(data)
-            if row.get("kind") == "caption":
-                data.append([Paragraph(text(label(row)), caption)] + [""] * (span - 1))
-                style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 6)]
-                continue
             role = row.get("role") or ""
             lab_style = strong if role == "total" else (muted if role in ("part", "sub") else cell)
             num_style = strong_num if role == "total" else num
@@ -34973,18 +34964,12 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
 
     sale, gns = f(summary.get("monetizable_saleable_sqm")), f(summary.get("project_gns_sqm"))
     rev_all = [f(x.get("revenue")) for x in c]
-    inputs0 = (c[0].get("shared_rate_inputs_th") or {}) if c else {}
-    # Ставки общепроектных статей — не деньги, а тыс ₽ за м² МКД очереди.
-    # Стоят они в «Затратах» рядом со своими статьями, но своей подгруппой с
-    # единицей в заголовке: голое «1,0» под колонкой «млрд ₽» читалось как
-    # продолжение денег (владелец, 27.09.2026: «почему в начале млрд, а
-    # дальше удельные»).
-    rates = [row("Цена м² МКД очереди по общепроектным статьям, тыс ₽/м²", "caption", [], None)]
-    rates += [row(label, "th", [(x.get("shared_rates_th") or {}).get(key) for x in c], None,
-                  rate_input=inputs0.get(key), role="sub")
-              for key, label in (("ird", "ИРД и согласования"), ("design", "Проектирование П+РД"),
-                                 ("preparation", "Подготовительные работы"),
-                                 ("utilities", "Наружные сети"))]
+    # Ставок общепроектных статей («ИРД… — цена м² МКД очереди») здесь нет:
+    # это не расходы очереди, а проверка долей, которыми статью режут между
+    # очередями, и среди денег «Затрат» они читались как единственные
+    # расходы, считаемые по очередям (владелец, 27.09.2026). Место им — на
+    # вкладке «Очерёдность», под долей, которую задают руками
+    # (`sharedRateNote`): ставку видно там, где её меняют.
 
     def money(label: str, key: str, total: Any) -> dict[str, Any]:
         return row(label, "money", [f(x.get(key)) for x in c], total)
@@ -35002,8 +34987,7 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
                 role="total", group="all")]),
         ("costs", "Затраты", [
             money("CAPEX", "capex", f(summary.get("capex"))),
-            money("Полные расходы", "total_expenses", f(summary.get("total_expenses"))),
-            *rates]),
+            money("Полные расходы", "total_expenses", f(summary.get("total_expenses")))]),
         ("finance", "Финансирование", [
             money("Пиковый БРИДЖ", "peak_bridge", f(finance.get("peak_bridge"))),
             money("Затраты до РНС", "pre_rns_costs", f(totals_fin.get("pre_rns_costs"))),
@@ -42592,8 +42576,6 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-comparison-card td:not(:first-child),.phase-comparison-card th:not(:first-child){white-space:nowrap}
 .phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{position:sticky;left:0;z-index:1;background:#fff}
 .phase-comparison-card tr.pc-block th span{position:sticky;left:0}
-.phase-comparison-card tr.pc-caption td{padding-top:10px;font-size:11px;color:#555;font-style:italic}
-.phase-comparison-card tr.pc-caption td span{position:sticky;left:0}
 @media(max-width:600px){.phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{min-width:128px;max-width:150px;box-shadow:1px 0 0 #e5e5e5}}
 .phase-status{font-size:11px;color:#666;margin-top:8px}
 .object-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
@@ -50964,16 +50946,14 @@ function renderPhaseComparison(){
   if(r.kind==='date')return dateRu(v);
   return String(v);
  };
- const label=r=>r.label+(r.rate_input!=null?` (вводная ${num2(r.rate_input)} тыс ₽/м²)`:'');
  // Сырые числа итогов и слагаемых уходят в разметку (`data-v`): проверка
  // сверяет итог с суммой слагаемых по ним, а не по округлённому тексту.
  const td=(r,v)=>`<td${r.group?` data-v="${v}"`:''}>${fmt(r,v)}</td>`;
  const span=table.columns.length+2;
  phaseComparisonBody.innerHTML=table.blocks.map(b=>
   `<tr class="pc-block" data-block="${b.key}"><th colspan="${span}"><span>${b.title}</span></th></tr>`+
-  b.rows.map(r=>r.kind==='caption'
-   ?`<tr class="pc-caption" data-block="${b.key}"><td colspan="${span}"><span>${r.label}</span></td></tr>`
-   :`<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${label(r)}</td>`+
+  b.rows.map(r=>
+   `<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${r.label}</td>`+
    r.values.map(v=>td(r,v)).join('')+td(r,r.total)+'</tr>').join('')
  ).join('');
  renderPhaseEscrowCharts();

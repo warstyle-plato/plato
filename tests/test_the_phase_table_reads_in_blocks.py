@@ -101,18 +101,19 @@ def test_unit_block_follows_finance_and_profit_per_metre_closes_the_table(rows) 
     assert rows[-1]["block"] == "unit"
 
 
-def test_article_rates_sit_with_the_costs(rows) -> None:
-    """Ставки — подгруппой в «Затратах»: заголовок с единицей, строки с отступом.
+def test_article_rates_live_on_the_phasing_tab_not_in_the_table(rows, bundle) -> None:
+    """Ставки общепроектных статей — проверка долей, а не расходы очереди.
 
-    Голое «1,0» под колонкой «млрд ₽» читалось как продолжение денег.
+    Среди денег «Затрат» они читались как единственные расходы, считаемые по
+    очередям (владелец, 27.09.2026). Их место — вкладка «Очерёдность», под
+    долей, которую задают руками; данные для неё движок по-прежнему отдаёт.
     """
-    at = next(i for i, r in enumerate(rows) if r["cls"] == "pc-caption")
-    caption = rows[at]
-    assert caption["block"] == "costs" and "тыс ₽/м²" in caption["label"], caption
-    rates = rows[at + 1:at + 5]
-    assert [r["label"].split(" (")[0] for r in rates] == [
-        "ИРД и согласования", "Проектирование П+РД", "Подготовительные работы", "Наружные сети"]
-    assert all(r["block"] == "costs" and r["cls"] == "pc-sub" for r in rates), rates
+    assert not [r for r in rows if "цена м² МКД" in r["label"]], [r["label"] for r in rows]
+    costs = [r["label"] for r in rows if r["block"] == "costs" and r["cls"] != "pc-block"]
+    assert costs == ["CAPEX", "Полные расходы"], costs
+    assert all(set(x["shared_rates_th"]) >= {"ird", "design", "preparation", "utilities"}
+               for x in bundle["comparison"])
+    assert "sharedRateNote(k,i)" in core.PAGE, "вкладка «Очерёдность» больше не показывает ставку"
 
 
 def _block_of(rows, text: str) -> str:
