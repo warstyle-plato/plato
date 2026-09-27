@@ -83,16 +83,17 @@ def _irr_monthly(cashflows: list[float]) -> float | None:
 
     low, high = -0.95, 10.0
     left, right = npv(low), npv(high)
+    npv_tolerance = max(1e-9, sum(abs(value) for value in cashflows) * 1e-12)
     if left == 0:
         return low
     if right == 0:
         return high
     if left * right > 0:
         return None
-    for _ in range(180):
+    for _ in range(220):
         mid = (low + high) / 2.0
         value = npv(mid)
-        if abs(value) < 0.01:
+        if abs(value) <= npv_tolerance or (high - low) <= 1e-13:
             return mid
         if left * value <= 0:
             high, right = mid, value
