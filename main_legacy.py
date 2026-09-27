@@ -17527,14 +17527,8 @@ def _v4_cell_text(xml: str, coord: str) -> str | None:
     return html.unescape(value.group(1)) if value else None
 
 
-def _v4_mirror_secondary_input_styles(xml: str) -> str:
-    """E:H — такая же форма ввода, как A:D, с правильным типом значения.
-
-    Копировать стиль той же СТРОКИ нельзя: справа может стоять процент, а
-    слева в этой строке — сумма или дата. Стиль Excel несёт number format,
-    поэтому визуально похожая правка превращала 3% в 0,03. Берём образец по
-    роли колонки и типу поля из единого FIELD_GROUPS.
-    """
+def _v4_input_field_meta() -> dict[str, tuple[str, str]]:
+    """Ключ поля → (тип, единица) из единого FIELD_GROUPS."""
     field_meta: dict[str, tuple[str, str]] = {}
     for _group, fields in FIELD_GROUPS:
         for field in fields:
@@ -17543,6 +17537,246 @@ def _v4_mirror_secondary_input_styles(xml: str) -> str:
     for field in globals().get("_M2_RATE_INPUTS", ()):
         if len(field) >= 4:
             field_meta.setdefault(str(field[0]), (str(field[3]), str(field[2])))
+    return field_meta
+
+
+_V4_FMT_DATE = "dd.mm.yyyy"
+_V4_FMT_PCT = "0.0%;[Red](0.0%);-"
+_V4_FMT_PCT_FINE = "0.00%;[Red](0.00%);-"
+_V4_FMT_COUNT = "0"
+_V4_FMT_AREA = "#,##0;[Red](#,##0);-"
+_V4_FMT_AMOUNT = "#,##0.0;[Red](#,##0.0);-"
+_V4_FMT_AMOUNT_FINE = "#,##0.00;[Red](#,##0.00);-"
+
+
+def _v4_input_format_code(kind: str, unit: str, value: Any = None) -> str | None:
+    """Формат числа вводной по типу и единице поля — одно решение на книгу.
+
+    Все коды — из каталога шаблона (dd.mm.yyyy, 0.0%, 0, #,##0, #,##0.0):
+    своих форматов книга не заводит. Дробная часть решается по записанному
+    значению: 2,75 тыс. ₽/м² форматом #,##0.0 показалось бы 2,8 — число на
+    экране разошлось бы с числом в ячейке. Текстовое поле — None: формат
+    ему не нужен.
+    """
+    if kind == "date":
+        return _V4_FMT_DATE
+    if kind != "number":
+        return None
+    unit = (unit or "").strip()
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = None
+
+    def decimals(scale: float = 1.0) -> int:
+        if number is None:
+            return 0
+        text = f"{abs(number) * scale:.10f}".rstrip("0")
+        return len(text.split(".")[1]) if "." in text else 0
+
+    if unit.startswith("%") or unit.startswith("п.п."):
+        return _V4_FMT_PCT_FINE if decimals(100) > 1 else _V4_FMT_PCT
+    if re.match(r"(мес|лет|год|шт|мест|пос\.)", unit):
+        return _V4_FMT_COUNT
+    if (unit.startswith("м²") and unit[2:3] not in ("/", "(")) or unit.startswith("м "):
+        return _V4_FMT_AREA
+    return _V4_FMT_AMOUNT_FINE if decimals() > 1 else _V4_FMT_AMOUNT
+
+
+_V4_INPUT_BLOCKS = (("D", "B"), ("H", "F"), ("M", "K"))
+
+# Вводные с ключом, которого нет в FIELD_GROUPS: служебные поля книги.
+_V4_KEYED_INPUT_FORMATS = {
+    "engine_horizon_end": _V4_FMT_DATE,
+    "vri_obligation_lead_months": _V4_FMT_COUNT,
+    "social_cash_part_mln": _V4_FMT_AMOUNT,
+    "offices_queue": _V4_FMT_COUNT, "retail_queue": _V4_FMT_COUNT,
+    "above_parking_queue": _V4_FMT_COUNT, "sports_queue": _V4_FMT_COUNT,
+}
+_V4_FMT_MULTIPLE = "0.00x;[Red](0.00x);-"
+# Таблица очередей «Параметров модели» (строки 88–91): колонка → формат.
+_V4_QUEUE_INPUT_FORMATS = {
+    "E": _V4_FMT_COUNT, "F": _V4_FMT_COUNT, "G": _V4_FMT_COUNT,
+    "W": _V4_FMT_AREA, "X": _V4_FMT_AREA, "Y": _V4_FMT_AREA,
+    "Z": _V4_FMT_AREA, "AA": _V4_FMT_AREA, "AB": _V4_FMT_AREA, "AC": _V4_FMT_AREA,
+    "AS": _V4_FMT_AMOUNT,
+}
+# Блок соцобъектов «Вводных»: колонка → формат (заголовки пишет
+# `_v4_social_rows_xml`; F — формула стоимости, она не ввод).
+_V4_SOCIAL_INPUT_FORMATS = {
+    "B": _V4_FMT_AREA, "C": _V4_FMT_AMOUNT_FINE, "D": _V4_FMT_DATE, "E": _V4_FMT_COUNT,
+    "G": _V4_FMT_MULTIPLE, "L": _V4_FMT_AREA, "M": _V4_FMT_AMOUNT, "P": _V4_FMT_PCT,
+}
+
+
+def _v4_block_input_formats(social_base_row: int | None,
+                            ladder_refs: list[tuple[str, str]],
+                            population_norm_ref: str | None) -> dict[str, str]:
+    """Форматы вводных без ключа поля — по месту, которое знает их сборщик."""
+    out: dict[str, str] = {}
+    for row in range(_V4_CF_QUEUE_ENABLED_ROW, _V4_CF_QUEUE_ENABLED_ROW + _V4_CAPEX_PHASES):
+        for column, code in _V4_QUEUE_INPUT_FORMATS.items():
+            out[f"{column}{row}"] = code
+    if social_base_row is not None:
+        for type_index in range(len(_V4_SOCIAL_TYPES)):
+            for phase in range(4):
+                row = _v4_social_row(social_base_row, type_index, phase)
+                for column, code in _V4_SOCIAL_INPUT_FORMATS.items():
+                    out[f"{column}{row}"] = code
+        out[f"F{_v4_social_cash_row(social_base_row)}"] = _V4_FMT_AMOUNT
+    for edge_ref, rate_ref in ladder_refs:
+        out[edge_ref.split("!")[-1].replace("$", "")] = _V4_FMT_MULTIPLE
+        out[rate_ref.split("!")[-1].replace("$", "")] = _V4_FMT_PCT_FINE
+    if population_norm_ref:
+        out[population_norm_ref.replace("$", "")] = _V4_FMT_AREA
+    return out
+
+
+def _v4_type_input_formats(xml: str, styles: str,
+                           extra: dict[str, str] | None = None) -> tuple[str, str]:
+    """У каждой вводной с ключом — формат её поля.
+
+    Шаблон и дописанные нами строки ставили вводным стиль с General: цель
+    ставки 9% читалась как 0,09, дата старта — как 46227, суммы — без
+    разрядов. Стиль ячейки меняется только в формате числа (xf клонируется у
+    шаблона), и только там, где формат обещает не то семейство: General,
+    процент у суммы, число у процента. Удачный формат шаблона того же
+    семейства остаётся его решением.
+
+    Вводные без ключа поля (таблицы соцобъектов, очередей, ступеней ставки)
+    приходят явной картой `extra` «ячейка → формат»: угадывать тип по
+    подписи колонки значило бы однажды назвать сумму процентом.
+    """
+    field_meta = _v4_input_field_meta()
+    entry = v4_entry_sheet.style_map(styles)["entry"]
+    rows = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
+    wanted: dict[str, str] = {}
+    for key_col, value_col in _V4_INPUT_BLOCKS:
+        for row in range(1, max(rows, default=0) + 1):
+            key = _v4_cell_text(xml, f"{key_col}{row}")
+            coord = f"{value_col}{row}"
+            if key in _V4_KEYED_INPUT_FORMATS:
+                wanted[coord] = _V4_KEYED_INPUT_FORMATS[key]
+                continue
+            if key not in field_meta or key in V4_INPUTS_NOT_IN_BOOK:
+                continue
+            code = _v4_input_format_code(*field_meta[key], _v4_cell_text(xml, coord))
+            if code is not None:
+                wanted[coord] = code
+    for coord, code in (extra or {}).items():
+        wanted.setdefault(coord, code)
+    for coord, code in wanted.items():
+        found = re.search(r'<x:c r="%s"([^>]*?)(/?>)' % re.escape(coord), xml)
+        if not found:
+            continue
+        if code == _V4_FMT_DATE:
+            # Ноль в поле даты — «не задана», а не 00.01.1900. И читатели
+            # книги (openpyxl, наш вычислитель) превращают ноль под форматом
+            # даты во время суток 00:00, на котором встаёт любая арифметика.
+            try:
+                if float(_v4_cell_text(xml, coord) or 0) <= 0:
+                    continue
+            except ValueError:
+                continue
+        style = re.search(r'\ss="(\d+)"', found.group(1))
+        if not style or int(style.group(1)) not in entry:
+            continue
+        current = v4_entry_sheet.format_code(
+            styles, v4_entry_sheet.num_fmt_id(styles, int(style.group(1))))
+        have = v4_entry_sheet.format_family(current)
+        if have != "general" and have == v4_entry_sheet.format_family(code):
+            continue
+        styles, fmt_id = v4_entry_sheet.with_format(styles, code)
+        styles, new_style = v4_entry_sheet.xf_with_format(styles, int(style.group(1)), fmt_id)
+        attrs = re.sub(r'\ss="\d+"', f' s="{new_style}"', found.group(1), count=1)
+        xml = (xml[:found.start()] + f'<x:c r="{coord}"{attrs}{found.group(2)}'
+               + xml[found.end():])
+    return xml, styles
+
+
+def _v4_with_number_format(xml: str, coord: str, code: str, styles: str
+                           ) -> tuple[str, str, bool]:
+    """Ячейке — формат числа `code`; цвет и рамка её стиля остаются.
+
+    → (лист, styles.xml, найдена ли ячейка).
+    """
+    found = re.search(r'<x:c r="%s"([^>]*?)(/?>)' % re.escape(coord), xml)
+    if not found:
+        return xml, styles, False
+    style = re.search(r'\ss="(\d+)"', found.group(1))
+    styles, fmt_id = v4_entry_sheet.with_format(styles, code)
+    styles, new_style = v4_entry_sheet.xf_with_format(
+        styles, int(style.group(1)) if style else 0, fmt_id)
+    attrs = (re.sub(r'\ss="\d+"', f' s="{new_style}"', found.group(1), count=1) if style
+             else f'{found.group(1)} s="{new_style}"')
+    return (xml[:found.start()] + f'<x:c r="{coord}"{attrs}{found.group(2)}'
+            + xml[found.end():], styles, True)
+
+
+_V4_REF_ONLY = re.compile(r"^\s*'?([^'!]+)'?!\$?([A-Z]{1,3})\$?(\d+)\s*$")
+
+
+def _v4_report_number_formats(report_xml: str, tep_xml: str, consolidator_xml: str,
+                              styles: str) -> tuple[str, str, str]:
+    """Числа ОТЧЁТа и расшифровки ТЭП — с форматом, а не General.
+
+    Дописанные нами ячейки (строка дефолта, соцобъекты, подземные метры и
+    итог структуры продукта) и ссылки шаблона на КОНСОЛИДАТОР шли без
+    формата: 2 349,1 млн читались как 2349.07318, даты как 46905. Формат
+    задан здесь явно — по месту, которое пишет сборщик, — а у ссылки
+    `=КОНСОЛИДАТОР!X` он берётся у её источника, как у читалок «Вводных».
+    """
+    tep_formats: dict[str, str] = {}
+    for tep_row in (40, 41, 42):
+        tep_formats.update({f"B{tep_row}": _V4_FMT_AREA, f"C{tep_row}": _V4_FMT_AREA,
+                            f"E{tep_row}": _V4_FMT_AMOUNT, f"F{tep_row}": _V4_FMT_AREA})
+    tep_formats["E43"] = _V4_FMT_AMOUNT
+
+    report_formats: dict[str, str] = {f"B{_V4_REPORT_DEFAULT_ROW}": _V4_FMT_AMOUNT}
+    for report_row in (33, 34, 35):
+        report_formats.update({f"F{report_row}": _V4_FMT_AREA,
+                               f"H{report_row}": _V4_FMT_AMOUNT})
+    report_formats.update({"H36": _V4_FMT_AMOUNT, "H37": _V4_FMT_AMOUNT})
+    under, total = _V4_UNDER_COLUMN, _V4_PRODUCT_STRUCTURE_TOTAL_ROW
+    for row in range(_V4_PRODUCT_STRUCTURE_FIRST_ROW, total + 1):
+        report_formats[f"{under}{row}"] = _V4_FMT_AREA
+    report_formats.update({f"B{total}": _V4_FMT_AREA, f"C{total}": _V4_FMT_AREA,
+                           f"D{total}": _V4_FMT_AREA, f"E{total}": _V4_FMT_AMOUNT})
+    for column in "BCDEF":
+        report_formats[f"{column}73"] = _V4_FMT_AMOUNT
+
+    # Сравнение очередей — ссылки на КОНСОЛИДАТОР строка в строку: формат у
+    # каждой — формат её источника, второго ответа «как это показать» нет.
+    for cell in re.finditer(r'<x:c r="([A-Z]+\d+)"[^>]*?>\s*<x:f>([^<]*)</x:f>', report_xml):
+        link = _V4_REF_ONLY.match(html.unescape(cell.group(2)))
+        if not link or link.group(1) != "КОНСОЛИДАТОР":
+            continue
+        source = re.search(r'<x:c r="%s%s"[^>]*?\ss="(\d+)"' % (link.group(2), link.group(3)),
+                           consolidator_xml)
+        fmt_id = v4_entry_sheet.num_fmt_id(styles, int(source.group(1)) if source else None)
+        if fmt_id:
+            report_formats.setdefault(cell.group(1), v4_entry_sheet.format_code(styles, fmt_id))
+
+    # Нет ячейки — нет и числа, которое можно показать не тем форматом: без
+    # блока соцобъектов, например, колонки F расшифровки ТЭП не пишутся.
+    for coord, code in tep_formats.items():
+        tep_xml, styles, _found = _v4_with_number_format(tep_xml, coord, code, styles)
+    for coord, code in report_formats.items():
+        report_xml, styles, _found = _v4_with_number_format(report_xml, coord, code, styles)
+    return report_xml, tep_xml, styles
+
+
+def _v4_mirror_secondary_input_styles(xml: str) -> str:
+    """E:H — такая же форма ввода, как A:D, с правильным типом значения.
+
+    Копировать стиль той же СТРОКИ нельзя: справа может стоять процент, а
+    слева в этой строке — сумма или дата. Стиль Excel несёт number format,
+    поэтому визуально похожая правка превращала 3% в 0,03. Образец выбирается
+    по семейству формата, которое решает `_v4_input_format_code`, — тем же
+    решением, что и формат вводных A:D и J:M; точный формат ставит следом
+    `_v4_type_input_formats`.
+    """
+    field_meta = _v4_input_field_meta()
 
     def style_of(coord: str) -> str | None:
         found = re.search(r'<x:c r="%s"[^>]*?\ss="(\d+)"' % re.escape(coord), xml)
@@ -17598,15 +17832,10 @@ def _v4_mirror_secondary_input_styles(xml: str) -> str:
             # Engine-only значение остаётся результатом/основанием и не
             # получает стиль пользовательского ввода.
             value_style = exemplar["readonly"]
-        elif kind == "date":
-            value_style = exemplar["date"]
-        elif kind == "number" and (unit.startswith("%") or unit == "п.п."
-                                   or unit.startswith("п.п.")):
-            value_style = exemplar["pct"]
-        elif kind == "number":
-            value_style = exemplar["number"]
         else:
-            value_style = exemplar["text"]
+            code = _v4_input_format_code(kind, unit, _v4_cell_text(xml, f"F{row}"))
+            family = v4_entry_sheet.format_family(code) if code else "text"
+            value_style = exemplar.get(family, exemplar["number"])
         set_style(f"F{row}", value_style)
     return xml
 
@@ -23985,6 +24214,7 @@ def build_project_workbook(
                 label=f"{_obj_prefix}_residual_months")
         put_new(f"L{_obj_row}", text="мес.")
         put_new(f"M{_obj_row}", text=f"{_obj_prefix}_residual_months")
+        xml = _v4_mark_as_entry(xml, f"K{_obj_row}", missing)
         put(_obj_term, formula=f"{_obj_months}+$K${_obj_row}",
             label=f"срок продаж {_obj_prefix}")
 
@@ -24004,6 +24234,14 @@ def build_project_workbook(
     put_new("K82", number=round(_under_norm, 4), label="underground_area_per_space_sqm")
     put_new("L82", text="м²/место, гросс")
     put_new("M82", text="underground_area_per_space_sqm")
+    # Дописанные вводные J:M — остаточные продажи объектов, норматив места и
+    # размещение паркинга объектов — шли без стиля ввода. Лист ввода отбирает
+    # по стилю: соседи по строке уезжали, а эти ячейки ехали туда простой
+    # копией без читалки (правка на «Вводных» ничего не меняла) или вовсе
+    # оставались на «Параметрах модели» вторым местом ввода.
+    for _entry_coord in (["K82"] + [coord for _, _, coord, _ in _V4_OBJECT_PARKING_INPUT_ROWS
+                                    if coord]):
+        xml = _v4_mark_as_entry(xml, _entry_coord, missing)
     put_new("J83", text="Отказ от подземного паркинга")
     put_new("K83", text="Да" if b(x, "underground_parking_disabled") else "Нет",
             label="underground_parking_disabled")
@@ -24576,11 +24814,18 @@ def build_project_workbook(
     # из ячеек, которые помечены как пользовательский ввод, а строки E:H
     # появляются в этой же сборке выше — зеркало, вызванное раньше них,
     # красило пустое место, и блок уезжал на лист ввода без стилей.
+    report_xml, tep_xml, styles_xml = _v4_report_number_formats(
+        report_xml, tep_xml, consolidator_xml, styles_xml)
     xml = _v4_mirror_secondary_input_styles(xml)
+    xml, styles_xml = _v4_type_input_formats(xml, styles_xml, _v4_block_input_formats(
+        social_base_row, _ladder_refs, _landscaping_norm))
     xml = _v4_mark_engine_only_readonly(xml)
     xml = v4_entry_sheet.rename_sheet_refs(xml)
     try:
         xml, entry_xml, entry_report = v4_entry_sheet.build(xml, styles_xml)
+        # Читалки «Параметров модели» несут формат своей вводной — это новые
+        # стили, и книга обязана получить styles.xml, где они есть.
+        styles_xml = entry_report.get("styles_xml") or styles_xml
         # Engine-only поля снимаются ДО декодеров: декодер региона читает
         # $K$6 расчётного листа, и туда значение должно вернуться раньше.
         entry_xml, xml = _v4_strip_engine_only_from_entry(entry_xml, xml, entry_report, missing)
@@ -24638,8 +24883,10 @@ def build_project_workbook(
                 payload = xml.encode("utf-8")
             elif _dashboard and item.filename in _dashboard["parts"]:
                 payload = _dashboard["parts"][item.filename]
-            elif _dashboard and item.filename == "xl/styles.xml":
-                payload = _dashboard["styles_xml"].encode("utf-8")
+            elif item.filename == "xl/styles.xml":
+                # Стили пишутся всегда: форматы вводных и читалок дописаны в
+                # каталог до дашборда, и книга без дашборда их тоже несёт.
+                payload = (_dashboard["styles_xml"] if _dashboard else styles_xml).encode("utf-8")
             elif item.filename == report_sheet_path:
                 payload = report_xml.encode("utf-8")
             elif item.filename == tep_sheet_path:
