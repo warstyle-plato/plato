@@ -247,7 +247,7 @@ def test_the_screen_prints_the_garage_and_does_not_count_it() -> None:
     assert body, "функции сравнения очередей на странице нет"
     block = body.group(0)
     start = block.index("const objParkRows=[]")
-    piece = block[start:block.index("const rows=[")]
+    piece = block[start:block.index("const blocks=[")]
     assert "object_parking_units" in piece
     assert "object_parking_saleable_units" in piece
     assert "object_parking_under_gns" in piece
