@@ -356,13 +356,16 @@ def _npv_monthly(cashflows: list[float], annual_rate: float) -> float:
 
 
 def _payback_month(cashflows: list[float]) -> int | None:
+    """First month after which cumulative cash flow never turns negative again."""
+    cumulative_values: list[float] = []
     cumulative = 0.0
-    has_investment = False
-    for index, value in enumerate(cashflows):
+    for value in cashflows:
         cumulative += value
-        if value < 0:
-            has_investment = True
-        if has_investment and cumulative >= 0:
+        cumulative_values.append(cumulative)
+    if not any(value < 0 for value in cashflows):
+        return 0 if cashflows else None
+    for index, cumulative in enumerate(cumulative_values):
+        if cumulative >= 0 and min(cumulative_values[index:]) >= 0:
             return index
     return None
 
@@ -372,6 +375,7 @@ def _annual_summary(monthly: dict[str, list[float]], horizon: int) -> list[dict[
         "development_spend",
         "operating_revenue",
         "operating_cost",
+        "selling_cost",
         "sale_revenue",
         "terminal_value",
         "disposition_cost",
@@ -512,16 +516,12 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         weights = _sales_weights(sale_months, str(values.get("sales_curve", "bell")))
         sale_cost_pct = _pct(values, "selling_cost_pct", 2.0)
         sale_price_growth = _pct(values, "sale_price_growth_pct", 0.0)
-        weighted_amounts: list[float] = []
-        for index, weight in enumerate(weights):
-            growth = (1.0 + sale_price_growth) ** (index / 12.0)
-            weighted_amounts.append(weight * growth)
-        normalizer = sum(weighted_amounts) or 1.0
-        for index, amount_weight in enumerate(weighted_amounts):
+        for index, quantity_weight in enumerate(weights):
             month = sale_start + index
             if month >= horizon:
                 break
-            amount = gross_sales * amount_weight / normalizer
+            growth = (1.0 + sale_price_growth) ** (index / 12.0)
+            amount = gross_sales * quantity_weight * growth
             sale_revenue[month] = amount
             selling_cost[month] = amount * sale_cost_pct
 
@@ -682,14 +682,12 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         "months": list(range(horizon)),
         "development_spend": development_spend,
         "operating_revenue": operating_revenue,
-        "operating_cost": [
-            operating_cost[i] + selling_cost[i] for i in range(horizon)
-        ],
+        "operating_cost": operating_cost,
+        "selling_cost": selling_cost,
         "operating_noi": operating_noi,
         "occupancy": occupancy,
         "rate_metric": rate_metric,
         "sale_revenue": sale_revenue,
-        "selling_cost": selling_cost,
         "terminal_value": terminal_value,
         "disposition_cost": disposition_cost,
         "project_cashflow": project_cashflow,
@@ -697,6 +695,7 @@ def calculate_v2(req: CommercialRequest) -> dict[str, Any]:
         "interest": interest,
         "loan_fees": loan_fees,
         "debt_repayment": debt_repayment,
+        "debt_before_repayment": debt_before_repayment,
         "debt_balance": debt_balance,
         "equity_injection": equity_injection,
         "equity_distribution": equity_distribution,
