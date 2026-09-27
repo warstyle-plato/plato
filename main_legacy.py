@@ -43997,6 +43997,10 @@ async function sendAgentMessage(scenario){
  // и «долго» отличимо от «зависло».
  const traceId=Array.from(crypto.getRandomValues(new Uint8Array(6))).map(b=>b.toString(16).padStart(2,'0')).join('');
  const stagePoll=setInterval(async()=>{try{const r=await fetch('/agent/trace/'+traceId);const t=await r.json();if(t&&t.label&&t.stage!=='done')thinking.textContent=t.label+'…'}catch(e){}},1200);
+ // Номер принятой работы читает catch ниже, поэтому он объявлен ДО try:
+ // объявленный внутри, он в catch недоступен, и кнопка «Забрать ответ» не
+ // вставала бы никогда.
+ let resumeTrace='';
  try{
   await syncInputsForAgent();
   let data={},response=null;
@@ -44008,6 +44012,7 @@ async function sendAgentMessage(scenario){
     // номером запуска. Так длительность работы перестаёт упираться в чужие
     // сроки — nginx, Render и мобильная сеть рвали её на полпути.
     data=await awaitAgentResult(traceId,thinking,true);
+    if(data&&data.timedOut)resumeTrace=data.traceId;
     response={ok:!!data.answer,status:200};
    }
   }catch(networkError){
@@ -44015,6 +44020,7 @@ async function sendAgentMessage(scenario){
    // запрос не переживает ни nginx, ни мобильную сеть, а работа на сервере
    // при этом доходит до конца. Забираем готовый ответ коротким запросом.
    data=await awaitAgentResult(traceId,thinking);
+   if(data&&data.timedOut)resumeTrace=data.traceId;
    response={ok:!!data.answer,status:504};
   }
   if(response&&!response.ok&&(response.status===502||response.status===504)){
@@ -44023,6 +44029,7 @@ async function sendAgentMessage(scenario){
    // Сохранённая причина отказа лучше общего текста: прежде она здесь
    // терялась, и человек читал «временно не получил ответ» вместо неё.
    else if(late&&late.detail&&!data.detail)data={detail:late.detail};
+   if(late&&late.timedOut)resumeTrace=late.traceId;
   }
   thinking.remove();
   if(response&&response.status===401){
@@ -44036,10 +44043,43 @@ async function sendAgentMessage(scenario){
   const answer=String(data.answer||'Ответ не получен.');
   appendAiMessage('assistant',answer+(data.cached?'\n\n*Ответ из кэша: тот же вопрос по тем же вводным за последние 10 минут.*':''));
   if(Array.isArray(data.proposals)&&data.proposals.length)appendAiProposals(data.proposals);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
- }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error')}
+ }catch(e){thinking.remove();appendAiMessage('assistant',String(e.message||e),'error');
+  // Работа принята — значит забрать её можно: кнопка стоит там, где человек
+  // прочитал отказ, а не на соседнем экране.
+  if(resumeTrace)appendAiResumeButton(resumeTrace)}
  finally{clearInterval(stagePoll);aiBusy=false;aiSendBtn.disabled=false;aiInput.focus()}
 }
 const AI_UNAVAILABLE='Платон Сергеевич временно не получил ответ от AI-сервиса. Расчётная модель продолжает работать. Повторите вопрос через несколько секунд.';
+
+function appendAiResumeButton(traceId){
+ // «Забрать ответ» — не повтор вопроса: работа уже идёт под этим номером, и
+ // второе нажатие «Отправить» заказало бы вторую работу вместо начатой.
+ const wrap=document.createElement('div');
+ wrap.style.cssText='margin:8px 0';
+ const btn=document.createElement('button');
+ btn.className='btn dark';
+ btn.textContent='Забрать ответ';
+ const status=document.createElement('div');
+ status.style.cssText='font-size:12px;color:#777;margin-top:6px';
+ btn.onclick=async()=>{
+  btn.disabled=true;btn.textContent='Забираю…';
+  const late=await awaitAgentResult(traceId,status,true);
+  if(late&&late.answer){
+   wrap.remove();
+   const answer=String(late.answer);
+   appendAiMessage('assistant',answer);
+   if(Array.isArray(late.proposals)&&late.proposals.length)appendAiProposals(late.proposals);
+   aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
+   return;
+  }
+  btn.disabled=false;btn.textContent='Забрать ответ';
+  status.textContent=String((late&&late.detail)||AI_UNAVAILABLE);
+ };
+ wrap.appendChild(btn);
+ wrap.appendChild(status);
+ aiMessages.appendChild(wrap);
+ aiMessages.scrollTop=aiMessages.scrollHeight;
+}
 
 function appendAiLoginButton(){
  const wrap=document.createElement('div');
@@ -44091,9 +44131,14 @@ async function awaitAgentResult(traceId,thinking,accepted){
  // одинаков и когда молчит AI-сервис, и когда стоит очередь у сервиса модели,
  // и когда работа давно упала, — по нему разобрать нечего.
  const waited=Math.round((Date.now()-startedAt)/1000);
- return {detail:'Ответ не пришёл за '+Math.floor(waited/60)+' мин '+(waited%60)+' с.'
+ // Окно сдалось, а работа на сервере продолжается и ляжет под тем же номером
+ // запуска: выбросить её значит потерять посчитанное (экран владельца,
+ // 14.09.2026 — «ответ не пришёл за 6 мин 24 с»). Номер уезжает вместе с
+ // отказом, и рядом с ним встаёт кнопка «Забрать ответ».
+ return {timedOut:true,traceId:traceId,
+   detail:'Ответ не пришёл за '+Math.floor(waited/60)+' мин '+(waited%60)+' с.'
    +(lastStage?' Последняя стадия: '+lastStage+'.':'')
-   +' '+AI_UNAVAILABLE};
+   +' Работа на сервере продолжается — заберите ответ кнопкой ниже.'};
 }
 
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('aiDrawer')?.classList.contains('open'))toggleAgent(false);if((e.ctrlKey||e.metaKey)&&e.key==='Enter'&&document.getElementById('aiDrawer')?.classList.contains('open'))sendAgentMessage()});
