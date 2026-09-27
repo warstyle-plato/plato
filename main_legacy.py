@@ -42043,6 +42043,9 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-report-nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 16px}
 .phase-report-nav .btn.active{background:#111;color:#fff;border-color:#111}
 .phase-comparison-card{display:none}
+.phase-comparison-card tr.pc-block th{text-align:left;padding:16px 0 5px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#111;border-bottom:2px solid #111}
+.phase-comparison-card tr.pc-part td:first-child,.phase-comparison-card tr.pc-sub td:first-child{padding-left:22px;color:#777}
+.phase-comparison-card tr.pc-total td{font-weight:750;color:#111;border-top:1.5px solid #111}
 .phase-status{font-size:11px;color:#666;margin-top:8px}
 .object-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
 #phasing:not(.phasing-on) .phase-config-only{display:none}
@@ -50298,27 +50301,52 @@ function renderPhaseComparison(){
  phaseComparisonHead.innerHTML=`<tr><th>Показатель</th>${c.map(x=>`<th>${x.name}</th>`).join('')}<th>Свод</th></tr>`;
  const cs=cons.summary,csSale=cs.monetizable_saleable_sqm||0,csGns=cs.project_gns_sqm||0;
  const perTh=(v,a)=>a?num2(v/a/1000)+' тыс ₽/м²':'—';
- // Выручка одной строкой не говорит, чем очередь живёт: у одной весь объём в
- // квартирах, у другой треть в паркинге и ОСЗ, а маржа и риск у них разные.
- // Строки строятся по продуктам, у которых выручка есть хоть в одной очереди:
- // семь нулевых строк — это шум, а не полнота.
- const prodOrder=(cons.report&&cons.report.products||[]).map(p=>p.key);
- const prodLabel={};(cons.report&&cons.report.products||[]).forEach(p=>{prodLabel[p.key]=p.label});
- const shown=prodOrder.filter(k=>c.some(x=>Number((x.revenue_by_product||{})[k]||0)>0));
- const sumOf=(keys,x)=>keys.reduce((s,k)=>s+Number((x.revenue_by_product||{})[k]||0),0);
- const sumCons=keys=>keys.reduce((s,k)=>s+Number((cons.report.products.find(p=>p.key===k)||{}).revenue||0),0);
+ // Таблица читается блоками, и у каждой сущности блок ОДИН: места паркинга
+ // объектов стояли посреди площадей МКД, а его деньги — внизу среди ОСЗ, и
+ // итоги были неотличимы от слагаемых (владелец, 27.09.2026). Строка — это
+ // [подпись, ячейки очередей, свод, роль, группа, сырые числа]; роль «part»
+ // — слагаемое итога своей группы, «total» — итог, «sub» — «из них».
+ const products=(cons.report&&cons.report.products)||[];
+ const prodOrder=products.map(p=>p.key);
+ const prodOf=k=>products.find(p=>p.key===k)||{};
+ const labelOf=k=>prodOf(k).label||k;
+ const revOf=(x,k)=>Number((x.revenue_by_product||{})[k]||0);
+ const qtyOf=(x,k)=>Number((x.saleable_by_product||{})[k]||0);
+ // Состав групп — из движка: МКД из MKD_PRODUCTS, объекты из реестра
+ // STANDALONE_OBJECTS в его порядке. Продукт вне обоих списков (паркинг
+ // объектов) идёт в ОСЗ следом за объектами, а не теряется: новый объект
+ // реестра встаёт сюда сам.
+ const objKeys=STANDALONE_OBJECTS.map(o=>o.key);
+ const MKD=MKD_PRODUCTS.filter(k=>prodOrder.includes(k));
+ const OSZ=[...objKeys.filter(k=>prodOrder.includes(k)),
+            ...prodOrder.filter(k=>!MKD_PRODUCTS.includes(k)&&!objKeys.includes(k))];
+ // Объём к продаже по продуктам — то количество, на которое движок продаёт
+ // (м² или места, единица у продукта своя). Строка заводится вместе с числом.
+ // Паркинг объектов сюда не идёт: его места — своими строками ниже.
+ const volume=(keys,suffix)=>keys.filter(k=>c.some(x=>qtyOf(x,k)>0)).map(k=>{
+  const u=prodOf(k).unit||'';
+  return [labelOf(k)+(suffix||''),c.map(x=>num(qtyOf(x,k))+' '+u),num(Number(prodOf(k).quantity||0))+' '+u];
+ });
+ // Выручка по продуктам: семь нулевых строк — это шум, а не полнота.
  // Промежуточный итог заводится, только когда в группе больше одного продукта:
  // «Итого МКД» под единственной строкой квартир — это та же строка дважды.
- const group=(keys,label)=>{
-  const mine=shown.filter(k=>keys.includes(k));
-  const rows=mine.map(k=>[' · '+(prodLabel[k]||k),
-                          c.map(x=>money((x.revenue_by_product||{})[k]||0)),
-                          money((cons.report.products.find(p=>p.key===k)||{}).revenue||0)]);
-  if(mine.length>1)rows.push([label,c.map(x=>money(sumOf(mine,x))),money(sumCons(mine))]);
+ const revenueGroup=(keys,label,group)=>{
+  const mine=keys.filter(k=>c.some(x=>revOf(x,k)>0));
+  const rows=mine.map(k=>{
+   const v=[...c.map(x=>revOf(x,k)),Number(prodOf(k).revenue||0)];
+   return [labelOf(k),v.slice(0,-1).map(money),money(v[c.length]),'part',group,v];
+  });
+  if(mine.length>1){
+   const v=[...c.map(x=>mine.reduce((s,k)=>s+revOf(x,k),0)),
+            mine.reduce((s,k)=>s+Number(prodOf(k).revenue||0),0)];
+   rows.push([label,v.slice(0,-1).map(money),money(v[c.length]),'total',group,v]);
+  }
   return rows;
  };
- const prodRows=[...group(MKD_PRODUCTS,'Итого МКД'),
-                 ...group(prodOrder.filter(k=>!MKD_PRODUCTS.includes(k)),'Итого отдельные объекты')];
+ const revAll=[...c.map(x=>Number(x.revenue||0)),Number(cs.revenue||0)];
+ const revenueRows=[...revenueGroup(MKD,'Итого МКД','mkd'),
+                    ...revenueGroup(OSZ,'Итого ОСЗ','osz'),
+                    ['Выручка всего',revAll.slice(0,-1).map(money),money(revAll[c.length]),'total','all',revAll]];
  // Непогашенный долг очереди в таблице не стоял вовсе: очередь, не
  // рассчитавшаяся с банком, выглядела здесь так же, как закрывшая долг. А
  // после переноса у передавшей очереди ноль — без строки «передано следующей»
@@ -50348,66 +50376,87 @@ function renderPhaseComparison(){
  // заводится вместе с числом: пустая «0 мест» у проекта без ОСЗ — шум.
  // Построено и продаётся — два разных числа: у ТЦ и ФОКа места обеспечивают
  // посетителей и не продаются вовсе, у офисника продаются все, кроме
- // гостевых. Оба считает движок очереди, экран их только печатает.
+ // гостевых. Оба считает движок очереди, экран их только печатает. Стоят они
+ // в блоке объектов, рядом с их площадями, а не среди площадей МКД.
  const objParkRows=[];
  if(c.some(x=>Number(x.object_parking_units||0)>0)){
   objParkRows.push(['Паркинг отдельно стоящих объектов — мест',
    c.map(x=>num(x.object_parking_units||0)+' шт.'),
    num(cs.object_parking_units||0)+' шт.']);
-  objParkRows.push([' · из них продаётся',
+  objParkRows.push(['из них продаётся',
    c.map(x=>num(x.object_parking_saleable_units||0)+' шт.'),
-   num(cs.object_parking_saleable_units||0)+' шт.']);
-  objParkRows.push([' · подземная часть под объектами',
+   num(cs.object_parking_saleable_units||0)+' шт.','sub']);
+  objParkRows.push(['подземная часть под объектами',
    c.map(x=>num(x.object_parking_under_gns||0)+' м²'),
-   num(cs.object_parking_under_gns||0)+' м²']);
+   num(cs.object_parking_under_gns||0)+' м²','sub']);
  }
- const rows=[
-  ['Продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
-  ['Общая площадь — ГНС',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
-  ...objParkRows,
-  ['Выручка',c.map(x=>money(x.revenue)),money(cs.revenue)],
-  ...prodRows,
-  ['Цена реализации на м² продаваемой',c.map(x=>num2(x.revenue_per_saleable_th)+' тыс ₽/м²'),perTh(cs.revenue,csSale)],
-  ['Цена реализации на м² ГНС',c.map(x=>num2(x.revenue_per_gns_th)+' тыс ₽/м²'),perTh(cs.revenue,csGns)],
-  ['CAPEX',c.map(x=>money(x.capex)),money(cs.capex)],
-  ['CAPEX на м² ГНС',c.map(x=>num2(x.capex_per_gns_th)+' тыс ₽/м²'),perTh(cs.capex,csGns)],
-  ['Полные расходы на м² продаваемой',c.map(x=>num2(x.expenses_per_saleable_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csSale)],
-  ['Полные расходы на м² ГНС',c.map(x=>num2(x.expenses_per_gns_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csGns)],
-  ['Чистая прибыль на м² продаваемой',c.map(x=>num2(x.net_profit_per_saleable_th)+' тыс ₽/м²'),perTh(cs.net_profit,csSale)],
-  ['Общепроектная нагрузка — cash',c.map(x=>money(x.cash_shared_cost)),'—'],
-  // Цена метра очереди по общепроектным статьям — из движка: заданная руками
-  // доля видна здесь числом, а не только процентом в редакторе.
-  ...[['ird','ИРД и согласования'],['design','Проектирование П+РД'],['preparation','Подготовительные работы'],['utilities','Наружные сети']].map(([k,l])=>{
-   const inp=((c[0]||{}).shared_rate_inputs_th||{})[k];
-   return [`${l} — цена м² МКД очереди${inp!=null?` (вводная ${num2(inp)} тыс ₽/м²)`:''}`,c.map(x=>((x.shared_rates_th||{})[k]!=null)?num2(x.shared_rates_th[k])+' тыс ₽/м²':'—'),'—'];
-  }),
-  ['Аллоцированные общие расходы',c.map(x=>money(x.allocated_shared_cost)),'—'],
-  ['Пиковый БРИДЖ',c.map(x=>money(x.peak_bridge)),money(cons.finance.peak_bridge)],
-  ['Затраты до РНС',c.map(x=>money(x.pre_rns_costs)),money(((phaseBundle.phase_financing||{}).totals||{}).pre_rns_costs)],
-  ['Свободный cash проекта',c.map(x=>money(x.project_cash_used)),money(((phaseBundle.phase_financing||{}).totals||{}).project_cash_used)],
-  ['Собственные средства',c.map(x=>money(x.own_funds)),money(((phaseBundle.phase_financing||{}).totals||{}).own_funds)],
-  ['Новый БРИДЖ',c.map(x=>money(x.new_bridge)),money(((phaseBundle.phase_financing||{}).totals||{}).new_bridge)],
-  ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
-  // Раскрытие эскроу — событие очереди. В своде эти строки складывались под
-  // именами моментов: «Раскрытый эскроу в РВЭ» суммировал раскрытия разных
-  // лет, а «в т.ч. принято от предыдущей очереди» при трёх очередях не
-  // отвечало, от какой (владелец, 31.08.2026). Здесь у каждого числа есть
-  // очередь и дата, а в своде остались только те же величины как итоги.
-  ['Лимит ПФ',c.map(x=>money(x.pf_limit)),money(cons.finance.pf_limit)],
-  ['РВЭ очереди',c.map(x=>x.rve?dateRu(x.rve):'—'),'—'],
-  ['Долг ПФ перед раскрытием',c.map(x=>money(x.rve_pf_before_repayment)),
-   money(cons.finance.rve_pf_before_repayment)],
-  ['Раскрыто эскроу',c.map(x=>money(x.rve_escrow_release)),money(cons.finance.rve_escrow_release)],
-  ['Из него на погашение ПФ',c.map(x=>money(x.rve_pf_repayment)),money(cons.finance.rve_pf_repayment)],
-  ['Не покрыто эскроу при раскрытии',c.map(x=>money(x.rve_pf_shortfall)),
-   money(cons.finance.rve_pf_shortfall)],
-  ...debtRows,
-  ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
-  ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
-  ['Аналитическая прибыль после аллокации',c.map(x=>money(x.allocated_net_profit)),'—'],
-  ['Маржинальность',c.map(x=>pct(x.margin)),pct(cons.summary.margin)]
+ const blocks=[
+  ['mkd','Объём МКД — к продаже',volume(MKD)],
+  ['osz','Отдельно стоящие объекты',[...volume(objKeys.filter(k=>prodOrder.includes(k)),' — к продаже'),...objParkRows]],
+  ['revenue','Выручка',revenueRows],
+  ['costs','Затраты',[
+   ['CAPEX',c.map(x=>money(x.capex)),money(cs.capex)],
+   ['Полные расходы',c.map(x=>money(x.total_expenses)),money(cs.total_expenses)],
+  ]],
+  ['unit','Удельные показатели',[
+   // Удельный подписан своим делителем, и делитель стоит строкой над ним:
+   // те же числа, на которые делит движок (`monetizable_saleable_sqm`,
+   // `project_gns_sqm`), а не площадь, угаданная по заголовку.
+   ['Делитель «на м² продаваемой» — продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
+   ['Делитель «на м² ГНС» — ГНС наземная',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
+   ['Цена реализации на м² продаваемой',c.map(x=>num2(x.revenue_per_saleable_th)+' тыс ₽/м²'),perTh(cs.revenue,csSale)],
+   ['Цена реализации на м² ГНС',c.map(x=>num2(x.revenue_per_gns_th)+' тыс ₽/м²'),perTh(cs.revenue,csGns)],
+   ['CAPEX на м² ГНС',c.map(x=>num2(x.capex_per_gns_th)+' тыс ₽/м²'),perTh(cs.capex,csGns)],
+   ['Полные расходы на м² продаваемой',c.map(x=>num2(x.expenses_per_saleable_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csSale)],
+   ['Полные расходы на м² ГНС',c.map(x=>num2(x.expenses_per_gns_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csGns)],
+   ['Чистая прибыль на м² продаваемой',c.map(x=>num2(x.net_profit_per_saleable_th)+' тыс ₽/м²'),perTh(cs.net_profit,csSale)],
+   // Цена метра очереди по общепроектным статьям — из движка: заданная руками
+   // доля видна здесь числом, а не только процентом в редакторе.
+   ...[['ird','ИРД и согласования'],['design','Проектирование П+РД'],['preparation','Подготовительные работы'],['utilities','Наружные сети']].map(([k,l])=>{
+    const inp=((c[0]||{}).shared_rate_inputs_th||{})[k];
+    return [`${l} — цена м² МКД очереди${inp!=null?` (вводная ${num2(inp)} тыс ₽/м²)`:''}`,c.map(x=>((x.shared_rates_th||{})[k]!=null)?num2(x.shared_rates_th[k])+' тыс ₽/м²':'—'),'—'];
+   }),
+  ]],
+  ['finance','Финансирование',[
+   ['Пиковый БРИДЖ',c.map(x=>money(x.peak_bridge)),money(cons.finance.peak_bridge)],
+   ['Затраты до РНС',c.map(x=>money(x.pre_rns_costs)),money(((phaseBundle.phase_financing||{}).totals||{}).pre_rns_costs)],
+   ['Свободный cash проекта',c.map(x=>money(x.project_cash_used)),money(((phaseBundle.phase_financing||{}).totals||{}).project_cash_used)],
+   ['Собственные средства',c.map(x=>money(x.own_funds)),money(((phaseBundle.phase_financing||{}).totals||{}).own_funds)],
+   ['Новый БРИДЖ',c.map(x=>money(x.new_bridge)),money(((phaseBundle.phase_financing||{}).totals||{}).new_bridge)],
+   ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
+   // Раскрытие эскроу — событие очереди. В своде эти строки складывались под
+   // именами моментов: «Раскрытый эскроу в РВЭ» суммировал раскрытия разных
+   // лет, а «в т.ч. принято от предыдущей очереди» при трёх очередях не
+   // отвечало, от какой (владелец, 31.08.2026). Здесь у каждого числа есть
+   // очередь и дата, а в своде остались только те же величины как итоги.
+   ['Лимит ПФ',c.map(x=>money(x.pf_limit)),money(cons.finance.pf_limit)],
+   ['РВЭ очереди',c.map(x=>x.rve?dateRu(x.rve):'—'),'—'],
+   ['Долг ПФ перед раскрытием',c.map(x=>money(x.rve_pf_before_repayment)),
+    money(cons.finance.rve_pf_before_repayment)],
+   ['Раскрыто эскроу',c.map(x=>money(x.rve_escrow_release)),money(cons.finance.rve_escrow_release)],
+   ['Из него на погашение ПФ',c.map(x=>money(x.rve_pf_repayment)),money(cons.finance.rve_pf_repayment)],
+   ['Не покрыто эскроу при раскрытии',c.map(x=>money(x.rve_pf_shortfall)),
+    money(cons.finance.rve_pf_shortfall)],
+   ...debtRows,
+   ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
+  ]],
+  ['result','Результат',[
+   ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
+   ['Маржинальность',c.map(x=>pct(x.margin)),pct(cons.summary.margin)],
+   ['Общепроектная нагрузка — cash',c.map(x=>money(x.cash_shared_cost)),'—'],
+   ['Аллоцированные общие расходы',c.map(x=>money(x.allocated_shared_cost)),'—'],
+   ['Аналитическая прибыль после аллокации',c.map(x=>money(x.allocated_net_profit)),'—'],
+  ]],
  ];
- phaseComparisonBody.innerHTML=rows.map(r=>`<tr><td>${r[0]}</td>${r[1].map(v=>`<td>${v}</td>`).join('')}<td>${r[2]}</td></tr>`).join('');
+ // Сырые числа итогов и слагаемых уходят в разметку (`data-v`): проверка
+ // сверяет итог с суммой слагаемых по ним, а не по округлённому тексту.
+ const td=(v,raw)=>`<td${raw!=null?` data-v="${raw}"`:''}>${v}</td>`;
+ phaseComparisonBody.innerHTML=blocks.filter(b=>b[2].length).map(([key,title,list])=>
+  `<tr class="pc-block" data-block="${key}"><th colspan="${c.length+2}">${title}</th></tr>`+
+  list.map(([l,cells,tot,role,group,vals])=>
+   `<tr data-block="${key}"${role?` class="pc-${role}"`:''}${group?` data-group="${group}"`:''}><td>${l}</td>`+
+   cells.map((v,i)=>td(v,vals&&vals[i])).join('')+td(tot,vals&&vals[cells.length])+'</tr>').join('')
+ ).join('');
  renderPhaseEscrowCharts();
  // Причина, по которой долг сменил очередь — или по которой не сменил.
  // Обнулённый долг первой очереди рядом с выросшим долгом второй без этой
