@@ -46480,19 +46480,12 @@ const TERRITORY_CLEARED_LABELS={
  sports_gba_sqm:'площадь ФОКа', sports_saleable_sqm:'продаваемая ФОКа',
  parking_k1:'К1 паркинга', parking_k2:'К2 паркинга',
  parking_rail_distance_m:'расстояние до станции',
+ // Поля вторых объектов — подписи из реестра движка, подстановкой.
+ __DEVELOPAID_TERRITORY_OBJECT_LABELS__
 };
-// Имя поля объекта, у которого своей подписи выше нет (второй офисник), —
-// из реестра: «площадь: офисы 2», а не сырой ключ.
-function territoryClearedLabel(key){
- if(TERRITORY_CLEARED_LABELS[key])return TERRITORY_CLEARED_LABELS[key];
- const o=STANDALONE_OBJECTS.find(o=>key.startsWith(o.prefix+'_'));
- if(!o)return key;
- const field=key.slice(o.prefix.length+1);
- return (field==='spaces'?'машино-места':field==='saleable_sqm'?'продаваемая':'площадь')+': '+o.label;
-}
 function territoryClearedNote(){
  if(!territoryCleared.length)return '';
- const names=territoryCleared.map(territoryClearedLabel);
+ const names=territoryCleared.map(k=>TERRITORY_CLEARED_LABELS[k]||k);
  return ' <b>Обнулено вместе с участком: '+names.join(', ')
   +'.</b> Эти значения относятся к площадке, а не к вашим предпосылкам — введите заново.';
 }
@@ -53552,6 +53545,12 @@ def _js_keys(keys: Any) -> str:
 
 
 PAGE = PAGE.replace("__DEVELOPAID_TERRITORY_OBJECT_KEYS__", _js_keys(TERRITORY_OBJECT_INPUT_KEYS))
+PAGE = PAGE.replace("__DEVELOPAID_TERRITORY_OBJECT_LABELS__", "".join(
+    f"{key}:'{label}: {obj.label}',"
+    for obj in STANDALONE_OBJECTS if obj.family
+    for key, label in (((f"{obj.prefix}_spaces", "машино-места"),) if obj.measure == "spaces"
+                       else ((f"{obj.prefix}_gba_sqm", "площадь"),
+                             (f"{obj.prefix}_saleable_sqm", "продаваемая")))))
 PAGE = PAGE.replace("__DEVELOPAID_TEP_DERIVED_OBJECT_INPUTS__", _js_keys(
     key for obj in STANDALONE_OBJECTS
     for key in (obj.enabled_key, *((obj.sale_gate,) if obj.sale_gate else ()),
