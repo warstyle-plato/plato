@@ -193,7 +193,14 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
 
     digest = hashlib.sha256(body).hexdigest()
     old_digest = str(previous.get("sha256") or "")
-    changed = bool(old_digest and old_digest != digest)
+    # Отпечаток — свойство АДРЕСА. Сменили адрес в реестре (редакция 2118-ПП
+    # вместо PDF 2025 года) — прежний отпечаток другого документа, и «содержимое
+    # изменилось» было бы утверждением о смене редакции, которой не было.
+    # Снимок без адреса (до этой правки) сравнивается по-прежнему: пропустить
+    # настоящую смену хуже одного лишнего оповещения.
+    old_url = str(previous.get("source_url") or "")
+    new_source = bool(old_url and old_url != url)
+    changed = bool(old_digest and old_digest != digest and not new_source)
     terms = [str(x).strip() for x in entry.get("watch_terms", []) if str(x).strip()]
     found: list[str] = []
     missing: list[str] = []
@@ -226,7 +233,9 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
         message = "Содержимое источника изменилось — нужна ревизия редакции"
     else:
         result = "ok"
-        message = ("Источник доступен; содержимое не изменилось с предыдущей проверкой"
+        message = ("Источник сменён в реестре; зафиксирован отпечаток нового источника"
+                   if new_source
+                   else "Источник доступен; содержимое не изменилось с предыдущей проверкой"
                    if old_digest
                    else "Источник доступен; зафиксирован контрольный отпечаток")
 
@@ -238,6 +247,7 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
         "charset": charset,
         "last_modified": last_modified,
         "sha256": digest,
+        "source_url": url,
         "changed": changed,
         "found_terms": found,
         "missing_terms": missing,
