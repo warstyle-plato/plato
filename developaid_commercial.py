@@ -61,7 +61,10 @@ ASSET_DEFAULTS: dict[str, dict[str, Any]] = {
         "income_area_sqm": 22_000,
         "rent_rub_sqm_month": 4_500,
         "occupancy_pct": 92.0,
+        "rent_growth_pct": 5.0,
+        "other_income_pct": 4.0,
         "opex_pct": 18.0,
+        "leasing_cost_pct": 4.0,
         "saleable_area_sqm": 22_000,
         "sale_price_rub_sqm": 420_000,
     },
@@ -71,7 +74,9 @@ ASSET_DEFAULTS: dict[str, dict[str, Any]] = {
         "occupancy_pct": 94.0,
         "sales_rub_sqm_month": 55_000,
         "turnover_rent_pct": 8.0,
+        "rent_growth_pct": 5.0,
         "opex_pct": 22.0,
+        "marketing_pct": 2.0,
         "saleable_area_sqm": 18_000,
         "sale_price_rub_sqm": 360_000,
     },
@@ -80,8 +85,11 @@ ASSET_DEFAULTS: dict[str, dict[str, Any]] = {
         "adr_rub": 14_000,
         "occupancy_pct": 72.0,
         "other_revenue_pct": 25.0,
+        "adr_growth_pct": 5.0,
         "opex_pct": 58.0,
+        "management_fee_pct": 3.0,
         "ffe_reserve_pct": 3.0,
+        "preopening_cost_rub": 180_000_000,
         "saleable_keys": 180,
         "sale_price_rub_key": 28_000_000,
     },
@@ -107,15 +115,22 @@ FIELD_LABELS: dict[str, tuple[str, str]] = {
     "income_area_sqm": ("Арендопригодная площадь", "м²"),
     "rent_rub_sqm_month": ("Базовая аренда", "₽/м²/мес."),
     "occupancy_pct": ("Стабилизированная загрузка", "%"),
+    "rent_growth_pct": ("Индексация аренды / ставок", "%/год"),
+    "other_income_pct": ("Прочая выручка офиса", "% аренды"),
     "opex_pct": ("Операционные расходы", "% выручки"),
+    "leasing_cost_pct": ("Leasing / TI / LC", "% выручки lease-up"),
+    "marketing_pct": ("Маркетинг / promotion", "% выручки"),
     "saleable_area_sqm": ("Продаваемая площадь", "м²"),
     "sale_price_rub_sqm": ("Цена продажи", "₽/м²"),
     "sales_rub_sqm_month": ("Оборот арендаторов", "₽/м²/мес."),
     "turnover_rent_pct": ("Процент с оборота", "%"),
     "keys": ("Номерной фонд", "ключей"),
     "adr_rub": ("ADR", "₽/номер/сутки"),
+    "adr_growth_pct": ("Рост ADR", "%/год"),
     "other_revenue_pct": ("Прочая выручка", "% room revenue"),
+    "management_fee_pct": ("Management fee", "% выручки"),
     "ffe_reserve_pct": ("FF&E reserve", "% выручки"),
+    "preopening_cost_rub": ("Pre-opening", "₽"),
     "saleable_keys": ("Продаваемые номера", "шт."),
     "sale_price_rub_key": ("Цена продажи номера", "₽/номер"),
 }
@@ -182,28 +197,42 @@ def form_description() -> dict[str, Any]:
     }
 
 
-def _asset_income(asset_type: str, values: dict[str, Any], occupancy_factor: float = 1.0) -> dict[str, float]:
+def _asset_income(
+    asset_type: str,
+    values: dict[str, Any],
+    occupancy_factor: float = 1.0,
+    growth_factor: float = 1.0,
+) -> dict[str, float]:
     occupancy = min(1.0, _pct(values, "occupancy_pct", 90.0) * occupancy_factor)
     opex = min(0.95, _pct(values, "opex_pct", 20.0))
 
     if asset_type == "office":
         area = max(0.0, _f(values, "income_area_sqm"))
-        rent = max(0.0, _f(values, "rent_rub_sqm_month"))
-        gross = area * rent * occupancy
+        rent = max(0.0, _f(values, "rent_rub_sqm_month")) * growth_factor
+        base_rent = area * rent * occupancy
+        other = base_rent * _pct(values, "other_income_pct", 0.0)
+        gross = base_rent + other
         operating = gross * opex
-        return {"revenue": gross, "opex": operating, "noi": gross - operating}
+        return {
+            "revenue": gross,
+            "base_rent": base_rent,
+            "other_revenue": other,
+            "opex": operating,
+            "noi": gross - operating,
+        }
 
     if asset_type == "retail":
         area = max(0.0, _f(values, "income_area_sqm"))
-        base = area * max(0.0, _f(values, "rent_rub_sqm_month")) * occupancy
+        base = area * max(0.0, _f(values, "rent_rub_sqm_month")) * growth_factor * occupancy
         turnover = (
             area
             * max(0.0, _f(values, "sales_rub_sqm_month"))
+            * growth_factor
             * min(1.0, _pct(values, "turnover_rent_pct", 8.0))
             * occupancy
         )
         gross = max(base, turnover)
-        operating = gross * opex
+        operating = gross * min(0.95, opex + _pct(values, "marketing_pct", 0.0))
         return {
             "revenue": gross,
             "base_rent": base,
@@ -213,20 +242,23 @@ def _asset_income(asset_type: str, values: dict[str, Any], occupancy_factor: flo
         }
 
     keys = max(0.0, _f(values, "keys"))
-    adr = max(0.0, _f(values, "adr_rub"))
+    adr = max(0.0, _f(values, "adr_rub")) * growth_factor
     room_revenue = keys * adr * 365.0 / 12.0 * occupancy
     other_revenue = room_revenue * _pct(values, "other_revenue_pct", 25.0)
     gross = room_revenue + other_revenue
     operating = gross * opex
+    management_fee = gross * min(0.25, _pct(values, "management_fee_pct", 3.0))
     ffe = gross * min(0.25, _pct(values, "ffe_reserve_pct", 3.0))
     return {
         "revenue": gross,
         "room_revenue": room_revenue,
         "other_revenue": other_revenue,
         "opex": operating,
+        "management_fee": management_fee,
         "ffe_reserve": ffe,
-        "noi": gross - operating - ffe,
+        "noi": gross - operating - management_fee - ffe,
         "revpar": adr * occupancy,
+        "adr": adr,
     }
 
 
@@ -285,7 +317,12 @@ def calculate(req: CommercialRequest) -> dict[str, Any]:
     soft_cost = hard_cost * _pct(values, "soft_cost_pct", 12.0)
     contingency = hard_cost * _pct(values, "contingency_pct", 5.0)
     land_cost = max(0.0, _f(values, "land_cost_rub"))
-    development_cost = land_cost + hard_cost + soft_cost + contingency
+    preopening_cost = (
+        max(0.0, _f(values, "preopening_cost_rub"))
+        if req.asset_type == "hotel"
+        else 0.0
+    )
+    development_cost = land_cost + hard_cost + soft_cost + contingency + preopening_cost
 
     construction_months = _months(values, "construction_months", 30)
     sale_start = max(0, int(round(_f(values, "sale_start_month", 18))))
@@ -305,13 +342,20 @@ def calculate(req: CommercialRequest) -> dict[str, Any]:
     for month in range(1, construction_months + 1):
         if month < horizon:
             development_spend[month] += monthly_build
+    if preopening_cost and construction_months < horizon:
+        development_spend[construction_months] += preopening_cost
 
     operating_revenue = [0.0 for _ in range(horizon)]
     operating_opex = [0.0 for _ in range(horizon)]
     sale_revenue = [0.0 for _ in range(horizon)]
     selling_cost = [0.0 for _ in range(horizon)]
     terminal_value = [0.0 for _ in range(horizon)]
-    stabilized = _asset_income(req.asset_type, values, 1.0)
+    stabilized = _asset_income(req.asset_type, values, 1.0, 1.0)
+    growth_rate = _pct(
+        values,
+        "adr_growth_pct" if req.asset_type == "hotel" else "rent_growth_pct",
+        0.0,
+    )
 
     if req.strategy == "sale":
         total_sales = _sale_total(req.asset_type, values)
@@ -324,11 +368,17 @@ def calculate(req: CommercialRequest) -> dict[str, Any]:
         for month in range(construction_months + 1, horizon):
             months_open = month - construction_months
             ramp = min(1.0, 0.5 + 0.5 * months_open / stabilization_months)
-            economics = _asset_income(req.asset_type, values, ramp)
+            growth = (1.0 + growth_rate) ** (max(0, months_open - 1) / 12.0)
+            economics = _asset_income(req.asset_type, values, ramp, growth)
             operating_revenue[month] = economics["revenue"]
-            operating_opex[month] = economics["revenue"] - economics["noi"]
+            operating_cost = economics["revenue"] - economics["noi"]
+            if req.asset_type == "office" and months_open <= stabilization_months:
+                operating_cost += economics["revenue"] * _pct(values, "leasing_cost_pct", 0.0)
+            operating_opex[month] = operating_cost
         cap_rate = max(0.0001, _pct(values, "exit_cap_rate_pct", 11.0))
-        terminal_value[-1] = stabilized["noi"] * 12.0 / cap_rate
+        exit_growth = (1.0 + growth_rate) ** max(0.0, float(_f(values, "hold_years", 5)))
+        exit_economics = _asset_income(req.asset_type, values, 1.0, exit_growth)
+        terminal_value[-1] = exit_economics["noi"] * 12.0 / cap_rate
 
     project_cashflow = [
         operating_revenue[i]
@@ -423,6 +473,11 @@ def calculate(req: CommercialRequest) -> dict[str, Any]:
         else None
     )
     exit_value = sum(terminal_value)
+    exit_noi_annual = (
+        exit_value * max(0.0001, _pct(values, "exit_cap_rate_pct", 11.0))
+        if req.strategy == "income"
+        else 0.0
+    )
 
     report: dict[str, Any] = {
         "title": {
@@ -460,8 +515,16 @@ def calculate(req: CommercialRequest) -> dict[str, Any]:
         income_metrics: dict[str, Any] = {
             "Стабилизированный NOI, ₽/год": stabilized_noi_annual,
             "Exit value, ₽": exit_value,
+            "NOI на выходе, ₽/год": exit_noi_annual,
         }
-        if req.asset_type == "hotel":
+        if req.asset_type == "office":
+            income_metrics["Базовая аренда, ₽/м²/мес."] = _f(values, "rent_rub_sqm_month")
+            income_metrics["Загрузка, %"] = _f(values, "occupancy_pct")
+        elif req.asset_type == "retail":
+            income_metrics["Базовая аренда, ₽/мес."] = stabilized.get("base_rent")
+            income_metrics["Процент с оборота, ₽/мес."] = stabilized.get("turnover_rent")
+        elif req.asset_type == "hotel":
+            income_metrics["ADR, ₽"] = stabilized.get("adr")
             income_metrics["RevPAR, ₽"] = stabilized.get("revpar")
         report["sections"].append({"name": "Доход", "metrics": income_metrics})
     else:
@@ -495,6 +558,7 @@ def calculate(req: CommercialRequest) -> dict[str, Any]:
             "stabilized_noi_annual": stabilized_noi_annual,
             "yield_on_cost": yield_on_cost,
             "exit_value": exit_value,
+            "exit_noi_annual": exit_noi_annual,
         },
         "operating": stabilized,
         "monthly": {
