@@ -131,7 +131,8 @@ def territory_input_keys(core: Any) -> list[str]:
     match = re.search(r"const TERRITORY_INPUT_KEYS=\[(.*?)\];", core.PAGE, re.S)
     if not match:
         raise RuntimeError("на странице движка не найден TERRITORY_INPUT_KEYS")
-    return re.findall(r"'([^']+)'", match.group(1))
+    # Поля объектов подставлены движком JSON-списком — в двойных кавычках.
+    return re.findall(r"""['"]([^'"]+)['"]""", match.group(1))
 
 
 def inputs_from_glavapu(
@@ -163,10 +164,9 @@ def inputs_from_glavapu(
             inputs[key] = 0
     # Отдельные объекты КРТ выключаются вместе с их площадями: включённым
     # объект делает файл, а не память о прошлом проекте.
-    inputs["offices_enabled"] = False
-    inputs["retail_enabled"] = False
-    inputs["above_parking_enabled"] = False
-    inputs["sports_enabled"] = False
+    # Состав — реестр движка: второй офисник выключается так же, как первый.
+    for obj in core.STANDALONE_OBJECTS:
+        inputs[obj.enabled_key] = False
     inputs.update(mappings.get("inputs") or {})
     inputs["site_area_ha"] = normalized.get("site_area_ha") or 0
     # Плотность приезжает тем же файлом и не должна оставаться справочной:

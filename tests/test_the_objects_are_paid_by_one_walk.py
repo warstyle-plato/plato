@@ -51,6 +51,16 @@ def _project() -> tuple[dict, dict]:
         tep[key].update({"gns": gns, "total_area": gns * 0.94,
                          "useful": sale, "saleable": sale})
     tep["above_parking"].update({"units": 300})
+    # Вторые ОСЗ — теми же числами, что их двойники: «каждый объект» здесь —
+    # весь реестр.
+    for obj in core.STANDALONE_OBJECTS:
+        if not obj.family:
+            continue
+        twin = next(o for o in core.STANDALONE_OBJECTS if o.key == obj.family)
+        for field, value in list(x.items()):
+            if field.startswith(twin.prefix + "_"):
+                x[obj.prefix + field[len(twin.prefix):]] = value
+        tep[obj.key].update({k: v for k, v in tep[twin.key].items() if k != "label"})
     return x, tep
 
 

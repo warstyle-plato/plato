@@ -126,6 +126,15 @@ def test_the_column_is_built_from_the_rows_already_declared(built) -> None:
     column = next(cell.column_letter for cell in sheet[3]
                   if isinstance(cell.value, str) and label in cell.value)
     formula = str(sheet[f"{column}4"].value)
-    for _label, enabled_row, _units, revenue_row, *_rest in core._V4_OBJECT_PARKING:
+    # Гаражи объектов ЭТОЙ книги: второй объект пишется в книгу, только когда
+    # включён, — его строк здесь нет и быть не должно.
+    token = core._V4_BOOK_OBJECTS.set(core._v4_book_objects(
+        {**core.DEFAULT_INPUTS, **_inputs()}))
+    try:
+        rows = core._v4_object_parking()
+    finally:
+        core._V4_BOOK_OBJECTS.reset(token)
+    assert len(rows) < len(core._V4_OBJECT_PARKING), "вторых объектов в карте нет — проверять нечего"
+    for _label, enabled_row, _units, revenue_row, *_rest in rows:
         assert f"$B${enabled_row + 1}=1" in formula, formula
         assert f"$B${revenue_row}" in formula, formula

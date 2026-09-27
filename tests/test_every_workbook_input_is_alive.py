@@ -81,6 +81,17 @@ _BLOCKS = {
 }
 
 
+# Вторые ОСЗ пишутся в книгу, только когда включены: охват берёт весь реестр,
+# а не четыре объекта, перечисленных выше руками.
+_OBJECTS.update({o.enabled_key: True for o in core.STANDALONE_OBJECTS})
+# Замещённые профилем и лестницей вводные — те же у каждого объекта реестра.
+PROFILE_SUPERSEDES |= {f"{o.prefix}_share_before_rve_pct" for o in core.STANDALONE_OBJECTS}
+LADDER_SUPERSEDES |= {f"{o.prefix}_growth_pre_pct" for o in core.STANDALONE_OBJECTS}
+for _obj in core.STANDALONE_OBJECTS:
+    _BLOCKS.setdefault(f"{_obj.prefix}_sales_profile", "50%@0; 50%@12")
+    _BLOCKS.setdefault(f"{_obj.prefix}_growth_stage1_pct", 4)
+
+
 def _build(extra: dict) -> bytes:
     inputs = {**core.DEFAULT_INPUTS, **_OBJECTS, **extra}
     tep = {key: dict(row) for key, row in core.TEP_DEFAULT.items()}

@@ -100,7 +100,23 @@ def build_project_presentation(
     products: list[dict[str, Any]] = []
     by_key = {str(p.get("key")): p for p in (report.get("products") or [])}
     product_numbers = numbers.get("products") or {}
+    # Порядок — объявленный, а продукт, которого в нём нет (второй офисник),
+    # встаёт за тем, за кем его поставил расчёт, а не выпадает: выборка по
+    # списку молча теряла бы объект, который модель посчитала.
+    anchor: dict[str, str | None] = {}
+    last: str | None = None
+    for key in by_key:
+        if key in PRODUCT_ORDER:
+            last = key
+        else:
+            anchor[key] = last
+    ordered: list[str] = []
     for key in PRODUCT_ORDER:
+        if key in by_key:
+            ordered.append(key)
+            ordered.extend(k for k, at in anchor.items() if at == key)
+    ordered.extend(k for k, at in anchor.items() if at is None)
+    for key in ordered:
         product = by_key.get(key)
         if not product:
             continue
