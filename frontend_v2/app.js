@@ -1026,10 +1026,11 @@ function commercialFieldKeys() {
   if (commercial.strategy === 'income') {
     keys.push('stabilization_months', 'hold_years', 'exit_cap_rate_pct');
     if (commercial.asset === 'hotel') {
-      keys.push('keys', 'adr_rub', 'occupancy_pct', 'other_revenue_pct', 'opex_pct', 'ffe_reserve_pct');
+      keys.push('keys', 'adr_rub', 'occupancy_pct', 'adr_growth_pct', 'other_revenue_pct', 'opex_pct', 'management_fee_pct', 'ffe_reserve_pct', 'preopening_cost_rub');
     } else {
-      keys.push('income_area_sqm', 'rent_rub_sqm_month', 'occupancy_pct', 'opex_pct');
-      if (commercial.asset === 'retail') keys.push('sales_rub_sqm_month', 'turnover_rent_pct');
+      keys.push('income_area_sqm', 'rent_rub_sqm_month', 'occupancy_pct', 'rent_growth_pct', 'opex_pct');
+      if (commercial.asset === 'office') keys.push('other_income_pct', 'leasing_cost_pct');
+      if (commercial.asset === 'retail') keys.push('sales_rub_sqm_month', 'turnover_rent_pct', 'marketing_pct');
     }
   } else {
     keys.push('sale_start_month', 'sale_months', 'selling_cost_pct');
