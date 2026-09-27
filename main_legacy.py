@@ -47596,7 +47596,6 @@ function renderInputs(){
    // Порядок полей уже сгруппирован движком — страница его не пересобирает.
    let grid=null,section=null;
    const openGrid=()=>{grid=document.createElement('div');grid.className='fields';det.appendChild(grid)};
-   openGrid();
    grp[1].forEach(f=>{
      const [id,label,unit,type]=f;
      // Норматив площади двора правится в «Настройках класса»: он свойство
@@ -47607,11 +47606,10 @@ function renderInputs(){
      if(CLASS_ONLY_INPUTS.includes(id))return;
      const own=FIELD_SECTIONS[id];
      if(own&&own!==section){
-       if(section!==null||grid.childElementCount)openGrid();
        section=own;
        const head=document.createElement('div');head.className='field-section';head.textContent=own;
-       det.insertBefore(head,grid);
-     }
+       det.appendChild(head);openGrid();
+     }else if(!grid||(!own&&section)){section=null;openGrid()}
      const wrap=document.createElement('div');wrap.className='field';wrap.dataset.field=id;
      // Класс задаёт не только деньги, и об этом сказано у самого поля:
      // одиннадцать вводных ставит выбранный класс, а на экране они
