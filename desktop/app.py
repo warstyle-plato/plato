@@ -138,7 +138,7 @@ def create_app(core: Any, store: Store, token: str, origin: str) -> FastAPI:
     @app.get("/api/bootstrap")
     def bootstrap():
         return {"engine_version": core.VERSION,
-                "desktop_version": "0.2",
+                "desktop_version": "0.3-beta",
                 "form": {**developaid_v2_form.form_description(core),
                          "blocks": [{"key": "site", "kind": "site", "title": "Участок",
                                      "hint": "Найдите участок по кадастровому номеру или адресу. Для поиска нужен интернет."},
