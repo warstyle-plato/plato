@@ -48,7 +48,7 @@ __DEVELOPAID_PLATO_DRAWER_CSS__
 .askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:normal;overflow:hidden}.money>b,.money>.fit{white-space:nowrap;display:block}.money .source{white-space:normal;overflow-wrap:anywhere;line-height:1.25}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px;position:sticky;top:12px;align-self:start;max-height:calc(100vh - 24px);overflow:auto;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#b4b8be var(--soft)}.side::-webkit-scrollbar{width:11px}.side::-webkit-scrollbar-track{background:var(--soft)}.side::-webkit-scrollbar-thumb{background:#b4b8be;border:2px solid var(--soft)}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.actions.minor{margin-top:-6px}.actions.minor button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.askcard h2{font-size:16px;margin:0 0 6px}.askhint{color:var(--muted);font-size:12px;margin-bottom:10px}.chips{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}.chips button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}#askText{width:100%;min-height:74px;padding:9px 11px;resize:vertical;font:inherit}#askOut{margin-top:10px}.plato-answer{border-left:3px solid var(--accent);background:var(--soft);padding:11px 13px;font-size:13px;line-height:1.55;white-space:pre-wrap}details.fold{border:1px solid var(--line);margin-top:10px}details.fold>summary{cursor:pointer;padding:9px 11px;font-size:12px;font-weight:750;color:var(--muted);list-style:none;display:flex;justify-content:space-between;gap:10px}details.fold>summary::-webkit-details-marker{display:none}details.fold>summary:after{content:'развернуть';font-weight:500}details.fold[open]>summary:after{content:'свернуть'}details.fold>summary:hover{background:var(--soft)}.foldbody{padding:0 11px 11px}.ratio-row{display:grid;grid-template-columns:1fr auto;gap:7px;margin-bottom:7px}.brand{display:block;line-height:0}.legal-footer{display:flex;gap:18px;flex-wrap:wrap;margin:0 34px;padding:14px 0 22px;font-size:11px;color:var(--muted);border-top:1px solid var(--line)}.legal-footer a{color:var(--muted)}.plato-footer{margin:0;padding:0 34px;line-height:0}.plato-footer img{width:100%;height:auto;display:block}tr.family>td:first-child{border-left:3px solid var(--accent)}tr.family>td{background:var(--panel)}tr.sub>td:first-child{padding-left:30px}tr.sub>td{background:var(--soft)}.famcount{display:inline-flex;padding:3px 6px;margin-left:7px;background:var(--accent);color:#fff;font-size:11px;font-weight:700;vertical-align:2px}.money{font-weight:750;white-space:nowrap}.pbatt{position:relative;display:block;height:14px;margin-top:4px;border:1px solid var(--line);border-radius:0;background:var(--soft);overflow:hidden}.pbatt-fill{position:absolute;left:0;top:0;height:100%}.pbatt-pct{position:absolute;left:5px;top:0;font-size:10px;font-weight:750;color:#18202a;text-shadow:0 0 3px #fff,0 0 3px #fff}.side{padding:16px;min-height:420px;position:sticky;top:12px;align-self:start;max-height:calc(100vh - 24px);overflow:auto;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:#b4b8be var(--soft)}.side::-webkit-scrollbar{width:11px}.side::-webkit-scrollbar-track{background:var(--soft)}.side::-webkit-scrollbar-thumb{background:#b4b8be;border:2px solid var(--soft)}.side h2{font-size:18px;margin:0 0 4px}.side .sub{color:var(--muted);font-size:12px;margin-bottom:14px}.empty{display:grid;place-items:center;color:var(--muted);min-height:360px;text-align:center;padding:25px}.kv{display:grid;grid-template-columns:145px 1fr;gap:7px 10px;padding:10px 0;border-bottom:1px solid var(--line)}.kv div:nth-child(odd){color:var(--muted)}.actions{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0}.actions.minor{margin-top:-6px}.actions.minor button{min-height:34px;font-weight:500;font-size:12px;padding:0 10px;border-color:var(--line)}.notice{border-radius:0;padding:10px 11px;background:var(--soft);font-size:12px;margin:10px 0}.notice.warn{color:var(--warn)}.section{margin-top:16px}.section h3{font-size:13px;margin:0 0 7px}.krtgroup{margin:18px -16px 0;border-top:1px solid var(--line)}.krtgroup-head{display:flex;align-items:baseline;gap:9px;padding:9px 16px;background:#e6e6e0;border-bottom:1px solid var(--line)}.krtgroup-head b{font-size:13px}.krtgroup-step{display:inline-flex;flex:0 0 auto;width:19px;height:19px;align-items:center;justify-content:center;background:var(--accent);color:#fff;font-size:11px;font-weight:750}.krtgroup-note{font-size:11px;color:var(--muted);margin-left:auto;text-align:right}.krtgroup-body{padding:2px 16px 16px}.krtgroup.g2 .krtgroup-head{background:#e2e9ee}.krtgroup.g3 .krtgroup-head{background:#ece7dd}.krtgroup-body>.section:first-child{margin-top:12px}.items{display:grid;gap:6px}.item{border:1px solid var(--line);border-radius:0;padding:8px 9px;font-size:12px}.item b{display:block;margin-bottom:2px}.source{font-size:11px;color:var(--muted);margin-top:4px}.source.warn{color:var(--warn)}.status{font-size:12px;color:var(--muted);margin-left:auto}.spinner{display:inline-block;width:13px;height:13px;border:2px solid var(--line);border-top-color:var(--text);border-radius:50%;animation:spin .7s linear infinite;vertical-align:-2px;margin-right:5px}@keyframes spin{to{transform:rotate(360deg)}}@media(max-width:950px){.filters,.filters.wide{grid-template-columns:repeat(2,minmax(0,1fr))}.stats{grid-template-columns:1fr 1fr}.layout{grid-template-columns:1fr}.side{min-height:0;position:static;max-height:none;overflow:visible}.brandbar{padding:14px 16px 0}.head{padding:14px 16px 10px}.tabs{padding:0 16px;gap:18px}.content{padding:16px 16px 28px}.plato-footer{padding:0 16px}.legal-footer{margin:0 16px}}
 @media(max-width:640px){.filters,.filters.wide{grid-template-columns:minmax(0,1fr)}.stats{grid-template-columns:minmax(0,1fr)}.filter-actions{justify-content:stretch}.filter-actions button{flex:1 1 100%}.kv{grid-template-columns:minmax(0,1fr)}.kv div:nth-child(odd){padding-top:4px}}
 .tabs{display:flex;gap:28px;padding:0 34px;border-bottom:1px solid var(--line);overflow:auto;background:var(--panel)}.tabs .tab{border:0;background:none;min-height:0;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent}.tabs .tab.active{color:#000;border-color:#000}.hidden{display:none!important}.fit{display:inline-flex;align-items:center;gap:6px;font-weight:750;white-space:nowrap}.fit .light{width:10px;height:10px;border-radius:50%;background:var(--muted);}.fit.ok{color:var(--ok)}.fit.ok .light{background:var(--ok)}.fit.warn{color:var(--warn)}.fit.warn .light{background:var(--warn)}.fit.bad{color:var(--bad)}.fit.bad .light{background:var(--bad)}
-.multi{position:relative;min-width:0}.multi-toggle{width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px;position:relative}.multi-toggle:after{content:'⌄';position:absolute;right:11px;font-size:16px;line-height:1}.multi-toggle[aria-expanded="true"]:after{content:'⌃'}.multi-menu{position:absolute;z-index:20;top:calc(100% + 6px);left:0;width:max-content;min-width:100%;max-width:min(320px,80vw);padding:8px;border:1px solid var(--line);border-radius:0;background:var(--panel);}.multi-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:2px 4px 7px;font-size:12px;font-weight:750;color:var(--muted)}.multi-clear{min-height:28px;padding:0 7px;border:0;background:transparent;color:var(--muted);font-size:12px}.multi-options{display:grid;gap:2px;max-height:310px;overflow:auto}.multi-option{display:flex;align-items:center;gap:9px;min-height:36px;padding:5px 7px;border-radius:0;cursor:pointer}.multi-option:hover{background:var(--soft)}.multi-option input{flex:0 0 auto;width:17px;height:17px;min-height:0;margin:0;padding:0;accent-color:var(--accent)}
+.multi{position:relative;min-width:0}.multi-toggle{width:100%;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:30px;position:relative}.multi-toggle:after{content:'⌄';position:absolute;right:11px;font-size:16px;line-height:1}.multi-toggle[aria-expanded="true"]:after{content:'⌃'}.multi-menu{position:absolute;z-index:20;top:calc(100% + 6px);left:0;width:max-content;min-width:100%;max-width:min(320px,80vw);padding:8px;border:1px solid var(--line);border-radius:0;background:var(--panel);}.multi-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:2px 4px 7px;font-size:12px;font-weight:750;color:var(--muted)}.multi-clear{min-height:28px;padding:0 7px;border:0;background:transparent;color:var(--muted);font-size:12px}.multi-options{display:grid;gap:2px;max-height:310px;overflow:auto}.multi-option{display:flex;align-items:center;gap:9px;min-height:36px;padding:5px 7px;border-radius:0;cursor:pointer}.multi-option:hover{background:var(--soft)}.multi-group{font-weight:600}.multi-child{padding-left:30px}.noise-sep td{background:var(--soft);color:var(--muted,#666);font-weight:600;cursor:default}.multi-option input{flex:0 0 auto;width:17px;height:17px;min-height:0;margin:0;padding:0;accent-color:var(--accent)}
 .krt-proto-modal{position:fixed;inset:0;z-index:120;background:rgba(18,24,30,.48);padding:22px;display:grid;place-items:center}
 .krt-proto-shell{position:relative;width:min(1540px,calc(100vw - 44px));height:calc(100vh - 44px);background:#fff;border:1px solid var(--line)}
 .krt-proto-shell iframe{width:100%;height:100%;border:0;background:#f4f5f6}
@@ -163,7 +163,7 @@ __DEVELOPAID_CONTOUR__
         <div class="multi-options" id="auctionKindOptions"></div>
       </div>
     </div>
-    <select id="noise"><option value="0">Интересные · данные заполнены</option><option value="1">Показать неполные и шум</option></select>
+    <select id="noise"><option value="0">Интересные · данные заполнены</option><option value="1">Интересные + неполные и шум</option></select>
     <input id="search" placeholder="Адрес / кадастр / лот">
     <button id="refresh" class="primary">Обновить</button><button id="auctionExport">Выгрузить Excel</button>
   </div>
@@ -203,11 +203,18 @@ __DEVELOPAID_LAND_MAP_DIALOG__
 __DEVELOPAID_LAND_MAP_KIT__
 const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,auctionKinds:new Set(),krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRules:0,krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'name',dir:1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()},egrnStore:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
-const AUCTION_KIND_OPTIONS=[
- ['land','— Земля'],['building','— Объекты'],['krt','КРТ'],
- ['land_sale','Продажа земли'],['land_lease','Аренда земли'],['property_complex','ЗИК'],
- ['equity_stake','Доля в юрлице'],['unfinished','Незавершёнка']
+// Типы лота — дерево, а не плоский список: «Земля» и «Объекты» — группы, под
+// ними их виды. Плоский список ставил группу и её же вид на один уровень
+// («Земля», потом снова «Продажа земли»), и владелец читал это как повтор
+// (27.09.2026). Состав групп — тот же, что `LAND_KINDS`/`BUILDING_KINDS`
+// сервера (поле `subject`); в выборе хранятся только конечные виды.
+const AUCTION_KIND_TREE=[
+ ['land','Земля',[['land_sale','Продажа земли'],['land_lease','Аренда земли'],['krt','КРТ']]],
+ ['building','Объекты',[['property_complex','ЗИК'],['unfinished','Незавершёнка']]],
+ ['equity_stake','Доля в юрлице',[]],
+ ['other','Прочее',[]]
 ];
+const AUCTION_KIND_OPTIONS=AUCTION_KIND_TREE.flatMap(([value,name,kids])=>kids.length?kids:[[value,name]]);
 const $=id=>document.getElementById(id);
 const KRT_EARLY_ONLY=new URLSearchParams(location.search).get('early')==='1';
 // Ноль и «цены нет» — разные вещи. Number(null) равен нулю, и лот без
@@ -252,25 +259,49 @@ function lotDeadline(l){return shortDate(l&&l.application_deadline_iso,l&&l.appl
 const ORIGIN_LABEL={city:'Городские',bankruptcy:'Банкротные',seized:'Арест и ИП',other:'Прочие'};
 function lotMatchesKind(lot,wanted){
  if(wanted==='all')return true;
- if(wanted==='land'||wanted==='building')return (lot.subject||'')===wanted;
+ if(wanted==='other')return !AUCTION_KIND_OPTIONS.some(([value])=>value!=='other'&&value===lot.lot_kind);
  return lot.lot_kind===wanted;
 }
+// Подпись кнопки: целиком выбранная группа называется группой, а не списком видов.
+function auctionKindPicked(){
+ return AUCTION_KIND_TREE.flatMap(([value,name,kids])=>{
+  if(!kids.length)return state.auctionKinds.has(value)?[name]:[];
+  const on=kids.filter(([kid])=>state.auctionKinds.has(kid));
+  return on.length===kids.length?[name]:on.map(([,kidName])=>kidName);
+ });
+}
 function updateAuctionKindLabel(){
- const picked=AUCTION_KIND_OPTIONS.filter(([value])=>state.auctionKinds.has(value));
- const button=$('auctionKindToggle'),labels=picked.map(([,label])=>label.replace(/^—\s*/,''));
+ const button=$('auctionKindToggle'),labels=auctionKindPicked();
  button.textContent=!labels.length?'Все типы':labels.length<=3?labels.join(', '):`${labels.slice(0,2).join(', ')} +${labels.length-2}`;
  button.title=labels.length?labels.join(', '):'Все типы';
  $('auctionKindClear').disabled=!labels.length;
 }
+function syncAuctionKindBoxes(){
+ $('auctionKindOptions').querySelectorAll('input').forEach(input=>{
+  const kids=(input.dataset.kids||'').split(',').filter(Boolean);
+  if(!kids.length){input.checked=state.auctionKinds.has(input.value);return}
+  const on=kids.filter(kid=>state.auctionKinds.has(kid)).length;
+  input.checked=on===kids.length;input.indeterminate=on>0&&on<kids.length;
+ });
+}
 function populateAuctionKinds(){
  const options=$('auctionKindOptions');options.innerHTML='';
- AUCTION_KIND_OPTIONS.forEach(([value,name])=>{
+ const row=(value,name,kids,child)=>{
   const label=document.createElement('label'),input=document.createElement('input'),text=document.createElement('span');
-  label.className='multi-option';input.type='checkbox';input.value=value;input.checked=state.auctionKinds.has(value);text.textContent=name;
-  input.onchange=()=>{input.checked?state.auctionKinds.add(value):state.auctionKinds.delete(value);updateAuctionKindLabel();filter()};
+  label.className='multi-option'+(child?' multi-child':kids.length?' multi-group':'');
+  input.type='checkbox';input.value=value;if(kids.length)input.dataset.kids=kids.map(([kid])=>kid).join(',');
+  text.textContent=name;
+  input.onchange=()=>{
+   (kids.length?kids.map(([kid])=>kid):[value]).forEach(kid=>input.checked?state.auctionKinds.add(kid):state.auctionKinds.delete(kid));
+   syncAuctionKindBoxes();updateAuctionKindLabel();filter();
+  };
   label.append(input,text);options.appendChild(label);
+ };
+ AUCTION_KIND_TREE.forEach(([value,name,kids])=>{
+  row(value,name,kids,false);
+  kids.forEach(([kid,kidName])=>row(kid,kidName,[],true));
  });
- updateAuctionKindLabel();
+ syncAuctionKindBoxes();updateAuctionKindLabel();
 }
 function closeAuctionMenus(){
  document.querySelectorAll('#auctionFilters .multi-menu').forEach(menu=>menu.classList.add('hidden'));
@@ -280,7 +311,7 @@ function bindAuctionKindFilter(){
  const button=$('auctionKindToggle'),menu=$('auctionKindMenu'),clear=$('auctionKindClear');
  button.onclick=event=>{event.stopPropagation();const open=menu.classList.contains('hidden');closeAuctionMenus();menu.classList.toggle('hidden',!open);button.setAttribute('aria-expanded',String(open))};
  menu.onclick=event=>event.stopPropagation();
- clear.onclick=()=>{state.auctionKinds.clear();$('auctionKindOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateAuctionKindLabel();filter()};
+ clear.onclick=()=>{state.auctionKinds.clear();syncAuctionKindBoxes();updateAuctionKindLabel();filter()};
  document.addEventListener('click',closeAuctionMenus);
  document.addEventListener('keydown',event=>{if(event.key==='Escape'){closeAuctionMenus();button.focus()}});
 }
@@ -475,13 +506,16 @@ function lotFamilies(list){
   const prices=f.lots.map(l=>Number(l.current_price_rub??l.start_price_rub)).filter(v=>Number.isFinite(v));
   const areas=f.lots.map(l=>Number(l.land_area_sqm)||Number(l.building_area_sqm)||0).filter(v=>v>0);
   return {key:f.key,lots:f.lots,count:f.lots.length,collapsed:f.lots.length>=FAMILY_MIN,
+   // Основная подборка — решение сервера (`main_selection`); нет поля — не
+   // «шум», а «не сказано», и лот остаётся наверху.
+   main:f.lots.some(l=>l.main_selection!==false),
    lead:f.lots[best],score:scores[best],
    priceMin:prices.length?Math.min.apply(null,prices):null,
    priceMax:prices.length?Math.max.apply(null,prices):null,
    areaMin:areas.length?Math.min.apply(null,areas):null,
    areaMax:areas.length?Math.max.apply(null,areas):null,
    docs:f.lots.reduce((sum,l)=>sum+((l.documents||[]).length),0)};
- }).sort((a,b)=>b.score.score-a.score.score||b.count-a.count);
+ }).sort((a,b)=>(b.main-a.main)||b.score.score-a.score.score||b.count-a.count);
 }
 function lotRange(min,max,fmt){
  if(min===null||min===undefined)return '—';
@@ -532,7 +566,18 @@ function renderRows(){
  const body=$('rows'),empty=$('tableEmpty'),fams=state.families||[];
  body.innerHTML='';
  empty.style.display=fams.length?'none':'grid';
+ // «С шумом» добавляет лоты к интересным, а не заменяет их: интересные идут
+ // первыми, добавленные — под чертой со своим числом (владелец, 27.09.2026:
+ // в общем списке по баллу интересные терялись среди ста шумных).
+ const extra=fams.filter(f=>!f.main).reduce((sum,f)=>sum+f.count,0);
+ let marked=false;
  fams.forEach(f=>{
+  if(!f.main&&!marked){
+   marked=true;
+   const sep=document.createElement('tr');sep.className='noise-sep';
+   sep.innerHTML=`<td colspan="99">Вне основной подборки — неполные и шум: ${extra}. Выше — ${fams.filter(x=>x.main).reduce((sum,x)=>sum+x.count,0)} интересных.</td>`;
+   body.appendChild(sep);
+  }
   if(!f.collapsed){
    f.lots.forEach(l=>{const tr=document.createElement('tr');tr.innerHTML=lotRowHtml(l);tr.onclick=()=>selectLot(l);body.appendChild(tr)});
    return;
