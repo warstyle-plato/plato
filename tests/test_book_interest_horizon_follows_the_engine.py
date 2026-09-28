@@ -39,6 +39,12 @@ import main_legacy as core  # noqa: E402
 
 import v4_inputs  # noqa: E402
 
+
+def _serial(value) -> float:
+    """Дата горизонта — ячейка с форматом даты: openpyxl отдаёт её датой."""
+    from openpyxl.utils.datetime import to_excel
+    return float(to_excel(value)) if hasattr(value, "year") else float(value)
+
 openpyxl = pytest.importorskip("openpyxl")
 
 BASE = {**core.DEFAULT_INPUTS, "purchase_price_mln": 4300, "land_rights_cost_mln": 0,
@@ -84,13 +90,13 @@ def evaluated(**overrides):
 def test_the_engine_horizon_reaches_the_workbook():
     book = workbook()
     assert v4_inputs.inputs(book)["D71"].value == "engine_horizon_end"
-    assert float(v4_inputs.inputs(book)["B71"].value) > 0
+    assert _serial(v4_inputs.inputs(book)["B71"].value) > 0
 
 
 def test_the_horizon_follows_the_last_cash_flow():
     """Садик строится дольше — горизонт длиннее, и книга должна это видеть."""
-    without = float(v4_inputs.inputs(workbook(kindergarten_places=0))["B71"].value)
-    with_school = float(v4_inputs.inputs(workbook(school_places=500))["B71"].value)
+    without = _serial(v4_inputs.inputs(workbook(kindergarten_places=0))["B71"].value)
+    with_school = _serial(v4_inputs.inputs(workbook(school_places=500))["B71"].value)
     assert with_school > without
 
 
@@ -98,7 +104,7 @@ def test_the_written_date_is_the_engine_horizon():
     operating = core.build_operating_model(
         {**core.DEFAULT_INPUTS, **BASE}, tep_of_a_real_project(), [])
     expected = core._v4_excel_serial(operating["end"].isoformat())
-    assert float(v4_inputs.inputs(workbook())["B71"].value) == pytest.approx(expected)
+    assert _serial(v4_inputs.inputs(workbook())["B71"].value) == pytest.approx(expected)
 
 
 # --- проценты идут, пока идёт горизонт ------------------------------------------
