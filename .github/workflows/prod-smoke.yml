@@ -1,0 +1,135 @@
+name: Проверка прода после выката
+
+# Тест PR проверяет код, а не то, что видит пользователь: тизер КРТ Нагатино
+# рисовал 10 участков из 20, из выгрузки торгов пропали примечания, а CI был
+# зелёный. Здесь готовые поверхности живого прода проверяются на эталонном
+# проекте (scripts/prod_smoke_reference.json) сразу после выката.
+#
+# Только чтение и по одному запросу на поверхность: проекты пользователей не
+# трогаются, нагрузка — один эталонный проект.
+
+# Запускает её последний шаг сборки (build-yandex.yml, задание «Проверка прода
+# после выката»), а не `workflow_run`: сборку диспатчит release-merge токеном
+# GITHUB_TOKEN, а прогоны, порождённые этим токеном, `workflow_run` не будят —
+# ни один выпуск не проверился сам, пока триггер стоял здесь. Диспатч же от
+# GITHUB_TOKEN прогон создаёт. Второго триггера нет, чтобы один выпуск не
+# проверялся дважды и прогоны не снимали друг друга через concurrency.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Адрес прода
+        default: https://developaid.ru
+      expect_commit:
+        description: Коммит, который должен отдавать /health (пусто — не ждать)
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: prod-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Поверхности прода
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      BASE: ${{ github.event.inputs.base || 'https://developaid.ru' }}
+      EXPECT_COMMIT: ${{ github.event.inputs.expect_commit }}
+    steps:
+      # Код проверки — с ветки, на которой запущен диспатч (сборка шлёт его
+      # на main), а не из ожидаемого коммита: у прогона есть секреты и право
+      # писать issue. Ожидаемый коммит — только строка, которую ждём в /health.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install openpyxl pypdf playwright
+
+      - name: Браузер для страницы «Итог»
+        run: python -m playwright install --with-deps chromium
+
+      - name: Последний слитый PR
+        id: pr
+        run: |
+          # Номер из заголовка merge/squash-коммита: «… (#541)».
+          last=$(git log -1 --format=%s | grep -oE '#[0-9]+' | tail -1 || true)
+          echo "last_pr=${last:-не определён} ($(git log -1 --format=%h))" >> "$GITHUB_OUTPUT"
+
+      - name: Проверка прода
+        id: smoke
+        env:
+          LAST_PR: ${{ steps.pr.outputs.last_pr }}
+          # Тизер и экономика «Итога» — за входом; без ключа они пропускаются
+          # с этой причиной в итоге, а не зеленеют.
+          PROD_SMOKE_ADMIN_KEY: ${{ secrets.DEVELOPAID_ADMIN_KEY }}
+        run: |
+          args=(--base "$BASE" --summary smoke-summary.md --json smoke-result.json
+                --out smoke-out --last-pr "$LAST_PR")
+          if [ -n "$EXPECT_COMMIT" ]; then
+            # Не проверять старый образ: ждём, пока прод отдаст этот коммит
+            # (а если /health commit пуст — версию из этого же коммита).
+            args+=(--wait-commit "$EXPECT_COMMIT" --wait-timeout 2400)
+            # Запасная сверка по версии (если /health не отдаёт commit) —
+            # только когда на руках тот самый коммит: иначе версия чужая.
+            if [ "$(git rev-parse HEAD)" = "$EXPECT_COMMIT" ]; then
+              version=$(grep -m1 '^VERSION = ' main_legacy.py | cut -d'"' -f2)
+              args+=(--wait-version "$version")
+            fi
+          fi
+          set +e
+          python3 scripts/prod_smoke.py "${args[@]}"
+          code=$?
+          set -e
+          cat smoke-summary.md >> "$GITHUB_STEP_SUMMARY"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      - name: Результат прогона
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-smoke
+          path: |
+            smoke-summary.md
+            smoke-result.json
+            smoke-out/
+          if-no-files-found: ignore
+
+      - name: Issue prod-regression
+        if: failure() && steps.smoke.outputs.code != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.existsSync('smoke-summary.md')
+              ? fs.readFileSync('smoke-summary.md', 'utf8')
+              : 'Итог прогона не записан — смотрите журнал.';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const label = 'prod-regression';
+            try {
+              await github.rest.issues.getLabel({...context.repo, name: label});
+            } catch (e) {
+              await github.rest.issues.createLabel({...context.repo, name: label, color: 'b60205',
+                description: 'Проверка прода после выката нашла поломку'});
+            }
+            const open = await github.rest.issues.listForRepo({...context.repo, state: 'open', labels: label, per_page: 1});
+            if (open.data.length) {
+              // Открытая уже есть — дописываем прогон туда, новую не плодим.
+              await github.rest.issues.createComment({...context.repo, issue_number: open.data[0].number,
+                body: `Снова красно: ${run}\n\n${body}`});
+              return;
+            }
+            await github.rest.issues.create({...context.repo, title: 'Прод: проверка поверхностей после выката красная',
+              labels: [label], body: `Прогон: ${run}\n\n${body}`});

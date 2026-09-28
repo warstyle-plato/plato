@@ -359,8 +359,12 @@ def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
         row["saleable"] = 0
         row["transfer"] = 0
 
-    elif key == "above_parking" and field in {"units", "gns", "total_area"}:
-        per = _per_space(core, inputs, "above_parking_area_per_space_sqm")
+    elif (key in {o.key for o in core.STANDALONE_OBJECTS if o.measure == "spaces"}
+          and field in {"units", "gns", "total_area"}):
+        # Объект, который меряется местами (наземный паркинг и второй такой же),
+        # — по своей площади на место, из реестра, а не по имени строки.
+        prefix = next(o.prefix for o in core.STANDALONE_OBJECTS if o.key == key)
+        per = _per_space(core, inputs, f"{prefix}_area_per_space_sqm")
         if field == "units":
             area = value * per
             row["gns"] = _round_area(area)

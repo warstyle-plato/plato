@@ -50,6 +50,16 @@ LOADED = {**core.DEFAULT_INPUTS, "purchase_price_mln": 1000,
           "above_parking_sales_profile": "80%@0; 20%@6",
           "growth_stage1_pct": 10, "offices_growth_stage1_pct": 8,
           "retail_growth_stage1_pct": 5, "above_parking_growth_stage1_pct": 4}
+# Остальные объекты реестра (вторые ОСЗ) — включены со своими профилем и
+# лестницей: второй объект пишется в книгу, только когда он в проекте, и
+# перечисленные руками четыре объекта оставили бы его блок за бортом охвата.
+for _obj in core.STANDALONE_OBJECTS:
+    LOADED.setdefault(_obj.enabled_key, True)
+    LOADED[_obj.enabled_key] = True
+    if not LOADED.get(f"{_obj.prefix}_sales_profile"):
+        LOADED[f"{_obj.prefix}_sales_profile"] = "60%@0; 40%@12"
+    if not LOADED.get(f"{_obj.prefix}_growth_stage1_pct"):
+        LOADED[f"{_obj.prefix}_growth_stage1_pct"] = 5
 
 
 @pytest.fixture(scope="module")

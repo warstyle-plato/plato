@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
 import sys
 from pathlib import Path
 
@@ -47,6 +49,72 @@ os.environ.setdefault("NORMATIVES_WATCH", "0")
 # ВСЕХ страниц приложения, — и тридцать девять запросов в НСПД из теста это та
 # же фоновая работа приложения, которой в прогоне быть не должно.
 os.environ.setdefault("NAGATINO_EGRN_READ", "0")
+
+
+# Внешней сети в прогоне нет. Браузерные проверки поднимают приложение нитью в
+# этом же процессе, страница при открытии спрашивает сервер, а сервер — НСПД
+# (25 с на запрос) и ЦБ; проверка ссылок нормативов читала госсайты по 2,5 МБ.
+# С раннера GitHub эти хосты то отвечают, то молчат до таймаута, и одна доля
+# шла 64 минуты, а другая упиралась в потолок 80 — без единого упавшего теста.
+# Ответ чужого сервера — не предмет проверки: соединение с ним обрывается
+# сразу, код идёт своей веткой «источник недоступен», как в жизни при отказе.
+# Попытка не молчит: хост и тест попадают в сводку конца прогона. Живую сеть
+# для ручной разведки включает TESTS_ALLOW_NETWORK=1.
+_EXTERNAL_ATTEMPTS: dict[str, set[str]] = {}
+
+
+def _is_local(address) -> bool:
+    if not isinstance(address, tuple) or not address:
+        return True
+    host = str(address[0])
+    if host in {"localhost", ""}:
+        return True
+    try:
+        ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_unspecified
+
+
+def _refuse_external(sock, address) -> None:
+    if sock.family not in (socket.AF_INET, socket.AF_INET6) or _is_local(address):
+        return
+    where = f"{address[0]}:{address[1]}"
+    test = os.environ.get("PYTEST_CURRENT_TEST", "(вне теста)").split(" (", 1)[0]
+    _EXTERNAL_ATTEMPTS.setdefault(where, set()).add(test)
+    raise ConnectionRefusedError(
+        f"тесты не ходят во внешнюю сеть: {where} (tests/conftest.py)")
+
+
+if os.environ.get("TESTS_ALLOW_NETWORK", "").strip() not in {"1", "true", "yes"}:
+    # Прокси на localhost провёл бы запрос наружу мимо запрета: соединение
+    # с ним локальное, а ответ — чужой.
+    for _name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        os.environ.pop(_name, None)
+        os.environ.pop(_name.lower(), None)
+    _socket_connect = socket.socket.connect
+    _socket_connect_ex = socket.socket.connect_ex
+
+    def _connect(self, address):
+        _refuse_external(self, address)
+        return _socket_connect(self, address)
+
+    def _connect_ex(self, address):
+        _refuse_external(self, address)
+        return _socket_connect_ex(self, address)
+
+    socket.socket.connect = _connect
+    socket.socket.connect_ex = _connect_ex
+
+
+def pytest_terminal_summary(terminalreporter):
+    if not _EXTERNAL_ATTEMPTS:
+        return
+    terminalreporter.section("внешняя сеть: соединения оборваны")
+    for where, tests in sorted(_EXTERNAL_ATTEMPTS.items()):
+        terminalreporter.write_line(
+            f"{where}: {len(tests)} тест(ов), напр. {sorted(tests)[0]}")
+
 
 import main as _wrapper  # noqa: E402
 import main_legacy as _engine  # noqa: E402

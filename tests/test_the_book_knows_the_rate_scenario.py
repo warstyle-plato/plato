@@ -163,6 +163,13 @@ def test_every_input_has_a_home_in_the_book() -> None:
            for prefix in ("", "offices_", "retail_", "above_parking_", "sports_")
            for step in (1, 2, 3, 4)},
     }
+    # Вторые ОСЗ пишутся в книгу, только когда включены: заполнено — значит
+    # весь реестр, со своими профилями и лестницами.
+    for obj in core.STANDALONE_OBJECTS:
+        filled[obj.enabled_key] = True
+        filled.setdefault(f"{obj.prefix}_sales_profile", "50%@0; 50%@12")
+        for step in (1, 2, 3, 4):
+            filled.setdefault(f"{obj.prefix}_growth_stage{step}_pct", 5)
     content, _ = book("base", **filled)
     workbook = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     texts = {cell.value.strip() for name in workbook.sheetnames

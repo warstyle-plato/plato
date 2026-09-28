@@ -63,12 +63,17 @@ def test_the_row_of_the_result_carries_both_numbers() -> None:
     assert row["guest_units"] == 40
     assert row["transfer_units"] == 25
     assert row["saleable_units"] == 335
-    assert got["tep"]["total"]["saleable_units"] < got["tep"]["total"]["units"]
+    # Свод сравнивается в СВОЕЙ мере: складывать машино-места с квартирами
+    # и местами в саду нечем, и общего итога штук у него больше нет.
+    built = got["tep"]["total"]["units_by_measure"][core.COUNT_PARKING]
+    sold = got["tep"]["total"]["saleable_units_by_measure"][core.COUNT_PARKING]
+    assert sold < built
 
 
 def test_the_screen_shows_the_sold_column_and_says_why() -> None:
     """У таблицы результата своя колонка проданного и пояснение к разнице."""
-    assert "<th>Построено, шт.</th><th>Продаётся, шт.</th>" in PAGE
+    # «шт.» из заголовка ушло: мера у каждой строки своя и стоит при числе.
+    assert "<th>Построено</th><th>Продаётся</th>" in PAGE
     assert "из них ${parts.join(' · ')}" in PAGE
     assert "'гостевых '+num(x.guest_units)" in PAGE
     assert "'передано '+num(x.transfer_units)" in PAGE

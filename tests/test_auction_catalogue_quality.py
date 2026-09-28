@@ -104,7 +104,7 @@ def test_the_screen_names_the_main_and_raw_catalogues_honestly() -> None:
     assert "Все официальные источники" in page
     assert '<option value="torgi_gov">ГИС Торги</option>' in page
     assert "Интересные · данные заполнены" in page
-    assert "Показать неполные и шум" in page
+    assert "Интересные + неполные и шум" in page
 
 
 def test_selected_lot_checks_nspd_and_keeps_building_and_land_areas_separate() -> None:

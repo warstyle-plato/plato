@@ -89,6 +89,9 @@ def _stand() -> str:
         "async function rescaleSocialFromTep(){return false}",
         "async function recalcFromTepByNorms(){}",
         "function nonresidentialAboveSqm(){return 0}",
+        # Суммы «офисы и ТЦ» читают реестр: второй офисник той же семьи.
+        page_blocks.object_roster(),
+        page_blocks.function("standaloneProductSum"),
         page_blocks.krt_lock(),
         page_blocks.function("recalcFromTep"),
     ])
