@@ -236,7 +236,28 @@ PRODUCT_ITEMS: tuple[tuple[str, str, str, str, str, str, str, str, str, str, str
 )
 PRODUCT_ROWS: dict[str, int] = {item[0]: PRODUCT_FIRST_ROW + index
                                 for index, item in enumerate(PRODUCT_ITEMS)}
-PRODUCT_TOTAL_ROW = PRODUCT_FIRST_ROW + len(PRODUCT_ITEMS)
+# Дописанные объекты книги (ФОК, второй офисник, второй ТЦ, второй наземный
+# паркинг) — свои строки под продуктами шаблона. Модуль движка не знает, и их
+# состав и ячейки даёт сборщик книги (`extra_products`); здесь только место.
+# Мест — с запасом, и число их постоянное: всё, что ниже на листе, стоит на
+# вычисленных отсюда строках, и сдвигать их от проекта к проекту нельзя.
+EXTRA_PRODUCT_SLOTS = 6
+EXTRA_PRODUCT_FIRST_ROW = PRODUCT_FIRST_ROW + len(PRODUCT_ITEMS)
+PRODUCT_TOTAL_ROW = EXTRA_PRODUCT_FIRST_ROW + EXTRA_PRODUCT_SLOTS
+
+
+def product_items(extra_products: tuple = ()) -> tuple:
+    """Продукты шаблона и дописанные объекты — в порядке строк листа."""
+    if len(extra_products) > EXTRA_PRODUCT_SLOTS:
+        raise ValueError(f"дописанных объектов {len(extra_products)}, "
+                         f"а мест на Dashboard_Data {EXTRA_PRODUCT_SLOTS}")
+    return PRODUCT_ITEMS + tuple(extra_products)
+
+
+def product_rows(extra_products: tuple = ()) -> dict[str, int]:
+    """Строка Dashboard_Data каждого продукта, дописанные объекты включительно."""
+    return {item[0]: PRODUCT_FIRST_ROW + index
+            for index, item in enumerate(product_items(extra_products))}
 # Колонки блока продуктов на Dashboard_Data.
 PRODUCT_COLUMNS = {"label": "B", "gns": "C", "saleable": "D", "units": "E", "revenue": "F",
                    "avg_price": "G", "start_price": "H", "pace": "I", "per_gns": "J",
@@ -422,15 +443,20 @@ def _capex_article(key: str, capex_rows: dict[str, int], capex_stride: int) -> s
 
 def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: str,
                      month_columns: list[str], capex_rows: dict[str, int],
-                     capex_stride: int) -> str:
+                     capex_stride: int, extra_products: tuple = ()) -> str:
     """Скрытый лист-источник: каждая величина — формула на листы книги.
 
     `month_columns` — колонки месяцев листа CF (D..GA): ряды долга и эскроу
     копируются помесячно, чтобы график перестраивался в Excel сам.
     `capex_rows`/`capex_stride` — где на листе CAPEX стоят статьи первой
     очереди и через сколько строк повторяется блок очереди.
+    `extra_products` — строки дописанных объектов в той же форме, что
+    `PRODUCT_ITEMS` (ключ, подпись, ГНС наземная, подземная, продаваемая,
+    единицы, выручка, стартовая цена, темп, чем ценится, в чём считается);
+    пустая ячейка — величины у объекта нет.
     """
     rows: list[str] = []
+    all_rows = product_rows(extra_products)
     rows.append(_row(1, [("A1", _cell("A1", text="ключ")), ("B1", _cell("B1", text="подпись")),
                          ("C1", _cell("C1", text="значение")), ("D1", _cell("D1", text="единица"))]))
     for key, label, unit, formula in DATA_ITEMS:
@@ -454,12 +480,14 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
         ("J", "выручка на м² ГНС / на шт., тыс ₽"), ("K", "выручка на м² прод., тыс ₽"),
         ("L", "подземная, м²")))
     for (key, label, gns, under, saleable, units, revenue,
-         start_price, pace, priced_by, _counted_in) in PRODUCT_ITEMS:
-        r = PRODUCT_ROWS[key]
+         start_price, pace, priced_by, _counted_in) in product_items(extra_products):
+        r = all_rows[key]
         cells = [(f"A{r}", _cell(f"A{r}", text=key)), (f"B{r}", _cell(f"B{r}", text=label)),
                  (f"F{r}", _cell(f"F{r}", formula=revenue)),
                  (f"H{r}", _cell(f"H{r}", formula=start_price)),
-                 (f"I{r}", _cell(f"I{r}", formula=pace))]
+                 # Темпа продаж у дописанного объекта на ОТЧЕТе нет — клетка
+                 # пустая, а не чужая.
+                 (f"I{r}", _cell(f"I{r}", formula=pace) if pace else _cell(f"I{r}"))]
         cells.append((f"C{r}", _cell(f"C{r}", formula=gns) if gns else _cell(f"C{r}")))
         cells.append((f"L{r}", _cell(f"L{r}", formula=under) if under else _cell(f"L{r}")))
         cells.append((f"D{r}", _cell(f"D{r}", formula=saleable) if saleable else _cell(f"D{r}")))
@@ -759,12 +787,22 @@ def _src(column: str, row: int) -> str:
     return f"'{DATA_SHEET}'!${column}${row}"
 
 
-def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool) -> tuple[str, list[tuple[int, int, int, int]]]:
+def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
+                          extra_products: tuple = (),
+                          shown_extras: frozenset[str] | None = None,
+                          ) -> tuple[str, list[tuple[int, int, int, int]]]:
     """Лист «Дашборд» — формулы на Dashboard_Data, узкая вертикальная
     раскладка. Возвращает xml листа и якоря трёх диаграмм (мост, кольцо,
     долг и эскроу) — колонки и строки, куда их ставит рисунок."""
     sh = _Sheet(styles)
     del phased  # состав листа один для проекта в одну и в несколько очередей
+    rows_of = product_rows(extra_products)
+    # Видимый лист показывает дописанный объект, только если он в проекте:
+    # четыре строки нулей на каждом дашборде — шум. Источник несёт все, и
+    # итоги складывают все — включённый потом в Excel объект в сумме есть.
+    products = PRODUCT_ITEMS + tuple(
+        item for item in extra_products
+        if shown_extras is None or item[0] in shown_extras)
 
     sh.band("DEVELOPAID · ИНВЕСТИЦИОННЫЙ ДАШБОРД", None, sh.title, 24)
     sh.band(None, data_cell("project_name"), sh.subtitle, 15)
@@ -830,9 +868,9 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool) -> 
     # надо суммировать», владелец, 27.09.2026). Разбор стоит строками выше.
     sh.header(_G_TABLE_5, ["Продукт", "ГНС наземная, м²", "Подземная, м²",
                            "Продаваемая, м²", "Количество"])
-    for item in PRODUCT_ITEMS:
+    for item in products:
         key, counted_in = item[0], item[-1]
-        src = PRODUCT_ROWS[key]
+        src = rows_of[key]
         sh.line(_G_TABLE_5, [(None, _src(P["label"], src), sh.td),
                              (None, _src(P["gns"], src), sh.value("м²")),
                              (None, _src(P["under"], src), sh.value("м²")),
@@ -850,8 +888,8 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool) -> 
     # Доходы: выручка и удельные на метр.
     sh.section_row("ДОХОДЫ")
     sh.header(_G_TABLE_4, ["Продукт", "Выручка, млн ₽", "тыс ₽/м² ГНС (на шт.)", "тыс ₽/м² прод."])
-    for key, *_rest in PRODUCT_ITEMS:
-        src = PRODUCT_ROWS[key]
+    for key, *_rest in products:
+        src = rows_of[key]
         sh.line(_G_TABLE_4, [(None, _src(P["label"], src), sh.td),
                              (None, _src(P["revenue"], src), sh.value("млн ₽")),
                              (None, _src(P["per_gns"], src), sh.value("тыс ₽")),
@@ -866,9 +904,9 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool) -> 
     # Цены реализации и темп продаж.
     sh.section_row("ЦЕНЫ РЕАЛИЗАЦИИ И ТЕМП ПРОДАЖ")
     sh.header(_G_TABLE_5, ["Продукт", "Средняя, тыс ₽", "Старт, тыс ₽", "Темп до РВЭ, в мес.", "Ед."])
-    for item in PRODUCT_ITEMS:
+    for item in products:
         key, priced_by = item[0], item[-2]
-        src = PRODUCT_ROWS[key]
+        src = rows_of[key]
         unit = priced_by or "м²"
         sh.line(_G_TABLE_5, [(None, _src(P["label"], src), sh.td),
                              (None, _src(P["avg_price"], src), sh.value("тыс ₽")),
@@ -1225,11 +1263,15 @@ def types_with_data_sheet(types: str, dropped_parts: list[str]) -> str:
 
 def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any],
           llcr_target: float, month_columns: list[str], phased: bool,
-          capex_rows: dict[str, int], capex_stride: int) -> dict[str, Any]:
+          capex_rows: dict[str, int], capex_stride: int,
+          extra_products: tuple = (),
+          shown_extras: frozenset[str] | None = None) -> dict[str, Any]:
     """Собрать все части дашборда. Возвращает словарь «путь → байты» и
     новый styles.xml; лишние диаграммы шаблона названы в `dropped`.
     `capex_rows`/`capex_stride` — карта статей листа CAPEX (её владелец —
-    сборщик книги)."""
+    сборщик книги); `extra_products` — строки дописанных объектов (см.
+    `build_data_sheet`); `shown_extras` — какие из них видны на листе
+    «Дашборд» (None — все)."""
     where = locate(archive, sheet_path)
     styles = Styles(styles_xml)
     last_column = month_columns[-1]
@@ -1247,14 +1289,16 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
         rel_ids.append(rel)
         targets.append((rel, "/" + path))
     dropped = [path for _rel, path in existing[len(charts):]]
-    sheet_xml, anchors = build_dashboard_sheet(styles, where["drawing_rel"], phased)
+    sheet_xml, anchors = build_dashboard_sheet(styles, where["drawing_rel"], phased,
+                                               tuple(extra_products), shown_extras)
     if len(anchors) != len(charts):
         raise ValueError(f"диаграмм {len(charts)}, а мест на листе {len(anchors)}")
     parts[where["drawing_path"]] = drawing_xml(rel_ids, anchors)
     parts[where["drawing_rels_path"]] = drawing_rels_xml(targets)
     parts[sheet_path] = sheet_xml.encode("utf-8")
     parts[DATA_SHEET_PATH] = build_data_sheet(origin, llcr_target, last_column, month_columns,
-                                              capex_rows, capex_stride).encode("utf-8")
+                                              capex_rows, capex_stride,
+                                              tuple(extra_products)).encode("utf-8")
     added_charts = [path for _rel, path in targets if path.lstrip("/") not in {p for _r, p in existing}]
     return {"parts": parts, "styles_xml": styles.render(), "dropped": dropped,
             "added_charts": [p.lstrip("/") for p in added_charts], "styles_added": styles.added}

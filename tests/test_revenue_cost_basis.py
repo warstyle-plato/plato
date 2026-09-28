@@ -124,8 +124,9 @@ def test_reset_clears_products_and_markers():
     assert "Object.keys(tep).forEach" in body
     for marker in ("_glavapu_import", "_manual_tep_import", "_mo_calc", "_cadastral_analysis"):
         assert marker in page[page.index("const TERRITORY_MARKERS"):page.index("const TERRITORY_MARKERS") + 200]
-    assert "inputs.retail_enabled=false;" in body
-    assert "inputs.above_parking_enabled=false;" in body
+    # Выключаются все объекты реестра, включая вторые ОСЗ, — обходом, а не
+    # поимённо.
+    assert "STANDALONE_OBJECTS.forEach(o=>{inputs[o.prefix+'_enabled']=false})" in body
 
 
 def test_reset_keeps_the_analyst_assumptions():
