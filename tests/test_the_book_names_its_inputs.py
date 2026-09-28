@@ -33,8 +33,11 @@ openpyxl = pytest.importorskip("openpyxl")
 
 @pytest.fixture(scope="module")
 def sheet():
+    # Все объекты реестра включены: второй объект пишется в книгу только
+    # включённым, а карта `_V4_INPUT_CELLS` называет его ячейки всегда.
     content, _, _ = core.build_project_workbook(
-        {**core.DEFAULT_INPUTS}, core.TEP_DEFAULT, [], {}, project_name="Имена")
+        {**core.DEFAULT_INPUTS, **{o.enabled_key: True for o in core.STANDALONE_OBJECTS}},
+        core.TEP_DEFAULT, [], {}, project_name="Имена")
     return v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
 
 

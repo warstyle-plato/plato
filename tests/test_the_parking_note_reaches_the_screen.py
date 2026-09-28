@@ -439,7 +439,8 @@ def test_the_field_hint_does_not_repeat_the_note() -> None:
     hints = [(field[0], field[2]) for _title, fields in core.FIELD_GROUPS
              for field in fields
              if str(field[0]).endswith(("_parking_under_spaces", "_parking_over_spaces"))]
-    assert len(hints) == 6, f"полей паркинга объектов найдено {len(hints)}"
+    garaged = sum(1 for obj in core.STANDALONE_OBJECTS if obj.garage)
+    assert len(hints) == 2 * garaged, f"полей паркинга объектов найдено {len(hints)}"
     for key, hint in hints:
         assert "приложения 6" not in hint, (
             f"{key}: подсказка повторяет подпись под полем — {hint}")
@@ -476,8 +477,9 @@ def test_the_note_stands_under_both_parking_fields() -> None:
     Между ними она объясняла бы только верхнее, а число нормы приходит в оба.
     """
     place = PAGE.index("normCell.id='parkNorm_'")
-    head = PAGE.rindex("if(/^(offices|retail|sports)_parking_", 0, place)
-    assert "_parking_over_spaces$/" in PAGE[head:place], PAGE[head:place]
+    # Объекты с гаражом — из реестра (`OBJECT_PARKING_PREFIXES`), а не списком.
+    head = PAGE.rindex("OBJECT_PARKING_PREFIXES.find(", 0, place)
+    assert "_parking_over_spaces'" in PAGE[head:place], PAGE[head:place]
 
 
 def test_without_a_calculation_the_note_says_so() -> None:

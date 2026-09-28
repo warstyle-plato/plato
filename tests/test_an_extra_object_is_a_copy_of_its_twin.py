@@ -36,12 +36,9 @@ def _object(key, prefix, twin, *, garage=True, sellable=False, measure="sqm"):
                          group_label=f"{base.group_label} 2", book_twin=twin)
 
 
-SECOND = core.STANDALONE_OBJECTS + (
-    _object("offices2", "offices2", "offices", sellable=True),
-    _object("standalone_retail2", "retail2", "standalone_retail"),
-    _object("above_parking2", "above_parking2", "above_parking",
-            garage=False, measure="spaces"),
-)
+# Вторые объекты стоят в реестре с шага 2 — раскладка проверяется на нём.
+SECOND = core.STANDALONE_OBJECTS
+assert {"offices2", "standalone_retail2", "above_parking2"} <= {o.key for o in SECOND}
 
 
 def test_the_sports_object_stays_where_the_book_had_it() -> None:
@@ -74,8 +71,10 @@ def test_second_objects_do_not_overlap_anything() -> None:
     """
     layouts = core._v4_object_layouts(SECOND)
     extras = [lay for lay in layouts if lay.extra]
+    # ФОК — первым дописанным (его строки книга несёт давно), вторые ОСЗ —
+    # следом, порядком реестра.
     assert [lay.obj.key for lay in extras] == [
-        "sports", "offices2", "standalone_retail2", "above_parking2"]
+        "sports", "standalone_retail2", "offices2", "above_parking2"]
 
     inputs: dict[int, str] = {}
     objects: dict[int, str] = {}

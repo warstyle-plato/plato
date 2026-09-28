@@ -65,6 +65,14 @@ LOADED = {
     "retail_growth_stage1_pct": 5, "above_parking_growth_stage1_pct": 4,
     "sports_growth_stage1_pct": 6,
 }
+# Вторые ОСЗ пишутся в книгу, только когда включены: сверка идёт по всему
+# реестру, со своими профилями.
+for _obj in core.STANDALONE_OBJECTS:
+    LOADED[_obj.enabled_key] = True
+    if not LOADED.get(f"{_obj.prefix}_sales_profile"):
+        LOADED[f"{_obj.prefix}_sales_profile"] = "60%@0; 40%@12"
+    if not LOADED.get(f"{_obj.prefix}_growth_stage1_pct"):
+        LOADED[f"{_obj.prefix}_growth_stage1_pct"] = 5
 
 
 @pytest.fixture(scope="module")
