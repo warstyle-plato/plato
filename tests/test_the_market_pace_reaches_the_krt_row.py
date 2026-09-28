@@ -126,7 +126,7 @@ def test_the_rules_version_rises_with_the_answer():
 # 5 — 24.09.2026: цена окружения больше не наследуется от одного ЖК внутри
 # площадки и публикуется только из устойчивого price_hint. Состав строки не
 # изменился, но смысл и числа изменились — сохранённые строки надо пересчитать.
-ROW_KEYS_AT_RULES_VERSION = (5, (
+ROW_KEYS_AT_RULES_VERSION = (6, (
     "area_ha", "at_asking_price", "available", "card_facts", "computed_at",
     "district", "engine_version", "entry_capacity_mln", "entry_capacity_reason",
     "entry_capacity_rub_per_sqm", "entry_capacity_upper_bound_mln",
