@@ -36,6 +36,10 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
 
 def _inputs() -> dict:
     x = dict(core.DEFAULT_INPUTS)
@@ -101,7 +105,7 @@ def test_the_project_actually_sells_object_places() -> None:
     result, _content = _built()
     products = {str(item["key"]): float(item.get("revenue") or 0)
                 for item in (result.get("report") or {}).get("products") or []}
-    assert products.get("object_parking", 0) > 1e8, (
+    assert products.get(OFFICE_PARKING, 0) > 1e8, (
         "у проверочного проекта нет выручки мест объекта — "
         "проверки этого файла перестали что-либо значить: " + str(sorted(products)))
 
@@ -152,12 +156,12 @@ def test_the_consolidator_carries_the_object_parking_product() -> None:
     for index in range(core._V4_CONSOLIDATOR_FIRST_COL, core._V4_CONSOLIDATOR_FIRST_COL + 12):
         letter = sheet.cell(row=3, column=index).column_letter
         title = sheet[f"{letter}3"].value
-        if title and "Паркинг отдельно стоящих объектов" in str(title):
+        if title and "Паркинг — МФОЦ / офисы" in str(title):
             column = letter
             break
     assert column, "колонки паркинга объектов на КОНСОЛИДАТОРЕ нет"
     total = evaluator.cell("КОНСОЛИДАТОР", f"{column}{core._V4_CONSOLIDATOR_TOTAL_ROW}")
-    assert total == pytest.approx(products["object_parking"] / 1e6, rel=1e-6)
+    assert total == pytest.approx(products[OFFICE_PARKING] / 1e6, rel=1e-6)
 
 
 def test_the_build_reports_nothing_missing_for_the_garage() -> None:
@@ -172,5 +176,5 @@ def test_the_build_reports_nothing_missing_for_the_garage() -> None:
     _content, _name, report = core.build_project_workbook(
         dict(x), copy.deepcopy(t), [], phasing, project_name="Гараж объекта")
     unknown = [item for item in (report.get("missing") or [])
-               if "Паркинг отдельно стоящих объектов" in item]
+               if "Паркинг — МФОЦ / офисы" in item]
     assert not unknown, unknown

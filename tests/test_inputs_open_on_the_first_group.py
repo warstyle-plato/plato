@@ -130,6 +130,10 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # отдельной задачей: заглушки стенда разрешитель добрал бы со
         # страницы и подменил бы ими поведение соседних проверок.
         page_const("CLASS_ONLY_INPUTS"),
+        # Поля участка (К1, К2, расстояние, край нормы МО) рисует карточка
+        # «Участок и плотность», и форма пропускает их тем же правилом.
+        page_const("SITE_ONLY_INPUTS"),
+        page_const("notOnInputs"),
         # Пометка «ставит класс проекта» у единицы поля: список полей — сам
         # профиль класса, а не перечисление рядом с ним, поэтому стенду нужен
         # и профиль, и тот, кто по нему спрашивает.
@@ -222,11 +226,11 @@ def test_every_group_with_its_own_fields_is_rendered():
     исчезнет тем же правилом, а перечисление имён отстало бы на ней.
     """
     drawn = {item["name"] for item in render({})}
+    away = set(core.CLASS_ONLY_INPUTS) | set(core.SITE_ONLY_INPUTS)
     expected = {name for name, fields in core.FIELD_GROUPS
-                if any(one[0] not in core.CLASS_ONLY_INPUTS for one in fields)}
+                if any(one[0] not in away for one in fields)}
     hidden = {name for name, fields in core.FIELD_GROUPS
-              if fields and not any(one[0] not in core.CLASS_ONLY_INPUTS
-                                    for one in fields)}
+              if fields and not any(one[0] not in away for one in fields)}
     # Предохранитель: без такой группы утверждение про исключение не проверено.
     assert hidden, "ни одной группы, целиком уехавшей в класс"
     assert drawn == expected, {"не нарисованы": sorted(expected - drawn),

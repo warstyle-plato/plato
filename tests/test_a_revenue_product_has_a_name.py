@@ -17,6 +17,9 @@ import re
 
 import main_legacy as core
 
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = core.object_parking_product_key("offices")
+
 RUSSIAN = re.compile(r"[а-яё]", re.IGNORECASE)
 
 
@@ -28,8 +31,13 @@ def _revenue_product_keys() -> list[str]:
     for obj in core.STANDALONE_OBJECTS:
         inputs[obj.enabled_key] = True
     req = core.CalcRequest(inputs=inputs, tep=dict(core.TEP_DEFAULT))
-    report = core.calculate(req).get("report") or {}
+    result = core.calculate(req)
+    report = result.get("report") or {}
     keys = [str(item["key"]) for item in (report.get("products") or [])]
+    # Продукт выручки без строки отчёта (паркинг объекта без мест) всё равно
+    # стоит в структуре выручки — и его имя тоже едет на экран.
+    keys += [key for key in (result.get("revenue") or {})
+             if key != "total" and key not in keys]
     assert len(keys) > 5, f"продуктов в отчёте почти нет: {keys}"
     return keys
 
@@ -47,10 +55,10 @@ def test_every_revenue_product_has_a_russian_name():
 def test_the_check_would_catch_a_bare_key():
     """Сторож, не падающий на поломке, — не сторож."""
     labels = dict(core.product_labels())
-    labels.pop("object_parking", None)
+    labels.pop(OFFICE_PARKING, None)
     nameless = [key for key in _revenue_product_keys()
                 if not RUSSIAN.search(labels.get(key, ""))]
-    assert nameless == ["object_parking"], nameless
+    assert nameless == [OFFICE_PARKING], nameless
 
 
 def test_the_page_reads_the_names_from_the_engine():

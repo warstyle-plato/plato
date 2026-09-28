@@ -27,6 +27,10 @@ from xlsx_eval import Evaluator  # noqa: E402
 
 core = wrapper.core
 
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
 # Офисник с гаражом и с лестницей цены: без лестницы ветка не проверяется
 # вовсе, а без гаража проверять нечего.
 INPUTS = {
@@ -64,7 +68,7 @@ def built() -> tuple[bytes, dict]:
 
 def _engine_garage_mln(report: dict) -> float:
     """Выручка гаражей объектов у движка, в млн ₽ — он считает в рублях."""
-    return float((report.get("revenue") or {}).get("object_parking") or 0) / 1e6
+    return float((report.get("revenue") or {}).get(OFFICE_PARKING) or 0) / 1e6
 
 
 def _row_total(book: openpyxl.Workbook, sheet: str, row: int) -> float:
