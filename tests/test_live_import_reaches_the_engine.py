@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import shutil
@@ -141,6 +142,17 @@ def test_the_page_and_the_engine_see_one_parking(mytishchi):
         spaces, abs=1.0)
 
 
+def _saleable_of_the_site(inputs, tep) -> float:
+    """Продаваемые места участка — по строке, которую движок ВЫВОДИТ.
+
+    Сырая строка несёт гостевые умолчаний (109 из 1 199 мест шаблона), а не
+    участка: пара, поставленная нормой, ведёт гостевые нормы. Сверка с сырой
+    строкой сравнивала бы очереди с чужим числом."""
+    row_tep = copy.deepcopy(tep)
+    core.apply_underground_tep_row(copy.deepcopy(inputs), row_tep)
+    return core.underground_saleable_spaces(row_tep["underground_parking"])
+
+
 # --- и с этими вводными очереди по-прежнему делят, а не множат --------------------
 
 @pytest.mark.parametrize("count", [1, 2, 3, 4])
@@ -153,7 +165,7 @@ def test_the_queues_keep_the_imported_parking(mytishchi, count):
     ниже, на строках ТЭП."""
     inputs, tep = mytishchi["inputs"], mytishchi["tep"]
     built = float(tep["underground_parking"]["units"])
-    master = core.underground_saleable_spaces(tep["underground_parking"])
+    master = _saleable_of_the_site(inputs, tep)
     assert built > 0, "в файле нет подземного паркинга — тест проверял бы ноль"
     assert master > 0
     bundle = core.calculate_phased(core.PhasedCalcRequest(
@@ -208,7 +220,7 @@ def test_no_imported_product_is_multiplied(mytishchi, count):
 def test_the_rule_holds_for_another_site():
     project = live_import("Мишина_ТЭП.xlsx")
     inputs, tep = project["inputs"], project["tep"]
-    master = core.underground_saleable_spaces(tep["underground_parking"])
+    master = _saleable_of_the_site(inputs, tep)
     built = float(tep["underground_parking"]["units"])
     bundle = core.calculate_phased(core.PhasedCalcRequest(
         inputs=inputs, tep=tep, rates=[], phasing=phasing(3)))
