@@ -185,9 +185,15 @@ def test_every_canonical_mode_is_live_or_explicitly_engine_only():
     assert all(str(core.V4_INPUTS_NOT_IN_BOOK[key]).strip() for key in engine_only)
 
 
+# Выключатели вторых ОСЗ — тоже режимы, но их блок пишется в книгу только у
+# включённого объекта (`_v4_book_objects`). Проверки режимов строят книгу, где
+# они есть все: иначе ключа нет на листе, и проверять нечего.
+_ALL_OBJECTS = {o.enabled_key: True for o in core.STANDALONE_OBJECTS if o.family}
+
+
 def test_live_mode_inputs_have_excel_dropdowns_and_canonical_values():
     """Dropdown-ы строятся из canonical declaration, а не из Excel-списка."""
-    content, _, meta, _ = _book({"vri_payment_mode": "installment"})
+    content, _, meta, _ = _book({"vri_payment_mode": "installment", **_ALL_OBJECTS})
     assert meta["missing"] == []
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     entry = book["Вводные"]
@@ -278,7 +284,7 @@ def _formula_reads_parameter(book, coord):
 
 def test_every_editable_mode_has_a_real_formula_reader():
     """Стрелка без экономического читателя запрещена: зеркало ввода не считается."""
-    content, _, meta, _ = _book({"vri_payment_mode": "installment"})
+    content, _, meta, _ = _book({"vri_payment_mode": "installment", **_ALL_OBJECTS})
     assert meta["missing"] == []
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     entry = book["Вводные"]
@@ -292,6 +298,17 @@ def test_every_editable_mode_has_a_real_formula_reader():
             f"{key}: dropdown есть, но {source_coord} не читает ни одна "
             "экономическая формула книги")
 
+
+
+def test_a_second_object_off_leaves_no_switch_on_the_sheet():
+    """Выключенный второй объект в книгу не пишется — и его выключатель тоже;
+    отсутствие ключа не считается потерянной вводной."""
+    content, _, meta, _ = _book()
+    assert meta["missing"] == []
+    entry = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["Вводные"]
+    for key in _ALL_OBJECTS:
+        with pytest.raises(AssertionError):
+            _entry_value_cell_for_key(entry, key)
 
 
 def test_engine_only_fields_are_absent_from_user_input_sheet():
