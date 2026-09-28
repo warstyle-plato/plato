@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.60"
+VERSION = "0.24.61"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13446,6 +13446,9 @@ def _map_context_bbox(points: list[Any], target_aspect: float,
     return min_x, min_y, max_x, max_y
 
 
+_TERRITORY_LOOKUP_CHUNK = 15
+
+
 def _territory_image_png(numbers: list[str], basemap: str = "nspd",
                          aspect: float | None = None) -> tuple[bytes, str] | None:
     """Картинка территории: контуры ЕГРН поверх подложки — с подписью.
@@ -13465,10 +13468,14 @@ def _territory_image_png(numbers: list[str], basemap: str = "nspd",
     """
     if basemap not in _MAP_BASEMAP_CAPTION:
         raise ValueError(f"неизвестная подложка карты: {basemap!r}")
-    data = land_lookup(LandLookupRequest(
-        query=", ".join(numbers), limit=max(10, len(numbers))))
-    found = [item for item in (data.get("results") or [])
-             if item.get("found") and item.get("contour_merc")]
+    # Поиск берёт не больше 500 символов запроса — это ~23 номера; территория
+    # КРТ бывает до 30 участков. Частями по 15: иначе вся карта пропадала.
+    results: list[dict[str, Any]] = []
+    for start in range(0, len(numbers), _TERRITORY_LOOKUP_CHUNK):
+        part = numbers[start:start + _TERRITORY_LOOKUP_CHUNK]
+        data = land_lookup(LandLookupRequest(query=", ".join(part), limit=max(10, len(part))))
+        results.extend(data.get("results") or [])
+    found, missing = _territory_contours(numbers, results)
     rings = [ring for item in found for ring in item["contour_merc"]
              if isinstance(ring, list) and len(ring) >= 3]
     points = [p for ring in rings for p in ring
@@ -13534,13 +13541,62 @@ def _territory_image_png(numbers: list[str], basemap: str = "nspd",
         draw.text((x0, y0), label, fill=(40, 40, 40), font=font)
     out = io.BytesIO()
     image.save(out, format="PNG")
-    listed = ", ".join(str(item.get("cadastral_number") or "") for item in found[:5])
-    count = len(found)
-    caption = (
-        f"Контур участка {listed} · границы ЕГРН" if count == 1
-        else f"Территория из {count} участков: {listed} · границы ЕГРН")
-    caption += " · " + _MAP_BASEMAP_CAPTION[basemap]
-    return out.getvalue(), caption
+    return out.getvalue(), _territory_caption(numbers, found, missing, basemap)
+
+
+def _cadastral_key(number: Any) -> str:
+    """Номер для сверки: части без ведущих нулей — «77:05:0004001:040» и
+    «77:05:4001:40» один участок, а соседний номер — другой."""
+    parts = str(number or "").strip().split(":")
+    return ":".join(str(int(p)) if p.isdigit() else p for p in parts)
+
+
+def _territory_contours(numbers: list[str], results: list[dict[str, Any]]
+                        ) -> tuple[list[dict[str, Any]], list[str]]:
+    """Контуры территории, сверенные с запрошенными номерами.
+
+    Ответ поиска сопоставляется с номером по самому номеру, а не по месту в
+    списке: по промаху НСПД может отдать соседний участок, и тогда на карте
+    рисовался сосед, а нужный участок молча пропадал из середины контура.
+    Возвращает найденные с контуром (по одному на номер, в порядке запроса) и
+    номера, контура которых в источнике нет, — их подпись называет."""
+    by_key: dict[str, dict[str, Any]] = {}
+    for item in results:
+        if not (item.get("found") and item.get("contour_merc")):
+            continue
+        by_key.setdefault(_cadastral_key(item.get("cadastral_number")), item)
+    found: list[dict[str, Any]] = []
+    missing: list[str] = []
+    seen: set[str] = set()
+    for number in numbers:
+        key = _cadastral_key(number)
+        if key in seen:
+            continue
+        seen.add(key)
+        item = by_key.get(key)
+        if item is None:
+            missing.append(number)
+        else:
+            found.append(item)
+    return found, missing
+
+
+def _territory_caption(numbers: list[str], found: list[dict[str, Any]],
+                       missing: list[str], basemap: str) -> str:
+    """Подпись карты: число участков — то же, что в таблице (запрошенные
+    номера), перечень не обрывается молча, а недорисованные названы."""
+    total = len({_cadastral_key(n) for n in numbers})
+    shown = [str(item.get("cadastral_number") or "") for item in found]
+    listed = ", ".join(shown[:5]) + (f" и ещё {len(shown) - 5}" if len(shown) > 5 else "")
+    if total == 1 and not missing:
+        caption = f"Контур участка {listed} · границы ЕГРН"
+    else:
+        caption = f"Территория из {total} участков: {listed} · границы ЕГРН"
+    if missing:
+        names = ", ".join(missing[:5]) + (f" и ещё {len(missing) - 5}" if len(missing) > 5 else "")
+        caption += (f" · контур нарисован для {len(found)} из {total}: "
+                    f"у участков {names} нет границ в источнике (НСПД)")
+    return caption + " · " + _MAP_BASEMAP_CAPTION[basemap]
 
 
 def _telegram_territory_photo(chat_id: int, numbers: list[str]) -> bool:
@@ -15827,12 +15883,25 @@ class _PdfSection:
         self.name = name
 
 
-def _pdf_screening_numbers(inputs: dict[str, Any]) -> list[str]:
-    """Кадастровые номера проекта для раздела реализуемости посадки."""
+def _project_cadastral_numbers(inputs: dict[str, Any]) -> list[str]:
+    """Все кадастровые номера проекта — из снимка поиска участка во вводных,
+    а нет его — из поля `cadastral_numbers`. Без обрезки: территория КРТ из
+    двадцати участков — двадцать номеров, и тизер, таблица и карта читают
+    этот список целиком."""
     snapshot = inputs.get("_land_lookup") or {}
     raw = _land_text(snapshot.get("query")) or _land_text(inputs.get("cadastral_numbers"))
-    numbers = [n for n in re.split(r"[\s,;]+", raw) if n]
-    return [n for n in numbers if re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n)][:10]
+    numbers: list[str] = []
+    for n in re.split(r"[\s,;]+", raw):
+        if n and re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n) and n not in numbers:
+            numbers.append(n)
+    return numbers
+
+
+def _pdf_screening_numbers(inputs: dict[str, Any]) -> list[str]:
+    """Кадастровые номера для раздела реализуемости посадки полного PDF:
+    первые десять из `_project_cadastral_numbers` — скрининг участка стоит
+    десятки запросов к НСПД. Тизер эту обрезку не наследует."""
+    return _project_cadastral_numbers(inputs)[:10]
 
 
 def _pdf_ordered_story(story: list[Any], order: list[tuple[str, bool]],
@@ -28703,10 +28772,10 @@ def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
 
 
 def _teaser_site(payload: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
-    """Участок для тизера — оттуда же, откуда полный PDF берёт номера для
-    раздела реализуемости (`_pdf_screening_numbers`: снимок поиска участка во
-    вводных), а нет их там — из груза страницы (`cadastral_numbers` / `cads`)."""
-    numbers = _pdf_screening_numbers(inputs)
+    """Участок для тизера — все номера проекта (`_project_cadastral_numbers`:
+    снимок поиска участка во вводных; без десятки, которой ограничен
+    скрининг полного PDF), а нет их там — из груза страницы (`cadastral_numbers` / `cads`)."""
+    numbers = _project_cadastral_numbers(inputs)
     if not numbers:
         raw = payload.get("cadastral_numbers") or payload.get("cads") or []
         if isinstance(raw, str):
