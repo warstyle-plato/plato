@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import sys
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -86,8 +87,10 @@ def test_the_route_asks_only_the_platform_and_parses_nothing(monkeypatch) -> Non
     answer = roseltorg_probe.probe(seconds=5.0, url="https://example.com/lot/1")
     asked = [a for a in answer["attempts"] if a["asked"] == "Адрес, который спросили"]
     assert asked and "roseltorg.ru" in asked[0].get("reason", ""), asked
-    assert not any("example.com" in url for url in fetched), fetched
-    assert all("roseltorg.ru" in url for url in fetched), fetched
+    hosts = {(urllib.parse.urlparse(url).hostname or "").lower() for url in fetched}
+    assert hosts, "разделы площадки не спрошены вовсе"
+    assert all(host == "roseltorg.ru" or host.endswith(".roseltorg.ru")
+               for host in hosts), hosts
 
 
 def test_the_dom_is_asked_by_what_a_card_is_not_by_a_guessed_class() -> None:

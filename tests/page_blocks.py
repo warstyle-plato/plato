@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import functools
 import re
 import sys
 from pathlib import Path
@@ -175,9 +176,28 @@ def _declared_in(text: str, name: str) -> bool:
     роняет стенд целиком. Отсечка точкой — чтобы `x.имя=` не считалось
     объявлением, `(?![=>])` — чтобы им не считались `==` и `=>`.
     """
+    if name not in text:
+        return False
+    function_form, binding_form = _declaration_patterns(name)
+    return bool(function_form.search(text) or binding_form.search(text))
+
+
+@functools.lru_cache(maxsize=None)
+def _declaration_patterns(name: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
+    """Шаблоны `_declared_in`, начинающиеся с буквального слова.
+
+    Прежде оба начинались с проверки соседа слева (`(?:^|[^\\w$.])`,
+    `(?<![\\w$.])`), и движок пробовал КАЖДУЮ позицию собранного скрипта:
+    29 тысяч таких поисков по растущему тексту съедали 78 из 84 секунд
+    одного стенда, а браузерно-node стендов в наборе десятки — отсюда доли
+    CI по 50 минут. Та же отсечка стоит теперь ПОСЛЕ слова просмотром назад
+    фиксированной ширины, и поиск прыгает сразу к вхождениям слова.
+    Совпадение со старой формой держит `test_page_blocks_finds_declarations_fast`.
+    """
     word = re.escape(name)
-    return bool(re.search(rf"(?:^|[^\w$.])(?:async\s+)?function\s+{word}\s*\(", text)
-                or re.search(rf"(?<![\w$.]){word}\s*=(?![=>])", text))
+    function_form = re.compile(rf"function(?<![\w$.]function)\s+{word}\s*\(")
+    binding_form = re.compile(rf"{word}(?<![\w$.]{word})\s*=(?![=>])")
+    return function_form, binding_form
 
 
 def _page_declares(name: str, page: str) -> bool:
@@ -190,8 +210,18 @@ def _page_declares(name: str, page: str) -> bool:
     already been declared» на первом же прогоне). Значения по-прежнему
     добираются лениво, по своей ошибке, — а слепота разрешителя, ради которой
     правка и написана, померена на функции (`moscowFormat`).
+
+    Ответ берётся из множества имён, собранного со страницы один раз: поиск
+    подстроки по всей странице на каждое прочитанное имя стоил стенду пять
+    секунд из девяти.
     """
-    return f"function {name}(" in page
+    return name in _page_functions(page)
+
+
+@functools.lru_cache(maxsize=8)
+def _page_functions(page: str) -> frozenset[str]:
+    """Все имена `X`, для которых на странице есть подстрока `function X(`."""
+    return frozenset(re.findall(r"function ([A-Za-z_$][\w$]*)\(", page))
 
 
 # Обращение к свойству (`Math.max`, `x.slice`) именем страницы не является:
