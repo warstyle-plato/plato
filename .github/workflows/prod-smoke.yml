@@ -68,14 +68,20 @@ jobs:
         id: smoke
         env:
           LAST_PR: ${{ steps.pr.outputs.last_pr }}
+          # Тизер и экономика «Итога» — за входом; без ключа они пропускаются
+          # с этой причиной в итоге, а не зеленеют.
+          PROD_SMOKE_ADMIN_KEY: ${{ secrets.DEVELOPAID_ADMIN_KEY }}
         run: |
-          args="--base $BASE --summary smoke-summary.md --json smoke-result.json --last-pr \"$LAST_PR\""
+          args=(--base "$BASE" --summary smoke-summary.md --json smoke-result.json
+                --out smoke-out --last-pr "$LAST_PR")
           if [ -n "$EXPECT_COMMIT" ]; then
-            # Не проверять старый образ: ждём, пока прод отдаст этот коммит.
-            args="$args --wait-commit $EXPECT_COMMIT --wait-timeout 2400"
+            # Не проверять старый образ: ждём, пока прод отдаст этот коммит
+            # (а если /health commit пуст — версию из этого же коммита).
+            version=$(grep -m1 '^VERSION = ' main_legacy.py | cut -d'"' -f2)
+            args+=(--wait-commit "$EXPECT_COMMIT" --wait-version "$version" --wait-timeout 2400)
           fi
           set +e
-          eval python3 scripts/prod_smoke.py $args
+          python3 scripts/prod_smoke.py "${args[@]}"
           code=$?
           set -e
           cat smoke-summary.md >> "$GITHUB_STEP_SUMMARY"
