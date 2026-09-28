@@ -94,8 +94,9 @@ def test_the_tep_has_one_underground_parking(phasing) -> None:
     office = _row(result, "offices")
     assert office["parking_under_units"] == GARAGE
     # Итог мест — только гараж объекта: 286, а не 435.
+    # Итог по мере «машино-места» (#550): у жилого типа тот же проект даёт 435.
     total = result["tep"]["total"]
-    assert total["units"] + total["parking_units"] == GARAGE, total
+    assert total["units_by_measure"] == {"м/м": GARAGE}, total
 
 
 @pytest.mark.parametrize("phasing", PHASINGS)
@@ -234,7 +235,8 @@ def test_the_page_draws_one_underground_parking(drawn) -> None:
     assert not any(n.startswith("Подземный паркинг") for n in names), names
     assert not any(n.startswith("Квартиры") or n.startswith("ДОО") for n in names), names
     # Итог «построено, шт.» — только гараж объекта.
-    assert drawn["foot"][5].replace(" ", " ").replace(" ", "") == str(GARAGE), drawn["foot"]
+    built = "".join(ch for ch in drawn["foot"][5] if ch.isdigit())
+    assert built == str(GARAGE), drawn["foot"]
 
 
 def test_the_page_keeps_the_saved_housing(drawn) -> None:
