@@ -13256,6 +13256,9 @@ def _map_context_bbox(points: list[Any], target_aspect: float,
     return min_x, min_y, max_x, max_y
 
 
+_TERRITORY_LOOKUP_CHUNK = 15
+
+
 def _territory_image_png(numbers: list[str], basemap: str = "nspd",
                          aspect: float | None = None) -> tuple[bytes, str] | None:
     """Картинка территории: контуры ЕГРН поверх подложки — с подписью.
@@ -13275,9 +13278,14 @@ def _territory_image_png(numbers: list[str], basemap: str = "nspd",
     """
     if basemap not in _MAP_BASEMAP_CAPTION:
         raise ValueError(f"неизвестная подложка карты: {basemap!r}")
-    data = land_lookup(LandLookupRequest(
-        query=", ".join(numbers), limit=max(10, len(numbers))))
-    found, missing = _territory_contours(numbers, data.get("results") or [])
+    # Поиск берёт не больше 500 символов запроса — это ~23 номера; территория
+    # КРТ бывает до 30 участков. Частями по 15: иначе вся карта пропадала.
+    results: list[dict[str, Any]] = []
+    for start in range(0, len(numbers), _TERRITORY_LOOKUP_CHUNK):
+        part = numbers[start:start + _TERRITORY_LOOKUP_CHUNK]
+        data = land_lookup(LandLookupRequest(query=", ".join(part), limit=max(10, len(part))))
+        results.extend(data.get("results") or [])
+    found, missing = _territory_contours(numbers, results)
     rings = [ring for item in found for ring in item["contour_merc"]
              if isinstance(ring, list) and len(ring) >= 3]
     points = [p for ring in rings for p in ring
@@ -15685,12 +15693,25 @@ class _PdfSection:
         self.name = name
 
 
-def _pdf_screening_numbers(inputs: dict[str, Any]) -> list[str]:
-    """Кадастровые номера проекта для раздела реализуемости посадки."""
+def _project_cadastral_numbers(inputs: dict[str, Any]) -> list[str]:
+    """Все кадастровые номера проекта — из снимка поиска участка во вводных,
+    а нет его — из поля `cadastral_numbers`. Без обрезки: территория КРТ из
+    двадцати участков — двадцать номеров, и тизер, таблица и карта читают
+    этот список целиком."""
     snapshot = inputs.get("_land_lookup") or {}
     raw = _land_text(snapshot.get("query")) or _land_text(inputs.get("cadastral_numbers"))
-    numbers = [n for n in re.split(r"[\s,;]+", raw) if n]
-    return [n for n in numbers if re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n)][:10]
+    numbers: list[str] = []
+    for n in re.split(r"[\s,;]+", raw):
+        if n and re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n) and n not in numbers:
+            numbers.append(n)
+    return numbers
+
+
+def _pdf_screening_numbers(inputs: dict[str, Any]) -> list[str]:
+    """Кадастровые номера для раздела реализуемости посадки полного PDF:
+    первые десять из `_project_cadastral_numbers` — скрининг участка стоит
+    десятки запросов к НСПД. Тизер эту обрезку не наследует."""
+    return _project_cadastral_numbers(inputs)[:10]
 
 
 def _pdf_ordered_story(story: list[Any], order: list[tuple[str, bool]],
@@ -27727,10 +27748,10 @@ def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
 
 
 def _teaser_site(payload: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
-    """Участок для тизера — оттуда же, откуда полный PDF берёт номера для
-    раздела реализуемости (`_pdf_screening_numbers`: снимок поиска участка во
-    вводных), а нет их там — из груза страницы (`cadastral_numbers` / `cads`)."""
-    numbers = _pdf_screening_numbers(inputs)
+    """Участок для тизера — все номера проекта (`_project_cadastral_numbers`:
+    снимок поиска участка во вводных; без десятки, которой ограничен
+    скрининг полного PDF), а нет их там — из груза страницы (`cadastral_numbers` / `cads`)."""
+    numbers = _project_cadastral_numbers(inputs)
     if not numbers:
         raw = payload.get("cadastral_numbers") or payload.get("cads") or []
         if isinstance(raw, str):
