@@ -44,11 +44,31 @@ def test_social_capacity_stays_visible_but_is_not_saleable() -> None:
 
 
 def test_social_capacity_does_not_enter_saleable_units_total() -> None:
+    """Мощность соцобъекта не попадает в проданное.
+
+    Общего итога проданных штук у свода больше нет: складывать квартиры с
+    машино-местами и местами в саду нечем («конечно это не надо суммировать»,
+    владелец 27.09.2026). Утверждение то же, спрашивается оно теперь В СВОЕЙ
+    МЕРЕ — и стало строже: прежде мощность могла спрятаться в общей сумме,
+    теперь её мера обязана быть пустой.
+    """
     result = _report()
-    rows = result["tep"]["rows"]
-    expected = sum(row["saleable_units"] for row in rows
-                   if row["key"] not in core.SOCIAL_TEP_FIELDS)
-    assert result["tep"]["total"]["saleable_units"] == pytest.approx(expected)
+    rows = {row["key"]: row for row in result["tep"]["rows"]}
+    sold = result["tep"]["total"]["saleable_units_by_measure"]
+    built = result["tep"]["total"]["units_by_measure"]
+    checked = 0
+    for key in core.SOCIAL_TEP_FIELDS:
+        row = rows.get(key)
+        if not row or not row["units"]:
+            continue
+        measure = core.tep_count_measure(key)
+        assert built.get(measure, 0) >= row["units"], (key, measure, built)
+        assert sold.get(measure, 0) == 0, (
+            f"мощность соцобъекта попала в проданное: {measure}")
+        checked += 1
+    assert checked, "в стенде нет ни одного соцобъекта — сверять нечего"
+    # Продаваемое при этом на месте: квартиры и машино-места продаются.
+    assert sold.get(core.COUNT_FLATS, 0) > 0 and sold.get(core.COUNT_PARKING, 0) > 0
 
 
 def _social_inputs() -> dict:
@@ -123,6 +143,18 @@ def test_the_v4_workbook_keeps_capacity_out_of_sales() -> None:
     allowed = {(params, f"F{row}") for row in range(174, 186)}
     allowed |= {("ТЭП", f"{col}{row}") for row in social_rows.values()
                 for col in "BCD"}
+    # Строка 174 есть на КАЖДОМ листе, и означает она везде своё: на
+    # «Параметры модели» это «ДОО — очередь 1», а на листе ввода —
+    # «Инфляция затрат». Ссылка `='Вводные'!B174` в ячейке листа параметров
+    # адресует ВВОДНЫЕ, а не мощность, и протечкой не является.
+    #
+    # Отбор шёл по номеру строки и по тому, на каком листе СТОИТ формула, —
+    # и звал протечкой законные ссылки на инфляцию затрат и лимит НКЛ
+    # (`AF88`, `AS88`), как только лист ввода переложили. Номер без имени
+    # листа адреса не составляет: смотреть надо, КУДА ссылка указывает.
+    other_sheets = {sheet.title for sheet in book} - {params}
+    qualified = re.compile("|".join(re.escape(f"'{name}'!") + r"\$?B\$?(?:17[4-9]|18[0-5])(?!\d)"
+                                    for name in sorted(other_sheets)))
     leaks = []
     for sheet in book:
         for line in sheet.iter_rows():
@@ -133,7 +165,10 @@ def test_the_v4_workbook_keeps_capacity_out_of_sales() -> None:
                 same_sheet = sheet.title == params
                 if not (same_sheet or params in value):
                     continue
-                if capacity_ref.search(value) and (sheet.title, cell.coordinate) not in allowed:
+                # Ссылки, явно адресующие ЧУЖОЙ лист, к мощности отношения
+                # не имеют: у них своя строка 174.
+                own = qualified.sub("", value)
+                if capacity_ref.search(own) and (sheet.title, cell.coordinate) not in allowed:
                     leaks.append(f"{sheet.title}!{cell.coordinate}: {value[:120]}")
     assert not leaks, leaks
     # Итог единиц проекта складывает очереди и объекты, но не места.
