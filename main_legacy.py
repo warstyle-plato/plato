@@ -50727,8 +50727,7 @@ function updateTepTotals(){
  let underGns=0;
  Object.entries(tep).forEach(([k,r])=>{
    Object.keys(sums).forEach(c=>{
-     if(c==='gns'&&UNDERGROUND_PRODUCTS.includes(k))return;
-     sums[c]+=Number(r[c]||0);
+     sums[c]+=c==='gns'?tepRowAboveGns(k,r):Number(r[c]||0);
    });
    underGns+=tepRowUnderGns(k,r);
  });

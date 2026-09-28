@@ -117,3 +117,29 @@ def test_the_bot_summary_names_the_above_ground_gns():
     total = sum(float(r.get("gns") or 0) for r in tep.values())
     assert parsed["summary"]["total_gns_sqm"] == pytest.approx(core.project_above_gns(tep))
     assert parsed["summary"]["total_gns_sqm"] == pytest.approx(total - below)
+
+
+def test_the_site_panel_repeats_the_tep_total():
+    """Приёмка владельца: предупреждение участка и «Использовано наземной ГНС»
+    равны итогу таблицы ТЭП на одном проекте — на одной отрисовке.
+
+    На проде итог таблицы был 443 700,6, а предупреждение — 448 000,6: ровно
+    4 300 м² кладовых. Итог и панель теперь берут одно правило строки.
+    """
+    tail = (
+        "for(const id of ['tg','ta','tu','ts','tt','tn'])globalThis[id]=el(id);\n"
+        "updateTepTotals();\n"
+        "console.log(JSON.stringify(shown));\n"
+    )
+    prelude_extra = "function repairParkingFromGlavapu(){return false;}\n"
+    prelude = (PRELUDE % {
+        "inputs": json.dumps({"site_area_ha": 1, "site_density_sqm_per_ha": 100_000,
+                              "_glavapu_import": {"normalized": {}}}),
+        "tep": json.dumps(_tep()),
+    }) + prelude_extra
+    out = page_blocks.run_json(prelude, tail)
+    total = out["tg"]["textContent"]
+    assert total == str(round(_above(_tep())))
+    warn = out["siteDensityWarn"]["innerHTML"]
+    assert f"Наземная ГНС проекта <b>{total} м²</b>" in warn
+    assert out["siteUsage"]["textContent"] == f"{round(int(total) / 100_000 * 100)}%"
