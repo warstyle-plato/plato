@@ -76,7 +76,7 @@ def rows() -> list[dict]:
 
 
 def test_articles_follow_the_engine_order(rows) -> None:
-    body = [row["name"] for row in rows if row["name"] != "Итого"]
+    body = [row["name"] for row in rows if not row["name"].startswith("Итого")]
     rank = {NAMES[key]: i for i, key in enumerate(ORDER)}
     unknown = [name for name in body if name not in rank]
     assert not unknown, f"статьи без места в порядке движка: {unknown}"
@@ -86,9 +86,9 @@ def test_articles_follow_the_engine_order(rows) -> None:
 
 def test_zero_articles_take_no_row(rows) -> None:
     zeros = [row["name"] for row in rows
-             if row["name"] != "Итого" and row["sum"].startswith("0 ")]
+             if not row["name"].startswith("Итого") and row["sum"].startswith("0 ")]
     assert not zeros, f"нулевые статьи в таблице: {zeros}"
 
 
 def test_the_total_stays_last(rows) -> None:
-    assert rows[-1]["name"] == "Итого"
+    assert rows[-1]["name"] == "Итого CAPEX"
