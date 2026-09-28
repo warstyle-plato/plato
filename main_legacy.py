@@ -48739,9 +48739,41 @@ function markClassManual(k){
  const list=classManualKeys();
  if(!list.includes(k))list.push(k);
  inputs._class_manual=list;
+ // Новая правка отменяет прежнее происхождение: число, набранное поверх
+ // рекомендации, — уже не рекомендация.
+ if(inputs._class_manual_source&&typeof inputs._class_manual_source==='object')delete inputs._class_manual_source[k];
  return true;
 }
 function isClassManual(k){return classManualKeys().includes(k)}
+// Не класс и не пальцы: число поставил источник (рекомендация DevelopAid по
+// рынку). Как и ручное, смена класса его не затирает, но у поля названо, откуда
+// оно, — иначе значение рекомендации после сохранения выглядело бы набранным.
+// Происхождение держится, пока в поле стоит именно это число.
+function markClassFieldSource(k,value,by){
+ if(!markClassManual(k))return false;
+ const map=inputs._class_manual_source&&typeof inputs._class_manual_source==='object'?inputs._class_manual_source:{};
+ map[k]={value:Number(value),by:String(by||'')};
+ inputs._class_manual_source=map;
+ return true;
+}
+function classFieldSource(k){
+ const s=inputs._class_manual_source&&inputs._class_manual_source[k];
+ if(!s||!s.by||!isClassManual(k))return '';
+ return Math.abs(Number(inputs[k])-Number(s.value))<1e-9?String(s.by):'';
+}
+function classFieldUnitText(id,unit){
+ if(!classSetsField(id))return unit;
+ if(!isClassManual(id))return unit+' · ставит класс проекта, правится в «Настройках класса»';
+ return unit+' · '+(classFieldSource(id)||'вписано руками')+' — смена класса его не затрёт';
+}
+// Подпись у единицы без перерисовки вводных: перерисовка снесла бы соседние
+// с полем узлы — например, ответ кнопки рекомендации.
+// Единица — из объявления поля (`FIELD_GROUPS`), как её берёт и `renderInputs`.
+function refreshClassFieldUnit(id){
+ const span=document.querySelector('.field[data-field="'+id+'"] > label > .unit');
+ if(!span)return;
+ for(const grp of FIELD_GROUPS)for(const f of grp[1])if(f[0]===id){span.textContent=classFieldUnitText(id,f[2]);return}
+}
 
 function applyProjectClassPreset(selectedKey){
  const select=document.getElementById('projectClassSelect');
@@ -49552,7 +49584,7 @@ function renderInputs(){
      // машиноместа установлена по классу», владелец, 15.09.2026). Пометка
      // стоит у ЕДИНИЦЫ, то есть рядом с числом, а не строкой ниже: подпись
      // под полем читают, когда уже засомневались.
-     const unitText=!classSetsField(id)?unit:isClassManual(id)?unit+' · вписано руками — смена класса его не затрёт':unit+' · ставит класс проекта, правится в «Настройках класса»';
+     const unitText=classFieldUnitText(id,unit);
      wrap.innerHTML=`<label>${label} <span class="unit">${unitText}</span></label>`;
      // Срок строительства при очередности задаёт очередь, а не проект: движок
      // читает проектное поле ТОЛЬКО когда очередь своего срока не назвала, а
