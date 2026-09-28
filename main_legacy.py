@@ -1405,6 +1405,18 @@ TEP_DEFAULT: dict[str, Any] = {
     for _key, _row in _TEP_DEFAULT_LITERAL.items()
 }
 
+# Колонки строки ТЭП так, как их называет таблица ТЭП на странице. Окно
+# импорта показывало вместо них ключи (`gns`, `saleable`) — человек видел
+# схему, а не площади. Слова те же, что в шапке таблицы: одно имя колонки.
+TEP_COLUMN_LABELS: dict[str, str] = {
+    "gns": "ГНС, м²",
+    "total_area": "Общая площадь, м²",
+    "useful": "Полезная площадь, м²",
+    "saleable": "Продаваемая площадь, м²",
+    "transfer": "Передаваемая площадь, м²",
+    "units": "Количество, шт.",
+}
+
 FIELD_GROUPS: list[Any] = [
     standalone_object_group(_BY_KEY[str(_group[0])[len(_OBJECT_PLACEHOLDER):]])
     if str(_group[0]).startswith(_OBJECT_PLACEHOLDER) else _group
@@ -4044,7 +4056,7 @@ def import_project_preset(req: ProjectPresetRequest) -> dict[str, Any]:
             if abs(float(new_value or 0.0) - old_value) < 1e-6:
                 continue
             tep_rows.append({
-                "key": f"{key}.{field}", "label": f"{tep_labels.get(key, key)} · {field}",
+                "key": f"{key}.{field}", "label": f"{tep_labels.get(key, key)} · {TEP_COLUMN_LABELS.get(field, field)}",
                 "was": old_value, "becomes": new_value,
                 "action": "заменится" if old_value else "заполнится",
             })
@@ -44098,7 +44110,7 @@ details.cadastral-box>summary::marker{color:#888}
           <button class="btn" onclick="refreshCurrentKeyRate(true)">Обновить из ЦБ</button>
         </div>
 
-        <div class="fields" style="grid-template-columns:repeat(5,minmax(150px,1fr))">
+        <div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
           <div class="field">
             <label>Текущая ставка ЦБ <span class="unit">%</span></label>
             <input id="rateStartPct" type="number" step="0.01" readonly>
