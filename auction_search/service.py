@@ -123,8 +123,16 @@ class AuctionSearchService:
         }
         if include_noise:
             return lots
-        return [lot for lot, screen, quality in assessed
-                if screen["development_relevant"] and quality["accepted"]]
+        return [lot for lot, screen, quality in assessed if self.in_main_selection(screen, quality)]
+
+    @staticmethod
+    def in_main_selection(screen: dict, quality: dict) -> bool:
+        """Лот основной подборки «Интересные»: относится к девелопменту и прошёл допуск.
+
+        Одно правило на отбор сервера и на пометку лота для страницы: режим
+        «с шумом» добавляет прочие лоты к этим, а не заменяет их.
+        """
+        return bool(screen.get("development_relevant") and quality.get("accepted"))
 
 
     @staticmethod
