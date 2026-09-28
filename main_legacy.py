@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.65"
+VERSION = "0.24.66"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2597,7 +2597,9 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     if missing:
         raise ValueError("В шаблоне отсутствуют обязательные строки: " + ", ".join(missing))
 
-    total_gns = sum(item["gns"] for item in tep_mapping.values())
+    # ГНС в сводке бота — наземная: гараж и кладовые лежат под землёй, и
+    # правило одно на все поверхности (`project_above_gns`).
+    total_gns = project_above_gns(tep_mapping)
     total_saleable = sum(item["saleable"] for item in tep_mapping.values())
     monetizable_units = sum(
         tep_mapping[key]["units"] for key in ("above_parking", "underground_parking", "storage")
@@ -3316,7 +3318,7 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
         "social_school_gba_sqm": tep["school"]["total_area"],
         "social_clinic_gba_sqm": tep["clinic"]["total_area"],
     }
-    total_gns = sum(item["gns"] for item in tep.values())
+    total_gns = project_above_gns(tep)
     return {
         "source": {"format": "Сообщение Telegram — расчёт по алгоритму ТЭП DevelopAid"},
         "entered_fields": sorted(
@@ -14560,7 +14562,7 @@ def _telegram_send_tep_review(chat_id: int, parsed: dict[str, Any], *, dialog_mo
     button = {"inline_keyboard": keyboard}
     provided = "\n".join("• " + html.escape(item) for item in parsed.get("provided") or [])
     calculated = (
-        f"• совокупная ГНС проекта — {_telegram_number(summary.get('total_gns_sqm'), 0)} м²\n"
+        f"• наземная ГНС проекта — {_telegram_number(summary.get('total_gns_sqm'), 0)} м²\n"
         f"• плотность СПП — {_telegram_number(summary.get('density_spp_th_ha'), 2)} тыс. м²/га\n"
         f"• население — {_telegram_number(summary.get('population'), 0)} чел.\n"
         f"• квартир — {_telegram_number(summary.get('apartment_units'), 0)} шт.\n"
@@ -27771,7 +27773,7 @@ def build_plato_model_v2(
     # входят. Книга считала их наземными, движок подземными: одна методика в
     # двух местах, и расходились они молча, пока площадь кладовых была нулём.
     core_above_keys = ("apartments", "ground_commercial")
-    core_under_keys = ("underground_parking", "storage")
+    core_under_keys = UNDERGROUND_PRODUCTS
     base_line = total_line + 2
     ws_tep.cell(row=base_line, column=1, value="БАЗЫ ДЛЯ УДЕЛЬНЫХ СТАВОК").font = styles["section"]
     tep_base: dict[str, int] = {}
@@ -30609,7 +30611,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # подземном паркинге проекта, который тут и стоит. Отдельный гараж был бы
     # вторым счётом тех же мест, а приобъектная стоянка — асфальт, метров она
     # не занимает вовсе.
-    core_under_gns = n(underground, "gns") + n(storage, "gns")
+    core_under_gns = sum(n(t.get(key) or {}, "gns") for key in UNDERGROUND_PRODUCTS)
     core_total_gns = core_above_gns + core_under_gns
     # Благоустройство считается по физической площади двора: она своя база и в
     # строительный объём не входит вовсе. Ответ объявлен один раз и назван
@@ -49279,9 +49281,13 @@ function classStatsAreas(){
  let gba=0,sell=0,under=0;
  for(const key in tep){
   const row=tep[key]||{};
-  gba+=Number(row.gns)||0;
   sell+=Number(row.saleable)||0;
-  if(key==='underground_parking')under+=Number(row.gns)||0;
+  // Подземная и наземная — по правилам строки (`tepRowUnderGns`,
+  // `tepRowAboveGns`), а общая площадь — их сумма: гараж один не был всей
+  // подземной частью, и кладовые уходили в наземную ставку.
+  const above=tepRowAboveGns(key,row),below=tepRowUnderGns(key,row);
+  gba+=above+below;
+  under+=below;
  }
  const areas={};
  if(gba>0)areas.gba_sqm=String(Math.round(gba));
@@ -50275,6 +50281,13 @@ function tepRowUnderGns(key,row){
  return (UNDERGROUND_PRODUCTS.includes(key)?Number(r.gns||0):0)
   +(Number(r.under_gns||0)||objectGarageUnderGns(key));
 }
+// Сколько у строки НАЗЕМНОЙ площади — пара к подземной выше. Гараж и кладовые
+// лежат под землёй целиком, и их колонка ГНС в наземную не входит; правило —
+// `UNDERGROUND_PRODUCTS` из движка (`project_above_gns`). Читатели, считавшие
+// сами, пропускали один гараж, и кладовые садились в наземную ГНС участка.
+function tepRowAboveGns(key,row){
+ return UNDERGROUND_PRODUCTS.includes(key)?0:Number((row||{}).gns||0);
+}
 // Метры гаража объекта считает движок (`apply_object_parking`), а таблица ТЭП
 // на вводных живёт своими строками, куда их никто не пишет. Подпись «гаражи
 // объектов» при этом складывала поле, которое всегда пусто, и гараж офисника
@@ -50296,7 +50309,7 @@ function tepSubtotalRow(group){
  tr.innerHTML=`<td>Итого · ${escapeHtml(group.title.toLowerCase())}</td>`
   +cols.map(c=>{
     const value=c==='gns'
-      ?group.keys.reduce((a,k)=>a+(UNDERGROUND_PRODUCTS.includes(k)?0:Number((tep[k]||{}).gns||0)),0)
+      ?group.keys.reduce((a,k)=>a+tepRowAboveGns(k,tep[k]),0)
       :sums[c];
     return `<td>${num(value)}`
      +(c==='gns'&&under>0?`<div class="tep-note">подземная ${num(under)}</div>`:'')
@@ -50714,8 +50727,7 @@ function updateTepTotals(){
  let underGns=0;
  Object.entries(tep).forEach(([k,r])=>{
    Object.keys(sums).forEach(c=>{
-     if(c==='gns'&&UNDERGROUND_PRODUCTS.includes(k))return;
-     sums[c]+=Number(r[c]||0);
+     sums[c]+=c==='gns'?tepRowAboveGns(k,r):Number(r[c]||0);
    });
    underGns+=tepRowUnderGns(k,r);
  });
@@ -51051,9 +51063,8 @@ function renderSitePanel(){
  if(useLabel)useLabel.textContent=normative?'Использовано квартирами':'Использовано наземной ГНС';
  let above=0,core=0;
  Object.entries(tep).forEach(([key,row])=>{
-   if(key==='underground_parking')return;
-   const gns=Number(row.gns||0);above+=gns;
-   if(key==='apartments'||key==='ground_commercial'||key==='storage')core+=gns;
+   const gns=tepRowAboveGns(key,row);above+=gns;
+   if(key==='apartments'||key==='ground_commercial')core+=gns;
  });
  const other=above-core;
  const used=normative?Number((tep.apartments||{}).saleable||0):above;
