@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+import page_blocks  # noqa: E402
 
 
 def page_fragment(marker: str, end: str) -> str:
@@ -38,24 +39,23 @@ def page_fragment(marker: str, end: str) -> str:
 
 
 def run(inputs: dict) -> dict:
-    """Гоняет сброс полей участка и подпись к нему."""
-    node = shutil.which("node")
-    if not node:
+    """Гоняет сброс полей участка и подпись к нему.
+
+    Недостающие куски страницы (`SITE_ONLY_INPUTS` и прочие) стенд добирает
+    через `page_blocks.run`, а не перечисляет руками: перечисленный список
+    отставал от страницы, и падение выходило про стенд.
+    """
+    if not shutil.which("node"):
         pytest.skip("node недоступен")
     keys = page_fragment("let territoryCleared=[];", "const TERRITORY_MARKERS")
     labels = page_fragment("const TERRITORY_CLEARED_LABELS=", "function resetTerritoryData(")
     reset = page_fragment(" territoryCleared=[];\n TERRITORY_INPUT_KEYS.forEach",
                           "\n TERRITORY_MARKERS.forEach")
-    script = "\n".join([
-        keys, labels,
-        f"const inputs={json.dumps(inputs, ensure_ascii=False)};",
-        reset,
-        "console.log(JSON.stringify({cleared:territoryCleared,"
-        "note:territoryClearedNote(),inputs}));",
-    ])
-    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
-    assert done.returncode == 0, done.stderr[:800]
-    return json.loads(done.stdout)
+    prelude = "\n".join([keys, labels,
+                         f"const inputs={json.dumps(inputs, ensure_ascii=False)};"])
+    tail = (reset + "\nconsole.log(JSON.stringify({cleared:territoryCleared,"
+            "note:territoryClearedNote(),inputs}));")
+    return page_blocks.run_json(prelude, tail)
 
 
 # --- обнуление по-прежнему происходит ----------------------------------------------

@@ -122,8 +122,8 @@ __DEVELOPAID_CONTOUR__
             <span>Ориентир рейтинга</span>
             <span class="krt-rating-input"><input id="krtRatingTarget" type="number" min="1" max="10000000" step="10000" value="600000"><span>₽/м²</span></span>
           </label>
-          <div class="krt-action-note">Общий ориентир каталога. При пересчёте сохраняется на сервере и становится одинаковым для всех пользователей.</div>
-          <button id="krtRatingBtn" title="Сохраняет указанный ориентир как общий и пересчитывает рейтинг всем площадкам вне статуса «В реализации».">Пересчитать рейтинги</button>
+          <div class="krt-action-note" id="krtRatingTargetNote">Уровень каталога задаёт владелец сервиса. Своё число считается только для вас: каталог по нему не переписывается.</div>
+          <button id="krtRatingBtn" title="Пересчитывает рейтинг площадкам вне статуса «В реализации». Уровень каталога это поле не меняет: другое число считается личным сценарием.">Пересчитать рейтинги</button>
         </div>
       </div>
     </div>
@@ -2872,15 +2872,18 @@ async function startKrtInvestmentRating(){
   if(box){box.style.display='';box.className='notice warn';box.textContent='Укажите ценовой ориентир от 1 до 10 000 000 ₽/м².'}
   return;
  }
- try{
-  await askJson('/auctions/krt/investment-rating/target',{
-   method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({price_target_rub_sqm:target})
-  }).catch(needLogin);
- }catch(e){
-  if(box){box.style.display='';box.className='notice warn';box.textContent=String(e.message||e)}
-  return;
- }
+ // Уровень каталога это поле НЕ меняет. Прежде кнопка сначала записывала
+ // введённое число общей настройкой, и личное «450 000» становилось уровнем
+ // всем: каталог целиком оказывался устаревшим и перечитывался чужим
+ // ориентиром. Уровень меняет только владелец сервиса, своим ключом; здесь
+ // число едет параметром запроса, а сторож `canonical` на сервере не даёт
+ // записать в каталог оценку, посчитанную не по уровню каталога.
+ const level=Number(state.krtRatingTarget)||0;
+ const own=level>0&&Math.abs(target-level)>=0.5;
+ // Расхождение называется на экране: молча посчитать «для себя» там, где
+ // человек ждал пересчёта каталога, — это ответить не на тот вопрос.
+ const scenario=own?' · личный сценарий: уровень каталога '
+  +new Intl.NumberFormat('ru-RU').format(Math.round(level))+' ₽/м² не меняется':'';
  // Массово считаем все площадки, куда теоретически ещё можно входить.
  // Статус «В реализации» остаётся справочно и в рейтинг-прогон не входит.
  const source=KRT_EARLY_ONLY?(state.krtFiltered||[]):(state.krt||[]);
@@ -2891,7 +2894,7 @@ async function startKrtInvestmentRating(){
   return;
  }
  b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю 0/'+total;
- if(box){box.style.display='';box.className='notice';box.textContent='Считаю рейтинг: 0 из '+total+' · ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м²'}
+ if(box){box.style.display='';box.className='notice';box.textContent='Считаю рейтинг: 0 из '+total+' · ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м²'+scenario}
  let done=0,finals=0,estimated=0,partial=0,failed=0,next=0;
  const worker=async()=>{
   while(true){
@@ -2928,7 +2931,8 @@ async function startKrtInvestmentRating(){
  await loadKrtRanking();
  if(box){
   box.style.display='';box.className=failed?'notice warn':'notice';
-  box.textContent=(KRT_EARLY_ONLY?'Ранние проекты: ':'Рейтинг для площадок вне реализации: ')+finals+' оценок, '+estimated+' с медианной подстановкой, '+partial+' без оценки'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².';
+  box.textContent=(KRT_EARLY_ONLY?'Ранние проекты: ':'Рейтинг для площадок вне реализации: ')+finals+' оценок, '+estimated+' с медианной подстановкой, '+partial+' без оценки'+(failed?', '+failed+' ошибок':'')+'. Ориентир '+new Intl.NumberFormat('ru-RU').format(target)+' ₽/м².'
+   +(own?' Это личный сценарий: в каталоге остался уровень '+new Intl.NumberFormat('ru-RU').format(Math.round(level))+' ₽/м², записанные баллы не менялись.':'');
  }
  b.disabled=false;b.textContent='Пересчитать рейтинги';
 }
