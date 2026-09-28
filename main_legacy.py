@@ -54223,14 +54223,7 @@ function renderResult(){
   // рынком, ни с себестоимостью.
   const rGns=Number(r.summary.project_gns_sqm||0),rSaleable=Number(r.summary.monetizable_saleable_sqm||0);
   const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
-  // Порядок продуктов — порядок строк ТЭП (карта имён движка идёт в нём же),
-  // а не порядок ключей ответа: наземный паркинг стоял первым, квартиры —
-  // четвёртыми. Нулевой продукт строку не занимает, итог прежний (ревизия
-  // интерфейса, S10).
-  const productOrder=Object.keys(PRODUCT_LABELS);
-  const productRank=key=>{const i=productOrder.indexOf(key);return i<0?productOrder.length:i};
-  revenueTable.innerHTML=Object.entries(r.revenue).filter(([key,v])=>key!=='total'&&Math.abs(Number(v||0))>=0.5)
-   .sort((a,b)=>productRank(a[0])-productRank(b[0]))
+  revenueTable.innerHTML=Object.entries(r.revenue).filter(([key])=>key!=='total')
    .map(([key,v])=>`<tr><td>${productName(key)}</td><td>${money(v)}</td><td>${perTh(v,rGns)}</td><td>${perTh(v,rSaleable)}</td></tr>`).join('')
    +`<tr><th>Итого</th><th>${money(r.revenue.total)}</th><th>${perTh(r.revenue.total,rGns)}</th><th>${perTh(r.revenue.total,rSaleable)}</th></tr>`;
  }

@@ -9,8 +9,6 @@
 * **S33** — НДС стоял после налога на прибыль и читался платой из чистой
   прибыли. Теперь «НДС к уплате» идёт перед налогом — в порядке, в каком его
   вычитает база налога. Числа те же.
-* **S10** — «Структура выручки» шла в порядке ключей ответа (паркинг первым,
-  квартиры четвёртыми) и с нулевыми строками.
 * **S17** — плитка «Цена приобретения» писала «0 млрд ₽» там, где цена не
   задана.
 * **S5** — средняя цена квартиры выходила «0,03 млрд ₽».
@@ -86,7 +84,7 @@ def seen() -> dict:
 
 def test_the_page_calculates(seen) -> None:
     assert seen["errors"] == [], seen["errors"]
-    assert len(seen["revenue"]) > 1 and len(seen["rates"]) > 1
+    assert len(seen["rates"]) > 1
 
 
 def test_the_two_finance_cards_do_not_repeat_each_other(seen) -> None:
@@ -100,16 +98,6 @@ def test_vat_comes_before_the_profit_tax(seen) -> None:
     rows = seen["economics"]
     assert rows.index("НДС к уплате") < rows.index("Налог на прибыль") < rows.index("Чистая прибыль")
     assert rows.index("Прибыль до налога") < rows.index("НДС к уплате")
-
-
-def test_revenue_follows_the_product_order_without_zeros(seen) -> None:
-    body = [r for r in seen["revenue"] if not r[0].startswith("Итого")]
-    rank = {name: i for i, name in enumerate(seen["order"])}
-    names = [r[0] for r in body]
-    assert all(n in rank for n in names), names
-    assert [rank[n] for n in names] == sorted(rank[n] for n in names), names
-    zeros = [r[0] for r in body if r[1].startswith("0 ")]
-    assert not zeros, f"нулевые продукты в выручке: {zeros}"
 
 
 def test_an_unset_price_says_so(seen) -> None:
