@@ -10530,6 +10530,14 @@ def underground_tep_row(inputs: dict[str, Any],
         spaces = manual_spaces if manual_spaces > 0 else (
             round(manual_area / per) if per > 0 else 0.0)
         area = manual_area if manual_area > 0 else spaces * per
+        # Гостевые — требование нормы к ЭТИМ квартирам, а не свойство площади:
+        # поле мест задаёт, сколько построено, но не сколько из них гостевых.
+        # Без пересчёта здесь в строке оставалось число выгрузки — страница
+        # кладёт норму в эти же поля, и проект на 69 местах нёс 109 гостевых
+        # из ТЭП ГлавАПУ, то есть не продавал ни одного места.
+        need = underground_parking_requirement(inputs, tep)
+        if need:
+            guest = float(min(need["guest"], spaces))
     else:
         need = underground_parking_requirement(inputs, tep)
         if not need:
@@ -31163,16 +31171,18 @@ def underground_guest_spaces(row: dict[str, Any]) -> int:
     и гостевых остаётся S/11. На 369 местах это 34 — ровно столько, сколько
     насчитал владелец.
     """
-    known = row.get("guest_units")
-    if known not in (None, ""):
-        try:
-            return max(0, int(round(float(known))))
-        except (TypeError, ValueError):
-            pass
     try:
         total = float(row.get("units") or 0)
     except (TypeError, ValueError):
-        return 0
+        total = 0.0
+    known = row.get("guest_units")
+    if known not in (None, ""):
+        try:
+            # Гостевых не бывает больше, чем мест построено: такое число —
+            # чужое (от прежнего ТЭП), а не решение проекта.
+            return max(0, min(int(round(float(known))), int(round(max(0.0, total)))))
+        except (TypeError, ValueError):
+            pass
     return max(0, int(round(total / 11.0))) if total > 0 else 0
 
 
