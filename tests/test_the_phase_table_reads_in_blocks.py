@@ -29,16 +29,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main_legacy as core  # noqa: E402
+
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
 import page_blocks  # noqa: E402
 from browser import chromium_or_skip  # noqa: E402
 from test_object_parking_reaches_the_queue import _phased  # noqa: E402
 
 PORT = 18934
 
-# Порядок отчёта о прибылях: объёмы → выручка → расходы → финансирование →
-# прибыль, удельные — после них (владелец, 27.09.2026).
-BLOCKS = ["mkd", "osz", "revenue", "costs", "finance", "result", "unit"]
-LAST_ROW = "Чистая прибыль на м² продаваемой"
+# Порядок отчёта о прибылях: объёмы → выручка → расходы → удельные →
+# финансирование → результат. Удельная экономика — ПЕРЕД расходами на
+# финансирование (владелец), и внутри неё чистая прибыль последней.
+BLOCKS = ["mkd", "osz", "revenue", "costs", "unit", "finance", "result"]
+UNIT_ROWS = [
+    "Цена реализации на м² продаваемой",
+    "в т.ч. квартиры — на м² их продаваемой",
+    "Цена реализации на м² ГНС",
+    "CAPEX на м² ГНС",
+    "Полные расходы на м² продаваемой",
+    "Полные расходы на м² ГНС",
+    "Чистая прибыль на м² ГНС",
+    "Чистая прибыль на м² продаваемой",
+]
+LAST_ROW = "Аналитическая прибыль после аллокации"
+DIVISORS = ("на м² продаваемой — продаваемая площадь", "на м² ГНС — ГНС наземная")
 
 
 @pytest.fixture(scope="module")
@@ -68,9 +84,11 @@ def _rows_from_node(bundle: dict) -> list[dict]:
         attrs = tr[:tr.index(">")]
         get = lambda name: (re.search(name + r'="([^"]*)"', attrs) or [None, ""])[1]  # noqa: E731
         cells = re.findall(r"<t[dh]([^>]*)>(.*?)</t[dh]>", tr, re.S)
+        caption = re.search(r'<small class="pc-divisors">(.*?)</small>', tr, re.S)
         rows.append({
+            "caption": html.unescape(re.sub(r"<[^>]+>", " ", caption.group(1))) if caption else "",
             "block": get("data-block"), "cls": get("class"), "group": get("data-group"),
-            "label": html.unescape(re.sub(r"<[^>]+>", "", cells[0][1])).strip() if cells else "",
+            "label": html.unescape(re.sub(r"<small.*?</small>|<[^>]+>", "", cells[0][1], flags=re.S)).strip() if cells else "",
             "values": [float(v.group(1)) if (v := re.search(r'data-v="([^"]*)"', a)) else None
                        for a, _ in cells[1:]],
         })
@@ -93,12 +111,33 @@ def test_every_row_sits_in_a_titled_block_in_order(rows) -> None:
         assert r["block"] and r["block"] == current, r
 
 
-def test_unit_block_follows_finance_and_profit_per_metre_closes_the_table(rows) -> None:
+def test_unit_block_reads_like_a_profit_report_and_precedes_finance(rows) -> None:
+    """Удельные — перед финансированием, внутри: цена → CAPEX → полные
+    расходы → чистая прибыль ПОСЛЕДНЕЙ; ни ставок статей, ни делителей после
+    неё (прод, телефон: «всё в кучу» — владелец, 28.09.2026)."""
     heads = [r["block"] for r in rows if r["cls"] == "pc-block"]
-    assert heads.index("unit") > heads.index("finance"), heads
-    assert heads.index("unit") > heads.index("result"), heads
+    assert heads.index("costs") < heads.index("unit") < heads.index("finance"), heads
+    unit = [r["label"] for r in rows if r["block"] == "unit" and r["cls"] != "pc-block"]
+    assert unit == UNIT_ROWS, unit
     assert rows[-1]["label"] == LAST_ROW, rows[-1]["label"]
-    assert rows[-1]["block"] == "unit"
+
+
+def test_divisors_are_a_caption_not_body_rows(rows, bundle) -> None:
+    """«Делитель зачем показывать, тем более так крупно»: делитель — подпись
+    блока мелким шрифтом, строк-делителей в теле нет. Числа подписи — те же
+    площади, на которые делит движок."""
+    assert not [r for r in rows if r["cls"] != "pc-block" and "елитель" in r["label"]], (
+        [r["label"] for r in rows])
+    head = next(r for r in rows if r["cls"] == "pc-block" and r["block"] == "unit")
+    caption = head["caption"]
+    for text in DIVISORS:
+        assert text in caption, caption
+    summary = bundle["consolidated"]["summary"]
+    for key in ("monetizable_saleable_sqm", "project_gns_sqm"):
+        total = f"{round(float(summary[key])):,}".replace(",", " ")
+        assert total in caption.replace("\u00a0", " "), (key, total, caption)
+    others = [r for r in rows if r["cls"] == "pc-block" and r["block"] != "unit"]
+    assert not any(r["caption"] for r in others), "делители стоят не у своего блока"
 
 
 def test_article_rates_live_on_the_phasing_tab_not_in_the_table(rows, bundle) -> None:
@@ -130,7 +169,7 @@ def test_object_parking_lives_in_the_object_block(rows) -> None:
         assert _block_of(rows, text) == "osz", text
     # Деньги того же паркинга — слагаемое «Итого ОСЗ», а не МКД.
     money = [r for r in rows if r["block"] == "revenue"
-             and r["label"] == core.NON_TEP_PRODUCT_LABELS["object_parking"]]
+             and r["label"] == core.NON_TEP_PRODUCT_LABELS[OFFICE_PARKING]]
     assert money and money[0]["group"] == "osz"
 
 
@@ -219,7 +258,15 @@ _LAYOUT = """()=>{
   const res={broken:broken.slice(0,5),scrolls:wrap.scrollWidth>wrap.clientWidth,
     firstLeft:first.left-w.left,lastRight:w.right-last.right,
     lastText:row.cells[0].innerText.trim(),order:[...document.querySelectorAll(
-      '#phaseComparisonBody tr.pc-block')].map(t=>t.dataset.block)};
+      '#phaseComparisonBody tr.pc-block')].map(t=>t.dataset.block),
+    unit:[...document.querySelectorAll('#phaseComparisonBody tr[data-block="unit"]:not(.pc-block)')]
+      .map(t=>t.cells[0].innerText.trim())};
+  const cap=document.querySelector('#phaseComparisonBody tr.pc-block[data-block="unit"] small.pc-divisors');
+  const cell=document.querySelector('#phaseComparisonBody tr[data-block="unit"]:not(.pc-block) td');
+  if(cap){const cr=cap.getBoundingClientRect();
+    res.caption={text:cap.innerText,visible:cap.offsetHeight>0,
+      size:parseFloat(getComputedStyle(cap).fontSize),rowSize:parseFloat(getComputedStyle(cell).fontSize),
+      left:cr.left-w.left,right:w.right-cr.right}}
   wrap.scrollLeft=0;return res}"""
 
 
@@ -236,6 +283,13 @@ def test_the_table_reads_on_desktop_and_phone(bundle, server, width) -> None:
     assert not errors, errors
     assert got["order"] == BLOCKS, got["order"]
     assert got["lastText"] == LAST_ROW, got["lastText"]
+    assert got["unit"] == UNIT_ROWS, got["unit"]
+    # Делитель виден подписью блока — мельче строки таблицы и в пределах
+    # экрана, а не отдельной крупной строкой.
+    cap = got.get("caption")
+    assert cap and cap["visible"], got
+    assert all(t in " ".join(cap["text"].split()) for t in DIVISORS), cap
+    assert cap["size"] < cap["rowSize"], cap
     assert not got["broken"], f"число разорвано переносом на {width}px: {got['broken']}"
     # Прокрученная до конца таблица показывает «Свод» целиком, а подпись
     # строки стоит у левого края.

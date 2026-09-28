@@ -120,9 +120,22 @@ def test_the_probe_collects_the_calls_the_page_makes() -> None:
     assert "data_calls" in body
 
 
-def test_a_blocked_probe_says_why() -> None:
-    """Из песочницы хост закрыт: отказ обязан назвать причину, а не молчать."""
+def test_a_blocked_probe_says_why(monkeypatch) -> None:
+    """Хост закрыт: отказ обязан назвать причину, а не молчать.
+
+    Закрытым хост делает сам тест — прокси браузера смотрит в закрытый порт.
+    Прежде тест полагался на то, что из песочницы ЕФРСБ не отвечает, и с
+    раннера GitHub страница однажды успела загрузиться за пять секунд:
+    «ok: True» и красная доля — на скорости чужого сайта, а не на нашем коде.
+    """
+    import browser_launch
     from auction_search.adapters import fedresurs as module
+
+    launch = browser_launch.launch
+    monkeypatch.setattr(
+        browser_launch, "launch",
+        lambda playwright, **kwargs: launch(
+            playwright, proxy={"server": "http://127.0.0.1:9"}, **kwargs))
     got = module.probe_browser(seconds=5)
     assert got["ok"] is False
     assert got.get("reason"), "молчаливый отказ читался бы как «лотов нет»"

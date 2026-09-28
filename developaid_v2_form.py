@@ -131,7 +131,21 @@ def territory_input_keys(core: Any) -> list[str]:
     match = re.search(r"const TERRITORY_INPUT_KEYS=\[(.*?)\];", core.PAGE, re.S)
     if not match:
         raise RuntimeError("на странице движка не найден TERRITORY_INPUT_KEYS")
-    return re.findall(r"'([^']+)'", match.group(1))
+    # Поля объектов подставлены движком JSON-списком — в двойных кавычках.
+    return re.findall(r"""['"]([^'"]+)['"]""", match.group(1))
+
+
+def territory_reset_value(core: Any, key: str, current: Any = None) -> Any:
+    """Чем сбрасывается поле участка при смене территории — ответ один.
+
+    К1, К2 и расстояние до станции при пустом значении считаются сами (по
+    расстоянию → по району → 1,0), поэтому сброс у них — ПУСТО, а не ноль:
+    пустое поле не равно нулю (CLAUDE.md). Признак — ложь, остальное — ноль.
+    Список «пустых» полей у движка один: `SITE_ONLY_INPUTS`.
+    """
+    if key in set(getattr(core, "SITE_ONLY_INPUTS", ()) or ()):
+        return ""
+    return False if isinstance(current, bool) else 0
 
 
 def inputs_from_glavapu(
@@ -160,13 +174,12 @@ def inputs_from_glavapu(
     inputs: dict[str, Any] = copy.deepcopy(core.DEFAULT_INPUTS)
     for key in territory_input_keys(core):
         if key in inputs:
-            inputs[key] = 0
+            inputs[key] = territory_reset_value(core, key, inputs[key])
     # Отдельные объекты КРТ выключаются вместе с их площадями: включённым
     # объект делает файл, а не память о прошлом проекте.
-    inputs["offices_enabled"] = False
-    inputs["retail_enabled"] = False
-    inputs["above_parking_enabled"] = False
-    inputs["sports_enabled"] = False
+    # Состав — реестр движка: второй офисник выключается так же, как первый.
+    for obj in core.STANDALONE_OBJECTS:
+        inputs[obj.enabled_key] = False
     inputs.update(mappings.get("inputs") or {})
     inputs["site_area_ha"] = normalized.get("site_area_ha") or 0
     # Плотность приезжает тем же файлом и не должна оставаться справочной:

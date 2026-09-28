@@ -23,6 +23,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main_legacy as core  # noqa: E402
 
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
 
 def _project() -> tuple[dict, dict]:
     """Проект, где у КАЖДОГО объекта живые метры и живой гараж.
@@ -51,6 +55,16 @@ def _project() -> tuple[dict, dict]:
         tep[key].update({"gns": gns, "total_area": gns * 0.94,
                          "useful": sale, "saleable": sale})
     tep["above_parking"].update({"units": 300})
+    # Вторые ОСЗ — теми же числами, что их двойники: «каждый объект» здесь —
+    # весь реестр.
+    for obj in core.STANDALONE_OBJECTS:
+        if not obj.family:
+            continue
+        twin = next(o for o in core.STANDALONE_OBJECTS if o.key == obj.family)
+        for field, value in list(x.items()):
+            if field.startswith(twin.prefix + "_"):
+                x[obj.prefix + field[len(twin.prefix):]] = value
+        tep[obj.key].update({k: v for k, v in tep[twin.key].items() if k != "label"})
     return x, tep
 
 
@@ -144,13 +158,13 @@ def test_the_garage_is_sold_by_its_own_object_calendar():
     общий календарь продал бы места офиса вместе с квартирами.
     """
     x, tep = _project()
-    base = _run(x, tep)["revenue"]["object_parking"]
+    base = _run(x, tep)["revenue"][OFFICE_PARKING]
     assert base > 0, "гаражи объектов не продаются — мерить нечем"
 
     late = dict(x)
     late["offices_start"] = "2032-01-01"
     late["offices_sales_start"] = "2032-06-01"
-    assert _run(late, tep)["revenue"]["object_parking"] != base, (
+    assert _run(late, tep)["revenue"][OFFICE_PARKING] != base, (
         "перенос стройки объекта не двинул выручку его гаража")
 
 

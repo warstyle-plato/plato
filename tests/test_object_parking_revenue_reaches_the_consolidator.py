@@ -27,7 +27,11 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
-PRODUCT = "object_parking"
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
+PRODUCT = OFFICE_PARKING
 
 
 def _phasing() -> dict:
@@ -126,6 +130,11 @@ def test_the_column_is_built_from_the_rows_already_declared(built) -> None:
     column = next(cell.column_letter for cell in sheet[3]
                   if isinstance(cell.value, str) and label in cell.value)
     formula = str(sheet[f"{column}4"].value)
-    for _label, enabled_row, _units, revenue_row, *_rest in core._V4_OBJECT_PARKING:
-        assert f"$B${enabled_row + 1}=1" in formula, formula
-        assert f"$B${revenue_row}" in formula, formula
+    # Колонка — СВОЕГО объекта (паркинг — продукт каждого объекта, владелец
+    # 27.09.2026): строка офиса из `_V4_OBJECT_PARKING`, чужих строк в ней нет.
+    own = core._V4_OBJECT_PARKING_BY_KEY["offices"]
+    assert f"$B${own[1] + 1}=1" in formula, formula
+    assert f"$B${own[3]}" in formula, formula
+    for other in core._V4_OBJECT_PARKING:
+        if other is not own:
+            assert f"$B${other[3]}," not in formula, (other[0], formula)

@@ -239,12 +239,16 @@ def test_the_measure_of_a_product_is_declared_not_guessed():
     Пока оно выводилось из заполненности соседней колонки, заполнение колонки
     молча меняло смысл двух других.
     """
+    # Чем ЦЕНИТСЯ и в чём СЧИТАЕТСЯ — разные поля: у квартиры это метр и
+    # квартира (решение владельца 27.09.2026 — несравнимое не складывать).
+    measures = {vd.AREA_MEASURE, vd.FLATS_MEASURE, vd.PARKING_MEASURE, vd.PIECES_MEASURE}
     for item in vd.PRODUCT_ITEMS:
-        assert item[-1] in (vd.BY_AREA, vd.BY_PIECE), item[0]
+        assert item[-2] in measures, (item[0], "чем ценится")
+        assert item[-1] in measures, (item[0], "в чём считается")
     source = (ROOT / "v4_dashboard.py").read_text(encoding="utf-8")
     block = source[source.index("for (key, label, gns, under"):
                    source.index("t = PRODUCT_TOTAL_ROW")]
-    assert "sold_by == BY_PIECE" in block
+    assert "priced_by != BY_AREA" in block
     # Проверяются ДВЕ строки, которые выбирают делитель, а не весь блок:
     # «заполнена ли колонка» — законный вопрос при записи самой колонки и
     # незаконный при выборе того, чем меряется продукт.

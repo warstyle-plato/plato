@@ -100,6 +100,13 @@ def test_the_book_names_the_scenario_by_its_own_column() -> None:
     for scenario, column in (("base", "Base"), ("high", "Downside"), ("low", "Upside")):
         content, _ = book(scenario)
         coord, value = cells(content)["rate_scenario"]
+        if isinstance(value, str) and value.startswith("="):
+            # С живыми вводными ячейка — декодер: слово страницы («Базовый»)
+            # с листа ввода превращается в имя колонки листа «Ставки». Имя
+            # проверяется результатом формулы, а не её текстом.
+            workbook = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+            row = "".join(ch for ch in coord if ch.isdigit())
+            value = Evaluator(workbook).cell(v4_inputs.inputs(workbook).title, f"B{row}")
         assert value == column, (scenario, value)
 
 
@@ -156,6 +163,13 @@ def test_every_input_has_a_home_in_the_book() -> None:
            for prefix in ("", "offices_", "retail_", "above_parking_", "sports_")
            for step in (1, 2, 3, 4)},
     }
+    # Вторые ОСЗ пишутся в книгу, только когда включены: заполнено — значит
+    # весь реестр, со своими профилями и лестницами.
+    for obj in core.STANDALONE_OBJECTS:
+        filled[obj.enabled_key] = True
+        filled.setdefault(f"{obj.prefix}_sales_profile", "50%@0; 50%@12")
+        for step in (1, 2, 3, 4):
+            filled.setdefault(f"{obj.prefix}_growth_stage{step}_pct", 5)
     content, _ = book("base", **filled)
     workbook = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     texts = {cell.value.strip() for name in workbook.sheetnames
