@@ -100,6 +100,13 @@ def test_the_book_names_the_scenario_by_its_own_column() -> None:
     for scenario, column in (("base", "Base"), ("high", "Downside"), ("low", "Upside")):
         content, _ = book(scenario)
         coord, value = cells(content)["rate_scenario"]
+        if isinstance(value, str) and value.startswith("="):
+            # С живыми вводными ячейка — декодер: слово страницы («Базовый»)
+            # с листа ввода превращается в имя колонки листа «Ставки». Имя
+            # проверяется результатом формулы, а не её текстом.
+            workbook = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+            row = "".join(ch for ch in coord if ch.isdigit())
+            value = Evaluator(workbook).cell(v4_inputs.inputs(workbook).title, f"B{row}")
         assert value == column, (scenario, value)
 
 

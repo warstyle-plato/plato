@@ -135,6 +135,19 @@ def territory_input_keys(core: Any) -> list[str]:
     return re.findall(r"""['"]([^'"]+)['"]""", match.group(1))
 
 
+def territory_reset_value(core: Any, key: str, current: Any = None) -> Any:
+    """Чем сбрасывается поле участка при смене территории — ответ один.
+
+    К1, К2 и расстояние до станции при пустом значении считаются сами (по
+    расстоянию → по району → 1,0), поэтому сброс у них — ПУСТО, а не ноль:
+    пустое поле не равно нулю (CLAUDE.md). Признак — ложь, остальное — ноль.
+    Список «пустых» полей у движка один: `SITE_ONLY_INPUTS`.
+    """
+    if key in set(getattr(core, "SITE_ONLY_INPUTS", ()) or ()):
+        return ""
+    return False if isinstance(current, bool) else 0
+
+
 def inputs_from_glavapu(
     core: Any,
     parsed: dict[str, Any],
@@ -161,7 +174,7 @@ def inputs_from_glavapu(
     inputs: dict[str, Any] = copy.deepcopy(core.DEFAULT_INPUTS)
     for key in territory_input_keys(core):
         if key in inputs:
-            inputs[key] = 0
+            inputs[key] = territory_reset_value(core, key, inputs[key])
     # Отдельные объекты КРТ выключаются вместе с их площадями: включённым
     # объект делает файл, а не память о прошлом проекте.
     # Состав — реестр движка: второй офисник выключается так же, как первый.

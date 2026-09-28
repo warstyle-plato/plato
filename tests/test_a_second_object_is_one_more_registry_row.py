@@ -210,24 +210,53 @@ def test_the_dashboard_names_each_second_object(flat_book) -> None:
         assert book_revenue > 0, key
         # Строка ТЭП объекта в книге несёт и выручку его гаража — так же, как
         # строка первого офисника (G31 = блок + гараж); у движка гараж — свой
-        # продукт `object_parking`. Места продаются только у офисника, и здесь
-        # в проекте гараж с продаваемыми местами один — его.
+        # продукт объекта (`OBJECT_PARKING_PRODUCT_KEYS`). Места продаются
+        # только у офисника, но строку гаража берём у каждого, у кого она есть.
         engine_revenue = numbers[key]["revenue_mln"]
-        if key == "offices2":
-            engine_revenue += numbers["object_parking"]["revenue_mln"]
+        parking = core.OBJECT_PARKING_PRODUCT_KEYS.get(key)
+        if parking in numbers:
+            engine_revenue += numbers[parking]["revenue_mln"]
         assert book_revenue == pytest.approx(engine_revenue, rel=5e-4, abs=1.0), key
     # Итог продуктов складывает и дописанные строки.
     total = float(evaluator.cell(v4_dashboard.DATA_SHEET, f"F{v4_dashboard.PRODUCT_TOTAL_ROW}") or 0)
     assert total == pytest.approx(engine["summary"]["revenue"] / 1e6, rel=5e-4)
 
 
+def test_the_second_garage_is_its_own_product_in_engine_and_book(phased_book, phased) -> None:
+    """Паркинг второго офисника — СВОЙ продукт (реестр паркинга объектов), а не
+    слагаемое чужой строки: в отчёте движка своей строкой, в КОНСОЛИДАТОРЕ —
+    своей колонкой, читающей строку гаража именно этого объекта."""
+    key = core.OBJECT_PARKING_PRODUCT_KEYS["offices2"]
+    assert key != core.OBJECT_PARKING_PRODUCT_KEYS["offices"]
+    products = {p["key"]: p for p in phased["consolidated"]["report"]["products"]}
+    assert products[key]["object"] == "offices2"
+    assert float(products[key].get("revenue") or 0) > 0
+    # Очередь гаража — очередь его объекта (третья), в других его нет.
+    by_phase = [float(next((p.get("revenue") or 0.0) for p in item["result"]["report"]["products"]
+                           if p["key"] == key) or 0.0) if any(
+                    p["key"] == key for p in item["result"]["report"]["products"]) else 0.0
+                for item in phased["phases"]]
+    assert [value > 0 for value in by_phase] == [False, False, True], by_phase
+    book, _evaluator, meta = phased_book
+    assert meta["missing"] == [], meta["missing"]
+    sheet = book["КОНСОЛИДАТОР"]
+    label = core.NON_TEP_PRODUCT_LABELS[key]
+    column = next(cell.column_letter for cell in sheet[3]
+                  if isinstance(cell.value, str) and label in cell.value)
+    formula = str(sheet[f"{column}4"].value)
+    own = core._V4_OBJECT_PARKING_BY_KEY["offices2"]
+    assert f"$B${own[3]}" in formula, formula
+    for other in core._V4_OBJECT_PARKING:
+        if other is not own:
+            assert f"$B${other[3]}," not in formula, (other[0], formula)
+
+
 # --- поверхности -----------------------------------------------------------------
 
 def test_the_teaser_keeps_a_product_that_is_not_in_its_order() -> None:
-    """Порядок тизера — перестановка, а не выборка: второй офисник не выпадает."""
+    """Порядок и состав тизера — у отчёта движка: второй офисник не выпадает."""
     report = {"products": [{"key": key, "label": key} for key in
                            ("apartments", "offices", "offices2", "sports", "above_parking2")]}
-    assert "offices2" not in presentation.PRODUCT_ORDER  # иначе проверять нечего
     model = presentation.build_project_presentation(
         {"products": {}}, {"report": report}, [], {}, {}, 1.2)
     keys = [p["key"] for p in model["products"]]

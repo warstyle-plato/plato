@@ -106,10 +106,29 @@ def test_a_premise_is_not_called_a_building(monkeypatch):
 
 def test_without_parcels_the_area_names_its_source(monkeypatch):
     """Вписанная руками площадь — не ответ реестра, и так и подписана."""
-    texts = _tile(monkeypatch, _payload([_building("77:06:0003016:2001", 1492.0)],
-                                        site_area_ha=0.4899))
+    payload = _payload([_building("77:06:0003016:2001", 1492.0)], site_area_ha=0.4899)
+    payload["inputs"]["_site_area_user_set"] = True
+    texts = _tile(monkeypatch, payload)
 
     assert _value_after(texts, "Площадь ЗУ") == "4 899 м² · вписана руками"
+
+
+def test_an_imported_area_is_not_called_manual(monkeypatch):
+    """Площадь из выгрузки ГлавАПУ человек не вписывал — подпись своя."""
+    payload = _payload([_building("77:06:0003016:2001", 1492.0)], site_area_ha=0.4899)
+    payload["inputs"]["_glavapu_import"] = {"normalized": {"site_area_ha": 0.4899}}
+    texts = _tile(monkeypatch, payload)
+    assert _value_after(texts, "Площадь ЗУ") == "4 899 м² · по выгрузке ГлавАПУ"
+
+    plain = _payload([_building("77:06:0003016:2001", 1492.0)], site_area_ha=0.4899)
+    texts = _tile(monkeypatch, plain)
+    assert _value_after(texts, "Площадь ЗУ") == "4 899 м² · из вводных"
+
+
+def test_a_parcel_without_area_is_named_not_zeroed(monkeypatch):
+    texts = _tile(monkeypatch, _payload([_land("77:06:0003016:1", 1000.0),
+                                         _land("77:06:0003016:2", 0.0)]))
+    assert _value_after(texts, "Площадь ЗУ") == "1 000 м² · без площади в ЕГРН: 1"
 
 
 def test_an_unknown_area_is_not_a_zero(monkeypatch):

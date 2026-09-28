@@ -263,11 +263,18 @@ def test_moscow_oblast_has_no_moscow_coefficients() -> None:
 
 
 def test_moscow_oblast_built_in_uses_the_confirmed_rule() -> None:
-    """774-ПП называет встроенно-пристроенные помещения первых этажей прямо."""
+    """Норматив называет встроенно-пристроенные помещения первых этажей прямо.
+
+    Абзац двадцать седьмой п. 5.12 переиздан 1080-ПП от 01.09.2026: число то же
+    (1 место на 50 кв. м общей площади), состав помещений расширен
+    многоуровневыми паркингами. Редакцию называет сама строка источника, и
+    проверка держит её там, а не в этом тексте.
+    """
     got = core.parking_demand(_inputs(vri_region="mo"), TEP)
     row = next(r for r in got["rows"] if r["tep_key"] == "ground_commercial")
     assert row["required_spaces"] == 180        # 9 000 общей / 50
     assert row["source_confirmed"] is True
+    assert "1080-ПП" in row["normative_source"]
 
 
 def test_missing_coefficients_are_the_upper_edge_not_a_silent_zero() -> None:
@@ -298,14 +305,19 @@ def test_the_demand_reaches_the_calculation_result() -> None:
 
 def test_the_fields_are_declared_once_in_the_engine() -> None:
     """Страница берёт поля у движка — копии на странице быть не должно."""
+    # Площадь подземного места гаража своего поля не имеет — это норматив
+    # класса `underground_area_per_space_sqm` (владелец, 27.09.2026).
+    assert "object_parking_area_per_space_sqm" not in core.DEFAULT_INPUTS
     for key in ("parking_k1", "parking_k2", "parking_design_mode",
-                "object_parking_area_per_space_sqm",
+                "underground_area_per_space_sqm",
                 "offices_parking_under_spaces", "offices_parking_over_spaces",
                 "retail_parking_under_spaces", "retail_parking_over_spaces",
                 "sports_parking_under_spaces", "sports_parking_over_spaces",
                 "offices_parking_guest_pct"):
         assert key in core.DEFAULT_INPUTS, key
     names = {group[0] for group in core.FIELD_GROUPS}
+    # Группа объявлена там же; во «Вводных» её поля не рисуются — коэффициенты
+    # стоят в карточке участка, площадь места — в «Настройках класса».
     assert "Нормативы парковки нежилья (общие на объекты)" in names
     # Паркинг объекта живёт в блоке САМОГО объекта (владелец, 06.09.2026):
     # «может, парковки приобъектные разнести по блокам самих объектов».

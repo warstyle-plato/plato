@@ -119,6 +119,8 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         pytest.skip("node недоступен")
     script = "\n".join([
         page_const("FIELD_GROUPS"),
+        # Заголовки смысловых блоков объекта — карта движка рядом с группами.
+        page_const("FIELD_SECTIONS"),
         # Поля, которые правят в «Настройках класса», форма пропускает.
         # Список приходит из движка вместе с самими полями: без него
         # `renderInputs` падает на «CLASS_ONLY_INPUTS is not defined», то
@@ -128,11 +130,18 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # отдельной задачей: заглушки стенда разрешитель добрал бы со
         # страницы и подменил бы ими поведение соседних проверок.
         page_const("CLASS_ONLY_INPUTS"),
+        # Поля участка (К1, К2, расстояние, край нормы МО) рисует карточка
+        # «Участок и плотность», и форма пропускает их тем же правилом.
+        page_const("SITE_ONLY_INPUTS"),
+        page_const("notOnInputs"),
         # Пометка «ставит класс проекта» у единицы поля: список полей — сам
         # профиль класса, а не перечисление рядом с ним, поэтому стенду нужен
         # и профиль, и тот, кто по нему спрашивает.
         page_const("PROJECT_CLASS_PRESETS"),
         page_function("classSetsField"),
+        # Пометка «вписано руками» у поля профиля класса — рядом с пометкой класса.
+        page_function("classManualKeys"),
+        page_function("isClassManual"),
         page_const("INPUT_DEFAULT"),
         page_const("num"),
         page_const("VRI_GROUP_NAME"),
@@ -217,11 +226,11 @@ def test_every_group_with_its_own_fields_is_rendered():
     исчезнет тем же правилом, а перечисление имён отстало бы на ней.
     """
     drawn = {item["name"] for item in render({})}
+    away = set(core.CLASS_ONLY_INPUTS) | set(core.SITE_ONLY_INPUTS)
     expected = {name for name, fields in core.FIELD_GROUPS
-                if any(one[0] not in core.CLASS_ONLY_INPUTS for one in fields)}
+                if any(one[0] not in away for one in fields)}
     hidden = {name for name, fields in core.FIELD_GROUPS
-              if fields and not any(one[0] not in core.CLASS_ONLY_INPUTS
-                                    for one in fields)}
+              if fields and not any(one[0] not in away for one in fields)}
     # Предохранитель: без такой группы утверждение про исключение не проверено.
     assert hidden, "ни одной группы, целиком уехавшей в класс"
     assert drawn == expected, {"не нарисованы": sorted(expected - drawn),

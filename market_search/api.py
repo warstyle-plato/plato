@@ -376,6 +376,20 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         cabinet_module.require_cabinet(request)
         return await run_in_threadpool(service.pulse.probe_fields)
 
+    @app.get("/market/pulse/project-dates")
+    async def market_pulse_project_dates(
+        request: Request, complex_id: int = 0
+    ) -> dict[str, Any]:
+        """Проверка дат проекта прямо в ЛК Пульса, без месячного XLSX."""
+        cabinet_module.require_cabinet(request)
+        if not complex_id:
+            known = await run_in_threadpool(service.pulse.projects)
+            complex_id = next((row.complex_id for row in known or []), 0)
+        if not complex_id:
+            raise HTTPException(status_code=503, detail="Справочник проектов пуст")
+        dates = await run_in_threadpool(service.pulse.project_dates, complex_id)
+        return {"complex_id": complex_id, **dates}
+
     @app.get("/market/pulse/object-types")
     async def market_pulse_object_types(request: Request, complex_id: int = 0) -> dict[str, Any]:
         """Есть ли у источника коммерция и машино-места.

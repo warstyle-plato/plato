@@ -242,9 +242,10 @@ def test_the_catalogue_counts_itself_once_a_week(tmp_path):
     assert second.claim() is True, "после освобождения работа снова доступна"
     second.release()
 
-    # Свежий кэш откладывает следующий прогон.
+    # Свежий полный прогон откладывает следующий.
     first._persist({"a": {"slug": "a", "available": True,
-                          "entry_capacity_rub_per_sqm": 1, "name": "a"}})
+                          "entry_capacity_rub_per_sqm": 1, "name": "a"}},
+                   catalogue_run=True)
     assert first.due() is False
 
 

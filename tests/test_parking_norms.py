@@ -156,11 +156,19 @@ def test_mo_catering_counts_seats_not_metres() -> None:
 
 
 def test_mo_fallback_is_the_confirmed_rule() -> None:
-    """1 место на 50 м² — дословный текст 774-ПП, и он подтверждён."""
+    """1 место на 50 м² — дословный текст, и он подтверждён.
+
+    Редакцию называет сама строка источника: абзац двадцать седьмой п. 5.12
+    переиздан 1080-ПП от 01.09.2026, и число в нём то же. Проверка держит
+    утверждение «правило подтверждено и названо действующей редакцией», а не
+    номер прошлой поправки: под номером она падала бы на верной правке.
+    """
     got = pn.mo_required("gym", 10_000)
     assert got["required_spaces_min"] == got["required_spaces_max"] == 200
     assert got["source_confirmed"] is True
-    assert "774-ПП" in got["normative_source"]
+    assert "1080-ПП" in got["normative_source"]
+    # Состав помещений правила 1/50 расширен, и это видно в самой строке.
+    assert "многоуровневые паркинги" in got["normative_source"]
 
 
 def test_mo_fallback_does_not_swallow_the_mall() -> None:
