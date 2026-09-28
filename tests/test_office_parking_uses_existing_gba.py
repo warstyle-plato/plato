@@ -27,6 +27,9 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import v4_inputs  # noqa: E402
+
 # Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
 OFFICE_PARKING = "object_parking_offices"
 
@@ -258,7 +261,8 @@ def test_v4_book_uses_25sqm_footprint_before_saleable_ratio() -> None:
     assert not [m for m in meta["missing"] if "паркинг объектов" in m], meta["missing"]
 
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    params = book["Параметры модели"]
+    # Вводная живёт на «Вводных», «Параметры модели» её читают ссылкой.
+    params = v4_inputs.inputs(book)
     objects = book["ОБЪЕКТЫ"]
 
     assert params["K160"].value == 25
@@ -319,7 +323,7 @@ def test_v4_book_uses_separate_office_parking_prices() -> None:
     assert not [m for m in meta["missing"] if "паркинг объектов" in m], meta["missing"]
 
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    params = book["Параметры модели"]
+    params = v4_inputs.inputs(book)
     objects = book["ОБЪЕКТЫ"]
 
     assert params["K169"].value == 6
