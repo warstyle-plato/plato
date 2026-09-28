@@ -142,6 +142,10 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # Пометка «вписано руками» у поля профиля класса — рядом с пометкой класса.
         page_function("classManualKeys"),
         page_function("isClassManual"),
+        # Подпись у единицы собирает один владелец — с происхождением числа
+        # (рекомендация DevelopAid), если его поставил источник.
+        page_function("classFieldSource"),
+        page_function("classFieldUnitText"),
         page_const("INPUT_DEFAULT"),
         page_const("num"),
         page_const("VRI_GROUP_NAME"),
