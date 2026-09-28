@@ -162,6 +162,38 @@ def tep_cell_stand() -> str:
     return "\n".join(pieces) + "\n"
 
 
+# Одно и то же объявление ищется ДЕСЯТКИ ТЫСЯЧ раз за один стенд: разрешитель
+# спрашивает «занято ли имя» про каждую зависимость и про каждого её соседа, а
+# собранный скрипт к концу разбора — сотни килобайт. Поиск по имени сканировал
+# весь текст заново на каждый вопрос, и 73 секунды из 84 у одного стенда
+# уходили в `re.search` (замер 27.09.2026 профилировщиком на подписи паркинга:
+# 57 811 сканирований, node при этом занял 0,2 с). Поэтому текст разбирается
+# ОДИН раз в набор объявленных имён, а вопрос про имя становится взглядом в
+# набор. Правило то же, что и было: перекос в сторону «занято».
+#
+# Выражения — те же самые, только имя в них не подставляется, а вынимается
+# группой: два написания правила разошлись бы молча.
+_DECLARED_FUNCTION = re.compile(r"(?:^|[^\w$.])(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(")
+_DECLARED_BINDING = re.compile(r"(?<![\w$.])([A-Za-z_$][\w$]*)\s*=(?![=>])")
+# Сколько раз текст пришлось разобрать целиком. Считается, чтобы возврат к
+# «сканировать на каждое имя» был виден проверкой, а не только секундами.
+_SCANS = 0
+
+
+def scans() -> int:
+    """Сколько раз разбирался текст целиком за всё время процесса."""
+    return _SCANS
+
+
+@functools.lru_cache(maxsize=512)
+def _declared_names(text: str) -> frozenset[str]:
+    """Все имена, связанные в этом тексте, — один разбор на текст."""
+    global _SCANS
+    _SCANS += 1
+    return frozenset(_DECLARED_FUNCTION.findall(text)) | frozenset(
+        _DECLARED_BINDING.findall(text))
+
+
 def _declared_in(text: str, name: str) -> bool:
     """Занято ли имя в уже собранном скрипте — включая заглушки стенда.
 
@@ -176,28 +208,15 @@ def _declared_in(text: str, name: str) -> bool:
     роняет стенд целиком. Отсечка точкой — чтобы `x.имя=` не считалось
     объявлением, `(?![=>])` — чтобы им не считались `==` и `=>`.
     """
-    if name not in text:
-        return False
-    function_form, binding_form = _declaration_patterns(name)
-    return bool(function_form.search(text) or binding_form.search(text))
+    return name in _declared_names(text)
 
 
-@functools.lru_cache(maxsize=None)
-def _declaration_patterns(name: str) -> tuple[re.Pattern[str], re.Pattern[str]]:
-    """Шаблоны `_declared_in`, начинающиеся с буквального слова.
-
-    Прежде оба начинались с проверки соседа слева (`(?:^|[^\\w$.])`,
-    `(?<![\\w$.])`), и движок пробовал КАЖДУЮ позицию собранного скрипта:
-    29 тысяч таких поисков по растущему тексту съедали 78 из 84 секунд
-    одного стенда, а браузерно-node стендов в наборе десятки — отсюда доли
-    CI по 50 минут. Та же отсечка стоит теперь ПОСЛЕ слова просмотром назад
-    фиксированной ширины, и поиск прыгает сразу к вхождениям слова.
-    Совпадение со старой формой держит `test_page_blocks_finds_declarations_fast`.
-    """
-    word = re.escape(name)
-    function_form = re.compile(rf"function(?<![\w$.]function)\s+{word}\s*\(")
-    binding_form = re.compile(rf"{word}(?<![\w$.]{word})\s*=(?![=>])")
-    return function_form, binding_form
+@functools.lru_cache(maxsize=8)
+def _page_function_names(page: str) -> frozenset[str]:
+    """Имена функций страницы — один разбор на страницу, а не на имя."""
+    global _SCANS
+    _SCANS += 1
+    return frozenset(re.findall(r"function ([A-Za-z_$][\w$]*)\(", page))
 
 
 def _page_declares(name: str, page: str) -> bool:
@@ -211,17 +230,11 @@ def _page_declares(name: str, page: str) -> bool:
     добираются лениво, по своей ошибке, — а слепота разрешителя, ради которой
     правка и написана, померена на функции (`moscowFormat`).
 
-    Ответ берётся из множества имён, собранного со страницы один раз: поиск
-    подстроки по всей странице на каждое прочитанное имя стоил стенду пять
-    секунд из девяти.
+    Подстрока `function имя(` и имя в наборе имён — одно и то же условие:
+    набор собран тем же выражением, что и подстрока, включая отсутствие
+    пробела перед скобкой.
     """
-    return name in _page_functions(page)
-
-
-@functools.lru_cache(maxsize=8)
-def _page_functions(page: str) -> frozenset[str]:
-    """Все имена `X`, для которых на странице есть подстрока `function X(`."""
-    return frozenset(re.findall(r"function ([A-Za-z_$][\w$]*)\(", page))
+    return name in _page_function_names(page)
 
 
 # Обращение к свойству (`Math.max`, `x.slice`) именем страницы не является:
@@ -257,23 +270,36 @@ def _piece_with_deps(name: str, page: str | None, have: str,
     стенда) не трогаем: заглушка ответила бы за страницу только если её ставили
     нарочно, и перебивать её настоящим куском — это менять стенд под собой.
     """
-    if depth > 40:
-        raise AssertionError(f"зависимости {name} не сходятся — цепочка глубже 40")
     # Чья это страница, решается здесь же, а не у вызывающего: `piece` умеет
     # умолчание, а разбор зависимостей получал сырой `None` и падал «argument
     # of type NoneType is not iterable» — то есть на стенде, а не на том, что
     # стенд проверяет.
     page = core.PAGE if page is None else page
+    return _deps(name, page, _declared_names(have), depth)
+
+
+def _deps(name: str, page: str, seen: frozenset[str],
+          depth: int = 0) -> list[tuple[str, str]]:
+    """То же, но занятые имена едут НАБОРОМ, а не растущим текстом.
+
+    Раньше сюда ехал собранный скрипт, и «занято ли имя» сканировало его
+    целиком на каждую зависимость. Текст к концу разбора — сотни килобайт,
+    вопросов — десятки тысяч, и один стенд подписи паркинга съедал 84 секунды,
+    из них 73 в `re.search` (замер 27.09.2026). Набор собирается по разу на
+    КУСОК, а не по разу на вопрос; правило «занято» не менялось.
+    """
+    if depth > 40:
+        raise AssertionError(f"зависимости {name} не сходятся — цепочка глубже 40")
     body = piece(name, page)
     out: list[tuple[str, str]] = []
-    seen = have + "\n" + body
+    seen = seen | _declared_names(body)
     for dependency in _needs(body, page):
-        if _declared_in(seen, dependency):
+        if dependency in seen:
             continue
-        for got_name, got_body in _piece_with_deps(dependency, page, seen, depth + 1):
-            if not _declared_in(seen, got_name):
+        for got_name, got_body in _deps(dependency, page, seen, depth + 1):
+            if got_name not in seen:
                 out.append((got_name, got_body))
-                seen += "\n" + got_body
+                seen = seen | _declared_names(got_body)
     out.append((name, body))
     return out
 
@@ -359,14 +385,36 @@ def run(prelude: str, tail: str, limit: int = 60,
         have = prelude + "\n" + "\n".join(bodies) + "\n" + tail
         # Дважды объявленное имя — SyntaxError на весь скрипт, и решает это
         # МЕСТО вставки: оно одно видит собранный скрипт целиком, а страж
-        # внутри рекурсии видит только свою ветку.
+        # внутри рекурсии видит только свою ветку. Занятые имена растут
+        # набором: пересобирать текст на каждую вставку значило бы снова
+        # сканировать сотни килобайт по разу на кусок.
+        have_names = _declared_names(have)
         offset = 0
         for got_name, got_body in _piece_with_deps(name, page, have):
-            if _declared_in(have, got_name):
+            # Имя, которое НАЗВАЛ сам node, добирается даже если текст считает
+            # его занятым. «Занято» здесь проверяется текстом и об области
+            # видимости не знает: `money` объявлен у страницы наверху
+            # (`const money=v=>…`), но такая же строка стоит ЛОКАЛЬНО внутри
+            # чужой функции (`const money=opts.value==='money_or_share';`), и
+            # добранный кусок приносил её с собой. Дальше страж говорил
+            # «занято», настоящий верхний `money` не добирался никогда, node
+            # повторял «money is not defined», а разрешитель каждый круг
+            # подтягивал соседей — и упирался в предел, ничего не сказав о
+            # причине. Так 27.09.2026 разъехались доли CI: стенд таблицы
+            # очередей сходился или нет в зависимости от того, какую ветку
+            # отрисовки node прошёл первой.
+            #
+            # Обещание «лишний отказ добора только вернёт имя ленивому пути»
+            # здесь не работает: ленивый путь упирается в ту же слепую
+            # проверку. Слово node о неопределённом имени — ответ о ВИДИМОСТИ,
+            # и текстовое совпадение внутри чужой функции его не отменяет.
+            # Двойного объявления это не создаёт: объяви прелюдия имя сверху,
+            # node не сказал бы «is not defined».
+            if got_name in have_names and got_name != name:
                 continue
             bodies.insert(reader + offset, got_body)
             taken.insert(reader + offset, got_name)
-            have += "\n" + got_body
+            have_names = have_names | _declared_names(got_body)
             offset += 1
     raise AssertionError(f"зависимостей больше {limit} — стенд не сходится")
 

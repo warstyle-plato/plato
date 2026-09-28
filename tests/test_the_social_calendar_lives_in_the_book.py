@@ -140,7 +140,10 @@ def test_moving_the_start_inside_excel_moves_the_schedule(phased):
     sheet = v4_inputs.inputs(moved)
     row = next(number for number in range(1, sheet.max_row + 1)
                if str(sheet[f"A{number}"].value or "") == "ДОО — очередь 1")
-    sheet[f"D{row}"] = sheet[f"D{row}"].value + 6      # начало на полгода позже
+    # Начало — ячейка с форматом даты: openpyxl отдаёт её датой.
+    from openpyxl.utils.datetime import to_excel
+    start = sheet[f"D{row}"].value
+    sheet[f"D{row}"] = (to_excel(start) if hasattr(start, "year") else start) + 6
     after = [month for month, value in enumerate(monthly(evaluated(moved), 31))
              if abs(value) > 1e-9]
     assert after and after[0] > before[0], (before[:2], after[:2])

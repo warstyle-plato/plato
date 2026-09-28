@@ -77,6 +77,104 @@ def style_map(styles: str) -> dict[str, Any]:
             "entry_default": entry[0] if entry else None}
 
 
+# ---------------------------------------------------------------------------
+# Формат числа. Стиль Excel несёт numFmt вместе с цветом, поэтому «покрасить
+# как ввод» и «показать как процент» — одно решение об одном xf. Своих цветов
+# здесь не бывает: xf клонируется у шаблона, меняется только numFmtId.
+# ---------------------------------------------------------------------------
+_BUILTIN_FORMATS = {0: "General", 1: "0", 2: "0.00", 3: "#,##0", 4: "#,##0.00",
+                    9: "0%", 10: "0.00%", 14: "mm-dd-yy", 49: "@"}
+
+
+def _xf_items(styles: str) -> tuple["re.Match[str]", list[str]]:
+    block = re.search(r'<x:cellXfs count="(\d+)">(.*?)</x:cellXfs>', styles, re.S)
+    if not block:
+        raise ValueError("styles.xml без cellXfs")
+    return block, re.findall(r'<x:xf [^>]*?(?:/>|>.*?</x:xf>)', block.group(2), re.S)
+
+
+def num_fmt_id(styles: str, xf_id: int | None) -> int:
+    """numFmtId стиля ячейки; ячейка без стиля — General."""
+    if xf_id is None:
+        return 0
+    _block, items = _xf_items(styles)
+    if not 0 <= xf_id < len(items):
+        return 0
+    found = re.search(r'numFmtId="(\d+)"', items[xf_id])
+    return int(found.group(1)) if found else 0
+
+
+def format_code(styles: str, fmt_id: int) -> str:
+    """Код формата по id: свой из <numFmts>, иначе встроенный Excel."""
+    found = re.search(r'<x:numFmt numFmtId="%d" formatCode="([^"]*)"' % fmt_id, styles)
+    if found:
+        return found.group(1).replace("&quot;", '"').replace("&amp;", "&")
+    return _BUILTIN_FORMATS.get(fmt_id, "General")
+
+
+def format_family(code: str) -> str:
+    """Что формат обещает читателю: процент, дату, число или «как есть»."""
+    bare = re.sub(r'"[^"]*"|\[[^\]]*\]', "", code or "General")
+    if bare in ("General", "@"):
+        return "general"
+    if "%" in bare:
+        return "pct"
+    if re.search(r"[dy]|mmm", bare, re.I):
+        return "date"
+    return "number"
+
+
+def with_format(styles: str, code: str) -> tuple[str, int]:
+    """id формата с данным кодом; нет такого в книге — дописывается."""
+    for fmt_id, known in _BUILTIN_FORMATS.items():
+        if known == code:
+            return styles, fmt_id
+    for fmt_id, known in re.findall(r'<x:numFmt numFmtId="(\d+)" formatCode="([^"]*)"', styles):
+        if known.replace("&quot;", '"').replace("&amp;", "&") == code:
+            return styles, int(fmt_id)
+    ids = [int(one) for one in re.findall(r'<x:numFmt numFmtId="(\d+)"', styles)]
+    new_id = max(ids + [163]) + 1
+    escaped = code.replace("&", "&amp;").replace('"', "&quot;")
+    item = f'<x:numFmt numFmtId="{new_id}" formatCode="{escaped}" />'
+    block = re.search(r'<x:numFmts count="(\d+)">(.*?)</x:numFmts>', styles, re.S)
+    if block:
+        styles = (styles[:block.start()]
+                  + f'<x:numFmts count="{int(block.group(1)) + 1}">{block.group(2)}{item}</x:numFmts>'
+                  + styles[block.end():])
+    else:
+        styles = re.sub(r"(<x:styleSheet[^>]*>)", r"\1" + f'<x:numFmts count="1">{item}</x:numFmts>',
+                        styles, count=1)
+    return styles, new_id
+
+
+def xf_with_format(styles: str, xf_id: int, fmt_id: int) -> tuple[str, int]:
+    """Тот же стиль шаблона, но с другим форматом числа.
+
+    Цвет, рамка и выравнивание — утверждения шаблона о ячейке, и менять их
+    ради формата нельзя. Поэтому xf клонируется целиком, а готовый такой же
+    берётся повторно: книга не пухнет от одинаковых стилей.
+    """
+    if num_fmt_id(styles, xf_id) == fmt_id:
+        return styles, xf_id
+    block, items = _xf_items(styles)
+    base = items[xf_id]
+    if 'numFmtId="' in base:
+        clone = re.sub(r'numFmtId="\d+"', f'numFmtId="{fmt_id}"', base, count=1)
+    else:
+        clone = base.replace("<x:xf ", f'<x:xf numFmtId="{fmt_id}" ', 1)
+    if "applyNumberFormat" in clone:
+        clone = re.sub(r'applyNumberFormat="\d"', 'applyNumberFormat="1"', clone, count=1)
+    else:
+        clone = clone.replace("<x:xf ", '<x:xf applyNumberFormat="1" ', 1)
+    squeeze = lambda s: re.sub(r"\s+", "", s)  # noqa: E731
+    for index, item in enumerate(items):
+        if squeeze(item) == squeeze(clone):
+            return styles, index
+    items.append(clone)
+    new_block = f'<x:cellXfs count="{len(items)}">{"".join(items)}</x:cellXfs>'
+    return styles[:block.start()] + new_block + styles[block.end():], len(items) - 1
+
+
 def shared_strings(xml: str) -> list[str]:
     out: list[str] = []
     for item in re.findall(r"<x:si>(.*?)</x:si>", xml, re.S):
@@ -499,7 +597,9 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
 
     Возвращает (расчётный XML, XML листа ввода, отчёт). Соответствие адресов
     строится в том же проходе, что и перенос, — второй список «что куда уехало»
-    разошёлся бы с первым молча.
+    разошёлся бы с первым молча. Читалкам нужны стили, которых у шаблона нет
+    (формульный цвет с форматом источника): дополненный styles.xml лежит в
+    `отчёт["styles_xml"]`, и писать в книгу надо именно его.
     """
     made = plan(sheet, styles)
     rows, smap = made["rows"], made["styles"]
@@ -573,16 +673,32 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
                  + _merges_xml(sheet, moved_rows)
                  + '</x:worksheet>')
 
+    # Читалка показывает то же число, что вводная, — значит и тем же форматом.
+    # Формульный стиль шаблона несёт General: 4,5% читались на «Параметрах
+    # модели» как 0,045, а дата — как 46227. Цвет остаётся формульным (здесь
+    # не печатают), формат берётся у ячейки-источника.
+    source_style = {cell["coord"]: cell["style"]
+                    for cells in rows.values() for cell in cells.values()}
     params = sheet
     for source, target in moved.items():
-        style = f' s="{formula_style}"' if formula_style is not None else ""
+        style_id = formula_style
+        if formula_style is not None:
+            wanted = num_fmt_id(styles, source_style.get(source))
+            styles, style_id = xf_with_format(styles, formula_style, wanted)
+        style = f' s="{style_id}"' if style_id is not None else ""
         replacement = (f'<x:c r="{source}"{style}>'
                        f"<x:f>'{ENTRY_SHEET}'!{target}</x:f></x:c>")
         params = _CELL.sub(lambda m, c=source, r=replacement: r if m.group(1) == c else m.group(0),
                            params, count=0)
     for coord in made["restyle"]:
+        # Формула в жёлтом перекрашивается в формульный цвет — формат числа
+        # остаётся её собственным по той же причине, что у читалки.
+        style_id = formula_style
+        if formula_style is not None:
+            wanted = num_fmt_id(styles, source_style.get(coord))
+            styles, style_id = xf_with_format(styles, formula_style, wanted)
         params = re.sub(r'(<x:c r="%s")[^>]*?s="\d+"' % re.escape(coord),
-                        lambda m: m.group(1) + f' s="{formula_style}"', params, count=1)
+                        lambda m, sid=style_id: m.group(1) + f' s="{sid}"', params, count=1)
     return params, entry_xml, {"moved": len(moved), "restyled": len(made["restyle"]),
                                "rows": len(made["keep"]), "map": moved,
-                               "authored": list(AUTHORED)}
+                               "authored": list(AUTHORED), "styles_xml": styles}

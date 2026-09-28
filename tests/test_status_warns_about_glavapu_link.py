@@ -69,15 +69,21 @@ def test_the_health_route_asks_the_core_when_it_is_remote(monkeypatch):
     assert asked == ["http://core.test/glavapu/health"]
 
 
-def test_a_dead_core_is_a_loud_state_not_an_exception(monkeypatch):
+def test_a_dead_core_is_a_loud_state_not_an_exception(monkeypatch, caplog):
     def broken(request, timeout=0):
         raise OSError("нет маршрута")
 
     monkeypatch.setattr(core, "_core_api_url", lambda path: "http://core.test" + path)
     monkeypatch.setattr(core.urllib.request, "urlopen", broken)
-    state = core.glavapu_health()
+    with caplog.at_level("ERROR"):
+        state = core.glavapu_health()
     assert state["state"] == "ядро недоступно"
-    assert "нет маршрута" in state["hint"]
+    # Наружу — класс ошибки и метка журнала; текст исключения — в журнал
+    # (CodeQL py/stack-trace-exposure), и по метке он там находится.
+    assert "OSError" in state["hint"]
+    assert "нет маршрута" not in state["hint"]
+    ref = state["hint"].rsplit("метка журнала ", 1)[1].rstrip(")")
+    assert ref in caplog.text and "нет маршрута" in caplog.text
 
 
 def test_status_shows_a_ready_link_quietly(sent, monkeypatch):

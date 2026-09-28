@@ -32,6 +32,12 @@ PAGE_TIMEOUT_SECONDS = 60
 class Unavailable(RuntimeError):
     """Распознавания нет — это отказ, а не пустой ответ."""
 
+    def __init__(self, message: str = "") -> None:
+        super().__init__(message)
+        # Подпись написана нами для человека: её отдают наружу вместо
+        # `str(exc)`, чтобы в ответ не уходило ничего, кроме этого текста.
+        self.public_message = str(message)
+
 
 def available() -> bool:
     """Есть ли обе половины. Половина — это «нет»."""

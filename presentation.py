@@ -51,10 +51,6 @@ RISK_CATALOGUE: tuple[tuple[str, str, str], ...] = (
     ("weakest_phase", "Слабейшая очередь ниже 1,00x", "weakest_phase_llcr"),
 )
 
-PRODUCT_ORDER: tuple[str, ...] = (
-    "apartments", "ground_commercial", "underground_parking", "storage",
-    "offices", "standalone_retail", "above_parking", "sports", "object_parking",
-)
 
 
 def _text(value: Any) -> str:
@@ -100,10 +96,11 @@ def build_project_presentation(
     products: list[dict[str, Any]] = []
     by_key = {str(p.get("key")): p for p in (report.get("products") or [])}
     product_numbers = numbers.get("products") or {}
-    for key in PRODUCT_ORDER:
-        product = by_key.get(key)
-        if not product:
-            continue
+    # Порядок и состав — у отчёта движка: паркинг каждого объекта стоит там
+    # своей строкой сразу за объектом (`object_parking_<объект>`). Список
+    # ключей здесь был второй копией состава и отстал бы на следующем объекте.
+    for key in by_key:
+        product = by_key[key]
         products.append({
             "key": key,
             "label": _text(product.get("label")),
