@@ -34559,9 +34559,12 @@ def _shift_iso(value: Any, months: int) -> Any:
 
 
 def _sum_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
-    keys: set[str] = set()
+    # Порядок ключей — порядок первой встречи, а не множества: порядок `set`
+    # зависит от сида хеша процесса, и статьи расходов вставали на экране
+    # вразнобой, от перезапуска к перезапуску по-разному.
+    keys: dict[str, None] = {}
     for item in items:
-        keys.update(item.keys())
+        keys.update(dict.fromkeys(item.keys()))
     out: dict[str, float] = {}
     for key in keys:
         if key == "total":
@@ -54122,7 +54125,14 @@ function renderResult(){
  {
   const cGns=Number(r.summary.project_gns_sqm||0),cSaleable=Number(r.summary.monetizable_saleable_sqm||0);
   const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
-  capexTable.innerHTML=Object.entries(r.capex).filter(([key])=>key!=='total')
+  // Порядок статей — порядок движка (`_MODEL_CAPEX_LABELS`: земля → ИРД и
+  // проект → снос → СМР → объекты → соцнагрузка → надбавки → резерв), а не
+  // порядок ключей ответа. Нулевая статья строку не занимает: итог её не
+  // теряет, а «0 млрд ₽» между статьями только мешает читать.
+  const capOrder=Object.keys(capNames);
+  const capRank=key=>{const i=capOrder.indexOf(key);return i<0?capOrder.length:i};
+  capexTable.innerHTML=Object.entries(r.capex).filter(([key,v])=>key!=='total'&&Math.abs(Number(v||0))>=0.5)
+   .sort((a,b)=>capRank(a[0])-capRank(b[0]))
    .map(([key,v])=>`<tr><td>${capNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,cGns)}</td><td>${perTh(v,cSaleable)}</td></tr>`).join('')
    +`<tr><th>Итого</th><th>${money(r.capex.total)}</th><th>${perTh(r.capex.total,cGns)}</th><th>${perTh(r.capex.total,cSaleable)}</th></tr>`;
  }
