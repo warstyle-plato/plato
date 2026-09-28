@@ -23,6 +23,10 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import main_legacy as core  # noqa: E402
 
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
 
 def _project() -> tuple[dict, dict]:
     """Проект, где у КАЖДОГО объекта живые метры и живой гараж.
@@ -144,13 +148,13 @@ def test_the_garage_is_sold_by_its_own_object_calendar():
     общий календарь продал бы места офиса вместе с квартирами.
     """
     x, tep = _project()
-    base = _run(x, tep)["revenue"]["object_parking"]
+    base = _run(x, tep)["revenue"][OFFICE_PARKING]
     assert base > 0, "гаражи объектов не продаются — мерить нечем"
 
     late = dict(x)
     late["offices_start"] = "2032-01-01"
     late["offices_sales_start"] = "2032-06-01"
-    assert _run(late, tep)["revenue"]["object_parking"] != base, (
+    assert _run(late, tep)["revenue"][OFFICE_PARKING] != base, (
         "перенос стройки объекта не двинул выручку его гаража")
 
 

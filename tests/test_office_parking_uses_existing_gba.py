@@ -30,6 +30,10 @@ import main_legacy as core  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import v4_inputs  # noqa: E402
 
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
 GBA = 186_180.0
 TOTAL = GBA * 0.94
 SALEABLE = TOTAL * 0.50
@@ -107,12 +111,132 @@ def test_project_reallocation_keeps_parking_revenue_and_changes_only_office_quan
     over_result = core.calculate(core.CalcRequest(
         inputs=_inputs(UNDER, OVER), tep=_tep(), rates=[]))
 
-    assert _product_revenue(over_result, "object_parking") == pytest.approx(
-        _product_revenue(under_result, "object_parking"), rel=1e-12)
+    assert _product_revenue(over_result, OFFICE_PARKING) == pytest.approx(
+        _product_revenue(under_result, OFFICE_PARKING), rel=1e-12)
 
     office_under = _product_revenue(under_result, "offices")
     office_over = _product_revenue(over_result, "offices")
     assert office_over / office_under == pytest.approx(75_754.6 / 87_504.6, rel=1e-12)
+
+
+# Очереди: перенесено из PR #504 (Codex) — в main этих проверок не было.
+def _four_phase_project() -> dict:
+    return {
+        "enabled": True,
+        "mode": "phased",
+        "user_enabled": True,
+        "phase_count": 4,
+        "phase_gap_months": 12,
+        "phases": [
+            {"name": f"О{i + 1}", "start_offset_months": i * 12,
+             "construction_months": 24}
+            for i in range(4)
+        ],
+        "discrete": {"offices": 3},
+        "social_objects": [],
+    }
+
+
+def _product_row(result: dict, key: str) -> dict:
+    hit = [row for row in result["report"]["products"] if row.get("key") == key]
+    assert len(hit) == 1, (key, hit)
+    return hit[0]
+
+
+def test_phased_office_sells_the_saleable_left_after_first_floor_parking() -> None:
+    """Очередь не должна печатать/продавать исходные метры после парковки.
+
+    Контрольный расклад пользователя: 1 778 мест на первых этажах и 1 000
+    подземных. При GBA 186 180 м² первые этажи занимают 44 450 м² GBA, поэтому
+    офисная продаваемая падает с 87 504,6 до 66 613,1 м². До этой регрессии
+    ТЭП уже показывал 66 613, а «Продажи и продукты» продолжали печатать
+    исходные 87 505 из offices_saleable_sqm.
+    """
+    over = 1_778
+    under = SPACES - over
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=_inputs(under, over),
+        tep=_tep(),
+        rates=[],
+        phasing=_four_phase_project(),
+    ))
+    office_phase = bundle["phases"][2]["result"]
+    office_tep = next(row for row in office_phase["tep"]["rows"]
+                      if row["key"] == "offices")
+    expected = SALEABLE * (GBA - over * 25) / GBA
+
+    assert expected == pytest.approx(66_613.1)
+    assert office_tep["saleable"] == pytest.approx(expected)
+    assert _product_row(office_phase, "offices")["quantity"] == pytest.approx(expected)
+    assert bundle["comparison"][2]["saleable_by_product"]["offices"] == pytest.approx(expected)
+
+    consolidated_tep = next(row for row in bundle["consolidated"]["tep"]["rows"]
+                            if row["key"] == "offices")
+    consolidated_product = _product_row(bundle["consolidated"], "offices")
+    assert consolidated_tep["saleable"] == pytest.approx(expected)
+    assert consolidated_product["quantity"] == pytest.approx(expected)
+
+
+def test_phased_office_cashflow_uses_adjusted_saleable_not_raw_input() -> None:
+    """LLCR получает офисную выручку именно от остаточной площади.
+
+    При одинаковом календаре и цене отношение офисной выручки должно ровно
+    повторять отношение продаваемых метров. Это ловит возврат к сырой вводной
+    87 504,6 м² внутри очередности.
+    """
+    over = 1_778
+    adjusted = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=_inputs(SPACES - over, over), tep=_tep(), rates=[],
+        phasing=_four_phase_project(),
+    ))
+    all_under = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=_inputs(SPACES, 0), tep=_tep(), rates=[],
+        phasing=_four_phase_project(),
+    ))
+    adjusted_revenue = adjusted["comparison"][2]["revenue_by_product"]["offices"]
+    all_under_revenue = all_under["comparison"][2]["revenue_by_product"]["offices"]
+    expected_ratio = (GBA - over * 25) / GBA
+    assert adjusted_revenue / all_under_revenue == pytest.approx(expected_ratio, rel=1e-12)
+
+
+def test_phased_v4_book_office_revenue_matches_engine_after_parking_reallocation() -> None:
+    """Excel не получает старую продаваемую хардом: формулы сходятся с движком."""
+    openpyxl = pytest.importorskip("openpyxl")
+    from xlsx_eval import Evaluator
+
+    over = 1_778
+    x = _inputs(SPACES - over, over)
+    phasing = _four_phase_project()
+    # Книга рекурсивна; без запаса до сборки `missing` получает RecursionError.
+    sys.setrecursionlimit(400000)
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=copy.deepcopy(x), tep=_tep(), rates=[],
+        phasing=copy.deepcopy(phasing),
+    ))
+    content, _, meta = core.build_project_workbook(
+        copy.deepcopy(x), _tep(), [], copy.deepcopy(phasing),
+        project_name="Паркинг офиса · очереди",
+    )
+    assert meta["missing"] == [], meta["missing"]
+
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    sheet = book["КОНСОЛИДАТОР"]
+    office_col = None
+    for column in range(17, 40):
+        title = sheet.cell(row=3, column=column).value
+        if isinstance(title, str) and title.startswith("Выручка · Офисы"):
+            office_col = column
+            break
+    assert office_col is not None, "в КОНСОЛИДАТОРЕ нет колонки выручки офисов"
+
+    sys.setrecursionlimit(400000)
+    evaluator = Evaluator(book)
+    letter = openpyxl.utils.get_column_letter(office_col)
+    engine_mln = bundle["comparison"][2]["revenue_by_product"]["offices"] / 1_000_000
+    assert evaluator.cell("КОНСОЛИДАТОР", f"{letter}6") == pytest.approx(
+        engine_mln, abs=1.0, rel=0.005)
+
+
 
 
 def test_impossible_first_floor_layout_warns_instead_of_growing_gba() -> None:
@@ -168,8 +292,8 @@ def test_office_under_and_first_floor_places_can_have_different_sale_prices() ->
     same_result = core.calculate(core.CalcRequest(inputs=same, tep=_tep(), rates=[]))
     split_result = core.calculate(core.CalcRequest(inputs=split, tep=_tep(), rates=[]))
 
-    same_revenue = _product_revenue(same_result, "object_parking")
-    split_revenue = _product_revenue(split_result, "object_parking")
+    same_revenue = _product_revenue(same_result, OFFICE_PARKING)
+    split_revenue = _product_revenue(split_result, OFFICE_PARKING)
     weighted_mln = (UNDER * 6 + OVER * 4) / SPACES
     assert split_revenue / same_revenue == pytest.approx(weighted_mln / 6, rel=1e-12)
 
@@ -210,7 +334,7 @@ def test_v4_book_uses_separate_office_parking_prices() -> None:
     sys.setrecursionlimit(400000)
     evaluator = Evaluator(book)
     assert evaluator.cell("ОБЪЕКТЫ", "B33") == pytest.approx(
-        _product_revenue(report, "object_parking") / 1_000_000, rel=1e-9)
+        _product_revenue(report, OFFICE_PARKING) / 1_000_000, rel=1e-9)
 
 
 def test_engine_and_book_sell_the_same_office_when_tep_arrives_apart() -> None:
