@@ -55685,7 +55685,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
  'landScreeningRun','tepRunSequence',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
- 'CLASS_STATS_BY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN'];
+ 'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
