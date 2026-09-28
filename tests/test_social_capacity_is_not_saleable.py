@@ -133,7 +133,14 @@ def test_the_v4_workbook_keeps_capacity_out_of_sales() -> None:
                 same_sheet = sheet.title == params
                 if not (same_sheet or params in value):
                     continue
-                if capacity_ref.search(value) and (sheet.title, cell.coordinate) not in allowed:
+                # Ссылка на ЧУЖОЙ лист (`'Вводные'!B174` после #526 — ячейка
+                # листа ввода, а не место соцобъекта) места не читает: её
+                # вырезаем, прежде чем искать B174:B185 «Параметров модели».
+                own = re.sub(r"'([^']+)'!\$?[A-Z]{1,3}\$?\d+",
+                             lambda m: m.group(0) if m.group(1) == params else "", value)
+                if not same_sheet:
+                    own = value
+                if capacity_ref.search(own) and (sheet.title, cell.coordinate) not in allowed:
                     leaks.append(f"{sheet.title}!{cell.coordinate}: {value[:120]}")
     assert not leaks, leaks
     # Итог единиц проекта складывает очереди и объекты, но не места.
