@@ -571,3 +571,23 @@ def test_the_school_is_built_when_people_move_in():
         "школа нужна к заселению первых очередей, а не к концу стройки")
     for item in objects:
         assert item.get("basis"), "срок обязан нести основание: в извещении его нет"
+
+
+# --- подписи окна импорта ---------------------------------------------------------
+# Окно импорта называло колонки ТЭП ключами схемы: «Квартиры · gns / saleable /
+# useful / units». Человек видел схему, а не площади (ревизия 27.09.2026, S20).
+
+
+def test_the_preview_names_tep_columns_in_words() -> None:
+    rows = preview()["diff"]["tep"]
+    assert rows
+    for row in rows:
+        column = row["label"].rsplit(" · ", 1)[-1]
+        assert column in core.TEP_COLUMN_LABELS.values(), row["label"]
+
+
+def test_the_preview_uses_the_words_of_the_tep_table() -> None:
+    """Одно имя колонки: окно импорта и шапка таблицы ТЭП говорят одинаково."""
+    header = core.PAGE.split('<table class="teptable">', 1)[1].split("</thead>", 1)[0]
+    for label in core.TEP_COLUMN_LABELS.values():
+        assert f"<th>{label}</th>" in header, label
