@@ -34,9 +34,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import main_legacy as core  # noqa: E402
 import page_blocks  # noqa: E402
 
+# «шт.» из заголовков ушло 27.09.2026: мера у каждой строки своя и стоит при
+# числе — у ДОО это места, у паркинга машино-места, у квартир квартиры.
 HEADERS = ("Продукт", "ГНС наземная, м²", "Подземная, м²",
            "Продаваемая площадь, м²", "Передаётся, м²",
-           "Построено, шт.", "Продаётся, шт.")
+           "Построено", "Продаётся")
 
 
 def _const(name: str) -> str:
@@ -69,6 +71,12 @@ def _render() -> str:
     # и разрешитель их не найдёт — значит подставляем тем же значением.
     declared = ("const UNDERGROUND_PRODUCTS=" + json.dumps(list(core.UNDERGROUND_PRODUCTS))
                 + ";\nconst TRANSFER_NOTE_WORD=" + json.dumps(core.TRANSFER_NOTE_WORD) + ";\n"
+                # Мера счёта продукта — такой же подставленный плейсхолдером
+                # список, как и соседние: разрешитель их не находит.
+                + "const TEP_COUNT_MEASURE="
+                + json.dumps(core.TEP_COUNT_MEASURE, ensure_ascii=False) + ";\n"
+                + "const COUNT_PARKING=" + json.dumps(core.COUNT_PARKING, ensure_ascii=False)
+                + ";\n"
                 + _const("num") + "\n")
     stand = declared + """
 const reportTep={innerHTML:''};

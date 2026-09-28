@@ -131,10 +131,13 @@ def test_the_results_tep_shows_the_object_parking_row() -> None:
     assert "подземных 1 000" in html and "на первых этажах 1 778" in html
     row = _office_row(result)
     assert f"{int(row['parking_saleable_units']):,}".replace(",", " ") in html
-    # Итог штук включает места объекта: иначе подстрока не сходится с итогом.
-    total_built = result["tep"]["total"]["units"] + result["tep"]["total"]["parking_units"]
-    shown = f"{total_built:,.1f}".replace(",", " ").replace(".", ",").removesuffix(",0")
-    assert f"<th>{shown}</th>" in html, "итог штук без мест объекта"
+    # Итог считается мерой счёта, а не одной суммой: квартиры, машино-места и
+    # места детсада — разные величины. Места объекта обязаны стоять в графе
+    # машино-мест итога, иначе подстрока не сходится с итогом.
+    places = core.tep_units_by_measure(result["tep"]["rows"])[core.COUNT_PARKING]
+    assert places >= float(row["parking_units"]) > 0, "места объекта потерялись в разборе"
+    shown = f"{places:,.1f}".replace(",", " ").replace(".", ",").removesuffix(",0")
+    assert f"{shown} {core.COUNT_PARKING}" in html, "итог мест без мест объекта"
 
 
 def test_the_input_tep_counts_the_object_garage_underground() -> None:
