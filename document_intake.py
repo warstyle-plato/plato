@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -72,8 +73,12 @@ def extract_text(data: bytes, filename: str = "",
         import io
         reader = PdfReader(io.BytesIO(data))
     except Exception as exc:  # noqa: BLE001
+        # Наружу — класс ошибки, текст и стек разборщика — в журнал: причина
+        # названа, а внутренности библиотеки в ответ не уходят.
+        logging.warning("document_intake: PDF не открылся", exc_info=True)
         return {"text": "", "pages": 0, "scanned": False, "recognized": False,
-                "reason": f"не удалось открыть PDF: {exc}"}
+                "reason": f"не удалось открыть PDF ({type(exc).__name__}) — "
+                          "файл повреждён или это не PDF"}
     pages = len(reader.pages)
     chunks = []
     for index, page in enumerate(reader.pages[:MAX_PAGES], start=1):
@@ -112,10 +117,12 @@ def _recognized(result: dict[str, Any], data: bytes, pages: int) -> dict[str, An
     try:
         text = pdf_ocr.text(data, pages=limit)
     except pdf_ocr.Unavailable as exc:
-        return {**result, "reason": f"{_SCAN_REFUSAL} ({exc})"}
+        return {**result, "reason": f"{_SCAN_REFUSAL} ({getattr(exc, 'public_message', '')})"}
     except Exception as exc:  # noqa: BLE001
         # Сорвалось — это «не смогли», а не «в документе пусто».
-        return {**result, "reason": f"{_SCAN_REFUSAL}; распознавание сорвалось: {exc}"}
+        logging.warning("document_intake: распознавание сорвалось", exc_info=True)
+        return {**result, "reason": f"{_SCAN_REFUSAL}; распознавание сорвалось "
+                                    f"({type(exc).__name__})"}
     if len(re.sub(r"\s", "", text)) < MIN_CHARS_PER_PAGE:
         return {**result, "reason": f"{_SCAN_REFUSAL}; распознавание не нашло букв"}
     return {**result, "text": text.strip(), "recognized": True,
@@ -316,7 +323,8 @@ def parse_intake(answer: str) -> dict[str, Any]:
         data = json.loads(match.group(0))
     except json.JSONDecodeError as exc:
         return {"fields": [], "questions": [], "not_asked": [], "notes": [],
-                "reason": f"ответ модели не разобрался: {exc}"}
+                "reason": (f"ответ модели не разобрался: {exc.msg} "
+                           f"(строка {exc.lineno}, столбец {exc.colno})")}
     if not isinstance(data, dict):
         return {"fields": [], "questions": [], "not_asked": [], "notes": [],
                 "reason": "ответ модели не объект"}

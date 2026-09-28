@@ -60,6 +60,23 @@ _MODULES = (_wrapper.core, _engine) if _wrapper.core is not _engine else (_engin
 
 
 @pytest.fixture(autouse=True)
+def pristine_page():
+    """Страница движка возвращается к исходной после КАЖДОГО теста.
+
+    Установка модуля торгов (`auction_search.api.install`) вшивает мост в
+    `core.PAGE` насовсем, и так делают десятки тестов. Страница с мостом
+    доживала до стендов на node в той же доле, и разрешитель зависимостей
+    упирался в предел («зависимостей больше 60») на сравнении очередей —
+    падение выходило про соседа и зависело от того, как тесты легли по долям.
+    Лечить каждого вшивающего по одному значит ловить их по одному; правило
+    одно — здесь."""
+    saved = [(module, module.PAGE) for module in _MODULES]
+    yield
+    for module, page in saved:
+        module.PAGE = page
+
+
+@pytest.fixture(autouse=True)
 def empty_glavapu_tep_cache():
     """ТЭП участка кэшируется на шесть часов — в жизни это ускорение, в тестах
     чужой ответ: один тест кладёт результат по номеру, следующий проверяет

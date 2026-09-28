@@ -73,6 +73,27 @@ def _project_dir(project: str) -> Path:
     return path
 
 
+def _inside(folder: Path, name: str) -> Path:
+    """Файл ``name`` строго внутри ``folder`` — одним сегментом, не выше.
+
+    `_project_dir` запирает имя проекта, но дальше к нему дописывается дата
+    из запроса (`f"{day}.xlsx"`), а она — второй вход в путь. Большинство
+    записей проверяют дату регуляркой, но не все (`store_programme`,
+    `store_proposal` берут её как есть), и CodeQL регулярку санитайзером не
+    считает. Поэтому у каждого имени файла тот же замок, что у каталога
+    проекта: `normpath` + `startswith` по базе с разделителем, плюс «ровно
+    один сегмент» — дата с «/» внутри не должна создавать подкаталоги.
+    Возвращается именно проверенное значение: его и надо писать на диск.
+    """
+    base = os.path.normpath(folder)
+    target = os.path.normpath(os.path.join(base, str(name)))
+    if not target.startswith(base + os.sep):
+        raise ValueError(f"Имя файла выходит за каталог проекта: {name!r}")
+    if os.path.dirname(target) != base:
+        raise ValueError(f"Имя файла не одним сегментом: {name!r}")
+    return Path(target)
+
+
 def _iso(value: Any) -> str:
     if isinstance(value, (datetime.date, datetime.datetime)):
         return value.strftime("%Y-%m-%d")
@@ -123,8 +144,8 @@ def store_retention(project: str, data: bytes, taken_at: Any,
     parsed = retention.read_retention(data)
     folder = _project_dir(project) / "retention"
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{day}.xlsx").write_bytes(data)
-    (folder / f"{day}.json").write_text(json.dumps({
+    _inside(folder, f"{day}.xlsx").write_bytes(data)
+    _inside(folder, f"{day}.json").write_text(json.dumps({
         "taken_at": day,
         "filename": filename,
         "rows": len(parsed.get("rows") or []),
@@ -169,11 +190,11 @@ def store_estimate(project: str, data: bytes, taken_at: Any,
         raise ValueError(f"это не полная выгрузка РСС 6.1.2: {exc}") from exc
     folder = _project_dir(project) / "estimate"
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{day}.xlsx"
+    path = _inside(folder, f"{day}.xlsx")
     if path.exists():
         raise FileExistsError(f"снимок РСС на {day} уже загружен")
     path.write_bytes(data)
-    (folder / f"{day}.json").write_text(json.dumps({
+    _inside(folder, f"{day}.json").write_text(json.dumps({
         "taken_at": day,
         "filename": filename,
         "bytes": len(data),
@@ -322,7 +343,7 @@ def store_schedule_fact(project: str, data: bytes, taken_at: Any) -> dict[str, A
     parsed = _read_baseline_gpr_bytes(data)
     folder = _project_dir(project) / "schedule_fact"
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{day}.xlsx"
+    path = _inside(folder, f"{day}.xlsx")
     if path.exists():
         raise FileExistsError(f"ГПР-факт на {day} уже загружен")
     path.write_bytes(data)
@@ -397,7 +418,7 @@ def store_work_fact(project: str, rows: list[dict[str, Any]],
         raise ValueError("ни в одной строке нет id и процента")
     folder = _project_dir(project) / "work_fact"
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{day}.json"
+    path = _inside(folder, f"{day}.json")
     stored = []
     if path.exists():
         stored = json.loads(path.read_text(encoding="utf-8")).get("rows", [])
@@ -827,7 +848,7 @@ def trend(project: str, cut: Any, programme: dict[str, Any] | None = None) -> li
 def moved_between_snapshots(project: str, first: str, second: str) -> dict[str, Any]:
     """Audit whether prior-month accepted works were rewritten between RSS snapshots."""
     def monthly(day: str) -> dict[str, float]:
-        path = _project_dir(project) / "estimate" / f"{day}.xlsx"
+        path = _inside(_project_dir(project) / "estimate", f"{day}.xlsx")
         if not path.exists():
             raise FileNotFoundError(f"нет снимка РСС на {day}")
         out: dict[str, float] = {}
@@ -876,7 +897,7 @@ def store_sales(project: str, rows: list[dict[str, Any]], taken_at: Any) -> dict
         raise ValueError("ни в одной строке нет месяца")
     folder = _project_dir(project) / "sales"
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{day}.json").write_text(json.dumps(
+    _inside(folder, f"{day}.json").write_text(json.dumps(
         {"taken_at": day, "rows": cleaned}, ensure_ascii=False), encoding="utf-8")
     return {"taken_at": day, "months": len(cleaned)}
 
@@ -889,7 +910,7 @@ def store_programme(project: str, data: bytes, start: Any, taken_at: Any) -> dic
     day = _iso(taken_at)
     folder = _project_dir(project) / "programme"
     folder.mkdir(parents=True, exist_ok=True)
-    (folder / f"{day}.xlsx").write_bytes(data)
+    _inside(folder, f"{day}.xlsx").write_bytes(data)
     return {"taken_at": day, "ignored_by_monitor": True}
 
 
@@ -899,7 +920,7 @@ def store_proposal(project: str, data: bytes, sheet: str, start: Any,
     folder = _project_dir(project) / "proposal"
     folder.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^0-9-]", "-", str(code))
-    (folder / f"{day}.{slug}.json").write_text(json.dumps({
+    _inside(folder, f"{day}.{slug}.json").write_text(json.dumps({
         "taken_at": day, "code": code, "ignored_by_monitor": True,
     }, ensure_ascii=False), encoding="utf-8")
     return {"taken_at": day, "code": code, "ignored_by_monitor": True}

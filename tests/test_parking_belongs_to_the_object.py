@@ -305,14 +305,19 @@ def test_the_demand_reaches_the_calculation_result() -> None:
 
 def test_the_fields_are_declared_once_in_the_engine() -> None:
     """Страница берёт поля у движка — копии на странице быть не должно."""
+    # Площадь подземного места гаража своего поля не имеет — это норматив
+    # класса `underground_area_per_space_sqm` (владелец, 27.09.2026).
+    assert "object_parking_area_per_space_sqm" not in core.DEFAULT_INPUTS
     for key in ("parking_k1", "parking_k2", "parking_design_mode",
-                "object_parking_area_per_space_sqm",
+                "underground_area_per_space_sqm",
                 "offices_parking_under_spaces", "offices_parking_over_spaces",
                 "retail_parking_under_spaces", "retail_parking_over_spaces",
                 "sports_parking_under_spaces", "sports_parking_over_spaces",
                 "offices_parking_guest_pct"):
         assert key in core.DEFAULT_INPUTS, key
     names = {group[0] for group in core.FIELD_GROUPS}
+    # Группа объявлена там же; во «Вводных» её поля не рисуются — коэффициенты
+    # стоят в карточке участка, площадь места — в «Настройках класса».
     assert "Нормативы парковки нежилья (общие на объекты)" in names
     # Паркинг объекта живёт в блоке САМОГО объекта (владелец, 06.09.2026):
     # «может, парковки приобъектные разнести по блокам самих объектов».
