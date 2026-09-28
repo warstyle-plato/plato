@@ -140,3 +140,21 @@ def test_the_status_shows_when_the_background_last_ran_and_why_it_stood(tmp_path
     status = store.status()
     assert status["nspd_points"]["last_failure"] == "НСПД не нашёл участок по этому номеру"
     assert "спрошено 1, получено 0" in status["runs"]["nspd_points"]["result"]
+
+
+def test_no_lot_row_of_the_real_export_has_an_empty_comment_or_map_cell(tmp_path, monkeypatch):
+    """Маршрут выгрузки целиком: у каждой строки лота — комментарий или причина,
+    ссылка на участок или причина. Пустая клетка читалась бы как «пропало»."""
+    from fastapi.testclient import TestClient
+
+    app, _core = _app(tmp_path, monkeypatch, lambda numbers: [{"found": True, "map_url": HREF}])
+    rows = _rows(ARBAT, "") + [{"section": "Торги", "name": "Без срока", "url": "https://etp/lot/9"}]
+    got = TestClient(app).post("/auctions/export.xlsx", json={"rows": rows, "kind": "auctions"})
+    assert got.status_code == 200
+    ws = openpyxl.load_workbook(io.BytesIO(got.content)).active
+    header = [cell.value for cell in ws[1]]
+    comment = header.index("Комментарий Платона: чем интересен, чем опасен, что пишут") + 1
+    nspd = header.index(NSPD) + 1
+    for row in range(2, ws.max_row + 1):
+        assert str(ws.cell(row, comment).value or "").strip(), f"строка {row}: пустой комментарий"
+        assert str(ws.cell(row, nspd).value or "").strip(), f"строка {row}: пустая клетка НСПД"
