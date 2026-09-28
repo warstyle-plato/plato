@@ -168,11 +168,12 @@ class ETPRFAdapter(AuctionPlatformAdapter):
             else:
                 # Публичный partial-view иногда не повторяет заголовок. Порядок
                 # столбцов фиксирован самой таблицей и опубликован над ней.
+                # Даты начала заявок и торгов без заголовка не берём: по
+                # номеру колонки их не отличить от соседних дат.
                 out.append({
                     "number": values[0], "notice": values[1], "title": values[2],
                     "price": values[3], "organizer": values[4], "published": values[5],
-                    "application_start": values[6], "deadline": values[7],
-                    "auction_date": values[8] if len(values) > 8 else "", "notice_status": values[9] if len(values) > 9 else "",
+                    "deadline": values[7], "notice_status": values[9] if len(values) > 9 else "",
                     "auction_status": values[10] if len(values) > 10 else "",
                     "procedure": values[11] if len(values) > 11 else "", "url": detail,
                 })

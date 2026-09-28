@@ -10,17 +10,13 @@
 from __future__ import annotations
 
 import json
-import shutil
-import subprocess
-
-import pytest
 
 from auction_search.krt_ranking import rating_by_current_methodology
 from auction_search.ui import auctions_page
+import page_blocks  # noqa: E402 — стенд страницы, лежит рядом с тестами
 
 CURRENT = "issue-485-krt-rating-4x100-v4"
 OLD = "issue-485-krt-rating-4x100-v1"
-NODE = shutil.which("node")
 
 
 def _row(slug: str, version: str, status: str = "", score=40) -> dict:
@@ -60,22 +56,11 @@ def test_an_incomplete_catalogue_does_not_claim_absence() -> None:
     assert marked["investment_rating"]["stale_methodology"] is True
 
 
-@pytest.mark.skipif(NODE is None, reason="node не установлен")
 def test_the_catalogue_cell_shows_the_reason_not_the_old_score() -> None:
-    page = auctions_page()
-    start = page.index("function krtInvestmentRatingCell(")
-    depth = 0
-    for index in range(page.index("{", start), len(page)):
-        depth += {"{": 1, "}": -1}.get(page[index], 0)
-        if depth == 0:
-            fn = page[start:index + 1]
-            break
     rank = rating_by_current_methodology(_row("early:2", OLD), CURRENT, catalogue_slugs=set())
-    code = ("const esc=s=>String(s??'');const state={krtRatingTarget:650000,krtRank:"
-            + json.dumps({"early:2": rank}) + "};" + fn
-            + ";console.log(JSON.stringify(krtInvestmentRatingCell('early:2')))")
-    out = subprocess.run([NODE, "-e", code], capture_output=True, text=True, timeout=30)
-    assert out.returncode == 0, out.stderr
-    cell = json.loads(out.stdout)
+    cell = page_blocks.run_json(
+        "const state={krtRatingTarget:650000,krtRank:" + json.dumps({"early:2": rank}) + "};",
+        "console.log(JSON.stringify(krtInvestmentRatingCell('early:2')))",
+        page=auctions_page())
     assert "не пересчитано по текущей методике" in cell
     assert "<b>40</b>" not in cell and "ещё не рассчитан" not in cell

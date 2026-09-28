@@ -186,7 +186,13 @@ function renderHero(p,rank,req){
 function renderEntry(p,rank){
  const row={...p,...rank},live=activeTender(row),op=operatorInfo(row),facts=[];
  let title='Вход не подтверждён';
- const past=live?null:(row.tender_lots||[]).find(v=>v&&v.deadline);
+ // «Закончился» — только у лота, чей срок разобран и уже прошёл: лот, который
+ // activeTender отбросил по другой причине, про приём заявок ничего не говорит.
+ const past=live?null:(row.tender_lots||[]).find(v=>{
+  if(!v||!v.deadline)return false;
+  const at=Date.parse(v.deadline_iso||'');
+  return Number.isFinite(at)&&at<Date.now();
+ });
  if(live){title='Идёт аукцион — вход открыт';if(live.deadline)facts.push('Заявки до '+live.deadline);facts.push(live.auction_date_label?'Торги '+live.auction_date_label:(live.auction_date_note||'дата торгов не получена от источника'));if(live.price_rub)facts.push('Цена права '+fmt(live.price_rub/1e6,1)+' млн ₽');}
  else if(op.taken){title='Вход закрыт / площадка занята';if(op.operator)facts.push('Оператор: '+op.operator);if(op.agreement)facts.push('Есть упоминание заключённого договора КРТ');if(op.selling.length)facts.push('Есть текущие продажи на связанной площадке');}
  // Лот есть, а срок подачи прошёл: «торги были», не «идут» и не «лота нет».
