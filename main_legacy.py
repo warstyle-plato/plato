@@ -1538,6 +1538,11 @@ FIELD_GROUPS: list[Any] = [
         if str(_group[0]).startswith(_OBJECT_PLACEHOLDER) else [_group])
 ]
 
+# Группы и поля экземпляров: странице они не отдаются (см. `objectFields`).
+_INSTANCE_GROUPS = frozenset(o.group_label for o in STANDALONE_OBJECTS if o.family)
+_INSTANCE_FIELDS = frozenset(
+    field[0] for o in STANDALONE_OBJECTS if o.family for field in standalone_object_group(o)[1])
+
 # Блок каждого поля объекта — для заголовков на странице. Отдельной картой, а не
 # третьим элементом группы: группу и поле читают распаковкой в десятке мест.
 FIELD_SECTIONS_PLACEHOLDER = "__DEVELOPAID_FIELD_SECTIONS__"
@@ -1740,8 +1745,10 @@ def object_is_sold(inputs: dict[str, Any] | None, obj: "StandaloneObject") -> bo
 OBJECT_INSTANCES_KEY = "object_instances"
 OBJECT_INSTANCES: dict[str, StandaloneObject] = {
     o.key: o for o in STANDALONE_OBJECTS if o.family}
-# Прежние «вторые» объекты (#559) — явной картой, а не разбором имён.
-LEGACY_SECOND_OBJECTS: tuple[str, ...] = ("standalone_retail2", "offices2", "above_parking2")
+# Прежние «вторые» объекты (#559): второй экземпляр каждого типа, у которого
+# в шаблоне книги свой блок (офисы, ТЦ, наземный паркинг; у ФОКа блока нет).
+LEGACY_SECOND_OBJECTS: tuple[str, ...] = tuple(
+    object_instance(base, 2).key for base in OBJECT_TYPES if not base.book_twin)
 _INSTANCE_VOLUME_FIELDS = ("gba_sqm", "saleable_sqm", "spaces",
                            "parking_under_spaces", "parking_over_spaces")
 
@@ -24951,6 +24958,8 @@ def build_project_workbook(
     получает ту же книгу, что и до его появления в реестре (`_V4_BOOK_OBJECTS`).
     """
     merged = {**DEFAULT_INPUTS, **(inputs or {})}
+    # Экземпляр вне состава проекта в книгу не пишется, даже включённый.
+    merged = object_instances_applied(merged, {})[0]
     token = _V4_BOOK_OBJECTS.set(_v4_book_objects(merged))
     try:
         return _build_project_workbook(inputs, tep, rates, phasing, **kwargs)
@@ -44247,6 +44256,11 @@ details{border-top:1px solid #e5e5e5;padding:4px 0}details:first-child{border-to
 summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
 .group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
 details[open]>summary>.group-peek{display:none}
+.object-tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0 4px}
+.object-tabs button{padding:5px 11px;border-radius:14px;border:1px solid #cfd6e0;background:#fff;cursor:pointer;font-size:13px}
+.object-tabs .object-tab.active{background:#1f4e79;color:#fff;border-color:#1f4e79}
+.object-tabs .object-remove{color:#b3261e;border-color:#e3b4b0}
+.object-tabs .tep-note{flex-basis:100%}
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:0 0 15px}
 .field-card{background:var(--soft,#f5f5f3);border:1px solid var(--line,#dedede);border-radius:10px;padding:12px 14px 4px;margin:0 0 14px}
 .field-card:first-of-type{margin-top:4px}
@@ -45687,35 +45701,66 @@ function removeObjectInstance(key){
  inputs[obj.prefix+'_enabled']=false;
  if(TEP_DEFAULT[key])tep[key]=cloneValue(TEP_DEFAULT[key]);
 }
-function onAddObjectInstance(){
- const sel=document.getElementById('objectAddType');
- const key=addObjectInstance(sel?sel.value:'');
+// Экземпляры живут ВНУТРИ блока своего типа (владелец, 28.09.2026): вкладки
+// «Объект 1, Объект 2…» в «МФОЦ / офисы», кнопка «Добавить объект» там же.
+// Число групп вводных от числа объектов не растёт.
+const OBJECT_TAB={};
+function objectsOfType(type){return projectObjects().filter(o=>o.type===type)}
+function objectTabObject(type){
+ const key=OBJECT_TAB[type];
+ const o=key&&OBJECT_BY_KEY[key];
+ return o&&o.type===type&&objectInProject(key)?o:OBJECT_BY_KEY[type];
+}
+// Поля экземпляра — поля его типа под своей приставкой: форма экземпляра
+// второй копией не приходит, а выводится из группы типа.
+function objectFields(o){
+ const base=OBJECT_BY_KEY[o.type];
+ const grp=FIELD_GROUPS.find(g=>g[0]===base.group_label);
+ if(!grp)return [];
+ if(!o.instance)return grp[1];
+ const head=base.prefix+'_';
+ return grp[1].map(f=>{const c=f.slice();if(String(c[0]).startsWith(head))c[0]=o.prefix+'_'+c[0].slice(head.length);return c});
+}
+function fieldSection(id){
+ if(FIELD_SECTIONS[id])return FIELD_SECTIONS[id];
+ const o=STANDALONE_OBJECTS.find(x=>x.instance&&String(id).startsWith(x.prefix+'_'));
+ if(!o)return undefined;
+ return FIELD_SECTIONS[OBJECT_BY_KEY[o.type].prefix+String(id).slice(o.prefix.length)];
+}
+// Все объявления полей, экземпляров включительно.
+function allFieldGroups(){
+ return FIELD_GROUPS.concat(STANDALONE_OBJECTS.filter(o=>o.instance).map(o=>[o.group_label,objectFields(o)]));
+}
+function objectTabsBar(type,shown){
+ const bar=document.createElement('div');bar.className='object-tabs';bar.dataset.type=type;
+ const list=objectsOfType(type);
+ const refusal=objectInstanceRefusal(type);
+ bar.innerHTML=list.map((o,i)=>'<button type="button" class="object-tab'+(o.key===shown.key?' active':'')
+   +'" data-object="'+escapeHtml(o.key)+'">Объект '+(i+1)+'</button>').join('')
+  +'<button type="button" class="object-add" data-type="'+escapeHtml(type)+'"'+(refusal?' disabled':'')
+  +'>Добавить объект</button>'
+  +(shown.instance?'<button type="button" class="object-remove" data-object="'+escapeHtml(shown.key)+'">Удалить объект</button>':'')
+  +(refusal?'<div class="tep-note">'+escapeHtml(refusal)+'</div>':'');
+ bar.querySelectorAll('.object-tab').forEach(btn=>{btn.onclick=()=>{OBJECT_TAB[type]=btn.dataset.object;renderInputs()}});
+ const add=bar.querySelector('.object-add');if(add)add.onclick=()=>onAddObjectInstance(type);
+ const rm=bar.querySelector('.object-remove');if(rm)rm.onclick=()=>onRemoveObjectInstance(rm.dataset.object);
+ return bar;
+}
+function onAddObjectInstance(type){
+ const key=addObjectInstance(type);
  if(!key)return;
+ OBJECT_TAB[type]=key;
  syncTep(false);renderInputs();renderTep();
- const det=document.querySelector('details[data-group="'+CSS.escape(OBJECT_BY_KEY[key].group_label)+'"]');
- if(det){det.open=true;det.scrollIntoView({block:'start'})}
+ const det=document.querySelector('details[data-group="'+CSS.escape(OBJECT_BY_KEY[type].group_label)+'"]');
+ if(det)det.open=true;
  calculate();
 }
 function onRemoveObjectInstance(key){
  const o=OBJECT_BY_KEY[key];
  if(!o||!confirm('Удалить «'+o.group_label+'» из проекта? Его вводные вернутся к умолчаниям при следующем добавлении.'))return;
  removeObjectInstance(key);
+ OBJECT_TAB[o.type]=o.type;
  syncTep(false);renderInputs();renderTep();calculate();
-}
-function objectAddBar(){
- const types=STANDALONE_OBJECTS.filter(o=>!o.instance);
- const bar=document.createElement('div');bar.className='note object-add';bar.id='objectAddBar';
- const refusals=types.map(o=>objectInstanceRefusal(o.key)).filter(Boolean);
- bar.innerHTML='<b>Объекты проекта.</b> Офисов, ТЦ, наземных паркингов и ФОКов — сколько нужно, до '
-  +OBJECT_INSTANCE_RULES.max+' каждого типа. '
-  +'<select id="objectAddType">'+types.map(o=>'<option value="'+escapeHtml(o.key)+'"'
-    +(objectInstanceRefusal(o.key)?' disabled':'')+'>'+escapeHtml(o.group_label)+'</option>').join('')+'</select> '
-  +'<button type="button" id="objectAddButton" onclick="onAddObjectInstance()"'
-  +(refusals.length===types.length?' disabled':'')+'>Добавить объект</button>'
-  +(refusals.length?'<div class="tep-note">'+refusals.map(escapeHtml).join('; ')+'</div>':'');
- const sel=bar.querySelector('select');
- const first=Array.from(sel.options).find(o=>!o.disabled);if(first)sel.value=first.value;
- return bar;
 }
 function discreteDefaults(count){
  const out={};
@@ -49815,7 +49860,7 @@ function classSetsField(k){
 // отклонений в PDF; короткая подпись осталась только внутри своей группы.
 const FIELD_LABELS_OUTSIDE=__DEVELOPAID_FIELD_LABELS_OUTSIDE__;
 const CLASS_DERIVED_NOTES=__DEVELOPAID_CLASS_DERIVED_NOTES__;
-function classFieldLabel(k){if(FIELD_LABELS_OUTSIDE[k])return FIELD_LABELS_OUTSIDE[k];for(const g of FIELD_GROUPS){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
+function classFieldLabel(k){if(FIELD_LABELS_OUTSIDE[k])return FIELD_LABELS_OUTSIDE[k];for(const g of allFieldGroups()){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
 // Единицы полей класса считает движок и подставляет готовой картой — как
 // PRODUCT_LABELS и доли ТЭП. Свой разрез подсказки на JS был бы второй
 // реализацией одного правила, и разошлись бы они молча.
@@ -50253,10 +50298,8 @@ function renderInputs(){
    // в класс завтра, исчезнет тем же правилом. Выход ДО создания узла —
    // наполовину нарисованная группа оставила бы пустую складку.
    if(!grp[1].some(f=>!notOnInputs(f[0])))return;
-   // Экземпляр объекта вне состава проекта не рисуется: его нет в проекте.
+   // Блок типа объекта несёт все его экземпляры вкладками.
    const grpObj=OBJECT_BY_GROUP[grp[0]];
-   if(grpObj&&!objectInProject(grpObj.key))return;
-   if(grpObj&&!box.querySelector('#objectAddBar'))box.appendChild(objectAddBar());
    // Открыта только первая группа. Одиннадцать развёрнутых групп — это
    // экран, на котором не видно, с чего начинать: человек листает поля
    // вместо того, чтобы ввести цену и сроки и посмотреть результат.
@@ -50269,11 +50312,12 @@ function renderInputs(){
    const peek=groupPeek(grp[0],grp[1]);
    if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
    det.appendChild(sum);
-   if(grpObj&&grpObj.instance){
-    const rm=document.createElement('button');rm.type='button';rm.className='object-remove';
-    rm.dataset.object=grpObj.key;rm.textContent='Удалить объект';
-    rm.onclick=()=>onRemoveObjectInstance(grpObj.key);
-    det.appendChild(rm);
+   let fields=grp[1];
+   if(grpObj){
+    const shown=objectTabObject(grpObj.key);
+    det.dataset.object=shown.key;
+    det.appendChild(objectTabsBar(grpObj.key,shown));
+    fields=objectFields(shown);
    }
    // Поля объекта разбиты на смысловые блоки: каждый блок — отдельная
    // карточка с заголовком и своей сеткой полей внутри, и новая карточка
@@ -50283,7 +50327,7 @@ function renderInputs(){
    // его не пересобирает.
    let grid=null,section=null;
    const openGrid=(parent)=>{grid=document.createElement('div');grid.className='fields';(parent||det).appendChild(grid)};
-   grp[1].forEach(f=>{
+   fields.forEach(f=>{
      const [id,label,unit,type]=f;
      // Норматив площади двора правится в «Настройках класса»: он свойство
      // класса, а не площадки. Поле при этом объявлено там же, где все
@@ -50291,7 +50335,7 @@ function renderInputs(){
      // отклонений в отчёте; здесь оно только не рисуется. Выход ДО создания
      // узла: наполовину нарисованное поле оставило бы в сетке пустую клетку.
      if(notOnInputs(id))return;
-     const own=FIELD_SECTIONS[id];
+     const own=fieldSection(id);
      if(own&&own!==section){
        section=own;
        const card=document.createElement('section');card.className='field-card';card.dataset.section=own;
@@ -51741,7 +51785,7 @@ function renderSiteParkingFields(){
  if(!box)return;
  // Человек печатает в поле — перерисовка сняла бы с него фокус.
  if(box.contains(document.activeElement))return;
- const decl={};FIELD_GROUPS.forEach(g=>g[1].forEach(f=>{decl[f[0]]=f}));
+ const decl={};allFieldGroups().forEach(g=>g[1].forEach(f=>{decl[f[0]]=f}));
  box.innerHTML='';
  SITE_ONLY_INPUTS.forEach(id=>{
   const f=decl[id];if(!f)return;
@@ -56423,10 +56467,15 @@ MONITOR_PAGE_HTML = (
     # не должно: «Платон должен везде уметь вести диалог, а не один ответ».
     .replace(plato_question.PLACEHOLDER, plato_question.SCRIPT)
 )
-PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
-                    json.dumps(FIELD_GROUPS, ensure_ascii=False))
-PAGE = PAGE.replace(FIELD_SECTIONS_PLACEHOLDER,
-                    json.dumps(FIELD_SECTIONS, ensure_ascii=False))
+# Странице — группы ТИПОВ: экземпляр рисуется вкладкой внутри блока своего
+# типа, и его поля страница выводит из полей типа (`objectFields`). Число групп
+# вводных от числа объектов не растёт (владелец, 28.09.2026).
+PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER, json.dumps(
+    [group for group in FIELD_GROUPS if group[0] not in _INSTANCE_GROUPS],
+    ensure_ascii=False))
+PAGE = PAGE.replace(FIELD_SECTIONS_PLACEHOLDER, json.dumps(
+    {key: title for key, title in FIELD_SECTIONS.items() if key not in _INSTANCE_FIELDS},
+    ensure_ascii=False))
 # Подписи полей объектов вне их группы — тем же правилом, что в PDF и отчётах.
 PAGE = PAGE.replace("__DEVELOPAID_FIELD_LABELS_OUTSIDE__", json.dumps(
     {key: _input_field_label(key) for key in FIELD_SECTIONS}, ensure_ascii=False))

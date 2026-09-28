@@ -126,7 +126,9 @@ def test_the_page_draws_the_blocks_of_every_object() -> None:
     from playwright.sync_api import sync_playwright
 
     path = browser.chromium_or_skip()
-    groups = [o.group_label for o in core.STANDALONE_OBJECTS]
+    # Экземпляр своей группы не имеет: он вкладка в блоке своего типа.
+    groups = [o.group_label for o in core.OBJECT_TYPES]
+    seconds = {base.key: core.object_instance(base, 2) for base in core.OBJECT_TYPES}
     future = core.standalone_object_group(FUTURE)
     future_sections = {f[0]: core.standalone_object_section(FUTURE, f[0])
                        for f in future[1]}
@@ -137,14 +139,20 @@ def test_the_page_draws_the_blocks_of_every_object() -> None:
             page.wait_for_function("document.querySelectorAll('details[data-group]').length>3",
                                    timeout=20000)
             got = page.evaluate(PROBE, groups)
+            # Вкладка второго экземпляра каждого типа — те же блоки своими полями.
+            page.evaluate("""(types)=>{types.forEach(t=>{OBJECT_TAB[t]=addObjectInstance(t)});
+              renderInputs();}""", list(seconds))
+            got_seconds = page.evaluate(PROBE, groups)
             # Будущий объект — строкой реестра, дописанной в ту же форму, и
             # настоящей перерисовкой страницы: своей раскладки у него нет.
             page.evaluate("""([group,sections])=>{
               FIELD_GROUPS.push(group);Object.assign(FIELD_SECTIONS,sections);
               renderInputs();}""", [future, future_sections])
             got_future = page.evaluate(PROBE, [future[0]])
-    for obj in core.STANDALONE_OBJECTS:
+    for obj in core.OBJECT_TYPES:
         _check(obj.group_label, got[obj.group_label], _expected(obj))
+        _check(obj.group_label + " · объект 2", got_seconds[obj.group_label],
+               _expected(seconds[obj.key]))
     _check(future[0], got_future[future[0]], _expected(FUTURE))
     # Деньги метров и деньги мест — в разных блоках, как бы ни звалось поле.
     offices = {f[0]: f[1] for f in got["МФОЦ / офисы"]["fields"]}

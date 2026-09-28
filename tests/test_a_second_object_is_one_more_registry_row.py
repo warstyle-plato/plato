@@ -205,7 +205,13 @@ def test_the_book_agrees_with_the_engine(which, request) -> None:
 def test_the_dashboard_names_each_second_object(flat_book) -> None:
     """Дашборд книги знает дописанные объекты своими строками — и ФОК тоже."""
     book, evaluator, _ = flat_book
-    extras = core._v4_dashboard_extra_products()
+    # Строки дашборда — объектов ЭТОЙ книги, а не всего пула экземпляров.
+    token = core._V4_BOOK_OBJECTS.set(core._v4_book_objects(
+        core.object_instances_applied(_inputs(), {})[0]))
+    try:
+        extras = core._v4_dashboard_extra_products()
+    finally:
+        core._V4_BOOK_OBJECTS.reset(token)
     rows = v4_dashboard.product_rows(extras)
     assert [item[0] for item in extras][0] == "sports"
     engine = core._run_authoritative_model(
@@ -303,6 +309,8 @@ def test_the_capex_tables_name_the_second_object() -> None:
 PROBE_PAGE = """() => {
   inputs.offices2_enabled=true; inputs.offices2_gba_sqm=8000; inputs.offices2_saleable_sqm=0;
   inputs.above_parking2_enabled=true; inputs.above_parking2_spaces=300;
+  // Поля второго офисника — его вкладкой в блоке «МФОЦ / офисы».
+  OBJECT_TAB.offices='offices2';
   syncTep(false); renderInputs(); renderTep();
   // Правка мест гаража отмечает их «заданными руками» у своего объекта.
   const garage=document.getElementById('f_offices2_parking_under_spaces');

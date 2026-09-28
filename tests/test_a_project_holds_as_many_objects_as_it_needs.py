@@ -231,15 +231,28 @@ MIRROR_CASES = [
     {"object_instances": []},
 ]
 
-STATE = """() => ({
-  instances: projectInstances(),
-  groups: Array.from(document.querySelectorAll('#inputGroups details[data-group]')).map(d=>d.dataset.group),
-  tep: Array.from(document.querySelectorAll('#tepBody td:first-child')).map(td=>td.textContent),
-  queues: Array.from(document.querySelectorAll('#assignObjects select[data-object]')).map(s=>s.dataset.object),
-  officeOption: !!document.querySelector('#objectAddType option[value="offices"]:not([disabled])'),
-  bar: (document.getElementById('objectAddBar')||{}).textContent||'',
-  gba4: Number(inputs.offices4_gba_sqm||0),
-})"""
+STATE = """() => {
+  const office = document.querySelector('#inputGroups details[data-group="МФОЦ / офисы"]');
+  const bar = office && office.querySelector('.object-tabs');
+  return {
+    instances: projectInstances(),
+    groups: Array.from(document.querySelectorAll('#inputGroups details[data-group]')).map(d=>d.dataset.group),
+    tabs: bar ? Array.from(bar.querySelectorAll('.object-tab')).map(b=>b.dataset.object) : [],
+    shown: office ? office.dataset.object : '',
+    addDisabled: bar ? !!bar.querySelector('.object-add[disabled]') : null,
+    note: bar ? (bar.querySelector('.tep-note')||{}).textContent||'' : '',
+    tep: Array.from(document.querySelectorAll('#tepBody td:first-child')).map(td=>td.textContent),
+    gba4: Number(inputs.offices4_gba_sqm||0),
+  };
+}"""
+
+# Вкладка, где живёт блок, и сам блок — открыты, как их открыл бы человек.
+OPEN_OFFICES = """() => {
+  const panel = document.getElementById('inputGroups').closest('.panel');
+  if (panel) openTab(panel.id);
+  document.querySelector('#inputGroups details[data-group="МФОЦ / офисы"]').open = true;
+}"""
+OFFICE_BAR = '#inputGroups details[data-group="МФОЦ / офисы"] .object-tabs'
 
 
 @pytest.fixture(scope="module")
@@ -262,28 +275,30 @@ def page_run():
             page.reload(wait_until="domcontentloaded")
             page.wait_for_timeout(1500)
             out["mirror"] = page.evaluate(MIRROR, MIRROR_CASES)
-            page.evaluate("renderPhasing&&renderPhasing()")
             out["start"] = page.evaluate(STATE)
-            # Четыре офиса сверх первого — кнопкой, как человек.
+            page.evaluate(OPEN_OFFICES)
+            # Четыре офиса сверх первого — кнопкой внутри блока, как человек.
             for _ in range(core.OBJECT_INSTANCES_MAX - 1):
-                page.select_option("#objectAddType", "offices")
                 with page.expect_response(lambda r: "/calculate" in r.url) as resp:
-                    page.click("#objectAddButton")
+                    page.click(f"{OFFICE_BAR} .object-add")
+                body = resp.value.json()
                 out.setdefault("summaries", []).append(
-                    (resp.value.json().get("summary")
-                     or (resp.value.json().get("consolidated") or {}).get("summary") or {}))
-            # Своё число у четвёртого — живёт через перерисовку и пересчёт.
+                    body.get("summary") or (body.get("consolidated") or {}).get("summary") or {})
+            out["after_add"] = page.evaluate(STATE)
+            # Своё число у четвёртого — его вкладкой; живёт через перерисовку.
+            page.click(f'{OFFICE_BAR} .object-tab[data-object="offices4"]')
             page.fill("#f_offices4_gba_sqm", "12345")
             page.dispatch_event("#f_offices4_gba_sqm", "change")
-            page.evaluate("renderInputs();renderTep();renderPhasing&&renderPhasing()")
+            page.evaluate("renderInputs();renderTep()")
             out["full"] = page.evaluate(STATE)
+            page.click(f'{OFFICE_BAR} .object-tab[data-object="offices3"]')
             with page.expect_response(lambda r: "/calculate" in r.url):
-                page.click('button.object-remove[data-object="offices3"]')
-            page.evaluate("renderPhasing&&renderPhasing();persistLocalSilently()")
+                page.click(f"{OFFICE_BAR} .object-remove")
+            page.evaluate("persistLocalSilently()")
             out["removed"] = page.evaluate(STATE)
             page.reload(wait_until="domcontentloaded")
             page.wait_for_timeout(1500)
-            page.evaluate("renderPhasing&&renderPhasing()")
+            page.evaluate(OPEN_OFFICES)
             out["reloaded"] = page.evaluate(STATE)
             page.close()
     out["errors"] = errors
@@ -300,32 +315,43 @@ def test_the_page_mirrors_the_engine_list(page_run) -> None:
     assert page_run["mirror"] == expected
 
 
-def test_the_page_adds_and_removes_objects(page_run) -> None:
+def test_the_objects_live_inside_the_block_of_their_type(page_run) -> None:
+    """Владелец: число групп вводных от числа объектов не растёт — все офисы
+    вкладками внутри «МФОЦ / офисы»."""
     assert page_run["errors"] == [], page_run["errors"]
     start, full = page_run["start"], page_run["full"]
-    assert start["instances"] == []
-    assert "МФОЦ / офисы 2" not in start["groups"]
-    assert not any("Офисы 2" in text for text in start["tep"])
-    assert start["officeOption"]
+    assert start["instances"] == [] and start["tabs"] == ["offices"]
+    assert not start["addDisabled"]
+    assert full["groups"] == start["groups"]
+    assert not any(group.startswith("МФОЦ / офисы ") for group in full["groups"])
     assert full["instances"] == ["offices2", "offices3", "offices4", "offices5"]
+    assert full["tabs"] == list(OFFICES)
+    assert full["shown"] == "offices4" and full["gba4"] == 12345
     for number in range(2, 6):
-        assert f"МФОЦ / офисы {number}" in full["groups"]
         assert any(text.startswith(f"Офисы {number}") for text in full["tep"]), full["tep"]
-    # Шестой офис не обрезается молча: тип заперт, причина названа.
-    assert not full["officeOption"]
-    assert "МФОЦ / офисы" in full["bar"] and "больше реестр не заводит" in full["bar"]
-    assert full["gba4"] == 12345
+    # Шестой офис не обрезается молча: кнопка заперта, причина названа.
+    assert full["addDisabled"] and "больше реестр не заводит" in full["note"]
     # Расчёт видит тот же состав, что страница.
     assert page_run["summaries"][-1].get("object_instances") == full["instances"]
+
+
+def test_the_page_removes_an_object(page_run) -> None:
     removed = page_run["removed"]
     assert removed["instances"] == ["offices2", "offices4", "offices5"]
-    assert "МФОЦ / офисы 3" not in removed["groups"]
+    assert removed["tabs"] == ["offices", "offices2", "offices4", "offices5"]
     assert not any(text.startswith("Офисы 3") for text in removed["tep"])
-    assert removed["officeOption"]
+    assert not removed["addDisabled"]
 
 
 def test_the_page_keeps_objects_across_reload(page_run) -> None:
     reloaded = page_run["reloaded"]
     assert reloaded["instances"] == ["offices2", "offices4", "offices5"]
-    assert "МФОЦ / офисы 4" in reloaded["groups"] and "МФОЦ / офисы 3" not in reloaded["groups"]
+    assert reloaded["tabs"] == ["offices", "offices2", "offices4", "offices5"]
     assert reloaded["gba4"] == 12345
+
+
+def test_the_book_dashboard_has_a_place_for_every_instance() -> None:
+    import v4_dashboard
+
+    extras = [lay for lay in core._V4_EXTRA_OBJECT_LAYOUTS]
+    assert v4_dashboard.EXTRA_PRODUCT_SLOTS == len(extras)
