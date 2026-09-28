@@ -73,7 +73,33 @@ def test_the_queue_goes_unanswered_first_and_soonest_first(tmp_path):
 
 def test_search_asks_by_cadastre_and_by_address():
     asked = rules.search_queries(_lot("https://etp/lot/1"))
-    assert asked == ['"77:01:0001001:1"', "Москва, ул. Тверская, 1 торги продажа"]
+    assert asked == ['"77:01:0001001:1"',
+                     "Москва, ул. Тверская, 1 (банкротство | суд | арест | обременение | "
+                     "торги | стройка | снос | скандал)"]
+
+
+def test_search_asks_about_a_private_seller_but_not_about_the_city():
+    lot = _lot("https://etp/lot/1")
+    private = rules.search_queries({**lot, "seller": "ООО «Ромашка»"})
+    assert private[-1] == '"ООО «Ромашка»" (банкротство | суд | арест | долги | скандал)'
+    city = rules.search_queries({**lot, "seller": "Департамент городского имущества города Москвы"})
+    assert len(city) == 2, "об органе власти платный поиск о банкротстве не нужен"
+
+
+def test_the_question_fits_platons_limit_and_asks_for_news_not_norms():
+    lot = {**_lot("https://etp/lot/1"), "title": "Лот " * 900, "seller": "ООО «Ромашка»"}
+    docs = [{"title": "Новость " * 40, "url": f"https://news/{index}", "snippet": "Суд " * 400,
+             "modtime": "2026-09-01"} for index in range(8)]
+    kept = rules.fit_docs(lot, docs)
+    text = rules.prompt(lot, kept)
+    assert len(text) <= rules.PROMPT_BUDGET < 4000, "предел Платона — 4000 знаков"
+    assert kept, "выдержки урезаются, а не выбрасываются целиком"
+    assert "дата страницы 2026-09-01" in text
+    assert "банкротство продавца" in text and "Что пишут: не нашлось" in text
+    assert "Нормы: одна короткая строка" in text
+    # Контрпример: со всеми выдержками вопрос превышал предел — проверка не пустая.
+    assert len(rules.prompt(lot, docs)) > 4000
+    assert len(kept) < len(docs)
 
 
 class _Doc:
@@ -163,3 +189,15 @@ def test_a_failed_answer_is_named_in_the_book(tmp_path, monkeypatch):
 def test_the_krt_book_has_no_lot_comment_column():
     ws = openpyxl.load_workbook(io.BytesIO(api._xlsx([{"name": "КРТ"}], "krt"))).active
     assert not any("Комментарий Платона" in str(cell.value) for cell in ws[1])
+
+
+def test_the_search_result_carries_the_page_date():
+    from market_search.yandex_search import YandexSearchClient
+
+    body = ("<yandexsearch><response><results><grouping><group><doc>"
+            "<url>https://news/1</url><title>Суд</title><modtime>20260901T101500</modtime>"
+            "</doc></group><group><doc><url>https://news/2</url><title>Без даты</title>"
+            "</doc></group></grouping></results></response></yandexsearch>").encode()
+    first, second = YandexSearchClient._parse_response(body)
+    assert first.modtime == "2026-09-01"
+    assert second.modtime == "", "нет даты — пусто, а не выдуманная"
