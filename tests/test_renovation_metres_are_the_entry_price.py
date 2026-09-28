@@ -58,17 +58,31 @@ def screen(renovation_sqm: float | None, *, housing: float = 150940.0):
 
 
 def test_the_renovation_metres_are_built_but_not_sold():
-    """ГНС и общая полные — метры строят; из продаваемой они вычтены."""
+    """ГНС и общая полные — метры строят; из продаваемой они вычтены.
+
+    Жильё города — МКД ЦЕЛИКОМ, и с 26.09.2026 оно разложено на две строки:
+    квартиры и встроенная коммерция первого этажа (методика ГлавАПУ 94/6).
+    Полнота построенного проверяется поэтому по ПАРЕ строк: у одних квартир
+    ГНС теперь и не должна равняться жилью площадки.
+    """
     got = screen(15100.0)
     assert got["available"], got.get("reason")
-    row = got["model_inputs"]["tep"]["apartments"]
+    tep = got["model_inputs"]["tep"]
+    row, ground = tep["apartments"], tep["ground_commercial"]
     ratio = got["tep_ratios"]["apartments"]["saleable_of_gns"]
-    built = 150940.0 * ratio
-    assert row["gns"] == pytest.approx(150940.0), "метры перестали строиться"
+    built = row["gns"] * ratio
+    assert row["gns"] + ground["gns"] == pytest.approx(150940.0), "метры перестали строиться"
+    assert row["gns"] == pytest.approx(150940.0 * core.MKD_SPP_SPLIT["apartments"])
     assert row["saleable"] == pytest.approx(built * 0.9, rel=0.001), row
     # Переданное едет тем же полем, что метры муниципалитету, — не вторым.
     assert row["transfer"] == pytest.approx(built * 0.1, rel=0.001), row
     assert row["saleable"] + row["transfer"] == pytest.approx(built, rel=1e-6)
+    # Дом уезжает Фонду со своим первым этажом: доля вычтена и из встроенной
+    # коммерции. Иначе на продаже осталась бы коммерция домов, которых у
+    # инвестора нет.
+    ground_built = ground["useful"]
+    assert ground["transfer"] == pytest.approx(ground_built * 0.1, rel=0.001), ground
+    assert ground["saleable"] == pytest.approx(ground_built * 0.9, rel=0.001), ground
 
 
 def test_the_lots_counted_are_the_lots_sold():
@@ -82,9 +96,15 @@ def test_the_lots_counted_are_the_lots_sold():
 def test_the_whole_site_keeps_no_market_housing():
     """5-й Верхний Михайловский: всё жильё — реновация, продавать нечего."""
     got = screen(95180.0, housing=95180.0)
-    row = got["model_inputs"]["tep"]["apartments"]
-    assert row["gns"] == pytest.approx(95180.0), "метры всё равно строятся"
+    tep = got["model_inputs"]["tep"]
+    row, ground = tep["apartments"], tep["ground_commercial"]
+    assert row["gns"] + ground["gns"] == pytest.approx(95180.0), "метры всё равно строятся"
     assert row["saleable"] == pytest.approx(0.0, abs=1.0), row
+    # И встроенная коммерция тоже: 6% СПП здесь — первые этажи домов Фонда, а
+    # не продукт инвестора. Оставленные на продаже, они дали бы выручку, за
+    # которой нет метров.
+    assert ground["gns"] > 0, "иначе проверять нечего"
+    assert ground["saleable"] == pytest.approx(0.0, abs=1.0), ground
     assert got["renovation"]["whole_site"] is True
     said = " ".join(got["assumptions"])
     assert "девелоперского продукта" in said.lower(), said

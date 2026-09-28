@@ -63,14 +63,32 @@ def test_the_moscow_floor_lifts_the_cheap_class_and_only_moscow() -> None:
 
 
 def test_the_screening_prices_by_this_sites_housing() -> None:
-    """Цена нежилого идёт за ценой жилья ЭТОЙ площадки, а не пресета."""
-    source = Path(krt_screening.__file__).read_text("utf-8")
-    at = source.index('"apartment_price_th": start_price / 1000.0,')
-    block = source[at:at + 700]
-    assert "retail_price_th_per_sqm" in block and "offices_price_th_per_sqm" in block, \
-        "цена нежилого снова остаётся числом пресета при рыночной цене жилья"
-    assert "core.nonresidential_price_th" in block, \
-        "скрининг считает цену нежилого своей копией правила"
+    """Цена нежилого идёт за ценой жилья ЭТОЙ площадки, а не пресета.
+
+    Проверяется на ВВОДНЫХ, которые прогон отдал модели, а не окном в 700
+    знаков исходника: окно однажды уже отъехало от своих строк, когда рядом
+    завели цену встроенной коммерции, и падение вышло про размер окна.
+    """
+    site = {"slug": "decision:333331220", "name": "Рубцовская наб., влд. 3",
+            "no_card": True, "area_ha": 0.73, "flats_sqm": 4_290.0,
+            "nonresidential_ground_sqm": 16_200.0}
+    market = {"analysis": {"site": {"segment": "бизнес", "price_per_sqm": 608_200,
+                                    "sold_lot_avg": 45.0, "units_per_month": 12.0}},
+              "price_hint": {"entry_per_sqm": 608_200, "price_per_sqm": 608_200}}
+    got = krt_screening.build_krt_model_screening(site, market, core)
+    assert got["available"] is True, got.get("reason")
+    inputs = got["model_inputs"]["inputs"]
+
+    housing_th = inputs["apartment_price_th"]
+    assert housing_th == 608.2, inputs
+    expected = core.nonresidential_price_th(housing_th)
+    assert inputs["retail_price_th_per_sqm"] == expected, inputs
+    assert inputs["offices_price_th_per_sqm"] == expected, inputs
+    # Предохранитель: это НЕ число пресета класса — иначе проверка проходила бы
+    # и на прежней болезни, когда цена нежилого стояла вне профиля.
+    preset = core.PROJECT_CLASS_PRESETS[got["market"]["model_class"]]
+    assert expected != preset.get("retail_price_th_per_sqm"), (
+        "цена нежилого снова совпала с числом пресета — правило площадки не сработало")
 
 
 def _programme(project: dict) -> dict:

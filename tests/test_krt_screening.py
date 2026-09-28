@@ -45,6 +45,10 @@ def test_krt_surrounding_price_uses_the_dedicated_price_hint() -> None:
             "segment": "премиум",
             "price_per_sqm": 620_000,
             "entry_per_sqm": 590_000,
+            # На чём стоит ориентир, говорит сам price_hint. Цена окружения —
+            # только `peers`: медиана округа и медиана класса по Москве
+            # остаются ценой модели, но наблюдением площадки не считаются.
+            "basis": "peers",
         },
     }
 
@@ -54,6 +58,14 @@ def test_krt_surrounding_price_uses_the_dedicated_price_hint() -> None:
     assert start_price == 620_000
     assert market_price == 620_000
     assert "price_hint" in basis
+
+    # Тот же ориентир без трёх свежих соседей: считаем по нему, а ценой
+    # окружения не называем.
+    okrug = {**report, "price_hint": {**report["price_hint"], "basis": "okrug",
+                                      "basis_title": "по округу и классу"}}
+    _segment, model_price, surrounding, okrug_basis = _market_inputs(okrug)
+    assert model_price == 620_000 and surrounding == 0.0
+    assert "по округу и классу" in okrug_basis
 
 
 def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
@@ -72,7 +84,12 @@ def test_krt_screening_uses_market_class_and_authoritative_phasing() -> None:
     assert result["market"]["start_price_rub_sqm"] == 708_000
     assert result["market"]["entry_price_rub_sqm"] == 680_000
     assert result["phasing"]["count"] == 2
-    assert result["phasing"]["saleable_sqm"] == round(161_680 * 0.65)
+    # Продаваемая считается от ГНС КВАРТИР, а не от всего жилого объёма:
+    # «объекты жилого назначения» — это МКД целиком, и 6% его СПП по методике
+    # ГлавАПУ — встроенная коммерция первого этажа. Своей строки она не имела
+    # вовсе, и эти метры продавались по цене квартир (владелец, 26.09.2026).
+    assert result["phasing"]["saleable_sqm"] == round(
+        161_680 * core.MKD_SPP_SPLIT["apartments"] * 0.65)
     assert len(result["phasing"]["phases"]) == 2
     assert result["absorption"]["available"] is True
     assert result["absorption"]["market_units_per_month"] == 21.5

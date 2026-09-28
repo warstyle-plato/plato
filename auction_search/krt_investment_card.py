@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from auction_search import krt_tenders
+
 
 def krt_investment_card_page(slug: str, footer_html: str = "") -> str:
     """Generic full-screen KRT investment card over the production endpoints.
@@ -140,11 +142,15 @@ __FOOTER__
 const SLUG=__SLUG__;
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// Ссылка из внешнего источника попадает в href только с http(s): esc защищает
+// разметку, но не схему — `javascript:` из данных площадки исполнился бы кликом.
+const safeUrl=u=>/^https?:\/\//i.test(String(u??'').trim())?String(u).trim():'#';
 const num=v=>v===null||v===undefined||v===''||!Number.isFinite(Number(v))?null:Number(v);
 const fmt=(v,d=0)=>num(v)===null?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:d});
 async function get(url){const r=await fetch(url,{cache:'no-store'});let b={};try{b=await r.json()}catch(_){ }if(!r.ok){const e=new Error((b&&b.detail)||url+' → '+r.status);e.status=r.status;throw e}return b}
 function findProject(cat){return (cat.projects||[]).find(x=>String(x.slug||'')===SLUG)||null}
-function activeTender(row){return (row.tender_lots||[]).find(x=>['future','active','open','now'].includes(String(x.moment||x.status||'').toLowerCase())||(!x.moment&&!x.ended))||null}
+/*__DEVELOPAID_LIVE_LOT__*/
+function activeTender(row){return liveTenderLot(row.tender_lots)}
 function operatorInfo(row){
  const p=row.press_facts||{},c=row.card_facts||{},developers=(c.developers||[]).filter(Boolean);
  const operator=p.operator_name||(((p.operator_named||[])[0]||{}).name)||'';
@@ -188,7 +194,7 @@ function renderEntry(p,rank){
   if(num(p.start_price_mln)!==null)facts.push('Предварительный ориентир входа '+fmt(p.start_price_mln,1)+' млн ₽');
  }else facts.push('Живой лот и подтверждённый оператор не найдены в сохранённых данных.');
  $('entry').innerHTML='<div class="statusline">'+esc(title)+'</div><div class="notice '+(op.taken?'bad':live?'':'warn')+'">'+esc(facts.join(' · '))+'</div>'
-  +(live&&live.url?'<div class="actionbar"><a class="primary" target="_blank" rel="noopener" href="'+esc(live.url)+'">Открыть лот торгов</a></div>':'')
+  +(live&&live.url?'<div class="actionbar"><a class="primary" target="_blank" rel="noopener" href="'+esc(safeUrl(live.url))+'">Открыть лот торгов</a></div>':'')
   +(op.developers.length?'<div class="metric"><span>Названный застройщик</span><b>'+esc(op.developers.join(', '))+'</b></div>':'');
 }
 function deadlineText(req){return (req.deadlines||[]).slice(0,2).map(x=>x.quote||x.label||x.text||String(x)).filter(Boolean).join(' · ')}
@@ -211,7 +217,7 @@ function officialSourceLinks(p,req){
 }
 function renderOfficialSources(p,req){
  const links=officialSourceLinks(p,req);
- const html=links.map(x=>'<a target="_blank" rel="noopener" href="'+esc(x.url)+'">'+esc(x.label)+'</a>').join('');
+ const html=links.map(x=>'<a target="_blank" rel="noopener" href="'+esc(safeUrl(x.url))+'">'+esc(x.label)+'</a>').join('');
  const box=$('officialSources');if(box){box.innerHTML=html;box.style.display=html?'flex':'none'}
  return links;
 }
@@ -232,10 +238,10 @@ function renderProgramme(p,req){
   $('programmeSource').innerHTML='Источник: '+esc(p.source_label||'ранний сигнал')
    +(p.note?' · '+esc(p.note):'')
    +'. Изъятие показано отдельно и не считается полным денежным стеком КРТ.'
-   +(links.length?' · '+links.map(x=>'<a target="_blank" rel="noopener" href="'+esc(x.url)+'">'+esc(x.label)+'</a>').join(' · '):'');
+   +(links.length?' · '+links.map(x=>'<a target="_blank" rel="noopener" href="'+esc(safeUrl(x.url))+'">'+esc(x.label)+'</a>').join(' · '):'');
  }else{
   $('programmeSource').innerHTML=links.length
-   ?'Официальные источники: '+links.map(x=>'<a target="_blank" rel="noopener" href="'+esc(x.url)+'">'+esc(x.label)+'</a>').join(' · ')
+   ?'Официальные источники: '+links.map(x=>'<a target="_blank" rel="noopener" href="'+esc(safeUrl(x.url))+'">'+esc(x.label)+'</a>').join(' · ')
    :'Официальные ссылки для этой площадки пока не получены.';
  }
 }
@@ -283,7 +289,7 @@ function ratingInput(k,x){
  if(k==='burden')return (x.value===null||x.value===undefined?'—':fmt(x.value,1)+' млн ₽')+' / CAPEX '+(x.benchmark===null||x.benchmark===undefined?'—':fmt(x.benchmark,1)+' млн ₽')+' → '+(x.score===null||x.score===undefined?'—':fmt(x.score,1));
  return '';
 }
-function renderScore(sc){
+function renderScore(sc,canonical){
  if(!sc){$('scoreKpi').textContent='—';$('score').innerHTML='<div class="notice">Расчёт рейтинга пока не получен.</div>';return}
  $('scoreKpi').textContent=sc.display_score===null||sc.display_score===undefined?'—':fmt(sc.display_score);
  const C=sc.components||{},order=['llcr','price','absorption','burden'];
@@ -301,9 +307,11 @@ function renderScore(sc){
   +'</div></details>';
  const mb=$('ratingMethodBtn'),md=$('ratingMethod');
  if(mb&&md)mb.onclick=()=>{md.open=true;md.scrollIntoView({behavior:'smooth',block:'nearest'})};
- if(window.parent&&window.parent!==window){
+ // В каталог уходит только канонический рейтинг: сценарий с другим ориентиром
+ // живёт в карточке и не подменяет цифру в общей таблице.
+ if(canonical===true&&window.parent&&window.parent!==window){
   window.parent.postMessage({
-   type:'developaid-krt-rating',slug:SLUG,
+   type:'developaid-krt-rating',slug:SLUG,canonical:true,
    rating:{score:sc.score,display_score:sc.display_score,coverage_pct:sc.coverage_pct,rankable:sc.rankable,reason:sc.reason,missing:sc.missing||[],imputed:sc.imputed||[],components:sc.components||{}}
   },location.origin);
  }
@@ -348,7 +356,7 @@ function drawMap(){
   return '<g class="bub market-peer"><circle cx="'+xx.toFixed(1)+'" cy="'+yy.toFixed(1)+'" r="7" fill="'+colour+'" fill-opacity=".72" stroke="'+colour+'" stroke-width="2" vector-effect="non-scaling-stroke" data-tip="'+esc(tip)+'"></circle><text class="hov" x="'+(xx+(left?-10:10)).toFixed(1)+'" y="'+(yy+4).toFixed(1)+'" text-anchor="'+(left?'end':'start')+'" font-size="12" font-weight="700" fill="#16202b" stroke="#fff" stroke-width="4" paint-order="stroke" vector-effect="non-scaling-stroke">'+name+'</text></g>';
  }).join(''):'';
  $('map').innerHTML='<img src="'+base+'" alt="Карта"><svg viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'+landPaths+objPaths+sitePath+market+peerPins+'</svg>';
- const peerNote=MAP.peers&&MAP.peers.length?' На карте отмечено ЖК из Пульса: '+MAP.peers.length+'.':' ЖК из Пульса с координатами в текущем отчёте не получены.';
+ const peerNote=MAP.peers&&MAP.peers.length?' На карте отмечено ЖК из Пульса: '+MAP.peers.length+'.':(MAP.reportWhy?' ЖК из Пульса не показаны: '+MAP.reportWhy+'.':' ЖК из Пульса с координатами в текущем отчёте не получены.');
  $('mapNote').textContent=(site.length?'Контур КРТ получен. ':'Карта центрирована по доступной геометрии территории. ')+(MAP.parcels?'Участки и объекты — из рабочего свода территории. ':'Слой участков/объектов пока недоступен. ')+'Рынок — радиус 3 км.'+peerNote;
 }
 function bindMap(){
@@ -388,7 +396,7 @@ async function recalcRating(rank,report){
  const b=$('recalcRating');if(b){b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю'}
  try{
   const s=await get(ratingUrl(true)),rating=s.rating||s;
-  renderScore(rating);
+  renderScore(rating,s.canonical);
   if(rank)renderEconomics(rank,report,rating);
   return rating;
  }catch(e){
@@ -407,13 +415,16 @@ async function boot(){
  if(p.early_unpublished){$('territoryLink').style.display='none'}
  const rankData=rankR.status==='fulfilled'?rankR.value:{rows:[]},rank=(rankData.rows||[]).find(x=>String(x.slug||'')===SLUG)||{},req=reqR.status==='fulfilled'?reqR.value:(rank.requirements||{}),parcels=parcelR.status==='fulfilled'?parcelR.value:null,report=reportR.status==='fulfilled'?reportR.value:null;
  MAP.point=pointR.status==='fulfilled'?pointR.value:null;MAP.parcels=parcels;MAP.peers=marketPeers(report);
+ // Отказ отчёта — не «данных нет». Без ключа кабинета /report отвечает 401, и
+ // экран говорил «ЖК из Пульса не получены», хотя данные есть, а нет доступа.
+ MAP.reportWhy=reportR.status==='rejected'?String((reportR.reason&&(reportR.reason.message||reportR.reason))||''):'';
  const scorePayload=scoreR.status==='fulfilled'?scoreR.value:null;
  if(scorePayload)syncCanonicalTarget(scorePayload);
  const initialRating=scorePayload?(scorePayload.rating||scorePayload):null;
- renderHero(p,rank,req);renderEntry(p,rank);renderProgramme(p,req);renderOfficialSources(p,req);renderTerritory(req,parcels);renderEconomics(rank,report,initialRating);renderPublic(rank);renderScore(initialRating);drawMap();
+ renderHero(p,rank,req);renderEntry(p,rank);renderProgramme(p,req);renderOfficialSources(p,req);renderTerritory(req,parcels);renderEconomics(rank,report,initialRating);renderPublic(rank);renderScore(initialRating,!!(scorePayload&&scorePayload.canonical));drawMap();
  $('recalcRating').onclick=()=>recalcRating(rank,report);
  $('priceTarget').onkeydown=e=>{if(e.key==='Enter')recalcRating(rank,report)};
- $('refreshMarket').onclick=async()=>{const b=$('refreshMarket');b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/market');const r2=await get('/auctions/krt/ranking');const rr=(r2.rows||[]).find(x=>String(x.slug||'')===SLUG)||rank;MAP.peers=marketPeers(d);renderHero(p,rr,req);drawMap();try{const s=await get(ratingUrl());const rating=s.rating||s;renderScore(rating);renderEconomics(rr,d,rating)}catch(_){renderEconomics(rr,d,null)}}catch(e){$('economics').insertAdjacentHTML('afterbegin','<div class="notice bad">'+esc(e.message||e)+'</div>')}finally{b.disabled=false;b.textContent='Обновить рынок и модель'}};
+ $('refreshMarket').onclick=async()=>{const b=$('refreshMarket');b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/market');const r2=await get('/auctions/krt/ranking');const rr=(r2.rows||[]).find(x=>String(x.slug||'')===SLUG)||rank;MAP.peers=marketPeers(d);renderHero(p,rr,req);drawMap();try{const s=await get(ratingUrl());const rating=s.rating||s;renderScore(rating,s.canonical);renderEconomics(rr,d,rating)}catch(_){renderEconomics(rr,d,null)}}catch(e){$('economics').insertAdjacentHTML('afterbegin','<div class="notice bad">'+esc(e.message||e)+'</div>')}finally{b.disabled=false;b.textContent='Обновить рынок и модель'}};
  $('refreshPublic').onclick=async()=>{const b=$('refreshPublic');b.disabled=true;b.innerHTML='<span class="spinner"></span>Ищу';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/open-sources');renderPublic(rank,d)}catch(e){$('publicContext').innerHTML='<div class="notice bad">'+esc(e.message||e)+'</div>'}finally{b.disabled=false;b.textContent='Обновить публичный поиск'}};
  $('handoffDevelopAid').onclick=()=>{const s=$('actionStatus');if(parentAction('handoff',p))s.textContent='Передаю в DevelopAid…';else location.href='/auctions#krt='+encodeURIComponent(SLUG)};
  $('askPlato').onclick=()=>{const s=$('actionStatus');if(parentAction('plato',p))s.textContent='Передаю контекст Платону…';else s.textContent='Платон открывается из каталога КРТ.'};
@@ -421,4 +432,5 @@ async function boot(){
 }
 boot().catch(e=>{document.querySelector('.shell').insertAdjacentHTML('afterbegin','<div class="notice bad"><b>Карточка не собрана:</b> '+esc(e.message||e)+'</div>')});
 </script>
-</body></html>""".replace("__SLUG__", slug_js).replace("__FOOTER__", footer_html)
+</body></html>""".replace("__SLUG__", slug_js).replace("__FOOTER__", footer_html).replace(
+        krt_tenders.LIVE_LOT_PLACEHOLDER, krt_tenders.LIVE_LOT_SCRIPT)
