@@ -31,6 +31,10 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
 
 def _inputs() -> dict:
     x = copy.deepcopy(core.DEFAULT_INPUTS)
@@ -54,7 +58,7 @@ def _revenue(report: dict) -> dict[str, float]:
 
 def test_the_scenario_actually_sells_the_object_parking(report: dict) -> None:
     """Предохранитель: без выручки паркинга объектов проверка ниже пуста."""
-    assert _revenue(report).get("object_parking", 0.0) > 100e6, (
+    assert _revenue(report).get(OFFICE_PARKING, 0.0) > 100e6, (
         "паркинг отдельно стоящих объектов не продаётся — сценарий ничего не ловит")
 
 

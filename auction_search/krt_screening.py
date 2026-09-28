@@ -15,6 +15,9 @@ import math
 from typing import Any
 
 from market_search.krt_requirements import social_objects_from_decision
+# Основание ориентира объявляет price_hint; здесь оно читается, а не
+# пересказывается строковым литералом.
+from market_search.price_hint import BASIS_PEERS as PRICE_BASIS_PEERS
 from market_search.segments import BUSINESS, COMFORT, ECONOMY, ELITE, PREMIUM, normalize_segment
 
 
@@ -150,7 +153,11 @@ def _empty_tep(core: Any) -> dict[str, dict[str, Any]]:
 # числового ориентира, которому нужны минимум три свежих сопоставимых прайса.
 # site_verdict остаётся ответом «что здесь строить», а entry_per_sqm — справкой
 # о входных ценах соседей. Ни одно из них не подменяет отсутствующую цену рынка.
-SCREENING_RULES_VERSION = 5
+# 6: цена окружения ненулевая только при основании `peers`. Медиана округа и
+# медиана класса по Москве остаются ценой МОДЕЛИ с названным основанием, но
+# наблюдением этой площадки не считаются. Подъём версии нужен, чтобы строки,
+# посчитанные прежним правилом, перечитались.
+SCREENING_RULES_VERSION = 6
 
 
 def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, str]:
@@ -174,16 +181,36 @@ def _market_inputs(report: dict[str, Any]) -> tuple[str | None, float, float, st
     # нельзя: именно так единичный premium/elite-кластер давал каталогу КРТ
     # 2,6–3,2 млн ₽/м² как «цену окружения».
     hint_price = _number(hint.get("price_per_sqm"))
-    if hint_price > 0:
+    # На чём стоит ориентир, говорит САМ price_hint. Соседей меньше трёх — он
+    # честно отдаёт медиану округа (`okrug`), а нет и её — медиану класса по
+    # Москве (`city`), и обещание «минимум три свежих сопоставимых прайса»
+    # относится только к `peers`. Читалось же оно как цена окружения при любом
+    # основании: медиана всего округа ехала в колонку «Цена окружения», в
+    # фильтр «от 600 000 ₽/м²» и в ценовую часть рейтинга — то есть городское
+    # среднее выдавалось за наблюдение этой площадки.
+    basis = str(hint.get("basis") or "").strip().lower()
+    basis_title = str(hint.get("basis_title") or "").strip()
+    if hint_price > 0 and basis == PRICE_BASIS_PEERS:
         return (
             segment,
             hint_price,
             hint_price,
             "price_hint отчёта — медиана свежих сопоставимых проектов",
         )
-    # Нет трёх свежих сопоставимых прайсов — цены окружения нет. Не подменяем
-    # её ни site_verdict (он может стоять на одном дорогом проекте выбранного
-    # класса), ни entry_per_sqm (это цена самого дешёвого лота, другой смысл).
+    if hint_price > 0:
+        # Считать по округу можно — он лучше пресета класса. Называть это
+        # ценой ОКРУЖЕНИЯ нельзя: цена окружения остаётся нулём, а основание
+        # едет в предпосылки строкой самого отчёта.
+        return (
+            segment,
+            hint_price,
+            0.0,
+            f"ориентир {basis_title or basis or 'без основания'}: трёх свежих "
+            "сопоставимых проектов рядом не нашлось, цена окружения не измерена",
+        )
+    # Нет и этого — цены нет вовсе. Не подменяем её ни site_verdict (он может
+    # стоять на одном дорогом проекте выбранного класса), ни entry_per_sqm
+    # (это цена самого дешёвого лота, другой смысл).
     return segment, 0.0, 0.0, "price_hint не дал достаточной выборки свежих сопоставимых цен"
 
 
@@ -870,9 +897,12 @@ def build_krt_model_screening(
     # DevelopAid приезжал чужой участок — с офисами 10 000 м² и площадью
     # прошлого проекта («в девелоп он передаёт какой-то другой участок и явно
     # не 14 га», владелец, 02.09.2026). Площадь территории — из каталога.
+    from developaid_v2_form import territory_reset_value
     for key in _territory_keys(core):
         if key in inputs:
-            inputs[key] = 0.0 if not isinstance(inputs[key], bool) else False
+            # Чем сбрасывать — ответ один на страницу, 2.0 и КРТ: у К1, К2 и
+            # расстояния это пусто (считаются сами), у признаков — ложь.
+            inputs[key] = territory_reset_value(core, key, inputs[key])
     area_ha = _number(project.get("area_ha"))
     if area_ha > 0:
         inputs["site_area_ha"] = area_ha

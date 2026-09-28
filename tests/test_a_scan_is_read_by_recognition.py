@@ -147,13 +147,18 @@ def test_a_missing_recognizer_still_refuses_with_a_reason(monkeypatch):
     assert "tesseract" in document["reason"]
 
 
-def test_a_failing_recognizer_is_not_an_empty_document(monkeypatch):
+def test_a_failing_recognizer_is_not_an_empty_document(monkeypatch, caplog):
     _stub_ocr(monkeypatch, "")
 
     def boom(*a, **k):
         raise RuntimeError("растр не собрался")
 
     monkeypatch.setattr(pdf_ocr, "text", boom)
-    document = di.extract_text(_scan_pdf(), "скан.pdf")
+    with caplog.at_level("WARNING"):
+        document = di.extract_text(_scan_pdf(), "скан.pdf")
     assert document["recognized"] is False
-    assert "сорвалось" in document["reason"] and "растр не собрался" in document["reason"]
+    # Наружу — что сорвалось и класс ошибки; текст чужого исключения в ответ
+    # HTTP не уходит (CodeQL py/stack-trace-exposure), он — в журнале.
+    assert "сорвалось" in document["reason"] and "RuntimeError" in document["reason"]
+    assert "растр не собрался" not in document["reason"]
+    assert "растр не собрался" in caplog.text
