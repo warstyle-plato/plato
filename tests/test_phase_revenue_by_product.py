@@ -94,7 +94,7 @@ def _table_rows(bundle, block):
 
 
 def test_the_screen_lists_the_products_under_revenue(bundle):
-    """Строки продуктов стоят в блоке «Выручка», над удельными.
+    """Строки продуктов стоят в блоке «Выручка», над ценой реализации на м².
 
     Таблицу собирает движок (`phase_comparison_table`), страница и PDF её
     печатают; что на отрисованной странице строки стоят там же, меряет
@@ -102,7 +102,9 @@ def test_the_screen_lists_the_products_under_revenue(bundle):
     """
     table = bundle["consolidated"]["comparison_table"]
     keys = [b["key"] for b in table["blocks"]]
-    assert keys.index("revenue") < keys.index("unit")
+    assert keys.index("revenue") < keys.index("costs")
+    revenue = [r["label"] for r in _table_rows(bundle, "revenue")]
+    assert revenue.index("Выручка всего") < revenue.index("Цена реализации на м² продаваемой")
     labels = {p["key"]: p["label"] for p in bundle["consolidated"]["report"]["products"]}
     shown = [r["label"] for r in _table_rows(bundle, "revenue") if r.get("role") == "part"]
     for key in ("apartments", "offices", "standalone_retail"):

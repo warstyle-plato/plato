@@ -15864,6 +15864,8 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
 
     def label(row: dict[str, Any]) -> str:
         out = str(row.get("label") or "")
+        if row.get("rate_input") is not None:
+            out += f" (вводная {one(row['rate_input'])})"
         if row.get("kind") == "th":
             out += ", тыс ₽/м²"
         return out
@@ -15880,20 +15882,22 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
         ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
     ]
+    # Делители удельных — одна подпись таблицы мелким шрифтом под шапкой,
+    # как на странице, а не строки-показатели.
     note = ParagraphStyle("pc_note", parent=muted, fontSize=5.8, leading=7.0)
+    divisors = [
+        text(str(d.get("label") or "")) + ": " + " · ".join(
+            [text(n) + " " + _pdf_num(v, 0) for n, v in zip(columns, d.get("values") or [])]
+            + ["свод " + _pdf_num(d.get("total"), 0)]) + " " + text(str(d.get("unit") or ""))
+        for d in table.get("divisors") or []]
+    if divisors:
+        i = len(data)
+        data.append([Paragraph("Удельные показатели — делители: " + "<br/>".join(divisors), note)]
+                    + [""] * (span - 1))
+        style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 4)]
     for block in table.get("blocks") or []:
         i = len(data)
-        title: Any = Paragraph(text(str(block.get("title") or "").upper()), head)
-        # Делитель удельного — подпись блока мелким шрифтом, как на странице,
-        # а не строка-показатель.
-        divisors = [
-            text(str(d.get("label") or "")) + ": " + " · ".join(
-                [text(n) + " " + _pdf_num(v, 0) for n, v in zip(columns, d.get("values") or [])]
-                + ["свод " + _pdf_num(d.get("total"), 0)]) + " " + text(str(d.get("unit") or ""))
-            for d in block.get("divisors") or []]
-        if divisors:
-            title = [title, Paragraph("<br/>".join(divisors), note)]
-        data.append([title] + [""] * (span - 1))
+        data.append([Paragraph(text(str(block.get("title") or "").upper()), head)] + [""] * (span - 1))
         style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 7),
                   ("LINEBELOW", (0, i), (-1, i), 1.0, colors.HexColor("#111111"))]
         for row in block.get("rows") or []:
@@ -36829,11 +36833,10 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
     число по его виду (`kind`): деньги, количество с единицей, тыс ₽/м²,
     процент, кратность, дата.
 
-    Порядок — как в отчёте о прибылях: объёмы → выручка → затраты →
-    удельные (цена → CAPEX → полные расходы → чистая прибыль на метр
-    последней) → финансирование → результат. Удельные стоят перед
-    финансированием по требованию владельца; делители метра — подпись блока
-    (`divisors`), а не строки-показатели.
+    Порядок — как в отчёте о прибылях: объёмы → выручка (и цена на м²) →
+    затраты (ставки статей, CAPEX, полные расходы и их метр) →
+    финансирование → результат, последней строкой — чистая прибыль на м².
+    Делители метра — одна подпись таблицы (`divisors`), а не строки.
     """
     c = [item for item in (consolidated.get("comparison") or []) if isinstance(item, dict)]
     summary = consolidated.get("summary") or {}
@@ -36936,12 +36939,17 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
 
     sale, gns = f(summary.get("monetizable_saleable_sqm")), f(summary.get("project_gns_sqm"))
     rev_all = [f(x.get("revenue")) for x in c]
-    # Ставок общепроектных статей («ИРД… — цена м² МКД очереди») здесь нет:
-    # это не расходы очереди, а проверка долей, которыми статью режут между
-    # очередями, и среди денег «Затрат» они читались как единственные
-    # расходы, считаемые по очередям (владелец, 27.09.2026). Место им — на
-    # вкладке «Очерёдность», под долей, которую задают руками
-    # (`sharedRateNote`): ставку видно там, где её меняют.
+    # Ставки общепроектных статей — цена метра МКД очереди по статье, с
+    # вводной рядом: заданная руками доля видна числом. Стоят ВИДИМЫМИ
+    # строками в начале расходов, до CAPEX: это расходы, и после итоговой
+    # прибыли им не место (владелец, 28.09.2026: «ничего не сворачивать»).
+    inputs0 = (c[0].get("shared_rate_inputs_th") or {}) if c else {}
+    rates = [row(label + " — цена м² МКД очереди", "th",
+                 [(x.get("shared_rates_th") or {}).get(key) for x in c], None,
+                 rate_input=inputs0.get(key))
+             for key, label in (("ird", "ИРД и согласования"), ("design", "Проектирование П+РД"),
+                                ("preparation", "Подготовительные работы"),
+                                ("utilities", "Наружные сети"))]
 
     def money(label: str, key: str, total: Any) -> dict[str, Any]:
         return row(label, "money", [f(x.get(key)) for x in c], total)
@@ -36949,6 +36957,11 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
     def th(label: str, key: str, value: float, area: float) -> dict[str, Any]:
         return row(label, "th", [f(x.get(key)) for x in c], per_th(value, area))
 
+    # Порядок — отчёт о прибылях (владелец, 28.09.2026): доходы → все
+    # расходы подряд → финансирование → прибыль, и последней строкой таблицы
+    # — чистая прибыль на м². Удельный стоит в разделе своей величины, рядом
+    # с её деньгами, а не отдельным блоком, где цена, затраты и прибыль
+    # шли вперемешку. Ни одна строка не свёрнута.
     blocks = [
         ("mkd", "Объём МКД — к продаже", volume(mkd)),
         ("osz", "Отдельно стоящие объекты",
@@ -36956,15 +36969,7 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
         ("revenue", "Выручка",
          revenue_group(mkd, "Итого МКД", "mkd") + revenue_group(osz, "Итого ОСЗ", "osz")
          + [row("Выручка всего", "money", rev_all, f(summary.get("revenue")),
-                role="total", group="all")]),
-        ("costs", "Затраты", [
-            money("CAPEX", "capex", f(summary.get("capex"))),
-            money("Полные расходы", "total_expenses", f(summary.get("total_expenses")))]),
-        # Удельные — ПЕРЕД финансированием (владелец): метр читается как
-        # экономика продукта, а не банка. Порядок внутри — отчёт о прибылях:
-        # цена → CAPEX → полные расходы → чистая прибыль последней. Делители
-        # стоят подписью блока (`divisors`), а не строками-показателями.
-        ("unit", "Удельные показатели", [
+                role="total", group="all"),
             th("Цена реализации на м² продаваемой", "revenue_per_saleable_th",
                f(summary.get("revenue")), sale),
             # Чисто квартирная цена — общий знаменатель с Excel-книгой: в ней
@@ -36972,15 +36977,16 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
             row("в т.ч. квартиры — на м² их продаваемой", "th",
                 [f(x.get("apartment_price_th")) for x in c],
                 f(summary.get("average_apartment_price_th")) or None, role="sub"),
-            th("Цена реализации на м² ГНС", "revenue_per_gns_th", f(summary.get("revenue")), gns),
+            th("Цена реализации на м² ГНС", "revenue_per_gns_th", f(summary.get("revenue")), gns)]),
+        ("costs", "Затраты", [
+            *rates,
+            money("CAPEX", "capex", f(summary.get("capex"))),
             th("CAPEX на м² ГНС", "capex_per_gns_th", f(summary.get("capex")), gns),
+            money("Полные расходы", "total_expenses", f(summary.get("total_expenses"))),
             th("Полные расходы на м² продаваемой", "expenses_per_saleable_th",
                f(summary.get("total_expenses")), sale),
             th("Полные расходы на м² ГНС", "expenses_per_gns_th",
-               f(summary.get("total_expenses")), gns),
-            th("Чистая прибыль на м² ГНС", "net_profit_per_gns_th", f(summary.get("net_profit")), gns),
-            th("Чистая прибыль на м² продаваемой", "net_profit_per_saleable_th",
-               f(summary.get("net_profit")), sale)]),
+               f(summary.get("total_expenses")), gns)]),
         ("finance", "Финансирование", [
             money("Пиковый БРИДЖ", "peak_bridge", f(finance.get("peak_bridge"))),
             money("Затраты до РНС", "pre_rns_costs", f(totals_fin.get("pre_rns_costs"))),
@@ -37000,28 +37006,33 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
                   f(finance.get("rve_pf_shortfall"))),
             *debt,
             row("LLCR", "mult", [f(x.get("llcr")) for x in c], f(summary.get("llcr")))]),
+        # Аллокация общих расходов — аналитика рядом с прибылью, а сама
+        # прибыль и её метр закрывают таблицу.
         ("result", "Результат", [
-            money("Чистая прибыль — cash", "net_profit", f(summary.get("net_profit"))),
-            row("Маржинальность", "pct", [f(x.get("margin")) for x in c], f(summary.get("margin"))),
             money("Общепроектная нагрузка — cash", "cash_shared_cost", None),
             money("Аллоцированные общие расходы", "allocated_shared_cost", None),
-            money("Аналитическая прибыль после аллокации", "allocated_net_profit", None)]),
+            money("Аналитическая прибыль после аллокации", "allocated_net_profit", None),
+            money("Чистая прибыль — cash", "net_profit", f(summary.get("net_profit"))),
+            row("Маржинальность", "pct", [f(x.get("margin")) for x in c], f(summary.get("margin"))),
+            th("Чистая прибыль на м² ГНС", "net_profit_per_gns_th", f(summary.get("net_profit")), gns),
+            th("Чистая прибыль на м² продаваемой", "net_profit_per_saleable_th",
+               f(summary.get("net_profit")), sale)]),
     ]
     # Удельный подписан своим делителем: те же площади, на которые делит
     # движок (`monetizable_saleable_sqm`, `project_gns_sqm`), а не угаданные
-    # по заголовку. Это подпись блока мелким шрифтом, а не строка-показатель:
-    # крупная строка «Делитель…» среди денег читалась как ещё одно число
-    # экономики (владелец, 28.09.2026). Итог — отношение сумм, а не среднее.
-    notes = {"unit": [
+    # по заголовку. Это одна подпись таблицы мелким шрифтом, а не строки:
+    # крупная «Делитель…» среди денег читалась как ещё одно число экономики
+    # (владелец, 28.09.2026). Удельные стоят в нескольких разделах, делитель
+    # у них общий. Итог удельного — отношение сумм, а не среднее.
+    divisors = [
         {"label": "на м² продаваемой — продаваемая площадь", "unit": "м²",
          "values": [f(x.get("saleable_sqm")) for x in c], "total": sale},
         {"label": "на м² ГНС — ГНС наземная", "unit": "м²",
-         "values": [f(x.get("gns_sqm")) for x in c], "total": gns}]}
+         "values": [f(x.get("gns_sqm")) for x in c], "total": gns}]
     return {"columns": [str(x.get("name") or "") for x in c],
             "has_debt": bool(debt),
-            "blocks": [{"key": k, "title": t, "rows": r,
-                        **({"divisors": notes[k]} if k in notes else {})}
-                       for k, t, r in blocks if r]}
+            "divisors": divisors,
+            "blocks": [{"key": k, "title": t, "rows": r} for k, t, r in blocks if r]}
 
 
 def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
@@ -44592,7 +44603,8 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-comparison-card td:not(:first-child),.phase-comparison-card th:not(:first-child){white-space:nowrap}
 .phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{position:sticky;left:0;z-index:1;background:#fff}
 .phase-comparison-card tr.pc-block th span{position:sticky;left:0}
-.phase-comparison-card tr.pc-block th small.pc-divisors{display:block;position:sticky;left:0;margin-top:3px;font-size:10px;font-weight:400;letter-spacing:0;text-transform:none;color:#777;white-space:normal;max-width:calc(100vw - 48px)}
+.phase-comparison-card tr.pc-caption th{text-align:left;padding:6px 0 0;font-weight:400;letter-spacing:0;text-transform:none;border:0}
+.phase-comparison-card tr.pc-caption small.pc-divisors{display:block;position:sticky;left:0;font-size:10px;line-height:1.35;color:#777;white-space:normal;max-width:calc(100vw - 48px)}
 @media(max-width:600px){.phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{min-width:128px;max-width:150px;box-shadow:1px 0 0 #e5e5e5}}
 .phase-status{font-size:11px;color:#666;margin-top:8px}
 .object-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
@@ -53151,18 +53163,19 @@ function renderPhaseComparison(){
  // сверяет итог с суммой слагаемых по ним, а не по округлённому тексту.
  const td=(r,v)=>`<td${r.group?` data-v="${v}"`:''}>${fmt(r,v)}</td>`;
  const span=table.columns.length+2;
- // Делитель удельного — подпись блока мелким шрифтом, а не строка тела:
- // крупная «Делитель…» среди показателей читалась как ещё одно число.
+ // Делители удельных — одна подпись таблицы мелким шрифтом, а не строки
+ // тела: крупная «Делитель…» среди показателей читалась как ещё одно число.
  // Метры — целыми, как в PDF (`_phase_comparison_pdf`).
- const divisors=b=>(b.divisors||[]).length
-  ?`<small class="pc-divisors">${b.divisors.map(d=>escapeHtml(d.label)+': '+
+ const divisors=(table.divisors||[]).length
+  ?`<tr class="pc-caption"><th colspan="${span}"><small class="pc-divisors">Удельные показатели — делители: ${table.divisors.map(d=>escapeHtml(d.label)+': '+
      table.columns.map((n,i)=>escapeHtml(n)+' '+num(Math.round(d.values[i]||0))).concat('свод '+num(Math.round(d.total||0))).join(' · ')+
-     ' '+escapeHtml(d.unit||'')).join('<br>')}</small>`
+     ' '+escapeHtml(d.unit||'')).join('<br>')}</small></th></tr>`
   :'';
- phaseComparisonBody.innerHTML=table.blocks.map(b=>
-  `<tr class="pc-block" data-block="${b.key}"><th colspan="${span}"><span>${b.title}</span>${divisors(b)}</th></tr>`+
+ const label=r=>r.label+(r.rate_input!=null?` (вводная ${num2(r.rate_input)} тыс ₽/м²)`:'');
+ phaseComparisonBody.innerHTML=divisors+table.blocks.map(b=>
+  `<tr class="pc-block" data-block="${b.key}"><th colspan="${span}"><span>${b.title}</span></th></tr>`+
   b.rows.map(r=>
-   `<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${r.label}</td>`+
+   `<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${label(r)}</td>`+
    r.values.map(v=>td(r,v)).join('')+td(r,r.total)+'</tr>').join('')
  ).join('');
  renderPhaseEscrowCharts();

@@ -39,21 +39,32 @@ from test_object_parking_reaches_the_queue import _phased  # noqa: E402
 
 PORT = 18934
 
-# Порядок отчёта о прибылях: объёмы → выручка → расходы → удельные →
-# финансирование → результат. Удельная экономика — ПЕРЕД расходами на
-# финансирование (владелец), и внутри неё чистая прибыль последней.
-BLOCKS = ["mkd", "osz", "revenue", "costs", "unit", "finance", "result"]
-UNIT_ROWS = [
+# Порядок отчёта о прибылях (владелец, 28.09.2026): доходы → все расходы
+# подряд → финансирование → прибыль, последней строкой — чистая прибыль на
+# м². Удельный стоит в разделе своей величины; ничего не свёрнуто.
+BLOCKS = ["mkd", "osz", "revenue", "costs", "finance", "result"]
+REVENUE_TAIL = [
+    "Выручка всего",
     "Цена реализации на м² продаваемой",
     "в т.ч. квартиры — на м² их продаваемой",
     "Цена реализации на м² ГНС",
+]
+RATES = [f"{name} — цена м² МКД очереди" for name in (
+    "ИРД и согласования", "Проектирование П+РД", "Подготовительные работы", "Наружные сети")]
+COSTS = RATES + [
+    "CAPEX",
     "CAPEX на м² ГНС",
+    "Полные расходы",
     "Полные расходы на м² продаваемой",
     "Полные расходы на м² ГНС",
+]
+RESULT_TAIL = [
+    "Чистая прибыль — cash",
+    "Маржинальность",
     "Чистая прибыль на м² ГНС",
     "Чистая прибыль на м² продаваемой",
 ]
-LAST_ROW = "Аналитическая прибыль после аллокации"
+LAST_ROW = RESULT_TAIL[-1]
 DIVISORS = ("на м² продаваемой — продаваемая площадь", "на м² ГНС — ГНС наземная")
 
 
@@ -108,51 +119,69 @@ def test_every_row_sits_in_a_titled_block_in_order(rows) -> None:
         if r["cls"] == "pc-block":
             current = r["block"]
             continue
+        if r["cls"] == "pc-caption":
+            assert current is None, "подпись-делитель стоит не над таблицей"
+            continue
         assert r["block"] and r["block"] == current, r
 
 
-def test_unit_block_reads_like_a_profit_report_and_precedes_finance(rows) -> None:
-    """Удельные — перед финансированием, внутри: цена → CAPEX → полные
-    расходы → чистая прибыль ПОСЛЕДНЕЙ; ни ставок статей, ни делителей после
-    неё (прод, телефон: «всё в кучу» — владелец, 28.09.2026)."""
+def _labels(rows, block: str) -> list[str]:
+    return [r["label"] for r in rows if r["block"] == block and r["cls"] != "pc-block"]
+
+
+def _strip_input(label: str) -> str:
+    return re.sub(r" \(вводная [^)]*\)$", "", label)
+
+
+def test_the_table_reads_like_a_profit_report(rows) -> None:
+    """Доходы → все расходы подряд → финансирование → прибыль, и чистая
+    прибыль на м² — последняя строка таблицы (прод, телефон: «всё в кучу» —
+    владелец, 28.09.2026)."""
     heads = [r["block"] for r in rows if r["cls"] == "pc-block"]
-    assert heads.index("costs") < heads.index("unit") < heads.index("finance"), heads
-    unit = [r["label"] for r in rows if r["block"] == "unit" and r["cls"] != "pc-block"]
-    assert unit == UNIT_ROWS, unit
+    assert heads.index("revenue") < heads.index("costs") < heads.index("finance") \
+        < heads.index("result") == len(heads) - 1, heads
+    assert "unit" not in heads, "удельные снова собраны в свой блок вперемешку"
+    revenue = _labels(rows, "revenue")
+    assert revenue[-len(REVENUE_TAIL):] == REVENUE_TAIL, revenue
+    costs = [_strip_input(x) for x in _labels(rows, "costs")]
+    assert costs == COSTS, costs
+    result = _labels(rows, "result")
+    assert result[-len(RESULT_TAIL):] == RESULT_TAIL, result
     assert rows[-1]["label"] == LAST_ROW, rows[-1]["label"]
+    # Цены — только среди доходов, расходы на метр — только среди расходов.
+    for r in rows:
+        if "Цена реализации" in r["label"]:
+            assert r["block"] == "revenue", r
+        if r["label"].startswith(("CAPEX на", "Полные расходы на")) or "цена м² МКД" in r["label"]:
+            assert r["block"] == "costs", r
 
 
 def test_divisors_are_a_caption_not_body_rows(rows, bundle) -> None:
     """«Делитель зачем показывать, тем более так крупно»: делитель — подпись
-    блока мелким шрифтом, строк-делителей в теле нет. Числа подписи — те же
-    площади, на которые делит движок."""
-    assert not [r for r in rows if r["cls"] != "pc-block" and "елитель" in r["label"]], (
-        [r["label"] for r in rows])
-    head = next(r for r in rows if r["cls"] == "pc-block" and r["block"] == "unit")
-    caption = head["caption"]
+    таблицы мелким шрифтом, строк-делителей в теле нет. Числа подписи — те
+    же площади, на которые делит движок."""
+    assert not [r for r in rows if r["cls"] not in ("pc-block", "pc-caption")
+                and "елитель" in r["label"]], [r["label"] for r in rows]
+    captions = [r["caption"] for r in rows if r["caption"]]
+    assert len(captions) == 1, captions
+    caption = captions[0]
     for text in DIVISORS:
         assert text in caption, caption
     summary = bundle["consolidated"]["summary"]
     for key in ("monetizable_saleable_sqm", "project_gns_sqm"):
         total = f"{round(float(summary[key])):,}".replace(",", " ")
-        assert total in caption.replace("\u00a0", " "), (key, total, caption)
-    others = [r for r in rows if r["cls"] == "pc-block" and r["block"] != "unit"]
-    assert not any(r["caption"] for r in others), "делители стоят не у своего блока"
+        assert total in caption.replace(" ", " "), (key, total, caption)
 
 
-def test_article_rates_live_on_the_phasing_tab_not_in_the_table(rows, bundle) -> None:
-    """Ставки общепроектных статей — проверка долей, а не расходы очереди.
-
-    Среди денег «Затрат» они читались как единственные расходы, считаемые по
-    очередям (владелец, 27.09.2026). Их место — вкладка «Очерёдность», под
-    долей, которую задают руками; данные для неё движок по-прежнему отдаёт.
-    """
-    assert not [r for r in rows if "цена м² МКД" in r["label"]], [r["label"] for r in rows]
-    costs = [r["label"] for r in rows if r["block"] == "costs" and r["cls"] != "pc-block"]
-    assert costs == ["CAPEX", "Полные расходы"], costs
-    assert all(set(x["shared_rates_th"]) >= {"ird", "design", "preparation", "utilities"}
-               for x in bundle["comparison"])
-    assert "sharedRateNote(k,i)" in core.PAGE, "вкладка «Очерёдность» больше не показывает ставку"
+def test_article_rates_are_visible_costs_with_their_input(rows, bundle) -> None:
+    """Ставки общепроектных статей — видимые строки расходов, до CAPEX, с
+    вводной рядом; ничего не свёрнуто и не спрятано на другую вкладку."""
+    costs = _labels(rows, "costs")
+    assert [_strip_input(x) for x in costs[:len(RATES)]] == RATES, costs
+    inputs = bundle["comparison"][0]["shared_rate_inputs_th"]
+    for label, key in zip(costs, ("ird", "design", "preparation", "utilities")):
+        if inputs.get(key) is not None:
+            assert "(вводная " in label, label
 
 
 def _block_of(rows, text: str) -> str:
@@ -259,10 +288,11 @@ _LAYOUT = """()=>{
     firstLeft:first.left-w.left,lastRight:w.right-last.right,
     lastText:row.cells[0].innerText.trim(),order:[...document.querySelectorAll(
       '#phaseComparisonBody tr.pc-block')].map(t=>t.dataset.block),
-    unit:[...document.querySelectorAll('#phaseComparisonBody tr[data-block="unit"]:not(.pc-block)')]
-      .map(t=>t.cells[0].innerText.trim())};
-  const cap=document.querySelector('#phaseComparisonBody tr.pc-block[data-block="unit"] small.pc-divisors');
-  const cell=document.querySelector('#phaseComparisonBody tr[data-block="unit"]:not(.pc-block) td');
+    costs:[...document.querySelectorAll('#phaseComparisonBody tr[data-block="costs"]:not(.pc-block)')]
+      .map(t=>t.cells[0].innerText.trim().replace(/ \(вводная [^)]*\)$/,'')),
+    hidden:rows.filter(t=>t.offsetHeight===0).map(t=>t.cells[0].innerText)};
+  const cap=document.querySelector('#phaseComparisonBody tr.pc-caption small.pc-divisors');
+  const cell=document.querySelector('#phaseComparisonBody tr[data-block="costs"]:not(.pc-block) td');
   if(cap){const cr=cap.getBoundingClientRect();
     res.caption={text:cap.innerText,visible:cap.offsetHeight>0,
       size:parseFloat(getComputedStyle(cap).fontSize),rowSize:parseFloat(getComputedStyle(cell).fontSize),
@@ -283,7 +313,8 @@ def test_the_table_reads_on_desktop_and_phone(bundle, server, width) -> None:
     assert not errors, errors
     assert got["order"] == BLOCKS, got["order"]
     assert got["lastText"] == LAST_ROW, got["lastText"]
-    assert got["unit"] == UNIT_ROWS, got["unit"]
+    assert got["costs"] == COSTS, got["costs"]
+    assert not got["hidden"], f"строки скрыты: {got['hidden']}"
     # Делитель виден подписью блока — мельче строки таблицы и в пределах
     # экрана, а не отдельной крупной строкой.
     cap = got.get("caption")
