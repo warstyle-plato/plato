@@ -93,3 +93,32 @@ def test_the_page_names_are_the_ones_the_substring_found() -> None:
     sample = sorted(set(names))[:300] + [names[0][:3], "заведомоНетТакойФункции"]
     for name in sample:
         assert page_blocks._page_declares(name, page) == _literal_page_declares(name, page), name
+
+
+# --- слово node о видимости сильнее текстового совпадения -------------------
+
+# Имя объявлено у страницы НАВЕРХУ и такой же строкой — локально внутри чужой
+# функции. Ровно это и стоит на настоящей странице: `const money=v=>…` сверху
+# и `const money=opts.value==='money_or_share';` внутри разбора графика.
+# Порядок как на настоящей странице: верхнее объявление ВЫШЕ локального, иначе
+# `constant` вынет локальное и проверка будет про другую дыру.
+SHADOWED_PAGE = """
+const money=v=>'\u20bd'+String(v);
+function outer(opts){ const money=opts.value==='x'; return money ? 1 : 0; }
+function shows(){ return String(outer({value:'y'})) + money(2); }
+"""
+
+
+def test_a_name_node_asks_for_is_taken_even_if_the_text_looks_busy() -> None:
+    """Локальное объявление в чужом куске не отменяет добор верхнего.
+
+    Разрешитель добирал `shows` вместе с `outer`, а тот приносил с собой
+    локальную строку `const money=…`. Дальше страж «занято» — он проверяет
+    ТЕКСТ и области видимости не знает — запрещал добрать настоящий верхний
+    `money`, node повторял «money is not defined», и стенд упирался в предел,
+    ничего не сказав о причине. На прежнем коде этот тест падает отказом
+    «зависимостей больше 60».
+    """
+    out, taken = page_blocks.run("", "console.log(shows());\n", page=SHADOWED_PAGE)
+    assert out.strip() == "0₽2", out
+    assert "money" in taken, taken

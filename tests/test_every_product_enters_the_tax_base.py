@@ -31,6 +31,10 @@ import main as wrapper  # noqa: E402
 
 core = wrapper.core
 
+# Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
+OFFICE_PARKING = "object_parking_offices"
+
+
 
 def _project():
     """Очереди с отдельно стоящими объектами: у них и живёт собственный гараж."""
@@ -64,7 +68,7 @@ def test_the_object_garage_actually_sells_in_this_project(bundle):
     sold = 0.0
     for phase in bundle["phases"]:
         for item in (phase["result"]["report"].get("products") or []):
-            if item.get("key") == "object_parking":
+            if item.get("key") == OFFICE_PARKING:
                 sold += float(item.get("revenue") or 0.0)
     assert sold > 0, "в проекте нет выручки собственного паркинга объектов"
 
