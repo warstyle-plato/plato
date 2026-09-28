@@ -241,3 +241,26 @@ jobs:
           echo "Версия:  ${{ steps.meta.outputs.version }}"
           echo "Digest:  ${{ steps.push.outputs.digest }}"
           echo "Теги:    ${GITHUB_SHA}, prod"
+
+  # Проверка прода запускается отсюда, а не своим `workflow_run`: сборку
+  # диспатчит release-merge токеном GITHUB_TOKEN, а прогон, порождённый этим
+  # токеном, `workflow_run` не будит (0.24.65 уехал без проверки, её звали
+  # руками). Диспатч от GITHUB_TOKEN прогон создаёт — так же, как release-merge
+  # создаёт эту сборку. Только main: образ других веток не выкатывается.
+  smoke:
+    name: Проверка прода после выката
+    needs: [build]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+    steps:
+      - name: Запустить prod-smoke.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Код проверки берётся с main; ждём в /health именно этот коммит.
+        run: |
+          gh workflow run prod-smoke.yml --repo "$GITHUB_REPOSITORY" --ref main \
+            -f expect_commit="$GITHUB_SHA"
+          echo "Проверка прода запущена, ждёт коммит ${GITHUB_SHA}."
