@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import io
+import re
 from datetime import date
 from typing import Any, Callable
 
@@ -26,8 +27,9 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.platypus import (BaseDocTemplate, Frame, Image, NextPageTemplate, PageBreak,
-                                PageTemplate, Paragraph, Spacer, Table, TableStyle)
+from reportlab.platypus import (BaseDocTemplate, Frame, Image, KeepInFrame, NextPageTemplate,
+                                PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle)
+from reportlab.platypus.doctemplate import LayoutError
 
 NAVY = colors.HexColor("#17365D")
 NAVY_DARK = colors.HexColor("#0B1F33")
@@ -49,6 +51,22 @@ CHART_TITLE = "Объём кредита и средств эскроу"
 GANTT_TITLE = "Периоды строительства и продаж"
 
 FLAG_MARK = {"killer": "СТОП", "economic": "ВЛИЯЕТ"}
+# Перечни, которые у КРТ растут без предела, на листе обрезаются с названным
+# остатком: тизер — две страницы, всё остальное в полном отчёте. Числа ТЭП и
+# экономики сюда не входят — их не обрезают.
+MAX_CADASTRAL_SHOWN = 6
+MAX_PARCELS_SHOWN = 6
+MAX_FINDINGS_SHOWN = 5
+MAX_GANTT_PHASES = 8
+FULL_REPORT_TAIL = "в полном отчёте"
+PAGE_NAMES = {"p": PAGE1_TITLE, "l": PAGE2_TITLE}
+
+
+class TeaserLayoutError(ValueError):
+    """Лист тизера не собрался: какая страница и насколько, словами, а не
+    дампом Flowable из ReportLab."""
+
+
 MONTHS_GEN = ("янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек")
 
 
@@ -246,7 +264,11 @@ def _site_rows(site: dict[str, Any], tep: dict[str, Any], fm: _Formats) -> list[
     numbers = site.get("cadastral_numbers") or []
     rows: list[tuple[str, str, str]] = []
     rows.append(("Адрес", site.get("address") or "не назван", ""))
-    rows.append(("Кадастровые номера", ", ".join(numbers) if numbers else "не заданы", ""))
+    shown = ", ".join(numbers[:MAX_CADASTRAL_SHOWN])
+    if len(numbers) > MAX_CADASTRAL_SHOWN:
+        shown += f" … и ещё {len(numbers) - MAX_CADASTRAL_SHOWN} — {FULL_REPORT_TAIL}"
+    rows.append((f"Кадастровые номера ({len(numbers)})" if len(numbers) > 1 else "Кадастровые номера",
+                 shown if numbers else "не заданы", ""))
     area_ha = site.get("land_area_ha")
     rows.append(("Площадь участка",
                  (fm.num(area_ha, 2) if area_ha is not None else "—"), "га" if area_ha is not None else ""))
@@ -254,11 +276,11 @@ def _site_rows(site: dict[str, Any], tep: dict[str, Any], fm: _Formats) -> list[
     if len(parcels) > 1:
         # Состав из нескольких ЗУ — построчно, как в тизере участка у владельца
         # (Походный, 5): у каждого номера своя площадь.
-        for index, parcel in enumerate(parcels[:6], start=1):
+        for index, parcel in enumerate(parcels[:MAX_PARCELS_SHOWN], start=1):
             rows.append((f"  ЗУ {index} · {parcel.get('cadastral_number') or '—'}",
                          fm.num(float(parcel["area_sqm"]) / 10000.0, 4), "га"))
-        if len(parcels) > 6:
-            rows.append((f"  … и ещё {len(parcels) - 6} ЗУ", "", ""))
+        if len(parcels) > MAX_PARCELS_SHOWN:
+            rows.append((f"  … и ещё {len(parcels) - MAX_PARCELS_SHOWN} ЗУ — {FULL_REPORT_TAIL}", "", ""))
     rows.append(("Правовой статус", site.get("land_right") or "—", ""))
     if site.get("permitted_use"):
         rows.append(("Текущий ВРИ", site["permitted_use"], ""))
@@ -278,13 +300,13 @@ def _restrictions(site: dict[str, Any], st: _Styles, fm: _Formats) -> list[Any]:
     if site.get("verdict_headline"):
         out.append(Paragraph(site["verdict_headline"], st.label_b))
     findings = list(site.get("findings") or [])
-    for finding in findings[:5]:
+    for finding in findings[:MAX_FINDINGS_SHOWN]:
         mark = FLAG_MARK.get(finding.get("flag_class") or "", "справка")
         share = finding.get("coverage_pct")
         tail = f" · ~{fm.num(share, 0)}% участка" if share is not None else ""
         out.append(Paragraph(f"• {mark} · {finding.get('name') or '—'}{tail}", st.label))
-    if len(findings) > 5:
-        out.append(Paragraph(f"… и ещё {len(findings) - 5}, все в полном отчёте", st.note))
+    if len(findings) > MAX_FINDINGS_SHOWN:
+        out.append(Paragraph(f"… и ещё {len(findings) - MAX_FINDINGS_SHOWN} — {FULL_REPORT_TAIL}", st.note))
     if not findings:
         out.append(Paragraph("В НСПД ограничений на участке не обнаружено.", st.label))
     if site.get("free_pct") is not None:
@@ -487,6 +509,8 @@ def _gantt(model: dict[str, Any], width: float, st: _Styles) -> Drawing | None:
         phases = [{"name": "Проект", "dates": {"project_start": dates.get("project_start"),
                                                "permit": dates.get("permit"), "rve": dates.get("rve"),
                                                "sales_start": sales.get("start"), "sales_end": sales.get("end")}}]
+    hidden = max(len(phases) - MAX_GANTT_PHASES, 0)
+    phases = phases[:MAX_GANTT_PHASES]
     starts = [d for p in phases for d in ((p.get("dates") or {}).get("project_start"),
                                           (p.get("dates") or {}).get("permit")) if d]
     ends = [d for p in phases for d in ((p.get("dates") or {}).get("rve"),
@@ -502,7 +526,7 @@ def _gantt(model: dict[str, Any], width: float, st: _Styles) -> Drawing | None:
     label_w = 150
     row_h = 9
     left, right, top, bottom = label_w + 6, 8, 18, 14
-    height = top + bottom + row_h * 2 * len(phases) + 4
+    height = top + bottom + row_h * 2 * len(phases) + 4 + (row_h if hidden else 0)
     plot_w = width - left - right
     d = Drawing(width, height)
     d.add(String(2, height - 9, GANTT_TITLE, fontName=st.bold, fontSize=7.5, fillColor=NAVY))
@@ -532,7 +556,18 @@ def _gantt(model: dict[str, Any], width: float, st: _Styles) -> Drawing | None:
             d.add(String(2, y + 2, f"{phase.get('name') or 'Проект'} · {label}{span}", fontName=st.regular,
                          fontSize=6.0, fillColor=NAVY_DARK))
             y -= row_h
+    if hidden:
+        d.add(String(2, y + 2, f"… и ещё {hidden} очереди — {FULL_REPORT_TAIL}", fontName=st.regular,
+                     fontSize=6.0, fillColor=GREY))
     return d
+
+
+def _fit_page(flowables: list[Any], width: float) -> list[Any]:
+    """Последний предохранитель листа. Колонки лежат в одной строке таблицы,
+    которую ReportLab не переносит: колонка выше листа роняла весь PDF. Здесь
+    страница целиком ужимается в свой кадр (высота — та, что кадр даёт), и
+    тизер собирается всегда; перечни обрезаны раньше, так что ужатие мелкое."""
+    return [KeepInFrame(width, 0, flowables, mode="shrink", hAlign="LEFT", vAlign="TOP")]
 
 
 def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _Styles,
@@ -581,7 +616,7 @@ def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _S
         "Числа посчитаны движком DevelopAid одним расчётом; тизер их не пересчитывает. "
         f"Отпечаток вводных: {origin.get('inputs_fingerprint') or origin.get('calculation_id') or '—'}. "
         "Подробности — на странице «Итог» и в полном отчёте.", st.note))
-    return story
+    return _fit_page(story, width)
 
 
 def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) -> list[Any]:
@@ -691,7 +726,7 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
         f"Расчёт {origin.get('calculation_id') or '—'} · движок DevelopAid {origin.get('engine_version') or '—'} "
         f"· {origin.get('generated_at') or ''}. Удельные показатели на метр ГНС (наземная площадь) и "
         "на метр продаваемой площади считает движок; тизер их не выводит сам.", st.note))
-    return story
+    return _fit_page(story, width)
 
 
 def build_teaser_pdf(presentation: dict[str, Any], fonts: tuple[str, str],
@@ -722,5 +757,23 @@ def build_teaser_pdf(presentation: dict[str, Any], fonts: tuple[str, str],
     story.append(NextPageTemplate("landscape"))
     story.append(PageBreak())
     story += _page_two(presentation, landscape_w, st, fm)
-    doc.build(story)
+    try:
+        doc.build(story)
+    except LayoutError as exc:
+        raise TeaserLayoutError(_layout_reason(str(exc))) from exc
     return buf.getvalue()
+
+
+def _layout_reason(raw: str) -> str:
+    """Причина отказа вёрстки словами: какая страница тизера, насколько блок
+    выше листа. Дамп Flowable остаётся в цепочке исключений для журнала."""
+    frame = re.search(r"in frame '(\w+)'\(([\d.]+) x ([\d.]+)", raw)
+    tallest = re.search(r"tallest cell ([\d.]+) points", raw)
+    page = PAGE_NAMES.get(frame.group(1)) if frame else None
+    where = f"страница «{page}»" if page else "страница тизера"
+    size = ""
+    if frame and tallest:
+        need, have = float(tallest.groups()[-1]), float(frame.group(3))
+        size = f" (блок {need / mm:.0f} мм при листе {have / mm:.0f} мм)"
+    return (f"{where} не уместилась на лист A4{size}. Полный отчёт PDF собирается без этого "
+            "ограничения; сообщите разработчику проект, на котором это случилось.")

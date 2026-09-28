@@ -522,23 +522,24 @@ def test_the_page_substitutes_the_lease_payment_too():
     assert "applyDerivedInputs(derived)" in body
 
 
-def test_editing_the_tep_recalculates_by_itself():
-    """Правка метров пересчитывает ВРИ, соцнагрузку и места без кнопки.
+def test_editing_apartments_recalculates_the_derived_loads_by_itself():
+    """Автопересчёт остаётся у жилого драйвера, но не у любой строки ТЭП.
 
-    Пересчёт был только кнопкой с подтверждением, и это оказалось не системой, а
-    ещё одной дверью: человек правит ТЭП по решению ГЗК, а плата за ВРИ,
-    соцнагрузка и машино-места остаются нормативными и завышенными кратно
-    («не гибкая система изменения ТЭПов после просчёта на калькуляторе ГлавАПУ»,
-    владелец, 20.08.2026).
+    Квартиры создают население, поэтому их правка должна запускать ВРИ,
+    соцнагрузку и нормативные места. Офисная продаваемая доля этих величин не
+    создаёт и общий пересчёт запускать не должна.
     """
     page = core.PAGE
-    assert "function scheduleTepAutoRecalc()" in page
+    assert "function scheduleTepAutoRecalc(changedKey)" in page
+    scheduler = page_blocks.function("scheduleTepAutoRecalc", page)
+    assert "changedKey!=='apartments'" in scheduler
+
     body = page_blocks.function("tepCellChanged", page)
-    assert "scheduleTepAutoRecalc()" in body, (
-        "правка ячейки ТЭП обязана заводить пересчёт — иначе он снова только кнопка")
+    assert "scheduleTepAutoRecalc(key)" in body, (
+        "правка ТЭП обязана передать изменённую строку планировщику")
     refill = page[page.index("function refillTepRow("):]
     refill = refill[:refill.index("\n// Ответ кнопки живёт")]
-    assert "scheduleTepAutoRecalc()" in refill
+    assert "scheduleTepAutoRecalc(key)" in refill
 
 
 def test_the_automatic_pass_does_not_ask_and_does_not_hide():

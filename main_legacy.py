@@ -27317,8 +27317,12 @@ def build_plato_model_v2(
                         value=round(float(item.get(key) or 0.0), 6)).number_format = area
         # Продаётся — то, что остаётся за вычетом гостевых: правка мест на этой
         # же строке сразу двигает объём продаж, а не оставляет выгруженное число.
-        ws_tep.cell(row=line, column=9,
-                    value=f"=G{line}-H{line}").number_format = area
+        # У соцобъектов колонка G — мощность учреждения, не продаваемые
+        # единицы. Формула G-H для школы превращала 1 000 мест в 1 000
+        # «продаж» прямо в выгруженной книге.
+        sold_value = (0 if item.get("key") in SOCIAL_TEP_FIELDS
+                      else f"=G{line}-H{line}")
+        ws_tep.cell(row=line, column=9, value=sold_value).number_format = area
     total_line = 5 + len(tep_rows)
     ws_tep.cell(row=total_line, column=1, value="ИТОГО").font = styles["bold"]
     for column in range(2, 10):
@@ -31950,7 +31954,13 @@ def calculate(req: CalcRequest) -> dict:
             # гостевые места. Число едет строкой ТЭП, а не выводится каждой
             # поверхностью заново.
             "transfer_units": given,
-            "saleable_units": max(0.0, units - guest - given),
+            # У соцобъекта units — мощность (места ДОО/СОШ или посещения
+            # поликлиники), а не товарные единицы. Такие места строятся как
+            # обязательство, но не продаются участникам проекта.
+            "saleable_units": (
+                0.0 if key in SOCIAL_TEP_FIELDS
+                else max(0.0, units - guest - given)
+            ),
             # Гараж отдельно стоящего объекта живёт полем на его же строке, и
             # до отчёта эти поля не доезжали вовсе: строка собирается по
             # списку ключей, а их в списке не было. Свод очередей складывает
@@ -42839,8 +42849,11 @@ summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
 .group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
 details[open]>summary>.group-peek{display:none}
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:0 0 15px}
-.field-section{font-size:12px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--muted,#667085);border-top:1px solid var(--line,#e4e7ec);padding:12px 0 8px;margin-top:4px}
-.field-section+.fields{padding-bottom:10px}
+.field-card{background:var(--soft,#f5f5f3);border:1px solid var(--line,#dedede);border-radius:10px;padding:12px 14px 4px;margin:0 0 14px}
+.field-card:first-of-type{margin-top:4px}
+.field-section{font-size:15px;font-weight:700;color:var(--ink,#171717);padding:0 0 10px;margin:0 0 10px;border-bottom:1px solid var(--line,#dedede)}
+.field-card .fields{padding-bottom:10px}
+@media(max-width:640px){.field-card{padding:10px 10px 2px;border-radius:8px}}
 .field label{font-size:12px;color:#555;display:block;margin-bottom:4px}.unit{color:#aaa;font-size:10px}
 input,select{width:100%;border:1px solid #cfcfcf;background:#fff;border-radius:0;padding:9px 10px;font-size:14px;color:#111}
 input:focus,select:focus{outline:2px solid #111;outline-offset:-1px}
@@ -48715,11 +48728,14 @@ function renderInputs(){
    const peek=groupPeek(grp[0],grp[1]);
    if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
    det.appendChild(sum);
-   // Поля объекта разбиты на смысловые блоки с заголовком: у каждого блока
-   // своя сетка, и новый блок начинается там, где у поля сменился блок.
-   // Порядок полей уже сгруппирован движком — страница его не пересобирает.
+   // Поля объекта разбиты на смысловые блоки: каждый блок — отдельная
+   // карточка с заголовком и своей сеткой полей внутри, и новая карточка
+   // начинается там, где у поля сменился блок. Заголовок одной мелкой серой
+   // строкой над общей сеткой форму не делил — она читалась прежним списком
+   // (владелец, 27.09.2026). Порядок полей сгруппирован движком — страница
+   // его не пересобирает.
    let grid=null,section=null;
-   const openGrid=()=>{grid=document.createElement('div');grid.className='fields';det.appendChild(grid)};
+   const openGrid=(parent)=>{grid=document.createElement('div');grid.className='fields';(parent||det).appendChild(grid)};
    grp[1].forEach(f=>{
      const [id,label,unit,type]=f;
      // Норматив площади двора правится в «Настройках класса»: он свойство
@@ -48731,8 +48747,9 @@ function renderInputs(){
      const own=FIELD_SECTIONS[id];
      if(own&&own!==section){
        section=own;
+       const card=document.createElement('section');card.className='field-card';card.dataset.section=own;
        const head=document.createElement('div');head.className='field-section';head.textContent=own;
-       det.appendChild(head);openGrid();
+       card.appendChild(head);det.appendChild(card);openGrid(card);
      }else if(!grid||(!own&&section)){section=null;openGrid()}
      const wrap=document.createElement('div');wrap.className='field';wrap.dataset.field=id;
      // Класс задаёт не только деньги, и об этом сказано у самого поля:
@@ -49626,7 +49643,7 @@ function enableTepRow(key){
  inputs[sw[0]]=true;
  setTepNote(key,'');
  syncTep(false);renderInputs();renderTep();
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -49667,7 +49684,7 @@ function refillTepRow(key){
  // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
  if(tepRowToInputs(key))renderInputs();
  renderTep();
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -49849,14 +49866,14 @@ function tepCellChanged(key,col,value){
   inputs[TEP_SOCIAL_INPUTS[key]]=tep[key].total_area;
   renderInputs();
   renderTep();
-  scheduleTepAutoRecalc();
+  scheduleTepAutoRecalc(key);
   calculate();
   return;
  }
  if(key==='storage'&&['gns','units'].includes(col)){
   syncStoragePair(col);
   renderTep();
-  scheduleTepAutoRecalc();
+  scheduleTepAutoRecalc(key);
   calculate();
   return;
  }
@@ -49876,7 +49893,7 @@ function tepCellChanged(key,col,value){
   renderInputs();
   renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -50563,7 +50580,13 @@ let moAutoBusy=false;
 function moNormativeApartments(){
  return Number((inputs._mo_calc||{}).apartments_saleable||0);
 }
-function scheduleTepAutoRecalc(){
+function scheduleTepAutoRecalc(changedKey){
+ // Автопересчёт нормативов запускает только изменение ЖИЛОЙ базы. Офис,
+ // коммерция, кладовые и их доли не создают население. Раньше любая правка
+ // ТЭП по проекту с ГлавАПУ запускала общий recalc: смена 50→60% офисника
+ // показывала новое население, соцкомпенсацию и ВРИ, хотя квартира не
+ // изменилась ни на метр.
+ if(changedKey!=='apartments')return;
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  if(baseline&&Number(baseline.change_vri_mln||0)){
   clearTimeout(tepAutoTimer);
