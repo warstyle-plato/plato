@@ -41,8 +41,10 @@ API = "https://api.github.com"
 ATTEMPTS = 3
 # Сразу после push номера GitHub ещё не знает, сливается ли новая голова
 # (mergeable=null), и PUT merge в эту секунду получает 405. Ждём, пока он
-# досчитает: до минуты шагами по три секунды.
-SETTLE_POLLS = 20
+# досчитает: до трёх минут шагами по три секунды. Минуты не хватало: после
+# сдвига main GitHub пересчитывает все открытые PR разом, и 27.09 #532 и #538
+# упали на входе с null через минуту ожидания.
+SETTLE_POLLS = 60
 SETTLE_PAUSE = 3
 
 
@@ -229,6 +231,13 @@ def main() -> int:
         # после любого слияния — null. Ждать, а не отказывать.
         pull = _wait_settled(repo, number, token, (pull.get("head") or {}).get("sha", ""))
     reason = refuse_reason(pull)
+    if reason and pull.get("mergeable") is None and pull.get("state") == "open" \
+            and not pull.get("draft") and not pull.get("merged"):
+        # Недосчитанная слияемость на входе — не отказ: дальше база вливается
+        # в ветку (настоящий конфликт `_set_version` назовёт сам), и перед
+        # слиянием GitHub опрашивается снова уже про итоговую голову.
+        print("GitHub не досчитал слияемость на входе — проверим её перед слиянием.")
+        reason = ""
     if reason and not _conflict_may_be_the_number(pull):
         print(reason, file=sys.stderr)
         return 1

@@ -83,8 +83,8 @@
 ## Команды проверки
 
 - Полный набор: `bash scripts/run_tests.sh`.
-- Доля: `TEST_SHARDS=4 TEST_SHARD=2 bash scripts/run_tests.sh`.
-- План долей: `python3 scripts/test_shards.py --shards 4 --plan`.
+- Доля: `TEST_SHARDS=6 TEST_SHARD=2 bash scripts/run_tests.sh`.
+- План долей: `python3 scripts/test_shards.py --shards 6 --plan`.
 - Число тестов и длительность быстро меняются; не хранить здесь устаревающие счётчики. Смотреть текущий CI.
 - При приёмке шардов проверять, что сумма collected/passed/skipped по долям соответствует целому набору.
 
