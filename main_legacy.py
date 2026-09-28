@@ -1540,6 +1540,9 @@ FIELD_GROUPS: list[Any] = [
 
 # Группы и поля экземпляров: странице они не отдаются (см. `objectFields`).
 _INSTANCE_GROUPS = frozenset(o.group_label for o in STANDALONE_OBJECTS if o.family)
+# Группы вводных, которые рисует страница: всё, кроме групп экземпляров.
+PAGE_FIELD_GROUPS: list[Any] = [group for group in FIELD_GROUPS
+                                if group[0] not in _INSTANCE_GROUPS]
 _INSTANCE_FIELDS = frozenset(
     field[0] for o in STANDALONE_OBJECTS if o.family for field in standalone_object_group(o)[1])
 
@@ -56470,9 +56473,8 @@ MONITOR_PAGE_HTML = (
 # Странице — группы ТИПОВ: экземпляр рисуется вкладкой внутри блока своего
 # типа, и его поля страница выводит из полей типа (`objectFields`). Число групп
 # вводных от числа объектов не растёт (владелец, 28.09.2026).
-PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER, json.dumps(
-    [group for group in FIELD_GROUPS if group[0] not in _INSTANCE_GROUPS],
-    ensure_ascii=False))
+PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
+                    json.dumps(PAGE_FIELD_GROUPS, ensure_ascii=False))
 PAGE = PAGE.replace(FIELD_SECTIONS_PLACEHOLDER, json.dumps(
     {key: title for key, title in FIELD_SECTIONS.items() if key not in _INSTANCE_FIELDS},
     ensure_ascii=False))
