@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.53"
+VERSION = "0.24.54"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -26535,8 +26535,12 @@ def build_plato_model_v2(
                         value=round(float(item.get(key) or 0.0), 6)).number_format = area
         # Продаётся — то, что остаётся за вычетом гостевых: правка мест на этой
         # же строке сразу двигает объём продаж, а не оставляет выгруженное число.
-        ws_tep.cell(row=line, column=9,
-                    value=f"=G{line}-H{line}").number_format = area
+        # У соцобъектов колонка G — мощность учреждения, не продаваемые
+        # единицы. Формула G-H для школы превращала 1 000 мест в 1 000
+        # «продаж» прямо в выгруженной книге.
+        sold_value = (0 if item.get("key") in SOCIAL_TEP_FIELDS
+                      else f"=G{line}-H{line}")
+        ws_tep.cell(row=line, column=9, value=sold_value).number_format = area
     total_line = 5 + len(tep_rows)
     ws_tep.cell(row=total_line, column=1, value="ИТОГО").font = styles["bold"]
     for column in range(2, 10):
@@ -31168,7 +31172,13 @@ def calculate(req: CalcRequest) -> dict:
             # гостевые места. Число едет строкой ТЭП, а не выводится каждой
             # поверхностью заново.
             "transfer_units": given,
-            "saleable_units": max(0.0, units - guest - given),
+            # У соцобъекта units — мощность (места ДОО/СОШ или посещения
+            # поликлиники), а не товарные единицы. Такие места строятся как
+            # обязательство, но не продаются участникам проекта.
+            "saleable_units": (
+                0.0 if key in SOCIAL_TEP_FIELDS
+                else max(0.0, units - guest - given)
+            ),
             # Гараж отдельно стоящего объекта живёт полем на его же строке, и
             # до отчёта эти поля не доезжали вовсе: строка собирается по
             # списку ключей, а их в списке не было. Свод очередей складывает
@@ -48851,7 +48861,7 @@ function enableTepRow(key){
  inputs[sw[0]]=true;
  setTepNote(key,'');
  syncTep(false);renderInputs();renderTep();
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -48892,7 +48902,7 @@ function refillTepRow(key){
  // Посчитанное возвращается во вводные — иначе `syncTep` вернёт прежнее.
  if(tepRowToInputs(key))renderInputs();
  renderTep();
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -49074,14 +49084,14 @@ function tepCellChanged(key,col,value){
   inputs[TEP_SOCIAL_INPUTS[key]]=tep[key].total_area;
   renderInputs();
   renderTep();
-  scheduleTepAutoRecalc();
+  scheduleTepAutoRecalc(key);
   calculate();
   return;
  }
  if(key==='storage'&&['gns','units'].includes(col)){
   syncStoragePair(col);
   renderTep();
-  scheduleTepAutoRecalc();
+  scheduleTepAutoRecalc(key);
   calculate();
   return;
  }
@@ -49101,7 +49111,7 @@ function tepCellChanged(key,col,value){
   renderInputs();
   renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
- scheduleTepAutoRecalc();
+ scheduleTepAutoRecalc(key);
  calculate();
 }
 
@@ -49788,7 +49798,13 @@ let moAutoBusy=false;
 function moNormativeApartments(){
  return Number((inputs._mo_calc||{}).apartments_saleable||0);
 }
-function scheduleTepAutoRecalc(){
+function scheduleTepAutoRecalc(changedKey){
+ // Автопересчёт нормативов запускает только изменение ЖИЛОЙ базы. Офис,
+ // коммерция, кладовые и их доли не создают население. Раньше любая правка
+ // ТЭП по проекту с ГлавАПУ запускала общий recalc: смена 50→60% офисника
+ // показывала новое население, соцкомпенсацию и ВРИ, хотя квартира не
+ // изменилась ни на метр.
+ if(changedKey!=='apartments')return;
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  if(baseline&&Number(baseline.change_vri_mln||0)){
   clearTimeout(tepAutoTimer);
