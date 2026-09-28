@@ -81,7 +81,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.57"
+VERSION = "0.24.59"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1403,6 +1403,18 @@ TEP_DEFAULT: dict[str, Any] = {
     _key: (standalone_object_tep_row(_BY_KEY[str(_row)[len(_OBJECT_PLACEHOLDER):]])
            if isinstance(_row, str) and _row.startswith(_OBJECT_PLACEHOLDER) else _row)
     for _key, _row in _TEP_DEFAULT_LITERAL.items()
+}
+
+# Колонки строки ТЭП так, как их называет таблица ТЭП на странице. Окно
+# импорта показывало вместо них ключи (`gns`, `saleable`) — человек видел
+# схему, а не площади. Слова те же, что в шапке таблицы: одно имя колонки.
+TEP_COLUMN_LABELS: dict[str, str] = {
+    "gns": "ГНС, м²",
+    "total_area": "Общая площадь, м²",
+    "useful": "Полезная площадь, м²",
+    "saleable": "Продаваемая площадь, м²",
+    "transfer": "Передаваемая площадь, м²",
+    "units": "Количество, шт.",
 }
 
 FIELD_GROUPS: list[Any] = [
@@ -4044,7 +4056,7 @@ def import_project_preset(req: ProjectPresetRequest) -> dict[str, Any]:
             if abs(float(new_value or 0.0) - old_value) < 1e-6:
                 continue
             tep_rows.append({
-                "key": f"{key}.{field}", "label": f"{tep_labels.get(key, key)} · {field}",
+                "key": f"{key}.{field}", "label": f"{tep_labels.get(key, key)} · {TEP_COLUMN_LABELS.get(field, field)}",
                 "was": old_value, "becomes": new_value,
                 "action": "заменится" if old_value else "заполнится",
             })
@@ -44179,7 +44191,7 @@ details.cadastral-box>summary::marker{color:#888}
           <button class="btn" onclick="refreshCurrentKeyRate(true)">Обновить из ЦБ</button>
         </div>
 
-        <div class="fields" style="grid-template-columns:repeat(5,minmax(150px,1fr))">
+        <div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
           <div class="field">
             <label>Текущая ставка ЦБ <span class="unit">%</span></label>
             <input id="rateStartPct" type="number" step="0.01" readonly>
