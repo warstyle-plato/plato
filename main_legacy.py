@@ -18215,6 +18215,9 @@ _V4_KEYED_INPUT_FORMATS = {
     "social_cash_part_mln": _V4_FMT_AMOUNT,
     "offices_queue": _V4_FMT_COUNT, "retail_queue": _V4_FMT_COUNT,
     "above_parking_queue": _V4_FMT_COUNT, "sports_queue": _V4_FMT_COUNT,
+    # Площадь подземного места гаража ОСЗ своего поля не имеет — это норматив
+    # класса (`object_parking_area_per_space`), и формат его ячейки — здесь.
+    "object_parking_area_per_space_sqm": _v4_input_format_code("number", "м²/место", 35),
 }
 _V4_FMT_MULTIPLE = "0.00x;[Red](0.00x);-"
 # Таблица очередей «Параметров модели» (строки 88–91): колонка → формат.
