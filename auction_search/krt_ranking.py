@@ -362,6 +362,48 @@ def model_needs_recount(row: dict[str, Any]) -> bool:
     return not (row.get("available") and model_is_current(row))
 
 
+def rating_by_current_methodology(
+    row: dict[str, Any],
+    current_version: str,
+    *,
+    catalogue_slugs: set[str] | None = None,
+) -> dict[str, Any]:
+    """Строка рейтинга, чей балл посчитан ПРЕЖНЕЙ методикой, так и называется.
+
+    Фон пересчитывает не всё: площадку «В реализации» он пропускает нарочно,
+    а площадку, которой больше нет в каталоге (ранний сигнал сменил номер),
+    не видит вовсе. Строка такой площадки жила с баллом v1/v2 рядом с баллами
+    нынешней методики — или с пустым баллом без объяснения. Прежний балл не
+    выдаётся за нынешний: он уходит в `previous_*`, а причина называет, почему
+    строка не пересчитана. `catalogue_slugs=None` — каталог прочитан не
+    целиком, и «площадки нет в каталоге» тогда не утверждаем.
+    """
+    stored = (row or {}).get("investment_rating")
+    version = str((row or {}).get("investment_rating_version") or "")
+    if not isinstance(stored, dict) or not stored or not current_version \
+            or version == current_version:
+        return row
+    short = version.rsplit("-", 1)[-1] if version else "без версии"
+    slug = str((row or {}).get("slug") or "")
+    if catalogue_slugs is not None and slug not in catalogue_slugs:
+        why = "площадки нет в нынешнем каталоге — пересчитывать не по чему"
+    elif "реализац" in str((row or {}).get("status") or "").casefold():
+        why = "площадка в реализации — рейтинг по ней не пересчитывается"
+    else:
+        why = "пересчёт в очереди"
+    marked = dict(row)
+    marked["investment_rating"] = {
+        "score": None,
+        "display_score": None,
+        "rankable": False,
+        "stale_methodology": True,
+        "previous_version": version,
+        "previous_display_score": stored.get("display_score"),
+        "reason": f"не пересчитано по текущей методике (посчитано {short}): {why}",
+    }
+    return marked
+
+
 def score_row(project: dict[str, Any], screening: dict[str, Any]) -> dict[str, Any]:
     """Одна строка рейтинга. Ничего не считает сверх того, что дал скрининг.
 
