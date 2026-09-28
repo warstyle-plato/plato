@@ -4918,18 +4918,42 @@ def _nspd_object_kind(feature: dict[str, Any], options: dict[str, Any]) -> str:
     return "other"
 
 
-def _nspd_map_url(center: dict[str, Any] | None, cadastral_number: str) -> str:
+def _nspd_card(feature: dict[str, Any]) -> tuple[str, str]:
+    """(id объекта, номер слоя) для `selectedCard` — из ответа поиска НСПД.
+
+    Ссылка «скопировать» самой НСПД открывает карточку объекта параметром
+    `selectedCard=<id>,<слой>,<номер>` (владелец, 27.09.2026). Слой в ответе
+    поиска — `properties.category`, id — `feature.id`. Чего нет или что не
+    число — пусто: карточку не угадываем, ссылка остаётся по точке.
+    """
+    properties = feature.get("properties")
+    properties = properties if isinstance(properties, dict) else {}
+    ident, layer = str(feature.get("id") or "").strip(), str(properties.get("category") or "").strip()
+    return (ident, layer) if ident.isdigit() and layer.isdigit() else ("", "")
+
+
+def _nspd_map_url(center: dict[str, Any] | None, cadastral_number: str,
+                  card: tuple[str, str] = ("", "")) -> str:
     if center and center.get("merc_x") is not None:
+        ident, layer = card
+        selected = ""
+        if ident and layer and cadastral_number:
+            selected = "&selectedCard=" + urllib.parse.quote(
+                f"{ident},{layer},{cadastral_number}", safe="")
+        # Порядок и набор параметров — как у ссылки «скопировать» самой НСПД
+        # (`theme_id=1`, `is_copy_url=true`): номер из адреса карта не читает
+        # (`?query=` открывала прежнее место, владелец 27.09.2026), точку — да.
         return (
-            f"{_NSPD_BASE_URL}/map?thematic=PKK&zoom=17"
-            f"&coordinate_x={center['merc_x']}&coordinate_y={center['merc_y']}"
+            f"{_NSPD_BASE_URL}/map?thematic=PKK&theme_id=1&is_copy_url=true"
+            f"&coordinate_x={center['merc_x']}&coordinate_y={center['merc_y']}&zoom=18"
+            f"{selected}"
         )
     if cadastral_number:
         return f"{_NSPD_BASE_URL}/map?thematic=PKK&query={urllib.parse.quote(cadastral_number)}"
     return f"{_NSPD_BASE_URL}/map"
 
 
-def _normalize_nspd_feature(feature: dict[str, Any]) -> dict[str, Any]:
+def _normalize_nspd_feature(feature: dict[str, Any], query_number: str = "") -> dict[str, Any]:
     options = _nspd_options(feature)
     properties = feature.get("properties")
     properties = properties if isinstance(properties, dict) else {}
@@ -4971,7 +4995,11 @@ def _normalize_nspd_feature(feature: dict[str, Any]) -> dict[str, Any]:
         # Границы для миниатюры на странице: контур рисуется своим SVG, без
         # внешних карт — работает и в телеграм-WebView, и при лежащей НСПД.
         "contour_merc": _geometry_contours_merc(feature.get("geometry")),
-        "map_url": _nspd_map_url(center, cadastral_number),
+        # Номер для карточки — свой у объекта, иначе тот, по которому искали:
+        # у помещений НСПД поле номера бывает пустым.
+        "map_url": _nspd_map_url(center, cadastral_number or query_number, _nspd_card(feature)),
+        "nspd_id": _nspd_card(feature)[0],
+        "nspd_layer": _nspd_card(feature)[1],
         "category_name": _land_text(properties.get("categoryName")),
         "source": "НСПД / ЕГРН",
     }
@@ -6926,7 +6954,7 @@ def _land_lookup_by_numbers(numbers: list[str]) -> list[dict[str, Any]]:
                 "note": "В ЕГРН по этому номеру сведений не найдено.",
             })
             continue
-        results.append(_normalize_nspd_feature(matched[0]))
+        results.append(_normalize_nspd_feature(matched[0], number))
     return results
 
 
