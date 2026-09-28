@@ -165,7 +165,9 @@ def test_the_potential_is_compared_with_the_above_ground_gns():
     """Плотность нормирует наземную поэтажную площадь — без подземного паркинга."""
     match = re.search(r"function renderSitePanel\(\).*?\n\}", core.PAGE, re.S)
     assert match
-    assert "underground_parking" in match.group(0)
+    # Подземную часть отсекает правило строки на списке движка; поведение
+    # проверяет tests/test_the_storage_is_not_above_ground.py.
+    assert "tepRowAboveGns" in match.group(0)
 
 
 def test_glavapu_import_feeds_the_density(monkeypatch):
