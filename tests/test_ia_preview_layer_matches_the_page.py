@@ -26,7 +26,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import main as wrapper  # noqa: E402
+# Test the assembled production entrypoint independently of test import order.
+# main alone has not installed the commercial panel used by this navigation.
+import main_registry as wrapper  # noqa: E402
 
 core = wrapper.core
 PAGE = core.PAGE
