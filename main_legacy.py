@@ -1690,9 +1690,9 @@ def nonresidential_leftovers(inputs: dict[str, Any] | None,
     """Что осталось от жилья в нежилом проекте — поимённо.
 
     Сами не убираем: вводная принадлежит человеку, а не расчёту, а проект
-    приходит файлом, ссылкой и мостом КРТ, страницы не проходя. Молчать тоже
-    нельзя — оставшиеся метры продаются, места ДОО строятся, а плата за ВРИ
-    уходит в CAPEX и в расчётный лимит БРИДЖа как настоящая.
+    приходит файлом, ссылкой и мостом КРТ, страницы не проходя. Считать
+    остаток расчёт не будет (`residential_excluded`), но и молчать нельзя:
+    вводная, которой не видно в расчёте, читалась бы как потерянная.
     """
     if not is_nonresidential(inputs):
         return []
@@ -1718,6 +1718,71 @@ def nonresidential_leftovers(inputs: dict[str, Any] | None,
         if value > 0:
             left.append(f"{label}: " + f"{value:,.0f}".replace(",", " "))
     return left
+
+
+def residential_excluded_rows(inputs: dict[str, Any] | None) -> frozenset[str]:
+    """Строки ТЭП, которые проект объявленного типа не считает.
+
+    Нежилой проект не считает дом (`MKD_PRODUCTS`) и соцобъекты (их строки
+    идут от мест, а места — от населения). Строка остаётся в ответе движка с
+    нулями и этим признаком: поверхность её не показывает, а ключ не
+    пропадает у тех, кто ищет строку по имени.
+    """
+    if not is_nonresidential(inputs):
+        return frozenset()
+    return frozenset(MKD_PRODUCTS) | frozenset(SOCIAL_TEP_FIELDS)
+
+
+# Столбцы строки ТЭП, которые несут количество: обнулив их, строка перестаёт
+# участвовать в площадях, штуках, выручке и СМР. Подписи, признаки и нормативы
+# строки не трогаются — это не количество.
+_RESIDENTIAL_EXCLUDED_TEP_COLUMNS: tuple[str, ...] = (
+    "gns", "total_area", "useful", "saleable", "transfer", "units",
+    "guest_units", "transfer_units", "under_gns",
+)
+
+
+def residential_excluded(inputs: dict[str, Any],
+                         tep: dict[str, dict[str, Any]]
+                         ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Вводные и ТЭП, которыми СЧИТАЕТ проект объявленного типа.
+
+    Один предикат на вопрос «участвует ли жильё в расчёте»: у жилого проекта
+    возвращаются те же объекты, у нежилого — копии, где продукты МКД
+    (`MKD_PRODUCTS`: квартиры, встроенная коммерция, подземный паркинг МКД,
+    кладовые) и жилые вводные (`NONRESIDENTIAL_CLEARED_INPUTS`: соцнагрузка,
+    плата за ВРИ, пара «места ↔ площадь» паркинга МКД) обнулены.
+
+    Сохранённое значение и участие в расчёте — разные вещи: присланное не
+    правится, и возврат к жилому типу получает набранное назад. Прежде режим
+    здесь только НАЗЫВАЛ остаток (`nonresidential_leftovers`), а расчёт его
+    считал: на проекте владельца «Вавилов» (офисы 19 110 м²) строка МКД
+    собиралась заново из оставшихся `underground_manual_*` — 149 мест,
+    5 215 м² в строительном объёме, 834,6 млн ₽ выручки и СМР подземной части.
+    """
+    if not is_nonresidential(inputs):
+        return inputs, tep
+    x = dict(inputs or {})
+    for key in NONRESIDENTIAL_CLEARED_INPUTS:
+        x[key] = 0
+    # Признак ВРИ — не количество, и страница его не обнуляет; но платы за
+    # смену ВРИ у нежилого проекта нет, и тизер по признаку писал строку
+    # «Плата за смену ВРИ — 0 млн ₽», будто плата есть и равна нулю.
+    x["vri_required"] = False
+    # Копируются только строки МКД: строки объектов остаются теми же
+    # объектами, и раскладка паркинга объекта (`apply_object_parking`) видна
+    # вызывающему так же, как у жилого проекта.
+    t = dict(tep or {})
+    for key in MKD_PRODUCTS:
+        row = t.get(key)
+        if not isinstance(row, dict):
+            continue
+        row = dict(row)
+        for col in _RESIDENTIAL_EXCLUDED_TEP_COLUMNS:
+            if col in row:
+                row[col] = 0.0
+        t[key] = row
+    return x, t
 
 
 EXCEL_CONTROL = {'llcr': 1.103956112148479, 'bridge_principal_mln': 1345.8299811734776, 'bridge_interest_mln': 61.01315248705002, 'pf_draw_mln': 30011.506226781967, 'pf_interest_and_fees_mln': 2112.072941531574, 'all_interest_and_fees_mln': 2173.086094018624}
@@ -16742,13 +16807,22 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # той же величины однажды разошёлся бы с экраном, и обе строки выглядели
     # бы верными.
     if str(summary.get("project_kind") or "") == PROJECT_KIND_NONRESIDENTIAL:
+        # Цены и темп проекта принадлежат продуктам МКД: у объекта свой
+        # профиль продаж и своя цена места. Напечатанные у нежилого проекта,
+        # они читались бы как предпосылки его расчёта.
+        _mkd_premises = {"Стартовая цена квартир", "Стартовая цена коммерции",
+                         "Цена подземного машино-места", "Доля продаж до РВЭ"}
+        premise_rows = [row for row in premise_rows if row[0] not in _mkd_premises]
         premise_rows.append(["Тип проекта",
                              dict(PROJECT_KINDS)[PROJECT_KIND_NONRESIDENTIAL]
                              + " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет"])
         _left = [str(item) for item in (summary.get("project_kind_leftovers") or [])]
         if _left:
+            # Остаток назван, но не посчитан (`residential_excluded`): без
+            # пометки строка читалась бы как часть расчёта — ровно так её и
+            # прочёл владелец, увидев рядом второй подземный паркинг.
             premise_rows.append(["Осталось от жилья во вводных",
-                                 "; ".join(_left)])
+                                 "; ".join(_left) + " — в расчёт не входит"])
     story.append(table(premise_rows,[105*mm,65*mm]))
     if _class_dev["rows"]:
         # Ушёл от базы — скажи об этом: молча два отчёта «одного класса»
@@ -22288,9 +22362,13 @@ def project_presentation(bundle: dict[str, Any], inputs: dict[str, Any],
         land["purchase_mln"] = price_mln
         saleable = float((((consolidated.get("tep") or {}).get("total") or {}).get("saleable")) or 0.0)
         land["purchase_per_saleable_th"] = (price_mln * 1e3 / saleable) if saleable > 0 else None
+    # Карточки читают вводные (места ДОО и СОШ, признак ВРИ) — те же, что
+    # посчитал движок: у нежилого проекта сырые назвали бы садик, которого
+    # он не строит.
+    counted_inputs = residential_excluded(inputs or {}, {})[0]
     return _presentation.build_project_presentation(
         numbers, consolidated, list(bundle.get("phases") or []),
-        inputs or {}, origin, _AGENT_BANK_LLCR_TARGET, site=site or {})
+        counted_inputs, origin, _AGENT_BANK_LLCR_TARGET, site=site or {})
 
 
 def presentation_origin(inputs: dict[str, Any], tep: dict[str, Any],
@@ -24182,6 +24260,12 @@ def build_project_workbook(
     applied_parking = apply_object_parking(inputs, tep)
 
     x = {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items() if not str(k).startswith("_")}}
+    # Книга считает то же, что движок, и по типу проекта тоже: плата за ВРИ,
+    # соцкомпенсация и места соцобъектов нежилого проекта в ячейки не идут —
+    # тот же предикат, что у движка, а не своя проверка. Движок ниже получает
+    # присланное: остаток он называет сам.
+    engine_tep = tep
+    x, tep = residential_excluded(x, tep)
     # Лимиты финансирования — из движка: книжная пропорция от CAPEX-блоков
     # занижала лимит ПФ очереди с офисами, и плата за невыбранный лимит
     # выходила вдвое меньше движковой. Поверхности считают один раз: бот
@@ -24192,7 +24276,7 @@ def build_project_workbook(
     if finance_hints is None:
         try:
             finance_hints = _v4_finance_hints(_run_authoritative_model(
-                inputs or {}, tep or {}, rates or [], phasing or {}))
+                inputs or {}, engine_tep or {}, rates or [], phasing or {}))
         except Exception as exc:
             # Молчать здесь нельзя: без контрольных чисел лист ПРОВЕРОК выглядит
             # просто пустым, и «паритет не считался» неотличимо от «паритет
@@ -24431,10 +24515,9 @@ def build_project_workbook(
     # границы и этой даты — правка сроков прямо в Excel по-прежнему двигает
     # границу вслед за РВЭ.
     try:
-        _horizon = build_operating_model(
-            {**DEFAULT_INPUTS, **{k: v for k, v in (inputs or {}).items()
-                                  if not str(k).startswith("_")}},
-            tep or {}, rates or [])["end"]
+        # Вводные — те же `x`, что у ячеек: сырые продлили бы горизонт
+        # стройкой садика, которого нежилой проект не строит.
+        _horizon = build_operating_model(dict(x), tep or {}, rates or [])["end"]
         put("B71", number=_v4_excel_serial(_horizon.isoformat()) or 0.0,
             label="engine_horizon_end")
     except Exception:
@@ -26735,6 +26818,9 @@ def fill_plato_template(
     for key, values in (tep or {}).items():
         if isinstance(values, dict) and key in merged_tep:
             merged_tep[key].update(values)
+    # Тип проекта — тем же предикатом, что у движка: шаблон строит то, что
+    # движок считает, а не присланное целиком (и не умолчание квартир).
+    merged, merged_tep = residential_excluded(merged, merged_tep)
 
     workbook = load_workbook(path, data_only=False, keep_vba=False)
     filled: list[dict[str, Any]] = []
@@ -28456,7 +28542,8 @@ _PLATO_AUDIT_AS_IS = frozenset({"summary.llcr", "summary.margin"})
 def _plato_audit_expected(bundle: dict[str, Any], inputs: dict[str, Any], path: str) -> float | None:
     where, _, key = path.partition(".")
     if where == "inputs":
-        return n(inputs, key, 0.0)
+        # Ожидаемое — то, что книга получила: вводные после типа проекта.
+        return n(residential_excluded(inputs, {})[0], key, 0.0)
     result = bundle.get("consolidated") or {}
     if where == "summary":
         value = (result.get("summary") or {}).get(key)
@@ -32374,6 +32461,15 @@ def calculate(req: CalcRequest) -> dict:
     apply_underground_tep_row(x, t)
     apply_storage_tep_row(x, t)
 
+    # Тип проекта решает, что из присланного СЧИТАЕТСЯ: нежилой проект
+    # продукты МКД и жилые вводные не считает нигде — ни в ТЭП, ни в деньгах.
+    # Стоит это после строк МКД (их писатели иначе собрали бы паркинг дома
+    # заново из оставшихся мест) и до соцобъектов (их строки идут от мест,
+    # которые здесь обнуляются). Остаток называется по присланному — это
+    # расхождение вводных с типом, а не часть расчёта.
+    kind_leftovers = nonresidential_leftovers(x, t)
+    x, t = residential_excluded(x, t)
+
     # Соцобъект приводится к вводным здесь же, где чинится подземный паркинг,
     # и по той же причине: строка ТЭП у него — производная, а хранимая
     # производная расходится с правилом молча. Прежде одиночный расчёт не
@@ -32402,6 +32498,7 @@ def calculate(req: CalcRequest) -> dict:
     fin = simulate_financing(x, t, rates, op)
 
     tep_rows = []
+    excluded_rows = residential_excluded_rows(x)
     for key, row in t.items():
         # Гостевые машино-места строятся и стоят денег, но не продаются. Число
         # едет в строку ТЭП, а не выводится каждой поверхностью заново: книга
@@ -32444,6 +32541,9 @@ def calculate(req: CalcRequest) -> dict:
             "parking_under_units": n(row, "parking_under_units"),
             "parking_over_units": n(row, "parking_over_units"),
             "parking_guest_units": n(row, "parking_guest_units"),
+            # Строка, которую тип проекта не считает (`residential_excluded_rows`):
+            # нули в ней — не «продукт пуст», а «продукта в этом проекте нет».
+            "excluded": key in excluded_rows,
         })
 
     tep_total = {
@@ -33097,10 +33197,10 @@ def calculate(req: CalcRequest) -> dict:
             # Что за проект считали — и что от жилья в нём осталось. Второе
             # пусто у жилого проекта по построению и у нежилого, собранного
             # страницей: она обнуляет и называет убранное. Непусто — значит
-            # проект пришёл файлом, ссылкой или мостом КРТ, и жилые метры
-            # продаются в проекте, который объявлен нежилым.
+            # проект пришёл файлом, ссылкой или мостом КРТ, и во вводных лежат
+            # жилые метры, которые расчёт не считает (`residential_excluded`).
             "project_kind": project_kind(x),
-            "project_kind_leftovers": nonresidential_leftovers(x, t),
+            "project_kind_leftovers": kind_leftovers,
             "npv": project_npv,
             "irr_equity": irr_equity,
             "full_project_cost": full_project_cost,
@@ -34826,6 +34926,7 @@ def _consolidate_phase_results(
                 "parking_saleable_units": 0.0,
                 "parking_under_units": 0.0, "parking_over_units": 0.0,
                 "parking_guest_units": 0.0,
+                "excluded": bool(row.get("excluded")),
             })
             for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
                           "guest_units", "transfer_units", "saleable_units",
@@ -35404,6 +35505,11 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     # этаж кладовых доставался очередям вторым экземпляром.
     apply_underground_tep_row(x_master, t_master)
     apply_storage_tep_row(x_master, t_master)
+    # Тип проекта — тем же предикатом, что у одиночного расчёта, и в том же
+    # месте: после строк МКД и до деления. Очередь иначе получила бы долю
+    # паркинга дома и мест ДОО, которых нежилой проект не строит.
+    kind_leftovers = nonresidential_leftovers(x_master, t_master)
+    x_master, t_master = residential_excluded(x_master, t_master)
 
     while len(phases_cfg) < count:
         phases_cfg.append({
@@ -36097,8 +36203,7 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     summary_block = consolidated.get("summary")
     if isinstance(summary_block, dict):
         summary_block["project_kind"] = project_kind(x_master)
-        summary_block["project_kind_leftovers"] = nonresidential_leftovers(
-            x_master, t_master)
+        summary_block["project_kind_leftovers"] = kind_leftovers
     for item, row in zip(phase_items, comparison):
         row["vri_cash"] = item["result"].get("vri", {}).get("totals", {}).get("cash", 0.0)
     # Применённые кассовые доли — один ответ на движок и книгу: статья «по
@@ -47949,6 +48054,13 @@ async function sendTelegramResult(){
  const cads=(cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[];
  const manual=!!manualMeta;
   const edited=telegramMode==='edit';
+ // Нежилой проект считает не всё присланное (`residential_excluded` движка):
+ // квартиры, паркинг МКД, соцнагрузка и плата за ВРИ в расчёт не входят.
+ // Сводка в чат берёт тогда посчитанное движком, а не вводные и не выгрузку,
+ // иначе чат назвал бы места и деньги, которых в расчёте нет.
+ const counted=isNonResidential();
+ const countedRow=key=>((lastResult.tep&&lastResult.tep.rows)||[]).find(r=>r.key===key)||{};
+ const countedTotal=(lastResult.tep&&lastResult.tep.total)||{};
   persistLocalSilently();
  const payload={
    cadastral_numbers:cads,
@@ -47958,10 +48070,14 @@ async function sendTelegramResult(){
     // Источник проекта важнее сохранённого значения: в inputs могла остаться
     // площадь прошлого расчёта, и она перебивала площадь текущего участка.
     site_area_ha:Number(n.site_area_ha||(manualMeta&&manualMeta.site_area_ha)||inputs.site_area_ha||0),
-    apartment_area_sqm:(manual||edited)?Number((tep.apartments&&tep.apartments.saleable)||0):Number(n.apartment_area_sqm||0),
-    change_vri_mln:(manual||edited)?Number(inputs.land_rights_cost_mln||0):Number(n.change_vri_mln||0),
-    social_compensation_mln:(manual||edited)?Number(inputs.social_compensation_mln||0):Number(n.social_compensation_total_mln||0),
-    parking_spaces:(manual||edited)
+    apartment_area_sqm:counted?Number(countedRow('apartments').saleable||0)
+     :(manual||edited)?Number((tep.apartments&&tep.apartments.saleable)||0):Number(n.apartment_area_sqm||0),
+    change_vri_mln:counted?0:(manual||edited)?Number(inputs.land_rights_cost_mln||0):Number(n.change_vri_mln||0),
+    social_compensation_mln:counted?0:(manual||edited)?Number(inputs.social_compensation_mln||0):Number(n.social_compensation_total_mln||0),
+    parking_spaces:counted
+     ? Number(countedRow('underground_parking').units||0)+Number(countedRow('above_parking').units||0)
+       +Number(countedTotal.parking_units||0)
+     :(manual||edited)
      ? Number((tep.underground_parking&&tep.underground_parking.units)||0)+Number((tep.above_parking&&tep.above_parking.units)||0)
      : Number(n.parking_permanent||0)+Number(n.parking_guest||0)+Number(n.mfc_parking_spaces||0),
    revenue_mln:Number(s.revenue||0)/1e6,
@@ -51855,7 +51971,10 @@ async function calculate(){
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
    lastResult=await response.json();phaseBundle=null;
    if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
-    lastResult.tep.rows.forEach(r=>{if(!tep[r.key])return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
+    // Строку, которую тип проекта не считает, назад НЕ пишем: её нули —
+    // участие в расчёте, а не решение человека, и записанные они стёрли бы
+    // набранное, которое вернётся с жилым типом.
+    lastResult.tep.rows.forEach(r=>{if(!tep[r.key]||r.excluded)return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
    }
  }
  if(startedAtReset!==resetRun){
@@ -53402,7 +53521,10 @@ function renderResult(){
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Передаётся, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
   `<tbody>`+
-  r.tep.rows.map(x=>`<tr><td>${x.label}</td>`
+  // Строку, которую тип проекта не считает, движок помечает сам
+  // (`residential_excluded_rows`): нулевой «Подземный паркинг» дома рядом
+  // с гаражом объекта читался бы вторым паркингом.
+  r.tep.rows.filter(x=>!x.excluded).map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0&&!objParkUnits(x)?num(objUnder(x)):dash)}</td>`
    +`<td>${num(x.saleable)}</td><td>${num(x.transfer)}</td>`
