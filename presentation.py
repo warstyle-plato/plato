@@ -15,6 +15,19 @@ from __future__ import annotations
 
 from typing import Any
 
+# Чем считается продукт. Слова живут ЗДЕСЬ, потому что этот модуль ниже всех,
+# кто их печатает: движок ставит их строкам ТЭП, книга и тизер их выводят.
+# Квартира, машино-место, место в детском саду и посещение поликлиники в
+# смену — четыре разные величины, и сумма у них не значит ничего.
+FLATS_MEASURE = "квартир"
+PARKING_MEASURE = "м/м"
+PLACES_MEASURE = "мест"
+VISITS_MEASURE = "посещений в смену"
+PIECES_MEASURE = "шт."
+# Метровый продукт штуками не считается вовсе: пустая мера — это «вопроса
+# нет», а не «ноль штук».
+AREA_MEASURE = ""
+
 # Ключ, подпись, единица. Первые шесть — карточки; все одиннадцать — таблица.
 KPI_CATALOGUE: tuple[tuple[str, str, str], ...] = (
     ("revenue_mln", "Выручка", "млн ₽"),
@@ -135,9 +148,18 @@ def build_project_presentation(
         "apartment_saleable_sqm": _number(summary.get("apartment_saleable_sqm")),
         "transfer_sqm": _number(tep_total.get("transfer")),
         "total_area_sqm": _number(tep_total.get("total_area")),
-        "units": _number(tep_total.get("units")),
-        "parking_units": _number(tep_total.get("units")),
-        "parking_saleable_units": _number(tep_total.get("saleable_units")),
+        # Штуки — РАЗБОР по мере счёта, а не число: квартира, машино-место и
+        # место в детском саду несравнимы. Прежде здесь стоял общий итог, и
+        # под именем `parking_units` в тизер уезжали ВСЕ штуки проекта: строка
+        # «Машино-места» печатала 2 811 м/м при 1 199 настоящих.
+        "units_by_measure": {str(measure): _number(value)
+                             for measure, value in (tep_total.get("units_by_measure") or {}).items()},
+        "saleable_units_by_measure": {
+            str(measure): _number(value) for measure, value
+            in (tep_total.get("saleable_units_by_measure") or {}).items()},
+        "parking_units": _number((tep_total.get("units_by_measure") or {}).get(PARKING_MEASURE)),
+        "parking_saleable_units": _number(
+            (tep_total.get("saleable_units_by_measure") or {}).get(PARKING_MEASURE)),
         "residential_saleable_sqm": _number(_row(tep_rows, "apartments").get("saleable")),
         "commercial_saleable_sqm": _number(_row(tep_rows, "ground_commercial").get("saleable")),
         "apartments_count": _number(_row(tep_rows, "apartments").get("units")),
