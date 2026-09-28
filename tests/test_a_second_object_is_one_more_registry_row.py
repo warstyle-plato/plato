@@ -83,8 +83,10 @@ def test_each_second_object_is_a_copy_of_its_twin() -> None:
             assert own[obj.prefix + field[len(first.prefix):]] == value, (key, field)
         assert core.DEFAULT_INPUTS[obj.enabled_key] is False
     # ФОК остаётся первым дописанным объектом: его строки в книге постоянны.
+    # Дальше — все экземпляры реестра (`object_instance`), вторые включительно.
     extras = [lay.obj.key for lay in core._V4_EXTRA_OBJECT_LAYOUTS]
-    assert extras[0] == "sports" and set(extras[1:]) == set(SECONDS)
+    assert extras[0] == "sports" and set(extras[1:]) == set(core.OBJECT_INSTANCES)
+    assert set(SECONDS) <= set(core.OBJECT_INSTANCES)
 
 
 def test_the_literals_place_the_second_object_after_its_twin() -> None:

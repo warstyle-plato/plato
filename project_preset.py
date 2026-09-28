@@ -121,12 +121,21 @@ MONEY_INPUTS_ANNOUNCED = {
 # Поэтому у копии есть сторож (`test_the_preset_knows_every_product`): он
 # сверяет этот список с `TEP_DEFAULT` движка и падает на любом новом продукте.
 # Копия, за которой следят, отличается от копии, которая расходится молча.
+#
+# Экземпляры объекта (`offices2` … `offices5`) стоят за своим типом — порядком
+# строк ТЭП. Их число — копия `OBJECT_INSTANCES_MAX` движка под тем же сторожем.
+_OBJECT_INSTANCES_MAX = 5
+
+
+def _with_instances(key: str) -> tuple[str, ...]:
+    return (key, *(f"{key}{number}" for number in range(2, _OBJECT_INSTANCES_MAX + 1)))
+
+
 PHASE_PRODUCT_KEYS = (
     "apartments", "ground_commercial",
-    # Вторые объекты стоят за своими двойниками — порядком строк ТЭП.
-    "standalone_retail", "standalone_retail2", "offices", "offices2",
-    "above_parking", "above_parking2", "underground_parking", "storage",
-    "kindergarten", "school", "clinic", "sports", "other_mandatory",
+    *_with_instances("standalone_retail"), *_with_instances("offices"),
+    *_with_instances("above_parking"), "underground_parking", "storage",
+    "kindergarten", "school", "clinic", *_with_instances("sports"), "other_mandatory",
 )
 
 
