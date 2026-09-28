@@ -155,7 +155,11 @@ class ETPRFAdapter(AuctionPlatformAdapter):
                     "price": get("начальная цена", "начальная цена, руб."),
                     "organizer": get("организатор"),
                     "published": get("дата публикации"),
+                    "application_start": get("дата начала приема заявок", "дата начала приёма заявок"),
                     "deadline": get("дата завершения приема заявок", "дата завершения приёма заявок"),
+                    # Реестр даёт дату торгов отдельной колонкой; раньше она
+                    # не читалась, и «Дата торгов» у лота ЭТП РФ была пустой.
+                    "auction_date": get("дата начала торгов", "дата проведения торгов"),
                     "notice_status": get("статус извещения"),
                     "auction_status": get("статус торгов"),
                     "procedure": get("тип извещения"),
@@ -164,6 +168,8 @@ class ETPRFAdapter(AuctionPlatformAdapter):
             else:
                 # Публичный partial-view иногда не повторяет заголовок. Порядок
                 # столбцов фиксирован самой таблицей и опубликован над ней.
+                # Даты начала заявок и торгов без заголовка не берём: по
+                # номеру колонки их не отличить от соседних дат.
                 out.append({
                     "number": values[0], "notice": values[1], "title": values[2],
                     "price": values[3], "organizer": values[4], "published": values[5],
@@ -179,6 +185,8 @@ class ETPRFAdapter(AuctionPlatformAdapter):
         if not title or not _DEVELOPMENT_RE.search(title) or not cls._is_moscow(title):
             return None
         deadline = cls._moment(row.get("deadline") or "")
+        application_start = cls._moment(row.get("application_start") or "")
+        auction_date = cls._moment(row.get("auction_date") or "")
         status_blob = normalize_space(" ".join((row.get("notice_status") or "", row.get("auction_status") or "")))
         current_words = ("ожидает подачи", "прием заявок", "приём заявок", "опубликован")
         if not cls._future(deadline) or (status_blob and not any(word in status_blob.lower() for word in current_words)):
@@ -209,7 +217,9 @@ class ETPRFAdapter(AuctionPlatformAdapter):
             procedure_type=procedure,
             start_price_rub=price,
             current_price_rub=price,
+            application_start=application_start,
             application_deadline=deadline,
+            auction_date=auction_date,
             status=status_blob or "Приём заявок",
             raw={"published_at": cls._moment(row.get("published") or ""), "registry_row": row},
         )
@@ -218,7 +228,9 @@ class ETPRFAdapter(AuctionPlatformAdapter):
             "land_area_sqm": str(lot.land_area_sqm) if lot.land_area_sqm else None,
             "building_area_sqm": str(lot.building_area_sqm) if lot.building_area_sqm else None,
             "start_price_rub": str(price) if price is not None else None,
-            "application_deadline": deadline, "status": lot.status,
+            "application_start": application_start,
+            "application_deadline": deadline, "auction_date": auction_date,
+            "status": lot.status,
         }.items():
             if value:
                 lot.provenance[field] = Provenance(source_url=lot_url, fetched_at=fetched_at, raw_value=value)

@@ -8,10 +8,13 @@ name: Проверка прода после выката
 # Только чтение и по одному запросу на поверхность: проекты пользователей не
 # трогаются, нагрузка — один эталонный проект.
 
+# Запускает её последний шаг сборки (build-yandex.yml, задание «Проверка прода
+# после выката»), а не `workflow_run`: сборку диспатчит release-merge токеном
+# GITHUB_TOKEN, а прогоны, порождённые этим токеном, `workflow_run` не будят —
+# ни один выпуск не проверился сам, пока триггер стоял здесь. Диспатч же от
+# GITHUB_TOKEN прогон создаёт. Второго триггера нет, чтобы один выпуск не
+# проверялся дважды и прогоны не снимали друг друга через concurrency.
 on:
-  workflow_run:
-    workflows: ["Сборка образа в Yandex Container Registry"]
-    types: [completed]
   workflow_dispatch:
     inputs:
       base:
@@ -32,24 +35,15 @@ concurrency:
 jobs:
   smoke:
     name: Поверхности прода
-    # Упавшая сборка ничего не выкатила — проверять нечего.
-    # Только сборка main этого же репозитория: чужая ветка или форк сюда не
-    # доходят, и коммит, которого ждём, — тот, что выкатывается.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       BASE: ${{ github.event.inputs.base || 'https://developaid.ru' }}
-      EXPECT_COMMIT: ${{ github.event.workflow_run.head_sha || github.event.inputs.expect_commit }}
+      EXPECT_COMMIT: ${{ github.event.inputs.expect_commit }}
     steps:
-      # Код проверки — всегда с ветки по умолчанию, а не из коммита события:
-      # у workflow_run есть секреты и право писать issue, и исполнять здесь
-      # код, пришедший с событием, нельзя. Коммит события — только строка,
-      # которую ждём в /health.
+      # Код проверки — с ветки, на которой запущен диспатч (сборка шлёт его
+      # на main), а не из ожидаемого коммита: у прогона есть секреты и право
+      # писать issue. Ожидаемый коммит — только строка, которую ждём в /health.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 50

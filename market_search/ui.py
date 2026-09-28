@@ -53,6 +53,49 @@ _PANEL = r"""
 </div>
 """
 
+# Поле цены квартир и запись в него — одна копия на кнопку рекомендации и на
+# панель «Рынок». Ищется само поле ввода страницы (`f_<ключ>`), а не любой узел
+# с именем ключа: обёртка поля носит `data-field` с тем же ключом, и прежний
+# перебор «id, name, data-key, data-field» находил её раньше поля. Значение
+# писалось в div, `onchange` поля не срабатывал, а ответ говорил «Подставлено».
+# Угадывание по подстроке «apartment…price» и по тексту подписи убрано по той
+# же причине: схему не угадывают по имени.
+PRICE_FIELD_JS = r"""
+function mdApartmentPriceInput(){
+  return document.querySelector('input#f_apartment_price_th')
+    ||document.querySelector('.field[data-field="apartment_price_th"] input')
+    ||null;
+}
+function mdSetNativeValue(el,value){
+  let proto=el;
+  let descriptor=null;
+  while(proto&&!descriptor){proto=Object.getPrototypeOf(proto);if(proto)descriptor=Object.getOwnPropertyDescriptor(proto,'value')}
+  if(descriptor&&descriptor.set)descriptor.set.call(el,value);else el.value=value;
+  el.dispatchEvent(new Event('input',{bubbles:true}));
+  el.dispatchEvent(new Event('change',{bubbles:true}));
+}
+// Поставить цену в поле и сказать, встала ли она. Поле берётся заново в момент
+// записи: вводные перерисовываются, и узел, найденный раньше, может быть уже
+// не на странице. «Встала» — это число в видимом поле И во вводных расчёта;
+// иначе ответ называет, что осталось. Происхождение (`by`) пишется страницей:
+// смена класса такое число не затирает, а у поля видно, откуда оно.
+function mdPlaceApartmentPrice(valueTh,by){
+  const value=Number(valueTh);
+  if(!Number.isFinite(value)||value<=0)return {ok:false,reason:'ориентир не число ('+valueTh+')'};
+  const input=mdApartmentPriceInput();
+  if(!input)return {ok:false,reason:'на странице нет поля «Стартовая цена квартир» (f_apartment_price_th)'};
+  mdSetNativeValue(input,String(value));
+  if(typeof markClassFieldSource==='function')markClassFieldSource('apartment_price_th',value,by);
+  if(typeof refreshClassFieldUnit==='function')refreshClassFieldUnit('apartment_price_th');
+  const live=mdApartmentPriceInput();
+  if(!live||Math.abs(Number(live.value)-value)>1e-9)
+    return {ok:false,reason:'в поле осталось '+(live?(live.value||'пусто'):'— (поля нет)')};
+  if(typeof inputs==='object'&&inputs&&Math.abs(Number(inputs.apartment_price_th)-value)>1e-9)
+    return {ok:false,reason:'поле показывает '+live.value+', а расчёт держит '+inputs.apartment_price_th};
+  return {ok:true,input:live};
+}
+"""
+
 _SCRIPT = r"""
 <script id="market-discovery-script">
 function mdEsc(value){return String(value??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]))}
@@ -75,44 +118,14 @@ function mdTrustedPriceSources(sources){
   }
   return Array.from(best.values());
 }
-function mdApartmentPriceInput(){
-  const direct=[
-    document.getElementById('apartment_price_th'),
-    document.querySelector('[name="apartment_price_th"]'),
-    document.querySelector('[data-key="apartment_price_th"]'),
-    document.querySelector('[data-field="apartment_price_th"]')
-  ].find(Boolean);
-  if(direct)return direct;
-  for(const el of document.querySelectorAll('input,select')){
-    const key=((el.id||'')+' '+(el.name||'')+' '+(el.dataset&&el.dataset.key||'')+' '+(el.dataset&&el.dataset.field||'')).toLowerCase();
-    if(key.includes('apartment')&&key.includes('price'))return el;
-  }
-  for(const label of document.querySelectorAll('label')){
-    const text=String(label.textContent||'').toLowerCase().replace('ё','е');
-    if((text.includes('цена квартир')||text.includes('цена жилья'))&&(text.includes('м²')||text.includes('м2')||text.includes('тыс'))){
-      const el=label.querySelector('input,select');
-      if(el)return el;
-    }
-  }
-  return null;
-}
-function mdSetNativeValue(el,value){
-  let proto=el;
-  let descriptor=null;
-  while(proto&&!descriptor){proto=Object.getPrototypeOf(proto);if(proto)descriptor=Object.getOwnPropertyDescriptor(proto,'value')}
-  if(descriptor&&descriptor.set)descriptor.set.call(el,value);else el.value=value;
-  el.dispatchEvent(new Event('input',{bubbles:true}));
-  el.dispatchEvent(new Event('change',{bubbles:true}));
-}
+""" + PRICE_FIELD_JS + r"""
 function applyMarketPriceToModel(priceRurM2){
   const price=Number(priceRurM2||0);
   const status=document.getElementById('mdStatus');
   if(!Number.isFinite(price)||price<=0){status.textContent='Не удалось определить цену для передачи в модель.';return}
-  const input=mdApartmentPriceInput();
-  if(!input){status.textContent='Не найдено поле «Цена квартир» во вводных модели. Цена не применена.';return}
   const valueTh=Math.round(price)/1000;
-  mdSetNativeValue(input,String(valueTh));
-  try{if(typeof calculate==='function')calculate()}catch(error){console.error(error)}
+  const placed=mdPlaceApartmentPrice(valueTh,'рынок: панель «Рынок»');
+  if(!placed.ok){status.textContent='Цена '+valueTh.toLocaleString('ru-RU',{maximumFractionDigits:3})+' тыс. ₽/м² не применена: '+placed.reason+'.';return}
   status.textContent='Применено в модель: '+valueTh.toLocaleString('ru-RU',{maximumFractionDigits:3})+' тыс. ₽/м² в поле «Цена квартир».';
 }
 async function runMarketDiscovery(){

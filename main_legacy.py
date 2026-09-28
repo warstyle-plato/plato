@@ -82,7 +82,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.68"
+VERSION = "0.24.73"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -475,15 +475,10 @@ for _preset in PROJECT_CLASS_PRESETS.values():
         _preset["apartment_price_th"])
     _preset["offices_price_th_per_sqm"] = _preset["retail_price_th_per_sqm"]
 del _preset
-# Откуда берётся число класса, если оно не вписано, а выведено. Две строки
-# «Стартовая цена» с одним числом в окне класса читались загадкой (владелец,
-# 27.09.2026): совпадают они потому, что обе считаются правилом выше, и это
-# сказано у самой строки, а не выведено человеком.
-CLASS_DERIVED_NOTES_PLACEHOLDER = "__DEVELOPAID_CLASS_DERIVED_NOTES__"
-CLASS_DERIVED_NOTES: dict[str, str] = {
-    "retail_price_th_per_sqm": "считается от цены квартир",
-    "offices_price_th_per_sqm": "считается от цены квартир",
-}
+# Правило выше даёт только БАЗУ класса. Дальше цена нежилого — своё число:
+# правка цены квартир её не двигает (решение владельца, 28.09.2026: «своя
+# цена, не следует»). Подпись «считается от цены квартир» у строки окна
+# обещала обратное и снята.
 
 # Класс проекта — это и класс его офисника (владелец, 27.09.2026): комфорт —
 # офисы B и ниже, бизнес — B+ и A−, элитный — A и выше. Себестоимость здания
@@ -580,7 +575,8 @@ def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
     копии нет — поле, добавленное в пресет, попадает в сверку само.
     """
     key = str((inputs or {}).get("project_class") or "")
-    preset = PROJECT_CLASS_PRESETS.get(key)
+    # База — для региона проекта: в МО цена нежилого без московского пола.
+    preset = class_base_preset(key, class_region(inputs))
     if not preset:
         return {"class": key, "label": "Пользовательский", "rows": []}
     rows: list[dict[str, Any]] = []
@@ -1426,6 +1422,46 @@ for _preset in PROJECT_CLASS_PRESETS.values():
             if _theirs in _preset:
                 _preset[_own] = _preset[_theirs]
 del _preset
+
+# Поля профиля, чья БАЗА — цена нежилого по правилу `nonresidential_price_th`:
+# ТЦ/ОСЗ, офисы и их вторые объекты. У правила есть регион — московский пол
+# 450 тыс ₽/м² в области не действует, — а профиль класса один, московский.
+# Проект в МО получал ОСЗ по 450 при квартирах по 350 (решение владельца,
+# 28.09.2026: «в МО без московского минимума»). База класса для региона —
+# `class_base_preset`, её читают и сверка отклонений, и страница.
+CLASS_NONRES_PRICE_FIELDS: tuple[str, ...] = tuple(
+    ["retail_price_th_per_sqm", "offices_price_th_per_sqm"]
+    + [o.rate_price for o in STANDALONE_OBJECTS
+       if o.family and _BY_KEY.get(o.family) is not None
+       and _BY_KEY[o.family].rate_price in ("retail_price_th_per_sqm",
+                                            "offices_price_th_per_sqm")])
+
+
+def class_region(inputs: dict[str, Any] | None) -> str:
+    """Регион проекта для базы класса: `mo` — область, иначе Москва."""
+    return "mo" if str((inputs or {}).get("vri_region") or "msk").strip().lower() == "mo" else "msk"
+
+
+def class_base_preset(key: str, region: str = "msk") -> dict[str, Any] | None:
+    """База класса для региона проекта; `None` — у класса нет профиля."""
+    preset = PROJECT_CLASS_PRESETS.get(str(key or ""))
+    if not preset:
+        return None
+    out = dict(preset)
+    for field in CLASS_NONRES_PRICE_FIELDS:
+        if field in out:
+            out[field] = nonresidential_price_th(preset["apartment_price_th"], region=region)
+    return out
+
+
+# Что в регионе отличается от московского профиля — страница накладывает это
+# на `PROJECT_CLASS_PRESETS`, а не держит своё правило цены нежилого.
+CLASS_REGION_BASES_PLACEHOLDER = "__DEVELOPAID_CLASS_REGION_BASES__"
+CLASS_REGION_BASES: dict[str, dict[str, dict[str, float]]] = {
+    "mo": {key: {field: value for field, value in class_base_preset(key, "mo").items()
+                 if field in CLASS_NONRES_PRICE_FIELDS and value != preset.get(field)}
+           for key, preset in PROJECT_CLASS_PRESETS.items()},
+}
 
 
 # Доли площадей второго объекта — доли его продукта: у второго офисника стены
@@ -34768,9 +34804,12 @@ def _shift_iso(value: Any, months: int) -> Any:
 
 
 def _sum_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
-    keys: set[str] = set()
+    # Порядок ключей — порядок первой встречи, а не множества: порядок `set`
+    # зависит от сида хеша процесса, и статьи расходов вставали на экране
+    # вразнобой, от перезапуска к перезапуску по-разному.
+    keys: dict[str, None] = {}
     for item in items:
-        keys.update(item.keys())
+        keys.update(dict.fromkeys(item.keys()))
     out: dict[str, float] = {}
     for key in keys:
         if key == "total":
@@ -49525,9 +49564,41 @@ function markClassManual(k){
  const list=classManualKeys();
  if(!list.includes(k))list.push(k);
  inputs._class_manual=list;
+ // Новая правка отменяет прежнее происхождение: число, набранное поверх
+ // рекомендации, — уже не рекомендация.
+ if(inputs._class_manual_source&&typeof inputs._class_manual_source==='object')delete inputs._class_manual_source[k];
  return true;
 }
 function isClassManual(k){return classManualKeys().includes(k)}
+// Не класс и не пальцы: число поставил источник (рекомендация DevelopAid по
+// рынку). Как и ручное, смена класса его не затирает, но у поля названо, откуда
+// оно, — иначе значение рекомендации после сохранения выглядело бы набранным.
+// Происхождение держится, пока в поле стоит именно это число.
+function markClassFieldSource(k,value,by){
+ if(!markClassManual(k))return false;
+ const map=inputs._class_manual_source&&typeof inputs._class_manual_source==='object'?inputs._class_manual_source:{};
+ map[k]={value:Number(value),by:String(by||'')};
+ inputs._class_manual_source=map;
+ return true;
+}
+function classFieldSource(k){
+ const s=inputs._class_manual_source&&inputs._class_manual_source[k];
+ if(!s||!s.by||!isClassManual(k))return '';
+ return Math.abs(Number(inputs[k])-Number(s.value))<1e-9?String(s.by):'';
+}
+function classFieldUnitText(id,unit){
+ if(!classSetsField(id))return unit;
+ if(!isClassManual(id))return unit+' · ставит класс проекта, правится в «Настройках класса»';
+ return unit+' · '+(classFieldSource(id)||'вписано руками')+' — смена класса его не затрёт';
+}
+// Подпись у единицы без перерисовки вводных: перерисовка снесла бы соседние
+// с полем узлы — например, ответ кнопки рекомендации.
+// Единица — из объявления поля (`FIELD_GROUPS`), как её берёт и `renderInputs`.
+function refreshClassFieldUnit(id){
+ const span=document.querySelector('.field[data-field="'+id+'"] > label > .unit');
+ if(!span)return;
+ for(const grp of FIELD_GROUPS)for(const f of grp[1])if(f[0]===id){span.textContent=classFieldUnitText(id,f[2]);return}
+}
 
 function applyProjectClassPreset(selectedKey){
  const select=document.getElementById('projectClassSelect');
@@ -49862,7 +49933,6 @@ function classSetsField(k){
 // цена — МФОЦ / офисы»). Карту считает движок тем же правилом, что строки
 // отклонений в PDF; короткая подпись осталась только внутри своей группы.
 const FIELD_LABELS_OUTSIDE=__DEVELOPAID_FIELD_LABELS_OUTSIDE__;
-const CLASS_DERIVED_NOTES=__DEVELOPAID_CLASS_DERIVED_NOTES__;
 function classFieldLabel(k){if(FIELD_LABELS_OUTSIDE[k])return FIELD_LABELS_OUTSIDE[k];for(const g of allFieldGroups()){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
 // Единицы полей класса считает движок и подставляет готовой картой — как
 // PRODUCT_LABELS и доли ТЭП. Свой разрез подсказки на JS был бы второй
@@ -49875,7 +49945,34 @@ function classFieldUnit(k){return CLASS_FIELD_UNITS[k]||''}
 // проекта в PDF и книгах по-прежнему считаются от ОБЩЕЙ базы.
 let CLASS_OVERRIDES=null;
 let CLASS_OVERRIDES_NOTE='';
-function classBase(c,k){return Number(PROJECT_CLASS_PRESETS[c][k])}
+// База класса — для региона проекта: в МО цена нежилого без московского пола.
+// Что в регионе отличается от профиля, считает движок (`class_base_preset`) и
+// подставляет картой — своего правила цены нежилого у страницы нет.
+const CLASS_REGION_BASES=__DEVELOPAID_CLASS_REGION_BASES__;
+function classRegion(){return String(inputs.vri_region||'msk')==='mo'?'mo':'msk'}
+function classBaseIn(region,c,k){
+ const regional=((CLASS_REGION_BASES[region]||{})[c]||{})[k];
+ return Number(regional!==undefined?regional:PROJECT_CLASS_PRESETS[c][k]);
+}
+function classBase(c,k){return classBaseIn(classRegion(),c,k)}
+// Поле проекта идёт за классом, только пока в нём стоит число класса: число,
+// вписанное руками или пришедшее импортом, остаётся своим. Одно правило для
+// смены региона и для правки колонки текущего класса.
+function followsClass(k,previous){
+ return !isClassManual(k)&&isFinite(Number(inputs[k]))&&Math.abs(Number(inputs[k])-previous)<1e-9;
+}
+// Регион сменился — поля, чья база зависит от региона, идут за новой базой:
+// иначе в МО стояла бы московская цена нежилого.
+function followClassRegion(previousRegion){
+ const cur=inputs.project_class;
+ if(!PROJECT_CLASS_PRESETS[cur])return;
+ const regional=new Set(Object.values(CLASS_REGION_BASES).flatMap(byClass=>Object.values(byClass).flatMap(Object.keys)));
+ regional.forEach(k=>{
+  const own=CLASS_OVERRIDES&&CLASS_OVERRIDES[cur]?Number(CLASS_OVERRIDES[cur][k]):NaN;
+  if(isFinite(own)&&own>0)return;
+  if(followsClass(k,classBaseIn(previousRegion,cur,k)))inputs[k]=classValue(cur,k);
+ });
+}
 function classValue(c,k){
  const own=CLASS_OVERRIDES&&CLASS_OVERRIDES[c]?Number(CLASS_OVERRIDES[c][k]):NaN;
  return isFinite(own)&&own>0?own:classBase(c,k);
@@ -49912,6 +50009,7 @@ async function loadClassOverrides(){
 }
 async function setClassBase(c,k,value){
  const num=Number(String(value).replace(/\s/g,'').replace(',','.'));
+ const previous=classValue(c,k);
  if(CLASS_OVERRIDES===null)CLASS_OVERRIDES={};
  if(!isFinite(num)||num<=0||Math.abs(num-classBase(c,k))<1e-9){
   // Пустое, мусор или ровно база — своего значения нет; выключатель
@@ -49919,6 +50017,15 @@ async function setClassBase(c,k,value){
   if(CLASS_OVERRIDES[c]){delete CLASS_OVERRIDES[c][k];if(!Object.keys(CLASS_OVERRIDES[c]).length)delete CLASS_OVERRIDES[c];}
  }else{
   (CLASS_OVERRIDES[c]=CLASS_OVERRIDES[c]||{})[k]=num;
+ }
+ // Правка колонки ТЕКУЩЕГО класса проекта сразу идёт в проект (решение
+ // владельца, 28.09.2026): прежде число ждало повторного выбора класса, а
+ // окно тем временем писало «всё соответствует». Вписанное в проект руками
+ // не трогается; правка чужого класса проект не двигает.
+ if(c===inputs.project_class&&followsClass(k,previous)){
+  inputs[k]=classValue(c,k);
+  renderInputs();
+  calculate();
  }
  renderProjectClassPreview();
  renderClassDialog();
@@ -49949,9 +50056,7 @@ function renderClassDialog(){
   const rowStats=classes.map(c=>classStatsRow(c,k));
   const hasStats=rowStats.some(Boolean);
   const unit=classFieldUnit(k);
-  const derived=CLASS_DERIVED_NOTES[k]||'';
-  const unitCell=(unit?` <span style="color:#8a94a6;font-size:11px;white-space:nowrap">${escapeHtml(unit)}</span>`:'')
-   +(derived?` <span class="class-derived" style="color:#8a94a6;font-size:11px">· ${escapeHtml(derived)}</span>`:'');
+  const unitCell=(unit?` <span style="color:#8a94a6;font-size:11px;white-space:nowrap">${escapeHtml(unit)}</span>`:'');
   const labelCell=(hasStats
    ?`<a href="#" onclick="toggleClassDetail('${k}');return false" title="Обоснование: источники, диапазон и положение вашего значения" style="color:inherit;text-decoration:none;border-bottom:1px dashed #b6c4d6">${classFieldLabel(k)} <span style="color:#3b6db4">${CLASS_DETAIL_OPEN[k]?'▾':'▸'}</span></a>`
    :classFieldLabel(k))+unitCell;
@@ -50082,14 +50187,21 @@ function classStatsAreas(){
  if(gba>under)areas.above_ground_gns_sqm=String(Math.round(gba-under));
  return areas;
 }
+// Свод спрашивается по региону проекта и на его площади; ключ запоминается,
+// и окно, открытое после смены ТЭП или региона, спрашивает заново — прежде
+// свод считался один раз и всегда по Москве.
+let CLASS_STATS_KEY='';
+function classStatsRegionName(){return classRegion()==='mo'?'Московская область':'Москва'}
 async function loadClassStats(){
- if(CLASS_STATS_BY)return;
- CLASS_STATS_ERROR='';
  const areas=classStatsAreas();
+ const statsKey=JSON.stringify([classStatsRegionName(),areas]);
+ if(CLASS_STATS_BY&&CLASS_STATS_KEY===statsKey)return;
+ CLASS_STATS_BY=null;CLASS_STATS_KEY=statsKey;
+ CLASS_STATS_ERROR='';
  const classes=Object.keys(PROJECT_CLASS_PRESETS);
  try{
   const answers=await Promise.all(classes.map(c=>{
-   const params=new URLSearchParams(Object.assign({class:c,region:'Москва'},areas));
+   const params=new URLSearchParams(Object.assign({class:c,region:classStatsRegionName()},areas));
    return fetch('/api/statistics/cost-recommendation?'+params.toString())
     .then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json()});
   }));
@@ -50352,7 +50464,7 @@ function renderInputs(){
      // машиноместа установлена по классу», владелец, 15.09.2026). Пометка
      // стоит у ЕДИНИЦЫ, то есть рядом с числом, а не строкой ниже: подпись
      // под полем читают, когда уже засомневались.
-     const unitText=!classSetsField(id)?unit:isClassManual(id)?unit+' · вписано руками — смена класса его не затрёт':unit+' · ставит класс проекта, правится в «Настройках класса»';
+     const unitText=classFieldUnitText(id,unit);
      wrap.innerHTML=`<label>${label} <span class="unit">${unitText}</span></label>`;
      // Срок строительства при очередности задаёт очередь, а не проект: движок
      // читает проектное поле ТОЛЬКО когда очередь своего срока не назвала, а
@@ -50414,7 +50526,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
@@ -54469,7 +54581,14 @@ function renderResult(){
  {
   const cGns=Number(r.summary.project_gns_sqm||0),cSaleable=Number(r.summary.monetizable_saleable_sqm||0);
   const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
-  capexTable.innerHTML=Object.entries(r.capex).filter(([key])=>key!=='total')
+  // Порядок статей — порядок движка (`_MODEL_CAPEX_LABELS`: земля → ИРД и
+  // проект → снос → СМР → объекты → соцнагрузка → надбавки → резерв), а не
+  // порядок ключей ответа. Нулевая статья строку не занимает: итог её не
+  // теряет, а «0 млрд ₽» между статьями только мешает читать.
+  const capOrder=Object.keys(capNames);
+  const capRank=key=>{const i=capOrder.indexOf(key);return i<0?capOrder.length:i};
+  capexTable.innerHTML=Object.entries(r.capex).filter(([key,v])=>key!=='total'&&Math.abs(Number(v||0))>=0.5)
+   .sort((a,b)=>capRank(a[0])-capRank(b[0]))
    .map(([key,v])=>`<tr><td>${capNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,cGns)}</td><td>${perTh(v,cSaleable)}</td></tr>`).join('')
    +`<tr><th>Итого</th><th>${money(r.capex.total)}</th><th>${perTh(r.capex.total,cGns)}</th><th>${perTh(r.capex.total,cSaleable)}</th></tr>`;
  }
@@ -55955,7 +56074,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
  'landScreeningRun','tepRunSequence',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
- 'CLASS_STATS_BY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN'];
+ 'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
@@ -56481,8 +56600,6 @@ PAGE = PAGE.replace(FIELD_SECTIONS_PLACEHOLDER, json.dumps(
 # Подписи полей объектов вне их группы — тем же правилом, что в PDF и отчётах.
 PAGE = PAGE.replace("__DEVELOPAID_FIELD_LABELS_OUTSIDE__", json.dumps(
     {key: _input_field_label(key) for key in FIELD_SECTIONS}, ensure_ascii=False))
-PAGE = PAGE.replace(CLASS_DERIVED_NOTES_PLACEHOLDER,
-                    json.dumps(CLASS_DERIVED_NOTES, ensure_ascii=False))
 # Базы классов — из движка. Копия жила на странице с рождения окна и отстала
 # от пресета в первый же раз, когда профиль класса расширили статьями:
 # полный профиль применялся бы на сервере и молча не существовал бы в браузере.
@@ -56522,6 +56639,8 @@ PAGE = PAGE.replace(
                ensure_ascii=False))
 # Имена статей расходов — из движка. Статья без короткой подписи получает
 # полную: сырой ключ на экране невозможен по построению, а не по вниманию.
+PAGE = PAGE.replace(CLASS_REGION_BASES_PLACEHOLDER,
+                    json.dumps(CLASS_REGION_BASES, ensure_ascii=False))
 PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
     {key: CAPEX_SHORT_NAMES.get(key, name) for key, name in _MODEL_CAPEX_LABELS},
     ensure_ascii=False))
