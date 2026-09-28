@@ -110,7 +110,11 @@ def test_the_v4_workbook_keeps_capacity_out_of_sales() -> None:
         project_name="Социальная мощность")
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     params = "Параметры модели"
-    capacity_ref = re.compile(r"\$?B\$?(17[4-9]|18[0-5])(?!\d)")
+    # Ссылка на B174:B185 считается местами только тогда, когда она указывает
+    # на «Параметры модели»: явным префиксом листа или без префикса на самом
+    # этом листе. 'Вводные'!B174 — другая ячейка другого листа.
+    capacity_ref = re.compile(
+        r"(?:'([^']+)'!|([A-Za-zА-Яа-яЁё_][\wЁё.]*)!)?(?<![\w$])\$?B\$?(17[4-9]|18[0-5])(?!\d)")
     tep = book["ТЭП"]
     social_rows = {}
     for row in range(1, tep.max_row + 1):
@@ -133,7 +137,10 @@ def test_the_v4_workbook_keeps_capacity_out_of_sales() -> None:
                 same_sheet = sheet.title == params
                 if not (same_sheet or params in value):
                     continue
-                if capacity_ref.search(value) and (sheet.title, cell.coordinate) not in allowed:
+                reads_capacity = any(
+                    (match.group(1) or match.group(2) or sheet.title) == params
+                    for match in capacity_ref.finditer(value))
+                if reads_capacity and (sheet.title, cell.coordinate) not in allowed:
                     leaks.append(f"{sheet.title}!{cell.coordinate}: {value[:120]}")
     assert not leaks, leaks
     # Итог единиц проекта складывает очереди и объекты, но не места.
