@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import sys
+import urllib.parse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,7 +54,7 @@ def test_the_same_address_is_asked_by_urllib_only_percent_encoded() -> None:
     assert encoded.split("?")[0] == roseltorg_probe.CATALOGUE_URL.split("?")[0]
 
 
-def test_the_route_asks_only_the_platform_and_parses_nothing() -> None:
+def test_the_route_asks_only_the_platform_and_parses_nothing(monkeypatch) -> None:
     """Адрес спрашивать можно, но только у площадки, и без разбора.
 
     Прежде здесь стояло «произвольного адреса нет вовсе», и это было верно,
@@ -74,9 +75,22 @@ def test_the_route_asks_only_the_platform_and_parses_nothing() -> None:
         assert invented not in route
 
     # Чужой хост проба не спрашивает — проверяется запуском, а не чтением.
+    # Сеть заменена записью: разделы площадки и живой браузер здесь не
+    # предмет, а настоящими они держали тест полторы минуты на таймаутах.
+    fetched: list[str] = []
+    monkeypatch.setattr(roseltorg_probe, "_fetch",
+                        lambda url, context: fetched.append(url) or {"status": 200})
+    monkeypatch.setattr(roseltorg_probe, "_certificates",
+                        lambda url: fetched.append(url) or {})
+    monkeypatch.setattr(roseltorg_probe, "probe_browser",
+                        lambda url, **kwargs: {"url": url})
     answer = roseltorg_probe.probe(seconds=5.0, url="https://example.com/lot/1")
     asked = [a for a in answer["attempts"] if a["asked"] == "Адрес, который спросили"]
     assert asked and "roseltorg.ru" in asked[0].get("reason", ""), asked
+    hosts = {(urllib.parse.urlparse(url).hostname or "").lower() for url in fetched}
+    assert hosts, "разделы площадки не спрошены вовсе"
+    assert all(host == "roseltorg.ru" or host.endswith(".roseltorg.ru")
+               for host in hosts), hosts
 
 
 def test_the_dom_is_asked_by_what_a_card_is_not_by_a_guessed_class() -> None:
