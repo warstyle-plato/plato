@@ -39,6 +39,11 @@ def _client(monkeypatch, tmp_path, ask, result):
     monkeypatch.setenv("MARKET_CABINET_KEY", "test-key")
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     monkeypatch.setitem(sys.modules, "developaid_core", core)
+    # `install` вшивает мост торгов в `core.PAGE` насовсем. Без восстановления
+    # страница с мостом доживала до чужих стендов в той же доле, и разрешитель
+    # зависимостей упирался в предел («зависимостей больше 60») на сравнении
+    # очередей — падение выходило про соседа, а не про то, что он проверяет.
+    monkeypatch.setattr(core, "PAGE", core.PAGE)
     app = FastAPI()
     app.state.market_discovery_service = SimpleNamespace(
         krt=SimpleNamespace(catalogue=lambda **_: [PROJECT],
