@@ -30,7 +30,9 @@ import re
 from typing import Any
 from xml.sax.saxutils import escape as _xml_escape
 
-from presentation import BRIDGE_STEPS, CARD_COUNT, KPI_CATALOGUE, RISK_CATALOGUE
+from presentation import (AREA_MEASURE, BRIDGE_STEPS, CARD_COUNT, FLATS_MEASURE,
+                          KPI_CATALOGUE, PARKING_MEASURE, PIECES_MEASURE,
+                          RISK_CATALOGUE)
 
 DATA_SHEET = "Dashboard_Data"
 DASHBOARD_SHEET = "Дашборд"
@@ -179,7 +181,12 @@ def _tep_sum(col: str, shift: int) -> str:
 # которого не заполнена продаваемая площадь, — и заполнить квартирам число
 # квартир значило бы объявить их штучными, то есть перевести их среднюю цену
 # и удельную выручку с метра на квартиру, ничего об этом не сказав.
-BY_AREA, BY_PIECE = "м²", "шт."
+# Мера счёта продукта — из `presentation`, где она объявлена для всех
+# поверхностей. Пустая мера значит «меряется метрами, штук у него нет»;
+# непустая называет, В ЧЁМ штуки: квартиры, машино-места, кладовые. Одного
+# слова «шт.» на всех не хватает — «конечно это не надо суммировать»
+# (владелец, 27.09.2026), а чтобы не сложить, надо сперва различить.
+BY_AREA = AREA_MEASURE
 
 # Квартир, шт. — блок очередей листа параметров: там число следует за
 # плотностью так же, как за ней следуют метры. В структуре продукта ОТЧЁТа его
@@ -195,31 +202,37 @@ QUEUE_APARTMENT_UNITS_COL = "AV"
 APARTMENT_UNITS = (f"SUM('{QUEUE_SHEET}'!{QUEUE_APARTMENT_UNITS_COL}{QUEUE_FIRST_ROW}:"
                    f"{QUEUE_APARTMENT_UNITS_COL}{QUEUE_LAST_ROW})")
 
-PRODUCT_ITEMS: tuple[tuple[str, str, str, str, str, str, str, str, str, str], ...] = (
+# Две РАЗНЫЕ вещи, и путать их нельзя: чем продукт ЦЕНИТСЯ и в чём считаются
+# его ШТУКИ. У квартиры это метр и квартира: цена за м², а количество — 1 362
+# квартиры. Пока признак был один, заполнение числа квартир переводило их
+# среднюю цену на квартиру, ничего об этом не сказав.
+PRODUCT_ITEMS: tuple[tuple[str, str, str, str, str, str, str, str, str, str, str], ...] = (
     # key, label, gns_above, under, saleable, units, revenue_mln,
-    # start_price_th, pace_pre, sold_by
+    # start_price_th, pace_pre, priced_by (пусто — за метр), counted_in
+    # (пусто — штук у продукта нет вовсе)
     # Квартиры читаются из блока очередей: в структуре продукта ОТЧЁТа колонка
     # «Единицы» означает продаваемые МЕСТА, и квартиры сложились бы с ними.
     ("apartments", "Квартиры", "'ОТЧЕТ'!B46", "", "'ОТЧЕТ'!C46", APARTMENT_UNITS,
-     _tep_sum("G", 0), "'ТЭП'!F4", "'ОТЧЕТ'!B87", BY_AREA),
+     _tep_sum("G", 0), "'ТЭП'!F4", "'ОТЧЕТ'!B87", BY_AREA, FLATS_MEASURE),
     ("ground_commercial", "Коммерция первого этажа", "'ОТЧЕТ'!B47", "", "'ОТЧЕТ'!C47", "",
-     _tep_sum("G", 1), "'ТЭП'!F5", "'ОТЧЕТ'!B88", BY_AREA),
+     _tep_sum("G", 1), "'ТЭП'!F5", "'ОТЧЕТ'!B88", BY_AREA, AREA_MEASURE),
     # Подземному паркингу наземной площади не полагается вовсе: его метры
     # стояли в колонке «ГНС» и складывались её итогом — «подземное опять
     # входит в ГНС» (владелец, 26.09.2026). Теперь у них своя колонка, как на
     # ОТЧЁТе и на странице.
     ("underground_parking", "Подземный паркинг", "", _tep_sum("C", 2), "", _tep_sum("E", 2),
-     _tep_sum("G", 2), "'ТЭП'!F6", "'ОТЧЕТ'!B89", BY_PIECE),
+     _tep_sum("G", 2), "'ТЭП'!F6", "'ОТЧЕТ'!B89", PARKING_MEASURE, PARKING_MEASURE),
     # Метры кладовых до сих пор не доезжали до дашборда ВООБЩЕ: наземной у них
     # нет, а подземной колонки не было.
     ("storage", "Кладовые", "", _tep_sum("C", 3), "", _tep_sum("E", 3),
-     _tep_sum("G", 3), "'ТЭП'!F7", "'ОТЧЕТ'!B90", BY_PIECE),
+     _tep_sum("G", 3), "'ТЭП'!F7", "'ОТЧЕТ'!B90", PIECES_MEASURE, PIECES_MEASURE),
     ("offices", "МФОЦ / офисный центр", "'ТЭП'!C31", "'ОТЧЕТ'!G50", "'ТЭП'!D31", "'ОТЧЕТ'!D50",
-     "'ТЭП'!G31", "'ТЭП'!F31", "'ОТЧЕТ'!B91", BY_AREA),
+     # Штуки офисника — места его гаража, и меряются они машино-местами.
+     "'ТЭП'!G31", "'ТЭП'!F31", "'ОТЧЕТ'!B91", BY_AREA, PARKING_MEASURE),
     ("standalone_retail", "Торговый центр / ОСЗ", "'ТЭП'!C32", "'ОТЧЕТ'!G51", "'ТЭП'!D32", "",
-     "'ТЭП'!G32", "'ТЭП'!F32", "'ОТЧЕТ'!B92", BY_AREA),
+     "'ТЭП'!G32", "'ТЭП'!F32", "'ОТЧЕТ'!B92", BY_AREA, AREA_MEASURE),
     ("above_parking", "Наземный паркинг", "'ТЭП'!C33", "", "", "'ТЭП'!E33",
-     "'ТЭП'!G33", "'ТЭП'!F33", "'ОТЧЕТ'!B93", BY_PIECE),
+     "'ТЭП'!G33", "'ТЭП'!F33", "'ОТЧЕТ'!B93", PARKING_MEASURE, PARKING_MEASURE),
 )
 PRODUCT_ROWS: dict[str, int] = {item[0]: PRODUCT_FIRST_ROW + index
                                 for index, item in enumerate(PRODUCT_ITEMS)}
@@ -439,8 +452,8 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
     очереди и через сколько строк повторяется блок очереди.
     `extra_products` — строки дописанных объектов в той же форме, что
     `PRODUCT_ITEMS` (ключ, подпись, ГНС наземная, подземная, продаваемая,
-    единицы, выручка, стартовая цена, темп, мера продажи); пустая ячейка —
-    величины у объекта нет.
+    единицы, выручка, стартовая цена, темп, чем ценится, в чём считается);
+    пустая ячейка — величины у объекта нет.
     """
     rows: list[str] = []
     all_rows = product_rows(extra_products)
@@ -467,7 +480,7 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
         ("J", "выручка на м² ГНС / на шт., тыс ₽"), ("K", "выручка на м² прод., тыс ₽"),
         ("L", "подземная, м²")))
     for (key, label, gns, under, saleable, units, revenue,
-         start_price, pace, sold_by) in product_items(extra_products):
+         start_price, pace, priced_by, _counted_in) in product_items(extra_products):
         r = all_rows[key]
         cells = [(f"A{r}", _cell(f"A{r}", text=key)), (f"B{r}", _cell(f"B{r}", text=label)),
                  (f"F{r}", _cell(f"F{r}", formula=revenue)),
@@ -482,7 +495,7 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
         # Чем продукт меряется — ОБЪЯВЛЕНО в его строке. Прежде это выводилось
         # из того, заполнена ли колонка штук, и число квартир в ней перевело бы
         # квартиры на цену за квартиру молча.
-        piece = sold_by == BY_PIECE
+        piece = priced_by != BY_AREA
         base = f"E{r}" if piece else (f"D{r}" if saleable else "")
         cells.append((f"G{r}", _cell(f"G{r}", formula=f"IFERROR(F{r}*1000/{base},0)") if base
                       else _cell(f"G{r}")))
@@ -500,7 +513,9 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
                          (f"C{t}", _cell(f"C{t}", formula=f"SUM(C{first}:C{last})")),
                          (f"L{t}", _cell(f"L{t}", formula=f"SUM(L{first}:L{last})")),
                          (f"D{t}", _cell(f"D{t}", formula=f"SUM(D{first}:D{last})")),
-                         (f"E{t}", _cell(f"E{t}", formula=f"SUM(E{first}:E{last})")),
+                         # Итога штук нет: складывать квартиры с машино-местами
+                         # и кладовыми нечем. Пустая клетка здесь — ответ.
+                         (f"E{t}", _cell(f"E{t}")),
                          (f"F{t}", _cell(f"F{t}", formula=f"SUM(F{first}:F{last})")),
                          (f"J{t}", _cell(f"J{t}", formula=f"IFERROR(F{t}*1000/{data_cell('gns_above_sqm')},0)")),
                          (f"K{t}", _cell(f"K{t}", formula=f"IFERROR(F{t}*1000/{data_cell('saleable_sqm')},0)"))]))
@@ -847,21 +862,27 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
     # Наземная и подземная — разные величины, и колонки у них разные: под
     # одним именем «ГНС» они складывались в итоге, и подземный паркинг читался
     # наземной площадью («подземное опять входит в гнс», владелец, 26.09.2026).
+    # Колонка количества называет МЕРУ каждой строки: «250 шт.» у детского
+    # сада читались штуками, а это места. Итога у неё нет вовсе — квартиры,
+    # машино-места и места несравнимы, и складывать их нечем («конечно это не
+    # надо суммировать», владелец, 27.09.2026). Разбор стоит строками выше.
     sh.header(_G_TABLE_5, ["Продукт", "ГНС наземная, м²", "Подземная, м²",
-                           "Продаваемая, м²", "Единиц"])
-    for key, *_rest in products:
+                           "Продаваемая, м²", "Количество"])
+    for item in products:
+        key, counted_in = item[0], item[-1]
         src = rows_of[key]
         sh.line(_G_TABLE_5, [(None, _src(P["label"], src), sh.td),
                              (None, _src(P["gns"], src), sh.value("м²")),
                              (None, _src(P["under"], src), sh.value("м²")),
                              (None, _src(P["saleable"], src), sh.value("м²")),
-                             (None, _src(P["units"], src), sh.value("шт."))])
+                             ((None, _src(P["units"], src), sh.value(counted_in))
+                              if counted_in else ("—", None, sh.td))])
     src = PRODUCT_TOTAL_ROW
     sh.line(_G_TABLE_5, [("Итого проект", None, sh.bold_td),
                          (None, _src(P["gns"], src), sh.bold_value("м²")),
                          (None, _src(P["under"], src), sh.bold_value("м²")),
                          (None, _src(P["saleable"], src), sh.bold_value("м²")),
-                         (None, _src(P["units"], src), sh.bold_value("шт."))])
+                         ("—", None, sh.bold_td)])
     sh.blank()
 
     # Доходы: выручка и удельные на метр.
@@ -884,9 +905,9 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
     sh.section_row("ЦЕНЫ РЕАЛИЗАЦИИ И ТЕМП ПРОДАЖ")
     sh.header(_G_TABLE_5, ["Продукт", "Средняя, тыс ₽", "Старт, тыс ₽", "Темп до РВЭ, в мес.", "Ед."])
     for item in products:
-        key, sold_by = item[0], item[-1]
+        key, priced_by = item[0], item[-2]
         src = rows_of[key]
-        unit = sold_by
+        unit = priced_by or "м²"
         sh.line(_G_TABLE_5, [(None, _src(P["label"], src), sh.td),
                              (None, _src(P["avg_price"], src), sh.value("тыс ₽")),
                              (None, _src(P["start_price"], src), sh.value("тыс ₽")),

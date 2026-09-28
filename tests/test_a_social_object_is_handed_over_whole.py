@@ -67,14 +67,26 @@ def test_a_row_does_not_hand_over_metres_and_sell_places_at_once():
 
 
 def test_the_sold_total_counts_no_social_place():
-    """Итог проданного не считает места ДОО, СОШ и поликлиники."""
+    """Итог проданного не считает места ДОО, СОШ и поликлиники.
+
+    Свод считает штуки ПО МЕРЕ: места соцобъектов меряются местами, и
+    спрашивать их надо в своей мере, а не в общей сумме — общей суммы больше
+    нет (решение владельца 27.09.2026, разбор «не надо суммировать»).
+    """
     got = _result()
-    social = sum(_row(got, key)["units"] for key in SOCIAL)
-    assert social > 0, "в стенде нет ни одного соцобъекта — сверять нечего"
-    sold = got["tep"]["total"]["saleable_units"]
-    built = got["tep"]["total"]["units"]
-    assert built - sold >= social, (
-        "проданного меньше построенного не на все переданные места")
+    built = got["tep"]["total"]["units_by_measure"]
+    sold = got["tep"]["total"]["saleable_units_by_measure"]
+    # Поликлиника меряется НЕ местами, а посещениями в смену: сложить её со
+    # школой и садиком было бы той же бедой, от которой заведена мера.
+    for key in SOCIAL:
+        measure = core.tep_count_measure(key)
+        capacity = _row(got, key)["units"]
+        assert capacity > 0, f"в стенде нет {key} — сверять нечего"
+        assert built.get(measure, 0) >= capacity, (key, measure, built)
+        assert sold.get(measure, 0) == 0, (
+            f"мощность соцобъекта попала в проданное: {measure}")
+    assert core.tep_count_measure("clinic") != core.tep_count_measure("school"), (
+        "посещение в смену и место в школе снова стали одной величиной")
 
 
 def test_the_money_does_not_know_about_this():

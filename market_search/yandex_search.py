@@ -70,6 +70,9 @@ class SearchDoc:
     domain: str
     snippet: str
     rank: int
+    # Дата страницы по индексу Яндекса (`modtime`, «ГГГГ-ММ-ДД»); пусто — не
+    # отдал. Это не дата публикации, а дата, когда поиск видел страницу такой.
+    modtime: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -197,6 +200,9 @@ class YandexSearchClient:
             except ValueError:
                 hostname = ""
             domain = cls._element_text(doc.find("domain")) or hostname
+            raw_time = cls._element_text(doc.find("modtime"))
+            stamp = re.match(r"(\d{4})(\d{2})(\d{2})", raw_time or "")
+            modtime = "-".join(stamp.groups()) if stamp else ""
             result.append(
                 SearchDoc(
                     title=html.unescape(title).strip(),
@@ -204,6 +210,7 @@ class YandexSearchClient:
                     domain=domain.lower().strip(),
                     snippet=html.unescape(snippet).strip(),
                     rank=rank,
+                    modtime=modtime,
                 )
             )
         return result

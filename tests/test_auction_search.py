@@ -597,7 +597,10 @@ def test_auction_excel_enriches_location_krt_links_and_deadlines():
     assert get("Окончание приёма заявок").value == datetime(2099, 12, 31, 15, 0)
     assert get("Дней до окончания заявок").value > 0
     assert get("Адрес").hyperlink.target.startswith("https://yandex.ru/maps/?text=")
-    assert get("Кадастровые номера").hyperlink.target == "https://nspd.gov.ru/map?thematic=PKK"
+    # Общая карта НСПД — не ссылка на участок: пока фон не получил точку,
+    # номер остаётся текстом, а причина стоит в столбце карты.
+    assert get("Кадастровые номера").hyperlink is None
+    assert get("Участок на карте НСПД").value.startswith("Точка не запрашивалась")
 
 
 def test_auction_type_filter_allows_several_types_at_once():

@@ -336,6 +336,9 @@ def _tep_rows(model: dict[str, Any], fm: _Formats) -> list[tuple[str, str, str]]
                      + (f" · {fm.count(count)} шт." if count else ""), "м²"))
     if tep.get("commercial_saleable_sqm"):
         rows.append(("  коммерция 1-х этажей", fm.sqm(tep.get("commercial_saleable_sqm")), "м²"))
+    # Машино-места — только они. Здесь стоял общий итог штук проекта, и в
+    # строку с подписью «м/м» уезжали квартиры и места детского сада: 2 811
+    # против 1 199 настоящих на умолчаниях. Документ читают банк и партнёр.
     units = tep.get("parking_units")
     if units:
         rows.append(("Машино-места", fm.count(units), "м/м"))
@@ -649,8 +652,12 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
     tep_rows = [[p["label"], fm.sqm(p.get("gns")) if p.get("gns") else "—",
                  fm.sqm(p.get("saleable")) if p.get("saleable") else "—",
                  fm.count(p.get("quantity")) if p.get("unit") == "шт." else "—"] for p in products]
+    # Итог штук — разбор по мере, а не число: складывать квартиры с
+    # машино-местами и местами в саду нечем.
+    counts = tep.get("units_by_measure") or {}
     tep_rows.append(["Итого", fm.sqm(tep.get("project_gns_sqm")), fm.sqm(tep.get("saleable_sqm")),
-                     fm.count(tep.get("parking_units")) if tep.get("parking_units") else "—"])
+                     " · ".join(f"{fm.count(value)} {measure}"
+                                for measure, value in counts.items() if value) or "—"])
     col1.append(_grid(["Продукт", "ГНС, м²", "Продаваемая, м²", "Единиц"], tep_rows,
                       [col_w * 0.40, col_w * 0.22, col_w * 0.22, col_w * 0.16], st, bold_last=True))
     taxes = model.get("taxes") or {}

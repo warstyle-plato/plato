@@ -106,6 +106,12 @@ def test_a_second_object_follows_its_product() -> None:
     for preset in core.PROJECT_CLASS_PRESETS.values():
         assert preset["offices2_price_th_per_sqm"] == preset["offices_price_th_per_sqm"]
         assert preset["retail2_price_th_per_sqm"] == preset["retail_price_th_per_sqm"]
+    # Мера счёта — продукта: второй паркинг считается машино-местами, второй
+    # офисник штук не имеет вовсе, а не уходит в «шт.» последнего прибежища.
+    for key, twin in SECONDS.items():
+        assert key in core.TEP_COUNT_MEASURE, key
+        assert core.tep_count_measure(key) == core.tep_count_measure(twin), key
+    assert core.tep_count_measure("above_parking2") == core.COUNT_PARKING
     functions = {row[0]: row[1:] for row in core._PARKING_DEMAND_PRODUCTS}
     assert functions["offices2"] == functions["offices"]
     assert functions["standalone_retail2"] == functions["standalone_retail"]
@@ -249,6 +255,22 @@ def test_the_second_garage_is_its_own_product_in_engine_and_book(phased_book, ph
     for other in core._V4_OBJECT_PARKING:
         if other is not own:
             assert f"$B${other[3]}," not in formula, (other[0], formula)
+
+
+def test_the_second_garage_counts_as_parking_spaces(phased) -> None:
+    """Гараж второго офисника — машино-места в разборе штук свода, а спутать
+    места с метрами офиса или сложить с квартирами нельзя."""
+    total = phased["consolidated"]["tep"]["total"]
+    rows = phased["consolidated"]["tep"]["rows"]
+    by_measure = total["units_by_measure"]
+    garage = sum(float(row.get("parking_units") or 0) for row in rows
+                 if row.get("key") == "offices2")
+    assert garage > 0
+    assert by_measure[core.COUNT_PARKING] == pytest.approx(
+        core.tep_parking_spaces(rows)), by_measure
+    assert core.COUNT_PIECES not in by_measure or all(
+        core.tep_count_measure(row.get("key")) != core.COUNT_PIECES
+        for row in rows if str(row.get("key", "")).endswith("2")), by_measure
 
 
 # --- поверхности -----------------------------------------------------------------

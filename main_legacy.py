@@ -82,7 +82,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.59"
+VERSION = "0.24.65"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -5012,18 +5012,42 @@ def _nspd_object_kind(feature: dict[str, Any], options: dict[str, Any]) -> str:
     return "other"
 
 
-def _nspd_map_url(center: dict[str, Any] | None, cadastral_number: str) -> str:
+def _nspd_card(feature: dict[str, Any]) -> tuple[str, str]:
+    """(id объекта, номер слоя) для `selectedCard` — из ответа поиска НСПД.
+
+    Ссылка «скопировать» самой НСПД открывает карточку объекта параметром
+    `selectedCard=<id>,<слой>,<номер>` (владелец, 27.09.2026). Слой в ответе
+    поиска — `properties.category`, id — `feature.id`. Чего нет или что не
+    число — пусто: карточку не угадываем, ссылка остаётся по точке.
+    """
+    properties = feature.get("properties")
+    properties = properties if isinstance(properties, dict) else {}
+    ident, layer = str(feature.get("id") or "").strip(), str(properties.get("category") or "").strip()
+    return (ident, layer) if ident.isdigit() and layer.isdigit() else ("", "")
+
+
+def _nspd_map_url(center: dict[str, Any] | None, cadastral_number: str,
+                  card: tuple[str, str] = ("", "")) -> str:
     if center and center.get("merc_x") is not None:
+        ident, layer = card
+        selected = ""
+        if ident and layer and cadastral_number:
+            selected = "&selectedCard=" + urllib.parse.quote(
+                f"{ident},{layer},{cadastral_number}", safe="")
+        # Порядок и набор параметров — как у ссылки «скопировать» самой НСПД
+        # (`theme_id=1`, `is_copy_url=true`): номер из адреса карта не читает
+        # (`?query=` открывала прежнее место, владелец 27.09.2026), точку — да.
         return (
-            f"{_NSPD_BASE_URL}/map?thematic=PKK&zoom=17"
-            f"&coordinate_x={center['merc_x']}&coordinate_y={center['merc_y']}"
+            f"{_NSPD_BASE_URL}/map?thematic=PKK&theme_id=1&is_copy_url=true"
+            f"&coordinate_x={center['merc_x']}&coordinate_y={center['merc_y']}&zoom=18"
+            f"{selected}"
         )
     if cadastral_number:
         return f"{_NSPD_BASE_URL}/map?thematic=PKK&query={urllib.parse.quote(cadastral_number)}"
     return f"{_NSPD_BASE_URL}/map"
 
 
-def _normalize_nspd_feature(feature: dict[str, Any]) -> dict[str, Any]:
+def _normalize_nspd_feature(feature: dict[str, Any], query_number: str = "") -> dict[str, Any]:
     options = _nspd_options(feature)
     properties = feature.get("properties")
     properties = properties if isinstance(properties, dict) else {}
@@ -5065,7 +5089,11 @@ def _normalize_nspd_feature(feature: dict[str, Any]) -> dict[str, Any]:
         # Границы для миниатюры на странице: контур рисуется своим SVG, без
         # внешних карт — работает и в телеграм-WebView, и при лежащей НСПД.
         "contour_merc": _geometry_contours_merc(feature.get("geometry")),
-        "map_url": _nspd_map_url(center, cadastral_number),
+        # Номер для карточки — свой у объекта, иначе тот, по которому искали:
+        # у помещений НСПД поле номера бывает пустым.
+        "map_url": _nspd_map_url(center, cadastral_number or query_number, _nspd_card(feature)),
+        "nspd_id": _nspd_card(feature)[0],
+        "nspd_layer": _nspd_card(feature)[1],
         "category_name": _land_text(properties.get("categoryName")),
         "source": "НСПД / ЕГРН",
     }
@@ -7020,7 +7048,7 @@ def _land_lookup_by_numbers(numbers: list[str]) -> list[dict[str, Any]]:
                 "note": "В ЕГРН по этому номеру сведений не найдено.",
             })
             continue
-        results.append(_normalize_nspd_feature(matched[0]))
+        results.append(_normalize_nspd_feature(matched[0], number))
     return results
 
 
@@ -13517,6 +13545,9 @@ def _map_context_bbox(points: list[Any], target_aspect: float,
     return min_x, min_y, max_x, max_y
 
 
+_TERRITORY_LOOKUP_CHUNK = 15
+
+
 def _territory_image_png(numbers: list[str], basemap: str = "nspd",
                          aspect: float | None = None) -> tuple[bytes, str] | None:
     """Картинка территории: контуры ЕГРН поверх подложки — с подписью.
@@ -13536,10 +13567,14 @@ def _territory_image_png(numbers: list[str], basemap: str = "nspd",
     """
     if basemap not in _MAP_BASEMAP_CAPTION:
         raise ValueError(f"неизвестная подложка карты: {basemap!r}")
-    data = land_lookup(LandLookupRequest(
-        query=", ".join(numbers), limit=max(10, len(numbers))))
-    found = [item for item in (data.get("results") or [])
-             if item.get("found") and item.get("contour_merc")]
+    # Поиск берёт не больше 500 символов запроса — это ~23 номера; территория
+    # КРТ бывает до 30 участков. Частями по 15: иначе вся карта пропадала.
+    results: list[dict[str, Any]] = []
+    for start in range(0, len(numbers), _TERRITORY_LOOKUP_CHUNK):
+        part = numbers[start:start + _TERRITORY_LOOKUP_CHUNK]
+        data = land_lookup(LandLookupRequest(query=", ".join(part), limit=max(10, len(part))))
+        results.extend(data.get("results") or [])
+    found, missing = _territory_contours(numbers, results)
     rings = [ring for item in found for ring in item["contour_merc"]
              if isinstance(ring, list) and len(ring) >= 3]
     points = [p for ring in rings for p in ring
@@ -13605,13 +13640,62 @@ def _territory_image_png(numbers: list[str], basemap: str = "nspd",
         draw.text((x0, y0), label, fill=(40, 40, 40), font=font)
     out = io.BytesIO()
     image.save(out, format="PNG")
-    listed = ", ".join(str(item.get("cadastral_number") or "") for item in found[:5])
-    count = len(found)
-    caption = (
-        f"Контур участка {listed} · границы ЕГРН" if count == 1
-        else f"Территория из {count} участков: {listed} · границы ЕГРН")
-    caption += " · " + _MAP_BASEMAP_CAPTION[basemap]
-    return out.getvalue(), caption
+    return out.getvalue(), _territory_caption(numbers, found, missing, basemap)
+
+
+def _cadastral_key(number: Any) -> str:
+    """Номер для сверки: части без ведущих нулей — «77:05:0004001:040» и
+    «77:05:4001:40» один участок, а соседний номер — другой."""
+    parts = str(number or "").strip().split(":")
+    return ":".join(str(int(p)) if p.isdigit() else p for p in parts)
+
+
+def _territory_contours(numbers: list[str], results: list[dict[str, Any]]
+                        ) -> tuple[list[dict[str, Any]], list[str]]:
+    """Контуры территории, сверенные с запрошенными номерами.
+
+    Ответ поиска сопоставляется с номером по самому номеру, а не по месту в
+    списке: по промаху НСПД может отдать соседний участок, и тогда на карте
+    рисовался сосед, а нужный участок молча пропадал из середины контура.
+    Возвращает найденные с контуром (по одному на номер, в порядке запроса) и
+    номера, контура которых в источнике нет, — их подпись называет."""
+    by_key: dict[str, dict[str, Any]] = {}
+    for item in results:
+        if not (item.get("found") and item.get("contour_merc")):
+            continue
+        by_key.setdefault(_cadastral_key(item.get("cadastral_number")), item)
+    found: list[dict[str, Any]] = []
+    missing: list[str] = []
+    seen: set[str] = set()
+    for number in numbers:
+        key = _cadastral_key(number)
+        if key in seen:
+            continue
+        seen.add(key)
+        item = by_key.get(key)
+        if item is None:
+            missing.append(number)
+        else:
+            found.append(item)
+    return found, missing
+
+
+def _territory_caption(numbers: list[str], found: list[dict[str, Any]],
+                       missing: list[str], basemap: str) -> str:
+    """Подпись карты: число участков — то же, что в таблице (запрошенные
+    номера), перечень не обрывается молча, а недорисованные названы."""
+    total = len({_cadastral_key(n) for n in numbers})
+    shown = [str(item.get("cadastral_number") or "") for item in found]
+    listed = ", ".join(shown[:5]) + (f" и ещё {len(shown) - 5}" if len(shown) > 5 else "")
+    if total == 1 and not missing:
+        caption = f"Контур участка {listed} · границы ЕГРН"
+    else:
+        caption = f"Территория из {total} участков: {listed} · границы ЕГРН"
+    if missing:
+        names = ", ".join(missing[:5]) + (f" и ещё {len(missing) - 5}" if len(missing) > 5 else "")
+        caption += (f" · контур нарисован для {len(found)} из {total}: "
+                    f"у участков {names} нет границ в источнике (НСПД)")
+    return caption + " · " + _MAP_BASEMAP_CAPTION[basemap]
 
 
 def _telegram_territory_photo(chat_id: int, numbers: list[str]) -> bool:
@@ -15898,12 +15982,25 @@ class _PdfSection:
         self.name = name
 
 
-def _pdf_screening_numbers(inputs: dict[str, Any]) -> list[str]:
-    """Кадастровые номера проекта для раздела реализуемости посадки."""
+def _project_cadastral_numbers(inputs: dict[str, Any]) -> list[str]:
+    """Все кадастровые номера проекта — из снимка поиска участка во вводных,
+    а нет его — из поля `cadastral_numbers`. Без обрезки: территория КРТ из
+    двадцати участков — двадцать номеров, и тизер, таблица и карта читают
+    этот список целиком."""
     snapshot = inputs.get("_land_lookup") or {}
     raw = _land_text(snapshot.get("query")) or _land_text(inputs.get("cadastral_numbers"))
-    numbers = [n for n in re.split(r"[\s,;]+", raw) if n]
-    return [n for n in numbers if re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n)][:10]
+    numbers: list[str] = []
+    for n in re.split(r"[\s,;]+", raw):
+        if n and re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n) and n not in numbers:
+            numbers.append(n)
+    return numbers
+
+
+def _pdf_screening_numbers(inputs: dict[str, Any]) -> list[str]:
+    """Кадастровые номера для раздела реализуемости посадки полного PDF:
+    первые десять из `_project_cadastral_numbers` — скрининг участка стоит
+    десятки запросов к НСПД. Тизер эту обрезку не наследует."""
+    return _project_cadastral_numbers(inputs)[:10]
 
 
 def _pdf_ordered_story(story: list[Any], order: list[tuple[str, bool]],
@@ -16602,14 +16699,24 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                  if any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
     total=tep_report.get('total') or {}
     given = sum(float(row.get('transfer') or 0) for row in rows_data)
+    # Итог количества — разбор по мере счёта, а не сумма: квартиры,
+    # машино-места и места детского сада складывались в число, не значащее
+    # ничего. Строка продукта тоже называет свою меру: «250 шт.» у ДОО читалось
+    # как штуки, а это места.
+    def _count(row):
+        measure = tep_count_measure(row.get('key'))
+        return (_pdf_num(row.get('units'), 0) + ' ' + measure) if measure else '—'
+    _counts = ' · '.join(f"{_pdf_num(value, 0)} {measure}"
+                         for measure, value in (total.get('units_by_measure') or {}).items()
+                         if value) or '—'
     # Свой паркинг отдельно стоящего объекта — продукт, и в ТЭП он стоит
     # подстрокой с местами, как на экране: полем на строке объекта его в
     # печати не было вовсе. Метры гаража названы в подписи — в колонке ГНС
-    # они читались бы наземными.
+    # они читались бы наземными. В итог эти места входят через разбор по мере
+    # счёта: там они в графе «м/м», отдельно складывать их нечего.
     def _park_label(row):
         under=float(row.get('parking_under_units') or 0)
         over=float(row.get('parking_over_units') or 0)
-        units=float(row.get('parking_units') or 0)
         sold=float(row.get('parking_saleable_units') or 0)
         where=[]
         if under: where.append("подземных "+_pdf_num(under,0)
@@ -16620,18 +16727,19 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         tail=("продаётся "+_pdf_num(sold,0)+(", гостевых "+_pdf_num(guest,0) if guest else "")
               if sold else "не продаются — обеспечивают посетителей")
         return "   в т.ч. паркинг объекта, мест: "+"; ".join(where+[tail])
-    park_units_total=float(total.get('parking_units') or 0)
+    def _park_count(row):
+        return _pdf_num(row.get('parking_units'), 0) + ' ' + COUNT_PARKING
     if given > 0:
         tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²",
                    f"{TRANSFER_WORD}, м²","Кол-во"]]
         for row in rows_data:
             tep_rows.append([row.get('label') or row.get('key') or '—',
                              _pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),
-                             _pdf_num(row.get('transfer'),0),_pdf_num(row.get('units'),0)])
+                             _pdf_num(row.get('transfer'),0),_count(row)])
             if float(row.get('parking_units') or 0):
-                tep_rows.append([_park_label(row),"—","—","—",_pdf_num(row.get('parking_units'),0)])
+                tep_rows.append([_park_label(row),"—","—","—",_park_count(row)])
         tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),
-                         _pdf_num(given,0),_pdf_num(float(total.get('units') or 0)+park_units_total,0)])
+                         _pdf_num(given,0),_counts])
         story.append(table(tep_rows,[58*mm,30*mm,32*mm,35*mm,15*mm]))
         story.append(P("Переданные метры строятся, но не продаются: в продаваемой "
                        f"площади их нет. {TRANSFER_RECIPIENT_NOTE.capitalize()}.",
@@ -16639,10 +16747,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     else:
         tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²","Кол-во"]]
         for row in rows_data:
-            tep_rows.append([row.get('label') or row.get('key') or '—',_pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),_pdf_num(row.get('units'),0)])
+            tep_rows.append([row.get('label') or row.get('key') or '—',_pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),_count(row)])
             if float(row.get('parking_units') or 0):
-                tep_rows.append([_park_label(row),"—","—",_pdf_num(row.get('parking_units'),0)])
-        tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_pdf_num(float(total.get('units') or 0)+park_units_total,0)])
+                tep_rows.append([_park_label(row),"—","—",_park_count(row)])
+        tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_counts])
         story.append(table(tep_rows,[75*mm,32*mm,38*mm,25*mm]))
 
     # Очередность меняет проект целиком — сроки, инфляцию затрат, стартовые цены
@@ -16919,6 +17027,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     story.append(_PdfSection("income"));story.append(P("Продажи и продукты",h2))
     product_rows=[["Продукт","Объём","Темп до РВЭ","Стартовая цена","Средняя цена","Выручка"]]
     for item in products:
+        # Непродаваемое в таблицу ПРОДАЖ не идёт: соцобъект стоял тут строкой
+        # с объёмом «350 м²» и выручкой ноль, хотя 350 — это места. Его метры
+        # и мощность названы в таблице ТЭП, где у них своя мера.
+        if item.get('sellable') is False: continue
         quantity=float(item.get('quantity') or 0);revenue=float(item.get('revenue') or 0)
         built=float(item.get('built_units') or 0)
         # Паркинг объекта с местами, которые не продаются (ТЦ, ФОК), — тоже
@@ -19291,6 +19403,109 @@ def project_above_gns(tep: dict[str, Any]) -> float:
 _UNDERGROUND_TEP_KEYS = frozenset(UNDERGROUND_PRODUCTS)
 
 
+# Чем СЧИТАЕТСЯ продукт. Квартира, машино-место, место в детском саду и
+# посещение поликлиники в смену — четыре разные величины, и сумма у них не
+# значит ничего: «конечно это не надо суммировать» (владелец, 27.09.2026).
+#
+# Пока меры не было, свод складывал все штуки подряд — 2 811 на умолчаниях, —
+# и это число не только печаталось итогом на странице, в книге, в отчёте и в
+# тизере. Его ДЕЛИЛИ: обеспеченность парковкой считалась от него и выходила
+# 28,98 вместо 12,36, а строка тизера «Машино-места» печатала 2 811 м/м при
+# 1 199 настоящих. Документ для банка утверждал число, которого в проекте нет.
+#
+# Объявлено ОДИН раз и читается всеми поверхностями. Продукт без меры —
+# ошибка объявления, а не «штуки по умолчанию»: проверка требует меру у
+# каждой строки ТЭП, поэтому новый продукт заставляет решить, в чём он.
+# Сами слова объявлены в `presentation` — модуле ниже всех, кто их печатает.
+# Вторая их копия здесь разошлась бы с книгой и тизером молча.
+COUNT_FLATS = _presentation.FLATS_MEASURE
+COUNT_PARKING = _presentation.PARKING_MEASURE
+COUNT_PLACES = _presentation.PLACES_MEASURE
+COUNT_VISITS = _presentation.VISITS_MEASURE
+COUNT_PIECES = _presentation.PIECES_MEASURE
+# Метровый продукт штуками не считается вовсе — у него нет меры счёта, и это
+# не пробел: «сколько штук у офисного центра» вопрос без смысла.
+COUNT_BY_AREA = _presentation.AREA_MEASURE
+
+TEP_COUNT_MEASURE: dict[str, str] = {
+    "apartments": COUNT_FLATS,
+    "ground_commercial": COUNT_BY_AREA,
+    "offices": COUNT_BY_AREA,
+    "standalone_retail": COUNT_BY_AREA,
+    "sports": COUNT_BY_AREA,
+    "underground_parking": COUNT_PARKING,
+    "above_parking": COUNT_PARKING,
+    "storage": COUNT_PIECES,
+    "kindergarten": COUNT_PLACES,
+    "school": COUNT_PLACES,
+    "clinic": COUNT_VISITS,
+    "other_mandatory": COUNT_PIECES,
+}
+# Второй объект того же рода считается как его продукт: второй офисник —
+# метрами, второй наземный паркинг — машино-местами. Из реестра, чтобы
+# следующий объект не ушёл в «шт.» последнего прибежища.
+for _obj in STANDALONE_OBJECTS:
+    TEP_COUNT_MEASURE.setdefault(_obj.key, TEP_COUNT_MEASURE[_obj.product])
+
+
+def tep_count_measure(key: str) -> str:
+    """Мера счёта строки ТЭП. Незнакомый продукт — «шт.» и жалоба проверке.
+
+    Возврат «шт.» здесь не умолчание, а последнее прибежище: складывать
+    незнакомое с известным нельзя, но и терять его в своде тоже нельзя.
+    Настоящее место решения — `TEP_COUNT_MEASURE`, и проверка следит, чтобы
+    новый продукт туда попал.
+    """
+    return TEP_COUNT_MEASURE.get(str(key or ""), COUNT_PIECES)
+
+
+def tep_units_by_measure(rows: "list[dict[str, Any]]", field: str = "units",
+                         garage_field: str = "parking_units") -> dict[str, float]:
+    """Штуки свода, разложенные по мере счёта.
+
+    Ответ на «сколько всего единиц» — не число, а разбор: 1 362 квартиры,
+    1 199 машино-мест, 250 мест ДОО. Складывать их в 2 811 нельзя, а потерять
+    нельзя тем более.
+
+    Гараж объекта (`parking_units`) — тоже машино-места, и он попадает в ту же
+    меру: иначе «сколько машино-мест в проекте» отвечалось бы без гаража
+    офисника, который в проекте есть.
+    """
+    out: dict[str, float] = {}
+    for row in rows:
+        value = n(row, field)
+        if value:
+            measure = tep_count_measure(row.get("key"))
+            if measure:
+                out[measure] = out.get(measure, 0.0) + value
+        garage = n(row, garage_field) if garage_field else 0.0
+        if garage:
+            out[COUNT_PARKING] = out.get(COUNT_PARKING, 0.0) + garage
+    return out
+
+
+def tep_parking_spaces(rows: "list[dict[str, Any]]", field: str = "units",
+                       garage_field: str = "parking_units") -> float:
+    """Машино-места проекта — и подземные, и наземные, и гаражи объектов.
+
+    Отдельной функцией, потому что спрашивают именно её: обеспеченность,
+    строка тизера и книга. Чтение меры из общего разбора — чтобы «что считать
+    машино-местом» отвечалось один раз.
+    """
+    return tep_units_by_measure(rows, field, garage_field).get(COUNT_PARKING, 0.0)
+
+
+# Поля свода ТЭП, которые СКЛАДЫВАЮТСЯ построчно. Список объявлен один раз:
+# две его копии стояли в одиночном и очередном расчёте и однажды разошлись бы.
+# Штук здесь нет намеренно — они группируются мерой, а не складываются.
+TEP_SUMMABLE_FIELDS: tuple[str, ...] = (
+    "gns", "total_area", "useful", "saleable", "transfer",
+    "guest_units", "transfer_units", "under_gns",
+    "parking_units", "parking_saleable_units",
+    "parking_under_units", "parking_over_units", "parking_guest_units",
+)
+
+
 MANAGEMENT_PROFILE_ARTICLES: tuple[str, ...] = (
     "ird", "design_p", "design_rd", "author_supervision", "preparation",
     "main_above", "main_under", "utilities", "landscaping", "site_maintenance",
@@ -20815,7 +21030,7 @@ def _v4_dashboard_extra_products() -> tuple[tuple[str, ...], ...]:
 
     Та же форма, что у продуктов шаблона в `v4_dashboard.PRODUCT_ITEMS`:
     ключ, подпись, ГНС наземная, подземная, продаваемая, единицы, выручка,
-    стартовая цена, темп, мера продажи. Подземная — гараж объекта из его
+    стартовая цена, темп, чем ценится, в чём считается. Подземная — гараж объекта из его
     строки структуры продукта ОТЧЁТа; объект без своей строки сидит в строке
     двойника, и его гараж уже там — второй раз его не пишем.
     Колонки строки ТЭП объявлены одним местом (`_v4_object_tep_cells`), и
@@ -20831,9 +21046,11 @@ def _v4_dashboard_extra_products() -> tuple[tuple[str, ...], ...]:
         gns = cell("C") if lay.obj.measure != "spaces" else ""
         under = (f"'ОТЧЕТ'!G{lay.report_row}"
                  if lay.report_row and lay.obj.garage else "")
-        sold_by = v4_dashboard.BY_PIECE if lay.obj.measure == "spaces" else v4_dashboard.BY_AREA
+        # Чем объект ценится и в чём считаются его штуки — как у двойника:
+        # второй офисник меряет места гаража машино-местами, как первый.
+        twin = next(item for item in v4_dashboard.PRODUCT_ITEMS if item[0] == lay.twin)
         out.append((lay.obj.key, lay.obj.group_label or lay.obj.label, gns, under, cell("D"),
-                    cell("E"), cell("G"), cell("F"), "", sold_by))
+                    cell("E"), cell("G"), cell("F"), "", twin[-2], twin[-1]))
     return tuple(out)
 
 
@@ -22369,6 +22586,11 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
     report = consolidated.get("report") or {}
     vri_totals = (consolidated.get("vri") or {}).get("totals") or {}
     tep_total = (consolidated.get("tep") or {}).get("total") or {}
+    # Машино-места проекта считаются один раз и одним правилом: подземные,
+    # наземные и гаражи объектов. Выражение, повторённое трижды внутри
+    # словаря, читалось бы хуже и однажды разошлось бы само с собой.
+    _parking_required = float((consolidated.get("parking") or {}).get("required_total") or 0.0)
+    _parking_built = tep_parking_spaces((consolidated.get("tep") or {}).get("rows") or [])
     apartment_sales = report.get("apartment_sales") or {}
     apartments = next((p for p in (report.get("products") or [])
                        if str(p.get("key")) == "apartments"), {})
@@ -22422,13 +22644,17 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
             "full_project_cost_mln": float(summary.get("full_project_cost") or 0.0) / 1e6,
             "commercial_mln": float(summary.get("commercial_costs") or 0.0) / 1e6,
         },
+        # Построенные МАШИНО-МЕСТА, а не все штуки проекта. Здесь стоял общий
+        # итог штук, и в обеспеченность парковкой шли квартиры и места
+        # детского сада: 2 811 вместо 1 199 на умолчаниях, обеспеченность
+        # 28,98 вместо 12,36. Мера счёта у продуктов разная, и складывать их
+        # было нечем — «конечно это не надо суммировать» (владелец,
+        # 27.09.2026).
         "parking": {
             "required_total": float((consolidated.get("parking") or {}).get("required_total") or 0.0),
-            "built_units": float(tep_total.get("units") or 0.0),
-            "provision": ((float(tep_total.get("units") or 0.0)
-                           / float((consolidated.get("parking") or {}).get("required_total") or 0.0))
-                          if float((consolidated.get("parking") or {}).get("required_total") or 0.0) > 0
-                          else None),
+            "built_units": _parking_built,
+            "provision": (_parking_built / _parking_required
+                          if _parking_required > 0 else None),
         },
         "land": {
             "purchase_per_saleable_th": (
@@ -28945,10 +29171,10 @@ def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
 
 
 def _teaser_site(payload: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
-    """Участок для тизера — оттуда же, откуда полный PDF берёт номера для
-    раздела реализуемости (`_pdf_screening_numbers`: снимок поиска участка во
-    вводных), а нет их там — из груза страницы (`cadastral_numbers` / `cads`)."""
-    numbers = _pdf_screening_numbers(inputs)
+    """Участок для тизера — все номера проекта (`_project_cadastral_numbers`:
+    снимок поиска участка во вводных; без десятки, которой ограничен
+    скрининг полного PDF), а нет их там — из груза страницы (`cadastral_numbers` / `cads`)."""
+    numbers = _project_cadastral_numbers(inputs)
     if not numbers:
         raw = payload.get("cadastral_numbers") or payload.get("cads") or []
         if isinstance(raw, str):
@@ -32716,14 +32942,13 @@ def calculate(req: CalcRequest) -> dict:
             "parking_guest_units": n(row, "parking_guest_units"),
         })
 
-    tep_total = {
-        key: sum(row[key] for row in tep_rows)
-        for key in ("gns", "total_area", "useful", "saleable", "transfer", "units",
-                    "guest_units", "transfer_units", "saleable_units",
-                    "under_gns", "parking_units", "parking_saleable_units",
-                    "parking_under_units", "parking_over_units",
-                    "parking_guest_units")
-    }
+    # Свод складывает только складываемое. Штук в списке нет: они
+    # группируются мерой счёта, потому что квартира, машино-место и место в
+    # детском саду — разные величины.
+    tep_total = {key: sum(row[key] for row in tep_rows) for key in TEP_SUMMABLE_FIELDS}
+    tep_total["units_by_measure"] = tep_units_by_measure(tep_rows)
+    tep_total["saleable_units_by_measure"] = tep_units_by_measure(
+        tep_rows, "saleable_units", "parking_saleable_units")
 
     total_revenue = fin["total_revenue"]
     total_capex = fin["total_capex"]
@@ -33182,6 +33407,9 @@ def calculate(req: CalcRequest) -> dict:
             "key": key,
             "label": spec["label"],
             "unit": spec["unit"],
+            # Продукт продаж: у него есть цена и график. Признак стоит у
+            # ОБЕИХ половин списка — «нет ключа» читалось бы как «не знаем».
+            "sellable": True,
             "quantity": quantity,
             "gns": float(tep_row.get("gns", 0.0) or 0.0),
             "saleable": float(tep_row.get("saleable", 0.0) or 0.0),
@@ -33204,19 +33432,36 @@ def calculate(req: CalcRequest) -> dict:
             **_product_schedule_fields(op.get("object_schedule_notes", {}), key),
         })
 
+    # Остаточные строки ТЭП — продукт, заведённый позже и не попавший в список
+    # продаваемых. Он обязан остаться видимым, а не исчезнуть молча, но
+    # ПРОДУКТОМ ПРОДАЖ он от этого не становится.
+    #
+    # Единица здесь стояла литералом «м²», а количество бралось из штук: у
+    # ДОО выходило «350 м²», у СОШ «1 000 м²», у поликлиники «79 м²» — это
+    # места, места и посещения в смену, подписанные метрами, в таблице
+    # продаж, с выручкой ноль. «Почему школа, поликлиника и СОШ в метрах
+    # квадратных стоят» (владелец, 27.09.2026). Единица клетки — единица
+    # ЭТОГО числа, а не соседнего, и берётся она у объявленной меры счёта.
     reported = {item["key"] for item in products_report}
     for key, tep_row in t.items():
         if key in reported or not any(float(tep_row.get(field, 0.0) or 0.0)
                                       for field in ("gns", "total_area", "units")):
             continue
+        measure = tep_count_measure(key)
+        metres = float(tep_row.get("saleable", 0.0) or 0.0)
         products_report.append({
-            "key": key, "label": tep_row.get("label") or key, "unit": "м²",
-            "quantity": float(tep_row.get("units", 0.0) or 0.0),
+            "key": key, "label": tep_row.get("label") or key,
+            "unit": measure or "м²",
+            "quantity": (float(tep_row.get("units", 0.0) or 0.0) if measure else metres),
             "gns": float(tep_row.get("gns", 0.0) or tep_row.get("total_area", 0.0) or 0.0),
-            "saleable": float(tep_row.get("saleable", 0.0) or 0.0),
+            "saleable": metres,
             "revenue": 0.0, "cost": 0.0, "margin": None,
             "start_price_th": 0.0, "avg_price_th": 0.0, "pace_pre": 0.0,
             "share_before_rve": 0.0, "sales_start": None, "sales_end": None,
+            # Признак объявлен, а не выводится из нулевой выручки: продукт,
+            # который в этом расчёте ничего не продал, — не то же самое, что
+            # продукт, который не продаётся по построению.
+            "sellable": False,
         })
 
     # Calendar / Gantt, mirroring the conceptual structure of the Excel Calendar sheet.
@@ -35105,14 +35350,13 @@ def _consolidate_phase_results(
                           "parking_over_units", "parking_guest_units"):
                 target[field] += float(row.get(field, 0.0) or 0.0)
     tep_rows = list(tep_map.values())
-    tep_total = {
-        field: sum(row[field] for row in tep_rows)
-        for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
-                      "guest_units", "transfer_units", "saleable_units",
-                      "under_gns", "parking_units",
-                      "parking_saleable_units", "parking_under_units",
-                      "parking_over_units", "parking_guest_units")
-    }
+    # Тот же список полей, что у одиночного расчёта, и та же группировка
+    # штук: две копии однажды разошлись бы, и своды очередного и одиночного
+    # проектов считались бы по-разному.
+    tep_total = {field: sum(row[field] for row in tep_rows) for field in TEP_SUMMABLE_FIELDS}
+    tep_total["units_by_measure"] = tep_units_by_measure(tep_rows)
+    tep_total["saleable_units_by_measure"] = tep_units_by_measure(
+        tep_rows, "saleable_units", "parking_saleable_units")
 
     revenue = _sum_dicts([r["revenue"] for r in results])
     capex = _sum_dicts([r["capex"] for r in results])
@@ -35270,6 +35514,11 @@ def _consolidate_phase_results(
         for item in result["report"]["products"]:
             p = product_map.setdefault(item["key"], {
                 "key": item["key"], "label": item["label"], "unit": item["unit"],
+                # Признак продаваемости переносится на свод как есть: без
+                # него таблица очередей снова показала бы соцобъект строкой
+                # продаж — она собирается из ЭТОГО списка, а не из
+                # одноочередного.
+                "sellable": bool(item.get("sellable", True)),
                 "quantity": 0.0, "gns": 0.0, "saleable": 0.0,
                 "revenue": 0.0, "cost": 0.0, "margin": None,
                 "start_price_th": item["start_price_th"],
@@ -35334,6 +35583,7 @@ def _consolidate_phase_results(
             "key": key,
             "label": total_item["label"],
             "unit": total_item["unit"],
+            "sellable": total_item["sellable"],
             "quantity": total_item["quantity"],
             "revenue": total_item["revenue"],
             "avg_price_th": total_item["avg_price_th"],
@@ -51197,6 +51447,43 @@ function socialAreaPerPlace(kind,places){
 const MKD_PRODUCTS=__DEVELOPAID_MKD_PRODUCTS__;
 // Строки ТЭП без наземной площади: гараж и кладовые лежат под землёй.
 const UNDERGROUND_PRODUCTS=__DEVELOPAID_UNDERGROUND_PRODUCTS__;
+// Чем считается продукт — из движка. Квартира, машино-место, место в саду и
+// посещение в смену несравнимы, и складывать их вместе нельзя; копия этого
+// списка на странице разошлась бы с движком молча.
+const TEP_COUNT_MEASURE=__DEVELOPAID_TEP_COUNT_MEASURE__;
+const COUNT_PARKING=__DEVELOPAID_COUNT_PARKING__;
+function countMeasure(key){
+ const measure=TEP_COUNT_MEASURE[key];
+ return measure===undefined?'шт.':measure;
+}
+// Число со своей мерой. Метровому продукту штук не полагается вовсе — у него
+// их нет, и печатать «0 шт.» значило бы отвечать на вопрос, которого нет.
+function countWithMeasure(key,value){
+ const measure=countMeasure(key);
+ if(!measure)return '<span style="color:#bbb">—</span>';
+ return num(value)+' '+measure;
+}
+// Итог штук — РАЗБОР, а не сумма: «конечно это не надо суммировать»
+// (владелец, 27.09.2026). Гараж объекта идёт в машино-места: иначе ответ на
+// «сколько мест в проекте» терял бы гараж офисника.
+function countsByMeasure(rows,field,garageField){
+ const out=new Map();
+ (rows||[]).forEach(row=>{
+  const value=Number(row[field]||0);
+  const measure=countMeasure(row.key);
+  if(value&&measure)out.set(measure,(out.get(measure)||0)+value);
+  const garage=garageField?Number(row[garageField]||0):0;
+  if(garage)out.set(COUNT_PARKING,(out.get(COUNT_PARKING)||0)+garage);
+ });
+ return out;
+}
+function countsCell(rows,field,garageField){
+ const parts=[];
+ countsByMeasure(rows,field,garageField).forEach((value,measure)=>{
+  if(value)parts.push(num(value)+' '+measure);
+ });
+ return parts.length?parts.join('<br>'):'<span style="color:#bbb">—</span>';
+}
 // Разделы таблицы ТЭП — из движка. Третий раздел объявлен пустым списком и
 // собирает всё, что не попало в первые два: продукт, заведённый позже, обязан
 // остаться в таблице, а не исчезнуть из неё молча.
@@ -53226,7 +53513,14 @@ function renderResult(){
   row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment))+
   row('Проектирование П и РД',money((r.capex.design_p||0)+(r.capex.design_rd||0)))+
   row('Продаваемая площадь',num(r.summary.monetizable_saleable_sqm)+' м²')+
-  row('Средняя цена квартир',th(r.summary.average_apartment_price_th))+
+  // Удельный показатель подписывается тем делителем, на который число
+  // делится: это выручка квартир ÷ ПРОДАВАЕМАЯ ПЛОЩАДЬ квартир, то есть
+  // тыс. ₽ за метр. Единицы не было вовсе, и «916,6 тыс. ₽» читались как цена
+  // квартиры — тем более что строкой ниже, в блоке продаж квартир, стоит
+  // «Средняя цена квартиры» в рублях ЗА КВАРТИРУ, и два названия отличались
+  // одной буквой. Соседние строки этого же блока подписаны «/м² прод.» —
+  // теперь и эта.
+  row('Средняя цена м² квартир',th(r.summary.average_apartment_price_th)+'/м² прод.')+
   // Каждый удельный — в обеих базах: одна без второй читается как другая.
   row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.full_cost_per_gns_th)+'/м² ГНС')+
   row('Строительная себестоимость',th(r.summary.construction_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.construction_cost_per_gns_th)+'/м² строит. объёма МКД')+
@@ -53547,11 +53841,19 @@ function renderResult(){
   row('Проценты и комиссии',money(r.report.financing.interest_and_fees))+
   row('LLCR',mult(r.summary.llcr));
 
+ // Признак приходит из движка и читается как есть: выводить «продаётся ли»
+ // из нулевой выручки значило бы путать «не продал в этом расчёте» с «не
+ // продаётся по построению».
+ const sellable=p=>p.sellable!==false;
  if(phaseBundle&&phaseBundle.mode==='phased'&&reportView==='all'&&Array.isArray(r.report.phase_products)){
    const phaseNames=(phaseBundle.phases||[]).map(x=>x.name);
    const productTotals=Object.fromEntries((r.report.products||[]).map(x=>[x.key,x]));
    salesReportHead.innerHTML=`<tr><th>Продукт</th><th>ГНС, м²</th><th>Продаваемая, м²</th>${phaseNames.map(n=>`<th>${n}: объём</th>`).join('')}<th>Средняя цена</th><th>Выручка</th><th>Себестоимость</th><th>Маржа</th></tr>`;
-   salesReportTable.innerHTML=(r.report.phase_products||[]).map(p=>{
+   // Соцобъект не продаётся по построению: в таблице ПРОДАЖ ему не место.
+   // Он стоял тут строкой с объёмом «350 м²» и выручкой ноль — мощность,
+   // подписанная чужой единицей. Метры и мощность его видны в таблице ТЭП,
+   // где у них свои колонки и своя мера.
+   salesReportTable.innerHTML=(r.report.phase_products||[]).filter(sellable).map(p=>{
      const by=Object.fromEntries((p.phases||[]).map(x=>[x.phase,x]));
      const total=productTotals[p.key]||{};
      return `<tr><td>${p.label}</td><td>${num(total.gns||0)}</td><td>${num(total.saleable||0)}</td>`+
@@ -53577,7 +53879,7 @@ function renderResult(){
    // без подписи читалось бы как «мест нет».
    const builtSub=p=>p.built_units==null?'':sub('построено '+num(p.built_units)+' мест'
     +(Number(p.quantity||0)>0?'':' · не продаются — обеспечивают посетителей'));
-   salesReportTable.innerHTML=(r.report.products||[]).map(p=>`<tr>
+   salesReportTable.innerHTML=(r.report.products||[]).filter(sellable).map(p=>`<tr>
     <td>${p.label}${schedSub(p)}${builtSub(p)}</td>
     <td>${num(p.gns||0)}</td>
     <td>${num(p.saleable||0)}</td>
@@ -53657,7 +53959,11 @@ function renderResult(){
    ? `<span style="display:block;font-size:10px;color:#777">из них ${parts.join(' · ')}</span>`
    : '';
  };
- const soldTotal=r.tep.rows.reduce((sum,x)=>sum+soldUnits(x),0);
+ // Итога штук одним числом больше нет: квартиры, машино-места и места ДОО
+ // складывались в 2 811 «штук», не значащих ничего. Ответ — разбор по мере.
+ const builtCounts=countsCell(r.tep.rows,'units','parking_units');
+ const soldCounts=countsCell(r.tep.rows.map(x=>Object.assign({},x,{_sold:soldUnits(x)})),
+  '_sold','parking_saleable_units');
  // ГНС — наземная площадь здания, и у гаража с кладовыми её нет: под землёй
  // наружных стен не бывает, а экономика у подземной части своя — свой метр
  // стройки и продукт, продаваемый местами. Пока обе величины стояли в одной
@@ -53706,18 +54012,18 @@ function renderResult(){
    +`<td>${num(sold)}${small(sold?'':'места обеспечивают посетителей, не продаются')}</td></tr>`;
  };
  reportTep.innerHTML=
-  `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Передаётся, м²</th><th>Построено, шт.</th><th>Продаётся, шт.</th></tr></thead>`+
+  `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Передаётся, м²</th><th>Построено</th><th>Продаётся</th></tr></thead>`+
   `<tbody>`+
   r.tep.rows.map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0&&!objParkUnits(x)?num(objUnder(x)):dash)}</td>`
    +`<td>${num(x.saleable)}</td><td>${num(x.transfer)}</td>`
-   +`<td>${num(x.units)}${unitNote(x)}</td><td>${num(soldUnits(x))}</td></tr>`
+   +`<td>${countWithMeasure(x.key,x.units)}${unitNote(x)}</td>`
+   +`<td>${countWithMeasure(x.key,soldUnits(x))}</td></tr>`
    +objParkRow(x)).join('')+
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}</th><th>${num(transferTotal)}</th>`
-  +`<th>${num(Number(r.tep.total.units||0)+Number(r.tep.total.parking_units||0))}</th>`
-  +`<th>${num(soldTotal+Number(r.tep.total.parking_saleable_units||0))}</th></tr></tfoot>`;
+   +`<th>${builtCounts}</th><th>${soldCounts}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
   ? `Строительный объём — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная: на нём считаются общие статьи (ИРД, проектирование, подготовка, сети, благоустройство, сдача, содержание). Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
@@ -55738,6 +56044,12 @@ PAGE = PAGE.replace("__DEVELOPAID_STORAGE_AREA_PER_UNIT__",
                     json.dumps(STORAGE_AREA_PER_UNIT_DEFAULT))
 PAGE = PAGE.replace("__DEVELOPAID_UNDERGROUND_PRODUCTS__",
                     json.dumps(list(UNDERGROUND_PRODUCTS), ensure_ascii=False))
+# Мера счёта продукта — из движка: страница, книга, отчёт и тизер обязаны
+# называть одно и то же одним словом.
+PAGE = PAGE.replace("__DEVELOPAID_TEP_COUNT_MEASURE__",
+                    json.dumps(TEP_COUNT_MEASURE, ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_COUNT_PARKING__",
+                    json.dumps(COUNT_PARKING, ensure_ascii=False))
 # Разделы таблицы ТЭП — оттуда же, где объявлены составы: два списка и
 # остаточный третий раздел. Копии на странице нет по той же причине, что и у
 # состава МКД.
