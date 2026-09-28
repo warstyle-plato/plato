@@ -54,15 +54,22 @@ def _tep() -> dict[str, dict[str, float]]:
     return tep
 
 
+def _norm_guest() -> int:
+    """Гостевые — требование нормы к квартирам фикстуры, а не число строки."""
+    return int(core.underground_parking_requirement(_inputs(), _tep())["guest"])
+
+
 def test_the_row_of_the_result_carries_both_numbers() -> None:
     """Строка ТЭП несёт построенные, гостевые, переданные и продаваемые."""
     got = core.calculate(core.CalcRequest(
         inputs=_inputs(), tep=_tep(), rates=[]))
     row = next(r for r in got["tep"]["rows"] if r["key"] == "underground_parking")
     assert row["units"] == 400
-    assert row["guest_units"] == 40
+    guest = _norm_guest()
+    assert 0 < guest < 400 - 25
+    assert row["guest_units"] == guest
     assert row["transfer_units"] == 25
-    assert row["saleable_units"] == 335
+    assert row["saleable_units"] == 400 - guest - 25
     assert got["tep"]["total"]["saleable_units"] < got["tep"]["total"]["units"]
 
 
@@ -89,9 +96,10 @@ def test_the_book_names_the_guest_and_the_given_places() -> None:
     # Значение переехало на лист ввода, на прежней координате — ссылка на него.
     # Спрашивать надо величину, а не лист.
     book = openpyxl.load_workbook(io.BytesIO(content))
-    assert float(v4_inputs.value(book, "AB88")) == 335, \
+    guest = _norm_guest()
+    assert float(v4_inputs.value(book, "AB88")) == 400 - guest - 25, \
         "в продажи идут только непереданные негостевые"
-    assert float(ws["AN88"].value) == 40
+    assert float(ws["AN88"].value) == guest
     assert float(ws["AO88"].value) == 25
     # Обещание книги про место правки приведено к правде: колонки «База
     # гостевых мест» в блоке очередей нет и не было.

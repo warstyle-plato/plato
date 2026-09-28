@@ -56,18 +56,15 @@ def test_guest_spaces_come_from_the_norm_in_every_branch(manual):
     assert core.underground_saleable_spaces(row) == 62
 
 
-def test_a_garage_set_by_hand_keeps_its_own_guest_spaces():
-    """Гараж человека не нормин: гостевые строки сохраняются, но не больше мест."""
+@pytest.mark.parametrize("spaces", [69, 300])
+def test_a_garage_set_by_hand_takes_guest_spaces_from_the_norm_too(spaces):
+    """Число строки не переживает ручной гараж: гостевые — требование нормы."""
     inputs, tep = _project()
-    inputs.update(underground_manual_spaces=300, _parking_by_hand=["underground"])
-    tep["underground_parking"]["guest_units"] = 40
+    inputs.update(underground_manual_spaces=spaces, _parking_by_hand=["underground"])
     core.apply_underground_tep_row(inputs, tep)
-    assert core.underground_guest_spaces(tep["underground_parking"]) == 40
-
-    inputs, tep = _project()
-    inputs.update(underground_manual_spaces=69, _parking_by_hand=["underground"])
-    core.apply_underground_tep_row(inputs, tep)
-    assert core.underground_guest_spaces(tep["underground_parking"]) == 69
+    row = tep["underground_parking"]
+    assert core.underground_guest_spaces(row) == 7
+    assert core.underground_saleable_spaces(row) == spaces - 7
 
 
 def test_guest_spaces_never_exceed_built_spaces():

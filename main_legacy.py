@@ -10484,24 +10484,6 @@ def underground_parking_requirement(inputs: dict[str, Any],
             "gns": spaces * per}
 
 
-def _underground_pair_by_norm(inputs: dict[str, Any], need: dict[str, Any],
-                              spaces: float, area: float) -> bool:
-    """Пара «места / площадь» подземного паркинга поставлена нормой?
-
-    Ответ страницы (`fillUndergroundFromTep`): пометки `_parking_by_hand` /
-    `_parking_by_norm` под ключом `underground`, а у проекта без пометок —
-    сравнение с нормой на тех же вводных: пара, равная ей до места, — её.
-    """
-    key = "underground"
-    if key in set(inputs.get("_parking_by_hand") or ()):
-        return False
-    if key in set(inputs.get("_parking_by_norm") or ()):
-        return True
-    want_spaces = round(float(need.get("spaces") or 0))
-    want_area = round(float(need.get("gns") or 0))
-    return (round(spaces) == want_spaces) or (spaces <= 0 and round(area) == want_area)
-
-
 def underground_tep_row(inputs: dict[str, Any],
                         tep: dict[str, dict[str, Any]]) -> dict[str, float] | None:
     """Строка ТЭП подземного паркинга — производная, и ответ у неё ОДИН.
@@ -10548,13 +10530,15 @@ def underground_tep_row(inputs: dict[str, Any],
         spaces = manual_spaces if manual_spaces > 0 else (
             round(manual_area / per) if per > 0 else 0.0)
         area = manual_area if manual_area > 0 else spaces * per
-        # Страница кладёт норму в эти же поля, и пара, поставленная нормой,
-        # несёт гостевые нормы, а не число строки: иначе в ней оставалось
-        # число выгрузки, и проект на 69 местах (62 + 7 по 2118-ПП) нёс 109
-        # гостевых из ТЭП ГлавАПУ — не продавал ни одного места. Гараж,
-        # заданный человеком, гостевые своей строки сохраняет.
+        # Гостевые — требование нормы к квартирам проекта, а не свойство
+        # гаража: поле мест говорит, сколько построено, но не сколько из них
+        # гостевых. Число строки здесь не ответ — оно приезжает из умолчаний
+        # шаблона (109 из 1 199 мест) или прежнего ТЭП и с проектом не связано:
+        # на 69 местах (62 + 7 по 2118-ПП) строка несла 109 гостевых, и не
+        # продавалось ни одного места. Страница к тому же кладёт норму в эти
+        # же поля, так что «руками» здесь и норма тоже.
         need = underground_parking_requirement(inputs, tep)
-        if need and _underground_pair_by_norm(inputs, need, manual_spaces, manual_area):
+        if need:
             guest = float(min(need["guest"], spaces))
     else:
         need = underground_parking_requirement(inputs, tep)
@@ -24229,6 +24213,10 @@ def build_project_workbook(
         missing.append(
             "ТЭП движка: книга пишет присланный — строка, приведённая расчётом "
             "к вводным (площадь гаража, выгрузка ГлавАПУ, соцобъект), до неё не дошла")
+        # Строку гаража выводит одна функция, и без ответа движка книга зовёт
+        # её сама: иначе она продавала бы места за вычетом гостевых присланной
+        # строки (109 из умолчаний шаблона), а движок — за вычетом нормы.
+        apply_underground_tep_row({**DEFAULT_INPUTS, **(inputs or {})}, tep)
 
     # Сетка книги конечна, а горизонт движка — нет. Не влезло — это `missing`
     # числами, а не молчание: обрезанная книга выглядит целой, и половина её

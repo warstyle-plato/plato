@@ -52,7 +52,7 @@ def test_the_revenue_drops_by_the_transferred_places() -> None:
     tep = _tep()
     # Гараж фикстуры — решение проекта, и выражается оно ручными полями: иначе
     # движок выведет строку нормативом (1 199 мест на умолчаниях), и доля
-    # 335/360 будет считаться от чужого знаменателя.
+    # переданных будет считаться от чужого знаменателя.
     inputs = {**core.DEFAULT_INPUTS, "parking_price_th": 3000, "storage_price_th": 1000,
               "underground_manual_spaces": 400, "underground_manual_gns_sqm": 14000}
     before = core.calculate(core.CalcRequest(inputs=dict(inputs), tep=copy.deepcopy(tep), rates=[]))
@@ -62,12 +62,16 @@ def test_the_revenue_drops_by_the_transferred_places() -> None:
     parking_before = before["revenue"]["underground_parking"]
     parking_after = after["revenue"]["underground_parking"]
     assert parking_after < parking_before
-    # 25 мест из 360 продаваемых — доля выручки паркинга совпадает до процента.
-    assert abs(parking_after / parking_before - 335 / 360) < 0.01
+    # Гостевые — требование нормы к квартирам (на умолчаниях не 40 строки),
+    # поэтому продаваемые берутся строкой результата, а не числом фикстуры.
+    sold = next(r for r in before["tep"]["rows"] if r["key"] == "underground_parking")
+    sold = sold["saleable_units"]
+    # 25 мест из продаваемых — доля выручки паркинга совпадает до процента.
+    assert abs(parking_after / parking_before - (sold - 25) / sold) < 0.01
     assert abs(after["summary"]["capex"] - before["summary"]["capex"]) < 1.0
     row = next(r for r in after["tep"]["rows"] if r["key"] == "underground_parking")
     assert row["units"] == 400 and row["transfer_units"] == 25
-    assert row["saleable_units"] == 335
+    assert row["saleable_units"] == sold - 25
 
 
 def test_a_queue_gets_its_own_share_of_guest_and_given_places() -> None:
