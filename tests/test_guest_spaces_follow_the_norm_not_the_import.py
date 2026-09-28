@@ -43,6 +43,8 @@ def _project():
     {"underground_manual_gns_sqm": 2760},
     {"underground_manual_spaces": 69},
     {"underground_manual_spaces": 69, "underground_manual_gns_sqm": 2760},
+    {"underground_manual_spaces": 69, "underground_manual_gns_sqm": 2760,
+     "_parking_by_norm": ["underground"]},
 ])
 def test_guest_spaces_come_from_the_norm_in_every_branch(manual):
     inputs, tep = _project()
@@ -52,6 +54,20 @@ def test_guest_spaces_come_from_the_norm_in_every_branch(manual):
     assert row["units"] == 69
     assert core.underground_guest_spaces(row) == 7
     assert core.underground_saleable_spaces(row) == 62
+
+
+def test_a_garage_set_by_hand_keeps_its_own_guest_spaces():
+    """Гараж человека не нормин: гостевые строки сохраняются, но не больше мест."""
+    inputs, tep = _project()
+    inputs.update(underground_manual_spaces=300, _parking_by_hand=["underground"])
+    tep["underground_parking"]["guest_units"] = 40
+    core.apply_underground_tep_row(inputs, tep)
+    assert core.underground_guest_spaces(tep["underground_parking"]) == 40
+
+    inputs, tep = _project()
+    inputs.update(underground_manual_spaces=69, _parking_by_hand=["underground"])
+    core.apply_underground_tep_row(inputs, tep)
+    assert core.underground_guest_spaces(tep["underground_parking"]) == 69
 
 
 def test_guest_spaces_never_exceed_built_spaces():
@@ -64,7 +80,7 @@ def test_underground_parking_earns_revenue_when_the_page_stored_the_norm():
     inputs.update(underground_manual_spaces=69, underground_manual_gns_sqm=2760,
                   parking_price_th=20000)
     result = core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))
-    row = next(r for r in result["tep"] if r["key"] == "underground_parking")
+    row = next(r for r in result["tep"]["rows"] if r["key"] == "underground_parking")
     assert row["guest_units"] == 7
     assert row["saleable_units"] == 62
     assert result["revenue"]["underground_parking"] > 62 * 20_000_000 * 0.99
