@@ -33725,6 +33725,7 @@ def calculate(req: CalcRequest) -> dict:
             "core_under_gns": op["core_under_gns"],
         },
         "revenue": {"total": total_revenue, **op["revenue_by_product"]},
+        "revenue_structure": revenue_structure({"total": total_revenue, **op["revenue_by_product"]}),
         # land_rights_gross и land_rights_relief — справочные величины платы
         # до льготы: в total их нет, а таблица расходов на странице рисует все
         # ключи подряд — и показывала их сырыми именами. Валовая плата и льгота
@@ -35812,6 +35813,7 @@ def _consolidate_phase_results(
             "core_under_gns": sum(r["tep"]["core_under_gns"] for r in results),
         },
         "revenue": revenue,
+        "revenue_structure": revenue_structure({**revenue, "total": total_revenue}),
         "capex": capex,
         "commercial_costs": commercial_costs,
         "finance": finance,
@@ -36823,6 +36825,50 @@ _PHASE_DEBT_CARRY_MIN_LLCR = 1.0
 _PHASE_DEBT_CARRY_MIN_RUB = 500_000.0
 
 
+def product_groups(keys: Any) -> tuple[list[str], list[str]]:
+    """Продукты по группам и в порядке чтения: МКД из `MKD_PRODUCTS`, затем
+    отдельно стоящие объекты в порядке реестра `STANDALONE_OBJECTS`, и паркинг
+    каждого объекта — сразу за своим объектом (`OBJECT_PARKING_PRODUCT_KEYS`),
+    а не по имени. Продукт вне обоих списков идёт в ОСЗ следом, а не теряется.
+
+    Один ответ для всех таблиц выручки: сравнения очередей и «Структуры
+    выручки» — прежде вторая шла в порядке словаря движка, и паркинг ТЦ стоял
+    перед квартирами, а офисы — посреди кладовых (владелец, 28.09.2026).
+    """
+    present = [str(k) for k in keys]
+    have = set(present)
+    mkd = [k for k in MKD_PRODUCTS if k in have]
+    obj = [k for o in STANDALONE_OBJECTS
+           for k in (o.key, OBJECT_PARKING_PRODUCT_KEYS.get(o.key, ""))
+           if k and k in have]
+    osz = obj + [k for k in present if k not in MKD_PRODUCTS and k not in obj]
+    return mkd, osz
+
+
+def revenue_structure(revenue: dict[str, Any]) -> dict[str, Any]:
+    """«Структура выручки» — строки, которые печатает страница.
+
+    Нулевой продукт — шум, а не полнота: семь строк «0 млрд ₽» между
+    настоящими разрывали таблицу. Итог группы заводится, когда в ней больше
+    одного продукта: «Итого МКД» под единственной строкой квартир — та же
+    строка дважды. Последняя строка — «Итого» всей выручки.
+    """
+    labels = product_labels()
+    values = {str(k): float(v or 0.0) for k, v in (revenue or {}).items() if k != "total"}
+    mkd, osz = product_groups(values)
+    rows: list[dict[str, Any]] = []
+    for keys, label, group in ((mkd, "Итого МКД", "mkd"), (osz, "Итого ОСЗ", "osz")):
+        mine = [k for k in keys if abs(values[k]) > 0.5]
+        rows += [{"key": k, "label": labels.get(k, k), "value": values[k],
+                  "role": "part", "group": group} for k in mine]
+        if len(mine) > 1:
+            rows.append({"label": label, "value": sum(values[k] for k in mine),
+                         "role": "total", "group": group})
+    total = float((revenue or {}).get("total") or sum(values.values()))
+    rows.append({"label": "Итого", "value": total, "role": "total", "group": "all"})
+    return {"rows": rows}
+
+
 def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
     """Таблица «Сравнение очередей» — одна на страницу и PDF.
 
@@ -36870,11 +36916,9 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
     # строкой сразу за объектом (владелец, 27.09.2026): ключ продукта берётся
     # из реестра (`OBJECT_PARKING_PRODUCT_KEYS`), а не угадывается по имени.
     # Продукт вне обоих списков идёт в ОСЗ следом, а не теряется.
-    obj_block = [k for o in STANDALONE_OBJECTS
-                 for k in (o.key, OBJECT_PARKING_PRODUCT_KEYS.get(o.key, ""))
-                 if k and k in by_key]
-    mkd = [k for k in MKD_PRODUCTS if k in by_key]
-    osz = obj_block + [k for k in order if k not in MKD_PRODUCTS and k not in obj_block]
+    mkd, osz = product_groups(order)
+    obj_block = [k for k in osz if k in {o.key for o in STANDALONE_OBJECTS}
+                 or k in OBJECT_PARKING_PRODUCT_KEYS.values()]
 
     # Объём к продаже — то количество, на которое движок продаёт; строка
     # заводится вместе с числом.
@@ -44594,6 +44638,8 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-report-nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 16px}
 .phase-report-nav .btn.active{background:#111;color:#fff;border-color:#111}
 .phase-comparison-card{display:none}
+#revenueTable tr.rs-part td:first-child{padding-left:18px;color:#555}
+#revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
 .phase-comparison-card tr.pc-block th{text-align:left;padding:16px 0 5px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#111;border-bottom:2px solid #111}
 .phase-comparison-card tr.pc-part td:first-child,.phase-comparison-card tr.pc-sub td:first-child{padding-left:22px;color:#777}
 .phase-comparison-card tr.pc-total td{font-weight:750;color:#111;border-top:1.5px solid #111}
@@ -54246,9 +54292,18 @@ function renderResult(){
   // рынком, ни с себестоимостью.
   const rGns=Number(r.summary.project_gns_sqm||0),rSaleable=Number(r.summary.monetizable_saleable_sqm||0);
   const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
-  revenueTable.innerHTML=Object.entries(r.revenue).filter(([key])=>key!=='total')
-   .map(([key,v])=>`<tr><td>${productName(key)}</td><td>${money(v)}</td><td>${perTh(v,rGns)}</td><td>${perTh(v,rSaleable)}</td></tr>`).join('')
-   +`<tr><th>Итого</th><th>${money(r.revenue.total)}</th><th>${perTh(r.revenue.total,rGns)}</th><th>${perTh(r.revenue.total,rSaleable)}</th></tr>`;
+  // Состав, порядок и итоги групп решает движок (`revenue_structure`):
+  // МКД → Итого МКД → объекты, каждый со своим паркингом → Итого ОСЗ →
+  // Итого; нулевых продуктов нет. Прежде строки шли в порядке словаря.
+  // Результат без раскладки (сохранён до неё) печатается прежним списком,
+  // а не пустой таблицей: пустота читалась бы как «выручки нет».
+  const rs=(r.revenue_structure||{}).rows
+   ||[...Object.entries(r.revenue||{}).filter(([k])=>k!=='total').map(([k,v])=>({label:productName(k),value:v,role:'part',group:''})),
+      {label:'Итого',value:(r.revenue||{}).total,role:'total',group:'all'}];
+  revenueTable.innerHTML=rs.map(x=>{
+   const c=x.group==='all'?'th':'td',cls=x.role==='total'?(x.group==='all'?'':' class="rs-total"'):' class="rs-part"';
+   return `<tr${cls} data-group="${x.group}" data-role="${x.role}"><${c}>${escapeHtml(x.label)}</${c}><${c}>${money(x.value)}</${c}><${c}>${perTh(x.value,rGns)}</${c}><${c}>${perTh(x.value,rSaleable)}</${c}></tr>`;
+  }).join('');
  }
  // Имена статей приходят из движка плейсхолдером, как VERSION и доли ТЭП.
  const capNames=__DEVELOPAID_CAPEX_NAMES__;
