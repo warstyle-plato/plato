@@ -149,6 +149,8 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         page_const("INPUT_DEFAULT"),
         page_const("num"),
         page_const("VRI_GROUP_NAME"),
+        # Сводка группы вторых объектов считается из реестра — он раньше неё.
+        page_blocks.object_roster(),
         PAGE[PAGE.index("const GROUP_PEEK={"):PAGE.index("function groupPeek(")],
         page_function("groupPeek"),
         page_function("refreshGroupPeeks"),
@@ -177,9 +179,7 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         page_function("renderInputs"),
         # Форма пишет подпись под полями паркинга объектов сама: ячейки она же
         # и создаёт, а пустая ячейка под нулём читается как «гаража нет».
-        # Приставки объектов с гаражом считаются из реестра, а он приезжает
-        # на страницу подстановкой: одной строки мало, нужен её источник.
-        page_blocks.object_roster(),
+        # Приставки объектов с гаражом считаются из реестра (он взят выше).
         page_function("renderObjectParkingFieldNotes"),
         page_function("objectParkingFieldNote"),
         # Та же история у подписи под ставкой благоустройства: ячейку создаёт

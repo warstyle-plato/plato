@@ -55,6 +55,18 @@ def _inputs() -> dict:
         sports_disposition="sale", sports_parking_under_spaces=SPACES,
         above_parking_enabled=True, above_parking_spaces=GROUND_SPACES,
     )
+    # Вторые объекты — той же формой, что их продукт: «все объекты» здесь это
+    # весь реестр, а не четыре, перечисленные выше.
+    for obj in core.STANDALONE_OBJECTS:
+        if not obj.family:
+            continue
+        x[obj.enabled_key] = True
+        if obj.measure == "spaces":
+            x[f"{obj.prefix}_spaces"] = GROUND_SPACES
+        else:
+            x[f"{obj.prefix}_gba_sqm"], x[f"{obj.prefix}_saleable_sqm"] = 20000.0, 12000.0
+        if obj.garage:
+            x[f"{obj.prefix}_parking_under_spaces"] = SPACES
     return x
 
 
@@ -63,6 +75,9 @@ def _tep() -> dict:
     t["offices"].update(gns=40000, total_area=37600, saleable=24000)
     t["standalone_retail"].update(gns=30000, total_area=28200, saleable=18000)
     t["sports"].update(gns=20000, total_area=18800, saleable=12000)
+    for obj in core.STANDALONE_OBJECTS:
+        if obj.family and obj.measure == "sqm":
+            t[obj.key].update(gns=20000, total_area=18800, saleable=12000)
     return t
 
 
