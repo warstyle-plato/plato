@@ -244,10 +244,15 @@ def test_the_page_keeps_the_saved_housing(drawn) -> None:
     assert drawn["kept"] == LEFT_SPACES
 
 
-def test_the_book_counts_what_the_engine_counts() -> None:
+@pytest.mark.parametrize("phasing", PHASINGS)
+def test_the_book_counts_what_the_engine_counts(phasing) -> None:
     """Методика в движке и книге одна: книга v4 на проекте с остатком сходится
     с движком по всем строкам паритета, а плата за ВРИ и соцкомпенсация во
-    вводные книги не идут."""
+    вводные книги не идут.
+
+    Строки налога, чистой прибыли и LLCR падали и без остатка: у проекта без
+    квартир общий пул расходов делился на ноль проданных штук, и IFERROR книги
+    не вычитал его вовсе (`_v4_apply_core_pool_without_sales`)."""
     import io
 
     import openpyxl
@@ -258,8 +263,10 @@ def test_the_book_counts_what_the_engine_counts() -> None:
     x, t = _vavilov()
     x["land_rights_cost_mln"] = 1200.0
     x["social_compensation_mln"] = 300.0
+    bundle = core._run_authoritative_model(copy.deepcopy(x), copy.deepcopy(t), [], phasing)
     content, _, meta = core.build_project_workbook(
-        copy.deepcopy(x), copy.deepcopy(t), [], {}, project_name="Вавилов")
+        copy.deepcopy(x), copy.deepcopy(t), [], bundle.get("phasing") or phasing,
+        project_name="Вавилов")
     assert meta["missing"] == [], meta["missing"]
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     evaluator = Evaluator(book)
@@ -272,7 +279,7 @@ def test_the_book_counts_what_the_engine_counts() -> None:
     clean_x, clean_t = _vavilov()
     clean_t["underground_parking"].update(units=0, gns=0, total_area=0)
     clean_x.update(underground_manual_spaces=0, underground_manual_gns_sqm=0)
-    clean = _run(clean_x, clean_t)["summary"]
+    clean = _run(clean_x, clean_t, phasing)["summary"]
     revenue_row = next(r for r in range(76, 85)
                        if "ыручк" in str(book["ПРОВЕРКИ"][f"A{r}"].value or ""))
     assert float(book["ПРОВЕРКИ"][f"C{revenue_row}"].value) == pytest.approx(

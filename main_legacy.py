@@ -21434,6 +21434,55 @@ def _v4_apply_extra_objects_tax_row(xml: str, phase: int, missing: list[str]) ->
     return xml
 
 
+def _v4_apply_core_pool_without_sales(xml: str, phase: int, missing: list[str]) -> str:
+    """Общий пул расходов очереди без проданных штук признаётся в РВЭ — как в движке.
+
+    Строка налоговой базы делит пул (все расходы очереди минус CAPEX
+    объектов) на проданные квартиры, коммерцию, паркинг и кладовые. У проекта
+    без них — нежилого, офисника — делитель ноль, IFERROR отдавал 0, и пул не
+    вычитался НИ В ОДНОМ месяце. Движок (`core_cost and not
+    core_quantity_total`) вычитает его целиком в месяц РВЭ. На проекте
+    владельца «Вавилов» (офисы 19 110 м²) это 1 819,65 млн ₽ мимо базы:
+    налог книги 763,9 млн против 308,6 у движка, и паритет налога, чистой
+    прибыли и LLCR падал.
+
+    Правится только запасная ветка IFERROR, и после прохода дописанных
+    объектов: пул к этому моменту уже несёт возвращённую стоимость ФОКа.
+    """
+    head = f"IFERROR((SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${96 + 8 * (phase - 1)}"
+
+    def build(column: str, body: str) -> str:
+        at = body.find(head)
+        if at < 0:
+            return body
+        # Пул — первая скобка внутри IFERROR; запасная ветка — «,0)» в конце
+        # вызова. Скобки считаются, а не ищутся строкой: внутри пула стоят
+        # вложенные IF дописанных объектов.
+        start = at + len("IFERROR(")
+        depth, pool_end, call_end = 0, -1, -1
+        for index in range(start, len(body)):
+            char = body[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and pool_end < 0:
+                    pool_end = index + 1
+                if depth < 0:
+                    call_end = index
+                    break
+        if pool_end < 0 or call_end < 0 or body[call_end - 2:call_end] != ",0":
+            return body
+        pool = body[start:pool_end]
+        in_rve = f"{_v4_month_offset(column, '$B$8')}=0"
+        return (body[:call_end - 1] + f"IF({in_rve},{pool},0)" + body[call_end:])
+
+    xml, count = _v4_rewrite_row_formulas(xml, 22, head, build)
+    if count < 100:
+        missing.append(f"CF_{phase}: строка налоговой базы не признаёт пул без продаж ({count})")
+    return xml
+
+
 _V4_ACCRUAL_ROW = 58                 # Финансовые расходы месяца (начисление)
 
 
@@ -24901,7 +24950,7 @@ def build_project_workbook(
         # «правка не сработала»: D21 в книге с правкой, а число прежнее.
         cf_sheet_xml[_name] = _v4_apply_vat_base(
             _v4_apply_interest_accrual(
-                _v4_apply_extra_objects_tax_row(
+                _v4_apply_core_pool_without_sales(_v4_apply_extra_objects_tax_row(
                     _v4_use_bridge_base_row(
                         _v4_apply_cash_sweep(
                             _v4_apply_pf_ceiling(
@@ -24913,6 +24962,7 @@ def build_project_workbook(
                                 _phase, missing),
                             _phase, missing),
                         _phase, missing),
+                    _phase, missing),
                     _phase, missing),
                 _phase, missing),
             _phase, missing)
