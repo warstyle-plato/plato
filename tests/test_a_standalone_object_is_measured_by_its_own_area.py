@@ -130,7 +130,7 @@ def test_the_row_columns_stay_project_wide_and_say_so() -> None:
     gns = sum(core._number_or_zero(one["value"]) for one in rows)
     assert row["per_gns_th"] > 0 and gns > 0
     assert row["items_note"], "база строки и база подстрок не разведены словами"
-    assert "на весь проект" in row["items_note"]
+    assert "ВСЕГО проекта" in row["items_note"]
 
 
 def test_the_queues_sum_the_object_with_its_own_area() -> None:
@@ -147,10 +147,19 @@ def test_the_queues_sum_the_object_with_its_own_area() -> None:
     # Объект строится ОДИН раз, в своей очереди: сложение по очередям не имеет
     # права удвоить его метры — иначе ставка на свой метр упала бы вдвое.
     assert office["gns_sqm"] == pytest.approx(OFFICE_GBA), "метры объекта посчитаны дважды"
+    # Гараж на своде стоит своей строкой, как в очереди: сложенный со зданием
+    # и делённый на наземную ГНС, он давал «ставку здания» 316 при вводной 200.
+    assert office["garage_value"] > 0, "гараж на своде потерялся"
+    assert office["value"] == pytest.approx(
+        office["building_value"] + office["garage_value"])
     assert office["per_own_gns_th"] == pytest.approx(
-        office["value"] / office["gns_sqm"] / 1000), "ставка считана не на свою базу"
-    assert OFFICE_RATE_TH <= office["per_own_gns_th"] < OFFICE_RATE_TH * 2, (
+        office["building_value"] / office["gns_sqm"] / 1000), "ставка считана не на свою базу"
+    assert OFFICE_RATE_TH <= office["per_own_gns_th"] < OFFICE_RATE_TH * 1.5, (
         "ставка на свою ГНС ушла от вводной дальше, чем на инфляцию стройки")
+    single = _item(_standalone(_structure()), "offices")
+    assert office["garage_per_gns_th"] == pytest.approx(
+        single["garage_per_gns_th"], rel=0.5), "гараж на своде мерится не своим метром"
+    assert [line["basis"] for line in office["lines"]] == ["свой м²", "м² подземной"]
     parking = _item(row, "above_parking")
     assert parking["per_unit_mln"] == pytest.approx(
         parking["value"] / parking["units"] / 1_000_000)
@@ -174,12 +183,16 @@ def test_the_page_draws_the_sub_rows_with_the_engine_numbers() -> None:
         "label": "Отдельные объекты", "value": 4.55e9, "share": 0.22,
         "per_gns_th": 22.8, "per_saleable_th": 45.6,
         "items_note": "подпись про базы",
+        # Строки подстрок собирает движок — стенд берёт их у него же, а не
+        # пишет руками: рисунок обязан сходиться с тем, что движок отдаёт.
         "items": [
-            {"key": "offices", "label": "Офисы / МФОЦ", "value": 2.0e9,
-             "basis": "area", "basis_label": "10 000 м² ГНС объекта",
-             "per_own_gns_th": 200.0, "per_own_saleable_th": 333.3},
-            {"key": "above_parking", "label": "Наземный паркинг", "value": 0.55e9,
-             "basis": "units", "basis_label": "550 мест", "per_unit_mln": 1.0},
+            core.standalone_expense_item_rates(
+                {"key": "offices", "label": "Офисы / МФОЦ", "value": 2.0e9,
+                 "basis": "area", "building_value": 2.0e9, "garage_value": 0.0,
+                 "gns_sqm": 10_000.0, "saleable_sqm": 6_000.0}),
+            core.standalone_expense_item_rates(
+                {"key": "above_parking", "label": "Наземный паркинг", "value": 0.55e9,
+                 "basis": "units", "units": 550.0}),
         ],
     }]
     program = (
@@ -198,7 +211,7 @@ def test_the_page_draws_the_sub_rows_with_the_engine_numbers() -> None:
     done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)
     assert done.returncode == 0, done.stderr[:800]
     html = done.stdout
-    assert "в т.ч. Офисы / МФОЦ · 10 000 м² ГНС объекта" in html, (
+    assert "в т.ч. Офисы / МФОЦ — здание · 10\u00a0000 м² ГНС здания" in html, (
         "подстрока объекта со своей базой не нарисована")
     assert "200" in html, "ставка на свою ГНС не доехала до экрана"
     assert "1 млн ₽/место" in html, "паркинг нарисован не в местах"
@@ -220,4 +233,4 @@ def test_the_print_carries_the_same_sub_rows() -> None:
     assert "в т.ч. Офисы / МФОЦ" in text, "подстрока объекта не доехала до печати"
     assert "в т.ч. Наземный паркинг · 550 мест" in text, (
         "паркинг в печати мерится не местами")
-    assert "на весь проект" in text, "подпись о базах не напечатана"
+    assert "ВСЕГО" in text, "подпись о базах не напечатана"
