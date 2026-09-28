@@ -46,6 +46,7 @@ from auction_search.adapters.etp_probe import (
 from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
+from auction_search.adapters import source_page
 from auction_search.adapters.roseltorg_probe import (
     CATALOGUE_URL as ROSELTORG_SECTION_URL,
     probe as roseltorg_probe,
@@ -4957,6 +4958,16 @@ def install(app: FastAPI) -> None:
         """
         return await run_in_threadpool(
             lambda: roseltorg_probe(seconds=float(seconds), url=url.strip()))
+
+    @app.get("/auctions/source-page")
+    async def auction_source_page(url: str = Query(default="")) -> dict[str, Any]:
+        """Страница площадки целиком — образец для разбора даты торгов.
+
+        Проба Росэлторга отдаёт голову текста, а разбор пишется по всей
+        карточке. Только официальные хосты площадок, без разбора; из песочницы
+        эти площадки закрыты, поэтому образец снимается здесь, на ядре.
+        """
+        return await run_in_threadpool(lambda: source_page.fetch(url))
 
     @app.get("/auctions/roseltorg/browser")
     async def auction_roseltorg_browser(
