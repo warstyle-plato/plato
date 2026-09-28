@@ -870,9 +870,12 @@ def build_krt_model_screening(
     # DevelopAid приезжал чужой участок — с офисами 10 000 м² и площадью
     # прошлого проекта («в девелоп он передаёт какой-то другой участок и явно
     # не 14 га», владелец, 02.09.2026). Площадь территории — из каталога.
+    from developaid_v2_form import territory_reset_value
     for key in _territory_keys(core):
         if key in inputs:
-            inputs[key] = 0.0 if not isinstance(inputs[key], bool) else False
+            # Чем сбрасывать — ответ один на страницу, 2.0 и КРТ: у К1, К2 и
+            # расстояния это пусто (считаются сами), у признаков — ложь.
+            inputs[key] = territory_reset_value(core, key, inputs[key])
     area_ha = _number(project.get("area_ha"))
     if area_ha > 0:
         inputs["site_area_ha"] = area_ha
