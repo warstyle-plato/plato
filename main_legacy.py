@@ -53440,36 +53440,7 @@ function syncTep(rerender=true){
  // городу, — а продаётся только по признаку. Переданные метры уходят в
  // «передаётся»: они строятся, но не продаются, как у соцобъекта. Половиной
  // объект не делится: «всё или так, или так» (владелец, 05.09.2026).
- STANDALONE_OBJECTS.forEach(o=>{
-  const row=tep[o.key];if(!row)return;
-  const p=o.prefix,flag=p+'_enabled';
-  if(o.measure==='spaces'){
-   row.units=inputs[flag]?Number(inputs[p+'_spaces']||0):0;
-   row.gns=row.units*Number(inputs[p+'_area_per_space_sqm']||25);row.total_area=row.gns;
-   return;
-  }
-  const gbaId=p+'_gba_sqm',saleId=p+'_saleable_sqm';
-  if(!inputs[flag]){row.gns=0;row.total_area=0;row.saleable=0;row.useful=0;
-   if(o.sale_gate)row.transfer=0;return}
-  const sold=!o.sale_gate||String(inputs[o.sale_gate]||'transfer')==='sale';
-  const key=o.key;
-  const filled=tepFillByRatios(key,{gns:Number(inputs[gbaId]||0),total_area:0,
-   saleable:sold?Number(inputs[saleId]||0):0,useful:0});
-  row.gns=filled.gns;row.total_area=filled.total_area;
-  if(o.sale_gate){
-   row.saleable=sold?filled.saleable:0;row.useful=row.saleable;
-   row.transfer=sold?0:row.total_area;
-   applyObjectParkingShare(key);
-  }else{
-   row.saleable=filled.saleable;row.useful=filled.useful;
-   applyObjectParkingShare(key);
-   // Известна только продаваемая — ГНС считается и возвращается во вводные:
-   // себестоимость объекта берётся оттуда, и с нулём она была бы нулевой при
-   // живой выручке. Число видно в поле, а не подставлено втихую.
-   if(!Number(inputs[gbaId]||0)&&filled.gns>0){inputs[gbaId]=filled.gns;inputsFilled=true}
-  }
-  if(sold&&!Number(inputs[saleId]||0)&&filled.saleable>0){inputs[saleId]=filled.saleable;inputsFilled=true}
- });
+ if(syncStandaloneTepRows())inputsFilled=true;
  // Соцобъект: места, площадь и ГНС. Прежде строка получала только общую
  // площадь и места, а `gns` не трогалась вовсе — поля «ГНС ДОУ» во вводных нет.
  // Импорт ГлавАПУ при этом писал в неё СПП из выгрузки, и один и тот же садик
@@ -53543,6 +53514,48 @@ function syncTep(rerender=true){
  if(rerender||!editingTep)renderTep();else updateTepTotals();
  return inputsFilled;
 }
+
+// Строки отдельно стоящих объектов из их вводных. Отдельной функцией — её
+// зовёт и расчёт очередей: свод назад в строки не пишется, а остаток ГНС
+// после мест первых этажей строке объекта нужен. Весь `syncTep` там звать
+// нельзя: он дописывает вводные (норма паркинга, соцнормативы) мимо полей
+// формы, и следующий расчёт возвращал бы прежнее — страница и PDF считали
+// бы по разным вводным.
+function syncStandaloneTepRows(){
+ let inputsFilled=false;
+ STANDALONE_OBJECTS.forEach(o=>{
+  const row=tep[o.key];if(!row)return;
+  const p=o.prefix,flag=p+'_enabled';
+  if(o.measure==='spaces'){
+   row.units=inputs[flag]?Number(inputs[p+'_spaces']||0):0;
+   row.gns=row.units*Number(inputs[p+'_area_per_space_sqm']||25);row.total_area=row.gns;
+   return;
+  }
+  const gbaId=p+'_gba_sqm',saleId=p+'_saleable_sqm';
+  if(!inputs[flag]){row.gns=0;row.total_area=0;row.saleable=0;row.useful=0;
+   if(o.sale_gate)row.transfer=0;return}
+  const sold=!o.sale_gate||String(inputs[o.sale_gate]||'transfer')==='sale';
+  const key=o.key;
+  const filled=tepFillByRatios(key,{gns:Number(inputs[gbaId]||0),total_area:0,
+   saleable:sold?Number(inputs[saleId]||0):0,useful:0});
+  row.gns=filled.gns;row.total_area=filled.total_area;
+  if(o.sale_gate){
+   row.saleable=sold?filled.saleable:0;row.useful=row.saleable;
+   row.transfer=sold?0:row.total_area;
+   applyObjectParkingShare(key);
+  }else{
+   row.saleable=filled.saleable;row.useful=filled.useful;
+   applyObjectParkingShare(key);
+   // Известна только продаваемая — ГНС считается и возвращается во вводные:
+   // себестоимость объекта берётся оттуда, и с нулём она была бы нулевой при
+   // живой выручке. Число видно в поле, а не подставлено втихую.
+   if(!Number(inputs[gbaId]||0)&&filled.gns>0){inputs[gbaId]=filled.gns;inputsFilled=true}
+  }
+  if(sold&&!Number(inputs[saleId]||0)&&filled.saleable>0){inputs[saleId]=filled.saleable;inputsFilled=true}
+ });
+ return inputsFilled;
+}
+
 function addMonthsJS(iso,months){
  const d=new Date(iso+'T12:00:00');
  const day=d.getDate();
@@ -53786,7 +53799,7 @@ async function calculate(){
    phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
    // Свод назад в строки не пишется, а места первых этажей строке объекта
    // нужны: пересобираем её из вводных с остатком ГНС из свода.
-   syncTep(false);
+   syncStandaloneTepRows();
  }else{
    const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
