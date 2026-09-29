@@ -1409,7 +1409,8 @@ def build_krt_model_screening(
     if isinstance(buyout_source, dict) and buyout_source.get("kind") == "krt_contour":
         exclusions.append(
             f"Выкуп ЗУ/ОКС у третьих лиц: {_ru_number(inputs.get('land_buyout_mln'), 1)} млн ₽ — "
-            f"{buyout_source.get('by')}. Своя статья CAPEX до РнС, цену входа не нагружает."
+            f"{buyout_source.get('by')}. Строка стоимости сделки рядом с ценой права, "
+            "платится графиком покупки."
             + (f" Внимание: {buyout_source['warn']}." if buyout_source.get("warn") else ""))
     if not demolition_from_contour and duties["demolition_area_sqm"] > 0:
         exclusions.append(

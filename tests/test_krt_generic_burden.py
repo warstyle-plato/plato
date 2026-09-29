@@ -40,8 +40,8 @@ class FakeCore:
             float(inputs.get("demolition_area_sqm") or 0)
             * float(inputs.get("demolition_cost_th_per_sqm") or 0) / 1000.0
         )
-        # Выкуп — своя статья CAPEX (`land_buyout_mln`), цена входа им не
-        # нагружается (решение владельца, 29.09.2026).
+        # Выкуп — своя строка стоимости сделки (`land_buyout_mln`), цена
+        # права им не нагружается (решение владельца, 29.09.2026).
         self.calls = [*getattr(self, "calls", []), dict(inputs)]
         burden = (
             float(inputs.get("purchase_price_mln") or 0)

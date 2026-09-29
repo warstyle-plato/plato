@@ -860,9 +860,10 @@ def generic_project_burden(
     cadastral_mln = float(buyout.get("amount_mln") or 0.0)
 
     rated_inputs = copy.deepcopy(inputs)
-    # Выкуп — своя статья CAPEX до РнС (решение владельца, 29.09.2026), а не
-    # цена входа: ёмкость входа теперь и есть цена права КРТ, без вычета.
-    # Вписанное руками в вводную сильнее кадастровой оценки.
+    # Выкуп — своя строка стоимости сделки (`land_buyout_mln`, решение
+    # владельца 29.09.2026), а не часть цены права: подбирается только цена
+    # права, и ёмкость входа — она сама, без вычета. Вписанное руками в
+    # вводную сильнее кадастровой оценки.
     manual_buyout = _manual_buyout_mln(inputs)
     if manual_buyout is not None:
         cadastral_mln = manual_buyout
@@ -1081,7 +1082,7 @@ def nagatino_live_example(core: Any) -> dict[str, Any]:
     inputs, tep, phasing = _merge_model(core, preview)
 
     # The KRT right itself is zero in the baseline.  Cadastral buyout is its
-    # own CAPEX article before the permit (owner decision 29.09.2026), so the
+    # own line of the deal cost (owner decision 29.09.2026), so the
     # goal-sought entry price IS the capacity for the KRT right.
     cadastral_mln = float(stack["cadastral_buyout_mln"])
     inputs["land_buyout_mln"] = cadastral_mln
@@ -1091,7 +1092,7 @@ def nagatino_live_example(core: Any) -> dict[str, Any]:
         "source": "59 выписок ЕГРН + извещение торгов + пресет DevelopAid",
         "cost_stack": stack,
         "method_note": (
-            "Кадастровый выкуп — своя статья CAPEX до РнС, не цена входа. "
+            "Кадастровый выкуп — своя строка стоимости сделки, не цена права. "
             "Цена самого права КРТ в базовом LLCR равна нулю."
         ),
     }
