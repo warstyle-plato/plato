@@ -164,7 +164,8 @@ def test_the_page_renders_the_field_from_the_engine_list():
 
     page = core.PAGE
     groups = json.loads(re.search(r"^const FIELD_GROUPS=(\[.*\]);$", page, re.M).group(1))
-    assert groups == json.loads(json.dumps(core.FIELD_GROUPS, ensure_ascii=False)), \
+    # Группы экземпляров объектов страница выводит из группы типа сама.
+    assert groups == json.loads(json.dumps(core.PAGE_FIELD_GROUPS, ensure_ascii=False)), \
         "список полей страницы разошёлся с движком"
     assert any(field[0] == "pre_pf_own_funds_mln" for group in groups for field in group[1])
 

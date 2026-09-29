@@ -484,8 +484,14 @@ def object_roster() -> str:
     считаются — порознь они в стенде падают на неопределённом имени, и
     падение выходит про стенд, а не про то, что он проверяет.
     """
-    return "\n".join((page_const("STANDALONE_OBJECTS"),
-                       function("discreteDefaults"),
+    # Состав проекта (`object_instances`), вкладки экземпляров и их поля стоят
+    # на странице между реестром и `discreteDefaults` и считаются из реестра —
+    # берутся одним куском с ним, а не поимённо.
+    page = core.PAGE
+    start = page.index("const STANDALONE_OBJECTS=")
+    head = page.index("function discreteDefaults(", start)
+    return "\n".join((page[start:head], function("discreteDefaults"),
+                       function("escapeHtml"),
                        page_const("OBJECT_PARKING_PREFIXES")))
 
 

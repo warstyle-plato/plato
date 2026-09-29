@@ -268,8 +268,10 @@ def test_a_group_without_its_own_fields_is_not_drawn(page_state):
     # Во «Вводных» не рисуются поля класса и поля участка (карточка «Участок
     # и плотность», владелец 27.09.2026).
     away = set(core.CLASS_ONLY_INPUTS) | set(core.SITE_ONLY_INPUTS)
+    # Экземпляр объекта своей группы не имеет: он вкладка в блоке своего типа.
     expected = {title for title, fields in core.FIELD_GROUPS
-                if any(one[0] not in away for one in fields)}
+                if any(one[0] not in away for one in fields)
+                and title not in core._INSTANCE_GROUPS}
     hidden = {title for title, fields in core.FIELD_GROUPS
               if fields and not any(one[0] not in away for one in fields)}
     # Предохранитель: без такой группы проверка не значит ничего.
