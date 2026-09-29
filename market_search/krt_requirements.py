@@ -375,7 +375,7 @@ def _facts(lines: list[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for paragraph in paired:
-        for fact in _SENTENCE.split(paragraph):
+        for fact in _split_sentences(paragraph):
             fact = _SPACE.sub(" ", fact).strip()
             if len(fact) < 5:
                 continue
@@ -409,9 +409,35 @@ def pdf_text(data: bytes) -> str:
     return text
 
 
+# Сокращения адреса и единиц, после которых точка — не конец фразы. «Предельный
+# срок реализации решения о КРТ «ул. Тверская» составляет 6 лет» резалось на
+# «…о КРТ «ул.», и в карточку вместо срока уходил обрывок.
+_ABBREVIATION = re.compile(
+    r"(?:^|[\s«(\"])(?:ул|д|дд|пер|стр|корп|к|вл|влд|пр|просп|пр-т|ш|наб|пл|б-р|туп|"
+    r"мкр|р-н|пос|г|им|кв|тыс|млн|млрд|руб|коп|п|пп|ст|ч|гл|прил|рис|табл|см|т|"
+    r"кад|№)\.$", re.I)
+
+
+def _split_sentences(flat: str) -> list[str]:
+    """Фразы решения: конец — точка перед заглавной, но не после сокращения и
+    не внутри кавычек «…» (название КРТ — одно имя, а не две фразы)."""
+    out: list[str] = []
+    start = 0
+    for match in _SENTENCE.finditer(flat):
+        head = flat[start:match.start()]
+        if _ABBREVIATION.search(head[-12:]):
+            continue
+        if head.count("«") > head.count("»"):
+            continue
+        out.append(head)
+        start = match.end()
+    out.append(flat[start:])
+    return out
+
+
 def _decision_sentences(text: str) -> list[str]:
     flat = _SPACE.sub(" ", text.replace("\u00ad", "")).strip()
-    return _facts(_SENTENCE.split(flat))
+    return _facts(_split_sentences(flat))
 
 
 def _area_before_action(window: str) -> float | None:
@@ -808,6 +834,73 @@ def _construction_parameters(text: str) -> list[str]:
     return list(dict.fromkeys(result))[:20]
 
 
+_TERM_ANCHOR = re.compile(
+    # «реше ния», «р ешения» — PDF рвёт слова; подпись узнаётся без них.
+    r"(?:(\d{1,3})\s*\.?\s*)?Предельн\w*\s+срок\w*\s+реализации\b", re.I)
+_TERM_SPAN = re.compile(
+    # «… составляет 6 лет» и «…» – 6 лет»: связка бывает и словом, и тире.
+    r"(?:составля\w*|[–—-])\s+(\d{1,3})\s*(?:\([а-яё\s-]+\)\s*)?(лет|года|год|месяц\w*)"
+    r"(?:\s+(со\s+дня\s+[^.;«]{3,90}?)(?=\s*«|\s+или\b|\s+в\s+случае\b|[.;,]|$)"
+    r"(\s*«[^»]{1,80}»)?)?",
+    re.I)
+_TERM_DATE = re.compile(r"\bдо\s+(\d{2}\.\d{2}\.\d{4}|\d{4}\s+года)", re.I)
+
+
+def decision_term(text: str) -> dict[str, Any] | None:
+    """Предельный срок реализации решения — числом, с пунктом и цитатой.
+
+    Срок — это число лет или месяцев (или дата), а не первая фраза абзаца: та
+    обрывалась на «ул.» в названии КРТ и уходила в карточку обрубком. Ищется
+    только ПОСЛЕ своей подписи «предельный срок реализации решения» и в её
+    пределах: соседний пункт — срок подготовки ДПТ — тоже «составляет N
+    месяцев», и это не срок реализации.
+    """
+    flat = _SPACE.sub(" ", (text or "").replace("\u00ad", "")).strip()
+    for anchor in _TERM_ANCHOR.finditer(flat):
+        window = flat[anchor.end():anchor.end() + 400]
+        # Следующий «предельный срок …» — уже другой пункт.
+        cut = re.search(r"Предельн\w*\s+срок", window, re.I)
+        if cut:
+            window = window[:cut.start()]
+        point = anchor.group(1) or ""
+        found = _TERM_SPAN.search(window)
+        if found:
+            value, unit, since = int(found.group(1)), found.group(2).casefold(), found.group(3)
+            unit_key = "months" if unit.startswith("месяц") else "years"
+            label = f"{value} {found.group(2)}" + (f" {_SPACE.sub(' ', since).strip()}" if since else "")
+            return {"label": label, "value": value, "unit": unit_key,
+                    "point": point,
+                    "quote": _SPACE.sub(" ", flat[anchor.start():anchor.end() + found.end()]).strip()[:400],
+                    "origin": ("проект решения, п. " + point) if point else "проект решения"}
+        dated = _TERM_DATE.search(window)
+        if dated:
+            return {"label": "до " + dated.group(1), "value": dated.group(1), "unit": "date",
+                    "point": point, "quote": _SPACE.sub(" ", flat[anchor.start():anchor.end()]
+                                                       + window[:dated.end()]).strip()[:400],
+                    "origin": ("проект решения, п. " + point) if point else "проект решения"}
+    return None
+
+
+# Как срок реализации показывается на страницах — одно правило на карточку КРТ
+# и каталог. Срок — поле `term` (число и пункт решения). Разбор прежней версии
+# `term` не несёт: из его `deadlines` показывается только то, что похоже на
+# срок, а обрывок фразы («…о КРТ «ул.») — нет. Срока нет — строка называет
+# причину и источник, а не молчит.
+TERM_PLACEHOLDER = "/*__DEVELOPAID_KRT_TERM__*/"
+TERM_SCRIPT = r"""function krtTermText(req){
+ const r=req||{},t=r.term;
+ if(t&&t.label)return t.label+(t.origin?' ('+t.origin+')':'');
+ if(!('term' in r)){
+  const legacy=(r.deadlines||[]).map(x=>String((x&&(x.quote||x.label||x.text))||x||''))
+   .filter(s=>/\d+\s*(?:\([^)]*\)\s*)?(?:лет|год|месяц)|до\s+\d{2}\.\d{2}\.\d{4}/i.test(s));
+  if(legacy.length)return legacy[0];
+ }
+ const src=(r.source_level==='official_project_decision'||r.decision_available===true)?'проект решения на mos.ru'
+  :(r.decision_available===false?'проект решения не найден на mos.ru':'решение не прочитано');
+ return 'срок в решении не найден ('+src+')';
+}"""
+
+
 def parse_decision_requirements(text: str, title: str = "") -> dict[str, Any]:
     """Extract duties explicitly present in a project-decision PDF."""
     sentences = _decision_sentences(text)
@@ -852,6 +945,9 @@ def parse_decision_requirements(text: str, title: str = "") -> dict[str, Any]:
         # больше карточного.
         "volumes": programme_volumes(construction),
         "deadlines": list(dict.fromkeys(deadlines))[:5],
+        # Срок реализации — числом и с пунктом решения. Нет его в тексте —
+        # поле пустое, а причину называет читатель (`term_reason`), не обрывок.
+        "term": decision_term(text),
         "resettlement": list(dict.fromkeys(resettlement))[:20],
         "object_actions": actions[:100],
         # Состав территории по документу — для контура из ЕГРН, когда файла
@@ -877,6 +973,7 @@ def merge_decision_requirements(
         "preservation", "resettlement", "object_actions", "deadlines", "permitted_uses",
     ):
         result[key] = list(facts.get(key) or [])
+    result["term"] = facts.get("term")
     if facts.get("renovation"):
         result["renovation"] = facts["renovation"]
     if facts.get("volumes"):

@@ -51,13 +51,36 @@ REVENUE_TAIL = [
 ]
 RATES = [f"{name} — цена м² МКД очереди" for name in (
     "ИРД и согласования", "Проектирование П+РД", "Подготовительные работы", "Наружные сети")]
-COSTS = RATES + [
-    "CAPEX",
+EXPENSE_NOTE = ("По объектам не делятся: финансирование, коммерческие расходы "
+                "и налог считаются на очередь целиком")
+COSTS_TAIL = [
+    "CAPEX всего",
     "CAPEX на м² ГНС",
     "Полные расходы",
+    EXPENSE_NOTE,
     "Полные расходы на м² продаваемой",
     "Полные расходы на м² ГНС",
 ]
+
+
+def _expected_costs(bundle: dict) -> list[str]:
+    """«Затраты» зеркалят «Выручку»: объекты — в порядке строк ОСЗ выручки,
+    выведенном из реестров напрямую, а не из проверяемой функции."""
+    labels = core.product_labels()
+    phases = bundle["phases"]
+    built = [o.key for o in core.STANDALONE_OBJECTS
+             if any(float(p["result"]["capex"].get(o.key) or 0) > 0.5 for p in phases)]
+    out = RATES + ["МКД и общепроектные статьи"]
+    for o in core.STANDALONE_OBJECTS:
+        if o.key in built:
+            out.append(labels[o.key])
+            park = core.OBJECT_PARKING_PRODUCT_KEYS.get(o.key)
+            if park and any((x.get("revenue_by_product") or {}).get(park)
+                            for x in bundle["comparison"]):
+                out.append(labels[park] + " — в CAPEX объекта")
+    if len(built) > 1:
+        out.append("Итого ОСЗ")
+    return out + COSTS_TAIL
 RESULT_TAIL = [
     "Чистая прибыль — cash",
     "Маржинальность",
@@ -133,7 +156,7 @@ def _strip_input(label: str) -> str:
     return re.sub(r" \(вводная [^)]*\)$", "", label)
 
 
-def test_the_table_reads_like_a_profit_report(rows) -> None:
+def test_the_table_reads_like_a_profit_report(rows, bundle) -> None:
     """Доходы → все расходы подряд → финансирование → прибыль, и чистая
     прибыль на м² — последняя строка таблицы (прод, телефон: «всё в кучу» —
     владелец, 28.09.2026)."""
@@ -144,7 +167,7 @@ def test_the_table_reads_like_a_profit_report(rows) -> None:
     revenue = _labels(rows, "revenue")
     assert revenue[-len(REVENUE_TAIL):] == REVENUE_TAIL, revenue
     costs = [_strip_input(x) for x in _labels(rows, "costs")]
-    assert costs == COSTS, costs
+    assert costs == _expected_costs(bundle), costs
     result = _labels(rows, "result")
     assert result[-len(RESULT_TAIL):] == RESULT_TAIL, result
     assert rows[-1]["label"] == LAST_ROW, rows[-1]["label"]
@@ -215,23 +238,44 @@ def test_object_rows_follow_the_registry(rows, bundle) -> None:
 
 
 def test_totals_are_marked_and_equal_the_sum_of_their_parts(rows) -> None:
-    totals = {r["label"]: r for r in rows if r["cls"] == "pc-total"}
-    assert {"Итого МКД", "Итого ОСЗ", "Выручка всего"} <= set(totals), list(totals)
-    for label, group in (("Итого МКД", "mkd"), ("Итого ОСЗ", "osz"),
-                         ("Выручка всего", None)):
-        total = totals[label]
-        parts = [r for r in rows if r["cls"] == "pc-part"
-                 and (group is None or r["group"] == group)]
-        assert parts, label
-        for i, value in enumerate(total["values"]):
-            assert value is not None, (label, i)
-            assert value == pytest.approx(sum(p["values"][i] for p in parts),
-                                          rel=1e-9, abs=1.0), (label, i)
-    # Итог стоит ПОСЛЕ своих слагаемых, не над ними.
-    idx = {r["label"]: i for i, r in enumerate(rows)}
-    for group, label in (("mkd", "Итого МКД"), ("osz", "Итого ОСЗ")):
-        last = max(i for i, r in enumerate(rows) if r["cls"] == "pc-part" and r["group"] == group)
-        assert idx[label] > last, label
+    """Итог равен сумме своих слагаемых в своём разделе: «Итого МКД/ОСЗ» —
+    своей группы, «Выручка всего» и «CAPEX всего» — всех слагаемых раздела.
+    Итог стоит ПОСЛЕ своих слагаемых, не над ними."""
+    checked = set()
+    for block in ("revenue", "costs"):
+        mine = [(i, r) for i, r in enumerate(rows) if r["block"] == block]
+        for i, total in mine:
+            if total["cls"] != "pc-total":
+                continue
+            everything = total["group"].endswith("all")
+            parts = [(j, p) for j, p in mine if p["cls"] == "pc-part"
+                     and (everything or p["group"] == total["group"])]
+            assert parts, total["label"]
+            assert i > max(j for j, _ in parts), total["label"]
+            for k, value in enumerate(total["values"]):
+                assert value is not None, (total["label"], k)
+                assert value == pytest.approx(sum(p["values"][k] for _, p in parts),
+                                              rel=1e-9, abs=1.0), (block, total["label"], k)
+            checked.add((block, total["label"]))
+    assert {("revenue", "Итого МКД"), ("revenue", "Итого ОСЗ"), ("revenue", "Выручка всего"),
+            ("costs", "CAPEX всего")} <= checked, checked
+
+
+def test_capex_of_an_object_is_the_engines_article(rows, bundle) -> None:
+    """Число объекта в «Затратах» — статья объекта в расчёте очереди, а не
+    доля, посчитанная страницей; МКД + ОСЗ = CAPEX очереди."""
+    labels = core.product_labels()
+    phases = bundle["phases"]
+    costs = {r["label"]: r for r in rows if r["block"] == "costs" and r["cls"] == "pc-part"}
+    objects = [o.key for o in core.STANDALONE_OBJECTS if labels[o.key] in costs]
+    assert len(objects) >= 2, "на вводных меньше двух объектов со стройкой — проверять нечего"
+    for key in objects:
+        got = costs[labels[key]]["values"][:len(phases)]
+        want = [float(p["result"]["capex"].get(key) or 0) for p in phases]
+        assert got == pytest.approx(want, abs=1.0), key
+    for k, p in enumerate(phases):
+        assert sum(r["values"][k] for r in costs.values()) == pytest.approx(
+            p["result"]["capex"]["total"], abs=1.0)
 
 
 def _server():
@@ -318,7 +362,7 @@ def test_the_table_reads_on_desktop_and_phone(bundle, server, width) -> None:
     assert not errors, errors
     assert got["order"] == BLOCKS, got["order"]
     assert got["lastText"] == LAST_ROW, got["lastText"]
-    assert got["costs"] == COSTS, got["costs"]
+    assert got["costs"] == _expected_costs(bundle), got["costs"]
     assert not got["hidden"], f"строки скрыты: {got['hidden']}"
     # Делитель виден подписью блока — мельче строки таблицы и в пределах
     # экрана, а не отдельной крупной строкой.
@@ -343,13 +387,19 @@ def test_totals_look_like_totals_on_the_rendered_page(bundle, server) -> None:
     with sync_playwright() as pw:
         browser, page, errors = _open(pw, chrome, bundle, 1300)
         got = page.evaluate("""()=>[...document.querySelectorAll('#phaseComparisonBody tr')]
-          .filter(t=>!t.classList.contains('pc-block')&&!t.classList.contains('pc-caption')).map(t=>{
+          .filter(t=>!t.classList.contains('pc-block')&&!t.classList.contains('pc-caption')&&!t.classList.contains('pc-note')).map(t=>{
             const c=t.cells[0],s=getComputedStyle(c),n=getComputedStyle(t.cells[1]);
             return {label:c.innerText.trim(),cls:t.className,visible:t.offsetHeight>0,
               weight:+n.fontWeight,border:parseFloat(n.borderTopWidth),
               indent:parseFloat(s.paddingLeft)}})""")
         heads = page.evaluate("""()=>[...document.querySelectorAll(
           '#phaseComparisonBody tr.pc-block')].map(t=>t.offsetHeight>0&&t.innerText.trim())""")
+        # Заголовок раздела против итога: размер шрифта, фон, цвет текста.
+        look = page.evaluate("""()=>{
+          const st=el=>{const s=getComputedStyle(el);return {size:parseFloat(s.fontSize),
+            bg:s.backgroundColor,color:s.color,height:el.getBoundingClientRect().height}};
+          return {head:st(document.querySelector('#phaseComparisonBody tr.pc-block th')),
+            total:st(document.querySelector('#phaseComparisonBody tr.pc-total td'))}}""")
         browser.close()
     assert not errors, errors
     assert len(heads) == len(BLOCKS) and all(heads), heads
@@ -365,3 +415,10 @@ def test_totals_look_like_totals_on_the_rendered_page(bundle, server) -> None:
         assert r["border"] >= 1, r
     for r in parts:
         assert r["indent"] >= base_indent + 10, r
+    # Раздел отличим от «Итого» с первого взгляда: крупнее и на своей
+    # полосе (владелец, 29.09.2026: «теряются среди строк Итого»).
+    head, total = look["head"], look["total"]
+    assert head["size"] >= total["size"] + 1, look
+    transparent = ("rgba(0, 0, 0, 0)", "transparent")
+    assert head["bg"] not in transparent and head["bg"] != total["bg"], look
+    assert head["color"] != total["color"], look
