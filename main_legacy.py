@@ -51845,7 +51845,7 @@ function renderTep(){
     // (владелец, 23.08.2026).
     return '<div style="margin-top:4px;font-size:11px;color:'+(own?'#a33':'#777')
      +';white-space:nowrap;display:flex;align-items:center;gap:4px">'
-     +'<input type="number" class="tep-ratio" step="0.1" min="0" max="100" value="'+value+'" style="font-size:11px;margin:0" '
+     +'<input type="number" step="0.1" min="0" max="100" class="tep-ratio" value="'+value+'" style="font-size:11px;margin:0" '
      +'title="доля, по которой достраивается это число" '
      +'onchange="tepRatioSet(\''+key+'\',\''+which+'\',this.value)"><span>'+of+'</span>'
      +(own&&which==='saleable'?'<button type="button" class="tep-refill" onclick="tepRatioReset(\''+key+'\')">наши</button>':'')
