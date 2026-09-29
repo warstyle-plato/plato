@@ -234,6 +234,10 @@ class ETPRFAdapter(AuctionPlatformAdapter):
         }.items():
             if value:
                 lot.provenance[field] = Provenance(source_url=lot_url, fetched_at=fetched_at, raw_value=value)
+        if auction_date:
+            lot.provenance["auction_date"] = Provenance(
+                source_url=lot_url, fetched_at=fetched_at, raw_value=auction_date,
+                source_section="реестр, колонка «Дата начала торгов»")
         return lot
 
     def discover_moscow(self, *, deadline: float | None = None) -> list[AuctionLot]:

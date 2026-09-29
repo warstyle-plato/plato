@@ -1,0 +1,250 @@
+{
+ "_snapshot": {
+  "fetched_at": "2026-09-29T01:40:07.200094+00:00",
+  "url": "https://etpgpb.ru/api/v2/procedures/?page=1&per=100&sort=by_relevance&procedure%5Bstage%5D%5B0%5D=accepting&search=%D0%BF%D1%80%D0%BE%D0%B4%D0%B0%D0%B6%D0%B0+%D0%B7%D0%B5%D0%BC%D0%B5%D0%BB%D1%8C%D0%BD%D0%BE%D0%B3%D0%BE+%D1%83%D1%87%D0%B0%D1%81%D1%82%D0%BA%D0%B0",
+  "note": "фрагмент ответа: 3 записи с ключом lots_first_date_begin_auction и 2 без него из 100; поля записей не тронуты",
+  "total_in_response": 100,
+  "with_key": 66
+ },
+ "data": [
+  {
+   "id": "1955693",
+   "type": "procedure",
+   "attributes": {
+    "with_guarantee_application": false,
+    "without_ep": false,
+    "_score": 67.56754,
+    "registry_number": "ИМ009408",
+    "stage": "accepting",
+    "title": "Продажа земельного участка на берегу Волги под проекты рекреации Конаково",
+    "platform_url": "https://torgi.etpgpb.ru/#com/procedure/view/procedure/1166703",
+    "kind": "fz223",
+    "procedure_type_name": "Голландский аукцион/Аукцион с поэтапным снижением цены",
+    "truncated_path": "/procedure/tender/sale/1166703-prodazha-zemelnogo-uchastka-na-beregu-volgi-pod-proekty-rekreatsii-konakovo/",
+    "app_guarantee_type": null,
+    "total_guarantee_application": "0,00",
+    "company_name": "ООО \"МХ МЕНЕДЖМЕНТ\"",
+    "company_url": "/customers/ooo-mh-menedzhment/",
+    "amount": "200330000.0",
+    "currency_name": "RUB",
+    "date_published": "2026-06-04T13:35:00.000+03:00",
+    "lot_regions": [
+     "Тверская область"
+    ],
+    "date_last_update": null,
+    "lots_first_date_begin_auction": "2026-07-10T11:00:00.000+03:00",
+    "lots_count": 1,
+    "template": "nelikvid",
+    "mineral_type": null,
+    "section_category_name": "ЭТП Торги",
+    "rebranding_truncated_path": "/procedures/sale/1166703-prodazha-zemelnogo-uchastka-na-beregu-volgi-pod-proekty-rekreatsii-konakovo/",
+    "custom_procedure_type_name": "Голландский аукцион/Аукцион с поэтапным снижением цены",
+    "end_registration": "2026-07-09T14:00:00.000+03:00",
+    "guarantee_application_currency": "RUB",
+    "time_before_end_registration": 86398
+   },
+   "relationships": {
+    "unique_lot_companies": {
+     "data": [
+      {
+       "id": "24430",
+       "type": "company"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "2057135",
+   "type": "procedure",
+   "attributes": {
+    "with_guarantee_application": true,
+    "without_ep": false,
+    "_score": 41.32642,
+    "registry_number": "21000018880000003288",
+    "stage": "accepting",
+    "title": "Аукцион по продаже земельного участка с КН 60:03:0101903:422, площадью 5000 кв.м, с местоположением: Псковская область, Гдовский муниципальный округ, д. Спицино, з/у 117А, с видом разрешенного использования \"сенокошение\" (код 1.19)",
+    "platform_url": "https://torgi.etpgpb.ru/#com/procedure/view/procedure/1172593",
+    "kind": "fz223",
+    "procedure_type_name": "Аукцион",
+    "truncated_path": "/procedure/tender/sale/1172593-auktsion-po-prodazhe-zemelnogo-uchastka-s-kn-60-03-0101903-422-ploschadyu-5000-kv-m-s-mestopolozheniem-pskovskaya-oblast-gdovskiy-munitsipalnyy-okrug-d-spitsino-z-u-117a-s-vidom-razreshennogo-ispolzovaniya-senokoshenie-kod-1-19/",
+    "app_guarantee_type": 1,
+    "total_guarantee_application": "653,40",
+    "company_name": "МИНИСТЕРСТВО ИМУЩЕСТВЕННЫХ ОТНОШЕНИЙ ПСКОВСКОЙ ОБЛАСТИ",
+    "company_url": "/customers/komitet-po-upravleniyu-gosudarstvennym-imuschestvom-pskovskoy-oblasti/",
+    "amount": "3267.0",
+    "currency_name": "RUB",
+    "date_published": "2026-09-23T09:54:54.000+03:00",
+    "lot_regions": [
+     "Псковская область"
+    ],
+    "date_last_update": null,
+    "lots_first_date_begin_auction": "2026-10-14T10:00:00.000+03:00",
+    "lots_count": 1,
+    "template": "nelikvid",
+    "mineral_type": null,
+    "section_category_name": "ЭТП Торги",
+    "rebranding_truncated_path": "/procedures/sale/1172593-auktsion-po-prodazhe-zemelnogo-uchastka-s-kn-60-03-0101903-422-ploschadyu-5000-kv-m-s-mestopolozheniem-pskovskaya-oblast-gdovskiy-munitsipalnyy-okrug-d-spitsino-z-u-117a-s-vidom-razreshennogo-ispolzovaniya-senokoshenie-kod-1-19/",
+    "custom_procedure_type_name": "Аукцион",
+    "end_registration": "2026-10-12T15:00:00.000+03:00",
+    "guarantee_application_currency": "RUB",
+    "time_before_end_registration": 1659802
+   },
+   "relationships": {
+    "unique_lot_companies": {
+     "data": [
+      {
+       "id": "9397",
+       "type": "company"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "2053091",
+   "type": "procedure",
+   "attributes": {
+    "with_guarantee_application": true,
+    "without_ep": false,
+    "_score": 37.31249,
+    "registry_number": "21000018880000003273",
+    "stage": "accepting",
+    "title": "Аукцион по продаже земельного участка с КН 60:27:0100112:73, площадью 1500 кв.м,                                      с местоположением: Псковская область, г. Псков, ул. Родниковая, з/у 23, с видом разрешенного использования \"стоянка транспортных средств\" (код 4.9.2), без права строительства капитальных объектов",
+    "platform_url": "https://torgi.etpgpb.ru/#com/procedure/view/procedure/1172382",
+    "kind": "fz223",
+    "procedure_type_name": "Аукцион",
+    "truncated_path": "/procedure/tender/sale/1172382-auktsion-po-prodazhe-zemelnogo-uchastka-s-kn-60-27-0100112-73-ploschadyu-1500-kv-m-s-mestopolozheniem-pskovskaya-oblast-g-pskov-ul-rodnikovaya-z-u-23-s-vidom-razreshennogo-ispolzovaniya-stoyanka-transportnyh-sredstv-kod-4-9-2-bez-prava-stroitelstva-kapitalnyh-obektov/",
+    "app_guarantee_type": 1,
+    "total_guarantee_application": "177721,66",
+    "company_name": "МИНИСТЕРСТВО ИМУЩЕСТВЕННЫХ ОТНОШЕНИЙ ПСКОВСКОЙ ОБЛАСТИ",
+    "company_url": "/customers/komitet-po-upravleniyu-gosudarstvennym-imuschestvom-pskovskoy-oblasti/",
+    "amount": "888608.32",
+    "currency_name": "RUB",
+    "date_published": "2026-09-17T14:23:02.000+03:00",
+    "lot_regions": [
+     "Псковская область"
+    ],
+    "date_last_update": null,
+    "lots_first_date_begin_auction": "2026-10-07T10:00:00.000+03:00",
+    "lots_count": 1,
+    "template": "nelikvid",
+    "mineral_type": null,
+    "section_category_name": "ЭТП Торги",
+    "rebranding_truncated_path": "/procedures/sale/1172382-auktsion-po-prodazhe-zemelnogo-uchastka-s-kn-60-27-0100112-73-ploschadyu-1500-kv-m-s-mestopolozheniem-pskovskaya-oblast-g-pskov-ul-rodnikovaya-z-u-23-s-vidom-razreshennogo-ispolzovaniya-stoyanka-transportnyh-sredstv-kod-4-9-2-bez-prava-stroitelstva-kapitalnyh-obektov/",
+    "custom_procedure_type_name": "Аукцион",
+    "end_registration": "2026-10-05T15:00:00.000+03:00",
+    "guarantee_application_currency": "RUB",
+    "time_before_end_registration": 1557327
+   },
+   "relationships": {
+    "unique_lot_companies": {
+     "data": [
+      {
+       "id": "9397",
+       "type": "company"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "1811477",
+   "type": "procedure",
+   "attributes": {
+    "with_guarantee_application": false,
+    "without_ep": true,
+    "_score": 34.433163,
+    "registry_number": "ИМ003828",
+    "stage": "accepting",
+    "title": "Продажа земельного участка площадью: 30 000 кв.м. Кадастровый номер 55:24:080502:3 с движимым имуществом не являющимся обьектом капитального строительства. Ориентир оз. Кунганкуль, участок находится примерно в 25 м. от ориентира по направлению на север. Омская область, р-н Саргатский, д Калмакуль.",
+    "platform_url": "https://torgi.etpgpb.ru/#com/procedure/view/procedure/1161029",
+    "kind": "fz223",
+    "procedure_type_name": "Запрос предложений",
+    "truncated_path": "/procedure/tender/sale/1161029-prodazha-zemelnogo-uchastka-ploschadyu-30-000-kv-m-kadastrovyy-55-24-080502-3-s-dvizhimym-imuschestvom-ne-yavlyayuschimsya-obiektom-kapitalnogo-stroitelstva-orientir-oz-kungankul-uchastok-nahoditsya-primerno-v-25-m-ot-orientira-po-napravleniyu-na-sever-omskaya-oblast-r-n-sargatskiy-d-kalmakul/",
+    "app_guarantee_type": null,
+    "total_guarantee_application": "0,00",
+    "company_name": "АО \"ОМСКИЙ КАУЧУК\"",
+    "company_url": "/customers/ao-omskiy-kauchuk/",
+    "amount": "3000000.0",
+    "currency_name": "RUB",
+    "date_published": "2026-02-02T06:58:00.000+03:00",
+    "lot_regions": [
+     "Омская область"
+    ],
+    "date_last_update": "2026-08-03T13:32:20.000+03:00",
+    "lots_first_date_begin_auction": null,
+    "lots_count": 1,
+    "template": "nelikvid",
+    "mineral_type": null,
+    "section_category_name": "ЭТП Торги",
+    "rebranding_truncated_path": "/procedures/sale/1161029-prodazha-zemelnogo-uchastka-ploschadyu-30-000-kv-m-kadastrovyy-55-24-080502-3-s-dvizhimym-imuschestvom-ne-yavlyayuschimsya-obiektom-kapitalnogo-stroitelstva-orientir-oz-kungankul-uchastok-nahoditsya-primerno-v-25-m-ot-orientira-po-napravleniyu-na-sever-omskaya-oblast-r-n-sargatskiy-d-kalmakul/",
+    "custom_procedure_type_name": "Запрос предложений",
+    "end_registration": "2027-02-03T11:00:00.000+03:00",
+    "guarantee_application_currency": "RUB",
+    "time_before_end_registration": 15888418
+   },
+   "relationships": {
+    "unique_lot_companies": {
+     "data": [
+      {
+       "id": "8864",
+       "type": "company"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "1802741",
+   "type": "procedure",
+   "attributes": {
+    "with_guarantee_application": false,
+    "without_ep": true,
+    "_score": 10.915466,
+    "registry_number": "ИМ003292",
+    "stage": "accepting",
+    "title": "Продажа одноэтажного нежилого здания (156,7 кв.м) и прилегающего земельного участка (408 кв.м), расположенных по адресу: Ханты-Мансийский автономный округ — Югра, Октябрьский район, пгт Приобье",
+    "platform_url": "https://torgi.etpgpb.ru/#com/procedure/view/procedure/1160483",
+    "kind": "fz223",
+    "procedure_type_name": "Запрос предложений",
+    "truncated_path": "/procedure/tender/sale/1160483-prodazha-odnoetazhnogo-nezhilogo-zdaniya-1567-kv-m-i-prilegayuschego-zemelnogo-uchastka-408-kv-m-raspolozhennyh-po-adresu-hanty-mansiyskiy-avtonomnyy-okrug-yugra-oktyabrskiy-rayon-pgt-priobie/",
+    "app_guarantee_type": null,
+    "total_guarantee_application": "0,00",
+    "company_name": "АО \"Газпром энергосбыт Тюмень\"",
+    "company_url": "/customers/ao-tyumenskaya-energosbytovaya-kompaniya/",
+    "amount": "6500000.0",
+    "currency_name": "RUB",
+    "date_published": "2026-01-22T13:54:00.000+03:00",
+    "lot_regions": [
+     "Ханты-Мансийский автономный округ - Югра"
+    ],
+    "date_last_update": "2026-09-25T10:20:57.000+03:00",
+    "lots_first_date_begin_auction": null,
+    "lots_count": 1,
+    "template": "nelikvid",
+    "mineral_type": null,
+    "section_category_name": "ЭТП Торги",
+    "rebranding_truncated_path": "/procedures/sale/1160483-prodazha-odnoetazhnogo-nezhilogo-zdaniya-1567-kv-m-i-prilegayuschego-zemelnogo-uchastka-408-kv-m-raspolozhennyh-po-adresu-hanty-mansiyskiy-avtonomnyy-okrug-yugra-oktyabrskiy-rayon-pgt-priobie/",
+    "custom_procedure_type_name": "Запрос предложений",
+    "end_registration": "2026-10-26T09:00:00.000+03:00",
+    "guarantee_application_currency": "RUB",
+    "time_before_end_registration": 2673510
+   },
+   "relationships": {
+    "unique_lot_companies": {
+     "data": [
+      {
+       "id": "992",
+       "type": "company"
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "meta": {
+  "total_pages": 12,
+  "total_count": 1190
+ }
+}
