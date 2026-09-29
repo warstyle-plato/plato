@@ -5,7 +5,7 @@
 удалены, а в отчёте есть?». Окно классов и вводные экземпляры вне проекта уже
 прятали, а ТЭП движка отдавал их строки всем поверхностям.
 
-Состав решает движок одним предикатом (`tep_row_outside_project`) и ставит
+Состав решает движок одним предикатом (`row_outside_project`) и ставит
 признак `excluded` на строку — отчёт страницы, PDF и Платон читают его, а не
 выводят состав заново. Законный ноль продукта дома (кладовые, СОШ) в составе
 и остаётся строкой. Итог таблицы не меняется: скрытые строки пусты.
@@ -34,6 +34,11 @@ PORT = 18979
 SHOWN_OBJECTS = {"Офисы", "Офисы 2"}
 OBJECT_LABELS = {row.get("label") for key, row in core.TEP_DEFAULT.items()
                  if key in core._BY_KEY}
+# Продукты объектов в таблице продаж: сам объект и паркинг объекта.
+OBJECT_PRODUCTS = set(core._BY_KEY) | set(core.OBJECT_PARKING_PRODUCT_KEYS.values())
+PROJECT_PRODUCTS = {"offices", "offices2",
+                    core.OBJECT_PARKING_PRODUCT_KEYS.get("offices"),
+                    core.OBJECT_PARKING_PRODUCT_KEYS.get("offices2")}
 
 
 def _project() -> tuple[dict, dict]:
@@ -101,6 +106,21 @@ def test_the_totals_do_not_move(phasing) -> None:
         assert sum(row[field] for row in _shown(result)) == pytest.approx(total[field]), field
 
 
+@pytest.mark.parametrize("phasing", [None, PHASED], ids=["single", "phased"])
+def test_the_product_table_lists_only_project_objects(phasing) -> None:
+    """Вторая таблица отчёта (владелец, второй снимок): продукты с выручкой,
+    себестоимостью и маржой — той же меркой, что ТЭП."""
+    report = _run(*_project(), phasing)["report"]
+    for name in ("products", *(("phase_products",) if phasing else ())):
+        shown = {p["key"] for p in report[name] if not p["excluded"]}
+        objects = shown & OBJECT_PRODUCTS
+        assert {"offices", "offices2"} <= objects <= PROJECT_PRODUCTS, (name, sorted(objects))
+        # Скрытое пусто: выручка, себестоимость и итог не двигаются.
+        for p in report[name]:
+            if p["excluded"]:
+                assert not float(p.get("revenue") or 0) and not float(p.get("quantity") or 0), p
+
+
 def test_a_disabled_object_with_area_stays_in_the_table() -> None:
     """Выключенный объект с метрами складывается в итог — строку не прячут."""
     x, t = _project()
@@ -113,10 +133,10 @@ def test_a_disabled_object_with_area_stays_in_the_table() -> None:
 def test_the_predicate_is_the_composition() -> None:
     x, _t = _project()
     empty = {"gns": 0.0}
-    assert core.tep_row_outside_project(x, "offices2", empty) is False
-    assert core.tep_row_outside_project(x, "offices3", empty) is True
-    assert core.tep_row_outside_project(x, "standalone_retail", empty) is True
-    assert core.tep_row_outside_project(x, "storage", empty) is False
+    assert core.row_outside_project(x, "offices2", empty) is False
+    assert core.row_outside_project(x, "offices3", empty) is True
+    assert core.row_outside_project(x, "standalone_retail", empty) is True
+    assert core.row_outside_project(x, "storage", empty) is False
 
 
 def test_the_pdf_prints_the_same_composition() -> None:
@@ -132,6 +152,9 @@ def test_the_pdf_prints_the_same_composition() -> None:
     assert "Офисы 2" in tep_part
     for label in ("Коммерция ОСЗ", "Офисы 3", "Офисы 4"):
         assert label not in tep_part, label
+    sales_part = text.split("Продажи и продукты", 1)[1][:3000]
+    for label in ("ОСЗ", "Офисы 3", "Офисы 4", "Наземный паркинг"):
+        assert label not in sales_part, label
 
 
 def test_platon_reads_the_same_composition() -> None:
@@ -140,6 +163,10 @@ def test_platon_reads_the_same_composition() -> None:
     got = core._tool_explain_metric(req, {"consolidated": _run(x, t)}, "tep", "consolidated")
     labels = {row["label"] for row in got["tep"]}
     assert labels & OBJECT_LABELS == SHOWN_OBJECTS
+    result = _run(x, t)
+    got = core._tool_explain_metric(req, {"consolidated": result}, "revenue", "consolidated")
+    hidden = {p["label"] for p in result["report"]["products"] if p["excluded"]}
+    assert hidden and not hidden & {p["label"] for p in got["products"]}
 
 
 # Отрисованная страница: настоящий `calculate()` и таблица отчёта.
@@ -152,7 +179,9 @@ RENDER = """async (arg)=>{
     .map(tr=>(tr.cells[0].textContent||'').trim());
   const foot=Array.from(document.querySelectorAll('#reportTep tfoot th, #reportTep tfoot td'))
     .map(th=>(th.textContent||'').trim());
-  return {rows:rows, foot:foot};
+  const sales=Array.from(document.querySelectorAll('#salesReportTable tr'))
+    .map(tr=>(tr.cells[0].firstChild&&tr.cells[0].firstChild.textContent||'').trim());
+  return {rows:rows, foot:foot, sales:sales};
 }"""
 
 
@@ -189,3 +218,14 @@ def test_the_drawn_report_shows_only_project_objects(drawn) -> None:
     assert objects == SHOWN_OBJECTS, drawn["rows"]
     # Продукты дома с законным нулём — на месте.
     assert "Кладовые" in drawn["rows"], drawn["rows"]
+
+
+def test_the_drawn_product_table_shows_only_project_objects(drawn) -> None:
+    assert drawn["errors"] == [], drawn["errors"]
+    products = drawn["result"]["report"]["products"]
+    hidden = {p["label"] for p in products if p["excluded"]}
+    shown = {p["label"] for p in products
+             if not p["excluded"] and p["key"] in ("offices", "offices2")}
+    assert hidden, "скрывать нечего — проверка ничего не доказывает"
+    assert set(drawn["sales"]) & hidden == set(), drawn["sales"]
+    assert shown <= set(drawn["sales"]), drawn["sales"]
