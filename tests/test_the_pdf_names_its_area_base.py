@@ -32,6 +32,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from terms_glossary import TOTAL_AREA  # noqa: E402
 
 
 # Подземная площадь умолчания — не литерал: с 0.23.x строка ТЭП считается
@@ -81,14 +82,14 @@ def test_the_underground_is_named_and_excluded(report) -> None:
 
 
 def test_the_construction_volume_is_named_where_it_works(report) -> None:
-    """Строительный объём — сумма обеих, и назван там, где он и считается."""
+    """Суммарная площадь — сумма обеих, и назван там, где он и считается."""
     text, summary = report
     line = text[text.index("База ГНС — наземная площадь"):][:600]
     numbers = _numbers(line)
     assert len(numbers) >= 3, line
     above, under, volume = numbers[0], numbers[1], numbers[2]
     assert above + under == volume, (above, under, volume)
-    assert "Строительный объём" in line
+    assert TOTAL_AREA.name in line
     # На нём считаются общие статьи — без этого читатель не знает, зачем оно.
     assert "общие статьи" in line
 

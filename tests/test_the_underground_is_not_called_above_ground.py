@@ -41,6 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from terms_glossary import TOTAL_AREA  # noqa: E402
 
 PORT = 18247
 
@@ -127,8 +128,8 @@ def test_the_book_stops_calling_the_underground_above_ground() -> None:
         None, None, project_name="Подписи ГНС")
     book = openpyxl.load_workbook(_io.BytesIO(data))
     assert book["ТЭП"]["C3"].value == "ГНС / подземная площадь, м²"
-    assert book["ТЭП"]["A36"].value == "ИТОГО ПРОЕКТ — строительный объём"
-    assert book["ОТЧЕТ"]["F6"].value == "Строительный объём"
+    assert book["ТЭП"]["A36"].value == f"ИТОГО ПРОЕКТ — {TOTAL_AREA.lower()}"
+    assert book["ОТЧЕТ"]["F6"].value == TOTAL_AREA.name
     # Формула под подписью осталась прежней: переименование методику не двигает.
     assert book["ОТЧЕТ"]["G6"].value == "='ТЭП'!C36"
     assert not [one for one in (report.get("missing") or []) if "подпись" in str(one)], report
@@ -196,7 +197,7 @@ def test_in_a_real_browser_the_table_names_both_bases() -> None:
     above, under = number(totals[0]), number(totals[1])
     assert under > 0, "проверять нечего: на умолчаниях подземной части нет"
 
-    volume = re.search(r"Строительный объём — ([\d\s&nbsp;\xa0,\.]+?) м²", note)
+    volume = re.search(re.escape(TOTAL_AREA.name) + r" — ([\d\s&nbsp;\xa0,\.]+?) м²", note)
     assert volume, note
     assert above + under == pytest.approx(number(volume.group(1)), rel=1e-6), (
         above, under, volume.group(1))
@@ -230,14 +231,14 @@ def test_the_shared_rates_say_they_are_on_the_construction_volume() -> None:
     for key in ("ird_th_per_sqm", "design_p_th_per_sqm", "design_rd_th_per_sqm",
                 "preparation_th_per_sqm", "utilities_th_per_sqm",
                 "commissioning_th_per_sqm", "site_maintenance_th_per_sqm"):
-        assert "строительного объёма" in hints[key], (key, hints[key])
+        assert f"м² {TOTAL_AREA.genitive}" in hints[key], (key, hints[key])
     # Благоустройство в этом списке стояло и проходило проверку НА ОТРИЦАНИИ:
     # подсказка говорила «тыс. ₽/м² благоустроенной территории, а НЕ
     # строительного объёма», и подстрока не отличила утверждение от его
     # отрицания. База у статьи двор (правило 10.09.2026), и теперь это
     # проверяется прямо — вместе с предохранителем от возврата в список.
     assert "двора" in hints["landscaping_th_per_sqm"], hints["landscaping_th_per_sqm"]
-    assert "строительного объёма" not in hints["landscaping_th_per_sqm"]
+    assert TOTAL_AREA.genitive not in hints["landscaping_th_per_sqm"]
     # У СМР базы свои, и они названы своими именами.
     assert "наземной части" in hints["main_above_th_per_sqm"]
     assert "подземной части" in hints["main_under_th_per_sqm"]

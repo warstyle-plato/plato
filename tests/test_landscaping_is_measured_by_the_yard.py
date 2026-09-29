@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
+from terms_glossary import TOTAL_AREA  # noqa: E402
 import page_blocks  # noqa: E402
 
 
@@ -179,6 +180,7 @@ def test_the_fields_name_their_base():
     # Запрещается МЕСТО, а не слово: прежняя подпись ОБЪЯВЛЯЛА базой
     # строительный объём, а нынешняя называет его, чтобы сказать «не он».
     assert "м² строительного объёма" not in hints["landscaping_th_per_sqm"]
+    assert f"м² {TOTAL_AREA.genitive}" not in hints["landscaping_th_per_sqm"]
     # Единица — первая часть подсказки, и она обязана быть единицей, а не
     # объяснением: её показывает таблица классов рядом с числом.
     assert core.class_field_unit("landscaping_area_per_person_sqm") == "м²/чел."

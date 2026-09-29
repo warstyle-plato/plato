@@ -10,6 +10,8 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from terms_glossary import TOTAL_AREA
+
 
 _INSTALLED = False
 
@@ -291,7 +293,7 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
                            else f"{len(others)} · площадь не названа")
             info_rows.append([para(others_label, label_style), para(others_text)])
         info_rows.extend([
-            [para("Строит. объём", label_style), para(core._pdf_num(total_tep.get("gns"), 0) + " м²")],
+            [para(TOTAL_AREA.name, label_style), para(core._pdf_num(total_tep.get("gns"), 0) + " м²")],
             [para("Продаваемая", label_style), para(core._pdf_num(total_tep.get("saleable"), 0) + " м²")],
         ])
         if transfer > 0:
