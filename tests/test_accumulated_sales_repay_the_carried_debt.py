@@ -45,7 +45,10 @@ def _bundle(sweep: bool) -> dict:
     # а остаток продаётся после — ровно та картина, где накопленное решает.
     inputs.update(purchase_price_mln=12000, project_start="2027-01-01", ird_months=12,
                   construction_months=24, apartment_price_th=900,
-                  share_before_rve_pct=45, residual_sales_months=18)
+                  share_before_rve_pct=45, residual_sales_months=18,
+                  # Рост цены — вводная этой картины, а не умолчание формы:
+                  # на нём подобрано, что свип закрывает разрыв.
+                  monthly_growth_pre_pct=1.5)
     tep = {key: dict(row) for key, row in core.TEP_DEFAULT.items()}
     phasing = {
         "enabled": True, "mode": "phased", "user_enabled": True,
