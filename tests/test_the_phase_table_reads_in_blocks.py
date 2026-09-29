@@ -39,7 +39,33 @@ from test_object_parking_reaches_the_queue import _phased  # noqa: E402
 
 PORT = 18934
 
-BLOCKS = ["mkd", "osz", "revenue", "costs", "unit", "finance", "result"]
+# Порядок отчёта о прибылях (владелец, 28.09.2026): доходы → все расходы
+# подряд → финансирование → прибыль, последней строкой — чистая прибыль на
+# м². Удельный стоит в разделе своей величины; ничего не свёрнуто.
+BLOCKS = ["mkd", "osz", "revenue", "costs", "finance", "result"]
+REVENUE_TAIL = [
+    "Выручка всего",
+    "Цена реализации на м² продаваемой",
+    "в т.ч. квартиры — на м² их продаваемой",
+    "Цена реализации на м² ГНС",
+]
+RATES = [f"{name} — цена м² МКД очереди" for name in (
+    "ИРД и согласования", "Проектирование П+РД", "Подготовительные работы", "Наружные сети")]
+COSTS = RATES + [
+    "CAPEX",
+    "CAPEX на м² ГНС",
+    "Полные расходы",
+    "Полные расходы на м² продаваемой",
+    "Полные расходы на м² ГНС",
+]
+RESULT_TAIL = [
+    "Чистая прибыль — cash",
+    "Маржинальность",
+    "Чистая прибыль на м² ГНС",
+    "Чистая прибыль на м² продаваемой",
+]
+LAST_ROW = RESULT_TAIL[-1]
+DIVISORS = ("на м² продаваемой — продаваемая площадь", "на м² ГНС — ГНС наземная")
 
 
 @pytest.fixture(scope="module")
@@ -69,9 +95,11 @@ def _rows_from_node(bundle: dict) -> list[dict]:
         attrs = tr[:tr.index(">")]
         get = lambda name: (re.search(name + r'="([^"]*)"', attrs) or [None, ""])[1]  # noqa: E731
         cells = re.findall(r"<t[dh]([^>]*)>(.*?)</t[dh]>", tr, re.S)
+        caption = re.search(r'<small class="pc-divisors">(.*?)</small>', tr, re.S)
         rows.append({
+            "caption": html.unescape(re.sub(r"<[^>]+>", " ", caption.group(1))) if caption else "",
             "block": get("data-block"), "cls": get("class"), "group": get("data-group"),
-            "label": html.unescape(re.sub(r"<[^>]+>", "", cells[0][1])).strip() if cells else "",
+            "label": html.unescape(re.sub(r"<small.*?</small>|<[^>]+>", "", cells[0][1], flags=re.S)).strip() if cells else "",
             "values": [float(v.group(1)) if (v := re.search(r'data-v="([^"]*)"', a)) else None
                        for a, _ in cells[1:]],
         })
@@ -91,7 +119,69 @@ def test_every_row_sits_in_a_titled_block_in_order(rows) -> None:
         if r["cls"] == "pc-block":
             current = r["block"]
             continue
+        if r["cls"] == "pc-caption":
+            assert current is None, "подпись-делитель стоит не над таблицей"
+            continue
         assert r["block"] and r["block"] == current, r
+
+
+def _labels(rows, block: str) -> list[str]:
+    return [r["label"] for r in rows if r["block"] == block and r["cls"] != "pc-block"]
+
+
+def _strip_input(label: str) -> str:
+    return re.sub(r" \(вводная [^)]*\)$", "", label)
+
+
+def test_the_table_reads_like_a_profit_report(rows) -> None:
+    """Доходы → все расходы подряд → финансирование → прибыль, и чистая
+    прибыль на м² — последняя строка таблицы (прод, телефон: «всё в кучу» —
+    владелец, 28.09.2026)."""
+    heads = [r["block"] for r in rows if r["cls"] == "pc-block"]
+    assert heads.index("revenue") < heads.index("costs") < heads.index("finance") \
+        < heads.index("result") == len(heads) - 1, heads
+    assert "unit" not in heads, "удельные снова собраны в свой блок вперемешку"
+    revenue = _labels(rows, "revenue")
+    assert revenue[-len(REVENUE_TAIL):] == REVENUE_TAIL, revenue
+    costs = [_strip_input(x) for x in _labels(rows, "costs")]
+    assert costs == COSTS, costs
+    result = _labels(rows, "result")
+    assert result[-len(RESULT_TAIL):] == RESULT_TAIL, result
+    assert rows[-1]["label"] == LAST_ROW, rows[-1]["label"]
+    # Цены — только среди доходов, расходы на метр — только среди расходов.
+    for r in rows:
+        if "Цена реализации" in r["label"]:
+            assert r["block"] == "revenue", r
+        if r["label"].startswith(("CAPEX на", "Полные расходы на")) or "цена м² МКД" in r["label"]:
+            assert r["block"] == "costs", r
+
+
+def test_divisors_are_a_caption_not_body_rows(rows, bundle) -> None:
+    """«Делитель зачем показывать, тем более так крупно»: делитель — подпись
+    таблицы мелким шрифтом, строк-делителей в теле нет. Числа подписи — те
+    же площади, на которые делит движок."""
+    assert not [r for r in rows if r["cls"] not in ("pc-block", "pc-caption")
+                and "елитель" in r["label"]], [r["label"] for r in rows]
+    captions = [r["caption"] for r in rows if r["caption"]]
+    assert len(captions) == 1, captions
+    caption = captions[0]
+    for text in DIVISORS:
+        assert text in caption, caption
+    summary = bundle["consolidated"]["summary"]
+    for key in ("monetizable_saleable_sqm", "project_gns_sqm"):
+        total = f"{round(float(summary[key])):,}".replace(",", " ")
+        assert total in caption.replace(" ", " "), (key, total, caption)
+
+
+def test_article_rates_are_visible_costs_with_their_input(rows, bundle) -> None:
+    """Ставки общепроектных статей — видимые строки расходов, до CAPEX, с
+    вводной рядом; ничего не свёрнуто и не спрятано на другую вкладку."""
+    costs = _labels(rows, "costs")
+    assert [_strip_input(x) for x in costs[:len(RATES)]] == RATES, costs
+    inputs = bundle["comparison"][0]["shared_rate_inputs_th"]
+    for label, key in zip(costs, ("ird", "design", "preparation", "utilities")):
+        if inputs.get(key) is not None:
+            assert "(вводная " in label, label
 
 
 def _block_of(rows, text: str) -> str:
@@ -144,10 +234,7 @@ def test_totals_are_marked_and_equal_the_sum_of_their_parts(rows) -> None:
         assert idx[label] > last, label
 
 
-@pytest.mark.timeout(300)
-def test_totals_look_like_totals_on_the_rendered_page(bundle) -> None:
-    chrome = chromium_or_skip()
-    from playwright.sync_api import sync_playwright
+def _server():
     import uvicorn
 
     server = uvicorn.Server(uvicorn.Config(core.app, host="127.0.0.1", port=PORT,
@@ -158,29 +245,107 @@ def test_totals_look_like_totals_on_the_rendered_page(bundle) -> None:
             break
         time.sleep(0.05)
     assert server.started
-    try:
-        with sync_playwright() as pw:
-            browser = pw.chromium.launch(executable_path=str(chrome))
-            page = browser.new_page(viewport={"width": 1300, "height": 900})
-            errors: list[str] = []
-            page.on("pageerror", lambda exc: errors.append(str(exc)))
-            page.goto(f"http://127.0.0.1:{PORT}/", wait_until="domcontentloaded")
-            page.wait_for_function("typeof renderPhaseComparison==='function'")
-            page.evaluate(
-                "b=>{phaseBundle=b;let n=document.getElementById('phaseComparisonCard');"
-                "while(n){if(n.style)n.style.display='block';n=n.parentElement}"
-                "renderPhaseComparison()}", bundle)
-            got = page.evaluate("""()=>[...document.querySelectorAll('#phaseComparisonBody tr')]
-              .filter(t=>!t.classList.contains('pc-block')).map(t=>{
-                const c=t.cells[0],s=getComputedStyle(c),n=getComputedStyle(t.cells[1]);
-                return {label:c.innerText.trim(),cls:t.className,visible:t.offsetHeight>0,
-                  weight:+n.fontWeight,border:parseFloat(n.borderTopWidth),
-                  indent:parseFloat(s.paddingLeft)}})""")
-            heads = page.evaluate("""()=>[...document.querySelectorAll(
-              '#phaseComparisonBody tr.pc-block')].map(t=>t.offsetHeight>0&&t.innerText.trim())""")
-            browser.close()
-    finally:
-        server.should_exit = True
+    return server
+
+
+def _open(pw, chrome, bundle, width: int):
+    """Живая страница с таблицей сравнения на пакете очередей."""
+    browser = pw.chromium.launch(executable_path=str(chrome))
+    page = browser.new_page(viewport={"width": width, "height": 900})
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    page.goto(f"http://127.0.0.1:{PORT}/", wait_until="domcontentloaded")
+    page.wait_for_function("typeof renderPhaseComparison==='function'")
+    page.evaluate(
+        "b=>{phaseBundle=b;let n=document.getElementById('phaseComparisonCard');"
+        "while(n){if(n.style)n.style.display='block';n=n.parentElement}"
+        "renderPhaseComparison()}", bundle)
+    return browser, page, errors
+
+
+@pytest.fixture(scope="module")
+def server():
+    chromium_or_skip()
+    srv = _server()
+    yield srv
+    srv.should_exit = True
+
+
+# Число, разорванное переносом («917,9 тыс ₽/м» и «²» строкой ниже), и
+# колонка подписей, уехавшая при прокрутке, — то, что видел владелец на
+# телефоне. Меряется на отрисованной странице, а не по CSS в исходнике.
+_LAYOUT = """()=>{
+  const wrap=document.querySelector('#phaseComparisonCard .scroll');
+  const rows=[...document.querySelectorAll('#phaseComparisonBody tr:not(.pc-block):not(.pc-caption)')];
+  const lines=el=>{const r=document.createRange();r.selectNodeContents(el);
+    return new Set([...r.getClientRects()].filter(x=>x.width>0).map(x=>Math.round(x.top))).size};
+  const broken=[];
+  rows.forEach(t=>[...t.cells].slice(1).forEach(td=>{if(lines(td)>1)broken.push(td.innerText)}));
+  wrap.scrollLeft=wrap.scrollWidth;
+  const w=wrap.getBoundingClientRect(),row=rows[rows.length-1];
+  const first=row.cells[0].getBoundingClientRect(),last=row.cells[row.cells.length-1].getBoundingClientRect();
+  const res={broken:broken.slice(0,5),scrolls:wrap.scrollWidth>wrap.clientWidth,
+    firstLeft:first.left-w.left,lastRight:w.right-last.right,
+    lastText:row.cells[0].innerText.trim(),order:[...document.querySelectorAll(
+      '#phaseComparisonBody tr.pc-block')].map(t=>t.dataset.block),
+    costs:[...document.querySelectorAll('#phaseComparisonBody tr[data-block="costs"]:not(.pc-block)')]
+      .map(t=>t.cells[0].innerText.trim().replace(/ \(вводная [^)]*\)$/,'')),
+    hidden:rows.filter(t=>t.offsetHeight===0).map(t=>t.cells[0].innerText)};
+  const cap=document.querySelector('#phaseComparisonBody tr.pc-caption small.pc-divisors');
+  const cell=document.querySelector('#phaseComparisonBody tr[data-block="costs"]:not(.pc-block) td');
+  if(cap){const cr=cap.getBoundingClientRect();
+    res.caption={text:cap.innerText,visible:cap.offsetHeight>0,
+      size:parseFloat(getComputedStyle(cap).fontSize),rowSize:parseFloat(getComputedStyle(cell).fontSize),
+      left:cr.left-w.left,right:w.right-cr.right}}
+  wrap.scrollLeft=0;return res}"""
+
+
+@pytest.mark.timeout(300)
+@pytest.mark.parametrize("width", [1300, 390])
+def test_the_table_reads_on_desktop_and_phone(bundle, server, width) -> None:
+    from playwright.sync_api import sync_playwright
+
+    chrome = chromium_or_skip()
+    with sync_playwright() as pw:
+        browser, page, errors = _open(pw, chrome, bundle, width)
+        got = page.evaluate(_LAYOUT)
+        browser.close()
+    assert not errors, errors
+    assert got["order"] == BLOCKS, got["order"]
+    assert got["lastText"] == LAST_ROW, got["lastText"]
+    assert got["costs"] == COSTS, got["costs"]
+    assert not got["hidden"], f"строки скрыты: {got['hidden']}"
+    # Делитель виден подписью блока — мельче строки таблицы и в пределах
+    # экрана, а не отдельной крупной строкой.
+    cap = got.get("caption")
+    assert cap and cap["visible"], got
+    assert all(t in " ".join(cap["text"].split()) for t in DIVISORS), cap
+    assert cap["size"] < cap["rowSize"], cap
+    assert not got["broken"], f"число разорвано переносом на {width}px: {got['broken']}"
+    # Прокрученная до конца таблица показывает «Свод» целиком, а подпись
+    # строки стоит у левого края.
+    assert got["lastRight"] >= -1, got
+    assert abs(got["firstLeft"]) <= 1, got
+    if width == 390:
+        assert got["scrolls"], "на телефоне таблица обязана прокручиваться вбок"
+
+
+@pytest.mark.timeout(300)
+def test_totals_look_like_totals_on_the_rendered_page(bundle, server) -> None:
+    from playwright.sync_api import sync_playwright
+
+    chrome = chromium_or_skip()
+    with sync_playwright() as pw:
+        browser, page, errors = _open(pw, chrome, bundle, 1300)
+        got = page.evaluate("""()=>[...document.querySelectorAll('#phaseComparisonBody tr')]
+          .filter(t=>!t.classList.contains('pc-block')&&!t.classList.contains('pc-caption')).map(t=>{
+            const c=t.cells[0],s=getComputedStyle(c),n=getComputedStyle(t.cells[1]);
+            return {label:c.innerText.trim(),cls:t.className,visible:t.offsetHeight>0,
+              weight:+n.fontWeight,border:parseFloat(n.borderTopWidth),
+              indent:parseFloat(s.paddingLeft)}})""")
+        heads = page.evaluate("""()=>[...document.querySelectorAll(
+          '#phaseComparisonBody tr.pc-block')].map(t=>t.offsetHeight>0&&t.innerText.trim())""")
+        browser.close()
     assert not errors, errors
     assert len(heads) == len(BLOCKS) and all(heads), heads
     assert all(r["visible"] for r in got)

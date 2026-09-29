@@ -242,18 +242,22 @@ def test_the_comparison_names_the_garage_of_each_queue() -> None:
 
 
 def test_the_screen_prints_the_garage_and_does_not_count_it() -> None:
-    """Экран печатает посчитанное движком: второй счёт разошёлся бы с первым."""
-    body = re.search(r"\nfunction renderPhaseComparison\(.*?\n\}", core.PAGE, re.S)
-    assert body, "функции сравнения очередей на странице нет"
-    block = body.group(0)
-    start = block.index("const objParkRows=[]")
-    piece = block[start:block.index("const blocks=[")]
-    assert "object_parking_units" in piece
-    assert "object_parking_saleable_units" in piece
-    assert "object_parking_under_gns" in piece
-    # Ни деления, ни умножения, ни сложения рядов: свод берётся у движка.
-    for sign in ("reduce(", "*", "/", "+Number("):
-        assert sign not in piece, f"в блоке паркинга очередей появилась арифметика: {sign}"
+    """Экран печатает посчитанное движком: второй счёт разошёлся бы с первым.
+
+    Строки гаража собирает `phase_comparison_table` из полей очереди и свода,
+    и числа в ней — ровно эти поля; на странице о гараже нет ни слова.
+    """
+    bundle = _phased()
+    table = bundle["consolidated"]["comparison_table"]
+    rows = {r["label"]: r for r in next(b for b in table["blocks"] if b["key"] == "osz")["rows"]}
+    summary = bundle["consolidated"]["summary"]
+    for label, key in (("Паркинг отдельно стоящих объектов — мест", "object_parking_units"),
+                       ("из них продаётся", "object_parking_saleable_units"),
+                       ("подземная часть под объектами", "object_parking_under_gns")):
+        assert rows[label]["values"] == [item[key] for item in bundle["comparison"]], label
+        assert rows[label]["total"] == summary[key], label
+    body = re.search(r"\nfunction renderPhaseComparison\(.*?\n\}", core.PAGE, re.S).group(0)
+    assert "object_parking" not in body, "страница считает гараж сама"
 
 
 def test_the_share_is_taken_from_the_metres_not_from_a_second_rule() -> None:
