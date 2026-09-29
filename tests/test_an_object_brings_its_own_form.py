@@ -72,8 +72,10 @@ def test_the_group_stands_where_the_literal_put_it() -> None:
     """
     places = [i for i, g in enumerate(core._FIELD_GROUPS_LITERAL)
               if str(g[0]).startswith(core._OBJECT_PLACEHOLDER)]
-    built = [i for i, g in enumerate(core.FIELD_GROUPS)
-             if g[0] in {o.group_label for o in core.STANDALONE_OBJECTS}]
+    # Экземпляры встают сразу за своим типом; место задаёт тип.
+    types = [g for g in core.FIELD_GROUPS if g[0] not in core._INSTANCE_GROUPS]
+    built = [i for i, g in enumerate(types)
+             if g[0] in {o.group_label for o in core.OBJECT_TYPES}]
     assert places == built
     # Предохранитель: места не подряд — иначе проверка не различала бы
     # «встало на место» и «дописано в конец».

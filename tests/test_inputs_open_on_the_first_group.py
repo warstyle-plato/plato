@@ -231,8 +231,11 @@ def test_every_group_with_its_own_fields_is_rendered():
     """
     drawn = {item["name"] for item in render({})}
     away = set(core.CLASS_ONLY_INPUTS) | set(core.SITE_ONLY_INPUTS)
+    # Экземпляр объекта своей группы не имеет: он вкладка в блоке своего типа
+    # (владелец, 28.09.2026 — групп от числа объектов не прибавляется).
     expected = {name for name, fields in core.FIELD_GROUPS
-                if any(one[0] not in away for one in fields)}
+                if any(one[0] not in away for one in fields)
+                and name not in core._INSTANCE_GROUPS}
     hidden = {name for name, fields in core.FIELD_GROUPS
               if fields and not any(one[0] not in away for one in fields)}
     # Предохранитель: без такой группы утверждение про исключение не проверено.
