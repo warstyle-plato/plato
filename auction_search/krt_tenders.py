@@ -145,6 +145,11 @@ def match(lots: Iterable[dict[str, Any]], sites: Iterable[dict[str, Any]]) -> di
             # и живой лот от этого выглядит просроченным.
             "deadline_iso": deadline_iso(lot.get("application_deadline")),
             "auction_date": lot.get("auction_date"),
+            # Откуда дата торгов: поле или подпись у источника. Без этого дата
+            # из «Этапов» Росэлторга и дата из ключа API ГПБ неразличимы.
+            "auction_date_origin": str(
+                (((lot.get("provenance") or {}).get("auction_date") or {})
+                 .get("source_section")) or ""),
             "source": str((lot.get("source") or {}).get("catalogue")
                           or (lot.get("source") or {}).get("name") or ""),
             # Чей это склад скачанного и разобранного. Ключ объявлен один раз —
