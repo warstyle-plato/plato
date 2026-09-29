@@ -558,6 +558,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         deposit = self._money_near(text, "Обеспечение заявки")
         application_start = self._application_start(text)
         deadline = self._deadline(text)
+        auction_date, auction_label = self._auction_date(text)
         organizer = self._value(text, "Организатор торгов", ("ФИО", "Телефон", "E-mail", "Способ проведения"))
         seller = self._value(text, "Название организации", ("Юридический адрес продавца", "Почтовый адрес продавца", "Место поставки"))
         status = self._status(text, lot_no)
@@ -599,6 +600,7 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             deposit_rub=deposit,
             application_start=application_start,
             application_deadline=deadline,
+            auction_date=auction_date,
             status=status,
             documents=docs,
             raw={
@@ -623,6 +625,10 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
         }.items():
             if value is not None:
                 lot.provenance[field] = Provenance(source_url=lot_url, fetched_at=fetched_at, raw_value=value)
+        if auction_date:
+            lot.provenance["auction_date"] = Provenance(
+                source_url=lot_url, fetched_at=fetched_at, raw_value=auction_date,
+                source_section=f"карточка, «Этапы»: {auction_label}")
         return lot
 
     @staticmethod
@@ -738,6 +744,29 @@ class RoseltorgAdapter(AuctionPlatformAdapter):
             if match:
                 return " ".join(group for group in match.groups() if group)
         return None
+
+    # Подпись даты торгов в карточке. Порядок — от точной к общей; дата берётся
+    # только ПОСЛЕ своей подписи, а не по положению в тексте: соседние строки
+    # «Этапов» — окончание заявок и вскрытие конвертов — тоже даты.
+    _AUCTION_LABELS = (
+        "Дата и время проведения торгов",
+        "Дата и время проведения аукциона",
+        "Дата проведения торгов",
+        "Дата проведения аукциона",
+        "Проведение торгов",
+        "Проведение аукциона",
+    )
+
+    @classmethod
+    def _auction_date(cls, text: str) -> tuple[str | None, str | None]:
+        """Дата торгов и подпись, после которой она стоит; нет подписи — (None, None)."""
+        for label in cls._AUCTION_LABELS:
+            match = re.search(
+                re.escape(label) + r"\s*:?\s*(?:\|\s*)?(\d{2}\.\d{2}\.\d{2,4})"
+                r"(?:\s+(\d{2}:\d{2}(?::\d{2})?))?", text, re.I)
+            if match:
+                return " ".join(g for g in match.groups() if g), label
+        return None, None
 
     @staticmethod
     def _deadline(text: str):

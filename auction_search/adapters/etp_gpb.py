@@ -50,6 +50,9 @@ class ETPGPBAdapter(AuctionPlatformAdapter):
 
     HOST = "etpgpb.ru"
     API_URL = "https://etpgpb.ru/api/v2/procedures/"
+    # Ключ даты торгов в ответе `/api/v2/procedures/`, снятом с ядра 29.09.2026
+    # (tests/fixtures/etp_gpb_procedures_2026-09-29.json): 66 процедур из 100.
+    AUCTION_DATE_KEY = "lots_first_date_begin_auction"
     USER_AGENT = "DevelopAid-AuctionCollector/0.1 (+https://developaid.ru)"
     SEARCH_TERMS = (
         "продажа земельного участка",
@@ -216,6 +219,10 @@ class ETPGPBAdapter(AuctionPlatformAdapter):
         lot_url = cls._lot_url(item, attrs)
         external_id = normalize_space(str(attrs.get("registry_number") or item.get("id") or lot_url))
         cad = cadastral_numbers(title)
+        # Дата торгов — явный ключ ответа площадки. Он про ПЕРВЫЙ лот процедуры:
+        # при нескольких лотах это так и называется в происхождении, а не
+        # выдаётся за дату всей процедуры.
+        auction_date = cls._moment(attrs.get(cls.AUCTION_DATE_KEY))
         source = AuctionSource(
             platform=SourceKind.ETP_GPB,
             lot_url=lot_url,
@@ -237,6 +244,7 @@ class ETPGPBAdapter(AuctionPlatformAdapter):
             current_price_rub=price,
             application_start=cls._moment(attrs.get("start_registration")),
             application_deadline=deadline,
+            auction_date=auction_date,
             status="Приём заявок",
             raw={
                 "api_item_id": str(item.get("id") or ""),
@@ -258,6 +266,14 @@ class ETPGPBAdapter(AuctionPlatformAdapter):
             if value:
                 lot.provenance[field] = Provenance(
                     source_url=lot_url, fetched_at=fetched_at, raw_value=value)
+        if auction_date:
+            lots_count = attrs.get("lots_count")
+            first = (f"; лотов в процедуре {lots_count}, дата первого"
+                     if isinstance(lots_count, int) and lots_count > 1 else "")
+            lot.provenance["auction_date"] = Provenance(
+                source_url=lot_url, fetched_at=fetched_at,
+                raw_value=str(attrs.get(cls.AUCTION_DATE_KEY)),
+                source_section=f"API площадки, ключ {cls.AUCTION_DATE_KEY}{first}")
         return lot
 
     @classmethod
