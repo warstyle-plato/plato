@@ -37,7 +37,8 @@ BASE_URL = "https://api.krt.mos.ru"
 CATALOGUE_URL = BASE_URL + "/projects/"
 JINA_PREFIX = "https://r.jina.ai/"
 CACHE_SCHEMA_VERSION = 3
-REQUIREMENTS_CACHE_SCHEMA_VERSION = 3
+# 4: срок реализации — полем `term` (число и пункт решения), а не обрывком фразы.
+REQUIREMENTS_CACHE_SCHEMA_VERSION = 4
 # Разбор карточки версионируется отдельно: он меняется чаще требований.
 # Версия разбора карточки. Поднимается тогда и только тогда, когда меняется
 # ОТВЕТ читателя на те же байты: прочитанное лежит на диске сутками, и без
@@ -52,7 +53,8 @@ CARD_FACTS_SCHEMA_VERSION = 2
 # пустым жильём при названных городом метрах.
 DECISION_TEP_SCHEMA_VERSION = 2
 # Обязательства из проекта решения: свой файл и своя версия схемы.
-DECISION_REQUIREMENTS_SCHEMA_VERSION = 1
+# 2: срок реализации — полем `term`; прежние разборы несли обрывок «…о КРТ «ул.».
+DECISION_REQUIREMENTS_SCHEMA_VERSION = 2
 # Лоты, привязанные к площадке. Считает их сервер, а хранились они только
 # в памяти вкладки — и правило «живой лот сильнее публикации» работало
 # ровно до перезагрузки.
@@ -941,7 +943,7 @@ class KrtRegistry:
                 "у этой площадки нет — сверить документ с ней не с чем."
             ),
             **{key: facts.get(key) for key in (
-                "intent", "renovation", "construction", "volumes", "deadlines",
+                "intent", "renovation", "construction", "volumes", "deadlines", "term",
                 "resettlement", "object_actions", "permitted_uses",
                 "cadastral_numbers", "cadastral_numbers_source",
                 "demolition", "demolition_or_reconstruction", "reconstruction",
