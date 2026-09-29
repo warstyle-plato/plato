@@ -64,6 +64,64 @@ TEXT_FIXES = {"1–3": "1–4"}
 
 _REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
+# Ключи API на листе ввода (колонки D, H, M блоков вводных). Скрыть колонку
+# целиком нельзя: в D стоят сценарная таблица и даты соцобъектов. Поэтому ключ
+# гасится — серым мелким шрифтом: для сверки он есть, глаз по нему не цепляется.
+KEY_SHEET = "Вводные"
+KEY_COLUMNS = ("D", "H", "M")
+_KEY = re.compile(r"^[a-z][a-z0-9_]*$")
+_KEY_HEADER = "Ключ API"
+_KEY_FONT = '<x:font><x:sz val="8"/><x:color rgb="FFA6A6A6"/><x:name val="Carlito"/></x:font>'
+
+
+def _font_id(styles: str, font: str) -> tuple[str, int]:
+    block = re.search(r'<x:fonts count="(\d+)"[^>]*>(.*?)</x:fonts>', styles, re.S)
+    fonts = re.findall(r"<x:font>.*?</x:font>|<x:font/>", block.group(2), re.S)
+    if font in fonts:
+        return styles, fonts.index(font)
+    head = block.group(0)[:block.group(0).index(">") + 1]
+    head = re.sub(r'count="\d+"', f'count="{len(fonts) + 1}"', head)
+    new = head + block.group(2) + font + "</x:fonts>"
+    return styles[:block.start()] + new + styles[block.end():], len(fonts)
+
+
+def _xf_with_font(styles: str, xf_id: int, font_id: int) -> tuple[str, int]:
+    block, items = ves._xf_items(styles)
+    base = items[xf_id]
+    clone = (re.sub(r'fontId="\d+"', f'fontId="{font_id}"', base, count=1)
+             if 'fontId="' in base else base.replace("<x:xf ", f'<x:xf fontId="{font_id}" ', 1))
+    clone = (re.sub(r'applyFont="\d"', 'applyFont="1"', clone)
+             if "applyFont" in clone else clone.replace("<x:xf ", '<x:xf applyFont="1" ', 1))
+    for index, item in enumerate(items):
+        if item == clone:
+            return styles, index
+    items.append(clone)
+    new_block = f'<x:cellXfs count="{len(items)}">{"".join(items)}</x:cellXfs>'
+    return styles[:block.start()] + new_block + styles[block.end():], len(items) - 1
+
+
+def _quiet_keys(xml: str, styles: str, strings: list[str]) -> tuple[str, str]:
+    styles, font = _font_id(styles, _KEY_FONT)
+    cache: dict[int, int] = {}
+
+    def fix(cell: "re.Match[str]") -> str:
+        nonlocal styles
+        column, row, attrs, rest = cell.group(1), cell.group(2), cell.group(3), cell.group(4)
+        text = _unescape(ves.cell_text(attrs, rest, strings)).strip()
+        if not (_KEY.match(text) or text == _KEY_HEADER):
+            return cell.group(0)
+        style = re.search(r'\ss="(\d+)"', attrs)
+        xf = int(style.group(1)) if style else 0
+        if xf not in cache:
+            styles, cache[xf] = _xf_with_font(styles, xf, font)
+        attrs = (re.sub(r'\ss="\d+"', f' s="{cache[xf]}"', attrs) if style
+                 else attrs + f' s="{cache[xf]}"')
+        return f'<x:c r="{column}{row}"{attrs}{rest}'
+
+    columns = "|".join(KEY_COLUMNS)
+    xml = re.sub(rf'<x:c r="({columns})(\d+)"([^>]*?)(/>|>.*?</x:c>)', fix, xml, flags=re.S)
+    return xml, styles
+
 
 def _sheet_paths(archive: zipfile.ZipFile) -> dict[str, str]:
     workbook = archive.read("xl/workbook.xml").decode("utf-8")
@@ -328,6 +386,8 @@ def polish(content: bytes, *, hidden_rows: dict[str, list[tuple[int, str, str]]]
                 xml, styles, _changed = _unit_formats(xml, styles, strings)
             if name in hidden_rows:
                 xml = _hide_rows(xml, name, hidden_rows[name], strings, missing)
+            if name == KEY_SHEET:
+                xml, styles = _quiet_keys(xml, styles, strings)
             xml = _text_fixes(xml)
             xml = _untab(xml, name == FIRST_SHEET)
         except Exception as exc:  # noqa: BLE001 — лист без оформления лучше несобранной книги

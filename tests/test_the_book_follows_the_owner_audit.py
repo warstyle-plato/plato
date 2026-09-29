@@ -147,3 +147,12 @@ def test_the_extra_object_header_is_its_own_and_merged():
     assert texts == {"ФОК / МЕДЦЕНТР"}, texts
     assert "A124:GA124" in {str(m) for m in objects.merged_cells.ranges}
     assert not objects.row_dimensions[124].hidden
+
+
+def test_api_keys_are_quiet_and_the_rest_of_the_column_is_not(default_book):
+    """Колонку ключей скрыть нельзя — в ней сценарии и даты; ключ гасится шрифтом."""
+    book, _, _, _ = default_book
+    entry = book["Вводные"]
+    assert entry["D14"].value == "purchase_price_mln"
+    assert entry["D14"].font.sz == 8 and entry["D14"].font.color.rgb == "FFA6A6A6"
+    assert entry["D4"].font.sz != 8          # «Сценарный драйвер» — не ключ
