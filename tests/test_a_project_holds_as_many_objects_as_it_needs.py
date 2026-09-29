@@ -31,10 +31,9 @@ core = wrapper.core
 
 PORT = 18973
 OFFICES = ("offices", "offices2", "offices3", "offices4", "offices5")
-# Пять офисов в трёх очередях, у каждого свои метры и гараж; второй ФОК
-# продаётся и назначен медцентром — при том что первый ФОК передаётся городу.
+# Пять офисов в трёх очередях, у каждого свои метры и гараж, и второй ТЦ.
 QUEUES = {"offices": 1, "offices2": 1, "offices3": 2, "offices4": 3, "offices5": 3,
-          "sports2": 2}
+          "standalone_retail2": 2}
 
 
 def _five_offices() -> dict:
@@ -46,9 +45,9 @@ def _five_offices() -> dict:
         x.update({f"{prefix}_enabled": True, f"{prefix}_gba_sqm": 6000 + 1000 * number,
                   f"{prefix}_saleable_sqm": 4000 + 500 * number,
                   f"{prefix}_parking_under_spaces": 10 * number})
-    x.update(sports2_enabled=True, sports2_disposition="sale",
-             sports2_purpose="healthcare", sports_disposition="transfer")
-    x["object_instances"] = ["offices2", "offices3", "offices4", "offices5", "sports2"]
+    x.update(retail2_enabled=True, retail2_gba_sqm=7000, retail2_saleable_sqm=4000)
+    x["object_instances"] = ["offices2", "offices3", "offices4", "offices5",
+                             "standalone_retail2"]
     return x
 
 
@@ -71,6 +70,9 @@ def _revenue(result: dict, key: str) -> float:
 def test_every_type_has_its_instances() -> None:
     for base in core.OBJECT_TYPES:
         own = [o for o in core.STANDALONE_OBJECTS if o.family == base.key]
+        if not base.duplicable:
+            assert own == [], base.key
+            continue
         assert len(own) == core.OBJECT_INSTANCES_MAX - 1, base.key
         for number, obj in enumerate(own, start=2):
             assert obj.key == f"{base.key}{number}" and obj.prefix == f"{base.prefix}{number}"
@@ -124,22 +126,46 @@ def test_the_list_decides_and_the_rest_is_named() -> None:
 
 def test_adding_stops_at_the_limit_with_a_reason() -> None:
     x = dict(core.DEFAULT_INPUTS)
-    added = [core.object_instance_add(x, "sports") for _ in range(core.OBJECT_INSTANCES_MAX - 1)]
-    assert added == [f"sports{n}" for n in range(2, core.OBJECT_INSTANCES_MAX + 1)]
+    added = [core.object_instance_add(x, "above_parking")
+             for _ in range(core.OBJECT_INSTANCES_MAX - 1)]
+    assert added == [f"above_parking{n}" for n in range(2, core.OBJECT_INSTANCES_MAX + 1)]
     assert all(x[f"{key}_enabled"] for key in added)
-    reason = core.object_instance_refusal(x, "sports")
-    assert "ФОК / медцентр" in reason and str(core.OBJECT_INSTANCES_MAX) in reason
+    reason = core.object_instance_refusal(x, "above_parking")
+    assert "Наземный паркинг" in reason and str(core.OBJECT_INSTANCES_MAX) in reason
     with pytest.raises(ValueError):
-        core.object_instance_add(x, "sports")
-    core.object_instance_remove(x, "sports3")
-    assert "sports3" not in core.project_object_instances(x)
-    assert core.object_instance_refusal(x, "sports") == ""
+        core.object_instance_add(x, "above_parking")
+    core.object_instance_remove(x, "above_parking3")
+    assert "above_parking3" not in core.project_object_instances(x)
+    assert core.object_instance_refusal(x, "above_parking") == ""
     # Снова добавленный встаёт умолчаниями, а не значениями удалённого.
-    x["sports3_gba_sqm"] = 777
-    assert core.object_instance_add(x, "sports") == "sports3"
-    assert x["sports3_gba_sqm"] == core.DEFAULT_INPUTS["sports3_gba_sqm"]
+    x["above_parking3_spaces"] = 777
+    assert core.object_instance_add(x, "above_parking") == "above_parking3"
+    assert x["above_parking3_spaces"] == core.DEFAULT_INPUTS["above_parking3_spaces"]
     with pytest.raises(ValueError):
-        core.object_instance_remove(x, "sports")
+        core.object_instance_remove(x, "above_parking")
+
+
+def test_the_sports_object_is_not_duplicated() -> None:
+    """Владелец: «дубли только у ТЦ, МФОЦ/офисов, наземного паркинга; ФОК НЕ
+    дублируется». Второго ФОКа завести нельзя, а присланный — назван и не
+    считается; его вводные не трогаются."""
+    assert not any(o.family == "sports" for o in core.STANDALONE_OBJECTS)
+    x = dict(core.DEFAULT_INPUTS)
+    reason = core.object_instance_refusal(x, "sports")
+    assert "не дублируется" in reason
+    with pytest.raises(ValueError, match="не дублируется"):
+        core.object_instance_add(x, "sports")
+    x.update(object_instances=["sports2", "offices2"], sports2_enabled=True,
+             sports2_gba_sqm=4000, offices2_enabled=True)
+    assert core.project_object_instances(x) == ("offices2",)
+    notes = core.object_instance_notes(x)
+    assert any("sports2" in note and "не дублируется" in note for note in notes), notes
+    got = core._run_authoritative_model(x, copy.deepcopy(core.TEP_DEFAULT), [], {})
+    summary = got["consolidated"]["summary"]
+    assert summary["object_instances"] == ["offices2"]
+    assert any("sports2" in note for note in summary["object_instance_notes"])
+    assert not any(p["key"] == "sports2" for p in got["consolidated"]["report"]["products"])
+    assert x["sports2_gba_sqm"] == 4000, "присланное не правится"
 
 
 # --- движок ------------------------------------------------------------------
@@ -156,22 +182,50 @@ def test_each_office_is_built_in_its_own_queue(phased) -> None:
         assert [index + 1 for index, value in enumerate(by_phase) if value > 0] == [queue], (
             key, by_phase)
     summary = phased["consolidated"]["summary"]
-    assert summary["object_instances"] == ["offices2", "offices3", "offices4", "offices5",
-                                           "sports2"]
+    assert summary["object_instances"] == ["standalone_retail2", "offices2", "offices3",
+                                           "offices4", "offices5"]
     assert summary["object_instance_notes"] == []
 
 
-def test_the_second_sports_object_is_sold_by_its_own_switch(phased) -> None:
-    """Продажу второго ФОКа читал признак ПЕРВОГО: переданный первый гасил
-    выручку всех ФОКов, и книга с движком расходились на весь второй."""
-    assert sum(_revenue(item["result"], "sports2") for item in phased["phases"]) > 0
-    assert sum(_revenue(item["result"], "sports") for item in phased["phases"]) == 0
+def _object_then_its_parking(keys: list[str]) -> list[str]:
+    """Ожидаемый порядок блока ОСЗ: реестр, паркинг объекта — сразу за ним."""
+    return [k for o in core.STANDALONE_OBJECTS
+            for k in (o.key, core.OBJECT_PARKING_PRODUCT_KEYS.get(o.key, ""))
+            if k and k in keys]
+
+
+def test_the_revenue_structure_lists_every_instance_in_order(phased) -> None:
+    """«Структура выручки» (#544) видит экземпляры: объект, затем его паркинг."""
+    rows = phased["consolidated"]["revenue_structure"]["rows"]
+    osz = [row["key"] for row in rows if row.get("group") == "osz" and row.get("key")]
+    for key in QUEUES:
+        assert key in osz, (key, osz)
+    assert osz == _object_then_its_parking(osz), osz
+    assert osz.index(core.OBJECT_PARKING_PRODUCT_KEYS["offices4"]) == osz.index("offices4") + 1
+
+
+def test_the_queue_comparison_lists_every_instance_in_order(phased) -> None:
+    """Сравнение очередей (#544): те же экземпляры и тот же порядок, что у выручки."""
+    table = core.phase_comparison_table(phased["consolidated"])
+    revenue = next(block for block in table["blocks"] if block["title"] == "Выручка")
+    labels = [row["label"] for row in revenue["rows"]]
+    names = core.product_labels()
+    order = _object_then_its_parking(
+        [row["key"] for row in phased["consolidated"]["revenue_structure"]["rows"]
+         if row.get("group") == "osz" and row.get("key")])
+    # У первого офисника в таблице своя подпись («Офисы / МФОЦ»); экземпляры
+    # и их паркинги подписаны именем продукта.
+    shown = [names.get(key, key) for key in order if key in core.OBJECT_INSTANCES
+             or key in core.OBJECT_PARKING_PRODUCT_KEYS.values()]
+    positions = [labels.index(name) for name in shown if name in labels]
+    assert len(positions) == len(shown), (shown, labels)
+    assert positions == sorted(positions), (shown, labels)
 
 
 def test_an_instance_outside_the_project_is_not_counted() -> None:
     x = _five_offices()
     single = core._run_authoritative_model(x, copy.deepcopy(core.TEP_DEFAULT), [], {})
-    x["object_instances"] = ["offices2", "offices3", "offices4", "sports2"]
+    x["object_instances"] = ["offices2", "offices3", "offices4", "standalone_retail2"]
     without = core._run_authoritative_model(x, copy.deepcopy(core.TEP_DEFAULT), [], {})
     assert _revenue(single["consolidated"], "offices5") > 0
     assert _revenue(without["consolidated"], "offices5") == 0
@@ -211,8 +265,8 @@ def test_the_book_writes_only_the_project_instances() -> None:
     x["retail3_enabled"] = True  # включён, но в составе проекта его нет
     applied, _ = core.object_instances_applied(x, copy.deepcopy(core.TEP_DEFAULT))
     got = core._v4_book_objects(applied)
-    assert {"offices3", "offices4", "offices5", "sports2"} <= got
-    assert not {"offices2", "standalone_retail3", "standalone_retail2"} & got
+    assert {"offices3", "offices4", "offices5", "standalone_retail2"} <= got
+    assert not {"offices2", "standalone_retail3"} & got
 
 
 # --- страница ----------------------------------------------------------------
@@ -227,7 +281,7 @@ MIRROR_CASES = [
     {},
     {"offices2_enabled": True, "above_parking2_spaces": 120},
     {"offices3_enabled": True, "object_instances": ["offices2", "offices9"]},
-    {"object_instances": "sports2, retail3"},
+    {"object_instances": "sports2, standalone_retail3"},
     {"object_instances": []},
 ]
 
@@ -243,6 +297,8 @@ STATE = """() => {
     note: bar ? (bar.querySelector('.tep-note')||{}).textContent||'' : '',
     tep: Array.from(document.querySelectorAll('#tepBody td:first-child')).map(td=>td.textContent),
     gba4: Number(inputs.offices4_gba_sqm||0),
+    sportsBar: !!document.querySelector('#inputGroups details[data-group="ФОК / медцентр"] .object-tabs'),
+    sportsGroup: !!document.querySelector('#inputGroups details[data-group="ФОК / медцентр"]'),
   };
 }"""
 
@@ -321,6 +377,8 @@ def test_the_objects_live_inside_the_block_of_their_type(page_run) -> None:
     assert page_run["errors"] == [], page_run["errors"]
     start, full = page_run["start"], page_run["full"]
     assert start["instances"] == [] and start["tabs"] == ["offices"]
+    # ФОК не дублируется: блок на месте, вкладок и «Добавить объект» у него нет.
+    assert start["sportsGroup"] and not start["sportsBar"]
     assert not start["addDisabled"]
     assert full["groups"] == start["groups"]
     assert not any(group.startswith("МФОЦ / офисы ") for group in full["groups"])

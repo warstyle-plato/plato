@@ -135,7 +135,8 @@ PHASE_PRODUCT_KEYS = (
     "apartments", "ground_commercial",
     *_with_instances("standalone_retail"), *_with_instances("offices"),
     *_with_instances("above_parking"), "underground_parking", "storage",
-    "kindergarten", "school", "clinic", *_with_instances("sports"), "other_mandatory",
+    # ФОК не дублируется — экземпляров у него нет.
+    "kindergarten", "school", "clinic", "sports", "other_mandatory",
 )
 
 

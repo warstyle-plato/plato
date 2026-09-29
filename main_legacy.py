@@ -1056,6 +1056,10 @@ class StandaloneObject(NamedTuple):
     # норматив доли ТЭП, мест работы, сносок. Пусто — сам собой. Это НЕ
     # `book_twin`: ФОК берёт у книги блок ТЦ, но торговым центром не является.
     family: str = ""
+    # Бывает ли в проекте несколько объектов этого типа. ФОК — нет: «дубли
+    # только у ТЦ, МФОЦ/офисов, наземного паркинга; ФОК НЕ дублируется»
+    # (владелец, 29.09.2026). Экземпляров такого типа реестр не порождает.
+    duplicable: bool = True
 
     @property
     def product(self) -> str:
@@ -1124,7 +1128,7 @@ OBJECT_TYPES: tuple[StandaloneObject, ...] = (
                      defaults={"gba_sqm": 5000, "saleable_sqm": 3500,
                                "cost_th_per_sqm": 150, "price_th_per_sqm": 300},
                      tep_label="ФОК / медцентр", group_label="ФОК / медцентр",
-                     book_twin="standalone_retail",
+                     book_twin="standalone_retail", duplicable=False,
                      hints={"saleable_sqm": "м²; читается только при продаже — при"
                                             " передаче метры строятся, но не продаются",
                             "cost_th_per_sqm": "тыс. ₽/м² GBA; умолчание — стартовая"
@@ -1136,9 +1140,9 @@ OBJECT_TYPES: tuple[StandaloneObject, ...] = (
 )
 
 
-# Экземпляры объекта. Проект держит столько офисов, ТЦ, наземных паркингов и
-# ФОКов, сколько нужно (владелец, 28.09.2026: «возможность добавлять дубли —
-# хоть 2, хоть 5 объектов»). Прежде вторые объекты были тремя зашитыми
+# Экземпляры объекта. Проект держит столько офисов, ТЦ и наземных паркингов,
+# сколько нужно (владелец, 28.09.2026: «возможность добавлять дубли — хоть 2,
+# хоть 5 объектов»); ФОК не дублируется (`duplicable`). Прежде вторые объекты были тремя зашитыми
 # строками реестра: третий офис или второй ФОК завести было нельзя.
 #
 # Экземпляр — копия своего типа с номером: `offices3`, `retail3_*`. Имена
@@ -1180,7 +1184,8 @@ def object_instance(base: StandaloneObject, number: int) -> StandaloneObject:
 STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = tuple(
     obj for base in OBJECT_TYPES
     for obj in (base, *(object_instance(base, number)
-                        for number in range(2, OBJECT_INSTANCES_MAX + 1))))
+                        for number in range(2, OBJECT_INSTANCES_MAX + 1)
+                        if base.duplicable)))
 
 
 # Вводные объекта порождаются его строкой реестра, а не пишутся руками.
@@ -1835,10 +1840,8 @@ def object_instance_notes(inputs: dict[str, Any] | None) -> list[str]:
     if isinstance(raw, str):
         raw = [part for part in re.split(r"[\s,;]+", raw) if part]
     listed = [str(key) for key in raw] if isinstance(raw, (list, tuple, set, frozenset)) else []
-    notes = [
-        f"объект «{key}» не заведён: такого экземпляра в реестре нет "
-        f"(предел — {OBJECT_INSTANCES_MAX} объектов одного типа)"
-        for key in listed if key not in OBJECT_INSTANCES and key not in _BY_KEY]
+    notes = [_unknown_instance_note(key)
+             for key in listed if key not in OBJECT_INSTANCES and key not in _BY_KEY]
     present = set(project_object_instances(x))
     notes += [
         f"«{obj.group_label}» включён во вводных, но в составе проекта его нет — "
@@ -1848,11 +1851,27 @@ def object_instance_notes(inputs: dict[str, Any] | None) -> list[str]:
     return notes
 
 
+def _unknown_instance_note(key: str) -> str:
+    """Почему экземпляр из присланного списка не заведён.
+
+    Тип узнаётся по явному списку типов, а не по разбору имени: ключ вида
+    «тип + номер» проверяется против каждого недублируемого типа целиком.
+    """
+    for base in OBJECT_TYPES:
+        if not base.duplicable and key in {f"{base.key}{number}" for number in range(2, 100)}:
+            return (f"«{base.group_label}» не дублируется — объект «{key}» не "
+                    "считается; его вводные сохранены как есть")
+    return (f"объект «{key}» не заведён: такого экземпляра в реестре нет "
+            f"(предел — {OBJECT_INSTANCES_MAX} объектов одного типа)")
+
+
 def object_instance_refusal(inputs: dict[str, Any] | None, type_key: str) -> str:
     """Почему экземпляр типа добавить нельзя; пусто — можно."""
     base = _BY_KEY.get(type_key)
     if base is None or base.family:
         return f"типа объекта «{type_key}» нет"
+    if not base.duplicable:
+        return f"«{base.group_label}» не дублируется: в проекте он один"
     present = set(project_object_instances(inputs))
     free = [key for key, obj in OBJECT_INSTANCES.items()
             if obj.family == type_key and key not in present]
@@ -50735,7 +50754,8 @@ function renderInputs(){
    if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
    det.appendChild(sum);
    let fields=grp[1];
-   if(grpObj){
+   // У недублируемого типа (ФОК) вкладок и кнопки «Добавить объект» нет.
+   if(grpObj&&grpObj.duplicable){
     const shown=objectTabObject(grpObj.key);
     det.dataset.object=shown.key;
     det.appendChild(objectTabsBar(grpObj.key,shown));
@@ -56876,6 +56896,7 @@ PAGE = PAGE.replace("__DEVELOPAID_STANDALONE_OBJECTS__", json.dumps(
       # Экземпляр типа (`offices3`) и сам тип: из них страница собирает
       # состав проекта и кнопку «Добавить объект».
       "instance": bool(o.family), "type": o.family or o.key,
+      "duplicable": o.duplicable,
       # Продукт «паркинг объекта» — ключ из движка, страница его не собирает.
       "parking_product": OBJECT_PARKING_PRODUCT_KEYS.get(o.key, "")}
      for o in STANDALONE_OBJECTS], ensure_ascii=False))

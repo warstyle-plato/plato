@@ -242,10 +242,11 @@ PRODUCT_ROWS: dict[str, int] = {item[0]: PRODUCT_FIRST_ROW + index
 # Мест — с запасом, и число их постоянное: всё, что ниже на листе, стоит на
 # вычисленных отсюда строках, и сдвигать их от проекта к проекту нельзя.
 # Мест — по числу объектов, которые реестр движка вообще может дописать: ФОК и
-# экземпляры четырёх типов со второго по пятый (`OBJECT_INSTANCES_MAX`). Модуль
-# движка не импортирует, поэтому число стоит здесь, а сторож
-# `test_a_project_holds_as_many_objects_as_it_needs` сверяет его с реестром.
-EXTRA_PRODUCT_SLOTS = 1 + 4 * (5 - 1)
+# экземпляры трёх дублируемых типов (офисы, ТЦ, наземный паркинг) со второго по
+# пятый (`OBJECT_INSTANCES_MAX`). Модуль движка не импортирует, поэтому число
+# стоит здесь, а сторож `test_a_project_holds_as_many_objects_as_it_needs`
+# сверяет его с реестром.
+EXTRA_PRODUCT_SLOTS = 1 + 3 * (5 - 1)
 EXTRA_PRODUCT_FIRST_ROW = PRODUCT_FIRST_ROW + len(PRODUCT_ITEMS)
 PRODUCT_TOTAL_ROW = EXTRA_PRODUCT_FIRST_ROW + EXTRA_PRODUCT_SLOTS
 

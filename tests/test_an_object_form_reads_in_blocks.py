@@ -128,7 +128,8 @@ def test_the_page_draws_the_blocks_of_every_object() -> None:
     path = browser.chromium_or_skip()
     # Экземпляр своей группы не имеет: он вкладка в блоке своего типа.
     groups = [o.group_label for o in core.OBJECT_TYPES]
-    seconds = {base.key: core.object_instance(base, 2) for base in core.OBJECT_TYPES}
+    seconds = {base.key: core.object_instance(base, 2) for base in core.OBJECT_TYPES
+               if base.duplicable}
     future = core.standalone_object_group(FUTURE)
     future_sections = {f[0]: core.standalone_object_section(FUTURE, f[0])
                        for f in future[1]}
@@ -151,8 +152,9 @@ def test_the_page_draws_the_blocks_of_every_object() -> None:
             got_future = page.evaluate(PROBE, [future[0]])
     for obj in core.OBJECT_TYPES:
         _check(obj.group_label, got[obj.group_label], _expected(obj))
-        _check(obj.group_label + " · объект 2", got_seconds[obj.group_label],
-               _expected(seconds[obj.key]))
+        if obj.key in seconds:
+            _check(obj.group_label + " · объект 2", got_seconds[obj.group_label],
+                   _expected(seconds[obj.key]))
     _check(future[0], got_future[future[0]], _expected(FUTURE))
     # Деньги метров и деньги мест — в разных блоках, как бы ни звалось поле.
     offices = {f[0]: f[1] for f in got["МФОЦ / офисы"]["fields"]}
