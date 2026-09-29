@@ -7682,6 +7682,44 @@ _LAND_LOOKUP_STANDING_NOTES = (
 )
 
 
+class LandContourObjectsRequest(BaseModel):
+    # Контур площадки КРТ — кольца в веб-меркаторе, как их отдаёт
+    # `_krt_site_finder` (файл карты реестра или участки перечня решения).
+    rings_merc: list[list[list[float]]] = []
+
+
+def _nspd_layer_in_bounds(layer_id: int,
+                          bounds: tuple[float, float, float, float]) -> list[dict[str, Any]]:
+    """Объекты слоя НСПД, задевающие рамку, — нормализованные, как карточка ЕГРН.
+
+    Тот же GetFeatureInfo рамкой, которым скрининг спрашивает зоны по контуру
+    участка (`_nspd_getfeatureinfo(bounds=...)`), с тем же предохранителем.
+    Бросает HTTPException: неответ портала — не пустая рамка.
+    """
+    payload = _nspd_getfeatureinfo(0.0, 0.0, int(layer_id), bounds=tuple(bounds))
+    return [_normalize_nspd_feature(feature) for feature in _nspd_features(payload)]
+
+
+def _land_contour_objects(rings_merc: list[list[list[float]]]) -> dict[str, Any]:
+    """ОКС и ЗУ в контуре КРТ по карте НСПД. С Render — на ядро, как `/land/lookup`.
+
+    Сетку рамок, дробление упёршихся в потолок ответа и долю в контуре держит
+    `auction_search.krt_contour_objects.collect`; здесь только доступ к НСПД.
+    """
+    url = _core_api_url("/land/contour-objects")
+    if url:
+        return _core_post(url, {"rings_merc": rings_merc}, _MO_CALC_TIMEOUT_SECONDS)
+    from auction_search import krt_contour_objects
+
+    return krt_contour_objects.collect(rings_merc, _nspd_layer_in_bounds)
+
+
+@app.post("/land/contour-objects", include_in_schema=False)
+def land_contour_objects(req: LandContourObjectsRequest) -> dict[str, Any]:
+    """Объекты в контуре площадки — ответ ядра для Render. Долго: зовётся фоном."""
+    return _land_contour_objects(list(req.rings_merc or []))
+
+
 @app.post("/land/lookup")
 def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
     """Сведения ЕГРН по кадастровому номеру, адресу или координатам — по всей России."""
@@ -49700,7 +49738,7 @@ const TERRITORY_INPUT_KEYS=[
  'parking_k1','parking_k2','parking_rail_distance_m'
 ];
 const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
- '_site_area_user_set','_site_density_user_set'];
+ '_site_area_user_set','_site_density_user_set','_demolition_source'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
 // данные участка, и сбрасывать их при смене территории нельзя.
@@ -50163,7 +50201,16 @@ function classFieldSource(k){
  if(!s||!s.by||!isClassManual(k))return '';
  return Math.abs(Number(inputs[k])-Number(s.value))<1e-9?String(s.by):'';
 }
+// Площадь сноса, найденная по контуру КРТ, подписана своим происхождением,
+// пока число в поле то же, что положил контур; исправленное — уже ручное.
+function demolitionSourceText(id){
+ const s=id==='demolition_area_sqm'&&inputs._demolition_source;
+ if(!s||!s.by)return '';
+ return Math.abs(Number(inputs[id])-Number(s.value))<0.05?String(s.by):'';
+}
 function classFieldUnitText(id,unit){
+ const demolition=demolitionSourceText(id);
+ if(demolition)return unit+' · '+demolition+' — исправьте, если здание сохраняется';
  if(!classSetsField(id))return unit;
  if(!isClassManual(id))return unit+' · ставит класс проекта, правится в «Настройках класса»';
  return unit+' · '+(classFieldSource(id)||'вписано руками')+' — смена класса его не затрёт';
@@ -51110,7 +51157,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от

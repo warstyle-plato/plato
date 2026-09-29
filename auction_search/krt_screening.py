@@ -919,6 +919,21 @@ def build_krt_model_screening(
         # Площадь доезжает в штатное поле DevelopAid; нулевая стоимость не
         # маскируется допущением — ниже такой прогон лишается зелёного статуса.
         inputs["demolition_area_sqm"] = duties["demolition_area_sqm"]
+        inputs["_demolition_source"] = {
+            "value": duties["demolition_area_sqm"], "kind": "krt_decision",
+            "by": f"проект решения, {duties['demolition_objects']} объектов под снос"}
+    # Здания в контуре на карте НСПД — полнее перечня: решение не прочитано
+    # или перечень неполон, а здания на территории есть. Ответ собран фоном и
+    # читается с диска; сети внутри расчёта нет.
+    from auction_search import krt_contour_objects
+
+    contour_demolition = None
+    contour_slug = str(project.get("slug") or "")
+    if contour_slug and krt_contour_objects.cached(contour_slug):
+        contour_view = krt_contour_objects.view(contour_slug, requirements)
+        if contour_view.get("available"):
+            contour_demolition = contour_view["demolition"]
+            inputs.update(krt_contour_objects.apply_demolition(inputs, contour_demolition))
 
     tep = _empty_tep(core)
     applied_ratios, ratio_warnings = core.tep_ratios_applied(tep_ratios)
@@ -1376,7 +1391,15 @@ def build_krt_model_screening(
             f"{_ru_number(programme['city']['total_gfa_sqm'])} м², разница "
             f"{_ru_number(programme['balance']['difference_sqm'])} м². В модель взяты слагаемые."
         )
-    if duties["demolition_area_sqm"] > 0:
+    if contour_demolition is not None and (inputs.get("_demolition_source") or {}).get(
+            "kind") == "krt_contour":
+        exclusions.append(
+            f"Снос по контуру КРТ: {_ru_number(contour_demolition['area_sqm'], 1)} м² — "
+            f"{contour_demolition['objects']} ОКС в контуре на карте НСПД "
+            f"({contour_demolition['by_decision']} по решению, "
+            f"{contour_demolition['assumed']} по допущению). "
+            + " ".join(a.rstrip(".") + "." for a in contour_demolition["assumptions"]))
+    elif duties["demolition_area_sqm"] > 0:
         exclusions.append(
             f"Проект решения требует безусловный снос {_ru_number(duties['demolition_area_sqm'], 1)} м²: "
             "площадь передана в DevelopAid, но стоимость сноса не опубликована и пока не включена в CAPEX."
