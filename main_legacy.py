@@ -46038,6 +46038,15 @@ function objectInProject(key){
  return !o||!o.instance||projectInstances().includes(key);
 }
 function projectObjects(){return STANDALONE_OBJECTS.filter(o=>objectInProject(o.key))}
+// Поле объекта (по приставке его строки реестра) — в проекте ли оно. Поле не
+// объекта — всегда. Тот же предикат состава, что у расчёта и формы: окно
+// «Настройки классов» не показывает строки экземпляра, которого нет в проекте
+// (владелец, 29.09.2026: «зачем они в настройках, если не добавлены»).
+function objectOfField(k){
+ const id=String(k);
+ return STANDALONE_OBJECTS.find(o=>id.startsWith(o.prefix+'_'))||null;
+}
+function fieldInProject(k){const o=objectOfField(k);return !o||objectInProject(o.key)}
 // Почему экземпляр типа добавить нельзя; пусто — можно. Предел — отказ с
 // причиной, а не молчаливая обрезка (`object_instance_refusal` движка).
 function objectInstanceRefusal(type){
@@ -49923,7 +49932,7 @@ function classFieldUnitText(id,unit){
 function refreshClassFieldUnit(id){
  const span=document.querySelector('.field[data-field="'+id+'"] > label > .unit');
  if(!span)return;
- for(const grp of FIELD_GROUPS)for(const f of grp[1])if(f[0]===id){span.textContent=classFieldUnitText(id,f[2]);return}
+ for(const grp of allFieldGroups())for(const f of grp[1])if(f[0]===id){span.textContent=classFieldUnitText(id,f[2]);return}
 }
 
 function applyProjectClassPreset(selectedKey){
@@ -49934,15 +49943,19 @@ function applyProjectClassPreset(selectedKey){
  // Вписанное руками, что класс поменял бы, называется поимённо, и решает
  // человек: заменить значениями класса или оставить своё. Без окна (стенд,
  // встроенный вид) — оставить: молча терять ручное хуже, чем не поставить класс.
- const manual=classManualKeys().filter(k=>Object.prototype.hasOwnProperty.call(p,k)
+ const manualAll=classManualKeys().filter(k=>Object.prototype.hasOwnProperty.call(p,k)
    &&isFinite(Number(inputs[k]))&&Math.abs(Number(inputs[k])-classValue(key,k))>1e-9);
- let keep=[];
+ // О вписанном у экземпляра вне проекта не спрашиваем — его в проекте нет, — но
+ // и не затираем: добавят объект снова, и число человека вернётся с ним.
+ const manual=manualAll.filter(fieldInProject);
+ const hiddenManual=manualAll.filter(k=>!fieldInProject(k));
+ let keep=hiddenManual.slice();
  if(manual.length){
   const lines=manual.map(k=>`${classFieldLabel(k)}: ${Number(inputs[k]).toLocaleString('ru-RU')} → ${classValue(key,k).toLocaleString('ru-RU')}`).join('\n');
   const ask=typeof window!=='undefined'&&typeof window.confirm==='function'?window.confirm.bind(window):null;
   const replace=ask?ask(`Класс «${p.label||key}» заменит числа, вписанные руками:\n${lines}\n\nОК — заменить значениями класса.\nОтмена — оставить вписанные руками.`):false;
   if(replace)inputs._class_manual=classManualKeys().filter(k=>!manual.includes(k));
-  else keep=manual;
+  else keep=keep.concat(manual);
  }
  inputs.project_class=key;
  // Личная перекрышка сильнее общей базы: применяется значение человека,
@@ -50362,7 +50375,9 @@ async function setClassBase(c,k,value){
 function renderClassDialog(){
  const box=document.getElementById('classDialogBody');if(!box)return;
  const classes=Object.keys(PROJECT_CLASS_PRESETS);
- const keys=Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label');
+ // Строки экземпляров вне проекта не рисуются; их значения и перекрышки
+ // остаются и вернутся строками, когда экземпляр добавят.
+ const keys=Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label'&&fieldInProject(k));
  const cur=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
  const confLabels={high:'высокое',medium:'среднее',limited:'ограниченное',pilot:'пилотное — источников мало',insufficient:'недостаточно данных'};
  const thous=v=>v==null?'—':(v/1000).toLocaleString('ru-RU',{maximumFractionDigits:1});
