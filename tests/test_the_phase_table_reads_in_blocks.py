@@ -300,6 +300,11 @@ def _open(pw, chrome, bundle, width: int):
     page.on("pageerror", lambda exc: errors.append(str(exc)))
     page.goto(f"http://127.0.0.1:{PORT}/", wait_until="domcontentloaded")
     page.wait_for_function("typeof renderPhaseComparison==='function'")
+    # Страница при загрузке сама считает модель, и ответ сбрасывает
+    # `phaseBundle` и прячет карточку сравнения. Подложенный раньше ответа
+    # пакет пропадал, когда пересчёт приходил позже (медленная машина CI):
+    # заголовки блоков получали высоту 0. Ждём, пока сеть затихнет.
+    page.wait_for_load_state("networkidle")
     page.evaluate(
         "b=>{phaseBundle=b;let n=document.getElementById('phaseComparisonCard');"
         "while(n){if(n.style)n.style.display='block';n=n.parentElement}"

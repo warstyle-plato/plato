@@ -82,7 +82,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.80"
+VERSION = "0.24.81"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -45696,7 +45696,7 @@ details.cadastral-box>summary::marker{color:#888}
           <table class="metric-table metric-compact" id="reportFinanceTable"></table>
         </div>
         <div class="card">
-          <div class="section-title">Ставки и долговая нагрузка</div>
+          <div class="section-title">Ставки финансирования</div>
           <table class="metric-table metric-compact" id="ratesDebtTable"></table>
         </div>
       </div>
@@ -54290,7 +54290,10 @@ function renderResult(){
   // Цена входа стояла только в «Параметрах проекта» ниже и в PDF первой
   // строкой ключевой экономики: экран и отчёт расходились по составу, а
   // главное число сделки в шапку не попадало вовсе.
-  ['Цена приобретения',money(expenseGroup('Цена приобретения'))],
+  // Цена не задана — это «не задана», а не «0 млрд ₽»: карточка решения выше
+  // говорит «не задана», и плитка рядом с нулём ей противоречила (ревизия
+  // интерфейса, S17). Правило то же, что у карточки: цена больше нуля.
+  ['Цена приобретения',(v=>v>0?money(v):'не задана')(expenseGroup('Цена приобретения'))],
   // Чем оплачен вход: свои деньги и пик банковского долга до ПФ. Прежде здесь
   // стояли оба БРИДЖа сразу — лимит банка и фактическая потребность, — и рядом
   // они читались как расхождение, а не как разные величины. Остался один,
@@ -54410,10 +54413,13 @@ function renderResult(){
   `<tr><th>EBITDA</th><th>${money(r.summary.ebitda)}</th></tr>`+
   row('Проценты и комиссии',`(${money(r.summary.financing_cost)})`)+
   `<tr><th>Прибыль до налога</th><th>${money(r.summary.profit_before_tax)}</th></tr>`+
+  // Без строки НДС экономика не сходилась: прибыль до налога минус налог
+  // давала не чистую прибыль, и разницу человеку было негде найти. НДС стоит
+  // ПЕРЕД налогом на прибыль — в том порядке, в каком его вычитает база налога
+  // (блок «Налоговая база»): стоя после, он читался платой из чистой прибыли
+  // (ревизия интерфейса, S33). Числа те же, меняется только порядок строк.
+  row('НДС к уплате',`(${money(r.summary.vat||0)})`)+
   row('Налог на прибыль',`(${money(r.summary.profit_tax)})`)+
-  // Без этой строки экономика не сходилась: прибыль до налога минус налог
-  // давала не чистую прибыль, и разницу человеку было негде найти.
-  row('НДС',`(${money(r.summary.vat||0)})`)+
   `<tr><th>Чистая прибыль</th><th>${money(r.summary.net_profit)}</th></tr>`+
   row('Маржинальность',pct(r.summary.margin))+
   row('NPV',money(r.summary.npv))+
@@ -54513,16 +54519,9 @@ function renderResult(){
       +(Number(r.report.financing.ending_pf||0)>0?' · дефолт':''),
       money(r.report.financing.ending_pf))+
   (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
-  row('Текущая ключевая ставка',pct(r.report.financing.current_key_rate))+
-  row('Спред БРИДЖ',pct(r.report.financing.bridge_spread))+
-  row('Ставка БРИДЖ на текущей ключевой',pct(r.report.financing.current_bridge_rate))+
-  row('Средняя ключевая за период БРИДЖ',pct(r.report.financing.avg_bridge_key_rate))+
-  row('Средневзвешенная ставка БРИДЖ за период',pct(r.report.financing.avg_bridge_rate))+
-  row('Средняя ключевая ставка в период ПФ',pct(r.report.financing.avg_pf_key_rate))+
-  row('Средняя ставка ПФ без эффекта эскроу',pct(r.report.financing.avg_pf_base_rate))+
-  row('Ставка ПФ при покрытии эскроу 1×',pct(r.report.financing.pf_special_rate))+
-  pfStepRows(r.report.financing)+
-  row('Средняя фактическая ставка ПФ с учётом эскроу',pct(r.report.financing.avg_pf_effective_rate))+
+  // Ставки — в соседней карточке «Ставки и долговая нагрузка»: десять строк
+  // стояли в обеих карточках рядом, одними словами и одними числами (ревизия
+  // интерфейса, S7). Здесь — лимиты, пики и итог долга; там — только ставки.
   row('Проценты и комиссии',money(r.report.financing.interest_and_fees))+
   `<tr><th>LLCR</th><th>${mult(r.summary.llcr)}</th></tr>`;
 
@@ -54759,12 +54758,9 @@ function renderResult(){
   row('Средняя ставка ПФ без эффекта эскроу',pct(r.report.financing.avg_pf_base_rate))+
   row('Ставка ПФ при покрытии эскроу 1×',pct(r.report.financing.pf_special_rate))+
   pfStepRows(r.report.financing)+
-  row('Средняя фактическая ставка ПФ с учётом эскроу',pct(r.report.financing.avg_pf_effective_rate))+
-  row('Пиковый БРИДЖ',money(r.report.financing.actual_bridge))+
-  row('Пиковый ПФ',money(r.report.financing.pf_peak))+
-  row('Лимит ПФ',money(r.report.financing.pf_limit))+
-  row('Проценты и комиссии',money(r.report.financing.interest_and_fees))+
-  row('LLCR',mult(r.summary.llcr));
+  // Пики, лимит, проценты и LLCR — в карточке «Финансирование» рядом; здесь
+  // стояли их повторы (ревизия интерфейса, S7).
+  row('Средняя фактическая ставка ПФ с учётом эскроу',pct(r.report.financing.avg_pf_effective_rate));
 
  // Признак приходит из движка и читается как есть: выводить «продаётся ли»
  // из нулевой выручки значило бы путать «не продал в этом расчёте» с «не
@@ -54822,7 +54818,9 @@ function renderResult(){
   if(paceEl)paceEl.innerHTML=Number(ap.units_total||0)>0?
    row('Квартир в проекте',num(Math.round(ap.units_total))+' шт.')+
    row('Средняя площадь квартиры',num2(ap.avg_unit_sqm)+' м²')+
-   row('Средняя цена квартиры',money(Number(ap.avg_unit_price_mln||0)*1e6))+
+   // Цена одной квартиры — десятки миллионов: в миллиардах она выходила
+   // «0,03 млрд ₽» (ревизия интерфейса, S5). PDF пишет её в млн ₽ — так же.
+   row('Средняя цена квартиры',mln(Number(ap.avg_unit_price_mln||0)*1e6))+
    row('Темп продаж до РВЭ',num2(ap.pace_pre_rve_units)+' кв./мес.')+
    row('Средний темп за период продаж',num2(ap.pace_units)+' кв./мес.')+
    row('Пиковый месяц',num2(ap.peak_units)+' кв.')
@@ -54885,7 +54883,7 @@ function renderResult(){
   capexTable.innerHTML=Object.entries(r.capex).filter(([key,v])=>key!=='total'&&Math.abs(Number(v||0))>=0.5)
    .sort((a,b)=>capRank(a[0])-capRank(b[0]))
    .map(([key,v])=>`<tr><td>${capNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,cGns)}</td><td>${perTh(v,cSaleable)}</td></tr>`).join('')
-   +`<tr><th>Итого</th><th>${money(r.capex.total)}</th><th>${perTh(r.capex.total,cGns)}</th><th>${perTh(r.capex.total,cSaleable)}</th></tr>`;
+   +`<tr><th>Итого CAPEX</th><th>${money(r.capex.total)}</th><th>${perTh(r.capex.total,cGns)}</th><th>${perTh(r.capex.total,cSaleable)}</th></tr>`;
  }
  // Построенных штук и проданных — разные числа, и до сих пор на экране стояло
  // только первое. Разниц теперь две: гостевые места (строятся, но общие) и
