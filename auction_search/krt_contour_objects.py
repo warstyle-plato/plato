@@ -456,6 +456,57 @@ def apply_demolition(inputs: dict[str, Any], summary: dict[str, Any] | None) -> 
     return out
 
 
+def apply_buyout(inputs: dict[str, Any], buyout: dict[str, Any] | None) -> dict[str, Any]:
+    """Положить оценку выкупа во вводную `land_buyout_mln` — если человек не вписал свою.
+
+    Число — кадастровая стоимость не-московских ЗУ и ОКС контура без дублей
+    (`_cached_cadastral_buyout`), подпись — «кадастровая стоимость, не цена
+    сделки». Собственник не определён — не ноль: объекты перечисляются в
+    отметке предупреждением, а в число входят только доказанные. Сбор не
+    закончен (ЕГРН дочитывается) — вводная не трогается.
+    """
+    out = dict(inputs or {})
+    if not isinstance(buyout, dict) or buyout.get("pending"):
+        return out
+    unknown = [str(n) for n in (buyout.get("unknown_numbers") or [])]
+    if buyout.get("available"):
+        value = buyout.get("amount_mln")
+    elif unknown or buyout.get("known_paid_mln"):
+        value = buyout.get("known_paid_mln")
+    else:
+        return out
+    if not isinstance(value, (int, float)):
+        return out
+    current = out.get("land_buyout_mln")
+    try:
+        current_value = float(current or 0)
+    except (TypeError, ValueError):
+        current_value = 0.0
+    marker = out.get("_land_buyout_source")
+    auto = isinstance(marker, dict) and _same(marker.get("value"), current_value)
+    if current_value > 0 and not auto:
+        out["_land_buyout_source_skipped"] = {
+            "value": round(float(value), 3),
+            "reason": "выкуп вписан вручную — оценка по контуру его не затирает",
+        }
+        return out
+    paid = int(buyout.get("paid_count") or 0)
+    city = int(buyout.get("moscow_zero_count") or 0)
+    by = (f"кадастровая стоимость, не цена сделки: {paid} объектов не Москвы"
+          + (f", {city} у Москвы — 0" if city else ""))
+    warn = ""
+    if unknown:
+        warn = (f"собственник не определён у {len(unknown)} объектов — в сумму не вошли, "
+                f"выкуп занижен на них: {', '.join(unknown[:20])}")
+    elif not buyout.get("available"):
+        warn = str(buyout.get("reason") or "выкуп собран не полностью")
+    out["land_buyout_mln"] = round(float(value), 3)
+    out["_land_buyout_source"] = {"value": round(float(value), 3), "by": by,
+                                  "kind": "krt_contour", "warn": warn,
+                                  "unknown": unknown[:60]}
+    return out
+
+
 def _same(a: Any, b: Any) -> bool:
     try:
         return abs(float(a) - float(b)) < 0.05

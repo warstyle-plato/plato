@@ -644,6 +644,18 @@ def _cached_cadastral_buyout(
     }
 
 
+def _manual_buyout_mln(inputs: dict[str, Any]) -> float | None:
+    """Выкуп, вписанный руками: ненулевой и без отметки контура о своём числе."""
+    value = _number(inputs.get("land_buyout_mln"))
+    if value is None or value <= 0:
+        return None
+    marker = inputs.get("_land_buyout_source")
+    if isinstance(marker, dict) and _number(marker.get("value")) is not None \
+            and abs(float(_number(marker.get("value"))) - value) < 0.0005:
+        return None
+    return value
+
+
 def _social_burden_from_inputs(inputs: dict[str, Any]) -> tuple[float, list[str]]:
     specs = (
         ("kindergarten_places", "kindergarten_cost_mln_per_place", "ДОО"),
@@ -848,7 +860,13 @@ def generic_project_burden(
     cadastral_mln = float(buyout.get("amount_mln") or 0.0)
 
     rated_inputs = copy.deepcopy(inputs)
-    rated_inputs["purchase_price_mln"] = cadastral_mln
+    # Выкуп — своя статья CAPEX до РнС (решение владельца, 29.09.2026), а не
+    # цена входа: ёмкость входа теперь и есть цена права КРТ, без вычета.
+    # Вписанное руками в вводную сильнее кадастровой оценки.
+    manual_buyout = _manual_buyout_mln(inputs)
+    if manual_buyout is not None:
+        cadastral_mln = manual_buyout
+    rated_inputs["land_buyout_mln"] = cadastral_mln
     rated_inputs["demolition_area_sqm"] = demolition_area
     rated_inputs["demolition_cost_th_per_sqm"] = demolition_rate
     if resettlement_mln > 0:
@@ -888,7 +906,7 @@ def generic_project_burden(
             if isinstance(capacity, dict) and capacity.get("available"):
                 gross = _number(capacity.get("amount_mln"))
                 if gross is not None:
-                    right_capacity = max(0.0, gross - cadastral_mln)
+                    right_capacity = max(0.0, gross)
         except Exception:  # noqa: BLE001
             right_capacity = None
 
@@ -1019,7 +1037,7 @@ def _ordinary_capex(core: Any, inputs: dict[str, Any], tep: dict[str, Any],
     base_phasing = copy.deepcopy(phasing)
     for key in (
         "purchase_price_mln", "land_rights_cost_mln", "social_compensation_mln",
-        "resettlement_cost_mln", "demolition_area_sqm", "demolition_cost_th_per_sqm",
+        "resettlement_cost_mln", "land_buyout_mln", "demolition_area_sqm", "demolition_cost_th_per_sqm",
         "vri_security_cost_mln",
     ):
         if key in base_inputs:
@@ -1062,17 +1080,18 @@ def nagatino_live_example(core: Any) -> dict[str, Any]:
     stack.pop("territory", None)
     inputs, tep, phasing = _merge_model(core, preview)
 
-    # The KRT right itself is zero in the baseline.  Cadastral buyout is a real
-    # acquisition outflow and therefore occupies purchase-price capacity.
+    # The KRT right itself is zero in the baseline.  Cadastral buyout is its
+    # own CAPEX article before the permit (owner decision 29.09.2026), so the
+    # goal-sought entry price IS the capacity for the KRT right.
     cadastral_mln = float(stack["cadastral_buyout_mln"])
-    inputs["purchase_price_mln"] = cadastral_mln
+    inputs["land_buyout_mln"] = cadastral_mln
 
     result: dict[str, Any] = {
         "name": "КРТ Нагатино",
         "source": "59 выписок ЕГРН + извещение торгов + пресет DevelopAid",
         "cost_stack": stack,
         "method_note": (
-            "Кадастровый выкуп проведён как часть acquisition cash-out. "
+            "Кадастровый выкуп — своя статья CAPEX до РнС, не цена входа. "
             "Цена самого права КРТ в базовом LLCR равна нулю."
         ),
     }
@@ -1084,7 +1103,7 @@ def nagatino_live_example(core: Any) -> dict[str, Any]:
             _number((capacity or {}).get("amount_mln"))
             if isinstance(capacity, dict) and capacity.get("available") else None
         )
-        right_capacity = None if total_capacity is None else total_capacity - cadastral_mln
+        right_capacity = total_capacity
 
         start_rub = _number((preset.get("transaction") or {}).get("start_price_rub"))
         if start_rub is None:
@@ -1093,7 +1112,7 @@ def nagatino_live_example(core: Any) -> dict[str, Any]:
         at_start = None
         if start_mln is not None:
             at_start = model_at_asking_price(
-                core, inputs, tep, phasing, cadastral_mln + start_mln
+                core, inputs, tep, phasing, start_mln
             )
         ordinary_capex = _ordinary_capex(core, inputs, tep, phasing)
         # Неизвестная кадастровая стоимость не ноль (`missing_cadastral_value:
