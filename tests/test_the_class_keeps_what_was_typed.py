@@ -61,8 +61,8 @@ def test_the_class_window_names_the_object_and_the_rule() -> None:
     # Строка — это подпись плюс единица; пояснение правила стоит после «·».
     names = [row.split(" · ")[0] for row in rows]
     assert len(names) == len(set(names)), f"в окне класса две одинаковые строки: {names}"
-    offices = next(r for r in rows if r.startswith("Стартовая цена — МФОЦ / офисы"))
-    retail = next(r for r in rows if r.startswith("Стартовая цена — ТЦ / коммерция ОСЗ"))
+    offices = next(r for r in rows if r.startswith("МФОЦ / офисы: стартовая цена"))
+    retail = next(r for r in rows if r.startswith("ТЦ / коммерция ОСЗ: стартовая цена"))
     # У нежилого своя цена: правило даёт только базу класса, дальше за ценой
     # квартир она не идёт (владелец, 28.09.2026), и строка этого не обещает.
     for row in (offices, retail):
