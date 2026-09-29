@@ -81,3 +81,15 @@ def test_card_and_catalogue_share_one_rule() -> None:
     card = page_blocks.function("krtTermText", krt_investment_card_page("x"))
     catalogue = page_blocks.function("krtTermText", auctions_page())
     assert card == catalogue
+
+
+def test_a_dash_and_a_torn_word_still_give_the_term() -> None:
+    """Живые варианты каталога: «…» – 6 лет» вместо «составляет» и «реше ния»."""
+    dash = krt_requirements.decision_term(
+        "4. Предельный срок реализации решения о КРТ «Фестивальная ул.. влд. 53А» – "
+        "6 лет со дня заключения договора о КРТ « Фестивальная ул. » или договора.")
+    assert dash["label"] == "6 лет со дня заключения договора о КРТ" and dash["point"] == "4"
+    torn = krt_requirements.decision_term(
+        "Предельный срок реализации реше ния о КРТ « вдоль Синельниковской ул.; "
+        "1-я Горловская улица, вл д. 4 » составляет 7 лет со дня заключения договора.")
+    assert torn["value"] == 7 and torn["unit"] == "years"
