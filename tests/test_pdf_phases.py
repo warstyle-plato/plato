@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
-from terms_glossary import TOTAL_AREA  # noqa: E402
+from terms_glossary import CORE_TOTAL_AREA, TOTAL_AREA  # noqa: E402
 
 
 def phased_payload():
@@ -110,6 +110,7 @@ def test_unit_metrics_are_shown(phased_text):
     # Запрещается МЕСТО, а не слово: «тыс. ₽/м² строит. объёма» в предпосылках —
     # верная подпись ставки наружных сетей, её правда умножают на весь объём.
     assert "на м² строит. объёма" not in flat
+    assert f"на м² {CORE_TOTAL_AREA.genitive}" not in flat
     assert f"на м² {TOTAL_AREA.genitive}" not in flat, (
         "колонка очередей названа базой, которой не делится")
 

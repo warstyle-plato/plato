@@ -28,7 +28,7 @@ sys.path.insert(0, str(ROOT))
 import main as _wrapper  # noqa: E402
 import terms_glossary  # noqa: E402
 from browser import chromium_or_skip, serve  # noqa: E402
-from terms_glossary import TOTAL_AREA  # noqa: E402
+from terms_glossary import CORE_TOTAL_AREA, TOTAL_AREA  # noqa: E402
 
 core = _wrapper.core
 PORT = 19631
@@ -52,8 +52,10 @@ def bundle():
 def test_the_glossary_owns_the_word() -> None:
     """Слово — у словаря, в движке старого нет ни в одной строке, что видна."""
     assert TOTAL_AREA.unit == "м²"
-    assert TOTAL_AREA.name == "Суммарная площадь"
-    assert "наземная ГНС + подземная" in TOTAL_AREA.full
+    # Название — решение владельца (29.09.2026): СПП по ГлавАПУ только
+    # наземная, «общая площадь» у нас и у ГлавАПУ — НП.
+    assert TOTAL_AREA.full == "Суммарная площадь в ГНС (СПП + подземная), м²"
+    assert "Общая" not in TOTAL_AREA.name and not TOTAL_AREA.name.startswith("СПП")
     # Страница получает словарь целиком, а не копию слов.
     assert "const TERMS=__DEVELOPAID_TERMS__" not in core.PAGE
     assert f'"name": "{TOTAL_AREA.name}"' in core.PAGE
@@ -153,3 +155,31 @@ def test_the_rendered_page_names_the_sum_by_the_glossary() -> None:
     assert got["note"], "подписи под ТЭП отчёта нет"
     note = _flat(got["note"])
     assert note.startswith(f"{TOTAL_AREA.name} — "), note[:120]
+
+
+def test_the_shared_articles_name_their_own_base(bundle) -> None:
+    """Общие статьи считаются от суммарной площади МКД, а не проекта.
+
+    Под одним именем стояли две величины: база общих статей `core_total_gns`
+    (только жилые дома) и сумма всего проекта. Пояснение «на ней считаются
+    общие статьи» висело у второй — с объектами это неправда.
+    """
+    pypdf = pytest.importorskip("pypdf")
+    inputs, tep, report = bundle
+    summary = report["consolidated"]["summary"]
+    tep_report = report["consolidated"]["tep"]
+    core_total = tep_report["core_above_gns"] + tep_report["core_under_gns"]
+    # С соцобъектом база общих статей меньше суммы проекта — иначе проверять нечего.
+    assert core_total < summary["construction_volume_sqm"]
+    assert CORE_TOTAL_AREA.name != TOTAL_AREA.name
+    result = core.calculate(core.CalcRequest(inputs=copy.deepcopy(inputs),
+                                             tep=copy.deepcopy(tep), rates=[]))
+    content = core._build_developaid_pdf({
+        "project_name": "Словарь терминов", "result": result,
+        "inputs": inputs, "tep": tep, "rates": [],
+    })
+    reader = pypdf.PdfReader(io.BytesIO(content))
+    text = _flat("\n".join(page.extract_text() or "" for page in reader.pages))
+    line = text[text.index("Общие статьи"):][:300]
+    assert CORE_TOTAL_AREA.genitive in line, line
+    assert core._pdf_num(core_total, 0).replace("\xa0", " ") in line, line

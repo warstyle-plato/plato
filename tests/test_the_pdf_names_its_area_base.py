@@ -91,7 +91,7 @@ def test_the_construction_volume_is_named_where_it_works(report) -> None:
     assert above + under == volume, (above, under, volume)
     assert TOTAL_AREA.name in line
     # На нём считаются общие статьи — без этого читатель не знает, зачем оно.
-    assert "общие статьи" in line
+    assert "общие статьи" in line.lower()
 
 
 def test_a_mixed_number_is_never_labelled_gns(report) -> None:

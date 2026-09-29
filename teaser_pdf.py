@@ -326,7 +326,7 @@ def _tep_rows(model: dict[str, Any], fm: _Formats) -> list[tuple[str, str, str]]
     gns = fm.sqm(tep.get("project_gns_sqm"))
     rows.append(("Наземная площадь ГНС", gns, "м²"))
     if density:
-        rows.append(("Плотность застройки", fm.num(density, 0), "м²/га"))
+        rows.append(("Плотность застройки по наземной ГНС", fm.num(density, 0), "м²/га"))
     if tep.get("underground_gns_sqm"):
         rows.append(("Подземная часть", fm.sqm(tep.get("underground_gns_sqm")), "м²"))
     rows.append((TOTAL_AREA.name, fm.sqm(tep.get("construction_volume_sqm")), "м²"))

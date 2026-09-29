@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
-from terms_glossary import TOTAL_AREA  # noqa: E402
+from terms_glossary import CORE_TOTAL_AREA, TOTAL_AREA  # noqa: E402
 
 PORT = 18247
 
@@ -231,14 +231,14 @@ def test_the_shared_rates_say_they_are_on_the_construction_volume() -> None:
     for key in ("ird_th_per_sqm", "design_p_th_per_sqm", "design_rd_th_per_sqm",
                 "preparation_th_per_sqm", "utilities_th_per_sqm",
                 "commissioning_th_per_sqm", "site_maintenance_th_per_sqm"):
-        assert f"м² {TOTAL_AREA.genitive}" in hints[key], (key, hints[key])
+        assert f"м² {CORE_TOTAL_AREA.genitive}" in hints[key], (key, hints[key])
     # Благоустройство в этом списке стояло и проходило проверку НА ОТРИЦАНИИ:
     # подсказка говорила «тыс. ₽/м² благоустроенной территории, а НЕ
     # строительного объёма», и подстрока не отличила утверждение от его
     # отрицания. База у статьи двор (правило 10.09.2026), и теперь это
     # проверяется прямо — вместе с предохранителем от возврата в список.
     assert "двора" in hints["landscaping_th_per_sqm"], hints["landscaping_th_per_sqm"]
-    assert TOTAL_AREA.genitive not in hints["landscaping_th_per_sqm"]
+    assert CORE_TOTAL_AREA.genitive not in hints["landscaping_th_per_sqm"]
     # У СМР базы свои, и они названы своими именами.
     assert "наземной части" in hints["main_above_th_per_sqm"]
     assert "подземной части" in hints["main_under_th_per_sqm"]

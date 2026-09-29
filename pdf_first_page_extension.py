@@ -271,6 +271,9 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
             area_text = (core._pdf_num(manual, 0) + " м² · " + origin
                          if manual > 0 else "—")
         total_tep = ((result.get("tep") or {}).get("total") or {})
+        # Та же суммарная площадь, что в отчёте: с гаражами объектов.
+        summary = result.get("summary") or {}
+        total_area = summary.get("construction_volume_sqm", total_tep.get("gns"))
         transfer = sum(
             _number(row.get("transfer"))
             for row in ((payload.get("tep") or {}).values())
@@ -293,7 +296,7 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
                            else f"{len(others)} · площадь не названа")
             info_rows.append([para(others_label, label_style), para(others_text)])
         info_rows.extend([
-            [para(TOTAL_AREA.name, label_style), para(core._pdf_num(total_tep.get("gns"), 0) + " м²")],
+            [para(TOTAL_AREA.name, label_style), para(core._pdf_num(total_area, 0) + " м²")],
             [para("Продаваемая", label_style), para(core._pdf_num(total_tep.get("saleable"), 0) + " м²")],
         ])
         if transfer > 0:
