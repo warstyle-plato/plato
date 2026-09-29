@@ -242,8 +242,11 @@ def test_the_consolidated_tax_is_not_lost_on_a_losing_project() -> None:
     from xlsx_eval import Evaluator
 
     sys.setrecursionlimit(400000)
+    # Рост цены 1,5 — вводная картины: на умолчании 1,0 (с 29.09.2026)
+    # налога нет ни в одном году, и проверять было бы нечего.
+    inputs = {**_inputs(disposition="transfer"), "monthly_growth_pre_pct": 1.5}
     content, _, meta = core.build_project_workbook(
-        _inputs(disposition="transfer"), _tep(), [], _phasing(), project_name="П")
+        inputs, _tep(), [], _phasing(), project_name="П")
     assert meta["missing"] == []
     book = openpyxl.load_workbook(io.BytesIO(content))
     # Доля берётся из блока раздачи по годам, а не из базы за горизонт.

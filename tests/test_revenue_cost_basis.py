@@ -45,7 +45,8 @@ def project(storage_units: float):
     # Цена кладовой задана явно, а не взята из умолчаний: умолчание — методика
     # владельца, оно меняется выпуском (1 000 → 1 500 тыс ₽ 14.09.2026), и
     # проверка, стоящая на нём, падала бы на правке методики, а не на поломке.
-    inputs = {**main.DEFAULT_INPUTS, "project_class": "business",
+    # Рост цены до РВЭ закреплён по той же причине (1,5 → 1,0 29.09.2026).
+    inputs = {**main.DEFAULT_INPUTS, "project_class": "business", "monthly_growth_pre_pct": 1.5,
               "apartment_price_th": 650, "commercial_price_th": 650,
               "parking_price_th": 5000, "storage_price_th": 1000,
               "purchase_price_mln": 700, "land_rights_cost_mln": 1270}

@@ -50,7 +50,7 @@ from typing import Any, Callable, NamedTuple
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse, Response
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 # Факт действующего проекта — РСС, реестр договоров, помесячные ряды — и
@@ -82,7 +82,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.81"
+VERSION = "0.24.84"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1595,6 +1595,8 @@ def object_parking_product_key(object_key: str) -> str:
 OBJECT_PARKING_PRODUCT_KEYS: dict[str, str] = {
     o.key: object_parking_product_key(o.key) for o in STANDALONE_OBJECTS if o.garage
 }
+_OBJECT_OF_PARKING_PRODUCT: dict[str, str] = {
+    pkey: okey for okey, pkey in OBJECT_PARKING_PRODUCT_KEYS.items()}
 NON_TEP_PRODUCT_LABELS.update({
     OBJECT_PARKING_PRODUCT_KEYS[o.key]: f"Паркинг — {o.group_label or o.label}"
     for o in STANDALONE_OBJECTS if o.garage
@@ -1814,7 +1816,7 @@ def find_input_fields(query: str, limit: int = 8) -> list[dict[str, Any]]:
 # задаёт ставку ПФ, и на 71% проект по умолчаниям перестаёт гасить долг.
 # Ставки классов (PROJECT_CLASS_PRESETS) проверку прошли и не менялись: старт
 # квартир 644,94 против пресета 650, машино-место 5 000 против 5 000.
-_DEFAULT_INPUTS_LITERAL = {'project_class': 'comfort', 'project_kind': 'mixed', 'purchase_price_mln': 0, 'purchase_schedule': '', 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1500, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'demolition_area_sqm': 0.0, 'demolition_cost_th_per_sqm': 0.0, 'resettlement_cost_mln': 0.0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 15, 'landscaping_area_sqm': 0.0, 'landscaping_area_per_person_sqm': 11.0, 'landscaping_gns_th_per_sqm': 0.0, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'pf_limit_approved_mln': 0.0, 'pf_special_steps': PF_SPECIAL_STEPS_DEFAULT, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.5, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'social_dou_gba_sqm': 4500, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 88, 'social_mode': 'Строительство', 'social_area_source': 'norm', 'social_dou_norm_sqm': 18, 'social_school_norm_sqm': 0, 'social_clinic_norm_sqm': 15, 'underground_area_per_space_sqm': 35, 'storage_area_per_unit_sqm': 4.3, 'parking_k1': '', 'parking_rail_distance_m': '', 'parking_k2': '', 'parking_design_mode': 'maximum', 'object_parking_over_area_per_space_sqm': 25, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_transfer_offset_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0, 'tep_ratios_custom': ''}
+_DEFAULT_INPUTS_LITERAL = {'project_class': 'comfort', 'project_kind': 'mixed', 'purchase_price_mln': 0, 'purchase_schedule': '', 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1500, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'demolition_area_sqm': 0.0, 'demolition_cost_th_per_sqm': 0.0, 'resettlement_cost_mln': 0.0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 15, 'landscaping_area_sqm': 0.0, 'landscaping_area_per_person_sqm': 11.0, 'landscaping_gns_th_per_sqm': 0.0, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'pf_limit_approved_mln': 0.0, 'pf_special_steps': PF_SPECIAL_STEPS_DEFAULT, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.0, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'social_dou_gba_sqm': 4500, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 88, 'social_mode': 'Строительство', 'social_area_source': 'norm', 'social_dou_norm_sqm': 18, 'social_school_norm_sqm': 0, 'social_clinic_norm_sqm': 15, 'underground_area_per_space_sqm': 35, 'storage_area_per_unit_sqm': 4.3, 'parking_k1': '', 'parking_rail_distance_m': '', 'parking_k2': '', 'parking_design_mode': 'maximum', 'object_parking_over_area_per_space_sqm': 25, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_transfer_offset_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0, 'tep_ratios_custom': ''}
 # Поля объектов сюда не пишутся: их порождает реестр. Пока они стояли
 # литералом, новый объект означал ещё двадцать строк здесь — то есть список,
 # расходящийся с реестром молча.
@@ -2131,6 +2133,44 @@ def residential_excluded_rows(inputs: dict[str, Any] | None) -> frozenset[str]:
     if not is_nonresidential(inputs):
         return frozenset()
     return frozenset(MKD_PRODUCTS) | frozenset(SOCIAL_TEP_FIELDS)
+
+
+# Количества строки ТЭП и строки продукта отчёта: строка вне состава
+# скрывается, только пока все они пусты.
+_ROW_QUANTITY_FIELDS: tuple[str, ...] = (
+    "quantity", "revenue", "cost", "built_units")
+
+
+def row_outside_project(inputs: dict[str, Any] | None, key: str,
+                        row: dict[str, Any]) -> bool:
+    """Строки ТЭП или продукта отчёта нет в составе проекта.
+
+    Один ответ на «показывать ли строку» для всех таблиц, перечисляющих
+    продукты и объекты: ТЭП и продажи отчёта страницы, PDF, Платон читают
+    признак `excluded`, который ставит расчёт, а не выводят состав заново.
+    Строки в ответе остаются — ключ не пропадает у тех, кто ищет строку по
+    имени. Паркинг объекта (`OBJECT_PARKING_PRODUCT_KEYS`) — в составе вместе
+    со своим объектом.
+
+    Вне состава — то, что тип проекта не считает (`residential_excluded_rows`),
+    и объект, которого в проекте нет: экземпляр не заведён
+    (`project_objects`) или объект выключен. Строка объекта вне состава
+    скрывается, только пока она пуста: выключенный объект с метрами в ТЭП
+    итог по-прежнему складывает, и спрятать строку значило бы потерять из
+    таблицы число, которое стоит в её итоге. Законный ноль продукта дома
+    (передаётся 0) признаком не становится — он в составе.
+    """
+    if key in residential_excluded_rows(inputs):
+        return True
+    obj = _BY_KEY.get(key) or _BY_KEY.get(_OBJECT_OF_PARKING_PRODUCT.get(key, ""))
+    if obj is None:
+        return False
+    x = inputs or {}
+    if obj in project_objects(x) and b(x, obj.enabled_key):
+        return False
+    return not any(n(row, col) for col in (*_RESIDENTIAL_EXCLUDED_TEP_COLUMNS,
+                                           *TEP_SUMMABLE_FIELDS,
+                                           *_ROW_QUANTITY_FIELDS))
 
 
 # Столбцы строки ТЭП, которые несут количество: обнулив их, строка перестаёт
@@ -17200,8 +17240,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # переданном молчал — и читался так, будто продано всё построенное
     # (владелец, 10.09.2026). Колонка появляется вместе с числом: постоянный
     # столбец нулей — шум, а не полнота.
+    # Строка вне состава проекта (`row_outside_project`) не печатается —
+    # тот же признак, что у отчёта страницы и книги.
     rows_data = [row for row in (tep_report.get('rows') or [])
-                 if any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
+                 if not row.get('excluded')
+                 and any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
     total=tep_report.get('total') or {}
     given = sum(float(row.get('transfer') or 0) for row in rows_data)
     # Итог количества — разбор по мере счёта, а не сумма: квартиры,
@@ -17462,7 +17505,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # Непродаваемое в таблицу ПРОДАЖ не идёт: соцобъект стоял тут строкой
         # с объёмом «350 м²» и выручкой ноль, хотя 350 — это места. Его метры
         # и мощность названы в таблице ТЭП, где у них своя мера.
-        if item.get('sellable') is False: continue
+        if item.get('sellable') is False or item.get('excluded'): continue
         quantity=float(item.get('quantity') or 0);revenue=float(item.get('revenue') or 0)
         built=float(item.get('built_units') or 0)
         # Паркинг объекта с местами, которые не продаются (ТЦ, ФОК), — тоже
@@ -27853,8 +27896,8 @@ def fill_plato_template(
     # Шаблон не принимает месячный рост цены напрямую: он выводит его из
     # целевого совокупного роста за период продаж по формуле
     # (1+цель)^(1/N)-1, где N — месяцы от старта продаж до РВЭ. Пока эта строка
-    # не заполнена, там остаётся 30% сценария, а модель считает по своим
-    # 1,5% в месяц — на длинных продажах расхождение по выручке доходит до
+    # не заполнена, там остаётся 30% сценария, а модель считает по своему
+    # месячному росту — на длинных продажах расхождение по выручке доходит до
     # четверти. Пересчитываем цель обратно, чтобы месячный рост совпал.
     growth_rows = rows_by_label.get(_plato_normalize(
         "Целевой совокупный рост цены от старта продаж до РВЭ")) or []
@@ -29607,6 +29650,164 @@ async def report_pdf(request: Request) -> Response:
     return Response(content=content,media_type="application/pdf",headers={"Content-Disposition":f"attachment; filename=DevelopAid_report.pdf; filename*=UTF-8''{encoded_name}"})
 
 
+# --- Тизер собирается в фоне, запрос его не держит --------------------------
+# На холодных кэшах тизер площадки КРТ — это скрининг НСПД по каждому участку
+# (шесть десятков слоёв на участок), поиск контуров и склейка подложки: минуты,
+# а nginx перед ядром держит запрос меньше. Первый тизер после выкатки получал
+# 504, повтор через пару минут шёл быстро — кэш уже прогрет первым. Поэтому
+# сборка идёт в своём потоке: успела за `_TEASER_HANDOFF_SECONDS` — ответ тем же
+# запросом, как раньше; нет — 202 с билетом и стадией, PDF забирается опросом
+# `GET /report/teaser/{ticket}`. Состояние на диске: воркеров два, и опрос может
+# прийти не в тот, где идёт сборка.
+_TEASER_JOB_DIR = Path(__file__).resolve().parent / "data" / "platon_state" / "teaser"
+_TEASER_HANDOFF_SECONDS = max(0.0, _env_float("TEASER_HANDOFF_SECONDS", 20.0))
+# Стадия обновляет файл сборки; тишина дольше этого — сборка прервалась
+# (перезапуск контейнера), и опрос говорит это, а не «готовится» вечно.
+_TEASER_JOB_STALL_SECONDS = _env_float("TEASER_JOB_STALL_SECONDS", 1800.0)
+_TEASER_JOB_TTL_SECONDS = 3600.0
+_TEASER_TICKET_RE = re.compile(r"^[0-9a-f]{16,32}$")
+_TEASER_JOBS: dict[str, threading.Event] = {}
+_TEASER_JOBS_LOCK = threading.Lock()
+_TEASER_STAGES = {
+    "model": "расчёт модели",
+    "screening": "скрининг участков в НСПД",
+    "map": "карта участка",
+    "pdf": "вёрстка PDF",
+}
+
+
+def _teaser_job_path(ticket: str, suffix: str) -> Path:
+    return _safe_child(_TEASER_JOB_DIR, f"teaser_{ticket}.{suffix}")
+
+
+def _teaser_write(path: Path, data: bytes) -> None:
+    # Через временный файл: соседний воркер не должен прочитать половину PDF.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def _teaser_stage(ticket: str, stage: str, started: float) -> None:
+    _teaser_write(_teaser_job_path(ticket, "pending"), json.dumps(
+        {"stage": stage, "started": started, "updated": time.time()}).encode("utf-8"))
+
+
+def _teaser_job_state(ticket: str) -> dict[str, Any]:
+    """Что с билетом сейчас: `done` (PDF на диске), `error`, `pending`, `unknown`."""
+    meta_path = _teaser_job_path(ticket, "json")
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+        if meta.get("error"):
+            return {"state": "error", "status": int(meta.get("status") or 500),
+                    "detail": str(meta["error"])}
+        pdf_path = _teaser_job_path(ticket, "pdf")
+        if pdf_path.exists():
+            return {"state": "done", "pdf": pdf_path.read_bytes(),
+                    "filename": str(meta.get("filename") or "DevelopAid_Тизер.pdf")}
+    pending_path = _teaser_job_path(ticket, "pending")
+    if pending_path.exists():
+        try:
+            pending = json.loads(pending_path.read_text(encoding="utf-8"))
+        except Exception:
+            pending = {}
+        quiet = time.time() - float(pending.get("updated") or pending_path.stat().st_mtime)
+        stage = str(pending.get("stage") or "model")
+        if quiet > _TEASER_JOB_STALL_SECONDS:
+            return {"state": "error", "status": 504,
+                    "detail": (f"Сборка тизера прервалась на стадии «{_TEASER_STAGES.get(stage, stage)}»: "
+                               f"нет движения {int(quiet // 60)} мин (вероятно, перезапуск сервера). "
+                               "Запросите тизер ещё раз.")}
+        return {"state": "pending", "stage": stage,
+                "elapsed": max(0.0, time.time() - float(pending.get("started") or time.time()))}
+    return {"state": "unknown"}
+
+
+def _teaser_sweep() -> None:
+    """Старые билеты уходят с диска: PDF проекта не должен лежать там сутками."""
+    try:
+        now = time.time()
+        for path in _TEASER_JOB_DIR.glob("teaser_*"):
+            if now - path.stat().st_mtime > _TEASER_JOB_TTL_SECONDS:
+                path.unlink(missing_ok=True)
+    except Exception as exc:
+        logging.info("teaser sweep skipped: %s", exc)
+
+
+def _teaser_filename(inputs: dict[str, Any]) -> str:
+    project_name = str(inputs.get("project_name") or "DevelopAid").strip()
+    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", project_name).strip("_")[:60] or "DevelopAid"
+    return f"DevelopAid_Тизер_{safe}.pdf"
+
+
+def _teaser_build(ticket: str, payload: dict[str, Any], inputs: dict[str, Any]) -> None:
+    """Сборка тизера целиком — в своём потоке; итог и отказ ложатся на диск."""
+    started = time.time()
+    stage = "model"
+    try:
+        _teaser_stage(ticket, stage, started)
+        bundle = _run_authoritative_model(inputs, payload.get("tep") or {},
+                                          payload.get("rates") or [],
+                                          payload.get("phasing") or {})
+        site = _teaser_site(payload, inputs)
+        # Карта и скрининг ходят в НСПД (с Render — через ядро); их отказ
+        # тизер называет сам и не падает.
+        gns = float(((bundle.get("consolidated") or {}).get("summary") or {})
+                    .get("project_gns_sqm") or 0.0)
+        stage = "screening"
+        _teaser_stage(ticket, stage, started)
+        facts = _teaser_site_facts(site, gns)
+        stage = "map"
+        _teaser_stage(ticket, stage, started)
+        map_png = _teaser_map_png(site)
+        stage = "pdf"
+        _teaser_stage(ticket, stage, started)
+        content = build_teaser_pdf(bundle, inputs, payload.get("tep") or {},
+                                   payload.get("phasing") or {}, facts, map_png)
+        _teaser_write(_teaser_job_path(ticket, "pdf"), content)
+        meta = {"filename": _teaser_filename(inputs), "seconds": round(time.time() - started, 1)}
+        logging.info("teaser %s built in %.1fs", ticket, time.time() - started)
+    except HTTPException as exc:
+        meta = {"error": str(exc.detail), "status": exc.status_code}
+    except Exception as exc:
+        logging.exception("teaser %s failed at %s", ticket, stage)
+        meta = {"error": (f"Не удалось сформировать тизер (стадия «{_TEASER_STAGES.get(stage, stage)}»): "
+                          f"{exc}"), "status": 500}
+    try:
+        _teaser_write(_teaser_job_path(ticket, "json"),
+                      json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+        _teaser_job_path(ticket, "pending").unlink(missing_ok=True)
+    finally:
+        with _TEASER_JOBS_LOCK:
+            done = _TEASER_JOBS.pop(ticket, None)
+        if done is not None:
+            done.set()
+
+
+def _teaser_response(ticket: str, state: dict[str, Any]) -> Response:
+    if state["state"] == "done":
+        encoded_name = urllib.parse.quote(state["filename"])
+        return Response(content=state["pdf"], media_type="application/pdf",
+                        headers={"Content-Disposition":
+                                 f"attachment; filename=DevelopAid_teaser.pdf; filename*=UTF-8''{encoded_name}",
+                                 "X-Teaser-Ticket": ticket})
+    if state["state"] == "error":
+        raise HTTPException(status_code=state["status"], detail=state["detail"])
+    if state["state"] == "pending":
+        stage = state.get("stage") or "model"
+        return JSONResponse(status_code=202, content={
+            "pending": True, "ticket": ticket, "stage": stage,
+            "elapsed_seconds": round(float(state.get("elapsed") or 0.0), 1),
+            "poll": f"/report/teaser/{ticket}",
+            "detail": f"Тизер готовится: {_TEASER_STAGES.get(stage, stage)}.",
+        })
+    raise HTTPException(status_code=404, detail=(
+        "Билет тизера не найден: он истёк или сервер перезапущен. Запросите тизер ещё раз."))
+
+
 @app.post("/report/teaser")
 async def report_teaser(request: Request) -> Response:
     """Тизер проекта — две страницы из модели представления: тизер и «Итог».
@@ -29614,46 +29815,59 @@ async def report_teaser(request: Request) -> Response:
     Считает движок один раз (`_run_authoritative_model`), как у PDF и книги;
     из результата собирается модель представления, из неё — страница. Полный
     отчёт остаётся как есть: тизер не его обрезка и не снимок экрана.
+
+    Готов за `_TEASER_HANDOFF_SECONDS` — PDF тем же ответом; нет — 202 с
+    билетом, и PDF забирается `GET /report/teaser/{ticket}`. Билет можно
+    прислать свой (`ticket`): повтор оборванного запроса с тем же билетом
+    найдёт начатую сборку, а не закажет вторую.
     """
     payload = await json_object(request)
     if not isinstance(payload.get("inputs"), dict) or not payload.get("tep"):
         raise HTTPException(status_code=400, detail="Нет вводных для тизера")
     _require_web_access(str(payload.get("session") or ""),
                         str(payload.get("access_key") or ""), "тизер проекта")
+    ticket = str(payload.get("ticket") or "").strip().lower()
+    if ticket and not _TEASER_TICKET_RE.fullmatch(ticket):
+        raise HTTPException(status_code=400, detail="Неверный билет тизера.")
+    if ticket:
+        state = _teaser_job_state(ticket)
+        if state["state"] != "unknown":
+            return _teaser_response(ticket, state)
+    else:
+        ticket = os.urandom(16).hex()
     usage_track("teaser", surface="site",
                 chat_id=_web_identity_chat_id(str(payload.get("session") or "")))
-    from starlette.concurrency import run_in_threadpool
     inputs = dict(payload.get("inputs") or {})
     # Имя проекта в запросе сильнее имени во вводных — как у `/report/pdf`:
     # страница шлёт заголовок проекта отдельным полем, а вводные могут
     # нести имя, под которым проект когда-то сохранили.
     if payload.get("project_name"):
         inputs["project_name"] = str(payload.get("project_name"))
-    try:
-        bundle = await run_in_threadpool(
-            _run_authoritative_model, inputs, payload.get("tep") or {},
-            payload.get("rates") or [], payload.get("phasing") or {})
-        site = _teaser_site(payload, inputs)
-        # Карта и скрининг ходят в НСПД (с Render — через ядро): в потоке,
-        # не на цикле; их отказ тизер называет сам и не падает.
-        gns = float(((bundle.get("consolidated") or {}).get("summary") or {})
-                    .get("project_gns_sqm") or 0.0)
-        facts = await run_in_threadpool(_teaser_site_facts, site, gns)
-        map_png = await run_in_threadpool(_teaser_map_png, site)
-        content = await run_in_threadpool(
-            build_teaser_pdf, bundle, inputs, payload.get("tep") or {},
-            payload.get("phasing") or {}, facts, map_png)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500,
-                            detail=f"Не удалось сформировать тизер: {exc}") from exc
-    project_name = str(inputs.get("project_name") or "DevelopAid").strip()
-    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", project_name).strip("_")[:60] or "DevelopAid"
-    encoded_name = urllib.parse.quote(f"DevelopAid_Тизер_{safe}.pdf")
-    return Response(content=content, media_type="application/pdf",
-                    headers={"Content-Disposition":
-                             f"attachment; filename=DevelopAid_teaser.pdf; filename*=UTF-8''{encoded_name}"})
+    _teaser_sweep()
+    with _TEASER_JOBS_LOCK:
+        done = _TEASER_JOBS.get(ticket)
+        fresh = done is None
+        if fresh:
+            done = _TEASER_JOBS[ticket] = threading.Event()
+    if fresh:
+        # Файл стадии — раньше потока: опрос в соседнем воркере сразу видит
+        # «готовится», а не «билет не найден».
+        _teaser_stage(ticket, "model", time.time())
+        threading.Thread(target=_teaser_build, args=(ticket, payload, inputs),
+                         name="teaser-" + ticket[:8], daemon=True).start()
+    from starlette.concurrency import run_in_threadpool
+    await run_in_threadpool(done.wait, _TEASER_HANDOFF_SECONDS)
+    return _teaser_response(ticket, _teaser_job_state(ticket))
+
+
+@app.get("/report/teaser/{ticket}")
+def report_teaser_result(ticket: str) -> Response:
+    """Опрос сборки тизера. Билет — 128 случайных бит, выданных владельцу
+    запроса после проверки доступа; по нему и отдаётся PDF."""
+    ticket = str(ticket or "").strip().lower()
+    if not _TEASER_TICKET_RE.fullmatch(ticket):
+        raise HTTPException(status_code=400, detail="Неверный билет тизера.")
+    return _teaser_response(ticket, _teaser_job_state(ticket))
 
 
 def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
@@ -31420,7 +31634,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             revenue[month] += value
 
     share = n(x, "share_before_rve_pct", 85) / 100
-    growth_pre = n(x, "monthly_growth_pre_pct", 1.5) / 100
+    # Запасное значение — то же умолчание, что видит форма, а не своя константа.
+    growth_pre = n(x, "monthly_growth_pre_pct", DEFAULT_INPUTS["monthly_growth_pre_pct"]) / 100
     growth_post = n(x, "monthly_growth_post_pct", 0.25) / 100
     # Сезонность и смещение темпа были в интерфейсе, но на расчёт не влияли:
     # уходили только в шаблон ПЛАТО. Из-за этого шаблон и модель по одним и тем
@@ -33414,7 +33629,6 @@ def calculate(req: CalcRequest) -> dict:
     fin = simulate_financing(x, t, rates, op)
 
     tep_rows = []
-    excluded_rows = residential_excluded_rows(x)
     for key, row in t.items():
         # Гостевые машино-места строятся и стоят денег, но не продаются. Число
         # едет в строку ТЭП, а не выводится каждой поверхностью заново: книга
@@ -33457,10 +33671,10 @@ def calculate(req: CalcRequest) -> dict:
             "parking_under_units": n(row, "parking_under_units"),
             "parking_over_units": n(row, "parking_over_units"),
             "parking_guest_units": n(row, "parking_guest_units"),
-            # Строка, которую тип проекта не считает (`residential_excluded_rows`):
-            # нули в ней — не «продукт пуст», а «продукта в этом проекте нет».
-            "excluded": key in excluded_rows,
         })
+        # Строка вне состава проекта (`row_outside_project`): нули в ней —
+        # не «продукт пуст», а «продукта в этом проекте нет».
+        tep_rows[-1]["excluded"] = row_outside_project(x, key, tep_rows[-1])
 
     # Свод складывает только складываемое. Штук в списке нет: они
     # группируются мерой счёта, потому что квартира, машино-место и место в
@@ -33983,6 +34197,10 @@ def calculate(req: CalcRequest) -> dict:
             # продукт, который не продаётся по построению.
             "sellable": False,
         })
+
+    # Продукт объекта вне состава проекта — той же меркой, что строка ТЭП.
+    for item in products_report:
+        item["excluded"] = row_outside_project(x, item["key"], item)
 
     # Calendar / Gantt, mirroring the conceptual structure of the Excel Calendar sheet.
     calendar_events = []
@@ -35870,8 +36088,12 @@ def _consolidate_phase_results(
                 "parking_saleable_units": 0.0,
                 "parking_under_units": 0.0, "parking_over_units": 0.0,
                 "parking_guest_units": 0.0,
-                "excluded": bool(row.get("excluded")),
+                "excluded": True,
             })
+            # Вне состава свода — только строка, которой нет ни в одной
+            # очереди: объект второй очереди выключен в первой, и ответ
+            # первой очереди не прячет его из свода.
+            target["excluded"] = target["excluded"] and bool(row.get("excluded"))
             for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
                           "guest_units", "transfer_units", "saleable_units",
                           "under_gns", "parking_units",
@@ -36054,7 +36276,10 @@ def _consolidate_phase_results(
                 "avg_price_th": 0.0, "pace_pre": None,
                 "share_before_rve": item["share_before_rve"],
                 "sales_start": None, "sales_end": None,
+                "excluded": True,
             })
+            # Вне состава свода — только продукт, которого нет ни в одной очереди.
+            p["excluded"] = p["excluded"] and bool(item.get("excluded"))
             p["quantity"] += float(item["quantity"] or 0.0)
             p["gns"] += float(item.get("gns", 0.0) or 0.0)
             p["saleable"] += float(item.get("saleable", 0.0) or 0.0)
@@ -36113,6 +36338,7 @@ def _consolidate_phase_results(
             "label": total_item["label"],
             "unit": total_item["unit"],
             "sellable": total_item["sellable"],
+            "excluded": total_item["excluded"],
             "quantity": total_item["quantity"],
             "revenue": total_item["revenue"],
             "avg_price_th": total_item["avg_price_th"],
@@ -38576,6 +38802,7 @@ def _tool_explain_metric(
                 "sales_end": p.get("sales_end"),
             }
             for p in (report.get("products") or [])
+            if not p.get("excluded")
         ]
         base["total_revenue_mln"] = round(float(s.get("revenue", 0) or 0) / 1e6, 2)
         return base
@@ -38673,6 +38900,7 @@ def _tool_explain_metric(
                 "units": round(float(row.get("units", 0) or 0), 2),
             }
             for row in ((result.get("tep") or {}).get("rows") or [])
+            if not row.get("excluded")
         ]
         return base
 
@@ -54853,7 +55081,9 @@ function renderResult(){
  // Признак приходит из движка и читается как есть: выводить «продаётся ли»
  // из нулевой выручки значило бы путать «не продал в этом расчёте» с «не
  // продаётся по построению».
- const sellable=p=>p.sellable!==false;
+ // Объект вне состава проекта движок помечает (`row_outside_project`) —
+ // та же мерка, что у таблицы ТЭП: удалённые объекты не стоят строкой нулей.
+ const sellable=p=>p.sellable!==false&&!p.excluded;
  if(phaseBundle&&phaseBundle.mode==='phased'&&reportView==='all'&&Array.isArray(r.report.phase_products)){
    const phaseNames=(phaseBundle.phases||[]).map(x=>x.name);
    const productTotals=Object.fromEntries((r.report.products||[]).map(x=>[x.key,x]));
@@ -55041,9 +55271,10 @@ function renderResult(){
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Передаётся, м²</th><th>Построено</th><th>Продаётся</th></tr></thead>`+
   `<tbody>`+
-  // Строку, которую тип проекта не считает, движок помечает сам
-  // (`residential_excluded_rows`): нулевой «Подземный паркинг» дома рядом
-  // с гаражом объекта читался бы вторым паркингом.
+  // Строку вне состава проекта движок помечает сам (`row_outside_project`):
+  // то, что тип проекта не считает (нулевой «Подземный паркинг» дома рядом с
+  // гаражом объекта читался бы вторым паркингом), и объект, которого в проекте
+  // нет — удалённые «Коммерция ОСЗ 2…5», «Офисы 2…4» стояли здесь нулями.
   r.tep.rows.filter(x=>!x.excluded).map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0&&!objParkUnits(x)?num(objUnder(x)):dash)}</td>`
@@ -55578,13 +55809,31 @@ async function exportReportPdf(){
 async function exportTeaserPdf(){
  // Тизер считает сервер тем же расчётом, что PDF и книгу: страница только
  // шлёт вводные. Ответ разбирается с оглядкой на то, что он может быть не PDF.
+ // На холодных кэшах сервер собирает тизер минутами и отвечает 202 с билетом
+ // и стадией: PDF забирается опросом, кнопка называет, что сейчас идёт.
  await calculate();
- const response=await fetch('/report/teaser',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
- if(!response.ok){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
- const blob=await response.blob();
- downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'','DevelopAid_Тизер.pdf');
+ const button=document.querySelector('[onclick="exportTeaserPdf()"]');
+ const label=button?button.textContent:'';
+ const show=text=>{if(button){button.disabled=!!text;button.textContent=text||label}};
+ try{
+  let response=await fetch('/report/teaser',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
+  const deadline=Date.now()+TEASER_POLL_LIMIT_MS;
+  while(response.status===202){
+   let state={};try{state=await response.json()}catch(e){}
+   if(!state.ticket)break;
+   show(state.detail||'Тизер готовится…');
+   if(Date.now()>deadline){alert('Тизер всё ещё готовится ('+(state.detail||'')+'). Нажмите «Скачать тизер» позже.');return;}
+   await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
+   response=await fetch('/report/teaser/'+encodeURIComponent(state.ticket));
+  }
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  const blob=await response.blob();
+  downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'','DevelopAid_Тизер.pdf');
+ }finally{show('')}
 }
+const TEASER_POLL_MS=3000;
+const TEASER_POLL_LIMIT_MS=25*60*1000;
 
 function downloadBlobResponse(blob,disposition,fallback){
  const utf=String(disposition||'').match(/filename\*=UTF-8''([^;]+)/i);
