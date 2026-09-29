@@ -98,14 +98,18 @@ def test_the_receiving_queue_is_named_in_the_table_not_the_summary() -> None:
 
 
 def test_the_comparison_table_shows_the_rve_block() -> None:
-    """Место этих величин — рядом с именем очереди и её датой."""
-    body = core.PAGE[core.PAGE.index("const rows=["):]
-    body = body[:body.index("phaseComparisonBody.innerHTML")]
-    for label in ("'Лимит ПФ'", "'РВЭ очереди'", "'Долг ПФ перед раскрытием'",
-                  "'Раскрыто эскроу'", "'Из него на погашение ПФ'",
-                  "'Не покрыто эскроу при раскрытии'"):
+    """Место этих величин — рядом с именем очереди и её датой.
+
+    Таблицу сравнения собирает движок (`phase_comparison_table`), её же
+    печатают страница и PDF.
+    """
+    import inspect
+    body = inspect.getsource(core.phase_comparison_table)
+    for label in ('"Лимит ПФ"', '"РВЭ очереди"', '"Долг ПФ перед раскрытием"',
+                  '"Раскрыто эскроу"', '"Из него на погашение ПФ"',
+                  '"Не покрыто эскроу при раскрытии"'):
         assert label in body, label
-    assert "dateRu(x.rve)" in body
+    assert 'row("РВЭ очереди", "date", [str(x.get("rve") or "") for x in c], None)' in body
 
 
 def test_the_pdf_says_the_same_thing() -> None:
