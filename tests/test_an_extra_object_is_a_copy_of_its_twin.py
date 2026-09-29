@@ -71,10 +71,10 @@ def test_second_objects_do_not_overlap_anything() -> None:
     """
     layouts = core._v4_object_layouts(SECOND)
     extras = [lay for lay in layouts if lay.extra]
-    # ФОК — первым дописанным (его строки книга несёт давно), вторые ОСЗ —
-    # следом, порядком реестра.
-    assert [lay.obj.key for lay in extras] == [
-        "sports", "standalone_retail2", "offices2", "above_parking2"]
+    # ФОК — первым дописанным (его строки книга несёт давно), экземпляры
+    # типов — следом, порядком реестра.
+    assert [lay.obj.key for lay in extras] == ["sports", *(
+        o.key for o in SECOND if o.family)]
 
     inputs: dict[int, str] = {}
     objects: dict[int, str] = {}
