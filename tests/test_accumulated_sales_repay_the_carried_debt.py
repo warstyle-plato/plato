@@ -228,7 +228,8 @@ def _book(sweep: bool, carry: bool = True):
     inputs = dict(core.DEFAULT_INPUTS)
     inputs.update(purchase_price_mln=12000, project_start="2027-01-01", ird_months=12,
                   construction_months=24, apartment_price_th=900,
-                  share_before_rve_pct=45, residual_sales_months=18)
+                  share_before_rve_pct=45, residual_sales_months=18,
+                  monthly_growth_pre_pct=1.5)  # та же картина, что у `_bundle`
     tep = {key: dict(row) for key, row in core.TEP_DEFAULT.items()}
     phasing = {
         "enabled": True, "mode": "phased", "user_enabled": True,
