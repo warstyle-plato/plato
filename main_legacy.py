@@ -16133,6 +16133,8 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
     # Делители удельных — одна подпись таблицы мелким шрифтом под шапкой,
     # как на странице, а не строки-показатели.
     note = ParagraphStyle("pc_note", parent=muted, fontSize=5.8, leading=7.0)
+    section = ParagraphStyle("pc_section", parent=strong, fontSize=8.2, leading=10,
+                             textColor=colors.white)
     divisors = [
         text(str(d.get("label") or "")) + ": " + " · ".join(
             [text(n) + " " + _pdf_num(v, 0) for n, v in zip(columns, d.get("values") or [])]
@@ -16145,11 +16147,18 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
         style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 4)]
     for block in table.get("blocks") or []:
         i = len(data)
-        data.append([Paragraph(text(str(block.get("title") or "").upper()), head)] + [""] * (span - 1))
-        style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 7),
-                  ("LINEBELOW", (0, i), (-1, i), 1.0, colors.HexColor("#111111"))]
+        # Заголовок раздела — тёмная полоса крупнее итогов: жирное «Итого» с
+        # линией выглядело так же, и разделы терялись (владелец, 29.09.2026).
+        data.append([Paragraph(text(str(block.get("title") or "").upper()), section)] + [""] * (span - 1))
+        style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 4),
+                  ("BOTTOMPADDING", (0, i), (-1, i), 4),
+                  ("BACKGROUND", (0, i), (-1, i), colors.HexColor("#111111"))]
         for row in block.get("rows") or []:
             i = len(data)
+            if row.get("kind") == "note":
+                data.append([Paragraph(text(str(row.get("label") or "")), note)] + [""] * (span - 1))
+                style += [("SPAN", (0, i), (-1, i)), ("LEFTPADDING", (0, i), (0, i), 12)]
+                continue
             role = row.get("role") or ""
             lab_style = strong if role == "total" else (muted if role in ("part", "sub") else cell)
             num_style = strong_num if role == "total" else num
@@ -36985,6 +36994,14 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             "saleable_by_product":{
                 str(item.get("key")): float(item.get("quantity") or 0.0)
                 for item in (result.get("report") or {}).get("products") or []},
+            # CAPEX объекта — его собственная статья очереди: стройка вместе
+            # со своим гаражом (паркинг объекта своего расхода не имеет, он в
+            # статье объекта — так и в книге, `'ОБЪЕКТЫ'!B28`). Число берётся
+            # из расчёта очереди, а не делится на странице.
+            "capex_by_object":{
+                o.key: float((result.get("capex") or {}).get(o.key) or 0.0)
+                for o in STANDALONE_OBJECTS
+                if float((result.get("capex") or {}).get(o.key) or 0.0) > 0.5},
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
             # Раскрытие эскроу — событие очереди, а не проекта: у каждой своя
@@ -37269,6 +37286,56 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
     def money(label: str, key: str, total: Any) -> dict[str, Any]:
         return row(label, "money", [f(x.get(key)) for x in c], total)
 
+    # CAPEX — зеркало «Выручки» (владелец, 29.09.2026): МКД → каждый объект
+    # в порядке `product_groups`, паркинг объекта за объектом → Итого ОСЗ →
+    # CAPEX всего. Порядок и состав — у того же владельца, что у выручки.
+    # Объект — его собственная статья очереди; «МКД и общепроектные статьи»
+    # — остаток CAPEX очереди: дома и всё, что движок не относит к объекту
+    # (земля, ИРД, проектирование, надбавки, резерв), а не угаданная доля.
+    def capex_obj(item: dict[str, Any], key: str) -> float:
+        return f((item.get("capex_by_object") or {}).get(key))
+
+    object_keys = {o.key for o in STANDALONE_OBJECTS}
+    built = [k for k in (o.key for o in STANDALONE_OBJECTS)
+             if any(capex_obj(x, k) > 0.5 for x in c)]
+    capex_total = row("CAPEX всего", "money", [f(x.get("capex")) for x in c],
+                      f(summary.get("capex")), role="total", group="capex_all")
+    capex_rows: list[dict[str, Any]] = [capex_total]
+    expense_note: list[dict[str, Any]] = []
+    if built:
+        cons_capex = consolidated.get("capex") or {}
+        _, osz_order = product_groups(list(dict.fromkeys(order + built)))
+        parking_of = {p: o for o, p in OBJECT_PARKING_PRODUCT_KEYS.items()}
+        labels = product_labels()
+        osz_rows: list[dict[str, Any]] = []
+        for key in osz_order:
+            if key in object_keys and key in built:
+                osz_rows.append(row(labels.get(key, key), "money",
+                                    [capex_obj(x, key) for x in c],
+                                    f(cons_capex.get(key)) or sum(capex_obj(x, key) for x in c),
+                                    role="part", group="capex_osz"))
+            elif parking_of.get(key) in built and any(rev(x, key) > 0 for x in c):
+                # Строка мест — зеркало выручки: заводится там же, где у
+                # паркинга есть выручка, и говорит, где его расход.
+                osz_rows.append(row(labels.get(key, key) + " — в CAPEX объекта", "note",
+                                    [None for _ in c], None, role="sub"))
+        mkd_values = [f(x.get("capex")) - sum(capex_obj(x, k) for k in built) for x in c]
+        mkd_total = f(summary.get("capex")) - sum(r["total"] for r in osz_rows if r["role"] == "part")
+        capex_rows = [row("МКД и общепроектные статьи", "money", mkd_values, mkd_total,
+                          role="part", group="capex_mkd"), *osz_rows]
+        parts = [r for r in osz_rows if r["role"] == "part"]
+        if len(parts) > 1:
+            capex_rows.append(row("Итого ОСЗ", "money",
+                                  [sum(r["values"][i] for r in parts) for i in range(len(c))],
+                                  sum(r["total"] for r in parts), role="total", group="capex_osz"))
+        capex_rows.append(capex_total)
+        # Полные расходы по объектам не делятся: финансирование, коммерческие
+        # расходы и налог движок считает на очередь целиком, и пропорция
+        # здесь была бы выдумкой (владелец: «не делить молча»).
+        expense_note = [row("По объектам не делятся: финансирование, коммерческие "
+                            "расходы и налог считаются на очередь целиком", "note",
+                            [None for _ in c], None, role="sub")]
+
     def th(label: str, key: str, value: float, area: float) -> dict[str, Any]:
         return row(label, "th", [f(x.get(key)) for x in c], per_th(value, area))
 
@@ -37295,9 +37362,10 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
             th("Цена реализации на м² ГНС", "revenue_per_gns_th", f(summary.get("revenue")), gns)]),
         ("costs", "Затраты", [
             *rates,
-            money("CAPEX", "capex", f(summary.get("capex"))),
+            *capex_rows,
             th("CAPEX на м² ГНС", "capex_per_gns_th", f(summary.get("capex")), gns),
             money("Полные расходы", "total_expenses", f(summary.get("total_expenses"))),
+            *expense_note,
             th("Полные расходы на м² продаваемой", "expenses_per_saleable_th",
                f(summary.get("total_expenses")), sale),
             th("Полные расходы на м² ГНС", "expenses_per_gns_th",
@@ -44916,7 +44984,9 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-comparison-card{display:none}
 #revenueTable tr.rs-part td:first-child{padding-left:18px;color:#555}
 #revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
-.phase-comparison-card tr.pc-block th{text-align:left;padding:16px 0 5px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#111;border-bottom:2px solid #111}
+.phase-comparison-card tr.pc-block th{text-align:left;padding:9px 10px 8px;font-size:15px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#fff;background:#111;border:0;border-top:14px solid #fff}
+.phase-comparison-card tr.pc-note td{padding:2px 0 6px 22px;font-size:11px;font-weight:400;color:#777;white-space:normal}
+.phase-comparison-card tr.pc-note td span{position:sticky;left:22px}
 .phase-comparison-card tr.pc-part td:first-child,.phase-comparison-card tr.pc-sub td:first-child{padding-left:22px;color:#777}
 .phase-comparison-card tr.pc-total td{font-weight:750;color:#111;border-top:1.5px solid #111}
 /* На телефоне таблица шире экрана: числа не переносятся (единица рвалась —
@@ -53699,8 +53769,10 @@ function renderPhaseComparison(){
  const label=r=>r.label+(r.rate_input!=null?` (вводная ${num2(r.rate_input)} тыс ₽/м²)`:'');
  phaseComparisonBody.innerHTML=divisors+table.blocks.map(b=>
   `<tr class="pc-block" data-block="${b.key}"><th colspan="${span}"><span>${b.title}</span></th></tr>`+
-  b.rows.map(r=>
-   `<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${label(r)}</td>`+
+  b.rows.map(r=>r.kind==='note'
+   // Пояснение — строка во всю ширину, а не «—» в каждой колонке.
+   ?`<tr data-block="${b.key}" class="pc-note"><td colspan="${span}"><span>${escapeHtml(r.label)}</span></td></tr>`
+   :`<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${label(r)}</td>`+
    r.values.map(v=>td(r,v)).join('')+td(r,r.total)+'</tr>').join('')
  ).join('');
  renderPhaseEscrowCharts();
