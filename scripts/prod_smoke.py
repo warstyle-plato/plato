@@ -24,12 +24,14 @@ import io
 import json
 import os
 import re
+import socket
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
+from http.client import HTTPException
 from pathlib import Path
 from typing import Any, Callable
 
@@ -338,6 +340,63 @@ def http(method: str, url: str, body: Any = None, timeout: int = 300,
         return exc.code, exc.headers.get("Content-Type", ""), exc.read()
 
 
+# Ответа нет вовсе: прод оборвал соединение (RemoteDisconnected), сбросил его,
+# не ответил за таймаут, не нашёлся. HTTP 4xx/5xx сюда не входят — это ответ.
+NETWORK_ERRORS = (OSError, HTTPException, socket.timeout)
+RETRY_PAUSE = 20  # с; обрыв после выката — обычно холодный старт воркера
+
+
+class NetworkDrop(Exception):
+    """Запрос остался без ответа и после повтора; текст — причина и место."""
+
+
+def describe_drop(exc: BaseException) -> str:
+    kind = type(exc).__name__
+    if isinstance(exc, urllib.error.URLError) and not isinstance(exc, urllib.error.HTTPError):
+        reason = exc.reason
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            return f"таймаут ({reason})"
+        return f"нет соединения ({type(reason).__name__}: {reason})"
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return f"таймаут ({kind})"
+    if isinstance(exc, ConnectionResetError) and kind != "RemoteDisconnected":
+        return f"сброс соединения ({kind}: {exc})"
+    return f"обрыв соединения ({kind}: {exc})" if str(exc) else f"обрыв соединения ({kind})"
+
+
+def fetch(method: str, url: str, body: Any = None, timeout: int = 300,
+          headers: dict[str, str] | None = None,
+          log: Callable[[str], None] | None = None) -> tuple[int, str, bytes, str]:
+    """`http` с одной повторной попыткой на обрыв без ответа.
+
+    Четвёртое значение — пометка «повтор после обрыва …» для строки итога
+    (пусто, если хватило первой попытки). Любой HTTP-статус — ответ, его не
+    повторяем. Второй обрыв — `NetworkDrop` с причиной, методом, путём и
+    временем: провал этой проверки, а не всего прогона."""
+    path = urllib.parse.urlparse(url).path or "/"
+    first = ""
+    for attempt in (1, 2):
+        started = time.monotonic()
+        try:
+            status, ctype, data = http(method, url, body, timeout=timeout, headers=headers)
+            return status, ctype, data, (f"повтор после обрыва: {first}" if first else "")
+        except NETWORK_ERRORS as exc:
+            where = f"{describe_drop(exc)} на {method} {path} через {time.monotonic() - started:.0f} с"
+            if attempt == 2:
+                raise NetworkDrop(f"{where}; повтор после обрыва ({first}) тоже без ответа") from exc
+            first = where
+            if log:
+                log(f"{where}; повтор через {RETRY_PAUSE} с")
+            time.sleep(RETRY_PAUSE)
+    raise AssertionError("unreachable")
+
+
+def with_note(check: Check, note: str) -> Check:
+    if note:
+        check.got = f"{check.got} ({note})"
+    return check
+
+
 def health(base: str) -> dict[str, Any]:
     try:
         status, _, body = http("GET", base + "/health", timeout=30)
@@ -499,20 +558,34 @@ def browser_auction_export(base: str, out: Path, log: Callable[[str], None]) -> 
 
 # --- прогон -----------------------------------------------------------------
 
+def guarded(name: str, expected: str, body: Callable[[], Check]) -> Check:
+    """Исключение внутри проверки — провал этой проверки с причиной, а не
+    конец прогона: остальные проверки выполняются, итог пишется."""
+    try:
+        return body()
+    except NetworkDrop as exc:
+        return Check(name, FAIL, expected, "нет ответа", str(exc))
+    except Exception as exc:  # noqa: BLE001 — причина уходит в итог
+        first = (str(exc).splitlines() or [""])[0][:300]
+        return Check(name, FAIL, expected, "ошибка проверки", f"{type(exc).__name__}: {first}")
+
+
 def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
         log: Callable[[str], None]) -> list[Check]:
     checks: list[Check] = []
     out.mkdir(parents=True, exist_ok=True)
 
     # 1. Автозагрузка — маршрут кнопки «Найти участок»: один запрос.
-    try:
-        status, _, body = http("POST", base + "/land/lookup",
-                               {"query": ", ".join(ref["cadastral_numbers"]), "limit": 30})
-        data = json.loads(body) if status == 200 else {}
-        checks.append(judge_autoload(data, ref) if status == 200 else Check(
-            "1. Автозагрузка участков", FAIL, "HTTP 200", f"HTTP {status}: {body[:200]!r}"))
-    except Exception as exc:  # noqa: BLE001
-        checks.append(Check("1. Автозагрузка участков", FAIL, "ответ маршрута", f"ошибка: {exc}"))
+    def autoload() -> Check:
+        status, _, body, note = fetch("POST", base + "/land/lookup",
+                                      {"query": ", ".join(ref["cadastral_numbers"]), "limit": 30},
+                                      log=log)
+        if status != 200:
+            return with_note(Check("1. Автозагрузка участков", FAIL, "HTTP 200",
+                                   f"HTTP {status}: {body[:200]!r}"), note)
+        return with_note(judge_autoload(json.loads(body), ref), note)
+
+    checks.append(guarded("1. Автозагрузка участков", "ответ маршрута", autoload))
 
     # Главная страница: импорт эталона, «Итог», груз для тизера и книги.
     project: dict[str, Any] | None = None
@@ -534,15 +607,32 @@ def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
         checks.append(Check("2. Тизер PDF", FAIL if browser_error.startswith("страница") else SKIP,
                             "PDF", "—", browser_error))
     else:
-        status, ctype, body = http("POST", base + "/report/teaser",
-                                   {"session": "", "access_key": admin_key, **payload}, timeout=600)
-        if status == 401:
-            checks.append(Check("2. Тизер PDF", SKIP, "PDF", "HTTP 401 — тизер только после входа",
-                                no_key if not admin_key else "ключ не принят прод-сервером"))
-        else:
+        def teaser() -> Check:
+            status, ctype, body, note = fetch(
+                "POST", base + "/report/teaser",
+                {"session": "", "access_key": admin_key, **payload}, timeout=600, log=log)
+            notes = [note] if note else []
+            # Холодный тизер сервер собирает в фоне: 202 с билетом, PDF — опросом.
+            deadline = time.monotonic() + 1200
+            while status == 202 and time.monotonic() < deadline:
+                ticket = str((json.loads(body or b"{}") or {}).get("ticket") or "")
+                if not ticket:
+                    break
+                log(f"тизер готовится: {json.loads(body).get('detail', '')}")
+                time.sleep(5)
+                status, ctype, body, note = fetch("GET", base + "/report/teaser/" + ticket,
+                                                  timeout=120, log=log)
+                if note:
+                    notes.append(note)
+            note = "; ".join(notes)
+            if status == 401:
+                return with_note(Check("2. Тизер PDF", SKIP, "PDF", "HTTP 401 — тизер только после входа",
+                                       no_key if not admin_key else "ключ не принят прод-сервером"), note)
             if body.startswith(b"%PDF"):
                 (out / "teaser.pdf").write_bytes(body)
-            checks.append(judge_teaser_response(status, ctype, body, ref))
+            return with_note(judge_teaser_response(status, ctype, body, ref), note)
+
+        checks.append(guarded("2. Тизер PDF", "PDF", teaser))
 
     # 3. Выгрузка торгов.
     try:
@@ -565,17 +655,19 @@ def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
         checks.append(Check("4. Книга Excel v4", FAIL if browser_error.startswith("страница") else SKIP,
                             "xlsx", "—", browser_error))
     else:
-        status, ctype, body = http("POST", base + "/report/workbook", {
-            key: payload.get(key) for key in ("inputs", "tep", "rates", "phasing", "scenario")
-        } | {"project_name": ref["project"]}, timeout=600)
-        if status == 401:
-            checks.append(Check("4. Книга Excel v4", SKIP, "xlsx", "HTTP 401", no_key))
-        elif status != 200 or not body.startswith(b"PK"):
-            checks.append(Check("4. Книга Excel v4", FAIL, "HTTP 200, xlsx",
-                                f"HTTP {status} {ctype}: {body[:300]!r}"))
-        else:
+        def workbook() -> Check:
+            status, ctype, body, note = fetch("POST", base + "/report/workbook", {
+                key: payload.get(key) for key in ("inputs", "tep", "rates", "phasing", "scenario")
+            } | {"project_name": ref["project"]}, timeout=600, log=log)
+            if status == 401:
+                return with_note(Check("4. Книга Excel v4", SKIP, "xlsx", "HTTP 401", no_key), note)
+            if status != 200 or not body.startswith(b"PK"):
+                return with_note(Check("4. Книга Excel v4", FAIL, "HTTP 200, xlsx",
+                                       f"HTTP {status} {ctype}: {body[:300]!r}"), note)
             (out / "workbook.xlsx").write_bytes(body)
-            checks.append(judge_workbook(body, payload.get("tep") or {}, ref))
+            return with_note(judge_workbook(body, payload.get("tep") or {}, ref), note)
+
+        checks.append(guarded("4. Книга Excel v4", "xlsx", workbook))
 
     # 5. «Итог».
     if not project:
@@ -586,7 +678,8 @@ def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
                             "экономика за входом через Telegram", no_key if not admin_key
                             else "ключ не принят страницей"))
     else:
-        checks.append(judge_itog(project["itog"], ref))
+        checks.append(guarded("5. Страница «Итог»", "отрисованный «Итог»",
+                              lambda: judge_itog(project["itog"], ref)))
     return checks
 
 
@@ -635,7 +728,12 @@ def main(argv: list[str] | None = None) -> int:
         arrived = wait_for_commit(base, args.wait_commit, args.wait_timeout, log, args.wait_version)
         checks.append(arrived)
     if not checks or checks[-1].status == OK:
-        checks += run(base, ref, admin_key, Path(args.out), log)
+        try:
+            checks += run(base, ref, admin_key, Path(args.out), log)
+        except Exception as exc:  # noqa: BLE001 — итог и json пишутся всегда
+            first = (str(exc).splitlines() or [""])[0][:300]
+            checks.append(Check("Прогон", FAIL, "все проверки выполнены", "прогон прерван",
+                                f"{type(exc).__name__}: {first}"))
     prod = health(base)
     last_pr = args.last_pr or "не указан"
     text = summary_markdown(checks, base, prod, last_pr)
