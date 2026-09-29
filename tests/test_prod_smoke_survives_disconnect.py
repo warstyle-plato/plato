@@ -135,3 +135,32 @@ def test_the_workflow_raises_an_issue_when_the_summary_is_missing():
     issue = next(s for s in steps if s.get("name") == "Issue prod-regression")
     assert "steps.smoke.outcome == 'failure'" in issue["if"]
     assert "прогон упал без итога" in issue["with"]["script"]
+
+
+class TicketProd(FakeProd):
+    """Холодный тизер: POST отвечает 202 с билетом, опрос билета один раз рвётся."""
+
+    def __call__(self, method, url, body=None, timeout=300, headers=None):
+        path = url.split("://", 1)[-1].split("/", 1)[-1]
+        if path == "report/teaser":
+            self.calls.append(f"{method} /{path}")
+            return 202, "application/json", json.dumps({"ticket": "ab" * 16, "detail": "сборка"}).encode()
+        if path.startswith("report/teaser/"):
+            self.calls.append(f"{method} /report/teaser/<ticket>")
+            if self.drops:
+                self.drops -= 1
+                raise RemoteDisconnected("Remote end closed connection without response")
+            return 500, "text/plain", b"Internal Server Error"
+        return super().__call__(method, url, body, timeout, headers)
+
+
+def test_a_disconnect_while_polling_the_ticket_is_retried(prod, tmp_path, monkeypatch):
+    fake = prod(TicketProd(drops=1))
+    monkeypatch.setattr(smoke.time, "sleep", lambda _s: None)
+    _code, _summary, result = _main(tmp_path)
+
+    assert fake.calls.count("GET /report/teaser/<ticket>") == 2
+    teaser = next(c for c in result["checks"] if c["name"] == "2. Тизер PDF")
+    assert teaser["status"] == "fail" and "HTTP 500" in teaser["got"]
+    assert "повтор после обрыва" in teaser["got"] and "GET /report/teaser/" in teaser["got"]
+    assert "4. Книга Excel v4" in [c["name"] for c in result["checks"]]

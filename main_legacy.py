@@ -50,7 +50,7 @@ from typing import Any, Callable, NamedTuple
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, FileResponse, Response
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 # Факт действующего проекта — РСС, реестр договоров, помесячные ряды — и
@@ -82,7 +82,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.76"
+VERSION = "0.24.82"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -16133,6 +16133,8 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
     # Делители удельных — одна подпись таблицы мелким шрифтом под шапкой,
     # как на странице, а не строки-показатели.
     note = ParagraphStyle("pc_note", parent=muted, fontSize=5.8, leading=7.0)
+    section = ParagraphStyle("pc_section", parent=strong, fontSize=8.2, leading=10,
+                             textColor=colors.white)
     divisors = [
         text(str(d.get("label") or "")) + ": " + " · ".join(
             [text(n) + " " + _pdf_num(v, 0) for n, v in zip(columns, d.get("values") or [])]
@@ -16145,11 +16147,18 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
         style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 4)]
     for block in table.get("blocks") or []:
         i = len(data)
-        data.append([Paragraph(text(str(block.get("title") or "").upper()), head)] + [""] * (span - 1))
-        style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 7),
-                  ("LINEBELOW", (0, i), (-1, i), 1.0, colors.HexColor("#111111"))]
+        # Заголовок раздела — тёмная полоса крупнее итогов: жирное «Итого» с
+        # линией выглядело так же, и разделы терялись (владелец, 29.09.2026).
+        data.append([Paragraph(text(str(block.get("title") or "").upper()), section)] + [""] * (span - 1))
+        style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 4),
+                  ("BOTTOMPADDING", (0, i), (-1, i), 4),
+                  ("BACKGROUND", (0, i), (-1, i), colors.HexColor("#111111"))]
         for row in block.get("rows") or []:
             i = len(data)
+            if row.get("kind") == "note":
+                data.append([Paragraph(text(str(row.get("label") or "")), note)] + [""] * (span - 1))
+                style += [("SPAN", (0, i), (-1, i)), ("LEFTPADDING", (0, i), (0, i), 12)]
+                continue
             role = row.get("role") or ""
             lab_style = strong if role == "total" else (muted if role in ("part", "sub") else cell)
             num_style = strong_num if role == "total" else num
@@ -29526,6 +29535,164 @@ async def report_pdf(request: Request) -> Response:
     return Response(content=content,media_type="application/pdf",headers={"Content-Disposition":f"attachment; filename=DevelopAid_report.pdf; filename*=UTF-8''{encoded_name}"})
 
 
+# --- Тизер собирается в фоне, запрос его не держит --------------------------
+# На холодных кэшах тизер площадки КРТ — это скрининг НСПД по каждому участку
+# (шесть десятков слоёв на участок), поиск контуров и склейка подложки: минуты,
+# а nginx перед ядром держит запрос меньше. Первый тизер после выкатки получал
+# 504, повтор через пару минут шёл быстро — кэш уже прогрет первым. Поэтому
+# сборка идёт в своём потоке: успела за `_TEASER_HANDOFF_SECONDS` — ответ тем же
+# запросом, как раньше; нет — 202 с билетом и стадией, PDF забирается опросом
+# `GET /report/teaser/{ticket}`. Состояние на диске: воркеров два, и опрос может
+# прийти не в тот, где идёт сборка.
+_TEASER_JOB_DIR = Path(__file__).resolve().parent / "data" / "platon_state" / "teaser"
+_TEASER_HANDOFF_SECONDS = max(0.0, _env_float("TEASER_HANDOFF_SECONDS", 20.0))
+# Стадия обновляет файл сборки; тишина дольше этого — сборка прервалась
+# (перезапуск контейнера), и опрос говорит это, а не «готовится» вечно.
+_TEASER_JOB_STALL_SECONDS = _env_float("TEASER_JOB_STALL_SECONDS", 1800.0)
+_TEASER_JOB_TTL_SECONDS = 3600.0
+_TEASER_TICKET_RE = re.compile(r"^[0-9a-f]{16,32}$")
+_TEASER_JOBS: dict[str, threading.Event] = {}
+_TEASER_JOBS_LOCK = threading.Lock()
+_TEASER_STAGES = {
+    "model": "расчёт модели",
+    "screening": "скрининг участков в НСПД",
+    "map": "карта участка",
+    "pdf": "вёрстка PDF",
+}
+
+
+def _teaser_job_path(ticket: str, suffix: str) -> Path:
+    return _safe_child(_TEASER_JOB_DIR, f"teaser_{ticket}.{suffix}")
+
+
+def _teaser_write(path: Path, data: bytes) -> None:
+    # Через временный файл: соседний воркер не должен прочитать половину PDF.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def _teaser_stage(ticket: str, stage: str, started: float) -> None:
+    _teaser_write(_teaser_job_path(ticket, "pending"), json.dumps(
+        {"stage": stage, "started": started, "updated": time.time()}).encode("utf-8"))
+
+
+def _teaser_job_state(ticket: str) -> dict[str, Any]:
+    """Что с билетом сейчас: `done` (PDF на диске), `error`, `pending`, `unknown`."""
+    meta_path = _teaser_job_path(ticket, "json")
+    if meta_path.exists():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+        if meta.get("error"):
+            return {"state": "error", "status": int(meta.get("status") or 500),
+                    "detail": str(meta["error"])}
+        pdf_path = _teaser_job_path(ticket, "pdf")
+        if pdf_path.exists():
+            return {"state": "done", "pdf": pdf_path.read_bytes(),
+                    "filename": str(meta.get("filename") or "DevelopAid_Тизер.pdf")}
+    pending_path = _teaser_job_path(ticket, "pending")
+    if pending_path.exists():
+        try:
+            pending = json.loads(pending_path.read_text(encoding="utf-8"))
+        except Exception:
+            pending = {}
+        quiet = time.time() - float(pending.get("updated") or pending_path.stat().st_mtime)
+        stage = str(pending.get("stage") or "model")
+        if quiet > _TEASER_JOB_STALL_SECONDS:
+            return {"state": "error", "status": 504,
+                    "detail": (f"Сборка тизера прервалась на стадии «{_TEASER_STAGES.get(stage, stage)}»: "
+                               f"нет движения {int(quiet // 60)} мин (вероятно, перезапуск сервера). "
+                               "Запросите тизер ещё раз.")}
+        return {"state": "pending", "stage": stage,
+                "elapsed": max(0.0, time.time() - float(pending.get("started") or time.time()))}
+    return {"state": "unknown"}
+
+
+def _teaser_sweep() -> None:
+    """Старые билеты уходят с диска: PDF проекта не должен лежать там сутками."""
+    try:
+        now = time.time()
+        for path in _TEASER_JOB_DIR.glob("teaser_*"):
+            if now - path.stat().st_mtime > _TEASER_JOB_TTL_SECONDS:
+                path.unlink(missing_ok=True)
+    except Exception as exc:
+        logging.info("teaser sweep skipped: %s", exc)
+
+
+def _teaser_filename(inputs: dict[str, Any]) -> str:
+    project_name = str(inputs.get("project_name") or "DevelopAid").strip()
+    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", project_name).strip("_")[:60] or "DevelopAid"
+    return f"DevelopAid_Тизер_{safe}.pdf"
+
+
+def _teaser_build(ticket: str, payload: dict[str, Any], inputs: dict[str, Any]) -> None:
+    """Сборка тизера целиком — в своём потоке; итог и отказ ложатся на диск."""
+    started = time.time()
+    stage = "model"
+    try:
+        _teaser_stage(ticket, stage, started)
+        bundle = _run_authoritative_model(inputs, payload.get("tep") or {},
+                                          payload.get("rates") or [],
+                                          payload.get("phasing") or {})
+        site = _teaser_site(payload, inputs)
+        # Карта и скрининг ходят в НСПД (с Render — через ядро); их отказ
+        # тизер называет сам и не падает.
+        gns = float(((bundle.get("consolidated") or {}).get("summary") or {})
+                    .get("project_gns_sqm") or 0.0)
+        stage = "screening"
+        _teaser_stage(ticket, stage, started)
+        facts = _teaser_site_facts(site, gns)
+        stage = "map"
+        _teaser_stage(ticket, stage, started)
+        map_png = _teaser_map_png(site)
+        stage = "pdf"
+        _teaser_stage(ticket, stage, started)
+        content = build_teaser_pdf(bundle, inputs, payload.get("tep") or {},
+                                   payload.get("phasing") or {}, facts, map_png)
+        _teaser_write(_teaser_job_path(ticket, "pdf"), content)
+        meta = {"filename": _teaser_filename(inputs), "seconds": round(time.time() - started, 1)}
+        logging.info("teaser %s built in %.1fs", ticket, time.time() - started)
+    except HTTPException as exc:
+        meta = {"error": str(exc.detail), "status": exc.status_code}
+    except Exception as exc:
+        logging.exception("teaser %s failed at %s", ticket, stage)
+        meta = {"error": (f"Не удалось сформировать тизер (стадия «{_TEASER_STAGES.get(stage, stage)}»): "
+                          f"{exc}"), "status": 500}
+    try:
+        _teaser_write(_teaser_job_path(ticket, "json"),
+                      json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+        _teaser_job_path(ticket, "pending").unlink(missing_ok=True)
+    finally:
+        with _TEASER_JOBS_LOCK:
+            done = _TEASER_JOBS.pop(ticket, None)
+        if done is not None:
+            done.set()
+
+
+def _teaser_response(ticket: str, state: dict[str, Any]) -> Response:
+    if state["state"] == "done":
+        encoded_name = urllib.parse.quote(state["filename"])
+        return Response(content=state["pdf"], media_type="application/pdf",
+                        headers={"Content-Disposition":
+                                 f"attachment; filename=DevelopAid_teaser.pdf; filename*=UTF-8''{encoded_name}",
+                                 "X-Teaser-Ticket": ticket})
+    if state["state"] == "error":
+        raise HTTPException(status_code=state["status"], detail=state["detail"])
+    if state["state"] == "pending":
+        stage = state.get("stage") or "model"
+        return JSONResponse(status_code=202, content={
+            "pending": True, "ticket": ticket, "stage": stage,
+            "elapsed_seconds": round(float(state.get("elapsed") or 0.0), 1),
+            "poll": f"/report/teaser/{ticket}",
+            "detail": f"Тизер готовится: {_TEASER_STAGES.get(stage, stage)}.",
+        })
+    raise HTTPException(status_code=404, detail=(
+        "Билет тизера не найден: он истёк или сервер перезапущен. Запросите тизер ещё раз."))
+
+
 @app.post("/report/teaser")
 async def report_teaser(request: Request) -> Response:
     """Тизер проекта — две страницы из модели представления: тизер и «Итог».
@@ -29533,46 +29700,59 @@ async def report_teaser(request: Request) -> Response:
     Считает движок один раз (`_run_authoritative_model`), как у PDF и книги;
     из результата собирается модель представления, из неё — страница. Полный
     отчёт остаётся как есть: тизер не его обрезка и не снимок экрана.
+
+    Готов за `_TEASER_HANDOFF_SECONDS` — PDF тем же ответом; нет — 202 с
+    билетом, и PDF забирается `GET /report/teaser/{ticket}`. Билет можно
+    прислать свой (`ticket`): повтор оборванного запроса с тем же билетом
+    найдёт начатую сборку, а не закажет вторую.
     """
     payload = await json_object(request)
     if not isinstance(payload.get("inputs"), dict) or not payload.get("tep"):
         raise HTTPException(status_code=400, detail="Нет вводных для тизера")
     _require_web_access(str(payload.get("session") or ""),
                         str(payload.get("access_key") or ""), "тизер проекта")
+    ticket = str(payload.get("ticket") or "").strip().lower()
+    if ticket and not _TEASER_TICKET_RE.fullmatch(ticket):
+        raise HTTPException(status_code=400, detail="Неверный билет тизера.")
+    if ticket:
+        state = _teaser_job_state(ticket)
+        if state["state"] != "unknown":
+            return _teaser_response(ticket, state)
+    else:
+        ticket = os.urandom(16).hex()
     usage_track("teaser", surface="site",
                 chat_id=_web_identity_chat_id(str(payload.get("session") or "")))
-    from starlette.concurrency import run_in_threadpool
     inputs = dict(payload.get("inputs") or {})
     # Имя проекта в запросе сильнее имени во вводных — как у `/report/pdf`:
     # страница шлёт заголовок проекта отдельным полем, а вводные могут
     # нести имя, под которым проект когда-то сохранили.
     if payload.get("project_name"):
         inputs["project_name"] = str(payload.get("project_name"))
-    try:
-        bundle = await run_in_threadpool(
-            _run_authoritative_model, inputs, payload.get("tep") or {},
-            payload.get("rates") or [], payload.get("phasing") or {})
-        site = _teaser_site(payload, inputs)
-        # Карта и скрининг ходят в НСПД (с Render — через ядро): в потоке,
-        # не на цикле; их отказ тизер называет сам и не падает.
-        gns = float(((bundle.get("consolidated") or {}).get("summary") or {})
-                    .get("project_gns_sqm") or 0.0)
-        facts = await run_in_threadpool(_teaser_site_facts, site, gns)
-        map_png = await run_in_threadpool(_teaser_map_png, site)
-        content = await run_in_threadpool(
-            build_teaser_pdf, bundle, inputs, payload.get("tep") or {},
-            payload.get("phasing") or {}, facts, map_png)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=500,
-                            detail=f"Не удалось сформировать тизер: {exc}") from exc
-    project_name = str(inputs.get("project_name") or "DevelopAid").strip()
-    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", project_name).strip("_")[:60] or "DevelopAid"
-    encoded_name = urllib.parse.quote(f"DevelopAid_Тизер_{safe}.pdf")
-    return Response(content=content, media_type="application/pdf",
-                    headers={"Content-Disposition":
-                             f"attachment; filename=DevelopAid_teaser.pdf; filename*=UTF-8''{encoded_name}"})
+    _teaser_sweep()
+    with _TEASER_JOBS_LOCK:
+        done = _TEASER_JOBS.get(ticket)
+        fresh = done is None
+        if fresh:
+            done = _TEASER_JOBS[ticket] = threading.Event()
+    if fresh:
+        # Файл стадии — раньше потока: опрос в соседнем воркере сразу видит
+        # «готовится», а не «билет не найден».
+        _teaser_stage(ticket, "model", time.time())
+        threading.Thread(target=_teaser_build, args=(ticket, payload, inputs),
+                         name="teaser-" + ticket[:8], daemon=True).start()
+    from starlette.concurrency import run_in_threadpool
+    await run_in_threadpool(done.wait, _TEASER_HANDOFF_SECONDS)
+    return _teaser_response(ticket, _teaser_job_state(ticket))
+
+
+@app.get("/report/teaser/{ticket}")
+def report_teaser_result(ticket: str) -> Response:
+    """Опрос сборки тизера. Билет — 128 случайных бит, выданных владельцу
+    запроса после проверки доступа; по нему и отдаётся PDF."""
+    ticket = str(ticket or "").strip().lower()
+    if not _TEASER_TICKET_RE.fullmatch(ticket):
+        raise HTTPException(status_code=400, detail="Неверный билет тизера.")
+    return _teaser_response(ticket, _teaser_job_state(ticket))
 
 
 def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
@@ -36985,6 +37165,14 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             "saleable_by_product":{
                 str(item.get("key")): float(item.get("quantity") or 0.0)
                 for item in (result.get("report") or {}).get("products") or []},
+            # CAPEX объекта — его собственная статья очереди: стройка вместе
+            # со своим гаражом (паркинг объекта своего расхода не имеет, он в
+            # статье объекта — так и в книге, `'ОБЪЕКТЫ'!B28`). Число берётся
+            # из расчёта очереди, а не делится на странице.
+            "capex_by_object":{
+                o.key: float((result.get("capex") or {}).get(o.key) or 0.0)
+                for o in STANDALONE_OBJECTS
+                if float((result.get("capex") or {}).get(o.key) or 0.0) > 0.5},
             "cash_shared_cost":cash_shared,"allocated_shared_cost":allocated_shared,
             "peak_bridge":result["finance"]["peak_bridge"],"peak_pf":result["finance"]["peak_pf"],
             # Раскрытие эскроу — событие очереди, а не проекта: у каждой своя
@@ -37269,6 +37457,56 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
     def money(label: str, key: str, total: Any) -> dict[str, Any]:
         return row(label, "money", [f(x.get(key)) for x in c], total)
 
+    # CAPEX — зеркало «Выручки» (владелец, 29.09.2026): МКД → каждый объект
+    # в порядке `product_groups`, паркинг объекта за объектом → Итого ОСЗ →
+    # CAPEX всего. Порядок и состав — у того же владельца, что у выручки.
+    # Объект — его собственная статья очереди; «МКД и общепроектные статьи»
+    # — остаток CAPEX очереди: дома и всё, что движок не относит к объекту
+    # (земля, ИРД, проектирование, надбавки, резерв), а не угаданная доля.
+    def capex_obj(item: dict[str, Any], key: str) -> float:
+        return f((item.get("capex_by_object") or {}).get(key))
+
+    object_keys = {o.key for o in STANDALONE_OBJECTS}
+    built = [k for k in (o.key for o in STANDALONE_OBJECTS)
+             if any(capex_obj(x, k) > 0.5 for x in c)]
+    capex_total = row("CAPEX всего", "money", [f(x.get("capex")) for x in c],
+                      f(summary.get("capex")), role="total", group="capex_all")
+    capex_rows: list[dict[str, Any]] = [capex_total]
+    expense_note: list[dict[str, Any]] = []
+    if built:
+        cons_capex = consolidated.get("capex") or {}
+        _, osz_order = product_groups(list(dict.fromkeys(order + built)))
+        parking_of = {p: o for o, p in OBJECT_PARKING_PRODUCT_KEYS.items()}
+        labels = product_labels()
+        osz_rows: list[dict[str, Any]] = []
+        for key in osz_order:
+            if key in object_keys and key in built:
+                osz_rows.append(row(labels.get(key, key), "money",
+                                    [capex_obj(x, key) for x in c],
+                                    f(cons_capex.get(key)) or sum(capex_obj(x, key) for x in c),
+                                    role="part", group="capex_osz"))
+            elif parking_of.get(key) in built and any(rev(x, key) > 0 for x in c):
+                # Строка мест — зеркало выручки: заводится там же, где у
+                # паркинга есть выручка, и говорит, где его расход.
+                osz_rows.append(row(labels.get(key, key) + " — в CAPEX объекта", "note",
+                                    [None for _ in c], None, role="sub"))
+        mkd_values = [f(x.get("capex")) - sum(capex_obj(x, k) for k in built) for x in c]
+        mkd_total = f(summary.get("capex")) - sum(r["total"] for r in osz_rows if r["role"] == "part")
+        capex_rows = [row("МКД и общепроектные статьи", "money", mkd_values, mkd_total,
+                          role="part", group="capex_mkd"), *osz_rows]
+        parts = [r for r in osz_rows if r["role"] == "part"]
+        if len(parts) > 1:
+            capex_rows.append(row("Итого ОСЗ", "money",
+                                  [sum(r["values"][i] for r in parts) for i in range(len(c))],
+                                  sum(r["total"] for r in parts), role="total", group="capex_osz"))
+        capex_rows.append(capex_total)
+        # Полные расходы по объектам не делятся: финансирование, коммерческие
+        # расходы и налог движок считает на очередь целиком, и пропорция
+        # здесь была бы выдумкой (владелец: «не делить молча»).
+        expense_note = [row("По объектам не делятся: финансирование, коммерческие "
+                            "расходы и налог считаются на очередь целиком", "note",
+                            [None for _ in c], None, role="sub")]
+
     def th(label: str, key: str, value: float, area: float) -> dict[str, Any]:
         return row(label, "th", [f(x.get(key)) for x in c], per_th(value, area))
 
@@ -37295,9 +37533,10 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
             th("Цена реализации на м² ГНС", "revenue_per_gns_th", f(summary.get("revenue")), gns)]),
         ("costs", "Затраты", [
             *rates,
-            money("CAPEX", "capex", f(summary.get("capex"))),
+            *capex_rows,
             th("CAPEX на м² ГНС", "capex_per_gns_th", f(summary.get("capex")), gns),
             money("Полные расходы", "total_expenses", f(summary.get("total_expenses"))),
+            *expense_note,
             th("Полные расходы на м² продаваемой", "expenses_per_saleable_th",
                f(summary.get("total_expenses")), sale),
             th("Полные расходы на м² ГНС", "expenses_per_gns_th",
@@ -44916,7 +45155,9 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-comparison-card{display:none}
 #revenueTable tr.rs-part td:first-child{padding-left:18px;color:#555}
 #revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
-.phase-comparison-card tr.pc-block th{text-align:left;padding:16px 0 5px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#111;border-bottom:2px solid #111}
+.phase-comparison-card tr.pc-block th{text-align:left;padding:9px 10px 8px;font-size:15px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#fff;background:#111;border:0;border-top:14px solid #fff}
+.phase-comparison-card tr.pc-note td{padding:2px 0 6px 22px;font-size:11px;font-weight:400;color:#777;white-space:normal}
+.phase-comparison-card tr.pc-note td span{position:sticky;left:22px}
 .phase-comparison-card tr.pc-part td:first-child,.phase-comparison-card tr.pc-sub td:first-child{padding-left:22px;color:#777}
 .phase-comparison-card tr.pc-total td{font-weight:750;color:#111;border-top:1.5px solid #111}
 /* На телефоне таблица шире экрана: числа не переносятся (единица рвалась —
@@ -45626,7 +45867,7 @@ details.cadastral-box>summary::marker{color:#888}
           <table class="metric-table metric-compact" id="reportFinanceTable"></table>
         </div>
         <div class="card">
-          <div class="section-title">Ставки и долговая нагрузка</div>
+          <div class="section-title">Ставки финансирования</div>
           <table class="metric-table metric-compact" id="ratesDebtTable"></table>
         </div>
       </div>
@@ -46038,6 +46279,15 @@ function objectInProject(key){
  return !o||!o.instance||projectInstances().includes(key);
 }
 function projectObjects(){return STANDALONE_OBJECTS.filter(o=>objectInProject(o.key))}
+// Поле объекта (по приставке его строки реестра) — в проекте ли оно. Поле не
+// объекта — всегда. Тот же предикат состава, что у расчёта и формы: окно
+// «Настройки классов» не показывает строки экземпляра, которого нет в проекте
+// (владелец, 29.09.2026: «зачем они в настройках, если не добавлены»).
+function objectOfField(k){
+ const id=String(k);
+ return STANDALONE_OBJECTS.find(o=>id.startsWith(o.prefix+'_'))||null;
+}
+function fieldInProject(k){const o=objectOfField(k);return !o||objectInProject(o.key)}
 // Почему экземпляр типа добавить нельзя; пусто — можно. Предел — отказ с
 // причиной, а не молчаливая обрезка (`object_instance_refusal` движка).
 function objectInstanceRefusal(type){
@@ -49923,7 +50173,7 @@ function classFieldUnitText(id,unit){
 function refreshClassFieldUnit(id){
  const span=document.querySelector('.field[data-field="'+id+'"] > label > .unit');
  if(!span)return;
- for(const grp of FIELD_GROUPS)for(const f of grp[1])if(f[0]===id){span.textContent=classFieldUnitText(id,f[2]);return}
+ for(const grp of allFieldGroups())for(const f of grp[1])if(f[0]===id){span.textContent=classFieldUnitText(id,f[2]);return}
 }
 
 function applyProjectClassPreset(selectedKey){
@@ -49934,15 +50184,19 @@ function applyProjectClassPreset(selectedKey){
  // Вписанное руками, что класс поменял бы, называется поимённо, и решает
  // человек: заменить значениями класса или оставить своё. Без окна (стенд,
  // встроенный вид) — оставить: молча терять ручное хуже, чем не поставить класс.
- const manual=classManualKeys().filter(k=>Object.prototype.hasOwnProperty.call(p,k)
+ const manualAll=classManualKeys().filter(k=>Object.prototype.hasOwnProperty.call(p,k)
    &&isFinite(Number(inputs[k]))&&Math.abs(Number(inputs[k])-classValue(key,k))>1e-9);
- let keep=[];
+ // О вписанном у экземпляра вне проекта не спрашиваем — его в проекте нет, — но
+ // и не затираем: добавят объект снова, и число человека вернётся с ним.
+ const manual=manualAll.filter(fieldInProject);
+ const hiddenManual=manualAll.filter(k=>!fieldInProject(k));
+ let keep=hiddenManual.slice();
  if(manual.length){
   const lines=manual.map(k=>`${classFieldLabel(k)}: ${Number(inputs[k]).toLocaleString('ru-RU')} → ${classValue(key,k).toLocaleString('ru-RU')}`).join('\n');
   const ask=typeof window!=='undefined'&&typeof window.confirm==='function'?window.confirm.bind(window):null;
   const replace=ask?ask(`Класс «${p.label||key}» заменит числа, вписанные руками:\n${lines}\n\nОК — заменить значениями класса.\nОтмена — оставить вписанные руками.`):false;
   if(replace)inputs._class_manual=classManualKeys().filter(k=>!manual.includes(k));
-  else keep=manual;
+  else keep=keep.concat(manual);
  }
  inputs.project_class=key;
  // Личная перекрышка сильнее общей базы: применяется значение человека,
@@ -50362,7 +50616,9 @@ async function setClassBase(c,k,value){
 function renderClassDialog(){
  const box=document.getElementById('classDialogBody');if(!box)return;
  const classes=Object.keys(PROJECT_CLASS_PRESETS);
- const keys=Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label');
+ // Строки экземпляров вне проекта не рисуются; их значения и перекрышки
+ // остаются и вернутся строками, когда экземпляр добавят.
+ const keys=Object.keys(PROJECT_CLASS_PRESETS[classes[0]]).filter(k=>k!=='label'&&fieldInProject(k));
  const cur=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
  const confLabels={high:'высокое',medium:'среднее',limited:'ограниченное',pilot:'пилотное — источников мало',insufficient:'недостаточно данных'};
  const thous=v=>v==null?'—':(v/1000).toLocaleString('ru-RU',{maximumFractionDigits:1});
@@ -53699,8 +53955,10 @@ function renderPhaseComparison(){
  const label=r=>r.label+(r.rate_input!=null?` (вводная ${num2(r.rate_input)} тыс ₽/м²)`:'');
  phaseComparisonBody.innerHTML=divisors+table.blocks.map(b=>
   `<tr class="pc-block" data-block="${b.key}"><th colspan="${span}"><span>${b.title}</span></th></tr>`+
-  b.rows.map(r=>
-   `<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${label(r)}</td>`+
+  b.rows.map(r=>r.kind==='note'
+   // Пояснение — строка во всю ширину, а не «—» в каждой колонке.
+   ?`<tr data-block="${b.key}" class="pc-note"><td colspan="${span}"><span>${escapeHtml(r.label)}</span></td></tr>`
+   :`<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${label(r)}</td>`+
    r.values.map(v=>td(r,v)).join('')+td(r,r.total)+'</tr>').join('')
  ).join('');
  renderPhaseEscrowCharts();
@@ -54203,7 +54461,10 @@ function renderResult(){
   // Цена входа стояла только в «Параметрах проекта» ниже и в PDF первой
   // строкой ключевой экономики: экран и отчёт расходились по составу, а
   // главное число сделки в шапку не попадало вовсе.
-  ['Цена приобретения',money(expenseGroup('Цена приобретения'))],
+  // Цена не задана — это «не задана», а не «0 млрд ₽»: карточка решения выше
+  // говорит «не задана», и плитка рядом с нулём ей противоречила (ревизия
+  // интерфейса, S17). Правило то же, что у карточки: цена больше нуля.
+  ['Цена приобретения',(v=>v>0?money(v):'не задана')(expenseGroup('Цена приобретения'))],
   // Чем оплачен вход: свои деньги и пик банковского долга до ПФ. Прежде здесь
   // стояли оба БРИДЖа сразу — лимит банка и фактическая потребность, — и рядом
   // они читались как расхождение, а не как разные величины. Остался один,
@@ -54323,10 +54584,13 @@ function renderResult(){
   `<tr><th>EBITDA</th><th>${money(r.summary.ebitda)}</th></tr>`+
   row('Проценты и комиссии',`(${money(r.summary.financing_cost)})`)+
   `<tr><th>Прибыль до налога</th><th>${money(r.summary.profit_before_tax)}</th></tr>`+
+  // Без строки НДС экономика не сходилась: прибыль до налога минус налог
+  // давала не чистую прибыль, и разницу человеку было негде найти. НДС стоит
+  // ПЕРЕД налогом на прибыль — в том порядке, в каком его вычитает база налога
+  // (блок «Налоговая база»): стоя после, он читался платой из чистой прибыли
+  // (ревизия интерфейса, S33). Числа те же, меняется только порядок строк.
+  row('НДС к уплате',`(${money(r.summary.vat||0)})`)+
   row('Налог на прибыль',`(${money(r.summary.profit_tax)})`)+
-  // Без этой строки экономика не сходилась: прибыль до налога минус налог
-  // давала не чистую прибыль, и разницу человеку было негде найти.
-  row('НДС',`(${money(r.summary.vat||0)})`)+
   `<tr><th>Чистая прибыль</th><th>${money(r.summary.net_profit)}</th></tr>`+
   row('Маржинальность',pct(r.summary.margin))+
   row('NPV',money(r.summary.npv))+
@@ -54426,16 +54690,9 @@ function renderResult(){
       +(Number(r.report.financing.ending_pf||0)>0?' · дефолт':''),
       money(r.report.financing.ending_pf))+
   (r.report.financing.peak_total_debt!=null?row('Максимальный совокупный долг',money(r.report.financing.peak_total_debt)):'')+
-  row('Текущая ключевая ставка',pct(r.report.financing.current_key_rate))+
-  row('Спред БРИДЖ',pct(r.report.financing.bridge_spread))+
-  row('Ставка БРИДЖ на текущей ключевой',pct(r.report.financing.current_bridge_rate))+
-  row('Средняя ключевая за период БРИДЖ',pct(r.report.financing.avg_bridge_key_rate))+
-  row('Средневзвешенная ставка БРИДЖ за период',pct(r.report.financing.avg_bridge_rate))+
-  row('Средняя ключевая ставка в период ПФ',pct(r.report.financing.avg_pf_key_rate))+
-  row('Средняя ставка ПФ без эффекта эскроу',pct(r.report.financing.avg_pf_base_rate))+
-  row('Ставка ПФ при покрытии эскроу 1×',pct(r.report.financing.pf_special_rate))+
-  pfStepRows(r.report.financing)+
-  row('Средняя фактическая ставка ПФ с учётом эскроу',pct(r.report.financing.avg_pf_effective_rate))+
+  // Ставки — в соседней карточке «Ставки и долговая нагрузка»: десять строк
+  // стояли в обеих карточках рядом, одними словами и одними числами (ревизия
+  // интерфейса, S7). Здесь — лимиты, пики и итог долга; там — только ставки.
   row('Проценты и комиссии',money(r.report.financing.interest_and_fees))+
   `<tr><th>LLCR</th><th>${mult(r.summary.llcr)}</th></tr>`;
 
@@ -54672,12 +54929,9 @@ function renderResult(){
   row('Средняя ставка ПФ без эффекта эскроу',pct(r.report.financing.avg_pf_base_rate))+
   row('Ставка ПФ при покрытии эскроу 1×',pct(r.report.financing.pf_special_rate))+
   pfStepRows(r.report.financing)+
-  row('Средняя фактическая ставка ПФ с учётом эскроу',pct(r.report.financing.avg_pf_effective_rate))+
-  row('Пиковый БРИДЖ',money(r.report.financing.actual_bridge))+
-  row('Пиковый ПФ',money(r.report.financing.pf_peak))+
-  row('Лимит ПФ',money(r.report.financing.pf_limit))+
-  row('Проценты и комиссии',money(r.report.financing.interest_and_fees))+
-  row('LLCR',mult(r.summary.llcr));
+  // Пики, лимит, проценты и LLCR — в карточке «Финансирование» рядом; здесь
+  // стояли их повторы (ревизия интерфейса, S7).
+  row('Средняя фактическая ставка ПФ с учётом эскроу',pct(r.report.financing.avg_pf_effective_rate));
 
  // Признак приходит из движка и читается как есть: выводить «продаётся ли»
  // из нулевой выручки значило бы путать «не продал в этом расчёте» с «не
@@ -54735,7 +54989,9 @@ function renderResult(){
   if(paceEl)paceEl.innerHTML=Number(ap.units_total||0)>0?
    row('Квартир в проекте',num(Math.round(ap.units_total))+' шт.')+
    row('Средняя площадь квартиры',num2(ap.avg_unit_sqm)+' м²')+
-   row('Средняя цена квартиры',money(Number(ap.avg_unit_price_mln||0)*1e6))+
+   // Цена одной квартиры — десятки миллионов: в миллиардах она выходила
+   // «0,03 млрд ₽» (ревизия интерфейса, S5). PDF пишет её в млн ₽ — так же.
+   row('Средняя цена квартиры',mln(Number(ap.avg_unit_price_mln||0)*1e6))+
    row('Темп продаж до РВЭ',num2(ap.pace_pre_rve_units)+' кв./мес.')+
    row('Средний темп за период продаж',num2(ap.pace_units)+' кв./мес.')+
    row('Пиковый месяц',num2(ap.peak_units)+' кв.')
@@ -54798,7 +55054,7 @@ function renderResult(){
   capexTable.innerHTML=Object.entries(r.capex).filter(([key,v])=>key!=='total'&&Math.abs(Number(v||0))>=0.5)
    .sort((a,b)=>capRank(a[0])-capRank(b[0]))
    .map(([key,v])=>`<tr><td>${capNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,cGns)}</td><td>${perTh(v,cSaleable)}</td></tr>`).join('')
-   +`<tr><th>Итого</th><th>${money(r.capex.total)}</th><th>${perTh(r.capex.total,cGns)}</th><th>${perTh(r.capex.total,cSaleable)}</th></tr>`;
+   +`<tr><th>Итого CAPEX</th><th>${money(r.capex.total)}</th><th>${perTh(r.capex.total,cGns)}</th><th>${perTh(r.capex.total,cSaleable)}</th></tr>`;
  }
  // Построенных штук и проданных — разные числа, и до сих пор на экране стояло
  // только первое. Разниц теперь две: гостевые места (строятся, но общие) и
@@ -55405,13 +55661,31 @@ async function exportReportPdf(){
 async function exportTeaserPdf(){
  // Тизер считает сервер тем же расчётом, что PDF и книгу: страница только
  // шлёт вводные. Ответ разбирается с оглядкой на то, что он может быть не PDF.
+ // На холодных кэшах сервер собирает тизер минутами и отвечает 202 с билетом
+ // и стадией: PDF забирается опросом, кнопка называет, что сейчас идёт.
  await calculate();
- const response=await fetch('/report/teaser',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
- if(!response.ok){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
- const blob=await response.blob();
- downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'','DevelopAid_Тизер.pdf');
+ const button=document.querySelector('[onclick="exportTeaserPdf()"]');
+ const label=button?button.textContent:'';
+ const show=text=>{if(button){button.disabled=!!text;button.textContent=text||label}};
+ try{
+  let response=await fetch('/report/teaser',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
+  const deadline=Date.now()+TEASER_POLL_LIMIT_MS;
+  while(response.status===202){
+   let state={};try{state=await response.json()}catch(e){}
+   if(!state.ticket)break;
+   show(state.detail||'Тизер готовится…');
+   if(Date.now()>deadline){alert('Тизер всё ещё готовится ('+(state.detail||'')+'). Нажмите «Скачать тизер» позже.');return;}
+   await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
+   response=await fetch('/report/teaser/'+encodeURIComponent(state.ticket));
+  }
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  const blob=await response.blob();
+  downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'','DevelopAid_Тизер.pdf');
+ }finally{show('')}
 }
+const TEASER_POLL_MS=3000;
+const TEASER_POLL_LIMIT_MS=25*60*1000;
 
 function downloadBlobResponse(blob,disposition,fallback){
  const utf=String(disposition||'').match(/filename\*=UTF-8''([^;]+)/i);

@@ -40,6 +40,13 @@ _RUNTIME_VERSION = core.VERSION
 app = core.app
 app.version = _RUNTIME_VERSION
 
+# Счётчик Метрики ставится одной прослойкой на выходе, а не по страницам:
+# любой HTML-ответ получает его перед </head>, всё прочее идёт насквозь.
+# Номер — YANDEX_METRIKA_ID; пустая переменная — счётчика нет нигде.
+import yandex_metrika as _yandex_metrika  # noqa: E402
+
+_yandex_metrika.install(app)
+
 _ORIGINAL_SEND_MESSAGE = core._telegram_send_message
 _ORIGINAL_HANDLE_MESSAGE = core._telegram_handle_message
 _ORIGINAL_HANDLE_UPDATE = core._telegram_handle_update

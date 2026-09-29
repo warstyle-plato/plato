@@ -611,6 +611,20 @@ def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
             status, ctype, body, note = fetch(
                 "POST", base + "/report/teaser",
                 {"session": "", "access_key": admin_key, **payload}, timeout=600, log=log)
+            notes = [note] if note else []
+            # Холодный тизер сервер собирает в фоне: 202 с билетом, PDF — опросом.
+            deadline = time.monotonic() + 1200
+            while status == 202 and time.monotonic() < deadline:
+                ticket = str((json.loads(body or b"{}") or {}).get("ticket") or "")
+                if not ticket:
+                    break
+                log(f"тизер готовится: {json.loads(body).get('detail', '')}")
+                time.sleep(5)
+                status, ctype, body, note = fetch("GET", base + "/report/teaser/" + ticket,
+                                                  timeout=120, log=log)
+                if note:
+                    notes.append(note)
+            note = "; ".join(notes)
             if status == 401:
                 return with_note(Check("2. Тизер PDF", SKIP, "PDF", "HTTP 401 — тизер только после входа",
                                        no_key if not admin_key else "ключ не принят прод-сервером"), note)
