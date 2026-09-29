@@ -154,3 +154,71 @@ def test_the_totals_row_is_a_ratio_not_an_average(phased_text):
 def test_a_single_phase_project_gets_no_phase_section():
     """Раздел не должен появляться там, где очередей нет."""
     assert "Сравнение очередей" not in pdf_text(single_payload())
+
+
+# --- «Затраты» зеркалят «Выручку», разделы видны (владелец, 29.09.2026) ------
+
+
+@pytest.fixture(scope="module")
+def object_table():
+    """Таблица PDF на пакете очередей с объектами: ТЦ, офисы и их паркинг."""
+    from reportlab.lib import colors
+
+    from test_object_parking_reaches_the_queue import _phased
+    sys.setrecursionlimit(400000)
+    bundle = _phased()
+    table = core.phase_comparison_table(bundle["consolidated"])
+    return core._phase_comparison_pdf(table, "Helvetica", "Helvetica-Bold", colors), bundle
+
+
+def _pdf_rows(tbl) -> list[tuple[int, str]]:
+    out = []
+    for i, row in enumerate(tbl._cellvalues):
+        cell = row[0]
+        cell = cell[0] if isinstance(cell, list) else cell
+        out.append((i, " ".join(str(getattr(cell, "text", cell) or "").split())))
+    return out
+
+
+def _section(rows, title: str, following: str) -> list[str]:
+    labels = [t for _, t in rows]
+    return labels[labels.index(title) + 1:labels.index(following)]
+
+
+def test_pdf_costs_mirror_revenue_objects(object_table) -> None:
+    tbl, bundle = object_table
+    rows = _pdf_rows(tbl)
+    labels = core.product_labels()
+    revenue = _section(rows, "ВЫРУЧКА", "ЗАТРАТЫ")
+    costs = _section(rows, "ЗАТРАТЫ", "ФИНАНСИРОВАНИЕ")
+    objects = [o.key for o in core.STANDALONE_OBJECTS if labels[o.key] in costs]
+    assert len(objects) >= 2, costs
+    # Объекты в «Затратах» — в том же порядке, что их строки в «Выручке».
+    in_revenue = [labels[k] for k in objects if labels[k] in revenue]
+    assert [labels[k] for k in objects if labels[k] in revenue] == \
+        [t for t in revenue if t in in_revenue]
+    order = [costs.index(t) for t in (
+        "МКД и общепроектные статьи", labels[objects[0]], labels[objects[-1]],
+        "Итого ОСЗ", "CAPEX всего", "CAPEX на м² ГНС, тыс ₽/м²", "Полные расходы")]
+    assert order == sorted(order), costs
+    assert any(t.startswith("По объектам не делятся") for t in costs), costs
+
+
+def test_pdf_section_header_stands_out_from_totals(object_table) -> None:
+    tbl, _ = object_table
+    rows = dict(_pdf_rows(tbl))
+    head = next(i for i, t in rows.items() if t == "ЗАТРАТЫ")
+    total = next(i for i, t in rows.items() if t == "CAPEX всего")
+    backgrounds = {}
+    for cmd in tbl._bkgrndcmds:
+        _, (c0, r0), (c1, r1), colour = cmd[:4]
+        for r in range(r0, (r1 if r1 >= 0 else len(tbl._cellvalues) + r1) + 1):
+            backgrounds[r] = colour
+    assert head in backgrounds, "у заголовка раздела нет своей полосы"
+    assert total not in backgrounds or backgrounds[total] != backgrounds[head]
+
+    def size(i):
+        cell = tbl._cellvalues[i][0]
+        return (cell[0] if isinstance(cell, list) else cell).style.fontSize
+
+    assert size(head) >= size(total) + 1, (size(head), size(total))

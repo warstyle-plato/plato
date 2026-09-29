@@ -1241,6 +1241,7 @@ function krtLots(x){
 // заново при каждом открытии, хватало наличия срока; у запомненного лота срок
 // может быть вчерашним, и «идут торги» на нём — обещание вчерашнего дня.
 /*__DEVELOPAID_LIVE_LOT__*/
+/*__DEVELOPAID_KRT_TERM__*/
 function krtLiveLot(x){return liveTenderLot(krtLots(x))}
 function krtStage(x){
  const lots=krtLots(x), press=state.krtPress[x.slug]||null;
@@ -3043,7 +3044,7 @@ function renderKrtRequirements(d){
  const parts=[
   ['Что построить кроме жилья',d.construction],
   ['Что разрешено разместить',d.permitted_uses],
-  ['Срок реализации',d.deadlines],
+  ['Срок реализации',[krtTermText(d)]],
   ['Что находится на территории сейчас',d.existing],
   ['Что снести',d.demolition],
   ['Что снести или реконструировать',d.demolition_or_reconstruction],
@@ -4489,6 +4490,11 @@ from auction_search.krt_tenders import LIVE_LOT_PLACEHOLDER as _LIVE_LOT_PLACEHO
 from auction_search.krt_tenders import LIVE_LOT_SCRIPT as _LIVE_LOT_SCRIPT  # noqa: E402
 
 AUCTIONS_PAGE = AUCTIONS_PAGE.replace(_LIVE_LOT_PLACEHOLDER, _LIVE_LOT_SCRIPT)
+# Срок реализации КРТ — то же правило, что в карточке (`krtTermText`).
+from market_search.krt_requirements import TERM_PLACEHOLDER as _TERM_PLACEHOLDER  # noqa: E402
+from market_search.krt_requirements import TERM_SCRIPT as _TERM_SCRIPT  # noqa: E402
+
+AUCTIONS_PAGE = AUCTIONS_PAGE.replace(_TERM_PLACEHOLDER, _TERM_SCRIPT)
 
 
 LEGAL_FOOTER_PLACEHOLDER = "__DEVELOPAID_LEGAL_FOOTER__"
