@@ -21354,11 +21354,31 @@ def _v4_extra_object_block(xml: str, lay: _V4ObjectLayout, missing: list[str]) -
     # Заголовок стоит во всех ячейках строки — так его пишет шаблон (полоса
     # заливки во всю ширину). Оставить там подпись двойника значило бы завести
     # в книге второй торговый центр, который на самом деле ФОК.
-    for _column in ("A", "B", "C", "D"):
+    # Прежде подпись менялась в A–D, а с E по GA оставался «ТОРГОВЫЙ ЦЕНТР»
+    # двойника, и объединения строки копия не несла — ревизия 29.09.2026
+    # видела его на экране. Подпись ставится во все ячейки, строка
+    # объединяется, как заголовки блоков шаблона.
+    columns = re.findall(r'<x:c r="([A-Z]+)%d"' % head, xml)
+    for _column in columns:
         xml, done = _v4_set_cell(xml, f"{_column}{head}", text=name.upper())
         if not done and _column == "A":
             missing.append(f"{name}: заголовок блока объекта")
+    if columns:
+        xml = _v4_add_merge(xml, f"A{head}:{columns[-1]}{head}")
     return xml
+
+
+def _v4_add_merge(xml: str, ref: str) -> str:
+    """Добавляет объединение в `mergeCells` листа и правит счётчик."""
+    found = re.search(r'<x:mergeCells(?:\s[^>]*)?>(.*?)</x:mergeCells>', xml, re.S)
+    if not found:
+        return xml
+    if f'ref="{ref}"' in found.group(1):
+        return xml
+    body = found.group(1) + f'<x:mergeCell ref="{ref}" />'
+    count = len(re.findall(r"<x:mergeCell ", body))
+    return (xml[:found.start()] + f'<x:mergeCells count="{count}">' + body
+            + "</x:mergeCells>" + xml[found.end():])
 
 
 def _v4_object_tep_cells(lay: _V4ObjectLayout) -> dict[str, str]:
@@ -21428,6 +21448,9 @@ def _v4_extra_tep_rows(xml: str, missing: list[str]) -> str:
     складывает оба куска — это сказано в строке раздела.
     """
     below = [lay for lay in _v4_extras() if lay.tep_row > 36]
+    # Итог переезжает с 34 на 35 — и его стиль вместе с ним (см. `_v4_restyle_row`).
+    total_styles = _v4_sheet_row_styles(xml, 34)
+    plain_styles = _v4_sheet_row_styles(xml, 33)
     for letter in ("C", "D", "E", "G"):
         parts = [f"{letter}31:{letter}34"]
         if below:
@@ -21499,6 +21522,16 @@ def _v4_extra_tep_rows(xml: str, missing: list[str]) -> str:
                 xml, done = _v4_set_or_insert_cell(xml, coord, formula=value)
             if not done:
                 missing.append(f"ТЭП · строка {lay.obj.label} {coord}")
+    xml = _v4_restyle_row(xml, 34, plain_styles, whole_row=True)
+    xml = _v4_restyle_row(xml, 35, total_styles, whole_row=True)
+    # Блок соцобъектов в шаблоне стоит без оформления: заголовок раздела,
+    # шапка и итог получают стили своих ролей с этого же листа.
+    section = _v4_sheet_row_styles(xml, 30).get("A", "")
+    header = _v4_sheet_row_styles(xml, 3)
+    xml = _v4_restyle_row(xml, 38, {"A": section})
+    xml = _v4_restyle_row(xml, 39, {c: header.get("A", "") for c in "ABCDEF"})
+    xml = _v4_restyle_row(xml, 44, {"A": total_styles.get("A", ""),
+                                    "E": total_styles.get("G", "")})
     return xml
 
 
@@ -21591,6 +21624,10 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
         if not done:
             missing.append(f"ОТЧЁТ · структура продукта: ячейка {coord} не поставлена")
 
+    # Стиль итога шаблона стоит на строке, которую займёт ФОК: он переезжает
+    # на строку итога вместе с ним, а ФОК получает стиль обычной строки.
+    total_styles = _v4_sheet_row_styles(xml, total - 1)
+    plain_styles = _v4_sheet_row_styles(xml, total - 2)
     xml_holder = [_v4_ensure_row(xml, total)]
     # Шапка: колонка называет то, что в ней лежит.
     put("B45", text="ГНС наземная, м²")
@@ -21652,7 +21689,28 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
     put(f"H{total}", text=("Строительный объём = наземная + подземная. "
                            "Соцобъекты сюда не входят — они не продукт; "
                            "их метры на листе ТЭП."))
+    xml_holder[0] = _v4_restyle_row(xml_holder[0], total - 1, plain_styles, whole_row=True)
+    xml_holder[0] = _v4_restyle_row(xml_holder[0], total, total_styles, whole_row=True)
     return xml_holder[0]
+
+
+def _v4_report_unit_tables_style(xml: str) -> str:
+    """Юнит-экономика и темпы продаж ОТЧЕТА: данные — стилем данных.
+
+    В шаблоне подписи строк 76–83 и 87–93 (и единицы E87:E93) залиты тёмным
+    цветом ЗАГОЛОВКА раздела, а шапки 75 и 86 — тем же цветом, а не цветом
+    шапок таблиц листа. Таблица читалась сплошной тёмной полосой (ревизия
+    29.09.2026). Стили берутся у соседних таблиц этого же листа: подпись —
+    у «Продаваемая площадь» (A57), единица — у G57, шапка — у строки 56.
+    """
+    label = _v4_sheet_row_styles(xml, 57)
+    header = _v4_sheet_row_styles(xml, 56)
+    head = header.get("B", "")
+    for row in (75, 86):
+        xml = _v4_restyle_row(xml, row, {c: head for c in "ABCDE"})
+    for row in list(range(76, 84)) + list(range(87, 94)):
+        xml = _v4_restyle_row(xml, row, {"A": label.get("A", ""), "E": label.get("G", "")})
+    return xml
 
 
 def _v4_object_checks(xml: str, missing: list[str]) -> str:
@@ -23385,6 +23443,34 @@ def _v4_sheet_row_styles(xml: str, row: int) -> dict[str, str]:
         if style:
             styles[coord] = f' s="{style.group(1)}"'
     return styles
+
+
+def _v4_restyle_row(xml: str, row: int, styles: dict[str, str], *,
+                    whole_row: bool = False) -> str:
+    """Ставит ячейкам строки стили по колонкам.
+
+    Колонки вне `styles` не трогаются; `whole_row=True` — строка целиком
+    меняет роль (итог ↔ обычная), и колонке без стиля у образца стиль снимается.
+
+    Сборщик переносит итог блока на строку ниже и отдаёт его прежнее место
+    дописанному объекту (ФОК на ОТЧЕТ!53 и ТЭП!34). Содержимое переезжало, а
+    стиль итога оставался на месте: ревизия 29.09.2026 нашла жирный серый
+    «ФОК / медцентр» над невыделенным «ИТОГО». Стиль — свойство строки-роли, а
+    не номера, и переезжает вместе с ней.
+    """
+    found = re.search(rf'(<x:row r="{row}"[^>]*>)(.*?)(</x:row>)', xml, re.S)
+    if not found:
+        return xml
+
+    def restyle(match: "re.Match[str]") -> str:
+        column, attrs, close = match.group(1), match.group(2), match.group(3)
+        if column not in styles and not whole_row:
+            return match.group(0)
+        attrs = re.sub(r'\ss="\d+"', "", attrs)
+        return f'<x:c r="{column}{row}"{attrs}{styles.get(column, "")}{close}>'
+
+    body = re.sub(rf'<x:c r="([A-Z]+){row}"([^>]*?)(/?)>', restyle, found.group(2))
+    return xml[:found.start()] + found.group(1) + body + found.group(3) + xml[found.end():]
 
 
 def _v4_normative_sources_rows(xml: str, region: str, missing: list[str]) -> str:
@@ -25607,6 +25693,7 @@ def _build_project_workbook(
     report_xml = _v4_add_report_default_row(report_xml, missing)
     report_xml = _v4_report_net_profit_from_its_own_rows(report_xml, missing)
     report_xml = _v4_product_structure_block(report_xml, missing)
+    report_xml = _v4_report_unit_tables_style(report_xml)
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = _v4_extra_tep_rows(
         source.read(tep_sheet_path).decode("utf-8"), missing)
