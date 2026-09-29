@@ -1441,6 +1441,78 @@ CLASS_NONRES_PRICE_FIELDS: tuple[str, ...] = tuple(
        and _BY_KEY[o.family].rate_price in ("retail_price_th_per_sqm",
                                             "offices_price_th_per_sqm")])
 
+# Окно «Настройки классов» — разделами, а не подряд (владелец, 29.09.2026:
+# «не структурированный набор вводных»; «Площадь на 1 место на первых этажах,
+# м²/место = 25» читалось как «место за 25 рублей»). Раздел и подпись строки —
+# явной картой, одним владельцем: угадывание по имени поля отнесло бы новое
+# поле куда попало. Подпись — объект, величина; единицу печатает
+# `class_field_unit` из той же подсказки поля, что и везде.
+#
+# У полей объектов ОСЗ вместо имени объекта стоит `{object}`: экземпляры
+# (офисы 2…5) берут раздел и подпись поля своего типа по реестру (`family`,
+# `rate_price`/`rate_cost`) — строка экземпляра получает имя своего объекта.
+CLASS_DIALOG_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
+    ("flats", "Квартиры и МКД — цены продажи", (
+        ("apartment_price_th", "Квартиры: стартовая цена продажи"),
+        ("commercial_price_th", "Коммерция на первом этаже МКД: стартовая цена продажи"),
+        ("storage_price_th", "Кладовые МКД: цена продажи одной кладовой"),
+    )),
+    ("build", "Себестоимость строительства МКД", (
+        ("preparation_th_per_sqm", "МКД: подготовительные работы"),
+        ("main_above_th_per_sqm", "МКД, наземная часть: основное строительство"),
+        ("main_under_th_per_sqm", "МКД, подземная часть: основное строительство"),
+        ("utilities_th_per_sqm", "МКД: наружные инженерные сети и плата за техприсоединение"),
+    )),
+    ("norms", "Благоустройство и нормативы", (
+        ("landscaping_th_per_sqm", "Благоустройство двора: стоимость работ"),
+        ("landscaping_area_per_person_sqm", "Благоустройство двора: норматив площади двора на одного жителя"),
+        ("storage_area_per_unit_sqm", "Кладовые МКД: площадь одной кладовой"),
+    )),
+    ("parking", "Паркинг", (
+        ("parking_price_th", "Подземный паркинг МКД: цена продажи одного машино-места"),
+        ("underground_area_per_space_sqm",
+         "Подземный паркинг: площадь на одно машино-место с проездами и рампами"),
+        ("object_parking_over_area_per_space_sqm",
+         "Паркинг объекта ОСЗ в здании (первые этажи): площадь одного машино-места"),
+    )),
+    ("objects", "Объекты ОСЗ — МФОЦ, ТЦ", (
+        ("retail_price_th_per_sqm", "{object}: стартовая цена продажи"),
+        ("offices_price_th_per_sqm", "{object}: стартовая цена продажи"),
+        ("offices_cost_th_per_sqm", "{object}: себестоимость строительства"),
+    )),
+)
+CLASS_DIALOG_PLACEHOLDER = "__DEVELOPAID_CLASS_DIALOG__"
+
+
+def class_dialog_layout() -> list[dict[str, Any]]:
+    """Разделы окна классов: [{id, title, rows: [{key, label}]}] в порядке окна.
+
+    Поля объектов раскладываются в порядке реестра: у каждого объекта — его
+    цена, затем себестоимость. Строки экземпляров, которых нет в проекте,
+    здесь есть: состав решает страница тем же `fieldInProject`, что и прежде.
+    """
+    profile = PROJECT_CLASS_PRESETS["comfort"]
+    out: list[dict[str, Any]] = []
+    for section_id, title, fields in CLASS_DIALOG_SECTIONS:
+        templates = dict(fields)
+        rows: list[dict[str, str]] = []
+        object_fields: set[str] = set()
+        for obj in STANDALONE_OBJECTS:
+            family = _BY_KEY.get(obj.family) if obj.family else obj
+            if family is None:
+                continue
+            for own, theirs in ((obj.rate_price, family.rate_price),
+                                (obj.rate_cost, family.rate_cost)):
+                if theirs in templates and own in profile:
+                    object_fields.add(theirs)
+                    rows.append({"key": own, "label": templates[theirs].replace(
+                        "{object}", obj.group_label)})
+        for key, label in fields:
+            if key not in object_fields and key in profile:
+                rows.append({"key": key, "label": label})
+        out.append({"id": section_id, "title": title, "rows": rows})
+    return out
+
 
 def class_region(inputs: dict[str, Any] | None) -> str:
     """Регион проекта для базы класса: `mo` — область, иначе Москва."""
@@ -50348,6 +50420,9 @@ function classFieldLabel(k){if(FIELD_LABELS_OUTSIDE[k])return FIELD_LABELS_OUTSI
 // реализацией одного правила, и разошлись бы они молча.
 const CLASS_FIELD_UNITS=__DEVELOPAID_CLASS_UNITS__;
 function classFieldUnit(k){return CLASS_FIELD_UNITS[k]||''}
+// Разделы окна классов и подписи их строк — карта движка
+// (`CLASS_DIALOG_SECTIONS`): раздел строки не угадывается по имени поля.
+const CLASS_DIALOG=__DEVELOPAID_CLASS_DIALOG__;
 // Личные значения классов — перекрышка поверх общей базы (решение владельца,
 // 24.08.2026: база одна и общая, у человека может быть своя). Лежат на ядре
 // рядом с проектами и действуют при следующем применении класса; отклонения
@@ -50454,7 +50529,19 @@ function renderClassDialog(){
  let deviations=0;
  let owned=0;
  let html='<table style="width:100%;border-collapse:collapse;font-size:12px"><tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">Поле</th>'+classes.map(c=>`<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd;${c===cur?'background:#eef4fb':''}">${PROJECT_CLASS_PRESETS[c].label}</th>`).join('')+'<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd">В проекте</th></tr>';
- for(const k of keys){
+ // Строки идут разделами карты движка (`CLASS_DIALOG`), в её порядке. Поле
+ // профиля, которого в карте нет, не пропадает: оно встаёт в раздел «без
+ // раздела» с прежней подписью — видимая дыра карты, а не потерянная строка.
+ const placed=new Set();
+ const sections=CLASS_DIALOG.map(s=>({id:s.id,title:s.title,rows:s.rows.filter(r=>keys.includes(r.key))}));
+ sections.forEach(s=>s.rows.forEach(r=>placed.add(r.key)));
+ const loose=keys.filter(k=>!placed.has(k));
+ if(loose.length)sections.push({id:'unmapped',title:'Без раздела — поле не внесено в карту окна',rows:loose.map(k=>({key:k,label:classFieldLabel(k)}))});
+ for(const sec of sections){
+ if(!sec.rows.length)continue;
+ // Заголовок раздела — тёмная полоса крупнее строк, как в «Сравнении очередей».
+ html+=`<tr class="class-section" data-section="${sec.id}"><th colspan="${classes.length+2}" style="text-align:left;padding:8px 10px 7px;font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#fff;background:#111;border-top:12px solid #fff">${escapeHtml(sec.title)}</th></tr>`;
+ for(const {key:k,label:rowLabel} of sec.rows){
   const actual=Number(inputs[k]);
   // Отклонение проекта меряется от ОБЩЕЙ базы — той же, что сервер печатает
   // в PDF и книгах; личная перекрышка эту сверку не подменяет.
@@ -50467,11 +50554,11 @@ function renderClassDialog(){
   const rowStats=classes.map(c=>classStatsRow(c,k));
   const hasStats=rowStats.some(Boolean);
   const unit=classFieldUnit(k);
-  const unitCell=(unit?` <span style="color:#8a94a6;font-size:11px;white-space:nowrap">${escapeHtml(unit)}</span>`:'');
+  const unitCell=(unit?`<span style="color:#8a94a6;font-size:11px;white-space:nowrap">, ${escapeHtml(unit)}</span>`:'');
   const labelCell=(hasStats
-   ?`<a href="#" onclick="toggleClassDetail('${k}');return false" title="Обоснование: источники, диапазон и положение вашего значения" style="color:inherit;text-decoration:none;border-bottom:1px dashed #b6c4d6">${classFieldLabel(k)} <span style="color:#3b6db4">${CLASS_DETAIL_OPEN[k]?'▾':'▸'}</span></a>`
-   :classFieldLabel(k))+unitCell;
-  html+=`<tr><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${labelCell}</td>`+classes.map(c=>{
+   ?`<a href="#" onclick="toggleClassDetail('${k}');return false" title="Обоснование: источники, диапазон и положение вашего значения" style="color:inherit;text-decoration:none;border-bottom:1px dashed #b6c4d6">${escapeHtml(rowLabel)} <span style="color:#3b6db4">${CLASS_DETAIL_OPEN[k]?'▾':'▸'}</span></a>`
+   :escapeHtml(rowLabel))+unitCell;
+  html+=`<tr class="class-row" data-key="${k}" data-section="${sec.id}"><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${labelCell}</td>`+classes.map(c=>{
    const own=Math.abs(classValue(c,k)-classBase(c,k))>1e-9;
    if(own)owned++;
    return `<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}"><input type="number" value="${classValue(c,k)}" onchange="setClassBase('${c}','${k}',this.value)" title="${own?'Своё значение; общая база: '+classBase(c,k).toLocaleString('ru-RU'):'Общая база класса — своё значение можно вписать прямо сюда'}" style="width:84px;text-align:right;border:1px solid ${own?'#c98a1b':'#dfe4ea'};border-radius:5px;padding:3px 6px;font-size:12px;${own?'background:#fdf6e6;font-weight:600':''}"></td>`;
@@ -50525,6 +50612,7 @@ function renderClassDialog(){
     html+=`<tr><td colspan="${classes.length+2}" style="padding:4px 10px 8px 22px;border-bottom:1px solid #f0f0f0;font-size:11px;color:#555;background:#fbfcfe">Обоснование для класса «${PROJECT_CLASS_PRESETS[detailCls].label}»: свод <b>${thous(rec.recommended_rub_m2)}</b> тыс ₽/м², разброс p25–p75 ${thous(rec.p25_rub_m2)}–${thous(rec.p75_rub_m2)}, источников ${rec.source_count}, доверие — ${confLabels[rec.confidence]||rec.confidence}.${srcRows?'<div style="margin-top:3px">'+srcRows+'</div>':''}${pos}</td></tr>`;
    }
   }
+ }
  }
  // Справка о нормах ГОРОДА живёт рядом с нормативом, который она объясняет,
  // а не во «Вводных», где считают деньги (владелец, 16.09.2026: «нормы
@@ -56902,6 +56990,8 @@ PAGE = PAGE.replace(OFFICE_CLASS_PLACEHOLDER,
                     json.dumps(OFFICE_CLASS_BY_PROJECT_CLASS, ensure_ascii=False))
 PAGE = PAGE.replace(CLASS_FIELD_UNITS_PLACEHOLDER,
                     json.dumps(class_field_units(), ensure_ascii=False))
+PAGE = PAGE.replace(CLASS_DIALOG_PLACEHOLDER,
+                    json.dumps(class_dialog_layout(), ensure_ascii=False))
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace(CLASS_ONLY_INPUTS_PLACEHOLDER,
