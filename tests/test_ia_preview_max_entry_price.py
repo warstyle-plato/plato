@@ -82,7 +82,10 @@ def test_the_ceiling_holds_the_target_llcr(client: TestClient):
     assert data["available"], data.get("reason")
     ceiling = data["solution"]["variable"]
     assert ceiling > 0
-    assert data["solution"]["metric"] >= TARGET, data["solution"]
+    # «Порог держится» решает один предикат движка — с его допуском 1e-5, а
+    # не строгое `>=` здесь: иначе граница, попавшая в допуск, краснила бы
+    # тест на верном подборе.
+    assert core._constraint_ok(data["solution"]["metric"], TARGET, "at_least"), data["solution"]
     assert data["current"]["metric"] > TARGET, "порог должен быть достижим на этих вводных"
 
     # Шаг вверх по цене: порог обязан сорваться. Полмиллиона — это меньше
@@ -92,7 +95,7 @@ def test_the_ceiling_holds_the_target_llcr(client: TestClient):
     b = core._run_authoritative_model(beyond["inputs"], beyond["tep"],
                                       beyond["rates"], beyond["phasing"])
     _label, metric, _res = core._metric_value(b, "llcr", "consolidated", None)
-    assert metric is not None and metric < TARGET, (
+    assert not core._constraint_ok(metric, TARGET, "at_least"), (
         "цена на полмиллиона выше найденной всё ещё держит порог — "
         "значит подбор остановился не на границе", ceiling, metric)
 
