@@ -255,3 +255,23 @@ def test_a_broken_restore_says_so_instead_of_dropping_the_project() -> None:
     said = json.loads(done.stdout)["said"]
     assert said, "восстановление упало молча — проект пропал без причины"
     assert "умолчани" in said, said
+
+
+# Миграция v0.7.1: в v0.7.0 пять процентов управления стояли под технадзором.
+# Примета такого состояния — нет поля управления проектом. Нет версии — у
+# любого проекта, сохранённого без неё, и прежде миграция ставила технадзор 0
+# новому проекту при первой перезагрузке: CAPEX −1 млрд, LLCR «сам» рос.
+def test_a_new_project_keeps_its_technical_supervision_after_reload():
+    saved = {"inputs": {"technical_supervision_pct": 5, "project_management_pct": 5},
+             "tep": {}, "scenario": "base"}
+    got = restore(saved)["inputs"]
+    assert got["technical_supervision_pct"] == 5
+    assert got["project_management_pct"] == 5
+    assert got["_cost_structure_version"] == "0.7.1"
+
+
+def test_a_v070_state_moves_its_rate_to_management():
+    saved = {"inputs": {"technical_supervision_pct": 5}, "tep": {}, "scenario": "base"}
+    got = restore(saved)["inputs"]
+    assert got["project_management_pct"] == 5
+    assert got["technical_supervision_pct"] == 0

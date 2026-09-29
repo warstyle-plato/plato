@@ -198,22 +198,18 @@ def test_a_known_saleable_area_fills_the_gns_in_the_inputs():
 
 
 def _complaint(key: str, row: dict) -> str:
-    """Настоящая проверка строки со страницы, через node."""
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
-    body = re.search(r"function tepRowComplaint\(key,row\)\{.*?\n\}", core.PAGE, re.S)
-    assert body, "tepRowComplaint не найдена"
-    script = (
+    """Настоящая проверка строки со страницы, через node.
+
+    Куски страницы добирает `page_blocks.run`: жалоба читает остаток ГНС после
+    мест первых этажей, и перечисленный руками список отстал бы от неё.
+    """
+    prelude = (
         f"const TEP_RATIOS={json.dumps(core.TEP_RATIOS, ensure_ascii=False)};\n"
-            + ratio_layer()
-        + "const landNum=(v,d)=>Number(v).toFixed(d);\n"
-        + body.group(0)
-        + f"\nconsole.log(JSON.stringify(tepRowComplaint({json.dumps(key)},{json.dumps(row)})));"
+        "let inputs={};let lastResult=null;let phaseBundle=null;\n"
+        "const landNum=(v,d)=>Number(v).toFixed(d);\n"
     )
-    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
+    tail = f"console.log(JSON.stringify(tepRowComplaint({json.dumps(key)},{json.dumps(row)})));"
+    return page_blocks.run_json(prelude, tail)
 
 
 def test_nonsense_in_a_row_is_called_out():
