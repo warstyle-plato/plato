@@ -50201,16 +50201,14 @@ function classFieldSource(k){
  if(!s||!s.by||!isClassManual(k))return '';
  return Math.abs(Number(inputs[k])-Number(s.value))<1e-9?String(s.by):'';
 }
-// Площадь сноса, найденная по контуру КРТ, подписана своим происхождением,
-// пока число в поле то же, что положил контур; исправленное — уже ручное.
-function demolitionSourceText(id){
- const s=id==='demolition_area_sqm'&&inputs._demolition_source;
- if(!s||!s.by)return '';
- return Math.abs(Number(inputs[id])-Number(s.value))<0.05?String(s.by):'';
-}
 function classFieldUnitText(id,unit){
- const demolition=demolitionSourceText(id);
- if(demolition)return unit+' · '+demolition+' — исправьте, если здание сохраняется';
+ // Площадь сноса, найденная по контуру КРТ, подписана своим происхождением,
+ // пока число в поле то же, что положил контур; исправленное — уже ручное.
+ // Проверка внутри, а не своей функцией: стенды страницы собирают
+ // `classFieldUnitText` по имени, и новое имя рядом роняло бы их все.
+ const demolition=id==='demolition_area_sqm'&&inputs._demolition_source;
+ if(demolition&&demolition.by&&Math.abs(Number(inputs[id])-Number(demolition.value))<0.05)
+  return unit+' · '+demolition.by+' — исправьте, если здание сохраняется';
  if(!classSetsField(id))return unit;
  if(!isClassManual(id))return unit+' · ставит класс проекта, правится в «Настройках класса»';
  return unit+' · '+(classFieldSource(id)||'вписано руками')+' — смена класса его не затрёт';
