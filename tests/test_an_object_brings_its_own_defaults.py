@@ -69,9 +69,10 @@ def test_a_new_roster_line_brings_its_whole_form() -> None:
 
     Это и есть цена, ради которой реестр заводился: строка вместо двадцати.
     """
+    # Ключ вне пула экземпляров (`offices2`…`offices5` уже в реестре).
     extra = core.StandaloneObject(
-        "offices3", "offices3", "офисы 3", 3, True, True, "sqm",
-        "offices3_cost_th_per_sqm", "offices3_price_th_per_sqm",
+        "hotel", "hotel", "гостиница", 3, True, True, "sqm",
+        "hotel_cost_th_per_sqm", "hotel_price_th_per_sqm",
         defaults={"gba_sqm": 1, "saleable_sqm": 1,
                   "cost_th_per_sqm": 1, "price_th_per_sqm": 1})
     grown = _built(core.STANDALONE_OBJECTS + (extra,))
@@ -80,7 +81,7 @@ def test_a_new_roster_line_brings_its_whole_form() -> None:
     # Форма сверяется с уже живущим объектом той же меры и с тем же гаражом:
     # свой список «каким полям быть» разошёлся бы с генератором молча.
     offices = core.standalone_objects(("offices",))[0]
-    expected = {key.replace("offices_", "offices3_", 1)
+    expected = {key.replace("offices_", "hotel_", 1)
                 for key in core.standalone_object_defaults(offices)}
     assert added == expected
 

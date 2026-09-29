@@ -82,7 +82,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.70"
+VERSION = "0.24.76"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -475,15 +475,10 @@ for _preset in PROJECT_CLASS_PRESETS.values():
         _preset["apartment_price_th"])
     _preset["offices_price_th_per_sqm"] = _preset["retail_price_th_per_sqm"]
 del _preset
-# Откуда берётся число класса, если оно не вписано, а выведено. Две строки
-# «Стартовая цена» с одним числом в окне класса читались загадкой (владелец,
-# 27.09.2026): совпадают они потому, что обе считаются правилом выше, и это
-# сказано у самой строки, а не выведено человеком.
-CLASS_DERIVED_NOTES_PLACEHOLDER = "__DEVELOPAID_CLASS_DERIVED_NOTES__"
-CLASS_DERIVED_NOTES: dict[str, str] = {
-    "retail_price_th_per_sqm": "считается от цены квартир",
-    "offices_price_th_per_sqm": "считается от цены квартир",
-}
+# Правило выше даёт только БАЗУ класса. Дальше цена нежилого — своё число:
+# правка цены квартир её не двигает (решение владельца, 28.09.2026: «своя
+# цена, не следует»). Подпись «считается от цены квартир» у строки окна
+# обещала обратное и снята.
 
 # Класс проекта — это и класс его офисника (владелец, 27.09.2026): комфорт —
 # офисы B и ниже, бизнес — B+ и A−, элитный — A и выше. Себестоимость здания
@@ -580,7 +575,8 @@ def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
     копии нет — поле, добавленное в пресет, попадает в сверку само.
     """
     key = str((inputs or {}).get("project_class") or "")
-    preset = PROJECT_CLASS_PRESETS.get(key)
+    # База — для региона проекта: в МО цена нежилого без московского пола.
+    preset = class_base_preset(key, class_region(inputs))
     if not preset:
         return {"class": key, "label": "Пользовательский", "rows": []}
     rows: list[dict[str, Any]] = []
@@ -1033,9 +1029,9 @@ class StandaloneObject(NamedTuple):
     sale_gate: str = ""
     # Назначения объекта, если их у него больше одного: пары «значение — имя».
     # У ФОКа их два, спорт и здравоохранение, и норматив приобъектной парковки
-    # у них РАЗНЫЙ. Пустой кортеж значит «назначение одно», и поля не будет:
-    # второго такого объекта в проекте не бывает (владелец, 15.09.2026),
-    # поэтому это признак объекта, а не пятая строка реестра.
+    # у них РАЗНЫЙ. Пустой кортеж значит «назначение одно», и поля не будет.
+    # Назначение — признак объекта, а не пятая строка реестра: у каждого
+    # экземпляра ФОКа оно своё.
     purposes: tuple[tuple[str, str], ...] = ()
     # Собственные числа объекта: метры или места, ставки себестоимости и цены.
     # Общая форма вводных к ним прибавляется генератором.
@@ -1060,6 +1056,10 @@ class StandaloneObject(NamedTuple):
     # норматив доли ТЭП, мест работы, сносок. Пусто — сам собой. Это НЕ
     # `book_twin`: ФОК берёт у книги блок ТЦ, но торговым центром не является.
     family: str = ""
+    # Бывает ли в проекте несколько объектов этого типа. ФОК — нет: «дубли
+    # только у ТЦ, МФОЦ/офисов, наземного паркинга; ФОК НЕ дублируется»
+    # (владелец, 29.09.2026). Экземпляров такого типа реестр не порождает.
+    duplicable: bool = True
 
     @property
     def product(self) -> str:
@@ -1083,10 +1083,14 @@ class StandaloneObject(NamedTuple):
         return {"gns": f"{self.prefix}_gba_sqm", "saleable": f"{self.prefix}_saleable_sqm"}
 
 
+# ТИПЫ объектов — четыре блока шаблона книги и ФОК. Каждый тип — это и его
+# первый экземпляр (ключи прежние: `offices`, `retail_*`), остальные
+# экземпляры порождает `object_instance` ниже.
+#
 # Порядок — тот, что виден на экране строками таблицы ТЭП. У списка гаражей он
 # был другим, с офисов: один состав двумя списками в разном порядке накопился
 # сам, и держать два ответа на «в каком порядке» незачем.
-STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
+OBJECT_TYPES: tuple[StandaloneObject, ...] = (
     StandaloneObject("standalone_retail", "retail", "ТЦ", 2, True, False, "sqm",
                      "retail_cost_th_per_sqm", "retail_price_th_per_sqm",
                      # Умолчания и есть комфорт: цена нежилого берётся из его
@@ -1099,20 +1103,6 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                                    PROJECT_CLASS_PRESETS["comfort"][
                                        "apartment_price_th"])},
                      tep_label="Коммерция ОСЗ", group_label="ТЦ / коммерция ОСЗ"),
-    # Вторые объекты — для случая «два объекта в ОДНОЙ очереди» (решение
-    # владельца 13.09.2026: инфляция объекта — от старта его очереди, и
-    # объект следующей очереди дорожает сам). Каждый — копия своего двойника
-    # и стоит сразу за ним: порядок реестра — порядок строк ТЭП. Место в книге
-    # раздаёт `_v4_object_layouts`, и ФОК остаётся первым дописанным.
-    StandaloneObject("standalone_retail2", "retail2", "ТЦ 2", 2, True, False, "sqm",
-                     "retail2_cost_th_per_sqm", "retail2_price_th_per_sqm",
-                     defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
-                               "cost_th_per_sqm": 200,
-                               "price_th_per_sqm": nonresidential_price_th(
-                                   PROJECT_CLASS_PRESETS["comfort"][
-                                       "apartment_price_th"])},
-                     tep_label="Коммерция ОСЗ 2", group_label="ТЦ / коммерция ОСЗ 2",
-                     book_twin="standalone_retail", family="standalone_retail"),
     StandaloneObject("offices", "offices", "офисы", 3, True, True, "sqm",
                      "offices_cost_th_per_sqm", "offices_price_th_per_sqm",
                      # 175 — ставка класса «Комфорт» (офисы B и ниже):
@@ -1123,16 +1113,6 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                                    PROJECT_CLASS_PRESETS["comfort"][
                                        "apartment_price_th"])},
                      tep_label="Офисы", group_label="МФОЦ / офисы"),
-    StandaloneObject("offices2", "offices2", "офисы 2", 3, True, True, "sqm",
-                     "offices2_cost_th_per_sqm", "offices2_price_th_per_sqm",
-                     # Ставка класса «Комфорт», как у первого офисника.
-                     defaults={"gba_sqm": 10000, "saleable_sqm": 6000,
-                               "cost_th_per_sqm": 175,
-                               "price_th_per_sqm": nonresidential_price_th(
-                                   PROJECT_CLASS_PRESETS["comfort"][
-                                       "apartment_price_th"])},
-                     tep_label="Офисы 2", group_label="МФОЦ / офисы 2",
-                     book_twin="offices", family="offices"),
     StandaloneObject("above_parking", "above_parking", "наземный паркинг", 2, False,
                      False, "spaces", "above_parking_cost_mln_per_space",
                      "above_parking_price_mln_per_space",
@@ -1140,14 +1120,6 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                      defaults={"spaces": 550, "cost_mln_per_space": 1,
                                "price_mln_per_space": 2, "area_per_space_sqm": 25},
                      tep_label="Наземный паркинг", group_label="Наземный паркинг"),
-    StandaloneObject("above_parking2", "above_parking2", "наземный паркинг 2", 2, False,
-                     False, "spaces", "above_parking2_cost_mln_per_space",
-                     "above_parking2_price_mln_per_space",
-                     default_months=18, growth_pre_default=0.75, growth_post_default=0.2,
-                     defaults={"spaces": 550, "cost_mln_per_space": 1,
-                               "price_mln_per_space": 2, "area_per_space_sqm": 25},
-                     tep_label="Наземный паркинг 2", group_label="Наземный паркинг 2",
-                     book_twin="above_parking", family="above_parking"),
     StandaloneObject("sports", "sports", "ФОК / медцентр", 2, True, False, "sqm",
                      "sports_cost_th_per_sqm", "sports_price_th_per_sqm",
                      sale_gate="sports_disposition",
@@ -1156,7 +1128,7 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                      defaults={"gba_sqm": 5000, "saleable_sqm": 3500,
                                "cost_th_per_sqm": 150, "price_th_per_sqm": 300},
                      tep_label="ФОК / медцентр", group_label="ФОК / медцентр",
-                     book_twin="standalone_retail",
+                     book_twin="standalone_retail", duplicable=False,
                      hints={"saleable_sqm": "м²; читается только при продаже — при"
                                             " передаче метры строятся, но не продаются",
                             "cost_th_per_sqm": "тыс. ₽/м² GBA; умолчание — стартовая"
@@ -1166,6 +1138,54 @@ STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = (
                                        " (200 м² ННП на место), здравоохранение 3.4"
                                        " (300 м²)"}),
 )
+
+
+# Экземпляры объекта. Проект держит столько офисов, ТЦ и наземных паркингов,
+# сколько нужно (владелец, 28.09.2026: «возможность добавлять дубли — хоть 2,
+# хоть 5 объектов»); ФОК не дублируется (`duplicable`). Прежде вторые объекты были тремя зашитыми
+# строками реестра: третий офис или второй ФОК завести было нельзя.
+#
+# Экземпляр — копия своего типа с номером: `offices3`, `retail3_*`. Имена
+# `offices2`, `standalone_retail2`, `above_parking2` — те же, что носили
+# «вторые» объекты, поэтому сохранённые проекты открываются без перевода
+# ключей. Какие экземпляры ЕСТЬ в проекте, говорит явный список вводной
+# `object_instances` (`project_object_instances`), а не угадывание по полям.
+#
+# Предел — `OBJECT_INSTANCES_MAX` на тип, первый экземпляр включительно. Это
+# предел реестра: каждый экземпляр — строка ТЭП, группа вводных и блок книги,
+# и поля заводятся заранее. Шестой офис не обрезается молча — добавление
+# отказывает и называет предел (`object_instance_refusal`).
+OBJECT_INSTANCES_MAX = 5
+
+
+def object_instance(base: StandaloneObject, number: int) -> StandaloneObject:
+    """Экземпляр `number` (со второго) объекта типа `base`."""
+    prefix = f"{base.prefix}{number}"
+
+    def own(key: str) -> str:
+        # Поле типа всегда начинается с его приставки — иначе экземпляр
+        # унаследовал бы ЧУЖОЕ поле, и две вводные стали бы одной.
+        if not key.startswith(base.prefix + "_"):
+            raise ValueError(f"поле «{key}» не принадлежит типу «{base.key}»")
+        return prefix + key[len(base.prefix):]
+
+    return base._replace(
+        key=f"{base.key}{number}", prefix=prefix, label=f"{base.label} {number}",
+        rate_cost=own(base.rate_cost), rate_price=own(base.rate_price),
+        sale_gate=own(base.sale_gate) if base.sale_gate else "",
+        tep_label=f"{base.tep_label} {number}",
+        group_label=f"{base.group_label} {number}",
+        # Блок книги — у двойника типа (ФОК берёт блок ТЦ), продукт — сам тип.
+        book_twin=base.book_twin or base.key, family=base.key)
+
+
+# Реестр — типы и их экземпляры; экземпляр стоит сразу за своим типом:
+# порядок реестра — порядок строк ТЭП и групп вводных.
+STANDALONE_OBJECTS: tuple[StandaloneObject, ...] = tuple(
+    obj for base in OBJECT_TYPES
+    for obj in (base, *(object_instance(base, number)
+                        for number in range(2, OBJECT_INSTANCES_MAX + 1)
+                        if base.duplicable)))
 
 
 # Вводные объекта порождаются его строкой реестра, а не пишутся руками.
@@ -1408,6 +1428,46 @@ for _preset in PROJECT_CLASS_PRESETS.values():
                 _preset[_own] = _preset[_theirs]
 del _preset
 
+# Поля профиля, чья БАЗА — цена нежилого по правилу `nonresidential_price_th`:
+# ТЦ/ОСЗ, офисы и их вторые объекты. У правила есть регион — московский пол
+# 450 тыс ₽/м² в области не действует, — а профиль класса один, московский.
+# Проект в МО получал ОСЗ по 450 при квартирах по 350 (решение владельца,
+# 28.09.2026: «в МО без московского минимума»). База класса для региона —
+# `class_base_preset`, её читают и сверка отклонений, и страница.
+CLASS_NONRES_PRICE_FIELDS: tuple[str, ...] = tuple(
+    ["retail_price_th_per_sqm", "offices_price_th_per_sqm"]
+    + [o.rate_price for o in STANDALONE_OBJECTS
+       if o.family and _BY_KEY.get(o.family) is not None
+       and _BY_KEY[o.family].rate_price in ("retail_price_th_per_sqm",
+                                            "offices_price_th_per_sqm")])
+
+
+def class_region(inputs: dict[str, Any] | None) -> str:
+    """Регион проекта для базы класса: `mo` — область, иначе Москва."""
+    return "mo" if str((inputs or {}).get("vri_region") or "msk").strip().lower() == "mo" else "msk"
+
+
+def class_base_preset(key: str, region: str = "msk") -> dict[str, Any] | None:
+    """База класса для региона проекта; `None` — у класса нет профиля."""
+    preset = PROJECT_CLASS_PRESETS.get(str(key or ""))
+    if not preset:
+        return None
+    out = dict(preset)
+    for field in CLASS_NONRES_PRICE_FIELDS:
+        if field in out:
+            out[field] = nonresidential_price_th(preset["apartment_price_th"], region=region)
+    return out
+
+
+# Что в регионе отличается от московского профиля — страница накладывает это
+# на `PROJECT_CLASS_PRESETS`, а не держит своё правило цены нежилого.
+CLASS_REGION_BASES_PLACEHOLDER = "__DEVELOPAID_CLASS_REGION_BASES__"
+CLASS_REGION_BASES: dict[str, dict[str, dict[str, float]]] = {
+    "mo": {key: {field: value for field, value in class_base_preset(key, "mo").items()
+                 if field in CLASS_NONRES_PRICE_FIELDS and value != preset.get(field)}
+           for key, preset in PROJECT_CLASS_PRESETS.items()},
+}
+
 
 # Доли площадей второго объекта — доли его продукта: у второго офисника стены
 # той же толщины. Строка своя, и правится своей строкой таблицы ТЭП.
@@ -1477,16 +1537,26 @@ OBJECT_PARKING_FIELDS = tuple(
 )
 
 
-_TEP_DEFAULT_LITERAL = {'apartments': {'label': 'Квартиры', 'gns': 130716.66012842482, 'total_area': 117647.0588235294, 'useful': 80000, 'saleable': 80000, 'transfer': 0, 'units': 1361.815754339119}, 'ground_commercial': {'label': 'Коммерция 1 этажа', 'gns': 9664.049734985854, 'total_area': 8695.652173913044, 'useful': 7826.08695652174, 'saleable': 7826.08695652174, 'transfer': 0, 'units': 0}, 'standalone_retail': '__object__:standalone_retail', 'standalone_retail2': '__object__:standalone_retail2', 'offices': '__object__:offices', 'offices2': '__object__:offices2', 'above_parking': '__object__:above_parking', 'above_parking2': '__object__:above_parking2', 'underground_parking': {'label': 'Подземный паркинг', 'gns': 38763, 'total_area': 38763, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 1107.5142857142857}, 'storage': {'label': 'Кладовые', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'kindergarten': {'label': 'ДОО', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'school': {'label': 'СОШ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'clinic': {'label': 'Поликлиника', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'sports': '__object__:sports', 'other_mandatory': {'label': 'Прочие обязательные объекты', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}}
-_FIELD_GROUPS_LITERAL = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['purchase_schedule', 'График платежей за покупку', 'доли или суммы по месяцам от начала проекта: «30%@0; 40%@6; 30%@12» или «500@0; 300@12» (млн ₽). Пусто — вся цена в дату сделки', 'schedule', {'value': 'money_or_share', 'anchor': 'project_start', 'value_label': 'Сумма или доля', 'when_label': 'Дата платежа', 'total_field': 'purchase_price_mln', 'total_label': 'стоимость покупки'}], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%; скачок цены при строительной готовности 25%. Этапы — лестница цены квартир, коммерции 1 этажа, паркинга и кладовых; задан хоть один — ежемесячный рост до РВЭ не применяется', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%; при готовности 50%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%; при готовности 75%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%; при готовности 100% — ввод; дальше ежемесячный рост после РВЭ', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['demolition_area_sqm', 'Снос — площадь сносимого', 'м²; по обязательствам КРТ, а не по новой ГНС', 'number'], ['demolition_cost_th_per_sqm', 'Снос — стоимость', 'тыс. ₽/м² сносимого; пусто при непустой площади — статья не посчитана', 'number'], ['resettlement_cost_mln', 'Расселение', 'млн ₽; отдельное обязательство КРТ, не соцнагрузка', 'number'], ['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² наземной части', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² подземной части', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети, в т.ч. плата за техприсоединение', 'тыс. ₽/м² строительного объёма — наземная плюс подземная; ТП зависит от мощности, а не от метров — на длинном проекте проверяйте отдельно', 'number'], ['landscaping_area_per_person_sqm', 'Благоустройство — норматив площади двора', 'м²/чел.; двор считается от населения, население — от площади квартир нормой региона', 'number'], ['landscaping_area_sqm', 'Благоустройство — площадь двора', 'м²; пусто — считает методика класса, заданная руками её перебьёт', 'number'], ['landscaping_th_per_sqm', 'Благоустройство — ставка за метр двора', 'тыс. ₽/м² двора', 'number'], ['landscaping_gns_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — потолок, а нехватка показывается отдельно. При очередях это общий лимит по генеральным условиям — ожидание на все очереди, потолком не служит: НКЛ каждой очереди заключается при её открытии и считается заново; реальный лимит НКЛ очереди задаётся в «Очерёдности»', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'лестница как в НКЛ: диапазон покрытия — своя ставка; по умолчанию лестница Сбера, впишите свою из договора. Пусто — одна ставка выше', 'pf_steps'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_area_source', 'Соцобъекты и плата за ВРИ', 'источник; «требование КРТ» запирает места, площади, нормативы, соцкомпенсацию и плату за ВРИ — пересчёт ТЭП их не трогает', 'select', [['norm', 'Норматив РНГП — считать от числа мест'], ['manual', 'Требование КРТ — вписываю руками']]], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОО — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОО — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОО — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОО — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОО — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОО — норматив площади на место', 'м²/место; РНГП: 27 до 125 мест, 18 до 250, дальше 16. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место; РНГП: 18 до 550 мест, 15 до 1000, дальше 13. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/(пос./смену); норматива города для поликлиники нет — это наша экспертная величина. В режиме «Требование КРТ» показывает фактический', 'number']]], ['__object__:offices', []], ['__object__:offices2', []], ['__object__:standalone_retail', []], ['__object__:standalone_retail2', []], ['__object__:sports', []], ['Нормативы парковки нежилья (общие на объекты)', [['parking_k1', 'К1 — доступность рельсового каркаса', '0,75 до 1200 м · 0,9 до 2200 м · 1,0 дальше. Пусто — считается по расстоянию ниже, а без него берётся 1,0 (верхний край, максимум мест)', 'number'], ['parking_rail_distance_m', 'Расстояние до станции', 'м до ближайшего входа на станцию; норматив меряет по пешеходным путям, подсказка адреса даёт по прямой — пеший путь длиннее', 'number'], ['parking_k2', 'К2 — деловая активность района', 'приложение 3 к 945-ПП. Пусто — берётся по району участка из разбора кадастра, а без района 1,0 (верхний край)', 'number'], ['object_parking_over_area_per_space_sqm', 'Площадь на 1 место на первых этажах', 'м²/место; занимает существующую ГНС объекта, а не добавляется к ней', 'number'], ['parking_design_mode', 'Край норматива (Московская область)', 'режим', 'select', [['maximum', 'Верхний — больше мест'], ['minimum', 'Нижний — меньше мест']]]]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены; по нему же считается подземный гараж ОСЗ', 'number']]], ['Кладовые', [['storage_area_per_unit_sqm', 'Площадь одной кладовой', 'м²/шт.; штуки и метры строки ТЭП — одна величина в двух видах: правка любой считает вторую. Замер рынка: средняя кладовая 4,3 м² (ПИК, 2026) и 4,6 (НДВ, 2024), потолок по СП 4.13130.2013 — 10', 'number']]], ['__object__:above_parking', []], ['__object__:above_parking2', []]]
+_TEP_DEFAULT_LITERAL = {'apartments': {'label': 'Квартиры', 'gns': 130716.66012842482, 'total_area': 117647.0588235294, 'useful': 80000, 'saleable': 80000, 'transfer': 0, 'units': 1361.815754339119}, 'ground_commercial': {'label': 'Коммерция 1 этажа', 'gns': 9664.049734985854, 'total_area': 8695.652173913044, 'useful': 7826.08695652174, 'saleable': 7826.08695652174, 'transfer': 0, 'units': 0}, 'standalone_retail': '__object__:standalone_retail', 'offices': '__object__:offices', 'above_parking': '__object__:above_parking', 'underground_parking': {'label': 'Подземный паркинг', 'gns': 38763, 'total_area': 38763, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 1107.5142857142857}, 'storage': {'label': 'Кладовые', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'kindergarten': {'label': 'ДОО', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'school': {'label': 'СОШ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'clinic': {'label': 'Поликлиника', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'sports': '__object__:sports', 'other_mandatory': {'label': 'Прочие обязательные объекты', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}}
+_FIELD_GROUPS_LITERAL = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['purchase_schedule', 'График платежей за покупку', 'доли или суммы по месяцам от начала проекта: «30%@0; 40%@6; 30%@12» или «500@0; 300@12» (млн ₽). Пусто — вся цена в дату сделки', 'schedule', {'value': 'money_or_share', 'anchor': 'project_start', 'value_label': 'Сумма или доля', 'when_label': 'Дата платежа', 'total_field': 'purchase_price_mln', 'total_label': 'стоимость покупки'}], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%; скачок цены при строительной готовности 25%. Этапы — лестница цены квартир, коммерции 1 этажа, паркинга и кладовых; задан хоть один — ежемесячный рост до РВЭ не применяется', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%; при готовности 50%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%; при готовности 75%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%; при готовности 100% — ввод; дальше ежемесячный рост после РВЭ', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['demolition_area_sqm', 'Снос — площадь сносимого', 'м²; по обязательствам КРТ, а не по новой ГНС', 'number'], ['demolition_cost_th_per_sqm', 'Снос — стоимость', 'тыс. ₽/м² сносимого; пусто при непустой площади — статья не посчитана', 'number'], ['resettlement_cost_mln', 'Расселение', 'млн ₽; отдельное обязательство КРТ, не соцнагрузка', 'number'], ['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² наземной части', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² подземной части', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети, в т.ч. плата за техприсоединение', 'тыс. ₽/м² строительного объёма — наземная плюс подземная; ТП зависит от мощности, а не от метров — на длинном проекте проверяйте отдельно', 'number'], ['landscaping_area_per_person_sqm', 'Благоустройство — норматив площади двора', 'м²/чел.; двор считается от населения, население — от площади квартир нормой региона', 'number'], ['landscaping_area_sqm', 'Благоустройство — площадь двора', 'м²; пусто — считает методика класса, заданная руками её перебьёт', 'number'], ['landscaping_th_per_sqm', 'Благоустройство — ставка за метр двора', 'тыс. ₽/м² двора', 'number'], ['landscaping_gns_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — потолок, а нехватка показывается отдельно. При очередях это общий лимит по генеральным условиям — ожидание на все очереди, потолком не служит: НКЛ каждой очереди заключается при её открытии и считается заново; реальный лимит НКЛ очереди задаётся в «Очерёдности»', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'лестница как в НКЛ: диапазон покрытия — своя ставка; по умолчанию лестница Сбера, впишите свою из договора. Пусто — одна ставка выше', 'pf_steps'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_area_source', 'Соцобъекты и плата за ВРИ', 'источник; «требование КРТ» запирает места, площади, нормативы, соцкомпенсацию и плату за ВРИ — пересчёт ТЭП их не трогает', 'select', [['norm', 'Норматив РНГП — считать от числа мест'], ['manual', 'Требование КРТ — вписываю руками']]], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОО — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОО — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОО — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОО — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОО — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОО — норматив площади на место', 'м²/место; РНГП: 27 до 125 мест, 18 до 250, дальше 16. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место; РНГП: 18 до 550 мест, 15 до 1000, дальше 13. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/(пос./смену); норматива города для поликлиники нет — это наша экспертная величина. В режиме «Требование КРТ» показывает фактический', 'number']]], ['__object__:offices', []], ['__object__:standalone_retail', []], ['__object__:sports', []], ['Нормативы парковки нежилья (общие на объекты)', [['parking_k1', 'К1 — доступность рельсового каркаса', '0,75 до 1200 м · 0,9 до 2200 м · 1,0 дальше. Пусто — считается по расстоянию ниже, а без него берётся 1,0 (верхний край, максимум мест)', 'number'], ['parking_rail_distance_m', 'Расстояние до станции', 'м до ближайшего входа на станцию; норматив меряет по пешеходным путям, подсказка адреса даёт по прямой — пеший путь длиннее', 'number'], ['parking_k2', 'К2 — деловая активность района', 'приложение 3 к 945-ПП. Пусто — берётся по району участка из разбора кадастра, а без района 1,0 (верхний край)', 'number'], ['object_parking_over_area_per_space_sqm', 'Площадь на 1 место на первых этажах', 'м²/место; занимает существующую ГНС объекта, а не добавляется к ней', 'number'], ['parking_design_mode', 'Край норматива (Московская область)', 'режим', 'select', [['maximum', 'Верхний — больше мест'], ['minimum', 'Нижний — меньше мест']]]]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены; по нему же считается подземный гараж ОСЗ', 'number']]], ['Кладовые', [['storage_area_per_unit_sqm', 'Площадь одной кладовой', 'м²/шт.; штуки и метры строки ТЭП — одна величина в двух видах: правка любой считает вторую. Замер рынка: средняя кладовая 4,3 м² (ПИК, 2026) и 4,6 (НДВ, 2024), потолок по СП 4.13130.2013 — 10', 'number']]], ['__object__:above_parking', []]]
 
 # Строки ТЭП объектов и их группы вводных приносит реестр: литерал держит
 # только МЕСТО — порядок строк и порядок групп на экране, — а содержимое
 # считается один раз.
+#
+# Заглушка называет ТИП: на её место встаёт тип и сразу за ним его экземпляры.
+def _object_and_instances(placeholder: str) -> tuple[StandaloneObject, ...]:
+    base = _BY_KEY[placeholder[len(_OBJECT_PLACEHOLDER):]]
+    return tuple(o for o in STANDALONE_OBJECTS if o.key == base.key or o.family == base.key)
+
+
 TEP_DEFAULT: dict[str, Any] = {
-    _key: (standalone_object_tep_row(_BY_KEY[str(_row)[len(_OBJECT_PLACEHOLDER):]])
-           if isinstance(_row, str) and _row.startswith(_OBJECT_PLACEHOLDER) else _row)
-    for _key, _row in _TEP_DEFAULT_LITERAL.items()
+    _key: _value
+    for _lkey, _row in _TEP_DEFAULT_LITERAL.items()
+    for _key, _value in (
+        ((o.key, standalone_object_tep_row(o)) for o in _object_and_instances(_row))
+        if isinstance(_row, str) and _row.startswith(_OBJECT_PLACEHOLDER)
+        else ((_lkey, _row),))
 }
 
 # Колонки строки ТЭП так, как их называет таблица ТЭП на странице. Окно
@@ -1502,10 +1572,20 @@ TEP_COLUMN_LABELS: dict[str, str] = {
 }
 
 FIELD_GROUPS: list[Any] = [
-    standalone_object_group(_BY_KEY[str(_group[0])[len(_OBJECT_PLACEHOLDER):]])
-    if str(_group[0]).startswith(_OBJECT_PLACEHOLDER) else _group
+    _item
     for _group in _FIELD_GROUPS_LITERAL
+    for _item in (
+        [standalone_object_group(o) for o in _object_and_instances(str(_group[0]))]
+        if str(_group[0]).startswith(_OBJECT_PLACEHOLDER) else [_group])
 ]
+
+# Группы и поля экземпляров: странице они не отдаются (см. `objectFields`).
+_INSTANCE_GROUPS = frozenset(o.group_label for o in STANDALONE_OBJECTS if o.family)
+# Группы вводных, которые рисует страница: всё, кроме групп экземпляров.
+PAGE_FIELD_GROUPS: list[Any] = [group for group in FIELD_GROUPS
+                                if group[0] not in _INSTANCE_GROUPS]
+_INSTANCE_FIELDS = frozenset(
+    field[0] for o in STANDALONE_OBJECTS if o.family for field in standalone_object_group(o)[1])
 
 # Блок каждого поля объекта — для заголовков на странице. Отдельной картой, а не
 # третьим элементом группы: группу и поле читают распаковкой в десятке мест.
@@ -1694,6 +1774,170 @@ def object_is_sold(inputs: dict[str, Any] | None, obj: "StandaloneObject") -> bo
     value = str((inputs or {}).get(obj.sale_gate)
                 or SPORTS_DISPOSITION_TRANSFER).strip().lower()
     return value == SPORTS_DISPOSITION_SALE
+
+
+# --- экземпляры объектов проекта ----------------------------------------------
+# Какие экземпляры есть в проекте — явный список вводной `object_instances`
+# (ключи реестра: `offices3`, `sports2`). Первый экземпляр типа (`offices`,
+# `sports`) в проекте есть всегда — у него, как и прежде, свой выключатель.
+#
+# Отсутствующий ключ — не пустой список: проект, сохранённый до экземпляров
+# (или присланный ботом, мостом, API), своего списка не несёт. Тогда состав
+# берётся из того, что проект о себе сказал явно: включённые экземпляры, а у
+# прежних «вторых» объектов (`LEGACY_SECOND_OBJECTS`) ещё и набранные метры —
+# выключенный второй офисник с площадями оставался данными человека.
+OBJECT_INSTANCES_KEY = "object_instances"
+OBJECT_INSTANCES: dict[str, StandaloneObject] = {
+    o.key: o for o in STANDALONE_OBJECTS if o.family}
+# Прежние «вторые» объекты (#559): второй экземпляр каждого типа, у которого
+# в шаблоне книги свой блок (офисы, ТЦ, наземный паркинг; у ФОКа блока нет).
+LEGACY_SECOND_OBJECTS: tuple[str, ...] = tuple(
+    object_instance(base, 2).key for base in OBJECT_TYPES if not base.book_twin)
+_INSTANCE_VOLUME_FIELDS = ("gba_sqm", "saleable_sqm", "spaces",
+                           "parking_under_spaces", "parking_over_spaces")
+
+
+def _legacy_instance_has_data(inputs: dict[str, Any], obj: StandaloneObject) -> bool:
+    defaults = standalone_object_defaults(obj)
+    for field in _INSTANCE_VOLUME_FIELDS:
+        key = f"{obj.prefix}_{field}"
+        if key in inputs and key in defaults and n(inputs, key) != n(defaults, key):
+            return True
+    return False
+
+
+def _instance_order(keys: Any) -> tuple[str, ...]:
+    wanted = {str(key) for key in keys}
+    return tuple(key for key in OBJECT_INSTANCES if key in wanted)
+
+
+def project_object_instances(inputs: dict[str, Any] | None) -> tuple[str, ...]:
+    """Экземпляры объектов, заведённые в проекте, — в порядке реестра."""
+    x = inputs or {}
+    raw = x.get(OBJECT_INSTANCES_KEY)
+    if raw is None:
+        return _instance_order(
+            key for key, obj in OBJECT_INSTANCES.items()
+            if b(x, obj.enabled_key)
+            or (key in LEGACY_SECOND_OBJECTS and _legacy_instance_has_data(x, obj)))
+    if isinstance(raw, str):
+        raw = [part for part in re.split(r"[\s,;]+", raw) if part]
+    return _instance_order(raw if isinstance(raw, (list, tuple, set, frozenset)) else ())
+
+
+def project_objects(inputs: dict[str, Any] | None) -> tuple[StandaloneObject, ...]:
+    """Объекты проекта: первые экземпляры типов и заведённые экземпляры."""
+    present = set(project_object_instances(inputs))
+    return tuple(o for o in STANDALONE_OBJECTS if not o.family or o.key in present)
+
+
+def object_instance_notes(inputs: dict[str, Any] | None) -> list[str]:
+    """Что из присланного про экземпляры расчёт НЕ принял — и почему."""
+    x = inputs or {}
+    raw = x.get(OBJECT_INSTANCES_KEY)
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw = [part for part in re.split(r"[\s,;]+", raw) if part]
+    listed = [str(key) for key in raw] if isinstance(raw, (list, tuple, set, frozenset)) else []
+    notes = [_unknown_instance_note(key)
+             for key in listed if key not in OBJECT_INSTANCES and key not in _BY_KEY]
+    present = set(project_object_instances(x))
+    notes += [
+        f"«{obj.group_label}» включён во вводных, но в составе проекта его нет — "
+        "не считается"
+        for key, obj in OBJECT_INSTANCES.items()
+        if key not in present and b(x, obj.enabled_key)]
+    return notes
+
+
+def _unknown_instance_note(key: str) -> str:
+    """Почему экземпляр из присланного списка не заведён.
+
+    Тип узнаётся по явному списку типов, а не по разбору имени: ключ вида
+    «тип + номер» проверяется против каждого недублируемого типа целиком.
+    """
+    for base in OBJECT_TYPES:
+        if not base.duplicable and key in {f"{base.key}{number}" for number in range(2, 100)}:
+            return (f"«{base.group_label}» не дублируется — объект «{key}» не "
+                    "считается; его вводные сохранены как есть")
+    return (f"объект «{key}» не заведён: такого экземпляра в реестре нет "
+            f"(предел — {OBJECT_INSTANCES_MAX} объектов одного типа)")
+
+
+def object_instance_refusal(inputs: dict[str, Any] | None, type_key: str) -> str:
+    """Почему экземпляр типа добавить нельзя; пусто — можно."""
+    base = _BY_KEY.get(type_key)
+    if base is None or base.family:
+        return f"типа объекта «{type_key}» нет"
+    if not base.duplicable:
+        return f"«{base.group_label}» не дублируется: в проекте он один"
+    present = set(project_object_instances(inputs))
+    free = [key for key, obj in OBJECT_INSTANCES.items()
+            if obj.family == type_key and key not in present]
+    if not free:
+        return (f"«{base.group_label}»: в проекте уже {OBJECT_INSTANCES_MAX} "
+                f"объектов этого типа — больше реестр не заводит "
+                f"(OBJECT_INSTANCES_MAX)")
+    return ""
+
+
+def object_instance_add(inputs: dict[str, Any], type_key: str) -> str:
+    """Заводит следующий свободный экземпляр типа; возвращает его ключ.
+
+    Поля экземпляра встают умолчаниями его строки реестра — прежние значения
+    удалённого экземпляра с тем же номером не воскресают. Предел — отказ с
+    причиной (`object_instance_refusal`), а не молчаливая обрезка.
+    """
+    refusal = object_instance_refusal(inputs, type_key)
+    if refusal:
+        raise ValueError(refusal)
+    present = project_object_instances(inputs)
+    key = next(key for key, obj in OBJECT_INSTANCES.items()
+               if obj.family == type_key and key not in present)
+    inputs.update(standalone_object_defaults(OBJECT_INSTANCES[key]))
+    inputs[OBJECT_INSTANCES[key].enabled_key] = True
+    inputs[OBJECT_INSTANCES_KEY] = list(_instance_order((*present, key)))
+    return key
+
+
+def object_instance_remove(inputs: dict[str, Any], key: str) -> None:
+    """Убирает экземпляр из проекта. Первый экземпляр типа не удаляется."""
+    obj = OBJECT_INSTANCES.get(key)
+    if obj is None:
+        raise ValueError(f"«{key}» — не добавленный экземпляр объекта")
+    present = project_object_instances(inputs)
+    inputs[OBJECT_INSTANCES_KEY] = [item for item in present if item != key]
+    inputs[obj.enabled_key] = False
+
+
+def object_instances_applied(inputs: dict[str, Any],
+                             tep: dict[str, dict[str, Any]]
+                             ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """Вводные и ТЭП, которыми считает проект своего состава объектов.
+
+    Экземпляр вне состава проекта не считается нигде: выключатель гасится,
+    строка ТЭП — нули. Присланное не правится (копии), и список состава
+    фиксируется явным — дальше по расчёту (очереди, книга) его не выводят
+    заново. Проект без экземпляров возвращается теми же объектами.
+    """
+    present = project_object_instances(inputs)
+    absent = [obj for key, obj in OBJECT_INSTANCES.items() if key not in present]
+    if (inputs or {}).get(OBJECT_INSTANCES_KEY) == list(present) and not any(
+            b(inputs, obj.enabled_key) for obj in absent):
+        return inputs, tep
+    x = dict(inputs or {})
+    x[OBJECT_INSTANCES_KEY] = list(present)
+    t = dict(tep or {})
+    for obj in absent:
+        if b(x, obj.enabled_key):
+            x[obj.enabled_key] = False
+        row = t.get(obj.key)
+        if isinstance(row, dict) and any(
+                n(row, col) for col in _RESIDENTIAL_EXCLUDED_TEP_COLUMNS):
+            t[obj.key] = {**row, **{col: 0.0 for col in _RESIDENTIAL_EXCLUDED_TEP_COLUMNS
+                                    if col in row}}
+    return x, t
 
 
 def sports_is_sold(inputs: dict[str, Any] | None) -> bool:
@@ -11322,14 +11566,16 @@ _SPORTS_PURPOSE_FUNCTIONS = {
 }
 
 
-def sports_parking_functions(inputs: dict[str, Any] | None) -> tuple[str, str]:
+def sports_parking_functions(inputs: dict[str, Any] | None,
+                             purpose_key: str = "sports_purpose") -> tuple[str, str]:
     """Функции норматива для объекта «ФОК / медцентр»: (Москва, область).
 
     У области строки здравоохранения в таблице нет, и `mo_required` отвечает на
     неё правилом п. 5.12 «1 место на 50 м²», называя это допущением, — своего
-    костыля здесь не нужно.
+    костыля здесь не нужно. Назначение у каждого экземпляра ФОКа своё
+    (`purpose_key`).
     """
-    purpose = str(((inputs or {}).get("sports_purpose") or "sport")).strip().lower()
+    purpose = str(((inputs or {}).get(purpose_key) or "sport")).strip().lower()
     return _SPORTS_PURPOSE_FUNCTIONS.get(purpose, _SPORTS_PURPOSE_FUNCTIONS["sport"])
 
 
@@ -11653,12 +11899,14 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
     k1_applied = k2_applied = 0.0
     k_assumed = False
     k_origin = {"k1": "", "k2": ""}
-    sports_msk, sports_mo = sports_parking_functions(inputs)
     for tep_key, msk_function, mo_function, built_in in _PARKING_DEMAND_PRODUCTS:
         # Единственный продукт, у которого функция норматива зависит от вводных:
-        # «ФОК / медцентр» — один объект с двумя назначениями.
-        if tep_key == "sports":
-            msk_function, mo_function = sports_msk, sports_mo
+        # «ФОК / медцентр» — объект с двумя назначениями, и у каждого его
+        # экземпляра назначение своё.
+        _purposeful = _BY_KEY.get(tep_key)
+        if _purposeful is not None and _purposeful.purpose_key:
+            msk_function, mo_function = sports_parking_functions(
+                inputs, _purposeful.purpose_key)
         row = (tep or {}).get(tep_key) or {}
         # База у юрисдикций РАЗНАЯ, и это часть норматива, а не подробность.
         # Москва считает от нежилой наземной площади (сноска 2 приложения 1 в
@@ -15810,6 +16058,115 @@ def _pdf_pct(value: Any) -> str:
         return "—"
 
 
+def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors: Any) -> Any:
+    """Таблица сравнения очередей для PDF — печать `phase_comparison_table`.
+
+    Блок открывается строкой-заголовком во всю ширину; итог жирный и с линией
+    сверху, слагаемое и «из них» — с отступом: то же, что на странице.
+    """
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Table, TableStyle
+
+    cell = ParagraphStyle("pc_cell", fontName=regular, fontSize=6.8, leading=8.2,
+                          textColor=colors.HexColor("#222222"))
+    num = ParagraphStyle("pc_num", parent=cell, alignment=2)
+    strong = ParagraphStyle("pc_strong", parent=cell, fontName=bold,
+                            textColor=colors.HexColor("#111111"))
+    strong_num = ParagraphStyle("pc_strong_num", parent=strong, alignment=2)
+    head = ParagraphStyle("pc_head", parent=strong, fontSize=6.6)
+    muted = ParagraphStyle("pc_muted", parent=cell, textColor=colors.HexColor("#666666"))
+
+    def text(value: Any) -> str:
+        return (str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+    def one(value: Any) -> str:
+        # Одна цифра после запятой так, как округляет страница (половина —
+        # вверх по короткой записи числа): иначе «вводная 10,25» выходит
+        # 10,3 на экране и 10,2 в PDF.
+        from decimal import ROUND_HALF_UP, Decimal
+        return _pdf_num(float(Decimal(repr(float(value or 0))).quantize(
+            Decimal("0.1"), rounding=ROUND_HALF_UP)), 1)
+
+    def fmt(row: dict[str, Any], value: Any) -> str:
+        if value is None or value == "":
+            return "—"
+        kind = row.get("kind")
+        if kind == "money":
+            # Одна единица на таблицу, как на странице: «166,0 млн» под
+            # «3,15 млрд» читается как другой масштаб колонки.
+            return _pdf_num(float(value) / 1_000_000_000, 2) + " млрд ₽"
+        if kind == "qty":
+            unit = str(row.get("unit") or "")
+            return (_pdf_num(value, 0 if unit == "шт." else 1) + " " + unit).strip()
+        if kind == "th":
+            return one(value)
+        if kind == "pct":
+            return _pdf_pct(value)
+        if kind == "mult":
+            return _pdf_num(value, 2) + "x"
+        if kind == "date":
+            raw = str(value)[:10]
+            return f"{raw[8:10]}.{raw[5:7]}.{raw[:4]}" if len(raw) == 10 else raw
+        return str(value)
+
+    def label(row: dict[str, Any]) -> str:
+        out = str(row.get("label") or "")
+        if row.get("rate_input") is not None:
+            out += f" (вводная {one(row['rate_input'])})"
+        if row.get("kind") == "th":
+            out += ", тыс ₽/м²"
+        return out
+
+    columns = list(table.get("columns") or [])
+    span = len(columns) + 2
+    data: list[list[Any]] = [[Paragraph("Показатель", head)]
+                             + [Paragraph(text(n), ParagraphStyle("pc_hn", parent=head, alignment=2))
+                                for n in columns + ["Свод"]]]
+    style: list[tuple] = [
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.HexColor("#111111")),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.3, colors.HexColor("#E2E2E2")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]
+    # Делители удельных — одна подпись таблицы мелким шрифтом под шапкой,
+    # как на странице, а не строки-показатели.
+    note = ParagraphStyle("pc_note", parent=muted, fontSize=5.8, leading=7.0)
+    divisors = [
+        text(str(d.get("label") or "")) + ": " + " · ".join(
+            [text(n) + " " + _pdf_num(v, 0) for n, v in zip(columns, d.get("values") or [])]
+            + ["свод " + _pdf_num(d.get("total"), 0)]) + " " + text(str(d.get("unit") or ""))
+        for d in table.get("divisors") or []]
+    if divisors:
+        i = len(data)
+        data.append([Paragraph("Удельные показатели — делители: " + "<br/>".join(divisors), note)]
+                    + [""] * (span - 1))
+        style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 4)]
+    for block in table.get("blocks") or []:
+        i = len(data)
+        data.append([Paragraph(text(str(block.get("title") or "").upper()), head)] + [""] * (span - 1))
+        style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 7),
+                  ("LINEBELOW", (0, i), (-1, i), 1.0, colors.HexColor("#111111"))]
+        for row in block.get("rows") or []:
+            i = len(data)
+            role = row.get("role") or ""
+            lab_style = strong if role == "total" else (muted if role in ("part", "sub") else cell)
+            num_style = strong_num if role == "total" else num
+            values = list(row.get("values") or []) + [row.get("total")]
+            data.append([Paragraph(text(label(row)), lab_style)]
+                        + [Paragraph(text(fmt(row, v)), num_style) for v in values])
+            if role == "total":
+                style.append(("LINEABOVE", (0, i), (-1, i), 0.9, colors.HexColor("#111111")))
+            if role in ("part", "sub"):
+                style.append(("LEFTPADDING", (0, i), (0, i), 12))
+    label_w = 62 * mm
+    rest = (170 * mm - label_w) / max(1, len(columns) + 1)
+    out = Table(data, colWidths=[label_w] + [rest] * (len(columns) + 1), repeatRows=1, hAlign="LEFT")
+    out.setStyle(TableStyle(style))
+    return out
+
+
 def _pdf_entry_cost_rows(result: dict[str, Any],
                          expense_structure: list[dict[str, Any]]) -> list[list[str]]:
     """Цена входа и плата за ВРИ — из расчёта, а не из формы.
@@ -16840,83 +17197,34 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             ])
         story.append(table(params,[30*mm,35*mm,38*mm,34*mm,33*mm],font_size=7.4))
         story.append(P("Сравнение очередей",h2))
-        head=[["Очередь","Строит. объём, м²","Продаваемая, м²","Выручка","Расходы","Чистая прибыль","LLCR"]]
-        for item in comparison:
-            head.append([
-                str(item.get("name") or "—"),
-                _pdf_num(item.get("gns_sqm"),0),_pdf_num(item.get("saleable_sqm"),0),
-                _pdf_money(item.get("revenue")),_pdf_money(item.get("total_expenses")),
-                _pdf_money(item.get("net_profit")),_pdf_num(item.get("llcr"),2)+"x",
-            ])
-        head.append([
-            "Итого",_pdf_num(sum(float(i.get("gns_sqm") or 0) for i in comparison),0),
-            _pdf_num(sum(float(i.get("saleable_sqm") or 0) for i in comparison),0),
-            _pdf_money(summary.get("revenue")),_pdf_money(summary.get("total_expenses")),
-            _pdf_money(summary.get("net_profit")),_pdf_num(summary.get("llcr"),2)+"x",
-        ])
-        story.append(table(head,[22*mm,25*mm,29*mm,26*mm,26*mm,27*mm,15*mm],font_size=7.0))
-        # Непогашенный долг очереди и перенос его в следующую. Раздел не
-        # печатался вовсе: очередь, не рассчитавшаяся с банком, выглядела в
-        # отчёте так же, как закрывшая долг, а после переноса у передавшей
-        # стоял ноль — обязательство исчезало бесследно. Строка появляется
-        # вместе с числом: у проекта без непогашенного долга её нет.
+        # Та же таблица, что на странице, и из того же места —
+        # `phase_comparison_table`: состав, порядок блоков и числа решает
+        # движок, PDF только печатает. Прежде отчёт печатал своё сравнение
+        # пятью таблицами в своём порядке, и две раскладки одного сравнения
+        # расходились (владелец, 27.09.2026: «PDF тоже надо сделать то же»).
+        story.append(_phase_comparison_pdf(phase_comparison_table(result), regular, bold, colors))
+        story.append(P("Удельные показатели — в тыс. ₽ за м² своего делителя; итог по ним — "
+                       "отношение сумм, а не среднее по очередям.", small))
+        # Причина, по которой долг сменил очередь или остался на своей: без неё
+        # обнулённый долг первой очереди рядом с выросшим долгом второй
+        # читается как ошибка расчёта. Раздел «Непогашенный долг и перенос
+        # между очередями» стал строками блока «Финансирование»; здесь —
+        # объяснение к ним.
         _carry = result.get("debt_carry") if isinstance(result.get("debt_carry"), dict) else {}
         _has_debt = any(
             float(i.get("ending_pf") or 0) > 500_000
             or float(i.get("debt_carried_out") or 0) > 500_000
             or float(i.get("carried_debt_in") or 0) > 500_000
             for i in comparison)
-        if _has_debt or _carry:
-            story.append(P("Непогашенный долг и перенос между очередями",h2))
-            # Порядок колонок — рассказ: сколько пришло, сколько ушло, что
-            # осталось. «Непогашено» посередине читалось как противоречие
-            # соседней колонке с тем же числом (владелец, 30.08.2026).
-            _carried_any = any(float(i.get("debt_carried_out") or 0) > 500_000
-                               for i in comparison)
-            debt_rows=[["Очередь","Принято от предыдущей","Передано следующей",
-                        "Осталось на очереди" if _carried_any else "Непогашено на конец"]]
-            for item in comparison:
-                debt_rows.append([
-                    str(item.get("name") or "—"),
-                    _pdf_money(item.get("carried_debt_in")),
-                    _pdf_money(item.get("debt_carried_out")),
-                    _pdf_money(item.get("ending_pf")),
-                ])
-            debt_rows.append([
-                "Итого","—",
-                _pdf_money(sum(float(i.get("debt_carried_out") or 0) for i in comparison)),
-                _pdf_money(sum(float(i.get("ending_pf") or 0) for i in comparison)),
-            ])
-            story.append(table(debt_rows,[30*mm,42*mm,42*mm,42*mm],font_size=7.0))
-            if _carry.get("note"):
-                story.append(P(str(_carry["note"]),small))
-            elif _has_debt:
-                story.append(P(
-                    "Перенос долга между очередями выключен: непогашенный остаток "
-                    "остаётся на очереди, которая его набрала, и означает дефолт по "
-                    "её линии. Итог по проекту при этом складывается из очередей.",small))
+        if _carry.get("note"):
+            story.append(P(str(_carry["note"]),small))
+        elif _has_debt:
+            story.append(P(
+                "Перенос долга между очередями выключен: непогашенный остаток "
+                "остаётся на очереди, которая его набрала, и означает дефолт по "
+                "её линии. Итог по проекту при этом складывается из очередей.",small))
         phase_financing = result.get("phase_financing") or {}
-        funding_rows = phase_financing.get("rows") or []
-        if funding_rows:
-            story.append(P("Стратегия финансирования очередей",h2))
-            funding = [["Очередь","Затраты до РНС","Cash проекта","Свои средства","Новый БРИДЖ","ПФ после РНС"]]
-            for row in funding_rows:
-                funding.append([
-                    str(row.get("name") or "—"),
-                    _pdf_money(row.get("pre_rns_costs")),
-                    _pdf_money(row.get("project_cash_used")),
-                    _pdf_money(row.get("own_funds")),
-                    _pdf_money(row.get("new_bridge")),
-                    _pdf_money(row.get("peak_pf")),
-                ])
-            totals = phase_financing.get("totals") or {}
-            funding.append([
-                "Итого",_pdf_money(totals.get("pre_rns_costs")),
-                _pdf_money(totals.get("project_cash_used")),
-                _pdf_money(totals.get("own_funds")),
-                _pdf_money(totals.get("new_bridge")),"—",
-            ])
-            story.append(table(funding,[22*mm,31*mm,28*mm,28*mm,31*mm,30*mm],font_size=6.7))
+        if phase_financing.get("rows"):
             story.append(P(
                 ("Единый денежный поток проекта включён. " if phase_financing.get("enabled")
                  else "Независимое финансирование очередей включено. ")
@@ -16930,44 +17238,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             for item in comparison if item.get("allocated_net_profit") is not None]
         if allocated_parts:
             story.append(P(
-                "Прибыль очередей выше — кассовая, как в CF-листах Excel-книги: общие "
+                "Чистая прибыль очередей — кассовая, как в CF-листах Excel-книги: общие "
                 "расходы (покупка, ВРИ, соцнагрузка) стоят в очереди их оплаты. "
                 "Аллоцированная прибыль разносит их экономически: "
                 + "; ".join(allocated_parts)
                 + ". Сумма по проекту в обеих раскладках одна.", small))
-        story.append(P("Удельные показатели по очередям",h2))
-        # Итог по удельным — это отношение сумм, а не сумма отношений: у очередей
-        # разные площади, и среднее по строкам дало бы неверную величину.
-        def ratio(value_key: str, area_key: str) -> str:
-            area=sum(float(i.get(area_key) or 0) for i in comparison)
-            value=sum(float(i.get(value_key) or 0) for i in comparison)
-            return _pdf_num(value/area/1000,1) if area else "—"
-        # «Выручка на м² прод.» делит всю выручку очереди, включая паркинг и
-        # кладовые; чисто квартирная колонка — общий знаменатель с книгой:
-        # в ней та же строка, и цифры обязаны совпадать один в один.
-        def apartments_total() -> str:
-            area=sum(float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
-            value=sum(float(i.get("apartment_price_th") or 0)
-                      *float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
-            return _pdf_num(value/area,1) if area else "—"
-        units=[["Очередь","Выручка на м² прод.","в т.ч. квартиры","Выручка на м² наземной ГНС","Расходы на м² прод.","Расходы на м² наземной ГНС","Прибыль на м² прод.","Прибыль на м² наземной ГНС"]]
-        for item in comparison:
-            units.append([
-                str(item.get("name") or "—"),
-                _pdf_num(item.get("revenue_per_saleable_th"),1),
-                _pdf_num(item.get("apartment_price_th"),1),
-                _pdf_num(item.get("revenue_per_gns_th"),1),
-                _pdf_num(item.get("expenses_per_saleable_th"),1),_pdf_num(item.get("expenses_per_gns_th"),1),
-                _pdf_num(item.get("net_profit_per_saleable_th"),1),
-                _pdf_num(item.get("net_profit_per_gns_th"),1),
-            ])
-        units.append([
-            "Итого",ratio("revenue","saleable_sqm"),apartments_total(),ratio("revenue","gns_sqm"),
-            ratio("total_expenses","saleable_sqm"),ratio("total_expenses","gns_sqm"),
-            ratio("net_profit","saleable_sqm"),ratio("net_profit","gns_sqm"),
-        ])
-        story.append(table(units,[18*mm,23*mm,21*mm,22*mm,23*mm,22*mm,21*mm,20*mm],font_size=6.6))
-        story.append(P("Значения удельных показателей — в тыс. ₽ за м². «Выручка на м² прод.» включает штучные продукты (паркинг, кладовые); «в т.ч. квартиры» — только квартиры на м² их продаваемой площади, эта же строка есть в Excel-книге. Итоговая строка считается как отношение сумм, а не как среднее по очередям.",small))
 
     # Раздел появляется только если чувствительность считали на вкладке.
     # Гнать полсотни расчётов внутри сборки PDF ради раздела, который никто не
@@ -23991,6 +24266,10 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
         "готовое число — смена слова в книге ничего не пересчитывает "
         "(решение владельца 26.09.2026: книгу не усложнять)"),
 }
+# Назначение каждого экземпляра ФОКа — та же вводная норматива, что у первого.
+V4_INPUTS_NOT_IN_BOOK.update({
+    _obj.purpose_key: V4_INPUTS_NOT_IN_BOOK["sports_purpose"]
+    for _obj in STANDALONE_OBJECTS if _obj.purpose_key})
 # Ячейки, в которых значение ПОКАЗАНО, но книгой не читается ни одной
 # формулой. Это не ввод: правка здесь не изменит ничего, а выглядит рабочей —
 # «вводная, которую никто не читает, — не вводная, а обещание». Нашлись они
@@ -24764,6 +25043,8 @@ def build_project_workbook(
     получает ту же книгу, что и до его появления в реестре (`_V4_BOOK_OBJECTS`).
     """
     merged = {**DEFAULT_INPUTS, **(inputs or {})}
+    # Экземпляр вне состава проекта в книгу не пишется, даже включённый.
+    merged = object_instances_applied(merged, {})[0]
     token = _V4_BOOK_OBJECTS.set(_v4_book_objects(merged))
     try:
         return _build_project_workbook(inputs, tep, rates, phasing, **kwargs)
@@ -24805,6 +25086,7 @@ def _build_project_workbook(
     # присланное: остаток он называет сам.
     engine_tep = tep
     x, tep = residential_excluded(x, tep)
+    x, tep = object_instances_applied(x, tep)
     # Лимиты финансирования — из движка: книжная пропорция от CAPEX-блоков
     # занижала лимит ПФ очереди с офисами, и плата за невыбранный лимит
     # выходила вдвое меньше движковой. Поверхности считают один раз: бот
@@ -27369,6 +27651,7 @@ def fill_plato_template(
     # Тип проекта — тем же предикатом, что у движка: шаблон строит то, что
     # движок считает, а не присланное целиком (и не умолчание квартир).
     merged, merged_tep = residential_excluded(merged, merged_tep)
+    merged, merged_tep = object_instances_applied(merged, merged_tep)
 
     workbook = load_workbook(path, data_only=False, keep_vba=False)
     filled: list[dict[str, Any]] = []
@@ -31179,7 +31462,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             standalone_capex[obj.key] += standalone_garage_capex[obj.key]
         # Признак продажи гасит ВЫРУЧКУ, а не стройку: переданный объект
         # строится за те же деньги и ведёт себя как соцобъект.
-        if obj.sale_gate and not sports_is_sold(x):
+        if obj.sale_gate and not object_is_sold(x, obj):
             revenue_by_product[obj.key] = 0.0
             continue
         sales_start = d(x[f"{obj.prefix}_sales_start"])
@@ -32576,10 +32859,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # выручки нет вовсе, и собственный пул расходов ему признавать нечем:
     # стоимость постройки осталась бы непризнанной до конца проекта. Переданный
     # ФОК ведёт себя как соцобъект — его CAPEX уходит в общий пул `core`.
-    sports_sold = b(x, "sports_enabled") and sports_is_sold(x)
+    # Признак — свой у каждого экземпляра ФОКа.
     krt_products = tuple(
         obj.key for obj in standalone_objects()
-        if obj.key != "sports" or sports_sold
+        if not obj.sale_gate or (b(x, obj.enabled_key) and object_is_sold(x, obj))
     )
     # Состав пула и состав его стоимостей — один список, а не два: разойдись
     # они, объект попал бы в выручку и не попал в расход, и обе строки
@@ -33017,6 +33300,10 @@ def calculate(req: CalcRequest) -> dict:
     # расхождение вводных с типом, а не часть расчёта.
     kind_leftovers = nonresidential_leftovers(x, t)
     x, t = residential_excluded(x, t)
+    # Состав объектов — тем же порядком: экземпляр вне проекта не считается,
+    # а непринятое из присланного называется (`object_instance_notes`).
+    instance_notes = object_instance_notes(x)
+    x, t = object_instances_applied(x, t)
 
     # Соцобъект приводится к вводным здесь же, где чинится подземный паркинг,
     # и по той же причине: строка ТЭП у него — производная, а хранимая
@@ -33698,6 +33985,7 @@ def calculate(req: CalcRequest) -> dict:
             "core_under_gns": op["core_under_gns"],
         },
         "revenue": {"total": total_revenue, **op["revenue_by_product"]},
+        "revenue_structure": revenue_structure({"total": total_revenue, **op["revenue_by_product"]}),
         # land_rights_gross и land_rights_relief — справочные величины платы
         # до льготы: в total их нет, а таблица расходов на странице рисует все
         # ключи подряд — и показывала их сырыми именами. Валовая плата и льгота
@@ -33754,6 +34042,10 @@ def calculate(req: CalcRequest) -> dict:
             # жилые метры, которые расчёт не считает (`residential_excluded`).
             "project_kind": project_kind(x),
             "project_kind_leftovers": kind_leftovers,
+            # Состав объектов, которым считал расчёт, и непринятое из
+            # присланного — с причиной, а не молчаливым пропуском.
+            "object_instances": list(project_object_instances(x)),
+            "object_instance_notes": instance_notes,
             "npv": project_npv,
             "irr_equity": irr_equity,
             "full_project_cost": full_project_cost,
@@ -35788,6 +36080,7 @@ def _consolidate_phase_results(
             "core_under_gns": sum(r["tep"]["core_under_gns"] for r in results),
         },
         "revenue": revenue,
+        "revenue_structure": revenue_structure({**revenue, "total": total_revenue}),
         "capex": capex,
         "commercial_costs": commercial_costs,
         "finance": finance,
@@ -36086,6 +36379,8 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     # паркинга дома и мест ДОО, которых нежилой проект не строит.
     kind_leftovers = nonresidential_leftovers(x_master, t_master)
     x_master, t_master = residential_excluded(x_master, t_master)
+    instance_notes = object_instance_notes(x_master)
+    x_master, t_master = object_instances_applied(x_master, t_master)
 
     while len(phases_cfg) < count:
         phases_cfg.append({
@@ -36778,6 +37073,8 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     if isinstance(summary_block, dict):
         summary_block["project_kind"] = project_kind(x_master)
         summary_block["project_kind_leftovers"] = kind_leftovers
+        summary_block["object_instances"] = list(project_object_instances(x_master))
+        summary_block["object_instance_notes"] = instance_notes
     for item, row in zip(phase_items, comparison):
         row["vri_cash"] = item["result"].get("vri", {}).get("totals", {}).get("cash", 0.0)
     # Применённые кассовые доли — один ответ на движок и книгу: статья «по
@@ -36799,7 +37096,274 @@ _PHASE_DEBT_CARRY_MIN_LLCR = 1.0
 _PHASE_DEBT_CARRY_MIN_RUB = 500_000.0
 
 
+def product_groups(keys: Any) -> tuple[list[str], list[str]]:
+    """Продукты по группам и в порядке чтения: МКД из `MKD_PRODUCTS`, затем
+    отдельно стоящие объекты в порядке реестра `STANDALONE_OBJECTS`, и паркинг
+    каждого объекта — сразу за своим объектом (`OBJECT_PARKING_PRODUCT_KEYS`),
+    а не по имени. Продукт вне обоих списков идёт в ОСЗ следом, а не теряется.
+
+    Один ответ для всех таблиц выручки: сравнения очередей и «Структуры
+    выручки» — прежде вторая шла в порядке словаря движка, и паркинг ТЦ стоял
+    перед квартирами, а офисы — посреди кладовых (владелец, 28.09.2026).
+    """
+    present = [str(k) for k in keys]
+    have = set(present)
+    mkd = [k for k in MKD_PRODUCTS if k in have]
+    obj = [k for o in STANDALONE_OBJECTS
+           for k in (o.key, OBJECT_PARKING_PRODUCT_KEYS.get(o.key, ""))
+           if k and k in have]
+    osz = obj + [k for k in present if k not in MKD_PRODUCTS and k not in obj]
+    return mkd, osz
+
+
+def revenue_structure(revenue: dict[str, Any]) -> dict[str, Any]:
+    """«Структура выручки» — строки, которые печатает страница.
+
+    Нулевой продукт — шум, а не полнота: семь строк «0 млрд ₽» между
+    настоящими разрывали таблицу. Итог группы заводится, когда в ней больше
+    одного продукта: «Итого МКД» под единственной строкой квартир — та же
+    строка дважды. Последняя строка — «Итого» всей выручки.
+    """
+    labels = product_labels()
+    values = {str(k): float(v or 0.0) for k, v in (revenue or {}).items() if k != "total"}
+    mkd, osz = product_groups(values)
+    rows: list[dict[str, Any]] = []
+    for keys, label, group in ((mkd, "Итого МКД", "mkd"), (osz, "Итого ОСЗ", "osz")):
+        mine = [k for k in keys if abs(values[k]) > 0.5]
+        rows += [{"key": k, "label": labels.get(k, k), "value": values[k],
+                  "role": "part", "group": group} for k in mine]
+        if len(mine) > 1:
+            rows.append({"label": label, "value": sum(values[k] for k in mine),
+                         "role": "total", "group": group})
+    total = float((revenue or {}).get("total") or sum(values.values()))
+    rows.append({"label": "Итого", "value": total, "role": "total", "group": "all"})
+    return {"rows": rows}
+
+
+def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
+    """Таблица «Сравнение очередей» — одна на страницу и PDF.
+
+    Порядок строк жил на странице, а PDF печатал свой набор своими таблицами:
+    две раскладки одного сравнения расходились бы молча (владелец, 27.09.2026:
+    «PDF тоже надо сделать то же»). Здесь решается состав и порядок — блоки,
+    строки, роль итога и слагаемого, сырые числа; поверхность только печатает
+    число по его виду (`kind`): деньги, количество с единицей, тыс ₽/м²,
+    процент, кратность, дата.
+
+    Порядок — как в отчёте о прибылях: объёмы → выручка (и цена на м²) →
+    затраты (ставки статей, CAPEX, полные расходы и их метр) →
+    финансирование → результат, последней строкой — чистая прибыль на м².
+    Делители метра — одна подпись таблицы (`divisors`), а не строки.
+    """
+    c = [item for item in (consolidated.get("comparison") or []) if isinstance(item, dict)]
+    summary = consolidated.get("summary") or {}
+    finance = consolidated.get("finance") or {}
+    totals_fin = ((consolidated.get("phase_financing") or {}).get("totals") or {})
+    products = [p for p in ((consolidated.get("report") or {}).get("products") or [])
+                if isinstance(p, dict)]
+    order = [str(p.get("key")) for p in products]
+    by_key = {str(p.get("key")): p for p in products}
+
+    def f(value: Any) -> float:
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def rev(item: dict[str, Any], key: str) -> float:
+        return f((item.get("revenue_by_product") or {}).get(key))
+
+    def qty(item: dict[str, Any], key: str) -> float:
+        return f((item.get("saleable_by_product") or {}).get(key))
+
+    def row(label: str, kind: str, values: list[Any], total: Any, **extra: Any) -> dict[str, Any]:
+        return {"label": label, "kind": kind, "values": values, "total": total, **extra}
+
+    def per_th(value: float, area: float) -> float | None:
+        return value / area / 1000.0 if area else None
+
+    # Состав групп — из реестров движка: МКД из MKD_PRODUCTS, объекты из
+    # STANDALONE_OBJECTS в его порядке, и паркинг каждого объекта — своей
+    # строкой сразу за объектом (владелец, 27.09.2026): ключ продукта берётся
+    # из реестра (`OBJECT_PARKING_PRODUCT_KEYS`), а не угадывается по имени.
+    # Продукт вне обоих списков идёт в ОСЗ следом, а не теряется.
+    mkd, osz = product_groups(order)
+    obj_block = [k for k in osz if k in {o.key for o in STANDALONE_OBJECTS}
+                 or k in OBJECT_PARKING_PRODUCT_KEYS.values()]
+
+    # Объём к продаже — то количество, на которое движок продаёт; строка
+    # заводится вместе с числом.
+    def volume(keys: list[str], suffix: str = "") -> list[dict[str, Any]]:
+        out = []
+        for key in keys:
+            if not any(qty(x, key) > 0 for x in c):
+                continue
+            p = by_key[key]
+            out.append(row(str(p.get("label") or key) + suffix, "qty",
+                           [qty(x, key) for x in c], f(p.get("quantity")),
+                           unit=str(p.get("unit") or "")))
+        return out
+
+    # Выручка по продуктам: нулевые строки — шум, а не полнота. Итог группы
+    # заводится, только когда продуктов в ней больше одного: «Итого МКД» под
+    # единственной строкой квартир — та же строка дважды.
+    def revenue_group(keys: list[str], label: str, group: str) -> list[dict[str, Any]]:
+        mine = [k for k in keys if any(rev(x, k) > 0 for x in c)]
+        out = [row(str(by_key[k].get("label") or k), "money", [rev(x, k) for x in c],
+                   f(by_key[k].get("revenue")), role="part", group=group) for k in mine]
+        if len(mine) > 1:
+            out.append(row(label, "money", [sum(rev(x, k) for k in mine) for x in c],
+                           sum(f(by_key[k].get("revenue")) for k in mine),
+                           role="total", group=group))
+        return out
+
+    # Гараж объектов строится в СВОЕЙ очереди. Построено и продаётся — два
+    # разных числа: у ТЦ и ФОКа места обеспечивают посетителей и не продаются,
+    # у офисника продаются все, кроме гостевых. Оба считает движок очереди.
+    park: list[dict[str, Any]] = []
+    if any(f(x.get("object_parking_units")) > 0 for x in c):
+        park = [
+            row("Паркинг отдельно стоящих объектов — мест", "qty",
+                [f(x.get("object_parking_units")) for x in c],
+                f(summary.get("object_parking_units")), unit="шт."),
+            row("из них продаётся", "qty",
+                [f(x.get("object_parking_saleable_units")) for x in c],
+                f(summary.get("object_parking_saleable_units")), unit="шт.", role="sub"),
+            row("подземная часть под объектами", "qty",
+                [f(x.get("object_parking_under_gns")) for x in c],
+                f(summary.get("object_parking_under_gns")), unit="м²", role="sub"),
+        ]
+
+    # Долг, не погашенный очередью, и его перенос. Порядок — рассказ: сколько
+    # пришло, сколько ушло, что осталось (владелец, 30.08.2026). Строки
+    # заводятся вместе с числом.
+    def any_debt(key: str) -> bool:
+        return any(f(x.get(key)) > 0.5e6 for x in c)
+
+    debt: list[dict[str, Any]] = []
+    if any_debt("ending_pf") or any_debt("debt_carried_out") or any_debt("carried_debt_in"):
+        if any_debt("carried_debt_in"):
+            debt.append(row("Принято от предыдущей очереди", "money",
+                            [f(x.get("carried_debt_in")) for x in c], None))
+        if any_debt("debt_carried_out"):
+            debt.append(row("Передано следующей очереди", "money",
+                            [f(x.get("debt_carried_out")) for x in c], None))
+        debt.append(row("Осталось непогашенным на очереди" if any_debt("debt_carried_out")
+                        else "Непогашенный долг ПФ на конец очереди", "money",
+                        [f(x.get("ending_pf")) for x in c], f(finance.get("ending_pf"))))
+
+    sale, gns = f(summary.get("monetizable_saleable_sqm")), f(summary.get("project_gns_sqm"))
+    rev_all = [f(x.get("revenue")) for x in c]
+    # Ставки общепроектных статей — цена метра МКД очереди по статье, с
+    # вводной рядом: заданная руками доля видна числом. Стоят ВИДИМЫМИ
+    # строками в начале расходов, до CAPEX: это расходы, и после итоговой
+    # прибыли им не место (владелец, 28.09.2026: «ничего не сворачивать»).
+    inputs0 = (c[0].get("shared_rate_inputs_th") or {}) if c else {}
+    rates = [row(label + " — цена м² МКД очереди", "th",
+                 [(x.get("shared_rates_th") or {}).get(key) for x in c], None,
+                 rate_input=inputs0.get(key))
+             for key, label in (("ird", "ИРД и согласования"), ("design", "Проектирование П+РД"),
+                                ("preparation", "Подготовительные работы"),
+                                ("utilities", "Наружные сети"))]
+
+    def money(label: str, key: str, total: Any) -> dict[str, Any]:
+        return row(label, "money", [f(x.get(key)) for x in c], total)
+
+    def th(label: str, key: str, value: float, area: float) -> dict[str, Any]:
+        return row(label, "th", [f(x.get(key)) for x in c], per_th(value, area))
+
+    # Порядок — отчёт о прибылях (владелец, 28.09.2026): доходы → все
+    # расходы подряд → финансирование → прибыль, и последней строкой таблицы
+    # — чистая прибыль на м². Удельный стоит в разделе своей величины, рядом
+    # с её деньгами, а не отдельным блоком, где цена, затраты и прибыль
+    # шли вперемешку. Ни одна строка не свёрнута.
+    blocks = [
+        ("mkd", "Объём МКД — к продаже", volume(mkd)),
+        ("osz", "Отдельно стоящие объекты",
+         volume(obj_block, " — к продаже") + park),
+        ("revenue", "Выручка",
+         revenue_group(mkd, "Итого МКД", "mkd") + revenue_group(osz, "Итого ОСЗ", "osz")
+         + [row("Выручка всего", "money", rev_all, f(summary.get("revenue")),
+                role="total", group="all"),
+            th("Цена реализации на м² продаваемой", "revenue_per_saleable_th",
+               f(summary.get("revenue")), sale),
+            # Чисто квартирная цена — общий знаменатель с Excel-книгой: в ней
+            # та же строка, и числа обязаны совпадать один в один.
+            row("в т.ч. квартиры — на м² их продаваемой", "th",
+                [f(x.get("apartment_price_th")) for x in c],
+                f(summary.get("average_apartment_price_th")) or None, role="sub"),
+            th("Цена реализации на м² ГНС", "revenue_per_gns_th", f(summary.get("revenue")), gns)]),
+        ("costs", "Затраты", [
+            *rates,
+            money("CAPEX", "capex", f(summary.get("capex"))),
+            th("CAPEX на м² ГНС", "capex_per_gns_th", f(summary.get("capex")), gns),
+            money("Полные расходы", "total_expenses", f(summary.get("total_expenses"))),
+            th("Полные расходы на м² продаваемой", "expenses_per_saleable_th",
+               f(summary.get("total_expenses")), sale),
+            th("Полные расходы на м² ГНС", "expenses_per_gns_th",
+               f(summary.get("total_expenses")), gns)]),
+        ("finance", "Финансирование", [
+            money("Пиковый БРИДЖ", "peak_bridge", f(finance.get("peak_bridge"))),
+            money("Затраты до РНС", "pre_rns_costs", f(totals_fin.get("pre_rns_costs"))),
+            money("Свободный cash проекта", "project_cash_used",
+                  f(totals_fin.get("project_cash_used"))),
+            money("Собственные средства", "own_funds", f(totals_fin.get("own_funds"))),
+            money("Новый БРИДЖ", "new_bridge", f(totals_fin.get("new_bridge"))),
+            money("Пиковый остаток ПФ", "peak_pf", f(finance.get("peak_pf"))),
+            # Раскрытие эскроу — событие очереди: у каждой своя дата РВЭ.
+            money("Лимит ПФ", "pf_limit", f(finance.get("pf_limit"))),
+            row("РВЭ очереди", "date", [str(x.get("rve") or "") for x in c], None),
+            money("Долг ПФ перед раскрытием", "rve_pf_before_repayment",
+                  f(finance.get("rve_pf_before_repayment"))),
+            money("Раскрыто эскроу", "rve_escrow_release", f(finance.get("rve_escrow_release"))),
+            money("Из него на погашение ПФ", "rve_pf_repayment", f(finance.get("rve_pf_repayment"))),
+            money("Не покрыто эскроу при раскрытии", "rve_pf_shortfall",
+                  f(finance.get("rve_pf_shortfall"))),
+            *debt,
+            row("LLCR", "mult", [f(x.get("llcr")) for x in c], f(summary.get("llcr")))]),
+        # Аллокация общих расходов — аналитика рядом с прибылью, а сама
+        # прибыль и её метр закрывают таблицу.
+        ("result", "Результат", [
+            money("Общепроектная нагрузка — cash", "cash_shared_cost", None),
+            money("Аллоцированные общие расходы", "allocated_shared_cost", None),
+            money("Аналитическая прибыль после аллокации", "allocated_net_profit", None),
+            money("Чистая прибыль — cash", "net_profit", f(summary.get("net_profit"))),
+            row("Маржинальность", "pct", [f(x.get("margin")) for x in c], f(summary.get("margin"))),
+            th("Чистая прибыль на м² ГНС", "net_profit_per_gns_th", f(summary.get("net_profit")), gns),
+            th("Чистая прибыль на м² продаваемой", "net_profit_per_saleable_th",
+               f(summary.get("net_profit")), sale)]),
+    ]
+    # Удельный подписан своим делителем: те же площади, на которые делит
+    # движок (`monetizable_saleable_sqm`, `project_gns_sqm`), а не угаданные
+    # по заголовку. Это одна подпись таблицы мелким шрифтом, а не строки:
+    # крупная «Делитель…» среди денег читалась как ещё одно число экономики
+    # (владелец, 28.09.2026). Удельные стоят в нескольких разделах, делитель
+    # у них общий. Итог удельного — отношение сумм, а не среднее.
+    divisors = [
+        {"label": "на м² продаваемой — продаваемая площадь", "unit": "м²",
+         "values": [f(x.get("saleable_sqm")) for x in c], "total": sale},
+        {"label": "на м² ГНС — ГНС наземная", "unit": "м²",
+         "values": [f(x.get("gns_sqm")) for x in c], "total": gns}]
+    return {"columns": [str(x.get("name") or "") for x in c],
+            "has_debt": bool(debt),
+            "divisors": divisors,
+            "blocks": [{"key": k, "title": t, "rows": r} for k, t, r in blocks if r]}
+
+
 def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
+    """Очереди с переносом долга и таблицей сравнения.
+
+    Таблица строится ПОСЛЕ переноса: перенос дописывает строкам сравнения
+    принятый и переданный долг, и собранная раньше таблица их бы не знала.
+    """
+    bundle = _calculate_phased_with_carry(req)
+    consolidated = bundle.get("consolidated")
+    if bundle.get("mode") == "phased" and isinstance(consolidated, dict):
+        consolidated["comparison_table"] = phase_comparison_table(consolidated)
+    return bundle
+
+
+def _calculate_phased_with_carry(req: PhasedCalcRequest) -> dict[str, Any]:
     """Очереди с переносом непогашенного долга вперёд.
 
     По генеральному соглашению долг, который очередь не погасила, переходит в
@@ -44049,6 +44613,11 @@ details{border-top:1px solid #e5e5e5;padding:4px 0}details:first-child{border-to
 summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
 .group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
 details[open]>summary>.group-peek{display:none}
+.object-tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0 4px}
+.object-tabs button{padding:5px 11px;border-radius:14px;border:1px solid #cfd6e0;background:#fff;cursor:pointer;font-size:13px}
+.object-tabs .object-tab.active{background:#1f4e79;color:#fff;border-color:#1f4e79}
+.object-tabs .object-remove{color:#b3261e;border-color:#e3b4b0}
+.object-tabs .tep-note{flex-basis:100%}
 .fields{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;padding:0 0 15px}
 .field-card{background:var(--soft,#f5f5f3);border:1px solid var(--line,#dedede);border-radius:10px;padding:12px 14px 4px;margin:0 0 14px}
 .field-card:first-of-type{margin-top:4px}
@@ -44345,9 +44914,20 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-report-nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 16px}
 .phase-report-nav .btn.active{background:#111;color:#fff;border-color:#111}
 .phase-comparison-card{display:none}
+#revenueTable tr.rs-part td:first-child{padding-left:18px;color:#555}
+#revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
 .phase-comparison-card tr.pc-block th{text-align:left;padding:16px 0 5px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#111;border-bottom:2px solid #111}
 .phase-comparison-card tr.pc-part td:first-child,.phase-comparison-card tr.pc-sub td:first-child{padding-left:22px;color:#777}
 .phase-comparison-card tr.pc-total td{font-weight:750;color:#111;border-top:1.5px solid #111}
+/* На телефоне таблица шире экрана: числа не переносятся (единица рвалась —
+   «917,9 тыс ₽/м» без «²»), таблица прокручивается вбок, а колонка подписей
+   стоит на месте — иначе на «Своде» не видно, чья это строка. */
+.phase-comparison-card td:not(:first-child),.phase-comparison-card th:not(:first-child){white-space:nowrap}
+.phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{position:sticky;left:0;z-index:1;background:#fff}
+.phase-comparison-card tr.pc-block th span{position:sticky;left:0}
+.phase-comparison-card tr.pc-caption th{text-align:left;padding:6px 0 0;font-weight:400;letter-spacing:0;text-transform:none;border:0}
+.phase-comparison-card tr.pc-caption small.pc-divisors{display:block;position:sticky;left:0;font-size:10px;line-height:1.35;color:#777;white-space:normal;max-width:calc(100vw - 48px)}
+@media(max-width:600px){.phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{min-width:128px;max-width:150px;box-shadow:1px 0 0 #e5e5e5}}
 .phase-status{font-size:11px;color:#666;margin-top:8px}
 .object-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
 #phasing:not(.phasing-on) .phase-config-only{display:none}
@@ -45430,6 +46010,126 @@ const STANDALONE_OBJECTS=__DEVELOPAID_STANDALONE_OBJECTS__;
 // Куда садится объект, пока человек не сказал иначе. Ответ один на обе
 // стороны — умолчание сборки очередей и умолчание пересчёта строки ТЭП, —
 // иначе они разойдутся молча, и обе будут выглядеть верными.
+// Экземпляры объектов проекта: какие из них ЕСТЬ, говорит явный список
+// `inputs.object_instances` (владелец ответа — `project_object_instances`
+// движка; правило ниже — его зеркало под проверкой в браузере). Без списка
+// проект сохранён до экземпляров: состав — включённые экземпляры и прежние
+// «вторые» объекты с набранными метрами.
+const OBJECT_INSTANCE_RULES=__DEVELOPAID_OBJECT_INSTANCE_RULES__;
+const OBJECT_BY_KEY=Object.fromEntries(STANDALONE_OBJECTS.map(o=>[o.key,o]));
+const OBJECT_BY_GROUP=Object.fromEntries(STANDALONE_OBJECTS.map(o=>[o.group_label,o]));
+function inputOn(v){return v===true||['1','true','да','yes','on'].includes(String(v).toLowerCase())}
+function inputNum(v){return v==null||v===''?0:(Number(v)||0)}
+function projectInstances(){
+ const all=STANDALONE_OBJECTS.filter(o=>o.instance);
+ const raw=inputs[OBJECT_INSTANCE_RULES.key];
+ if(raw==null){
+  return all.filter(o=>inputOn(inputs[o.prefix+'_enabled'])
+   ||(OBJECT_INSTANCE_RULES.legacy.includes(o.key)&&OBJECT_INSTANCE_RULES.volume.some(f=>{
+     const k=o.prefix+'_'+f;
+     return (k in inputs)&&(k in INPUT_DEFAULT)&&inputNum(inputs[k])!==inputNum(INPUT_DEFAULT[k]);
+   }))).map(o=>o.key);
+ }
+ const list=(Array.isArray(raw)?raw:String(raw).split(/[\s,;]+/)).map(String);
+ return all.filter(o=>list.includes(o.key)).map(o=>o.key);
+}
+function objectInProject(key){
+ const o=OBJECT_BY_KEY[key];
+ return !o||!o.instance||projectInstances().includes(key);
+}
+function projectObjects(){return STANDALONE_OBJECTS.filter(o=>objectInProject(o.key))}
+// Почему экземпляр типа добавить нельзя; пусто — можно. Предел — отказ с
+// причиной, а не молчаливая обрезка (`object_instance_refusal` движка).
+function objectInstanceRefusal(type){
+ const base=OBJECT_BY_KEY[type];
+ if(!base||base.instance)return 'типа объекта «'+type+'» нет';
+ const present=projectInstances();
+ const free=STANDALONE_OBJECTS.filter(o=>o.instance&&o.type===type&&!present.includes(o.key));
+ return free.length?'':'«'+base.group_label+'»: в проекте уже '+OBJECT_INSTANCE_RULES.max
+  +' объектов этого типа — больше реестр не заводит';
+}
+// Новый экземпляр встаёт умолчаниями своей строки реестра: значения
+// удалённого экземпляра с тем же номером не воскресают.
+function addObjectInstance(type){
+ const refusal=objectInstanceRefusal(type);
+ if(refusal){alert(refusal);return ''}
+ const present=projectInstances();
+ const obj=STANDALONE_OBJECTS.find(o=>o.instance&&o.type===type&&!present.includes(o.key));
+ Object.keys(INPUT_DEFAULT).forEach(k=>{if(k.startsWith(obj.prefix+'_'))inputs[k]=cloneValue(INPUT_DEFAULT[k])});
+ (inputs._parking_by_hand||[]).includes(obj.key)&&(inputs._parking_by_hand=inputs._parking_by_hand.filter(k=>k!==obj.key));
+ inputs[obj.prefix+'_enabled']=true;
+ inputs[OBJECT_INSTANCE_RULES.key]=STANDALONE_OBJECTS.filter(o=>o.instance&&(present.includes(o.key)||o.key===obj.key)).map(o=>o.key);
+ if(TEP_DEFAULT[obj.key])tep[obj.key]=cloneValue(TEP_DEFAULT[obj.key]);
+ return obj.key;
+}
+function removeObjectInstance(key){
+ const obj=OBJECT_BY_KEY[key];
+ if(!obj||!obj.instance)return;
+ inputs[OBJECT_INSTANCE_RULES.key]=projectInstances().filter(k=>k!==key);
+ inputs[obj.prefix+'_enabled']=false;
+ if(TEP_DEFAULT[key])tep[key]=cloneValue(TEP_DEFAULT[key]);
+}
+// Экземпляры живут ВНУТРИ блока своего типа (владелец, 28.09.2026): вкладки
+// «Объект 1, Объект 2…» в «МФОЦ / офисы», кнопка «Добавить объект» там же.
+// Число групп вводных от числа объектов не растёт.
+const OBJECT_TAB={};
+function objectsOfType(type){return projectObjects().filter(o=>o.type===type)}
+function objectTabObject(type){
+ const key=OBJECT_TAB[type];
+ const o=key&&OBJECT_BY_KEY[key];
+ return o&&o.type===type&&objectInProject(key)?o:OBJECT_BY_KEY[type];
+}
+// Поля экземпляра — поля его типа под своей приставкой: форма экземпляра
+// второй копией не приходит, а выводится из группы типа.
+function objectFields(o){
+ const base=OBJECT_BY_KEY[o.type];
+ const grp=FIELD_GROUPS.find(g=>g[0]===base.group_label);
+ if(!grp)return [];
+ if(!o.instance)return grp[1];
+ const head=base.prefix+'_';
+ return grp[1].map(f=>{const c=f.slice();if(String(c[0]).startsWith(head))c[0]=o.prefix+'_'+c[0].slice(head.length);return c});
+}
+function fieldSection(id){
+ if(FIELD_SECTIONS[id])return FIELD_SECTIONS[id];
+ const o=STANDALONE_OBJECTS.find(x=>x.instance&&String(id).startsWith(x.prefix+'_'));
+ if(!o)return undefined;
+ return FIELD_SECTIONS[OBJECT_BY_KEY[o.type].prefix+String(id).slice(o.prefix.length)];
+}
+// Все объявления полей, экземпляров включительно.
+function allFieldGroups(){
+ return FIELD_GROUPS.concat(STANDALONE_OBJECTS.filter(o=>o.instance).map(o=>[o.group_label,objectFields(o)]));
+}
+function objectTabsBar(type,shown){
+ const bar=document.createElement('div');bar.className='object-tabs';bar.dataset.type=type;
+ const list=objectsOfType(type);
+ const refusal=objectInstanceRefusal(type);
+ bar.innerHTML=list.map((o,i)=>'<button type="button" class="object-tab'+(o.key===shown.key?' active':'')
+   +'" data-object="'+escapeHtml(o.key)+'">Объект '+(i+1)+'</button>').join('')
+  +'<button type="button" class="object-add" data-type="'+escapeHtml(type)+'"'+(refusal?' disabled':'')
+  +'>Добавить объект</button>'
+  +(shown.instance?'<button type="button" class="object-remove" data-object="'+escapeHtml(shown.key)+'">Удалить объект</button>':'')
+  +(refusal?'<div class="tep-note">'+escapeHtml(refusal)+'</div>':'');
+ bar.querySelectorAll('.object-tab').forEach(btn=>{btn.onclick=()=>{OBJECT_TAB[type]=btn.dataset.object;renderInputs()}});
+ const add=bar.querySelector('.object-add');if(add)add.onclick=()=>onAddObjectInstance(type);
+ const rm=bar.querySelector('.object-remove');if(rm)rm.onclick=()=>onRemoveObjectInstance(rm.dataset.object);
+ return bar;
+}
+function onAddObjectInstance(type){
+ const key=addObjectInstance(type);
+ if(!key)return;
+ OBJECT_TAB[type]=key;
+ syncTep(false);renderInputs();renderTep();
+ const det=document.querySelector('details[data-group="'+CSS.escape(OBJECT_BY_KEY[type].group_label)+'"]');
+ if(det)det.open=true;
+ calculate();
+}
+function onRemoveObjectInstance(key){
+ const o=OBJECT_BY_KEY[key];
+ if(!o||!confirm('Удалить «'+o.group_label+'» из проекта? Его вводные вернутся к умолчаниям при следующем добавлении.'))return;
+ removeObjectInstance(key);
+ OBJECT_TAB[o.type]=o.type;
+ syncTep(false);renderInputs();renderTep();calculate();
+}
 function discreteDefaults(count){
  const out={};
  for(const o of STANDALONE_OBJECTS)out[o.key]=Math.min(o.default_queue,count);
@@ -46752,7 +47452,7 @@ function renderPhasing(){
  const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
  renderShareTable('phaseCashHead','phaseCashBody',phasing.shared_cash,sl,'shared_cash');renderShareTable('phaseAllocHead','phaseAllocBody',phasing.shared_allocation,sl,'shared_allocation');
  socialObjectsBody.innerHTML=phasing.social_objects.map((o,i)=>`<tr><td><input value="${o.name||''}" onchange="updateSocialObject(${i},'name',this.value)"></td><td><select onchange="updateSocialObject(${i},'type',this.value)"><option value="kindergarten" ${o.type==='kindergarten'?'selected':''}>${productName('kindergarten')}</option><option value="school" ${o.type==='school'?'selected':''}>${productName('school')}</option><option value="clinic" ${o.type==='clinic'?'selected':''}>${productName('clinic')}</option></select></td><td><input type="number" value="${Number(o.capacity||0)}" onchange="updateSocialObject(${i},'capacity',this.value)"></td><td><select onchange="updateSocialObject(${i},'phase',this.value)">${phaseOptions(o.phase)}</select></td><td><input type="date" value="${o.start_date||''}" onchange="updateSocialObject(${i},'start_date',this.value)"></td><td><button class="btn" onclick="deleteSocialObject(${i})">×</button></td></tr>`).join('');renderSocialStatus();
- assignObjects.innerHTML=STANDALONE_OBJECTS.map(o=>
+ assignObjects.innerHTML=projectObjects().map(o=>
   `<div class="field"><label>${escapeHtml(productName(o.key))}</label>`
   +`<select data-object="${escapeHtml(o.key)}">${phaseOptions(phasing.discrete[o.key])}</select></div>`).join('');
  assignObjects.querySelectorAll('select[data-object]').forEach(sel=>{
@@ -49559,8 +50259,7 @@ function classSetsField(k){
 // цена — МФОЦ / офисы»). Карту считает движок тем же правилом, что строки
 // отклонений в PDF; короткая подпись осталась только внутри своей группы.
 const FIELD_LABELS_OUTSIDE=__DEVELOPAID_FIELD_LABELS_OUTSIDE__;
-const CLASS_DERIVED_NOTES=__DEVELOPAID_CLASS_DERIVED_NOTES__;
-function classFieldLabel(k){if(FIELD_LABELS_OUTSIDE[k])return FIELD_LABELS_OUTSIDE[k];for(const g of FIELD_GROUPS){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
+function classFieldLabel(k){if(FIELD_LABELS_OUTSIDE[k])return FIELD_LABELS_OUTSIDE[k];for(const g of allFieldGroups()){for(const f of g[1]){if(f[0]===k)return f[1]}}return k}
 // Единицы полей класса считает движок и подставляет готовой картой — как
 // PRODUCT_LABELS и доли ТЭП. Свой разрез подсказки на JS был бы второй
 // реализацией одного правила, и разошлись бы они молча.
@@ -49572,7 +50271,34 @@ function classFieldUnit(k){return CLASS_FIELD_UNITS[k]||''}
 // проекта в PDF и книгах по-прежнему считаются от ОБЩЕЙ базы.
 let CLASS_OVERRIDES=null;
 let CLASS_OVERRIDES_NOTE='';
-function classBase(c,k){return Number(PROJECT_CLASS_PRESETS[c][k])}
+// База класса — для региона проекта: в МО цена нежилого без московского пола.
+// Что в регионе отличается от профиля, считает движок (`class_base_preset`) и
+// подставляет картой — своего правила цены нежилого у страницы нет.
+const CLASS_REGION_BASES=__DEVELOPAID_CLASS_REGION_BASES__;
+function classRegion(){return String(inputs.vri_region||'msk')==='mo'?'mo':'msk'}
+function classBaseIn(region,c,k){
+ const regional=((CLASS_REGION_BASES[region]||{})[c]||{})[k];
+ return Number(regional!==undefined?regional:PROJECT_CLASS_PRESETS[c][k]);
+}
+function classBase(c,k){return classBaseIn(classRegion(),c,k)}
+// Поле проекта идёт за классом, только пока в нём стоит число класса: число,
+// вписанное руками или пришедшее импортом, остаётся своим. Одно правило для
+// смены региона и для правки колонки текущего класса.
+function followsClass(k,previous){
+ return !isClassManual(k)&&isFinite(Number(inputs[k]))&&Math.abs(Number(inputs[k])-previous)<1e-9;
+}
+// Регион сменился — поля, чья база зависит от региона, идут за новой базой:
+// иначе в МО стояла бы московская цена нежилого.
+function followClassRegion(previousRegion){
+ const cur=inputs.project_class;
+ if(!PROJECT_CLASS_PRESETS[cur])return;
+ const regional=new Set(Object.values(CLASS_REGION_BASES).flatMap(byClass=>Object.values(byClass).flatMap(Object.keys)));
+ regional.forEach(k=>{
+  const own=CLASS_OVERRIDES&&CLASS_OVERRIDES[cur]?Number(CLASS_OVERRIDES[cur][k]):NaN;
+  if(isFinite(own)&&own>0)return;
+  if(followsClass(k,classBaseIn(previousRegion,cur,k)))inputs[k]=classValue(cur,k);
+ });
+}
 function classValue(c,k){
  const own=CLASS_OVERRIDES&&CLASS_OVERRIDES[c]?Number(CLASS_OVERRIDES[c][k]):NaN;
  return isFinite(own)&&own>0?own:classBase(c,k);
@@ -49609,6 +50335,7 @@ async function loadClassOverrides(){
 }
 async function setClassBase(c,k,value){
  const num=Number(String(value).replace(/\s/g,'').replace(',','.'));
+ const previous=classValue(c,k);
  if(CLASS_OVERRIDES===null)CLASS_OVERRIDES={};
  if(!isFinite(num)||num<=0||Math.abs(num-classBase(c,k))<1e-9){
   // Пустое, мусор или ровно база — своего значения нет; выключатель
@@ -49616,6 +50343,15 @@ async function setClassBase(c,k,value){
   if(CLASS_OVERRIDES[c]){delete CLASS_OVERRIDES[c][k];if(!Object.keys(CLASS_OVERRIDES[c]).length)delete CLASS_OVERRIDES[c];}
  }else{
   (CLASS_OVERRIDES[c]=CLASS_OVERRIDES[c]||{})[k]=num;
+ }
+ // Правка колонки ТЕКУЩЕГО класса проекта сразу идёт в проект (решение
+ // владельца, 28.09.2026): прежде число ждало повторного выбора класса, а
+ // окно тем временем писало «всё соответствует». Вписанное в проект руками
+ // не трогается; правка чужого класса проект не двигает.
+ if(c===inputs.project_class&&followsClass(k,previous)){
+  inputs[k]=classValue(c,k);
+  renderInputs();
+  calculate();
  }
  renderProjectClassPreview();
  renderClassDialog();
@@ -49646,9 +50382,7 @@ function renderClassDialog(){
   const rowStats=classes.map(c=>classStatsRow(c,k));
   const hasStats=rowStats.some(Boolean);
   const unit=classFieldUnit(k);
-  const derived=CLASS_DERIVED_NOTES[k]||'';
-  const unitCell=(unit?` <span style="color:#8a94a6;font-size:11px;white-space:nowrap">${escapeHtml(unit)}</span>`:'')
-   +(derived?` <span class="class-derived" style="color:#8a94a6;font-size:11px">· ${escapeHtml(derived)}</span>`:'');
+  const unitCell=(unit?` <span style="color:#8a94a6;font-size:11px;white-space:nowrap">${escapeHtml(unit)}</span>`:'');
   const labelCell=(hasStats
    ?`<a href="#" onclick="toggleClassDetail('${k}');return false" title="Обоснование: источники, диапазон и положение вашего значения" style="color:inherit;text-decoration:none;border-bottom:1px dashed #b6c4d6">${classFieldLabel(k)} <span style="color:#3b6db4">${CLASS_DETAIL_OPEN[k]?'▾':'▸'}</span></a>`
    :classFieldLabel(k))+unitCell;
@@ -49779,14 +50513,21 @@ function classStatsAreas(){
  if(gba>under)areas.above_ground_gns_sqm=String(Math.round(gba-under));
  return areas;
 }
+// Свод спрашивается по региону проекта и на его площади; ключ запоминается,
+// и окно, открытое после смены ТЭП или региона, спрашивает заново — прежде
+// свод считался один раз и всегда по Москве.
+let CLASS_STATS_KEY='';
+function classStatsRegionName(){return classRegion()==='mo'?'Московская область':'Москва'}
 async function loadClassStats(){
- if(CLASS_STATS_BY)return;
- CLASS_STATS_ERROR='';
  const areas=classStatsAreas();
+ const statsKey=JSON.stringify([classStatsRegionName(),areas]);
+ if(CLASS_STATS_BY&&CLASS_STATS_KEY===statsKey)return;
+ CLASS_STATS_BY=null;CLASS_STATS_KEY=statsKey;
+ CLASS_STATS_ERROR='';
  const classes=Object.keys(PROJECT_CLASS_PRESETS);
  try{
   const answers=await Promise.all(classes.map(c=>{
-   const params=new URLSearchParams(Object.assign({class:c,region:'Москва'},areas));
+   const params=new URLSearchParams(Object.assign({class:c,region:classStatsRegionName()},areas));
    return fetch('/api/statistics/cost-recommendation?'+params.toString())
     .then(r=>{if(!r.ok)throw new Error('HTTP '+r.status);return r.json()});
   }));
@@ -49998,6 +50739,8 @@ function renderInputs(){
    // в класс завтра, исчезнет тем же правилом. Выход ДО создания узла —
    // наполовину нарисованная группа оставила бы пустую складку.
    if(!grp[1].some(f=>!notOnInputs(f[0])))return;
+   // Блок типа объекта несёт все его экземпляры вкладками.
+   const grpObj=OBJECT_BY_GROUP[grp[0]];
    // Открыта только первая группа. Одиннадцать развёрнутых групп — это
    // экран, на котором не видно, с чего начинать: человек листает поля
    // вместо того, чтобы ввести цену и сроки и посмотреть результат.
@@ -50010,6 +50753,14 @@ function renderInputs(){
    const peek=groupPeek(grp[0],grp[1]);
    if(peek){const hint=document.createElement('span');hint.className='group-peek';hint.textContent=peek;sum.appendChild(hint)}
    det.appendChild(sum);
+   let fields=grp[1];
+   // У недублируемого типа (ФОК) вкладок и кнопки «Добавить объект» нет.
+   if(grpObj&&grpObj.duplicable){
+    const shown=objectTabObject(grpObj.key);
+    det.dataset.object=shown.key;
+    det.appendChild(objectTabsBar(grpObj.key,shown));
+    fields=objectFields(shown);
+   }
    // Поля объекта разбиты на смысловые блоки: каждый блок — отдельная
    // карточка с заголовком и своей сеткой полей внутри, и новая карточка
    // начинается там, где у поля сменился блок. Заголовок одной мелкой серой
@@ -50018,7 +50769,7 @@ function renderInputs(){
    // его не пересобирает.
    let grid=null,section=null;
    const openGrid=(parent)=>{grid=document.createElement('div');grid.className='fields';(parent||det).appendChild(grid)};
-   grp[1].forEach(f=>{
+   fields.forEach(f=>{
      const [id,label,unit,type]=f;
      // Норматив площади двора правится в «Настройках класса»: он свойство
      // класса, а не площадки. Поле при этом объявлено там же, где все
@@ -50026,7 +50777,7 @@ function renderInputs(){
      // отклонений в отчёте; здесь оно только не рисуется. Выход ДО создания
      // узла: наполовину нарисованное поле оставило бы в сетке пустую клетку.
      if(notOnInputs(id))return;
-     const own=FIELD_SECTIONS[id];
+     const own=fieldSection(id);
      if(own&&own!==section){
        section=own;
        const card=document.createElement('section');card.className='field-card';card.dataset.section=own;
@@ -50102,7 +50853,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
@@ -51476,7 +52227,7 @@ function renderSiteParkingFields(){
  if(!box)return;
  // Человек печатает в поле — перерисовка сняла бы с него фокус.
  if(box.contains(document.activeElement))return;
- const decl={};FIELD_GROUPS.forEach(g=>g[1].forEach(f=>{decl[f[0]]=f}));
+ const decl={};allFieldGroups().forEach(g=>g[1].forEach(f=>{decl[f[0]]=f}));
  box.innerHTML='';
  SITE_ONLY_INPUTS.forEach(id=>{
   const f=decl[id];if(!f)return;
@@ -51703,11 +52454,11 @@ const TEP_GROUPS=__DEVELOPAID_TEP_GROUPS__;
 function tepGroupRows(){
  const seen=new Set();
  const groups=TEP_GROUPS.map(([title,keys])=>{
-  const rows=keys.filter(k=>tep[k]);
-  rows.forEach(k=>seen.add(k));
+  const rows=keys.filter(k=>tep[k]&&objectInProject(k));
+  keys.forEach(k=>seen.add(k));
   return {title:title, keys:rows};
  });
- const rest=Object.keys(tep).filter(k=>!seen.has(k));
+ const rest=Object.keys(tep).filter(k=>!seen.has(k)&&objectInProject(k));
  // Остаток кладётся в раздел, объявленный пустым; такого нет — заводится
  // последним, чтобы строка не пропала.
  const tail=groups.find(g=>!g.keys.length)||groups[groups.length-1];
@@ -52918,167 +53669,39 @@ function pfStepRows(f){
 function renderPhaseComparison(){
  if(!phaseBundle||phaseBundle.mode!=='phased'){phaseComparisonCard.style.display='none';return}
  const c=phaseBundle.comparison||[],cons=phaseBundle.consolidated;
- phaseComparisonHead.innerHTML=`<tr><th>Показатель</th>${c.map(x=>`<th>${x.name}</th>`).join('')}<th>Свод</th></tr>`;
- const cs=cons.summary,csSale=cs.monetizable_saleable_sqm||0,csGns=cs.project_gns_sqm||0;
- const perTh=(v,a)=>a?num2(v/a/1000)+' тыс ₽/м²':'—';
- // Таблица читается блоками, и у каждой сущности блок ОДИН: места паркинга
- // объектов стояли посреди площадей МКД, а его деньги — внизу среди ОСЗ, и
- // итоги были неотличимы от слагаемых (владелец, 27.09.2026). Строка — это
- // [подпись, ячейки очередей, свод, роль, группа, сырые числа]; роль «part»
- // — слагаемое итога своей группы, «total» — итог, «sub» — «из них».
- const products=(cons.report&&cons.report.products)||[];
- const prodOrder=products.map(p=>p.key);
- const prodOf=k=>products.find(p=>p.key===k)||{};
- const labelOf=k=>prodOf(k).label||k;
- const revOf=(x,k)=>Number((x.revenue_by_product||{})[k]||0);
- const qtyOf=(x,k)=>Number((x.saleable_by_product||{})[k]||0);
- // Состав групп — из движка: МКД из MKD_PRODUCTS, объекты из реестра
- // STANDALONE_OBJECTS в его порядке. Продукт вне обоих списков (паркинг
- // объектов) идёт в ОСЗ следом за объектами, а не теряется: новый объект
- // реестра встаёт сюда сам.
- const objKeys=STANDALONE_OBJECTS.map(o=>o.key);
- // Паркинг каждого объекта — своя строка сразу за объектом (владелец,
- // 27.09.2026): ключ продукта приходит из реестра движка.
- const objBlockKeys=STANDALONE_OBJECTS.flatMap(o=>[o.key,o.parking_product]).filter(k=>k&&prodOrder.includes(k));
- const MKD=MKD_PRODUCTS.filter(k=>prodOrder.includes(k));
- const OSZ=[...objBlockKeys,
-            ...prodOrder.filter(k=>!MKD_PRODUCTS.includes(k)&&!objBlockKeys.includes(k))];
- // Объём к продаже по продуктам — то количество, на которое движок продаёт
- // (м² или места, единица у продукта своя). Строка заводится вместе с числом.
- // Паркинг объектов сюда не идёт: его места — своими строками ниже.
- const volume=(keys,suffix)=>keys.filter(k=>c.some(x=>qtyOf(x,k)>0)).map(k=>{
-  const u=prodOf(k).unit||'';
-  return [labelOf(k)+(suffix||''),c.map(x=>num(qtyOf(x,k))+' '+u),num(Number(prodOf(k).quantity||0))+' '+u];
- });
- // Выручка по продуктам: семь нулевых строк — это шум, а не полнота.
- // Промежуточный итог заводится, только когда в группе больше одного продукта:
- // «Итого МКД» под единственной строкой квартир — это та же строка дважды.
- const revenueGroup=(keys,label,group)=>{
-  const mine=keys.filter(k=>c.some(x=>revOf(x,k)>0));
-  const rows=mine.map(k=>{
-   const v=[...c.map(x=>revOf(x,k)),Number(prodOf(k).revenue||0)];
-   return [labelOf(k),v.slice(0,-1).map(money),money(v[c.length]),'part',group,v];
-  });
-  if(mine.length>1){
-   const v=[...c.map(x=>mine.reduce((s,k)=>s+revOf(x,k),0)),
-            mine.reduce((s,k)=>s+Number(prodOf(k).revenue||0),0)];
-   rows.push([label,v.slice(0,-1).map(money),money(v[c.length]),'total',group,v]);
-  }
-  return rows;
+ // Состав, порядок и числа таблицы решает движок (`phase_comparison_table`):
+ // тот же ответ печатает PDF, и две раскладки одного сравнения не разойдутся.
+ // Экран только форматирует число по его виду.
+ const table=cons.comparison_table||{columns:c.map(x=>x.name),blocks:[]};
+ phaseComparisonHead.innerHTML=`<tr><th>Показатель</th>${table.columns.map(n=>`<th>${escapeHtml(n)}</th>`).join('')}<th>Свод</th></tr>`;
+ const fmt=(r,v)=>{
+  if(v==null||v==='')return '—';
+  if(r.kind==='money')return money(v);
+  if(r.kind==='qty')return num(v)+' '+(r.unit||'');
+  if(r.kind==='th')return num2(v)+' тыс ₽/м²';
+  if(r.kind==='pct')return pct(v);
+  if(r.kind==='mult')return mult(v);
+  if(r.kind==='date')return dateRu(v);
+  return String(v);
  };
- const revAll=[...c.map(x=>Number(x.revenue||0)),Number(cs.revenue||0)];
- const revenueRows=[...revenueGroup(MKD,'Итого МКД','mkd'),
-                    ...revenueGroup(OSZ,'Итого ОСЗ','osz'),
-                    ['Выручка всего',revAll.slice(0,-1).map(money),money(revAll[c.length]),'total','all',revAll]];
- // Непогашенный долг очереди в таблице не стоял вовсе: очередь, не
- // рассчитавшаяся с банком, выглядела здесь так же, как закрывшая долг. А
- // после переноса у передавшей очереди ноль — без строки «передано следующей»
- // обязательство исчезало бы бесследно. Строка заводится вместе с числом.
- const anyDebt=k=>c.some(x=>Number(x[k]||0)>0.5e6);
- const debtRows=[];
- if(anyDebt('ending_pf')||anyDebt('debt_carried_out')||anyDebt('carried_debt_in')){
-  // Порядок строк — это и есть рассказ: сколько пришло, сколько ушло, что
-  // осталось. Прежде «непогашенный долг 0» стоял МЕЖДУ «принято 11,73» и
-  // «передано 11,73» и читался как противоречие («как это долга нет, но он
-  // передан?» — владелец, 30.08.2026). Противоречия нет, но и объяснять его
-  // читателю не должно приходиться.
-  //
-  // И название: 11,73 млрд ПФ ведь НЕ погашены — они сменили должника.
-  // «Непогашенный долг на конец очереди» обещало ровно то, что стояло строкой
-  // выше с другим числом. Осталось — значит осталось здесь, после передачи.
-  if(anyDebt('carried_debt_in'))
-   debtRows.push(['Принято от предыдущей очереди',c.map(x=>money(x.carried_debt_in||0)),'—']);
-  if(anyDebt('debt_carried_out'))
-   debtRows.push(['Передано следующей очереди',c.map(x=>money(x.debt_carried_out||0)),'—']);
-  debtRows.push([anyDebt('debt_carried_out')
-                 ?'Осталось непогашенным на очереди'
-                 :'Непогашенный долг ПФ на конец очереди',
-                 c.map(x=>money(x.ending_pf||0)),money(cons.finance.ending_pf||0)]);
- }
- // Гараж отдельно стоящих объектов строится в СВОЕЙ очереди, и строка
- // заводится вместе с числом: пустая «0 мест» у проекта без ОСЗ — шум.
- // Построено и продаётся — два разных числа: у ТЦ и ФОКа места обеспечивают
- // посетителей и не продаются вовсе, у офисника продаются все, кроме
- // гостевых. Оба считает движок очереди, экран их только печатает. Стоят они
- // в блоке объектов, рядом с их площадями, а не среди площадей МКД.
- const objParkRows=[];
- if(c.some(x=>Number(x.object_parking_units||0)>0)){
-  objParkRows.push(['Паркинг отдельно стоящих объектов — мест',
-   c.map(x=>num(x.object_parking_units||0)+' шт.'),
-   num(cs.object_parking_units||0)+' шт.']);
-  objParkRows.push(['из них продаётся',
-   c.map(x=>num(x.object_parking_saleable_units||0)+' шт.'),
-   num(cs.object_parking_saleable_units||0)+' шт.','sub']);
-  objParkRows.push(['подземная часть под объектами',
-   c.map(x=>num(x.object_parking_under_gns||0)+' м²'),
-   num(cs.object_parking_under_gns||0)+' м²','sub']);
- }
- const blocks=[
-  ['mkd','Объём МКД — к продаже',volume(MKD)],
-  ['osz','Отдельно стоящие объекты',[...volume(objBlockKeys,' — к продаже'),...objParkRows]],
-  ['revenue','Выручка',revenueRows],
-  ['costs','Затраты',[
-   ['CAPEX',c.map(x=>money(x.capex)),money(cs.capex)],
-   ['Полные расходы',c.map(x=>money(x.total_expenses)),money(cs.total_expenses)],
-  ]],
-  ['unit','Удельные показатели',[
-   // Удельный подписан своим делителем, и делитель стоит строкой над ним:
-   // те же числа, на которые делит движок (`monetizable_saleable_sqm`,
-   // `project_gns_sqm`), а не площадь, угаданная по заголовку.
-   ['Делитель «на м² продаваемой» — продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
-   ['Делитель «на м² ГНС» — ГНС наземная',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
-   ['Цена реализации на м² продаваемой',c.map(x=>num2(x.revenue_per_saleable_th)+' тыс ₽/м²'),perTh(cs.revenue,csSale)],
-   ['Цена реализации на м² ГНС',c.map(x=>num2(x.revenue_per_gns_th)+' тыс ₽/м²'),perTh(cs.revenue,csGns)],
-   ['CAPEX на м² ГНС',c.map(x=>num2(x.capex_per_gns_th)+' тыс ₽/м²'),perTh(cs.capex,csGns)],
-   ['Полные расходы на м² продаваемой',c.map(x=>num2(x.expenses_per_saleable_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csSale)],
-   ['Полные расходы на м² ГНС',c.map(x=>num2(x.expenses_per_gns_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csGns)],
-   ['Чистая прибыль на м² продаваемой',c.map(x=>num2(x.net_profit_per_saleable_th)+' тыс ₽/м²'),perTh(cs.net_profit,csSale)],
-   // Цена метра очереди по общепроектным статьям — из движка: заданная руками
-   // доля видна здесь числом, а не только процентом в редакторе.
-   ...[['ird','ИРД и согласования'],['design','Проектирование П+РД'],['preparation','Подготовительные работы'],['utilities','Наружные сети']].map(([k,l])=>{
-    const inp=((c[0]||{}).shared_rate_inputs_th||{})[k];
-    return [`${l} — цена м² МКД очереди${inp!=null?` (вводная ${num2(inp)} тыс ₽/м²)`:''}`,c.map(x=>((x.shared_rates_th||{})[k]!=null)?num2(x.shared_rates_th[k])+' тыс ₽/м²':'—'),'—'];
-   }),
-  ]],
-  ['finance','Финансирование',[
-   ['Пиковый БРИДЖ',c.map(x=>money(x.peak_bridge)),money(cons.finance.peak_bridge)],
-   ['Затраты до РНС',c.map(x=>money(x.pre_rns_costs)),money(((phaseBundle.phase_financing||{}).totals||{}).pre_rns_costs)],
-   ['Свободный cash проекта',c.map(x=>money(x.project_cash_used)),money(((phaseBundle.phase_financing||{}).totals||{}).project_cash_used)],
-   ['Собственные средства',c.map(x=>money(x.own_funds)),money(((phaseBundle.phase_financing||{}).totals||{}).own_funds)],
-   ['Новый БРИДЖ',c.map(x=>money(x.new_bridge)),money(((phaseBundle.phase_financing||{}).totals||{}).new_bridge)],
-   ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
-   // Раскрытие эскроу — событие очереди. В своде эти строки складывались под
-   // именами моментов: «Раскрытый эскроу в РВЭ» суммировал раскрытия разных
-   // лет, а «в т.ч. принято от предыдущей очереди» при трёх очередях не
-   // отвечало, от какой (владелец, 31.08.2026). Здесь у каждого числа есть
-   // очередь и дата, а в своде остались только те же величины как итоги.
-   ['Лимит ПФ',c.map(x=>money(x.pf_limit)),money(cons.finance.pf_limit)],
-   ['РВЭ очереди',c.map(x=>x.rve?dateRu(x.rve):'—'),'—'],
-   ['Долг ПФ перед раскрытием',c.map(x=>money(x.rve_pf_before_repayment)),
-    money(cons.finance.rve_pf_before_repayment)],
-   ['Раскрыто эскроу',c.map(x=>money(x.rve_escrow_release)),money(cons.finance.rve_escrow_release)],
-   ['Из него на погашение ПФ',c.map(x=>money(x.rve_pf_repayment)),money(cons.finance.rve_pf_repayment)],
-   ['Не покрыто эскроу при раскрытии',c.map(x=>money(x.rve_pf_shortfall)),
-    money(cons.finance.rve_pf_shortfall)],
-   ...debtRows,
-   ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
-  ]],
-  ['result','Результат',[
-   ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
-   ['Маржинальность',c.map(x=>pct(x.margin)),pct(cons.summary.margin)],
-   ['Общепроектная нагрузка — cash',c.map(x=>money(x.cash_shared_cost)),'—'],
-   ['Аллоцированные общие расходы',c.map(x=>money(x.allocated_shared_cost)),'—'],
-   ['Аналитическая прибыль после аллокации',c.map(x=>money(x.allocated_net_profit)),'—'],
-  ]],
- ];
  // Сырые числа итогов и слагаемых уходят в разметку (`data-v`): проверка
  // сверяет итог с суммой слагаемых по ним, а не по округлённому тексту.
- const td=(v,raw)=>`<td${raw!=null?` data-v="${raw}"`:''}>${v}</td>`;
- phaseComparisonBody.innerHTML=blocks.filter(b=>b[2].length).map(([key,title,list])=>
-  `<tr class="pc-block" data-block="${key}"><th colspan="${c.length+2}">${title}</th></tr>`+
-  list.map(([l,cells,tot,role,group,vals])=>
-   `<tr data-block="${key}"${role?` class="pc-${role}"`:''}${group?` data-group="${group}"`:''}><td>${l}</td>`+
-   cells.map((v,i)=>td(v,vals&&vals[i])).join('')+td(tot,vals&&vals[cells.length])+'</tr>').join('')
+ const td=(r,v)=>`<td${r.group?` data-v="${v}"`:''}>${fmt(r,v)}</td>`;
+ const span=table.columns.length+2;
+ // Делители удельных — одна подпись таблицы мелким шрифтом, а не строки
+ // тела: крупная «Делитель…» среди показателей читалась как ещё одно число.
+ // Метры — целыми, как в PDF (`_phase_comparison_pdf`).
+ const divisors=(table.divisors||[]).length
+  ?`<tr class="pc-caption"><th colspan="${span}"><small class="pc-divisors">Удельные показатели — делители: ${table.divisors.map(d=>escapeHtml(d.label)+': '+
+     table.columns.map((n,i)=>escapeHtml(n)+' '+num(Math.round(d.values[i]||0))).concat('свод '+num(Math.round(d.total||0))).join(' · ')+
+     ' '+escapeHtml(d.unit||'')).join('<br>')}</small></th></tr>`
+  :'';
+ const label=r=>r.label+(r.rate_input!=null?` (вводная ${num2(r.rate_input)} тыс ₽/м²)`:'');
+ phaseComparisonBody.innerHTML=divisors+table.blocks.map(b=>
+  `<tr class="pc-block" data-block="${b.key}"><th colspan="${span}"><span>${b.title}</span></th></tr>`+
+  b.rows.map(r=>
+   `<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${label(r)}</td>`+
+   r.values.map(v=>td(r,v)).join('')+td(r,r.total)+'</tr>').join('')
  ).join('');
  renderPhaseEscrowCharts();
  // Причина, по которой долг сменил очередь — или по которой не сменил.
@@ -53091,7 +53714,7 @@ function renderPhaseComparison(){
    note.textContent=carry.note;
    note.className='note '+(carry.applied?'phase-total-ok':'phase-total-bad');
    note.style.display='block';
-  }else if(debtRows.length){
+  }else if(table.has_debt){
    note.textContent='Перенос долга между очередями выключен: непогашенный остаток остаётся на очереди, которая его набрала, и означает дефолт по её линии. Признак — на вкладке «Очерёдность».';
    note.className='note';note.style.display='block';
   }else{note.style.display='none'}
@@ -54148,9 +54771,18 @@ function renderResult(){
   // рынком, ни с себестоимостью.
   const rGns=Number(r.summary.project_gns_sqm||0),rSaleable=Number(r.summary.monetizable_saleable_sqm||0);
   const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
-  revenueTable.innerHTML=Object.entries(r.revenue).filter(([key])=>key!=='total')
-   .map(([key,v])=>`<tr><td>${productName(key)}</td><td>${money(v)}</td><td>${perTh(v,rGns)}</td><td>${perTh(v,rSaleable)}</td></tr>`).join('')
-   +`<tr><th>Итого</th><th>${money(r.revenue.total)}</th><th>${perTh(r.revenue.total,rGns)}</th><th>${perTh(r.revenue.total,rSaleable)}</th></tr>`;
+  // Состав, порядок и итоги групп решает движок (`revenue_structure`):
+  // МКД → Итого МКД → объекты, каждый со своим паркингом → Итого ОСЗ →
+  // Итого; нулевых продуктов нет. Прежде строки шли в порядке словаря.
+  // Результат без раскладки (сохранён до неё) печатается прежним списком,
+  // а не пустой таблицей: пустота читалась бы как «выручки нет».
+  const rs=(r.revenue_structure||{}).rows
+   ||[...Object.entries(r.revenue||{}).filter(([k])=>k!=='total').map(([k,v])=>({label:productName(k),value:v,role:'part',group:''})),
+      {label:'Итого',value:(r.revenue||{}).total,role:'total',group:'all'}];
+  revenueTable.innerHTML=rs.map(x=>{
+   const c=x.group==='all'?'th':'td',cls=x.role==='total'?(x.group==='all'?'':' class="rs-total"'):' class="rs-part"';
+   return `<tr${cls} data-group="${x.group}" data-role="${x.role}"><${c}>${escapeHtml(x.label)}</${c}><${c}>${money(x.value)}</${c}><${c}>${perTh(x.value,rGns)}</${c}><${c}>${perTh(x.value,rSaleable)}</${c}></tr>`;
+  }).join('');
  }
  // Имена статей приходят из движка плейсхолдером, как VERSION и доли ТЭП.
  const capNames=__DEVELOPAID_CAPEX_NAMES__;
@@ -55650,7 +56282,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
  'landScreeningRun','tepRunSequence',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
- 'CLASS_STATS_BY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN'];
+ 'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
@@ -56165,15 +56797,17 @@ MONITOR_PAGE_HTML = (
     # не должно: «Платон должен везде уметь вести диалог, а не один ответ».
     .replace(plato_question.PLACEHOLDER, plato_question.SCRIPT)
 )
+# Странице — группы ТИПОВ: экземпляр рисуется вкладкой внутри блока своего
+# типа, и его поля страница выводит из полей типа (`objectFields`). Число групп
+# вводных от числа объектов не растёт (владелец, 28.09.2026).
 PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
-                    json.dumps(FIELD_GROUPS, ensure_ascii=False))
-PAGE = PAGE.replace(FIELD_SECTIONS_PLACEHOLDER,
-                    json.dumps(FIELD_SECTIONS, ensure_ascii=False))
+                    json.dumps(PAGE_FIELD_GROUPS, ensure_ascii=False))
+PAGE = PAGE.replace(FIELD_SECTIONS_PLACEHOLDER, json.dumps(
+    {key: title for key, title in FIELD_SECTIONS.items() if key not in _INSTANCE_FIELDS},
+    ensure_ascii=False))
 # Подписи полей объектов вне их группы — тем же правилом, что в PDF и отчётах.
 PAGE = PAGE.replace("__DEVELOPAID_FIELD_LABELS_OUTSIDE__", json.dumps(
     {key: _input_field_label(key) for key in FIELD_SECTIONS}, ensure_ascii=False))
-PAGE = PAGE.replace(CLASS_DERIVED_NOTES_PLACEHOLDER,
-                    json.dumps(CLASS_DERIVED_NOTES, ensure_ascii=False))
 # Базы классов — из движка. Копия жила на странице с рождения окна и отстала
 # от пресета в первый же раз, когда профиль класса расширили статьями:
 # полный профиль применялся бы на сервере и молча не существовал бы в браузере.
@@ -56213,6 +56847,8 @@ PAGE = PAGE.replace(
                ensure_ascii=False))
 # Имена статей расходов — из движка. Статья без короткой подписи получает
 # полную: сырой ключ на экране невозможен по построению, а не по вниманию.
+PAGE = PAGE.replace(CLASS_REGION_BASES_PLACEHOLDER,
+                    json.dumps(CLASS_REGION_BASES, ensure_ascii=False))
 PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
     {key: CAPEX_SHORT_NAMES.get(key, name) for key, name in _MODEL_CAPEX_LABELS},
     ensure_ascii=False))
@@ -56257,9 +56893,17 @@ PAGE = PAGE.replace("__DEVELOPAID_STANDALONE_OBJECTS__", json.dumps(
       "garage": o.garage, "garage_sellable": o.garage_sellable,
       "measure": o.measure, "sale_gate": o.sale_gate, "product": o.product,
       "label": o.label, "tep_label": o.tep_label, "group_label": o.group_label,
+      # Экземпляр типа (`offices3`) и сам тип: из них страница собирает
+      # состав проекта и кнопку «Добавить объект».
+      "instance": bool(o.family), "type": o.family or o.key,
+      "duplicable": o.duplicable,
       # Продукт «паркинг объекта» — ключ из движка, страница его не собирает.
       "parking_product": OBJECT_PARKING_PRODUCT_KEYS.get(o.key, "")}
      for o in STANDALONE_OBJECTS], ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_OBJECT_INSTANCE_RULES__", json.dumps(
+    {"key": OBJECT_INSTANCES_KEY, "max": OBJECT_INSTANCES_MAX,
+     "legacy": list(LEGACY_SECOND_OBJECTS), "volume": list(_INSTANCE_VOLUME_FIELDS)},
+    ensure_ascii=False))
 # Подпись переданных метров — из движка: получателя мы не знаем, и шесть копий
 # слова «городу» правились бы порознь.
 PAGE = PAGE.replace(TRANSFER_LABELS_PLACEHOLDER, json.dumps(

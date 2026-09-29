@@ -79,19 +79,23 @@ def test_in_a_real_browser_every_object_gets_its_queue_field() -> None:
             page.wait_for_function(
                 "document.querySelectorAll('#assignObjects select[data-object]').length>0",
                 timeout=30000)
+            # Поле очереди — у объектов ПРОЕКТА: второй офис заведён, прочие
+            # экземпляры пула — нет, и выбирать им очередь незачем.
+            page.evaluate("addObjectInstance('offices');renderPhasing()")
+            project = [o for o in core.STANDALONE_OBJECTS
+                       if not o.family or o.key == "offices2"]
 
             got = page.evaluate("""() => Array.from(
                 document.querySelectorAll('#assignObjects select[data-object]')
             ).map(s => ({key: s.dataset.object,
                          label: s.closest('.field').querySelector('label').textContent,
                          value: s.value}))""")
-            expected = [o.key for o in core.STANDALONE_OBJECTS]
+            expected = [o.key for o in project]
             assert [g["key"] for g in got] == expected
-            assert [g["label"] for g in got] == [o.tep_label
-                                                 for o in core.STANDALONE_OBJECTS]
+            assert [g["label"] for g in got] == [o.tep_label for o in project]
 
             # Умолчание очереди — из реестра, а не из памяти страницы.
-            wanted = {o.key: min(o.default_queue, 2) for o in core.STANDALONE_OBJECTS}
+            wanted = {o.key: min(o.default_queue, 2) for o in project}
             assert {g["key"]: int(g["value"]) for g in got} == wanted
 
             # Выбор доезжает до состояния: поле, которое ничего не меняет,

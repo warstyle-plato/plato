@@ -2466,6 +2466,8 @@ function krtInvestmentRatingCell(slug){
    +'">без составляющей: '+esc(held.map(x=>names[x.component]||x.component).join(', '))+'</span>':'';
   return '<b>'+esc(Math.round(Number(score)))+'</b><div class="source">/100'+quality+estimate+waiting+stale+'</div>';
  }
+ // Балл прежней методики сервер не выдаёт за нынешний: пусто и названо почему.
+ if(r.stale_methodology)return '<b>—</b><div class="source">'+esc(r.reason||'не пересчитано по текущей методике')+'</div>';
  if(Number.isFinite(coverage)&&coverage>0){
   const missing=(r.missing||[]).map(x=>names[x]||x).join(', ');
   return '<b>—</b><div class="source">'+coverage+'% факта'+(missing?' · нет даже медианы: '+esc(missing):'')+'</div>';

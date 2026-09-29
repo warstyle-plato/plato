@@ -25,7 +25,7 @@ import re
 from typing import Any, Iterable
 
 from auction_search import krt_pipeline
-from auction_search.parsing import deadline_iso
+from auction_search.parsing import deadline_iso, deadline_label
 from market_search.krt_decisions import same_place
 
 _CADASTRAL = re.compile(r"\b\d{2}:\d{2}:\d{5,8}:\d+\b")
@@ -145,6 +145,11 @@ def match(lots: Iterable[dict[str, Any]], sites: Iterable[dict[str, Any]]) -> di
             # и живой лот от этого выглядит просроченным.
             "deadline_iso": deadline_iso(lot.get("application_deadline")),
             "auction_date": lot.get("auction_date"),
+            # Откуда дата торгов: поле или подпись у источника. Без этого дата
+            # из «Этапов» Росэлторга и дата из ключа API ГПБ неразличимы.
+            "auction_date_origin": str(
+                (((lot.get("provenance") or {}).get("auction_date") or {})
+                 .get("source_section")) or ""),
             "source": str((lot.get("source") or {}).get("catalogue")
                           or (lot.get("source") or {}).get("name") or ""),
             # Чей это склад скачанного и разобранного. Ключ объявлен один раз —
@@ -153,6 +158,7 @@ def match(lots: Iterable[dict[str, Any]], sites: Iterable[dict[str, Any]]) -> di
             # выписки, и «выписок нет» читалось бы как ответ документов.
             "store_key": krt_pipeline.store_key(dict(lot)),
         }
+        summary.update(auction_date_fields(summary))
         if hit:
             by_site.setdefault(hit["slug"], []).append(summary)
         else:
@@ -161,6 +167,22 @@ def match(lots: Iterable[dict[str, Any]], sites: Iterable[dict[str, Any]]) -> di
             orphans.append(summary)
     return {"by_site": by_site, "unmatched": orphans, "krt_lots": checked,
             "matched_by_area": matched_by_area}
+
+def auction_date_fields(lot: dict[str, Any]) -> dict[str, str]:
+    """Дата торгов лота — или названная причина, почему её нет.
+
+    Большинство площадок дату торгов в том, что мы читаем, не отдают (у
+    torgi.gov в карточке только окно заявок `biddStartTime`/`biddEndTime`).
+    Пустое поле не «торгов не будет» и не «дата неизвестна площадке»: это
+    «источник нам её не дал», и так и говорится — с именем источника.
+    """
+    raw = lot.get("auction_date")
+    if raw:
+        return {"auction_date_label": deadline_label(raw), "auction_date_note": ""}
+    source = str(lot.get("source") or "").strip()
+    note = "дата торгов не получена от источника" + (f" ({source})" if source else "")
+    return {"auction_date_label": "", "auction_date_note": note}
+
 
 def with_moment(lots: Iterable[dict[str, Any]] | None) -> list[dict[str, Any]]:
     """Момент срока у запомненной связки: производную считаем при ЧТЕНИИ.
@@ -176,10 +198,12 @@ def with_moment(lots: Iterable[dict[str, Any]] | None) -> list[dict[str, Any]]:
     for lot in lots or []:
         if not isinstance(lot, dict):
             continue
-        if lot.get("deadline_iso"):
-            out.append(lot)
-            continue
-        out.append({**lot, "deadline_iso": deadline_iso(lot.get("deadline"))})
+        # Подпись даты торгов — тоже производная: связка прежних выпусков её
+        # не несёт, и считается она здесь же, на чтении.
+        fresh = {**lot, **auction_date_fields(lot)}
+        if not fresh.get("deadline_iso"):
+            fresh["deadline_iso"] = deadline_iso(lot.get("deadline"))
+        out.append(fresh)
     return out
 
 

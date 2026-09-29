@@ -46,6 +46,7 @@ from auction_search.adapters.etp_probe import (
 from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
     probe as fedresurs_probe, probe_browser as fedresurs_browser)
+from auction_search.adapters import source_page
 from auction_search.adapters.roseltorg_probe import (
     CATALOGUE_URL as ROSELTORG_SECTION_URL,
     probe as roseltorg_probe,
@@ -4194,7 +4195,21 @@ def install(app: FastAPI) -> None:
         Отдаёт посчитанное сразу — даже на ходу прогона: половина рейтинга с
         честным ходом полезнее пустого экрана, который ничего не объясняет.
         """
+        rating_version = str(krt_investment_score.methodology().get("version") or "")
+        try:
+            # Список собирается из каталога и решений — не в цикле событий.
+            sites, whole = await run_in_threadpool(_krt_screen_list)
+            catalogue = ({str(site.get("slug") or "") for site in sites}
+                         if whole else None)
+        except Exception:  # noqa: BLE001
+            logger.exception("KRT ranking: catalogue for rating marks failed")
+            catalogue = None
         rows = [_row_without_stale_facts(row) for row in krt_ranking.rows()]
+        rows = [
+            krt_ranking_rules.rating_by_current_methodology(
+                row, rating_version, catalogue_slugs=catalogue)
+            for row in rows
+        ]
         return {
             "investment_rating_target_rub_sqm": krt_ranking.rating_target(
                 krt_investment_score.DEFAULT_PRICE_TARGET_RUB_SQM),
@@ -4220,6 +4235,11 @@ def install(app: FastAPI) -> None:
             "stale_rules_count": sum(
                 1 for row in rows
                 if ((row.get("press_facts") or {}).get("stale_rules"))),
+            # Сколько баллов посчитано прежней методикой и не пересчитано:
+            # причина у каждой строки своя (`investment_rating.reason`).
+            "stale_rating_count": sum(
+                1 for row in rows
+                if (row.get("investment_rating") or {}).get("stale_methodology")),
             # Сколько строк судят по ПРЕЖНЕЙ методике счёта. Правка цены,
             # очередей или соцобъектов меняет числа сразу у всех, а строка
             # выглядит свежей: `computed_at` отвечает «когда», а не «чем», и
@@ -4938,6 +4958,16 @@ def install(app: FastAPI) -> None:
         """
         return await run_in_threadpool(
             lambda: roseltorg_probe(seconds=float(seconds), url=url.strip()))
+
+    @app.get("/auctions/source-page")
+    async def auction_source_page(url: str = Query(default="")) -> dict[str, Any]:
+        """Страница площадки целиком — образец для разбора даты торгов.
+
+        Проба Росэлторга отдаёт голову текста, а разбор пишется по всей
+        карточке. Только официальные хосты площадок, без разбора; из песочницы
+        эти площадки закрыты, поэтому образец снимается здесь, на ядре.
+        """
+        return await run_in_threadpool(lambda: source_page.fetch(url))
 
     @app.get("/auctions/roseltorg/browser")
     async def auction_roseltorg_browser(
