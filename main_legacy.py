@@ -82,7 +82,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.83"
+VERSION = "0.24.84"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1523,6 +1523,8 @@ def object_parking_product_key(object_key: str) -> str:
 OBJECT_PARKING_PRODUCT_KEYS: dict[str, str] = {
     o.key: object_parking_product_key(o.key) for o in STANDALONE_OBJECTS if o.garage
 }
+_OBJECT_OF_PARKING_PRODUCT: dict[str, str] = {
+    pkey: okey for okey, pkey in OBJECT_PARKING_PRODUCT_KEYS.items()}
 NON_TEP_PRODUCT_LABELS.update({
     OBJECT_PARKING_PRODUCT_KEYS[o.key]: f"Паркинг — {o.group_label or o.label}"
     for o in STANDALONE_OBJECTS if o.garage
@@ -2059,6 +2061,44 @@ def residential_excluded_rows(inputs: dict[str, Any] | None) -> frozenset[str]:
     if not is_nonresidential(inputs):
         return frozenset()
     return frozenset(MKD_PRODUCTS) | frozenset(SOCIAL_TEP_FIELDS)
+
+
+# Количества строки ТЭП и строки продукта отчёта: строка вне состава
+# скрывается, только пока все они пусты.
+_ROW_QUANTITY_FIELDS: tuple[str, ...] = (
+    "quantity", "revenue", "cost", "built_units")
+
+
+def row_outside_project(inputs: dict[str, Any] | None, key: str,
+                        row: dict[str, Any]) -> bool:
+    """Строки ТЭП или продукта отчёта нет в составе проекта.
+
+    Один ответ на «показывать ли строку» для всех таблиц, перечисляющих
+    продукты и объекты: ТЭП и продажи отчёта страницы, PDF, Платон читают
+    признак `excluded`, который ставит расчёт, а не выводят состав заново.
+    Строки в ответе остаются — ключ не пропадает у тех, кто ищет строку по
+    имени. Паркинг объекта (`OBJECT_PARKING_PRODUCT_KEYS`) — в составе вместе
+    со своим объектом.
+
+    Вне состава — то, что тип проекта не считает (`residential_excluded_rows`),
+    и объект, которого в проекте нет: экземпляр не заведён
+    (`project_objects`) или объект выключен. Строка объекта вне состава
+    скрывается, только пока она пуста: выключенный объект с метрами в ТЭП
+    итог по-прежнему складывает, и спрятать строку значило бы потерять из
+    таблицы число, которое стоит в её итоге. Законный ноль продукта дома
+    (передаётся 0) признаком не становится — он в составе.
+    """
+    if key in residential_excluded_rows(inputs):
+        return True
+    obj = _BY_KEY.get(key) or _BY_KEY.get(_OBJECT_OF_PARKING_PRODUCT.get(key, ""))
+    if obj is None:
+        return False
+    x = inputs or {}
+    if obj in project_objects(x) and b(x, obj.enabled_key):
+        return False
+    return not any(n(row, col) for col in (*_RESIDENTIAL_EXCLUDED_TEP_COLUMNS,
+                                           *TEP_SUMMABLE_FIELDS,
+                                           *_ROW_QUANTITY_FIELDS))
 
 
 # Столбцы строки ТЭП, которые несут количество: обнулив их, строка перестаёт
@@ -17128,8 +17168,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # переданном молчал — и читался так, будто продано всё построенное
     # (владелец, 10.09.2026). Колонка появляется вместе с числом: постоянный
     # столбец нулей — шум, а не полнота.
+    # Строка вне состава проекта (`row_outside_project`) не печатается —
+    # тот же признак, что у отчёта страницы и книги.
     rows_data = [row for row in (tep_report.get('rows') or [])
-                 if any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
+                 if not row.get('excluded')
+                 and any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
     total=tep_report.get('total') or {}
     given = sum(float(row.get('transfer') or 0) for row in rows_data)
     # Итог количества — разбор по мере счёта, а не сумма: квартиры,
@@ -17390,7 +17433,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # Непродаваемое в таблицу ПРОДАЖ не идёт: соцобъект стоял тут строкой
         # с объёмом «350 м²» и выручкой ноль, хотя 350 — это места. Его метры
         # и мощность названы в таблице ТЭП, где у них своя мера.
-        if item.get('sellable') is False: continue
+        if item.get('sellable') is False or item.get('excluded'): continue
         quantity=float(item.get('quantity') or 0);revenue=float(item.get('revenue') or 0)
         built=float(item.get('built_units') or 0)
         # Паркинг объекта с местами, которые не продаются (ТЦ, ФОК), — тоже
@@ -33514,7 +33557,6 @@ def calculate(req: CalcRequest) -> dict:
     fin = simulate_financing(x, t, rates, op)
 
     tep_rows = []
-    excluded_rows = residential_excluded_rows(x)
     for key, row in t.items():
         # Гостевые машино-места строятся и стоят денег, но не продаются. Число
         # едет в строку ТЭП, а не выводится каждой поверхностью заново: книга
@@ -33557,10 +33599,10 @@ def calculate(req: CalcRequest) -> dict:
             "parking_under_units": n(row, "parking_under_units"),
             "parking_over_units": n(row, "parking_over_units"),
             "parking_guest_units": n(row, "parking_guest_units"),
-            # Строка, которую тип проекта не считает (`residential_excluded_rows`):
-            # нули в ней — не «продукт пуст», а «продукта в этом проекте нет».
-            "excluded": key in excluded_rows,
         })
+        # Строка вне состава проекта (`row_outside_project`): нули в ней —
+        # не «продукт пуст», а «продукта в этом проекте нет».
+        tep_rows[-1]["excluded"] = row_outside_project(x, key, tep_rows[-1])
 
     # Свод складывает только складываемое. Штук в списке нет: они
     # группируются мерой счёта, потому что квартира, машино-место и место в
@@ -34083,6 +34125,10 @@ def calculate(req: CalcRequest) -> dict:
             # продукт, который не продаётся по построению.
             "sellable": False,
         })
+
+    # Продукт объекта вне состава проекта — той же меркой, что строка ТЭП.
+    for item in products_report:
+        item["excluded"] = row_outside_project(x, item["key"], item)
 
     # Calendar / Gantt, mirroring the conceptual structure of the Excel Calendar sheet.
     calendar_events = []
@@ -35970,8 +36016,12 @@ def _consolidate_phase_results(
                 "parking_saleable_units": 0.0,
                 "parking_under_units": 0.0, "parking_over_units": 0.0,
                 "parking_guest_units": 0.0,
-                "excluded": bool(row.get("excluded")),
+                "excluded": True,
             })
+            # Вне состава свода — только строка, которой нет ни в одной
+            # очереди: объект второй очереди выключен в первой, и ответ
+            # первой очереди не прячет его из свода.
+            target["excluded"] = target["excluded"] and bool(row.get("excluded"))
             for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
                           "guest_units", "transfer_units", "saleable_units",
                           "under_gns", "parking_units",
@@ -36154,7 +36204,10 @@ def _consolidate_phase_results(
                 "avg_price_th": 0.0, "pace_pre": None,
                 "share_before_rve": item["share_before_rve"],
                 "sales_start": None, "sales_end": None,
+                "excluded": True,
             })
+            # Вне состава свода — только продукт, которого нет ни в одной очереди.
+            p["excluded"] = p["excluded"] and bool(item.get("excluded"))
             p["quantity"] += float(item["quantity"] or 0.0)
             p["gns"] += float(item.get("gns", 0.0) or 0.0)
             p["saleable"] += float(item.get("saleable", 0.0) or 0.0)
@@ -36213,6 +36266,7 @@ def _consolidate_phase_results(
             "label": total_item["label"],
             "unit": total_item["unit"],
             "sellable": total_item["sellable"],
+            "excluded": total_item["excluded"],
             "quantity": total_item["quantity"],
             "revenue": total_item["revenue"],
             "avg_price_th": total_item["avg_price_th"],
@@ -38676,6 +38730,7 @@ def _tool_explain_metric(
                 "sales_end": p.get("sales_end"),
             }
             for p in (report.get("products") or [])
+            if not p.get("excluded")
         ]
         base["total_revenue_mln"] = round(float(s.get("revenue", 0) or 0) / 1e6, 2)
         return base
@@ -38773,6 +38828,7 @@ def _tool_explain_metric(
                 "units": round(float(row.get("units", 0) or 0), 2),
             }
             for row in ((result.get("tep") or {}).get("rows") or [])
+            if not row.get("excluded")
         ]
         return base
 
@@ -54937,7 +54993,9 @@ function renderResult(){
  // Признак приходит из движка и читается как есть: выводить «продаётся ли»
  // из нулевой выручки значило бы путать «не продал в этом расчёте» с «не
  // продаётся по построению».
- const sellable=p=>p.sellable!==false;
+ // Объект вне состава проекта движок помечает (`row_outside_project`) —
+ // та же мерка, что у таблицы ТЭП: удалённые объекты не стоят строкой нулей.
+ const sellable=p=>p.sellable!==false&&!p.excluded;
  if(phaseBundle&&phaseBundle.mode==='phased'&&reportView==='all'&&Array.isArray(r.report.phase_products)){
    const phaseNames=(phaseBundle.phases||[]).map(x=>x.name);
    const productTotals=Object.fromEntries((r.report.products||[]).map(x=>[x.key,x]));
@@ -55125,9 +55183,10 @@ function renderResult(){
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Передаётся, м²</th><th>Построено</th><th>Продаётся</th></tr></thead>`+
   `<tbody>`+
-  // Строку, которую тип проекта не считает, движок помечает сам
-  // (`residential_excluded_rows`): нулевой «Подземный паркинг» дома рядом
-  // с гаражом объекта читался бы вторым паркингом.
+  // Строку вне состава проекта движок помечает сам (`row_outside_project`):
+  // то, что тип проекта не считает (нулевой «Подземный паркинг» дома рядом с
+  // гаражом объекта читался бы вторым паркингом), и объект, которого в проекте
+  // нет — удалённые «Коммерция ОСЗ 2…5», «Офисы 2…4» стояли здесь нулями.
   r.tep.rows.filter(x=>!x.excluded).map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0&&!objParkUnits(x)?num(objUnder(x)):dash)}</td>`
