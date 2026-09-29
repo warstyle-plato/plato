@@ -1783,6 +1783,27 @@ def object_is_sold(inputs: dict[str, Any] | None, obj: "StandaloneObject") -> bo
     return value == SPORTS_DISPOSITION_SALE
 
 
+def sold_saleable_sqm(tep: dict[str, Any], inputs: dict[str, Any] | None) -> float:
+    """Продаваемая площадь — то, что реально продаётся метрами.
+
+    Квартиры, коммерция 1 этажа и объекты, продаваемые метрами (ОСЗ, офисы,
+    ФОК — если он продаётся, а не уходит городу). Паркинг и кладовые продаются
+    штуками, соцобъекты передаются — в метры продаж они не входят. Один ответ
+    на «сколько метров продаём» для отчёта, тизера, первой страницы и бота:
+    прежде отчёт не видел проданного ФОК, а тизер складывал колонку
+    «Продаваемая» всех строк ТЭП, не спрашивая, продаётся ли строка.
+    """
+    keys = ["apartments", "ground_commercial"]
+    for obj in STANDALONE_OBJECTS:
+        if obj.measure != "sqm":
+            continue
+        if obj.sale_gate and not (b(inputs or {}, obj.enabled_key)
+                                  and object_is_sold(inputs, obj)):
+            continue
+        keys.append(obj.key)
+    return sum(n(tep.get(key) or {}, "saleable") for key in keys)
+
+
 # --- экземпляры объектов проекта ----------------------------------------------
 # Какие экземпляры есть в проекте — явный список вводной `object_instances`
 # (ключи реестра: `offices3`, `sports2`). Первый экземпляр типа (`offices`,
@@ -3040,7 +3061,9 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     # ГНС в сводке бота — наземная: гараж и кладовые лежат под землёй, и
     # правило одно на все поверхности (`project_above_gns`).
     total_gns = project_above_gns(tep_mapping)
-    total_saleable = sum(item["saleable"] for item in tep_mapping.values())
+    # Продаваемая — то, что продаётся метрами; судьба ФОК в файле ТЭП не
+    # названа, и он читается как у движка — переданным.
+    total_saleable = sold_saleable_sqm(tep_mapping, {})
     monetizable_units = sum(
         tep_mapping[key]["units"] for key in ("above_parking", "underground_parking", "storage")
     )
@@ -23124,8 +23147,8 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
         "land": {
             "purchase_per_saleable_th": (
                 float((report.get("purchase") or {}).get("total_mln") or 0.0) * 1e3
-                / float(tep_total.get("saleable") or 0.0)
-                if float(tep_total.get("saleable") or 0.0) > 0 else None),
+                / float(summary.get("monetizable_saleable_sqm") or 0.0)
+                if float(summary.get("monetizable_saleable_sqm") or 0.0) > 0 else None),
             "social_payment_mln": float(summary.get("social_payment") or 0.0) / 1e6,
             "social_payment_mode": str(summary.get("social_payment_mode") or ""),
             "land_rights_mln": float((consolidated.get("capex") or {}).get("land_rights") or 0.0) / 1e6,
@@ -33631,11 +33654,7 @@ def calculate(req: CalcRequest) -> dict:
     net_profit = after_finance_pre_tax - fin["profit_tax"] - fin.get("vat", 0.0)
 
     # Report-level project metrics.
-    monetizable_saleable_sqm = sum(
-        n(row, "saleable") for key, row in t.items()
-        if key in ("apartments", "ground_commercial",
-                   *object_keys_of("standalone_retail", "offices"))
-    )
+    monetizable_saleable_sqm = sold_saleable_sqm(t, x)
     apartment_saleable_sqm = n(t.get("apartments", {}), "saleable")
     core_gns = op["core_above_gns"] + op["core_under_gns"]
 
