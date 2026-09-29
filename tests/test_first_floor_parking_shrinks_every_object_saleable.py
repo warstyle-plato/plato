@@ -1,10 +1,14 @@
-"""Места первых этажей уменьшают продаваемую объекта — на каждой поверхности.
+"""Места первых этажей уменьшают ПРОДАННОЕ объекта, а не его строку ТЭП.
 
 Правило одно (`standalone_object_saleable`, формула книги K26/K46/K129):
 продаваемая = (ГНС вводных − места 1 эт. × площадь места) × продаваемая / ГНС.
 Проект владельца (29.09.2026): офисы 186 180 м² ГНС, 1 000 подземных мест и
 1 778 на первых этажах по 25 м² — под местами 44 450 м² ГНС здания, продаваемая
 87 504,6 → 66 613,1 м².
+
+Строка ТЭП — площадь здания: 87 504,6 м². Вычет живёт в структуре продукта —
+продукт «Офисы», выручка, сводная продаваемая (владелец, 29.09.2026: «оставь в
+структуре»).
 
 Поломка была в том, ЧТО движок считал базой строки ТЭП. Страница после
 расчёта кладёт в свою строку ответ движка — уже уменьшенный — и отправляет её
@@ -88,10 +92,11 @@ def test_tep_row_report_and_revenue_carry_one_saleable(obj, sent) -> None:
     owner = core.standalone_object_saleable(x, {obj.key: {"parking_over_units": OVER}}, obj.key)
     assert owner == pytest.approx(AFTER)
     row = _tep_row(result, obj.key)
-    assert row["saleable"] == pytest.approx(AFTER), "строка ТЭП движка"
-    assert row["useful"] == pytest.approx(AFTER)
-    assert row["total_area"] == pytest.approx((GBA - OVER * 25) * 0.94)
+    assert row["saleable"] == pytest.approx(RAW), "строка ТЭП — площадь здания"
+    assert row["useful"] == pytest.approx(RAW)
+    assert row["total_area"] == pytest.approx(GBA * 0.94)
     assert row["gns"] == pytest.approx(GBA), "ГНС объекта места не меняют"
+    assert row["parking_saleable_after_sqm"] == pytest.approx(AFTER)
     assert _product(result, obj.key)["quantity"] == pytest.approx(AFTER), "отчёт «Продукт»"
 
     own = next(o for o in result["parking"]["own"] if o["tep_key"] == obj.key)
@@ -119,7 +124,22 @@ def test_a_repeated_answer_does_not_shrink_the_row_again() -> None:
         row = _tep_row(result, "offices")
         for field in ("gns", "total_area", "useful", "saleable"):
             t["offices"][field] = row[field]
-        assert row["saleable"] == pytest.approx(AFTER)
+        assert row["saleable"] == pytest.approx(RAW)
+        assert row["parking_saleable_after_sqm"] == pytest.approx(AFTER)
+        assert _product(result, "offices")["quantity"] == pytest.approx(AFTER)
+
+
+def test_the_project_saleable_counts_what_is_sold() -> None:
+    """Сводная продаваемая — проданные метры: строка ТЭП держит здание, и её
+    сумма дала бы в продаваемую метры под машино-местами."""
+    obj = next(o for o in GARAGE_OBJECTS if o.key == "offices")
+    x = _inputs(obj)
+    with_places = core.calculate(core.CalcRequest(inputs=x, tep=_tep(obj, RAW), rates=[]))
+    none = copy.deepcopy(x)
+    none.update(offices_parking_under_spaces=UNDER + OVER, offices_parking_over_spaces=0)
+    without = core.calculate(core.CalcRequest(inputs=none, tep=_tep(obj, RAW), rates=[]))
+    assert (without["summary"]["monetizable_saleable_sqm"]
+            - with_places["summary"]["monetizable_saleable_sqm"]) == pytest.approx(RAW - AFTER)
 
 
 def test_the_queue_summary_reads_the_same_saleable() -> None:
@@ -135,7 +155,7 @@ def test_the_queue_summary_reads_the_same_saleable() -> None:
         },
     ))
     consolidated = bundle["consolidated"]
-    assert _tep_row(consolidated, "offices")["saleable"] == pytest.approx(AFTER)
+    assert _tep_row(consolidated, "offices")["saleable"] == pytest.approx(RAW)
     assert _product(consolidated, "offices")["quantity"] == pytest.approx(AFTER)
     own = next(o for o in consolidated["parking"]["own"] if o["tep_key"] == "offices")
     assert own["over_gba_sqm"] == pytest.approx(OVER * 25)

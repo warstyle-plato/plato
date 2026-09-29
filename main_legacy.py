@@ -11722,6 +11722,23 @@ def standalone_object_saleable(inputs: dict[str, Any], tep: dict[str, Any] | Non
     return max(0.0, base_gba - over_gba) * base_saleable / base_gba
 
 
+def object_sold_saleable(inputs: dict[str, Any], tep: dict[str, Any] | None,
+                         key: str) -> float:
+    """Сколько метров объекта ПРОДАЁТСЯ — для структуры продукта, отчёта и сводки.
+
+    Строка ТЭП объекта держит площадь здания: места первых этажей её не
+    уменьшают (владелец, 29.09.2026: «оставь в структуре»). Продаётся остаток
+    — `standalone_object_saleable`. Строка без продаваемой (объект выключен,
+    передан) или объект без вводной ГНС отвечают своей строкой.
+    """
+    row = (tep or {}).get(key) or {}
+    obj = _BY_KEY.get(key)
+    if (obj is None or obj.measure == "spaces" or n(row, "saleable") <= 0
+            or n(inputs, f"{obj.prefix}_gba_sqm") <= 0):
+        return n(row, "saleable")
+    return standalone_object_saleable(inputs, tep, key)
+
+
 def object_parking_by_hand(inputs: dict[str, Any], prefix: str) -> bool:
     """Места гаража объекта заданы человеком? Ответ один на проект и очередь.
 
@@ -11774,10 +11791,11 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         row = (tep or {}).get(tep_key) or None
         if row is None:
             continue
-        # Продаваемая объекта ДО мест первых этажей — вводная, а не присланная
-        # строка: страница кладёт в свою строку ответ прошлого расчёта, уже
-        # уменьшенный на места, и следующий расчёт вычитал их второй раз —
-        # строка ТЭП 50 709 м² при выручке от 66 613 (владелец, 29.09.2026).
+        # Продаваемая объекта — вводная, а не присланная строка: страница
+        # кладёт в свою строку ответ прошлого расчёта, и строка, сохранённая,
+        # пока движок вычитал в ней места первых этажей, несёт уже уменьшенное
+        # число — следующий расчёт вычитал бы его снова (строка ТЭП 50 709 м²
+        # при выручке от 66 613, владелец, 29.09.2026).
         # Строка приводится к вводной одной долей: пропорции общей, полезной и
         # продаваемой у неё свои, и место мест в них не меняет.
         # Строка с другой ГНС — это другой ТЭП (свежий пересчёт, доля очереди),
@@ -11860,15 +11878,18 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         remaining_gba = max(0.0, base_gns - over_gba)
         ratio = (remaining_gba / base_gns) if base_gns > 0 else (1.0 if over_gba <= 0 else 0.0)
 
+        # Строка ТЭП объекта остаётся площадью ЗДАНИЯ: места первых этажей её
+        # не уменьшают. Вычет живёт в структуре продукта — продаётся остаток,
+        # `standalone_object_saleable`, — и называется здесь числом (владелец,
+        # 29.09.2026: «оставь в структуре»). Прежде строка уменьшалась, и
+        # ТЭП, продукт и присланная назад строка давали три разных числа.
         losses: dict[str, float] = {}
         for field in ("total_area", "useful", "saleable"):
             base = n(row, f"_object_parking_base_{field}")
-            adjusted = max(0.0, base * ratio)
-            row[field] = adjusted
-            # Маркер именно НАШЕГО последнего значения отличает повторный
-            # проход от нового ТЭП, пришедшего между расчётами.
-            row[f"_object_parking_applied_{field}"] = adjusted
-            losses[field] = max(0.0, base - adjusted)
+            row[field] = base
+            row[f"_object_parking_applied_{field}"] = base
+            losses[field] = max(0.0, base - max(0.0, base * ratio))
+        row["parking_saleable_after_sqm"] = max(0.0, n(row, "saleable") - losses["saleable"])
 
         overflow = max(0.0, over_gba - base_gns)
         if overflow > 1e-9:
@@ -33687,6 +33708,9 @@ def calculate(req: CalcRequest) -> dict:
             # здания. ТЭП печатает их строкой «в т.ч. паркинг объекта».
             "parking_under_units": n(row, "parking_under_units"),
             "parking_over_units": n(row, "parking_over_units"),
+            # Продаётся у объекта остаток после мест первых этажей; строка
+            # держит площадь здания. Число — `apply_object_parking`.
+            "parking_saleable_after_sqm": n(row, "parking_saleable_after_sqm"),
             "parking_guest_units": n(row, "parking_guest_units"),
         })
         # Строка вне состава проекта (`row_outside_project`): нули в ней —
@@ -33707,10 +33731,14 @@ def calculate(req: CalcRequest) -> dict:
     net_profit = after_finance_pre_tax - fin["profit_tax"] - fin.get("vat", 0.0)
 
     # Report-level project metrics.
+    # Продаётся у объекта остаток после мест первых этажей — ответ один,
+    # `standalone_object_saleable`. Строка ТЭП держит площадь здания, и
+    # сумма строк дала бы в продаваемую метры под машино-местами.
+    _sold_objects = set(object_keys_of("standalone_retail", "offices"))
     monetizable_saleable_sqm = sum(
-        n(row, "saleable") for key, row in t.items()
-        if key in ("apartments", "ground_commercial",
-                   *object_keys_of("standalone_retail", "offices"))
+        (object_sold_saleable(x, t, key) if key in _sold_objects else n(row, "saleable"))
+        for key, row in t.items()
+        if key in ("apartments", "ground_commercial", *_sold_objects)
     )
     apartment_saleable_sqm = n(t.get("apartments", {}), "saleable")
     core_gns = op["core_above_gns"] + op["core_under_gns"]
@@ -33937,7 +33965,9 @@ def calculate(req: CalcRequest) -> dict:
             continue
         row = t.get(key) or {}
         own_gns = n(row, "gns")
-        own_saleable = n(row, "saleable")
+        # Удельная на продаваемый — на ПРОДАННЫЕ метры: под местами первых
+        # этажей офис не продаётся.
+        own_saleable = object_sold_saleable(x, t, key)
         # Гараж объекта стоит подземного метра и в его наземной ГНС не лежит:
         # делённый на неё, он поднимал удельную с вводных 200 до 249 тыс ₽/м²,
         # и сравнить это ни со сметой, ни со своей же вводной было нельзя.
@@ -34163,7 +34193,8 @@ def calculate(req: CalcRequest) -> dict:
             "sellable": True,
             "quantity": quantity,
             "gns": float(tep_row.get("gns", 0.0) or 0.0),
-            "saleable": float(tep_row.get("saleable", 0.0) or 0.0),
+            "saleable": (object_sold_saleable(x, t, key) if key in _BY_KEY
+                         else float(tep_row.get("saleable", 0.0) or 0.0)),
             "revenue": revenue_value,
             "cost": product_cost,
             "margin": ((revenue_value - product_cost) / revenue_value
@@ -51571,30 +51602,6 @@ function projectParking(){
  return ((lastResult||{}).parking)||{};
 }
 
-// Места первых этажей занимают часть ГНС объекта, и общая, полезная и
-// продаваемая считаются от остатка (`apply_object_parking`). Сколько ГНС ушло
-// под места — число движка; строка ТЭП на странице умножается на остаток, а
-// во вводные уходит обратно делением: поле объекта — площадь ДО мест. Без
-// этого таблица при очередях показывала продаваемую из вводных, как будто
-// паркинга на первых этажах нет (владелец, 29.09.2026).
-function objectParkingOverGba(key){
- const own=(projectParking().own)||[];
- const item=own.find(o=>o&&o.tep_key===key&&o.enabled);
- return item?Math.max(0,Number(item.over_gba_sqm||0)):0;
-}
-function objectParkingShare(key,gns){
- if(!STANDALONE_OBJECTS.some(o=>o.key===key&&o.garage))return 1;
- const g=Number(gns||0);
- return g>0?Math.max(0,g-objectParkingOverGba(key))/g:1;
-}
-function applyObjectParkingShare(key){
- const row=tep[key];if(!row)return;
- const share=objectParkingShare(key,row.gns);
- if(share===1)return;
- const round=v=>Math.round(Number(v||0)*share*10)/10;
- row.total_area=round(row.total_area);row.useful=round(row.useful);row.saleable=round(row.saleable);
-}
-
 function objectParkingNote(key){
  const own=(projectParking().own)||[];
  const item=own.find(o=>o&&o.tep_key===key&&o.enabled);
@@ -52140,7 +52147,7 @@ function tepRowComplaint(key,row){
   // Доли объявлены от ГНС: продаваемая сравнивается с ней же, иначе сравнение
   // поедет вслед за общей площадью, которая тоже может быть введена неверно.
   const r=tepRatio(key);
-  const expected=gns*r.saleable_of_gns*objectParkingShare(key,gns);
+  const expected=gns*r.saleable_of_gns;
   if(expected>0&&Math.abs(sale-expected)/expected>0.25)
    return 'продаваемая расходится с пропорцией больше чем на четверть ('+
     landNum(sale/gns*100,0)+'% ГНС против '+landNum(r.saleable_of_gns*100,0)+'%) — проверьте или пересчитайте';
@@ -52197,8 +52204,6 @@ function refillTepRow(key){
  // без этого правка доли и кнопка «наши» возвращали отданные метры в продажу
  // (замер 12.09.2026: 4 500 м² квартир снова становились продаваемыми).
  tepApplyTransfer(key,filled.saleable);
- // Строка объекта — площади ПОСЛЕ мест первых этажей, как у движка.
- applyObjectParkingShare(key);
  // Жилая СПП двинулась — за ней идёт встроенная коммерция, как и при правке
  // ячейки: правило одно, а закрытое в одном месте соседнее не защищает.
  if(key==='apartments'&&Math.abs(Number(row.gns||0)-gns)>0.05){
@@ -52249,13 +52254,7 @@ function tepRowToInputs(key){
  const map=TEP_ROW_INPUTS[key];
  if(!map)return false;
  inputs[map.gns]=Number(tep[key].gns||0);
- // В строке — продаваемая ПОСЛЕ мест первых этажей, в поле — до них.
- const share=objectParkingShare(key,tep[key].gns);
- // Места съели всю ГНС — из нуля продаваемую до мест не вернуть: поле
- // остаётся, каким было, а перерасход называет предупреждение движка.
- if(share>0)inputs[map.saleable]=share<1
-  ?Math.round(Number(tep[key].saleable||0)/share*10)/10
-  :Number(tep[key].saleable||0);
+ inputs[map.saleable]=Number(tep[key].saleable||0);
  const sw=TEP_ROW_SWITCH[key];
  if(sw&&!inputs[sw[0]]&&Number(tep[key].gns||0)>0){
   // Выключенный объект обнулит строку на первом же пересчёте. Числа сохранены,
@@ -52414,18 +52413,9 @@ function tepCellChanged(key,col,value){
   const transfer=Math.max(0,Number(tep[key].transfer||0));
   const base={gns:0,total_area:0,saleable:0,useful:0};
   base[col]=col==='saleable'?Number(value||0)+transfer:Number(value||0);
-  // Вписанная общая/продаваемая объекта с местами на первых этажах — это
-  // площадь ПОСЛЕ мест: ГНС = вписанное ÷ доля + ГНС под местами.
-  const over=STANDALONE_OBJECTS.some(o=>o.key===key&&o.garage)?objectParkingOverGba(key):0;
-  if(over>0&&col!=='gns'){
-   const r=tepRatio(key);
-   const part=col==='total_area'?r.total_of_gns:r.saleable_of_gns;
-   if(part>0){base.gns=base[col]/part+over;base.total_area=0;base.saleable=0}
-  }
   const filled=tepFillByRatios(key,base);
   ['gns','total_area'].forEach(field=>{tep[key][field]=filled[field]});
   tepApplyTransfer(key,filled.saleable);
-  if(over>0)applyObjectParkingShare(key);
   tepRowToInputs(key);
   if(key==='apartments'){rescaleApartmentUnits();rescaleBuiltInCommercial()}
   renderInputs();
@@ -53528,7 +53518,34 @@ function syncTep(rerender=true){
  // городу, — а продаётся только по признаку. Переданные метры уходят в
  // «передаётся»: они строятся, но не продаются, как у соцобъекта. Половиной
  // объект не делится: «всё или так, или так» (владелец, 05.09.2026).
- if(syncStandaloneTepRows())inputsFilled=true;
+ STANDALONE_OBJECTS.forEach(o=>{
+  const row=tep[o.key];if(!row)return;
+  const p=o.prefix,flag=p+'_enabled';
+  if(o.measure==='spaces'){
+   row.units=inputs[flag]?Number(inputs[p+'_spaces']||0):0;
+   row.gns=row.units*Number(inputs[p+'_area_per_space_sqm']||25);row.total_area=row.gns;
+   return;
+  }
+  const gbaId=p+'_gba_sqm',saleId=p+'_saleable_sqm';
+  if(!inputs[flag]){row.gns=0;row.total_area=0;row.saleable=0;row.useful=0;
+   if(o.sale_gate)row.transfer=0;return}
+  const sold=!o.sale_gate||String(inputs[o.sale_gate]||'transfer')==='sale';
+  const key=o.key;
+  const filled=tepFillByRatios(key,{gns:Number(inputs[gbaId]||0),total_area:0,
+   saleable:sold?Number(inputs[saleId]||0):0,useful:0});
+  row.gns=filled.gns;row.total_area=filled.total_area;
+  if(o.sale_gate){
+   row.saleable=sold?filled.saleable:0;row.useful=row.saleable;
+   row.transfer=sold?0:row.total_area;
+  }else{
+   row.saleable=filled.saleable;row.useful=filled.useful;
+   // Известна только продаваемая — ГНС считается и возвращается во вводные:
+   // себестоимость объекта берётся оттуда, и с нулём она была бы нулевой при
+   // живой выручке. Число видно в поле, а не подставлено втихую.
+   if(!Number(inputs[gbaId]||0)&&filled.gns>0){inputs[gbaId]=filled.gns;inputsFilled=true}
+  }
+  if(sold&&!Number(inputs[saleId]||0)&&filled.saleable>0){inputs[saleId]=filled.saleable;inputsFilled=true}
+ });
  // Соцобъект: места, площадь и ГНС. Прежде строка получала только общую
  // площадь и места, а `gns` не трогалась вовсе — поля «ГНС ДОУ» во вводных нет.
  // Импорт ГлавАПУ при этом писал в неё СПП из выгрузки, и один и тот же садик
@@ -53602,48 +53619,6 @@ function syncTep(rerender=true){
  if(rerender||!editingTep)renderTep();else updateTepTotals();
  return inputsFilled;
 }
-
-// Строки отдельно стоящих объектов из их вводных. Отдельной функцией — её
-// зовёт и расчёт очередей: свод назад в строки не пишется, а остаток ГНС
-// после мест первых этажей строке объекта нужен. Весь `syncTep` там звать
-// нельзя: он дописывает вводные (норма паркинга, соцнормативы) мимо полей
-// формы, и следующий расчёт возвращал бы прежнее — страница и PDF считали
-// бы по разным вводным.
-function syncStandaloneTepRows(){
- let inputsFilled=false;
- STANDALONE_OBJECTS.forEach(o=>{
-  const row=tep[o.key];if(!row)return;
-  const p=o.prefix,flag=p+'_enabled';
-  if(o.measure==='spaces'){
-   row.units=inputs[flag]?Number(inputs[p+'_spaces']||0):0;
-   row.gns=row.units*Number(inputs[p+'_area_per_space_sqm']||25);row.total_area=row.gns;
-   return;
-  }
-  const gbaId=p+'_gba_sqm',saleId=p+'_saleable_sqm';
-  if(!inputs[flag]){row.gns=0;row.total_area=0;row.saleable=0;row.useful=0;
-   if(o.sale_gate)row.transfer=0;return}
-  const sold=!o.sale_gate||String(inputs[o.sale_gate]||'transfer')==='sale';
-  const key=o.key;
-  const filled=tepFillByRatios(key,{gns:Number(inputs[gbaId]||0),total_area:0,
-   saleable:sold?Number(inputs[saleId]||0):0,useful:0});
-  row.gns=filled.gns;row.total_area=filled.total_area;
-  if(o.sale_gate){
-   row.saleable=sold?filled.saleable:0;row.useful=row.saleable;
-   row.transfer=sold?0:row.total_area;
-   applyObjectParkingShare(key);
-  }else{
-   row.saleable=filled.saleable;row.useful=filled.useful;
-   applyObjectParkingShare(key);
-   // Известна только продаваемая — ГНС считается и возвращается во вводные:
-   // себестоимость объекта берётся оттуда, и с нулём она была бы нулевой при
-   // живой выручке. Число видно в поле, а не подставлено втихую.
-   if(!Number(inputs[gbaId]||0)&&filled.gns>0){inputs[gbaId]=filled.gns;inputsFilled=true}
-  }
-  if(sold&&!Number(inputs[saleId]||0)&&filled.saleable>0){inputs[saleId]=filled.saleable;inputsFilled=true}
- });
- return inputsFilled;
-}
-
 function addMonthsJS(iso,months){
  const d=new Date(iso+'T12:00:00');
  const day=d.getDate();
@@ -53885,9 +53860,6 @@ async function calculate(){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
    phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
-   // Свод назад в строки не пишется, а места первых этажей строке объекта
-   // нужны: пересобираем её из вводных с остатком ГНС из свода.
-   syncStandaloneTepRows();
  }else{
    const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
