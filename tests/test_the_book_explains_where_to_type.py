@@ -110,6 +110,7 @@ def test_the_guide_carries_no_builder_statistics(book):
         assert phrase not in text, phrase
 
 
-def test_the_guide_is_second_and_the_report_is_third(book):
-    """Инструкция рядом с листом, о котором она, но не вместо работы."""
-    assert book.sheetnames[:3] == [ves.ENTRY_SHEET, ves.GUIDE_SHEET, "ОТЧЕТ"]
+def test_the_guide_stands_right_after_the_entry_sheet(book):
+    """Инструкция рядом с листом, о котором она; итоги — впереди обоих
+    (решение владельца 29.09.2026: книга открывается на Дашборде)."""
+    assert book.sheetnames[:4] == ["Дашборд", "ОТЧЕТ", ves.ENTRY_SHEET, ves.GUIDE_SHEET]

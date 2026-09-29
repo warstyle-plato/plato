@@ -330,7 +330,10 @@ def _workbook(xml: str, hidden: set[str], print_titles: dict[str, str]) -> str:
     for name in ordered:
         tag = by_name[name]
         if name in hidden and 'state="' not in tag:
-            tag = tag.replace("<x:sheet ", '<x:sheet state="hidden" ', 1)
+            # Атрибут — в конец тега, как у скрытого Dashboard_Data: читатели
+            # книги ищут `<x:sheet name=` подряд, и лист с state впереди имени
+            # для них исчезал вместе со своими формулами.
+            tag = re.sub(r"\s*/>$", ' state="hidden" />', tag)
         out.append(tag)
     xml = xml[:sheets.start(1)] + "".join(out) + xml[sheets.end(1):]
     first = ordered.index(FIRST_SHEET) if FIRST_SHEET in ordered else 0

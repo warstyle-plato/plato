@@ -21359,14 +21359,24 @@ def _v4_extra_object_block(xml: str, lay: _V4ObjectLayout, missing: list[str]) -
     # двойника, и объединения строки копия не несла — ревизия 29.09.2026
     # видела его на экране. Подпись ставится во все ячейки, строка
     # объединяется, как заголовки блоков шаблона.
-    columns = re.findall(r'<x:c r="([A-Z]+)%d"' % head, xml)
-    for _column in columns:
-        xml, done = _v4_set_cell(xml, f"{_column}{head}", text=name.upper())
-        if not done and _column == "A":
-            missing.append(f"{name}: заголовок блока объекта")
-    if columns:
-        xml = _v4_add_merge(xml, f"A{head}:{columns[-1]}{head}")
-    return xml
+    # Строка переписывается одним проходом: по ячейке через `_v4_set_cell`
+    # это 183 чтения всего листа ОБЪЕКТЫ на один заголовок.
+    found = re.search(rf'(<x:row r="{head}"[^>]*>)(.*?)(</x:row>)', xml, re.S)
+    columns = re.findall(r'<x:c r="([A-Z]+)%d"' % head, found.group(2)) if found else []
+    if "A" not in columns:
+        missing.append(f"{name}: заголовок блока объекта")
+        return xml
+    text = xml_escape(name.upper())
+
+    def titled(cell: "re.Match[str]") -> str:
+        attrs = re.sub(r'\st="[^"]*"', "", cell.group(2))
+        return (f'<x:c r="{cell.group(1)}{head}"{attrs} t="inlineStr">'
+                f"<x:is><x:t>{text}</x:t></x:is></x:c>")
+
+    body = re.sub(rf'<x:c r="([A-Z]+){head}"([^>]*?)(?:/>|>.*?</x:c>)', titled,
+                  found.group(2), flags=re.S)
+    xml = xml[:found.start()] + found.group(1) + body + found.group(3) + xml[found.end():]
+    return _v4_add_merge(xml, f"A{head}:{columns[-1]}{head}")
 
 
 def _v4_add_merge(xml: str, ref: str) -> str:
@@ -21817,7 +21827,7 @@ def _v4_storage_present(tep: dict[str, dict[str, Any]]) -> bool:
 
 def _v4_absent_products(inputs: dict[str, Any], tep: dict[str, dict[str, Any]]) -> frozenset[str]:
     """Продукты шаблона, которых нет в проекте, — их строки Дашборд не показывает."""
-    absent = {key for key in ("offices", "standalone_retail", "above_parking")
+    absent = {key for key in _V4_TEMPLATE_OBJECT_LAYOUT
               if not _v4_family_present(inputs, key)}
     if not _v4_storage_present(tep):
         absent.add("storage")

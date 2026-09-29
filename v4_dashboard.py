@@ -157,12 +157,6 @@ DATA_ITEMS: tuple[tuple[str, str, str, str], ...] = (
     ("issue_fees_mln", "Комиссии выдачи (БРИДЖ и резервирование ПФ)", "млн ₽", _cf_sum("B57")),
     ("gns_above_sqm", "ГНС наземная (база удельных)", "м²", _GNS_ABOVE),
     ("saleable_sqm", "Продаваемая площадь (база удельных)", "м²", _SALEABLE),
-    # Решение владельца 29.09.2026: база «на м²» следует показателю. Расходы
-    # целиком — на GBA вместе с подземной (строительный объём), СМР наземной —
-    # на наземную ГНС, СМР подземной — на подземную площадь очередей.
-    ("gba_total_sqm", "GBA с подземной частью — строительный объём (база удельных)", "м²",
-     "'ТЭП'!C36"),
-    ("under_queues_sqm", "Подземная площадь очередей (база СМР подземной)", "м²", "'ОТЧЕТ'!G48"),
 )
 DATA_ROWS: dict[str, int] = {item[0]: index + 2 for index, item in enumerate(DATA_ITEMS)}
 DATA_LAST_ROW = 1 + len(DATA_ITEMS)
@@ -312,12 +306,6 @@ STRUCTURE_TOTAL_ROW = STRUCTURE_FIRST_ROW + len(STRUCTURE_ITEMS)
 # Себестоимость строительства — статьи CAPEX, как их печатает отчёт движка
 # (`construction_costs`): подпись и ключи статей книги. Строки статей на листе
 # CAPEX первой очереди и шаг блока очереди передаёт сборщик книги.
-# База удельного показателя статьи себестоимости; статья вне списка — на GBA
-# с подземной частью. Подпись статьи называет свою базу, если она не общая.
-COST_BASES: dict[str, tuple[str, str]] = {
-    "main_above": ("gns_above_sqm", " · на м² наземной ГНС"),
-    "main_under": ("under_queues_sqm", " · на м² подземной"),
-}
 COST_ITEMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("ИРД", ("ird",)),
     ("Проектирование (П, РД) и авторский надзор", ("design_p", "design_rd", "author_supervision")),
@@ -571,11 +559,11 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
         formula = data_cell(key, "C") if sign > 0 else f"-{data_cell(key, 'C')}"
         rows.append(_row(r, [(f"A{r}", _cell(f"A{r}", text=label)), (f"B{r}", _cell(f"B{r}", formula=formula))]))
 
-    # Структура расходов проекта: статья, млн ₽, доля, на м² GBA с подземной, на м² прод.
+    # Структура расходов проекта: статья, млн ₽, доля, на м² ГНС, на м² прод.
     articles = {key: _capex_article(key, capex_rows, capex_stride) for key in capex_rows}
     header_row(STRUCTURE_HEADER_ROW, (
         ("A", "структура расходов"), ("B", "млн ₽"), ("C", "доля"),
-        ("D", "на м² GBA с подземной, тыс ₽"), ("E", "на м² прод., тыс ₽")))
+        ("D", "на м² ГНС, тыс ₽"), ("E", "на м² прод., тыс ₽")))
     first, last, t = STRUCTURE_FIRST_ROW, STRUCTURE_TOTAL_ROW - 1, STRUCTURE_TOTAL_ROW
     for index, (label, formula) in enumerate(STRUCTURE_ITEMS):
         r = STRUCTURE_FIRST_ROW + index
@@ -583,7 +571,7 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
             (f"A{r}", _cell(f"A{r}", text=label)),
             (f"B{r}", _cell(f"B{r}", formula=formula.format(**articles))),
             (f"C{r}", _cell(f"C{r}", formula=f"IFERROR(B{r}/$B${t},0)")),
-            (f"D{r}", _cell(f"D{r}", formula=f"IFERROR(B{r}*1000/{data_cell('gba_total_sqm')},0)")),
+            (f"D{r}", _cell(f"D{r}", formula=f"IFERROR(B{r}*1000/{data_cell('gns_above_sqm')},0)")),
             (f"E{r}", _cell(f"E{r}", formula=f"IFERROR(B{r}*1000/{data_cell('saleable_sqm')},0)")),
         ]))
     rows.append(_row(t, [
@@ -594,24 +582,23 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
         (f"E{t}", _cell(f"E{t}", formula=f"SUM(E{first}:E{last})")),
     ]))
 
-    # Себестоимость строительства: статья, млн ₽, на м² своей базы (COST_BASES), на м² прод.
+    # Себестоимость строительства: статья, млн ₽, на м² ГНС, на м² прод.
     header_row(COST_HEADER_ROW, (
         ("A", "себестоимость строительства"), ("B", "млн ₽"),
-        ("C", "на м² GBA с подземной, тыс ₽"), ("D", "на м² прод., тыс ₽")))
+        ("C", "на м² ГНС, тыс ₽"), ("D", "на м² прод., тыс ₽")))
     first, last, t = COST_FIRST_ROW, COST_TOTAL_ROW - 1, COST_TOTAL_ROW
     for index, (label, keys) in enumerate(COST_ITEMS):
         r = COST_FIRST_ROW + index
-        base, suffix = COST_BASES.get(keys[0], ("gba_total_sqm", ""))
         rows.append(_row(r, [
-            (f"A{r}", _cell(f"A{r}", text=label + suffix)),
+            (f"A{r}", _cell(f"A{r}", text=label)),
             (f"B{r}", _cell(f"B{r}", formula="+".join(articles[k] for k in keys))),
-            (f"C{r}", _cell(f"C{r}", formula=f"IFERROR(B{r}*1000/{data_cell(base)},0)")),
+            (f"C{r}", _cell(f"C{r}", formula=f"IFERROR(B{r}*1000/{data_cell('gns_above_sqm')},0)")),
             (f"D{r}", _cell(f"D{r}", formula=f"IFERROR(B{r}*1000/{data_cell('saleable_sqm')},0)")),
         ]))
     rows.append(_row(t, [
         (f"A{t}", _cell(f"A{t}", text="Итого")),
         (f"B{t}", _cell(f"B{t}", formula=f"SUM(B{first}:B{last})")),
-        (f"C{t}", _cell(f"C{t}", formula=f"IFERROR(B{t}*1000/{data_cell('gba_total_sqm')},0)")),
+        (f"C{t}", _cell(f"C{t}", formula=f"SUM(C{first}:C{last})")),
         (f"D{t}", _cell(f"D{t}", formula=f"SUM(D{first}:D{last})")),
     ]))
 
@@ -941,7 +928,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
 
     # Себестоимость строительства по статьям.
     sh.section_row("СЕБЕСТОИМОСТЬ СТРОИТЕЛЬСТВА")
-    sh.header(_G_TABLE_4, ["Статья", "млн ₽", "тыс ₽/м² GBA с подземной", "тыс ₽/м² прод."])
+    sh.header(_G_TABLE_4, ["Статья", "млн ₽", "тыс ₽/м² ГНС", "тыс ₽/м² прод."])
     for index in range(len(COST_ITEMS)):
         src = COST_FIRST_ROW + index
         sh.line(_G_TABLE_4, [(None, _src("A", src), sh.td),
