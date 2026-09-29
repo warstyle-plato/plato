@@ -55908,10 +55908,18 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  const mytishchiPreset=inputs._preset_expert_overrides&&inputs._preset_expert_overrides.preset_id==='mytishchi';
  if(phasing.user_enabled!==true&&!mytishchiPreset)phasing=makeDefaultPhasing(1);
  // v0.7.1 migration: v0.7.0 temporarily misclassified the old 5% management rate as technical supervision.
- if(inputs._cost_structure_version!=='0.7.1'){
-   if(inputs.project_management_pct==null)inputs.project_management_pct=Number(inputs.technical_supervision_pct??5);
-   // Source model had no separate technical-supervision input: reset migrated value to 0.
-   inputs.technical_supervision_pct=0;
+ // Примета состояния v0.7.0 — нет поля управления проектом: там 5 % стояли
+ // под технадзором. Нет версии у ЛЮБОГО проекта, сохранённого без неё, — и
+ // миграция молча ставила технадзор 0 новому проекту при первой же
+ // перезагрузке: CAPEX −1 млрд, LLCR «сам» рос (аудит регрессов, 29.09.2026).
+ // Решает сохранённое, а не наложенное на умолчания.
+ const savedInputs=x.inputs||{};
+ if(savedInputs._cost_structure_version!=='0.7.1'){
+   if(savedInputs.project_management_pct==null){
+    inputs.project_management_pct=Number(savedInputs.technical_supervision_pct??5);
+    // Source model had no separate technical-supervision input: reset migrated value to 0.
+    inputs.technical_supervision_pct=0;
+   }
    inputs._cost_structure_version='0.7.1';
  }
  if(inputs.author_supervision_pct==null)inputs.author_supervision_pct=0;
