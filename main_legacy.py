@@ -21713,6 +21713,88 @@ def _v4_report_unit_tables_style(xml: str) -> str:
     return xml
 
 
+_V4_FINAL_DEBT_ROW = 23
+_V4_FINAL_DEBT_LABEL = "Финальный долг"
+_V4_DEBT_DEFAULT_STATUS = "ДЕФОЛТ ПО ДОЛГУ"
+
+
+def _v4_name_debt_default_status(xml: str, missing: list[str]) -> str:
+    """Вердикт ПРОВЕРОК отличает дефолт по долгу от сбоя расчёта.
+
+    Решение владельца 29.09.2026: непогашенный к концу долг — это ответ модели
+    о проекте, а не поломка модели. Прежде единственный FAIL «Финальный долг»
+    давал «СБОЙ», и все три проверенных проекта читались сломанными. Теперь:
+    FAIL в любой другой строке — «СБОЙ»; FAIL только в строке финального долга
+    — «ДЕФОЛТ ПО ДОЛГУ». Строка берётся по подписи, а не по номеру наугад.
+    """
+    label = _v4_cell_text(xml, f"A{_V4_FINAL_DEBT_ROW}")
+    if label != _V4_FINAL_DEBT_LABEL:
+        missing.append(f"ПРОВЕРКИ · строка {_V4_FINAL_DEBT_ROW} не «{_V4_FINAL_DEBT_LABEL}», "
+                       f"а {label!r}: статус дефолта не назван")
+        return xml
+    current = _v4_cell_formula(xml, "B3") or ""
+    found = re.search(r"COUNTIF\(F6:F(\d+),", current)
+    if not found:
+        missing.append("ПРОВЕРКИ · вердикт B3 не распознан: статус дефолта не назван")
+        return xml
+    last = found.group(1)
+    debt = f"F{_V4_FINAL_DEBT_ROW}"
+    formula = (f'IF(COUNTIF(F6:F{last},"FAIL")-COUNTIF({debt},"FAIL")>0,"СБОЙ",'
+               f'IF(COUNTIF({debt},"FAIL")>0,"{_V4_DEBT_DEFAULT_STATUS}",'
+               f'IF(COUNTIF(F6:F{last},"WARN")>0,"ПРОЙДЕНО С ПРЕДУПРЕЖДЕНИЯМИ","ПРОЙДЕНО")))')
+    xml, done = _v4_set_cell(xml, "B3", formula=formula)
+    if not done:
+        missing.append("ПРОВЕРКИ · вердикт B3 не записан")
+        return xml
+    # Подсветка вердикта: дефолт красится как сбой — оба красные, но названы по-разному.
+    rule = re.search(r'<x:cfRule type="expression" dxfId="(\d+)" priority="\d+">'
+                     r'<x:formula>\$B\$3="СБОЙ"</x:formula></x:cfRule>', xml)
+    if rule:
+        priorities = [int(p) for p in re.findall(r'priority="(\d+)"', xml)]
+        added = (f'<x:cfRule type="expression" dxfId="{rule.group(1)}" '
+                 f'priority="{max(priorities) + 1}"><x:formula>$B$3="{_V4_DEBT_DEFAULT_STATUS}"'
+                 f'</x:formula></x:cfRule>')
+        xml = xml[:rule.end()] + added + xml[rule.end():]
+    return xml
+
+
+# Подписи удельных показателей ОТЧЕТА — по их фактическому делителю (решение
+# владельца 29.09.2026: база следует показателю и называется в подписи).
+# (ячейка, прежняя подпись шаблона, новая подпись). Прежняя сверяется: если
+# шаблон поменялся, подпись не переписывается вслепую.
+_V4_REPORT_AREA_LABELS = (
+    ("A58", "Общая площадь (GBA)", "GBA продуктов: наземная + подземная очередей"),
+    ("H58", "Жилые очереди и отдельно стоящие объекты",
+     "Жилые очереди с подземной частью и наземная GBA отдельных объектов; "
+     "без соцобъектов и гаражей объектов"),
+    ("A62", "CAPEX на м² GBA", "CAPEX на м² GBA продуктов"),
+    ("H62", "CAPEX очереди / общая площадь", "CAPEX очереди / «GBA продуктов» (строка 58)"),
+    ("F9", "CAPEX на м² GBA", "CAPEX на м² GBA продуктов"),
+    ("C75", "на м² GBA, тыс. ₽", "на м² GBA с подземной и соцобъектами, тыс. ₽"),
+)
+
+
+def _v4_report_area_labels(xml: str, missing: list[str]) -> str:
+    """ОТЧЕТ делил «на м² GBA» на две разные площади под одной подписью.
+
+    `F62`/`G9` — на GBA продуктов (строка 58), `C76:C83` — на строительный
+    объём ТЭП!C36 (с соцобъектами и гаражами объектов): рядом стояли две
+    «CAPEX на м² GBA» — 190 и 185 на дефолтном проекте. Делители не меняются,
+    меняются подписи: каждая называет то, на что делит.
+    """
+    for coord, old, new in _V4_REPORT_AREA_LABELS:
+        current = _v4_cell_text(xml, coord)
+        if current == new:
+            continue
+        if current != old:
+            missing.append(f"ОТЧЕТ · подпись {coord}: ждали «{old}», в шаблоне {current!r}")
+            continue
+        xml, done = _v4_set_or_insert_cell(xml, coord, text=new)
+        if not done:
+            missing.append(f"ОТЧЕТ · подпись {coord} не записана")
+    return xml
+
+
 def _v4_object_checks(xml: str, missing: list[str]) -> str:
     """Учит лист ПРОВЕРКИ знать о дописанных объектах.
 
@@ -25694,6 +25776,7 @@ def _build_project_workbook(
     report_xml = _v4_report_net_profit_from_its_own_rows(report_xml, missing)
     report_xml = _v4_product_structure_block(report_xml, missing)
     report_xml = _v4_report_unit_tables_style(report_xml)
+    report_xml = _v4_report_area_labels(report_xml, missing)
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = _v4_extra_tep_rows(
         source.read(tep_sheet_path).decode("utf-8"), missing)
@@ -25918,6 +26001,7 @@ def _build_project_workbook(
         checks_xml = _v4_add_pf_uncovered_parity_row(
             checks_xml, float(_parity.get("pf_shortfall_mln") or 0.0), missing)
     checks_xml = _v4_teach_funding_check_about_the_limit(checks_xml, missing)
+    checks_xml = _v4_name_debt_default_status(checks_xml, missing)
 
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)

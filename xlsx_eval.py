@@ -286,7 +286,7 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "SUMIF": _sumif,
     "INDEX": _index,
     "MATCH": _match,
-    "TEXT": lambda args: _text(args[0]),
+    "TEXT": lambda args: _text_format(args),
     # Строковые: подпись очередей соцобъекта собирается формулой, чтобы не
     # устаревать после правки мест прямо в книге.
     "LEN": lambda args: float(len(_text(args[0]))),
@@ -544,6 +544,28 @@ def _split(address: str) -> tuple[int, int]:
     if not match:
         raise FormulaError(f"не адрес: {address}")
     return column_index_from_string(match.group(1)), int(match.group(2))
+
+
+_TEXT_FIXED = re.compile(r"^0(?:\.(0+))?$")
+
+
+def _text_format(args: list[Any]) -> str:
+    """TEXT(значение; формат) — ровно те форматы, что пишет книга.
+
+    Прежде формат отбрасывался, и в сохранённых значениях авто-рисков
+    Дашборда стояло «ДА · 16043.71748868101», хотя Excel покажет «16043,7».
+    Разделитель — запятая: книгу открывают в русском Excel. Незнакомый формат
+    — пробел вычислителя, а не повод угадать.
+    """
+    if len(args) < 2:
+        return _text(args[0])
+    code = _text(args[1])
+    match = _TEXT_FIXED.match(code)
+    if not match:
+        raise FormulaError(f"TEXT: формат {code!r} вычислителю неизвестен")
+    digits = len(match.group(1) or "")
+    value = _excel_round(_as_number(args[0]), digits)
+    return f"{value:.{digits}f}".replace(".", ",")
 
 
 def _text(value: Any) -> str:
