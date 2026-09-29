@@ -82,7 +82,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.85"
+VERSION = "0.24.86"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -11770,10 +11770,27 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
     # тем самым отменяла свежий ТЭП. Поэтому рядом с базой держим последнее
     # значение, которое поставили МЫ. Если текущее значение уже отличается от
     # него, это внешнее изменение — оно становится новой базой.
-    for tep_key, _prefix, _enabled_key, _sellable in OBJECT_PARKING_OBJECTS:
+    for tep_key, prefix, _enabled_key, _sellable in OBJECT_PARKING_OBJECTS:
         row = (tep or {}).get(tep_key) or None
         if row is None:
             continue
+        # Продаваемая объекта ДО мест первых этажей — вводная, а не присланная
+        # строка: страница кладёт в свою строку ответ прошлого расчёта, уже
+        # уменьшенный на места, и следующий расчёт вычитал их второй раз —
+        # строка ТЭП 50 709 м² при выручке от 66 613 (владелец, 29.09.2026).
+        # Строка приводится к вводной одной долей: пропорции общей, полезной и
+        # продаваемой у неё свои, и место мест в них не меняет.
+        # Строка с другой ГНС — это другой ТЭП (свежий пересчёт, доля очереди),
+        # и вводная о ней не говорит: тогда база — сама строка.
+        anchor = max(0.0, n(inputs, f"{prefix}_saleable_sqm"))
+        sent = n(row, "saleable")
+        same_object = math.isclose(n(row, "gns"), n(inputs, f"{prefix}_gba_sqm"),
+                                   rel_tol=1e-9, abs_tol=0.05)
+        if (same_object and anchor > 0 and sent > 0
+                and not math.isclose(anchor, sent, rel_tol=1e-9, abs_tol=1e-6)):
+            scale = anchor / sent
+            for field in ("total_area", "useful", "saleable"):
+                row[field] = n(row, field) * scale
         for field in ("total_area", "useful", "saleable"):
             base_key = f"_object_parking_base_{field}"
             applied_key = f"_object_parking_applied_{field}"
@@ -45023,6 +45040,21 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .teptable .tep-note.bad{color:#a33;margin-top:2px}
 .teptable .tep-head-note{font-size:10px;color:#999;font-weight:400;text-transform:none;letter-spacing:0}
 .teptable tfoot th{background:#f2f0ea}
+/* Колонка подписей закреплена: таблица шире телефона и прокручивается сама,
+   и без закрепа на 390 px стояли одни числа без названий (владелец,
+   29.09.2026). Подпись раздела — тоже: её ячейка на всю ширину, закрепляется
+   текст внутри. Доля под числом — узкое поле: общее правило ширины полей
+   ТЭП (94 px) к нему не относится, иначе «100» обрезалось до «00». */
+.teptable tbody td:first-child,.teptable thead th:first-child,.teptable tfoot th:first-child{position:sticky;left:0;z-index:1;background:#fff;box-shadow:1px 0 0 #e5e5e5}
+.teptable thead th:first-child{z-index:3;background:#fafafa}
+.teptable tfoot th:first-child{background:#f2f0ea}
+.teptable tr.tep-sub td:first-child{background:#fafaf8}
+.teptable tr.tep-group .tep-sticky{position:sticky;left:10px;display:inline-block}
+.teptable input.tep-ratio{min-width:0;width:58px;padding:4px 5px}
+@media(max-width:640px){
+ .teptable tbody td:first-child,.teptable thead th:first-child,.teptable tfoot th:first-child{min-width:112px;max-width:128px;white-space:normal;overflow-wrap:anywhere}
+ .teptable tr.tep-park .tep-park-note{position:sticky;left:136px;display:inline-block;max-width:calc(100vw - 240px);white-space:normal}
+}
 .note{padding:13px 15px;background:#f6f6f4;border-left:3px solid #111;font-size:12px;line-height:1.55;color:#555;margin-top:14px}
 .warning{border-left-color:#9a6700;background:#fff8e6;color:#704800}
 .finance-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
@@ -51539,6 +51571,30 @@ function projectParking(){
  return ((lastResult||{}).parking)||{};
 }
 
+// Места первых этажей занимают часть ГНС объекта, и общая, полезная и
+// продаваемая считаются от остатка (`apply_object_parking`). Сколько ГНС ушло
+// под места — число движка; строка ТЭП на странице умножается на остаток, а
+// во вводные уходит обратно делением: поле объекта — площадь ДО мест. Без
+// этого таблица при очередях показывала продаваемую из вводных, как будто
+// паркинга на первых этажах нет (владелец, 29.09.2026).
+function objectParkingOverGba(key){
+ const own=(projectParking().own)||[];
+ const item=own.find(o=>o&&o.tep_key===key&&o.enabled);
+ return item?Math.max(0,Number(item.over_gba_sqm||0)):0;
+}
+function objectParkingShare(key,gns){
+ if(!STANDALONE_OBJECTS.some(o=>o.key===key&&o.garage))return 1;
+ const g=Number(gns||0);
+ return g>0?Math.max(0,g-objectParkingOverGba(key))/g:1;
+}
+function applyObjectParkingShare(key){
+ const row=tep[key];if(!row)return;
+ const share=objectParkingShare(key,row.gns);
+ if(share===1)return;
+ const round=v=>Math.round(Number(v||0)*share*10)/10;
+ row.total_area=round(row.total_area);row.useful=round(row.useful);row.saleable=round(row.saleable);
+}
+
 function objectParkingNote(key){
  const own=(projectParking().own)||[];
  const item=own.find(o=>o&&o.tep_key===key&&o.enabled);
@@ -51549,6 +51605,9 @@ function objectParkingNote(key){
    :'не продаются — обеспеченность посетителей';
  return `Паркинг объекта: ${num(item.units)} м/м (${where}), `
   +`${num(item.under_gns)} м² подземной части, ${sold}`
+  +(Number(item.over_gba_sqm||0)>0
+    ?`; места первых этажей занимают ${num(item.over_gba_sqm)} м² ГНС здания — продаваемая объекта меньше на ${num(item.saleable_taken_sqm)} м²`
+    :'')
   +` · ${item.by_norm?'по нормативу приложения 6':'задано руками'}`;
 }
 
@@ -51751,7 +51810,7 @@ function renderTep(){
   if(groups.length>1){
    const head=document.createElement('tr');
    head.className='tep-group';
-   head.innerHTML=`<th colspan="7">${escapeHtml(group.title)}</th>`;
+   head.innerHTML=`<th colspan="7"><span class="tep-sticky">${escapeHtml(group.title)}</span></th>`;
    body.appendChild(head);
   }
   group.keys.forEach(key=>{
@@ -51874,7 +51933,7 @@ function renderTep(){
     // (владелец, 23.08.2026).
     return '<div style="margin-top:4px;font-size:11px;color:'+(own?'#a33':'#777')
      +';white-space:nowrap;display:flex;align-items:center;gap:4px">'
-     +'<input type="number" step="0.1" min="0" max="100" value="'+value+'" style="width:52px;font-size:11px;margin:0" '
+     +'<input type="number" step="0.1" min="0" max="100" class="tep-ratio" value="'+value+'" style="font-size:11px;margin:0" '
      +'title="доля, по которой достраивается это число" '
      +'onchange="tepRatioSet(\''+key+'\',\''+which+'\',this.value)"><span>'+of+'</span>'
      +(own&&which==='saleable'?'<button type="button" class="tep-refill" onclick="tepRatioReset(\''+key+'\')">наши</button>':'')
@@ -51900,7 +51959,7 @@ function renderTep(){
     const park=document.createElement('tr');
     park.className='tep-park';
     park.innerHTML=`<td style="padding-left:14px;color:#555">↳ Паркинг объекта</td>`
-     +`<td colspan="6" style="font-size:11px;color:#555;text-align:left">${escapeHtml(parkNote)}</td>`;
+     +`<td colspan="6" style="font-size:11px;color:#555;text-align:left"><span class="tep-park-note">${escapeHtml(parkNote)}</span></td>`;
     body.appendChild(park);
    }
   });
@@ -52081,7 +52140,7 @@ function tepRowComplaint(key,row){
   // Доли объявлены от ГНС: продаваемая сравнивается с ней же, иначе сравнение
   // поедет вслед за общей площадью, которая тоже может быть введена неверно.
   const r=tepRatio(key);
-  const expected=gns*r.saleable_of_gns;
+  const expected=gns*r.saleable_of_gns*objectParkingShare(key,gns);
   if(expected>0&&Math.abs(sale-expected)/expected>0.25)
    return 'продаваемая расходится с пропорцией больше чем на четверть ('+
     landNum(sale/gns*100,0)+'% ГНС против '+landNum(r.saleable_of_gns*100,0)+'%) — проверьте или пересчитайте';
@@ -52138,6 +52197,8 @@ function refillTepRow(key){
  // без этого правка доли и кнопка «наши» возвращали отданные метры в продажу
  // (замер 12.09.2026: 4 500 м² квартир снова становились продаваемыми).
  tepApplyTransfer(key,filled.saleable);
+ // Строка объекта — площади ПОСЛЕ мест первых этажей, как у движка.
+ applyObjectParkingShare(key);
  // Жилая СПП двинулась — за ней идёт встроенная коммерция, как и при правке
  // ячейки: правило одно, а закрытое в одном месте соседнее не защищает.
  if(key==='apartments'&&Math.abs(Number(row.gns||0)-gns)>0.05){
@@ -52188,7 +52249,13 @@ function tepRowToInputs(key){
  const map=TEP_ROW_INPUTS[key];
  if(!map)return false;
  inputs[map.gns]=Number(tep[key].gns||0);
- inputs[map.saleable]=Number(tep[key].saleable||0);
+ // В строке — продаваемая ПОСЛЕ мест первых этажей, в поле — до них.
+ const share=objectParkingShare(key,tep[key].gns);
+ // Места съели всю ГНС — из нуля продаваемую до мест не вернуть: поле
+ // остаётся, каким было, а перерасход называет предупреждение движка.
+ if(share>0)inputs[map.saleable]=share<1
+  ?Math.round(Number(tep[key].saleable||0)/share*10)/10
+  :Number(tep[key].saleable||0);
  const sw=TEP_ROW_SWITCH[key];
  if(sw&&!inputs[sw[0]]&&Number(tep[key].gns||0)>0){
   // Выключенный объект обнулит строку на первом же пересчёте. Числа сохранены,
@@ -52347,9 +52414,18 @@ function tepCellChanged(key,col,value){
   const transfer=Math.max(0,Number(tep[key].transfer||0));
   const base={gns:0,total_area:0,saleable:0,useful:0};
   base[col]=col==='saleable'?Number(value||0)+transfer:Number(value||0);
+  // Вписанная общая/продаваемая объекта с местами на первых этажах — это
+  // площадь ПОСЛЕ мест: ГНС = вписанное ÷ доля + ГНС под местами.
+  const over=STANDALONE_OBJECTS.some(o=>o.key===key&&o.garage)?objectParkingOverGba(key):0;
+  if(over>0&&col!=='gns'){
+   const r=tepRatio(key);
+   const part=col==='total_area'?r.total_of_gns:r.saleable_of_gns;
+   if(part>0){base.gns=base[col]/part+over;base.total_area=0;base.saleable=0}
+  }
   const filled=tepFillByRatios(key,base);
   ['gns','total_area'].forEach(field=>{tep[key][field]=filled[field]});
   tepApplyTransfer(key,filled.saleable);
+  if(over>0)applyObjectParkingShare(key);
   tepRowToInputs(key);
   if(key==='apartments'){rescaleApartmentUnits();rescaleBuiltInCommercial()}
   renderInputs();
@@ -53452,34 +53528,7 @@ function syncTep(rerender=true){
  // городу, — а продаётся только по признаку. Переданные метры уходят в
  // «передаётся»: они строятся, но не продаются, как у соцобъекта. Половиной
  // объект не делится: «всё или так, или так» (владелец, 05.09.2026).
- STANDALONE_OBJECTS.forEach(o=>{
-  const row=tep[o.key];if(!row)return;
-  const p=o.prefix,flag=p+'_enabled';
-  if(o.measure==='spaces'){
-   row.units=inputs[flag]?Number(inputs[p+'_spaces']||0):0;
-   row.gns=row.units*Number(inputs[p+'_area_per_space_sqm']||25);row.total_area=row.gns;
-   return;
-  }
-  const gbaId=p+'_gba_sqm',saleId=p+'_saleable_sqm';
-  if(!inputs[flag]){row.gns=0;row.total_area=0;row.saleable=0;row.useful=0;
-   if(o.sale_gate)row.transfer=0;return}
-  const sold=!o.sale_gate||String(inputs[o.sale_gate]||'transfer')==='sale';
-  const key=o.key;
-  const filled=tepFillByRatios(key,{gns:Number(inputs[gbaId]||0),total_area:0,
-   saleable:sold?Number(inputs[saleId]||0):0,useful:0});
-  row.gns=filled.gns;row.total_area=filled.total_area;
-  if(o.sale_gate){
-   row.saleable=sold?filled.saleable:0;row.useful=row.saleable;
-   row.transfer=sold?0:row.total_area;
-  }else{
-   row.saleable=filled.saleable;row.useful=filled.useful;
-   // Известна только продаваемая — ГНС считается и возвращается во вводные:
-   // себестоимость объекта берётся оттуда, и с нулём она была бы нулевой при
-   // живой выручке. Число видно в поле, а не подставлено втихую.
-   if(!Number(inputs[gbaId]||0)&&filled.gns>0){inputs[gbaId]=filled.gns;inputsFilled=true}
-  }
-  if(sold&&!Number(inputs[saleId]||0)&&filled.saleable>0){inputs[saleId]=filled.saleable;inputsFilled=true}
- });
+ if(syncStandaloneTepRows())inputsFilled=true;
  // Соцобъект: места, площадь и ГНС. Прежде строка получала только общую
  // площадь и места, а `gns` не трогалась вовсе — поля «ГНС ДОУ» во вводных нет.
  // Импорт ГлавАПУ при этом писал в неё СПП из выгрузки, и один и тот же садик
@@ -53553,6 +53602,48 @@ function syncTep(rerender=true){
  if(rerender||!editingTep)renderTep();else updateTepTotals();
  return inputsFilled;
 }
+
+// Строки отдельно стоящих объектов из их вводных. Отдельной функцией — её
+// зовёт и расчёт очередей: свод назад в строки не пишется, а остаток ГНС
+// после мест первых этажей строке объекта нужен. Весь `syncTep` там звать
+// нельзя: он дописывает вводные (норма паркинга, соцнормативы) мимо полей
+// формы, и следующий расчёт возвращал бы прежнее — страница и PDF считали
+// бы по разным вводным.
+function syncStandaloneTepRows(){
+ let inputsFilled=false;
+ STANDALONE_OBJECTS.forEach(o=>{
+  const row=tep[o.key];if(!row)return;
+  const p=o.prefix,flag=p+'_enabled';
+  if(o.measure==='spaces'){
+   row.units=inputs[flag]?Number(inputs[p+'_spaces']||0):0;
+   row.gns=row.units*Number(inputs[p+'_area_per_space_sqm']||25);row.total_area=row.gns;
+   return;
+  }
+  const gbaId=p+'_gba_sqm',saleId=p+'_saleable_sqm';
+  if(!inputs[flag]){row.gns=0;row.total_area=0;row.saleable=0;row.useful=0;
+   if(o.sale_gate)row.transfer=0;return}
+  const sold=!o.sale_gate||String(inputs[o.sale_gate]||'transfer')==='sale';
+  const key=o.key;
+  const filled=tepFillByRatios(key,{gns:Number(inputs[gbaId]||0),total_area:0,
+   saleable:sold?Number(inputs[saleId]||0):0,useful:0});
+  row.gns=filled.gns;row.total_area=filled.total_area;
+  if(o.sale_gate){
+   row.saleable=sold?filled.saleable:0;row.useful=row.saleable;
+   row.transfer=sold?0:row.total_area;
+   applyObjectParkingShare(key);
+  }else{
+   row.saleable=filled.saleable;row.useful=filled.useful;
+   applyObjectParkingShare(key);
+   // Известна только продаваемая — ГНС считается и возвращается во вводные:
+   // себестоимость объекта берётся оттуда, и с нулём она была бы нулевой при
+   // живой выручке. Число видно в поле, а не подставлено втихую.
+   if(!Number(inputs[gbaId]||0)&&filled.gns>0){inputs[gbaId]=filled.gns;inputsFilled=true}
+  }
+  if(sold&&!Number(inputs[saleId]||0)&&filled.saleable>0){inputs[saleId]=filled.saleable;inputsFilled=true}
+ });
+ return inputsFilled;
+}
+
 function addMonthsJS(iso,months){
  const d=new Date(iso+'T12:00:00');
  const day=d.getDate();
@@ -53794,6 +53885,9 @@ async function calculate(){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
    phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
+   // Свод назад в строки не пишется, а места первых этажей строке объекта
+   // нужны: пересобираем её из вводных с остатком ГНС из свода.
+   syncStandaloneTepRows();
  }else{
    const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
@@ -55902,10 +55996,18 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  const mytishchiPreset=inputs._preset_expert_overrides&&inputs._preset_expert_overrides.preset_id==='mytishchi';
  if(phasing.user_enabled!==true&&!mytishchiPreset)phasing=makeDefaultPhasing(1);
  // v0.7.1 migration: v0.7.0 temporarily misclassified the old 5% management rate as technical supervision.
- if(inputs._cost_structure_version!=='0.7.1'){
-   if(inputs.project_management_pct==null)inputs.project_management_pct=Number(inputs.technical_supervision_pct??5);
-   // Source model had no separate technical-supervision input: reset migrated value to 0.
-   inputs.technical_supervision_pct=0;
+ // Примета состояния v0.7.0 — нет поля управления проектом: там 5 % стояли
+ // под технадзором. Нет версии у ЛЮБОГО проекта, сохранённого без неё, — и
+ // миграция молча ставила технадзор 0 новому проекту при первой же
+ // перезагрузке: CAPEX −1 млрд, LLCR «сам» рос (аудит регрессов, 29.09.2026).
+ // Решает сохранённое, а не наложенное на умолчания.
+ const savedInputs=x.inputs||{};
+ if(savedInputs._cost_structure_version!=='0.7.1'){
+   if(savedInputs.project_management_pct==null){
+    inputs.project_management_pct=Number(savedInputs.technical_supervision_pct??5);
+    // Source model had no separate technical-supervision input: reset migrated value to 0.
+    inputs.technical_supervision_pct=0;
+   }
    inputs._cost_structure_version='0.7.1';
  }
  if(inputs.author_supervision_pct==null)inputs.author_supervision_pct=0;
