@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from auction_search import krt_tenders
+from market_search import krt_requirements
 
 
 def krt_investment_card_page(slug: str, footer_html: str = "") -> str:
@@ -206,7 +207,8 @@ function renderEntry(p,rank){
   +(live&&live.url?'<div class="actionbar"><a class="primary" target="_blank" rel="noopener" href="'+esc(safeUrl(live.url))+'">Открыть лот торгов</a></div>':'')
   +(op.developers.length?'<div class="metric"><span>Названный застройщик</span><b>'+esc(op.developers.join(', '))+'</b></div>':'');
 }
-function deadlineText(req){return (req.deadlines||[]).slice(0,2).map(x=>x.quote||x.label||x.text||String(x)).filter(Boolean).join(' · ')}
+/*__DEVELOPAID_KRT_TERM__*/
+function deadlineText(req){return krtTermText(req)}
 function actionCounts(req){
  const a=Array.isArray(req.object_actions)?req.object_actions:[],count=k=>a.filter(x=>x&&x.category===k).length;
  return {demo:count('demolition'),conditional:count('demolition_or_reconstruction'),recon:count('reconstruction'),preserve:count('preservation'),res:Number(req.resettlement_mentions??(req.resettlement||[]).length)||0};
@@ -238,9 +240,16 @@ function renderProgramme(p,req){
  const dl=deadlineText(req);if(dl)left+='<div class="metric"><span>Срок</span><b>'+esc(dl)+'</b></div>';
  $('programme').innerHTML=left;
  const c=actionCounts(req);let right='';
+ // Счётчики берутся из перечня решения. Решение не прочитано — нули были бы
+ // выдумкой «ничего нет»: вместо них названа причина.
+ const read=req.source_level==='official_project_decision'||req.decision_available===true
+  ||(Array.isArray(req.object_actions)&&req.object_actions.length>0);
+ const why=read?'':('нет данных: '+(req.decision_available===false?'проект решения не найден на mos.ru':(req.error||req.reason||'решение не прочитано')));
+ const n=v=>read?String(v):'—';
  right+='<div class="metric"><span>Жильё реновации</span><b>'+(ren.area!==null?fmt(ren.area)+' м²':(ren.mentioned?'объём не назван':(p.early_unpublished?'не подтверждено источником':'не найдено в решении')))+'</b></div>';
  if(p.early_unpublished&&num(p.seizure_mln)!==null)right+='<div class="metric"><span>Изъятие · предварительно</span><b>'+fmt(p.seizure_mln,1)+' млн ₽</b></div>';
- right+='<div class="metric"><span>Снос</span><b>'+c.demo+'</b></div><div class="metric"><span>Снос / реконструкция</span><b>'+c.conditional+'</b></div><div class="metric"><span>Реконструкция</span><b>'+c.recon+'</b></div><div class="metric"><span>Сохранение</span><b>'+c.preserve+'</b></div><div class="metric"><span>Расселение / изъятие</span><b>'+c.res+'</b></div>';
+ right+='<div class="metric"><span>Снос</span><b>'+n(c.demo)+'</b></div><div class="metric"><span>Снос / реконструкция</span><b>'+n(c.conditional)+'</b></div><div class="metric"><span>Реконструкция</span><b>'+n(c.recon)+'</b></div><div class="metric"><span>Сохранение</span><b>'+n(c.preserve)+'</b></div><div class="metric"><span>Расселение / изъятие</span><b>'+n(c.res)+'</b></div>';
+ if(why)right+='<div class="source">'+esc(why)+'</div>';
  $('burden').innerHTML=right;
  const links=officialSourceLinks(p,req);
  if(p.early_unpublished){
@@ -442,4 +451,5 @@ async function boot(){
 boot().catch(e=>{document.querySelector('.shell').insertAdjacentHTML('afterbegin','<div class="notice bad"><b>Карточка не собрана:</b> '+esc(e.message||e)+'</div>')});
 </script>
 </body></html>""".replace("__SLUG__", slug_js).replace("__FOOTER__", footer_html).replace(
-        krt_tenders.LIVE_LOT_PLACEHOLDER, krt_tenders.LIVE_LOT_SCRIPT)
+        krt_tenders.LIVE_LOT_PLACEHOLDER, krt_tenders.LIVE_LOT_SCRIPT).replace(
+        krt_requirements.TERM_PLACEHOLDER, krt_requirements.TERM_SCRIPT)
