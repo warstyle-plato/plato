@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .ui import install as install_v4
+from .ui import PRICE_FIELD_JS, install as install_v4
 
 
 _OLD_HINT = (
@@ -356,20 +356,31 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
       explain.href='/cabinet/price-hint?'+query.toString();
     });
     btn.addEventListener('click',async function(){
+      // Ответ пишется в подпись, которая сейчас на странице: вводные могли
+      // перерисоваться, пока шёл запрос, и узел из замыкания уже снят. Если
+      // кнопку к новому полю ещё не вернули, она возвращается здесь же.
+      function say(text){if(!placed())init();(document.getElementById('daHintNote')||note).textContent=text}
       const where=locationHint();
-      if(!where){note.textContent='Укажите участок — кадастровый номер или адрес.';return}
-      btn.disabled=true; note.textContent='Считаю…';
+      if(!where){say('Укажите участок — кадастровый номер или адрес.');return}
+      btn.disabled=true; say('Считаю…');
       try{
         const response=await fetch('/market/price-hint',{method:'POST',
           headers:{'Content-Type':'application/json'},body:JSON.stringify(where)});
         const payload=await daReadJson(response);
         if(!response.ok||!payload||payload.available===false){
-          note.textContent=(payload&&(payload.reason||payload.detail))||'Ориентир не рассчитан.';
+          say((payload&&(payload.reason||payload.detail))||'Ориентир не рассчитан.');
           return;
         }
-        mdSetNativeValue(input,String(payload.price_th_per_sqm));
-        try{if(typeof calculate==='function')calculate()}catch(e){console.error(e)}
         const when=payload.observed_at?String(payload.observed_at).split('-').reverse().join('.'):'';
+        // Поле берётся в момент записи, а не то, что поймано при вставке
+        // кнопки; «Подставлено» — только когда число стоит в поле и во
+        // вводных. Иначе названо, что осталось, и число ориентира не теряется.
+        const placedPrice=mdPlaceApartmentPrice(payload.price_th_per_sqm,
+          'рекомендация DevelopAid'+(when?' от '+when:''));
+        if(!placedPrice.ok){
+          say('Ориентир '+payload.price_th_per_sqm+' тыс ₽/м² не подставлен: '+placedPrice.reason+'.');
+          return;
+        }
         const parts=[payload.price_th_per_sqm+' тыс ₽/м²'];
         if(payload.sample)parts.push('наблюдений '+payload.sample);
         if(when)parts.push(when);
@@ -377,10 +388,10 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
         // Москве» и «по соседям рядом» — числа разной силы, и молчать об этом
         // нельзя. Для соседей достаточно даты и объёма выборки.
         if(payload.basis&&payload.basis!=='peers'&&payload.basis_title)parts.push(payload.basis_title);
-        note.textContent='Подставлено: '+parts.join(' · ');
+        say('Подставлено: '+parts.join(' · '));
       }catch(error){
-        note.textContent='Не удалось получить ориентир: '+String((error&&error.message)||error);
-      }finally{btn.disabled=false}
+        say('Не удалось получить ориентир: '+String((error&&error.message)||error));
+      }finally{btn.disabled=false;const live=document.getElementById('daHintBtn');if(live)live.disabled=false}
     });
   }
   if(document.readyState!=='loading')init();else document.addEventListener('DOMContentLoaded',init);
@@ -409,31 +420,10 @@ def install_price_hint(core: Any) -> None:
     page = str(core.PAGE)
     if 'id="market-v6-price-hint"' in page:
         return
-    helper = """<script id="market-v6-price-field">
-function mdApartmentPriceInput(){
-  const direct=[
-    document.getElementById('apartment_price_th'),
-    document.querySelector('[name="apartment_price_th"]'),
-    document.querySelector('[data-key="apartment_price_th"]'),
-    document.querySelector('[data-field="apartment_price_th"]')
-  ].find(Boolean);
-  if(direct)return direct;
-  for(const el of document.querySelectorAll('input,select')){
-    const key=((el.id||'')+' '+(el.name||'')+' '+(el.dataset&&el.dataset.key||'')
-      +' '+(el.dataset&&el.dataset.field||'')).toLowerCase();
-    if(key.includes('apartment')&&key.includes('price'))return el;
-  }
-  return null;
-}
-function mdSetNativeValue(el,value){
-  const setter=Object.getOwnPropertyDescriptor(el.__proto__,'value');
-  if(setter&&setter.set)setter.set.call(el,value); else el.value=value;
-  el.dispatchEvent(new Event('input',{bubbles:true}));
-  el.dispatchEvent(new Event('change',{bubbles:true}));
-}
+    helper = ('<script id="market-v6-price-field">' + PRICE_FIELD_JS + """
 function mdEsc(s){return String(s===null||s===undefined?'':s)
   .replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
-</script>"""
+</script>""")
     block = helper + PRICE_HINT_SCRIPT
     if "</body>" in page:
         page = page.replace("</body>", block + "</body>", 1)
