@@ -175,18 +175,25 @@ def test_the_refusal_also_reaches_the_consolidated_result():
     assert "ниже" in str(carry.get("note") or "")
 
 
-def test_the_page_shows_the_debt_rows_and_the_reason():
+def _finance_rows(bundle: dict) -> list[str]:
+    """Подписи блока «Финансирование» таблицы сравнения — той, что печатают
+    и страница, и PDF (`phase_comparison_table`)."""
+    table = bundle["consolidated"]["comparison_table"]
+    block = next(b for b in table["blocks"] if b["key"] == "finance")
+    return [row["label"] for row in block["rows"]]
+
+
+def test_the_page_shows_the_debt_rows_and_the_reason(healthy):
+    labels = _finance_rows(healthy)
+    for label in ("Принято от предыдущей очереди", "Передано следующей очереди",
+                  "Осталось непогашенным на очереди"):
+        assert label in labels, (label, labels)
     page = core.PAGE
-    for label in ("Непогашенный долг ПФ на конец очереди",
-                  "Осталось непогашенным на очереди",
-                  "Передано следующей очереди",
-                  "Принято от предыдущей очереди",
-                  "Долг передан в ПФ следующей очереди",
-                  "phaseDebtCarryNote"):
+    for label in ("Долг передан в ПФ следующей очереди", "phaseDebtCarryNote"):
         assert label in page, label
 
 
-def test_the_remainder_comes_after_what_went_in_and_out():
+def test_the_remainder_comes_after_what_went_in_and_out(healthy):
     """Порядок строк — это и есть рассказ: пришло, ушло, осталось.
 
     Прежде «непогашенный долг 0» стоял МЕЖДУ «принято 11,73» и «передано
@@ -194,27 +201,26 @@ def test_the_remainder_comes_after_what_went_in_and_out():
     другую очередь тут же в другой строке» (владелец, 30.08.2026).
     Противоречия не было, но объяснять его читателю не должно приходиться.
     """
-    page = core.PAGE
-    taken = page.index("'Принято от предыдущей очереди'")
-    passed = page.index("'Передано следующей очереди'")
-    left = page.index("'Осталось непогашенным на очереди'")
+    labels = _finance_rows(healthy)
+    taken = labels.index("Принято от предыдущей очереди")
+    passed = labels.index("Передано следующей очереди")
+    left = labels.index("Осталось непогашенным на очереди")
     assert taken < passed < left, (
         "остаток обязан стоять последним: он вывод, а не одно из трёх чисел")
 
 
-def test_the_remainder_is_not_called_unpaid_when_the_debt_moved():
+def test_the_remainder_is_not_called_unpaid_when_the_debt_moved(healthy):
     """11,73 млрд ПФ не погашены — они сменили должника.
 
     Название «Непогашенный долг на конец очереди» обещало ровно то, что
     стояло строкой выше с тем же числом. При переносе строка называется
     иначе, при его отсутствии — как раньше.
     """
+    assert "Непогашенный долг ПФ на конец очереди" not in _finance_rows(healthy)
+    stuck = _finance_rows(_bundle(700, 12000, carry=False))
+    assert "Непогашенный долг ПФ на конец очереди" in stuck, stuck
+    assert "Осталось непогашенным на очереди" not in stuck
     page = core.PAGE
-    marker = "anyDebt('debt_carried_out')\n                 ?'Осталось непогашенным на очереди'"
-    assert marker.replace("\n", "\n") in page or (
-        "?'Осталось непогашенным на очереди'" in page
-        and "'Непогашенный долг ПФ на конец очереди'" in page), (
-        "название строки обязано зависеть от того, был ли перенос")
     # Признак должен быть на экране: без него перенос включить нечем, и весь
     # разбор остаётся недостижимым из интерфейса.
     assert "phaseCarryDebt" in page
@@ -225,10 +231,12 @@ def test_the_remainder_is_not_called_unpaid_when_the_debt_moved():
 
 
 def test_the_pdf_prints_the_transfer_section():
+    """Строки долга PDF берёт из той же таблицы, что страница; причина
+    переноса — примечанием под ней."""
     import inspect
     source = inspect.getsource(core._build_developaid_pdf)
-    assert "Непогашенный долг и перенос между очередями" in source
-    assert 'item.get("debt_carried_out")' in source
+    assert "phase_comparison_table(result)" in source
+    assert 'i.get("debt_carried_out")' in source
     assert 'result.get("debt_carry")' in source
 
 

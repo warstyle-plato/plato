@@ -82,7 +82,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.72"
+VERSION = "0.24.74"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -15846,6 +15846,115 @@ def _pdf_pct(value: Any) -> str:
         return "—"
 
 
+def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors: Any) -> Any:
+    """Таблица сравнения очередей для PDF — печать `phase_comparison_table`.
+
+    Блок открывается строкой-заголовком во всю ширину; итог жирный и с линией
+    сверху, слагаемое и «из них» — с отступом: то же, что на странице.
+    """
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import Paragraph, Table, TableStyle
+
+    cell = ParagraphStyle("pc_cell", fontName=regular, fontSize=6.8, leading=8.2,
+                          textColor=colors.HexColor("#222222"))
+    num = ParagraphStyle("pc_num", parent=cell, alignment=2)
+    strong = ParagraphStyle("pc_strong", parent=cell, fontName=bold,
+                            textColor=colors.HexColor("#111111"))
+    strong_num = ParagraphStyle("pc_strong_num", parent=strong, alignment=2)
+    head = ParagraphStyle("pc_head", parent=strong, fontSize=6.6)
+    muted = ParagraphStyle("pc_muted", parent=cell, textColor=colors.HexColor("#666666"))
+
+    def text(value: Any) -> str:
+        return (str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+    def one(value: Any) -> str:
+        # Одна цифра после запятой так, как округляет страница (половина —
+        # вверх по короткой записи числа): иначе «вводная 10,25» выходит
+        # 10,3 на экране и 10,2 в PDF.
+        from decimal import ROUND_HALF_UP, Decimal
+        return _pdf_num(float(Decimal(repr(float(value or 0))).quantize(
+            Decimal("0.1"), rounding=ROUND_HALF_UP)), 1)
+
+    def fmt(row: dict[str, Any], value: Any) -> str:
+        if value is None or value == "":
+            return "—"
+        kind = row.get("kind")
+        if kind == "money":
+            # Одна единица на таблицу, как на странице: «166,0 млн» под
+            # «3,15 млрд» читается как другой масштаб колонки.
+            return _pdf_num(float(value) / 1_000_000_000, 2) + " млрд ₽"
+        if kind == "qty":
+            unit = str(row.get("unit") or "")
+            return (_pdf_num(value, 0 if unit == "шт." else 1) + " " + unit).strip()
+        if kind == "th":
+            return one(value)
+        if kind == "pct":
+            return _pdf_pct(value)
+        if kind == "mult":
+            return _pdf_num(value, 2) + "x"
+        if kind == "date":
+            raw = str(value)[:10]
+            return f"{raw[8:10]}.{raw[5:7]}.{raw[:4]}" if len(raw) == 10 else raw
+        return str(value)
+
+    def label(row: dict[str, Any]) -> str:
+        out = str(row.get("label") or "")
+        if row.get("rate_input") is not None:
+            out += f" (вводная {one(row['rate_input'])})"
+        if row.get("kind") == "th":
+            out += ", тыс ₽/м²"
+        return out
+
+    columns = list(table.get("columns") or [])
+    span = len(columns) + 2
+    data: list[list[Any]] = [[Paragraph("Показатель", head)]
+                             + [Paragraph(text(n), ParagraphStyle("pc_hn", parent=head, alignment=2))
+                                for n in columns + ["Свод"]]]
+    style: list[tuple] = [
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LINEBELOW", (0, 0), (-1, 0), 0.8, colors.HexColor("#111111")),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.3, colors.HexColor("#E2E2E2")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]
+    # Делители удельных — одна подпись таблицы мелким шрифтом под шапкой,
+    # как на странице, а не строки-показатели.
+    note = ParagraphStyle("pc_note", parent=muted, fontSize=5.8, leading=7.0)
+    divisors = [
+        text(str(d.get("label") or "")) + ": " + " · ".join(
+            [text(n) + " " + _pdf_num(v, 0) for n, v in zip(columns, d.get("values") or [])]
+            + ["свод " + _pdf_num(d.get("total"), 0)]) + " " + text(str(d.get("unit") or ""))
+        for d in table.get("divisors") or []]
+    if divisors:
+        i = len(data)
+        data.append([Paragraph("Удельные показатели — делители: " + "<br/>".join(divisors), note)]
+                    + [""] * (span - 1))
+        style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 4)]
+    for block in table.get("blocks") or []:
+        i = len(data)
+        data.append([Paragraph(text(str(block.get("title") or "").upper()), head)] + [""] * (span - 1))
+        style += [("SPAN", (0, i), (-1, i)), ("TOPPADDING", (0, i), (-1, i), 7),
+                  ("LINEBELOW", (0, i), (-1, i), 1.0, colors.HexColor("#111111"))]
+        for row in block.get("rows") or []:
+            i = len(data)
+            role = row.get("role") or ""
+            lab_style = strong if role == "total" else (muted if role in ("part", "sub") else cell)
+            num_style = strong_num if role == "total" else num
+            values = list(row.get("values") or []) + [row.get("total")]
+            data.append([Paragraph(text(label(row)), lab_style)]
+                        + [Paragraph(text(fmt(row, v)), num_style) for v in values])
+            if role == "total":
+                style.append(("LINEABOVE", (0, i), (-1, i), 0.9, colors.HexColor("#111111")))
+            if role in ("part", "sub"):
+                style.append(("LEFTPADDING", (0, i), (0, i), 12))
+    label_w = 62 * mm
+    rest = (170 * mm - label_w) / max(1, len(columns) + 1)
+    out = Table(data, colWidths=[label_w] + [rest] * (len(columns) + 1), repeatRows=1, hAlign="LEFT")
+    out.setStyle(TableStyle(style))
+    return out
+
+
 def _pdf_entry_cost_rows(result: dict[str, Any],
                          expense_structure: list[dict[str, Any]]) -> list[list[str]]:
     """Цена входа и плата за ВРИ — из расчёта, а не из формы.
@@ -16876,83 +16985,34 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             ])
         story.append(table(params,[30*mm,35*mm,38*mm,34*mm,33*mm],font_size=7.4))
         story.append(P("Сравнение очередей",h2))
-        head=[["Очередь","Строит. объём, м²","Продаваемая, м²","Выручка","Расходы","Чистая прибыль","LLCR"]]
-        for item in comparison:
-            head.append([
-                str(item.get("name") or "—"),
-                _pdf_num(item.get("gns_sqm"),0),_pdf_num(item.get("saleable_sqm"),0),
-                _pdf_money(item.get("revenue")),_pdf_money(item.get("total_expenses")),
-                _pdf_money(item.get("net_profit")),_pdf_num(item.get("llcr"),2)+"x",
-            ])
-        head.append([
-            "Итого",_pdf_num(sum(float(i.get("gns_sqm") or 0) for i in comparison),0),
-            _pdf_num(sum(float(i.get("saleable_sqm") or 0) for i in comparison),0),
-            _pdf_money(summary.get("revenue")),_pdf_money(summary.get("total_expenses")),
-            _pdf_money(summary.get("net_profit")),_pdf_num(summary.get("llcr"),2)+"x",
-        ])
-        story.append(table(head,[22*mm,25*mm,29*mm,26*mm,26*mm,27*mm,15*mm],font_size=7.0))
-        # Непогашенный долг очереди и перенос его в следующую. Раздел не
-        # печатался вовсе: очередь, не рассчитавшаяся с банком, выглядела в
-        # отчёте так же, как закрывшая долг, а после переноса у передавшей
-        # стоял ноль — обязательство исчезало бесследно. Строка появляется
-        # вместе с числом: у проекта без непогашенного долга её нет.
+        # Та же таблица, что на странице, и из того же места —
+        # `phase_comparison_table`: состав, порядок блоков и числа решает
+        # движок, PDF только печатает. Прежде отчёт печатал своё сравнение
+        # пятью таблицами в своём порядке, и две раскладки одного сравнения
+        # расходились (владелец, 27.09.2026: «PDF тоже надо сделать то же»).
+        story.append(_phase_comparison_pdf(phase_comparison_table(result), regular, bold, colors))
+        story.append(P("Удельные показатели — в тыс. ₽ за м² своего делителя; итог по ним — "
+                       "отношение сумм, а не среднее по очередям.", small))
+        # Причина, по которой долг сменил очередь или остался на своей: без неё
+        # обнулённый долг первой очереди рядом с выросшим долгом второй
+        # читается как ошибка расчёта. Раздел «Непогашенный долг и перенос
+        # между очередями» стал строками блока «Финансирование»; здесь —
+        # объяснение к ним.
         _carry = result.get("debt_carry") if isinstance(result.get("debt_carry"), dict) else {}
         _has_debt = any(
             float(i.get("ending_pf") or 0) > 500_000
             or float(i.get("debt_carried_out") or 0) > 500_000
             or float(i.get("carried_debt_in") or 0) > 500_000
             for i in comparison)
-        if _has_debt or _carry:
-            story.append(P("Непогашенный долг и перенос между очередями",h2))
-            # Порядок колонок — рассказ: сколько пришло, сколько ушло, что
-            # осталось. «Непогашено» посередине читалось как противоречие
-            # соседней колонке с тем же числом (владелец, 30.08.2026).
-            _carried_any = any(float(i.get("debt_carried_out") or 0) > 500_000
-                               for i in comparison)
-            debt_rows=[["Очередь","Принято от предыдущей","Передано следующей",
-                        "Осталось на очереди" if _carried_any else "Непогашено на конец"]]
-            for item in comparison:
-                debt_rows.append([
-                    str(item.get("name") or "—"),
-                    _pdf_money(item.get("carried_debt_in")),
-                    _pdf_money(item.get("debt_carried_out")),
-                    _pdf_money(item.get("ending_pf")),
-                ])
-            debt_rows.append([
-                "Итого","—",
-                _pdf_money(sum(float(i.get("debt_carried_out") or 0) for i in comparison)),
-                _pdf_money(sum(float(i.get("ending_pf") or 0) for i in comparison)),
-            ])
-            story.append(table(debt_rows,[30*mm,42*mm,42*mm,42*mm],font_size=7.0))
-            if _carry.get("note"):
-                story.append(P(str(_carry["note"]),small))
-            elif _has_debt:
-                story.append(P(
-                    "Перенос долга между очередями выключен: непогашенный остаток "
-                    "остаётся на очереди, которая его набрала, и означает дефолт по "
-                    "её линии. Итог по проекту при этом складывается из очередей.",small))
+        if _carry.get("note"):
+            story.append(P(str(_carry["note"]),small))
+        elif _has_debt:
+            story.append(P(
+                "Перенос долга между очередями выключен: непогашенный остаток "
+                "остаётся на очереди, которая его набрала, и означает дефолт по "
+                "её линии. Итог по проекту при этом складывается из очередей.",small))
         phase_financing = result.get("phase_financing") or {}
-        funding_rows = phase_financing.get("rows") or []
-        if funding_rows:
-            story.append(P("Стратегия финансирования очередей",h2))
-            funding = [["Очередь","Затраты до РНС","Cash проекта","Свои средства","Новый БРИДЖ","ПФ после РНС"]]
-            for row in funding_rows:
-                funding.append([
-                    str(row.get("name") or "—"),
-                    _pdf_money(row.get("pre_rns_costs")),
-                    _pdf_money(row.get("project_cash_used")),
-                    _pdf_money(row.get("own_funds")),
-                    _pdf_money(row.get("new_bridge")),
-                    _pdf_money(row.get("peak_pf")),
-                ])
-            totals = phase_financing.get("totals") or {}
-            funding.append([
-                "Итого",_pdf_money(totals.get("pre_rns_costs")),
-                _pdf_money(totals.get("project_cash_used")),
-                _pdf_money(totals.get("own_funds")),
-                _pdf_money(totals.get("new_bridge")),"—",
-            ])
-            story.append(table(funding,[22*mm,31*mm,28*mm,28*mm,31*mm,30*mm],font_size=6.7))
+        if phase_financing.get("rows"):
             story.append(P(
                 ("Единый денежный поток проекта включён. " if phase_financing.get("enabled")
                  else "Независимое финансирование очередей включено. ")
@@ -16966,44 +17026,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             for item in comparison if item.get("allocated_net_profit") is not None]
         if allocated_parts:
             story.append(P(
-                "Прибыль очередей выше — кассовая, как в CF-листах Excel-книги: общие "
+                "Чистая прибыль очередей — кассовая, как в CF-листах Excel-книги: общие "
                 "расходы (покупка, ВРИ, соцнагрузка) стоят в очереди их оплаты. "
                 "Аллоцированная прибыль разносит их экономически: "
                 + "; ".join(allocated_parts)
                 + ". Сумма по проекту в обеих раскладках одна.", small))
-        story.append(P("Удельные показатели по очередям",h2))
-        # Итог по удельным — это отношение сумм, а не сумма отношений: у очередей
-        # разные площади, и среднее по строкам дало бы неверную величину.
-        def ratio(value_key: str, area_key: str) -> str:
-            area=sum(float(i.get(area_key) or 0) for i in comparison)
-            value=sum(float(i.get(value_key) or 0) for i in comparison)
-            return _pdf_num(value/area/1000,1) if area else "—"
-        # «Выручка на м² прод.» делит всю выручку очереди, включая паркинг и
-        # кладовые; чисто квартирная колонка — общий знаменатель с книгой:
-        # в ней та же строка, и цифры обязаны совпадать один в один.
-        def apartments_total() -> str:
-            area=sum(float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
-            value=sum(float(i.get("apartment_price_th") or 0)
-                      *float(i.get("apartment_saleable_sqm") or 0) for i in comparison)
-            return _pdf_num(value/area,1) if area else "—"
-        units=[["Очередь","Выручка на м² прод.","в т.ч. квартиры","Выручка на м² наземной ГНС","Расходы на м² прод.","Расходы на м² наземной ГНС","Прибыль на м² прод.","Прибыль на м² наземной ГНС"]]
-        for item in comparison:
-            units.append([
-                str(item.get("name") or "—"),
-                _pdf_num(item.get("revenue_per_saleable_th"),1),
-                _pdf_num(item.get("apartment_price_th"),1),
-                _pdf_num(item.get("revenue_per_gns_th"),1),
-                _pdf_num(item.get("expenses_per_saleable_th"),1),_pdf_num(item.get("expenses_per_gns_th"),1),
-                _pdf_num(item.get("net_profit_per_saleable_th"),1),
-                _pdf_num(item.get("net_profit_per_gns_th"),1),
-            ])
-        units.append([
-            "Итого",ratio("revenue","saleable_sqm"),apartments_total(),ratio("revenue","gns_sqm"),
-            ratio("total_expenses","saleable_sqm"),ratio("total_expenses","gns_sqm"),
-            ratio("net_profit","saleable_sqm"),ratio("net_profit","gns_sqm"),
-        ])
-        story.append(table(units,[18*mm,23*mm,21*mm,22*mm,23*mm,22*mm,21*mm,20*mm],font_size=6.6))
-        story.append(P("Значения удельных показателей — в тыс. ₽ за м². «Выручка на м² прод.» включает штучные продукты (паркинг, кладовые); «в т.ч. квартиры» — только квартиры на м² их продаваемой площади, эта же строка есть в Excel-книге. Итоговая строка считается как отношение сумм, а не как среднее по очередям.",small))
 
     # Раздел появляется только если чувствительность считали на вкладке.
     # Гнать полсотни расчётов внутри сборки PDF ради раздела, который никто не
@@ -33734,6 +33761,7 @@ def calculate(req: CalcRequest) -> dict:
             "core_under_gns": op["core_under_gns"],
         },
         "revenue": {"total": total_revenue, **op["revenue_by_product"]},
+        "revenue_structure": revenue_structure({"total": total_revenue, **op["revenue_by_product"]}),
         # land_rights_gross и land_rights_relief — справочные величины платы
         # до льготы: в total их нет, а таблица расходов на странице рисует все
         # ключи подряд — и показывала их сырыми именами. Валовая плата и льгота
@@ -35824,6 +35852,7 @@ def _consolidate_phase_results(
             "core_under_gns": sum(r["tep"]["core_under_gns"] for r in results),
         },
         "revenue": revenue,
+        "revenue_structure": revenue_structure({**revenue, "total": total_revenue}),
         "capex": capex,
         "commercial_costs": commercial_costs,
         "finance": finance,
@@ -36835,7 +36864,274 @@ _PHASE_DEBT_CARRY_MIN_LLCR = 1.0
 _PHASE_DEBT_CARRY_MIN_RUB = 500_000.0
 
 
+def product_groups(keys: Any) -> tuple[list[str], list[str]]:
+    """Продукты по группам и в порядке чтения: МКД из `MKD_PRODUCTS`, затем
+    отдельно стоящие объекты в порядке реестра `STANDALONE_OBJECTS`, и паркинг
+    каждого объекта — сразу за своим объектом (`OBJECT_PARKING_PRODUCT_KEYS`),
+    а не по имени. Продукт вне обоих списков идёт в ОСЗ следом, а не теряется.
+
+    Один ответ для всех таблиц выручки: сравнения очередей и «Структуры
+    выручки» — прежде вторая шла в порядке словаря движка, и паркинг ТЦ стоял
+    перед квартирами, а офисы — посреди кладовых (владелец, 28.09.2026).
+    """
+    present = [str(k) for k in keys]
+    have = set(present)
+    mkd = [k for k in MKD_PRODUCTS if k in have]
+    obj = [k for o in STANDALONE_OBJECTS
+           for k in (o.key, OBJECT_PARKING_PRODUCT_KEYS.get(o.key, ""))
+           if k and k in have]
+    osz = obj + [k for k in present if k not in MKD_PRODUCTS and k not in obj]
+    return mkd, osz
+
+
+def revenue_structure(revenue: dict[str, Any]) -> dict[str, Any]:
+    """«Структура выручки» — строки, которые печатает страница.
+
+    Нулевой продукт — шум, а не полнота: семь строк «0 млрд ₽» между
+    настоящими разрывали таблицу. Итог группы заводится, когда в ней больше
+    одного продукта: «Итого МКД» под единственной строкой квартир — та же
+    строка дважды. Последняя строка — «Итого» всей выручки.
+    """
+    labels = product_labels()
+    values = {str(k): float(v or 0.0) for k, v in (revenue or {}).items() if k != "total"}
+    mkd, osz = product_groups(values)
+    rows: list[dict[str, Any]] = []
+    for keys, label, group in ((mkd, "Итого МКД", "mkd"), (osz, "Итого ОСЗ", "osz")):
+        mine = [k for k in keys if abs(values[k]) > 0.5]
+        rows += [{"key": k, "label": labels.get(k, k), "value": values[k],
+                  "role": "part", "group": group} for k in mine]
+        if len(mine) > 1:
+            rows.append({"label": label, "value": sum(values[k] for k in mine),
+                         "role": "total", "group": group})
+    total = float((revenue or {}).get("total") or sum(values.values()))
+    rows.append({"label": "Итого", "value": total, "role": "total", "group": "all"})
+    return {"rows": rows}
+
+
+def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
+    """Таблица «Сравнение очередей» — одна на страницу и PDF.
+
+    Порядок строк жил на странице, а PDF печатал свой набор своими таблицами:
+    две раскладки одного сравнения расходились бы молча (владелец, 27.09.2026:
+    «PDF тоже надо сделать то же»). Здесь решается состав и порядок — блоки,
+    строки, роль итога и слагаемого, сырые числа; поверхность только печатает
+    число по его виду (`kind`): деньги, количество с единицей, тыс ₽/м²,
+    процент, кратность, дата.
+
+    Порядок — как в отчёте о прибылях: объёмы → выручка (и цена на м²) →
+    затраты (ставки статей, CAPEX, полные расходы и их метр) →
+    финансирование → результат, последней строкой — чистая прибыль на м².
+    Делители метра — одна подпись таблицы (`divisors`), а не строки.
+    """
+    c = [item for item in (consolidated.get("comparison") or []) if isinstance(item, dict)]
+    summary = consolidated.get("summary") or {}
+    finance = consolidated.get("finance") or {}
+    totals_fin = ((consolidated.get("phase_financing") or {}).get("totals") or {})
+    products = [p for p in ((consolidated.get("report") or {}).get("products") or [])
+                if isinstance(p, dict)]
+    order = [str(p.get("key")) for p in products]
+    by_key = {str(p.get("key")): p for p in products}
+
+    def f(value: Any) -> float:
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def rev(item: dict[str, Any], key: str) -> float:
+        return f((item.get("revenue_by_product") or {}).get(key))
+
+    def qty(item: dict[str, Any], key: str) -> float:
+        return f((item.get("saleable_by_product") or {}).get(key))
+
+    def row(label: str, kind: str, values: list[Any], total: Any, **extra: Any) -> dict[str, Any]:
+        return {"label": label, "kind": kind, "values": values, "total": total, **extra}
+
+    def per_th(value: float, area: float) -> float | None:
+        return value / area / 1000.0 if area else None
+
+    # Состав групп — из реестров движка: МКД из MKD_PRODUCTS, объекты из
+    # STANDALONE_OBJECTS в его порядке, и паркинг каждого объекта — своей
+    # строкой сразу за объектом (владелец, 27.09.2026): ключ продукта берётся
+    # из реестра (`OBJECT_PARKING_PRODUCT_KEYS`), а не угадывается по имени.
+    # Продукт вне обоих списков идёт в ОСЗ следом, а не теряется.
+    mkd, osz = product_groups(order)
+    obj_block = [k for k in osz if k in {o.key for o in STANDALONE_OBJECTS}
+                 or k in OBJECT_PARKING_PRODUCT_KEYS.values()]
+
+    # Объём к продаже — то количество, на которое движок продаёт; строка
+    # заводится вместе с числом.
+    def volume(keys: list[str], suffix: str = "") -> list[dict[str, Any]]:
+        out = []
+        for key in keys:
+            if not any(qty(x, key) > 0 for x in c):
+                continue
+            p = by_key[key]
+            out.append(row(str(p.get("label") or key) + suffix, "qty",
+                           [qty(x, key) for x in c], f(p.get("quantity")),
+                           unit=str(p.get("unit") or "")))
+        return out
+
+    # Выручка по продуктам: нулевые строки — шум, а не полнота. Итог группы
+    # заводится, только когда продуктов в ней больше одного: «Итого МКД» под
+    # единственной строкой квартир — та же строка дважды.
+    def revenue_group(keys: list[str], label: str, group: str) -> list[dict[str, Any]]:
+        mine = [k for k in keys if any(rev(x, k) > 0 for x in c)]
+        out = [row(str(by_key[k].get("label") or k), "money", [rev(x, k) for x in c],
+                   f(by_key[k].get("revenue")), role="part", group=group) for k in mine]
+        if len(mine) > 1:
+            out.append(row(label, "money", [sum(rev(x, k) for k in mine) for x in c],
+                           sum(f(by_key[k].get("revenue")) for k in mine),
+                           role="total", group=group))
+        return out
+
+    # Гараж объектов строится в СВОЕЙ очереди. Построено и продаётся — два
+    # разных числа: у ТЦ и ФОКа места обеспечивают посетителей и не продаются,
+    # у офисника продаются все, кроме гостевых. Оба считает движок очереди.
+    park: list[dict[str, Any]] = []
+    if any(f(x.get("object_parking_units")) > 0 for x in c):
+        park = [
+            row("Паркинг отдельно стоящих объектов — мест", "qty",
+                [f(x.get("object_parking_units")) for x in c],
+                f(summary.get("object_parking_units")), unit="шт."),
+            row("из них продаётся", "qty",
+                [f(x.get("object_parking_saleable_units")) for x in c],
+                f(summary.get("object_parking_saleable_units")), unit="шт.", role="sub"),
+            row("подземная часть под объектами", "qty",
+                [f(x.get("object_parking_under_gns")) for x in c],
+                f(summary.get("object_parking_under_gns")), unit="м²", role="sub"),
+        ]
+
+    # Долг, не погашенный очередью, и его перенос. Порядок — рассказ: сколько
+    # пришло, сколько ушло, что осталось (владелец, 30.08.2026). Строки
+    # заводятся вместе с числом.
+    def any_debt(key: str) -> bool:
+        return any(f(x.get(key)) > 0.5e6 for x in c)
+
+    debt: list[dict[str, Any]] = []
+    if any_debt("ending_pf") or any_debt("debt_carried_out") or any_debt("carried_debt_in"):
+        if any_debt("carried_debt_in"):
+            debt.append(row("Принято от предыдущей очереди", "money",
+                            [f(x.get("carried_debt_in")) for x in c], None))
+        if any_debt("debt_carried_out"):
+            debt.append(row("Передано следующей очереди", "money",
+                            [f(x.get("debt_carried_out")) for x in c], None))
+        debt.append(row("Осталось непогашенным на очереди" if any_debt("debt_carried_out")
+                        else "Непогашенный долг ПФ на конец очереди", "money",
+                        [f(x.get("ending_pf")) for x in c], f(finance.get("ending_pf"))))
+
+    sale, gns = f(summary.get("monetizable_saleable_sqm")), f(summary.get("project_gns_sqm"))
+    rev_all = [f(x.get("revenue")) for x in c]
+    # Ставки общепроектных статей — цена метра МКД очереди по статье, с
+    # вводной рядом: заданная руками доля видна числом. Стоят ВИДИМЫМИ
+    # строками в начале расходов, до CAPEX: это расходы, и после итоговой
+    # прибыли им не место (владелец, 28.09.2026: «ничего не сворачивать»).
+    inputs0 = (c[0].get("shared_rate_inputs_th") or {}) if c else {}
+    rates = [row(label + " — цена м² МКД очереди", "th",
+                 [(x.get("shared_rates_th") or {}).get(key) for x in c], None,
+                 rate_input=inputs0.get(key))
+             for key, label in (("ird", "ИРД и согласования"), ("design", "Проектирование П+РД"),
+                                ("preparation", "Подготовительные работы"),
+                                ("utilities", "Наружные сети"))]
+
+    def money(label: str, key: str, total: Any) -> dict[str, Any]:
+        return row(label, "money", [f(x.get(key)) for x in c], total)
+
+    def th(label: str, key: str, value: float, area: float) -> dict[str, Any]:
+        return row(label, "th", [f(x.get(key)) for x in c], per_th(value, area))
+
+    # Порядок — отчёт о прибылях (владелец, 28.09.2026): доходы → все
+    # расходы подряд → финансирование → прибыль, и последней строкой таблицы
+    # — чистая прибыль на м². Удельный стоит в разделе своей величины, рядом
+    # с её деньгами, а не отдельным блоком, где цена, затраты и прибыль
+    # шли вперемешку. Ни одна строка не свёрнута.
+    blocks = [
+        ("mkd", "Объём МКД — к продаже", volume(mkd)),
+        ("osz", "Отдельно стоящие объекты",
+         volume(obj_block, " — к продаже") + park),
+        ("revenue", "Выручка",
+         revenue_group(mkd, "Итого МКД", "mkd") + revenue_group(osz, "Итого ОСЗ", "osz")
+         + [row("Выручка всего", "money", rev_all, f(summary.get("revenue")),
+                role="total", group="all"),
+            th("Цена реализации на м² продаваемой", "revenue_per_saleable_th",
+               f(summary.get("revenue")), sale),
+            # Чисто квартирная цена — общий знаменатель с Excel-книгой: в ней
+            # та же строка, и числа обязаны совпадать один в один.
+            row("в т.ч. квартиры — на м² их продаваемой", "th",
+                [f(x.get("apartment_price_th")) for x in c],
+                f(summary.get("average_apartment_price_th")) or None, role="sub"),
+            th("Цена реализации на м² ГНС", "revenue_per_gns_th", f(summary.get("revenue")), gns)]),
+        ("costs", "Затраты", [
+            *rates,
+            money("CAPEX", "capex", f(summary.get("capex"))),
+            th("CAPEX на м² ГНС", "capex_per_gns_th", f(summary.get("capex")), gns),
+            money("Полные расходы", "total_expenses", f(summary.get("total_expenses"))),
+            th("Полные расходы на м² продаваемой", "expenses_per_saleable_th",
+               f(summary.get("total_expenses")), sale),
+            th("Полные расходы на м² ГНС", "expenses_per_gns_th",
+               f(summary.get("total_expenses")), gns)]),
+        ("finance", "Финансирование", [
+            money("Пиковый БРИДЖ", "peak_bridge", f(finance.get("peak_bridge"))),
+            money("Затраты до РНС", "pre_rns_costs", f(totals_fin.get("pre_rns_costs"))),
+            money("Свободный cash проекта", "project_cash_used",
+                  f(totals_fin.get("project_cash_used"))),
+            money("Собственные средства", "own_funds", f(totals_fin.get("own_funds"))),
+            money("Новый БРИДЖ", "new_bridge", f(totals_fin.get("new_bridge"))),
+            money("Пиковый остаток ПФ", "peak_pf", f(finance.get("peak_pf"))),
+            # Раскрытие эскроу — событие очереди: у каждой своя дата РВЭ.
+            money("Лимит ПФ", "pf_limit", f(finance.get("pf_limit"))),
+            row("РВЭ очереди", "date", [str(x.get("rve") or "") for x in c], None),
+            money("Долг ПФ перед раскрытием", "rve_pf_before_repayment",
+                  f(finance.get("rve_pf_before_repayment"))),
+            money("Раскрыто эскроу", "rve_escrow_release", f(finance.get("rve_escrow_release"))),
+            money("Из него на погашение ПФ", "rve_pf_repayment", f(finance.get("rve_pf_repayment"))),
+            money("Не покрыто эскроу при раскрытии", "rve_pf_shortfall",
+                  f(finance.get("rve_pf_shortfall"))),
+            *debt,
+            row("LLCR", "mult", [f(x.get("llcr")) for x in c], f(summary.get("llcr")))]),
+        # Аллокация общих расходов — аналитика рядом с прибылью, а сама
+        # прибыль и её метр закрывают таблицу.
+        ("result", "Результат", [
+            money("Общепроектная нагрузка — cash", "cash_shared_cost", None),
+            money("Аллоцированные общие расходы", "allocated_shared_cost", None),
+            money("Аналитическая прибыль после аллокации", "allocated_net_profit", None),
+            money("Чистая прибыль — cash", "net_profit", f(summary.get("net_profit"))),
+            row("Маржинальность", "pct", [f(x.get("margin")) for x in c], f(summary.get("margin"))),
+            th("Чистая прибыль на м² ГНС", "net_profit_per_gns_th", f(summary.get("net_profit")), gns),
+            th("Чистая прибыль на м² продаваемой", "net_profit_per_saleable_th",
+               f(summary.get("net_profit")), sale)]),
+    ]
+    # Удельный подписан своим делителем: те же площади, на которые делит
+    # движок (`monetizable_saleable_sqm`, `project_gns_sqm`), а не угаданные
+    # по заголовку. Это одна подпись таблицы мелким шрифтом, а не строки:
+    # крупная «Делитель…» среди денег читалась как ещё одно число экономики
+    # (владелец, 28.09.2026). Удельные стоят в нескольких разделах, делитель
+    # у них общий. Итог удельного — отношение сумм, а не среднее.
+    divisors = [
+        {"label": "на м² продаваемой — продаваемая площадь", "unit": "м²",
+         "values": [f(x.get("saleable_sqm")) for x in c], "total": sale},
+        {"label": "на м² ГНС — ГНС наземная", "unit": "м²",
+         "values": [f(x.get("gns_sqm")) for x in c], "total": gns}]
+    return {"columns": [str(x.get("name") or "") for x in c],
+            "has_debt": bool(debt),
+            "divisors": divisors,
+            "blocks": [{"key": k, "title": t, "rows": r} for k, t, r in blocks if r]}
+
+
 def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
+    """Очереди с переносом долга и таблицей сравнения.
+
+    Таблица строится ПОСЛЕ переноса: перенос дописывает строкам сравнения
+    принятый и переданный долг, и собранная раньше таблица их бы не знала.
+    """
+    bundle = _calculate_phased_with_carry(req)
+    consolidated = bundle.get("consolidated")
+    if bundle.get("mode") == "phased" and isinstance(consolidated, dict):
+        consolidated["comparison_table"] = phase_comparison_table(consolidated)
+    return bundle
+
+
+def _calculate_phased_with_carry(req: PhasedCalcRequest) -> dict[str, Any]:
     """Очереди с переносом непогашенного долга вперёд.
 
     По генеральному соглашению долг, который очередь не погасила, переходит в
@@ -44381,9 +44677,20 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-report-nav{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:0 0 16px}
 .phase-report-nav .btn.active{background:#111;color:#fff;border-color:#111}
 .phase-comparison-card{display:none}
+#revenueTable tr.rs-part td:first-child{padding-left:18px;color:#555}
+#revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
 .phase-comparison-card tr.pc-block th{text-align:left;padding:16px 0 5px;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#111;border-bottom:2px solid #111}
 .phase-comparison-card tr.pc-part td:first-child,.phase-comparison-card tr.pc-sub td:first-child{padding-left:22px;color:#777}
 .phase-comparison-card tr.pc-total td{font-weight:750;color:#111;border-top:1.5px solid #111}
+/* На телефоне таблица шире экрана: числа не переносятся (единица рвалась —
+   «917,9 тыс ₽/м» без «²»), таблица прокручивается вбок, а колонка подписей
+   стоит на месте — иначе на «Своде» не видно, чья это строка. */
+.phase-comparison-card td:not(:first-child),.phase-comparison-card th:not(:first-child){white-space:nowrap}
+.phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{position:sticky;left:0;z-index:1;background:#fff}
+.phase-comparison-card tr.pc-block th span{position:sticky;left:0}
+.phase-comparison-card tr.pc-caption th{text-align:left;padding:6px 0 0;font-weight:400;letter-spacing:0;text-transform:none;border:0}
+.phase-comparison-card tr.pc-caption small.pc-divisors{display:block;position:sticky;left:0;font-size:10px;line-height:1.35;color:#777;white-space:normal;max-width:calc(100vw - 48px)}
+@media(max-width:600px){.phase-comparison-card thead th:first-child,.phase-comparison-card tbody td:first-child{min-width:128px;max-width:150px;box-shadow:1px 0 0 #e5e5e5}}
 .phase-status{font-size:11px;color:#666;margin-top:8px}
 .object-actions{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
 #phasing:not(.phasing-on) .phase-config-only{display:none}
@@ -52995,167 +53302,39 @@ function pfStepRows(f){
 function renderPhaseComparison(){
  if(!phaseBundle||phaseBundle.mode!=='phased'){phaseComparisonCard.style.display='none';return}
  const c=phaseBundle.comparison||[],cons=phaseBundle.consolidated;
- phaseComparisonHead.innerHTML=`<tr><th>Показатель</th>${c.map(x=>`<th>${x.name}</th>`).join('')}<th>Свод</th></tr>`;
- const cs=cons.summary,csSale=cs.monetizable_saleable_sqm||0,csGns=cs.project_gns_sqm||0;
- const perTh=(v,a)=>a?num2(v/a/1000)+' тыс ₽/м²':'—';
- // Таблица читается блоками, и у каждой сущности блок ОДИН: места паркинга
- // объектов стояли посреди площадей МКД, а его деньги — внизу среди ОСЗ, и
- // итоги были неотличимы от слагаемых (владелец, 27.09.2026). Строка — это
- // [подпись, ячейки очередей, свод, роль, группа, сырые числа]; роль «part»
- // — слагаемое итога своей группы, «total» — итог, «sub» — «из них».
- const products=(cons.report&&cons.report.products)||[];
- const prodOrder=products.map(p=>p.key);
- const prodOf=k=>products.find(p=>p.key===k)||{};
- const labelOf=k=>prodOf(k).label||k;
- const revOf=(x,k)=>Number((x.revenue_by_product||{})[k]||0);
- const qtyOf=(x,k)=>Number((x.saleable_by_product||{})[k]||0);
- // Состав групп — из движка: МКД из MKD_PRODUCTS, объекты из реестра
- // STANDALONE_OBJECTS в его порядке. Продукт вне обоих списков (паркинг
- // объектов) идёт в ОСЗ следом за объектами, а не теряется: новый объект
- // реестра встаёт сюда сам.
- const objKeys=STANDALONE_OBJECTS.map(o=>o.key);
- // Паркинг каждого объекта — своя строка сразу за объектом (владелец,
- // 27.09.2026): ключ продукта приходит из реестра движка.
- const objBlockKeys=STANDALONE_OBJECTS.flatMap(o=>[o.key,o.parking_product]).filter(k=>k&&prodOrder.includes(k));
- const MKD=MKD_PRODUCTS.filter(k=>prodOrder.includes(k));
- const OSZ=[...objBlockKeys,
-            ...prodOrder.filter(k=>!MKD_PRODUCTS.includes(k)&&!objBlockKeys.includes(k))];
- // Объём к продаже по продуктам — то количество, на которое движок продаёт
- // (м² или места, единица у продукта своя). Строка заводится вместе с числом.
- // Паркинг объектов сюда не идёт: его места — своими строками ниже.
- const volume=(keys,suffix)=>keys.filter(k=>c.some(x=>qtyOf(x,k)>0)).map(k=>{
-  const u=prodOf(k).unit||'';
-  return [labelOf(k)+(suffix||''),c.map(x=>num(qtyOf(x,k))+' '+u),num(Number(prodOf(k).quantity||0))+' '+u];
- });
- // Выручка по продуктам: семь нулевых строк — это шум, а не полнота.
- // Промежуточный итог заводится, только когда в группе больше одного продукта:
- // «Итого МКД» под единственной строкой квартир — это та же строка дважды.
- const revenueGroup=(keys,label,group)=>{
-  const mine=keys.filter(k=>c.some(x=>revOf(x,k)>0));
-  const rows=mine.map(k=>{
-   const v=[...c.map(x=>revOf(x,k)),Number(prodOf(k).revenue||0)];
-   return [labelOf(k),v.slice(0,-1).map(money),money(v[c.length]),'part',group,v];
-  });
-  if(mine.length>1){
-   const v=[...c.map(x=>mine.reduce((s,k)=>s+revOf(x,k),0)),
-            mine.reduce((s,k)=>s+Number(prodOf(k).revenue||0),0)];
-   rows.push([label,v.slice(0,-1).map(money),money(v[c.length]),'total',group,v]);
-  }
-  return rows;
+ // Состав, порядок и числа таблицы решает движок (`phase_comparison_table`):
+ // тот же ответ печатает PDF, и две раскладки одного сравнения не разойдутся.
+ // Экран только форматирует число по его виду.
+ const table=cons.comparison_table||{columns:c.map(x=>x.name),blocks:[]};
+ phaseComparisonHead.innerHTML=`<tr><th>Показатель</th>${table.columns.map(n=>`<th>${escapeHtml(n)}</th>`).join('')}<th>Свод</th></tr>`;
+ const fmt=(r,v)=>{
+  if(v==null||v==='')return '—';
+  if(r.kind==='money')return money(v);
+  if(r.kind==='qty')return num(v)+' '+(r.unit||'');
+  if(r.kind==='th')return num2(v)+' тыс ₽/м²';
+  if(r.kind==='pct')return pct(v);
+  if(r.kind==='mult')return mult(v);
+  if(r.kind==='date')return dateRu(v);
+  return String(v);
  };
- const revAll=[...c.map(x=>Number(x.revenue||0)),Number(cs.revenue||0)];
- const revenueRows=[...revenueGroup(MKD,'Итого МКД','mkd'),
-                    ...revenueGroup(OSZ,'Итого ОСЗ','osz'),
-                    ['Выручка всего',revAll.slice(0,-1).map(money),money(revAll[c.length]),'total','all',revAll]];
- // Непогашенный долг очереди в таблице не стоял вовсе: очередь, не
- // рассчитавшаяся с банком, выглядела здесь так же, как закрывшая долг. А
- // после переноса у передавшей очереди ноль — без строки «передано следующей»
- // обязательство исчезало бы бесследно. Строка заводится вместе с числом.
- const anyDebt=k=>c.some(x=>Number(x[k]||0)>0.5e6);
- const debtRows=[];
- if(anyDebt('ending_pf')||anyDebt('debt_carried_out')||anyDebt('carried_debt_in')){
-  // Порядок строк — это и есть рассказ: сколько пришло, сколько ушло, что
-  // осталось. Прежде «непогашенный долг 0» стоял МЕЖДУ «принято 11,73» и
-  // «передано 11,73» и читался как противоречие («как это долга нет, но он
-  // передан?» — владелец, 30.08.2026). Противоречия нет, но и объяснять его
-  // читателю не должно приходиться.
-  //
-  // И название: 11,73 млрд ПФ ведь НЕ погашены — они сменили должника.
-  // «Непогашенный долг на конец очереди» обещало ровно то, что стояло строкой
-  // выше с другим числом. Осталось — значит осталось здесь, после передачи.
-  if(anyDebt('carried_debt_in'))
-   debtRows.push(['Принято от предыдущей очереди',c.map(x=>money(x.carried_debt_in||0)),'—']);
-  if(anyDebt('debt_carried_out'))
-   debtRows.push(['Передано следующей очереди',c.map(x=>money(x.debt_carried_out||0)),'—']);
-  debtRows.push([anyDebt('debt_carried_out')
-                 ?'Осталось непогашенным на очереди'
-                 :'Непогашенный долг ПФ на конец очереди',
-                 c.map(x=>money(x.ending_pf||0)),money(cons.finance.ending_pf||0)]);
- }
- // Гараж отдельно стоящих объектов строится в СВОЕЙ очереди, и строка
- // заводится вместе с числом: пустая «0 мест» у проекта без ОСЗ — шум.
- // Построено и продаётся — два разных числа: у ТЦ и ФОКа места обеспечивают
- // посетителей и не продаются вовсе, у офисника продаются все, кроме
- // гостевых. Оба считает движок очереди, экран их только печатает. Стоят они
- // в блоке объектов, рядом с их площадями, а не среди площадей МКД.
- const objParkRows=[];
- if(c.some(x=>Number(x.object_parking_units||0)>0)){
-  objParkRows.push(['Паркинг отдельно стоящих объектов — мест',
-   c.map(x=>num(x.object_parking_units||0)+' шт.'),
-   num(cs.object_parking_units||0)+' шт.']);
-  objParkRows.push(['из них продаётся',
-   c.map(x=>num(x.object_parking_saleable_units||0)+' шт.'),
-   num(cs.object_parking_saleable_units||0)+' шт.','sub']);
-  objParkRows.push(['подземная часть под объектами',
-   c.map(x=>num(x.object_parking_under_gns||0)+' м²'),
-   num(cs.object_parking_under_gns||0)+' м²','sub']);
- }
- const blocks=[
-  ['mkd','Объём МКД — к продаже',volume(MKD)],
-  ['osz','Отдельно стоящие объекты',[...volume(objBlockKeys,' — к продаже'),...objParkRows]],
-  ['revenue','Выручка',revenueRows],
-  ['costs','Затраты',[
-   ['CAPEX',c.map(x=>money(x.capex)),money(cs.capex)],
-   ['Полные расходы',c.map(x=>money(x.total_expenses)),money(cs.total_expenses)],
-  ]],
-  ['unit','Удельные показатели',[
-   // Удельный подписан своим делителем, и делитель стоит строкой над ним:
-   // те же числа, на которые делит движок (`monetizable_saleable_sqm`,
-   // `project_gns_sqm`), а не площадь, угаданная по заголовку.
-   ['Делитель «на м² продаваемой» — продаваемая площадь',c.map(x=>num(x.saleable_sqm)+' м²'),num(csSale)+' м²'],
-   ['Делитель «на м² ГНС» — ГНС наземная',c.map(x=>num(x.gns_sqm)+' м²'),num(csGns)+' м²'],
-   ['Цена реализации на м² продаваемой',c.map(x=>num2(x.revenue_per_saleable_th)+' тыс ₽/м²'),perTh(cs.revenue,csSale)],
-   ['Цена реализации на м² ГНС',c.map(x=>num2(x.revenue_per_gns_th)+' тыс ₽/м²'),perTh(cs.revenue,csGns)],
-   ['CAPEX на м² ГНС',c.map(x=>num2(x.capex_per_gns_th)+' тыс ₽/м²'),perTh(cs.capex,csGns)],
-   ['Полные расходы на м² продаваемой',c.map(x=>num2(x.expenses_per_saleable_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csSale)],
-   ['Полные расходы на м² ГНС',c.map(x=>num2(x.expenses_per_gns_th)+' тыс ₽/м²'),perTh(cs.total_expenses,csGns)],
-   ['Чистая прибыль на м² продаваемой',c.map(x=>num2(x.net_profit_per_saleable_th)+' тыс ₽/м²'),perTh(cs.net_profit,csSale)],
-   // Цена метра очереди по общепроектным статьям — из движка: заданная руками
-   // доля видна здесь числом, а не только процентом в редакторе.
-   ...[['ird','ИРД и согласования'],['design','Проектирование П+РД'],['preparation','Подготовительные работы'],['utilities','Наружные сети']].map(([k,l])=>{
-    const inp=((c[0]||{}).shared_rate_inputs_th||{})[k];
-    return [`${l} — цена м² МКД очереди${inp!=null?` (вводная ${num2(inp)} тыс ₽/м²)`:''}`,c.map(x=>((x.shared_rates_th||{})[k]!=null)?num2(x.shared_rates_th[k])+' тыс ₽/м²':'—'),'—'];
-   }),
-  ]],
-  ['finance','Финансирование',[
-   ['Пиковый БРИДЖ',c.map(x=>money(x.peak_bridge)),money(cons.finance.peak_bridge)],
-   ['Затраты до РНС',c.map(x=>money(x.pre_rns_costs)),money(((phaseBundle.phase_financing||{}).totals||{}).pre_rns_costs)],
-   ['Свободный cash проекта',c.map(x=>money(x.project_cash_used)),money(((phaseBundle.phase_financing||{}).totals||{}).project_cash_used)],
-   ['Собственные средства',c.map(x=>money(x.own_funds)),money(((phaseBundle.phase_financing||{}).totals||{}).own_funds)],
-   ['Новый БРИДЖ',c.map(x=>money(x.new_bridge)),money(((phaseBundle.phase_financing||{}).totals||{}).new_bridge)],
-   ['Пиковый остаток ПФ',c.map(x=>money(x.peak_pf)),money(cons.finance.peak_pf)],
-   // Раскрытие эскроу — событие очереди. В своде эти строки складывались под
-   // именами моментов: «Раскрытый эскроу в РВЭ» суммировал раскрытия разных
-   // лет, а «в т.ч. принято от предыдущей очереди» при трёх очередях не
-   // отвечало, от какой (владелец, 31.08.2026). Здесь у каждого числа есть
-   // очередь и дата, а в своде остались только те же величины как итоги.
-   ['Лимит ПФ',c.map(x=>money(x.pf_limit)),money(cons.finance.pf_limit)],
-   ['РВЭ очереди',c.map(x=>x.rve?dateRu(x.rve):'—'),'—'],
-   ['Долг ПФ перед раскрытием',c.map(x=>money(x.rve_pf_before_repayment)),
-    money(cons.finance.rve_pf_before_repayment)],
-   ['Раскрыто эскроу',c.map(x=>money(x.rve_escrow_release)),money(cons.finance.rve_escrow_release)],
-   ['Из него на погашение ПФ',c.map(x=>money(x.rve_pf_repayment)),money(cons.finance.rve_pf_repayment)],
-   ['Не покрыто эскроу при раскрытии',c.map(x=>money(x.rve_pf_shortfall)),
-    money(cons.finance.rve_pf_shortfall)],
-   ...debtRows,
-   ['LLCR',c.map(x=>mult(x.llcr)),mult(cons.summary.llcr)],
-  ]],
-  ['result','Результат',[
-   ['Чистая прибыль — cash',c.map(x=>money(x.net_profit)),money(cons.summary.net_profit)],
-   ['Маржинальность',c.map(x=>pct(x.margin)),pct(cons.summary.margin)],
-   ['Общепроектная нагрузка — cash',c.map(x=>money(x.cash_shared_cost)),'—'],
-   ['Аллоцированные общие расходы',c.map(x=>money(x.allocated_shared_cost)),'—'],
-   ['Аналитическая прибыль после аллокации',c.map(x=>money(x.allocated_net_profit)),'—'],
-  ]],
- ];
  // Сырые числа итогов и слагаемых уходят в разметку (`data-v`): проверка
  // сверяет итог с суммой слагаемых по ним, а не по округлённому тексту.
- const td=(v,raw)=>`<td${raw!=null?` data-v="${raw}"`:''}>${v}</td>`;
- phaseComparisonBody.innerHTML=blocks.filter(b=>b[2].length).map(([key,title,list])=>
-  `<tr class="pc-block" data-block="${key}"><th colspan="${c.length+2}">${title}</th></tr>`+
-  list.map(([l,cells,tot,role,group,vals])=>
-   `<tr data-block="${key}"${role?` class="pc-${role}"`:''}${group?` data-group="${group}"`:''}><td>${l}</td>`+
-   cells.map((v,i)=>td(v,vals&&vals[i])).join('')+td(tot,vals&&vals[cells.length])+'</tr>').join('')
+ const td=(r,v)=>`<td${r.group?` data-v="${v}"`:''}>${fmt(r,v)}</td>`;
+ const span=table.columns.length+2;
+ // Делители удельных — одна подпись таблицы мелким шрифтом, а не строки
+ // тела: крупная «Делитель…» среди показателей читалась как ещё одно число.
+ // Метры — целыми, как в PDF (`_phase_comparison_pdf`).
+ const divisors=(table.divisors||[]).length
+  ?`<tr class="pc-caption"><th colspan="${span}"><small class="pc-divisors">Удельные показатели — делители: ${table.divisors.map(d=>escapeHtml(d.label)+': '+
+     table.columns.map((n,i)=>escapeHtml(n)+' '+num(Math.round(d.values[i]||0))).concat('свод '+num(Math.round(d.total||0))).join(' · ')+
+     ' '+escapeHtml(d.unit||'')).join('<br>')}</small></th></tr>`
+  :'';
+ const label=r=>r.label+(r.rate_input!=null?` (вводная ${num2(r.rate_input)} тыс ₽/м²)`:'');
+ phaseComparisonBody.innerHTML=divisors+table.blocks.map(b=>
+  `<tr class="pc-block" data-block="${b.key}"><th colspan="${span}"><span>${b.title}</span></th></tr>`+
+  b.rows.map(r=>
+   `<tr data-block="${b.key}"${r.role?` class="pc-${r.role}"`:''}${r.group?` data-group="${r.group}"`:''}><td>${label(r)}</td>`+
+   r.values.map(v=>td(r,v)).join('')+td(r,r.total)+'</tr>').join('')
  ).join('');
  renderPhaseEscrowCharts();
  // Причина, по которой долг сменил очередь — или по которой не сменил.
@@ -53168,7 +53347,7 @@ function renderPhaseComparison(){
    note.textContent=carry.note;
    note.className='note '+(carry.applied?'phase-total-ok':'phase-total-bad');
    note.style.display='block';
-  }else if(debtRows.length){
+  }else if(table.has_debt){
    note.textContent='Перенос долга между очередями выключен: непогашенный остаток остаётся на очереди, которая его набрала, и означает дефолт по её линии. Признак — на вкладке «Очерёдность».';
    note.className='note';note.style.display='block';
   }else{note.style.display='none'}
@@ -54223,9 +54402,18 @@ function renderResult(){
   // рынком, ни с себестоимостью.
   const rGns=Number(r.summary.project_gns_sqm||0),rSaleable=Number(r.summary.monetizable_saleable_sqm||0);
   const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
-  revenueTable.innerHTML=Object.entries(r.revenue).filter(([key])=>key!=='total')
-   .map(([key,v])=>`<tr><td>${productName(key)}</td><td>${money(v)}</td><td>${perTh(v,rGns)}</td><td>${perTh(v,rSaleable)}</td></tr>`).join('')
-   +`<tr><th>Итого</th><th>${money(r.revenue.total)}</th><th>${perTh(r.revenue.total,rGns)}</th><th>${perTh(r.revenue.total,rSaleable)}</th></tr>`;
+  // Состав, порядок и итоги групп решает движок (`revenue_structure`):
+  // МКД → Итого МКД → объекты, каждый со своим паркингом → Итого ОСЗ →
+  // Итого; нулевых продуктов нет. Прежде строки шли в порядке словаря.
+  // Результат без раскладки (сохранён до неё) печатается прежним списком,
+  // а не пустой таблицей: пустота читалась бы как «выручки нет».
+  const rs=(r.revenue_structure||{}).rows
+   ||[...Object.entries(r.revenue||{}).filter(([k])=>k!=='total').map(([k,v])=>({label:productName(k),value:v,role:'part',group:''})),
+      {label:'Итого',value:(r.revenue||{}).total,role:'total',group:'all'}];
+  revenueTable.innerHTML=rs.map(x=>{
+   const c=x.group==='all'?'th':'td',cls=x.role==='total'?(x.group==='all'?'':' class="rs-total"'):' class="rs-part"';
+   return `<tr${cls} data-group="${x.group}" data-role="${x.role}"><${c}>${escapeHtml(x.label)}</${c}><${c}>${money(x.value)}</${c}><${c}>${perTh(x.value,rGns)}</${c}><${c}>${perTh(x.value,rSaleable)}</${c}></tr>`;
+  }).join('');
  }
  // Имена статей приходят из движка плейсхолдером, как VERSION и доли ТЭП.
  const capNames=__DEVELOPAID_CAPEX_NAMES__;
