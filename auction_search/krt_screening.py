@@ -96,12 +96,6 @@ def _ru_number(value: Any, digits: int = 0) -> str:
     return f"{_number(value):,.{digits}f}".replace(",", " ")
 
 
-def _pct_word(inputs: dict[str, Any], core: Any, key: str) -> str:
-    """Процент вводной словами («1», «0,25»): нет ключа — умолчание модели."""
-    value = _number(inputs.get(key, core.DEFAULT_INPUTS.get(key)))
-    return f"{value:g}".replace(".", ",")
-
-
 def _queue_word(count: int) -> str:
     if count % 10 == 1 and count % 100 != 11:
         return "очередь"
@@ -1199,10 +1193,7 @@ def build_krt_model_screening(
         f"Квартирография: средний продаваемый лот {_ru_number(lot_area, 1)} м²; расчётно {_ru_number(saleable / lot_area)} квартир.",
         f"Паркинг рассчитан по методике импорта DevelopAid: {_ru_number(parking_spaces)} мест по {_ru_number(UNDERGROUND_AREA_PER_SPACE)} м² ГНС; "
         f"цена места — {_ru_number(_number(preset.get('parking_price_th')) / 1000, 1)} млн ₽ из классового пресета.",
-        # Проценты — из вводных, на которых шёл расчёт: литерал отстал бы от
-        # умолчания модели при первой же его правке.
-        f"Рост цены принят по базовым вводным модели: {_pct_word(inputs, core, 'monthly_growth_pre_pct')}% в месяц до РВЭ "
-        f"и {_pct_word(inputs, core, 'monthly_growth_post_pct')}% после РВЭ; "
+        "Рост цены принят по базовым вводным модели: 1,5% в месяц до РВЭ и 0,25% после РВЭ; "
         "для очередей дополнительно применены 8% в год к затратам и их стартовой цене.",
     ]
     social_text = "; ".join(
