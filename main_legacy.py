@@ -67,6 +67,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
 from request_body import json_object
+import v4_book_polish
 import v4_dashboard
 import v4_entry_sheet
 import v4_value_cache
@@ -21710,6 +21711,15 @@ def _v4_report_unit_tables_style(xml: str) -> str:
         xml = _v4_restyle_row(xml, row, {c: head for c in "ABCDE"})
     for row in list(range(76, 84)) + list(range(87, 94)):
         xml = _v4_restyle_row(xml, row, {"A": label.get("A", ""), "E": label.get("G", "")})
+    # «Итого» доли структуры расходов — в процентах, как строки над ним
+    # (стоял формат суммы: «1,0» вместо «100,0%»); шапка «Подземная, м²» —
+    # стилем шапки своей таблицы.
+    shares = _v4_sheet_row_styles(xml, 39).get("C")
+    if shares:
+        xml = _v4_restyle_row(xml, 40, {"C": shares.replace('"', '"')})
+    product_header = _v4_sheet_row_styles(xml, 45).get("F")
+    if product_header:
+        xml = _v4_restyle_row(xml, 45, {"G": product_header})
     return xml
 
 
@@ -21793,6 +21803,106 @@ def _v4_report_area_labels(xml: str, missing: list[str]) -> str:
         if not done:
             missing.append(f"ОТЧЕТ · подпись {coord} не записана")
     return xml
+
+
+def _v4_family_present(inputs: dict[str, Any], key: str) -> bool:
+    """Есть ли в проекте объект этого вида — сам или любой его экземпляр."""
+    return any(b(inputs, o.enabled_key) for o in STANDALONE_OBJECTS
+               if o.key == key or o.family == key)
+
+
+def _v4_storage_present(tep: dict[str, dict[str, Any]]) -> bool:
+    return float((tep.get("storage") or {}).get("units") or 0) > 0
+
+
+def _v4_absent_products(inputs: dict[str, Any], tep: dict[str, dict[str, Any]]) -> frozenset[str]:
+    """Продукты шаблона, которых нет в проекте, — их строки Дашборд не показывает."""
+    absent = {key for key in ("offices", "standalone_retail", "above_parking")
+              if not _v4_family_present(inputs, key)}
+    if not _v4_storage_present(tep):
+        absent.add("storage")
+    return frozenset(absent)
+
+
+# Строки листов, которые скрываются, когда объекта нет в проекте. Подпись —
+# часть адреса: оформление сверяет её и не скрывает строку, если стоит другая.
+_V4_ABSENT_OBJECT_ROWS: dict[str, tuple[tuple[str, int, str, str], ...]] = {
+    "offices": (("ОТЧЕТ", 50, "A", "МФОЦ"), ("ОТЧЕТ", 91, "A", "МФОЦ"),
+                ("ТЭП", 31, "B", "МФОЦ")),
+    "standalone_retail": (("ОТЧЕТ", 51, "A", "Торговый центр"), ("ОТЧЕТ", 92, "A", "Торговый центр"),
+                          ("ТЭП", 32, "B", "Торговый центр")),
+    "above_parking": (("ОТЧЕТ", 52, "A", "Наземный паркинг"), ("ОТЧЕТ", 93, "A", "Наземный паркинг"),
+                      ("ТЭП", 33, "B", "Наземный")),
+    "sports": (("ОТЧЕТ", 53, "A", "ФОК"), ("ТЭП", 34, "B", "ФОК")),
+}
+_V4_OBJECT_BLOCK_SPAN = 28          # заголовок блока ОБЪЕКТЫ … «Паркинг объекта — выручка»
+_V4_OBJECT_QUEUE_FIRST = 92         # ОБЪЕКТЫ: «Очередь 1 — Выручка объектов»
+_V4_OBJECT_QUEUE_STRIDE = 8
+_V4_OBJECT_QUEUE_ROWS = 7
+_V4_TEP_QUEUE_PRODUCTS = ("Квартиры", "Коммерция 1 этажа", "Подземный паркинг", "Кладовые")
+_V4_QUEUE_BLOCKS = {                # лист: (заголовок первой очереди, шаг блока)
+    "Продажи": (6, _V4_SALES_PHASE_STRIDE),
+    "CAPEX": (6, _V4_CAPEX_BLOCK_STRIDE),
+    "ВРИ": (6, _V4_VRI_BLOCK_STRIDE),
+}
+
+
+def _v4_hidden_plan(inputs: dict[str, Any], tep: dict[str, dict[str, Any]], queues: int,
+                    entry_xml: str) -> tuple[dict[str, list[tuple[int, str, str]]], set[str]]:
+    """Что скрыть в книге: объекты и очереди, которых нет в проекте.
+
+    Решение владельца 29.09.2026. Скрывается, а не удаляется: формулы на эти
+    строки ссылаются, и включённый потом прямо в Excel объект вернётся, стоит
+    показать строки. Вводные объектов не скрываются — в них сам выключатель.
+    """
+    rows: dict[str, list[tuple[int, str, str]]] = {}
+
+    def hide(sheet: str, row: int, column: str = "A", label: str = "") -> None:
+        rows.setdefault(sheet, []).append((row, column, label))
+
+    for key, places in _V4_ABSENT_OBJECT_ROWS.items():
+        present = (b(inputs, "sports_enabled") if key == "sports"
+                   else _v4_family_present(inputs, key))
+        if not present:
+            for sheet, row, column, label in places:
+                hide(sheet, row, column, label)
+    for lay in _v4_layouts():
+        if b(inputs, lay.obj.enabled_key):
+            continue
+        name = (lay.obj.group_label or lay.obj.label).upper() if lay.extra else ""
+        head = lay.object_head
+        hide("ОБЪЕКТЫ", head, "A", name)
+        for row in range(head + 1, head + _V4_OBJECT_BLOCK_SPAN):
+            hide("ОБЪЕКТЫ", row)
+        if lay.extra and lay.tep_row > 36:
+            hide("ТЭП", lay.tep_row, "B", lay.obj.tep_label or lay.obj.label)
+    if not _v4_storage_present(tep):
+        hide("ОТЧЕТ", 49, "A", "Кладовые")
+        hide("ОТЧЕТ", 90, "A", "Кладовые")
+    for q in range(queues + 1, 5):
+        hide("ОТЧЕТ", 24 + q)
+        tep_head = 4 + _V4_TEP_PHASE_STRIDE * (q - 1)
+        for index, product in enumerate(_V4_TEP_QUEUE_PRODUCTS):
+            hide("ТЭП", tep_head + index, "B", product)
+        hide("ТЭП", tep_head + len(_V4_TEP_QUEUE_PRODUCTS), "A", f"Итого очередь {q}")
+        for sheet, (first, stride) in _V4_QUEUE_BLOCKS.items():
+            head = first + stride * (q - 1)
+            hide(sheet, head, "A", f"ОЧЕРЕДЬ {q}")
+            for row in range(head + 1, head + stride):
+                hide(sheet, row)
+        start = _V4_OBJECT_QUEUE_FIRST + _V4_OBJECT_QUEUE_STRIDE * (q - 1)
+        for row in range(start, start + _V4_OBJECT_QUEUE_ROWS):
+            hide("ОБЪЕКТЫ", row, "A", f"Очередь {q} —")
+        for found in re.finditer(r'<x:row r="(\d+)"[^>]*>(.*?)</x:row>', entry_xml or "", re.S):
+            text = _v4_cell_text(found.group(0), f"A{found.group(1)}") or ""
+            if re.fullmatch(rf"(ДОО|СОШ|Поликлиника) — очередь {q}", text):
+                hide("Вводные", int(found.group(1)), "A", text)
+    if _v4_storage_present(tep):
+        pass
+    else:
+        for q in range(1, queues + 1):
+            hide("ТЭП", 4 + _V4_TEP_PHASE_STRIDE * (q - 1) + 3, "B", "Кладовые")
+    return rows, {f"CF_{q}" for q in range(queues + 1, 5)}
 
 
 def _v4_object_checks(xml: str, missing: list[str]) -> str:
@@ -26904,7 +27014,8 @@ def _build_project_workbook(
             _AGENT_BANK_LLCR_TARGET, _v4_cf_columns(), enabled_phases > 1,
             _V4_CAPEX_ARTICLE_ROW, _V4_CAPEX_BLOCK_STRIDE,
             _v4_dashboard_extra_products(),
-            frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)))
+            frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)),
+            hidden_products=_v4_absent_products(x, tep), queues=count)
     except Exception as exc:  # noqa: BLE001 — дашборд без книги не выпускается молча
         missing.append("Дашборд · не собран: " + _error_location(exc))
 
@@ -27007,6 +27118,16 @@ def _build_project_workbook(
     # может. Сбой оставляет книгу без значений и говорит об этом: выгрузка без
     # чисел хуже, чем с ними, но несобранная выгрузка хуже обеих.
     content = out.getvalue()
+    # Оформление по решениям владельца (ревизия 29.09.2026): порядок листов,
+    # закрепления, печать, форматы по единице, скрытие того, чего нет в
+    # проекте. Только стили и атрибуты — формулы не трогаются.
+    _hidden_rows, _hidden_sheets = _v4_hidden_plan(x, tep, count, entry_xml)
+    try:
+        content = v4_book_polish.polish(content, hidden_rows=_hidden_rows,
+                                        hidden_sheets=_hidden_sheets, missing=missing)
+    except Exception as exc:  # noqa: BLE001 — книга без оформления лучше несобранной
+        missing.append("оформление книги не применено: " + _error_location(exc))
+    polished = content
     # Счёт всей книги стоит около четырнадцати секунд — для выгрузки это
     # ничто, а для набора тестов много: книгу собирают 62 файла, и на каждой
     # сборке набор подорожал бы получасом. Поэтому `tests/conftest.py` гасит
@@ -27027,7 +27148,7 @@ def _build_project_workbook(
     except _SkipValueCache:
         pass
     except Exception as exc:  # noqa: BLE001 — молчащая потеря значений и есть болезнь
-        content = out.getvalue()
+        content = polished
         missing.append("сохранённые значения не записаны: " + _error_location(exc))
 
     stem = _safe_file_stem(title, "project")
