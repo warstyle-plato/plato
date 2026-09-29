@@ -38,7 +38,10 @@ def _calc(approved_mln: float) -> dict:
     inputs = {**core.DEFAULT_INPUTS, "purchase_price_mln": 3000,
               "project_start": "2027-01-01", "ird_months": 12,
               "construction_months": 24, "apartment_price_th": 500,
-              "pf_limit_approved_mln": approved_mln}
+              "pf_limit_approved_mln": approved_mln,
+              # Рост цены — вводная картины: на нём проект прибылен, и вопрос
+              # теста ровно в оговорке к положительному заключению.
+              "monthly_growth_pre_pct": 1.5}
     tep = {key: dict(row) for key, row in core.TEP_DEFAULT.items()}
     return core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))
 

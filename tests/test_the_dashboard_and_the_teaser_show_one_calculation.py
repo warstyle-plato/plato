@@ -88,7 +88,9 @@ def _defaulted() -> tuple[dict, dict, None]:
 def _phased() -> tuple[dict, dict, dict]:
     """Две очереди: строки сроков и лента дашборда живут по очередям."""
     inputs = copy.deepcopy(core.DEFAULT_INPUTS)
-    inputs.update(project_name="Проект в две очереди")
+    # Рост цены закреплён: при умолчании 1 %/мес. обе очереди уходят в
+    # дефолт, а дефолт — отдельная форма `_defaulted`, не эта.
+    inputs.update(project_name="Проект в две очереди", monthly_growth_pre_pct=1.5)
     phasing = {"enabled": True, "mode": "phased", "phase_count": 2, "user_enabled": True,
                "phase_gap_months": 12,
                "phases": [{"name": f"О{i + 1}", "start_offset_months": 12 * i,

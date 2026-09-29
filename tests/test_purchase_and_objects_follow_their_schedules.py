@@ -350,7 +350,7 @@ def test_the_stage_fields_are_the_ladder_and_the_engine_reads_them() -> None:
         assert key in fields and key in core.DEFAULT_INPUTS
         assert key not in core._M2_TEMPLATE_ONLY_INPUTS, f"{key} помечен как нечитаемый движком"
     # Заданный этап замещает ежемесячный рост до РВЭ: без него цену ведёт
-    # 1,5% в месяц, с ним — одна ступень.
+    # ежемесячный рост, с ним — одна ступень.
     flat = _inputs(monthly_growth_pre_pct=0)
     before = core.build_operating_model(flat, _tep(), [])["revenue_by_product"]["apartments"]
     after = core.build_operating_model({**flat, "growth_stage2_pct": 10}, _tep(), [])["revenue_by_product"]["apartments"]

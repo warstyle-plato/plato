@@ -87,7 +87,10 @@ def test_the_social_objects_are_not_later_than_the_first_queues() -> None:
     assert core._purchase_feasibility(3000, 5000, floor - 0.01, 20000)["status"] == "negative"
     assert core._purchase_feasibility(3000, 5000, floor + 0.01, 20000)["status"] != "negative"
 
-    known = {"parking_k1": 0.75, "parking_k2": 0.5}
+    # Рост цены — вводная этой картины, а не умолчание формы: на 1 %/мес.
+    # (умолчание с 29.09.2026) слабейшая очередь площадки опускается ниже
+    # порога уже от цены, а не от места соцобъекта.
+    known = {"parking_k1": 0.75, "parking_k2": 0.5, "monthly_growth_pre_pct": 1.5}
     def _weakest(x: dict) -> float:
         got = core._run_authoritative_model(
             dict(x), screening["model_inputs"]["tep"], [],
