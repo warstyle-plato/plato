@@ -51530,6 +51530,20 @@ function tepRowUnderGns(key,row){
 function tepRowAboveGns(key,row){
  return UNDERGROUND_PRODUCTS.includes(key)?0:Number((row||{}).gns||0);
 }
+// Наземная ГНС проекта по строкам ТЭП — один ответ для итога таблицы и для
+// предупреждения о потенциале участка. Прежде оба складывали строки своим
+// циклом, и в предупреждении стояла обобщённая фраза «прочие наземные (офисы,
+// ТЦ, наземный паркинг, соцобъекты)» без чисел: 214 700 м² «прочих» нельзя было
+// разобрать, не вычисляя руками (владелец, 29.09.2026). Правило то же, что у
+// движка (`project_above_gns`): все строки, кроме подземных продуктов.
+// Экземпляр объекта вне состава проекта строкой не считается.
+function projectAboveGnsParts(){
+ return Object.entries(tep)
+  .filter(([key])=>objectInProject(key))
+  .map(([key,row])=>({key,label:(row&&row.label)||productName(key),gns:tepRowAboveGns(key,row)}))
+  .filter(part=>part.gns>0.5);
+}
+function projectAboveGns(){return projectAboveGnsParts().reduce((a,p)=>a+p.gns,0)}
 // Метры гаража объекта считает движок (`apply_object_parking`), а таблица ТЭП
 // на вводных живёт своими строками, куда их никто не пишет. Подпись «гаражи
 // объектов» при этом складывала поле, которое всегда пусто, и гараж офисника
@@ -51969,10 +51983,11 @@ function updateTepTotals(){
  let underGns=0;
  Object.entries(tep).forEach(([k,r])=>{
    Object.keys(sums).forEach(c=>{
-     sums[c]+=c==='gns'?tepRowAboveGns(k,r):Number(r[c]||0);
+     if(c!=='gns')sums[c]+=Number(r[c]||0);
    });
    underGns+=tepRowUnderGns(k,r);
  });
+ sums.gns=projectAboveGns();
  renderTepUndergroundNote(sums.gns,underGns);
  tg.textContent=num(sums.gns);ta.textContent=num(sums.total_area);tu.textContent=num(sums.useful);ts.textContent=num(sums.saleable);tt.textContent=num(sums.transfer);tn.textContent=num(sums.units);
  renderSitePanel();
@@ -52305,11 +52320,11 @@ function renderSitePanel(){
  if(potLabel)potLabel.textContent=normative?'Потенциал продаваемой площади квартир':'Потенциал поэтажной площади';
  const useLabel=document.getElementById('siteUsageLabel');
  if(useLabel)useLabel.textContent=normative?'Использовано квартирами':'Использовано наземной ГНС';
- let above=0,core=0;
- Object.entries(tep).forEach(([key,row])=>{
-   const gns=tepRowAboveGns(key,row);above+=gns;
-   if(key==='apartments'||key==='ground_commercial')core+=gns;
- });
+ const parts=projectAboveGnsParts();
+ const above=parts.reduce((a,p)=>a+p.gns,0);
+ const coreKeys=['apartments','ground_commercial'];
+ const core=parts.filter(p=>coreKeys.includes(p.key)).reduce((a,p)=>a+p.gns,0);
+ const otherParts=parts.filter(p=>!coreKeys.includes(p.key)).sort((a,b)=>b.gns-a.gns);
  const other=above-core;
  const used=normative?Number((tep.apartments||{}).saleable||0):above;
  document.getElementById('sitePotential').textContent=potential>0?num(potential)+' м²':'—';
@@ -52328,8 +52343,10 @@ function renderSitePanel(){
    // ошибка пересчёта.
    :'Наземная ГНС проекта <b>'+num(above)+' м²</b> превышает потенциал участка <b>'+num(potential)+
     ' м²</b> при плотности '+num(effectiveSiteDensity())+' м²/га.'+
-    (other>0.5?' В составе: жильё и коммерция 1 этажа — <b>'+num(core)+' м²</b>, прочие наземные (офисы, ТЦ, наземный паркинг, соцобъекты) — <b>'+
-     num(other)+' м²</b>. Кнопка пересчёта меняет только жильё и коммерцию; отключите лишние объекты или поднимите плотность.'
+    (other>0.5?' В составе: жильё и коммерция 1 этажа — <b>'+num(core)+' м²</b>, прочие наземные — <b>'+
+     num(other)+' м²</b>: <span id="siteDensityParts">'
+     +otherParts.map(p=>escapeHtml(p.label)+' — '+num(p.gns)+' м²').join('; ')
+     +'</span>. Кнопка пересчёта меняет только жильё и коммерцию; отключите лишние объекты или поднимите плотность.'
      :' Проверьте плотность или состав ТЭП.');
  }else warn.style.display='none';
 }

@@ -167,7 +167,11 @@ def test_the_potential_is_compared_with_the_above_ground_gns():
     assert match
     # Подземную часть отсекает правило строки на списке движка; поведение
     # проверяет tests/test_the_storage_is_not_above_ground.py.
-    assert "tepRowAboveGns" in match.group(0)
+    # Сумма — общая с итогом таблицы ТЭП (`projectAboveGnsParts`), а та
+    # берёт правило строки.
+    assert "projectAboveGnsParts" in match.group(0)
+    shared = re.search(r"function projectAboveGnsParts\(\).*?\n\}", core.PAGE, re.S)
+    assert shared and "tepRowAboveGns" in shared.group(0)
 
 
 def test_glavapu_import_feeds_the_density(monkeypatch):

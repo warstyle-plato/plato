@@ -100,7 +100,9 @@ def test_a_reader_does_not_keep_its_own_underground_list(fn):
     """Копия списка отстала бы от движка: читатель берёт правило строки."""
     body = page_blocks.function(fn)
     assert "'underground_parking'" not in body and "'storage'" not in body
-    assert "tepRowAboveGns" in body
+    # Читатель берёт правило строки сам или через общую сумму наземной ГНС.
+    assert "tepRowAboveGns" in body or "projectAboveGnsParts" in body
+    assert "tepRowAboveGns" in page_blocks.function("projectAboveGnsParts")
 
 
 def test_the_bot_summary_names_the_above_ground_gns():
