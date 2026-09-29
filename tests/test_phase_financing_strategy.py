@@ -24,7 +24,10 @@ def nagatino():
     imported = TestClient(core.app).post("/api/project-presets/import", json={
         "preset": preset,
         "mode": "apply",
-        "inputs": copy.deepcopy(core.DEFAULT_INPUTS),
+        # Preset has no price growth of its own; 1.5 %/month is this case's
+        # input (form default is 1.0 since 29.09.2026): at 1.0 O1 releases no
+        # cash before O4's RNS and there is nothing to compare strategies on.
+        "inputs": {**copy.deepcopy(core.DEFAULT_INPUTS), "monthly_growth_pre_pct": 1.5},
         "tep": {},
     }).json()
     tep = copy.deepcopy(core.TEP_DEFAULT)
