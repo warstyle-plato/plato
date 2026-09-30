@@ -93,6 +93,7 @@ details{border:1px solid var(--line);margin-top:10px}summary{cursor:pointer;padd
     <div class="body">
      <div class="kpis" id="territoryStats" style="grid-template-columns:repeat(4,1fr)"></div>
      <div id="objectsTable"></div>
+     <div id="contourObjects"></div>
     </div>
    </section>
 
@@ -271,6 +272,38 @@ function renderTerritory(req,parcels){
  $('territoryStats').innerHTML=[[lands.length||'—','земельных участков'],[rows.length||'—','объектов'],[counts['Снос']||0,'под снос'],[(counts['Реконструкция']||0)+(counts['Сохранение']||0),'реконструкция / сохранение']].map(x=>'<div class="kpi"><b>'+x[0]+'</b><span>'+x[1]+'</span></div>').join('');
  $('objectsTable').innerHTML=rows.length?'<details><summary>Снос / реконструкция / сохранение — '+rows.length+' объектов</summary><div class="detailsbody" style="overflow:auto"><table><thead><tr><th>КН / адрес</th><th>Объект</th><th>Площадь</th><th>Действие</th></tr></thead><tbody>'+rows.slice(0,60).map(x=>'<tr><td>'+esc(x.cadastral_number||x.address||'—')+'</td><td>'+esc(x.name||x.purpose||x.address||'—')+'</td><td class="num">'+fmt(x.area_sqm)+' м²</td><td>'+esc(fate(x))+'</td></tr>').join('')+'</tbody></table></div></details>':'<div class="notice">Перечень существующих объектов в текущих данных не получен.</div>';
 }
+const CONTOUR_KIND={land:'ЗУ',building:'здание',structure:'сооружение',unfinished:'ОНС'};
+const CONTOUR_OWNER={moscow:'Москва — 0',non_moscow:'не Москва',unknown:'не определён',not_found:'нет в ЕГРН',not_oks:'не ЗУ/ОКС'};
+function contourList(title,numbers){return numbers&&numbers.length?'<div><b>'+esc(title)+' — '+numbers.length+'</b>: '+numbers.slice(0,40).map(esc).join(', ')+(numbers.length>40?' …':'')+'</div>':''}
+function renderContour(d){
+ const el=$('contourObjects');if(!el)return;
+ if(!d){el.innerHTML='<div class="notice">Объекты в контуре не получены.</div>';return}
+ if(!d.available){el.innerHTML='<div class="notice'+(d.pending?'':' bad')+'">'+(d.pending?'<span class="spinner"></span>':'')+esc(d.problem||d.reason||'Объекты в контуре не найдены')+'</div>';return}
+ const objs=d.objects||[],share=Number(d.in_contour_share||0.5),inside=objs.filter(x=>Number(x.share)>=share),rec=d.reconcile||{},dem=d.demolition||{},buy=d.buyout||{},c=d.counts||{};
+ const rows=Object.fromEntries((buy.rows||[]).map(r=>[r.cadastral_number,r]));
+ const buyText=buy.available?fmt(buy.amount_mln,1)+' млн ₽':(buy.pending?'дочитываем ЕГРН':'не закрыт');
+ let h='<h3 style="margin:14px 0 6px">ОКС и ЗУ в контуре КРТ — по карте НСПД</h3>';
+ h+='<div class="kpis" style="grid-template-columns:repeat(4,1fr)">'+[[c.land||0,'ЗУ в контуре'],[(c.building||0)+(c.structure||0)+(c.unfinished||0),'ОКС в контуре'],[fmt(dem.area_sqm)+' м²','снос: '+(dem.label||'')],[buyText,'выкуп — кадастровая стоимость, не цена сделки']].map(x=>'<div class="kpi"><b>'+esc(x[0])+'</b><span>'+esc(x[1])+'</span></div>').join('')+'</div>';
+ const notes=[];
+ if(d.contour&&d.contour.source)notes.push('Контур: '+d.contour.source+'.');
+ if(d.problem)notes.push(d.problem+'.');
+ (d.truncated||[]).forEach(t=>notes.push('Ответ неполон: '+t.reason+'.'));
+ (dem.assumptions||[]).forEach(a=>notes.push(a+'.'));
+ if(buy.moscow_zero_count)notes.push(buy.moscow_zero_count+' объектов — собственность Москвы: выкуп 0, у города выкупать не надо.');
+ if(buy.unknown_numbers&&buy.unknown_numbers.length)notes.push('Не определён собственник у '+buy.unknown_numbers.length+' объектов — выкуп не 0, а не посчитан: '+buy.unknown_numbers.slice(0,20).join(', ')+'.');
+ if(!buy.available&&buy.known_paid_mln)notes.push('По объектам с доказанным не-московским собственником — '+fmt(buy.known_paid_mln,1)+' млн ₽; итог не закрыт.');
+ if(!buy.available&&buy.reason)notes.push('Выкуп: '+buy.reason+'.');
+ h+='<div class="source">'+notes.map(esc).join(' ')+' Кадастровая стоимость — не цена выкупа: это оценка, а не сделка.</div>';
+ h+='<div class="source">'+contourList('В перечне решения и в контуре',rec.both)+contourList('Только в контуре — решение их не называет',rec.contour_only)+contourList('Только в перечне — на карте в контуре не найдены',rec.list_only)+contourList('На границе контура (меньше '+Math.round(share*100)+'% внутри) — в расчёт не идут',rec.border)+contourList('Без пятна на карте — доля не измерена',rec.no_shape)+(rec.listed_available?'':'<div>Перечень решения не прочитан — сверять не с чем.</div>')+'</div>';
+ const fates=Object.fromEntries((dem.rows||[]).map(r=>[r.cadastral_number,r]));
+ h+=inside.length?'<details><summary>Объекты в контуре — '+inside.length+'</summary><div class="detailsbody" style="overflow:auto"><table><thead><tr><th>КН</th><th>Вид</th><th>Площадь</th><th>Назначение</th><th>Доля в контуре</th><th>Кад. стоимость</th><th>Собственник</th><th>Снос</th></tr></thead><tbody>'+inside.slice(0,200).map(x=>{const r=rows[x.cadastral_number]||{},f=fates[x.cadastral_number];return '<tr><td>'+esc(x.cadastral_number)+'</td><td>'+esc(CONTOUR_KIND[x.kind]||x.kind)+'</td><td class="num">'+fmt(x.area_sqm)+' м²</td><td>'+esc(x.purpose||x.address||'—')+'</td><td class="num">'+fmt(Number(x.share)*100)+'%</td><td class="num">'+fmt((r.value_rub??x.cadastral_value_rub)/1e6,1)+' млн ₽</td><td>'+esc(CONTOUR_OWNER[r.owner]||'—')+'</td><td>'+esc(f?(f.counted?'в площади: ':'')+f.basis:'—')+'</td></tr>'}).join('')+'</tbody></table></div></details>':'';
+ el.innerHTML=h;
+}
+async function loadContour(tries){
+ let d=null;try{d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/contour-objects')}catch(e){d={available:false,problem:String(e.message||e)}}
+ renderContour(d);
+ if(d&&d.pending&&tries>0)setTimeout(()=>loadContour(tries-1),Math.max(5,Number(d.retry_after_seconds)||20)*1000);
+}
 function renderEconomics(rank,report,rating){
  const market=(report&&report.market)||report||{},analysis=market.analysis||{},site=analysis.site||analysis.overall||{},hint=market.price_hint||{},peers=market.peers||[];
  const price=num(rank.surrounding_price_rub_sqm)??num(site.price_per_sqm)??num(hint.price_per_sqm),pace=num(rank.surrounding_sales_units_per_month);
@@ -439,7 +472,7 @@ async function boot(){
  const scorePayload=scoreR.status==='fulfilled'?scoreR.value:null;
  if(scorePayload)syncCanonicalTarget(scorePayload);
  const initialRating=scorePayload?(scorePayload.rating||scorePayload):null;
- renderHero(p,rank,req);renderEntry(p,rank);renderProgramme(p,req);renderOfficialSources(p,req);renderTerritory(req,parcels);renderEconomics(rank,report,initialRating);renderPublic(rank);renderScore(initialRating,!!(scorePayload&&scorePayload.canonical));drawMap();
+ renderHero(p,rank,req);renderEntry(p,rank);renderProgramme(p,req);renderOfficialSources(p,req);renderTerritory(req,parcels);loadContour(30);renderEconomics(rank,report,initialRating);renderPublic(rank);renderScore(initialRating,!!(scorePayload&&scorePayload.canonical));drawMap();
  $('recalcRating').onclick=()=>recalcRating(rank,report);
  $('priceTarget').onkeydown=e=>{if(e.key==='Enter')recalcRating(rank,report)};
  $('refreshMarket').onclick=async()=>{const b=$('refreshMarket');b.disabled=true;b.innerHTML='<span class="spinner"></span>Считаю';try{const d=await get('/auctions/krt/'+encodeURIComponent(SLUG)+'/market');const r2=await get('/auctions/krt/ranking');const rr=(r2.rows||[]).find(x=>String(x.slug||'')===SLUG)||rank;MAP.peers=marketPeers(d);renderHero(p,rr,req);drawMap();try{const s=await get(ratingUrl());const rating=s.rating||s;renderScore(rating,s.canonical);renderEconomics(rr,d,rating)}catch(_){renderEconomics(rr,d,null)}}catch(e){$('economics').insertAdjacentHTML('afterbegin','<div class="notice bad">'+esc(e.message||e)+'</div>')}finally{b.disabled=false;b.textContent='Обновить рынок и модель'}};
