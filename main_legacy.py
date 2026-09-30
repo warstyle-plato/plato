@@ -82,7 +82,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.86"
+VERSION = "0.24.87"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -11745,13 +11745,64 @@ def object_parking_by_hand(inputs: dict[str, Any], prefix: str) -> bool:
     return any(n(inputs, f"{prefix}_parking_{kind}_spaces") > 0 for kind in ("under", "over"))
 
 
+# Своё поле площади места гаража объекта удалено (#541): теперь это норматив
+# класса. Проекты, сохранённые раньше, несут прежний ключ, и молча терять
+# вписанное туда число нельзя — сохранённое состояние накладывается на
+# умолчания, а не исчезает. Прежнее умолчание поля было одно на все классы —
+# 35 м², — и оно решением человека не считается.
+OBJECT_PARKING_AREA_SAVED_KEY = "object_parking_area_per_space_sqm"
+OBJECT_PARKING_AREA_OLD_DEFAULT = 35.0
+
+
+def object_parking_area_saved(inputs: dict[str, Any]) -> dict[str, Any] | None:
+    """Число прежнего поля из сохранённого проекта и его судьба.
+
+    `None` — ключа нет, он пуст или совпадает с нормативом класса: сказать
+    нечего. Иначе `origin`:
+    - `manual` — число вписано руками, оно и действует для гаража объекта;
+    - `old_default` — стояло прежнее умолчание 35 м²: действует норматив
+      класса, а человеку сказано, что число заменено.
+    """
+    raw = (inputs or {}).get(OBJECT_PARKING_AREA_SAVED_KEY)
+    if raw in (None, "") or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    norm = underground_area_per_space(inputs) or OBJECT_PARKING_AREA_DEFAULT
+    if math.isclose(value, norm, abs_tol=1e-9):
+        return None
+    origin = ("old_default"
+              if math.isclose(value, OBJECT_PARKING_AREA_OLD_DEFAULT, abs_tol=1e-9)
+              else "manual")
+    return {"value": value, "norm": norm, "origin": origin}
+
+
 def object_parking_area_per_space(inputs: dict[str, Any]) -> float:
     """Площадь одного подземного места гаража ОСЗ — норматив класса.
 
     Ответ один на гараж дома и гараж объекта: `underground_area_per_space`.
-    Книга пишет в K158 это же число (`_V4_DERIVED_INPUTS`).
+    Исключение одно — число, вписанное руками в прежнее поле сохранённого
+    проекта (`object_parking_area_saved`). Книга пишет в K158 это же число
+    (`_V4_DERIVED_INPUTS`).
     """
+    saved = object_parking_area_saved(inputs)
+    if saved and saved["origin"] == "manual":
+        return saved["value"]
     return underground_area_per_space(inputs) or OBJECT_PARKING_AREA_DEFAULT
+
+
+def _object_parking_area_saved_line(saved: dict[str, Any]) -> str:
+    value = _pdf_num(saved["value"], 1).replace(",0", "")
+    norm = _pdf_num(saved["norm"], 1).replace(",0", "")
+    if saved["origin"] == "manual":
+        return (f"площадь подземного места гаража объектов {value} м² — из сохранённого "
+                f"проекта, вписана руками; норматив класса {norm} м²")
+    return (f"в сохранённом проекте площадь места гаража объектов стояла {value} м² — "
+            f"прежнее умолчание; теперь берётся норматив класса {norm} м²")
 
 
 def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
@@ -11907,6 +11958,14 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
     demand["own_under_gns"] = sum(item["under_gns"] for item in own if item["enabled"])
     demand["area_per_space_sqm"] = under_per_space
     demand["over_area_per_space_sqm"] = over_per_space
+    # Происхождение площади места — рядом с числом: норматив класса и число
+    # из сохранённого проекта на экране выглядят одинаково.
+    saved_area = object_parking_area_saved(inputs)
+    demand["area_per_space_source"] = (
+        "saved_manual" if saved_area and saved_area["origin"] == "manual" else "class_norm")
+    demand["area_per_space_saved"] = saved_area
+    if saved_area and any(item["under_spaces"] for item in own if item["enabled"]):
+        demand.setdefault("assumptions", []).append(_object_parking_area_saved_line(saved_area))
     if layout_warnings:
         demand.setdefault("warnings", []).extend(layout_warnings)
     demand["note"] = _object_parking_note(demand, own)
@@ -16170,6 +16229,35 @@ def _pdf_num(value: Any, decimals: int = 1) -> str:
     return f"{number:,.{decimals}f}".replace(",", " ").replace(".", ",")
 
 
+def _pdf_count_text(value: Any, measure: str) -> str:
+    """«1 362 квартир» — одна неразрывная строка ячейки PDF.
+
+    Число и мера связаны неразрывным пробелом, разряды числа — тоже: узкая
+    колонка «Кол-во» рвала «квартир» на «кварти / р», а «1 199» — на две
+    строки. Пробелы внутри длинной меры («посещений в смену») остаются
+    обычными — там перенос по словам законен.
+    """
+    return _pdf_num(value, 0).replace(" ", "\u00a0") + "\u00a0" + measure
+
+
+def _pdf_count_column_width(cells: "list[str]", font: str, size: float,
+                            padding: float, minimum: float) -> float:
+    """Ширина колонки количества по самому длинному неразрывному куску.
+
+    Колонка не угадывается числом миллиметров: мера у продуктов своя, и
+    «4 500 посещений в смену» длиннее «250 мест». Ячейка переносится только
+    по обычным пробелам и по строкам, поэтому ширину задаёт самое длинное
+    слово с неразрывными пробелами, плюс поля ячейки.
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    widest = 0.0
+    for cell in cells:
+        for line in str(cell or "").split("\n"):
+            for token in line.split(" "):
+                widest = max(widest, stringWidth(token, font, size))
+    return max(minimum, widest + 2 * padding + 1.0)
+
+
 def _pdf_money(value: Any) -> str:
     try:
         number = float(value or 0)
@@ -17268,12 +17356,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # машино-места и места детского сада складывались в число, не значащее
     # ничего. Строка продукта тоже называет свою меру: «250 шт.» у ДОО читалось
     # как штуки, а это места.
+    # Итог — мера на строку: через « · » в одну строку он разваливался в
+    # узкой колонке на семь обрывков.
     def _count(row):
         measure = tep_count_measure(row.get('key'))
-        return (_pdf_num(row.get('units'), 0) + ' ' + measure) if measure else '—'
-    _counts = ' · '.join(f"{_pdf_num(value, 0)} {measure}"
-                         for measure, value in (total.get('units_by_measure') or {}).items()
-                         if value) or '—'
+        return _pdf_count_text(row.get('units'), measure) if measure else '—'
+    _counts = '\n'.join(_pdf_count_text(value, measure)
+                        for measure, value in (total.get('units_by_measure') or {}).items()
+                        if value) or '—'
     # Свой паркинг отдельно стоящего объекта — продукт, и в ТЭП он стоит
     # подстрокой с местами, как на экране: полем на строке объекта его в
     # печати не было вовсе. Метры гаража названы в подписи — в колонке ГНС
@@ -17293,7 +17383,13 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
               if sold else "не продаются — обеспечивают посетителей")
         return "   в т.ч. паркинг объекта, мест: "+"; ".join(where+[tail])
     def _park_count(row):
-        return _pdf_num(row.get('parking_units'), 0) + ' ' + COUNT_PARKING
+        return _pdf_count_text(row.get('parking_units'), COUNT_PARKING)
+
+    def _tep_widths(rows, middle):
+        """Колонка «Кол-во» — по своему содержимому, остаток — названию."""
+        count_w = _pdf_count_column_width([row[-1] for row in rows[1:]], regular,
+                                          normal.fontSize, 5, 22*mm)
+        return [170*mm - sum(middle) - count_w, *middle, count_w]
     if given > 0:
         tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²",
                    f"{TRANSFER_WORD}, м²","Кол-во"]]
@@ -17305,7 +17401,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                 tep_rows.append([_park_label(row),"—","—","—",_park_count(row)])
         tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),
                          _pdf_num(given,0),_counts])
-        story.append(table(tep_rows,[58*mm,30*mm,32*mm,35*mm,15*mm]))
+        story.append(table(tep_rows,_tep_widths(tep_rows,[28*mm,30*mm,30*mm])))
         story.append(P("Переданные метры строятся, но не продаются: в продаваемой "
                        f"площади их нет. {TRANSFER_RECIPIENT_NOTE.capitalize()}.",
                        small))
@@ -17316,7 +17412,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             if float(row.get('parking_units') or 0):
                 tep_rows.append([_park_label(row),"—","—",_park_count(row)])
         tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_counts])
-        story.append(table(tep_rows,[75*mm,32*mm,38*mm,25*mm]))
+        story.append(table(tep_rows,_tep_widths(tep_rows,[32*mm,36*mm])))
 
     # Очередность меняет проект целиком — сроки, инфляцию затрат, стартовые цены
     # и нагрузку по финансированию, — а отчёт о ней молчал: сводные цифры были,
@@ -54630,8 +54726,24 @@ function renderObjectParkingNote(){
  if(!note){box.innerHTML='';return;}
  // Тон у плашки на странице ровно один — `warning`. Придуманные `ok` и `bad`
  // отрисовались бы обычной плашкой: выглядит стилизованным, а стиля нет.
+ // Число прежнего поля площади места гаража из сохранённого проекта движок
+ // держит и называет в плашке; снять его можно только здесь — своего поля
+ // у него больше нет.
+ const saved=projectParking().area_per_space_saved;
+ const drop=saved?('<button type="button" id="objectParkingAreaSavedDrop" class="btn" '
+  +'style="margin-top:6px;font-size:12px">'
+  +(saved.origin==='manual'?'Взять норматив класса':'Понятно, убрать старое число')
+  +'</button>'):'';
  box.innerHTML='<div class="note" style="margin:0;padding:9px 11px;font-size:12px">'
-  +escapeHtml(note)+'</div>';
+  +escapeHtml(note)+(drop?'<br>'+drop:'')+'</div>';
+ const button=document.getElementById('objectParkingAreaSavedDrop');
+ if(button)button.addEventListener('click',dropSavedObjectParkingArea);
+}
+
+function dropSavedObjectParkingArea(){
+ delete inputs.object_parking_area_per_space_sqm;
+ try{persistLocalSilently()}catch(e){}
+ calculate();
 }
 
 
