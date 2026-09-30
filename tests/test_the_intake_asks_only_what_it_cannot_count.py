@@ -142,6 +142,22 @@ def test_money_without_a_unit_is_refused_with_a_reason() -> None:
     assert "единица не названа" in applied["refused"][0]["reason"]
 
 
+def test_the_bot_hands_every_parcel_from_separate_pdf_rows() -> None:
+    """Два отдельных поля кадастра из разбора PDF должны уйти в один расчёт."""
+    import main_legacy as core
+
+    got = di.parse_intake(json.dumps({"fields": [
+        {"key": "cadastral_numbers", "value": "77:01:0005017:20",
+         "unit": "список", "quote": "77:01:0005017:20"},
+        {"key": "cadastral_numbers", "value": "77:01:0005017:56",
+         "unit": "список", "quote": "77:01:0005017:56"},
+    ], "questions": [], "notes": []}, ensure_ascii=False))
+
+    assert core._intake_cadastral_numbers(got) == [
+        "77:01:0005017:20", "77:01:0005017:56"
+    ]
+
+
 def test_the_bot_hands_the_parcel_to_the_calculator() -> None:
     """Номер участка из документа уходит туда же, куда присланный сообщением."""
     import main_legacy as core
