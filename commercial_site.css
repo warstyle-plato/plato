@@ -2,3 +2,22 @@
 
 /* Global residential actions do not describe the commercial project. */
 .commercial-active [data-ia-confirm],.commercial-active .ia-fab,.commercial-active #iaFabHint{display:none!important}
+
+/* Read a month vertically; the optional overview keeps only comparable totals. */
+#commercial .ce-month-toolbar{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:22px;max-width:760px}
+#commercial .ce-month-toolbar label{flex:1;min-width:180px}
+#commercial .ce-month-toolbar button{min-height:42px}
+#commercial .ce-month-breakdown{max-width:760px;font-variant-numeric:tabular-nums}
+#commercial .ce-month-breakdown h3{margin:24px 0 12px}
+#commercial .ce-month-breakdown h4{margin:22px 0 0;padding-bottom:10px;border-bottom:2px solid #111}
+#commercial .ce-month-breakdown dl{margin:0}
+#commercial .ce-month-breakdown dl>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;padding:12px 0;border-bottom:1px solid #ddd;font-size:14px}
+#commercial .ce-month-breakdown dt,#commercial .ce-month-breakdown dd{margin:0;overflow-wrap:anywhere}
+#commercial .ce-month-breakdown dd{text-align:right}
+#commercial .ce-cf-total{font-weight:700;background:#f5f5f5}
+#commercial .ce-month-overview{max-width:760px;margin-top:24px}
+#commercial .ce-month-overview summary{font-size:15px}
+#commercial .ce-month-overview th{white-space:normal}
+#commercial .ce-month-overview table{table-layout:fixed}
+#commercial .ce-month-overview td{white-space:normal;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+@media(max-width:560px){#commercial .ce-month-toolbar label{order:-1;flex-basis:100%}#commercial .ce-month-toolbar button{flex:1}#commercial .ce-month-overview td,#commercial .ce-month-overview th{padding:9px 4px}}

@@ -124,7 +124,7 @@ FIELD_LABELS: dict[str, tuple[str, str]] = {
     "selling_cost_pct": ("Расходы на продажи", "% выручки"),
     "debt_share_pct": ("Доля кредита", "% затрат"),
     "debt_rate_pct": ("Ставка кредита", "% годовых"),
-    "loan_fee_pct": ("Комиссия за кредит", "% лимита"),
+    "loan_fee_pct": ("Комиссия за выдачу кредита", "% каждой выдачи"),
     "sales_cash_sweep_pct": ("Погашение долга из продаж", "% поступлений"),
     "income_area_sqm": ("Арендопригодная площадь", "м²"),
     "rent_rub_sqm_month": ("Базовая аренда", "₽/м²/мес."),
@@ -257,4 +257,3 @@ def install(app: FastAPI) -> None:
         except (TypeError, ValueError, KeyError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return JSONResponse(payload, headers=_NO_STORE)
-

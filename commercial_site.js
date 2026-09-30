@@ -33,6 +33,10 @@
     schema.groups[selection().join('/')].forEach(group => {
       const fieldset = element('fieldset');
       fieldset.append(element('legend', group.label));
+      if (group.keys.includes('debt_rate_pct')) {
+        fieldset.append(element('p', 'Стартовые условия — условный пример модели, не предложение банка. Ставка не загружается из банков и не привязана к ключевой ставке. В расчёте действуют введённые ниже значения; их можно заменить условиями вашего кредита.', 'ce-muted'));
+        fieldset.append(element('p', 'Выдачи — пропорционально затратам. Ставка фиксирована на весь срок; комиссия начисляется на каждую выдачу. Проценты оплачиваются ежемесячно из собственных средств. Срок кредита отдельно не задаётся: остаток погашается при закрытии проекта.' + (strategy === 'sale' ? ' До закрытия долг также погашается из поступлений от продаж после расходов на продажу, в указанной ниже доле.' : ' До продажи актива планового погашения основного долга нет.'), 'ce-muted'));
+      }
       const grid = element('div', null, 'ce-fields');
       group.keys.forEach(key => {
         const meta = schema.fields.find(f => f.key === key);
@@ -106,13 +110,76 @@
     if(result.asset_type==='retail') operations=operations.concat([['Базовая аренда',money(o.base_rent)],['Аренда с оборота',money(o.turnover_rent)]]);
     cards($('ce-operating-kpis'),operations);
     $('ce-annual').replaceChildren(cashTable(result.annual,false));
-    const monthly=result.monthly.months.map((month,i)=>{
-      const row={month}; Object.entries(result.monthly).forEach(([key,series])=>{row[key]=series[i];}); return row;
-    });
-    $('ce-monthly').replaceChildren(cashTable(monthly,true));
+    renderMonthly(result);
     $('ce-result-context').textContent=selection().map((_,i)=>[$('ce-asset'),$('ce-strategy'),$('ce-financing')][i].selectedOptions[0].textContent).join(' · ');
     $('ce-validation').textContent=result.warnings.filter(w=>!w.startsWith('Beta:')&&!w.startsWith('Продажная модель')).join(' ');
     $('ce-results').hidden=false; $('ce-results').dataset.stale='false';
+  }
+  function renderMonthly(result) {
+    const series = result.monthly, months = series.months;
+    const previousMonth = Number($('ce-month-picker')?.value || 0);
+    const host = $('ce-monthly'); host.replaceChildren();
+    const toolbar = element('div', null, 'ce-month-toolbar');
+    const prev = element('button', '← Предыдущий'), next = element('button', 'Следующий →');
+    prev.type = next.type = 'button';
+    prev.id = 'ce-month-prev'; next.id = 'ce-month-next';
+    const label = element('label', 'Месяц проекта'), picker = element('select');
+    picker.id = 'ce-month-picker'; label.htmlFor = picker.id;
+    months.forEach((month, i) => {
+      const option = element('option', 'Месяц ' + month + (month === 0 ? ' · покупка участка' : ''));
+      option.value = i; picker.append(option);
+    });
+    picker.value = Math.min(previousMonth, months.length - 1);
+    label.append(picker); toolbar.append(prev, label, next);
+    const detail = element('div', null, 'ce-month-breakdown'); detail.id = 'ce-month-breakdown';
+    detail.setAttribute('aria-live', 'polite');
+    const income = result.strategy === 'income', debt = result.financing_mode === 'equity_debt';
+    const groups = [
+      ['Проект', [
+        ['development_spend', 'Затраты на девелопмент'],
+        ...(income ? [['operating_revenue', 'Операционная выручка'], ['operating_cost', 'Операционные расходы, TI и fees'], ['terminal_value', 'Продажа актива · до расходов'], ['disposition_cost', 'Расходы на выход']] : [['sale_quantity', 'Продано, ' + (result.asset_type === 'hotel' ? 'номеров' : 'м²'), 'quantity'], ['sale_revenue', 'Выручка от продаж'], ['selling_cost', 'Расходы на продажи']]),
+        ['project_cashflow', 'Денежный поток проекта', 'total']
+      ]],
+      ...(debt ? [['Кредит', [
+        ['debt_draw', 'Выдача кредита'], ['interest', 'Проценты'], ['loan_fees', 'Комиссии за выдачу'],
+        ['debt_before_repayment', 'Долг до погашения'], ['debt_repayment', 'Погашение долга'], ['debt_balance', 'Долг на конец месяца', 'total']
+      ]]] : []),
+      ['Инвестор', [['equity_injection', 'Взнос собственных средств'], ['equity_distribution', 'Выплата инвестору'], ['equity_cashflow', 'Денежный поток инвестора', 'total']]]
+    ];
+    function showMonth() {
+      const i = Number(picker.value); detail.replaceChildren();
+      detail.append(element('h3', 'Месяц ' + months[i]));
+      groups.forEach(([title, fields]) => {
+        const section = element('section'); section.append(element('h4', title));
+        const list = element('dl');
+        fields.forEach(([key, name, kind]) => {
+          const row = element('div', null, kind === 'total' ? 'ce-cf-total' : '');
+          row.dataset.series = key;
+          const value = series[key]?.[i];
+          row.append(element('dt', name), element('dd', value == null ? '—' : kind === 'quantity' ? fmt.format(value) : money(value)));
+          list.append(row);
+        });
+        section.append(list); detail.append(section);
+      });
+      prev.disabled = i === 0; next.disabled = i === months.length - 1;
+    }
+    picker.addEventListener('change', showMonth);
+    prev.addEventListener('click', () => { picker.value = Number(picker.value) - 1; showMonth(); });
+    next.addEventListener('click', () => { picker.value = Number(picker.value) + 1; showMonth(); });
+    const overview = element('details', null, 'ce-month-overview');
+    overview.append(element('summary', 'Сравнить все месяцы'), element('p', 'Сводка в млн ₽. Подробная расшифровка выбранного месяца выше — в рублях.', 'ce-muted'));
+    const scroll = element('div', null, 'ce-scroll'); scroll.tabIndex = 0;
+    const table = element('table'), head = element('thead'), hr = element('tr'), body = element('tbody');
+    ['Месяц', 'Поток проекта', 'Поток инвестора', ...(debt ? ['Долг на конец'] : [])].forEach(name => hr.append(element('th', name)));
+    head.append(hr);
+    months.forEach((month, i) => {
+      const tr = element('tr'); tr.append(element('td', month));
+      ['project_cashflow', 'equity_cashflow', ...(debt ? ['debt_balance'] : [])].forEach(key => tr.append(element('td', fmt.format(series[key][i] / 1e6))));
+      body.append(tr);
+    });
+    table.append(head, body); scroll.append(table); overview.append(scroll);
+    host.append(toolbar, element('p', 'Суммы — в рублях. Расходы, взносы и погашения показаны положительными суммами; итоговые денежные потоки — со знаком.', 'ce-muted'), detail, overview);
+    showMonth();
   }
   async function calculate() {
     if(!initialized) return;
