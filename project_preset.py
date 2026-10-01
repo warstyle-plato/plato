@@ -652,6 +652,7 @@ def map_economics(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
         "demolition_area_sqm": "площадь сносимого",
         "demolition_cost_th_per_sqm": "стоимость сноса",
         "resettlement_cost_mln": "расселение",
+        "land_buyout_mln": "выкуп ЗУ/ОКС у третьих лиц",
         "ird_months": "срок ИРД",
         "construction_months": "срок строительства",
         "share_before_rve_pct": "доля продаж до РВЭ",
