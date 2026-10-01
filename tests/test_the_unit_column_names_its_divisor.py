@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
+from terms_glossary import CORE_TOTAL_AREA, TOTAL_AREA  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -90,6 +91,9 @@ def test_the_pdf_column_carries_the_base_it_divides_by(bundle, summary):
     assert "тыс ₽/м² строит. объёма" not in flat
     assert "тыс ₽/м² строительного объёма" not in flat
     assert "на м² строит. объёма" not in flat
+    assert f"тыс ₽/м² {TOTAL_AREA.genitive}" not in flat
+    assert f"на м² {TOTAL_AREA.genitive}" not in flat
+    assert f"тыс ₽/м² {CORE_TOTAL_AREA.genitive}" not in flat
 
     gns = float(summary["project_gns_sqm"])
     volume = float(summary["construction_volume_sqm"])
@@ -107,6 +111,8 @@ def test_the_page_columns_name_the_same_base():
     page = core.PAGE
     assert page.count("<th>тыс ₽/м² наземной ГНС</th>") == 3
     assert "тыс ₽/м² строит. объёма" not in page
+    assert f"тыс ₽/м² {TOTAL_AREA.genitive}" not in page
+    assert f"тыс ₽/м² {CORE_TOTAL_AREA.genitive}" not in page
     for anchor in ("Структура расходов", "Структура затрат по статьям",
                    "Структура выручки"):
         head = page[page.find(anchor):][:600]
@@ -123,7 +129,8 @@ def test_the_construction_cost_names_the_core_volume():
     объём МКД (наземная плюс подземная части ядра), а не на наземную ГНС и не
     на объём всего проекта. Обе прежние подписи называли чужую базу."""
     source = open("main_legacy.py", encoding="utf-8").read()
-    assert '("construction_cost_per_gns_th", "Строительство, тыс. ₽/м² строит. объёма МКД", "num"),' in source
+    assert ('("construction_cost_per_gns_th", '
+            'f"Строительство, тыс. ₽/м² {CORE_TOTAL_AREA.genitive}", "num"),') in source
     line = next(l for l in source.splitlines()
                 if "construction_cost_per_saleable_th)+'/м² прод." in l)
-    assert "строит. объёма МКД" in line and "/м² ГНС" not in line, line.strip()[:160]
+    assert "'/м² '+TERMS.core_total_area.genitive" in line and "/м² ГНС" not in line, line.strip()[:160]

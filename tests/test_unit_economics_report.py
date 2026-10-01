@@ -25,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
+from terms_glossary import TOTAL_AREA  # noqa: E402
 
 
 def _bundle(phasing: dict | None = None):
@@ -128,7 +129,7 @@ def test_the_pdf_prints_the_unit_economics(payload):
     # читается как посчитанный по всему объёму.
     assert "База ГНС — наземная площадь" in text
     assert "Подземная часть" in text and "в неё не входит" in text
-    assert "Строительный объём" in text
+    assert TOTAL_AREA.name in text
 
 
 def test_the_pdf_construction_table_gained_the_saleable_column(payload):
