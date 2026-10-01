@@ -38,10 +38,6 @@ jobs:
           path = Path('main_legacy.py')
           text = path.read_text(encoding='utf-8')
 
-          # The only intentional overlap is the huge FIELD_GROUPS literal.
-          # If the merge strategy kept the #584 version of that hunk, restore
-          # #588's glossary import/helper and rate labels without touching the
-          # #584 land_buyout_mln field that now belongs to main.
           glossary_import = 'from terms_glossary import CORE_TOTAL_AREA, TOTAL_AREA, page_terms'
           if glossary_import not in text:
               needle = 'import plato_provider\n'
@@ -102,7 +98,7 @@ jobs:
           path.write_text(text, encoding='utf-8')
           PY
 
-          python -m py_compile main_legacy.py terms_glossary.py report_pdf.py
+          python -m py_compile main_legacy.py terms_glossary.py pdf_first_page_extension.py presentation.py teaser_pdf.py
 
           # Temporary resolver must not remain in the PR diff.
           git rm .github/workflows/resolve-pr-588.yml
