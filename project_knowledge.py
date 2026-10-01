@@ -23,7 +23,7 @@ SOURCES = {
     "backlog": ("docs/questions_backlog.md",),
 }
 NORMATIVE_DIR = _ROOT / "docs" / "normative"
-GLOSSARY_FILE = _ROOT / "docs" / "glossary.md"
+GLOSSARY_RELATIVE = Path("docs/glossary.md")
 SOURCE_LABELS = {
     "rules": "CLAUDE.md и его архив — правила, выведенные из поломок",
     "backlog": "docs/questions_backlog.md — задачи и открытые вопросы",
@@ -90,7 +90,7 @@ def _patterns(source: str | None = None) -> list[str]:
     if not source or source == "normative":
         found.append(str(NORMATIVE_DIR.relative_to(_ROOT) / "*.md"))
     if not source or source == "glossary":
-        found.append(str(GLOSSARY_FILE.relative_to(_ROOT)))
+        found.append(str(GLOSSARY_RELATIVE))
     return found
 
 
@@ -110,8 +110,9 @@ def entries(source: str | None = None) -> list[dict[str, str]]:
     ]
     if not source or source == "normative":
         paths += [("normative", path) for path in sorted(NORMATIVE_DIR.glob("*.md"))]
-    if source == "glossary" and GLOSSARY_FILE.exists():
-        paths.append(("glossary", GLOSSARY_FILE))
+    glossary_file = _ROOT / GLOSSARY_RELATIVE
+    if source == "glossary" and glossary_file.exists():
+        paths.append(("glossary", glossary_file))
     for key, path in paths:
         found.extend(_file_entries(key, path))
     return found
@@ -186,8 +187,6 @@ def search(query: str, limit: int = 4, source: str | None = None) -> dict[str, A
         title = entry["title"].lower()
         score = sum(weight(word) * min(haystack.count(word), 3) for word in words)
         score += 3 * sum(weight(word) for word in words if word in title)
-        # При одинаковой релевантности словарь идёт впереди: он владеет
-        # терминологией, а не фактом расчёта или нормой.
         if entry["source"] == "glossary":
             score += 0.25 * sum(1 for word in words if word in haystack)
         if score:
