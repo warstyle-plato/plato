@@ -343,6 +343,44 @@ def parse_intake(answer: str) -> dict[str, Any]:
             continue
         fields.append({"key": key, "value": item.get("value"),
                        "unit": str(item.get("unit") or ""), "quote": quote})
+    # Модель иногда возвращает каждый кадастровый номер отдельной строкой с
+    # одним и тем же key. Дальше бот выбирает поле кадастров один раз и такой
+    # ответ схлопывался до первого участка. Для документа это одна территория:
+    # собираем повторяющиеся строки в одно поле, сохраняя порядок и цитаты.
+    cadastral_positions = [
+        index for index, row in enumerate(fields)
+        if row.get("key") == "cadastral_numbers"
+    ]
+    if len(cadastral_positions) > 1:
+        numbers: list[str] = []
+        quotes: list[str] = []
+        unit = ""
+        for index in cadastral_positions:
+            row = fields[index]
+            unit = unit or str(row.get("unit") or "")
+            value = row.get("value")
+            values = value if isinstance(value, (list, tuple, set)) else [value]
+            for one in values:
+                written = str(one or "").strip()
+                if not written:
+                    continue
+                found = re.findall(r"(?<!\\d)\\d{2}:\\d{2}:\\d{6,8}:\\d+(?!\\d)", written)
+                candidates = found or [written]
+                for candidate in candidates:
+                    if candidate not in numbers:
+                        numbers.append(candidate)
+            quote = str(row.get("quote") or "").strip()
+            if quote and quote not in quotes:
+                quotes.append(quote)
+        first = cadastral_positions[0]
+        fields = [row for row in fields if row.get("key") != "cadastral_numbers"]
+        fields.insert(first, {
+            "key": "cadastral_numbers",
+            "value": numbers,
+            "unit": unit or "список",
+            "quote": " | ".join(quotes),
+        })
+
     # Вопрос задаётся только о том, чего нельзя ни прочитать, ни посчитать.
     # Остальное не выбрасывается молча: молча снятый вопрос читается как
     # «об этом не подумали», а тут наоборот — об этом есть кому ответить.
