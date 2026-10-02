@@ -96,6 +96,21 @@ def test_a_quoted_known_field_survives() -> None:
     assert got["fields"][0]["quote"].startswith("СПП ГНС")
 
 
+def test_separate_cadastral_rows_are_merged_into_one_territory() -> None:
+    """Два участка в одном PDF не должны превращаться в один при расчёте."""
+    got = di.parse_intake(_answer([
+        {"key": "cadastral_numbers", "value": "77:01:0005017:20",
+         "unit": "список", "quote": "77:01:0005017:20"},
+        {"key": "cadastral_numbers", "value": "77:01:0005017:56",
+         "unit": "список", "quote": "77:01:0005017:56"},
+    ]))
+    rows = [row for row in got["fields"] if row["key"] == "cadastral_numbers"]
+    assert len(rows) == 1
+    assert rows[0]["value"] == ["77:01:0005017:20", "77:01:0005017:56"]
+    assert "77:01:0005017:20" in rows[0]["quote"]
+    assert "77:01:0005017:56" in rows[0]["quote"]
+
+
 def test_a_non_json_answer_is_a_refusal_not_an_empty_result() -> None:
     got = di.parse_intake("Конечно! Я посмотрел документ и вот что нашёл: …")
     assert got["fields"] == []
