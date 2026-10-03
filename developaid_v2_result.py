@@ -62,6 +62,8 @@ _KPI_KEYS = (
     "llcr",
     "npv",
     "irr_equity",
+    # Признак движка: IRR и NPV сняты при непогашенном долге и почему.
+    "equity_returns",
     "full_project_cost",
     "ending_pf",
     "monetizable_saleable_sqm",

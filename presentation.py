@@ -44,6 +44,10 @@ KPI_CATALOGUE: tuple[tuple[str, str, str], ...] = (
 )
 CARD_COUNT = 6
 
+# Величины, которые движок снимает при непогашенном долге
+# (`summary.equity_returns`); подпись причины приходит из движка.
+_EQUITY_RETURN_KEYS = frozenset({"npv_mln", "irr_equity"})
+
 # Величины моста «от выручки к чистой прибыли»: ключ величины и знак бара.
 BRIDGE_STEPS: tuple[tuple[str, str, int], ...] = (
     ("revenue_mln", "Выручка", 1),
@@ -102,9 +106,14 @@ def build_project_presentation(
     dates = consolidated.get("dates") or {}
 
     kpi: list[dict[str, Any]] = []
+    returns_na = _text(numbers.get("equity_returns_na")) or None
     for key, label, unit in KPI_CATALOGUE:
-        kpi.append({"key": key, "label": label, "unit": unit,
-                    "value": _number(numbers.get(key))})
+        item = {"key": key, "label": label, "unit": unit,
+                "value": _number(numbers.get(key))}
+        # NPV снят движком при непогашенном долге: причина вместо числа.
+        if key in _EQUITY_RETURN_KEYS and returns_na:
+            item.update({"value": None, "unit": "", "na": returns_na})
+        kpi.append(item)
 
     products: list[dict[str, Any]] = []
     by_key = {str(p.get("key")): p for p in (report.get("products") or [])}
@@ -358,6 +367,8 @@ def _efficiency_block(numbers: dict[str, Any]) -> dict[str, Any]:
         "margin": _number(numbers.get("margin")),
         "irr_equity": _number(eff.get("irr_equity")),
         "npv_mln": _number(numbers.get("npv_mln")),
+        # «N/A — долг не погашен» от движка; None — IRR и NPV числами.
+        "returns_na": _text(numbers.get("equity_returns_na")) or None,
         "term_months": _number(numbers.get("term_months")),
         "llcr": _number(numbers.get("llcr")),
         "full_project_cost_mln": _number(eff.get("full_project_cost_mln")),

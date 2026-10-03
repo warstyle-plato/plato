@@ -23352,7 +23352,11 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
                        if str(p.get("key")) == "apartments"), {})
     numbers.update({
         "margin": float(summary.get("margin") or 0.0),
-        "npv_mln": float(summary.get("npv") or 0.0) / 1e6,
+        # NPV и IRR снимает движок при непогашенном долге: None и подпись
+        # причины, а не ноль.
+        "npv_mln": (None if summary.get("npv") is None
+                    else float(summary.get("npv")) / 1e6),
+        "equity_returns_na": equity_returns_na_label(summary),
         "commercial_mln": float(summary.get("commercial_costs") or 0.0) / 1e6,
         "rve_unpaid_mln": float(finance.get("rve_unpaid") or 0.0) / 1e6,
         "ending_pf_mln": float(summary.get("ending_pf") or 0.0) / 1e6,
@@ -31243,6 +31247,58 @@ def _monthly_irr(cashflows: list[float]) -> float | None:
     return pow(1 + monthly, 12) - 1
 
 
+# Доходность капитала при непогашенном долге (решение владельца 29.09.2026,
+# ревизия книги, решение 2): если ПФ к концу проекта не погашен, IRR и NPV не
+# числа, а «N/A — долг не погашен». Порог тот же, что у книги:
+# `КОНСОЛИДАТОР!N8` = IF('CF'!B19>0.5 млн, "N/A (долг не погашен)", …), и тот
+# же, по которому PDF зовёт прибыль бумажной. Решение принимает одна функция
+# ниже; страница, PDF, тизер, Telegram и Платон читают её признак, а не
+# сравнивают остаток долга сами. Отсутствие числа — не ноль.
+EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB = 500_000.0
+EQUITY_RETURNS_DEBT_UNREPAID = "debt_unrepaid"
+EQUITY_RETURNS_NA_DEBT_LABEL = "N/A — долг не погашен"
+
+
+def _apply_equity_returns_verdict(summary: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Снимает IRR и NPV, если долг ПФ к концу проекта не погашен.
+
+    Пишет `summary["equity_returns"]` — единственный признак для всех
+    поверхностей — и при дефолте заменяет `npv`/`irr_equity` на None.
+    Повторный вызов на уже решённой сводке ничего не меняет.
+    """
+    if not isinstance(summary, dict) or "equity_returns" in summary:
+        return summary
+    ending = float(summary.get("ending_pf") or 0.0)
+    if ending > EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB:
+        summary["npv"] = None
+        summary["irr_equity"] = None
+        summary["equity_returns"] = {
+            "status": EQUITY_RETURNS_DEBT_UNREPAID,
+            "label": EQUITY_RETURNS_NA_DEBT_LABEL,
+            "reason": (f"ПФ не погашен к концу проекта: остаток "
+                       f"{ending / 1_000_000:,.1f} млн ₽".replace(",", " ")),
+            "ending_pf": ending,
+        }
+    else:
+        summary["equity_returns"] = {"status": "ok", "label": None, "reason": "",
+                                     "ending_pf": ending}
+    return summary
+
+
+def equity_returns_na_label(summary: dict[str, Any] | None) -> str | None:
+    """Подпись вместо IRR/NPV, если движок их снял; None — числа есть."""
+    verdict = (summary or {}).get("equity_returns") or {}
+    if verdict.get("status") == EQUITY_RETURNS_DEBT_UNREPAID:
+        return str(verdict.get("label") or EQUITY_RETURNS_NA_DEBT_LABEL)
+    return None
+
+
+def _apply_equity_returns_to_result(result: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(result, dict):
+        _apply_equity_returns_verdict(result.get("summary"))
+    return result
+
+
 def _iso(value: date) -> str:
     return value.isoformat()
 
@@ -33834,6 +33890,12 @@ def standalone_expense_note(row_value: float, project_gns: float, saleable: floa
 
 
 def calculate(req: CalcRequest) -> dict:
+    # Решение о доходности капитала принимается один раз, на выходе расчёта:
+    # у раннего выхода (наложение фактов) и у основного пути одно правило.
+    return _apply_equity_returns_to_result(_calculate_economics(req))
+
+
+def _calculate_economics(req: CalcRequest) -> dict:
     x = req.inputs
     t = req.tep
     rates = req.rates
@@ -37998,6 +38060,21 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
 
 
 def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
+    """Очереди и свод; решение о доходности капитала — по итоговому долгу.
+
+    Свод решается после переноса долга между очередями: до него остаток
+    свода ещё не приведён к очередям (см. `_calculate_phased_with_carry`).
+    Очереди решены своим `calculate`.
+    """
+    bundle = _calculate_phased_with_table(req)
+    if isinstance(bundle, dict):
+        _apply_equity_returns_to_result(bundle.get("consolidated"))
+        for item in bundle.get("phases") or []:
+            _apply_equity_returns_to_result((item or {}).get("result"))
+    return bundle
+
+
+def _calculate_phased_with_table(req: PhasedCalcRequest) -> dict[str, Any]:
     """Очереди с переносом долга и таблицей сравнения.
 
     Таблица строится ПОСЛЕ переноса: перенос дописывает строкам сравнения
@@ -38411,6 +38488,7 @@ _AGENT_INSTRUCTIONS = """
    variable=main_construction_cost_th_per_sqm с теми же правилами LLCR.
 5. Не говори «примерно» там, где инструмент вернул точный расчётный результат.
 6. Если инструмент сообщает ограничение/предупреждение методики — обязательно упомяни его.
+6a. Если в снимке npv_mln/irr_equity_pct равны null и есть equity_returns_na, называй их ровно так: «N/A — долг не погашен». Не подставляй ноль и не досчитывай IRR/NPV сам: при непогашенном ПФ движок их не считает.
 7. Не утверждай, что банк гарантированно одобрит проект.
 8. Ты не можешь менять модель без подтверждения пользователя. prepare_model_patch только готовит изменение; реальный Input меняется после кнопки «Применить в модель».
 8a. Если пользователь пишет «поставь», «измени», «повысить», «снизить» и значение известно — проверь эффект и подготовь patch. Не ограничивайся инструкцией пользователю, где вручную менять поле.
@@ -38545,8 +38623,11 @@ def _result_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         "net_profit_mln": round(float(s.get("net_profit", 0) or 0) / 1e6, 2),
         "margin_pct": round(float(s.get("margin", 0) or 0) * 100, 3),
         "llcr_x": round(float(s.get("llcr", 0) or 0), 4),
-        "npv_mln": round(float(s.get("npv", 0) or 0) / 1e6, 2),
+        # None — «не число»: при непогашенном долге движок снял NPV и IRR
+        # (`equity_returns`), и ноль здесь читался бы как ответ.
+        "npv_mln": round(float(s["npv"]) / 1e6, 2) if s.get("npv") is not None else None,
         "irr_equity_pct": round(float(s["irr_equity"]) * 100, 3) if s.get("irr_equity") is not None else None,
+        "equity_returns_na": equity_returns_na_label(s),
         "peak_bridge_mln": round(float(f.get("peak_bridge", 0) or 0) / 1e6, 2),
         "peak_pf_mln": round(float(f.get("peak_pf", 0) or 0) / 1e6, 2),
         "pf_draw_total_mln": round(float(f.get("pf_draw_total", 0) or 0) / 1e6, 2),
@@ -38570,7 +38651,7 @@ def _metric_value(
         "llcr": float(s.get("llcr", 0) or 0),
         "margin_pct": float(s.get("margin", 0) or 0) * 100,
         "net_profit_mln": float(s.get("net_profit", 0) or 0) / 1e6,
-        "npv_mln": float(s.get("npv", 0) or 0) / 1e6,
+        "npv_mln": (float(s["npv"]) / 1e6 if s.get("npv") is not None else None),
         "irr_equity_pct": (float(s["irr_equity"]) * 100 if s.get("irr_equity") is not None else None),
         # Метрики анализа чувствительности берутся отсюда же: одна выборка
         # показателя на целеподбор Платона и на Tornado.
@@ -38864,11 +38945,15 @@ def run_sensitivity(
     scope_label, base_value, _ = _metric_value(base_bundle, metric, scope, selected_view)
     if base_value is None:
         # Например, IRR не считается, когда поток собственного капитала не меняет
-        # знак. Анализировать нечего: не от чего отсчитывать отклонения.
+        # знак, а IRR и NPV снимаются при непогашенном долге. Анализировать
+        # нечего: не от чего отсчитывать отклонения. Причину называем.
+        _na = (equity_returns_na_label(_scope_result(base_bundle, scope, selected_view)[1].get("summary"))
+               if metric in ("npv_mln", "irr_equity_pct") else None)
         raise HTTPException(
             status_code=400,
             detail=f"Показатель «{_SENSITIVITY_METRICS[metric]['label']}» "
-                   "не определён в текущем расчёте — выберите другой",
+                   + "не определён в текущем расчёте"
+                   + (f" ({_na})" if _na else "") + " — выберите другой",
         )
 
     meta = _field_meta()
@@ -47268,6 +47353,9 @@ const th=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:0,maximum
 const num2=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1});
 const dateRu=v=>{if(!v)return '—';const [y,m,d]=String(v).slice(0,10).split('-');return `${d}.${m}.${y}`};
 const irrFmt=v=>v==null?'N/A':pct(v);
+// IRR и NPV при непогашенном долге снимает движок (summary.equity_returns):
+// страница не сравнивает остаток долга сама, а печатает его подпись.
+const returnsNa=s=>((s||{}).equity_returns||{}).label||null;
 const inputDisplay=v=>Math.round(Number(v||0)*10)/10;
 
 function openTab(id,btn){
@@ -50041,6 +50129,7 @@ async function sendTelegramResult(){
    net_profit_mln:Number(s.net_profit||0)/1e6,
    margin:Number(s.margin||0),
    irr_equity:s.irr_equity==null?null:Number(s.irr_equity),
+   equity_returns_na:returnsNa(s),
    llcr:Number(s.llcr||0),
    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6,
@@ -54988,7 +55077,7 @@ function renderResult(){
   // не только в плашке выше: плашку можно пролистать, плитку нет.
   ['Чистая прибыль',money(r.summary.net_profit)+conditionalNote],
   ['Маржинальность',pct(r.summary.margin)+conditionalShort],
-  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',money(r.summary.npv)+conditionalShort],
+  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',returnsNa(r.summary)||(money(r.summary.npv)+conditionalShort)],
   // Цена входа стояла только в «Параметрах проекта» ниже и в PDF первой
   // строкой ключевой экономики: экран и отчёт расходились по составу, а
   // главное число сделки в шапку не попадало вовсе.
@@ -55127,8 +55216,8 @@ function renderResult(){
   row('Налог на прибыль',`(${money(r.summary.profit_tax)})`)+
   `<tr><th>Чистая прибыль</th><th>${money(r.summary.net_profit)}</th></tr>`+
   row('Маржинальность',pct(r.summary.margin))+
-  row('NPV',money(r.summary.npv))+
-  row('IRR equity',irrFmt(r.summary.irr_equity));
+  row('NPV',returnsNa(r.summary)||money(r.summary.npv))+
+  row('IRR equity',returnsNa(r.summary)||irrFmt(r.summary.irr_equity));
 
  // Числа карточки — из результата, а не из формы. Форма не знает ни о льготе,
  // ни о доле очереди: при стопроцентной льготе строка показывала полную плату

@@ -378,6 +378,17 @@ def _vri_rows(model: dict[str, Any], fm: _Formats) -> list[tuple[str, str, str]]
     return rows
 
 
+def _npv_row(eff: dict[str, Any], fm: _Formats) -> tuple[str, str, str]:
+    """NPV — числом или причиной, по которой движок его снял.
+
+    При непогашенном долге движок пишет «N/A — долг не погашен» (решение
+    владельца 29.09.2026); прочерк читался бы как «не посчитали».
+    """
+    if eff.get("returns_na"):
+        return ("NPV собственного капитала", str(eff["returns_na"]), "")
+    return ("NPV собственного капитала", fm.mln(eff.get("npv_mln")), "млн ₽")
+
+
 def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, str, str]], tuple[int, ...]]:
     eff = model.get("efficiency") or {}
     land = model.get("land") or {}
@@ -402,7 +413,7 @@ def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, 
     rows.append(("Чистая прибыль", fm.mln(eff.get("net_profit_mln")), "млн ₽"))
     rows.append(("Маржинальность", fm.pct(eff.get("margin")), ""))
     rows.append(("LLCR (цель банка " + fm.x(model.get("llcr_target")) + ")", fm.x(eff.get("llcr")), ""))
-    rows.append(("NPV собственного капитала", fm.mln(eff.get("npv_mln")), "млн ₽"))
+    rows.append(_npv_row(eff, fm))
     term = eff.get("term_months")
     rows.append(("Срок до РВЭ", fm.count(term) + (f" · {fm.num(term / 12, 2)} года" if term else ""), "мес."))
     entry = land.get("purchase_mln")
@@ -644,8 +655,9 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
         ("EBITDA", fm.mln(eff.get("ebitda_mln")), "млн ₽"),
         ("Чистая прибыль", fm.mln(eff.get("net_profit_mln")), "млн ₽"),
         ("Operating margin", fm.pct(eff.get("margin")), ""),
-        ("Equity IRR", fm.pct(eff.get("irr_equity")) if eff.get("irr_equity") is not None else "—", ""),
-        ("NPV собственного капитала", fm.mln(eff.get("npv_mln")), "млн ₽"),
+        ("Equity IRR", eff.get("returns_na") or (fm.pct(eff.get("irr_equity"))
+                                                 if eff.get("irr_equity") is not None else "—"), ""),
+        _npv_row(eff, fm),
         ("Длительность до РВЭ", (fm.num(term / 12, 2) if term else "—"), "лет"),
         ("LLCR проекта", fm.x(eff.get("llcr")), ""),
         ("Полные расходы проекта", fm.mln(eff.get("full_project_cost_mln")), "млн ₽"),
