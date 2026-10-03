@@ -2375,9 +2375,13 @@ def internal_auction_keys(req: AuctionKeysRequest) -> dict[str, Any]:
     try:
         return _auction_keys_do(req.action, req.holder, req.ident, req.by)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400,
+                            detail="Не указано, кому выдаётся ключ") from exc
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
+        from auction_search import access_keys
+
+        raise HTTPException(status_code=503,
+                            detail=access_keys.REGISTRY_BROKEN) from exc
 
 
 def _auction_keys_call(action: str, holder: str = "", ident: str = "",

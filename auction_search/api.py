@@ -1302,9 +1302,10 @@ def install(app: FastAPI) -> None:
         # обычным посетителем.
         try:
             scoped = _scoped_key(request)
-        except RuntimeError as exc:
-            return JSONResponse({"detail": str(exc)}, status_code=503,
-                                headers={"Cache-Control": "no-store"})
+        except RuntimeError:
+            logger.exception("auctions key registry unreadable")
+            return JSONResponse({"detail": access_keys.REGISTRY_BROKEN},
+                                status_code=503, headers={"Cache-Control": "no-store"})
         if scoped:
             problem = access_keys.scope_problem(
                 request.method, path, request.query_params)
@@ -1397,8 +1398,9 @@ def install(app: FastAPI) -> None:
         body = await json_object(request)
         try:
             record = access_keys.find_by_key(str(body.get("key") or ""))
-        except RuntimeError as exc:
-            return JSONResponse({"detail": str(exc)}, status_code=503)
+        except RuntimeError:
+            logger.exception("auctions key registry unreadable")
+            return JSONResponse({"detail": access_keys.REGISTRY_BROKEN}, status_code=503)
         if not record:
             return JSONResponse(
                 {"detail": "Ссылка не действует: ключ неверный, отозван или его "

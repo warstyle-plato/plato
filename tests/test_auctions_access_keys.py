@@ -325,3 +325,20 @@ def test_rendered_auctions_page_hides_and_server_refuses(registry_app):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+def test_broken_registry_closes_and_names_the_reason(registry_app):
+    """Битый реестр — не «ключей нет»: раздел закрыт, причина названа, а
+    подробности исключения наружу не уходят."""
+    path = access_keys.store_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("{битый", "utf-8")
+    access_keys._CACHE.update(sig=None, data=None)
+    client = TestClient(registry_app)
+    client.cookies.set(access_keys.COOKIE_NAME, "abc.def")
+    response = client.get("/auctions", headers={"Accept": "application/json"})
+    assert response.status_code == 503
+    assert response.json()["detail"] == access_keys.REGISTRY_BROKEN
+    refused = TestClient(registry_app).post(access_keys.ENTER_PATH, json={"key": "ak_x"})
+    assert refused.status_code == 503
+    assert path.name not in refused.text
