@@ -342,3 +342,29 @@ def test_broken_registry_closes_and_names_the_reason(registry_app):
     refused = TestClient(registry_app).post(access_keys.ENTER_PATH, json={"key": "ak_x"})
     assert refused.status_code == 503
     assert path.name not in refused.text
+
+
+def test_gate_is_installed_even_into_an_already_started_app(monkeypatch):
+    """Приложение уже обслужило запрос, а модуль торгов ставится после.
+
+    Раньше гейт в таком случае молча не ставился, и ключ «auctions» открывал
+    всё (так падала доля CI, где соседний тест раньше запускал движок)."""
+    import sys
+
+    from auction_search.api import install
+
+    monkeypatch.delitem(sys.modules, "developaid_core", raising=False)
+    access_keys._CACHE.update(sig=None, data=None)
+    app = FastAPI()
+
+    @app.post("/calculate")
+    def calculate():
+        return {"ok": True}
+
+    client = TestClient(app)
+    assert client.post("/calculate").status_code == 200  # стек собран
+    install(app)
+    _record, secret = access_keys.issue("Поздний")
+    assert _enter(client, secret).status_code == 200
+    refused = client.post("/calculate", json={})
+    assert refused.status_code == 403 and refused.json()["detail"] == DENIED

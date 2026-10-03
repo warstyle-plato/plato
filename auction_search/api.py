@@ -1289,7 +1289,8 @@ def install(app: FastAPI) -> None:
         wants_page = (request.method in ("GET", "HEAD")
                       and "text/html" in request.headers.get("accept", ""))
         if wants_page:
-            return HTMLResponse(access_keys.denied_page(), status_code=403,
+            return HTMLResponse(access_keys.denied_page(
+                guide.legal_footer_html(core) if core is not None else ""), status_code=403,
                                 headers={"Cache-Control": "no-store"})
         return JSONResponse({"detail": problem}, status_code=403,
                             headers={"Cache-Control": "no-store"})
@@ -1350,12 +1351,21 @@ def install(app: FastAPI) -> None:
                 )
         return await call_next(request)
 
-    # Production устанавливает auction_search до первого запроса. Некоторые
-    # unit-тесты легально доустанавливают модуль в уже стартовавшее FastAPI-
-    # приложение; FastAPI запрещает add_middleware после старта. В таком
-    # тестовом/встраиваемом сценарии не ломаем приложение из-за гейта.
+    # Production устанавливает auction_search до первого запроса. Если же
+    # приложение уже обслужило запрос (тесты, встраивание), FastAPI не даёт
+    # add_middleware — но молча остаться без гейта нельзя: это проверка
+    # доступа, и без неё ключ «auctions» открывал бы весь сайт. Гейт ставится
+    # в список и стек сбрасывается: Starlette соберёт его заново на следующем
+    # запросе.
     if getattr(app, "middleware_stack", None) is None:
         app.middleware("http")(_auctions_view_gate)
+    else:
+        from starlette.middleware import Middleware
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        app.user_middleware.insert(
+            0, Middleware(BaseHTTPMiddleware, dispatch=_auctions_view_gate))
+        app.middleware_stack = None
 
     @app.post("/auctions/login", include_in_schema=False)
     async def auctions_login(request: Request):
@@ -1389,7 +1399,8 @@ def install(app: FastAPI) -> None:
     @app.get(access_keys.ENTER_PATH, response_class=HTMLResponse, include_in_schema=False)
     async def auctions_enter_page() -> HTMLResponse:
         """Вход по ссылке: ключ во фрагменте `#k=…`, до сервера он не доходит."""
-        return HTMLResponse(access_keys.ENTER_PAGE, headers={
+        footer = guide.legal_footer_html(core) if core is not None else ""
+        return HTMLResponse(access_keys.enter_page(footer), headers={
             "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
     @app.post(access_keys.ENTER_PATH, include_in_schema=False)

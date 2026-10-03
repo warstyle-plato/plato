@@ -288,6 +288,10 @@ def scope_problem(method: str, path: str, query: Mapping[str, Any]) -> str:
 # Ключ приходит во фрагменте ссылки (`#k=…`): фрагмент браузер на сервер не
 # шлёт, поэтому ключ не попадает ни в журнал запросов, ни в Referer. Скрипт
 # сразу стирает его из адресной строки и отдаёт серверу POST-ом.
+_EMBLEM = ('<div class="brandbar"><img src="/guide/assets/logo.webp" alt="ПЛАТО" '
+           'style="height:34px"></div>')
+_FOOTER_SLOT = "__ACCESS_FOOTER__"
+
 ENTER_PAGE = """<!doctype html><meta charset="utf-8">
 <title>Торги DevelopAid</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -296,7 +300,8 @@ ENTER_PAGE = """<!doctype html><meta charset="utf-8">
 color:#16202b;display:flex;min-height:100vh;align-items:center;justify-content:center}
 main{background:#fff;padding:28px;border-radius:14px;box-shadow:0 2px 18px rgba(20,35,60,.10);
 max-width:360px}h1{font-size:19px;margin:0 0 8px}#msg{color:#5b6b7d}#msg.err{color:#B3261E}</style>
-<main><h1>Торги DevelopAid</h1><div id="msg">Проверяю ссылку доступа…</div></main>
+<main>__ACCESS_EMBLEM__<h1>Торги DevelopAid</h1><div id="msg">Проверяю ссылку доступа…</div>
+__ACCESS_FOOTER__</main>
 <script>
 (function(){
  var m=/(?:^#|&)k=([^&]+)/.exec(location.hash||''),msg=document.getElementById('msg');
@@ -313,12 +318,21 @@ max-width:360px}h1{font-size:19px;margin:0 0 8px}#msg{color:#5b6b7d}#msg.err{col
 </script>"""
 
 
-def denied_page() -> str:
+def enter_page(footer: str = "") -> str:
+    """Страница входа: эмблема и подвал документов — как на любой странице."""
+    return (ENTER_PAGE.replace("__ACCESS_EMBLEM__", _EMBLEM)
+            .replace(_FOOTER_SLOT, footer or ""))
+
+
+def denied_page(footer: str = "") -> str:
     return ("<!doctype html><meta charset=\"utf-8\"><title>Нет доступа</title>"
             "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
             "<style>body{font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;"
             "background:#f4f6f9;color:#16202b;display:flex;min-height:100vh;"
             "align-items:center;justify-content:center;margin:0}"
             "main{background:#fff;padding:28px;border-radius:14px;max-width:380px}"
-            "a{color:#1367AE}</style><main><h1 style=\"font-size:19px\">Нет доступа</h1>"
-            f"<p>{DENIED}.</p><p><a href=\"/auctions\">Перейти к торгам</a></p></main>")
+            "a[href=\"/guide\"],a[href=\"/normatives\"]{display:none}"
+            f"a{{color:#1367AE}}</style><main>{_EMBLEM}"
+            "<h1 style=\"font-size:19px\">Нет доступа</h1>"
+            f"<p>{DENIED}.</p><p><a href=\"/auctions\">Перейти к торгам</a></p>"
+            f"{footer or ''}</main>")
