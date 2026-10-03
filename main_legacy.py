@@ -46383,7 +46383,7 @@ details.cadastral-box>summary::marker{color:#888}
         </div>
         <div class="scroll" style="max-height:none">
           <table class="unit-table">
-            <thead><tr><th>Показатель</th><th>Всего</th><th>тыс. ₽ / м² своей базы</th><th>База</th><th>тыс. ₽ / м² продаваемой</th></tr></thead>
+            <thead><tr><th>Показатель</th><th>Всего</th><th>тыс. ₽/м² своей базы</th><th>База</th><th>тыс. ₽/м² прод.</th></tr></thead>
             <tbody id="unitEconomicsTable"></tbody>
           </table>
         </div>
@@ -46427,8 +46427,8 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       <div class="card">
         <div class="section-title">Структура затрат по статьям</div>
-        <table><thead><tr><th>Статья</th><th>Сумма</th><th>тыс ₽/м² своей базы</th><th>База</th><th>тыс ₽/м² прод.</th></tr></thead>
-        <tbody id="capexTable"></tbody></table>
+        <div class="scroll" style="max-height:none"><table><thead><tr><th>Статья</th><th>Сумма</th><th>тыс ₽/м² своей базы</th><th>База</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <tbody id="capexTable"></tbody></table></div>
       </div>
       </div>
 
