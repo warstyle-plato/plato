@@ -307,3 +307,37 @@ def test_the_pdf_prints_the_strategy_table(tmp_path) -> None:
     exit_value = next(row["value"] for row in result["report"]["nonres_strategy"][0]["rows"]
                       if row["label"].startswith("Выход"))
     assert " ".join(core._pdf_money(exit_value).split()) in flat
+
+
+# --- книга -------------------------------------------------------------------
+
+def _book(**over):
+    import io
+    import openpyxl
+    x, t = _spec(**over)
+    content, _name, meta = core.build_project_workbook(x, t, [], {})
+    return openpyxl.load_workbook(io.BytesIO(content)), meta
+
+
+def test_the_book_carries_the_engine_result_sheet_and_names_the_gap() -> None:
+    book, meta = _book(offices_strategy="income")
+    assert "Нежильё — стратегия" in book.sheetnames
+    sheet = book["Нежильё — стратегия"]
+    assert str(sheet["A2"].value).startswith("СЧИТАЕТ ДВИЖОК")
+    values = {sheet.cell(row, 1).value: sheet.cell(row, 2).value for row in range(1, sheet.max_row + 1)}
+    report = _run(offices_strategy="income")["report"]["nonres_strategy"][0]
+    for row in report["rows"]:
+        if row["unit"] == "rub":
+            assert values[row["label"]] == pytest.approx(row["value"], rel=1e-9)
+    assert any("Нежильё — стратегия: Офисы" in item for item in meta["missing"])
+    # Месячные ряды сходятся с итогом движка.
+    header = next(r for r in range(1, sheet.max_row + 1) if sheet.cell(r, 1).value == "Месяц")
+    revenue = sum(float(sheet.cell(r, 2).value or 0) for r in range(header + 1, sheet.max_row + 1))
+    office = _object(_run(offices_strategy="income"))
+    assert revenue == pytest.approx(office["totals"]["revenue"], rel=1e-9)
+
+
+def test_a_ddu_book_has_no_strategy_sheet() -> None:
+    book, meta = _book(offices_strategy="ddu")
+    assert "Нежильё — стратегия" not in book.sheetnames
+    assert not any("Нежильё — стратегия" in item for item in meta["missing"])

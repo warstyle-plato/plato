@@ -72,6 +72,7 @@ import document_intake
 from request_body import json_object
 import v4_dashboard
 import v4_entry_sheet
+import v4_nonres_sheet
 import v4_value_cache
 import presentation as _presentation
 import teaser_pdf as _teaser_pdf
@@ -24255,6 +24256,19 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
             "bridge_peak_by_phase": [float(finance.get("peak_bridge", 0.0)) / 1e6],
         }
     hints["parity"] = _v4_parity_targets(bundle.get("consolidated") or {})
+    # ТЦ и офисы вне ДДУ: книга получает результат движка листом
+    # «Нежильё — стратегия» (`v4_nonres_sheet`) — таблицу отчёта и месячные ряды.
+    _consolidated = bundle.get("consolidated") or {}
+    _nonres_report = (_consolidated.get("report") or {}).get("nonres_strategy") or []
+    if _nonres_report:
+        hints["nonres"] = {
+            "report": _nonres_report,
+            "monthly": [
+                {"month": row.get("month"),
+                 **{key: float(row.get(key) or 0.0) for key, _ in v4_nonres_sheet.MONTHLY_COLUMNS}}
+                for row in (_consolidated.get("finance") or {}).get("rows") or []
+                if any(float(row.get(key) or 0.0) for key, _ in v4_nonres_sheet.MONTHLY_COLUMNS)],
+        }
     # ТЭП, на котором посчитан отчёт. Книга писала присланный страницей, а
     # движок приводит строку ТЭП к вводным: заданная руками площадь гаража
     # сильнее норматива, выгрузка ГлавАПУ сильнее устаревшей строки, соцобъект
@@ -27196,6 +27210,19 @@ def _build_project_workbook(
             number=round(_v4_entry_fingerprint(entry_xml), 6))
         if not _stamped:
             missing.append("гейт паритета: отпечаток листа ввода не записан")
+    # Объекты вне ДДУ формулами книги не моделируются: их деньги приходят
+    # листом движка, и расхождение сверки названо, а не спрятано.
+    _nonres_xml = ""
+    _nonres = (finance_hints or {}).get("nonres") or {}
+    if _nonres.get("report"):
+        _nonres_xml = v4_nonres_sheet.build_sheet(_nonres["report"], _nonres.get("monthly") or [])
+        missing.append(
+            "Нежильё — стратегия: " + ", ".join(
+                f"{item.get('title')} — {next((r.get('value') for r in item.get('rows') or [] if r.get('label') == 'Стратегия'), '')}"
+                for item in _nonres["report"])
+            + ". Формулы книги считают эти объекты по ДДУ; результат движка — "
+              "на листе «Нежильё — стратегия», сверка «ПРОВЕРКИ» по ним расходится.")
+
     # Инструкция собирается ПОСЛЕ всего: она читает готовый лист ввода и
     # `missing` целиком. Написанная раньше, она обещала бы книгу, которой ещё
     # нет, — и разошлась бы с ней ровно тем, что добавили следом.
@@ -27289,6 +27316,8 @@ def _build_project_workbook(
                 text = _v4_workbook_with_entry(payload.decode("utf-8"), bool(entry_xml))
                 if _dashboard:
                     text = v4_dashboard.workbook_with_data_sheet(text)
+                if _nonres_xml:
+                    text = v4_nonres_sheet.workbook_with_sheet(text)
                 payload = text.encode("utf-8")
             elif item.filename == "xl/_rels/workbook.xml.rels":
                 text = payload.decode("utf-8")
@@ -27296,6 +27325,8 @@ def _build_project_workbook(
                     text = _v4_rels_with_entry(text)
                 if _dashboard:
                     text = v4_dashboard.rels_with_data_sheet(text)
+                if _nonres_xml:
+                    text = v4_nonres_sheet.rels_with_sheet(text)
                 payload = text.encode("utf-8")
             elif item.filename == "[Content_Types].xml":
                 text = payload.decode("utf-8")
@@ -27303,11 +27334,15 @@ def _build_project_workbook(
                     text = _v4_types_with_entry(text)
                 if _dashboard:
                     text = v4_dashboard.types_with_data_sheet(text, _dashboard["dropped"])
+                if _nonres_xml:
+                    text = v4_nonres_sheet.types_with_sheet(text)
                 payload = text.encode("utf-8")
             archive.writestr(item, payload)
         if entry_xml:
             archive.writestr(_V4_ENTRY_SHEET_PATH, entry_xml.encode("utf-8"))
             archive.writestr(_V4_GUIDE_SHEET_PATH, guide_xml.encode("utf-8"))
+        if _nonres_xml:
+            archive.writestr(v4_nonres_sheet.SHEET_PATH, _nonres_xml.encode("utf-8"))
         if _dashboard:
             # Источник дашборда — новая часть, мимо цикла: ссылки на лист ввода
             # переименовываются здесь же, как у остальных листов.
