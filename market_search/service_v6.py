@@ -1128,8 +1128,18 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         radius_km: float = 2.5,
         budget: int = 20,
         include_projects: bool = False,
+        stages: list[str] | None = None,
+        include_estimated_stage: bool = True,
+        project_sales_start: str | None = None,
+        project_commissioning: str | None = None,
     ) -> dict[str, Any]:
         """Ориентир цены для поля модели и, по запросу, его расшифровка.
+
+        `stages` — стадии строительства аналогов, выбранные пользователем (как
+        фильтр стадии в самом Пульсе). Пусто — отбора по стадии нет. Аналог без
+        стадии при отборе не проходит: «не указана» не значит «любая».
+        `include_estimated_stage=False` оставляет только стадию, пришедшую
+        полем Пульса, без оценки по срокам.
 
         Обычная кнопка по-прежнему получает только агрегированное число.
         include_projects используется внутренней страницей «Как посчитано»:
@@ -1146,6 +1156,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             subject_latitude, subject_longitude = found.latitude, found.longitude
         okrug_match = self._OKRUG_RE.search(where or "")
         okrug = okrug_match.group(1) if okrug_match else None
+        selected_stages = stage.normalize_stage_codes(stages)
 
         today = self.verified_prices.today.isoformat()
         fresh_since = _fresh_price_since(self.verified_prices.today)
@@ -1177,6 +1188,13 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 )
                 progress = stage.calendar_progress(sales_start, commissioning, today)
                 coefficient = stage.factor(progress) if progress is not None else None
+                # Стадия строительства — после дат: таблица проекта к этому
+                # моменту уже в кэше, и стадия читается из неё без запроса.
+                stage_reader = getattr(self.pulse, "project_stage", None)
+                stage_answer = (
+                    stage_reader(project.complex_id) if callable(stage_reader) else {}
+                ) or {}
+                built_stage = stage.analog_stage(stage_answer.get("raw"), progress)
                 row: dict[str, Any] = {
                     "complex_id": project.complex_id,
                     "name": project.name,
@@ -1199,6 +1217,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                         round(progress * 100, 1) if progress is not None else None
                     ),
                     "stage_label": stage.calendar_stage_label(progress),
+                    "construction_stage": built_stage["code"],
+                    "construction_stage_label": built_stage["label"],
+                    "construction_stage_origin": built_stage["origin"],
+                    "construction_stage_origin_title": built_stage["origin_title"],
+                    "construction_stage_raw": built_stage["raw"],
                     "stage_factor": round(coefficient, 4) if coefficient is not None else None,
                     "ready_equivalent_price": (
                         int(round(stage.to_ready(price["price_per_sqm"], progress)))
@@ -1257,15 +1280,43 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             row["eligible"] = reason is None
             row["excluded_reason"] = reason
 
-        scope = self.city.scope(where)
-        hint = price_hint(
-            peers=peers,
-            segment=segment,
-            okrug=okrug,
-            city=self.city if scope["covered"] else MoscowMarket({}),
-            fresh_since=fresh_since,
+        stage_filter = self._stage_filter(
+            peers,
+            selected_stages,
+            include_estimated=include_estimated_stage,
+            suggestion=stage.suggest_project_stage(
+                project_sales_start, project_commissioning, today
+            ),
         )
-        if not scope["covered"] and not hint.get("available"):
+
+        scope = self.city.scope(where)
+        if selected_stages:
+            # Округ и город стадию не знают. Подставить их медиану под подписью
+            # «по стадии котлован» значило бы выдать за отбор то, чего не было.
+            hint = price_hint(
+                peers=[row for row in peers if row["eligible"]],
+                segment=segment,
+                okrug=None,
+                city=MoscowMarket({}),
+                fresh_since=fresh_since,
+            )
+            if not hint.get("available"):
+                hint["reason"] = (
+                    f"По стадии {stage_filter['title']} подходящих аналогов "
+                    f"{stage_filter['matched']} — меньше трёх. Ориентир по округу и городу "
+                    "стадию не учитывает, поэтому не подставлен: расширьте радиус или "
+                    "выберите больше стадий"
+                )
+        else:
+            hint = price_hint(
+                peers=peers,
+                segment=segment,
+                okrug=okrug,
+                city=self.city if scope["covered"] else MoscowMarket({}),
+                fresh_since=fresh_since,
+            )
+        hint["stage_filter"] = stage_filter
+        if not scope["covered"] and not hint.get("available") and not selected_stages:
             hint["reason"] = (
                 f"{hint.get('reason') or 'Ориентир не рассчитан'}. "
                 f"Свод рынка собран по отчёту «{scope['label']}» и для этого адреса не применяется"
@@ -1336,6 +1387,84 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                     "и плановый ввод."
                 )
         return hint
+
+    @staticmethod
+    def _stage_filter(
+        peers: list[dict[str, Any]],
+        selected: list[str],
+        *,
+        include_estimated: bool,
+        suggestion: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Отбор аналогов по стадии строительства и его счёт.
+
+        Счёт по стадиям ведётся по аналогам, прошедшим свежесть и класс, — тем,
+        из кого вообще строится ориентир: так видно, сколько останется, ещё до
+        выбора. Аналог, не прошедший стадию, остаётся в списке с причиной.
+        """
+        base = [row for row in peers if row.get("eligible")]
+        options = []
+        for code, title in stage.CONSTRUCTION_STAGES:
+            same = [row for row in base if row.get("construction_stage") == code]
+            options.append({
+                "code": code,
+                "label": title,
+                "count": len(same),
+                "from_pulse": sum(
+                    1 for row in same
+                    if row.get("construction_stage_origin") == stage.STAGE_ORIGIN_PULSE
+                ),
+            })
+        without = sum(1 for row in base if not row.get("construction_stage"))
+        from_pulse = sum(
+            1 for row in peers
+            if row.get("construction_stage_origin") == stage.STAGE_ORIGIN_PULSE
+        )
+        counts = {"other_stage": 0, "without_stage": 0, "estimated_only": 0}
+        if selected:
+            for row in base:
+                code = row.get("construction_stage")
+                reason = None
+                if not code:
+                    reason = stage.STAGE_UNKNOWN_LABEL
+                    counts["without_stage"] += 1
+                elif code not in selected:
+                    reason = f"стадия «{row.get('construction_stage_label')}» не выбрана"
+                    counts["other_stage"] += 1
+                elif (
+                    not include_estimated
+                    and row.get("construction_stage_origin") != stage.STAGE_ORIGIN_PULSE
+                ):
+                    reason = "стадия только оценена по срокам, а не пришла из Пульса"
+                    counts["estimated_only"] += 1
+                if reason:
+                    row["eligible"] = False
+                    row["excluded_reason"] = reason
+        labels = [stage.STAGE_TITLES[code] for code in selected]
+        return {
+            "active": bool(selected),
+            "stages": selected,
+            "labels": labels,
+            "title": "«" + "», «".join(labels) + "»" if labels else "любая",
+            "include_estimated": include_estimated,
+            "considered": len(base),
+            "matched": sum(1 for row in base if row.get("eligible")),
+            "without_stage_total": without,
+            **counts,
+            "options": options,
+            "suggestion": suggestion,
+            "from_pulse": from_pulse,
+            # Честный ответ о маршруте: стадию Пульс даёт фильтром на сайте, а
+            # в ответах, которые мы читаем, поле стадии не пришло ни у кого.
+            "source_note": (
+                "Стадия аналогов пришла полем Пульса."
+                if from_pulse
+                else "Пульс даёт выбрать стадию строительства фильтром на своём сайте, но в "
+                     "ответах, которые читает наш маршрут (карта, таблица проекта), поля "
+                     "стадии нет. Стадия аналогов оценена по срокам «старт продаж → "
+                     "плановый ввод»; у аналогов без этих дат — «стадия не указана»."
+            ),
+        }
 
     @staticmethod
     def _row(entity: ProjectEntity, geo, distance: float) -> dict[str, Any]:

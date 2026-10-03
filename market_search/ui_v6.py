@@ -14,8 +14,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
+from .stage import CONSTRUCTION_STAGES
 from .ui import PRICE_FIELD_JS, install as install_v4
 
 
@@ -250,6 +252,8 @@ def install(core: Any) -> None:
 # установку значит выкатывать лишнее.
 PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
 (function(){
+  const DA_STAGES=__DA_STAGES__;
+  let daHintStage='';
   // Где взять место. Поле участка — не единственный источник и не самый
   // надёжный: у загруженного проекта вводные восстановлены, ТЭП и плата за
   // ВРИ посчитаны, а текст в поле пустой — он не часть модели. Кнопка при
@@ -334,10 +338,20 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
     explain.id='daHintExplain'; explain.href='#'; explain.target='_blank';
     explain.rel='noopener'; explain.textContent='Как посчитано →';
     explain.style.cssText='font-size:12px;color:#1367AE;text-decoration:none';
+    // Стадия строительства аналогов — как фильтр стадии в Пульсе. Словарь
+    // стадий один, серверный (`stage.CONSTRUCTION_STAGES`); выбор переживает
+    // перерисовку вводных, потому что живёт не в узле, а в переменной.
+    const stageSel=document.createElement('select');
+    stageSel.id='daHintStage'; stageSel.title='Стадия строительства аналогов';
+    stageSel.style.cssText='font-size:12px;padding:3px 6px';
+    stageSel.innerHTML='<option value="">аналоги: любая стадия</option>'
+      +DA_STAGES.map(function(s){return '<option value="'+s[0]+'">аналоги: '+s[1]+'</option>'}).join('');
+    stageSel.value=daHintStage;
+    stageSel.addEventListener('change',function(){daHintStage=stageSel.value});
     const note=document.createElement('span');
     note.id='daHintNote';
     note.style.cssText='font-size:12px;color:#667;line-height:1.35';
-    wrap.appendChild(btn); wrap.appendChild(explain); wrap.appendChild(note);
+    wrap.appendChild(btn); wrap.appendChild(stageSel); wrap.appendChild(explain); wrap.appendChild(note);
     input.insertAdjacentElement('afterend',wrap);
     explain.addEventListener('click',function(event){
       const where=locationHint();
@@ -353,6 +367,7 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
         query.set('longitude',String(where.longitude));
       }
       query.set('radius_km','2.5');
+      if(daHintStage)query.set('stages',daHintStage);
       explain.href='/cabinet/price-hint?'+query.toString();
     });
     btn.addEventListener('click',async function(){
@@ -363,6 +378,7 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
       const where=locationHint();
       if(!where){say('Укажите участок — кадастровый номер или адрес.');return}
       btn.disabled=true; say('Считаю…');
+      if(daHintStage)where.stages=[daHintStage];
       try{
         const response=await fetch('/market/price-hint',{method:'POST',
           headers:{'Content-Type':'application/json'},body:JSON.stringify(where)});
@@ -375,14 +391,18 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
         // Поле берётся в момент записи, а не то, что поймано при вставке
         // кнопки; «Подставлено» — только когда число стоит в поле и во
         // вводных. Иначе названо, что осталось, и число ориентира не теряется.
+        const staged=payload.stage_filter&&payload.stage_filter.active
+          ?' · стадия аналогов '+payload.stage_filter.title:'';
         const placedPrice=mdPlaceApartmentPrice(payload.price_th_per_sqm,
-          'рекомендация DevelopAid'+(when?' от '+when:''));
+          'рекомендация DevelopAid'+(when?' от '+when:'')+staged);
         if(!placedPrice.ok){
           say('Ориентир '+payload.price_th_per_sqm+' тыс ₽/м² не подставлен: '+placedPrice.reason+'.');
           return;
         }
         const parts=[payload.price_th_per_sqm+' тыс ₽/м²'];
         if(payload.sample)parts.push('наблюдений '+payload.sample);
+        const filter=payload.stage_filter;
+        if(staged)parts.push('по стадии '+filter.title+', аналогов '+filter.matched+' из '+filter.considered);
         if(when)parts.push(when);
         // Основание называем только когда оно слабее соседей: «по классу в
         // Москве» и «по соседям рядом» — числа разной силы, и молчать об этом
@@ -408,7 +428,7 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
   }
   setInterval(init,2000);
 })();
-</script>"""
+</script>""".replace("__DA_STAGES__", json.dumps([list(item) for item in CONSTRUCTION_STAGES], ensure_ascii=False))
 
 
 def install_price_hint(core: Any) -> None:
