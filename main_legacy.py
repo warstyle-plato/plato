@@ -30,6 +30,8 @@ import zipfile
 # Кем Платон думает — переключатель, а не найденный ключ:
 # перевод запроса и ответа живёт на границе поставщика.
 import plato_provider
+# Подписи величин — у словаря терминов, здесь только чтение.
+from terms_glossary import CORE_TOTAL_AREA, TOTAL_AREA, page_terms
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 
@@ -83,7 +85,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.83"
+VERSION = "0.24.89"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1442,6 +1444,78 @@ CLASS_NONRES_PRICE_FIELDS: tuple[str, ...] = tuple(
        and _BY_KEY[o.family].rate_price in ("retail_price_th_per_sqm",
                                             "offices_price_th_per_sqm")])
 
+# Окно «Настройки классов» — разделами, а не подряд (владелец, 29.09.2026:
+# «не структурированный набор вводных»; «Площадь на 1 место на первых этажах,
+# м²/место = 25» читалось как «место за 25 рублей»). Раздел и подпись строки —
+# явной картой, одним владельцем: угадывание по имени поля отнесло бы новое
+# поле куда попало. Подпись — объект, величина; единицу печатает
+# `class_field_unit` из той же подсказки поля, что и везде.
+#
+# У полей объектов ОСЗ вместо имени объекта стоит `{object}`: экземпляры
+# (офисы 2…5) берут раздел и подпись поля своего типа по реестру (`family`,
+# `rate_price`/`rate_cost`) — строка экземпляра получает имя своего объекта.
+CLASS_DIALOG_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
+    ("flats", "Квартиры и МКД — цены продажи", (
+        ("apartment_price_th", "Квартиры: стартовая цена продажи"),
+        ("commercial_price_th", "Коммерция на первом этаже МКД: стартовая цена продажи"),
+        ("storage_price_th", "Кладовые МКД: цена продажи одной кладовой"),
+    )),
+    ("build", "Себестоимость строительства МКД", (
+        ("preparation_th_per_sqm", "МКД: подготовительные работы"),
+        ("main_above_th_per_sqm", "МКД, наземная часть: основное строительство"),
+        ("main_under_th_per_sqm", "МКД, подземная часть: основное строительство"),
+        ("utilities_th_per_sqm", "МКД: наружные инженерные сети и плата за техприсоединение"),
+    )),
+    ("norms", "Благоустройство и нормативы", (
+        ("landscaping_th_per_sqm", "Благоустройство двора: стоимость работ"),
+        ("landscaping_area_per_person_sqm", "Благоустройство двора: норматив площади двора на одного жителя"),
+        ("storage_area_per_unit_sqm", "Кладовые МКД: площадь одной кладовой"),
+    )),
+    ("parking", "Паркинг", (
+        ("parking_price_th", "Подземный паркинг МКД: цена продажи одного машино-места"),
+        ("underground_area_per_space_sqm",
+         "Подземный паркинг: площадь на одно машино-место с проездами и рампами"),
+        ("object_parking_over_area_per_space_sqm",
+         "Паркинг объекта ОСЗ в здании (первые этажи): площадь одного машино-места"),
+    )),
+    ("objects", "Объекты ОСЗ — МФОЦ, ТЦ", (
+        ("retail_price_th_per_sqm", "{object}: стартовая цена продажи"),
+        ("offices_price_th_per_sqm", "{object}: стартовая цена продажи"),
+        ("offices_cost_th_per_sqm", "{object}: себестоимость строительства"),
+    )),
+)
+CLASS_DIALOG_PLACEHOLDER = "__DEVELOPAID_CLASS_DIALOG__"
+
+
+def class_dialog_layout() -> list[dict[str, Any]]:
+    """Разделы окна классов: [{id, title, rows: [{key, label}]}] в порядке окна.
+
+    Поля объектов раскладываются в порядке реестра: у каждого объекта — его
+    цена, затем себестоимость. Строки экземпляров, которых нет в проекте,
+    здесь есть: состав решает страница тем же `fieldInProject`, что и прежде.
+    """
+    profile = PROJECT_CLASS_PRESETS["comfort"]
+    out: list[dict[str, Any]] = []
+    for section_id, title, fields in CLASS_DIALOG_SECTIONS:
+        templates = dict(fields)
+        rows: list[dict[str, str]] = []
+        object_fields: set[str] = set()
+        for obj in STANDALONE_OBJECTS:
+            family = _BY_KEY.get(obj.family) if obj.family else obj
+            if family is None:
+                continue
+            for own, theirs in ((obj.rate_price, family.rate_price),
+                                (obj.rate_cost, family.rate_cost)):
+                if theirs in templates and own in profile:
+                    object_fields.add(theirs)
+                    rows.append({"key": own, "label": templates[theirs].replace(
+                        "{object}", obj.group_label)})
+        for key, label in fields:
+            if key not in object_fields and key in profile:
+                rows.append({"key": key, "label": label})
+        out.append({"id": section_id, "title": title, "rows": rows})
+    return out
+
 
 def class_region(inputs: dict[str, Any] | None) -> str:
     """Регион проекта для базы класса: `mo` — область, иначе Москва."""
@@ -1524,6 +1598,8 @@ def object_parking_product_key(object_key: str) -> str:
 OBJECT_PARKING_PRODUCT_KEYS: dict[str, str] = {
     o.key: object_parking_product_key(o.key) for o in STANDALONE_OBJECTS if o.garage
 }
+_OBJECT_OF_PARKING_PRODUCT: dict[str, str] = {
+    pkey: okey for okey, pkey in OBJECT_PARKING_PRODUCT_KEYS.items()}
 NON_TEP_PRODUCT_LABELS.update({
     OBJECT_PARKING_PRODUCT_KEYS[o.key]: f"Паркинг — {o.group_label or o.label}"
     for o in STANDALONE_OBJECTS if o.garage
@@ -1539,7 +1615,10 @@ OBJECT_PARKING_FIELDS = tuple(
 
 
 _TEP_DEFAULT_LITERAL = {'apartments': {'label': 'Квартиры', 'gns': 130716.66012842482, 'total_area': 117647.0588235294, 'useful': 80000, 'saleable': 80000, 'transfer': 0, 'units': 1361.815754339119}, 'ground_commercial': {'label': 'Коммерция 1 этажа', 'gns': 9664.049734985854, 'total_area': 8695.652173913044, 'useful': 7826.08695652174, 'saleable': 7826.08695652174, 'transfer': 0, 'units': 0}, 'standalone_retail': '__object__:standalone_retail', 'offices': '__object__:offices', 'above_parking': '__object__:above_parking', 'underground_parking': {'label': 'Подземный паркинг', 'gns': 38763, 'total_area': 38763, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 1107.5142857142857}, 'storage': {'label': 'Кладовые', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'kindergarten': {'label': 'ДОО', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'school': {'label': 'СОШ', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'clinic': {'label': 'Поликлиника', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}, 'sports': '__object__:sports', 'other_mandatory': {'label': 'Прочие обязательные объекты', 'gns': 0, 'total_area': 0, 'useful': 0, 'saleable': 0, 'transfer': 0, 'units': 0}}
-_FIELD_GROUPS_LITERAL = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['purchase_schedule', 'График платежей за покупку', 'доли или суммы по месяцам от начала проекта: «30%@0; 40%@6; 30%@12» или «500@0; 300@12» (млн ₽). Пусто — вся цена в дату сделки', 'schedule', {'value': 'money_or_share', 'anchor': 'project_start', 'value_label': 'Сумма или доля', 'when_label': 'Дата платежа', 'total_field': 'purchase_price_mln', 'total_label': 'стоимость покупки'}], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%; скачок цены при строительной готовности 25%. Этапы — лестница цены квартир, коммерции 1 этажа, паркинга и кладовых; задан хоть один — ежемесячный рост до РВЭ не применяется', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%; при готовности 50%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%; при готовности 75%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%; при готовности 100% — ввод; дальше ежемесячный рост после РВЭ', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['demolition_area_sqm', 'Снос — площадь сносимого', 'м²; по обязательствам КРТ, а не по новой ГНС', 'number'], ['demolition_cost_th_per_sqm', 'Снос — стоимость', 'тыс. ₽/м² сносимого; пусто при непустой площади — статья не посчитана', 'number'], ['resettlement_cost_mln', 'Расселение', 'млн ₽; отдельное обязательство КРТ, не соцнагрузка', 'number'], ['ird_th_per_sqm', 'ИРД и согласования', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² наземной части', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² подземной части', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети, в т.ч. плата за техприсоединение', 'тыс. ₽/м² строительного объёма — наземная плюс подземная; ТП зависит от мощности, а не от метров — на длинном проекте проверяйте отдельно', 'number'], ['landscaping_area_per_person_sqm', 'Благоустройство — норматив площади двора', 'м²/чел.; двор считается от населения, население — от площади квартир нормой региона', 'number'], ['landscaping_area_sqm', 'Благоустройство — площадь двора', 'м²; пусто — считает методика класса, заданная руками её перебьёт', 'number'], ['landscaping_th_per_sqm', 'Благоустройство — ставка за метр двора', 'тыс. ₽/м² двора', 'number'], ['landscaping_gns_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', 'тыс. ₽/м² строительного объёма — наземная плюс подземная', 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — потолок, а нехватка показывается отдельно. При очередях это общий лимит по генеральным условиям — ожидание на все очереди, потолком не служит: НКЛ каждой очереди заключается при её открытии и считается заново; реальный лимит НКЛ очереди задаётся в «Очерёдности»', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'лестница как в НКЛ: диапазон покрытия — своя ставка; по умолчанию лестница Сбера, впишите свою из договора. Пусто — одна ставка выше', 'pf_steps'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_area_source', 'Соцобъекты и плата за ВРИ', 'источник; «требование КРТ» запирает места, площади, нормативы, соцкомпенсацию и плату за ВРИ — пересчёт ТЭП их не трогает', 'select', [['norm', 'Норматив РНГП — считать от числа мест'], ['manual', 'Требование КРТ — вписываю руками']]], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОО — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОО — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОО — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОО — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОО — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОО — норматив площади на место', 'м²/место; РНГП: 27 до 125 мест, 18 до 250, дальше 16. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место; РНГП: 18 до 550 мест, 15 до 1000, дальше 13. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/(пос./смену); норматива города для поликлиники нет — это наша экспертная величина. В режиме «Требование КРТ» показывает фактический', 'number']]], ['__object__:offices', []], ['__object__:standalone_retail', []], ['__object__:sports', []], ['Нормативы парковки нежилья (общие на объекты)', [['parking_k1', 'К1 — доступность рельсового каркаса', '0,75 до 1200 м · 0,9 до 2200 м · 1,0 дальше. Пусто — считается по расстоянию ниже, а без него берётся 1,0 (верхний край, максимум мест)', 'number'], ['parking_rail_distance_m', 'Расстояние до станции', 'м до ближайшего входа на станцию; норматив меряет по пешеходным путям, подсказка адреса даёт по прямой — пеший путь длиннее', 'number'], ['parking_k2', 'К2 — деловая активность района', 'приложение 3 к 945-ПП. Пусто — берётся по району участка из разбора кадастра, а без района 1,0 (верхний край)', 'number'], ['object_parking_over_area_per_space_sqm', 'Площадь на 1 место на первых этажах', 'м²/место; занимает существующую ГНС объекта, а не добавляется к ней', 'number'], ['parking_design_mode', 'Край норматива (Московская область)', 'режим', 'select', [['maximum', 'Верхний — больше мест'], ['minimum', 'Нижний — меньше мест']]]]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены; по нему же считается подземный гараж ОСЗ', 'number']]], ['Кладовые', [['storage_area_per_unit_sqm', 'Площадь одной кладовой', 'м²/шт.; штуки и метры строки ТЭП — одна величина в двух видах: правка любой считает вторую. Замер рынка: средняя кладовая 4,3 м² (ПИК, 2026) и 4,6 (НДВ, 2024), потолок по СП 4.13130.2013 — 10', 'number']]], ['__object__:above_parking', []]]
+# Ставка общепроектной статьи умножается на `core_total_gns` — суммарную
+# площадь МКД в ГНС; слово у словаря.
+_PER_TOTAL_AREA_HINT = f"тыс. ₽/м² {CORE_TOTAL_AREA.genitive} — наземная плюс подземная"
+_FIELD_GROUPS_LITERAL = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_buyout_mln', 'Выкуп ЗУ/ОКС у третьих лиц', 'млн ₽; входит в стоимость сделки и платится по её графику; по контуру КРТ — кадастровая стоимость, не цена сделки', 'number'], ['purchase_schedule', 'График платежей за покупку', 'доли или суммы по месяцам от начала проекта: «30%@0; 40%@6; 30%@12» или «500@0; 300@12» (млн ₽). Пусто — вся цена в дату сделки', 'schedule', {'value': 'money_or_share', 'anchor': 'project_start', 'value_label': 'Сумма или доля', 'when_label': 'Дата платежа', 'total_field': 'purchase_price_mln', 'total_label': 'стоимость покупки'}], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%; скачок цены при строительной готовности 25%. Этапы — лестница цены квартир, коммерции 1 этажа, паркинга и кладовых; задан хоть один — ежемесячный рост до РВЭ не применяется', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%; при готовности 50%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%; при готовности 75%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%; при готовности 100% — ввод; дальше ежемесячный рост после РВЭ', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['demolition_area_sqm', 'Снос — площадь сносимого', 'м²; по обязательствам КРТ, а не по новой ГНС', 'number'], ['demolition_cost_th_per_sqm', 'Снос — стоимость', 'тыс. ₽/м² сносимого; пусто при непустой площади — статья не посчитана', 'number'], ['resettlement_cost_mln', 'Расселение', 'млн ₽; отдельное обязательство КРТ, не соцнагрузка', 'number'], ['ird_th_per_sqm', 'ИРД и согласования', _PER_TOTAL_AREA_HINT, 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', _PER_TOTAL_AREA_HINT, 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', _PER_TOTAL_AREA_HINT, 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', _PER_TOTAL_AREA_HINT, 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² наземной части', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² подземной части', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети, в т.ч. плата за техприсоединение', _PER_TOTAL_AREA_HINT + '; ТП зависит от мощности, а не от метров — на длинном проекте проверяйте отдельно', 'number'], ['landscaping_area_per_person_sqm', 'Благоустройство — норматив площади двора', 'м²/чел.; двор считается от населения, население — от площади квартир нормой региона', 'number'], ['landscaping_area_sqm', 'Благоустройство — площадь двора', 'м²; пусто — считает методика класса, заданная руками её перебьёт', 'number'], ['landscaping_th_per_sqm', 'Благоустройство — ставка за метр двора', 'тыс. ₽/м² двора', 'number'], ['landscaping_gns_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', _PER_TOTAL_AREA_HINT, 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', _PER_TOTAL_AREA_HINT, 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — потолок, а нехватка показывается отдельно. При очередях это общий лимит по генеральным условиям — ожидание на все очереди, потолком не служит: НКЛ каждой очереди заключается при её открытии и считается заново; реальный лимит НКЛ очереди задаётся в «Очерёдности»', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'лестница как в НКЛ: диапазон покрытия — своя ставка; по умолчанию лестница Сбера, впишите свою из договора. Пусто — одна ставка выше', 'pf_steps'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_area_source', 'Соцобъекты и плата за ВРИ', 'источник; «требование КРТ» запирает места, площади, нормативы, соцкомпенсацию и плату за ВРИ — пересчёт ТЭП их не трогает', 'select', [['norm', 'Норматив РНГП — считать от числа мест'], ['manual', 'Требование КРТ — вписываю руками']]], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОО — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОО — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОО — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОО — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОО — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОО — норматив площади на место', 'м²/место; РНГП: 27 до 125 мест, 18 до 250, дальше 16. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место; РНГП: 18 до 550 мест, 15 до 1000, дальше 13. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/(пос./смену); норматива города для поликлиники нет — это наша экспертная величина. В режиме «Требование КРТ» показывает фактический', 'number']]], ['__object__:offices', []], ['__object__:standalone_retail', []], ['__object__:sports', []], ['Нормативы парковки нежилья (общие на объекты)', [['parking_k1', 'К1 — доступность рельсового каркаса', '0,75 до 1200 м · 0,9 до 2200 м · 1,0 дальше. Пусто — считается по расстоянию ниже, а без него берётся 1,0 (верхний край, максимум мест)', 'number'], ['parking_rail_distance_m', 'Расстояние до станции', 'м до ближайшего входа на станцию; норматив меряет по пешеходным путям, подсказка адреса даёт по прямой — пеший путь длиннее', 'number'], ['parking_k2', 'К2 — деловая активность района', 'приложение 3 к 945-ПП. Пусто — берётся по району участка из разбора кадастра, а без района 1,0 (верхний край)', 'number'], ['object_parking_over_area_per_space_sqm', 'Площадь на 1 место на первых этажах', 'м²/место; занимает существующую ГНС объекта, а не добавляется к ней', 'number'], ['parking_design_mode', 'Край норматива (Московская область)', 'режим', 'select', [['maximum', 'Верхний — больше мест'], ['minimum', 'Нижний — меньше мест']]]]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены; по нему же считается подземный гараж ОСЗ', 'number']]], ['Кладовые', [['storage_area_per_unit_sqm', 'Площадь одной кладовой', 'м²/шт.; штуки и метры строки ТЭП — одна величина в двух видах: правка любой считает вторую. Замер рынка: средняя кладовая 4,3 м² (ПИК, 2026) и 4,6 (НДВ, 2024), потолок по СП 4.13130.2013 — 10', 'number']]], ['__object__:above_parking', []]]
 
 # Строки ТЭП объектов и их группы вводных приносит реестр: литерал держит
 # только МЕСТО — порядок строк и порядок групп на экране, — а содержимое
@@ -1743,7 +1822,7 @@ def find_input_fields(query: str, limit: int = 8) -> list[dict[str, Any]]:
 # задаёт ставку ПФ, и на 71% проект по умолчаниям перестаёт гасить долг.
 # Ставки классов (PROJECT_CLASS_PRESETS) проверку прошли и не менялись: старт
 # квартир 644,94 против пресета 650, машино-место 5 000 против 5 000.
-_DEFAULT_INPUTS_LITERAL = {'project_class': 'comfort', 'project_kind': 'mixed', 'purchase_price_mln': 0, 'purchase_schedule': '', 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1500, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'demolition_area_sqm': 0.0, 'demolition_cost_th_per_sqm': 0.0, 'resettlement_cost_mln': 0.0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 15, 'landscaping_area_sqm': 0.0, 'landscaping_area_per_person_sqm': 11.0, 'landscaping_gns_th_per_sqm': 0.0, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'pf_limit_approved_mln': 0.0, 'pf_special_steps': PF_SPECIAL_STEPS_DEFAULT, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.0, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'social_dou_gba_sqm': 4500, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 88, 'social_mode': 'Строительство', 'social_area_source': 'norm', 'social_dou_norm_sqm': 18, 'social_school_norm_sqm': 0, 'social_clinic_norm_sqm': 15, 'underground_area_per_space_sqm': 35, 'storage_area_per_unit_sqm': 4.3, 'parking_k1': '', 'parking_rail_distance_m': '', 'parking_k2': '', 'parking_design_mode': 'maximum', 'object_parking_over_area_per_space_sqm': 25, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_transfer_offset_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0, 'tep_ratios_custom': ''}
+_DEFAULT_INPUTS_LITERAL = {'project_class': 'comfort', 'project_kind': 'mixed', 'purchase_price_mln': 0, 'land_buyout_mln': 0.0, 'purchase_schedule': '', 'construction_months': 24, 'apartment_price_th': 350, 'commercial_price_th': 350, 'parking_price_th': 1500, 'storage_price_th': 1500, 'share_before_rve_pct': 85, 'pace_adjustment_pct': 25, 'inflation_after_rve_pct': 3, 'seasonal_reduction_pct': -15, 'growth_stage1_pct': 0, 'growth_stage2_pct': 0, 'growth_stage3_pct': 0, 'growth_stage4_pct': 0, 'demolition_area_sqm': 0.0, 'demolition_cost_th_per_sqm': 0.0, 'resettlement_cost_mln': 0.0, 'ird_th_per_sqm': 1, 'design_p_th_per_sqm': 6.0, 'design_rd_th_per_sqm': 8.5, 'preparation_th_per_sqm': 2.75, 'main_above_th_per_sqm': 110, 'utilities_th_per_sqm': 10.25, 'landscaping_th_per_sqm': 15, 'landscaping_area_sqm': 0.0, 'landscaping_area_per_person_sqm': 11.0, 'landscaping_gns_th_per_sqm': 0.0, 'commissioning_th_per_sqm': 1, 'site_maintenance_th_per_sqm': 4.7, 'gc_fee_pct': 7, 'reserve_pct': 5, 'project_management_pct': 5, 'technical_supervision_pct': 5, 'author_supervision_pct': 3, 'marketing_pct': 4.5, 'selling_pct': 2.5, 'profit_tax_pct': 25, 'vat_pct': 22, 'pre_pf_own_funds_mln': 0.0, 'bridge_spread_pp': 6, 'bridge_cap_spread_pp': 6, 'pf_spread_pp': 4.5, 'pf_special_pct': 4.5, 'pf_limit_approved_mln': 0.0, 'pf_special_steps': PF_SPECIAL_STEPS_DEFAULT, 'limit_fee_pct': 0.7, 'reservation_fee_pct': 0.1, 'discount_rate_pct': 20, 'monthly_growth_pre_pct': 1.0, 'monthly_growth_post_pct': 0.25, 'ird_months': 18, 'sales_lag_months': 0, 'bridge_repay_lag_months': 0, 'residual_sales_months': 6, 'social_comp_date': '2028-06-01', 'social_compensation_mln': 0, 'kindergarten_places': 250, 'kindergarten_cost_mln_per_place': 2.75, 'kindergarten_start': '2028-06-01', 'kindergarten_months': 24, 'school_places': 0, 'school_cost_mln_per_place': 3, 'school_start': '2028-06-01', 'school_months': 30, 'clinic_capacity': 0, 'clinic_cost_mln_per_unit': 3, 'clinic_start': '2028-06-01', 'clinic_months': 24, 'social_dou_gba_sqm': 4500, 'social_school_gba_sqm': 0, 'social_clinic_gba_sqm': 0, 'project_start': '2027-01-01', 'main_under_th_per_sqm': 88, 'social_mode': 'Строительство', 'social_area_source': 'norm', 'social_dou_norm_sqm': 18, 'social_school_norm_sqm': 0, 'social_clinic_norm_sqm': 15, 'underground_area_per_space_sqm': 35, 'storage_area_per_unit_sqm': 4.3, 'parking_k1': '', 'parking_rail_distance_m': '', 'parking_k2': '', 'parking_design_mode': 'maximum', 'object_parking_over_area_per_space_sqm': 25, 'underground_manual_gns_sqm': 0, 'underground_manual_spaces': 0, 'underground_parking_disabled': False, 'rate_scenario': 'base', 'land_rights_cost_mln': 2864.291514155844, 'bridge_interest_mode': 'Капитализация в ПФ', 'rate_start_pct': 14.0, 'rate_start_date': '2026-07-24', 'rate_target_high_pct': 11.0, 'rate_target_base_pct': 9.0, 'rate_target_low_pct': 7.0, 'rate_normalization_months': 24, 'rate_curve_shape': 2.0, 'vri_required': True, 'vri_region': 'msk', 'land_right': 'ownership', 'vri_obligation_date': '', 'vri_payment_mode': 'lump', 'vri_installment_years': 3, 'vri_periodicity_months': 3, 'vri_schedule_mode': 'auto', 'vri_interest_enabled': '', 'vri_interest_spread_pp': 3.0, 'vri_early_repay_after_pf': False, 'vri_pf_open_date': '', 'vri_in_bank_budget': True, 'vri_financing_mode': 'auto', 'vri_share_bridge_pct': 0.0, 'vri_share_pf_pct': 0.0, 'vri_share_equity_pct': 0.0, 'vri_security_cost_mln': 0.0, 'vri_relief_mode': 'none', 'vri_relief_pct': 0.0, 'vri_relief_mln': 0.0, 'vri_transfer_offset_mln': 0.0, 'vri_obligation_date_mode': 'before_rns_1m', 'vri_months_after_purchase': 12, 'vri_initial_pct': 0.0, 'tep_ratios_custom': ''}
 # Поля объектов сюда не пишутся: их порождает реестр. Пока они стояли
 # литералом, новый объект означал ещё двадцать строк здесь — то есть список,
 # расходящийся с реестром молча.
@@ -1775,6 +1854,30 @@ def object_is_sold(inputs: dict[str, Any] | None, obj: "StandaloneObject") -> bo
     value = str((inputs or {}).get(obj.sale_gate)
                 or SPORTS_DISPOSITION_TRANSFER).strip().lower()
     return value == SPORTS_DISPOSITION_SALE
+
+
+def sold_saleable_sqm(tep: dict[str, Any], inputs: dict[str, Any] | None) -> float:
+    """Продаваемая площадь — то, что реально продаётся метрами.
+
+    Квартиры, коммерция 1 этажа и объекты, продаваемые метрами (ОСЗ, офисы,
+    ФОК — если он продаётся, а не уходит городу). Паркинг и кладовые продаются
+    штуками, соцобъекты передаются — в метры продаж они не входят. Один ответ
+    на «сколько метров продаём» для отчёта, тизера, первой страницы и бота:
+    прежде отчёт не видел проданного ФОК, а тизер складывал колонку
+    «Продаваемая» всех строк ТЭП, не спрашивая, продаётся ли строка.
+    """
+    keys = ["apartments", "ground_commercial"]
+    for obj in STANDALONE_OBJECTS:
+        if obj.measure != "sqm":
+            continue
+        if obj.sale_gate and not (b(inputs or {}, obj.enabled_key)
+                                  and object_is_sold(inputs, obj)):
+            continue
+        keys.append(obj.key)
+    # Объект продаёт остаток после мест первых этажей: строка ТЭП держит
+    # площадь здания (владелец, 29.09.2026), ответ — `object_sold_saleable`.
+    return sum(object_sold_saleable(inputs or {}, tep, key) if key in _BY_KEY
+               else n(tep.get(key) or {}, "saleable") for key in keys)
 
 
 # --- экземпляры объектов проекта ----------------------------------------------
@@ -2060,6 +2163,44 @@ def residential_excluded_rows(inputs: dict[str, Any] | None) -> frozenset[str]:
     if not is_nonresidential(inputs):
         return frozenset()
     return frozenset(MKD_PRODUCTS) | frozenset(SOCIAL_TEP_FIELDS)
+
+
+# Количества строки ТЭП и строки продукта отчёта: строка вне состава
+# скрывается, только пока все они пусты.
+_ROW_QUANTITY_FIELDS: tuple[str, ...] = (
+    "quantity", "revenue", "cost", "built_units")
+
+
+def row_outside_project(inputs: dict[str, Any] | None, key: str,
+                        row: dict[str, Any]) -> bool:
+    """Строки ТЭП или продукта отчёта нет в составе проекта.
+
+    Один ответ на «показывать ли строку» для всех таблиц, перечисляющих
+    продукты и объекты: ТЭП и продажи отчёта страницы, PDF, Платон читают
+    признак `excluded`, который ставит расчёт, а не выводят состав заново.
+    Строки в ответе остаются — ключ не пропадает у тех, кто ищет строку по
+    имени. Паркинг объекта (`OBJECT_PARKING_PRODUCT_KEYS`) — в составе вместе
+    со своим объектом.
+
+    Вне состава — то, что тип проекта не считает (`residential_excluded_rows`),
+    и объект, которого в проекте нет: экземпляр не заведён
+    (`project_objects`) или объект выключен. Строка объекта вне состава
+    скрывается, только пока она пуста: выключенный объект с метрами в ТЭП
+    итог по-прежнему складывает, и спрятать строку значило бы потерять из
+    таблицы число, которое стоит в её итоге. Законный ноль продукта дома
+    (передаётся 0) признаком не становится — он в составе.
+    """
+    if key in residential_excluded_rows(inputs):
+        return True
+    obj = _BY_KEY.get(key) or _BY_KEY.get(_OBJECT_OF_PARKING_PRODUCT.get(key, ""))
+    if obj is None:
+        return False
+    x = inputs or {}
+    if obj in project_objects(x) and b(x, obj.enabled_key):
+        return False
+    return not any(n(row, col) for col in (*_RESIDENTIAL_EXCLUDED_TEP_COLUMNS,
+                                           *TEP_SUMMABLE_FIELDS,
+                                           *_ROW_QUANTITY_FIELDS))
 
 
 # Столбцы строки ТЭП, которые несут количество: обнулив их, строка перестаёт
@@ -2996,7 +3137,9 @@ def parse_manual_tep_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     # ГНС в сводке бота — наземная: гараж и кладовые лежат под землёй, и
     # правило одно на все поверхности (`project_above_gns`).
     total_gns = project_above_gns(tep_mapping)
-    total_saleable = sum(item["saleable"] for item in tep_mapping.values())
+    # Продаваемая — то, что продаётся метрами; судьба ФОК в файле ТЭП не
+    # названа, и он читается как у движка — переданным.
+    total_saleable = sold_saleable_sqm(tep_mapping, {})
     monetizable_units = sum(
         tep_mapping[key]["units"] for key in ("above_parking", "underground_parking", "storage")
     )
@@ -3534,7 +3677,7 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
     if project_total_gns:
         provided.append(f"ГНС надземной части проекта — {_telegram_number(project_total_gns, 0)} м²")
     if density:
-        provided.append(f"плотность — {_telegram_number(density, 2)} тыс. м²/га")
+        provided.append(f"плотность по СПП — {_telegram_number(density, 2)} тыс. м²/га")
     if commercial_saleable:
         provided.append(f"коммерция — {_telegram_number(commercial_saleable, 0)} м²")
     if commercial_gns:
@@ -7683,6 +7826,44 @@ _LAND_LOOKUP_STANDING_NOTES = (
 )
 
 
+class LandContourObjectsRequest(BaseModel):
+    # Контур площадки КРТ — кольца в веб-меркаторе, как их отдаёт
+    # `_krt_site_finder` (файл карты реестра или участки перечня решения).
+    rings_merc: list[list[list[float]]] = []
+
+
+def _nspd_layer_in_bounds(layer_id: int,
+                          bounds: tuple[float, float, float, float]) -> list[dict[str, Any]]:
+    """Объекты слоя НСПД, задевающие рамку, — нормализованные, как карточка ЕГРН.
+
+    Тот же GetFeatureInfo рамкой, которым скрининг спрашивает зоны по контуру
+    участка (`_nspd_getfeatureinfo(bounds=...)`), с тем же предохранителем.
+    Бросает HTTPException: неответ портала — не пустая рамка.
+    """
+    payload = _nspd_getfeatureinfo(0.0, 0.0, int(layer_id), bounds=tuple(bounds))
+    return [_normalize_nspd_feature(feature) for feature in _nspd_features(payload)]
+
+
+def _land_contour_objects(rings_merc: list[list[list[float]]]) -> dict[str, Any]:
+    """ОКС и ЗУ в контуре КРТ по карте НСПД. С Render — на ядро, как `/land/lookup`.
+
+    Сетку рамок, дробление упёршихся в потолок ответа и долю в контуре держит
+    `auction_search.krt_contour_objects.collect`; здесь только доступ к НСПД.
+    """
+    url = _core_api_url("/land/contour-objects")
+    if url:
+        return _core_post(url, {"rings_merc": rings_merc}, _MO_CALC_TIMEOUT_SECONDS)
+    from auction_search import krt_contour_objects
+
+    return krt_contour_objects.collect(rings_merc, _nspd_layer_in_bounds)
+
+
+@app.post("/land/contour-objects", include_in_schema=False)
+def land_contour_objects(req: LandContourObjectsRequest) -> dict[str, Any]:
+    """Объекты в контуре площадки — ответ ядра для Render. Долго: зовётся фоном."""
+    return _land_contour_objects(list(req.rings_merc or []))
+
+
 @app.post("/land/lookup")
 def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
     """Сведения ЕГРН по кадастровому номеру, адресу или координатам — по всей России."""
@@ -11611,6 +11792,23 @@ def standalone_object_saleable(inputs: dict[str, Any], tep: dict[str, Any] | Non
     return max(0.0, base_gba - over_gba) * base_saleable / base_gba
 
 
+def object_sold_saleable(inputs: dict[str, Any], tep: dict[str, Any] | None,
+                         key: str) -> float:
+    """Сколько метров объекта ПРОДАЁТСЯ — для структуры продукта, отчёта и сводки.
+
+    Строка ТЭП объекта держит площадь здания: места первых этажей её не
+    уменьшают (владелец, 29.09.2026: «оставь в структуре»). Продаётся остаток
+    — `standalone_object_saleable`. Строка без продаваемой (объект выключен,
+    передан) или объект без вводной ГНС отвечают своей строкой.
+    """
+    row = (tep or {}).get(key) or {}
+    obj = _BY_KEY.get(key)
+    if (obj is None or obj.measure == "spaces" or n(row, "saleable") <= 0
+            or n(inputs, f"{obj.prefix}_gba_sqm") <= 0):
+        return n(row, "saleable")
+    return standalone_object_saleable(inputs, tep, key)
+
+
 def object_parking_by_hand(inputs: dict[str, Any], prefix: str) -> bool:
     """Места гаража объекта заданы человеком? Ответ один на проект и очередь.
 
@@ -11634,13 +11832,64 @@ def object_parking_by_hand(inputs: dict[str, Any], prefix: str) -> bool:
     return any(n(inputs, f"{prefix}_parking_{kind}_spaces") > 0 for kind in ("under", "over"))
 
 
+# Своё поле площади места гаража объекта удалено (#541): теперь это норматив
+# класса. Проекты, сохранённые раньше, несут прежний ключ, и молча терять
+# вписанное туда число нельзя — сохранённое состояние накладывается на
+# умолчания, а не исчезает. Прежнее умолчание поля было одно на все классы —
+# 35 м², — и оно решением человека не считается.
+OBJECT_PARKING_AREA_SAVED_KEY = "object_parking_area_per_space_sqm"
+OBJECT_PARKING_AREA_OLD_DEFAULT = 35.0
+
+
+def object_parking_area_saved(inputs: dict[str, Any]) -> dict[str, Any] | None:
+    """Число прежнего поля из сохранённого проекта и его судьба.
+
+    `None` — ключа нет, он пуст или совпадает с нормативом класса: сказать
+    нечего. Иначе `origin`:
+    - `manual` — число вписано руками, оно и действует для гаража объекта;
+    - `old_default` — стояло прежнее умолчание 35 м²: действует норматив
+      класса, а человеку сказано, что число заменено.
+    """
+    raw = (inputs or {}).get(OBJECT_PARKING_AREA_SAVED_KEY)
+    if raw in (None, "") or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    norm = underground_area_per_space(inputs) or OBJECT_PARKING_AREA_DEFAULT
+    if math.isclose(value, norm, abs_tol=1e-9):
+        return None
+    origin = ("old_default"
+              if math.isclose(value, OBJECT_PARKING_AREA_OLD_DEFAULT, abs_tol=1e-9)
+              else "manual")
+    return {"value": value, "norm": norm, "origin": origin}
+
+
 def object_parking_area_per_space(inputs: dict[str, Any]) -> float:
     """Площадь одного подземного места гаража ОСЗ — норматив класса.
 
     Ответ один на гараж дома и гараж объекта: `underground_area_per_space`.
-    Книга пишет в K158 это же число (`_V4_DERIVED_INPUTS`).
+    Исключение одно — число, вписанное руками в прежнее поле сохранённого
+    проекта (`object_parking_area_saved`). Книга пишет в K158 это же число
+    (`_V4_DERIVED_INPUTS`).
     """
+    saved = object_parking_area_saved(inputs)
+    if saved and saved["origin"] == "manual":
+        return saved["value"]
     return underground_area_per_space(inputs) or OBJECT_PARKING_AREA_DEFAULT
+
+
+def _object_parking_area_saved_line(saved: dict[str, Any]) -> str:
+    value = _pdf_num(saved["value"], 1).replace(",0", "")
+    norm = _pdf_num(saved["norm"], 1).replace(",0", "")
+    if saved["origin"] == "manual":
+        return (f"площадь подземного места гаража объектов {value} м² — из сохранённого "
+                f"проекта, вписана руками; норматив класса {norm} м²")
+    return (f"в сохранённом проекте площадь места гаража объектов стояла {value} м² — "
+            f"прежнее умолчание; теперь берётся норматив класса {norm} м²")
 
 
 def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
@@ -11659,10 +11908,28 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
     # тем самым отменяла свежий ТЭП. Поэтому рядом с базой держим последнее
     # значение, которое поставили МЫ. Если текущее значение уже отличается от
     # него, это внешнее изменение — оно становится новой базой.
-    for tep_key, _prefix, _enabled_key, _sellable in OBJECT_PARKING_OBJECTS:
+    for tep_key, prefix, _enabled_key, _sellable in OBJECT_PARKING_OBJECTS:
         row = (tep or {}).get(tep_key) or None
         if row is None:
             continue
+        # Продаваемая объекта — вводная, а не присланная строка: страница
+        # кладёт в свою строку ответ прошлого расчёта, и строка, сохранённая,
+        # пока движок вычитал в ней места первых этажей, несёт уже уменьшенное
+        # число — следующий расчёт вычитал бы его снова (строка ТЭП 50 709 м²
+        # при выручке от 66 613, владелец, 29.09.2026).
+        # Строка приводится к вводной одной долей: пропорции общей, полезной и
+        # продаваемой у неё свои, и место мест в них не меняет.
+        # Строка с другой ГНС — это другой ТЭП (свежий пересчёт, доля очереди),
+        # и вводная о ней не говорит: тогда база — сама строка.
+        anchor = max(0.0, n(inputs, f"{prefix}_saleable_sqm"))
+        sent = n(row, "saleable")
+        same_object = math.isclose(n(row, "gns"), n(inputs, f"{prefix}_gba_sqm"),
+                                   rel_tol=1e-9, abs_tol=0.05)
+        if (same_object and anchor > 0 and sent > 0
+                and not math.isclose(anchor, sent, rel_tol=1e-9, abs_tol=1e-6)):
+            scale = anchor / sent
+            for field in ("total_area", "useful", "saleable"):
+                row[field] = n(row, field) * scale
         for field in ("total_area", "useful", "saleable"):
             base_key = f"_object_parking_base_{field}"
             applied_key = f"_object_parking_applied_{field}"
@@ -11732,15 +11999,18 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         remaining_gba = max(0.0, base_gns - over_gba)
         ratio = (remaining_gba / base_gns) if base_gns > 0 else (1.0 if over_gba <= 0 else 0.0)
 
+        # Строка ТЭП объекта остаётся площадью ЗДАНИЯ: места первых этажей её
+        # не уменьшают. Вычет живёт в структуре продукта — продаётся остаток,
+        # `standalone_object_saleable`, — и называется здесь числом (владелец,
+        # 29.09.2026: «оставь в структуре»). Прежде строка уменьшалась, и
+        # ТЭП, продукт и присланная назад строка давали три разных числа.
         losses: dict[str, float] = {}
         for field in ("total_area", "useful", "saleable"):
             base = n(row, f"_object_parking_base_{field}")
-            adjusted = max(0.0, base * ratio)
-            row[field] = adjusted
-            # Маркер именно НАШЕГО последнего значения отличает повторный
-            # проход от нового ТЭП, пришедшего между расчётами.
-            row[f"_object_parking_applied_{field}"] = adjusted
-            losses[field] = max(0.0, base - adjusted)
+            row[field] = base
+            row[f"_object_parking_applied_{field}"] = base
+            losses[field] = max(0.0, base - max(0.0, base * ratio))
+        row["parking_saleable_after_sqm"] = max(0.0, n(row, "saleable") - losses["saleable"])
 
         overflow = max(0.0, over_gba - base_gns)
         if overflow > 1e-9:
@@ -11779,6 +12049,14 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
     demand["own_under_gns"] = sum(item["under_gns"] for item in own if item["enabled"])
     demand["area_per_space_sqm"] = under_per_space
     demand["over_area_per_space_sqm"] = over_per_space
+    # Происхождение площади места — рядом с числом: норматив класса и число
+    # из сохранённого проекта на экране выглядят одинаково.
+    saved_area = object_parking_area_saved(inputs)
+    demand["area_per_space_source"] = (
+        "saved_manual" if saved_area and saved_area["origin"] == "manual" else "class_norm")
+    demand["area_per_space_saved"] = saved_area
+    if saved_area and any(item["under_spaces"] for item in own if item["enabled"]):
+        demand.setdefault("assumptions", []).append(_object_parking_area_saved_line(saved_area))
     if layout_warnings:
         demand.setdefault("warnings", []).extend(layout_warnings)
     demand["note"] = _object_parking_note(demand, own)
@@ -14126,7 +14404,7 @@ def _telegram_dialog_data_lines(data: dict[str, Any]) -> list[str]:
         ("project_total_gns_sqm", "ГНС надземной части проекта", "м²", 0),
         ("apartments_gns_sqm", "жилая ГНС", "м²", 0),
         ("apartments_saleable_sqm", "продаваемая площадь квартир", "м²", 0),
-        ("residential_density_spp_th_ha", "плотность", "тыс. м²/га", 2),
+        ("residential_density_spp_th_ha", "плотность по СПП", "тыс. м²/га", 2),
         ("commercial_saleable_sqm", "продаваемая коммерция", "м²", 0),
         ("commercial_gns_sqm", "ГНС коммерции", "м²", 0),
         ("parking_spaces", "паркинг", "м/м", 0),
@@ -15982,6 +16260,12 @@ def _pdf_font_names() -> tuple[str, str]:
     return "DevelopAidSans", "DevelopAidSansBold"
 
 
+def _core_total_sqm(tep_report: dict[str, Any]) -> float:
+    """Суммарная площадь МКД в ГНС — база общепроектных статей (`core_total_gns`)."""
+    return (float(tep_report.get("core_above_gns") or 0.0)
+            + float(tep_report.get("core_under_gns") or 0.0))
+
+
 def _above_ground_sqm(tep_report: dict[str, Any]) -> float:
     """Наземная часть проекта: строительный объём минус подземные СТРОКИ.
 
@@ -16040,6 +16324,35 @@ def _pdf_num(value: Any, decimals: int = 1) -> str:
     except Exception:
         return "—"
     return f"{number:,.{decimals}f}".replace(",", " ").replace(".", ",")
+
+
+def _pdf_count_text(value: Any, measure: str) -> str:
+    """«1 362 квартир» — одна неразрывная строка ячейки PDF.
+
+    Число и мера связаны неразрывным пробелом, разряды числа — тоже: узкая
+    колонка «Кол-во» рвала «квартир» на «кварти / р», а «1 199» — на две
+    строки. Пробелы внутри длинной меры («посещений в смену») остаются
+    обычными — там перенос по словам законен.
+    """
+    return _pdf_num(value, 0).replace(" ", "\u00a0") + "\u00a0" + measure
+
+
+def _pdf_count_column_width(cells: "list[str]", font: str, size: float,
+                            padding: float, minimum: float) -> float:
+    """Ширина колонки количества по самому длинному неразрывному куску.
+
+    Колонка не угадывается числом миллиметров: мера у продуктов своя, и
+    «4 500 посещений в смену» длиннее «250 мест». Ячейка переносится только
+    по обычным пробелам и по строкам, поэтому ширину задаёт самое длинное
+    слово с неразрывными пробелами, плюс поля ячейки.
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    widest = 0.0
+    for cell in cells:
+        for line in str(cell or "").split("\n"):
+            for token in line.split(" "):
+                widest = max(widest, stringWidth(token, font, size))
+    return max(minimum, widest + 2 * padding + 1.0)
 
 
 def _pdf_money(value: Any) -> str:
@@ -16193,8 +16506,18 @@ def _pdf_entry_cost_rows(result: dict[str, Any],
             break
     paid = float((result.get("capex") or {}).get("land_rights") or 0)
     relief = float(((result.get("vri") or {}).get("totals") or {}).get("relief") or 0)
+    # Стоимость сделки — две строки и итог, когда в ней есть выкуп ЗУ/ОКС у
+    # третьих лиц (решение владельца, 29.09.2026). Разбивка — из сводки
+    # расчёта, итог — та же группа структуры расходов.
+    deal = result.get("deal") or {}
+    buyout = float(deal.get("buyout_mln") or 0) * 1_000_000
+    deal_rows = ([["Цена участка / права", _pdf_money(purchase - buyout)],
+                  ["Выкуп ЗУ/ОКС у третьих лиц (кадастровая стоимость, не цена сделки)",
+                   _pdf_money(buyout)],
+                  ["Стоимость сделки", _pdf_money(purchase)]]
+                 if buyout > 0 else [["Цена приобретения", _pdf_money(purchase)]])
     return [
-        ["Цена приобретения", _pdf_money(purchase)],
+        *deal_rows,
         ["Смена ВРИ / земельные права",
          _pdf_money(paid) + (f" (льгота {_pdf_money(relief)})" if relief > 0 else "")],
     ]
@@ -17063,9 +17386,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             P(f"База ГНС — наземная площадь {_pdf_num(summary.get('project_gns_sqm'), 0)} м². "
               f"Подземная часть {_pdf_num(_underground_sqm(tep_report), 0)} м² в неё не входит: "
               f"у неё своя себестоимость метра и свой продукт, продаваемый местами. "
-              f"Строительный объём — {_pdf_num(_above_ground_sqm(tep_report) + _underground_sqm(tep_report), 0)} м²; "
-              "на нём считаются общие статьи (ИРД, проектирование, подготовка, сети, "
-              "благоустройство, сдача, содержание). "
+              f"{TOTAL_AREA.name} — {_pdf_num(_above_ground_sqm(tep_report) + _underground_sqm(tep_report), 0)} м², "
+              "наземная плюс подземная. Общие статьи (ИРД, проектирование, подготовка, "
+              f"сети, сдача, содержание) считаются от {CORE_TOTAL_AREA.genitive} — "
+              f"{_pdf_num(_core_total_sqm(tep_report), 0)} м²: квартиры, коммерция "
+              "1 этажа, подземный паркинг и кладовые. "
               f"База продаваемой — {_pdf_num(summary.get('monetizable_saleable_sqm'), 0)} м² "
               "монетизируемой площади (паркинг и кладовые продаются штуками и в неё "
               "не входят). Показатели на метр — термины финансовой модели DevelopAid, "
@@ -17129,20 +17454,25 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # переданном молчал — и читался так, будто продано всё построенное
     # (владелец, 10.09.2026). Колонка появляется вместе с числом: постоянный
     # столбец нулей — шум, а не полнота.
+    # Строка вне состава проекта (`row_outside_project`) не печатается —
+    # тот же признак, что у отчёта страницы и книги.
     rows_data = [row for row in (tep_report.get('rows') or [])
-                 if any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
+                 if not row.get('excluded')
+                 and any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
     total=tep_report.get('total') or {}
     given = sum(float(row.get('transfer') or 0) for row in rows_data)
     # Итог количества — разбор по мере счёта, а не сумма: квартиры,
     # машино-места и места детского сада складывались в число, не значащее
     # ничего. Строка продукта тоже называет свою меру: «250 шт.» у ДОО читалось
     # как штуки, а это места.
+    # Итог — мера на строку: через « · » в одну строку он разваливался в
+    # узкой колонке на семь обрывков.
     def _count(row):
         measure = tep_count_measure(row.get('key'))
-        return (_pdf_num(row.get('units'), 0) + ' ' + measure) if measure else '—'
-    _counts = ' · '.join(f"{_pdf_num(value, 0)} {measure}"
-                         for measure, value in (total.get('units_by_measure') or {}).items()
-                         if value) or '—'
+        return _pdf_count_text(row.get('units'), measure) if measure else '—'
+    _counts = '\n'.join(_pdf_count_text(value, measure)
+                        for measure, value in (total.get('units_by_measure') or {}).items()
+                        if value) or '—'
     # Свой паркинг отдельно стоящего объекта — продукт, и в ТЭП он стоит
     # подстрокой с местами, как на экране: полем на строке объекта его в
     # печати не было вовсе. Метры гаража названы в подписи — в колонке ГНС
@@ -17162,9 +17492,15 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
               if sold else "не продаются — обеспечивают посетителей")
         return "   в т.ч. паркинг объекта, мест: "+"; ".join(where+[tail])
     def _park_count(row):
-        return _pdf_num(row.get('parking_units'), 0) + ' ' + COUNT_PARKING
+        return _pdf_count_text(row.get('parking_units'), COUNT_PARKING)
+
+    def _tep_widths(rows, middle):
+        """Колонка «Кол-во» — по своему содержимому, остаток — названию."""
+        count_w = _pdf_count_column_width([row[-1] for row in rows[1:]], regular,
+                                          normal.fontSize, 5, 22*mm)
+        return [170*mm - sum(middle) - count_w, *middle, count_w]
     if given > 0:
-        tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²",
+        tep_rows=[["Продукт",TOTAL_AREA.with_unit(),"Продаваемая, м²",
                    f"{TRANSFER_WORD}, м²","Кол-во"]]
         for row in rows_data:
             tep_rows.append([row.get('label') or row.get('key') or '—',
@@ -17174,18 +17510,18 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                 tep_rows.append([_park_label(row),"—","—","—",_park_count(row)])
         tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),
                          _pdf_num(given,0),_counts])
-        story.append(table(tep_rows,[58*mm,30*mm,32*mm,35*mm,15*mm]))
+        story.append(table(tep_rows,_tep_widths(tep_rows,[28*mm,30*mm,30*mm])))
         story.append(P("Переданные метры строятся, но не продаются: в продаваемой "
                        f"площади их нет. {TRANSFER_RECIPIENT_NOTE.capitalize()}.",
                        small))
     else:
-        tep_rows=[["Продукт","Строит. объём, м²","Продаваемая, м²","Кол-во"]]
+        tep_rows=[["Продукт",TOTAL_AREA.with_unit(),"Продаваемая, м²","Кол-во"]]
         for row in rows_data:
             tep_rows.append([row.get('label') or row.get('key') or '—',_pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),_count(row)])
             if float(row.get('parking_units') or 0):
                 tep_rows.append([_park_label(row),"—","—",_park_count(row)])
         tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_counts])
-        story.append(table(tep_rows,[75*mm,32*mm,38*mm,25*mm]))
+        story.append(table(tep_rows,_tep_widths(tep_rows,[32*mm,36*mm])))
 
     # Очередность меняет проект целиком — сроки, инфляцию затрат, стартовые цены
     # и нагрузку по финансированию, — а отчёт о ней молчал: сводные цифры были,
@@ -17292,7 +17628,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
 
     story.append(_PdfSection("premises"));story.append(P("Цены и основные предпосылки",h2))
     _class_dev=project_class_deviations(inputs)
-    premise_rows=[["Параметр","Значение"],["Класс проекта",_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² наземной части"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² подземной части"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² строит. объёма"],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
+    premise_rows=[["Параметр","Значение"],["Класс проекта",_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² наземной части"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² подземной части"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
     # Тип проекта называется только там, где он не тот, что у всех: строка
     # «Жилой / смешанный» в каждом отчёте — постоянная приписка, а такие
     # перестают читаться. Оставшееся от жилья идёт своей строкой, потому что
@@ -17391,7 +17727,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # Непродаваемое в таблицу ПРОДАЖ не идёт: соцобъект стоял тут строкой
         # с объёмом «350 м²» и выручкой ноль, хотя 350 — это места. Его метры
         # и мощность названы в таблице ТЭП, где у них своя мера.
-        if item.get('sellable') is False: continue
+        if item.get('sellable') is False or item.get('excluded'): continue
         quantity=float(item.get('quantity') or 0);revenue=float(item.get('revenue') or 0)
         built=float(item.get('built_units') or 0)
         # Паркинг объекта с местами, которые не продаются (ТЦ, ФОК), — тоже
@@ -18072,7 +18408,7 @@ _MODEL_SUMMARY_ROWS: list[tuple[str, str, str]] = [
     ("project_gns_sqm", "ГНС проекта (наземная), м²", "int"),
     ("monetizable_saleable_sqm", "Продаваемая площадь, м²", "int"),
     ("full_cost_per_saleable_th", "Полная себестоимость, тыс. ₽/м² продаж", "num"),
-    ("construction_cost_per_gns_th", "Строительство, тыс. ₽/м² строит. объёма МКД", "num"),
+    ("construction_cost_per_gns_th", f"Строительство, тыс. ₽/м² {CORE_TOTAL_AREA.genitive}", "num"),
 ]
 
 _MODEL_FINANCE_SUMMARY_ROWS: list[tuple[str, str, str]] = [
@@ -20240,9 +20576,44 @@ def _v4_management_profile_ranges() -> tuple[int, int, list[int]]:
 # ячейка `ОТЧЕТ!G6`, и её саму не читает никто.
 _V4_GNS_LABELS: tuple[tuple[str, str, str, str], ...] = (
     ("ТЭП", "C3", "ГНС, м²", "ГНС / подземная площадь, м²"),
-    ("ТЭП", "A36", "ИТОГО ПРОЕКТ", "ИТОГО ПРОЕКТ — строительный объём"),
-    ("ОТЧЕТ", "F6", "ГНС", "Строительный объём"),
+    ("ТЭП", "A36", "ИТОГО ПРОЕКТ", f"ИТОГО ПРОЕКТ — {TOTAL_AREA.lower()}"),
+    ("ОТЧЕТ", "F6", "ГНС", TOTAL_AREA.name),
+    ("ОТЧЕТ", "A33", "Покупка", "Покупка: участок + выкуп ЗУ/ОКС"),
 )
+
+
+# Выкуп ЗУ/ОКС у третьих лиц — строка стоимости сделки (решение владельца,
+# 29.09.2026). В книге он стоит своей ячейкой блока сделки, а там, где книга
+# берёт цену покупки, — покупка идёт вместе с выкупом: строка «Приобретение»
+# каждой очереди (та же доля очереди, тот же график), база вычета НДС листов
+# CF и «Покупка» структуры расходов ОТЧЕТа. Движок делает то же самое: выкуп
+# платится статьёй покупки и из базы НДС вычитается.
+_V4_CAPEX_PURCHASE_ROW = 14
+# Апостроф в XML листа бывает и целым, и мнемоникой — опознаются все написания.
+_V4_DEAL_PRICE_CELLS = ("'Вводные'!$B$15", "&apos;Вводные&apos;!$B$15",
+                        "&#39;Вводные&#39;!$B$15")
+
+
+def _v4_deal_includes_buyout(xml: str, sheet: str, rows: tuple[int, ...],
+                             missing: list[str]) -> str:
+    """Цена покупки в названных строках → цена покупки плюс выкуп ЗУ/ОКС."""
+    for row in rows:
+        cells: dict[str, dict[str, Any]] = {}
+        for coord, formula in _v4_row_formulas(xml, row).items():
+            for price in _V4_DEAL_PRICE_CELLS:
+                buyout = price.replace("$B$15", "$F$16")
+                if price in formula and buyout not in formula:
+                    cells[coord] = dict(formula=formula.replace(
+                        price, f"({price}+{buyout})"))
+                    break
+        if not cells:
+            missing.append(f"{sheet} · строка {row}: цена покупки не опознана — "
+                           "выкуп ЗУ/ОКС в стоимость сделки не добавлен")
+            continue
+        xml, done = _v4_set_cells(xml, row, cells)
+        if not done:
+            missing.append(f"{sheet} · строка {row}: стоимость сделки с выкупом не записана")
+    return xml
 
 
 def _v4_rename_labels(xml: str, sheet: str, missing: list[str]) -> str:
@@ -21499,7 +21870,7 @@ def _v4_extra_tep_rows(xml: str, missing: list[str]) -> str:
         xml, "C36",
         formula=f"SUM(C28,C35,F40:F43)+'Вводные'!$K$158*({garages})")
     if not done:
-        missing.append("ТЭП · гаражи объектов в строительном объёме")
+        missing.append(f"ТЭП · гаражи объектов в {TOTAL_AREA.prepositional}")
     xml, _ = _v4_set_or_insert_cell(
         xml, "H36",
         text="Включая соцобъекты и подземные гаражи отдельно стоящих объектов")
@@ -21697,7 +22068,7 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
     put(f"A{total}", text="ИТОГО ПРОДУКТЫ")
     for column in ("B", "C", "D", "E", under):
         put(f"{column}{total}", formula=f"SUM({column}{first}:{column}{total - 1})")
-    put(f"H{total}", text=("Строительный объём = наземная + подземная. "
+    put(f"H{total}", text=(f"{TOTAL_AREA.name} = наземная + подземная. "
                            "Соцобъекты сюда не входят — они не продукт; "
                            "их метры на листе ТЭП."))
     xml_holder[0] = _v4_restyle_row(xml_holder[0], total - 1, plain_styles, whole_row=True)
@@ -23328,8 +23699,8 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
         "land": {
             "purchase_per_saleable_th": (
                 float((report.get("purchase") or {}).get("total_mln") or 0.0) * 1e3
-                / float(tep_total.get("saleable") or 0.0)
-                if float(tep_total.get("saleable") or 0.0) > 0 else None),
+                / float(summary.get("monetizable_saleable_sqm") or 0.0)
+                if float(summary.get("monetizable_saleable_sqm") or 0.0) > 0 else None),
             "social_payment_mln": float(summary.get("social_payment") or 0.0) / 1e6,
             "social_payment_mode": str(summary.get("social_payment_mode") or ""),
             "land_rights_mln": float((consolidated.get("capex") or {}).get("land_rights") or 0.0) / 1e6,
@@ -24717,7 +25088,7 @@ def _v4_landscaping_rows_xml(xml: str, inputs: dict[str, Any],
     hint = base_row + 1
     parts.append(f'<x:row r="{hint}">'
                  + text_cell(f"A{hint}", "Ставка благоустройства умножается на площадь "
-                                         "двора, а не на строительный объём. Площадь "
+                                         f"двора, а не на {CORE_TOTAL_AREA.lower()}. Площадь "
                                          "считает формула: население × метры на человека; "
                                          "население — площадь квартир очереди делённая на "
                                          "норматив региона.")
@@ -24895,7 +25266,7 @@ def _v4_apply_storage_area_rows(xml: str, missing: list[str]) -> str:
     xml, count = xml.replace(volume_was, volume_now), xml.count(volume_was)
     expect = len(_V4_SHARED_CASH_ARTICLES) * _V4_CAPEX_PHASES
     if count != expect:
-        missing.append("CAPEX · строительный объём: формула общепроектных статей "
+        missing.append(f"CAPEX · {CORE_TOTAL_AREA.lower()}: формула общепроектных статей "
                        f"не опознана ({count} из {expect})")
     for phase in range(_V4_CAPEX_PHASES):
         base = _V4_CAPEX_BLOCK_STRIDE * phase
@@ -25244,11 +25615,12 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "ОТЧЕТ": (
         (
-        2, 12, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 58, 61,
+        2, 12, 33, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 58, 61,
         ),
-        "Наземная ГНС, строительный объём, непогашенный долг при "
+        f"Наземная ГНС, {TOTAL_AREA.lower()}, непогашенный долг при "
         "переносе между очередями и чистая прибыль из строк того же "
-        "листа (12) "
+        "листа (12); покупка вместе с выкупом ЗУ/ОКС у третьих лиц (33, "
+        "_v4_deal_includes_buyout) "
     ),
     "ПРОВЕРКИ": (
         (
@@ -26243,6 +26615,7 @@ def _build_project_workbook(
     for _extra_row, _extra_label, _extra_key, _extra_unit, _extra_kind in (
             # Сделка и сроки (13–37)
             (15, "Лаг погашения БРИДЖ после РнС", "bridge_repay_lag_months", "мес.", "number"),
+            (16, "Выкуп ЗУ/ОКС у третьих лиц", "land_buyout_mln", "млн ₽", "number"),
             # Стоимость строительства (38–54)
             (39, "Снос — площадь сносимого", "demolition_area_sqm", "м²", "number"),
             (40, "Снос — стоимость", "demolition_cost_th_per_sqm", "тыс. ₽/м²", "number"),
@@ -27028,6 +27401,15 @@ def _build_project_workbook(
             hidden_products=_v4_absent_products(x, tep), queues=count)
     except Exception as exc:  # noqa: BLE001 — дашборд без книги не выпускается молча
         missing.append("Дашборд · не собран: " + _error_location(exc))
+
+    capex_xml = _v4_deal_includes_buyout(
+        capex_xml, "CAPEX",
+        tuple(_V4_CAPEX_PURCHASE_ROW + _V4_CAPEX_BLOCK_STRIDE * k for k in range(_V4_CAPEX_PHASES)),
+        missing)
+    for _name in list(cf_sheet_xml):
+        cf_sheet_xml[_name] = _v4_deal_includes_buyout(
+            cf_sheet_xml[_name], _name, (_V4_CF_VAT_ROW,), missing)
+    report_xml = _v4_deal_includes_buyout(report_xml, "ОТЧЕТ", (33,), missing)
 
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
@@ -28246,6 +28628,7 @@ _PLATO_CONSOLIDATOR_SLOTS = 4
 
 _MODEL2_INPUTS: list[tuple[str, str, str]] = [
     ("Цена покупки / вход", "purchase_price_mln", "млн ₽"),
+    ("Выкуп ЗУ/ОКС у третьих лиц (в стоимости сделки)", "land_buyout_mln", "млн ₽"),
     ("Смена ВРИ / земельные права", "land_rights_cost_mln", "млн ₽"),
     ("Спред БРИДЖ", "bridge_spread_pp", "п.п."),
     ("Спред капитализации БРИДЖ", "bridge_cap_spread_pp", "п.п."),
@@ -28789,7 +29172,7 @@ def build_plato_model_v2(
     for offset, (key, label, formula) in enumerate((
         ("core_above_gns", "Наземная площадь (ГНС), м²", f"={above}"),
         ("core_under_gns", "Подземная площадь, м²", f"={under}"),
-        ("core_total_gns", "Строительный объём, м²", f"=B{base_line + 1}+B{base_line + 2}"),
+        ("core_total_gns", CORE_TOTAL_AREA.with_unit(), f"=B{base_line + 1}+B{base_line + 2}"),
         # Благоустраивают двор, а не дом: у статьи своя физическая база.
         # Считается она формулой от площади квартир — правка ТЭП прямо в книге
         # двигает и площадь двора, как в движке. Норматив населения книге не
@@ -29051,7 +29434,9 @@ def build_plato_model_v2(
         return f"={tep_ref(base_key)}*{ref(rate_key)}/1000"
 
     plan: dict[str, tuple[str, str, str]] = {
-        "purchase": (f"={ref('purchase_price_mln')}", f"={ref('project_start')}", "=1"),
+        # Стоимость сделки — цена участка и выкуп ЗУ/ОКС у третьих лиц.
+        "purchase": (f"={ref('purchase_price_mln')}+{ref('land_buyout_mln')}",
+                     f"={ref('project_start')}", "=1"),
         "ird": (unit_rate("ird_th_per_sqm", "core_total_gns"),
                 f"={ref('project_start')}", f"={ref('ird_months')}"),
         "design_p": (unit_rate("design_p_th_per_sqm", "core_total_gns"),
@@ -30284,6 +30669,9 @@ def telegram_result(req: TelegramResultRequest,
         f"• подземный паркинг — {_telegram_number(parking, 0)} м/м\n\n"
         "<b>Предварительная экономика</b>\n"
         f"• цена покупки — {_telegram_money_mln(summary.get('purchase_price_mln'))}\n"
+        + (f"• выкуп ЗУ/ОКС у третьих лиц — {_telegram_money_mln(summary.get('land_buyout_mln'))} "
+           "(кадастровая стоимость, не цена сделки)\n"
+           if float(summary.get("land_buyout_mln") or 0) > 0 else "") +
         f"• выручка — {_telegram_money_mln(summary.get('revenue_mln'))}\n"
         f"• расходы всего — {_telegram_money_mln(summary.get('total_expenses_mln'))}\n"
         f"• EBITDA — {_telegram_money_mln(summary.get('ebitda_mln'))}\n"
@@ -32230,10 +32618,30 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # выборка следует за платежами, и отложенный платёж сам снижает проценты.
     purchase_payments, purchase_warnings = purchase_payment_plan(
         n(x, "purchase_price_mln") * 1_000_000, x.get("purchase_schedule"), project_start, end)
-    for when, amount in purchase_payments:
+    # Выкуп ЗУ/ОКС у третьих лиц — строка стоимости сделки рядом с ценой
+    # участка (решение владельца, 29.09.2026: «при переносе из расчёта КРТ эти
+    # суммы выкупа должны идти в стоимость сделки»). Платится графиком покупки
+    # в той же пропорции; без цены участка — графиком сделки сам по себе.
+    # Статья та же — «purchase»: лимит БРИДЖа, НДС, очереди и книга видят
+    # сделку целиком, а разбивку на две строки дают вводные.
+    buyout_total = n(x, "land_buyout_mln") * 1_000_000
+    buyout_payments: list[tuple[date, float]] = []
+    if buyout_total > 0:
+        paid_for_price = sum(amount for _, amount in purchase_payments)
+        if paid_for_price > 0:
+            buyout_payments = [(when, buyout_total * amount / paid_for_price)
+                               for when, amount in purchase_payments]
+        else:
+            buyout_payments, buyout_warnings = purchase_payment_plan(
+                buyout_total, x.get("purchase_schedule"), project_start, end)
+            purchase_warnings = list(purchase_warnings) + [
+                f"выкуп ЗУ/ОКС: {w}" for w in buyout_warnings]
+    for when, amount in [*purchase_payments, *buyout_payments]:
         add_capex("purchase", when, amount)
     purchase_schedule_info = {
-        "total_mln": n(x, "purchase_price_mln"),
+        "total_mln": n(x, "purchase_price_mln") + n(x, "land_buyout_mln"),
+        "price_mln": n(x, "purchase_price_mln"),
+        "buyout_mln": n(x, "land_buyout_mln"),
         "custom": bool(str(x.get("purchase_schedule") or "").strip()),
         "rows": [{"date": when.isoformat(), "amount_mln": amount / 1_000_000,
                   "share": (amount / (n(x, "purchase_price_mln") * 1_000_000)
@@ -33512,6 +33920,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         vat_bearing_costs = (
             total_capex + commercial_costs
             - n(x, "purchase_price_mln") * 1_000_000
+            - n(x, "land_buyout_mln") * 1_000_000
             - n(x, "land_rights_cost_mln") * 1_000_000
             - op["capex_amounts"].get("vri_interest", 0.0)
             - op["capex_amounts"].get("vri_security", 0.0)
@@ -33816,7 +34225,6 @@ def calculate(req: CalcRequest) -> dict:
     fin = simulate_financing(x, t, rates, op)
 
     tep_rows = []
-    excluded_rows = residential_excluded_rows(x)
     for key, row in t.items():
         # Гостевые машино-места строятся и стоят денег, но не продаются. Число
         # едет в строку ТЭП, а не выводится каждой поверхностью заново: книга
@@ -33858,11 +34266,14 @@ def calculate(req: CalcRequest) -> dict:
             # здания. ТЭП печатает их строкой «в т.ч. паркинг объекта».
             "parking_under_units": n(row, "parking_under_units"),
             "parking_over_units": n(row, "parking_over_units"),
+            # Продаётся у объекта остаток после мест первых этажей; строка
+            # держит площадь здания. Число — `apply_object_parking`.
+            "parking_saleable_after_sqm": n(row, "parking_saleable_after_sqm"),
             "parking_guest_units": n(row, "parking_guest_units"),
-            # Строка, которую тип проекта не считает (`residential_excluded_rows`):
-            # нули в ней — не «продукт пуст», а «продукта в этом проекте нет».
-            "excluded": key in excluded_rows,
         })
+        # Строка вне состава проекта (`row_outside_project`): нули в ней —
+        # не «продукт пуст», а «продукта в этом проекте нет».
+        tep_rows[-1]["excluded"] = row_outside_project(x, key, tep_rows[-1])
 
     # Свод складывает только складываемое. Штук в списке нет: они
     # группируются мерой счёта, потому что квартира, машино-место и место в
@@ -33878,11 +34289,7 @@ def calculate(req: CalcRequest) -> dict:
     net_profit = after_finance_pre_tax - fin["profit_tax"] - fin.get("vat", 0.0)
 
     # Report-level project metrics.
-    monetizable_saleable_sqm = sum(
-        n(row, "saleable") for key, row in t.items()
-        if key in ("apartments", "ground_commercial",
-                   *object_keys_of("standalone_retail", "offices"))
-    )
+    monetizable_saleable_sqm = sold_saleable_sqm(t, x)
     apartment_saleable_sqm = n(t.get("apartments", {}), "saleable")
     core_gns = op["core_above_gns"] + op["core_under_gns"]
 
@@ -34042,7 +34449,9 @@ def calculate(req: CalcRequest) -> dict:
         }
 
     # Expense structure: categories are mutually exclusive and sum to total expenses.
-    purchase_value = n(x, "purchase_price_mln") * 1_000_000
+    # Стоимость сделки — цена участка и выкуп ЗУ/ОКС у третьих лиц одной
+    # группой: обе строки платятся графиком сделки. Разбивка — в `summary`.
+    purchase_value = (n(x, "purchase_price_mln") + n(x, "land_buyout_mln")) * 1_000_000
     expense_groups = [
         ("Цена приобретения", purchase_value),
         ("Смена ВРИ / земельные права",
@@ -34108,7 +34517,9 @@ def calculate(req: CalcRequest) -> dict:
             continue
         row = t.get(key) or {}
         own_gns = n(row, "gns")
-        own_saleable = n(row, "saleable")
+        # Удельная на продаваемый — на ПРОДАННЫЕ метры: под местами первых
+        # этажей офис не продаётся.
+        own_saleable = object_sold_saleable(x, t, key)
         # Гараж объекта стоит подземного метра и в его наземной ГНС не лежит:
         # делённый на неё, он поднимал удельную с вводных 200 до 249 тыс ₽/м²,
         # и сравнить это ни со сметой, ни со своей же вводной было нельзя.
@@ -34334,7 +34745,8 @@ def calculate(req: CalcRequest) -> dict:
             "sellable": True,
             "quantity": quantity,
             "gns": float(tep_row.get("gns", 0.0) or 0.0),
-            "saleable": float(tep_row.get("saleable", 0.0) or 0.0),
+            "saleable": (object_sold_saleable(x, t, key) if key in _BY_KEY
+                         else float(tep_row.get("saleable", 0.0) or 0.0)),
             "revenue": revenue_value,
             "cost": product_cost,
             "margin": ((revenue_value - product_cost) / revenue_value
@@ -34385,6 +34797,10 @@ def calculate(req: CalcRequest) -> dict:
             # продукт, который не продаётся по построению.
             "sellable": False,
         })
+
+    # Продукт объекта вне состава проекта — той же меркой, что строка ТЭП.
+    for item in products_report:
+        item["excluded"] = row_outside_project(x, item["key"], item)
 
     # Calendar / Gantt, mirroring the conceptual structure of the Excel Calendar sheet.
     calendar_events = []
@@ -34489,6 +34905,14 @@ def calculate(req: CalcRequest) -> dict:
         "actuals": actuals_report,
         "commercial_costs": fin["commercial_costs"],
         "finance": fin,
+        # Стоимость сделки двумя строками и итогом: цена участка/права и
+        # выкуп ЗУ/ОКС у третьих лиц. Одна разбивка на все поверхности; своим
+        # ключом, а не в сводке, — числа сводки держит сторож эталонов.
+        "deal": {
+            "price_mln": n(x, "purchase_price_mln"),
+            "buyout_mln": n(x, "land_buyout_mln"),
+            "total_mln": n(x, "purchase_price_mln") + n(x, "land_buyout_mln"),
+        },
         "summary": {
             "revenue": total_revenue,
             "capex": total_capex,
@@ -36272,8 +36696,12 @@ def _consolidate_phase_results(
                 "parking_saleable_units": 0.0,
                 "parking_under_units": 0.0, "parking_over_units": 0.0,
                 "parking_guest_units": 0.0,
-                "excluded": bool(row.get("excluded")),
+                "excluded": True,
             })
+            # Вне состава свода — только строка, которой нет ни в одной
+            # очереди: объект второй очереди выключен в первой, и ответ
+            # первой очереди не прячет его из свода.
+            target["excluded"] = target["excluded"] and bool(row.get("excluded"))
             for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
                           "guest_units", "transfer_units", "saleable_units",
                           "under_gns", "parking_units",
@@ -36456,7 +36884,10 @@ def _consolidate_phase_results(
                 "avg_price_th": 0.0, "pace_pre": None,
                 "share_before_rve": item["share_before_rve"],
                 "sales_start": None, "sales_end": None,
+                "excluded": True,
             })
+            # Вне состава свода — только продукт, которого нет ни в одной очереди.
+            p["excluded"] = p["excluded"] and bool(item.get("excluded"))
             p["quantity"] += float(item["quantity"] or 0.0)
             p["gns"] += float(item.get("gns", 0.0) or 0.0)
             p["saleable"] += float(item.get("saleable", 0.0) or 0.0)
@@ -36515,6 +36946,7 @@ def _consolidate_phase_results(
             "label": total_item["label"],
             "unit": total_item["unit"],
             "sellable": total_item["sellable"],
+            "excluded": total_item["excluded"],
             "quantity": total_item["quantity"],
             "revenue": total_item["revenue"],
             "avg_price_th": total_item["avg_price_th"],
@@ -36567,6 +36999,9 @@ def _consolidate_phase_results(
         "capex": capex,
         "commercial_costs": commercial_costs,
         "finance": finance,
+        # Сделка проекта — сумма сделок очередей, строка к строке.
+        "deal": {key: sum(float((r.get("deal") or {}).get(key) or 0.0) for r in results)
+                 for key in ("price_mln", "buyout_mln", "total_mln")},
         "summary": {
             "revenue": total_revenue, "capex": total_capex,
             "commercial_costs": commercial_costs, "ebitda": ebitda,
@@ -37065,6 +37500,8 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         p_inputs["storage_price_th"] = n(x_master,"storage_price_th")*sales_price_inflation_factor
 
         p_inputs["purchase_price_mln"] = shared_base_mln["purchase"]*cash_weights["purchase"][idx]/100
+        # Выкуп — часть сделки: той же долей, что цена участка.
+        p_inputs["land_buyout_mln"] = n(x_master, "land_buyout_mln")*cash_weights["purchase"][idx]/100
         p_inputs["land_rights_cost_mln"] = shared_base_mln["land_rights"]*cash_weights["land_rights"][idx]/100
         # Свои средства — один котёл на проект: без деления каждая очередь
         # получила бы всю сумму, и проект «финансировал» бы себя вчетверо.
@@ -38978,6 +39415,7 @@ def _tool_explain_metric(
                 "sales_end": p.get("sales_end"),
             }
             for p in (report.get("products") or [])
+            if not p.get("excluded")
         ]
         base["total_revenue_mln"] = round(float(s.get("revenue", 0) or 0) / 1e6, 2)
         return base
@@ -39075,6 +39513,7 @@ def _tool_explain_metric(
                 "units": round(float(row.get("units", 0) or 0), 2),
             }
             for row in ((result.get("tep") or {}).get("rows") or [])
+            if not row.get("excluded")
         ]
         return base
 
@@ -39295,7 +39734,7 @@ _PATCH_VARIABLES = {
     "storage_price_th": "Цена кладовой, тыс. ₽/шт.",
     "offices_price_th_per_sqm": "Стартовая цена МФК/офисов, тыс. ₽/м²",
     "offices_cost_th_per_sqm": "Себестоимость МФК/офисов, тыс. ₽/м² GBA",
-    "utilities_th_per_sqm": "Внешние сети, тыс. ₽/м² строительного объёма",
+    "utilities_th_per_sqm": f"Внешние сети, тыс. ₽/м² {CORE_TOTAL_AREA.genitive}",
     "technical_supervision_pct": "Технический заказчик / стройконтроль, %",
     "project_management_pct": "Управление проектом, %",
     "gc_fee_pct": "Генподрядчик, %",
@@ -45197,6 +45636,21 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .teptable .tep-note.bad{color:#a33;margin-top:2px}
 .teptable .tep-head-note{font-size:10px;color:#999;font-weight:400;text-transform:none;letter-spacing:0}
 .teptable tfoot th{background:#f2f0ea}
+/* Колонка подписей закреплена: таблица шире телефона и прокручивается сама,
+   и без закрепа на 390 px стояли одни числа без названий (владелец,
+   29.09.2026). Подпись раздела — тоже: её ячейка на всю ширину, закрепляется
+   текст внутри. Доля под числом — узкое поле: общее правило ширины полей
+   ТЭП (94 px) к нему не относится, иначе «100» обрезалось до «00». */
+.teptable tbody td:first-child,.teptable thead th:first-child,.teptable tfoot th:first-child{position:sticky;left:0;z-index:1;background:#fff;box-shadow:1px 0 0 #e5e5e5}
+.teptable thead th:first-child{z-index:3;background:#fafafa}
+.teptable tfoot th:first-child{background:#f2f0ea}
+.teptable tr.tep-sub td:first-child{background:#fafaf8}
+.teptable tr.tep-group .tep-sticky{position:sticky;left:10px;display:inline-block}
+.teptable input.tep-ratio{min-width:0;width:58px;padding:4px 5px}
+@media(max-width:640px){
+ .teptable tbody td:first-child,.teptable thead th:first-child,.teptable tfoot th:first-child{min-width:112px;max-width:128px;white-space:normal;overflow-wrap:anywhere}
+ .teptable tr.tep-park .tep-park-note{position:sticky;left:136px;display:inline-block;max-width:calc(100vw - 240px);white-space:normal}
+}
 .note{padding:13px 15px;background:#f6f6f4;border-left:3px solid #111;font-size:12px;line-height:1.55;color:#555;margin-top:14px}
 .warning{border-left-color:#9a6700;background:#fff8e6;color:#704800}
 .finance-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
@@ -46545,6 +46999,9 @@ const TEP_DEFAULT=__DEVELOPAID_TEP_DEFAULT__;
 // видел у одного продукта до четырёх имён. Объявление одно — в движке
 // (`TEP_DEFAULT`), здесь только чтение.
 const PRODUCT_LABELS=__DEVELOPAID_PRODUCT_LABELS__;
+// Подписи величин — из словаря терминов (`terms_glossary`): страница, PDF и
+// книга называют одну величину одним словом.
+const TERMS=__DEVELOPAID_TERMS__;
 // Отдельно стоящие объекты — из движка. Страница знала о них четырьмя
 // рукописными перечислениями: умолчание очереди в двух местах, четыре поля
 // выбора очереди в разметке и приставки объектов с гаражом. Пятый объект в
@@ -49896,6 +50353,7 @@ async function sendTelegramResult(){
    project_name:manual?String(manualMeta.project_name||''):'',
    source_label:tepSourceLabel(manual),
     purchase_price_mln:Number(inputs.purchase_price_mln||0),
+    land_buyout_mln:Number(inputs.land_buyout_mln||0),
     // Источник проекта важнее сохранённого значения: в inputs могла остаться
     // площадь прошлого расчёта, и она перебивала площадь текущего участка.
     site_area_ha:Number(n.site_area_ha||(manualMeta&&manualMeta.site_area_ha)||inputs.site_area_ha||0),
@@ -50002,7 +50460,7 @@ const TERRITORY_INPUT_KEYS=[
  'parking_k1','parking_k2','parking_rail_distance_m'
 ];
 const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
- '_site_area_user_set','_site_density_user_set'];
+ '_site_area_user_set','_site_density_user_set','_demolition_source','_land_buyout_source'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
 // данные участка, и сбрасывать их при смене территории нельзя.
@@ -50466,6 +50924,14 @@ function classFieldSource(k){
  return Math.abs(Number(inputs[k])-Number(s.value))<1e-9?String(s.by):'';
 }
 function classFieldUnitText(id,unit){
+ // Площадь сноса и выкуп, найденные по контуру КРТ, подписаны своим
+ // происхождением, пока число в поле то же, что положил контур; исправленное —
+ // уже ручное. Проверка внутри, а не своей функцией: стенды страницы собирают
+ // `classFieldUnitText` по имени, и новое имя рядом роняло бы их все.
+ const krtSource=id==='demolition_area_sqm'?inputs._demolition_source:(id==='land_buyout_mln'?inputs._land_buyout_source:null);
+ if(krtSource&&krtSource.by&&Math.abs(Number(inputs[id])-Number(krtSource.value))<0.05)
+  return unit+' · '+krtSource.by+(krtSource.warn?' · ВНИМАНИЕ: '+krtSource.warn:'')
+   +(id==='demolition_area_sqm'?' — исправьте, если здание сохраняется':' — вписанное руками сильнее');
  if(!classSetsField(id))return unit;
  if(!isClassManual(id))return unit+' · ставит класс проекта, правится в «Настройках класса»';
  return unit+' · '+(classFieldSource(id)||'вписано руками')+' — смена класса его не затрёт';
@@ -50822,6 +51288,9 @@ function classFieldLabel(k){if(FIELD_LABELS_OUTSIDE[k])return FIELD_LABELS_OUTSI
 // реализацией одного правила, и разошлись бы они молча.
 const CLASS_FIELD_UNITS=__DEVELOPAID_CLASS_UNITS__;
 function classFieldUnit(k){return CLASS_FIELD_UNITS[k]||''}
+// Разделы окна классов и подписи их строк — карта движка
+// (`CLASS_DIALOG_SECTIONS`): раздел строки не угадывается по имени поля.
+const CLASS_DIALOG=__DEVELOPAID_CLASS_DIALOG__;
 // Личные значения классов — перекрышка поверх общей базы (решение владельца,
 // 24.08.2026: база одна и общая, у человека может быть своя). Лежат на ядре
 // рядом с проектами и действуют при следующем применении класса; отклонения
@@ -50928,7 +51397,19 @@ function renderClassDialog(){
  let deviations=0;
  let owned=0;
  let html='<table style="width:100%;border-collapse:collapse;font-size:12px"><tr><th style="text-align:left;padding:6px 8px;border-bottom:1px solid #ddd">Поле</th>'+classes.map(c=>`<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd;${c===cur?'background:#eef4fb':''}">${PROJECT_CLASS_PRESETS[c].label}</th>`).join('')+'<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #ddd">В проекте</th></tr>';
- for(const k of keys){
+ // Строки идут разделами карты движка (`CLASS_DIALOG`), в её порядке. Поле
+ // профиля, которого в карте нет, не пропадает: оно встаёт в раздел «без
+ // раздела» с прежней подписью — видимая дыра карты, а не потерянная строка.
+ const placed=new Set();
+ const sections=CLASS_DIALOG.map(s=>({id:s.id,title:s.title,rows:s.rows.filter(r=>keys.includes(r.key))}));
+ sections.forEach(s=>s.rows.forEach(r=>placed.add(r.key)));
+ const loose=keys.filter(k=>!placed.has(k));
+ if(loose.length)sections.push({id:'unmapped',title:'Без раздела — поле не внесено в карту окна',rows:loose.map(k=>({key:k,label:classFieldLabel(k)}))});
+ for(const sec of sections){
+ if(!sec.rows.length)continue;
+ // Заголовок раздела — тёмная полоса крупнее строк, как в «Сравнении очередей».
+ html+=`<tr class="class-section" data-section="${sec.id}"><th colspan="${classes.length+2}" style="text-align:left;padding:8px 10px 7px;font-size:13px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#fff;background:#111;border-top:12px solid #fff">${escapeHtml(sec.title)}</th></tr>`;
+ for(const {key:k,label:rowLabel} of sec.rows){
   const actual=Number(inputs[k]);
   // Отклонение проекта меряется от ОБЩЕЙ базы — той же, что сервер печатает
   // в PDF и книгах; личная перекрышка эту сверку не подменяет.
@@ -50941,11 +51422,11 @@ function renderClassDialog(){
   const rowStats=classes.map(c=>classStatsRow(c,k));
   const hasStats=rowStats.some(Boolean);
   const unit=classFieldUnit(k);
-  const unitCell=(unit?` <span style="color:#8a94a6;font-size:11px;white-space:nowrap">${escapeHtml(unit)}</span>`:'');
+  const unitCell=(unit?`<span style="color:#8a94a6;font-size:11px;white-space:nowrap">, ${escapeHtml(unit)}</span>`:'');
   const labelCell=(hasStats
-   ?`<a href="#" onclick="toggleClassDetail('${k}');return false" title="Обоснование: источники, диапазон и положение вашего значения" style="color:inherit;text-decoration:none;border-bottom:1px dashed #b6c4d6">${classFieldLabel(k)} <span style="color:#3b6db4">${CLASS_DETAIL_OPEN[k]?'▾':'▸'}</span></a>`
-   :classFieldLabel(k))+unitCell;
-  html+=`<tr><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${labelCell}</td>`+classes.map(c=>{
+   ?`<a href="#" onclick="toggleClassDetail('${k}');return false" title="Обоснование: источники, диапазон и положение вашего значения" style="color:inherit;text-decoration:none;border-bottom:1px dashed #b6c4d6">${escapeHtml(rowLabel)} <span style="color:#3b6db4">${CLASS_DETAIL_OPEN[k]?'▾':'▸'}</span></a>`
+   :escapeHtml(rowLabel))+unitCell;
+  html+=`<tr class="class-row" data-key="${k}" data-section="${sec.id}"><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${labelCell}</td>`+classes.map(c=>{
    const own=Math.abs(classValue(c,k)-classBase(c,k))>1e-9;
    if(own)owned++;
    return `<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}"><input type="number" value="${classValue(c,k)}" onchange="setClassBase('${c}','${k}',this.value)" title="${own?'Своё значение; общая база: '+classBase(c,k).toLocaleString('ru-RU'):'Общая база класса — своё значение можно вписать прямо сюда'}" style="width:84px;text-align:right;border:1px solid ${own?'#c98a1b':'#dfe4ea'};border-radius:5px;padding:3px 6px;font-size:12px;${own?'background:#fdf6e6;font-weight:600':''}"></td>`;
@@ -50999,6 +51480,7 @@ function renderClassDialog(){
     html+=`<tr><td colspan="${classes.length+2}" style="padding:4px 10px 8px 22px;border-bottom:1px solid #f0f0f0;font-size:11px;color:#555;background:#fbfcfe">Обоснование для класса «${PROJECT_CLASS_PRESETS[detailCls].label}»: свод <b>${thous(rec.recommended_rub_m2)}</b> тыс ₽/м², разброс p25–p75 ${thous(rec.p25_rub_m2)}–${thous(rec.p75_rub_m2)}, источников ${rec.source_count}, доверие — ${confLabels[rec.confidence]||rec.confidence}.${srcRows?'<div style="margin-top:3px">'+srcRows+'</div>':''}${pos}</td></tr>`;
    }
   }
+ }
  }
  // Справка о нормах ГОРОДА живёт рядом с нормативом, который она объясняет,
  // а не во «Вводных», где считают деньги (владелец, 16.09.2026: «нормы
@@ -51412,7 +51894,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
@@ -51679,7 +52161,7 @@ function renderTepUndergroundNote(aboveGns,underGns){
  box.textContent=`Итог ГНС — наземная площадь: ${num(aboveGns)} м². `
   +`Подземная часть (паркинг, кладовые, гаражи объектов) ${num(underGns)} м² — `
   +`у неё своя экономика и в ГНС она не входит. `
-  +`Строительный объём ${num(aboveGns+underGns)} м².`;
+  +`${TERMS.total_area.name} ${num(aboveGns+underGns)} м².`;
 }
 
 function projectParking(){
@@ -51707,6 +52189,9 @@ function objectParkingNote(key){
    :'не продаются — обеспеченность посетителей';
  return `Паркинг объекта: ${num(item.units)} м/м (${where}), `
   +`${num(item.under_gns)} м² подземной части, ${sold}`
+  +(Number(item.over_gba_sqm||0)>0
+    ?`; места первых этажей занимают ${num(item.over_gba_sqm)} м² ГНС здания — продаваемая объекта меньше на ${num(item.saleable_taken_sqm)} м²`
+    :'')
   +` · ${item.by_norm?'по нормативу приложения 6':'задано руками'}`;
 }
 
@@ -51909,7 +52394,7 @@ function renderTep(){
   if(groups.length>1){
    const head=document.createElement('tr');
    head.className='tep-group';
-   head.innerHTML=`<th colspan="7">${escapeHtml(group.title)}</th>`;
+   head.innerHTML=`<th colspan="7"><span class="tep-sticky">${escapeHtml(group.title)}</span></th>`;
    body.appendChild(head);
   }
   group.keys.forEach(key=>{
@@ -52032,7 +52517,7 @@ function renderTep(){
     // (владелец, 23.08.2026).
     return '<div style="margin-top:4px;font-size:11px;color:'+(own?'#a33':'#777')
      +';white-space:nowrap;display:flex;align-items:center;gap:4px">'
-     +'<input type="number" step="0.1" min="0" max="100" value="'+value+'" style="width:52px;font-size:11px;margin:0" '
+     +'<input type="number" step="0.1" min="0" max="100" class="tep-ratio" value="'+value+'" style="font-size:11px;margin:0" '
      +'title="доля, по которой достраивается это число" '
      +'onchange="tepRatioSet(\''+key+'\',\''+which+'\',this.value)"><span>'+of+'</span>'
      +(own&&which==='saleable'?'<button type="button" class="tep-refill" onclick="tepRatioReset(\''+key+'\')">наши</button>':'')
@@ -52058,7 +52543,7 @@ function renderTep(){
     const park=document.createElement('tr');
     park.className='tep-park';
     park.innerHTML=`<td style="padding-left:14px;color:#555">↳ Паркинг объекта</td>`
-     +`<td colspan="6" style="font-size:11px;color:#555;text-align:left">${escapeHtml(parkNote)}</td>`;
+     +`<td colspan="6" style="font-size:11px;color:#555;text-align:left"><span class="tep-park-note">${escapeHtml(parkNote)}</span></td>`;
     body.appendChild(park);
    }
   });
@@ -54694,8 +55179,24 @@ function renderObjectParkingNote(){
  if(!note){box.innerHTML='';return;}
  // Тон у плашки на странице ровно один — `warning`. Придуманные `ok` и `bad`
  // отрисовались бы обычной плашкой: выглядит стилизованным, а стиля нет.
+ // Число прежнего поля площади места гаража из сохранённого проекта движок
+ // держит и называет в плашке; снять его можно только здесь — своего поля
+ // у него больше нет.
+ const saved=projectParking().area_per_space_saved;
+ const drop=saved?('<button type="button" id="objectParkingAreaSavedDrop" class="btn" '
+  +'style="margin-top:6px;font-size:12px">'
+  +(saved.origin==='manual'?'Взять норматив класса':'Понятно, убрать старое число')
+  +'</button>'):'';
  box.innerHTML='<div class="note" style="margin:0;padding:9px 11px;font-size:12px">'
-  +escapeHtml(note)+'</div>';
+  +escapeHtml(note)+(drop?'<br>'+drop:'')+'</div>';
+ const button=document.getElementById('objectParkingAreaSavedDrop');
+ if(button)button.addEventListener('click',dropSavedObjectParkingArea);
+}
+
+function dropSavedObjectParkingArea(){
+ delete inputs.object_parking_area_per_space_sqm;
+ try{persistLocalSilently()}catch(e){}
+ calculate();
 }
 
 
@@ -54767,6 +55268,9 @@ function renderResult(){
   // Цена не задана — это «не задана», а не «0 млрд ₽»: карточка решения выше
   // говорит «не задана», и плитка рядом с нулём ей противоречила (ревизия
   // интерфейса, S17). Правило то же, что у карточки: цена больше нуля.
+  // Итог сделки: цена участка вместе с выкупом ЗУ/ОКС у третьих лиц. Две
+  // строки разбивки стоят в «Параметрах проекта» ниже — шапка остаётся в
+  // десять плиток.
   ['Цена приобретения',(v=>v>0?money(v):'не задана')(expenseGroup('Цена приобретения'))],
   // Чем оплачен вход: свои деньги и пик банковского долга до ПФ. Прежде здесь
   // стояли оба БРИДЖа сразу — лимит банка и фактическая потребность, — и рядом
@@ -54913,6 +55417,9 @@ function renderResult(){
   row('Доходы к базовому сценарию',Number(r.summary.scenario_revenue_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   row('Расходы к базовому сценарию',Number(r.summary.scenario_cost_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   row('Стоимость покупки',money(expenseGroup('Цена приобретения')))+
+  ((r.deal&&Number(r.deal.buyout_mln)>0)
+   ?row('в т.ч. цена участка / права',money(Number(r.deal.price_mln)*1e6))
+    +row('в т.ч. выкуп ЗУ/ОКС у третьих лиц (кадастровая стоимость, не цена сделки)',money(Number(r.deal.buyout_mln)*1e6)):'')+
   row('Стоимость смены ВРИ / права',money(Number(r.capex.land_rights||0))
    +(vriRelief>0?' <span style="color:#777;font-weight:400">льгота '+money(vriRelief)+'</span>':''))+
   row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment))+
@@ -54928,7 +55435,7 @@ function renderResult(){
   row('Средняя цена м² квартир',th(r.summary.average_apartment_price_th)+'/м² прод.')+
   // Каждый удельный — в обеих базах: одна без второй читается как другая.
   row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.full_cost_per_gns_th)+'/м² ГНС')+
-  row('Строительная себестоимость',th(r.summary.construction_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.construction_cost_per_gns_th)+'/м² строит. объёма МКД')+
+  row('Строительная себестоимость',th(r.summary.construction_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.construction_cost_per_gns_th)+'/м² '+TERMS.core_total_area.genitive)+
   row('EBITDA на метр',th(r.summary.ebitda_per_saleable_th)+'/м² прод. · '+th(r.summary.ebitda_per_gns_th)+'/м² ГНС')+
   row('Чистая прибыль на метр',th(r.summary.net_profit_per_saleable_th)+'/м² прод. · '+th(r.summary.net_profit_per_gns_th)+'/м² ГНС');
 
@@ -55239,7 +55746,9 @@ function renderResult(){
  // Признак приходит из движка и читается как есть: выводить «продаётся ли»
  // из нулевой выручки значило бы путать «не продал в этом расчёте» с «не
  // продаётся по построению».
- const sellable=p=>p.sellable!==false;
+ // Объект вне состава проекта движок помечает (`row_outside_project`) —
+ // та же мерка, что у таблицы ТЭП: удалённые объекты не стоят строкой нулей.
+ const sellable=p=>p.sellable!==false&&!p.excluded;
  if(phaseBundle&&phaseBundle.mode==='phased'&&reportView==='all'&&Array.isArray(r.report.phase_products)){
    const phaseNames=(phaseBundle.phases||[]).map(x=>x.name);
    const productTotals=Object.fromEntries((r.report.products||[]).map(x=>[x.key,x]));
@@ -55427,9 +55936,10 @@ function renderResult(){
  reportTep.innerHTML=
   `<thead><tr><th>Продукт</th><th>ГНС наземная, м²</th><th>Подземная, м²</th><th>Продаваемая площадь, м²</th><th>Передаётся, м²</th><th>Построено</th><th>Продаётся</th></tr></thead>`+
   `<tbody>`+
-  // Строку, которую тип проекта не считает, движок помечает сам
-  // (`residential_excluded_rows`): нулевой «Подземный паркинг» дома рядом
-  // с гаражом объекта читался бы вторым паркингом.
+  // Строку вне состава проекта движок помечает сам (`row_outside_project`):
+  // то, что тип проекта не считает (нулевой «Подземный паркинг» дома рядом с
+  // гаражом объекта читался бы вторым паркингом), и объект, которого в проекте
+  // нет — удалённые «Коммерция ОСЗ 2…5», «Офисы 2…4» стояли здесь нулями.
   r.tep.rows.filter(x=>!x.excluded).map(x=>`<tr><td>${x.label}</td>`
    +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0&&!objParkUnits(x)?num(objUnder(x)):dash)}</td>`
@@ -55442,7 +55952,7 @@ function renderResult(){
    +`<th>${builtCounts}</th><th>${soldCounts}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
-  ? `Строительный объём — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная: на нём считаются общие статьи (ИРД, проектирование, подготовка, сети, благоустройство, сдача, содержание). Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
+  ? `${TERMS.total_area.name} — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная. Общие статьи (ИРД, проектирование, подготовка, сети, сдача, содержание) считаются от ${TERMS.core_total_area.genitive}${r.tep.core_above_gns!==undefined?' — '+num(Number(r.tep.core_above_gns)+Number(r.tep.core_under_gns||0))+' м²':''}: квартиры, коммерция 1 этажа, подземный паркинг и кладовые. Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
   : 'ГНС — наземная площадь здания, внутренний термин DevelopAid. Город нагрузки считает от суммарной поэтажной площади.';
 }
 
@@ -56057,10 +56567,18 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  const mytishchiPreset=inputs._preset_expert_overrides&&inputs._preset_expert_overrides.preset_id==='mytishchi';
  if(phasing.user_enabled!==true&&!mytishchiPreset)phasing=makeDefaultPhasing(1);
  // v0.7.1 migration: v0.7.0 temporarily misclassified the old 5% management rate as technical supervision.
- if(inputs._cost_structure_version!=='0.7.1'){
-   if(inputs.project_management_pct==null)inputs.project_management_pct=Number(inputs.technical_supervision_pct??5);
-   // Source model had no separate technical-supervision input: reset migrated value to 0.
-   inputs.technical_supervision_pct=0;
+ // Примета состояния v0.7.0 — нет поля управления проектом: там 5 % стояли
+ // под технадзором. Нет версии у ЛЮБОГО проекта, сохранённого без неё, — и
+ // миграция молча ставила технадзор 0 новому проекту при первой же
+ // перезагрузке: CAPEX −1 млрд, LLCR «сам» рос (аудит регрессов, 29.09.2026).
+ // Решает сохранённое, а не наложенное на умолчания.
+ const savedInputs=x.inputs||{};
+ if(savedInputs._cost_structure_version!=='0.7.1'){
+   if(savedInputs.project_management_pct==null){
+    inputs.project_management_pct=Number(savedInputs.technical_supervision_pct??5);
+    // Source model had no separate technical-supervision input: reset migrated value to 0.
+    inputs.technical_supervision_pct=0;
+   }
    inputs._cost_structure_version='0.7.1';
  }
  if(inputs.author_supervision_pct==null)inputs.author_supervision_pct=0;
@@ -57394,6 +57912,8 @@ PAGE = PAGE.replace(OFFICE_CLASS_PLACEHOLDER,
                     json.dumps(OFFICE_CLASS_BY_PROJECT_CLASS, ensure_ascii=False))
 PAGE = PAGE.replace(CLASS_FIELD_UNITS_PLACEHOLDER,
                     json.dumps(class_field_units(), ensure_ascii=False))
+PAGE = PAGE.replace(CLASS_DIALOG_PLACEHOLDER,
+                    json.dumps(class_dialog_layout(), ensure_ascii=False))
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
                     json.dumps(DEFAULT_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace(CLASS_ONLY_INPUTS_PLACEHOLDER,
@@ -57409,6 +57929,7 @@ PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
                     json.dumps(TEP_DEFAULT, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
 PAGE = PAGE.replace(MKD_SPP_SPLIT_PLACEHOLDER, json.dumps(MKD_SPP_SPLIT, ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_TERMS__", json.dumps(page_terms(), ensure_ascii=False))
 PAGE = PAGE.replace(PRODUCT_LABELS_PLACEHOLDER,
                     json.dumps(product_labels(), ensure_ascii=False))
 PAGE = PAGE.replace(

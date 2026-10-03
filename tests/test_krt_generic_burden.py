@@ -40,8 +40,12 @@ class FakeCore:
             float(inputs.get("demolition_area_sqm") or 0)
             * float(inputs.get("demolition_cost_th_per_sqm") or 0) / 1000.0
         )
+        # Выкуп — своя строка стоимости сделки (`land_buyout_mln`), цена
+        # права им не нагружается (решение владельца, 29.09.2026).
+        self.calls = [*getattr(self, "calls", []), dict(inputs)]
         burden = (
             float(inputs.get("purchase_price_mln") or 0)
+            + float(inputs.get("land_buyout_mln") or 0)
             + social + demolition
             + float(inputs.get("resettlement_cost_mln") or 0)
             + float(inputs.get("social_compensation_mln") or 0)
@@ -127,6 +131,10 @@ def test_generic_burden_uses_private_cadastral_value_and_zeroes_moscow(tmp_path:
     assert result["components"]["cadastral_buyout"]["paid_count"] == 1
     # Baseline LLCR is recalculated with the same burden, not the old zero-entry row.
     assert result["project_llcr_x"] == pytest.approx(1.085)
+    # Выкуп ушёл в свою статью, цена входа им больше не нагружена.
+    rated = next(call for call in core.calls if call.get("land_buyout_mln"))
+    assert rated["land_buyout_mln"] == pytest.approx(100.0)
+    assert float(rated.get("purchase_price_mln") or 0) == 0.0
 
 
 def test_generic_burden_stays_unknown_when_treatment_is_conditional(tmp_path: Path):

@@ -476,9 +476,12 @@ def _cached_cadastral_buyout(
     if (
         isinstance(cached, dict)
         and cached.get("schema_version") == BURDEN_CACHE_SCHEMA_VERSION
-        and list(cached.get("numbers") or []) == clean
     ):
-        answers = dict(cached.get("answers") or {})
+        # Ответы держатся по номеру, а не по всему списку: перечень решения и
+        # объекты контура пополняют список, и прочитанное по прежним номерам
+        # не должно выбрасываться из-за одного нового.
+        answers = {number: answer for number, answer
+                   in dict(cached.get("answers") or {}).items() if number in clean}
 
     now = time.time()
 
@@ -562,29 +565,50 @@ def _cached_cadastral_buyout(
     missing: list[str] = []
     city_numbers: list[str] = []
     paid_numbers: list[str] = []
+    unknown_numbers: list[str] = []
+    # Строка на каждый номер — ответ, который читает и карточка, и нагрузка:
+    # итог и разбивка из одного прохода не могут разойтись.
+    rows: list[dict[str, Any]] = []
     total_rub = 0.0
     for number in clean:
         item = dict(answers.get(number) or {})
+        row: dict[str, Any] = {
+            "cadastral_number": number, "kind": str(item.get("kind") or ""),
+            "ownership": str(item.get("ownership") or ""),
+            "value_rub": _number(item.get("cadastral_value_rub")),
+            "owner": "", "counted_rub": None, "reason": "",
+        }
+        rows.append(row)
         if not item.get("found"):
-            missing.append(f"{number}: {item.get('reason') or 'объект не найден'}")
+            row["owner"] = "not_found"
+            row["reason"] = str(item.get("reason") or "объект не найден")
+            missing.append(f"{number}: {row['reason']}")
             continue
         kind = str(item.get("kind") or "")
         if kind not in {"land", "building"}:
-            missing.append(f"{number}: тип ЕГРН «{kind or 'не определён'}» не является ЗУ/ОКС")
+            row["owner"] = "not_oks"
+            row["reason"] = f"тип ЕГРН «{kind or 'не определён'}» не является ЗУ/ОКС"
+            missing.append(f"{number}: {row['reason']}")
             continue
         bucket = _ownership_bucket(item.get("ownership"), number)
+        row["owner"] = bucket
         if bucket == "unknown":
-            missing.append(
-                f"{number}: ЕГРН не позволяет отличить собственность Москвы от иной"
-            )
+            row["reason"] = "ЕГРН не позволяет отличить собственность Москвы от иной"
+            unknown_numbers.append(number)
+            missing.append(f"{number}: {row['reason']}")
             continue
         if bucket == "moscow":
+            row["counted_rub"] = 0.0
+            row["reason"] = "собственность города Москвы — выкупать не надо"
             city_numbers.append(number)
             continue
         value = _number(item.get("cadastral_value_rub"))
         if value is None:
-            missing.append(f"{number}: кадастровая стоимость не опубликована")
+            row["reason"] = "кадастровая стоимость не опубликована"
+            missing.append(f"{number}: {row['reason']}")
             continue
+        row["counted_rub"] = value
+        row["reason"] = "кадастровая стоимость, не цена сделки"
         total_rub += value
         paid_numbers.append(number)
 
@@ -599,6 +623,11 @@ def _cached_cadastral_buyout(
             "total": len(clean),
             "moscow_zero_count": len(city_numbers),
             "paid_count": len(paid_numbers),
+            # Сумма по доказанным строкам — не итог выкупа: итог не закрыт,
+            # пока хоть у одного объекта не определён собственник или цена.
+            "known_paid_mln": round(total_rub / 1_000_000.0, 3),
+            "unknown_numbers": unknown_numbers[:60],
+            "rows": rows,
         }
     return {
         "available": True,
@@ -611,7 +640,20 @@ def _cached_cadastral_buyout(
         "paid_count": len(paid_numbers),
         "moscow_zero_numbers": city_numbers[:30],
         "paid_numbers": paid_numbers[:30],
+        "rows": rows,
     }
+
+
+def _manual_buyout_mln(inputs: dict[str, Any]) -> float | None:
+    """Выкуп, вписанный руками: ненулевой и без отметки контура о своём числе."""
+    value = _number(inputs.get("land_buyout_mln"))
+    if value is None or value <= 0:
+        return None
+    marker = inputs.get("_land_buyout_source")
+    if isinstance(marker, dict) and _number(marker.get("value")) is not None \
+            and abs(float(_number(marker.get("value"))) - value) < 0.0005:
+        return None
+    return value
 
 
 def _social_burden_from_inputs(inputs: dict[str, Any]) -> tuple[float, list[str]]:
@@ -709,6 +751,17 @@ def generic_project_burden(
             "reason": "В проекте решения не прочитан полный перечень ЗУ и ОКС",
         }
 
+    # Объекты, найденные в контуре на карте НСПД, входят в выкуп рядом с
+    # перечнем — тот же список, что читает карточка (`buyout_numbers`), значит
+    # и тот же кэш ЕГРН и тот же итог.
+    from auction_search import krt_contour_objects
+
+    contour = krt_contour_objects.cached(str(project.get("slug") or ""))
+    contour_objects = list((contour or {}).get("objects") or [])
+    if contour_objects:
+        numbers = krt_contour_objects.buyout_numbers(
+            contour_objects, {"cadastral_numbers": numbers})
+
     model_inputs = dict(screening.get("model_inputs") or {})
     inputs = copy.deepcopy(model_inputs.get("inputs") or {})
     tep = copy.deepcopy(model_inputs.get("tep") or {})
@@ -749,6 +802,14 @@ def generic_project_burden(
     demolition_objects = int(_number(duties.get("demolition_objects")) or 0)
     demolition_known = int(_number(duties.get("demolition_known_area_objects")) or 0)
     demolition_area = _number(duties.get("demolition_area_sqm")) or 0.0
+    # Площадь сноса по контуру КРТ уже лежит во вводной модели: одно число на
+    # модель и на нагрузку. Её неполноту контур называет сам (`assumptions`),
+    # поэтому счётчик «известна по всем объектам» решения к ней не прикладывается.
+    source = inputs.get("_demolition_source")
+    if (isinstance(source, dict) and source.get("kind") == "krt_contour"
+            and _number(source.get("value")) == _number(inputs.get("demolition_area_sqm"))):
+        demolition_area = _number(inputs.get("demolition_area_sqm")) or 0.0
+        demolition_objects = demolition_known = 1 if demolition_area > 0 else 0
     demolition_rate = _number(inputs.get("demolition_cost_th_per_sqm"))
     demolition_rate = (
         demolition_rate if demolition_rate is not None and demolition_rate > 0
@@ -799,7 +860,14 @@ def generic_project_burden(
     cadastral_mln = float(buyout.get("amount_mln") or 0.0)
 
     rated_inputs = copy.deepcopy(inputs)
-    rated_inputs["purchase_price_mln"] = cadastral_mln
+    # Выкуп — своя строка стоимости сделки (`land_buyout_mln`, решение
+    # владельца 29.09.2026), а не часть цены права: подбирается только цена
+    # права, и ёмкость входа — она сама, без вычета. Вписанное руками в
+    # вводную сильнее кадастровой оценки.
+    manual_buyout = _manual_buyout_mln(inputs)
+    if manual_buyout is not None:
+        cadastral_mln = manual_buyout
+    rated_inputs["land_buyout_mln"] = cadastral_mln
     rated_inputs["demolition_area_sqm"] = demolition_area
     rated_inputs["demolition_cost_th_per_sqm"] = demolition_rate
     if resettlement_mln > 0:
@@ -839,7 +907,7 @@ def generic_project_burden(
             if isinstance(capacity, dict) and capacity.get("available"):
                 gross = _number(capacity.get("amount_mln"))
                 if gross is not None:
-                    right_capacity = max(0.0, gross - cadastral_mln)
+                    right_capacity = max(0.0, gross)
         except Exception:  # noqa: BLE001
             right_capacity = None
 
@@ -970,7 +1038,7 @@ def _ordinary_capex(core: Any, inputs: dict[str, Any], tep: dict[str, Any],
     base_phasing = copy.deepcopy(phasing)
     for key in (
         "purchase_price_mln", "land_rights_cost_mln", "social_compensation_mln",
-        "resettlement_cost_mln", "demolition_area_sqm", "demolition_cost_th_per_sqm",
+        "resettlement_cost_mln", "land_buyout_mln", "demolition_area_sqm", "demolition_cost_th_per_sqm",
         "vri_security_cost_mln",
     ):
         if key in base_inputs:
@@ -1013,17 +1081,18 @@ def nagatino_live_example(core: Any) -> dict[str, Any]:
     stack.pop("territory", None)
     inputs, tep, phasing = _merge_model(core, preview)
 
-    # The KRT right itself is zero in the baseline.  Cadastral buyout is a real
-    # acquisition outflow and therefore occupies purchase-price capacity.
+    # The KRT right itself is zero in the baseline.  Cadastral buyout is its
+    # own line of the deal cost (owner decision 29.09.2026), so the
+    # goal-sought entry price IS the capacity for the KRT right.
     cadastral_mln = float(stack["cadastral_buyout_mln"])
-    inputs["purchase_price_mln"] = cadastral_mln
+    inputs["land_buyout_mln"] = cadastral_mln
 
     result: dict[str, Any] = {
         "name": "КРТ Нагатино",
         "source": "59 выписок ЕГРН + извещение торгов + пресет DevelopAid",
         "cost_stack": stack,
         "method_note": (
-            "Кадастровый выкуп проведён как часть acquisition cash-out. "
+            "Кадастровый выкуп — своя строка стоимости сделки, не цена права. "
             "Цена самого права КРТ в базовом LLCR равна нулю."
         ),
     }
@@ -1035,7 +1104,7 @@ def nagatino_live_example(core: Any) -> dict[str, Any]:
             _number((capacity or {}).get("amount_mln"))
             if isinstance(capacity, dict) and capacity.get("available") else None
         )
-        right_capacity = None if total_capacity is None else total_capacity - cadastral_mln
+        right_capacity = total_capacity
 
         start_rub = _number((preset.get("transaction") or {}).get("start_price_rub"))
         if start_rub is None:
@@ -1044,7 +1113,7 @@ def nagatino_live_example(core: Any) -> dict[str, Any]:
         at_start = None
         if start_mln is not None:
             at_start = model_at_asking_price(
-                core, inputs, tep, phasing, cadastral_mln + start_mln
+                core, inputs, tep, phasing, start_mln
             )
         ordinary_capex = _ordinary_capex(core, inputs, tep, phasing)
         # Неизвестная кадастровая стоимость не ноль (`missing_cadastral_value:

@@ -49,7 +49,8 @@ def test_the_pdf_column_names_the_project_gns():
     for line in source.splitlines():
         if '"Показатель", "Всего"' in line or '"Статья", "млн ₽"' in line \
                 or 'expense_rows=[["Статья"' in line:
-            assert "строит. объёма" not in line and "строительного объёма" not in line, (
+            assert "строит. объёма" not in line and "строительного объёма" not in line \
+                and "TOTAL_AREA" not in line, (
                 "колонка названа базой, которой не делится: " + line.strip()[:120])
 
 

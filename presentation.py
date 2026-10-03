@@ -141,7 +141,9 @@ def build_project_presentation(
         "project_gns_sqm": _number(summary.get("project_gns_sqm")),
         "underground_gns_sqm": _number(summary.get("underground_gns_sqm")),
         "construction_volume_sqm": _number(summary.get("construction_volume_sqm")),
-        "saleable_sqm": _number(tep_total.get("saleable")),
+        # Продаваемая — то, что реально продаётся метрами (`sold_saleable_sqm`),
+        # а не сумма колонки всех строк ТЭП.
+        "saleable_sqm": _number(summary.get("monetizable_saleable_sqm")),
         "apartment_saleable_sqm": _number(summary.get("apartment_saleable_sqm")),
         "transfer_sqm": _number(tep_total.get("transfer")),
         "total_area_sqm": _number(tep_total.get("total_area")),

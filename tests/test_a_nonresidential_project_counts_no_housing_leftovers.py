@@ -178,7 +178,10 @@ def test_the_engine_marks_what_the_kind_does_not_count() -> None:
         assert rows["kindergarten"]["excluded"] is True
         assert rows["offices"]["excluded"] is False
     mixed = _run(*_vavilov(core.PROJECT_KIND_MIXED))
-    assert not any(r["excluded"] for r in mixed["tep"]["rows"])
+    # Жилой проект не прячет ни одного продукта дома; помечены могут быть
+    # только объекты вне состава проекта (`tep_row_outside_project`).
+    assert not any(r["excluded"] for r in mixed["tep"]["rows"]
+                   if r["key"] not in core._BY_KEY)
 
 
 # Настоящая страница, настоящий путь: проект из кабинета ложится во вводные

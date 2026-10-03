@@ -31,6 +31,8 @@ from reportlab.platypus import (BaseDocTemplate, Frame, Image, KeepInFrame, Next
                                 PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle)
 from reportlab.platypus.doctemplate import LayoutError
 
+from terms_glossary import TOTAL_AREA
+
 NAVY = colors.HexColor("#17365D")
 NAVY_DARK = colors.HexColor("#0B1F33")
 LIGHT = colors.HexColor("#EAF2F8")
@@ -324,10 +326,10 @@ def _tep_rows(model: dict[str, Any], fm: _Formats) -> list[tuple[str, str, str]]
     gns = fm.sqm(tep.get("project_gns_sqm"))
     rows.append(("Наземная площадь ГНС", gns, "м²"))
     if density:
-        rows.append(("Плотность застройки", fm.num(density, 0), "м²/га"))
+        rows.append(("Плотность застройки по наземной ГНС", fm.num(density, 0), "м²/га"))
     if tep.get("underground_gns_sqm"):
         rows.append(("Подземная часть", fm.sqm(tep.get("underground_gns_sqm")), "м²"))
-    rows.append(("Строительный объём", fm.sqm(tep.get("construction_volume_sqm")), "м²"))
+    rows.append((TOTAL_AREA.name, fm.sqm(tep.get("construction_volume_sqm")), "м²"))
     rows.append(("Продаваемая площадь", fm.sqm(tep.get("saleable_sqm")), "м²"))
     apartments = tep.get("residential_saleable_sqm")
     if apartments:

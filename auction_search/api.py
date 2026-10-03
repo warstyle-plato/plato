@@ -3977,6 +3977,41 @@ def install(app: FastAPI) -> None:
         """
         return await run_in_threadpool(_decision_outline_now, slug)
 
+    @app.get("/auctions/krt/{slug}/contour-objects")
+    async def auction_krt_contour_objects(slug: str) -> dict[str, Any]:
+        """ОКС и ЗУ в контуре площадки на карте НСПД: сверка с перечнем, снос, выкуп.
+
+        Запрос не ждёт НСПД: ответ читается с диска, а сбор (десятки рамок по
+        четырём слоям и дочитка ЕГРН) идёт фоном — как фоновая сборка тизера.
+        Пока сбора нет, ответ говорит «ищем» и когда спросить снова.
+        """
+        from auction_search import krt_contour_objects
+
+        project, _site = await run_in_threadpool(_krt_site_source, slug)
+        try:
+            requirements = await run_in_threadpool(_requirements_for, slug)
+        except Exception as exc:  # noqa: BLE001 — перечень нужен для сверки, не для поиска
+            logger.exception("КРТ: перечень решения для контура не прочитан slug=%s", slug)
+            requirements = {"available": False, "reason": f"{type(exc).__name__}: {exc}"[:200]}
+        finder = getattr(core, "_land_contour_objects", None) if core is not None else None
+        lookup = getattr(core, "_land_lookup_by_numbers", None) if core is not None else None
+        started = False
+        if callable(finder):
+            started = await run_in_threadpool(lambda: krt_contour_objects.start(
+                slug,
+                find_site=_krt_site_finder(slug, str(project.get("name") or slug)),
+                contour_objects=finder, requirements=requirements, lookup=lookup,
+                buyout=krt_investment_score._cached_cadastral_buyout))
+        data = await run_in_threadpool(
+            krt_contour_objects.view, slug, requirements,
+            krt_investment_score._cached_cadastral_buyout)
+        if not callable(finder):
+            data["problem"] = (str(data.get("problem") or "")
+                               or "движок НСПД не подключён — контур не опрашивался")
+        data["pending"] = bool(data.get("pending") or started)
+        data["retry_after_seconds"] = 20 if data["pending"] else None
+        return data
+
     @app.get("/auctions/krt/{slug}/point")
     async def auction_krt_point(slug: str) -> dict[str, Any]:
         """Геокодированная точка территории — чтобы показать её на карте.

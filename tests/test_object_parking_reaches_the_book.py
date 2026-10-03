@@ -94,8 +94,14 @@ def test_first_floor_places_take_metres_out_of_the_saleable_not_the_gns() -> Non
     assert t["offices"]["gns"] == 10000, "ГНС не меняется: этажи уже внутри неё"
     assert got["over_area_per_space_sqm"] == 25
     assert t["offices"]["parking_over_gba_sqm"] == 40 * 25
-    assert t["offices"]["total_area"] == pytest.approx((10000 - 40 * 25) * 0.94)
-    assert t["offices"]["saleable"] == pytest.approx((10000 - 40 * 25) * 0.60)
+    # Строка ТЭП — площадь здания (владелец, 29.09.2026: вычет — в структуре
+    # продукта). Продаётся остаток после мест первых этажей.
+    assert t["offices"]["total_area"] == pytest.approx(10000 * 0.94)
+    assert t["offices"]["saleable"] == pytest.approx(10000 * 0.60)
+    assert t["offices"]["parking_saleable_after_sqm"] == pytest.approx((10000 - 40 * 25) * 0.60)
+    assert core.standalone_object_saleable(_inputs(offices_parking_over_spaces=40,
+                                                   offices_parking_under_spaces=40),
+                                           t, "offices") == pytest.approx((10000 - 40 * 25) * 0.60)
 
 
 def test_the_book_counts_the_same_parking_as_the_engine() -> None:

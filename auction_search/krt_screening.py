@@ -919,6 +919,26 @@ def build_krt_model_screening(
         # Площадь доезжает в штатное поле DevelopAid; нулевая стоимость не
         # маскируется допущением — ниже такой прогон лишается зелёного статуса.
         inputs["demolition_area_sqm"] = duties["demolition_area_sqm"]
+        inputs["_demolition_source"] = {
+            "value": duties["demolition_area_sqm"], "kind": "krt_decision",
+            "by": f"проект решения, {duties['demolition_objects']} объектов под снос"}
+    # Здания в контуре на карте НСПД — полнее перечня: решение не прочитано
+    # или перечень неполон, а здания на территории есть. Ответ собран фоном и
+    # читается с диска; сети внутри расчёта нет.
+    from auction_search import krt_contour_objects
+
+    contour_demolition = None
+    contour_slug = str(project.get("slug") or "")
+    if contour_slug and krt_contour_objects.cached(contour_slug):
+        from auction_search.krt_investment_score import _cached_cadastral_buyout
+
+        contour_view = krt_contour_objects.view(contour_slug, requirements,
+                                                _cached_cadastral_buyout)
+        if contour_view.get("available"):
+            contour_demolition = contour_view["demolition"]
+            inputs.update(krt_contour_objects.apply_demolition(inputs, contour_demolition))
+            contour_buyout = contour_view.get("buyout")
+            inputs.update(krt_contour_objects.apply_buyout(inputs, contour_buyout))
 
     tep = _empty_tep(core)
     applied_ratios, ratio_warnings = core.tep_ratios_applied(tep_ratios)
@@ -1376,7 +1396,23 @@ def build_krt_model_screening(
             f"{_ru_number(programme['city']['total_gfa_sqm'])} м², разница "
             f"{_ru_number(programme['balance']['difference_sqm'])} м². В модель взяты слагаемые."
         )
-    if duties["demolition_area_sqm"] > 0:
+    demolition_from_contour = contour_demolition is not None and (
+        inputs.get("_demolition_source") or {}).get("kind") == "krt_contour"
+    if demolition_from_contour:
+        exclusions.append(
+            f"Снос по контуру КРТ: {_ru_number(contour_demolition['area_sqm'], 1)} м² — "
+            f"{contour_demolition['objects']} ОКС в контуре на карте НСПД "
+            f"({contour_demolition['by_decision']} по решению, "
+            f"{contour_demolition['assumed']} по допущению). "
+            + " ".join(a.rstrip(".") + "." for a in contour_demolition["assumptions"]))
+    buyout_source = inputs.get("_land_buyout_source")
+    if isinstance(buyout_source, dict) and buyout_source.get("kind") == "krt_contour":
+        exclusions.append(
+            f"Выкуп ЗУ/ОКС у третьих лиц: {_ru_number(inputs.get('land_buyout_mln'), 1)} млн ₽ — "
+            f"{buyout_source.get('by')}. Строка стоимости сделки рядом с ценой права, "
+            "платится графиком покупки."
+            + (f" Внимание: {buyout_source['warn']}." if buyout_source.get("warn") else ""))
+    if not demolition_from_contour and duties["demolition_area_sqm"] > 0:
         exclusions.append(
             f"Проект решения требует безусловный снос {_ru_number(duties['demolition_area_sqm'], 1)} м²: "
             "площадь передана в DevelopAid, но стоимость сноса не опубликована и пока не включена в CAPEX."

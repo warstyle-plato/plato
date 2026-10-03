@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from terms_glossary import TOTAL_AREA  # noqa: E402
 
 
 def test_the_product_name_is_declared_once() -> None:
@@ -156,7 +157,7 @@ def test_the_total_gns_is_the_above_ground_one(screen) -> None:
     # Говорит это подпись под таблицей (`tepUndergroundNote`), и она одна:
     # второе такое утверждение в клетке итога было бы тем же дважды.
     assert "Подземная часть" in state["under_note"], state["under_note"]
-    assert "Строительный объём" in state["under_note"]
+    assert TOTAL_AREA.name in state["under_note"]
     volume = summary["construction_volume_sqm"]
     assert abs(shown - summary["project_gns_sqm"]) < abs(shown - volume), (
         "в клетке ГНС стоит строительный объём")
