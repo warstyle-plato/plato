@@ -132,7 +132,6 @@ def build_project_presentation(
             "saleable": _number(product.get("saleable")),
             "revenue_mln": _number((product_numbers.get(key) or {}).get("revenue_mln")),
             "cost_mln": _number((product_numbers.get(key) or {}).get("cost_mln")),
-            "per_gns_th": _number((product_numbers.get(key) or {}).get("per_gns_th")),
             "per_saleable_th": _number((product_numbers.get(key) or {}).get("per_saleable_th")),
             "per_unit_th": _number((product_numbers.get(key) or {}).get("per_unit_th")),
             "pace_year": _number((product_numbers.get(key) or {}).get("pace_year")),

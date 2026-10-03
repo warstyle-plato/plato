@@ -9,7 +9,8 @@
 Держать подпись строкой мало: три прежние проверки её и закрепляли — одна из
 них прямо утверждала «база удельных — весь строительный объём». Поэтому здесь
 сравнивается ПЕЧАТНОЕ число с делением на каждую из двух баз: подпись верна
-ровно тогда, когда совпадает с той, что названа.
+ровно тогда, когда совпадает с той, что названа. С 29.09.2026 у каждой
+строки своя база (решение 4 ревизии книги), и проверка сверяет число с ней.
 
 Запуск: python3 -m pytest tests -q
 """
@@ -28,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import main as wrapper  # noqa: E402
 
 core = wrapper.core
-from terms_glossary import CORE_TOTAL_AREA, TOTAL_AREA  # noqa: E402
+from terms_glossary import TOTAL_AREA  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -51,21 +52,21 @@ def test_the_two_bases_differ(summary):
     assert gns > 0 and volume > gns * 1.05, (gns, volume)
 
 
-def test_unit_economics_divide_by_the_above_ground_gns(bundle, summary):
-    gns = float(summary["project_gns_sqm"])
-    volume = float(summary["construction_volume_sqm"])
+def test_unit_economics_divide_by_the_base_they_name(bundle, summary):
+    """С 29.09.2026 (решение 4 ревизии книги) у строки своя база, и она
+    названа в строке: число обязано делиться ровно на неё, а не на соседнюю."""
+    bases = summary["unit_bases"]
     report = bundle["consolidated"]["report"]
-    for item in report["unit_economics"]:
-        total = float(item.get("total") or 0.0)
+    for item in report["unit_economics"] + report["construction_costs"]:
+        total = float(item.get("total", item.get("value")) or 0.0)
         if abs(total) < 1.0:
             continue
-        assert item["per_gns_th"] == pytest.approx(total / gns / 1000, rel=1e-9), item["label"]
-        assert item["per_gns_th"] != pytest.approx(total / volume / 1000, rel=1e-6), item["label"]
-    for item in report["construction_costs"]:
-        value = float(item.get("value") or 0.0)
-        if value < 1.0:
-            continue
-        assert item["per_gns_th"] == pytest.approx(value / gns / 1000, rel=1e-9), item["label"]
+        assert item["per_base_th"] == pytest.approx(total / bases[item["base"]] / 1000,
+                                                    rel=1e-9), item["label"]
+        for other, area in bases.items():
+            if other != item["base"] and abs(area - bases[item["base"]]) > 1:
+                assert item["per_base_th"] != pytest.approx(total / area / 1000, rel=1e-6), \
+                    (item["label"], other)
 
 
 def test_the_pdf_column_carries_the_base_it_divides_by(bundle, summary):
@@ -84,44 +85,36 @@ def test_the_pdf_column_carries_the_base_it_divides_by(bundle, summary):
     flat = " ".join(
         " ".join((page.extract_text() or "").split()) for page in reader.pages)
 
-    assert "тыс ₽/м² наземной ГНС" in flat
-    # Запрещается МЕСТО, а не слово: в предпосылках отчёта стоит «тыс. ₽/м²
-    # строит. объёма» у ставки наружных сетей, и это правда — её умножают на
-    # весь объём. Запрет держит колонки, у которых делитель наземный.
+    assert f"м² {TOTAL_AREA.genitive}" in flat
+    assert "тыс ₽/м² наземной ГНС" not in flat, "прежняя общая база вернулась"
     assert "тыс ₽/м² строит. объёма" not in flat
     assert "тыс ₽/м² строительного объёма" not in flat
-    assert "на м² строит. объёма" not in flat
-    assert f"тыс ₽/м² {TOTAL_AREA.genitive}" not in flat
-    assert f"на м² {TOTAL_AREA.genitive}" not in flat
-    assert f"тыс ₽/м² {CORE_TOTAL_AREA.genitive}" not in flat
 
     gns = float(summary["project_gns_sqm"])
     volume = float(summary["construction_volume_sqm"])
-    revenue = float(bundle["consolidated"]["summary"]["revenue"])
-    printed = core._pdf_num(revenue / gns / 1000, 1)
-    other = core._pdf_num(revenue / volume / 1000, 1)
+    capex = float(summary["capex"])
+    printed = core._pdf_num(capex / volume / 1000, 1)
+    other = core._pdf_num(capex / gns / 1000, 1)
     assert printed != other, (printed, other)
     assert printed in flat, ("в колонке стоит не то число, что названо базой",
                              printed, other)
 
 
 def test_the_page_columns_name_the_same_base():
-    """Три таблицы отчёта на странице делят на `r.summary.project_gns_sqm` —
-    ту же наземную ГНС, что и PDF."""
+    """Таблицы отчёта на странице печатают удельные движка и называют базу:
+    своей колонкой (удельная экономика, статьи CAPEX) или шапкой, у которой
+    база одна на все строки (структура расходов, структура выручки)."""
     page = core.PAGE
-    assert page.count("<th>тыс ₽/м² наземной ГНС</th>") == 3
+    assert "<th>тыс ₽/м² наземной ГНС</th>" not in page
     assert "тыс ₽/м² строит. объёма" not in page
-    assert f"тыс ₽/м² {TOTAL_AREA.genitive}" not in page
-    assert f"тыс ₽/м² {CORE_TOTAL_AREA.genitive}" not in page
-    for anchor in ("Структура расходов", "Структура затрат по статьям",
-                   "Структура выручки"):
-        head = page[page.find(anchor):][:600]
-        assert "тыс ₽/м² наземной ГНС" in head, anchor
-    # Делитель на странице тот же, что в движке: если он сменится на
-    # строительный объём, подпись обязана уехать вместе с ним.
-    assert "construction_volume_sqm" not in re.sub(
-        r"\s+", "", page[page.find("revenueTable.innerHTML") - 400:
-                         page.find("capexTable.innerHTML") + 400])
+    for anchor in ("Удельная экономика", "Структура затрат по статьям"):
+        head = page[page.find(anchor):][:900]
+        assert "своей базы" in head and "<th>База</th>" in head, anchor
+    assert "<th>тыс ₽/м² продаваемой площади</th>" in page[page.find("Структура выручки"):][:600]
+    # Делить на странице больше нечего: удельные приходят из движка.
+    block = re.sub(r"\s+", "", page[page.find("revenueTable.innerHTML") - 400:
+                                    page.find("capexTable.innerHTML") + 600])
+    assert "/1000" not in block, "страница снова делит сама"
 
 
 def test_the_construction_cost_names_the_core_volume():

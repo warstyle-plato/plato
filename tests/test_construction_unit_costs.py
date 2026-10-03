@@ -4,7 +4,7 @@ PDF с сайта был беднее ботовского при тех же в
 шлёт чувствительность, только если её считали в окне, а дообогащал отчёт
 только бот) и без удельной экономики стройки — статьи СМР, сетей и
 благоустройства жили только внутри группы «Основное строительство». Теперь
-движок отдаёт report.construction_costs (млн ₽ и тыс ₽/м² ГНС), PDF печатает
+движок отдаёт report.construction_costs (млн ₽ и тыс ₽/м² своей базы), PDF печатает
 раздел на первой странице, а /report/pdf досчитывает чувствительность сам.
 
 Запуск: python3 -m pytest tests -q
@@ -42,18 +42,19 @@ def payload():
 
 
 def test_the_engine_reports_construction_articles(payload):
-    """Статьи стройки в отчётном блоке: суммы положительны, удельные — это
-    статья, делённая на ГНС проекта, а не на площадь её части."""
+    """Статьи стройки в отчётном блоке: суммы положительны, удельные — на
+    свою базу (решение 4 ревизии книги, 29.09.2026): СМР — на ту часть, на
+    которую начислено, прочие статьи — на суммарную площадь в ГНС."""
     report = payload["result"]["report"]
     rows = report.get("construction_costs") or []
     labels = [row["label"] for row in rows]
     assert "СМР наземной части" in labels
     assert "Наружные инженерные сети" in labels
     assert "Благоустройство" in labels
-    gns = float(payload["result"]["summary"]["project_gns_sqm"])
+    bases = payload["result"]["summary"]["unit_bases"]
     for row in rows:
         assert row["value"] > 0
-        assert row["per_gns_th"] == pytest.approx(row["value"] / gns / 1000)
+        assert row["per_base_th"] == pytest.approx(row["value"] / bases[row["base"]] / 1000)
 
 
 def test_the_phased_report_sums_articles_over_queues():
@@ -79,7 +80,9 @@ def test_the_pdf_prints_the_section(payload):
                      for page in pypdf.PdfReader(io.BytesIO(data)).pages)
     assert "Удельные расходы строительства" in text
     assert "СМР наземной части" in text
-    assert "Итого строительство" in text
+    # Итога «на м²» у таблицы нет: у статей разные базы, и сумма удельных
+    # была бы числом без базы.
+    assert "Итого строительство" not in text
     assert "Внутренние инженерные" in text
 
 
