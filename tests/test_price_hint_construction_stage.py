@@ -8,9 +8,8 @@
 * ориентир пересчитывается сервером по выбранным стадиям, аналог без стадии
   при отборе не проходит, а недобор не подменяется медианой округа/города;
 * на отрисованной странице «Как посчитано» стадии выбираются, пересчёт уходит
-  на сервер, видно, по какой стадии посчитано и сколько аналогов;
-* у кнопки «Рекомендация DevelopAid» выбранная стадия уходит в запрос и
-  называется в подписи.
+  на сервер, видно, по какой стадии посчитано и сколько аналогов. Выбор стадии
+  живёт только там: у кнопки на основной странице лишних органов нет.
 """
 
 from __future__ import annotations
@@ -281,54 +280,9 @@ def test_the_breakdown_page_filters_by_stage_on_the_rendered_page() -> None:
     assert suggested["checked"] == ["pit"], suggested
 
 
-def test_the_price_button_sends_the_chosen_stage_and_names_it() -> None:
-    import browser
+def test_the_price_button_stays_bare() -> None:
+    """Владелец: все настройки — в «Как посчитано», рядом с кнопкой ничего."""
+    from market_search import ui_v6
 
-    path = browser.chromium_or_skip()
-    from playwright.sync_api import sync_playwright
-
-    import main_registry  # noqa: PLC0415
-
-    sent: list[dict] = []
-    answer = {"available": True, "price_th_per_sqm": 510.0, "sample": 2,
-              "observed_at": "2026-09-28", "basis": "peers",
-              "stage_filter": {"active": True, "title": "«котлован»",
-                               "matched": 2, "considered": 3}}
-
-    def reply(route):
-        sent.append(json.loads(route.request.post_data or "{}"))
-        route.fulfill(status=200, content_type="application/json", body=json.dumps(answer))
-
-    with browser.serve(main_registry.app, 19431) as base, sync_playwright() as pw:
-        with pw.chromium.launch(executable_path=str(path)) as engine:
-            page = engine.new_page()
-            page.on("dialog", lambda d: d.dismiss())
-            page.route("**/market/price-hint", reply)
-            page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_function("()=>!!document.getElementById('daHintStage')", timeout=20000)
-            options = page.evaluate(
-                "()=>[...document.getElementById('daHintStage').options].map(o=>o.textContent)")
-            # Вводные на старте свёрнуты — выбор делается тем же событием,
-            # что даёт список при касании.
-            page.evaluate("()=>{const s=document.getElementById('daHintStage');"
-                          "s.value='pit';s.dispatchEvent(new Event('change'))}")
-            page.evaluate("()=>{document.getElementById('cadastralNumbers').value="
-                          "'77:01:0004023:1000';document.getElementById('daHintBtn').click()}")
-            page.wait_for_function(
-                "()=>{const n=document.getElementById('daHintNote');"
-                "return n&&n.textContent&&n.textContent!=='Считаю…'}", timeout=15000)
-            note = page.evaluate("()=>document.getElementById('daHintNote').textContent")
-            # Выбор переживает перерисовку вводных.
-            page.evaluate("()=>renderInputs()")
-            page.wait_for_function("()=>!!document.getElementById('daHintStage')", timeout=5000)
-            state = page.evaluate("""()=>{
-              const f=document.getElementById('f_apartment_price_th');
-              return {unit:f.closest('.field').querySelector('.unit').textContent,
-                      stage:document.getElementById('daHintStage').value}}""")
-
-    assert options == ["аналоги: любая стадия", "аналоги: котлован", "аналоги: каркас",
-                       "аналоги: отделка", "аналоги: сдан"], options
-    assert sent and sent[0]["stages"] == ["pit"], sent
-    assert "по стадии «котлован», аналогов 2 из 3" in note, note
-    assert "стадия аналогов «котлован»" in state["unit"], state
-    assert state["stage"] == "pit", state
+    assert "daHintStage" not in ui_v6.PRICE_HINT_SCRIPT
+    assert "stages" not in ui_v6.PRICE_HINT_SCRIPT
