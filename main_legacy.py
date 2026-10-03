@@ -1314,7 +1314,7 @@ _OBJECT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
                           "growth_stage3_pct", "growth_stage4_pct")),
     ("Темп продаж", ("sales_start", "share_before_rve_pct", "residual_months",
                      "sales_profile")),
-    ("Прямая продажа", ("direct_sale_delay_months", "direct_sale_months",
+    ("Прямая продажа", ("direct_sale_offset_months", "direct_sale_months",
                         "direct_sale_curve")),
     ("Доходный метод", ("rent_th_per_sqm_month", "parking_rent_th_month",
                         "rent_index_pct", "occupancy_start_pct",
@@ -1431,8 +1431,9 @@ def _object_strategy_fields(obj: StandaloneObject) -> list[list[Any]]:
          "ДДУ — деньги в общий эскроу проекта; прямая продажа и доходный метод — "
          "без эскроу, со своим кредитом объекта", "select",
          [list(pair) for pair in nonres_strategy.STRATEGIES]],
-        [f"{p}_direct_sale_delay_months", "Старт ДКП после ввода",
-         "мес. от ввода объекта; продажи без эскроу начинаются не раньше ввода", "number"],
+        [f"{p}_direct_sale_offset_months", "Старт прямых продаж от ввода",
+         "мес.; 0 — с ввода, отрицательное — до ввода (предварительный ДКП с "
+         "авансами, без эскроу)", "number"],
         [f"{p}_direct_sale_months", "Срок прямых продаж", "мес.", "number"],
         [f"{p}_direct_sale_curve", "Профиль прямых продаж", "форма графика", "select",
          [["flat", "Равномерно"], ["bell", "Колокол"],

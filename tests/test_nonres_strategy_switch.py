@@ -221,7 +221,7 @@ def test_rent_noi_and_exit_follow_the_named_formulas() -> None:
 
 
 def test_direct_sale_starts_at_commissioning_and_sells_everything() -> None:
-    plan = _plan("direct", direct_sale_months=4, direct_sale_delay_months=2)
+    plan = _plan("direct", direct_sale_months=4, direct_sale_offset_months=2)
     flows = ns.object_flows(plan, lambda m: 0.10, vat_rate=0.22)
     sales = flows["monthly"]["sale_revenue"]
     assert min(sales) == date(2028, 3, 1) and max(sales) == date(2028, 6, 1)
@@ -240,3 +240,40 @@ def test_vat_on_the_object_nets_input_against_output() -> None:
     totals = flows["totals"]
     input_vat = 1_200_000_000 * 0.22 / 1.22
     assert totals["vat_paid"] == pytest.approx(totals["vat_charged"] - input_vat)
+
+
+def test_direct_sale_can_start_before_commissioning_with_advances() -> None:
+    """Предварительный ДКП: авансы до ввода, без эскроу (владелец, 03.10.2026).
+
+    Деньги приходят сразу и гасят кредит объекта; НДС с аванса — в месяц
+    оплаты; прибыль признаётся не раньше ввода."""
+    after = ns.object_flows(_plan("direct", direct_sale_months=6), lambda m: 0.10, vat_rate=0.22)
+    early = ns.object_flows(_plan("direct", direct_sale_months=6, direct_sale_offset_months=-6),
+                            lambda m: 0.10, vat_rate=0.22)
+    sales = early["monthly"]["sale_revenue"]
+    assert min(sales) == date(2027, 7, 1) and max(sales) == date(2027, 12, 1)
+    # Аванс гасит кредит до ввода — процентов меньше, чем при продаже после.
+    assert early["monthly"]["loan_repayment"][date(2027, 7, 1)] > 0
+    assert early["totals"]["loan_interest"] < after["totals"]["loan_interest"]
+    # НДС с аванса начислен в месяц оплаты.
+    assert early["monthly"]["vat_charged"][date(2027, 7, 1)] == pytest.approx(
+        sales[date(2027, 7, 1)] * 0.22 / 1.22)
+    # Налоговая маржа до ввода — только расходы на продажу, выручка — в месяц ввода.
+    margin = early["monthly"]["tax_margin"]
+    assert all(value <= 0 for when, value in margin.items() if when < date(2028, 1, 1))
+    assert margin[date(2028, 1, 1)] > 0
+    assert early["totals"]["tax_margin"] == pytest.approx(
+        early["totals"]["sale_revenue"] - early["totals"]["vat_charged"]
+        - 1_200_000_000 / 1.22 - early["totals"]["selling_cost"]
+        - early["totals"]["property_tax"])
+    # Горизонт не короче ввода: кредит закрывается не позже него.
+    assert early["horizon_end"] == date(2028, 1, 1)
+
+
+def test_the_project_takes_advances_before_commissioning() -> None:
+    result = _run(offices_strategy="direct", offices_direct_sale_offset_months=-12)
+    office = _object(result)
+    assert office["totals"]["sale_revenue"] > 0
+    first_sale = min(d for d, v in (
+        (core.d(r["month"]), float(r.get("nonres_revenue") or 0)) for r in result["finance"]["rows"]) if v)
+    assert first_sale < core.d(office["commissioning"])

@@ -59,7 +59,7 @@ STRATEGY_FIELD_DEFAULTS: dict[str, tuple[Any, Any]] = {
     "loan_spread_pp": (4.0, 4.0),
     "loan_fee_pct": (1.0, 1.0),
     "property_tax_pct": (2.2, 2.2),
-    "direct_sale_delay_months": (0, 0),
+    "direct_sale_offset_months": (0, 0),
     "direct_sale_months": (12, 12),
     "direct_sale_curve": ("flat", "flat"),
     "rent_th_per_sqm_month": (4.5, 3.8),
@@ -159,6 +159,16 @@ def operating_month(p: dict[str, float], months_open: int) -> dict[str, float]:
 
 # --- расчёт объекта ---------------------------------------------------------
 
+def direct_sale_window(plan: dict[str, Any]) -> tuple[date, int]:
+    """Старт и срок прямых продаж. Сдвиг считается от ввода и может быть
+    отрицательным: предварительный ДКП с авансами до ввода, без эскроу
+    (владелец, 03.10.2026: «возможна и нужна»)."""
+    params = plan.get("params") or {}
+    offset = int(_num(params, "direct_sale_offset_months", 0))
+    period = max(1, int(_num(params, "direct_sale_months", 12)))
+    return _add_months(plan["commissioning"], max(-120, offset)), period
+
+
 def plan_horizon_end(plan: dict[str, Any]) -> date:
     """Последний месяц денег объекта: конец прямых продаж или выход.
 
@@ -168,9 +178,8 @@ def plan_horizon_end(plan: dict[str, Any]) -> date:
     params = plan.get("params") or {}
     commissioning: date = plan["commissioning"]
     if plan["strategy"] == STRATEGY_DIRECT:
-        delay = max(0, int(_num(params, "direct_sale_delay_months", 0)))
-        period = max(1, int(_num(params, "direct_sale_months", 12)))
-        return _add_months(commissioning, delay + period - 1)
+        start, period = direct_sale_window(plan)
+        return max(commissioning, _add_months(start, period - 1))
     hold_years = max(1, int(_num(params, "hold_years", 5)))
     return _add_months(commissioning, hold_years * 12 - 1)
 
@@ -229,10 +238,9 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     exit_month: date | None = None
 
     if strategy == STRATEGY_DIRECT:
-        delay = max(0, int(_num(params, "direct_sale_delay_months", 0)))
-        period = max(1, int(_num(params, "direct_sale_months", 12)))
+        start, period = direct_sale_window(plan)
         curve = _choice(params, "direct_sale_curve", SALE_CURVES, "flat")
-        start = _add_months(commissioning, delay)
+        first = min(first, start)
         price_start: date = plan.get("price_start") or commissioning
         growth_pre = float(plan.get("growth_pre", 0.0) or 0.0)
         growth_post = float(plan.get("growth_post", 0.0) or 0.0)
@@ -253,7 +261,10 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             m["selling_cost"][month] += base * float(plan.get("selling_share", 0.0) or 0.0) * cost_multiplier
             sold_share[month] = sold_share.get(month, 0.0) + weight
         horizon_end = plan_horizon_end(plan)
-        unsold = 1.0
+        # Налог на имущество — с непроданной доли готового здания; проданное
+        # авансом до ввода в неё уже не входит.
+        unsold = max(0.0, 1.0 - sum(share for when, share in sold_share.items()
+                                    if when < commissioning))
         month = commissioning
         while month <= horizon_end:
             # Налог на имущество — с непроданной доли готового здания.
@@ -351,7 +362,8 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             m["loan_draw"][month] = draw
             m["loan_fee"][month] = draw * fee_share
             balance += draw
-        if month >= commissioning and balance > 0:
+        # Авансы прямой продажи гасят кредит сразу, и до ввода: эскроу нет.
+        if balance > 0 and (month >= commissioning or strategy == STRATEGY_DIRECT):
             cash = (m["sale_revenue"][month] + m["rent_revenue"][month]
                     + m["exit_revenue"][month] - m["selling_cost"][month]
                     - m["opex"][month] - m["property_tax"][month]
@@ -373,10 +385,25 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # --- налоговая база объекта (без процентов: они идут вычетом финансирования)
     monthly_dep = cost_basis / (max(1, int(_num(params, "depreciation_years", 30))) * 12.0)
     book = cost_basis
+    # Аванс по предварительному ДКП — не доход: выручка и себестоимость
+    # признаются передачей, то есть не раньше ввода. НДС с аванса начислен в
+    # месяц оплаты (ст. 167 НК) и в базу прибыли не идёт.
+    realized_sale: dict[date, float] = defaultdict(float)
+    realized_share: dict[date, float] = defaultdict(float)
+    for month, share in sold_share.items():
+        when = max(month, commissioning)
+        realized_sale[when] += m["sale_revenue"][month] - m["vat_charged"][month]
+        realized_share[when] += share
     for month in months:
         if strategy == STRATEGY_DIRECT:
-            recognized = cost_basis * sold_share.get(month, 0.0)
-        elif month >= commissioning:
+            recognized = cost_basis * realized_share.get(month, 0.0)
+            book -= recognized
+            m["cost_recognized"][month] = recognized
+            m["tax_margin"][month] = (
+                realized_sale.get(month, 0.0) - recognized - m["selling_cost"][month]
+                - m["property_tax"][month])
+            continue
+        if month >= commissioning:
             recognized = min(book, monthly_dep)
             if exit_month == month and m["exit_revenue"][month]:
                 recognized = book  # при продаже списывается остаток стоимости
