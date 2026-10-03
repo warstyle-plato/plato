@@ -102,15 +102,22 @@ def _run(script: str) -> dict:
 
 
 def test_the_page_prints_the_server_moment_not_its_own_guess() -> None:
-    """Ровно жалоба владельца: 09.10 обязано печататься девятым октября."""
+    """Ровно жалоба владельца: 09.10 обязано печататься девятым октября.
+
+    Дата — через месяц от сегодня: зашитая 09.10.2026 сама становилась
+    «меньше недели» и роняла проверку, не сломав ничего в коде.
+    """
+    import datetime as _dt
+    day = _dt.date.today() + _dt.timedelta(days=30)
+    shown, iso = day.strftime("%d.%m.%y") + " 15:00", day.isoformat() + "T15:00:00+03:00"
     answer = _run(
         "console.log(JSON.stringify({"
-        "shown:lotDeadline({application_deadline:'09.10.26 15:00',"
-        "application_deadline_iso:'2026-10-09T15:00:00+03:00'}),"
-        "days:lotDeadlineDays({application_deadline:'09.10.26 15:00',"
-        "application_deadline_iso:'2026-10-09T15:00:00+03:00'})}))"
+        f"shown:lotDeadline({{application_deadline:'{shown}',"
+        f"application_deadline_iso:'{iso}'}}),"
+        f"days:lotDeadlineDays({{application_deadline:'{shown}',"
+        f"application_deadline_iso:'{iso}'}})}}))"
     )
-    assert answer["shown"].startswith("09.10.26"), answer["shown"]
+    assert answer["shown"].startswith(day.strftime("%d.%m.%y")), answer["shown"]
     # Днём раньше правки тут стояло 2 — и балл снимался за истекающий срок.
     assert answer["days"] > 7
 
