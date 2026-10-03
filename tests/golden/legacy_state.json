@@ -547,6 +547,8 @@
   "summary.ebitda_per_gns_th": 60.5751,
   "summary.ebitda_per_saleable_th": 100.9606,
   "summary.ending_pf": 0.0,
+  "summary.equity_returns.ending_pf": 0.0,
+  "summary.equity_returns.label": null,
   "summary.financing_cost": 3978850004.3638,
   "summary.full_cost_per_gns_th": 299.1435,
   "summary.full_cost_per_saleable_th": 498.5829,
