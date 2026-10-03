@@ -400,3 +400,72 @@ body::before {
 .message ul { margin: 4px 0 6px; padding-left: 18px; }
 .message li { margin-bottom: 3px; }
 .message code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; background: rgba(255, 255, 255, .07); padding: 1px 5px; border-radius: 5px; }
+
+
+/* --- Нежилая экономика beta --------------------------------------------- */
+.project-kind-switcher { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.project-kind-switcher .eyebrow { display: block; margin-bottom: 8px; }
+.kind-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.kind-toggle button {
+  border: 1px solid var(--line); border-radius: 11px; padding: 9px 8px;
+  background: rgba(11,27,47,.58); color: var(--muted); cursor: pointer; font-size: 11px;
+}
+.kind-toggle button.is-active {
+  color: #fff; border-color: rgba(47,140,255,.48); background: rgba(47,140,255,.14);
+}
+
+.commercial-selector-panel { padding: 22px; margin-bottom: 16px; }
+.commercial-control-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; }
+.commercial-control-grid label, .commercial-fields label {
+  display: flex; flex-direction: column; gap: 7px; color: var(--muted); font-size: 11px;
+}
+.commercial-control-grid select,
+.commercial-fields input {
+  width: 100%; box-sizing: border-box; border: 1px solid var(--line-strong);
+  border-radius: 11px; background: rgba(6,18,32,.72); color: #edf5ff;
+  padding: 11px 12px; outline: none;
+}
+.commercial-control-grid select:focus,
+.commercial-fields input:focus { border-color: rgba(47,140,255,.62); }
+
+.commercial-workspace { align-items: start; }
+.commercial-fields { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+.commercial-fields label > span { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+.commercial-fields label small { color: rgba(166,188,210,.58); font-size: 9px; text-align: right; }
+
+.commercial-summary { display: grid; gap: 0; }
+.commercial-summary-row {
+  display: grid; grid-template-columns: 140px 1fr; gap: 14px; padding: 12px 0;
+  border-bottom: 1px solid var(--line); align-items: start;
+}
+.commercial-summary-row span { color: var(--muted); font-size: 11px; }
+.commercial-summary-row strong { font-size: 12px; line-height: 1.45; }
+.commercial-warning-list { display: grid; gap: 8px; padding-top: 16px; }
+.commercial-warning-list p {
+  margin: 0; padding: 10px 12px; border: 1px solid rgba(47,140,255,.18);
+  border-radius: 11px; background: rgba(47,140,255,.06); color: #b7c9dc;
+  font-size: 11px; line-height: 1.5;
+}
+
+.commercial-report-panel { margin-top: 16px; }
+.commercial-report { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; }
+.commercial-report-section {
+  border: 1px solid var(--line); border-radius: 14px; padding: 14px;
+  background: rgba(7,20,36,.52);
+}
+.commercial-report-section h3 { margin: 0 0 9px; font-size: 12px; }
+.commercial-report-section > div {
+  display: flex; justify-content: space-between; gap: 12px; padding: 8px 0;
+  border-top: 1px solid rgba(255,255,255,.045); font-size: 11px;
+}
+.commercial-report-section span { color: var(--muted); }
+.commercial-report-section strong { text-align: right; }
+
+@media (max-width: 900px) {
+  .commercial-control-grid, .commercial-report { grid-template-columns: 1fr; }
+  .commercial-fields { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 560px) {
+  .commercial-fields { grid-template-columns: 1fr; }
+  .commercial-summary-row { grid-template-columns: 100px 1fr; }
+}

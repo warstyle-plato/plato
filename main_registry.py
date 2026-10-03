@@ -14,6 +14,7 @@ from developaid_v2_account_projects import install as install_v2_account_project
 from developaid_v2_upgrade import install as install_v2_upgrade
 from guide import install as install_guide
 from ia_preview import install as install_ia_preview
+from developaid_commercial_site import install as install_commercial_site
 from market_search import install as install_market_search
 from market_search.ui_v6 import install as install_market_ui, install_price_hint
 from mpt_bot_menu import install as install_mpt_bot_menu
@@ -242,6 +243,7 @@ install_v2_upgrade(app, core)
 # загрузила account-projects.js между auth/photo hook и штатным app.js.
 install_v2_account_projects(app)
 # Тестовый адрес новой информационной архитектуры: та же PAGE, другой порядок.
+install_commercial_site(core, app)
 install_ia_preview(app, core)
 # Руководство пользователя — обычная страница приложения на /guide.
 install_guide(app, core)

@@ -1,0 +1,23 @@
+#commercial{min-width:0}#commercial .card{min-width:0}#commercial h2{margin:0 0 14px}#commercial .ce-muted{color:#666;font-size:13px;line-height:1.6}#commercial .ce-selectors,#commercial .ce-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}#commercial label{display:flex;flex-direction:column;gap:7px;font-size:13px;min-width:0}#commercial input,#commercial select{box-sizing:border-box;width:100%;min-width:0;padding:10px;border:1px solid #bbb;background:#fff;color:#111;border-radius:0;font:inherit}#commercial fieldset{border:0;padding:20px 0;margin:0;border-top:1px solid #ddd}#commercial legend{font-size:16px;font-weight:700;padding:18px 0 10px}#commercial .ce-actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-top:20px}#commercial button{white-space:normal}#commercial .ce-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:2px solid #111;border-left:1px solid #ddd}#commercial .ce-kpi{padding:16px;border-right:1px solid #ddd;border-bottom:1px solid #ddd;overflow-wrap:anywhere}#commercial .ce-kpi span{display:block;color:#666;font-size:12px;line-height:1.5}#commercial .ce-kpi strong{display:block;margin-top:8px;font-size:20px}#commercial .ce-scroll{width:100%;overflow:auto;max-height:600px}#commercial table{border-collapse:collapse;width:100%;font-size:12px}#commercial th,#commercial td{padding:10px;white-space:nowrap;text-align:right;border-bottom:1px solid #ddd}#commercial th{position:sticky;top:0;background:#f5f5f5}#commercial td:first-child,#commercial th:first-child{text-align:left}#commercial summary{font-size:18px;font-weight:700;cursor:pointer}#commercial [hidden]{display:none!important}#commercial #ce-error{border-left:3px solid #a00;padding:12px;background:#fff4f4}#commercial input:invalid{border-color:#a00}#commercial :focus-visible{outline:2px solid #111;outline-offset:3px}#commercial #ce-results[data-stale="true"]{opacity:.55}@media(max-width:900px){#commercial .ce-selectors,#commercial .ce-fields{grid-template-columns:repeat(2,minmax(0,1fr))}#commercial .ce-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){#commercial .ce-selectors,#commercial .ce-fields{grid-template-columns:1fr}#commercial .ce-kpi{padding:10px}#commercial .ce-kpi strong{font-size:17px}#commercial .ce-actions button{width:100%}.ia-nav{flex-wrap:wrap;gap:0 20px}.ia-nav button{padding:12px 0 8px}}
+
+/* Global residential actions do not describe the commercial project. */
+.commercial-active [data-ia-confirm],.commercial-active .ia-fab,.commercial-active #iaFabHint{display:none!important}
+
+/* Read a month vertically; the optional overview keeps only comparable totals. */
+#commercial .ce-month-toolbar{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-top:22px;max-width:760px}
+#commercial .ce-month-toolbar label{flex:1;min-width:180px}
+#commercial .ce-month-toolbar button{min-height:42px}
+#commercial .ce-month-breakdown{max-width:760px;font-variant-numeric:tabular-nums}
+#commercial .ce-month-breakdown h3{margin:24px 0 12px}
+#commercial .ce-month-breakdown h4{margin:22px 0 0;padding-bottom:10px;border-bottom:2px solid #111}
+#commercial .ce-month-breakdown dl{margin:0}
+#commercial .ce-month-breakdown dl>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:16px;padding:12px 0;border-bottom:1px solid #ddd;font-size:14px}
+#commercial .ce-month-breakdown dt,#commercial .ce-month-breakdown dd{margin:0;overflow-wrap:anywhere}
+#commercial .ce-month-breakdown dd{text-align:right}
+#commercial .ce-cf-total{font-weight:700;background:#f5f5f5}
+#commercial .ce-month-overview{max-width:760px;margin-top:24px}
+#commercial .ce-month-overview summary{font-size:15px}
+#commercial .ce-month-overview th{white-space:normal}
+#commercial .ce-month-overview table{table-layout:fixed}
+#commercial .ce-month-overview td{white-space:normal;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+@media(max-width:560px){#commercial .ce-month-toolbar label{order:-1;flex-basis:100%}#commercial .ce-month-toolbar button{flex:1}#commercial .ce-month-overview td,#commercial .ce-month-overview th{padding:9px 4px}}

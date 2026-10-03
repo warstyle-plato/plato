@@ -44,7 +44,8 @@
   var SECTIONS = [
     { id: 'project', label: 'Проект', tabs: ['iaSite', 'tep', 'phasing'] },
     { id: 'economics', label: 'Экономика', tabs: ['inputs', 'vri', 'rates'] },
-    { id: 'result', label: 'Результат', tabs: ['report', 'sensitivity'] }
+    { id: 'result', label: 'Результат', tabs: ['report', 'sensitivity'] },
+    { id: 'commercial', label: 'Нежилая экономика', tabs: ['commercial'] }
   ];
   /* Финансирование и календарь отдельными вкладками были дублями: в отчёте
      оба живут разделами с оглавлением (rsFinance, rsCalendar) — «зачем блок
@@ -62,7 +63,7 @@
     iaSite: 'Участок', tep: 'ТЭП', vri: 'ВРИ', inputs: 'Вводные',
     rates: 'Ключевая ставка', finance: 'Финансирование',
     phasing: 'Очередность', calendar: 'Календарь', sensitivity: 'Чувствительность',
-    report: 'Отчёт'
+    report: 'Отчёт', commercial: 'Нежилая экономика'
   };
   var TARGET_LLCR = 1.2;
 
@@ -776,6 +777,8 @@
     var section = sectionOf(activeTab);
     if (!section) return;
     currentSection = section.id;
+    document.body.classList.toggle('commercial-active', section.id === 'commercial');
+    renderState();
     Object.keys(navButtons).forEach(function (key) {
       navButtons[key].classList.toggle('active', key === section.id);
     });
@@ -1031,6 +1034,14 @@
     // Кнопка «Пересчитать модель» — главное действие только когда есть
     // изменения; при актуальном расчёте она спорила со статусом рядом.
     var recalc = document.querySelector('.actions .btn.dark');
+    if (currentSection === 'commercial') {
+      var commercialStatus = document.getElementById('ce-status');
+      var message = commercialStatus ? commercialStatus.textContent : 'Загрузка параметров…';
+      text.textContent = message;
+      box.classList.toggle('dirty', /изменены|не выполнен/.test(message));
+      if (recalc) recalc.style.display = '';
+      return;
+    }
     if (recalc) recalc.style.display = (dirty > 0 && !running) ? '' : 'none';
     box.classList.toggle('dirty', dirty > 0 && !running);
     if (running) text.textContent = 'Считаю…';
@@ -1049,6 +1060,8 @@
   }
 
   function watchChanges() {
+    var commercialStatus = document.getElementById('ce-status');
+    if (commercialStatus) new MutationObserver(renderState).observe(commercialStatus, {childList: true, characterData: true, subtree: true});
     document.addEventListener('input', onEdit, true);
     document.addEventListener('change', onEdit, true);
     var original = window.calculate;
@@ -1073,7 +1086,7 @@
     var target = event.target;
     if (!target || !target.closest) return;
     if (!target.closest('.content')) return;
-    if (target.closest('.ai-drawer')) return;
+    if (target.closest('.ai-drawer') || target.closest('#commercial')) return;
     // Поле поиска участка и блок загрузки — не вводные модели: каждая буква
     // адреса накручивала «есть 136 изменений» (наблюдение владельца).
     if (target.closest('.import-card')) return;
