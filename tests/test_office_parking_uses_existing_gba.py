@@ -93,15 +93,20 @@ def test_project_reallocation_keeps_gba_and_recalculates_saleable_once() -> None
 
     assert o["over_area_per_space_sqm"] == 25
     assert overground["offices"]["parking_over_gba_sqm"] == footprint
-    assert overground["offices"]["total_area"] == pytest.approx(expected_total)
-    assert overground["offices"]["saleable"] == pytest.approx(expected_saleable)
+    # Строка ТЭП — площадь здания; вычет — в структуре продукта (владелец,
+    # 29.09.2026). Продаётся остаток.
+    assert overground["offices"]["total_area"] == pytest.approx(TOTAL)
+    assert overground["offices"]["saleable"] == pytest.approx(SALEABLE)
+    assert overground["offices"]["parking_saleable_after_sqm"] == pytest.approx(expected_saleable)
     assert overground["offices"]["parking_saleable_taken"] == pytest.approx(
         SALEABLE - expected_saleable)
-    assert overground["offices"]["saleable"] == pytest.approx(75_754.6)
+    assert overground["offices"]["parking_saleable_after_sqm"] == pytest.approx(75_754.6)
+    assert expected_total == pytest.approx((GBA - footprint) * 0.94)
 
     # Повторный проход на той же копии ТЭП не вычитает первые этажи второй раз.
     core.apply_object_parking(_inputs(UNDER, OVER), overground)
-    assert overground["offices"]["saleable"] == pytest.approx(expected_saleable)
+    assert overground["offices"]["saleable"] == pytest.approx(SALEABLE)
+    assert overground["offices"]["parking_saleable_after_sqm"] == pytest.approx(expected_saleable)
     assert overground["offices"]["gns"] == GBA
 
 
@@ -166,14 +171,15 @@ def test_phased_office_sells_the_saleable_left_after_first_floor_parking() -> No
     expected = SALEABLE * (GBA - over * 25) / GBA
 
     assert expected == pytest.approx(66_613.1)
-    assert office_tep["saleable"] == pytest.approx(expected)
+    assert office_tep["saleable"] == pytest.approx(SALEABLE), "строка ТЭП — площадь здания"
+    assert office_tep["parking_saleable_after_sqm"] == pytest.approx(expected)
     assert _product_row(office_phase, "offices")["quantity"] == pytest.approx(expected)
     assert bundle["comparison"][2]["saleable_by_product"]["offices"] == pytest.approx(expected)
 
     consolidated_tep = next(row for row in bundle["consolidated"]["tep"]["rows"]
                             if row["key"] == "offices")
     consolidated_product = _product_row(bundle["consolidated"], "offices")
-    assert consolidated_tep["saleable"] == pytest.approx(expected)
+    assert consolidated_tep["saleable"] == pytest.approx(SALEABLE)
     assert consolidated_product["quantity"] == pytest.approx(expected)
 
 
@@ -245,7 +251,8 @@ def test_impossible_first_floor_layout_warns_instead_of_growing_gba() -> None:
     got = core.apply_object_parking(x, t)
 
     assert t["offices"]["gns"] == GBA
-    assert t["offices"]["saleable"] == 0
+    assert t["offices"]["saleable"] == pytest.approx(SALEABLE)
+    assert t["offices"]["parking_saleable_after_sqm"] == 0
     assert t["offices"]["parking_layout_overflow_sqm"] > 0
     assert got.get("warnings")
     assert "площадь объекта не увеличена" in got["note"]

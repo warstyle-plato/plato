@@ -42,7 +42,9 @@ def test_fresh_tep_on_same_object_replaces_cached_parking_base() -> None:
     t = _tep()
 
     core.apply_object_parking(x, t)
-    assert t["offices"]["saleable"] == pytest.approx(5_400.0)
+    # Строка ТЭП — площадь здания; продаётся остаток после мест.
+    assert t["offices"]["saleable"] == pytest.approx(6_000.0)
+    assert t["offices"]["parking_saleable_after_sqm"] == pytest.approx(5_400.0)
 
     # Имитируем настоящий сценарий страницы/книги: ТЭП пересчитался, но та же
     # структура dict живёт дальше. Это НОВАЯ база, а не результат прошлого
@@ -56,9 +58,9 @@ def test_fresh_tep_on_same_object_replaces_cached_parking_base() -> None:
 
     core.apply_object_parking(x, t)
     ratio = (12_000.0 - 40 * 25) / 12_000.0
-    assert t["offices"]["total_area"] == pytest.approx(11_280.0 * ratio)
-    assert t["offices"]["useful"] == pytest.approx(7_200.0 * ratio)
-    assert t["offices"]["saleable"] == pytest.approx(7_200.0 * ratio)
+    assert t["offices"]["total_area"] == pytest.approx(11_280.0)
+    assert t["offices"]["saleable"] == pytest.approx(7_200.0)
+    assert t["offices"]["parking_saleable_after_sqm"] == pytest.approx(7_200.0 * ratio)
 
     # И следующий проход без нового ТЭП должен быть идемпотентным.
     once = (

@@ -84,7 +84,11 @@ def test_the_office_product_is_measured_by_what_is_sold() -> None:
     """Места первых этажей занимают метры здания — их не продают офисом."""
     result = _result()
     office = next(p for p in result["report"]["products"] if p["key"] == "offices")
-    sold = _office_row(result)["saleable"]
+    row = _office_row(result)
+    # Строка ТЭП — площадь здания, продаётся остаток после мест первых
+    # этажей (владелец, 29.09.2026: вычет — в структуре продукта).
+    assert row["saleable"] == pytest.approx(OFFICE_SALEABLE)
+    sold = row["parking_saleable_after_sqm"]
     assert sold < OFFICE_SALEABLE, "места первых этажей не вычлись — проверять нечего"
     assert office["quantity"] == pytest.approx(sold)
     assert office["avg_price_th"] == pytest.approx(office["revenue"] / sold / 1000)
