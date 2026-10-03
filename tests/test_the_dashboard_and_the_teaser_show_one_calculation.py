@@ -40,6 +40,7 @@ import main as _wrapper  # noqa: E402
 import presentation  # noqa: E402
 import teaser_pdf  # noqa: E402
 import v4_dashboard  # noqa: E402
+from terms_glossary import TERMS  # noqa: E402
 
 core = _wrapper.core
 ROOT = Path(__file__).resolve().parent.parent
@@ -205,7 +206,7 @@ def test_the_risks_agree(shape, request):
 # --- движок → Dashboard_Data: страница «Итог» -----------------------------------
 
 SUMMARY_KEYS = ("irr_equity", "full_project_cost_mln", "peak_escrow_mln", "rve_escrow_release_mln",
-                "bridge_interest_mln", "pf_interest_mln", "gns_above_sqm", "saleable_sqm")
+                "bridge_interest_mln", "pf_interest_mln", "total_area_sqm", "saleable_sqm")
 
 
 def _summary_engine(model: dict) -> dict[str, float | None]:
@@ -217,7 +218,8 @@ def _summary_engine(model: dict) -> dict[str, float | None]:
         "rve_escrow_release_mln": fin.get("rve_escrow_release_mln"),
         "bridge_interest_mln": fin.get("bridge_interest_mln"),
         "pf_interest_mln": fin.get("pf_interest_mln"),
-        "gns_above_sqm": tep.get("project_gns_sqm"),
+        # База удельных расходов — суммарная площадь в ГНС (решение 4).
+        "total_area_sqm": tep.get("construction_volume_sqm"),
         "saleable_sqm": tep.get("saleable_sqm"),
     }
 
@@ -259,9 +261,12 @@ def test_the_construction_costs_match_the_engine(shape, request):
         r = v4_dashboard.COST_FIRST_ROW + book_labels.index(row["label"])
         total = float(evaluator.cell(v4_dashboard.DATA_SHEET, f"B{r}") or 0)
         assert _close(total, row["total_mln"]), (row["label"], total, row["total_mln"])
-        per_gns = float(evaluator.cell(v4_dashboard.DATA_SHEET, f"C{r}") or 0)
+        per_base = float(evaluator.cell(v4_dashboard.DATA_SHEET, f"C{r}") or 0)
         per_saleable = float(evaluator.cell(v4_dashboard.DATA_SHEET, f"D{r}") or 0)
-        assert abs(per_gns - row["per_gns_th"]) <= max(0.01, row["per_gns_th"] * 0.005), row["label"]
+        # Своя база строки — та же, что у движка, и названа той же подписью.
+        assert abs(per_base - row["per_base_th"]) <= max(0.01, row["per_base_th"] * 0.005), row["label"]
+        base = evaluator.cell(v4_dashboard.DATA_SHEET, f"E{r}")
+        assert base == "м² " + TERMS[row["base"]].genitive, (row["label"], base)
         assert abs(per_saleable - row["per_saleable_th"]) <= max(0.01, row["per_saleable_th"] * 0.005), row["label"]
     book_total = float(evaluator.cell(v4_dashboard.DATA_SHEET, f"B{v4_dashboard.COST_TOTAL_ROW}") or 0)
     assert _close(book_total, sum(r["total_mln"] for r in model["construction_costs"]))
@@ -307,15 +312,16 @@ def test_the_product_prices_and_pace_match_the_engine(starved):
         assert abs(cell("start_price") - float(product["start_price_th"])) <= 0.5, key
         assert abs(cell("avg_price") - float(product["avg_price_th"])) <= max(0.5, product["avg_price_th"] * 0.005), key
         assert abs(cell("pace") - float(product["pace_month"])) <= max(0.5, product["pace_month"] * 0.005), key
-        per_gns = product.get("per_gns_th") if product.get("per_gns_th") is not None else product.get("per_unit_th")
-        assert abs(cell("per_gns") - float(per_gns)) <= max(0.1, per_gns * 0.005), key
+        # Выручка — на продаваемую; штучный продукт — ещё и на штуку.
+        if product.get("per_unit_th") is not None:
+            per_unit = float(product["per_unit_th"])
+            assert abs(cell("per_unit") - per_unit) <= max(0.1, per_unit * 0.005), key
         if product.get("per_saleable_th"):
             assert abs(cell("per_saleable") - float(product["per_saleable_th"])) <= max(0.1, product["per_saleable_th"] * 0.005), key
         checked += 1
     assert checked >= 3
     unit = {u["label"]: u for u in model["unit_economics"]}["Выручка"]
     t = v4_dashboard.PRODUCT_TOTAL_ROW
-    assert abs(float(evaluator.cell(v4_dashboard.DATA_SHEET, f"{columns['per_gns']}{t}")) - unit["per_gns_th"]) <= 0.1
     assert abs(float(evaluator.cell(v4_dashboard.DATA_SHEET, f"{columns['per_saleable']}{t}")) - unit["per_saleable_th"]) <= 0.1
 
 
@@ -563,7 +569,8 @@ def test_the_teaser_prints_unit_economics_social_and_vri(starved):
     inputs, tep, phasing = _starved()
     text = _pdf_text(core.build_teaser_pdf(bundle, inputs, tep, phasing, SITE, _map_png()))
     for item in numbers["unit_economics"]:
-        assert core._pdf_num(item["per_gns_th"], 1) in text, item["label"]
+        # Каждая строка — на свою базу; расходы — ещё и на продаваемую.
+        assert core._pdf_num(item["per_base_th"], 1) in text, item["label"]
         assert core._pdf_num(item["per_saleable_th"], 1) in text, item["label"]
     land = model["land"]
     assert core._pdf_num(land["social_payment_mln"], 1) in text
