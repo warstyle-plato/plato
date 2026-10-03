@@ -17835,6 +17835,23 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         notes += [str(w) for w in (item.get("schedule_warnings") or [])]
         if notes:
             story.append(P(f"{item.get('label') or '—'}: " + "; ".join(notes) + ".", small))
+    # ТЦ и офисы вне ДДУ — таблицей движка (`nonres_report`), той же, что на
+    # экране: прямая продажа или аренда с выходом и свой кредит объекта.
+    for _nr in report.get("nonres_strategy") or []:
+        _nr_rows = [["Нежильё — стратегия реализации: " + str(_nr.get("title") or ""), ""]]
+        for _row in _nr.get("rows") or []:
+            _unit, _value = _row.get("unit"), _row.get("value")
+            if _unit == "rub":
+                _shown = _pdf_money(_value)
+            elif _unit == "pct":
+                _shown = _pdf_num(float(_value or 0) * 100, 1) + "%"
+            elif _unit == "date":
+                _shown = ".".join(reversed(str(_value or "—")[:7].split("-")))
+            else:
+                _shown = str(_value or "—")
+            _nr_rows.append([str(_row.get("label") or ""), _shown])
+        story.append(KeepTogether([table(_nr_rows, [112*mm, 58*mm], font_size=7.6)]
+                                  + [P(str(w), small) for w in _nr.get("warnings") or []]))
     # Квартиры продаются штуками. «40 квартир в месяц» проверяется отделом
     # продаж и рынком, «2 400 м² в месяц» — нет, а в отчёте был только метр.
     apartment_sales = report.get("apartment_sales") or {}

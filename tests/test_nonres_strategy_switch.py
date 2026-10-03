@@ -277,3 +277,33 @@ def test_the_project_takes_advances_before_commissioning() -> None:
     first_sale = min(d for d, v in (
         (core.d(r["month"]), float(r.get("nonres_revenue") or 0)) for r in result["finance"]["rows"]) if v)
     assert first_sale < core.d(office["commissioning"])
+
+
+# --- отчёт и PDF -------------------------------------------------------------
+
+def test_the_report_table_reads_the_same_totals() -> None:
+    result = _run(offices_strategy="income")
+    [table] = result["report"]["nonres_strategy"]
+    rows = {row["label"]: row["value"] for row in table["rows"]}
+    office = _object(result)
+    assert rows["Затраты стройки объекта"] == office["totals"]["capex"]
+    assert rows["NOI за срок удержания"] == office["totals"]["noi"]
+    assert rows["Выход: продажа по ставке капитализации"] == office["kpi"]["exit_value"]
+    assert _run(offices_strategy="ddu")["report"]["nonres_strategy"] == []
+
+
+def test_the_pdf_prints_the_strategy_table(tmp_path) -> None:
+    pypdf = pytest.importorskip("pypdf")
+    x, t = _spec(offices_strategy="income")
+    result = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
+    content = core._build_developaid_pdf({"project_name": "Офис в аренду", "result": result,
+                                          "inputs": x, "tep": t, "rates": []})
+    path = tmp_path / "nonres.pdf"
+    path.write_bytes(content)
+    text = "\n".join(page.extract_text() or "" for page in pypdf.PdfReader(str(path)).pages)
+    flat = " ".join(text.split())
+    assert "Нежильё — стратегия реализации: Офисы" in flat
+    assert "Доходный метод: аренда и выход" in flat
+    exit_value = next(row["value"] for row in result["report"]["nonres_strategy"][0]["rows"]
+                      if row["label"].startswith("Выход"))
+    assert " ".join(core._pdf_money(exit_value).split()) in flat
