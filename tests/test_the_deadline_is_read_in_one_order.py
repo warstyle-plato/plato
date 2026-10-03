@@ -23,7 +23,7 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -104,20 +104,21 @@ def _run(script: str) -> dict:
 def test_the_page_prints_the_server_moment_not_its_own_guess() -> None:
     """Ровно жалоба владельца: 09.10 обязано печататься девятым октября.
 
-    Дата — через месяц от сегодня: зашитая 09.10.2026 сама становилась
-    «меньше недели» и роняла проверку, не сломав ничего в коде.
+    Срок берётся от сегодняшнего дня: зашитая дата 09.10.2026 сама
+    становилась «истекающим сроком» за неделю до неё, и тест краснел без
+    единой правки кода.
     """
-    import datetime as _dt
-    day = _dt.date.today() + _dt.timedelta(days=30)
-    shown, iso = day.strftime("%d.%m.%y") + " 15:00", day.isoformat() + "T15:00:00+03:00"
+    msk = timezone(timedelta(hours=3))
+    moment = (datetime.now(msk) + timedelta(days=20)).replace(
+        hour=15, minute=0, second=0, microsecond=0)
+    source = moment.strftime("%d.%m.%y %H:%M")
+    lot = f"{{application_deadline:'{source}',application_deadline_iso:'{moment.isoformat()}'}}"
     answer = _run(
         "console.log(JSON.stringify({"
-        f"shown:lotDeadline({{application_deadline:'{shown}',"
-        f"application_deadline_iso:'{iso}'}}),"
-        f"days:lotDeadlineDays({{application_deadline:'{shown}',"
-        f"application_deadline_iso:'{iso}'}})}}))"
+        f"shown:lotDeadline({lot}),"
+        f"days:lotDeadlineDays({lot})}}))"
     )
-    assert answer["shown"].startswith(day.strftime("%d.%m.%y")), answer["shown"]
+    assert answer["shown"].startswith(moment.strftime("%d.%m.%y")), answer["shown"]
     # Днём раньше правки тут стояло 2 — и балл снимался за истекающий срок.
     assert answer["days"] > 7
 
