@@ -95,6 +95,7 @@ from market_search.krt_map_data import wgs84 as krt_wgs84
 from market_search import krt_decision_tep
 from market_search import tep_check
 from market_search import cabinet as market_cabinet
+from auction_search import access_keys
 from market_search.geocoder import GeocodingError
 from market_search.http import RemoteServiceError
 from market_search.subject import SubjectNotFound
@@ -1257,22 +1258,65 @@ def install(app: FastAPI) -> None:
     # Ограниченный ключ включается только когда AUCTIONS_VIEW_KEY реально
     # задан. До настройки переменной поведение /auctions остаётся прежним:
     # выкатить код раньше секрета безопаснее, чем случайно закрыть раздел.
+    # Выданные личные ключи тоже закрывают раздел: ключ, который можно
+    # отозвать, ничего не значит, если без него открыто то же самое.
     def _auctions_gate_enabled() -> bool:
-        return bool(auction_view.view_key())
+        if auction_view.view_key():
+            return True
+        try:
+            return any(not r.get("revoked_at") for r in access_keys.listing())
+        except RuntimeError:
+            # Реестр не читается — закрыто, а не открыто всем.
+            return True
+
+    def _scoped_key(request: Request) -> dict[str, Any] | None:
+        """Личный ключ «auctions» этого браузера, если нет полного ключа."""
+        if not access_keys.has_cookie(request) or market_cabinet.authorised(request):
+            return None
+        return access_keys.scoped(request)
 
     def _view_only(request: Request) -> bool:
         """Вошёл ограниченным ключом просмотра, без полного ключа кабинета."""
+        if _scoped_key(request):
+            return True
         return bool(
             _auctions_gate_enabled()
             and auction_view.authorised(request)
             and not market_cabinet.authorised(request)
         )
 
+    def _scope_denied(request: Request, problem: str):
+        wants_page = (request.method in ("GET", "HEAD")
+                      and "text/html" in request.headers.get("accept", ""))
+        if wants_page:
+            return HTMLResponse(access_keys.denied_page(), status_code=403,
+                                headers={"Cache-Control": "no-store"})
+        return JSONResponse({"detail": problem}, status_code=403,
+                            headers={"Cache-Control": "no-store"})
+
     async def _auctions_view_gate(request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
-        if path == "/auctions/login" or not _auctions_gate_enabled():
+        # Личный ключ «auctions» ограничивает ВЕСЬ сайт, а не только /auctions:
+        # с ним открыт раздел торгов и нужные ему запросы карты, остальное —
+        # отказ на сервере. Отозванный ключ не действует: браузер становится
+        # обычным посетителем.
+        try:
+            scoped = _scoped_key(request)
+        except RuntimeError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=503,
+                                headers={"Cache-Control": "no-store"})
+        if scoped:
+            problem = access_keys.scope_problem(
+                request.method, path, request.query_params)
+            if problem:
+                return _scope_denied(request, problem)
+            request.state.access_scope = access_keys.SCOPE
+            return await call_next(request)
+        if path == access_keys.ENTER_PATH:
             return await call_next(request)
         if path != "/auctions" and not path.startswith("/auctions/"):
+            return await call_next(request)
+        if path == "/auctions/login" or not _auctions_gate_enabled():
             return await call_next(request)
 
         full_access = market_cabinet.authorised(request)
@@ -1341,10 +1385,40 @@ def install(app: FastAPI) -> None:
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
+    @app.get(access_keys.ENTER_PATH, response_class=HTMLResponse, include_in_schema=False)
+    async def auctions_enter_page() -> HTMLResponse:
+        """Вход по ссылке: ключ во фрагменте `#k=…`, до сервера он не доходит."""
+        return HTMLResponse(access_keys.ENTER_PAGE, headers={
+            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+    @app.post(access_keys.ENTER_PATH, include_in_schema=False)
+    async def auctions_enter(request: Request):
+        """Обменять личный ключ на cookie. Сам ключ в cookie не кладётся."""
+        body = await json_object(request)
+        try:
+            record = access_keys.find_by_key(str(body.get("key") or ""))
+        except RuntimeError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=503)
+        if not record:
+            return JSONResponse(
+                {"detail": "Ссылка не действует: ключ неверный или отозван. "
+                           "Попросите владельца выдать новую."},
+                status_code=401, headers={"Cache-Control": "no-store"})
+        access_keys.record_login(record["id"])
+        logger.info("auctions key login: id=%s", record["id"])
+        response = JSONResponse({"ok": True, "scope": access_keys.SCOPE},
+                                headers={"Cache-Control": "no-store"})
+        response.set_cookie(
+            access_keys.COOKIE_NAME, access_keys.cookie_value(record),
+            httponly=True, samesite="lax", max_age=access_keys.COOKIE_MAX_AGE,
+            path="/", secure=request.url.scheme == "https")
+        return response
+
     @app.get("/auctions", response_class=HTMLResponse)
-    async def auctions_home() -> HTMLResponse:
+    async def auctions_home(request: Request) -> HTMLResponse:
+        scope = getattr(request.state, "access_scope", "") or ""
         return HTMLResponse(
-            auction_page_with_handoff(auctions_page(core)),
+            auction_page_with_handoff(auctions_page(core, access_scope=scope)),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
