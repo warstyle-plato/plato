@@ -1756,6 +1756,32 @@ FIELD_SECTIONS: dict[str, str] = {
 }
 
 
+# Какие блоки формы объекта читает какая стратегия реализации. Блок, которого
+# выбранная стратегия не читает, на странице не рисуется: поле, правка которого
+# ничего не меняет, — не вводная. Значения при этом остаются в проекте.
+STRATEGY_SECTION_READERS: dict[str, tuple[str, ...]] = {
+    "Цена и рост цены": (nonres_strategy.STRATEGY_DDU, nonres_strategy.STRATEGY_DIRECT),
+    "Темп продаж": (nonres_strategy.STRATEGY_DDU, nonres_strategy.STRATEGY_DIRECT),
+    "Прямая продажа": (nonres_strategy.STRATEGY_DIRECT,),
+    "Доходный метод": (nonres_strategy.STRATEGY_INCOME,),
+    "Финансирование объекта": (nonres_strategy.STRATEGY_DIRECT,
+                               nonres_strategy.STRATEGY_INCOME),
+}
+
+
+def strategy_field_readers() -> dict[str, list[Any]]:
+    """Поле объекта → [его поле стратегии, стратегии, которые поле читают]."""
+    out: dict[str, list[Any]] = {}
+    for obj in STANDALONE_OBJECTS:
+        if not obj.strategies:
+            continue
+        for field in standalone_object_group(obj)[1]:
+            reads = STRATEGY_SECTION_READERS.get(standalone_object_section(obj, field[0]))
+            if reads:
+                out[field[0]] = [f"{obj.prefix}_strategy", list(reads)]
+    return out
+
+
 # Правится в настройках класса, а не во «Вводных». МЕТОДИКА благоустройства —
 # свойство класса ЦЕЛИКОМ, обеими половинами: норматив площади двора
 # (11 / 15 / 20 м²/чел.) и ставка метра двора (15 / 35 / 50 тыс ₽/м²). Человек
@@ -32115,6 +32141,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             revenue_by_product[obj.key] = 0.0
             nonres_plans[obj.key] = {
                 "key": obj.key, "prefix": obj.prefix, "label": obj.label,
+                "title": obj.tep_label or obj.label,
                 "strategy": strategy, "commissioning": end_ref,
                 "area_sqm": volume, "price_rub_sqm": price,
                 "price_start": sales_start,
@@ -32870,6 +32897,8 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
 
     for key, plan in plans.items():
         flows = nonres_strategy.object_flows(plan, key_rate, vat_rate=vat_rate)
+        flows["title"] = plan.get("title") or key
+        flows["params"] = dict(plan.get("params") or {})
         objects[key] = flows
         series = flows["monthly"]
 
@@ -33945,7 +33974,8 @@ def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
         if kpi.get("exit_month"):
             kpi["exit_month"] = kpi["exit_month"].isoformat()
         objects.append({
-            "key": key, "strategy": flows["strategy"],
+            "key": key, "title": flows.get("title") or key, "strategy": flows["strategy"],
+            "exit_mode": (flows.get("params") or {}).get("exit_mode"),
             "strategy_label": nonres_strategy.STRATEGY_LABELS[flows["strategy"]],
             "commissioning": flows["commissioning"].isoformat(),
             "horizon_end": flows["horizon_end"].isoformat(),
@@ -33953,6 +33983,54 @@ def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
             "warnings": list(flows["warnings"]),
         })
     return {"objects": objects, "totals": dict(nonres.get("totals") or {})}
+
+
+def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Таблица «Нежильё — стратегия реализации»: одна на страницу, PDF и бот.
+
+    Строки собираются из `finance.nonres` — того же итога, что вошёл в
+    прибыль и поток. Строка, которой у стратегии нет, не печатается нулём:
+    у прямой продажи нет NOI, у аренды — выручки ДКП.
+    """
+    out: list[dict[str, Any]] = []
+    for item in (nonres or {}).get("objects") or []:
+        totals, kpi = item.get("totals") or {}, item.get("kpi") or {}
+        income = item.get("strategy") == nonres_strategy.STRATEGY_INCOME
+        hold = income and item.get("exit_mode") == nonres_strategy.EXIT_HOLD
+        rows: list[dict[str, Any]] = [
+            {"label": "Стратегия", "value": item.get("strategy_label"), "unit": "text"},
+            {"label": "Ввод объекта", "value": item.get("commissioning"), "unit": "date"},
+            {"label": "Конец горизонта объекта", "value": item.get("horizon_end"), "unit": "date"},
+            {"label": "Затраты стройки объекта", "value": totals.get("capex"), "unit": "rub"},
+        ]
+        if not income:
+            rows.append({"label": "Выручка прямых продаж (ДКП, без эскроу)",
+                         "value": totals.get("sale_revenue"), "unit": "rub"})
+        else:
+            rows += [
+                {"label": "Арендная выручка за срок удержания",
+                 "value": totals.get("rent_revenue"), "unit": "rub"},
+                {"label": "NOI за срок удержания", "value": totals.get("noi"), "unit": "rub"},
+                {"label": "Стабилизированный NOI, год", "value": kpi.get("stabilized_noi"),
+                 "unit": "rub"},
+                {"label": "Доходность на затраты (NOI / CAPEX)",
+                 "value": kpi.get("yield_on_cost"), "unit": "pct"},
+                {"label": ("Стоимость объекта — оценка удержания, без сделки" if hold
+                           else "Выход: продажа по ставке капитализации"),
+                 "value": kpi.get("exit_value"), "unit": "rub"},
+            ]
+        rows += [
+            {"label": "Кредит объекта — выборка", "value": totals.get("loan_draw"), "unit": "rub"},
+            {"label": "Кредит объекта — пик долга", "value": totals.get("loan_peak"), "unit": "rub"},
+            {"label": "Кредит объекта — проценты и комиссии",
+             "value": float(totals.get("loan_interest") or 0) + float(totals.get("loan_fee") or 0),
+             "unit": "rub"},
+            {"label": "НДС объекта к уплате", "value": totals.get("vat_paid"), "unit": "rub"},
+        ]
+        out.append({"key": item.get("key"), "title": item.get("title"),
+                    "strategy": item.get("strategy"), "rows": rows,
+                    "warnings": list(item.get("warnings") or [])})
+    return out
 
 
 # Суммы подстроки объекта, которые свод по очередям складывает. Удельные среди
@@ -34984,6 +35062,7 @@ def calculate(req: CalcRequest) -> dict:
             },
         },
         "report": {
+            "nonres_strategy": nonres_report(fin.get("nonres")),
             "products": products_report,
             # График платежей за покупку — как посчитано: даты, суммы, доли и
             # оговорки разбора. Одна строка в дату сделки — прежнее поведение.
@@ -37014,6 +37093,7 @@ def _consolidate_phase_results(
             "peak_total_debt": finance["peak_total_debt"],
         },
         "report": {
+            "nonres_strategy": nonres_report(finance.get("nonres")),
             "products": list(product_map.values()),
             "phase_products": phase_sales,
             "unit_economics": unit_economics,
@@ -46541,6 +46621,10 @@ details.cadastral-box>summary::marker{color:#888}
         <table><thead><tr><th>Продукт</th><th>Выручка</th><th>тыс ₽/м² наземной ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
         <tbody id="revenueTable"></tbody></table>
       </div>
+      <div class="card" id="nonresStrategyCard" hidden>
+        <div class="section-title">Нежильё — стратегия реализации</div>
+        <div id="nonresStrategyTables"></div>
+      </div>
       <div class="card">
         <div class="section-title">Темпы и цены продаж</div>
         <div class="scroll" style="max-height:none">
@@ -47116,6 +47200,32 @@ const CLASS_ONLY_INPUTS=__DEVELOPAID_CLASS_ONLY_INPUTS__;
 // Поля участка — рисуются в карточке «Участок и плотность», не во «Вводных».
 const SITE_ONLY_INPUTS=__DEVELOPAID_SITE_ONLY_INPUTS__;
 const notOnInputs=id=>CLASS_ONLY_INPUTS.includes(id)||SITE_ONLY_INPUTS.includes(id);
+// Блоки объекта, которые выбранная стратегия реализации не читает (ДДУ /
+// прямая продажа / доходный метод), не рисуются. Карта — из движка
+// (`strategy_field_readers`); неизвестное значение читается как ДДУ, как и там.
+const STRATEGY_FIELD_READERS=__DEVELOPAID_STRATEGY_FIELD_READERS__;
+const STRATEGY_VALUES=__DEVELOPAID_STRATEGY_VALUES__;
+function objectStrategy(key){const v=String(inputs[key]||'');return STRATEGY_VALUES.includes(v)?v:STRATEGY_VALUES[0]}
+// Таблица «Нежильё — стратегия реализации» — строки собирает движок
+// (`nonres_report`), страница только печатает: при ДДУ таблицы нет.
+function nonresCell(row){
+ const v=row.value;
+ if(row.unit==='rub')return money(v);
+ if(row.unit==='pct')return (Number(v||0)*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%';
+ if(row.unit==='date')return v?String(v).slice(0,7).split('-').reverse().join('.'):'—';
+ return escapeHtml(String(v??'—'));
+}
+function renderNonresStrategy(r){
+ const card=document.getElementById('nonresStrategyCard'),box=document.getElementById('nonresStrategyTables');
+ if(!card||!box)return;
+ const items=((r||{}).report||{}).nonres_strategy||[];
+ card.hidden=!items.length;
+ box.innerHTML=items.map(item=>`<table class="nonres-strategy" data-object="${escapeHtml(item.key)}" data-strategy="${escapeHtml(item.strategy)}"><thead><tr><th colspan="2">${escapeHtml(item.title)}</th></tr></thead><tbody>${
+  item.rows.map(row=>`<tr><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}${
+  (item.warnings||[]).map(w=>`<tr><td colspan="2" class="warn">${escapeHtml(w)}</td></tr>`).join('')}</tbody></table>`).join('');
+}
+const STRATEGY_FIELD_READERS_SWITCHES=[...new Set(Object.values(STRATEGY_FIELD_READERS).map(r=>r[0]))];
+function strategyHides(id){const r=STRATEGY_FIELD_READERS[id];return !!r&&!r[1].includes(objectStrategy(r[0]))}
 const INPUT_DEFAULT=__DEVELOPAID_INPUT_DEFAULT__;
 const FEEDBACK_FORM=__DEVELOPAID_FEEDBACK_FORM__;
 
@@ -51764,7 +51874,7 @@ function renderInputs(){
      // остальные, — отсюда берут подпись и единицу окно классов и строка
      // отклонений в отчёте; здесь оно только не рисуется. Выход ДО создания
      // узла: наполовину нарисованное поле оставило бы в сетке пустую клетку.
-     if(notOnInputs(id))return;
+     if(notOnInputs(id)||strategyHides(id))return;
      const own=fieldSection(id);
      if(own&&own!==section){
        section=own;
@@ -51841,7 +51951,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);renderInputs();return calculate()}if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
@@ -55858,6 +55968,7 @@ function renderResult(){
    return `<tr${cls} data-group="${x.group}" data-role="${x.role}"><${c}>${escapeHtml(x.label)}</${c}><${c}>${money(x.value)}</${c}><${c}>${perTh(x.value,rGns)}</${c}><${c}>${perTh(x.value,rSaleable)}</${c}></tr>`;
   }).join('');
  }
+ renderNonresStrategy(r);
  // Имена статей приходят из движка плейсхолдером, как VERSION и доли ТЭП.
  const capNames=__DEVELOPAID_CAPEX_NAMES__;
  {
@@ -57903,6 +58014,10 @@ MONITOR_PAGE_HTML = (
 # вводных от числа объектов не растёт (владелец, 28.09.2026).
 PAGE = PAGE.replace(FIELD_GROUPS_PLACEHOLDER,
                     json.dumps(PAGE_FIELD_GROUPS, ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_STRATEGY_FIELD_READERS__", json.dumps(
+    strategy_field_readers(), ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_STRATEGY_VALUES__", json.dumps(
+    [value for value, _ in nonres_strategy.STRATEGIES]))
 PAGE = PAGE.replace(FIELD_SECTIONS_PLACEHOLDER, json.dumps(
     {key: title for key, title in FIELD_SECTIONS.items() if key not in _INSTANCE_FIELDS},
     ensure_ascii=False))

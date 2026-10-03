@@ -38,7 +38,7 @@ STRATEGY_DIRECT = "direct"
 STRATEGY_INCOME = "income"
 STRATEGIES: tuple[tuple[str, str], ...] = (
     (STRATEGY_DDU, "Продажа по ДДУ 214-ФЗ (эскроу)"),
-    (STRATEGY_DIRECT, "Прямая продажа без эскроу (ДКП после ввода)"),
+    (STRATEGY_DIRECT, "Прямая продажа без эскроу (ДКП, в т.ч. до ввода)"),
     (STRATEGY_INCOME, "Доходный метод: аренда и выход"),
 )
 STRATEGY_LABELS = dict(STRATEGIES)
