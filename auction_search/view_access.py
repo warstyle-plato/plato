@@ -183,7 +183,7 @@ font-size:15px;cursor:pointer}.err{color:#B3261E;font-size:13px;margin-top:10px}
 <input type="password" name="key" placeholder="Ключ доступа" autofocus autocomplete="current-password">
 <button type="submit">Войти</button>
 __ERROR__
-<div class="scope">Полный ключ кабинета рынка здесь тоже принимается.</div>
+<div class="scope">Полный ключ кабинета рынка здесь тоже принимается. Личный ключ вводить не нужно: откройте ссылку, которую прислал владелец.</div>
 </form>"""
 
 
