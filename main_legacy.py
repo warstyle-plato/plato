@@ -69,6 +69,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
 from request_body import json_object
+import v4_book_polish
 import v4_dashboard
 import v4_entry_sheet
 import v4_value_cache
@@ -84,7 +85,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.89"
+VERSION = "0.24.90"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -21725,11 +21726,41 @@ def _v4_extra_object_block(xml: str, lay: _V4ObjectLayout, missing: list[str]) -
     # Заголовок стоит во всех ячейках строки — так его пишет шаблон (полоса
     # заливки во всю ширину). Оставить там подпись двойника значило бы завести
     # в книге второй торговый центр, который на самом деле ФОК.
-    for _column in ("A", "B", "C", "D"):
-        xml, done = _v4_set_cell(xml, f"{_column}{head}", text=name.upper())
-        if not done and _column == "A":
-            missing.append(f"{name}: заголовок блока объекта")
-    return xml
+    # Прежде подпись менялась в A–D, а с E по GA оставался «ТОРГОВЫЙ ЦЕНТР»
+    # двойника, и объединения строки копия не несла — ревизия 29.09.2026
+    # видела его на экране. Подпись ставится во все ячейки, строка
+    # объединяется, как заголовки блоков шаблона.
+    # Строка переписывается одним проходом: по ячейке через `_v4_set_cell`
+    # это 183 чтения всего листа ОБЪЕКТЫ на один заголовок.
+    found = re.search(rf'(<x:row r="{head}"[^>]*>)(.*?)(</x:row>)', xml, re.S)
+    columns = re.findall(r'<x:c r="([A-Z]+)%d"' % head, found.group(2)) if found else []
+    if "A" not in columns:
+        missing.append(f"{name}: заголовок блока объекта")
+        return xml
+    text = xml_escape(name.upper())
+
+    def titled(cell: "re.Match[str]") -> str:
+        attrs = re.sub(r'\st="[^"]*"', "", cell.group(2))
+        return (f'<x:c r="{cell.group(1)}{head}"{attrs} t="inlineStr">'
+                f"<x:is><x:t>{text}</x:t></x:is></x:c>")
+
+    body = re.sub(rf'<x:c r="([A-Z]+){head}"([^>]*?)(?:/>|>.*?</x:c>)', titled,
+                  found.group(2), flags=re.S)
+    xml = xml[:found.start()] + found.group(1) + body + found.group(3) + xml[found.end():]
+    return _v4_add_merge(xml, f"A{head}:{columns[-1]}{head}")
+
+
+def _v4_add_merge(xml: str, ref: str) -> str:
+    """Добавляет объединение в `mergeCells` листа и правит счётчик."""
+    found = re.search(r'<x:mergeCells(?:\s[^>]*)?>(.*?)</x:mergeCells>', xml, re.S)
+    if not found:
+        return xml
+    if f'ref="{ref}"' in found.group(1):
+        return xml
+    body = found.group(1) + f'<x:mergeCell ref="{ref}" />'
+    count = len(re.findall(r"<x:mergeCell ", body))
+    return (xml[:found.start()] + f'<x:mergeCells count="{count}">' + body
+            + "</x:mergeCells>" + xml[found.end():])
 
 
 def _v4_object_tep_cells(lay: _V4ObjectLayout) -> dict[str, str]:
@@ -21799,6 +21830,9 @@ def _v4_extra_tep_rows(xml: str, missing: list[str]) -> str:
     складывает оба куска — это сказано в строке раздела.
     """
     below = [lay for lay in _v4_extras() if lay.tep_row > 36]
+    # Итог переезжает с 34 на 35 — и его стиль вместе с ним (см. `_v4_restyle_row`).
+    total_styles = _v4_sheet_row_styles(xml, 34)
+    plain_styles = _v4_sheet_row_styles(xml, 33)
     for letter in ("C", "D", "E", "G"):
         parts = [f"{letter}31:{letter}34"]
         if below:
@@ -21870,6 +21904,16 @@ def _v4_extra_tep_rows(xml: str, missing: list[str]) -> str:
                 xml, done = _v4_set_or_insert_cell(xml, coord, formula=value)
             if not done:
                 missing.append(f"ТЭП · строка {lay.obj.label} {coord}")
+    xml = _v4_restyle_row(xml, 34, plain_styles, whole_row=True)
+    xml = _v4_restyle_row(xml, 35, total_styles, whole_row=True)
+    # Блок соцобъектов в шаблоне стоит без оформления: заголовок раздела,
+    # шапка и итог получают стили своих ролей с этого же листа.
+    section = _v4_sheet_row_styles(xml, 30).get("A", "")
+    header = _v4_sheet_row_styles(xml, 3)
+    xml = _v4_restyle_row(xml, 38, {"A": section})
+    xml = _v4_restyle_row(xml, 39, {c: header.get("A", "") for c in "ABCDEF"})
+    xml = _v4_restyle_row(xml, 44, {"A": total_styles.get("A", ""),
+                                    "E": total_styles.get("G", "")})
     return xml
 
 
@@ -21962,6 +22006,10 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
         if not done:
             missing.append(f"ОТЧЁТ · структура продукта: ячейка {coord} не поставлена")
 
+    # Стиль итога шаблона стоит на строке, которую займёт ФОК: он переезжает
+    # на строку итога вместе с ним, а ФОК получает стиль обычной строки.
+    total_styles = _v4_sheet_row_styles(xml, total - 1)
+    plain_styles = _v4_sheet_row_styles(xml, total - 2)
     xml_holder = [_v4_ensure_row(xml, total)]
     # Шапка: колонка называет то, что в ней лежит.
     put("B45", text="ГНС наземная, м²")
@@ -22023,7 +22071,219 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
     put(f"H{total}", text=(f"{TOTAL_AREA.name} = наземная + подземная. "
                            "Соцобъекты сюда не входят — они не продукт; "
                            "их метры на листе ТЭП."))
+    xml_holder[0] = _v4_restyle_row(xml_holder[0], total - 1, plain_styles, whole_row=True)
+    xml_holder[0] = _v4_restyle_row(xml_holder[0], total, total_styles, whole_row=True)
     return xml_holder[0]
+
+
+def _v4_report_unit_tables_style(xml: str) -> str:
+    """Юнит-экономика и темпы продаж ОТЧЕТА: данные — стилем данных.
+
+    В шаблоне подписи строк 76–83 и 87–93 (и единицы E87:E93) залиты тёмным
+    цветом ЗАГОЛОВКА раздела, а шапки 75 и 86 — тем же цветом, а не цветом
+    шапок таблиц листа. Таблица читалась сплошной тёмной полосой (ревизия
+    29.09.2026). Стили берутся у соседних таблиц этого же листа: подпись —
+    у «Продаваемая площадь» (A57), единица — у G57, шапка — у строки 56.
+    """
+    label = _v4_sheet_row_styles(xml, 57)
+    header = _v4_sheet_row_styles(xml, 56)
+    head = header.get("B", "")
+    for row in (75, 86):
+        xml = _v4_restyle_row(xml, row, {c: head for c in "ABCDE"})
+    for row in list(range(76, 84)) + list(range(87, 94)):
+        xml = _v4_restyle_row(xml, row, {"A": label.get("A", ""), "E": label.get("G", "")})
+    # «Итого» доли структуры расходов — в процентах, как строки над ним
+    # (стоял формат суммы: «1,0» вместо «100,0%»); шапка «Подземная, м²» —
+    # стилем шапки своей таблицы.
+    shares = _v4_sheet_row_styles(xml, 39).get("C")
+    if shares:
+        xml = _v4_restyle_row(xml, 40, {"C": shares.replace('"', '"')})
+    product_header = _v4_sheet_row_styles(xml, 45).get("F")
+    if product_header:
+        xml = _v4_restyle_row(xml, 45, {"G": product_header})
+    return xml
+
+
+_V4_FINAL_DEBT_ROW = 23
+_V4_FINAL_DEBT_LABEL = "Финальный долг"
+_V4_DEBT_DEFAULT_STATUS = "ДЕФОЛТ ПО ДОЛГУ"
+
+
+def _v4_name_debt_default_status(xml: str, missing: list[str]) -> str:
+    """Вердикт ПРОВЕРОК отличает дефолт по долгу от сбоя расчёта.
+
+    Решение владельца 29.09.2026: непогашенный к концу долг — это ответ модели
+    о проекте, а не поломка модели. Прежде единственный FAIL «Финальный долг»
+    давал «СБОЙ», и все три проверенных проекта читались сломанными. Теперь:
+    FAIL в любой другой строке — «СБОЙ»; FAIL только в строке финального долга
+    — «ДЕФОЛТ ПО ДОЛГУ». Строка берётся по подписи, а не по номеру наугад.
+    """
+    label = _v4_cell_text(xml, f"A{_V4_FINAL_DEBT_ROW}")
+    if label != _V4_FINAL_DEBT_LABEL:
+        missing.append(f"ПРОВЕРКИ · строка {_V4_FINAL_DEBT_ROW} не «{_V4_FINAL_DEBT_LABEL}», "
+                       f"а {label!r}: статус дефолта не назван")
+        return xml
+    current = _v4_cell_formula(xml, "B3") or ""
+    found = re.search(r"COUNTIF\(F6:F(\d+),", current)
+    if not found:
+        missing.append("ПРОВЕРКИ · вердикт B3 не распознан: статус дефолта не назван")
+        return xml
+    last = found.group(1)
+    debt = f"F{_V4_FINAL_DEBT_ROW}"
+    formula = (f'IF(COUNTIF(F6:F{last},"FAIL")-COUNTIF({debt},"FAIL")>0,"СБОЙ",'
+               f'IF(COUNTIF({debt},"FAIL")>0,"{_V4_DEBT_DEFAULT_STATUS}",'
+               f'IF(COUNTIF(F6:F{last},"WARN")>0,"ПРОЙДЕНО С ПРЕДУПРЕЖДЕНИЯМИ","ПРОЙДЕНО")))')
+    xml, done = _v4_set_cell(xml, "B3", formula=formula)
+    if not done:
+        missing.append("ПРОВЕРКИ · вердикт B3 не записан")
+        return xml
+    # Подсветка вердикта: дефолт красится как сбой — оба красные, но названы по-разному.
+    rule = re.search(r'<x:cfRule type="expression" dxfId="(\d+)" priority="\d+">'
+                     r'<x:formula>\$B\$3="СБОЙ"</x:formula></x:cfRule>', xml)
+    if rule:
+        priorities = [int(p) for p in re.findall(r'priority="(\d+)"', xml)]
+        added = (f'<x:cfRule type="expression" dxfId="{rule.group(1)}" '
+                 f'priority="{max(priorities) + 1}"><x:formula>$B$3="{_V4_DEBT_DEFAULT_STATUS}"'
+                 f'</x:formula></x:cfRule>')
+        xml = xml[:rule.end()] + added + xml[rule.end():]
+    return xml
+
+
+# Подписи удельных показателей ОТЧЕТА — по их фактическому делителю (решение
+# владельца 29.09.2026: база следует показателю и называется в подписи).
+# (ячейка, прежняя подпись шаблона, новая подпись). Прежняя сверяется: если
+# шаблон поменялся, подпись не переписывается вслепую.
+_V4_REPORT_AREA_LABELS = (
+    ("A58", "Общая площадь (GBA)", "GBA продуктов: наземная + подземная очередей"),
+    ("H58", "Жилые очереди и отдельно стоящие объекты",
+     "Жилые очереди с подземной частью и наземная GBA отдельных объектов; "
+     "без соцобъектов и гаражей объектов"),
+    ("A62", "CAPEX на м² GBA", "CAPEX на м² GBA продуктов"),
+    ("H62", "CAPEX очереди / общая площадь", "CAPEX очереди / «GBA продуктов» (строка 58)"),
+    ("F9", "CAPEX на м² GBA", "CAPEX на м² GBA продуктов"),
+    ("C75", "на м² GBA, тыс. ₽", "на м² GBA с подземной и соцобъектами, тыс. ₽"),
+)
+
+
+def _v4_report_area_labels(xml: str, missing: list[str]) -> str:
+    """ОТЧЕТ делил «на м² GBA» на две разные площади под одной подписью.
+
+    `F62`/`G9` — на GBA продуктов (строка 58), `C76:C83` — на строительный
+    объём ТЭП!C36 (с соцобъектами и гаражами объектов): рядом стояли две
+    «CAPEX на м² GBA» — 190 и 185 на дефолтном проекте. Делители не меняются,
+    меняются подписи: каждая называет то, на что делит.
+    """
+    for coord, old, new in _V4_REPORT_AREA_LABELS:
+        current = _v4_cell_text(xml, coord)
+        if current == new:
+            continue
+        if current != old:
+            missing.append(f"ОТЧЕТ · подпись {coord}: ждали «{old}», в шаблоне {current!r}")
+            continue
+        xml, done = _v4_set_or_insert_cell(xml, coord, text=new)
+        if not done:
+            missing.append(f"ОТЧЕТ · подпись {coord} не записана")
+    return xml
+
+
+def _v4_family_present(inputs: dict[str, Any], key: str) -> bool:
+    """Есть ли в проекте объект этого вида — сам или любой его экземпляр."""
+    return any(b(inputs, o.enabled_key) for o in STANDALONE_OBJECTS
+               if o.key == key or o.family == key)
+
+
+def _v4_storage_present(tep: dict[str, dict[str, Any]]) -> bool:
+    return float((tep.get("storage") or {}).get("units") or 0) > 0
+
+
+def _v4_absent_products(inputs: dict[str, Any], tep: dict[str, dict[str, Any]]) -> frozenset[str]:
+    """Продукты шаблона, которых нет в проекте, — их строки Дашборд не показывает."""
+    absent = {key for key in _V4_TEMPLATE_OBJECT_LAYOUT
+              if not _v4_family_present(inputs, key)}
+    if not _v4_storage_present(tep):
+        absent.add("storage")
+    return frozenset(absent)
+
+
+# Строки листов, которые скрываются, когда объекта нет в проекте. Подпись —
+# часть адреса: оформление сверяет её и не скрывает строку, если стоит другая.
+_V4_ABSENT_OBJECT_ROWS: dict[str, tuple[tuple[str, int, str, str], ...]] = {
+    "offices": (("ОТЧЕТ", 50, "A", "МФОЦ"), ("ОТЧЕТ", 91, "A", "МФОЦ"),
+                ("ТЭП", 31, "B", "МФОЦ")),
+    "standalone_retail": (("ОТЧЕТ", 51, "A", "Торговый центр"), ("ОТЧЕТ", 92, "A", "Торговый центр"),
+                          ("ТЭП", 32, "B", "Торговый центр")),
+    "above_parking": (("ОТЧЕТ", 52, "A", "Наземный паркинг"), ("ОТЧЕТ", 93, "A", "Наземный паркинг"),
+                      ("ТЭП", 33, "B", "Наземный")),
+    "sports": (("ОТЧЕТ", 53, "A", "ФОК"), ("ТЭП", 34, "B", "ФОК")),
+}
+_V4_OBJECT_BLOCK_SPAN = 28          # заголовок блока ОБЪЕКТЫ … «Паркинг объекта — выручка»
+_V4_OBJECT_QUEUE_FIRST = 92         # ОБЪЕКТЫ: «Очередь 1 — Выручка объектов»
+_V4_OBJECT_QUEUE_STRIDE = 8
+_V4_OBJECT_QUEUE_ROWS = 7
+_V4_TEP_QUEUE_PRODUCTS = ("Квартиры", "Коммерция 1 этажа", "Подземный паркинг", "Кладовые")
+_V4_QUEUE_BLOCKS = {                # лист: (заголовок первой очереди, шаг блока)
+    "Продажи": (6, _V4_SALES_PHASE_STRIDE),
+    "CAPEX": (6, _V4_CAPEX_BLOCK_STRIDE),
+    "ВРИ": (6, _V4_VRI_BLOCK_STRIDE),
+}
+
+
+def _v4_hidden_plan(inputs: dict[str, Any], tep: dict[str, dict[str, Any]], queues: int,
+                    entry_xml: str) -> tuple[dict[str, list[tuple[int, str, str]]], set[str]]:
+    """Что скрыть в книге: объекты и очереди, которых нет в проекте.
+
+    Решение владельца 29.09.2026. Скрывается, а не удаляется: формулы на эти
+    строки ссылаются, и включённый потом прямо в Excel объект вернётся, стоит
+    показать строки. Вводные объектов не скрываются — в них сам выключатель.
+    """
+    rows: dict[str, list[tuple[int, str, str]]] = {}
+
+    def hide(sheet: str, row: int, column: str = "A", label: str = "") -> None:
+        rows.setdefault(sheet, []).append((row, column, label))
+
+    for key, places in _V4_ABSENT_OBJECT_ROWS.items():
+        present = (b(inputs, "sports_enabled") if key == "sports"
+                   else _v4_family_present(inputs, key))
+        if not present:
+            for sheet, row, column, label in places:
+                hide(sheet, row, column, label)
+    for lay in _v4_layouts():
+        if b(inputs, lay.obj.enabled_key):
+            continue
+        name = (lay.obj.group_label or lay.obj.label).upper() if lay.extra else ""
+        head = lay.object_head
+        hide("ОБЪЕКТЫ", head, "A", name)
+        for row in range(head + 1, head + _V4_OBJECT_BLOCK_SPAN):
+            hide("ОБЪЕКТЫ", row)
+        if lay.extra and lay.tep_row > 36:
+            hide("ТЭП", lay.tep_row, "B", lay.obj.tep_label or lay.obj.label)
+    if not _v4_storage_present(tep):
+        hide("ОТЧЕТ", 49, "A", "Кладовые")
+        hide("ОТЧЕТ", 90, "A", "Кладовые")
+    for q in range(queues + 1, 5):
+        hide("ОТЧЕТ", 24 + q)
+        tep_head = 4 + _V4_TEP_PHASE_STRIDE * (q - 1)
+        for index, product in enumerate(_V4_TEP_QUEUE_PRODUCTS):
+            hide("ТЭП", tep_head + index, "B", product)
+        hide("ТЭП", tep_head + len(_V4_TEP_QUEUE_PRODUCTS), "A", f"Итого очередь {q}")
+        for sheet, (first, stride) in _V4_QUEUE_BLOCKS.items():
+            head = first + stride * (q - 1)
+            hide(sheet, head, "A", f"ОЧЕРЕДЬ {q}")
+            for row in range(head + 1, head + stride):
+                hide(sheet, row)
+        start = _V4_OBJECT_QUEUE_FIRST + _V4_OBJECT_QUEUE_STRIDE * (q - 1)
+        for row in range(start, start + _V4_OBJECT_QUEUE_ROWS):
+            hide("ОБЪЕКТЫ", row, "A", f"Очередь {q} —")
+        for found in re.finditer(r'<x:row r="(\d+)"[^>]*>(.*?)</x:row>', entry_xml or "", re.S):
+            text = _v4_cell_text(found.group(0), f"A{found.group(1)}") or ""
+            if re.fullmatch(rf"(ДОО|СОШ|Поликлиника) — очередь {q}", text):
+                hide("Вводные", int(found.group(1)), "A", text)
+    if _v4_storage_present(tep):
+        pass
+    else:
+        for q in range(1, queues + 1):
+            hide("ТЭП", 4 + _V4_TEP_PHASE_STRIDE * (q - 1) + 3, "B", "Кладовые")
+    return rows, {f"CF_{q}" for q in range(queues + 1, 5)}
 
 
 def _v4_object_checks(xml: str, missing: list[str]) -> str:
@@ -23756,6 +24016,34 @@ def _v4_sheet_row_styles(xml: str, row: int) -> dict[str, str]:
         if style:
             styles[coord] = f' s="{style.group(1)}"'
     return styles
+
+
+def _v4_restyle_row(xml: str, row: int, styles: dict[str, str], *,
+                    whole_row: bool = False) -> str:
+    """Ставит ячейкам строки стили по колонкам.
+
+    Колонки вне `styles` не трогаются; `whole_row=True` — строка целиком
+    меняет роль (итог ↔ обычная), и колонке без стиля у образца стиль снимается.
+
+    Сборщик переносит итог блока на строку ниже и отдаёт его прежнее место
+    дописанному объекту (ФОК на ОТЧЕТ!53 и ТЭП!34). Содержимое переезжало, а
+    стиль итога оставался на месте: ревизия 29.09.2026 нашла жирный серый
+    «ФОК / медцентр» над невыделенным «ИТОГО». Стиль — свойство строки-роли, а
+    не номера, и переезжает вместе с ней.
+    """
+    found = re.search(rf'(<x:row r="{row}"[^>]*>)(.*?)(</x:row>)', xml, re.S)
+    if not found:
+        return xml
+
+    def restyle(match: "re.Match[str]") -> str:
+        column, attrs, close = match.group(1), match.group(2), match.group(3)
+        if column not in styles and not whole_row:
+            return match.group(0)
+        attrs = re.sub(r'\ss="\d+"', "", attrs)
+        return f'<x:c r="{column}{row}"{attrs}{styles.get(column, "")}{close}>'
+
+    body = re.sub(rf'<x:c r="([A-Z]+){row}"([^>]*?)(/?)>', restyle, found.group(2))
+    return xml[:found.start()] + found.group(1) + body + found.group(3) + xml[found.end():]
 
 
 def _v4_normative_sources_rows(xml: str, region: str, missing: list[str]) -> str:
@@ -25979,6 +26267,8 @@ def _build_project_workbook(
     report_xml = _v4_add_report_default_row(report_xml, missing)
     report_xml = _v4_report_net_profit_from_its_own_rows(report_xml, missing)
     report_xml = _v4_product_structure_block(report_xml, missing)
+    report_xml = _v4_report_unit_tables_style(report_xml)
+    report_xml = _v4_report_area_labels(report_xml, missing)
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = _v4_extra_tep_rows(
         source.read(tep_sheet_path).decode("utf-8"), missing)
@@ -26203,6 +26493,7 @@ def _build_project_workbook(
         checks_xml = _v4_add_pf_uncovered_parity_row(
             checks_xml, float(_parity.get("pf_shortfall_mln") or 0.0), missing)
     checks_xml = _v4_teach_funding_check_about_the_limit(checks_xml, missing)
+    checks_xml = _v4_name_debt_default_status(checks_xml, missing)
 
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
@@ -27106,7 +27397,8 @@ def _build_project_workbook(
             _AGENT_BANK_LLCR_TARGET, _v4_cf_columns(), enabled_phases > 1,
             _V4_CAPEX_ARTICLE_ROW, _V4_CAPEX_BLOCK_STRIDE,
             _v4_dashboard_extra_products(),
-            frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)))
+            frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)),
+            hidden_products=_v4_absent_products(x, tep), queues=count)
     except Exception as exc:  # noqa: BLE001 — дашборд без книги не выпускается молча
         missing.append("Дашборд · не собран: " + _error_location(exc))
 
@@ -27218,6 +27510,16 @@ def _build_project_workbook(
     # может. Сбой оставляет книгу без значений и говорит об этом: выгрузка без
     # чисел хуже, чем с ними, но несобранная выгрузка хуже обеих.
     content = out.getvalue()
+    # Оформление по решениям владельца (ревизия 29.09.2026): порядок листов,
+    # закрепления, печать, форматы по единице, скрытие того, чего нет в
+    # проекте. Только стили и атрибуты — формулы не трогаются.
+    _hidden_rows, _hidden_sheets = _v4_hidden_plan(x, tep, count, entry_xml)
+    try:
+        content = v4_book_polish.polish(content, hidden_rows=_hidden_rows,
+                                        hidden_sheets=_hidden_sheets, missing=missing)
+    except Exception as exc:  # noqa: BLE001 — книга без оформления лучше несобранной
+        missing.append("оформление книги не применено: " + _error_location(exc))
+    polished = content
     # Счёт всей книги стоит около четырнадцати секунд — для выгрузки это
     # ничто, а для набора тестов много: книгу собирают 62 файла, и на каждой
     # сборке набор подорожал бы получасом. Поэтому `tests/conftest.py` гасит
@@ -27238,7 +27540,7 @@ def _build_project_workbook(
     except _SkipValueCache:
         pass
     except Exception as exc:  # noqa: BLE001 — молчащая потеря значений и есть болезнь
-        content = out.getvalue()
+        content = polished
         missing.append("сохранённые значения не записаны: " + _error_location(exc))
 
     stem = _safe_file_stem(title, "project")
