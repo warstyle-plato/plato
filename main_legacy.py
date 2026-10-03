@@ -47272,9 +47272,9 @@ function renderNonresStrategy(r){
  if(!card||!box)return;
  const items=((r||{}).report||{}).nonres_strategy||[];
  card.hidden=!items.length;
- box.innerHTML=items.map(item=>`<table class="nonres-strategy" data-object="${escapeHtml(item.key)}" data-strategy="${escapeHtml(item.strategy)}"><thead><tr><th colspan="2">${escapeHtml(item.title)}</th></tr></thead><tbody>${
+ box.innerHTML=items.map(item=>`<table class="nonres-strategy" data-object="${escapeHtml(item.key)}" data-strategy="${escapeHtml(item.strategy)}"><caption>${escapeHtml(item.title)}</caption><tbody>${
   item.rows.map(row=>`<tr><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}${
-  (item.warnings||[]).map(w=>`<tr><td colspan="2" class="warn">${escapeHtml(w)}</td></tr>`).join('')}</tbody></table>`).join('');
+  (item.warnings||[]).map(w=>`<tr class="warn"><td>${escapeHtml(w)}</td><td></td></tr>`).join('')}</tbody></table>`).join('');
 }
 const STRATEGY_FIELD_READERS_SWITCHES=[...new Set(Object.values(STRATEGY_FIELD_READERS).map(r=>r[0]))];
 function strategyHides(id){const r=STRATEGY_FIELD_READERS[id];return !!r&&!r[1].includes(objectStrategy(r[0]))}
