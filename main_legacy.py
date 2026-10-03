@@ -59,6 +59,7 @@ from pydantic import BaseModel
 # наложение этого факта на плановую модель. Отдельным модулем по той же
 # причине: он о выгрузках и их разборе, движок — об экономике.
 import developaid_actuals
+import developaid_nonres_strategy as nonres_strategy
 import developaid_monitor
 import developaid_monitor_daily
 import developaid_monitor_scenarios
@@ -1062,6 +1063,10 @@ class StandaloneObject(NamedTuple):
     # только у ТЦ, МФОЦ/офисов, наземного паркинга; ФОК НЕ дублируется»
     # (владелец, 29.09.2026). Экземпляров такого типа реестр не порождает.
     duplicable: bool = True
+    # Есть ли у объекта выбор стратегии реализации: ДДУ с эскроу, прямая
+    # продажа или доходный метод (`developaid_nonres_strategy`). Только ТЦ и
+    # офисы (владелец, 03.10.2026: «тц и офисы только»); экземпляры наследуют.
+    strategies: bool = False
 
     @property
     def product(self) -> str:
@@ -1104,7 +1109,8 @@ OBJECT_TYPES: tuple[StandaloneObject, ...] = (
                                "price_th_per_sqm": nonresidential_price_th(
                                    PROJECT_CLASS_PRESETS["comfort"][
                                        "apartment_price_th"])},
-                     tep_label="Коммерция ОСЗ", group_label="ТЦ / коммерция ОСЗ"),
+                     tep_label="Коммерция ОСЗ", group_label="ТЦ / коммерция ОСЗ",
+                     strategies=True),
     StandaloneObject("offices", "offices", "офисы", 3, True, True, "sqm",
                      "offices_cost_th_per_sqm", "offices_price_th_per_sqm",
                      # 175 — ставка класса «Комфорт» (офисы B и ниже):
@@ -1114,7 +1120,8 @@ OBJECT_TYPES: tuple[StandaloneObject, ...] = (
                                "price_th_per_sqm": nonresidential_price_th(
                                    PROJECT_CLASS_PRESETS["comfort"][
                                        "apartment_price_th"])},
-                     tep_label="Офисы", group_label="МФОЦ / офисы"),
+                     tep_label="Офисы", group_label="МФОЦ / офисы",
+                     strategies=True),
     StandaloneObject("above_parking", "above_parking", "наземный паркинг", 2, False,
                      False, "spaces", "above_parking_cost_mln_per_space",
                      "above_parking_price_mln_per_space",
@@ -1237,7 +1244,15 @@ def standalone_object_defaults(obj: StandaloneObject) -> dict[str, Any]:
     # реестр и форма отвечали бы на «чем объект является по умолчанию» порознь.
     if obj.purposes:
         out["purpose"] = obj.purposes[0][0]
-    return {f"{obj.prefix}_{key}": value for key, value in out.items()}
+    out = {f"{obj.prefix}_{key}": value for key, value in out.items()}
+    # Стратегия реализации — по умолчанию ДДУ: сохранённый проект без поля
+    # считается так же, как считался.
+    if obj.strategies:
+        out.update(nonres_strategy.strategy_defaults(obj.prefix, obj.product))
+        if not obj.garage_sellable:
+            # Места ТЦ не продаются и не сдаются: они обеспечивают посетителей.
+            out.pop(f"{obj.prefix}_parking_rent_th_month", None)
+    return out
 
 
 # Группа вводных объекта — та же форма, что и умолчания, только с подписями.
@@ -1289,6 +1304,7 @@ _OBJECT_SALES_PROFILE_EDITOR = {"value": "share", "anchor": "sales_start",
 # не рисуется. Смысл полей и их умолчания живут выше; здесь только раскладка.
 _OBJECT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Объект", ("enabled", "purpose")),
+    ("Стратегия реализации", ("strategy",)),
     ("Объём", ("gba_sqm", "saleable_sqm", "spaces", "area_per_space_sqm")),
     ("Сроки строительства", ("start", "months")),
     ("Себестоимость", ("cost_th_per_sqm", "cost_mln_per_space")),
@@ -1298,6 +1314,15 @@ _OBJECT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
                           "growth_stage3_pct", "growth_stage4_pct")),
     ("Темп продаж", ("sales_start", "share_before_rve_pct", "residual_months",
                      "sales_profile")),
+    ("Прямая продажа", ("direct_sale_delay_months", "direct_sale_months",
+                        "direct_sale_curve")),
+    ("Доходный метод", ("rent_th_per_sqm_month", "parking_rent_th_month",
+                        "rent_index_pct", "occupancy_start_pct",
+                        "occupancy_stable_pct", "leaseup_months", "opex_pct",
+                        "hold_years", "exit_mode", "exit_cap_pct", "exit_cost_pct",
+                        "depreciation_years")),
+    ("Финансирование объекта", ("loan_share_pct", "loan_spread_pp", "loan_fee_pct",
+                                "debt_repayment", "property_tax_pct")),
     ("Паркинг объекта", ("parking_under_spaces", "parking_over_spaces",
                          "parking_guest_pct", "parking_under_price_mln_per_space",
                          "parking_over_price_mln_per_space")),
@@ -1387,9 +1412,64 @@ def standalone_object_group(obj: StandaloneObject) -> list[Any]:
                 "%; при готовности 100% — ввод; дальше ежемесячный рост после РВЭ",
                 "number"])
     out += add(measure["tail"])
+    if obj.strategies:
+        out += _object_strategy_fields(obj)
     # Внутри блока поля идут в порядке ввода выше; сортировка устойчива.
     out.sort(key=lambda field: _section_order(obj, field))
     return [obj.group_label, out]
+
+
+def _object_strategy_fields(obj: StandaloneObject) -> list[list[Any]]:
+    """Поля стратегии реализации ТЦ и офисов (`developaid_nonres_strategy`).
+
+    Блоки «Прямая продажа», «Доходный метод» и «Финансирование объекта»
+    читаются только при своей стратегии; при ДДУ объект считается как прежде.
+    """
+    p = obj.prefix
+    out: list[list[Any]] = [
+        [f"{p}_strategy", "Стратегия реализации",
+         "ДДУ — деньги в общий эскроу проекта; прямая продажа и доходный метод — "
+         "без эскроу, со своим кредитом объекта", "select",
+         [list(pair) for pair in nonres_strategy.STRATEGIES]],
+        [f"{p}_direct_sale_delay_months", "Старт ДКП после ввода",
+         "мес. от ввода объекта; продажи без эскроу начинаются не раньше ввода", "number"],
+        [f"{p}_direct_sale_months", "Срок прямых продаж", "мес.", "number"],
+        [f"{p}_direct_sale_curve", "Профиль прямых продаж", "форма графика", "select",
+         [["flat", "Равномерно"], ["bell", "Колокол"],
+          ["front_loaded", "С упором на начало"], ["back_loaded", "С упором на конец"]]],
+        [f"{p}_rent_th_per_sqm_month", "Ставка аренды",
+         "тыс. ₽/м²/мес. с НДС, на продаваемую (арендопригодную) площадь", "number"],
+    ]
+    if obj.garage_sellable:
+        out.append([f"{p}_parking_rent_th_month", "Аренда машино-места объекта",
+                    "тыс. ₽/место/мес. с НДС; гостевые не сдаются", "number"])
+    out += [
+        [f"{p}_rent_index_pct", "Индексация аренды", "%/год", "number"],
+        [f"{p}_occupancy_start_pct", "Загрузка на открытии", "%", "number"],
+        [f"{p}_occupancy_stable_pct", "Стабильная загрузка", "%", "number"],
+        [f"{p}_leaseup_months", "Срок заполнения", "мес. от ввода до стабильной загрузки",
+         "number"],
+        [f"{p}_opex_pct", "Операционные расходы", "% арендной выручки", "number"],
+        [f"{p}_hold_years", "Срок удержания", "лет от ввода", "number"],
+        [f"{p}_exit_mode", "Выход", "в конце срока удержания", "select",
+         [[nonres_strategy.EXIT_SALE, "Продажа по ставке капитализации"],
+          [nonres_strategy.EXIT_HOLD, "Удержание — оценка стоимости без сделки"]]],
+        [f"{p}_exit_cap_pct", "Ставка капитализации выхода",
+         "%; стоимость = NOI следующих 12 мес. / ставка", "number"],
+        [f"{p}_exit_cost_pct", "Затраты на выход", "% стоимости продажи", "number"],
+        [f"{p}_depreciation_years", "Срок амортизации для налога", "лет", "number"],
+        [f"{p}_loan_share_pct", "Доля кредита объекта",
+         "% затрат стройки объекта; остальное — капитал", "number"],
+        [f"{p}_loan_spread_pp", "Спред кредита объекта",
+         "п.п. к ключевой ставке сценария проекта", "number"],
+        [f"{p}_loan_fee_pct", "Комиссия за выдачу", "% выборки", "number"],
+        [f"{p}_debt_repayment", "Погашение кредита объекта", "доходный метод", "select",
+         [[nonres_strategy.REPAY_SWEEP, "Из NOI по мере поступления"],
+          [nonres_strategy.REPAY_BULLET, "Одним платежом при выходе"]]],
+        [f"{p}_property_tax_pct", "Налог на имущество",
+         "%/год от стоимости объекта без НДС, пока объект у застройщика", "number"],
+    ]
+    return out
 
 
 def standalone_object_tep_row(obj: StandaloneObject) -> dict[str, Any]:
@@ -24622,6 +24702,18 @@ V4_INPUTS_NOT_IN_BOOK: dict[str, str] = {
         "готовое число — смена слова в книге ничего не пересчитывает "
         "(решение владельца 26.09.2026: книгу не усложнять)"),
 }
+# Стратегия реализации ТЦ и офисов (`developaid_nonres_strategy`): аренду,
+# кредит объекта и выход формулы шаблона не моделируют. В книгу приходит
+# результат движка — лист «Нежильё — стратегия», — а вводные показываются
+# основанием, как у платы за ВРИ.
+V4_INPUTS_NOT_IN_BOOK.update({
+    f"{_obj.prefix}_{_suffix}": (
+        "стратегия реализации объекта (ДДУ / прямая продажа / доходный метод) "
+        "и её параметры считаются движком; книга получает результат на листе "
+        "«Нежильё — стратегия»")
+    for _obj in STANDALONE_OBJECTS if _obj.strategies
+    for _suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS
+    if _obj.garage_sellable or _suffix != "parking_rent_th_month"})
 # Назначение каждого экземпляра ФОКа — та же вводная норматива, что у первого.
 V4_INPUTS_NOT_IN_BOOK.update({
     _obj.purpose_key: V4_INPUTS_NOT_IN_BOOK["sports_purpose"]
@@ -31985,6 +32077,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # читают продажи мест его гаража ниже. Собранный там второй раз, он
     # однажды разошёлся бы с этим, и обе половины выглядели бы верными.
     sold: dict[str, dict[str, Any]] = {}
+    nonres_plans: dict[str, dict[str, Any]] = {}
     for obj in standalone_objects():
         if not b(x, obj.enabled_key):
             revenue_by_product[obj.key] = 0.0
@@ -32012,6 +32105,26 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             continue
         sales_start = d(x[f"{obj.prefix}_sales_start"])
         end_ref = add_months(build_start, months)
+        # Прямая продажа и доходный метод идут мимо эскроу проекта: продукта
+        # ДДУ у объекта нет, его деньги считает `developaid_nonres_strategy`
+        # в финансировании, где известна ключевая ставка. Здесь — только план.
+        strategy = (nonres_strategy.object_strategy(x, obj.prefix)
+                    if obj.strategies else nonres_strategy.STRATEGY_DDU)
+        if strategy != nonres_strategy.STRATEGY_DDU:
+            revenue_by_product[obj.key] = 0.0
+            nonres_plans[obj.key] = {
+                "key": obj.key, "prefix": obj.prefix, "label": obj.label,
+                "strategy": strategy, "commissioning": end_ref,
+                "area_sqm": volume, "price_rub_sqm": price,
+                "price_start": sales_start,
+                "growth_pre": n(x, f"{obj.prefix}_growth_pre_pct", obj.growth_pre_default) / 100,
+                "growth_post": n(x, f"{obj.prefix}_growth_post_pct", obj.growth_post_default) / 100,
+                "parking_spaces": 0.0, "parking_price_rub": 0.0,
+                "selling_share": (n(x, "marketing_pct") + n(x, "selling_pct")) / 100,
+                "params": {suffix: x.get(f"{obj.prefix}_{suffix}")
+                           for suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS},
+            }
+            continue
         share_value = n(x, f"{obj.prefix}_share_before_rve_pct", 85) / 100
         residual = int(n(x, f"{obj.prefix}_residual_months", 6))
         growth_pre = n(x, f"{obj.prefix}_growth_pre_pct", obj.growth_pre_default) / 100
@@ -32105,6 +32218,12 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # (`object_parking_product_key`), а не одна общая на все ОСЗ.
         product_key = object_parking_product_key(obj.key)
         revenue_by_product[product_key] = 0.0
+        if obj.key in nonres_plans and obj.garage_sellable:
+            # Места офисника при прямой продаже уходят ДКП вместе с объектом, при
+            # доходном методе — сдаются. Гостевые не продаются и не сдаются.
+            nonres_plans[obj.key]["parking_spaces"] = n(
+                object_parking_row(obj.key), "parking_saleable_units")
+            nonres_plans[obj.key]["parking_price_rub"] = object_parking_price(obj.key, obj.prefix)
         plan = sold.get(obj.key)
         if plan is None:
             continue
@@ -32500,6 +32619,16 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     debt_capex = dict(capex)
     for month, equity_value in vri_equity_by_month.items():
         debt_capex[month] = max(0.0, debt_capex.get(month, 0.0) - equity_value)
+    # Объект вне ДДУ строится на свой кредит и капитал, а не на БРИДЖ и ПФ
+    # проекта: банк ПФ эскроу-покрытия от него не получает и его не кредитует.
+    # Затраты остаются в CAPEX проекта — прибыль и налог их видят.
+    for key, plan in nonres_plans.items():
+        plan["capex"] = dict(capex_by_article.get(key) or {})
+        plan["revenue_multiplier"] = revenue_multiplier
+        plan["cost_multiplier"] = cost_multiplier
+        for month, value in plan["capex"].items():
+            debt_capex[month] = max(0.0, debt_capex.get(month, 0.0) - value)
+        end = max(end, nonres_strategy.plan_horizon_end(plan))
 
     return {
         "project_start": project_start,
@@ -32514,6 +32643,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "capex": dict(capex),
         "capex_by_article": {article: dict(schedule) for article, schedule in capex_by_article.items()},
         "debt_capex": debt_capex,
+        "nonres_plans": nonres_plans,
         "operating": dict(operating),
         "capex_amounts": amounts,
         # Гараж объекта внутри его статьи, но со своей базой: здание меряется
@@ -32705,6 +32835,72 @@ def storage_saleable_spaces(row: dict[str, Any]) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, total - transferred_units(row))
+
+
+# Ряды объекта вне ДДУ, которые едут в месячные строки финансирования. Свод
+# очередей складывает их как прочие потоки, остаток кредита — как остаток.
+NONRES_ROW_FLOWS = (
+    "nonres_revenue", "nonres_costs", "nonres_vat_paid", "nonres_loan_draw",
+    "nonres_loan_interest", "nonres_loan_interest_paid", "nonres_loan_fee",
+    "nonres_loan_repayment", "nonres_cash_to_equity", "nonres_residual_value",
+)
+NONRES_ROW_STOCKS = ("nonres_loan_balance",)
+
+
+def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, Any]:
+    """Деньги ТЦ и офисов вне ДДУ — один расчёт на объект.
+
+    План объекта (затраты, ввод, цена, вводные стратегии) собирает
+    `build_operating_model`; здесь он получает ключевую ставку сценария и
+    превращается в помесячные ряды `developaid_nonres_strategy.object_flows`.
+    Все поверхности читают итог отсюда — из `finance["nonres"]` и месячных
+    строк, — а не считают объект заново.
+    """
+    plans = op.get("nonres_plans") or {}
+    objects: dict[str, Any] = {}
+    monthly: dict[str, dict[date, float]] = defaultdict(lambda: defaultdict(float))
+    if not plans:
+        return {"objects": objects, "monthly": {}, "totals": {}}
+    scenario = str(x.get("rate_scenario", "low"))
+    vat_rate = max(0.0, n(x, "vat_pct", 22)) / 100
+
+    def key_rate(month: date) -> float:
+        return rate_lookup(rates, month, scenario)
+
+    for key, plan in plans.items():
+        flows = nonres_strategy.object_flows(plan, key_rate, vat_rate=vat_rate)
+        objects[key] = flows
+        series = flows["monthly"]
+
+        def get(name: str, month: date) -> float:
+            return float((series.get(name) or {}).get(month, 0.0) or 0.0)
+
+        for month in flows["months"]:
+            row = {
+                "nonres_revenue": get("sale_revenue", month) + get("rent_revenue", month)
+                + get("exit_revenue", month) + get("residual_value", month),
+                "nonres_residual_value": get("residual_value", month),
+                "nonres_costs": get("selling_cost", month) + get("opex", month)
+                + get("property_tax", month) + get("exit_cost", month),
+                "nonres_vat_paid": get("vat_paid", month),
+                "nonres_vat_charged": get("vat_charged", month),
+                "nonres_loan_draw": get("loan_draw", month),
+                "nonres_loan_interest": get("loan_interest_cap", month)
+                + get("loan_interest_paid", month),
+                "nonres_loan_interest_paid": get("loan_interest_paid", month),
+                "nonres_loan_fee": get("loan_fee", month),
+                "nonres_loan_repayment": get("loan_repayment", month),
+                "nonres_loan_balance": get("loan_balance", month),
+                "nonres_cash_to_equity": get("cash_to_equity", month),
+                "nonres_capex": float(plan["capex"].get(month, 0.0) or 0.0),
+                "nonres_tax_margin": get("tax_margin", month),
+            }
+            for name, value in row.items():
+                monthly[name][month] += value
+    totals = {name: float(sum(values.values())) for name, values in monthly.items()}
+    return {"objects": objects,
+            "monthly": {name: dict(values) for name, values in monthly.items()},
+            "totals": totals}
 
 
 def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) -> dict:
@@ -33403,16 +33599,36 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     result["pf_limit_required"] = pf_limit
     result["pf_limit_approved"] = approved_pf_limit
 
-    total_revenue = sum(op["revenue"].values())
+    # ТЦ и офисы вне ДДУ: их деньги складываются с проектом здесь, один раз.
+    # Месячные строки получают их ряды — по ним считаются поток капитала, свод
+    # очередей и пик долга; итоги — в прибыль, налог и НДС ниже.
+    nonres = nonres_overlay(x, rates, op)
+    nonres_monthly = nonres["monthly"]
+    nonres_totals = nonres["totals"]
+    for row in result["rows"]:
+        month = d(row["month"])
+        for name in (*NONRES_ROW_FLOWS, *NONRES_ROW_STOCKS):
+            row[name] = float((nonres_monthly.get(name) or {}).get(month, 0.0) or 0.0)
+    for key, flows in nonres["objects"].items():
+        op["revenue_by_product"][key] = flows["totals"]["revenue"]
+    nonres_capex = nonres_totals.get("nonres_capex", 0.0)
+
+    # Выручка эскроу-проекта — база доли вычета НДС и LLCR; общая — прибыли.
+    project_revenue = sum(op["revenue"].values())
+    total_revenue = project_revenue + nonres_totals.get("nonres_revenue", 0.0)
     total_capex = sum(op["capex"].values())
     commercial_costs = sum(op["operating"].values())
+    nonres_costs = nonres_totals.get("nonres_costs", 0.0)
 
     financing_cost = (
         result["bridge_interest"] + result["bridge_capitalization"] + result["bridge_fee"]
         + result["pf_interest"] + result["pf_interest_capitalization"]
         + result["pf_limit_fee"] + result["pf_reservation_fee"]
+        + nonres_totals.get("nonres_loan_interest", 0.0)
+        + nonres_totals.get("nonres_loan_fee", 0.0)
     )
-    profit_before_tax = total_revenue - total_capex - commercial_costs - financing_cost
+    profit_before_tax = (total_revenue - total_capex - commercial_costs - nonres_costs
+                         - financing_cost)
 
     # Profit tax follows the workbook's cumulative realization method.
     # Core products share one residual cost pool; every standalone KRT object
@@ -33498,6 +33714,11 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             for month in product_months
         }
 
+    # Объект вне ДДУ признаёт выручку и затраты своим графиком (ДКП по
+    # проданным метрам, аренда — амортизацией), и маржа уже за вычетом его НДС.
+    for key, flows in nonres["objects"].items():
+        tax_margin_schedules[key] = dict(flows["monthly"].get("tax_margin") or {})
+
     tax_margin_by_month: dict[date, float] = defaultdict(float)
     tax_margin_by_product = {}
     for key, schedule in tax_margin_schedules.items():
@@ -33532,6 +33753,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             + float(row.get("pf_interest", 0.0) or 0.0)
             + float(row.get("pf_interest_capitalization", 0.0) or 0.0)
             + float(row.get("limit_fee", 0.0) or 0.0)
+            + float(row.get("nonres_loan_interest", 0.0) or 0.0)
+            + float(row.get("nonres_loan_fee", 0.0) or 0.0)
         )
     financing_deductions[project_start] += result["bridge_fee"]
     financing_deductions[permit] += result["pf_reservation_fee"]
@@ -33598,8 +33821,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             - n(x, "land_rights_cost_mln") * 1_000_000
             - op["capex_amounts"].get("vri_interest", 0.0)
             - op["capex_amounts"].get("vri_security", 0.0)
+            # Входящий НДС объекта вне ДДУ принимает к вычету сам объект.
+            - nonres_capex
         )
-        deductible_share = taxable_revenue / total_revenue if total_revenue else 0.0
+        deductible_share = taxable_revenue / project_revenue if project_revenue else 0.0
         vat_input_deductible = vat_bearing_costs * gross_to_tax * deductible_share
         # Вычет накапливается по ходу стройки, начисление приходит после ввода —
         # значит к моменту передачи он уже есть, и живыми деньгами уходит
@@ -33613,6 +33838,15 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # входящего в части, принятой к вычету (плюс вычет). В сумме это ровно
     # чистый НДС. Вычитать начисленный значило бы дважды учесть вычет.
     vat_charged_by_month = dict(vat_schedule)
+    # НДС объекта вне ДДУ — его собственный зачёт по месяцам, а маржа объекта
+    # уже без него: в базу налога он второй раз не идёт.
+    for month, value in (nonres_monthly.get("nonres_vat_paid") or {}).items():
+        if value:
+            vat_schedule[month] = vat_schedule.get(month, 0.0) + value
+    vat = sum(vat_schedule.values())
+    vat_charged += nonres_totals.get("nonres_vat_charged", 0.0)
+    vat_input_deductible += (nonres_totals.get("nonres_vat_charged", 0.0)
+                             - nonres_totals.get("nonres_vat_paid", 0.0))
 
     tax_rate = n(x, "profit_tax_pct", 25) / 100
     margins = {month: (tax_margin_by_month.get(month, 0.0)
@@ -33646,7 +33880,11 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # LLCR methodology mirrors the current workbook presentation:
     # numerator = project receipts - operating/tax - investment + PF inflow.
     # denominator = PF principal + interest/commissions, excluding duplicated transferred bridge interest.
-    llcr_numerator = total_revenue - commercial_costs - profit_tax - vat - total_capex + result["pf_draw_total"]
+    # LLCR — покрытие ПФ: объект вне ДДУ в нём не участвует ни выручкой, ни
+    # затратами, ни НДС (его кредит — не ПФ). Налог на прибыль общий.
+    llcr_numerator = (project_revenue - commercial_costs - profit_tax
+                      - (vat - nonres_totals.get("nonres_vat_paid", 0.0))
+                      - (total_capex - nonres_capex) + result["pf_draw_total"])
 
     # To reproduce Excel's correction concept, create a "reported" total where transferred bridge interest
     # appears in both bridge and PF buckets, then subtract it once.
@@ -33692,8 +33930,28 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         "total_revenue": total_revenue,
         "total_capex": total_capex,
         "commercial_costs": commercial_costs,
+        "nonres_costs": nonres_costs,
+        "nonres": nonres_summary(nonres),
     })
     return result
+
+
+def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
+    """Итог объектов вне ДДУ для отчёта: без помесячных рядов."""
+    objects = []
+    for key, flows in (nonres.get("objects") or {}).items():
+        kpi = dict(flows["kpi"])
+        if kpi.get("exit_month"):
+            kpi["exit_month"] = kpi["exit_month"].isoformat()
+        objects.append({
+            "key": key, "strategy": flows["strategy"],
+            "strategy_label": nonres_strategy.STRATEGY_LABELS[flows["strategy"]],
+            "commissioning": flows["commissioning"].isoformat(),
+            "horizon_end": flows["horizon_end"].isoformat(),
+            "totals": dict(flows["totals"]), "kpi": kpi,
+            "warnings": list(flows["warnings"]),
+        })
+    return {"objects": objects, "totals": dict(nonres.get("totals") or {})}
 
 
 # Суммы подстроки объекта, которые свод по очередям складывает. Удельные среди
@@ -34259,7 +34517,18 @@ def calculate(req: CalcRequest) -> dict:
         # engine and therefore already included in interest_payment when paid.
         fees = 0.0
         tax = float(fr.get("profit_tax", 0.0) or 0.0)
-        project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax)
+        # ТЦ и офисы вне ДДУ: их выручка приходит мимо эскроу, в свой месяц.
+        # Проекту — начисленные проценты кредита объекта, капиталу — его
+        # собственный остаток после кредита (`nonres_cash_to_equity`); CAPEX
+        # объекта уже в `capex_m`.
+        nonres_project = (
+            float(fr.get("nonres_revenue", 0.0) or 0.0)
+            - float(fr.get("nonres_costs", 0.0) or 0.0)
+            - float(fr.get("nonres_vat_paid", 0.0) or 0.0)
+            - float(fr.get("nonres_loan_interest", 0.0) or 0.0)
+            - float(fr.get("nonres_loan_fee", 0.0) or 0.0)
+        )
+        project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax + nonres_project)
         escrow_release = float(fr.get("escrow_release", 0.0) or 0.0)
         cash_revenue_to_equity = 0.0 if month < op["rve"] else revenue_m + escrow_release
         # Кэш-свип уходит банку с поступлений этой очереди: её долг он не
@@ -34271,6 +34540,7 @@ def calculate(req: CalcRequest) -> dict:
             + bridge_draw + pf_draw - bridge_repay - pf_repay
             - float(fr.get("bank_sweep_out", 0.0) or 0.0)
             + float(fr.get("bank_sweep_returned", 0.0) or 0.0)
+            + float(fr.get("nonres_cash_to_equity", 0.0) or 0.0)
         )
 
     if project_cf:
@@ -35821,8 +36091,9 @@ def _aggregate_finance(results: list[dict[str, Any]],
         "interest_payment", "profit_tax", "taxable_margin",
         "financing_tax_deduction", "taxable_profit_cumulative",
         "revenue", "capex", "operating",
+        *NONRES_ROW_FLOWS,
     )
-    stocks = ("bridge_balance", "pf_balance", "pf_payable", "escrow")
+    stocks = ("bridge_balance", "pf_balance", "pf_payable", "escrow", *NONRES_ROW_STOCKS)
     # `pf_obligation` здесь не складывается: это тело плюс начисленное, и ниже
     # он считается из уже сложенных остатков. Сложенный третьим слагаемым, он
     # разошёлся бы с ними на первой же правке.
@@ -35943,7 +36214,8 @@ def _aggregate_finance(results: list[dict[str, Any]],
     peak_bridge = max((r["bridge_balance"] for r in rows), default=0.0)
     peak_pf = max((r["pf_balance"] for r in rows), default=0.0)
     peak_uncovered_pf = max((max(r["pf_balance"] - r["escrow"], 0.0) for r in rows), default=0.0)
-    peak_total_debt = max((r["bridge_balance"] + r["pf_balance"] for r in rows), default=0.0)
+    peak_total_debt = max((r["bridge_balance"] + r["pf_balance"] + r.get("nonres_loan_balance", 0.0)
+                           for r in rows), default=0.0)
     peak_escrow = max((r["escrow"] for r in rows), default=0.0)
     llcr_num = sum(f["llcr_numerator"] for f in fs)
     # Долг, принятый одной очередью от другой, стоит в знаменателе принявшей —
@@ -36028,6 +36300,11 @@ def _aggregate_finance(results: list[dict[str, Any]],
         "total_revenue": sum(f["total_revenue"] for f in fs),
         "total_capex": sum(f["total_capex"] for f in fs),
         "commercial_costs": sum(f["commercial_costs"] for f in fs),
+        "nonres_costs": sum(f.get("nonres_costs", 0.0) for f in fs),
+        "nonres": {
+            "objects": [item for f in fs for item in (f.get("nonres") or {}).get("objects") or []],
+            "totals": _sum_dicts([(f.get("nonres") or {}).get("totals") or {} for f in fs]),
+        },
         # Налог свода — пересчитанный как у одного налогоплательщика, а не
         # сумма очередей. Оставить сумму значило бы посчитать заново и не
         # применить: строки показывали бы одно, итог другое.
@@ -38598,7 +38875,8 @@ def _peak_total_debt(result: dict[str, Any]) -> float:
     """Пик совокупного долга: БРИДЖ и ПФ в один и тот же месяц, а не порознь."""
     rows = (result.get("finance") or {}).get("rows") or []
     return max(
-        (float(row.get("bridge_balance") or 0) + float(row.get("pf_balance") or 0) for row in rows),
+        (float(row.get("bridge_balance") or 0) + float(row.get("pf_balance") or 0)
+         + float(row.get("nonres_loan_balance") or 0) for row in rows),
         default=0.0,
     )
 
