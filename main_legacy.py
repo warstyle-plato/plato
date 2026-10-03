@@ -1873,7 +1873,10 @@ def sold_saleable_sqm(tep: dict[str, Any], inputs: dict[str, Any] | None) -> flo
                                   and object_is_sold(inputs, obj)):
             continue
         keys.append(obj.key)
-    return sum(n(tep.get(key) or {}, "saleable") for key in keys)
+    # Объект продаёт остаток после мест первых этажей: строка ТЭП держит
+    # площадь здания (владелец, 29.09.2026), ответ — `object_sold_saleable`.
+    return sum(object_sold_saleable(inputs or {}, tep, key) if key in _BY_KEY
+               else n(tep.get(key) or {}, "saleable") for key in keys)
 
 
 # --- экземпляры объектов проекта ----------------------------------------------
@@ -33984,15 +33987,7 @@ def calculate(req: CalcRequest) -> dict:
     net_profit = after_finance_pre_tax - fin["profit_tax"] - fin.get("vat", 0.0)
 
     # Report-level project metrics.
-    # Продаётся у объекта остаток после мест первых этажей — ответ один,
-    # `standalone_object_saleable`. Строка ТЭП держит площадь здания, и
-    # сумма строк дала бы в продаваемую метры под машино-местами.
-    _sold_objects = set(object_keys_of("standalone_retail", "offices"))
-    monetizable_saleable_sqm = sum(
-        (object_sold_saleable(x, t, key) if key in _sold_objects else n(row, "saleable"))
-        for key, row in t.items()
-        if key in ("apartments", "ground_commercial", *_sold_objects)
-    )
+    monetizable_saleable_sqm = sold_saleable_sqm(t, x)
     apartment_saleable_sqm = n(t.get("apartments", {}), "saleable")
     core_gns = op["core_above_gns"] + op["core_under_gns"]
 
