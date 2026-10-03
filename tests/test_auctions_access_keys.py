@@ -148,6 +148,30 @@ def test_revoked_key_stops_working(registry_app):
     assert again.cookies.get(access_keys.COOKIE_NAME) is None
 
 
+def test_key_expires_after_five_days(registry_app, monkeypatch):
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(access_keys, "_now", lambda: now[0])
+    record, secret = access_keys.issue("На пять дней")
+    # Общий ключ держит раздел закрытым и после срока личного: иначе 401 ниже
+    # нечем было бы отличить от «раздел открыт всем».
+    monkeypatch.setenv("AUCTIONS_VIEW_KEY", "shared-view-key-for-test")
+    assert record["expires_at"] - record["issued_at"] == 5 * 24 * 3600
+
+    client = TestClient(registry_app)
+    entered = _enter(client, secret)
+    assert entered.status_code == 200
+    max_age = re.search(r"Max-Age=(\d+)", entered.headers["set-cookie"])
+    assert max_age and int(max_age.group(1)) <= 5 * 24 * 3600, "cookie не дольше ключа"
+
+    now[0] += 5 * 24 * 3600 - 60
+    assert client.get("/auctions").status_code == 200, "за минуту до срока ещё действует"
+
+    now[0] += 120
+    assert client.get("/auctions").status_code == 401, "после срока cookie не действует"
+    refused = _enter(TestClient(registry_app), secret)
+    assert refused.status_code == 401 and "срок" in refused.json()["detail"]
+
+
 def test_forged_cookie_is_not_a_key(registry_app):
     record, _secret = access_keys.issue("Настоящий")
     client = TestClient(registry_app)
@@ -192,11 +216,14 @@ def test_owner_issues_lists_and_revokes_from_the_bot(registry_app, monkeypatch):
     link = re.search(r"https://site\.example/auctions/enter#k=(\S+)", sent[-1])
     assert link, sent[-1]
     secret = link.group(1)
+    assert "Действует 5 дней" in sent[-1]
     client = TestClient(registry_app)
     assert _enter(client, secret).status_code == 200
 
     wrapper._auction_key_command(42, 42, "/auction_keys", "")
     assert "Иван Петров" in sent[-1] and "входов 1" in sent[-1]
+    assert "действует до" in sent[-1]
+    assert "действует до" in sent[-1]
     assert secret not in sent[-1]
 
     wrapper._auction_key_command(42, 42, "/auction_revoke", "Иван Петров")

@@ -1264,7 +1264,7 @@ def install(app: FastAPI) -> None:
         if auction_view.view_key():
             return True
         try:
-            return any(not r.get("revoked_at") for r in access_keys.listing())
+            return access_keys.any_active()
         except RuntimeError:
             # Реестр не читается — закрыто, а не открыто всем.
             return True
@@ -1401,7 +1401,8 @@ def install(app: FastAPI) -> None:
             return JSONResponse({"detail": str(exc)}, status_code=503)
         if not record:
             return JSONResponse(
-                {"detail": "Ссылка не действует: ключ неверный или отозван. "
+                {"detail": "Ссылка не действует: ключ неверный, отозван или его "
+                           "срок истёк. "
                            "Попросите владельца выдать новую."},
                 status_code=401, headers={"Cache-Control": "no-store"})
         access_keys.record_login(record["id"])
@@ -1410,7 +1411,7 @@ def install(app: FastAPI) -> None:
                                 headers={"Cache-Control": "no-store"})
         response.set_cookie(
             access_keys.COOKIE_NAME, access_keys.cookie_value(record),
-            httponly=True, samesite="lax", max_age=access_keys.COOKIE_MAX_AGE,
+            httponly=True, samesite="lax", max_age=access_keys.cookie_max_age(record),
             path="/", secure=request.url.scheme == "https")
         return response
 

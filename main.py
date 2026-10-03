@@ -2428,7 +2428,8 @@ def _auction_key_command(chat_id: int, user_id: int, command: str, argument: str
             _send_message(chat_id, "\n".join([
                 f"<b>Ключ торгов выдан:</b> {html.escape(str(record.get('holder', '')))} "
                 f"(№ <code>{html.escape(str(record.get('id', '')))}</code>)",
-                "Открывает только раздел «Торги», только просмотр.",
+                "Открывает только раздел «Торги», только просмотр. "
+                f"Действует 5 дней — до {_auction_when(record.get('expires_at'))} UTC.",
                 "",
                 "Ссылка для входа — перешлите её человеку. Больше она нигде не "
                 "показывается:",
@@ -2464,8 +2465,12 @@ def _auction_key_command(chat_id: int, user_id: int, command: str, argument: str
         return
     lines = ["<b>Ключи торгов</b> <i>(время UTC)</i>"]
     for record in keys:
-        state = (f"отозван {_auction_when(record.get('revoked_at'))}"
-                 if record.get("revoked_at") else "действует")
+        if record.get("revoked_at"):
+            state = f"отозван {_auction_when(record.get('revoked_at'))}"
+        elif time.time() >= float(record.get("expires_at") or 0):
+            state = f"истёк {_auction_when(record.get('expires_at'))}"
+        else:
+            state = f"действует до {_auction_when(record.get('expires_at'))}"
         lines.append(
             f"• № <code>{html.escape(str(record.get('id', '')))}</code> "
             f"{html.escape(str(record.get('holder', '')))} — {state}; "

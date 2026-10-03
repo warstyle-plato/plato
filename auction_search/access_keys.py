@@ -33,7 +33,8 @@ from auction_search import view_access
 SCOPE = "auctions"
 COOKIE_NAME = "auctions_key"
 KEY_PREFIX = "ak_"
-COOKIE_MAX_AGE = 180 * 24 * 3600
+# Срок действия ключа — решение владельца: пять дней с выдачи.
+KEY_TTL_SECONDS = 5 * 24 * 3600
 ENTER_PATH = "/auctions/enter"
 _COOKIE_CONTEXT = b"developaid-auctions-key-v1"
 
@@ -92,6 +93,20 @@ def _locked() -> Iterator[dict[str, Any]]:
         _CACHE.update(sig=None, data=None)
 
 
+def _now() -> float:
+    return time.time()
+
+
+def expired(record: Mapping[str, Any]) -> bool:
+    return _now() >= float(record.get("expires_at") or 0)
+
+
+def active(record: Mapping[str, Any] | None) -> bool:
+    """Действует ли ключ: не отозван, не истёк, своей области."""
+    return bool(record and not record.get("revoked_at") and not expired(record)
+                and record.get("scope") == SCOPE and record.get("hash"))
+
+
 def _digest(secret: str) -> str:
     return hashlib.sha256(str(secret).encode("utf-8")).hexdigest()
 
@@ -114,12 +129,14 @@ def issue(holder: str, issued_by: str = "") -> tuple[dict[str, Any], str]:
         key_id = secrets.token_hex(3)
         while key_id in taken:
             key_id = secrets.token_hex(3)
+        issued_at = int(_now())
         record = {
             "id": key_id,
             "holder": holder,
             "scope": SCOPE,
             "hash": _digest(secret),
-            "issued_at": int(time.time()),
+            "issued_at": issued_at,
+            "expires_at": issued_at + KEY_TTL_SECONDS,
             "issued_by": str(issued_by or ""),
             "revoked_at": None,
             "last_login_at": None,
@@ -138,10 +155,10 @@ def revoke(ident: str) -> tuple[dict[str, Any] | None, str]:
     if not ident:
         return None, "Укажите номер ключа или имя"
     with _locked() as data:
-        active = [r for r in data["keys"] if not r.get("revoked_at")]
+        alive = [r for r in data["keys"] if not r.get("revoked_at")]
         found = [r for r in data["keys"] if str(r.get("id")) == ident.lower()]
         if not found:
-            found = [r for r in active
+            found = [r for r in alive
                      if str(r.get("holder", "")).casefold() == ident.casefold()]
             if len(found) > 1:
                 return None, (f"У «{ident}» несколько ключей — укажите номер: "
@@ -151,7 +168,7 @@ def revoke(ident: str) -> tuple[dict[str, Any] | None, str]:
         record = found[0]
         if record.get("revoked_at"):
             return public(record), "Ключ уже отозван"
-        record["revoked_at"] = int(time.time())
+        record["revoked_at"] = int(_now())
     return public(record), ""
 
 
@@ -159,12 +176,12 @@ def listing() -> list[dict[str, Any]]:
     return [public(r) for r in _load()["keys"]]
 
 
+def any_active() -> bool:
+    """Есть ли хоть один действующий ключ: тогда раздел без входа закрыт."""
+    return any(active(r) for r in _load()["keys"])
+
+
 # --- проверка ------------------------------------------------------------
-
-def _active(record: Mapping[str, Any] | None) -> bool:
-    return bool(record and not record.get("revoked_at")
-                and record.get("scope") == SCOPE and record.get("hash"))
-
 
 def find_by_key(secret: str) -> dict[str, Any] | None:
     secret = str(secret or "").strip()
@@ -173,7 +190,7 @@ def find_by_key(secret: str) -> dict[str, Any] | None:
     digest = _digest(secret)
     for record in _load()["keys"]:
         if hmac.compare_digest(str(record.get("hash", "")), digest):
-            return dict(record) if _active(record) else None
+            return dict(record) if active(record) else None
     return None
 
 
@@ -182,7 +199,7 @@ def record_login(key_id: str) -> None:
     with _locked() as data:
         for record in data["keys"]:
             if str(record.get("id")) == str(key_id):
-                record["last_login_at"] = int(time.time())
+                record["last_login_at"] = int(_now())
                 record["logins"] = int(record.get("logins") or 0) + 1
 
 
@@ -191,19 +208,24 @@ def _cookie_mac(record: Mapping[str, Any]) -> str:
                     + str(record["id"]).encode("ascii"), hashlib.sha256).hexdigest()
 
 
+def cookie_max_age(record: Mapping[str, Any]) -> int:
+    """Cookie живёт не дольше ключа; сервер всё равно проверяет срок сам."""
+    return max(0, int(float(record.get("expires_at") or 0) - _now()))
+
+
 def cookie_value(record: Mapping[str, Any]) -> str:
     """В cookie — номер и производная подпись, а не сам ключ."""
     return f"{record['id']}.{_cookie_mac(record)}"
 
 
 def from_cookie(value: str | None) -> dict[str, Any] | None:
-    """Действующая запись по cookie. Отозванный ключ — None."""
+    """Действующая запись по cookie. Отозванный или истёкший ключ — None."""
     key_id, _, mac = str(value or "").partition(".")
     if not key_id or not mac:
         return None
     for record in _load()["keys"]:
         if str(record.get("id")) == key_id:
-            if not _active(record):
+            if not active(record):
                 return None
             if hmac.compare_digest(mac.encode("ascii", "ignore"),
                                    _cookie_mac(record).encode("ascii")):
