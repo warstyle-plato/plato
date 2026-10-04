@@ -10907,6 +10907,11 @@ PARKING_2118_PARAMS: dict[str, Any] = {
     # Пункт 2 по средней квартире — те же полосы и коэффициенты, что у движка.
     "mix": dict(_PARKING_2118_MIX),
     "bands": dict(_PARKING_2118_BANDS),
+    # Область считается своей нормой (`underground_parking_requirement`),
+    # и её числа странице подставляются отсюда же — копии нет.
+    "mo": {key: MO_NORMS_DEFAULT[key] for key in (
+        "living_space_per_person_sqm", "parking_permanent_per_1000",
+        "parking_permanent_share")},
 }
 PARKING_2118_PLACEHOLDER = "__DEVELOPAID_PARKING_2118__"
 
@@ -11070,6 +11075,23 @@ def underground_parking_requirement(inputs: dict[str, Any],
     apartment_row = rows.get("apartments") or {}
     apartments = _underground_number(apartment_row, "saleable")
     normalized = (inputs.get("_glavapu_import") or {}).get("normalized") or {}
+    if str(inputs.get("vri_region") or "msk") == "mo":
+        # В области норматив мест свой — РНГП МО, и он у движка уже есть
+        # (`mo_social_program`): по нему же считаются соцобъекты. 2118-ПП —
+        # постановление Москвы, а выгрузка ГлавАПУ — московский орган; в
+        # области ни то ни другое потребность не задаёт. Гостевых здесь нет:
+        # временные места норматив МО отдаёт жилому району, а не кварталу.
+        if apartments <= 0:
+            return None
+        program = mo_social_program(apartments)
+        permanent = float(program["parking"]["permanent_spaces"])
+        if permanent <= 0:
+            return None
+        return {"permanent": permanent, "guest": 0.0, "mfc": 0.0, "spaces": permanent,
+                "basis": (f"РНГП Московской области: {program['population']} чел. от "
+                          f"{apartments:,.0f} м² квартир, только постоянное хранение"
+                          ).replace(",", " "),
+                "gns": permanent * per}
     imported_permanent = _underground_number(normalized, "parking_permanent")
     imported_guest = _underground_number(normalized, "parking_guest")
     imported_mfc = _underground_number(normalized, "mfc_parking_spaces")
@@ -11163,6 +11185,11 @@ def underground_tep_row(inputs: dict[str, Any],
         if not need:
             return None
         spaces, area, guest = need["spaces"], need["gns"], need["guest"]
+    if str(inputs.get("vri_region") or "msk") == "mo":
+        # Гостевых мест норматив области в квартале не строит — значит, и
+        # заданные руками места все постоянные. Без явного нуля движок
+        # вычел бы из них московскую одиннадцатую часть и не продал бы её.
+        guest = 0.0
     computed = dict(zero)
     computed["units"] = float(spaces)
     computed["gns"] = round(area, 1)
@@ -50871,7 +50898,25 @@ function normativeUnderground(){
 // 945-ПП) и живёт своими полями объекта.
 function parkingRequirement(){
  if(isNonResidential())return null;
+ if(String(inputs.vri_region||'msk')==='mo')return moNormativeUnderground();
  return getGlavapuUnderground()||normativeUnderground();
+}
+
+// Московская область: РНГП МО, а не 2118-ПП и не выгрузка ГлавАПУ — оба
+// московские. Та же формула, что `mo_social_program` движка, числа — из
+// плейсхолдера; гостевых нет, временные места закрывает жилой район.
+function moNormativeUnderground(){
+ const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(apartments<=0)return null;
+ const m=PARKING_2118.mo;
+ const up=v=>Math.ceil(Math.round(v*1e6)/1e6);
+ const population=up(apartments/m.living_space_per_person_sqm);
+ const permanent=up(population*m.parking_permanent_per_1000/1000*m.parking_permanent_share);
+ if(permanent<=0)return null;
+ return {permanent,guest:0,mfc:0,spaces:permanent,
+         basis:'РНГП Московской области: '+num(population)+' чел. от '+num(Math.round(apartments))
+               +' м² квартир, только постоянное хранение',
+         gns:permanent*undergroundAreaPerSpace()};
 }
 
 function undergroundAreaPerSpace(){
@@ -52049,7 +52094,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
