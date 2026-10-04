@@ -31,6 +31,13 @@ AUCTIONS_PAGE = r'''<!doctype html>
 #krtTableWrap th{font-size:10px;letter-spacing:.025em}
 #krtTableWrap .lotname{max-width:none;line-height:1.25;margin:0}
 #krtPanel .layout{grid-template-columns:minmax(0,1fr)}
+.viewswitch{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}.viewswitch button{min-height:34px}.viewswitch button.active{background:var(--ink,#171717);color:#fff;border-color:var(--ink,#171717)}
+.sheetwrap{min-height:200px;max-width:100%;max-height:78vh}table.sheet{min-width:0;table-layout:fixed;font-size:12px}table.sheet th{position:sticky;top:0;z-index:2;background:#171717;color:#fff;cursor:pointer;vertical-align:bottom;white-space:normal}table.sheet td{white-space:normal;overflow-wrap:anywhere}
+@media(min-width:641px){table.sheet td.k-name{position:sticky;left:0;z-index:1;background:var(--panel,#fff);border-right:1px solid var(--line)}table.sheet th.k-name{left:0;z-index:3}}table.sheet th .arrow{opacity:.7}table.sheet td{vertical-align:top}
+table.sheet td .clip{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}table.sheet td.days.past,table.sheet td.status.past{color:#a33}table.sheet tr.sheetrow{cursor:pointer}table.sheet tr.sheetrow.open td{background:#f6f6f3}
+table.sheet tr.sheetmore td{background:#fbfbf9;white-space:normal}.sheetmore .morebox{position:sticky;left:0;max-width:min(860px,calc(100vw - 48px));white-space:pre-wrap}.sheetmore h4{margin:0 0 6px;font-size:13px}.sheetmore .muted{color:var(--muted)}
+.sheet .cmhint{display:none;color:var(--muted);font-size:11px;margin-top:4px}
+@media(max-width:640px){table.sheet th.k-plato_comment,table.sheet td.k-plato_comment{display:none}.sheet .cmhint{display:block}}
 #krtSide{display:none!important}
 #krtTableWrap .krt-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
 #krtTableWrap .krt-tags .tag{margin:0;padding:3px 5px;font-size:10px}
@@ -175,7 +182,12 @@ __DEVELOPAID_CONTOUR__
   </div>
   <div id="coverage" class="notice coverage"></div>
   <div id="foldNote" class="notice" style="display:none"></div>
-  <div class="layout" id="auctionLayout">
+  <div class="viewswitch" id="auctionViewSwitch" role="tablist"><button type="button" id="viewSheet" class="active" role="tab">Таблица как в Excel</button><button type="button" id="viewPick" role="tab">Подборка: балл и карточка лота</button></div>
+  <div class="sheetview" id="auctionSheet">
+    <div class="notice" id="sheetNote">Колонки и значения — те же, что в выгрузке Excel. Нажмите на строку, чтобы прочитать комментарий Платона целиком.</div>
+    <div class="tablewrap sheetwrap" id="sheetWrap"><table class="sheet" id="sheetTable"><thead id="sheetHead"></thead><tbody id="sheetRows"></tbody></table><div id="sheetEmpty" class="empty">Нажмите «Обновить», чтобы получить текущую выборку с официальных площадок.</div></div>
+  </div>
+  <div class="layout hidden" id="auctionLayout">
     <div class="tablewrap"><table><thead><tr><th>Лот</th><th title="Балл лота: соответствие девелоперскому профилю за вычетом названных снижений. Считается арифметикой DevelopAid, Платон в нём не участвует">Балл лота</th><th>Тип</th><th>Площадь</th><th>Текущая цена</th><th>Заявка до</th><th>Документы</th></tr></thead><tbody id="rows"></tbody></table><div id="tableEmpty" class="empty">Нажмите «Обновить», чтобы получить текущую выборку с официальных площадок.</div></div>
     <aside class="side" id="side"><div class="empty">Выберите лот.<br>Карточка справа показывает только данные ЭТП; аналитика DevelopAid появляется после разбора.</div></aside>
   </div>
@@ -320,7 +332,7 @@ function filter(){const q=$('search').value.trim().toLowerCase(),kinds=[...state
   &&(o==='all'||(l.origin||'other')===o)
   &&(!q||JSON.stringify([l.title,l.address,l.cadastral_numbers,l.source?.external_lot_id]).toLowerCase().includes(q)));
  state.families=lotFamilies(state.filtered);
- renderRows();stats()}
+ renderRows();stats();loadSheet()}
 // Батарейка снижения цены. У банкротного лота публичное предложение идёт по
 // графику: цена ползёт от начальной к минимальной, и «дешевле» тут часто значит
 // «дошло до последнего шага», а не «выгодно». Полная батарейка — торги только
@@ -593,8 +605,63 @@ function renderRows(){
  });
  renderFoldNote();renderAskContext();
 }
-function stats(){const a=state.filtered;$('sCount').textContent=a.length;$('sKrt').textContent=a.filter(x=>x.lot_kind==='krt').length;$('sLand').textContent=a.filter(x=>['land_sale','land_lease'].includes(x.lot_kind)).length;const ds=a.map(x=>new Date(x.application_deadline_iso||'')).filter(x=>!Number.isNaN(x.getTime())).sort((a,b)=>a-b);$('sDeadline').textContent=ds.length?moscowFormat({day:'2-digit',month:'2-digit'}).format(ds[0]):'—'}
-async function exportRows(rows,kind){if(!rows.length){alert('В текущей выборке нет строк для выгрузки.');return}const payload=rows.map(r=>{const rank=kind==='krt'?krtFreshRank(r.slug):{},intent=kind==='krt'?(krtIntent(r)||{}):{},score=kind==='krt'?krtScore(r):lotScore(r),duties=krtRequirementTotals(state.krtRequirements[r.slug]||rank.requirements||{});return{section:kind==='krt'?'КРТ':'Торги',name:r.name||r.title||'',okrug:r.okrug||'',district:r.district||'',address:r.address||'',cadastre:(r.cadastral_numbers||[]).join(', '),type:kind==='krt'?'КРТ':kindLabel(r.lot_kind),land_area_sqm:r.land_area_sqm??'',building_area_sqm:r.building_area_sqm??'',krt_area_ha:kind==='krt'?(r.area_ha??''):((r.lot_kind==='krt'&&Number.isFinite(Number(r.land_area_sqm)))?Number(r.land_area_sqm)/10000:(r.krt_area_ha??'')),total_gfa_sqm:r.total_gfa_sqm??'',housing_gfa_sqm:r.housing_gfa_sqm??'',nonresidential_gfa_sqm:r.nonresidential_gfa_sqm??'',business_gfa_sqm:r.business_gfa_sqm??'',jobs:r.jobs??'',price:r.current_price_rub??r.start_price_rub??'',score:score.score,traffic_light:rank.traffic_light?.label||score.label||'',saleable_sqm:rank.saleable_sqm??'',entry_capacity_rub_per_sqm:rank.entry_capacity_rub_per_sqm??'',entry_capacity_mln:rank.entry_capacity_mln??'',project_llcr_x:rank.project_llcr_x??'',weakest_phase_llcr_x:rank.weakest_phase_llcr_x??'',margin_pct:rank.margin_pct??'',surrounding_price_rub_sqm:rank.surrounding_price_rub_sqm??'',surrounding_sales_units_per_month:rank.surrounding_sales_units_per_month??'',demolition_objects:duties.demolition.count||'',demolition_area_sqm:duties.demolition.area||'',conditional_objects:duties.conditional.count||'',conditional_area_sqm:duties.conditional.area||'',reconstruction_objects:duties.reconstruction.count||'',reconstruction_area_sqm:duties.reconstruction.area||'',preservation_objects:duties.preservation.count||'',preservation_area_sqm:duties.preservation.area||'',resettlement_mentions:duties.resettlement||'',application_start:r.application_start||'',application_deadline:r.application_deadline||'',application_deadline_iso:r.application_deadline_iso||'',auction_date:r.auction_date||'',status:r.status||'',krt_kind:kind==='krt'?(intent.kind||''):'',krt_city_needs:kind==='krt'?krtIntentCell(intent,'city_needs'):'',krt_operator:kind==='krt'?krtIntentCell(intent,'operator'):'',url:r.source?.lot_url||r.url||''}});const res=await fetch('/auctions/export.xlsx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:payload,kind})});if(!res.ok){let why='';try{why=(await res.json()).detail||''}catch(_){}throw new Error('Не удалось подготовить Excel ('+res.status+(why?': '+why:'')+')')}const blob=await res.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=kind==='krt'?'developaid-krt.xlsx':'developaid-auctions.xlsx';a.click();URL.revokeObjectURL(a.href)}
+function stats(){const a=state.filtered;$('sCount').textContent=a.length;$('sKrt').textContent=a.filter(x=>x.lot_kind==='krt').length;$('sLand').textContent=a.filter(x=>['land_sale','land_lease'].includes(x.lot_kind)).length;const now=Date.now(),ds=a.map(x=>new Date(x.application_deadline_iso||'')).filter(x=>!Number.isNaN(x.getTime())&&x.getTime()>=now).sort((a,b)=>a-b);$('sDeadline').textContent=ds.length?moscowFormat({day:'2-digit',month:'2-digit'}).format(ds[0]):'—'}
+// Строки выгрузки и таблицы «как в Excel» — одна сборка: книга и экран
+// получают от страницы одно и то же и готовятся сервером одним кодом.
+function exportPayload(rows,kind){return rows.map(r=>{const rank=kind==='krt'?krtFreshRank(r.slug):{},intent=kind==='krt'?(krtIntent(r)||{}):{},score=kind==='krt'?krtScore(r):lotScore(r),duties=krtRequirementTotals(state.krtRequirements[r.slug]||rank.requirements||{});return{section:kind==='krt'?'КРТ':'Торги',name:r.name||r.title||'',okrug:r.okrug||'',district:r.district||'',address:r.address||'',cadastre:(r.cadastral_numbers||[]).join(', '),type:kind==='krt'?'КРТ':kindLabel(r.lot_kind),land_area_sqm:r.land_area_sqm??'',building_area_sqm:r.building_area_sqm??'',krt_area_ha:kind==='krt'?(r.area_ha??''):((r.lot_kind==='krt'&&Number.isFinite(Number(r.land_area_sqm)))?Number(r.land_area_sqm)/10000:(r.krt_area_ha??'')),total_gfa_sqm:r.total_gfa_sqm??'',housing_gfa_sqm:r.housing_gfa_sqm??'',nonresidential_gfa_sqm:r.nonresidential_gfa_sqm??'',business_gfa_sqm:r.business_gfa_sqm??'',jobs:r.jobs??'',price:r.current_price_rub??r.start_price_rub??'',score:score.score,traffic_light:rank.traffic_light?.label||score.label||'',saleable_sqm:rank.saleable_sqm??'',entry_capacity_rub_per_sqm:rank.entry_capacity_rub_per_sqm??'',entry_capacity_mln:rank.entry_capacity_mln??'',project_llcr_x:rank.project_llcr_x??'',weakest_phase_llcr_x:rank.weakest_phase_llcr_x??'',margin_pct:rank.margin_pct??'',surrounding_price_rub_sqm:rank.surrounding_price_rub_sqm??'',surrounding_sales_units_per_month:rank.surrounding_sales_units_per_month??'',demolition_objects:duties.demolition.count||'',demolition_area_sqm:duties.demolition.area||'',conditional_objects:duties.conditional.count||'',conditional_area_sqm:duties.conditional.area||'',reconstruction_objects:duties.reconstruction.count||'',reconstruction_area_sqm:duties.reconstruction.area||'',preservation_objects:duties.preservation.count||'',preservation_area_sqm:duties.preservation.area||'',resettlement_mentions:duties.resettlement||'',application_start:r.application_start||'',application_deadline:r.application_deadline||'',application_deadline_iso:r.application_deadline_iso||'',auction_date:r.auction_date||'',status:r.status||'',krt_kind:kind==='krt'?(intent.kind||''):'',krt_city_needs:kind==='krt'?krtIntentCell(intent,'city_needs'):'',krt_operator:kind==='krt'?krtIntentCell(intent,'operator'):'',url:r.source?.lot_url||r.url||''}})}
+// Таблица «как в Excel». Колонки и клетки готовит сервер (`/auctions/table`)
+// тем же кодом, что книгу: список колонок здесь не повторяется, иначе колонка,
+// добавленная в книгу, опять не доехала бы до экрана. Комментарий Платона —
+// из фонового разбора; модель запросом страницы не зовётся.
+state.auctionView='sheet';state.sheet={columns:[],rows:[],seq:0,open:new Set(),sort:null,mayRequest:false};
+function applyAuctionView(){const krt=!!state.krtTab,sheet=state.auctionView==='sheet';
+ $('auctionSheet').classList.toggle('hidden',krt||!sheet);$('auctionLayout').classList.toggle('hidden',krt||sheet);
+ $('viewSheet').classList.toggle('active',sheet);$('viewPick').classList.toggle('active',!sheet)}
+function setAuctionView(v){state.auctionView=v;applyAuctionView();renderAskContext()}
+async function loadSheet(){const rows=state.filtered||[],seq=++state.sheet.seq,empty=$('sheetEmpty');
+ if(!rows.length){state.sheet.columns=state.sheet.columns||[];state.sheet.rows=[];renderSheet();return}
+ empty.style.display='grid';empty.textContent='Готовлю таблицу: те же колонки, что в Excel…';
+ try{const d=await askJson('/auctions/table',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:exportPayload(rows,'auctions'),kind:'auctions'})});
+  if(seq!==state.sheet.seq)return;
+  state.sheet.columns=d.columns||[];state.sheet.rows=(d.rows||[]).map((r,i)=>({...r,lot:rows[i]}));state.sheet.mayRequest=!!d.may_request_notes;renderSheet()}
+ catch(e){if(seq!==state.sheet.seq)return;state.sheet.rows=[];renderSheet();empty.style.display='grid';empty.textContent='Таблица не построена: '+String(e.message||e)}}
+function sheetCellHtml(c,cell){const t=esc(cell.text??'—');
+ if(cell.href)return `<a href="${esc(cell.href)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">${t}</a>`;
+ return (c.kind==='comment'||c.kind==='long')?`<div class="clip">${t}</div>`:t}
+function sheetSorted(){const rows=state.sheet.rows.slice(),s=state.sheet.sort;if(!s)return rows;
+ const key=r=>{const cell=r.cells[s.key]||{};return cell.value??null};
+ return rows.sort((a,b)=>{const x=key(a),y=key(b);let d;
+  if(x!==null||y!==null){if(x===null)return 1;if(y===null)return -1;d=x-y}
+  else d=String(a.cells[s.key]?.text||'').localeCompare(String(b.cells[s.key]?.text||''),'ru');
+  return s.dir*d})}
+// Ширина колонки — из той же записи, что ширина в книге (символы Excel → пиксели).
+function sheetColPx(c){return Math.round((c.width||12)*6.6)}
+function renderSheet(){const cols=state.sheet.columns||[],head=$('sheetHead'),body=$('sheetRows'),empty=$('sheetEmpty');
+ const phone=window.matchMedia&&matchMedia('(max-width:640px)').matches;
+ $('sheetTable').style.width=cols.reduce((sum,c)=>sum+(phone&&c.kind==='comment'?0:sheetColPx(c)),0)+'px';
+ head.innerHTML='<tr>'+cols.map(c=>{const s=state.sheet.sort,arrow=s&&s.key===c.key?(s.dir>0?' ▲':' ▼'):'';
+  return `<th class="k-${esc(c.key)}" data-key="${esc(c.key)}" style="width:${sheetColPx(c)}px">${esc(c.title)}<span class="arrow">${arrow}</span></th>`}).join('')+'</tr>';
+ head.querySelectorAll('th').forEach(th=>th.onclick=()=>{const k=th.dataset.key,s=state.sheet.sort;state.sheet.sort={key:k,dir:s&&s.key===k?-s.dir:1};renderSheet()});
+ body.innerHTML='';
+ const rows=sheetSorted();empty.style.display=rows.length?'none':'grid';
+ if(!rows.length)empty.textContent=(state.lots||[]).length?'В текущей выборке нет строк.':'Нажмите «Обновить», чтобы получить текущую выборку с официальных площадок.';
+ rows.forEach(r=>{const tr=document.createElement('tr'),open=state.sheet.open.has(r.url);tr.className='sheetrow'+(open?' open':'');
+  const days=r.cells.days_to_deadline||{},past=typeof days.value==='number'&&days.value<0;
+  tr.innerHTML=cols.map(c=>{const cell=r.cells[c.key]||{text:'—'},cls=['k-'+c.key,c.kind==='days'?'days':'',c.key==='status'?'status':'',past&&(c.kind==='days'||c.key==='status')?'past':''].filter(Boolean).join(' ');
+   return `<td class="${cls}">${sheetCellHtml(c,cell)}${c.key==='name'?`<div class="cmhint">${open?'▾':'▸'} Комментарий Платона</div>`:''}</td>`}).join('');
+  tr.onclick=()=>{if(state.sheet.open.has(r.url))state.sheet.open.delete(r.url);else state.sheet.open.add(r.url);renderSheet()};
+  body.appendChild(tr);
+  if(open){const more=document.createElement('tr');more.className='sheetmore';const cm=r.cells.plato_comment||{text:'—'};
+   const title=(cols.find(c=>c.key==='plato_comment')||{}).title||'';
+   more.innerHTML=`<td colspan="${cols.length||1}"><div class="morebox"><h4>${esc(title)}</h4><div class="${cm.ready?'':'muted'}">${esc(cm.text||'—')}</div>${(!cm.ready&&state.sheet.mayRequest)?'<div class="actions"><button type="button" class="askNote">Заказать комментарий Платона</button></div>':''}${r.lot?'<div class="actions"><button type="button" class="openCard">Карточка лота</button></div>':''}</div></td>`;
+   const ask=more.querySelector('.askNote');if(ask)ask.onclick=e=>{e.stopPropagation();requestSheetNote(r,ask)};
+   const card=more.querySelector('.openCard');if(card)card.onclick=e=>{e.stopPropagation();setAuctionView('pick');selectLot(r.lot)};
+   body.appendChild(more)}
+ })}
+async function requestSheetNote(r,btn){btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Ставлю в очередь';
+ try{await askJson('/auctions/lot-notes/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:exportPayload([r.lot],'auctions'),kind:'auctions'})});await loadSheet()}
+ catch(e){btn.disabled=false;btn.textContent='Не поставлено: '+String(e.message||e)}}
+async function exportRows(rows,kind){if(!rows.length){alert('В текущей выборке нет строк для выгрузки.');return}const payload=exportPayload(rows,kind);const res=await fetch('/auctions/export.xlsx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:payload,kind})});if(!res.ok){let why='';try{why=(await res.json()).detail||''}catch(_){}throw new Error('Не удалось подготовить Excel ('+res.status+(why?': '+why:'')+')')}const blob=await res.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=kind==='krt'?'developaid-krt.xlsx':'developaid-auctions.xlsx';a.click();URL.revokeObjectURL(a.href)}
 function coverageLine(r){
  // Каждый источник говорит за себя. Числа у читателей разной формы: у
  // ИнвестМосквы карточки города и подтверждённые лоты, у остальных страницы,
@@ -1011,7 +1078,7 @@ function renderAnalysis(d){const s=d.screening||{},l=d.lot||{},a=$('analysis'),s
  a.innerHTML=`<div class="section"><h3>Оценка Платона: ${esc(px.rating||s.rating||'—')}</h3><div class="notice"><b>Почему здесь:</b> ${esc(px.why_here||s.why_here||'—')}</div><div class="items">${(px.concerns||[]).map(x=>`<div class="item"><b>Что настораживает</b>${esc(x)}</div>`).join('')}${(px.verify_before_calculation||[]).map(x=>`<div class="item"><b>Что проверить до расчёта</b>${esc(x)}</div>`).join('')}</div></div><div class="section"><h3>Готовность к DevelopAid</h3><div class="kv"><div>Структура сделки</div><div>${esc(kindLabel(s.legal_structure))}</div><div>Требует условий КРТ</div><div>${s.requires_krt_terms?'да':'нет'}</div><div>Вложений</div><div>${docsRead(s.documents,docs.length)}</div><div>Программа КРТ</div><div>${program.length}</div><div>Обязательств</div><div>${obs.length}</div></div>${docsRefusalNote(s.documents)}</div>${program.length?`<div class="section"><h3>Программа застройки из документов</h3><div class="items">${program.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)} · ${esc(x.area_sqm?fmtArea(x.area_sqm):x.quantity?x.quantity+' '+(x.unit||''):'')}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}${obs.length?`<div class="section"><h3>Обязательства инвестора</h3><div class="items">${obs.slice(0,12).map(x=>`<div class="item"><b>${esc(x.category)}${x.quantity?' · '+x.quantity+' '+(x.unit||''):''}</b>${esc(x.title)}<div class="source">${esc(x.provenance?.source_document||'')}</div></div>`).join('')}</div></div>`:''}<div class="actions"><button id="copySeed">Скопировать seed</button><button id="modelBtn" ${s.ready_for_financial_model?'':'disabled'}>Подготовить в DevelopAid</button></div><div id="modelNote" class="notice">Handoff использует штатный project-preset import; отдельный расчётный движок для торгов не создаётся.</div>`;
  $('copySeed').onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(d.developaid_seed,null,2));$('copySeed').textContent='Скопировано'};$('modelBtn').onclick=()=>{const note=$('modelNote');note.textContent='Project-preset handoff подключается следующим слоем: цена лота → цена входа, КРТ-ТЭП → planning, обязательства → отдельные cost/constraint lines.'}
 }
-function switchTab(showKrt){['auctionFilters','auctionStats','auctionLayout','coverage'].forEach(id=>$(id).classList.toggle('hidden',showKrt));$('krtPanel').classList.toggle('hidden',!showKrt);$('tabAuctions').classList.toggle('active',!showKrt);$('tabKrt').classList.toggle('active',showKrt);renderAskContext();if(showKrt&&!state.krt.length)loadKrt()}
+function switchTab(showKrt){['auctionFilters','auctionStats','coverage','auctionViewSwitch'].forEach(id=>$(id).classList.toggle('hidden',showKrt));state.krtTab=!!showKrt;applyAuctionView();$('krtPanel').classList.toggle('hidden',!showKrt);$('tabAuctions').classList.toggle('active',!showKrt);$('tabKrt').classList.toggle('active',showKrt);renderAskContext();if(showKrt&&!state.krt.length)loadKrt()}
 // Кнопка «Обновить каталог» до 04.09.2026 не читала источник вовсе: снимок
 // живёт сутки, и обход начинался только у ПРОСРОЧЕННОГО — страница
 // перерисовывала тот же файл. Опубликованный вчера проект решения ждал ночного
@@ -4479,7 +4546,7 @@ populateAuctionKinds();bindAuctionKindFilter();$('refresh').onclick=discover;$('
 // Отказ выгрузки называется на экране: необработанное исключение видно только
 // в консоли, и кнопка выглядела бы просто не сработавшей.
 const exportFailed=e=>alert(String((e&&e.message)||e||'Не удалось подготовить Excel'));
-$('auctionExport').onclick=()=>exportRows(state.filtered||[],'auctions').catch(exportFailed);$('krtExport').onclick=()=>exportRows(state.krtFiltered||[],'krt').catch(exportFailed);
+$('viewSheet').onclick=()=>setAuctionView('sheet');$('viewPick').onclick=()=>setAuctionView('pick');$('auctionExport').onclick=()=>exportRows(state.filtered||[],'auctions').catch(exportFailed);$('krtExport').onclick=()=>exportRows(state.krtFiltered||[],'krt').catch(exportFailed);
 </script>
 </body></html>'''
 
