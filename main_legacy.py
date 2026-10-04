@@ -73,6 +73,7 @@ from request_body import json_object
 import v4_dashboard
 import v4_entry_sheet
 import v4_nonres_sheet
+import nonres_workbook
 import v4_value_cache
 import presentation as _presentation
 import teaser_pdf as _teaser_pdf
@@ -25602,6 +25603,27 @@ class _SkipValueCache(Exception):
     """Проход сохранённых значений выключен — это выбор, а не сбой."""
 
 
+def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
+                             rates: list[dict[str, Any]] | None,
+                             phasing: dict[str, Any] | None,
+                             project_name: str) -> tuple[bytes, str, dict[str, Any]] | None:
+    """Книга нежилого проекта, если у него нет ДДУ; иначе None — книга v4.
+
+    Решение «есть ли у проекта БРИДЖ/ПФ/эскроу» — то же `report.layout`, что
+    читают страница, PDF, тизер и бот.
+    """
+    consolidated = (_run_authoritative_model(
+        inputs or {}, tep or {}, rates or [], phasing or {}) or {}).get("consolidated") or {}
+    layout = (consolidated.get("report") or {}).get("layout") or {}
+    if layout.get("project_finance", True) or not layout.get("nonres_strategy"):
+        return None
+    content = nonres_workbook.build(consolidated, project_name)
+    stem = _safe_file_stem(project_name or "project", "project")
+    filename = f"DevelopAid_нежилой_{stem}_{date.today().isoformat()}.xlsx"
+    return content, filename, {"missing": [], "phased": False, "class_deviations": [],
+                               "nonres_book": True}
+
+
 def build_project_workbook(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -25615,6 +25637,14 @@ def build_project_workbook(
     получает ту же книгу, что и до его появления в реестре (`_V4_BOOK_OBJECTS`).
     """
     merged = {**DEFAULT_INPUTS, **(inputs or {})}
+    # Нежилой проект без ДДУ получает свою книгу (`nonres_workbook`): книга v4
+    # построена на ДДУ, эскроу и ПФ, которых у него нет (владелец, 04.10.2026:
+    # отчёт, тизер и книга нежилого проекта — самостоятельные).
+    if is_nonresidential(merged):
+        nonres_book = _nonres_project_workbook(inputs, tep, rates, phasing,
+                                               str(kwargs.get("project_name") or ""))
+        if nonres_book is not None:
+            return nonres_book
     # Экземпляр вне состава проекта в книгу не пишется, даже включённый.
     merged = object_instances_applied(merged, {})[0]
     token = _V4_BOOK_OBJECTS.set(_v4_book_objects(merged))
@@ -33071,6 +33101,30 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
         flows = nonres_strategy.object_flows(plan, key_rate, vat_rate=vat_rate)
         flows["title"] = plan.get("title") or key
         flows["params"] = dict(plan.get("params") or {})
+        # Исходные данные книги нежилого проекта: что движок дал объекту
+        # (CAPEX по месяцам, общие затраты, ключевая ставка), — всё остальное
+        # книга считает своими формулами и сверяет с итогом движка.
+        flows["book"] = {
+            "strategy": plan["strategy"], "title": flows["title"],
+            "commissioning": plan["commissioning"].isoformat(),
+            "price_start": (plan.get("price_start") or plan["commissioning"]).isoformat(),
+            "area_sqm": float(plan.get("area_sqm") or 0.0),
+            "parking_spaces": float(plan.get("parking_spaces") or 0.0),
+            "price_rub_sqm": float(plan.get("price_rub_sqm") or 0.0),
+            "parking_price_rub": float(plan.get("parking_price_rub") or 0.0),
+            "growth_pre": float(plan.get("growth_pre") or 0.0),
+            "growth_post": float(plan.get("growth_post") or 0.0),
+            "selling_share": float(plan.get("selling_share") or 0.0),
+            "revenue_multiplier": float(plan.get("revenue_multiplier", 1.0) or 1.0),
+            "cost_multiplier": float(plan.get("cost_multiplier", 1.0) or 1.0),
+            "vat_rate": vat_rate,
+            "params": dict(plan.get("params") or {}),
+            "months": [{"month": mm.isoformat(),
+                        "capex": float((plan.get("capex") or {}).get(mm, 0.0) or 0.0),
+                        "common": float((plan.get("common_capex") or {}).get(mm, 0.0) or 0.0),
+                        "key_rate": key_rate(mm)}
+                       for mm in flows["months"]],
+        }
         objects[key] = flows
         series = flows["monthly"]
 
@@ -34154,6 +34208,7 @@ def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
             "horizon_end": flows["horizon_end"].isoformat(),
             "totals": dict(flows["totals"]), "kpi": kpi,
             "warnings": list(flows["warnings"]),
+            "book": flows.get("book"),
         })
     return {"objects": objects, "totals": dict(nonres.get("totals") or {})}
 

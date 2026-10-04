@@ -9,3 +9,6 @@
 -r requirements.txt
 pytest>=8.0
 httpx2>=0.28
+# Вычислитель формул Excel: книга нежилого проекта сверяет свои живые формулы с
+# движком, и проверка должна их считать без Excel (tests/test_nonres_workbook.py).
+pycel==1.0b30
