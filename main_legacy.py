@@ -86,7 +86,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.95"
+VERSION = "0.24.96"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -47035,7 +47035,7 @@ details.cadastral-box>summary::marker{color:#888}
      z-index:90;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeClassDialog()">
   <div style="background:#fff;max-width:780px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><h2 style="margin:0;font-size:17px">Настройки классов</h2><button onclick="closeClassDialog()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button></div>
-    <div id="classDialogBody"></div>
+    <div id="classDialogBody" style="container-type:inline-size"></div>
     <div id="classDialogNote" style="font-size:12px;margin-top:10px;color:#444"></div>
     <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="applyProjectClassPreset(document.getElementById('projectClassSelect').value);renderClassDialog()" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть базу выбранного класса</button><button onclick="fillClassesFromStats()" title="Подставляет свод модуля «Статистика» во все классы как ваши значения — по каждой статье, где свод есть" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вставить данные из статистики</button><button id="clearClassOwnButton" onclick="clearClassOverrides()" title="Убирает ВАШИ значения всех классов — таблица возвращается к общим базам DevelopAid" style="border:1px solid #c98a1b;background:#fff;color:#8a5a00;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Убрать мои значения</button></div>
     <div id="classSourcesBody" style="margin-top:16px"></div>
@@ -51686,6 +51686,28 @@ function renderClassDialog(){
  // Строки идут разделами карты движка (`CLASS_DIALOG`), в её порядке. Поле
  // профиля, которого в карте нет, не пропадает: оно встаёт в раздел «без
  // раздела» с прежней подписью — видимая дыра карты, а не потерянная строка.
+ // Справка о нормах ГОРОДА живёт рядом с нормативом, который она объясняет,
+ // а не во «Вводных», где считают деньги (владелец, 16.09.2026: «нормы
+ // логично вставить в настройки класса»), и в окне — строкой в конце
+ // раздела благоустройства, а не под объектами ОСЗ внизу таблицы. Она про
+ // Москву: в области 2152-ПП не писан, и там эта справка была бы неправдой.
+ // Строкой таблицы она шириной с таблицу, а на телефоне таблица шире окна:
+ // справка держится ширины видимой части окна (`cqw` от `classDialogBody`)
+ // и прилипает к его левому краю, иначе подпись уезжает за край экрана.
+ const norms=String(inputs.vri_region||'msk')==='msk'
+  ? '<details class="note" style="margin:8px 0 0;padding:11px 12px;position:sticky;left:0;box-sizing:border-box;max-width:100cqw">'
+ +'<summary style="cursor:pointer">Нормы озеленения города — справка, в расчёт не входит</summary>'
+ +'<div style="margin-top:6px">Норматив двора выше — НАША ставка площади, а не норма '
+ +'города. Город (2152-ПП, табл. 1.4.2, территория преобразования) требует 5,0 м²/чел. '
+ +'озеленённых территорий ЖК, из них 3,5 — зелёные насаждения. С 18.08.2026 (2260-ПП) часть '
+ +'нормы разрешено не добирать метрами, а платить деньгами в бюджет по решению ГЗК через '
+ +'инфраструктурный договор: −15% при ОТОП ≥5 га, ООПТ или ООЗТ в радиусе 500 м; внутри '
+ +'Садового кольца при участке 0,5–1 га — от 3,0 м²/чел., при участке меньше 0,5 га или '
+ +'реконструкции без нового строительства — можно без озеленения вовсе. Модель платит полную '
+ +'ставку всегда и компенсацию не считает: порядок её расчёта определит акт ДГП, а его нет. '
+ +'Согласованное снижение вносится площадью двора во «Вводных».</div></details>'
+  : '';
+ let normsPlaced=false;
  const placed=new Set();
  const sections=CLASS_DIALOG.map(s=>({id:s.id,title:s.title,rows:s.rows.filter(r=>keys.includes(r.key))}));
  sections.forEach(s=>s.rows.forEach(r=>placed.add(r.key)));
@@ -51767,25 +51789,12 @@ function renderClassDialog(){
    }
   }
  }
+ if(sec.id==='norms'&&norms){
+  html+=`<tr class="class-note" data-section="norms"><td colspan="${classes.length+2}" style="padding:0 0 8px;border-bottom:1px solid #f0f0f0">${norms}</td></tr>`;
+  normsPlaced=true;
  }
- // Справка о нормах ГОРОДА живёт рядом с нормативом, который она объясняет,
- // а не во «Вводных», где считают деньги (владелец, 16.09.2026: «нормы
- // логично вставить в настройки класса»). Она про Москву: в области
- // 2152-ПП не писан, и там эта справка была бы неправдой.
- const norms=String(inputs.vri_region||'msk')==='msk'
-  ? '<details class="note" style="margin:8px 0 0;padding:11px 12px">'
- +'<summary style="cursor:pointer">Нормы озеленения города — справка, в расчёт не входит</summary>'
- +'<div style="margin-top:6px">Норматив двора выше — НАША ставка площади, а не норма '
- +'города. Город (2152-ПП, табл. 1.4.2, территория преобразования) требует 5,0 м²/чел. '
- +'озеленённых территорий ЖК, из них 3,5 — зелёные насаждения. С 18.08.2026 (2260-ПП) часть '
- +'нормы разрешено не добирать метрами, а платить деньгами в бюджет по решению ГЗК через '
- +'инфраструктурный договор: −15% при ОТОП ≥5 га, ООПТ или ООЗТ в радиусе 500 м; внутри '
- +'Садового кольца при участке 0,5–1 га — от 3,0 м²/чел., при участке меньше 0,5 га или '
- +'реконструкции без нового строительства — можно без озеленения вовсе. Модель платит полную '
- +'ставку всегда и компенсацию не считает: порядок её расчёта определит акт ДГП, а его нет. '
- +'Согласованное снижение вносится площадью двора во «Вводных».</div></details>'
-  : '';
- box.innerHTML=html+'</table>'+norms;
+ }
+ box.innerHTML=html+'</table>'+(normsPlaced?'':norms);
  const note=document.getElementById('classDialogNote');
  const parts=[];
  if(cur==='custom')parts.push('Класс «Пользовательский»: базы для сверки нет — все ставки заданы проектом.');
