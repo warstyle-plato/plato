@@ -48668,7 +48668,8 @@ function phaseObjectListed(key){
  return !row||row.listed!==false;
 }
 function renderPhaseObjects(){
- if(!document.getElementById('assignObjects'))return;
+ // Узел — как у `tepBody` в `syncTep`: стенд страницы зовёт её без разметки.
+ if(typeof assignObjects==='undefined'||!assignObjects)return;
  assignObjects.innerHTML=projectObjects().filter(o=>phaseObjectListed(o.key)).map(o=>
   `<div class="field"><label>${escapeHtml(productName(o.key))}</label>`
   +`<select data-object="${escapeHtml(o.key)}">${phaseOptions(phasing.discrete[o.key])}</select></div>`).join('');
