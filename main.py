@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import hmac
 import html
 import json
 import re
@@ -2317,6 +2319,171 @@ def _feedback_pending_text(chat_id: int, text: str) -> bool:
     return True
 
 
+# --- личные ключи раздела «Торги» --------------------------------------------
+#
+# Реестр живёт на ядре (`auction_search.access_keys`): сайт обслуживает оно, а
+# диск бота на Render стирается выкаткой. Бот выдаёт и отзывает ключи
+# подписанным запросом к ядру; подпись — токеном бота, с отметкой времени,
+# чтобы перехваченный запрос нельзя было повторить.
+
+_AUCTION_KEYS_PATH = "/internal/auctions/keys"
+_AUCTION_KEYS_TTL = 300
+
+
+class AuctionKeysRequest(BaseModel):
+    action: str = ""
+    holder: str = ""
+    ident: str = ""
+    by: str = ""
+    ts: int = 0
+    sign: str = ""
+
+
+def _auction_keys_sign(action: str, holder: str, ident: str, by: str, ts: int) -> str:
+    token = core._telegram_token()
+    if not token:
+        raise HTTPException(status_code=503,
+                            detail="TELEGRAM_BOT_TOKEN не задан — ключи торгов не выдаются.")
+    raw = json.dumps(["auction-keys", action, holder, ident, by, int(ts)],
+                     ensure_ascii=False).encode("utf-8")
+    return hmac.new(token.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+
+def _auction_keys_do(action: str, holder: str, ident: str, by: str) -> dict[str, Any]:
+    from auction_search import access_keys
+
+    if action == "issue":
+        record, secret = access_keys.issue(holder, issued_by=by)
+        return {"ok": True, "key": record, "secret": secret}
+    if action == "revoke":
+        record, problem = access_keys.revoke(ident)
+        return {"ok": not problem, "key": record, "problem": problem}
+    if action == "list":
+        return {"ok": True, "keys": access_keys.listing()}
+    raise HTTPException(status_code=400, detail=f"Неизвестное действие: {action}")
+
+
+@app.post(_AUCTION_KEYS_PATH, include_in_schema=False)
+def internal_auction_keys(req: AuctionKeysRequest) -> dict[str, Any]:
+    """Выдача, отзыв и список личных ключей «Торгов» — только для бота."""
+    if abs(time.time() - int(req.ts or 0)) > _AUCTION_KEYS_TTL:
+        raise HTTPException(status_code=403, detail="Запрос устарел.")
+    expected = _auction_keys_sign(req.action, req.holder, req.ident, req.by, req.ts)
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    try:
+        return _auction_keys_do(req.action, req.holder, req.ident, req.by)
+    except ValueError as exc:
+        raise HTTPException(status_code=400,
+                            detail="Не указано, кому выдаётся ключ") from exc
+    except RuntimeError as exc:
+        from auction_search import access_keys
+
+        raise HTTPException(status_code=503,
+                            detail=access_keys.REGISTRY_BROKEN) from exc
+
+
+def _auction_keys_call(action: str, holder: str = "", ident: str = "",
+                       by: str = "") -> dict[str, Any]:
+    """Ядро — у себя; бот на Render — подписанным запросом к ядру."""
+    remote = core._projects_remote_url(_AUCTION_KEYS_PATH)
+    if not remote:
+        return _auction_keys_do(action, holder, ident, by)
+    ts = int(time.time())
+    return core._core_post(remote, {
+        "action": action, "holder": holder, "ident": ident, "by": by, "ts": ts,
+        "sign": _auction_keys_sign(action, holder, ident, by, ts)}, 30.0)
+
+
+def _auctions_enter_url() -> str:
+    """Куда ведёт ссылка: на хост, где лежит реестр ключей, — на ядро."""
+    base = (os.getenv("AUCTIONS_PUBLIC_URL") or "").strip().rstrip("/")
+    if not base:
+        base = core._core_api_url("") if core._projects_remote_url("/") else ""
+    if not base:
+        base = str(getattr(core, "_TELEGRAM_WEB_APP_BASE_URL", "") or "").rstrip("/")
+    return f"{base}/auctions/enter" if base else "/auctions/enter"
+
+
+def _auction_when(at: Any) -> str:
+    return _when(at) if at else "—"
+
+
+def _auction_key_command(chat_id: int, user_id: int, command: str, argument: str) -> None:
+    """/auction_key Имя — выдать; /auction_revoke номер|Имя — отозвать;
+    /auction_keys — список. Только для администраторов."""
+    admins = core.usage_admin_ids()
+    if not admins or user_id not in admins:
+        _send_message(chat_id, "<b>Ключи торгов выдаёт только владелец.</b> "
+                      + (f"Задайте <code>DEVELOPAID_ADMIN_IDS</code>: ваш ID "
+                         f"<code>{user_id}</code>." if not admins
+                         else "Ваш Telegram ID не в списке администраторов."))
+        return
+    argument = (argument or "").strip()
+    try:
+        if command in {"/auction_key", "/ключ_торгов"}:
+            if not argument:
+                _send_message(chat_id, "Кому выдать? Напишите: <code>/auction_key Имя</code>")
+                return
+            data = _auction_keys_call("issue", holder=argument, by=str(user_id))
+            record, secret = data.get("key") or {}, str(data.get("secret") or "")
+            link = f"{_auctions_enter_url()}#k={secret}"
+            _send_message(chat_id, "\n".join([
+                f"<b>Ключ торгов выдан:</b> {html.escape(str(record.get('holder', '')))} "
+                f"(№ <code>{html.escape(str(record.get('id', '')))}</code>)",
+                "Открывает только раздел «Торги», только просмотр. "
+                f"Действует 5 дней — до {_auction_when(record.get('expires_at'))} UTC.",
+                "",
+                "Ссылка для входа — перешлите её человеку. Больше она нигде не "
+                "показывается:",
+                html.escape(link),
+                "",
+                f"Отозвать: <code>/auction_revoke {html.escape(str(record.get('id', '')))}</code>",
+            ]))
+            return
+        if command in {"/auction_revoke", "/отозвать_ключ"}:
+            if not argument:
+                _send_message(chat_id, "Какой ключ отозвать? "
+                              "<code>/auction_revoke номер</code> или имя.")
+                return
+            data = _auction_keys_call("revoke", ident=argument)
+            record = data.get("key") or {}
+            if data.get("problem"):
+                _send_message(chat_id, html.escape(str(data["problem"])))
+                return
+            _send_message(chat_id, f"<b>Ключ отозван:</b> "
+                          f"{html.escape(str(record.get('holder', '')))} "
+                          f"(№ <code>{html.escape(str(record.get('id', '')))}</code>). "
+                          "Вход по нему больше не работает.")
+            return
+        data = _auction_keys_call("list")
+    except HTTPException as exc:
+        _send_message(chat_id, "<b>Ключи торгов недоступны:</b> "
+                      + html.escape(str(exc.detail)))
+        return
+    keys = data.get("keys") or []
+    if not keys:
+        _send_message(chat_id, "Ключей торгов пока нет. Выдать: "
+                      "<code>/auction_key Имя</code>")
+        return
+    lines = ["<b>Ключи торгов</b> <i>(время UTC)</i>"]
+    for record in keys:
+        if record.get("revoked_at"):
+            state = f"отозван {_auction_when(record.get('revoked_at'))}"
+        elif time.time() >= float(record.get("expires_at") or 0):
+            state = f"истёк {_auction_when(record.get('expires_at'))}"
+        else:
+            state = f"действует до {_auction_when(record.get('expires_at'))}"
+        lines.append(
+            f"• № <code>{html.escape(str(record.get('id', '')))}</code> "
+            f"{html.escape(str(record.get('holder', '')))} — {state}; "
+            f"выдан {_auction_when(record.get('issued_at'))}; "
+            f"входов {int(record.get('logins') or 0)}, последний "
+            f"{_auction_when(record.get('last_login_at'))}")
+    _send_message(chat_id, "\n".join(lines))
+
+
 def _handle_message(message: dict[str, Any]) -> None:
     chat_id, user_id, text = _extract_message(message)
     if not chat_id:
@@ -2354,6 +2521,11 @@ def _handle_message(message: dict[str, Any]) -> None:
         return
     if command in {"/survey", "/анкета"}:
         _survey_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
+        return
+    if command in {"/auction_key", "/ключ_торгов", "/auction_revoke",
+                   "/отозвать_ключ", "/auction_keys", "/ключи_торгов"}:
+        _auction_key_command(chat_id, user_id, command,
+                             text.split(maxsplit=1)[1] if " " in text else "")
         return
     if command in {"/stats", "/статистика"}:
         _stats_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
