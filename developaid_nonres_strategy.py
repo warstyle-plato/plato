@@ -45,8 +45,10 @@ STRATEGY_LABELS = dict(STRATEGIES)
 
 EXIT_SALE = "sale"
 EXIT_HOLD = "hold"
+REPAY_ANNUITY = "annuity"
 REPAY_SWEEP = "sweep"
 REPAY_BULLET = "bullet"
+REPAYMENTS = (REPAY_ANNUITY, REPAY_SWEEP, REPAY_BULLET)
 SALE_CURVES = ("flat", "bell", "front_loaded", "back_loaded")
 
 # Поля стратегии у объекта: суффикс → (умолчание офиса, умолчание ТЦ).
@@ -73,7 +75,13 @@ STRATEGY_FIELD_DEFAULTS: dict[str, tuple[Any, Any]] = {
     "exit_mode": (EXIT_SALE, EXIT_SALE),
     "exit_cap_pct": (11.0, 11.0),
     "exit_cost_pct": (1.0, 1.0),
-    "debt_repayment": (REPAY_SWEEP, REPAY_SWEEP),
+    # Удержание: кредит после ввода — долгосрочный, проценты и тело ежемесячно
+    # аннуитетом, в конце срока — «баллон» (владелец, 04.10.2026: «кредит
+    # становится условно 10 летним с регулярным погашением… в конце ещё
+    # небольшой баллон»).
+    "debt_repayment": (REPAY_ANNUITY, REPAY_ANNUITY),
+    "loan_term_years": (10, 10),
+    "loan_balloon_pct": (20.0, 20.0),
     "depreciation_years": (30, 30),
 }
 
@@ -228,9 +236,16 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     spread = _num(params, "loan_spread_pp", 4.0) / 100.0
     fee_share = max(0.0, _num(params, "loan_fee_pct", 1.0) / 100.0)
     property_tax = max(0.0, _num(params, "property_tax_pct", 2.2) / 100.0)
-    repayment = _choice(params, "debt_repayment", (REPAY_SWEEP, REPAY_BULLET), REPAY_SWEEP)
+    repayment = _choice(params, "debt_repayment", REPAYMENTS, REPAY_ANNUITY)
+    term_months = max(1, int(_num(params, "loan_term_years", 10))) * 12
+    balloon_share = _clamp(_num(params, "loan_balloon_pct", 20.0) / 100.0, 0.0, 1.0)
+    # Общие затраты проекта (участок, проект, надбавки), которые несёт этот
+    # объект: в нежилом проекте банк кредитует долю ВСЕЙ стоимости. Они
+    # финансируются кредитом, но не входят ни в НДС, ни в себестоимость
+    # объекта — их учитывает проект.
+    common: dict[date, float] = {mm: float(v) for mm, v in (plan.get("common_capex") or {}).items() if v}
 
-    first = min([commissioning, *capex]) if capex else commissioning
+    first = min([commissioning, *capex, *(plan.get("common_capex") or {})])
     m = defaultdict(lambda: defaultdict(float))  # ряд → месяц → значение
     sold_share: dict[date, float] = {}
     horizon_end = commissioning
@@ -348,6 +363,8 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # --- кредит объекта ---------------------------------------------------
     balance = 0.0
     peak = 0.0
+    balloon = 0.0
+    maturity: date | None = None
     for month in months:
         rate = key_rate(month) + spread
         interest = balance * rate / 12.0
@@ -357,7 +374,8 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             balance += interest
         else:
             m["loan_interest_paid"][month] = interest
-        draw = capex.get(month, 0.0) * loan_share if month <= commissioning else 0.0
+        draw = ((capex.get(month, 0.0) + common.get(month, 0.0)) * loan_share
+                if month <= commissioning else 0.0)
         if draw:
             m["loan_draw"][month] = draw
             m["loan_fee"][month] = draw * fee_share
@@ -374,6 +392,24 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
                 repay = balance  # недостающее вносит капитал
             elif repayment == REPAY_SWEEP or strategy == STRATEGY_DIRECT:
                 repay = min(balance, max(0.0, cash))
+            elif repayment == REPAY_ANNUITY:
+                if maturity is None:
+                    # Срок и баллон отсчитываются от долга на ввод (с
+                    # капитализированными процентами); первый платёж — в
+                    # месяц после ввода.
+                    maturity = _add_months(commissioning, term_months)
+                    balloon = balance * balloon_share
+                    repay = 0.0
+                elif month >= maturity:
+                    repay = balance  # баллон
+                else:
+                    # Платежей до срока; в сам срок гасится остаток — баллон.
+                    left = _month_index(month, maturity)
+                    r = rate / 12.0
+                    target = balance - balloon / (1.0 + r) ** left if r else balance - balloon
+                    payment = (target * r / (1.0 - (1.0 + r) ** -left)) if r else target / left
+                    repay = min(balance, max(0.0, payment - interest))
+                    m["loan_amortization"][month] = repay
             else:
                 repay = 0.0
             if repay:
@@ -430,13 +466,16 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # месяц, когда кредит погашен. DSCR при погашении «из NOI» всегда 1 —
     # гасится ровно остаток после процентов, — поэтому показатель здесь ICR.
     icr_by_year: list[float] = []
+    dscr_by_year: list[float] = []
     if strategy == STRATEGY_INCOME:
         for year in range(max(1, int(_num(params, "hold_years", 5)))):
             span = [_add_months(commissioning, year * 12 + k) for k in range(12)]
             noi = sum(m["rent_revenue"][mm] - m["opex"][mm] - m["property_tax"][mm] for mm in span)
             interest = sum(m["loan_interest_paid"][mm] for mm in span)
+            service = interest + sum(m["loan_amortization"][mm] for mm in span)
             if interest > 0:
                 icr_by_year.append(noi / interest)
+                dscr_by_year.append(noi / service)
     repaid = next((mm for mm in months if mm >= commissioning
                    and m["loan_repayment"][mm] and not m["loan_balance"][mm]), None)
 
@@ -486,6 +525,11 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "equity_cash_flow_sum": sum(equity_cf),
             "icr_min": min(icr_by_year) if icr_by_year else None,
             "icr_by_year": icr_by_year,
+            # DSCR — NOI на проценты и плановое тело (без баллона и выхода).
+            "dscr_min": min(dscr_by_year) if dscr_by_year else None,
+            "dscr_by_year": dscr_by_year,
+            "loan_maturity": maturity,
+            "loan_balloon": balloon,
             "loan_repaid_month": repaid,
         },
         "warnings": warnings,

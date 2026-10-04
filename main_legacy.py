@@ -1323,7 +1323,8 @@ _OBJECT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
                         "hold_years", "exit_mode", "exit_cap_pct", "exit_cost_pct",
                         "depreciation_years")),
     ("Финансирование объекта", ("loan_share_pct", "loan_spread_pp", "loan_fee_pct",
-                                "debt_repayment", "property_tax_pct")),
+                                "debt_repayment", "loan_term_years",
+                                "loan_balloon_pct", "property_tax_pct")),
     ("Паркинг объекта", ("parking_under_spaces", "parking_over_spaces",
                          "parking_guest_pct", "parking_under_price_mln_per_space",
                          "parking_over_price_mln_per_space")),
@@ -1466,8 +1467,12 @@ def _object_strategy_fields(obj: StandaloneObject) -> list[list[Any]]:
          "п.п. к ключевой ставке сценария проекта", "number"],
         [f"{p}_loan_fee_pct", "Комиссия за выдачу", "% выборки", "number"],
         [f"{p}_debt_repayment", "Погашение кредита объекта", "доходный метод", "select",
-         [[nonres_strategy.REPAY_SWEEP, "Из NOI по мере поступления"],
+         [[nonres_strategy.REPAY_ANNUITY, "Аннуитет на срок кредита с баллоном в конце"],
+          [nonres_strategy.REPAY_SWEEP, "Из всего NOI по мере поступления"],
           [nonres_strategy.REPAY_BULLET, "Одним платежом при выходе"]]],
+        [f"{p}_loan_term_years", "Срок кредита после ввода", "лет; аннуитет", "number"],
+        [f"{p}_loan_balloon_pct", "Баллон в конце срока",
+         "% долга на ввод, гасится последним платежом или при выходе", "number"],
         [f"{p}_property_tax_pct", "Налог на имущество",
          "%/год от стоимости объекта без НДС, пока объект у застройщика", "number"],
     ]
@@ -32709,6 +32714,30 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         for month, value in plan["capex"].items():
             debt_capex[month] = max(0.0, debt_capex.get(month, 0.0) - value)
         end = max(end, nonres_strategy.plan_horizon_end(plan))
+    # Нежилой проект: банк кредитует долю ВСЕЙ стоимости — участка, проекта,
+    # сетей, надбавок, — а не только стройки здания (владелец, 04.10.2026:
+    # «банк даёт деньги в какой-то пропорции, остальное даёшь сам»). Общие
+    # затраты, которые иначе выбирали бы БРИДЖ и ПФ без единого рубля эскроу,
+    # уходят в кредит объектов вне ДДУ долей их стройки. Доля объектов на ДДУ
+    # остаётся на ПФ — у них эскроу есть. В смешанном проекте общие затраты
+    # несёт ПФ жилья, как прежде.
+    if nonres_plans and is_nonresidential(x):
+        object_keys = {obj.key for obj in standalone_objects()}
+        object_capex = {key: sum((capex_by_article.get(key) or {}).values()) for key in object_keys}
+        objects_total = sum(object_capex.values())
+        shares = {key: object_capex[key] / objects_total
+                  for key in nonres_plans if objects_total > 0}
+        for month in list(debt_capex):
+            ddu_objects = sum((capex_by_article.get(key) or {}).get(month, 0.0)
+                              for key in object_keys if key not in nonres_plans)
+            common = max(0.0, debt_capex[month] - ddu_objects)
+            if common <= 0:
+                continue
+            for key, share in shares.items():
+                plan = nonres_plans[key]
+                plan.setdefault("common_capex", {})
+                plan["common_capex"][month] = common * share
+            debt_capex[month] -= common * sum(shares.values())
 
     return {
         "project_start": project_start,
@@ -34023,7 +34052,7 @@ def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
     objects = []
     for key, flows in (nonres.get("objects") or {}).items():
         kpi = dict(flows["kpi"])
-        for _when in ("exit_month", "loan_repaid_month"):
+        for _when in ("exit_month", "loan_repaid_month", "loan_maturity"):
             if kpi.get(_when):
                 kpi[_when] = kpi[_when].isoformat()
         objects.append({
