@@ -37194,6 +37194,17 @@ def _consolidate_phase_results(
             # Деньги у очередей считаются своими основаниями — у одной ставка,
             # у другой методика, — и взятое у первой говорило бы за остальные.
             "landscaping_money_basis": "сумма очередей — у каждой своё основание",
+            # Показатель поля «Благоустройство, тыс. ₽/м² ГНС» — от денег и ГНС
+            # свода, а не средним удельных. Без него страница читала пустоту
+            # как «методика дала ноль» и писала «благоустройства в расчёте
+            # нет» над 544 млн ₽ в CAPEX (Мытищи, владелец, 04.10.2026).
+            "landscaping_per_gns_th": per_th(capex.get("landscaping", 0.0), project_gns),
+            "landscaping_by_class_th": per_th(sum(
+                float(r["summary"].get("landscaping_by_class_th") or 0.0)
+                * float(r["summary"].get("project_gns_sqm") or 0.0) * 1000
+                for r in results), project_gns),
+            "landscaping_by_rate": any(
+                bool(r["summary"].get("landscaping_by_rate")) for r in results),
             # Пустоту свод не выбирает у первой очереди: текстов у неё
             # столько же, сколько очередей, и любой выбранный говорил бы за
             # остальные. Свод называет счёт.
