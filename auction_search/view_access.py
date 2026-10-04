@@ -121,7 +121,7 @@ _READ_ONLY_GET = tuple(re.compile(pattern) for pattern in (
 
 # POST, которые ничего не пишут: собрать xlsx из строк на экране и найти точку
 # лота на карте.
-_READ_ONLY_POST = frozenset({"/auctions/export.xlsx", "/auctions/lot-point"})
+_READ_ONLY_POST = frozenset({"/auctions/export.xlsx", "/auctions/lot-point", "/auctions/table"})
 
 # Параметры, превращающие чтение в пересчёт или запись. Ложными считаются ровно
 # те значения, которые FastAPI/pydantic читает как False; всё прочее — команда.
@@ -183,7 +183,7 @@ font-size:15px;cursor:pointer}.err{color:#B3261E;font-size:13px;margin-top:10px}
 <input type="password" name="key" placeholder="Ключ доступа" autofocus autocomplete="current-password">
 <button type="submit">Войти</button>
 __ERROR__
-<div class="scope">Полный ключ кабинета рынка здесь тоже принимается.</div>
+<div class="scope">Полный ключ кабинета рынка здесь тоже принимается. Личный ключ вводить не нужно: откройте ссылку, которую прислал владелец.</div>
 </form>"""
 
 

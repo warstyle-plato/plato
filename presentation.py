@@ -136,8 +136,12 @@ def build_project_presentation(
     # Порядок и состав — у отчёта движка: паркинг каждого объекта стоит там
     # своей строкой сразу за объектом (`object_parking_<объект>`). Список
     # ключей здесь был второй копией состава и отстал бы на следующем объекте.
+    # Продукта, которого нет в проекте, в модели нет: движок отвечает
+    # признаком `listed`. Нет признака — нет и ответа, и строку не прячут.
     for key in by_key:
         product = by_key[key]
+        if (product_numbers.get(key) or {}).get("listed") is False:
+            continue
         products.append({
             "key": key,
             "label": _text(product.get("label")),

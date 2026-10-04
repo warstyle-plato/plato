@@ -74,6 +74,11 @@ def test_in_a_real_browser_every_object_gets_its_queue_field() -> None:
             # проверка разметки, а сюда приезжает то, что рисует `renderPhasing`.
             page.evaluate(
                 "openTab('phasing',document.querySelector(\"button.tab[data-tab='phasing']\"))")
+            # Очередь выбирается только объекту, который есть в проекте
+            # (`row_listed`): на умолчаниях все объекты выключены, и полей нет
+            # вовсе. Включаем каждый — поля должны встать по реестру.
+            page.evaluate("STANDALONE_OBJECTS.filter(o=>!o.instance)"
+                          ".forEach(o=>{inputs[o.prefix+'_enabled']=true})")
             page.evaluate("document.getElementById('phasingEnabled').checked=true;"
                           "togglePhasing(true)")
             page.wait_for_function(

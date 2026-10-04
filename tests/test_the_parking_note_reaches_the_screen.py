@@ -175,7 +175,11 @@ console.log(JSON.stringify({
 
 def _result(by_norm: bool, under: int, over: int):
     """Ответ расчёта об офисах — чтобы состояния подписи читались рядом."""
-    return {"parking": {"own": [
+    import main_legacy as core
+
+    # Имя норматива движок кладёт рядом с юрисдикцией (`PARKING_NORM_OF`);
+    # ответ без него был бы ответом, которого расчёт не даёт.
+    return {"parking": {"norm_of": core.PARKING_NORM_OF[core.parking_norms.MOSCOW], "own": [
         {"prefix": "offices", "tep_key": "offices", "enabled": True,
          "by_norm": by_norm, "required_spaces": under + over,
          "units": under + over, "under_spaces": under, "over_spaces": over},
@@ -508,7 +512,10 @@ def test_a_fresh_result_still_fills_the_field() -> None:
     Проверяется то, ради чего всё писалось, — при свежем расчёте число встаёт
     В ПОЛЕ, а подпись говорит, чьё оно.
     """
-    seen = _render_fields({"parking": {"own": [
+    import main_legacy as core
+
+    seen = _render_fields({"parking": {
+        "norm_of": core.PARKING_NORM_OF[core.parking_norms.MOSCOW], "own": [
         {"prefix": "offices", "enabled": True, "by_norm": True,
          "required_spaces": 159, "under_spaces": 159, "over_spaces": 0},
     ]}})
