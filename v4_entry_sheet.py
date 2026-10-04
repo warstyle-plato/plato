@@ -314,9 +314,8 @@ def guide(entry: str, params: str, styles: str, report: dict[str, Any],
         at += 1
 
     row(_text_cell(f"A{at}", "DEVELOPAID · КАК ЗАПОЛНЯТЬ КНИГУ", chrome["title"]))
-    row(_text_cell(f"A{at}", "Собрано из самой книги: разделы прочитаны с листа "
-                             "ввода, цвета — из стилей шаблона. Второй правды о "
-                             "книге здесь нет.", chrome["note"]))
+    row(_text_cell(f"A{at}", "Ввод — только на листе «Вводные»; всё остальное "
+                             "считают формулы книги.", chrome["note"]))
     at += 1
 
     row(_text_cell(f"A{at}", "ПРАВИЛА", chrome["header"]))
@@ -334,12 +333,9 @@ def guide(entry: str, params: str, styles: str, report: dict[str, Any],
             + _text_cell(f"B{at}", f"{number}–{end}", chrome["label"]))
     at += 1
 
-    row(_text_cell(f"A{at}", "СКОЛЬКО ЯЧЕЕК", chrome["header"]))
-    row(_text_cell(f"A{at}", "Переехало на лист ввода", chrome["label"])
-        + _text_cell(f"B{at}", str(report.get("moved", 0)), chrome["label"]))
-    row(_text_cell(f"A{at}", "Перекрашено (была жёлтой, стала формулой)", chrome["label"])
-        + _text_cell(f"B{at}", str(report.get("restyled", 0)), chrome["label"]))
-    at += 1
+    # Счётчики сборки («переехало 331», «перекрашено 18») сняты с листа
+    # 29.09.2026: это статистика сборщика, а не инструкция читателю. Они
+    # остаются в `report` и в тестах.
 
     row(_text_cell(f"A{at}", "ЧЕГО КНИГА НЕ СЧИТАЕТ", chrome["header"]))
     left = list(missing or [])

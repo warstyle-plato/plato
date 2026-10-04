@@ -802,6 +802,8 @@ def _src(column: str, row: int) -> str:
 def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
                           extra_products: tuple = (),
                           shown_extras: frozenset[str] | None = None,
+                          hidden_products: frozenset[str] = frozenset(),
+                          queues: int | None = None,
                           ) -> tuple[str, list[tuple[int, int, int, int]]]:
     """Лист «Дашборд» — формулы на Dashboard_Data, узкая вертикальная
     раскладка. Возвращает xml листа и якоря трёх диаграмм (мост, кольцо,
@@ -812,9 +814,13 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
     # Видимый лист показывает дописанный объект, только если он в проекте:
     # четыре строки нулей на каждом дашборде — шум. Источник несёт все, и
     # итоги складывают все — включённый потом в Excel объект в сумме есть.
-    products = PRODUCT_ITEMS + tuple(
+    # Решение владельца 29.09.2026: и продукт шаблона, которого нет в проекте
+    # (офисы, ТЦ, наземный паркинг, кладовые), на листе не показывается —
+    # источник и итоги по-прежнему несут все. Так же — очереди сверх проекта.
+    products = tuple(item for item in PRODUCT_ITEMS if item[0] not in hidden_products) + tuple(
         item for item in extra_products
         if shown_extras is None or item[0] in shown_extras)
+    shown_queues = QUEUE_COUNT if queues is None else max(1, min(QUEUE_COUNT, queues))
 
     sh.band("DEVELOPAID · ИНВЕСТИЦИОННЫЙ ДАШБОРД", None, sh.title, 24)
     sh.band(None, data_cell("project_name"), sh.subtitle, 15)
@@ -978,9 +984,13 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
             key, _label, value_key = risks[index]
             src = RISK_ROWS[key]
             flag = _src("C", src)
-            unit = "x" if value_key in ("llcr", "weakest_phase_llcr") else "млн ₽"
+            # Коэффициент — две цифры и «x», деньги — целые миллионы: при «0.0»
+            # LLCR 0,97 читался «1,0» рядом со словом «ниже» (ревизия 29.09.2026).
+            shown = (f'TEXT({_src("D", src)},"0.00")&"x"'
+                     if value_key in ("llcr", "weakest_phase_llcr")
+                     else f'TEXT({_src("D", src)},"0")&" млн ₽"')
             items += [(None, _src("B", src), sh.td),
-                      (None, f'IF({flag}=1,"ДА · "&TEXT({_src("D", src)},"0.0"),"нет")', sh.risk_on)]
+                      (None, f'IF({flag}=1,"ДА · "&{shown},"нет")', sh.risk_on)]
         elif index == len(risks):
             items += [("Статус модели (ПРОВЕРКИ)", None, sh.td_muted), (None, data_cell("status"), sh.value("текст"))]
         else:
@@ -993,7 +1003,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
     sh.section_row("СРОКИ · ОЧЕРЕДИ")
     sh.header(_G_QUEUE, ["Очередь", "Старт", "РнС / ПФ", "РВЭ", "Продажи с", "Продажи по",
                          "Стройка, мес.", "Продажи, мес."])
-    for q in range(QUEUE_COUNT):
+    for q in range(shown_queues):
         src = QUEUE_FIRST_ROW + q
         on = _src(Q["on"], src)
         def when(column: str) -> str:
@@ -1016,7 +1026,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
         cells[i] = _cell(f"{_col(i)}{r}", formula=f"{year0}+{k}", style=sh.year)
     sh.put(cells, sh.th, height=18)
     sh.merge(r, 0, 1)
-    for q in range(QUEUE_COUNT):
+    for q in range(shown_queues):
         src = QUEUE_FIRST_ROW + q
         on = _src(Q["on"], src)
         for stage, start_col, end_col, style in (("Стройка", Q["permit"], Q["build_end"], sh.gantt_build),
@@ -1280,7 +1290,9 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
           llcr_target: float, month_columns: list[str], phased: bool,
           capex_rows: dict[str, int], capex_stride: int,
           extra_products: tuple = (),
-          shown_extras: frozenset[str] | None = None) -> dict[str, Any]:
+          shown_extras: frozenset[str] | None = None,
+          hidden_products: frozenset[str] = frozenset(),
+          queues: int | None = None) -> dict[str, Any]:
     """Собрать все части дашборда. Возвращает словарь «путь → байты» и
     новый styles.xml; лишние диаграммы шаблона названы в `dropped`.
     `capex_rows`/`capex_stride` — карта статей листа CAPEX (её владелец —
@@ -1305,7 +1317,8 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
         targets.append((rel, "/" + path))
     dropped = [path for _rel, path in existing[len(charts):]]
     sheet_xml, anchors = build_dashboard_sheet(styles, where["drawing_rel"], phased,
-                                               tuple(extra_products), shown_extras)
+                                               tuple(extra_products), shown_extras,
+                                               hidden_products, queues)
     if len(anchors) != len(charts):
         raise ValueError(f"диаграмм {len(charts)}, а мест на листе {len(anchors)}")
     parts[where["drawing_path"]] = drawing_xml(rel_ids, anchors)
