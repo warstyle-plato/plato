@@ -380,9 +380,16 @@ def _export_row(source_row: dict[str, Any], keys: tuple[str, ...],
     if context is not None:
         if "plato_comment" in keys:
             key = str(row.get("url") or "").strip()
-            row["plato_comment"] = lot_notes_rules.comment_for_book(
-                context.notes.get(key), place=context.queue_place.get(key),
-                interval_seconds=context.interval, again=again)
+            days = row.get("days_to_deadline")
+            if not context.notes.get(key) and isinstance(days, int) and days < 0:
+                # Очередь разбора берёт только живые лоты (`LotNotes.queue`):
+                # «не поставлен в очередь» здесь было бы неправдой о причине.
+                row["plato_comment"] = ("Не разбирался: приём заявок закончился, "
+                                        "разбор делается только по живым лотам")
+            else:
+                row["plato_comment"] = lot_notes_rules.comment_for_book(
+                    context.notes.get(key), place=context.queue_place.get(key),
+                    interval_seconds=context.interval, again=again)
         if "nspd_map" in keys:
             row["nspd_map"], nspd_href = lot_notes_rules.nspd_cell(
                 lot_notes_rules.row_numbers(row), context.points,

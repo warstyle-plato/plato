@@ -34,8 +34,10 @@ AUCTIONS_PAGE = r'''<!doctype html>
 .viewswitch{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}.viewswitch button{min-height:34px}.viewswitch button.active{background:var(--ink,#171717);color:#fff;border-color:var(--ink,#171717)}
 .sheetwrap{min-height:200px;max-width:100%;max-height:78vh}table.sheet{min-width:0;table-layout:fixed;font-size:12px}table.sheet th{position:sticky;top:0;z-index:2;background:#171717;color:#fff;cursor:pointer;vertical-align:bottom;white-space:normal}table.sheet td{white-space:normal;overflow-wrap:anywhere}
 @media(min-width:641px){table.sheet td.k-name{position:sticky;left:0;z-index:1;background:var(--panel,#fff);border-right:1px solid var(--line)}table.sheet th.k-name{left:0;z-index:3}}table.sheet th .arrow{opacity:.7}table.sheet td{vertical-align:top}
-table.sheet td .clip{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}table.sheet td.days.past,table.sheet td.status.past{color:#a33}table.sheet tr.sheetrow{cursor:pointer}table.sheet tr.sheetrow.open td{background:#f6f6f3}
-table.sheet tr.sheetmore td{background:#fbfbf9;white-space:normal}.sheetmore .morebox{position:sticky;left:0;max-width:min(860px,calc(100vw - 48px));white-space:pre-wrap}.sheetmore h4{margin:0 0 6px;font-size:13px}.sheetmore .fullname{margin-bottom:10px}.sheetmore .muted{color:var(--muted)}
+table.sheet td .clip{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}table.sheet td.days.past,table.sheet td.status.past{color:#a33}table.sheet tr.sheetrow{cursor:pointer}
+table.sheet tr.sheetrow.sel td{background:#f6f6f3}
+.krt-proto-shell.lot-shell{width:min(980px,calc(100vw - 44px));overflow:auto}.lot-modal-body{padding:22px 26px}.lot-modal-body .side{border:0;overflow:visible;padding:0}.lot-modal-body .lotnote{margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--line)}.lot-modal-body .lotnote .muted{color:var(--muted)}.lot-modal-body .lotnote div{white-space:pre-wrap}
+@media(max-width:700px){.krt-proto-shell.lot-shell{width:100vw}.lot-modal-body{padding:52px 14px 18px}}
 .sheet .cmhint{display:none;color:var(--muted);font-size:11px;margin-top:4px}
 @media(max-width:640px){table.sheet th.k-plato_comment,table.sheet td.k-plato_comment{display:none}.sheet .cmhint{display:block}}
 #krtSide{display:none!important}
@@ -154,6 +156,7 @@ __DEVELOPAID_CONTOUR__
 <th data-sort="total">Всего</th>
 <th data-sort="housing">Жильё</th></tr></thead><tbody id="krtRows"></tbody></table><div id="krtEmpty" class="empty">Открываю официальный каталог krt.mos.ru…</div></div></div><aside class="side" id="krtSide"><div class="empty">Выберите проект КРТ.<br>ТЭП берутся из каталога krt.mos.ru и проектов решений на mos.ru, рынок считает существующий движок DevelopAid.</div></aside></div>
   </div>
+  <div id="lotModal" class="krt-proto-modal hidden" role="dialog" aria-modal="true" aria-label="Карточка лота"><div class="krt-proto-shell lot-shell" id="lotModalShell"><button type="button" class="krt-proto-close" id="lotModalClose" aria-label="Закрыть">×</button><div class="lot-modal-body"><div id="lotModalNote"></div><div id="lotModalSlot"></div></div></div></div>
   <div id="krtPrototypeModal" class="krt-proto-modal hidden" role="dialog" aria-modal="true" aria-label="Инвестиционный разбор КРТ">
    <div class="krt-proto-shell">
     <button type="button" class="krt-proto-close" id="krtPrototypeClose" aria-label="Закрыть">×</button>
@@ -184,7 +187,7 @@ __DEVELOPAID_CONTOUR__
   <div id="foldNote" class="notice" style="display:none"></div>
   <div class="viewswitch" id="auctionViewSwitch" role="tablist"><button type="button" id="viewSheet" class="active" role="tab">Таблица как в Excel</button><button type="button" id="viewPick" role="tab">Подборка: балл и карточка лота</button></div>
   <div class="sheetview" id="auctionSheet">
-    <div class="notice" id="sheetNote">Колонки и значения — те же, что в выгрузке Excel. Нажмите на строку, чтобы прочитать комментарий Платона целиком.</div>
+    <div class="notice" id="sheetNote">Колонки и значения — те же, что в выгрузке Excel. Нажмите на строку — откроется карточка лота с комментарием Платона, картой и разбором.</div>
     <div class="tablewrap sheetwrap" id="sheetWrap"><table class="sheet" id="sheetTable"><thead id="sheetHead"></thead><tbody id="sheetRows"></tbody></table><div id="sheetEmpty" class="empty">Нажмите «Обновить», чтобы получить текущую выборку с официальных площадок.</div></div>
   </div>
   <div class="layout hidden" id="auctionLayout">
@@ -613,7 +616,7 @@ function exportPayload(rows,kind){return rows.map(r=>{const rank=kind==='krt'?kr
 // тем же кодом, что книгу: список колонок здесь не повторяется, иначе колонка,
 // добавленная в книгу, опять не доехала бы до экрана. Комментарий Платона —
 // из фонового разбора; модель запросом страницы не зовётся.
-state.auctionView='sheet';state.sheet={columns:[],rows:[],seq:0,open:new Set(),sort:null,mayRequest:false};
+state.auctionView='sheet';state.sheet={columns:[],rows:[],seq:0,openUrl:null,sort:null,mayRequest:false};
 function applyAuctionView(){const krt=!!state.krtTab,sheet=state.auctionView==='sheet';
  $('auctionSheet').classList.toggle('hidden',krt||!sheet);$('auctionLayout').classList.toggle('hidden',krt||sheet);
  $('viewSheet').classList.toggle('active',sheet);$('viewPick').classList.toggle('active',!sheet)}
@@ -645,22 +648,37 @@ function renderSheet(){const cols=state.sheet.columns||[],head=$('sheetHead'),bo
  body.innerHTML='';
  const rows=sheetSorted();empty.style.display=rows.length?'none':'grid';
  if(!rows.length)empty.textContent=(state.lots||[]).length?'В текущей выборке нет строк.':'Нажмите «Обновить», чтобы получить текущую выборку с официальных площадок.';
- rows.forEach(r=>{const tr=document.createElement('tr'),open=state.sheet.open.has(r.url);tr.className='sheetrow'+(open?' open':'');
+ rows.forEach(r=>{const tr=document.createElement('tr'),sel=state.sheet.openUrl===r.url;tr.className='sheetrow'+(sel?' sel':'');
   const days=r.cells.days_to_deadline||{},past=typeof days.value==='number'&&days.value<0;
   tr.innerHTML=cols.map(c=>{const cell=r.cells[c.key]||{text:'—'},cls=['k-'+c.key,c.kind==='days'?'days':'',c.key==='status'?'status':'',past&&(c.kind==='days'||c.key==='status')?'past':''].filter(Boolean).join(' ');
-   return `<td class="${cls}">${sheetCellHtml(c,cell)}${c.key==='name'?`<div class="cmhint">${open?'▾':'▸'} Комментарий Платона</div>`:''}</td>`}).join('');
-  tr.onclick=()=>{if(state.sheet.open.has(r.url))state.sheet.open.delete(r.url);else state.sheet.open.add(r.url);renderSheet()};
+   return `<td class="${cls}">${sheetCellHtml(c,cell)}${c.key==='name'?'<div class="cmhint">▸ Карточка и комментарий Платона</div>':''}</td>`}).join('');
+  tr.onclick=()=>openLotModal(r);
   body.appendChild(tr);
-  if(open){const more=document.createElement('tr');more.className='sheetmore';const cm=r.cells.plato_comment||{text:'—'};
-   const title=(cols.find(c=>c.key==='plato_comment')||{}).title||'';
-   const nameCol=cols.find(c=>c.key==='name'),nm=r.cells.name||{};
-   more.innerHTML=`<td colspan="${cols.length||1}"><div class="morebox">${nameCol?`<h4>${esc(nameCol.title)}</h4><div class="fullname">${esc(nm.text||'—')}</div>`:''}<h4>${esc(title)}</h4><div class="${cm.ready?'':'muted'}">${esc(cm.text||'—')}</div>${(!cm.ready&&state.sheet.mayRequest)?'<div class="actions"><button type="button" class="askNote">Заказать комментарий Платона</button></div>':''}${r.lot?'<div class="actions"><button type="button" class="openCard">Карточка лота</button></div>':''}</div></td>`;
-   const ask=more.querySelector('.askNote');if(ask)ask.onclick=e=>{e.stopPropagation();requestSheetNote(r,ask)};
-   const card=more.querySelector('.openCard');if(card)card.onclick=e=>{e.stopPropagation();setAuctionView('pick');selectLot(r.lot)};
-   body.appendChild(more)}
  })}
+// Карточка лота — окном поверх таблицы, как у КРТ. В окне та же карточка,
+// что в подборке (`selectLot` рисует в #side): узел переезжает в окно и
+// возвращается на место, второй копии карточки нет. Первым блоком —
+// комментарий Платона из той же клетки, что в таблице и книге.
+function lotModalNoteHtml(r){const cols=state.sheet.columns||[],cm=r.cells.plato_comment||{text:'—'},days=(r.cells.days_to_deadline||{}).value,live=!(typeof days==='number'&&days<0);
+ const title=k=>(cols.find(c=>c.key===k)||{}).title||'';
+ return `<div class="section lotnote"><h3>${esc(title('plato_comment'))}</h3><div class="${cm.ready?'':'muted'}">${esc(cm.text||'—')}</div>${(!cm.ready&&live&&state.sheet.mayRequest)?'<div class="actions"><button type="button" class="askNote">Заказать комментарий Платона</button></div>':''}</div>`}
+function renderLotModalNote(){const r=(state.sheet.rows||[]).find(x=>x.url===state.sheet.openUrl),box=$('lotModalNote');if(!r||!box)return;
+ box.innerHTML=lotModalNoteHtml(r);const ask=box.querySelector('.askNote');if(ask)ask.onclick=()=>requestSheetNote(r,ask)}
+function openLotModal(r){if(!r||!r.lot)return;const side=$('side'),modal=$('lotModal');
+ if(!state.lotSideHome){state.lotSideHome=document.createComment('side');side.parentNode.insertBefore(state.lotSideHome,side)}
+ $('lotModalSlot').appendChild(side);
+ state.sheet.openUrl=r.url;renderLotModalNote();selectLot(r.lot);
+ modal.classList.remove('hidden');document.body.classList.add('krt-modal-open');$('lotModalShell').scrollTop=0;
+ // «Назад» на телефоне закрывает окно, а не уходит со страницы.
+ if(!state.lotModalPushed){try{history.pushState({lotModal:1},'');state.lotModalPushed=true}catch(_){}}
+ renderSheet()}
+function closeLotModal(fromHistory){const modal=$('lotModal');if(!modal||modal.classList.contains('hidden'))return;
+ modal.classList.add('hidden');document.body.classList.remove('krt-modal-open');
+ if(state.lotSideHome){state.lotSideHome.parentNode.insertBefore($('side'),state.lotSideHome)}
+ state.sheet.openUrl=null;renderSheet();
+ if(state.lotModalPushed){state.lotModalPushed=false;if(!fromHistory)try{history.back()}catch(_){}}}
 async function requestSheetNote(r,btn){btn.disabled=true;btn.innerHTML='<span class="spinner"></span>Ставлю в очередь';
- try{await askJson('/auctions/lot-notes/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:exportPayload([r.lot],'auctions'),kind:'auctions'})});await loadSheet()}
+ try{await askJson('/auctions/lot-notes/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:exportPayload([r.lot],'auctions'),kind:'auctions'})});await loadSheet();renderLotModalNote()}
  catch(e){btn.disabled=false;btn.textContent='Не поставлено: '+String(e.message||e)}}
 async function exportRows(rows,kind){if(!rows.length){alert('В текущей выборке нет строк для выгрузки.');return}const payload=exportPayload(rows,kind);const res=await fetch('/auctions/export.xlsx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows:payload,kind})});if(!res.ok){let why='';try{why=(await res.json()).detail||''}catch(_){}throw new Error('Не удалось подготовить Excel ('+res.status+(why?': '+why:'')+')')}const blob=await res.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=kind==='krt'?'developaid-krt.xlsx':'developaid-auctions.xlsx';a.click();URL.revokeObjectURL(a.href)}
 function coverageLine(r){
@@ -4507,7 +4525,7 @@ platoBlock('#krtPanel', AUCTION_SURFACE, 'о площадках КРТ');
 
 
 $('krtPrototypeClose').onclick=closeKrtPrototype;
-$('krtPrototypeModal').onclick=e=>{if(e.target===$('krtPrototypeModal'))closeKrtPrototype()};
+$('krtPrototypeModal').onclick=e=>{if(e.target===$('krtPrototypeModal'))closeKrtPrototype()};$('lotModal').onclick=e=>{if(e.target===$('lotModal'))closeLotModal()};$('lotModalClose').onclick=()=>closeLotModal();window.addEventListener('popstate',()=>closeLotModal(true));
 window.addEventListener('message',e=>{
  if(e.origin!==location.origin)return;
  const d=e.data||{};
@@ -4525,7 +4543,7 @@ window.addEventListener('message',e=>{
  if(d.action==='handoff'){handoffKrt(x);return}
  if(d.action==='plato'){renderAskContext();platoOpen(AUCTION_SURFACE);return}
 });
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('krtPrototypeModal').classList.contains('hidden'))closeKrtPrototype()});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('krtPrototypeModal').classList.contains('hidden'))closeKrtPrototype()});document.addEventListener('keydown',e=>{if(e.key==='Escape')closeLotModal()});
 $('tabAuctions').onclick=()=>switchTab(false);$('tabKrt').onclick=()=>switchTab(true);$('krtRefresh').onclick=()=>loadKrt(true);$('krtRankBtn').onclick=startKrtRanking;$('krtRatingBtn').onclick=startKrtInvestmentRating;$('krtPressBtn').onclick=readKrtPress;$('krtSearch').oninput=filterKrt;bindKrtFilters();document.getElementById('krtMapFold')?.addEventListener('toggle',ev=>{if(ev.target.open)loadKrtMap()});$('krtMinHousing').oninput=filterKrt;$('krtMinPrice').oninput=filterKrt;document.querySelectorAll('th[data-sort]').forEach(th=>{th.style.cursor='pointer';th.title=(th.title?th.title+'. ':'')+'Нажмите, чтобы отсортировать';th.onclick=()=>krtSortBy(th.dataset.sort)});
 $('krtOkrugToggle').onclick=e=>{e.stopPropagation();const menu=$('krtOkrugMenu'),open=menu.classList.contains('hidden');closeKrtMenus();menu.classList.toggle('hidden',!open);$('krtOkrugToggle').setAttribute('aria-expanded',String(open))};$('krtOkrugMenu').onclick=e=>e.stopPropagation();$('krtOkrugClear').onclick=()=>{state.krtOkrugs.clear();$('krtOkrugOptions').querySelectorAll('input').forEach(x=>x.checked=false);updateKrtOkrugLabel();filterKrt()};document.addEventListener('click',closeKrtMenus);document.addEventListener('keydown',e=>{if(e.key==='Escape'){closeKrtMenus();$('krtOkrugToggle').focus()}});
 loadKrtRanking();

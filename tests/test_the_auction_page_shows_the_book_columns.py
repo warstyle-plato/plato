@@ -138,7 +138,7 @@ def test_the_book_and_the_table_route_read_one_column_list(tmp_path, monkeypatch
     assert NOTE_TEXT in live["cells"]["plato_comment"]["text"]
     assert live["cells"]["plato_comment"]["ready"] is True
     # Неразобранный лот — причина, а не пустота.
-    assert past["cells"]["plato_comment"]["text"].startswith("Не разбирался")
+    assert past["cells"]["plato_comment"]["text"].startswith("Не разбирался: приём заявок закончился")
     assert live["cells"]["days_to_deadline"]["value"] == 9
     assert past["cells"]["days_to_deadline"]["text"].startswith("Приём заявок закончился")
     assert past["cells"]["status"]["text"] == "Приём заявок закончился"
@@ -187,6 +187,20 @@ def test_in_a_real_browser_the_page_has_the_book_columns(tmp_path, monkeypatch):
                 check_page_against_book(page.evaluate(READ))
             assert not errors, errors
 
+            # Десктоп: окно карточки открывается строкой, закрывается Esc,
+            # выделенная строка — та, чья карточка открыта.
+            page.click("#sheetRows tr.sheetrow >> nth=1")
+            assert page.is_visible("#lotModal")
+            assert page.evaluate("state.selected.source.lot_url") == PAST_URL
+            assert page.evaluate("document.querySelector('#sheetRows tr.sel td.k-url').textContent") == PAST_URL
+            assert "приём заявок закончился" in page.inner_text("#lotModalNote")
+            # Просроченный лот очередь не берёт — и кнопки заказа у него нет.
+            assert page.locator("#lotModalNote .askNote").count() == 0
+            page.screenshot(path=str(shots / "auctions-desktop-card.png"))
+            page.keyboard.press("Escape")
+            page.wait_for_function("document.getElementById('lotModal').classList.contains('hidden')")
+            assert page.evaluate("!!document.querySelector('#auctionLayout #side')")
+
             # Телефон: таблица не ломает ширину, комментарий — раскрытием строки.
             phone = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True)
             phone.on("pageerror", lambda exc: errors.append(str(exc)))
@@ -195,17 +209,26 @@ def test_in_a_real_browser_the_page_has_the_book_columns(tmp_path, monkeypatch):
             assert width[0] <= width[1], f"страница шире экрана: {width}"
             assert not phone.is_visible("#sheetRows td.k-plato_comment")
             phone.screenshot(path=str(shots / "auctions-phone.png"))
+            # Строка открывает карточку лота окном, как у КРТ.
             phone.click("#sheetRows tr.sheetrow >> nth=0")
-            more = phone.locator("#sheetRows tr.sheetmore .morebox")
-            assert NOTE_TEXT in more.inner_text()
-            # Название в строке обрезано до трёх строк; целиком — при раскрытии.
-            assert LOTS[0]["title"] in more.inner_text()
-            box = more.bounding_box()
+            modal = phone.locator("#lotModal")
+            assert modal.is_visible()
+            text = modal.inner_text()
+            assert NOTE_TEXT in text, "в окне нет комментария Платона"
+            # Название в строке обрезано до трёх строк; целиком — в окне.
+            assert LOTS[0]["title"] in text
+            # В окне — та же карточка подборки (#side), а не вторая копия.
+            assert phone.evaluate("!!document.querySelector('#lotModal #side .actions')")
+            box = phone.locator("#lotModalShell").bounding_box()
             assert box and box["x"] >= 0 and box["x"] + box["width"] <= 390, box
             width = phone.evaluate("[document.documentElement.scrollWidth, innerWidth]")
-            assert width[0] <= width[1], f"раскрытая строка расширила страницу: {width}"
-            more.scroll_into_view_if_needed()
+            assert width[0] <= width[1], f"окно расширило страницу: {width}"
             phone.screenshot(path=str(shots / "auctions-phone-open.png"))
+            # «Назад» закрывает окно и возвращает карточку на её место.
+            phone.go_back()
+            phone.wait_for_function("document.getElementById('lotModal').classList.contains('hidden')")
+            assert phone.evaluate("!!document.querySelector('#auctionLayout #side')")
+            assert phone.url.endswith("/auctions"), phone.url
             assert not errors, errors
         finally:
             browser.close()
