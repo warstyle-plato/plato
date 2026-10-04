@@ -45,12 +45,25 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
 .close{border:0;background:none;font-size:22px;cursor:pointer;color:var(--dim)}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:10px 0}
 .fact{padding:8px 10px;background:#f7f9fb;border-radius:8px}.fact small{display:block;color:var(--dim)}
+.stages{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.stages label{display:inline-flex;gap:6px;align-items:center;padding:6px 10px;border:1px solid #ccd6e0;border-radius:18px;background:#fff;cursor:pointer}
+.stages label.on{border-color:var(--blue);background:#eef4fa}
+.badge.est{background:#fff4e5;color:#8a4b0f}.badge.none{background:#f1f1f1;color:#666}
 .err{background:#fdecea;color:#7a1d16;border-left:3px solid #B3261E;padding:10px 12px}
 @media(max-width:720px){main{padding:12px}th,td{padding:7px 6px;font-size:12px}}
 </style>
 <header><a href="/cabinet">Кабинет DevelopAid</a> · <b>Как посчитана рекомендация цены</b></header>
 <main>
   <div class="card" id="summary"><div class="muted">Загружаю расчёт…</div></div>
+  <div class="card" id="stageCard">
+    <h2>Стадия строительства аналогов</h2>
+    <div class="muted">Как фильтр стадии в Пульсе: отметьте стадии — аналоги и рекомендованная цена пересчитаются по ним. Ничего не отмечено — стадия не ограничена.</div>
+    <div class="stages" id="stageFilter"></div>
+    <label class="muted"><input type="checkbox" id="stageEstimated" checked> учитывать стадию, оценённую по срокам (старт продаж → плановый ввод)</label>
+    <div id="stageSuggest" style="margin-top:8px"></div>
+    <div id="stageStatus" style="margin-top:8px;font-weight:600"></div>
+    <div class="muted" id="stageSource" style="margin-top:6px"></div>
+  </div>
   <div class="card">
     <div class="controls">
       <div><label>Стадия нашего проекта<br>
@@ -73,7 +86,7 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
     <div class="wrap"><table>
       <thead><tr><th>Учитывать</th><th>Проект</th><th>Класс</th><th class="num">км</th>
       <th class="num">Цена ₽/м²</th><th>Цена на</th><th>Старт продаж</th><th>План. ввод</th>
-      <th>Стадия</th><th class="num">К готовому ₽/м²</th></tr></thead>
+      <th>Стадия строительства</th><th>Календарь</th><th class="num">К готовому ₽/м²</th></tr></thead>
       <tbody id="rows"></tbody>
     </table></div>
   </div>
@@ -93,6 +106,9 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
     body.latitude=Number(params.get('latitude')); body.longitude=Number(params.get('longitude'));
   }
   if(params.get('segment')) body.segment=params.get('segment');
+  if(params.get('stages')) body.stages=params.get('stages').split(',').filter(Boolean);
+  if(params.get('estimated')==='0') body.include_estimated_stage=false;
+  ['project_sales_start','project_commissioning'].forEach(function(k){if(params.get(k))body[k]=params.get(k)});
 
   function esc(v){return String(v===null||v===undefined?'':v).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
   function num(v,d){if(v===null||v===undefined||v==='')return '—';return Number(v).toLocaleString('ru-RU',{minimumFractionDigits:d||0,maximumFractionDigits:d||0})}
@@ -107,12 +123,54 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
     s.innerHTML='<div class="muted">'+esc((data.location&&data.location.display_name)||'')+'</div>'
       +'<div class="big">'+num(data.price_per_sqm)+' ₽/м²</div>'
       +'<div>'+esc(data.basis_title||data.basis||'')+' · наблюдений '+esc(data.sample||0)
-      +(data.observed_at?' · '+date(data.observed_at):'')+'</div>'
+      +(data.observed_at?' · '+date(data.observed_at):'')
+      +(data.stage_filter&&data.stage_filter.active?' · по стадии '+esc(data.stage_filter.title)+', аналогов '+esc(data.stage_filter.matched):'')+'</div>'
       +'<div class="kpis">'
       +'<div class="kpi"><span class="muted">Автоматический ориентир</span><b>'+num(data.price_per_sqm)+'</b><span>₽/м²</span></div>'
       +(stage.available?'<div class="kpi"><span class="muted">На старте по стадии</span><b>'+num(stage.price_per_sqm)+'</b><span>₽/м² · '+num(stage.adjustment_pct,1)+'% к ориентиру · стадия '+num(stage.stage_effect_pct,1)+'% по '+esc(stage.dated_peers||0)+' аналогам с датами</span></div>':'')
       +'<div class="kpi"><span class="muted">Класс</span><b style="font-size:15px">'+esc(data.segment||'не определён')+'</b><span>выборки</span></div>'
       +'</div>';
+  }
+
+  function stageBadge(p){
+    if(!p.construction_stage)return '<span class="badge none">стадия не указана</span>';
+    var est=p.construction_stage_origin!=='pulse';
+    return '<span class="badge'+(est?' est':'')+'" title="'+esc(p.construction_stage_raw||'')+'">'+esc(p.construction_stage_label)+'</span>'
+      +(p.construction_stage_origin_title?' <span class="muted">'+esc(p.construction_stage_origin_title)+'</span>':'');
+  }
+
+  function renderStageFilter(){
+    var f=(data&&data.stage_filter)||null, box=document.getElementById('stageFilter');
+    if(!f){box.innerHTML='';return}
+    var chosen=f.stages||[];
+    box.innerHTML=(f.options||[]).map(function(o){
+      var on=chosen.indexOf(o.code)>=0;
+      return '<label class="'+(on?'on':'')+'"><input type="checkbox" class="stagePick" value="'+esc(o.code)+'"'+(on?' checked':'')+'> '
+        +esc(o.label)+' <span class="muted">· '+esc(o.count)+'</span></label>';
+    }).join('')+'<label><span class="badge none">стадия не указана</span> <span class="muted">· '+esc(f.without_stage_total||0)+'</span></label>';
+    document.getElementById('stageEstimated').checked=f.include_estimated!==false;
+    var sug=f.suggestion||{}, sugBox=document.getElementById('stageSuggest');
+    var applied=chosen.length===1&&chosen[0]===sug.code;
+    sugBox.innerHTML=sug.code?'<span class="muted">Подсказка для нашего проекта: <b>'+esc(sug.label)+'</b> — '+esc(sug.reason||'')+'.</span> '
+      +(applied?'':'<button type="button" class="action" id="stageApply">Отобрать «'+esc(sug.label)+'»</button>'):'';
+    var btn=document.getElementById('stageApply');
+    if(btn)btn.addEventListener('click',function(){load([sug.code])});
+    var status=document.getElementById('stageStatus');
+    if(f.active){
+      status.textContent='Посчитано по стадии '+f.title+': аналогов '+f.matched+' из '+f.considered
+        +(f.without_stage?' · без стадии исключено '+f.without_stage:'')
+        +(f.other_stage?' · другой стадии '+f.other_stage:'')
+        +(f.estimated_only?' · только с оценкой по срокам '+f.estimated_only:'');
+    }else{
+      status.textContent='Стадия не выбрана: посчитано по всем стадиям, аналогов '+f.considered
+        +(f.without_stage_total?' (из них без стадии '+f.without_stage_total+')':'');
+    }
+    document.getElementById('stageSource').textContent=f.source_note||'';
+    document.querySelectorAll('.stagePick').forEach(function(el){el.addEventListener('change',function(){load(pickedStages())})});
+  }
+
+  function pickedStages(){
+    var out=[];document.querySelectorAll('.stagePick').forEach(function(el){if(el.checked)out.push(el.value)});return out;
   }
 
   function renderRows(){
@@ -127,6 +185,7 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
         +'<td>'+esc(p.segment||'—')+'</td><td class="num">'+num(p.distance_km,2)+'</td>'
         +'<td class="num">'+num(p.price_per_sqm)+'</td><td>'+date(p.observed_at)+'</td>'
         +'<td>'+date(p.sales_start)+'</td><td>'+date(p.commissioning)+'</td>'
+        +'<td>'+stageBadge(p)+'</td>'
         +'<td>'+(p.stage_label?'<span class="badge">'+esc(p.stage_label)+'</span> '+num(p.calendar_progress_pct,0)+'%':'—')+'</td>'
         +'<td class="num">'+num(p.ready_equivalent_price)+'</td></tr>';
     }).join('');
@@ -172,7 +231,7 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
     var html='<div class="muted">'+esc(p.address||'')+(p.developer?' · '+esc(p.developer):'')+'</div><div class="grid">'
       +fact('Цена',num(p.price_per_sqm)+' ₽/м²')+fact('Расстояние',num(p.distance_km,2)+' км')
       +fact('Класс',p.segment||'—')+fact('Старт продаж',date(p.sales_start))
-      +fact('Плановый ввод',date(p.commissioning))+fact('Источник дат',p.date_source||'—')+fact('Календарная стадия',p.stage_label?String(p.stage_label)+' · '+num(p.calendar_progress_pct,0)+'%':'—')
+      +fact('Плановый ввод',date(p.commissioning))+fact('Источник дат',p.date_source||'—')+fact('Стадия строительства',(p.construction_stage_label||'стадия не указана')+(p.construction_stage_origin_title?' · '+p.construction_stage_origin_title:'')+(p.construction_stage_raw?' · «'+p.construction_stage_raw+'»':''))+fact('Календарная стадия',p.stage_label?String(p.stage_label)+' · '+num(p.calendar_progress_pct,0)+'%':'—')
       +fact('Продано, посл. месяц',s.sold!==undefined?num(s.sold):'—')+fact('Остаток',s.rem!==undefined?num(s.rem):'—')
       +fact('Цена сделки ДДУ',s.ddu!==undefined?num(s.ddu)+' ₽/м²':'—')+fact('Скидка к прайсу',s.disc!==undefined?num(s.disc,1)+'%':'—')
       +fact('Ипотека',s.mortgage!==undefined?num(s.mortgage,1)+'%':'—')+fact('Юрлица',s.legal!==undefined?num(s.legal,1)+'%':'—')
@@ -194,10 +253,26 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
   document.getElementById('targetStage').addEventListener('change',recalc);
   document.getElementById('reset').addEventListener('click',function(){document.querySelectorAll('.use:not([disabled])').forEach(function(x){x.checked=true});recalc()});
 
-  fetch('/market/price-hint/details',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
-    .then(async function(r){var t=await r.text();var d;try{d=JSON.parse(t)}catch(e){throw new Error('сервер ответил не JSON: '+t.slice(0,120))}if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d})
-    .then(function(d){data=d;renderSummary();renderRows();recalc();document.getElementById('method').textContent=(d.stage_model&&d.stage_model.note?d.stage_model.note+' ':'')+'Автоматический ориентир остаётся исходной оценкой; снятие галочек меняет только сценарий на этой странице.'})
-    .catch(function(e){document.getElementById('summary').innerHTML='<div class="err">'+esc(e.message||e)+'</div>'});
+  document.getElementById('stageEstimated').addEventListener('change',function(){load(pickedStages())});
+
+  // Выбор стадии пересчитывает ориентир на сервере: правило ориентира одно
+  // (`price_hint`), и страница не заводит ему вторую копию.
+  function load(stages){
+    if(stages!==undefined){
+      if(stages.length)body.stages=stages;else delete body.stages;
+      body.include_estimated_stage=document.getElementById('stageEstimated').checked;
+      var url=new URLSearchParams(location.search);
+      if(stages.length)url.set('stages',stages.join(','));else url.delete('stages');
+      if(body.include_estimated_stage)url.delete('estimated');else url.set('estimated','0');
+      try{history.replaceState(null,'','?'+url.toString())}catch(e){}
+      document.getElementById('stageStatus').textContent='Пересчитываю…';
+    }
+    return fetch('/market/price-hint/details',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+      .then(async function(r){var t=await r.text();var d;try{d=JSON.parse(t)}catch(e){throw new Error('сервер ответил не JSON: '+t.slice(0,120))}if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));return d})
+      .then(function(d){data=d;renderSummary();renderStageFilter();renderRows();recalc();document.getElementById('method').textContent=(d.stage_model&&d.stage_model.note?d.stage_model.note+' ':'')+'Автоматический ориентир остаётся исходной оценкой; снятие галочек меняет только сценарий на этой странице.'})
+      .catch(function(e){document.getElementById('summary').innerHTML='<div class="err">'+esc(e.message||e)+'</div>';document.getElementById('stageStatus').textContent=''});
+  }
+  load();
 })();
 </script>
 """

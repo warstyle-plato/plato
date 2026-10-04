@@ -76,6 +76,9 @@ class PulseProject:
     address: str | None = None
     sales_start: str | None = None
     commissioning: str | None = None
+    # Сырой текст стадии строительства, если карта его несёт. Приводит его к
+    # стадии `stage.stage_from_text`, а не этот класс.
+    construction_stage: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +91,7 @@ class PulseProject:
             "address": self.address,
             "sales_start": self.sales_start,
             "commissioning": self.commissioning,
+            "construction_stage": self.construction_stage,
             "url": f"{PULSE_BASE}/complex/{self.complex_id}/",
         }
 
@@ -224,6 +228,54 @@ def _date_key_score(path: str, kind: str) -> int:
     if any(word in key for word in ("sale", "sales", "продаж")):
         score -= 15
     return score
+
+
+def _stage_key(key: str) -> bool:
+    """Ключ, который по смыслу несёт стадию строительства."""
+    low = str(key).lower().replace("ё", "е")
+    if any(word in low for word in ("sale", "продаж", "price", "цен")):
+        return False
+    return any(word in low for word in (
+        "stage", "стади", "build_status", "construction_status", "constr_status",
+        "building_status", "этап строит", "ход строит",
+    ))
+
+
+def _stage_from_payload(payload: Any) -> str | None:
+    """Сырой текст стадии строительства из ответа Пульса, если он там есть.
+
+    Пульс отбирает проекты по стадии фильтром на своём сайте, но в ответах,
+    которые читает наш маршрут (карта, таблица проекта), поле стадии не
+    подтверждено: имя его неизвестно. Поэтому ключ ищется по смыслу, а
+    значение отдаётся сырым — к стадии его приводит `stage.stage_from_text`,
+    и нераспознанный текст остаётся видимым, а не превращается в стадию.
+    Ничего не нашлось — `None`, и это «стадия не указана», а не «любая».
+    """
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if isinstance(child, (dict, list)):
+                    walk(child)
+                elif _stage_key(key) and isinstance(child, str) and child.strip():
+                    found.append(" ".join(html.unescape(child).split()))
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(payload)
+    if not found:
+        return None
+    from .stage import stage_from_text  # noqa: PLC0415 — словарь стадий один
+
+    # Корпуса одного ЖК бывают на разных стадиях; проект целиком стоит на
+    # самой ранней — так же, как его старт продаж берётся самым ранним.
+    order = {code: index for index, code in enumerate(("pit", "frame", "finish", "done"))}
+    known = [(order[code], text) for text in found if (code := stage_from_text(text))]
+    if known:
+        return min(known)[1]
+    return found[0]
 
 
 def _dates_from_payload(payload: Any) -> dict[str, str]:
@@ -638,6 +690,7 @@ class PulseClient:
                 address=(row.get("address") or None),
                 sales_start=(row.get("sales_start") or None),
                 commissioning=(row.get("commissioning") or None),
+                construction_stage=(row.get("construction_stage") or None),
             )
             for row in cached
             if row.get("complex_id") and row.get("latitude") is not None
@@ -701,6 +754,7 @@ class PulseClient:
                     "address": (props.get("construction_address") or "").strip() or None,
                     "sales_start": project_dates.get("sales_start"),
                     "commissioning": project_dates.get("commissioning"),
+                    "construction_stage": _stage_from_payload(props),
                 }
             )
         return out
@@ -1048,6 +1102,30 @@ class PulseClient:
 
         return self._cached("dates", cid, build) or {}
 
+    def project_stage(self, complex_id: int) -> dict[str, Any]:
+        """Стадия строительства проекта из уже полученных ответов Пульса.
+
+        Новых запросов нет: таблица проекта лежит в кэше после `project_dates`,
+        точка карты — в справочнике. Пусто — значит в нашем маршруте поля
+        стадии нет, и ответ говорит это словами, а не молчит.
+        """
+        cid = int(complex_id)
+        path = self.dir / "cache" / f"table-{cid}.json"
+        cached = load_json(path) if path.exists() else None
+        table = cached.get("value") if isinstance(cached, dict) else None
+        raw = _stage_from_payload(table) if isinstance(table, dict) else None
+        if raw:
+            return {"raw": raw, "source": "pulse_api_table"}
+        # Только то, что уже лежит рядом: справочник карты не тянется ради стадии.
+        known = next((item for item in self.projects(fetch=False) if item.complex_id == cid), None)
+        if known is not None and known.construction_stage:
+            return {"raw": known.construction_stage, "source": "pulse_map"}
+        return {
+            "raw": None,
+            "source": None,
+            "reason": "в ответах Пульса, которые читает наш маршрут (карта, таблица проекта), поля стадии нет",
+        }
+
     def remaining(self, complex_id: int) -> dict[str, Any]:
         """Непроданный остаток по корпусам, сложенный в проект."""
         columns = ["building", "living_remaining_predict", "living_remaining_area_predict"]
@@ -1177,6 +1255,9 @@ class PulseClient:
                 ],
                 "sample": sample,
                 "unused": sorted(set(keys) - set(self._MAP_FIELDS_TAKEN)),
+                # Стадию строительства Пульс даёт фильтром на сайте; есть ли
+                # она полем в этих ответах — видно здесь, а не по догадке.
+                "stage_like": sorted(key for key in keys if _stage_key(key)),
             }
 
         if not self.available and not self._cookie("sessionid"):
