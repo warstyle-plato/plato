@@ -403,3 +403,31 @@ def test_a_mixed_project_keeps_the_common_costs_on_the_housing_loan() -> None:
     share = core.DEFAULT_INPUTS["offices_loan_share_pct"] / 100
     assert office["loan_draw"] == pytest.approx(office["capex"] * share, rel=1e-9)
     assert _rows_sum(result, "pf_draw") > 0
+
+
+def _pdf_text(result, x, t, tmp_path, name):
+    pypdf = pytest.importorskip("pypdf")
+    content = core._build_developaid_pdf({"project_name": name, "result": result,
+                                          "inputs": x, "tep": t, "rates": []})
+    path = tmp_path / f"{name}.pdf"
+    path.write_bytes(content)
+    return " ".join("\n".join(p.extract_text() or "" for p in pypdf.PdfReader(str(path)).pages).split())
+
+
+def test_the_nonresidential_pdf_has_no_bank_blocks(tmp_path) -> None:
+    x, t = _spec(offices_strategy="income")
+    for key in core.MKD_PRODUCTS:
+        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            if key in t:
+                t[key][col] = 0
+    x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+    result = core._run_authoritative_model(x, t, [], {})["consolidated"]
+    assert result["report"]["layout"]["project_finance"] is False
+    text = _pdf_text(result, x, t, tmp_path, "nonres")
+    assert "Проект без продаж по ДДУ" in text
+    assert "DSCR — минимум по годам" in text
+    assert "Расчётный БРИДЖ" not in text and "Эскроу против обязательств" not in text
+    mixed = _run(offices_strategy="income")
+    xm, tm = _spec(offices_strategy="income")
+    mixed_text = _pdf_text(mixed, xm, tm, tmp_path, "mixed")
+    assert "Расчётный БРИДЖ" in mixed_text and "Проект без продаж по ДДУ" not in mixed_text

@@ -16928,6 +16928,20 @@ def _escrow_chart_legend_html() -> str:
     return '<div class="legend">' + "".join(spans) + "</div>"
 
 
+def _pdf_nonres_value(row: dict[str, Any]) -> str:
+    """Значение строки нежилья (`nonres_report`, `report_layout`) для PDF."""
+    unit, value = row.get("unit"), row.get("value")
+    if unit == "rub":
+        return _pdf_money(value)
+    if unit == "pct":
+        return _pdf_num(float(value or 0) * 100, 1) + "%"
+    if unit == "mult":
+        return "—" if value is None else _pdf_num(float(value), 2) + "x"
+    if unit == "date":
+        return ".".join(reversed(str(value or "—")[:7].split("-")))
+    return str(value or "—")
+
+
 def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -17428,6 +17442,15 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         kpis.append(["Непогашенный долг ПФ на конец проекта",_pdf_money(_ending_pf)])
     elif _carried_out>500_000:
         kpis.append(["Долг передан в ПФ следующей очереди",_pdf_money(_carried_out)])
+    # Нежилой проект без ДДУ: БРИДЖа, ПФ и LLCR у него нет — строки банка
+    # уходят, а на их место встают деньги объектов (`report.layout`).
+    _layout = report.get("layout") or {}
+    if _layout and not _layout.get("project_finance", True):
+        _bank = {"LLCR", "Расчётный БРИДЖ", "Фактический пик БРИДЖ",
+                 "Пиковая (непокрытая эскроу) задолженность ПФ"}
+        kpis = [row for row in kpis if row[0] not in _bank]
+    kpis += [[str(t.get("label") or ""), _pdf_nonres_value(t)]
+             for t in _layout.get("nonres_tiles") or []]
     story.append(table([["Показатель","Значение"]]+kpis,[112*mm,58*mm]))
     story.append(_PdfSection("vri"))
     # Основание платы за ВРИ — тремя множителями формулы ГлавАПУ. Расхождение
@@ -17846,18 +17869,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     for _nr in report.get("nonres_strategy") or []:
         _nr_rows = [["Нежильё — стратегия реализации: " + str(_nr.get("title") or ""), ""]]
         for _row in _nr.get("rows") or []:
-            _unit, _value = _row.get("unit"), _row.get("value")
-            if _unit == "rub":
-                _shown = _pdf_money(_value)
-            elif _unit == "pct":
-                _shown = _pdf_num(float(_value or 0) * 100, 1) + "%"
-            elif _unit == "mult":
-                _shown = "—" if _value is None else _pdf_num(float(_value), 2) + "x"
-            elif _unit == "date":
-                _shown = ".".join(reversed(str(_value or "—")[:7].split("-")))
-            else:
-                _shown = str(_value or "—")
-            _nr_rows.append([str(_row.get("label") or ""), _shown])
+            _nr_rows.append([str(_row.get("label") or ""), _pdf_nonres_value(_row)])
         story.append(KeepTogether([table(_nr_rows, [112*mm, 58*mm], font_size=7.6)]
                                   + [P(str(w), small) for w in _nr.get("warnings") or []]))
     # Квартиры продаются штуками. «40 квартир в месяц» проверяется отделом
@@ -17879,6 +17891,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             P("Штуки пересчитаны из помесячных продаж по средней площади квартиры "
               "из ТЭП: изменится нарезка — изменится и темп.", small),
         ]))
+    _financing_start = len(story)
     story.append(_PdfSection("financing"));story.append(P("Финансирование и динамика проекта",h2))
     # Раскрытие эскроу — событие очереди, и у каждой оно своё. На
     # многоочередном проекте подписи «в РВЭ» называли моментом сумму
@@ -18316,6 +18329,17 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     )
     if rate_chart:
         story.append(KeepTogether([P("Ставки финансирования",h2),rate_chart]))
+    if _layout and not _layout.get("project_finance", True):
+        # Банковского блока у проекта без ДДУ нет: печатать нули БРИДЖа,
+        # ПФ и эскроу значило бы называть их «посчитанными и пустыми».
+        del story[_financing_start:]
+        story.append(_PdfSection("financing"))
+        story.append(P("Финансирование", h2))
+        story.append(P("Проект без продаж по ДДУ: БРИДЖа, проектного финансирования и "
+                       "эскроу нет. Стройку и общие затраты финансирует кредит объекта "
+                       "на долю стоимости, остальное — собственный капитал; условия, "
+                       "DSCR, срок и баллон — в таблице «Нежильё — стратегия реализации».",
+                       small))
 
     story.append(_PdfSection("income"))
     pace_chart=sales_bar_chart(timeline_rows,height=104)
