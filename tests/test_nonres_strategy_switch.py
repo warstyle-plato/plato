@@ -431,3 +431,30 @@ def test_the_nonresidential_pdf_has_no_bank_blocks(tmp_path) -> None:
     xm, tm = _spec(offices_strategy="income")
     mixed_text = _pdf_text(mixed, xm, tm, tmp_path, "mixed")
     assert "Расчётный БРИДЖ" in mixed_text and "Проект без продаж по ДДУ" not in mixed_text
+
+
+def test_the_nonresidential_teaser_speaks_of_the_object_loan(tmp_path) -> None:
+    pypdf = pytest.importorskip("pypdf")
+    x, t = _spec(offices_strategy="income")
+    for key in core.MKD_PRODUCTS:
+        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            if key in t:
+                t[key][col] = 0
+    x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+
+    def text_of(inputs, tep, name):
+        bundle = core._run_authoritative_model(inputs, tep, [], {})
+        pdf = core.build_teaser_pdf(bundle, inputs, tep, {})
+        path = tmp_path / f"{name}.pdf"
+        path.write_bytes(pdf)
+        return " ".join("\n".join(p.extract_text() or "" for p in pypdf.PdfReader(str(path)).pages).split()), bundle
+
+    text, bundle = text_of(x, t, "teaser_nonres")
+    assert "DSCR — минимум по годам" in text
+    assert "LLCR" not in text and "Пик эскроу" not in text and "Пик БРИДЖа" not in text
+    presentation = core.project_presentation(bundle, x, t, {})
+    assert not {"llcr", "peak_bridge_mln", "peak_pf_mln"} & {k["key"] for k in presentation["kpi"]}
+    assert not {"llcr_below_target", "weakest_phase"} & {r["key"] for r in presentation["risks"]}
+    xm, tm = _spec(offices_strategy="income")
+    mixed, _ = text_of(xm, tm, "teaser_mixed")
+    assert "LLCR" in mixed and "Пик эскроу" in mixed

@@ -34132,6 +34132,9 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
             tiles.append({"label": "DSCR — минимум по годам", "value": min(dscr), "unit": "mult"})
         if exit_value:
             tiles.append({"label": "Стоимость объектов на выходе", "value": exit_value, "unit": "rub"})
+    for tile in tiles:
+        if tile["unit"] == "rub":
+            tile["value_mln"] = float(tile["value"] or 0.0) / 1e6
     return {"housing": not is_nonresidential(inputs),
             "project_finance": project_finance,
             "nonres_strategy": bool(objects),
