@@ -130,3 +130,66 @@ def test_the_designers_200k_workbook():
     row = core.underground_tep_row({"vri_region": "mo"}, tep)
     assert row["units"] == 2289 and row["gns"] == 80115
     assert core.underground_guest_spaces(row) == 0
+
+
+# Состояние проекта «Мытищи» (выгрузка владельца, 04.10.2026): регион МО,
+# пара подземного паркинга 150 м/м / 5 215 м² осталась от прежнего участка и
+# помечена «руками», а расчёт МО по этому участку даёт 2 289 / 80 115.
+STALE = """()=>{
+  inputs.vri_region='mo';
+  inputs.underground_manual_spaces=150;
+  inputs.underground_manual_gns_sqm=5215;
+  markParkingByHand(PROJECT_PARKING_KEY);
+}"""
+
+APPLY = """async (silent)=>{
+  const response=await fetch('/mo/calculate',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({query:'',limit:30,site_area_ha:6.6667,
+      density_sqm_per_ha:30000,district:'',market_price_rub_per_sqm:0,vri_kd:0,
+      average_flat_sqm:AVERAGE_FLAT.mo.sqm})});
+  moResult=await response.json();
+  if(silent)inputs._mo_calc=inputs._mo_calc||{};
+  await applyMo({silent});
+  return {spaces:Number(inputs.underground_manual_spaces||0),
+          area:Number(inputs.underground_manual_gns_sqm||0),
+          row:Number(tep.underground_parking.units||0),
+          flats:Number(tep.apartments.saleable||0),
+          field:Number(document.getElementById('f_underground_manual_spaces').value||0),
+          byHand:parkingByHand(PROJECT_PARKING_KEY)};
+}"""
+
+
+@pytest.fixture(scope="module")
+def applied():
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    path = browser.chromium_or_skip()
+    out: dict[str, dict] = {}
+    with browser.serve(core.app, 18163) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            for mode, silent in (("explicit", False), ("silent", True)):
+                ctx = engine.new_context(viewport={"width": 1440, "height": 900})
+                page = ctx.new_page()
+                page.goto(base, wait_until="domcontentloaded")
+                page.wait_for_timeout(2000)
+                page.evaluate(STALE)
+                out[mode] = page.evaluate(APPLY, silent)
+                ctx.close()
+    return out
+
+
+def test_applying_the_mo_site_drops_the_old_parking_pair(applied):
+    got = applied["explicit"]
+    want = core.mo_social_program(got["flats"])["parking"]["permanent_spaces"]
+    assert want > 150, f"проверка ничего не доказывает: норма {want}"
+    assert got["spaces"] == want and got["row"] == want and got["field"] == want, got
+    assert not got["byHand"], "норма нового участка помечена как ручная"
+
+
+def test_a_silent_refresh_keeps_the_hand_pair(applied):
+    """Предохранитель: тихое обновление того же участка руки не трогает —
+    иначе сброс выше мог бы оказаться сбросом на любой пересчёт."""
+    got = applied["silent"]
+    assert got["spaces"] == 150 and got["area"] == 5215 and got["byHand"], got

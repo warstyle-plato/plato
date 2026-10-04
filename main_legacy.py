@@ -11089,8 +11089,8 @@ def underground_parking_requirement(inputs: dict[str, Any],
             return None
         return {"permanent": permanent, "guest": 0.0, "mfc": 0.0, "spaces": permanent,
                 "basis": (f"РНГП Московской области: {program['population']} чел. от "
-                          f"{apartments:,.0f} м² квартир, только постоянное хранение"
-                          ).replace(",", " "),
+                          + f"{apartments:,.0f}".replace(",", " ")
+                          + " м² квартир, только постоянное хранение"),
                 "gns": permanent * per}
     imported_permanent = _underground_number(normalized, "parking_permanent")
     imported_guest = _underground_number(normalized, "parking_guest")
@@ -50245,6 +50245,17 @@ async function applyMo(options){
  Object.entries(moResult.tep||{}).forEach(([key,values])=>{
   if(tep[key])Object.assign(tep[key],values);
  });
+ // Другой участок — другой паркинг: то же правило, что у импорта ГлавАПУ.
+ // Без него пара «места ↔ площадь» прежнего участка (с пометкой «руками»)
+ // перебивала норму нового на первом же пересчёте: в Мытищах расчёт МО
+ // дал 2 289 м/м и 80 115 м², а в проекте остались 150 и 5 215 (владелец,
+ // 04.10.2026). Тихое обновление параметров того же участка пару не трогает:
+ // там вписанное человеком остаётся его решением.
+ if(!silent){
+  inputs.underground_manual_spaces=0;
+  inputs.underground_manual_gns_sqm=0;
+  markParkingByNorm(PROJECT_PARKING_KEY);
+ }
  syncTep(false);
  // Очерёдность сбрасываем только при явном применении: при автоматическом
  // обновлении параметров она уже настроена пользователем, и терять её нельзя.
