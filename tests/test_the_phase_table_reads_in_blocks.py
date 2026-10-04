@@ -37,6 +37,8 @@ import page_blocks  # noqa: E402
 from browser import chromium_or_skip  # noqa: E402
 from test_object_parking_reaches_the_queue import _phased  # noqa: E402
 
+from terms_glossary import TOTAL_AREA  # noqa: E402
+
 PORT = 18934
 
 # Порядок отчёта о прибылях (владелец, 28.09.2026): доходы → все расходы
@@ -47,7 +49,6 @@ REVENUE_TAIL = [
     "Выручка всего",
     "Цена реализации на м² продаваемой",
     "в т.ч. квартиры — на м² их продаваемой",
-    "Цена реализации на м² ГНС",
 ]
 RATES = [f"{name} — цена м² МКД очереди" for name in (
     "ИРД и согласования", "Проектирование П+РД", "Подготовительные работы", "Наружные сети")]
@@ -55,11 +56,11 @@ EXPENSE_NOTE = ("По объектам не делятся: финансиров
                 "и налог считаются на очередь целиком")
 COSTS_TAIL = [
     "CAPEX всего",
-    "CAPEX на м² ГНС",
+    f"CAPEX на м² {TOTAL_AREA.genitive}",
     "Полные расходы",
     EXPENSE_NOTE,
     "Полные расходы на м² продаваемой",
-    "Полные расходы на м² ГНС",
+    f"Полные расходы на м² {TOTAL_AREA.genitive}",
 ]
 
 
@@ -84,11 +85,13 @@ def _expected_costs(bundle: dict) -> list[str]:
 RESULT_TAIL = [
     "Чистая прибыль — cash",
     "Маржинальность",
-    "Чистая прибыль на м² ГНС",
     "Чистая прибыль на м² продаваемой",
 ]
 LAST_ROW = RESULT_TAIL[-1]
-DIVISORS = ("на м² продаваемой — продаваемая площадь", "на м² ГНС — ГНС наземная")
+# Базы — решение 4 ревизии книги (29.09.2026): выручка и прибыль на
+# продаваемую, расходы на суммарную площадь в ГНС; подписи — из словаря.
+DIVISORS = ("на м² продаваемой — продаваемая площадь",
+            f"на м² {TOTAL_AREA.genitive} — {TOTAL_AREA.lower()} (наземная и подземная)")
 
 
 @pytest.fixture(scope="module")
@@ -191,7 +194,7 @@ def test_divisors_are_a_caption_not_body_rows(rows, bundle) -> None:
     for text in DIVISORS:
         assert text in caption, caption
     summary = bundle["consolidated"]["summary"]
-    for key in ("monetizable_saleable_sqm", "project_gns_sqm"):
+    for key in ("monetizable_saleable_sqm", "construction_volume_sqm"):
         total = f"{round(float(summary[key])):,}".replace(",", " ")
         assert total in caption.replace(" ", " "), (key, total, caption)
 

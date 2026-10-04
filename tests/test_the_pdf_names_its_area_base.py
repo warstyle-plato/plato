@@ -64,34 +64,47 @@ def _numbers(line: str) -> list[int]:
             for value in re.findall(r"(\d[\d\s ]{3,})\s*м²", line)]
 
 
-def test_the_base_is_the_above_ground_area(report) -> None:
-    """База названа наземной площадью, и это она и есть."""
-    text, summary = report
-    assert "База ГНС — наземная площадь" in text
-    line = text[text.index("База ГНС — наземная площадь"):][:500]
-    assert _numbers(line)[0] == int(round(summary["project_gns_sqm"]))
+# С 29.09.2026 (решение 4 ревизии книги) у каждой строки удельных своя база,
+# и под таблицей перечислены все четыре — каждая своим именем и числом движка.
+_NOTE = "Базы удельных:"
 
 
-def test_the_underground_is_named_and_excluded(report) -> None:
-    """Подземная часть названа числом и сказано, что в базу она не входит."""
+def _note(text: str) -> str:
+    flat = " ".join(text.split())
+    assert _NOTE in flat, "подписи баз под удельной экономикой нет"
+    return flat[flat.index(_NOTE):][:900]
+
+
+def test_each_base_is_named_with_the_engines_number(report) -> None:
+    """Каждая база названа словом словаря и числом движка."""
+    from terms_glossary import CORE_ABOVE_AREA, CORE_UNDER_AREA, SALEABLE_AREA
     text, summary = report
-    line = text[text.index("База ГНС — наземная площадь"):][:500]
-    assert "Подземная часть" in line and "в неё не входит" in line
-    assert _numbers(line)[1] == int(UNDERGROUND_SQM)
-    assert int(round(summary["underground_gns_sqm"])) == int(UNDERGROUND_SQM)
+    note = _note(text)
+    bases = summary["unit_bases"]
+    for term in (TOTAL_AREA, SALEABLE_AREA, CORE_ABOVE_AREA, CORE_UNDER_AREA):
+        part = note[note.index(term.name):]
+        assert _numbers(part)[0] == int(round(bases[term.key])), term.name
+
+
+def test_the_underground_is_named_and_counted(report) -> None:
+    """Подземная часть МКД — своя база СМР подземной части, числом движка."""
+    text, summary = report
+    note = _note(text)
+    assert int(round(summary["unit_bases"]["core_under_area"])) == int(UNDERGROUND_SQM)
+    assert "подземной" in note
 
 
 def test_the_construction_volume_is_named_where_it_works(report) -> None:
-    """Суммарная площадь — сумма обеих, и назван там, где он и считается."""
+    """Суммарная площадь — база расходов, и это сказано; общие статьи названы."""
     text, summary = report
-    line = text[text.index("База ГНС — наземная площадь"):][:600]
-    numbers = _numbers(line)
-    assert len(numbers) >= 3, line
-    above, under, volume = numbers[0], numbers[1], numbers[2]
-    assert above + under == volume, (above, under, volume)
-    assert TOTAL_AREA.name in line
-    # На нём считаются общие статьи — без этого читатель не знает, зачем оно.
-    assert "общие статьи" in line.lower()
+    note = _note(text)
+    assert TOTAL_AREA.name in note
+    assert f"Расходы — на {TOTAL_AREA.genitive}" in note
+    assert int(round(summary["construction_volume_sqm"])) == int(round(
+        summary["project_gns_sqm"] + summary["underground_gns_sqm"]))
+    # На суммарной площади МКД считаются общие статьи — без этого читатель не
+    # знает, зачем она.
+    assert "общие статьи" in note.lower()
 
 
 def test_a_mixed_number_is_never_labelled_gns(report) -> None:

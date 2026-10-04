@@ -67,11 +67,13 @@ def test_the_phased_summary_carries_it_too():
 
 
 def test_the_unit_economics_show_the_vat(result):
-    """Удельная экономика — на обеих базах, как всё остальное в отчёте."""
+    """Удельная экономика — на своей базе (расход — суммарная площадь в ГНС)
+    и на продаваемой, как остальные расходы отчёта."""
     line = next(item for item in result["report"]["unit_economics"]
                 if item["label"] == "НДС")
     assert line["total"] == pytest.approx(result["finance"]["vat"], rel=1e-9)
-    assert line["per_gns_th"] > 0 and line["per_saleable_th"] > 0
+    assert line["base"] == "total_area"
+    assert line["per_base_th"] > 0 and line["per_saleable_th"] > 0
 
 
 # --- НДС виден на странице -------------------------------------------------------

@@ -213,9 +213,12 @@ def test_the_base_of_the_unit_figures_is_the_above_ground_area() -> None:
     assert under > 0, "проверять нечего: на умолчаниях подземной части нет"
     assert above + under == pytest.approx(volume)
     assert above == pytest.approx(volume - under)
-    # Удельные считаются на наземной, а не на объёме: иначе правка не сделана.
+    # С 29.09.2026 (решение 4 ревизии книги) расходы делятся на суммарную
+    # площадь — сумму обеих половин, — и это число названо своей базой, а не
+    # «ГНС»: подмена наземной на объём под одним именем остаётся невозможной.
     expenses = float(summary["total_expenses"])
-    assert summary["full_cost_per_gns_th"] != pytest.approx(expenses / volume / 1000, rel=1e-9)
+    assert summary["full_cost_per_total_area_th"] == pytest.approx(expenses / volume / 1000, rel=1e-9)
+    assert "full_cost_per_gns_th" not in summary
 
 
 def test_the_shared_rates_say_they_are_on_the_construction_volume() -> None:
