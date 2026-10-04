@@ -241,14 +241,17 @@ def test_an_uncounted_sensitivity_offers_to_count_it():
 # --- удельные на обе базы там, где их не было ---------------------------------
 
 def test_the_revenue_table_speaks_in_roubles_per_metre(report_tab):
+    """Выручка — на продаваемую площадь (решение 4 ревизии книги)."""
     assert "Структура выручки" in report_tab
     head = report_tab[report_tab.find("Структура выручки"):]
-    assert "тыс ₽/м² наземной ГНС" in head[:400] and "тыс ₽/м² прод." in head[:400]
+    assert "тыс ₽/м² продаваемой площади" in head[:400]
 
 
 def test_the_capex_table_speaks_in_roubles_per_metre(report_tab):
+    """Статьи CAPEX — каждая на свою базу, названную колонкой «База»."""
     head = report_tab[report_tab.find("Структура затрат по статьям"):]
-    assert "тыс ₽/м² наземной ГНС" in head[:400] and "тыс ₽/м² прод." in head[:400]
+    assert "тыс ₽/м² своей базы" in head[:400] and "<th>База</th>" in head[:400]
+    assert "тыс ₽/м² прод." in head[:400]
 
 
 def test_the_social_load_is_shown_per_metre():

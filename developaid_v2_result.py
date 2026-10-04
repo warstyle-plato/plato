@@ -62,6 +62,8 @@ _KPI_KEYS = (
     "llcr",
     "npv",
     "irr_equity",
+    # Признак движка: IRR и NPV сняты при непогашенном долге и почему.
+    "equity_returns",
     "full_project_cost",
     "ending_pf",
     "monetizable_saleable_sqm",
@@ -69,6 +71,10 @@ _KPI_KEYS = (
     "project_gns_sqm",
     "average_apartment_price_th",
     "full_cost_per_saleable_th",
+    # Удельные на свою базу (решение 4 ревизии книги) и сами базы.
+    "full_cost_per_total_area_th",
+    "capex_per_total_area_th",
+    "unit_bases",
     "construction_cost_per_gns_th",
     "ebitda_per_saleable_th",
     "net_profit_per_saleable_th",
