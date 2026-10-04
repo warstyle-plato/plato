@@ -86,7 +86,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.91"
+VERSION = "0.24.95"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2202,6 +2202,24 @@ def row_outside_project(inputs: dict[str, Any] | None, key: str,
     return not any(n(row, col) for col in (*_RESIDENTIAL_EXCLUDED_TEP_COLUMNS,
                                            *TEP_SUMMABLE_FIELDS,
                                            *_ROW_QUANTITY_FIELDS))
+
+
+def row_listed(row: dict[str, Any]) -> bool:
+    """Печатать ли строку ТЭП или продукта в списке продуктов проекта.
+
+    Один ответ для тизера (модель представления) и таблицы ТЭП полного PDF.
+    Строка есть, только если продукт есть в проекте: состав решает расчёт
+    признаком `excluded` (`row_outside_project`), а продукт дома без метров и
+    штук (кладовые 0) — не «ноль кладовых», а «кладовых нет». Объект, который
+    заведён и включён, остаётся строкой и пустым: его в проекте завели.
+    """
+    if row.get("excluded"):
+        return False
+    if str(row.get("key") or "") in _BY_KEY:
+        return True
+    return any(n(row, col) for col in (*_RESIDENTIAL_EXCLUDED_TEP_COLUMNS,
+                                       *TEP_SUMMABLE_FIELDS,
+                                       *_ROW_QUANTITY_FIELDS))
 
 
 # Столбцы строки ТЭП, которые несут количество: обнулив их, строка перестаёт
@@ -10907,6 +10925,11 @@ PARKING_2118_PARAMS: dict[str, Any] = {
     # Пункт 2 по средней квартире — те же полосы и коэффициенты, что у движка.
     "mix": dict(_PARKING_2118_MIX),
     "bands": dict(_PARKING_2118_BANDS),
+    # Область считается своей нормой (`underground_parking_requirement`),
+    # и её числа странице подставляются отсюда же — копии нет.
+    "mo": {key: MO_NORMS_DEFAULT[key] for key in (
+        "living_space_per_person_sqm", "parking_permanent_per_1000",
+        "parking_permanent_share")},
 }
 PARKING_2118_PLACEHOLDER = "__DEVELOPAID_PARKING_2118__"
 
@@ -11070,6 +11093,23 @@ def underground_parking_requirement(inputs: dict[str, Any],
     apartment_row = rows.get("apartments") or {}
     apartments = _underground_number(apartment_row, "saleable")
     normalized = (inputs.get("_glavapu_import") or {}).get("normalized") or {}
+    if str(inputs.get("vri_region") or "msk") == "mo":
+        # В области норматив мест свой — РНГП МО, и он у движка уже есть
+        # (`mo_social_program`): по нему же считаются соцобъекты. 2118-ПП —
+        # постановление Москвы, а выгрузка ГлавАПУ — московский орган; в
+        # области ни то ни другое потребность не задаёт. Гостевых здесь нет:
+        # временные места норматив МО отдаёт жилому району, а не кварталу.
+        if apartments <= 0:
+            return None
+        program = mo_social_program(apartments)
+        permanent = float(program["parking"]["permanent_spaces"])
+        if permanent <= 0:
+            return None
+        return {"permanent": permanent, "guest": 0.0, "mfc": 0.0, "spaces": permanent,
+                "basis": (f"РНГП Московской области: {program['population']} чел. от "
+                          + f"{apartments:,.0f}".replace(",", " ")
+                          + " м² квартир, только постоянное хранение"),
+                "gns": permanent * per}
     imported_permanent = _underground_number(normalized, "parking_permanent")
     imported_guest = _underground_number(normalized, "parking_guest")
     imported_mfc = _underground_number(normalized, "mfc_parking_spaces")
@@ -11163,6 +11203,11 @@ def underground_tep_row(inputs: dict[str, Any],
         if not need:
             return None
         spaces, area, guest = need["spaces"], need["gns"], need["guest"]
+    if str(inputs.get("vri_region") or "msk") == "mo":
+        # Гостевых мест норматив области в квартале не строит — значит, и
+        # заданные руками места все постоянные. Без явного нуля движок
+        # вычел бы из них московскую одиннадцатую часть и не продал бы её.
+        guest = 0.0
     computed = dict(zero)
     computed["units"] = float(spaces)
     computed["gns"] = round(area, 1)
@@ -12112,7 +12157,7 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
     in_house = sum(int(row.get("required_spaces") or 0)
                    for row in (demand.get("rows") or [])
                    if row.get("tep_key") not in own_keys)
-    head = (f"По нормативу приложения 6 положено {required} мест."
+    head = (f"По нормативу {demand.get('norm_of') or ''} положено {required} мест."
             if required else "Норматив не посчитан — числа заданы руками.")
     if in_house:
         head += (f" Из них {in_house} — встроенной коммерции МКД: её места в "
@@ -12128,6 +12173,16 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
         spoken = "; ".join(caveats)
         text += " " + spoken[:1].upper() + spoken[1:] + "."
     return text
+
+
+# Чей норматив посчитал приобъектные места — в родительном падеже, чтобы
+# встать после «по нормативу». Подпись берётся отсюда же, откуда расчёт
+# берёт юрисдикцию: зашитое «приложение 6 к 945-ПП» на участке в области
+# называло московский документ под областным числом (Мытищи, 04.10.2026).
+PARKING_NORM_OF: dict[str, str] = {
+    parking_norms.MOSCOW: "приложения 6 к 945-ПП",
+    parking_norms.MOSCOW_OBLAST: "Московской области (СП 42.13330.2016, табл. Ж.1)",
+}
 
 
 def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
@@ -12230,6 +12285,7 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
     missing = [f"{row['label']}: {row.get('reason')}" for row in rows if row.get("reason")]
     return {
         "jurisdiction": jurisdiction,
+        "norm_of": PARKING_NORM_OF[jurisdiction],
         "k1": k1_applied or k1, "k2": k2_applied or k2,
         "k_input": {"k1": k1, "k2": k2},
         "k_assumed": k_assumed,
@@ -17480,11 +17536,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # переданном молчал — и читался так, будто продано всё построенное
     # (владелец, 10.09.2026). Колонка появляется вместе с числом: постоянный
     # столбец нулей — шум, а не полнота.
-    # Строка вне состава проекта (`row_outside_project`) не печатается —
-    # тот же признак, что у отчёта страницы и книги.
-    rows_data = [row for row in (tep_report.get('rows') or [])
-                 if not row.get('excluded')
-                 and any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
+    # Строка продукта, которого нет в проекте, не печатается — то же
+    # правило, что у ТЭП тизера (`row_listed`).
+    rows_data = [row for row in (tep_report.get('rows') or []) if row_listed(row)]
     total=tep_report.get('total') or {}
     given = sum(float(row.get('transfer') or 0) for row in rows_data)
     # Итог количества — разбор по мере счёта, а не сумма: квартиры,
@@ -23773,6 +23827,10 @@ def _presentation_product_numbers(item: dict[str, Any]) -> dict[str, Any]:
     quantity = float(item.get("quantity") or 0.0)
     by_units = str(item.get("unit") or "") == "шт."
     return {
+        # Есть ли продукт в проекте — решает движок (`row_listed`), а слой
+        # представления только отбирает: тизер печатал все продукты отчёта,
+        # и кладовые 0 и удалённые «Офисы 2…5» стояли в его ТЭП.
+        "listed": row_listed(item),
         "revenue_mln": revenue / 1e6,
         "cost_mln": cost / 1e6,
         # Выручка и цена — на продаваемую площадь (решение 4 ревизии книги):
@@ -34464,6 +34522,9 @@ def _calculate_economics(req: CalcRequest) -> dict:
         # Строка вне состава проекта (`row_outside_project`): нули в ней —
         # не «продукт пуст», а «продукта в этом проекте нет».
         tep_rows[-1]["excluded"] = row_outside_project(x, key, tep_rows[-1])
+        # Есть ли продукт в проекте — тот же ответ, что у тизера и полного PDF
+        # (`row_listed`); его читают поверхности, которым состава мало.
+        tep_rows[-1]["listed"] = row_listed(tep_rows[-1])
 
     # Свод складывает только складываемое. Штук в списке нет: они
     # группируются мерой счёта, потому что квартира, машино-место и место в
@@ -36826,6 +36887,10 @@ def _consolidate_phase_results(
                           "parking_over_units", "parking_guest_units"):
                 target[field] += float(row.get(field, 0.0) or 0.0)
     tep_rows = list(tep_map.values())
+    # Признак свода — по своду, а не по первой очереди: объект второй очереди
+    # выключен в первой и пуст в ней.
+    for _row in tep_rows:
+        _row["listed"] = row_listed(_row)
     # Тот же список полей, что у одиночного расчёта, и та же группировка
     # штук: две копии однажды разошлись бы, и своды очередного и одиночного
     # проектов считались бы по-разному.
@@ -37156,6 +37221,17 @@ def _consolidate_phase_results(
             # Деньги у очередей считаются своими основаниями — у одной ставка,
             # у другой методика, — и взятое у первой говорило бы за остальные.
             "landscaping_money_basis": "сумма очередей — у каждой своё основание",
+            # Показатель поля «Благоустройство, тыс. ₽/м² ГНС» — от денег и ГНС
+            # свода, а не средним удельных. Без него страница читала пустоту
+            # как «методика дала ноль» и писала «благоустройства в расчёте
+            # нет» над 544 млн ₽ в CAPEX (Мытищи, владелец, 04.10.2026).
+            "landscaping_per_gns_th": per_th(capex.get("landscaping", 0.0), project_gns),
+            "landscaping_by_class_th": per_th(sum(
+                float(r["summary"].get("landscaping_by_class_th") or 0.0)
+                * float(r["summary"].get("project_gns_sqm") or 0.0) * 1000
+                for r in results), project_gns),
+            "landscaping_by_rate": any(
+                bool(r["summary"].get("landscaping_by_rate")) for r in results),
             # Пустоту свод не выбирает у первой очереди: текстов у неё
             # столько же, сколько очередей, и любой выбранный говорил бы за
             # остальные. Свод называет счёт.
@@ -48616,7 +48692,34 @@ function renderPhasing(){
  const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
  renderShareTable('phaseCashHead','phaseCashBody',phasing.shared_cash,sl,'shared_cash');renderShareTable('phaseAllocHead','phaseAllocBody',phasing.shared_allocation,sl,'shared_allocation');
  socialObjectsBody.innerHTML=phasing.social_objects.map((o,i)=>`<tr><td><input value="${o.name||''}" onchange="updateSocialObject(${i},'name',this.value)"></td><td><select onchange="updateSocialObject(${i},'type',this.value)"><option value="kindergarten" ${o.type==='kindergarten'?'selected':''}>${productName('kindergarten')}</option><option value="school" ${o.type==='school'?'selected':''}>${productName('school')}</option><option value="clinic" ${o.type==='clinic'?'selected':''}>${productName('clinic')}</option></select></td><td><input type="number" value="${Number(o.capacity||0)}" onchange="updateSocialObject(${i},'capacity',this.value)"></td><td><select onchange="updateSocialObject(${i},'phase',this.value)">${phaseOptions(o.phase)}</select></td><td><input type="date" value="${o.start_date||''}" onchange="updateSocialObject(${i},'start_date',this.value)"></td><td><button class="btn" onclick="deleteSocialObject(${i})">×</button></td></tr>`).join('');renderSocialStatus();
- assignObjects.innerHTML=projectObjects().map(o=>
+ renderPhaseObjects();
+ renderPhaseFinancing();
+}
+
+// Очередь выбирается только объекту, который есть в проекте: заведён и
+// включён, или с метрами. Ответ — у движка (`row_listed`, признак `listed`
+// строки ТЭП), тот же, что у ТЭП тизера; второй проверки здесь нет. Здесь
+// стояли селекторы всех заведённых объектов, выключенных тоже («почему в
+// Очерёдности все эти объекты, если включён только один офисник?», владелец,
+// 04.10.2026). Нет ответа или признака — селектор остаётся: отсутствие ответа
+// не решение. Очередь спрятанного объекта в `phasing.discrete` не трогается и
+// вернётся вместе с ним.
+function phaseObjectListed(key){
+ // Свод, а не открытая очередь: в первой очереди объект второй пуст.
+ const result=(phaseBundle&&phaseBundle.consolidated)||lastResult;
+ const rows=result&&result.tep&&result.tep.rows;
+ const row=Array.isArray(rows)?rows.find(r=>r&&r.key===key):null;
+ // Ответ движка — о посчитанных вводных. Объект, включённый после него,
+ // движок по `row_listed` назовёт объектом проекта всегда (заведён и
+ // включён), и прятать его до пересчёта значило бы читать устаревший ответ.
+ const o=OBJECT_BY_KEY[key];
+ if(o&&inputOn(inputs[o.prefix+'_enabled']))return true;
+ return !row||row.listed!==false;
+}
+function renderPhaseObjects(){
+ // Узел — как у `tepBody` в `syncTep`: стенд страницы зовёт её без разметки.
+ if(typeof assignObjects==='undefined'||!assignObjects)return;
+ assignObjects.innerHTML=projectObjects().filter(o=>phaseObjectListed(o.key)).map(o=>
   `<div class="field"><label>${escapeHtml(productName(o.key))}</label>`
   +`<select data-object="${escapeHtml(o.key)}">${phaseOptions(phasing.discrete[o.key])}</select></div>`).join('');
  assignObjects.querySelectorAll('select[data-object]').forEach(sel=>{
@@ -48624,7 +48727,6 @@ function renderPhasing(){
   sel.value=String(phasing.discrete[key]||1);
   sel.onchange=function(){phasing.discrete[key]=Number(this.value);calculate()};
  })
- renderPhaseFinancing();
 }
 
 function waitForGenplan(test,timeout=60000){
@@ -50196,6 +50298,17 @@ async function applyMo(options){
  Object.entries(moResult.tep||{}).forEach(([key,values])=>{
   if(tep[key])Object.assign(tep[key],values);
  });
+ // Другой участок — другой паркинг: то же правило, что у импорта ГлавАПУ.
+ // Без него пара «места ↔ площадь» прежнего участка (с пометкой «руками»)
+ // перебивала норму нового на первом же пересчёте: в Мытищах расчёт МО
+ // дал 2 289 м/м и 80 115 м², а в проекте остались 150 и 5 215 (владелец,
+ // 04.10.2026). Тихое обновление параметров того же участка пару не трогает:
+ // там вписанное человеком остаётся его решением.
+ if(!silent){
+  inputs.underground_manual_spaces=0;
+  inputs.underground_manual_gns_sqm=0;
+  markParkingByNorm(PROJECT_PARKING_KEY);
+ }
  syncTep(false);
  // Очерёдность сбрасываем только при явном применении: при автоматическом
  // обновлении параметров она уже настроена пользователем, и терять её нельзя.
@@ -50871,7 +50984,25 @@ function normativeUnderground(){
 // 945-ПП) и живёт своими полями объекта.
 function parkingRequirement(){
  if(isNonResidential())return null;
+ if(String(inputs.vri_region||'msk')==='mo')return moNormativeUnderground();
  return getGlavapuUnderground()||normativeUnderground();
+}
+
+// Московская область: РНГП МО, а не 2118-ПП и не выгрузка ГлавАПУ — оба
+// московские. Та же формула, что `mo_social_program` движка, числа — из
+// плейсхолдера; гостевых нет, временные места закрывает жилой район.
+function moNormativeUnderground(){
+ const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(apartments<=0)return null;
+ const m=PARKING_2118.mo;
+ const up=v=>Math.ceil(Math.round(v*1e6)/1e6);
+ const population=up(apartments/m.living_space_per_person_sqm);
+ const permanent=up(population*m.parking_permanent_per_1000/1000*m.parking_permanent_share);
+ if(permanent<=0)return null;
+ return {permanent,guest:0,mfc:0,spaces:permanent,
+         basis:'РНГП Московской области: '+num(population)+' чел. от '+num(Math.round(apartments))
+               +' м² квартир, только постоянное хранение',
+         gns:permanent*undergroundAreaPerSpace()};
 }
 
 function undergroundAreaPerSpace(){
@@ -52058,7 +52189,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
@@ -52343,6 +52474,10 @@ function projectParking(){
  return ((lastResult||{}).parking)||{};
 }
 
+// Чей норматив — говорит расчёт (`PARKING_NORM_OF` движка), а не подпись:
+// у области он свой, и московское имя под областным числом было бы неправдой.
+function parkingNormOf(){return String(projectParking().norm_of||'(документ расчёт не назвал)')}
+
 function objectParkingNote(key){
  const own=(projectParking().own)||[];
  const item=own.find(o=>o&&o.tep_key===key&&o.enabled);
@@ -52356,7 +52491,7 @@ function objectParkingNote(key){
   +(Number(item.over_gba_sqm||0)>0
     ?`; места первых этажей занимают ${num(item.over_gba_sqm)} м² ГНС здания — продаваемая объекта меньше на ${num(item.saleable_taken_sqm)} м²`
     :'')
-  +` · ${item.by_norm?'по нормативу приложения 6':'задано руками'}`;
+  +` · ${item.by_norm?'по нормативу '+parkingNormOf():'задано руками'}`;
 }
 
 // Какие поля паркинга объекта тронуты руками. Список заводится в момент, когда
@@ -52512,9 +52647,9 @@ function objectParkingFieldNote(prefix){
  // подряд перестают читать. Подпись отвечает на другое — чьё оно и что будет,
  // если поле тронуть.
  if(item.by_norm)return req
-  ?'Оба числа выше поставил норматив приложения 6 к 945-ПП — они следуют за ТЭП. '
+  ?'Оба числа выше поставил норматив '+parkingNormOf()+' — они следуют за ТЭП. '
    +'Впишите своё, чтобы перебить; ноль руками значит «гаража нет».'
-  :'По нормативу приложения 6 к 945-ПП мест не требуется.';
+  :'По нормативу '+parkingNormOf()+' мест не требуется.';
  // Замок обязан называть, чем его открыть. Проект, сохранённый до того, как
  // норма начала заполнять поле, приходит без списков — и её же число читается
  // как человеческое и замирает: на живом проекте офисы стояли 2 956 при норме
@@ -52522,7 +52657,7 @@ function objectParkingFieldNote(prefix){
  // Разойтись эти два числа могут на два порядка, поэтому норматив называется
  // рядом, а путь назад — очистить поле — сказан прямо.
  const back=' Очистите поле — вернётся норматив и снова пойдёт за ТЭП.';
- if(!req)return 'Задано руками. По нормативу приложения 6 мест не требуется.' + back;
+ if(!req)return 'Задано руками. По нормативу '+parkingNormOf()+' мест не требуется.' + back;
  // Норматив — обязательство ОБЪЕКТА, а не одного из двух полей: места при
  // объекте бывают и под ним, и на первых этажах. Пока это не сказано, число
  // под полем «мест на первых этажах» читается как норма ЭТОГО поля.
@@ -52535,7 +52670,7 @@ function objectParkingFieldNote(prefix){
  // печатались двумя числами подряд, а дефицит в 1 093 места числом не
  // назывался. Оба случая модель знала и не говорила.
  const gap=objectParkingGap(item);
- const norm=`Задано руками. Норматив приложения 6 — ${num(req)} мест на объект: `
+ const norm=`Задано руками. Норматив ${parkingNormOf()} — ${num(req)} мест на объект: `
   +'это оба поля вместе, под зданием и на первых этажах.';
  // Перебор — решение человека, а не ошибка, поэтому он назван, но не
  // выделен: он же и подсказывает, на сколько можно снизить подземные.
@@ -54358,6 +54493,9 @@ function syncTep(rerender=true){
  const editingTep=typeof tepBody!=='undefined'&&tepBody
   &&tepBody.contains(document.activeElement);
  if(rerender||!editingTep)renderTep();else updateTepTotals();
+ // Включённый или выключенный объект меняет состав очередей сразу, а не со
+ // следующим ответом движка (`renderPhaseObjects`).
+ if(typeof renderPhaseObjects==='function')renderPhaseObjects();
  return inputsFilled;
 }
 function addMonthsJS(iso,months){
@@ -54616,7 +54754,7 @@ async function calculate(){
   // Между стартом расчёта и его ответом человек нажал «Сбросить».
   lastResult=null;phaseBundle=null;blankResultSurfaces();return null;
  }
- repairParkingFromGlavapu();renderResult();renderPhaseReportControls();renderPhaseFinancing();
+ repairParkingFromGlavapu();renderResult();renderPhaseReportControls();renderPhaseFinancing();renderPhaseObjects();
  if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();
  // Состояние сохраняется каждым пересчётом, а не отдельной кнопкой и
  // телеграм-потоком: применённая предустановка не переживала перезагрузку —
