@@ -33,12 +33,17 @@ PAST_URL = "https://torgi.gov.ru/new/public/lots/lot/PAST-1"
 NOTE_TEXT = "Интересен: участок у метро. Опасен: обременение сетями."
 
 
+# Дата — по московскому календарю: дни до срока сервер считает по Москве, и
+# дата по UTC после 21:00 UTC ушла бы на сутки назад.
+_MSK = 3 * 3600
+
+
 def _iso(days: int) -> str:
-    return time.strftime("%Y-%m-%dT18:00:00+03:00", time.gmtime(time.time() + days * 86400))
+    return time.strftime("%Y-%m-%dT18:00:00+03:00", time.gmtime(time.time() + _MSK + days * 86400))
 
 
 def _ru(days: int) -> str:
-    return time.strftime("%d.%m.%Y 18:00", time.gmtime(time.time() + days * 86400))
+    return time.strftime("%d.%m.%Y 18:00", time.gmtime(time.time() + _MSK + days * 86400))
 
 
 def _lot(url: str, title: str, days: int, status: str) -> dict:

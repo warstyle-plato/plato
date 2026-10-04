@@ -31,6 +31,8 @@ AUCTIONS_PAGE = r'''<!doctype html>
 #krtTableWrap th{font-size:10px;letter-spacing:.025em}
 #krtTableWrap .lotname{max-width:none;line-height:1.25;margin:0}
 #krtPanel .layout{grid-template-columns:minmax(0,1fr)}
+.livemap{position:relative;height:340px;overflow:hidden;background:#eeeee9;border:1px solid var(--line);touch-action:none;cursor:grab;user-select:none}.livemap:active{cursor:grabbing}.lm-tiles,.lm-shapes{position:absolute;left:0;top:0}.lm-tile{position:absolute;width:256px;height:256px;max-width:none;pointer-events:none}.lm-shapes{pointer-events:none;overflow:visible}.lm-land{fill:#c03b32;fill-opacity:.16;stroke:#c03b32;stroke-width:3}.lm-building{fill:#555;fill-opacity:.3;stroke:#333;stroke-width:1.5}.lm-point{fill:#c03b32;stroke:#fff;stroke-width:3}.lm-ctl{position:absolute;right:8px;top:8px;display:flex;flex-direction:column;gap:4px;z-index:2}.lm-ctl button{width:34px;height:34px;min-height:34px;padding:0;font-size:18px;line-height:1;background:#fff}.lm-attr{position:absolute;right:0;bottom:0;background:rgba(255,255,255,.8);font-size:10px;padding:1px 4px}
+@media(max-width:640px){.livemap{height:280px}}
 .viewswitch{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}.viewswitch button{min-height:34px}.viewswitch button.active{background:var(--ink,#171717);color:#fff;border-color:var(--ink,#171717)}
 .sheetwrap{min-height:200px;max-width:100%;max-height:78vh}table.sheet{min-width:0;table-layout:fixed;font-size:12px}table.sheet th{position:sticky;top:0;z-index:2;background:#171717;color:#fff;cursor:pointer;vertical-align:bottom;white-space:normal}table.sheet td{white-space:normal;overflow-wrap:anywhere}
 @media(min-width:641px){table.sheet td.k-name{position:sticky;left:0;z-index:1;background:var(--panel,#fff);border-right:1px solid var(--line)}table.sheet th.k-name{left:0;z-index:3}}table.sheet th .arrow{opacity:.7}table.sheet td{vertical-align:top}
@@ -809,7 +811,8 @@ function cadastralMapLink(item){
  const url=String(item?.map_url||'');
  return url?` <a href="${esc(url)}" target="_blank" rel="noopener">карта НСПД</a>`:'';
 }
-function renderLotCadastre(l){
+function renderLotCadastre(l){renderLotCadastreBox(l);renderLotLiveMap(l)}
+function renderLotCadastreBox(l){
  const box=$('lotCadastre');
  if(!box||state.selected!==l)return;
  const numbers=(l.cadastral_numbers||[]).filter(Boolean);
@@ -856,16 +859,105 @@ async function loadLotCadastre(l,force=false){
  }catch(e){l._cadError=String(e.message||e)}
  finally{l._cadLoading=false;renderLotCadastre(l)}
 }
+// Живая карта участка: тянется мышью и пальцем, масштаб колесом, кнопками и
+// двойным щелчком. Своей тайловой службы нет: каждый тайл — это серверная
+// подложка `/land/basemap` ровно на bbox одного тайла OSM (сервер выбирает тот
+// же масштаб и кэширует), а контуры — меркаторные кольца НСПД, которые карточка
+// уже получила проверкой `/land/lot-context`. Второй проекции и второго
+// источника границ нет.
+const LIVE_MAP={zMin:10,zMax:18,tile:256};
+function liveMapShapes(c){
+ const out=[];
+ (c&&c.land_parcels||[]).forEach(x=>(x.contour_merc||[]).length&&out.push({rings:x.contour_merc,kind:'land',label:x.cadastral_number||''}));
+ (c&&c.buildings||[]).forEach(x=>(x.contour_merc||[]).length&&out.push({rings:x.contour_merc,kind:'building',label:x.cadastral_number||''}));
+ (c&&c.other_objects||[]).filter(x=>x.found).forEach(x=>(x.contour_merc||[]).length&&out.push({rings:x.contour_merc,kind:'building',label:x.cadastral_number||''}));
+ return out}
+function liveMap(box,shapes,point){
+ const st={shapes:shapes||[],point:point||null,tiles:new Map(),z:17,cx:0,cy:0};
+ box.innerHTML='<div class="livemap" tabindex="0" aria-label="Карта участка: перетаскивайте, масштаб колесом или кнопками"><div class="lm-tiles"></div><svg class="lm-shapes"></svg>'
+  +'<div class="lm-ctl"><button type="button" data-z="1" aria-label="Приблизить">+</button><button type="button" data-z="-1" aria-label="Отдалить">−</button><button type="button" data-fit="1" aria-label="К участку">◎</button></div>'
+  +'<div class="lm-attr">© OpenStreetMap</div></div>';
+ const el=box.querySelector('.livemap'),layer=el.querySelector('.lm-tiles'),svg=el.querySelector('.lm-shapes');
+ const mpp=z=>2*MERC/(LIVE_MAP.tile*Math.pow(2,z));
+ const pts=st.shapes.flatMap(s=>s.rings.flat()).concat(st.point?[[st.point.x,st.point.y]]:[]);
+ function fit(){
+  if(!pts.length)return;
+  const xs=pts.map(p=>+p[0]),ys=pts.map(p=>+p[1]),ax=Math.min(...xs),bx=Math.max(...xs),ay=Math.min(...ys),by=Math.max(...ys);
+  st.cx=(ax+bx)/2;st.cy=(ay+by)/2;
+  const W=el.clientWidth||600,H=el.clientHeight||320,span=Math.max((bx-ax)/W,(by-ay)/H)*1.8;
+  let z=LIVE_MAP.zMax;while(z>LIVE_MAP.zMin&&mpp(z)<span)z--;st.z=st.shapes.length?z:17;draw()}
+ function draw(){
+  const W=el.clientWidth||600,H=el.clientHeight||320,m=mpp(st.z),tw=LIVE_MAP.tile*m;
+  const x0=st.cx-W/2*m,y1=st.cy+H/2*m,x1=st.cx+W/2*m,y0=st.cy-H/2*m;
+  const want=new Set();
+  const n=Math.pow(2,st.z);
+  for(let tx=Math.floor((x0+MERC)/tw);tx<=Math.floor((x1+MERC)/tw);tx++)
+   for(let ty=Math.floor((MERC-y1)/tw);ty<=Math.floor((MERC-y0)/tw);ty++){
+    if(tx<0||ty<0||tx>=n||ty>=n)continue;
+    const key=st.z+'/'+tx+'/'+ty;want.add(key);
+    let img=st.tiles.get(key);
+    const minx=-MERC+tx*tw,maxy=MERC-ty*tw;
+    if(!img){img=document.createElement('img');img.alt='';img.draggable=false;img.className='lm-tile';
+     img.src='/land/basemap?'+new URLSearchParams({bbox:[minx,maxy-tw,minx+tw,maxy].join(','),width:String(LIVE_MAP.tile)});
+     st.tiles.set(key,img);layer.appendChild(img)}
+    img.style.left=((minx-x0)/m).toFixed(1)+'px';img.style.top=((y1-maxy)/m).toFixed(1)+'px'}
+  st.tiles.forEach((img,key)=>{if(!want.has(key)){img.remove();st.tiles.delete(key)}});
+  const px=x=>((x-x0)/m).toFixed(1),py=y=>((y1-y)/m).toFixed(1);
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);svg.setAttribute('width',W);svg.setAttribute('height',H);
+  svg.innerHTML=st.shapes.map(s=>'<path class="lm-'+s.kind+'" d="'+s.rings.map(r=>'M'+r.map(q=>px(+q[0])+' '+py(+q[1])).join('L')+'Z').join(' ')+'"><title>'+esc(s.label)+'</title></path>').join('')
+   +(st.point?'<circle class="lm-point" cx="'+px(st.point.x)+'" cy="'+py(st.point.y)+'" r="7"/>':'')}
+ function zoom(dz,ax,ay){
+  const z=Math.max(LIVE_MAP.zMin,Math.min(LIVE_MAP.zMax,st.z+dz));if(z===st.z)return;
+  const W=el.clientWidth,H=el.clientHeight,m=mpp(st.z);
+  // Точка под курсором остаётся под курсором.
+  const fx=ax==null?0:ax-W/2,fy=ay==null?0:ay-H/2,gx=st.cx+fx*m,gy=st.cy-fy*m,m2=mpp(z);
+  st.cx=gx-fx*m2;st.cy=gy+fy*m2;st.z=z;draw()}
+ const down=new Map();let last=null,pinch=0;
+ el.addEventListener('pointerdown',e=>{if(e.target.closest('.lm-ctl'))return;el.setPointerCapture(e.pointerId);down.set(e.pointerId,[e.clientX,e.clientY]);last=[e.clientX,e.clientY];pinch=0});
+ el.addEventListener('pointermove',e=>{if(!down.has(e.pointerId))return;
+  down.set(e.pointerId,[e.clientX,e.clientY]);
+  if(down.size===2){const [a,b]=[...down.values()],d=Math.hypot(a[0]-b[0],a[1]-b[1]);
+   if(!pinch)pinch=d;else if(d/pinch>1.6||d/pinch<0.62){const r=el.getBoundingClientRect();zoom(d>pinch?1:-1,(a[0]+b[0])/2-r.left,(a[1]+b[1])/2-r.top);pinch=d}return}
+  const m=mpp(st.z);st.cx-=(e.clientX-last[0])*m;st.cy+=(e.clientY-last[1])*m;last=[e.clientX,e.clientY];draw()});
+ const up=e=>{down.delete(e.pointerId);if(down.size===1)last=[...down.values()][0];if(down.size<2)pinch=0};
+ el.addEventListener('pointerup',up);el.addEventListener('pointercancel',up);
+ el.addEventListener('wheel',e=>{e.preventDefault();const r=el.getBoundingClientRect();zoom(e.deltaY<0?1:-1,e.clientX-r.left,e.clientY-r.top)},{passive:false});
+ el.addEventListener('dblclick',e=>{const r=el.getBoundingClientRect();zoom(1,e.clientX-r.left,e.clientY-r.top)});
+ el.querySelectorAll('.lm-ctl button').forEach(b=>b.onclick=e=>{e.stopPropagation();if(b.dataset.fit)fit();else zoom(+b.dataset.z)});
+ st.fit=fit;st.draw=draw;st.zoom=zoom;box._liveMap=st;
+ // Окно карточки открывается анимацией и меняет ширину на телефоне: кадр
+ // подгоняется под настоящий размер, а не под размер в момент вставки.
+ if(window.ResizeObserver){const ro=new ResizeObserver(()=>draw());ro.observe(el)}
+ fit();return st}
+function renderLotLiveMap(l){
+ const box=$('lotLiveMap');if(!box||state.selected!==l)return;
+ const head='<h3>Карта участка</h3>';
+ const numbers=(l.cadastral_numbers||[]).filter(Boolean);
+ const done=(html)=>{box.innerHTML='<div class="section">'+head+html+'</div>'};
+ if(numbers.length&&(l._cadLoading||(!l._cadContext&&!l._cadError))){done('<div class="notice"><span class="spinner"></span>Получаю границы участка в НСПД…</div>');return}
+ const shapes=liveMapShapes(l._cadContext);
+ if(shapes.length){
+  if(box._liveFor===l)return;box._liveFor=l;
+  box.innerHTML='<div class="section">'+head+'<div class="lm-host"></div><div class="source">Границы — НСПД / ЕГРН: красным земельные участки, серым здания. Карту можно двигать и масштабировать.</div></div>';
+  liveMap(box.querySelector('.lm-host'),shapes,null);return}
+ // Контура нет — назвать почему и поставить точку по адресу, если он есть.
+ const why=!numbers.length?'Площадка не указала кадастровый номер — границ нет, точка поставлена по адресу.'
+  :l._cadError?'Границы не получены: '+l._cadError+'. Точка поставлена по адресу.'
+  :'НСПД не вернула границы по номерам лота. Точка поставлена по адресу.';
+ const p=l._addrPoint;
+ if(!p){done('<div class="notice"><span class="spinner"></span>'+esc(why.replace(/ Точка поставлена по адресу\.$/,''))+' Ищу точку по адресу…</div>');loadLotAddressPoint(l);return}
+ if(p.error){box._liveFor=null;done('<div class="notice warn">'+esc(why.replace(/ Точка поставлена по адресу\.$/,''))+' Точку по адресу найти не удалось: '+esc(p.error)+'.</div>');return}
+ if(box._liveFor===l)return;box._liveFor=l;
+ box.innerHTML='<div class="section">'+head+'<div class="lm-host"></div><div class="source warn">'+esc(why)+' Адрес: '+esc(p.address)+'.</div></div>';
+ liveMap(box.querySelector('.lm-host'),[],p)}
 function selectLot(l){
  state.selected=l;state.ingested=null;
  const sc=lotScore(l),side=$('side');
- side.innerHTML=`<h2>${esc(l.title||'Лот')}</h2><div class="sub">${esc(l.source?.source_name||l.source?.platform||'ЭТП')} · ${esc(l.source?.external_lot_id||'')}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Балл лота: ${sc.score}/100 · ${esc(sc.label)}</div><div class="source">Потенциал лота — ${sc.base}. ${sc.cut?`Снято ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Снижать нечего.'}</div></div>${sc.cuts.length?`<div class="items">${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div>`:''}<div class="kv"><div>Юр. конструкция</div><div>${esc(kindLabel(l.lot_kind))} · ${esc(ORIGIN_LABEL[l.origin||'other']||'—')}</div><div>Кадастр</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||'—')}</div><div>Площадь по ЭТП</div><div>${areaLine(l)}</div><div>Цена сейчас</div><div class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}</div><div>Минимальная цена</div><div>${fmtMoney(l.min_price_rub)}</div><div>Заявка до</div><div>${esc(lotDeadline(l))}</div><div>ВРИ площадки</div><div>${esc(l.permitted_use||'—')}</div></div>${lotCaveats(l)}<div id="lotCadastre"></div><div id="egrnBox"></div><div class="actions"><button class="primary" id="ingestBtn"${lotAnalysis(l).available?'':' disabled'}>Разобрать лот</button><button id="sourceBtn">Открыть ЭТП</button></div><div id="detailStatus" class="notice${lotAnalysis(l).available?'':' warn'}">${esc(lotAnalysis(l).available?'Документы пока только перечислены. Полный разбор запускается по выбранному лоту, чтобы не нагружать ЭТП массовыми скачиваниями.':'Разобрать этот лот нечем: '+lotAnalysis(l).reason+' Карточку можно открыть на самой площадке — кнопка «Открыть ЭТП».')}</div><div id="analysis"></div>`;
+ side.innerHTML=`<h2>${esc(l.title||'Лот')}</h2><div class="sub">${esc(l.source?.source_name||l.source?.platform||'ЭТП')} · ${esc(l.source?.external_lot_id||'')}</div><div class="notice"><div class="fit ${sc.tone}"><span class="light"></span>Балл лота: ${sc.score}/100 · ${esc(sc.label)}</div><div class="source">Потенциал лота — ${sc.base}. ${sc.cut?`Снято ${sc.cut}%: `+esc(sc.cuts.map(c=>c.label+' −'+c.points+'%').join(', ')):'Снижать нечего.'}</div></div>${sc.cuts.length?`<div class="items">${sc.cuts.map(c=>`<div class="item"><b>Балл снижен на ${c.points}%</b>${esc(c.label)}</div>`).join('')}</div>`:''}<div class="kv"><div>Юр. конструкция</div><div>${esc(kindLabel(l.lot_kind))} · ${esc(ORIGIN_LABEL[l.origin||'other']||'—')}</div><div>Кадастр</div><div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||'—')}</div><div>Площадь по ЭТП</div><div>${areaLine(l)}</div><div>Цена сейчас</div><div class="money">${fmtMoney(l.current_price_rub??l.start_price_rub)}</div><div>Минимальная цена</div><div>${fmtMoney(l.min_price_rub)}</div><div>Заявка до</div><div>${esc(lotDeadline(l))}</div><div>ВРИ площадки</div><div>${esc(l.permitted_use||'—')}</div></div>${lotCaveats(l)}<div id="lotLiveMap"></div><div id="lotCadastre"></div><div id="egrnBox"></div><div class="actions"><button class="primary" id="ingestBtn"${lotAnalysis(l).available?'':' disabled'}>Разобрать лот</button><button id="sourceBtn">Открыть ЭТП</button></div><div id="detailStatus" class="notice${lotAnalysis(l).available?'':' warn'}">${esc(lotAnalysis(l).available?'Документы пока только перечислены. Полный разбор запускается по выбранному лоту, чтобы не нагружать ЭТП массовыми скачиваниями.':'Разобрать этот лот нечем: '+lotAnalysis(l).reason+' Карточку можно открыть на самой площадке — кнопка «Открыть ЭТП».')}</div><div id="analysis"></div>`;
  $('ingestBtn').onclick=ingest;
  renderEgrn();loadEgrnStore();
  $('sourceBtn').onclick=()=>window.open(l.source?.lot_url,'_blank','noopener');
  const osm=document.createElement('button');osm.textContent='Открыть карту OSM';osm.onclick=()=>window.open('https://www.openstreetmap.org/search?query='+encodeURIComponent(l.address||((l.cadastral_numbers||[]).join(' '))||l.title||''),'_blank','noopener');$('side').querySelector('.actions').appendChild(osm);
- const mapBtn=document.createElement('button');mapBtn.textContent='Показать интерактивную карту';mapBtn.onclick=()=>loadLotInteractiveMap(l);$('side').querySelector('.actions').appendChild(mapBtn);
- const mapBox=document.createElement('div');mapBox.id='lotInteractiveMap';$('side').appendChild(mapBox);
  renderLotCadastre(l);loadLotCadastre(l);renderAskContext();
 }
 // Выписки ЕГРН: один рисовальщик на оба источника.
@@ -966,7 +1058,13 @@ async function uploadEgrn(){
   const b=$('egrnUpload');if(b){b.disabled=false;b.textContent='Загрузить зип с выписками'}
  }
 }
-async function loadLotInteractiveMap(l){const box=$('lotInteractiveMap');if(!box)return;box.innerHTML='<div class="notice"><span class="spinner"></span>Определяю точку…</div>';const query=l.address||((l.cadastral_numbers||[]).join(' '))||l.title||'';try{const d=await askJson('/auctions/lot-point',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query})});const lat=Number(d.latitude),lon=Number(d.longitude);if(!Number.isFinite(lat)||!Number.isFinite(lon))throw new Error('Координаты не найдены');const delta=.006,bbox=[lon-delta,lat-delta,lon+delta,lat+delta].join(',');const src='https://www.openstreetmap.org/export/embed.html?'+new URLSearchParams({bbox,layer:'mapnik',marker:lat+','+lon});box.innerHTML='<details open><summary style="cursor:pointer;font-weight:700;padding:8px 0">Карта участка · можно двигать и масштабировать</summary><iframe src="'+src+'" title="Интерактивная карта лота" style="width:100%;height:330px;border:1px solid #e3e3e0" loading="lazy"></iframe><div class="source">Точка определена по адресу: '+esc(d.address||query)+'</div></details>'}catch(e){box.innerHTML='<div class="notice warn">Карту не удалось построить: '+esc(e.message||e)+'</div>'}}
+// Точка по адресу — для лота без кадастрового номера: контура тогда нет, и
+// карта ставит метку, называя, откуда точка (адрес, а не ЕГРН).
+async function loadLotAddressPoint(l){if(l._addrPoint||l._addrLoading)return;const query=l.address||l.title||'';if(!query){l._addrPoint={error:'у лота нет ни кадастрового номера, ни адреса'};renderLotLiveMap(l);return}
+ l._addrLoading=true;renderLotLiveMap(l);
+ try{const d=await askJson('/auctions/lot-point',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query})});const lat=Number(d.latitude),lon=Number(d.longitude);if(!Number.isFinite(lat)||!Number.isFinite(lon))throw new Error('по адресу координаты не найдены');l._addrPoint={x:mercX(lon),y:mercY(lat),address:d.address||query}}
+ catch(e){l._addrPoint={error:String(e.message||e)}}
+ finally{l._addrLoading=false;if(state.selected===l)renderLotLiveMap(l)}}
 // Отказ по входу объясняется одинаково во всех шести местах, где он бывает:
 // шесть копий одной фразы разошлись бы, и человек получил бы разный ответ на
 // одну причину.
