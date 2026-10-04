@@ -87,6 +87,11 @@ def seen():
             page.evaluate(SAVE)
             page.reload(wait_until="domcontentloaded")
             page.wait_for_timeout(2000)
+            # Пересчёт страницы асинхронный и на ответе переписывает `tep`.
+            # Таймера мало на медленном раннере: ответ приходил уже после
+            # правки ТЭП ниже и стирал её — «норма не изменилась». Ждём тишины
+            # в сети, то есть вернувшегося расчёта, а не времени.
+            page.wait_for_load_state("networkidle")
 
             out["opened"] = page.evaluate(READ)
             page.evaluate(DOUBLE)
@@ -96,11 +101,13 @@ def seen():
             # переписывает `tep` ответом сервера. Не дождавшись, стенд мерил бы
             # состояние посреди пересчёта — и правка ТЭП следом не применялась.
             page.wait_for_timeout(1500)
+            page.wait_for_load_state("networkidle")
             out["typed"] = page.evaluate(READ)
             page.evaluate(DOUBLE)
             out["hand_holds"] = page.evaluate(READ)
             page.evaluate(TYPE, "")
             page.wait_for_timeout(1500)
+            page.wait_for_load_state("networkidle")
             out["restored"] = page.evaluate(READ)
             # Предохранитель: снимаем пометку и повторяем правку ТЭП.
             page.evaluate(FREEZE)
