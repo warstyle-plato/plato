@@ -74,6 +74,10 @@ jobs:
           # Тизер и экономика «Итога» — за входом; без ключа они пропускаются
           # с этой причиной в итоге, а не зеленеют.
           PROD_SMOKE_ADMIN_KEY: ${{ secrets.DEVELOPAID_ADMIN_KEY }}
+          # Торги закрыты входом, пока есть личные ключи; /auctions/login
+          # принимает ключ кабинета рынка или общий AUCTIONS_VIEW_KEY, но не
+          # ключ владельца. Без секрета шаг 3 пропускается с этой причиной.
+          PROD_SMOKE_AUCTIONS_KEY: ${{ secrets.PROD_SMOKE_AUCTIONS_KEY }}
         run: |
           args=(--base "$BASE" --summary smoke-summary.md --json smoke-result.json
                 --out smoke-out --last-pr "$LAST_PR")
