@@ -117,3 +117,16 @@ def test_engine_sells_every_mo_space():
     assert mo["guest_units"] == 0
     assert core.underground_guest_spaces(mo) == 0
     assert core.underground_guest_spaces(msk) == 20, "Москва по-прежнему S/11"
+
+
+def test_the_designers_200k_workbook():
+    """Расчёт проектировщиков «Мытищи» на 200 000 м² квартир (04.10.2026):
+    население 7 143, постоянных мест 2 289 (90% от 356 на 1000), подземная
+    площадь 80 115 м² (35 м²/место) — гостевых сверху нет."""
+    tep = {"apartments": {"saleable": 200000.0},
+           "underground_parking": {"units": 0, "gns": 0}}
+    need = core.underground_parking_requirement({"vri_region": "mo"}, tep)
+    assert need["spaces"] == 2289 and need["guest"] == 0
+    row = core.underground_tep_row({"vri_region": "mo"}, tep)
+    assert row["units"] == 2289 and row["gns"] == 80115
+    assert core.underground_guest_spaces(row) == 0
