@@ -4822,6 +4822,61 @@ def install(app: FastAPI) -> None:
             },
         }
 
+    def _plato_access(request: Request) -> dict[str, Any] | None:
+        """Кто спрашивает Платона: кабинет (None) или личный ключ (его запись).
+
+        Остальным — 401, как и прежде: Платон стоит денег и без входа не
+        открывается."""
+        scoped = _scoped_key(request)
+        if scoped:
+            return scoped
+        market_cabinet.require_cabinet(request)
+        return None
+
+    def _plato_quota(scoped: dict[str, Any] | None) -> None:
+        if not scoped:
+            return
+        allowed, used, limit = access_keys.plato_take(scoped["id"])
+        if not allowed:
+            raise HTTPException(status_code=429,
+                                detail=access_keys.plato_limit_message(used, limit))
+
+    @app.post(access_keys.ASK_PATH)
+    async def auctions_ask(request: Request) -> dict[str, Any]:
+        """Вопрос Платону из раздела «Торги».
+
+        Для кабинета — то же, что `/cabinet/ask`. Для личного ключа — с дневным
+        лимитом и рамкой темы: только торги, лоты и площадки КРТ."""
+        scoped = _plato_access(request)
+        ask = getattr(market, "plato_ask", None) if market is not None else None
+        if ask is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Платон недоступен: модуль рынка запущен без движка DevelopAid",
+            )
+        payload = await json_object(request)
+        message = str((payload or {}).get("message") or "").strip()
+        if not message:
+            raise HTTPException(status_code=422, detail="Пустой вопрос")
+        history = [
+            {"role": str(item.get("role") or ""),
+             "content": str(item.get("content") or "")}
+            for item in ((payload or {}).get("history") or [])
+            if isinstance(item, dict)
+            and str(item.get("role") or "") in ("user", "assistant")
+            and str(item.get("content") or "").strip()
+        ][-6:]
+        _plato_quota(scoped)
+        if scoped:
+            message = access_keys.framed(message)
+        try:
+            return await run_in_threadpool(ask, message, request, history)
+        except HTTPException:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("auctions ask failed")
+            raise HTTPException(status_code=502, detail="Платон не ответил") from exc
+
     @app.post("/auctions/krt/{slug}/plato")
     async def auction_krt_plato(slug: str, request: Request) -> dict[str, Any]:
         """Рекомендация Платона по этой площадке — по маркетингу и по модели.
@@ -4840,7 +4895,7 @@ def install(app: FastAPI) -> None:
         `/agent/result` напрямую: ответ надо ещё положить в отчёт площадки, а
         отчёт знает он.
         """
-        market_cabinet.require_cabinet(request)
+        scoped = _plato_access(request)
         stored = await run_in_threadpool(_stored_report, slug)
         refresh = str(request.query_params.get("refresh") or "").strip() in {"1", "true", "yes"}
         cached = stored.get("plato")
@@ -4885,6 +4940,11 @@ def install(app: FastAPI) -> None:
                 detail="Платон недоступен: модуль рынка запущен без движка DevelopAid",
             )
         prompt = _plato_krt_prompt(stored)
+        # Готовый ответ и забор по номеру запуска лимит не тратят: платный
+        # только новый вопрос модели.
+        _plato_quota(scoped)
+        if scoped:
+            prompt = access_keys.framed(prompt)
         try:
             answer = await run_in_threadpool(ask, prompt, request)
         except HTTPException:
