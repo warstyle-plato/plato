@@ -48660,6 +48660,11 @@ function phaseObjectListed(key){
  const result=(phaseBundle&&phaseBundle.consolidated)||lastResult;
  const rows=result&&result.tep&&result.tep.rows;
  const row=Array.isArray(rows)?rows.find(r=>r&&r.key===key):null;
+ // Ответ движка — о посчитанных вводных. Объект, включённый после него,
+ // движок по `row_listed` назовёт объектом проекта всегда (заведён и
+ // включён), и прятать его до пересчёта значило бы читать устаревший ответ.
+ const o=OBJECT_BY_KEY[key];
+ if(o&&inputOn(inputs[o.prefix+'_enabled']))return true;
  return !row||row.listed!==false;
 }
 function renderPhaseObjects(){
@@ -54396,6 +54401,9 @@ function syncTep(rerender=true){
  const editingTep=typeof tepBody!=='undefined'&&tepBody
   &&tepBody.contains(document.activeElement);
  if(rerender||!editingTep)renderTep();else updateTepTotals();
+ // Включённый или выключенный объект меняет состав очередей сразу, а не со
+ // следующим ответом движка (`renderPhaseObjects`).
+ if(typeof renderPhaseObjects==='function')renderPhaseObjects();
  return inputsFilled;
 }
 function addMonthsJS(iso,months){
