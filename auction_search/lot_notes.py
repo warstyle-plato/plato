@@ -91,7 +91,8 @@ def row_numbers(row: dict[str, Any]) -> list[str]:
 
 
 def nspd_cell(numbers: list[str], points: dict[str, dict[str, Any]], *,
-              waiting: list[str] | None = None, interval_seconds: float = 180.0) -> tuple[str, str]:
+              waiting: list[str] | None = None, interval_seconds: float = 180.0,
+              again: str = "выгрузите таблицу ещё раз") -> tuple[str, str]:
     """Клетка «Участок на карте НСПД»: (текст, ссылка). Пустой клетки нет — у неё причина.
 
     `waiting` — очередь номеров фона (`points_queue`); номер вне её и без
@@ -111,7 +112,7 @@ def nspd_cell(numbers: list[str], points: dict[str, dict[str, Any]], *,
         runs = min(places) // NSPD_POINTS_PER_RUN + 1
         minutes = max(1, int(round(runs * interval_seconds / 60.0)))
         return (f"Точка у НСПД ещё не получена: появится примерно через {minutes} мин — "
-                "выгрузите таблицу ещё раз"), ""
+                f"{again}"), ""
     reasons = [str((points.get(number) or {}).get("reason") or "") for number in numbers
                if points.get(number)]
     reasons = [reason for reason in reasons if reason]
@@ -526,7 +527,8 @@ def prompt(lot: dict[str, Any], docs: list[dict[str, Any]], search_problem: str 
 
 
 def comment_for_book(note: dict[str, Any] | None, *, place: int | None = None,
-                     interval_seconds: float = 180.0) -> str:
+                     interval_seconds: float = 180.0,
+                     again: str = "выгрузите таблицу ещё раз") -> str:
     """Текст клетки «Комментарий Платона». Пустоты не бывает: у неё всегда причина.
 
     `place` — место лота в очереди разбора (1 — следующий); None — лот в
@@ -537,7 +539,7 @@ def comment_for_book(note: dict[str, Any] | None, *, place: int | None = None,
             return "Не разбирался: лот не поставлен в очередь разбора"
         minutes = max(1, int(round(place * interval_seconds / 60.0)))
         return (f"Ещё не разобран: в очереди {place}-й, комментарий появится "
-                f"примерно через {minutes} мин — выгрузите таблицу ещё раз")
+                f"примерно через {minutes} мин — {again}")
     if note.get("failed"):
         return f"Разбор не удался: {note.get('reason') or 'причина не названа'}"
     text = str(note.get("text") or "").strip()

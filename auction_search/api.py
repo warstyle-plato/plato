@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.parse
 import guide
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,7 @@ from auction_search.service import AuctionSearchService
 from auction_search import krt_territory, nagatino_parcels
 from auction_search import view_access as auction_view
 from auction_search import lot_notes as lot_notes_rules
+from auction_search import export_columns
 from auction_search import krt_early_projects
 from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
@@ -95,6 +97,7 @@ from market_search.krt_map_data import wgs84 as krt_wgs84
 from market_search import krt_decision_tep
 from market_search import tep_check
 from market_search import cabinet as market_cabinet
+from auction_search import access_keys
 from market_search.geocoder import GeocodingError
 from market_search.http import RemoteServiceError
 from market_search.subject import SubjectNotFound
@@ -310,6 +313,129 @@ def _xlsx_safe_href(value: Any) -> str:
     return text if re.match(r"^https?://", text, re.I) else ""
 
 
+def _export_number(value: Any) -> float | int | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+        return int(parsed) if parsed.is_integer() else parsed
+    except (TypeError, ValueError):
+        return None
+
+
+@dataclass
+class _ExportContext:
+    """Что строке торгов нужно с диска: комментарии Платона, очередь, точки НСПД.
+
+    Читается один раз на таблицу — и книгой, и страницей. Модель здесь не
+    зовётся: комментарий пишет фоновый разбор (`lot_notes`), таблица его читает.
+    """
+    notes: dict[str, Any]
+    queue_place: dict[str, int]
+    interval: float
+    points: dict[str, Any]
+    points_waiting: list[str]
+
+    @classmethod
+    def read(cls) -> "_ExportContext":
+        store = lot_notes_rules.LotNotes(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
+        return cls(
+            notes=store.notes(),
+            queue_place={lot["url"]: index for index, lot in enumerate(store.queue(), start=1)},
+            interval=lot_notes_rules.interval_seconds(),
+            points=store.points(),
+            points_waiting=store.points_queue(),
+        )
+
+
+def _export_row(source_row: dict[str, Any], keys: tuple[str, ...],
+                context: "_ExportContext | None", *,
+                again: str = "выгрузите таблицу ещё раз") -> tuple[dict[str, Any], str]:
+    """Строка таблицы торгов так, как её видят книга и страница. Один разбор на обе.
+
+    Возвращает строку и ссылку на участок в НСПД (пусто — точки нет).
+    """
+    row = dict(source_row)
+    if row.get("section") == "Торги":
+        areas = export_areas(row)
+        row["land_area_sqm"] = areas.land_area_sqm
+        row["building_area_sqm"] = areas.building_area_sqm
+        if not row.get("cadastre"):
+            row["cadastre"] = ", ".join(cadastral_numbers(str(row.get("name") or "")))
+        row["address"] = _export_address(row)
+        row["district"] = _export_district(row, row["address"])
+        row["okrug"] = _export_okrug(row, row["district"], str(row.get("cadastre") or ""))
+        if str(row.get("type") or "").strip().upper() == "КРТ" and not row.get("krt_area_ha"):
+            area_sqm = _export_number(row.get("land_area_sqm"))
+            if area_sqm is None:
+                area_sqm = parse_hectares_sqm(str(row.get("name") or ""))
+            row["krt_area_ha"] = (area_sqm / 10_000) if area_sqm is not None else ""
+        row["days_to_deadline"] = _days_to_application_deadline(row)
+    # Снимки, сохранённые до перевода, несут код ГИС Торгов как есть.
+    row["status"] = lot_status_ru(row.get("status"))
+    if row.get("section") == "Торги":
+        # Просроченный лот не выдаётся за идущие торги, хоть площадка и не
+        # сменила статус: приём заявок закончился.
+        row["status"] = export_columns.status_for(row["status"], row.get("days_to_deadline"))
+    nspd_href = ""
+    if context is not None:
+        if "plato_comment" in keys:
+            key = str(row.get("url") or "").strip()
+            days = row.get("days_to_deadline")
+            if not context.notes.get(key) and isinstance(days, int) and days < 0:
+                # Очередь разбора берёт только живые лоты (`LotNotes.queue`):
+                # «не поставлен в очередь» здесь было бы неправдой о причине.
+                row["plato_comment"] = ("Не разбирался: приём заявок закончился, "
+                                        "разбор делается только по живым лотам")
+            else:
+                row["plato_comment"] = lot_notes_rules.comment_for_book(
+                    context.notes.get(key), place=context.queue_place.get(key),
+                    interval_seconds=context.interval, again=again)
+        if "nspd_map" in keys:
+            row["nspd_map"], nspd_href = lot_notes_rules.nspd_cell(
+                lot_notes_rules.row_numbers(row), context.points,
+                waiting=context.points_waiting, interval_seconds=context.interval,
+                again=again)
+    return row, nspd_href
+
+
+def _web_table(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Таблица торгов для страницы: те же колонки и те же значения, что в книге.
+
+    Каждая клетка — текст для экрана, ссылка (если есть) и число (для
+    сортировки). Пустых клеток нет: у пустоты — тире или причина.
+    """
+    columns = export_columns.AUCTION_COLUMNS
+    keys = tuple(c.key for c in columns)
+    context = _ExportContext.read()
+    out = []
+    for source_row in rows[:2000]:
+        row, nspd_href = _export_row(source_row, keys, context, again="обновите таблицу позже")
+        cells: dict[str, dict[str, Any]] = {}
+        for column in columns:
+            value = row.get(column.key)
+            if column.kind in export_columns.NUMERIC_KINDS:
+                value = _export_number(value)
+            cell: dict[str, Any] = {"text": export_columns.cell_text(column, value)}
+            if isinstance(value, (int, float)):
+                cell["value"] = value
+            href = ""
+            if column.key == "url":
+                href = _xlsx_safe_href(value)
+            elif column.key == "address":
+                href = _yandex_maps_href(str(value or ""))
+            elif column.key in ("nspd_map", "cadastre"):
+                href = _xlsx_safe_href(nspd_href)
+            if href:
+                cell["href"] = href
+            if column.kind == "comment":
+                key = str(row.get("url") or "").strip()
+                cell["ready"] = bool((context.notes.get(key) or {}).get("text"))
+            cells[column.key] = cell
+        out.append({"url": str(row.get("url") or ""), "cells": cells})
+    return {"columns": export_columns.public_columns(columns), "rows": out}
+
+
 def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
     if kind == "krt":
         columns = [
@@ -370,50 +496,15 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
             "preservation_objects", "preservation_area_sqm", "resettlement_mentions",
         }
     else:
-        columns = [
-            ("section", "Раздел", 11),
-            ("name", "Название", 48),
-            ("okrug", "Округ", 10),
-            ("district", "Район", 18),
-            ("address", "Адрес", 34),
-            ("cadastre", "Кадастровые номера", 28),
-            # Ссылка на участок — по координатам, полученным фоном у НСПД
-            # (`lot_notes.points`); без точки клетка называет причину. Общая
-            # карта без точки ссылкой «на участок» не считается.
-            ("nspd_map", "Участок на карте НСПД", 30),
-            ("type", "Тип", 18),
-            ("land_area_sqm", "Площадь участка, м²", 20),
-            ("building_area_sqm", "Площадь здания/ОКС, м²", 23),
-            ("krt_area_ha", "Площадь КРТ, га", 18),
-            ("total_gfa_sqm", "Общий объём, м²", 18),
-            ("housing_gfa_sqm", "Жильё, м²", 16),
-            ("price", "Цена, ₽", 18),
-            ("score", "Балл лота", 17),
-            ("application_start", "Начало приёма заявок", 21),
-            ("application_deadline", "Окончание приёма заявок", 21),
-            ("days_to_deadline", "Дней до окончания заявок", 21),
-            ("auction_date", "Дата торгов", 18),
-            ("status", "Статус", 22),
-            # Комментарий Платона — из фонового разбора лота; выгрузка его только
-            # читает (`lot_notes`). Пустой клетки нет: у отсутствия — причина.
-            ("plato_comment", "Комментарий Платона: чем интересен, чем опасен, что пишут", 70),
-            ("url", "Источник", 42),
-        ]
+        # Список колонок торгов — один на книгу и страницу (`export_columns`).
+        columns = [(c.key, c.title, c.width) for c in export_columns.AUCTION_COLUMNS]
         obligation_columns = []
-        numeric_keys = {
-            "land_area_sqm", "building_area_sqm", "krt_area_ha", "total_gfa_sqm",
-            "housing_gfa_sqm", "price", "score", "days_to_deadline",
-        }
-    def number(value: Any) -> float | int | None:
-        if value in (None, ""):
-            return None
-        try:
-            parsed = float(value)
-            return int(parsed) if parsed.is_integer() else parsed
-        except (TypeError, ValueError):
-            return None
-
+        numeric_keys = {c.key for c in export_columns.AUCTION_COLUMNS
+                        if c.kind in export_columns.NUMERIC_KINDS}
+    number = _export_number
     formats = {
+        **{c.key: export_columns.XLSX_FORMATS[c.kind] for c in export_columns.AUCTION_COLUMNS
+           if c.kind in export_columns.XLSX_FORMATS},
         "land_area_sqm": '#,##0.00', "building_area_sqm": '#,##0.00',
         "krt_area_ha": '0.00', "total_gfa_sqm": '#,##0', "housing_gfa_sqm": '#,##0',
         "nonresidential_gfa_sqm": '#,##0', "business_gfa_sqm": '#,##0',
@@ -429,13 +520,7 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
         "resettlement_mentions": '0',
     }
     wb = Workbook()
-    store = lot_notes_rules.LotNotes(os.path.join(os.getenv("DATA_DIR", "data"), "market"))
-    notes = store.notes() if kind != "krt" else {}
-    queue_place = ({lot["url"]: index for index, lot in enumerate(store.queue(), start=1)}
-                   if kind != "krt" else {})
-    lot_note_interval = lot_notes_rules.interval_seconds()
-    points = store.points() if kind != "krt" else {}
-    points_waiting = store.points_queue() if kind != "krt" else []
+    context = _ExportContext.read() if kind != "krt" else None
     nspd_links: dict[int, str] = {}
 
     def fill_sheet(ws, sheet_columns, title: str, table_name: str) -> None:
@@ -443,33 +528,9 @@ def _xlsx(rows: list[dict[str, Any]], kind: str = "auctions") -> bytes:
         keys = tuple(column[0] for column in sheet_columns)
         ws.append([column[1] for column in sheet_columns])
         for source_row in rows[:2000]:
-            row = dict(source_row)
-            if row.get("section") == "Торги":
-                areas = export_areas(row)
-                row["land_area_sqm"] = areas.land_area_sqm
-                row["building_area_sqm"] = areas.building_area_sqm
-                if not row.get("cadastre"):
-                    row["cadastre"] = ", ".join(cadastral_numbers(str(row.get("name") or "")))
-                row["address"] = _export_address(row)
-                row["district"] = _export_district(row, row["address"])
-                row["okrug"] = _export_okrug(row, row["district"], str(row.get("cadastre") or ""))
-                if str(row.get("type") or "").strip().upper() == "КРТ" and not row.get("krt_area_ha"):
-                    area_sqm = number(row.get("land_area_sqm"))
-                    if area_sqm is None:
-                        area_sqm = parse_hectares_sqm(str(row.get("name") or ""))
-                    row["krt_area_ha"] = (area_sqm / 10_000) if area_sqm is not None else ""
-                row["days_to_deadline"] = _days_to_application_deadline(row)
-            # Снимки, сохранённые до перевода, несут код ГИС Торгов как есть.
-            row["status"] = lot_status_ru(row.get("status"))
-            if "plato_comment" in keys:
-                key = str(row.get("url") or "").strip()
-                row["plato_comment"] = lot_notes_rules.comment_for_book(
-                    notes.get(key), place=queue_place.get(key),
-                    interval_seconds=lot_note_interval)
+            row, nspd_href = _export_row(source_row, keys, context)
             if "nspd_map" in keys:
-                row["nspd_map"], nspd_links[ws.max_row + 1] = lot_notes_rules.nspd_cell(
-                    lot_notes_rules.row_numbers(row), points,
-                    waiting=points_waiting, interval_seconds=lot_note_interval)
+                nspd_links[ws.max_row + 1] = nspd_href
             values = []
             for key in keys:
                 if key in numeric_keys:
@@ -1257,22 +1318,67 @@ def install(app: FastAPI) -> None:
     # Ограниченный ключ включается только когда AUCTIONS_VIEW_KEY реально
     # задан. До настройки переменной поведение /auctions остаётся прежним:
     # выкатить код раньше секрета безопаснее, чем случайно закрыть раздел.
+    # Выданные личные ключи тоже закрывают раздел: ключ, который можно
+    # отозвать, ничего не значит, если без него открыто то же самое.
     def _auctions_gate_enabled() -> bool:
-        return bool(auction_view.view_key())
+        if auction_view.view_key():
+            return True
+        try:
+            return access_keys.any_active()
+        except RuntimeError:
+            # Реестр не читается — закрыто, а не открыто всем.
+            return True
+
+    def _scoped_key(request: Request) -> dict[str, Any] | None:
+        """Личный ключ «auctions» этого браузера, если нет полного ключа."""
+        if not access_keys.has_cookie(request) or market_cabinet.authorised(request):
+            return None
+        return access_keys.scoped(request)
 
     def _view_only(request: Request) -> bool:
         """Вошёл ограниченным ключом просмотра, без полного ключа кабинета."""
+        if _scoped_key(request):
+            return True
         return bool(
             _auctions_gate_enabled()
             and auction_view.authorised(request)
             and not market_cabinet.authorised(request)
         )
 
+    def _scope_denied(request: Request, problem: str):
+        wants_page = (request.method in ("GET", "HEAD")
+                      and "text/html" in request.headers.get("accept", ""))
+        if wants_page:
+            return HTMLResponse(access_keys.denied_page(
+                guide.legal_footer_html(core) if core is not None else ""), status_code=403,
+                                headers={"Cache-Control": "no-store"})
+        return JSONResponse({"detail": problem}, status_code=403,
+                            headers={"Cache-Control": "no-store"})
+
     async def _auctions_view_gate(request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
-        if path == "/auctions/login" or not _auctions_gate_enabled():
+        # Личный ключ «auctions» ограничивает ВЕСЬ сайт, а не только /auctions:
+        # с ним открыт раздел торгов и нужные ему запросы карты, остальное —
+        # отказ на сервере. Отозванный ключ не действует: браузер становится
+        # обычным посетителем.
+        try:
+            scoped = _scoped_key(request)
+        except RuntimeError:
+            logger.exception("auctions key registry unreadable")
+            return JSONResponse({"detail": access_keys.REGISTRY_BROKEN},
+                                status_code=503, headers={"Cache-Control": "no-store"})
+        if scoped:
+            problem = access_keys.scope_problem(
+                request.method, path, request.query_params)
+            if problem:
+                return _scope_denied(request, problem)
+            request.state.access_scope = access_keys.SCOPE
+            return await call_next(request)
+        if path == access_keys.ENTER_PATH:
             return await call_next(request)
         if path != "/auctions" and not path.startswith("/auctions/"):
+            return await call_next(request)
+        if path == "/auctions/login" or not _auctions_gate_enabled():
             return await call_next(request)
 
         full_access = market_cabinet.authorised(request)
@@ -1305,12 +1411,21 @@ def install(app: FastAPI) -> None:
                 )
         return await call_next(request)
 
-    # Production устанавливает auction_search до первого запроса. Некоторые
-    # unit-тесты легально доустанавливают модуль в уже стартовавшее FastAPI-
-    # приложение; FastAPI запрещает add_middleware после старта. В таком
-    # тестовом/встраиваемом сценарии не ломаем приложение из-за гейта.
+    # Production устанавливает auction_search до первого запроса. Если же
+    # приложение уже обслужило запрос (тесты, встраивание), FastAPI не даёт
+    # add_middleware — но молча остаться без гейта нельзя: это проверка
+    # доступа, и без неё ключ «auctions» открывал бы весь сайт. Гейт ставится
+    # в список и стек сбрасывается: Starlette соберёт его заново на следующем
+    # запросе.
     if getattr(app, "middleware_stack", None) is None:
         app.middleware("http")(_auctions_view_gate)
+    else:
+        from starlette.middleware import Middleware
+        from starlette.middleware.base import BaseHTTPMiddleware
+
+        app.user_middleware.insert(
+            0, Middleware(BaseHTTPMiddleware, dispatch=_auctions_view_gate))
+        app.middleware_stack = None
 
     @app.post("/auctions/login", include_in_schema=False)
     async def auctions_login(request: Request):
@@ -1341,10 +1456,43 @@ def install(app: FastAPI) -> None:
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
+    @app.get(access_keys.ENTER_PATH, response_class=HTMLResponse, include_in_schema=False)
+    async def auctions_enter_page() -> HTMLResponse:
+        """Вход по ссылке: ключ во фрагменте `#k=…`, до сервера он не доходит."""
+        footer = guide.legal_footer_html(core) if core is not None else ""
+        return HTMLResponse(access_keys.enter_page(footer), headers={
+            "Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
+
+    @app.post(access_keys.ENTER_PATH, include_in_schema=False)
+    async def auctions_enter(request: Request):
+        """Обменять личный ключ на cookie. Сам ключ в cookie не кладётся."""
+        body = await json_object(request)
+        try:
+            record = access_keys.find_by_key(str(body.get("key") or ""))
+        except RuntimeError:
+            logger.exception("auctions key registry unreadable")
+            return JSONResponse({"detail": access_keys.REGISTRY_BROKEN}, status_code=503)
+        if not record:
+            return JSONResponse(
+                {"detail": "Ссылка не действует: ключ неверный, отозван или его "
+                           "срок истёк. "
+                           "Попросите владельца выдать новую."},
+                status_code=401, headers={"Cache-Control": "no-store"})
+        access_keys.record_login(record["id"])
+        logger.info("auctions key login: id=%s", record["id"])
+        response = JSONResponse({"ok": True, "scope": access_keys.SCOPE},
+                                headers={"Cache-Control": "no-store"})
+        response.set_cookie(
+            access_keys.COOKIE_NAME, access_keys.cookie_value(record),
+            httponly=True, samesite="lax", max_age=access_keys.cookie_max_age(record),
+            path="/", secure=request.url.scheme == "https")
+        return response
+
     @app.get("/auctions", response_class=HTMLResponse)
-    async def auctions_home() -> HTMLResponse:
+    async def auctions_home(request: Request) -> HTMLResponse:
+        scope = getattr(request.state, "access_scope", "") or ""
         return HTMLResponse(
-            auction_page_with_handoff(auctions_page(core)),
+            auction_page_with_handoff(auctions_page(core, access_scope=scope)),
             headers={"Cache-Control": "no-store, must-revalidate"},
         )
 
@@ -5328,6 +5476,26 @@ def install(app: FastAPI) -> None:
         filename = "developaid-krt.xlsx" if req.kind == "krt" else "developaid-auctions.xlsx"
         return Response(content=data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+    @app.post("/auctions/table")
+    async def auction_table(req: AuctionExportRequest, request: Request) -> dict[str, Any]:
+        """Таблица торгов для страницы — колонки и значения книги Excel.
+
+        Только чтение: комментарий Платона берётся из фонового разбора, модель
+        в запросе страницы не зовётся. Заказать разбор — отдельной кнопкой
+        (`/auctions/lot-notes/request`), её нет у ключа «только просмотр».
+        """
+        table = await run_in_threadpool(_web_table, list(req.rows or []))
+        table["may_request_notes"] = not _view_only(request)
+        return table
+
+    @app.post("/auctions/lot-notes/request")
+    async def auction_lot_notes_request(req: AuctionExportRequest, request: Request) -> dict[str, Any]:
+        """Поставить лоты в очередь фонового комментария Платона — как выгрузка."""
+        if _view_only(request):
+            raise HTTPException(status_code=403, detail="Ключ «только просмотр» разбор не заказывает")
+        added = await run_in_threadpool(lot_notes.request, list(req.rows or []))
+        return {"queued": added}
 
     @app.post("/auctions/lot-point")
     async def auction_lot_point(req: AuctionLotPointRequest) -> dict[str, Any]:
