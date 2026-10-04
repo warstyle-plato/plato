@@ -17851,6 +17851,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                 _shown = _pdf_money(_value)
             elif _unit == "pct":
                 _shown = _pdf_num(float(_value or 0) * 100, 1) + "%"
+            elif _unit == "mult":
+                _shown = "—" if _value is None else _pdf_num(float(_value), 2) + "x"
             elif _unit == "date":
                 _shown = ".".join(reversed(str(_value or "—")[:7].split("-")))
             else:
@@ -34067,6 +34069,51 @@ def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
     return {"objects": objects, "totals": dict(nonres.get("totals") or {})}
 
 
+def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
+                  equity_cf: list[float]) -> dict[str, Any]:
+    """Какие блоки отчёта у проекта есть — одно решение для всех поверхностей.
+
+    Страница, PDF, тизер и бот читают его, а не решают сами. Нежилой проект
+    без ДДУ (владелец, 04.10.2026: отчёт, тизер и книга «самостоятельные»)
+    не печатает ни квартир, ни БРИДЖа, ПФ, эскроу и LLCR — их у него нет; его
+    шапка — деньги объектов: кредит, капитал, NOI, DSCR, выход.
+    """
+    rows = finance.get("rows") or []
+    project_finance = any(
+        float(row.get(key) or 0.0) > 0.0
+        for row in rows for key in ("bridge_draw", "pf_draw", "escrow"))
+    objects = (finance.get("nonres") or {}).get("objects") or []
+    tiles: list[dict[str, Any]] = []
+    if objects:
+        cumulative = worst = 0.0
+        for value in equity_cf:
+            cumulative += float(value or 0.0)
+            worst = min(worst, cumulative)
+        totals = [item.get("totals") or {} for item in objects]
+        kpis = [item.get("kpi") or {} for item in objects]
+        dscr = [k["dscr_min"] for k in kpis if k.get("dscr_min") is not None]
+        noi = sum(float(k.get("stabilized_noi") or 0.0) for k in kpis)
+        capex = sum(float(t.get("capex") or 0.0) for t in totals)
+        exit_value = sum(float(k.get("exit_value") or 0.0) for k in kpis)
+        tiles = [
+            {"label": "Кредит объектов — пик", "value": sum(float(t.get("loan_peak") or 0.0) for t in totals), "unit": "rub"},
+            {"label": "Собственный капитал — пик потребности", "value": -worst, "unit": "rub"},
+        ]
+        if noi:
+            tiles += [
+                {"label": "Стабилизированный NOI, год", "value": noi, "unit": "rub"},
+                {"label": "Доходность на затраты", "value": noi / capex if capex else 0.0, "unit": "pct"},
+            ]
+        if dscr:
+            tiles.append({"label": "DSCR — минимум по годам", "value": min(dscr), "unit": "mult"})
+        if exit_value:
+            tiles.append({"label": "Стоимость объектов на выходе", "value": exit_value, "unit": "rub"})
+    return {"housing": not is_nonresidential(inputs),
+            "project_finance": project_finance,
+            "nonres_strategy": bool(objects),
+            "nonres_tiles": tiles}
+
+
 def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Таблица «Нежильё — стратегия реализации»: одна на страницу, PDF и бот.
 
@@ -34100,6 +34147,18 @@ def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
                 {"label": ("Стоимость объекта — оценка удержания, без сделки" if hold
                            else "Выход: продажа по ставке капитализации"),
                  "value": kpi.get("exit_value"), "unit": "rub"},
+            ]
+        if income and kpi.get("dscr_min") is not None:
+            rows += [
+                {"label": "DSCR — минимум по годам (NOI / проценты и тело)",
+                 "value": kpi.get("dscr_min"), "unit": "mult"},
+                {"label": "Покрытие процентов NOI (ICR) — минимум",
+                 "value": kpi.get("icr_min"), "unit": "mult"},
+            ]
+        if income and kpi.get("loan_maturity"):
+            rows += [
+                {"label": "Кредит объекта — срок погашения", "value": kpi.get("loan_maturity"), "unit": "date"},
+                {"label": "Кредит объекта — баллон в конце срока", "value": kpi.get("loan_balloon"), "unit": "rub"},
             ]
         rows += [
             {"label": "Кредит объекта — выборка", "value": totals.get("loan_draw"), "unit": "rub"},
@@ -35145,6 +35204,7 @@ def calculate(req: CalcRequest) -> dict:
         },
         "report": {
             "nonres_strategy": nonres_report(fin.get("nonres")),
+            "layout": report_layout(x, fin, equity_cf),
             "products": products_report,
             # График платежей за покупку — как посчитано: даты, суммы, доли и
             # оговорки разбора. Одна строка в дату сделки — прежнее поведение.
@@ -37176,6 +37236,7 @@ def _consolidate_phase_results(
         },
         "report": {
             "nonres_strategy": nonres_report(finance.get("nonres")),
+            "layout": report_layout(master_inputs, finance, equity_cf),
             "products": list(product_map.values()),
             "phase_products": phase_sales,
             "unit_economics": unit_economics,
@@ -46021,6 +46082,7 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-comparison-card{display:none}
 #revenueTable tr.rs-part td:first-child{padding-left:18px;color:#555}
 #revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
+[data-needs][hidden],#nonresStrategyCard[hidden]{display:none!important}
 .phase-comparison-card tr.pc-block th{text-align:left;padding:9px 10px 8px;font-size:15px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#fff;background:#111;border:0;border-top:14px solid #fff}
 .phase-comparison-card tr.pc-note td{padding:2px 0 6px 22px;font-size:11px;font-weight:400;color:#777;white-space:normal}
 .phase-comparison-card tr.pc-note td span{position:sticky;left:22px}
@@ -46501,22 +46563,22 @@ details.cadastral-box>summary::marker{color:#888}
     </div>
 
     <div id="finance" class="panel">
-      <div class="card">
+      <div class="card" data-needs="project_finance">
         <div class="llcr-hero">
           <div><div class="section-title">LLCR — расчётный</div><div id="llcrValue" class="llcr-value">—</div></div>
           <div class="llcr-label">Показатель рассчитан текущим веб-движком. Пока кредитный CF не сверён помесячно с актуальным Excel, LLCR нельзя считать контрольным значением модели.</div>
         </div>
       </div>
-      <div class="kpis" id="financeKpi"></div>
+      <div class="kpis" id="financeKpi" data-needs="project_finance"></div>
       <div class="note" style="margin-top:16px">Низкая «эффективная ставка ПФ» может возникать из-за льготной ставки при покрытии долга средствами на эскроу. Поэтому она показана отдельно от базовой ставки ПФ до эскроу.</div>
 
-      <div class="finance-grid" style="margin-top:18px">
+      <div class="finance-grid" style="margin-top:18px" data-needs="project_finance">
         <div class="card"><div class="section-title">БРИДЖ</div><table class="metric-table" id="bridgeTable"></table></div>
         <div class="card"><div class="section-title">Проектное финансирование</div><table class="metric-table" id="pfTable"></table></div>
         <div class="card"><div class="section-title">Проценты и комиссии</div><table class="metric-table" id="interestTable"></table></div>
       </div>
 
-      <div class="card">
+      <div class="card" data-needs="project_finance">
         <div class="section-title">Эскроу против обязательств по ПФ</div>
         <div id="financeChart" class="chart"></div>
         __DEVELOPAID_ESCROW_LEGEND__
@@ -46524,7 +46586,7 @@ details.cadastral-box>summary::marker{color:#888}
         <div id="financeEscrowPhases"></div>
       </div>
 
-      <div class="card">
+      <div class="card" data-needs="project_finance">
         <div class="section-title">Расчёт LLCR</div>
         <table class="metric-table" id="llcrTable"></table>
       </div>
@@ -46622,7 +46684,7 @@ details.cadastral-box>summary::marker{color:#888}
         </div>
         <div id="vriWarnings" class="note" style="display:none"></div>
       </div>
-      <div class="card">
+      <div class="card" data-needs="housing">
         <div class="section-title">Социальная нагрузка</div>
         <table class="metric-table metric-compact" id="socialTable"></table>
       </div>
@@ -46741,7 +46803,7 @@ details.cadastral-box>summary::marker{color:#888}
           <table class="metric-table metric-compact" id="ratesDebtTable"></table>
         </div>
       </div>
-      <div class="card">
+      <div class="card" data-needs="project_finance">
         <div class="section-title">Эскроу против обязательств по ПФ</div>
         <div id="reportEscrowChart" class="chart"></div>
         __DEVELOPAID_ESCROW_LEGEND__
@@ -46749,7 +46811,7 @@ details.cadastral-box>summary::marker{color:#888}
         <div id="reportEscrowPhases"></div>
       </div>
 
-      <div class="card">
+      <div class="card" data-needs="project_finance">
         <div class="section-title" id="bridgePurposeTitle">Структура расчётного БРИДЖа</div>
         <table class="metric-table metric-compact bridge-purpose-table" id="bridgePurposeTable"></table>
         <div class="bridge-purpose-note" id="bridgePurposeNote">В лимит входит только то, что платится ДО РнС: при рассрочке покупки часть, приходящаяся на период после РнС, финансируется уже ПФ. Смена ВРИ / земельные права, проценты и комиссии в расчётный лимит БРИДЖа не входят.</div>
@@ -47294,8 +47356,18 @@ function nonresCell(row){
  const v=row.value;
  if(row.unit==='rub')return money(v);
  if(row.unit==='pct')return (Number(v||0)*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%';
+ if(row.unit==='mult')return v==null?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x';
  if(row.unit==='date')return v?String(v).slice(0,7).split('-').reverse().join('.'):'—';
  return escapeHtml(String(v??'—'));
+}
+// Какие блоки у проекта есть, решает движок (`report_layout`); результат,
+// сохранённый до этого решения, читается как прежде — всё на месте.
+function reportLayout(r){
+ const l=((r||{}).report||{}).layout;
+ return l||{housing:true,project_finance:true,nonres_strategy:false,nonres_tiles:[]};
+}
+function applyReportLayout(layout){
+ document.querySelectorAll('[data-needs]').forEach(el=>{el.hidden=!layout[el.dataset.needs]});
 }
 function renderNonresStrategy(r){
  const card=document.getElementById('nonresStrategyCard'),box=document.getElementById('nonresStrategyTables');
@@ -55480,7 +55552,13 @@ function renderResult(){
   ['Пиковый БРИДЖ',money(r.report.financing.actual_bridge)],
   ['LLCR (расчётный)',mult(r.summary.llcr)]
  ];
+ // Нежилой проект без ДДУ: БРИДЖа, ПФ и LLCR у него нет — шапку
+ // заканчивают деньги объектов (`report.layout`, решение движка).
+ const layout=reportLayout(r);
+ if(!layout.project_finance)reportKpis.splice(-3,3);
+ (layout.nonres_tiles||[]).forEach(t=>reportKpis.push([t.label,nonresCell(t)]));
  reportKpi.innerHTML=reportKpis.map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
+ applyReportLayout(layout);
 
  const rveWarning=document.getElementById('pfRveWarning');
  if(rveWarning){
