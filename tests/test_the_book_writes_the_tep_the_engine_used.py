@@ -110,7 +110,11 @@ def test_the_object_parking_is_not_applied_twice() -> None:
     tep = copy.deepcopy(core.TEP_DEFAULT)
     tep["offices"].update(gns=20000.0, total_area=18800.0, useful=17000.0, saleable=17000.0)
     result = core.calculate(core.CalcRequest(inputs=inputs, tep=copy.deepcopy(tep)))
-    office = {row["key"]: row for row in result["tep"]["rows"]}["offices"]
+    # Строка ТЭП держит площадь здания; остаток после мест первых этажей —
+    # её поле `parking_saleable_after_sqm` (владелец, 29.09.2026).
+    row = {row["key"]: row for row in result["tep"]["rows"]}["offices"]
+    assert row["saleable"] == pytest.approx(17000.0)
+    office = {"saleable": row["parking_saleable_after_sqm"]}
     footprint = 20 * core.n(
         inputs, "object_parking_over_area_per_space_sqm",
         core.OBJECT_PARKING_OVER_AREA_DEFAULT)

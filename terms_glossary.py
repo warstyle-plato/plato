@@ -68,7 +68,67 @@ CORE_TOTAL_AREA = Term(
     formula="ГНС квартир + ГНС коммерции 1 этажа + подземный паркинг + кладовые",
 )
 
-TERMS: dict[str, Term] = {term.key: term for term in (TOTAL_AREA, CORE_TOTAL_AREA)}
+# Базы удельных показателей (решение владельца 29.09.2026, ревизия книги,
+# решение 4): каждый удельный делится на свою базу и подписывается ею. Какой
+# строке какая база — решает движок (`UNIT_ECONOMICS_ROWS`, `capex_unit_base`);
+# здесь — только слова.
+
+# Продаваемая площадь проекта (`monetizable_saleable_sqm`): то, что реально
+# продаётся метрами. База выручки, цены, EBITDA и прибыли.
+SALEABLE_AREA = Term(
+    key="saleable_area",
+    name="Продаваемая площадь",
+    full="Продаваемая площадь (квартиры, коммерция, объекты на продажу метрами), м²",
+    genitive="продаваемой площади",
+    prepositional="продаваемой площади",
+    unit="м²",
+    formula="продаваемая площадь квартир, коммерции 1 этажа и объектов, продаваемых метрами",
+)
+
+# Наземная ГНС жилых домов (`core_above_gns`): квартиры + коммерция 1 этажа.
+# На неё начислено СМР наземной части, на неё же оно и делится.
+CORE_ABOVE_AREA = Term(
+    key="core_above_area",
+    name="Наземная ГНС МКД",
+    full="Наземная ГНС МКД (квартиры и коммерция 1 этажа), м²",
+    genitive="наземной ГНС МКД",
+    prepositional="наземной ГНС МКД",
+    unit="м²",
+    formula="ГНС квартир + ГНС коммерции 1 этажа",
+)
+
+# Подземная площадь жилых домов (`core_under_gns`): паркинг + кладовые.
+# База СМР подземной части.
+CORE_UNDER_AREA = Term(
+    key="core_under_area",
+    name="Подземная площадь МКД",
+    full="Подземная площадь МКД (паркинг и кладовые), м²",
+    genitive="подземной площади МКД",
+    prepositional="подземной площади МКД",
+    unit="м²",
+    formula="ГНС подземного паркинга + ГНС кладовых",
+)
+
+TERMS: dict[str, Term] = {term.key: term for term in (
+    TOTAL_AREA, CORE_TOTAL_AREA, SALEABLE_AREA, CORE_ABOVE_AREA, CORE_UNDER_AREA)}
+
+
+# База удельного у статьи CAPEX: СМР — на ту часть, на которую начислено,
+# прочее — на суммарную площадь в ГНС. Это не слово, а выбор, но его читают
+# двое — движок (`capex_unit_base`) и Дашборд книги (`v4_dashboard`), — и
+# второй копии быть не должно.
+CAPEX_UNIT_BASE: dict[str, str] = {"main_above": CORE_ABOVE_AREA.key,
+                                   "main_under": CORE_UNDER_AREA.key}
+
+
+def capex_unit_base(key: str) -> str:
+    """База удельного статьи CAPEX по её ключу."""
+    return CAPEX_UNIT_BASE.get(str(key), TOTAL_AREA.key)
+
+
+def unit_label(key: str) -> str:
+    """Подпись удельного по ключу базы: «тыс. ₽/м² продаваемой площади»."""
+    return f"тыс. ₽/м² {TERMS[key].genitive}"
 
 
 def page_terms() -> dict[str, dict[str, str]]:

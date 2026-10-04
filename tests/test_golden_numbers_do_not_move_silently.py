@@ -81,13 +81,16 @@ def test_the_guard_notices_a_moved_number(current) -> None:
 
 
 def test_the_office_garage_on_the_first_floors_takes_saleable_area(current) -> None:
-    """Предохранитель смысла эталона: 40 мест на первых этажах вычтены из продаваемой офиса.
+    """Предохранитель смысла эталона: 40 мест на первых этажах вычтены из ПРОДАННОГО офиса.
 
-    Без этого снимок мог бы честно хранить уже сломанное число.
+    Строка ТЭП держит площадь здания, вычет живёт в структуре продукта
+    (владелец, 29.09.2026). Без этой проверки снимок мог бы честно хранить уже
+    сломанное число.
     """
     tep = current["mixed_osz_parking"]["consolidated"]
     gba, saleable, over = 40000.0, 24000.0, 40
     per_space = 25.0
     expected = saleable * (gba - over * per_space) / gba
     assert tep["tep.offices.parking_over_units"] == over
-    assert tep["tep.offices.saleable"] == pytest.approx(expected, rel=1e-6)
+    assert tep["tep.offices.saleable"] == pytest.approx(saleable, rel=1e-6)
+    assert tep["report.products[offices].saleable"] == pytest.approx(expected, rel=1e-6)
