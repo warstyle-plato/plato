@@ -4586,7 +4586,7 @@ AUCTIONS_PAGE = AUCTIONS_PAGE.replace(_TERM_PLACEHOLDER, _TERM_SCRIPT)
 LEGAL_FOOTER_PLACEHOLDER = "__DEVELOPAID_LEGAL_FOOTER__"
 
 
-def auctions_page(core=None) -> str:
+def auctions_page(core=None, access_scope: str = "") -> str:
     """Страница торгов. Подвал документов подставляется из `PAGE`, копии нет.
 
     Без движка плейсхолдер убирается, а не остаётся строкой на экране: страница
@@ -4609,7 +4609,7 @@ def auctions_page(core=None) -> str:
         # расчёте такой кнопки нет, там Платон стоит в шапке страницы.
         css = plato_question.drawer_css(core) + "\n" + plato_question.launcher_css()
         drawer = plato_question.drawer_markup(plato_question.DRAWER_IDS)
-    return (AUCTIONS_PAGE
+    page = (AUCTIONS_PAGE
             .replace("__DEVELOPAID_KRT_MEASURE_FIELDS__",
                      json.dumps({kind: list(fields) for kind, fields
                                  in krt_screening.MEASURE_FIELDS.items()},
@@ -4627,4 +4627,33 @@ def auctions_page(core=None) -> str:
             .replace(land_map.MARKUP_PLACEHOLDER, land_map.markup(core))
             .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
             .replace(management_contour.PLACEHOLDER,
-                     management_contour.markup("/auctions")))
+                     "" if access_scope else management_contour.markup("/auctions")))
+    return scoped_page(page, access_scope)
+
+
+# Что прячется от браузера с личным ключом области «auctions». Сервер эти
+# маршруты всё равно закрывает (`access_keys.scope_problem`); здесь — чтобы
+# человек не видел кнопок, которые ему ответят отказом: расчёт модели,
+# передача в калькулятор, Платон, обновление и разбор данных.
+SCOPED_HIDDEN_IDS = (
+    "platoFab", "platoDrawer", "platoOverlay",
+    "krtHandoff", "krtMarket", "krtPlato",
+    "krtRankBtn", "krtRatingBtn", "krtPressBtn", "ingestBtn",
+)
+
+# Ссылки подвала на справочник и нормативы: ключ торгов их не открывает.
+SCOPED_HIDDEN_LINKS = ("/guide", "/normatives")
+
+
+def scoped_page(page: str, access_scope: str = "") -> str:
+    """Страница торгов для ключа «auctions»: без контура, Платона и расчёта."""
+    if not access_scope:
+        return page
+    rule = ",".join([f"#{i}" for i in SCOPED_HIDDEN_IDS]
+                    + [f'a[href="{href}"]' for href in SCOPED_HIDDEN_LINKS])
+    style = (f'<style id="accessScope">{rule}{{display:none!important}}</style>'
+             f'<script>window.DEVELOPAID_ACCESS_SCOPE={json.dumps(access_scope)}</script>')
+    return (page
+            .replace('<a class="brand" href="/"', '<a class="brand" href="/auctions"', 1)
+            .replace("</head>", style + "</head>", 1)
+            .replace("<body>", f'<body data-access="{access_scope}">', 1))
