@@ -34023,8 +34023,9 @@ def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
     objects = []
     for key, flows in (nonres.get("objects") or {}).items():
         kpi = dict(flows["kpi"])
-        if kpi.get("exit_month"):
-            kpi["exit_month"] = kpi["exit_month"].isoformat()
+        for _when in ("exit_month", "loan_repaid_month"):
+            if kpi.get(_when):
+                kpi[_when] = kpi[_when].isoformat()
         objects.append({
             "key": key, "title": flows.get("title") or key, "strategy": flows["strategy"],
             "exit_mode": (flows.get("params") or {}).get("exit_mode"),

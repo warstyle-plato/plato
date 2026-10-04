@@ -426,6 +426,20 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             - m["loan_interest_paid"][month] - m["loan_fee"][month]
             + m["loan_draw"][month] - m["loan_repayment"][month])
 
+    # Покрытие процентов кредита объекта NOI (ICR) по годам эксплуатации и
+    # месяц, когда кредит погашен. DSCR при погашении «из NOI» всегда 1 —
+    # гасится ровно остаток после процентов, — поэтому показатель здесь ICR.
+    icr_by_year: list[float] = []
+    if strategy == STRATEGY_INCOME:
+        for year in range(max(1, int(_num(params, "hold_years", 5)))):
+            span = [_add_months(commissioning, year * 12 + k) for k in range(12)]
+            noi = sum(m["rent_revenue"][mm] - m["opex"][mm] - m["property_tax"][mm] for mm in span)
+            interest = sum(m["loan_interest_paid"][mm] for mm in span)
+            if interest > 0:
+                icr_by_year.append(noi / interest)
+    repaid = next((mm for mm in months if mm >= commissioning
+                   and m["loan_repayment"][mm] and not m["loan_balance"][mm]), None)
+
     def total(name: str) -> float:
         return float(sum(m[name].values()))
 
@@ -470,6 +484,9 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "yield_on_cost": stabilized_noi / capex_total if capex_total else 0.0,
             "exit_month": exit_month,
             "equity_cash_flow_sum": sum(equity_cf),
+            "icr_min": min(icr_by_year) if icr_by_year else None,
+            "icr_by_year": icr_by_year,
+            "loan_repaid_month": repaid,
         },
         "warnings": warnings,
     }
