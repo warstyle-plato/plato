@@ -29,13 +29,29 @@
     "nspd_host": "nspd.gov.ru"
   },
   "itog": {
-    "_note": "Удельные строки «Ключевых параметров» (main_legacy: projectParamsTable) — каждая в обеих базах; делитель назван после «/м²».",
-    "per_metre_rows": [
-      "Полная себестоимость",
-      "Строительная себестоимость",
-      "EBITDA на метр",
-      "Чистая прибыль на метр"
-    ],
-    "unit_headers": ["тыс. ₽ / м² ГНС", "тыс. ₽ / м² продаваемой"]
+    "_note": "Удельные строки «Ключевых параметров» (main_legacy: projectParamsTable) — каждая на свою базу (решение 4 ревизии книги): значение → ключи баз terms_glossary в порядке печати. Базы сверены с движком тестом tests/test_prod_smoke_itog_matches_the_page.py.",
+    "per_metre_rows": {
+      "Полная себестоимость": ["saleable_area", "total_area"],
+      "Строительная себестоимость": ["saleable_area", "core_total_area"],
+      "EBITDA на метр": ["saleable_area"],
+      "Чистая прибыль на метр": ["saleable_area"]
+    },
+    "base_abbreviations": {
+      "_note": "Сокращения базы, которые печатает страница вместо родительного падежа из словаря.",
+      "прод.": "saleable_area"
+    },
+    "unit_headers": ["Показатель", "Всего", "тыс. ₽/м² своей базы", "База", "тыс. ₽/м² прод."],
+    "unit_row_bases": {
+      "_note": "Колонка «База» «Удельной экономики»: строка → ключ базы (main_legacy.UNIT_ECONOMICS_ROWS).",
+      "Выручка": "saleable_area",
+      "CAPEX": "total_area",
+      "Маркетинг и продажи": "total_area",
+      "EBITDA": "saleable_area",
+      "Проценты и комиссии": "total_area",
+      "Налог на прибыль": "total_area",
+      "НДС": "total_area",
+      "Полные расходы": "total_area",
+      "Чистая прибыль": "saleable_area"
+    }
   }
 }

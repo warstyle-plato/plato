@@ -230,32 +230,80 @@ def test_the_book_without_the_inputs_sheet_is_red():
 
 # --- 5. «Итог» --------------------------------------------------------------
 
-def _itog(**changes) -> dict:
+TOTAL = "суммарной площади в ГНС"
+CORE = "суммарной площади МКД в ГНС"
+UNIT_ROWS = [["Выручка", "120 000 млн ₽", "916,6", "м² продаваемой площади", "—"],
+             ["CAPEX", "60 000 млн ₽", "274,2", f"м² {TOTAL}", "458,1"],
+             ["Маркетинг и продажи", "3 000 млн ₽", "13,7", f"м² {TOTAL}", "22,9"],
+             ["EBITDA", "5 000 млн ₽", "38,8", "м² продаваемой площади", "—"],
+             ["Проценты и комиссии", "9 000 млн ₽", "41,1", f"м² {TOTAL}", "68,7"],
+             ["Налог на прибыль", "0 млн ₽", "0", f"м² {TOTAL}", "0"],
+             ["НДС", "4 000 млн ₽", "18,3", f"м² {TOTAL}", "30,5"],
+             ["Полные расходы", "71 000 млн ₽", "327,2", f"м² {TOTAL}", "711,4"],
+             ["Чистая прибыль", "-5 000 млн ₽", "-41,4", "м² продаваемой площади", "—"]]
+
+
+def _itog(unit_rows=None, headers=None, **changes) -> dict:
+    """Снимок «Итога» в раскладке решения 4: каждая строка — на свою базу."""
     params = {
-        "Полная себестоимость": "310,2 тыс. ₽/м² прод. · 250,1 тыс. ₽/м² ГНС",
-        "Строительная себестоимость": "180,0 тыс. ₽/м² прод. · 150,0 тыс. ₽/м² суммарной площади МКД",
-        "EBITDA на метр": "95,4 тыс. ₽/м² прод. · 80,2 тыс. ₽/м² ГНС",
-        "Чистая прибыль на метр": "70,1 тыс. ₽/м² прод. · 60,3 тыс. ₽/м² ГНС",
+        "Полная себестоимость": f"711,4 тыс. ₽/м² прод. · 327,2 тыс. ₽/м² {TOTAL}",
+        "Строительная себестоимость": f"467,8 тыс. ₽/м² прод. · 300,1 тыс. ₽/м² {CORE}",
+        "EBITDA на метр": "38,8 тыс. ₽/м² прод.",
+        "Чистая прибыль на метр": "-41,4 тыс. ₽/м² прод.",
     }
     params.update(changes)
-    return {"params": params, "unit_headers": ["Показатель", "Всего", "тыс. ₽ / м² ГНС",
-                                               "тыс. ₽ / м² продаваемой"],
-            "unit_rows": 12, "text": "ИТОГ …"}
+    cells = UNIT_ROWS if unit_rows is None else unit_rows
+    return {"params": params,
+            "unit_headers": headers or ["ПОКАЗАТЕЛЬ", "ВСЕГО", "ТЫС. ₽/М² СВОЕЙ БАЗЫ", "БАЗА",
+                                        "ТЫС. ₽/М² ПРОД."],
+            "unit_cells": cells, "unit_rows": len(cells), "text": "ИТОГ …"}
 
 
-def test_the_itog_with_units_and_bases_is_green():
+def test_the_itog_with_each_row_on_its_own_base_is_green():
     check = smoke.judge_itog(_itog(), REF)
     assert check.status == smoke.OK, check.detail
 
 
 def test_a_per_metre_number_without_its_divider_is_red():
-    check = smoke.judge_itog(_itog(**{"EBITDA на метр": "95,4 тыс. ₽ · 80,2 тыс. ₽"}), REF)
+    check = smoke.judge_itog(_itog(**{"EBITDA на метр": "38,8 тыс. ₽"}), REF)
     assert check.status == smoke.FAIL and "EBITDA на метр" in check.detail
 
 
-def test_a_per_metre_number_in_one_base_only_is_red():
-    check = smoke.judge_itog(_itog(**{"Полная себестоимость": "310,2 тыс. ₽/м²"}), REF)
+def test_a_second_half_without_its_divider_is_red():
+    check = smoke.judge_itog(_itog(**{"Полная себестоимость": "711,4 тыс. ₽/м² прод. · 327,2 тыс. ₽"}), REF)
     assert check.status == smoke.FAIL and "Полная себестоимость" in check.detail
+
+
+def test_a_profit_on_the_wrong_base_is_red():
+    """Прибыль на суммарную площадь — подделка: решение 4 делит её на продаваемую."""
+    check = smoke.judge_itog(_itog(**{"Чистая прибыль на метр": f"-41,4 тыс. ₽/м² {TOTAL}"}), REF)
+    assert check.status == smoke.FAIL and "база не та" in check.detail
+
+
+def test_a_cost_missing_its_total_area_half_is_red():
+    check = smoke.judge_itog(_itog(**{"Полная себестоимость": "711,4 тыс. ₽/м² прод."}), REF)
+    assert check.status == smoke.FAIL and "Полная себестоимость" in check.detail
+
+
+def test_a_base_outside_the_glossary_is_red():
+    """Прежняя подпись «ГНС» — не база словаря, а не «какая-нибудь подпись»."""
+    check = smoke.judge_itog(_itog(**{"EBITDA на метр": "38,8 тыс. ₽/м² ГНС"}), REF)
+    assert check.status == smoke.FAIL and "не из словаря" in check.detail
+
+
+def test_the_layout_before_decision_four_is_red():
+    old = _itog(headers=["Показатель", "Всего", "тыс. ₽ / м² ГНС", "тыс. ₽ / м² продаваемой"],
+                **{"EBITDA на метр": "38,8 тыс. ₽/м² прод. · 30,0 тыс. ₽/м² ГНС"})
+    check = smoke.judge_itog(old, REF)
+    assert check.status == smoke.FAIL
+    assert "EBITDA на метр" in check.detail and "колонки" in check.detail
+
+
+def test_a_unit_row_on_the_wrong_base_is_red():
+    rows = [list(r) for r in UNIT_ROWS]
+    rows[0][3] = f"м² {TOTAL}"
+    check = smoke.judge_itog(_itog(unit_rows=rows), REF)
+    assert check.status == smoke.FAIL and "«Выручка»" in check.detail
 
 
 def test_an_empty_itog_is_red_not_skipped():
