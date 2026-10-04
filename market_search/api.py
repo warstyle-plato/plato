@@ -29,6 +29,7 @@ from . import contracting
 from . import demand as demand_module
 from . import report_pdf
 from . import price_hint_ui
+from . import stage as stage_module
 from . import sales_deck
 from .subject import SubjectNotFound
 
@@ -61,13 +62,29 @@ class PriceHintRequest(BaseModel):
     longitude: float | None = Field(default=None, ge=-180, le=180)
     segment: str | None = None
     radius_km: float = Field(default=2.5, ge=0.5, le=5.0)
+    # Стадии строительства аналогов (коды `stage.CONSTRUCTION_STAGES`). Пусто —
+    # отбора по стадии нет. Неизвестный код — 422, а не молчаливое «любая».
+    stages: list[str] | None = None
+    include_estimated_stage: bool = True
+    # Сроки НАШЕГО проекта — только для подсказки стадии, не для отбора.
+    project_sales_start: str | None = None
+    project_commissioning: str | None = None
 
     @model_validator(mode="after")
     def address_or_coordinates(self) -> "PriceHintRequest":
         have_coords = self.latitude is not None and self.longitude is not None
         if not have_coords and not str(self.address or "").strip():
             raise ValueError("Нужен адрес, кадастровый номер или координаты")
+        self.stages = stage_module.normalize_stage_codes(self.stages)
         return self
+
+    def stage_options(self) -> dict[str, Any]:
+        return {
+            "stages": self.stages,
+            "include_estimated_stage": self.include_estimated_stage,
+            "project_sales_start": self.project_sales_start,
+            "project_commissioning": self.project_commissioning,
+        }
 
 
 class ReportRequest(BaseModel):
@@ -170,6 +187,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 longitude=req.longitude,
                 segment=req.segment,
                 radius_km=req.radius_km,
+                **req.stage_options(),
             )
         except SubjectNotFound as exc:
             # Неопознанный ввод — это ОТВЕТ, а не поломка: кадастровый номер, у
@@ -204,6 +222,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 segment=req.segment,
                 radius_km=req.radius_km,
                 include_projects=True,
+                **req.stage_options(),
             )
         except SubjectNotFound as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
