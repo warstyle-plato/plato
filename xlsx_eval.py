@@ -50,6 +50,17 @@ class FormulaError(Exception):
     """Формула, которую вычислитель не понимает, — повод упасть, а не гадать."""
 
 
+class ExcelError(FormulaError):
+    """Ошибка, которую дал бы и сам Excel: #VALUE!, #N/A, #REF!.
+
+    Её ловит IFERROR — как в Excel. Прочая `FormulaError` — это пробел
+    вычислителя, а не ответ книги, и IFERROR её НЕ глотает: иначе непонятая
+    формула получала запасное значение (обычно ноль) и выглядела посчитанной.
+    Так 29.09.2026 в сохранённых значениях стояли нулями все темпы продаж
+    ОТЧЕТА и ставки CF, хотя Excel считал их верно.
+    """
+
+
 def _as_number(value: Any) -> float:
     if value is None or value == "":
         return 0.0
@@ -62,7 +73,9 @@ def _as_number(value: Any) -> float:
     if isinstance(value, _dt.date):
         # Серийная дата Excel: 1899-12-30 — нулевой день книги.
         return float((value - _dt.date(1899, 12, 30)).days)
-    raise FormulaError(f"не число: {value!r}")
+    if isinstance(value, list):
+        raise FormulaError(f"массив там, где ждали число: {len(value)} значений")
+    raise ExcelError(f"не число: {value!r}")
 
 
 def _as_date(value: Any) -> _dt.date:
@@ -140,7 +153,7 @@ def _index(args: list[Any]) -> Any:
     flat = _flatten(values)
     position = max(row, col, 1)
     if not 1 <= position <= len(flat):
-        raise FormulaError(f"INDEX за пределами диапазона: {position} из {len(flat)}")
+        raise ExcelError(f"INDEX за пределами диапазона: {position} из {len(flat)}")
     return flat[position - 1]
 
 
@@ -153,7 +166,7 @@ def _match(args: list[Any]) -> int:
     for position, item in enumerate(flat, start=1):
         if _compare("=", item, target):
             return position
-    raise FormulaError(f"MATCH: {target!r} не найдено")
+    raise ExcelError(f"MATCH: {target!r} не найдено")
 
 
 _CRITERIA_OP = re.compile(r"^(<=|>=|<>|<|>|=)?(.*)$", re.S)
@@ -227,6 +240,25 @@ def _xirr(args: list[Any]) -> float:
     return (low + high) / 2
 
 
+def _sumproduct(args: list[Any]) -> float:
+    """SUMPRODUCT с любым числом массивов, в том числе с одним.
+
+    Один массив — это сумма уже перемноженного выражения:
+    `SUMPRODUCT((A1:C1+A2:C2)*A3:C3)`. Массивы разной длины Excel не
+    складывает (#VALUE!), и молча обрезать их по короткому здесь нельзя.
+    """
+    columns = [[_as_number(v) for v in _flatten(arg)] for arg in args]
+    if len({len(column) for column in columns}) > 1:
+        raise ExcelError("SUMPRODUCT: массивы разной длины")
+    total = 0.0
+    for values in zip(*columns):
+        product = 1.0
+        for value in values:
+            product *= value
+        total += product
+    return total
+
+
 FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "SUM": lambda args: sum(_numbers(args)),
     "MAX": lambda args: max(_numbers(args) or [0.0]),
@@ -236,9 +268,7 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "OR": lambda args: any(bool(_as_number(a)) for a in _flatten(args)),
     "IF": lambda args: args[1] if bool(_as_number(args[0]))
     else (args[2] if len(args) > 2 else False),
-    "SUMPRODUCT": lambda args: sum(
-        a * b for a, b in zip(*[[_as_number(v) for v in _flatten(arg)] for arg in args])
-    ),
+    "SUMPRODUCT": lambda args: _sumproduct(args),
     "YEAR": lambda args: _as_date(args[0]).year,
     "DAY": lambda args: _as_date(args[0]).day,
     "EXP": lambda args: _math.exp(_as_number(args[0])),
@@ -256,7 +286,7 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "SUMIF": _sumif,
     "INDEX": _index,
     "MATCH": _match,
-    "TEXT": lambda args: _text(args[0]),
+    "TEXT": lambda args: _text_format(args),
     # Строковые: подпись очередей соцобъекта собирается формулой, чтобы не
     # устаревать после правки мест прямо в книге.
     "LEN": lambda args: float(len(_text(args[0]))),
@@ -354,7 +384,7 @@ class Evaluator:
         while (token := self._peek()) and token[0] == "op" and token[1] in ("=", "<>", "<", "<=", ">", ">="):
             self._take()
             right = self._concat()
-            left = _compare(token[1], left, right)
+            left = _elementwise(lambda a, b, op=token[1]: _compare(op, a, b), left, right)
         return left
 
     def _concat(self) -> Any:
@@ -369,21 +399,18 @@ class Evaluator:
         while (token := self._peek()) and token[0] == "op" and token[1] in "+-":
             self._take()
             right = self._product()
-            left = _as_number(left) + _as_number(right) if token[1] == "+" \
-                else _as_number(left) - _as_number(right)
+            left = _elementwise(
+                (lambda a, b: _as_number(a) + _as_number(b)) if token[1] == "+"
+                else (lambda a, b: _as_number(a) - _as_number(b)), left, right)
         return left
 
     def _product(self) -> Any:
         left = self._power()
         while (token := self._peek()) and token[0] == "op" and token[1] in "*/":
             self._take()
-            right = _as_number(self._power())
-            if token[1] == "/":
-                if right == 0:
-                    raise _DivZero()
-                left = _as_number(left) / right
-            else:
-                left = _as_number(left) * right
+            right = self._power()
+            left = _elementwise(_divide if token[1] == "/"
+                                else (lambda a, b: _as_number(a) * _as_number(b)), left, right)
         return left
 
     def _power(self) -> Any:
@@ -397,8 +424,12 @@ class Evaluator:
         token = self._peek()
         if token and token[0] == "op" and token[1] in "+-":
             self._take()
-            value = _as_number(self._unary())
-            return -value if token[1] == "-" else value
+            value = self._unary()
+            sign = -1.0 if token[1] == "-" else 1.0
+            if isinstance(value, list):
+                return RangeValue([sign * _as_number(v) for v in value],
+                                  getattr(value, "rows", len(value)), getattr(value, "cols", 1))
+            return sign * _as_number(value)
         return self._atom()
 
     def _atom(self) -> Any:
@@ -454,7 +485,7 @@ class Evaluator:
         if name == "IFERROR":
             try:
                 value = args[0]()
-            except (_DivZero, ZeroDivisionError, FormulaError):
+            except (_DivZero, ZeroDivisionError, ExcelError):
                 return args[1]()
             return value
         if name == "IF":
@@ -515,8 +546,74 @@ def _split(address: str) -> tuple[int, int]:
     return column_index_from_string(match.group(1)), int(match.group(2))
 
 
+_TEXT_FIXED = re.compile(r"^0(?:\.(0+))?$")
+
+
+def _text_format(args: list[Any]) -> str:
+    """TEXT(значение; формат) — ровно те форматы, что пишет книга.
+
+    Прежде формат отбрасывался, и в сохранённых значениях авто-рисков
+    Дашборда стояло «ДА · 16043.71748868101», хотя Excel покажет «16043,7».
+    Разделитель — запятая: книгу открывают в русском Excel. Незнакомый формат
+    — пробел вычислителя, а не повод угадать.
+    """
+    if len(args) < 2:
+        return _text(args[0])
+    code = _text(args[1])
+    match = _TEXT_FIXED.match(code)
+    if not match:
+        raise FormulaError(f"TEXT: формат {code!r} вычислителю неизвестен")
+    digits = len(match.group(1) or "")
+    value = _excel_round(_as_number(args[0]), digits)
+    return f"{value:.{digits}f}".replace(".", ",")
+
+
 def _text(value: Any) -> str:
     return "" if value is None else str(value)
+
+
+def _divide(a: Any, b: Any) -> float:
+    divisor = _as_number(b)
+    if divisor == 0:
+        raise _DivZero()
+    return _as_number(a) / divisor
+
+
+def _shape(value: Any) -> tuple[int, int]:
+    return (getattr(value, "rows", len(value)), getattr(value, "cols", 1))
+
+
+def _elementwise(op: Callable[[Any, Any], Any], left: Any, right: Any) -> Any:
+    """Операция над числами или поэлементно над диапазонами — как в Excel.
+
+    `SUMPRODUCT((A1:C1+A2:C2)*A3:C3)` и `--(A1:C1>0)` книга пишет постоянно;
+    без этого вычислитель падал на «не число: [массив]». Строка растягивается
+    на блок той же ширины (1×N с M×N даёт M×N), столбец — на блок той же
+    высоты: так делает Excel. Иные формы — пробел, а не ответ: Excel дал бы
+    #N/A по краю, и гадать здесь нельзя.
+    """
+    left_list, right_list = isinstance(left, list), isinstance(right, list)
+    if not left_list and not right_list:
+        return op(left, right)
+    if not left_list:
+        rows, cols = _shape(right)
+        return RangeValue([op(left, y) for y in right], rows, cols)
+    if not right_list:
+        rows, cols = _shape(left)
+        return RangeValue([op(x, right) for x in left], rows, cols)
+    (r1, c1), (r2, c2) = _shape(left), _shape(right)
+    if len(left) != r1 * c1 or len(right) != r2 * c2:
+        raise FormulaError("массив без формы")
+    rows, cols = max(r1, r2), max(c1, c2)
+    if r1 not in (1, rows) or r2 not in (1, rows) or c1 not in (1, cols) or c2 not in (1, cols):
+        raise FormulaError(f"диапазоны разной формы: {r1}×{c1} и {r2}×{c2}")
+    out = []
+    for r in range(rows):
+        for c in range(cols):
+            x = left[(r if r1 > 1 else 0) * c1 + (c if c1 > 1 else 0)]
+            y = right[(r if r2 > 1 else 0) * c2 + (c if c2 > 1 else 0)]
+            out.append(op(x, y))
+    return RangeValue(out, rows, cols)
 
 
 def _compare(operator: str, left: Any, right: Any) -> bool:

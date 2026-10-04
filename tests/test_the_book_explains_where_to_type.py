@@ -98,16 +98,19 @@ def test_the_guide_does_not_promise_a_sheet_that_is_not_there(book):
             assert name in book.sheetnames, name
 
 
-def test_the_guide_counts_come_from_the_transfer(book):
-    """Число переехавших ячеек — из отчёта о переносе, а не из головы."""
-    pairs = dict(_pairs(book[ves.GUIDE_SHEET]))
-    moved = int(pairs["Переехало на лист ввода"])
-    entry = book[ves.ENTRY_SHEET]
-    filled = sum(1 for row in entry.iter_rows() for cell in row
-                 if cell.value is not None)
-    assert 0 < moved <= filled, (moved, filled)
+def test_the_guide_carries_no_builder_statistics(book):
+    """Счётчики сборки («переехало 331», «перекрашено 18») — не инструкция.
+
+    Ревизия книги 29.09.2026: читателю они ничего не говорят, и лист их больше
+    не несёт; сам перенос проверяется по отчёту сборки, а не по листу.
+    """
+    text = " ".join(a + " " + b for a, b in _pairs(book[ves.GUIDE_SHEET]))
+    for phrase in ("Переехало на лист ввода", "Перекрашено", "СКОЛЬКО ЯЧЕЕК",
+                   "Второй правды"):
+        assert phrase not in text, phrase
 
 
-def test_the_guide_is_second_and_the_report_is_third(book):
-    """Инструкция рядом с листом, о котором она, но не вместо работы."""
-    assert book.sheetnames[:3] == [ves.ENTRY_SHEET, ves.GUIDE_SHEET, "ОТЧЕТ"]
+def test_the_guide_stands_right_after_the_entry_sheet(book):
+    """Инструкция рядом с листом, о котором она; итоги — впереди обоих
+    (решение владельца 29.09.2026: книга открывается на Дашборде)."""
+    assert book.sheetnames[:4] == ["Дашборд", "ОТЧЕТ", ves.ENTRY_SHEET, ves.GUIDE_SHEET]

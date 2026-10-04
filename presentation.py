@@ -47,6 +47,10 @@ CARD_COUNT = 6
 BANK_KPIS = frozenset({"llcr", "peak_bridge_mln", "peak_pf_mln"})
 BANK_RISKS = frozenset({"llcr_below_target", "weakest_phase"})
 
+# Величины, которые движок снимает при непогашенном долге
+# (`summary.equity_returns`); подпись причины приходит из движка.
+_EQUITY_RETURN_KEYS = frozenset({"npv_mln", "irr_equity"})
+
 # Величины моста «от выручки к чистой прибыли»: ключ величины и знак бара.
 BRIDGE_STEPS: tuple[tuple[str, str, int], ...] = (
     ("revenue_mln", "Выручка", 1),
@@ -110,11 +114,16 @@ def build_project_presentation(
     layout = dict(report.get("layout") or {})
     bank = bool(layout.get("project_finance", True))
     kpi: list[dict[str, Any]] = []
+    returns_na = _text(numbers.get("equity_returns_na")) or None
     for key, label, unit in KPI_CATALOGUE:
         if not bank and key in BANK_KPIS:
             continue
-        kpi.append({"key": key, "label": label, "unit": unit,
-                    "value": _number(numbers.get(key))})
+        item = {"key": key, "label": label, "unit": unit,
+                "value": _number(numbers.get(key))}
+        # NPV снят движком при непогашенном долге: причина вместо числа.
+        if key in _EQUITY_RETURN_KEYS and returns_na:
+            item.update({"value": None, "unit": "", "na": returns_na})
+        kpi.append(item)
     for tile in layout.get("nonres_tiles") or []:
         unit = {"rub": "млн ₽", "pct": "%", "mult": "x"}.get(str(tile.get("unit")), "")
         kpi.append({"key": f"nonres:{tile.get('label')}", "label": str(tile.get("label")),
@@ -138,7 +147,6 @@ def build_project_presentation(
             "saleable": _number(product.get("saleable")),
             "revenue_mln": _number((product_numbers.get(key) or {}).get("revenue_mln")),
             "cost_mln": _number((product_numbers.get(key) or {}).get("cost_mln")),
-            "per_gns_th": _number((product_numbers.get(key) or {}).get("per_gns_th")),
             "per_saleable_th": _number((product_numbers.get(key) or {}).get("per_saleable_th")),
             "per_unit_th": _number((product_numbers.get(key) or {}).get("per_unit_th")),
             "pace_year": _number((product_numbers.get(key) or {}).get("pace_year")),
@@ -377,6 +385,8 @@ def _efficiency_block(numbers: dict[str, Any]) -> dict[str, Any]:
         "margin": _number(numbers.get("margin")),
         "irr_equity": _number(eff.get("irr_equity")),
         "npv_mln": _number(numbers.get("npv_mln")),
+        # «N/A — долг не погашен» от движка; None — IRR и NPV числами.
+        "returns_na": _text(numbers.get("equity_returns_na")) or None,
         "term_months": _number(numbers.get("term_months")),
         "llcr": _number(numbers.get("llcr")),
         "full_project_cost_mln": _number(eff.get("full_project_cost_mln")),

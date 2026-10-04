@@ -31,7 +31,8 @@ import zipfile
 # перевод запроса и ответа живёт на границе поставщика.
 import plato_provider
 # Подписи величин — у словаря терминов, здесь только чтение.
-from terms_glossary import CORE_TOTAL_AREA, TOTAL_AREA, page_terms
+from terms_glossary import (CORE_ABOVE_AREA, CORE_TOTAL_AREA, CORE_UNDER_AREA, SALEABLE_AREA,
+                            TERMS, TOTAL_AREA, capex_unit_base, page_terms, unit_label)
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
 
@@ -70,6 +71,7 @@ from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
 from request_body import json_object
+import v4_book_polish
 import v4_dashboard
 import v4_entry_sheet
 import v4_nonres_sheet
@@ -87,7 +89,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.87"
+VERSION = "0.24.91"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1988,7 +1990,10 @@ def sold_saleable_sqm(tep: dict[str, Any], inputs: dict[str, Any] | None) -> flo
                                   and object_is_sold(inputs, obj)):
             continue
         keys.append(obj.key)
-    return sum(n(tep.get(key) or {}, "saleable") for key in keys)
+    # Объект продаёт остаток после мест первых этажей: строка ТЭП держит
+    # площадь здания (владелец, 29.09.2026), ответ — `object_sold_saleable`.
+    return sum(object_sold_saleable(inputs or {}, tep, key) if key in _BY_KEY
+               else n(tep.get(key) or {}, "saleable") for key in keys)
 
 
 # --- экземпляры объектов проекта ----------------------------------------------
@@ -11903,6 +11908,23 @@ def standalone_object_saleable(inputs: dict[str, Any], tep: dict[str, Any] | Non
     return max(0.0, base_gba - over_gba) * base_saleable / base_gba
 
 
+def object_sold_saleable(inputs: dict[str, Any], tep: dict[str, Any] | None,
+                         key: str) -> float:
+    """Сколько метров объекта ПРОДАЁТСЯ — для структуры продукта, отчёта и сводки.
+
+    Строка ТЭП объекта держит площадь здания: места первых этажей её не
+    уменьшают (владелец, 29.09.2026: «оставь в структуре»). Продаётся остаток
+    — `standalone_object_saleable`. Строка без продаваемой (объект выключен,
+    передан) или объект без вводной ГНС отвечают своей строкой.
+    """
+    row = (tep or {}).get(key) or {}
+    obj = _BY_KEY.get(key)
+    if (obj is None or obj.measure == "spaces" or n(row, "saleable") <= 0
+            or n(inputs, f"{obj.prefix}_gba_sqm") <= 0):
+        return n(row, "saleable")
+    return standalone_object_saleable(inputs, tep, key)
+
+
 def object_parking_by_hand(inputs: dict[str, Any], prefix: str) -> bool:
     """Места гаража объекта заданы человеком? Ответ один на проект и очередь.
 
@@ -12006,10 +12028,11 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         row = (tep or {}).get(tep_key) or None
         if row is None:
             continue
-        # Продаваемая объекта ДО мест первых этажей — вводная, а не присланная
-        # строка: страница кладёт в свою строку ответ прошлого расчёта, уже
-        # уменьшенный на места, и следующий расчёт вычитал их второй раз —
-        # строка ТЭП 50 709 м² при выручке от 66 613 (владелец, 29.09.2026).
+        # Продаваемая объекта — вводная, а не присланная строка: страница
+        # кладёт в свою строку ответ прошлого расчёта, и строка, сохранённая,
+        # пока движок вычитал в ней места первых этажей, несёт уже уменьшенное
+        # число — следующий расчёт вычитал бы его снова (строка ТЭП 50 709 м²
+        # при выручке от 66 613, владелец, 29.09.2026).
         # Строка приводится к вводной одной долей: пропорции общей, полезной и
         # продаваемой у неё свои, и место мест в них не меняет.
         # Строка с другой ГНС — это другой ТЭП (свежий пересчёт, доля очереди),
@@ -12092,15 +12115,18 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         remaining_gba = max(0.0, base_gns - over_gba)
         ratio = (remaining_gba / base_gns) if base_gns > 0 else (1.0 if over_gba <= 0 else 0.0)
 
+        # Строка ТЭП объекта остаётся площадью ЗДАНИЯ: места первых этажей её
+        # не уменьшают. Вычет живёт в структуре продукта — продаётся остаток,
+        # `standalone_object_saleable`, — и называется здесь числом (владелец,
+        # 29.09.2026: «оставь в структуре»). Прежде строка уменьшалась, и
+        # ТЭП, продукт и присланная назад строка давали три разных числа.
         losses: dict[str, float] = {}
         for field in ("total_area", "useful", "saleable"):
             base = n(row, f"_object_parking_base_{field}")
-            adjusted = max(0.0, base * ratio)
-            row[field] = adjusted
-            # Маркер именно НАШЕГО последнего значения отличает повторный
-            # проход от нового ТЭП, пришедшего между расчётами.
-            row[f"_object_parking_applied_{field}"] = adjusted
-            losses[field] = max(0.0, base - adjusted)
+            row[field] = base
+            row[f"_object_parking_applied_{field}"] = base
+            losses[field] = max(0.0, base - max(0.0, base * ratio))
+        row["parking_saleable_after_sqm"] = max(0.0, n(row, "saleable") - losses["saleable"])
 
         overflow = max(0.0, over_gba - base_gns)
         if overflow > 1e-9:
@@ -16445,6 +16471,36 @@ def _pdf_count_column_width(cells: "list[str]", font: str, size: float,
     return max(minimum, widest + 2 * padding + 1.0)
 
 
+def _pdf_unit_num(value: Any, digits: int) -> str:
+    """Удельное: нулевая база — прочерк, а не «0,0» (движок отдаёт None)."""
+    return "—" if value is None else _pdf_num(value, digits)
+
+
+def _pdf_unit_base(item: dict[str, Any]) -> str:
+    """База удельного строки — подпись из словаря по ключу движка."""
+    base = str(item.get("base") or "")
+    return f"м² {TERMS[base].genitive}" if base in TERMS else "—"
+
+
+def _pdf_unit_saleable(item: dict[str, Any], digits: int) -> str:
+    """На м² продаваемой — для сравнения с ценой; у строк с этой базой не повторяется."""
+    if str(item.get("base") or "") == UNIT_BASE_SALEABLE:
+        return "—"
+    return _pdf_unit_num(item.get("per_saleable_th"), digits)
+
+
+def _pdf_unit_bases_note(summary: dict[str, Any]) -> str:
+    """Площади баз удельных — числами движка и словами словаря."""
+    bases = summary.get("unit_bases") or {}
+    parts = [f"{TERMS[key].name} — {_pdf_num(bases.get(key), 0)} м²"
+             for key in (UNIT_BASE_TOTAL, UNIT_BASE_SALEABLE, UNIT_BASE_CORE_ABOVE, UNIT_BASE_CORE_UNDER)
+             if key in TERMS and bases.get(key) is not None]
+    return ("Базы удельных: " + "; ".join(parts) + ". Расходы — на "
+            f"{TOTAL_AREA.genitive}, выручка и прибыль — на {SALEABLE_AREA.genitive}, "
+            f"СМР наземной части — на {CORE_ABOVE_AREA.genitive}, подземной — на "
+            f"{CORE_UNDER_AREA.genitive}.") if parts else ""
+
+
 def _pdf_money(value: Any) -> str:
     try:
         number = float(value or 0)
@@ -17510,29 +17566,30 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # сравнивают с ценой продажи, и подмена одной другой ошибается вдвое.
     unit_economics = report.get("unit_economics") or []
     if unit_economics:
-        ue_rows = [["Показатель", "Всего", "тыс ₽/м² наземной ГНС",
+        # Каждая строка — на свою базу, и база названа в строке (решение 4
+        # ревизии книги); вторая колонка — на продаваемую, для сравнения с
+        # ценой. У строк, чья база и есть продаваемая, она не повторяется.
+        ue_rows = [["Показатель", "Всего", "На м² своей базы", "База",
                     "тыс ₽/м² продаваемой"]]
         for item in unit_economics:
             ue_rows.append([
                 str(item.get("label") or "—"),
                 _pdf_money(item.get("total")),
-                _pdf_num(item.get("per_gns_th"), 1),
-                _pdf_num(item.get("per_saleable_th"), 1),
+                _pdf_unit_num(item.get("per_base_th"), 1),
+                _pdf_unit_base(item),
+                _pdf_unit_saleable(item, 1),
             ])
         story.append(KeepTogether([
             P("Удельная экономика проекта", h2),
-            table(ue_rows, [62*mm, 40*mm, 34*mm, 34*mm], font_size=7.6),
+            table(ue_rows, [40*mm, 32*mm, 24*mm, 50*mm, 24*mm], font_size=7.2),
             # База — НАЗЕМНАЯ площадь: подземная в ГНС не входит, у неё своя
             # экономика — свой метр стройки и продукт, продаваемый местами
             # (решение владельца, 04.09.2026). Строительный объём стоит рядом
             # своим числом: на нём считаются общие статьи, и без него удельный
             # показатель читается как посчитанный по всему объёму. Термин наш:
             # город считает нагрузки от суммарной поэтажной площади.
-            P(f"База ГНС — наземная площадь {_pdf_num(summary.get('project_gns_sqm'), 0)} м². "
-              f"Подземная часть {_pdf_num(_underground_sqm(tep_report), 0)} м² в неё не входит: "
-              f"у неё своя себестоимость метра и свой продукт, продаваемый местами. "
-              f"{TOTAL_AREA.name} — {_pdf_num(_above_ground_sqm(tep_report) + _underground_sqm(tep_report), 0)} м², "
-              "наземная плюс подземная. Общие статьи (ИРД, проектирование, подготовка, "
+            P(_pdf_unit_bases_note(summary) + " "
+              "Общие статьи (ИРД, проектирование, подготовка, "
               f"сети, сдача, содержание) считаются от {CORE_TOTAL_AREA.genitive} — "
               f"{_pdf_num(_core_total_sqm(tep_report), 0)} м²: квартиры, коммерция "
               "1 этажа, подземный паркинг и кладовые. "
@@ -17549,27 +17606,21 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if construction_costs:
         # Вторая база в заголовке обязательна: без неё 23 тыс ₽/м² подземной
         # части читались как ставка на подземный метр (она — 190, во вводных).
-        cc_rows = [["Статья", "млн ₽", "тыс ₽/м² наземной ГНС",
+        # СМР — на ту часть, на которую начислено; прочие статьи — на
+        # суммарную площадь в ГНС. База — в строке, из движка.
+        cc_rows = [["Статья", "млн ₽", "На м² своей базы", "База",
                     "тыс ₽/м² продаваемой"]]
         for item in construction_costs:
             cc_rows.append([
                 str(item.get("label") or "—"),
                 _pdf_num(float(item.get("value") or 0) / 1e6, 1),
-                _pdf_num(item.get("per_gns_th"), 2),
-                _pdf_num(item.get("per_saleable_th"), 2),
+                _pdf_unit_num(item.get("per_base_th"), 2),
+                _pdf_unit_base(item),
+                _pdf_unit_saleable(item, 2),
             ])
-        cc_total = sum(float(item.get("value") or 0) for item in construction_costs)
-        cc_gns = float(summary.get("project_gns_sqm") or 0)
-        cc_saleable = float(summary.get("monetizable_saleable_sqm") or 0)
-        cc_rows.append([
-            "Итого строительство",
-            _pdf_num(cc_total / 1e6, 1),
-            _pdf_num(cc_total / cc_gns / 1000 if cc_gns else 0, 2),
-            _pdf_num(cc_total / cc_saleable / 1000 if cc_saleable else 0, 2),
-        ])
         story.append(KeepTogether([
             P("Удельные расходы строительства", h2),
-            table(cc_rows, [70*mm, 30*mm, 35*mm, 35*mm], font_size=7.6),
+            table(cc_rows, [52*mm, 22*mm, 24*mm, 48*mm, 24*mm], font_size=7.2),
             P("Внутренние инженерные сети входят в СМР соответствующей части.", small),
         ]))
     story.append(_PdfSection("summary"))
@@ -17821,10 +17872,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Рубль на метр — в обеих базах, как во всех удельных отчёта: именно по
     # этим статьям спорят с подрядчиком и с банком, а в долях процента спор
     # не ведут.
-    expense_rows=[["Статья","Сумма","Доля","тыс ₽/м² наземной ГНС","тыс ₽/м² продаваемой"]]
+    # Все строки — расходы, база у них одна (решение 4 ревизии книги):
+    # суммарная площадь в ГНС; подпись — из словаря терминов.
+    expense_rows=[["Статья","Сумма","Доля",unit_label(UNIT_BASE_TOTAL).replace("тыс. ","тыс "),"тыс ₽/м² продаваемой"]]
     total_expense=sum(float(item.get('value') or 0) for item in expense_structure) or float(summary.get('total_expenses') or 0)
-    _exp_gns=float(summary.get('project_gns_sqm') or 0)
-    _exp_saleable=float(summary.get('monetizable_saleable_sqm') or 0)
     for item in expense_structure:
         value=float(item.get('value') or 0)
         if value<=0: continue
@@ -17835,8 +17886,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # другой, и найти её удалось только глазами.
         expense_rows.append([item.get('label') or '—',_pdf_money(value),
                              (_pdf_num(value/total_expense*100,1)+'%') if total_expense else '—',
-                             _pdf_num(item.get('per_gns_th') or 0,1),
-                             _pdf_num(item.get('per_saleable_th') or 0,1)])
+                             _pdf_unit_num(item.get('per_base_th'),1),
+                             _pdf_unit_num(item.get('per_saleable_th'),1)])
         # Отдельно стоящий объект меряется своей площадью, наземный паркинг —
         # своими местами. Числа считает движок; отчёт носят в банк, и
         # расходиться с экраном ему нельзя — подстроки те же.
@@ -17852,8 +17903,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             expense_rows.append(["   в т.ч. "+str(line.get('label') or '—'),
                                  _pdf_money(line.get('value') or 0),"—",_gns,_sal])
     expense_rows.append(["Итого расходы",_pdf_money(total_expense),"100,0%" if total_expense else "—",
-                         _pdf_num(total_expense/_exp_gns/1000 if _exp_gns else 0,1),
-                         _pdf_num(total_expense/_exp_saleable/1000 if _exp_saleable else 0,1)])
+                         _pdf_unit_num(summary.get('full_cost_per_total_area_th'),1),
+                         _pdf_num(summary.get('full_cost_per_saleable_th'),1)])
     story.append(table(expense_rows,[62*mm,32*mm,20*mm,28*mm,28*mm],font_size=7.4))
     _exp_note=next((str(i.get('items_note') or '') for i in expense_structure
                     if i.get('items') and i.get('items_note')),'')
@@ -21892,11 +21943,41 @@ def _v4_extra_object_block(xml: str, lay: _V4ObjectLayout, missing: list[str]) -
     # Заголовок стоит во всех ячейках строки — так его пишет шаблон (полоса
     # заливки во всю ширину). Оставить там подпись двойника значило бы завести
     # в книге второй торговый центр, который на самом деле ФОК.
-    for _column in ("A", "B", "C", "D"):
-        xml, done = _v4_set_cell(xml, f"{_column}{head}", text=name.upper())
-        if not done and _column == "A":
-            missing.append(f"{name}: заголовок блока объекта")
-    return xml
+    # Прежде подпись менялась в A–D, а с E по GA оставался «ТОРГОВЫЙ ЦЕНТР»
+    # двойника, и объединения строки копия не несла — ревизия 29.09.2026
+    # видела его на экране. Подпись ставится во все ячейки, строка
+    # объединяется, как заголовки блоков шаблона.
+    # Строка переписывается одним проходом: по ячейке через `_v4_set_cell`
+    # это 183 чтения всего листа ОБЪЕКТЫ на один заголовок.
+    found = re.search(rf'(<x:row r="{head}"[^>]*>)(.*?)(</x:row>)', xml, re.S)
+    columns = re.findall(r'<x:c r="([A-Z]+)%d"' % head, found.group(2)) if found else []
+    if "A" not in columns:
+        missing.append(f"{name}: заголовок блока объекта")
+        return xml
+    text = xml_escape(name.upper())
+
+    def titled(cell: "re.Match[str]") -> str:
+        attrs = re.sub(r'\st="[^"]*"', "", cell.group(2))
+        return (f'<x:c r="{cell.group(1)}{head}"{attrs} t="inlineStr">'
+                f"<x:is><x:t>{text}</x:t></x:is></x:c>")
+
+    body = re.sub(rf'<x:c r="([A-Z]+){head}"([^>]*?)(?:/>|>.*?</x:c>)', titled,
+                  found.group(2), flags=re.S)
+    xml = xml[:found.start()] + found.group(1) + body + found.group(3) + xml[found.end():]
+    return _v4_add_merge(xml, f"A{head}:{columns[-1]}{head}")
+
+
+def _v4_add_merge(xml: str, ref: str) -> str:
+    """Добавляет объединение в `mergeCells` листа и правит счётчик."""
+    found = re.search(r'<x:mergeCells(?:\s[^>]*)?>(.*?)</x:mergeCells>', xml, re.S)
+    if not found:
+        return xml
+    if f'ref="{ref}"' in found.group(1):
+        return xml
+    body = found.group(1) + f'<x:mergeCell ref="{ref}" />'
+    count = len(re.findall(r"<x:mergeCell ", body))
+    return (xml[:found.start()] + f'<x:mergeCells count="{count}">' + body
+            + "</x:mergeCells>" + xml[found.end():])
 
 
 def _v4_object_tep_cells(lay: _V4ObjectLayout) -> dict[str, str]:
@@ -21966,6 +22047,9 @@ def _v4_extra_tep_rows(xml: str, missing: list[str]) -> str:
     складывает оба куска — это сказано в строке раздела.
     """
     below = [lay for lay in _v4_extras() if lay.tep_row > 36]
+    # Итог переезжает с 34 на 35 — и его стиль вместе с ним (см. `_v4_restyle_row`).
+    total_styles = _v4_sheet_row_styles(xml, 34)
+    plain_styles = _v4_sheet_row_styles(xml, 33)
     for letter in ("C", "D", "E", "G"):
         parts = [f"{letter}31:{letter}34"]
         if below:
@@ -22037,6 +22121,16 @@ def _v4_extra_tep_rows(xml: str, missing: list[str]) -> str:
                 xml, done = _v4_set_or_insert_cell(xml, coord, formula=value)
             if not done:
                 missing.append(f"ТЭП · строка {lay.obj.label} {coord}")
+    xml = _v4_restyle_row(xml, 34, plain_styles, whole_row=True)
+    xml = _v4_restyle_row(xml, 35, total_styles, whole_row=True)
+    # Блок соцобъектов в шаблоне стоит без оформления: заголовок раздела,
+    # шапка и итог получают стили своих ролей с этого же листа.
+    section = _v4_sheet_row_styles(xml, 30).get("A", "")
+    header = _v4_sheet_row_styles(xml, 3)
+    xml = _v4_restyle_row(xml, 38, {"A": section})
+    xml = _v4_restyle_row(xml, 39, {c: header.get("A", "") for c in "ABCDEF"})
+    xml = _v4_restyle_row(xml, 44, {"A": total_styles.get("A", ""),
+                                    "E": total_styles.get("G", "")})
     return xml
 
 
@@ -22129,6 +22223,10 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
         if not done:
             missing.append(f"ОТЧЁТ · структура продукта: ячейка {coord} не поставлена")
 
+    # Стиль итога шаблона стоит на строке, которую займёт ФОК: он переезжает
+    # на строку итога вместе с ним, а ФОК получает стиль обычной строки.
+    total_styles = _v4_sheet_row_styles(xml, total - 1)
+    plain_styles = _v4_sheet_row_styles(xml, total - 2)
     xml_holder = [_v4_ensure_row(xml, total)]
     # Шапка: колонка называет то, что в ней лежит.
     put("B45", text="ГНС наземная, м²")
@@ -22190,7 +22288,219 @@ def _v4_product_structure_block(xml: str, missing: list[str]) -> str:
     put(f"H{total}", text=(f"{TOTAL_AREA.name} = наземная + подземная. "
                            "Соцобъекты сюда не входят — они не продукт; "
                            "их метры на листе ТЭП."))
+    xml_holder[0] = _v4_restyle_row(xml_holder[0], total - 1, plain_styles, whole_row=True)
+    xml_holder[0] = _v4_restyle_row(xml_holder[0], total, total_styles, whole_row=True)
     return xml_holder[0]
+
+
+def _v4_report_unit_tables_style(xml: str) -> str:
+    """Юнит-экономика и темпы продаж ОТЧЕТА: данные — стилем данных.
+
+    В шаблоне подписи строк 76–83 и 87–93 (и единицы E87:E93) залиты тёмным
+    цветом ЗАГОЛОВКА раздела, а шапки 75 и 86 — тем же цветом, а не цветом
+    шапок таблиц листа. Таблица читалась сплошной тёмной полосой (ревизия
+    29.09.2026). Стили берутся у соседних таблиц этого же листа: подпись —
+    у «Продаваемая площадь» (A57), единица — у G57, шапка — у строки 56.
+    """
+    label = _v4_sheet_row_styles(xml, 57)
+    header = _v4_sheet_row_styles(xml, 56)
+    head = header.get("B", "")
+    for row in (75, 86):
+        xml = _v4_restyle_row(xml, row, {c: head for c in "ABCDE"})
+    for row in list(range(76, 84)) + list(range(87, 94)):
+        xml = _v4_restyle_row(xml, row, {"A": label.get("A", ""), "E": label.get("G", "")})
+    # «Итого» доли структуры расходов — в процентах, как строки над ним
+    # (стоял формат суммы: «1,0» вместо «100,0%»); шапка «Подземная, м²» —
+    # стилем шапки своей таблицы.
+    shares = _v4_sheet_row_styles(xml, 39).get("C")
+    if shares:
+        xml = _v4_restyle_row(xml, 40, {"C": shares.replace('"', '"')})
+    product_header = _v4_sheet_row_styles(xml, 45).get("F")
+    if product_header:
+        xml = _v4_restyle_row(xml, 45, {"G": product_header})
+    return xml
+
+
+_V4_FINAL_DEBT_ROW = 23
+_V4_FINAL_DEBT_LABEL = "Финальный долг"
+_V4_DEBT_DEFAULT_STATUS = "ДЕФОЛТ ПО ДОЛГУ"
+
+
+def _v4_name_debt_default_status(xml: str, missing: list[str]) -> str:
+    """Вердикт ПРОВЕРОК отличает дефолт по долгу от сбоя расчёта.
+
+    Решение владельца 29.09.2026: непогашенный к концу долг — это ответ модели
+    о проекте, а не поломка модели. Прежде единственный FAIL «Финальный долг»
+    давал «СБОЙ», и все три проверенных проекта читались сломанными. Теперь:
+    FAIL в любой другой строке — «СБОЙ»; FAIL только в строке финального долга
+    — «ДЕФОЛТ ПО ДОЛГУ». Строка берётся по подписи, а не по номеру наугад.
+    """
+    label = _v4_cell_text(xml, f"A{_V4_FINAL_DEBT_ROW}")
+    if label != _V4_FINAL_DEBT_LABEL:
+        missing.append(f"ПРОВЕРКИ · строка {_V4_FINAL_DEBT_ROW} не «{_V4_FINAL_DEBT_LABEL}», "
+                       f"а {label!r}: статус дефолта не назван")
+        return xml
+    current = _v4_cell_formula(xml, "B3") or ""
+    found = re.search(r"COUNTIF\(F6:F(\d+),", current)
+    if not found:
+        missing.append("ПРОВЕРКИ · вердикт B3 не распознан: статус дефолта не назван")
+        return xml
+    last = found.group(1)
+    debt = f"F{_V4_FINAL_DEBT_ROW}"
+    formula = (f'IF(COUNTIF(F6:F{last},"FAIL")-COUNTIF({debt},"FAIL")>0,"СБОЙ",'
+               f'IF(COUNTIF({debt},"FAIL")>0,"{_V4_DEBT_DEFAULT_STATUS}",'
+               f'IF(COUNTIF(F6:F{last},"WARN")>0,"ПРОЙДЕНО С ПРЕДУПРЕЖДЕНИЯМИ","ПРОЙДЕНО")))')
+    xml, done = _v4_set_cell(xml, "B3", formula=formula)
+    if not done:
+        missing.append("ПРОВЕРКИ · вердикт B3 не записан")
+        return xml
+    # Подсветка вердикта: дефолт красится как сбой — оба красные, но названы по-разному.
+    rule = re.search(r'<x:cfRule type="expression" dxfId="(\d+)" priority="\d+">'
+                     r'<x:formula>\$B\$3="СБОЙ"</x:formula></x:cfRule>', xml)
+    if rule:
+        priorities = [int(p) for p in re.findall(r'priority="(\d+)"', xml)]
+        added = (f'<x:cfRule type="expression" dxfId="{rule.group(1)}" '
+                 f'priority="{max(priorities) + 1}"><x:formula>$B$3="{_V4_DEBT_DEFAULT_STATUS}"'
+                 f'</x:formula></x:cfRule>')
+        xml = xml[:rule.end()] + added + xml[rule.end():]
+    return xml
+
+
+# Подписи удельных показателей ОТЧЕТА — по их фактическому делителю (решение
+# владельца 29.09.2026: база следует показателю и называется в подписи).
+# (ячейка, прежняя подпись шаблона, новая подпись). Прежняя сверяется: если
+# шаблон поменялся, подпись не переписывается вслепую.
+_V4_REPORT_AREA_LABELS = (
+    ("A58", "Общая площадь (GBA)", "GBA продуктов: наземная + подземная очередей"),
+    ("H58", "Жилые очереди и отдельно стоящие объекты",
+     "Жилые очереди с подземной частью и наземная GBA отдельных объектов; "
+     "без соцобъектов и гаражей объектов"),
+    ("A62", "CAPEX на м² GBA", "CAPEX на м² GBA продуктов"),
+    ("H62", "CAPEX очереди / общая площадь", "CAPEX очереди / «GBA продуктов» (строка 58)"),
+    ("F9", "CAPEX на м² GBA", "CAPEX на м² GBA продуктов"),
+    ("C75", "на м² GBA, тыс. ₽", "на м² GBA с подземной и соцобъектами, тыс. ₽"),
+)
+
+
+def _v4_report_area_labels(xml: str, missing: list[str]) -> str:
+    """ОТЧЕТ делил «на м² GBA» на две разные площади под одной подписью.
+
+    `F62`/`G9` — на GBA продуктов (строка 58), `C76:C83` — на строительный
+    объём ТЭП!C36 (с соцобъектами и гаражами объектов): рядом стояли две
+    «CAPEX на м² GBA» — 190 и 185 на дефолтном проекте. Делители не меняются,
+    меняются подписи: каждая называет то, на что делит.
+    """
+    for coord, old, new in _V4_REPORT_AREA_LABELS:
+        current = _v4_cell_text(xml, coord)
+        if current == new:
+            continue
+        if current != old:
+            missing.append(f"ОТЧЕТ · подпись {coord}: ждали «{old}», в шаблоне {current!r}")
+            continue
+        xml, done = _v4_set_or_insert_cell(xml, coord, text=new)
+        if not done:
+            missing.append(f"ОТЧЕТ · подпись {coord} не записана")
+    return xml
+
+
+def _v4_family_present(inputs: dict[str, Any], key: str) -> bool:
+    """Есть ли в проекте объект этого вида — сам или любой его экземпляр."""
+    return any(b(inputs, o.enabled_key) for o in STANDALONE_OBJECTS
+               if o.key == key or o.family == key)
+
+
+def _v4_storage_present(tep: dict[str, dict[str, Any]]) -> bool:
+    return float((tep.get("storage") or {}).get("units") or 0) > 0
+
+
+def _v4_absent_products(inputs: dict[str, Any], tep: dict[str, dict[str, Any]]) -> frozenset[str]:
+    """Продукты шаблона, которых нет в проекте, — их строки Дашборд не показывает."""
+    absent = {key for key in _V4_TEMPLATE_OBJECT_LAYOUT
+              if not _v4_family_present(inputs, key)}
+    if not _v4_storage_present(tep):
+        absent.add("storage")
+    return frozenset(absent)
+
+
+# Строки листов, которые скрываются, когда объекта нет в проекте. Подпись —
+# часть адреса: оформление сверяет её и не скрывает строку, если стоит другая.
+_V4_ABSENT_OBJECT_ROWS: dict[str, tuple[tuple[str, int, str, str], ...]] = {
+    "offices": (("ОТЧЕТ", 50, "A", "МФОЦ"), ("ОТЧЕТ", 91, "A", "МФОЦ"),
+                ("ТЭП", 31, "B", "МФОЦ")),
+    "standalone_retail": (("ОТЧЕТ", 51, "A", "Торговый центр"), ("ОТЧЕТ", 92, "A", "Торговый центр"),
+                          ("ТЭП", 32, "B", "Торговый центр")),
+    "above_parking": (("ОТЧЕТ", 52, "A", "Наземный паркинг"), ("ОТЧЕТ", 93, "A", "Наземный паркинг"),
+                      ("ТЭП", 33, "B", "Наземный")),
+    "sports": (("ОТЧЕТ", 53, "A", "ФОК"), ("ТЭП", 34, "B", "ФОК")),
+}
+_V4_OBJECT_BLOCK_SPAN = 28          # заголовок блока ОБЪЕКТЫ … «Паркинг объекта — выручка»
+_V4_OBJECT_QUEUE_FIRST = 92         # ОБЪЕКТЫ: «Очередь 1 — Выручка объектов»
+_V4_OBJECT_QUEUE_STRIDE = 8
+_V4_OBJECT_QUEUE_ROWS = 7
+_V4_TEP_QUEUE_PRODUCTS = ("Квартиры", "Коммерция 1 этажа", "Подземный паркинг", "Кладовые")
+_V4_QUEUE_BLOCKS = {                # лист: (заголовок первой очереди, шаг блока)
+    "Продажи": (6, _V4_SALES_PHASE_STRIDE),
+    "CAPEX": (6, _V4_CAPEX_BLOCK_STRIDE),
+    "ВРИ": (6, _V4_VRI_BLOCK_STRIDE),
+}
+
+
+def _v4_hidden_plan(inputs: dict[str, Any], tep: dict[str, dict[str, Any]], queues: int,
+                    entry_xml: str) -> tuple[dict[str, list[tuple[int, str, str]]], set[str]]:
+    """Что скрыть в книге: объекты и очереди, которых нет в проекте.
+
+    Решение владельца 29.09.2026. Скрывается, а не удаляется: формулы на эти
+    строки ссылаются, и включённый потом прямо в Excel объект вернётся, стоит
+    показать строки. Вводные объектов не скрываются — в них сам выключатель.
+    """
+    rows: dict[str, list[tuple[int, str, str]]] = {}
+
+    def hide(sheet: str, row: int, column: str = "A", label: str = "") -> None:
+        rows.setdefault(sheet, []).append((row, column, label))
+
+    for key, places in _V4_ABSENT_OBJECT_ROWS.items():
+        present = (b(inputs, "sports_enabled") if key == "sports"
+                   else _v4_family_present(inputs, key))
+        if not present:
+            for sheet, row, column, label in places:
+                hide(sheet, row, column, label)
+    for lay in _v4_layouts():
+        if b(inputs, lay.obj.enabled_key):
+            continue
+        name = (lay.obj.group_label or lay.obj.label).upper() if lay.extra else ""
+        head = lay.object_head
+        hide("ОБЪЕКТЫ", head, "A", name)
+        for row in range(head + 1, head + _V4_OBJECT_BLOCK_SPAN):
+            hide("ОБЪЕКТЫ", row)
+        if lay.extra and lay.tep_row > 36:
+            hide("ТЭП", lay.tep_row, "B", lay.obj.tep_label or lay.obj.label)
+    if not _v4_storage_present(tep):
+        hide("ОТЧЕТ", 49, "A", "Кладовые")
+        hide("ОТЧЕТ", 90, "A", "Кладовые")
+    for q in range(queues + 1, 5):
+        hide("ОТЧЕТ", 24 + q)
+        tep_head = 4 + _V4_TEP_PHASE_STRIDE * (q - 1)
+        for index, product in enumerate(_V4_TEP_QUEUE_PRODUCTS):
+            hide("ТЭП", tep_head + index, "B", product)
+        hide("ТЭП", tep_head + len(_V4_TEP_QUEUE_PRODUCTS), "A", f"Итого очередь {q}")
+        for sheet, (first, stride) in _V4_QUEUE_BLOCKS.items():
+            head = first + stride * (q - 1)
+            hide(sheet, head, "A", f"ОЧЕРЕДЬ {q}")
+            for row in range(head + 1, head + stride):
+                hide(sheet, row)
+        start = _V4_OBJECT_QUEUE_FIRST + _V4_OBJECT_QUEUE_STRIDE * (q - 1)
+        for row in range(start, start + _V4_OBJECT_QUEUE_ROWS):
+            hide("ОБЪЕКТЫ", row, "A", f"Очередь {q} —")
+        for found in re.finditer(r'<x:row r="(\d+)"[^>]*>(.*?)</x:row>', entry_xml or "", re.S):
+            text = _v4_cell_text(found.group(0), f"A{found.group(1)}") or ""
+            if re.fullmatch(rf"(ДОО|СОШ|Поликлиника) — очередь {q}", text):
+                hide("Вводные", int(found.group(1)), "A", text)
+    if _v4_storage_present(tep):
+        pass
+    else:
+        for q in range(1, queues + 1):
+            hide("ТЭП", 4 + _V4_TEP_PHASE_STRIDE * (q - 1) + 3, "B", "Кладовые")
+    return rows, {f"CF_{q}" for q in range(queues + 1, 5)}
 
 
 def _v4_object_checks(xml: str, missing: list[str]) -> str:
@@ -23543,7 +23853,11 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
                        if str(p.get("key")) == "apartments"), {})
     numbers.update({
         "margin": float(summary.get("margin") or 0.0),
-        "npv_mln": float(summary.get("npv") or 0.0) / 1e6,
+        # NPV и IRR снимает движок при непогашенном долге: None и подпись
+        # причины, а не ноль.
+        "npv_mln": (None if summary.get("npv") is None
+                    else float(summary.get("npv")) / 1e6),
+        "equity_returns_na": equity_returns_na_label(summary),
         "commercial_mln": float(summary.get("commercial_costs") or 0.0) / 1e6,
         "rve_unpaid_mln": float(finance.get("rve_unpaid") or 0.0) / 1e6,
         "ending_pf_mln": float(summary.get("ending_pf") or 0.0) / 1e6,
@@ -23556,7 +23870,7 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
         },
         # Строки удельной экономики и себестоимости — те же, что в полном PDF
         # и книге, только итог приведён к миллионам; ставки на метр приходят
-        # готовыми парами (`per_gns_th` / `per_saleable_th`), как всюду.
+        # готовыми парами (`per_base_th` со своей базой / `per_saleable_th`).
         "unit_economics": _presentation_rows_mln(report.get("unit_economics"), "total"),
         "construction_costs": _presentation_rows_mln(report.get("construction_costs"), "value"),
         "expense_structure": _presentation_rows_mln(report.get("expense_structure"), "value"),
@@ -23646,14 +23960,14 @@ def _presentation_product_numbers(item: dict[str, Any]) -> dict[str, Any]:
     """
     revenue = float(item.get("revenue") or 0.0)
     cost = float(item.get("cost") or 0.0)
-    gns = float(item.get("gns") or 0.0)
     saleable = float(item.get("saleable") or 0.0)
     quantity = float(item.get("quantity") or 0.0)
     by_units = str(item.get("unit") or "") == "шт."
     return {
         "revenue_mln": revenue / 1e6,
         "cost_mln": cost / 1e6,
-        "per_gns_th": (revenue / gns / 1e3) if (gns > 0 and not by_units) else None,
+        # Выручка и цена — на продаваемую площадь (решение 4 ревизии книги):
+        # на ГНС продукта цену не делят.
         "per_saleable_th": (revenue / saleable / 1e3) if (saleable > 0 and not by_units) else None,
         "per_unit_th": (revenue / quantity / 1e3) if (quantity > 0 and by_units) else None,
         "pace_year": float(item.get("pace_pre") or 0.0) * 12.0,
@@ -23665,9 +23979,13 @@ def _presentation_rows_mln(rows: Any, total_key: str) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for item in rows or []:
         out.append({
+            "key": str(item.get("key") or "") or None,
             "label": str(item.get("label") or ""),
             "total_mln": float(item.get(total_key) or 0.0) / 1e6,
-            "per_gns_th": (None if item.get("per_gns_th") is None else float(item.get("per_gns_th"))),
+            # Удельное на свою базу и его подпись — как их решил движок.
+            "base": str(item.get("base") or "") or None,
+            "base_label": str(item.get("base_label") or "") or None,
+            "per_base_th": (None if item.get("per_base_th") is None else float(item.get("per_base_th"))),
             "per_saleable_th": (None if item.get("per_saleable_th") is None
                                 else float(item.get("per_saleable_th"))),
             "share": (None if item.get("share") is None else float(item.get("share"))),
@@ -23923,6 +24241,34 @@ def _v4_sheet_row_styles(xml: str, row: int) -> dict[str, str]:
         if style:
             styles[coord] = f' s="{style.group(1)}"'
     return styles
+
+
+def _v4_restyle_row(xml: str, row: int, styles: dict[str, str], *,
+                    whole_row: bool = False) -> str:
+    """Ставит ячейкам строки стили по колонкам.
+
+    Колонки вне `styles` не трогаются; `whole_row=True` — строка целиком
+    меняет роль (итог ↔ обычная), и колонке без стиля у образца стиль снимается.
+
+    Сборщик переносит итог блока на строку ниже и отдаёт его прежнее место
+    дописанному объекту (ФОК на ОТЧЕТ!53 и ТЭП!34). Содержимое переезжало, а
+    стиль итога оставался на месте: ревизия 29.09.2026 нашла жирный серый
+    «ФОК / медцентр» над невыделенным «ИТОГО». Стиль — свойство строки-роли, а
+    не номера, и переезжает вместе с ней.
+    """
+    found = re.search(rf'(<x:row r="{row}"[^>]*>)(.*?)(</x:row>)', xml, re.S)
+    if not found:
+        return xml
+
+    def restyle(match: "re.Match[str]") -> str:
+        column, attrs, close = match.group(1), match.group(2), match.group(3)
+        if column not in styles and not whole_row:
+            return match.group(0)
+        attrs = re.sub(r'\ss="\d+"', "", attrs)
+        return f'<x:c r="{column}{row}"{attrs}{styles.get(column, "")}{close}>'
+
+    body = re.sub(rf'<x:c r="([A-Z]+){row}"([^>]*?)(/?)>', restyle, found.group(2))
+    return xml[:found.start()] + found.group(1) + body + found.group(3) + xml[found.end():]
 
 
 def _v4_normative_sources_rows(xml: str, region: str, missing: list[str]) -> str:
@@ -26200,6 +26546,8 @@ def _build_project_workbook(
     report_xml = _v4_add_report_default_row(report_xml, missing)
     report_xml = _v4_report_net_profit_from_its_own_rows(report_xml, missing)
     report_xml = _v4_product_structure_block(report_xml, missing)
+    report_xml = _v4_report_unit_tables_style(report_xml)
+    report_xml = _v4_report_area_labels(report_xml, missing)
     report_xml = _v4_rename_labels(report_xml, "ОТЧЕТ", missing)
     tep_xml = _v4_extra_tep_rows(
         source.read(tep_sheet_path).decode("utf-8"), missing)
@@ -26424,6 +26772,7 @@ def _build_project_workbook(
         checks_xml = _v4_add_pf_uncovered_parity_row(
             checks_xml, float(_parity.get("pf_shortfall_mln") or 0.0), missing)
     checks_xml = _v4_teach_funding_check_about_the_limit(checks_xml, missing)
+    checks_xml = _v4_name_debt_default_status(checks_xml, missing)
 
     def _put_extra(sheet_xml: str, coord: str, *, number=None, text=None) -> str:
         updated, done = _v4_set_cell(sheet_xml, coord, number=number, text=text)
@@ -27340,7 +27689,8 @@ def _build_project_workbook(
             _AGENT_BANK_LLCR_TARGET, _v4_cf_columns(), enabled_phases > 1,
             _V4_CAPEX_ARTICLE_ROW, _V4_CAPEX_BLOCK_STRIDE,
             _v4_dashboard_extra_products(),
-            frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)))
+            frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)),
+            hidden_products=_v4_absent_products(x, tep), queues=count)
     except Exception as exc:  # noqa: BLE001 — дашборд без книги не выпускается молча
         missing.append("Дашборд · не собран: " + _error_location(exc))
 
@@ -27460,6 +27810,16 @@ def _build_project_workbook(
     # может. Сбой оставляет книгу без значений и говорит об этом: выгрузка без
     # чисел хуже, чем с ними, но несобранная выгрузка хуже обеих.
     content = out.getvalue()
+    # Оформление по решениям владельца (ревизия 29.09.2026): порядок листов,
+    # закрепления, печать, форматы по единице, скрытие того, чего нет в
+    # проекте. Только стили и атрибуты — формулы не трогаются.
+    _hidden_rows, _hidden_sheets = _v4_hidden_plan(x, tep, count, entry_xml)
+    try:
+        content = v4_book_polish.polish(content, hidden_rows=_hidden_rows,
+                                        hidden_sheets=_hidden_sheets, missing=missing)
+    except Exception as exc:  # noqa: BLE001 — книга без оформления лучше несобранной
+        missing.append("оформление книги не применено: " + _error_location(exc))
+    polished = content
     # Счёт всей книги стоит около четырнадцати секунд — для выгрузки это
     # ничто, а для набора тестов много: книгу собирают 62 файла, и на каждой
     # сборке набор подорожал бы получасом. Поэтому `tests/conftest.py` гасит
@@ -27480,7 +27840,7 @@ def _build_project_workbook(
     except _SkipValueCache:
         pass
     except Exception as exc:  # noqa: BLE001 — молчащая потеря значений и есть болезнь
-        content = out.getvalue()
+        content = polished
         missing.append("сохранённые значения не записаны: " + _error_location(exc))
 
     stem = _safe_file_stem(title, "project")
@@ -29951,19 +30311,24 @@ def build_plato_model_v2(
     ws_rep.cell(row=line, column=1, value="УДЕЛЬНЫЕ ПОКАЗАТЕЛИ").font = styles["section"]
     line += 1
     for column, label in enumerate(
-            ("Показатель", "Всего, млн ₽", "На ГНС, тыс. ₽/м²", "На продаваемую, тыс. ₽/м²"), start=1):
+            ("Показатель", "Всего, млн ₽", "На м² своей базы, тыс. ₽", "База",
+             "На продаваемую, тыс. ₽/м²"), start=1):
         ws_rep.cell(row=line, column=column, value=label).font = styles["bold"]
     for offset, item in enumerate(report.get("unit_economics") or []):
         current = line + 1 + offset
         ws_rep.cell(row=current, column=1, value=item.get("label"))
         ws_rep.cell(row=current, column=2,
                     value=round(float(item.get("total") or 0.0) / 1e6, 3)).number_format = money
-        ws_rep.cell(row=current, column=3,
-                    value=round(float(item.get("per_gns_th") or 0.0), 3)).number_format = money
-        ws_rep.cell(row=current, column=4,
-                    value=round(float(item.get("per_saleable_th") or 0.0), 3)).number_format = money
+        # База строки — из движка, подпись — из словаря (решение 4 ревизии).
+        if item.get("per_base_th") is not None:
+            ws_rep.cell(row=current, column=3,
+                        value=round(float(item["per_base_th"]), 3)).number_format = money
+        ws_rep.cell(row=current, column=4, value=_pdf_unit_base(item))
+        if item.get("per_saleable_th") is not None and item.get("base") != UNIT_BASE_SALEABLE:
+            ws_rep.cell(row=current, column=5,
+                        value=round(float(item["per_saleable_th"]), 3)).number_format = money
     ws_rep.column_dimensions["A"].width = 40
-    for column in ("B", "C", "D"):
+    for column in ("B", "C", "D", "E"):
         ws_rep.column_dimensions[column].width = 18
 
     # Отчёт открывается первым, дальше — вводные и расчётные листы по порядку.
@@ -31538,6 +31903,58 @@ def _monthly_irr(cashflows: list[float]) -> float | None:
 
     monthly = (lo + hi) / 2
     return pow(1 + monthly, 12) - 1
+
+
+# Доходность капитала при непогашенном долге (решение владельца 29.09.2026,
+# ревизия книги, решение 2): если ПФ к концу проекта не погашен, IRR и NPV не
+# числа, а «N/A — долг не погашен». Порог тот же, что у книги:
+# `КОНСОЛИДАТОР!N8` = IF('CF'!B19>0.5 млн, "N/A (долг не погашен)", …), и тот
+# же, по которому PDF зовёт прибыль бумажной. Решение принимает одна функция
+# ниже; страница, PDF, тизер, Telegram и Платон читают её признак, а не
+# сравнивают остаток долга сами. Отсутствие числа — не ноль.
+EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB = 500_000.0
+EQUITY_RETURNS_DEBT_UNREPAID = "debt_unrepaid"
+EQUITY_RETURNS_NA_DEBT_LABEL = "N/A — долг не погашен"
+
+
+def _apply_equity_returns_verdict(summary: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Снимает IRR и NPV, если долг ПФ к концу проекта не погашен.
+
+    Пишет `summary["equity_returns"]` — единственный признак для всех
+    поверхностей — и при дефолте заменяет `npv`/`irr_equity` на None.
+    Повторный вызов на уже решённой сводке ничего не меняет.
+    """
+    if not isinstance(summary, dict) or "equity_returns" in summary:
+        return summary
+    ending = float(summary.get("ending_pf") or 0.0)
+    if ending > EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB:
+        summary["npv"] = None
+        summary["irr_equity"] = None
+        summary["equity_returns"] = {
+            "status": EQUITY_RETURNS_DEBT_UNREPAID,
+            "label": EQUITY_RETURNS_NA_DEBT_LABEL,
+            "reason": (f"ПФ не погашен к концу проекта: остаток "
+                       f"{ending / 1_000_000:,.1f} млн ₽".replace(",", " ")),
+            "ending_pf": ending,
+        }
+    else:
+        summary["equity_returns"] = {"status": "ok", "label": None, "reason": "",
+                                     "ending_pf": ending}
+    return summary
+
+
+def equity_returns_na_label(summary: dict[str, Any] | None) -> str | None:
+    """Подпись вместо IRR/NPV, если движок их снял; None — числа есть."""
+    verdict = (summary or {}).get("equity_returns") or {}
+    if verdict.get("status") == EQUITY_RETURNS_DEBT_UNREPAID:
+        return str(verdict.get("label") or EQUITY_RETURNS_NA_DEBT_LABEL)
+    return None
+
+
+def _apply_equity_returns_to_result(result: dict[str, Any]) -> dict[str, Any]:
+    if isinstance(result, dict):
+        _apply_equity_returns_verdict(result.get("summary"))
+    return result
 
 
 def _iso(value: date) -> str:
@@ -34434,7 +34851,7 @@ def standalone_expense_item_rates(item: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def standalone_expense_note(row_value: float, project_gns: float, saleable: float) -> str:
+def standalone_expense_note(row_value: float, total_area: float, saleable: float) -> str:
     """Почему у строки «Отдельные объекты» и её подстрок разные удельные.
 
     Владелец увидел в одной таблице 132,7 у строки и 316,2 у её подстроки и
@@ -34449,7 +34866,7 @@ def standalone_expense_note(row_value: float, project_gns: float, saleable: floa
         return f"{per:,.1f}".replace(",", " ").replace(".", ",")
     return (
         "Строка «Отдельные объекты» — те же деньги, делённые на площадь ВСЕГО "
-        f"проекта ({area(project_gns)} наземной ГНС → {rate(row_value, project_gns)}; "
+        f"проекта ({area(total_area)} {TOTAL_AREA.genitive} → {rate(row_value, total_area)}; "
         f"{area(saleable)} продаваемой → {rate(row_value, saleable)}): так она "
         "складывается в итог таблицы. Подстроки «в т.ч.» делят "
         "деньги объекта на ЕГО базу — здание на свою ГНС и свою продаваемую, "
@@ -34458,7 +34875,106 @@ def standalone_expense_note(row_value: float, project_gns: float, saleable: floa
     )
 
 
+# --- Базы удельных показателей ---------------------------------------------
+# Решение владельца 29.09.2026 (ревизия книги, решение 4): каждый удельный
+# делится на СВОЮ базу и подписывается ею; база берётся из кода — из того,
+# на что начислены деньги, а не из заголовка таблицы.
+#   полные расходы, CAPEX и все расходные строки — на суммарную площадь в ГНС
+#     (наземная + подземная, `construction_volume_sqm`);
+#   СМР наземной части — на наземную ГНС МКД (на неё начислено);
+#   СМР подземной части — на подземную площадь МКД;
+#   выручка, цена, EBITDA и чистая прибыль — на продаваемую площадь.
+# Вторая колонка «на м² продаваемой» остаётся у расходов для сравнения с ценой
+# (ответы владельца 03.10.2026). Выбор базы — здесь, слова — в terms_glossary.
+UNIT_BASE_TOTAL = TOTAL_AREA.key
+UNIT_BASE_SALEABLE = SALEABLE_AREA.key
+UNIT_BASE_CORE_ABOVE = CORE_ABOVE_AREA.key
+UNIT_BASE_CORE_UNDER = CORE_UNDER_AREA.key
+
+# Строки «Удельной экономики»: ключ, подпись, база.
+UNIT_ECONOMICS_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("revenue", "Выручка", UNIT_BASE_SALEABLE),
+    ("capex", "CAPEX", UNIT_BASE_TOTAL),
+    ("commercial_costs", "Маркетинг и продажи", UNIT_BASE_TOTAL),
+    ("ebitda", "EBITDA", UNIT_BASE_SALEABLE),
+    ("financing_cost", "Проценты и комиссии", UNIT_BASE_TOTAL),
+    ("profit_tax", "Налог на прибыль", UNIT_BASE_TOTAL),
+    ("vat", "НДС", UNIT_BASE_TOTAL),
+    ("total_expenses", "Полные расходы", UNIT_BASE_TOTAL),
+    ("net_profit", "Чистая прибыль", UNIT_BASE_SALEABLE),
+)
+
+# Статьи «Удельных расходов строительства»: подпись и ключи CAPEX. Внутренние
+# инженерные сети отдельной статьёй не живут: они в составе СМР своей части.
+CONSTRUCTION_COST_ITEMS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ИРД", ("ird",)),
+    ("Проектирование (П, РД) и авторский надзор",
+     ("design_p", "design_rd", "author_supervision")),
+    ("Подготовка территории", ("preparation",)),
+    ("СМР наземной части", ("main_above",)),
+    ("СМР подземной части", ("main_under",)),
+    ("Наружные инженерные сети", ("utilities",)),
+    ("Благоустройство", ("landscaping",)),
+    ("Сдача и ввод", ("commissioning",)),
+    ("Содержание стройплощадки", ("site_maintenance",)),
+    ("Вознаграждение генподрядчика", ("gc_fee",)),
+    ("Технический заказчик / стройконтроль", ("technical_supervision",)),
+    ("Управление проектом", ("project_management",)),
+    ("Резерв", ("reserve",)),
+)
+
+def unit_bases(total_area: float, saleable: float, core_above: float,
+               core_under: float) -> dict[str, float]:
+    """Площади баз удельных, м² — одна выборка на расчёт."""
+    return {UNIT_BASE_TOTAL: float(total_area or 0.0),
+            UNIT_BASE_SALEABLE: float(saleable or 0.0),
+            UNIT_BASE_CORE_ABOVE: float(core_above or 0.0),
+            UNIT_BASE_CORE_UNDER: float(core_under or 0.0)}
+
+
+def unit_rates(value: float, base: str, bases: dict[str, float]) -> dict[str, Any]:
+    """Удельное на свою базу и на продаваемую; подпись базы — из словаря.
+
+    Нулевая база — `None`, а не ноль: «0 тыс. ₽/м²» читался бы ответом.
+    """
+    def per(area: float) -> float | None:
+        return float(value or 0.0) / area / 1000 if area else None
+
+    return {"base": base, "base_label": unit_label(base),
+            "per_base_th": per(bases.get(base, 0.0)),
+            "per_saleable_th": per(bases.get(UNIT_BASE_SALEABLE, 0.0))}
+
+
+def unit_economics_rows(values: dict[str, float], bases: dict[str, float]) -> list[dict[str, Any]]:
+    return [{"key": key, "label": label, "total": float(values.get(key) or 0.0),
+             **unit_rates(values.get(key) or 0.0, base, bases)}
+            for key, label, base in UNIT_ECONOMICS_ROWS]
+
+
+def construction_cost_rows(capex: dict[str, float], bases: dict[str, float]) -> list[dict[str, Any]]:
+    rows = []
+    for label, keys in CONSTRUCTION_COST_ITEMS:
+        value = sum(float(capex.get(key) or 0.0) for key in keys)
+        if value <= 0:
+            continue
+        rows.append({"label": label, "keys": list(keys), "value": value,
+                     **unit_rates(value, capex_unit_base(keys[0]), bases)})
+    return rows
+
+
+def capex_unit_rows(capex: dict[str, float], bases: dict[str, float]) -> dict[str, dict[str, Any]]:
+    """Удельные каждой статьи CAPEX и итога — для таблицы «Структура затрат»."""
+    return {str(key): unit_rates(float(value or 0.0), capex_unit_base(key), bases)
+            for key, value in (capex or {}).items() if isinstance(value, (int, float))}
+
+
 def calculate(req: CalcRequest) -> dict:
+    # Решение о доходности капитала принимается один раз, на выходе расчёта:
+    # у раннего выхода (наложение фактов) и у основного пути одно правило.
+    return _apply_equity_returns_to_result(_calculate_economics(req))
+
+
+def _calculate_economics(req: CalcRequest) -> dict:
     x = req.inputs
     t = req.tep
     rates = req.rates
@@ -34565,6 +35081,9 @@ def calculate(req: CalcRequest) -> dict:
             # здания. ТЭП печатает их строкой «в т.ч. паркинг объекта».
             "parking_under_units": n(row, "parking_under_units"),
             "parking_over_units": n(row, "parking_over_units"),
+            # Продаётся у объекта остаток после мест первых этажей; строка
+            # держит площадь здания. Число — `apply_object_parking`.
+            "parking_saleable_after_sqm": n(row, "parking_saleable_after_sqm"),
             "parking_guest_units": n(row, "parking_guest_units"),
         })
         # Строка вне состава проекта (`row_outside_project`): нули в ней —
@@ -34625,99 +35144,22 @@ def calculate(req: CalcRequest) -> dict:
     def per_sqm_th(value: float, area: float) -> float:
         return value / area / 1000 if area else 0.0
 
-    unit_economics = [
-        {
-            "label": "Выручка",
-            "total": total_revenue,
-            "per_gns_th": per_sqm_th(total_revenue, project_gns_sqm),
-            "per_saleable_th": per_sqm_th(total_revenue, monetizable_saleable_sqm),
-        },
-        {
-            "label": "CAPEX",
-            "total": total_capex,
-            "per_gns_th": per_sqm_th(total_capex, project_gns_sqm),
-            "per_saleable_th": per_sqm_th(total_capex, monetizable_saleable_sqm),
-        },
-        {
-            "label": "Маркетинг и продажи",
-            "total": fin["commercial_costs"],
-            "per_gns_th": per_sqm_th(fin["commercial_costs"], project_gns_sqm),
-            "per_saleable_th": per_sqm_th(fin["commercial_costs"], monetizable_saleable_sqm),
-        },
-        {
-            "label": "EBITDA",
-            "total": ebitda,
-            "per_gns_th": per_sqm_th(ebitda, project_gns_sqm),
-            "per_saleable_th": per_sqm_th(ebitda, monetizable_saleable_sqm),
-        },
-        {
-            "label": "Проценты и комиссии",
-            "total": fin["financing_cost"],
-            "per_gns_th": per_sqm_th(fin["financing_cost"], project_gns_sqm),
-            "per_saleable_th": per_sqm_th(fin["financing_cost"], monetizable_saleable_sqm),
-        },
-        {
-            "label": "Налог на прибыль",
-            "total": fin["profit_tax"],
-            "per_gns_th": per_sqm_th(fin["profit_tax"], project_gns_sqm),
-            "per_saleable_th": per_sqm_th(fin["profit_tax"], monetizable_saleable_sqm),
-        },
-        {
-            # НДС — в тех же двух базах, что и всё остальное: одна база без
-            # второй уже читалась как другой показатель.
-            "label": "НДС",
-            "total": fin.get("vat", 0.0),
-            "per_gns_th": per_sqm_th(fin.get("vat", 0.0), project_gns_sqm),
-            "per_saleable_th": per_sqm_th(fin.get("vat", 0.0), monetizable_saleable_sqm),
-        },
-        {
-            "label": "Полные расходы",
-            "total": total_expenses,
-            "per_gns_th": per_sqm_th(total_expenses, project_gns_sqm),
-            "per_saleable_th": per_sqm_th(total_expenses, monetizable_saleable_sqm),
-        },
-        {
-            "label": "Чистая прибыль",
-            "total": net_profit,
-            "per_gns_th": per_sqm_th(net_profit, project_gns_sqm),
-            "per_saleable_th": per_sqm_th(net_profit, monetizable_saleable_sqm),
-        },
-    ]
+    # Базы удельных — одна выборка; строки и их базы объявлены движком
+    # (`UNIT_ECONOMICS_ROWS`, `CONSTRUCTION_COST_ITEMS`), решение 4 ревизии.
+    bases = unit_bases(construction_volume_sqm, monetizable_saleable_sqm,
+                       op["core_above_gns"], op["core_under_gns"])
+    unit_economics = unit_economics_rows({
+        "revenue": total_revenue, "capex": total_capex,
+        "commercial_costs": fin["commercial_costs"], "ebitda": ebitda,
+        "financing_cost": fin["financing_cost"], "profit_tax": fin["profit_tax"],
+        "vat": fin.get("vat", 0.0), "total_expenses": total_expenses,
+        "net_profit": net_profit}, bases)
 
-    # Удельные расходы строительства: статьи стройки в деньгах и на м² ГНС.
-    # В структуре расходов они склеены крупными группами, а решение о
-    # себестоимости принимают по статьям — СМР, сети, благоустройство.
-    # Внутренние инженерные сети отдельной статьёй не живут: они в составе
-    # СМР соответствующей части, об этом отчёт говорит явно.
-    construction_costs = []
-    for cc_label, cc_keys in (
-        ("ИРД", ("ird",)),
-        ("Проектирование (П, РД) и авторский надзор",
-         ("design_p", "design_rd", "author_supervision")),
-        ("Подготовка территории", ("preparation",)),
-        ("СМР наземной части", ("main_above",)),
-        ("СМР подземной части", ("main_under",)),
-        ("Наружные инженерные сети", ("utilities",)),
-        ("Благоустройство", ("landscaping",)),
-        ("Сдача и ввод", ("commissioning",)),
-        ("Содержание стройплощадки", ("site_maintenance",)),
-        ("Вознаграждение генподрядчика", ("gc_fee",)),
-        ("Технический заказчик / стройконтроль", ("technical_supervision",)),
-        ("Управление проектом", ("project_management",)),
-        ("Резерв", ("reserve",)),
-    ):
-        cc_value = sum(op["capex_amounts"].get(key, 0.0) for key in cc_keys)
-        if cc_value <= 0:
-            continue
-        construction_costs.append({
-            "label": cc_label,
-            "value": cc_value,
-            "per_gns_th": per_sqm_th(cc_value, project_gns_sqm),
-            # На продаваемую — та база, в которой считают цену: стройка на м²
-            # ГНС и стройка на м² продаж различаются в полтора-два раза, и
-            # сравнивать с ценой продажи можно только вторую.
-            "per_saleable_th": per_sqm_th(cc_value, monetizable_saleable_sqm),
-        })
+    # Удельные расходы строительства: статьи стройки в деньгах и на м² своей
+    # базы. СМР делится на ту часть, на которую начислено (наземная ГНС МКД,
+    # подземная площадь МКД): прежде подземное СМР делилось на НАЗЕМНУЮ ГНС
+    # проекта, и 23 тыс ₽/м² читались ставкой за подземный метр, а она 190.
+    construction_costs = construction_cost_rows(op["capex_amounts"], bases)
 
     # Темп продаж квартир в штуках. В метрах он есть везде, но продаются
     # квартиры штуками: «40 квартир в месяц» проверяется отделом продаж и
@@ -34813,7 +35255,9 @@ def calculate(req: CalcRequest) -> dict:
             continue
         row = t.get(key) or {}
         own_gns = n(row, "gns")
-        own_saleable = n(row, "saleable")
+        # Удельная на продаваемый — на ПРОДАННЫЕ метры: под местами первых
+        # этажей офис не продаётся.
+        own_saleable = object_sold_saleable(x, t, key)
         # Гараж объекта стоит подземного метра и в его наземной ГНС не лежит:
         # делённый на неё, он поднимал удельную с вводных 200 до 249 тыс ₽/м²,
         # и сравнить это ни со сметой, ни со своей же вводной было нельзя.
@@ -34853,15 +35297,13 @@ def calculate(req: CalcRequest) -> dict:
             "label": label,
             "value": value,
             "share": value / expense_base if expense_base else 0.0,
-            # Удельные — обе базы, как везде в отчёте. Именно по этим статьям
-            # спорят с подрядчиком и с банком, а в рублях на метр их не было.
-            "per_gns_th": per_sqm_th(value, project_gns_sqm),
-            "per_saleable_th": per_sqm_th(value, monetizable_saleable_sqm),
+            # Расход — на суммарную площадь в ГНС и на продаваемую (решение 4).
+            **unit_rates(value, UNIT_BASE_TOTAL, bases),
         }
         if label == "Отдельные объекты" and standalone_items:
             entry["items"] = standalone_items
             entry["items_note"] = standalone_expense_note(
-                value, project_gns_sqm, monetizable_saleable_sqm)
+                value, construction_volume_sqm, monetizable_saleable_sqm)
         expense_structure.append(entry)
     expense_structure.sort(key=lambda item: item["value"], reverse=True)
 
@@ -35051,7 +35493,8 @@ def calculate(req: CalcRequest) -> dict:
             "sellable": True,
             "quantity": quantity,
             "gns": float(tep_row.get("gns", 0.0) or 0.0),
-            "saleable": float(tep_row.get("saleable", 0.0) or 0.0),
+            "saleable": (object_sold_saleable(x, t, key) if key in _BY_KEY
+                         else float(tep_row.get("saleable", 0.0) or 0.0)),
             "revenue": revenue_value,
             "cost": product_cost,
             "margin": ((revenue_value - product_cost) / revenue_value
@@ -35189,7 +35632,8 @@ def calculate(req: CalcRequest) -> dict:
             "core_under_gns": op["core_under_gns"],
         },
         "revenue": {"total": total_revenue, **op["revenue_by_product"]},
-        "revenue_structure": revenue_structure({"total": total_revenue, **op["revenue_by_product"]}),
+        "revenue_structure": revenue_structure({"total": total_revenue, **op["revenue_by_product"]},
+                                               monetizable_saleable_sqm),
         # land_rights_gross и land_rights_relief — справочные величины платы
         # до льготы: в total их нет, а таблица расходов на странице рисует все
         # ключи подряд — и показывала их сырыми именами. Валовая плата и льгота
@@ -35197,6 +35641,12 @@ def calculate(req: CalcRequest) -> dict:
         "capex": {"total": total_capex,
                   **{key: value for key, value in op["capex_amounts"].items()
                      if key not in ("land_rights_gross", "land_rights_relief")}},
+        # Удельные статей CAPEX — каждая на свою базу (решение 4 ревизии):
+        # страница их печатает, а не делит сама.
+        "capex_units": capex_unit_rows(
+            {"total": total_capex,
+             **{key: value for key, value in op["capex_amounts"].items()
+                if key not in ("land_rights_gross", "land_rights_relief")}}, bases),
         "vri": op["vri"],
         # Нормативная потребность нежилых объектов в машино-местах. Считается
         # всегда: офисник или ТЦ без парковки — это не «ноль мест», а не
@@ -35264,18 +35714,18 @@ def calculate(req: CalcRequest) -> dict:
             "monetizable_saleable_sqm": monetizable_saleable_sqm,
             "apartment_saleable_sqm": apartment_saleable_sqm,
             "average_apartment_price_th": avg_apartment_price,
-            # Каждый удельный показатель — в двух базах. Одна база без второй
-            # уже стоила разбирательств: 23 тыс ₽/м² подземной части читались
-            # как ставка за подземный метр, а она 190.
+            # Каждый удельный — на свою базу (решение 4 ревизии книги):
+            # расходы — на суммарную площадь в ГНС и для сравнения с ценой на
+            # продаваемую; EBITDA и прибыль — на продаваемую.
             "full_cost_per_saleable_th": full_cost_per_saleable,
-            "full_cost_per_gns_th": per_sqm_th(full_project_cost, project_gns_sqm),
+            "full_cost_per_total_area_th": per_sqm_th(full_project_cost, construction_volume_sqm),
+            "capex_per_total_area_th": per_sqm_th(total_capex, construction_volume_sqm),
             "construction_cost_per_gns_th": construction_cost_per_gns,
             "construction_cost_per_saleable_th": per_sqm_th(
                 construction_capex, monetizable_saleable_sqm),
             "ebitda_per_saleable_th": ebitda_per_saleable,
-            "ebitda_per_gns_th": per_sqm_th(ebitda, project_gns_sqm),
             "net_profit_per_saleable_th": net_profit_per_saleable,
-            "net_profit_per_gns_th": per_sqm_th(net_profit, project_gns_sqm),
+            "unit_bases": bases,
             "project_gns_sqm": project_gns_sqm,
             # Обе половины базы — рядом с ней: удельный показатель без второй
             # базы читается как другой показатель.
@@ -36949,8 +37399,8 @@ def _restate_phase_tax_expense(result: dict[str, Any], profit_tax: float) -> Non
     report = result.get("report") or {}
     rows = report.get("expense_structure") or []
     summary = result.get("summary") or {}
-    gns = float(summary.get("project_gns_sqm") or 0.0)
-    saleable = float(summary.get("monetizable_saleable_sqm") or 0.0)
+    bases = summary.get("unit_bases") or unit_bases(
+        summary.get("construction_volume_sqm"), summary.get("monetizable_saleable_sqm"), 0.0, 0.0)
     target = None
     for row in rows:
         if str(row.get("label")) == "Налог на прибыль":
@@ -36967,8 +37417,7 @@ def _restate_phase_tax_expense(result: dict[str, Any], profit_tax: float) -> Non
         rows.append(target)
         report["expense_structure"] = rows
     target["value"] = profit_tax
-    target["per_gns_th"] = profit_tax / gns / 1000 if gns else 0.0
-    target["per_saleable_th"] = profit_tax / saleable / 1000 if saleable else 0.0
+    target.update(unit_rates(profit_tax, UNIT_BASE_TOTAL, bases))
     base = sum(float(row.get("value") or 0.0) for row in rows)
     for row in rows:
         row["share"] = (float(row.get("value") or 0.0) / base) if base else 0.0
@@ -37082,33 +37531,20 @@ def _consolidate_phase_results(
     def per_th(value: float, area: float) -> float:
         return value / area / 1000 if area else 0.0
 
-    unit_economics = []
-    for label, value in (
-        ("Выручка", total_revenue), ("CAPEX", total_capex),
-        ("Маркетинг и продажи", commercial_costs), ("EBITDA", ebitda),
-        ("Проценты и комиссии", finance["financing_cost"]),
-        ("Налог на прибыль", finance["profit_tax"]),
-        ("НДС", finance.get("vat", 0.0)),
-        ("Полные расходы", full_cost), ("Чистая прибыль", net_profit),
-    ):
-        unit_economics.append({
-            "label": label, "total": value,
-            "per_gns_th": per_th(value, project_gns),
-            "per_saleable_th": per_th(value, saleable),
-        })
+    # Те же строки и базы, что у очереди (`unit_economics_rows`), от сводных
+    # площадей: удельные складывать нельзя.
+    bases = unit_bases(construction_volume, saleable,
+                       sum(r["tep"]["core_above_gns"] for r in results),
+                       sum(r["tep"]["core_under_gns"] for r in results))
+    unit_economics = unit_economics_rows({
+        "revenue": total_revenue, "capex": total_capex,
+        "commercial_costs": commercial_costs, "ebitda": ebitda,
+        "financing_cost": finance["financing_cost"], "profit_tax": finance["profit_tax"],
+        "vat": finance.get("vat", 0.0), "total_expenses": full_cost,
+        "net_profit": net_profit}, bases)
 
-    # Статьи стройки суммируются по очередям; порядок статей задан движком
-    # и сохраняется словарём — сортировать по сумме их нельзя, это смета.
-    construction_map: dict[str, float] = {}
-    for result in results:
-        for item in result["report"].get("construction_costs") or []:
-            construction_map[item["label"]] = (
-                construction_map.get(item["label"], 0.0) + float(item["value"] or 0.0))
-    construction_costs = [
-        {"label": label, "value": value, "per_gns_th": per_th(value, project_gns),
-         "per_saleable_th": per_th(value, saleable)}
-        for label, value in construction_map.items() if value > 0
-    ]
+    # Статьи стройки — из сводного CAPEX теми же строками, что у очереди.
+    construction_costs = construction_cost_rows(capex, bases)
 
     # Темп продаж квартир в штуках складывается по месяцам всех очередей:
     # в один месяц могут продаваться квартиры двух очередей сразу, и отдел
@@ -37168,8 +37604,7 @@ def _consolidate_phase_results(
             # Пока их тут не было, свод по всему проекту показывал нули во всех
             # строках, а итоговая строка считалась отдельно и стояла живая:
             # таблица выглядела сломанной ровно там, где по ней и спорят.
-            "per_gns_th": value / project_gns / 1000 if project_gns else 0.0,
-            "per_saleable_th": value / saleable / 1000 if saleable else 0.0,
+            **unit_rates(value, UNIT_BASE_TOTAL, bases),
         }
         for label, value in expense_map.items() if value > 0
     ]
@@ -37179,7 +37614,7 @@ def _consolidate_phase_results(
         if not parts:
             continue
         entry["items"] = sorted(parts, key=lambda one: one["value"], reverse=True)
-        entry["items_note"] = standalone_expense_note(entry["value"], project_gns, saleable)
+        entry["items_note"] = standalone_expense_note(entry["value"], construction_volume, saleable)
     expense_structure.sort(key=lambda x: x["value"], reverse=True)
 
     product_map: dict[str, dict[str, Any]] = {}
@@ -37309,8 +37744,9 @@ def _consolidate_phase_results(
             "core_under_gns": sum(r["tep"]["core_under_gns"] for r in results),
         },
         "revenue": revenue,
-        "revenue_structure": revenue_structure({**revenue, "total": total_revenue}),
+        "revenue_structure": revenue_structure({**revenue, "total": total_revenue}, saleable),
         "capex": capex,
+        "capex_units": capex_unit_rows(capex, bases),
         "commercial_costs": commercial_costs,
         "finance": finance,
         # Сделка проекта — сумма сделок очередей, строка к строке.
@@ -37348,13 +37784,13 @@ def _consolidate_phase_results(
                 float((r.get("parking") or {}).get("own_under_gns") or 0.0) for r in results),
             "average_apartment_price_th": avg_apt_price,
             "full_cost_per_saleable_th": per_th(full_cost, saleable),
-            "full_cost_per_gns_th": per_th(full_cost, project_gns),
+            "full_cost_per_total_area_th": per_th(full_cost, construction_volume),
+            "capex_per_total_area_th": per_th(total_capex, construction_volume),
             "construction_cost_per_gns_th": per_th(construction_capex, core_gns),
             "construction_cost_per_saleable_th": per_th(construction_capex, saleable),
             "ebitda_per_saleable_th": per_th(ebitda, saleable),
-            "ebitda_per_gns_th": per_th(ebitda, project_gns),
             "net_profit_per_saleable_th": per_th(net_profit, saleable),
-            "net_profit_per_gns_th": per_th(net_profit, project_gns),
+            "unit_bases": bases,
             "project_gns_sqm": project_gns, "total_expenses": full_cost,
             "underground_gns_sqm": underground_gns,
             "construction_volume_sqm": construction_volume,
@@ -38177,6 +38613,7 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             "utilities": n(x_master, "utilities_th_per_sqm"),
         }
 
+        p_total_area = float(result["summary"].get("construction_volume_sqm") or 0.0)
         comparison.append({
             "name":name,"saleable_sqm":result["summary"]["monetizable_saleable_sqm"],
             "shared_rates_th":shared_rates_th,
@@ -38203,13 +38640,14 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             "object_parking_under_gns":float(
                 (result.get("parking") or {}).get("own_under_gns") or 0.0),
             "revenue_per_saleable_th":per_th(result["summary"]["revenue"], p_saleable),
-            "revenue_per_gns_th":per_th(result["summary"]["revenue"], p_gns),
-            "capex_per_gns_th":per_th(result["summary"]["capex"], p_gns),
+            # Базы — решение 4 ревизии книги: выручка и прибыль на
+            # продаваемую, расходы на суммарную площадь в ГНС (и на
+            # продаваемую для сравнения с ценой).
+            "capex_per_total_area_th":per_th(result["summary"]["capex"], p_total_area),
             "capex_per_saleable_th":per_th(result["summary"]["capex"], p_saleable),
             "expenses_per_saleable_th":per_th(p_expenses, p_saleable),
-            "expenses_per_gns_th":per_th(p_expenses, p_gns),
+            "expenses_per_total_area_th":per_th(p_expenses, p_total_area),
             "net_profit_per_saleable_th":per_th(result["summary"]["net_profit"], p_saleable),
-            "net_profit_per_gns_th":per_th(result["summary"]["net_profit"], p_gns),
             "revenue":result["summary"]["revenue"],"capex":result["summary"]["capex"],
             # Выручка очереди по продуктам. Одной строкой она не отвечает на
             # вопрос, чем очередь живёт: у одной весь объём в квартирах, у
@@ -38360,7 +38798,7 @@ def product_groups(keys: Any) -> tuple[list[str], list[str]]:
     return mkd, osz
 
 
-def revenue_structure(revenue: dict[str, Any]) -> dict[str, Any]:
+def revenue_structure(revenue: dict[str, Any], saleable: float = 0.0) -> dict[str, Any]:
     """«Структура выручки» — строки, которые печатает страница.
 
     Нулевой продукт — шум, а не полнота: семь строк «0 млрд ₽» между
@@ -38381,7 +38819,11 @@ def revenue_structure(revenue: dict[str, Any]) -> dict[str, Any]:
                          "role": "total", "group": group})
     total = float((revenue or {}).get("total") or sum(values.values()))
     rows.append({"label": "Итого", "value": total, "role": "total", "group": "all"})
-    return {"rows": rows}
+    # Выручка — на продаваемую площадь проекта (решение 4 ревизии книги);
+    # нулевая база — None, а не ноль.
+    for item in rows:
+        item["per_saleable_th"] = (item["value"] / saleable / 1000) if saleable else None
+    return {"rows": rows, "base": UNIT_BASE_SALEABLE, "base_label": unit_label(UNIT_BASE_SALEABLE)}
 
 
 def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
@@ -38496,7 +38938,7 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
                         else "Непогашенный долг ПФ на конец очереди", "money",
                         [f(x.get("ending_pf")) for x in c], f(finance.get("ending_pf"))))
 
-    sale, gns = f(summary.get("monetizable_saleable_sqm")), f(summary.get("project_gns_sqm"))
+    sale, total_area = f(summary.get("monetizable_saleable_sqm")), f(summary.get("construction_volume_sqm"))
     rev_all = [f(x.get("revenue")) for x in c]
     # Ставки общепроектных статей — цена метра МКД очереди по статье, с
     # вводной рядом: заданная руками доля видна числом. Стоят ВИДИМЫМИ
@@ -38586,17 +39028,18 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
             row("в т.ч. квартиры — на м² их продаваемой", "th",
                 [f(x.get("apartment_price_th")) for x in c],
                 f(summary.get("average_apartment_price_th")) or None, role="sub"),
-            th("Цена реализации на м² ГНС", "revenue_per_gns_th", f(summary.get("revenue")), gns)]),
+        ]),
         ("costs", "Затраты", [
             *rates,
             *capex_rows,
-            th("CAPEX на м² ГНС", "capex_per_gns_th", f(summary.get("capex")), gns),
+            th(f"CAPEX на м² {TOTAL_AREA.genitive}", "capex_per_total_area_th",
+               f(summary.get("capex")), total_area),
             money("Полные расходы", "total_expenses", f(summary.get("total_expenses"))),
             *expense_note,
             th("Полные расходы на м² продаваемой", "expenses_per_saleable_th",
                f(summary.get("total_expenses")), sale),
-            th("Полные расходы на м² ГНС", "expenses_per_gns_th",
-               f(summary.get("total_expenses")), gns)]),
+            th(f"Полные расходы на м² {TOTAL_AREA.genitive}", "expenses_per_total_area_th",
+               f(summary.get("total_expenses")), total_area)]),
         ("finance", "Финансирование", [
             money("Пиковый БРИДЖ", "peak_bridge", f(finance.get("peak_bridge"))),
             money("Затраты до РНС", "pre_rns_costs", f(totals_fin.get("pre_rns_costs"))),
@@ -38624,12 +39067,11 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
             money("Аналитическая прибыль после аллокации", "allocated_net_profit", None),
             money("Чистая прибыль — cash", "net_profit", f(summary.get("net_profit"))),
             row("Маржинальность", "pct", [f(x.get("margin")) for x in c], f(summary.get("margin"))),
-            th("Чистая прибыль на м² ГНС", "net_profit_per_gns_th", f(summary.get("net_profit")), gns),
             th("Чистая прибыль на м² продаваемой", "net_profit_per_saleable_th",
                f(summary.get("net_profit")), sale)]),
     ]
     # Удельный подписан своим делителем: те же площади, на которые делит
-    # движок (`monetizable_saleable_sqm`, `project_gns_sqm`), а не угаданные
+    # движок (`monetizable_saleable_sqm`, `construction_volume_sqm`), а не угаданные
     # по заголовку. Это одна подпись таблицы мелким шрифтом, а не строки:
     # крупная «Делитель…» среди денег читалась как ещё одно число экономики
     # (владелец, 28.09.2026). Удельные стоят в нескольких разделах, делитель
@@ -38637,8 +39079,9 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
     divisors = [
         {"label": "на м² продаваемой — продаваемая площадь", "unit": "м²",
          "values": [f(x.get("saleable_sqm")) for x in c], "total": sale},
-        {"label": "на м² ГНС — ГНС наземная", "unit": "м²",
-         "values": [f(x.get("gns_sqm")) for x in c], "total": gns}]
+        {"label": f"на м² {TOTAL_AREA.genitive} — {TOTAL_AREA.lower()} (наземная и подземная)",
+         "unit": "м²",
+         "values": [f(x.get("construction_volume_sqm")) for x in c], "total": total_area}]
     return {"columns": [str(x.get("name") or "") for x in c],
             "has_debt": bool(debt),
             "divisors": divisors,
@@ -38646,6 +39089,21 @@ def phase_comparison_table(consolidated: dict[str, Any]) -> dict[str, Any]:
 
 
 def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
+    """Очереди и свод; решение о доходности капитала — по итоговому долгу.
+
+    Свод решается после переноса долга между очередями: до него остаток
+    свода ещё не приведён к очередям (см. `_calculate_phased_with_carry`).
+    Очереди решены своим `calculate`.
+    """
+    bundle = _calculate_phased_with_table(req)
+    if isinstance(bundle, dict):
+        _apply_equity_returns_to_result(bundle.get("consolidated"))
+        for item in bundle.get("phases") or []:
+            _apply_equity_returns_to_result((item or {}).get("result"))
+    return bundle
+
+
+def _calculate_phased_with_table(req: PhasedCalcRequest) -> dict[str, Any]:
     """Очереди с переносом долга и таблицей сравнения.
 
     Таблица строится ПОСЛЕ переноса: перенос дописывает строкам сравнения
@@ -39059,6 +39517,7 @@ _AGENT_INSTRUCTIONS = """
    variable=main_construction_cost_th_per_sqm с теми же правилами LLCR.
 5. Не говори «примерно» там, где инструмент вернул точный расчётный результат.
 6. Если инструмент сообщает ограничение/предупреждение методики — обязательно упомяни его.
+6a. Если в снимке npv_mln/irr_equity_pct равны null и есть equity_returns_na, называй их ровно так: «N/A — долг не погашен». Не подставляй ноль и не досчитывай IRR/NPV сам: при непогашенном ПФ движок их не считает.
 7. Не утверждай, что банк гарантированно одобрит проект.
 8. Ты не можешь менять модель без подтверждения пользователя. prepare_model_patch только готовит изменение; реальный Input меняется после кнопки «Применить в модель».
 8a. Если пользователь пишет «поставь», «измени», «повысить», «снизить» и значение известно — проверь эффект и подготовь patch. Не ограничивайся инструкцией пользователю, где вручную менять поле.
@@ -39157,15 +39616,14 @@ def _phase_comparison_for_agent(bundle: dict[str, Any]) -> list[dict[str, Any]]:
             "gns_sqm": round(float(item.get("gns_sqm", 0) or 0), 2),
             "revenue_mln": round(float(item.get("revenue", 0) or 0) / 1e6, 2),
             "revenue_per_saleable_th": round(float(item.get("revenue_per_saleable_th", 0) or 0), 2),
-            "revenue_per_gns_th": round(float(item.get("revenue_per_gns_th", 0) or 0), 2),
             "capex_mln": round(float(item.get("capex", 0) or 0) / 1e6, 2),
-            "capex_per_gns_th": round(float(item.get("capex_per_gns_th", 0) or 0), 2),
+            "construction_volume_sqm": round(float(item.get("construction_volume_sqm", 0) or 0), 2),
+            "capex_per_total_area_th": round(float(item.get("capex_per_total_area_th", 0) or 0), 2),
             "capex_per_saleable_th": round(float(item.get("capex_per_saleable_th", 0) or 0), 2),
             "total_expenses_mln": round(float(item.get("total_expenses", 0) or 0) / 1e6, 2),
             "expenses_per_saleable_th": round(float(item.get("expenses_per_saleable_th", 0) or 0), 2),
-            "expenses_per_gns_th": round(float(item.get("expenses_per_gns_th", 0) or 0), 2),
+            "expenses_per_total_area_th": round(float(item.get("expenses_per_total_area_th", 0) or 0), 2),
             "net_profit_per_saleable_th": round(float(item.get("net_profit_per_saleable_th", 0) or 0), 2),
-            "net_profit_per_gns_th": round(float(item.get("net_profit_per_gns_th", 0) or 0), 2),
             "cash_shared_cost_mln": round(float(item.get("cash_shared_cost", 0) or 0) / 1e6, 2),
             "allocated_shared_cost_mln": round(float(item.get("allocated_shared_cost", 0) or 0) / 1e6, 2),
             "peak_bridge_mln": round(float(item.get("peak_bridge", 0) or 0) / 1e6, 2),
@@ -39193,13 +39651,17 @@ def _result_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         "net_profit_mln": round(float(s.get("net_profit", 0) or 0) / 1e6, 2),
         "margin_pct": round(float(s.get("margin", 0) or 0) * 100, 3),
         "llcr_x": round(float(s.get("llcr", 0) or 0), 4),
-        "npv_mln": round(float(s.get("npv", 0) or 0) / 1e6, 2),
+        # None — «не число»: при непогашенном долге движок снял NPV и IRR
+        # (`equity_returns`), и ноль здесь читался бы как ответ.
+        "npv_mln": round(float(s["npv"]) / 1e6, 2) if s.get("npv") is not None else None,
         "irr_equity_pct": round(float(s["irr_equity"]) * 100, 3) if s.get("irr_equity") is not None else None,
+        "equity_returns_na": equity_returns_na_label(s),
         "peak_bridge_mln": round(float(f.get("peak_bridge", 0) or 0) / 1e6, 2),
         "peak_pf_mln": round(float(f.get("peak_pf", 0) or 0) / 1e6, 2),
         "pf_draw_total_mln": round(float(f.get("pf_draw_total", 0) or 0) / 1e6, 2),
         "full_cost_per_saleable_th_per_sqm": round(float(s.get("full_cost_per_saleable_th", 0) or 0), 2),
-        "full_cost_per_gns_th_per_sqm": round(float(s.get("full_cost_per_gns_th", 0) or 0), 2),
+        "full_cost_per_total_area_th_per_sqm": round(float(s.get("full_cost_per_total_area_th", 0) or 0), 2),
+        "capex_per_total_area_th_per_sqm": round(float(s.get("capex_per_total_area_th", 0) or 0), 2),
         "construction_cost_per_gns_th_per_sqm": round(float(s.get("construction_cost_per_gns_th", 0) or 0), 2),
         "construction_cost_per_saleable_th_per_sqm": round(float(s.get("construction_cost_per_saleable_th", 0) or 0), 2),
         "average_apartment_price_th_per_sqm": round(float(s.get("average_apartment_price_th", 0) or 0), 2),
@@ -39218,7 +39680,7 @@ def _metric_value(
         "llcr": float(s.get("llcr", 0) or 0),
         "margin_pct": float(s.get("margin", 0) or 0) * 100,
         "net_profit_mln": float(s.get("net_profit", 0) or 0) / 1e6,
-        "npv_mln": float(s.get("npv", 0) or 0) / 1e6,
+        "npv_mln": (float(s["npv"]) / 1e6 if s.get("npv") is not None else None),
         "irr_equity_pct": (float(s["irr_equity"]) * 100 if s.get("irr_equity") is not None else None),
         # Метрики анализа чувствительности берутся отсюда же: одна выборка
         # показателя на целеподбор Платона и на Tornado.
@@ -39513,11 +39975,15 @@ def run_sensitivity(
     scope_label, base_value, _ = _metric_value(base_bundle, metric, scope, selected_view)
     if base_value is None:
         # Например, IRR не считается, когда поток собственного капитала не меняет
-        # знак. Анализировать нечего: не от чего отсчитывать отклонения.
+        # знак, а IRR и NPV снимаются при непогашенном долге. Анализировать
+        # нечего: не от чего отсчитывать отклонения. Причину называем.
+        _na = (equity_returns_na_label(_scope_result(base_bundle, scope, selected_view)[1].get("summary"))
+               if metric in ("npv_mln", "irr_equity_pct") else None)
         raise HTTPException(
             status_code=400,
             detail=f"Показатель «{_SENSITIVITY_METRICS[metric]['label']}» "
-                   "не определён в текущем расчёте — выберите другой",
+                   + "не определён в текущем расчёте"
+                   + (f" ({_na})" if _na else "") + " — выберите другой",
         )
 
     meta = _field_meta()
@@ -39790,15 +40256,28 @@ def _tool_explain_metric(
             "construction_cost_per_gns_th_per_sqm": round(float(s.get("construction_cost_per_gns_th", 0) or 0), 2),
             "construction_cost_per_saleable_th_per_sqm": round(float(s.get("construction_cost_per_saleable_th", 0) or 0), 2),
             "full_cost_per_saleable_th_per_sqm": round(float(s.get("full_cost_per_saleable_th", 0) or 0), 2),
-            "full_cost_per_gns_th_per_sqm": round(float(s.get("full_cost_per_gns_th", 0) or 0), 2),
+            "full_cost_per_total_area_th_per_sqm": round(float(s.get("full_cost_per_total_area_th", 0) or 0), 2),
+            "capex_per_total_area_th_per_sqm": round(float(s.get("capex_per_total_area_th", 0) or 0), 2),
             "project_gns_sqm": round(float(s.get("project_gns_sqm", 0) or 0), 2),
             "monetizable_saleable_sqm": round(float(s.get("monetizable_saleable_sqm", 0) or 0), 2),
+            # Базы удельных и их подписи — как их решил движок (решение 4).
+            "unit_bases": {key: {"area_sqm": round(float(area or 0), 2), "name": TERMS[key].name}
+                           for key, area in (s.get("unit_bases") or {}).items() if key in TERMS},
+            "construction_costs": [
+                {"label": i.get("label"), "value_mln": round(float(i.get("value", 0) or 0) / 1e6, 2),
+                 "per_base_th_per_sqm": (None if i.get("per_base_th") is None
+                                         else round(float(i["per_base_th"]), 2)),
+                 "base": i.get("base_label")}
+                for i in (report.get("construction_costs") or [])
+            ],
             "expense_structure": [
                 {
                     "label": i.get("label"),
                     "value_mln": round(float(i.get("value", 0) or 0) / 1e6, 2),
                     "share_pct": round(float(i.get("share", 0) or 0) * 100, 2),
-                    "per_gns_th_per_sqm": round(float(i.get("per_gns_th", 0) or 0), 2),
+                    "per_base_th_per_sqm": (None if i.get("per_base_th") is None
+                                            else round(float(i["per_base_th"]), 2)),
+                    "base": i.get("base_label"),
                     "per_saleable_th_per_sqm": round(float(i.get("per_saleable_th", 0) or 0), 2),
                 }
                 for i in (report.get("expense_structure") or [])
@@ -40427,7 +40906,7 @@ def _tool_simulate_change(
         "revenue_mln", "capex_mln", "commercial_costs_mln", "financing_cost_mln",
         "profit_tax_mln", "net_profit_mln", "margin_pct", "llcr_x", "npv_mln",
         "peak_bridge_mln", "peak_pf_mln", "full_cost_per_saleable_th_per_sqm",
-        "full_cost_per_gns_th_per_sqm", "construction_cost_per_gns_th_per_sqm",
+        "full_cost_per_total_area_th_per_sqm", "capex_per_total_area_th_per_sqm", "construction_cost_per_gns_th_per_sqm",
         "construction_cost_per_saleable_th_per_sqm",
     ):
         bv, nv = b.get(key), nres.get(key)
@@ -40558,7 +41037,7 @@ def _tool_prepare_model_patch(
     for key in (
         "revenue_mln", "capex_mln", "financing_cost_mln", "net_profit_mln",
         "margin_pct", "llcr_x", "npv_mln", "peak_bridge_mln", "peak_pf_mln",
-        "full_cost_per_saleable_th_per_sqm", "full_cost_per_gns_th_per_sqm",
+        "full_cost_per_saleable_th_per_sqm", "full_cost_per_total_area_th_per_sqm", "capex_per_total_area_th_per_sqm",
         "construction_cost_per_gns_th_per_sqm", "construction_cost_per_saleable_th_per_sqm",
     ):
         bv, nv = base_snap.get(key), new_snap.get(key)
@@ -46852,11 +47331,11 @@ details.cadastral-box>summary::marker{color:#888}
       <div class="card">
         <div class="section-title">Удельная экономика</div>
         <div style="font-size:11px;color:#777;margin:-5px 0 10px">
-          Все значения приведены одновременно на 1 м² ГНС и на 1 м² продаваемой площади.
+          Каждая строка — на свою базу: расходы на суммарную площадь в ГНС (с подземной), выручка и прибыль на продаваемую. Расходы — ещё и на 1 м² продаваемой, для сравнения с ценой.
         </div>
         <div class="scroll" style="max-height:none">
           <table class="unit-table">
-            <thead><tr><th>Показатель</th><th>Всего</th><th>тыс. ₽ / м² ГНС</th><th>тыс. ₽ / м² продаваемой</th></tr></thead>
+            <thead><tr><th>Показатель</th><th>Всего</th><th>тыс. ₽/м² своей базы</th><th>База</th><th>тыс. ₽/м² прод.</th></tr></thead>
             <tbody id="unitEconomicsTable"></tbody>
           </table>
         </div>
@@ -46891,7 +47370,7 @@ details.cadastral-box>summary::marker{color:#888}
           <div id="expenseStructureChart" class="expense-bars"></div>
           <div class="scroll" style="max-height:none">
             <table class="metric-table metric-compact">
-              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th>тыс ₽/м² наземной ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th id="expenseBaseHead">тыс ₽/м² суммарной площади в ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
               <tbody id="expenseStructureTable"></tbody>
               <tfoot><tr><th>Итого расходов</th><th id="expenseTotal"></th><th>100%</th><th id="expenseTotalGns"></th><th id="expenseTotalSaleable"></th></tr></tfoot>
             </table>
@@ -46900,8 +47379,8 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       <div class="card">
         <div class="section-title">Структура затрат по статьям</div>
-        <table><thead><tr><th>Статья</th><th>Сумма</th><th>тыс ₽/м² наземной ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
-        <tbody id="capexTable"></tbody></table>
+        <div class="scroll" style="max-height:none"><table><thead><tr><th>Статья</th><th>Сумма</th><th>тыс ₽/м² своей базы</th><th>База</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <tbody id="capexTable"></tbody></table></div>
       </div>
       </div>
 
@@ -46909,7 +47388,7 @@ details.cadastral-box>summary::marker{color:#888}
         <div class="report-section-title">Доходы</div>
       <div class="card">
         <div class="section-title">Структура выручки</div>
-        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>тыс ₽/м² наземной ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>тыс ₽/м² продаваемой площади</th></tr></thead>
         <tbody id="revenueTable"></tbody></table>
       </div>
       <div class="card" id="nonresStrategyCard" hidden>
@@ -47958,6 +48437,13 @@ const th=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:0,maximum
 const num2=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1});
 const dateRu=v=>{if(!v)return '—';const [y,m,d]=String(v).slice(0,10).split('-');return `${d}.${m}.${y}`};
 const irrFmt=v=>v==null?'N/A':pct(v);
+// Удельное движка: None (нулевая база) — прочерк, а не «0». База строки —
+// ключ движка, слова — из словаря терминов (TERMS).
+const unitNum=(v,d)=>v==null?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
+const unitBase=x=>(x&&x.base&&TERMS[x.base])?'м² '+TERMS[x.base].genitive:'—';
+// IRR и NPV при непогашенном долге снимает движок (summary.equity_returns):
+// страница не сравнивает остаток долга сама, а печатает его подпись.
+const returnsNa=s=>((s||{}).equity_returns||{}).label||null;
 const inputDisplay=v=>Math.round(Number(v||0)*10)/10;
 
 function openTab(id,btn){
@@ -50731,6 +51217,7 @@ async function sendTelegramResult(){
    net_profit_mln:Number(s.net_profit||0)/1e6,
    margin:Number(s.margin||0),
    irr_equity:s.irr_equity==null?null:Number(s.irr_equity),
+   equity_returns_na:returnsNa(s),
    llcr:Number(s.llcr||0),
    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6,
@@ -52540,30 +53027,6 @@ function projectParking(){
  return ((lastResult||{}).parking)||{};
 }
 
-// Места первых этажей занимают часть ГНС объекта, и общая, полезная и
-// продаваемая считаются от остатка (`apply_object_parking`). Сколько ГНС ушло
-// под места — число движка; строка ТЭП на странице умножается на остаток, а
-// во вводные уходит обратно делением: поле объекта — площадь ДО мест. Без
-// этого таблица при очередях показывала продаваемую из вводных, как будто
-// паркинга на первых этажах нет (владелец, 29.09.2026).
-function objectParkingOverGba(key){
- const own=(projectParking().own)||[];
- const item=own.find(o=>o&&o.tep_key===key&&o.enabled);
- return item?Math.max(0,Number(item.over_gba_sqm||0)):0;
-}
-function objectParkingShare(key,gns){
- if(!STANDALONE_OBJECTS.some(o=>o.key===key&&o.garage))return 1;
- const g=Number(gns||0);
- return g>0?Math.max(0,g-objectParkingOverGba(key))/g:1;
-}
-function applyObjectParkingShare(key){
- const row=tep[key];if(!row)return;
- const share=objectParkingShare(key,row.gns);
- if(share===1)return;
- const round=v=>Math.round(Number(v||0)*share*10)/10;
- row.total_area=round(row.total_area);row.useful=round(row.useful);row.saleable=round(row.saleable);
-}
-
 function objectParkingNote(key){
  const own=(projectParking().own)||[];
  const item=own.find(o=>o&&o.tep_key===key&&o.enabled);
@@ -53109,7 +53572,7 @@ function tepRowComplaint(key,row){
   // Доли объявлены от ГНС: продаваемая сравнивается с ней же, иначе сравнение
   // поедет вслед за общей площадью, которая тоже может быть введена неверно.
   const r=tepRatio(key);
-  const expected=gns*r.saleable_of_gns*objectParkingShare(key,gns);
+  const expected=gns*r.saleable_of_gns;
   if(expected>0&&Math.abs(sale-expected)/expected>0.25)
    return 'продаваемая расходится с пропорцией больше чем на четверть ('+
     landNum(sale/gns*100,0)+'% ГНС против '+landNum(r.saleable_of_gns*100,0)+'%) — проверьте или пересчитайте';
@@ -53166,8 +53629,6 @@ function refillTepRow(key){
  // без этого правка доли и кнопка «наши» возвращали отданные метры в продажу
  // (замер 12.09.2026: 4 500 м² квартир снова становились продаваемыми).
  tepApplyTransfer(key,filled.saleable);
- // Строка объекта — площади ПОСЛЕ мест первых этажей, как у движка.
- applyObjectParkingShare(key);
  // Жилая СПП двинулась — за ней идёт встроенная коммерция, как и при правке
  // ячейки: правило одно, а закрытое в одном месте соседнее не защищает.
  if(key==='apartments'&&Math.abs(Number(row.gns||0)-gns)>0.05){
@@ -53218,13 +53679,7 @@ function tepRowToInputs(key){
  const map=TEP_ROW_INPUTS[key];
  if(!map)return false;
  inputs[map.gns]=Number(tep[key].gns||0);
- // В строке — продаваемая ПОСЛЕ мест первых этажей, в поле — до них.
- const share=objectParkingShare(key,tep[key].gns);
- // Места съели всю ГНС — из нуля продаваемую до мест не вернуть: поле
- // остаётся, каким было, а перерасход называет предупреждение движка.
- if(share>0)inputs[map.saleable]=share<1
-  ?Math.round(Number(tep[key].saleable||0)/share*10)/10
-  :Number(tep[key].saleable||0);
+ inputs[map.saleable]=Number(tep[key].saleable||0);
  const sw=TEP_ROW_SWITCH[key];
  if(sw&&!inputs[sw[0]]&&Number(tep[key].gns||0)>0){
   // Выключенный объект обнулит строку на первом же пересчёте. Числа сохранены,
@@ -53383,18 +53838,9 @@ function tepCellChanged(key,col,value){
   const transfer=Math.max(0,Number(tep[key].transfer||0));
   const base={gns:0,total_area:0,saleable:0,useful:0};
   base[col]=col==='saleable'?Number(value||0)+transfer:Number(value||0);
-  // Вписанная общая/продаваемая объекта с местами на первых этажах — это
-  // площадь ПОСЛЕ мест: ГНС = вписанное ÷ доля + ГНС под местами.
-  const over=STANDALONE_OBJECTS.some(o=>o.key===key&&o.garage)?objectParkingOverGba(key):0;
-  if(over>0&&col!=='gns'){
-   const r=tepRatio(key);
-   const part=col==='total_area'?r.total_of_gns:r.saleable_of_gns;
-   if(part>0){base.gns=base[col]/part+over;base.total_area=0;base.saleable=0}
-  }
   const filled=tepFillByRatios(key,base);
   ['gns','total_area'].forEach(field=>{tep[key][field]=filled[field]});
   tepApplyTransfer(key,filled.saleable);
-  if(over>0)applyObjectParkingShare(key);
   tepRowToInputs(key);
   if(key==='apartments'){rescaleApartmentUnits();rescaleBuiltInCommercial()}
   renderInputs();
@@ -54497,7 +54943,34 @@ function syncTep(rerender=true){
  // городу, — а продаётся только по признаку. Переданные метры уходят в
  // «передаётся»: они строятся, но не продаются, как у соцобъекта. Половиной
  // объект не делится: «всё или так, или так» (владелец, 05.09.2026).
- if(syncStandaloneTepRows())inputsFilled=true;
+ STANDALONE_OBJECTS.forEach(o=>{
+  const row=tep[o.key];if(!row)return;
+  const p=o.prefix,flag=p+'_enabled';
+  if(o.measure==='spaces'){
+   row.units=inputs[flag]?Number(inputs[p+'_spaces']||0):0;
+   row.gns=row.units*Number(inputs[p+'_area_per_space_sqm']||25);row.total_area=row.gns;
+   return;
+  }
+  const gbaId=p+'_gba_sqm',saleId=p+'_saleable_sqm';
+  if(!inputs[flag]){row.gns=0;row.total_area=0;row.saleable=0;row.useful=0;
+   if(o.sale_gate)row.transfer=0;return}
+  const sold=!o.sale_gate||String(inputs[o.sale_gate]||'transfer')==='sale';
+  const key=o.key;
+  const filled=tepFillByRatios(key,{gns:Number(inputs[gbaId]||0),total_area:0,
+   saleable:sold?Number(inputs[saleId]||0):0,useful:0});
+  row.gns=filled.gns;row.total_area=filled.total_area;
+  if(o.sale_gate){
+   row.saleable=sold?filled.saleable:0;row.useful=row.saleable;
+   row.transfer=sold?0:row.total_area;
+  }else{
+   row.saleable=filled.saleable;row.useful=filled.useful;
+   // Известна только продаваемая — ГНС считается и возвращается во вводные:
+   // себестоимость объекта берётся оттуда, и с нулём она была бы нулевой при
+   // живой выручке. Число видно в поле, а не подставлено втихую.
+   if(!Number(inputs[gbaId]||0)&&filled.gns>0){inputs[gbaId]=filled.gns;inputsFilled=true}
+  }
+  if(sold&&!Number(inputs[saleId]||0)&&filled.saleable>0){inputs[saleId]=filled.saleable;inputsFilled=true}
+ });
  // Соцобъект: места, площадь и ГНС. Прежде строка получала только общую
  // площадь и места, а `gns` не трогалась вовсе — поля «ГНС ДОУ» во вводных нет.
  // Импорт ГлавАПУ при этом писал в неё СПП из выгрузки, и один и тот же садик
@@ -54571,48 +55044,6 @@ function syncTep(rerender=true){
  if(rerender||!editingTep)renderTep();else updateTepTotals();
  return inputsFilled;
 }
-
-// Строки отдельно стоящих объектов из их вводных. Отдельной функцией — её
-// зовёт и расчёт очередей: свод назад в строки не пишется, а остаток ГНС
-// после мест первых этажей строке объекта нужен. Весь `syncTep` там звать
-// нельзя: он дописывает вводные (норма паркинга, соцнормативы) мимо полей
-// формы, и следующий расчёт возвращал бы прежнее — страница и PDF считали
-// бы по разным вводным.
-function syncStandaloneTepRows(){
- let inputsFilled=false;
- STANDALONE_OBJECTS.forEach(o=>{
-  const row=tep[o.key];if(!row)return;
-  const p=o.prefix,flag=p+'_enabled';
-  if(o.measure==='spaces'){
-   row.units=inputs[flag]?Number(inputs[p+'_spaces']||0):0;
-   row.gns=row.units*Number(inputs[p+'_area_per_space_sqm']||25);row.total_area=row.gns;
-   return;
-  }
-  const gbaId=p+'_gba_sqm',saleId=p+'_saleable_sqm';
-  if(!inputs[flag]){row.gns=0;row.total_area=0;row.saleable=0;row.useful=0;
-   if(o.sale_gate)row.transfer=0;return}
-  const sold=!o.sale_gate||String(inputs[o.sale_gate]||'transfer')==='sale';
-  const key=o.key;
-  const filled=tepFillByRatios(key,{gns:Number(inputs[gbaId]||0),total_area:0,
-   saleable:sold?Number(inputs[saleId]||0):0,useful:0});
-  row.gns=filled.gns;row.total_area=filled.total_area;
-  if(o.sale_gate){
-   row.saleable=sold?filled.saleable:0;row.useful=row.saleable;
-   row.transfer=sold?0:row.total_area;
-   applyObjectParkingShare(key);
-  }else{
-   row.saleable=filled.saleable;row.useful=filled.useful;
-   applyObjectParkingShare(key);
-   // Известна только продаваемая — ГНС считается и возвращается во вводные:
-   // себестоимость объекта берётся оттуда, и с нулём она была бы нулевой при
-   // живой выручке. Число видно в поле, а не подставлено втихую.
-   if(!Number(inputs[gbaId]||0)&&filled.gns>0){inputs[gbaId]=filled.gns;inputsFilled=true}
-  }
-  if(sold&&!Number(inputs[saleId]||0)&&filled.saleable>0){inputs[saleId]=filled.saleable;inputsFilled=true}
- });
- return inputsFilled;
-}
-
 function addMonthsJS(iso,months){
  const d=new Date(iso+'T12:00:00');
  const day=d.getDate();
@@ -54854,9 +55285,6 @@ async function calculate(){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
    phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
-   // Свод назад в строки не пишется, а места первых этажей строке объекта
-   // нужны: пересобираем её из вводных с остатком ГНС из свода.
-   syncStandaloneTepRows();
  }else{
    const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
@@ -55681,7 +56109,7 @@ function renderResult(){
   // не только в плашке выше: плашку можно пролистать, плитку нет.
   ['Чистая прибыль',money(r.summary.net_profit)+conditionalNote],
   ['Маржинальность',pct(r.summary.margin)+conditionalShort],
-  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',money(r.summary.npv)+conditionalShort],
+  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',returnsNa(r.summary)||(money(r.summary.npv)+conditionalShort)],
   // Цена входа стояла только в «Параметрах проекта» ниже и в PDF первой
   // строкой ключевой экономики: экран и отчёт расходились по составу, а
   // главное число сделки в шапку не попадало вовсе.
@@ -55826,8 +56254,8 @@ function renderResult(){
   row('Налог на прибыль',`(${money(r.summary.profit_tax)})`)+
   `<tr><th>Чистая прибыль</th><th>${money(r.summary.net_profit)}</th></tr>`+
   row('Маржинальность',pct(r.summary.margin))+
-  row('NPV',money(r.summary.npv))+
-  row('IRR equity',irrFmt(r.summary.irr_equity));
+  row('NPV',returnsNa(r.summary)||money(r.summary.npv))+
+  row('IRR equity',returnsNa(r.summary)||irrFmt(r.summary.irr_equity));
 
  // Числа карточки — из результата, а не из формы. Форма не знает ни о льготе,
  // ни о доле очереди: при стопроцентной льготе строка показывала полную плату
@@ -55859,11 +56287,13 @@ function renderResult(){
   // одной буквой. Соседние строки этого же блока подписаны «/м² прод.» —
   // теперь и эта.
   row('Средняя цена м² квартир',th(r.summary.average_apartment_price_th)+'/м² прод.')+
-  // Каждый удельный — в обеих базах: одна без второй читается как другая.
-  row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.full_cost_per_gns_th)+'/м² ГНС')+
+  // Каждый удельный — на свою базу (решение 4 ревизии книги): расходы — на
+  // суммарную площадь в ГНС и для сравнения с ценой на продаваемую; EBITDA и
+  // прибыль — на продаваемую. Подписи баз — из словаря терминов.
+  row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.full_cost_per_total_area_th)+'/м² '+TERMS.total_area.genitive)+
   row('Строительная себестоимость',th(r.summary.construction_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.construction_cost_per_gns_th)+'/м² '+TERMS.core_total_area.genitive)+
-  row('EBITDA на метр',th(r.summary.ebitda_per_saleable_th)+'/м² прод. · '+th(r.summary.ebitda_per_gns_th)+'/м² ГНС')+
-  row('Чистая прибыль на метр',th(r.summary.net_profit_per_saleable_th)+'/м² прод. · '+th(r.summary.net_profit_per_gns_th)+'/м² ГНС');
+  row('EBITDA на метр',th(r.summary.ebitda_per_saleable_th)+'/м² прод.')+
+  row('Чистая прибыль на метр',th(r.summary.net_profit_per_saleable_th)+'/м² прод.');
 
  // Свод финансирования на многоочередном проекте — это итоги, а не моменты:
  // подписи «в РВЭ» и «от предыдущей очереди» там называют событием сумму по
@@ -56103,11 +56533,14 @@ function renderResult(){
    :'БРИДЖ не привлекался.';
  }
 
+ // Каждая строка — на свою базу, решённую движком (`base`), и подписана ею;
+ // вторая колонка — на продаваемую, у строк с этой же базой не повторяется.
  unitEconomicsTable.innerHTML=(r.report.unit_economics||[]).map(x=>`<tr>
   <td>${x.label}</td>
   <td>${money(x.total)}</td>
-  <td>${Number(x.per_gns_th||0).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}</td>
-  <td>${Number(x.per_saleable_th||0).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}</td>
+  <td>${unitNum(x.per_base_th,1)}</td>
+  <td>${unitBase(x)}</td>
+  <td>${x.base==='saleable_area'?'—':unitNum(x.per_saleable_th,1)}</td>
  </tr>`).join('');
 
  renderVri(r.vri);
@@ -56128,8 +56561,8 @@ function renderResult(){
    <td>${x.label}</td>
    <td>${money(x.value)}</td>
    <td>${(Number(x.share||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})}%</td>
-   <td>${num2(x.per_gns_th)}</td>
-   <td>${num2(x.per_saleable_th)}</td>
+   <td>${unitNum(x.per_base_th,2)}</td>
+   <td>${unitNum(x.per_saleable_th,2)}</td>
  </tr>`;
    // Строки объекта собраны движком (`standalone_expense_item_rates`): здание
    // на свою площадь, свой гараж на свои метры и места. База названа в самой
@@ -56148,10 +56581,11 @@ function renderResult(){
  }).join('')+landscapingGapRow();
  {
   const expenseSum=Number(r.summary.total_expenses||0)||expenseRows.reduce((s,x)=>s+Number(x.value||0),0);
-  const eGns=Number(r.summary.project_gns_sqm||0),eSaleable=Number(r.summary.monetizable_saleable_sqm||0);
   expenseTotal.textContent=money(expenseSum);
-  document.getElementById('expenseTotalGns').textContent=num2(eGns?expenseSum/eGns/1000:0);
-  document.getElementById('expenseTotalSaleable').textContent=num2(eSaleable?expenseSum/eSaleable/1000:0);
+  // Итог — числа движка на ту же базу, что строки, а не деление здесь.
+  document.getElementById('expenseBaseHead').textContent='тыс ₽/м² '+TERMS.total_area.genitive;
+  document.getElementById('expenseTotalGns').textContent=unitNum(r.summary.full_cost_per_total_area_th,2);
+  document.getElementById('expenseTotalSaleable').textContent=unitNum(r.summary.full_cost_per_saleable_th,2);
  }
 
  ratesDebtTable.innerHTML=
@@ -56263,8 +56697,8 @@ function renderResult(){
  {
   // Рубль на метр в обеих базах: сумма сама по себе не сравнивается ни с
   // рынком, ни с себестоимостью.
-  const rGns=Number(r.summary.project_gns_sqm||0),rSaleable=Number(r.summary.monetizable_saleable_sqm||0);
-  const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
+  // Выручка — на продаваемую площадь (решение 4 ревизии книги); делит
+  // движок (`revenue_structure`), страница печатает.
   // Состав, порядок и итоги групп решает движок (`revenue_structure`):
   // МКД → Итого МКД → объекты, каждый со своим паркингом → Итого ОСЗ →
   // Итого; нулевых продуктов нет. Прежде строки шли в порядке словаря.
@@ -56275,15 +56709,18 @@ function renderResult(){
       {label:'Итого',value:(r.revenue||{}).total,role:'total',group:'all'}];
   revenueTable.innerHTML=rs.map(x=>{
    const c=x.group==='all'?'th':'td',cls=x.role==='total'?(x.group==='all'?'':' class="rs-total"'):' class="rs-part"';
-   return `<tr${cls} data-group="${x.group}" data-role="${x.role}"><${c}>${escapeHtml(x.label)}</${c}><${c}>${money(x.value)}</${c}><${c}>${perTh(x.value,rGns)}</${c}><${c}>${perTh(x.value,rSaleable)}</${c}></tr>`;
+   return `<tr${cls} data-group="${x.group}" data-role="${x.role}"><${c}>${escapeHtml(x.label)}</${c}><${c}>${money(x.value)}</${c}><${c}>${unitNum(x.per_saleable_th,2)}</${c}></tr>`;
   }).join('');
  }
  renderNonresStrategy(r);
  // Имена статей приходят из движка плейсхолдером, как VERSION и доли ТЭП.
  const capNames=__DEVELOPAID_CAPEX_NAMES__;
  {
-  const cGns=Number(r.summary.project_gns_sqm||0),cSaleable=Number(r.summary.monetizable_saleable_sqm||0);
-  const perTh=(v,area)=>area>0?num2(Number(v||0)/area/1000):'—';
+  // Удельные статей — движка (`capex_units`): СМР на свою часть, прочее на
+  // суммарную площадь в ГНС; база названа в строке.
+  const cu=r.capex_units||{};
+  const capCells=key=>{const u=cu[key]||{};
+   return `<td>${unitNum(u.per_base_th,2)}</td><td>${unitBase(u)}</td><td>${unitNum(u.per_saleable_th,2)}</td>`;};
   // Порядок статей — порядок движка (`_MODEL_CAPEX_LABELS`: земля → ИРД и
   // проект → снос → СМР → объекты → соцнагрузка → надбавки → резерв), а не
   // порядок ключей ответа. Нулевая статья строку не занимает: итог её не
@@ -56292,8 +56729,8 @@ function renderResult(){
   const capRank=key=>{const i=capOrder.indexOf(key);return i<0?capOrder.length:i};
   capexTable.innerHTML=Object.entries(r.capex).filter(([key,v])=>key!=='total'&&Math.abs(Number(v||0))>=0.5)
    .sort((a,b)=>capRank(a[0])-capRank(b[0]))
-   .map(([key,v])=>`<tr><td>${capNames[key]||key}</td><td>${money(v)}</td><td>${perTh(v,cGns)}</td><td>${perTh(v,cSaleable)}</td></tr>`).join('')
-   +`<tr><th>Итого CAPEX</th><th>${money(r.capex.total)}</th><th>${perTh(r.capex.total,cGns)}</th><th>${perTh(r.capex.total,cSaleable)}</th></tr>`;
+   .map(([key,v])=>`<tr><td>${capNames[key]||key}</td><td>${money(v)}</td>${capCells(key)}</tr>`).join('')
+   +`<tr><th>Итого CAPEX</th><th>${money(r.capex.total)}</th>${capCells('total').replace(/<(\/?)td>/g,'<$1th>')}</tr>`;
  }
  // Построенных штук и проданных — разные числа, и до сих пор на экране стояло
  // только первое. Разниц теперь две: гостевые места (строятся, но общие) и

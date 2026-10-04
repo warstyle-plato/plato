@@ -139,19 +139,28 @@ def test_the_totals_do_not_mix_the_two_heights(built):
         assert _product(evaluator, key, "gns") == 0
 
 
-def test_the_above_ground_base_of_every_unit_rate_is_the_engines(built):
-    """Делитель удельных на метр ГНС — та же величина, что у движка.
+def test_the_bases_of_every_unit_rate_are_the_engines():
+    """Делители удельных — те же величины, что у движка (`unit_bases`).
 
-    Она считалась вычитанием одного подземного паркинга из строительного
-    объёма: кладовые и гараж объекта оставались внутри, и каждый удельный
-    дашборда был занижен.
+    Прежде база «ГНС наземная» считалась вычитанием одного подземного
+    паркинга, и кладовые с гаражом объекта оставались внутри. С 29.09.2026
+    (решение 4 ревизии книги) баз четыре, и каждая сверяется с движком на
+    проекте, где кладовые и гараж объекта есть.
     """
-    rows, _workbook, evaluator = built
-    book = _num(evaluator, vd.DATA_SHEET, f"C{vd.DATA_ROWS['gns_above_sqm']}")
-    engine = core.project_above_gns(rows)
-    assert abs(book - engine) <= 1.0, (book, engine)
-    # И это НЕ тот же ответ, что давало вычитание одного паркинга.
-    assert abs(book - engine) < STORAGE_SQM + OBJECT_GARAGE_SQM
+    inputs, tep = _shape()
+    result = core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))
+    sys.setrecursionlimit(400000)
+    content, _name, meta = core.build_project_workbook(inputs, tep, [], None)
+    evaluator = Evaluator(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
+    bases = result["summary"]["unit_bases"]
+    for data_key, base in (("total_area_sqm", "total_area"), ("saleable_sqm", "saleable_area"),
+                           ("core_above_sqm", "core_above_area"),
+                           ("core_under_sqm", "core_under_area")):
+        book = _num(evaluator, vd.DATA_SHEET, f"C{vd.DATA_ROWS[data_key]}")
+        assert abs(book - bases[base]) <= 1.0, (data_key, book, bases[base])
+    # Кладовые — в подземной базе МКД, гараж объекта — в суммарной.
+    assert bases["core_under_area"] >= STORAGE_SQM
+    assert bases["total_area"] >= bases["core_above_area"] + bases["core_under_area"] + OBJECT_GARAGE_SQM
 
 
 def test_the_report_keeps_the_storage_metres_underground(built):
@@ -223,12 +232,14 @@ def test_a_flat_is_still_priced_by_the_metre(built):
     assert revenue > 0 and saleable > 0 and units > 0
     assert abs(_product(evaluator, "apartments", "avg_price")
                - revenue * 1000 / saleable) <= 0.5, "средняя цена уехала на квартиру"
-    assert abs(_product(evaluator, "apartments", "per_gns")
-               - revenue * 1000 / _product(evaluator, "apartments", "gns")) <= 0.5
+    # Выручка — на продаваемую (решение 4 ревизии книги), не на ГНС.
+    assert abs(_product(evaluator, "apartments", "per_saleable")
+               - revenue * 1000 / saleable) <= 0.5
+    assert _product(evaluator, "apartments", "per_unit") == 0, "квартира не штучный товар"
     # А у машино-места удельная по-прежнему на штуку: метры гаража ни с чем
     # не сравнимы.
     parking_revenue = _product(evaluator, "underground_parking", "revenue")
-    assert abs(_product(evaluator, "underground_parking", "per_gns")
+    assert abs(_product(evaluator, "underground_parking", "per_unit")
                - parking_revenue * 1000
                / _product(evaluator, "underground_parking", "units")) <= 0.5
 
@@ -253,7 +264,8 @@ def test_the_measure_of_a_product_is_declared_not_guessed():
     # «заполнена ли колонка» — законный вопрос при записи самой колонки и
     # незаконный при выборе того, чем меряется продукт.
     chooses = [line.strip() for line in block.split("\n")
-               if line.strip().startswith(("base =", "per_gns ="))]
+               if line.strip().startswith("base =")
+               or ('_cell(f"J{r}"' in line and "if " in line)]
     assert len(chooses) == 2, chooses
     for line in chooses:
         assert "piece" in line, f"делитель снова выбирается не по объявлению: {line}"

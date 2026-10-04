@@ -45,28 +45,30 @@ def payload():
 # --- удельные на две базы ----------------------------------------------------
 
 def test_the_construction_articles_carry_both_bases(payload):
-    """Стройка на м² ГНС и на м² продаж различается в полтора-два раза, и
-    сравнивать с ценой продажи можно только вторую."""
+    """Стройка на м² своей базы и на м² продаж различается в полтора-два раза,
+    и сравнивать с ценой продажи можно только вторую. Своя база — решение 4
+    ревизии книги: СМР на свою часть, прочее на суммарную площадь в ГНС."""
     summary = payload["result"]["summary"]
-    gns = float(summary["project_gns_sqm"])
+    bases = summary["unit_bases"]
     saleable = float(summary["monetizable_saleable_sqm"])
-    assert saleable < gns, "продаваемая всегда меньше ГНС — иначе базы перепутаны"
+    assert saleable < bases["total_area"], "продаваемая всегда меньше ГНС — иначе базы перепутаны"
     for row in payload["result"]["report"]["construction_costs"]:
-        assert row["per_gns_th"] == pytest.approx(row["value"] / gns / 1000)
+        assert row["per_base_th"] == pytest.approx(row["value"] / bases[row["base"]] / 1000)
         assert row["per_saleable_th"] == pytest.approx(row["value"] / saleable / 1000)
-        assert row["per_saleable_th"] > row["per_gns_th"]
+        if row["base"] == "total_area":
+            assert row["per_saleable_th"] > row["per_base_th"]
 
 
 def test_the_phased_report_keeps_both_bases():
     """Консолидация очередей делит на свои итоги, а не на итоги первой."""
     bundle, _, _ = _bundle({"enabled": True, "phase_count": 2, "phase_gap_months": 12})
     consolidated = bundle["consolidated"]
-    gns = float(consolidated["summary"]["project_gns_sqm"])
+    bases = consolidated["summary"]["unit_bases"]
     saleable = float(consolidated["summary"]["monetizable_saleable_sqm"])
     rows = consolidated["report"]["construction_costs"]
     assert rows, "статьи стройки обязаны доехать до сводки"
     for row in rows:
-        assert row["per_gns_th"] == pytest.approx(row["value"] / gns / 1000)
+        assert row["per_base_th"] == pytest.approx(row["value"] / bases[row["base"]] / 1000)
         assert row["per_saleable_th"] == pytest.approx(row["value"] / saleable / 1000)
 
 
@@ -81,12 +83,13 @@ def test_the_expense_structure_keeps_both_bases_in_every_mode():
     for phasing in ({}, {"enabled": True, "phase_count": 3, "phase_gap_months": 12}):
         bundle, _, _ = _bundle(phasing)
         consolidated = bundle["consolidated"]
-        gns = float(consolidated["summary"]["project_gns_sqm"])
+        area = float(consolidated["summary"]["construction_volume_sqm"])
         saleable = float(consolidated["summary"]["monetizable_saleable_sqm"])
         rows = consolidated["report"]["expense_structure"]
         assert rows, "структура расходов обязана доехать до свода"
         for row in rows:
-            assert row["per_gns_th"] == pytest.approx(row["value"] / gns / 1000), row["label"]
+            assert row["base"] == "total_area", row["label"]
+            assert row["per_base_th"] == pytest.approx(row["value"] / area / 1000), row["label"]
             assert row["per_saleable_th"] == pytest.approx(row["value"] / saleable / 1000)
 
 
@@ -96,8 +99,8 @@ def test_the_rows_of_the_structure_add_up_to_its_total_line():
     bundle, _, _ = _bundle({"enabled": True, "phase_count": 2, "phase_gap_months": 12})
     consolidated = bundle["consolidated"]
     rows = consolidated["report"]["expense_structure"]
-    assert sum(row["per_gns_th"] for row in rows) == pytest.approx(
-        consolidated["summary"]["full_cost_per_gns_th"], rel=1e-6)
+    assert sum(row["per_base_th"] for row in rows) == pytest.approx(
+        consolidated["summary"]["full_cost_per_total_area_th"], rel=1e-6)
     assert sum(row["per_saleable_th"] for row in rows) == pytest.approx(
         consolidated["summary"]["full_cost_per_saleable_th"], rel=1e-6)
 
@@ -110,7 +113,7 @@ def test_the_print_does_not_recount_what_the_engine_gives():
     source = inspect.getsource(core._build_developaid_pdf)
     block = source[source.find('expense_rows=[["Статья"'):]
     block = block[:block.find('story.append(_PdfSection("income")')]
-    assert "per_gns_th" in block
+    assert "per_base_th" in block
     assert "value/_exp_gns/1000" not in block, "печать снова считает своё"
 
 
@@ -122,14 +125,12 @@ def test_the_pdf_prints_the_unit_economics(payload):
                      for page in pypdf.PdfReader(io.BytesIO(data)).pages)
     assert "Удельная экономика проекта" in text
     assert "продаваемой" in text
-    # Обе базы названы числом: «тыс ₽/м²» без базы читается как что угодно.
-    # База удельных — НАЗЕМНАЯ площадь: подземная в неё не входит, у неё своя
-    # экономика (решение владельца, 04.09.2026). Строительный объём назван
-    # рядом своим числом — на нём считаются общие статьи, и без него удельный
-    # читается как посчитанный по всему объёму.
-    assert "База ГНС — наземная площадь" in text
-    assert "Подземная часть" in text and "в неё не входит" in text
-    assert TOTAL_AREA.name in text
+    # Базы названы числом: «тыс ₽/м²» без базы читается как что угодно.
+    # С 29.09.2026 (решение 4 ревизии книги) у каждой строки своя база, и
+    # под таблицей перечислены все четыре площади.
+    flat = " ".join(text.split())
+    assert "Базы удельных:" in flat
+    assert TOTAL_AREA.name in flat
 
 
 def test_the_pdf_construction_table_gained_the_saleable_column(payload):

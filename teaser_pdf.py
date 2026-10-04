@@ -3,7 +3,7 @@
 Страница 1, «Девелоперский проект» (A4 книжная): карта участка с контурами
 ЕГРН, паспорт участка и ограничения, расчётный ТЭП, экономика, удельная
 экономика, финансирование, риски. Страница 2, «Итог» (A4 альбомная): показатели
-эффективности, ТЭП по продуктам, доходы и себестоимость на метр ГНС и
+эффективности, ТЭП по продуктам, доходы и себестоимость на метр своей базы и
 продаваемой, график кредита и эскроу, сроки строительства и продаж.
 
 Состав снят с двух образцов владельца (тизер+итог от 10.03.2026 и тизер по
@@ -31,7 +31,7 @@ from reportlab.platypus import (BaseDocTemplate, Frame, Image, KeepInFrame, Next
                                 PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle)
 from reportlab.platypus.doctemplate import LayoutError
 
-from terms_glossary import TOTAL_AREA
+from terms_glossary import SALEABLE_AREA, TERMS, TOTAL_AREA
 
 NAVY = colors.HexColor("#17365D")
 NAVY_DARK = colors.HexColor("#0B1F33")
@@ -378,6 +378,17 @@ def _vri_rows(model: dict[str, Any], fm: _Formats) -> list[tuple[str, str, str]]
     return rows
 
 
+def _npv_row(eff: dict[str, Any], fm: _Formats) -> tuple[str, str, str]:
+    """NPV — числом или причиной, по которой движок его снял.
+
+    При непогашенном долге движок пишет «N/A — долг не погашен» (решение
+    владельца 29.09.2026); прочерк читался бы как «не посчитали».
+    """
+    if eff.get("returns_na"):
+        return ("NPV собственного капитала", str(eff["returns_na"]), "")
+    return ("NPV собственного капитала", fm.mln(eff.get("npv_mln")), "млн ₽")
+
+
 def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, str, str]], tuple[int, ...]]:
     eff = model.get("efficiency") or {}
     land = model.get("land") or {}
@@ -392,8 +403,11 @@ def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, 
         start = (f" (старт {fm.th(apartments['start_price_th'], 0)})" if apartments.get("start_price_th") else "")
         rows.append(("  ср. цена квартир" + start, fm.th(apartments["avg_price_th"], 0), "тыс ₽/м²"))
     rows.append(("Расходная часть (CAPEX)", fm.mln(eff.get("capex_mln")), "млн ₽"))
-    if smr.get("per_gns_th"):
-        rows.append(("  СМР наземной части", fm.th(smr["per_gns_th"], 0), "тыс ₽/м² ГНС"))
+    # СМР — на ту часть, на которую начислено; база и подпись — движка
+    # (решение 4 ревизии книги).
+    if smr.get("per_base_th"):
+        rows.append(("  СМР наземной части", fm.th(smr["per_base_th"], 0),
+                     str(smr.get("base_label") or "").replace("тыс. ", "тыс ")))
     rows.append(("Коммерческие расходы", fm.mln(eff.get("commercial_mln")), "млн ₽"))
     rows.append(("Стоимость финансирования", fm.mln(eff.get("financing_mln")), "млн ₽"))
     rows.append(("Налоги (прибыль и НДС)",
@@ -403,7 +417,7 @@ def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, 
     rows.append(("Маржинальность", fm.pct(eff.get("margin")), ""))
     if _bank(model):
         rows.append(("LLCR (цель банка " + fm.x(model.get("llcr_target")) + ")", fm.x(eff.get("llcr")), ""))
-    rows.append(("NPV собственного капитала", fm.mln(eff.get("npv_mln")), "млн ₽"))
+    rows.append(_npv_row(eff, fm))
     term = eff.get("term_months")
     rows.append(("Срок до РВЭ", fm.count(term) + (f" · {fm.num(term / 12, 2)} года" if term else ""), "мес."))
     entry = land.get("purchase_mln")
@@ -494,11 +508,16 @@ def _risk_lines(model: dict[str, Any], st: _Styles, fm: _Formats) -> list[Any]:
 
 
 def _unit_economics_grid(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) -> Table:
-    rows = [[item["label"], fm.mln(item.get("total_mln")), fm.th(item.get("per_gns_th")),
+    # Две базы — две колонки, подписанные словарём: расходы стоят в колонке
+    # суммарной площади в ГНС (и для сравнения с ценой — в продаваемой),
+    # выручка и прибыль — только в продаваемой. База строки — движка.
+    rows = [[item["label"], fm.mln(item.get("total_mln")),
+             fm.th(item.get("per_base_th")) if item.get("base") == TOTAL_AREA.key else "—",
              fm.th(item.get("per_saleable_th"))]
             for item in (model.get("unit_economics") or [])]
-    return _grid(["Показатель", "млн ₽", "тыс ₽/м² ГНС", "тыс ₽/м² прод."], rows,
-                 [width * 0.40, width * 0.20, width * 0.20, width * 0.20], st)
+    return _grid(["Показатель", "млн ₽", f"тыс ₽/м² {TOTAL_AREA.genitive}",
+                  f"тыс ₽/м² {SALEABLE_AREA.genitive}"], rows,
+                 [width * 0.34, width * 0.18, width * 0.24, width * 0.24], st)
 
 
 def _line_chart(rows: list[dict[str, Any]], width: float, height: float, st: _Styles,
@@ -687,8 +706,9 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
         ("EBITDA", fm.mln(eff.get("ebitda_mln")), "млн ₽"),
         ("Чистая прибыль", fm.mln(eff.get("net_profit_mln")), "млн ₽"),
         ("Operating margin", fm.pct(eff.get("margin")), ""),
-        ("Equity IRR", fm.pct(eff.get("irr_equity")) if eff.get("irr_equity") is not None else "—", ""),
-        ("NPV собственного капитала", fm.mln(eff.get("npv_mln")), "млн ₽"),
+        ("Equity IRR", eff.get("returns_na") or (fm.pct(eff.get("irr_equity"))
+                                                 if eff.get("irr_equity") is not None else "—"), ""),
+        _npv_row(eff, fm),
         ("Длительность до РВЭ", (fm.num(term / 12, 2) if term else "—"), "лет"),
         ("LLCR проекта", fm.x(eff.get("llcr")), ""),
         ("Полные расходы проекта", fm.mln(eff.get("full_project_cost_mln")), "млн ₽"),
@@ -734,16 +754,16 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
     for p in products:
         if not p.get("revenue_mln"):
             continue
-        per = (fm.th(p.get("per_unit_th"), 0) + " /шт." if p.get("per_unit_th") else fm.th(p.get("per_gns_th"), 0))
-        income_rows.append([p["label"], fm.mln(p.get("revenue_mln")), per,
-                            fm.th(p.get("per_saleable_th"), 0) if p.get("per_saleable_th") else "—"])
+        # Выручка и цена — на продаваемую площадь (решение 4 ревизии книги);
+        # штучный продукт — на штуку.
+        per = (fm.th(p.get("per_unit_th"), 0) + " /шт." if p.get("per_unit_th")
+               else fm.th(p.get("per_saleable_th"), 0) if p.get("per_saleable_th") else "—")
+        income_rows.append([p["label"], fm.mln(p.get("revenue_mln")), per])
     income_rows.append(["Всего", fm.mln(eff.get("revenue_mln")),
-                        fm.th(next((u.get("per_gns_th") for u in model.get("unit_economics") or []
-                                    if u["label"] == "Выручка"), None), 0),
                         fm.th(next((u.get("per_saleable_th") for u in model.get("unit_economics") or []
-                                    if u["label"] == "Выручка"), None), 0)])
-    col2.append(_grid(["Продукт", "млн ₽", "тыс ₽/м² ГНС", "тыс ₽/м² прод."], income_rows,
-                      [col_w * 0.37, col_w * 0.21, col_w * 0.21, col_w * 0.21], st, bold_last=True))
+                                    if u.get("key") == "revenue" or u["label"] == "Выручка"), None), 0)])
+    col2.append(_grid(["Продукт", "млн ₽", f"тыс ₽/м² {SALEABLE_AREA.genitive}"], income_rows,
+                      [col_w * 0.40, col_w * 0.24, col_w * 0.36], st, bold_last=True))
     col2.append(_section("Цены реализации и темп продаж", col_w, st))
     price_rows = []
     for p in products:
@@ -763,9 +783,13 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
 
     # Колонка 3: себестоимость, структура расходов, финансовая деятельность, налоги.
     col3: list[Any] = [_section("Себестоимость строительства", col_w, st)]
-    cost_rows = [[c["label"], fm.mln(c.get("total_mln")), fm.th(c.get("per_gns_th")), fm.th(c.get("per_saleable_th"))]
+    # Статьи — на суммарную площадь в ГНС (шапка), СМР — на свою часть, и
+    # такая строка называет свою базу сама. Базы — движка.
+    cost_rows = [[c["label"] + ("" if c.get("base") in (None, TOTAL_AREA.key)
+                                else f", на м² {TERMS[c['base']].genitive}"),
+                  fm.mln(c.get("total_mln")), fm.th(c.get("per_base_th")), fm.th(c.get("per_saleable_th"))]
                  for c in (model.get("construction_costs") or [])]
-    col3.append(_grid(["Статья", "млн ₽", "тыс ₽/м² ГНС", "тыс ₽/м² прод."], cost_rows,
+    col3.append(_grid(["Статья", "млн ₽", f"тыс ₽/м² {TOTAL_AREA.genitive}", "тыс ₽/м² прод."], cost_rows,
                       [col_w * 0.49, col_w * 0.17, col_w * 0.17, col_w * 0.17], st))
     col3.append(_section("Структура расходов проекта", col_w, st))
     struct_rows = [[c["label"], fm.mln(c.get("total_mln")), fm.pct(c.get("share"), 0),
@@ -786,8 +810,9 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
         story.append(gantt)
     story.append(Paragraph(
         f"Расчёт {origin.get('calculation_id') or '—'} · движок DevelopAid {origin.get('engine_version') or '—'} "
-        f"· {origin.get('generated_at') or ''}. Удельные показатели на метр ГНС (наземная площадь) и "
-        "на метр продаваемой площади считает движок; тизер их не выводит сам.", st.note))
+        f"· {origin.get('generated_at') or ''}. Удельные показатели — каждый на свою базу: расходы на "
+        f"метр {TOTAL_AREA.genitive} (наземная и подземная), выручка и прибыль на метр "
+        f"{SALEABLE_AREA.genitive}, СМР — на свою часть. Считает движок; тизер их не выводит сам.", st.note))
     return _fit_page(story, width)
 
 

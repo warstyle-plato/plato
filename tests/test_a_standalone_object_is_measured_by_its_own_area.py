@@ -88,7 +88,7 @@ def test_the_object_reproduces_its_own_input_rate() -> None:
 
 
     # Прежнее число никуда не делось — оно проектное и стоит в колонках статьи.
-    assert row["per_gns_th"] < OFFICE_RATE_TH / 5, (
+    assert row["per_base_th"] < OFFICE_RATE_TH / 5, (
         "проектная база должна остаться сильно ниже собственной — иначе "
         "проверка мерит одно и то же дважды")
 
@@ -128,7 +128,7 @@ def test_the_row_columns_stay_project_wide_and_say_so() -> None:
     rows = _structure()
     row = _standalone(rows)
     gns = sum(core._number_or_zero(one["value"]) for one in rows)
-    assert row["per_gns_th"] > 0 and gns > 0
+    assert row["per_base_th"] > 0 and gns > 0
     assert row["items_note"], "база строки и база подстрок не разведены словами"
     assert "ВСЕГО проекта" in row["items_note"]
 
@@ -181,7 +181,7 @@ def test_the_page_draws_the_sub_rows_with_the_engine_numbers() -> None:
     block = page[start:end]
     rows = [{
         "label": "Отдельные объекты", "value": 4.55e9, "share": 0.22,
-        "per_gns_th": 22.8, "per_saleable_th": 45.6,
+        "base": "total_area", "per_base_th": 22.8, "per_saleable_th": 45.6,
         "items_note": "подпись про базы",
         # Строки подстрок собирает движок — стенд берёт их у него же, а не
         # пишет руками: рисунок обязан сходиться с тем, что движок отдаёт.
@@ -204,6 +204,8 @@ def test_the_page_draws_the_sub_rows_with_the_engine_numbers() -> None:
         # оператора: её функция берётся со страницы, а не подменяется
         # заглушкой — заглушка отвечала бы за страницу.
         "const lastResult={summary:{}};\n"
+        # Печать удельного движка — со страницы, а не заглушкой.
+        + page_blocks.constant("unitNum") + "\n"
         "const escapeHtml=s=>String(s);\n"
         + page_blocks.function("landscapingGapRow") + "\n"
         + block + "\nprocess.stdout.write(expenseStructureTable.innerHTML);"

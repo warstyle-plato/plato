@@ -280,6 +280,9 @@ def test_a_metric_the_model_cannot_compute_is_named():
 
     assert "IRR" in str(failure.value.detail)
     assert "не определён" in str(failure.value.detail)
+    # Причина названа: у эталонного проекта ПФ к концу не погашен, и движок
+    # снял IRR сам (решение владельца 29.09.2026), а не «не смог посчитать».
+    assert "N/A — долг не погашен" in str(failure.value.detail)
 
 
 def test_the_options_come_from_the_form_dictionary():

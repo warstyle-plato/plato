@@ -95,24 +95,25 @@ def test_phase_parameters_are_filled_in():
 
 
 def test_unit_metrics_are_shown(phased_text):
-    """Каждый удельный показатель — в двух базах: на наземную ГНС и на
-    продаваемую, и делитель назван подписью блока.
+    """Каждый удельный показатель — на свою базу (решение 4 ревизии книги,
+    29.09.2026): выручка и прибыль — на продаваемую, расходы — на суммарную
+    площадь в ГНС и на продаваемую; делители названы подписью блока.
     Подписи переносятся по словам, поэтому ищем их в тексте со склеенными
     переводами строк, а не в вёрстке."""
     flat = " ".join(phased_text.split())
     assert "Удельные показатели — делители" in flat
-    # База удельных — НАЗЕМНАЯ ГНС очереди (`project_gns_sqm`), а не весь
-    # строительный объём: подземная часть в неё не входит с 04.09.2026.
-    for label in ("ГНС наземная", "Цена реализации на м² продаваемой",
-                  "Цена реализации на м² ГНС", "Полные расходы на м² продаваемой",
-                  "Полные расходы на м² ГНС", "Чистая прибыль на м² продаваемой"):
+    for label in (f"на м² {TOTAL_AREA.genitive} — {TOTAL_AREA.lower()}",
+                  "Цена реализации на м² продаваемой",
+                  "Полные расходы на м² продаваемой",
+                  f"Полные расходы на м² {TOTAL_AREA.genitive}",
+                  f"CAPEX на м² {TOTAL_AREA.genitive}", "Чистая прибыль на м² продаваемой"):
         assert label in flat, label
+    for gone in ("Цена реализации на м² ГНС", "Чистая прибыль на м² ГНС", "ГНС наземная"):
+        assert gone not in flat, gone
     # Запрещается МЕСТО, а не слово: «тыс. ₽/м² строит. объёма» в предпосылках —
     # верная подпись ставки наружных сетей, её правда умножают на весь объём.
     assert "на м² строит. объёма" not in flat
     assert f"на м² {CORE_TOTAL_AREA.genitive}" not in flat
-    assert f"на м² {TOTAL_AREA.genitive}" not in flat, (
-        "колонка очередей названа базой, которой не делится")
 
 
 def test_the_pdf_prints_the_page_table_in_the_page_order(phased_text):
@@ -130,15 +131,16 @@ def test_the_pdf_prints_the_page_table_in_the_page_order(phased_text):
     assert "УДЕЛЬНЫЕ ПОКАЗАТЕЛИ" not in part, "удельные снова собраны в свой блок"
     assert "Делитель" not in part, "делитель снова стоит строкой-показателем"
     head = part[:part.index("ОБЪЁМ МКД — К ПРОДАЖЕ")]
-    for caption in ("на м² продаваемой — продаваемая площадь", "на м² ГНС — ГНС наземная", "свод"):
+    for caption in ("на м² продаваемой — продаваемая площадь",
+                    f"на м² {TOTAL_AREA.genitive} — {TOTAL_AREA.lower()}", "свод"):
         assert caption in head, (caption, head)
     revenue = part[part.index("ВЫРУЧКА"):part.index("ЗАТРАТЫ")]
     assert "Цена реализации на м² продаваемой" in revenue
     costs = part[part.index("ЗАТРАТЫ"):part.index("ФИНАНСИРОВАНИЕ")]
     order = [costs.index(t) for t in (
         "ИРД и согласования — цена м² МКД очереди", "Проектирование П+РД",
-        "Подготовительные работы", "Наружные сети", "CAPEX", "CAPEX на м² ГНС",
-        "Полные расходы", "Полные расходы на м² ГНС")]
+        "Подготовительные работы", "Наружные сети", "CAPEX", f"CAPEX на м² {TOTAL_AREA.genitive}",
+        "Полные расходы", f"Полные расходы на м² {TOTAL_AREA.genitive}")]
     assert order == sorted(order), order
     result = part[part.index("РЕЗУЛЬТАТ"):]
     tail = result.split("Чистая прибыль на м² продаваемой, тыс ₽/м²")
@@ -202,7 +204,7 @@ def test_pdf_costs_mirror_revenue_objects(object_table) -> None:
         [t for t in revenue if t in in_revenue]
     order = [costs.index(t) for t in (
         "МКД и общепроектные статьи", labels[objects[0]], labels[objects[-1]],
-        "Итого ОСЗ", "CAPEX всего", "CAPEX на м² ГНС, тыс ₽/м²", "Полные расходы")]
+        "Итого ОСЗ", "CAPEX всего", f"CAPEX на м² {TOTAL_AREA.genitive}, тыс ₽/м²", "Полные расходы")]
     assert order == sorted(order), costs
     assert any(t.startswith("По объектам не делятся") for t in costs), costs
 
