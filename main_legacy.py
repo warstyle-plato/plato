@@ -2203,6 +2203,24 @@ def row_outside_project(inputs: dict[str, Any] | None, key: str,
                                            *_ROW_QUANTITY_FIELDS))
 
 
+def row_listed(row: dict[str, Any]) -> bool:
+    """Печатать ли строку ТЭП или продукта в списке продуктов проекта.
+
+    Один ответ для тизера (модель представления) и таблицы ТЭП полного PDF.
+    Строка есть, только если продукт есть в проекте: состав решает расчёт
+    признаком `excluded` (`row_outside_project`), а продукт дома без метров и
+    штук (кладовые 0) — не «ноль кладовых», а «кладовых нет». Объект, который
+    заведён и включён, остаётся строкой и пустым: его в проекте завели.
+    """
+    if row.get("excluded"):
+        return False
+    if str(row.get("key") or "") in _BY_KEY:
+        return True
+    return any(n(row, col) for col in (*_RESIDENTIAL_EXCLUDED_TEP_COLUMNS,
+                                       *TEP_SUMMABLE_FIELDS,
+                                       *_ROW_QUANTITY_FIELDS))
+
+
 # Столбцы строки ТЭП, которые несут количество: обнулив их, строка перестаёт
 # участвовать в площадях, штуках, выручке и СМР. Подписи, признаки и нормативы
 # строки не трогаются — это не количество.
@@ -17454,11 +17472,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # переданном молчал — и читался так, будто продано всё построенное
     # (владелец, 10.09.2026). Колонка появляется вместе с числом: постоянный
     # столбец нулей — шум, а не полнота.
-    # Строка вне состава проекта (`row_outside_project`) не печатается —
-    # тот же признак, что у отчёта страницы и книги.
-    rows_data = [row for row in (tep_report.get('rows') or [])
-                 if not row.get('excluded')
-                 and any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
+    # Строка продукта, которого нет в проекте, не печатается — то же
+    # правило, что у ТЭП тизера (`row_listed`).
+    rows_data = [row for row in (tep_report.get('rows') or []) if row_listed(row)]
     total=tep_report.get('total') or {}
     given = sum(float(row.get('transfer') or 0) for row in rows_data)
     # Итог количества — разбор по мере счёта, а не сумма: квартиры,
@@ -23744,6 +23760,10 @@ def _presentation_product_numbers(item: dict[str, Any]) -> dict[str, Any]:
     quantity = float(item.get("quantity") or 0.0)
     by_units = str(item.get("unit") or "") == "шт."
     return {
+        # Есть ли продукт в проекте — решает движок (`row_listed`), а слой
+        # представления только отбирает: тизер печатал все продукты отчёта,
+        # и кладовые 0 и удалённые «Офисы 2…5» стояли в его ТЭП.
+        "listed": row_listed(item),
         "revenue_mln": revenue / 1e6,
         "cost_mln": cost / 1e6,
         "per_gns_th": (revenue / gns / 1e3) if (gns > 0 and not by_units) else None,
