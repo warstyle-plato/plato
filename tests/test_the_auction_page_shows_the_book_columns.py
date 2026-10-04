@@ -93,6 +93,7 @@ READ = """() => ({
   rows: [...document.querySelectorAll('#sheetRows tr.sheetrow')].map(tr =>
     [...tr.children].map(td => td.textContent)),
   payload: exportPayload(state.filtered, 'auctions'),
+  scores: state.filtered.map(l => String(lotScore(l).score)),
 })"""
 
 
@@ -169,6 +170,9 @@ def test_in_a_real_browser_the_page_has_the_book_columns(tmp_path, monkeypatch):
             assert live[days] == "9", live[days]
             assert past[days].startswith("Приём заявок закончился"), past[days]
             assert past[status] == "Приём заявок закончился", past[status]
+            # Балл в таблице — тот же lotScore, что в строке подборки и карточке лота.
+            score = keys.index("score")
+            assert [row[score] for row in seen["rows"]] == seen["scores"]
             assert page.is_visible("#sheetRows td.k-plato_comment"), "комментарий на десктопе скрыт"
             page.screenshot(path=str(shots / "auctions-desktop.png"), full_page=False)
 
@@ -194,6 +198,8 @@ def test_in_a_real_browser_the_page_has_the_book_columns(tmp_path, monkeypatch):
             phone.click("#sheetRows tr.sheetrow >> nth=0")
             more = phone.locator("#sheetRows tr.sheetmore .morebox")
             assert NOTE_TEXT in more.inner_text()
+            # Название в строке обрезано до трёх строк; целиком — при раскрытии.
+            assert LOTS[0]["title"] in more.inner_text()
             box = more.bounding_box()
             assert box and box["x"] >= 0 and box["x"] + box["width"] <= 390, box
             width = phone.evaluate("[document.documentElement.scrollWidth, innerWidth]")

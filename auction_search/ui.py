@@ -35,7 +35,7 @@ AUCTIONS_PAGE = r'''<!doctype html>
 .sheetwrap{min-height:200px;max-width:100%;max-height:78vh}table.sheet{min-width:0;table-layout:fixed;font-size:12px}table.sheet th{position:sticky;top:0;z-index:2;background:#171717;color:#fff;cursor:pointer;vertical-align:bottom;white-space:normal}table.sheet td{white-space:normal;overflow-wrap:anywhere}
 @media(min-width:641px){table.sheet td.k-name{position:sticky;left:0;z-index:1;background:var(--panel,#fff);border-right:1px solid var(--line)}table.sheet th.k-name{left:0;z-index:3}}table.sheet th .arrow{opacity:.7}table.sheet td{vertical-align:top}
 table.sheet td .clip{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}table.sheet td.days.past,table.sheet td.status.past{color:#a33}table.sheet tr.sheetrow{cursor:pointer}table.sheet tr.sheetrow.open td{background:#f6f6f3}
-table.sheet tr.sheetmore td{background:#fbfbf9;white-space:normal}.sheetmore .morebox{position:sticky;left:0;max-width:min(860px,calc(100vw - 48px));white-space:pre-wrap}.sheetmore h4{margin:0 0 6px;font-size:13px}.sheetmore .muted{color:var(--muted)}
+table.sheet tr.sheetmore td{background:#fbfbf9;white-space:normal}.sheetmore .morebox{position:sticky;left:0;max-width:min(860px,calc(100vw - 48px));white-space:pre-wrap}.sheetmore h4{margin:0 0 6px;font-size:13px}.sheetmore .fullname{margin-bottom:10px}.sheetmore .muted{color:var(--muted)}
 .sheet .cmhint{display:none;color:var(--muted);font-size:11px;margin-top:4px}
 @media(max-width:640px){table.sheet th.k-plato_comment,table.sheet td.k-plato_comment{display:none}.sheet .cmhint{display:block}}
 #krtSide{display:none!important}
@@ -653,7 +653,8 @@ function renderSheet(){const cols=state.sheet.columns||[],head=$('sheetHead'),bo
   body.appendChild(tr);
   if(open){const more=document.createElement('tr');more.className='sheetmore';const cm=r.cells.plato_comment||{text:'—'};
    const title=(cols.find(c=>c.key==='plato_comment')||{}).title||'';
-   more.innerHTML=`<td colspan="${cols.length||1}"><div class="morebox"><h4>${esc(title)}</h4><div class="${cm.ready?'':'muted'}">${esc(cm.text||'—')}</div>${(!cm.ready&&state.sheet.mayRequest)?'<div class="actions"><button type="button" class="askNote">Заказать комментарий Платона</button></div>':''}${r.lot?'<div class="actions"><button type="button" class="openCard">Карточка лота</button></div>':''}</div></td>`;
+   const nameCol=cols.find(c=>c.key==='name'),nm=r.cells.name||{};
+   more.innerHTML=`<td colspan="${cols.length||1}"><div class="morebox">${nameCol?`<h4>${esc(nameCol.title)}</h4><div class="fullname">${esc(nm.text||'—')}</div>`:''}<h4>${esc(title)}</h4><div class="${cm.ready?'':'muted'}">${esc(cm.text||'—')}</div>${(!cm.ready&&state.sheet.mayRequest)?'<div class="actions"><button type="button" class="askNote">Заказать комментарий Платона</button></div>':''}${r.lot?'<div class="actions"><button type="button" class="openCard">Карточка лота</button></div>':''}</div></td>`;
    const ask=more.querySelector('.askNote');if(ask)ask.onclick=e=>{e.stopPropagation();requestSheetNote(r,ask)};
    const card=more.querySelector('.openCard');if(card)card.onclick=e=>{e.stopPropagation();setAuctionView('pick');selectLot(r.lot)};
    body.appendChild(more)}
