@@ -365,6 +365,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     peak = 0.0
     balloon = 0.0
     maturity: date | None = None
+    first_draw: date | None = None
     for month in months:
         rate = key_rate(month) + spread
         interest = balance * rate / 12.0
@@ -377,6 +378,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         draw = ((capex.get(month, 0.0) + common.get(month, 0.0)) * loan_share
                 if month <= commissioning else 0.0)
         if draw:
+            first_draw = first_draw or month
             m["loan_draw"][month] = draw
             m["loan_fee"][month] = draw * fee_share
             balance += draw
@@ -394,12 +396,15 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
                 repay = min(balance, max(0.0, cash))
             elif repayment == REPAY_ANNUITY:
                 if maturity is None:
-                    # Срок и баллон отсчитываются от долга на ввод (с
-                    # капитализированными процентами); первый платёж — в
-                    # месяц после ввода.
-                    maturity = _add_months(commissioning, term_months)
+                    # Кредит на доходный объект длинный СРАЗУ (владелец,
+                    # 04.10.2026): срок считается от первой выдачи, стройка —
+                    # льготный период по телу. С ввода — аннуитет, к сроку
+                    # остаётся баллон (доля долга на ввод). Срок, истёкший до
+                    # ввода, гасит весь долг в месяц ввода.
+                    maturity = max(_add_months(first_draw or commissioning, term_months),
+                                   commissioning)
                     balloon = balance * balloon_share
-                    repay = 0.0
+                    repay = balance if maturity <= commissioning else 0.0
                 elif month >= maturity:
                     repay = balance  # баллон
                 else:

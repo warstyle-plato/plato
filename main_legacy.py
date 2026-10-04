@@ -1470,7 +1470,8 @@ def _object_strategy_fields(obj: StandaloneObject) -> list[list[Any]]:
          [[nonres_strategy.REPAY_ANNUITY, "Аннуитет на срок кредита с баллоном в конце"],
           [nonres_strategy.REPAY_SWEEP, "Из всего NOI по мере поступления"],
           [nonres_strategy.REPAY_BULLET, "Одним платежом при выходе"]]],
-        [f"{p}_loan_term_years", "Срок кредита после ввода", "лет; аннуитет", "number"],
+        [f"{p}_loan_term_years", "Срок кредита", "лет от первой выдачи; стройка — льготный "
+         "период по телу, с ввода — аннуитет", "number"],
         [f"{p}_loan_balloon_pct", "Баллон в конце срока",
          "% долга на ввод, гасится последним платежом или при выходе", "number"],
         [f"{p}_property_tax_pct", "Налог на имущество",

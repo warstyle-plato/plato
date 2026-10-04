@@ -353,15 +353,18 @@ def test_the_hold_loan_amortizes_to_its_balloon() -> None:
     monthly, kpi = flows["monthly"], flows["kpi"]
     at_commissioning = monthly["loan_balance"][date(2028, 1, 1)]
     assert kpi["loan_balloon"] == pytest.approx(at_commissioning * 0.20)
-    assert kpi["loan_maturity"] == date(2038, 1, 1)
+    # Срок — от первой выдачи (2027-01), а не от ввода (2028-01).
+    assert kpi["loan_maturity"] == date(2037, 1, 1)
     # Платёж (проценты + тело) постоянен при постоянной ставке.
     payments = [monthly["loan_interest_paid"][mm] + monthly["loan_amortization"][mm]
-                for mm in (date(2028, 2, 1), date(2031, 6, 1), date(2037, 12, 1))]
+                for mm in (date(2028, 2, 1), date(2031, 6, 1), date(2036, 12, 1))]
     assert payments[0] == pytest.approx(payments[1]) == pytest.approx(payments[2])
     # Перед баллоном долг ровно баллон, в срок он погашен.
-    assert monthly["loan_balance"][date(2037, 12, 1)] == pytest.approx(kpi["loan_balloon"])
-    assert monthly["loan_repayment"][date(2038, 1, 1)] == pytest.approx(kpi["loan_balloon"])
-    assert monthly["loan_balance"].get(date(2038, 1, 1), 0.0) == pytest.approx(0.0, abs=1e-6)
+    assert monthly["loan_balance"][date(2036, 12, 1)] == pytest.approx(kpi["loan_balloon"])
+    assert monthly["loan_repayment"][date(2037, 1, 1)] == pytest.approx(kpi["loan_balloon"])
+    assert monthly["loan_balance"].get(date(2037, 1, 1), 0.0) == pytest.approx(0.0, abs=1e-6)
+    # На стройке тело не гасится — льготный период.
+    assert not any(v for mm, v in monthly.get("loan_amortization", {}).items() if mm <= date(2028, 1, 1))
     assert kpi["dscr_min"] is not None and kpi["dscr_min"] < kpi["icr_min"]
 
 
