@@ -1152,7 +1152,8 @@
         + (weakest.llcr < TARGET_LLCR ? ' (ниже порога: по ней понадобится перенос долга или согласие банка)' : '') + '. ' : '')
       + 'Чистая прибыль ' + fmtMoney(result.summary.net_profit)
       + ' · маржинальность ' + fmtPct(result.summary.margin)
-      + ' · IRR ' + (result.summary.irr_equity == null ? 'N/A' : fmtPct(result.summary.irr_equity))
+      + ' · IRR ' + ((result.summary.equity_returns || {}).label
+        || (result.summary.irr_equity == null ? 'N/A' : fmtPct(result.summary.irr_equity)))
       + ' · порог банка LLCR ' + TARGET_LLCR.toFixed(2).replace('.', ',') + 'x.';
 
     var found = goalSeek && goalSeek.available && goalSeek.solution ? goalSeek.solution : null;

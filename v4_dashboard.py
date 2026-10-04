@@ -30,6 +30,8 @@ import re
 from typing import Any
 from xml.sax.saxutils import escape as _xml_escape
 
+from terms_glossary import (CORE_ABOVE_AREA, CORE_UNDER_AREA, SALEABLE_AREA, TERMS,
+                            TOTAL_AREA, capex_unit_base)
 from presentation import (AREA_MEASURE, BRIDGE_STEPS, CARD_COUNT, FLATS_MEASURE,
                           KPI_CATALOGUE, PARKING_MEASURE, PIECES_MEASURE,
                           RISK_CATALOGUE)
@@ -103,22 +105,19 @@ def _sheet_sum(sheet: str, column: str, rows: tuple[int, ...]) -> str:
     return "SUM(" + ",".join(f"'{sheet}'!{column}{r}" for r in rows) + ")"
 
 
-# ГНС наземная — база удельных на метр ГНС (движок: `project_above_gns`):
-# ГНС проекта без подземного паркинга, кладовых и подземных гаражей объектов.
-#
-# Считалась вычитанием из строительного объёма ТЭП, и вычитался из него ОДИН
-# подземный паркинг: кладовые и гаражи объектов оставались в «наземной». На
-# 400 кладовых и гараже офисника это 5 800 м² — база КАЖДОГО удельного на
-# метр ГНС была больше движковой, то есть все удельные дашборда занижены.
-#
-# Теперь берётся готовый итог наземной колонки структуры продукта ОТЧЁТа
-# (там наземное и подземное разведены колонками) плюс соцобъекты, которые в
-# тот блок не входят: они не продукт. Вычитание подземного второй раз здесь
-# не пишется — оно уже сделано там, где колонка называет свою величину.
-# Итог наземной колонки блока «Структура продукта» листа ОТЧЁТ.
-_REPORT_PRODUCT_TOTAL_ROW = 54
-_GNS_ABOVE = f"'ОТЧЕТ'!B{_REPORT_PRODUCT_TOTAL_ROW}+SUM('ТЭП'!F40:F43)"
 _SALEABLE = "'ТЭП'!D36"
+
+# Базы удельных по решению 4 ревизии книги (29.09.2026) — те же величины, что
+# у движка (`unit_bases`), из ячеек книги: суммарная площадь в ГНС — итог ТЭП
+# (`C36`: наземная, подземная и соцобъекты), наземная ГНС МКД — квартиры и
+# коммерция 1 этажа очередей, подземная МКД — паркинг и кладовые очередей.
+_QUEUE_TEP_FIRST = (4, 10, 16, 22)
+_TOTAL_AREA = "'ТЭП'!C36"
+_CORE_ABOVE = "SUM(" + ",".join(f"'ТЭП'!C{r}:C{r + 1}" for r in _QUEUE_TEP_FIRST) + ")"
+_CORE_UNDER = "SUM(" + ",".join(f"'ТЭП'!C{r + 2}:C{r + 3}" for r in _QUEUE_TEP_FIRST) + ")"
+# Ключ базы движка → строка Dashboard_Data с её площадью.
+_BASE_DATA_KEY = {TOTAL_AREA.key: "total_area_sqm", SALEABLE_AREA.key: "saleable_sqm",
+                  CORE_ABOVE_AREA.key: "core_above_sqm", CORE_UNDER_AREA.key: "core_under_sqm"}
 
 # (ключ, подпись, единица, формула книги). Порядок = строки со 2-й.
 DATA_ITEMS: tuple[tuple[str, str, str, str], ...] = (
@@ -155,8 +154,10 @@ DATA_ITEMS: tuple[tuple[str, str, str, str], ...] = (
     ("pf_interest_mln", "Проценты ПФ", "млн ₽", "'ОТЧЕТ'!G14"),
     ("pf_limit_fee_mln", "Плата за лимит ПФ", "млн ₽", _cf_sum("B43")),
     ("issue_fees_mln", "Комиссии выдачи (БРИДЖ и резервирование ПФ)", "млн ₽", _cf_sum("B57")),
-    ("gns_above_sqm", "ГНС наземная (база удельных)", "м²", _GNS_ABOVE),
-    ("saleable_sqm", "Продаваемая площадь (база удельных)", "м²", _SALEABLE),
+    ("total_area_sqm", f"{TOTAL_AREA.name} (база удельных расходов)", "м²", _TOTAL_AREA),
+    ("saleable_sqm", f"{SALEABLE_AREA.name} (база выручки и прибыли)", "м²", _SALEABLE),
+    ("core_above_sqm", f"{CORE_ABOVE_AREA.name} (база СМР наземной части)", "м²", _CORE_ABOVE),
+    ("core_under_sqm", f"{CORE_UNDER_AREA.name} (база СМР подземной части)", "м²", _CORE_UNDER),
 )
 DATA_ROWS: dict[str, int] = {item[0]: index + 2 for index, item in enumerate(DATA_ITEMS)}
 DATA_LAST_ROW = 1 + len(DATA_ITEMS)
@@ -265,7 +266,7 @@ def product_rows(extra_products: tuple = ()) -> dict[str, int]:
             for index, item in enumerate(product_items(extra_products))}
 # Колонки блока продуктов на Dashboard_Data.
 PRODUCT_COLUMNS = {"label": "B", "gns": "C", "saleable": "D", "units": "E", "revenue": "F",
-                   "avg_price": "G", "start_price": "H", "pace": "I", "per_gns": "J",
+                   "avg_price": "G", "start_price": "H", "pace": "I", "per_unit": "J",
                    "per_saleable": "K", "under": "L"}
 
 RISK_HEADER_ROW = PRODUCT_TOTAL_ROW + 2
@@ -504,10 +505,10 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
         base = f"E{r}" if piece else (f"D{r}" if saleable else "")
         cells.append((f"G{r}", _cell(f"G{r}", formula=f"IFERROR(F{r}*1000/{base},0)") if base
                       else _cell(f"G{r}")))
-        # Штучный продукт — на штуку (у машино-места метры ГНС ни с чем не
-        # сравнимы), метровый — на свою наземную ГНС; так же считает движок.
-        per_gns = f"E{r}" if piece else (f"C{r}" if gns else "")
-        cells.append((f"J{r}", _cell(f"J{r}", formula=f"IFERROR(F{r}*1000/{per_gns},0)") if per_gns
+        # Выручка — на продаваемую (K); штучный продукт — ещё и на штуку (J):
+        # у машино-места метры ни с чем не сравнимы. На ГНС выручку не делят
+        # (решение 4 ревизии книги); так же считает движок.
+        cells.append((f"J{r}", _cell(f"J{r}", formula=f"IFERROR(F{r}*1000/E{r},0)") if piece
                       else _cell(f"J{r}")))
         cells.append((f"K{r}", _cell(f"K{r}", formula=f"IFERROR(F{r}*1000/D{r},0)") if saleable
                       else _cell(f"K{r}")))
@@ -522,7 +523,6 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
                          # и кладовыми нечем. Пустая клетка здесь — ответ.
                          (f"E{t}", _cell(f"E{t}")),
                          (f"F{t}", _cell(f"F{t}", formula=f"SUM(F{first}:F{last})")),
-                         (f"J{t}", _cell(f"J{t}", formula=f"IFERROR(F{t}*1000/{data_cell('gns_above_sqm')},0)")),
                          (f"K{t}", _cell(f"K{t}", formula=f"IFERROR(F{t}*1000/{data_cell('saleable_sqm')},0)"))]))
 
     # Риски: ключ, подпись, признак 0/1, величина рядом.
@@ -563,7 +563,7 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
     articles = {key: _capex_article(key, capex_rows, capex_stride) for key in capex_rows}
     header_row(STRUCTURE_HEADER_ROW, (
         ("A", "структура расходов"), ("B", "млн ₽"), ("C", "доля"),
-        ("D", "на м² ГНС, тыс ₽"), ("E", "на м² прод., тыс ₽")))
+        ("D", f"на м² {TOTAL_AREA.genitive}, тыс ₽"), ("E", "на м² прод., тыс ₽")))
     first, last, t = STRUCTURE_FIRST_ROW, STRUCTURE_TOTAL_ROW - 1, STRUCTURE_TOTAL_ROW
     for index, (label, formula) in enumerate(STRUCTURE_ITEMS):
         r = STRUCTURE_FIRST_ROW + index
@@ -571,7 +571,7 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
             (f"A{r}", _cell(f"A{r}", text=label)),
             (f"B{r}", _cell(f"B{r}", formula=formula.format(**articles))),
             (f"C{r}", _cell(f"C{r}", formula=f"IFERROR(B{r}/$B${t},0)")),
-            (f"D{r}", _cell(f"D{r}", formula=f"IFERROR(B{r}*1000/{data_cell('gns_above_sqm')},0)")),
+            (f"D{r}", _cell(f"D{r}", formula=f"IFERROR(B{r}*1000/{data_cell('total_area_sqm')},0)")),
             (f"E{r}", _cell(f"E{r}", formula=f"IFERROR(B{r}*1000/{data_cell('saleable_sqm')},0)")),
         ]))
     rows.append(_row(t, [
@@ -582,24 +582,31 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
         (f"E{t}", _cell(f"E{t}", formula=f"SUM(E{first}:E{last})")),
     ]))
 
-    # Себестоимость строительства: статья, млн ₽, на м² ГНС, на м² прод.
+    # Себестоимость строительства: статья, млн ₽, на м² своей базы, на м²
+    # прод., база. СМР — на свою часть, прочее — на суммарную площадь в ГНС
+    # (решение 4; выбор базы — `capex_unit_base`, один с движком).
     header_row(COST_HEADER_ROW, (
         ("A", "себестоимость строительства"), ("B", "млн ₽"),
-        ("C", "на м² ГНС, тыс ₽"), ("D", "на м² прод., тыс ₽")))
+        ("C", "на м² своей базы, тыс ₽"), ("D", "на м² прод., тыс ₽"), ("E", "база")))
     first, last, t = COST_FIRST_ROW, COST_TOTAL_ROW - 1, COST_TOTAL_ROW
     for index, (label, keys) in enumerate(COST_ITEMS):
         r = COST_FIRST_ROW + index
+        base = capex_unit_base(keys[0])
         rows.append(_row(r, [
             (f"A{r}", _cell(f"A{r}", text=label)),
             (f"B{r}", _cell(f"B{r}", formula="+".join(articles[k] for k in keys))),
-            (f"C{r}", _cell(f"C{r}", formula=f"IFERROR(B{r}*1000/{data_cell('gns_above_sqm')},0)")),
+            (f"C{r}", _cell(f"C{r}", formula=f"IFERROR(B{r}*1000/{data_cell(_BASE_DATA_KEY[base])},0)")),
             (f"D{r}", _cell(f"D{r}", formula=f"IFERROR(B{r}*1000/{data_cell('saleable_sqm')},0)")),
+            (f"E{r}", _cell(f"E{r}", text=f"м² {TERMS[base].genitive}")),
         ]))
+    # Итог — отношение сумм на суммарную площадь: удельные разных баз не
+    # складываются.
     rows.append(_row(t, [
         (f"A{t}", _cell(f"A{t}", text="Итого")),
         (f"B{t}", _cell(f"B{t}", formula=f"SUM(B{first}:B{last})")),
-        (f"C{t}", _cell(f"C{t}", formula=f"SUM(C{first}:C{last})")),
-        (f"D{t}", _cell(f"D{t}", formula=f"SUM(D{first}:D{last})")),
+        (f"C{t}", _cell(f"C{t}", formula=f"IFERROR(B{t}*1000/{data_cell('total_area_sqm')},0)")),
+        (f"D{t}", _cell(f"D{t}", formula=f"IFERROR(B{t}*1000/{data_cell('saleable_sqm')},0)")),
+        (f"E{t}", _cell(f"E{t}", text=f"м² {TOTAL_AREA.genitive}")),
     ]))
 
     # Помесячные ряды долга и эскроу — колонки CF без пересчёта.
@@ -795,6 +802,8 @@ def _src(column: str, row: int) -> str:
 def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
                           extra_products: tuple = (),
                           shown_extras: frozenset[str] | None = None,
+                          hidden_products: frozenset[str] = frozenset(),
+                          queues: int | None = None,
                           ) -> tuple[str, list[tuple[int, int, int, int]]]:
     """Лист «Дашборд» — формулы на Dashboard_Data, узкая вертикальная
     раскладка. Возвращает xml листа и якоря трёх диаграмм (мост, кольцо,
@@ -805,9 +814,13 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
     # Видимый лист показывает дописанный объект, только если он в проекте:
     # четыре строки нулей на каждом дашборде — шум. Источник несёт все, и
     # итоги складывают все — включённый потом в Excel объект в сумме есть.
-    products = PRODUCT_ITEMS + tuple(
+    # Решение владельца 29.09.2026: и продукт шаблона, которого нет в проекте
+    # (офисы, ТЦ, наземный паркинг, кладовые), на листе не показывается —
+    # источник и итоги по-прежнему несут все. Так же — очереди сверх проекта.
+    products = tuple(item for item in PRODUCT_ITEMS if item[0] not in hidden_products) + tuple(
         item for item in extra_products
         if shown_extras is None or item[0] in shown_extras)
+    shown_queues = QUEUE_COUNT if queues is None else max(1, min(QUEUE_COUNT, queues))
 
     sh.band("DEVELOPAID · ИНВЕСТИЦИОННЫЙ ДАШБОРД", None, sh.title, 24)
     sh.band(None, data_cell("project_name"), sh.subtitle, 15)
@@ -892,17 +905,18 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
 
     # Доходы: выручка и удельные на метр.
     sh.section_row("ДОХОДЫ")
-    sh.header(_G_TABLE_4, ["Продукт", "Выручка, млн ₽", "тыс ₽/м² ГНС (на шт.)", "тыс ₽/м² прод."])
+    sh.header(_G_TABLE_4, ["Продукт", "Выручка, млн ₽", "тыс ₽ на шт.",
+                           f"тыс ₽/м² {SALEABLE_AREA.genitive}"])
     for key, *_rest in products:
         src = rows_of[key]
         sh.line(_G_TABLE_4, [(None, _src(P["label"], src), sh.td),
                              (None, _src(P["revenue"], src), sh.value("млн ₽")),
-                             (None, _src(P["per_gns"], src), sh.value("тыс ₽")),
+                             (None, _src(P["per_unit"], src), sh.value("тыс ₽")),
                              (None, _src(P["per_saleable"], src), sh.value("тыс ₽"))])
     src = PRODUCT_TOTAL_ROW
     sh.line(_G_TABLE_4, [("Всего", None, sh.bold_td),
                          (None, _src(P["revenue"], src), sh.bold_value("млн ₽")),
-                         (None, _src(P["per_gns"], src), sh.bold_value("тыс ₽")),
+                         (None, _src(P["per_unit"], src), sh.bold_value("тыс ₽")),
                          (None, _src(P["per_saleable"], src), sh.bold_value("тыс ₽"))])
     sh.blank()
 
@@ -922,17 +936,19 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
 
     # Себестоимость строительства по статьям.
     sh.section_row("СЕБЕСТОИМОСТЬ СТРОИТЕЛЬСТВА")
-    sh.header(_G_TABLE_4, ["Статья", "млн ₽", "тыс ₽/м² ГНС", "тыс ₽/м² прод."])
+    sh.header(_G_TABLE_5, ["Статья", "млн ₽", "тыс ₽/м² своей базы", "База", "тыс ₽/м² прод."])
     for index in range(len(COST_ITEMS)):
         src = COST_FIRST_ROW + index
-        sh.line(_G_TABLE_4, [(None, _src("A", src), sh.td),
+        sh.line(_G_TABLE_5, [(None, _src("A", src), sh.td),
                              (None, _src("B", src), sh.value("млн ₽")),
                              (None, _src("C", src), sh.value("тыс ₽")),
+                             (None, _src("E", src), sh.value("текст")),
                              (None, _src("D", src), sh.value("тыс ₽"))])
     src = COST_TOTAL_ROW
-    sh.line(_G_TABLE_4, [("Итого", None, sh.bold_td),
+    sh.line(_G_TABLE_5, [("Итого", None, sh.bold_td),
                          (None, _src("B", src), sh.bold_value("млн ₽")),
                          (None, _src("C", src), sh.bold_value("тыс ₽")),
+                         (None, _src("E", src), sh.value("текст")),
                          (None, _src("D", src), sh.bold_value("тыс ₽"))])
     sh.blank()
 
@@ -968,9 +984,13 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
             key, _label, value_key = risks[index]
             src = RISK_ROWS[key]
             flag = _src("C", src)
-            unit = "x" if value_key in ("llcr", "weakest_phase_llcr") else "млн ₽"
+            # Коэффициент — две цифры и «x», деньги — целые миллионы: при «0.0»
+            # LLCR 0,97 читался «1,0» рядом со словом «ниже» (ревизия 29.09.2026).
+            shown = (f'TEXT({_src("D", src)},"0.00")&"x"'
+                     if value_key in ("llcr", "weakest_phase_llcr")
+                     else f'TEXT({_src("D", src)},"0")&" млн ₽"')
             items += [(None, _src("B", src), sh.td),
-                      (None, f'IF({flag}=1,"ДА · "&TEXT({_src("D", src)},"0.0"),"нет")', sh.risk_on)]
+                      (None, f'IF({flag}=1,"ДА · "&{shown},"нет")', sh.risk_on)]
         elif index == len(risks):
             items += [("Статус модели (ПРОВЕРКИ)", None, sh.td_muted), (None, data_cell("status"), sh.value("текст"))]
         else:
@@ -983,7 +1003,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
     sh.section_row("СРОКИ · ОЧЕРЕДИ")
     sh.header(_G_QUEUE, ["Очередь", "Старт", "РнС / ПФ", "РВЭ", "Продажи с", "Продажи по",
                          "Стройка, мес.", "Продажи, мес."])
-    for q in range(QUEUE_COUNT):
+    for q in range(shown_queues):
         src = QUEUE_FIRST_ROW + q
         on = _src(Q["on"], src)
         def when(column: str) -> str:
@@ -1006,7 +1026,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
         cells[i] = _cell(f"{_col(i)}{r}", formula=f"{year0}+{k}", style=sh.year)
     sh.put(cells, sh.th, height=18)
     sh.merge(r, 0, 1)
-    for q in range(QUEUE_COUNT):
+    for q in range(shown_queues):
         src = QUEUE_FIRST_ROW + q
         on = _src(Q["on"], src)
         for stage, start_col, end_col, style in (("Стройка", Q["permit"], Q["build_end"], sh.gantt_build),
@@ -1270,7 +1290,9 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
           llcr_target: float, month_columns: list[str], phased: bool,
           capex_rows: dict[str, int], capex_stride: int,
           extra_products: tuple = (),
-          shown_extras: frozenset[str] | None = None) -> dict[str, Any]:
+          shown_extras: frozenset[str] | None = None,
+          hidden_products: frozenset[str] = frozenset(),
+          queues: int | None = None) -> dict[str, Any]:
     """Собрать все части дашборда. Возвращает словарь «путь → байты» и
     новый styles.xml; лишние диаграммы шаблона названы в `dropped`.
     `capex_rows`/`capex_stride` — карта статей листа CAPEX (её владелец —
@@ -1295,7 +1317,8 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
         targets.append((rel, "/" + path))
     dropped = [path for _rel, path in existing[len(charts):]]
     sheet_xml, anchors = build_dashboard_sheet(styles, where["drawing_rel"], phased,
-                                               tuple(extra_products), shown_extras)
+                                               tuple(extra_products), shown_extras,
+                                               hidden_products, queues)
     if len(anchors) != len(charts):
         raise ValueError(f"диаграмм {len(charts)}, а мест на листе {len(anchors)}")
     parts[where["drawing_path"]] = drawing_xml(rel_ids, anchors)

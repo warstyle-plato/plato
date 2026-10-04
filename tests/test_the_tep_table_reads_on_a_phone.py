@@ -6,9 +6,11 @@
 1. Таблица шире телефона и прокручивается сама; колонка подписей уезжала
    вместе с числами, и на 390 px стояли «17100 / 0 / 153 600» без названий.
    Колонка подписей закреплена; доля «% общей» под числом не обрезается.
-2. При очередях строка офисов показывала продаваемую из вводных — 87 504,6,
-   как будто мест на первых этажах нет; движок считал 66 613,1. Строка ТЭП
-   страницы идёт за движком: остаток ГНС после мест называет свод.
+2. Строка офисов была одной в одиночном расчёте (66 613,1 — ответ движка,
+   уменьшенный на места первых этажей) и другой при очередях (87 504,6 из
+   вводных). Решение владельца (29.09.2026): строка ТЭП — площадь здания,
+   87 504,6 в обоих режимах; вычет — в структуре продукта, а подстрока
+   паркинга называет его числом.
 
 Мерится отрисованная страница в Chromium: настоящий `calculate` на
 настоящем сервере, геометрия ячеек после прокрутки таблицы до упора.
@@ -80,6 +82,7 @@ SETUP = r"""async (phased) => {
     width: document.documentElement.clientWidth,
     rows, ratios,
     office: office ? [...office.querySelectorAll('td > input')].map(i => Number(i.value)) : null,
+    park: (box.querySelector('tr.tep-park') || {innerText: ''}).innerText,
     // Строка назад во вводные: поле объекта — продаваемая ДО мест.
     roundtrip: (tepRowToInputs('offices'), inputs.offices_saleable_sqm),
   };
@@ -130,18 +133,20 @@ def test_the_page_does_not_scroll_sideways(single) -> None:
 
 
 @pytest.mark.parametrize("mode", ["single", "phased"])
-def test_the_office_row_shows_saleable_after_first_floor_parking(mode, request) -> None:
+def test_the_office_row_is_the_building_and_names_the_places(mode, request) -> None:
     got = request.getfixturevalue(mode)
     gns, total, useful, saleable = got["office"][:4]
     assert gns == pytest.approx(186_180)
-    assert saleable == pytest.approx(AFTER, abs=0.1), (
-        f"{mode}: продаваемая офисов {saleable} — места первых этажей не вычтены")
-    assert useful == pytest.approx(AFTER, abs=0.1)
+    assert saleable == pytest.approx(87_504.6, abs=0.1), (
+        f"{mode}: строка ТЭП офисов {saleable} — а должна быть площадью здания")
+    assert useful == pytest.approx(87_504.6, abs=0.1)
+    park = got["park"].replace("\u00a0", " ")
+    assert "44 450 м² ГНС здания" in park, park
+    assert f"меньше на {87_504.6 - AFTER:,.1f}".replace(",", " ").replace(".", ",") in park, park
 
 
 @pytest.mark.parametrize("mode", ["single", "phased"])
 def test_the_row_returns_to_the_inputs_before_parking(mode, request) -> None:
-    """Правка любой ячейки пишет строку во вводные; уменьшенная продаваемая,
-    записанная как есть, вычиталась бы следующим расчётом ещё раз."""
+    """Правка любой ячейки пишет строку во вводные — площадь здания, как есть."""
     got = request.getfixturevalue(mode)
     assert got["roundtrip"] == pytest.approx(87_504.6, abs=0.2)

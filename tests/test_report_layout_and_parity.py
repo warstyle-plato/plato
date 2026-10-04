@@ -14,7 +14,8 @@
 результату из браузера — пока вкладка свежая, разницы нет, а устаревшая давала
 два достоверных на вид отчёта с разными числами.
 
-Третье: удельный показатель без второй базы читается как другой показатель.
+Третье: удельный показатель без названной базы читается как другой показатель
+(с 29.09.2026 — каждый на свою базу, решение 4 ревизии книги).
 23 тыс ₽/м² подземной части — это на метр ГНС проекта, а ставка подземного
 метра 190, и одна колонка уже стоила разбирательства.
 
@@ -163,55 +164,64 @@ def test_a_failed_recalculation_still_returns_the_report(payload, monkeypatch):
 
 # --- обе базы у каждого удельного --------------------------------------------
 
-_PAIRS = [
-    ("full_cost_per_saleable_th", "full_cost_per_gns_th"),
-    ("construction_cost_per_saleable_th", "construction_cost_per_gns_th"),
-    ("ebitda_per_saleable_th", "ebitda_per_gns_th"),
-    ("net_profit_per_saleable_th", "net_profit_per_gns_th"),
-]
+# Правило двух баз заменено решением 4 ревизии книги (29.09.2026, ответы
+# 03.10.2026): каждый удельный — на СВОЮ базу и назван ею; расходы — ещё и на
+# продаваемую для сравнения с ценой; прибыль — только на продаваемую.
+_SUMMARY_UNIT_KEYS = {
+    "full_cost_per_saleable_th": "saleable_area",
+    "full_cost_per_total_area_th": "total_area",
+    "capex_per_total_area_th": "total_area",
+    "ebitda_per_saleable_th": "saleable_area",
+    "net_profit_per_saleable_th": "saleable_area",
+}
 
 
-def test_every_summary_unit_metric_has_both_bases(payload):
+def test_every_summary_unit_metric_has_its_base(payload):
     summary = payload["result"]["summary"]
-    gns = float(summary["project_gns_sqm"])
-    saleable = float(summary["monetizable_saleable_sqm"])
-    for saleable_key, gns_key in _PAIRS:
-        assert saleable_key in summary and gns_key in summary, (saleable_key, gns_key)
-    assert summary["net_profit_per_gns_th"] == pytest.approx(
-        summary["net_profit"] / gns / 1000)
+    bases = summary["unit_bases"]
+    for key, base in _SUMMARY_UNIT_KEYS.items():
+        assert key in summary, key
     assert summary["net_profit_per_saleable_th"] == pytest.approx(
-        summary["net_profit"] / saleable / 1000)
+        summary["net_profit"] / bases["saleable_area"] / 1000)
+    assert summary["full_cost_per_total_area_th"] == pytest.approx(
+        summary["total_expenses"] / bases["total_area"] / 1000)
+    assert "net_profit_per_gns_th" not in summary, "прибыль на наземную ГНС больше не считается"
 
 
-def test_the_phased_summary_carries_both_bases_too():
+def test_the_phased_summary_carries_its_bases_too():
     bundle = core._run_authoritative_model(
         dict(core.DEFAULT_INPUTS),
         {key: dict(value) for key, value in core.TEP_DEFAULT.items()},
         [], {"enabled": True, "phase_count": 2, "phase_gap_months": 12})
     summary = bundle["consolidated"]["summary"]
-    for saleable_key, gns_key in _PAIRS:
-        assert saleable_key in summary and gns_key in summary
+    for key in _SUMMARY_UNIT_KEYS:
+        assert key in summary, key
     for item in bundle["comparison"]:
-        for key in ("revenue_per_saleable_th", "revenue_per_gns_th",
-                    "capex_per_saleable_th", "capex_per_gns_th",
-                    "expenses_per_saleable_th", "expenses_per_gns_th",
-                    "net_profit_per_saleable_th", "net_profit_per_gns_th"):
+        for key in ("revenue_per_saleable_th", "capex_per_saleable_th", "capex_per_total_area_th",
+                    "expenses_per_saleable_th", "expenses_per_total_area_th",
+                    "net_profit_per_saleable_th"):
             assert key in item, key
 
 
-def test_no_lonely_unit_metric_survives_anywhere(payload):
-    """Правило проверяется механически: любое поле «на метр» обязано иметь
-    пару по второй базе. Так новое удельное поле нельзя завести с одной."""
-    lonely: list[str] = []
+def test_no_unit_metric_without_a_named_base(payload):
+    """Правило проверяется механически: строка с удельным на свою базу обязана
+    назвать базу ключом словаря терминов и подписью из него. Так новое
+    удельное нельзя завести без базы."""
+    import terms_glossary as tg
+    nameless: list[str] = []
 
     def walk(node, path=""):
         if isinstance(node, dict):
-            keys = set(node)
-            for key in keys:
-                if key.endswith("per_gns_th") and key.replace("per_gns_th", "per_saleable_th") not in keys:
-                    lonely.append(f"{path}.{key}")
-                if key.endswith("per_saleable_th") and key.replace("per_saleable_th", "per_gns_th") not in keys:
-                    lonely.append(f"{path}.{key}")
+            if "per_base_th" in node:
+                if node.get("base") not in tg.TERMS or node.get("base_label") != tg.unit_label(node.get("base")):
+                    nameless.append(path)
+            for key in node:
+                # Две ставки названы своей базой в имени поля: стройка МКД — на
+                # суммарную площадь МКД, благоустройство — на ту же наземную
+                # ГНС, что и поле ввода его ставки.
+                if key.endswith("per_gns_th") and key not in (
+                        "construction_cost_per_gns_th", "landscaping_per_gns_th"):
+                    nameless.append(f"{path}.{key}")
             for key, value in node.items():
                 walk(value, f"{path}.{key}")
         elif isinstance(node, list):
@@ -219,22 +229,23 @@ def test_no_lonely_unit_metric_survives_anywhere(payload):
                 walk(value, f"{path}[{index}]")
 
     walk(payload["result"])
-    assert not lonely, "удельные без второй базы: " + ", ".join(sorted(set(lonely)))
+    assert not nameless, "удельные без названной базы: " + ", ".join(sorted(set(nameless)))
 
 
 def test_the_expense_structure_speaks_in_roubles_per_metre(payload, text):
     """По этим статьям спорят с подрядчиком и банком, а они были только в
     долях процента."""
     for item in payload["result"]["report"]["expense_structure"]:
-        assert item["per_gns_th"] > 0 and item["per_saleable_th"] > 0
+        assert item["base"] == "total_area"
+        assert item["per_base_th"] > 0 and item["per_saleable_th"] > 0
     flat = " ".join(text.split())
     assert "Итого расходы" in flat
 
 
-def test_the_page_shows_both_bases_as_well():
+def test_the_page_shows_the_bases_as_well():
     page = core.PAGE
     assert "construction_cost_per_saleable_th" in page
-    assert "net_profit_per_gns_th" in page
-    assert "ebitda_per_gns_th" in page
+    assert "full_cost_per_total_area_th" in page
+    assert "net_profit_per_gns_th" not in page and "ebitda_per_gns_th" not in page
     assert "expenseTotalGns" in page and "expenseTotalSaleable" in page
 

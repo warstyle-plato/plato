@@ -46,7 +46,20 @@ PROBE = """()=>{
     const body=document.getElementById('classDialogBody');
     const folds=body?[...body.querySelectorAll('details')]:[];
     const form=document.getElementById('inputs');
+    // Где справка стоит в окне: раздел, в котором она лежит строкой, и
+    // разделы, заголовки которых идут в документе ДО неё.
+    let row=folds.length?folds[0].closest('tr'):null;
+    const before=[];
+    if(folds.length)for(const tr of body.querySelectorAll('tr.class-section')){
+      if(tr.compareDocumentPosition(folds[0])&Node.DOCUMENT_POSITION_FOLLOWING)before.push(tr.dataset.section);
+    }
+    let prevKey=null;
+    for(let tr=row&&row.previousElementSibling;tr;tr=tr.previousElementSibling){
+      if(tr.classList.contains('class-row')){prevKey=tr.dataset.key;break;}
+    }
     return {
+      section: row?row.dataset.section||'':null,
+      before, prevKey,
       inClass: folds.map(one=>one.textContent).join(' '),
       folds: folds.length,
       summary: folds.length?folds[0].querySelector('summary').textContent:'',
@@ -56,7 +69,15 @@ PROBE = """()=>{
   openTab('inputs');
   const msk=read('msk'), mo=read('mo');
   read('msk');
-  return {msk, mo};
+  // На телефоне таблица шире окна: справка обязана помещаться в видимую
+  // часть окна, а не тянуться шириной таблицы за край экрана.
+  openClassDialog();
+  const fold=document.querySelector('#classDialogBody details');
+  const pane=document.getElementById('classDialogBody').parentElement.getBoundingClientRect();
+  const r=fold.getBoundingClientRect();
+  const fits={left:r.left>=pane.left-1, right:r.right<=pane.right+1, width:r.width};
+  closeClassDialog();
+  return {msk, mo, fits};
 }"""
 
 
@@ -70,7 +91,8 @@ def seen():
     with browser.serve(wrapper.app, PORT) as root:
         with sync_playwright() as pw:
             chromium = pw.chromium.launch(executable_path=str(chrome))
-            page = chromium.new_page()
+            # Ширина телефона: владелец смотрит окно с него.
+            page = chromium.new_page(viewport={"width": 390, "height": 844})
             errors: list[str] = []
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.goto(root, wait_until="networkidle")
@@ -89,6 +111,27 @@ def test_the_note_lives_in_the_class_settings(seen):
     assert seen["msk"]["folds"] >= 1, "в окне классов нет ни одной складки"
     assert "Нормы озеленения города" in seen["msk"]["summary"], seen["msk"]["summary"]
     assert "2152-ПП" in seen["msk"]["inClass"]
+
+
+def test_the_note_sits_in_the_landscaping_section(seen):
+    """Справка — строкой раздела «Благоустройство и нормативы», под его ставками.
+
+    Не внизу окна после объектов ОСЗ (владелец: «можно этот блок поднять
+    выше в благоустройство?»): там она читалась приложением к МФОЦ и ТЦ.
+    """
+    msk = seen["msk"]
+    assert msk["section"] == "norms", msk
+    assert msk["before"] and msk["before"][-1] == "norms", msk["before"]
+    assert "objects" not in msk["before"] and "parking" not in msk["before"], msk["before"]
+    norms_keys = [k for sid, _, fields in core.CLASS_DIALOG_SECTIONS if sid == "norms"
+                  for k, _ in fields]
+    assert msk["prevKey"] in norms_keys, msk["prevKey"]
+
+
+def test_the_note_fits_the_phone_screen(seen):
+    """Строкой широкой таблицы справка не уезжает за край окна телефона."""
+    fits = seen["fits"]
+    assert fits["left"] and fits["right"] and fits["width"] > 100, fits
 
 
 def test_the_note_left_the_inputs(seen):
