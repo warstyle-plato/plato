@@ -458,3 +458,41 @@ def test_the_nonresidential_teaser_speaks_of_the_object_loan(tmp_path) -> None:
     xm, tm = _spec(offices_strategy="income")
     mixed, _ = text_of(xm, tm, "teaser_mixed")
     assert "LLCR" in mixed and "Пик эскроу" in mixed
+
+
+def test_the_bot_card_of_a_nonresidential_project_names_the_object_loan(monkeypatch) -> None:
+    x, t = _spec(offices_strategy="income")
+    for key in core.MKD_PRODUCTS:
+        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            if key in t:
+                t[key][col] = 0
+    x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+    layout = core._run_authoritative_model(x, t, [], {})["consolidated"]["report"]["layout"]
+
+    def card(summary):
+        sent: list[str] = []
+        monkeypatch.setattr(core, "_telegram_verify_session", lambda s: {"chat_id": 42, "cad": []})
+        monkeypatch.setattr(core, "_telegram_user_allowed", lambda c: True)
+        monkeypatch.setattr(core, "_telegram_send_message", lambda chat_id, text, **kw: sent.append(text))
+        monkeypatch.setattr(core, "_telegram_web_app_url", lambda *a, **k: "https://example.org/")
+        core.telegram_result(core.TelegramResultRequest(session="s", summary={
+            "purchase_price_mln": 500, "net_profit_mln": 900, "llcr": 0.0,
+            "revenue_mln": 12000, "total_expenses_mln": 11000, **summary}))
+        return sent[0]
+
+    text = card({"layout": layout})
+    assert "LLCR" not in text and "БРИДЖ" not in text and "квартиры" not in text
+    assert "dscr — минимум по годам" in text
+    dscr = next(tile for tile in layout["nonres_tiles"] if tile["unit"] == "mult")
+    assert core._telegram_tile(dscr) in text
+    assert "LLCR" in card({})  # старый результат без решения — как прежде
+
+
+@pytest.mark.parametrize("dscr,status", [(0.9, "negative"), (1.1, "review"), (1.5, "positive")])
+def test_the_verdict_of_a_project_without_ddu_reads_the_dscr(dscr, status) -> None:
+    verdict = core._purchase_feasibility(500, 900, 0.0, 0.0, 0.0, None, 0.0, None, dscr)
+    assert verdict["status"] == status
+    assert "DSCR" in verdict["text"] and "LLCR" not in verdict["text"]
+    assert core._layout_dscr({"project_finance": True, "nonres_tiles": [{"unit": "mult", "value": 0.5}]}) is None
+    assert core._layout_dscr({"project_finance": False, "nonres_tiles": [
+        {"unit": "mult", "value": 1.4}, {"unit": "rub", "value": 9.0}]}) == 1.4

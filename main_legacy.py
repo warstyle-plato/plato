@@ -16611,6 +16611,20 @@ def _pdf_entry_cost_rows(result: dict[str, Any],
     ]
 
 
+def _layout_dscr(layout: Any) -> float | None:
+    """DSCR кредита объекта для вердикта — только у проекта без ДДУ.
+
+    У проекта с БРИДЖем и ПФ вердикт меряет LLCR, как прежде; у проекта без
+    них — минимальный DSCR объектов из `report_layout`. Нет DSCR (прямая
+    продажа без аренды) — вердикт без долговой проверки.
+    """
+    if not isinstance(layout, dict) or layout.get("project_finance", True):
+        return None
+    values = [float(t["value"]) for t in layout.get("nonres_tiles") or []
+              if t.get("unit") == "mult" and t.get("value") is not None]
+    return min(values) if values else None
+
+
 def _purchase_feasibility(
     purchase_price_mln: Any,
     net_profit_mln: Any,
@@ -16620,6 +16634,7 @@ def _purchase_feasibility(
     default_date: Any = None,
     pf_shortfall_mln: Any = 0.0,
     pf_shortfall_month: Any = None,
+    object_dscr: Any = None,
 ) -> dict[str, str]:
     """Вердикт по вводным плюс оговорка о дефолте, если он в модели был.
 
@@ -16632,7 +16647,8 @@ def _purchase_feasibility(
     «значит нельзя писать и чистую прибыль»).
     """
     verdict = _purchase_feasibility_base(
-        purchase_price_mln, net_profit_mln, llcr, debt_amount, ending_debt_mln)
+        purchase_price_mln, net_profit_mln, llcr, debt_amount, ending_debt_mln,
+        object_dscr)
     verdict = _financing_not_closed_clause(
         verdict, pf_shortfall_mln, pf_shortfall_month)
     when = str(default_date or "").strip()
@@ -16729,8 +16745,13 @@ def _purchase_feasibility_base(
     llcr: Any,
     debt_amount: Any = 0.0,
     ending_debt_mln: Any = 0.0,
+    object_dscr: Any = None,
 ) -> dict[str, str]:
     """Return a short preliminary purchase-feasibility conclusion.
+
+    `object_dscr` — у проекта без ДДУ (`report_layout.project_finance` ложно)
+    долг — кредит объекта, и его покрытие меряет DSCR, а не LLCR: те же
+    пороги 1,00x и 1,20x.
 
     The conclusion uses only the current model parameters. It does not estimate
     market value or calculate an alternative purchase price.
@@ -16785,6 +16806,17 @@ def _purchase_feasibility_base(
             "title": "Предварительно нецелесообразна",
             "text": "При текущей цене покупки и принятых параметрах проект не формирует положительную чистую прибыль.",
         }
+    if object_dscr is not None:
+        dscr = float(object_dscr)
+        shown = _telegram_number(dscr, 2)
+        if dscr < 1.0:
+            return {"status": "negative", "title": "Предварительно нецелесообразна",
+                    "text": f"Проект прибылен, но NOI не покрывает обслуживание кредита объекта: DSCR {shown}x — ниже 1,00x."}
+        if dscr < 1.20:
+            return {"status": "review", "title": "Требует пересмотра условий покупки",
+                    "text": f"Проект формирует прибыль, однако DSCR кредита объекта {shown}x — ниже целевого уровня 1,20x. Следует проверить аренду, долю кредита, ставку и срок."}
+        return {"status": "positive", "title": "Предварительно целесообразна",
+                "text": f"При текущей цене покупки проект формирует положительную чистую прибыль, а DSCR кредита объекта {shown}x — не ниже 1,20x."}
     if debt > 0 and llcr_value < 1.0:
         return {
             "status": "negative",
@@ -17551,6 +17583,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         financing.get("default_date"),
         float(financing.get("pf_shortfall") or 0) / 1_000_000,
         financing.get("pf_shortfall_month"),
+        _layout_dscr(report.get("layout")),
     )
     story.append(KeepTogether([
         P("Оценка целесообразности покупки", h2),
@@ -30424,6 +30457,18 @@ def _teaser_map_png(site: dict[str, Any]) -> tuple[bytes, str] | None:
     return None
 
 
+def _telegram_tile(tile: dict[str, Any]) -> str:
+    """Плитка нежилья (`report_layout`) строкой бота."""
+    unit, value = tile.get("unit"), tile.get("value")
+    if unit == "rub":
+        return _telegram_money_mln(tile.get("value_mln"))
+    if unit == "pct":
+        return _telegram_number(float(value or 0) * 100, 1) + "%"
+    if unit == "mult":
+        return "—" if value is None else _telegram_number(value, 2) + "x"
+    return html.escape(str(value or "—"))
+
+
 @app.post("/telegram/result")
 def telegram_result(req: TelegramResultRequest,
                     background: BackgroundTasks = None) -> dict[str, bool]:
@@ -30462,6 +30507,7 @@ def telegram_result(req: TelegramResultRequest,
         summary.get("default_date"),
         summary.get("pf_shortfall_mln"),
         summary.get("pf_shortfall_month"),
+        _layout_dscr(summary.get("layout")),
     )
     # Продукт с ГНС и без продаваемой площади делает вердикт бессмысленным:
     # расходы полные, выручки нет, и «нецелесообразна» относится к дырке
@@ -30533,15 +30579,35 @@ def telegram_result(req: TelegramResultRequest,
             "• дальше посчитано так, будто эти деньги проект получил: "
             "источника у них в модели нет, стоимость не учтена.\n\n"
         ) + debt_warning
+    # Нежилой проект без ДДУ: квартир, соцнагрузки, БРИДЖа, ПФ и LLCR у него
+    # нет — строки банка заменяет кредит объекта (`report.layout` движка).
+    layout = summary.get("layout") if isinstance(summary.get("layout"), dict) else {}
+    housing = bool(layout.get("housing", True))
+    bank = bool(layout.get("project_finance", True))
+    housing_lines = (
+        f"• квартиры — {_telegram_number(summary.get('apartment_area_sqm'), 0)} м²\n"
+        if housing else "")
+    social_line = (
+        f"• социальная нагрузка — {_telegram_money_mln(summary.get('social_compensation_mln'))}\n"
+        if housing else "")
+    if bank:
+        bank_lines = (
+            f"• LLCR — {_telegram_number(summary.get('llcr'), 2)}x\n"
+            f"• расчётный БРИДЖ — {_telegram_money_mln(summary.get('calculated_bridge_mln'))}\n"
+            f"• Пиковая (непокрытая эскроу) задолженность ПФ — {_telegram_money_mln(summary.get('pf_uncovered_peak_mln'))}\n\n")
+    else:
+        bank_lines = "".join(
+            f"• {html.escape(str(tile.get('label') or '')).lower()} — {_telegram_tile(tile)}\n"
+            for tile in layout.get("nonres_tiles") or []) + "\n"
     text = (
         "<b>Расчёт DevelopAid готов</b>\n"
         + scope_line +
         f"Источник ТЭП: <b>{html.escape(source_label)}</b>\n\n"
         "<b>ТЭП</b>\n"
         f"• территория — {_telegram_number(summary.get('site_area_ha'), 4)} га\n"
-        f"• квартиры — {_telegram_number(summary.get('apartment_area_sqm'), 0)} м²\n"
+        + housing_lines +
         f"• смена ВРИ — {_telegram_money_mln(summary.get('change_vri_mln'))}\n"
-        f"• социальная нагрузка — {_telegram_money_mln(summary.get('social_compensation_mln'))}\n"
+        + social_line +
         f"• подземный паркинг — {_telegram_number(parking, 0)} м/м\n\n"
         "<b>Предварительная экономика</b>\n"
         f"• цена покупки — {_telegram_money_mln(summary.get('purchase_price_mln'))}\n"
@@ -30553,9 +30619,7 @@ def telegram_result(req: TelegramResultRequest,
         f"• EBITDA — {_telegram_money_mln(summary.get('ebitda_mln'))}\n"
         f"• чистая прибыль — {_telegram_money_mln(summary.get('net_profit_mln'))}\n"
         f"• маржинальность — {margin_text}\n"
-        f"• LLCR — {_telegram_number(summary.get('llcr'), 2)}x\n"
-        f"• расчётный БРИДЖ — {_telegram_money_mln(summary.get('calculated_bridge_mln'))}\n"
-        f"• Пиковая (непокрытая эскроу) задолженность ПФ — {_telegram_money_mln(summary.get('pf_uncovered_peak_mln'))}\n\n"
+        + bank_lines
         + rve_warning + debt_warning +
         "<b>Оценка целесообразности покупки</b>\n"
         f"• <b>{html.escape(purchase_assessment['title'])}</b>\n"
@@ -50614,6 +50678,9 @@ async function sendTelegramResult(){
    llcr:Number(s.llcr||0),
    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6,
+   // Состав блоков решает движок (`report.layout`): нежилому проекту без ДДУ
+   // бот не печатает БРИДЖ, ПФ и LLCR, а печатает деньги объекта.
+   layout:(lastResult&&lastResult.report&&lastResult.report.layout)||null,
    rve_pf_shortfall_mln:Number(f.rve_pf_shortfall||0)/1e6,
    ending_pf_mln:Number(f.ending_pf||0)/1e6,
    // Непокрытая потребность в ПФ: одобренного лимита не хватило. Без неё
