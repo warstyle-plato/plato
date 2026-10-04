@@ -86,7 +86,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.24.91"
+VERSION = "0.24.94"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -2202,6 +2202,24 @@ def row_outside_project(inputs: dict[str, Any] | None, key: str,
     return not any(n(row, col) for col in (*_RESIDENTIAL_EXCLUDED_TEP_COLUMNS,
                                            *TEP_SUMMABLE_FIELDS,
                                            *_ROW_QUANTITY_FIELDS))
+
+
+def row_listed(row: dict[str, Any]) -> bool:
+    """Печатать ли строку ТЭП или продукта в списке продуктов проекта.
+
+    Один ответ для тизера (модель представления) и таблицы ТЭП полного PDF.
+    Строка есть, только если продукт есть в проекте: состав решает расчёт
+    признаком `excluded` (`row_outside_project`), а продукт дома без метров и
+    штук (кладовые 0) — не «ноль кладовых», а «кладовых нет». Объект, который
+    заведён и включён, остаётся строкой и пустым: его в проекте завели.
+    """
+    if row.get("excluded"):
+        return False
+    if str(row.get("key") or "") in _BY_KEY:
+        return True
+    return any(n(row, col) for col in (*_RESIDENTIAL_EXCLUDED_TEP_COLUMNS,
+                                       *TEP_SUMMABLE_FIELDS,
+                                       *_ROW_QUANTITY_FIELDS))
 
 
 # Столбцы строки ТЭП, которые несут количество: обнулив их, строка перестаёт
@@ -17518,11 +17536,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # переданном молчал — и читался так, будто продано всё построенное
     # (владелец, 10.09.2026). Колонка появляется вместе с числом: постоянный
     # столбец нулей — шум, а не полнота.
-    # Строка вне состава проекта (`row_outside_project`) не печатается —
-    # тот же признак, что у отчёта страницы и книги.
-    rows_data = [row for row in (tep_report.get('rows') or [])
-                 if not row.get('excluded')
-                 and any(float(row.get(k) or 0) for k in ('gns', 'saleable', 'units'))]
+    # Строка продукта, которого нет в проекте, не печатается — то же
+    # правило, что у ТЭП тизера (`row_listed`).
+    rows_data = [row for row in (tep_report.get('rows') or []) if row_listed(row)]
     total=tep_report.get('total') or {}
     given = sum(float(row.get('transfer') or 0) for row in rows_data)
     # Итог количества — разбор по мере счёта, а не сумма: квартиры,
@@ -23811,6 +23827,10 @@ def _presentation_product_numbers(item: dict[str, Any]) -> dict[str, Any]:
     quantity = float(item.get("quantity") or 0.0)
     by_units = str(item.get("unit") or "") == "шт."
     return {
+        # Есть ли продукт в проекте — решает движок (`row_listed`), а слой
+        # представления только отбирает: тизер печатал все продукты отчёта,
+        # и кладовые 0 и удалённые «Офисы 2…5» стояли в его ТЭП.
+        "listed": row_listed(item),
         "revenue_mln": revenue / 1e6,
         "cost_mln": cost / 1e6,
         # Выручка и цена — на продаваемую площадь (решение 4 ревизии книги):
@@ -34502,6 +34522,9 @@ def _calculate_economics(req: CalcRequest) -> dict:
         # Строка вне состава проекта (`row_outside_project`): нули в ней —
         # не «продукт пуст», а «продукта в этом проекте нет».
         tep_rows[-1]["excluded"] = row_outside_project(x, key, tep_rows[-1])
+        # Есть ли продукт в проекте — тот же ответ, что у тизера и полного PDF
+        # (`row_listed`); его читают поверхности, которым состава мало.
+        tep_rows[-1]["listed"] = row_listed(tep_rows[-1])
 
     # Свод складывает только складываемое. Штук в списке нет: они
     # группируются мерой счёта, потому что квартира, машино-место и место в
@@ -36864,6 +36887,10 @@ def _consolidate_phase_results(
                           "parking_over_units", "parking_guest_units"):
                 target[field] += float(row.get(field, 0.0) or 0.0)
     tep_rows = list(tep_map.values())
+    # Признак свода — по своду, а не по первой очереди: объект второй очереди
+    # выключен в первой и пуст в ней.
+    for _row in tep_rows:
+        _row["listed"] = row_listed(_row)
     # Тот же список полей, что у одиночного расчёта, и та же группировка
     # штук: две копии однажды разошлись бы, и своды очередного и одиночного
     # проектов считались бы по-разному.
@@ -48665,7 +48692,34 @@ function renderPhasing(){
  const sl={purchase:'Покупка / вход',land_rights:'Земельные права / ВРИ',ird:'ИРД',design:'П + РД',preparation:'Подготовительные',utilities:'Наружные сети',social_compensation:'Соцкомпенсация',social_construction:'Соцобъекты — аналитическая аллокация'};
  renderShareTable('phaseCashHead','phaseCashBody',phasing.shared_cash,sl,'shared_cash');renderShareTable('phaseAllocHead','phaseAllocBody',phasing.shared_allocation,sl,'shared_allocation');
  socialObjectsBody.innerHTML=phasing.social_objects.map((o,i)=>`<tr><td><input value="${o.name||''}" onchange="updateSocialObject(${i},'name',this.value)"></td><td><select onchange="updateSocialObject(${i},'type',this.value)"><option value="kindergarten" ${o.type==='kindergarten'?'selected':''}>${productName('kindergarten')}</option><option value="school" ${o.type==='school'?'selected':''}>${productName('school')}</option><option value="clinic" ${o.type==='clinic'?'selected':''}>${productName('clinic')}</option></select></td><td><input type="number" value="${Number(o.capacity||0)}" onchange="updateSocialObject(${i},'capacity',this.value)"></td><td><select onchange="updateSocialObject(${i},'phase',this.value)">${phaseOptions(o.phase)}</select></td><td><input type="date" value="${o.start_date||''}" onchange="updateSocialObject(${i},'start_date',this.value)"></td><td><button class="btn" onclick="deleteSocialObject(${i})">×</button></td></tr>`).join('');renderSocialStatus();
- assignObjects.innerHTML=projectObjects().map(o=>
+ renderPhaseObjects();
+ renderPhaseFinancing();
+}
+
+// Очередь выбирается только объекту, который есть в проекте: заведён и
+// включён, или с метрами. Ответ — у движка (`row_listed`, признак `listed`
+// строки ТЭП), тот же, что у ТЭП тизера; второй проверки здесь нет. Здесь
+// стояли селекторы всех заведённых объектов, выключенных тоже («почему в
+// Очерёдности все эти объекты, если включён только один офисник?», владелец,
+// 04.10.2026). Нет ответа или признака — селектор остаётся: отсутствие ответа
+// не решение. Очередь спрятанного объекта в `phasing.discrete` не трогается и
+// вернётся вместе с ним.
+function phaseObjectListed(key){
+ // Свод, а не открытая очередь: в первой очереди объект второй пуст.
+ const result=(phaseBundle&&phaseBundle.consolidated)||lastResult;
+ const rows=result&&result.tep&&result.tep.rows;
+ const row=Array.isArray(rows)?rows.find(r=>r&&r.key===key):null;
+ // Ответ движка — о посчитанных вводных. Объект, включённый после него,
+ // движок по `row_listed` назовёт объектом проекта всегда (заведён и
+ // включён), и прятать его до пересчёта значило бы читать устаревший ответ.
+ const o=OBJECT_BY_KEY[key];
+ if(o&&inputOn(inputs[o.prefix+'_enabled']))return true;
+ return !row||row.listed!==false;
+}
+function renderPhaseObjects(){
+ // Узел — как у `tepBody` в `syncTep`: стенд страницы зовёт её без разметки.
+ if(typeof assignObjects==='undefined'||!assignObjects)return;
+ assignObjects.innerHTML=projectObjects().filter(o=>phaseObjectListed(o.key)).map(o=>
   `<div class="field"><label>${escapeHtml(productName(o.key))}</label>`
   +`<select data-object="${escapeHtml(o.key)}">${phaseOptions(phasing.discrete[o.key])}</select></div>`).join('');
  assignObjects.querySelectorAll('select[data-object]').forEach(sel=>{
@@ -48673,7 +48727,6 @@ function renderPhasing(){
   sel.value=String(phasing.discrete[key]||1);
   sel.onchange=function(){phasing.discrete[key]=Number(this.value);calculate()};
  })
- renderPhaseFinancing();
 }
 
 function waitForGenplan(test,timeout=60000){
@@ -54431,6 +54484,9 @@ function syncTep(rerender=true){
  const editingTep=typeof tepBody!=='undefined'&&tepBody
   &&tepBody.contains(document.activeElement);
  if(rerender||!editingTep)renderTep();else updateTepTotals();
+ // Включённый или выключенный объект меняет состав очередей сразу, а не со
+ // следующим ответом движка (`renderPhaseObjects`).
+ if(typeof renderPhaseObjects==='function')renderPhaseObjects();
  return inputsFilled;
 }
 function addMonthsJS(iso,months){
@@ -54689,7 +54745,7 @@ async function calculate(){
   // Между стартом расчёта и его ответом человек нажал «Сбросить».
   lastResult=null;phaseBundle=null;blankResultSurfaces();return null;
  }
- repairParkingFromGlavapu();renderResult();renderPhaseReportControls();renderPhaseFinancing();
+ repairParkingFromGlavapu();renderResult();renderPhaseReportControls();renderPhaseFinancing();renderPhaseObjects();
  if(document.getElementById('tep')&&document.getElementById('tep').classList.contains('active'))renderTep();
  // Состояние сохраняется каждым пересчётом, а не отдельной кнопкой и
  // телеграм-потоком: применённая предустановка не переживала перезагрузку —
