@@ -12139,7 +12139,7 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
     in_house = sum(int(row.get("required_spaces") or 0)
                    for row in (demand.get("rows") or [])
                    if row.get("tep_key") not in own_keys)
-    head = (f"По нормативу приложения 6 положено {required} мест."
+    head = (f"По нормативу {demand.get('norm_of') or ''} положено {required} мест."
             if required else "Норматив не посчитан — числа заданы руками.")
     if in_house:
         head += (f" Из них {in_house} — встроенной коммерции МКД: её места в "
@@ -12155,6 +12155,16 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
         spoken = "; ".join(caveats)
         text += " " + spoken[:1].upper() + spoken[1:] + "."
     return text
+
+
+# Чей норматив посчитал приобъектные места — в родительном падеже, чтобы
+# встать после «по нормативу». Подпись берётся отсюда же, откуда расчёт
+# берёт юрисдикцию: зашитое «приложение 6 к 945-ПП» на участке в области
+# называло московский документ под областным числом (Мытищи, 04.10.2026).
+PARKING_NORM_OF: dict[str, str] = {
+    parking_norms.MOSCOW: "приложения 6 к 945-ПП",
+    parking_norms.MOSCOW_OBLAST: "Московской области (СП 42.13330.2016, табл. Ж.1)",
+}
 
 
 def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
@@ -12257,6 +12267,7 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
     missing = [f"{row['label']}: {row.get('reason')}" for row in rows if row.get("reason")]
     return {
         "jurisdiction": jurisdiction,
+        "norm_of": PARKING_NORM_OF[jurisdiction],
         "k1": k1_applied or k1, "k2": k2_applied or k2,
         "k_input": {"k1": k1, "k2": k2},
         "k_assumed": k_assumed,
@@ -52379,6 +52390,10 @@ function projectParking(){
  return ((lastResult||{}).parking)||{};
 }
 
+// Чей норматив — говорит расчёт (`PARKING_NORM_OF` движка), а не подпись:
+// у области он свой, и московское имя под областным числом было бы неправдой.
+function parkingNormOf(){return String(projectParking().norm_of||'(документ расчёт не назвал)')}
+
 function objectParkingNote(key){
  const own=(projectParking().own)||[];
  const item=own.find(o=>o&&o.tep_key===key&&o.enabled);
@@ -52392,7 +52407,7 @@ function objectParkingNote(key){
   +(Number(item.over_gba_sqm||0)>0
     ?`; места первых этажей занимают ${num(item.over_gba_sqm)} м² ГНС здания — продаваемая объекта меньше на ${num(item.saleable_taken_sqm)} м²`
     :'')
-  +` · ${item.by_norm?'по нормативу приложения 6':'задано руками'}`;
+  +` · ${item.by_norm?'по нормативу '+parkingNormOf():'задано руками'}`;
 }
 
 // Какие поля паркинга объекта тронуты руками. Список заводится в момент, когда
@@ -52548,9 +52563,9 @@ function objectParkingFieldNote(prefix){
  // подряд перестают читать. Подпись отвечает на другое — чьё оно и что будет,
  // если поле тронуть.
  if(item.by_norm)return req
-  ?'Оба числа выше поставил норматив приложения 6 к 945-ПП — они следуют за ТЭП. '
+  ?'Оба числа выше поставил норматив '+parkingNormOf()+' — они следуют за ТЭП. '
    +'Впишите своё, чтобы перебить; ноль руками значит «гаража нет».'
-  :'По нормативу приложения 6 к 945-ПП мест не требуется.';
+  :'По нормативу '+parkingNormOf()+' мест не требуется.';
  // Замок обязан называть, чем его открыть. Проект, сохранённый до того, как
  // норма начала заполнять поле, приходит без списков — и её же число читается
  // как человеческое и замирает: на живом проекте офисы стояли 2 956 при норме
@@ -52558,7 +52573,7 @@ function objectParkingFieldNote(prefix){
  // Разойтись эти два числа могут на два порядка, поэтому норматив называется
  // рядом, а путь назад — очистить поле — сказан прямо.
  const back=' Очистите поле — вернётся норматив и снова пойдёт за ТЭП.';
- if(!req)return 'Задано руками. По нормативу приложения 6 мест не требуется.' + back;
+ if(!req)return 'Задано руками. По нормативу '+parkingNormOf()+' мест не требуется.' + back;
  // Норматив — обязательство ОБЪЕКТА, а не одного из двух полей: места при
  // объекте бывают и под ним, и на первых этажах. Пока это не сказано, число
  // под полем «мест на первых этажах» читается как норма ЭТОГО поля.
@@ -52571,7 +52586,7 @@ function objectParkingFieldNote(prefix){
  // печатались двумя числами подряд, а дефицит в 1 093 места числом не
  // назывался. Оба случая модель знала и не говорила.
  const gap=objectParkingGap(item);
- const norm=`Задано руками. Норматив приложения 6 — ${num(req)} мест на объект: `
+ const norm=`Задано руками. Норматив ${parkingNormOf()} — ${num(req)} мест на объект: `
   +'это оба поля вместе, под зданием и на первых этажах.';
  // Перебор — решение человека, а не ошибка, поэтому он назван, но не
  // выделен: он же и подсказывает, на сколько можно снизить подземные.
