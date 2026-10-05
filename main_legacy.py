@@ -17085,6 +17085,8 @@ def _pdf_nonres_value(row: dict[str, Any]) -> str:
         return "—" if value is None else _pdf_num(float(value), 2) + "x"
     if unit == "date":
         return ".".join(reversed(str(value or "—")[:7].split("-")))
+    if unit == "section":
+        return ""
     return str(value or "—")
 
 
@@ -18009,7 +18011,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     for _nr in report.get("nonres_strategy") or []:
         _nr_rows = [["Нежильё — стратегия реализации: " + str(_nr.get("title") or ""), ""]]
         for _row in _nr.get("rows") or []:
-            _nr_rows.append([str(_row.get("label") or ""), _pdf_nonres_value(_row)])
+            # Блок «Итог объекта» — заголовком строки, без значения.
+            _nr_rows.append([str(_row.get("label") or "").upper()
+                             if _row.get("unit") == "section" else str(_row.get("label") or ""),
+                             _pdf_nonres_value(_row)])
         story.append(KeepTogether([table(_nr_rows, [112*mm, 58*mm], font_size=7.6)]
                                   + [P(str(w), small) for w in _nr.get("warnings") or []]))
     # Квартиры продаются штуками. «40 квартир в месяц» проверяется отделом
@@ -24738,6 +24743,11 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
                  **{key: float(row.get(key) or 0.0) for key, _ in v4_nonres_sheet.MONTHLY_COLUMNS}}
                 for row in (_consolidated.get("finance") or {}).get("rows") or []
                 if any(float(row.get(key) or 0.0) for key, _ in v4_nonres_sheet.MONTHLY_COLUMNS)],
+            # Ряды каждого объекта — строки движка (`nonres_overlay`), не раскладка итога.
+            "objects": [{"key": item.get("key"), "title": item.get("title"),
+                         "rows": list(item.get("rows") or [])}
+                        for item in ((_consolidated.get("finance") or {}).get("nonres") or {})
+                        .get("objects") or []],
         }
     # ТЭП, на котором посчитан отчёт. Книга писала присланный страницей, а
     # движок приводит строку ТЭП к вводным: заданная руками площадь гаража
@@ -27717,7 +27727,8 @@ def _build_project_workbook(
     _nonres_xml = ""
     _nonres = (finance_hints or {}).get("nonres") or {}
     if _nonres.get("report"):
-        _nonres_xml = v4_nonres_sheet.build_sheet(_nonres["report"], _nonres.get("monthly") or [])
+        _nonres_xml = v4_nonres_sheet.build_sheet(_nonres["report"], _nonres.get("monthly") or [],
+                                                  _nonres.get("objects") or [])
         missing.append(
             "Нежильё — стратегия: " + ", ".join(
                 f"{item.get('title')} — {next((r.get('value') for r in item.get('rows') or [] if r.get('label') == 'Стратегия'), '')}"
@@ -33576,6 +33587,10 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
         flows = nonres_strategy.object_flows(plan, key_rate, vat_rate=vat_rate)
         flows["title"] = plan.get("title") or key
         flows["params"] = dict(plan.get("params") or {})
+        flows["result"] = object_result(
+            flows, start=op["project_start"],
+            discount_rate=n(x, "discount_rate_pct", 20) / 100,
+            tax_rate=n(x, "profit_tax_pct", 25) / 100)
         # Исходные данные книги нежилого проекта: что движок дал объекту
         # (CAPEX по месяцам, общие затраты, ключевая ставка), — всё остальное
         # книга считает своими формулами и сверяет с итогом движка.
@@ -33606,6 +33621,8 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
         def get(name: str, month: date) -> float:
             return float((series.get(name) or {}).get(month, 0.0) or 0.0)
 
+        object_rows: list[dict[str, Any]] = []
+        result_series = flows["result"]["monthly"]
         for month in flows["months"]:
             row = {
                 "nonres_revenue": get("sale_revenue", month) + get("rent_revenue", month)
@@ -33625,13 +33642,172 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
                 "nonres_cash_to_equity": get("cash_to_equity", month),
                 "nonres_capex": float(plan["capex"].get(month, 0.0) or 0.0),
                 "nonres_tax_margin": get("tax_margin", month),
+                "nonres_common_capex": float(flows["common_by_month"].get(month, 0.0) or 0.0),
             }
             for name, value in row.items():
                 monthly[name][month] += value
+            # Строка объекта для книги: те же ряды плюс его собственный итог —
+            # налог объекта и поток его капитала (`object_result`).
+            object_rows.append({
+                "month": month.isoformat(), **row,
+                **{name: float((result_series.get(name) or {}).get(month, 0.0) or 0.0)
+                   for name in OBJECT_RESULT_SERIES}})
+        flows["rows"] = object_rows
     totals = {name: float(sum(values.values())) for name, values in monthly.items()}
     return {"objects": objects,
             "monthly": {name: dict(values) for name, values in monthly.items()},
             "totals": totals}
+
+
+# Помесячные ряды итога объекта (`object_result`), которые едут в строки
+# объекта для книги.
+OBJECT_RESULT_SERIES = ("object_profit_tax", "object_equity_flow")
+
+
+def _payback(flows: list[float], months: list[date]) -> dict[str, Any]:
+    """Окупаемость капитала: месяц, с которого накопленный поток больше не
+    уходит в минус. Без вложений окупаться нечему; ушёл в минус к концу —
+    «не окупается», а не «срок не задан»."""
+    first = next((i for i, value in enumerate(flows) if value < 0), None)
+    if first is None:
+        return {"month": None, "months": None, "reason": "вложений капитала нет"}
+    cumulative, last_negative = 0.0, None
+    for index, value in enumerate(flows):
+        cumulative += value
+        if cumulative < -0.5:
+            last_negative = index
+    if last_negative is None or last_negative + 1 >= len(flows):
+        return {"month": None, "months": None,
+                "reason": "не окупается за горизонт объекта"}
+    return {"month": months[last_negative + 1],
+            "months": last_negative + 1 - first, "reason": ""}
+
+
+def object_result(flows: dict[str, Any], *, start: date, discount_rate: float,
+                  tax_rate: float) -> dict[str, Any]:
+    """Итог объекта вне ДДУ — как будто он отдельный проект.
+
+    Читает только ряды объекта (`developaid_nonres_strategy.object_flows`):
+    стройку, долю общих затрат проекта, которую кредитует его кредит, кредит,
+    деньги собственнику и налоговую маржу. Схема рядов не офисная — гостиница
+    или другой объект с тем же набором рядов получает итог той же функцией.
+
+    * Затраты объекта — своя стройка и доля общих затрат; собственный капитал —
+      затраты минус выборка кредита объекта.
+    * Доля общих затрат признаётся в налоговой базе тем же графиком, что
+      стройка объекта (`cost_recognized`): продано — списано, удержано —
+      амортизируется; при удержании непризнанный остаток ждёт сделки.
+    * Налог — объекта как отдельного плательщика, тем же правилом переноса
+      убытка (`_profit_tax_schedule`), что у проекта. Проект платит налог со
+      всей базы сразу, поэтому сумма налогов объектов с налогом проекта не
+      обязана совпадать — совпадает база (`nonres_reconciliation`).
+    * IRR и NPV — на поток капитала объекта после налога, NPV — по ставке
+      дисконтирования проекта на дату начала проекта. При удержании оценка
+      стоимости — не деньги: IRR показан с ней и без неё, денежный итог и
+      окупаемость — без неё.
+    """
+    months: list[date] = list(flows["months"])
+    series = flows["monthly"]
+    capex = flows.get("capex_by_month") or {}
+    common = flows.get("common_by_month") or {}
+    cost_basis = float(flows.get("cost_basis") or 0.0)
+
+    def get(name: str, month: date) -> float:
+        return float((series.get(name) or {}).get(month, 0.0) or 0.0)
+
+    capex_total = float(sum(capex.values()))
+    common_total = float(sum(common.values()))
+    # Затраты вне месяцев объекта в его поток не попали бы молча: капитал и
+    # IRR вышли бы лучше, чем есть. Такого графика быть не должно — названо.
+    outside = sorted(mm for mm in (*capex, *common) if mm not in set(months))
+    if outside:
+        flows.setdefault("warnings", []).append(
+            "Затраты объекта вне его горизонта ("
+            + ", ".join(mm.strftime("%m.%Y") for mm in outside[:3])
+            + ") не вошли в поток капитала объекта — итог объекта неполон.")
+    common_recognized: dict[date, float] = {}
+    for month in months:
+        share = (get("cost_recognized", month) / cost_basis if cost_basis
+                 else (1.0 if month == flows["commissioning"] else 0.0))
+        common_recognized[month] = common_total * share
+    margins = {mm: get("tax_margin", mm) - common_recognized[mm] for mm in months}
+    financing = {mm: get("loan_interest_cap", mm) + get("loan_interest_paid", mm)
+                 + get("loan_fee", mm) for mm in months}
+    tax_by_month, _detail = _profit_tax_schedule(months, margins, financing, None, tax_rate)
+    profit_before_tax = float(sum(margins.values()) - sum(financing.values()))
+    profit_tax = float(sum(tax_by_month.values()))
+
+    equity_flow = {mm: (get("cash_to_equity", mm) - float(capex.get(mm, 0.0) or 0.0)
+                        - float(common.get(mm, 0.0) or 0.0) - tax_by_month.get(mm, 0.0))
+                   for mm in months}
+    residual = {mm: get("residual_value", mm) for mm in months}
+    lead = [0.0] * max(0, months_between(start, months[0])) if months else []
+    with_value = lead + [equity_flow[mm] for mm in months]
+    cash_only = lead + [equity_flow[mm] - residual[mm] for mm in months]
+    residual_total = float(sum(residual.values()))
+    loan_draw = float(sum((series.get("loan_draw") or {}).values()))
+    peak, cumulative = 0.0, 0.0
+    for value in cash_only:
+        cumulative += value
+        peak = min(peak, cumulative)
+    payback = _payback(cash_only[len(lead):], months)
+    return {
+        "capex": capex_total,
+        "common_capex": common_total,
+        "cost_total": capex_total + common_total,
+        "loan_draw": loan_draw,
+        "equity_invested": capex_total + common_total - loan_draw,
+        "equity_peak": -peak,
+        "common_recognized": float(sum(common_recognized.values())),
+        "tax_margin": float(sum(margins.values()) + sum(common_recognized.values())),
+        "financing_cost": float(sum(financing.values())),
+        "profit_before_tax": profit_before_tax,
+        "profit_tax": profit_tax,
+        "profit_after_tax": profit_before_tax - profit_tax,
+        "equity_pre_tax": float(sum(equity_flow.values()) + profit_tax),
+        "equity_cash": float(sum(cash_only)),
+        "residual_value": residual_total,
+        "equity_with_value": float(sum(with_value)),
+        "irr": _monthly_irr(with_value),
+        "irr_cash": _monthly_irr(cash_only) if residual_total else None,
+        "npv": _monthly_npv(with_value, discount_rate),
+        "discount_rate": discount_rate,
+        "payback_month": payback["month"],
+        "payback_months": payback["months"],
+        "payback_reason": payback["reason"],
+        "monthly": {"object_profit_tax": dict(tax_by_month),
+                    "object_equity_flow": dict(equity_flow)},
+    }
+
+
+def nonres_reconciliation(nonres: dict[str, Any], rows: list[dict[str, Any]],
+                          tax_margin_by_product: dict[str, float]) -> dict[str, Any]:
+    """Сходится ли сумма итогов объектов с тем, что нежильё внесло в проект.
+
+    Деньги: поток капитала объектов до налога — это то, что проект получил
+    строкой `nonres_cash_to_equity`, минус стройка объектов и доля общих
+    затрат, которые проект оплатил. База налога: маржа объектов в базе проекта
+    (`tax_margin_by_product`) за вычетом процентов и комиссий кредита объектов.
+    Разошлось — итог объекта посчитан не из того, что вошло в проект, и это
+    видно в отчёте, а не только в тесте.
+    """
+    objects = list((nonres.get("objects") or {}).values())
+    if not objects:
+        return {}
+    def rows_sum(name: str) -> float:
+        return float(sum(float(row.get(name, 0.0) or 0.0) for row in rows))
+    project_equity = (rows_sum("nonres_cash_to_equity")
+                      - float((nonres.get("totals") or {}).get("nonres_capex", 0.0))
+                      - float((nonres.get("totals") or {}).get("nonres_common_capex", 0.0)))
+    objects_equity = float(sum(f["result"]["equity_pre_tax"] for f in objects))
+    project_base = (float(sum(tax_margin_by_product.get(key, 0.0)
+                              for key in (nonres.get("objects") or {})))
+                    - rows_sum("nonres_loan_interest") - rows_sum("nonres_loan_fee"))
+    objects_base = float(sum(f["result"]["profit_before_tax"] + f["result"]["common_recognized"]
+                             for f in objects))
+    ok = abs(project_equity - objects_equity) <= 1.0 and abs(project_base - objects_base) <= 1.0
+    return {"project_equity": project_equity, "objects_equity": objects_equity,
+            "project_tax_base": project_base, "objects_tax_base": objects_base, "ok": ok}
 
 
 def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) -> dict:
@@ -34662,19 +34838,26 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         "total_capex": total_capex,
         "commercial_costs": commercial_costs,
         "nonres_costs": nonres_costs,
-        "nonres": nonres_summary(nonres),
+        "nonres": nonres_summary(nonres, nonres_reconciliation(
+            nonres, result["rows"], tax_margin_by_product)),
     })
     return result
 
 
-def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
-    """Итог объектов вне ДДУ для отчёта: без помесячных рядов."""
+def nonres_summary(nonres: dict[str, Any],
+                   reconciliation: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Итог объектов вне ДДУ для отчёта; помесячно — только строки объекта для
+    книги (`rows`), сырые ряды движка остаются внутри."""
     objects = []
     for key, flows in (nonres.get("objects") or {}).items():
         kpi = dict(flows["kpi"])
         for _when in ("exit_month", "loan_repaid_month", "loan_maturity"):
             if kpi.get(_when):
                 kpi[_when] = kpi[_when].isoformat()
+        outcome = {name: value for name, value in (flows.get("result") or {}).items()
+                   if name != "monthly"}
+        if outcome.get("payback_month"):
+            outcome["payback_month"] = outcome["payback_month"].isoformat()
         objects.append({
             "key": key, "title": flows.get("title") or key, "strategy": flows["strategy"],
             "exit_mode": (flows.get("params") or {}).get("exit_mode"),
@@ -34684,8 +34867,13 @@ def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
             "totals": dict(flows["totals"]), "kpi": kpi,
             "warnings": list(flows["warnings"]),
             "book": flows.get("book"),
+            "result": outcome,
+            "rows": list(flows.get("rows") or []),
         })
-    return {"objects": objects, "totals": dict(nonres.get("totals") or {})}
+    out = {"objects": objects, "totals": dict(nonres.get("totals") or {})}
+    if reconciliation:
+        out["reconciliation"] = reconciliation
+    return out
 
 
 def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
@@ -34744,6 +34932,7 @@ def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
     у прямой продажи нет NOI, у аренды — выручки ДКП.
     """
     out: list[dict[str, Any]] = []
+    reconciliation = (nonres or {}).get("reconciliation") or {}
     for item in (nonres or {}).get("objects") or []:
         totals, kpi = item.get("totals") or {}, item.get("kpi") or {}
         income = item.get("strategy") == nonres_strategy.STRATEGY_INCOME
@@ -34790,10 +34979,94 @@ def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
              "unit": "rub"},
             {"label": "НДС объекта к уплате", "value": totals.get("vat_paid"), "unit": "rub"},
         ]
+        rows += object_result_rows(item.get("result") or {}, hold=hold)
+        warnings = list(item.get("warnings") or [])
+        if reconciliation and not reconciliation.get("ok"):
+            warnings.append(
+                "Итог объекта не сходится с вкладом нежилья в проект: поток капитала "
+                f"объектов {reconciliation.get('objects_equity', 0) / 1e6:,.1f} млн ₽ "
+                f"против {reconciliation.get('project_equity', 0) / 1e6:,.1f} млн ₽ в проекте, "
+                f"база налога {reconciliation.get('objects_tax_base', 0) / 1e6:,.1f} "
+                f"против {reconciliation.get('project_tax_base', 0) / 1e6:,.1f} млн ₽ "
+                "(сверка `nonres_reconciliation`).".replace(",", " "))
         out.append({"key": item.get("key"), "title": item.get("title"),
                     "strategy": item.get("strategy"), "rows": rows,
-                    "warnings": list(item.get("warnings") or [])})
+                    "warnings": warnings})
     return out
+
+
+def object_result_rows(result: dict[str, Any], *, hold: bool) -> list[dict[str, Any]]:
+    """Блок «Итог объекта» таблицы — из `object_result`, без пересчёта.
+
+    Строки не офисные: любой объект со своим итогом печатает тот же блок.
+    Чего нет — того и не печатаем нулём: IRR без смены знака потока назван
+    причиной, окупаемость за горизонт — тоже.
+    """
+    if not result:
+        return []
+    rate = float(result.get("discount_rate") or 0.0)
+
+    def irr_row(label: str, value: Any, flow: float) -> dict[str, Any]:
+        if value is not None:
+            return {"label": label, "value": value, "unit": "pct"}
+        reason = ("не считается — поток не возвращает вложенное" if flow < 0
+                  else "не считается — поток не меняет знак")
+        return {"label": label, "value": reason, "unit": "text"}
+
+    rows: list[dict[str, Any]] = [{"label": "Итог объекта", "value": None, "unit": "section"}]
+    if result.get("common_capex"):
+        rows += [
+            {"label": "Затраты объекта — стройка и доля общих затрат проекта",
+             "value": result.get("cost_total"), "unit": "rub"},
+            {"label": "в т.ч. доля общих затрат проекта (участок, проект, сети)",
+             "value": result.get("common_capex"), "unit": "rub"},
+        ]
+    else:
+        rows.append({"label": "Затраты объекта", "value": result.get("cost_total"), "unit": "rub"})
+    rows += [
+        {"label": "Собственный капитал объекта (затраты − кредит объекта)",
+         "value": result.get("equity_invested"), "unit": "rub"},
+        {"label": "Собственный капитал объекта — пик потребности",
+         "value": result.get("equity_peak"), "unit": "rub"},
+        {"label": ("Прибыль объекта до налога — без оценки, сделки нет" if hold
+                   else "Прибыль объекта до налога"),
+         "value": result.get("profit_before_tax"), "unit": "rub"},
+        {"label": "Налог на прибыль объекта (как отдельного плательщика)",
+         "value": result.get("profit_tax"), "unit": "rub"},
+        {"label": ("Прибыль объекта после налога — без оценки" if hold
+                   else "Прибыль объекта после налога"),
+         "value": result.get("profit_after_tax"), "unit": "rub"},
+        {"label": ("Денежный поток капитала объекта — итог без оценки" if hold
+                   else "Денежный поток капитала объекта — итог"),
+         "value": result.get("equity_cash"), "unit": "rub"},
+    ]
+    if hold:
+        rows += [
+            {"label": "Оценка объекта на конец горизонта — без сделки",
+             "value": result.get("residual_value"), "unit": "rub"},
+            {"label": "Поток капитала объекта с оценкой — итог",
+             "value": result.get("equity_with_value"), "unit": "rub"},
+            irr_row("IRR капитала объекта — с оценкой (часть результата без сделки)",
+                    result.get("irr"), float(result.get("equity_with_value") or 0.0)),
+            irr_row("IRR капитала объекта — только деньги, без оценки",
+                    result.get("irr_cash"), float(result.get("equity_cash") or 0.0)),
+        ]
+    else:
+        rows.append(irr_row("IRR капитала объекта", result.get("irr"),
+                            float(result.get("equity_cash") or 0.0)))
+    rows += [
+        {"label": (f"NPV капитала объекта @{rate * 100:.4g}%"
+                   + (" — с оценкой" if hold else "")),
+         "value": result.get("npv"), "unit": "rub"},
+        {"label": ("Срок окупаемости капитала — без оценки" if hold
+                   else "Срок окупаемости капитала"),
+         "value": (f"{result['payback_months']} мес. от первого вложения — "
+                   + ".".join(reversed(str(result["payback_month"])[:7].split("-")))
+                   if result.get("payback_months") is not None
+                   else result.get("payback_reason") or "—"),
+         "unit": "text"},
+    ]
+    return rows
 
 
 # Суммы подстроки объекта, которые свод по очередям складывает. Удельные среди
@@ -36575,6 +36848,18 @@ def _shift_iso(value: Any, months: int) -> Any:
         return value
 
 
+def _merged_nonres_reconciliation(fs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Сверка итогов объектов с проектом на своде очередей: суммы — суммой,
+    «сошлось» — только если сошлось в каждой очереди."""
+    recs = [(f.get("nonres") or {}).get("reconciliation") for f in fs]
+    recs = [rec for rec in recs if rec]
+    if not recs:
+        return {}
+    return {"reconciliation": {
+        **_sum_dicts([{k: v for k, v in rec.items() if k != "ok"} for rec in recs]),
+        "ok": all(rec.get("ok") for rec in recs)}}
+
+
 def _sum_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
     # Порядок ключей — порядок первой встречи, а не множества: порядок `set`
     # зависит от сида хеша процесса, и статьи расходов вставали на экране
@@ -37184,6 +37469,7 @@ def _aggregate_finance(results: list[dict[str, Any]],
         "nonres": {
             "objects": [item for f in fs for item in (f.get("nonres") or {}).get("objects") or []],
             "totals": _sum_dicts([(f.get("nonres") or {}).get("totals") or {} for f in fs]),
+            **_merged_nonres_reconciliation(fs),
         },
         # Налог свода — пересчитанный как у одного налогоплательщика, а не
         # сумма очередей. Оставить сумму значило бы посчитать заново и не
@@ -46785,6 +47071,7 @@ details.cadastral-box>summary::marker{color:#888}
 #revenueTable tr.rs-part td:first-child{padding-left:18px;color:#555}
 #revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
 [data-needs][hidden],#nonresStrategyCard[hidden]{display:none!important}
+table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:1px solid var(--line)}
 .phase-comparison-card tr.pc-block th{text-align:left;padding:9px 10px 8px;font-size:15px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#fff;background:#111;border:0;border-top:14px solid #fff}
 .phase-comparison-card tr.pc-note td{padding:2px 0 6px 22px;font-size:11px;font-weight:400;color:#777;white-space:normal}
 .phase-comparison-card tr.pc-note td span{position:sticky;left:22px}
@@ -48060,6 +48347,7 @@ function nonresCell(row){
  if(row.unit==='pct')return (Number(v||0)*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%';
  if(row.unit==='mult')return v==null?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x';
  if(row.unit==='date')return v?String(v).slice(0,7).split('-').reverse().join('.'):'—';
+ if(row.unit==='section')return '';
  return escapeHtml(String(v??'—'));
 }
 // Какие блоки у проекта есть, решает движок (`report_layout`); результат,
@@ -48077,7 +48365,7 @@ function renderNonresStrategy(r){
  const items=((r||{}).report||{}).nonres_strategy||[];
  card.hidden=!items.length;
  box.innerHTML=items.map(item=>`<table class="nonres-strategy" data-object="${escapeHtml(item.key)}" data-strategy="${escapeHtml(item.strategy)}"><caption>${escapeHtml(item.title)}</caption><tbody>${
-  item.rows.map(row=>`<tr><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}${
+  item.rows.map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}${
   (item.warnings||[]).map(w=>`<tr class="warn"><td>${escapeHtml(w)}</td><td></td></tr>`).join('')}</tbody></table>`).join('');
 }
 const STRATEGY_FIELD_READERS_SWITCHES=[...new Set(Object.values(STRATEGY_FIELD_READERS).map(r=>r[0]))];
