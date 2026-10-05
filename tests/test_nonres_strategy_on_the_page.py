@@ -137,3 +137,68 @@ def test_switching_the_strategy_changes_the_totals(walk) -> None:
     assert "NOI за срок удержания" not in labels
     income_labels = [row[0] for row in walk["income"]["tables"][0]["rows"]]
     assert "NOI за срок удержания" in income_labels
+
+
+# --- нежилой проект: свой вид отчёта -----------------------------------------
+
+LAYOUT = r"""() => {
+  const hidden = sel => { const el = document.querySelector(sel); return !el || el.hidden || el.offsetParent === null; };
+  return {
+    layout: lastResult.report.layout,
+    tiles: [...document.querySelectorAll('#reportKpi .kpi span')].map(s => s.innerText.trim()),
+    values: [...document.querySelectorAll('#reportKpi .kpi')].map(k => [k.querySelector('span').innerText.trim(), k.querySelector('b').innerText.trim()]),
+    expected: (lastResult.report.layout.nonres_tiles || []).map(t => [t.label, nonresCell(t)]),
+    llcrCardHidden: document.getElementById('llcrTable').closest('[data-needs]').hidden,
+    socialHidden: document.getElementById('socialTable').closest('[data-needs]').hidden,
+    pfGridHidden: document.getElementById('pfTable').closest('[data-needs]').hidden,
+  };
+}"""
+
+
+@pytest.fixture(scope="module")
+def nonresidential_walk() -> dict:
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    path = browser.chromium_or_skip()
+    out: dict = {}
+    with browser.serve(core.app, PORT + 1) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            page = engine.new_page(viewport={"width": 1440, "height": 900})
+            errors: list[str] = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(base, wait_until="domcontentloaded")
+            page.wait_for_function("() => typeof lastResult !== 'undefined' && lastResult")
+            page.evaluate(SET, ["offices_enabled", True])
+            page.wait_for_function("() => lastResult && lastResult.revenue.offices > 0")
+            out["mixed_ddu"] = page.evaluate(LAYOUT)
+            page.evaluate("() => { applyProjectKind('nonresidential'); closeProjectKindDialog(); }")
+            page.evaluate(SET, ["offices_strategy", "income"])
+            page.wait_for_function(
+                "() => lastResult.report.layout && lastResult.report.layout.nonres_strategy"
+                " && !lastResult.report.layout.housing")
+            out["nonres_income"] = page.evaluate(LAYOUT)
+            out["errors"] = errors
+            page.close()
+    return out
+
+
+def test_a_mixed_project_keeps_the_bank_blocks(nonresidential_walk) -> None:
+    state = nonresidential_walk["mixed_ddu"]
+    assert state["layout"]["housing"] and state["layout"]["project_finance"]
+    assert "LLCR (расчётный)" in state["tiles"]
+    assert not state["llcrCardHidden"] and not state["socialHidden"]
+
+
+def test_a_nonresidential_rent_project_reads_as_its_own_report(nonresidential_walk) -> None:
+    state = nonresidential_walk["nonres_income"]
+    assert state["layout"]["project_finance"] is False
+    # Шапка — деньги объекта, а не БРИДЖ/ПФ/LLCR.
+    assert not {"LLCR (расчётный)", "Пиковый БРИДЖ", "Собственные средства до ПФ"} & set(state["tiles"])
+    assert "DSCR — минимум по годам" in state["tiles"]
+    assert "Стабилизированный NOI, год" in state["tiles"]
+    shown = {label: value for label, value in state["values"]}
+    for label, value in state["expected"]:
+        assert shown[label] == value
+    assert state["llcrCardHidden"] and state["socialHidden"] and state["pfGridHidden"]
+    assert nonresidential_walk["errors"] == []
