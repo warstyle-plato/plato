@@ -127,9 +127,34 @@ def test_the_pdf_prints_the_object_financing(tmp_path) -> None:
     path.write_bytes(content)
     flat = " ".join(" ".join(p.extract_text() or "" for p in pypdf.PdfReader(str(path)).pages).split())
     assert "Финансирование объекта: Офисы" in flat
+    # Таблица стоит в разделе «Финансирование» — за графиком долга кредита
+    # объектов, который есть только там, — а не среди продуктов.
+    chart = flat.index("Кредит объектов — остаток долга")
+    first = flat.index("Финансирование объекта: ")
+    assert chart < first and first - chart < 600
     assert "Финансирование объекта: Коммерция ОСЗ" in flat
     payment = _rows(_financing(result, "offices"))["Аннуитетный платёж — средний, в месяц"]
     assert core._pdf_nonres_value(payment) in flat
+
+
+def test_the_nonresidential_pdf_financing_section_is_not_empty(tmp_path) -> None:
+    """Снимок владельца: раздел «Финансирование» нежилого PDF был пуст —
+    одна фраза со ссылкой на другую таблицу."""
+    pypdf = pytest.importorskip("pypdf")
+    from test_nonres_debt_metric import _nonres_inputs
+    x, t = _nonres_inputs()
+    result = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
+    content = core._build_developaid_pdf({"project_name": "Офис", "result": result,
+                                          "inputs": x, "tep": t, "rates": []})
+    path = tmp_path / "n.pdf"
+    path.write_bytes(content)
+    flat = " ".join(" ".join(p.extract_text() or "" for p in pypdf.PdfReader(str(path)).pages).split())
+    intro = flat.index("Проект без продаж по ДДУ")
+    assert intro < flat.index("Кредит объектов — остаток долга") < flat.index("Финансирование объекта: Офисы")
+    assert "в таблице «Нежильё — стратегия реализации»" not in flat
+    for label in ("Аннуитетный платёж — средний, в месяц", "Баллон по графику (доля долга на ввод)",
+                  "Обслуживание кредита по годам"):
+        assert label in flat
 
 
 def test_the_book_prints_the_object_financing() -> None:

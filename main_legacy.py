@@ -17122,7 +17122,7 @@ def _pdf_nonres_value(row: dict[str, Any]) -> str:
     if unit == "date":
         return ".".join(reversed(str(value or "—")[:7].split("-")))
     if unit == "section":
-        return ""
+        return " "  # пустая клетка: «—» значило бы «нет данных»
     return str(value or "—")
 
 
@@ -18046,7 +18046,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # ТЦ и офисы вне ДДУ — таблицей движка (`nonres_report`), той же, что на
     # экране: прямая продажа или аренда с выходом и свой кредит объекта.
     for _nr in report.get("nonres_strategy") or []:
-        _nr_rows = [["Нежильё — стратегия реализации: " + str(_nr.get("title") or ""), ""]]
+        _nr_rows = [["Нежильё — стратегия реализации: " + str(_nr.get("title") or ""), " "]]
         for _row in _nr.get("rows") or []:
             # Блок «Итог объекта» — заголовком строки, без значения.
             _nr_rows.append([str(_row.get("label") or "").upper()
@@ -18054,23 +18054,6 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                              _pdf_nonres_value(_row)])
         story.append(KeepTogether([table(_nr_rows, [112*mm, 58*mm], font_size=7.6)]
                                   + [P(str(w), small) for w in _nr.get("warnings") or []]))
-    # Кредит объекта — своим отчётом (`nonres_financing_report`), как на экране.
-    for _nf in report.get("nonres_financing") or []:
-        _years_cols = _nf.get("columns") or []
-        _nf_rows = [["Финансирование объекта: " + str(_nf.get("title") or ""), ""]]
-        for _row in _nf.get("rows") or []:
-            _nf_rows.append([str(_row.get("label") or "").upper()
-                             if _row.get("unit") == "section" else str(_row.get("label") or ""),
-                             _pdf_nonres_value(_row)])
-        _parts = [table(_nf_rows, [112*mm, 58*mm], font_size=7.6)]
-        if _nf.get("years") and _years_cols:
-            _yrows = [[str(c[1]) for c in _years_cols]]
-            for _y in _nf["years"]:
-                _yrows.append([str(_y.get(c[0])) if c[2] == "text"
-                               else _pdf_nonres_value({"unit": c[2], "value": _y.get(c[0])})
-                               for c in _years_cols])
-            _parts.append(table(_yrows, [14*mm] + [26*mm] * (len(_years_cols) - 1), font_size=6.8))
-        story.append(KeepTogether(_parts))
     # Квартиры продаются штуками. «40 квартир в месяц» проверяется отделом
     # продаж и рынком, «2 400 м² в месяц» — нет, а в отчёте был только метр.
     apartment_sales = report.get("apartment_sales") or {}
@@ -18536,9 +18519,43 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         story.append(P("Финансирование", h2))
         story.append(P("Проект без продаж по ДДУ: БРИДЖа, проектного финансирования и "
                        "эскроу нет. Стройку и общие затраты финансирует кредит объекта "
-                       "на долю стоимости, остальное — собственный капитал; условия, "
-                       "DSCR, срок и баллон — в таблице «Нежильё — стратегия реализации».",
-                       small))
+                       "на долю стоимости, остальное — собственный капитал.", small))
+    # Кредит объектов вне ДДУ — в разделе «Финансирование», той же таблицей
+    # движка (`nonres_financing_report`), что на экране: условия, выборка,
+    # платёж, баллон, погашение и обслуживание по годам. Прежде раздел у
+    # нежилого проекта был пуст, а таблица стояла среди продуктов.
+    if report.get("nonres_financing"):
+        loan_chart = line_chart(
+            timeline_rows,
+            [{"label": "Кредит объектов — остаток", "key": "nonres_loan_balance",
+              "factor": 1/1_000_000_000, "color": "#171717",
+              "active": lambda row: float(row.get("nonres_loan_balance", 0) or 0) > 0}],
+            "млрд ₽",
+            height=118,
+        )
+        if loan_chart:
+            story.append(KeepTogether([P("Кредит объектов — остаток долга", h2), loan_chart]))
+    for _nf in report.get("nonres_financing") or []:
+        _years_cols = _nf.get("columns") or []
+        _nf_rows = [["Финансирование объекта: " + str(_nf.get("title") or ""), " "]]
+        for _row in _nf.get("rows") or []:
+            _nf_rows.append([str(_row.get("label") or "").upper()
+                             if _row.get("unit") == "section" else str(_row.get("label") or ""),
+                             _pdf_nonres_value(_row)])
+        # Длинная таблица переносится со строкой заголовка, а не прыгает
+        # целиком на следующую страницу, оставляя раздел пустым.
+        story.append(table(_nf_rows, [112*mm, 58*mm], font_size=7.6))
+        _parts = []
+        if _nf.get("years") and _years_cols:
+            _yrows = [[str(c[1]) for c in _years_cols]]
+            for _y in _nf["years"]:
+                _yrows.append([str(_y.get(c[0])) if c[2] == "text"
+                               else _pdf_nonres_value({"unit": c[2], "value": _y.get(c[0])})
+                               for c in _years_cols])
+            _parts.append(P("Обслуживание кредита по годам", small))
+            _parts.append(table(_yrows, [14*mm] + [26*mm] * (len(_years_cols) - 1), font_size=6.8))
+        if _parts:
+            story.append(KeepTogether(_parts))
 
     story.append(_PdfSection("income"))
     pace_chart=sales_bar_chart(timeline_rows,height=104)
