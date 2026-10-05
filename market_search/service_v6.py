@@ -137,6 +137,34 @@ def _report_extras(
     return out
 
 
+def _peer_source_coverage(peers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Сколько аналогов несут стадию и сроки — и откуда.
+
+    «Стадия не указана» почти у всех соседей была на проде невидимой
+    поломкой: каждая строка выглядела честной, а доля — нет. Счёт отвечает
+    сразу: из N аналогов стадия со страницы Пульса у k, по срокам у m.
+    """
+    total = len(peers)
+
+    def share(count: int) -> dict[str, Any]:
+        return {"count": count, "pct": round(100 * count / total, 1) if total else None}
+
+    return {
+        "peers": total,
+        "stage_from_pulse": share(sum(
+            1 for row in peers if row.get("construction_stage_origin") == stage.STAGE_ORIGIN_PULSE
+        )),
+        "stage_from_calendar": share(sum(
+            1 for row in peers if row.get("construction_stage_origin") == stage.STAGE_ORIGIN_CALENDAR
+        )),
+        "stage_distribution": share(sum(
+            1 for row in peers if row.get("construction_stage_distribution")
+        )),
+        "commissioning": share(sum(1 for row in peers if row.get("commissioning"))),
+        "sales_start": share(sum(1 for row in peers if row.get("sales_start"))),
+    }
+
+
 class MarketDiscoveryService(LegacyMarketDiscoveryService):
     """Ревизованный конвейер.
 
@@ -1209,6 +1237,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                     stage_reader(project.complex_id) if callable(stage_reader) else {}
                 ) or {}
                 built_stage = stage.analog_stage(stage_answer.get("raw"), progress)
+                latest_code = stage.stage_from_text(stage_answer.get("latest_raw"))
+                facts_reader = getattr(self.pulse, "project_facts", None)
+                page_facts = (facts_reader(project.complex_id) if callable(facts_reader) else {}) or {}
                 row: dict[str, Any] = {
                     "complex_id": project.complex_id,
                     "name": project.name,
@@ -1236,6 +1267,22 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                     "construction_stage_origin": built_stage["origin"],
                     "construction_stage_origin_title": built_stage["origin_title"],
                     "construction_stage_raw": built_stage["raw"],
+                    # Стадия по корпусам — целиком, со страницы проекта: одно
+                    # слово «каркас» у ЖК с 18 сданными корпусами и 2 строящимися
+                    # без распределения читается как неправда.
+                    "construction_stage_source": stage_answer.get("source"),
+                    "construction_stage_as_of": stage_answer.get("as_of"),
+                    "construction_stage_rule": stage_answer.get("rule"),
+                    "construction_stage_distribution": stage_answer.get("distribution") or [],
+                    "construction_stage_latest_label": (
+                        stage.STAGE_TITLES.get(latest_code) if latest_code else None
+                    ),
+                    "construction_stage_reason": stage_answer.get("reason"),
+                    "commissioning_first": live_dates.get("commissioning_first"),
+                    "commissioning_raw": live_dates.get("commissioning_raw"),
+                    "commissioning_rule": live_dates.get("commissioning_rule"),
+                    "date_candidates": live_dates.get("candidates") or {},
+                    "page_facts": page_facts,
                     "stage_factor": round(coefficient, 4) if coefficient is not None else None,
                     "ready_equivalent_price": (
                         int(round(stage.to_ready(price["price_per_sqm"], progress)))
@@ -1330,6 +1377,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 fresh_since=fresh_since,
             )
         hint["stage_filter"] = stage_filter
+        hint["source_coverage"] = _peer_source_coverage(peers)
         if not scope["covered"] and not hint.get("available") and not selected_stages:
             hint["reason"] = (
                 f"{hint.get('reason') or 'Ориентир не рассчитан'}. "
