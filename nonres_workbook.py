@@ -147,6 +147,8 @@ OBJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("price", "Цена продажи, тыс ₽/м² с НДС (места — млн ₽)"),
     ("sales_start", "Отсчёт цены (старт продаж)"),
     ("growth_pre", "Рост цены до ввода, % в месяц"),
+    ("growth_pre_year", "  справочно: рост до ввода, % в год"),
+    ("growth_pre_source", "  откуда рост до ввода"),
     ("growth_post", "Рост цены после ввода, % в месяц"),
     ("parking_units", "Машино-места объекта в продаже или аренде, шт."),
     ("parking_under_units", "Мест в гараже подземных, шт. (вес средней цены)"),
@@ -289,6 +291,15 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
                 "term": params["loan_term_years"], "balloon": params["loan_balloon_pct"],
                 "dep_years": params["depreciation_years"],
             })
+        if nonres:
+            default = float(item.get("growth_pre_default_pct") or 0.0)
+            same = abs(float(item["growth_pre_pct"]) - default) < 1e-9
+            ws[f"{column}{O_ROW['growth_pre_year']}"] = (
+                f"=((1+{column}{O_ROW['growth_pre']}/100)^12-1)*100")
+            ws[f"{column}{O_ROW['growth_pre_year']}"].number_format = "0.0"
+            ws[f"{column}{O_ROW['growth_pre_source']}"] = (
+                f"умолчание объекта {default:g} %/мес. (реестр объектов движка); у жилья своё"
+                if same else "задано в проекте")
         for key, value in cells.items():
             cell = ws[f"{column}{O_ROW[key]}"]
             cell.value = value
@@ -1023,6 +1034,16 @@ def _object_sheet(book: Workbook, item: dict[str, Any], title: str, costs: _Cost
     for i in range(1, len(COLUMNS) + 1):
         ws.column_dimensions[get_column_letter(i)].width = 16
     ws.column_dimensions["A"].width = 58
+    # Блок другой стратегии свёрнут группой: у прямой продажи нет аренды и
+    # выхода, у аренды — продаж ДКП. Столбцы на месте, их формулы дают нули и
+    # разворачиваются кнопкой группы, если стратегию сменить на «Вводных».
+    hidden = (("open", "occ", "growth", "rent", "opex", "exit", "exit_cost", "residual", "op_rev",
+               "fwd", "stab", "year", "noi")
+              if item.get("strategy") == ns.STRATEGY_DIRECT
+              else ("weight", "factor", "sale", "selling", "realized"))
+    for name in hidden:
+        ws.column_dimensions[_c(name)].outlineLevel = 1
+        ws.column_dimensions[_c(name)].hidden = True
 
     # Годы эксплуатации: NOI, проценты, плановое тело, DSCR и ICR.
     years_row = last + 3
@@ -1400,6 +1421,13 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
          f"=MAX({costs.cells['rve']}+MAX(INT({_p('residual_months')})+3,12)"
          + "".join(f",{h}" for h in horizons) + f",{costs.cells['plan_last_k']})+1", "0")
 
+    section("Как сложены итоги")
+    line("identity_ebitda", "EBITDA − проценты − прибыль до налога (должно быть 0)",
+         f"={ref('ebitda')}-{ref('financing_cost')}-{ref('profit_before_tax')}")
+    ws[f"C{row - 1}"] = "EBITDA = выручка − CAPEX − расходы объектов; без процентов, налога на прибыль и НДС"
+    identity_row = row
+    row += 0
+
     section("Структура расходов")
     article_rows = []
     for key, label in costs.labels.items():
@@ -1420,6 +1448,12 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
     line("structure_vat", "НДС", f"={ref('vat')}")
     first_article = article_rows[0] if article_rows else row
     line("total_expenses", "Расходы всего", f"=SUM(B{first_article}:B{row - 1})")
+    ws[f"C{row - 1}"] = ("CAPEX + расходы объектов + проценты и комиссии + налог на прибыль + НДС; "
+                         "поэтому выручка − расходы всего = чистая прибыль, а не EBITDA")
+    ws[f"A{identity_row}"] = "Выручка − расходы всего − чистая прибыль (должно быть 0)"
+    ws[f"B{identity_row}"] = f"={ref('revenue')}-{ref('total_expenses')}-{ref('net_profit')}"
+    ws[f"B{identity_row}"].number_format = MONEY
+    out["identity_total"] = f"'{REPORT_SHEET}'!$B${identity_row}"
 
     section("Финансирование объектов")
     ws[f"A{row}"] = "Показатель"
@@ -1443,6 +1477,8 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
             ws.cell(row, 2 + i, f"={item[key]}").number_format = (
                 "0.00" if key in ("dscr_min", "icr_min") else MONEY)
         row += 1
+    line("loan_peak", "Кредит объектов — пик (сумма пиков объектов)",
+         "=" + _sum([item["loan_peak"] for item in objects_refs]))
     dscr = [item["dscr_min"] for item in objects_refs]
     line("debt_metric", "DSCR кредита объектов — минимум по годам и объектам",
          (f'=IF(COUNT({",".join(dscr)})>0,MIN({",".join(dscr)}),"")'
@@ -1475,6 +1511,24 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
     line("payback", "Окупаемость собственных средств",
          f'=IF(AND({last_neg}>=0,{last_neg}+1<={months - 1}),EDATE({_p("start")},{last_neg}+1),'
          f'"не окупается за горизонт проекта")', MONTH)
+
+    section("ОПУ по годам (налоговая база проекта)")
+    head = ("Год", "Маржа объектов", "Общие затраты (в РВЭ)", "Проценты и комиссии",
+            "Прибыль до налога", "Налог на прибыль", "Прибыль после налога")
+    for i, label in enumerate(head):
+        ws.cell(row, 1 + i, label).font = BOLD
+    row += 1
+    for year in sorted({_month(m).year for m in spec["months"]}):
+        ws.cell(row, 1, year)
+        for i, key in enumerate(("objects_margin", "common", "financing"), start=2):
+            ws.cell(row, i, f"=SUMIF({taxes['cal_year']},A{row},{taxes[key]})").number_format = MONEY
+        ws.cell(row, 5, f"=B{row}+C{row}-D{row}").number_format = MONEY
+        ws.cell(row, 6, f"=SUMIF({taxes['cal_year']},A{row},{taxes['tx_tax']})").number_format = MONEY
+        ws.cell(row, 7, f"=E{row}-F{row}").number_format = MONEY
+        row += 1
+    ws.cell(row, 1, "Чувствительность: сценарные множители выручки и затрат — на «Вводных»; "
+                    "таблицы данных Excel книга не строит").font = Font(italic=True)
+    row += 1
 
     section("По годам")
     years = sorted({_month(m).year for m in spec["months"]})
@@ -1539,6 +1593,10 @@ def _check_rows(result: dict[str, Any], spec: dict[str, Any], objects_refs: list
         ("total_expenses", "Расходы всего", summary.get("total_expenses"), False),
         ("npv", "NPV проекта", summary.get("npv"), False),
         ("irr_equity", "IRR собственного капитала", summary.get("irr_equity"), True),
+        ("loan_peak", "Кредит объектов — пик",
+         sum(float((o.get("totals") or {}).get("loan_peak") or 0.0) for o in engine_objects), False),
+        ("identity_total", "Выручка − расходы всего − чистая прибыль", 0.0, False),
+        ("identity_ebitda", "EBITDA − проценты − прибыль до налога", 0.0, False),
         ("horizon_months", "Горизонт модели, мес.", len((result.get("cashflow") or {}).get("months") or []),
          True),
         ("debt_metric", "DSCR кредита объектов — минимум",

@@ -96,6 +96,13 @@ def _evaluate(content: bytes, tamper=None) -> tuple[str, list, Evaluator, object
             for cell in row:
                 if isinstance(cell.value, str) and cell.value.startswith("="):
                     evaluator.cell(name, cell.coordinate)
+    # Каждая формула книги — и вводные-ссылки, и отчёт с ОПУ — понятна
+    # вычислителю: непонятая упала бы здесь, а не пролезла.
+    for name in book.sheetnames:
+        for row in book[name].iter_rows(max_row=nw.FIRST_ROW):
+            for cell in row:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    evaluator.cell(name, cell.coordinate)
     checks = book[nw.CHECK_SHEET]
     bad = [(checks[f"A{r}"].value, checks[f"B{r}"].value, evaluator.cell(nw.CHECK_SHEET, f"C{r}"),
             checks[f"D{r}"].value)
@@ -117,8 +124,12 @@ def test_the_book_formulas_agree_with_the_engine(name) -> None:
     compared = {checks[f"B{r}"].value: checks[f"D{r}"].value for r in range(3, checks.max_row + 1)
                 if checks[f"A{r}"].value == "Проект"}
     for label in ("Выручка проекта", "CAPEX", "EBITDA", "Налог на прибыль", "НДС", "NPV проекта",
-                  "Расходы всего"):
+                  "Расходы всего", "Чистая прибыль", "Кредит объектов — пик"):
         assert compared[label] not in ("", None, 0)
+    # Свод «на глаз»: выручка − расходы всего = чистая прибыль, EBITDA −
+    # проценты = прибыль до налога; обе разности стоят в сверке нулём.
+    assert compared["Выручка − расходы всего − чистая прибыль"] == 0.0
+    assert compared["EBITDA − проценты − прибыль до налога"] == 0.0
 
 
 def _operating_row(sheet) -> int:
@@ -205,6 +216,13 @@ def test_the_model_counts_with_formulas_from_one_input_sheet() -> None:
         assert str(sheet[f"B{row}"].value).startswith("="), key
     assert f"'{nw.COSTS_SHEET}'!" in sheet[f"{nw.COLUMNS['capex'][0]}{nw.FIRST_ROW}"].value
     assert f"'{nw.CREDIT_SHEET}'!" in sheet[f"{nw.COLUMNS['key_rate'][0]}{nw.FIRST_ROW}"].value
+    # Блок другой стратегии свёрнут: у прямой продажи — аренда, у аренды — ДКП.
+    titles = {book[n]["A1"].value.split(" — ")[0]: book[n] for n in ("Объект 1", "Объект 2")}
+    office, retail = titles["Офисы"], titles["Коммерция ОСЗ"]
+    assert office.column_dimensions[nw.COLUMNS["rent"][0]].hidden
+    assert not office.column_dimensions[nw.COLUMNS["sale"][0]].hidden
+    assert retail.column_dimensions[nw.COLUMNS["sale"][0]].hidden
+    assert not retail.column_dimensions[nw.COLUMNS["rent"][0]].hidden
     report = book[nw.REPORT_SHEET]
     for r in range(1, report.max_row + 1):
         value = report[f"B{r}"].value
@@ -227,6 +245,8 @@ def test_choices_are_russian_lists_and_dates_are_dates() -> None:
     for key in ("start", "sales_start"):
         assert hasattr(sheet[f"C{nw.O_ROW[key]}"].value, "year")
     assert hasattr(sheet[f"B{nw.P_ROW['start']}"].value, "year")
+    # Чьё умолчание роста цены до ввода — подписано, а не угадывается.
+    assert "умолчание объекта" in str(sheet[f"C{nw.O_ROW['growth_pre_source']}"].value)
     codes = {"income", "direct", "sweep", "annuity", "bullet", "hold", "sale", "flat", "bell"}
     for row in sheet.iter_rows():
         for cell in row:

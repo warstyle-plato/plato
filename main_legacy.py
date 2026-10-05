@@ -26197,6 +26197,10 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
                 "price": n(x, obj.rate_price),
                 "sales_start": d(x[f"{obj.prefix}_sales_start"]),
                 "growth_pre_pct": n(x, f"{obj.prefix}_growth_pre_pct", obj.growth_pre_default),
+                # Откуда число: владелец спросил, чьё это «1 % в месяц». Умолчание
+                # объекта — `StandaloneObject.growth_pre_default` реестра; у жилья
+                # своё — `monthly_growth_pre_pct`.
+                "growth_pre_default_pct": float(obj.growth_pre_default),
                 "growth_post_pct": n(x, f"{obj.prefix}_growth_post_pct", obj.growth_post_default),
                 "parking_sellable": bool(obj.garage_sellable),
                 "parking_saleable_units": n(row, "parking_saleable_units") if obj.garage_sellable else 0.0,
