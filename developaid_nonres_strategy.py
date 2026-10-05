@@ -239,6 +239,9 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # затрат — участка, проекта, стройки — одной линией, и резервирует её
     # лимит при открытии. Ставка — проектная вводная (как у БРИДЖа и ПФ).
     reservation_share = max(0.0, float(plan.get("reservation_fee_pct", 0.0) or 0.0) / 100.0)
+    # Плата за невыбранный лимит — как у ПФ: остаток лимита сверх выбранного
+    # тела × ставка / 12, пока линия доступна (с первой выдачи до ввода).
+    commitment_share = max(0.0, float(plan.get("limit_fee_pct", 0.0) or 0.0) / 100.0)
     property_tax = max(0.0, _num(params, "property_tax_pct", 2.2) / 100.0)
     repayment = _choice(params, "debt_repayment", REPAYMENTS, REPAY_ANNUITY)
     term_months = max(1, int(_num(params, "loan_term_years", 10))) * 12
@@ -434,6 +437,15 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     if first_draw is not None and loan_limit and reservation_share:
         m["loan_reservation_fee"][first_draw] = loan_limit * reservation_share
         m["loan_fee"][first_draw] += loan_limit * reservation_share
+    if first_draw is not None and loan_limit and commitment_share:
+        drawn = 0.0
+        for month in months:
+            drawn += m["loan_draw"][month]
+            if first_draw <= month <= commissioning:
+                unused = max(0.0, loan_limit - drawn)
+                if unused > 0:
+                    m["loan_commitment_fee"][month] = unused * commitment_share / 12.0
+                    m["loan_fee"][month] += unused * commitment_share / 12.0
 
     # --- налоговая база объекта (без процентов: они идут вычетом финансирования)
     monthly_dep = cost_basis / (max(1, int(_num(params, "depreciation_years", 30))) * 12.0)
@@ -535,6 +547,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "loan_interest": total("loan_interest_cap") + total("loan_interest_paid"),
             "loan_fee": total("loan_fee"),
             "loan_reservation_fee": total("loan_reservation_fee"),
+            "loan_commitment_fee": total("loan_commitment_fee"),
             "loan_limit": loan_limit,
             "loan_repayment": total("loan_repayment"),
             "loan_peak": peak,

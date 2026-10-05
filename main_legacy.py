@@ -26278,6 +26278,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         "purchase_price_mln": n(x, "purchase_price_mln"),
         "land_buyout_mln": n(x, "land_buyout_mln"),
         "reservation_fee_pct": n(x, "reservation_fee_pct"),
+        "limit_fee_pct": n(x, "limit_fee_pct"),
         "purchase_plan": sorted(plan.items()),
         "land_rights_gross_mln": n(x, "land_rights_cost_mln"),
         "land_rights_relief_mln": relief / 1_000_000,
@@ -33097,6 +33098,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                 # Плата за резервирование лимита — та же вводная, что у
                 # БРИДЖа и ПФ, но с лимита НКЛ объекта (владелец, 05.10.2026).
                 "reservation_fee_pct": n(x, "reservation_fee_pct"),
+                # Плата за невыбранный лимит — та же вводная, что у ПФ.
+                "limit_fee_pct": n(x, "limit_fee_pct"),
                 "params": {suffix: x.get(f"{obj.prefix}_{suffix}")
                            for suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS},
             }
@@ -34198,8 +34201,10 @@ def object_financing(flows: dict[str, Any]) -> dict[str, Any]:
         "draw_common": max(0.0, draw_total - draw_object),
         # Комиссия за выдачу и плата за резервирование лимита — раздельно;
         # в ряду `loan_fee` они лежат вместе.
-        "fee": total("loan_fee") - total("loan_reservation_fee"),
+        "fee": (total("loan_fee") - total("loan_reservation_fee")
+                - total("loan_commitment_fee")),
         "reservation_fee": total("loan_reservation_fee"),
+        "commitment_fee": total("loan_commitment_fee"),
         "limit": float((flows.get("totals") or {}).get("loan_limit") or 0.0),
         "interest_capitalized": total("loan_interest_cap"),
         "interest_paid": total("loan_interest_paid"),
@@ -35518,6 +35523,9 @@ def nonres_financing_report(nonres: dict[str, Any] | None) -> list[dict[str, Any
         if f.get("reservation_fee"):
             rows.append({"label": "Плата за резервирование лимита НКЛ", "value": f.get("reservation_fee"),
                          "unit": "rub"})
+        if f.get("commitment_fee"):
+            rows.append({"label": "Плата за невыбранный лимит НКЛ", "value": f.get("commitment_fee"),
+                         "unit": "rub"})
         rows += [
             {"label": "Комиссия за выдачу", "value": f.get("fee"), "unit": "rub"},
             {"label": "Проценты до ввода — капитализированы в долг",
@@ -35552,7 +35560,8 @@ def nonres_financing_report(nonres: dict[str, Any] | None) -> list[dict[str, Any
             {"label": "Проценты после ввода — уплачены", "value": f.get("interest_paid"), "unit": "rub"},
             {"label": "Проценты и комиссии — всего",
              "value": float(f.get("interest_capitalized") or 0) + float(f.get("interest_paid") or 0)
-                      + float(f.get("fee") or 0) + float(f.get("reservation_fee") or 0), "unit": "rub"},
+                      + float(f.get("fee") or 0) + float(f.get("reservation_fee") or 0)
+                      + float(f.get("commitment_fee") or 0), "unit": "rub"},
         ]
         if f.get("dscr_min") is not None:
             rows += [

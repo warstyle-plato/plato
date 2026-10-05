@@ -260,10 +260,25 @@ def test_a_pure_nonresidential_project_reserves_the_object_line_not_a_bridge() -
         assert f["limit"] == pytest.approx(f["draw_total"])
         assert f["reservation_fee"] == pytest.approx(
             f["limit"] * float(x["reservation_fee_pct"]) / 100, rel=1e-12)
-        assert f["reservation_fee"] + f["fee"] == pytest.approx(item["totals"]["loan_fee"], rel=1e-12)
+        # Невыбранный лимит — как у ПФ: (лимит − выбранное тело) × ставка / 12,
+        # с первой выдачи до ввода.
+        draws = item["rows"]
+        drawn, expected = 0.0, 0.0
+        for row in draws:
+            drawn += row["nonres_loan_draw"]
+            if drawn and row["month"] <= item["commissioning"]:
+                expected += max(0.0, f["limit"] - drawn) * float(x["limit_fee_pct"]) / 100 / 12
+        assert f["commitment_fee"] == pytest.approx(expected, rel=1e-9) and expected > 0
+        assert f["reservation_fee"] + f["commitment_fee"] + f["fee"] == pytest.approx(
+            item["totals"]["loan_fee"], rel=1e-12)
         rows = _rows({"rows": next(r["rows"] for r in result["report"]["nonres_financing"]
                                    if r["key"] == item["key"])})
         assert rows["Плата за резервирование лимита НКЛ"]["value"] == pytest.approx(f["reservation_fee"])
+    # Ставку человек вписывает свою или ставит 0 — тогда платы нет.
+    zero = core.calculate(core.CalcRequest(inputs={**x, "limit_fee_pct": 0, "reservation_fee_pct": 0},
+                                           tep=t, rates=[]))
+    for item in zero["finance"]["nonres"]["objects"]:
+        assert item["financing"]["commitment_fee"] == 0 and item["financing"]["reservation_fee"] == 0
     housing = core.calculate(core.CalcRequest(inputs=copy.deepcopy(core.DEFAULT_INPUTS),
                                               tep=copy.deepcopy(core.TEP_DEFAULT), rates=[]))
     assert housing["finance"]["bridge_fee"] > 0

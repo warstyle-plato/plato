@@ -128,6 +128,7 @@ PROJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("land_rights_relief", "Льгота и зачёт по плате за ВРИ, млн ₽"),
     ("parking_price_th", "Цена машино-места проекта по умолчанию, тыс ₽"),
     ("reservation_fee_pct", "Плата за резервирование лимита НКЛ объекта, % лимита"),
+    ("limit_fee_pct", "Плата за невыбранный лимит НКЛ, % годовых (0 — нет)"),
 )
 
 # Объект: ключ → подпись. Значения — столбцы C, D, … по объектам.
@@ -227,6 +228,7 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
         "land_rights_gross": spec["land_rights_gross_mln"],
         "land_rights_relief": spec["land_rights_relief_mln"],
         "reservation_fee_pct": spec.get("reservation_fee_pct", 0.0),
+        "limit_fee_pct": spec.get("limit_fee_pct", 0.0),
         **{key: cost.get(key, 0.0) for key in (
             "ird_th", "design_p_th", "design_rd_th", "author_supervision_pct", "demolition_area",
             "demolition_th", "resettlement_mln", "preparation_th", "main_above_th", "utilities_th",
@@ -658,6 +660,7 @@ INPUTS: dict[str, tuple[int, str]] = {key: (2 + i, label) for i, (key, label) in
     ("spread", "Спред кредита к ключевой ставке"),
     ("fee", "Комиссия за выдачу, доля выборки"),
     ("reservation", "Плата за резервирование лимита НКЛ, доля лимита"),
+    ("commitment", "Плата за невыбранный лимит НКЛ, доля в год"),
     ("term", "Срок кредита от первой выдачи, мес."),
     ("balloon_share", "Баллон, доля долга на ввод"),
     ("hold", "Срок удержания, мес."),
@@ -719,7 +722,7 @@ _COLUMN_LIST: tuple[tuple[str, str], ...] = (
     ("rate", "Ставка кредита"), ("bal_open", "Долг на начало"),
     ("interest", "Проценты"), ("int_cap", "Проценты капитализированные"),
     ("int_paid", "Проценты уплаченные"), ("draw", "Выборка"), ("fee", "Комиссия"),
-    ("first_k", "Служебная: выборка"), ("bal_after", "Долг после выборки"),
+    ("first_k", "Служебная: выборка"), ("commitment_fee", "Плата за невыбранный лимит"), ("bal_after", "Долг после выборки"),
     ("bal_build", "Служебная: долг стройки до погашений"), ("cash", "Деньги до погашения"),
     ("repay", "Погашение"), ("annuity", "Тело по аннуитету"),
     ("amort", "Плановое тело (для DSCR)"), ("bal_close", "Долг на конец"),
@@ -857,7 +860,12 @@ def _row_formulas(r: int, refs: dict[str, str]) -> dict[str, str]:
         "int_paid": f"=IF({A}>={_in('comm')},{v['interest']},0)",
         "draw": f"=IF({A}<={_in('comm')},({v['capex']}+{v['common']})*{_in('loan_share')},0)",
         "fee": (f"={v['draw']}*{_in('fee')}"
-                f"+IF(AND({_in('first_draw')}<1000000,{A}={_in('first_draw')}),{_in('reservation_fee')},0)"),
+                f"+IF(AND({_in('first_draw')}<1000000,{A}={_in('first_draw')}),{_in('reservation_fee')},0)"
+                f"+{v['commitment_fee']}"),
+        # Невыбранный лимит — с первой выдачи до ввода, как у ПФ до РВЭ.
+        "commitment_fee": (f"=IF(AND({_in('first_draw')}<1000000,{A}>={_in('first_draw')},"
+                           f"{A}<={_in('comm')}),MAX(0,{_in('loan_limit')}"
+                           f"-SUM({_c('draw')}${first}:{_c('draw')}{r}))*{_in('commitment')}/12,0)"),
         "first_k": f"=IF({v['draw']}>0,{A},1000000)",
         "bal_after": f"={v['bal_open']}+{v['int_cap']}+{v['draw']}",
         # Долг стройки без погашений: до ввода у доходного объекта погашений
@@ -961,6 +969,7 @@ def _object_sheet(book: Workbook, item: dict[str, Any], title: str, costs: _Cost
         "spread": f"={_o('spread', c)}/100",
         "fee": f"=MAX(0,{_o('fee', c)}/100)",
         "reservation": f"=MAX(0,{_p('reservation_fee_pct')}/100)",
+        "commitment": f"=MAX(0,{_p('limit_fee_pct')}/100)",
         "term": f"=MAX(1,INT({_o('term', c)}))*12",
         "balloon_share": f"=MIN(1,MAX(0,{_o('balloon', c)}/100))",
         "hold": f"=MAX(1,INT({_o('hold_years', c)}))*12",
@@ -1085,7 +1094,8 @@ def _object_sheet(book: Workbook, item: dict[str, Any], title: str, costs: _Cost
         "loan_draw": f"=SUM({col('draw')})",
         "loan_interest": f"=SUM({col('int_cap')})+SUM({col('int_paid')})",
         "loan_fee": f"=SUM({col('fee')})", "loan_repayment": f"=SUM({col('repay')})",
-        "issue_fee": f"=SUM({col('fee')})-{_in('reservation_fee')}",
+        "issue_fee": f"=SUM({col('fee')})-{_in('reservation_fee')}-SUM({col('commitment_fee')})",
+        "commitment_fee": f"=SUM({col('commitment_fee')})",
         "reservation_fee": f"={_in('reservation_fee')}", "limit": f"={_in('loan_limit')}",
         "loan_peak": f"={_in('peak')}", "tax_margin": f"=SUM({col('margin')})",
         "noi": f"=IF({income},SUM({col('noi')}),0)",
@@ -1152,7 +1162,7 @@ TOTAL_LABELS = {
     "loan_draw": "Кредит — выборка", "loan_interest": "Кредит — проценты",
     "loan_fee": "Кредит — комиссии всего", "loan_repayment": "Кредит — погашение",
     "issue_fee": "Комиссия за выдачу", "reservation_fee": "Плата за резервирование лимита НКЛ",
-    "limit": "Лимит НКЛ объекта",
+    "limit": "Лимит НКЛ объекта", "commitment_fee": "Плата за невыбранный лимит НКЛ",
     "loan_peak": "Кредит — пик долга", "noi": "NOI за срок удержания",
     "tax_margin": "Налоговая маржа объекта", "exit_value": "Стоимость выхода",
     "stabilized_noi": "Стабилизированный NOI", "dscr_min": "DSCR — минимум",
@@ -1454,7 +1464,8 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
     financing_rows = (
         ("loan_draw", "Выборка кредита"), ("draw_object", "в т.ч. на стройку объекта"),
         ("draw_common", "в т.ч. на общие затраты проекта"), ("limit", "Лимит НКЛ объекта"),
-        ("reservation_fee", "Плата за резервирование лимита НКЛ"), ("issue_fee", "Комиссия за выдачу"),
+        ("reservation_fee", "Плата за резервирование лимита НКЛ"),
+        ("commitment_fee", "Плата за невыбранный лимит НКЛ"), ("issue_fee", "Комиссия за выдачу"),
         ("interest_capitalized", "Проценты до ввода — капитализированы"),
         ("debt_at_commissioning", "Долг на ввод"), ("loan_peak", "Пик долга"),
         ("balloon_planned", "Баллон по графику"), ("repaid_scheduled", "Погашено плановым телом"),
@@ -1656,6 +1667,7 @@ def _check_rows(result: dict[str, Any], spec: dict[str, Any], objects_refs: list
         ("exit_value", "kpi"), ("stabilized_noi", "kpi"), ("dscr_min", "kpi"), ("icr_min", "kpi"),
         ("draw_object", "financing"), ("draw_common", "financing"),
         ("issue_fee", "financing:fee"), ("reservation_fee", "financing"), ("limit", "financing"),
+        ("commitment_fee", "financing"),
         ("interest_capitalized", "financing"), ("interest_paid", "financing"),
         ("debt_at_commissioning", "financing"), ("rate_at_commissioning", "financing"),
         ("avg_rate", "financing"), ("balloon_planned", "financing"), ("balloon_paid", "financing"),
