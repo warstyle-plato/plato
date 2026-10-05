@@ -38265,6 +38265,16 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     # сойтись с проектной, а место неделимо.
     object_parking_split: dict[str, tuple[float, int]] = {}
 
+    # Население очередей — делитель заданной руками площади двора: та же
+    # норма региона, что у самого счёта двора (`project_population`).
+    given_yard = float(x_master.get("landscaping_area_sqm") or 0.0)
+    _yard_region = str(x_master.get("vri_region") or "msk")
+    phase_populations = [
+        project_population({"apartments": phase_product_rows[i].get("apartments")
+                            or t_master.get("apartments") or {}}, _yard_region)[0]
+        for i in range(count)]
+    phase_populations_total = sum(phase_populations)
+
     for idx in range(count):
         cfg = phases_cfg[idx]
         name = str(cfg.get("name") or f"О{idx+1}")
@@ -38274,13 +38284,18 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         p_inputs["project_start"] = add_months(d(x_master["project_start"]), offset).isoformat()
         p_inputs["construction_months"] = int(cfg.get("construction_months", n(x_master,"construction_months",24)))
         p_inputs.pop("_glavapu_import", None)
-        # Благоустройство меряется м² на человека, и мера одна на проект и на
-        # очередь. Заданная руками ПЛОЩАДЬ — величина проекта: оставленная
+        # Заданная руками ПЛОЩАДЬ двора — величина проекта: оставленная
         # очереди целиком, она благоустроила бы один и тот же двор столько раз,
-        # сколько очередей. Приводим её к мере на человека — тогда очередь
-        # считает свою площадь своим населением, и сумма очередей сходится с
-        # проектом сама, без второго списка «что делить долями».
-        if float(x_master.get("landscaping_area_sqm") or 0.0) > 0:
+        # сколько очередей. Очередь получает долю площади по своему населению,
+        # и сумма очередей равна заданному числу ровно. Прежде площадь
+        # приводилась к мере на человека и умножалась на население очереди, а
+        # население каждой очереди округляется вверх: в Мытищах 7 145 жителей
+        # по очередям против 7 143 по проекту, и вписанные 78 595 м² в своде
+        # становились 78 617 (владелец, 05.10.2026).
+        if given_yard > 0 and phase_populations_total > 0:
+            p_inputs["landscaping_area_sqm"] = (
+                given_yard * phase_populations[idx] / phase_populations_total)
+        elif given_yard > 0:
             p_inputs["landscaping_area_per_person_sqm"] = landscaping_area_per_person(
                 x_master, t_master)[0]
             p_inputs["landscaping_area_sqm"] = 0.0
