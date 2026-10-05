@@ -144,7 +144,7 @@ FIELDS: tuple[HotelField, ...] = (
     HotelField("keys", "Номерной фонд", "номеров", "object",
                hint="делитель всех показателей «на номер»"),
     HotelField("gba_sqm", "Площадь гостиницы (ГНС)", "м²", "object", capex=True,
-               hint="строительный объём; CAPEX здания = ГНС × ставка"),
+               hint="ГНС здания; CAPEX здания = ГНС × ставка"),
     HotelField("cost_th_per_sqm", "Стройка здания", "тыс. ₽/м² ГНС с НДС", "object",
                capex=True, hint="СМР, сети и отделка без мебели и оборудования"),
     HotelField("ffe_th_per_key", "Мебель и оборудование (FF&E)", "тыс. ₽/номер с НДС",
