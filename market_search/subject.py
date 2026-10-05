@@ -141,7 +141,7 @@ class Subject:
     query: str
     address: str | None = None
     cadastre: str | None = None
-    project_id: int | None = None
+    project_id: str | None = None
     project_name: str | None = None
     segment: str | None = None
     notes: list[str] = field(default_factory=list)
