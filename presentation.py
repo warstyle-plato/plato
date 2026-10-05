@@ -269,6 +269,9 @@ def build_project_presentation(
         "layout": layout,
         "nonres_strategy": list(report.get("nonres_strategy") or []),
         "nonres_financing": list(report.get("nonres_financing") or []),
+        # Разделы проекта без жилья (`report.object_report`) — те же, что на
+        # странице и в PDF; тизер печатает их краткие строки.
+        "object_sections": list((report.get("object_report") or {}).get("sections") or []),
     }
 
 
