@@ -506,7 +506,11 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         params, price_date=_as_date(plan.get("start"), commissioning),
         revenue_multiplier=float(plan.get("revenue_multiplier", 1.0) or 1.0))
     horizon_end = plan_horizon_end(plan)
-    first = min([commissioning, *capex])
+    # Ряды начинаются с начала проекта, как месячные строки движка: NPV
+    # дисконтирует от первого месяца ряда, и ряд, начатый с первой затраты,
+    # дал бы другое число при тех же деньгах.
+    start = plan.get("start")
+    first = min([commissioning, *capex, *([_as_date(start, commissioning)] if start else [])])
     months: list[date] = []
     month = first
     while month <= horizon_end:
@@ -542,45 +546,51 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
             m["vat_refund"][min(add_months(mm, 3), horizon_end)] += vat
 
     # --- эксплуатация ---------------------------------------------------
+    # Срок расчёта и ещё 12 месяцев после него — одним правилом: EBITDA
+    # следующих 12 месяцев (база оценки выхода) считается тем же месяцем
+    # эксплуатации, с тем же износом здания, а не отдельной формулой.
     building_book = building_net
     ffe_book = ffe_net
-    for index, month in enumerate(months):
+    book_at_end = (building_net, ffe_net)
+    forward_ebitda = 0.0
+    forward = [add_months(horizon_end, k) for k in range(1, 13)]
+    for month in [*months, *forward]:
         if month < commissioning:
             continue
         months_open = month_index(commissioning, month) + 1
         row = operating_month(ops, month, months_open, vat_rate)
-        for name in OPERATING_SERIES:
-            m[name][month] = row[name]
-        m["occupancy"][month] = row["occupancy"]
-        m["adr"][month] = row["adr"]
         # Налог на имущество — со здания по остаточной стоимости (движимое
         # имущество с 2019 года не облагается); страхование — от CAPEX.
         dep_building = min(building_book, building_net / building_months)
         dep_ffe = min(ffe_book, ffe_net / ffe_months)
-        m["property_tax"][month] = (building_book - dep_building / 2.0) * property_rate / 12.0
-        m["insurance"][month] = (capex_net - land_total) * insurance_rate / 12.0
+        property_tax = (building_book - dep_building / 2.0) * property_rate / 12.0
+        insurance = (capex_net - land_total) * insurance_rate / 12.0
         building_book -= dep_building
         ffe_book -= dep_ffe
+        revenue = row["department_revenue"] + row["vat_relief"]
+        opex = (row["department_revenue"] - row["gop"] + row["base_fee"]
+                + row["incentive_fee"] + row["ffe_reserve"])
+        ebitda = revenue - opex - property_tax - insurance
+        if month > horizon_end:
+            forward_ebitda += ebitda
+            continue
+        for name in OPERATING_SERIES:
+            m[name][month] = row[name]
+        m["occupancy"][month] = row["occupancy"]
+        m["adr"][month] = row["adr"]
+        m["property_tax"][month] = property_tax
+        m["insurance"][month] = insurance
         m["depreciation"][month] = dep_building + dep_ffe
-        m["revenue"][month] = row["department_revenue"] + row["vat_relief"]
-        m["opex"][month] = (row["department_revenue"] - row["gop"] + row["base_fee"]
-                            + row["incentive_fee"] + row["ffe_reserve"])
-        m["ebitda"][month] = (m["revenue"][month] - m["opex"][month]
-                              - m["property_tax"][month] - m["insurance"][month])
+        m["revenue"][month] = revenue
+        m["opex"][month] = opex
+        m["ebitda"][month] = ebitda
+        if month == horizon_end:
+            book_at_end = (building_book, ffe_book)
+    building_book, ffe_book = book_at_end
 
     # --- выход ----------------------------------------------------------
     exit_mode = str(params.get("exit_mode") or EXIT_SALE)
     valuation = str(params.get("valuation") or VALUATION_CAP)
-    forward_ebitda = 0.0
-    for k in range(1, 13):
-        month = add_months(horizon_end, k)
-        months_open = month_index(commissioning, month) + 1
-        row = operating_month(ops, month, months_open, vat_rate)
-        building_tail = max(0.0, building_book - building_net / building_months * k)
-        forward_ebitda += (row["gop"] + row["vat_relief"] - row["base_fee"]
-                           - row["incentive_fee"] - row["ffe_reserve"]
-                           - building_tail * property_rate / 12.0
-                           - (capex_net - land_total) * insurance_rate / 12.0)
     if valuation == VALUATION_MULTIPLE:
         multiple = _num(params, "exit_multiple")
         exit_value = forward_ebitda * multiple if forward_ebitda > 0 else 0.0

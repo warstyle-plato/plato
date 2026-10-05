@@ -268,6 +268,8 @@ def build_project_presentation(
         "chart_rows": list(numbers.get("chart_rows") or []),
         "layout": layout,
         "nonres_strategy": list(report.get("nonres_strategy") or []),
+        # Гостиница — таблица движка (`hotel_report`), как на экране и в PDF.
+        "hotel": report.get("hotel"),
     }
 
 
