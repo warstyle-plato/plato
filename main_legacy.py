@@ -89,7 +89,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.4"
+VERSION = "0.25.7"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -23909,8 +23909,10 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
         "margin": float(summary.get("margin") or 0.0),
         # NPV и IRR снимает движок при непогашенном долге: None и подпись
         # причины, а не ноль.
-        "npv_mln": (None if summary.get("npv") is None
-                    else float(summary.get("npv")) / 1e6),
+        # Подпись строки — «NPV собственного капитала», и считается он по
+        # потоку капитала, как у книги (`_equity_npv`), а не по потоку проекта.
+        "npv_mln": (None if summary.get("npv_equity") is None
+                    else float(summary.get("npv_equity")) / 1e6),
         "equity_returns_na": equity_returns_na_label(summary),
         "commercial_mln": float(summary.get("commercial_costs") or 0.0) / 1e6,
         "rve_unpaid_mln": float(finance.get("rve_unpaid") or 0.0) / 1e6,
@@ -31907,6 +31909,21 @@ def _monthly_npv(cashflows: list[float], annual_rate: float) -> float:
     return sum(cf / pow(1.0 + monthly_rate, i) for i, cf in enumerate(cashflows))
 
 
+def _equity_npv(cashflows: list[float], annual_rate: float) -> float:
+    """NPV потока собственного капитала — методикой книги.
+
+    `КОНСОЛИДАТОР!O8` = 'CF'!D25 + NPV('Вводные'!B23/12, 'CF'!E25:GA25):
+    первый месяц без дисконта, дальше ставка «годовая / 12». Тот же поток, что
+    у IRR капитала. `npv` сводки — другой вопрос (поток проекта без кредитов);
+    тизер подписывал его «NPV собственного капитала», и рядом с IRR капитала
+    две строки спорили: IRR 411 % при NPV −29,7 млн ₽ (владелец, 05.10.2026).
+    """
+    if not cashflows:
+        return 0.0
+    monthly_rate = max(annual_rate, -0.999999) / 12.0
+    return sum(cf / pow(1.0 + monthly_rate, i) for i, cf in enumerate(cashflows))
+
+
 def _monthly_irr(cashflows: list[float]) -> float | None:
     if not cashflows or not any(v < 0 for v in cashflows) or not any(v > 0 for v in cashflows):
         return None
@@ -31987,6 +32004,7 @@ def _apply_equity_returns_verdict(summary: dict[str, Any] | None) -> dict[str, A
     ending = float(summary.get("ending_pf") or 0.0)
     if ending > EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB:
         summary["npv"] = None
+        summary["npv_equity"] = None
         summary["irr_equity"] = None
         summary["equity_returns"] = {
             "status": EQUITY_RETURNS_DEBT_UNREPAID,
@@ -35424,6 +35442,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
 
     discount_rate = n(x, "discount_rate_pct", 20) / 100
     project_npv = _monthly_npv(project_cf, discount_rate)
+    equity_npv = _equity_npv(equity_cf, discount_rate)
     irr_equity = _monthly_irr(equity_cf)
 
     # Product economics / sales KPIs.
@@ -35770,6 +35789,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "object_instances": list(project_object_instances(x)),
             "object_instance_notes": instance_notes,
             "npv": project_npv,
+            "npv_equity": equity_npv,
             "irr_equity": irr_equity,
             "full_project_cost": full_project_cost,
             "monetizable_saleable_sqm": monetizable_saleable_sqm,
@@ -37591,6 +37611,7 @@ def _consolidate_phase_results(
     }
     discount_rate = n(master_inputs, "discount_rate_pct", 20) / 100
     npv = _monthly_npv(project_cf, discount_rate) if project_cf else 0.0
+    npv_equity = _equity_npv(equity_cf, discount_rate) if equity_cf else 0.0
     irr_equity = _monthly_irr(equity_cf) if equity_cf else None
 
     def per_th(value: float, area: float) -> float:
@@ -37833,7 +37854,7 @@ def _consolidate_phase_results(
             "min_phase_llcr": min((r["summary"]["llcr"] for r in results), default=0.0),
             "scenario_revenue_multiplier": n(master_inputs, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(master_inputs, "scenario_cost_multiplier", 1.0),
-            "npv": npv, "irr_equity": irr_equity,
+            "npv": npv, "npv_equity": npv_equity, "irr_equity": irr_equity,
             "full_project_cost": full_cost,
             "monetizable_saleable_sqm": saleable,
             "apartment_saleable_sqm": apartment_saleable,
