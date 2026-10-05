@@ -67,7 +67,9 @@ def _row(number: int, cells: list[str]) -> str:
 
 def _shown(row: dict[str, Any]) -> tuple[str, Any]:
     unit, value = row.get("unit"), row.get("value")
-    if unit in ("rub", "pct"):
+    if unit in ("rub", "pct", "mult"):
+        if value is None:
+            return "text", "—"
         return "number", float(value or 0.0)
     if unit == "date":
         return "text", ".".join(reversed(str(value or "—")[:7].split("-")))

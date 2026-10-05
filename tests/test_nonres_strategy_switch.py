@@ -341,3 +341,161 @@ def test_a_ddu_book_has_no_strategy_sheet() -> None:
     book, meta = _book(offices_strategy="ddu")
     assert "Нежильё — стратегия" not in book.sheetnames
     assert not any("Нежильё — стратегия" in item for item in meta["missing"])
+
+
+# --- кредит удержания и общие затраты нежилого проекта -----------------------
+
+def test_the_hold_loan_amortizes_to_its_balloon() -> None:
+    """После ввода — аннуитет на срок кредита, в конце баллон (владелец, 04.10.2026)."""
+    plan = _plan("income", hold_years=12, loan_term_years=10, loan_balloon_pct=20,
+                 debt_repayment="annuity", rent_th_per_sqm_month=6.0)
+    flows = ns.object_flows(plan, lambda m: 0.10, vat_rate=0.22)
+    monthly, kpi = flows["monthly"], flows["kpi"]
+    at_commissioning = monthly["loan_balance"][date(2028, 1, 1)]
+    assert kpi["loan_balloon"] == pytest.approx(at_commissioning * 0.20)
+    # Срок — от первой выдачи (2027-01), а не от ввода (2028-01).
+    assert kpi["loan_maturity"] == date(2037, 1, 1)
+    # Платёж (проценты + тело) постоянен при постоянной ставке.
+    payments = [monthly["loan_interest_paid"][mm] + monthly["loan_amortization"][mm]
+                for mm in (date(2028, 2, 1), date(2031, 6, 1), date(2036, 12, 1))]
+    assert payments[0] == pytest.approx(payments[1]) == pytest.approx(payments[2])
+    # Перед баллоном долг ровно баллон, в срок он погашен.
+    assert monthly["loan_balance"][date(2036, 12, 1)] == pytest.approx(kpi["loan_balloon"])
+    assert monthly["loan_repayment"][date(2037, 1, 1)] == pytest.approx(kpi["loan_balloon"])
+    assert monthly["loan_balance"].get(date(2037, 1, 1), 0.0) == pytest.approx(0.0, abs=1e-6)
+    # На стройке тело не гасится — льготный период.
+    assert not any(v for mm, v in monthly.get("loan_amortization", {}).items() if mm <= date(2028, 1, 1))
+    assert kpi["dscr_min"] is not None and kpi["dscr_min"] < kpi["icr_min"]
+
+
+def test_a_sale_before_maturity_repays_the_rest_from_the_exit() -> None:
+    flows = ns.object_flows(_plan("income", hold_years=5, loan_term_years=10),
+                            lambda m: 0.10, vat_rate=0.22)
+    exit_month = flows["kpi"]["exit_month"]
+    assert flows["monthly"]["loan_repayment"][exit_month] > flows["kpi"]["loan_balloon"]
+    assert flows["monthly"]["loan_balance"].get(exit_month, 0.0) == pytest.approx(0.0, abs=1e-6)
+
+
+def _nonresidential(**over):
+    x, t = _spec(**over)
+    for key in core.MKD_PRODUCTS:
+        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            if key in t:
+                t[key][col] = 0
+    x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+    return core._run_authoritative_model(x, t, [], {})["consolidated"]
+
+
+def test_a_nonresidential_project_lends_on_the_whole_cost() -> None:
+    """Офисник без жилья: общие затраты (участок, надбавки) — в кредит объекта,
+    БРИДЖа и ПФ без эскроу нет."""
+    result = _nonresidential(offices_strategy="income")
+    office = _object(result)["totals"]
+    total_capex = result["finance"]["total_capex"]
+    share = core.DEFAULT_INPUTS["offices_loan_share_pct"] / 100
+    assert office["loan_draw"] > office["capex"] * share
+    assert office["loan_draw"] <= total_capex * share + 1.0
+    assert result["finance"]["peak_pf"] == pytest.approx(0.0, abs=1.0)
+    assert _rows_sum(result, "pf_draw") == pytest.approx(0.0, abs=1.0)
+    assert _rows_sum(result, "bridge_draw") == pytest.approx(0.0, abs=1.0)
+
+
+def test_a_mixed_project_keeps_the_common_costs_on_the_housing_loan() -> None:
+    result = _run(offices_strategy="income")
+    office = _object(result)["totals"]
+    share = core.DEFAULT_INPUTS["offices_loan_share_pct"] / 100
+    assert office["loan_draw"] == pytest.approx(office["capex"] * share, rel=1e-9)
+    assert _rows_sum(result, "pf_draw") > 0
+
+
+def _pdf_text(result, x, t, tmp_path, name):
+    pypdf = pytest.importorskip("pypdf")
+    content = core._build_developaid_pdf({"project_name": name, "result": result,
+                                          "inputs": x, "tep": t, "rates": []})
+    path = tmp_path / f"{name}.pdf"
+    path.write_bytes(content)
+    return " ".join("\n".join(p.extract_text() or "" for p in pypdf.PdfReader(str(path)).pages).split())
+
+
+def test_the_nonresidential_pdf_has_no_bank_blocks(tmp_path) -> None:
+    x, t = _spec(offices_strategy="income")
+    for key in core.MKD_PRODUCTS:
+        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            if key in t:
+                t[key][col] = 0
+    x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+    result = core._run_authoritative_model(x, t, [], {})["consolidated"]
+    assert result["report"]["layout"]["project_finance"] is False
+    text = _pdf_text(result, x, t, tmp_path, "nonres")
+    assert "Проект без продаж по ДДУ" in text
+    assert "DSCR — минимум по годам" in text
+    assert "Расчётный БРИДЖ" not in text and "Эскроу против обязательств" not in text
+    mixed = _run(offices_strategy="income")
+    xm, tm = _spec(offices_strategy="income")
+    mixed_text = _pdf_text(mixed, xm, tm, tmp_path, "mixed")
+    assert "Расчётный БРИДЖ" in mixed_text and "Проект без продаж по ДДУ" not in mixed_text
+
+
+def test_the_nonresidential_teaser_speaks_of_the_object_loan(tmp_path) -> None:
+    pypdf = pytest.importorskip("pypdf")
+    x, t = _spec(offices_strategy="income")
+    for key in core.MKD_PRODUCTS:
+        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            if key in t:
+                t[key][col] = 0
+    x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+
+    def text_of(inputs, tep, name):
+        bundle = core._run_authoritative_model(inputs, tep, [], {})
+        pdf = core.build_teaser_pdf(bundle, inputs, tep, {})
+        path = tmp_path / f"{name}.pdf"
+        path.write_bytes(pdf)
+        return " ".join("\n".join(p.extract_text() or "" for p in pypdf.PdfReader(str(path)).pages).split()), bundle
+
+    text, bundle = text_of(x, t, "teaser_nonres")
+    assert "DSCR — минимум по годам" in text
+    assert "LLCR" not in text and "Пик эскроу" not in text and "Пик БРИДЖа" not in text
+    presentation = core.project_presentation(bundle, x, t, {})
+    assert not {"llcr", "peak_bridge_mln", "peak_pf_mln"} & {k["key"] for k in presentation["kpi"]}
+    assert not {"llcr_below_target", "weakest_phase"} & {r["key"] for r in presentation["risks"]}
+    xm, tm = _spec(offices_strategy="income")
+    mixed, _ = text_of(xm, tm, "teaser_mixed")
+    assert "LLCR" in mixed and "Пик эскроу" in mixed
+
+
+def test_the_bot_card_of_a_nonresidential_project_names_the_object_loan(monkeypatch) -> None:
+    x, t = _spec(offices_strategy="income")
+    for key in core.MKD_PRODUCTS:
+        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            if key in t:
+                t[key][col] = 0
+    x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+    layout = core._run_authoritative_model(x, t, [], {})["consolidated"]["report"]["layout"]
+
+    def card(summary):
+        sent: list[str] = []
+        monkeypatch.setattr(core, "_telegram_verify_session", lambda s: {"chat_id": 42, "cad": []})
+        monkeypatch.setattr(core, "_telegram_user_allowed", lambda c: True)
+        monkeypatch.setattr(core, "_telegram_send_message", lambda chat_id, text, **kw: sent.append(text))
+        monkeypatch.setattr(core, "_telegram_web_app_url", lambda *a, **k: "https://example.org/")
+        core.telegram_result(core.TelegramResultRequest(session="s", summary={
+            "purchase_price_mln": 500, "net_profit_mln": 900, "llcr": 0.0,
+            "revenue_mln": 12000, "total_expenses_mln": 11000, **summary}))
+        return sent[0]
+
+    text = card({"layout": layout})
+    assert "LLCR" not in text and "БРИДЖ" not in text and "квартиры" not in text
+    assert "dscr — минимум по годам" in text
+    dscr = next(tile for tile in layout["nonres_tiles"] if tile["unit"] == "mult")
+    assert core._telegram_tile(dscr) in text
+    assert "LLCR" in card({})  # старый результат без решения — как прежде
+
+
+@pytest.mark.parametrize("dscr,status", [(0.9, "negative"), (1.1, "review"), (1.5, "positive")])
+def test_the_verdict_of_a_project_without_ddu_reads_the_dscr(dscr, status) -> None:
+    verdict = core._purchase_feasibility(500, 900, 0.0, 0.0, 0.0, None, 0.0, None, dscr)
+    assert verdict["status"] == status
+    assert "DSCR" in verdict["text"] and "LLCR" not in verdict["text"]
+    assert core._layout_dscr({"project_finance": True, "nonres_tiles": [{"unit": "mult", "value": 0.5}]}) is None
+    assert core._layout_dscr({"project_finance": False, "nonres_tiles": [
+        {"unit": "mult", "value": 1.4}, {"unit": "rub", "value": 9.0}]}) == 1.4

@@ -415,7 +415,8 @@ def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, 
     rows.append(("EBITDA", fm.mln(eff.get("ebitda_mln")), "млн ₽"))
     rows.append(("Чистая прибыль", fm.mln(eff.get("net_profit_mln")), "млн ₽"))
     rows.append(("Маржинальность", fm.pct(eff.get("margin")), ""))
-    rows.append(("LLCR (цель банка " + fm.x(model.get("llcr_target")) + ")", fm.x(eff.get("llcr")), ""))
+    if _bank(model):
+        rows.append(("LLCR (цель банка " + fm.x(model.get("llcr_target")) + ")", fm.x(eff.get("llcr")), ""))
     rows.append(_npv_row(eff, fm))
     term = eff.get("term_months")
     rows.append(("Срок до РВЭ", fm.count(term) + (f" · {fm.num(term / 12, 2)} года" if term else ""), "мес."))
@@ -425,10 +426,49 @@ def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, 
                  fm.mln(entry) + (f" · {fm.th(per, 0)} тыс ₽/м² прод." if per else ""), "млн ₽"))
     if sales.get("share_before_rve") is not None:
         rows.append(("Распроданность до ввода", fm.pct(sales.get("share_before_rve"), 0), ""))
-    return rows, (8, 10, 13)
+    # Жирные строки — по подписи, а не по номеру: номер сдвигается от каждой
+    # необязательной строки выше (цена квартир, СМР, LLCR).
+    strong = tuple(i for i, row in enumerate(rows)
+                   if row[0] == "Чистая прибыль" or row[0].startswith(("LLCR", "Стоимость входа")))
+    return rows, strong
+
+
+def _bank(model: dict[str, Any]) -> bool:
+    """Есть ли у проекта БРИДЖ, ПФ и эскроу — решение движка (`report.layout`)."""
+    return bool((model.get("layout") or {}).get("project_finance", True))
+
+
+def _nonres_value(row: dict[str, Any], fm: "_Formats") -> tuple[str, str]:
+    unit, value = row.get("unit"), row.get("value")
+    if unit == "rub":
+        return fm.mln((float(value) / 1e6) if value is not None else None), "млн ₽"
+    if unit == "pct":
+        return fm.pct(value), ""
+    if unit == "mult":
+        return (fm.x(value) if value is not None else "—"), ""
+    if unit == "date":
+        return ".".join(reversed(str(value or "—")[:7].split("-"))), ""
+    return str(value or "—"), ""
+
+
+def _nonres_financing_rows(model: dict[str, Any], fm: "_Formats") -> list[tuple[str, str, str]]:
+    """Финансирование проекта без ДДУ: кредит объекта и капитал (таблица движка)."""
+    rows: list[tuple[str, str, str]] = []
+    for tile in (model.get("layout") or {}).get("nonres_tiles") or []:
+        rows.append((str(tile.get("label")), *_nonres_value(tile, fm)))
+    wanted = ("Кредит объекта — проценты и комиссии", "Кредит объекта — срок погашения",
+              "Кредит объекта — баллон в конце срока")
+    for item in model.get("nonres_strategy") or []:
+        for row in item.get("rows") or []:
+            if row.get("label") in wanted:
+                rows.append((f"{item.get('title')}: {str(row['label']).replace('Кредит объекта — ', '')}",
+                             *_nonres_value(row, fm)))
+    return rows
 
 
 def _financing_rows(model: dict[str, Any], fm: _Formats) -> list[tuple[str, str, str]]:
+    if not _bank(model):
+        return _nonres_financing_rows(model, fm)
     fin = model.get("financing") or {}
     rows: list[tuple[str, str, str]] = [
         ("Пик БРИДЖа", fm.mln(fin.get("peak_bridge_mln")), "млн ₽"),
@@ -458,7 +498,10 @@ def _risk_lines(model: dict[str, Any], st: _Styles, fm: _Formats) -> list[Any]:
         shown = fm.x(risk.get("value")) if unit == "x" else fm.mln(risk.get("value")) + " млн ₽"
         detail = f" ({risk['detail']})" if risk.get("detail") else ""
         out.append(Paragraph(f"• {risk['label']}: {shown}{detail}", st.risk_on))
-    if not active:
+    if not active and not _bank(model):
+        out.append(Paragraph("Рисков модель не нашла: проект без ДДУ, БРИДЖа и ПФ нет; "
+                             "покрытие кредита объекта — в DSCR.", st.risk_off))
+    elif not active:
         out.append(Paragraph("Рисков модель не нашла: дефолта в РВЭ нет, лимита хватает, "
                              "LLCR не ниже цели банка.", st.risk_off))
     return out
@@ -659,7 +702,7 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
     # Колонка 1: эффективность и ТЭП по продуктам.
     term = eff.get("term_months")
     col1: list[Any] = [_section("Показатели эффективности проекта", col_w, st)]
-    col1.append(_kv([
+    efficiency = [
         ("EBITDA", fm.mln(eff.get("ebitda_mln")), "млн ₽"),
         ("Чистая прибыль", fm.mln(eff.get("net_profit_mln")), "млн ₽"),
         ("Operating margin", fm.pct(eff.get("margin")), ""),
@@ -669,7 +712,12 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
         ("Длительность до РВЭ", (fm.num(term / 12, 2) if term else "—"), "лет"),
         ("LLCR проекта", fm.x(eff.get("llcr")), ""),
         ("Полные расходы проекта", fm.mln(eff.get("full_project_cost_mln")), "млн ₽"),
-    ], col_w, st, label_share=0.56, bold_rows=(6,)))
+    ]
+    if not _bank(model):
+        efficiency = [row for row in efficiency if row[0] != "LLCR проекта"]
+        efficiency[5] = ("Длительность до ввода", efficiency[5][1], "лет")
+    col1.append(_kv(efficiency, col_w, st, label_share=0.56,
+                    bold_rows=tuple(i for i, row in enumerate(efficiency) if row[0] == "LLCR проекта")))
     col1.append(_section("ТЭП", col_w, st))
     tep_rows = [[p["label"], fm.sqm(p.get("gns")) if p.get("gns") else "—",
                  fm.sqm(p.get("saleable")) if p.get("saleable") else "—",
@@ -684,7 +732,7 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
                       [col_w * 0.40, col_w * 0.22, col_w * 0.22, col_w * 0.16], st, bold_last=True))
     taxes = model.get("taxes") or {}
     col1.append(_section("Финансовая деятельность и налоги", col_w, st))
-    col1.append(_kv([
+    bank_rows = [
         ("Пик эскроу", fm.mln(fin.get("peak_escrow_mln")), "млн ₽"),
         ("Раскрыто эскроу в РВЭ", fm.mln(fin.get("rve_escrow_release_mln")), "млн ₽"),
         ("Проценты БРИДЖа", fm.mln(fin.get("bridge_interest_mln")), "млн ₽"),
@@ -694,7 +742,11 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
          fm.mln((fin.get("pf_limit_fee_mln") or 0.0) + (fin.get("pf_reservation_fee_mln") or 0.0)), "млн ₽"),
         ("Налог на прибыль", fm.mln(taxes.get("profit_tax_mln")), "млн ₽"),
         ("НДС", fm.mln(taxes.get("vat_mln")), "млн ₽"),
-    ], col_w, st, label_share=0.6))
+    ]
+    if not _bank(model):
+        # Эскроу, БРИДЖа и ПФ нет: деньги банка — кредит объекта.
+        bank_rows = _nonres_financing_rows(model, fm) + bank_rows[-2:]
+    col1.append(_kv(bank_rows, col_w, st, label_share=0.6))
 
     # Колонка 2: доходы, цены, темпы, график.
     col2: list[Any] = [_section("Доходы", col_w, st)]
@@ -723,7 +775,8 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
                            (fm.num(pace, 0) + ("/мес." if pace else "")) if pace else "—", unit])
     col2.append(_grid(["Продукт", "средняя", "старт", "темп", "ед."], price_rows,
                       [col_w * 0.34, col_w * 0.16, col_w * 0.16, col_w * 0.18, col_w * 0.16], st))
-    chart = _line_chart(model.get("chart_rows") or [], col_w, 108, st, fm)
+    chart = (_line_chart(model.get("chart_rows") or [], col_w, 108, st, fm)
+             if _bank(model) else None)
     if chart is not None:
         col2.append(Spacer(1, 2 * mm))
         col2.append(chart)

@@ -14,6 +14,8 @@
 
 Запуск:  python3 scripts/prod_smoke.py --base https://developaid.ru
 Ключ владельца (тизер и экономика «Итога» — за входом): PROD_SMOKE_ADMIN_KEY.
+Ключ раздела «Торги» (закрыт, пока есть действующие личные ключи):
+PROD_SMOKE_AUCTIONS_KEY — ключ кабинета рынка или общий AUCTIONS_VIEW_KEY.
 Нет ключа — проверка ПРОПУЩЕНА с причиной, а не зелёная.
 """
 
@@ -606,8 +608,36 @@ def browser_project(base: str, ref: dict[str, Any], admin_key: str, out: Path,
     return project
 
 
-def browser_auction_export(base: str, out: Path, log: Callable[[str], None]) -> tuple[int, bytes, int]:
-    """Страница торгов: выборка, которую видит человек, и её кнопка выгрузки."""
+AUCTIONS_KEY_ENV = "PROD_SMOKE_AUCTIONS_KEY"
+AUCTIONS_NO_KEY = ("раздел «Торги» закрыт входом (есть действующие личные ключи или "
+                   "задан AUCTIONS_VIEW_KEY): нужен ключ — секрет в прогон "
+                   f"{AUCTIONS_KEY_ENV} (ключ кабинета рынка или AUCTIONS_VIEW_KEY)")
+
+
+class AuctionsLocked(Exception):
+    """Страница торгов ответила формой входа. `keyed` — был ли ключ у прогона."""
+
+    def __init__(self, reason: str, keyed: bool):
+        super().__init__(reason)
+        self.keyed = keyed
+
+
+def _auctions_login(page, base: str, key: str, log: Callable[[str], None]) -> bool:
+    """Войти в раздел торгов той же формой, что и человек. Cookie остаётся в
+    контексте страницы: `page.request` делит её с браузером."""
+    response = page.request.post(base + "/auctions/login", form={"key": key},
+                                 max_redirects=0, timeout=60_000)
+    accepted = response.status in (302, 303)
+    log(f"вход в торги: HTTP {response.status}" + ("" if accepted else " — ключ не принят"))
+    return accepted
+
+
+def browser_auction_export(base: str, out: Path, log: Callable[[str], None],
+                           key: str = "") -> tuple[int, bytes, int]:
+    """Страница торгов: выборка, которую видит человек, и её кнопка выгрузки.
+
+    Раздел может быть закрыт входом. Тогда без ключа — `AuctionsLocked` сразу,
+    с причиной, а не таймаут ожидания страницы, которой за формой нет."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
@@ -617,7 +647,18 @@ def browser_auction_export(base: str, out: Path, log: Callable[[str], None]) -> 
             _route_via_python(page)
         alerts: list[str] = []
         page.on("dialog", lambda d: (alerts.append(d.message), d.dismiss()))
-        page.goto(base + "/auctions", wait_until="domcontentloaded", timeout=120_000)
+        refused = bool(key) and not _auctions_login(page, base, key, log)
+        response = page.goto(base + "/auctions", wait_until="domcontentloaded", timeout=120_000)
+        locked = ((response is not None and response.status == 401)
+                  or page.locator('form[action="/auctions/login"]').count() > 0)
+        if locked:
+            browser.close()
+            if not key:
+                raise AuctionsLocked(AUCTIONS_NO_KEY, keyed=False)
+            raise AuctionsLocked(
+                "раздел «Торги» закрыт входом, а ключ прогона "
+                + ("не принят /auctions/login" if refused else "не открыл страницу"),
+                keyed=True)
         # Лоты страница сама не тянет: человек жмёт «Обновить» — и мы тоже.
         page.wait_for_function("typeof discover==='function'", timeout=120_000)
         page.click("#refresh")
@@ -652,7 +693,7 @@ def guarded(name: str, expected: str, body: Callable[[], Check]) -> Check:
 
 
 def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
-        log: Callable[[str], None]) -> list[Check]:
+        log: Callable[[str], None], auctions_key: str = "") -> list[Check]:
     checks: list[Check] = []
     out.mkdir(parents=True, exist_ok=True)
 
@@ -717,7 +758,7 @@ def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
 
     # 3. Выгрузка торгов.
     try:
-        status, body, count = browser_auction_export(base, out, log)
+        status, body, count = browser_auction_export(base, out, log, auctions_key)
         if status != 200:
             checks.append(Check("3. Excel-выгрузка торгов", FAIL, "HTTP 200, xlsx",
                                 f"HTTP {status}: {body[:200]!r}"))
@@ -725,6 +766,11 @@ def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
             check = judge_auction_export(body, ref)
             check.got = f"выборка на странице {count} лотов; " + check.got
             checks.append(check)
+    except AuctionsLocked as exc:
+        # Без ключа — пропуск с причиной, как у тизера: проверять нечем. С ключом,
+        # который не открыл раздел, — провал: вход сломан или ключ устарел.
+        checks.append(Check("3. Excel-выгрузка торгов", FAIL if exc.keyed else SKIP,
+                            "выборка и xlsx", "HTTP 401 — форма входа", str(exc)))
     except ImportError as exc:
         checks.append(Check("3. Excel-выгрузка торгов", SKIP, "xlsx", "—", f"нет playwright ({exc})"))
     except Exception as exc:  # noqa: BLE001
@@ -810,7 +856,8 @@ def main(argv: list[str] | None = None) -> int:
         checks.append(arrived)
     if not checks or checks[-1].status == OK:
         try:
-            checks += run(base, ref, admin_key, Path(args.out), log)
+            checks += run(base, ref, admin_key, Path(args.out), log,
+                          os.environ.get(AUCTIONS_KEY_ENV, "").strip())
         except Exception as exc:  # noqa: BLE001 — итог и json пишутся всегда
             first = (str(exc).splitlines() or [""])[0][:300]
             checks.append(Check("Прогон", FAIL, "все проверки выполнены", "прогон прерван",
