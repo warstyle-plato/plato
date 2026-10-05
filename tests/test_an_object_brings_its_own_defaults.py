@@ -80,7 +80,9 @@ def test_a_new_roster_line_brings_its_whole_form() -> None:
 
     # Форма сверяется с уже живущим объектом той же меры и с тем же гаражом:
     # свой список «каким полям быть» разошёлся бы с генератором молча.
-    offices = core.standalone_objects(("offices",))[0]
+    # Выбор стратегии реализации — признак строки (`strategies`), у новой
+    # строки его нет: сверяемся с офисами без него.
+    offices = core.standalone_objects(("offices",))[0]._replace(strategies=False)
     expected = {key.replace("offices_", "hotel_", 1)
                 for key in core.standalone_object_defaults(offices)}
     assert added == expected
