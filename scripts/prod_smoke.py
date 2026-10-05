@@ -14,6 +14,8 @@
 
 Запуск:  python3 scripts/prod_smoke.py --base https://developaid.ru
 Ключ владельца (тизер и экономика «Итога» — за входом): PROD_SMOKE_ADMIN_KEY.
+Ключ раздела «Торги» (закрыт, пока есть действующие личные ключи):
+PROD_SMOKE_AUCTIONS_KEY — ключ кабинета рынка или общий AUCTIONS_VIEW_KEY.
 Нет ключа — проверка ПРОПУЩЕНА с причиной, а не зелёная.
 """
 
@@ -286,39 +288,106 @@ def judge_workbook(xlsx: bytes, tep: dict[str, Any], ref: dict[str, Any]) -> Che
     return Check(name, FAIL if missing else OK, expected, got, detail)
 
 
+_UNIT_RE = re.compile(r"(?:тыс\.|млн|млрд)\s*₽\s*/\s*м²\s*(.*)$")
+
+
+def _base_words(cfg: dict[str, Any]) -> dict[str, str]:
+    """Слова базы → ключ базы: родительный падеж из словаря терминов
+    (`terms_glossary` — его же печатает страница) и сокращения страницы из
+    эталона. Явная карта: база, которой в ней нет, — ошибка, а не догадка."""
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    import terms_glossary as tg
+    words = {t.genitive.lower(): key for key, t in tg.TERMS.items()}
+    words.update({k.lower(): v for k, v in (cfg.get("base_abbreviations") or {}).items()
+                  if not k.startswith("_")})
+    return words
+
+
+def per_metre_bases(value: str, words: dict[str, str]) -> list[str]:
+    """«310,2 тыс. ₽/м² прод. · 250,1 тыс. ₽/м² суммарной площади в ГНС» →
+    ["saleable_area", "total_area"]. Число без делителя — «?», делитель не из
+    словаря — «?слова»."""
+    out = []
+    for part in value.split("·"):
+        match = _UNIT_RE.search(part.strip())
+        if not match:
+            out.append("?")
+            continue
+        said = re.sub(r"\s+", " ", match.group(1)).strip().lower()
+        out.append(words.get(said, "?" + said))
+    return out
+
+
+def _base_name(key: str, words: dict[str, str]) -> str:
+    names = [w for w, k in words.items() if k == key]
+    return max(names, key=len) if names else key
+
+
 def judge_itog(page: dict[str, Any], ref: dict[str, Any]) -> Check:
-    """«Итог»: удельные числа подписаны единицей с делителем.
+    """«Итог»: каждое удельное число подписано делителем СВОЕЙ базы.
+
+    Решение 4 ревизии книги: расходы — на суммарную площадь в ГНС (и для
+    сравнения на продаваемую), строительство — на площадь МКД, EBITDA и
+    прибыль — на продаваемую. Какой строке какая база — эталон, сверенный с
+    движком тестом `tests/test_prod_smoke_itog_matches_the_page.py`.
 
     `page` — то, что отрисовано: строки «Ключевых параметров» (подпись →
-    значение), заголовки «Удельной экономики» и число её строк, текст раздела."""
+    значение), заголовки «Удельной экономики», её ячейки, текст раздела."""
     name = "5. Страница «Итог»"
     cfg = ref["itog"]
-    expected = ("удельные строки «Ключевых параметров» — «тыс. ₽/м² <база>» в обеих базах; "
-                "заголовки «Удельной экономики»: " + ", ".join(f"«{h}»" for h in cfg["unit_headers"]))
+    words = _base_words(cfg)
+    rows = {k: v for k, v in cfg["per_metre_rows"].items() if not k.startswith("_")}
+    expected = ("удельные строки «Ключевых параметров» — «тыс. ₽/м² <своя база>»: "
+                + "; ".join(f"{label} — " + " · ".join(_base_name(b, words) for b in bases)
+                            for label, bases in rows.items())
+                + "; заголовки «Удельной экономики»: " + ", ".join(f"«{h}»" for h in cfg["unit_headers"]))
     params: dict[str, str] = page.get("params") or {}
     problems: list[str] = []
     if not params:
         return Check(name, FAIL, expected, "«Ключевые параметры» пусты", "расчёт не отрисован")
-    for label in cfg["per_metre_rows"]:
+    for label, want in rows.items():
         value = params.get(label)
         if value is None:
             problems.append(f"нет строки «{label}»")
             continue
-        units = re.findall(r"(?:тыс\.|млн|млрд)\s*₽\s*/\s*м²\s*([^\d·]*)", value)
-        bases = [u.strip() for u in units if u.strip()]
-        if len(bases) < 2:
-            problems.append(f"«{label}: {value}» — нет единицы с делителем в обеих базах")
+        got = per_metre_bases(value, words)
+        if "?" in got:
+            problems.append(f"«{label}: {value}» — число без единицы с делителем")
+        elif any(b.startswith("?") for b in got):
+            problems.append(f"«{label}: {value}» — база не из словаря: "
+                            + ", ".join(f"«{b[1:]}»" for b in got if b.startswith("?")))
+        elif got != want:
+            problems.append(f"«{label}: {value}» — база не та: ждали "
+                            + " · ".join(_base_name(b, words) for b in want))
     headers = [re.sub(r"\s+", " ", h).strip() for h in page.get("unit_headers") or []]
-    for want in cfg["unit_headers"]:
-        if not any(h.lower() == want.lower() for h in headers):
-            problems.append(f"в «Удельной экономике» нет колонки «{want}» (есть: {', '.join(headers)})")
+    if [h.lower() for h in headers] != [h.lower() for h in cfg["unit_headers"]]:
+        problems.append("колонки «Удельной экономики» не те: ждали "
+                        + ", ".join(f"«{h}»" for h in cfg["unit_headers"])
+                        + f" (есть: {', '.join(headers) or '—'})")
     if not page.get("unit_rows"):
         problems.append("«Удельная экономика» без строк")
+    cells = page.get("unit_cells")
+    lower = [h.lower() for h in headers]
+    if cells is not None and "база" in lower:
+        column = lower.index("база")
+        seen = {row[0]: row for row in cells if row}
+        for label, base in cfg["unit_row_bases"].items():
+            if label.startswith("_"):
+                continue
+            row = seen.get(label)
+            if row is None:
+                problems.append(f"в «Удельной экономике» нет строки «{label}»")
+                continue
+            said = re.sub(r"^м²\s*", "", row[column] if column < len(row) else "").strip().lower()
+            if words.get(said) != base:
+                problems.append(f"«Удельная экономика», «{label}»: база «{row[column] if column < len(row) else ''}», "
+                                f"ждали «м² {_base_name(base, words)}»")
     text = page.get("text") or ""
     for junk in ("NaN", "undefined", "Infinity"):
         if junk in text:
             problems.append(f"в разделе напечатано «{junk}»")
-    sample = "; ".join(f"{k}: {params[k]}" for k in cfg["per_metre_rows"][:2] if k in params)
+    sample = "; ".join(f"{k}: {params[k]}" for k in rows if k in params)
     got = f"строк параметров {len(params)}, удельной экономики {page.get('unit_rows', 0)}; {sample}"
     return Check(name, FAIL if problems else OK, expected, got, "; ".join(problems))
 
@@ -469,6 +538,51 @@ def _route_via_python(page) -> None:
     page.route("**/*", handle)
 
 
+# Что видит человек на «Итоге»: строки «Ключевых параметров», заголовки и
+# ячейки «Удельной экономики», текст раздела. Один снимок на прод и на тест
+# CI (`tests/test_prod_smoke_itog_matches_the_page.py`).
+ITOG_JS = """()=>{
+  const clean=x=>(x||'').replace(/\\s+/g,' ').trim();
+  const params={};
+  document.querySelectorAll('#projectParamsTable tr').forEach(tr=>{
+    const c=tr.querySelectorAll('td,th'); if(c.length>=2)
+      params[c[0].innerText.trim()]=clean(c[c.length-1].innerText)});
+  const table=document.getElementById('unitEconomicsTable');
+  const heads=table?[...table.closest('table').querySelectorAll('thead th')].map(t=>t.innerText):[];
+  const cells=table?[...table.querySelectorAll('tr')].map(tr=>[...tr.children].map(x=>clean(x.textContent))):[];
+  const sec=document.getElementById('rsSummary');
+  return {params, unit_headers:heads, unit_cells:cells,
+          unit_rows:table?table.querySelectorAll('tr').length:0, text:sec?sec.innerText:''};
+}"""
+
+
+def open_project(page, base: str, ref: dict[str, Any], log: Callable[[str], None],
+                 land_wait_ms: int = 180_000) -> dict[str, Any]:
+    """Шаги человека на открытой вкладке: импорт пресета эталона, расчёт, «Итог»."""
+    alerts: list[str] = []
+    page.on("dialog", lambda d: (alerts.append(d.message), d.dismiss()))
+    page.goto(base + "/", wait_until="domcontentloaded", timeout=120_000)
+    page.wait_for_function("typeof uploadPreset==='function'&&typeof applyPreset==='function'",
+                           timeout=120_000)
+    page.set_input_files("#presetFile", str(ROOT / ref["preset"]))
+    page.evaluate("uploadPreset()")
+    page.wait_for_function("typeof presetPreview!=='undefined'&&!!presetPreview", timeout=120_000)
+    page.evaluate("applyPreset()")
+    try:
+        page.wait_for_function("inputs._land_lookup&&inputs._land_lookup.found_count",
+                               timeout=land_wait_ms)
+    except Exception:  # noqa: BLE001 — автозагрузку проверяет пункт 1
+        log(f"страница не дождалась автозагрузки участка за {land_wait_ms // 1000} с")
+    locked = page.evaluate("async()=>{const r=await calculate();openTab('report');"
+                           "return r===null&&typeof calcNeedsLogin==='function'&&calcNeedsLogin()}")
+    page.wait_for_timeout(3000)
+    itog = page.evaluate(ITOG_JS)
+    itog["locked"] = bool(locked)
+    itog["alerts"] = alerts
+    payload = page.evaluate("JSON.parse(JSON.stringify(currentPdfReportPayload()))")
+    return {"itog": itog, "payload": payload}
+
+
 def browser_project(base: str, ref: dict[str, Any], admin_key: str, out: Path,
                     log: Callable[[str], None]) -> dict[str, Any]:
     """Главная страница: импорт пресета эталона, расчёт, «Итог».
@@ -477,7 +591,6 @@ def browser_project(base: str, ref: dict[str, Any], admin_key: str, out: Path,
     книги — тот же `currentPdfReportPayload()`, что шлют её кнопки."""
     from playwright.sync_api import sync_playwright
 
-    preset = ROOT / ref["preset"]
     with sync_playwright() as p:
         browser = _chromium_launch(p)
         page = browser.new_page(viewport={"width": 1440, "height": 1000})
@@ -486,47 +599,45 @@ def browser_project(base: str, ref: dict[str, Any], admin_key: str, out: Path,
         if admin_key:
             page.add_init_script(
                 f"try{{localStorage.setItem('plato_projects_key',{json.dumps(admin_key)})}}catch(e){{}}")
-        alerts: list[str] = []
-        page.on("dialog", lambda d: (alerts.append(d.message), d.dismiss()))
-        page.goto(base + "/", wait_until="domcontentloaded", timeout=120_000)
-        page.wait_for_function("typeof uploadPreset==='function'&&typeof applyPreset==='function'",
-                               timeout=120_000)
-        page.set_input_files("#presetFile", str(preset))
-        page.evaluate("uploadPreset()")
-        page.wait_for_function("typeof presetPreview!=='undefined'&&!!presetPreview", timeout=120_000)
-        page.evaluate("applyPreset()")
-        try:
-            page.wait_for_function("inputs._land_lookup&&inputs._land_lookup.found_count",
-                                   timeout=180_000)
-        except Exception:  # noqa: BLE001 — автозагрузку проверяет пункт 1
-            log("страница не дождалась автозагрузки участка за 3 минуты")
-        locked = page.evaluate("async()=>{const r=await calculate();openTab('report');"
-                               "return r===null&&typeof calcNeedsLogin==='function'&&calcNeedsLogin()}")
-        page.wait_for_timeout(3000)
-        itog = page.evaluate("""()=>{
-          const params={};
-          document.querySelectorAll('#projectParamsTable tr').forEach(tr=>{
-            const c=tr.querySelectorAll('td,th'); if(c.length>=2)
-              params[c[0].innerText.trim()]=c[c.length-1].innerText.replace(/\\s+/g,' ').trim()});
-          const table=document.getElementById('unitEconomicsTable');
-          const heads=table?[...table.closest('table').querySelectorAll('thead th')].map(t=>t.innerText):[];
-          const sec=document.getElementById('rsSummary');
-          return {params, unit_headers:heads, unit_rows:table?table.querySelectorAll('tr').length:0,
-                  text:sec?sec.innerText:''};
-        }""")
-        itog["locked"] = bool(locked)
-        itog["alerts"] = alerts
-        payload = page.evaluate("JSON.parse(JSON.stringify(currentPdfReportPayload()))")
+        project = open_project(page, base, ref, log)
         try:
             page.screenshot(path=str(out / "itog.png"), full_page=False)
         except Exception:  # noqa: BLE001
             pass
         browser.close()
-    return {"itog": itog, "payload": payload}
+    return project
 
 
-def browser_auction_export(base: str, out: Path, log: Callable[[str], None]) -> tuple[int, bytes, int]:
-    """Страница торгов: выборка, которую видит человек, и её кнопка выгрузки."""
+AUCTIONS_KEY_ENV = "PROD_SMOKE_AUCTIONS_KEY"
+AUCTIONS_NO_KEY = ("раздел «Торги» закрыт входом (есть действующие личные ключи или "
+                   "задан AUCTIONS_VIEW_KEY): нужен ключ — секрет в прогон "
+                   f"{AUCTIONS_KEY_ENV} (ключ кабинета рынка или AUCTIONS_VIEW_KEY)")
+
+
+class AuctionsLocked(Exception):
+    """Страница торгов ответила формой входа. `keyed` — был ли ключ у прогона."""
+
+    def __init__(self, reason: str, keyed: bool):
+        super().__init__(reason)
+        self.keyed = keyed
+
+
+def _auctions_login(page, base: str, key: str, log: Callable[[str], None]) -> bool:
+    """Войти в раздел торгов той же формой, что и человек. Cookie остаётся в
+    контексте страницы: `page.request` делит её с браузером."""
+    response = page.request.post(base + "/auctions/login", form={"key": key},
+                                 max_redirects=0, timeout=60_000)
+    accepted = response.status in (302, 303)
+    log(f"вход в торги: HTTP {response.status}" + ("" if accepted else " — ключ не принят"))
+    return accepted
+
+
+def browser_auction_export(base: str, out: Path, log: Callable[[str], None],
+                           key: str = "") -> tuple[int, bytes, int]:
+    """Страница торгов: выборка, которую видит человек, и её кнопка выгрузки.
+
+    Раздел может быть закрыт входом. Тогда без ключа — `AuctionsLocked` сразу,
+    с причиной, а не таймаут ожидания страницы, которой за формой нет."""
     from playwright.sync_api import sync_playwright
 
     with sync_playwright() as p:
@@ -536,7 +647,18 @@ def browser_auction_export(base: str, out: Path, log: Callable[[str], None]) -> 
             _route_via_python(page)
         alerts: list[str] = []
         page.on("dialog", lambda d: (alerts.append(d.message), d.dismiss()))
-        page.goto(base + "/auctions", wait_until="domcontentloaded", timeout=120_000)
+        refused = bool(key) and not _auctions_login(page, base, key, log)
+        response = page.goto(base + "/auctions", wait_until="domcontentloaded", timeout=120_000)
+        locked = ((response is not None and response.status == 401)
+                  or page.locator('form[action="/auctions/login"]').count() > 0)
+        if locked:
+            browser.close()
+            if not key:
+                raise AuctionsLocked(AUCTIONS_NO_KEY, keyed=False)
+            raise AuctionsLocked(
+                "раздел «Торги» закрыт входом, а ключ прогона "
+                + ("не принят /auctions/login" if refused else "не открыл страницу"),
+                keyed=True)
         # Лоты страница сама не тянет: человек жмёт «Обновить» — и мы тоже.
         page.wait_for_function("typeof discover==='function'", timeout=120_000)
         page.click("#refresh")
@@ -571,7 +693,7 @@ def guarded(name: str, expected: str, body: Callable[[], Check]) -> Check:
 
 
 def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
-        log: Callable[[str], None]) -> list[Check]:
+        log: Callable[[str], None], auctions_key: str = "") -> list[Check]:
     checks: list[Check] = []
     out.mkdir(parents=True, exist_ok=True)
 
@@ -636,7 +758,7 @@ def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
 
     # 3. Выгрузка торгов.
     try:
-        status, body, count = browser_auction_export(base, out, log)
+        status, body, count = browser_auction_export(base, out, log, auctions_key)
         if status != 200:
             checks.append(Check("3. Excel-выгрузка торгов", FAIL, "HTTP 200, xlsx",
                                 f"HTTP {status}: {body[:200]!r}"))
@@ -644,6 +766,11 @@ def run(base: str, ref: dict[str, Any], admin_key: str, out: Path,
             check = judge_auction_export(body, ref)
             check.got = f"выборка на странице {count} лотов; " + check.got
             checks.append(check)
+    except AuctionsLocked as exc:
+        # Без ключа — пропуск с причиной, как у тизера: проверять нечем. С ключом,
+        # который не открыл раздел, — провал: вход сломан или ключ устарел.
+        checks.append(Check("3. Excel-выгрузка торгов", FAIL if exc.keyed else SKIP,
+                            "выборка и xlsx", "HTTP 401 — форма входа", str(exc)))
     except ImportError as exc:
         checks.append(Check("3. Excel-выгрузка торгов", SKIP, "xlsx", "—", f"нет playwright ({exc})"))
     except Exception as exc:  # noqa: BLE001
@@ -729,7 +856,8 @@ def main(argv: list[str] | None = None) -> int:
         checks.append(arrived)
     if not checks or checks[-1].status == OK:
         try:
-            checks += run(base, ref, admin_key, Path(args.out), log)
+            checks += run(base, ref, admin_key, Path(args.out), log,
+                          os.environ.get(AUCTIONS_KEY_ENV, "").strip())
         except Exception as exc:  # noqa: BLE001 — итог и json пишутся всегда
             first = (str(exc).splitlines() or [""])[0][:300]
             checks.append(Check("Прогон", FAIL, "все проверки выполнены", "прогон прерван",

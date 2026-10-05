@@ -43,6 +43,9 @@ KPI_CATALOGUE: tuple[tuple[str, str, str], ...] = (
     ("term_months", "Срок проекта", "мес."),
 )
 CARD_COUNT = 6
+# Показатели банка жилого контура: у проекта без БРИДЖа и ПФ их нет.
+BANK_KPIS = frozenset({"llcr", "peak_bridge_mln", "peak_pf_mln"})
+BANK_RISKS = frozenset({"llcr_below_target", "weakest_phase"})
 
 # Величины, которые движок снимает при непогашенном долге
 # (`summary.equity_returns`); подпись причины приходит из движка.
@@ -105,15 +108,27 @@ def build_project_presentation(
     report = consolidated.get("report") or {}
     dates = consolidated.get("dates") or {}
 
+    # Какие блоки у проекта есть, решает движок (`report.layout`). Нежилой
+    # проект без ДДУ не несёт ни LLCR, ни БРИДЖа с ПФ — его показатели — деньги
+    # объектов: кредит, капитал, NOI, DSCR, выход.
+    layout = dict(report.get("layout") or {})
+    bank = bool(layout.get("project_finance", True))
     kpi: list[dict[str, Any]] = []
     returns_na = _text(numbers.get("equity_returns_na")) or None
     for key, label, unit in KPI_CATALOGUE:
+        if not bank and key in BANK_KPIS:
+            continue
         item = {"key": key, "label": label, "unit": unit,
                 "value": _number(numbers.get(key))}
         # NPV снят движком при непогашенном долге: причина вместо числа.
         if key in _EQUITY_RETURN_KEYS and returns_na:
             item.update({"value": None, "unit": "", "na": returns_na})
         kpi.append(item)
+    for tile in layout.get("nonres_tiles") or []:
+        unit = {"rub": "млн ₽", "pct": "%", "mult": "x"}.get(str(tile.get("unit")), "")
+        kpi.append({"key": f"nonres:{tile.get('label')}", "label": str(tile.get("label")),
+                    "unit": unit,
+                    "value": _number(tile.get("value_mln" if unit == "млн ₽" else "value"))})
 
     products: list[dict[str, Any]] = []
     by_key = {str(p.get("key")): p for p in (report.get("products") or [])}
@@ -121,8 +136,12 @@ def build_project_presentation(
     # Порядок и состав — у отчёта движка: паркинг каждого объекта стоит там
     # своей строкой сразу за объектом (`object_parking_<объект>`). Список
     # ключей здесь был второй копией состава и отстал бы на следующем объекте.
+    # Продукта, которого нет в проекте, в модели нет: движок отвечает
+    # признаком `listed`. Нет признака — нет и ответа, и строку не прячут.
     for key in by_key:
         product = by_key[key]
+        if (product_numbers.get(key) or {}).get("listed") is False:
+            continue
         products.append({
             "key": key,
             "label": _text(product.get("label")),
@@ -195,6 +214,8 @@ def build_project_presentation(
     for key, label, value_key in RISK_CATALOGUE:
         if key == "weakest_phase" and not weakest:
             continue
+        if not bank and key in BANK_RISKS:
+            continue
         risks.append({
             "key": key, "label": label, "active": bool(flags[key]),
             "value_key": value_key, "value": risk_values.get(value_key),
@@ -245,6 +266,8 @@ def build_project_presentation(
             "profit_tax_rate": _number((numbers.get("taxes") or {}).get("profit_tax_rate")),
         },
         "chart_rows": list(numbers.get("chart_rows") or []),
+        "layout": layout,
+        "nonres_strategy": list(report.get("nonres_strategy") or []),
     }
 
 

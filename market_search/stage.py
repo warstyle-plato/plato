@@ -198,3 +198,142 @@ def adjust(peers: list[dict], *, target_readiness: float,
         # поправка и в какую сторону.
         "plain_median": int(round(median([price for price, _ in known]) or 0)),
     }
+
+
+# --- стадия строительства аналога ------------------------------------------
+#
+# Пульс на своём сайте даёт отобрать проекты по стадии строительства руками.
+# Здесь — словарь этих стадий, один на сервер и на страницы: подпись стадии,
+# её код и то, как сырой текст источника к ней приводится, объявлены один раз.
+#
+# У стадии аналога всегда названо происхождение:
+#   * «pulse»    — стадия пришла полем Пульса;
+#   * «calendar» — поля нет, стадия оценена по срокам «старт продаж → плановый
+#                  ввод» (календарный прокси, не измеренная готовность);
+#   * None       — нет ни поля, ни дат: «стадия не указана». Это не «любая
+#                  стадия», и при отборе по стадии такой аналог не проходит.
+
+CONSTRUCTION_STAGES: tuple[tuple[str, str], ...] = (
+    ("pit", "котлован"),
+    ("frame", "каркас"),
+    ("finish", "отделка"),
+    ("done", "сдан"),
+)
+STAGE_TITLES: dict[str, str] = dict(CONSTRUCTION_STAGES)
+STAGE_UNKNOWN_LABEL = "стадия не указана"
+
+STAGE_ORIGIN_PULSE = "pulse"
+STAGE_ORIGIN_CALENDAR = "calendar"
+STAGE_ORIGIN_TITLES = {
+    STAGE_ORIGIN_PULSE: "Пульс",
+    STAGE_ORIGIN_CALENDAR: "оценка по срокам",
+}
+
+# Слова, по которым сырой текст источника приводится к стадии. Порядок важен:
+# «сдан»/«ввод» проверяются раньше «отделки», а «отделка» раньше «каркаса» —
+# строка «каркас возведён, идёт отделка» говорит о более поздней стадии.
+_STAGE_WORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("done", ("сдан", "введен", "ввод в эксплуатац", "в эксплуатац", "получено рнв",
+              "разрешение на ввод", "completed", "commissioned", "finished")),
+    ("finish", ("отделк", "фасад", "кровл", "остеклен", "инженерн", "благоустр",
+                "finishing", "facade")),
+    ("frame", ("каркас", "монолит", "возведен", "надземн", "коробк", "этаж",
+               "frame", "superstructure")),
+    ("pit", ("котлован", "нулев", "землян", "фундамент", "подготовит",
+             "свай", "excavation", "foundation")),
+)
+
+# Календарный прокси → стадия. Допущение, объявленное одним местом: доля
+# окна «старт продаж → плановый ввод». Наступивший плановый срок — «сдан» по
+# плану, а не подтверждённый ввод; происхождение это и говорит.
+CALENDAR_STAGE_BOUNDS: tuple[tuple[float, str], ...] = (
+    (0.25, "pit"),
+    (0.65, "frame"),
+    (1.0, "finish"),
+)
+
+
+def stage_from_text(value: object) -> str | None:
+    """Код стадии по тексту источника; нераспознанный текст — `None`."""
+    text = " ".join(str(value or "").lower().replace("ё", "е").split())
+    if not text:
+        return None
+    for code, title in CONSTRUCTION_STAGES:
+        if text == title:
+            return code
+    for code, words in _STAGE_WORDS:
+        if any(word in text for word in words):
+            return code
+    return None
+
+
+def stage_from_calendar(progress: float | None) -> str | None:
+    """Стадия по календарному положению проекта; нет положения — `None`."""
+    if progress is None:
+        return None
+    value = _clamp(float(progress))
+    for bound, code in CALENDAR_STAGE_BOUNDS:
+        if value < bound:
+            return code
+    return "done"
+
+
+def analog_stage(raw: object, progress: float | None) -> dict:
+    """Стадия аналога с происхождением: поле Пульса → сроки → «не указана»."""
+    raw_text = " ".join(str(raw or "").split()) or None
+    code = stage_from_text(raw_text)
+    if code:
+        origin = STAGE_ORIGIN_PULSE
+    else:
+        code = stage_from_calendar(progress)
+        origin = STAGE_ORIGIN_CALENDAR if code else None
+    return {
+        "code": code,
+        "label": STAGE_TITLES[code] if code else STAGE_UNKNOWN_LABEL,
+        "origin": origin,
+        "origin_title": STAGE_ORIGIN_TITLES.get(origin) if origin else None,
+        # Сырой текст источника — даже нераспознанный: человек должен видеть,
+        # что поле пришло, а словарь его не узнал.
+        "raw": raw_text,
+    }
+
+
+def normalize_stage_codes(values: object) -> list[str]:
+    """Выбранные стадии в порядке словаря; неизвестный код — ошибка, а не тишина."""
+    if values in (None, ""):
+        return []
+    if isinstance(values, str):
+        values = [part for part in re.split(r"[,\s]+", values) if part]
+    picked = []
+    for value in values:  # type: ignore[union-attr]
+        code = str(value).strip()
+        if code not in STAGE_TITLES:
+            raise ValueError(f"неизвестная стадия строительства: {code!r}")
+        picked.append(code)
+    return [code for code, _ in CONSTRUCTION_STAGES if code in picked]
+
+
+def suggest_project_stage(sales_start: str | None = None,
+                          commissioning: str | None = None,
+                          today: str | None = None) -> dict:
+    """Подсказка стадии НАШЕГО проекта для отбора аналогов.
+
+    Это подсказка, а не решение: страница её предлагает, но не включает сама.
+    Сроки проекта известны — стадия по тем же календарным границам, что у
+    аналогов. Неизвестны — котлован: новый проект выходит в продажу на старте
+    стройки, и сравнивать его стартовую цену честнее с теми, кто тоже на старте.
+    """
+    progress = calendar_progress(sales_start, commissioning, today)
+    code = stage_from_calendar(progress)
+    if code:
+        return {
+            "code": code,
+            "label": STAGE_TITLES[code],
+            "reason": (f"по срокам проекта: {round(progress * 100)}% окна "
+                       "«старт продаж → плановый ввод»"),
+        }
+    return {
+        "code": "pit",
+        "label": STAGE_TITLES["pit"],
+        "reason": "новый проект выходит в продажу на старте стройки — котловане",
+    }

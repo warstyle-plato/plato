@@ -73,8 +73,13 @@ SECTION_TITLES = [title for title, _ in core._OBJECT_SECTIONS]
 
 
 def _expected(obj: core.StandaloneObject) -> list[str]:
+    # Блоки, которых стратегия реализации по умолчанию (ДДУ) не читает,
+    # страница не рисует — правило движка `strategy_field_readers`.
+    readers = core.strategy_field_readers()
+    default = core.nonres_strategy.STRATEGY_DDU
     return [f[0] for f in core.standalone_object_group(obj)[1]
-            if f[0] not in core.CLASS_ONLY_INPUTS]
+            if f[0] not in core.CLASS_ONLY_INPUTS
+            and (f[0] not in readers or default in readers[f[0]][1])]
 
 
 def _check(name: str, got: dict | None, keys: list[str]) -> None:

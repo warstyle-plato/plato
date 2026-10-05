@@ -218,3 +218,20 @@ def test_the_view_key_does_not_order_paid_lot_comments(monkeypatch, tmp_path):
     rows = [{"section": "Торги", "name": "Лот", "url": "https://etp/lot/1"}]
     assert client.post("/auctions/export.xlsx", json={"rows": rows, "kind": "auctions"}).status_code == 200
     assert lot_notes.LotNotes(tmp_path / "market").queue() == []
+
+
+def test_the_view_key_reads_the_table_but_does_not_order_comments(monkeypatch, tmp_path):
+    """Таблица «как в Excel» — просмотр; кнопки заказа разбора у ключа нет, и маршрут её не пускает."""
+    from auction_search import lot_notes
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    client = _viewer(monkeypatch)
+    rows = [{"section": "Торги", "name": "Лот", "url": "https://etp/lot/1"}]
+    answer = client.post("/auctions/table", json={"rows": rows, "kind": "auctions"})
+    assert answer.status_code == 200, answer.text
+    table = answer.json()
+    assert table["may_request_notes"] is False
+    assert table["rows"][0]["cells"]["plato_comment"]["text"].startswith("Не разбирался")
+    assert client.post("/auctions/lot-notes/request",
+                       json={"rows": rows, "kind": "auctions"}).status_code == 403
+    assert lot_notes.LotNotes(tmp_path / "market").queue() == []

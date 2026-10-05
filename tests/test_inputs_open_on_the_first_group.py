@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import json
 import re
+import os
 import shutil
+import tempfile
 import subprocess
 import sys
 from pathlib import Path
@@ -139,6 +141,12 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # Ячейка нормы под парой подземного паркинга проекта зовётся по ключу.
         page_const("PROJECT_PARKING_KEY"),
         page_const("notOnInputs"),
+        # Блоки объекта, которых выбранная стратегия реализации не читает,
+        # форма не рисует — карта приходит из движка.
+        page_const("STRATEGY_FIELD_READERS"),
+        page_const("STRATEGY_VALUES"),
+        page_function("objectStrategy"),
+        page_function("strategyHides"),
         # Пометка «ставит класс проекта» у единицы поля: список полей — сам
         # профиль класса, а не перечисление рядом с ним, поэтому стенду нужен
         # и профиль, и тот, кто по нему спрашивает.
@@ -203,7 +211,15 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         "renderInputs();",
         tail,
     ])
-    done = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=60)
+    # Скрипт уезжает файлом, а не аргументом `-e`: с полями стратегии
+    # реализации форма переросла предел длины одного аргумента команды.
+    with tempfile.NamedTemporaryFile("w", suffix=".js", encoding="utf-8", delete=False) as handle:
+        handle.write(script)
+        where = handle.name
+    try:
+        done = subprocess.run([node, where], capture_output=True, text=True, timeout=60)
+    finally:
+        os.unlink(where)
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)
 
