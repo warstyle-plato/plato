@@ -78,7 +78,7 @@ def _row(number: int, cells: list[str]) -> str:
 
 def _shown(row: dict[str, Any]) -> tuple[str, Any]:
     unit, value = row.get("unit"), row.get("value")
-    if unit in ("rub", "pct", "mult"):
+    if unit in ("rub", "pct", "mult", "mln"):
         if value is None:
             return "text", "—"
         return "number", float(value or 0.0)
@@ -107,7 +107,8 @@ def _monthly_block(rows: list[str], n: int, title: str,
 
 
 def build_sheet(report: list[dict[str, Any]], monthly: list[dict[str, Any]],
-                objects: list[dict[str, Any]] | None = None) -> str:
+                objects: list[dict[str, Any]] | None = None,
+                financing: list[dict[str, Any]] | None = None) -> str:
     """XML листа: пометка, таблица каждого объекта, помесячные ряды — итогом
     и по каждому объекту (`objects`: заголовок и строки объекта движка)."""
     rows: list[str] = []
@@ -128,6 +129,30 @@ def build_sheet(report: list[dict[str, Any]], monthly: list[dict[str, Any]],
         for warning in item.get("warnings") or []:
             rows.append(_row(n, [_text(f"A{n}", warning)]))
             n += 1
+        n += 1
+    # Кредит объекта — таблица «Финансирование объекта» и обслуживание по годам.
+    for item in financing or []:
+        rows.append(_row(n, [_text(f"A{n}", f"Финансирование объекта: {item.get('title') or item.get('key')}")]))
+        n += 1
+        for line in item.get("rows") or []:
+            kind, value = _shown(line)
+            cell = _number(f"B{n}", value) if kind == "number" else _text(f"B{n}", value)
+            rows.append(_row(n, [_text(f"A{n}", line.get("label") or ""), cell]))
+            n += 1
+        financing_columns = item.get("columns") or []
+        if item.get("years") and financing_columns:
+            rows.append(_row(n, [_text(f"{_col(i)}{n}", col[1])
+                                 for i, col in enumerate(financing_columns)]))
+            n += 1
+            for year in item["years"]:
+                cells = []
+                for i, col in enumerate(financing_columns):
+                    value = year.get(col[0])
+                    coord = f"{_col(i)}{n}"
+                    cells.append(_text(coord, value if value is not None else "—")
+                                 if col[2] == "text" or value is None else _number(coord, value))
+                rows.append(_row(n, cells))
+                n += 1
         n += 1
     n = _monthly_block(rows, n, TOTAL_TITLE, MONTHLY_COLUMNS, monthly)
     for item in objects or []:

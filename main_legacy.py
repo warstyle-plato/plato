@@ -1469,7 +1469,8 @@ def _object_strategy_fields(obj: StandaloneObject) -> list[list[Any]]:
         [f"{p}_loan_spread_pp", "Спред кредита объекта",
          "п.п. к ключевой ставке сценария проекта", "number"],
         [f"{p}_loan_fee_pct", "Комиссия за выдачу", "% выборки", "number"],
-        [f"{p}_debt_repayment", "Погашение кредита объекта", "доходный метод", "select",
+        [f"{p}_debt_repayment", "Погашение кредита объекта",
+         "доходный метод; при прямой продаже кредит гасится выручкой ДКП", "select",
          [[nonres_strategy.REPAY_ANNUITY, "Аннуитет на срок кредита с баллоном в конце"],
           [nonres_strategy.REPAY_SWEEP, "Из всего NOI по мере поступления"],
           [nonres_strategy.REPAY_BULLET, "Одним платежом при выходе"]]],
@@ -1779,6 +1780,17 @@ STRATEGY_SECTION_READERS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Поля, которые читает не весь блок стратегий, а только часть. Схема погашения,
+# срок и баллон — у доходного метода: при прямой продаже кредит гасится
+# выручкой ДКП (проданное выходит из залога), и выбор «аннуитет» там ничего
+# не менял — поле, правка которого ничего не меняет, не вводная.
+STRATEGY_FIELD_READERS_BY_SUFFIX: dict[str, tuple[str, ...]] = {
+    "debt_repayment": (nonres_strategy.STRATEGY_INCOME,),
+    "loan_term_years": (nonres_strategy.STRATEGY_INCOME,),
+    "loan_balloon_pct": (nonres_strategy.STRATEGY_INCOME,),
+}
+
+
 def strategy_field_readers() -> dict[str, list[Any]]:
     """Поле объекта → [его поле стратегии, стратегии, которые поле читают]."""
     out: dict[str, list[Any]] = {}
@@ -1786,7 +1798,9 @@ def strategy_field_readers() -> dict[str, list[Any]]:
         if not obj.strategies:
             continue
         for field in standalone_object_group(obj)[1]:
-            reads = STRATEGY_SECTION_READERS.get(standalone_object_section(obj, field[0]))
+            suffix = field[0].removeprefix(f"{obj.prefix}_")
+            reads = (STRATEGY_FIELD_READERS_BY_SUFFIX.get(suffix)
+                     or STRATEGY_SECTION_READERS.get(standalone_object_section(obj, field[0])))
             if reads:
                 out[field[0]] = [f"{obj.prefix}_strategy", list(reads)]
     return out
@@ -17077,6 +17091,10 @@ def _escrow_chart_legend_html() -> str:
 def _pdf_nonres_value(row: dict[str, Any]) -> str:
     """Значение строки нежилья (`nonres_report`, `report_layout`) для PDF."""
     unit, value = row.get("unit"), row.get("value")
+    if value is None and unit in ("rub", "pct", "mln"):
+        return "—"
+    if unit == "mln":
+        return _pdf_num(float(value) / 1e6, 1) + " млн ₽"
     if unit == "rub":
         return _pdf_money(value)
     if unit == "pct":
@@ -18017,6 +18035,23 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                              _pdf_nonres_value(_row)])
         story.append(KeepTogether([table(_nr_rows, [112*mm, 58*mm], font_size=7.6)]
                                   + [P(str(w), small) for w in _nr.get("warnings") or []]))
+    # Кредит объекта — своим отчётом (`nonres_financing_report`), как на экране.
+    for _nf in report.get("nonres_financing") or []:
+        _years_cols = _nf.get("columns") or []
+        _nf_rows = [["Финансирование объекта: " + str(_nf.get("title") or ""), ""]]
+        for _row in _nf.get("rows") or []:
+            _nf_rows.append([str(_row.get("label") or "").upper()
+                             if _row.get("unit") == "section" else str(_row.get("label") or ""),
+                             _pdf_nonres_value(_row)])
+        _parts = [table(_nf_rows, [112*mm, 58*mm], font_size=7.6)]
+        if _nf.get("years") and _years_cols:
+            _yrows = [[str(c[1]) for c in _years_cols]]
+            for _y in _nf["years"]:
+                _yrows.append([str(_y.get(c[0])) if c[2] == "text"
+                               else _pdf_nonres_value({"unit": c[2], "value": _y.get(c[0])})
+                               for c in _years_cols])
+            _parts.append(table(_yrows, [14*mm] + [26*mm] * (len(_years_cols) - 1), font_size=6.8))
+        story.append(KeepTogether(_parts))
     # Квартиры продаются штуками. «40 квартир в месяц» проверяется отделом
     # продаж и рынком, «2 400 м² в месяц» — нет, а в отчёте был только метр.
     apartment_sales = report.get("apartment_sales") or {}
@@ -24738,6 +24773,7 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     if _nonres_report:
         hints["nonres"] = {
             "report": _nonres_report,
+            "financing": (_consolidated.get("report") or {}).get("nonres_financing") or [],
             "monthly": [
                 {"month": row.get("month"),
                  **{key: float(row.get(key) or 0.0) for key, _ in v4_nonres_sheet.MONTHLY_COLUMNS}}
@@ -27728,7 +27764,8 @@ def _build_project_workbook(
     _nonres = (finance_hints or {}).get("nonres") or {}
     if _nonres.get("report"):
         _nonres_xml = v4_nonres_sheet.build_sheet(_nonres["report"], _nonres.get("monthly") or [],
-                                                  _nonres.get("objects") or [])
+                                                  _nonres.get("objects") or [],
+                                                  _nonres.get("financing") or [])
         missing.append(
             "Нежильё — стратегия: " + ", ".join(
                 f"{item.get('title')} — {next((r.get('value') for r in item.get('rows') or [] if r.get('label') == 'Стратегия'), '')}"
@@ -33587,6 +33624,7 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
         flows = nonres_strategy.object_flows(plan, key_rate, vat_rate=vat_rate)
         flows["title"] = plan.get("title") or key
         flows["params"] = dict(plan.get("params") or {})
+        flows["financing"] = object_financing(flows)
         flows["result"] = object_result(
             flows, start=op["project_start"],
             discount_rate=n(x, "discount_rate_pct", 20) / 100,
@@ -33777,6 +33815,150 @@ def object_result(flows: dict[str, Any], *, start: date, discount_rate: float,
         "payback_reason": payback["reason"],
         "monthly": {"object_profit_tax": dict(tax_by_month),
                     "object_equity_flow": dict(equity_flow)},
+    }
+
+
+REPAYMENT_LABELS = {
+    nonres_strategy.REPAY_ANNUITY: "Аннуитет на срок кредита с баллоном в конце",
+    nonres_strategy.REPAY_SWEEP: "Из всего NOI по мере поступления",
+    nonres_strategy.REPAY_BULLET: "Одним платежом при выходе",
+}
+DIRECT_REPAYMENT_LABEL = ("Из выручки ДКП по мере продаж — проданные помещения "
+                          "выходят из залога, аннуитета нет")
+
+
+def object_financing(flows: dict[str, Any]) -> dict[str, Any]:
+    """Кредит объекта вне ДДУ — как банк его увидит: условия, выборка, долг на
+    ввод, платёж, баллон, чем погашено и обслуживание по годам.
+
+    Только читает ряды `object_flows` (выборка, проценты, погашение, остаток,
+    ставка) — второго расчёта кредита нет. Погашение разложено по причине:
+    плановое тело аннуитета, баллон в срок, остаток при выходе, из выручки
+    ДКП / NOI. Сумма частей — всё погашение, и это проверяется тестом.
+    Схема не офисная: любой объект с этими рядами получает тот же отчёт.
+    """
+    series = flows["monthly"]
+    params = flows.get("params") or {}
+    months: list[date] = list(flows["months"])
+    commissioning: date = flows["commissioning"]
+    horizon_end: date = flows["horizon_end"]
+    kpi = flows.get("kpi") or {}
+    strategy = flows["strategy"]
+
+    def get(name: str, month: date) -> float:
+        return float((series.get(name) or {}).get(month, 0.0) or 0.0)
+
+    def total(name: str) -> float:
+        return float(sum((series.get(name) or {}).values()))
+
+    def num(key: str, default: float) -> float:
+        try:
+            value = params.get(key)
+            return default if value in (None, "") else float(value)
+        except (TypeError, ValueError):
+            return default
+
+    repayment = str(params.get("debt_repayment") or "").strip().lower()
+    if repayment not in REPAYMENT_LABELS:
+        repayment = nonres_strategy.REPAY_ANNUITY
+    if strategy == nonres_strategy.STRATEGY_DIRECT:
+        scheme, scheme_label = "sale", DIRECT_REPAYMENT_LABEL
+    else:
+        scheme, scheme_label = repayment, REPAYMENT_LABELS[repayment]
+    share = max(0.0, min(0.95, num("loan_share_pct", 60.0) / 100.0))
+    capex = flows.get("capex_by_month") or {}
+    draw_total = total("loan_draw")
+    draw_object = float(sum(float(v or 0.0) * share for mm, v in capex.items()
+                            if mm <= commissioning))
+    maturity: date | None = kpi.get("loan_maturity")
+    # Погашение по причине.
+    parts = {"scheduled": 0.0, "balloon": 0.0, "exit": 0.0, "cash": 0.0}
+    balloon_month: date | None = None
+    for month in months:
+        repaid = get("loan_repayment", month)
+        if not repaid:
+            continue
+        amort = get("loan_amortization", month)
+        if amort:
+            parts["scheduled"] += amort
+            repaid -= amort
+        if repaid <= 0:
+            continue
+        if scheme == nonres_strategy.REPAY_ANNUITY and maturity and month == maturity:
+            parts["balloon"] += repaid
+            balloon_month = month
+        elif month == horizon_end and scheme != "sale":
+            parts["exit"] += repaid
+        else:
+            parts["cash"] += repaid
+    after = [mm for mm in months if mm > commissioning]
+    first_payment = next(((get("loan_interest_paid", mm) + get("loan_amortization", mm), mm)
+                          for mm in after if get("loan_amortization", mm)), (0.0, None))
+    payments = [get("loan_interest_paid", mm) + get("loan_amortization", mm)
+                for mm in after if get("loan_amortization", mm)]
+    weight = sum(get("loan_balance", mm) for mm in months)
+    avg_rate = (sum(get("loan_rate", mm) * get("loan_balance", mm) for mm in months) / weight
+                if weight else 0.0)
+    # Обслуживание по календарным годам: что выбрано, начислено, погашено,
+    # остаток на конец года и покрытие платежей NOI.
+    years: list[dict[str, Any]] = []
+    for year in sorted({mm.year for mm in months}):
+        span = [mm for mm in months if mm.year == year]
+        operating = [mm for mm in span if mm >= commissioning]
+        noi = (sum(get("rent_revenue", mm) - get("opex", mm) - get("property_tax", mm)
+                   for mm in operating)
+               if strategy == nonres_strategy.STRATEGY_INCOME and operating else None)
+        interest_paid = sum(get("loan_interest_paid", mm) for mm in span)
+        amort = sum(get("loan_amortization", mm) for mm in span)
+        service = interest_paid + amort
+        years.append({
+            "year": year,
+            "draw": sum(get("loan_draw", mm) for mm in span),
+            "interest": sum(get("loan_interest_cap", mm) + get("loan_interest_paid", mm) for mm in span),
+            "interest_capitalized": sum(get("loan_interest_cap", mm) for mm in span),
+            "repayment": sum(get("loan_repayment", mm) for mm in span),
+            "scheduled": amort,
+            "balance_end": get("loan_balance", span[-1]),
+            "noi": noi,
+            "dscr": (noi / service) if (noi is not None and service > 0) else None,
+        })
+    peak = max([get("loan_balance", mm) for mm in months] or [0.0])
+    return {
+        "strategy": strategy,
+        "scheme": scheme,
+        "scheme_label": scheme_label,
+        "loan_share": share,
+        "spread": num("loan_spread_pp", 4.0) / 100.0,
+        "fee_share": num("loan_fee_pct", 1.0) / 100.0,
+        "term_years": int(num("loan_term_years", 10)) if scheme == nonres_strategy.REPAY_ANNUITY else None,
+        "balloon_share": num("loan_balloon_pct", 20.0) / 100.0 if scheme == nonres_strategy.REPAY_ANNUITY else None,
+        "maturity": maturity,
+        "horizon_end": horizon_end,
+        "commissioning": commissioning,
+        "rate_at_commissioning": get("loan_rate", commissioning),
+        "avg_rate": avg_rate,
+        "draw_total": draw_total,
+        "draw_object": min(draw_object, draw_total),
+        "draw_common": max(0.0, draw_total - draw_object),
+        "fee": total("loan_fee"),
+        "interest_capitalized": total("loan_interest_cap"),
+        "interest_paid": total("loan_interest_paid"),
+        "debt_at_commissioning": get("loan_balance", commissioning),
+        "first_payment": first_payment[0],
+        "first_payment_month": first_payment[1],
+        "avg_payment": (sum(payments) / len(payments)) if payments else 0.0,
+        "balloon_planned": float(kpi.get("loan_balloon") or 0.0) if scheme == nonres_strategy.REPAY_ANNUITY else 0.0,
+        "balloon_paid": parts["balloon"],
+        "balloon_month": balloon_month,
+        "repaid_scheduled": parts["scheduled"],
+        "repaid_at_exit": parts["exit"],
+        "repaid_from_cash": parts["cash"],
+        "repaid_total": total("loan_repayment"),
+        "repaid_month": kpi.get("loan_repaid_month"),
+        "peak": peak,
+        "dscr_min": kpi.get("dscr_min"),
+        "icr_min": kpi.get("icr_min"),
+        "years": years,
     }
 
 
@@ -34858,6 +35040,11 @@ def nonres_summary(nonres: dict[str, Any],
                    if name != "monthly"}
         if outcome.get("payback_month"):
             outcome["payback_month"] = outcome["payback_month"].isoformat()
+        financing = dict(flows.get("financing") or {})
+        for _when in ("maturity", "horizon_end", "commissioning", "first_payment_month",
+                      "balloon_month", "repaid_month"):
+            if isinstance(financing.get(_when), date):
+                financing[_when] = financing[_when].isoformat()
         objects.append({
             "key": key, "title": flows.get("title") or key, "strategy": flows["strategy"],
             "exit_mode": (flows.get("params") or {}).get("exit_mode"),
@@ -34868,6 +35055,7 @@ def nonres_summary(nonres: dict[str, Any],
             "warnings": list(flows["warnings"]),
             "book": flows.get("book"),
             "result": outcome,
+            "financing": financing,
             "rows": list(flows.get("rows") or []),
         })
     out = {"objects": objects, "totals": dict(nonres.get("totals") or {})}
@@ -34959,26 +35147,9 @@ def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
                            else "Выход: продажа по ставке капитализации"),
                  "value": kpi.get("exit_value"), "unit": "rub"},
             ]
-        if income and kpi.get("dscr_min") is not None:
-            rows += [
-                {"label": "DSCR — минимум по годам (NOI / проценты и тело)",
-                 "value": kpi.get("dscr_min"), "unit": "mult"},
-                {"label": "Покрытие процентов NOI (ICR) — минимум",
-                 "value": kpi.get("icr_min"), "unit": "mult"},
-            ]
-        if income and kpi.get("loan_maturity"):
-            rows += [
-                {"label": "Кредит объекта — срок погашения", "value": kpi.get("loan_maturity"), "unit": "date"},
-                {"label": "Кредит объекта — баллон в конце срока", "value": kpi.get("loan_balloon"), "unit": "rub"},
-            ]
-        rows += [
-            {"label": "Кредит объекта — выборка", "value": totals.get("loan_draw"), "unit": "rub"},
-            {"label": "Кредит объекта — пик долга", "value": totals.get("loan_peak"), "unit": "rub"},
-            {"label": "Кредит объекта — проценты и комиссии",
-             "value": float(totals.get("loan_interest") or 0) + float(totals.get("loan_fee") or 0),
-             "unit": "rub"},
-            {"label": "НДС объекта к уплате", "value": totals.get("vat_paid"), "unit": "rub"},
-        ]
+        # Кредит объекта — в своём отчёте «Финансирование объекта»
+        # (`nonres_financing_report`), здесь его не дублируем.
+        rows.append({"label": "НДС объекта к уплате", "value": totals.get("vat_paid"), "unit": "rub"})
         rows += object_result_rows(item.get("result") or {}, hold=hold)
         warnings = list(item.get("warnings") or [])
         if reconciliation and not reconciliation.get("ok"):
@@ -34993,6 +35164,117 @@ def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
                     "strategy": item.get("strategy"), "rows": rows,
                     "warnings": warnings})
     return out
+
+
+def _month_label(value: Any) -> str:
+    return ".".join(reversed(str(value)[:7].split("-"))) if value else "—"
+
+
+def nonres_financing_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """«Финансирование объекта»: кредит каждого объекта вне ДДУ блоками.
+
+    Одна таблица на страницу, PDF, книгу и тизер; читает `object_financing`
+    из `finance.nonres`. Блоки: условия, выборка и долг на ввод, погашение
+    (платёж, тело, баллон, выход), обслуживание; плюс таблица по годам.
+    Строка, которой у схемы нет, не печатается: у прямой продажи нет
+    аннуитета и баллона, у погашения из NOI — срока и баллона.
+    """
+    out: list[dict[str, Any]] = []
+    for item in (nonres or {}).get("objects") or []:
+        f = item.get("financing") or {}
+        if not f:
+            continue
+        annuity = f.get("scheme") == nonres_strategy.REPAY_ANNUITY
+        rows: list[dict[str, Any]] = [
+            {"label": "Условия кредита", "value": None, "unit": "section"},
+            {"label": "Схема погашения", "value": f.get("scheme_label"), "unit": "text"},
+            {"label": "Доля кредита в затратах", "value": f.get("loan_share"), "unit": "pct"},
+            {"label": "Ставка", "value": "ключевая + " + f"{float(f.get('spread') or 0) * 100:.4g}".replace(".", ",") + " п.п.",
+             "unit": "text"},
+            {"label": "Ставка на вводе", "value": f.get("rate_at_commissioning"), "unit": "pct"},
+            {"label": "Средняя ставка за срок (по остатку долга)", "value": f.get("avg_rate"), "unit": "pct"},
+        ]
+        if annuity:
+            maturity_after_exit = (f.get("maturity") and f.get("horizon_end")
+                                   and str(f["maturity"]) > str(f["horizon_end"]))
+            rows += [
+                {"label": "Срок кредита",
+                 "value": f"{f.get('term_years')} лет от первой выдачи — до {_month_label(f.get('maturity'))}"
+                          + (" (позже выхода: остаток гасится при выходе)" if maturity_after_exit else ""),
+                 "unit": "text"},
+                {"label": "Баллон в конце срока", "value": f.get("balloon_share"), "unit": "pct"},
+            ]
+        rows += [
+            {"label": "Выборка и долг на ввод", "value": None, "unit": "section"},
+            {"label": "Выборка кредита", "value": f.get("draw_total"), "unit": "rub"},
+        ]
+        if f.get("draw_common"):
+            rows += [
+                {"label": "в т.ч. на стройку объекта", "value": f.get("draw_object"), "unit": "rub"},
+                {"label": "в т.ч. на общие затраты проекта", "value": f.get("draw_common"), "unit": "rub"},
+            ]
+        rows += [
+            {"label": "Комиссия за выдачу", "value": f.get("fee"), "unit": "rub"},
+            {"label": "Проценты до ввода — капитализированы в долг",
+             "value": f.get("interest_capitalized"), "unit": "rub"},
+            {"label": f"Долг на ввод ({_month_label(f.get('commissioning'))})",
+             "value": f.get("debt_at_commissioning"), "unit": "rub"},
+            {"label": "Пик долга", "value": f.get("peak"), "unit": "rub"},
+            {"label": "Погашение", "value": None, "unit": "section"},
+        ]
+        if annuity and f.get("first_payment"):
+            rows += [
+                {"label": f"Аннуитетный платёж — первый ({_month_label(f.get('first_payment_month'))}), в месяц",
+                 "value": f.get("first_payment"), "unit": "mln"},
+                {"label": "Аннуитетный платёж — средний, в месяц", "value": f.get("avg_payment"), "unit": "mln"},
+                {"label": "Погашено плановым телом аннуитета", "value": f.get("repaid_scheduled"), "unit": "rub"},
+                {"label": "Баллон по графику (доля долга на ввод)", "value": f.get("balloon_planned"), "unit": "rub"},
+            ]
+            if f.get("balloon_paid"):
+                rows.append({"label": f"Баллон погашен в срок ({_month_label(f.get('balloon_month'))})",
+                             "value": f.get("balloon_paid"), "unit": "rub"})
+        if f.get("repaid_from_cash"):
+            rows.append({"label": ("Погашено из выручки ДКП" if f.get("scheme") == "sale"
+                                   else "Погашено из NOI по мере поступления"),
+                         "value": f.get("repaid_from_cash"), "unit": "rub"})
+        if f.get("repaid_at_exit"):
+            rows.append({"label": f"Остаток долга погашен при выходе ({_month_label(f.get('horizon_end'))})",
+                         "value": f.get("repaid_at_exit"), "unit": "rub"})
+        rows += [
+            {"label": "Погашено всего", "value": f.get("repaid_total"), "unit": "rub"},
+            {"label": "Кредит погашен полностью", "value": _month_label(f.get("repaid_month")), "unit": "text"},
+            {"label": "Обслуживание", "value": None, "unit": "section"},
+            {"label": "Проценты после ввода — уплачены", "value": f.get("interest_paid"), "unit": "rub"},
+            {"label": "Проценты и комиссии — всего",
+             "value": float(f.get("interest_capitalized") or 0) + float(f.get("interest_paid") or 0)
+                      + float(f.get("fee") or 0), "unit": "rub"},
+        ]
+        if f.get("dscr_min") is not None:
+            rows += [
+                {"label": "DSCR — минимум по годам (NOI / проценты и тело)",
+                 "value": f.get("dscr_min"), "unit": "mult"},
+                {"label": "Покрытие процентов NOI (ICR) — минимум", "value": f.get("icr_min"), "unit": "mult"},
+            ]
+        years = list(f.get("years") or [])
+        # Колонка без единого значения (NOI и DSCR у прямой продажи) не рисуется.
+        columns = [list(c) for c in NONRES_FINANCING_YEAR_COLUMNS
+                   if any(y.get(c[0]) is not None for y in years)]
+        out.append({"key": item.get("key"), "title": item.get("title"),
+                    "strategy": item.get("strategy"), "rows": rows,
+                    "years": years, "columns": columns})
+    return out
+
+
+# Колонки таблицы «по годам» — одна раскладка для страницы, PDF и книги.
+NONRES_FINANCING_YEAR_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("year", "Год", "text"),
+    ("draw", "Выборка", "mln"),
+    ("interest", "Проценты начислены", "mln"),
+    ("repayment", "Погашено тела", "mln"),
+    ("balance_end", "Долг на конец года", "mln"),
+    ("noi", "NOI", "mln"),
+    ("dscr", "DSCR", "mult"),
+)
 
 
 def object_result_rows(result: dict[str, Any], *, hold: bool) -> list[dict[str, Any]]:
@@ -36135,6 +36417,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         },
         "report": {
             "nonres_strategy": nonres_report(fin.get("nonres")),
+            "nonres_financing": nonres_financing_report(fin.get("nonres")),
             "layout": report_layout(x, fin, equity_cf),
             "products": products_report,
             # График платежей за покупку — как посчитано: даты, суммы, доли и
@@ -38181,6 +38464,7 @@ def _consolidate_phase_results(
         },
         "report": {
             "nonres_strategy": nonres_report(finance.get("nonres")),
+            "nonres_financing": nonres_financing_report(finance.get("nonres")),
             "layout": report_layout(master_inputs, finance, equity_cf),
             "products": list(product_map.values()),
             "phase_products": phase_sales,
@@ -47072,6 +47356,10 @@ details.cadastral-box>summary::marker{color:#888}
 #revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
 [data-needs][hidden],#nonresStrategyCard[hidden]{display:none!important}
 table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:1px solid var(--line)}
+[data-nonres-finance-card][hidden]{display:none!important}
+table.nonres-finance-years{width:100%;margin:8px 0 18px;font-size:12px}
+table.nonres-finance-years td,table.nonres-finance-years th{text-align:right;padding:3px 6px;white-space:nowrap}
+table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-child{text-align:left}
 .phase-comparison-card tr.pc-block th{text-align:left;padding:9px 10px 8px;font-size:15px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#fff;background:#111;border:0;border-top:14px solid #fff}
 .phase-comparison-card tr.pc-note td{padding:2px 0 6px 22px;font-size:11px;font-weight:400;color:#777;white-space:normal}
 .phase-comparison-card tr.pc-note td span{position:sticky;left:22px}
@@ -47552,6 +47840,10 @@ table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:
     </div>
 
     <div id="finance" class="panel">
+      <div class="card" data-nonres-finance-card hidden>
+        <div class="section-title">Финансирование объекта — кредит вне ДДУ</div>
+        <div class="nonres-finance-box"></div>
+      </div>
       <div class="card" data-needs="project_finance">
         <div class="llcr-hero">
           <div><div class="section-title">LLCR — расчётный</div><div id="llcrValue" class="llcr-value">—</div></div>
@@ -47782,7 +48074,11 @@ table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:
 
       <div class="report-section" id="rsFinance">
         <div class="report-section-title">Финансирование</div>
-      <div class="report-2col">
+      <div class="card" data-nonres-finance-card hidden>
+        <div class="section-title">Финансирование объекта — кредит вне ДДУ</div>
+        <div class="nonres-finance-box"></div>
+      </div>
+      <div class="report-2col" data-needs="project_finance">
         <div class="card">
           <div class="section-title">Финансирование</div>
           <table class="metric-table metric-compact" id="reportFinanceTable"></table>
@@ -48343,6 +48639,9 @@ function objectStrategy(key){const v=String(inputs[key]||'');return STRATEGY_VAL
 // (`nonres_report`), страница только печатает: при ДДУ таблицы нет.
 function nonresCell(row){
  const v=row.value;
+ if(v==null&&(row.unit==='rub'||row.unit==='pct'||row.unit==='mln'))return '—';
+ // Месячный платёж и годовые суммы кредита — в млн: в млрд они нули.
+ if(row.unit==='mln')return (Number(v)/1e6).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})+' млн ₽';
  if(row.unit==='rub')return money(v);
  if(row.unit==='pct')return (Number(v||0)*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%';
  if(row.unit==='mult')return v==null?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x';
@@ -48358,6 +48657,19 @@ function reportLayout(r){
 }
 function applyReportLayout(layout){
  document.querySelectorAll('[data-needs]').forEach(el=>{el.hidden=!layout[el.dataset.needs]});
+}
+// «Финансирование объекта» — таблица движка (`nonres_financing_report`):
+// условия, выборка, платёж, баллон, погашение и обслуживание по годам.
+function renderNonresFinancing(r){
+ const report=(r||{}).report||{};
+ const items=report.nonres_financing||[];
+ document.querySelectorAll('[data-nonres-finance-card]').forEach(card=>{card.hidden=!items.length});
+ const html=items.map(item=>`<table class="nonres-strategy nonres-finance" data-object="${escapeHtml(item.key)}" data-strategy="${escapeHtml(item.strategy)}"><caption>${escapeHtml(item.title)}</caption><tbody>${
+  item.rows.map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}</tbody></table>${
+  (item.years||[]).length?`<div class="scroll"><table class="nonres-finance-years" data-object="${escapeHtml(item.key)}"><thead><tr>${
+   (item.columns||[]).map(c=>`<th>${escapeHtml(c[1])}</th>`).join('')}</tr></thead><tbody>${
+   item.years.map(y=>`<tr>${(item.columns||[]).map(c=>`<td>${c[2]==='text'?escapeHtml(String(y[c[0]])):nonresCell({unit:c[2],value:y[c[0]]})}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:''}`).join('');
+ document.querySelectorAll('.nonres-finance-box').forEach(box=>{box.innerHTML=html});
 }
 function renderNonresStrategy(r){
  const card=document.getElementById('nonresStrategyCard'),box=document.getElementById('nonresStrategyTables');
@@ -57148,6 +57460,7 @@ function renderResult(){
   }).join('');
  }
  renderNonresStrategy(r);
+ renderNonresFinancing(r);
  // Имена статей приходят из движка плейсхолдером, как VERSION и доли ТЭП.
  const capNames=__DEVELOPAID_CAPEX_NAMES__;
  {
