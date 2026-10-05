@@ -127,7 +127,7 @@ PROJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("land_rights_gross", "Плата за смену ВРИ, млн ₽"),
     ("land_rights_relief", "Льгота и зачёт по плате за ВРИ, млн ₽"),
     ("parking_price_th", "Цена машино-места проекта по умолчанию, тыс ₽"),
-    ("reservation_fee_pct", "Комиссия за лимит БРИДЖа, % лимита"),
+    ("reservation_fee_pct", "Плата за резервирование лимита НКЛ объекта, % лимита"),
 )
 
 # Объект: ключ → подпись. Значения — столбцы C, D, … по объектам.
@@ -657,6 +657,7 @@ INPUTS: dict[str, tuple[int, str]] = {key: (2 + i, label) for i, (key, label) in
     ("loan_share", "Доля кредита в затратах"),
     ("spread", "Спред кредита к ключевой ставке"),
     ("fee", "Комиссия за выдачу, доля выборки"),
+    ("reservation", "Плата за резервирование лимита НКЛ, доля лимита"),
     ("term", "Срок кредита от первой выдачи, мес."),
     ("balloon_share", "Баллон, доля долга на ввод"),
     ("hold", "Срок удержания, мес."),
@@ -697,6 +698,8 @@ DERIVED: dict[str, tuple[int, str]] = {key: (_D0 + i, label) for i, (key, label)
     ("peak", "Пик долга, ₽"),
     ("common_total", "Общие затраты проекта на объекте, ₽"),
     ("monthly_rate", "Ставка дисконтирования, месячная"),
+    ("loan_limit", "Лимит НКЛ объекта = вся плановая выборка, ₽"),
+    ("reservation_fee", "Плата за резервирование лимита, ₽ (в месяц первой выдачи)"),
 ))}
 assert _D0 + len(DERIVED) < FIRST_ROW - 2
 
@@ -853,7 +856,8 @@ def _row_formulas(r: int, refs: dict[str, str]) -> dict[str, str]:
         "int_cap": f"=IF({A}<{_in('comm')},{v['interest']},0)",
         "int_paid": f"=IF({A}>={_in('comm')},{v['interest']},0)",
         "draw": f"=IF({A}<={_in('comm')},({v['capex']}+{v['common']})*{_in('loan_share')},0)",
-        "fee": f"={v['draw']}*{_in('fee')}",
+        "fee": (f"={v['draw']}*{_in('fee')}"
+                f"+IF(AND({_in('first_draw')}<1000000,{A}={_in('first_draw')}),{_in('reservation_fee')},0)"),
         "first_k": f"=IF({v['draw']}>0,{A},1000000)",
         "bal_after": f"={v['bal_open']}+{v['int_cap']}+{v['draw']}",
         # Долг стройки без погашений: до ввода у доходного объекта погашений
@@ -956,6 +960,7 @@ def _object_sheet(book: Workbook, item: dict[str, Any], title: str, costs: _Cost
         "loan_share": f"=MIN(0.95,MAX(0,{_o('loan_share', c)}/100))",
         "spread": f"={_o('spread', c)}/100",
         "fee": f"=MAX(0,{_o('fee', c)}/100)",
+        "reservation": f"=MAX(0,{_p('reservation_fee_pct')}/100)",
         "term": f"=MAX(1,INT({_o('term', c)}))*12",
         "balloon_share": f"=MIN(1,MAX(0,{_o('balloon', c)}/100))",
         "hold": f"=MAX(1,INT({_o('hold_years', c)}))*12",
@@ -1010,6 +1015,8 @@ def _object_sheet(book: Workbook, item: dict[str, Any], title: str, costs: _Cost
         "peak": f"=MAX({col('bal_close')})",
         "common_total": f"=SUM({col('common')})",
         "monthly_rate": f"=(1+MAX({_in('discount')},-0.999999))^(1/12)-1",
+        "loan_limit": f"=SUM({col('draw')})",
+        "reservation_fee": f"={_in('loan_limit')}*{_in('reservation')}",
     }
     for name, (row, label) in DERIVED.items():
         ws[f"A{row}"] = label
@@ -1078,6 +1085,8 @@ def _object_sheet(book: Workbook, item: dict[str, Any], title: str, costs: _Cost
         "loan_draw": f"=SUM({col('draw')})",
         "loan_interest": f"=SUM({col('int_cap')})+SUM({col('int_paid')})",
         "loan_fee": f"=SUM({col('fee')})", "loan_repayment": f"=SUM({col('repay')})",
+        "issue_fee": f"=SUM({col('fee')})-{_in('reservation_fee')}",
+        "reservation_fee": f"={_in('reservation_fee')}", "limit": f"={_in('loan_limit')}",
         "loan_peak": f"={_in('peak')}", "tax_margin": f"=SUM({col('margin')})",
         "noi": f"=IF({income},SUM({col('noi')}),0)",
         "exit_value": f"={_in('exit_value')}", "stabilized_noi": f"={_in('stabilized_noi')}",
@@ -1141,7 +1150,9 @@ TOTAL_LABELS = {
     "selling_cost": "Расходы на продажу", "exit_cost": "Затраты на выход",
     "vat_paid": "НДС к уплате", "vat_charged": "НДС начисленный",
     "loan_draw": "Кредит — выборка", "loan_interest": "Кредит — проценты",
-    "loan_fee": "Кредит — комиссия", "loan_repayment": "Кредит — погашение",
+    "loan_fee": "Кредит — комиссии всего", "loan_repayment": "Кредит — погашение",
+    "issue_fee": "Комиссия за выдачу", "reservation_fee": "Плата за резервирование лимита НКЛ",
+    "limit": "Лимит НКЛ объекта",
     "loan_peak": "Кредит — пик долга", "noi": "NOI за срок удержания",
     "tax_margin": "Налоговая маржа объекта", "exit_value": "Стоимость выхода",
     "stabilized_noi": "Стабилизированный NOI", "dscr_min": "DSCR — минимум",
@@ -1171,26 +1182,11 @@ def _object_sum(objects_refs: list[dict[str, str]], column: str, r: int) -> str:
 
 
 def _credit_sheet(book: Workbook, objects_refs: list[dict[str, str]], inputs: _Inputs,
-                  costs: _Costs, months: int) -> dict[str, str]:
+                  months: int) -> dict[str, str]:
     ws = book.create_sheet(CREDIT_SHEET)
     ws["A1"] = "Кредит объектов: ключевая ставка, выборка, проценты, погашение, долг"
     ws["A1"].font = BOLD
     ws["A2"] = "Помесячно — сумма по объектам; условия и итог каждого кредита — на листе объекта и в «Отчёте»."
-    # Комиссия за лимит БРИДЖа: движок (`simulate_financing`) начисляет её и
-    # нежилому проекту, у которого выборок БРИДЖа нет, — от оплат участка и
-    # проекта до РнС, в месяц старта. Книга повторяет это строкой с подписью,
-    # а не прячет в процентах.
-    k_range = f"'{COSTS_SHEET}'!$A${FIRST_ROW}:$A${FIRST_ROW + months - 1}"
-    before = '"<"&' + costs.cells["permit"]
-    parts = [f"SUMIF({k_range},{before},'{COSTS_SHEET}'!${costs.monthly[key]}${FIRST_ROW}:"
-             f"${costs.monthly[key]}${FIRST_ROW + months - 1})"
-             for key in ("purchase", "design_p", "design_rd") if key in costs.monthly]
-    ws["A4"] = "Лимит БРИДЖа по методике движка: оплаты участка и проекта до РнС, ₽"
-    ws["B4"] = "=" + _sum(parts)
-    ws["A5"] = ("Комиссия за лимит БРИДЖа, ₽ — движок начисляет её в месяц старта и проекту "
-                "без выборок БРИДЖа")
-    ws["B5"] = f"=B4*{_p('reservation_fee_pct')}/100"
-    ws["B4"].number_format = ws["B5"].number_format = MONEY
     columns = (("k", "k"), ("month", "Месяц"), ("key_rate", "Ключевая ставка"),
                ("draw", "Выборка"), ("int_cap", "Проценты капитализированные"),
                ("int_paid", "Проценты уплаченные"), ("fee", "Комиссия"),
@@ -1220,13 +1216,11 @@ def _credit_sheet(book: Workbook, objects_refs: list[dict[str, str]], inputs: _I
     for i in range(1, len(columns) + 1):
         ws.column_dimensions[get_column_letter(i)].width = 18
     last = FIRST_ROW + months - 1
-    out = {key: f"'{CREDIT_SHEET}'!${letters[key]}${FIRST_ROW}:${letters[key]}${last}" for key in letters}
-    out["bridge_fee"] = f"'{CREDIT_SHEET}'!$B$5"
-    return out
+    return {key: f"'{CREDIT_SHEET}'!${letters[key]}${FIRST_ROW}:${letters[key]}${last}" for key in letters}
 
 
 def _tax_sheet(book: Workbook, objects_refs: list[dict[str, str]], objects: list[dict[str, Any]],
-               costs: _Costs, credit: dict[str, str], months: int) -> dict[str, str]:
+               costs: _Costs, months: int) -> dict[str, str]:
     """Налог на прибыль проекта и НДС: база — маржа объектов, общие затраты
     проекта признаются в РВЭ (продаж ядра у нежилого проекта нет), вычет —
     начисленные проценты и комиссии; правило переноса убытка — то же, что у
@@ -1272,8 +1266,7 @@ def _tax_sheet(book: Workbook, objects_refs: list[dict[str, str]], objects: list
         ws[v["common"]] = f"=IF(A{r}=$B$4,-$B$3,0)"
         ws[v["margin"]] = f"={v['objects_margin']}+{v['common']}"
         ws[v["financing"]] = "=" + _sum([f"'{ref['sheet']}'!{_c('interest')}{r}+'{ref['sheet']}'!{_c('fee')}{r}"
-                                         for ref in objects_refs]
-                                        + ([credit["bridge_fee"]] if i == 0 else []))
+                                         for ref in objects_refs])
         ws[v["tx_net"]] = f"={v['margin']}-{v['financing']}"
         # Тот же пересказ `_profit_tax_schedule`, что у объекта, — со шлюзом РВЭ.
         tax = _tax_formulas(v, p, r, FIRST_ROW, f"IF(A{r}<$B$4,1,0)", "$B$5", "$B$6",
@@ -1291,7 +1284,7 @@ def _tax_sheet(book: Workbook, objects_refs: list[dict[str, str]], objects: list
 
 
 def _cash_sheet(book: Workbook, objects_refs: list[dict[str, str]], costs: _Costs,
-                taxes: dict[str, str], credit: dict[str, str], months: int) -> dict[str, str]:
+                taxes: dict[str, str], months: int) -> dict[str, str]:
     ws = book.create_sheet(CASH_SHEET)
     ws["A1"] = "Денежный поток проекта и собственника; NPV, IRR, окупаемость"
     ws["A1"].font = BOLD
@@ -1299,7 +1292,7 @@ def _cash_sheet(book: Workbook, objects_refs: list[dict[str, str]], costs: _Cost
                ("revenue", "Выручка объектов"), ("capex", "CAPEX проекта"),
                ("costs", "Расходы объектов: продажи, эксплуатация, налог на имущество, выход"),
                ("vat", "НДС к уплате"), ("interest", "Проценты начисленные"),
-               ("fee", "Комиссии (выдача кредита, лимит БРИДЖа)"),
+               ("fee", "Комиссии (выдача, резервирование лимита НКЛ)"),
                ("tax", "Налог на прибыль"), ("project", "Поток проекта"),
                ("to_equity", "Деньги объектов собственнику"), ("equity", "Поток собственного капитала"),
                ("residual", "Оценка удержания (не деньги)"), ("cash", "Поток капитала — деньги"),
@@ -1335,14 +1328,12 @@ def _cash_sheet(book: Workbook, objects_refs: list[dict[str, str]], costs: _Cost
             for name in ("selling", "opex", "ptax", "exit_cost")])
         ws[v["vat"]] = "=" + _object_sum(objects_refs, "vat_paid", r)
         ws[v["interest"]] = "=" + _object_sum(objects_refs, "interest", r)
-        ws[v["fee"]] = "=" + _sum([f"'{ref['sheet']}'!{_c('fee')}{r}" for ref in objects_refs]
-                                  + ([credit["bridge_fee"]] if i == 0 else []))
+        ws[v["fee"]] = "=" + _object_sum(objects_refs, "fee", r)
         ws[v["tax"]] = f"=INDEX({taxes['tx_tax']},{i + 1})"
         ws[v["project"]] = (f"={v['revenue']}-{v['costs']}-{v['vat']}-{v['interest']}-{v['fee']}"
                             f"-{v['capex']}-{v['tax']}")
         ws[v["to_equity"]] = "=" + _object_sum(objects_refs, "to_equity", r)
-        ws[v["equity"]] = (f"={v['to_equity']}-{v['capex']}-{v['tax']}"
-                           + (f"-{credit['bridge_fee']}" if i == 0 else ""))
+        ws[v["equity"]] = f"={v['to_equity']}-{v['capex']}-{v['tax']}"
         ws[v["residual"]] = "=" + _object_sum(objects_refs, "residual", r)
         ws[v["cash"]] = f"={v['equity']}-{v['residual']}"
         ws[v["cum"]] = (f"={letters['cum']}{r - 1}+{v['cash']}" if i else f"={v['cash']}")
@@ -1462,7 +1453,8 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
     row += 1
     financing_rows = (
         ("loan_draw", "Выборка кредита"), ("draw_object", "в т.ч. на стройку объекта"),
-        ("draw_common", "в т.ч. на общие затраты проекта"), ("loan_fee", "Комиссия за выдачу"),
+        ("draw_common", "в т.ч. на общие затраты проекта"), ("limit", "Лимит НКЛ объекта"),
+        ("reservation_fee", "Плата за резервирование лимита НКЛ"), ("issue_fee", "Комиссия за выдачу"),
         ("interest_capitalized", "Проценты до ввода — капитализированы"),
         ("debt_at_commissioning", "Долг на ввод"), ("loan_peak", "Пик долга"),
         ("balloon_planned", "Баллон по графику"), ("repaid_scheduled", "Погашено плановым телом"),
@@ -1663,6 +1655,7 @@ def _check_rows(result: dict[str, Any], spec: dict[str, Any], objects_refs: list
         ("loan_peak", "totals"), ("noi", "totals"), ("tax_margin", "totals"), ("capex", "totals"),
         ("exit_value", "kpi"), ("stabilized_noi", "kpi"), ("dscr_min", "kpi"), ("icr_min", "kpi"),
         ("draw_object", "financing"), ("draw_common", "financing"),
+        ("issue_fee", "financing:fee"), ("reservation_fee", "financing"), ("limit", "financing"),
         ("interest_capitalized", "financing"), ("interest_paid", "financing"),
         ("debt_at_commissioning", "financing"), ("rate_at_commissioning", "financing"),
         ("avg_rate", "financing"), ("balloon_planned", "financing"), ("balloon_paid", "financing"),
@@ -1676,8 +1669,9 @@ def _check_rows(result: dict[str, Any], spec: dict[str, Any], objects_refs: list
     ratios = {"dscr_min", "icr_min", "rate_at_commissioning", "avg_rate", "irr", "irr_cash"}
     for ref, item in zip(objects_refs, engine_objects):
         for key, where in object_checks:
+            where, _, engine_key = where.partition(":")
             rows.append((item.get("title") or item.get("key") or "", TOTAL_LABELS.get(key, key), ref[key],
-                         (item.get(where) or {}).get(key), key in ratios))
+                         (item.get(where) or {}).get(engine_key or key), key in ratios))
     return rows
 
 
@@ -1744,9 +1738,9 @@ def build(result: dict[str, Any], spec: dict[str, Any]) -> bytes:
         refs["title"] = item["title"]
         objects_refs.append(refs)
         ordered_engine.append(by_key.get(item["key"]) or {})
-    credit = _credit_sheet(book, objects_refs, inputs, costs, months)
-    taxes = _tax_sheet(book, objects_refs, objects, costs, credit, months)
-    cash = _cash_sheet(book, objects_refs, costs, taxes, credit, months)
+    _credit_sheet(book, objects_refs, inputs, months)
+    taxes = _tax_sheet(book, objects_refs, objects, costs, months)
+    cash = _cash_sheet(book, objects_refs, costs, taxes, months)
     report = _report_sheet(book, spec, objects, objects_refs, costs, cash, taxes, months)
     rows = _check_rows(result, spec, objects_refs, ordered_engine, costs, report)
     _check_sheet(book, rows, list(spec.get("missing") or []))

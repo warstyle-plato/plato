@@ -33094,6 +33094,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                 "growth_post": n(x, f"{obj.prefix}_growth_post_pct", obj.growth_post_default) / 100,
                 "parking_spaces": 0.0, "parking_price_rub": 0.0,
                 "selling_share": (n(x, "marketing_pct") + n(x, "selling_pct")) / 100,
+                # Плата за резервирование лимита — та же вводная, что у
+                # БРИДЖа и ПФ, но с лимита НКЛ объекта (владелец, 05.10.2026).
+                "reservation_fee_pct": n(x, "reservation_fee_pct"),
                 "params": {suffix: x.get(f"{obj.prefix}_{suffix}")
                            for suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS},
             }
@@ -33641,6 +33644,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "capex_by_article": {article: dict(schedule) for article, schedule in capex_by_article.items()},
         "debt_capex": debt_capex,
         "nonres_plans": nonres_plans,
+        # Общие затраты (участок, проект, сети) кредитует НКЛ объектов, а не
+        # БРИДЖ и ПФ: так устроен чисто нежилой проект. Читает финансирование —
+        # лимит БРИДЖа такому проекту не считается.
+        "common_on_object_loans": bool(nonres_plans and is_nonresidential(x)),
         "operating": dict(operating),
         "capex_amounts": amounts,
         # Гараж объекта внутри его статьи, но со своей базой: здание меряется
@@ -34189,7 +34196,11 @@ def object_financing(flows: dict[str, Any]) -> dict[str, Any]:
         "draw_total": draw_total,
         "draw_object": min(draw_object, draw_total),
         "draw_common": max(0.0, draw_total - draw_object),
-        "fee": total("loan_fee"),
+        # Комиссия за выдачу и плата за резервирование лимита — раздельно;
+        # в ряду `loan_fee` они лежат вместе.
+        "fee": total("loan_fee") - total("loan_reservation_fee"),
+        "reservation_fee": total("loan_reservation_fee"),
+        "limit": float((flows.get("totals") or {}).get("loan_limit") or 0.0),
         "interest_capitalized": total("loan_interest_cap"),
         "interest_paid": total("loan_interest_paid"),
         "debt_at_commissioning": get("loan_balance", commissioning),
@@ -34277,6 +34288,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # подразумевается: правило живёт у читателя.
         if social_cash_payment_date(x, permit) < permit:
             bridge_limit_parts["social"] = n(x, "social_compensation_mln") * 1_000_000
+    # Чисто нежилой проект БРИДЖа не открывает: участок и проект в доле
+    # кредита берёт НКЛ объектов (`object_flows`), и плата за резервирование
+    # считается с её лимита там же. Лимит БРИДЖа от тех же оплат был второй
+    # комиссией за кредит, которого нет (владелец, 05.10.2026).
+    if op.get("common_on_object_loans"):
+        bridge_limit_parts = {key: 0.0 for key in bridge_limit_parts}
     calculated_bridge_limit = sum(bridge_limit_parts.values())
 
     # Часть первоначального финансирования может идти не из банка: собственные
@@ -35498,6 +35515,9 @@ def nonres_financing_report(nonres: dict[str, Any] | None) -> list[dict[str, Any
                 {"label": "в т.ч. на стройку объекта", "value": f.get("draw_object"), "unit": "rub"},
                 {"label": "в т.ч. на общие затраты проекта", "value": f.get("draw_common"), "unit": "rub"},
             ]
+        if f.get("reservation_fee"):
+            rows.append({"label": "Плата за резервирование лимита НКЛ", "value": f.get("reservation_fee"),
+                         "unit": "rub"})
         rows += [
             {"label": "Комиссия за выдачу", "value": f.get("fee"), "unit": "rub"},
             {"label": "Проценты до ввода — капитализированы в долг",
@@ -35532,7 +35552,7 @@ def nonres_financing_report(nonres: dict[str, Any] | None) -> list[dict[str, Any
             {"label": "Проценты после ввода — уплачены", "value": f.get("interest_paid"), "unit": "rub"},
             {"label": "Проценты и комиссии — всего",
              "value": float(f.get("interest_capitalized") or 0) + float(f.get("interest_paid") or 0)
-                      + float(f.get("fee") or 0), "unit": "rub"},
+                      + float(f.get("fee") or 0) + float(f.get("reservation_fee") or 0), "unit": "rub"},
         ]
         if f.get("dscr_min") is not None:
             rows += [

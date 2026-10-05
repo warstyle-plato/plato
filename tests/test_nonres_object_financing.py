@@ -241,3 +241,29 @@ def test_the_page_check_fails_on_a_forgery() -> None:
 def test_no_objects_outside_ddu_hide_the_card() -> None:
     drawn = _render(_run(offices_strategy="ddu", retail_strategy="ddu")["report"])
     assert drawn["cards"] == [True, True] and drawn["tables"] == []
+
+
+def test_a_pure_nonresidential_project_reserves_the_object_line_not_a_bridge() -> None:
+    """Владелец (05.10.2026): чисто нежилой проект БРИДЖа не открывает —
+    участок и проект в доле кредита берёт НКЛ объекта, и плата за
+    резервирование считается с её лимита (вся плановая выборка) в месяц
+    первой выдачи. Прежде движок брал её ещё и с «лимита БРИДЖа» от оплат
+    участка — вторая комиссия за кредит, которого нет. Жилой проект с ПФ
+    комиссию БРИДЖа сохраняет."""
+    from test_nonres_debt_metric import _nonres_inputs
+
+    x, t = _nonres_inputs(offices_strategy="direct", purchase_price_mln=900)
+    result = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
+    assert result["finance"]["bridge_fee"] == 0.0
+    for item in result["finance"]["nonres"]["objects"]:
+        f = item["financing"]
+        assert f["limit"] == pytest.approx(f["draw_total"])
+        assert f["reservation_fee"] == pytest.approx(
+            f["limit"] * float(x["reservation_fee_pct"]) / 100, rel=1e-12)
+        assert f["reservation_fee"] + f["fee"] == pytest.approx(item["totals"]["loan_fee"], rel=1e-12)
+        rows = _rows({"rows": next(r["rows"] for r in result["report"]["nonres_financing"]
+                                   if r["key"] == item["key"])})
+        assert rows["Плата за резервирование лимита НКЛ"]["value"] == pytest.approx(f["reservation_fee"])
+    housing = core.calculate(core.CalcRequest(inputs=copy.deepcopy(core.DEFAULT_INPUTS),
+                                              tep=copy.deepcopy(core.TEP_DEFAULT), rates=[]))
+    assert housing["finance"]["bridge_fee"] > 0

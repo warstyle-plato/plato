@@ -235,6 +235,10 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     loan_share = _clamp(_num(params, "loan_share_pct", 60.0) / 100.0, 0.0, 0.95)
     spread = _num(params, "loan_spread_pp", 4.0) / 100.0
     fee_share = max(0.0, _num(params, "loan_fee_pct", 1.0) / 100.0)
+    # Плата за резервирование лимита НКЛ объекта: банк кредитует долю всех
+    # затрат — участка, проекта, стройки — одной линией, и резервирует её
+    # лимит при открытии. Ставка — проектная вводная (как у БРИДЖа и ПФ).
+    reservation_share = max(0.0, float(plan.get("reservation_fee_pct", 0.0) or 0.0) / 100.0)
     property_tax = max(0.0, _num(params, "property_tax_pct", 2.2) / 100.0)
     repayment = _choice(params, "debt_repayment", REPAYMENTS, REPAY_ANNUITY)
     term_months = max(1, int(_num(params, "loan_term_years", 10))) * 12
@@ -423,6 +427,14 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         m["loan_balance"][month] = balance
         peak = max(peak, balance)
 
+    # Лимит НКЛ — вся плановая выборка; плата за его резервирование — в месяц
+    # первой выдачи. Она лежит в комиссиях (`loan_fee`): поток, налог и итог
+    # объекта видят её сами, а отдельный ряд даёт ей строку в отчёте.
+    loan_limit = sum(m["loan_draw"].values())
+    if first_draw is not None and loan_limit and reservation_share:
+        m["loan_reservation_fee"][first_draw] = loan_limit * reservation_share
+        m["loan_fee"][first_draw] += loan_limit * reservation_share
+
     # --- налоговая база объекта (без процентов: они идут вычетом финансирования)
     monthly_dep = cost_basis / (max(1, int(_num(params, "depreciation_years", 30))) * 12.0)
     book = cost_basis
@@ -522,6 +534,8 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "loan_draw": total("loan_draw"),
             "loan_interest": total("loan_interest_cap") + total("loan_interest_paid"),
             "loan_fee": total("loan_fee"),
+            "loan_reservation_fee": total("loan_reservation_fee"),
+            "loan_limit": loan_limit,
             "loan_repayment": total("loan_repayment"),
             "loan_peak": peak,
             "noi": noi_total,
