@@ -1762,15 +1762,34 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
                 f"расспрашивать тех, кто и так был готов.")
         out["funnel"] = line.strip()
 
-    bank = summary.get("bank_plan") or {}
-    quarters = bank.get("revenue_by_quarter") or {}
-    fact = {q["quarter"]: float(q["amount"]) for q in (summary.get("by_quarter") or [])}
-    common = [q for q in quarters if q in fact]
+    # План банка в выводе — та же линия, что на графике: валовые продажи из
+    # `plan_comparison`. Прежде здесь стояла строка рассрочки — деньги до
+    # эскроу, — и подпись под графиком сравнивала факт с другой мерой, чем
+    # сам график.
+    plans = summary.get("plans") or plan_comparison(summary)
+    common = [row for row in plans.get("quarters") or []
+              if row.get("fact_amount") is not None and row.get("bank_amount") is not None]
+    opening = plans.get("bank_opening")
     if common:
-        gap = sum(fact[q] - float(quarters[q]) for q in common)
+        gap = sum(float(row["fact_amount"]) - float(row["bank_amount"]) for row in common)
         out["bank"] = (
             f"По {len(common)} общим кварталам факт {'выше' if gap >= 0 else 'ниже'} плана банка на "
             f"{_mln(abs(gap))} млн ₽.")
+    if opening:
+        last = (plans.get("quarters") or [{}])[-1]
+        text = (
+            f" Первый квартал модели банка ({opening['quarter']}, "
+            f"{_mln(opening['amount'])} млн ₽) — не квартал, а остаток на дату модели: "
+            f"продажи идут с {opening['fact_since']}. Факт этого квартала "
+            f"{_mln(opening['fact_quarter'])} млн ₽, с начала продаж — "
+            f"{_mln(opening['fact_to_date'])} млн ₽; число банка ближе ко "
+            + ("второму" if opening["closer_to"] == "to_date" else "первому")
+            + ". Поквартально он не сравнивается.")
+        if last.get("fact_amount_cum") is not None and last.get("bank_amount_cum") is not None:
+            gap = float(last["fact_amount_cum"]) - float(last["bank_amount_cum"])
+            text += (f" Накопленным итогом на {last['label']} факт "
+                     f"{'выше' if gap >= 0 else 'ниже'} плана банка на {_mln(abs(gap))} млн ₽.")
+        out["bank"] = (out.get("bank", "") + text).strip()
     return out
 
 
@@ -1785,6 +1804,55 @@ def conclusions(summary: dict[str, Any]) -> dict[str, str]:
 #
 # Складывается здесь: сумма месяцев плана до квартала, посчитанная в браузере,
 # была бы вторым счётом того же плана.
+
+
+def _bank_opening(fact_quarter: dict[str, dict[str, Any]], gross: dict[str, float],
+                  area: dict[str, float], cash: dict[str, float]) -> dict[str, Any] | None:
+    """Первый квартал банка как остаток на дату модели — или None.
+
+    Признак один и проверяемый: продажи по договорам начались раньше первого
+    заполненного квартала модели. Тогда в этой колонке банк держит проданное
+    до даты модели, и квартальным потоком она не является.
+    """
+    sold = sorted(q for q, row in fact_quarter.items() if row.get("amount"))
+    start = min((q for q, value in gross.items() if value), default="")
+    if not start or not sold or sold[0] >= start:
+        return None
+    to_date = sum(float(fact_quarter[q]["amount"]) for q in sold if q <= start)
+    in_quarter = float((fact_quarter.get(start) or {}).get("amount") or 0.0)
+    amount = float(gross[start])
+    return {"quarter": start, "amount": amount, "area": area.get(start) or None,
+            "cash": cash.get(start), "fact_since": sold[0],
+            "fact_quarter": in_quarter, "fact_to_date": to_date,
+            # С чем первое число банка сходится ближе — это показывается, а
+            # не решает за читателя: книгу банка мы видим только числами.
+            "closer_to": ("to_date" if abs(amount - to_date) < abs(amount - in_quarter)
+                          else "quarter")}
+
+
+# Накопленный итог считается ОДИН раз и для всех трёх линий: факт, план ФМ и
+# план банка. Переключатель на экране только выбирает, какое поле читать, —
+# вторая сумма в браузере разошлась бы с этой.
+_ACCUMULATED = ("fact", "fm", "bank")
+
+
+def accumulate(rows: list[dict[str, Any]], opening: dict[str, Any] | None = None) -> None:
+    """Дописывает к кварталам `<линия>_<мера>_cum` — нарастающий итог.
+
+    Остаток банка на дату модели входит в его итог своим кварталом: накопленным
+    итогом он сравним с фактом с начала продаж, а поквартально — нет. До
+    первого значения линии итога нет (None), а не ноль.
+    """
+    for line in _ACCUMULATED:
+        for metric in ("amount", "area"):
+            total: float | None = None
+            for row in rows:
+                value = row.get(f"{line}_{metric}")
+                if line == "bank" and opening and row["label"] == opening["quarter"]:
+                    value = opening.get(metric)
+                if value is not None:
+                    total = (total or 0.0) + float(value)
+                row[f"{line}_{metric}_cum"] = total
 
 
 def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
@@ -1833,6 +1901,15 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
     bank_price = {key: float(value) for key, value in
                   (bank.get("price_by_quarter") or {}).items()}
 
+    # Первый квартал модели банка, если продажи начались раньше него, — не
+    # квартал, а остаток на дату модели: банк кладёт в первую колонку всё
+    # проданное до неё. На графике это скачок до 1,6 млрд в 2026 Q1 и провал
+    # следом («такое ощущение, что разные базы сравнения», владелец,
+    # 05.10.2026). Рядом с квартальным фактом его ставить нельзя; он уходит
+    # отдельной записью с обоими числами факта — за квартал и с начала продаж,
+    # — чтобы читатель видел, с каким из них он сходится.
+    opening = _bank_opening(fact_quarter, bank_gross, bank_area, bank_cash)
+
     names = sorted(set(fact_quarter) | set(plan_quarter) | set(bank_gross) | set(bank_cash))
     last = max([q for q in fact_quarter], default="")
     months_in: dict[str, int] = {}
@@ -1864,7 +1941,12 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
             "months": months_in.get(name, 0),
             "partial": bool(fact.get("amount")) and months_in.get(name, 0) < 3,
         })
-    return {"quarters": rows, "fm_sheet": fm.get("sheet") or "",
+        if opening and name == opening["quarter"]:
+            # Цена — не поток, её первый квартал сравним; деньги и метры — нет.
+            rows[-1].update({"bank_amount": None, "bank_area": None,
+                             "bank_cash": None, "bank_opening": True})
+    accumulate(rows, opening)
+    return {"quarters": rows, "bank_opening": opening, "fm_sheet": fm.get("sheet") or "",
             "bank_sheet": bank.get("sheet") or "",
             # У плана банка есть только деньги: метров и цены в его строках нет.
             # Сказать это надо вслух — пропавшая линия читается как ноль.
