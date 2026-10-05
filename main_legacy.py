@@ -16748,9 +16748,19 @@ def _layout_dscr(layout: Any) -> float | None:
     """
     if not isinstance(layout, dict) or layout.get("project_finance", True):
         return None
+    metric = layout.get("debt_metric")
+    if isinstance(metric, dict):
+        return float(metric["value"]) if metric.get("key") == "dscr" else None
     values = [float(t["value"]) for t in layout.get("nonres_tiles") or []
               if t.get("unit") == "mult" and t.get("value") is not None]
     return min(values) if values else None
+
+
+def _layout_no_debt_cover(layout: Any) -> bool:
+    """У проекта без ПФ нет показателя долга (`debt_metric.key` пуст): кредит
+    объектов гасится продажами. Вердикт тогда не говорит ни об LLCR, ни о DSCR."""
+    metric = layout.get("debt_metric") if isinstance(layout, dict) else None
+    return isinstance(metric, dict) and not metric.get("key")
 
 
 def _purchase_feasibility(
@@ -16763,6 +16773,7 @@ def _purchase_feasibility(
     pf_shortfall_mln: Any = 0.0,
     pf_shortfall_month: Any = None,
     object_dscr: Any = None,
+    no_debt_cover: bool = False,
 ) -> dict[str, str]:
     """Вердикт по вводным плюс оговорка о дефолте, если он в модели был.
 
@@ -16776,7 +16787,7 @@ def _purchase_feasibility(
     """
     verdict = _purchase_feasibility_base(
         purchase_price_mln, net_profit_mln, llcr, debt_amount, ending_debt_mln,
-        object_dscr)
+        object_dscr, no_debt_cover)
     verdict = _financing_not_closed_clause(
         verdict, pf_shortfall_mln, pf_shortfall_month)
     when = str(default_date or "").strip()
@@ -16874,6 +16885,7 @@ def _purchase_feasibility_base(
     debt_amount: Any = 0.0,
     ending_debt_mln: Any = 0.0,
     object_dscr: Any = None,
+    no_debt_cover: bool = False,
 ) -> dict[str, str]:
     """Return a short preliminary purchase-feasibility conclusion.
 
@@ -16962,6 +16974,12 @@ def _purchase_feasibility_base(
             "status": "positive",
             "title": "Предварительно целесообразна",
             "text": "При текущей цене покупки проект формирует положительную чистую прибыль, а LLCR находится не ниже целевого уровня 1,20x.",
+        }
+    if no_debt_cover:
+        return {
+            "status": "positive",
+            "title": "Предварительно целесообразна",
+            "text": "При текущей цене покупки проект формирует положительную чистую прибыль; кредит объектов гасится выручкой прямых продаж, покрытие долга NOI не меряется — погашение кредита показано в «Финансировании объекта».",
         }
     return {
         "status": "positive",
@@ -17713,6 +17731,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         float(financing.get("pf_shortfall") or 0) / 1_000_000,
         financing.get("pf_shortfall_month"),
         _layout_dscr(report.get("layout")),
+        _layout_no_debt_cover(report.get("layout")),
     )
     story.append(KeepTogether([
         P("Оценка целесообразности покупки", h2),
@@ -31010,6 +31029,7 @@ def telegram_result(req: TelegramResultRequest,
         summary.get("pf_shortfall_mln"),
         summary.get("pf_shortfall_month"),
         _layout_dscr(summary.get("layout")),
+        _layout_no_debt_cover(summary.get("layout")),
     )
     # Продукт с ГНС и без продаваемой площади делает вердикт бессмысленным:
     # расходы полные, выручки нет, и «нецелесообразна» относится к дырке
@@ -35109,7 +35129,43 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
     return {"housing": not is_nonresidential(inputs),
             "project_finance": project_finance,
             "nonres_strategy": bool(objects),
-            "nonres_tiles": tiles}
+            "nonres_tiles": tiles,
+            "debt_metric": debt_metric(finance, project_finance, objects)}
+
+
+# Пороги покрытия долга: ориентир банка и нижняя граница «на грани». У LLCR
+# проекта с ПФ — прежние пороги карточки решения; у DSCR кредита объекта — те
+# же, что у вердикта (`_purchase_feasibility_base`): ниже 1,00x NOI не
+# покрывает платежа.
+DEBT_METRIC_TARGET = 1.20
+DEBT_METRIC_FLOOR = {"llcr": 1.05, "dscr": 1.00}
+
+
+def debt_metric(finance: dict[str, Any], project_finance: bool,
+                objects: list[dict[str, Any]]) -> dict[str, Any]:
+    """Чем мерить долг проекта — одно решение для карточки решения, подбора
+    цены входа, PDF и бота.
+
+    Проект с БРИДЖем и ПФ меряет LLCR. Проект без них — DSCR кредита объектов
+    (минимум по годам и объектам): LLCR там считать не из чего, и −8,68x на
+    экране было не ответом, а делением нуля ПФ. Кредит, который гасится
+    выручкой ДКП, покрытия NOI не имеет — тогда показателя нет, и сказано
+    почему, а не печатается ноль.
+    """
+    if project_finance or not objects:
+        return {"key": "llcr", "label": "LLCR", "value": finance.get("llcr"),
+                "target": DEBT_METRIC_TARGET, "floor": DEBT_METRIC_FLOOR["llcr"]}
+    values = [float(k["dscr_min"]) for k in ((o.get("kpi") or {}) for o in objects)
+              if k.get("dscr_min") is not None]
+    if values:
+        return {"key": "dscr", "label": "DSCR кредита объектов — минимум по годам",
+                "value": min(values), "target": DEBT_METRIC_TARGET,
+                "floor": DEBT_METRIC_FLOOR["dscr"]}
+    return {"key": None, "label": "Покрытие кредита объектов", "value": None,
+            "target": DEBT_METRIC_TARGET, "floor": None,
+            "reason": "Кредит объектов гасится выручкой прямых продаж — платежа из NOI "
+                      "нет, DSCR не считается. Проверка — что кредит погашен: "
+                      "см. «Финансирование объекта»."}
 
 
 def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -36180,10 +36236,23 @@ def _calculate_economics(req: CalcRequest) -> dict:
                               -min(6, max(IRD_MONTHS_MIN, int(n(x, "ird_months", 18)))))
     add_event("Проектирование П и РД", design_start, op["permit"], group="Подготовка")
     bridge_end = add_months(op["permit"], int(n(x, "bridge_repay_lag_months", 0)))
-    add_event("БРИДЖ", op["project_start"], bridge_end, group="Финансирование")
+    # Полоса финансирования — того долга, что у проекта есть. БРИДЖ рисуется,
+    # когда он выбирался; у нежилого проекта его нет, а есть кредит каждого
+    # объекта вне ДДУ — от первой выдачи до полного погашения
+    # (`object_financing`). Прежде БРИДЖ стоял в календаре любого проекта.
+    _nonres_objects = (fin.get("nonres") or {}).get("objects") or []
+    if float(fin.get("peak_bridge") or 0.0) > 0.5 or not _nonres_objects:
+        add_event("БРИДЖ", op["project_start"], bridge_end, group="Финансирование")
+    for _item in _nonres_objects:
+        _rows = [r for r in _item.get("rows") or [] if float(r.get("nonres_loan_draw") or 0) > 0]
+        _repaid = (_item.get("financing") or {}).get("repaid_month") or _item.get("horizon_end")
+        if _rows and _repaid:
+            add_event(f"Кредит объекта — {_item.get('title')}", d(_rows[0]["month"]), d(_repaid),
+                      group="Финансирование")
     add_event("РнС", op["permit"], group="Ключевые вехи", kind="milestone")
     add_event("Старт продаж", op["sales_start"], group="Ключевые вехи", kind="milestone")
-    add_event("Строительство ЖК", op["permit"], op["rve"], group="Строительство")
+    if not is_nonresidential(x):
+        add_event("Строительство ЖК", op["permit"], op["rve"], group="Строительство")
     if any(v > 0 for v in (op["capex_amounts"].get("utilities", 0), op["capex_amounts"].get("landscaping", 0))):
         add_event("Сети и благоустройство", op["permit"], op["rve"], group="Строительство")
 
@@ -40324,6 +40393,8 @@ def _metric_value(
     s = result.get("summary") or {}
     mapping = {
         "llcr": float(s.get("llcr", 0) or 0),
+        # DSCR кредита объектов — у проекта без ПФ (`report_layout.debt_metric`).
+        "dscr": _layout_dscr((result.get("report") or {}).get("layout")),
         "margin_pct": float(s.get("margin", 0) or 0) * 100,
         "net_profit_mln": float(s.get("net_profit", 0) or 0) / 1e6,
         "npv_mln": (float(s["npv"]) / 1e6 if s.get("npv") is not None else None),
@@ -41271,6 +41342,25 @@ def _goal_scope_label(scope: str, label: str) -> str:
     return label or "Весь проект"
 
 
+# Метрики, по которым подбирают, но не строят Tornado: DSCR кредита объектов
+# есть только у проекта без ПФ (`report_layout.debt_metric`).
+_GOAL_ONLY_METRICS: dict[str, dict[str, Any]] = {
+    "dscr": {"label": "DSCR кредита объектов", "unit": "x", "digits": 3, "better": "higher"},
+}
+
+
+def goal_seek_debt_metric(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Каким показателем долга подбирать цену входа — тем же, что судит проект
+    (`report_layout.debt_metric` свода): LLCR у проекта с ПФ, DSCR кредита
+    объектов у нежилого. Нет показателя — подбор не делается, и сказано почему."""
+    consolidated = bundle.get("consolidated") or {}
+    layout = (consolidated.get("report") or {}).get("layout") or {}
+    metric = layout.get("debt_metric")
+    if not isinstance(metric, dict):
+        return {"key": "llcr", "label": "LLCR", "target": DEBT_METRIC_TARGET}
+    return metric
+
+
 def _goal_refusal_reason(
     scope_label: str,
     variable: str,
@@ -41284,7 +41374,8 @@ def _goal_refusal_reason(
     closest_label: str,
 ) -> str:
     """Причина отказа подбора: чьё число, какой порог, до чего дотянули и где."""
-    metric_meta = _SENSITIVITY_METRICS.get(target_metric) or {}
+    metric_meta = (_SENSITIVITY_METRICS.get(target_metric)
+                   or _GOAL_ONLY_METRICS.get(target_metric) or {})
     metric_label = str(metric_meta.get("label") or target_metric)
     unit = str(metric_meta.get("unit") or "")
     # Кратность банка читают с двумя знаками: «1,20x», а не «1,200x».
@@ -48230,17 +48321,17 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
   </div>
   <div class="ai-quick">
     <button class="ai-chip" onclick="askAgentQuick('Разложи структуру расходов проекта: CAPEX, коммерческие расходы, проценты, налог и полную себестоимость. Что формирует основные затраты?','expense_structure')">Структура расходов</button>
-    <button class="ai-chip" onclick="askAgentQuick('Почему текущий LLCR именно такой? Разложи числитель и знаменатель и назови основные причины.','llcr_breakdown')">Почему такой LLCR?</button>
-    <button class="ai-chip" onclick="askAgentQuick('За сколько максимум можно купить проект, чтобы LLCR оставался не ниже 1,20x? Сделай подбор параметра. Если проект многоочередный — контролируй слабейшую очередь.','max_purchase_price')">Макс. цена покупки при LLCR 1,20</button>
-    <button class="ai-chip" onclick="askAgentQuick('Какая максимальная ставка основного строительства допустима, чтобы LLCR был не ниже 1,20x? Сделай подбор параметра; для многоочередного проекта проверь слабейшую очередь.','max_construction_cost')">Себестоимость для LLCR 1,20</button>
+    <button class="ai-chip" data-needs="project_finance" onclick="askAgentQuick('Почему текущий LLCR именно такой? Разложи числитель и знаменатель и назови основные причины.','llcr_breakdown')">Почему такой LLCR?</button>
+    <button class="ai-chip" data-needs="project_finance" onclick="askAgentQuick('За сколько максимум можно купить проект, чтобы LLCR оставался не ниже 1,20x? Сделай подбор параметра. Если проект многоочередный — контролируй слабейшую очередь.','max_purchase_price')">Макс. цена покупки при LLCR 1,20</button>
+    <button class="ai-chip" data-needs="project_finance" onclick="askAgentQuick('Какая максимальная ставка основного строительства допустима, чтобы LLCR был не ниже 1,20x? Сделай подбор параметра; для многоочередного проекта проверь слабейшую очередь.','max_construction_cost')">Себестоимость для LLCR 1,20</button>
     <button class="ai-chip" onclick="askAgentQuick('Проверь текущую модель на очевидные аномалии: ТЭП, выручка, CAPEX, маржа, очереди и финансирование. Назови только существенные отклонения.','anomalies')">Проверить аномалии</button>
-    <button class="ai-chip" onclick="askAgentQuick('Найди слабейшую очередь. Объясни причинно, почему её LLCR ниже целевого, и сам пересчитай реальные варианты оздоровления: перенос допустимых затрат, социалки, увеличение ТЭП. Дай ранжированную рекомендацию до LLCR не ниже 1,20.','phase_recovery')">Оздоровить слабую очередь</button>
-    <button class="ai-chip" onclick="askAgentQuick('Оцени текущую цену покупки как инвестиционное решение: какой максимальный потолок цены при LLCR 1,20, насколько текущая цена от него отличается и что делать, если продавец не снижает цену.','purchase_evaluation')">Оценить цену покупки</button>
+    <button class="ai-chip" data-needs="project_finance" onclick="askAgentQuick('Найди слабейшую очередь. Объясни причинно, почему её LLCR ниже целевого, и сам пересчитай реальные варианты оздоровления: перенос допустимых затрат, социалки, увеличение ТЭП. Дай ранжированную рекомендацию до LLCR не ниже 1,20.','phase_recovery')">Оздоровить слабую очередь</button>
+    <button class="ai-chip" data-needs="project_finance" onclick="askAgentQuick('Оцени текущую цену покупки как инвестиционное решение: какой максимальный потолок цены при LLCR 1,20, насколько текущая цена от него отличается и что делать, если продавец не снижает цену.','purchase_evaluation')">Оценить цену покупки</button>
   </div>
   <div id="aiMessages" class="ai-messages"><div id="aiHero" class="ai-hero"><img src="/assets/platon-hero.webp" alt="" width="260" height="298" loading="lazy"><div class="ai-hero-say"><b>Привет! Я Платон.</b><span>Помогу настроить отчёт и отвечу на вопросы.</span></div></div><div class="ai-msg system">Платон Сергеевич анализирует проект через расчётные инструменты DevelopAid. Цифры и подбор параметров считает движок модели, а не языковая модель.</div></div>
   <div class="ai-compose">
     <textarea id="aiInput" placeholder="Например: за сколько максимум можно купить проект, чтобы LLCR слабейшей очереди был не ниже 1,20?"></textarea>
-    <div class="ai-compose-row"><small>Ориентир диагностики: LLCR 1,20x. Методика конкретного банка может отличаться.</small><input type="file" id="aiFile" accept=".pdf,application/pdf" style="display:none" onchange="sendAgentDocument(this.files&&this.files[0])"><button id="aiFileBtn" class="btn" onclick="document.getElementById('aiFile').click()" title="Тизер, справка по участку, решение ГЗК — Платон прочитает и покажет, что можно взять в модель">Приложить документ</button><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
+    <div class="ai-compose-row"><small><span data-needs="project_finance">Ориентир диагностики: LLCR 1,20x. </span>Методика конкретного банка может отличаться.</small><input type="file" id="aiFile" accept=".pdf,application/pdf" style="display:none" onchange="sendAgentDocument(this.files&&this.files[0])"><button id="aiFileBtn" class="btn" onclick="document.getElementById('aiFile').click()" title="Тизер, справка по участку, решение ГЗК — Платон прочитает и покажет, что можно взять в модель">Приложить документ</button><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
   </div>
 </aside>
 
