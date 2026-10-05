@@ -18559,6 +18559,27 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             _parts.append(table(_yrows, [14*mm] + [26*mm] * (len(_years_cols) - 1), font_size=6.8))
         if _parts:
             story.append(KeepTogether(_parts))
+    # Собственное участие — та же таблица, что на экране
+    # (`equity_participation_report`): вложения, возврат, результат, по годам.
+    _eq = report.get("equity_participation") or {}
+    if _eq.get("rows"):
+        story.append(P("Собственное участие", h2))
+        _eq_rows = [["Показатель", "Значение"]]
+        for _row in _eq["rows"]:
+            _eq_rows.append([str(_row.get("label") or "").upper()
+                             if _row.get("unit") == "section" else str(_row.get("label") or ""),
+                             _pdf_nonres_value(_row)])
+        story.append(table(_eq_rows, [112*mm, 58*mm], font_size=7.6))
+        _cols = _eq.get("columns") or []
+        if _eq.get("years") and _cols:
+            _yrows = [[str(c[1]) for c in _cols]]
+            for _y in _eq["years"]:
+                _yrows.append([str(_y.get(c[0])) if c[2] == "text"
+                               else _pdf_nonres_value({"unit": c[2], "value": _y.get(c[0])})
+                               for c in _cols])
+            story.append(KeepTogether([P("Собственный капитал по годам", small),
+                                       table(_yrows, [16*mm] + [38*mm] * (len(_cols) - 1),
+                                             font_size=6.8)]))
 
     story.append(_PdfSection("income"))
     pace_chart=sales_bar_chart(timeline_rows,height=104)
@@ -35341,6 +35362,170 @@ def nonres_financing_report(nonres: dict[str, Any] | None) -> list[dict[str, Any
     return out
 
 
+EQUITY_YEAR_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("year", "Год", "text"),
+    ("contributed", "Вложено собственником", "mln"),
+    ("returned", "Получено собственником", "mln"),
+    ("net", "Чистый поток", "mln"),
+    ("cumulative", "Накопленный на конец года", "mln"),
+)
+
+
+def equity_participation_report(months: list[date], equity_cf: list[float],
+                                finance: dict[str, Any], *, discount_rate: float,
+                                irr: float | None) -> dict[str, Any]:
+    """«Собственное участие» проекта без ПФ: сколько, когда и на что вложил
+    собственник, сколько и когда получил обратно, и чем это кончилось.
+
+    Читает поток собственного капитала проекта (`cashflow.equity`) — тот же
+    ряд, по которому считан IRR проекта, — и строки финансирования для
+    раскладки по причинам. Второго расчёта нет: сумма частей равна потоку.
+
+    Вложения: до ввода объектов — доля стройки и общих затрат сверх кредита;
+    после ввода — то, чего NOI не хватило на платежи, налоги и расходы; при
+    выходе — довнесение на погашение остатка долга. Возврат: возмещение НДС
+    стройки, деньги по ходу (продажи ДКП, аренда после обслуживания долга),
+    выход. Оценка удержанного объекта — не деньги: она названа отдельно, а
+    денежный итог показан без неё.
+    """
+    objects = (finance.get("nonres") or {}).get("objects") or []
+    if not objects or not months or not equity_cf:
+        return {}
+    # В проекте с ПФ поток капитала несёт и жильё, и раскладка «до ввода
+    # объектов / после» была бы неправдой; там собственное участие — в
+    # банковских блоках. Признак тот же, что у `report_layout`.
+    if any(float(r.get(k) or 0.0) > 0.0 for r in finance.get("rows") or []
+           for k in ("bridge_draw", "pf_draw", "escrow")):
+        return {}
+    rows = {str(r.get("month"))[:10]: r for r in finance.get("rows") or []}
+    commissioning = max(str(o.get("commissioning")) for o in objects)
+    # Выход — у доходного метода (продажа или конец удержания); у прямой
+    # продажи конец горизонта — просто последний месяц продаж.
+    exits = {str(o.get("horizon_end"))[:10] for o in objects
+             if o.get("strategy") == nonres_strategy.STRATEGY_INCOME}
+
+    def row(month: date) -> dict[str, Any]:
+        return rows.get(month.isoformat()) or {}
+
+    parts = {"in_build": 0.0, "in_operation": 0.0, "in_exit": 0.0,
+             "out_vat": 0.0, "out_running": 0.0, "out_exit": 0.0}
+    residual_total = 0.0
+    cash_only: list[float] = []
+    years: dict[int, dict[str, float]] = {}
+    for month, flow in zip(months, equity_cf):
+        key = month.isoformat()
+        residual = float(row(month).get("nonres_residual_value") or 0.0)
+        residual_total += residual
+        cash = float(flow or 0.0) - residual
+        cash_only.append(cash)
+        year = years.setdefault(month.year, {"contributed": 0.0, "returned": 0.0})
+        if cash < 0:
+            year["contributed"] += -cash
+            if key <= commissioning:
+                parts["in_build"] += -cash
+            elif key in exits:
+                parts["in_exit"] += -cash
+            else:
+                parts["in_operation"] += -cash
+        elif cash > 0:
+            year["returned"] += cash
+            refund = min(cash, max(0.0, -float(row(month).get("nonres_vat_paid") or 0.0)))
+            parts["out_vat"] += refund
+            if key in exits:
+                parts["out_exit"] += cash - refund
+            else:
+                parts["out_running"] += cash - refund
+    contributed = parts["in_build"] + parts["in_operation"] + parts["in_exit"]
+    returned = parts["out_vat"] + parts["out_running"] + parts["out_exit"]
+    cumulative = worst = 0.0
+    worst_month: date | None = None
+    last_negative: int | None = None
+    for index, (month, cash) in enumerate(zip(months, cash_only)):
+        cumulative += cash
+        if cumulative < worst:
+            worst, worst_month = cumulative, month
+        if cumulative < -0.5:
+            last_negative = index
+    payback = (months[last_negative + 1] if last_negative is not None
+               and last_negative + 1 < len(months) else None)
+    capex = float(finance.get("total_capex") or 0.0)
+    draw = float(sum(float(r.get("nonres_loan_draw") or 0.0) for r in finance.get("rows") or []))
+    hold = residual_total > 0
+    running = 0.0
+    year_rows = []
+    for year in sorted(years):
+        net = years[year]["returned"] - years[year]["contributed"]
+        running += net
+        year_rows.append({"year": year, "contributed": years[year]["contributed"],
+                          "returned": years[year]["returned"], "net": net, "cumulative": running})
+
+    def money(label: str, value: float, unit: str = "rub") -> dict[str, Any]:
+        return {"label": label, "value": value, "unit": unit}
+
+    rate_label = f"{discount_rate * 100:.4g}".replace(".", ",")
+    out_rows: list[dict[str, Any]] = [
+        {"label": "Источники финансирования стройки", "value": None, "unit": "section"},
+        money("Затраты проекта (CAPEX, с НДС)", capex),
+        money("Кредит объектов — выборка", draw),
+        money("Собственные средства до ввода", parts["in_build"]),
+        {"label": "Доля собственных средств в затратах",
+         "value": parts["in_build"] / capex if capex else None, "unit": "pct"},
+        {"label": "Вложения собственника", "value": None, "unit": "section"},
+        money("Вложено всего", contributed),
+        money("в т.ч. до ввода — стройка и общие затраты сверх кредита", parts["in_build"]),
+    ]
+    if parts["in_operation"]:
+        out_rows.append(money("в т.ч. после ввода — дефицит: NOI и продаж не хватило на платежи "
+                              "по кредиту, налоги и расходы", parts["in_operation"]))
+    if parts["in_exit"]:
+        out_rows.append(money("в т.ч. при выходе — довнесение на погашение долга", parts["in_exit"]))
+    out_rows += [
+        money("Пик потребности в собственных средствах"
+              + (f" ({_month_label(worst_month.isoformat())})" if worst_month else ""), -worst),
+        {"label": "Возврат собственнику", "value": None, "unit": "section"},
+        money("Получено всего" + (" — деньгами, без оценки" if hold else ""), returned),
+    ]
+    if parts["out_vat"]:
+        out_rows.append(money("в т.ч. возмещение НДС стройки", parts["out_vat"]))
+    if parts["out_running"]:
+        out_rows.append(money("в т.ч. по ходу — продажи ДКП, аренда после обслуживания долга и налогов",
+                              parts["out_running"]))
+    if parts["out_exit"]:
+        out_rows.append(money("в т.ч. при выходе — после погашения долга", parts["out_exit"]))
+    if hold:
+        out_rows.append(money("Оценка удержанного объекта — без сделки, не деньги", residual_total))
+    out_rows += [
+        {"label": "Результат собственника", "value": None, "unit": "section"},
+        money("Чистый денежный результат (получено − вложено)" + (", без оценки" if hold else ""),
+              returned - contributed),
+        {"label": "Мультипликатор капитала (получено / вложено)" + (", без оценки" if hold else ""),
+         "value": returned / contributed if contributed else None, "unit": "mult"},
+    ]
+    if irr is not None:
+        out_rows.append({"label": "IRR собственного капитала" + (" — с оценкой" if hold else ""),
+                         "value": irr, "unit": "pct"})
+    else:
+        out_rows.append({"label": "IRR собственного капитала",
+                         "value": "не считается — поток не меняет знак", "unit": "text"})
+    if hold:
+        cash_irr = _monthly_irr(cash_only)
+        out_rows.append({"label": "IRR собственного капитала — только деньги",
+                         "value": cash_irr if cash_irr is not None
+                         else "не считается — деньги не возвращают вложенное",
+                         "unit": "pct" if cash_irr is not None else "text"})
+    out_rows += [
+        money(f"NPV собственного капитала @{rate_label}%" + (" — с оценкой" if hold else ""),
+              _monthly_npv(list(equity_cf), discount_rate)),
+        {"label": "Окупаемость собственных средств" + (" — без оценки" if hold else ""),
+         "value": (_month_label(payback.isoformat()) if payback
+                   else "не окупается за горизонт проекта"), "unit": "text"},
+    ]
+    return {"rows": out_rows, "years": year_rows,
+            "columns": [list(c) for c in EQUITY_YEAR_COLUMNS],
+            "contributed": contributed, "returned": returned, "parts": parts,
+            "residual": residual_total}
+
+
 # Колонки таблицы «по годам» — одна раскладка для страницы, PDF и книги.
 NONRES_FINANCING_YEAR_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("year", "Год", "text"),
@@ -36507,6 +36692,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
         "report": {
             "nonres_strategy": nonres_report(fin.get("nonres")),
             "nonres_financing": nonres_financing_report(fin.get("nonres")),
+            "equity_participation": equity_participation_report(
+                timeline, equity_cf, fin, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(x, fin, equity_cf),
             "products": products_report,
             # График платежей за покупку — как посчитано: даты, суммы, доли и
@@ -38554,6 +38741,8 @@ def _consolidate_phase_results(
         "report": {
             "nonres_strategy": nonres_report(finance.get("nonres")),
             "nonres_financing": nonres_financing_report(finance.get("nonres")),
+            "equity_participation": equity_participation_report(
+                cf_months, equity_cf, finance, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(master_inputs, finance, equity_cf),
             "products": list(product_map.values()),
             "phase_products": phase_sales,
@@ -47467,7 +47656,7 @@ details.cadastral-box>summary::marker{color:#888}
 #revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
 [data-needs][hidden],#nonresStrategyCard[hidden]{display:none!important}
 table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:1px solid var(--line)}
-[data-nonres-finance-card][hidden]{display:none!important}
+[data-nonres-finance-card][hidden],[data-equity-card][hidden]{display:none!important}
 table.nonres-finance-years{width:100%;margin:8px 0 18px;font-size:12px}
 table.nonres-finance-years td,table.nonres-finance-years th{text-align:right;padding:3px 6px;white-space:nowrap}
 table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-child{text-align:left}
@@ -47955,6 +48144,10 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
         <div class="section-title">Финансирование объекта — кредит вне ДДУ</div>
         <div class="nonres-finance-box"></div>
       </div>
+      <div class="card" data-equity-card hidden>
+        <div class="section-title">Собственное участие</div>
+        <div class="equity-box"></div>
+      </div>
       <div class="card" data-needs="project_finance">
         <div class="llcr-hero">
           <div><div class="section-title">LLCR — расчётный</div><div id="llcrValue" class="llcr-value">—</div></div>
@@ -48188,6 +48381,10 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
       <div class="card" data-nonres-finance-card hidden>
         <div class="section-title">Финансирование объекта — кредит вне ДДУ</div>
         <div class="nonres-finance-box"></div>
+      </div>
+      <div class="card" data-equity-card hidden>
+        <div class="section-title">Собственное участие</div>
+        <div class="equity-box"></div>
       </div>
       <div class="report-2col" data-needs="project_finance">
         <div class="card">
@@ -48781,6 +48978,19 @@ function renderNonresFinancing(r){
    (item.columns||[]).map(c=>`<th>${escapeHtml(c[1])}</th>`).join('')}</tr></thead><tbody>${
    item.years.map(y=>`<tr>${(item.columns||[]).map(c=>`<td>${c[2]==='text'?escapeHtml(String(y[c[0]])):nonresCell({unit:c[2],value:y[c[0]]})}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:''}`).join('');
  document.querySelectorAll('.nonres-finance-box').forEach(box=>{box.innerHTML=html});
+}
+// «Собственное участие» — таблица движка (`equity_participation_report`):
+// вложения и возврат собственника по причинам, результат и поток по годам.
+function renderEquityParticipation(r){
+ const item=((r||{}).report||{}).equity_participation||{};
+ const rows=item.rows||[], columns=item.columns||[];
+ document.querySelectorAll('[data-equity-card]').forEach(card=>{card.hidden=!rows.length});
+ const html=rows.length?`<table class="nonres-strategy equity-participation"><tbody>${
+  rows.map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}</tbody></table>${
+  (item.years||[]).length?`<div class="scroll"><table class="nonres-finance-years equity-years"><thead><tr>${
+   columns.map(c=>`<th>${escapeHtml(c[1])}</th>`).join('')}</tr></thead><tbody>${
+   item.years.map(y=>`<tr>${columns.map(c=>`<td>${c[2]==='text'?escapeHtml(String(y[c[0]])):nonresCell({unit:c[2],value:y[c[0]]})}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:''}`:'';
+ document.querySelectorAll('.equity-box').forEach(box=>{box.innerHTML=html});
 }
 function renderNonresStrategy(r){
  const card=document.getElementById('nonresStrategyCard'),box=document.getElementById('nonresStrategyTables');
@@ -57572,6 +57782,7 @@ function renderResult(){
  }
  renderNonresStrategy(r);
  renderNonresFinancing(r);
+ renderEquityParticipation(r);
  // Имена статей приходят из движка плейсхолдером, как VERSION и доли ТЭП.
  const capNames=__DEVELOPAID_CAPEX_NAMES__;
  {
