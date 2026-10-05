@@ -3419,17 +3419,17 @@ function salesPlansBlock(d){
   const rest=PLAN_METRICS.filter(m=>m.key!==metric.key);
   if(rest.length) html+='<div class="printviews">'
     +rest.map(m=>salesPlansChart(quarters, m, basis)).join('')+'</div>';
-  // Остаток банка на дату модели — своей строкой, а не точкой линии: рядом с
+  // Остаток банка на дату обновления плана — своей строкой, а не точкой линии: рядом с
   // квартальным фактом он читался бы как квартал продаж втрое больше обычного.
   if(opening&&basis!=='cum') html+='<div class="muted" data-bank-opening style="font-size:12.5px;margin-top:6px">'
-    +'<b>'+esc(opening.quarter)+', план банка '+num(opening.amount/1e6,1)+' млн ₽</b> — первый квартал модели банка, '
-    +'а продажи идут с '+esc(opening.fact_since)+': в этой колонке банк держит проданное до даты модели. '
+    +'<b>'+esc(opening.quarter)+', план банка '+num(opening.amount/1e6,1)+' млн ₽</b> — первый квартал обновлённого плана банка, '
+    +'а продажи идут с '+esc(opening.fact_since)+': в этой колонке банк держит проданное до даты обновления плана. '
     +'Факт этого квартала '+num(opening.fact_quarter/1e6,1)+' млн ₽, с начала продаж — '
     +num(opening.fact_to_date/1e6,1)+' млн ₽. На линии по кварталам его нет; '
     +'сравнить его с фактом можно накопленным итогом.</div>';
   html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
     +(basis==='cum'?'Накопленный итог всех трёх линий с первого квартала ряда'
-      +(opening?'; итог банка начинается с его остатка на дату модели ('+esc(opening.quarter)+')':'')+'. ':'')
+      +(opening?'; итог банка начинается с его остатка на дату обновления плана ('+esc(opening.quarter)+')':'')+'. ':'')
     +'Кварталы, а не месяцы: план банка квартальный, и раскладывать его по месяцам мы не станем — '
     +'сделать это можно тремя способами, и любой будет нашей выдумкой. '
     +'Листы: \u00ab'+esc(plans.fm_sheet||'\u2014')+'\u00bb и \u00ab'+esc(plans.bank_sheet||'\u2014')+'\u00bb. '
@@ -4024,7 +4024,7 @@ function salesDigest(d, limit){
     const opening=(d.plans||{}).bank_opening;
     const shown=planRows.filter(q=>q.fact_amount!=null&&(q.bank_amount!=null||q.bank_opening));
     const lines=shown.map(q=>q.bank_opening
-      ?`— ${q.label}: остаток банка на дату модели ${num(opening.amount/1e6,1)} млн ₽ против факта с начала продаж ${num(opening.fact_to_date/1e6,1)} млн ₽ (за квартал ${num(q.fact_amount/1e6,1)})`
+      ?`— ${q.label}: остаток банка на дату обновления плана ${num(opening.amount/1e6,1)} млн ₽ против факта с начала продаж ${num(opening.fact_to_date/1e6,1)} млн ₽ (за квартал ${num(q.fact_amount/1e6,1)})`
       :`— ${q.label}: план банка ${num(q.bank_amount/1e6,1)} млн ₽`
         +`, факт ${num(q.fact_amount/1e6,1)} млн ₽`
         +(q.bank_amount_cum!=null?`; накопленным: ${num(q.bank_amount_cum/1e6,1)} против ${num(q.fact_amount_cum/1e6,1)}`:''));
