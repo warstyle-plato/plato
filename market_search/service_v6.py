@@ -39,7 +39,7 @@ from .verdict import (
 from .page_price import PageFetcher
 from . import stage
 from .price_hint import price_hint
-from .pulse import PulseClient
+from .pulse import make_pulse_client, pulse_id
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation, official_recommendation
 from .cards import ProjectCards
@@ -157,7 +157,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         )
         # Платный источник и городской свод. Нет доступов — оба выключены, и
         # модуль работает как прежде.
-        self.pulse = PulseClient(Path(data_dir) / "pulse")
+        self.pulse = make_pulse_client(Path(data_dir) / "pulse")
         self.city = MoscowMarket.bundled()
         # История продаж и остатка: живой источник её не отдаёт, она вынута из
         # помесячного отчёта и едет с кодом.
@@ -634,7 +634,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         )
 
     def peer_row(
-        self, complex_id: int, *, latitude: float | None = None, longitude: float | None = None
+        self, complex_id: Any, *, latitude: float | None = None, longitude: float | None = None
     ) -> dict[str, Any]:
         """Проект в той же форме, в какой он попадает в отчёт соседом.
 
@@ -642,7 +642,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         себя в таблицах и на графиках как любая другая, иначе половина
         разделов её тихо пропустит.
         """
-        project = self.pulse.project(int(complex_id))
+        project = self.pulse.project(complex_id)
         if project is None:
             raise LookupError(f"Проект {complex_id} не найден в справочнике источника")
         row: dict[str, Any] = {
@@ -863,7 +863,14 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # сразу несколько проектов, а поштучный опрос стоил бы ожидания на
         # каждого соседа.
         history = self.pulse.price_history(
-            [subject.project_id] + [row["complex_id"] for row in peers if row.get("complex_id")]
+            [subject.project_id]
+            + [
+                row["complex_id"]
+                for row in peers
+                if row.get("complex_id")
+                # Отрицательный ключ — вписанный руками, у источника его нет.
+                and not (isinstance(row["complex_id"], (int, float)) and row["complex_id"] < 0)
+            ]
         )
         # Сосед без прайс-листа — не сосед без цены: у источника она бывает в
         # помесячном ряду. Правило одно на объект и на соседей: два ответа об
@@ -911,6 +918,13 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             if not clean.get("name"):
                 continue
             clean["added_by_hand"] = True
+            # Страница, открытая до перехода на строковый id, присылает число:
+            # приводим к той же строке, что у справочника, иначе тот же проект
+            # встанет в сравнение дважды. Отрицательный ключ — вписанный руками,
+            # он остаётся своим.
+            raw_id = clean.get("complex_id")
+            if not (isinstance(raw_id, (int, float)) and raw_id < 0):
+                clean["complex_id"] = pulse_id(raw_id) if raw_id is not None else None
             clean.setdefault("price_series", [])
             clean.setdefault("sales_series", [])
             same = next(
