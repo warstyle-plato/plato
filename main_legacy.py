@@ -18529,7 +18529,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             timeline_rows,
             [{"label": "Кредит объектов — остаток", "key": "nonres_loan_balance",
               "factor": 1/1_000_000_000, "color": "#171717",
-              "active": lambda row: float(row.get("nonres_loan_balance", 0) or 0) > 0}],
+              # Месяц погашения (остаток 0) тоже точка: без него линия
+              # обрывалась на последнем остатке, и долг выглядел непогашенным.
+              "active": lambda row: (float(row.get("nonres_loan_balance", 0) or 0) > 0
+                                     or float(row.get("nonres_loan_repayment", 0) or 0) > 0)}],
             "млрд ₽",
             height=118,
         )
