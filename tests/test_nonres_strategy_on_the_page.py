@@ -209,5 +209,7 @@ def test_a_nonresidential_rent_project_reads_as_its_own_report(nonresidential_wa
     # Раздел «Финансирование» отчёта: БРИДЖ/ПФ/LLCR скрыты, кредит объекта — на месте
     # (и в отчёте, и на вкладке «Финансирование»).
     assert state["reportBankHidden"] is True
-    assert state["objectLoanCards"] == [{"hidden": False, "tables": ["offices"]}] * 2
+    # Отчёт, вкладка «Финансирование» и раздел «Финансирование» объектной
+    # вёрстки (`object_report`) — таблица движка во всех трёх ящиках.
+    assert state["objectLoanCards"] == [{"hidden": False, "tables": ["offices"]}] * 3
     assert nonresidential_walk["errors"] == []
