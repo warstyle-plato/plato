@@ -98,6 +98,9 @@ const phasing=__PHASING__;
 const rateScenario={value:''};
 const syncProjectClassSelector=()=>{},syncTep=()=>{},syncUndergroundPair=()=>{};
 const calculate=()=>{},applyRequiredSocialProgramFromGlavapu=()=>false;
+// Подпись под парой подземного паркинга проекта пишет свой вызов; здесь
+// проверяется форма, а не подпись, и её ячейку форма создаёт по имени ключа.
+const renderUndergroundFieldNote=()=>{};
 function groups(){
  return created.filter(n=>n.tagName==='details'&&n.dataset.group).map(det=>{
   const sum=det.querySelector('summary');
@@ -133,6 +136,8 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # Поля участка (К1, К2, расстояние, край нормы МО) рисует карточка
         # «Участок и плотность», и форма пропускает их тем же правилом.
         page_const("SITE_ONLY_INPUTS"),
+        # Ячейка нормы под парой подземного паркинга проекта зовётся по ключу.
+        page_const("PROJECT_PARKING_KEY"),
         page_const("notOnInputs"),
         # Пометка «ставит класс проекта» у единицы поля: список полей — сам
         # профиль класса, а не перечисление рядом с ним, поэтому стенду нужен
