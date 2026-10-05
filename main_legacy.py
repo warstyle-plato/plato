@@ -46402,6 +46402,10 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
                 "reason": document.get("reason") or "в документе нет текста"}
 
     usage_track("document", surface="site", text=str(req.filename or ""))
+    # Та же порция, что уходит в вопрос (`intake_prompt`): ответ сообщает,
+    # сколько документа прочитано. Без неё окно получало HTTP 500 уже ПОСЛЕ
+    # ответа модели — работа была сделана и выброшена.
+    portion = document_intake.intake_text(document)
     payload = AgentChatRequest(
         message=document_intake.intake_prompt(document),
         inputs=dict(req.inputs or DEFAULT_INPUTS),
@@ -48710,13 +48714,15 @@ function aiEsc(value){const box=document.createElement('div');box.textContent=St
 let aiIntake=null;
 async function sendAgentDocument(file){
  if(!file||aiBusy)return;
- document.getElementById('aiFile').value='';
  aiBusy=true;aiSendBtn.disabled=true;aiFileBtn.disabled=true;
  appendAiMessage('user','Документ: '+file.name);
  const thinking=document.createElement('div');thinking.className='ai-thinking';
  thinking.textContent='Читаю документ…';aiMessages.appendChild(thinking);aiMessages.scrollTop=aiMessages.scrollHeight;
  try{
+  // Сначала прочитать, потом сбросить поле: iOS Safari освобождает выбранный
+  // файл при сбросе, и чтение после него падает «The object can not be found here».
   const buffer=await file.arrayBuffer();
+  document.getElementById('aiFile').value='';
   // Разбор base64 порциями: строка на два мегабайта через apply падает на
   // пределе аргументов, и падение выглядит как «файл не читается».
   const bytes=new Uint8Array(buffer);let binary='';
@@ -48730,7 +48736,7 @@ async function sendAgentDocument(file){
   if(!r.ok){appendAiMessage('system',data.detail||('Документ не разобрался: HTTP '+r.status));return}
   aiIntake=data;renderAiIntake(data);
  }catch(e){thinking.remove();appendAiMessage('system','Документ не разобрался: '+(e.message||e))}
- finally{aiBusy=false;aiSendBtn.disabled=false;aiFileBtn.disabled=false}
+ finally{document.getElementById('aiFile').value='';aiBusy=false;aiSendBtn.disabled=false;aiFileBtn.disabled=false}
 }
 function renderAiIntake(data){
  const doc=data.document||{};
