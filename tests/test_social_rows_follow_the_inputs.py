@@ -289,7 +289,9 @@ PRELUDE = "\n".join([
     "const TEP_SOCIAL_INPUTS={kindergarten:'social_dou_gba_sqm',"
     "school:'social_school_gba_sqm',clinic:'social_clinic_gba_sqm'};",
     "let inputs={},tep={},storageInsideParking=0;",
-    "let tepBody=null;const document={activeElement:null};",
+    # Поля подземного паркинга и подпись под ними `syncTep` пишет в DOM сам;
+    # на стенде DOM нет, и поиск поля честно отвечает «нет такого».
+    "let tepBody=null;const document={activeElement:null,getElementById:()=>null};",
     # Отрисовка к ответу отношения не имеет — синхронизация считается до неё.
     "function renderTep(){}",
     "function updateTepTotals(){}",
