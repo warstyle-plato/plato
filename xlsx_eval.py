@@ -240,6 +240,50 @@ def _xirr(args: list[Any]) -> float:
     return (low + high) / 2
 
 
+def _irr(args: list[Any]) -> float:
+    """IRR по периодам ряда, как у Excel: ставка за период, без годового
+    пересчёта. Корня нет (поток не меняет знак) — #NUM!, ловится IFERROR.
+
+    Excel ищет корень Ньютоном от догадки; здесь — делением отрезка, как у
+    движка (`_monthly_irr`): у ряда «вложения, потом возврат» корень один, и
+    оба способа приходят к нему же.
+    """
+    flows = _numbers(args[0])
+    if not any(v < 0 for v in flows) or not any(v > 0 for v in flows):
+        raise _DivZero()
+    tail = next((1.0 if v > 0 else -1.0 for v in reversed(flows) if v), 0.0)
+
+    def value(rate: float) -> float:
+        total, factor = 0.0, 1.0
+        for flow in flows:
+            if factor == 0.0:
+                return _math.inf * tail
+            total += flow / factor
+            try:
+                factor *= 1.0 + rate
+            except OverflowError:
+                factor = _math.inf
+        return total
+
+    low, high = -0.95, 1.0
+    f_low, f_high = value(low), value(high)
+    while f_low * f_high > 0 and high < 100:
+        high *= 2
+        f_high = value(high)
+    if f_low * f_high > 0:
+        raise _DivZero()
+    for _ in range(200):
+        mid = (low + high) / 2
+        f_mid = value(mid)
+        if f_mid == 0.0:
+            return mid
+        if f_low * f_mid <= 0:
+            high, f_high = mid, f_mid
+        else:
+            low, f_low = mid, f_mid
+    return (low + high) / 2
+
+
 def _sumproduct(args: list[Any]) -> float:
     """SUMPRODUCT с любым числом массивов, в том числе с одним.
 
@@ -294,6 +338,8 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "LEFT": lambda args: _text(args[0])[:int(_as_number(args[1]))
                                         if len(args) > 1 else 1],
     "NPV": _npv,
+    "IRR": _irr,
+    "INT": lambda args: float(_math.floor(_as_number(args[0]))),
     "XIRR": _xirr,
 }
 

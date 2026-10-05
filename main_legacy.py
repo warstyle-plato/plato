@@ -26113,6 +26113,178 @@ class _SkipValueCache(Exception):
     """Проход сохранённых значений выключен — это выбор, а не сбой."""
 
 
+# Статьи сметы, которые книга нежилого проекта формулой не повторяет:
+# благоустройство считается методикой двора, соцобъекты — программой и своими
+# графиками, рассрочка ВРИ — с процентами на остаток. Они приходят в книгу
+# значениями движка и называются в `missing`, а не выглядят посчитанными.
+NONRES_BOOK_ENGINE_ARTICLES = ("landscaping", "social", "vri_interest", "vri_security")
+
+
+def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
+                     project_name: str = "") -> dict[str, Any]:
+    """Вводные книги нежилого проекта — те же числа, которые читает движок.
+
+    Каждое значение берётся тем же вызовом `n(x, ключ, умолчание)`, что в
+    `build_operating_model` и `developaid_nonres_strategy.object_flows`; книга
+    дальше считает всё своими формулами, а лист «Сверка» сравнивает её итоги с
+    авторитетным расчётом (`consolidated`). Разойдись здесь умолчание — сверка
+    покраснеет, а не промолчит.
+    """
+    x, t, rates = prepared["x"], prepared["t"], prepared["rates"] or []
+    op = build_operating_model(x, t, rates)
+    start = op["project_start"]
+    months = [d(m) for m in (consolidated.get("cashflow") or {}).get("months") or []]
+    scenario = str(x.get("rate_scenario", "low"))
+    scenario_key = scenario if scenario in ("high", "base", "low") else "base"
+    # Прогноз — всеми тремя сценариями: выбор сценария в книге — список, и
+    # он обязан менять ставку, а не только подпись. Пропуск в строке — прежнее
+    # значение сценария, как у `rate_lookup`.
+    rate_table: list[dict[str, Any]] = []
+    held = {key: float(rates[0].get(key, 0.0)) if rates else 0.0 for key in ("low", "base", "high")}
+    for row in rates:
+        held = {key: float(row.get(key, held[key])) for key in held}
+        rate_table.append({"date": d(row["date"]), **held})
+
+    def k_of(month: date) -> int:
+        return months_between(start, month)
+
+    # Выкуп ЗУ/ОКС платится графиком покупки в той же пропорции, без цены
+    # участка — тем же графиком сам по себе: доли одни на обе суммы.
+    payments, _ = purchase_payment_plan(
+        (n(x, "purchase_price_mln") or n(x, "land_buyout_mln")) * 1_000_000,
+        x.get("purchase_schedule"), start, op["end"])
+    paid = sum(amount for _, amount in payments)
+    plan: dict[int, float] = defaultdict(float)
+    for when, amount in payments:
+        plan[k_of(when)] += amount / paid if paid else 0.0
+    vri = op.get("vri") or {}
+    vri_gross = n(x, "land_rights_cost_mln") * 1_000_000
+    relief, _net = vri_relief(x, vri_gross)
+    by_article = op.get("capex_by_article") or {}
+    engine_articles = {}
+    for key in NONRES_BOOK_ENGINE_ARTICLES + (("land_rights",) if vri.get("enabled") else ()):
+        schedule = {k_of(m): float(v) for m, v in (by_article.get(key) or {}).items() if v}
+        if schedule:
+            engine_articles[key] = schedule
+    nonres_plans = op.get("nonres_plans") or {}
+    objects = []
+    for obj in standalone_objects():
+        if not b(x, obj.enabled_key):
+            continue
+        row = t.get(obj.key) or {}
+        item: dict[str, Any] = {
+            "key": obj.key, "prefix": obj.prefix, "title": obj.tep_label or obj.label,
+            "measure": obj.measure,
+            "volume": n(x, f"{obj.prefix}_spaces") if obj.measure == "spaces" else n(x, f"{obj.prefix}_gba_sqm"),
+            "rate_cost": n(x, obj.rate_cost),
+            "garage": bool(obj.garage), "under_gns": n(row, "under_gns") if obj.garage else 0.0,
+            "start": d(x[f"{obj.prefix}_start"]),
+            "months": int(n(x, f"{obj.prefix}_months", obj.default_months)),
+            "in_tax_pool": (not obj.sale_gate) or object_is_sold(x, obj),
+            "nonres": obj.key in nonres_plans,
+        }
+        plan_item = nonres_plans.get(obj.key)
+        if plan_item:
+            params = plan_item.get("params") or {}
+            num = nonres_strategy._num
+            choice = nonres_strategy._choice
+            item.update({
+                "strategy": plan_item["strategy"],
+                "saleable_sqm": n(x, f"{obj.prefix}_saleable_sqm"),
+                "over_units": max(0.0, n(row, "parking_over_units")),
+                "over_area": (n(x, "object_parking_over_area_per_space_sqm", OBJECT_PARKING_OVER_AREA_DEFAULT)
+                              or OBJECT_PARKING_OVER_AREA_DEFAULT),
+                "price": n(x, obj.rate_price),
+                "sales_start": d(x[f"{obj.prefix}_sales_start"]),
+                "growth_pre_pct": n(x, f"{obj.prefix}_growth_pre_pct", obj.growth_pre_default),
+                "growth_post_pct": n(x, f"{obj.prefix}_growth_post_pct", obj.growth_post_default),
+                "parking_sellable": bool(obj.garage_sellable),
+                "parking_saleable_units": n(row, "parking_saleable_units") if obj.garage_sellable else 0.0,
+                "parking_under_units": max(0.0, n(row, "parking_under_units")),
+                "parking_over_units": max(0.0, n(row, "parking_over_units")),
+                "parking_under_mln": n(x, f"{obj.prefix}_parking_under_price_mln_per_space"),
+                "parking_over_mln": n(x, f"{obj.prefix}_parking_over_price_mln_per_space"),
+                # Умолчания — те, что у `object_flows`, а не у формы.
+                "params": {
+                    "loan_share_pct": num(params, "loan_share_pct", 60.0),
+                    "loan_spread_pp": num(params, "loan_spread_pp", 4.0),
+                    "loan_fee_pct": num(params, "loan_fee_pct", 1.0),
+                    "property_tax_pct": num(params, "property_tax_pct", 2.2),
+                    "debt_repayment": choice(params, "debt_repayment", nonres_strategy.REPAYMENTS,
+                                             nonres_strategy.REPAY_ANNUITY),
+                    "loan_term_years": num(params, "loan_term_years", 10),
+                    "loan_balloon_pct": num(params, "loan_balloon_pct", 20.0),
+                    "direct_sale_offset_months": num(params, "direct_sale_offset_months", 0),
+                    "direct_sale_months": num(params, "direct_sale_months", 12),
+                    "direct_sale_curve": choice(params, "direct_sale_curve", nonres_strategy.SALE_CURVES, "flat"),
+                    "rent_th_per_sqm_month": num(params, "rent_th_per_sqm_month", 0.0),
+                    "parking_rent_th_month": num(params, "parking_rent_th_month", 0.0),
+                    "rent_index_pct": num(params, "rent_index_pct", 0.0),
+                    "occupancy_start_pct": num(params, "occupancy_start_pct", 0.0),
+                    "occupancy_stable_pct": num(params, "occupancy_stable_pct", 0.0),
+                    "leaseup_months": num(params, "leaseup_months", 12),
+                    "opex_pct": num(params, "opex_pct", 0.0),
+                    "hold_years": num(params, "hold_years", 5),
+                    "exit_mode": choice(params, "exit_mode", (nonres_strategy.EXIT_SALE, nonres_strategy.EXIT_HOLD),
+                                        nonres_strategy.EXIT_SALE),
+                    "exit_cap_pct": num(params, "exit_cap_pct", 11.0),
+                    "exit_cost_pct": num(params, "exit_cost_pct", 1.0),
+                    "depreciation_years": num(params, "depreciation_years", 30),
+                },
+            })
+        objects.append(item)
+    missing = [f"Смета: «{key}» — значения движка, формулы в книге нет"
+               for key in engine_articles]
+    if any(op.get("revenue") or {}):
+        missing.append("Выручка продуктов по ДДУ — в книге нежилого проекта не моделируется")
+    return {
+        "name": project_name,
+        "start": start, "months": months,
+        "ird_months": int(n(x, "ird_months", 18)), "ird_min": IRD_MONTHS_MIN,
+        "construction_months": int(n(x, "construction_months", 24)),
+        "residual_months": int(n(x, "residual_sales_months", 6)),
+        "vat_pct": max(0.0, n(x, "vat_pct", 22)),
+        "profit_tax_pct": n(x, "profit_tax_pct", 25),
+        "discount_pct": n(x, "discount_rate_pct", 20),
+        "loss_limit": _LOSS_CARRY_USE_LIMIT,
+        "revenue_mult": n(x, "scenario_revenue_multiplier", 1.0),
+        "cost_mult": n(x, "scenario_cost_multiplier", 1.0),
+        "marketing_pct": n(x, "marketing_pct"), "selling_pct": n(x, "selling_pct"),
+        "rate_scenario": scenario_key, "rate_table": rate_table,
+        "core_above_gns": float(op.get("core_above_gns") or 0.0),
+        "core_under_gns": float(op.get("core_under_gns") or 0.0),
+        "parking_price_th": n(x, "parking_price_th"),
+        "main_under_th": n(x, "main_under_th_per_sqm"),
+        "cost": {
+            "ird_th": n(x, "ird_th_per_sqm"), "design_p_th": n(x, "design_p_th_per_sqm"),
+            "design_rd_th": n(x, "design_rd_th_per_sqm"),
+            "demolition_area": n(x, "demolition_area_sqm"),
+            "demolition_th": n(x, "demolition_cost_th_per_sqm"),
+            "resettlement_mln": n(x, "resettlement_cost_mln"),
+            "preparation_th": n(x, "preparation_th_per_sqm"),
+            "main_above_th": n(x, "main_above_th_per_sqm"),
+            "utilities_th": n(x, "utilities_th_per_sqm"),
+            "commissioning_th": n(x, "commissioning_th_per_sqm"),
+            "site_maintenance_th": n(x, "site_maintenance_th_per_sqm"),
+            "author_supervision_pct": n(x, "author_supervision_pct", 0.0),
+            "project_management_pct": n(x, "project_management_pct", 5.0),
+            "technical_supervision_pct": n(x, "technical_supervision_pct", 0.0),
+            "gc_fee_pct": n(x, "gc_fee_pct"), "reserve_pct": n(x, "reserve_pct"),
+        },
+        "purchase_price_mln": n(x, "purchase_price_mln"),
+        "land_buyout_mln": n(x, "land_buyout_mln"),
+        "reservation_fee_pct": n(x, "reservation_fee_pct"),
+        "purchase_plan": sorted(plan.items()),
+        "land_rights_gross_mln": n(x, "land_rights_cost_mln"),
+        "land_rights_relief_mln": relief / 1_000_000,
+        "vri_enabled": bool(vri.get("enabled")),
+        "engine_articles": engine_articles,
+        "vri_equity": {k_of(m): float(v) for m, v in (op.get("vri_equity") or {}).items() if v},
+        "objects": objects,
+        "missing": missing,
+    }
+
+
 def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
                              rates: list[dict[str, Any]] | None,
                              phasing: dict[str, Any] | None,
@@ -26127,11 +26299,18 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     layout = (consolidated.get("report") or {}).get("layout") or {}
     if layout.get("project_finance", True) or not layout.get("nonres_strategy"):
         return None
-    content = nonres_workbook.build(consolidated, project_name)
+    prepared = prepared_calculation(copy.deepcopy(inputs or {}), copy.deepcopy(tep or {}),
+                                    copy.deepcopy(rates or []))
+    spec = nonres_book_spec(prepared, consolidated, project_name)
+    phased = bool((phasing or {}).get("enabled") and int((phasing or {}).get("phase_count") or 1) > 1)
+    if phased:
+        spec["missing"].append("Очереди: книга моделирует проект одной очередью, "
+                               "сверка идёт со сводом очередей")
+    content = nonres_workbook.build(consolidated, spec)
     stem = _safe_file_stem(project_name or "project", "project")
     filename = f"DevelopAid_нежилой_{stem}_{date.today().isoformat()}.xlsx"
-    return content, filename, {"missing": [], "phased": False, "class_deviations": [],
-                               "nonres_book": True}
+    return content, filename, {"missing": list(spec["missing"]), "phased": phased,
+                               "class_deviations": [], "nonres_book": True}
 
 
 def build_project_workbook(
@@ -35853,10 +36032,14 @@ def calculate(req: CalcRequest) -> dict:
     return _apply_equity_returns_to_result(_calculate_economics(req))
 
 
-def _calculate_economics(req: CalcRequest) -> dict:
-    x = req.inputs
-    t = req.tep
-    rates = req.rates
+def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Вводные, ТЭП и кривая ставки — такими, какими их считает движок.
+
+    Одна подготовка на всех читателей: расчёт (`_calculate_economics`) и книга
+    нежилого проекта (`nonres_book_spec`) берут вводные отсюда, а не
+    повторяют порядок правок ТЭП у себя. Правит переданные словари так же,
+    как правил расчёт до выноса.
+    """
     if not rates:
         rates = generate_rate_curve(
             d(x.get("rate_start_date", date.today().isoformat())),
@@ -35906,6 +36089,16 @@ def _calculate_economics(req: CalcRequest) -> dict:
     # трогает продаваемую объекта, а значит выручку, и после счёта денег
     # правка ТЭП была бы правкой того, что уже посчитано.
     object_parking = apply_object_parking(x, t)
+    return {"x": x, "t": t, "rates": rates, "kind_leftovers": kind_leftovers,
+            "instance_notes": instance_notes, "object_parking": object_parking}
+
+
+def _calculate_economics(req: CalcRequest) -> dict:
+    prepared = prepared_calculation(req.inputs, req.tep, req.rates)
+    x, t, rates = prepared["x"], prepared["t"], prepared["rates"]
+    kind_leftovers = prepared["kind_leftovers"]
+    instance_notes = prepared["instance_notes"]
+    object_parking = prepared["object_parking"]
 
     op = build_operating_model(x, t, rates)
     # Прошлое действующего проекта не выдумывается — оно случилось. Наложение

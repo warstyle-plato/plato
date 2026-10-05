@@ -9,8 +9,8 @@
 * оценка удержанного объекта — не деньги: названа отдельно, денежный итог
   без неё;
 * в проекте с ПФ (поток несёт жильё) таблицы нет;
-* страница (стенд на node), PDF (раздел «Финансирование») и книга
-  нежилого проекта печатают ту же таблицу.
+* страница (стенд на node) и PDF (раздел «Финансирование») печатают ту же
+  таблицу, а книга нежилого проекта считает её формулами и сверяет с движком.
 
 Запуск: python3 -m pytest tests/test_nonres_equity_participation.py -q
 """
@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 import page_blocks  # noqa: E402
-from test_nonres_debt_metric import _nonres  # noqa: E402
+from test_nonres_debt_metric import _nonres, _nonres_inputs  # noqa: E402
 from test_nonres_object_result import _spec  # noqa: E402
 
 
@@ -106,21 +106,35 @@ def test_the_pdf_prints_it_in_the_financing_section(tmp_path) -> None:
     assert core._pdf_nonres_value(value) in flat[equity:]
 
 
-def test_the_nonresidential_book_has_the_sheet() -> None:
+def test_the_nonresidential_book_counts_it_with_formulas() -> None:
+    """«Собственное участие» книги — формулы раздела «Отчёта» от потока
+    капитала листа «Денежный поток», и «Сверка» сравнивает их с таблицей
+    движка (`equity_participation_report`)."""
     import openpyxl
 
-    import nonres_workbook
-    result = _nonres()
-    book = openpyxl.load_workbook(io.BytesIO(nonres_workbook.build(result, "Офис")))
-    ws = book[nonres_workbook.EQUITY_SHEET]
-    values = {ws.cell(r, 1).value: ws.cell(r, 2).value for r in range(1, ws.max_row + 1)}
-    for row in result["report"]["equity_participation"]["rows"]:
-        if row["unit"] == "rub":
-            assert values[row["label"]] == pytest.approx(row["value"], rel=1e-9)
-    header = next(r for r in range(1, ws.max_row + 1) if ws.cell(r, 1).value == "Месяц")
-    flows = [ws.cell(r, 2).value for r in range(header + 1, ws.max_row + 1)]
-    assert flows == pytest.approx(result["cashflow"]["equity"])
-    assert ws.cell(ws.max_row, 3).value == f"=C{ws.max_row - 1}+B{ws.max_row}"
+    import nonres_workbook as nw
+    from xlsx_eval import Evaluator
+    x, t = _nonres_inputs()
+    content, _, meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
+    assert meta.get("nonres_book") is True
+    book = openpyxl.load_workbook(io.BytesIO(content))
+    evaluator = Evaluator(book)
+    sys.setrecursionlimit(max(sys.getrecursionlimit(), 100000))
+    for name in book.sheetnames:
+        for row in book[name].iter_rows(min_row=nw.FIRST_ROW):
+            for cell in row:
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    evaluator.cell(name, cell.coordinate)
+    checks = book[nw.CHECK_SHEET]
+    equity = {checks[f"B{r}"].value: evaluator.cell(nw.CHECK_SHEET, f"G{r}")
+              for r in range(3, checks.max_row + 1)
+              if checks[f"A{r}"].value == "Собственное участие"}
+    assert {"Вложено всего", "Получено всего", "Вложено до ввода", "Пик потребности",
+            "NPV собственного капитала"} <= set(equity)
+    assert set(equity.values()) <= {"сходится", "—"}
+    report = book[nw.REPORT_SHEET]
+    labels = [report[f"A{r}"].value for r in range(1, report.max_row + 1)]
+    assert "Собственное участие" in labels and "Вложено всего" in labels
 
 
 # --- страница ----------------------------------------------------------------
