@@ -1,8 +1,9 @@
 """Личный ключ области «auctions»: только раздел «Торги», проверка на сервере.
 
 Ключ — ограничение всего сайта для браузера, который им вошёл: расчёт,
-проекты, Excel, PDF, Платон и бот отвечают отказом, а страница торгов не
-показывает кнопок, ведущих туда. Отозванный ключ не действует.
+проекты, Excel, PDF, общий чат Платона и бот отвечают отказом, а страница
+торгов не показывает кнопок, ведущих туда. Платон по торгам открыт — своим
+маршрутом с дневным лимитом и рамкой темы. Отозванный ключ не действует.
 """
 
 from __future__ import annotations
@@ -241,13 +242,23 @@ def _free_port() -> int:
 
 
 def test_rendered_auctions_page_hides_and_server_refuses(registry_app):
-    """Браузер вошёл по ссылке: Платона, контура и кнопок расчёта не видно, а
-    запросы к расчёту из той же страницы получают отказ сервера."""
+    """Браузер вошёл по ссылке: контура и кнопок расчёта не видно, запросы к
+    расчёту из той же страницы получают отказ сервера, а Платон спрашивается
+    через `/auctions/ask`."""
     play = pytest.importorskip("playwright.sync_api")
     uvicorn = pytest.importorskip("uvicorn")
     import browser_launch
 
     _record, secret = access_keys.issue("Браузер")
+    asked: list[str] = []
+    service = registry_app.state.market_discovery_service
+
+    def fake_ask(message, request, history=None):
+        asked.append(message)
+        return {"reply": "Ответ про торги"}
+
+    original_ask = service.plato_ask
+    service.plato_ask = fake_ask
     port = _free_port()
     server = uvicorn.Server(uvicorn.Config(registry_app, host="127.0.0.1", port=port,
                                            log_level="warning", lifespan="off"))
@@ -278,8 +289,9 @@ def test_rendered_auctions_page_hides_and_server_refuses(registry_app):
 
                 state = tab.evaluate("""()=>({
                   scope: document.body.dataset.access,
-                  fab: !!document.getElementById('platoFab')
-                       && getComputedStyle(document.getElementById('platoFab')).display,
+                  fab: !!document.getElementById('platoFab'),
+                  fabHiddenByScope: (document.getElementById('accessScope')?.textContent
+                                     || '').includes('platoFab'),
                   contour: !!document.querySelector('nav.contour'),
                   brand: document.querySelector('a.brand')?.getAttribute('href'),
                   calcLinks: [...document.querySelectorAll('a[href]')]
@@ -290,7 +302,8 @@ def test_rendered_auctions_page_hides_and_server_refuses(registry_app):
                      .map(u => u.pathname),
                 })""")
                 assert state["scope"] == "auctions"
-                assert state["fab"] in (False, "none")
+                assert state["fab"] is True and state["fabHiddenByScope"] is False, \
+                    "Платон по торгам открыт — кнопка не прячется"
                 assert state["contour"] is False
                 assert state["brand"] == "/auctions"
                 # Видимая ссылка не ведёт туда, где ключ получит отказ: каждую
@@ -317,12 +330,19 @@ def test_rendered_auctions_page_hides_and_server_refuses(registry_app):
                   return out}""")
                 assert set(probes.values()) == {403}, probes
 
+                reply = tab.evaluate("()=>platoAsk('Когда торги по лоту?', [])")
+                assert reply == "Ответ про торги"
+                assert asked and asked[-1].startswith(access_keys.PLATO_FRAME)
+                assert any(url.endswith("/auctions/ask") for url in seen)
+                assert not any("/cabinet/ask" in url for url in seen)
+
                 tab.goto(f"{base}/")
                 assert "Нет доступа" in tab.content()
                 assert tab.locator("#calcBtn, #tep, .calc").count() == 0
             finally:
                 browser.close()
     finally:
+        service.plato_ask = original_ask
         server.should_exit = True
         thread.join(timeout=10)
 
@@ -368,3 +388,38 @@ def test_gate_is_installed_even_into_an_already_started_app(monkeypatch):
     assert _enter(client, secret).status_code == 200
     refused = client.post("/calculate", json={})
     assert refused.status_code == 403 and refused.json()["detail"] == DENIED
+
+
+def test_plato_on_auctions_is_open_with_a_daily_limit(registry_app, monkeypatch):
+    """Платон по торгам: свой маршрут, рамка темы, лимит на ключ в сутки.
+
+    Общий чат расчёта (`/agent/chat`) при этом закрыт, а без входа Платон не
+    отвечает никому."""
+    monkeypatch.setenv(access_keys.PLATO_DAILY_ENV, "2")
+    service = registry_app.state.market_discovery_service
+    asked: list[str] = []
+    monkeypatch.setattr(service, "plato_ask",
+                        lambda message, request, history=None:
+                        asked.append(message) or {"reply": "ок"}, raising=False)
+    _record, secret = access_keys.issue("Спрашивающий")
+    client = TestClient(registry_app)
+
+    anonymous = TestClient(registry_app).post(access_keys.ASK_PATH, json={"message": "?"})
+    assert anonymous.status_code == 401, "без входа Платон не отвечает"
+
+    assert _enter(client, secret).status_code == 200
+    for n in (1, 2):
+        answer = client.post(access_keys.ASK_PATH, json={"message": f"вопрос {n}"})
+        assert answer.status_code == 200 and answer.json()["reply"] == "ок"
+    assert all(m.startswith(access_keys.PLATO_FRAME) for m in asked)
+    assert asked[0].endswith("вопрос 1")
+
+    over = client.post(access_keys.ASK_PATH, json={"message": "третий"})
+    assert over.status_code == 429 and "2 из 2" in over.json()["detail"]
+    assert len(asked) == 2, "сверх лимита модель не спрашивается"
+
+    # Общий чат расчёта и обновление рекомендации по площадке — закрыты.
+    assert client.post("/agent/chat", json={"message": "x"}).status_code == 403
+    assert client.post("/auctions/krt/any/plato?refresh=1").status_code == 403
+    # Номер запуска забирается — иначе долгий ответ не дошёл бы.
+    assert client.get("/agent/result/abc").status_code != 403

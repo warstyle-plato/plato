@@ -177,7 +177,9 @@ function platoThread(){
 // Числа сюда не приходят: что положить в вопрос, решает поверхность. Общее —
 // как спросить, как дождаться и как показать разговор.
 async function platoAsk(message, history, onStage){
- const r=await fetch('/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+ // Куда спрашивать, решает страница: торги по личному ключу ходят в свой
+ // маршрут с лимитом (`/auctions/ask`), остальные — в кабинет.
+ const r=await fetch(window.DEVELOPAID_PLATO_ASK_URL||'/cabinet/ask',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({message, history: history||[]})});
  // Ответ бывает не JSON — например HTML страницы шлюза. Разбирать его вслепую
  // значит показать поломку разбора вместо причины отказа.

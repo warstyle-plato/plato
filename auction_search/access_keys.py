@@ -200,6 +200,60 @@ def find_by_key(secret: str) -> dict[str, Any] | None:
     return None
 
 
+# --- Платон по ключу ------------------------------------------------------
+
+PLATO_DAILY_ENV = "AUCTIONS_KEY_PLATO_DAILY"
+PLATO_DAILY_DEFAULT = 20
+
+# Рамка темы. Это просьба к модели, а не замок: замок — серверный (Платону
+# доступны только умолчания движка и то, что человек сам написал), а рамка
+# держит разговор в теме торгов.
+PLATO_FRAME = (
+    "[Вопрос задан из раздела «Торги» по ключу просмотра. Отвечай только о "
+    "торгах, лотах, площадках КРТ, их документах и сроках. Финансовую модель "
+    "проекта не считай и вводные расчёта не обсуждай: на такие вопросы ответь, "
+    "что расчёт по этому доступу закрыт и за ним нужно обратиться к владельцу.]"
+)
+
+
+def plato_daily_limit() -> int:
+    raw = str(os.getenv(PLATO_DAILY_ENV) or "").strip()
+    try:
+        return max(0, int(raw)) if raw else PLATO_DAILY_DEFAULT
+    except ValueError:
+        return PLATO_DAILY_DEFAULT
+
+
+def plato_take(key_id: str) -> tuple[bool, int, int]:
+    """Списать один вопрос Платону с дневного лимита ключа (сутки — UTC).
+
+    Возвращает (можно ли, сколько уже задано сегодня, лимит). Счёт лежит в
+    реестре на диске: воркеров два, и счётчик в памяти каждый вёл бы свой.
+    """
+    limit = plato_daily_limit()
+    day = time.strftime("%Y-%m-%d", time.gmtime(_now()))
+    with _locked() as data:
+        for record in data["keys"]:
+            if str(record.get("id")) != str(key_id):
+                continue
+            used = int(record.get("plato_count") or 0) if record.get("plato_day") == day else 0
+            if used >= limit:
+                return False, used, limit
+            record["plato_day"] = day
+            record["plato_count"] = used + 1
+            return True, used + 1, limit
+    return False, 0, limit
+
+
+def plato_limit_message(used: int, limit: int) -> str:
+    return (f"Лимит вопросов Платону по этому доступу на сегодня исчерпан "
+            f"({used} из {limit}). Счётчик обнуляется в полночь по UTC.")
+
+
+def framed(message: str) -> str:
+    return f"{PLATO_FRAME}\n\n{message}"
+
+
 def record_login(key_id: str) -> None:
     """Журнал: последний вход и число входов. Сам ключ не пишется никуда."""
     with _locked() as data:
@@ -262,7 +316,14 @@ _EXTRA_POST = frozenset({"/land/lot-context"})
 # Статика оформления (логотип и т.п.) — не данные.
 _STATIC_PREFIXES = ("/guide/assets/",)
 DENIED = ("Ключ доступа даёт только раздел «Торги»; "
-          "расчёт, проекты, отчёты и Платон по нему закрыты")
+          "расчёт, проекты и отчёты по нему закрыты")
+
+# Платон по торгам — решение владельца: открыт, но только вопросом из раздела
+# торгов (свой маршрут с лимитом и рамкой темы) и рекомендацией по площадке
+# КРТ. Ответ забирается по номеру запуска — эти два GET тоже нужны.
+ASK_PATH = "/auctions/ask"
+_PLATO_POST = (re.compile(r"/auctions/krt/[^/]+/plato"),)
+_PLATO_GET = (re.compile(r"/agent/result/[^/]+"), re.compile(r"/agent/trace/[^/]+"))
 
 
 def scope_problem(method: str, path: str, query: Mapping[str, Any]) -> str:
@@ -272,6 +333,13 @@ def scope_problem(method: str, path: str, query: Mapping[str, Any]) -> str:
     if verb == "OPTIONS":
         return ""
     if clean == ENTER_PATH:
+        return ""
+    if verb == "POST" and (clean == ASK_PATH
+                           or any(p.fullmatch(clean) for p in _PLATO_POST)):
+        flag = view_access.command_flag(query)
+        return (f"Ограниченный ключ не запускает обновление данных (параметр «{flag}»)"
+                if flag else "")
+    if verb in ("GET", "HEAD") and any(p.fullmatch(clean) for p in _PLATO_GET):
         return ""
     if clean == "/auctions" or clean.startswith("/auctions/"):
         return view_access.scope_problem(verb, clean, query)

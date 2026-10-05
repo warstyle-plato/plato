@@ -4634,10 +4634,10 @@ def auctions_page(core=None, access_scope: str = "") -> str:
 # Что прячется от браузера с личным ключом области «auctions». Сервер эти
 # маршруты всё равно закрывает (`access_keys.scope_problem`); здесь — чтобы
 # человек не видел кнопок, которые ему ответят отказом: расчёт модели,
-# передача в калькулятор, Платон, обновление и разбор данных.
+# передача в калькулятор, обновление и разбор данных. Платон открыт (решение
+# владельца): вопрос идёт в `/auctions/ask` с лимитом и рамкой темы.
 SCOPED_HIDDEN_IDS = (
-    "platoFab", "platoDrawer", "platoOverlay",
-    "krtHandoff", "krtMarket", "krtPlato",
+    "krtHandoff", "krtMarket",
     "krtRankBtn", "krtRatingBtn", "krtPressBtn", "ingestBtn",
 )
 
@@ -4652,7 +4652,8 @@ def scoped_page(page: str, access_scope: str = "") -> str:
     rule = ",".join([f"#{i}" for i in SCOPED_HIDDEN_IDS]
                     + [f'a[href="{href}"]' for href in SCOPED_HIDDEN_LINKS])
     style = (f'<style id="accessScope">{rule}{{display:none!important}}</style>'
-             f'<script>window.DEVELOPAID_ACCESS_SCOPE={json.dumps(access_scope)}</script>')
+             f'<script>window.DEVELOPAID_ACCESS_SCOPE={json.dumps(access_scope)};'
+             f'window.DEVELOPAID_PLATO_ASK_URL="/auctions/ask"</script>')
     return (page
             .replace('<a class="brand" href="/"', '<a class="brand" href="/auctions"', 1)
             .replace("</head>", style + "</head>", 1)
