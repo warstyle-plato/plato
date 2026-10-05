@@ -99,6 +99,45 @@ def test_the_engine_verdict_does_not_speak_of_llcr_without_pf() -> None:
     assert "LLCR" in core._purchase_feasibility(500, 900, 1.5, 0.0)["text"]
 
 
+# --- экономика сходится: EBITDA, расходы, прибыль ----------------------------------
+
+def _pnl_gaps(summary: dict, finance: dict, expense_structure: list) -> dict[str, float]:
+    """Расхождения строк «Экономики проекта»: каждое должно быть нулём."""
+    return {
+        "ebitda − проценты ≠ прибыль до налога":
+            summary["ebitda"] - summary["financing_cost"] - summary["profit_before_tax"],
+        "выручка − расходы всего ≠ чистая прибыль":
+            summary["revenue"] - summary["total_expenses"] - summary["net_profit"],
+        "структура расходов ≠ расходы всего":
+            sum(e["value"] for e in expense_structure) - summary["total_expenses"],
+        "выручка − CAPEX − маркетинг − расходы объектов ≠ EBITDA":
+            summary["revenue"] - summary["capex"] - summary["commercial_costs"]
+            - float(finance.get("nonres_costs") or 0.0) - summary["ebitda"],
+    }
+
+
+@pytest.mark.parametrize("strategy", ["direct", "income"])
+def test_the_economics_lines_add_up_with_objects_outside_ddu(strategy) -> None:
+    """Снимок владельца: EBITDA 15,52 − проценты 1,12 = 14,40, а прибыль до
+    налога 12,45. Расходы объектов вне ДДУ (продажи ДКП, OPEX, налог на
+    имущество, выход) прибыль вычитала, а EBITDA и «Расходы всего» — нет."""
+    result = _nonres(offices_strategy=strategy)
+    assert float(result["finance"]["nonres_costs"]) > 0
+    gaps = _pnl_gaps(result["summary"], result["finance"], result["report"]["expense_structure"])
+    assert all(abs(v) < 1.0 for v in gaps.values()), gaps
+    labels = [e["label"] for e in result["report"]["expense_structure"]]
+    assert core.NONRES_COSTS_LABEL in labels
+
+
+def test_the_economics_check_catches_the_old_ebitda() -> None:
+    """Подделка: EBITDA без расходов объектов — проверка обязана покраснеть."""
+    result = _nonres(offices_strategy="direct")
+    forged = dict(result["summary"])
+    forged["ebitda"] += float(result["finance"]["nonres_costs"])
+    gaps = _pnl_gaps(forged, result["finance"], result["report"]["expense_structure"])
+    assert abs(gaps["ebitda − проценты ≠ прибыль до налога"]) > 1.0
+
+
 # --- подбор цены входа ----------------------------------------------------------
 
 def test_the_ceiling_of_a_rent_project_holds_the_dscr(client: TestClient) -> None:
@@ -157,7 +196,11 @@ VERDICT = r"""() => {
   const chips = [...document.querySelectorAll('.ai-chip')]
     .filter(c => c.offsetParent !== null || getComputedStyle(c).display !== 'none')
     .map(c => c.innerText.trim());
-  return {text: card ? card.innerText : null,
+  const economics = [...document.querySelectorAll('#economicsTable tr')]
+    .map(tr => [...tr.cells].map(c => c.innerText.trim()));
+  return {text: card ? card.innerText : null, economics,
+          nonresCosts: (lastResult.finance || {}).nonres_costs,
+          nonresCostsShown: money((lastResult.finance || {}).nonres_costs || 0),
           cells: card ? [...card.querySelectorAll('.ia-verdict-cell')].map(c => [
             c.querySelector('span').innerText.trim(), c.querySelector('b').innerText.trim()]) : [],
           chips, metric: lastResult.report.layout.debt_metric};
@@ -209,6 +252,14 @@ def test_the_verdict_card_of_a_rent_project_reads_the_dscr(drawn) -> None:
     assert "порог банка DSCR 1,20x" in state["text"]
     assert not any("LLCR" in chip for chip in state["chips"])
     assert drawn["errors"] == []
+
+
+def test_the_page_economics_names_the_object_costs_before_ebitda(drawn) -> None:
+    rows = drawn["direct"]["economics"]
+    labels = [r[0] for r in rows]
+    line = labels.index(core.NONRES_COSTS_LABEL)
+    assert line < labels.index("EBITDA")
+    assert rows[line][1] == f"({drawn['direct']['nonresCostsShown']})"
 
 
 def test_the_verdict_card_of_a_direct_sale_does_not_search_a_ceiling(drawn) -> None:

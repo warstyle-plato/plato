@@ -33758,6 +33758,11 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
             "totals": totals}
 
 
+# Строка расходов объектов вне ДДУ в структуре расходов и в экономике
+# проекта — одна подпись на все поверхности.
+NONRES_COSTS_LABEL = "Объекты вне ДДУ: продажи ДКП, эксплуатация, налог на имущество, выход"
+
+
 # Помесячные ряды итога объекта (`object_result`), которые едут в строки
 # объекта для книги.
 OBJECT_RESULT_SERIES = ("object_profit_tax", "object_equity_flow")
@@ -35990,14 +35995,20 @@ def _calculate_economics(req: CalcRequest) -> dict:
         "main_above", "main_under", "utilities", "landscaping",
         "commissioning", "site_maintenance", "gc_fee", "reserve"
     ))
-    full_project_cost = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
+    # Расходы объектов вне ДДУ — продажи ДКП, эксплуатация, налог на
+    # имущество, выход (`finance.nonres_costs`). Прибыль до налога их
+    # вычитала, а EBITDA, «Расходы всего» и структура расходов — нет: на
+    # экране EBITDA − проценты не давала прибыль до налога (владелец,
+    # 05.10.2026: «15,52 − 1,12 = 14,40, а у нас 12,45?»).
+    nonres_costs = float(fin.get("nonres_costs", 0.0) or 0.0)
+    full_project_cost = total_capex + fin["commercial_costs"] + nonres_costs + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
     avg_apartment_price = (
         op["revenue_by_product"].get("apartments", 0.0) / apartment_saleable_sqm / 1000
         if apartment_saleable_sqm else 0.0
     )
     full_cost_per_saleable = full_project_cost / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
     construction_cost_per_gns = construction_capex / core_gns / 1000 if core_gns else 0.0
-    ebitda = total_revenue - total_capex - fin["commercial_costs"]
+    ebitda = total_revenue - total_capex - fin["commercial_costs"] - nonres_costs
     ebitda_per_saleable = ebitda / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
     net_profit_per_saleable = net_profit / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
 
@@ -36016,7 +36027,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
                            + object_under_gns)
     construction_volume_sqm = sum(n(row, "gns") for row in t.values()) + object_under_gns
     project_gns_sqm = project_above_gns(t)
-    total_expenses = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
+    total_expenses = full_project_cost
 
     def per_sqm_th(value: float, area: float) -> float:
         return value / area / 1000 if area else 0.0
@@ -36097,6 +36108,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         ("Резерв",
          op["capex_amounts"].get("reserve", 0.0)),
         ("Маркетинг и продажи", fin["commercial_costs"]),
+        (NONRES_COSTS_LABEL, float(fin.get("nonres_costs", 0.0) or 0.0)),
         ("Проценты и комиссии", fin["financing_cost"]),
         ("Налог на прибыль", fin["profit_tax"]),
         # НДС виден отдельной строкой: он не налог на прибыль и не
@@ -36692,6 +36704,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         "report": {
             "nonres_strategy": nonres_report(fin.get("nonres")),
             "nonres_financing": nonres_financing_report(fin.get("nonres")),
+            "nonres_costs_label": NONRES_COSTS_LABEL,
             "equity_participation": equity_participation_report(
                 timeline, equity_cf, fin, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(x, fin, equity_cf),
@@ -38395,7 +38408,8 @@ def _consolidate_phase_results(
     total_revenue = finance["total_revenue"]
     total_capex = finance["total_capex"]
     commercial_costs = finance["commercial_costs"]
-    ebitda = total_revenue - total_capex - commercial_costs
+    nonres_costs = float(finance.get("nonres_costs", 0.0) or 0.0)
+    ebitda = total_revenue - total_capex - commercial_costs - nonres_costs
     net_profit = sum(r["summary"]["net_profit"] for r in results)
     # Налог пересчитан на своде как у одного налогоплательщика, а прибыль
     # очередей посчитана с их собственным налогом. Не развести — и таблица
@@ -38416,7 +38430,7 @@ def _consolidate_phase_results(
     # НДС — такой же денежный расход проекта, как налог на прибыль: без него
     # строки структуры расходов не сходятся с итоговой строкой, и обе
     # выглядят достоверно.
-    full_cost = (total_capex + commercial_costs + finance["financing_cost"]
+    full_cost = (total_capex + commercial_costs + nonres_costs + finance["financing_cost"]
                  + finance["profit_tax"] + finance.get("vat", 0.0))
     avg_apt_price = revenue.get("apartments", 0.0) / apartment_saleable / 1000 if apartment_saleable else 0.0
 
@@ -38741,6 +38755,7 @@ def _consolidate_phase_results(
         "report": {
             "nonres_strategy": nonres_report(finance.get("nonres")),
             "nonres_financing": nonres_financing_report(finance.get("nonres")),
+            "nonres_costs_label": NONRES_COSTS_LABEL,
             "equity_participation": equity_participation_report(
                 cf_months, equity_cf, finance, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(master_inputs, finance, equity_cf),
@@ -57310,6 +57325,7 @@ function renderResult(){
   row('Выручка',money(r.summary.revenue))+
   row('CAPEX проекта',`(${money(r.summary.capex)})`)+
   row('Маркетинг и продажи',`(${money(r.summary.commercial_costs)})`)+
+  (Number((r.finance||{}).nonres_costs||0)>0?row(((r.report||{}).nonres_costs_label||'Расходы объектов вне ДДУ'),`(${money(r.finance.nonres_costs)})`):'')+
   `<tr><th>EBITDA</th><th>${money(r.summary.ebitda)}</th></tr>`+
   row('Проценты и комиссии',`(${money(r.summary.financing_cost)})`)+
   `<tr><th>Прибыль до налога</th><th>${money(r.summary.profit_before_tax)}</th></tr>`+
