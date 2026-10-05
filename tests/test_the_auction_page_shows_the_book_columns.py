@@ -19,6 +19,7 @@ import io
 import json
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -33,17 +34,38 @@ PAST_URL = "https://torgi.gov.ru/new/public/lots/lot/PAST-1"
 NOTE_TEXT = "Интересен: участок у метро. Опасен: обременение сетями."
 
 
-# Дата — по московскому календарю: дни до срока сервер считает по Москве, и
-# дата по UTC после 21:00 UTC ушла бы на сутки назад.
-_MSK = 3 * 3600
+# «Сейчас» проверки — фиксированный момент, а не часы машины. Дни до срока
+# сервер считает по московскому календарю; 22:30 UTC — это 01:30 МСК, когда
+# сутки UTC и Москвы разные. Дата фикстуры по UTC с припиской «+03:00» в этот
+# час уходила на сутки назад, и main краснел только поздним вечером.
+MSK = timezone(timedelta(hours=3))
+NOW = datetime(2026, 10, 4, 22, 30, tzinfo=timezone.utc)
+MIDDAY = datetime(2026, 10, 4, 12, 0, tzinfo=timezone.utc)
 
 
-def _iso(days: int) -> str:
-    return time.strftime("%Y-%m-%dT18:00:00+03:00", time.gmtime(time.time() + _MSK + days * 86400))
+def _deadline(days: int, now: datetime = NOW) -> datetime:
+    return (now.astimezone(MSK) + timedelta(days=days)).replace(hour=18, minute=0, second=0,
+                                                                  microsecond=0)
 
 
-def _ru(days: int) -> str:
-    return time.strftime("%d.%m.%Y 18:00", time.gmtime(time.time() + _MSK + days * 86400))
+def _iso(days: int, now: datetime = NOW) -> str:
+    return _deadline(days, now).isoformat()
+
+
+def _ru(days: int, now: datetime = NOW) -> str:
+    return _deadline(days, now).strftime("%d.%m.%Y %H:%M")
+
+
+def _freeze(monkeypatch, now: datetime = NOW) -> None:
+    """Часы сервера торгов стоят на `now`: дни до срока считаются от него."""
+    from auction_search import api
+
+    class Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now.astimezone(tz) if tz else now.astimezone(timezone.utc).replace(tzinfo=None)
+
+    monkeypatch.setattr(api, "datetime", Frozen)
 
 
 def _lot(url: str, title: str, days: int, status: str) -> dict:
@@ -74,6 +96,8 @@ def _app(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     from auction_search import lot_notes
     from auction_search.api import install
+
+    _freeze(monkeypatch)
 
     store = lot_notes.LotNotes(tmp_path / "market")
     store.remember_lots([{"url": LIVE_URL, "title": LOTS[0]["title"]}])
@@ -124,17 +148,23 @@ def _open(page, base: str) -> None:
     page.wait_for_function("document.querySelectorAll('#sheetRows tr.sheetrow').length === 2")
 
 
-def test_the_book_and_the_table_route_read_one_column_list(tmp_path, monkeypatch):
-    """Маршрут страницы и книга отдают один список колонок — из одного места."""
+@pytest.mark.parametrize("now", [MIDDAY, NOW], ids=["12:00 UTC", "22:30 UTC"])
+def test_the_book_and_the_table_route_read_one_column_list(tmp_path, monkeypatch, now):
+    """Маршрут страницы и книга отдают один список колонок — из одного места.
+
+    Ответ не зависит от часа: и днём, и в 22:30 UTC (уже следующие сутки в
+    Москве) до срока «через 9 дней» — 9 дней.
+    """
     from fastapi.testclient import TestClient
 
     from auction_search import export_columns
 
     client = TestClient(_app(tmp_path, monkeypatch))
+    _freeze(monkeypatch, now)
     payload = [{"section": "Торги", "name": LOTS[0]["title"], "url": LIVE_URL,
-                "application_deadline_iso": _iso(9), "status": "APPLICATIONS_SUBMISSION"},
+                "application_deadline_iso": _iso(9, now), "status": "APPLICATIONS_SUBMISSION"},
                {"section": "Торги", "name": LOTS[1]["title"], "url": PAST_URL,
-                "application_deadline_iso": _iso(-3), "status": "APPLICATIONS_SUBMISSION"}]
+                "application_deadline_iso": _iso(-3, now), "status": "APPLICATIONS_SUBMISSION"}]
     answer = client.post("/auctions/table", json={"rows": payload, "kind": "auctions"}).json()
     titles = [column["title"] for column in answer["columns"]]
     assert titles == [column.title for column in export_columns.AUCTION_COLUMNS]
@@ -164,6 +194,7 @@ def test_in_a_real_browser_the_page_has_the_book_columns(tmp_path, monkeypatch):
         browser = pw.chromium.launch(executable_path=str(chrome))
         try:
             page = browser.new_page(viewport={"width": 1440, "height": 900})
+            page.clock.set_fixed_time(NOW)
             errors: list[str] = []
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             _open(page, base)
@@ -208,6 +239,7 @@ def test_in_a_real_browser_the_page_has_the_book_columns(tmp_path, monkeypatch):
 
             # Телефон: таблица не ломает ширину, комментарий — раскрытием строки.
             phone = browser.new_page(viewport={"width": 390, "height": 844}, is_mobile=True)
+            phone.clock.set_fixed_time(NOW)
             phone.on("pageerror", lambda exc: errors.append(str(exc)))
             _open(phone, base)
             width = phone.evaluate("[document.documentElement.scrollWidth, innerWidth]")
