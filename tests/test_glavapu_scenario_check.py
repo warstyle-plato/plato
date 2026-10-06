@@ -534,3 +534,18 @@ def test_a_foreign_key_does_not_reach_the_disk(core) -> None:
     with pytest.raises(HTTPException) as err:
         core.glavapu_scenario_state("0123456789abcdef0123")
     assert err.value.status_code == 404
+
+
+def test_a_missing_vri_fee_is_named_as_missing(core, monkeypatch) -> None:
+    """Нет нашей платы за ВРИ — причина говорит «не задана», а не «задана вводными»."""
+    calls: list = []
+    monkeypatch.setattr(core, "_glavapu_headless_run", _fake_run(calls))
+    inputs, tep = _nagatino()
+    inputs.pop("land_rights_cost_mln", None)
+    inputs.pop("vri_required", None)
+    req = core.GlavapuScenarioRequest(inputs=inputs, tep=tep)
+    core.glavapu_scenario_check(req)
+    rows = {r["kind"]: r for r in _wait_done(core, req)["comparison"]["rows"]}
+    row = rows["vri_cost_mln"]
+    assert row["status"] == "ours_missing" and "не задана" in row["reason"]
+    assert "от постоянных" in rows["parking.guest"]["reason"]

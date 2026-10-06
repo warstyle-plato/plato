@@ -13741,6 +13741,8 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
                              "калькулятор считает по ВРИ, НП и К1/К2 своего квартала"),
         "mpt": (f"у модели {derived['sqm_per_job']:g} м² НП на рабочее место; "
                 "калькулятор считает по ВРИ (лист «МПТ»)"),
+        "parking.guest": ("гостевые — десятая часть постоянных и у нас, и у калькулятора: "
+                          "расхождение идёт от постоянных мест"),
         "parking.permanent": ("наша норма: " + derived["parking_basis"]
                               + "; калькулятор — от своей площади квартир (строка 10)"),
     }
@@ -13768,6 +13770,9 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
                                    "сценарий по калькулятору")
     elif vri_value == 0.0 and vri_origin:
         reasons["vri_cost_mln"] = vri_origin
+    elif vri_value is None:
+        reasons["vri_cost_mln"] = ("в проекте не задана плата за смену ВРИ "
+                                   "(land_rights_cost_mln) — сравнить не с чем")
     else:
         reasons.setdefault("vri_cost_mln", "плата проекта задана вводными, калькулятор считает "
                                            "её от СПП по ВРИ и УПКС квартала")
