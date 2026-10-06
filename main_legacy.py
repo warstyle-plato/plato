@@ -1364,6 +1364,15 @@ def _section_order(obj: StandaloneObject, field: list[Any]) -> int:
     return titles.index(title) if title in titles else len(titles)
 
 
+# Ставка строительства объекта — «под ключ» (решение владельца 06.10.2026):
+# уже включает ИРД, проект, сети и ввод, поэтому ни эти статьи проекта, ни
+# генподряд с техзаказчиком на стройку объекта не начисляются. Подпись поля
+# говорит это пользователю; методика — `build_operating_model`, `works_base`.
+OBJECT_TURNKEY_HINT = ("под ключ: включает ИРД, проект, сети, ввод; "
+                       "генподряд и техзаказчик сверху не начисляются")
+_OBJECT_COST_RATE_FIELDS = frozenset({"cost_th_per_sqm", "cost_mln_per_space"})
+
+
 def standalone_object_group(obj: StandaloneObject) -> list[Any]:
     """Группа вводных одного объекта — по его строке реестра."""
     measure = _OBJECT_MEASURE_FIELDS[obj.measure]
@@ -1371,7 +1380,13 @@ def standalone_object_group(obj: StandaloneObject) -> list[Any]:
     def add(fields: tuple[tuple[str, str, str, str], ...]) -> list[list[Any]]:
         # Приписка к подсказке — свойство объекта: у ФОКа продаваемая площадь
         # читается только при продаже. Общая подсказка остаётся общей.
-        return [[f"{obj.prefix}_{key}", title, obj.hints.get(key, unit), kind]
+        # Ставка стройки объекта — «под ключ»: это свойство методики
+        # (`OBJECT_TURNKEY_HINT`), а не объекта, и приписывается к любой
+        # подсказке ставки, в том числе к своей подсказке ФОКа.
+        return [[f"{obj.prefix}_{key}", title,
+                 obj.hints.get(key, unit) + ("; " + OBJECT_TURNKEY_HINT
+                                             if key in _OBJECT_COST_RATE_FIELDS else ""),
+                 kind]
                 for key, title, unit, kind in fields]
 
     out: list[list[Any]] = [[obj.enabled_key, "Объект включен", "Да / Нет", "checkbox"]]
@@ -21077,6 +21092,50 @@ def _v4_apply_vri_interest_row(xml: str, missing: list[str]) -> str:
     return xml
 
 
+# Строки статей блока CAPEX, чья база меняется методикой «объект под ключ».
+_V4_CAPEX_TECH_SUPERVISION_ROW = 27
+_V4_CAPEX_GC_FEE_ROW = 29
+
+
+def _v4_apply_turnkey_overheads(xml: str, missing: list[str]) -> str:
+    """Генподряд, техзаказчик и резерв — на базах движка (решение 06.10.2026).
+
+    Шаблон брал техзаказчика (B27) и генподряд (B29) от СМР ядра, соцстройки
+    И «CAPEX объектов» с листа «ОБЪЕКТЫ», а резерв (B30) — от `SUM(B15:B29)`,
+    то есть и от платы за смену ВРИ (B15). Методика теперь иная: ставка
+    объекта — «под ключ», генподряд и техзаказчик в ней уже есть; плата за ВРИ
+    — известная сумма, резерв на неё не нужен. Правка точечная, поверх формулы
+    шаблона: из B27/B29 уходит слагаемое объектов, у резерва сумма начинается
+    со строки 16. Не опознанная формула — в `missing`, а не молчаливое
+    расхождение с движком.
+    """
+    objects_term = re.compile(r"\+'ОБЪЕКТЫ'!\$B\$\d+")
+    for phase in range(_V4_CAPEX_PHASES):
+        base = _V4_CAPEX_BLOCK_STRIDE * phase
+        for row_at, label in ((_V4_CAPEX_TECH_SUPERVISION_ROW, "техзаказчик"),
+                              (_V4_CAPEX_GC_FEE_ROW, "генподряд")):
+            row = row_at + base
+            formula = _v4_cell_formula(xml, f"B{row}")
+            fixed, count = objects_term.subn("", formula or "", count=1)
+            if count != 1:
+                missing.append(f"CAPEX · {label} очереди {phase + 1}: формула B{row} не опознана")
+                continue
+            xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(formula=fixed)})
+            if not done:
+                missing.append(f"CAPEX · {label} очереди {phase + 1}: B{row} не записана")
+        row = _V4_CAPEX_RESERVE_ROW + base
+        formula = _v4_cell_formula(xml, f"B{row}") or ""
+        was = f"SUM(B{_V4_CAPEX_VRI_ROW + base}:B{29 + base})"
+        if was not in formula:
+            missing.append(f"CAPEX · резерв очереди {phase + 1}: формула B{row} не опознана")
+            continue
+        fixed = formula.replace(was, f"SUM(B{_V4_CAPEX_VRI_ROW + 1 + base}:B{29 + base})", 1)
+        xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(formula=fixed)})
+        if not done:
+            missing.append(f"CAPEX · резерв очереди {phase + 1}: B{row} не записана")
+    return xml
+
+
 def _v4_management_profile_ranges() -> tuple[int, int, list[int]]:
     """Первая и последняя строка профиля и строки, которые в него не входят."""
     rows = sorted(_V4_CAPEX_ARTICLE_ROW[key] for key in MANAGEMENT_PROFILE_ARTICLES)
@@ -26432,6 +26491,8 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         "land_rights_relief_mln": relief / 1_000_000,
         "vri_enabled": bool(vri.get("enabled")),
         "engine_articles": engine_articles,
+        # Статьи без резерва — список движка, а не второй в книге.
+        "reserve_excluded": sorted(RESERVE_EXCLUDED_ARTICLES),
         "vri_equity": {k_of(m): float(v) for m, v in (op.get("vri_equity") or {}).items() if v},
         "objects": objects,
         "missing": missing,
@@ -27088,6 +27149,7 @@ def _build_project_workbook(
     capex_xml = _v4_apply_storage_area_rows(capex_xml, missing)
     capex_xml = _v4_apply_bridge_limit_before_permit(capex_xml, missing)
     capex_xml = _v4_apply_vri_interest_row(capex_xml, missing)
+    capex_xml = _v4_apply_turnkey_overheads(capex_xml, missing)
     vri_sheet_path = _v4_sheet_path(source, "ВРИ")
     vri_xml = _v4_apply_vri_installment_start(
         source.read(vri_sheet_path).decode("utf-8"), missing)
@@ -29573,9 +29635,18 @@ _M2_TEMPLATE_ONLY_INPUTS = frozenset({
     "inflation_after_rve_pct",
 })
 
-# Из базы резерва движок исключает цену входа и стоимость рассрочки ВРИ:
-# процент берётся от набора статей, в который они не входят.
-_M2_RESERVE_EXCLUDED = frozenset({"reserve", "purchase", "vri_interest", "vri_security"})
+# Статьи движка, на которые резерв не начисляется. Плата за смену ВРИ —
+# известная сумма по расчёту органа власти, а не смета, у которой бывает
+# перерасход: резерв на неё не нужен (решение владельца 06.10.2026). Проценты
+# и обеспечение рассрочки ВРИ, её теневые ключи (`land_rights_gross`,
+# `land_rights_relief`) и цена участка в `amounts` к моменту резерва ещё не
+# лежат. Один список на движок и обе книги.
+RESERVE_EXCLUDED_ARTICLES = frozenset({"land_rights"})
+
+# Из базы резерва движок исключает цену входа, плату за смену ВРИ и стоимость
+# её рассрочки: процент берётся от набора статей, в который они не входят.
+_M2_RESERVE_EXCLUDED = frozenset({"reserve", "purchase", "vri_interest", "vri_security",
+                                  *RESERVE_EXCLUDED_ARTICLES})
 
 # Статьи затрат в порядке листа. Третий признак — считает ли книга статью сама.
 # Плата за ВРИ и соцнагрузка идут по собственным графикам (рассрочка на своём
@@ -30246,9 +30317,10 @@ def build_plato_model_v2(
     to_permit = f"EDATE({ref('permit')},-{design_window})"
     before_rve = f"EDATE({ref('rve')},-3)"
     build_months = ref("construction_months")
+    # База генподряда и техзаказчика — как в движке: СМР ядра и соцобъектов.
+    # Ставка объекта «под ключ», процент на неё не начисляется.
     works = "+".join(amount(key) for key in
-                     ("main_above", "main_under", "social", "offices",
-                      "standalone_retail", "above_parking") if key in calc_row) or "0"
+                     ("main_above", "main_under", "social") if key in calc_row) or "0"
 
     def unit_rate(rate_key: str, base_key: str) -> str:
         return f"={tep_ref(base_key)}*{ref(rate_key)}/1000"
@@ -33444,9 +33516,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         if override_key in amounts and override_value_mln is not None:
             amounts[override_key] = float(override_value_mln) * 1_000_000
 
+    # База генподряда и техзаказчика — СМР, которые генподрядчик ведёт и
+    # заказчик контролирует. Стройка отдельно стоящих объектов (и их гаражей)
+    # сюда не входит: ставка объекта — «под ключ» (`OBJECT_TURNKEY_HINT`),
+    # вознаграждение генподрядчика и техзаказчик в ней уже есть, и процент
+    # сверху был двойным счётом (решение владельца 06.10.2026).
     works_base = (
         amounts["main_above"] + amounts["main_under"] + amounts["social"]
-        + sum(amounts[obj.key] for obj in standalone_objects())
         # Мебель и оборудование — поставка, а не работы: генподряд и
         # технадзор на неё не начисляются.
         + amounts.get("hotel", 0.0)
@@ -33478,7 +33554,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 
     amounts["gc_fee"] = works_base * n(x, "gc_fee_pct") / 100
 
-    base_for_overheads = sum(amounts.values())
+    base_for_overheads = sum(value for key, value in amounts.items()
+                             if key not in RESERVE_EXCLUDED_ARTICLES)
     amounts["reserve"] = base_for_overheads * n(x, "reserve_pct") / 100
 
     capex: dict[date, float] = defaultdict(float)
@@ -40995,6 +41072,11 @@ _DevelopAid_METHODOLOGY = [
         "id": "TECH_CUSTOMER_DEFAULT",
         "topic": "expenses",
         "rule": "Технический заказчик/стройконтроль — отдельная статья, базово 5% СМР. Управление проектом — тоже 5%, но это зарплаты и административные накладные девелопера; статьи не смешивать.",
+    },
+    {
+        "id": "OBJECT_RATE_IS_TURNKEY",
+        "topic": "expenses",
+        "rule": "Ставка строительства отдельно стоящего объекта (офис, ТЦ, ФОК, наземный паркинг, гараж объекта) — «под ключ»: уже включает ИРД, проект, сети, ввод, генподряд и техзаказчика. Генподряд и техзаказчик начисляются только на СМР жилой части и соцобъекты; резерв начисляется и на объект, но не на плату за смену ВРИ — это известная сумма (решение владельца 06.10.2026).",
     },
     {
         "id": "MARKET_BENCHMARK_NORMALIZATION",

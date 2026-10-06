@@ -162,14 +162,18 @@ def test_a_tampered_formula_is_caught() -> None:
 
 
 def test_a_tampered_cost_article_is_caught() -> None:
-    """Подделка статьи сметы: ставка генподряда в «Затратах» не та."""
+    """Подделка статьи сметы: ставка резерва в «Затратах» не та.
+
+    Генподряд у нежилого проекта без ядра — ноль (ставка объекта «под
+    ключ»), и подделка его ставки ничего бы не сдвинула: подделывается резерв.
+    """
     def tamper(book):
         sheet = book[nw.COSTS_SHEET]
-        row = next(r for r in range(1, nw.FIRST_ROW) if sheet[f"A{r}"].value == "Генподряд")
+        row = next(r for r in range(1, nw.FIRST_ROW) if sheet[f"A{r}"].value == "Резерв")
         sheet[f"D{row}"] = sheet[f"D{row}"].value + "*1.2"
 
     labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
-    assert {"Генподряд", "Резерв", "CAPEX", "Кредит — выборка"} <= labels
+    assert {"Резерв", "CAPEX", "Кредит — выборка"} <= labels
 
 
 def test_a_tampered_input_is_caught() -> None:

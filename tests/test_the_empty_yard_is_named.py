@@ -128,6 +128,7 @@ def screen() -> dict:
     Обе живут после расчёта и читают `lastResult`: стендом на node их не
     позвать, а в исходнике сломанная и починенная выглядят одинаково.
     """
+    from fastapi.encoders import jsonable_encoder
     from playwright.sync_api import sync_playwright
 
     import main as app_mod
@@ -163,6 +164,14 @@ def screen() -> dict:
                 "()=>{const e=document.getElementById('expenseStructureTable');"
                 "return e?e.textContent:''}")
             out["errors"] = page.evaluate("()=>document.querySelectorAll('.fatal').length")
+            # Структура расходов — отрисовкой страницы (`renderResult`) по
+            # результату движка: стенд на странице считает этот офисник без
+            # CAPEX, и таблица у него пуста — проверять в ней было бы нечего.
+            served = jsonable_encoder(core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[])))
+            page.evaluate("r=>{lastResult=r;phaseBundle=null;renderResult();}", served)
+            out["structure"] = page.evaluate(
+                "()=>{const e=document.getElementById('expenseStructureTable');"
+                "return e?e.textContent:''}")
             browser.close()
     return out
 
@@ -182,6 +191,22 @@ def test_the_expense_table_names_the_empty_article(screen) -> None:
     assert "Благоустройства в расчёте нет" in screen["expenses"], screen["expenses"][:400]
 
 
+# Ставка объекта — «под ключ» (решение владельца 06.10.2026): у офисника без
+# ядра генподряд и техзаказчик — ноль, и строк-нулей в структуре нет. Прежде
+# здесь стояли «Основное строительство» (одно вознаграждение генподрядчика) и
+# «Технический заказчик» от ставки объекта.
+_TURNKEY_ZERO_ROWS = ("Основное строительство", "Технический заказчик", "енподряд")
+
+
+def test_the_expense_table_has_no_turnkey_overheads(screen) -> None:
+    """Живая страница: генподряда и техзаказчика у офисника нет."""
+    assert screen["errors"] == 0, "страница не доработала"
+    assert "Отдельные объекты" in screen["structure"], screen["structure"][:400]
+    assert "Резерв" in screen["structure"], screen["structure"][:400]
+    for label in _TURNKEY_ZERO_ROWS:
+        assert label not in screen["structure"], screen["structure"][:400]
+
+
 def test_the_report_names_the_empty_article_too() -> None:
     """Отчёт носят в банк: пустота названа и на бумаге, той же фразой."""
     pypdf = pytest.importorskip("pypdf")
@@ -196,3 +221,6 @@ def test_the_report_names_the_empty_article_too() -> None:
     reader = pypdf.PdfReader(str(path))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
     assert "Благоустройства в расчёте нет" in text
+    # Та же структура на бумаге: строк генподряда и техзаказчика нет.
+    for label in _TURNKEY_ZERO_ROWS:
+        assert label not in text, label

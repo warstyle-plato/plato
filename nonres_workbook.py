@@ -454,8 +454,10 @@ def _costs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, A
                 "движок")
     article("author_supervision", "Авторский надзор", "=E{design_p}+E{design_rd}", "П + РД, ₽",
             f"={_p('author_supervision_pct')}/100", "=B{r}*D{r}", f"={permit}", f"={build}", S_CURVE)
-    works = "=E{main_above}+E{main_under}+E{social}+" + _sum(
-        [f"E{{{item['key']}__building}}+E{{{item['key']}__garage}}" for item in objects])
+    # База генподряда и техзаказчика — СМР ядра и соцобъектов, как в движке.
+    # Ставка объекта (здание и его гараж) — «под ключ»: генподряд и
+    # техзаказчик в ней уже есть, процент сверху был бы двойным счётом.
+    works = "=E{main_above}+E{main_under}+E{social}"
     article("technical_supervision", "Технический заказчик", works, "СМР, ₽",
             f"={_p('technical_supervision_pct')}/100", "=B{r}*D{r}", f"={permit}", f"={build}", S_CURVE)
     article("project_management", "Управление проектом",
@@ -473,7 +475,10 @@ def _costs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, A
         article("land_rights", "Плата за смену ВРИ к оплате", f"={_p('land_rights_gross')}", "млн ₽",
                 f"=1-IF({_p('land_rights_gross')}>0,MIN(1,{_p('land_rights_relief')}/{_p('land_rights_gross')}),0)",
                 "=B{r}*D{r}*1000000", f"={permit}", "=1", "разово в РнС")
-    reserve_parts = [key for key, *_ in rows]
+    # Плата за смену ВРИ — известная сумма, резерв на неё не начисляется
+    # (список движка `RESERVE_EXCLUDED_ARTICLES` приходит в спецификации).
+    reserve_excluded = set(spec["reserve_excluded"])
+    reserve_parts = [key for key, *_ in rows if key not in reserve_excluded]
     article("reserve", "Резерв", "=" + _sum([f"E{{{key.replace(':', '__')}}}" for key in reserve_parts]),
             "все статьи до резерва, ₽", f"={_p('reserve_pct')}/100", "=B{r}*D{r}",
             f"={permit}", f"={build}", S_CURVE)
