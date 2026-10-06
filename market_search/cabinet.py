@@ -225,6 +225,8 @@ margin:12px 0;font-size:14px}
 .say.watch{border-color:#C4581B;background:#fff8f0}
 .say.bad{border-color:#B3261E;background:#fdecea}
 .say b{margin-right:4px}
+.tm-form{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px;font-size:13px}
+#timingCard tr.same-stage td{background:#f1f8f4}
 .verdict h2{font-size:17px}
 .verdict .pos{margin-top:12px;padding-top:12px;border-top:1px solid var(--line);color:var(--ink)}
 .verdict.good{border-left:4px solid #1f7a4d}
@@ -376,6 +378,7 @@ display:flex;align-items:center;justify-content:center;color:#8ba0b5;font-size:1
 .room a span{display:block;font-size:11.5px;color:#5b6b7d}
 __DEVELOPAID_CONTOUR_STYLE__
 @media print{
+.tm-form{display:none}
   /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
      вопроса на бумаге бесполезны. Разделы не разрываются между страницами —
      таблица, оторванная от своего графика, читается как чужая. */
@@ -1545,6 +1548,89 @@ function peersCard(peers){
     +`</table></div></div>`;
 }
 
+// Сроки ввода и стадии конкурентов — против наших.
+//
+// Поля соседей те же, что в «Как посчитана цена» (`analog_timing` на сервере),
+// сравнение собрано сервером (`timing.compare`); здесь только показ. Пустое
+// поле печатается «нет данных» с причиной: молчаливый прочерк неотличим от
+// поломки.
+let ownDates={};
+function noData(reason){
+  return `<span class="muted nodata">нет данных${reason?': '+esc(reason):''}</span>`;
+}
+function stageSpread(rows){
+  return (rows||[]).map(r=>esc(r.raw||r.value||'—')
+    +(r.buildings!==null&&r.buildings!==undefined?' — '+esc(r.buildings)+' корп.':'')).join('; ');
+}
+function timingCard(d){
+  const t=d.timing||{};
+  if(t.available===false) return '';
+  const peers=d.peers||[], ours=t.subject||{};
+  const com=t.commissioning||{}, ov=t.overlap||{}, same=t.same_stage||{}, cov=t.coverage||{};
+  const cut=v=>String(v||'').slice(0,7);
+  const our=`<div class="tm-ours"><b>Наш проект:</b> старт продаж `
+    +(ours.sales_start?esc(monthYear(ours.sales_start)):noData('не задан'))
+    +` · плановый ввод `+(ours.commissioning?esc(monthYear(ours.commissioning)):noData(ours.reason))
+    +(ours.origin_title?` <span class="muted">(${esc(ours.origin_title)})</span>`:'')
+    +`<div class="tm-form"><label>Наш старт продаж <input type="month" id="ownStart" value="${esc(cut(ownDates.sales_start||ours.sales_start))}"></label>`
+    +` <label>Наш плановый ввод <input type="month" id="ownFinish" value="${esc(cut(ownDates.commissioning||ours.commissioning))}"></label>`
+    +` <button class="go alt" type="button" id="timingGo">Сравнить с нашими сроками</button></div></div>`;
+  const comLine=com.available
+    ?`Наш ввод — ${esc(monthYear(com.ours))}. Раньше нас вводятся <b>${num(com.earlier)}</b>,`
+      +` одновременно — <b>${num(com.same)}</b>, позже — <b>${num(com.later)}</b>`
+      +(com.unknown?`, без срока ввода — ${num(com.unknown)}`:'')
+      +(com.median_gap_months!==null&&com.median_gap_months!==undefined
+        ?`. Медиана разницы: ${com.median_gap_months>0?'+':''}${num(com.median_gap_months)} мес.`:'')
+      +` <span class="muted">${esc(com.rule||'')}</span>`
+    :noData(com.reason);
+  const ovLine=ov.available
+    ?`Наше окно продаж ${esc(monthYear(ov.window.from))} — ${esc(monthYear(ov.window.to))}.`
+      +` Продают одновременно с нами: <b>${num(ov.count)}</b>`
+      +(ov.count?': '+ov.peers.map(p=>`${esc(p.name)} (${num(p.months)} мес.)`).join(', '):'')
+      +(ov.unknown?`; окно не определить у ${num(ov.unknown)}`:'')
+      +` <span class="muted">${esc(ov.rule||'')}</span>`
+    :noData(ov.reason);
+  const st=same.stage||{};
+  const sameLine=`Стадия для сравнения — «${esc(st.label||'—')}» <span class="muted">(${esc(st.reason||'')})</span>. `
+    +(same.count
+      ?`Аналогов той же стадии с ценой: <b>${num(same.count)}</b>, медиана <b>${num(same.median_price_per_sqm)}</b> ₽/м²: `
+        +same.peers.map(p=>`${esc(p.name)} — ${num(p.price_per_sqm)}`).join('; ')
+      :noData(same.reason));
+  const covLine=cov.peers
+    ?`<div class="muted" style="font-size:12.5px">Из ${num(cov.peers)} соседей: плановый ввод у ${num((cov.commissioning||{}).count)},`
+      +` стадия с Пульса у ${num((cov.stage_from_pulse||{}).count)} (по корпусам у ${num((cov.stage_distribution||{}).count)}),`
+      +` стадия по срокам у ${num((cov.stage_from_calendar||{}).count)}</div>`:'';
+  const rel=v=>v.relation
+    ?esc(v.relation)+(v.gap_months?` <span class="muted">(${v.gap_months>0?'+':''}${num(v.gap_months)} мес.)</span>`:'')
+    :noData(v.commissioning_reason);
+  const overlapCell=v=>v.overlap===true?`<b>да</b>, ${num(v.overlap_months)} мес.`
+    :v.overlap===false?(v.overlap_reason?'нет — '+esc(v.overlap_reason):'нет')
+    :noData(v.overlap_reason);
+  const rows=peers.map(p=>{
+    const v=p.vs_ours||{};
+    const built=p.construction_stage
+      ?`${esc(p.construction_stage_label)}${p.construction_stage_origin_title?` <span class="muted">· ${esc(p.construction_stage_origin_title)}</span>`:''}`
+        +((p.construction_stage_distribution||[]).length?`<div class="muted">${stageSpread(p.construction_stage_distribution)}</div>`:'')
+      :noData(p.construction_stage_reason);
+    return `<tr${v.same_stage?' class="same-stage"':''}><td>${esc(p.name)}</td>`
+      +`<td>${p.commissioning?esc(monthYear(p.commissioning))+(p.commissioning_raw?` <span class="muted">«${esc(p.commissioning_raw)}»</span>`:''):noData(p.commissioning_reason)}</td>`
+      +`<td>${p.commissioning_first?esc(monthYear(p.commissioning_first))
+        :noData(p.commissioning?'первый корпус называет только страница проекта Пульса':p.commissioning_reason)}</td>`
+      +`<td>${built}</td>`
+      +`<td>${p.stage_label?esc(p.stage_label)+' · '+num(p.calendar_progress_pct)+'%':noData(p.calendar_reason)}</td>`
+      +`<td>${rel(v)}</td><td>${overlapCell(v)}</td>`
+      +`<td class="num">${p.price_per_sqm?num(p.price_per_sqm):noData('цены нет')}</td></tr>`;
+  }).join('');
+  return `<div class="card" id="timingCard"><h2>Сроки ввода и стадии конкурентов</h2>${our}
+    <div class="say"><b>Ввод</b> ${comLine}</div>
+    <div class="say"><b>Окно продаж</b> ${ovLine}</div>
+    <div class="say"><b>Та же стадия</b> ${sameLine}</div>${covLine}
+    <div class="wrap"><table class="peers" id="timingTable">
+    <tr><th>Проект</th><th>Плановый ввод (последний корпус)</th><th>Первый корпус</th><th>Стадия строительства</th>
+    <th>Календарная стадия</th><th>Ввод против нашего</th><th>Продаёт одновременно с нами</th><th class="num">₽/м²</th></tr>
+    ${rows}</table></div></div>`;
+}
+
 // Лестница цены метра по формату: линия на проект, категории по оси X.
 // Отвечает на вопрос, которого нет ни у одного помесячного графика: дешевеет
 // ли метр с ростом лота. У рынка дешевеет — покупатель приходит с бюджетом, и
@@ -2557,6 +2643,10 @@ const SALES_METRICS=[
 ];
 let salesMetric='amount';
 let plansMetric='amount';
+// Поквартально или накопленным итогом — для всех трёх линий сразу. Итог
+// считает сервер (`*_cum`), здесь только выбор поля.
+const PLAN_BASES=[{key:'quarter',name:'по кварталам'},{key:'cum',name:'накопленным итогом'}];
+let plansBasis='quarter';
 
 function salesMetricButtons(id, current, metrics){
   return '<div class="switch">'+metrics.map(m=>
@@ -3374,19 +3464,21 @@ const PLAN_METRICS=[
 // `ReferenceError` ровно тогда, когда планы прочитаны, то есть на настоящем
 // проекте. Экран при этом не «ломался наполовину»: `renderSales` обрывался, и
 // от отчёта не оставалось ничего (владелец, 31.08.2026).
-function salesPlansRows(quarters, metric){
+function salesPlansRows(quarters, metric, basis){
+  const end=basis==='cum'?'_cum':'';
   return quarters.map(q=>({
     label:q.label, short:q.label.replace(' ',''),
-    value:q['fact_'+metric.key], pale:q.partial,
-    fm:q['fm_'+metric.key], bank:q['bank_'+metric.key],
+    value:q['fact_'+metric.key+end], pale:q.partial,
+    fm:q['fm_'+metric.key+end], bank:q['bank_'+metric.key+end],
     factPrice:q.fact_price, fmPrice:q.fm_price, bankPrice:q.bank_price,
     over:q.partial?'часть':'',
-    tip:q.label+': факт '+metric.show(q['fact_'+metric.key])+(q.partial?' (месяцев в квартале — '+q.months+')':''),
+    tip:q.label+': факт '+metric.show(q['fact_'+metric.key+end])+(end?' с начала продаж':'')
+      +(q.partial?' (месяцев в квартале — '+q.months+')':''),
   }));
 }
 
-function salesPlansChart(quarters, metric){
-  const rows=salesPlansRows(quarters, metric);
+function salesPlansChart(quarters, metric, basis){
+  const rows=salesPlansRows(quarters, metric, basis);
   const lines=[{key:'fm',name:'план ФМ',color:'#C4581B'},
                {key:'bank',name:'план банка',color:'#8E7CC3',dash:true}];
   return barChart(rows,{lines,axis:metric.axis,show:metric.show,factName:'факт',
@@ -3397,7 +3489,7 @@ function salesPlansChart(quarters, metric){
                 {key:'bankPrice',name:'цена банка',color:'#5FA98A',dash:true}],
     rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²',
     rightName:'цена квартир, ₽/м²',
-    caption:metric.name+' по кварталам'});
+    caption:metric.name+(basis==='cum'?' накопленным итогом':' по кварталам')});
 }
 
 function salesPlansBlock(d){
@@ -3405,13 +3497,25 @@ function salesPlansBlock(d){
   const quarters=(plans.quarters||[]);
   if(quarters.length<2) return '';
   const metric=PLAN_METRICS.find(m=>m.key===plansMetric)||PLAN_METRICS[0];
-  const rows=salesPlansRows(quarters, metric);
+  const basis=PLAN_BASES.find(b=>b.key===plansBasis)?plansBasis:'quarter';
+  const rows=salesPlansRows(quarters, metric, basis);
+  const opening=plans.bank_opening;
   // На бумагу идут обе меры: переключателя в документе нет.
-  let html=salesPlansChart(quarters, metric);
+  let html=salesPlansChart(quarters, metric, basis);
   const rest=PLAN_METRICS.filter(m=>m.key!==metric.key);
   if(rest.length) html+='<div class="printviews">'
-    +rest.map(m=>salesPlansChart(quarters, m)).join('')+'</div>';
+    +rest.map(m=>salesPlansChart(quarters, m, basis)).join('')+'</div>';
+  // Остаток банка на дату обновления плана — своей строкой, а не точкой линии: рядом с
+  // квартальным фактом он читался бы как квартал продаж втрое больше обычного.
+  if(opening&&basis!=='cum') html+='<div class="muted" data-bank-opening style="font-size:12.5px;margin-top:6px">'
+    +'<b>'+esc(opening.quarter)+', план банка '+num(opening.amount/1e6,1)+' млн ₽</b> — первый квартал обновлённого плана банка, '
+    +'а продажи идут с '+esc(opening.fact_since)+': в этой колонке банк держит проданное до даты обновления плана. '
+    +'Факт этого квартала '+num(opening.fact_quarter/1e6,1)+' млн ₽, с начала продаж — '
+    +num(opening.fact_to_date/1e6,1)+' млн ₽. На линии по кварталам его нет; '
+    +'сравнить его с фактом можно накопленным итогом.</div>';
   html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
+    +(basis==='cum'?'Накопленный итог всех трёх линий с первого квартала ряда'
+      +(opening?'; итог банка начинается с его остатка на дату обновления плана ('+esc(opening.quarter)+')':'')+'. ':'')
     +'Кварталы, а не месяцы: план банка квартальный, и раскладывать его по месяцам мы не станем — '
     +'сделать это можно тремя способами, и любой будет нашей выдумкой. '
     +'Листы: \u00ab'+esc(plans.fm_sheet||'\u2014')+'\u00bb и \u00ab'+esc(plans.bank_sheet||'\u2014')+'\u00bb. '
@@ -3430,6 +3534,8 @@ function salesPlansBlock(d){
       rows.map(r=>[esc(r.label)+(r.pale?' (часть)':''),
         r.value===null||r.value===undefined?'—':metric.show(r.value),
         r.fm===null||r.fm===undefined?'—':metric.show(r.fm),
+        // Остаток банка — прочерком, а не словами: колода берёт эту таблицу,
+        // и текст в денежной колонке выбросил бы план банка со слайда целиком.
         r.bank===null||r.bank===undefined?'—':metric.show(r.bank),
         r.factPrice?num(r.factPrice):'—',
         r.fmPrice?num(r.fmPrice):'—',
@@ -3694,7 +3800,11 @@ function renderSales(d){
   html+=salesSection('sb-plan','Факт против планов',
     `<div id="planschart">${salesPlansBlock(d)}</div>`,
     salesNote(d,'fm')+salesNote(d,'bank'),
-    salesMetricButtons('planschart', plansMetric, PLAN_METRICS));
+    '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+    +salesMetricButtons('planschart', plansMetric, PLAN_METRICS)
+    +'<div class="switch">'+PLAN_BASES.map(b=>
+      `<button type="button" data-basis="${b.key}" data-for="planschart"`
+      +` class="${b.key===plansBasis?'on':''}">${esc(b.name)}</button>`).join('')+'</div></div>');
 
   html+=salesSection('sb-esc','Эскроу против погашения ПФ',
     salesEscrowBlock(d), salesNote(d,'escrow'));
@@ -3804,7 +3914,8 @@ function renderSales(d){
   box.querySelectorAll('.switch button').forEach(b=>{
     b.onclick=()=>{
       const target=b.dataset.for;
-      if(target==='saleschart') salesMetric=b.dataset.metric; else plansMetric=b.dataset.metric;
+      if(b.dataset.basis) plansBasis=b.dataset.basis;
+      else if(target==='saleschart') salesMetric=b.dataset.metric; else plansMetric=b.dataset.metric;
       // Перерисовывается только своя картинка: перестроить карточку целиком
       // значит захлопнуть все раскрытые списки под руками у человека.
       const box2=document.getElementById(target);
@@ -3991,20 +4102,21 @@ function salesDigest(d, limit){
     add('план ФМ', lines, 4);
   }
   const bank=d.bank_plan;
-  if(bank&&bank.revenue_by_quarter){
-    const fact={};
-    (d.by_quarter||[]).forEach(q=>{fact[q.quarter]=q.amount});
-    // Хвост плана — это 2029 год, а сравнивают с ним прошедшие кварталы.
-    // Обрезка «по последним» оставляла в вопросе четыре будущих квартала без
-    // факта: плана много, а ответить на них нечем.
-    const all=Object.keys(bank.revenue_by_quarter).sort();
-    const shown=all.filter(q=>fact[q]!==undefined);
-    const lines=shown.map(q=>
-      `— ${q}: план банка ${num(bank.revenue_by_quarter[q]/1e6,1)} млн ₽`
-      +`, факт ${num(fact[q]/1e6,1)} млн ₽`);
+  const planRows=((d.plans||{}).quarters)||[];
+  if(bank&&planRows.length){
+    // Та же линия, что на графике: валовые продажи банка из `plans`, а не
+    // строка рассрочки. Прошедшие кварталы — сервер режет ряд по последнему
+    // кварталу факта.
+    const opening=(d.plans||{}).bank_opening;
+    const shown=planRows.filter(q=>q.fact_amount!=null&&(q.bank_amount!=null||q.bank_opening));
+    const lines=shown.map(q=>q.bank_opening
+      ?`— ${q.label}: остаток банка на дату обновления плана ${num(opening.amount/1e6,1)} млн ₽ против факта с начала продаж ${num(opening.fact_to_date/1e6,1)} млн ₽ (за квартал ${num(q.fact_amount/1e6,1)})`
+      :`— ${q.label}: план банка ${num(q.bank_amount/1e6,1)} млн ₽`
+        +`, факт ${num(q.fact_amount/1e6,1)} млн ₽`
+        +(q.bank_amount_cum!=null?`; накопленным: ${num(q.bank_amount_cum/1e6,1)} против ${num(q.fact_amount_cum/1e6,1)}`:''));
     if(lines.length){
-      lines.unshift(`ПЛАН БАНКА (лист «${bank.sheet}», по кварталам; показаны `
-        +`${shown.length} кварталов с фактом из ${all.length} в плане):`);
+      lines.unshift(`ПЛАН БАНКА (лист «${bank.sheet}», валовые продажи цена × объём по кварталам; показаны `
+        +`${shown.length} кварталов с фактом):`);
       add('план банка', lines, 6);
     }
   }
@@ -4187,7 +4299,7 @@ async function addProject(item){
   const q=new URLSearchParams();
   if(s.latitude&&s.longitude){q.set('latitude',s.latitude);q.set('longitude',s.longitude)}
   try{
-    const r=await fetch(`/market/project/${item.complex_id}?`+q.toString());
+    const r=await fetch(`/market/project/${encodeURIComponent(item.complex_id)}?`+q.toString());
     const d=await r.json();
     if(!r.ok){$('#addstate').textContent=d.detail||'Не получилось';return}
     added.set(item.complex_id,d);
@@ -4237,7 +4349,8 @@ async function rebuild(){
     const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({query:s.query,codes,radius_km:(lastReport.comparison||{}).radius_km||3,
         peers_limit:Number($('#limit').value),segment:$('#segment').value||null,
-        city_reference:$('#cityref').checked,extra_peers:[...added.values()]})});
+        city_reference:$('#cityref').checked,extra_peers:[...added.values()],
+        project_sales_start:ownDates.sales_start||null,project_commissioning:ownDates.commissioning||null})});
     const d=await r.json();
     if(r.ok) lastReport=d;
   }catch(e){/* останемся на прежнем отчёте */}
@@ -4252,6 +4365,8 @@ async function build(){
   if(!codes.length){$('#state').textContent='Выберите хотя бы один раздел.';return}
   $('#go').disabled=true;
   $('#out').innerHTML='';
+  // Наши сроки принадлежат прежнему объекту: новому их задают заново.
+  ownDates={};
   // Ожидание без признака работы читается как внезапность: страница молчала
   // полминуты, а потом разом выкладывала отчёт. Сервер отвечает одним
   // запросом и о своих шагах не сообщает, поэтому ход показывается тем, что
@@ -4501,6 +4616,7 @@ function render(d){
 
   html+=boardCard(planData);
   html+=deepCard(d);
+  html+=timingCard(d);
   html+=peersCard(peers);
   // «Разбор» — в конце: те же числа, но связанные между собой.
   html+=essayCard(d);
@@ -4516,6 +4632,11 @@ function render(d){
   wireAdd();
   const byHand=$('#mAdd');
   if(byHand) byHand.addEventListener('click',addByHand);
+  const timingGo=$('#timingGo');
+  if(timingGo) timingGo.addEventListener('click',()=>{
+    ownDates={sales_start:$('#ownStart').value||null,commissioning:$('#ownFinish').value||null};
+    rebuild();
+  });
   // Галочка рисует кривую соседа поверх полосы. Отчёт не пересобирается: это
   // вопрос вида, а не расчёта, и лишний запрос к источнику тут не нужен.
   document.querySelectorAll('input[data-chart]').forEach(box=>{

@@ -1471,12 +1471,17 @@
       if (text === 'Пиковый остаток') { node.textContent = 'Пиковая потребность в БРИДЖе'; done += 1; }
       if (text === 'Расчётный лимит') { node.textContent = 'Расчётный лимит банка'; done += 1; }
     });
-    if (!bridgeChecked && pageResult() && done < 3) {
+    // У проекта без ПФ (нежилой вне ДДУ) страница сама убирает плитку
+    // «Пиковый БРИДЖ» из шапки — решение движка `report.layout`. Ждать её там
+    // значит поднимать ложную тревогу «переименованы частично (2 из 3)».
+    var layout = typeof reportLayout === 'function' ? reportLayout(pageResult()) : null;
+    var expected = layout && layout.project_finance === false ? 2 : 3;
+    if (!bridgeChecked && pageResult() && done < expected) {
       bridgeChecked = true;
-      missing.push('термины БРИДЖа переименованы частично (' + done + ' из 3) — проверьте #reportKpi и #bridgeTable');
+      missing.push('термины БРИДЖа переименованы частично (' + done + ' из ' + expected + ') — проверьте #reportKpi и #bridgeTable');
       report();
     }
-    if (done >= 3) bridgeChecked = true;
+    if (done >= expected) bridgeChecked = true;
     explainBridge();
   }
 

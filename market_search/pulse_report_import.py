@@ -194,6 +194,13 @@ def date_of(value: Any) -> str | None:
             return None
 
     romans = {"i": 1, "ii": 2, "iii": 3, "iv": 4}
+    # Пульс пишет срок ввода коротко: «28/II» — II квартал 2028 года; у проекта
+    # из нескольких корпусов — диапазоном «18/IV-27/IV». Плановый ввод проекта —
+    # последний квартал диапазона, как и между корпусами берётся поздний.
+    short = re.findall(r"(?<![\d/])(\d{2})\s*/\s*(i{1,3}|iv)\b", low)
+    if short and re.fullmatch(r"[\d\s/ivx\-–—]+", low):
+        year, quarter = max((2000 + int(yy), romans[q]) for yy, q in short)
+        return datetime.date(year, quarter * 3, 1).isoformat()
     quarter = None
     year = None
     found = re.search(r"\b(i{1,3}|iv|[1-4])\s*(?:кв(?:артал)?\.?|q)\s*(?:г(?:ода)?\.?)?\s*(20\d{2})\b", low)

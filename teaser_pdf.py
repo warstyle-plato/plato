@@ -463,6 +463,14 @@ def _nonres_financing_rows(model: dict[str, Any], fm: "_Formats") -> list[tuple[
         for row in item.get("rows") or []:
             if row.get("label") in wanted:
                 rows.append((f"{item.get('title')}: {row['label']}", *_nonres_value(row, fm)))
+    # Гостиница: условия своего кредита — строками той же таблицы движка.
+    hotel = model.get("hotel") or {}
+    for row in hotel.get("rows") or []:
+        if row.get("label") in ("Финансирование", "Кредит — проценты и комиссии", "Кредит погашен"):
+            rows.append((f"Гостиница: {row['label']}", *_nonres_value(row, fm)))
+    if hotel and not hotel.get("computed"):
+        rows.append(("Гостиница не считается — не заданы",
+                     ", ".join(str(m) for m in hotel.get("missing") or []), ""))
     return rows
 
 
