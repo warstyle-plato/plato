@@ -13612,9 +13612,20 @@ def _glavapu_scenario_dir() -> Path:
     return Path(os.getenv("DEVELOPAID_DATA_DIR") or "data") / "glavapu-scenario"
 
 
+_GLAVAPU_SCENARIO_KEY = re.compile(r"[0-9a-f]{8,40}")
+
+
 def _glavapu_scenario_file(key: str) -> Path:
-    clean = re.sub(r"[^0-9a-f]", "", str(key or ""))[:40] or "none"
-    return _glavapu_scenario_dir() / f"{clean}.json"
+    """Файл задания. Ключ приходит и из адреса запроса, поэтому он обязан быть
+    ровно хэшем `scenario_key`, а путь — лежать внутри каталога заданий."""
+    key = str(key or "")
+    if not _GLAVAPU_SCENARIO_KEY.fullmatch(key):
+        raise ValueError("ключ сверки — шестнадцатеричный хэш набора параметров")
+    base = os.path.normpath(os.path.abspath(_glavapu_scenario_dir()))
+    path = os.path.normpath(os.path.join(base, key + ".json"))
+    if not path.startswith(base + os.sep):
+        raise ValueError("ключ сверки выводит за каталог заданий")
+    return Path(path)
 
 
 def _glavapu_scenario_load(key: str) -> dict[str, Any] | None:
@@ -13877,6 +13888,9 @@ def glavapu_scenario_state(key: str) -> dict[str, Any]:
         except Exception as exc:
             raise HTTPException(status_code=502,
                                 detail="Ядро не ответило: " + _public_error(exc, "scenario state"))
+    if not _GLAVAPU_SCENARIO_KEY.fullmatch(str(key or "")):
+        raise HTTPException(status_code=400,
+                            detail="Ключ сверки — шестнадцатеричный хэш из ответа /glavapu/scenario")
     record = _glavapu_scenario_load(key)
     if record is None:
         raise HTTPException(status_code=404, detail="Задания сверки с таким ключом нет")

@@ -520,3 +520,17 @@ def test_the_page_has_the_block_and_its_button_calls_the_check() -> None:
     assert 'onclick="glavapuScenarioCheck()"' in block
     assert "function glavapuScenarioCheck(" in page
     assert "fetch('/glavapu/scenario'" in page
+
+
+def test_a_foreign_key_does_not_reach_the_disk(core) -> None:
+    """Ключ из адреса — только хэш; путь за каталог заданий не выводится."""
+    from fastapi import HTTPException
+    for bad in ("../../etc/passwd", "..", "abc", "ABCDEF0123", "0123abcd/../x"):
+        with pytest.raises(HTTPException) as err:
+            core.glavapu_scenario_state(bad)
+        assert err.value.status_code == 400
+        with pytest.raises(ValueError):
+            core._glavapu_scenario_file(bad)
+    with pytest.raises(HTTPException) as err:
+        core.glavapu_scenario_state("0123456789abcdef0123")
+    assert err.value.status_code == 404
