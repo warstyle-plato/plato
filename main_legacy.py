@@ -48259,19 +48259,6 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
             <div id="glavapuNotes" class="note"></div>
           </details>
         </div>
-        <!-- Сверка сценария: калькулятору ГлавАПУ выставляются НАШИ параметры
-             (доля жилья и коммерции, СПП, площадь, нежильё по ВРИ, соцобъекты,
-             вид права), и его ответ стоит рядом с нашим по видам. ГлавАПУ —
-             проверка: наши значения он не заменяет. -->
-        <details id="glavapuScenarioBox" class="import-fallback">
-          <summary>Сверка сценария с калькулятором ГлавАПУ</summary>
-          <div class="import-actions">
-            <button class="btn" id="glavapuScenarioButton" onclick="glavapuScenarioCheck()">Сверить сценарий</button>
-            <span style="font-size:11px;color:#777">Калькулятор считает в фоне 1–3 минуты; ГлавАПУ — проверка, наши значения не меняются.</span>
-          </div>
-          <div id="glavapuScenarioStatus" class="import-status" style="display:none"></div>
-          <div id="glavapuScenarioResult"></div>
-        </details>
         <!-- Загрузка готового файла — запасной путь для тех, у кого он уже на
              руках, а не первый шаг. Свёрнута, чтобы не разрывать «ввёл участок
              — получил ТЭП». -->
@@ -48301,6 +48288,19 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
             <input type="file" id="presetFile" accept=".json,application/json">
             <button class="btn dark" onclick="uploadPreset()">Импорт проекта / пресета</button>
           </div>
+        </details>
+        <!-- Сверка сценария: калькулятору ГлавАПУ выставляются НАШИ параметры
+             (доля жилья и коммерции, СПП, площадь, нежильё по ВРИ, соцобъекты,
+             вид права), и его ответ стоит рядом с нашим по видам. ГлавАПУ —
+             проверка: наши значения он не заменяет. -->
+        <details id="glavapuScenarioBox" class="import-fallback">
+          <summary>Сверка сценария с калькулятором ГлавАПУ</summary>
+          <div class="import-actions">
+            <button class="btn" id="glavapuScenarioButton" onclick="glavapuScenarioCheck()">Сверить сценарий</button>
+            <span style="font-size:11px;color:#777">Калькулятор считает в фоне 1–3 минуты; ГлавАПУ — проверка, наши значения не меняются.</span>
+          </div>
+          <div id="glavapuScenarioStatus" class="import-status" style="display:none"></div>
+          <div id="glavapuScenarioResult"></div>
         </details>
       </div>
       <div class="card">
