@@ -1,0 +1,30 @@
+{
+  "source": "Калькулятор ТЭП ГлавАПУ (genplan.tech/calc), КРТ Нагатино-Садовники, выгрузка владельца 06.10.2026 15:31 на умолчаниях калькулятора (100/0, плотность 23,1). PDF: reference_data/krt/nagatino-glavapu-calc-2026-10-06.pdf (PR #627). Числа переписаны из таблицы ТЭП выгрузки.",
+  "inputs": {
+    "site_area_ha": 17.8109,
+    "apartment_area_sqm": 251385,
+    "residential_living_spp_sqm": 386746,
+    "built_in_np_sqm": 22217,
+    "apartment_count": 3628,
+    "k1": 0.75,
+    "k2": 0.5,
+    "k_origin": "К1/К2 квартала Нагатино (анализ ГлавАПУ, вне ТТК) — те же, что в пресете и в выгрузке владельца с нашим сценарием",
+    "upks_rub": 83789.85,
+    "upks_origin": "УПКС МКД квартала 77:05:0004001 из листа «Параметры территории» выгрузки владельца"
+  },
+  "calculator": {
+    "population": [7618, "строка 4"],
+    "apartment_units": [3628, "строка 5"],
+    "kindergarten_places": [336, "строка 30"],
+    "school_places": [686, "строка 31"],
+    "clinic_capacity": [145, "строка 32"],
+    "parking_permanent": [2902, "строка 42.1"],
+    "parking_guest": [291, "строка 42.2"],
+    "parking_onsite": [93, "строка 42.3"],
+    "parking_short_stop": [16, "строка 43"],
+    "compensation_kindergarten_mln": [3016.333, "строка 54"],
+    "compensation_school_mln": [5079.718, "строка 55"],
+    "compensation_clinic_mln": [1518.636, "строка 56"],
+    "compensation_mln": [9614.687, "раздел «Расчёт компенсации за социальные объекты»"]
+  }
+}

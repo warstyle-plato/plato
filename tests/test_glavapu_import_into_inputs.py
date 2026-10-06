@@ -2,8 +2,8 @@
 
 Цель владельца (06.10.2026): калькулятор не переигрывать, а брать его данные
 во вводные и ТЭП московского проекта с пометкой «ГлавАПУ, выгрузка от <дата>,
-лист, строка». Ручное значение пользователя остаётся ручным. Для Подмосковья
-калькулятор к расчёту не применяется — выгрузка только справка для сравнения.
+лист, строка». Ручное значение пользователя остаётся ручным. В Подмосковье и
+других регионах калькулятор не участвует вовсе: ни подстановки, ни справки.
 Регион — по данным проекта (поле региона, кадастровые номера), а не по имени
 файла.
 
@@ -171,14 +171,15 @@ def test_a_new_site_clears_the_old_manual_values() -> None:
     {"vri_region": "mo"},
     {"vri_region": "msk", "_cadastral_analysis": {"recognized": ["50:12:0100101:5"]}},
 ])
-def test_outside_moscow_the_export_is_reference_only(extra) -> None:
+def test_outside_moscow_the_calculator_takes_no_part(extra) -> None:
+    """Подмосковье: ни подстановки, ни справки — выгрузка не сохраняется."""
     got = _apply(_parsed(), dict(extra))
     inputs = got["inputs"]
     assert inputs.get("land_rights_cost_mln") == core.DEFAULT_INPUTS.get("land_rights_cost_mln")
     assert "_glavapu_import" not in inputs and not inputs.get("_field_origin")
-    assert inputs["_glavapu_reference"]["normalized"]["change_vri_mln"] == pytest.approx(14985.285)
+    assert not any("glavapu" in key for key in inputs if key.startswith("_"))
     assert got["tep"]["apartments"]["gns"] == core.TEP_DEFAULT["apartments"]["gns"]
-    assert "не применяется" in got["status"] and "справкой" in got["status"]
+    assert "не участвует" in got["status"] and "не сохранена" in got["status"]
 
 
 def test_the_region_is_ours_not_the_file_name() -> None:
@@ -186,7 +187,7 @@ def test_the_region_is_ours_not_the_file_name() -> None:
     parsed = core.parse_glavapu_xlsx(_dated(XLSX.read_bytes(), datetime(2026, 10, 6)),
                                      "Подмосковье_50.xlsx")
     got = _apply(parsed, dict(MOSCOW))
-    assert "_glavapu_reference" not in got["inputs"]
+    assert "_glavapu_import" in got["inputs"]
     assert got["inputs"]["land_rights_cost_mln"] == pytest.approx(14985.285)
 
 
@@ -198,3 +199,20 @@ def test_the_origin_is_shown_at_the_field() -> None:
         "'inputs.y':{source:'manual',text:'вписано вручную'}}};",
         "console.log(JSON.stringify([fieldOriginNote('inputs.x'),fieldOriginNote('inputs.y'),fieldOriginNote('inputs.z')]))")
     assert "строка 44" in note[0] and note[1] == "" and note[2] == ""
+
+
+@pytest.mark.parametrize("inputs, numbers", [
+    ({"vri_region": "mo"}, ["77:05:0004001:1"]),
+    ({}, ["50:12:0100101:5"]),
+])
+def test_the_scenario_check_refuses_outside_moscow(inputs, numbers, monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("DEVELOPAID_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(core, "_core_api_url", lambda path: "")
+    called: list = []
+    monkeypatch.setattr(core, "_glavapu_headless_run", lambda *a, **k: called.append(a))
+    req = core.GlavapuScenarioRequest(
+        inputs=dict(inputs, site_area_ha=10.0, _cadastral_analysis={"recognized": numbers}),
+        tep={"apartments": {"gns": 10000.0, "saleable": 7000.0, "units": 100}})
+    answer = core.glavapu_scenario_check(req)
+    assert answer["state"] == "refused" and "не участвует" in answer["error"]
+    assert "регион проекта" in answer["where"] and not called

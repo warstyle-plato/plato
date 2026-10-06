@@ -14159,6 +14159,19 @@ def _glavapu_scenario_run(key: str, scenario: dict[str, Any]) -> None:
     _glavapu_scenario_save(key, record)
 
 
+def _glavapu_project_region(inputs: dict[str, Any], numbers: list[str]) -> tuple[str, str]:
+    """Регион проекта по НАШИМ данным — то же правило, что `projectRegion`
+    страницы: поле «Регион», иначе кадастровые номера (77 / 50)."""
+    if class_region(inputs) == "mo":
+        return "mo", "поле «Регион» проекта"
+    first = next((str(n) for n in numbers if re.match(r"^\d+:", str(n))), "")
+    if first.startswith("50:"):
+        return "mo", f"кадастровый номер проекта {first}"
+    if first.startswith("77:"):
+        return "msk", f"кадастровый номер проекта {first}"
+    return "msk", "поле «Регион» проекта"
+
+
 def _glavapu_scenario_fresh(record: dict[str, Any] | None) -> bool:
     if not record:
         return False
@@ -14192,6 +14205,14 @@ def glavapu_scenario_check(req: GlavapuScenarioRequest) -> dict[str, Any]:
     ours, reasons = _glavapu_scenario_ours(req.inputs or {}, req.tep or {}, scenario)
     answer: dict[str, Any] = {"key": key, "role": glavapu_scenario.ROLE,
                               "scenario": scenario, "ours": ours}
+    region, region_origin = _glavapu_project_region(req.inputs or {}, scenario.get("numbers") or [])
+    if region != "msk":
+        # Калькулятор ГлавАПУ — московский: в проекте области он не участвует
+        # ни подстановкой, ни сверкой (владелец, 06.10.2026).
+        answer.update(state="refused",
+                      error="проект не московский — калькулятор ГлавАПУ в нём не участвует",
+                      where=f"регион проекта: {region_origin}")
+        return answer
     if scenario["problems"]:
         answer.update(state="refused", error="; ".join(scenario["problems"]),
                       where="сценарий проекта (наши вводные и ТЭП), до калькулятора")
@@ -53273,7 +53294,7 @@ const TERRITORY_INPUT_KEYS=[
  // теряет выбор человека.
  'parking_k1','parking_k2','parking_rail_distance_m'
 ];
-const TERRITORY_MARKERS=['_glavapu_import','_glavapu_reference','_field_origin','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
+const TERRITORY_MARKERS=['_glavapu_import','_field_origin','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
  '_site_area_user_set','_site_density_user_set','_demolition_source','_land_buyout_source'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
@@ -53365,17 +53386,13 @@ function projectRegion(){
  if(first&&first.startsWith('77:'))return {region:'msk',origin:'кадастровый номер проекта '+first};
  return {region:classRegion(),origin:'поле «Регион» проекта'};
 }
-// Подмосковье и другие регионы: калькулятор ГлавАПУ — московский, к расчёту
-// он не применяется. Выгрузка сохраняется справкой для сравнения, ничего из
-// неё во вводные и ТЭП не подставляется.
-function keepGlavapuAsReference(region){
- inputs._glavapu_reference={source:glavapuImport.source,normalized:glavapuImport.normalized,
-  recognized:glavapuImport.recognized,warnings:glavapuImport.warnings,
-  region:region.region,region_origin:region.origin};
- renderGlavapuPreview(glavapuImport);
- glavapuStatus.innerHTML='<span class="import-ok"><b>Проект не московский</b> ('+escapeHtml(region.origin)+
-  '): калькулятор ГлавАПУ к расчёту не применяется. Выгрузка сохранена справкой для сравнения — '+
-  'во вводные и ТЭП ничего не подставлено.</span>';
+// Подмосковье и другие регионы: калькулятор ГлавАПУ — московский и в таком
+// проекте не участвует вовсе (владелец, 06.10.2026): ни подстановки, ни
+// справки. Выгрузка не применяется и в проекте не сохраняется.
+function refuseGlavapuOutsideMoscow(region){
+ glavapuStatus.innerHTML='<span class="import-error"><b>Проект не московский</b> ('+escapeHtml(region.origin)+
+  '): калькулятор ГлавАПУ — московский и в этом проекте не участвует. Выгрузка не применена и '+
+  'в проекте не сохранена.</span>';
 }
 // Та же территория — выгрузка того же квартала с той же площадью: новая
 // версия расчёта, а не новый участок. Тогда территория не обнуляется, и
@@ -53392,7 +53409,7 @@ async function applyGlavapu(){
  if(!glavapuImport){glavapuStatus.innerHTML='<span class="import-error">Сначала разберите файл.</span>';return}
  {
   const region=projectRegion();
-  if(region.region!=='msk'){keepGlavapuAsReference(region);return}
+  if(region.region!=='msk'){refuseGlavapuOutsideMoscow(region);return}
  }
  // Проект, сохранённый прежними версиями, не нёс mappings: применение
  // сначала обнуляло территорию, затем применяло пустоту — ВРИ, соцплатёж и
