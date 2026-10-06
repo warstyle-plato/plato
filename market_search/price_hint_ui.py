@@ -125,6 +125,7 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
       +'<div>'+esc(data.basis_title||data.basis||'')+' · наблюдений '+esc(data.sample||0)
       +(data.observed_at?' · '+date(data.observed_at):'')
       +(data.stage_filter&&data.stage_filter.active?' · по стадии '+esc(data.stage_filter.title)+', аналогов '+esc(data.stage_filter.matched):'')+'</div>'
+      +coverageLine(data.source_coverage)
       +'<div class="kpis">'
       +'<div class="kpi"><span class="muted">Автоматический ориентир</span><b>'+num(data.price_per_sqm)+'</b><span>₽/м²</span></div>'
       +(stage.available?'<div class="kpi"><span class="muted">На старте по стадии</span><b>'+num(stage.price_per_sqm)+'</b><span>₽/м² · '+num(stage.adjustment_pct,1)+'% к ориентиру · стадия '+num(stage.stage_effect_pct,1)+'% по '+esc(stage.dated_peers||0)+' аналогам с датами</span></div>':'')
@@ -132,11 +133,28 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
       +'</div>';
   }
 
+  // Доля аналогов, у которых стадия и сроки вообще есть: без неё «стадия не
+  // указана» у каждого соседа выглядит честной строкой, а не поломкой.
+  function coverageLine(c){
+    if(!c||!c.peers)return '';
+    function part(label,x){return label+' '+esc(x.count)+' из '+esc(c.peers)}
+    return '<div class="muted" id="sourceCoverage">Аналогов '+esc(c.peers)+': '
+      +part('стадия с Пульса',c.stage_from_pulse)+' (по корпусам '+esc(c.stage_distribution.count)+')'
+      +' · '+part('стадия по срокам',c.stage_from_calendar)
+      +' · '+part('плановый ввод',c.commissioning)+' · '+part('старт продаж',c.sales_start)+'</div>';
+  }
+  function distributionText(rows){
+    return (rows||[]).map(function(r){return (r.raw||r.value||'—')+(r.buildings!==null&&r.buildings!==undefined?' — '+r.buildings+' корп.':'')}).join('; ');
+  }
   function stageBadge(p){
     if(!p.construction_stage)return '<span class="badge none">стадия не указана</span>';
     var est=p.construction_stage_origin!=='pulse';
-    return '<span class="badge'+(est?' est':'')+'" title="'+esc(p.construction_stage_raw||'')+'">'+esc(p.construction_stage_label)+'</span>'
-      +(p.construction_stage_origin_title?' <span class="muted">'+esc(p.construction_stage_origin_title)+'</span>':'');
+    var title=p.construction_stage_distribution&&p.construction_stage_distribution.length
+      ?distributionText(p.construction_stage_distribution):(p.construction_stage_raw||'');
+    return '<span class="badge'+(est?' est':'')+'" title="'+esc(title)+'">'+esc(p.construction_stage_label)+'</span>'
+      +(p.construction_stage_origin_title?' <span class="muted">'+esc(p.construction_stage_origin_title)+'</span>':'')
+      +(p.construction_stage_latest_label&&p.construction_stage_latest_label!==p.construction_stage_label
+        ?'<br><span class="muted">самая поздняя: '+esc(p.construction_stage_latest_label)+'</span>':'');
   }
 
   function renderStageFilter(){
@@ -224,6 +242,39 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
     }
   }
 
+  var SOURCE_TITLES={pulse_project_page:'страница проекта Пульса',pulse_api_table:'таблица проекта (API)',pulse_map:'точка карты',pulse_project_page_keys:'ключи в коде страницы'};
+  function sourceText(p){
+    var src=p.date_sources||{}, parts=[];
+    if(src.sales_start)parts.push('старт — '+(SOURCE_TITLES[src.sales_start]||src.sales_start));
+    if(src.commissioning)parts.push('ввод — '+(SOURCE_TITLES[src.commissioning]||src.commissioning));
+    return parts.length?parts.join('; '):(p.date_source||'—');
+  }
+  // Поля страницы проекта — по корпусам и с датой состояния: стадия, договор,
+  // статус, эскроу, остатки со своими единицами, темп. Источник назван.
+  function pageFacts(p){
+    var f=p.page_facts||{}, html='';
+    var dist=p.construction_stage_distribution||[];
+    var rows=[];
+    if(dist.length)rows.push(['Стадия по корпусам',distributionText(dist)+(p.construction_stage_rule?' · для цены: '+p.construction_stage_rule:'')]);
+    [['contract','Тип договора'],['status','Статус реализации'],['escrow','Эскроу'],['finishing','Отделка']].forEach(function(k){
+      if(f[k[0]]&&f[k[0]].length)rows.push([k[1],distributionText(f[k[0]].map(function(r){return {raw:r.value,buildings:r.buildings}}))]);
+    });
+    (f.remaining_figures||[]).forEach(function(r){rows.push(['Остаток · '+r.basis,num(r.value,r.unit==='%'?2:0)+' '+r.unit+(r.as_of?' на '+date(r.as_of):'')])});
+    if(f.pace&&f.pace.sqm_per_month)rows.push(['Темп продаж'+(f.pace.window_months?' за '+f.pace.window_months+' мес':''),num(f.pace.sqm_per_month)+' м²/мес']);
+    if(f.flats&&f.flats.units)rows.push(['Квартир',num(f.flats.units)+' шт'+(f.flats.area_sqm?' · '+num(f.flats.area_sqm)+' м²':'')]);
+    if(f.buildings)rows.push(['Корпусов',num(f.buildings)]);
+    var cands=p.date_candidates||{};
+    Object.keys(cands).forEach(function(kind){
+      var c=cands[kind], keys=Object.keys(c);
+      if(keys.length>1)rows.push([(kind==='sales_start'?'Старт продаж':'Плановый ввод')+' · все источники',keys.map(function(k){return (SOURCE_TITLES[k]||k)+': '+date(c[k])}).join('; ')]);
+    });
+    if(!rows.length)return p.construction_stage_reason?'<div class="muted" style="margin-top:10px">Стадия: '+esc(p.construction_stage_reason)+'</div>':'';
+    var asOf=f.as_of||p.construction_stage_as_of;
+    html+='<h2 style="margin-top:18px">Страница проекта Пульса'+(asOf?' · на '+esc(date(asOf)):'')+'</h2><div class="grid" id="pageFacts">'
+      +rows.map(function(r){return fact(r[0],r[1])}).join('')+'</div>';
+    return html;
+  }
+
   function fact(label,value){return '<div class="fact"><small>'+esc(label)+'</small><b>'+esc(value===null||value===undefined||value===''?'—':value)+'</b></div>'}
   function openProject(i){
     var p=data.projects[i]||{}, s=p.sales||{}, f=p.facts||{}, hist=(p.history||[]).slice(-12);
@@ -231,11 +282,14 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
     var html='<div class="muted">'+esc(p.address||'')+(p.developer?' · '+esc(p.developer):'')+'</div><div class="grid">'
       +fact('Цена',num(p.price_per_sqm)+' ₽/м²')+fact('Расстояние',num(p.distance_km,2)+' км')
       +fact('Класс',p.segment||'—')+fact('Старт продаж',date(p.sales_start))
-      +fact('Плановый ввод',date(p.commissioning))+fact('Источник дат',p.date_source||'—')+fact('Стадия строительства',(p.construction_stage_label||'стадия не указана')+(p.construction_stage_origin_title?' · '+p.construction_stage_origin_title:'')+(p.construction_stage_raw?' · «'+p.construction_stage_raw+'»':''))+fact('Календарная стадия',p.stage_label?String(p.stage_label)+' · '+num(p.calendar_progress_pct,0)+'%':'—')
-      +fact('Продано, посл. месяц',s.sold!==undefined?num(s.sold):'—')+fact('Остаток',s.rem!==undefined?num(s.rem):'—')
+      +fact('Плановый ввод',date(p.commissioning)+(p.commissioning_raw?' · «'+p.commissioning_raw+'»':''))
+      +(p.commissioning_first?fact('Первый корпус сдан',date(p.commissioning_first)):'')
+      +fact('Источник дат',sourceText(p))+fact('Стадия строительства',(p.construction_stage_label||'стадия не указана')+(p.construction_stage_origin_title?' · '+p.construction_stage_origin_title:'')+(p.construction_stage_raw?' · «'+p.construction_stage_raw+'»':''))+fact('Календарная стадия',p.stage_label?String(p.stage_label)+' · '+num(p.calendar_progress_pct,0)+'%':'—')
+      +fact('Продано, посл. месяц',s.sold!==undefined?num(s.sold):'—')+fact('Остаток, шт · месячная выгрузка',s.rem!==undefined?num(s.rem):'—')
       +fact('Цена сделки ДДУ',s.ddu!==undefined?num(s.ddu)+' ₽/м²':'—')+fact('Скидка к прайсу',s.disc!==undefined?num(s.disc,1)+'%':'—')
       +fact('Ипотека',s.mortgage!==undefined?num(s.mortgage,1)+'%':'—')+fact('Юрлица',s.legal!==undefined?num(s.legal,1)+'%':'—')
       +'</div>';
+    html+=pageFacts(p);
     if(f.living_units!==undefined||f.flats!==undefined||f.apartments!==undefined){
       html+='<div class="muted">Состав: '+(f.living_units!==undefined?num(f.living_units)+' лотов':'')
         +(f.flats!==undefined?' · квартир '+num(f.flats):'')+(f.apartments!==undefined?' · апартаментов '+num(f.apartments):'')+'</div>';

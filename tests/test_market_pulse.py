@@ -432,10 +432,12 @@ def test_project_dates_come_from_live_pulse_table(tmp_path: Path) -> None:
         "price_date": "2026-09-01",
     }
     client._cookie = lambda name: "cookie"  # type: ignore[assignment]
-    client._open = lambda *args, **kwargs: (_ for _ in ()).throw(  # type: ignore[assignment]
-        AssertionError("при двух датах из API HTML открывать не надо")
-    )
+    # Страница проекта открывается всегда: на ней, а не в API, живёт стадия
+    # по корпусам. Здесь она пустая — и даты остаются за таблицей API.
+    opened: list[str] = []
+    client._open = lambda path, **kwargs: (opened.append(path), b"<html></html>")[1]  # type: ignore[assignment]
     got = client.project_dates(7)
+    assert opened == ["/complex/7/"]
     assert got["sales_start"] == "2026-08-01"
     assert got["commissioning"] == "2028-06-30"
     assert got["sources"] == {
@@ -472,9 +474,8 @@ def test_project_dates_aggregate_all_buildings_and_split_quarter(tmp_path: Path)
         ]
     }
     client._cookie = lambda name: "cookie"  # type: ignore[assignment]
-    client._open = lambda *args, **kwargs: (_ for _ in ()).throw(  # type: ignore[assignment]
-        AssertionError("API already returned both project dates")
-    )
+    # Страница проекта открывается ради стадии; дат на ней нет — решает API.
+    client._open = lambda *args, **kwargs: b"<html></html>"  # type: ignore[assignment]
     got = client.project_dates(7)
     assert got["sales_start"] == "2026-06-15"
     assert got["commissioning"] == "2028-06-01"
