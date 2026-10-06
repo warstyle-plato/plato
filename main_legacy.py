@@ -13733,6 +13733,40 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
             vri_origin = "вводные проекта: land_rights_cost_mln"
     ours["vri_cost_mln"] = (vri_value, vri_origin)
 
+    imported = ((inputs.get("_glavapu_import") or {}).get("mappings") or {}).get("inputs") or {}
+
+    def from_import(key: str, value: float) -> bool:
+        return (key in imported
+                and abs(float(imported.get(key) or 0.0) - value) < 0.001)
+
+    # Соцнагрузка деньгами: у проекта одна сумма; по объектам — справочно.
+    comp_value: float | None = None
+    comp_origin = ""
+    if inputs.get("social_compensation_mln") not in (None, ""):
+        comp_value = float(n(inputs, "social_compensation_mln"))
+        comp_origin = ("вводные проекта — число из выгрузки ГлавАПУ с ЕГО умолчаниями"
+                       if from_import("social_compensation_mln", comp_value)
+                       else "вводные проекта: social_compensation_mln")
+    ours["social_comp"] = {"total": (comp_value, comp_origin)}
+
+    # Приобъектные места по ВРИ — строки той же нормы `parking_demand`, что
+    # дала общий итог: объект → его ВРИ по карте NONRES_VRI.
+    by_vri: dict[str, list[Any]] = {}
+    for row in demand.get("rows") or []:
+        key = str(row.get("tep_key") or "")
+        if key == glavapu_scenario.RESIDENTIAL_NONRES_KEY:
+            kind = "built_in"
+        else:
+            target = glavapu_scenario.NONRES_VRI.get(_glavapu_scenario_product(key))
+            if not target:
+                continue
+            kind = target[1]
+        slot = by_vri.setdefault(kind, [0, []])
+        slot[0] += int(row.get("required_spaces") or 0)
+        slot[1].append(str(row.get("label") or key))
+    ours["parking_vri"] = {kind: (value, "наша норма (parking_demand): " + ", ".join(names))
+                           for kind, (value, names) in by_vri.items()}
+
     reasons: dict[str, str] = {
         "parking.short_stop": ("в модели нет нормы мест кратковременной остановки: "
                                "они не строятся в гараже (945-ПП п. 6.1.2), сверка справочная"),
@@ -13746,6 +13780,17 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
         "parking.permanent": ("наша норма: " + derived["parking_basis"]
                               + "; калькулятор — от своей площади квартир (строка 10)"),
     }
+    if comp_value is not None:
+        reasons["social_comp.total"] = (
+            ("наше число — выгрузка ГлавАПУ с его умолчаниями, а не наш сценарий; "
+             if comp_origin.startswith("вводные проекта — число из выгрузки") else "")
+            + "калькулятор считает компенсацию от дефицита мест по нашему сценарию: "
+              "объект, построенный сверх потребности, компенсацию не требует")
+    else:
+        reasons["social_comp.total"] = ("в проекте не задана компенсация за соцобъекты "
+                                        "(social_compensation_mln) — сравнить не с чем")
+    for kind in ours["parking_vri"]:
+        reasons[f"parking_vri.{kind}"] = reasons["parking.attached"]
     garage = tep.get("underground_parking") or {}
     if n(garage, "units") > 0:
         reasons["parking.permanent"] += (
@@ -50931,6 +50976,7 @@ function tepSourceLabel(manual){
 // страница спрашивает тот же маршрут, пока задание не кончится. Таблицу
 // собирает glavapuScenarioHtml — одна функция и для окна, и для теста.
 const GLAVAPU_SCENARIO_STATUS={match:['совпало','#2e7d32'],diff:['расходится','#b3261e'],
+ reference:['справочно','#666'],
  not_applied:['параметр не принят','#8a4b08'],ours_missing:['нет нашей величины','#666'],
  glavapu_missing:['нет у ГлавАПУ','#666']};
 let glavapuScenarioRun=0;
@@ -50963,7 +51009,7 @@ function glavapuScenarioHtml(a){
     '<td style="text-align:right">'+glavapuScenarioNum(r.delta)+'</td>'+
     '<td style="color:'+st[1]+'"><b>'+escapeHtml(st[0])+'</b>'+(r.reason?'<div style="font-size:11px">'+escapeHtml(r.reason)+'</div>':'')+'</td></tr>';
   }).join('');
-  parts.push('<div class="scroll"><table class="glavapu-scenario-table"><thead><tr><th>Показатель</th><th>Наше</th><th>ГлавАПУ</th><th>Разница</th><th>Итог и причина</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
+  parts.push('<div class="scroll" style="max-height:none"><table class="glavapu-scenario-table"><thead><tr><th>Показатель</th><th>Наше</th><th>ГлавАПУ</th><th>Разница</th><th>Итог и причина</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
  }
  const refused=((a.applied||{}).refused)||[];
  if(refused.length){
@@ -50977,10 +51023,12 @@ function glavapuScenarioHtml(a){
  if(p&&p.area_ha!==undefined){
   const nonres=(p.nonres||[]).map(x=>escapeHtml(x.menu)+' '+glavapuScenarioNum(x.spp_ths)).join(', ')||'нет';
   const social=(p.social||[]).map(x=>escapeHtml(x.label)+' '+x.places+' мест').join(', ')||'нет';
+  const ratio=(((a.applied||{}).applied)||[]).find(x=>x.param==='ratio');
   parts.push('<details style="margin-top:6px"><summary style="font-size:12px">Что передано калькулятору</summary><div class="note">'+
    'Площадь '+glavapuScenarioNum(p.area_ha)+' га; СПП жилых зданий '+glavapuScenarioNum(p.spp_residential_ths)+
    ' тыс. м², из них нежилая часть '+glavapuScenarioNum(p.vpp_pct)+'%; нежилые по ВРИ: '+nonres+
-   '; соцобъекты: '+social+(p.land_right?'; право — '+escapeHtml(p.land_right):'')+'.</div></details>');
+   '; соцобъекты: '+social+(p.land_right?'; право — '+escapeHtml(p.land_right):'')+'.'+
+   (ratio?' Ползунок калькулятора «Соотношение жилых / нежилых зданий» встал на: '+escapeHtml(ratio.got)+'.':'')+'</div></details>');
  }
  return parts.join('');
 }

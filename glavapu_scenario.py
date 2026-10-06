@@ -272,6 +272,11 @@ OPTIONS_JS = """() => Array.from(document.querySelectorAll('[role="option"]'))
 PANEL_ERRORS_JS = """() => Array.from(document.querySelectorAll('.Mui-error'))
   .map(e => String(e.textContent || '').replace(/\\s+/g, ' ').trim()).filter(Boolean).slice(0, 6)"""
 
+RATIO_SLIDER_JS = """() => {
+  const s = document.querySelector('[role="slider"][aria-label*="жилых и нежилых"]');
+  return s ? {value: s.getAttribute('aria-valuenow'), text: s.getAttribute('aria-valuetext')} : null;
+}"""
+
 SECTION_COMPOSITION = "Состав территории"
 SECTION_SOCIAL = "Определить социальные объекты"
 SECTION_DETAILS = "Детализировать СПП"
@@ -577,6 +582,21 @@ def verify(page: Any, params: dict[str, Any], log: ScenarioStep) -> dict[str, fl
                            item["spp_ths"], got)
             else:
                 log.ok(f"nonres.{item['code']}", place, item["spp_ths"], got)
+    # Ползунок «Соотношение жилых / нежилых зданий»: по умолчанию 100/0, наш
+    # сценарий двигает его вписанным СПП жилых зданий. Проверяется, что он
+    # встал туда, куда показывает таблица (строки 7 / 6).
+    slider = page.evaluate(RATIO_SLIDER_JS)
+    place = "ползунок «Соотношение жилых / нежилых зданий»"
+    if not slider:
+        log.refuse("ratio", place, "ползунка нет на панели — проверить соотношение нечем")
+    elif rows.get("6") and rows.get("7") is not None:
+        want = rows["7"] / rows["6"] * 100.0
+        got = ru_number(slider.get("value"))
+        if got is None or abs(got - want) > 0.2:
+            log.refuse("ratio", place, f"ползунок показывает {slider.get('text')!r}, "
+                       f"а по таблице жилых {want:.2f}%", round(want, 2), slider.get("text"))
+        else:
+            log.ok("ratio", place, round(want, 2), slider.get("text"))
     errors = page.evaluate(PANEL_ERRORS_JS) or []
     if errors:
         log.refuse("panel", "левая панель калькулятора",
@@ -653,6 +673,52 @@ def parking_by_vri(data: bytes) -> dict[str, Any] | None:
     return {"items": items, "totals": totals, "columns": sorted(columns)}
 
 
+def _name_key(text: Any) -> str:
+    return " ".join(str(text or "").lower().replace("ё", "е").rstrip(":").split())
+
+
+def tep_sections(data: bytes) -> dict[str, dict[str, Any]]:
+    """Лист «ТЭП» по разделам: строка без номера — заголовок раздела, строки с
+    номером под ним — его состав. Раздел ищется по НАЗВАНИЮ («расчет стоимости
+    смены ври»), а не по номерам строк: номера калькулятор уже менял молча.
+    """
+    rows = _sheet_rows(data, "ТЭП") if data else []
+    sections: dict[str, dict[str, Any]] = {}
+    current: dict[str, Any] | None = None
+    for row in rows[1:]:
+        if len(row) < 2 or not row[1]:
+            continue
+        code = str(row[0]).strip() if row[0] not in (None, "") else ""
+        value = ru_number(row[3]) if len(row) > 3 else None
+        if not code:
+            current = {"name": str(row[1]).strip().rstrip(":"), "total": value, "items": []}
+            sections[_name_key(row[1])] = current
+            continue
+        if current is not None:
+            current["items"].append({"code": code, "name": str(row[1]).strip(), "value": value})
+    return sections
+
+
+def _section(sections: dict[str, dict[str, Any]], prefix: str) -> dict[str, Any]:
+    for key, section in sections.items():
+        if key.startswith(prefix):
+            return section
+    return {}
+
+
+# Приобъектные места по ВРИ: строка листа «Машино-места» → вид сверки.
+# Встроенные помещения МКД — наша «Коммерция 1 этажа».
+BUILT_IN_VRI = "встроенно-пристроенные помещения"
+
+
+def parking_vri_kind(vri_name: str) -> str:
+    text = str(vri_name or "")
+    if text.lower().startswith(BUILT_IN_VRI):
+        return "parking_vri.built_in"
+    match = re.search(r"\(([\d.]+)", text)
+    return f"parking_vri.{match.group(1).replace('.', '_')}" if match else ""
+
+
 def glavapu_side(normalized: dict[str, Any], rows: dict[str, float | None],
                  data: bytes | None) -> dict[str, Any]:
     """Числа калькулятора для сверки — по видам, с местом в его выгрузке."""
@@ -691,6 +757,44 @@ def glavapu_side(normalized: dict[str, Any], rows: dict[str, float | None],
     side["mpt_items"] = (mpt or {}).get("items") or []
     side["parking_items"] = (parking_by_vri(data) or {}).get("items") if data else []
     side["rows"] = {code: value for code, value in (rows or {}).items()}
+    labels: dict[str, str] = {}
+    sections = tep_sections(data) if data else {}
+
+    # Соцнагрузка деньгами: итог раздела и его строки (ДОО, школа, поликлиника).
+    comp = _section(sections, "расчет компенсации за социальные объекты")
+    side["social_comp"] = {"total": (comp.get("total"), "«Расчёт компенсации за социальные объекты»")}
+    for item in comp.get("items") or []:
+        name = _name_key(item["name"])
+        kind = ("kindergarten" if name.startswith("доо") else "school" if name.startswith("школ")
+                else "clinic" if name.startswith("поликлин") else "")
+        if kind:
+            side["social_comp"][kind] = (item["value"], f"строка {item['code']} «{item['name']}»")
+
+    # Плата за ВРИ по видам и льготы — строки раздела как есть.
+    vri = _section(sections, "расчет стоимости смены ври")
+    side["vri"] = {}
+    for item in vri.get("items") or []:
+        kind = item["code"].replace(".", "_")
+        side["vri"][kind] = (item["value"], f"строка {item['code']}")
+        labels[f"vri.{kind}"] = item["name"]
+
+    # Баланс территории — как калькулятор разложил её под наше соотношение.
+    balance = _section(sections, "баланс территории")
+    side["balance"] = {}
+    for item in balance.get("items") or []:
+        kind = item["code"].replace(".", "_")
+        side["balance"][kind] = (item["value"], f"строка {item['code']}, га")
+        labels[f"balance.{kind}"] = item["name"]
+
+    # Приобъектные места по ВРИ — лист «Машино-места».
+    side["parking_vri"] = {}
+    for item in side["parking_items"] or []:
+        kind = parking_vri_kind(item.get("vri"))
+        if kind and item.get("attached"):
+            short = kind.split(".", 1)[1]
+            side["parking_vri"][short] = (item["attached"], "лист «Машино-места», приобъектные")
+            labels[kind] = "Приобъектные: " + str(item["vri"])
+    side["labels"] = labels
     return side
 
 
@@ -710,28 +814,72 @@ KIND_LABELS = {
     "parking.guest": "Машино-места гостевые",
     "parking.attached": "Машино-места приобъектные",
     "parking.short_stop": "Места кратковременной остановки",
+    "social_comp.total": "Компенсация за соцобъекты, всего",
+    "social_comp.kindergarten": "Компенсация: ДОО",
+    "social_comp.school": "Компенсация: СОШ",
+    "social_comp.clinic": "Компенсация: поликлиника",
+    "parking_vri.built_in": "Приобъектные: встроенная коммерция",
     "mpt": "МПТ, рабочих мест",
     "vri_cost_mln": "Стоимость смены ВРИ, млн ₽",
     "density": "Плотность от СПП, тыс. м²/га",
 }
-GROUPS = (("СПП и ГНС по видам", "spp"), ("Соцобъекты", "social"),
-          ("Машино-места по видам", "parking"), ("МПТ", "mpt"),
-          ("Стоимость смены ВРИ", "vri_cost_mln"), ("Плотность", "density"))
+# Группа сверки: заголовок и префиксы видов в ней (по порядку показа).
+GROUPS = (("СПП и ГНС по видам", ("spp",)),
+          ("Соцобъекты", ("social",)),
+          ("Соцнагрузка, млн ₽", ("social_comp",)),
+          ("Машино-места по видам", ("parking",)),
+          ("Приобъектные машино-места по ВРИ", ("parking_vri",)),
+          ("МПТ", ("mpt",)),
+          ("Стоимость смены ВРИ, млн ₽", ("vri_cost_mln", "vri")),
+          ("Плотность", ("density",)),
+          ("Баланс территории (как разложил калькулятор)", ("balance",)))
+NESTED = ("spp", "social", "social_comp", "parking", "parking_vri", "vri", "balance")
 
 # Допуск «совпало»: места — штучные, деньги и метры — доля.
-TOLERANCE = {"spp": ("rel", 0.002), "social": ("abs", 1.0), "parking": ("abs", 1.0),
-             "mpt": ("abs", 1.0), "vri_cost_mln": ("rel", 0.005), "density": ("abs", 0.02)}
+TOLERANCE = {"spp": ("rel", 0.002), "social": ("abs", 1.0), "social_comp": ("rel", 0.005),
+             "parking": ("abs", 1.0), "parking_vri": ("abs", 1.0), "mpt": ("abs", 1.0),
+             "vri_cost_mln": ("rel", 0.005), "vri": ("rel", 0.005),
+             "density": ("abs", 0.02), "balance": ("abs", 0.002)}
+
+# Виды, у которых своей величины в модели нет ПО УСТРОЙСТВУ: плата за ВРИ в
+# проекте одной суммой, компенсация — одной суммой, баланса территории нет.
+# Число калькулятора здесь справочное, а не «расхождение» и не «нет нашей».
+REFERENCE_PREFIXES = ("vri.", "balance.", "social_comp.kindergarten",
+                      "social_comp.school", "social_comp.clinic")
+REFERENCE_REASON = {
+    "vri.": "в проекте плата за ВРИ одной суммой — по видам показано, как посчитал калькулятор",
+    "balance.": "баланса территории в модели нет — калькулятор разложил её под наше "
+                "соотношение жилых и нежилых зданий",
+    "social_comp.": "в проекте компенсация одной суммой — по объектам показано, как посчитал "
+                    "калькулятор (минус — объект строится сверх потребности)",
+}
+
+
+# Почему своей величины нет — по виду, когда частной причины не дали.
+MISSING_REASON = {
+    "parking_vri.": ("приобъектные места этого ВРИ наша норма не считает: у соцобъектов "
+                     "(ДОО, школа, поликлиника) своих приобъектных в модели нет"),
+}
 
 
 def _flatten(side: dict[str, Any]) -> dict[str, tuple[Any, str]]:
     out: dict[str, tuple[Any, str]] = {}
-    for group in ("spp", "social", "parking"):
+    for group in NESTED:
         for kind, value in (side.get(group) or {}).items():
             out[f"{group}.{kind}"] = value
     for key in ("mpt", "vri_cost_mln", "density"):
         if key in side:
             out[key] = side[key]
     return out
+
+
+def _in_group(kind: str, prefixes: tuple[str, ...]) -> bool:
+    return any(kind == p or kind.startswith(p + ".") for p in prefixes)
+
+
+def _code_order(kind: str) -> tuple:
+    tail = kind.split(".", 1)[1] if "." in kind else kind
+    return (tuple(int(x) if x.isdigit() else 10**6 for x in tail.split("_")), tail)
 
 
 def compare(ours: dict[str, Any], theirs: dict[str, Any],
@@ -748,25 +896,41 @@ def compare(ours: dict[str, Any], theirs: dict[str, Any],
     refused = [item for item in ((applied or {}).get("refused") or [])]
     refused_params = {str(item.get("param") or "") for item in refused}
     flat_ours, flat_theirs = _flatten(ours), _flatten(theirs)
+    labels = dict(KIND_LABELS)
+    labels.update((ours or {}).get("labels") or {})
+    labels.update((theirs or {}).get("labels") or {})
     rows = []
-    for title, group in GROUPS:
-        for kind in [k for k in KIND_LABELS if k == group or k.startswith(group + ".")]:
+    for title, prefixes in GROUPS:
+        fixed = [k for k in KIND_LABELS if _in_group(k, prefixes)]
+        extra = sorted((k for k in set(flat_ours) | set(flat_theirs)
+                        if _in_group(k, prefixes) and k not in KIND_LABELS), key=_code_order)
+        for kind in fixed + extra:
             mine, mine_origin = flat_ours.get(kind, (None, ""))
             them, them_origin = flat_theirs.get(kind, (None, ""))
-            mode, tol = TOLERANCE[group]
-            row = {"group": title, "kind": kind, "label": KIND_LABELS[kind],
+            mode, tol = TOLERANCE[kind.split(".", 1)[0]]
+            row = {"group": title, "kind": kind, "label": labels.get(kind, kind),
                    "ours": mine, "ours_origin": mine_origin,
                    "glavapu": them, "glavapu_origin": them_origin,
                    "delta": None, "status": "", "reason": ""}
             blocked = _blocked_by(kind, refused_params)
             if mine is None and them is None:
                 continue
-            if them is None:
+            if (mine is None and kind.startswith(REFERENCE_PREFIXES)
+                    and them is not None and abs(float(them)) < 1e-9):
+                # Справочный ноль калькулятора (ИЖС, гаражи, производство…)
+                # — шум: своей величины у нас нет, у него вида нет.
+                continue
+            if mine is None and them is not None and kind.startswith(REFERENCE_PREFIXES):
+                why = next(v for k, v in REFERENCE_REASON.items() if kind.startswith(k))
+                row.update(status="reference", reason=why)
+            elif them is None:
                 row.update(status="glavapu_missing",
                            reason=f"в выгрузке калькулятора нет величины ({them_origin or 'место не найдено'})")
             elif mine is None:
                 row.update(status="ours_missing",
-                           reason=reasons.get(kind) or "в модели нет своей величины для сверки")
+                           reason=reasons.get(kind) or next(
+                               (v for k, v in MISSING_REASON.items() if kind.startswith(k)),
+                               "в модели нет своей величины для сверки"))
             else:
                 delta = float(them) - float(mine)
                 row["delta"] = round(delta, 3)
@@ -789,6 +953,11 @@ def compare(ours: dict[str, Any], theirs: dict[str, Any],
 # Какие виды зависят от каких параметров сценария: непринятый параметр
 # снимает доверие к виду, а не ко всей сверке.
 _DEPENDS = {
+    "social_comp.": ("spp", "vpp_pct", "spp_residential_ths", "composition", "social"),
+    "parking_vri.": ("spp_nonres_ths", "nonres", "vpp_pct", "composition"),
+    "vri.": ("spp", "spp_residential_ths", "spp_nonres_ths", "nonres", "land_right",
+             "composition"),
+    "balance.": ("spp", "area_ha", "spp_residential_ths", "ratio", "composition"),
     "spp.": ("spp", "area_ha", "vpp_pct", "spp_residential_ths", "spp_nonres_ths",
              "nonres", "composition"),
     "social.": ("spp", "vpp_pct", "spp_residential_ths", "composition"),

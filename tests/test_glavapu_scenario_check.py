@@ -406,6 +406,9 @@ def test_the_driver_sets_the_nagatino_scenario_on_the_calculator(calc_page) -> N
     assert rows["7.2"] == pytest.approx(13.769, abs=gs.TOL_THS)
     assert rows["8.1"] == pytest.approx(185.69, abs=gs.TOL_THS)
     assert (rows["18"], rows["22"]) == (350, 1000)
+    # Ползунок «Соотношение жилых / нежилых зданий» ушёл со 100/0 под наш сценарий.
+    ratio = next(x for x in report["applied"] if x["param"] == "ratio")
+    assert ratio["got"].startswith("Жилые 52") and "Нежилые 47" in ratio["got"]
     data = gs.export_xlsx(page)
     mpt = {i["vri"] for i in gs.mpt_by_vri(data)["items"]}
     assert {"Деловое управление (4.1)", "Объекты торговли (4.2)"} <= mpt
@@ -569,3 +572,69 @@ def test_a_missing_vri_fee_is_named_as_missing(core, monkeypatch) -> None:
     row = rows["vri_cost_mln"]
     assert row["status"] == "ours_missing" and "не задана" in row["reason"]
     assert "от постоянных" in rows["parking.guest"]["reason"]
+
+
+def test_money_and_parking_are_compared_by_kind(core, monkeypatch) -> None:
+    """Компенсация суммой, места по ВРИ, плата за ВРИ по видам, баланс."""
+    calls: list = []
+    monkeypatch.setattr(core, "_glavapu_headless_run", _fake_run(calls))
+    inputs, tep = _nagatino()
+    inputs = dict(inputs, social_compensation_mln=1500.0)
+    req = core.GlavapuScenarioRequest(inputs=inputs, tep=tep)
+    core.glavapu_scenario_check(req)
+    rows = {r["kind"]: r for r in _wait_done(core, req)["comparison"]["rows"]}
+    # Соцнагрузка: итог сравнивается, по объектам — как посчитал калькулятор.
+    total = rows["social_comp.total"]
+    assert total["ours"] == 1500.0 and total["glavapu"] == 0.0 and total["status"] == "diff"
+    assert "сверх потребности" in total["reason"]
+    assert rows["social_comp.school"]["glavapu"] == pytest.approx(-3799.372)
+    assert rows["social_comp.school"]["status"] == "reference"
+    # Приобъектные по ВРИ: офис и ТЦ — каждый со своей строкой нормы.
+    office, retail = rows["parking_vri.4_1"], rows["parking_vri.4_2"]
+    assert office["glavapu"] == 199 and retail["glavapu"] == 233
+    assert office["ours"] is not None and "parking_demand" in office["ours_origin"]
+    assert rows["parking_vri.built_in"]["glavapu"] == 21
+    # ВРИ по видам и льготы — по названиям строк калькулятора, справочно.
+    assert rows["vri.44"]["label"] == "Многоквартирная жилые здания"
+    assert rows["vri.52"]["label"].startswith("Льгота") and rows["vri.52"]["status"] == "reference"
+    # Баланс территории — как калькулятор разложил её под наше соотношение.
+    # Нули калькулятора по видам ВРИ — не строки, а шум: их нет.
+    assert "vri.45" not in rows and "vri.53" not in rows
+    assert "соцобъект" in rows["parking_vri.3_5"]["reason"]
+    assert rows["balance.12"]["glavapu"] == pytest.approx(7.659)
+    assert rows["balance.14"]["status"] == "reference"
+    groups = list(dict.fromkeys(r["group"] for r in rows.values()))
+    assert groups.index("Соцнагрузка, млн ₽") < groups.index("Машино-места по видам") \
+        < groups.index("Приобъектные машино-места по ВРИ")
+
+
+class _FakePage:
+    """Страница калькулятора для `verify`: таблица и ползунок — что скажем."""
+
+    def __init__(self, rows: dict[str, str], slider: dict | None) -> None:
+        self.rows, self.slider = rows, slider
+
+    def evaluate(self, script: str):
+        if script == gs.READ_ROWS_JS:
+            return self.rows
+        if script == gs.RATIO_SLIDER_JS:
+            return self.slider
+        return [] if script == gs.PANEL_ERRORS_JS else {}
+
+
+def test_a_slider_off_the_table_is_refused() -> None:
+    """Контрпример: ползунок стоит не там, куда показывает таблица."""
+    params = {"area_ha": 14.62, "spp_residential_ths": 229.49, "vpp_pct": 6.0,
+              "spp_nonres_ths": 185.69, "nonres": [], "social": []}
+    rows = {"1": "14,62", "6": "438,069", "7": "229,505", "7.2": "13,769", "8.1": "185,676"}
+    good = gs.ScenarioStep()
+    gs.verify(_FakePage(rows, {"value": "52.39", "text": "Жилые 52.39%, Нежилые 47.61%"}),
+              params, good)
+    assert not good.refused and any(x["param"] == "ratio" for x in good.applied)
+    bad = gs.ScenarioStep()
+    gs.verify(_FakePage(rows, {"value": "100", "text": "Жилые 100%, Нежилые 0%"}), params, bad)
+    [refused] = bad.refused
+    assert refused["param"] == "ratio" and "Жилые 100%" in refused["reason"]
+    missing = gs.ScenarioStep()
+    gs.verify(_FakePage(rows, None), params, missing)
+    assert missing.refused[0]["reason"].startswith("ползунка нет")
