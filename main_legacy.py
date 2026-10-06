@@ -2793,6 +2793,128 @@ def _glavapu_base_costs(rows: list[list[Any]], column: int = 2) -> dict[str, flo
     return found
 
 
+def _xlsx_export_date(data: bytes) -> str | None:
+    """Дата выгрузки из свойств книги (docProps/core.xml): изменена, иначе
+    создана. Нет свойств — None: дату не угадываем ни по имени файла, ни по
+    сегодняшнему дню."""
+    try:
+        core = ET.fromstring(zipfile.ZipFile(io.BytesIO(data)).read("docProps/core.xml"))
+    except Exception:
+        return None
+    for tag in ("modified", "created"):
+        node = core.find(f"{{http://purl.org/dc/terms/}}{tag}")
+        text = (node.text or "").strip() if node is not None else ""
+        if re.match(r"\d{4}-\d{2}-\d{2}", text):
+            year, month, day = text[:10].split("-")
+            return f"{day}.{month}.{year}"
+    return None
+
+
+# Откуда в выгрузке ГлавАПУ берётся каждое поле нормализованного разбора:
+# лист и строка (или подпись строки). Отсюда — происхождение значений,
+# подставленных во вводные и ТЭП проекта: «ГлавАПУ, выгрузка от …, лист
+# «ТЭП», строка 44». Ключ без строки здесь — значение без происхождения, и
+# тест это ловит.
+_GLAVAPU_SOURCE_ROWS: dict[str, tuple[str, str]] = {
+    "site_area_ha": ("ТЭП", "строка 1"),
+    "apartment_units": ("ТЭП", "строка 5"),
+    "residential_spp_sqm": ("ТЭП", "строка 7.1"),
+    "ground_commercial_spp_sqm": ("ТЭП", "строка 7.2"),
+    "standalone_nonres_spp_sqm": ("ТЭП", "строка 8.1"),
+    "residential_np_sqm": ("ТЭП", "строка 9.1.1"),
+    "ground_commercial_np_sqm": ("ТЭП", "строка 9.1.2"),
+    "standalone_nonres_np_sqm": ("ТЭП", "строка 9.2.1"),
+    "apartment_area_sqm": ("ТЭП", "строка 10"),
+    "nonresidential_aboveground_sqm": ("ТЭП", "строка 11"),
+    "actual_kindergarten_places": ("ТЭП", "строка 18"),
+    "actual_kindergarten_spp_sqm": ("ТЭП", "строка 19"),
+    "actual_kindergarten_np_sqm": ("ТЭП", "строка 20"),
+    "actual_school_places": ("ТЭП", "строка 22"),
+    "actual_school_spp_sqm": ("ТЭП", "строка 23"),
+    "actual_school_np_sqm": ("ТЭП", "строка 24"),
+    "actual_clinic_capacity": ("ТЭП", "строка 26"),
+    "actual_clinic_spp_sqm": ("ТЭП", "строка 27"),
+    "actual_clinic_np_sqm": ("ТЭП", "строка 28"),
+    "parking_permanent": ("ТЭП", "строка 42.1"),
+    "parking_guest": ("ТЭП", "строка 42.2"),
+    "change_vri_mln": ("ТЭП", "строка 44"),
+    "social_compensation_total_mln": ("ТЭП", "раздел «Расчёт компенсации за социальные объекты»"),
+    "parking_k1_coefficient": ("Параметры территории", "«К1 — доступность рельсового каркаса»"),
+    "parking_k2_coefficient": ("Параметры территории", "«К2 — деловая активность»"),
+    "office_gba_sqm": ("ТЭП", "«МФК / офисы — ГНС / GBA»"),
+    "office_saleable_sqm": ("ТЭП", "«МФК / офисы — продаваемая / полезная площадь»"),
+    "storage_units": ("ТЭП", "«Кладовые — количество»"),
+    "storage_area_sqm": ("ТЭП", "«Кладовые — общая подземная площадь»"),
+    "underground_parking_spaces": ("ТЭП", "строки 42.1 + 42.2 (+ паркинг МФК)"),
+    "underground_parking_gns_sqm": ("ТЭП", "строки 42.1 + 42.2 × 35 м² (+ паркинг МФК)"),
+}
+# Поле вводных / ТЭП → ключ разбора, из которого оно пришло.
+_GLAVAPU_INPUT_SOURCE = {
+    "land_rights_cost_mln": "change_vri_mln", "vri_required": "change_vri_mln",
+    "social_compensation_mln": "social_compensation_total_mln",
+    "kindergarten_places": "actual_kindergarten_places", "school_places": "actual_school_places",
+    "clinic_capacity": "actual_clinic_capacity",
+    "social_dou_gba_sqm": "actual_kindergarten_np_sqm",
+    "social_school_gba_sqm": "actual_school_np_sqm",
+    "social_clinic_gba_sqm": "actual_clinic_np_sqm",
+    "parking_k1": "parking_k1_coefficient", "parking_k2": "parking_k2_coefficient",
+    "offices_enabled": "office_gba_sqm", "offices_gba_sqm": "office_gba_sqm",
+    "offices_saleable_sqm": "office_saleable_sqm",
+}
+_GLAVAPU_TEP_SOURCE = {
+    ("apartments", "gns"): "residential_spp_sqm", ("apartments", "total_area"): "residential_np_sqm",
+    ("apartments", "useful"): "apartment_area_sqm", ("apartments", "saleable"): "apartment_area_sqm",
+    ("apartments", "units"): "apartment_units",
+    ("ground_commercial", "gns"): "ground_commercial_spp_sqm",
+    ("ground_commercial", "total_area"): "ground_commercial_np_sqm",
+    ("ground_commercial", "useful"): "nonresidential_aboveground_sqm",
+    ("ground_commercial", "saleable"): "nonresidential_aboveground_sqm",
+    ("underground_parking", "gns"): "underground_parking_gns_sqm",
+    ("underground_parking", "total_area"): "underground_parking_gns_sqm",
+    ("underground_parking", "units"): "underground_parking_spaces",
+    ("standalone_retail", "gns"): "standalone_nonres_spp_sqm",
+    ("standalone_retail", "total_area"): "standalone_nonres_np_sqm",
+    ("standalone_retail", "useful"): "standalone_nonres_np_sqm",
+    ("standalone_retail", "saleable"): "standalone_nonres_np_sqm",
+    ("offices", "gns"): "office_gba_sqm", ("offices", "total_area"): "office_gba_sqm",
+    ("offices", "useful"): "office_saleable_sqm", ("offices", "saleable"): "office_saleable_sqm",
+    ("storage", "total_area"): "storage_area_sqm", ("storage", "units"): "storage_units",
+    ("kindergarten", "gns"): "actual_kindergarten_spp_sqm",
+    ("kindergarten", "total_area"): "actual_kindergarten_np_sqm",
+    ("kindergarten", "transfer"): "actual_kindergarten_np_sqm",
+    ("kindergarten", "units"): "actual_kindergarten_places",
+    ("school", "gns"): "actual_school_spp_sqm", ("school", "total_area"): "actual_school_np_sqm",
+    ("school", "transfer"): "actual_school_np_sqm", ("school", "units"): "actual_school_places",
+    ("clinic", "gns"): "actual_clinic_spp_sqm", ("clinic", "total_area"): "actual_clinic_np_sqm",
+    ("clinic", "transfer"): "actual_clinic_np_sqm", ("clinic", "units"): "actual_clinic_capacity",
+}
+
+
+def _glavapu_provenance(input_mapping: dict[str, Any], tep_mapping: dict[str, dict[str, Any]],
+                        export_date: str | None) -> dict[str, dict[str, str]]:
+    """Происхождение каждого подставляемого значения: «ГлавАПУ, выгрузка от
+    <дата>, лист «…», <строка>». Без даты в файле так и сказано."""
+    when = f"выгрузка от {export_date}" if export_date else "выгрузка (дата в файле не указана)"
+
+    def one(source_key: str) -> dict[str, str]:
+        sheet, row = _GLAVAPU_SOURCE_ROWS.get(source_key, ("", ""))
+        if not sheet:
+            return {"source": "glavapu", "date": export_date or "", "sheet": "", "row": "",
+                    "text": f"ГлавАПУ, {when}, место в книге не размечено ({source_key})"}
+        return {"source": "glavapu", "date": export_date or "", "sheet": sheet, "row": row,
+                "text": f"ГлавАПУ, {when}, лист «{sheet}», {row}"}
+
+    out: dict[str, dict[str, str]] = {}
+    for key in input_mapping:
+        out[f"inputs.{key}"] = one(_GLAVAPU_INPUT_SOURCE.get(key, key))
+    for obj, fields in tep_mapping.items():
+        for field in fields:
+            source_key = _GLAVAPU_TEP_SOURCE.get((obj, field))
+            if source_key:
+                out[f"tep.{obj}.{field}"] = one(source_key)
+    return out
+
+
 def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
     tables = _xlsx_read_tables(data)
     tep_sheet = next((name for name in tables if name.strip().lower() == "тэп"), None)
@@ -3130,10 +3252,13 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
             f"сверьте эту строку в исходной таблице ГлавАПУ."
         )
 
+    export_date = _xlsx_export_date(data)
     return {
         "source": {
             "filename": filename,
             "format": "Калькулятор ТЭП ГлавАПУ",
+            # Дата выгрузки — из свойств книги; нет её — None, а не сегодня.
+            "export_date": export_date,
             "sheets": list(tables.keys()),
             "tep_sheet": tep_sheet,
             "parking_sheet": parking_sheet,
@@ -3142,6 +3267,9 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         "normalized": data_norm,
         "recognized": recognized,
         "mappings": {"inputs": input_mapping, "tep": tep_mapping},
+        # Происхождение подставляемых значений — страница пишет его в поле
+        # (`inputs._field_origin`), и оно видно у числа.
+        "provenance": _glavapu_provenance(input_mapping, tep_mapping, export_date),
         "warnings": warnings,
         "notes": notes,
     }
@@ -53145,7 +53273,7 @@ const TERRITORY_INPUT_KEYS=[
  // теряет выбор человека.
  'parking_k1','parking_k2','parking_rail_distance_m'
 ];
-const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
+const TERRITORY_MARKERS=['_glavapu_import','_glavapu_reference','_field_origin','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
  '_site_area_user_set','_site_density_user_set','_demolition_source','_land_buyout_source'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
@@ -53207,8 +53335,65 @@ function resetTerritoryData(options){
  if(moStatus)moStatus.style.display='none';
 }
 
+// Происхождение значения поля: `inputs._field_origin['inputs.<ключ>']` или
+// `['tep.<строка>.<поле>']` = {source:'glavapu'|'manual', text}. Ручное
+// значение остаётся ручным: импорт его не перезаписывает и называет это.
+function fieldOrigins(){
+ if(!inputs._field_origin||typeof inputs._field_origin!=='object')inputs._field_origin={};
+ return inputs._field_origin;
+}
+function markFieldManual(path){
+ fieldOrigins()[path]={source:'manual',text:'вписано вручную'};
+}
+function isFieldManual(path){
+ const o=(inputs._field_origin||{})[path];
+ return !!(o&&o.source==='manual');
+}
+function fieldOriginNote(path){
+ const o=(inputs._field_origin||{})[path];
+ if(!o||o.source!=='glavapu')return '';
+ return '<div class="glavapu-origin" style="font-size:11px;color:#666;margin-top:2px">'+escapeHtml(o.text||'ГлавАПУ')+'</div>';
+}
+// Регион проекта — по НАШИМ данным: поле региона, иначе кадастровые номера
+// проекта (77 — Москва, 50 — область). Имя файла выгрузки регион не задаёт.
+function projectRegion(){
+ if(String(inputs.vri_region||'')==='mo')return {region:'mo',origin:'поле «Регион» проекта'};
+ const analysis=inputs._cadastral_analysis||{};
+ const numbers=[].concat(analysis.recognized||[],analysis.requested||[]).map(String);
+ const first=numbers.find(n=>/^\d+:/.test(n));
+ if(first&&first.startsWith('50:'))return {region:'mo',origin:'кадастровый номер проекта '+first};
+ if(first&&first.startsWith('77:'))return {region:'msk',origin:'кадастровый номер проекта '+first};
+ return {region:classRegion(),origin:'поле «Регион» проекта'};
+}
+// Подмосковье и другие регионы: калькулятор ГлавАПУ — московский, к расчёту
+// он не применяется. Выгрузка сохраняется справкой для сравнения, ничего из
+// неё во вводные и ТЭП не подставляется.
+function keepGlavapuAsReference(region){
+ inputs._glavapu_reference={source:glavapuImport.source,normalized:glavapuImport.normalized,
+  recognized:glavapuImport.recognized,warnings:glavapuImport.warnings,
+  region:region.region,region_origin:region.origin};
+ renderGlavapuPreview(glavapuImport);
+ glavapuStatus.innerHTML='<span class="import-ok"><b>Проект не московский</b> ('+escapeHtml(region.origin)+
+  '): калькулятор ГлавАПУ к расчёту не применяется. Выгрузка сохранена справкой для сравнения — '+
+  'во вводные и ТЭП ничего не подставлено.</span>';
+}
+// Та же территория — выгрузка того же квартала с той же площадью: новая
+// версия расчёта, а не новый участок. Тогда территория не обнуляется, и
+// вписанное вручную остаётся.
+function sameGlavapuTerritory(incoming){
+ const before=((inputs._glavapu_import||{}).normalized)||{};
+ const now=(incoming&&incoming.normalized)||{};
+ const quarter=String(now.cadastral_quarter||'').trim();
+ return !!quarter&&quarter===String(before.cadastral_quarter||'').trim()
+  &&Math.abs(Number(now.site_area_ha||0)-Number(before.site_area_ha||0))<0.001;
+}
+
 async function applyGlavapu(){
  if(!glavapuImport){glavapuStatus.innerHTML='<span class="import-error">Сначала разберите файл.</span>';return}
+ {
+  const region=projectRegion();
+  if(region.region!=='msk'){keepGlavapuAsReference(region);return}
+ }
  // Проект, сохранённый прежними версиями, не нёс mappings: применение
  // сначала обнуляло территорию, затем применяло пустоту — ВРИ, соцплатёж и
  // площади пропадали молча. Без mappings применять нечего — и портить нечего.
@@ -53221,8 +53406,25 @@ async function applyGlavapu(){
   }
  }
  const incoming=glavapuImport;
- resetTerritoryData();
+ // Новый участок — территория обнуляется целиком (с ручными значениями:
+ // они про прежнюю площадку). Новая выгрузка того же участка — нет.
+ const sameTerritory=sameGlavapuTerritory(incoming);
+ const keptOrigins=sameTerritory?Object.assign({},inputs._field_origin||{}):{};
+ if(sameTerritory)territoryCleared=[];
+ else resetTerritoryData();
  glavapuImport=incoming;
+ inputs._field_origin=keptOrigins;
+ const provenance=incoming.provenance||{};
+ const stamp=(path)=>{if(provenance[path])fieldOrigins()[path]=provenance[path]};
+ // Значения прежней выгрузки того же участка, которых новая не несёт,
+ // уходят вместе с ней: ручные остаются, выгруженные — нет.
+ Object.keys(keptOrigins).forEach(path=>{
+  if(keptOrigins[path].source!=='glavapu'||provenance[path])return;
+  const parts=path.split('.');
+  if(parts[0]==='tep'&&tep[parts[1]]&&parts[2] in tep[parts[1]])tep[parts[1]][parts[2]]=0;
+  if(parts[0]==='inputs'&&parts[1] in inputs)inputs[parts[1]]=SITE_ONLY_INPUTS.includes(parts[1])?'':0;
+  delete inputs._field_origin[path];
+ });
 
  const previousMode=inputs.social_mode||'Строительство';
  const preserveMode=!!inputs._social_mode_user_set||!!inputs._glavapu_import;
@@ -53233,7 +53435,9 @@ async function applyGlavapu(){
  // платы оказывались 10 166,649 млн ₽ при включённом режиме. Приоритет по
  // полю объявлен один раз и не зависит от того, кто пишет: руками > документ
  // лота КРТ > выгрузка ГлавАПУ > норматив.
- const glavapuSkipped=applyDerivedInputs(glavapuImport.mappings.inputs||{});
+ const manualKept=[];
+ const glavapuSkipped=applyDerivedInputs(glavapuImport.mappings.inputs||{},
+  {keepManual:manualKept,written:key=>stamp('inputs.'+key)});
 
  inputs._glavapu_import={
    source:glavapuImport.source,
@@ -53242,12 +53446,18 @@ async function applyGlavapu(){
    warnings:glavapuImport.warnings,
    // Без mappings повторное «Применить» после перезагрузки обнуляло
    // территорию (resetTerritoryData) и применяло пустоту.
-   mappings:glavapuImport.mappings
+   mappings:glavapuImport.mappings,
+   provenance:glavapuImport.provenance||{}
  };
  // Площадь территории ГлавАПУ знает точно — она не должна оставаться справочной.
  {
   const glavapuArea=Number(((glavapuImport.normalized)||{}).site_area_ha||0);
-  if(glavapuArea>0)inputs.site_area_ha=glavapuArea;
+  if(glavapuArea>0&&!isFieldManual('inputs.site_area_ha')){
+   inputs.site_area_ha=glavapuArea;
+   const when=(glavapuImport.source||{}).export_date;
+   fieldOrigins()['inputs.site_area_ha']={source:'glavapu',
+    text:'ГлавАПУ, '+(when?'выгрузка от '+when:'выгрузка (дата в файле не указана)')+', лист «ТЭП», строка 1'};
+  }
   // Москва: плотность от СПП приезжает тем же файлом и не должна оставаться
   // справочной. Ручной ввод не перебивается.
   const glavapuDensity=Number(((glavapuImport.normalized)||{}).density_spp_th_sqm_ha||0)*1000;
@@ -53263,7 +53473,13 @@ async function applyGlavapu(){
  applyRequiredSocialProgramFromGlavapu();
 
  Object.entries(glavapuImport.mappings.tep||{}).forEach(([key,vals])=>{
-   if(tep[key])Object.assign(tep[key],vals);
+   if(!tep[key])return;
+   Object.entries(vals).forEach(([field,value])=>{
+    const path='tep.'+key+'.'+field;
+    if(isFieldManual(path)){manualKept.push('ТЭП «'+key+'» → '+field);return}
+    tep[key][field]=value;
+    stamp(path);
+   });
  });
 
  // Rebuild social TEP after generic mappings, then enforce parking rule.
@@ -53294,7 +53510,10 @@ async function applyGlavapu(){
  const socialNote=inputs.social_mode==='Строительство'
   ? 'Соцрежим: строительство; расчётные мощности ГлавАПУ используются при нулевых фактических объектах.'
   : 'Соцрежим: денежная компенсация.';
- glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+(glavapuSkipped?' <b>'+escapeHtml(glavapuSkipped)+'</b>':'')+territoryClearedNote()+'</span>';
+ const manualNote=manualKept.length?' <b>Оставлено вписанное вручную: '+escapeHtml(manualKept.join(', '))+'.</b>':'';
+ const sourceNote=' Происхождение подставленных значений — у полей: «ГлавАПУ, '+
+  ((glavapuImport.source||{}).export_date?'выгрузка от '+glavapuImport.source.export_date:'выгрузка (дата в файле не указана)')+', лист, строка».';
+ glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+manualNote+sourceNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+(glavapuSkipped?' <b>'+escapeHtml(glavapuSkipped)+'</b>':'')+territoryClearedNote()+'</span>';
  await calculate();
  await sendTelegramResult();
 }
@@ -53303,7 +53522,7 @@ function renderStoredGlavapu(){
  const stored=inputs._glavapu_import;
  if(!stored)return;
  glavapuImport={source:stored.source||{},normalized:stored.normalized||{},recognized:stored.recognized||[],warnings:stored.warnings||[],
-  mappings:stored.mappings||{inputs:{},tep:{}}};
+  mappings:stored.mappings||{inputs:{},tep:{}},provenance:stored.provenance||{}};
  renderGlavapuPreview(glavapuImport);
  glavapuStatus.innerHTML='<span class="import-ok">Показаны данные последнего применённого файла ГлавАПУ.</span>';
 }
@@ -54614,8 +54833,9 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
+     {const originNote=fieldOriginNote('inputs.'+id);if(originNote)wrap.insertAdjacentHTML('beforeend',originNote);}
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
      // решения мэрии, так что мы же можем просто указать на такую возможность
@@ -55686,6 +55906,7 @@ function rescaleApartmentUnits(){
 function tepCellChanged(key,col,value){
  const was=Number(tep[key][col]||0);
  tep[key][col]=Number(value||0);
+ markFieldManual('tep.'+key+'.'+col);
  // Переданное муниципалитету не продаётся: метры остаются в ГНС — их строят, —
  // но уходят из продаваемой. В Подмосковье этим ещё и уменьшают плату за смену
  // ВРИ, сумма зачёта вводится во «Вводных» (замечание владельца, 19.08.2026).
@@ -56494,13 +56715,21 @@ function derivedLine(name,key,counted,offered){
   return name+': осталось '+num(kept)+' — метод числа не дал, поле не тронуто';
  return name+': '+num(kept);
 }
-function applyDerivedInputs(values){
+// `options.keepManual` — массив: вписанное вручную поле не перезаписывается,
+// его подпись складывается туда (импорт выгрузки называет это сам);
+// `options.written(key)` — отметка записанного поля (происхождение).
+function applyDerivedInputs(values,options){
  const skipped=[];
+ const keepManual=options&&options.keepManual;
  Object.keys(values||{}).forEach(key=>{
   if(krtLocks(key)){
    skipped.push(KRT_REQUIREMENT_LABELS[key]||key);return;
   }
+  if(keepManual&&isFieldManual('inputs.'+key)){
+   keepManual.push(TERRITORY_CLEARED_LABELS[key]||key);return;
+  }
   inputs[key]=values[key];
+  if(options&&options.written)options.written(key);
  });
  return skipped.length
   ?'Не тронуто — вписано требованием КРТ: '+skipped.join(', ')+'.'
