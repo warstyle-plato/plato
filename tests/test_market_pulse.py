@@ -66,7 +66,9 @@ def test_project_index_is_read_from_the_map_page(tmp_path: Path) -> None:
     client._cookie = lambda name: "cookie"  # type: ignore[assignment]
 
     projects = client.projects()
-    assert [item.complex_id for item in projects] == [3372, 5924]
+    # Id — строка, как его дала карта: номер «50-004184» с всероссийского
+    # кабинета в `int` не переводится, и числовой идёт тем же типом.
+    assert [item.complex_id for item in projects] == ["3372", "5924"]
     first = projects[0]
     assert first.developer == "Level Group"
     assert first.address.endswith("д. 17")
@@ -74,7 +76,8 @@ def test_project_index_is_read_from_the_map_page(tmp_path: Path) -> None:
 
     # Второй вызов идёт с диска: справочник на три с половиной тысячи проектов
     # незачем тянуть на каждый запрос, а воркеров два.
-    assert (tmp_path / "projects.json").exists()
+    # Справочник лежит в каталоге своей базы, а не в общем.
+    assert (tmp_path / "pulsprodaj.ru" / "projects.json").exists()
 
 
 def test_radius_is_measured_not_guessed(tmp_path: Path) -> None:
@@ -197,8 +200,8 @@ def test_segments_are_read_from_the_class_filter(tmp_path: Path) -> None:
         pulse_module.lz_decompress_base64 = original
 
     assert sorted(asked) == [1, 2, 3, 4, 5], "спрашиваем каждый класс по разу"
-    assert segments == {5924: "Бизнес", 3372: "Премиум", 1695: "Премиум", 5504: "Элит/De Luxe"}
-    assert (tmp_path / "segments.json").exists(), "класс складывается на сутки"
+    assert segments == {"5924": "Бизнес", "3372": "Премиум", "1695": "Премиум", "5504": "Элит/De Luxe"}
+    assert (client.dir / "segments.json").exists(), "класс складывается на сутки"
 
 
 def test_balanced_json_survives_nested_braces() -> None:
@@ -255,13 +258,13 @@ def test_suggestions_never_go_to_the_network(tmp_path: Path) -> None:
     import json
 
     client = PulseClient(tmp_path, login="l", password="p")
-    (tmp_path / "projects.json").write_text(
+    (client.dir / "projects.json").write_text(
         json.dumps([{"complex_id": 7, "name": "Крылатская 33", "developer": "—",
                      "latitude": 55.75, "longitude": 37.41, "address": "Крылатская ул."}],
                    ensure_ascii=False),
         encoding="utf-8",
     )
-    (tmp_path / "segments.json").write_text(json.dumps({"7": "Бизнес"}), encoding="utf-8")
+    (client.dir / "segments.json").write_text(json.dumps({"7": "Бизнес"}), encoding="utf-8")
     # Кэш нарочно объявлен протухшим: именно в этот момент всё и ломалось.
     client.ttl_seconds = 0
 
