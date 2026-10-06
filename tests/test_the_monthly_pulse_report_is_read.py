@@ -181,6 +181,17 @@ def test_project_date_accepts_excel_text_and_quarter() -> None:
     assert imp.date_of("2029 г.") == "2029-12-01"
 
 
+def test_project_date_accepts_pulse_short_quarter() -> None:
+    """Срок ввода в отчёте Пульса за 2026-09 — «28/II», а у многокорпусного ЖК
+    диапазон «18/IV-27/IV»; без разбора импорт останавливался на 0/698."""
+    assert imp.date_of("28/II") == "2028-06-01"
+    assert imp.date_of("26/IV") == "2026-12-01"
+    assert imp.date_of("18/IV-27/IV") == "2027-12-01"
+    assert imp.date_of("27/IV - 28/III") == "2028-09-01"
+    # Дата «день/месяц» без года — не квартал.
+    assert imp.date_of("15/08") is None
+
+
 def test_project_dates_are_found_by_header_not_fixed_letters(tmp_path, monkeypatch) -> None:
     """Дата ввода не должна исчезать после вставки колонки в отчёте Пульса."""
     sheet = [
