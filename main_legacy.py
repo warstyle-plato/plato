@@ -39,6 +39,7 @@ from xml.sax.saxutils import escape as xml_escape
 # Запуск Chromium — общий: его заводят и ГлавАПУ, и печать отчёта, и ломается
 # он у обоих сразу, а наружу выходит по-разному.
 import browser_launch
+import vri_benefits
 # Профиль освоения стройки: им движок разносит СМР, им же отчёт о рынке считает
 # готовность дома по датам. Одна кривая на оба вопроса.
 import build_curve
@@ -32596,6 +32597,27 @@ _VRI_MSK_TERMS = (1, 3, 6)
 _VRI_MO_RANGES_KEY = "vri_mo_ranges"
 
 
+def vri_benefits_for(x: dict[str, Any], t: dict[str, Any]) -> dict[str, Any]:
+    """Льготы по плате за ВРИ (МПТ, передача квартир) и рабочие места проекта.
+
+    Считаются всегда, когда в проекте есть нежилые объекты или передача
+    квартир, — как предложение рядом с платой; экономику не меняют, пока
+    человек не внесёт сумму в льготу (`vri_relief_mode = amount`).
+    Отказ расчёта виден с местом, а не пустым блоком.
+    """
+    objects = [{"key": obj.key, "product": obj.product,
+                "label": obj.tep_label or obj.label,
+                "enabled": (bool(x.get(obj.enabled_key)) if obj.enabled_key in (x or {})
+                            else None),
+                "purpose": (x or {}).get(obj.purpose_key) if obj.purpose_key else None}
+               for obj in STANDALONE_OBJECTS]
+    try:
+        return vri_benefits.compute(x or {}, t or {}, objects)
+    except Exception as exc:  # noqa: BLE001 — отказ доходит до страницы с местом
+        return {"applicable": False, "rows": [],
+                "reason": "расчёт льгот не выполнен: " + _error_location(exc)}
+
+
 def vri_relief(x: dict[str, Any], gross: float) -> tuple[float, float]:
     """Льгота по плате за ВРИ: доля или фиксированная сумма. Возвращает (льгота, к оплате).
 
@@ -37226,7 +37248,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
             {"total": total_capex,
              **{key: value for key, value in op["capex_amounts"].items()
                 if key not in ("land_rights_gross", "land_rights_relief")}}, bases),
-        "vri": op["vri"],
+        "vri": {**op["vri"], "benefits": vri_benefits_for(x, t)},
         # Нормативная потребность нежилых объектов в машино-местах. Считается
         # всегда: офисник или ТЦ без парковки — это не «ноль мест», а не
         # заданный вопрос (владелец, 24.08.2026). Норма приходит готовой из
@@ -40279,6 +40301,7 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     vri_summary = _consolidate_vri(phase_items)
     vri_summary["totals"]["gross"] = round(base_amounts.get("land_rights_gross", 0.0), 2)
     vri_summary["totals"]["relief"] = round(base_amounts.get("land_rights_relief", 0.0), 2)
+    vri_summary["benefits"] = vri_benefits_for(x_master, t_master)
     consolidated["vri"] = vri_summary
     # Норматив приобъектной парковки — обязательство ОБЪЕКТА, то есть проекта:
     # офисник, разрезанный надвое, не становится двумя офисниками со своими
@@ -48598,6 +48621,15 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
         <div class="note"><b>Дата обязательства по умолчанию — экспертно за месяц до РнС.</b> На этапе инвестиционного анализа точная дата соглашения обычно неизвестна; после появления утверждённых документов и графика её необходимо заменить на фактическую. Платежи до открытия ПФ несёт БРИДЖ или собственный капитал, после — ПФ, и только если ВРИ включена в банковский бюджет. Проценты по рассрочке считаются отдельно от процентов по кредитам.</div>
         <div id="vriInputGroups"></div>
       </div>
+      <!-- Льготы по плате за ВРИ, посчитанные по проекту: за создание МПТ
+           (1874-ПП, по каждому нежилому объекту) и за передачу квартир городу.
+           Считаются всегда, когда есть нежильё или передача, — в расчёт идут
+           только кнопкой (владелец, 06.10.2026). Числа считает сервер
+           (`vri_benefits`), страница их только рисует. -->
+      <div class="card" id="vriBenefitsCard" style="display:none">
+        <div class="section-title">Льготы по плате за ВРИ и рабочие места</div>
+        <div id="vriBenefitsBody"></div>
+      </div>
       <div class="card" id="vriTabCard" style="display:none">
         <div class="section-title">Результат</div>
         <div class="report-2col">
@@ -52982,7 +53014,7 @@ const TERRITORY_INPUT_KEYS=[
  'parking_k1','parking_k2','parking_rail_distance_m'
 ];
 const TERRITORY_MARKERS=['_glavapu_import','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
- '_site_area_user_set','_site_density_user_set','_demolition_source','_land_buyout_source'];
+ '_site_area_user_set','_site_density_user_set','_demolition_source','_land_buyout_source','_vri_relief_source'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
 // данные участка, и сбрасывать их при смене территории нельзя.
@@ -54454,6 +54486,9 @@ function renderInputs(){
      if(id==='land_rights_cost_mln'&&krtRequirementEntered()){
        wrap.innerHTML+=krtVriFeeNote();
      }
+     if(id==='vri_relief_mln'){
+       wrap.innerHTML+=vriReliefSourceNote();
+     }
      if(type==='pf_steps'){renderPfStepsEditor(wrap);grid.appendChild(wrap);return;}
      // График — ячейками, а не строкой: значение, единица и срок отдельными
      // полями, строки добавляются и убираются.
@@ -54760,7 +54795,78 @@ function vriScheduleRows(rows){
  }).join('');
 }
 
+// Льготы по плате за ВРИ и рабочие места — таблица по объектам проекта.
+// Одна функция и для окна, и для теста; числа — с сервера (`vri.benefits`).
+function vriBenefitsHtml(b){
+ if(!b)return '';
+ if(!b.applicable)return b.reason?'<div class="note">'+escapeHtml(b.reason)+'</div>':'';
+ const rows=b.rows||[];
+ if(!rows.length&&!(b.transfer_mln>0))return '';
+ const n0=v=>Number(v||0).toLocaleString('ru-RU',{maximumFractionDigits:0});
+ const n3=v=>Number(v||0).toLocaleString('ru-RU',{maximumFractionDigits:1});
+ const body=rows.map(r=>{
+  const why=(r.blockers||[]).length?'<span style="color:#8a4b08">'+escapeHtml(r.blockers.join('; '))+'</span>'
+   :escapeHtml(r.kmest_source||'');
+  return '<tr data-key="'+escapeHtml(r.key)+'"><td>'+escapeHtml(r.label)+
+   (r.category_label?'<div style="font-size:10px;color:#888">'+escapeHtml(r.category_label)+'</div>':'')+'</td>'+
+   '<td style="text-align:right">'+n0(r.area_sqm)+'<div style="font-size:10px;color:#888">'+escapeHtml(r.area_origin||'')+'</div></td>'+
+   '<td style="text-align:right" title="'+escapeHtml(r.jobs_basis||'')+'">'+n0(r.jobs)+'</td>'+
+   '<td style="text-align:right">'+(r.kmest===null||r.kmest===undefined?'—':String(r.kmest).replace('.',','))+'</td>'+
+   '<td style="text-align:right"><b>'+n3(r.benefit_mln)+'</b></td>'+
+   '<td style="font-size:11px">'+why+'</td></tr>';
+ }).join('');
+ const transfer=b.transfer_mln>0?'<tr data-key="transfer"><td>Передача квартир городу<div style="font-size:10px;color:#888">'+
+  escapeHtml((b.transfer||{}).area_origin||'')+'</div></td><td style="text-align:right">'+n0((b.transfer||{}).area_sqm)+
+  '</td><td></td><td></td><td style="text-align:right"><b>'+n3(b.transfer_mln)+'</b></td><td style="font-size:11px">'+
+  escapeHtml((b.transfer||{}).source||'')+'</td></tr>':'';
+ const total='<tr style="font-weight:600;background:#fafaf8"><td>Итого</td><td></td><td style="text-align:right">'+n0(b.jobs_total)+
+  '</td><td></td><td style="text-align:right">'+n3(b.total_mln)+'</td><td style="font-size:11px">льгота МПТ '+n3(b.mpt_mln)+
+  (b.transfer_mln>0?' + передача квартир '+n3(b.transfer_mln):'')+' млн ₽</td></tr>';
+ const kz=b.kzatr?'<div style="font-size:11px;color:#777;margin:4px 0">Льгота за МПТ = 1000 ₽/м² × площадь × Кзатр × Кмест (1874-ПП); Кзатр '+
+  String(b.kzatr.value).replace('.',',')+' ('+escapeHtml(b.kzatr.quarter)+'). Рабочие места — по нормам калькулятора ГлавАПУ.</div>':'';
+ const sug=b.suggestion||{};
+ let action='';
+ if(b.total_mln>0){
+  if(sug.applied){
+   action='<div class="import-status" style="margin-top:8px"><span class="import-ok">Внесено в расчёт ВРИ: льгота '+n3(b.total_mln)+' млн ₽.</span></div>';
+  }else{
+   const other=sug.current_mode&&sug.current_mode!=='none'?' Сейчас в расчёте другая льгота ('+
+    (sug.current_mode==='amount'?n3(sug.current_mln)+' млн ₽':'доля от платы')+') — кнопка заменит её.':'';
+   action='<div class="toolbar" style="margin-top:8px"><button class="btn dark" onclick="applyVriBenefits()">Добавить в расчёт ВРИ суммой — '+
+    n3(b.total_mln)+' млн ₽</button><span style="font-size:12px;color:#777">Пока не нажато, льгота в экономику не входит.'+escapeHtml(other)+'</span></div>';
+  }
+ }
+ const notes=(b.notes||[]).length?'<div class="note">'+b.notes.map(x=>escapeHtml(x)).join('<br>')+'</div>':'';
+ return '<div class="scroll" style="max-height:none"><table class="metric-table metric-compact vri-benefits-table"><thead><tr>'+
+  '<th>Объект</th><th>Площадь, м²</th><th>Рабочие места</th><th>Кмест</th><th>Льгота, млн ₽</th><th>Основание / почему нет</th></tr></thead><tbody>'+
+  body+transfer+total+'</tbody></table></div>'+kz+notes+action;
+}
+function renderVriBenefits(b){
+ const card=document.getElementById('vriBenefitsCard');
+ if(!card)return;
+ const html=vriBenefitsHtml(b);
+ card.style.display=html?'':'none';
+ document.getElementById('vriBenefitsBody').innerHTML=html;
+}
+// Внести посчитанную льготу в расчёт: сумма уходит в «Льготу по плате»
+// режимом «Фиксированная сумма», с отметкой, откуда она. Отметка живёт, пока
+// в поле стоит именно эта сумма: правка руками делает число ручным.
+function applyVriBenefits(){
+ const b=(((lastResult||{}).vri)||{}).benefits||{};
+ const amount=Number(b.total_mln||0);
+ if(!(amount>0))return;
+ inputs.vri_relief_mode='amount';
+ inputs.vri_relief_mln=amount;
+ inputs._vri_relief_source={value:amount,by:'льготы за МПТ'+(b.transfer_mln>0?' и передачу квартир':'')+', посчитанные по проекту (вкладка «ВРИ»)'};
+ renderInputs();refreshGroupPeeks();calculate();
+}
+function vriReliefSourceNote(){
+ const src=inputs._vri_relief_source;
+ if(!src||inputs.vri_relief_mode!=='amount'||Math.abs(Number(inputs.vri_relief_mln||0)-Number(src.value||0))>0.0005)return '';
+ return '<div style="font-size:11px;color:#777;margin-top:4px">Сумма: '+escapeHtml(src.by||'')+'</div>';
+}
 function renderVri(vri){
+ renderVriBenefits(vri&&vri.benefits);
  const REGION={msk:'Москва',mo:'Московская область'};
  const MODE={lump:'единовременно',installment:'рассрочка'};
  const enabled=!!(vri&&vri.enabled);
