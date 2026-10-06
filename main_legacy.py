@@ -48372,7 +48372,10 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
           <span style="color:#777;font-size:12px">Калькулятору уходят ТЭП, площадь и соцобъекты этого проекта; считает в фоне 1–3 минуты. ГлавАПУ — проверка, наши значения не меняются.</span>
         </div>
         <div id="glavapuScenarioStatus" class="import-status" style="display:none"></div>
-        <div id="glavapuScenarioResult"></div>
+        <!-- Итог — здесь, полная таблица — окном по кнопке (решение владельца,
+             06.10.2026): расчёт идёт минуты, и окно, всплывшее само, перебило
+             бы работу с ТЭП. -->
+        <div id="glavapuScenarioSummary" style="display:none"></div>
       </div>
     </div>
 
@@ -48857,6 +48860,19 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
 
       <div class="note warning">LLCR, NPV и IRR в веб-модели являются расчётными показателями текущего движка. До полного отказа от Excel кредитный CF и доходность должны быть окончательно сверены помесячно с эталонной моделью.</div>
     </div>
+  </div>
+</div>
+
+<!-- Сверка с калькулятором ГлавАПУ: полная таблица «наше / ГлавАПУ» окном.
+     Открывается кнопкой из карточки на вкладке «ТЭП», само не всплывает. -->
+<div id="glavapuScenarioDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:80;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeGlavapuScenario()">
+  <div style="background:#fff;max-width:1200px;width:100%;max-height:88vh;overflow:auto;padding:22px 24px">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px">
+      <h2 style="margin:0;font-size:17px">Сверка с калькулятором ГлавАПУ</h2>
+      <button class="btn" style="margin-left:auto" onclick="closeGlavapuScenario()">Закрыть</button>
+    </div>
+    <div id="glavapuScenarioResult"></div>
   </div>
 </div>
 
@@ -50947,7 +50963,7 @@ function glavapuScenarioHtml(a){
     '<td style="text-align:right">'+glavapuScenarioNum(r.delta)+'</td>'+
     '<td style="color:'+st[1]+'"><b>'+escapeHtml(st[0])+'</b>'+(r.reason?'<div style="font-size:11px">'+escapeHtml(r.reason)+'</div>':'')+'</td></tr>';
   }).join('');
-  parts.push('<div class="scroll" style="max-height:520px"><table class="glavapu-scenario-table"><thead><tr><th>Показатель</th><th>Наше</th><th>ГлавАПУ</th><th>Разница</th><th>Итог и причина</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
+  parts.push('<div class="scroll"><table class="glavapu-scenario-table"><thead><tr><th>Показатель</th><th>Наше</th><th>ГлавАПУ</th><th>Разница</th><th>Итог и причина</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
  }
  const refused=((a.applied||{}).refused)||[];
  if(refused.length){
@@ -50983,6 +50999,8 @@ async function glavapuScenarioCheck(force){
  const box=document.getElementById('glavapuScenarioResult');
  status.style.display='block';
  status.textContent='Ставлю задание калькулятору ГлавАПУ…';
+ const summaryBox=document.getElementById('glavapuScenarioSummary');
+ summaryBox.innerHTML='';summaryBox.style.display='none';
  const body={inputs,tep,force:!!force};
  let answer=null;
  try{
@@ -51001,7 +51019,29 @@ async function glavapuScenarioCheck(force){
   return;
  }
  box.innerHTML=glavapuScenarioHtml(answer);
+ const summary=document.getElementById('glavapuScenarioSummary');
+ summary.innerHTML=glavapuScenarioSummaryHtml(answer);
+ summary.style.display=summary.innerHTML?'':'none';
 }
+// Короткий итог для карточки: сколько совпало и разошлось, и кнопка окна.
+// Отказ сюда не пишется — его причина и место уже в строке статуса.
+function glavapuScenarioSummaryHtml(a){
+ a=a||{};
+ if(a.state!=='done'||!a.comparison)return '';
+ const c=a.comparison.counts||{};
+ const parts=['совпало: '+(c.match||0),'расходится: '+(c.diff||0)];
+ if(c.not_applied)parts.push('параметр не принят: '+c.not_applied);
+ if(c.ours_missing)parts.push('нет нашей величины: '+c.ours_missing);
+ if(c.glavapu_missing)parts.push('нет у ГлавАПУ: '+c.glavapu_missing);
+ const refused=((a.applied||{}).refused||[]).length;
+ const notSent=((a.scenario||{}).not_sent||[]).length;
+ const warn=(refused?' Калькулятор не принял полей: '+refused+'.':'')+(notSent?' Не передано: '+notSent+'.':'');
+ return '<div class="toolbar" style="margin-top:8px"><span style="font-size:13px">'+escapeHtml(parts.join(' · '))+'.'+
+  (warn?'<span style="color:#8a4b08">'+escapeHtml(warn)+'</span>':'')+
+  '</span><button class="btn dark" onclick="openGlavapuScenario()">Открыть сверку</button></div>';
+}
+function openGlavapuScenario(){document.getElementById('glavapuScenarioDialog').style.display='flex'}
+function closeGlavapuScenario(){document.getElementById('glavapuScenarioDialog').style.display='none'}
 async function obtainServerTep(analysis,status,runId){
  // Формулы калькулятора, посчитанные сервером: равноценная замена
  // браузерной автоматизации, а не суррогат — сходятся до единицы.
@@ -59686,7 +59726,8 @@ function forgetTerritoryState(){
  // Сверка сценария с ГлавАПУ — про прошлый проект: номер запуска отсекает
  // опоздавший ответ, а таблица и статус снимаются вместе с остальным.
  ++glavapuScenarioRun;
- ['glavapuScenarioResult','glavapuScenarioStatus'].forEach(id=>{const box=document.getElementById(id);if(box){box.innerHTML='';box.style.display=id==='glavapuScenarioStatus'?'none':''}});
+ ['glavapuScenarioResult','glavapuScenarioStatus','glavapuScenarioSummary'].forEach(id=>{const box=document.getElementById(id);if(box){box.innerHTML='';box.style.display=id==='glavapuScenarioResult'?'':'none'}});
+ closeGlavapuScenario();
  ['cadastralNumbers','landQuery','moQuery'].forEach(id=>{const field=document.getElementById(id);if(field)field.value=''});
  // Память о вписанном номере (`inputs._cadastral_query`) здесь НЕ трогаем:
  // обе двери этой функции пересобирают `inputs` заново — `applyProjectSnapshot`

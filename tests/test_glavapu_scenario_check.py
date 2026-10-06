@@ -489,6 +489,8 @@ def test_the_page_shows_ours_and_glavapu_side_by_side(core, monkeypatch) -> None
                                       "place": "раздел «Стоимость смены ВРИ»"}]}
     prelude = "const answer=%s;" % json.dumps(answer, ensure_ascii=False, default=str)
     tail = "console.log(JSON.stringify({html:glavapuScenarioHtml(answer)," \
+           "summary:glavapuScenarioSummaryHtml(answer)," \
+           "noSummary:glavapuScenarioSummaryHtml({state:'refused',error:'нет площади'})," \
            "status:glavapuScenarioStatusText(answer)," \
            "refused:glavapuScenarioStatusText({state:'unavailable',error:'штатный калькулятор: выключен'," \
            "where:'считает сам',hint:'Нужны GLAVAPU_HEADLESS=1'})}));"
@@ -508,6 +510,12 @@ def test_the_page_shows_ours_and_glavapu_side_by_side(core, monkeypatch) -> None
     assert "Калькулятор не принял" in html and "раздел «Стоимость смены ВРИ»" in html
     assert "Не передано в калькулятор" in html and "Прочие обязательные объекты" in html
     assert got["status"].startswith("Сверка готова")
+    # Итог в карточке: счёт по статусам, предупреждение и кнопка окна.
+    summary = got["summary"]
+    assert "совпало:" in summary and "расходится:" in summary
+    assert "Калькулятор не принял полей: 1" in summary and "Не передано: 1" in summary
+    assert 'onclick="openGlavapuScenario()"' in summary
+    assert got["noSummary"] == ""
     assert "Место: считает сам" in got["refused"] and "GLAVAPU_HEADLESS=1" in got["refused"]
 
 
@@ -520,8 +528,16 @@ def test_the_page_has_the_block_and_its_button_calls_the_check() -> None:
     vri = page.index('<div id="vri" class="panel">')
     start = page.find('id="glavapuScenarioBox"')
     assert tep < page.find('class="teptable"', tep) < start < vri
-    block = page[start:page.find('id="glavapuScenarioResult"', start)]
+    block = page[start:page.find('id="glavapuScenarioSummary"', start)]
     assert 'onclick="glavapuScenarioCheck()"' in block
+    # Полная таблица — окном (решение владельца, 06.10.2026); окно само не
+    # всплывает: открывается только кнопкой итога.
+    dialog = page.index('id="glavapuScenarioDialog"')
+    assert dialog < page.index('id="glavapuScenarioResult"') < page.index("</div>", dialog) + 2000
+    assert 'id="glavapuScenarioResult"' not in block
+    check = page[page.index("async function glavapuScenarioCheck("):
+                 page.index("function glavapuScenarioSummaryHtml(")]
+    assert "openGlavapuScenario()" not in check
     assert "function glavapuScenarioCheck(" in page
     assert "fetch('/glavapu/scenario'" in page
 
