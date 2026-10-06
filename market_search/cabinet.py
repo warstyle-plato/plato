@@ -2643,6 +2643,10 @@ const SALES_METRICS=[
 ];
 let salesMetric='amount';
 let plansMetric='amount';
+// Поквартально или накопленным итогом — для всех трёх линий сразу. Итог
+// считает сервер (`*_cum`), здесь только выбор поля.
+const PLAN_BASES=[{key:'quarter',name:'по кварталам'},{key:'cum',name:'накопленным итогом'}];
+let plansBasis='quarter';
 
 function salesMetricButtons(id, current, metrics){
   return '<div class="switch">'+metrics.map(m=>
@@ -3460,19 +3464,21 @@ const PLAN_METRICS=[
 // `ReferenceError` ровно тогда, когда планы прочитаны, то есть на настоящем
 // проекте. Экран при этом не «ломался наполовину»: `renderSales` обрывался, и
 // от отчёта не оставалось ничего (владелец, 31.08.2026).
-function salesPlansRows(quarters, metric){
+function salesPlansRows(quarters, metric, basis){
+  const end=basis==='cum'?'_cum':'';
   return quarters.map(q=>({
     label:q.label, short:q.label.replace(' ',''),
-    value:q['fact_'+metric.key], pale:q.partial,
-    fm:q['fm_'+metric.key], bank:q['bank_'+metric.key],
+    value:q['fact_'+metric.key+end], pale:q.partial,
+    fm:q['fm_'+metric.key+end], bank:q['bank_'+metric.key+end],
     factPrice:q.fact_price, fmPrice:q.fm_price, bankPrice:q.bank_price,
     over:q.partial?'часть':'',
-    tip:q.label+': факт '+metric.show(q['fact_'+metric.key])+(q.partial?' (месяцев в квартале — '+q.months+')':''),
+    tip:q.label+': факт '+metric.show(q['fact_'+metric.key+end])+(end?' с начала продаж':'')
+      +(q.partial?' (месяцев в квартале — '+q.months+')':''),
   }));
 }
 
-function salesPlansChart(quarters, metric){
-  const rows=salesPlansRows(quarters, metric);
+function salesPlansChart(quarters, metric, basis){
+  const rows=salesPlansRows(quarters, metric, basis);
   const lines=[{key:'fm',name:'план ФМ',color:'#C4581B'},
                {key:'bank',name:'план банка',color:'#8E7CC3',dash:true}];
   return barChart(rows,{lines,axis:metric.axis,show:metric.show,factName:'факт',
@@ -3483,7 +3489,7 @@ function salesPlansChart(quarters, metric){
                 {key:'bankPrice',name:'цена банка',color:'#5FA98A',dash:true}],
     rightAxis:v=>num(v/1000)+' тыс', rightShow:v=>num(v)+' ₽/м²',
     rightName:'цена квартир, ₽/м²',
-    caption:metric.name+' по кварталам'});
+    caption:metric.name+(basis==='cum'?' накопленным итогом':' по кварталам')});
 }
 
 function salesPlansBlock(d){
@@ -3491,13 +3497,25 @@ function salesPlansBlock(d){
   const quarters=(plans.quarters||[]);
   if(quarters.length<2) return '';
   const metric=PLAN_METRICS.find(m=>m.key===plansMetric)||PLAN_METRICS[0];
-  const rows=salesPlansRows(quarters, metric);
+  const basis=PLAN_BASES.find(b=>b.key===plansBasis)?plansBasis:'quarter';
+  const rows=salesPlansRows(quarters, metric, basis);
+  const opening=plans.bank_opening;
   // На бумагу идут обе меры: переключателя в документе нет.
-  let html=salesPlansChart(quarters, metric);
+  let html=salesPlansChart(quarters, metric, basis);
   const rest=PLAN_METRICS.filter(m=>m.key!==metric.key);
   if(rest.length) html+='<div class="printviews">'
-    +rest.map(m=>salesPlansChart(quarters, m)).join('')+'</div>';
+    +rest.map(m=>salesPlansChart(quarters, m, basis)).join('')+'</div>';
+  // Остаток банка на дату обновления плана — своей строкой, а не точкой линии: рядом с
+  // квартальным фактом он читался бы как квартал продаж втрое больше обычного.
+  if(opening&&basis!=='cum') html+='<div class="muted" data-bank-opening style="font-size:12.5px;margin-top:6px">'
+    +'<b>'+esc(opening.quarter)+', план банка '+num(opening.amount/1e6,1)+' млн ₽</b> — первый квартал обновлённого плана банка, '
+    +'а продажи идут с '+esc(opening.fact_since)+': в этой колонке банк держит проданное до даты обновления плана. '
+    +'Факт этого квартала '+num(opening.fact_quarter/1e6,1)+' млн ₽, с начала продаж — '
+    +num(opening.fact_to_date/1e6,1)+' млн ₽. На линии по кварталам его нет; '
+    +'сравнить его с фактом можно накопленным итогом.</div>';
   html+='<div class="muted" style="font-size:12.5px;margin-top:6px">'
+    +(basis==='cum'?'Накопленный итог всех трёх линий с первого квартала ряда'
+      +(opening?'; итог банка начинается с его остатка на дату обновления плана ('+esc(opening.quarter)+')':'')+'. ':'')
     +'Кварталы, а не месяцы: план банка квартальный, и раскладывать его по месяцам мы не станем — '
     +'сделать это можно тремя способами, и любой будет нашей выдумкой. '
     +'Листы: \u00ab'+esc(plans.fm_sheet||'\u2014')+'\u00bb и \u00ab'+esc(plans.bank_sheet||'\u2014')+'\u00bb. '
@@ -3516,6 +3534,8 @@ function salesPlansBlock(d){
       rows.map(r=>[esc(r.label)+(r.pale?' (часть)':''),
         r.value===null||r.value===undefined?'—':metric.show(r.value),
         r.fm===null||r.fm===undefined?'—':metric.show(r.fm),
+        // Остаток банка — прочерком, а не словами: колода берёт эту таблицу,
+        // и текст в денежной колонке выбросил бы план банка со слайда целиком.
         r.bank===null||r.bank===undefined?'—':metric.show(r.bank),
         r.factPrice?num(r.factPrice):'—',
         r.fmPrice?num(r.fmPrice):'—',
@@ -3780,7 +3800,11 @@ function renderSales(d){
   html+=salesSection('sb-plan','Факт против планов',
     `<div id="planschart">${salesPlansBlock(d)}</div>`,
     salesNote(d,'fm')+salesNote(d,'bank'),
-    salesMetricButtons('planschart', plansMetric, PLAN_METRICS));
+    '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+    +salesMetricButtons('planschart', plansMetric, PLAN_METRICS)
+    +'<div class="switch">'+PLAN_BASES.map(b=>
+      `<button type="button" data-basis="${b.key}" data-for="planschart"`
+      +` class="${b.key===plansBasis?'on':''}">${esc(b.name)}</button>`).join('')+'</div></div>');
 
   html+=salesSection('sb-esc','Эскроу против погашения ПФ',
     salesEscrowBlock(d), salesNote(d,'escrow'));
@@ -3890,7 +3914,8 @@ function renderSales(d){
   box.querySelectorAll('.switch button').forEach(b=>{
     b.onclick=()=>{
       const target=b.dataset.for;
-      if(target==='saleschart') salesMetric=b.dataset.metric; else plansMetric=b.dataset.metric;
+      if(b.dataset.basis) plansBasis=b.dataset.basis;
+      else if(target==='saleschart') salesMetric=b.dataset.metric; else plansMetric=b.dataset.metric;
       // Перерисовывается только своя картинка: перестроить карточку целиком
       // значит захлопнуть все раскрытые списки под руками у человека.
       const box2=document.getElementById(target);
@@ -4077,20 +4102,21 @@ function salesDigest(d, limit){
     add('план ФМ', lines, 4);
   }
   const bank=d.bank_plan;
-  if(bank&&bank.revenue_by_quarter){
-    const fact={};
-    (d.by_quarter||[]).forEach(q=>{fact[q.quarter]=q.amount});
-    // Хвост плана — это 2029 год, а сравнивают с ним прошедшие кварталы.
-    // Обрезка «по последним» оставляла в вопросе четыре будущих квартала без
-    // факта: плана много, а ответить на них нечем.
-    const all=Object.keys(bank.revenue_by_quarter).sort();
-    const shown=all.filter(q=>fact[q]!==undefined);
-    const lines=shown.map(q=>
-      `— ${q}: план банка ${num(bank.revenue_by_quarter[q]/1e6,1)} млн ₽`
-      +`, факт ${num(fact[q]/1e6,1)} млн ₽`);
+  const planRows=((d.plans||{}).quarters)||[];
+  if(bank&&planRows.length){
+    // Та же линия, что на графике: валовые продажи банка из `plans`, а не
+    // строка рассрочки. Прошедшие кварталы — сервер режет ряд по последнему
+    // кварталу факта.
+    const opening=(d.plans||{}).bank_opening;
+    const shown=planRows.filter(q=>q.fact_amount!=null&&(q.bank_amount!=null||q.bank_opening));
+    const lines=shown.map(q=>q.bank_opening
+      ?`— ${q.label}: остаток банка на дату обновления плана ${num(opening.amount/1e6,1)} млн ₽ против факта с начала продаж ${num(opening.fact_to_date/1e6,1)} млн ₽ (за квартал ${num(q.fact_amount/1e6,1)})`
+      :`— ${q.label}: план банка ${num(q.bank_amount/1e6,1)} млн ₽`
+        +`, факт ${num(q.fact_amount/1e6,1)} млн ₽`
+        +(q.bank_amount_cum!=null?`; накопленным: ${num(q.bank_amount_cum/1e6,1)} против ${num(q.fact_amount_cum/1e6,1)}`:''));
     if(lines.length){
-      lines.unshift(`ПЛАН БАНКА (лист «${bank.sheet}», по кварталам; показаны `
-        +`${shown.length} кварталов с фактом из ${all.length} в плане):`);
+      lines.unshift(`ПЛАН БАНКА (лист «${bank.sheet}», валовые продажи цена × объём по кварталам; показаны `
+        +`${shown.length} кварталов с фактом):`);
       add('план банка', lines, 6);
     }
   }
