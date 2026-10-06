@@ -291,6 +291,11 @@ def intake_prompt(document: dict[str, Any], budget: int = DOCUMENT_TEXT_BUDGET) 
    человека и расчёт города разошлись бы, и оба выглядели бы верными.
    Вопрос уместен только о том, чего не знает ни документ, ни город: цена
    сделки, расселение, снос и то, куда отнести обязательство.
+6. underground_manual_spaces — ТОЛЬКО места подземного паркинга жилья:
+   постоянные и гостевые одним числом, как оно стоит в документе. Итог
+   «машино-мест», в который входят приобъектные или места остановки
+   (кратковременные), сюда не выписывай: они в подземный паркинг не идут.
+   Назови такой итог и его состав в notes.
 
 Поля, которые модель понимает:
 {catalogue}
@@ -478,6 +483,23 @@ def to_field_number(key: str, value: Any, unit: str = "") -> tuple[float | None,
     return number, ""
 
 
+# Подземный паркинг МКД — постоянные и гостевые. Приобъектные и места
+# остановки 945-ПП размещает на плоскостных парковках и в УДС (п. 6.1.2.3,
+# 6.1.2.4), а выгрузка ГлавАПУ держит их отдельными строками (42.3, 43). Итог,
+# который их содержит, положенный в поле гаража, строил бы асфальт под землёй:
+# метры × 35, СМР и места в выручке.
+OUTSIDE_GARAGE_MARKS = ("приобъект", "кратковрем", "остановк")
+OUTSIDE_GARAGE_REASON = (
+    "в цитате названы приобъектные или места остановки — они в подземный паркинг "
+    "МКД не входят (945-ПП п. 6.1.2.3–6.1.2.4); в поле гаража идут только "
+    "постоянные и гостевые")
+
+
+def _counts_outside_garage(item: dict[str, Any]) -> bool:
+    text = f"{item.get('quote') or ''} {item.get('value') or ''}".lower()
+    return any(mark in text for mark in OUTSIDE_GARAGE_MARKS)
+
+
 def apply_intake(
     extraction: dict[str, Any],
     inputs: dict[str, Any],
@@ -503,6 +525,10 @@ def apply_intake(
         if key == "cadastral_numbers":
             applied.append({"key": key, "value": item.get("value"),
                             "note": "участок применяется отдельным запросом ЕГРН"})
+            continue
+        if key == "underground_manual_spaces" and _counts_outside_garage(item):
+            refused.append({"key": key, "label": INTAKE_LABELS.get(key, key),
+                            "value": item.get("value"), "reason": OUTSIDE_GARAGE_REASON})
             continue
         number, why = to_field_number(key, item.get("value"), item.get("unit") or "")
         if number is None:
