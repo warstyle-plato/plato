@@ -61,6 +61,10 @@ _CLASS_FILTERS = {
 _LZ_KEY64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 _CSRF_RE = re.compile(r"csrfmiddlewaretoken['\"]?\s+value=['\"]([^'\"]+)")
 _GEOJSON_MARK = '{"type":"FeatureCollection"'
+# Заглушка, которую поддомен отдаёт гостю: 403 и «Сайт находится в
+# разработке». Это не отказ в пароле, а закрытая дверь — и говорить о ней
+# надо так, а не «вход не удался».
+_CLOSED_MARK = "в разработке"
 
 # Номер проекта во всероссийском кабинете выглядит как «50-004184»: код
 # региона, дефис, номер. Московский кабинет отдавал голое число. Формат
@@ -594,6 +598,7 @@ class PulseClient:
         timeout: float = 30.0,
         ttl_seconds: int = 86_400,
         detail_ttl_seconds: int = 43_200,
+        auth: "PulseClient | None" = None,
     ):
         # Одна база на клиента. Несколько баз из `PULSE_BASE_URL` собирает
         # `PulseNetwork`; здесь берётся первая.
@@ -613,6 +618,17 @@ class PulseClient:
         self._jar: http.cookiejar.MozillaCookieJar | None = None
         self._opener: urllib.request.OpenerDirector | None = None
         self._projects: list[PulseProject] | None = None
+        # Клиент, чья форма входа и чья банка кук обслуживают эту базу. У
+        # поддомена (`russia.pulsprodaj.ru`) это корневая база: своей формы
+        # входа для гостя у поддомена нет — он отдаёт 403 «в разработке», —
+        # а сессия выдаётся при входе на `pulsprodaj.ru`. `None` — сама.
+        self.auth = auth if auth is not self else None
+        # Причина закрытого доступа, если поддомен ответил заглушкой.
+        self.access_closed: str | None = None
+
+    @property
+    def host(self) -> str:
+        return (urllib.parse.urlparse(self.base).hostname or "").lower()
 
     @property
     def available(self) -> bool:
@@ -624,11 +640,17 @@ class PulseClient:
     def _build_opener(self) -> urllib.request.OpenerDirector:
         if self._opener is not None:
             return self._opener
-        jar = http.cookiejar.MozillaCookieJar(str(self.dir / "cookies.txt"))
-        try:
-            jar.load(ignore_discard=True, ignore_expires=True)
-        except (OSError, http.cookiejar.LoadError):
-            pass
+        if self.auth is not None:
+            # Одна банка кук на домен: сессия, выданная корневой базой, уходит
+            # на поддомен ровно по тем правилам, по которым её шлёт браузер.
+            self.auth._build_opener()
+            jar = self.auth._jar
+        else:
+            jar = http.cookiejar.MozillaCookieJar(str(self.dir / "cookies.txt"))
+            try:
+                jar.load(ignore_discard=True, ignore_expires=True)
+            except (OSError, http.cookiejar.LoadError):
+                pass
         self._jar = jar
         self._opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
         self._opener.addheaders = [
@@ -646,10 +668,76 @@ class PulseClient:
             pass
 
     def _cookie(self, name: str) -> str | None:
+        """Кука, которая уйдёт с запросом НА ЭТУ базу.
+
+        Банка общая на домен, поэтому «в банке есть кука с таким именем» больше
+        не значит «она уйдёт». Решает сама банка — тем же `add_cookie_header`,
+        которым urllib собирает заголовок запроса: два разных ответа на один
+        вопрос однажды разошлись бы. (Политика `http.cookiejar` мягче
+        браузерной: куку без домена она шлёт и на поддомены. Это оставлено —
+        лишняя попытка не вредит, а диагностика называет домен куки.)
+        """
+        if self._jar is None:
+            self._build_opener()
+        request = urllib.request.Request(f"{self.base}/")
+        self._jar.add_cookie_header(request)
+        header = request.get_header("Cookie") or ""
+        for part in header.split(";"):
+            key, _, value = part.strip().partition("=")
+            if key == name:
+                return value
+        return None
+
+    def _cookie_record(self, name: str) -> dict[str, Any] | None:
+        """Где лежит кука и уходит ли она на эту базу — для диагностики."""
+        if self._jar is None:
+            self._build_opener()
         for cookie in self._jar or []:
             if cookie.name == name:
-                return cookie.value
+                return {
+                    "domain": cookie.domain,
+                    "for_subdomains": bool(cookie.domain_specified),
+                    "sent_here": self._cookie(name) is not None,
+                }
         return None
+
+    def _closed(self, exc: BaseException, body: str | None = None) -> str | None:
+        """403 с заглушкой «Сайт находится в разработке» — закрытый поддомен.
+
+        Возвращает причину словами и запоминает её; любой другой ответ —
+        `None`, и его разбирает вызывающий код как прежде.
+        """
+        if not isinstance(exc, urllib.error.HTTPError) or exc.code != 403:
+            return None
+        if body is None:
+            try:
+                body = exc.read(4000).decode("utf-8", errors="ignore")
+            except Exception:  # noqa: BLE001 — тело ответа не обязано читаться
+                body = ""
+        if _CLOSED_MARK not in (body or "").lower():
+            return None
+        session = self._cookie_record("sessionid")
+        owner = self.auth.host if self.auth is not None else self.host
+        if session is None:
+            tail = (
+                f"сессии {owner} нет: вход на основную базу не удался"
+                if self.auth is not None else "входа с этой базы нет"
+            )
+        elif session["sent_here"]:
+            tail = f"сессия {owner} отправлена, доступа она не даёт"
+            if not session["for_subdomains"] and self.auth is not None:
+                tail += (
+                    f" (кука выдана без домена — браузер на {self.host} "
+                    "её бы не отправил)"
+                )
+        else:
+            tail = f"сессия {owner} на {self.host} не уходит"
+        what = "поддомен" if self.auth is not None else "база"
+        self.access_closed = (
+            f"{what} {self.host} закрыт{'а' if what == 'база' else ''} для нашего сервера: "
+            f"403 «Сайт находится в разработке»; {tail}"
+        )
+        return self.access_closed
 
     def _open(
         self,
@@ -668,6 +756,22 @@ class PulseClient:
     def sign_in(self) -> bool:
         """Войти под доступами из окружения. Возвращает успех, не бросает."""
         if not self.available:
+            return False
+        if self.auth is not None:
+            # Вход — на основной базе, её формой: у поддомена формы для гостя
+            # нет. Успех здесь — сессия, которая уходит и на этот хост.
+            if not self.auth.sign_in():
+                self.errors.append(
+                    f"вход на основную базу {self.auth.host} не удался: "
+                    + (self.auth.errors[-1] if self.auth.errors else "причина не названа")
+                )
+                return False
+            if self._cookie("sessionid"):
+                return True
+            self.errors.append(
+                f"сессия {self.auth.host} выдана только для {self.auth.host} "
+                f"и на {self.host} не уходит"
+            )
             return False
         try:
             page = self._open(_LOGIN_PATH).decode("utf-8", errors="ignore")
@@ -691,7 +795,7 @@ class PulseClient:
                 },
             )
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            self.errors.append(f"вход не удался: {exc}")
+            self.errors.append(self._closed(exc) or f"вход не удался: {exc}")
             return False
         # Признак входа — кука сессии. Страница после неудачи возвращается та же,
         # с кодом 200, поэтому по коду ответа судить нельзя.
@@ -730,9 +834,13 @@ class PulseClient:
                 # переспрашивался, и отказ выглядел отсутствием данных.
                 detail = ""
                 try:
-                    detail = exc.read(400).decode("utf-8", errors="ignore").strip()
+                    detail = exc.read(4000).decode("utf-8", errors="ignore").strip()
                 except Exception:  # noqa: BLE001 — тело ответа не обязано читаться
                     detail = ""
+                closed = self._closed(exc, detail)
+                if closed:
+                    self.errors.append(f"{path}: {closed}")
+                    return None
                 if exc.code in (401, 403) and attempt == 1 and self.sign_in():
                     continue
                 self.errors.append(
@@ -813,10 +921,13 @@ class PulseClient:
         """
         if not self.available and not self._cookie("sessionid"):
             return None
+        if self.auth is not None and not self._cookie("sessionid"):
+            # Поддомен гостю отдаёт заглушку, а не карту: сначала сессия.
+            self.sign_in()
         try:
             page = self._open(_MAP_PATH).decode("utf-8", errors="ignore")
         except (urllib.error.URLError, OSError) as exc:
-            self.errors.append(f"карта недоступна: {exc}")
+            self.errors.append(self._closed(exc) or f"карта недоступна: {exc}")
             return None
         index = page.find(_GEOJSON_MARK)
         if index < 0:
@@ -825,12 +936,14 @@ class PulseClient:
                 try:
                     page = self._open(_MAP_PATH).decode("utf-8", errors="ignore")
                 except (urllib.error.URLError, OSError) as exc:
-                    self.errors.append(f"карта недоступна: {exc}")
+                    self.errors.append(self._closed(exc) or f"карта недоступна: {exc}")
                     return None
                 index = page.find(_GEOJSON_MARK)
             if index < 0:
                 self.errors.append("на странице карты нет данных проектов")
                 return None
+        # Карта пришла — дверь открыта, прежняя причина закрытия устарела.
+        self.access_closed = None
         try:
             return json.loads(_balanced_json(page, page.index("{", index)))
         except ValueError as exc:
@@ -896,7 +1009,7 @@ class PulseClient:
                 },
             )
         except (urllib.error.URLError, OSError) as exc:
-            self.errors.append(f"класс «{title}»: {exc}")
+            self.errors.append(f"класс «{title}»: {self._closed(exc) or exc}")
             return None
         raw = lz_decompress_base64(body.decode("utf-8", errors="ignore"))
         if not raw:
@@ -1486,6 +1599,10 @@ class PulseClient:
             "cache_dir": self.dir.name,
             "available": self.available,
             "signed_in": bool(self._cookie("sessionid")),
+            # Чьей формой входим и чья сессия уходит на эту базу.
+            "auth_base": self.auth.base if self.auth is not None else self.base,
+            "session_cookie": self._cookie_record("sessionid"),
+            "access": self.access_closed or "открыт",
             "projects": len(projects),
             "catalog": stamp(self.catalog_path),
             "segments": {"projects": len(classes), **stamp(self.dir / "segments.json")},
@@ -1494,7 +1611,9 @@ class PulseClient:
             "by_id_region": ranked(by_id),
             "by_address_region": ranked(by_address),
             "sample_ids": [item.complex_id for item in projects[:5]],
-            "errors": self.errors[errors_before:][:10],
+            # Одна причина — одна строка: пять одинаковых «403» прежде
+            # заслоняли собой всё остальное.
+            "errors": list(dict.fromkeys(self.errors[errors_before:]))[:10],
         }
 
 
@@ -1684,9 +1803,27 @@ class PulseNetwork:
 def make_pulse_client(data_dir: Path, **kwargs: Any) -> PulseClient | PulseNetwork:
     """Клиент по `PULSE_BASE_URL`: одна база — как прежде, несколько — сеть."""
     bases = parse_bases(kwargs.pop("base", None) or os.getenv("PULSE_BASE_URL"))
-    if len(bases) == 1:
-        return PulseClient(data_dir, base=bases[0], **kwargs)
-    return PulseNetwork([PulseClient(data_dir, base=base, **kwargs) for base in bases])
+    sites = [PulseClient(data_dir, base=base, **kwargs) for base in bases]
+    # Поддомен входит через базу, чей хост — его суффикс: `russia.pulsprodaj.ru`
+    # через `pulsprodaj.ru`. Связь берётся из списка баз, а не выводится из
+    # имени. Поддомен без корневой базы в списке — `PULSE_AUTH_BASE_URL`.
+    auth_base = (os.getenv("PULSE_AUTH_BASE_URL") or "").strip().rstrip("/")
+    extra_auth: PulseClient | None = None
+    for site in sites:
+        parent = next(
+            (other for other in sites
+             if other is not site and site.host.endswith("." + other.host)),
+            None,
+        )
+        if parent is None and auth_base and auth_base != site.base:
+            if extra_auth is None:
+                extra_auth = PulseClient(data_dir, base=auth_base, **kwargs)
+            if site.host.endswith("." + extra_auth.host):
+                parent = extra_auth
+        site.auth = parent
+    if len(sites) == 1:
+        return sites[0]
+    return PulseNetwork(sites)
 
 
 
