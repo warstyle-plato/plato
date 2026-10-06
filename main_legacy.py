@@ -26586,6 +26586,13 @@ def _build_project_workbook(
         missing.append(
             "ТЭП движка: книга пишет присланный — строка, приведённая расчётом "
             "к вводным (площадь гаража, выгрузка ГлавАПУ, соцобъект), до неё не дошла")
+        # Строку гаража выводит одна функция, и без ответа движка книга зовёт
+        # её сама: иначе она продавала бы места за вычетом гостевых присланной
+        # строки (из умолчаний шаблона), а движок — за вычетом своих.
+        # Строка правится на копии: присланный ТЭП принадлежит вызывающему.
+        tep = {key: dict(value) for key, value in (tep or {}).items()
+               if isinstance(value, dict)}
+        apply_underground_tep_row({**DEFAULT_INPUTS, **(inputs or {})}, tep)
 
     # Сетка книги конечна, а горизонт движка — нет. Не влезло — это `missing`
     # числами, а не молчание: обрезанная книга выглядит целой, и половина её
@@ -33950,16 +33957,19 @@ def underground_guest_spaces(row: dict[str, Any]) -> int:
     и гостевых остаётся S/11. На 369 местах это 34 — ровно столько, сколько
     насчитал владелец.
     """
-    known = row.get("guest_units")
-    if known not in (None, ""):
-        try:
-            return max(0, int(round(float(known))))
-        except (TypeError, ValueError):
-            pass
     try:
         total = float(row.get("units") or 0)
     except (TypeError, ValueError):
-        return 0
+        total = 0.0
+    known = row.get("guest_units")
+    if known not in (None, ""):
+        try:
+            # Гостевых не бывает больше, чем мест построено: такое число —
+            # чужое (умолчания шаблона или прежний ТЭП: 109 гостевых на 69
+            # местах), а не решение проекта, и продаж оно не обнуляет.
+            return max(0, min(int(round(float(known))), int(round(max(0.0, total)))))
+        except (TypeError, ValueError):
+            pass
     return max(0, int(round(total / 11.0))) if total > 0 else 0
 
 
