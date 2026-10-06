@@ -33100,6 +33100,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                 "reservation_fee_pct": n(x, "reservation_fee_pct"),
                 # Плата за невыбранный лимит — та же вводная, что у ПФ.
                 "limit_fee_pct": n(x, "limit_fee_pct"),
+                # РнС делит кредит объекта на две НКЛ: участок и проект — до
+                # неё, строительная — с неё.
+                "permit": permit,
                 "params": {suffix: x.get(f"{obj.prefix}_{suffix}")
                            for suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS},
             }
@@ -34206,6 +34209,8 @@ def object_financing(flows: dict[str, Any]) -> dict[str, Any]:
         "reservation_fee": total("loan_reservation_fee"),
         "commitment_fee": total("loan_commitment_fee"),
         "limit": float((flows.get("totals") or {}).get("loan_limit") or 0.0),
+        "limit_land": float((flows.get("totals") or {}).get("loan_limit_land") or 0.0),
+        "limit_build": float((flows.get("totals") or {}).get("loan_limit_build") or 0.0),
         "interest_capitalized": total("loan_interest_cap"),
         "interest_paid": total("loan_interest_paid"),
         "debt_at_commissioning": get("loan_balance", commissioning),
@@ -35519,6 +35524,12 @@ def nonres_financing_report(nonres: dict[str, Any] | None) -> list[dict[str, Any
             rows += [
                 {"label": "в т.ч. на стройку объекта", "value": f.get("draw_object"), "unit": "rub"},
                 {"label": "в т.ч. на общие затраты проекта", "value": f.get("draw_common"), "unit": "rub"},
+            ]
+        if f.get("limit_land") and f.get("limit_build"):
+            rows += [
+                {"label": "Лимит НКЛ на участок и проект (до РнС)", "value": f.get("limit_land"),
+                 "unit": "rub"},
+                {"label": "Лимит строительной НКЛ (с РнС)", "value": f.get("limit_build"), "unit": "rub"},
             ]
         if f.get("reservation_fee"):
             rows.append({"label": "Плата за резервирование лимита НКЛ", "value": f.get("reservation_fee"),

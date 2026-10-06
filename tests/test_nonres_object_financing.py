@@ -260,15 +260,32 @@ def test_a_pure_nonresidential_project_reserves_the_object_line_not_a_bridge() -
         assert f["limit"] == pytest.approx(f["draw_total"])
         assert f["reservation_fee"] == pytest.approx(
             f["limit"] * float(x["reservation_fee_pct"]) / 100, rel=1e-12)
-        # Невыбранный лимит — как у ПФ: (лимит − выбранное тело) × ставка / 12,
-        # с первой выдачи до ввода.
-        draws = item["rows"]
-        drawn, expected = 0.0, 0.0
-        for row in draws:
-            drawn += row["nonres_loan_draw"]
-            if drawn and row["month"] <= item["commissioning"]:
-                expected += max(0.0, f["limit"] - drawn) * float(x["limit_fee_pct"]) / 100 / 12
+        # Две НКЛ (владелец, 06.10.2026): до РнС — участок и проект, с РнС —
+        # строительная. Каждая платит за невыбранный остаток своего лимита с
+        # первой своей выдачи, как ПФ: (лимит − выбранное) × ставка / 12.
+        permit = str(result["dates"]["permit"])[:10]
+        rows = item["rows"]
+        land = [r for r in rows if r["month"] < permit and r["nonres_loan_draw"]]
+        build = [r for r in rows if r["month"] >= permit and r["nonres_loan_draw"]]
+        assert land and build, "участок выбирается до РнС, стройка — после"
+        assert f["limit_land"] == pytest.approx(sum(r["nonres_loan_draw"] for r in land))
+        assert f["limit_build"] == pytest.approx(sum(r["nonres_loan_draw"] for r in build))
+        expected = 0.0
+        for line, limit in ((land, f["limit_land"]), (build, f["limit_build"])):
+            drawn = 0.0
+            for r in rows:
+                if line[0]["month"] <= r["month"] <= line[-1]["month"]:
+                    drawn += r["nonres_loan_draw"]
+                    expected += max(0.0, limit - drawn) * float(x["limit_fee_pct"]) / 100 / 12
         assert f["commitment_fee"] == pytest.approx(expected, rel=1e-9) and expected > 0
+        # Строительный лимит не лежит невыбранным с даты покупки участка.
+        single = 0.0
+        drawn = 0.0
+        for r in rows:
+            if r["month"] >= land[0]["month"] and r["month"] <= build[-1]["month"]:
+                drawn += r["nonres_loan_draw"]
+                single += max(0.0, f["limit"] - drawn) * float(x["limit_fee_pct"]) / 100 / 12
+        assert f["commitment_fee"] < single / 2
         assert f["reservation_fee"] + f["commitment_fee"] + f["fee"] == pytest.approx(
             item["totals"]["loan_fee"], rel=1e-12)
         rows = _rows({"rows": next(r["rows"] for r in result["report"]["nonres_financing"]
