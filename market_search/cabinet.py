@@ -4187,7 +4187,7 @@ async function addProject(item){
   const q=new URLSearchParams();
   if(s.latitude&&s.longitude){q.set('latitude',s.latitude);q.set('longitude',s.longitude)}
   try{
-    const r=await fetch(`/market/project/${item.complex_id}?`+q.toString());
+    const r=await fetch(`/market/project/${encodeURIComponent(item.complex_id)}?`+q.toString());
     const d=await r.json();
     if(!r.ok){$('#addstate').textContent=d.detail||'Не получилось';return}
     added.set(item.complex_id,d);

@@ -35,6 +35,9 @@ from market_search import market_reference  # noqa: E402
 from market_search.market_reference import MoscowMarket  # noqa: E402
 
 DATA = ROOT / "market_search" / "registry_data"
+# Замер владельца сделан на отчёте за 2026-08 — сверяем с ним, а не с самым
+# свежим месяцем: новый отчёт законно сдвигает медианы.
+MEASURED_MONTH = "2026-08"
 # Числа замера владельца: класс → (одномесячная медиана, медиана средних).
 OWNER_MEASURED = {
     "Бизнес": (708.2, 883.8),
@@ -45,11 +48,17 @@ OWNER_MEASURED = {
 
 
 def _dynamics() -> dict:
-    newest = None
-    for path in sorted(DATA.glob("moscow-dynamics-*.json")):
-        newest = json.loads(path.read_text(encoding="utf-8"))
-    assert newest, "нет городской динамики — проверять нечем"
-    return newest
+    path = DATA / f"moscow-dynamics-{MEASURED_MONTH}.json"
+    assert path.exists(), "нет городской динамики замера — проверять нечем"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _measured_city(tmp_path: Path) -> MoscowMarket:
+    """Город на данных замера: только файлы месяца замера, без более новых."""
+    for kind in ("market", "dynamics"):
+        name = f"moscow-{kind}-{MEASURED_MONTH}.json"
+        (tmp_path / name).write_bytes((DATA / name).read_bytes())
+    return MoscowMarket.bundled(tmp_path)
 
 
 def _one_month_median() -> dict[str, tuple[float, int]]:
@@ -72,13 +81,13 @@ def _one_month_median() -> dict[str, tuple[float, int]]:
             for segment, values in by.items() if values}
 
 
-def test_the_benchmark_is_the_average_pace_not_one_month() -> None:
+def test_the_benchmark_is_the_average_pace_not_one_month(tmp_path) -> None:
     """Эталон равен медиане СРЕДНИХ темпов, а не срезу месяца.
 
     Падает на прежней мере: у всех четырёх классов числа расходятся в разы
     сотых, а не в округлении.
     """
-    city = MoscowMarket.bundled()
+    city = _measured_city(tmp_path)
     was = _one_month_median()
 
     for segment, (one_month, average) in OWNER_MEASURED.items():
@@ -94,9 +103,9 @@ def test_the_benchmark_is_the_average_pace_not_one_month() -> None:
                for segment in OWNER_MEASURED), "перекос перестал быть односторонним"
 
 
-def test_the_window_lets_more_projects_speak() -> None:
+def test_the_window_lets_more_projects_speak(tmp_path) -> None:
     """Выборка класса растёт: месяц без сделок больше не выбрасывает проект."""
-    city = MoscowMarket.bundled()
+    city = _measured_city(tmp_path)
     was = _one_month_median()
     now = city.payload["_area_median_projects"]
 

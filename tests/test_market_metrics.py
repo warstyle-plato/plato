@@ -499,10 +499,9 @@ def test_suggestions_rank_the_name_above_the_address(tmp_path) -> None:
         {"complex_id": 4, "name": "Событие", "developer": "Донстрой",
          "latitude": 55.6, "longitude": 37.4, "address": "Кутузовский проспект, вл. 99"},
     ]
-    (tmp_path / "projects.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
-    (tmp_path / "segments.json").write_text(json.dumps({"1": "Бизнес"}), encoding="utf-8")
-
-    client = PulseClient(tmp_path, login="x", password="y")
+    client = PulseClient(tmp_path, login="x", password="y", base="https://pulsprodaj.ru")
+    (client.dir / "projects.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+    (client.dir / "segments.json").write_text(json.dumps({"1": "Бизнес"}), encoding="utf-8")
     names = [row["name"] for row in client.suggest("кутуз")]
 
     # Сначала совпавшие с начала имени — короткое имя выше длинного, потом
@@ -677,7 +676,9 @@ def test_suggestions_work_from_a_warm_cache_without_credentials(tmp_path, monkey
 
     from market_search.api import install
 
-    cache = tmp_path / "market" / "pulse"
+    # Справочник лежит в каталоге своей базы: база по умолчанию — корневой
+    # поддомен, всероссийский кабинет кладёт свой рядом.
+    cache = tmp_path / "market" / "pulse" / "pulsprodaj.ru"
     cache.mkdir(parents=True)
     (cache / "projects.json").write_text(
         json.dumps(
@@ -692,6 +693,7 @@ def test_suggestions_work_from_a_warm_cache_without_credentials(tmp_path, monkey
     monkeypatch.setenv("MARKET_CABINET_KEY", "stand-key-2026")
     monkeypatch.delenv("PULSE_LOGIN", raising=False)
     monkeypatch.delenv("PULSE_PASSWORD", raising=False)
+    monkeypatch.delenv("PULSE_BASE_URL", raising=False)
     app = FastAPI()
     install(app)
     opened = TestClient(app, headers={"X-Market-Key": "stand-key-2026"})
