@@ -54822,7 +54822,10 @@ function vriBenefitsHtml(b){
  const total='<tr style="font-weight:600;background:#fafaf8"><td>Итого</td><td></td><td style="text-align:right">'+n0(b.jobs_total)+
   '</td><td></td><td style="text-align:right">'+n3(b.total_mln)+'</td><td style="font-size:11px">льгота МПТ '+n3(b.mpt_mln)+
   (b.transfer_mln>0?' + передача квартир '+n3(b.transfer_mln):'')+' млн ₽</td></tr>';
- const kz=b.kzatr?'<div style="font-size:11px;color:#777;margin:4px 0">Льгота за МПТ = 1000 ₽/м² × площадь × Кзатр × Кмест (1874-ПП); Кзатр '+
+ const act=b.act||{};
+ const actLink=act.url?'<a href="'+escapeHtml(act.url)+'" target="_blank" rel="noopener">'+escapeHtml(act.title||act.short||'')+'</a>':escapeHtml(act.title||'');
+ const kz=b.kzatr?'<div style="font-size:11px;color:#777;margin:4px 0">Льгота за МПТ = 1000 ₽/м² × площадь × Кзатр × Кмест — '+actLink+
+  '. Кмест берётся из приложения 3 к постановлению (таблица 1: графа — вид объекта, строка — группа районов; таблица 2 — приоритетные кадастровые кварталы). Кзатр '+
   String(b.kzatr.value).replace('.',',')+' ('+escapeHtml(b.kzatr.quarter)+'). Рабочие места — по нормам калькулятора ГлавАПУ.</div>':'';
  const sug=b.suggestion||{};
  let action='';

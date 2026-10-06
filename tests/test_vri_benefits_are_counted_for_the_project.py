@@ -57,7 +57,9 @@ def test_every_non_residential_object_gets_its_relief_and_jobs() -> None:
     office = rows["offices"]
     assert office["kmest"] == 0.7 and "Нагатино-Садовники" in office["kmest_source"]
     # Основание называет акт, а не только «приложение 3».
-    assert office["kmest_source"].startswith("1874-ПП") and "Приложение 3" in office["kmest_source"]
+    assert office["kmest_source"].startswith("1874-ПП, прил. 3 (коэффициенты места расположения")
+    assert got["act"]["url"] == "https://www.mos.ru/depr/documents/view/273915220/"
+    assert "от 31.12.2019 № 1874-ПП" in got["act"]["title"]
     assert office["benefit_mln"] == pytest.approx(
         1000 * office["area_sqm"] * kzatr * 0.7 / 1e6, rel=1e-6)
     assert office["jobs"] == int(office["area_sqm"] // 32)
@@ -197,6 +199,9 @@ def test_the_page_draws_the_table_and_the_button_writes_the_relief(core) -> None
                  "Добавить в расчёт ВРИ суммой", "1874-ПП"):
         assert text in html, text
     assert 'onclick="applyVriBenefits()"' in html
+    # Постановление названо полностью и ведёт на mos.ru.
+    assert 'href="https://www.mos.ru/depr/documents/view/273915220/"' in html
+    assert "приложения 3 к постановлению" in html
     # Кнопка вписала сумму режимом «Фиксированная сумма» и отметила источник.
     assert got["inputs"]["vri_relief_mode"] == "amount"
     assert got["inputs"]["vri_relief_mln"] == pytest.approx(benefits["total_mln"] + 1)

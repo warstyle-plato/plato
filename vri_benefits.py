@@ -29,7 +29,13 @@ import mpt_calculator
 
 # Акт, к которому относятся «приложение 3, таблица 1…» в основании Кмест:
 # `mpt_calculator` пишет пункт без акта, а в карточке проекта акт нужен.
-MPT_ACT = "1874-ПП (пост. Правительства Москвы от 31.12.2019)"
+MPT_ACT = "1874-ПП"
+MPT_ACT_TITLE = ("Постановление Правительства Москвы от 31.12.2019 № 1874-ПП «О мерах по "
+                 "реализации инвестиционных проектов по созданию мест приложения труда на "
+                 "территории города Москвы»")
+# Карточка документа на mos.ru (ДЭПР), найдена поиском mos.ru 06.10.2026.
+MPT_ACT_URL = "https://www.mos.ru/depr/documents/view/273915220/"
+MPT_APPENDIX = "прил. 3 (коэффициенты места расположения МПТ — Кмест)"
 
 # Калькулятор ГлавАПУ: льгота за передачу = площадь (тыс. м²) × uupss_flats.
 TRANSFER_RATE_MLN_PER_THS_SQM = 190.46
@@ -135,6 +141,7 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
         result["notes"].append(f"Кзатр для {quarter} не опубликован — принят базовый "
                                f"{mpt_calculator.KZATR_BASE} (с 01.01.2026)")
     result["kzatr"] = {"value": kzatr, "quarter": quarter}
+    result["act"] = {"short": MPT_ACT, "title": MPT_ACT_TITLE, "url": MPT_ACT_URL}
 
     candidates: list[tuple[str, str, str | None, str, float | None]] = []
     for obj in objects:
@@ -202,7 +209,9 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
             else:
                 item.update(benefit_mln=round(got.benefit_rub / 1e6, 3),
                             potential_mln=round(got.potential_benefit_rub / 1e6, 3),
-                            kmest=got.kmest, kmest_source=f"{MPT_ACT}, {got.kmest_source}",
+                            kmest=got.kmest,
+                            kmest_source=f"{MPT_ACT}, " + got.kmest_source.replace(
+                                "Приложение 3", MPT_APPENDIX, 1),
                             blockers=list(got.blockers), warnings=list(got.warnings))
         result["rows"].append(item)
         result["jobs_total"] += int(item["jobs"])
