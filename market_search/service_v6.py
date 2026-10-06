@@ -25,7 +25,8 @@ from .geo_resolution import RESOLVED, ProjectGeoResolver, address_signature
 from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .dynamics import DealsSummary, SalesDynamics
-from .market_reference import MoscowMarket
+from .market_reference import MarketAtlas, MoscowMarket
+from .region_market import RegionMarketCollector
 from .metrics import build_blocks
 from .narrative import analysis, findings
 from .verdict import (
@@ -159,6 +160,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # модуль работает как прежде.
         self.pulse = make_pulse_client(Path(data_dir) / "pulse")
         self.city = MoscowMarket.bundled()
+        # «Рынок региона»: Москва — из месячного отчёта, остальные регионы —
+        # из недельного сбора кабинета «Пульса» (`region_market`). Сбор
+        # ведёт фоновый поток; здесь только чтение готовых файлов.
+        regions_dir = Path(data_dir) / "pulse-regions"
+        self.markets = MarketAtlas(self.city, regions_dir)
+        self.region_market = RegionMarketCollector(self.pulse, regions_dir)
         # История продаж и остатка: живой источник её не отдаёт, она вынута из
         # помесячного отчёта и едет с кодом.
         self.dynamics = SalesDynamics.bundled()
@@ -963,11 +970,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # городская база не подставляется вовсе: медианы чужого города,
         # выданные молча, выглядят исправным сравнением.
         where = " ".join(filter(None, [subject_address, subject.query]))
-        city_scope = self.city.scope(where)
+        market = self.markets.for_address(where)
+        city_scope = self.markets.scope(where)
         # Сравнение с городом можно выключить. Для площадки без своего проекта
         # медиана класса по всей Москве отвечает не на тот вопрос: решают
         # соседи в трёх километрах, а город только шумит рядом с ними.
-        reference = self.city if (city_scope["covered"] and city_reference) else MoscowMarket({})
+        reference = market if (city_scope["covered"] and city_reference) else MoscowMarket({})
         blocks = build_blocks(subject_metrics, peers, reference, codes)
         notes = build_notes(blocks, subject_series)
         notes["premium_series"] = premium_series(subject_series, peers)
@@ -1125,8 +1133,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             },
             "city": {
                 "asked": bool(city_reference),
-                "source": self.city.source,
-                "observed_at": self.city.observed_at,
+                "source": market.source,
+                "observed_at": market.observed_at,
                 "scope": city_scope,
             },
             "retrieved_at": self.verified_prices.today.isoformat(),
@@ -1303,7 +1311,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             ),
         )
 
-        scope = self.city.scope(where)
+        market = self.markets.for_address(where)
+        scope = self.markets.scope(where)
+        if market is not self.city:
+            # Средняя ступень региона — муниципалитет, а не округ Москвы.
+            okrug = market.okrug_of(where)
         if selected_stages:
             # Округ и город стадию не знают. Подставить их медиану под подписью
             # «по стадии котлован» значило бы выдать за отбор то, чего не было.
@@ -1326,7 +1338,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 peers=peers,
                 segment=segment,
                 okrug=okrug,
-                city=self.city if scope["covered"] else MoscowMarket({}),
+                city=market if scope["covered"] else MoscowMarket({}),
                 fresh_since=fresh_since,
             )
         hint["stage_filter"] = stage_filter
