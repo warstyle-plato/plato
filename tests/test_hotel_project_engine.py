@@ -128,6 +128,18 @@ def test_the_scenario_moves_the_hotel_revenue() -> None:
                              rel=1e-9))
 
 
+def test_no_bridge_limit_fee_for_a_loan_the_hotel_does_not_take() -> None:
+    """Участок и проект гостиницы кредитует её кредит, БРИДЖа нет — значит, нет
+    и платы за резервирование его лимита. Расходы на финансирование проекта —
+    ровно проценты и комиссии кредита гостиницы."""
+    _, result = _run(purchase_price_mln=500, land_rights_cost_mln=100)
+    fin = result["finance"]
+    totals = fin["hotel"]["totals"]
+    assert fin["calculated_bridge_limit"] == 0
+    assert fin["financing_cost"] == pytest.approx(
+        totals["loan_interest"] + totals["loan_fee"], abs=1.0)
+
+
 def test_the_hotel_debt_is_judged_by_its_own_dscr() -> None:
     """Показатель долга (`report_layout.debt_metric`) — DSCR кредита
     гостиницы, а не LLCR: ПФ у гостиницы нет. Без кредита и у пустой

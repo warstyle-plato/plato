@@ -111,6 +111,11 @@ class ReportRequest(BaseModel):
     # Сравнение с городом. Для площадки без своего проекта медиана класса по
     # всей Москве отвечает не на тот вопрос — решают соседи в трёх километрах.
     city_reference: bool = True
+    # Наши сроки для сравнения с конкурентами. У площадки проекта в «Пульсе»
+    # нет, и без них отчёт честно говорит «нашего ввода нет». Заданное здесь
+    # называется в отчёте «задано в отчёте», а не выдаётся за источник.
+    project_sales_start: str | None = Field(default=None, max_length=20)
+    project_commissioning: str | None = Field(default=None, max_length=20)
 
     @model_validator(mode="after")
     def query_is_not_blank(self) -> "ReportRequest":
@@ -1008,6 +1013,9 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 segment_override=req.segment,
                 extra_peers=req.extra_peers,
                 city_reference=req.city_reference,
+                project_sales_start=req.project_sales_start,
+                project_commissioning=req.project_commissioning,
+                include_timing=True,
             )
         except SubjectNotFound as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

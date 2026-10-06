@@ -241,3 +241,61 @@ def test_the_page_check_fails_on_a_forgery() -> None:
 def test_no_objects_outside_ddu_hide_the_card() -> None:
     drawn = _render(_run(offices_strategy="ddu", retail_strategy="ddu")["report"])
     assert drawn["cards"] == [True, True] and drawn["tables"] == []
+
+
+def test_a_pure_nonresidential_project_reserves_the_object_line_not_a_bridge() -> None:
+    """Владелец (05.10.2026): чисто нежилой проект БРИДЖа не открывает —
+    участок и проект в доле кредита берёт НКЛ объекта, и плата за
+    резервирование считается с её лимита (вся плановая выборка) в месяц
+    первой выдачи. Прежде движок брал её ещё и с «лимита БРИДЖа» от оплат
+    участка — вторая комиссия за кредит, которого нет. Жилой проект с ПФ
+    комиссию БРИДЖа сохраняет."""
+    from test_nonres_debt_metric import _nonres_inputs
+
+    x, t = _nonres_inputs(offices_strategy="direct", purchase_price_mln=900)
+    result = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
+    assert result["finance"]["bridge_fee"] == 0.0
+    for item in result["finance"]["nonres"]["objects"]:
+        f = item["financing"]
+        assert f["limit"] == pytest.approx(f["draw_total"])
+        assert f["reservation_fee"] == pytest.approx(
+            f["limit"] * float(x["reservation_fee_pct"]) / 100, rel=1e-12)
+        # Две НКЛ (владелец, 06.10.2026): до РнС — участок и проект, с РнС —
+        # строительная. Каждая платит за невыбранный остаток своего лимита с
+        # первой своей выдачи, как ПФ: (лимит − выбранное) × ставка / 12.
+        permit = str(result["dates"]["permit"])[:10]
+        rows = item["rows"]
+        land = [r for r in rows if r["month"] < permit and r["nonres_loan_draw"]]
+        build = [r for r in rows if r["month"] >= permit and r["nonres_loan_draw"]]
+        assert land and build, "участок выбирается до РнС, стройка — после"
+        assert f["limit_land"] == pytest.approx(sum(r["nonres_loan_draw"] for r in land))
+        assert f["limit_build"] == pytest.approx(sum(r["nonres_loan_draw"] for r in build))
+        expected = 0.0
+        for line, limit in ((land, f["limit_land"]), (build, f["limit_build"])):
+            drawn = 0.0
+            for r in rows:
+                if line[0]["month"] <= r["month"] <= line[-1]["month"]:
+                    drawn += r["nonres_loan_draw"]
+                    expected += max(0.0, limit - drawn) * float(x["limit_fee_pct"]) / 100 / 12
+        assert f["commitment_fee"] == pytest.approx(expected, rel=1e-9) and expected > 0
+        # Строительный лимит не лежит невыбранным с даты покупки участка.
+        single = 0.0
+        drawn = 0.0
+        for r in rows:
+            if r["month"] >= land[0]["month"] and r["month"] <= build[-1]["month"]:
+                drawn += r["nonres_loan_draw"]
+                single += max(0.0, f["limit"] - drawn) * float(x["limit_fee_pct"]) / 100 / 12
+        assert f["commitment_fee"] < single / 2
+        assert f["reservation_fee"] + f["commitment_fee"] + f["fee"] == pytest.approx(
+            item["totals"]["loan_fee"], rel=1e-12)
+        rows = _rows({"rows": next(r["rows"] for r in result["report"]["nonres_financing"]
+                                   if r["key"] == item["key"])})
+        assert rows["Плата за резервирование лимита НКЛ"]["value"] == pytest.approx(f["reservation_fee"])
+    # Ставку человек вписывает свою или ставит 0 — тогда платы нет.
+    zero = core.calculate(core.CalcRequest(inputs={**x, "limit_fee_pct": 0, "reservation_fee_pct": 0},
+                                           tep=t, rates=[]))
+    for item in zero["finance"]["nonres"]["objects"]:
+        assert item["financing"]["commitment_fee"] == 0 and item["financing"]["reservation_fee"] == 0
+    housing = core.calculate(core.CalcRequest(inputs=copy.deepcopy(core.DEFAULT_INPUTS),
+                                              tep=copy.deepcopy(core.TEP_DEFAULT), rates=[]))
+    assert housing["finance"]["bridge_fee"] > 0
