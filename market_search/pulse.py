@@ -304,6 +304,12 @@ def _pulse_date(value: Any) -> str | None:
     return None
 
 
+# Источники дат проекта по старшинству. Страница проекта — первой: это то,
+# что человек видит в ЛК; прежний разбор той же страницы по ключам JSON —
+# последним, он угадывает имя поля.
+_DATE_SOURCES = ("pulse_project_page", "pulse_api_table", "pulse_map", "pulse_project_page_keys")
+
+
 def _date_key_score(path: str, kind: str) -> int:
     key = re.sub(r"[^a-zа-я0-9]+", " ", str(path).lower().replace("ё", "е"))
     if kind == "sales_start":

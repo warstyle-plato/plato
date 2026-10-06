@@ -204,7 +204,7 @@
       var bubble = document.createElement('div');
       bubble.className = 'ia-fab-hint';
       bubble.id = 'iaFabHint';
-      bubble.innerHTML = 'Это AI-помощник по модели: разложит LLCR, найдёт потолок цены, '
+      bubble.innerHTML = 'Это AI-помощник по модели: разложит показатели, найдёт потолок цены, '
         + 'проверит аномалии. Числа считает движок, а не языковая модель.'
         + '<button type="button" aria-label="Понятно">×</button>';
       document.body.appendChild(bubble);
@@ -1111,8 +1111,9 @@
       if (hint) hint.remove();
       var input = document.getElementById('aiInput');
       if (input && !input.value) {
-        input.value = 'Объясни текущее инвестиционное решение: что двигает LLCR, '
-          + 'какие два-три параметра важнее всего и что бы ты проверил в первую очередь?';
+        input.value = 'Объясни текущее инвестиционное решение: что двигает '
+          + (debtMetric(pageResult()).key === 'dscr' ? 'DSCR кредита объектов' : 'LLCR')
+          + ', какие два-три параметра важнее всего и что бы ты проверил в первую очередь?';
       }
       if (typeof window.toggleAgent === 'function') window.toggleAgent(true);
     };
@@ -1127,21 +1128,33 @@
        у каждой очереди своя кредитная линия. Сводный LLCR 1,23x рядом с
        «максимум не достигается» читался как противоречие, пока карточка не
        говорила, что максимум подбирался для очереди с 0,95x. */
-    var phases = pagePhases();
+    /* Чем мерить долг, решает движок (`report.layout.debt_metric`): LLCR у
+       проекта с ПФ, DSCR кредита объектов у нежилого. Карточка читает это
+       решение: LLCR нежилого проекта (−8,68x) — деление нуля ПФ, а не ответ. */
+    var metric = debtMetric(result);
+    var byLlcr = metric.key === 'llcr';
+    var phases = byLlcr ? pagePhases() : null;
     var weakest = phases ? weakestPhase(phases) : null;
-    var llcr = phases && phases.consolidated && phases.consolidated.summary
-      ? phases.consolidated.summary.llcr : result.summary.llcr;
+    var llcr = !byLlcr ? metric.value
+      : phases && phases.consolidated && phases.consolidated.summary
+        ? phases.consolidated.summary.llcr : result.summary.llcr;
+    var name = byLlcr ? 'LLCR' : 'DSCR';
+    var target = Number(metric.target || TARGET_LLCR), floor = Number(metric.floor || 1.05);
     /* Судит свод: банк смотрит лимит в целом, ради этого и есть перенос долга
        между очередями (владелец, 04.09.2026). Слабейшая очередь называется
        рядом — она говорит, где понадобится согласие банка, а не проходит ли
        проект. */
     var title = document.getElementById('iaVerdictTitle');
     card.classList.remove('pass', 'edge', 'fail');
-    if (llcr == null) {
-      title.textContent = 'LLCR не рассчитан';
-    } else if (llcr >= TARGET_LLCR) {
+    if (!metric.key) {
+      title.textContent = Number(result.summary.net_profit || 0) > 0
+        ? 'Экономика проходит по прибыли' : 'Экономика не проходит';
+      card.classList.add(Number(result.summary.net_profit || 0) > 0 ? 'edge' : 'fail');
+    } else if (llcr == null) {
+      title.textContent = name + ' не рассчитан';
+    } else if (llcr >= target) {
       card.classList.add('pass'); title.textContent = 'Экономика проходит';
-    } else if (llcr >= 1.05) {
+    } else if (llcr >= floor) {
       card.classList.add('edge'); title.textContent = 'Экономика на границе';
     } else {
       card.classList.add('fail'); title.textContent = 'Экономика не проходит';
@@ -1154,7 +1167,8 @@
       + ' · маржинальность ' + fmtPct(result.summary.margin)
       + ' · IRR ' + ((result.summary.equity_returns || {}).label
         || (result.summary.irr_equity == null ? 'N/A' : fmtPct(result.summary.irr_equity)))
-      + ' · порог банка LLCR ' + TARGET_LLCR.toFixed(2).replace('.', ',') + 'x.';
+      + (metric.key ? ' · порог банка ' + name + ' ' + target.toFixed(2).replace('.', ',') + 'x.'
+        : '. Покрытие долга не меряется — кредит объектов гасится выручкой продаж.');
 
     var found = goalSeek && goalSeek.available && goalSeek.solution ? goalSeek.solution : null;
     var price = found ? goalSeek.current.variable : Number(pageInputs().purchase_price_mln || 0);
@@ -1163,15 +1177,23 @@
       weakest
         ? { label: 'LLCR (свод / слабейшая очередь)', value: fmtMult(llcr) + ' / ' + fmtMult(weakest.llcr),
             note: 'Ориентир банка — 1,20x; судит свод, слабейшая — ' + weakest.name + '.' }
-        : { label: 'LLCR (расчётный)', value: fmtMult(llcr), note: 'Ориентир банка — 1,20x.' },
+        : metric.key
+          ? { label: byLlcr ? 'LLCR (расчётный)' : metric.label, value: fmtMult(llcr),
+              note: 'Ориентир банка — ' + target.toFixed(2).replace('.', ',') + 'x'
+                + (byLlcr ? '.' : '; NOI объекта на проценты и тело кредита.') }
+          : { label: metric.label, value: 'не считается', note: 'Кредит гасится выручкой продаж: платежа из NOI нет. Погашение — в «Финансировании объекта».', wait: true },
       price > 0
         ? { label: 'Цена входа', value: mlnLabel(price), note: 'Текущая цена приобретения.' }
         : { label: 'Цена входа', value: 'не задана', note: 'Заполните «Стоимость покупки» в Экономике — сейчас всё посчитано как для бесплатного участка.', wait: true },
-      found
-        ? { label: 'Максимум цены входа', value: mlnLabel(solution), note: 'При LLCR не ниже 1,20x' + (goalSeek.scope_label ? ' · ' + goalSeek.scope_label : '') + '.' }
+      !metric.key
+        ? { label: 'Максимум цены входа', value: 'не подбирается', note: 'Потолок цены ищется по порогу покрытия долга, а у кредита, который гасится продажами, порога нет. Смотрите прибыль и IRR.', wait: true }
+        : found
+        ? { label: 'Максимум цены входа', value: mlnLabel(solution), note: 'При ' + name + ' не ниже ' + target.toFixed(2).replace('.', ',') + 'x' + (goalSeek.scope_label ? ' · ' + goalSeek.scope_label : '') + '.' }
         : { label: 'Максимум цены входа', value: ceilingText(), note: ceilingNote(), wait: true },
-      found
-        ? { label: 'Запас к цене', value: mlnLabel(found.change_abs), note: found.change_abs >= 0 ? 'Цена ниже потолка.' : 'Цена выше потолка — покупка не проходит по LLCR.' }
+      !metric.key
+        ? { label: 'Запас к цене', value: '—', note: 'Нет потолка — нет и запаса.', wait: true }
+        : found
+        ? { label: 'Запас к цене', value: mlnLabel(found.change_abs), note: found.change_abs >= 0 ? 'Цена ниже потолка.' : 'Цена выше потолка — покупка не проходит по ' + name + '.' }
         : { label: 'Запас к цене', value: '—', note: refused() ? 'Порог не достигается ни при какой цене входа' + (goalSeek.scope_label ? ' у ' + scopeGenitive(goalSeek.scope_label) : '') + ' — дело не в цене.' : 'Считается после подбора максимума.', wait: true }
     ];
 
@@ -1181,7 +1203,9 @@
     }).join('');
 
     var stamp = document.getElementById('iaVerdictStamp');
-    if (goalSeek && goalSeek.available === false) {
+    if (!metric.key) {
+      stamp.textContent = '';
+    } else if (goalSeek && goalSeek.available === false) {
       stamp.textContent = 'Подбор выполнен движком DevelopAid ' + (goalSeek.engine_version || '')
         + ': ' + (goalSeek.reason || 'причина не указана');
     } else if (goalSeek && goalSeek.engine_version) {
@@ -1214,9 +1238,18 @@
         : 'ближе всего при ' + mlnLabel(Number(closest.variable));
       var got = closest.metric == null ? '' : ' — там выходит ' + fmtMult(closest.metric)
         + (closest.scope_label && closest.scope_label !== goalSeek.scope_label ? ' (' + closest.scope_label + ')' : '');
-      return 'LLCR 1,20x у ' + who + ' не достигается ' + at + got + '.';
+      if (goalSeek.target_metric === null) return goalSeek.reason || '';
+      return seekName() + ' 1,20x у ' + who + ' не достигается ' + at + got + '.';
     }
-    return 'Подбор параметра движком при LLCR 1,20x.';
+    return 'Подбор параметра движком при ' + seekName() + ' 1,20x.';
+  }
+  function seekName() {
+    var m = goalSeek && goalSeek.target_metric ? goalSeek.target_metric : debtMetric(pageResult()).key;
+    return m === 'dscr' ? 'DSCR' : 'LLCR';
+  }
+  function debtMetric(result) {
+    var layout = result && result.report && result.report.layout;
+    return (layout && layout.debt_metric) || { key: 'llcr', label: 'LLCR', target: TARGET_LLCR, floor: 1.05 };
   }
   function scopeGenitive(label) {
     if (label.indexOf('слабейшая очередь') === 0) return 'слабейшей очереди' + label.slice('слабейшая очередь'.length);
@@ -1229,6 +1262,7 @@
      отдельным запросом и только там, где на него смотрят. */
   function ensureGoalSeek() {
     if (!pageResult() || goalSeekBusy) return;
+    if (!debtMetric(pageResult()).key) return;  // подбирать не по чему
     if (goalSeek && !goalSeekStale) return;
     if (goalSeekAbort) goalSeekAbort.abort();
     goalSeekAbort = new AbortController();
@@ -1437,12 +1471,17 @@
       if (text === 'Пиковый остаток') { node.textContent = 'Пиковая потребность в БРИДЖе'; done += 1; }
       if (text === 'Расчётный лимит') { node.textContent = 'Расчётный лимит банка'; done += 1; }
     });
-    if (!bridgeChecked && pageResult() && done < 3) {
+    // У проекта без ПФ (нежилой вне ДДУ) страница сама убирает плитку
+    // «Пиковый БРИДЖ» из шапки — решение движка `report.layout`. Ждать её там
+    // значит поднимать ложную тревогу «переименованы частично (2 из 3)».
+    var layout = typeof reportLayout === 'function' ? reportLayout(pageResult()) : null;
+    var expected = layout && layout.project_finance === false ? 2 : 3;
+    if (!bridgeChecked && pageResult() && done < expected) {
       bridgeChecked = true;
-      missing.push('термины БРИДЖа переименованы частично (' + done + ' из 3) — проверьте #reportKpi и #bridgeTable');
+      missing.push('термины БРИДЖа переименованы частично (' + done + ' из ' + expected + ') — проверьте #reportKpi и #bridgeTable');
       report();
     }
-    if (done >= 3) bridgeChecked = true;
+    if (done >= expected) bridgeChecked = true;
     explainBridge();
   }
 

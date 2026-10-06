@@ -172,6 +172,20 @@ def _parcel_drawing(payload: dict[str, Any], core: Any, width: float = 260,
     return drawing
 
 
+def _debt_metric_tile(result: dict[str, Any], core: Any) -> tuple[str, str]:
+    """Плитка долга — показатель, которым движок судит проект
+    (`report.layout.debt_metric`): LLCR у проекта с ПФ, DSCR кредита объектов у
+    нежилого. LLCR нежилого проекта — деление нуля ПФ, а не ответ."""
+    summary = result.get("summary") or {}
+    layout = (result.get("report") or {}).get("layout") or {}
+    metric = layout.get("debt_metric")
+    if not isinstance(metric, dict) or metric.get("key") == "llcr":
+        return "LLCR", core._pdf_num(summary.get("llcr"), 2) + "x"
+    if metric.get("key") == "dscr" and metric.get("value") is not None:
+        return "DSCR кредита объектов (мин.)", core._pdf_num(metric["value"], 2) + "x"
+    return "Кредит объектов", "гасится выручкой ДКП"
+
+
 def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
     import html
     from reportlab.lib import colors
@@ -211,7 +225,7 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
         ("Выручка", core._pdf_money(summary.get("revenue"))),
         ("Чистая прибыль", core._pdf_money(summary.get("net_profit"))),
         ("Маржинальность", core._pdf_pct(summary.get("margin"))),
-        ("LLCR", core._pdf_num(summary.get("llcr"), 2) + "x"),
+        _debt_metric_tile(result, core),
         ("Пиковый БРИДЖ", core._pdf_money(financing.get("actual_bridge"))),
     ]
 

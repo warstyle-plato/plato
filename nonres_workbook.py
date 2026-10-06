@@ -417,6 +417,68 @@ CHECKS: tuple[tuple[str, str, str], ...] = (
 TOLERANCE_SHARE = 1e-6
 
 
+EQUITY_SHEET = "Собственное участие"
+
+
+def _equity_sheet(book: Workbook, result: dict[str, Any]) -> None:
+    """Лист «Собственное участие»: таблица движка (`equity_participation_report`)
+    — вложения и возврат собственника по причинам, результат, по годам, — и
+    помесячный поток капитала проекта (тот, по которому считан IRR) с
+    накопленным итогом формулой книги."""
+    report = (result.get("report") or {}).get("equity_participation") or {}
+    cashflow = result.get("cashflow") or {}
+    if not report.get("rows"):
+        return
+    ws = book.create_sheet(EQUITY_SHEET)
+    ws["A1"] = "Собственное участие — СЧИТАЕТ ДВИЖОК"
+    ws["A1"].font = BOLD
+    row = 3
+    for line in report["rows"]:
+        unit, value = line.get("unit"), line.get("value")
+        ws[f"A{row}"] = str(line.get("label") or "")
+        if unit == "section":
+            ws[f"A{row}"].font = BOLD
+        elif unit in ("rub", "mln", "pct", "mult") and value is not None:
+            ws[f"B{row}"] = float(value)
+            ws[f"B{row}"].fill = ENGINE_FILL
+            ws[f"B{row}"].number_format = ("0.0%" if unit == "pct" else "0.00" if unit == "mult"
+                                           else "#,##0")
+        else:
+            ws[f"B{row}"] = "—" if value is None else str(value)
+        row += 1
+    row += 1
+    columns = report.get("columns") or []
+    if report.get("years") and columns:
+        for i, column in enumerate(columns):
+            ws.cell(row, i + 1, column[1]).font = BOLD
+        row += 1
+        for year in report["years"]:
+            for i, column in enumerate(columns):
+                value = year.get(column[0])
+                cell = ws.cell(row, i + 1, value if column[2] == "text" else float(value or 0.0))
+                if column[2] != "text":
+                    cell.number_format = "#,##0"
+            row += 1
+        row += 1
+    months = cashflow.get("months") or []
+    flows = cashflow.get("equity") or []
+    if months and flows:
+        ws.cell(row, 1, "Месяц").font = BOLD
+        ws.cell(row, 2, "Поток собственного капитала, ₽").font = BOLD
+        ws.cell(row, 3, "Накопленный, ₽ (формула книги)").font = BOLD
+        row += 1
+        first = row
+        for month, flow in zip(months, flows):
+            ws.cell(row, 1, str(month)[:7])
+            ws.cell(row, 2, float(flow or 0.0)).fill = ENGINE_FILL
+            ws.cell(row, 3, f"=B{row}" if row == first else f"=C{row - 1}+B{row}")
+            ws.cell(row, 2).number_format = ws.cell(row, 3).number_format = "#,##0"
+            row += 1
+    ws.column_dimensions["A"].width = 64
+    for letter in "BCDE":
+        ws.column_dimensions[letter].width = 24
+
+
 def build(result: dict[str, Any], project_name: str = "") -> bytes:
     """Книга нежилого проекта из посчитанного движком результата."""
     finance = result.get("finance") or {}
@@ -469,6 +531,7 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
     checks["I3"] = f'=IF(COUNTIF(G3:G{last},"РАСХОЖДЕНИЕ")=0,"ПРОЙДЕНО","ЕСТЬ РАСХОЖДЕНИЯ")'
     for letter, width in (("A", 22), ("B", 30), ("C", 20), ("D", 20), ("E", 14), ("F", 12), ("G", 14)):
         checks.column_dimensions[letter].width = width
+    _equity_sheet(book, result)
     stream = io.BytesIO()
     book.save(stream)
     return stream.getvalue()
