@@ -7880,7 +7880,7 @@ class TepDerivedRequest(BaseModel):
     k2: float = 1.0
     zone_two: bool = False
     upks_rub: float = 0.0
-    sqm_per_job: float = 36.0
+    sqm_per_job: float = 32.0
     parking_norm_regime: str = "2118_2026"
     # Число квартир: задано — постоянные места пунктом 2 по средней квартире.
     apartment_count: float = 0.0
@@ -8000,7 +8000,7 @@ class TepBySiteRequest(BaseModel):
     nonresidential_np_sqm: float = 0.0
     district: str = ""
     inside_moscow: bool = True
-    sqm_per_job: float = 36.0
+    sqm_per_job: float = 32.0
     parking_norm_regime: str = "2118_2026"
     apartment_count: float = 0.0
 
@@ -10067,6 +10067,33 @@ def _manual_tep_filled_template(project_name: str, region_label: str,
     return out.getvalue()
 
 
+# Рекомендуемая плотность от СПП калькулятора ГлавАПУ, тыс. м²/га — таблица по
+# площади территории (без ограничений) с линейной интерполяцией и округлением
+# до 0,1 (код калькулятора: Yd/dg). Нагатино 17,8109 га → 23,1.
+GLAVAPU_DENSITY_BY_AREA = ((2.5, 35.0), (10.0, 25.0), (22.5, 22.0), (45.0, 20.0))
+
+
+def glavapu_recommended_density(area_ha: float) -> float:
+    area = max(0.0, float(area_ha or 0.0))
+    table = GLAVAPU_DENSITY_BY_AREA
+    if area <= table[0][0]:
+        return table[0][1]
+    for (a0, d0), (a1, d1) in zip(table, table[1:]):
+        if area <= a1:
+            return round(d0 + (area - a0) / (a1 - a0) * (d1 - d0), 1)
+    return table[-1][1]
+
+
+# Норма МПТ калькулятора — м² наземной площади на рабочее место по виду
+# (код калькулятора, таблица Q): встроенные помещения и офисы 32, торговля 45.
+GLAVAPU_SQM_PER_JOB = {"built_in": 32.0, "offices": 32.0, "retail": 45.0}
+
+
+def _ru_trim(value: float, digits: int) -> str:
+    text = f"{float(value):.{digits}f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",") or "0"
+
+
 def vri_tep_quick(region: str, query: str,
                  site_area_ha: float | None = None,
                  district: str | None = None,
@@ -10265,21 +10292,30 @@ def vri_tep_quick(region: str, query: str,
         # цифры): СПП 94/6, НП — 90% СПП, квартиры — 65% жилой СПП, население —
         # 33 м² квартир на человека, квартир — население/2,1, соцпотребность и
         # обслуживание — нормативы на тысячу жителей с округлением вверх.
-        density = 35000.0
+        # Плотность: заданная вызывающим, иначе рекомендуемая калькулятора —
+        # таблица по площади территории (`glavapu_recommended_density`).
+        # Прежде здесь стояли 35 тыс. м²/га для любой площади: это верно
+        # только до 2,5 га, а на Нагатино (17,81 га) калькулятор берёт 23,1.
+        density = (float(density_sqm_per_ha) if density_sqm_per_ha and density_sqm_per_ha > 0
+                   else glavapu_recommended_density(area) * 1000.0)
         spp = area * density
         apartments_gns = spp * MKD_SPP_SPLIT["apartments"]
         apartments = apartments_gns * 0.65
         commerce_gns = spp * MKD_SPP_SPLIT["ground_commercial"]
         population = math.ceil(apartments / 33.0) if apartments > 0 else 0
         units = round(population / 2.1) if population else 0
-        dou = round(population * 44 / 1000)
+        # Вверх, как все нормативы на тысячу: на Нагатино (7 618 жителей)
+        # калькулятор даёт 336, округление к ближайшему давало 335.
+        dou = math.ceil(population * 44 / 1000) if population else 0
         school = math.ceil(population * 90 / 1000) if population else 0
         # Взрослая поликлиника — 13,2 пос./смену на тысячу, не 13,3: три
         # выгрузки (население 377, 422 и 1224 → 5, 6 и 17) сходятся только на
         # 13,2 с округлением вверх; 13,3 на населении 377 давала 6 против 5
         # у штатного калькулятора — и через мощность завышала компенсацию.
         clinic_adult = math.ceil(population * 13.2 / 1000) if population else 0
-        clinic_child = math.ceil(population * 6.5 / 1000) if population else 0
+        # Детская — 5,8 пос./смену на тысячу (код калькулятора; Нагатино
+        # 06.10.2026: 45 при 7 618 жителях). Прежние 6,5 давали 50.
+        clinic_child = math.ceil(population * 5.8 / 1000) if population else 0
         # Смешанная поликлиника — свой норматив 19 пос./смену на тысячу, а не
         # сумма взрослой и детской: на населении 970 город даёт 19 при наших
         # частях 13+7 (дрейф компенсации 190,814 против 200,857, третья точка
@@ -10309,10 +10345,18 @@ def vri_tep_quick(region: str, query: str,
                 # порядок, а не половина суммы.
                 return places * legacy_rate
             return factor * (uupss_th * places / 1000.0 + places * zu_sqm * upks / 1e6)
-        comp_dou = _social_comp(dou, 4799.71, 35.0, 1.2, 9.916526)
-        comp_school = _social_comp(school, 4578.69, 19.0, 1.2, 7.751053)
-        comp_clinic = _social_comp(clinic, 7887.92, 30.0, 1.0, 10.857111)
-        jobs = math.ceil(commerce_gns / 36.0) if commerce_gns > 0 else 0
+        # Земля на место — по мощности объекта, как в коде калькулятора:
+        # ДОО 35 м² до 150 мест, дальше 32; школа 19 до 900, 16 до 1 500,
+        # дальше 14. Мощность поликлиники в компенсации — взрослая + детская
+        # (Нагатино 06.10.2026: 101 + 45 = 146 при строке 32 = 145).
+        dou_land = 35.0 if dou <= 150 else 32.0
+        school_land = 19.0 if school <= 900 else 16.0 if school <= 1500 else 14.0
+        comp_dou = _social_comp(dou, 4799.71, dou_land, 1.2, 9.916526)
+        comp_school = _social_comp(school, 4578.69, school_land, 1.2, 7.751053)
+        comp_clinic = _social_comp(clinic_adult + clinic_child, 7887.92, 30.0, 1.0, 10.857111)
+        # МПТ встроенных помещений — 32 м² НП на место, округление к
+        # ближайшему (код калькулятора, таблица Q: embeddedNonResidential 32).
+        jobs = round(commerce_gns * 0.9 / GLAVAPU_SQM_PER_JOB["built_in"]) if commerce_gns > 0 else 0
         # Машино-места. Постоянные — методика города с августа 2026: одно
         # место на 90 м² НП жилых зданий (те же 100 м² их СПП) × К1. Прежняя
         # строка калькулятора — площадь квартир × 0,257/33 × К1 — на свежих
@@ -10362,7 +10406,11 @@ def vri_tep_quick(region: str, query: str,
             # `recalculate_from_glavapu_baseline` — он про наши метры и про
             # закон, а этот про нормативный ТЭП города. Приводить их к одному
             # числу нельзя: тогда фолбэк перестанет заменять калькулятор.
-            mm_permanent = math.ceil(apartments_gns * 0.9 / 90.0 * k1)
+            # Постоянные — пункт 1 приложения 5 к 945-ПП в ред. 2118-ПП:
+            # S / (33 × 2,1) × 0,8 вверх, без К1. Сходится со всеми тремя
+            # выгрузками: 144 и 161 (16.08.2026), 2 902 (Нагатино 06.10.2026);
+            # прежняя строка «НП жилых / 90 × К1» на Нагатино давала 2 901.
+            mm_permanent = moscow_permanent_parking_2118(apartments)
             mm_guest = math.ceil(mm_permanent / 10.0)
             mm_onsite = math.ceil(commerce_np / 90.0 * k1 * k2)
             mm = {
@@ -10374,8 +10422,10 @@ def vri_tep_quick(region: str, query: str,
             }
         rows = _glavapu_rows({
             "1": fmt(area, 3),
-            "2": fmt(density / 1000, 0),
-            "3": fmt(density * 0.9 / 1000, 1),
+            # Плотность — как печатает калькулятор: без хвостовых нулей
+            # («23,1», «20,79», «31,5»).
+            "2": _ru_trim(density / 1000, 3),
+            "3": _ru_trim(density * 0.9 / 1000, 2),
             "4": fmt(population, 0),
             "5": fmt(units, 0),
             "6": fmt(spp / 1000, 3),
@@ -11907,7 +11957,7 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
                       k1: float = 1.0, k2: float = 1.0,
                       zone_two: bool = False,
                       upks_rub: float = 0.0,
-                      sqm_per_job: float = 36.0,
+                      sqm_per_job: float = 32.0,
                       parking_norm_regime: str = "2118_2026",
                       apartment_count: float = 0.0) -> dict[str, Any]:
     """Что следует из введённого руками ТЭП: население, соцпотребность,
@@ -11970,9 +12020,16 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
             return 0.0
         return factor * (uupss_th * places / 1000.0 + places * land_sqm * upks / 1e6)
 
-    comp_dou = compensation(dou, 4799.71, 35.0, 1.2)
-    comp_school = compensation(school, 4578.69, 19.0, 1.2)
-    comp_clinic = compensation(clinic, 7887.92, 30.0, 1.0)
+    # Земля на место — по мощности объекта, как у калькулятора: ДОО 35 м² до
+    # 150 мест, дальше 32; школа 19 до 900, 16 до 1 500, дальше 14. Мощность
+    # поликлиники в компенсации — взрослая (13,2) + детская (5,8) на тысячу:
+    # на Нагатино 101 + 45 = 146 при смешанной 145 (выгрузка 06.10.2026).
+    clinic_parts = ((math.ceil(13.2 * population / 1000) + math.ceil(5.8 * population / 1000))
+                    if population else 0)
+    comp_dou = compensation(dou, 4799.71, 35.0 if dou <= 150 else 32.0, 1.2)
+    comp_school = compensation(school, 4578.69,
+                               19.0 if school <= 900 else 16.0 if school <= 1500 else 14.0, 1.2)
+    comp_clinic = compensation(clinic_parts, 7887.92, 30.0, 1.0)
     return {
         "population": population,
         "apartment_units": math.ceil(population / 2.1) if population else 0,
@@ -11993,11 +12050,11 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
         "parking_basis": parking_basis,
         # Места приложения труда — основание льготы по плате за ВРИ (3135-ПП),
         # у калькулятора для неё своя строка 52 «Льгота на стр-во жилья за
-        # создание МПТ». Норматив у нас 36 м² на место, у калькулятора на
-        # выгрузке 20.08.2026 выходит около 32 (6 867 м² → 214 мест): одна
-        # точка делителя не задаёт, поэтому он параметр, а не константа, и
-        # печатается вместе с ответом.
-        "jobs": math.ceil(nonresidential_np / sqm_per_job) if nonresidential_np and sqm_per_job else 0,
+        # создание МПТ». Норма — 32 м² НП на место с округлением к ближайшему,
+        # как в коде калькулятора для встроенных помещений и офисов (таблица Q;
+        # 6 867 м² → 214, Нагатино 22 217 м² → 694). У торговли у калькулятора
+        # 45 — поэтому делитель параметр и печатается вместе с ответом.
+        "jobs": round(nonresidential_np / sqm_per_job) if nonresidential_np and sqm_per_job else 0,
         "sqm_per_job": float(sqm_per_job or 0.0),
         "upks_rub": upks,
         "k1": k1,
