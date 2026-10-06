@@ -135,3 +135,23 @@ def test_the_page_sends_the_existing_area_to_the_calculator() -> None:
     from mpt_extension import _MPT_FRAGMENT
     assert 'id="mpt-existing"' in _MPT_FRAGMENT
     assert "existing_area_sqm:" in _MPT_FRAGMENT
+
+
+def test_the_page_and_the_api_take_kterm_again() -> None:
+    """Ксрок есть в п. 1.14.1 (ред. 24.04.2026); прежде API отказывал полю."""
+    import main_registry
+    client = TestClient(main_registry.app, raise_server_exceptions=False)
+    base = {"category": "office", "district": "Нагатино-Садовники",
+            "ttk_position": "outside", "area_sqm": 10_000}
+    plain = client.post("/api/mpt/calculate", json=base).json()
+    early = client.post("/api/mpt/calculate", json={**base, "kterm": 1.1})
+    assert early.status_code == 200, early.text
+    assert early.json()["benefit_rub"] == pytest.approx(plain["benefit_rub"] * 1.1)
+    from mpt_extension import _MPT_FRAGMENT
+    assert 'id="mpt-kterm"' in _MPT_FRAGMENT
+
+
+def test_the_workplaces_answer_rests_on_the_text_not_on_silence() -> None:
+    assert "не встречается ни разу" in mpt.WORKPLACES_RULE
+    assert "1.3.15" in mpt.EXISTING_AREA_RULE
+    assert "24.04.2026" in mpt.EDITION_READ

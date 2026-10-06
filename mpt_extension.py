@@ -71,13 +71,13 @@ class MptCalculateRequest(BaseModel):
     ons_readiness_pct: float = Field(default=0, ge=0, lt=100)
     ons_registered_before_2019_11_01: bool | None = None
     existing_area_sqm: float = Field(default=0, ge=0)
+    kterm: float = 1.0
 
 
-# Коэффициента срока реализации в действующей формуле нет. Прежний флаг
-# смешанного назначения не передаёт площади по отдельным графам таблицы.
-# Кадастровый номер, напротив, используется приоритетной таблицей 2.
+# Прежний флаг смешанного назначения не передаёт площади по отдельным графам
+# таблицы. Кадастровый номер, напротив, используется приоритетной таблицей 2.
+# Ксрок в формуле п. 1.14.1 есть (редакция 24.04.2026) и снова принимается.
 _REMOVED_FIELDS = {
-    "kterm": "Ксрок в 1874-ПП отсутствует: формула п. 1.14.1 — 1000 × Sмпт × Кзатр × Кмест.",
     "mixed_use": (
         "Признак смешанного назначения заменён площадями: примечание к таблице "
         "приложения 3 требует применять коэффициенты пропорционально площади, "
@@ -204,6 +204,7 @@ _MPT_FRAGMENT = r'''
         <div id="mpt-warehouse-wrap"><label for="mpt-warehouse">Склад внутри здания, м²</label><input id="mpt-warehouse" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-yard-wrap"><label for="mpt-yard">Открытая складская площадка, м²</label><input id="mpt-yard" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-rooms-wrap" class="mpt-hidden"><label for="mpt-rooms">Номерной фонд, м² <span style="opacity:.6">не менее 75%</span></label><input id="mpt-rooms" type="number" min="0" step="1" value="0"></div>
+        <div><label for="mpt-kterm">Ксрок <span style="opacity:.6">п. 1.14.1</span></label><select id="mpt-kterm"><option value="1" selected>1 — обычный срок регистрации права</option><option value="1.05">1,05 — регистрация раньше срока на 6–12 мес.</option><option value="1.1">1,1 — регистрация раньше срока на 12+ мес.</option></select></div>
         <div><label for="mpt-kzatr">Кзатр <span style="opacity:.6">приказ ДИиПП</span></label><input id="mpt-kzatr" type="number" min="0" step="0.00001" value="166.23078"></div>
         <div><label for="mpt-kzatr-quarter">Квартал, к которому относится Кзатр</label><input id="mpt-kzatr-quarter" type="text" placeholder="напр. 2026-Q1"></div>
         <div class="mpt-wide"><label><input id="mpt-kzatr-fixed" type="checkbox" style="width:auto"> Соглашение заключено до вступления приказа от 10.03.2026 в силу — Кзатр не индексируется</label>
@@ -354,7 +355,8 @@ _MPT_FRAGMENT = r'''
       kzatr_fixed_by_agreement:q('mpt-kzatr-fixed').checked,
       ons_readiness_pct:Number(q('mpt-ready').value||0),
       ons_registered_before_2019_11_01:q('mpt-mode').value==='ons'?q('mpt-ons-date').checked:null,
-      existing_area_sqm:Number(q('mpt-existing').value||0)
+      existing_area_sqm:Number(q('mpt-existing').value||0),
+      kterm:Number(q('mpt-kterm').value||1)
     };
     try{
       const r=await fetch('/api/mpt/calculate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)});

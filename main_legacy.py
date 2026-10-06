@@ -42325,7 +42325,8 @@ _AGENT_TOOLS = [
             "местах. existing_area_sqm — площадь, которая уже стоит (до "
             "реконструкции или в сносимых зданиях); при mode=reconstruction "
             "area_sqm — площадь ПОСЛЕ реконструкции. sqm_per_workplace — только "
-            "если плотность назвал человек: 1874-ПП её не задаёт. Ответ несёт "
+            "если плотность назвал человек: 1874-ПП её не задаёт. kterm (Ксрок) — "
+            "1, если человек не сказал о досрочной регистрации права. Ответ несёт "
             "правила акта о существующих площадях и рабочих местах и перечень "
             "прочитанных редакций — цитируй их, а не «нет в выжимках»."
         ),
@@ -42343,9 +42344,11 @@ _AGENT_TOOLS = [
                 "existing_area_sqm": {"type": ["number", "null"]},
                 "cadastral_number": {"type": ["string", "null"]},
                 "sqm_per_workplace": {"type": ["number", "null"]},
+                "kterm": {"type": ["number", "null"], "enum": [1, 1.05, 1.1, None]},
             },
             "required": ["category", "district", "ttk_position", "mode", "area_sqm",
-                         "existing_area_sqm", "cadastral_number", "sqm_per_workplace"],
+                         "existing_area_sqm", "cadastral_number", "sqm_per_workplace",
+                         "kterm"],
             "additionalProperties": False,
         },
         "strict": True,
@@ -42414,6 +42417,7 @@ def _execute_agent_tool(
             existing_area_sqm=args.get("existing_area_sqm"),
             cadastral_number=args.get("cadastral_number"),
             sqm_per_workplace=args.get("sqm_per_workplace"),
+            kterm=args.get("kterm"),
         )
     return {"error": f"Unknown tool: {name}"}
 
