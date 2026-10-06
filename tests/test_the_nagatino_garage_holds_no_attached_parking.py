@@ -104,6 +104,10 @@ def test_the_model_builds_the_nagatino_house_garage_without_attached_places() ->
 @pytest.mark.parametrize("quote", [
     "Машино-места — 2 778, в том числе приобъектные — 1 000",
     "машино-мест всего 2778 (включая кратковременные)",
+    # Строка 42 калькулятора ГлавАПУ по Нагатино (reference_data/krt/
+    # nagatino-glavapu-calc-2026-10-06.pdf): 3 286 = 2 902 + 291 + 93
+    # приобъектных, а слова «приобъектные» в её подписи нет.
+    "Места хранения и паркирования, в т.ч.: 3286 м/м",
 ])
 def test_intake_refuses_a_total_with_attached_places(quote) -> None:
     extraction = {"fields": [{"key": "underground_manual_spaces", "value": "2778",
