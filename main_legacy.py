@@ -14162,7 +14162,8 @@ def _glavapu_scenario_run(key: str, scenario: dict[str, Any]) -> None:
 def _glavapu_project_region(inputs: dict[str, Any]) -> tuple[str, str]:
     """Регион проекта — поле «Регион» (`class_region`), то же правило, что
     `projectRegion` страницы. Кадастровый номер регион не задаёт: у Новой
-    Москвы (ТиНАО) номера областные — 50:21, 50:26, 50:27."""
+    Москвы — Новомосковского и Троицкого округов (НАО, ТАО) — номера
+    областные: 50:21, 50:26, 50:27."""
     return class_region(inputs), "поле «Регион» проекта"
 
 
@@ -53370,7 +53371,7 @@ function fieldOriginNote(path){
  return '<div class="glavapu-origin" style="font-size:11px;color:#666;margin-top:2px">'+escapeHtml(o.text||'ГлавАПУ')+'</div>';
 }
 // Регион проекта — поле «Регион» проекта, и только оно. Ни имя файла
-// выгрузки, ни кадастровый номер регион не задают: у Новой Москвы (ТиНАО)
+// выгрузки, ни кадастровый номер регион не задают: у Новой Москвы — НАО и ТАО —
 // номера областные — 50:21, 50:26, 50:27, — а участок московский.
 function projectRegion(){
  return {region:classRegion(),origin:'поле «Регион» проекта'};

@@ -5,7 +5,8 @@
 лист, строка». Ручное значение пользователя остаётся ручным. В Подмосковье и
 других регионах калькулятор не участвует вовсе: ни подстановки, ни справки.
 Регион — поле «Регион» проекта, а не имя файла и не кадастровый номер: у Новой
-Москвы (ТиНАО) номера областные (50:21, 50:26, 50:27).
+Москвы — Новомосковского и Троицкого округов (НАО, ТАО) — номера областные
+(50:21, 50:26, 50:27).
 
 Страница проверяется настоящим `applyGlavapu` через node.
 
@@ -182,11 +183,15 @@ def test_outside_moscow_the_calculator_takes_no_part(extra) -> None:
     assert "не участвует" in got["status"] and "не сохранена" in got["status"]
 
 
-def test_new_moscow_with_a_50_number_is_moscow() -> None:
-    """ТиНАО: номер участка областной (50:21:…), а проект московский — регион
-    решает поле проекта, и выгрузка подставляется."""
+@pytest.mark.parametrize("number", [
+    "50:21:0120316:1221",   # Новомосковский округ (НАО), кадастровый округ Ленинского района
+    "50:27:0020611:12",     # Троицкий округ (ТАО), кадастровый округ Подольского района
+])
+def test_new_moscow_with_a_50_number_is_moscow(number) -> None:
+    """Новая Москва — два округа, НАО и ТАО: номер участка областной, а проект
+    московский. Регион решает поле проекта, и выгрузка подставляется."""
     got = _apply(_parsed(), {"vri_region": "msk",
-                             "_cadastral_analysis": {"recognized": ["50:21:0120316:1221"]}})
+                             "_cadastral_analysis": {"recognized": [number]}})
     assert "_glavapu_import" in got["inputs"]
     assert got["inputs"]["land_rights_cost_mln"] == pytest.approx(14985.285)
 
@@ -228,7 +233,7 @@ def test_the_scenario_check_refuses_outside_moscow(inputs, numbers, monkeypatch,
 
 
 def test_the_scenario_check_runs_for_new_moscow(monkeypatch, tmp_path) -> None:
-    """Контрпример к отказу: ТиНАО с номером 50:21 — московский проект."""
+    """Контрпример к отказу: НАО с номером 50:21 — московский проект."""
     monkeypatch.setenv("DEVELOPAID_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(core, "_core_api_url", lambda path: "")
     monkeypatch.setattr(core, "_glavapu_headless_available", lambda: False)
