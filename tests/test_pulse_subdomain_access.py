@@ -190,3 +190,55 @@ def test_a_reopened_subdomain_drops_the_old_closed_reason(tmp_path: Path) -> Non
     sub.projects(refresh=True)
     assert sub.access_closed is None
     assert sub.catalog_report()["access"] == "открыт"
+
+
+def test_the_russia_map_is_read_at_its_own_address_without_a_slash(tmp_path: Path) -> None:
+    """Адрес из браузера владельца — `russia.pulsprodaj.ru/map`, без слэша."""
+    root, sub, calls = _pair(tmp_path, cookie_domain=".pulsprodaj.ru")
+    collection = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "id": "50-004184-1",
+         "geometry": {"type": "Point", "coordinates": [55.8277, 37.2064]},
+         "properties": {"name": "Одинцовские кварталы"}}]}
+    page = "<script>var d = " + json.dumps(collection, ensure_ascii=False, separators=(",", ":")) + ";</script>"
+
+    def sub_open(path, *, data=None, headers=None):
+        calls["sub"].append(path)
+        if path == "/map/":
+            raise urllib.error.HTTPError(RUSSIA + path, 404, "Not Found", email.message.Message(), io.BytesIO(b""))
+        return page.encode()
+
+    sub._open = sub_open  # type: ignore[assignment]
+    assert [item.complex_id for item in sub.projects()] == ["50-004184-1"]
+    assert calls["sub"] == ["/map/", "/map"]
+    report = sub.catalog_report()
+    assert report["map_path"] == "/map"
+    assert [row["path"] for row in report["map_probe"]] == ["/map/", "/map"]
+    assert report["auth"] == "вход через сессию pulsprodaj.ru"
+    assert report["by_id_region"] == {"50": 1}
+
+
+def test_a_map_without_embedded_data_says_what_it_holds(tmp_path: Path) -> None:
+    """Карта, которая грузит объекты отдельным запросом, — проба называет его."""
+    root, sub, calls = _pair(tmp_path, cookie_domain=".pulsprodaj.ru")
+    page = (
+        "<html><head><title>Карта — Пульс продаж</title>"
+        "<script src='/static/js/map.bundle.js'></script></head>"
+        "<body><script>fetch('/api/objects/map/?region=all').then(r=>r.json())</script></body></html>"
+    )
+    sub._open = lambda path, **kw: page.encode()  # type: ignore[assignment]
+    assert sub.projects() == []
+    probe = sub.map_probe[-1]
+    assert probe["title"] == "Карта — Пульс продаж" and probe["geojson"] is False
+    assert probe["api_paths"] == ["/api/objects/map/?region=all"]
+    assert probe["scripts"] == ["/static/js/map.bundle.js"]
+    assert any("нет встроенных данных проектов" in text for text in sub.errors), sub.errors
+
+
+def test_a_construction_object_number_carries_its_declaration() -> None:
+    from market_search.pulse import pulse_declaration, pulse_region
+
+    assert pulse_region("50-004184-1") == "50"
+    assert pulse_declaration("50-004184-1") == "50-004184"
+    assert pulse_declaration("50-004184") == "50-004184"
+    assert pulse_declaration("4184") is None
+    assert pulse_region("50-004184-") is None

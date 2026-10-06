@@ -44,6 +44,10 @@ PULSE_BASE = "https://pulsprodaj.ru"
 
 _LOGIN_PATH = "/accounts/login/"
 _MAP_PATH = "/map/"
+# Адреса карты по очереди: у московского кабинета — со слэшем, у
+# всероссийского (`russia.pulsprodaj.ru/map`, адрес из браузера владельца) —
+# без. Берётся первый, на котором есть данные; что ответил каждый — в пробе.
+_MAP_PATHS = ("/map/", "/map")
 _SEARCH_PATH = "/api/search/"
 
 # Класс проекта не лежит ни в точке карты, ни в карточке: он живёт фильтром.
@@ -69,7 +73,9 @@ _CLOSED_MARK = "в разработке"
 # Номер проекта во всероссийском кабинете выглядит как «50-004184»: код
 # региона, дефис, номер. Московский кабинет отдавал голое число. Формат
 # распознаётся только целиком — код региона из чего-то другого не выводится.
-_REGION_ID_RE = re.compile(r"^(\d{2,3})-(\d+)$")
+# Объект строительства всероссийского кабинета — «50-004184-1»: номер
+# проектной декларации и номер объекта в ней (адрес `/object/50-004184-1`).
+_REGION_ID_RE = re.compile(r"^(\d{2,3})-(\d+)(?:-(\d+))?$")
 
 
 def pulse_id(value: Any) -> str | None:
@@ -88,6 +94,12 @@ def pulse_id(value: Any) -> str | None:
         value = int(value)
     text = str(value).strip()
     return text or None
+
+
+def pulse_declaration(complex_id: Any) -> str | None:
+    """Номер проектной декларации из «50-004184» или «50-004184-1»."""
+    found = _REGION_ID_RE.match(pulse_id(complex_id) or "")
+    return f"{found.group(1)}-{found.group(2)}" if found else None
 
 
 def pulse_region(complex_id: Any) -> str | None:
@@ -585,6 +597,24 @@ def _lz_decompress(length: int, reset: int, get) -> str | None:
             bits_n += 1
 
 
+def _describe_map_page(path: str, page: str, index: int) -> dict[str, Any]:
+    """Что лежит на странице карты — для пробы, без разбора данных."""
+    title = re.search(r"<title>(.*?)</title>", page, re.I | re.S)
+    api = re.findall(r"""["'`](/api/[A-Za-z0-9_\-/.?=&{}$]+)""", page)
+    scripts = re.findall(r"""<script[^>]+src=["']([^"']+)["']""", page, re.I)
+    data_files = re.findall(r"""["'`](/[A-Za-z0-9_\-/]+\.(?:geo)?json)\b""", page)
+    return {
+        "path": path,
+        "status": 200,
+        "bytes": len(page),
+        "title": " ".join(html.unescape(title.group(1)).split())[:120] if title else None,
+        "geojson": index >= 0,
+        "api_paths": list(dict.fromkeys(api))[:20],
+        "data_files": list(dict.fromkeys(data_files))[:10],
+        "scripts": list(dict.fromkeys(scripts))[:10],
+    }
+
+
 class PulseClient:
     """Клиент с сессией на диске и молчаливым отказом."""
 
@@ -625,6 +655,9 @@ class PulseClient:
         self.auth = auth if auth is not self else None
         # Причина закрытого доступа, если поддомен ответил заглушкой.
         self.access_closed: str | None = None
+        # Что ответили адреса карты при последнем чтении и какой из них дал данные.
+        self.map_probe: list[dict[str, Any]] = []
+        self.map_path: str | None = None
 
     @property
     def host(self) -> str:
@@ -924,24 +957,19 @@ class PulseClient:
         if self.auth is not None and not self._cookie("sessionid"):
             # Поддомен гостю отдаёт заглушку, а не карту: сначала сессия.
             self.sign_in()
-        try:
-            page = self._open(_MAP_PATH).decode("utf-8", errors="ignore")
-        except (urllib.error.URLError, OSError) as exc:
-            self.errors.append(self._closed(exc) or f"карта недоступна: {exc}")
-            return None
-        index = page.find(_GEOJSON_MARK)
-        if index < 0:
+        self.map_probe = []
+        page, index = self._read_map()
+        if index < 0 and page is not None:
             # Не вошли — карта отдаётся и гостю, но без данных.
             if self.sign_in():
-                try:
-                    page = self._open(_MAP_PATH).decode("utf-8", errors="ignore")
-                except (urllib.error.URLError, OSError) as exc:
-                    self.errors.append(self._closed(exc) or f"карта недоступна: {exc}")
-                    return None
-                index = page.find(_GEOJSON_MARK)
-            if index < 0:
-                self.errors.append("на странице карты нет данных проектов")
-                return None
+                page, index = self._read_map()
+            if index < 0 and page is not None:
+                self.errors.append(
+                    "на странице карты нет встроенных данных проектов (GeoJSON): "
+                    "что на ней есть — в map_probe отчёта справочника"
+                )
+        if index < 0:
+            return None
         # Карта пришла — дверь открыта, прежняя причина закрытия устарела.
         self.access_closed = None
         try:
@@ -949,6 +977,39 @@ class PulseClient:
         except ValueError as exc:
             self.errors.append(f"данные карты не разобрались: {exc}")
             return None
+
+    def _read_map(self) -> tuple[str | None, int]:
+        """Первая страница карты с данными: (страница, позиция GeoJSON).
+
+        Пробует `_MAP_PATHS` по очереди и записывает в `map_probe`, что
+        ответил каждый адрес: код, заголовок, адреса `/api/…` и скрипты.
+        Без входа в ЛК мы не видели, откуда всероссийская карта берёт свои
+        объекты; проба показывает это с прода, а не по догадке.
+        Страницы нет вовсе (сеть, отказ) — `(None, -1)` и причина в ошибках.
+        """
+        last_page: str | None = None
+        failures: list[str] = []
+        closed: str | None = None
+        for path in _MAP_PATHS:
+            try:
+                page = self._open(path).decode("utf-8", errors="ignore")
+            except urllib.error.HTTPError as exc:
+                closed = self._closed(exc) or closed
+                self.map_probe.append({"path": path, "status": exc.code})
+                failures.append(f"{path} → {exc.code}")
+                continue
+            except (urllib.error.URLError, OSError) as exc:
+                self.errors.append(f"карта недоступна: {exc}")
+                return None, -1
+            index = page.find(_GEOJSON_MARK)
+            self.map_probe.append(_describe_map_page(path, page, index))
+            if index >= 0:
+                self.map_path = path
+                return page, index
+            last_page = page
+        if last_page is None:
+            self.errors.append(closed or f"карта недоступна: {', '.join(failures)}")
+        return last_page, -1
 
     def _fetch_projects(self) -> list[dict[str, Any]] | None:
         collection = self._map_collection()
@@ -1601,6 +1662,12 @@ class PulseClient:
             "signed_in": bool(self._cookie("sessionid")),
             # Чьей формой входим и чья сессия уходит на эту базу.
             "auth_base": self.auth.base if self.auth is not None else self.base,
+            "auth": (
+                f"вход через сессию {self.auth.host}" if self.auth is not None
+                else "своя форма входа"
+            ),
+            "map_path": self.map_path,
+            "map_probe": self.map_probe,
             "session_cookie": self._cookie_record("sessionid"),
             "access": self.access_closed or "открыт",
             "projects": len(projects),
