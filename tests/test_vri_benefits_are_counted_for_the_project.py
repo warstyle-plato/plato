@@ -56,6 +56,8 @@ def test_every_non_residential_object_gets_its_relief_and_jobs() -> None:
     kzatr = mpt_calculator.kzatr_for_quarter("2026-Q4")
     office = rows["offices"]
     assert office["kmest"] == 0.7 and "Нагатино-Садовники" in office["kmest_source"]
+    # Основание называет акт, а не только «приложение 3».
+    assert office["kmest_source"].startswith("1874-ПП") and "Приложение 3" in office["kmest_source"]
     assert office["benefit_mln"] == pytest.approx(
         1000 * office["area_sqm"] * kzatr * 0.7 / 1e6, rel=1e-6)
     assert office["jobs"] == int(office["area_sqm"] // 32)

@@ -27,6 +27,10 @@ from typing import Any, Iterable
 
 import mpt_calculator
 
+# Акт, к которому относятся «приложение 3, таблица 1…» в основании Кмест:
+# `mpt_calculator` пишет пункт без акта, а в карточке проекта акт нужен.
+MPT_ACT = "1874-ПП (пост. Правительства Москвы от 31.12.2019)"
+
 # Калькулятор ГлавАПУ: льгота за передачу = площадь (тыс. м²) × uupss_flats.
 TRANSFER_RATE_MLN_PER_THS_SQM = 190.46
 TRANSFER_SOURCE = ("калькулятор ГлавАПУ: «Передача жилых помещений в собственность города "
@@ -198,7 +202,7 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
             else:
                 item.update(benefit_mln=round(got.benefit_rub / 1e6, 3),
                             potential_mln=round(got.potential_benefit_rub / 1e6, 3),
-                            kmest=got.kmest, kmest_source=got.kmest_source,
+                            kmest=got.kmest, kmest_source=f"{MPT_ACT}, {got.kmest_source}",
                             blockers=list(got.blockers), warnings=list(got.warnings))
         result["rows"].append(item)
         result["jobs_total"] += int(item["jobs"])
