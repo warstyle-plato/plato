@@ -59677,6 +59677,10 @@ function forgetTerritoryState(){
  // Опрос НСПД по прошлому участку может ещё идти: номер прогона отсекает его
  // ответ, иначе он дорисует чужие зоны поверх нового проекта.
  ++landScreeningRun;
+ // Сверка сценария с ГлавАПУ — про прошлый проект: номер запуска отсекает
+ // опоздавший ответ, а таблица и статус снимаются вместе с остальным.
+ ++glavapuScenarioRun;
+ ['glavapuScenarioResult','glavapuScenarioStatus'].forEach(id=>{const box=document.getElementById(id);if(box){box.innerHTML='';box.style.display=id==='glavapuScenarioStatus'?'none':''}});
  ['cadastralNumbers','landQuery','moQuery'].forEach(id=>{const field=document.getElementById(id);if(field)field.value=''});
  // Память о вписанном номере (`inputs._cadastral_query`) здесь НЕ трогаем:
  // обе двери этой функции пересобирают `inputs` заново — `applyProjectSnapshot`
@@ -59897,7 +59901,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence',
+ 'landScreeningRun','tepRunSequence','glavapuScenarioRun',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN'];
 
