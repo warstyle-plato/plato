@@ -332,7 +332,9 @@ def test_the_book_carries_the_engine_result_sheet_and_names_the_gap() -> None:
     assert any("Нежильё — стратегия: Офисы" in item for item in meta["missing"])
     # Месячные ряды сходятся с итогом движка.
     header = next(r for r in range(1, sheet.max_row + 1) if sheet.cell(r, 1).value == "Месяц")
-    revenue = sum(float(sheet.cell(r, 2).value or 0) for r in range(header + 1, sheet.max_row + 1))
+    end = next((r for r in range(header + 1, sheet.max_row + 1)
+                if not sheet.cell(r, 1).value), sheet.max_row + 1)
+    revenue = sum(float(sheet.cell(r, 2).value or 0) for r in range(header + 1, end))
     office = _object(_run(offices_strategy="income"))
     assert revenue == pytest.approx(office["totals"]["revenue"], rel=1e-9)
 

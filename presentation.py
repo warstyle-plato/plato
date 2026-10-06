@@ -268,6 +268,7 @@ def build_project_presentation(
         "chart_rows": list(numbers.get("chart_rows") or []),
         "layout": layout,
         "nonres_strategy": list(report.get("nonres_strategy") or []),
+        "nonres_financing": list(report.get("nonres_financing") or []),
     }
 
 
