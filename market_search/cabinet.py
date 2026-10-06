@@ -225,6 +225,8 @@ margin:12px 0;font-size:14px}
 .say.watch{border-color:#C4581B;background:#fff8f0}
 .say.bad{border-color:#B3261E;background:#fdecea}
 .say b{margin-right:4px}
+.tm-form{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:8px;font-size:13px}
+#timingCard tr.same-stage td{background:#f1f8f4}
 .verdict h2{font-size:17px}
 .verdict .pos{margin-top:12px;padding-top:12px;border-top:1px solid var(--line);color:var(--ink)}
 .verdict.good{border-left:4px solid #1f7a4d}
@@ -376,6 +378,7 @@ display:flex;align-items:center;justify-content:center;color:#8ba0b5;font-size:1
 .room a span{display:block;font-size:11.5px;color:#5b6b7d}
 __DEVELOPAID_CONTOUR_STYLE__
 @media print{
+.tm-form{display:none}
   /* В печать уходит отчёт, а не орудия его сборки: форма, кнопки и поле
      вопроса на бумаге бесполезны. Разделы не разрываются между страницами —
      таблица, оторванная от своего графика, читается как чужая. */
@@ -1543,6 +1546,89 @@ function peersCard(peers){
       <td class="num">${num(p.area_per_month)}</td><td class="num">${num(p.lot_count)}</td>
       <td class="muted">${esc(p.observed_at||'—')}</td></tr>`).join('')
     +`</table></div></div>`;
+}
+
+// Сроки ввода и стадии конкурентов — против наших.
+//
+// Поля соседей те же, что в «Как посчитана цена» (`analog_timing` на сервере),
+// сравнение собрано сервером (`timing.compare`); здесь только показ. Пустое
+// поле печатается «нет данных» с причиной: молчаливый прочерк неотличим от
+// поломки.
+let ownDates={};
+function noData(reason){
+  return `<span class="muted nodata">нет данных${reason?': '+esc(reason):''}</span>`;
+}
+function stageSpread(rows){
+  return (rows||[]).map(r=>esc(r.raw||r.value||'—')
+    +(r.buildings!==null&&r.buildings!==undefined?' — '+esc(r.buildings)+' корп.':'')).join('; ');
+}
+function timingCard(d){
+  const t=d.timing||{};
+  if(t.available===false) return '';
+  const peers=d.peers||[], ours=t.subject||{};
+  const com=t.commissioning||{}, ov=t.overlap||{}, same=t.same_stage||{}, cov=t.coverage||{};
+  const cut=v=>String(v||'').slice(0,7);
+  const our=`<div class="tm-ours"><b>Наш проект:</b> старт продаж `
+    +(ours.sales_start?esc(monthYear(ours.sales_start)):noData('не задан'))
+    +` · плановый ввод `+(ours.commissioning?esc(monthYear(ours.commissioning)):noData(ours.reason))
+    +(ours.origin_title?` <span class="muted">(${esc(ours.origin_title)})</span>`:'')
+    +`<div class="tm-form"><label>Наш старт продаж <input type="month" id="ownStart" value="${esc(cut(ownDates.sales_start||ours.sales_start))}"></label>`
+    +` <label>Наш плановый ввод <input type="month" id="ownFinish" value="${esc(cut(ownDates.commissioning||ours.commissioning))}"></label>`
+    +` <button class="go alt" type="button" id="timingGo">Сравнить с нашими сроками</button></div></div>`;
+  const comLine=com.available
+    ?`Наш ввод — ${esc(monthYear(com.ours))}. Раньше нас вводятся <b>${num(com.earlier)}</b>,`
+      +` одновременно — <b>${num(com.same)}</b>, позже — <b>${num(com.later)}</b>`
+      +(com.unknown?`, без срока ввода — ${num(com.unknown)}`:'')
+      +(com.median_gap_months!==null&&com.median_gap_months!==undefined
+        ?`. Медиана разницы: ${com.median_gap_months>0?'+':''}${num(com.median_gap_months)} мес.`:'')
+      +` <span class="muted">${esc(com.rule||'')}</span>`
+    :noData(com.reason);
+  const ovLine=ov.available
+    ?`Наше окно продаж ${esc(monthYear(ov.window.from))} — ${esc(monthYear(ov.window.to))}.`
+      +` Продают одновременно с нами: <b>${num(ov.count)}</b>`
+      +(ov.count?': '+ov.peers.map(p=>`${esc(p.name)} (${num(p.months)} мес.)`).join(', '):'')
+      +(ov.unknown?`; окно не определить у ${num(ov.unknown)}`:'')
+      +` <span class="muted">${esc(ov.rule||'')}</span>`
+    :noData(ov.reason);
+  const st=same.stage||{};
+  const sameLine=`Стадия для сравнения — «${esc(st.label||'—')}» <span class="muted">(${esc(st.reason||'')})</span>. `
+    +(same.count
+      ?`Аналогов той же стадии с ценой: <b>${num(same.count)}</b>, медиана <b>${num(same.median_price_per_sqm)}</b> ₽/м²: `
+        +same.peers.map(p=>`${esc(p.name)} — ${num(p.price_per_sqm)}`).join('; ')
+      :noData(same.reason));
+  const covLine=cov.peers
+    ?`<div class="muted" style="font-size:12.5px">Из ${num(cov.peers)} соседей: плановый ввод у ${num((cov.commissioning||{}).count)},`
+      +` стадия с Пульса у ${num((cov.stage_from_pulse||{}).count)} (по корпусам у ${num((cov.stage_distribution||{}).count)}),`
+      +` стадия по срокам у ${num((cov.stage_from_calendar||{}).count)}</div>`:'';
+  const rel=v=>v.relation
+    ?esc(v.relation)+(v.gap_months?` <span class="muted">(${v.gap_months>0?'+':''}${num(v.gap_months)} мес.)</span>`:'')
+    :noData(v.commissioning_reason);
+  const overlapCell=v=>v.overlap===true?`<b>да</b>, ${num(v.overlap_months)} мес.`
+    :v.overlap===false?(v.overlap_reason?'нет — '+esc(v.overlap_reason):'нет')
+    :noData(v.overlap_reason);
+  const rows=peers.map(p=>{
+    const v=p.vs_ours||{};
+    const built=p.construction_stage
+      ?`${esc(p.construction_stage_label)}${p.construction_stage_origin_title?` <span class="muted">· ${esc(p.construction_stage_origin_title)}</span>`:''}`
+        +((p.construction_stage_distribution||[]).length?`<div class="muted">${stageSpread(p.construction_stage_distribution)}</div>`:'')
+      :noData(p.construction_stage_reason);
+    return `<tr${v.same_stage?' class="same-stage"':''}><td>${esc(p.name)}</td>`
+      +`<td>${p.commissioning?esc(monthYear(p.commissioning))+(p.commissioning_raw?` <span class="muted">«${esc(p.commissioning_raw)}»</span>`:''):noData(p.commissioning_reason)}</td>`
+      +`<td>${p.commissioning_first?esc(monthYear(p.commissioning_first))
+        :noData(p.commissioning?'первый корпус называет только страница проекта Пульса':p.commissioning_reason)}</td>`
+      +`<td>${built}</td>`
+      +`<td>${p.stage_label?esc(p.stage_label)+' · '+num(p.calendar_progress_pct)+'%':noData(p.calendar_reason)}</td>`
+      +`<td>${rel(v)}</td><td>${overlapCell(v)}</td>`
+      +`<td class="num">${p.price_per_sqm?num(p.price_per_sqm):noData('цены нет')}</td></tr>`;
+  }).join('');
+  return `<div class="card" id="timingCard"><h2>Сроки ввода и стадии конкурентов</h2>${our}
+    <div class="say"><b>Ввод</b> ${comLine}</div>
+    <div class="say"><b>Окно продаж</b> ${ovLine}</div>
+    <div class="say"><b>Та же стадия</b> ${sameLine}</div>${covLine}
+    <div class="wrap"><table class="peers" id="timingTable">
+    <tr><th>Проект</th><th>Плановый ввод (последний корпус)</th><th>Первый корпус</th><th>Стадия строительства</th>
+    <th>Календарная стадия</th><th>Ввод против нашего</th><th>Продаёт одновременно с нами</th><th class="num">₽/м²</th></tr>
+    ${rows}</table></div></div>`;
 }
 
 // Лестница цены метра по формату: линия на проект, категории по оси X.
@@ -4263,7 +4349,8 @@ async function rebuild(){
     const r=await fetch('/market/report',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({query:s.query,codes,radius_km:(lastReport.comparison||{}).radius_km||3,
         peers_limit:Number($('#limit').value),segment:$('#segment').value||null,
-        city_reference:$('#cityref').checked,extra_peers:[...added.values()]})});
+        city_reference:$('#cityref').checked,extra_peers:[...added.values()],
+        project_sales_start:ownDates.sales_start||null,project_commissioning:ownDates.commissioning||null})});
     const d=await r.json();
     if(r.ok) lastReport=d;
   }catch(e){/* останемся на прежнем отчёте */}
@@ -4278,6 +4365,8 @@ async function build(){
   if(!codes.length){$('#state').textContent='Выберите хотя бы один раздел.';return}
   $('#go').disabled=true;
   $('#out').innerHTML='';
+  // Наши сроки принадлежат прежнему объекту: новому их задают заново.
+  ownDates={};
   // Ожидание без признака работы читается как внезапность: страница молчала
   // полминуты, а потом разом выкладывала отчёт. Сервер отвечает одним
   // запросом и о своих шагах не сообщает, поэтому ход показывается тем, что
@@ -4527,6 +4616,7 @@ function render(d){
 
   html+=boardCard(planData);
   html+=deepCard(d);
+  html+=timingCard(d);
   html+=peersCard(peers);
   // «Разбор» — в конце: те же числа, но связанные между собой.
   html+=essayCard(d);
@@ -4542,6 +4632,11 @@ function render(d){
   wireAdd();
   const byHand=$('#mAdd');
   if(byHand) byHand.addEventListener('click',addByHand);
+  const timingGo=$('#timingGo');
+  if(timingGo) timingGo.addEventListener('click',()=>{
+    ownDates={sales_start:$('#ownStart').value||null,commissioning:$('#ownFinish').value||null};
+    rebuild();
+  });
   // Галочка рисует кривую соседа поверх полосы. Отчёт не пересобирается: это
   // вопрос вида, а не расчёта, и лишний запрос к источнику тут не нужен.
   document.querySelectorAll('input[data-chart]').forEach(box=>{
