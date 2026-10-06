@@ -596,7 +596,9 @@ def test_money_and_parking_are_compared_by_kind(core, monkeypatch) -> None:
     assert rows["parking_vri.built_in"]["glavapu"] == 21
     # ВРИ по видам и льготы — по названиям строк калькулятора, справочно.
     assert rows["vri.44"]["label"] == "Многоквартирная жилые здания"
-    assert rows["vri.52"]["label"].startswith("Льгота") and rows["vri.52"]["status"] == "reference"
+    assert rows["vri.44"]["status"] == "reference"
+    # Льгот у калькулятора нет — строки «Льгота…» в сверку не идут.
+    assert not any(r["label"].startswith("Льгота") for r in rows.values())
     # Баланс территории — как калькулятор разложил её под наше соотношение.
     # Нули калькулятора по видам ВРИ — не строки, а шум: их нет.
     assert "vri.45" not in rows and "vri.53" not in rows

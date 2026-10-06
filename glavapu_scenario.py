@@ -774,6 +774,11 @@ def glavapu_side(normalized: dict[str, Any], rows: dict[str, float | None],
     vri = _section(sections, "расчет стоимости смены ври")
     side["vri"] = {}
     for item in vri.get("items") or []:
+        # Льгот у живого калькулятора нет (владелец, 06.10.2026): в его
+        # выгрузке строки «Льгота на стр-во жилья…» нулевые, а ненулевую
+        # давала только устаревшая копия `genplan_assets`. В сверку не идут.
+        if _name_key(item["name"]).startswith("льгота"):
+            continue
         kind = item["code"].replace(".", "_")
         side["vri"][kind] = (item["value"], f"строка {item['code']}")
         labels[f"vri.{kind}"] = item["name"]
