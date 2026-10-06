@@ -131,6 +131,41 @@ NORMATIVE_SNAPSHOT = (
     "от 10.03.2026, со второго квартала 2026 года пересматривается ежеквартально"
 )
 
+# Что 1874-ПП говорит (и чего не говорит) о существующих площадях и рабочих
+# местах — один источник для Платона, справки и выжимки docs/normative.
+# Прочитанные тексты перечислены в EDITION_READ: утверждение «правила нет»
+# относится к ним, а не к «выжимкам».
+EDITION_READ = (
+    "1874-ПП: исходная редакция от 31.12.2019 (base.garant.ru/73444425, "
+    "бесплатный доступ даёт только её); поправка 2072-ПП от 30.07.2026 целиком "
+    "(base.garant.ru/414766025); формула п. 1.14.1, пороги п. 3.1 и Кмест "
+    "приложения 3 — как они закодированы в калькуляторе; обзор B1 «Создание "
+    "МПТ в Москве», июль 2025. Сводный текст в редакции 2072-ПП не прочитан."
+)
+EXISTING_AREA_RULE = (
+    "Sмпт по п. 1.14.1 — общая площадь планируемого к строительству МПТ, а при "
+    "реконструкции — прирост общей площади МПТ. Строительство на месте "
+    "сносимых объектов остаётся строительством (ГрК РФ, ст. 1, п. 13), и "
+    "зачёта сносимых площадей в формуле нет. При реконструкции порог п. 3.1 "
+    "(5 000 м² для офисов) применяется к приросту."
+)
+WORKPLACES_RULE = (
+    "Число рабочих мест в формулу льготы не входит: льгота = 1000 ₽/м² × Sмпт "
+    "× Кзатр × Кмест считается от площади. Норматива «м² на рабочее место» и "
+    "правила «льгота только по вновь создаваемым рабочим местам» в прочитанных "
+    "текстах нет; программа нацелена на новые места, но мерой служит площадь. "
+    "Условие льготы — создание МПТ и его профильная эксплуатация."
+)
+ROUTE_RULE = (
+    "2072-ПП (п. 2.1, с 30.07.2026): в п. 1.1 приложения 1 к 1874-ПП слова "
+    "«со строительством (реконструкцией)» заменены на «с реконструкцией», "
+    "«создание» — на «реконструкция». Наше прочтение (полный п. 1.1 не "
+    "прочитан): соглашение МПТ по 1874-ПП остаётся для реконструкции, а "
+    "строительство МПТ идёт через инфраструктурный договор 3135-ПП — по "
+    "обзору B1 так с конца 2024 года. Маршрут и квалификацию проекта (строительство или "
+    "реконструкция) решает город: ДИиПП и Межведомственная комиссия."
+)
+
 CATEGORY_LABELS: dict[str, str] = {
     "office": "Деловое управление / наука / торговля / развлечения / общепит",
     "industrial": "Производственная деятельность (кроме складов и складских площадок)",
@@ -347,6 +382,14 @@ class MptInput:
     kzatr_fixed_by_agreement: bool = False
     ons_readiness_pct: float = 0.0
     ons_registered_before_2019_11_01: bool | None = None
+    # Площадь МПТ, которая уже стоит на участке: до реконструкции или в
+    # сносимых зданиях. При реконструкции п. 1.14.1 берёт Sмпт как прирост, и
+    # тогда area_sqm — площадь ПОСЛЕ реконструкции. При строительстве (в том
+    # числе на месте сносимых объектов — ГрК РФ, ст. 1, п. 13) формула берёт
+    # всю планируемую площадь: зачёта сносимых площадей в ней нет, поле только
+    # показывает, что дала бы квалификация проекта как реконструкции.
+    # 0 — не задано: площадь до реконструкции уже вычтена в area_sqm.
+    existing_area_sqm: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -359,6 +402,10 @@ class MptResult:
     excluded_area_sqm: float
     warehouse_counted_sqm: float
     warehouse_excluded_sqm: float
+    existing_area_sqm: float
+    # Площадь после минус существующая — со знаком: отрицательный прирост и
+    # есть ответ «строим меньше, чем было».
+    area_increment_sqm: float
     kmest: float
     kmest_source: str
     kmest_column: str
@@ -486,6 +533,9 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
     rooms = _finite("Площадь номерного фонда", data.hotel_rooms_sqm)
     part_business = _finite("Площадь по графе 3", data.area_business_sqm)
     part_social = _finite("Площадь по графе 4", data.area_social_sqm)
+    existing = _finite("Существующая площадь МПТ", data.existing_area_sqm)
+    if existing < 0:
+        raise MptCalculationError("Существующая площадь МПТ не может быть отрицательной.")
     kzatr = _finite("Кзатр", data.kzatr)
     if kzatr <= 0:
         raise MptCalculationError("Кзатр должен быть больше нуля.")
@@ -543,6 +593,13 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
         warnings.append("Сумма исключаемых компонент превышает базовую площадь — проверьте ТЭП.")
     eligible_area = max(eligible_area, 0.0)
     excluded_area = max(area - eligible_area, 0.0)
+    after_area = eligible_area
+    increment = after_area - existing
+    if data.mode == "reconstruction" and existing > 0:
+        # п. 1.14.1: при реконструкции Sмпт — прирост общей площади МПТ. Это
+        # обязательная формула, а не справка: площадь после реконструкции не
+        # больше прежней — льготы нет, и это отказ, а не ноль из ниоткуда.
+        eligible_area = max(increment, 0.0)
 
     # --- условия присвоения статуса ------------------------------------------
     # ТТК в постановлении не коэффициент, а условие: п. 1.2 и 3.5 требуют, чтобы
@@ -595,10 +652,34 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
             )
         readiness_factor = 1.0 - readiness / 100.0
 
-    if data.mode == "reconstruction":
+    if data.mode == "reconstruction" and existing > 0:
+        if increment <= 0:
+            blockers.append(
+                f"Прирост площади МПТ {_thousands(increment)} м² "
+                f"({_thousands(after_area)} м² "
+                f"после реконструкции против {_thousands(existing)} м² до неё): при "
+                "реконструкции Sмпт — прирост общей площади (п. 1.14.1), а его нет."
+            )
+        else:
+            warnings.append(
+                f"Реконструкция: Sмпт — прирост {_thousands(increment)} м² к "
+                f"существующим {_thousands(existing)} м² (п. 1.14.1)."
+            )
+    elif data.mode == "reconstruction":
         warnings.append(
             "При реконструкции Sмпт — прирост общей площади к первоначальной "
             "(п. 1.14.1), а не полная площадь объекта."
+        )
+    elif existing > 0:
+        warnings.append(
+            f"Существующие (сносимые) {_thousands(existing)} м² в Sмпт не "
+            "зачитываются: при строительстве, в том числе на месте сносимых "
+            "объектов (ГрК РФ, ст. 1, п. 13), п. 1.14.1 берёт общую площадь "
+            "планируемого МПТ. Если проект будет квалифицирован как "
+            f"реконструкция, Sмпт = прирост {_thousands(increment)} м²"
+            + (" — льготы не будет." if increment <= 0 else ".")
+            + " Квалификацию и маршрут (соглашение МПТ или инфраструктурный "
+            "договор 3135-ПП) определяет город, а не калькулятор."
         )
     if kmest == 0:
         warnings.append("Кмест = 0 по приложению 3: расчётная льгота равна нулю.")
@@ -682,6 +763,8 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
         excluded_area_sqm=excluded_area,
         warehouse_counted_sqm=warehouse_counted,
         warehouse_excluded_sqm=warehouse_excluded,
+        existing_area_sqm=existing,
+        area_increment_sqm=increment,
         kmest=kmest,
         kmest_source=kmest_source,
         kmest_column=column,
@@ -739,3 +822,76 @@ def metadata() -> dict[str, Any]:
         "ttk_required_outside": True,
         "normative_snapshot": NORMATIVE_SNAPSHOT,
     }
+
+
+def agent_answer(
+    *,
+    category: str,
+    district: str,
+    ttk_position: str | None,
+    mode: str,
+    area_sqm: float,
+    existing_area_sqm: float | None = None,
+    cadastral_number: str | None = None,
+    sqm_per_workplace: float | None = None,
+    today: date | None = None,
+) -> dict[str, Any]:
+    """Расчёт льготы МПТ для Платона — тем же движком, что и страница.
+
+    Кзатр берётся действующего квартала, как на странице. Рабочие места
+    считаются только по плотности, которую назвал человек: 1874-ПП её не
+    задаёт, и своё число здесь выглядело бы нормой города.
+    """
+    today = today or date.today()
+    quarter = quarter_of(today)
+    kzatr = kzatr_for_quarter(quarter)
+    payload = MptInput(
+        category=category,  # type: ignore[arg-type]
+        district=district,
+        area_sqm=float(area_sqm),
+        cadastral_number=str(cadastral_number or ""),
+        mode=mode,  # type: ignore[arg-type]
+        ttk_position=ttk_position,  # type: ignore[arg-type]
+        existing_area_sqm=float(existing_area_sqm or 0.0),
+        kzatr=kzatr if kzatr is not None else KZATR_DEFAULT,
+        kzatr_quarter=quarter if kzatr is not None else "",
+    )
+    try:
+        result = calculate_mpt_benefit(payload, today=today)
+    except MptCalculationError as error:
+        return {"available": False, "reason": str(error),
+                "edition_read": EDITION_READ}
+    answer: dict[str, Any] = {
+        "available": True,
+        "result": result.as_dict(),
+        "existing_area_rule": EXISTING_AREA_RULE,
+        "workplaces_rule": WORKPLACES_RULE,
+        "route_rule": ROUTE_RULE,
+        "edition_read": EDITION_READ,
+    }
+    existing = float(existing_area_sqm or 0.0)
+    if existing > 0 and mode != "reconstruction":
+        # Тот же проект, квалифицированный как реконструкция: обе ветки рядом,
+        # потому что выбирает между ними город, а не калькулятор.
+        alt = calculate_mpt_benefit(
+            MptInput(**{**asdict(payload), "mode": "reconstruction"}), today=today
+        )
+        answer["if_reconstruction"] = {
+            "eligible_area_sqm": alt.eligible_area_sqm,
+            "benefit_rub": alt.benefit_rub,
+            "blockers": list(alt.blockers),
+        }
+    density = float(sqm_per_workplace or 0.0)
+    if density > 0 and math.isfinite(density):
+        before = existing / density if existing > 0 else None
+        after = float(area_sqm) / density
+        answer["workplaces_estimate"] = {
+            "basis": (f"справочно: {density:g} м² общей площади на рабочее место — "
+                      "плотность названа пользователем; 1874-ПП её не устанавливает "
+                      "и в формулу льготы рабочие места не входят"),
+            "sqm_per_workplace": density,
+            "existing": round(before) if before is not None else None,
+            "planned": round(after),
+            "delta": round(after - before) if before is not None else None,
+        }
+    return answer

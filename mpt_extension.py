@@ -70,6 +70,7 @@ class MptCalculateRequest(BaseModel):
     kzatr_fixed_by_agreement: bool = False
     ons_readiness_pct: float = Field(default=0, ge=0, lt=100)
     ons_registered_before_2019_11_01: bool | None = None
+    existing_area_sqm: float = Field(default=0, ge=0)
 
 
 # Коэффициента срока реализации в действующей формуле нет. Прежний флаг
@@ -197,6 +198,7 @@ _MPT_FRAGMENT = r'''
         <div id="mpt-ttk-wrap"><label for="mpt-ttk">Положение относительно ТТК <span style="opacity:.6">п. 1.2</span></label><select id="mpt-ttk"><option value="">— выберите —</option><option value="outside">За внешней границей ТТК</option><option value="inside">Внутри ТТК</option></select></div>
         <div id="mpt-cadastral-wrap" class="mpt-wide"><label for="mpt-cadastral">Кадастровый номер участка или квартал <span style="opacity:.6">таблица 2: для 99 кварталов Кмест 0,8</span></label><input id="mpt-cadastral" type="text" placeholder="77:07:0012002:123"></div>
         <div><label id="mpt-area-label" for="mpt-area">Общая площадь МПТ, м²</label><input id="mpt-area" type="number" min="0" step="1" placeholder="10000"></div>
+        <div><label for="mpt-existing">Существующая (сносимая) площадь МПТ, м² <span style="opacity:.6">п. 1.14.1</span></label><input id="mpt-existing" type="number" min="0" step="1" value="0"></div>
         <div><label for="mpt-parking">Парковки, м²</label><input id="mpt-parking" type="number" min="0" step="1" value="0"></div>
         <div><label for="mpt-garages">Гаражи, м²</label><input id="mpt-garages" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-warehouse-wrap"><label for="mpt-warehouse">Склад внутри здания, м²</label><input id="mpt-warehouse" type="number" min="0" step="1" value="0"></div>
@@ -294,12 +296,17 @@ _MPT_FRAGMENT = r'''
     // постановление не предусматривает, и расчёт такой запрос отклоняет.
     q('mpt-split-wrap').classList.toggle('mpt-hidden',hotel);
     if(hotel){q('mpt-warehouse').value='0';q('mpt-yard').value='0';q('mpt-area-business').value='0';q('mpt-area-social').value='0';}
+    // С заданной существующей площадью прирост считает сервер (п. 1.14.1),
+    // и в поле площади вводится площадь ПОСЛЕ реконструкции.
+    const existing=Number(q('mpt-existing').value||0)>0;
+    const prefix=mode!=='reconstruction'?'':existing?'после реконструкции':'прирост';
     if(hotel){
-      q('mpt-area-label').textContent=mode==='reconstruction'
+      q('mpt-area-label').textContent=prefix==='прирост'
         ? 'Прирост площади допустимых помещений средства размещения, м²'
-        : 'Площадь допустимых помещений средства размещения, м²';
+        : 'Площадь допустимых помещений средства размещения'+(prefix?' '+prefix:'')+', м²';
     }else{
-      q('mpt-area-label').textContent=mode==='reconstruction'?'Прирост общей площади МПТ, м²':'Общая площадь МПТ, м²';
+      q('mpt-area-label').textContent=prefix==='прирост'?'Прирост общей площади МПТ, м²'
+        : 'Общая площадь МПТ'+(prefix?' '+prefix:'')+', м²';
     }
     q('mpt-context-note').textContent=category==='industrial'
       ? 'Приложение 3 исключает склады и складские площадки из производственного ВРИ: закрытый склад учитывается максимум в пределах 25% площади, открытая площадка, парковки и гаражи исключаются.'
@@ -346,7 +353,8 @@ _MPT_FRAGMENT = r'''
       kzatr_quarter:(q('mpt-kzatr-quarter').value||'').trim(),
       kzatr_fixed_by_agreement:q('mpt-kzatr-fixed').checked,
       ons_readiness_pct:Number(q('mpt-ready').value||0),
-      ons_registered_before_2019_11_01:q('mpt-mode').value==='ons'?q('mpt-ons-date').checked:null
+      ons_registered_before_2019_11_01:q('mpt-mode').value==='ons'?q('mpt-ons-date').checked:null,
+      existing_area_sqm:Number(q('mpt-existing').value||0)
     };
     try{
       const r=await fetch('/api/mpt/calculate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)});
@@ -368,6 +376,7 @@ _MPT_FRAGMENT = r'''
   }
   function wire(){
     ['mpt-category','mpt-mode','mpt-district','mpt-ttk'].forEach(id=>q(id)?.addEventListener('change',sync));
+    q('mpt-existing')?.addEventListener('input',sync);
     q('mpt-calc')?.addEventListener('click',calculate);
     loadMeta().catch(err=>{q('mpt-context-note').textContent=err?.message||String(err);});
     const params=new URLSearchParams(location.search);
