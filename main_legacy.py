@@ -14159,17 +14159,11 @@ def _glavapu_scenario_run(key: str, scenario: dict[str, Any]) -> None:
     _glavapu_scenario_save(key, record)
 
 
-def _glavapu_project_region(inputs: dict[str, Any], numbers: list[str]) -> tuple[str, str]:
-    """Регион проекта по НАШИМ данным — то же правило, что `projectRegion`
-    страницы: поле «Регион», иначе кадастровые номера (77 / 50)."""
-    if class_region(inputs) == "mo":
-        return "mo", "поле «Регион» проекта"
-    first = next((str(n) for n in numbers if re.match(r"^\d+:", str(n))), "")
-    if first.startswith("50:"):
-        return "mo", f"кадастровый номер проекта {first}"
-    if first.startswith("77:"):
-        return "msk", f"кадастровый номер проекта {first}"
-    return "msk", "поле «Регион» проекта"
+def _glavapu_project_region(inputs: dict[str, Any]) -> tuple[str, str]:
+    """Регион проекта — поле «Регион» (`class_region`), то же правило, что
+    `projectRegion` страницы. Кадастровый номер регион не задаёт: у Новой
+    Москвы (ТиНАО) номера областные — 50:21, 50:26, 50:27."""
+    return class_region(inputs), "поле «Регион» проекта"
 
 
 def _glavapu_scenario_fresh(record: dict[str, Any] | None) -> bool:
@@ -14205,7 +14199,7 @@ def glavapu_scenario_check(req: GlavapuScenarioRequest) -> dict[str, Any]:
     ours, reasons = _glavapu_scenario_ours(req.inputs or {}, req.tep or {}, scenario)
     answer: dict[str, Any] = {"key": key, "role": glavapu_scenario.ROLE,
                               "scenario": scenario, "ours": ours}
-    region, region_origin = _glavapu_project_region(req.inputs or {}, scenario.get("numbers") or [])
+    region, region_origin = _glavapu_project_region(req.inputs or {})
     if region != "msk":
         # Калькулятор ГлавАПУ — московский: в проекте области он не участвует
         # ни подстановкой, ни сверкой (владелец, 06.10.2026).
@@ -53375,15 +53369,10 @@ function fieldOriginNote(path){
  if(!o||o.source!=='glavapu')return '';
  return '<div class="glavapu-origin" style="font-size:11px;color:#666;margin-top:2px">'+escapeHtml(o.text||'ГлавАПУ')+'</div>';
 }
-// Регион проекта — по НАШИМ данным: поле региона, иначе кадастровые номера
-// проекта (77 — Москва, 50 — область). Имя файла выгрузки регион не задаёт.
+// Регион проекта — поле «Регион» проекта, и только оно. Ни имя файла
+// выгрузки, ни кадастровый номер регион не задают: у Новой Москвы (ТиНАО)
+// номера областные — 50:21, 50:26, 50:27, — а участок московский.
 function projectRegion(){
- if(String(inputs.vri_region||'')==='mo')return {region:'mo',origin:'поле «Регион» проекта'};
- const analysis=inputs._cadastral_analysis||{};
- const numbers=[].concat(analysis.recognized||[],analysis.requested||[]).map(String);
- const first=numbers.find(n=>/^\d+:/.test(n));
- if(first&&first.startsWith('50:'))return {region:'mo',origin:'кадастровый номер проекта '+first};
- if(first&&first.startsWith('77:'))return {region:'msk',origin:'кадастровый номер проекта '+first};
  return {region:classRegion(),origin:'поле «Регион» проекта'};
 }
 // Подмосковье и другие регионы: калькулятор ГлавАПУ — московский и в таком
