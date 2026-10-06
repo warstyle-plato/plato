@@ -146,6 +146,10 @@ def tep_cell_stand() -> str:
         # а не про то, что проверяет.
         function("storageAreaPerUnit"),
         function("syncStoragePair"),
+        # Правка ячейки помечает поле ручным (`_field_origin`): импорт
+        # выгрузки ГлавАПУ его потом не перезаписывает.
+        function("fieldOrigins"),
+        function("markFieldManual"),
         function("tepCellChanged"),
         # Пересборка строки по долям — тот же путь, что правка ячейки:
         # «наши» и правка доли обязаны считать переданное так же.
