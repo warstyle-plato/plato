@@ -500,6 +500,12 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         # Нули не несём: ряд — это месяцы, в которых что-то было.
         "monthly": {name: {month: value for month, value in series.items() if value}
                     for name, series in m.items()},
+        # Затраты объекта по месяцам: своя стройка и доля общих затрат проекта,
+        # которую кредитует его кредит. Платит их проект, но итог объекта
+        # (`main_legacy.object_result`) без них не сложить.
+        "capex_by_month": dict(capex),
+        "common_by_month": dict(common),
+        "cost_basis": cost_basis,
         "totals": {
             "capex": capex_total,
             "revenue": revenue_total,

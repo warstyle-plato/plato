@@ -395,22 +395,116 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         cabinet_module.require_cabinet(request)
         return await run_in_threadpool(service.pulse.probe_fields)
 
+    @app.get("/market/pulse/catalog")
+    async def market_pulse_catalog(
+        request: Request, refresh: bool = False, q: str = "", check: bool = False
+    ) -> dict[str, Any]:
+        """Справочник «Пульса»: из какой базы, когда обновлён, сколько по регионам.
+
+        `refresh=1` — забрать карту и классы заново, мимо суточного кэша.
+        `q=Мытищи` — что найдёт подсказка по этой строке, тем же отбором.
+        `check=1` вместе с `q` — спросить у базы-владельца цену и остатки
+        первого найденного проекта: это и есть проверка «проекты региона
+        не только видны, но и отвечают».
+        """
+        cabinet_module.require_cabinet(request)
+        pulse = service.pulse
+        report = await run_in_threadpool(lambda: pulse.catalog_report(refresh=refresh))
+        if "bases" not in report:
+            report = {
+                "bases": [report],
+                "projects": report.get("projects", 0),
+                "duplicates": 0,
+                "conflicts": 0,
+                "conflict_sample": [],
+            }
+        report["configured"] = "PULSE_BASE_URL" if os.getenv("PULSE_BASE_URL") else "по умолчанию"
+        text = " ".join(str(q or "").split())
+        if text:
+            found = await run_in_threadpool(pulse.suggest, text, 10)
+            report["query"] = {"q": text, "found": len(found), "items": found}
+            if check and found:
+                first = found[0]["complex_id"]
+
+                def ask() -> dict[str, Any]:
+                    seen = set(pulse.errors)
+                    price = pulse.price(first) or {}
+                    remaining = pulse.remaining(first) or {}
+                    return {
+                        "complex_id": first,
+                        "price_per_sqm": price.get("price_per_sqm"),
+                        "observed_at": price.get("observed_at"),
+                        "remaining_units": remaining.get("remaining_units"),
+                        "ok": bool(price.get("price_per_sqm")) and remaining.get("remaining_units") is not None,
+                        "errors": [e for e in pulse.errors if e not in seen][:5],
+                    }
+
+                report["query"]["check"] = await run_in_threadpool(ask)
+        return report
+
+    @app.get("/market/pulse/project-page")
+    async def market_pulse_project_page(
+        request: Request, complex_id: str = "", q: str = "", refresh: bool = False
+    ) -> dict[str, Any]:
+        """Страница проекта в ЛК — как её понял разбор, и даты из всех источников.
+
+        `complex_id=…` или `q=Зиларт` (первый из подсказки). `refresh=1` —
+        открыть страницу заново, мимо кэша. Ответ кладёт рядом: найденные
+        подписи (что разбор узнал на живой странице), стадию по корпусам,
+        поля по корпусам с датой состояния, даты проекта по каждому
+        источнику — страница, таблица API, карта, месячная выгрузка. Так
+        «старт продаж сентябрь против ноября» решается чтением, а не догадкой.
+        """
+        cabinet_module.require_cabinet(request)
+        pulse = service.pulse
+        cid = " ".join(str(complex_id or "").split())
+        picked = None
+        if not cid and q.strip():
+            found = await run_in_threadpool(pulse.suggest, q, 1)
+            if found:
+                picked = found[0]
+                cid = str(found[0]["complex_id"])
+        if not cid:
+            raise HTTPException(status_code=400, detail="Укажите complex_id или q (название проекта)")
+
+        def collect() -> dict[str, Any]:
+            seen = set(pulse.errors)
+            page = pulse.project_page(cid, refresh=refresh)
+            dates = pulse.project_dates(cid)
+            card = service.cards.card(cid)
+            return {
+                "complex_id": cid,
+                "picked": picked,
+                "page": page,
+                "dates": dates,
+                "monthly_report": {
+                    "sales_start": card.get("sales_start"),
+                    "commissioning": card.get("commissioning"),
+                    "source": "месячная выгрузка Пульса (XLSX)",
+                },
+                "stage": pulse.project_stage(cid),
+                "facts": pulse.project_facts(cid),
+                "errors": [e for e in pulse.errors if e not in seen][:10],
+            }
+
+        return await run_in_threadpool(collect)
+
     @app.get("/market/pulse/project-dates")
     async def market_pulse_project_dates(
-        request: Request, complex_id: int = 0
+        request: Request, complex_id: str = ""
     ) -> dict[str, Any]:
         """Проверка дат проекта прямо в ЛК Пульса, без месячного XLSX."""
         cabinet_module.require_cabinet(request)
         if not complex_id:
             known = await run_in_threadpool(service.pulse.projects)
-            complex_id = next((row.complex_id for row in known or []), 0)
+            complex_id = next((row.complex_id for row in known or []), "")
         if not complex_id:
             raise HTTPException(status_code=503, detail="Справочник проектов пуст")
         dates = await run_in_threadpool(service.pulse.project_dates, complex_id)
         return {"complex_id": complex_id, **dates}
 
     @app.get("/market/pulse/object-types")
-    async def market_pulse_object_types(request: Request, complex_id: int = 0) -> dict[str, Any]:
+    async def market_pulse_object_types(request: Request, complex_id: str = "") -> dict[str, Any]:
         """Есть ли у источника коммерция и машино-места.
 
         Всё, что мы берём, прибито к жилью: `object_type: "living"` у цены и
@@ -432,7 +526,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             # собирался. Проба обязана ходить тем же путём, что рабочий код, —
             # иначе она проверяет саму себя.
             known = await run_in_threadpool(service.pulse.projects)
-            complex_id = next((row.complex_id for row in known or []), 0)
+            complex_id = next((row.complex_id for row in known or []), "")
         if not complex_id:
             raise HTTPException(
                 status_code=503,
@@ -550,7 +644,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
 
     @app.get("/market/project/{complex_id}")
     async def market_project(
-        request: Request, complex_id: int, latitude: float | None = None, longitude: float | None = None
+        request: Request, complex_id: str, latitude: float | None = None, longitude: float | None = None
     ) -> dict[str, Any]:
         """Один проект в той же форме, что и сосед в отчёте.
 

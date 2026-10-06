@@ -210,11 +210,22 @@ def _goal_seek(core, request: GoalSeekRequest) -> dict[str, Any]:
         phasing=request.phasing,
     )
     bundle = core._run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
+    # Показатель долга выбирает движок (`report_layout.debt_metric`): LLCR у
+    # проекта с ПФ, DSCR кредита объектов у нежилого. Подбирать цену нежилого
+    # проекта по LLCR, которого у него нет, значило отвечать «не достигается»
+    # ни про что.
+    metric = core.goal_seek_debt_metric(bundle)
+    if not metric.get("key"):
+        return {"available": False, "target_metric": None,
+                "metric_label": metric.get("label"),
+                "reason": metric.get("reason") or "Показателя долга у проекта нет.",
+                "engine_version": core.VERSION,
+                "computed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
     data = core._tool_goal_seek(
         req,
         bundle,
         request.variable,
-        "llcr",
+        metric["key"],
         float(request.target_llcr),
         "at_least",
         "maximum_variable",
@@ -223,6 +234,7 @@ def _goal_seek(core, request: GoalSeekRequest) -> dict[str, Any]:
         None,
     )
     data = dict(data)
+    data["metric_label"] = metric.get("label")
     data["engine_version"] = core.VERSION
     data["computed_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     return data

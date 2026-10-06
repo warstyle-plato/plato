@@ -39,7 +39,7 @@ from .verdict import (
 from .page_price import PageFetcher
 from . import stage
 from .price_hint import price_hint
-from .pulse import PulseClient
+from .pulse import make_pulse_client, pulse_id
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation, official_recommendation
 from .cards import ProjectCards
@@ -137,6 +137,34 @@ def _report_extras(
     return out
 
 
+def _peer_source_coverage(peers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Сколько аналогов несут стадию и сроки — и откуда.
+
+    «Стадия не указана» почти у всех соседей была на проде невидимой
+    поломкой: каждая строка выглядела честной, а доля — нет. Счёт отвечает
+    сразу: из N аналогов стадия со страницы Пульса у k, по срокам у m.
+    """
+    total = len(peers)
+
+    def share(count: int) -> dict[str, Any]:
+        return {"count": count, "pct": round(100 * count / total, 1) if total else None}
+
+    return {
+        "peers": total,
+        "stage_from_pulse": share(sum(
+            1 for row in peers if row.get("construction_stage_origin") == stage.STAGE_ORIGIN_PULSE
+        )),
+        "stage_from_calendar": share(sum(
+            1 for row in peers if row.get("construction_stage_origin") == stage.STAGE_ORIGIN_CALENDAR
+        )),
+        "stage_distribution": share(sum(
+            1 for row in peers if row.get("construction_stage_distribution")
+        )),
+        "commissioning": share(sum(1 for row in peers if row.get("commissioning"))),
+        "sales_start": share(sum(1 for row in peers if row.get("sales_start"))),
+    }
+
+
 class MarketDiscoveryService(LegacyMarketDiscoveryService):
     """Ревизованный конвейер.
 
@@ -157,7 +185,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         )
         # Платный источник и городской свод. Нет доступов — оба выключены, и
         # модуль работает как прежде.
-        self.pulse = PulseClient(Path(data_dir) / "pulse")
+        self.pulse = make_pulse_client(Path(data_dir) / "pulse")
         self.city = MoscowMarket.bundled()
         # История продаж и остатка: живой источник её не отдаёт, она вынута из
         # помесячного отчёта и едет с кодом.
@@ -634,7 +662,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         )
 
     def peer_row(
-        self, complex_id: int, *, latitude: float | None = None, longitude: float | None = None
+        self, complex_id: Any, *, latitude: float | None = None, longitude: float | None = None
     ) -> dict[str, Any]:
         """Проект в той же форме, в какой он попадает в отчёт соседом.
 
@@ -642,7 +670,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         себя в таблицах и на графиках как любая другая, иначе половина
         разделов её тихо пропустит.
         """
-        project = self.pulse.project(int(complex_id))
+        project = self.pulse.project(complex_id)
         if project is None:
             raise LookupError(f"Проект {complex_id} не найден в справочнике источника")
         row: dict[str, Any] = {
@@ -863,7 +891,14 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # сразу несколько проектов, а поштучный опрос стоил бы ожидания на
         # каждого соседа.
         history = self.pulse.price_history(
-            [subject.project_id] + [row["complex_id"] for row in peers if row.get("complex_id")]
+            [subject.project_id]
+            + [
+                row["complex_id"]
+                for row in peers
+                if row.get("complex_id")
+                # Отрицательный ключ — вписанный руками, у источника его нет.
+                and not (isinstance(row["complex_id"], (int, float)) and row["complex_id"] < 0)
+            ]
         )
         # Сосед без прайс-листа — не сосед без цены: у источника она бывает в
         # помесячном ряду. Правило одно на объект и на соседей: два ответа об
@@ -911,6 +946,13 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             if not clean.get("name"):
                 continue
             clean["added_by_hand"] = True
+            # Страница, открытая до перехода на строковый id, присылает число:
+            # приводим к той же строке, что у справочника, иначе тот же проект
+            # встанет в сравнение дважды. Отрицательный ключ — вписанный руками,
+            # он остаётся своим.
+            raw_id = clean.get("complex_id")
+            if not (isinstance(raw_id, (int, float)) and raw_id < 0):
+                clean["complex_id"] = pulse_id(raw_id) if raw_id is not None else None
             clean.setdefault("price_series", [])
             clean.setdefault("sales_series", [])
             same = next(
@@ -1195,6 +1237,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                     stage_reader(project.complex_id) if callable(stage_reader) else {}
                 ) or {}
                 built_stage = stage.analog_stage(stage_answer.get("raw"), progress)
+                latest_code = stage.stage_from_text(stage_answer.get("latest_raw"))
+                facts_reader = getattr(self.pulse, "project_facts", None)
+                page_facts = (facts_reader(project.complex_id) if callable(facts_reader) else {}) or {}
                 row: dict[str, Any] = {
                     "complex_id": project.complex_id,
                     "name": project.name,
@@ -1222,6 +1267,22 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                     "construction_stage_origin": built_stage["origin"],
                     "construction_stage_origin_title": built_stage["origin_title"],
                     "construction_stage_raw": built_stage["raw"],
+                    # Стадия по корпусам — целиком, со страницы проекта: одно
+                    # слово «каркас» у ЖК с 18 сданными корпусами и 2 строящимися
+                    # без распределения читается как неправда.
+                    "construction_stage_source": stage_answer.get("source"),
+                    "construction_stage_as_of": stage_answer.get("as_of"),
+                    "construction_stage_rule": stage_answer.get("rule"),
+                    "construction_stage_distribution": stage_answer.get("distribution") or [],
+                    "construction_stage_latest_label": (
+                        stage.STAGE_TITLES.get(latest_code) if latest_code else None
+                    ),
+                    "construction_stage_reason": stage_answer.get("reason"),
+                    "commissioning_first": live_dates.get("commissioning_first"),
+                    "commissioning_raw": live_dates.get("commissioning_raw"),
+                    "commissioning_rule": live_dates.get("commissioning_rule"),
+                    "date_candidates": live_dates.get("candidates") or {},
+                    "page_facts": page_facts,
                     "stage_factor": round(coefficient, 4) if coefficient is not None else None,
                     "ready_equivalent_price": (
                         int(round(stage.to_ready(price["price_per_sqm"], progress)))
@@ -1316,6 +1377,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 fresh_since=fresh_since,
             )
         hint["stage_filter"] = stage_filter
+        hint["source_coverage"] = _peer_source_coverage(peers)
         if not scope["covered"] and not hint.get("available") and not selected_stages:
             hint["reason"] = (
                 f"{hint.get('reason') or 'Ориентир не рассчитан'}. "

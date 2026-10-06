@@ -62,12 +62,98 @@ _LZ_KEY64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 _CSRF_RE = re.compile(r"csrfmiddlewaretoken['\"]?\s+value=['\"]([^'\"]+)")
 _GEOJSON_MARK = '{"type":"FeatureCollection"'
 
+# Номер проекта во всероссийском кабинете выглядит как «50-004184»: код
+# региона, дефис, номер. Московский кабинет отдавал голое число. Формат
+# распознаётся только целиком — код региона из чего-то другого не выводится.
+_REGION_ID_RE = re.compile(r"^(\d{2,3})-(\d+)$")
+
+
+def pulse_id(value: Any) -> str | None:
+    """Идентификатор проекта — всегда строка, как его дал источник.
+
+    Прежде он приводился к `int`, и номер «50-004184» с всероссийского
+    кабинета ронял весь справочник на первой же строке. Старые сохранённые
+    числовые id (4184, 4184.0, "4184") дают ту же строку «4184», поэтому
+    прежние проекты и выгрузки находят свои строки без миграции.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    text = str(value).strip()
+    return text or None
+
+
+def pulse_region(complex_id: Any) -> str | None:
+    """Код региона из номера вида «50-004184»; у голого числа — нет."""
+    found = _REGION_ID_RE.match(pulse_id(complex_id) or "")
+    return found.group(1) if found else None
+
+
+def _api_id(complex_id: Any) -> int | str:
+    """Id для тела запроса к API — в том виде, в каком его дала карта.
+
+    Голое число уходит числом (так API принимал его всегда), номер с регионом
+    — строкой. Перевода одного в другое здесь нет: соответствия номера и
+    числа мы не знаем, и угадывать его значит спрашивать чужой проект.
+    """
+    text = pulse_id(complex_id) or ""
+    return int(text) if text.isdigit() else text
+
+
+def _id_file(complex_id: Any) -> str:
+    """Безопасное имя файла кэша: у числа — то же, что прежде."""
+    return re.sub(r"[^0-9A-Za-z_-]", "_", pulse_id(complex_id) or "none")
+
+
+def parse_bases(value: str | None) -> list[str]:
+    """Список баз из `PULSE_BASE_URL`: через запятую, порядок — приоритет.
+
+    Первая база владеет проектом, если тот же id пришёл из двух: так
+    всероссийский кабинет можно поставить первым, оставив московский
+    запасным, пока не видно, покрывает ли первый Москву.
+    """
+    out: list[str] = []
+    for item in str(value or "").replace(";", ",").split(","):
+        base = item.strip().rstrip("/")
+        if base and base not in out:
+            out.append(base)
+    return out or [PULSE_BASE]
+
+
+def site_key(base: str) -> str:
+    """Каталог кэша базы — её хост: «pulsprodaj.ru», «russia.pulsprodaj.ru»."""
+    host = urllib.parse.urlparse(base).netloc or base
+    return re.sub(r"[^0-9A-Za-z_.-]", "_", host.lower()) or "default"
+
+
+_ADDRESS_REGION_RE = re.compile(
+    r"(?:г\.?\s*)?(москва|санкт-петербург|севастополь)|("
+    r"[а-яё -]+\s(?:область|обл\.?|край|округ|ао)|"
+    r"(?:республика|респ\.?)\s[а-яё -]+)",
+    re.IGNORECASE,
+)
+
+
+def address_region(address: str | None) -> str | None:
+    """Регион из строительного адреса — для диагностики, не для решений."""
+    for part in str(address or "").split(","):
+        found = _ADDRESS_REGION_RE.fullmatch(part.strip())
+        if found:
+            if found.group(1):
+                return found.group(1).capitalize().replace("-п", "-П")
+            text = " ".join(found.group(2).split())
+            return re.sub(r"\sобл\.?$", " область", text, flags=re.IGNORECASE)
+    return None
+
 
 @dataclass(frozen=True)
 class PulseProject:
     """Проект справочника: идентификатор, место и вывеска."""
 
-    complex_id: int
+    complex_id: str
     name: str
     latitude: float
     longitude: float
@@ -79,10 +165,19 @@ class PulseProject:
     # Сырой текст стадии строительства, если карта его несёт. Приводит его к
     # стадии `stage.stage_from_text`, а не этот класс.
     construction_stage: str | None = None
+    # База, из чьего справочника пришёл проект: по ней же спрашиваются его
+    # цена и остатки — номер одной базы в другой ничего не значит.
+    base: str = PULSE_BASE
+
+    @property
+    def region(self) -> str | None:
+        return pulse_region(self.complex_id)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "complex_id": self.complex_id,
+            "region": self.region,
+            "base": self.base,
             "name": self.name,
             "latitude": self.latitude,
             "longitude": self.longitude,
@@ -92,7 +187,7 @@ class PulseProject:
             "sales_start": self.sales_start,
             "commissioning": self.commissioning,
             "construction_stage": self.construction_stage,
-            "url": f"{PULSE_BASE}/complex/{self.complex_id}/",
+            "url": f"{self.base}/complex/{self.complex_id}/",
         }
 
 
@@ -177,6 +272,14 @@ def _pulse_date(value: Any) -> str | None:
             return datetime.date(year, month, 1).isoformat()
         except ValueError:
             return None
+    # Месяц словом («Ноябрь 2015» — так карточка ЛК пишет старт продаж).
+    # Прежде такое значение отбрасывалось молча, и в отчёт попадала дата
+    # из другого источника.
+    from .pulse_page import month_date  # noqa: PLC0415 — один разбор месяцев
+
+    worded = month_date(text)
+    if worded:
+        return worded
     romans = {"i": 1, "ii": 2, "iii": 3, "iv": 4}
     quarter = None
     year = None
@@ -194,6 +297,12 @@ def _pulse_date(value: Any) -> str | None:
     if quarter and year:
         return datetime.date(year, quarter * 3, 1).isoformat()
     return None
+
+
+# Источники дат проекта по старшинству. Страница проекта — первой: это то,
+# что человек видит в ЛК; прежний разбор той же страницы по ключам JSON —
+# последним, он угадывает имя поля.
+_DATE_SOURCES = ("pulse_project_page", "pulse_api_table", "pulse_map", "pulse_project_page_keys")
 
 
 def _date_key_score(path: str, kind: str) -> int:
@@ -500,13 +609,19 @@ class PulseClient:
         ttl_seconds: int = 86_400,
         detail_ttl_seconds: int = 43_200,
     ):
-        self.base = (base or os.getenv("PULSE_BASE_URL") or PULSE_BASE).rstrip("/")
+        # Одна база на клиента. Несколько баз из `PULSE_BASE_URL` собирает
+        # `PulseNetwork`; здесь берётся первая.
+        self.base = (base or parse_bases(os.getenv("PULSE_BASE_URL"))[0]).rstrip("/")
         self.login = login if login is not None else os.getenv("PULSE_LOGIN", "")
         self.password = password if password is not None else os.getenv("PULSE_PASSWORD", "")
         self.timeout = timeout
         self.ttl_seconds = ttl_seconds
         self.detail_ttl_seconds = detail_ttl_seconds
-        self.dir = Path(data_dir)
+        # Кэш, куки и справочник — в каталоге своей базы. Прежде всё лежало
+        # в общем, и справочник московского кабинета после смены базы
+        # выдавался бы за всероссийский ещё сутки.
+        self.root = Path(data_dir)
+        self.dir = self.root / site_key(self.base)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.errors: list[str] = []
         self._jar: http.cookiejar.MozillaCookieJar | None = None
@@ -681,7 +796,7 @@ class PulseClient:
             save_json(path, cached)
         self._projects = [
             PulseProject(
-                complex_id=int(row["complex_id"]),
+                complex_id=pulse_id(row["complex_id"]) or "",
                 name=str(row.get("name") or "").strip(),
                 latitude=float(row["latitude"]),
                 longitude=float(row["longitude"]),
@@ -691,11 +806,16 @@ class PulseClient:
                 sales_start=(row.get("sales_start") or None),
                 commissioning=(row.get("commissioning") or None),
                 construction_stage=(row.get("construction_stage") or None),
+                base=self.base,
             )
             for row in cached
-            if row.get("complex_id") and row.get("latitude") is not None
+            if pulse_id(row.get("complex_id")) and row.get("latitude") is not None
         ]
         return self._projects
+
+    @property
+    def catalog_path(self) -> Path:
+        return self.dir / "projects.json"
 
     def _map_collection(self) -> dict[str, Any] | None:
         """Сырой GeoJSON карты — как он пришёл, без отбора полей.
@@ -802,7 +922,7 @@ class PulseClient:
             self.errors.append(f"класс «{title}»: ответ не разобрался")
             return None
 
-    def segments(self, *, refresh: bool = False, fetch: bool = True) -> dict[int, str]:
+    def segments(self, *, refresh: bool = False, fetch: bool = True) -> dict[str, str]:
         """Класс каждого проекта: идентификатор → «Бизнес», «Премиум»…
 
         Спрашивается пять раз, по разу на класс, и складывается на сутки.
@@ -816,22 +936,22 @@ class PulseClient:
         if not refresh and fresh(path, self.ttl_seconds):
             cached = load_json(path)
             if isinstance(cached, dict):
-                return {int(k): str(v) for k, v in cached.items()}
+                return {pulse_id(k): str(v) for k, v in cached.items() if pulse_id(k)}
         if not fetch:
             stale = load_json(path)
-            return {int(k): str(v) for k, v in stale.items()} if isinstance(stale, dict) else {}
+            return {pulse_id(k): str(v) for k, v in stale.items() if pulse_id(k)} if isinstance(stale, dict) else {}
 
-        out: dict[int, str] = {}
+        out: dict[str, str] = {}
         for code, title in _CLASS_FILTERS.items():
             collection = self._class_collection(code, title)
             if collection is None:
                 continue
             for feature in collection.get("features") or []:
-                if feature.get("id") is not None:
-                    out[int(feature["id"])] = title
+                if pulse_id(feature.get("id")):
+                    out[pulse_id(feature["id"])] = title
 
         if out:
-            save_json(path, {str(k): v for k, v in out.items()})
+            save_json(path, dict(out))
         return out
 
     def find_project(self, query: str) -> dict[str, Any] | None:
@@ -867,9 +987,9 @@ class PulseClient:
         # надёжнее имени компании, поэтому имя спрашивается первым.
         for key in ("name", "developer"):
             for row in found.get(key) or []:
-                if not isinstance(row, dict) or row.get("id") is None:
+                if not isinstance(row, dict) or not pulse_id(row.get("id")):
                     continue
-                project = self.project(int(row["id"]))
+                project = self.project(row["id"])
                 if project:
                     return {
                         **project.to_dict(),
@@ -878,7 +998,7 @@ class PulseClient:
                     }
         return None
 
-    def price_history(self, complex_ids: list[int], months: int = 12) -> dict[int, list[dict[str, Any]]]:
+    def price_history(self, complex_ids: list[Any], months: int = 12) -> dict[str, list[dict[str, Any]]]:
         """Помесячная цена метра по каждому проекту.
 
         Один запрос на весь набор: источник умеет отдавать сразу несколько
@@ -887,7 +1007,7 @@ class PulseClient:
         Ответ сжат тем же LZ, что и поиск. Пустой список — не ошибка: у нового
         проекта истории может не быть вовсе, и это надо показать, а не скрыть.
         """
-        ids = [int(value) for value in complex_ids if value]
+        ids = [_api_id(value) for value in complex_ids if pulse_id(value)]
         if not ids:
             return {}
         payload = {
@@ -916,9 +1036,9 @@ class PulseClient:
                 raw = None
         if not isinstance(raw, list):
             return {}
-        series: dict[int, list[dict[str, Any]]] = {}
+        series: dict[str, list[dict[str, Any]]] = {}
         for row in raw:
-            if not isinstance(row, dict) or row.get("id") is None:
+            if not isinstance(row, dict) or not pulse_id(row.get("id")):
                 continue
             points = []
             for point in row.get("values") or []:
@@ -927,7 +1047,7 @@ class PulseClient:
                 if month and value:
                     points.append({"month": month, "value": int(value)})
             points.sort(key=lambda item: item["month"])
-            series[int(row["id"])] = points[-months:]
+            series[pulse_id(row["id"])] = points[-months:]
         return series
 
     def suggest(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
@@ -946,50 +1066,28 @@ class PulseClient:
             return []
         # Ни справочник, ни классы здесь по сети не запрашиваются: подсказка
         # ходит на каждую вторую букву, а обе выгрузки тяжёлые.
-        classes = self.segments(fetch=False)
-        scored: list[tuple[int, int, dict[str, Any]]] = []
-        for project in self.projects(fetch=False):
-            name = (project.name or "").casefold()
-            address = (project.address or "").casefold()
-            if name.startswith(text):
-                rank = 0
-            elif text in name:
-                rank = 1
-            elif text in address:
-                rank = 2
-            else:
-                continue
-            scored.append((
-                rank,
-                len(project.name or ""),
-                {
-                    "complex_id": project.complex_id,
-                    "name": project.name,
-                    "developer": project.developer,
-                    "address": project.address,
-                    "segment": classes.get(project.complex_id),
-                },
-            ))
-        scored.sort(key=lambda item: (item[0], item[1]))
-        return [row for _, _, row in scored[:limit]]
+        return _rank_suggestions(
+            self.projects(fetch=False), self.segments(fetch=False), text, limit
+        )
 
-    def project(self, complex_id: int) -> PulseProject | None:
-        """Проект справочника по идентификатору."""
+    def project(self, complex_id: Any) -> PulseProject | None:
+        """Проект справочника по идентификатору (старый числовой — тоже)."""
+        wanted = pulse_id(complex_id)
         for item in self.projects():
-            if item.complex_id == int(complex_id):
+            if item.complex_id == wanted:
                 return item
         return None
 
     # --- данные проекта --------------------------------------------------------
 
-    def _cached(self, name: str, complex_id: int, build) -> Any:
+    def _cached(self, name: str, complex_id: Any, build) -> Any:
         """Ответ по проекту на диске: отчёт спрашивает одно и то же по кругу.
 
         Двадцать соседей — это сорок обращений к сервису; без кэша сборка
         отчёта ждала бы минуту, а повторная — столько же. Срок короче суток:
         прайс меняется чаще, чем справочник проектов.
         """
-        path = self.dir / "cache" / f"{name}-{int(complex_id)}.json"
+        path = self.dir / "cache" / f"{name}-{_id_file(complex_id)}.json"
         if fresh(path, self.detail_ttl_seconds):
             cached = load_json(path)
             if cached is not None:
@@ -999,7 +1097,7 @@ class PulseClient:
         save_json(path, {"value": value})
         return value
 
-    def metrics(self, complex_id: int) -> dict[str, Any]:
+    def metrics(self, complex_id: Any) -> dict[str, Any]:
         """Всё, что нужно блокам отчёта, одним словарём.
 
         Поглощение в метрах источник считает сам (`avg_sale_speed_living_area`),
@@ -1012,7 +1110,7 @@ class PulseClient:
         units = sales.get("units_per_month")
         area = sales.get("area_per_month")
         return {
-            "complex_id": int(complex_id),
+            "complex_id": pulse_id(complex_id),
             "price_per_sqm": price.get("price_per_sqm"),
             "price_per_sqm_min": price.get("price_per_sqm_min"),
             "price_per_sqm_max": price.get("price_per_sqm_max"),
@@ -1026,12 +1124,12 @@ class PulseClient:
             "sold_lot_avg": round(area / units, 1) if area and units else None,
         }
 
-    def project_totals(self, complex_id: int) -> dict[str, Any]:
+    def project_totals(self, complex_id: Any) -> dict[str, Any]:
         """ТЭП проекта: сколько всего жилья и какого размера лоты."""
         data = self._cached(
             "table",
             complex_id,
-            lambda: self._post_json("/api/app/complex/table/", {"complex_id": int(complex_id)}),
+            lambda: self._post_json("/api/app/complex/table/", {"complex_id": _api_id(complex_id)}),
         )
         if not isinstance(data, dict):
             return {}
@@ -1046,55 +1144,101 @@ class PulseClient:
             ),
         }
 
-    def project_dates(self, complex_id: int) -> dict[str, Any]:
-        """Старт продаж и плановый ввод прямо из ЛК Пульса.
+    def project_page(self, complex_id: Any, *, refresh: bool = False) -> dict[str, Any]:
+        """Страница проекта в ЛК, разобранная по подписям (`pulse_page`).
 
-        Источник тот же, что у текущей цены: сначала JSON карточки проекта,
-        затем сама HTML-карточка. Месячный XLSX сюда не нужен; он остаётся
-        только fallback выше по конвейеру. Ответ кэшируется на тот же срок,
-        что цена, чтобы двадцать аналогов не открывали карточки по кругу.
+        Здесь живёт то, чего нет ни в карте, ни в таблице проекта: стадия,
+        тип договора, статус и эскроу по корпусам, остатки с единицами,
+        «по состоянию на». Кэшируется разобранный ответ, а не HTML, и только
+        удачный: отказ сети не должен на полсуток выглядеть пустой страницей.
         """
-        cid = int(complex_id)
+        from . import pulse_page  # noqa: PLC0415 — разбор страницы отдельным модулем
+
+        cid = pulse_id(complex_id) or ""
+        path = self.dir / "cache" / f"page-{_id_file(cid)}.json"
+        if not refresh and fresh(path, self.detail_ttl_seconds):
+            cached = load_json(path)
+            if isinstance(cached, dict) and isinstance(cached.get("value"), dict):
+                return cached["value"]
+        url = f"{self.base}/complex/{cid}/"
+        if not cid:
+            return {"url": None, "reason": "нет id проекта"}
+        if not (self._cookie("sessionid") or self.sign_in()):
+            return {"url": url, "reason": "страница проекта не открыта: нет входа в ЛК"}
+        try:
+            page = self._open(f"/complex/{cid}/").decode("utf-8", errors="ignore")
+        except (urllib.error.URLError, OSError) as exc:
+            self.errors.append(f"карточка проекта {cid}: {exc}")
+            return {"url": url, "reason": f"страница проекта не открылась: {exc}"}
+        value = {
+            "url": url,
+            "parsed": pulse_page.parse_project_page(page),
+            # Прежний разбор по ключам JSON и подписям — как запасной источник дат.
+            "dates_html": _dates_from_project_html(page),
+            "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        save_json(path, {"value": value})
+        return value
+
+    def project_dates(self, complex_id: Any) -> dict[str, Any]:
+        """Старт продаж и плановый ввод из ЛК Пульса — с источником каждого.
+
+        Порядок источников объявлен здесь одним списком (`_DATE_SOURCES`):
+        страница проекта, которую человек видит в ЛК, — первой; затем таблица
+        API, точка карты и, последним, прежний разбор той же страницы по
+        ключам JSON. Все найденные значения отдаются в `candidates`: когда два
+        источника расходятся (сентябрь против ноября), видно, кто что сказал.
+
+        Плановый ввод — последний корпус: «18/IV-27/IV» даёт IV кв. 2027, а
+        первый корпус (IV кв. 2018) уходит полем `commissioning_first`.
+        """
+        cid = pulse_id(complex_id) or ""
 
         def build() -> dict[str, Any]:
+            candidates: dict[str, dict[str, str]] = {"sales_start": {}, "commissioning": {}}
             out: dict[str, Any] = {}
-            sources: dict[str, str] = {}
+
+            page = self.project_page(cid)
+            parsed = page.get("parsed") or {}
+            if parsed.get("sales_start"):
+                candidates["sales_start"]["pulse_project_page"] = parsed["sales_start"]
+            delivery = parsed.get("delivery") or {}
+            if delivery.get("last"):
+                candidates["commissioning"]["pulse_project_page"] = delivery["last"]
+                out["commissioning_first"] = delivery.get("first")
+                out["commissioning_raw"] = delivery.get("raw")
+                out["commissioning_rule"] = "плановый ввод — последний корпус по сроку сдачи"
+
             # Этот ответ уже используется для ТЭП проекта; делим тот же cache key.
             table = self._cached(
                 "table", cid,
-                lambda: self._post_json("/api/app/complex/table/", {"complex_id": cid}),
+                lambda: self._post_json("/api/app/complex/table/", {"complex_id": _api_id(cid)}),
             )
             if isinstance(table, dict):
-                got = _dates_from_payload(table)
-                for key, value in got.items():
-                    out[key] = value
-                    sources[key] = "pulse_api_table"
+                for key, value in _dates_from_payload(table).items():
+                    candidates[key]["pulse_api_table"] = value
 
-            # Карта иногда уже несёт паспортные поля одним общим ответом.
             known = self.project(cid)
             if known is not None:
-                if not out.get("sales_start") and known.sales_start:
-                    out["sales_start"] = known.sales_start
-                    sources["sales_start"] = "pulse_map"
-                if not out.get("commissioning") and known.commissioning:
-                    out["commissioning"] = known.commissioning
-                    sources["commissioning"] = "pulse_map"
+                if known.sales_start:
+                    candidates["sales_start"]["pulse_map"] = known.sales_start
+                if known.commissioning:
+                    candidates["commissioning"]["pulse_map"] = known.commissioning
 
-            # Если JSON молчит — читаем ровно ту страницу, которую человек
-            # видит в ЛК. Это резерв, а не основной механизм.
-            if not out.get("sales_start") or not out.get("commissioning"):
-                page = ""
-                if self._cookie("sessionid") or self.sign_in():
-                    try:
-                        page = self._open(f"/complex/{cid}/").decode("utf-8", errors="ignore")
-                    except (urllib.error.URLError, OSError) as exc:
-                        self.errors.append(f"карточка проекта {cid}: {exc}")
-                got = _dates_from_project_html(page)
-                for key, value in got.items():
-                    if not out.get(key):
-                        out[key] = value
-                        sources[key] = "pulse_project_page"
+            for key, value in (page.get("dates_html") or {}).items():
+                candidates[key]["pulse_project_page_keys"] = value
 
+            sources: dict[str, str] = {}
+            for key, found in candidates.items():
+                for source in _DATE_SOURCES:
+                    if found.get(source):
+                        out[key] = found[source]
+                        sources[key] = source
+                        break
+            out["candidates"] = {key: value for key, value in candidates.items() if value}
+            if parsed.get("as_of"):
+                out["as_of"] = parsed["as_of"]
             if sources:
                 out["sources"] = sources
                 out["source"] = "Пульс Продаж Новостроек · онлайн"
@@ -1102,15 +1246,35 @@ class PulseClient:
 
         return self._cached("dates", cid, build) or {}
 
-    def project_stage(self, complex_id: int) -> dict[str, Any]:
-        """Стадия строительства проекта из уже полученных ответов Пульса.
+    def project_stage(self, complex_id: Any) -> dict[str, Any]:
+        """Стадия строительства проекта — по корпусам, со страницы проекта.
 
-        Новых запросов нет: таблица проекта лежит в кэше после `project_dates`,
-        точка карты — в справочнике. Пусто — значит в нашем маршруте поля
-        стадии нет, и ответ говорит это словами, а не молчит.
+        Карта и таблица проекта поля стадии не несут: прежний поиск ключа по
+        смыслу в них на проде почти всегда отвечал «стадия не указана». Стадия
+        живёт на странице проекта распределением «стадия → корпусов». `raw` —
+        стадия для цены по правилу `pulse_page.stage_summary` (самая ранняя
+        незавершённая), рядом — распределение целиком и самая поздняя.
+
+        Страница берётся из кэша `project_page` (её уже открыл `project_dates`);
+        таблица и карта остаются запасными источниками.
         """
-        cid = int(complex_id)
-        path = self.dir / "cache" / f"table-{cid}.json"
+        cid = pulse_id(complex_id) or ""
+        page = self.project_page(cid)
+        parsed = page.get("parsed") or {}
+        summary = parsed.get("stage") or {}
+        price_stage = summary.get("price_stage") or {}
+        if price_stage.get("raw"):
+            latest = summary.get("latest_stage") or {}
+            return {
+                "raw": price_stage["raw"],
+                "source": "pulse_project_page",
+                "as_of": parsed.get("as_of"),
+                "distribution": summary.get("distribution") or [],
+                "buildings": summary.get("buildings"),
+                "latest_raw": latest.get("raw"),
+                "rule": summary.get("rule"),
+            }
+        path = self.dir / "cache" / f"table-{_id_file(cid)}.json"
         cached = load_json(path) if path.exists() else None
         table = cached.get("value") if isinstance(cached, dict) else None
         raw = _stage_from_payload(table) if isinstance(table, dict) else None
@@ -1120,13 +1284,38 @@ class PulseClient:
         known = next((item for item in self.projects(fetch=False) if item.complex_id == cid), None)
         if known is not None and known.construction_stage:
             return {"raw": known.construction_stage, "source": "pulse_map"}
+        reason = page.get("reason") or (
+            "на странице проекта нет подписи «Стадия строительства»"
+            if page.get("parsed") is not None else None
+        )
         return {
             "raw": None,
             "source": None,
-            "reason": "в ответах Пульса, которые читает наш маршрут (карта, таблица проекта), поля стадии нет",
+            "reason": reason or "стадии нет ни на странице проекта, ни в карте и таблице",
         }
 
-    def remaining(self, complex_id: int) -> dict[str, Any]:
+    def project_facts(self, complex_id: Any) -> dict[str, Any]:
+        """Поля страницы проекта по корпусам — с источником и датой состояния."""
+        from . import pulse_page  # noqa: PLC0415
+
+        page = self.project_page(complex_id)
+        parsed = page.get("parsed") or {}
+        if not parsed:
+            return {"reason": page.get("reason")} if page.get("reason") else {}
+        facts = {
+            key: parsed[key]
+            for key in ("contract", "status", "escrow", "finishing", "living", "flats",
+                        "commercial", "parking", "storage", "buildings", "pace",
+                        "exposure_price_per_sqm")
+            if parsed.get(key) is not None
+        }
+        facts["remaining_figures"] = pulse_page.remaining_figures(parsed)
+        facts["as_of"] = parsed.get("as_of")
+        facts["source"] = "страница проекта Пульса"
+        facts["url"] = page.get("url")
+        return facts
+
+    def remaining(self, complex_id: Any) -> dict[str, Any]:
         """Непроданный остаток по корпусам, сложенный в проект."""
         columns = ["building", "living_remaining_predict", "living_remaining_area_predict"]
         data = self._cached(
@@ -1134,7 +1323,7 @@ class PulseClient:
             complex_id,
             lambda: self._post_json(
                 "/api/app/complex/buildings_summary_table/",
-                {"complex_id": int(complex_id), "columns": columns},
+                {"complex_id": _api_id(complex_id), "columns": columns},
             ),
         )
         rows = (data or {}).get("rows") if isinstance(data, dict) else None
@@ -1147,13 +1336,13 @@ class PulseClient:
             "remaining_area": round(area) or None,
         }
 
-    def price(self, complex_id: int) -> dict[str, Any] | None:
+    def price(self, complex_id: Any) -> dict[str, Any] | None:
         """Цена прайс-листа: средняя, границы, число лотов и дата среза."""
         data = self._cached(
             "price",
             complex_id,
             lambda: self._post_json(
-                "/api/app/complex/price_stats/", {"complex_id": int(complex_id)}
+                "/api/app/complex/price_stats/", {"complex_id": _api_id(complex_id)}
             ),
         )
         current = (data or {}).get("current_price") if isinstance(data, dict) else None
@@ -1170,12 +1359,12 @@ class PulseClient:
             "basis": "pulse_price_list_average",
         }
 
-    def sales(self, complex_id: int) -> dict[str, Any] | None:
+    def sales(self, complex_id: Any) -> dict[str, Any] | None:
         """Темп продаж и прогноз их окончания."""
         data = self._cached(
             "sales",
             complex_id,
-            lambda: self._post_json("/api/app/complex/sales/", {"complex_id": int(complex_id)}),
+            lambda: self._post_json("/api/app/complex/sales/", {"complex_id": _api_id(complex_id)}),
         )
         if not isinstance(data, dict):
             return None
@@ -1192,9 +1381,9 @@ class PulseClient:
             "quality": "provider",
         }
 
-    def exposure(self, complex_id: int) -> list[dict[str, Any]]:
+    def exposure(self, complex_id: Any) -> list[dict[str, Any]]:
         """Откуда взят прайс: площадка, дата среза, объём предложения."""
-        data = self._post_json("/api/app/complex/price_exposure/", {"complex_id": int(complex_id)})
+        data = self._post_json("/api/app/complex/price_exposure/", {"complex_id": _api_id(complex_id)})
         if not isinstance(data, list):
             return []
         out: list[dict[str, Any]] = []
@@ -1278,7 +1467,7 @@ class PulseClient:
     _OBJECT_TYPES = ("living", "commercial", "nonliving", "non_living",
                      "parking", "pantry", "storeroom", "apartment", "office")
 
-    def probe_object_types(self, complex_id: int) -> dict[str, Any]:
+    def probe_object_types(self, complex_id: Any) -> dict[str, Any]:
         """Есть ли у источника коммерция и машино-места — спросив, а не гадая.
 
         Всё, что мы из «Пульса» берём, прибито к жилью: цена запрашивается с
@@ -1293,7 +1482,7 @@ class PulseClient:
         """
         if not self.available and not self._cookie("sessionid"):
             return {"available": False, "reason": "Источник выключен: не заданы доступы"}
-        cid = int(complex_id)
+        cid = pulse_id(complex_id) or ""
         # Причина неудачи лежит в `self.errors`: `_post_json` возвращает `None`
         # и пишет туда, что случилось. Не прочитать её значит показать «точек
         # ноль» и там, где типа нет, и там, где запрос не прошёл, — а это
@@ -1302,7 +1491,7 @@ class PulseClient:
         answers: dict[str, Any] = {}
         for kind in self._OBJECT_TYPES:
             payload = {
-                "ids": [cid],
+                "ids": [_api_id(cid)],
                 "opts": {"result_value": "sqm_price", "object_type": kind, "rooms": None,
                          "only_last_months": 12, "area_min": None, "area_max": None},
             }
@@ -1329,7 +1518,7 @@ class PulseClient:
                 "sample": next((point for point in points if point.get("value")), None),
             }
         try:
-            table = self._post_json("/api/app/complex/table/", {"complex_id": cid})
+            table = self._post_json("/api/app/complex/table/", {"complex_id": _api_id(cid)})
         except Exception as exc:  # noqa: BLE001
             table = {"error": f"{type(exc).__name__}: {exc}"}
         return {
@@ -1349,11 +1538,300 @@ class PulseClient:
 
     def diagnostics(self) -> dict[str, Any]:
         return {
+            "base": self.base,
             "available": self.available,
             "projects": len(self._projects or []),
             "errors": self.errors[:5],
         }
 
+    def catalog_report(self, *, refresh: bool = False) -> dict[str, Any]:
+        """Что лежит в справочнике этой базы: сколько, откуда, когда, по регионам.
+
+        `refresh=True` идёт за картой и классами заново, мимо суточного кэша.
+        Без него — только диск: отчёт смотрят из кабинета, и тянуть
+        мегабайтную карту на каждый взгляд незачем.
+        """
+        errors_before = len(self.errors)
+        projects = self.projects(refresh=refresh, fetch=refresh)
+        classes = self.segments(refresh=refresh, fetch=refresh)
+        by_id: dict[str, int] = {}
+        by_address: dict[str, int] = {}
+        id_format = {"регион-номер": 0, "число": 0, "иное": 0}
+        for item in projects:
+            region = item.region
+            if region:
+                id_format["регион-номер"] += 1
+            elif item.complex_id.isdigit():
+                id_format["число"] += 1
+            else:
+                id_format["иное"] += 1
+            key = region or "без кода в номере"
+            by_id[key] = by_id.get(key, 0) + 1
+            place = address_region(item.address) or "регион в адресе не распознан"
+            by_address[place] = by_address.get(place, 0) + 1
+
+        def stamp(path: Path) -> dict[str, Any]:
+            if not path.exists():
+                return {"updated_at": None, "age_hours": None, "fresh": False}
+            mtime = path.stat().st_mtime
+            age = max(0.0, datetime.datetime.now().timestamp() - mtime)
+            return {
+                "updated_at": datetime.datetime.fromtimestamp(
+                    mtime, tz=datetime.timezone.utc
+                ).isoformat(timespec="seconds"),
+                "age_hours": round(age / 3600, 1),
+                "fresh": age <= self.ttl_seconds,
+            }
+
+        def ranked(counts: dict[str, int]) -> dict[str, int]:
+            return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+        return {
+            "base": self.base,
+            "cache_dir": self.dir.name,
+            "available": self.available,
+            "signed_in": bool(self._cookie("sessionid")),
+            "projects": len(projects),
+            "catalog": stamp(self.catalog_path),
+            "segments": {"projects": len(classes), **stamp(self.dir / "segments.json")},
+            "ttl_hours": round(self.ttl_seconds / 3600, 1),
+            "id_format": id_format,
+            "by_id_region": ranked(by_id),
+            "by_address_region": ranked(by_address),
+            "sample_ids": [item.complex_id for item in projects[:5]],
+            "errors": self.errors[errors_before:][:10],
+        }
+
+
+class PulseNetwork:
+    """Несколько баз «Пульса» под одной вывеской клиента.
+
+    Всероссийский кабинет живёт на своём поддомене (`russia.pulsprodaj.ru`),
+    московский — на корневом. Покрывает ли первый Москву, без входа не
+    проверить, поэтому базы задаются списком в `PULSE_BASE_URL`, а здесь
+    собираются в один справочник. У каждой базы — свой клиент: свои куки,
+    свой вход, свой кэш. Порядок — приоритет: если один id пришёл из двух
+    баз и это один проект (точки рядом), берётся первая; если разные —
+    это конфликт, он не прячется, а считается и показывается в отчёте.
+
+    Цена, остатки и карточка проекта спрашиваются у той базы, чей
+    справочник проект принёс: номер одной базы в другой ничего не значит.
+    """
+
+    def __init__(self, sites: list[PulseClient]):
+        if not sites:
+            raise ValueError("нужна хотя бы одна база")
+        self.sites = sites
+        self._projects: list[PulseProject] | None = None
+        self._owner: dict[str, PulseClient] = {}
+        self.duplicates = 0
+        self.conflicts: list[dict[str, Any]] = []
+
+    # --- совместимость с одиночным клиентом -------------------------------------
+
+    @property
+    def base(self) -> str:
+        return self.sites[0].base
+
+    @property
+    def available(self) -> bool:
+        return any(site.available for site in self.sites)
+
+    @property
+    def errors(self) -> list[str]:
+        return [f"{site_key(site.base)}: {text}" for site in self.sites for text in site.errors]
+
+    @property
+    def ttl_seconds(self) -> int:
+        return self.sites[0].ttl_seconds
+
+    def sign_in(self) -> bool:
+        return any([site.sign_in() for site in self.sites])
+
+    # --- справочник ---------------------------------------------------------
+
+    def projects(self, *, refresh: bool = False, fetch: bool = True) -> list[PulseProject]:
+        if self._projects is not None and not refresh:
+            return self._projects
+        merged: list[PulseProject] = []
+        owner: dict[str, PulseClient] = {}
+        kept: dict[str, PulseProject] = {}
+        duplicates = 0
+        conflicts: list[dict[str, Any]] = []
+        for site in self.sites:
+            for item in site.projects(refresh=refresh, fetch=fetch):
+                first = kept.get(item.complex_id)
+                if first is None:
+                    kept[item.complex_id] = item
+                    owner[item.complex_id] = site
+                    merged.append(item)
+                    continue
+                gap = _distance_km(first.latitude, first.longitude, item.latitude, item.longitude)
+                if gap <= 1.0:
+                    duplicates += 1
+                else:
+                    conflicts.append({
+                        "complex_id": item.complex_id,
+                        "kept": {"base": first.base, "name": first.name},
+                        "dropped": {"base": item.base, "name": item.name},
+                        "distance_km": round(gap, 1),
+                    })
+        self._owner, self.duplicates, self.conflicts = owner, duplicates, conflicts
+        # Пустой список не запоминается: база могла ещё не загрузиться.
+        self._projects = merged or None
+        return merged
+
+    def _site(self, complex_id: Any) -> PulseClient:
+        wanted = pulse_id(complex_id) or ""
+        if wanted not in self._owner:
+            self.projects(fetch=False)
+        return self._owner.get(wanted) or self.sites[0]
+
+    def project(self, complex_id: Any) -> PulseProject | None:
+        wanted = pulse_id(complex_id)
+        for item in self.projects():
+            if item.complex_id == wanted:
+                return item
+        return None
+
+    def near(self, latitude: float, longitude: float, radius_km: float) -> list[tuple[float, PulseProject]]:
+        found = [
+            (round(_distance_km(latitude, longitude, item.latitude, item.longitude), 3), item)
+            for item in self.projects()
+        ]
+        return sorted((row for row in found if row[0] <= radius_km), key=lambda row: row[0])
+
+    def segments(self, *, refresh: bool = False, fetch: bool = True) -> dict[str, str]:
+        # Класс проекта — из той же базы, что и сам проект: первая база
+        # пишется последней и перекрывает остальные, как и в справочнике.
+        out: dict[str, str] = {}
+        for site in reversed(self.sites):
+            out.update(site.segments(refresh=refresh, fetch=fetch))
+        return out
+
+    def suggest(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        text = " ".join(str(query or "").split()).casefold()
+        if len(text) < 2:
+            return []
+        return _rank_suggestions(
+            self.projects(fetch=False), self.segments(fetch=False), text, limit
+        )
+
+    def find_project(self, query: str) -> dict[str, Any] | None:
+        for site in self.sites:
+            found = site.find_project(query)
+            if found:
+                return found
+        return None
+
+    def price_history(self, complex_ids: list[Any], months: int = 12) -> dict[str, list[dict[str, Any]]]:
+        groups: dict[int, list[Any]] = {}
+        for value in complex_ids:
+            if pulse_id(value):
+                groups.setdefault(self.sites.index(self._site(value)), []).append(value)
+        out: dict[str, list[dict[str, Any]]] = {}
+        for index, ids in groups.items():
+            out.update(self.sites[index].price_history(ids, months))
+        return out
+
+    # --- данные проекта: у базы-владельца ----------------------------------------
+
+    def metrics(self, complex_id: Any) -> dict[str, Any]:
+        return self._site(complex_id).metrics(complex_id)
+
+    def project_totals(self, complex_id: Any) -> dict[str, Any]:
+        return self._site(complex_id).project_totals(complex_id)
+
+    def project_dates(self, complex_id: Any) -> dict[str, Any]:
+        return self._site(complex_id).project_dates(complex_id)
+
+    def project_stage(self, complex_id: Any) -> dict[str, Any]:
+        return self._site(complex_id).project_stage(complex_id)
+
+    def project_page(self, complex_id: Any, *, refresh: bool = False) -> dict[str, Any]:
+        return self._site(complex_id).project_page(complex_id, refresh=refresh)
+
+    def project_facts(self, complex_id: Any) -> dict[str, Any]:
+        return self._site(complex_id).project_facts(complex_id)
+
+    def remaining(self, complex_id: Any) -> dict[str, Any]:
+        return self._site(complex_id).remaining(complex_id)
+
+    def price(self, complex_id: Any) -> dict[str, Any] | None:
+        return self._site(complex_id).price(complex_id)
+
+    def sales(self, complex_id: Any) -> dict[str, Any] | None:
+        return self._site(complex_id).sales(complex_id)
+
+    def exposure(self, complex_id: Any) -> list[dict[str, Any]]:
+        return self._site(complex_id).exposure(complex_id)
+
+    def probe_object_types(self, complex_id: Any) -> dict[str, Any]:
+        return self._site(complex_id).probe_object_types(complex_id)
+
+    def probe_fields(self) -> dict[str, Any]:
+        return {"bases": {site.base: site.probe_fields() for site in self.sites}}
+
+    def diagnostics(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "projects": len(self._projects or []),
+            "errors": self.errors[:5],
+            "bases": [site.diagnostics() for site in self.sites],
+        }
+
+    def catalog_report(self, *, refresh: bool = False) -> dict[str, Any]:
+        bases = [site.catalog_report(refresh=refresh) for site in self.sites]
+        merged = self.projects(refresh=refresh, fetch=refresh)
+        return {
+            "bases": bases,
+            "projects": len(merged),
+            "duplicates": self.duplicates,
+            "conflicts": len(self.conflicts),
+            "conflict_sample": self.conflicts[:5],
+        }
+
+
+def make_pulse_client(data_dir: Path, **kwargs: Any) -> PulseClient | PulseNetwork:
+    """Клиент по `PULSE_BASE_URL`: одна база — как прежде, несколько — сеть."""
+    bases = parse_bases(kwargs.pop("base", None) or os.getenv("PULSE_BASE_URL"))
+    if len(bases) == 1:
+        return PulseClient(data_dir, base=bases[0], **kwargs)
+    return PulseNetwork([PulseClient(data_dir, base=base, **kwargs) for base in bases])
+
+
+
+def _rank_suggestions(
+    projects: list[PulseProject], classes: dict[str, str], text: str, limit: int
+) -> list[dict[str, Any]]:
+    """Общий отбор подсказок: и для одной базы, и для нескольких сразу."""
+    scored: list[tuple[int, int, dict[str, Any]]] = []
+    for project in projects:
+        name = (project.name or "").casefold()
+        address = (project.address or "").casefold()
+        if name.startswith(text):
+            rank = 0
+        elif text in name:
+            rank = 1
+        elif text in address:
+            rank = 2
+        else:
+            continue
+        scored.append((
+            rank,
+            len(project.name or ""),
+            {
+                "complex_id": project.complex_id,
+                "region": project.region,
+                "name": project.name,
+                "developer": project.developer,
+                "address": project.address,
+                "segment": classes.get(project.complex_id),
+                "base": project.base,
+            },
+        ))
+    scored.sort(key=lambda item: (item[0], item[1]))
+    return [row for _, _, row in scored[:limit]]
 
 def _as_int(value: Any) -> int | None:
     try:

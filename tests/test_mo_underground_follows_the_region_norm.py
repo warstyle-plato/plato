@@ -174,6 +174,13 @@ def applied():
                 page = ctx.new_page()
                 page.goto(base, wait_until="domcontentloaded")
                 page.wait_for_timeout(2000)
+                if silent:
+                    # «Тот же участок»: его ТЭП уже на странице, руки вписаны
+                    # при нём. Правка ТЭП возвращает норматив (владелец,
+                    # 05.10.2026), поэтому руки, вписанные при ДРУГОМ ТЭП,
+                    # тихое обновление по праву сбросило бы — и предохранитель
+                    # ловил бы не «тихий пересчёт», а смену ТЭП.
+                    page.evaluate(APPLY, True)
                 page.evaluate(STALE)
                 out[mode] = page.evaluate(APPLY, silent)
                 ctx.close()
@@ -189,7 +196,7 @@ def test_applying_the_mo_site_drops_the_old_parking_pair(applied):
 
 
 def test_a_silent_refresh_keeps_the_hand_pair(applied):
-    """Предохранитель: тихое обновление того же участка руки не трогает —
-    иначе сброс выше мог бы оказаться сбросом на любой пересчёт."""
+    """Предохранитель: тихое обновление того же участка при том же ТЭП руки
+    не трогает — иначе сброс выше мог бы оказаться сбросом на любой пересчёт."""
     got = applied["silent"]
     assert got["spaces"] == 150 and got["area"] == 5215 and got["byHand"], got
