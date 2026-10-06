@@ -59,6 +59,11 @@ def test_every_non_residential_object_gets_its_relief_and_jobs() -> None:
     # Основание называет акт, а не только «приложение 3».
     assert office["kmest_source"].startswith("1874-ПП, прил. 3 (коэффициенты места расположения")
     assert got["act"]["url"] == "https://www.mos.ru/depr/documents/view/273915220/"
+    # Кзатр — по приказу; расхождение с калькулятором названо числом и причиной.
+    assert got["kzatr"]["value"] == pytest.approx(172.78027)
+    assert got["kzatr"]["glavapu"] == pytest.approx(172.78027 * 1.2036, abs=0.01)
+    note = next(n for n in got["notes"] if "1,2036" in n)
+    assert "138,11132" in note and "172,78" in note and "207,96" in note and "20% выше" in note
     assert "от 31.12.2019 № 1874-ПП" in got["act"]["title"]
     assert office["benefit_mln"] == pytest.approx(
         1000 * office["area_sqm"] * kzatr * 0.7 / 1e6, rel=1e-6)

@@ -37,6 +37,14 @@ MPT_ACT_TITLE = ("Постановление Правительства Моск
 MPT_ACT_URL = "https://www.mos.ru/depr/documents/view/273915220/"
 MPT_APPENDIX = "прил. 3 (коэффициенты места расположения МПТ — Кмест)"
 
+# Кзатр калькулятора ГлавАПУ (его код, константы constant_cost и
+# index_of_changes_costs_building): база 2026 года 166,23078 × 1,2036 × индекс
+# квартала. 1,2036 = 166,23078 / 138,11132 — переход с базы 2025 года на базу
+# 2026-го, то есть база умножена на свой же индекс второй раз. Считаем по
+# приказу (решение владельца, 06.10.2026), расхождение подписываем.
+GLAVAPU_KZATR_EXTRA = 1.2036
+GLAVAPU_KZATR_EXTRA_BASIS = "166,23078 / 138,11132 — переход с базы Кзатр 2025 года на базу 2026-го"
+
 # Калькулятор ГлавАПУ: льгота за передачу = площадь (тыс. м²) × uupss_flats.
 TRANSFER_RATE_MLN_PER_THS_SQM = 190.46
 TRANSFER_SOURCE = ("калькулятор ГлавАПУ: «Передача жилых помещений в собственность города "
@@ -142,6 +150,9 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
                                f"{mpt_calculator.KZATR_BASE} (с 01.01.2026)")
     result["kzatr"] = {"value": kzatr, "quarter": quarter}
     result["act"] = {"short": MPT_ACT, "title": MPT_ACT_TITLE, "url": MPT_ACT_URL}
+    glavapu_kzatr = round(kzatr * GLAVAPU_KZATR_EXTRA, 2)
+    result["kzatr"]["glavapu"] = glavapu_kzatr
+    result["kzatr"]["source"] = mpt_calculator.KZATR_SOURCE
 
     candidates: list[tuple[str, str, str | None, str, float | None]] = []
     for obj in objects:
@@ -230,6 +241,14 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
     if result["total_mln"] > 0 and gross > 0 and result["total_mln"] > gross:
         result["notes"].append("льготы больше платы за ВРИ проекта — к оплате останется ноль, "
                                "остаток льготы не переносится")
+    if result["mpt_mln"] > 0:
+        ours_text = f"{kzatr:.2f}".replace(".", ",")
+        theirs_text = f"{glavapu_kzatr:.2f}".replace(".", ",")
+        result["notes"].append(
+            f"Кзатр по приказу — {ours_text} ({quarter}). Калькулятор ГлавАПУ берёт "
+            f"≈{theirs_text}: ту же базу 2026 года ещё раз умножает на 1,2036 "
+            f"({GLAVAPU_KZATR_EXTRA_BASIS}), и его льгота за МПТ выходит на "
+            f"{(GLAVAPU_KZATR_EXTRA - 1) * 100:.0f}% выше. Считаем по приказу.")
     if result["total_mln"] > 0:
         result["notes"].append("калькулятор ГлавАПУ срезает льготами только плату за МКД; "
                                "в проекте плата одной суммой — этот потолок здесь не проверен")
