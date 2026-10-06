@@ -440,7 +440,7 @@ def _bank(model: dict[str, Any]) -> bool:
 
 def _nonres_value(row: dict[str, Any], fm: "_Formats") -> tuple[str, str]:
     unit, value = row.get("unit"), row.get("value")
-    if unit == "rub":
+    if unit in ("rub", "mln"):
         return fm.mln((float(value) / 1e6) if value is not None else None), "млн ₽"
     if unit == "pct":
         return fm.pct(value), ""
@@ -456,13 +456,13 @@ def _nonres_financing_rows(model: dict[str, Any], fm: "_Formats") -> list[tuple[
     rows: list[tuple[str, str, str]] = []
     for tile in (model.get("layout") or {}).get("nonres_tiles") or []:
         rows.append((str(tile.get("label")), *_nonres_value(tile, fm)))
-    wanted = ("Кредит объекта — проценты и комиссии", "Кредит объекта — срок погашения",
-              "Кредит объекта — баллон в конце срока")
-    for item in model.get("nonres_strategy") or []:
+    # Кредит объекта — из его отчёта «Финансирование объекта» (`nonres_financing`).
+    wanted = ("Схема погашения", "Проценты и комиссии — всего",
+              "Баллон по графику (доля долга на ввод)", "Кредит погашен полностью")
+    for item in model.get("nonres_financing") or []:
         for row in item.get("rows") or []:
             if row.get("label") in wanted:
-                rows.append((f"{item.get('title')}: {str(row['label']).replace('Кредит объекта — ', '')}",
-                             *_nonres_value(row, fm)))
+                rows.append((f"{item.get('title')}: {row['label']}", *_nonres_value(row, fm)))
     # Гостиница: условия своего кредита — строками той же таблицы движка.
     hotel = model.get("hotel") or {}
     for row in hotel.get("rows") or []:

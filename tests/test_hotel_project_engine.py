@@ -128,6 +128,62 @@ def test_the_scenario_moves_the_hotel_revenue() -> None:
                              rel=1e-9))
 
 
+def test_the_hotel_debt_is_judged_by_its_own_dscr() -> None:
+    """Показатель долга (`report_layout.debt_metric`) — DSCR кредита
+    гостиницы, а не LLCR: ПФ у гостиницы нет. Без кредита и у пустой
+    гостиницы показателя нет, и сказано почему."""
+    _, result = _run()
+    metric = result["report"]["layout"]["debt_metric"]
+    assert metric["key"] == "dscr"
+    assert metric["value"] == pytest.approx(result["finance"]["hotel"]["kpi"]["dscr_min"])
+    _, cash = _run(hotel_financing="none")
+    metric = cash["report"]["layout"]["debt_metric"]
+    assert metric["key"] is None and "нет кредита" in metric["reason"]
+    _, empty = _run(preset=None)
+    metric = empty["report"]["layout"]["debt_metric"]
+    assert metric["key"] is None and "не считается" in metric["reason"]
+
+
+def _pnl_gaps(result: dict) -> dict[str, float]:
+    s, fin = result["summary"], result["finance"]
+    return {
+        "EBITDA − проценты ≠ прибыль до налога":
+            s["ebitda"] - s["financing_cost"] - s["profit_before_tax"],
+        "выручка − расходы всего ≠ чистая прибыль":
+            s["revenue"] - s["total_expenses"] - s["net_profit"],
+        "структура расходов ≠ расходы всего":
+            sum(e["value"] for e in result["report"]["expense_structure"]) - s["total_expenses"],
+        "выручка − CAPEX − маркетинг − расходы объектов ≠ EBITDA":
+            s["revenue"] - s["capex"] - s["commercial_costs"]
+            - float(fin.get("nonres_costs") or 0.0) - s["ebitda"],
+    }
+
+
+def test_the_economics_lines_add_up_for_the_hotel() -> None:
+    """Строки «Экономики проекта» сходятся и у гостиницы: её CAPEX — строка
+    структуры расходов, её эксплуатация — расходы объекта вне ДДУ."""
+    _, result = _run()
+    gaps = _pnl_gaps(result)
+    assert all(abs(v) < 1.0 for v in gaps.values()), gaps
+    labels = [e["label"] for e in result["report"]["expense_structure"]]
+    assert "Гостиница — здание, мебель и оборудование" in labels
+    # Льгота 0 % на проживание: возмещение НДС стройки больше начисленного —
+    # строка со знаком минус, а не пропажа из структуры.
+    assert result["finance"]["vat"] < 0 and core.VAT_REFUND_LABEL in labels
+    _, mixed = _run("mixed", None)
+    assert "Гостиница — здание, мебель и оборудование" not in [
+        e["label"] for e in mixed["report"]["expense_structure"]]
+
+
+def test_the_economics_check_catches_a_missing_hotel_line() -> None:
+    """Подделка: структура без строки гостиницы — проверка обязана покраснеть."""
+    _, result = _run()
+    forged = {**result, "report": {**result["report"], "expense_structure": [
+        e for e in result["report"]["expense_structure"]
+        if not e["label"].startswith("Гостиница")]}}
+    assert abs(_pnl_gaps(forged)["структура расходов ≠ расходы всего"]) > 1.0
+
+
 def test_preferential_rate_reads_the_project_key_rate() -> None:
     _, pref = _run()
     _, com = _run(hotel_financing="commercial", hotel_loan_spread_pp=4)

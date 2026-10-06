@@ -442,6 +442,53 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 report["query"]["check"] = await run_in_threadpool(ask)
         return report
 
+    @app.get("/market/pulse/project-page")
+    async def market_pulse_project_page(
+        request: Request, complex_id: str = "", q: str = "", refresh: bool = False
+    ) -> dict[str, Any]:
+        """Страница проекта в ЛК — как её понял разбор, и даты из всех источников.
+
+        `complex_id=…` или `q=Зиларт` (первый из подсказки). `refresh=1` —
+        открыть страницу заново, мимо кэша. Ответ кладёт рядом: найденные
+        подписи (что разбор узнал на живой странице), стадию по корпусам,
+        поля по корпусам с датой состояния, даты проекта по каждому
+        источнику — страница, таблица API, карта, месячная выгрузка. Так
+        «старт продаж сентябрь против ноября» решается чтением, а не догадкой.
+        """
+        cabinet_module.require_cabinet(request)
+        pulse = service.pulse
+        cid = " ".join(str(complex_id or "").split())
+        picked = None
+        if not cid and q.strip():
+            found = await run_in_threadpool(pulse.suggest, q, 1)
+            if found:
+                picked = found[0]
+                cid = str(found[0]["complex_id"])
+        if not cid:
+            raise HTTPException(status_code=400, detail="Укажите complex_id или q (название проекта)")
+
+        def collect() -> dict[str, Any]:
+            seen = set(pulse.errors)
+            page = pulse.project_page(cid, refresh=refresh)
+            dates = pulse.project_dates(cid)
+            card = service.cards.card(cid)
+            return {
+                "complex_id": cid,
+                "picked": picked,
+                "page": page,
+                "dates": dates,
+                "monthly_report": {
+                    "sales_start": card.get("sales_start"),
+                    "commissioning": card.get("commissioning"),
+                    "source": "месячная выгрузка Пульса (XLSX)",
+                },
+                "stage": pulse.project_stage(cid),
+                "facts": pulse.project_facts(cid),
+                "errors": [e for e in pulse.errors if e not in seen][:10],
+            }
+
+        return await run_in_threadpool(collect)
+
     @app.get("/market/pulse/project-dates")
     async def market_pulse_project_dates(
         request: Request, complex_id: str = ""
