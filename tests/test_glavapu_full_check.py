@@ -12,8 +12,10 @@
   УПКС и базовые по типам;
 * квартиры по размерам, баланс и элементы жилых территорий.
 
-И две странности, которые сверка обязана ПОКАЗАТЬ: льгота за МПТ при
-«Коэффициент МПТ: не включён» и школа на 2 500 мест при потребности 351.
+Странность, которую сверка обязана ПОКАЗАТЬ: школа на 2 500 мест при
+потребности 351. Льгота за МПТ больше платы за МКД — не странность (нежилья
+больше жилья; уточнение владельца): она показывается как есть, а признак
+«Коэффициент МПТ: не включён» — рядом с её суммой, с источником.
 
 Книга собирается здесь же из чисел выгрузки владельца (`_owner_book`): самой
 книги в репозитории нет, и числа, которых владелец не назвал, в неё не
@@ -259,11 +261,11 @@ def test_the_owner_book_strangeness_is_shown(tmp_path) -> None:
     # Итог компенсации 0 при дефиците поликлиники: профицит школы его гасит.
     offset = found["social_comp_offset"]["text"]
     assert "Поликлиника +780,121" in offset and "max(0" in offset
-    # Льгота за МПТ при «не включён» — с объяснением, почему она не ноль.
-    flag = found["mpt_relief_flag"]["text"]
-    assert "23 253,958" in flag and "не включён" in flag and "соцобъекты (0,3)" in flag
-    over = found["relief_over_fee"]["text"]
-    assert "23 253,958" in over and "9 342,996" in over
+    # Льгота больше платы за МКД — не странность (нежилья больше жилья,
+    # 1874-ПП её платой не ограничивает; уточнение владельца 06.10.2026).
+    assert "relief_over_fee" not in found and "mpt_relief_flag" not in found
+    assert set(found) == {"social_surplus.school", "social_surplus.kindergarten",
+                          "social_comp_offset"}
     assert all(a["where"] for a in found.values())
 
 
@@ -392,7 +394,23 @@ def test_params_service_and_territory_are_compared(core, monkeypatch, tmp_path) 
     assert rows["flats.small"]["glavapu"] == 1856 and rows["flats.small"]["status"] == "ours_missing"
     assert "средняя квартира" in rows["flats.small"]["reason"]
     kinds = {a["kind"] for a in answer["comparison"]["anomalies"]}
-    assert {"social_surplus.school", "mpt_relief_flag", "relief_over_fee"} <= kinds
+    assert "social_surplus.school" in kinds and "relief_over_fee" not in kinds
+
+
+def test_a_relief_above_the_fee_is_shown_as_is(core, monkeypatch, tmp_path) -> None:
+    """Льгота 23 254 при плате за МКД 9 343: показана целиком, не обрезана до
+    платы и не названа аномалией; признак МПТ квартала — рядом, с источником."""
+    inputs, tep = _nagatino()
+    answer = _run_with(core, monkeypatch, _owner_book(tmp_path), inputs, tep)
+    rows = {r["kind"]: r for r in answer["comparison"]["rows"]}
+    mpt = rows["vri_relief.mpt"]
+    assert mpt["glavapu"] == pytest.approx(23253.958) and mpt["status"] == "reference"
+    assert "«Коэффициент МПТ: не включён»" in mpt["glavapu_origin"]
+    assert "Параметры территории" in mpt["glavapu_origin"]
+    assert "1874-ПП" in mpt["reason"]
+    assert rows["vri_relief.total"]["glavapu"] == pytest.approx(23253.958)
+    assert rows["vri_cost_mln"]["glavapu"] == pytest.approx(9342.996)
+    assert not any("льгот" in a["text"] for a in answer["comparison"]["anomalies"])
 
 
 def test_a_short_yard_is_named_short(core, monkeypatch, tmp_path) -> None:
@@ -418,7 +436,7 @@ def test_the_page_shows_anomalies_notes_and_new_statuses(core, monkeypatch, tmp_
     html = got["html"]
     anomalies = html.find("Странности выгрузки калькулятора")
     assert 0 <= anomalies < html.find("glavapu-scenario-table")
-    assert "сверх потребности 2 149" in html and "23 253,958" in html
+    assert "сверх потребности 2 149" in html and "«Коэффициент МПТ: не включён»" in html
     assert "а не «уличные»" in html
     assert 'data-status="covered"' in html and "покрывает" in html
     assert "Школьное здание на 2500 мест со спортивным ядром" in html
@@ -426,4 +444,4 @@ def test_the_page_shows_anomalies_notes_and_new_statuses(core, monkeypatch, tmp_
                                     "Объекты обслуживания", "Машино-места по ВРИ",
                                     "Элементы жилых территорий")]
     assert all(i >= 0 for i in order) and order == sorted(order), order
-    assert "Найдено странностей калькулятора: 5" in got["summary"]
+    assert "Найдено странностей калькулятора: 3" in got["summary"]
