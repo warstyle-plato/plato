@@ -590,10 +590,10 @@ def test_money_and_parking_are_compared_by_kind(core, monkeypatch) -> None:
     assert rows["social_comp.school"]["glavapu"] == pytest.approx(-3799.372)
     assert rows["social_comp.school"]["status"] == "reference"
     # Приобъектные по ВРИ: офис и ТЦ — каждый со своей строкой нормы.
-    office, retail = rows["parking_vri.4_1"], rows["parking_vri.4_2"]
+    office, retail = rows["parking_vri.4_1.attached"], rows["parking_vri.4_2.attached"]
     assert office["glavapu"] == 199 and retail["glavapu"] == 233
     assert office["ours"] is not None and "parking_demand" in office["ours_origin"]
-    assert rows["parking_vri.built_in"]["glavapu"] == 21
+    assert rows["parking_vri.built_in.attached"]["glavapu"] == 21
     # ВРИ по видам и льготы — по названиям строк калькулятора, справочно.
     assert rows["vri.44"]["label"] == "Многоквартирная жилые здания"
     assert rows["vri.44"]["status"] == "reference"
@@ -611,12 +611,12 @@ def test_money_and_parking_are_compared_by_kind(core, monkeypatch) -> None:
     # Баланс территории — как калькулятор разложил её под наше соотношение.
     # Нули калькулятора по видам ВРИ — не строки, а шум: их нет.
     assert "vri.45" not in rows and "vri.53" not in rows
-    assert "соцобъект" in rows["parking_vri.3_5"]["reason"]
+    assert "соцобъект" in rows["parking_vri.3_5.attached"]["reason"]
     assert rows["balance.12"]["glavapu"] == pytest.approx(7.659)
     assert rows["balance.14"]["status"] == "reference"
     groups = list(dict.fromkeys(r["group"] for r in rows.values()))
     assert groups.index("Соцнагрузка, млн ₽") < groups.index("Машино-места по видам") \
-        < groups.index("Приобъектные машино-места по ВРИ")
+        < groups.index("Машино-места по ВРИ")
 
 
 class _FakePage:

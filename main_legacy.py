@@ -2769,23 +2769,24 @@ _GLAVAPU_USE_ROWS: list[tuple[str, str]] = [
 ]
 
 
-def _glavapu_base_costs(rows: list[list[Any]]) -> dict[str, float]:
+def _glavapu_base_costs(rows: list[list[Any]], column: int = 2) -> dict[str, float]:
     """Базовые стоимости по типам использования из листа «Параметры территории».
 
     Таблица идёт после заголовка «Тип использования | УПКС | Базовая»: третий
-    столбец — базовая стоимость, второй — УПКС. Нулевая базовая означает, что
-    за этот вид не платят (производство, социальные объекты), и ноль здесь
-    осмысленный — он и сохраняется.
+    столбец — базовая стоимость, второй — УПКС (`column=1`, его читает сверка
+    сценария с калькулятором). Нулевая базовая означает, что за этот вид не
+    платят (производство, социальные объекты), и ноль здесь осмысленный — он и
+    сохраняется.
     """
     found: dict[str, float] = {}
     for row in rows or []:
         name = str((row or [None])[0] or "").strip().lower()
-        if not name or len(row) < 3:
+        if not name or len(row) <= column:
             continue
         key = next((code for code, needle in _GLAVAPU_USE_ROWS if name.startswith(needle)), "")
         if not key:
             continue
-        value = _ru_number(row[2])
+        value = _ru_number(row[column])
         if value is None:
             continue
         found[key] = float(value)
@@ -2901,6 +2902,11 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         # переписывать числа из файла руками, а «откуда взять базовую» —
         # первый вопрос, который задаёт человек (владелец, 20.08.2026).
         "vri_base_costs_by_use": _glavapu_base_costs(params_rows),
+        "vri_upks_by_use": _glavapu_base_costs(params_rows, column=1),
+        # Нормативы соцобъектов квартала (мест на 1000 жителей) — их сверка
+        # ставит рядом с нашими (`SOCIAL_NORMS_PER_1000`).
+        "kindergarten_norm_per_1000": _ru_number(_find_parameter(params_rows, "Норматив ДОО")),
+        "school_norm_per_1000": _ru_number(_find_parameter(params_rows, "Норматив школ")),
     }
 
     # Derived underground parking for the financial TEP.
@@ -11757,6 +11763,17 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     }
 
 
+# Нормативы соцобъектов — мест (посещений в смену) на 1000 жителей по
+# расчётной зоне. Один источник: ими считает `tep_derived_norms`, их же сверка
+# с калькулятором ГлавАПУ ставит рядом с «Нормативом ДОО / школ» его листа
+# «Параметры территории».
+SOCIAL_NORMS_PER_1000: dict[str, dict[str, int]] = {
+    "kindergarten": {"1": 44, "2": 63},
+    "school": {"1": 90, "2": 124},
+    "clinic": {"1": 19, "2": 19},
+}
+
+
 def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: float,
                       nonresidential_np_sqm: float = 0.0,
                       k1: float = 1.0, k2: float = 1.0,
@@ -11795,9 +11812,13 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
     upks = max(0.0, float(upks_rub or 0.0))
 
     population = math.ceil(apartments / 33.0) if apartments > 0 else 0
-    dou = math.ceil((63 if zone_two else 44) * population / 1000) if population else 0
-    school = math.ceil((124 if zone_two else 90) * population / 1000) if population else 0
-    clinic = math.ceil(19 * population / 1000) if population else 0
+    zone = "2" if zone_two else "1"
+    dou = (math.ceil(SOCIAL_NORMS_PER_1000["kindergarten"][zone] * population / 1000)
+           if population else 0)
+    school = (math.ceil(SOCIAL_NORMS_PER_1000["school"][zone] * population / 1000)
+              if population else 0)
+    clinic = (math.ceil(SOCIAL_NORMS_PER_1000["clinic"][zone] * population / 1000)
+              if population else 0)
 
     residential_np = residential_spp * 0.9
     regime = str(parking_norm_regime or "2118_2026").strip().lower()
@@ -13764,8 +13785,12 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
                        else "вводные проекта: social_compensation_mln")
     ours["social_comp"] = {"total": (comp_value, comp_origin)}
 
-    # Приобъектные места по ВРИ — строки той же нормы `parking_demand`, что
-    # дала общий итог: объект → его ВРИ по карте NONRES_VRI.
+    # Машино-места по ВРИ, все виды. Приобъектные — строки той же нормы
+    # `parking_demand`, что дала общий итог (объект → ВРИ по карте
+    # NONRES_VRI); постоянные и гостевые МКД — `tep_derived_norms`. Мест
+    # остановки модель не считает — их строки остаются без нашей величины, и
+    # «всего» по ВРИ не собирается: сумма без них была бы неполной, а не нашей.
+    extra: dict[str, str] = {}
     by_vri: dict[str, list[Any]] = {}
     for row in demand.get("rows") or []:
         key = str(row.get("tep_key") or "")
@@ -13779,8 +13804,131 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
         slot = by_vri.setdefault(kind, [0, []])
         slot[0] += int(row.get("required_spaces") or 0)
         slot[1].append(str(row.get("label") or key))
-    ours["parking_vri"] = {kind: (value, "наша норма (parking_demand): " + ", ".join(names))
+    ours["parking_vri"] = {f"{kind}.attached": (value, "наша норма (parking_demand): " + ", ".join(names))
                            for kind, (value, names) in by_vri.items()}
+    ours["parking_vri"]["2_1_1.permanent"] = ours["parking"]["permanent"]
+    ours["parking_vri"]["2_1_1.guest"] = ours["parking"]["guest"]
+    for code in {kind.split(".", 1)[0] for kind in ours["parking_vri"]}:
+        extra[f"parking_vri.{code}.total"] = (
+            "«всего» по ВРИ у нас не собирается: мест кратковременной остановки модель "
+            "не считает, и сумма без них была бы неполной — виды сверяются по строкам ниже")
+        extra[f"parking_vri.{code}.short_stop"] = (
+            "мест кратковременной остановки модель не считает: они не строятся в "
+            "гараже (945-ПП п. 6.1.2), а потребность в них показана калькулятором")
+
+    # Соцобъекты, которые поставил калькулятор, против строк ТЭП проекта.
+    ours["social_obj"] = {}
+    for key in glavapu_scenario.SOCIAL_KINDS:
+        row = tep.get(key)
+        if not isinstance(row, dict) or n(row, "gns") <= 0:
+            continue
+        label = glavapu_scenario._label(tep, key)
+        ours["social_obj"][f"{key}.places"] = (n(row, "units") or None, f"ТЭП проекта: «{label}», места")
+        ours["social_obj"][f"{key}.spp"] = (round(n(row, "gns") / 1000.0, 3), f"ТЭП проекта: «{label}», ГНС")
+        if n(row, "total_area") > 0:
+            ours["social_obj"][f"{key}.np"] = (round(n(row, "total_area") / 1000.0, 3),
+                                               f"ТЭП проекта: «{label}», общая площадь")
+        extra[f"social_obj.{key}.site"] = ("участка соцобъекта модель не ведёт — показано, "
+                                             "сколько земли под него взял калькулятор")
+        for field in ("spp", "np"):
+            extra[f"social_obj.{key}.{field}"] = (
+                f"калькулятор ставит типовое здание (лист «Социальные объекты»), у нас — «{label}» "
+                "из ТЭП; площадь здания калькулятор берёт свою")
+        extra[f"social_obj.{key}.places"] = (
+            f"сценарий передаёт {glavapu_scenario._ru(n(row, 'units'))} мест «{label}», а "
+            "калькулятор поставил своё типовое здание — его мощность из списка типовых, "
+            "а не наше число (см. «Калькулятор не принял»)")
+
+    # Обслуживание: своих норм на эти объекты у модели нет. Проверяется
+    # запас — покрывает ли встроенная коммерция ННП торговли, быта, общепита,
+    # культуры и городских служб, а ФОК — крытый спорт.
+    built_in_np = n(tep.get(glavapu_scenario.RESIDENTIAL_NONRES_KEY) or {}, "total_area")
+    ours["service"] = {"commerce_need": (
+        round(built_in_np / 1000.0, 3) if built_in_np > 0 else None,
+        "ТЭП проекта: «Коммерция 1 этажа», общая площадь")}
+    sports = [(key, row) for key, row in tep.items() if isinstance(row, dict)
+              and _glavapu_scenario_product(key) == "sports" and n(row, "total_area") > 0]
+    if sports:
+        ours["service"]["sport_indoor"] = (
+            round(sum(n(row, "total_area") for _, row in sports) / 1000.0, 3),
+            "ТЭП проекта: " + ", ".join(f"«{glavapu_scenario._label(tep, k)}»" for k, _ in sports))
+    else:
+        extra["service.sport_indoor"] = ("ФОК в ТЭП проекта нет — крытый спорт, который "
+                                           "требует калькулятор, нечем покрыть")
+    if built_in_np <= 0:
+        extra["service.commerce_need"] = ("встроенной коммерции в ТЭП проекта нет — "
+                                            "обслуживание квартала нечем покрыть")
+
+    # Озеленённые территории ЖК (город: 5,0 м² на жителя) против площади
+    # нашего двора — той, что считает благоустройство.
+    yard_sqm, yard_basis = landscaping_area(inputs, tep)
+    ours["territory"] = {"green_zhk": (round(yard_sqm / 10000.0, 4) if yard_sqm > 0 else None,
+                                       "наш двор (landscaping_area): " + yard_basis)}
+    extra["territory.green_zhk"] = (
+        "наш двор — площадь благоустройства по ставке класса; город (2152-ПП) требует "
+        "5,0 м² озеленённых территорий ЖК на жителя, из них 3,5 — насаждения"
+        if yard_sqm > 0 else "площадь двора в проекте не посчитана: " + yard_basis)
+
+    # Квартиры: всего и по размерам (если состав задан вводными).
+    units = n(apartments, "units")
+    ours["flats"] = {"total": (round(units) if units > 0 else None, "ТЭП проекта: «Квартиры», шт.")}
+    mix = inputs.get("apartment_mix") if isinstance(inputs.get("apartment_mix"), dict) else {}
+    for size in ("small", "medium", "large"):
+        if mix.get(size) not in (None, ""):
+            ours["flats"][size] = (n(mix, size), "вводные проекта: apartment_mix")
+    average = n(apartments, "saleable") / units if units > 0 else 0.0
+    extra["flats.total"] = ("калькулятор считает квартиры от населения (2,1 чел. на квартиру), "
+                              "мы — штуками ТЭП")
+    if not mix:
+        for size in ("small", "medium", "large"):
+            extra[f"flats.{size}"] = (
+                "состава квартир по размерам в модели нет"
+                + (f"; средняя квартира {average:,.1f} м²".replace(",", " ").replace(".", ",")
+                   if average > 0 else ""))
+
+    # Параметры территории: то, от чего считают наши нормы и плата.
+    analysis_src = "выгрузка ГлавАПУ, принятая в проект"
+    numbers = scenario.get("numbers") or []
+    quarter = numbers[0].rsplit(":", 1)[0] if numbers and numbers[0].count(":") >= 3 else None
+    zone = str(normalized.get("calculation_zone") or "").strip()
+    zone_key = "2" if zone == "2" else "1"
+    norms = SOCIAL_NORMS_PER_1000
+    ours["params"] = {
+        "k1": (float(demand.get("k1") or 0.0) or None,
+               "наша норма приобъектных (parking_demand): "
+               + str((demand.get("k_origin") or {}).get("k1") or "К1 вводных")),
+        "k2": (float(demand.get("k2") or 0.0) or None,
+               "наша норма приобъектных (parking_demand): "
+               + str((demand.get("k_origin") or {}).get("k2") or "К2 вводных")),
+        "district": (normalized.get("district") or None, analysis_src),
+        "zone": (zone or None, analysis_src),
+        "kindergarten_norm": (norms["kindergarten"][zone_key],
+                              f"наша норма (SOCIAL_NORMS_PER_1000), зона {zone_key}"),
+        "school_norm": (norms["school"][zone_key], f"наша норма (SOCIAL_NORMS_PER_1000), зона {zone_key}"),
+        "quarter": (quarter, "кадастровые номера сценария"),
+        "rent": (normalized.get("rent_coefficient"), analysis_src),
+        "mpt_coef": (None, ""),
+    }
+    for use, value in (normalized.get("vri_upks_by_use") or {}).items():
+        ours["params"][f"upks_{use}"] = (value, analysis_src)
+    for use, value in (normalized.get("vri_base_costs_by_use") or {}).items():
+        ours["params"][f"base_{use}"] = (value, analysis_src)
+    if not zone:
+        extra["params.zone"] = ("расчётной зоны в проекте нет — наша норма соцобъектов "
+                                  "считает по зоне 1")
+    for kind, key in (("district", "district"), ("rent", "rent_coefficient")):
+        if normalized.get(key) in (None, ""):
+            extra[f"params.{kind}"] = ("в проекте нет принятой выгрузки ГлавАПУ по участку "
+                                       "— параметр квартала не задан")
+    k_src = demand.get("k_origin") or {}
+    extra["params.k1"] = ("наша норма приобъектных берёт К1 "
+                          + (str(k_src.get("k1")) if k_src.get("k1") else
+                             "вводных; не задан — верхний край 1,0")
+                          + "; калькулятор — по участку (анализ ГлавАПУ)")
+    extra["params.k2"] = ("К2 зависит от положения участка относительно ТТК: калькулятор "
+                          "берёт своё (" + str(normalized.get("parking_k2_label") or "по анализу")
+                          + "); наша норма — " + (str(k_src.get("k2")) if k_src.get("k2") else
+                                                  "К2 вводных; не задан — верхний край 1,0"))
 
     reasons: dict[str, str] = {
         "parking.short_stop": ("в модели нет нормы мест кратковременной остановки: "
@@ -13810,12 +13958,15 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
             ("наше число — выгрузка ГлавАПУ с его умолчаниями, а не наш сценарий; "
              if comp_origin.startswith("вводные проекта — число из выгрузки") else "")
             + "калькулятор считает компенсацию от дефицита мест по нашему сценарию: "
-              "объект, построенный сверх потребности, компенсацию не требует")
+              "объект, построенный сверх потребности, компенсацию не требует, а его "
+              "лишние места вычитаются из дефицита других объектов (итог не меньше нуля)")
     else:
         reasons["social_comp.total"] = ("в проекте не задана компенсация за соцобъекты "
                                         "(social_compensation_mln) — сравнить не с чем")
     for kind in ours["parking_vri"]:
-        reasons[f"parking_vri.{kind}"] = reasons["parking.attached"]
+        column = kind.rsplit(".", 1)[-1]
+        reasons[f"parking_vri.{kind}"] = reasons["parking." + column]
+    reasons.update(extra)
     garage = tep.get("underground_parking") or {}
     if n(garage, "units") > 0:
         reasons["parking.permanent"] += (
@@ -51001,6 +51152,7 @@ function tepSourceLabel(manual){
 // страница спрашивает тот же маршрут, пока задание не кончится. Таблицу
 // собирает glavapuScenarioHtml — одна функция и для окна, и для теста.
 const GLAVAPU_SCENARIO_STATUS={match:['совпало','#2e7d32'],diff:['расходится','#b3261e'],
+ covered:['покрывает','#2e7d32'],short:['не хватает','#b3261e'],
  reference:['справочно','#666'],
  not_applied:['параметр не принят','#8a4b08'],ours_missing:['нет нашей величины','#666'],
  glavapu_missing:['нет у ГлавАПУ','#666']};
@@ -51021,11 +51173,30 @@ function glavapuScenarioHtml(a){
   const counts=c.counts||{};
   parts.push('<div class="note" style="margin:6px 0">ГлавАПУ — проверка (роль '+escapeHtml(a.role||'validation_only')+
    '): его числа стоят рядом и ничего в проекте не заменяют. Совпало: '+(counts.match||0)+
-   ', расходится: '+(counts.diff||0)+(counts.not_applied?', не принят параметр: '+counts.not_applied:'')+'.</div>');
+   ', расходится: '+(counts.diff||0)+(counts.not_applied?', не принят параметр: '+counts.not_applied:'')+
+   (counts.short?', не хватает: '+counts.short:'')+'.</div>');
+  // Странности самой выгрузки — над таблицей: это не расхождение с нами,
+  // а то, что читатель книги калькулятора поймёт неверно.
+  const odd=c.anomalies||[];
+  if(odd.length){
+   parts.push('<div class="note warning glavapu-scenario-anomalies"><b>Странности выгрузки калькулятора:</b><br>'+
+    odd.map(x=>escapeHtml(x.text)+' <span style="color:#777">('+escapeHtml(x.where||'')+')</span>').join('<br>')+'</div>');
+  }
+  const notes=c.notes||{};
+  const typical=((a.glavapu||{}).social_typical)||[];
   let group='';
   const rows=(c.rows||[]).map(r=>{
    const st=GLAVAPU_SCENARIO_STATUS[r.status]||[r.status,'#333'];
-   const head=r.group!==group?'<tr class="glavapu-scenario-group"><td colspan="5" style="font-weight:600;background:#fafaf8">'+escapeHtml(r.group)+'</td></tr>':'';
+   let head='';
+   if(r.group!==group){
+    head='<tr class="glavapu-scenario-group"><td colspan="5" style="font-weight:600;background:#fafaf8">'+escapeHtml(r.group)+
+     (notes[r.group]?'<div style="font-weight:400;font-size:11px;color:#555">'+escapeHtml(notes[r.group])+'</div>':'')+
+     (r.group==='Соцобъекты, которые поставил калькулятор'&&typical.length?
+      '<div style="font-weight:400;font-size:11px;color:#555">Типовые здания калькулятора: '+typical.map(t=>
+       escapeHtml(t.name)+' — участок '+glavapuScenarioNum(t.site_ha)+' га, НП '+glavapuScenarioNum(t.np_ths)+
+       ', СПП '+glavapuScenarioNum(t.spp_ths)+' тыс. м², '+glavapuScenarioNum(t.places)+' мест').join('; ')+'</div>':'')+
+     '</td></tr>';
+   }
    group=r.group;
    return head+'<tr data-kind="'+escapeHtml(r.kind)+'" data-status="'+escapeHtml(r.status)+'">'+
     '<td>'+escapeHtml(r.label)+'</td>'+
@@ -51106,9 +51277,12 @@ function glavapuScenarioSummaryHtml(a){
  if(c.not_applied)parts.push('параметр не принят: '+c.not_applied);
  if(c.ours_missing)parts.push('нет нашей величины: '+c.ours_missing);
  if(c.glavapu_missing)parts.push('нет у ГлавАПУ: '+c.glavapu_missing);
+ if(c.short)parts.push('не хватает: '+c.short);
  const refused=((a.applied||{}).refused||[]).length;
  const notSent=((a.scenario||{}).not_sent||[]).length;
- const warn=(refused?' Калькулятор не принял полей: '+refused+'.':'')+(notSent?' Не передано: '+notSent+'.':'');
+ const odd=(a.comparison.anomalies||[]).length;
+ const warn=(refused?' Калькулятор не принял полей: '+refused+'.':'')+(notSent?' Не передано: '+notSent+'.':'')+
+  (odd?' Найдено странностей калькулятора: '+odd+'.':'');
  return '<div class="toolbar" style="margin-top:8px"><span style="font-size:13px">'+escapeHtml(parts.join(' · '))+'.'+
   (warn?'<span style="color:#8a4b08">'+escapeHtml(warn)+'</span>':'')+
   '</span><button class="btn dark" onclick="openGlavapuScenario()">Открыть сверку</button></div>';
