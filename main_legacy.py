@@ -89,7 +89,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.7"
+VERSION = "0.25.11"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -1708,7 +1708,7 @@ _TEP_DEFAULT_LITERAL = {'apartments': {'label': 'Квартиры', 'gns': 13071
 # Ставка общепроектной статьи умножается на `core_total_gns` — суммарную
 # площадь МКД в ГНС; слово у словаря.
 _PER_TOTAL_AREA_HINT = f"тыс. ₽/м² {CORE_TOTAL_AREA.genitive} — наземная плюс подземная"
-_FIELD_GROUPS_LITERAL = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_buyout_mln', 'Выкуп ЗУ/ОКС у третьих лиц', 'млн ₽; входит в стоимость сделки и платится по её графику; по контуру КРТ — кадастровая стоимость, не цена сделки', 'number'], ['purchase_schedule', 'График платежей за покупку', 'доли или суммы по месяцам от начала проекта: «30%@0; 40%@6; 30%@12» или «500@0; 300@12» (млн ₽). Пусто — вся цена в дату сделки', 'schedule', {'value': 'money_or_share', 'anchor': 'project_start', 'value_label': 'Сумма или доля', 'when_label': 'Дата платежа', 'total_field': 'purchase_price_mln', 'total_label': 'стоимость покупки'}], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%; скачок цены при строительной готовности 25%. Этапы — лестница цены квартир, коммерции 1 этажа, паркинга и кладовых; задан хоть один — ежемесячный рост до РВЭ не применяется', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%; при готовности 50%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%; при готовности 75%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%; при готовности 100% — ввод; дальше ежемесячный рост после РВЭ', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['demolition_area_sqm', 'Снос — площадь сносимого', 'м²; по обязательствам КРТ, а не по новой ГНС', 'number'], ['demolition_cost_th_per_sqm', 'Снос — стоимость', 'тыс. ₽/м² сносимого; пусто при непустой площади — статья не посчитана', 'number'], ['resettlement_cost_mln', 'Расселение', 'млн ₽; отдельное обязательство КРТ, не соцнагрузка', 'number'], ['ird_th_per_sqm', 'ИРД и согласования', _PER_TOTAL_AREA_HINT, 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', _PER_TOTAL_AREA_HINT, 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', _PER_TOTAL_AREA_HINT, 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', _PER_TOTAL_AREA_HINT, 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² наземной части', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² подземной части', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети, в т.ч. плата за техприсоединение', _PER_TOTAL_AREA_HINT + '; ТП зависит от мощности, а не от метров — на длинном проекте проверяйте отдельно', 'number'], ['landscaping_area_per_person_sqm', 'Благоустройство — норматив площади двора', 'м²/чел.; двор считается от населения, население — от площади квартир нормой региона', 'number'], ['landscaping_area_sqm', 'Благоустройство — площадь двора', 'м²; пусто — считает методика класса, заданная руками её перебьёт', 'number'], ['landscaping_th_per_sqm', 'Благоустройство — ставка за метр двора', 'тыс. ₽/м² двора', 'number'], ['landscaping_gns_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', _PER_TOTAL_AREA_HINT, 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', _PER_TOTAL_AREA_HINT, 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — потолок, а нехватка показывается отдельно. При очередях это общий лимит по генеральным условиям — ожидание на все очереди, потолком не служит: НКЛ каждой очереди заключается при её открытии и считается заново; реальный лимит НКЛ очереди задаётся в «Очерёдности»', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'лестница как в НКЛ: диапазон покрытия — своя ставка; по умолчанию лестница Сбера, впишите свою из договора. Пусто — одна ставка выше', 'pf_steps'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_area_source', 'Соцобъекты и плата за ВРИ', 'источник; «требование КРТ» запирает места, площади, нормативы, соцкомпенсацию и плату за ВРИ — пересчёт ТЭП их не трогает', 'select', [['norm', 'Норматив РНГП — считать от числа мест'], ['manual', 'Требование КРТ — вписываю руками']]], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОО — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОО — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОО — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОО — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОО — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОО — норматив площади на место', 'м²/место; РНГП: 27 до 125 мест, 18 до 250, дальше 16. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место; РНГП: 18 до 550 мест, 15 до 1000, дальше 13. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/(пос./смену); норматива города для поликлиники нет — это наша экспертная величина. В режиме «Требование КРТ» показывает фактический', 'number']]], ['__object__:offices', []], ['__object__:standalone_retail', []], ['__object__:sports', []], ['Нормативы парковки нежилья (общие на объекты)', [['parking_k1', 'К1 — доступность рельсового каркаса', '0,75 до 1200 м · 0,9 до 2200 м · 1,0 дальше. Пусто — считается по расстоянию ниже, а без него берётся 1,0 (верхний край, максимум мест)', 'number'], ['parking_rail_distance_m', 'Расстояние до станции', 'м до ближайшего входа на станцию; норматив меряет по пешеходным путям, подсказка адреса даёт по прямой — пеший путь длиннее', 'number'], ['parking_k2', 'К2 — деловая активность района', 'приложение 3 к 945-ПП. Пусто — берётся по району участка из разбора кадастра, а без района 1,0 (верхний край)', 'number'], ['object_parking_over_area_per_space_sqm', 'Площадь на 1 место на первых этажах', 'м²/место; занимает существующую ГНС объекта, а не добавляется к ней', 'number'], ['parking_design_mode', 'Край норматива (Московская область)', 'режим', 'select', [['maximum', 'Верхний — больше мест'], ['minimum', 'Нижний — меньше мест']]]]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены; по нему же считается подземный гараж ОСЗ', 'number']]], ['Кладовые', [['storage_area_per_unit_sqm', 'Площадь одной кладовой', 'м²/шт.; штуки и метры строки ТЭП — одна величина в двух видах: правка любой считает вторую. Замер рынка: средняя кладовая 4,3 м² (ПИК, 2026) и 4,6 (НДВ, 2024), потолок по СП 4.13130.2013 — 10', 'number']]], ['__object__:above_parking', []]]
+_FIELD_GROUPS_LITERAL = [['Сделка и сроки', [['purchase_price_mln', 'Стоимость покупки / цена входа', 'млн ₽', 'number'], ['land_buyout_mln', 'Выкуп ЗУ/ОКС у третьих лиц', 'млн ₽; входит в стоимость сделки и платится по её графику; по контуру КРТ — кадастровая стоимость, не цена сделки', 'number'], ['purchase_schedule', 'График платежей за покупку', 'доли или суммы по месяцам от начала проекта: «30%@0; 40%@6; 30%@12» или «500@0; 300@12» (млн ₽). Пусто — вся цена в дату сделки', 'schedule', {'value': 'money_or_share', 'anchor': 'project_start', 'value_label': 'Сумма или доля', 'when_label': 'Дата платежа', 'total_field': 'purchase_price_mln', 'total_label': 'стоимость покупки'}], ['land_rights_cost_mln', 'Оформление земельных правоотношений / смена ВРИ', 'млн ₽', 'number'], ['project_start', 'Начало проекта', 'дата', 'date'], ['ird_months', 'Срок ИРД до РнС', 'мес.; минимум 1 — ноль модель не считает', 'number'], ['construction_months', 'Срок строительства', 'мес.', 'number'], ['sales_lag_months', 'Лаг старта продаж после РнС', 'мес.', 'number'], ['bridge_repay_lag_months', 'Лаг погашения БРИДЖ после РнС', 'мес.', 'number'], ['residual_sales_months', 'Остаточные продажи после РВЭ', 'мес.', 'number']]], ['Смена ВРИ и земельные права', [['vri_required', 'Требуется изменение ВРИ', 'Да / Нет', 'checkbox'], ['vri_region', 'Регион', 'регион', 'select', [['msk', 'Москва'], ['mo', 'Московская область']]], ['land_right', 'Право на участок', 'право', 'select', [['ownership', 'Собственность'], ['lease', 'Аренда']]], ['vri_obligation_date_mode', 'Дата обязательства', 'режим', 'select', [['before_rns_1m', 'За месяц до РнС — экспертная оценка'], ['at_rns', 'В дату РнС'], ['before_rns_3m', 'За три месяца до РнС'], ['after_purchase', 'Через N мес. после покупки'], ['manual', 'Задана вручную']]], ['vri_months_after_purchase', 'Месяцев после покупки', 'мес.', 'number'], ['vri_obligation_date', 'Дата возникновения обязательства', 'точная дата по документу; пусто — экспертная оценка', 'date'], ['vri_payment_mode', 'Порядок оплаты', 'режим', 'select', [['lump', 'Единовременно'], ['installment', 'Рассрочка']]], ['vri_installment_years', 'Срок рассрочки', 'лет (Москва: 1, 3, 6)', 'number'], ['vri_periodicity_months', 'Периодичность платежей', 'мес.; в Москве всегда квартал', 'select', [['1', 'Ежемесячно'], ['3', 'Ежеквартально'], ['6', 'Раз в полгода'], ['12', 'Раз в год']]], ['vri_initial_pct', 'Первый взнос по рассрочке', '% от суммы', 'number'], ['vri_schedule_mode', 'График платежей', 'режим', 'select', [['auto', 'Автоматический'], ['manual', 'Ручной']]], ['vri_interest_enabled', 'Проценты на остаток', 'режим', 'select', [['', 'По региону'], ['1', 'Начисляются'], ['0', 'Не начисляются']]], ['vri_interest_spread_pp', 'Спред к ключевой ставке по рассрочке', 'п.п.', 'number'], ['vri_early_repay_after_pf', 'Досрочное погашение остатка после открытия ПФ', 'Да / Нет', 'checkbox'], ['vri_pf_open_date', 'Дата открытия ПФ', 'дата (пусто — РнС)', 'date'], ['vri_in_bank_budget', 'ВРИ включена в банковский бюджет', 'Да / Нет', 'checkbox'], ['vri_financing_mode', 'Источники оплаты', 'режим', 'select', [['auto', 'Как весь проект'], ['shares', 'Заданные доли']]], ['vri_share_bridge_pct', 'Доля БРИДЖ', '%', 'number'], ['vri_share_pf_pct', 'Доля ПФ', '%', 'number'], ['vri_share_equity_pct', 'Доля собственного капитала', '%', 'number'], ['vri_relief_mode', 'Льгота по плате', 'режим', 'select', [['none', 'Нет'], ['percent', 'Доля от суммы'], ['amount', 'Фиксированная сумма']]], ['vri_relief_pct', 'Льгота — доля от суммы', '%', 'number'], ['vri_relief_mln', 'Льгота — сумма', 'млн ₽', 'number'], ['vri_transfer_offset_mln', 'Зачёт переданных муниципалитету площадей', 'млн ₽; по соглашению — уменьшает плату за ВРИ', 'number'], ['vri_security_cost_mln', 'Расходы на обеспечение обязательства', 'млн ₽', 'number']]], ['Продажи', [['apartment_price_th', 'Стартовая цена квартир', 'тыс. ₽/м²', 'number'], ['commercial_price_th', 'Стартовая цена коммерции 1 этажа', 'тыс. ₽/м²', 'number'], ['parking_price_th', 'Цена подземного машино-места', 'тыс. ₽/шт.', 'number'], ['storage_price_th', 'Цена кладовой', 'тыс. ₽/шт.', 'number'], ['share_before_rve_pct', 'Доля продаж до РВЭ', '%', 'number'], ['pace_adjustment_pct', 'Корректировка темпа', '%', 'number'], ['inflation_after_rve_pct', 'Инфляция после РВЭ', '% год', 'number'], ['seasonal_reduction_pct', 'Сезонное снижение темпа', '%', 'number'], ['growth_stage1_pct', 'Рост цены — этап 1', '%; скачок цены при строительной готовности 25%. Этапы — лестница цены квартир, коммерции 1 этажа, паркинга и кладовых; задан хоть один — ежемесячный рост до РВЭ не применяется', 'number'], ['growth_stage2_pct', 'Рост цены — этап 2', '%; при готовности 50%', 'number'], ['growth_stage3_pct', 'Рост цены — этап 3', '%; при готовности 75%', 'number'], ['growth_stage4_pct', 'Рост цены — этап 4', '%; при готовности 100% — ввод; дальше ежемесячный рост после РВЭ', 'number'], ['monthly_growth_pre_pct', 'Ежемесячный рост цены до РВЭ', '%/мес.', 'number'], ['monthly_growth_post_pct', 'Ежемесячный рост цены после РВЭ', '%/мес.', 'number']]], ['Строительство', [['demolition_area_sqm', 'Снос — площадь сносимого', 'м²; по обязательствам КРТ, а не по новой ГНС', 'number'], ['demolition_cost_th_per_sqm', 'Снос — стоимость', 'тыс. ₽/м² сносимого; пусто при непустой площади — статья не посчитана', 'number'], ['resettlement_cost_mln', 'Расселение', 'млн ₽; отдельное обязательство КРТ, не соцнагрузка', 'number'], ['ird_th_per_sqm', 'ИРД и согласования', _PER_TOTAL_AREA_HINT, 'number'], ['design_p_th_per_sqm', 'Проектирование стадии П', _PER_TOTAL_AREA_HINT, 'number'], ['design_rd_th_per_sqm', 'Проектирование стадии РД', _PER_TOTAL_AREA_HINT, 'number'], ['preparation_th_per_sqm', 'Подготовительные работы', _PER_TOTAL_AREA_HINT, 'number'], ['main_above_th_per_sqm', 'Основное строительство — наземная часть', 'тыс. ₽/м² наземной части', 'number'], ['main_under_th_per_sqm', 'Основное строительство — подземная часть', 'тыс. ₽/м² подземной части', 'number'], ['utilities_th_per_sqm', 'Наружные инженерные сети, в т.ч. плата за техприсоединение', _PER_TOTAL_AREA_HINT + '; ТП зависит от мощности, а не от метров — на длинном проекте проверяйте отдельно', 'number'], ['landscaping_area_per_person_sqm', 'Благоустройство — норматив площади двора', 'м²/чел.; двор считается от населения, население — от площади квартир нормой региона', 'number'], ['landscaping_area_sqm', 'Благоустройство — площадь двора', 'м²; пусто — считает методика класса, заданная руками её перебьёт', 'number'], ['landscaping_th_per_sqm', 'Благоустройство — ставка за метр двора', 'тыс. ₽/м² двора', 'number'], ['landscaping_gns_th_per_sqm', 'Благоустройство', 'тыс. ₽/м² ГНС', 'number'], ['commissioning_th_per_sqm', 'Сдача и ввод', _PER_TOTAL_AREA_HINT, 'number'], ['site_maintenance_th_per_sqm', 'Содержание стройплощадки', _PER_TOTAL_AREA_HINT, 'number'], ['gc_fee_pct', 'Вознаграждение генподрядчика', '% СМР', 'number'], ['author_supervision_pct', 'Авторский надзор', '% от П + РД', 'number'], ['project_management_pct', 'Управление проектом — зарплаты и накладные', '% прямых затрат', 'number'], ['technical_supervision_pct', 'Технический заказчик / стройконтроль (технадзор)', '% СМР', 'number'], ['reserve_pct', 'Резерв', '%', 'number']]], ['Коммерческие расходы и налоги', [['marketing_pct', 'Маркетинг', '% выручки', 'number'], ['selling_pct', 'Расходы на продажи', '% выручки', 'number'], ['profit_tax_pct', 'Налог на прибыль', '%', 'number'], ['vat_pct', 'НДС', '%', 'number']]], ['Финансирование', [['pre_pf_own_funds_mln', 'Собственные средства до открытия ПФ', 'млн ₽; тратятся раньше БРИДЖа и процентов не несут', 'number'], ['bridge_spread_pp', 'Спред БРИДЖ', 'п.п.', 'number'], ['bridge_cap_spread_pp', 'Спред капитализации БРИДЖ', 'п.п.', 'number'], ['pf_spread_pp', 'Спред ПФ', 'п.п.', 'number'], ['pf_special_pct', 'Ставка ПФ при покрытии эскроу 1×', '%', 'number'], ['pf_limit_approved_mln', 'Одобренный лимит ПФ', 'млн ₽; 0 — лимит выводится из потребности. Задан — потолок, а нехватка показывается отдельно. При очередях это общий лимит по генеральным условиям — ожидание на все очереди, потолком не служит: НКЛ каждой очереди заключается при её открытии и считается заново; реальный лимит НКЛ очереди задаётся в «Очерёдности»', 'number'], ['pf_special_steps', 'Ступени ставки по покрытию эскроу', 'лестница как в НКЛ: диапазон покрытия — своя ставка; по умолчанию лестница Сбера, впишите свою из договора. Пусто — одна ставка выше', 'pf_steps'], ['limit_fee_pct', 'Плата за лимит', '%', 'number'], ['reservation_fee_pct', 'Плата за резервирование', '%', 'number'], ['discount_rate_pct', 'Ставка дисконтирования', '%', 'number'], ['bridge_interest_mode', 'Проценты БРИДЖ при рефинансировании', 'режим', 'finance_select']]], ['Социальная нагрузка', [['social_mode', 'Форма исполнения', 'режим', 'select'], ['social_area_source', 'Соцобъекты и плата за ВРИ', 'источник; «требование КРТ» запирает места, площади, нормативы, соцкомпенсацию и плату за ВРИ — пересчёт ТЭП их не трогает', 'select', [['norm', 'Норматив РНГП — считать от числа мест'], ['manual', 'Требование КРТ — вписываю руками']]], ['social_comp_date', 'Дата денежной компенсации', 'дата', 'date'], ['social_compensation_mln', 'Социальный платеж / компенсация по ГлавАПУ', 'млн ₽', 'number'], ['kindergarten_places', 'ДОО — количество мест', 'мест', 'number'], ['kindergarten_cost_mln_per_place', 'ДОО — себестоимость места', 'млн ₽/место', 'number'], ['kindergarten_start', 'ДОО — начало строительства', 'дата', 'date'], ['kindergarten_months', 'ДОО — срок строительства', 'мес.', 'number'], ['school_places', 'СОШ — количество мест', 'мест', 'number'], ['school_cost_mln_per_place', 'СОШ — себестоимость места', 'млн ₽/место', 'number'], ['school_start', 'СОШ — начало строительства', 'дата', 'date'], ['school_months', 'СОШ — срок строительства', 'мес.', 'number'], ['clinic_capacity', 'Поликлиника — мощность', 'пос./смену', 'number'], ['clinic_cost_mln_per_unit', 'Поликлиника — себестоимость мощности', 'млн ₽/(пос./смену)', 'number'], ['clinic_start', 'Поликлиника — начало строительства', 'дата', 'date'], ['clinic_months', 'Поликлиника — срок строительства', 'мес.', 'number'], ['social_dou_gba_sqm', 'ДОО — общая площадь', 'м²', 'number'], ['social_dou_norm_sqm', 'ДОО — норматив площади на место', 'м²/место; РНГП: 27 до 125 мест, 18 до 250, дальше 16. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_school_gba_sqm', 'СОШ — общая площадь', 'м²', 'number'], ['social_school_norm_sqm', 'СОШ — норматив площади на место', 'м²/место; РНГП: 18 до 550 мест, 15 до 1000, дальше 13. В режиме «Требование КРТ» показывает фактический — площадь ÷ места', 'number'], ['social_clinic_gba_sqm', 'Поликлиника — общая площадь', 'м²', 'number'], ['social_clinic_norm_sqm', 'Поликлиника — норматив площади', 'м²/(пос./смену); норматива города для поликлиники нет — это наша экспертная величина. В режиме «Требование КРТ» показывает фактический', 'number']]], ['__object__:offices', []], ['__object__:standalone_retail', []], ['__object__:sports', []], ['Нормативы парковки нежилья (общие на объекты)', [['parking_k1', 'К1 — доступность рельсового каркаса', '0,75 до 1200 м · 0,9 до 2200 м · 1,0 дальше. Пусто — считается по расстоянию ниже, а без него берётся 1,0 (верхний край, максимум мест)', 'number'], ['parking_rail_distance_m', 'Расстояние до станции', 'м до ближайшего входа на станцию; норматив меряет по пешеходным путям, подсказка адреса даёт по прямой — пеший путь длиннее', 'number'], ['parking_k2', 'К2 — деловая активность района', 'приложение 3 к 945-ПП. Пусто — берётся по району участка из разбора кадастра, а без района 1,0 (верхний край)', 'number'], ['object_parking_over_area_per_space_sqm', 'Площадь на 1 место на первых этажах', 'м²/место; занимает существующую ГНС объекта, а не добавляется к ней', 'number'], ['parking_design_mode', 'Край норматива (Московская область)', 'режим', 'select', [['maximum', 'Верхний — больше мест'], ['minimum', 'Нижний — меньше мест']]]]], ['Подземный паркинг', [['underground_parking_disabled', 'Отказ от подземного паркинга', 'Да / Нет; места переносятся в наземный', 'checkbox'], ['underground_manual_spaces', 'Машино-места — решение проекта', 'шт.; из расчёта ТЭП — меняйте, площадь пересчитается; правка ТЭП возвращает норматив', 'number'], ['underground_manual_gns_sqm', 'Площадь подземной парковки', 'м²; пересчитывается из мест и обратно', 'number'], ['underground_area_per_space_sqm', 'Норматив площади на машино-место', 'м²/место, гросс: рампы, проезды и техпомещения включены; по нему же считается подземный гараж ОСЗ', 'number']]], ['Кладовые', [['storage_area_per_unit_sqm', 'Площадь одной кладовой', 'м²/шт.; штуки и метры строки ТЭП — одна величина в двух видах: правка любой считает вторую. Замер рынка: средняя кладовая 4,3 м² (ПИК, 2026) и 4,6 (НДВ, 2024), потолок по СП 4.13130.2013 — 10', 'number']]], ['__object__:above_parking', []]]
 
 # Строки ТЭП объектов и их группы вводных приносит реестр: литерал держит
 # только МЕСТО — порядок строк и порядок групп на экране, — а содержимое
@@ -38286,6 +38286,16 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     # сойтись с проектной, а место неделимо.
     object_parking_split: dict[str, tuple[float, int]] = {}
 
+    # Население очередей — делитель заданной руками площади двора: та же
+    # норма региона, что у самого счёта двора (`project_population`).
+    given_yard = float(x_master.get("landscaping_area_sqm") or 0.0)
+    _yard_region = str(x_master.get("vri_region") or "msk")
+    phase_populations = [
+        project_population({"apartments": phase_product_rows[i].get("apartments")
+                            or t_master.get("apartments") or {}}, _yard_region)[0]
+        for i in range(count)]
+    phase_populations_total = sum(phase_populations)
+
     for idx in range(count):
         cfg = phases_cfg[idx]
         name = str(cfg.get("name") or f"О{idx+1}")
@@ -38295,13 +38305,18 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         p_inputs["project_start"] = add_months(d(x_master["project_start"]), offset).isoformat()
         p_inputs["construction_months"] = int(cfg.get("construction_months", n(x_master,"construction_months",24)))
         p_inputs.pop("_glavapu_import", None)
-        # Благоустройство меряется м² на человека, и мера одна на проект и на
-        # очередь. Заданная руками ПЛОЩАДЬ — величина проекта: оставленная
+        # Заданная руками ПЛОЩАДЬ двора — величина проекта: оставленная
         # очереди целиком, она благоустроила бы один и тот же двор столько раз,
-        # сколько очередей. Приводим её к мере на человека — тогда очередь
-        # считает свою площадь своим населением, и сумма очередей сходится с
-        # проектом сама, без второго списка «что делить долями».
-        if float(x_master.get("landscaping_area_sqm") or 0.0) > 0:
+        # сколько очередей. Очередь получает долю площади по своему населению,
+        # и сумма очередей равна заданному числу ровно. Прежде площадь
+        # приводилась к мере на человека и умножалась на население очереди, а
+        # население каждой очереди округляется вверх: в Мытищах 7 145 жителей
+        # по очередям против 7 143 по проекту, и вписанные 78 595 м² в своде
+        # становились 78 617 (владелец, 05.10.2026).
+        if given_yard > 0 and phase_populations_total > 0:
+            p_inputs["landscaping_area_sqm"] = (
+                given_yard * phase_populations[idx] / phase_populations_total)
+        elif given_yard > 0:
             p_inputs["landscaping_area_per_person_sqm"] = landscaping_area_per_person(
                 x_master, t_master)[0]
             p_inputs["landscaping_area_sqm"] = 0.0
@@ -46402,6 +46417,10 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
                 "reason": document.get("reason") or "в документе нет текста"}
 
     usage_track("document", surface="site", text=str(req.filename or ""))
+    # Та же порция, что уходит в вопрос (`intake_prompt`): ответ сообщает,
+    # сколько документа прочитано. Без неё окно получало HTTP 500 уже ПОСЛЕ
+    # ответа модели — работа была сделана и выброшена.
+    portion = document_intake.intake_text(document)
     payload = AgentChatRequest(
         message=document_intake.intake_prompt(document),
         inputs=dict(req.inputs or DEFAULT_INPUTS),
@@ -48710,13 +48729,15 @@ function aiEsc(value){const box=document.createElement('div');box.textContent=St
 let aiIntake=null;
 async function sendAgentDocument(file){
  if(!file||aiBusy)return;
- document.getElementById('aiFile').value='';
  aiBusy=true;aiSendBtn.disabled=true;aiFileBtn.disabled=true;
  appendAiMessage('user','Документ: '+file.name);
  const thinking=document.createElement('div');thinking.className='ai-thinking';
  thinking.textContent='Читаю документ…';aiMessages.appendChild(thinking);aiMessages.scrollTop=aiMessages.scrollHeight;
  try{
+  // Сначала прочитать, потом сбросить поле: iOS Safari освобождает выбранный
+  // файл при сбросе, и чтение после него падает «The object can not be found here».
   const buffer=await file.arrayBuffer();
+  document.getElementById('aiFile').value='';
   // Разбор base64 порциями: строка на два мегабайта через apply падает на
   // пределе аргументов, и падение выглядит как «файл не читается».
   const bytes=new Uint8Array(buffer);let binary='';
@@ -48730,7 +48751,7 @@ async function sendAgentDocument(file){
   if(!r.ok){appendAiMessage('system',data.detail||('Документ не разобрался: HTTP '+r.status));return}
   aiIntake=data;renderAiIntake(data);
  }catch(e){thinking.remove();appendAiMessage('system','Документ не разобрался: '+(e.message||e))}
- finally{aiBusy=false;aiSendBtn.disabled=false;aiFileBtn.disabled=false}
+ finally{document.getElementById('aiFile').value='';aiBusy=false;aiSendBtn.disabled=false;aiFileBtn.disabled=false}
 }
 function renderAiIntake(data){
  const doc=data.document||{};
@@ -51014,7 +51035,8 @@ async function applyMo(options){
  // перебивала норму нового на первом же пересчёте: в Мытищах расчёт МО
  // дал 2 289 м/м и 80 115 м², а в проекте остались 150 и 5 215 (владелец,
  // 04.10.2026). Тихое обновление параметров того же участка пару не трогает:
- // там вписанное человеком остаётся его решением.
+ // там вписанное человеком остаётся его решением — пока ТЭП тот же; привезло
+ // ли обновление другой ТЭП, решает `fillUndergroundFromTep` по норме.
  if(!silent){
   inputs.underground_manual_spaces=0;
   inputs.underground_manual_gns_sqm=0;
@@ -51804,7 +51826,6 @@ function fillUndergroundFromTep(){
  // Пометка — та же, что у паркинга объектов, и списки те же: тронутое руками
  // норма не трогает, своё число она обновляет вместе с ТЭП.
  if(inputs.underground_parking_disabled||isNonResidential())return false;
- if(parkingByHand(PROJECT_PARKING_KEY))return false;
  const spaces=Number(inputs.underground_manual_spaces||0);
  const area=Number(inputs.underground_manual_gns_sqm||0);
  const p=parkingRequirement();
@@ -51812,12 +51833,20 @@ function fillUndergroundFromTep(){
  const per=undergroundAreaPerSpace();
  const wantSpaces=Math.round(p.spaces);
  const wantArea=Math.round(p.gns||p.spaces*per);
+ if(parkingByHand(PROJECT_PARKING_KEY)){
+  // Замок держит, пока норма та же, при которой число вписали. Поменяли ТЭП —
+  // норма другая, и пара возвращается к ней: дальше человек правит заново.
+  // Замок без записанной нормы (проект до этой правки) получает её сейчас.
+  const pinned=Number(inputs._underground_hand_norm||0);
+  if(pinned<=0){inputs._underground_hand_norm=wantSpaces;return false}
+  if(pinned===wantSpaces)return false;
+ }
  // Проект, сохранённый до этой правки, пометок не несёт вовсе, и разобрать по
  // ним нечего. Зато есть сравнение — то же, что у `reconcileLegacyParking`:
  // пара, равная норме на ТЕХ ЖЕ вводных, поставлена нормой, другого объяснения
  // совпадению до единицы нет; несовпадающая — человеческая, и её не трогаем.
  // Пустая пара — тоже нормина: ноль означал «взять норматив».
- if(!parkingByNorm(PROJECT_PARKING_KEY)&&(spaces>0||area>0)){
+ if(!parkingByNorm(PROJECT_PARKING_KEY)&&!parkingByHand(PROJECT_PARKING_KEY)&&(spaces>0||area>0)){
   const mine=(spaces===wantSpaces)||(spaces<=0&&area===wantArea);
   if(!mine){markParkingByHand(PROJECT_PARKING_KEY);return false}
  }
@@ -52971,6 +53000,15 @@ function renderInputs(){
       normCell.style.cssText='margin-top:4px;font-size:10px;color:#777';
       wrap.appendChild(normCell);
      }
+     // Та же подпись у проектного подземного: норма под парой полей, серым,
+     // пишет её `renderObjectParkingFieldNotes` — тем же вызовом, что и у
+     // объектов, иначе одна из подписей отставала бы от расчёта.
+     if(id==='underground_manual_gns_sqm'){
+      const normCell=document.createElement('div');
+      normCell.id='parkNorm_'+PROJECT_PARKING_KEY;
+      normCell.style.cssText='margin-top:4px;font-size:10px;color:#777';
+      wrap.appendChild(normCell);
+     }
      grid.appendChild(wrap);
    });(ownTab?vriBox:box).appendChild(det);
  });
@@ -52990,6 +53028,7 @@ function renderInputs(){
  // Подпись под полями пишет тот, кто эти поля создал: ячейки
  // пересобираются пустыми при каждой перерисовке формы.
  renderObjectParkingFieldNotes();
+ renderUndergroundFieldNote();
  renderLandscapingRateNote();
 }
 
@@ -53256,6 +53295,7 @@ function markParkingByNorm(prefix){
  norm.add(prefix);inputs._parking_by_norm=Array.from(norm);
  if(Array.isArray(inputs._parking_by_hand))
   inputs._parking_by_hand=inputs._parking_by_hand.filter(x=>x!==prefix);
+ if(prefix===PROJECT_PARKING_KEY)delete inputs._underground_hand_norm;
 }
 
 function restoreParkingNorm(prefix){
@@ -53300,6 +53340,19 @@ function markParkingByHand(prefix){
  // Тронутое руками перестаёт быть числом нормы — иначе посев вернёт его ей.
  if(Array.isArray(inputs._parking_by_norm))
   inputs._parking_by_norm=inputs._parking_by_norm.filter(x=>x!==prefix);
+ if(prefix===PROJECT_PARKING_KEY)pinUndergroundHandNorm();
+}
+
+// Вписанное руками число подземного паркинга живёт до следующей правки ТЭП:
+// «если мы увеличили квартиры после того, как что-то ввели вручную, должен
+// быть пересчёт, а дальше можно опять руками поправить» (владелец,
+// 05.10.2026). Чтобы отличить «ТЭП не трогали» от «ТЭП поменяли», рядом с
+// замком хранится норма, при которой число вписали: разошлась — замок снят.
+// Сравниваются МЕСТА, а не метры: норматив площади на место меняет метры при
+// тех же квартирах, и это правка пары, а не ТЭП (`syncUndergroundPair`).
+function pinUndergroundHandNorm(){
+ const p=parkingRequirement();
+ inputs._underground_hand_norm=p&&p.spaces>0?Math.round(p.spaces):0;
 }
 
 // Норма стоит У ТОГО ПОЛЯ, которое человек правит. Прежде число жило одной
@@ -53442,7 +53495,7 @@ function renderTep(){
      // молча, читаются как одно.
      const byHand=parkingByHand(PROJECT_PARKING_KEY);
      const factPer=spaces>0?area/spaces:per;
-     label+=` <span class="tep-note">${byHand?'Решение проекта':'По нормативу'}: ${num(spaces)} м/м × ${num(factPer)} м²/место (гросс) = ${num(area)} м². Менять — в разделе «Подземный паркинг»${byHand?'; очистить поле — вернуться к нормативу':''}.`
+     label+=` <span class="tep-note">${byHand?'Решение проекта':'По нормативу'}: ${num(spaces)} м/м × ${num(factPer)} м²/место (гросс) = ${num(area)} м². Менять — в разделе «Подземный паркинг»${byHand?'; правка ТЭП вернёт норматив, очистить поле — вернуться к нему сейчас':''}.`
       +(spaces>0&&Math.abs(factPer-per)>0.05
         ? ` Норматив класса — ${num(per)} м²/место: площадь задана и его не применяет.`
         : '')
@@ -55207,6 +55260,16 @@ function syncTep(rerender=true){
  const editingTep=typeof tepBody!=='undefined'&&tepBody
   &&tepBody.contains(document.activeElement);
  if(rerender||!editingTep)renderTep();else updateTepTotals();
+ // Пара полей подземного паркинга и подпись под ней идут за ТЭП здесь же:
+ // норма посчитана страницей, ждать ответа сервера ей незачем, а поле со
+ // старым числом под новой строкой ТЭП читалось бы как решение человека.
+ if(inputsFilled){
+  ['underground_manual_spaces','underground_manual_gns_sqm'].forEach(id=>{
+   const el=document.getElementById('f_'+id);
+   if(el&&document.activeElement!==el)el.value=inputs[id];
+  });
+ }
+ renderUndergroundFieldNote();
  // Включённый или выключенный объект меняет состав очередей сразу, а не со
  // следующим ответом движка (`renderPhaseObjects`).
  if(typeof renderPhaseObjects==='function')renderPhaseObjects();
@@ -56163,6 +56226,40 @@ function renderObjectParkingFieldNotes(){
  });
 }
 
+// Подпись под парой проекта пишется отдельным вызовом: её читатели — форма,
+// ответ расчёта и пересчёт ТЭП — зовут её рядом с подписями объектов.
+function renderUndergroundFieldNote(){
+ const cell=document.getElementById('parkNorm_'+PROJECT_PARKING_KEY);
+ if(!cell)return;
+ const note=undergroundFieldNote();
+ cell.textContent=note.text;
+ cell.style.color=note.short?'#a33':'#777';
+}
+
+// Подпись под парой «места ↔ площадь» проекта: чьё число стоит в поле и
+// что с ним будет. Норма названа числом ВСЕГДА, в том числе под вписанным
+// руками, — это ориентир, по которому человек видит, насколько ушёл от
+// норматива (владелец, 05.10.2026: «оставив серый ориентир для
+// предупреждения»). Дефицит красным, перебор — спокойно: перебор это решение.
+function undergroundFieldNote(){
+ if(inputs.underground_parking_disabled)
+  return {text:'Подземного паркинга нет — потребность закрывает наземный.',short:false};
+ if(isNonResidential())return {text:'',short:false};
+ const p=parkingRequirement();
+ if(!p||!(p.spaces>0))
+  return {text:'Норматив появится после расчёта ТЭП: мест считается от площади квартир и коммерции.',short:false};
+ const per=undergroundAreaPerSpace();
+ const normSpaces=Math.round(p.spaces);
+ const normArea=Math.round(p.gns||p.spaces*per);
+ const norm=`По нормативу: ${num(normSpaces)} м/м · ${num(normArea)} м²`;
+ if(!parkingByHand(PROJECT_PARKING_KEY))
+  return {text:norm+'. Оба числа выше поставил норматив — они следуют за ТЭП. Впишите своё, чтобы перебить.',short:false};
+ const spaces=Number(inputs.underground_manual_spaces||0);
+ const gap=spaces-normSpaces;
+ const diff=gap<0?` — дефицит ${num(-gap)} м/м`:gap>0?` — на ${num(gap)} м/м больше положенного`:'';
+ return {text:`Задано руками: ${num(spaces)} м/м${diff}. ${norm}. Правка ТЭП вернёт норматив; очистить поле — вернуться к нему сейчас.`,short:gap<0};
+}
+
 function renderObjectParkingNote(){
  // Норма ЗАПОЛНЯЕТ поле, а не только объясняется под ним. Пишется и во
  // вводные, и в само поле: перерисовывать форму целиком нельзя — она
@@ -56189,6 +56286,7 @@ function renderObjectParkingNote(){
  // всегда (`OBJECT_PARKING_PREFIXES`), а что сказать про каждый — решает
  // подпись, и решать это должна она одна.
  renderObjectParkingFieldNotes();
+ renderUndergroundFieldNote();
  const box=document.getElementById('objectParkingNote');
  if(!box)return;
  const note=projectParking().note;
