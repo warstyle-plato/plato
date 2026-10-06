@@ -269,6 +269,8 @@ def build_project_presentation(
         "layout": layout,
         "nonres_strategy": list(report.get("nonres_strategy") or []),
         "nonres_financing": list(report.get("nonres_financing") or []),
+        # Гостиница — таблица движка (`hotel_report`), как на экране и в PDF.
+        "hotel": report.get("hotel"),
     }
 
 
