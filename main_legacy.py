@@ -13733,6 +13733,21 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
             vri_origin = "вводные проекта: land_rights_cost_mln"
     ours["vri_cost_mln"] = (vri_value, vri_origin)
 
+    # Наша льгота по плате за ВРИ — одна сумма (доля или фиксированная) из
+    # вводных, тем же `vri_relief`, что считает модель. Режим «нет» — это не
+    # «льгота ноль», а «льгота не задана»: сверке не с чем сравнивать.
+    relief_mode = str(inputs.get("vri_relief_mode") or "none").strip().lower()
+    relief_value: float | None = None
+    if vri_value is not None and relief_mode in ("percent", "amount"):
+        relief_value = round(vri_relief({k: v for k, v in inputs.items()
+                                         if k != "vri_transfer_offset_mln"},
+                                        vri_value * 1_000_000)[0] / 1_000_000, 3)
+    ours["vri_relief"] = {"total": (relief_value,
+                                    f"вводные проекта: vri_relief_mode = {relief_mode}"
+                                    if relief_value is not None else "")}
+    ours["vri_net_mln"] = ((round(vri_value - (relief_value or 0.0), 3), "плата проекта за вычетом нашей льготы")
+                           if vri_value is not None else (None, ""))
+
     imported = ((inputs.get("_glavapu_import") or {}).get("mappings") or {}).get("inputs") or {}
 
     def from_import(key: str, value: float) -> bool:
@@ -13780,6 +13795,16 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
         "parking.permanent": ("наша норма: " + derived["parking_basis"]
                               + "; калькулятор — от своей площади квартир (строка 10)"),
     }
+    relief_basis = ("калькулятор даёт льготу за МПТ сам: нежилые ВРИ выше порога × "
+                    "коэффициент места (офисы и торговля вне ТТК 0,7, внутри 0; соцобъекты 0,3); "
+                    "срезает только плату за МКД")
+    reasons["vri_relief.total"] = (
+        "наша льгота — доля или сумма из вводных; " + relief_basis if relief_value is not None
+        else "в проекте льгота по плате за ВРИ не задана (vri_relief_mode = «нет»); "
+             + relief_basis + " — проверить основание (3135-ПП)")
+    reasons["vri_net_mln"] = ("к оплате = до льгот − льгота; расхождение складывается из "
+                              "двух строк выше" if vri_value is not None else
+                              reasons.get("vri_cost_mln", ""))
     if comp_value is not None:
         reasons["social_comp.total"] = (
             ("наше число — выгрузка ГлавАПУ с его умолчаниями, а не наш сценарий; "

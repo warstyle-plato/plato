@@ -597,8 +597,17 @@ def test_money_and_parking_are_compared_by_kind(core, monkeypatch) -> None:
     # ВРИ по видам и льготы — по названиям строк калькулятора, справочно.
     assert rows["vri.44"]["label"] == "Многоквартирная жилые здания"
     assert rows["vri.44"]["status"] == "reference"
-    # Льгот у калькулятора нет — строки «Льгота…» в сверку не идут.
-    assert not any(r["label"].startswith("Льгота") for r in rows.values())
+    # Льготы калькулятор считает сам; его итог ВРИ — уже после них. Сверка
+    # разводит «до льгот», «льгота» и «к оплате», чтобы не сравнить нашу
+    # валовую плату с его чистой.
+    assert rows["vri_cost_mln"]["glavapu"] == pytest.approx(14985.285)
+    assert rows["vri_relief.mpt"]["glavapu"] == pytest.approx(1264.781)
+    assert rows["vri_relief.mpt"]["status"] == "reference"
+    relief = rows["vri_relief.total"]
+    assert relief["status"] == "ours_missing" and "не задана" in relief["reason"]
+    assert "МПТ" in relief["reason"]
+    assert rows["vri_net_mln"]["glavapu"] == pytest.approx(13720.504)
+    assert not any(k.startswith("vri.5") for k in rows), "льготы не числятся видами ВРИ"
     # Баланс территории — как калькулятор разложил её под наше соотношение.
     # Нули калькулятора по видам ВРИ — не строки, а шум: их нет.
     assert "vri.45" not in rows and "vri.53" not in rows
@@ -640,3 +649,29 @@ def test_a_slider_off_the_table_is_refused() -> None:
     missing = gs.ScenarioStep()
     gs.verify(_FakePage(rows, None), params, missing)
     assert missing.refused[0]["reason"].startswith("ползунка нет")
+
+
+def test_our_relief_is_compared_and_the_net_fee_follows(core, monkeypatch) -> None:
+    """Наша льгота (доля от платы) против льгот калькулятора; к оплате — разность."""
+    calls: list = []
+    monkeypatch.setattr(core, "_glavapu_headless_run", _fake_run(calls))
+    inputs, tep = _nagatino()
+    inputs = dict(inputs, land_rights_cost_mln=15000.0, vri_required=True,
+                  vri_relief_mode="percent", vri_relief_pct=10.0)
+    req = core.GlavapuScenarioRequest(inputs=inputs, tep=tep)
+    core.glavapu_scenario_check(req)
+    rows = {r["kind"]: r for r in _wait_done(core, req)["comparison"]["rows"]}
+    assert rows["vri_cost_mln"]["ours"] == 15000.0 and rows["vri_cost_mln"]["status"] == "match"
+    assert rows["vri_relief.total"]["ours"] == 1500.0
+    assert rows["vri_relief.total"]["glavapu"] == pytest.approx(1264.781)
+    assert rows["vri_net_mln"]["ours"] == 13500.0
+    assert rows["vri_net_mln"]["glavapu"] == pytest.approx(13720.504)
+
+
+def test_flats_passed_to_the_city_are_named_as_not_sent() -> None:
+    inputs, tep = _nagatino()
+    tep = copy.deepcopy(tep)
+    tep["apartments"]["transfer"] = 4000.0
+    scenario = gs.build_scenario(inputs, tep, numbers=NUMBERS)
+    assert any(i["param"] == "benefit_for_flats" and "4 000" in i["reason"]
+               for i in scenario["not_sent"])

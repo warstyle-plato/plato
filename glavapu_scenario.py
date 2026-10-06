@@ -193,6 +193,15 @@ def build_scenario(inputs: dict[str, Any], tep: dict[str, Any], *,
         slot["origin"] = "ТЭП проекта: ГНС " + ", ".join(
             f"«{_label(tep, k)}»" for k in slot["keys"])
 
+    transfer = _num(((tep.get("apartments") or {}) if isinstance(tep.get("apartments"), dict)
+                     else {}).get("transfer"))
+    if transfer > 0:
+        # Льгота калькулятора за передачу квартир городу включается его
+        # галочкой — сверка её пока не ставит, и это видно, а не молчит.
+        not_sent.append({"param": "benefit_for_flats", "label": "Передача квартир городу",
+                         "reason": (f"передаваемые городу квартиры ({_sqm(transfer)} м²) калькулятору "
+                                    "не переданы: галочку «Передача жилых помещений в собственность "
+                                    "города Москвы» сверка не ставит — льготы за передачу у ГлавАПУ нет")})
     nonres_ths = round(sum(item["spp_ths"] for item in nonres.values()), 4)
     social_ths = round(sum(item["spp_ths"] for item in social.values()), 4)
     area_ha = _num(inputs.get("site_area_ha"))
@@ -771,17 +780,32 @@ def glavapu_side(normalized: dict[str, Any], rows: dict[str, float | None],
             side["social_comp"][kind] = (item["value"], f"строка {item['code']} «{item['name']}»")
 
     # Плата за ВРИ по видам и льготы — строки раздела как есть.
+    # Льготы калькулятор считает сам (код его класса стоимости ВРИ): за МПТ —
+    # нежилые ВРИ выше порога × коэффициент места (офисы и торговля вне ТТК
+    # 0,7, внутри 0, соцобъекты 0,3); за передачу квартир городу — галочкой.
+    # Обе срезают только плату за МКД. Итог раздела — уже ПОСЛЕ льгот.
     vri = _section(sections, "расчет стоимости смены ври")
-    side["vri"] = {}
+    side["vri"], side["vri_relief"] = {}, {}
+    gross: float | None = None
+    relief_total: float | None = None
     for item in vri.get("items") or []:
-        # Льгот у живого калькулятора нет (владелец, 06.10.2026): в его
-        # выгрузке строки «Льгота на стр-во жилья…» нулевые, а ненулевую
-        # давала только устаревшая копия `genplan_assets`. В сверку не идут.
-        if _name_key(item["name"]).startswith("льгота"):
+        name = _name_key(item["name"])
+        if name.startswith("льгота"):
+            kind = "mpt" if "мпт" in name else "flats" if "передач" in name else ""
+            if kind:
+                side["vri_relief"][kind] = (item["value"], f"строка {item['code']}")
+                relief_total = (relief_total or 0.0) + (item["value"] or 0.0)
             continue
         kind = item["code"].replace(".", "_")
         side["vri"][kind] = (item["value"], f"строка {item['code']}")
         labels[f"vri.{kind}"] = item["name"]
+        gross = (gross or 0.0) + (item["value"] or 0.0)
+    if vri:
+        side["vri_cost_mln"] = (None if gross is None else round(gross, 3),
+                                "сумма строк по видам ВРИ — до льгот")
+        side["vri_relief"]["total"] = (None if relief_total is None else round(relief_total, 3),
+                                       "строки «Льгота…» раздела ВРИ")
+        side["vri_net_mln"] = (vri.get("total"), "«Расчёт стоимости смены ВРИ» — к оплате после льгот")
 
     # Баланс территории — как калькулятор разложил её под наше соотношение.
     balance = _section(sections, "баланс территории")
@@ -825,7 +849,11 @@ KIND_LABELS = {
     "social_comp.clinic": "Компенсация: поликлиника",
     "parking_vri.built_in": "Приобъектные: встроенная коммерция",
     "mpt": "МПТ, рабочих мест",
-    "vri_cost_mln": "Стоимость смены ВРИ, млн ₽",
+    "vri_cost_mln": "Стоимость смены ВРИ до льгот",
+    "vri_relief.total": "Льгота по плате за ВРИ, всего",
+    "vri_relief.mpt": "Льгота за создание МПТ",
+    "vri_relief.flats": "Льгота за передачу квартир городу",
+    "vri_net_mln": "Стоимость смены ВРИ к оплате",
     "density": "Плотность от СПП, тыс. м²/га",
 }
 # Группа сверки: заголовок и префиксы видов в ней (по порядку показа).
@@ -835,24 +863,28 @@ GROUPS = (("СПП и ГНС по видам", ("spp",)),
           ("Машино-места по видам", ("parking",)),
           ("Приобъектные машино-места по ВРИ", ("parking_vri",)),
           ("МПТ", ("mpt",)),
-          ("Стоимость смены ВРИ, млн ₽", ("vri_cost_mln", "vri")),
+          ("Стоимость смены ВРИ, млн ₽", ("vri_cost_mln", "vri_relief", "vri_net_mln", "vri")),
           ("Плотность", ("density",)),
           ("Баланс территории (как разложил калькулятор)", ("balance",)))
-NESTED = ("spp", "social", "social_comp", "parking", "parking_vri", "vri", "balance")
+NESTED = ("spp", "social", "social_comp", "parking", "parking_vri", "vri", "vri_relief", "balance")
 
 # Допуск «совпало»: места — штучные, деньги и метры — доля.
 TOLERANCE = {"spp": ("rel", 0.002), "social": ("abs", 1.0), "social_comp": ("rel", 0.005),
              "parking": ("abs", 1.0), "parking_vri": ("abs", 1.0), "mpt": ("abs", 1.0),
              "vri_cost_mln": ("rel", 0.005), "vri": ("rel", 0.005),
+             "vri_relief": ("rel", 0.005), "vri_net_mln": ("rel", 0.005),
              "density": ("abs", 0.02), "balance": ("abs", 0.002)}
 
 # Виды, у которых своей величины в модели нет ПО УСТРОЙСТВУ: плата за ВРИ в
 # проекте одной суммой, компенсация — одной суммой, баланса территории нет.
 # Число калькулятора здесь справочное, а не «расхождение» и не «нет нашей».
-REFERENCE_PREFIXES = ("vri.", "balance.", "social_comp.kindergarten",
+REFERENCE_PREFIXES = ("vri.", "vri_relief.mpt", "vri_relief.flats", "balance.",
+                      "social_comp.kindergarten",
                       "social_comp.school", "social_comp.clinic")
 REFERENCE_REASON = {
     "vri.": "в проекте плата за ВРИ одной суммой — по видам показано, как посчитал калькулятор",
+    "vri_relief.": "в проекте льгота одной суммой, без оснований — по основаниям показано, "
+                   "как посчитал калькулятор",
     "balance.": "баланса территории в модели нет — калькулятор разложил её под наше "
                 "соотношение жилых и нежилых зданий",
     "social_comp.": "в проекте компенсация одной суммой — по объектам показано, как посчитал "
@@ -872,7 +904,7 @@ def _flatten(side: dict[str, Any]) -> dict[str, tuple[Any, str]]:
     for group in NESTED:
         for kind, value in (side.get(group) or {}).items():
             out[f"{group}.{kind}"] = value
-    for key in ("mpt", "vri_cost_mln", "density"):
+    for key in ("mpt", "vri_cost_mln", "vri_net_mln", "density"):
         if key in side:
             out[key] = side[key]
     return out
@@ -962,6 +994,9 @@ _DEPENDS = {
     "parking_vri.": ("spp_nonres_ths", "nonres", "vpp_pct", "composition"),
     "vri.": ("spp", "spp_residential_ths", "spp_nonres_ths", "nonres", "land_right",
              "composition"),
+    "vri_relief.": ("spp", "spp_nonres_ths", "nonres", "social", "composition"),
+    "vri_net_mln": ("spp", "spp_residential_ths", "spp_nonres_ths", "nonres", "land_right",
+                    "social", "composition"),
     "balance.": ("spp", "area_ha", "spp_residential_ths", "ratio", "composition"),
     "spp.": ("spp", "area_ha", "vpp_pct", "spp_residential_ths", "spp_nonres_ths",
              "nonres", "composition"),
