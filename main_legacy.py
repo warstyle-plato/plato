@@ -48294,19 +48294,6 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
             <button class="btn dark" onclick="uploadPreset()">Импорт проекта / пресета</button>
           </div>
         </details>
-        <!-- Сверка сценария: калькулятору ГлавАПУ выставляются НАШИ параметры
-             (доля жилья и коммерции, СПП, площадь, нежильё по ВРИ, соцобъекты,
-             вид права), и его ответ стоит рядом с нашим по видам. ГлавАПУ —
-             проверка: наши значения он не заменяет. -->
-        <details id="glavapuScenarioBox" class="import-fallback">
-          <summary>Сверка сценария с калькулятором ГлавАПУ</summary>
-          <div class="import-actions">
-            <button class="btn" id="glavapuScenarioButton" onclick="glavapuScenarioCheck()">Сверить сценарий</button>
-            <span style="font-size:11px;color:#777">Калькулятор считает в фоне 1–3 минуты; ГлавАПУ — проверка, наши значения не меняются.</span>
-          </div>
-          <div id="glavapuScenarioStatus" class="import-status" style="display:none"></div>
-          <div id="glavapuScenarioResult"></div>
-        </details>
       </div>
       <div class="card">
         <div class="section-title">Вводные данные</div>
@@ -48372,6 +48359,20 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
         <div id="tepRatioNote" style="color:#777;font-size:11px;margin:2px 0 8px"></div>
         <div id="tepDerivedNote" class="import-status" style="display:none"></div>
         <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div><div id="tepUndergroundNote" class="hint" style="margin-top:6px"></div>
+      </div>
+      <!-- Сверка сценария: калькулятору ГлавАПУ выставляются НАШИ параметры
+           (доля жилья и коммерции, СПП, площадь, нежильё по ВРИ, соцобъекты,
+           вид права), и его ответ стоит рядом с нашим по видам. Карточка — под
+           таблицей ТЭП: сначала наши числа, ниже их проверка. ГлавАПУ —
+           проверка: наши значения он не заменяет. -->
+      <div class="card" id="glavapuScenarioBox">
+        <div class="section-title">Сверка с калькулятором ГлавАПУ</div>
+        <div class="toolbar">
+          <button class="btn" id="glavapuScenarioButton" onclick="glavapuScenarioCheck()">Сверить сценарий</button>
+          <span style="color:#777;font-size:12px">Калькулятору уходят ТЭП, площадь и соцобъекты этого проекта; считает в фоне 1–3 минуты. ГлавАПУ — проверка, наши значения не меняются.</span>
+        </div>
+        <div id="glavapuScenarioStatus" class="import-status" style="display:none"></div>
+        <div id="glavapuScenarioResult"></div>
       </div>
     </div>
 

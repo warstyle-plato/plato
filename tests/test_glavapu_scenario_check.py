@@ -514,9 +514,13 @@ def test_the_page_shows_ours_and_glavapu_side_by_side(core, monkeypatch) -> None
 def test_the_page_has_the_block_and_its_button_calls_the_check() -> None:
     import main_legacy as legacy
     page = legacy.PAGE
+    # Сверка — на вкладке «ТЭП», под таблицей ТЭП: сначала наши числа, ниже
+    # их проверка. Блок внутри панели tep, а не на «Вводных».
+    tep = page.index('<div id="tep" class="panel">')
+    vri = page.index('<div id="vri" class="panel">')
     start = page.find('id="glavapuScenarioBox"')
-    assert start > 0
-    block = page[start:page.find("</details>", start)]
+    assert tep < page.find('class="teptable"', tep) < start < vri
+    block = page[start:page.find('id="glavapuScenarioResult"', start)]
     assert 'onclick="glavapuScenarioCheck()"' in block
     assert "function glavapuScenarioCheck(" in page
     assert "fetch('/glavapu/scenario'" in page
