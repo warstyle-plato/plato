@@ -112,10 +112,10 @@ def test_the_contents_skip_empty_sections():
     панели display:none. Меню отфильтровывало себя целиком каждый раз.
     """
     page = core.PAGE
-    assert "function renderReportToc()" in page
+    assert "function renderReportToc(r)" in page
     assert "getComputedStyle(el).display!=='none'" in page
     assert "child.textContent.trim().length>0" in page
-    assert "offsetParent" not in page.split("function renderReportToc()")[1][:900]
+    assert "offsetParent" not in page.split("function renderReportToc(r)")[1][:900]
 
 
 def _toc_html(sections: dict[str, list[tuple[str, str, str]]]) -> str:
@@ -125,16 +125,9 @@ def _toc_html(sections: dict[str, list[tuple[str, str, str]]]) -> str:
     выглядят в разметке отчёта: заголовок плюс карточки.
     """
     import json
-    import re
-    import shutil
-    import subprocess
 
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("node недоступен")
-    listed = re.search(r"const REPORT_SECTIONS=\[.*?\];", core.PAGE, re.S)
-    body = re.search(r"function renderReportToc\(\)\{.*?\n\}", core.PAGE, re.S)
-    assert listed and body, "оглавление отчёта не найдено на странице"
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import page_blocks
 
     stand = {
         name: {"style": {"display": display},
@@ -144,8 +137,10 @@ def _toc_html(sections: dict[str, list[tuple[str, str, str]]]) -> str:
                             for cls, child_display, text in children]}
         for name, (display, children) in sections.items()
     }
+    # Настоящий код страницы — через стенд (`page_blocks.run`): он сам
+    # подтянет `renderReportToc`, `REPORT_SECTIONS` и всё, что они зовут.
     script = (
-        listed.group(0) + "\n" + body.group(0) + "\n"
+        "let lastResult=null;\n"
         + "const stand=" + json.dumps(stand, ensure_ascii=False) + ";\n"
         + "Object.values(stand).forEach(s=>s.children.forEach(c=>{"
           "c.classList={contains:name=>c.cls===name}}));\n"
@@ -157,10 +152,9 @@ def _toc_html(sections: dict[str, list[tuple[str, str, str]]]) -> str:
         + "const toc={innerHTML:''};\n"
         + "const document={getElementById:id=>id==='reportToc'?toc:(stand[id]||null)};\n"
         + "function getComputedStyle(el){return {display:(el.style&&el.style.display)||'block'}}\n"
-        + "renderReportToc();console.log(toc.innerHTML);"
     )
-    return subprocess.run([node, "-e", script], capture_output=True, text=True,
-                          check=True).stdout
+    out, _ = page_blocks.run(script, "renderReportToc();console.log(toc.innerHTML);")
+    return out
 
 
 def test_a_closed_tab_no_longer_empties_the_contents():
