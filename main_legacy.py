@@ -37921,6 +37921,11 @@ def _calculate_economics(req: CalcRequest) -> dict:
          + op["capex_amounts"].get("commissioning", 0.0)
          + op["capex_amounts"].get("site_maintenance", 0.0)
          + op["capex_amounts"].get("gc_fee", 0.0)),
+        # Снос и расселение — статьи CAPEX движка и книги (строки 36 и 37), и
+        # в структуре расходов их не было вовсе: итог таблицы не сходился с
+        # CAPEX ровно на них. Подписи — те же, что у статей (`_MONTHLY_CAPEX_LABELS`).
+        (_MONTHLY_CAPEX_LABELS["demolition"], op["capex_amounts"].get("demolition", 0.0)),
+        (_MONTHLY_CAPEX_LABELS["resettlement"], op["capex_amounts"].get("resettlement", 0.0)),
         ("Отдельные объекты",
          sum(op["capex_amounts"].get(_o.key, 0.0) for _o in STANDALONE_OBJECTS)),
         # Статьи гостиницы (`hotel_capex_amounts`) есть только у гостиничного
