@@ -378,3 +378,62 @@ def test_the_book_shares_the_block_by_construction() -> None:
         tampered[nw.COSTS_SHEET][f"B{row}"] = 0.5
     verdict, bad, _ = _nonres_check(tampered)
     assert verdict == nw.FAILED and bad
+
+
+def test_the_nonresidential_rates_are_entered_in_one_block() -> None:
+    """Нежилой проект: ставки СМР вводятся в одном месте — в «Строительстве»
+    (владелец, 07.10.2026). Объект один — «наземная часть», объектов два —
+    строка на каждый; в блоке объекта ставки нет; наземной ставки МКД нет;
+    подземная подписана гаражом объектов. Смешанный проект — как прежде."""
+    from browser import chromium_or_skip, serve
+    from playwright.sync_api import sync_playwright
+
+    probe = """()=>{
+      const groups={};
+      document.querySelectorAll('#inputGroups details[data-group]').forEach(d=>{
+        groups[d.dataset.group]=Array.from(d.querySelectorAll('.field[data-field]')).map(w=>[
+          w.dataset.field,(w.querySelector('label')||{}).textContent||'']);
+      });
+      return groups;
+    }"""
+    show = ("k=>{inputs.project_class='comfort';Object.assign(inputs,k.inputs);"
+            "inputs.project_kind=k.kind;renderInputs();}")
+    with serve(wrapper.app, PORT + 1):
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=chromium_or_skip())
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(f"http://127.0.0.1:{PORT + 1}/", wait_until="load")
+            page.wait_for_function("()=>typeof renderInputs==='function'", timeout=60000)
+            page.evaluate(show, {"kind": "nonresidential",
+                                 "inputs": {"offices_enabled": True, "retail_enabled": False}})
+            one = page.evaluate(probe)
+            page.evaluate(show, {"kind": "nonresidential",
+                                 "inputs": {"offices_enabled": True, "retail_enabled": True}})
+            two = page.evaluate(probe)
+            page.evaluate(show, {"kind": "mixed",
+                                 "inputs": {"offices_enabled": True, "retail_enabled": False}})
+            mixed = page.evaluate(probe)
+            browser.close()
+    assert errors == []
+
+    def where(groups, key):
+        return [(g, label) for g, fields in groups.items() for k, label in fields if k == key]
+
+    build = next(g for g, fields in one.items() if any(k == "main_under_th_per_sqm" for k, _ in fields))
+    [(group, label)] = where(one, "offices_cost_th_per_sqm")
+    assert group == build and label.startswith("Основное строительство — наземная часть")
+    assert core.OBJECT_SMR_HINT in label
+    keys = [k for k, _ in one[build]]
+    assert keys.index("offices_cost_th_per_sqm") < keys.index("main_under_th_per_sqm")
+    assert not where(one, "main_above_th_per_sqm")
+    assert "гараж объектов" in dict(one[build])["main_under_th_per_sqm"]
+    # Два объекта — строка на каждый, обе в «Строительстве».
+    for key in ("offices_cost_th_per_sqm", "retail_cost_th_per_sqm"):
+        [(group, label)] = where(two, key)
+        assert group == build and "наземная часть, " in label, label
+    # Смешанный проект: ставка — в блоке объекта «под ключ», МКД — в «Строительстве».
+    [(group, label)] = where(mixed, "offices_cost_th_per_sqm")
+    assert group != build and core.OBJECT_TURNKEY_HINT in label
+    assert where(mixed, "main_above_th_per_sqm")

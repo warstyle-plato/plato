@@ -518,6 +518,11 @@ def project_kind() -> str:
                        page_const("RESIDENTIAL_ONLY_INPUTS"),
                        page_const("OBJECT_RATE_HINTS"),
                        function("objectRateUnit"),
+                       # Ставки зданий нежилого проекта — в «Строительстве»
+                       # (владелец, 07.10.2026).
+                       page_const("OBJECT_SMR"),
+                       function("nonresBuildingRateFields"),
+                       function("movedToConstruction"),
                        function("projectKind"),
                        function("isNonResidential"),
                        function("isHotel"),

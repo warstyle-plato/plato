@@ -55258,10 +55258,38 @@ function classFieldSource(k){
 // приписку текущего вида. Своего правила у страницы нет — только карта движка.
 const OBJECT_RATE_HINTS=__DEVELOPAID_OBJECT_RATE_HINTS__;
 function objectRateUnit(id,unit){
+ // Подземная ставка у нежилого проекта строит свой гараж объектов — других
+ // подземных метров у него нет, и подпись это говорит.
+ if(id==='main_under_th_per_sqm'&&inputs.project_kind==='nonresidential')
+  return String(unit)+' — свой подземный гараж объектов';
  const hints=OBJECT_RATE_HINTS[id];
  if(!hints)return unit;
  const own=hints[inputs.project_kind]||hints.mixed;
  return own===hints.mixed?unit:String(unit).replace(hints.mixed,own);
+}
+// Чисто нежилой проект: ставки СМР вводятся в ОДНОМ месте — в блоке
+// «Строительство», рядом с подземной ставкой и статьями проекта (владелец,
+// 07.10.2026: «два одинаковых блока в разных местах — как понять, куда и что
+// вводить?»). Число — то же поле объекта (`{prefix}_cost_th_per_sqm`): оно
+// только переезжает на экране, расчёт и книги читают его, как прежде. Объект
+// один — строка «наземная часть», объектов несколько — строка на каждый.
+// Объект «под ключ» (наземный паркинг, ставка за место) остаётся в своём
+// блоке: его ставка — не СМР здания (`OBJECT_SMR.defaults` — только СМР).
+function nonresBuildingRateFields(){
+ if(!isNonResidential())return [];
+ const objs=projectObjects().filter(o=>inputOn(inputs[o.prefix+'_enabled'])
+  &&Object.prototype.hasOwnProperty.call(OBJECT_SMR.defaults,o.prefix+'_cost_th_per_sqm'));
+ return objs.map(o=>{
+  const key=o.prefix+'_cost_th_per_sqm';
+  let unit='тыс. ₽/м² GBA';
+  for(const g of allFieldGroups())for(const f of g[1])if(f[0]===key)unit=f[2];
+  const label='Основное строительство — наземная часть'
+   +(objs.length>1?', '+(o.tep_label||o.label||o.group_label):'');
+  return [key,label,unit,'number'];
+ });
+}
+function movedToConstruction(id){
+ return isNonResidential()&&Object.prototype.hasOwnProperty.call(OBJECT_SMR.defaults,String(id));
 }
 function classFieldUnitText(id,unit){
  unit=objectRateUnit(id,unit);
@@ -56231,15 +56259,25 @@ function renderInputs(){
    // его не пересобирает.
    let grid=null,section=null;
    const openGrid=(parent)=>{grid=document.createElement('div');grid.className='fields';(parent||det).appendChild(grid)};
+   // Нежилой проект: ставки зданий — в «Строительстве», перед подземной.
+   const moved=new Set();
+   if(fields.some(f=>f[0]==='main_under_th_per_sqm')){
+    const own=nonresBuildingRateFields();
+    own.forEach(f=>moved.add(f[0]));
+    if(own.length)fields=fields.flatMap(f=>f[0]==='main_under_th_per_sqm'?[...own,f]:[f]);
+   }
    fields.forEach(f=>{
      const [id,label,unit,type]=f;
+     // Ставка здания нежилого проекта стоит в «Строительстве» — в блоке
+     // объекта её нет (одно место ввода).
+     if(grpObj&&movedToConstruction(id))return;
      // Норматив площади двора правится в «Настройках класса»: он свойство
      // класса, а не площадки. Поле при этом объявлено там же, где все
      // остальные, — отсюда берут подпись и единицу окно классов и строка
      // отклонений в отчёте; здесь оно только не рисуется. Выход ДО создания
      // узла: наполовину нарисованное поле оставило бы в сетке пустую клетку.
      if(notOnInputs(id)||strategyHides(id))return;
-     const own=fieldSection(id);
+     const own=moved.has(id)?null:fieldSection(id);
      if(own&&own!==section){
        section=own;
        const card=document.createElement('section');card.className='field-card';card.dataset.section=own;
