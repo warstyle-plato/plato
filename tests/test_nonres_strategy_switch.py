@@ -455,7 +455,9 @@ def test_the_nonresidential_teaser_speaks_of_the_object_loan(tmp_path) -> None:
         return " ".join("\n".join(p.extract_text() or "" for p in pypdf.PdfReader(str(path)).pages).split()), bundle
 
     text, bundle = text_of(x, t, "teaser_nonres")
-    assert "DSCR — минимум по годам" in text
+    # Тизер проекта без жилья — разделы его вёрстки: долг — DSCR кредита
+    # объектов в «Решении» и «Финансировании» (`report_layout.debt_metric`).
+    assert "DSCR кредита объектов — минимум по годам" in text
     assert "LLCR" not in text and "Пик эскроу" not in text and "Пик БРИДЖа" not in text
     presentation = core.project_presentation(bundle, x, t, {})
     assert not {"llcr", "peak_bridge_mln", "peak_pf_mln"} & {k["key"] for k in presentation["kpi"]}
@@ -487,7 +489,9 @@ def test_the_bot_card_of_a_nonresidential_project_names_the_object_loan(monkeypa
 
     text = card({"layout": layout})
     assert "LLCR" not in text and "БРИДЖ" not in text and "квартиры" not in text
-    assert "dscr — минимум по годам" in text
+    # Карточка проекта без жилья — разделы его вёрстки; долг — DSCR кредита
+    # объектов (`report_layout.debt_metric`), тем же числом, что плитка.
+    assert "DSCR кредита объектов — минимум по годам" in text
     dscr = next(tile for tile in layout["nonres_tiles"] if tile["unit"] == "mult")
     assert core._telegram_tile(dscr) in text
     assert "LLCR" in card({})  # старый результат без решения — как прежде
