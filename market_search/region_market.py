@@ -60,7 +60,10 @@ RETRY_SECONDS = 24 * 3600
 # в свод «на дату сбора» не годятся.
 PROGRESS_MAX_AGE_SECONDS = 2 * INTERVAL_SECONDS
 # Замок старше этого считается брошенным (воркер упал посреди прохода).
-LOCK_TTL_SECONDS = 6 * 3600
+# Замок трогается после каждого проекта, поэтому живой сбор его обновляет
+# каждые секунды. Выкатка убивает процесс посреди прохода, и замок остаётся
+# на диске: при шести часах сбор после каждой выкатки стоял бы полдня.
+LOCK_TTL_SECONDS = 15 * 60
 
 RUSSIA_HOST_PREFIX = "russia."
 RUSSIA_BASES_HINT = "PULSE_BASE_URL=https://russia.pulsprodaj.ru,https://pulsprodaj.ru"

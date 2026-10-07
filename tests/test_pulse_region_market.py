@@ -379,3 +379,30 @@ def test_the_price_hint_in_mytishchi_names_the_region_reason(monkeypatch, tmp_pa
     assert "Москва старая" not in hint["reason"]
     assert "Свода по региону «Московская область» нет" in hint["reason"]
     assert "russia.pulsprodaj.ru" in hint["reason"]
+    # «Соседей нет» тоже с причиной: в радиусе пусто — так и сказано.
+    assert "не нашёл ни одного проекта" in hint["reason"]
+    assert hint["peer_search"]["found"] == 0
+
+
+def test_neighbours_without_a_price_are_counted_in_the_reason(monkeypatch, tmp_path: Path) -> None:
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    near = [(0.5, _project("50-000001", "Московская область, г.о. Мытищи")),
+            (0.9, _project("50-000002", "Московская область, г.о. Мытищи"))]
+    service.pulse = SimpleNamespace(
+        available=True, segments=lambda: {}, near=lambda lat, lon, radius_km: near,
+        price=lambda cid: None, errors=["price_stats 50-000002: HTTP 502"],
+    )
+    original = service.pulse.price
+
+    def price(cid):
+        service.pulse.errors.append(f"price_stats {cid}: HTTP 502")
+        return original(cid)
+
+    service.pulse.errors = []
+    service.pulse.price = price
+    hint = service.price_hint(address="Мытищи, Московская область", latitude=55.91, longitude=37.73)
+    assert hint["peer_search"]["found"] == 2 and hint["peer_search"]["without_price"] == 2
+    assert "проектов «Пульса» 2" in hint["reason"] and "без цены 2" in hint["reason"]
+    assert "HTTP 502" in hint["reason"]

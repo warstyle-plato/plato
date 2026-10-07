@@ -1369,12 +1369,15 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         peers: list[dict[str, Any]] = []
         near: list[tuple[float, Any]] = []
         classes: dict[int, str] = {}
+        priceless = 0
+        errors_before = len(getattr(self.pulse, "errors", None) or [])
         if self.pulse.available:
             classes = self.pulse.segments()
             near = self.pulse.near(subject_latitude, subject_longitude, radius_km)
             for distance, project in near[:budget]:
                 price = self.pulse.price(project.complex_id)
                 if not price:
+                    priceless += 1
                     continue
                 card = self.cards.card(project.complex_id)
                 # Сроки и стадия — одним владельцем на обе поверхности:
@@ -1493,6 +1496,34 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             )
         hint["stage_filter"] = stage_filter
         hint["source_coverage"] = _peer_source_coverage(peers)
+        # «Соседей нет» бывает тремя разными ответами: в радиусе пусто
+        # (справочник не покрывает место), соседи есть, но без прайса, или
+        # источник ответил ошибкой. Счёт и ошибки едут в ответ, а не в лог.
+        pulse_errors = list(getattr(self.pulse, "errors", None) or [])[errors_before:]
+        hint["peer_search"] = {
+            "source_available": bool(self.pulse.available),
+            "radius_km": radius_km,
+            "found": len(near),
+            "asked": min(len(near), budget),
+            "without_price": priceless,
+            "with_price": len(peers),
+            "errors": pulse_errors[:3],
+        }
+        if not hint.get("available") and not peers:
+            if not self.pulse.available:
+                found_text = "источник «Пульс» выключен: не заданы PULSE_LOGIN и PULSE_PASSWORD"
+            elif not near:
+                found_text = (
+                    f"в радиусе {radius_km:g} км справочник «Пульса» не нашёл ни одного проекта"
+                )
+            else:
+                found_text = (
+                    f"в радиусе {radius_km:g} км проектов «Пульса» {len(near)}, "
+                    f"спрошено {min(len(near), budget)}, без цены {priceless}"
+                )
+            if pulse_errors:
+                found_text += f"; ошибки источника: {'; '.join(pulse_errors[:2])}"
+            hint["reason"] = f"{hint.get('reason') or 'Ориентир не рассчитан'} ({found_text})"
         if not scope["covered"] and not hint.get("available") and not selected_stages:
             # Регион адреса назван — причина про его свод (нет базы, идёт сбор,
             # не собирался), а не про то, что Москва сюда не годится.
