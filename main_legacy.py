@@ -100,7 +100,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.27"
+VERSION = "0.25.28"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -11300,6 +11300,27 @@ def underground_area_per_space(inputs: dict[str, Any]) -> float:
             or fallback or 35.0)
 
 
+def glavapu_apartments_unchanged(normalized: dict[str, Any],
+                                 apartment_row: dict[str, Any]) -> bool:
+    """Квартиры те же, что у выгрузки ГлавАПУ? Импорт кладёт их в ТЭП как есть.
+
+    Сверяются и площадь, и число квартир: норма считает места по средней
+    квартире, и правка одного числа квартир при той же площади меняет её
+    («меняю количество квартир до 24 — почему не меняется количество
+    машиномест», владелец, «Донской», 07.10.2026).
+
+    Нет площади в выгрузке — сравнить не с чем, и «не меняли» не доказано:
+    отсутствие числа не равно совпадению.
+    """
+    city = _underground_number(normalized or {}, "apartment_area_sqm")
+    if city <= 0:
+        return False
+    same_area = abs(_underground_number(apartment_row or {}, "saleable") - city) < 0.5
+    same_count = abs(_underground_number(apartment_row or {}, "units")
+                     - _underground_number(normalized or {}, "apartment_units")) < 0.5
+    return same_area and same_count
+
+
 def underground_parking_requirement(inputs: dict[str, Any],
                                     tep: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     """Потребность в подземных местах: выгрузка города первой, её нет — норма.
@@ -11337,12 +11358,16 @@ def underground_parking_requirement(inputs: dict[str, Any],
     if imported_permanent + imported_guest + imported_mfc > 0:
         permanent, guest = imported_permanent, imported_guest
         basis = "норматив ГлавАПУ по нормативному ТЭП"
-        if apartments > 0:
-            # Метры правили после выгрузки — места пересчитываются нормой от
-            # НОВОЙ площади квартир: число города посчитано на его же ТЭП.
-            permanent = float(moscow_permanent_parking_2118(apartments))
+        if apartments > 0 and not glavapu_apartments_unchanged(normalized, apartment_row):
+            # Квартиры правили после выгрузки — места пересчитываются нормой от
+            # НОВЫХ квартир: число города посчитано на его же ТЭП. Пока
+            # квартиры те же, что у города, его места и остаются (решение
+            # владельца 07.10.2026: «числа ГлавАПУ до правки»). Норма — та же,
+            # что без выгрузки: пункт 2 по средней квартире, второй формулы нет.
+            places, basis = moscow_permanent_parking_by_average(
+                apartments, _underground_number(apartment_row, "units"))
+            permanent = float(places)
             guest = float(math.ceil(permanent * _PARKING_GUEST_SHARE))
-            basis = f"2118-ПП от {apartments:,.0f} м² квартир".replace(",", " ")
         mfc = imported_mfc
         was_office = _underground_number(normalized, "office_gba_sqm")
         if imported_mfc > 0 and was_office > 0:
@@ -54643,12 +54668,20 @@ function getGlavapuUnderground(){
  if(impPermanent+impGuest+impMfc<=0)return null;
  // Площадь квартир — продаваемая жилья: это она в норме 2118-ПП.
  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ const count=Number((tep.apartments&&tep.apartments.units)||0);
  let permanent=impPermanent,guest=impGuest,basis='норматив ГлавАПУ по нормативному ТЭП';
- if(apartments>0){
-  permanent=Math.ceil(apartments/(PARKING_2118.sqm_per_person*PARKING_2118.household)
-                      *PARKING_2118.per_flat);
+ // Пока квартиры те же, что у выгрузки (импорт кладёт площадь и число как
+ // есть), места города и остаются; правили площадь или число квартир — норма
+ // от новых, та же, что без выгрузки (`permanentByNorm`). Правило то же, что
+ // у движка (`glavapu_apartments_unchanged`).
+ const city=Number(n.apartment_area_sqm||0);
+ const unchanged=city>0&&Math.abs(apartments-city)<0.5
+  &&Math.abs(count-Number(n.apartment_units||0))<0.5;
+ if(apartments>0&&!unchanged){
+  const own=permanentByNorm(apartments,count);
+  permanent=own.permanent;
   guest=Math.ceil(permanent*PARKING_2118.guest_share);
-  basis='2118-ПП от '+num(Math.round(apartments))+' м² квартир';
+  basis=own.basis;
  }
  let mfc=impMfc;
  const wasOffice=Number(n.office_gba_sqm||0);
@@ -54676,25 +54709,30 @@ function getGlavapuUnderground(){
 // К2 квартала, которых без выгрузки у нас нет, а единица «пока не знаем»
 // отдала бы максимум, выданный за норматив. Поэтому здесь только жильё, и
 // основание это называет.
-function normativeUnderground(){
- const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
- if(apartments<=0)return null;
- const count=Number((tep.apartments&&tep.apartments.units)||0);
- let permanent,basis;
+// Постоянные места по 2118-ПП — один расчёт на обоих читателей: норму без
+// выгрузки и выгрузку, чьи квартиры поправили.
+function permanentByNorm(apartments,count){
  if(count>0){
   // Пункт 2 по средней квартире: состава квартир до АГР нет, но средняя
   // меняется вместе с их числом — все квартиры относятся к её полосе.
   const avg=apartments/count;
   const band=avg<PARKING_2118.bands.small_max?'small':(avg<=PARKING_2118.bands.medium_max?'medium':'large');
-  permanent=Math.ceil(count*PARKING_2118.mix[band]);
-  basis='2118-ПП, п. 2 по средней квартире '+avg.toFixed(1).replace('.',',')+' м² ('
-        +num(Math.round(count))+' квартир × '+String(PARKING_2118.mix[band]).replace('.',',')
-        +'), приобъектные нежилья не учтены';
- }else{
-  permanent=Math.ceil(apartments/(PARKING_2118.sqm_per_person*PARKING_2118.household)
-                      *PARKING_2118.per_flat);
-  basis='2118-ПП, п. 1 от '+num(Math.round(apartments))+' м² квартир (число квартир не задано), приобъектные нежилья не учтены';
+  return {permanent:Math.ceil(count*PARKING_2118.mix[band]),
+          basis:'2118-ПП, п. 2 по средней квартире '+avg.toFixed(1).replace('.',',')+' м² ('
+                +num(Math.round(count))+' квартир × '+String(PARKING_2118.mix[band]).replace('.',',')+')'};
  }
+ return {permanent:Math.ceil(apartments/(PARKING_2118.sqm_per_person*PARKING_2118.household)
+                             *PARKING_2118.per_flat),
+         basis:'2118-ПП, п. 1 от '+num(Math.round(apartments))+' м² квартир (число квартир не задано)'};
+}
+
+function normativeUnderground(){
+ const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(apartments<=0)return null;
+ const count=Number((tep.apartments&&tep.apartments.units)||0);
+ const own=permanentByNorm(apartments,count);
+ const permanent=own.permanent;
+ const basis=own.basis+', приобъектные нежилья не учтены';
  const guest=Math.ceil(permanent*PARKING_2118.guest_share);
  const spaces=permanent+guest;
  if(spaces<=0)return null;

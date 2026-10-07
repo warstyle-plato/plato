@@ -20,7 +20,7 @@ import main_legacy as core
 # ровно её 44 постоянных; гостевые — десятая часть вверх, 5.
 _IMPORT = {"normalized": {"parking_permanent": 44, "parking_guest": 5,
                           "parking_attached": 1, "parking_short_stop": 2,
-                          "apartment_area_sqm": 3800.0}}
+                          "apartment_area_sqm": 3800.0, "apartment_units": 56}}
 
 
 def _row(inputs: dict, apartments: float = 3800.0) -> dict:
