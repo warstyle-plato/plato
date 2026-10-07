@@ -203,7 +203,8 @@ def test_the_report_carries_the_screening_before_the_money(monkeypatch):
     assert 'story.append(_PdfSection("screening"))' in body
     assert body.index('_PdfSection("screening")') < body.index('_PdfSection("summary")'), \
         "скрининг обязан стоять раньше ключевой экономики"
-    assert '("screening", True), ("summary", False)' in body, "порядок разделов не задан"
+    order = [name for name, _ in core._pdf_section_order({})]
+    assert order.index("screening") < order.index("summary"), "порядок разделов не задан"
     assert "except Exception:\n        screening = None" in body, "сбой сервиса не роняет отчёт"
 
 

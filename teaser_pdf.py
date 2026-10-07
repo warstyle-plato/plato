@@ -440,7 +440,7 @@ def _bank(model: dict[str, Any]) -> bool:
 
 def _nonres_value(row: dict[str, Any], fm: "_Formats") -> tuple[str, str]:
     unit, value = row.get("unit"), row.get("value")
-    if unit == "rub":
+    if unit in ("rub", "mln"):
         return fm.mln((float(value) / 1e6) if value is not None else None), "млн ₽"
     if unit == "pct":
         return fm.pct(value), ""
@@ -456,13 +456,21 @@ def _nonres_financing_rows(model: dict[str, Any], fm: "_Formats") -> list[tuple[
     rows: list[tuple[str, str, str]] = []
     for tile in (model.get("layout") or {}).get("nonres_tiles") or []:
         rows.append((str(tile.get("label")), *_nonres_value(tile, fm)))
-    wanted = ("Кредит объекта — проценты и комиссии", "Кредит объекта — срок погашения",
-              "Кредит объекта — баллон в конце срока")
-    for item in model.get("nonres_strategy") or []:
+    # Кредит объекта — из его отчёта «Финансирование объекта» (`nonres_financing`).
+    wanted = ("Схема погашения", "Проценты и комиссии — всего",
+              "Баллон по графику (доля долга на ввод)", "Кредит погашен полностью")
+    for item in model.get("nonres_financing") or []:
         for row in item.get("rows") or []:
             if row.get("label") in wanted:
-                rows.append((f"{item.get('title')}: {str(row['label']).replace('Кредит объекта — ', '')}",
-                             *_nonres_value(row, fm)))
+                rows.append((f"{item.get('title')}: {row['label']}", *_nonres_value(row, fm)))
+    # Гостиница: условия своего кредита — строками той же таблицы движка.
+    hotel = model.get("hotel") or {}
+    for row in hotel.get("rows") or []:
+        if row.get("label") in ("Финансирование", "Кредит — проценты и комиссии", "Кредит погашен"):
+            rows.append((f"Гостиница: {row['label']}", *_nonres_value(row, fm)))
+    if hotel and not hotel.get("computed"):
+        rows.append(("Гостиница не считается — не заданы",
+                     ", ".join(str(m) for m in hotel.get("missing") or []), ""))
     return rows
 
 
@@ -637,6 +645,64 @@ def _fit_page(flowables: list[Any], width: float) -> list[Any]:
     return [KeepInFrame(width, 0, flowables, mode="shrink", hAlign="LEFT", vAlign="TOP")]
 
 
+def _object_value(row: dict[str, Any], fm: _Formats) -> tuple[str, str]:
+    """Строка раздела объектной вёрстки: значение и единица."""
+    unit, value = row.get("unit"), row.get("value")
+    if unit == "rub":
+        return (fm.mln(None if value is None else float(value) / 1e6), "млн ₽")
+    if unit == "mln":
+        return (fm.mln(None if value is None else float(value) / 1e6), "млн ₽")
+    if unit == "pct":
+        return fm.pct(value), ""
+    if unit == "mult":
+        return fm.x(value), ""
+    if unit == "sqm":
+        return fm.sqm(value), "м²"
+    if unit == "count":
+        return fm.count(value), ""
+    if unit == "th":
+        return fm.th(value), "тыс ₽/м²"
+    if unit == "num":
+        return fm.th(value, 2), str(row.get("suffix") or "")
+    if unit == "date":
+        text = str(value or "")
+        return (".".join(reversed(text[:7].split("-"))) if text else "—"), ""
+    return str(value if value not in (None, "") else "—"), ""
+
+
+def _object_brief(section: dict[str, Any], width: float, st: _Styles, fm: _Formats,
+                  skip_verdict: bool = False) -> list[Any]:
+    """Раздел объектной вёрстки: заголовок движка и его краткие строки."""
+    out: list[Any] = [_section(str(section.get("title") or ""), width, st)]
+    verdict = section.get("verdict") if section.get("key") == "decision" else None
+    if verdict:
+        out.append(Paragraph(f"<b>{_esc(verdict.get('title'))}</b> {_esc(verdict.get('text'))}",
+                             st.note))
+    brief = [r for r in section.get("brief") or []
+             if not (verdict and r.get("label") in ("Вывод", "Основание"))]
+    # Длинный текст (перечень факторов, стратегия) — строкой под заголовком:
+    # в колонке значения таблицы он ломался по слогам.
+    for r in brief:
+        if r.get("unit") == "text" and len(str(r.get("value") or "")) > 32:
+            out.append(Paragraph(f"<b>{_esc(r.get('label'))}:</b> {_esc(r.get('value'))}", st.note))
+    rows = [(_esc(r.get("label")), *(_esc(v) for v in _object_value(r, fm))) for r in brief
+            if not (r.get("unit") == "text" and len(str(r.get("value") or "")) > 32)]
+    share = 0.56
+    if section.get("key") == "calendar":
+        share = 0.42
+        rows = [(_esc(e.get("label")),
+                 "–".join(dict.fromkeys(".".join(reversed(str(e.get(k) or "")[:7].split("-")))
+                                        for k in ("start", "end"))), "")
+                for e in ((section.get("calendar") or {}).get("events") or [])[:12]]
+    if rows:
+        out.append(_kv(rows, width, st, label_share=share))
+    return out
+
+
+def _esc(value: Any) -> str:
+    return (str(value or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
 def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _Styles,
               fm: _Formats, map_caption: str | None = None) -> list[Any]:
     site = model.get("site") or {}
@@ -651,24 +717,43 @@ def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _S
     left_w = (width - gutter) * 0.47
     right_w = width - gutter - left_w
 
-    left: list[Any] = [_section("Расположение", left_w, st)]
-    left += _map_block(map_png, left_w, st, site, map_caption)
-    left.append(_section("Информация по земельному участку", left_w, st))
-    left.append(_kv(_site_rows(site, model.get("tep") or {}, fm), left_w, st, label_share=0.36))
-    left.append(Paragraph("Ограничения участка", st.h3))
-    left += _restrictions(site, st, fm)
-    left.append(_section("Смена ВРИ", left_w, st))
-    left.append(_kv(_vri_rows(model, fm), left_w, st, label_share=0.48))
-    left.append(_section("Финансирование", left_w, st))
-    left.append(_kv(_financing_rows(model, fm), left_w, st, label_share=0.56))
+    objects = {str(sec.get("key")): sec for sec in model.get("object_sections") or []}
 
-    right: list[Any] = [_section("Расчётные ТЭП проекта", right_w, st)]
-    right.append(_kv(_tep_rows(model, fm), right_w, st, label_share=0.42))
-    right.append(_section("Экономика проекта", right_w, st))
-    econ_rows, strong = _economy_rows(model, fm)
-    right.append(_kv(econ_rows, right_w, st, label_share=0.56, bold_rows=strong))
-    right.append(_section("Удельная экономика", right_w, st))
-    right.append(_unit_economics_grid(model, right_w, st, fm))
+    def site_block(w: float) -> list[Any]:
+        out: list[Any] = [_section("Информация по земельному участку", w, st)]
+        out.append(_kv(_site_rows(site, model.get("tep") or {}, fm), w, st, label_share=0.36))
+        out.append(Paragraph("Ограничения участка", st.h3))
+        out += _restrictions(site, st, fm)
+        out.append(_section("Смена ВРИ", w, st))
+        out.append(_kv(_vri_rows(model, fm), w, st, label_share=0.48))
+        return out
+
+    if objects:
+        # Проект без жилья — его вёрстка: «Решение» первым, затем «Объект и
+        # участок» (объект, карта, участок). Финансирование — на втором листе,
+        # своим разделом.
+        left: list[Any] = []
+        if "decision" in objects:
+            left += _object_brief(objects["decision"], left_w, st, fm)
+        left.append(_section("Расположение", left_w, st))
+        left += _map_block(map_png, left_w, st, site, map_caption)
+        right: list[Any] = []
+        if "object" in objects:
+            right += _object_brief(objects["object"], right_w, st, fm)
+        right += site_block(right_w)
+    else:
+        left = [_section("Расположение", left_w, st)]
+        left += _map_block(map_png, left_w, st, site, map_caption)
+        left += site_block(left_w)
+        left.append(_section("Финансирование", left_w, st))
+        left.append(_kv(_financing_rows(model, fm), left_w, st, label_share=0.56))
+        right = [_section("Расчётные ТЭП проекта", right_w, st)]
+        right.append(_kv(_tep_rows(model, fm), right_w, st, label_share=0.42))
+        right.append(_section("Экономика проекта", right_w, st))
+        econ_rows, strong = _economy_rows(model, fm)
+        right.append(_kv(econ_rows, right_w, st, label_share=0.56, bold_rows=strong))
+        right.append(_section("Удельная экономика", right_w, st))
+        right.append(_unit_economics_grid(model, right_w, st, fm))
     right.append(_section("Риски, которые модель нашла сама", right_w, st))
     right += _risk_lines(model, st, fm)
 
@@ -694,6 +779,8 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
     story.append(Spacer(1, 2 * mm))
     gutter = 4 * mm
     col_w = (width - 2 * gutter) / 3
+    if model.get("object_sections"):
+        return _page_two_object(model, story, width, col_w, gutter, st, fm)
     eff = model.get("efficiency") or {}
     fin = model.get("financing") or {}
     tep = model.get("tep") or {}
@@ -813,6 +900,37 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
         f"· {origin.get('generated_at') or ''}. Удельные показатели — каждый на свою базу: расходы на "
         f"метр {TOTAL_AREA.genitive} (наземная и подземная), выручка и прибыль на метр "
         f"{SALEABLE_AREA.genitive}, СМР — на свою часть. Считает движок; тизер их не выводит сам.", st.note))
+    return _fit_page(story, width)
+
+
+# Колонки второй страницы проекта без жилья: разделы 3–9 его вёрстки в
+# порядке движка — стратегия, доходы, затраты | финансирование, экономика
+# собственника | чувствительность, календарь.
+OBJECT_PAGE_TWO_COLUMNS: tuple[tuple[str, ...], ...] = (
+    ("strategy", "income", "costs"), ("finance", "owner"), ("sensitivity", "calendar"))
+
+
+def _page_two_object(model: dict[str, Any], story: list[Any], width: float, col_w: float,
+                     gutter: float, st: _Styles, fm: _Formats) -> list[Any]:
+    objects = {str(sec.get("key")): sec for sec in model.get("object_sections") or []}
+    columns_data = []
+    for keys in OBJECT_PAGE_TWO_COLUMNS:
+        column: list[Any] = []
+        for key in keys:
+            if key in objects:
+                column += _object_brief(objects[key], col_w, st, fm)
+        columns_data.append(column or [Spacer(1, 1)])
+    columns = Table([columns_data], colWidths=[col_w + gutter, col_w + gutter, col_w])
+    columns.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                 ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (1, 0), gutter),
+                                 ("RIGHTPADDING", (2, 0), (2, 0), 0),
+                                 ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
+    story.append(columns)
+    origin = model.get("origin") or {}
+    story.append(Paragraph(
+        f"Расчёт {origin.get('calculation_id') or '—'} · движок DevelopAid {origin.get('engine_version') or '—'} "
+        f"· {origin.get('generated_at') or ''}. Разделы и числа — те же, что в отчёте на странице и в "
+        "полном PDF; тизер их не пересчитывает.", st.note))
     return _fit_page(story, width)
 
 
