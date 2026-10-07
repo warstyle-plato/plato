@@ -91,6 +91,15 @@ CLASSES: tuple[tuple[str, str], ...] = (
 )
 
 
+def class_label(stars: Any) -> str | None:
+    """Подпись класса гостиницы («5*»); пусто или чужое значение — None, а не
+    «без звёзд»: незаданный класс — не нулевой."""
+    if stars is None or (isinstance(stars, str) and not stars.strip()):
+        return None
+    key = str(int(stars)) if isinstance(stars, float) and stars.is_integer() else str(stars).strip()
+    return dict(CLASSES).get(key)
+
+
 # --- поля ------------------------------------------------------------------
 
 ORIGIN_ENGINE = "умолчание движка — то же, что у кредита объекта нежилого"

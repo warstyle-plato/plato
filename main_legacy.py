@@ -619,6 +619,24 @@ def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
     return {"class": key, "label": str(preset.get("label") or key), "rows": rows}
 
 
+def project_class_view(inputs: dict[str, Any]) -> dict[str, Any]:
+    """Класс проекта — одно решение для карточки «Ключевые параметры», PDF и бота.
+
+    У гостиничного проекта класс — звёздность (поле `hotel_stars` блока
+    «Гостиница»), а не класс жилья: пресет жилья — цены квартир, СМР, двор —
+    у гостиницы ничего не считает, и «Комфорт» в её отчёте был бы чужой
+    предпосылкой. Незаданная звёздность называется «не задан», а не «без
+    звёзд». У остальных проектов — класс жилья и его отклонения от базы
+    (`project_class_deviations`).
+    """
+    if is_hotel(inputs or {}):
+        stars = (inputs or {}).get(hotel_strategy.PREFIX + "stars")
+        return {"kind": "hotel", "title": "Класс гостиницы",
+                "class": "" if stars is None else str(stars),
+                "label": hotel_strategy.class_label(stars) or "не задан", "rows": []}
+    return {"kind": "housing", "title": "Класс проекта", **project_class_deviations(inputs)}
+
+
 # Лестница ставки ПФ по покрытию эскроу — умолчание, решение владельца
 # (20.08.2026: «ставим базово по умолчанию то, что у Сбера, а человек может
 # вручную вбить или оставить»). Числа из НКЛ Сбербанка, сверенного 04.08.2026:
@@ -17797,8 +17815,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     source_label = str(payload.get("source_label") or "ТЭП DevelopAid")
     scenario_key = str(payload.get("scenario") or "base")
     scenario_label = {"conservative":"Консервативный","base":"Базовый","optimistic":"Оптимистичный"}.get(scenario_key, scenario_key or "Базовый")
-    class_key = str(inputs.get("project_class") or "")
-    class_label = PROJECT_CLASS_PRESETS.get(class_key, {}).get("label") or "Пользовательский"
+    # Класс — то же решение, что у карточки и предпосылок (`project_class_view`).
+    _class_view = project_class_view(inputs)
+    class_label = _class_view["label"]
+    class_title = "Класс жилья" if _class_view["kind"] == "housing" else _class_view["title"]
     project_name = str(payload.get("project_name") or "").strip()
     title_scope = project_name or (", ".join(str(x) for x in cads) if cads else "Девелоперский проект")
 
@@ -18179,7 +18199,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         return drawings
 
     story=[P("DevelopAid",h1),P("Инвестиционный отчёт по девелоперскому проекту",h2),P(title_scope,ParagraphStyle("scope",parent=h2,fontSize=11,textColor=colors.HexColor('#555555')))]
-    meta=[["Дата расчёта",date.today().strftime("%d.%m.%Y")],["Источник ТЭП",source_label],["Класс жилья",class_label],["Сценарий",scenario_label]]
+    meta=[["Дата расчёта",date.today().strftime("%d.%m.%Y")],["Источник ТЭП",source_label],[class_title,class_label],["Сценарий",scenario_label]]
     # Класс жилья у проекта без жилья ничего не значит (`report_layout.housing`).
     if not (report.get("layout") or {}).get("housing", True):
         meta=[row for row in meta if row[0]!="Класс жилья"]
@@ -18569,8 +18589,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             story.append(P(str(line), small))
 
     story.append(_PdfSection("premises"));story.append(P("Цены и основные предпосылки",h2))
-    _class_dev=project_class_deviations(inputs)
-    premise_rows=[["Параметр","Значение"],["Класс проекта",_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² наземной части"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² подземной части"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
+    # Класс — то же решение, что у карточки «Ключевые параметры»
+    # (`project_class_view`): у гостиницы — звёздность, а не класс жилья.
+    _class_dev=project_class_view(inputs)
+    premise_rows=[["Параметр","Значение"],[_class_dev["title"],_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² наземной части"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² подземной части"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
     # Тип проекта называется только там, где он не тот, что у всех: строка
     # «Жилой / смешанный» в каждом отчёте — постоянная приписка, а такие
     # перестают читаться. Оставшееся от жилья идёт своей строкой, потому что
@@ -18585,6 +18607,12 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # они читались бы как предпосылки его расчёта.
         _mkd_premises = {"Стартовая цена квартир", "Стартовая цена коммерции",
                          "Цена подземного машино-места", "Доля продаж до РВЭ"}
+        if _kind == PROJECT_KIND_HOTEL:
+            # Стройку гостиницы считает её ставка (`hotel_cost_th_per_sqm`),
+            # а не ставки жилья: СМР дома и сети класса жилья у неё не
+            # участвуют, и напечатанные они читались бы её предпосылкой.
+            _mkd_premises |= {"СМР наземной части", "СМР подземной части",
+                              "Наружные инженерные сети, в т.ч. техприсоединение"}
         premise_rows = [row for row in premise_rows if row[0] not in _mkd_premises]
         premise_rows.append(["Тип проекта",
                              dict(PROJECT_KINDS)[_kind]
@@ -37003,7 +37031,7 @@ def hotel_report(hotel: dict[str, Any] | None) -> dict[str, Any] | None:
                 "rows": [], "usali": {"years": [], "rows": []}, "warnings": []}
     kpi, totals = hotel.get("kpi") or {}, hotel.get("totals") or {}
     params = hotel.get("params") or {}
-    stars = dict(hotel_strategy.CLASSES).get(str(params.get("stars") or ""), "не задан")
+    stars = hotel_strategy.class_label(params.get("stars")) or "не задан"
     sale = kpi.get("exit_mode") == hotel_strategy.EXIT_SALE
     valuation = dict(hotel_strategy.VALUATIONS).get(str(kpi.get("valuation") or ""), "")
     financing = dict(hotel_strategy.FINANCINGS).get(str(params.get("financing") or ""), "")
@@ -38538,6 +38566,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
             },
         },
         "report": {
+            "project_class": project_class_view(x),
             "nonres_strategy": nonres_report(fin.get("nonres")),
             "hotel": hotel_report(fin.get("hotel")),
             "nonres_financing": nonres_financing_report(fin.get("nonres")),
@@ -40505,6 +40534,7 @@ def _consolidate_phase_results(
             "peak_total_debt": finance["peak_total_debt"],
         },
         "report": {
+            "project_class": project_class_view(master_inputs),
             "nonres_strategy": nonres_report(finance.get("nonres")),
             "hotel": hotel_report(finance.get("hotel")),
             "nonres_financing": nonres_financing_report(finance.get("nonres")),
@@ -49555,7 +49585,14 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
         <select id="projectKindSelect" onchange="applyProjectKind(this.value)" style="min-width:135px"></select>
         <div id="projectKindNoteTop" style="font-size:10px;color:#777;margin-top:4px;text-align:right"></div>
       </div>
-      <div class="scenario">Класс&nbsp;
+      <!-- Класс гостиницы — звёздность, а не класс жилья: пресет жилья у
+           гостиницы ничего не считает. Поле одно — `hotel_stars` блока
+           «Гостиница»; шапка его показывает и правит. -->
+      <div class="scenario" id="hotelClassBox" style="display:none">Класс&nbsp;
+        <select id="hotelClassSelect" onchange="setHotelClass(this.value)" style="min-width:135px"></select>
+        <div id="hotelClassNote" style="font-size:10px;color:#777;margin-top:4px;text-align:right">звёздность гостиницы</div>
+      </div>
+      <div class="scenario" id="projectClassBox">Класс&nbsp;
         <select id="projectClassSelect" onchange="applyProjectClassPreset(this.value)" style="min-width:135px">
           <option value="comfort">Комфорт</option>
           <option value="business">Бизнес</option>
@@ -55254,6 +55291,31 @@ function syncProjectKindSelector(){
  select.value=projectKind();
  const box=document.getElementById('projectKindNoteTop');
  if(box)box.textContent=isHotel()?'номера, USALI, свой кредит':isNonResidential()?'жилья, соцнагрузки и ВРИ нет':'жильё, объекты, соцнагрузка';
+ syncHotelClassSelector();
+}
+
+// Класс в шапке у гостиничного проекта — её звёздность (`hotel_stars`), а
+// класс жилья прячется: его пресет — цены квартир, СМР, двор — у гостиницы
+// ничего не считает. Значение одно на шапку и блок «Гостиница».
+function syncHotelClassSelector(){
+ const hotel=isHotel();
+ const own=document.getElementById('projectClassBox'),box=document.getElementById('hotelClassBox');
+ if(own)own.style.display=hotel?'none':'';
+ if(box)box.style.display=hotel?'':'none';
+ const select=document.getElementById('hotelClassSelect');
+ if(!select)return;
+ if(!select.options.length){
+  const field=HOTEL.fields.find(f=>f.key==='stars');
+  [['','— не задан —'],...(field?field.choices:[])].forEach(pair=>{
+   const o=document.createElement('option');o.value=pair[0];o.textContent=pair[1];select.appendChild(o);
+  });
+ }
+ const v=inputs.hotel_stars;
+ select.value=hotelBlank(v)?'':String(v);
+}
+function setHotelClass(value){
+ setHotelField('stars',hotelBlank(value)?null:value,null);
+ renderInputs();refreshGroupPeeks();calculate();
 }
 
 function applyProjectKind(key){
@@ -56091,6 +56153,7 @@ function hotelInputsBlock(wasOpen){
    +'<button type="button" class="btn" onclick="applyHotelPreset(\''+p.key+'\',true)">Заполнить пустые: '+escapeHtml(p.title)+'</button>'
    +'<button type="button" class="tep-refill" onclick="applyHotelPreset(\''+p.key+'\',false)">заменить все</button></span>').join(' ');
  det.appendChild(bar);
+ syncHotelClassSelector();
  HOTEL.groups.forEach(([gkey,gtitle])=>{
   const fields=HOTEL.fields.filter(f=>f.group===gkey&&hotelFieldNeeded(f));
   if(!fields.length)return;
@@ -59683,9 +59746,16 @@ function renderResult(){
  // из расчёта, и эти две выбивались из общего правила. Сам `expenseGroup`
  // объявлен в начале функции — тем же значением живёт плитка цены входа.
  const vriRelief=Number(((r.vri||{}).totals||{}).relief||0);
+ // Класс решает движок (`report.project_class`): у гостиницы — звёздность, а
+ // не класс жилья. Строки метра продаваемой площади и цены квартир у неё
+ // встали бы нулями, которые читались бы ответом, — вместо них номера,
+ // затраты на номер и ADR из итога гостиницы.
+ const pc=(r.report||{}).project_class||{};
+ const hotelProject=pc.kind==='hotel';
+ const hk=(((r.finance||{}).hotel||{}).kpi)||{};
  projectParamsTable.innerHTML=
   (r.summary.phase_count?row('Очередность',r.summary.phase_count+' очереди'):'')+
-  row('Класс проекта',inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?PROJECT_CLASS_PRESETS[inputs.project_class].label:'Пользовательский')+
+  row(escapeHtml(pc.title||'Класс проекта'),escapeHtml(pc.label||'—'))+
   row('Сценарий',scenarioSelect.options[scenarioSelect.selectedIndex].text)+
   row('Доходы к базовому сценарию',Number(r.summary.scenario_revenue_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   row('Расходы к базовому сценарию',Number(r.summary.scenario_cost_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
@@ -59695,9 +59765,13 @@ function renderResult(){
     +row('в т.ч. выкуп ЗУ/ОКС у третьих лиц (кадастровая стоимость, не цена сделки)',money(Number(r.deal.buyout_mln)*1e6)):'')+
   row('Стоимость смены ВРИ / права',money(Number(r.capex.land_rights||0))
    +(vriRelief>0?' <span style="color:#777;font-weight:400">льгота '+money(vriRelief)+'</span>':''))+
-  row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment))+
+  (hotelProject?'':row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment)))+
   row('Проектирование П и РД',money((r.capex.design_p||0)+(r.capex.design_rd||0)))+
-  row('Продаваемая площадь',num(r.summary.monetizable_saleable_sqm)+' м²')+
+  (hotelProject
+   ?row('Номерной фонд',hotelCell({value:hk.keys,unit:'count'}))+
+    row('Затраты на номер с НДС',hotelCell({value:hk.capex_per_key,unit:'rub_unit'}))+
+    row('ADR первого года, без НДС',hotelCell({value:hk.adr_first_year,unit:'rub_unit'}))
+   :row('Продаваемая площадь',num(r.summary.monetizable_saleable_sqm)+' м²')+
   // Удельный показатель подписывается тем делителем, на который число
   // делится: это выручка квартир ÷ ПРОДАВАЕМАЯ ПЛОЩАДЬ квартир, то есть
   // тыс. ₽ за метр. Единицы не было вовсе, и «916,6 тыс. ₽» читались как цена
@@ -59712,7 +59786,7 @@ function renderResult(){
   row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.full_cost_per_total_area_th)+'/м² '+TERMS.total_area.genitive)+
   row('Строительная себестоимость',th(r.summary.construction_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.construction_cost_per_gns_th)+'/м² '+TERMS.core_total_area.genitive)+
   row('EBITDA на метр',th(r.summary.ebitda_per_saleable_th)+'/м² прод.')+
-  row('Чистая прибыль на метр',th(r.summary.net_profit_per_saleable_th)+'/м² прод.');
+  row('Чистая прибыль на метр',th(r.summary.net_profit_per_saleable_th)+'/м² прод.'));
 
  // Свод финансирования на многоочередном проекте — это итоги, а не моменты:
  // подписи «в РВЭ» и «от предыдущей очереди» там называют событием сумму по

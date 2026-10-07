@@ -45,6 +45,13 @@ STATE = r"""() => {
       ? lastResult.report.hotel.rows.map(r => [r.label, hotelCell(r)]) : [],
     tiles: [...document.querySelectorAll('#reportKpi .kpi span')].map(s => s.innerText.trim()),
     notes, inputs, tep,
+    header: {
+      hotelBox: getComputedStyle(document.getElementById('hotelClassBox')).display,
+      classBox: getComputedStyle(document.getElementById('projectClassBox')).display,
+      hotelClass: document.getElementById('hotelClassSelect').value,
+      blockStars: (document.getElementById('h_hotel_stars') || {}).value,
+    },
+    params: [...document.querySelectorAll('#projectParamsTable tr')].map(tr => [...tr.cells].map(c => c.textContent.trim())),
     hotel: lastResult.report.hotel,
     hotelKeys: Object.keys(inputs).filter(k => k.startsWith('hotel_') && k !== 'hotel_origins'),
   };
@@ -100,6 +107,14 @@ def walk() -> dict:
                 " && lastResult.report.hotel.rows.find(r => r.label === 'Выручка за срок').value !== before",
                 arg=next(r["value"] for r in state["hotel"]["rows"] if r["label"] == "Выручка за срок"))
             out["manual"] = page.evaluate(STATE)
+            # Класс из шапки — то же поле `hotel_stars`, что в блоке «Гостиница».
+            page.evaluate("""() => {
+              const s = document.getElementById('hotelClassSelect');
+              s.value = '4'; s.onchange();
+            }""")
+            page.wait_for_function(
+                "() => lastResult.report.project_class && lastResult.report.project_class.label === '4*'")
+            out["stars"] = page.evaluate(STATE)
             page.evaluate("() => { applyProjectKind('mixed'); }")
             page.wait_for_function("() => !lastResult.report.hotel")
             out["back"] = page.evaluate(STATE)
@@ -171,3 +186,40 @@ def test_a_manual_edit_drops_the_origin(walk) -> None:
     before = next(r for r in walk["dombai"]["hotel"]["rows"] if r["label"] == "Выручка за срок")
     after = next(r for r in state["hotel"]["rows"] if r["label"] == "Выручка за срок")
     assert after["value"] > before["value"]
+
+
+def test_the_header_class_of_a_hotel_is_its_stars(walk) -> None:
+    """Класс в шапке гостиничного проекта — звёздность, класс жилья спрятан;
+    у жилого проекта — наоборот."""
+    for name in ("empty", "dombai"):
+        header = walk[name]["header"]
+        assert header["hotelBox"] != "none" and header["classBox"] == "none", name
+    assert walk["empty"]["header"]["hotelClass"] == ""
+    assert walk["dombai"]["header"]["hotelClass"] == "5"
+    for name in ("mixed", "back"):
+        header = walk[name]["header"]
+        assert header["hotelBox"] == "none" and header["classBox"] != "none", name
+
+
+def test_the_key_parameters_name_the_stars_not_a_housing_class(walk) -> None:
+    assert walk["empty"]["params"][0] == ["Класс гостиницы", "не задан"]
+    params = walk["dombai"]["params"]
+    assert params[0] == ["Класс гостиницы", "5*"]
+    labels = [row[0] for row in params]
+    # Метры продаваемой площади и цена квартир у гостиницы были бы нулями.
+    assert not {"Продаваемая площадь", "Средняя цена м² квартир", "EBITDA на метр",
+                "Строительство соцобъектов", "Социальная компенсация"} & set(labels)
+    keys = walk["dombai"]["hotel"]["rows"]
+    rooms = next(r for r in keys if r["label"] == "Номерной фонд")["value"]
+    assert ["Номерной фонд", f"{rooms:,.0f}".replace(",", "\u00a0")] in params
+    for name in ("mixed", "back"):
+        assert walk[name]["params"][0] == ["Класс проекта", "Комфорт"], name
+
+
+def test_the_header_class_edits_the_hotel_field(walk) -> None:
+    state = walk["stars"]
+    assert state["inputs"]["hotel_stars"] == "4"
+    assert state["header"]["hotelClass"] == "4" and state["header"]["blockStars"] == "4"
+    assert "hotel-manual" in state["notes"]["hotel_stars"]["cls"]
+    assert state["params"][0] == ["Класс гостиницы", "4*"]
+

@@ -128,6 +128,38 @@ def test_the_scenario_moves_the_hotel_revenue() -> None:
                              rel=1e-9))
 
 
+def test_the_hotel_class_is_its_stars_not_a_housing_class() -> None:
+    """Класс гостиничного проекта — звёздность (`hotel_stars`), а не «Комфорт»:
+    пресет жилья у гостиницы ничего не считает. Незаданный класс — «не задан»."""
+    _, result = _run()
+    view = result["report"]["project_class"]
+    assert (view["kind"], view["title"], view["label"]) == ("hotel", "Класс гостиницы", "5*")
+    assert view["rows"] == []
+    _, empty = _run(preset=None)
+    assert empty["report"]["project_class"]["label"] == "не задан"
+    _, mixed = _run("mixed", None)
+    view = mixed["report"]["project_class"]
+    assert (view["kind"], view["title"], view["label"]) == ("housing", "Класс проекта", "Комфорт")
+
+
+def test_the_pdf_and_the_teaser_print_the_stars() -> None:
+    pytest.importorskip("reportlab")
+    from market_search.krt_requirements import pdf_text
+    x = hotel_presets.apply_preset({**copy.deepcopy(core.DEFAULT_INPUTS),
+                                    "project_kind": "hotel"}, "dombai")
+    t = copy.deepcopy(core.TEP_DEFAULT)
+    bundle = core._run_authoritative_model(x, t, [], {})
+    pdf = core._build_developaid_pdf({"result": bundle["consolidated"], "project_name": "Отель",
+                                      "inputs": x, "tep": t})
+    text = " ".join(pdf_text(pdf).split())
+    assert "Класс гостиницы 5*" in text
+    assert "Класс жилья" not in text and "Класс проекта" not in text
+    # Стройку гостиницы считает её ставка — ставки СМР жилья в предпосылках нет.
+    assert "тыс. ₽/м² наземной части" not in text
+    teaser = " ".join(pdf_text(core.build_teaser_pdf(bundle, x, t, {})).split())
+    assert "Класс гостиницы 5*" in teaser and "Комфорт" not in teaser
+
+
 def test_no_bridge_limit_fee_for_a_loan_the_hotel_does_not_take() -> None:
     """Участок и проект гостиницы кредитует её кредит, БРИДЖа нет — значит, нет
     и платы за резервирование его лимита. Расходы на финансирование проекта —
