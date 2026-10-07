@@ -17940,7 +17940,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
               "Общие статьи (ИРД, проектирование, подготовка, "
               f"сети, сдача, содержание) считаются от {_project_articles_term(tep_report).genitive} — "
               f"{_pdf_num(_project_articles_sqm(tep_report), 0)} м²: "
-              f"{_project_articles_term(tep_report).formula}. "
+              + ("квартиры, коммерция 1 этажа, подземный паркинг и кладовые. "
+                 if _project_articles_term(tep_report) is CORE_TOTAL_AREA
+                 else "здания объектов и их подземные гаражи. ") +
               f"База продаваемой — {_pdf_num(summary.get('monetizable_saleable_sqm'), 0)} м² "
               "монетизируемой площади (паркинг и кладовые продаются штуками и в неё "
               "не входят). Показатели на метр — термины финансовой модели DevelopAid, "
@@ -21274,6 +21276,82 @@ def _v4_apply_turnkey_overheads(xml: str, missing: list[str]) -> str:
         xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(formula=fixed)})
         if not done:
             missing.append(f"CAPEX · резерв очереди {phase + 1}: B{row} не записана")
+    return xml
+
+
+# Статьи проекта в блоке CAPEX очереди: разносимые долями движка по очередям
+# (база — сумма площадей всех очередей × доля) и считаемые своей очередью.
+_V4_SHARED_AREA_ARTICLE_ROWS = (16, 17, 18, 20, 23)
+_V4_PHASE_AREA_ARTICLE_ROWS = (25, 26)
+_V4_CAPEX_MANAGEMENT_ROW = 28
+
+
+def _v4_apply_nonres_full_estimate(xml: str, inputs: dict[str, Any], missing: list[str]) -> str:
+    """Чисто нежилой проект: полная смета формулами, как в движке.
+
+    Решение владельца 06.10.2026 (`object_rate_is_turnkey`): ставка метрового
+    объекта нежилого проекта — СМР здания. Статьи проекта (ИРД, П, РД,
+    подготовка, сети, ввод, содержание) идут по своим ставкам от суммарной
+    площади объектов в ГНС — здание (GBA) плюс свой гараж (места × площадь
+    места), — а генподряд, техзаказчик и управление начисляются и на СМР
+    объекта. Шаблон считал эти статьи от площади МКД (у нежилого — ноль) и без
+    объектов. Правка точечная, поверх формул: к площади добавляются слагаемые
+    объектов, к базам процентов — CAPEX объектов своей очереди. Объект «под
+    ключ» (наземный паркинг) в эти слагаемые не входит. Не опознанная формула —
+    в `missing`.
+    """
+    def cond(lay: "_V4ObjectLayout") -> str:
+        head = lay.object_head
+        return (f"AND('ОБЪЕКТЫ'!$B${head + 1}=\"Да\",IFERROR(INDEX('Вводные'!$B$88:$B$91,"
+                f"'ОБЪЕКТЫ'!$B${head + 2}),\"Нет\")=\"Да\")")
+
+    def area(lay: "_V4ObjectLayout") -> str:
+        head = lay.object_head
+        garage = ""
+        if lay.parking_under:
+            col, row = re.match(r"([A-Z]+)(\d+)$", lay.parking_under).groups()
+            garage = f"+'Вводные'!${col}${row}*'Вводные'!$K$158"
+        return f"IF({cond(lay)},'ОБЪЕКТЫ'!$B${head + 6}{garage},0)"
+
+    smr = [lay for lay in _v4_layouts() if not object_rate_is_turnkey(inputs, lay.obj)]
+    if not smr:
+        return xml
+    total_area = "+".join(area(lay) for lay in smr)
+
+    def phase_area(phase: int) -> str:
+        return "+".join(f"IF('ОБЪЕКТЫ'!$B${lay.object_head + 2}={phase + 1},{area(lay)},0)"
+                        for lay in smr)
+
+    def phase_works(phase: int) -> str:
+        return "+".join(f"IF('ОБЪЕКТЫ'!$B${lay.object_head + 2}={phase + 1},"
+                        f"'ОБЪЕКТЫ'!$B${lay.object_head + 22},0)" for lay in smr)
+
+    def patch(row: int, was: str, now: str, label: str) -> None:
+        nonlocal xml
+        formula = _v4_cell_formula(xml, f"B{row}") or ""
+        if was not in formula:
+            missing.append(f"CAPEX · нежилой проект, {label}: формула B{row} не опознана")
+            return
+        xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(formula=formula.replace(was, now, 1))})
+        if not done:
+            missing.append(f"CAPEX · нежилой проект, {label}: B{row} не записана")
+
+    shared = "SUM('Вводные'!$AR$88:$AR$91)"
+    for phase in range(_V4_CAPEX_PHASES):
+        base = _V4_CAPEX_BLOCK_STRIDE * phase
+        for row in _V4_SHARED_AREA_ARTICLE_ROWS:
+            patch(row + base, shared + ")", f"{shared}+{total_area})",
+                  f"статья проекта очереди {phase + 1}")
+        own = f"'Вводные'!$AR${88 + phase})"
+        for row in _V4_PHASE_AREA_ARTICLE_ROWS:
+            patch(row + base, own, f"'Вводные'!$AR${88 + phase}+{phase_area(phase)})",
+                  f"статья проекта очереди {phase + 1}")
+        works = phase_works(phase)
+        for row in (_V4_CAPEX_TECH_SUPERVISION_ROW, _V4_CAPEX_GC_FEE_ROW):
+            patch(row + base, f"B{31 + base})*", f"B{31 + base}+{works})*",
+                  f"генподряд и техзаказчик очереди {phase + 1}")
+        patch(_V4_CAPEX_MANAGEMENT_ROW + base, f"B{26 + base})*", f"B{26 + base}+{works})*",
+              f"управление очереди {phase + 1}")
     return xml
 
 
@@ -26278,18 +26356,23 @@ V4_REWRITTEN_FORMULA_ROWS: dict[str, tuple[tuple[int, ...], str]] = {
     ),
     "CAPEX": (
         (
-        9, 12, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 28, 30,
+        9, 12, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
         31, 32, 43, 46, 48, 49, 50, 51, 52, 54, 55, 56, 57, 58, 59, 60,
-        62, 64, 65, 66, 77, 80, 82, 83, 84, 85, 86, 88, 89, 90, 91, 92,
-        93, 94, 96, 98, 99, 100, 111, 114, 116, 117, 118, 119, 120, 122,
-        123, 124, 125, 126, 127, 128, 130, 132, 133, 134,
+        61, 62, 63, 64, 65, 66, 77, 80, 82, 83, 84, 85, 86, 88, 89, 90, 91, 92,
+        93, 94, 95, 96, 97, 98, 99, 100, 111, 114, 116, 117, 118, 119, 120, 122,
+        123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134,
         ),
         "Кассовые доли общих статей, снос и расселение, график платежей "
         "за покупку, профиль управления, лимит БРИДЖа до РнС и календари "
         "объектов: _v4_apply_shared_cash_articles, "
         "_v4_apply_demolition_rows, _v4_apply_purchase_schedule, "
         "_v4_apply_management_profile, "
-        "_v4_apply_bridge_limit_before_permit "
+        "_v4_apply_bridge_limit_before_permit; техзаказчик и генподряд без "
+        "стройки объектов «под ключ», резерв без платы за ВРИ (решение "
+        "владельца 06.10.2026): _v4_apply_turnkey_overheads; у чисто "
+        "нежилого проекта — полная смета: статьи проекта от площади объектов, "
+        "генподряд, техзаказчик и управление на их СМР: "
+        "_v4_apply_nonres_full_estimate "
     ),
     "CF": (
         (
@@ -27293,18 +27376,7 @@ def _build_project_workbook(
     capex_xml = _v4_apply_bridge_limit_before_permit(capex_xml, missing)
     capex_xml = _v4_apply_vri_interest_row(capex_xml, missing)
     capex_xml = _v4_apply_turnkey_overheads(capex_xml, missing)
-    if any(not object_rate_is_turnkey(x, obj) and b(x, obj.enabled_key)
-           for obj in standalone_objects()):
-        # Чисто нежилой проект: ставка объекта — СМР здания, и движок считает
-        # статьи проекта от площади объектов, а генподряд, техзаказчика и
-        # управление — и на СМР объекта. Шаблон v4 считает эти статьи от
-        # площади МКД (у нежилого — ноль) и без объектов; формулы шаблона не
-        # переписываются — расхождение названо, а не молчит.
-        missing.append(
-            "CAPEX · нежилой проект: ставка объекта — СМР; статьи проекта (ИРД, П, РД, "
-            "подготовка, сети, ввод, содержание) от площади объектов, генподряд, "
-            "техзаказчик и управление на СМР объекта книга v4 не считает — суммы "
-            "этих статей у движка больше")
+    capex_xml = _v4_apply_nonres_full_estimate(capex_xml, x, missing)
     vri_sheet_path = _v4_sheet_path(source, "ВРИ")
     vri_xml = _v4_apply_vri_installment_start(
         source.read(vri_sheet_path).decode("utf-8"), missing)
