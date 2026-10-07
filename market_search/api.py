@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import re
+import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +33,7 @@ from . import report_pdf
 from . import price_hint_ui
 from . import stage as stage_module
 from . import sales_deck
+from . import region_market as region_market_module
 from .subject import SubjectNotFound
 
 
@@ -111,6 +114,11 @@ class ReportRequest(BaseModel):
     # Сравнение с городом. Для площадки без своего проекта медиана класса по
     # всей Москве отвечает не на тот вопрос — решают соседи в трёх километрах.
     city_reference: bool = True
+    # Наши сроки для сравнения с конкурентами. У площадки проекта в «Пульсе»
+    # нет, и без них отчёт честно говорит «нашего ввода нет». Заданное здесь
+    # называется в отчёте «задано в отчёте», а не выдаётся за источник.
+    project_sales_start: str | None = Field(default=None, max_length=20)
+    project_commissioning: str | None = Field(default=None, max_length=20)
 
     @model_validator(mode="after")
     def query_is_not_blank(self) -> "ReportRequest":
@@ -171,6 +179,20 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     service = MarketDiscoveryService(data_dir)
     app.state.market_discovery_installed = True
     app.state.market_discovery_service = service
+
+    # Недельный свод рынка по регионам из кабинета «Пульса». Поток только
+    # проверяет срок раз в час; сбор идёт раз в 7 дней и берёт замок-файл,
+    # так что из двух воркеров работает один. В pytest не стартует.
+    if (
+        "pytest" not in sys.modules
+        and os.getenv(region_market_module.SWITCH_ENV, "1").strip() not in {"0", "false", "no"}
+    ):
+        threading.Thread(
+            target=region_market_module.background_loop,
+            args=(service.region_market,),
+            name="pulse-regions-weekly",
+            daemon=True,
+        ).start()
 
     @app.post("/market/price-hint")
     def market_price_hint(req: PriceHintRequest) -> dict[str, Any]:
@@ -441,6 +463,97 @@ def install(app: FastAPI) -> MarketDiscoveryService:
 
                 report["query"]["check"] = await run_in_threadpool(ask)
         return report
+
+    @app.get("/market/pulse/regions")
+    async def market_pulse_regions(request: Request) -> dict[str, Any]:
+        """Недельный свод рынка по регионам из кабинета: когда, сколько, ошибки.
+
+        Только диск: состояние сбора и готовые своды. Сам сбор идёт фоном раз
+        в неделю или по `POST /market/pulse/regions/run`.
+        """
+        cabinet_module.require_cabinet(request)
+        return await run_in_threadpool(service.region_market.status)
+
+    @app.post("/market/pulse/regions/run")
+    async def market_pulse_regions_run(
+        request: Request, region: str = "", force: bool = False
+    ) -> dict[str, Any]:
+        """Ручной запуск сбора под ключом кабинета — в фоне, не в запросе.
+
+        `force=1` начинает сбор заново, мимо недельного срока и прогресса.
+        `region=50` — только этот регион. Ответ сразу: идёт ли сбор и почему
+        нет; ход и итог — в `GET /market/pulse/regions`.
+        """
+        cabinet_module.require_cabinet(request)
+        collector = service.region_market
+        code = " ".join(str(region or "").split())
+        if code and code not in collector.regions:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Регион {code} не в настройке {region_market_module.REGIONS_ENV} "
+                    f"(сейчас: {', '.join(collector.regions)})"
+                ),
+            )
+        blocker = collector.blocker()
+        if blocker:
+            return {"started": False, "reason": blocker}
+        if collector.lock_path.exists():
+            return {"started": False, "reason": "Сбор уже идёт", "status": collector.status()}
+        threading.Thread(
+            target=collector.run_due,
+            kwargs={"force": force, "only": code or None},
+            name="pulse-regions-manual",
+            daemon=True,
+        ).start()
+        return {"started": True, "regions": [code] if code else collector.regions, "force": force}
+
+    @app.get("/market/pulse/project-page")
+    async def market_pulse_project_page(
+        request: Request, complex_id: str = "", q: str = "", refresh: bool = False
+    ) -> dict[str, Any]:
+        """Страница проекта в ЛК — как её понял разбор, и даты из всех источников.
+
+        `complex_id=…` или `q=Зиларт` (первый из подсказки). `refresh=1` —
+        открыть страницу заново, мимо кэша. Ответ кладёт рядом: найденные
+        подписи (что разбор узнал на живой странице), стадию по корпусам,
+        поля по корпусам с датой состояния, даты проекта по каждому
+        источнику — страница, таблица API, карта, месячная выгрузка. Так
+        «старт продаж сентябрь против ноября» решается чтением, а не догадкой.
+        """
+        cabinet_module.require_cabinet(request)
+        pulse = service.pulse
+        cid = " ".join(str(complex_id or "").split())
+        picked = None
+        if not cid and q.strip():
+            found = await run_in_threadpool(pulse.suggest, q, 1)
+            if found:
+                picked = found[0]
+                cid = str(found[0]["complex_id"])
+        if not cid:
+            raise HTTPException(status_code=400, detail="Укажите complex_id или q (название проекта)")
+
+        def collect() -> dict[str, Any]:
+            seen = set(pulse.errors)
+            page = pulse.project_page(cid, refresh=refresh)
+            dates = pulse.project_dates(cid)
+            card = service.cards.card(cid)
+            return {
+                "complex_id": cid,
+                "picked": picked,
+                "page": page,
+                "dates": dates,
+                "monthly_report": {
+                    "sales_start": card.get("sales_start"),
+                    "commissioning": card.get("commissioning"),
+                    "source": "месячная выгрузка Пульса (XLSX)",
+                },
+                "stage": pulse.project_stage(cid),
+                "facts": pulse.project_facts(cid),
+                "errors": [e for e in pulse.errors if e not in seen][:10],
+            }
+
+        return await run_in_threadpool(collect)
 
     @app.get("/market/pulse/project-dates")
     async def market_pulse_project_dates(
@@ -961,6 +1074,9 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 segment_override=req.segment,
                 extra_peers=req.extra_peers,
                 city_reference=req.city_reference,
+                project_sales_start=req.project_sales_start,
+                project_commissioning=req.project_commissioning,
+                include_timing=True,
             )
         except SubjectNotFound as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

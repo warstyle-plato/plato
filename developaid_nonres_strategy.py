@@ -235,6 +235,13 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     loan_share = _clamp(_num(params, "loan_share_pct", 60.0) / 100.0, 0.0, 0.95)
     spread = _num(params, "loan_spread_pp", 4.0) / 100.0
     fee_share = max(0.0, _num(params, "loan_fee_pct", 1.0) / 100.0)
+    # Плата за резервирование лимита НКЛ объекта: банк кредитует долю всех
+    # затрат — участка, проекта, стройки — одной линией, и резервирует её
+    # лимит при открытии. Ставка — проектная вводная (как у БРИДЖа и ПФ).
+    reservation_share = max(0.0, float(plan.get("reservation_fee_pct", 0.0) or 0.0) / 100.0)
+    # Плата за невыбранный лимит — как у ПФ: остаток лимита сверх выбранного
+    # тела × ставка / 12, пока линия доступна (с первой выдачи до ввода).
+    commitment_share = max(0.0, float(plan.get("limit_fee_pct", 0.0) or 0.0) / 100.0)
     property_tax = max(0.0, _num(params, "property_tax_pct", 2.2) / 100.0)
     repayment = _choice(params, "debt_repayment", REPAYMENTS, REPAY_ANNUITY)
     term_months = max(1, int(_num(params, "loan_term_years", 10))) * 12
@@ -423,6 +430,37 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
         m["loan_balance"][month] = balance
         peak = max(peak, balance)
 
+    # Две НКЛ (владелец, 06.10.2026: «основной лимит открывается ближе к
+    # РнС… де-факто два лимита НКЛ»): первая — на участок и проект, её
+    # лимит — выборка до РнС; вторая, строительная, — выборка с РнС. Каждая
+    # открывается своей первой выдачей: тогда и плата за резервирование её
+    # лимита, и с того же месяца — плата за невыбранный остаток, как у ПФ.
+    # После последней выдачи линии остаток нулевой — плата кончается сама.
+    # Без даты РнС в плане линия одна. Всё лежит в комиссиях (`loan_fee`):
+    # поток, налог и итог объекта видят их сами.
+    permit: date = plan.get("permit") or min(m["loan_draw"] or [commissioning])
+    lines = {"land": [mm for mm in months if mm < permit and m["loan_draw"][mm]],
+             "build": [mm for mm in months if mm >= permit and m["loan_draw"][mm]]}
+    limits = {name: sum(m["loan_draw"][mm] for mm in draws) for name, draws in lines.items()}
+    loan_limit = sum(limits.values())
+    for name, draws in lines.items():
+        if not draws or not limits[name]:
+            continue
+        opened = draws[0]
+        if reservation_share:
+            m["loan_reservation_fee"][opened] += limits[name] * reservation_share
+            m["loan_fee"][opened] += limits[name] * reservation_share
+        if commitment_share:
+            drawn = 0.0
+            for month in months:
+                if month < opened or month > draws[-1]:
+                    continue
+                drawn += m["loan_draw"][month]
+                unused = max(0.0, limits[name] - drawn)
+                if unused > 0:
+                    m["loan_commitment_fee"][month] += unused * commitment_share / 12.0
+                    m["loan_fee"][month] += unused * commitment_share / 12.0
+
     # --- налоговая база объекта (без процентов: они идут вычетом финансирования)
     monthly_dep = cost_basis / (max(1, int(_num(params, "depreciation_years", 30))) * 12.0)
     book = cost_basis
@@ -522,6 +560,11 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "loan_draw": total("loan_draw"),
             "loan_interest": total("loan_interest_cap") + total("loan_interest_paid"),
             "loan_fee": total("loan_fee"),
+            "loan_reservation_fee": total("loan_reservation_fee"),
+            "loan_commitment_fee": total("loan_commitment_fee"),
+            "loan_limit": loan_limit,
+            "loan_limit_land": limits["land"],
+            "loan_limit_build": limits["build"],
             "loan_repayment": total("loan_repayment"),
             "loan_peak": peak,
             "noi": noi_total,

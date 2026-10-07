@@ -82,7 +82,8 @@ def price_hint(
             "price_per_sqm": int(okrug_row["price_median"]),
             "price_th_per_sqm": round(okrug_row["price_median"] / 1000, 1),
             "basis": BASIS_OKRUG,
-            "basis_title": BASIS_TITLES[BASIS_OKRUG],
+            # Подпись даёт свод: у региона средняя ступень — муниципалитет.
+            "basis_title": getattr(reference, "okrug_basis_title", None) or BASIS_TITLES[BASIS_OKRUG],
             "sample": int(okrug_row.get("projects") or 0),
             "segment": segment,
             "observed_at": reference.observed_at,
@@ -95,7 +96,7 @@ def price_hint(
             "price_per_sqm": int(snapshot.price_median),
             "price_th_per_sqm": round(snapshot.price_median / 1000, 1),
             "basis": BASIS_CITY,
-            "basis_title": BASIS_TITLES[BASIS_CITY],
+            "basis_title": getattr(reference, "city_basis_title", None) or BASIS_TITLES[BASIS_CITY],
             "sample": snapshot.projects,
             "segment": segment,
             "observed_at": reference.observed_at,
