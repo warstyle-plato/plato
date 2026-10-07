@@ -193,8 +193,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # из недельного сбора кабинета «Пульса» (`region_market`). Сбор
         # ведёт фоновый поток; здесь только чтение готовых файлов.
         regions_dir = Path(data_dir) / "pulse-regions"
-        self.markets = MarketAtlas(self.city, regions_dir)
         self.region_market = RegionMarketCollector(self.pulse, regions_dir)
+        self.markets = MarketAtlas(self.city, regions_dir, explain=self.region_market.explain)
         # История продаж и остатка: живой источник её не отдаёт, она вынута из
         # помесячного отчёта и едет с кодом.
         self.dynamics = SalesDynamics.bundled()
@@ -1494,9 +1494,15 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         hint["stage_filter"] = stage_filter
         hint["source_coverage"] = _peer_source_coverage(peers)
         if not scope["covered"] and not hint.get("available") and not selected_stages:
+            # Регион адреса назван — причина про его свод (нет базы, идёт сбор,
+            # не собирался), а не про то, что Москва сюда не годится.
+            region_reason = (scope.get("region") or {}).get("reason")
             hint["reason"] = (
                 f"{hint.get('reason') or 'Ориентир не рассчитан'}. "
-                f"Свод рынка собран по отчёту «{scope['label']}» и для этого адреса не применяется"
+                + (
+                    region_reason
+                    or f"Свод рынка собран по отчёту «{scope['label']}» и для этого адреса не применяется"
+                )
             )
         hint["location"] = {
             "display_name": where,
