@@ -124,8 +124,10 @@ def test_the_consolidated_report_shows_the_project_total(project):
              if row["key"] == "underground_parking"))
         for phase in bundle["phases"])
     assert parking["quantity"] == pytest.approx(by_queue)
+    # Гостевые ручного гаража — S/11 его мест, а не число, оставшееся в
+    # присланной строке (у шаблона там 109 от гаража в 1 199 мест).
     assert parking["quantity"] == pytest.approx(
-        core.underground_saleable_spaces(tep["underground_parking"]), abs=len(bundle["phases"]))
+        core.underground_saleable_spaces({"units": PARKING_SPACES}), abs=len(bundle["phases"]))
     # Полное число мест при этом сохраняется до единицы: строится весь паркинг.
     rows = {row["key"]: row for row in bundle["consolidated"]["tep"]["rows"]}
     assert rows["underground_parking"]["units"] == pytest.approx(PARKING_SPACES)

@@ -100,7 +100,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.25"
+VERSION = "0.25.26"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -11373,6 +11373,27 @@ def underground_parking_requirement(inputs: dict[str, Any],
             "gns": spaces * per}
 
 
+def underground_parking_by_hand(inputs: dict[str, Any]) -> bool:
+    """Пара «места ↔ площадь» подземного паркинга — решение человека?
+
+    Страница сама заполняет пару нормой и помечает это `_parking_by_norm`
+    (`fillUndergroundFromTep`): поле непустое, но число — нормы. Движок прежде
+    читал всякое непустое поле как ручное, и производные строки (гостевые)
+    замирали на прежних вводных. Пометка руки сильнее пометки нормы; проект без
+    пометок (до них, API, бот) — непустое поле человеческое.
+
+    От `object_parking_by_hand` отличается одним: проектный подземный посев
+    списка `_parking_by_hand` не проходит намеренно, поэтому отсутствие в нём
+    ещё не значит «норма».
+    """
+    key = "underground"
+    if key in set(inputs.get("_parking_by_hand") or ()):
+        return True
+    if key in set(inputs.get("_parking_by_norm") or ()):
+        return False
+    return True
+
+
 def underground_tep_row(inputs: dict[str, Any],
                         tep: dict[str, dict[str, Any]]) -> dict[str, float] | None:
     """Строка ТЭП подземного паркинга — производная, и ответ у неё ОДИН.
@@ -11412,13 +11433,18 @@ def underground_tep_row(inputs: dict[str, Any],
     manual_spaces = _underground_number(inputs, "underground_manual_spaces")
     manual_area = _underground_number(inputs, "underground_manual_gns_sqm")
     guest: float | None = None
-    if manual_spaces > 0 or manual_area > 0:
+    if underground_parking_by_hand(inputs) and (manual_spaces > 0 or manual_area > 0):
         # Заданная руками площадь сильнее норматива ВСЕГДА, а не только когда
         # мест не назвали: реальный подземный этаж диктуют пятно застройки,
         # рампы и техпомещения, а норматив описывает потребность.
         spaces = manual_spaces if manual_spaces > 0 else (
             round(manual_area / per) if per > 0 else 0.0)
         area = manual_area if manual_area > 0 else spaces * per
+        # Гостевые человек не вписывал — они выводятся из его мест тем же
+        # правилом, что у читателя (S/11). Оставить в строке прежнее число
+        # значит заморозить производное: на «Донском» 44 места несли 109
+        # гостевых от давно сменившихся вводных.
+        guest = float(underground_guest_spaces({"units": spaces}))
     else:
         need = underground_parking_requirement(inputs, tep)
         if not need:
@@ -27142,6 +27168,13 @@ def _build_project_workbook(
         missing.append(
             "ТЭП движка: книга пишет присланный — строка, приведённая расчётом "
             "к вводным (площадь гаража, выгрузка ГлавАПУ, соцобъект), до неё не дошла")
+        # Строку гаража выводит одна функция, и без ответа движка книга зовёт
+        # её сама: иначе она продавала бы места за вычетом гостевых присланной
+        # строки (из умолчаний шаблона), а движок — за вычетом своих.
+        # Строка правится на копии: присланный ТЭП принадлежит вызывающему.
+        tep = {key: dict(value) for key, value in (tep or {}).items()
+               if isinstance(value, dict)}
+        apply_underground_tep_row({**DEFAULT_INPUTS, **(inputs or {})}, tep)
 
     # Сетка книги конечна, а горизонт движка — нет. Не влезло — это `missing`
     # числами, а не молчание: обрезанная книга выглядит целой, и половина её
@@ -34583,16 +34616,19 @@ def underground_guest_spaces(row: dict[str, Any]) -> int:
     и гостевых остаётся S/11. На 369 местах это 34 — ровно столько, сколько
     насчитал владелец.
     """
-    known = row.get("guest_units")
-    if known not in (None, ""):
-        try:
-            return max(0, int(round(float(known))))
-        except (TypeError, ValueError):
-            pass
     try:
         total = float(row.get("units") or 0)
     except (TypeError, ValueError):
-        return 0
+        total = 0.0
+    known = row.get("guest_units")
+    if known not in (None, ""):
+        try:
+            # Гостевых не бывает больше, чем мест построено: такое число —
+            # чужое (умолчания шаблона или прежний ТЭП: 109 гостевых на 69
+            # местах), а не решение проекта, и продаж оно не обнуляет.
+            return max(0, min(int(round(float(known))), int(round(max(0.0, total)))))
+        except (TypeError, ValueError):
+            pass
     return max(0, int(round(total / 11.0))) if total > 0 else 0
 
 
