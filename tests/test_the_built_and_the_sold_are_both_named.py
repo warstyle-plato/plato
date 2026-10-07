@@ -60,9 +60,11 @@ def test_the_row_of_the_result_carries_both_numbers() -> None:
         inputs=_inputs(), tep=_tep(), rates=[]))
     row = next(r for r in got["tep"]["rows"] if r["key"] == "underground_parking")
     assert row["units"] == 400
-    assert row["guest_units"] == 40
+    # Гостевые ручного гаража выводятся из его мест (S/11), а не берутся из
+    # строки: прежнее число в ней могло остаться от другого гаража.
+    assert row["guest_units"] == 36
     assert row["transfer_units"] == 25
-    assert row["saleable_units"] == 335
+    assert row["saleable_units"] == 339
     # Свод сравнивается в СВОЕЙ мере: складывать машино-места с квартирами
     # и местами в саду нечем, и общего итога штук у него больше нет.
     built = got["tep"]["total"]["units_by_measure"][core.COUNT_PARKING]
@@ -94,9 +96,9 @@ def test_the_book_names_the_guest_and_the_given_places() -> None:
     # Значение переехало на лист ввода, на прежней координате — ссылка на него.
     # Спрашивать надо величину, а не лист.
     book = openpyxl.load_workbook(io.BytesIO(content))
-    assert float(v4_inputs.value(book, "AB88")) == 335, \
+    assert float(v4_inputs.value(book, "AB88")) == 339, \
         "в продажи идут только непереданные негостевые"
-    assert float(ws["AN88"].value) == 40
+    assert float(ws["AN88"].value) == 36
     assert float(ws["AO88"].value) == 25
     # Обещание книги про место правки приведено к правде: колонки «База
     # гостевых мест» в блоке очередей нет и не было.
