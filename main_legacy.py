@@ -100,7 +100,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.23"
+VERSION = "0.25.24"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -57248,7 +57248,7 @@ function siteDensitySourceLabel(){
  if(glavapuDensitySqmHa()>0)return 'из калькулятора ГлавАПУ (Москва)';
  return 'по умолчанию 30 000 м²/га';
 }
-async function applyNormativeTep(densityOverride){
+async function applyNormativeTep(densityOverride,keepRows){
  // Нормативный пересчёт по РНГП МО — те же формулы, что в калькуляторе
  // Подмосковья: квартиры = площадь × плотность, население 28 м²/чел, ДОО
  // 65 и СОШ 135 мест на 1000 жителей, поликлиника 17,75 пос./смену,
@@ -57290,6 +57290,13 @@ async function applyNormativeTep(densityOverride){
  const data=await response.json();
  if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать нормативный ТЭП');
  Object.entries(data.tep||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
+ // Обратный счёт от вписанных метров: строка, которую человек вписал, остаётся
+ // его. Сервер выводит ГНС и общую из продаваемой своими долями, и ответ молча
+ // заменял вписанные 215 720,6 м² ГНС на 220 781,6 — при обещании таблицы
+ // «введённое вами не перебивается». Из ответа берётся только производное:
+ // число квартир, население, социалка, паркинг, плата за ВРИ.
+ Object.entries(keepRows||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
+ if(keepRows&&keepRows.apartments)rescaleBuiltInCommercial();
  const keepLand=Number(inputs.land_rights_cost_mln||0);
  const keepRegion=inputs.vri_region;
  Object.assign(inputs,data.inputs||{});
@@ -58015,6 +58022,21 @@ function scheduleTepAutoRecalc(changedKey){
  clearTimeout(tepAutoTimer);
  tepAutoTimer=setTimeout(()=>{recalcMoFromApartments(apartments,area)},500);
 }
+// Пояснение обратного счёта: что пересчитано, что сохранено и что поменялось
+// (было → стало). Молча заменённое число неотличимо от посчитанного.
+function moBackcountNote(typed,unitsWas,offered){
+ const now=Number((tep.apartments&&tep.apartments.units)||0);
+ const parts=['Нормативы пересчитаны под '+num(Number(typed.saleable||0))+' м² квартир: '
+  +'социалка, машино-места, рабочие места и плата за ВРИ следуют за объёмом.'];
+ parts.push('Вписанные площади квартир сохранены: ГНС '+num(Number(typed.gns||0))
+  +' м², общая '+num(Number(typed.total_area||0))+' м², продаваемая '
+  +num(Number(typed.saleable||0))+' м².'
+  +(Math.abs(Number(offered.gns||0)-Number(typed.gns||0))>=0.05&&Number(offered.gns||0)>0
+    ?' Нормативные доли дали бы ГНС '+num(Number(offered.gns||0))+' м² — не подставлено.':''));
+ if(Math.abs(now-unitsWas)>=0.05)
+  parts.push('Число квартир пересчитано от продаваемой: было '+num(unitsWas)+' → стало '+num(now)+'.');
+ return parts.join(' ');
+}
 async function recalcMoFromApartments(apartments,area){
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';
@@ -58024,10 +58046,16 @@ async function recalcMoFromApartments(apartments,area){
   const density=apartments/area;
   say('Пересчитываю нормативы РНГП под '+num(apartments)+' м² квартир: '
    +'плотность '+num(density)+' м²/га, население, социалка, машино-места и плата за ВРИ…',false);
-  await applyNormativeTep(density);
+  const row=tep.apartments||{};
+  // Столбцы, которые берутся у человека, а не у ответа: это и есть вписанное.
+  // Число квартир сюда не входит — оно выход формулы от продаваемой, и
+  // прежнее число описывало бы прежний объём.
+  const typed={};
+  ['gns','total_area','saleable','useful','transfer'].forEach(col=>{typed[col]=Number(row[col]||0)});
+  const unitsWas=Number(row.units||0);
+  const data=await applyNormativeTep(density,{apartments:typed});
   moAutoApartments=Number((tep.apartments&&tep.apartments.saleable)||0);
-  say('Нормативы пересчитаны под '+num(moAutoApartments)+' м² квартир: '
-   +'социалка, машино-места, рабочие места и плата за ВРИ следуют за объёмом.',true);
+  say(moBackcountNote(typed,unitsWas,((data||{}).tep||{}).apartments||{}),true);
  }catch(e){
   // Молчать нельзя: человек уже видит новые квартиры и старую социалку рядом,
   // и без объяснения это выглядит посчитанным.
