@@ -53,6 +53,11 @@ def _project(nonresidential: bool = True, **over):
                 if key in t:
                     t[key][col] = 0
         x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
+        # Ставка метрового объекта нежилого проекта — СМР; умолчание то же,
+        # что ставит страница при выборе вида (`object_smr_rate`).
+        for key, turnkey in core.OBJECT_SMR_RATE_DEFAULTS.items():
+            if key not in over and float(x.get(key) or 0) == turnkey:
+                x[key] = core.object_smr_rate(turnkey, x)
     return x, t
 
 

@@ -31,7 +31,7 @@ import zipfile
 # перевод запроса и ответа живёт на границе поставщика.
 import plato_provider
 # Подписи величин — у словаря терминов, здесь только чтение.
-from terms_glossary import (CORE_ABOVE_AREA, CORE_TOTAL_AREA, CORE_UNDER_AREA, SALEABLE_AREA,
+from terms_glossary import (CORE_ABOVE_AREA, CORE_TOTAL_AREA, CORE_UNDER_AREA, OBJECTS_TOTAL_AREA, SALEABLE_AREA,
                             TERMS, TOTAL_AREA, capex_unit_base, page_terms, unit_label)
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
@@ -593,7 +593,7 @@ def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
     """
     key = str((inputs or {}).get("project_class") or "")
     # База — для региона проекта: в МО цена нежилого без московского пола.
-    preset = class_base_preset(key, class_region(inputs))
+    preset = class_base_preset(key, class_region(inputs), project_kind(inputs))
     if not preset:
         return {"class": key, "label": "Пользовательский", "rows": []}
     rows: list[dict[str, Any]] = []
@@ -761,6 +761,23 @@ def project_population(tep: dict[str, Any], region: str = "msk") -> tuple[int, s
 #
 # Заданная руками площадь сильнее нормы — тот же приоритет по полю, что у
 # соцобъектов: у человека на руках бывает ППТ или АГР со своей территорией.
+def yard_gap_reason(inputs: dict[str, Any] | None) -> str:
+    """Почему у проекта без жилья нет статьи двора — правдой для его вида.
+
+    Двор такого проекта отдельно не считается (решения владельца 21.09 и
+    06.10.2026), пока ставка на метр ГНС не задана руками. У гостиницы двор
+    в ставке здания. У чисто нежилого проекта ставка объекта — СМР здания
+    (`object_rate_is_turnkey`), двора в ней нет: причина — жителей, от
+    которых меряется двор, у проекта нет, и посчитать его можно ставкой.
+    """
+    if is_nonresidential(inputs):
+        return ("двор отдельно не считается: жителей нет, а ставка объекта — "
+                "СМР здания без двора; посчитать двор — задайте ставку "
+                "благоустройства на м² ГНС")
+    return "двор входит в себестоимость объекта — отдельной статьёй не считается"
+
+
+
 def landscaping_area_per_person(inputs: dict[str, Any],
                                 tep: dict[str, Any]) -> tuple[float, str]:
     """Мера благоустройства — м² на человека, и она ОДНА на проект и на очередь.
@@ -775,8 +792,7 @@ def landscaping_area_per_person(inputs: dict[str, Any],
         if population <= 0:
             if without_housing(inputs):
                 return 0.0, ("нежилой проект: площадь задана, а делить её на "
-                             "человека не на кого — двор здесь входит в "
-                             "себестоимость объекта")
+                             "человека не на кого — " + yard_gap_reason(inputs))
             return 0.0, "площадь задана, а квартир в проекте нет — на человека не делится"
         shown_given = f"{given:g}".replace(".", ",")
         return given / population, (
@@ -818,8 +834,7 @@ def landscaping_cost(inputs: dict[str, Any], tep: dict[str, Any],
     # 0,5629. Заданная руками ставка по-прежнему сильнее: посчитать двор
     # отдельно — решение человека, а не запрет методики.
     if without_housing(inputs):
-        return 0.0, ("нежилой проект: двор входит в себестоимость объекта — "
-                     "отдельной статьёй не считается")
+        return 0.0, "нежилой проект: " + yard_gap_reason(inputs)
     area, basis = landscaping_area(inputs, tep)
     yard_rate = float(inputs.get("landscaping_th_per_sqm") or 0.0)
     return area * yard_rate * 1000, f"{yard_rate:g} тыс ₽/м² двора · {basis}"
@@ -836,8 +851,7 @@ def landscaping_area(inputs: dict[str, Any], tep: dict[str, Any]) -> tuple[float
             # молчание методики читалось бы как отсутствие работ. База у этого
             # проекта своя и она уже есть — ставка на метр наземной ГНС.
             if without_housing(inputs):
-                return 0.0, ("нежилой проект: двор входит в себестоимость "
-                             "объекта — отдельной статьёй не считается")
+                return 0.0, "нежилой проект: " + yard_gap_reason(inputs)
             return 0.0, "квартир в проекте нет — благоустраивать нечего"
         return 0.0, basis
     # Основание называет драйвер и не повторяет само себя: «11 м² × 2425 чел.»
@@ -1364,13 +1378,57 @@ def _section_order(obj: StandaloneObject, field: list[Any]) -> int:
     return titles.index(title) if title in titles else len(titles)
 
 
-# Ставка строительства объекта — «под ключ» (решение владельца 06.10.2026):
-# уже включает ИРД, проект, сети и ввод, поэтому ни эти статьи проекта, ни
-# генподряд с техзаказчиком на стройку объекта не начисляются. Подпись поля
-# говорит это пользователю; методика — `build_operating_model`, `works_base`.
+# Что включает ставка строительства объекта — решение владельца 06.10.2026
+# («середина»), правило зависит от вида проекта и объявлено ОДНИМ предикатом
+# `object_rate_is_turnkey`; его читают движок, книги и подпись поля ставки.
+#
+# Объект внутри жилого или смешанного проекта — ставка «под ключ»: уже
+# включает ИРД, проект, сети и ввод, и ни эти статьи, ни генподряд с
+# техзаказчиком на его стройку не начисляются (резерв — начисляется).
+# Чисто нежилой проект — полная постатейная смета, как у жилья: ставка объекта
+# — основное строительство здания (СМР), статьи блока «Строительство» идут по
+# своим ставкам от суммарной площади объектов в ГНС, генподряд, техзаказчик,
+# управление и резерв начисляются и на СМР объекта. Объект, который меряется
+# местами (наземный паркинг), и там «под ключ»: ставки статей — на метр
+# здания, и к месту они не прикладываются (решение владельца 06.10.2026).
 OBJECT_TURNKEY_HINT = ("под ключ: включает ИРД, проект, сети, ввод; "
                        "генподряд и техзаказчик сверху не начисляются")
+OBJECT_SMR_HINT = ("основное строительство здания (СМР); ИРД, проект, сети, "
+                   "генподряд, техзаказчик — статьями блока «Строительство»")
 _OBJECT_COST_RATE_FIELDS = frozenset({"cost_th_per_sqm", "cost_mln_per_space"})
+
+
+def object_rate_is_turnkey(inputs: dict[str, Any] | None, obj: "StandaloneObject") -> bool:
+    """Ставка объекта «под ключ» (жилой и смешанный проект; объект, который
+    меряется местами) или только СМР здания (метровый объект чисто нежилого
+    проекта). Один ответ на вопрос для всех читателей."""
+    return obj.measure == "spaces" or not is_nonresidential(inputs)
+
+
+def object_rate_hint(inputs: dict[str, Any] | None, obj: "StandaloneObject") -> str:
+    """Приписка к подсказке ставки объекта — по тому же предикату."""
+    return OBJECT_TURNKEY_HINT if object_rate_is_turnkey(inputs, obj) else OBJECT_SMR_HINT
+
+
+def objects_total_area(inputs: dict[str, Any], tep: dict[str, Any]) -> float:
+    """Суммарная площадь объектов в ГНС (`OBJECTS_TOTAL_AREA`): ГНС здания
+    (`{prefix}_gba_sqm`) плюс свой подземный гараж (`under_gns`) каждого включённого
+    объекта, чья ставка — СМР (`object_rate_is_turnkey`): у объекта «под
+    ключ» статьи проекта уже в ставке, и база их не видит.
+
+    База статей проекта у нежилого проекта — та же сумма «наземная плюс
+    подземная», что у жилья, только площадей объектов: других метров у него
+    нет. Включённость — та же, что у CAPEX объекта.
+    """
+    total = 0.0
+    for obj in standalone_objects():
+        if not b(inputs, obj.enabled_key) or object_rate_is_turnkey(inputs, obj):
+            continue
+        row = (tep or {}).get(obj.key) or {}
+        # Те же метры, на которых стоит CAPEX объекта: ГНС здания из вводных
+        # и свой гараж из строки ТЭП (`object_parking_capex`).
+        total += n(inputs, f"{obj.prefix}_gba_sqm") + (n(row, "under_gns") if obj.garage else 0.0)
+    return total
 
 
 def standalone_object_group(obj: StandaloneObject) -> list[Any]:
@@ -1380,9 +1438,12 @@ def standalone_object_group(obj: StandaloneObject) -> list[Any]:
     def add(fields: tuple[tuple[str, str, str, str], ...]) -> list[list[Any]]:
         # Приписка к подсказке — свойство объекта: у ФОКа продаваемая площадь
         # читается только при продаже. Общая подсказка остаётся общей.
-        # Ставка стройки объекта — «под ключ»: это свойство методики
-        # (`OBJECT_TURNKEY_HINT`), а не объекта, и приписывается к любой
-        # подсказке ставки, в том числе к своей подсказке ФОКа.
+        # Что включает ставка стройки объекта — свойство методики
+        # (`object_rate_is_turnkey`), а не объекта, и приписывается к любой
+        # подсказке ставки, в том числе к своей подсказке ФОКа. Группы полей
+        # общие для всех видов проекта: здесь стоит приписка смешанного
+        # проекта, страница меняет её на нежилую тем же правилом
+        # (`objectRateHint`, тексты — `OBJECT_RATE_HINTS`).
         return [[f"{obj.prefix}_{key}", title,
                  obj.hints.get(key, unit) + ("; " + OBJECT_TURNKEY_HINT
                                              if key in _OBJECT_COST_RATE_FIELDS else ""),
@@ -1638,8 +1699,56 @@ def class_region(inputs: dict[str, Any] | None) -> str:
     return "mo" if str((inputs or {}).get("vri_region") or "msk").strip().lower() == "mo" else "msk"
 
 
-def class_base_preset(key: str, region: str = "msk") -> dict[str, Any] | None:
-    """База класса для региона проекта; `None` — у класса нет профиля."""
+# Статьи проекта на метр здания — то, что ставка «под ключ» несёт сверх СМР.
+_PROJECT_ARTICLE_RATES = ("ird_th_per_sqm", "design_p_th_per_sqm", "design_rd_th_per_sqm",
+                          "preparation_th_per_sqm", "utilities_th_per_sqm",
+                          "commissioning_th_per_sqm", "site_maintenance_th_per_sqm")
+
+
+def object_smr_conversion(rates: dict[str, Any]) -> tuple[float, float]:
+    """Перевод ставки «под ключ» в ставку СМР здания: `S = (T − c) / m`.
+
+    Решение владельца 06.10.2026: в чисто нежилом проекте умолчание ставки
+    объекта — СМР, уменьшенное на долю статей проекта так, чтобы на
+    умолчаниях итог «под ключ» сохранился. Метр здания несёт статьи проекта
+    по их ставкам (c₀), авторский надзор от П+РД, управление от своей базы
+    (`management_base` движка: без сдачи и ввода) и проценты генподряда,
+    техзаказчика и управления от самого СМР:
+
+        T = S·(1 + ГП + ТЗ + УП) + Σ статей + АН + УП·(статьи базы УП + АН)
+
+    Резерв начисляется в обоих режимах на те же деньги и в перевод не входит;
+    двор нежилого проекта отдельной статьёй не считается (умолчание — ноль).
+    Возвращает (c, m): c — тыс. ₽/м² сверх СМР, m — множитель СМР.
+    """
+    def r(key: str) -> float:
+        return n(rates, key, n(DEFAULT_INPUTS, key))
+
+    def pct(key: str) -> float:
+        return r(key) / 100
+    articles = sum(r(key) for key in _PROJECT_ARTICLE_RATES)
+    author = pct("author_supervision_pct") * (r("design_p_th_per_sqm") + r("design_rd_th_per_sqm"))
+    management = pct("project_management_pct") * (
+        articles - r("commissioning_th_per_sqm") + author)
+    markup = 1 + pct("gc_fee_pct") + pct("technical_supervision_pct") + pct("project_management_pct")
+    return articles + author + management, markup
+
+
+def object_smr_rate(turnkey_th: float, rates: dict[str, Any]) -> float:
+    """Ставка СМР здания, которая на ставках `rates` даёт итог «под ключ»
+    `turnkey_th`. Округление — до 0,1 тыс. ₽/м², как у страницы (`Math.round`)."""
+    extra, markup = object_smr_conversion(rates)
+    return max(0.0, math.floor((float(turnkey_th) - extra) / markup * 10 + 0.5) / 10)
+
+
+def class_base_preset(key: str, region: str = "msk",
+                      kind: str | None = None) -> dict[str, Any] | None:
+    """База класса для региона и вида проекта; `None` — у класса нет профиля.
+
+    В чисто нежилом проекте ставка метрового объекта — СМР здания: база
+    класса переводится из «под ключ» тем же `object_smr_rate`, что и
+    умолчание страницы.
+    """
     preset = PROJECT_CLASS_PRESETS.get(str(key or ""))
     if not preset:
         return None
@@ -1647,6 +1756,10 @@ def class_base_preset(key: str, region: str = "msk") -> dict[str, Any] | None:
     for field in CLASS_NONRES_PRICE_FIELDS:
         if field in out:
             out[field] = nonresidential_price_th(preset["apartment_price_th"], region=region)
+    if kind is not None and is_nonresidential({"project_kind": kind}):
+        for field in OBJECT_SMR_RATE_DEFAULTS:
+            if field in out:
+                out[field] = object_smr_rate(out[field], out)
     return out
 
 
@@ -1861,6 +1974,12 @@ CLASS_ONLY_INPUTS = ["landscaping_area_per_person_sqm", "landscaping_th_per_sqm"
                      # Площадь места на первых этажах ОСЗ (владелец, 27.09.2026:
                      # блок «Нормативы парковки нежилья» во вводных не нужен).
                      "object_parking_over_area_per_space_sqm"]
+# Поля только жилого дома: в чисто нежилом проекте их не показывают
+# (решение владельца 06.10.2026). Наземная ставка СМР — ставка МКД, у объекта
+# своя ставка здания; площадь двора — двор от населения, а населения у
+# нежилого проекта нет. Подземная ставка остаётся: по ней строится гараж
+# объекта.
+RESIDENTIAL_ONLY_INPUTS = ["main_above_th_per_sqm", "landscaping_area_sqm"]
 # Поля, которые принадлежат УЧАСТКУ: их называет город по этой площадке (К1 —
 # от расстояния до рельсового каркаса, К2 — по району), и правятся они в
 # карточке «Участок и плотность», а не во «Вводных» (владелец, 27.09.2026).
@@ -2290,6 +2409,16 @@ def is_hotel(inputs: dict[str, Any] | None) -> bool:
 def without_housing(inputs: dict[str, Any] | None) -> bool:
     """Проект без жилья: нежилой или гостиничный. Решает, считается ли дом."""
     return project_kind(inputs) in PROJECT_KINDS_WITHOUT_HOUSING
+
+
+# Ставки объектов, которые в чисто нежилом проекте значат СМР здания:
+# метровые объекты (`object_rate_is_turnkey`). Ключ ставки → умолчание «под
+# ключ» реестра.
+OBJECT_SMR_RATE_DEFAULTS: dict[str, float] = {
+    obj.rate_cost: float(obj.defaults.get("cost_th_per_sqm") or 0.0)
+    for obj in STANDALONE_OBJECTS
+    if not object_rate_is_turnkey({"project_kind": PROJECT_KIND_NONRESIDENTIAL}, obj)
+}
 
 
 def nonresidential_leftovers(inputs: dict[str, Any] | None,
@@ -16552,8 +16681,20 @@ def _pdf_font_names() -> tuple[str, str]:
     return "DevelopAidSans", "DevelopAidSansBold"
 
 
-def _core_total_sqm(tep_report: dict[str, Any]) -> float:
-    """Суммарная площадь МКД в ГНС — база общепроектных статей (`core_total_gns`)."""
+def _project_articles_term(tep_report: dict[str, Any]) -> Any:
+    """Имя базы общепроектных статей — то, что назвал движок."""
+    return TERMS.get(str(tep_report.get("project_articles_area") or ""), CORE_TOTAL_AREA)
+
+
+def _project_articles_sqm(tep_report: dict[str, Any]) -> float:
+    """База общепроектных статей, м² — число движка (`project_articles_sqm`).
+
+    У жилого и смешанного проекта это суммарная площадь МКД в ГНС, у чисто
+    нежилого — суммарная площадь объектов (`object_rate_is_turnkey`). Отчёт
+    старого формата поля не несёт — тогда база по-прежнему МКД.
+    """
+    if tep_report.get("project_articles_sqm") is not None:
+        return float(tep_report.get("project_articles_sqm") or 0.0)
     return (float(tep_report.get("core_above_gns") or 0.0)
             + float(tep_report.get("core_under_gns") or 0.0))
 
@@ -17797,9 +17938,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             # город считает нагрузки от суммарной поэтажной площади.
             P(_pdf_unit_bases_note(summary) + " "
               "Общие статьи (ИРД, проектирование, подготовка, "
-              f"сети, сдача, содержание) считаются от {CORE_TOTAL_AREA.genitive} — "
-              f"{_pdf_num(_core_total_sqm(tep_report), 0)} м²: квартиры, коммерция "
-              "1 этажа, подземный паркинг и кладовые. "
+              f"сети, сдача, содержание) считаются от {_project_articles_term(tep_report).genitive} — "
+              f"{_pdf_num(_project_articles_sqm(tep_report), 0)} м²: "
+              f"{_project_articles_term(tep_report).formula}. "
               f"База продаваемой — {_pdf_num(summary.get('monetizable_saleable_sqm'), 0)} м² "
               "монетизируемой площади (паркинг и кладовые продаются штуками и в неё "
               "не входят). Показатели на метр — термины финансовой модели DevelopAid, "
@@ -26385,6 +26526,8 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             "volume": n(x, f"{obj.prefix}_spaces") if obj.measure == "spaces" else n(x, f"{obj.prefix}_gba_sqm"),
             "rate_cost": n(x, obj.rate_cost),
             "garage": bool(obj.garage), "under_gns": n(row, "under_gns") if obj.garage else 0.0,
+            # Что включает ставка — тот же предикат, что у движка.
+            "turnkey": object_rate_is_turnkey(x, obj),
             "start": d(x[f"{obj.prefix}_start"]),
             "months": int(n(x, f"{obj.prefix}_months", obj.default_months)),
             "in_tax_pool": (not obj.sale_gate) or object_is_sold(x, obj),
@@ -27150,6 +27293,18 @@ def _build_project_workbook(
     capex_xml = _v4_apply_bridge_limit_before_permit(capex_xml, missing)
     capex_xml = _v4_apply_vri_interest_row(capex_xml, missing)
     capex_xml = _v4_apply_turnkey_overheads(capex_xml, missing)
+    if any(not object_rate_is_turnkey(x, obj) and b(x, obj.enabled_key)
+           for obj in standalone_objects()):
+        # Чисто нежилой проект: ставка объекта — СМР здания, и движок считает
+        # статьи проекта от площади объектов, а генподряд, техзаказчика и
+        # управление — и на СМР объекта. Шаблон v4 считает эти статьи от
+        # площади МКД (у нежилого — ноль) и без объектов; формулы шаблона не
+        # переписываются — расхождение названо, а не молчит.
+        missing.append(
+            "CAPEX · нежилой проект: ставка объекта — СМР; статьи проекта (ИРД, П, РД, "
+            "подготовка, сети, ввод, содержание) от площади объектов, генподряд, "
+            "техзаказчик и управление на СМР объекта книга v4 не считает — суммы "
+            "этих статей у движка больше")
     vri_sheet_path = _v4_sheet_path(source, "ВРИ")
     vri_xml = _v4_apply_vri_installment_start(
         source.read(vri_sheet_path).decode("utf-8"), missing)
@@ -33449,11 +33604,21 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     vri_gross = n(x, "land_rights_cost_mln") * 1_000_000
     vri_relief_amount, vri_net = vri_relief(x, vri_gross)
 
+    # База статей проекта (ИРД, П, РД, подготовка, сети, ввод, содержание
+    # площадки). У жилого и смешанного проекта — суммарная площадь МКД:
+    # ставка объекта там «под ключ» и эти статьи уже несёт. У чисто нежилого
+    # ставка объекта — только СМР здания, и статьи идут по тем же ставкам от
+    # суммарной площади объектов в ГНС (`object_rate_is_turnkey`).
+    objects_area = objects_total_area(x, t)
+    project_articles_sqm = core_total_gns + objects_area
+    # Имя базы: у нежилого проекта она — площадь объектов (МКД там нет).
+    project_articles_term = OBJECTS_TOTAL_AREA if is_nonresidential(x) else CORE_TOTAL_AREA
+
     amounts = {
         "land_rights": vri_net,
-        "ird": core_total_gns * n(x, "ird_th_per_sqm") * 1000,
-        "design_p": core_total_gns * n(x, "design_p_th_per_sqm") * 1000,
-        "design_rd": core_total_gns * n(x, "design_rd_th_per_sqm") * 1000,
+        "ird": project_articles_sqm * n(x, "ird_th_per_sqm") * 1000,
+        "design_p": project_articles_sqm * n(x, "design_p_th_per_sqm") * 1000,
+        "design_rd": project_articles_sqm * n(x, "design_rd_th_per_sqm") * 1000,
         "author_supervision": 0.0,
         "technical_supervision": 0.0,
         # Снос считается от площади СНОСИМОГО, а не от новой ГНС: это разные
@@ -33463,10 +33628,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # и входит в расчётный лимит БРИДЖа, а снос — нет.
         "demolition": n(x, "demolition_area_sqm") * n(x, "demolition_cost_th_per_sqm") * 1000,
         "resettlement": n(x, "resettlement_cost_mln") * 1_000_000,
-        "preparation": core_total_gns * n(x, "preparation_th_per_sqm") * 1000,
+        "preparation": project_articles_sqm * n(x, "preparation_th_per_sqm") * 1000,
         "main_above": core_above_gns * n(x, "main_above_th_per_sqm") * 1000,
         "main_under": core_under_gns * n(x, "main_under_th_per_sqm") * 1000,
-        "utilities": core_total_gns * n(x, "utilities_th_per_sqm") * 1000,
+        "utilities": project_articles_sqm * n(x, "utilities_th_per_sqm") * 1000,
         # Ставка на метр ГНС сильнее методики двора, когда она задана:
         # привычный сметчику показатель — просьба владельца. База — НАЗЕМНАЯ
         # ГНС ПРОЕКТА, та же, которой меряют удельные и которой считает свод
@@ -33477,8 +33642,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # умолчаниях 140 381 м² против 145 381, то есть тот же показатель на
         # 3,5% выше при тех же деньгах.
         "landscaping": landscaping_amount,
-        "commissioning": core_total_gns * n(x, "commissioning_th_per_sqm") * 1000,
-        "site_maintenance": core_total_gns * n(x, "site_maintenance_th_per_sqm") * 1000,
+        "commissioning": project_articles_sqm * n(x, "commissioning_th_per_sqm") * 1000,
+        "site_maintenance": project_articles_sqm * n(x, "site_maintenance_th_per_sqm") * 1000,
         # Статьи объектов — по реестру, а не перечислением: снятый оттуда
         # объект иначе валит расчёт KeyError'ом, то есть список тут второй.
         **{obj.key: standalone_capex.get(obj.key, 0.0) for obj in standalone_objects()},
@@ -33516,13 +33681,16 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         if override_key in amounts and override_value_mln is not None:
             amounts[override_key] = float(override_value_mln) * 1_000_000
 
-    # База генподряда и техзаказчика — СМР, которые генподрядчик ведёт и
-    # заказчик контролирует. Стройка отдельно стоящих объектов (и их гаражей)
-    # сюда не входит: ставка объекта — «под ключ» (`OBJECT_TURNKEY_HINT`),
-    # вознаграждение генподрядчика и техзаказчик в ней уже есть, и процент
-    # сверху был двойным счётом (решение владельца 06.10.2026).
+    # СМР объектов (здание и свой гараж) — в базах генподряда, техзаказчика и
+    # управления только у чисто нежилого проекта: там ставка объекта — СМР.
+    # У жилого и смешанного ставка «под ключ», вознаграждение генподрядчика и
+    # техзаказчик в ней уже есть, и процент сверху был двойным счётом
+    # (решение владельца 06.10.2026, `object_rate_is_turnkey`).
+    object_works = sum(amounts[obj.key] for obj in standalone_objects()
+                       if not object_rate_is_turnkey(x, obj))
     works_base = (
         amounts["main_above"] + amounts["main_under"] + amounts["social"]
+        + object_works
         # Мебель и оборудование — поставка, а не работы: генподряд и
         # технадзор на неё не начисляются.
         + amounts.get("hotel", 0.0)
@@ -33541,7 +33709,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         amounts["ird"]
         + amounts["design_p"] + amounts["design_rd"] + amounts["author_supervision"]
         + amounts["preparation"]
-        + amounts["main_above"] + amounts["main_under"]
+        + amounts["main_above"] + amounts["main_under"] + object_works
         + amounts["utilities"]
         + amounts["landscaping"]
         + amounts["site_maintenance"]
@@ -33898,6 +34066,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "object_schedule_notes": object_schedule_notes,
         "core_above_gns": core_above_gns,
         "core_under_gns": core_under_gns,
+        # База статей проекта и её имя — один ответ для PDF, страницы и книг.
+        "project_articles_sqm": project_articles_sqm,
+        "project_articles_area": project_articles_term.key,
         # База благоустройства — своя, физическая: она не строительный объём, и
         # едет наружу вместе с основанием, чтобы читатель видел, чем посчитано.
         "landscaping_area_sqm": landscaping_sqm,
@@ -37286,6 +37457,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "total": tep_total,
             "core_above_gns": op["core_above_gns"],
             "core_under_gns": op["core_under_gns"],
+            "project_articles_sqm": op["project_articles_sqm"],
+            "project_articles_area": op["project_articles_area"],
         },
         "revenue": {"total": total_revenue, **op["revenue_by_product"]},
         "revenue_structure": revenue_structure({"total": total_revenue, **op["revenue_by_product"]},
@@ -39336,6 +39509,11 @@ def _consolidate_phase_results(
             "rows": tep_rows, "total": tep_total,
             "core_above_gns": sum(r["tep"]["core_above_gns"] for r in results),
             "core_under_gns": sum(r["tep"]["core_under_gns"] for r in results),
+            "project_articles_sqm": sum(float(r["tep"].get("project_articles_sqm") or 0.0)
+                                        for r in results),
+            # Вид проекта у очередей один — имя базы берётся у первой.
+            "project_articles_area": next((r["tep"].get("project_articles_area")
+                                           for r in results), CORE_TOTAL_AREA.key),
         },
         "revenue": revenue,
         "revenue_structure": revenue_structure({**revenue, "total": total_revenue}, saleable),
@@ -41076,7 +41254,7 @@ _DevelopAid_METHODOLOGY = [
     {
         "id": "OBJECT_RATE_IS_TURNKEY",
         "topic": "expenses",
-        "rule": "Ставка строительства отдельно стоящего объекта (офис, ТЦ, ФОК, наземный паркинг, гараж объекта) — «под ключ»: уже включает ИРД, проект, сети, ввод, генподряд и техзаказчика. Генподряд и техзаказчик начисляются только на СМР жилой части и соцобъекты; резерв начисляется и на объект, но не на плату за смену ВРИ — это известная сумма (решение владельца 06.10.2026).",
+        "rule": "Что включает ставка строительства отдельно стоящего объекта, зависит от вида проекта (решение владельца 06.10.2026). В жилом и смешанном проекте — «под ключ»: ИРД, проект, сети, ввод, генподряд и техзаказчик уже в ней, сверху начисляется только резерв. В чисто нежилом проекте ставка офиса, ТЦ, ФОКа — СМР здания: ИРД, П, РД, подготовка, сети, ввод и содержание площадки идут своими ставками от суммарной площади объектов в ГНС, генподряд, техзаказчик, управление и резерв — и на СМР объекта; умолчание СМР — ставка класса «под ключ», уменьшенная на эти статьи. Наземный паркинг (ставка за место) везде «под ключ». Резерв ни в каком проекте не начисляется на плату за смену ВРИ — это известная сумма.",
     },
     {
         "id": "MARKET_BENCHMARK_NORMALIZATION",
@@ -49655,7 +49833,11 @@ const FIELD_SECTIONS=__DEVELOPAID_FIELD_SECTIONS__;
 const CLASS_ONLY_INPUTS=__DEVELOPAID_CLASS_ONLY_INPUTS__;
 // Поля участка — рисуются в карточке «Участок и плотность», не во «Вводных».
 const SITE_ONLY_INPUTS=__DEVELOPAID_SITE_ONLY_INPUTS__;
-const notOnInputs=id=>CLASS_ONLY_INPUTS.includes(id)||SITE_ONLY_INPUTS.includes(id);
+// Поля только жилого дома (`RESIDENTIAL_ONLY_INPUTS`) — не на экране
+// чисто нежилого проекта.
+const RESIDENTIAL_ONLY_INPUTS=__DEVELOPAID_RESIDENTIAL_ONLY_INPUTS__;
+const notOnInputs=id=>CLASS_ONLY_INPUTS.includes(id)||SITE_ONLY_INPUTS.includes(id)
+ ||(RESIDENTIAL_ONLY_INPUTS.includes(id)&&isNonResidential());
 // Блоки объекта, которые выбранная стратегия реализации не читает (ДДУ /
 // прямая продажа / доходный метод), не рисуются. Карта — из движка
 // (`strategy_field_readers`); неизвестное значение читается как ДДУ, как и там.
@@ -53552,7 +53734,18 @@ function classFieldSource(k){
  if(!s||!s.by||!isClassManual(k))return '';
  return Math.abs(Number(inputs[k])-Number(s.value))<1e-9?String(s.by):'';
 }
+// Что включает ставка объекта, зависит от вида проекта (`object_rate_hint`):
+// группы полей несут приписку смешанного проекта, здесь она меняется на
+// приписку текущего вида. Своего правила у страницы нет — только карта движка.
+const OBJECT_RATE_HINTS=__DEVELOPAID_OBJECT_RATE_HINTS__;
+function objectRateUnit(id,unit){
+ const hints=OBJECT_RATE_HINTS[id];
+ if(!hints)return unit;
+ const own=hints[inputs.project_kind]||hints.mixed;
+ return own===hints.mixed?unit:String(unit).replace(hints.mixed,own);
+}
 function classFieldUnitText(id,unit){
+ unit=objectRateUnit(id,unit);
  // Площадь сноса и выкуп, найденные по контуру КРТ, подписаны своим
  // происхождением, пока число в поле то же, что положил контур; исправленное —
  // уже ручное. Проверка внутри, а не своей функцией: стенды страницы собирают
@@ -53899,6 +54092,7 @@ function syncProjectKindSelector(){
 function applyProjectKind(key){
  const kind=PROJECT_KINDS.some(p=>p[0]===key)?key:'mixed';
  inputs.project_kind=kind;
+ adoptObjectRateKind();
  if(kind!=='mixed'){clearResidentialInputs();placeNonResidentialDefaults()}
  syncTep(false);
  syncProjectKindSelector();
@@ -53979,9 +54173,49 @@ function followClassRegion(previousRegion){
   if(followsClass(k,classBaseIn(previousRegion,cur,k)))inputs[k]=classValue(cur,k);
  });
 }
-function classValue(c,k){
+// Ставка метрового объекта в чисто нежилом проекте — СМР здания, а профиль
+// класса и умолчания реестра — «под ключ» (решение владельца 06.10.2026).
+// Перевод — коэффициенты движка (`object_smr_conversion`): S = (T − c) / m,
+// округление до 0,1 тем же правилом, что у `object_smr_rate`.
+const OBJECT_SMR=__DEVELOPAID_OBJECT_SMR__;
+function objectSmrRate(turnkey,c){
+ const conv=OBJECT_SMR.conversion[c]||OBJECT_SMR.custom;
+ return Math.max(0,Math.floor((Number(turnkey)-conv[0])/conv[1]*10+0.5)/10);
+}
+function objectRateForKind(c,k,turnkey,kind){
+ return kind==='nonresidential'&&Object.prototype.hasOwnProperty.call(OBJECT_SMR.defaults,k)
+  ?objectSmrRate(turnkey,c):Number(turnkey);
+}
+function classValueForKind(c,k,kind){
  const own=CLASS_OVERRIDES&&CLASS_OVERRIDES[c]?Number(CLASS_OVERRIDES[c][k]):NaN;
- return isFinite(own)&&own>0?own:classBase(c,k);
+ return objectRateForKind(c,k,isFinite(own)&&own>0?own:classBase(c,k),kind);
+}
+function classValue(c,k){return classValueForKind(c,k,projectKind())}
+// Умолчание ставки объекта для вида проекта: число класса, если поле ставит
+// класс, иначе умолчание реестра — оба переведены для нежилого.
+function objectRateDefault(k,kind){
+ const c=inputs.project_class;
+ if(classSetsField(k)&&PROJECT_CLASS_PRESETS[c])return classValueForKind(c,k,kind);
+ return objectRateForKind(c,k,OBJECT_SMR.defaults[k],kind);
+}
+// Вид проекта сменился — ставка объекта, стоящая на умолчании прежнего вида,
+// идёт за умолчанием нового. Вписанное руками (или другое число) — своё.
+function followObjectRateKind(previousKind,kind){
+ Object.keys(OBJECT_SMR.defaults).forEach(k=>{
+  if(isClassManual(k)||!isFinite(Number(inputs[k])))return;
+  if(Math.abs(Number(inputs[k])-objectRateDefault(k,previousKind))<1e-9)
+   inputs[k]=objectRateDefault(k,kind);
+ });
+}
+// Под какой вид проекта положены умолчания ставок объектов — пометка
+// `_object_rate_kind`. Её нет у проекта, сохранённого до 06.10.2026: тогда
+// ставка везде значила «под ключ», то есть вид — смешанный. Одна функция на
+// смену вида и на каждую загрузку состояния: нежилой проект, сохранённый с
+// умолчанием «под ключ», получает умолчание СМР, а не считает 175 как СМР.
+function adoptObjectRateKind(){
+ const was=inputs._object_rate_kind||'mixed',now=projectKind();
+ if(was!==now)followObjectRateKind(was,now);
+ inputs._object_rate_kind=now;
 }
 function openClassDialog(){
  renderClassDialog();
@@ -57929,13 +58163,14 @@ function landscapingHouseRateNote(){
                :'Считает методика класса. Расчёта ещё нет.';
   }
   if(own>0)return 'Задано руками, но метров, на которые ставка множится, в расчёте нет.';
-  // У нежилого проекта ноль — не «методика дала ноль», а её ответ: двор
-  // входит в себестоимость объекта и отдельной статьёй не считается
-  // (владелец, 21.09.2026). Хвост «пока ставка здесь не задана» звал бы
-  // задать её, то есть посчитать двор второй раз.
-  if(/себестоимость объекта/.test(String(s.landscaping_money_basis||''))){
-   return 'Двор входит в себестоимость объекта — отдельной статьёй не считается. '
-    +'Вписанная здесь ставка её перебьёт.';
+  // У проекта без жилья ноль — не «методика дала ноль», а её ответ, и
+  // причину называет движок (`yard_gap_reason`): у гостиницы двор в ставке
+  // здания, у чисто нежилого жителей нет, а ставка объекта — СМР без двора
+  // (владелец, 21.09 и 06.10.2026). Своего текста у страницы нет.
+  const money=String(s.landscaping_money_basis||'');
+  if(/^нежилой проект: /.test(money)){
+   const why=money.replace(/^нежилой проект: /,'');
+   return why.charAt(0).toUpperCase()+why.slice(1)+'. Вписанная здесь ставка её перебьёт.';
   }
   return 'Методика класса дала ноль: '+String(s.landscaping_basis)
    +'. Пока ставка здесь не задана, благоустройства в расчёте нет.';
@@ -59480,7 +59715,7 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  // список показывает пустую строку, а число при пересчёте становится нулём —
  // так «Периодичность платежей» ВРИ оказалась 0 при расчёте по квартальной.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),x.inputs||{});
- seedParkingByHand();
+ seedParkingByHand();adoptObjectRateKind();
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(x.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
@@ -59657,7 +59892,7 @@ async function applyPreset(){
  }catch(e){alert(String(e.message||e));return}
  // Как и всюду: приходящее накладывается на умолчания, а не заменяет их.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.applied_inputs||{});
- seedParkingByHand();
+ seedParkingByHand();adoptObjectRateKind();
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.applied_tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
@@ -60110,7 +60345,7 @@ function applyProjectSnapshot(data){
  });
  phasing=data.phasing||makeDefaultPhasing(1);
  // Список тронутых полей паркинга — от ЭТОГО снимка, а не от прошлого проекта.
- seedParkingByHand();
+ seedParkingByHand();adoptObjectRateKind();
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
  renderInputs();renderTep();renderPhasing();
  // Территория снимка — из его же вводных, тем же путём, что при загрузке страницы.
@@ -60849,6 +61084,8 @@ PAGE = PAGE.replace(CLASS_ONLY_INPUTS_PLACEHOLDER,
                     json.dumps(CLASS_ONLY_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace(SITE_ONLY_INPUTS_PLACEHOLDER,
                     json.dumps(SITE_ONLY_INPUTS, ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_RESIDENTIAL_ONLY_INPUTS__",
+                    json.dumps(RESIDENTIAL_ONLY_INPUTS, ensure_ascii=False))
 # Имя группы ВРИ жило на странице второй копией: вкладка ВРИ узнаёт свою группу
 # по нему, и ответ «где это править» — тоже. Разойдись копии, и поле ВРИ ушло бы
 # рисоваться во «Вводные», а Платон продолжал бы звать на вкладку ВРИ.
@@ -60911,6 +61148,21 @@ PAGE = PAGE.replace("__DEVELOPAID_TEP_DERIVED_OBJECT_INPUTS__", _js_keys(
                 *((f"{obj.prefix}_spaces", f"{obj.prefix}_area_per_space_sqm")
                   if obj.measure == "spaces"
                   else (f"{obj.prefix}_gba_sqm", f"{obj.prefix}_saleable_sqm")))))
+# Перевод «под ключ» → СМР для страницы: коэффициенты по классу (у класса
+# свои ставки подготовки и сетей) и умолчания «под ключ» метровых объектов.
+# Формула одна — `object_smr_conversion`; страница только применяет (c, m).
+PAGE = PAGE.replace("__DEVELOPAID_OBJECT_SMR__", json.dumps({
+    "defaults": OBJECT_SMR_RATE_DEFAULTS,
+    "conversion": {key: list(object_smr_conversion(preset))
+                   for key, preset in PROJECT_CLASS_PRESETS.items()},
+    "custom": list(object_smr_conversion({})),
+}, ensure_ascii=False))
+# Подпись ставки объекта по виду проекта — ответ `object_rate_hint` для
+# каждого вида: правило живёт в движке, страница только выбирает по виду.
+PAGE = PAGE.replace("__DEVELOPAID_OBJECT_RATE_HINTS__", json.dumps(
+    {obj.rate_cost: {kind: object_rate_hint({"project_kind": kind}, obj)
+                     for kind, _title in PROJECT_KINDS}
+     for obj in STANDALONE_OBJECTS}, ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_UNIT_OBJECTS__", _js_keys(
     obj.key for obj in STANDALONE_OBJECTS if obj.measure == "spaces"))
 PAGE = PAGE.replace("__DEVELOPAID_TEP_ROW_SWITCH__", json.dumps(

@@ -1,15 +1,22 @@
-"""Ставка объекта — «под ключ»; резерв не начисляется на плату за ВРИ.
+"""Что включает ставка объекта — по виду проекта; резерв не берётся с ВРИ.
 
-Решение владельца 06.10.2026. Ставка строительства отдельно стоящего объекта
-(офис, ТЦ, ФОК, наземный паркинг, гараж объекта) уже включает ИРД, проект,
-сети, ввод, генподряд и техзаказчика. Поэтому генподряд и техзаказчик
-начисляются только на СМР ядра и соцобъекты, а не на стройку объекта: прежде
-офисник получал «Основное строительство» — одно вознаграждение генподрядчика —
-и «Технического заказчика» от собственной ставки «под ключ». Резерв на объект
-остаётся, а на плату за смену ВРИ — нет: это известная сумма, а не смета.
+Решение владельца 06.10.2026 («середина»), один предикат движка —
+`object_rate_is_turnkey`:
 
-Методика одна на движок и обе книги: книгу ПЛАТО v4 и книгу нежилого проекта.
-Каждая проверка падает на прежней методике — это доказывают подделки ниже.
+- объект внутри жилого или смешанного проекта — ставка «под ключ»: ИРД,
+  проект, сети, ввод, генподряд и техзаказчик уже в ней; генподряд и
+  техзаказчик на стройку объекта не начисляются, резерв — начисляется;
+- чисто нежилой проект — полная постатейная смета, как у жилья: ставка
+  метрового объекта — СМР здания, статьи проекта идут от суммарной площади
+  объектов в ГНС, генподряд, техзаказчик, управление и резерв — и на СМР
+  объекта. Наземный паркинг (ставка за место) и тут «под ключ»;
+- резерв ни у одного проекта не начисляется на плату за смену ВРИ.
+
+Умолчание ставки СМР в нежилом проекте — «под ключ», уменьшенное на долю
+статей проекта (`object_smr_rate`), чтобы на умолчаниях итог сохранился.
+
+Методика одна на движок и обе книги. Каждая проверка падает на прежней
+методике — это доказывают подделки ниже.
 
 Запуск: python3 -m pytest tests/test_object_turnkey_overheads.py -q
 """
@@ -79,12 +86,93 @@ def test_the_reserve_base_is_every_article_but_the_excluded() -> None:
     assert core.RESERVE_EXCLUDED_ARTICLES <= core._M2_RESERVE_EXCLUDED
 
 
-def test_the_object_rate_hint_says_turnkey() -> None:
-    """Подпись ставки объекта говорит, что сверху ничего не начисляется."""
+def test_the_object_rate_hint_follows_the_project_kind() -> None:
+    """Подпись ставки объекта — из того же предиката: «под ключ» в смешанном
+    проекте и у паркинга всегда, «СМР» у метрового объекта нежилого."""
+    mixed = {"project_kind": core.PROJECT_KIND_MIXED}
+    nonres = {"project_kind": core.PROJECT_KIND_NONRESIDENTIAL}
     for obj in core.STANDALONE_OBJECTS:
         _title, fields = core.standalone_object_group(obj)
         hints = {row[0]: row[2] for row in fields}
         assert core.OBJECT_TURNKEY_HINT in hints[obj.rate_cost], obj.key
+        assert core.object_rate_hint(mixed, obj) == core.OBJECT_TURNKEY_HINT
+        expected = core.OBJECT_TURNKEY_HINT if obj.measure == "spaces" else core.OBJECT_SMR_HINT
+        assert core.object_rate_hint(nonres, obj) == expected, obj.key
+    assert "__DEVELOPAID_OBJECT_RATE_HINTS__" not in core.PAGE
+    assert core.OBJECT_SMR_HINT in core.PAGE
+
+
+# --- Чисто нежилой проект: полная смета ---------------------------------------
+
+def _nonres_inputs(**over) -> tuple[dict, dict]:
+    x = copy.deepcopy(core.DEFAULT_INPUTS)
+    t = copy.deepcopy(core.TEP_DEFAULT)
+    x.update(offices_enabled=True, offices_gba_sqm=40000.0, offices_saleable_sqm=24000.0,
+             offices_parking_under_spaces=0, offices_parking_over_spaces=0,
+             _parking_by_hand=["offices"],  # без гаража: метры — только здание
+             offices_strategy="income", project_kind=core.PROJECT_KIND_NONRESIDENTIAL)
+    x.update(over)
+    t.setdefault("offices", {}).update(gns=40000.0, total_area=37600.0,
+                                       useful=24000.0, saleable=24000.0)
+    for key in core.MKD_PRODUCTS:
+        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            if key in t:
+                t[key][col] = 0
+    return x, t
+
+
+def _nonres_amounts(**over) -> dict[str, float]:
+    x, t = _nonres_inputs(**over)
+    prepared = core.prepared_calculation(x, t, [])
+    return core.build_operating_model(prepared["x"], prepared["t"])["capex_amounts"]
+
+
+def test_the_nonresidential_project_counts_every_article() -> None:
+    """Статьи проекта — от площади объектов, генподряд, техзаказчик и
+    управление — и на СМР объекта. На прежней методике статьи были нулём."""
+    a = _nonres_amounts()
+    area = 40000.0
+    d = core.DEFAULT_INPUTS
+    for key in ("ird", "design_p", "design_rd", "preparation", "utilities",
+                "commissioning", "site_maintenance"):
+        assert a[key] == pytest.approx(area * d[f"{key}_th_per_sqm"] * 1000), key
+    assert a["gc_fee"] == pytest.approx(a["offices"] * d["gc_fee_pct"] / 100)
+    assert a["technical_supervision"] == pytest.approx(
+        a["offices"] * d["technical_supervision_pct"] / 100)
+    management = (a["ird"] + a["design_p"] + a["design_rd"] + a["author_supervision"]
+                  + a["preparation"] + a["offices"] + a["utilities"] + a["landscaping"]
+                  + a["site_maintenance"])
+    assert a["project_management"] == pytest.approx(
+        management * d["project_management_pct"] / 100)
+
+
+def test_a_parking_priced_per_space_stays_turnkey() -> None:
+    """Наземный паркинг меряется местами — и в нежилом проекте «под ключ»."""
+    a = _nonres_amounts(offices_enabled=False, above_parking_enabled=True,
+                        above_parking_spaces=400)
+    assert a["above_parking"] > 0
+    for key in ("ird", "gc_fee", "technical_supervision"):
+        assert a[key] == 0.0, key
+
+
+def test_the_smr_default_keeps_the_turnkey_total() -> None:
+    """Умолчание СМР нежилого — «под ключ», уменьшенное на статьи проекта:
+    на умолчаниях стройка здания без резерва та же, что «под ключ»."""
+    for cls in ("comfort", "business", "elite"):
+        turnkey = core.PROJECT_CLASS_PRESETS[cls]["offices_cost_th_per_sqm"]
+        smr = core.class_base_preset(cls, "msk", core.PROJECT_KIND_NONRESIDENTIAL)[
+            "offices_cost_th_per_sqm"]
+        assert smr < turnkey
+        a = _nonres_amounts(offices_cost_th_per_sqm=smr)
+        building = sum(v for k, v in a.items()
+                       if k not in ("reserve", "land_rights", "land_rights_gross",
+                                    "land_rights_relief", "vri_interest", "vri_security",
+                                    "total"))
+        # Округление ставки до 0,1 тыс ₽/м² — не дальше полутора десятых на метр.
+        assert building / 40000 / 1000 == pytest.approx(turnkey, abs=0.15), cls
+    # У смешанного проекта база класса — прежняя ставка «под ключ».
+    assert core.class_base_preset("comfort", "msk", core.PROJECT_KIND_MIXED)[
+        "offices_cost_th_per_sqm"] == core.PROJECT_CLASS_PRESETS["comfort"]["offices_cost_th_per_sqm"]
 
 
 # --- Книга ПЛАТО v4 ----------------------------------------------------------
@@ -147,25 +235,78 @@ def _nonres_check(book) -> tuple[str, set[str], Evaluator]:
 
 
 def test_the_nonres_book_counts_the_same_bases() -> None:
-    """У офисника без ядра генподряд и техзаказчик — ноль, а резерв стоит на
-    стройке объекта и не видит строки платы за ВРИ; «Сверка» ПРОЙДЕНО.
-    Подделка — объект обратно в базе генподряда — ловится сверкой."""
+    """Книга нежилого проекта — полная смета формулами: статьи проекта от
+    площади объектов, генподряд и техзаказчик на СМР объекта, резерв без
+    строки платы за ВРИ; «Сверка» ПРОЙДЕНО. Подделка — объект «под ключ»
+    (прежняя методика) — ловится сверкой."""
     content = _nonres_content()
     book = openpyxl.load_workbook(io.BytesIO(content))
     sheet = book[nw.COSTS_SHEET]
     rows = {sheet[f"A{r}"].value: r for r in range(1, nw.FIRST_ROW) if sheet[f"A{r}"].value}
     verdict, bad, evaluator = _nonres_check(book)
     assert verdict == nw.PASSED and not bad
-    for label in ("Генподряд", "Технический заказчик"):
-        assert float(evaluator.cell(nw.COSTS_SHEET, f"E{rows[label]}") or 0) == 0.0
+    for label in ("ИРД", "Сети", "Генподряд", "Технический заказчик"):
+        assert float(evaluator.cell(nw.COSTS_SHEET, f"E{rows[label]}") or 0) > 0, label
     building = next(r for label, r in rows.items() if str(label).endswith(": здание"))
     vri_row = next(r for label, r in rows.items() if str(label).startswith("Плата за смену ВРИ"))
-    reserve_base = sheet[f"B{rows['Резерв']}"].value.split("+")
-    assert f"=E{building}" in reserve_base or f"E{building}" in reserve_base
-    assert f"E{vri_row}" not in reserve_base and f"=E{vri_row}" not in reserve_base
+    reserve_base = sheet[f"B{rows['Резерв']}"].value.lstrip("=").split("+")
+    assert f"E{building}" in reserve_base
+    assert f"E{vri_row}" not in reserve_base
 
     tampered = openpyxl.load_workbook(io.BytesIO(content))
-    cell = tampered[nw.COSTS_SHEET][f"B{rows['Генподряд']}"]
-    cell.value = cell.value + f"+E{building}"
+    tampered[nw.INPUTS_SHEET][f"C{nw.O_ROW['turnkey']}"] = nw.YES
     verdict, bad, _ = _nonres_check(tampered)
-    assert verdict == nw.FAILED and "Генподряд" in bad
+    assert verdict == nw.FAILED and {"Генподряд", "ИРД"} <= bad
+
+
+# --- Страница: умолчание СМР и подпись ставки ---------------------------------
+
+PORT = 19773
+
+
+def test_the_page_follows_the_project_kind() -> None:
+    """На отрисованной странице: выбор нежилого вида ставит умолчание СМР
+    (`object_smr_rate`) и подпись «основное строительство здания (СМР)»,
+    возврат к смешанному — прежние «под ключ»; нежилой проект, сохранённый
+    до решения со ставкой «под ключ», при загрузке получает СМР."""
+    from browser import chromium_or_skip, serve
+    from playwright.sync_api import sync_playwright
+
+    smr = core.class_base_preset("comfort", "msk", core.PROJECT_KIND_NONRESIDENTIAL)[
+        "offices_cost_th_per_sqm"]
+    turnkey = core.PROJECT_CLASS_PRESETS["comfort"]["offices_cost_th_per_sqm"]
+    retail_smr = core.object_smr_rate(core.OBJECT_SMR_RATE_DEFAULTS["retail_cost_th_per_sqm"],
+                                      core.PROJECT_CLASS_PRESETS["comfort"])
+    unit = ("()=>{const s=document.querySelector("
+            "'.field[data-field=\"offices_cost_th_per_sqm\"] > label > .unit');"
+            "return s?s.textContent:''}")
+    with serve(wrapper.app, PORT):
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=chromium_or_skip())
+            page = browser.new_page()
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.goto(f"http://127.0.0.1:{PORT}/", wait_until="load")
+            page.wait_for_function("()=>typeof applyProjectKind==='function'", timeout=60000)
+            page.evaluate("()=>{inputs.project_class='comfort';inputs.offices_enabled=true}")
+            page.evaluate("()=>{try{applyProjectKind('nonresidential')}catch(e){}"
+                          "renderInputs()}")
+            got = page.evaluate("()=>[inputs.offices_cost_th_per_sqm,inputs.retail_cost_th_per_sqm,"
+                                "inputs._object_rate_kind]")
+            hint_nonres = page.evaluate(unit)
+            page.evaluate("()=>{try{applyProjectKind('mixed')}catch(e){}renderInputs()}")
+            back = page.evaluate("()=>[inputs.offices_cost_th_per_sqm,inputs.retail_cost_th_per_sqm]")
+            hint_mixed = page.evaluate(unit)
+            # Сохранённый до решения нежилой проект: пометки вида нет.
+            page.evaluate(
+                "t=>{localStorage.setItem('plato_v04',JSON.stringify({inputs:{"
+                "project_kind:'nonresidential',project_class:'comfort',offices_enabled:true,"
+                "offices_cost_th_per_sqm:t}}));loadLocal();}", turnkey)
+            loaded = page.evaluate("()=>[inputs.offices_cost_th_per_sqm,inputs._object_rate_kind]")
+            browser.close()
+    assert errors == []
+    assert got == [smr, retail_smr, core.PROJECT_KIND_NONRESIDENTIAL]
+    assert core.OBJECT_SMR_HINT in hint_nonres, hint_nonres
+    assert back == [turnkey, core.OBJECT_SMR_RATE_DEFAULTS["retail_cost_th_per_sqm"]]
+    assert core.OBJECT_TURNKEY_HINT in hint_mixed, hint_mixed
+    assert loaded == [smr, core.PROJECT_KIND_NONRESIDENTIAL]
