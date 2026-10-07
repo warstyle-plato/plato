@@ -11300,6 +11300,16 @@ def underground_area_per_space(inputs: dict[str, Any]) -> float:
             or fallback or 35.0)
 
 
+def glavapu_apartments_unchanged(normalized: dict[str, Any], apartments: float) -> bool:
+    """Площадь квартир та же, что у выгрузки ГлавАПУ? Импорт кладёт её в ТЭП как есть.
+
+    Нет площади в выгрузке — сравнить не с чем, и «не меняли» не доказано:
+    отсутствие числа не равно совпадению.
+    """
+    city = _underground_number(normalized or {}, "apartment_area_sqm")
+    return city > 0 and abs(float(apartments or 0.0) - city) < 0.5
+
+
 def underground_parking_requirement(inputs: dict[str, Any],
                                     tep: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     """Потребность в подземных местах: выгрузка города первой, её нет — норма.
@@ -11337,9 +11347,12 @@ def underground_parking_requirement(inputs: dict[str, Any],
     if imported_permanent + imported_guest + imported_mfc > 0:
         permanent, guest = imported_permanent, imported_guest
         basis = "норматив ГлавАПУ по нормативному ТЭП"
-        if apartments > 0:
+        if apartments > 0 and not glavapu_apartments_unchanged(normalized, apartments):
             # Метры правили после выгрузки — места пересчитываются нормой от
             # НОВОЙ площади квартир: число города посчитано на его же ТЭП.
+            # Пока метры те же, что у города, его места и остаются: на
+            # «Донском» 2118-ПП от тех же метров давала 40 + 4 против 44 + 5
+            # выгрузки (решение владельца 07.10.2026: «числа ГлавАПУ до правки»).
             permanent = float(moscow_permanent_parking_2118(apartments))
             guest = float(math.ceil(permanent * _PARKING_GUEST_SHARE))
             basis = f"2118-ПП от {apartments:,.0f} м² квартир".replace(",", " ")
@@ -54644,7 +54657,12 @@ function getGlavapuUnderground(){
  // Площадь квартир — продаваемая жилья: это она в норме 2118-ПП.
  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
  let permanent=impPermanent,guest=impGuest,basis='норматив ГлавАПУ по нормативному ТЭП';
- if(apartments>0){
+ // Пока площадь квартир та же, что у выгрузки (импорт кладёт её как есть),
+ // места города и остаются; правили метры — норма от новых. Правило то же,
+ // что у движка (`glavapu_apartments_unchanged`).
+ const city=Number(n.apartment_area_sqm||0);
+ const unchanged=city>0&&Math.abs(apartments-city)<0.5;
+ if(apartments>0&&!unchanged){
   permanent=Math.ceil(apartments/(PARKING_2118.sqm_per_person*PARKING_2118.household)
                       *PARKING_2118.per_flat);
   guest=Math.ceil(permanent*PARKING_2118.guest_share);
