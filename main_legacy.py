@@ -39,6 +39,7 @@ from xml.sax.saxutils import escape as xml_escape
 # Запуск Chromium — общий: его заводят и ГлавАПУ, и печать отчёта, и ломается
 # он у обоих сразу, а наружу выходит по-разному.
 import browser_launch
+import glavapu_scenario
 # Профиль освоения стройки: им движок разносит СМР, им же отчёт о рынке считает
 # готовность дома по датам. Одна кривая на оба вопроса.
 import build_curve
@@ -99,7 +100,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.18"
+VERSION = "0.25.23"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -12514,8 +12515,12 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
         elif item["guest_spaces"]:
             line += f", из них {item['guest_spaces']} гостевых"
         parts.append(line)
-    # Норматив считается и встроенной коммерции МКД, а своего гаража у неё нет:
-    # её места лежат в подземном паркинге дома. Без этой оговорки «положено 222,
+    # Норматив считается и встроенной коммерции МКД, а своего гаража у неё нет.
+    # Это приобъектная стоянка у дома — плоскостная парковка или сторона улицы
+    # (945-ПП п. 6.1.2.3), и в подземный паркинг МКД она не идёт: гараж дома —
+    # постоянные и гостевые (`underground_parking_requirement`, выгрузка
+    # ГлавАПУ строками 42.1–42.2). Прежде подпись клала её «в подземный паркинг
+    # дома» — о гараже, который её не содержит. Без оговорки «положено 222,
     # строим 173» читается как недострой на 49 мест.
     own_keys = {item["tep_key"] for item in own}
     in_house = sum(int(row.get("required_spaces") or 0)
@@ -12524,8 +12529,9 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
     head = (f"По нормативу {demand.get('norm_of') or ''} положено {required} мест."
             if required else "Норматив не посчитан — числа заданы руками.")
     if in_house:
-        head += (f" Из них {in_house} — встроенной коммерции МКД: её места в "
-                 "подземном паркинге дома, своего гаража у неё нет.")
+        head += (f" Из них {in_house} — встроенной коммерции МКД: приобъектная "
+                 "стоянка у дома (плоскостная парковка или улица, 945-ПП п. 6.1.2.3), "
+                 "в подземный паркинг МКД не входит.")
     text = head + f" Строим {built}, продаётся {sold}: " + "; ".join(parts) + "."
     # Оговорка живёт у числа, а не в соседнем месте. Без выгрузки ГлавАПУ норма
     # берёт верхний край (К1 = К2 = 1) — это МАКСИМУМ мест, и подписанный
@@ -13367,6 +13373,18 @@ def _glavapu_browser_worker() -> None:
                         _glavapu_net_watch(page)
                     _glavapu_net_reset()
                     holder["rows"] = _glavapu_drive_page(page, numbers, area_ha, timings)
+                    scenario = holder.get("scenario_params")
+                    if scenario and numbers:
+                        # Сценарий ставится на ТОМ ЖЕ экране расчёта, что
+                        # только что открыт по участку: анализ территории
+                        # (район, квартал, К1/К2) — его, а метры — наши.
+                        holder["scenario_report"] = glavapu_scenario.apply_scenario(
+                            page, scenario)
+                        holder["scenario_rows"] = glavapu_scenario.read_rows(page)
+                        holder["scenario_xlsx"] = glavapu_scenario.export_xlsx(
+                            page, _GLAVAPU_HEADLESS_TIMEOUT_MS // 3)
+                        timings["scenario"] = int(
+                            holder["scenario_report"].get("ms") or 0)
                 except Exception as exc:
                     # Снимок страницы прикладывается к ЛЮБОМУ отказу, а не
                     # только к тем, что мы предвидели: `snapshot: {}` у пробы
@@ -13434,6 +13452,16 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
     Расчёт уходит потоку-владельцу браузера и ждёт его ответа. Ожидание в
     очереди конечно: не дождался — уходим на серверные формулы, а не висим.
     """
+    return _glavapu_headless_run(numbers, area_ha).get("rows") or []
+
+
+def _glavapu_headless_run(numbers: list[str], area_ha: float,
+                          scenario_params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Прогон браузера: таблица участка и — если задан — наш сценарий поверх.
+
+    Один путь для расчёта, пробы и сверки сценария: второй браузер или вторая
+    очередь к той же странице разошлись бы с первой при первой же правке.
+    """
     global _GLAVAPU_BROWSER_THREAD
 
     # Проверяется здесь, а не в потоке: без Playwright в образе поток умрёт
@@ -13448,7 +13476,7 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
             "— расчёт уходит на серверные формулы")
     started = time.monotonic()
     try:
-        holder: dict[str, Any] = {}
+        holder: dict[str, Any] = {"scenario_params": scenario_params} if scenario_params else {}
         done = threading.Event()
         with _GLAVAPU_BROWSER_LOCK:
             if _GLAVAPU_BROWSER_THREAD is None or not _GLAVAPU_BROWSER_THREAD.is_alive():
@@ -13456,7 +13484,9 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
                     target=_glavapu_browser_worker, name="glavapu-browser", daemon=True)
                 _GLAVAPU_BROWSER_THREAD.start()
             _GLAVAPU_HEADLESS_JOBS.put((list(numbers), float(area_ha), holder, done))
-        if not done.wait(_GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0 + 60.0):
+        # Сценарий — второй круг полей и выгрузка книги поверх расчёта участка.
+        budget = _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0 * (2 if scenario_params else 1) + 60.0
+        if not done.wait(budget):
             raise TimeoutError("поток браузера не ответил — расчёт уходит на формулы")
         timings = dict(holder.get("timings") or {})
         timings["total"] = int((time.monotonic() - started) * 1000)
@@ -13464,7 +13494,7 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
         logging.info("glavapu headless timings: %s", timings)
         if holder.get("error") is not None:
             raise holder["error"]
-        return holder.get("rows") or []
+        return holder
     finally:
         _GLAVAPU_HEADLESS_LOCK.release()
 
@@ -13781,6 +13811,407 @@ def glavapu_health() -> dict[str, Any]:
             state[key] = shared[key]
     state["worker"] = os.getpid()
     return _glavapu_state_with_history(state)
+
+
+# --- сверка нашего сценария со штатным калькулятором ГлавАПУ -----------------
+# Выгрузка ГлавАПУ, которую мы забирали до сих пор, — калькулятор с ЕГО
+# умолчаниями: 94/6 жилья и коммерции, плотность по таблице, нежильё целиком в
+# 4.1. Сверить с ней свой сценарий нельзя — посчитано не то, что строим мы.
+# Здесь калькулятору выставляются НАШИ параметры (`glavapu_scenario`), и его
+# ответ стоит рядом с нашими числами. Роль ГлавАПУ — проверка: ничего в модели
+# эти числа не заменяют.
+#
+# Браузер — тяжёлая работа на минуту и больше, а окно и бот ждать её не должны.
+# Поэтому запрос ставит задание и сразу отвечает его состоянием; страница
+# спрашивает тот же маршрут ещё раз, пока задание не кончится. Состояние —
+# файл на диске по ключу набора параметров: воркеров два, и спросить о ходе
+# расчёта можно не у того, кто его ведёт. Тот же файл — кэш: одинаковые
+# параметры второй раз калькулятор не гоняют.
+_GLAVAPU_SCENARIO_CACHE_SECONDS = max(0.0, _env_float("GLAVAPU_SCENARIO_CACHE_SECONDS", 21600.0))
+# Отказ помнится минутами: он про «калькулятор не дался в ту минуту», а не
+# про набор параметров.
+_GLAVAPU_SCENARIO_ERROR_SECONDS = max(0.0, _env_float("GLAVAPU_SCENARIO_ERROR_SECONDS", 300.0))
+# Задание, чей воркер умер (перезапуск), не должно числиться идущим вечно.
+_GLAVAPU_SCENARIO_STALE_SECONDS = max(
+    60.0, _GLAVAPU_HEADLESS_QUEUE_SECONDS + 3 * _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0 + 60.0)
+_GLAVAPU_SCENARIO_LOCK = threading.Lock()
+
+
+class GlavapuScenarioRequest(BaseModel):
+    """Сценарий проекта для сверки: те же вводные и ТЭП, что держит страница."""
+    inputs: dict[str, Any] = {}
+    tep: dict[str, Any] = {}
+    cadastral_numbers: str | list[str] = ""
+    # Только спросить состояние, не ставя задание (опрос страницы).
+    poll: bool = False
+    # Пересчитать, даже если ответ в кэше свежий.
+    force: bool = False
+
+
+def _glavapu_scenario_dir() -> Path:
+    return Path(os.getenv("DEVELOPAID_DATA_DIR") or "data") / "glavapu-scenario"
+
+
+_GLAVAPU_SCENARIO_KEY = re.compile(r"[0-9a-f]{8,40}")
+
+
+def _glavapu_scenario_file(key: str) -> Path:
+    """Файл задания. Ключ приходит и из адреса запроса, поэтому он обязан быть
+    ровно хэшем `scenario_key`, а путь — лежать внутри каталога заданий."""
+    key = str(key or "")
+    if not _GLAVAPU_SCENARIO_KEY.fullmatch(key):
+        raise ValueError("ключ сверки — шестнадцатеричный хэш набора параметров")
+    base = os.path.normpath(os.path.abspath(_glavapu_scenario_dir()))
+    path = os.path.normpath(os.path.join(base, key + ".json"))
+    if not path.startswith(base + os.sep):
+        raise ValueError("ключ сверки выводит за каталог заданий")
+    return Path(path)
+
+
+def _glavapu_scenario_load(key: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(_glavapu_scenario_file(key).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _glavapu_scenario_save(key: str, record: dict[str, Any]) -> None:
+    path = _glavapu_scenario_file(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(record, ensure_ascii=False, default=str), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _glavapu_scenario_product(key: str) -> str:
+    obj = _BY_KEY.get(key)
+    return obj.product if obj is not None else key
+
+
+def _glavapu_scenario_build(req: GlavapuScenarioRequest) -> dict[str, Any]:
+    numbers = _parse_cadastral_numbers(req.cadastral_numbers) if req.cadastral_numbers else []
+    if not numbers:
+        analysis = (req.inputs or {}).get("_cadastral_analysis") or {}
+        numbers = [str(x) for x in (analysis.get("recognized") or analysis.get("requested") or [])]
+    return glavapu_scenario.build_scenario(
+        req.inputs or {}, req.tep or {}, product_of=_glavapu_scenario_product, numbers=numbers)
+
+
+def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
+                           scenario: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """Наша сторона сверки — из тех же владельцев, что считают модель.
+
+    Нормы мест, соцпотребности и МПТ — `tep_derived_norms` (её ответ подписан
+    как наш расчёт по городским формулам), приобъектные места — `parking_demand`,
+    плата за ВРИ — поле проекта. Своей формулы сверка не заводит: второй ответ
+    на тот же вопрос был бы третьим мнением, а не проверкой.
+    """
+    inputs = inputs or {}
+    tep = tep or {}
+    params = scenario.get("params") or {}
+    normalized = (inputs.get("_glavapu_import") or {}).get("normalized") or {}
+    living = sum(n(tep.get(k) or {}, "gns") for k in glavapu_scenario.RESIDENTIAL_LIVING_KEYS)
+    built_in = n(tep.get(glavapu_scenario.RESIDENTIAL_NONRES_KEY) or {}, "gns")
+    social_gns = sum(n(tep.get(k) or {}, "gns") for k in glavapu_scenario.SOCIAL_KINDS)
+    skip = (set(glavapu_scenario.RESIDENTIAL_LIVING_KEYS) | set(glavapu_scenario.SOCIAL_KINDS)
+            | {glavapu_scenario.RESIDENTIAL_NONRES_KEY} | set(glavapu_scenario.NOT_SPP_KEYS))
+    nonres_gns = sum(n(row, "gns") for key, row in tep.items()
+                     if key not in skip and isinstance(row, dict))
+    nonres_np = sum(n(row, "total_area") for key, row in tep.items()
+                    if key not in skip and isinstance(row, dict))
+    total = living + built_in + nonres_gns + social_gns
+    area = float(params.get("area_ha") or 0.0)
+    apartments = tep.get("apartments") or {}
+    demand = parking_demand(inputs, tep)
+    derived = tep_derived_norms(
+        apartment_area_sqm=n(apartments, "saleable"),
+        residential_living_spp_sqm=n(apartments, "gns"),
+        nonresidential_np_sqm=nonres_np + n(tep.get("ground_commercial") or {}, "total_area"),
+        k1=float(demand.get("k1") or 1.0), k2=float(demand.get("k2") or 1.0),
+        zone_two=str(normalized.get("calculation_zone") or "").strip() == "2",
+        apartment_count=n(apartments, "units"))
+    tep_src = "ТЭП проекта, ГНС"
+    norm_src = "наша норма (tep_derived_norms)"
+    ours: dict[str, Any] = {
+        "spp": {
+            "total": (round(total / 1000.0, 3), tep_src + ": все наземные строки"),
+            "residential_living": (round(living / 1000.0, 3), tep_src + ": «Квартиры» + «Кладовые»"),
+            "built_in": (round(built_in / 1000.0, 3), tep_src + ": «Коммерция 1 этажа»"),
+            "nonres": (round(nonres_gns / 1000.0, 3), tep_src + ": нежилые объекты"),
+            "social": (round(social_gns / 1000.0, 3), tep_src + ": ДОО, СОШ, поликлиника"),
+        },
+        "social": {
+            "population": (derived["population"], norm_src + ": площадь квартир / 33 м²"),
+            "kindergarten": (derived["kindergarten_places"], norm_src),
+            "school": (derived["school_places"], norm_src),
+            "clinic": (derived["clinic_capacity"], norm_src),
+        },
+        "parking": {
+            "permanent": (derived["parking_permanent"], norm_src + ": " + derived["parking_basis"]),
+            "guest": (derived["parking_guest"], norm_src + ": десятая часть постоянных"),
+            "attached": (int(demand.get("required_total") or 0),
+                         "наша норма приобъектных (parking_demand, 945-ПП)"),
+            "short_stop": (None, ""),
+        },
+        "mpt": (derived["jobs"], norm_src + f": НП нежилья / {derived['sqm_per_job']:g} м²"),
+        "density": (round(total / 1000.0 / area, 3) if area > 0 else None,
+                    "ТЭП проекта: СПП / площадь территории"),
+    }
+    vri_value: float | None = None
+    vri_origin = ""
+    if inputs.get("vri_required") in (False, 0, "0", "false"):
+        vri_value, vri_origin = 0.0, "вводные проекта: смена ВРИ не требуется"
+    elif inputs.get("land_rights_cost_mln") not in (None, ""):
+        vri_value = float(n(inputs, "land_rights_cost_mln"))
+        imported = ((inputs.get("_glavapu_import") or {}).get("mappings") or {}).get("inputs") or {}
+        if ("land_rights_cost_mln" in imported
+                and abs(float(imported.get("land_rights_cost_mln") or 0.0) - vri_value) < 0.001):
+            vri_origin = ("вводные проекта — число из выгрузки ГлавАПУ с ЕГО умолчаниями, "
+                          "не наш расчёт")
+        else:
+            vri_origin = "вводные проекта: land_rights_cost_mln"
+    ours["vri_cost_mln"] = (vri_value, vri_origin)
+
+    # Наша льгота по плате за ВРИ — одна сумма (доля или фиксированная) из
+    # вводных, тем же `vri_relief`, что считает модель. Режим «нет» — это не
+    # «льгота ноль», а «льгота не задана»: сверке не с чем сравнивать.
+    relief_mode = str(inputs.get("vri_relief_mode") or "none").strip().lower()
+    relief_value: float | None = None
+    if vri_value is not None and relief_mode in ("percent", "amount"):
+        relief_value = round(vri_relief({k: v for k, v in inputs.items()
+                                         if k != "vri_transfer_offset_mln"},
+                                        vri_value * 1_000_000)[0] / 1_000_000, 3)
+    ours["vri_relief"] = {"total": (relief_value,
+                                    f"вводные проекта: vri_relief_mode = {relief_mode}"
+                                    if relief_value is not None else "")}
+    ours["vri_net_mln"] = ((round(vri_value - (relief_value or 0.0), 3), "плата проекта за вычетом нашей льготы")
+                           if vri_value is not None else (None, ""))
+
+    imported = ((inputs.get("_glavapu_import") or {}).get("mappings") or {}).get("inputs") or {}
+
+    def from_import(key: str, value: float) -> bool:
+        return (key in imported
+                and abs(float(imported.get(key) or 0.0) - value) < 0.001)
+
+    # Соцнагрузка деньгами: у проекта одна сумма; по объектам — справочно.
+    comp_value: float | None = None
+    comp_origin = ""
+    if inputs.get("social_compensation_mln") not in (None, ""):
+        comp_value = float(n(inputs, "social_compensation_mln"))
+        comp_origin = ("вводные проекта — число из выгрузки ГлавАПУ с ЕГО умолчаниями"
+                       if from_import("social_compensation_mln", comp_value)
+                       else "вводные проекта: social_compensation_mln")
+    ours["social_comp"] = {"total": (comp_value, comp_origin)}
+
+    # Приобъектные места по ВРИ — строки той же нормы `parking_demand`, что
+    # дала общий итог: объект → его ВРИ по карте NONRES_VRI.
+    by_vri: dict[str, list[Any]] = {}
+    for row in demand.get("rows") or []:
+        key = str(row.get("tep_key") or "")
+        if key == glavapu_scenario.RESIDENTIAL_NONRES_KEY:
+            kind = "built_in"
+        else:
+            target = glavapu_scenario.NONRES_VRI.get(_glavapu_scenario_product(key))
+            if not target:
+                continue
+            kind = target[1]
+        slot = by_vri.setdefault(kind, [0, []])
+        slot[0] += int(row.get("required_spaces") or 0)
+        slot[1].append(str(row.get("label") or key))
+    ours["parking_vri"] = {kind: (value, "наша норма (parking_demand): " + ", ".join(names))
+                           for kind, (value, names) in by_vri.items()}
+
+    reasons: dict[str, str] = {
+        "parking.short_stop": ("в модели нет нормы мест кратковременной остановки: "
+                               "они не строятся в гараже (945-ПП п. 6.1.2), сверка справочная"),
+        "parking.attached": ("наша норма — от общей площади нежилья с К1 "
+                             f"{float(demand.get('k1') or 0):g} и К2 {float(demand.get('k2') or 0):g}; "
+                             "калькулятор считает по ВРИ, НП и К1/К2 своего квартала"),
+        "mpt": (f"у модели {derived['sqm_per_job']:g} м² НП на рабочее место; "
+                "калькулятор считает по ВРИ (лист «МПТ»)"),
+        "parking.guest": ("гостевые — десятая часть постоянных и у нас, и у калькулятора: "
+                          "расхождение идёт от постоянных мест"),
+        "parking.permanent": ("наша норма: " + derived["parking_basis"]
+                              + "; калькулятор — от своей площади квартир (строка 10)"),
+    }
+    relief_basis = ("калькулятор даёт льготу за МПТ сам: нежилые ВРИ выше порога × "
+                    "коэффициент места (офисы и торговля вне ТТК 0,7, внутри 0; соцобъекты 0,3); "
+                    "срезает только плату за МКД. Его Кзатр — база 2026 года 166,23078 ещё раз "
+                    "× 1,2036 (= 166,23078 / 138,11132, переход с базы 2025 года) × индекс "
+                    "квартала: на ~20% выше приказа, по которому считаем мы")
+    reasons["vri_relief.total"] = (
+        "наша льгота — доля или сумма из вводных; " + relief_basis if relief_value is not None
+        else "в проекте льгота по плате за ВРИ не задана (vri_relief_mode = «нет»); "
+             + relief_basis + " — проверить основание (3135-ПП)")
+    reasons["vri_net_mln"] = ("к оплате = до льгот − льгота; расхождение складывается из "
+                              "двух строк выше" if vri_value is not None else
+                              reasons.get("vri_cost_mln", ""))
+    if comp_value is not None:
+        reasons["social_comp.total"] = (
+            ("наше число — выгрузка ГлавАПУ с его умолчаниями, а не наш сценарий; "
+             if comp_origin.startswith("вводные проекта — число из выгрузки") else "")
+            + "калькулятор считает компенсацию от дефицита мест по нашему сценарию: "
+              "объект, построенный сверх потребности, компенсацию не требует")
+    else:
+        reasons["social_comp.total"] = ("в проекте не задана компенсация за соцобъекты "
+                                        "(social_compensation_mln) — сравнить не с чем")
+    for kind in ours["parking_vri"]:
+        reasons[f"parking_vri.{kind}"] = reasons["parking.attached"]
+    garage = tep.get("underground_parking") or {}
+    if n(garage, "units") > 0:
+        reasons["parking.permanent"] += (
+            f"; в подземном гараже модели {n(garage, 'units'):,.0f} мест".replace(",", " "))
+    for item in scenario.get("not_sent") or []:
+        if str(item.get("param") or "").startswith("nonres."):
+            for kind in ("spp.nonres", "spp.total", "density"):
+                reasons[kind] = (reasons.get(kind, "") + "; " if reasons.get(kind) else "") + item["reason"]
+    for item in params.get("social") or []:
+        gns_text = f"{item['spp_ths'] * 1000:,.0f}".replace(",", " ")
+        line = (f"{item['label']}: калькулятор ставит типовой объект своей площади, "
+                f"у нас ГНС {gns_text} м²")
+        for kind in ("spp.social", "spp.total", "density"):
+            reasons[kind] = (reasons.get(kind, "") + "; " if reasons.get(kind) else "") + line
+    population = derived["population"]
+    for kind in ("social.population", "social.kindergarten", "social.school", "social.clinic"):
+        reasons.setdefault(kind, f"наша норма: население {population} = площадь квартир / 33 м²; "
+                                 "калькулятор — от своей площади квартир (строка 10)")
+    if vri_origin.startswith("вводные проекта — число из выгрузки"):
+        reasons["vri_cost_mln"] = ("наше число — выгрузка ГлавАПУ с его умолчаниями, а не "
+                                   "наш сценарий; расхождение показывает, сколько стоит "
+                                   "сценарий по калькулятору")
+    elif vri_value == 0.0 and vri_origin:
+        reasons["vri_cost_mln"] = vri_origin
+    elif vri_value is None:
+        reasons["vri_cost_mln"] = ("в проекте не задана плата за смену ВРИ "
+                                   "(land_rights_cost_mln) — сравнить не с чем")
+    else:
+        reasons.setdefault("vri_cost_mln", "плата проекта задана вводными, калькулятор считает "
+                                           "её от СПП по ВРИ и УПКС квартала")
+    return ours, reasons
+
+
+def _glavapu_scenario_run(key: str, scenario: dict[str, Any]) -> None:
+    """Задание браузера: выставить сценарий, забрать книгу, записать ответ."""
+    started = time.monotonic()
+    record = _glavapu_scenario_load(key) or {}
+    record.update(state="running", started_at=datetime.now(timezone.utc).isoformat(),
+                  worker=os.getpid())
+    _glavapu_scenario_save(key, record)
+    try:
+        params = scenario["params"]
+        holder = _glavapu_headless_run(scenario["numbers"], float(params["area_ha"]), params)
+        data = holder.get("scenario_xlsx") or b""
+        parsed = parse_glavapu_xlsx(data, "glavapu-scenario.xlsx") if data else {}
+        side = glavapu_scenario.glavapu_side(parsed.get("normalized") or {},
+                                             holder.get("scenario_rows") or {}, data)
+        record.update(state="done", glavapu=side,
+                      applied=holder.get("scenario_report") or {},
+                      warnings=parsed.get("warnings") or [],
+                      timings=holder.get("timings") or {})
+        _GLAVAPU_HEADLESS["last_ok"] = datetime.now().isoformat(timespec="seconds")
+    except (GlavapuTableNotReady, GlavapuParcelNotAccepted) as exc:
+        record.update(state="error", error=exc.public_message,
+                      where="калькулятор ГлавАПУ: расчёт участка до ввода сценария")
+    except Exception as exc:  # noqa: BLE001 — отказ доходит до окна с местом
+        record.update(state="error", error=_public_error(exc, "glavapu scenario"),
+                      where=_error_location(exc))
+    record["finished_at"] = datetime.now(timezone.utc).isoformat()
+    record["seconds"] = round(time.monotonic() - started, 1)
+    record["stored_at"] = time.time()
+    _glavapu_scenario_save(key, record)
+
+
+def _glavapu_scenario_fresh(record: dict[str, Any] | None) -> bool:
+    if not record:
+        return False
+    age = time.time() - float(record.get("stored_at") or 0.0)
+    state = record.get("state")
+    if state == "done":
+        return age <= _GLAVAPU_SCENARIO_CACHE_SECONDS
+    if state == "error":
+        return age <= _GLAVAPU_SCENARIO_ERROR_SECONDS
+    if state in ("queued", "running"):
+        return age <= _GLAVAPU_SCENARIO_STALE_SECONDS
+    return False
+
+
+@app.post("/glavapu/scenario")
+def glavapu_scenario_check(req: GlavapuScenarioRequest) -> dict[str, Any]:
+    """Сверка «наше / ГлавАПУ»: ставит задание и отвечает его состоянием.
+
+    Ответ сразу: `queued`/`running` — браузер работает, спросить ещё раз;
+    `done` — числа калькулятора и сверка; `error`/`unavailable` — причина и
+    место. Тяжёлая работа идёт в фоне, окно и бот её не ждут.
+    """
+    url = _core_api_url("/glavapu/scenario")
+    if url:
+        # Браузер живёт на ядре, как и для расчёта ТЭП.
+        forwarded = _core_post(url, _core_forward_payload(req), 30.0)
+        forwarded.setdefault("route", "ядро")
+        return forwarded
+    scenario = _glavapu_scenario_build(req)
+    key = glavapu_scenario.scenario_key(scenario)
+    ours, reasons = _glavapu_scenario_ours(req.inputs or {}, req.tep or {}, scenario)
+    answer: dict[str, Any] = {"key": key, "role": glavapu_scenario.ROLE,
+                              "scenario": scenario, "ours": ours}
+    if scenario["problems"]:
+        answer.update(state="refused", error="; ".join(scenario["problems"]),
+                      where="сценарий проекта (наши вводные и ТЭП), до калькулятора")
+        return answer
+    if not scenario["numbers"]:
+        answer.update(state="refused",
+                      error="нет кадастровых номеров: калькулятору нужен участок, чтобы "
+                            "взять район, квартал и коэффициенты",
+                      where="сценарий проекта: inputs._cadastral_analysis")
+        return answer
+    with _GLAVAPU_SCENARIO_LOCK:
+        record = _glavapu_scenario_load(key)
+        if req.force and record and record.get("state") in ("done", "error"):
+            record = None
+        if not _glavapu_scenario_fresh(record):
+            record = None
+            if not req.poll:
+                if not _glavapu_headless_available():
+                    state = _glavapu_headless_state()
+                    answer.update(state="unavailable",
+                                  error=f"штатный калькулятор: {state.get('state')}",
+                                  where=str(state.get("where") or ""),
+                                  hint=str(state.get("hint") or state.get("last_error") or ""))
+                    return answer
+                record = {"state": "queued", "stored_at": time.time(),
+                          "queued_at": datetime.now(timezone.utc).isoformat()}
+                _glavapu_scenario_save(key, record)
+                threading.Thread(target=_glavapu_scenario_run, args=(key, scenario),
+                                 name=f"glavapu-scenario-{key[:8]}", daemon=True).start()
+    if record is None:
+        answer.update(state="none", error="задание не найдено — запустите сверку")
+        return answer
+    answer.update({k: v for k, v in record.items() if k not in ("stored_at",)})
+    if record.get("state") == "done":
+        answer["comparison"] = glavapu_scenario.compare(
+            ours, record.get("glavapu") or {}, reasons, record.get("applied"))
+    return answer
+
+
+@app.get("/glavapu/scenario/{key}")
+def glavapu_scenario_state(key: str) -> dict[str, Any]:
+    """Запись задания как есть — для оператора: что ставили, что принято, где отказ."""
+    url = _core_api_url(f"/glavapu/scenario/{key}")
+    if url:
+        try:
+            with urllib.request.urlopen(url, timeout=15) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502,
+                                detail="Ядро не ответило: " + _public_error(exc, "scenario state"))
+    if not _GLAVAPU_SCENARIO_KEY.fullmatch(str(key or "")):
+        raise HTTPException(status_code=400,
+                            detail="Ключ сверки — шестнадцатеричный хэш из ответа /glavapu/scenario")
+    record = _glavapu_scenario_load(key)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Задания сверки с таким ключом нет")
+    return record
 
 
 def _cadastral_analysis_for(numbers: list[str],
@@ -17380,6 +17811,119 @@ def _pdf_nonres_value(row: dict[str, Any]) -> str:
     return str(value or "—")
 
 
+# Метки PDF у разделов объектной вёрстки: свои — `object_<ключ>`, общие
+# с жилой — финансирование (кредит объекта и собственное участие),
+# чувствительность и календарь.
+_PDF_OBJECT_SHARED = {"finance": "financing", "sensitivity": "sensitivity",
+                      "calendar": "calendar"}
+
+
+def _pdf_section_order(object_sections: dict[str, Any]) -> list[tuple[str, bool]]:
+    """Порядок разделов PDF — порядок `report_layout.sections` движка.
+
+    Жилой: разбор проекта — что за участок → что на нём выходит → на чём
+    считали → сколько стоит → сколько приносит → чем финансируется → чем
+    рискуем → когда. Объектный: девять разделов владельца; реализуемость
+    посадки — в разделе «Объект и участок».
+    """
+    if not object_sections:
+        return [
+            ("tep", False), ("vri", False), ("screening", True), ("summary", False),
+            ("phases", True), ("premises", True),
+            ("expenses", False), ("expenses_detail", False),
+            ("income", True), ("financing", True), ("sensitivity", True),
+            ("calendar", False), ("footer", False),
+        ]
+    order: list[tuple[str, bool]] = []
+    for index, key in enumerate(object_sections):
+        name = _PDF_OBJECT_SHARED.get(key, f"object_{key}")
+        order.append((name, index > 0 and key != "calendar"))
+        if key == "object":
+            order.append(("screening", False))
+    return order + [("footer", False)]
+
+
+def _pdf_object_value(row: dict[str, Any]) -> str:
+    """Значение строки объектной вёрстки: единицы `nonres_report` плюс метры,
+    места, тыс ₽/м² и вводная со своей единицей."""
+    unit, value = row.get("unit"), row.get("value")
+    if unit in ("sqm", "count", "th", "num") and value is None:
+        return "—"
+    if unit == "sqm":
+        return _pdf_num(value, 0) + " м²"
+    if unit == "count":
+        return _pdf_num(value, 0)
+    if unit == "th":
+        return _pdf_num(value, 1) + " тыс ₽/м²"
+    if unit == "num":
+        return (_pdf_num(value, 2).rstrip("0").rstrip(",") + (" " + str(row["suffix"])
+                                                             if row.get("suffix") else ""))
+    return _pdf_nonres_value(row)
+
+
+def _object_pdf_sections(story: list[Any], sections: dict[str, Any], inputs: dict[str, Any],
+                         P: Any, table: Any, h2: Any, small: Any, normal: Any,
+                         KeepTogether: Any, Spacer: Any, mm: float, *,
+                         sensitivity_done: bool) -> None:
+    """Разделы объектной вёрстки в поток PDF — блоками движка, без пересчёта."""
+    for key, section in sections.items():
+        if key in ("finance", "calendar") or (key == "sensitivity" and sensitivity_done):
+            continue
+        story.append(_PdfSection(_PDF_OBJECT_SHARED.get(key, f"object_{key}")))
+        story.append(P(str(section.get("title") or ""), h2))
+        for block in section.get("blocks") or []:
+            title = str(block.get("title") or "")
+            ref = block.get("ref")
+            if block.get("kind") == "verdict" and section.get("verdict"):
+                verdict = section["verdict"]
+                story.append(table([["Вывод", str(verdict.get("title") or "")],
+                                    ["Основание", str(verdict.get("text") or "")]],
+                                   [45*mm, 125*mm], header=False, font_size=8.0))
+                continue
+            if ref == "goal_seek":
+                goal = section.get("goal_seek") or {}
+                story.append(P(
+                    (f"{title}: подбирается на странице отчёта полным пересчётом модели — "
+                     f"наибольшая цена участка, при которой «{goal.get('label')}» не ниже "
+                     f"{_pdf_num(goal.get('target'), 2)}x.") if goal.get("metric")
+                    else f"{title}: {goal.get('reason') or 'показателя долга у проекта нет.'}",
+                    small))
+                continue
+            if ref == "site":
+                rows = []
+                area = float(inputs.get("site_area_ha") or 0)
+                if area > 0:
+                    rows.append(["Площадь участка", _pdf_num(area, 4) + " га"])
+                numbers = _project_cadastral_numbers(inputs)
+                if numbers:
+                    rows.append(["Кадастровые номера", ", ".join(numbers)])
+                if rows:
+                    story.append(KeepTogether([P(title, small),
+                                               table(rows, [60*mm, 110*mm], header=False)]))
+                continue
+            if ref == "sensitivity":
+                brief = ", ".join(str(r.get("value") or "") for r in section.get("brief") or [])
+                story.append(P("Чувствительность не рассчитана на вкладке — факторы объекта: "
+                               + (brief or "—") + ".", small))
+                continue
+            if block.get("years"):
+                columns = block.get("columns") or []
+                rows = [[str(c[1]) for c in columns]]
+                for year in block["years"]:
+                    rows.append([str(year.get(c[0])) if c[2] == "text"
+                                 else _pdf_object_value({"unit": c[2], "value": year.get(c[0])})
+                                 for c in columns])
+                width = 170 / max(1, len(columns))
+                story.append(KeepTogether([P(title, small),
+                                           table(rows, [width*mm] * len(columns), font_size=6.8)]))
+                continue
+            rows = [[title or " ", " "]]
+            for row in block.get("rows") or []:
+                rows.append([str(row.get("label") or ""), _pdf_object_value(row)])
+            story.append(table(rows, [112*mm, 58*mm], font_size=7.6))
+            story.append(Spacer(1, 2*mm))
+
+
 def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4
@@ -17398,6 +17942,13 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     products = report.get("products") or []
     expense_structure = report.get("expense_structure") or []
     calendar_data = report.get("calendar") or {}
+    # Проект без жилья — свои разделы (`report.object_report`, вёрстку выбрал
+    # движок в `report_layout.kind`): PDF их печатает, а не собирает.
+    _object_sections = {str(sec.get("key")): sec
+                        for sec in (report.get("object_report") or {}).get("sections") or []}
+    _object_calendar = (_object_sections.get("calendar") or {}).get("calendar") or {}
+    if _object_calendar.get("events"):
+        calendar_data = _object_calendar
     cads = payload.get("cadastral_numbers") or []
     source_label = str(payload.get("source_label") or "ТЭП DevelopAid")
     scenario_key = str(payload.get("scenario") or "base")
@@ -17785,6 +18336,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
 
     story=[P("DevelopAid",h1),P("Инвестиционный отчёт по девелоперскому проекту",h2),P(title_scope,ParagraphStyle("scope",parent=h2,fontSize=11,textColor=colors.HexColor('#555555')))]
     meta=[["Дата расчёта",date.today().strftime("%d.%m.%Y")],["Источник ТЭП",source_label],["Класс жилья",class_label],["Сценарий",scenario_label]]
+    # Класс жилья у проекта без жилья ничего не значит (`report_layout.housing`).
+    if not (report.get("layout") or {}).get("housing", True):
+        meta=[row for row in meta if row[0]!="Класс жилья"]
     # Один расчёт — один идентификатор: у пары «PDF + книга» из одного ответа
     # бота он совпадает, и сверка начинается с него, а не со спора о версиях.
     meta.append(["Идентификатор расчёта",
@@ -18896,10 +19450,16 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         gantt_pages=gantt_drawings(events)
         for page_index,gantt in enumerate(gantt_pages):
             story.append(PageBreak())
-            story.append(P("Календарный план проекта" if page_index==0 else "Календарный план проекта · продолжение",h2))
+            _cal_title = str((_object_sections.get("calendar") or {}).get("title")
+                             or "Календарный план проекта")
+            story.append(P(_cal_title if page_index==0 else _cal_title+" · продолжение",h2))
             story.append(gantt)
         story.append(Spacer(1,2*mm))
         story.append(P("Полосы построены по фактическим датам модели; ромбами отмечены ключевые вехи. При включённой очередности этапы каждой очереди показаны отдельными строками.",small))
+    if _object_sections:
+        _object_pdf_sections(story, _object_sections, inputs, P, table, h2, small, normal,
+                             KeepTogether, Spacer, mm, sensitivity_done=bool(
+                                 sensitivity and (sensitivity.get("items") or [])))
     story.append(_PdfSection("footer"))
     story.extend([Spacer(1,4*mm),P("Отчёт сформирован автоматически DevelopAid на основании текущих вводных модели. Перед инвестиционным решением требуется проверка исходных данных, юридических предпосылок и условий кредитования.",small)])
 
@@ -18908,13 +19468,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Разбор проекта, а не история правок: что за участок → что на нём выходит
     # → на чём считали → сколько стоит → сколько приносит → чем финансируется
     # → чем рискуем → когда.
-    story = _pdf_ordered_story(story, [
-        ("tep", False), ("vri", False), ("screening", True), ("summary", False),
-        ("phases", True), ("premises", True),
-        ("expenses", False), ("expenses_detail", False),
-        ("income", True), ("financing", True), ("sensitivity", True),
-        ("calendar", False), ("footer", False),
-    ], PageBreak)
+    story = _pdf_ordered_story(story, _pdf_section_order(_object_sections), PageBreak)
     doc.build(story,onFirstPage=footer,onLaterPages=footer)
     return buf.getvalue()
 
@@ -19176,7 +19730,9 @@ def _model_parking_norm_rows(result: dict[str, Any]) -> list[list[_XlsxCell]]:
     # деньгами читается как объём стройки.
     rows.append([_cell_text(
         "Приобъектная стоянка — вдоль проезда, в составе благоустройства: "
-        "на кадастр не ставится, отдельных метров и выручки не даёт")])
+        "на кадастр не ставится, отдельных метров и выручки не даёт. Размещение — "
+        "плоскостная парковка или сторона улицы в красных линиях УДС до 200 м от "
+        "объекта (945-ПП п. 6.1.2.3, 6.1.2.5.3); в подземный паркинг МКД не входит")])
     own = [item for item in (parking.get("own") or []) if item.get("enabled")]
     if own:
         rows.append([_cell_text(
@@ -31672,6 +32228,47 @@ def _teaser_map_png(site: dict[str, Any]) -> tuple[bytes, str] | None:
     return None
 
 
+def _telegram_object_value(row: dict[str, Any]) -> str:
+    """Строка раздела объектной вёрстки (`report.layout.sections`) для бота."""
+    unit, value = row.get("unit"), row.get("value")
+    if unit in ("rub", "mln"):
+        return "—" if value is None else _telegram_money_mln(float(value) / 1e6)
+    if unit == "sqm":
+        return "—" if value is None else _telegram_number(value, 0) + " м²"
+    if unit == "count":
+        return "—" if value is None else _telegram_number(value, 0)
+    if unit == "th":
+        return "—" if value is None else _telegram_number(value, 1) + " тыс ₽/м²"
+    if unit == "date":
+        text = str(value or "")
+        return ".".join(reversed(text[:7].split("-"))) if text else "—"
+    return _telegram_tile(row)
+
+
+def _telegram_object_sections(layout: dict[str, Any]) -> str:
+    """Карточка проекта без жилья — разделы его вёрстки в порядке движка
+    (`report_layout.kind` = объектная) с краткими строками каждого. Вердикт —
+    тот, что собрал движок в разделе «Решение»; второго здесь нет."""
+    if layout.get("kind") != REPORT_KIND_OBJECT:
+        return ""
+    sections = [s for s in layout.get("sections") or [] if s.get("brief") is not None]
+    if not sections:
+        return ""
+    out = []
+    for index, section in enumerate(sections, 1):
+        lines = [f"<b>{index}. {html.escape(str(section.get('title') or ''))}</b>"]
+        for row in section.get("brief") or []:
+            label = html.escape(str(row.get("label") or ""))
+            if section.get("key") == "decision" and row.get("label") == "Вывод":
+                lines.append(f"• <b>{html.escape(str(row.get('value') or ''))}</b>")
+            elif section.get("key") == "decision" and row.get("label") == "Основание":
+                lines.append(f"• {html.escape(str(row.get('value') or ''))}")
+            else:
+                lines.append(f"• {label} — {_telegram_object_value(row)}")
+        out.append("\n".join(lines))
+    return "\n\n".join(out) + "\n\n"
+
+
 def _telegram_tile(tile: dict[str, Any]) -> str:
     """Плитка нежилья (`report_layout`) строкой бота."""
     unit, value = tile.get("unit"), tile.get("value")
@@ -31815,7 +32412,14 @@ def telegram_result(req: TelegramResultRequest,
         bank_lines = "".join(
             f"• {html.escape(str(tile.get('label') or '')).lower()} — {_telegram_tile(tile)}\n"
             for tile in layout.get("nonres_tiles") or []) + "\n"
+    object_text = _telegram_object_sections(layout)
     text = (
+        "<b>Расчёт DevelopAid готов</b>\n"
+        + scope_line +
+        f"Источник ТЭП: <b>{html.escape(source_label)}</b>\n\n"
+        + object_text
+        + "<i>Вывод предварительный и основан только на текущих вводных DevelopAid; цены, сроки и себестоимость можно изменить в модели.</i>"
+    ) if object_text else (
         "<b>Расчёт DevelopAid готов</b>\n"
         + scope_line +
         f"Источник ТЭП: <b>{html.escape(source_label)}</b>\n\n"
@@ -33798,6 +34402,36 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                              if key not in RESERVE_EXCLUDED_ARTICLES)
     amounts["reserve"] = base_for_overheads * n(x, "reserve_pct") / 100
 
+    # Смета объекта — то, что начислено ОТ его стройки: генподряд и
+    # технический заказчик берут процент с базы работ, куда объект входит
+    # своей статьёй, резерв — процент со всех статей. Доля объекта в них —
+    # тот же процент с его денег, а не распределение: сумма долей и остатка
+    # равна статье. Владельцу «Основное строительство», «Технический заказчик»
+    # и «Резерв» общими строками не говорили, что это стройка офиса
+    # (05.10.2026). Гараж — внутри статьи объекта, в той же доле, что при
+    # расчёте (статью может перебить очередь).
+    object_cost_parts: dict[str, dict[str, float]] = {}
+    for obj in standalone_objects():
+        own = float(amounts.get(obj.key) or 0.0)
+        if own <= 0:
+            continue
+        # Объект «под ключ» в базу работ не входит (`object_rate_is_turnkey`,
+        # решение владельца 06.10.2026): генподряд и техзаказчик в его ставке,
+        # и доли процентов у него нет. Иначе own/works_base дало бы объекту
+        # долю чужого генподряда — СМР дома.
+        share = (0.0 if object_rate_is_turnkey(x, obj) or not works_base
+                 else own / works_base)
+        gc_part = amounts["gc_fee"] * share
+        tz_part = amounts["technical_supervision"] * share
+        planned = float(standalone_capex.get(obj.key) or 0.0)
+        garage = (float(standalone_garage_capex.get(obj.key) or 0.0) * own / planned
+                  if planned else 0.0)
+        object_cost_parts[obj.key] = {
+            "building": own - garage, "garage": garage,
+            "gc_fee": gc_part, "technical_supervision": tz_part,
+            "reserve": (own + gc_part + tz_part) * n(x, "reserve_pct") / 100,
+        }
+
     capex: dict[date, float] = defaultdict(float)
     # Помесячная детализация по статьям: тот же расклад, что и в общем ряду,
     # но с разбивкой — нужна для выгрузки финмодели и сверки с эталоном.
@@ -34020,6 +34654,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         })
         for key in list(amounts):
             amounts[key] *= cost_multiplier
+        for parts in object_cost_parts.values():
+            for key in parts:
+                parts[key] *= cost_multiplier
 
     # Marketing + selling expenses are also scenarioed as expenses relative to BASE,
     # not reduced merely because conservative revenue is lower.
@@ -34129,6 +34766,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # своей ГНС, гараж — подземным метром. Без этой пары удельная объекта
         # молча смешивает два показателя.
         "standalone_garage_capex": dict(standalone_garage_capex),
+        "object_cost_parts": object_cost_parts,
         "object_parking_plan": list(object_parking_plan),
         # Доля статьи объекта, которая приходится на его ПРОДАВАЕМЫЙ паркинг.
         # Долей, а не суммой: статья объекта может быть перебита очередью
@@ -34420,10 +35058,45 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
                 **{name: float((result_series.get(name) or {}).get(month, 0.0) or 0.0)
                    for name in OBJECT_RESULT_SERIES}})
         flows["rows"] = object_rows
+        flows["years"] = object_years(flows)
     totals = {name: float(sum(values.values())) for name, values in monthly.items()}
     return {"objects": objects,
             "monthly": {name: dict(values) for name, values in monthly.items()},
             "totals": totals}
+
+
+def object_years(flows: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ряды объекта по календарным годам — суммы месячных рядов `object_flows`.
+
+    Не второй расчёт, а свёртка: выручка ДКП, аренда, выход, эксплуатация,
+    налог на имущество и NOI года — суммы тех же месяцев; загрузка — средняя
+    по месяцам эксплуатации года; доля выручки ДКП — накопленным итогом от
+    всей выручки ДКП объекта. Схема рядов общая для любого объекта вне ДДУ.
+    """
+    series = flows.get("monthly") or {}
+    sale_total = float(sum((series.get("sale_revenue") or {}).values()))
+    years: dict[int, dict[str, Any]] = {}
+    occupancy: dict[int, list[float]] = defaultdict(list)
+    for month in flows.get("months") or []:
+        year = years.setdefault(month.year, {
+            "year": month.year, "sale_revenue": 0.0, "rent_revenue": 0.0,
+            "exit_revenue": 0.0, "opex": 0.0, "property_tax": 0.0, "noi": 0.0})
+        for name in ("sale_revenue", "rent_revenue", "exit_revenue", "opex", "property_tax"):
+            year[name] += float((series.get(name) or {}).get(month, 0.0) or 0.0)
+        if month in (series.get("occupancy") or {}):
+            occupancy[month.year].append(float(series["occupancy"][month] or 0.0))
+    sold = 0.0
+    out = []
+    for key in sorted(years):
+        year = years[key]
+        year["noi"] = (year["rent_revenue"] - year["opex"] - year["property_tax"]
+                       if year["rent_revenue"] else 0.0)
+        values = occupancy.get(key) or []
+        year["occupancy"] = sum(values) / len(values) if values else None
+        sold += year["sale_revenue"]
+        year["sold_share"] = sold / sale_total if sale_total else None
+        out.append(year)
+    return out
 
 
 # Строка расходов объектов вне ДДУ в структуре расходов и в экономике
@@ -35952,6 +36625,7 @@ def nonres_summary(nonres: dict[str, Any],
             "result": outcome,
             "financing": financing,
             "rows": list(flows.get("rows") or []),
+            "years": list(flows.get("years") or []),
         })
     out = {"objects": objects, "totals": dict(nonres.get("totals") or {})}
     if reconciliation:
@@ -36025,13 +36699,493 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
     for tile in tiles:
         if tile["unit"] == "rub":
             tile["value_mln"] = float(tile["value"] or 0.0) / 1e6
-    return {"housing": not without_housing(inputs),
+    housing = not without_housing(inputs)
+    # Своя вёрстка — у проекта без жилья и без ПФ, чьи объекты идут вне ДДУ
+    # (владелец, 05.10.2026: «вёрстка нежилых объектов, где они не идут в
+    # проекте с жильём, должна быть своей»). Жилой и смешанный — как были.
+    kind = (REPORT_KIND_OBJECT if not housing and not project_finance and objects
+            else REPORT_KIND_HOUSING)
+    return {"housing": housing,
             "project_finance": project_finance,
             "nonres_strategy": bool(objects),
             "hotel": bool(hotel),
             "nonres_tiles": tiles,
-            "debt_metric": debt_metric(finance, project_finance, objects)}
+            "debt_metric": debt_metric(finance, project_finance, objects),
+            "kind": kind,
+            "sections": [{"key": key, "title": title}
+                         for key, title in REPORT_SECTIONS[kind]]}
 
+
+# Разделы отчёта — один список на страницу, PDF, тизер и бота. Жилой — прежний
+# разбор проекта; объектный — разбор объекта вне ДДУ, утверждённый владельцем
+# (05.10.2026): решение → объект → стратегия → доходы → затраты →
+# финансирование → экономика собственника → чувствительность → календарь.
+# Список не офисный: гостиница встаёт в ту же рамку.
+REPORT_KIND_HOUSING = "housing"
+REPORT_KIND_OBJECT = "object"
+REPORT_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    REPORT_KIND_HOUSING: (
+        ("site", "Участок и продукт"), ("summary", "Итог"), ("phases", "Очереди проекта"),
+        ("expenses", "Расходы"), ("income", "Доходы"), ("finance", "Финансирование"),
+        ("sensitivity", "Чувствительность"), ("calendar", "Календарный план"),
+    ),
+    REPORT_KIND_OBJECT: (
+        ("decision", "Решение"), ("object", "Объект и участок"),
+        ("strategy", "Стратегия реализации"), ("income", "Доходы"),
+        ("costs", "Затраты"), ("finance", "Финансирование"),
+        ("owner", "Экономика собственника"), ("sensitivity", "Чувствительность"),
+        ("calendar", "Календарь"),
+    ),
+}
+
+
+def _row(label: str, value: Any, unit: str, **extra: Any) -> dict[str, Any]:
+    return {"label": label, "value": value, "unit": unit, **extra}
+
+
+def _sum_object_costs(results: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    """Смета объектов свода — сумма очередей, а не второй расчёт."""
+    out: dict[str, dict[str, float]] = {}
+    for result in results:
+        for key, parts in ((result or {}).get("object_costs") or {}).items():
+            bucket = out.setdefault(key, {})
+            for name, value in parts.items():
+                bucket[name] = bucket.get(name, 0.0) + float(value or 0.0)
+    return out
+
+
+# Статьи общих затрат проекта в разделе «Затраты» объектной вёрстки: подпись
+# и ключи CAPEX движка. Генподряд, техзаказчик и резерв идут сюда остатком —
+# то, что начислено не от стройки объектов.
+OBJECT_COMMON_COSTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Смена ВРИ / земельные права", ("land_rights", "vri_security")),
+    ("Проценты по рассрочке ВРИ", ("vri_interest",)),
+    ("ИРД, проектирование и авторский надзор",
+     ("ird", "design_p", "design_rd", "author_supervision")),
+    ("Снос и расселение", ("demolition", "resettlement")),
+    ("Подготовка территории", ("preparation",)),
+    ("Наружные инженерные сети", ("utilities",)),
+    ("Благоустройство", ("landscaping",)),
+    ("Сдача и ввод", ("commissioning",)),
+    ("Содержание стройплощадки", ("site_maintenance",)),
+    ("СМР основного здания проекта", ("main_above", "main_under")),
+    ("Социальные объекты", ("social",)),
+    ("Управление проектом", ("project_management",)),
+)
+# Части сметы объекта: ключ `object_cost_parts` → подпись.
+OBJECT_COST_PARTS: tuple[tuple[str, str], ...] = (
+    ("building", "Здание — СМР по ставке объекта"),
+    ("garage", "Подземный гараж объекта"),
+    ("gc_fee", "Вознаграждение генподрядчика — доля объекта"),
+    ("technical_supervision", "Технический заказчик / стройконтроль — доля объекта"),
+    ("reserve", "Резерв — доля объекта"),
+)
+_OBJECT_BY_KEY = {obj.key: obj for obj in STANDALONE_OBJECTS}
+
+
+def _object_param_rows(obj: StandaloneObject | None, params: dict[str, Any],
+                       strategy: str) -> list[dict[str, Any]]:
+    """Вводные стратегии объекта — подписи, единицы и варианты из описания
+    формы (`_object_strategy_fields`), а не своим списком."""
+    if obj is None:
+        return []
+    wanted = {nonres_strategy.STRATEGY_DIRECT: "Прямая продажа",
+              nonres_strategy.STRATEGY_INCOME: "Доходный метод"}.get(strategy)
+    rows: list[dict[str, Any]] = []
+    for field in _object_strategy_fields(obj):
+        key, label, unit, kind = field[0], field[1], field[2], field[3]
+        if key == f"{obj.prefix}_strategy" or standalone_object_section(obj, key) != wanted:
+            continue
+        value = params.get(key.removeprefix(f"{obj.prefix}_"))
+        if value is None:
+            continue
+        if kind == "select":
+            names = {str(v): str(name) for v, name in field[4]}
+            rows.append(_row(label, names.get(str(value), str(value)), "text"))
+        else:
+            rows.append(_row(label, float(value), "num",
+                             suffix=str(unit).split(";")[0].split(",")[0]))
+    return rows
+
+
+def _object_calendar(report: dict[str, Any], objects: list[dict[str, Any]]) -> dict[str, Any]:
+    """Календарь объекта: подготовка, стройка, кредит — полосы движка; продажи,
+    заполнение, аренда и выход — из рядов объекта. Жилых вех («Старт
+    продаж» эскроу, «РВЭ», «Окончание продаж» квартир) у него нет."""
+    keep_groups = {"Подготовка", "Финансирование", "Отдельные объекты"}
+    keep_milestones = {"Сделка / начало проекта", "РнС"}
+    events = [dict(e) for e in ((report.get("calendar") or {}).get("events") or [])
+              if e.get("group") in keep_groups or e.get("label") in keep_milestones]
+    for item in objects:
+        title = item.get("title") or item.get("key")
+        start = str(item.get("commissioning") or "")[:10]
+        end = str(item.get("horizon_end") or "")[:10]
+        if item.get("strategy") == nonres_strategy.STRATEGY_INCOME and start:
+            leaseup = int(float(((item.get("book") or {}).get("params") or {})
+                                .get("leaseup_months") or 0))
+            if leaseup > 0:
+                events.append({"label": f"Заполнение — {title}", "start": start,
+                               "end": _iso(add_months(d(start), leaseup)),
+                               "group": "Аренда", "kind": "bar"})
+            events.append({"label": f"Аренда — {title}", "start": start, "end": end or start,
+                           "group": "Аренда", "kind": "bar"})
+            hold = item.get("exit_mode") == nonres_strategy.EXIT_HOLD
+            if end:
+                events.append({"label": (f"Конец удержания (оценка) — {title}" if hold
+                                         else f"Выход: продажа — {title}"),
+                               "start": end, "end": end, "group": "Выход",
+                               "kind": "milestone"})
+        else:
+            sold = [r["month"] for r in item.get("rows") or []
+                    if float(r.get("nonres_revenue") or 0) > 0]
+            if sold:
+                events.append({"label": f"Продажи ДКП — {title}", "start": sold[0][:10],
+                               "end": sold[-1][:10], "group": "Продажи", "kind": "bar"})
+    if not events:
+        return {}
+    return {"start": min(e["start"] for e in events), "end": max(e["end"] for e in events),
+            "events": sorted(events, key=lambda e: (e["start"], e["end"]))}
+
+
+def _object_sensitivity(objects: list[dict[str, Any]], deal_rub: float,
+                        metric_key: str | None) -> dict[str, Any]:
+    """Факторы нежилья для чувствительности: те, что двигают ЭТИ объекты."""
+    keys: list[str] = []
+    for item in objects:
+        obj = _OBJECT_BY_KEY.get(str(item.get("key")))
+        if obj is None:
+            continue
+        for spec in _SENSITIVITY_PARAMETERS:
+            if spec.get("object") == obj.prefix and item.get("strategy") in spec["strategies"]:
+                keys.append(spec["key"])
+    if deal_rub > 0:
+        keys.append("purchase_price_mln")
+    keys.append("discount_rate_pct")
+    return {"metric": "dscr" if metric_key == "dscr" else "irr_equity_pct",
+            "parameters": keys}
+
+
+def object_report(result: dict[str, Any]) -> dict[str, Any]:
+    """Отчёт проекта без жилья — девять разделов (`REPORT_SECTIONS`) из уже
+    посчитанного: `finance.nonres`, смета объектов (`object_costs`),
+    `report.nonres_financing`, `report.equity_participation`, сводка и
+    `report.layout.debt_metric`. Второго расчёта нет — только раскладка.
+
+    Каждый раздел — `{key, title, brief, blocks}`: `brief` — несколько строк
+    для бота и тизера, `blocks` — таблицы для страницы и PDF. Блок со ссылкой
+    (`ref`) рисуется своей таблицей движка (кредит объекта, собственное
+    участие, карта, чувствительность, календарь).
+    """
+    report = result.get("report") or {}
+    layout = report.get("layout") or {}
+    if layout.get("kind") != REPORT_KIND_OBJECT:
+        return {}
+    summary = result.get("summary") or {}
+    finance = result.get("finance") or {}
+    objects = (finance.get("nonres") or {}).get("objects") or []
+    tep = {str(row.get("key")): row for row in (result.get("tep") or {}).get("rows") or []}
+    capex = result.get("capex") or {}
+    parts = result.get("object_costs") or {}
+    deal = result.get("deal") or {}
+    equity = report.get("equity_participation") or {}
+    metric = layout.get("debt_metric") or {}
+    na = equity_returns_na_label(summary)
+    deal_rub = float(deal.get("total_mln") or 0.0) * 1e6
+    income_any = any(o.get("strategy") == nonres_strategy.STRATEGY_INCOME for o in objects)
+    sections: dict[str, dict[str, Any]] = {}
+
+    # 1. Решение ------------------------------------------------------------
+    verdict = _purchase_feasibility(
+        deal.get("price_mln"), float(summary.get("net_profit") or 0) / 1e6,
+        summary.get("llcr"), 0.0, float(summary.get("ending_pf") or 0) / 1e6,
+        None, 0.0, None, _layout_dscr(layout), _layout_no_debt_cover(layout))
+    debt_row = (_row(str(metric.get("label") or "DSCR"), metric.get("value"), "mult")
+                if metric.get("key") else
+                _row(str(metric.get("label") or "Покрытие кредита"),
+                     str(metric.get("reason") or "не считается"), "text"))
+    irr = summary.get("irr_equity") if na is None else None
+    decision = [
+        _row("Чистая прибыль проекта", summary.get("net_profit"), "rub"),
+        debt_row,
+        (_row("IRR собственника", irr, "pct") if irr is not None
+         else _row("IRR собственника", na or "не считается — поток не меняет знак", "text")),
+        (_row("NPV собственника" + (f" @{float(equity.get('discount_rate') or 0) * 100:.4g}%"
+                                    .replace(".", ",") if equity else ""),
+              equity.get("npv"), "rub") if equity and na is None
+         else _row("NPV собственника", na or "—", "text")),
+        _row("Пик собственных средств", equity.get("peak") if equity else _equity_need(result), "rub"),
+        _row("Цена входа (участок, сделка)", deal_rub, "rub"),
+    ]
+    sections["decision"] = {
+        "brief": [_row("Вывод", verdict["title"], "text"),
+                  _row("Основание", verdict["text"], "text"), *decision[:4]],
+        "verdict": verdict,
+        "goal_seek": {"variable": "purchase_price_mln", "metric": metric.get("key"),
+                      "label": metric.get("label"), "target": metric.get("target"),
+                      "reason": metric.get("reason")},
+        "blocks": [{"title": "Вывод", "kind": "verdict",
+                    "rows": [_row(verdict["title"], verdict["text"], "text")]},
+                   {"title": "Ключевые показатели", "rows": decision},
+                   {"ref": "goal_seek", "title": "Максимальная цена входа по "
+                    + str(metric.get("label") or "покрытию кредита")}],
+    }
+
+    # 2. Объект и участок ---------------------------------------------------
+    object_blocks, gns_total, area_total = [], 0.0, 0.0
+    for item in objects:
+        row = tep.get(str(item.get("key"))) or {}
+        book = item.get("book") or {}
+        income = item.get("strategy") == nonres_strategy.STRATEGY_INCOME
+        area = float(book.get("area_sqm") or 0.0)
+        gns = float(row.get("gns") or 0.0)
+        gns_total += gns
+        area_total += area
+        rows = [_row("Наземная площадь в ГНС", gns, "sqm"),
+                _row("Общая площадь", row.get("total_area"), "sqm"),
+                _row("Арендопригодная площадь" if income else "Продаваемая площадь", area, "sqm")]
+        if float(row.get("under_gns") or 0):
+            rows.append(_row("Подземный гараж — площадь", row.get("under_gns"), "sqm"))
+        if float(row.get("parking_units") or 0):
+            rows.append(_row("Машино-места объекта", row.get("parking_units"), "count"))
+            for key, label in (("parking_under_units", "в т.ч. подземные"),
+                               ("parking_over_units", "в т.ч. на первых этажах"),
+                               ("parking_saleable_units",
+                                "в т.ч. сдаются / продаются" if income else "в т.ч. продаются")):
+                if float(row.get(key) or 0):
+                    rows.append(_row(label, row.get(key), "count"))
+        rows += [_row("Ввод объекта", item.get("commissioning"), "date")]
+        object_blocks.append({"title": item.get("title"), "rows": rows})
+    sections["object"] = {
+        "brief": [_row("Наземная площадь в ГНС", gns_total, "sqm"),
+                  _row("Арендопригодная / продаваемая площадь", area_total, "sqm")],
+        "blocks": [*object_blocks, {"ref": "site", "title": "Участок"}],
+    }
+
+    # 3. Стратегия реализации ----------------------------------------------
+    strategy_blocks, brief = [], []
+    for item in objects:
+        obj = _OBJECT_BY_KEY.get(str(item.get("key")))
+        book = item.get("book") or {}
+        income = item.get("strategy") == nonres_strategy.STRATEGY_INCOME
+        rows = [_row("Стратегия", item.get("strategy_label"), "text")]
+        if not income and float(book.get("price_rub_sqm") or 0):
+            rows.append(_row("Стартовая цена ДКП", float(book["price_rub_sqm"]) / 1000, "th"))
+        rows += _object_param_rows(obj, book.get("params") or {}, str(item.get("strategy")))
+        brief.append(_row(str(item.get("title")), item.get("strategy_label"), "text"))
+        years = [y for y in item.get("years") or []
+                 if (y.get("occupancy") is not None if income else y.get("sale_revenue"))]
+        columns = ([["year", "Год", "text"], ["occupancy", "Загрузка, средняя за год", "pct"]]
+                   if income else
+                   [["year", "Год", "text"], ["sale_revenue", "Выручка ДКП", "mln"],
+                    ["sold_share", "Продано накопленным итогом, доля выручки", "pct"]])
+        strategy_blocks.append({"title": item.get("title"), "rows": rows})
+        if years:
+            strategy_blocks.append({"title": ("График заполнения — " if income
+                                              else "График продаж — ") + str(item.get("title")),
+                                    "columns": columns, "years": years})
+    sections["strategy"] = {"brief": brief, "blocks": strategy_blocks}
+
+    # 4. Доходы ------------------------------------------------------------
+    income_blocks = []
+    totals = {name: sum(float((o.get("totals") or {}).get(name) or 0.0) for o in objects)
+              for name in ("sale_revenue", "rent_revenue", "exit_revenue", "noi",
+                           "opex", "property_tax", "selling_cost", "exit_cost", "vat_paid")}
+    for item in objects:
+        income = item.get("strategy") == nonres_strategy.STRATEGY_INCOME
+        hold = income and item.get("exit_mode") == nonres_strategy.EXIT_HOLD
+        t, kpi = item.get("totals") or {}, item.get("kpi") or {}
+        if income:
+            rows = [_row("Арендная выручка за срок удержания", t.get("rent_revenue"), "rub"),
+                    _row("NOI за срок удержания", t.get("noi"), "rub"),
+                    _row("Стабилизированный NOI, год", kpi.get("stabilized_noi"), "rub"),
+                    _row("Доходность на затраты (NOI / CAPEX)", kpi.get("yield_on_cost"), "pct"),
+                    _row("Стоимость объекта — оценка удержания, без сделки" if hold
+                         else "Выход: продажа по ставке капитализации",
+                         kpi.get("exit_value"), "rub")]
+            columns = [["year", "Год", "text"], ["rent_revenue", "Аренда", "mln"],
+                       ["opex", "Эксплуатация", "mln"], ["property_tax", "Налог на имущество", "mln"],
+                       ["noi", "NOI", "mln"], ["exit_revenue", "Выход", "mln"]]
+        else:
+            rows = [_row("Выручка прямых продаж (ДКП, без эскроу)", t.get("sale_revenue"), "rub"),
+                    _row("Расходы на продажу", t.get("selling_cost"), "rub")]
+            columns = [["year", "Год", "text"], ["sale_revenue", "Выручка ДКП", "mln"],
+                       ["property_tax", "Налог на имущество (непроданное)", "mln"]]
+        years = [y for y in item.get("years") or []
+                 if any(float(y.get(c[0]) or 0) for c in columns[1:])]
+        income_blocks.append({"title": item.get("title"), "rows": rows})
+        if years:
+            income_blocks.append({"title": "По годам — " + str(item.get("title")),
+                                  "columns": columns, "years": years})
+    income_brief = []
+    if totals["sale_revenue"]:
+        income_brief.append(_row("Выручка ДКП", totals["sale_revenue"], "rub"))
+    if totals["rent_revenue"]:
+        income_brief += [_row("Арендная выручка", totals["rent_revenue"], "rub"),
+                         _row("NOI за срок удержания", totals["noi"], "rub")]
+    exit_value = sum(float((o.get("kpi") or {}).get("exit_value") or 0.0) for o in objects
+                     if o.get("strategy") == nonres_strategy.STRATEGY_INCOME)
+    if exit_value:
+        income_brief.append(_row("Стоимость выхода", exit_value, "rub"))
+    sections["income"] = {"brief": income_brief, "blocks": income_blocks}
+
+    # 5. Затраты -----------------------------------------------------------
+    cost_blocks, objects_cost = [], 0.0
+    attributed: dict[str, float] = defaultdict(float)
+    for item in objects:
+        key = str(item.get("key"))
+        own = parts.get(key) or {}
+        if not own:
+            continue
+        row = tep.get(key) or {}
+        area = float((item.get("book") or {}).get("area_sqm") or 0.0)
+        gns = float(row.get("gns") or 0.0)
+        total = sum(float(v or 0.0) for v in own.values())
+        objects_cost += total
+        for name, value in own.items():
+            attributed[name] += float(value or 0.0)
+        rows = [_row(label, own.get(name), "rub") for name, label in OBJECT_COST_PARTS
+                if float(own.get(name) or 0.0)]
+        rows += [_row("Итого смета объекта", total, "rub"),
+                 _row("на м² наземной ГНС объекта", total / gns / 1000 if gns else None, "th"),
+                 _row("на м² арендопригодной / продаваемой", total / area / 1000 if area else None,
+                      "th")]
+        cost_blocks.append({"title": "Смета объекта — " + str(item.get("title")), "rows": rows})
+    common_rows = []
+    if deal_rub:
+        common_rows.append(_row("Участок — стоимость сделки", deal_rub, "rub"))
+    for label, keys in OBJECT_COMMON_COSTS:
+        value = sum(float(capex.get(k) or 0.0) for k in keys)
+        if value > 0.5:
+            common_rows.append(_row(label, value, "rub"))
+    for name, label in (("gc_fee", "Вознаграждение генподрядчика — вне объектов"),
+                        ("technical_supervision", "Технический заказчик — вне объектов"),
+                        ("reserve", "Резерв — вне объектов")):
+        rest = float(capex.get(name) or 0.0) - attributed.get(name, 0.0)
+        if rest > 0.5:
+            common_rows.append(_row(label, rest, "rub"))
+    nonres_keys = {str(o.get("key")) for o in objects}
+    for obj in STANDALONE_OBJECTS:
+        value = float(capex.get(obj.key) or 0.0)
+        if value > 0.5 and obj.key not in nonres_keys:
+            common_rows.append(_row(f"Объект {obj.label} — продаётся не этим отчётом",
+                                    value, "rub"))
+    common_total = sum(float(r["value"] or 0.0) for r in common_rows)
+    common_rows.append(_row("Итого общие затраты", common_total, "rub") if common_rows else
+                       _row("Общих затрат нет", "все затраты стройки начислены от объектов",
+                            "text"))
+    operating = [_row("Эксплуатация (OPEX)", totals["opex"], "rub"),
+                 _row("Налог на имущество", totals["property_tax"], "rub"),
+                 _row("Расходы на продажу ДКП", totals["selling_cost"], "rub"),
+                 _row("Затраты на выход", totals["exit_cost"], "rub")]
+    operating = [r for r in operating if float(r["value"] or 0.0)]
+    operating.append(_row("Итого эксплуатация, налог на имущество и продажа",
+                          sum(float(r["value"]) for r in operating), "rub"))
+    sections["costs"] = {
+        "brief": [_row("Смета объектов", objects_cost, "rub"),
+                  _row("Общие затраты", common_total, "rub"),
+                  _row("Расходы всего", summary.get("total_expenses"), "rub")],
+        "blocks": [*cost_blocks,
+                   {"title": "Общие затраты проекта — участок, ИРД, проект, сети",
+                    "rows": common_rows},
+                   {"title": "Эксплуатация и налог на имущество", "rows": operating},
+                   {"title": "Итог", "rows": [
+                       _row("Затраты стройки — смета объектов и общие",
+                            capex.get("total"), "rub"),
+                       _row("Расходы проекта всего (с процентами, НДС и налогами)",
+                            summary.get("total_expenses"), "rub")]}],
+    }
+
+    # 6. Финансирование ----------------------------------------------------
+    loan_peak = sum(float((o.get("totals") or {}).get("loan_peak") or 0.0) for o in objects)
+    sections["finance"] = {
+        "brief": [_row("Кредит объектов — пик", loan_peak, "rub"), debt_row,
+                  _row("Собственные средства до ввода",
+                       (equity.get("parts") or {}).get("in_build"), "rub")],
+        "blocks": [{"ref": "nonres_financing", "title": "Кредит объекта"},
+                   {"ref": "equity_participation", "title": "Собственное участие"}],
+    }
+
+    # 7. Экономика собственника --------------------------------------------
+    nonres_costs = next((float(e.get("value") or 0.0) for e in report.get("expense_structure") or []
+                         if e.get("label") == NONRES_COSTS_LABEL), 0.0)
+    pnl = [_row("Выручка", summary.get("revenue"), "rub")]
+    if income_any:
+        pnl.append(_row("NOI объектов за горизонт", totals["noi"], "rub"))
+    pnl += [_row("Затраты стройки (смета объектов и общие)", summary.get("capex"), "rub"),
+            _row("Эксплуатация, налог на имущество, продажа и выход", nonres_costs, "rub")]
+    if float(summary.get("commercial_costs") or 0):
+        pnl.append(_row("Коммерческие расходы", summary.get("commercial_costs"), "rub"))
+    pnl += [_row("EBITDA", summary.get("ebitda"), "rub"),
+            _row("Проценты и комиссии", summary.get("financing_cost"), "rub"),
+            _row("Прибыль до налога", summary.get("profit_before_tax"), "rub"),
+            _row("Налог на прибыль", summary.get("profit_tax"), "rub"),
+            # НДС движок вычитает после налога на прибыль: чистая прибыль =
+            # прибыль до налога − налог − НДС к уплате.
+            _row("НДС к уплате", summary.get("vat"), "rub"),
+            _row("Чистая прибыль", summary.get("net_profit"), "rub")]
+    returns = [decision[2], decision[3]]
+    if equity:
+        returns.append(_row("Окупаемость собственных средств",
+                            equity.get("payback_month") or "не окупается за горизонт проекта",
+                            "date" if equity.get("payback_month") else "text"))
+    owner_blocks = [{"title": "Отчёт о прибылях и убытках", "rows": pnl},
+                    {"title": "Доходность собственника", "rows": returns}]
+    if equity.get("years"):
+        owner_blocks.append({"title": "Поток собственника по годам",
+                             "columns": equity.get("columns") or [], "years": equity["years"]})
+    for item in objects:
+        hold = (item.get("strategy") == nonres_strategy.STRATEGY_INCOME
+                and item.get("exit_mode") == nonres_strategy.EXIT_HOLD)
+        rows = object_result_rows(item.get("result") or {}, hold=hold)
+        if rows:
+            owner_blocks.append({"title": "Итог объекта — " + str(item.get("title")),
+                                 "rows": [r for r in rows if r.get("unit") != "section"]})
+    sections["owner"] = {
+        "brief": [_row("EBITDA", summary.get("ebitda"), "rub"),
+                  _row("Чистая прибыль", summary.get("net_profit"), "rub"), *returns[:2]],
+        "blocks": owner_blocks,
+    }
+
+    # 8. Чувствительность ---------------------------------------------------
+    sensitivity = _object_sensitivity(objects, deal_rub, metric.get("key"))
+    meta_labels = {spec["key"]: _sensitivity_label(spec, {})[0] for spec in _SENSITIVITY_PARAMETERS}
+    sections["sensitivity"] = {
+        "brief": [_row("Факторы", ", ".join(meta_labels.get(k, k) for k in sensitivity["parameters"]
+                                            if k in meta_labels and _SENSITIVITY_BY_KEY[k].get("object")),
+                       "text")],
+        "sensitivity": sensitivity,
+        "blocks": [{"ref": "sensitivity", "title": "Чувствительность по факторам объекта"}],
+    }
+
+    # 9. Календарь ----------------------------------------------------------
+    calendar = _object_calendar(report, objects)
+    brief = [_row(str(e["label"]), e["start"], "date") for e in calendar.get("events") or []
+             if e.get("group") in ("Отдельные объекты", "Выход")][:4]
+    sections["calendar"] = {"brief": brief, "calendar": calendar,
+                            "blocks": [{"ref": "calendar", "title": "Календарный план объекта"}]}
+
+    return {"kind": REPORT_KIND_OBJECT,
+            "sections": [{"key": key, "title": title, **sections[key]}
+                         for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
+
+
+def _finalize_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Выход расчёта: решение о доходности капитала, затем объектный отчёт —
+    он читает уже решённые IRR и NPV. Краткие строки разделов ложатся в
+    `report.layout.sections`: их читают бот и тизер."""
+    _apply_equity_returns_to_result(result)
+    if not isinstance(result, dict):
+        return result
+    report = result.get("report")
+    if not isinstance(report, dict) or "object_report" in report:
+        return result
+    built = object_report(result)
+    report["object_report"] = built
+    layout = report.get("layout")
+    if built and isinstance(layout, dict):
+        layout["sections"] = [{"key": s["key"], "title": s["title"], "brief": s["brief"]}
+                              for s in built["sections"]]
+    return result
 
 # Пороги покрытия долга: ориентир банка и нижняя граница «на грани». У LLCR
 # проекта с ПФ — прежние пороги карточки решения; у DSCR кредита объекта — те
@@ -36492,9 +37646,10 @@ def equity_participation_report(months: list[date], equity_cf: list[float],
                          "value": cash_irr if cash_irr is not None
                          else "не считается — деньги не возвращают вложенное",
                          "unit": "pct" if cash_irr is not None else "text"})
+    npv = _monthly_npv(list(equity_cf), discount_rate)
     out_rows += [
         money(f"NPV собственного капитала @{rate_label}%" + (" — с оценкой" if hold else ""),
-              _monthly_npv(list(equity_cf), discount_rate)),
+              npv),
         {"label": "Окупаемость собственных средств" + (" — без оценки" if hold else ""),
          "value": (_month_label(payback.isoformat()) if payback
                    else "не окупается за горизонт проекта"), "unit": "text"},
@@ -36502,7 +37657,12 @@ def equity_participation_report(months: list[date], equity_cf: list[float],
     return {"rows": out_rows, "years": year_rows,
             "columns": [list(c) for c in EQUITY_YEAR_COLUMNS],
             "contributed": contributed, "returned": returned, "parts": parts,
-            "residual": residual_total}
+            "residual": residual_total,
+            # Итог собственника ключами, а не подписями строк: разделы
+            # «Решение» и «Экономика собственника» читают их отсюда.
+            "irr": irr, "npv": npv, "discount_rate": discount_rate, "hold": hold,
+            "peak": -worst, "peak_month": worst_month.isoformat() if worst_month else None,
+            "payback_month": payback.isoformat() if payback else None}
 
 
 # Колонки таблицы «по годам» — одна раскладка для страницы, PDF и книги.
@@ -36824,7 +37984,7 @@ def capex_unit_rows(capex: dict[str, float], bases: dict[str, float]) -> dict[st
 def calculate(req: CalcRequest) -> dict:
     # Решение о доходности капитала принимается один раз, на выходе расчёта:
     # у раннего выхода (наложение фактов) и у основного пути одно правило.
-    return _apply_equity_returns_to_result(_calculate_economics(req))
+    return _finalize_result(_calculate_economics(req))
 
 
 def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -37549,6 +38709,9 @@ def _calculate_economics(req: CalcRequest) -> dict:
              **{key: value for key, value in op["capex_amounts"].items()
                 if key not in ("land_rights_gross", "land_rights_relief")}}, bases),
         "vri": op["vri"],
+        # Смета каждого объекта вне ДДУ — его статья и начисленные от неё
+        # генподряд, техзаказчик и резерв (`object_cost_parts`).
+        "object_costs": op.get("object_cost_parts") or {},
         # Нормативная потребность нежилых объектов в машино-местах. Считается
         # всегда: офисник или ТЦ без парковки — это не «ноль мест», а не
         # заданный вопрос (владелец, 24.08.2026). Норма приходит готовой из
@@ -39590,6 +40753,7 @@ def _consolidate_phase_results(
         "revenue": revenue,
         "revenue_structure": revenue_structure({**revenue, "total": total_revenue}, saleable),
         "capex": capex,
+        "object_costs": _sum_object_costs(results),
         "capex_units": capex_unit_rows(capex, bases),
         "commercial_costs": commercial_costs,
         "finance": finance,
@@ -40972,9 +42136,9 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     """
     bundle = _calculate_phased_with_table(req)
     if isinstance(bundle, dict):
-        _apply_equity_returns_to_result(bundle.get("consolidated"))
+        _finalize_result(bundle.get("consolidated"))
         for item in bundle.get("phases") or []:
-            _apply_equity_returns_to_result((item or {}).get("result"))
+            _finalize_result((item or {}).get("result"))
     return bundle
 
 
@@ -41604,6 +42768,8 @@ def _peak_total_debt(result: dict[str, Any]) -> float:
 
 _SENSITIVITY_METRICS: dict[str, dict[str, Any]] = {
     "llcr":               {"label": "LLCR", "unit": "x", "digits": 3, "better": "higher"},
+    # Долг проекта без ПФ — кредит объектов (`report_layout.debt_metric`).
+    "dscr":               {"label": "DSCR кредита объектов — минимум", "unit": "x", "digits": 2, "better": "higher"},
     "npv_mln":            {"label": "NPV", "unit": "млн ₽", "digits": 0, "better": "higher"},
     "irr_equity_pct":     {"label": "IRR на собственный капитал", "unit": "%", "digits": 1, "better": "higher"},
     "net_profit_mln":     {"label": "Чистая прибыль", "unit": "млн ₽", "digits": 0, "better": "higher"},
@@ -41665,6 +42831,32 @@ _SENSITIVITY_PARAMETERS: list[dict[str, Any]] = [
     {"key": "discount_rate_pct", "kind": "pct", "group": "Финансирование"},
 ]
 
+# Факторы объекта вне ДДУ — вместо цены квартир (владелец, 05.10.2026):
+# ставка аренды, загрузка, ставка капитализации, цена ДКП, ставка кредита и
+# себестоимость объекта. Поле — у каждого экземпляра объекта своё; фактор
+# имеет смысл только при стратегии, которая его читает.
+_NONRES_SENSITIVITY_FACTORS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    ("rent_th_per_sqm_month", "Ставка аренды", "тыс. ₽/м²/мес.", "Доходы",
+     (nonres_strategy.STRATEGY_INCOME,)),
+    ("occupancy_stable_pct", "Стабильная загрузка", "%", "Доходы",
+     (nonres_strategy.STRATEGY_INCOME,)),
+    ("exit_cap_pct", "Ставка капитализации выхода", "%", "Доходы",
+     (nonres_strategy.STRATEGY_INCOME,)),
+    ("price_th_per_sqm", "Цена ДКП", "тыс. ₽/м²", "Доходы", (nonres_strategy.STRATEGY_DIRECT,)),
+    ("cost_th_per_sqm", "Себестоимость стройки", "тыс. ₽/м²", "Затраты",
+     (nonres_strategy.STRATEGY_DIRECT, nonres_strategy.STRATEGY_INCOME)),
+    ("loan_spread_pp", "Спред кредита объекта", "п.п.", "Финансирование",
+     (nonres_strategy.STRATEGY_DIRECT, nonres_strategy.STRATEGY_INCOME)),
+)
+_SENSITIVITY_PARAMETERS += [
+    {"key": f"{obj.prefix}_{suffix}", "kind": "pct", "group": group,
+     "label": f"{label} — {obj.label}", "unit": unit, "object": obj.prefix,
+     "enabled_key": obj.enabled_key, "strategies": strategies,
+     **({"max": 100.0} if suffix == "occupancy_stable_pct" else {})}
+    for obj in STANDALONE_OBJECTS if obj.strategies
+    for suffix, label, unit, group, strategies in _NONRES_SENSITIVITY_FACTORS
+]
+
 _SENSITIVITY_BY_KEY = {item["key"]: item for item in _SENSITIVITY_PARAMETERS}
 
 
@@ -41682,6 +42874,11 @@ def _sensitivity_applicable(
         return ""
     if needs == "social_payment" and str(inputs.get("social_mode") or "") == "Строительство":  # noqa: E501
         return "социальные объекты строятся, а не компенсируются деньгами"
+    if spec.get("object"):
+        if not b(inputs, spec["enabled_key"]):
+            return "объекта нет в проекте"
+        if nonres_strategy.object_strategy(inputs, spec["object"]) not in spec["strategies"]:
+            return "стратегия объекта этот фактор не читает"
     product = spec.get("product")
     if product:
         row = tep.get(product) or {}
@@ -48620,6 +49817,11 @@ details.cadastral-box>summary::marker{color:#888}
 .hotel-kpi td:last-child{text-align:right;white-space:nowrap}
 .hint.hotel-origin{color:#1f6f43}.hint.hotel-default{color:#667085}.hint.hotel-empty{color:#a15c00}.hint.hotel-manual{color:#667085}
 .hotel-preset{display:inline-flex;gap:6px;align-items:center;margin:6px 8px 0 0}
+[data-layout][hidden]{display:none!important}
+.object-report table.object-years td,.object-report table.object-years th{text-align:right;white-space:nowrap}
+.object-report table.object-years td:first-child,.object-report table.object-years th:first-child{text-align:left}
+.object-verdict{font-size:13px;line-height:1.5}
+.object-verdict b{display:block;font-size:15px;margin-bottom:4px}
 table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:1px solid var(--line)}
 [data-nonres-finance-card][hidden],[data-equity-card][hidden]{display:none!important}
 table.nonres-finance-years{width:100%;margin:8px 0 18px;font-size:12px}
@@ -48916,6 +50118,23 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
         <div id="tepDerivedNote" class="import-status" style="display:none"></div>
         <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div><div id="tepUndergroundNote" class="hint" style="margin-top:6px"></div>
       </div>
+      <!-- Сверка сценария: калькулятору ГлавАПУ выставляются НАШИ параметры
+           (доля жилья и коммерции, СПП, площадь, нежильё по ВРИ, соцобъекты,
+           вид права), и его ответ стоит рядом с нашим по видам. Карточка — под
+           таблицей ТЭП: сначала наши числа, ниже их проверка. ГлавАПУ —
+           проверка: наши значения он не заменяет. -->
+      <div class="card" id="glavapuScenarioBox">
+        <div class="section-title">Сверка с калькулятором ГлавАПУ</div>
+        <div class="toolbar">
+          <button class="btn" id="glavapuScenarioButton" onclick="glavapuScenarioCheck()">Сверить сценарий</button>
+          <span style="color:#777;font-size:12px">Калькулятору уходят ТЭП, площадь и соцобъекты этого проекта; считает в фоне 1–3 минуты. ГлавАПУ — проверка, наши значения не меняются.</span>
+        </div>
+        <div id="glavapuScenarioStatus" class="import-status" style="display:none"></div>
+        <!-- Итог — здесь, полная таблица — окном по кнопке (решение владельца,
+             06.10.2026): расчёт идёт минуты, и окно, всплывшее само, перебило
+             бы работу с ТЭП. -->
+        <div id="glavapuScenarioSummary" style="display:none"></div>
+      </div>
     </div>
 
     <div id="vri" class="panel">
@@ -49208,7 +50427,7 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
 
       <div class="report-toc no-print" id="reportToc"></div>
 
-      <div class="report-section" id="rsSite">
+      <div class="report-section" id="rsSite" data-layout="housing">
         <div class="report-section-title">Участок и продукт</div>
       <div class="card">
         <div class="section-title">ТЭП</div>
@@ -49240,7 +50459,7 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
       </div>
       </div>
 
-      <div class="report-section" id="rsSummary">
+      <div class="report-section" id="rsSummary" data-layout="housing">
         <div class="report-section-title">Итог</div>
       <div class="report-2col">
         <div class="card">
@@ -49266,7 +50485,7 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
       </div>
       </div>
 
-      <div class="report-section" id="rsPhases">
+      <div class="report-section" id="rsPhases" data-layout="housing">
         <div class="report-section-title">Очереди проекта</div>
       <div id="phaseReportControls" class="phase-report-nav no-print" style="display:none"></div>
       <div id="phaseComparisonCard" class="card phase-comparison-card">
@@ -49280,7 +50499,7 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
       </div>
       </div>
 
-      <div class="report-section" id="rsExpenses">
+      <div class="report-section" id="rsExpenses" data-layout="housing">
         <div class="report-section-title">Расходы</div>
       <div class="card">
         <div class="report-title">
@@ -49308,7 +50527,7 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
       </div>
       </div>
 
-      <div class="report-section" id="rsIncome">
+      <div class="report-section" id="rsIncome" data-layout="housing">
         <div class="report-section-title">Доходы</div>
       <div class="card">
         <div class="section-title">Структура выручки</div>
@@ -49345,7 +50564,7 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
       </div>
       </div>
 
-      <div class="report-section" id="rsFinance">
+      <div class="report-section" id="rsFinance" data-layout="housing">
         <div class="report-section-title">Финансирование</div>
       <div class="card" data-nonres-finance-card hidden>
         <div class="section-title">Финансирование объекта — кредит вне ДДУ</div>
@@ -49386,6 +50605,12 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
       </div>
       </div>
 
+      <!-- Отчёт проекта без жилья — свои разделы (`report.object_report`
+           движка): решение → объект → стратегия → доходы → затраты →
+           финансирование → экономика собственника. Чувствительность и
+           календарь — общие разделы ниже, с заголовками из `report.layout`. -->
+      <div id="objectReport" data-layout="object" hidden></div>
+
       <div class="report-section" id="rsSensitivity">
         <div class="report-section-title">Чувствительность</div>
       <div class="card">
@@ -49401,8 +50626,21 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
       </div>
       </div>
 
-      <div class="note warning">LLCR, NPV и IRR в веб-модели являются расчётными показателями текущего движка. До полного отказа от Excel кредитный CF и доходность должны быть окончательно сверены помесячно с эталонной моделью.</div>
+      <div class="note warning" data-layout="housing">LLCR, NPV и IRR в веб-модели являются расчётными показателями текущего движка. До полного отказа от Excel кредитный CF и доходность должны быть окончательно сверены помесячно с эталонной моделью.</div>
     </div>
+  </div>
+</div>
+
+<!-- Сверка с калькулятором ГлавАПУ: полная таблица «наше / ГлавАПУ» окном.
+     Открывается кнопкой из карточки на вкладке «ТЭП», само не всплывает. -->
+<div id="glavapuScenarioDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:80;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeGlavapuScenario()">
+  <div style="background:#fff;max-width:1200px;width:100%;max-height:88vh;overflow:auto;padding:22px 24px">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px">
+      <h2 style="margin:0;font-size:17px">Сверка с калькулятором ГлавАПУ</h2>
+      <button class="btn" style="margin-left:auto" onclick="closeGlavapuScenario()">Закрыть</button>
+    </div>
+    <div id="glavapuScenarioResult"></div>
   </div>
 </div>
 
@@ -49927,6 +51165,13 @@ function nonresCell(row){
  if(row.unit==='pct')return (Number(v||0)*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%';
  if(row.unit==='mult')return v==null?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x';
  if(row.unit==='date')return v?String(v).slice(0,7).split('-').reverse().join('.'):'—';
+ // Объектная вёрстка (`object_report`): метры, места, тыс ₽/м² и вводная со
+ // своей единицей.
+ const nf=(x,d)=>Number(x).toLocaleString('ru-RU',{minimumFractionDigits:d[0],maximumFractionDigits:d[1]});
+ if(row.unit==='sqm')return v==null?'—':nf(v,[0,0])+' м²';
+ if(row.unit==='count')return v==null?'—':nf(v,[0,0]);
+ if(row.unit==='th')return v==null?'—':nf(v,[1,1])+' тыс ₽/м²';
+ if(row.unit==='num')return v==null?'—':nf(v,[0,2])+(row.suffix?' '+escapeHtml(row.suffix):'');
  if(row.unit==='section')return '';
  return escapeHtml(String(v??'—'));
 }
@@ -49973,6 +51218,90 @@ function renderNonresStrategy(r){
  box.innerHTML=items.map(item=>`<table class="nonres-strategy" data-object="${escapeHtml(item.key)}" data-strategy="${escapeHtml(item.strategy)}"><caption>${escapeHtml(item.title)}</caption><tbody>${
   item.rows.map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}${
   (item.warnings||[]).map(w=>`<tr class="warn"><td>${escapeHtml(w)}</td><td></td></tr>`).join('')}</tbody></table>`).join('');
+}
+// Отчёт проекта без жилья (`report.object_report`): вёрстку выбирает движок
+// (`report_layout.kind`), разделы и строки собирает он же — страница печатает.
+// Чувствительность и календарь — общие разделы, заголовки — из движка.
+const OBJECT_SHARED_SECTIONS={sensitivity:'rsSensitivity',calendar:'rsCalendar'};
+function objectReportOf(r){
+ const layout=reportLayout(r),rep=((r||{}).report||{}).object_report||{};
+ return layout.kind==='object'&&(rep.sections||[]).length?rep:null;
+}
+function objectSection(r,key){const rep=objectReportOf(r);return rep?(rep.sections.find(s=>s.key===key)||null):null}
+function objectRowsHtml(rows,cls){
+ return `<table class="nonres-strategy ${cls||'object-rows'}"><tbody>${(rows||[]).map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}</tbody></table>`;
+}
+function objectYearsHtml(block){
+ const cols=block.columns||[];
+ return `<div class="scroll"><table class="object-years"><thead><tr>${cols.map(c=>`<th>${escapeHtml(c[1])}</th>`).join('')}</tr></thead><tbody>${
+  (block.years||[]).map(y=>`<tr>${cols.map(c=>`<td>${c[2]==='text'?escapeHtml(String(y[c[0]])):nonresCell({unit:c[2],value:y[c[0]]})}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+function objectRefHtml(block,section){
+ const t=`<div class="section-title">${escapeHtml(block.title||'')}</div>`;
+ if(block.ref==='nonres_financing')return `<div class="card" data-nonres-finance-card hidden>${t}<div class="nonres-finance-box"></div></div>`;
+ if(block.ref==='equity_participation')return `<div class="card" data-equity-card hidden>${t}<div class="equity-box"></div></div>`;
+ if(block.ref==='goal_seek'){
+  const g=section.goal_seek||{};
+  return `<div class="card no-print" data-object-goal-seek>${t}`+(g.metric
+   ?`<div style="font-size:12px;color:#555;margin-bottom:8px">Подбор — полный пересчёт модели движком: наибольшая цена участка, при которой «${escapeHtml(g.label||'')}» не ниже ${nonresCell({unit:'mult',value:g.target})}.</div><button class="btn" onclick="runObjectGoalSeek()">Подобрать цену входа</button> <span id="objectGoalSeekResult" style="font-size:12px"></span>`
+   :`<div style="font-size:12px;color:#777">${escapeHtml(g.reason||'Показателя долга у проекта нет — подбирать цену не по чему.')}</div>`)+'</div>';
+ }
+ if(block.ref==='site'){
+  // Участок — из вводных проекта: площадь и кадастровые номера.
+  const area=Number(inputs.site_area_ha||0),cads=String(inputs.cadastral_numbers||'').trim(),rows=[];
+  if(area>0)rows.push({label:'Площадь участка',value:area.toLocaleString('ru-RU',{maximumFractionDigits:4})+' га',unit:'text'});
+  if(cads)rows.push({label:'Кадастровые номера',value:cads,unit:'text'});
+  return rows.length?`<div class="card">${t}${objectRowsHtml(rows,'object-site')}</div>`:'';
+ }
+ return '';
+}
+function objectBlockHtml(block,section){
+ if(block.ref)return objectRefHtml(block,section);
+ if(block.kind==='verdict'&&section.verdict){
+  const v=section.verdict;
+  return `<div class="card object-verdict" data-status="${escapeHtml(v.status||'')}"><b>${escapeHtml(v.title||'')}</b>${escapeHtml(v.text||'')}</div>`;
+ }
+ const t=block.title?`<div class="section-title">${escapeHtml(block.title)}</div>`:'';
+ return `<div class="card">${t}${block.years?objectYearsHtml(block):objectRowsHtml(block.rows)}</div>`;
+}
+function renderObjectReport(r){
+ const box=document.getElementById('objectReport');
+ if(!box)return;
+ const rep=objectReportOf(r);
+ document.querySelectorAll('[data-layout]').forEach(el=>{el.hidden=rep?el.dataset.layout!=='object':el.dataset.layout==='object'});
+ Object.entries(OBJECT_SHARED_SECTIONS).forEach(([key,id])=>{
+  const title=document.querySelector('#'+id+' > .report-section-title');
+  if(!title)return;
+  if(!title.dataset.housingTitle)title.dataset.housingTitle=title.textContent;
+  const s=rep&&rep.sections.find(x=>x.key===key);
+  title.textContent=s?s.title:title.dataset.housingTitle;
+ });
+ box.innerHTML=rep?rep.sections.filter(s=>!OBJECT_SHARED_SECTIONS[s.key]).map(s=>
+  `<div class="report-section object-report" id="rsObj-${escapeHtml(s.key)}" data-section="${escapeHtml(s.key)}"><div class="report-section-title">${escapeHtml(s.title)}</div>${
+   (s.blocks||[]).map(b=>objectBlockHtml(b,s)).join('')}</div>`).join(''):'';
+ // Таблицы кредита и собственного участия рисуют свои функции во все свои
+ // ящики — и в ящики раздела «Финансирование» этой вёрстки.
+ renderNonresFinancing(r);
+ renderEquityParticipation(r);
+}
+// Разделы меню отчёта: объектная вёрстка — список движка, жилая — прежний.
+function reportTocSections(r){
+ const rep=objectReportOf(r);
+ if(!rep)return REPORT_SECTIONS;
+ return rep.sections.map(s=>[OBJECT_SHARED_SECTIONS[s.key]||('rsObj-'+s.key),s.title]);
+}
+async function runObjectGoalSeek(){
+ const out=document.getElementById('objectGoalSeekResult');
+ if(out)out.textContent='Считаю…';
+ try{
+  const response=await fetch('/ia/goal-seek',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({inputs,tep,rates,phasing,variable:'purchase_price_mln'})});
+  const data=await response.json();
+  if(!response.ok)throw new Error(data.detail||'Подбор не выполнен');
+  if(data.available===false)throw new Error(data.reason||'Показателя долга у проекта нет');
+  const v=(data.solution||{}).variable;
+  if(out)out.textContent=v!=null?('Максимальная цена входа: '+Number(v).toLocaleString('ru-RU',{maximumFractionDigits:0})+' млн ₽'):(data.reason||'Цель не достигается в границах подбора');
+ }catch(e){if(out)out.textContent=String(e.message||e)}
 }
 const STRATEGY_FIELD_READERS_SWITCHES=[...new Set(Object.values(STRATEGY_FIELD_READERS).map(r=>r[0]))];
 function strategyHides(id){const r=STRATEGY_FIELD_READERS[id];return !!r&&!r[1].includes(objectStrategy(r[0]))}
@@ -51461,6 +52790,124 @@ function tepSourceLabel(manual){
  return /серверн/i.test(fmt)?'ГлавАПУ · серверный расчёт DevelopAid'
                             :'ГлавАПУ · штатный калькулятор';
 }
+// Сверка «наше / ГлавАПУ». Сервер ставит задание браузеру и отвечает сразу;
+// страница спрашивает тот же маршрут, пока задание не кончится. Таблицу
+// собирает glavapuScenarioHtml — одна функция и для окна, и для теста.
+const GLAVAPU_SCENARIO_STATUS={match:['совпало','#2e7d32'],diff:['расходится','#b3261e'],
+ reference:['справочно','#666'],
+ not_applied:['параметр не принят','#8a4b08'],ours_missing:['нет нашей величины','#666'],
+ glavapu_missing:['нет у ГлавАПУ','#666']};
+let glavapuScenarioRun=0;
+function glavapuScenarioNum(v){
+ if(v===null||v===undefined||v==='')return '—';
+ const x=Number(v);if(!isFinite(x))return escapeHtml(String(v));
+ // Ноль в пределах округления — ноль, а не «-0».
+ if(Math.abs(x)<0.0005)return '0';
+ return x.toLocaleString('ru-RU',{maximumFractionDigits:Math.abs(x)<1000?3:0});
+}
+function glavapuScenarioHtml(a){
+ a=a||{};
+ const parts=[];
+ const sc=a.scenario||{},p=sc.params||{};
+ if(a.state==='done'||a.comparison){
+  const c=a.comparison||{rows:[],counts:{}};
+  const counts=c.counts||{};
+  parts.push('<div class="note" style="margin:6px 0">ГлавАПУ — проверка (роль '+escapeHtml(a.role||'validation_only')+
+   '): его числа стоят рядом и ничего в проекте не заменяют. Совпало: '+(counts.match||0)+
+   ', расходится: '+(counts.diff||0)+(counts.not_applied?', не принят параметр: '+counts.not_applied:'')+'.</div>');
+  let group='';
+  const rows=(c.rows||[]).map(r=>{
+   const st=GLAVAPU_SCENARIO_STATUS[r.status]||[r.status,'#333'];
+   const head=r.group!==group?'<tr class="glavapu-scenario-group"><td colspan="5" style="font-weight:600;background:#fafaf8">'+escapeHtml(r.group)+'</td></tr>':'';
+   group=r.group;
+   return head+'<tr data-kind="'+escapeHtml(r.kind)+'" data-status="'+escapeHtml(r.status)+'">'+
+    '<td>'+escapeHtml(r.label)+'</td>'+
+    '<td style="text-align:right">'+glavapuScenarioNum(r.ours)+'<div style="font-size:10px;color:#888">'+escapeHtml(r.ours_origin||'')+'</div></td>'+
+    '<td style="text-align:right">'+glavapuScenarioNum(r.glavapu)+'<div style="font-size:10px;color:#888">'+escapeHtml(r.glavapu_origin||'')+'</div></td>'+
+    '<td style="text-align:right">'+glavapuScenarioNum(r.delta)+'</td>'+
+    '<td style="color:'+st[1]+'"><b>'+escapeHtml(st[0])+'</b>'+(r.reason?'<div style="font-size:11px">'+escapeHtml(r.reason)+'</div>':'')+'</td></tr>';
+  }).join('');
+  parts.push('<div class="scroll" style="max-height:none"><table class="glavapu-scenario-table"><thead><tr><th>Показатель</th><th>Наше</th><th>ГлавАПУ</th><th>Разница</th><th>Итог и причина</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
+ }
+ const refused=((a.applied||{}).refused)||[];
+ if(refused.length){
+  parts.push('<div class="note warning"><b>Калькулятор не принял:</b><br>'+refused.map(r=>
+   escapeHtml(r.param)+' — '+escapeHtml(r.reason)+' <span style="color:#777">('+escapeHtml(r.place)+')</span>').join('<br>')+'</div>');
+ }
+ const notSent=sc.not_sent||[];
+ if(notSent.length){
+  parts.push('<div class="note warning"><b>Не передано в калькулятор:</b><br>'+notSent.map(r=>escapeHtml(r.reason)).join('<br>')+'</div>');
+ }
+ if(p&&p.area_ha!==undefined){
+  const nonres=(p.nonres||[]).map(x=>escapeHtml(x.menu)+' '+glavapuScenarioNum(x.spp_ths)).join(', ')||'нет';
+  const social=(p.social||[]).map(x=>escapeHtml(x.label)+' '+x.places+' мест').join(', ')||'нет';
+  const ratio=(((a.applied||{}).applied)||[]).find(x=>x.param==='ratio');
+  parts.push('<details style="margin-top:6px"><summary style="font-size:12px">Что передано калькулятору</summary><div class="note">'+
+   'Площадь '+glavapuScenarioNum(p.area_ha)+' га; СПП жилых зданий '+glavapuScenarioNum(p.spp_residential_ths)+
+   ' тыс. м², из них нежилая часть '+glavapuScenarioNum(p.vpp_pct)+'%; нежилые по ВРИ: '+nonres+
+   '; соцобъекты: '+social+(p.land_right?'; право — '+escapeHtml(p.land_right):'')+'.'+
+   (ratio?' Ползунок калькулятора «Соотношение жилых / нежилых зданий» встал на: '+escapeHtml(ratio.got)+'.':'')+'</div></details>');
+ }
+ return parts.join('');
+}
+function glavapuScenarioStatusText(a){
+ a=a||{};
+ if(a.state==='queued')return 'Задание поставлено, калькулятор ГлавАПУ начнёт расчёт…';
+ if(a.state==='running')return 'Калькулятор ГлавАПУ считает наш сценарий…';
+ if(a.state==='done')return 'Сверка готова'+(a.seconds?' ('+a.seconds+' с)':'')+'.';
+ const where=a.where?' Место: '+a.where+'.':'';
+ const hint=a.hint?' '+a.hint:'';
+ return 'Сверка не выполнена: '+(a.error||a.state||'нет ответа')+'.'+where+hint;
+}
+async function glavapuScenarioCheck(force){
+ const run=++glavapuScenarioRun;
+ const status=document.getElementById('glavapuScenarioStatus');
+ const box=document.getElementById('glavapuScenarioResult');
+ status.style.display='block';
+ status.textContent='Ставлю задание калькулятору ГлавАПУ…';
+ const summaryBox=document.getElementById('glavapuScenarioSummary');
+ summaryBox.innerHTML='';summaryBox.style.display='none';
+ const body={inputs,tep,force:!!force};
+ let answer=null;
+ try{
+  for(let i=0;i<120;i++){
+   const response=await fetch('/glavapu/scenario',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(i?Object.assign({},body,{poll:true,force:false}):body)});
+   answer=await response.json();
+   if(!response.ok)throw new Error(answer.detail||('HTTP '+response.status));
+   if(run!==glavapuScenarioRun)return;
+   status.textContent=glavapuScenarioStatusText(answer);
+   if(answer.state!=='queued'&&answer.state!=='running')break;
+   await new Promise(r=>setTimeout(r,4000));
+  }
+ }catch(error){
+  status.textContent='Сверка не выполнена: '+error.message+'. Место: запрос страницы к /glavapu/scenario.';
+  return;
+ }
+ box.innerHTML=glavapuScenarioHtml(answer);
+ const summary=document.getElementById('glavapuScenarioSummary');
+ summary.innerHTML=glavapuScenarioSummaryHtml(answer);
+ summary.style.display=summary.innerHTML?'':'none';
+}
+// Короткий итог для карточки: сколько совпало и разошлось, и кнопка окна.
+// Отказ сюда не пишется — его причина и место уже в строке статуса.
+function glavapuScenarioSummaryHtml(a){
+ a=a||{};
+ if(a.state!=='done'||!a.comparison)return '';
+ const c=a.comparison.counts||{};
+ const parts=['совпало: '+(c.match||0),'расходится: '+(c.diff||0)];
+ if(c.not_applied)parts.push('параметр не принят: '+c.not_applied);
+ if(c.ours_missing)parts.push('нет нашей величины: '+c.ours_missing);
+ if(c.glavapu_missing)parts.push('нет у ГлавАПУ: '+c.glavapu_missing);
+ const refused=((a.applied||{}).refused||[]).length;
+ const notSent=((a.scenario||{}).not_sent||[]).length;
+ const warn=(refused?' Калькулятор не принял полей: '+refused+'.':'')+(notSent?' Не передано: '+notSent+'.':'');
+ return '<div class="toolbar" style="margin-top:8px"><span style="font-size:13px">'+escapeHtml(parts.join(' · '))+'.'+
+  (warn?'<span style="color:#8a4b08">'+escapeHtml(warn)+'</span>':'')+
+  '</span><button class="btn dark" onclick="openGlavapuScenario()">Открыть сверку</button></div>';
+}
+function openGlavapuScenario(){document.getElementById('glavapuScenarioDialog').style.display='flex'}
+function closeGlavapuScenario(){document.getElementById('glavapuScenarioDialog').style.display='none'}
 async function obtainServerTep(analysis,status,runId){
  // Формулы калькулятора, посчитанные сервером: равноценная замена
  // браузерной автоматизации, а не суррогат — сходятся до единицы.
@@ -58501,6 +59948,7 @@ function renderResult(){
  (layout.nonres_tiles||[]).forEach(t=>reportKpis.push([t.label,nonresCell(t)]));
  reportKpi.innerHTML=reportKpis.map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
  applyReportLayout(layout);
+ renderObjectReport(r);
 
  const rveWarning=document.getElementById('pfRveWarning');
  if(rveWarning){
@@ -59050,13 +60498,21 @@ function renderResult(){
  // обязан быть тем же документом, что уходит в печать.
  {
   const dates=document.getElementById('reportCalendarDates');
-  if(dates)dates.innerHTML=[
+  // У проекта без жилья — свой календарь (`object_report`): стройка объекта,
+  // продажи / заполнение, кредит и выход; вех эскроу у него нет.
+  const objCal=(objectSection(r,'calendar')||{}).calendar;
+  const objItems=objCal?(((r.finance||{}).nonres||{}).objects||[]):null;
+  if(dates)dates.innerHTML=(objItems?[
+   ['Начало',r.dates.project_start],['РнС',r.dates.permit],
+   ...objItems.map(o=>['Ввод — '+escapeHtml(o.title||o.key),o.commissioning]),
+   ...objItems.map(o=>['Конец горизонта — '+escapeHtml(o.title||o.key),o.horizon_end]),
+  ]:[
    ['Начало',r.dates.project_start],['РнС',r.dates.permit],
    ['Старт продаж',r.dates.sales_start],['РВЭ',r.dates.rve]
-  ].map(x=>`<div class="datebox">${x[0]}<b>${dateRu(x[1])}</b></div>`).join('');
-  renderGantt('reportCalendarGantt',r.report.calendar);
+  ]).map(x=>`<div class="datebox">${x[0]}<b>${dateRu(x[1])}</b></div>`).join('');
+  renderGantt('reportCalendarGantt',objCal&&(objCal.events||[]).length?objCal:r.report.calendar);
   renderReportSensitivity();
-  renderReportToc();
+  renderReportToc(r);
  }
 
  {
@@ -59231,7 +60687,7 @@ function renderReportSensitivity(){
  renderTornado(sensitivityReport,'reportTornado');
 }
 
-function renderReportToc(){
+function renderReportToc(r){
  // Ссылка, ведущая в пустоту, хуже её отсутствия: очередей у одноочередного
  // проекта нет, чувствительности — пока её не посчитали.
  //
@@ -59243,7 +60699,7 @@ function renderReportToc(){
  const toc=document.getElementById('reportToc');
  if(!toc)return;
  const shown=el=>{try{return getComputedStyle(el).display!=='none'}catch(e){return true}};
- toc.innerHTML=REPORT_SECTIONS.filter(([id])=>{
+ toc.innerHTML=reportTocSections(r||(typeof lastResult!=='undefined'?lastResult:null)).filter(([id])=>{
   const node=document.getElementById(id);
   if(!node||!shown(node))return false;
   return Array.from(node.children).some(child=>!child.classList.contains('report-section-title')
@@ -59308,7 +60764,7 @@ function renderGantt(targetId,calendar){
      const l=pos(e.start),rgt=pos(e.end),w=Math.max(.4,rgt-l);
      const phaseIndex=Number(e.phase_index||0);
      const phaseColor=phaseIndex?phasePalette[Math.min(phaseIndex-1,phasePalette.length-1)]:null;
-     let cls='';if(g==='Финансирование')cls=' finance';else if(g==='Продажи')cls=' sales';else if(g==='Социальная нагрузка')cls=' social';
+     let cls='';if(g==='Финансирование')cls=' finance';else if(g==='Продажи'||g==='Аренда')cls=' sales';else if(g==='Социальная нагрузка')cls=' social';
      const phaseClass=phaseColor?' phase-colored':'';
      const phaseStyle=phaseColor?`--phase-color:${phaseColor};`:'';
      const shape=e.kind==='milestone'
@@ -59540,12 +60996,19 @@ async function renderSensitivityForm(){
  if(!box)return;
  const options=await loadSensitivityOptions();
  const scopes=sensitivityScopes();
+ // Показатель и факторы проекта без жилья — из движка (`object_report`):
+ // DSCR кредита объектов вместо LLCR, аренда, загрузка, ставка
+ // капитализации, цена ДКП и ставка кредита вместо цены квартир.
+ const objSens=(objectSection(typeof lastResult!=='undefined'?lastResult:null,'sensitivity')||{}).sensitivity;
+ const debtKey=((reportLayout(typeof lastResult!=='undefined'?lastResult:null).debt_metric)||{}).key;
+ const bankOnly=['llcr','peak_bridge_mln','pf_draw_total_mln'];
+ const metrics=options.metrics.filter(m=>m.key==='dscr'?debtKey==='dscr':!(objSens&&bankOnly.includes(m.key)));
  const field=(label,html)=>`<div class="field"><label>${label}</label>${html}</div>`;
  const select=(id,pairs,current)=>`<select id="${id}">`+pairs.map(
    ([value,text])=>`<option value="${value}" ${String(value)===String(current)?'selected':''}>${escapeHtml(text)}</option>`
  ).join('')+'</select>';
  box.innerHTML=
-   field('Показатель',select('sensMetric',options.metrics.map(m=>[m.key,m.label]),'llcr'))
+   field('Показатель',select('sensMetric',metrics.map(m=>[m.key,m.label]),objSens?objSens.metric:'llcr'))
   +field('Что анализируем',select('sensScope',scopes,scopes[0][0]))
   +field('Отклонение процентных параметров',select('sensPct',[['5','±5%'],['10','±10%'],['20','±20%'],['custom','Своё значение']],'10'))
   +field('Отклонение сроков',select('sensMonths',[['3','±3 месяца'],['6','±6 месяцев'],['12','±12 месяцев'],['custom','Своё значение']],'6'))
@@ -59557,19 +61020,20 @@ async function renderSensitivityForm(){
  document.getElementById('sensMonths').onchange=e=>{
   document.getElementById('sensMonthsCustom').disabled=e.target.value!=='custom';
  };
- renderSensitivityPicker(options);
+ renderSensitivityPicker(options,objSens);
 }
 
-function renderSensitivityPicker(options){
+function renderSensitivityPicker(options,objSens){
  const box=document.getElementById('sensitivityParams');
  if(!box)return;
  const groups={};
- options.parameters.forEach(p=>{(groups[p.group]=groups[p.group]||[]).push(p)});
+ const picked=objSens?objSens.parameters||[]:null;
+ options.parameters.filter(p=>!picked||picked.includes(p.key)).forEach(p=>{(groups[p.group]=groups[p.group]||[]).push(p)});
  box.innerHTML='<p style="font-size:11px;color:#777;margin:0 0 8px">Ничего не отмечено — берутся все параметры, применимые к текущей модели. Продукты, которых нет в ТЭП, и нулевые значения не анализируются: их изменение ничего не поменяет.</p>'
   +Object.entries(groups).map(([group,list])=>
     `<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:#555;margin-bottom:4px">${escapeHtml(group)}</div>`
     +list.map(p=>`<label style="display:inline-block;margin:0 14px 6px 0;font-size:12px">`
-      +`<input type="checkbox" class="sens-param" value="${p.key}"> ${escapeHtml(p.label)}</label>`).join('')
+      +`<input type="checkbox" class="sens-param" value="${p.key}"${picked?' checked':''}> ${escapeHtml(p.label)}</label>`).join('')
     +'</div>').join('');
 }
 
@@ -60387,6 +61851,11 @@ function forgetTerritoryState(){
  // Опрос НСПД по прошлому участку может ещё идти: номер прогона отсекает его
  // ответ, иначе он дорисует чужие зоны поверх нового проекта.
  ++landScreeningRun;
+ // Сверка сценария с ГлавАПУ — про прошлый проект: номер запуска отсекает
+ // опоздавший ответ, а таблица и статус снимаются вместе с остальным.
+ ++glavapuScenarioRun;
+ ['glavapuScenarioResult','glavapuScenarioStatus','glavapuScenarioSummary'].forEach(id=>{const box=document.getElementById(id);if(box){box.innerHTML='';box.style.display=id==='glavapuScenarioResult'?'':'none'}});
+ closeGlavapuScenario();
  ['cadastralNumbers','landQuery','moQuery'].forEach(id=>{const field=document.getElementById(id);if(field)field.value=''});
  // Память о вписанном номере (`inputs._cadastral_query`) здесь НЕ трогаем:
  // обе двери этой функции пересобирают `inputs` заново — `applyProjectSnapshot`
@@ -60607,7 +62076,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence',
+ 'landScreeningRun','tepRunSequence','glavapuScenarioRun',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN'];
 

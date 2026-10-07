@@ -209,6 +209,21 @@ def test_two_objects_share_one_construction_block() -> None:
     assert abs(common["offices"] - common["standalone_retail"]) > 0.3 * project_articles
 
 
+def test_a_turnkey_object_takes_no_share_of_the_gc_fee() -> None:
+    """Смета объекта (`object_cost_parts`): у объекта «под ключ» в смешанном
+    проекте доли генподряда и техзаказчика нет — они в его ставке. Прежняя
+    раскладка own / works_base дала бы офису долю генподряда дома."""
+    x = copy.deepcopy(core.DEFAULT_INPUTS)
+    x.update(offices_enabled=True)
+    parts = core.build_operating_model(x, copy.deepcopy(core.TEP_DEFAULT))["object_cost_parts"]
+    assert parts["offices"]["building"] > 0
+    assert parts["offices"]["gc_fee"] == 0.0
+    assert parts["offices"]["technical_supervision"] == 0.0
+    assert parts["offices"]["reserve"] == pytest.approx(
+        (parts["offices"]["building"] + parts["offices"]["garage"])
+        * core.DEFAULT_INPUTS["reserve_pct"] / 100)
+
+
 # --- Книга ПЛАТО v4 ----------------------------------------------------------
 
 _V4_ROWS = {27: "technical_supervision", 29: "gc_fee", 30: "reserve"}
