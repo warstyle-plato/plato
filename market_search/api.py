@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -465,14 +466,21 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         return report
 
     @app.get("/market/pulse/regions")
-    async def market_pulse_regions(request: Request) -> dict[str, Any]:
+    async def market_pulse_regions(request: Request) -> Response:
         """Недельный свод рынка по регионам из кабинета: когда, сколько, ошибки.
 
         Только диск: состояние сбора и готовые своды. Сам сбор идёт фоном раз
         в неделю или по `POST /market/pulse/regions/run`.
+
+        Кодировка названа в заголовке: эту страницу открывают прямо в
+        браузере телефона, и без `charset` Safari читал причины кракозябрами.
         """
         cabinet_module.require_cabinet(request)
-        return await run_in_threadpool(service.region_market.status)
+        status = await run_in_threadpool(service.region_market.status)
+        return Response(
+            content=json.dumps(status, ensure_ascii=False, indent=1),
+            media_type="application/json; charset=utf-8",
+        )
 
     @app.post("/market/pulse/regions/run")
     async def market_pulse_regions_run(

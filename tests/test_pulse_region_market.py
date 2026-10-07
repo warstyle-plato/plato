@@ -320,7 +320,9 @@ def test_the_regions_route_is_behind_the_cabinet_key(monkeypatch, tmp_path: Path
     install(app)
     assert TestClient(app).get("/market/pulse/regions").status_code == 401
     opened = TestClient(app, headers={"X-Market-Key": "stand-key-2026"})
-    status = opened.get("/market/pulse/regions").json()
+    answer = opened.get("/market/pulse/regions")
+    assert answer.headers["content-type"] == "application/json; charset=utf-8"
+    status = answer.json()
     assert "russia.pulsprodaj.ru" in status["blocker"]
     assert status["regions"][0]["region"] == "50" and status["interval_days"] == 7
     run = opened.post("/market/pulse/regions/run").json()
