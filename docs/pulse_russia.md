@@ -40,6 +40,9 @@
 
 ## Диагностика (под ключом кабинета)
 
+Доступ к поддомену `russia` (вход через сессию `pulsprodaj.ru`, 403
+«в разработке», адрес карты, `map_probe`) — в `docs/pulse_subdomain_access.md`.
+
     GET /market/pulse/catalog                       — только диск
     GET /market/pulse/catalog?refresh=1             — забрать карту и классы заново
     GET /market/pulse/catalog?q=Мытищи&check=1      — подсказка + цена/остатки первого
