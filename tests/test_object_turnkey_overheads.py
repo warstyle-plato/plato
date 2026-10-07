@@ -175,6 +175,40 @@ def test_the_smr_default_keeps_the_turnkey_total() -> None:
         "offices_cost_th_per_sqm"] == core.PROJECT_CLASS_PRESETS["comfort"]["offices_cost_th_per_sqm"]
 
 
+def _two_objects() -> tuple[dict, dict]:
+    x, t = _nonres_inputs(retail_enabled=True, retail_gba_sqm=15000.0,
+                          retail_saleable_sqm=11000.0, retail_strategy="income",
+                          _parking_by_hand=["offices", "retail"])
+    t.setdefault("standalone_retail", {}).update(gns=15000.0, total_area=14100.0,
+                                                 useful=11000.0, saleable=11000.0)
+    return x, t
+
+
+def test_two_objects_share_one_construction_block() -> None:
+    """Офис + ТЦ: один блок «Строительство» на проект. Статьи проекта и
+    проценты считаются от суммарных баз, а объекты получают их долей своей
+    стройки — тем же `common_capex`, что делит общие затраты нежилого проекта
+    между кредитами объектов. Сумма долей равна статьям проекта; доля каждого
+    — его стройка к стройке всех объектов (подделка 50/50 здесь краснеет:
+    стройки 7 000 и 3 000 млн)."""
+    x, t = _two_objects()
+    result = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
+    capex = result["capex"]
+    # Один блок: статьи проекта от суммы площадей, своих ставок у объекта нет.
+    assert capex["ird"] == pytest.approx((40000 + 15000) * x["ird_th_per_sqm"] * 1000)
+    assert capex["gc_fee"] == pytest.approx(
+        (capex["offices"] + capex["standalone_retail"]) * x["gc_fee_pct"] / 100)
+    objects = {o["key"]: o for o in result["finance"]["nonres"]["objects"]}
+    common = {key: float(objects[key]["result"]["common_capex"])
+              for key in ("offices", "standalone_retail")}
+    project_articles = capex["total"] - capex["offices"] - capex["standalone_retail"]
+    assert sum(common.values()) == pytest.approx(project_articles, rel=1e-9)
+    built = capex["offices"] + capex["standalone_retail"]
+    for key, value in common.items():
+        assert value == pytest.approx(project_articles * capex[key] / built, rel=1e-9), key
+    assert abs(common["offices"] - common["standalone_retail"]) > 0.3 * project_articles
+
+
 # --- Книга ПЛАТО v4 ----------------------------------------------------------
 
 _V4_ROWS = {27: "technical_supervision", 29: "gc_fee", 30: "reserve"}
@@ -310,3 +344,22 @@ def test_the_page_follows_the_project_kind() -> None:
     assert back == [turnkey, core.OBJECT_SMR_RATE_DEFAULTS["retail_cost_th_per_sqm"]]
     assert core.OBJECT_TURNKEY_HINT in hint_mixed, hint_mixed
     assert loaded == [smr, core.PROJECT_KIND_NONRESIDENTIAL]
+
+
+def test_the_book_shares_the_block_by_construction() -> None:
+    """Книга двух объектов: доля общих затрат — стройка объекта к стройке
+    всех, «Сверка» ПРОЙДЕНО; поддельная доля 50/50 краснеет."""
+    x, t = _two_objects()
+    content, _, meta = core.build_project_workbook(x, t, [], {}, project_name="Два")
+    assert meta.get("nonres_book") is True and meta["missing"] == []
+    book = openpyxl.load_workbook(io.BytesIO(content))
+    verdict, bad, _ = _nonres_check(book)
+    assert verdict == nw.PASSED and not bad
+    sheet = book[nw.COSTS_SHEET]
+    head = next(r for r in range(1, nw.FIRST_ROW)
+                if str(sheet[f"A{r}"].value or "").startswith("Доля объекта в общих затратах"))
+    tampered = openpyxl.load_workbook(io.BytesIO(content))
+    for row in (head + 1, head + 2):
+        tampered[nw.COSTS_SHEET][f"B{row}"] = 0.5
+    verdict, bad, _ = _nonres_check(tampered)
+    assert verdict == nw.FAILED and bad
