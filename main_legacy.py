@@ -39,6 +39,7 @@ from xml.sax.saxutils import escape as xml_escape
 # Запуск Chromium — общий: его заводят и ГлавАПУ, и печать отчёта, и ломается
 # он у обоих сразу, а наружу выходит по-разному.
 import browser_launch
+import glavapu_scenario
 # Профиль освоения стройки: им движок разносит СМР, им же отчёт о рынке считает
 # готовность дома по датам. Одна кривая на оба вопроса.
 import build_curve
@@ -99,7 +100,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.20"
+VERSION = "0.25.22"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13228,6 +13229,18 @@ def _glavapu_browser_worker() -> None:
                         _glavapu_net_watch(page)
                     _glavapu_net_reset()
                     holder["rows"] = _glavapu_drive_page(page, numbers, area_ha, timings)
+                    scenario = holder.get("scenario_params")
+                    if scenario and numbers:
+                        # Сценарий ставится на ТОМ ЖЕ экране расчёта, что
+                        # только что открыт по участку: анализ территории
+                        # (район, квартал, К1/К2) — его, а метры — наши.
+                        holder["scenario_report"] = glavapu_scenario.apply_scenario(
+                            page, scenario)
+                        holder["scenario_rows"] = glavapu_scenario.read_rows(page)
+                        holder["scenario_xlsx"] = glavapu_scenario.export_xlsx(
+                            page, _GLAVAPU_HEADLESS_TIMEOUT_MS // 3)
+                        timings["scenario"] = int(
+                            holder["scenario_report"].get("ms") or 0)
                 except Exception as exc:
                     # Снимок страницы прикладывается к ЛЮБОМУ отказу, а не
                     # только к тем, что мы предвидели: `snapshot: {}` у пробы
@@ -13295,6 +13308,16 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
     Расчёт уходит потоку-владельцу браузера и ждёт его ответа. Ожидание в
     очереди конечно: не дождался — уходим на серверные формулы, а не висим.
     """
+    return _glavapu_headless_run(numbers, area_ha).get("rows") or []
+
+
+def _glavapu_headless_run(numbers: list[str], area_ha: float,
+                          scenario_params: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Прогон браузера: таблица участка и — если задан — наш сценарий поверх.
+
+    Один путь для расчёта, пробы и сверки сценария: второй браузер или вторая
+    очередь к той же странице разошлись бы с первой при первой же правке.
+    """
     global _GLAVAPU_BROWSER_THREAD
 
     # Проверяется здесь, а не в потоке: без Playwright в образе поток умрёт
@@ -13309,7 +13332,7 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
             "— расчёт уходит на серверные формулы")
     started = time.monotonic()
     try:
-        holder: dict[str, Any] = {}
+        holder: dict[str, Any] = {"scenario_params": scenario_params} if scenario_params else {}
         done = threading.Event()
         with _GLAVAPU_BROWSER_LOCK:
             if _GLAVAPU_BROWSER_THREAD is None or not _GLAVAPU_BROWSER_THREAD.is_alive():
@@ -13317,7 +13340,9 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
                     target=_glavapu_browser_worker, name="glavapu-browser", daemon=True)
                 _GLAVAPU_BROWSER_THREAD.start()
             _GLAVAPU_HEADLESS_JOBS.put((list(numbers), float(area_ha), holder, done))
-        if not done.wait(_GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0 + 60.0):
+        # Сценарий — второй круг полей и выгрузка книги поверх расчёта участка.
+        budget = _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0 * (2 if scenario_params else 1) + 60.0
+        if not done.wait(budget):
             raise TimeoutError("поток браузера не ответил — расчёт уходит на формулы")
         timings = dict(holder.get("timings") or {})
         timings["total"] = int((time.monotonic() - started) * 1000)
@@ -13325,7 +13350,7 @@ def _glavapu_headless_rows(numbers: list[str], area_ha: float) -> list[dict[str,
         logging.info("glavapu headless timings: %s", timings)
         if holder.get("error") is not None:
             raise holder["error"]
-        return holder.get("rows") or []
+        return holder
     finally:
         _GLAVAPU_HEADLESS_LOCK.release()
 
@@ -13642,6 +13667,407 @@ def glavapu_health() -> dict[str, Any]:
             state[key] = shared[key]
     state["worker"] = os.getpid()
     return _glavapu_state_with_history(state)
+
+
+# --- сверка нашего сценария со штатным калькулятором ГлавАПУ -----------------
+# Выгрузка ГлавАПУ, которую мы забирали до сих пор, — калькулятор с ЕГО
+# умолчаниями: 94/6 жилья и коммерции, плотность по таблице, нежильё целиком в
+# 4.1. Сверить с ней свой сценарий нельзя — посчитано не то, что строим мы.
+# Здесь калькулятору выставляются НАШИ параметры (`glavapu_scenario`), и его
+# ответ стоит рядом с нашими числами. Роль ГлавАПУ — проверка: ничего в модели
+# эти числа не заменяют.
+#
+# Браузер — тяжёлая работа на минуту и больше, а окно и бот ждать её не должны.
+# Поэтому запрос ставит задание и сразу отвечает его состоянием; страница
+# спрашивает тот же маршрут ещё раз, пока задание не кончится. Состояние —
+# файл на диске по ключу набора параметров: воркеров два, и спросить о ходе
+# расчёта можно не у того, кто его ведёт. Тот же файл — кэш: одинаковые
+# параметры второй раз калькулятор не гоняют.
+_GLAVAPU_SCENARIO_CACHE_SECONDS = max(0.0, _env_float("GLAVAPU_SCENARIO_CACHE_SECONDS", 21600.0))
+# Отказ помнится минутами: он про «калькулятор не дался в ту минуту», а не
+# про набор параметров.
+_GLAVAPU_SCENARIO_ERROR_SECONDS = max(0.0, _env_float("GLAVAPU_SCENARIO_ERROR_SECONDS", 300.0))
+# Задание, чей воркер умер (перезапуск), не должно числиться идущим вечно.
+_GLAVAPU_SCENARIO_STALE_SECONDS = max(
+    60.0, _GLAVAPU_HEADLESS_QUEUE_SECONDS + 3 * _GLAVAPU_HEADLESS_TIMEOUT_MS / 1000.0 + 60.0)
+_GLAVAPU_SCENARIO_LOCK = threading.Lock()
+
+
+class GlavapuScenarioRequest(BaseModel):
+    """Сценарий проекта для сверки: те же вводные и ТЭП, что держит страница."""
+    inputs: dict[str, Any] = {}
+    tep: dict[str, Any] = {}
+    cadastral_numbers: str | list[str] = ""
+    # Только спросить состояние, не ставя задание (опрос страницы).
+    poll: bool = False
+    # Пересчитать, даже если ответ в кэше свежий.
+    force: bool = False
+
+
+def _glavapu_scenario_dir() -> Path:
+    return Path(os.getenv("DEVELOPAID_DATA_DIR") or "data") / "glavapu-scenario"
+
+
+_GLAVAPU_SCENARIO_KEY = re.compile(r"[0-9a-f]{8,40}")
+
+
+def _glavapu_scenario_file(key: str) -> Path:
+    """Файл задания. Ключ приходит и из адреса запроса, поэтому он обязан быть
+    ровно хэшем `scenario_key`, а путь — лежать внутри каталога заданий."""
+    key = str(key or "")
+    if not _GLAVAPU_SCENARIO_KEY.fullmatch(key):
+        raise ValueError("ключ сверки — шестнадцатеричный хэш набора параметров")
+    base = os.path.normpath(os.path.abspath(_glavapu_scenario_dir()))
+    path = os.path.normpath(os.path.join(base, key + ".json"))
+    if not path.startswith(base + os.sep):
+        raise ValueError("ключ сверки выводит за каталог заданий")
+    return Path(path)
+
+
+def _glavapu_scenario_load(key: str) -> dict[str, Any] | None:
+    try:
+        data = json.loads(_glavapu_scenario_file(key).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _glavapu_scenario_save(key: str, record: dict[str, Any]) -> None:
+    path = _glavapu_scenario_file(key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(record, ensure_ascii=False, default=str), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _glavapu_scenario_product(key: str) -> str:
+    obj = _BY_KEY.get(key)
+    return obj.product if obj is not None else key
+
+
+def _glavapu_scenario_build(req: GlavapuScenarioRequest) -> dict[str, Any]:
+    numbers = _parse_cadastral_numbers(req.cadastral_numbers) if req.cadastral_numbers else []
+    if not numbers:
+        analysis = (req.inputs or {}).get("_cadastral_analysis") or {}
+        numbers = [str(x) for x in (analysis.get("recognized") or analysis.get("requested") or [])]
+    return glavapu_scenario.build_scenario(
+        req.inputs or {}, req.tep or {}, product_of=_glavapu_scenario_product, numbers=numbers)
+
+
+def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
+                           scenario: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    """Наша сторона сверки — из тех же владельцев, что считают модель.
+
+    Нормы мест, соцпотребности и МПТ — `tep_derived_norms` (её ответ подписан
+    как наш расчёт по городским формулам), приобъектные места — `parking_demand`,
+    плата за ВРИ — поле проекта. Своей формулы сверка не заводит: второй ответ
+    на тот же вопрос был бы третьим мнением, а не проверкой.
+    """
+    inputs = inputs or {}
+    tep = tep or {}
+    params = scenario.get("params") or {}
+    normalized = (inputs.get("_glavapu_import") or {}).get("normalized") or {}
+    living = sum(n(tep.get(k) or {}, "gns") for k in glavapu_scenario.RESIDENTIAL_LIVING_KEYS)
+    built_in = n(tep.get(glavapu_scenario.RESIDENTIAL_NONRES_KEY) or {}, "gns")
+    social_gns = sum(n(tep.get(k) or {}, "gns") for k in glavapu_scenario.SOCIAL_KINDS)
+    skip = (set(glavapu_scenario.RESIDENTIAL_LIVING_KEYS) | set(glavapu_scenario.SOCIAL_KINDS)
+            | {glavapu_scenario.RESIDENTIAL_NONRES_KEY} | set(glavapu_scenario.NOT_SPP_KEYS))
+    nonres_gns = sum(n(row, "gns") for key, row in tep.items()
+                     if key not in skip and isinstance(row, dict))
+    nonres_np = sum(n(row, "total_area") for key, row in tep.items()
+                    if key not in skip and isinstance(row, dict))
+    total = living + built_in + nonres_gns + social_gns
+    area = float(params.get("area_ha") or 0.0)
+    apartments = tep.get("apartments") or {}
+    demand = parking_demand(inputs, tep)
+    derived = tep_derived_norms(
+        apartment_area_sqm=n(apartments, "saleable"),
+        residential_living_spp_sqm=n(apartments, "gns"),
+        nonresidential_np_sqm=nonres_np + n(tep.get("ground_commercial") or {}, "total_area"),
+        k1=float(demand.get("k1") or 1.0), k2=float(demand.get("k2") or 1.0),
+        zone_two=str(normalized.get("calculation_zone") or "").strip() == "2",
+        apartment_count=n(apartments, "units"))
+    tep_src = "ТЭП проекта, ГНС"
+    norm_src = "наша норма (tep_derived_norms)"
+    ours: dict[str, Any] = {
+        "spp": {
+            "total": (round(total / 1000.0, 3), tep_src + ": все наземные строки"),
+            "residential_living": (round(living / 1000.0, 3), tep_src + ": «Квартиры» + «Кладовые»"),
+            "built_in": (round(built_in / 1000.0, 3), tep_src + ": «Коммерция 1 этажа»"),
+            "nonres": (round(nonres_gns / 1000.0, 3), tep_src + ": нежилые объекты"),
+            "social": (round(social_gns / 1000.0, 3), tep_src + ": ДОО, СОШ, поликлиника"),
+        },
+        "social": {
+            "population": (derived["population"], norm_src + ": площадь квартир / 33 м²"),
+            "kindergarten": (derived["kindergarten_places"], norm_src),
+            "school": (derived["school_places"], norm_src),
+            "clinic": (derived["clinic_capacity"], norm_src),
+        },
+        "parking": {
+            "permanent": (derived["parking_permanent"], norm_src + ": " + derived["parking_basis"]),
+            "guest": (derived["parking_guest"], norm_src + ": десятая часть постоянных"),
+            "attached": (int(demand.get("required_total") or 0),
+                         "наша норма приобъектных (parking_demand, 945-ПП)"),
+            "short_stop": (None, ""),
+        },
+        "mpt": (derived["jobs"], norm_src + f": НП нежилья / {derived['sqm_per_job']:g} м²"),
+        "density": (round(total / 1000.0 / area, 3) if area > 0 else None,
+                    "ТЭП проекта: СПП / площадь территории"),
+    }
+    vri_value: float | None = None
+    vri_origin = ""
+    if inputs.get("vri_required") in (False, 0, "0", "false"):
+        vri_value, vri_origin = 0.0, "вводные проекта: смена ВРИ не требуется"
+    elif inputs.get("land_rights_cost_mln") not in (None, ""):
+        vri_value = float(n(inputs, "land_rights_cost_mln"))
+        imported = ((inputs.get("_glavapu_import") or {}).get("mappings") or {}).get("inputs") or {}
+        if ("land_rights_cost_mln" in imported
+                and abs(float(imported.get("land_rights_cost_mln") or 0.0) - vri_value) < 0.001):
+            vri_origin = ("вводные проекта — число из выгрузки ГлавАПУ с ЕГО умолчаниями, "
+                          "не наш расчёт")
+        else:
+            vri_origin = "вводные проекта: land_rights_cost_mln"
+    ours["vri_cost_mln"] = (vri_value, vri_origin)
+
+    # Наша льгота по плате за ВРИ — одна сумма (доля или фиксированная) из
+    # вводных, тем же `vri_relief`, что считает модель. Режим «нет» — это не
+    # «льгота ноль», а «льгота не задана»: сверке не с чем сравнивать.
+    relief_mode = str(inputs.get("vri_relief_mode") or "none").strip().lower()
+    relief_value: float | None = None
+    if vri_value is not None and relief_mode in ("percent", "amount"):
+        relief_value = round(vri_relief({k: v for k, v in inputs.items()
+                                         if k != "vri_transfer_offset_mln"},
+                                        vri_value * 1_000_000)[0] / 1_000_000, 3)
+    ours["vri_relief"] = {"total": (relief_value,
+                                    f"вводные проекта: vri_relief_mode = {relief_mode}"
+                                    if relief_value is not None else "")}
+    ours["vri_net_mln"] = ((round(vri_value - (relief_value or 0.0), 3), "плата проекта за вычетом нашей льготы")
+                           if vri_value is not None else (None, ""))
+
+    imported = ((inputs.get("_glavapu_import") or {}).get("mappings") or {}).get("inputs") or {}
+
+    def from_import(key: str, value: float) -> bool:
+        return (key in imported
+                and abs(float(imported.get(key) or 0.0) - value) < 0.001)
+
+    # Соцнагрузка деньгами: у проекта одна сумма; по объектам — справочно.
+    comp_value: float | None = None
+    comp_origin = ""
+    if inputs.get("social_compensation_mln") not in (None, ""):
+        comp_value = float(n(inputs, "social_compensation_mln"))
+        comp_origin = ("вводные проекта — число из выгрузки ГлавАПУ с ЕГО умолчаниями"
+                       if from_import("social_compensation_mln", comp_value)
+                       else "вводные проекта: social_compensation_mln")
+    ours["social_comp"] = {"total": (comp_value, comp_origin)}
+
+    # Приобъектные места по ВРИ — строки той же нормы `parking_demand`, что
+    # дала общий итог: объект → его ВРИ по карте NONRES_VRI.
+    by_vri: dict[str, list[Any]] = {}
+    for row in demand.get("rows") or []:
+        key = str(row.get("tep_key") or "")
+        if key == glavapu_scenario.RESIDENTIAL_NONRES_KEY:
+            kind = "built_in"
+        else:
+            target = glavapu_scenario.NONRES_VRI.get(_glavapu_scenario_product(key))
+            if not target:
+                continue
+            kind = target[1]
+        slot = by_vri.setdefault(kind, [0, []])
+        slot[0] += int(row.get("required_spaces") or 0)
+        slot[1].append(str(row.get("label") or key))
+    ours["parking_vri"] = {kind: (value, "наша норма (parking_demand): " + ", ".join(names))
+                           for kind, (value, names) in by_vri.items()}
+
+    reasons: dict[str, str] = {
+        "parking.short_stop": ("в модели нет нормы мест кратковременной остановки: "
+                               "они не строятся в гараже (945-ПП п. 6.1.2), сверка справочная"),
+        "parking.attached": ("наша норма — от общей площади нежилья с К1 "
+                             f"{float(demand.get('k1') or 0):g} и К2 {float(demand.get('k2') or 0):g}; "
+                             "калькулятор считает по ВРИ, НП и К1/К2 своего квартала"),
+        "mpt": (f"у модели {derived['sqm_per_job']:g} м² НП на рабочее место; "
+                "калькулятор считает по ВРИ (лист «МПТ»)"),
+        "parking.guest": ("гостевые — десятая часть постоянных и у нас, и у калькулятора: "
+                          "расхождение идёт от постоянных мест"),
+        "parking.permanent": ("наша норма: " + derived["parking_basis"]
+                              + "; калькулятор — от своей площади квартир (строка 10)"),
+    }
+    relief_basis = ("калькулятор даёт льготу за МПТ сам: нежилые ВРИ выше порога × "
+                    "коэффициент места (офисы и торговля вне ТТК 0,7, внутри 0; соцобъекты 0,3); "
+                    "срезает только плату за МКД. Его Кзатр — база 2026 года 166,23078 ещё раз "
+                    "× 1,2036 (= 166,23078 / 138,11132, переход с базы 2025 года) × индекс "
+                    "квартала: на ~20% выше приказа, по которому считаем мы")
+    reasons["vri_relief.total"] = (
+        "наша льгота — доля или сумма из вводных; " + relief_basis if relief_value is not None
+        else "в проекте льгота по плате за ВРИ не задана (vri_relief_mode = «нет»); "
+             + relief_basis + " — проверить основание (3135-ПП)")
+    reasons["vri_net_mln"] = ("к оплате = до льгот − льгота; расхождение складывается из "
+                              "двух строк выше" if vri_value is not None else
+                              reasons.get("vri_cost_mln", ""))
+    if comp_value is not None:
+        reasons["social_comp.total"] = (
+            ("наше число — выгрузка ГлавАПУ с его умолчаниями, а не наш сценарий; "
+             if comp_origin.startswith("вводные проекта — число из выгрузки") else "")
+            + "калькулятор считает компенсацию от дефицита мест по нашему сценарию: "
+              "объект, построенный сверх потребности, компенсацию не требует")
+    else:
+        reasons["social_comp.total"] = ("в проекте не задана компенсация за соцобъекты "
+                                        "(social_compensation_mln) — сравнить не с чем")
+    for kind in ours["parking_vri"]:
+        reasons[f"parking_vri.{kind}"] = reasons["parking.attached"]
+    garage = tep.get("underground_parking") or {}
+    if n(garage, "units") > 0:
+        reasons["parking.permanent"] += (
+            f"; в подземном гараже модели {n(garage, 'units'):,.0f} мест".replace(",", " "))
+    for item in scenario.get("not_sent") or []:
+        if str(item.get("param") or "").startswith("nonres."):
+            for kind in ("spp.nonres", "spp.total", "density"):
+                reasons[kind] = (reasons.get(kind, "") + "; " if reasons.get(kind) else "") + item["reason"]
+    for item in params.get("social") or []:
+        gns_text = f"{item['spp_ths'] * 1000:,.0f}".replace(",", " ")
+        line = (f"{item['label']}: калькулятор ставит типовой объект своей площади, "
+                f"у нас ГНС {gns_text} м²")
+        for kind in ("spp.social", "spp.total", "density"):
+            reasons[kind] = (reasons.get(kind, "") + "; " if reasons.get(kind) else "") + line
+    population = derived["population"]
+    for kind in ("social.population", "social.kindergarten", "social.school", "social.clinic"):
+        reasons.setdefault(kind, f"наша норма: население {population} = площадь квартир / 33 м²; "
+                                 "калькулятор — от своей площади квартир (строка 10)")
+    if vri_origin.startswith("вводные проекта — число из выгрузки"):
+        reasons["vri_cost_mln"] = ("наше число — выгрузка ГлавАПУ с его умолчаниями, а не "
+                                   "наш сценарий; расхождение показывает, сколько стоит "
+                                   "сценарий по калькулятору")
+    elif vri_value == 0.0 and vri_origin:
+        reasons["vri_cost_mln"] = vri_origin
+    elif vri_value is None:
+        reasons["vri_cost_mln"] = ("в проекте не задана плата за смену ВРИ "
+                                   "(land_rights_cost_mln) — сравнить не с чем")
+    else:
+        reasons.setdefault("vri_cost_mln", "плата проекта задана вводными, калькулятор считает "
+                                           "её от СПП по ВРИ и УПКС квартала")
+    return ours, reasons
+
+
+def _glavapu_scenario_run(key: str, scenario: dict[str, Any]) -> None:
+    """Задание браузера: выставить сценарий, забрать книгу, записать ответ."""
+    started = time.monotonic()
+    record = _glavapu_scenario_load(key) or {}
+    record.update(state="running", started_at=datetime.now(timezone.utc).isoformat(),
+                  worker=os.getpid())
+    _glavapu_scenario_save(key, record)
+    try:
+        params = scenario["params"]
+        holder = _glavapu_headless_run(scenario["numbers"], float(params["area_ha"]), params)
+        data = holder.get("scenario_xlsx") or b""
+        parsed = parse_glavapu_xlsx(data, "glavapu-scenario.xlsx") if data else {}
+        side = glavapu_scenario.glavapu_side(parsed.get("normalized") or {},
+                                             holder.get("scenario_rows") or {}, data)
+        record.update(state="done", glavapu=side,
+                      applied=holder.get("scenario_report") or {},
+                      warnings=parsed.get("warnings") or [],
+                      timings=holder.get("timings") or {})
+        _GLAVAPU_HEADLESS["last_ok"] = datetime.now().isoformat(timespec="seconds")
+    except (GlavapuTableNotReady, GlavapuParcelNotAccepted) as exc:
+        record.update(state="error", error=exc.public_message,
+                      where="калькулятор ГлавАПУ: расчёт участка до ввода сценария")
+    except Exception as exc:  # noqa: BLE001 — отказ доходит до окна с местом
+        record.update(state="error", error=_public_error(exc, "glavapu scenario"),
+                      where=_error_location(exc))
+    record["finished_at"] = datetime.now(timezone.utc).isoformat()
+    record["seconds"] = round(time.monotonic() - started, 1)
+    record["stored_at"] = time.time()
+    _glavapu_scenario_save(key, record)
+
+
+def _glavapu_scenario_fresh(record: dict[str, Any] | None) -> bool:
+    if not record:
+        return False
+    age = time.time() - float(record.get("stored_at") or 0.0)
+    state = record.get("state")
+    if state == "done":
+        return age <= _GLAVAPU_SCENARIO_CACHE_SECONDS
+    if state == "error":
+        return age <= _GLAVAPU_SCENARIO_ERROR_SECONDS
+    if state in ("queued", "running"):
+        return age <= _GLAVAPU_SCENARIO_STALE_SECONDS
+    return False
+
+
+@app.post("/glavapu/scenario")
+def glavapu_scenario_check(req: GlavapuScenarioRequest) -> dict[str, Any]:
+    """Сверка «наше / ГлавАПУ»: ставит задание и отвечает его состоянием.
+
+    Ответ сразу: `queued`/`running` — браузер работает, спросить ещё раз;
+    `done` — числа калькулятора и сверка; `error`/`unavailable` — причина и
+    место. Тяжёлая работа идёт в фоне, окно и бот её не ждут.
+    """
+    url = _core_api_url("/glavapu/scenario")
+    if url:
+        # Браузер живёт на ядре, как и для расчёта ТЭП.
+        forwarded = _core_post(url, _core_forward_payload(req), 30.0)
+        forwarded.setdefault("route", "ядро")
+        return forwarded
+    scenario = _glavapu_scenario_build(req)
+    key = glavapu_scenario.scenario_key(scenario)
+    ours, reasons = _glavapu_scenario_ours(req.inputs or {}, req.tep or {}, scenario)
+    answer: dict[str, Any] = {"key": key, "role": glavapu_scenario.ROLE,
+                              "scenario": scenario, "ours": ours}
+    if scenario["problems"]:
+        answer.update(state="refused", error="; ".join(scenario["problems"]),
+                      where="сценарий проекта (наши вводные и ТЭП), до калькулятора")
+        return answer
+    if not scenario["numbers"]:
+        answer.update(state="refused",
+                      error="нет кадастровых номеров: калькулятору нужен участок, чтобы "
+                            "взять район, квартал и коэффициенты",
+                      where="сценарий проекта: inputs._cadastral_analysis")
+        return answer
+    with _GLAVAPU_SCENARIO_LOCK:
+        record = _glavapu_scenario_load(key)
+        if req.force and record and record.get("state") in ("done", "error"):
+            record = None
+        if not _glavapu_scenario_fresh(record):
+            record = None
+            if not req.poll:
+                if not _glavapu_headless_available():
+                    state = _glavapu_headless_state()
+                    answer.update(state="unavailable",
+                                  error=f"штатный калькулятор: {state.get('state')}",
+                                  where=str(state.get("where") or ""),
+                                  hint=str(state.get("hint") or state.get("last_error") or ""))
+                    return answer
+                record = {"state": "queued", "stored_at": time.time(),
+                          "queued_at": datetime.now(timezone.utc).isoformat()}
+                _glavapu_scenario_save(key, record)
+                threading.Thread(target=_glavapu_scenario_run, args=(key, scenario),
+                                 name=f"glavapu-scenario-{key[:8]}", daemon=True).start()
+    if record is None:
+        answer.update(state="none", error="задание не найдено — запустите сверку")
+        return answer
+    answer.update({k: v for k, v in record.items() if k not in ("stored_at",)})
+    if record.get("state") == "done":
+        answer["comparison"] = glavapu_scenario.compare(
+            ours, record.get("glavapu") or {}, reasons, record.get("applied"))
+    return answer
+
+
+@app.get("/glavapu/scenario/{key}")
+def glavapu_scenario_state(key: str) -> dict[str, Any]:
+    """Запись задания как есть — для оператора: что ставили, что принято, где отказ."""
+    url = _core_api_url(f"/glavapu/scenario/{key}")
+    if url:
+        try:
+            with urllib.request.urlopen(url, timeout=15) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except Exception as exc:
+            raise HTTPException(status_code=502,
+                                detail="Ядро не ответило: " + _public_error(exc, "scenario state"))
+    if not _GLAVAPU_SCENARIO_KEY.fullmatch(str(key or "")):
+        raise HTTPException(status_code=400,
+                            detail="Ключ сверки — шестнадцатеричный хэш из ответа /glavapu/scenario")
+    record = _glavapu_scenario_load(key)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Задания сверки с таким ключом нет")
+    return record
 
 
 def _cadastral_analysis_for(numbers: list[str],
@@ -49355,6 +49781,23 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
         <div id="tepDerivedNote" class="import-status" style="display:none"></div>
         <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div><div id="tepUndergroundNote" class="hint" style="margin-top:6px"></div>
       </div>
+      <!-- Сверка сценария: калькулятору ГлавАПУ выставляются НАШИ параметры
+           (доля жилья и коммерции, СПП, площадь, нежильё по ВРИ, соцобъекты,
+           вид права), и его ответ стоит рядом с нашим по видам. Карточка — под
+           таблицей ТЭП: сначала наши числа, ниже их проверка. ГлавАПУ —
+           проверка: наши значения он не заменяет. -->
+      <div class="card" id="glavapuScenarioBox">
+        <div class="section-title">Сверка с калькулятором ГлавАПУ</div>
+        <div class="toolbar">
+          <button class="btn" id="glavapuScenarioButton" onclick="glavapuScenarioCheck()">Сверить сценарий</button>
+          <span style="color:#777;font-size:12px">Калькулятору уходят ТЭП, площадь и соцобъекты этого проекта; считает в фоне 1–3 минуты. ГлавАПУ — проверка, наши значения не меняются.</span>
+        </div>
+        <div id="glavapuScenarioStatus" class="import-status" style="display:none"></div>
+        <!-- Итог — здесь, полная таблица — окном по кнопке (решение владельца,
+             06.10.2026): расчёт идёт минуты, и окно, всплывшее само, перебило
+             бы работу с ТЭП. -->
+        <div id="glavapuScenarioSummary" style="display:none"></div>
+      </div>
     </div>
 
     <div id="vri" class="panel">
@@ -49848,6 +50291,19 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
 
       <div class="note warning" data-layout="housing">LLCR, NPV и IRR в веб-модели являются расчётными показателями текущего движка. До полного отказа от Excel кредитный CF и доходность должны быть окончательно сверены помесячно с эталонной моделью.</div>
     </div>
+  </div>
+</div>
+
+<!-- Сверка с калькулятором ГлавАПУ: полная таблица «наше / ГлавАПУ» окном.
+     Открывается кнопкой из карточки на вкладке «ТЭП», само не всплывает. -->
+<div id="glavapuScenarioDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:80;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeGlavapuScenario()">
+  <div style="background:#fff;max-width:1200px;width:100%;max-height:88vh;overflow:auto;padding:22px 24px">
+    <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px">
+      <h2 style="margin:0;font-size:17px">Сверка с калькулятором ГлавАПУ</h2>
+      <button class="btn" style="margin-left:auto" onclick="closeGlavapuScenario()">Закрыть</button>
+    </div>
+    <div id="glavapuScenarioResult"></div>
   </div>
 </div>
 
@@ -51993,6 +52449,124 @@ function tepSourceLabel(manual){
  return /серверн/i.test(fmt)?'ГлавАПУ · серверный расчёт DevelopAid'
                             :'ГлавАПУ · штатный калькулятор';
 }
+// Сверка «наше / ГлавАПУ». Сервер ставит задание браузеру и отвечает сразу;
+// страница спрашивает тот же маршрут, пока задание не кончится. Таблицу
+// собирает glavapuScenarioHtml — одна функция и для окна, и для теста.
+const GLAVAPU_SCENARIO_STATUS={match:['совпало','#2e7d32'],diff:['расходится','#b3261e'],
+ reference:['справочно','#666'],
+ not_applied:['параметр не принят','#8a4b08'],ours_missing:['нет нашей величины','#666'],
+ glavapu_missing:['нет у ГлавАПУ','#666']};
+let glavapuScenarioRun=0;
+function glavapuScenarioNum(v){
+ if(v===null||v===undefined||v==='')return '—';
+ const x=Number(v);if(!isFinite(x))return escapeHtml(String(v));
+ // Ноль в пределах округления — ноль, а не «-0».
+ if(Math.abs(x)<0.0005)return '0';
+ return x.toLocaleString('ru-RU',{maximumFractionDigits:Math.abs(x)<1000?3:0});
+}
+function glavapuScenarioHtml(a){
+ a=a||{};
+ const parts=[];
+ const sc=a.scenario||{},p=sc.params||{};
+ if(a.state==='done'||a.comparison){
+  const c=a.comparison||{rows:[],counts:{}};
+  const counts=c.counts||{};
+  parts.push('<div class="note" style="margin:6px 0">ГлавАПУ — проверка (роль '+escapeHtml(a.role||'validation_only')+
+   '): его числа стоят рядом и ничего в проекте не заменяют. Совпало: '+(counts.match||0)+
+   ', расходится: '+(counts.diff||0)+(counts.not_applied?', не принят параметр: '+counts.not_applied:'')+'.</div>');
+  let group='';
+  const rows=(c.rows||[]).map(r=>{
+   const st=GLAVAPU_SCENARIO_STATUS[r.status]||[r.status,'#333'];
+   const head=r.group!==group?'<tr class="glavapu-scenario-group"><td colspan="5" style="font-weight:600;background:#fafaf8">'+escapeHtml(r.group)+'</td></tr>':'';
+   group=r.group;
+   return head+'<tr data-kind="'+escapeHtml(r.kind)+'" data-status="'+escapeHtml(r.status)+'">'+
+    '<td>'+escapeHtml(r.label)+'</td>'+
+    '<td style="text-align:right">'+glavapuScenarioNum(r.ours)+'<div style="font-size:10px;color:#888">'+escapeHtml(r.ours_origin||'')+'</div></td>'+
+    '<td style="text-align:right">'+glavapuScenarioNum(r.glavapu)+'<div style="font-size:10px;color:#888">'+escapeHtml(r.glavapu_origin||'')+'</div></td>'+
+    '<td style="text-align:right">'+glavapuScenarioNum(r.delta)+'</td>'+
+    '<td style="color:'+st[1]+'"><b>'+escapeHtml(st[0])+'</b>'+(r.reason?'<div style="font-size:11px">'+escapeHtml(r.reason)+'</div>':'')+'</td></tr>';
+  }).join('');
+  parts.push('<div class="scroll" style="max-height:none"><table class="glavapu-scenario-table"><thead><tr><th>Показатель</th><th>Наше</th><th>ГлавАПУ</th><th>Разница</th><th>Итог и причина</th></tr></thead><tbody>'+rows+'</tbody></table></div>');
+ }
+ const refused=((a.applied||{}).refused)||[];
+ if(refused.length){
+  parts.push('<div class="note warning"><b>Калькулятор не принял:</b><br>'+refused.map(r=>
+   escapeHtml(r.param)+' — '+escapeHtml(r.reason)+' <span style="color:#777">('+escapeHtml(r.place)+')</span>').join('<br>')+'</div>');
+ }
+ const notSent=sc.not_sent||[];
+ if(notSent.length){
+  parts.push('<div class="note warning"><b>Не передано в калькулятор:</b><br>'+notSent.map(r=>escapeHtml(r.reason)).join('<br>')+'</div>');
+ }
+ if(p&&p.area_ha!==undefined){
+  const nonres=(p.nonres||[]).map(x=>escapeHtml(x.menu)+' '+glavapuScenarioNum(x.spp_ths)).join(', ')||'нет';
+  const social=(p.social||[]).map(x=>escapeHtml(x.label)+' '+x.places+' мест').join(', ')||'нет';
+  const ratio=(((a.applied||{}).applied)||[]).find(x=>x.param==='ratio');
+  parts.push('<details style="margin-top:6px"><summary style="font-size:12px">Что передано калькулятору</summary><div class="note">'+
+   'Площадь '+glavapuScenarioNum(p.area_ha)+' га; СПП жилых зданий '+glavapuScenarioNum(p.spp_residential_ths)+
+   ' тыс. м², из них нежилая часть '+glavapuScenarioNum(p.vpp_pct)+'%; нежилые по ВРИ: '+nonres+
+   '; соцобъекты: '+social+(p.land_right?'; право — '+escapeHtml(p.land_right):'')+'.'+
+   (ratio?' Ползунок калькулятора «Соотношение жилых / нежилых зданий» встал на: '+escapeHtml(ratio.got)+'.':'')+'</div></details>');
+ }
+ return parts.join('');
+}
+function glavapuScenarioStatusText(a){
+ a=a||{};
+ if(a.state==='queued')return 'Задание поставлено, калькулятор ГлавАПУ начнёт расчёт…';
+ if(a.state==='running')return 'Калькулятор ГлавАПУ считает наш сценарий…';
+ if(a.state==='done')return 'Сверка готова'+(a.seconds?' ('+a.seconds+' с)':'')+'.';
+ const where=a.where?' Место: '+a.where+'.':'';
+ const hint=a.hint?' '+a.hint:'';
+ return 'Сверка не выполнена: '+(a.error||a.state||'нет ответа')+'.'+where+hint;
+}
+async function glavapuScenarioCheck(force){
+ const run=++glavapuScenarioRun;
+ const status=document.getElementById('glavapuScenarioStatus');
+ const box=document.getElementById('glavapuScenarioResult');
+ status.style.display='block';
+ status.textContent='Ставлю задание калькулятору ГлавАПУ…';
+ const summaryBox=document.getElementById('glavapuScenarioSummary');
+ summaryBox.innerHTML='';summaryBox.style.display='none';
+ const body={inputs,tep,force:!!force};
+ let answer=null;
+ try{
+  for(let i=0;i<120;i++){
+   const response=await fetch('/glavapu/scenario',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(i?Object.assign({},body,{poll:true,force:false}):body)});
+   answer=await response.json();
+   if(!response.ok)throw new Error(answer.detail||('HTTP '+response.status));
+   if(run!==glavapuScenarioRun)return;
+   status.textContent=glavapuScenarioStatusText(answer);
+   if(answer.state!=='queued'&&answer.state!=='running')break;
+   await new Promise(r=>setTimeout(r,4000));
+  }
+ }catch(error){
+  status.textContent='Сверка не выполнена: '+error.message+'. Место: запрос страницы к /glavapu/scenario.';
+  return;
+ }
+ box.innerHTML=glavapuScenarioHtml(answer);
+ const summary=document.getElementById('glavapuScenarioSummary');
+ summary.innerHTML=glavapuScenarioSummaryHtml(answer);
+ summary.style.display=summary.innerHTML?'':'none';
+}
+// Короткий итог для карточки: сколько совпало и разошлось, и кнопка окна.
+// Отказ сюда не пишется — его причина и место уже в строке статуса.
+function glavapuScenarioSummaryHtml(a){
+ a=a||{};
+ if(a.state!=='done'||!a.comparison)return '';
+ const c=a.comparison.counts||{};
+ const parts=['совпало: '+(c.match||0),'расходится: '+(c.diff||0)];
+ if(c.not_applied)parts.push('параметр не принят: '+c.not_applied);
+ if(c.ours_missing)parts.push('нет нашей величины: '+c.ours_missing);
+ if(c.glavapu_missing)parts.push('нет у ГлавАПУ: '+c.glavapu_missing);
+ const refused=((a.applied||{}).refused||[]).length;
+ const notSent=((a.scenario||{}).not_sent||[]).length;
+ const warn=(refused?' Калькулятор не принял полей: '+refused+'.':'')+(notSent?' Не передано: '+notSent+'.':'');
+ return '<div class="toolbar" style="margin-top:8px"><span style="font-size:13px">'+escapeHtml(parts.join(' · '))+'.'+
+  (warn?'<span style="color:#8a4b08">'+escapeHtml(warn)+'</span>':'')+
+  '</span><button class="btn dark" onclick="openGlavapuScenario()">Открыть сверку</button></div>';
+}
+function openGlavapuScenario(){document.getElementById('glavapuScenarioDialog').style.display='flex'}
+function closeGlavapuScenario(){document.getElementById('glavapuScenarioDialog').style.display='none'}
 async function obtainServerTep(analysis,status,runId){
  // Формулы калькулятора, посчитанные сервером: равноценная замена
  // браузерной автоматизации, а не суррогат — сходятся до единицы.
@@ -60883,6 +61457,11 @@ function forgetTerritoryState(){
  // Опрос НСПД по прошлому участку может ещё идти: номер прогона отсекает его
  // ответ, иначе он дорисует чужие зоны поверх нового проекта.
  ++landScreeningRun;
+ // Сверка сценария с ГлавАПУ — про прошлый проект: номер запуска отсекает
+ // опоздавший ответ, а таблица и статус снимаются вместе с остальным.
+ ++glavapuScenarioRun;
+ ['glavapuScenarioResult','glavapuScenarioStatus','glavapuScenarioSummary'].forEach(id=>{const box=document.getElementById(id);if(box){box.innerHTML='';box.style.display=id==='glavapuScenarioResult'?'':'none'}});
+ closeGlavapuScenario();
  ['cadastralNumbers','landQuery','moQuery'].forEach(id=>{const field=document.getElementById(id);if(field)field.value=''});
  // Память о вписанном номере (`inputs._cadastral_query`) здесь НЕ трогаем:
  // обе двери этой функции пересобирают `inputs` заново — `applyProjectSnapshot`
@@ -61103,7 +61682,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence',
+ 'landScreeningRun','tepRunSequence','glavapuScenarioRun',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN'];
 
