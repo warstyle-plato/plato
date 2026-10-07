@@ -100,7 +100,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.29"
+VERSION = "0.25.30"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -13797,10 +13797,12 @@ def _glavapu_scenario_product(key: str) -> str:
 
 
 def _glavapu_scenario_build(req: GlavapuScenarioRequest) -> dict[str, Any]:
+    # Участок проекта — у одного владельца: номер, вписанный в поле, найденный
+    # через ЕГРН или посчитанный «Получить ТЭП», равноправны. Прежде сверка
+    # читала только расчёт ТЭП и отказывала проекту, у которого номер вписан.
     numbers = _parse_cadastral_numbers(req.cadastral_numbers) if req.cadastral_numbers else []
     if not numbers:
-        analysis = (req.inputs or {}).get("_cadastral_analysis") or {}
-        numbers = [str(x) for x in (analysis.get("recognized") or analysis.get("requested") or [])]
+        numbers = _project_cadastral_numbers(req.inputs or {})
     return glavapu_scenario.build_scenario(
         req.inputs or {}, req.tep or {}, product_of=_glavapu_scenario_product, numbers=numbers)
 
@@ -14067,10 +14069,18 @@ def glavapu_scenario_check(req: GlavapuScenarioRequest) -> dict[str, Any]:
                       where="сценарий проекта (наши вводные и ТЭП), до калькулятора")
         return answer
     if not scenario["numbers"]:
+        normalized = ((req.inputs or {}).get("_glavapu_import") or {}).get("normalized") or {}
+        quarter = str(normalized.get("cadastral_quarter") or "").strip()
+        missing = (f"у проекта есть только кадастровый квартал {quarter}, а калькулятор "
+                   "ГлавАПУ берёт номер участка (вида 77:05:0004001:1234), не квартал"
+                   if quarter else
+                   "у проекта нет кадастрового номера участка, а калькулятору он нужен, "
+                   "чтобы взять район, квартал и коэффициенты")
         answer.update(state="refused",
-                      error="нет кадастровых номеров: калькулятору нужен участок, чтобы "
-                            "взять район, квартал и коэффициенты",
-                      where="сценарий проекта: inputs._cadastral_analysis")
+                      error=missing + ". Впишите номер в поле «Участок» на вкладке вводных "
+                                      "(блок «Автозагрузка исходных данных») и повторите",
+                      where="участок проекта (_project_cadastral_numbers): поле участка, "
+                            "поиск ЕГРН, расчёт ТЭП по номеру — номеров нет")
         return answer
     with _GLAVAPU_SCENARIO_LOCK:
         record = _glavapu_scenario_load(key)
@@ -17579,17 +17589,31 @@ class _PdfSection:
 
 
 def _project_cadastral_numbers(inputs: dict[str, Any]) -> list[str]:
-    """Все кадастровые номера проекта — из снимка поиска участка во вводных,
-    а нет его — из поля `cadastral_numbers`. Без обрезки: территория КРТ из
-    двадцати участков — двадцать номеров, и тизер, таблица и карта читают
-    этот список целиком."""
-    snapshot = inputs.get("_land_lookup") or {}
-    raw = _land_text(snapshot.get("query")) or _land_text(inputs.get("cadastral_numbers"))
-    numbers: list[str] = []
-    for n in re.split(r"[\s,;]+", raw):
-        if n and re.match(r"^\d{2}:\d{2}:\d{6,8}:\d+$", n) and n not in numbers:
-            numbers.append(n)
-    return numbers
+    """Все кадастровые номера проекта — из первого места, где проект хранит
+    участок номерами: снимок поиска ЕГРН (`_land_lookup.query`), поле
+    `cadastral_numbers`, вписанное в поле участка (`_cadastral_query`), расчёт
+    ТЭП по номеру (`_cadastral_analysis`). Поиск по адресу номеров не даёт и
+    следующие места не заслоняет. Без обрезки: территория КРТ из двадцати
+    участков — двадцать номеров, и тизер, таблица и карта читают этот список
+    целиком."""
+    inputs = inputs or {}
+    analysis = inputs.get("_cadastral_analysis") or {}
+    analysed = analysis.get("recognized") or analysis.get("requested") or []
+    sources = (
+        (inputs.get("_land_lookup") or {}).get("query"),
+        inputs.get("cadastral_numbers"),
+        inputs.get("_cadastral_query"),
+        " ".join(_land_text(item) for item in analysed) if isinstance(analysed, list)
+        else analysed,
+    )
+    for source in sources:
+        numbers: list[str] = []
+        for n in re.findall(r"(?<![\d:])\d{2}:\d{2}:\d{6,8}:\d+", _land_text(source)):
+            if n not in numbers:
+                numbers.append(n)
+        if numbers:
+            return numbers
+    return []
 
 
 def _pdf_screening_numbers(inputs: dict[str, Any]) -> list[str]:
