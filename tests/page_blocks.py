@@ -510,14 +510,24 @@ def project_kind() -> str:
 
     Состав типов и список жилых вводных приезжают на страницу подстановкой из
     движка — здесь они берутся со СОБРАННОЙ страницы, как реестр объектов.
+    Гостиничный проект — третий тип: его предикаты (`isHotel`,
+    `withoutHousing`) и блок «Гостиница» (`HOTEL`, `hotelInputsBlock`)
+    читает та же форма.
     """
     return "\n".join((page_const("PROJECT_KINDS"),
                        page_const("NONRESIDENTIAL_CLEARED"),
+                       page_const("HOTEL"),
                        function("projectKind"),
                        function("isNonResidential"),
+                       function("isHotel"),
+                       function("withoutHousing"),
                        function("projectKindLabel"),
                        function("projectKindHasSaved"),
-                       function("projectKindNote")))
+                       function("projectKindNote"),
+                       *(function(name) for name in (
+                           "hotelOrigins", "setHotelField", "hotelBlank", "hotelValue",
+                           "hotelFieldNeeded", "hotelRangeText", "hotelFieldNote",
+                           "applyHotelPreset", "hotelInputsBlock"))))
 
 
 def auctions_function(*names: str) -> str:

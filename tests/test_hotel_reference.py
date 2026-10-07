@@ -132,16 +132,23 @@ def test_the_document_tables_are_built_from_the_module():
         "python3 scripts/hotel_reference_doc.py --write")
 
 
-def test_the_engine_does_not_read_the_reference_yet():
-    """До решения владельца ориентир чужого отеля в экономику не идёт."""
-    for name in ("main_legacy.py", "main.py", "developaid_nonres_strategy.py"):
+def test_the_reference_reaches_the_economy_only_through_presets():
+    """Ориентир чужого отеля идёт в экономику одной дорогой — явным выбором
+    ориентира в полях гостиницы (`hotel_presets`, решение владельца
+    05.10.2026), где у каждого числа есть происхождение. Движок, страница,
+    книга и расчёт гостиницы `hotel_reference` напрямую не читают: иначе
+    число чужой площадки стало бы молчаливым умолчанием."""
+    readers = []
+    for path in sorted(ROOT.glob("*.py")):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", SyntaxWarning)
             warnings.simplefilter("ignore", DeprecationWarning)
-            tree = ast.parse((ROOT / name).read_text(encoding="utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8"))
         imported = {alias.name for node in ast.walk(tree)
                     if isinstance(node, (ast.Import, ast.ImportFrom))
                     for alias in node.names}
         imported |= {node.module for node in ast.walk(tree)
                      if isinstance(node, ast.ImportFrom) and node.module}
-        assert "hotel_reference" not in imported, name
+        if "hotel_reference" in imported:
+            readers.append(path.name)
+    assert readers == ["hotel_presets.py"]

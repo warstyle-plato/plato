@@ -606,6 +606,8 @@ def test_money_and_parking_are_compared_by_kind(core, monkeypatch) -> None:
     relief = rows["vri_relief.total"]
     assert relief["status"] == "ours_missing" and "не задана" in relief["reason"]
     assert "МПТ" in relief["reason"]
+    # Кзатр калькулятора расходится с приказом — и это сказано числом.
+    assert "1,2036" in relief["reason"] and "138,11132" in relief["reason"]
     assert rows["vri_net_mln"]["glavapu"] == pytest.approx(13720.504)
     assert not any(k.startswith("vri.5") for k in rows), "льготы не числятся видами ВРИ"
     # Баланс территории — как калькулятор разложил её под наше соотношение.

@@ -130,6 +130,21 @@ def calendar_progress(
     return _clamp((now - first) / (last - first))
 
 
+def calendar_gap_reason(start: str | None, finish: str | None) -> str | None:
+    """Почему календарной стадии нет — словами, а не прочерком."""
+    if not start and not finish:
+        return "нет ни старта продаж, ни планового ввода"
+    if not start:
+        return "нет даты старта продаж"
+    if not finish:
+        return "нет планового ввода"
+    if _months(start) is None or _months(finish) is None:
+        return f"срок не читается как месяц: «{start}» → «{finish}»"
+    if _months(finish) <= _months(start):
+        return "плановый ввод не позже старта продаж — окна нет"
+    return None
+
+
 def calendar_stage_label(progress: float | None) -> str | None:
     """Человеческая подпись календарной стадии без притворства о % стройки."""
     if progress is None:
