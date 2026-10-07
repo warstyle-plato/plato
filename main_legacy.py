@@ -5058,6 +5058,9 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
             "cadastral_quarter": cad_quarter.get("quarter") or "",
             "inside_moscow": inside_moscow,
             "inside_ttc": bool(payload.get("insideTTC")),
+            # Отсутствующий ключ — не «вне ТТК»: без этого признака читатель
+            # не отличил бы ответ ГлавАПУ «вне кольца» от молчания.
+            "inside_ttc_known": payload.get("insideTTC") is not None,
             "center": {
                 "lat": point.get("lat"),
                 "lng": point.get("lng"),
@@ -51119,6 +51122,24 @@ function renderStoredMo(){
  const status=document.getElementById('moStatus');
  if(status)status.innerHTML='<span class="import-ok">В проекте сохранён расчёт по Подмосковью: '+
   escapeHtml((stored.territory&&stored.territory.district)||'округ не определён')+'.</span> Нажмите «Рассчитать», чтобы обновить.';
+}
+
+// Участок проекта — один владелец ответа для блоков, которым нужны кадастр,
+// район и ТТК (льгота МПТ, льготы ВРИ). Читают его, а не соседние поля.
+// Нет кадастрового анализа — null: ТЭП собран без адреса. Чего анализ не
+// сказал — в missing с источником, а не молчаливое «вне ТТК».
+function projectParcelFacts(){
+ const a=(inputs&&inputs._cadastral_analysis)||cadastralAnalysis||null;
+ if(!a||!a.territory)return null;
+ const t=a.territory||{};
+ const numbers=((a.recognized&&a.recognized.length)?a.recognized:(a.requested||[])).map(String);
+ const district=String(t.district||'').trim();
+ const ttk=t.inside_ttc===true?'inside':(t.inside_ttc_known===true?'outside':'');
+ const missing=[];
+ if(!district)missing.push('район: кадастровый анализ (ГлавАПУ) его не вернул');
+ if(!ttk)missing.push('положение относительно ТТК: в сохранённом анализе нет признака ГлавАПУ — повторите кадастровый анализ');
+ return {cadastral:numbers[0]||'',numbers,quarter:String(t.cadastral_quarter||''),district,ttk,
+  inside_moscow:t.inside_moscow,missing,source:'кадастровый анализ проекта'};
 }
 
 function renderStoredCadastral(){
