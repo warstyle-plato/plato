@@ -55922,7 +55922,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
@@ -58630,6 +58630,8 @@ function hideCalcLocked(){
  if(box)box.style.display='none';
 }
 
+// Номер последнего запущенного расчёта (см. `calculate`).
+let calcRun=0;
 async function calculate(){
  // Форма забирается целиком, КРОМЕ полей, где стоит счётный показатель, а не
  // набранное число: у таких вводная равна нулю, и ноль здесь значит «считает
@@ -58663,14 +58665,25 @@ async function calculate(){
  // заполняет отчёт заново. Тот же приём, что у опоздавшего ответа Платона:
  // результат прошлого состояния в новое не пускается.
  const startedAtReset=resetRun;
+ // Номер самого расчёта. Каждая правка поля зовёт расчёт, ответы приходят в
+ // любом порядке, и опоздавший ответ ПРЕЖНИХ вводных перерисовывал итог
+ // поверх свежего: подставили рекомендацию 951, вписали 1300 — ушло 1300, а
+ // в отчёте осталась выручка по 951. Показывается только последний запущенный.
+ const calcTicket=++calcRun;
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
+   if(calcTicket!==calcRun)return null;
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
-   phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
+   const bundle=await response.json();
+   if(calcTicket!==calcRun)return null;
+   phaseBundle=bundle;lastResult=phaseBundle.consolidated;
  }else{
    const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
+   if(calcTicket!==calcRun)return null;
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
-   lastResult=await response.json();phaseBundle=null;
+   const result=await response.json();
+   if(calcTicket!==calcRun)return null;
+   lastResult=result;phaseBundle=null;
    if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
     // Строку, которую тип проекта не считает, назад НЕ пишем: её нули —
     // участие в расчёте, а не решение человека, и записанные они стёрли бы
@@ -61678,7 +61691,7 @@ async function deleteProject(id){
 // трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
 // то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
- 'profileState','profileAskedOnResult','calcRequiresLogin','webLoginBusy',
+ 'profileState','profileAskedOnResult','calcRequiresLogin','calcRun','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
