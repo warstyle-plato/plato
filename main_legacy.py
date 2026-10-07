@@ -11373,6 +11373,27 @@ def underground_parking_requirement(inputs: dict[str, Any],
             "gns": spaces * per}
 
 
+def underground_parking_by_hand(inputs: dict[str, Any]) -> bool:
+    """Пара «места ↔ площадь» подземного паркинга — решение человека?
+
+    Страница сама заполняет пару нормой и помечает это `_parking_by_norm`
+    (`fillUndergroundFromTep`): поле непустое, но число — нормы. Движок прежде
+    читал всякое непустое поле как ручное, и производные строки (гостевые)
+    замирали на прежних вводных. Пометка руки сильнее пометки нормы; проект без
+    пометок (до них, API, бот) — непустое поле человеческое.
+
+    От `object_parking_by_hand` отличается одним: проектный подземный посев
+    списка `_parking_by_hand` не проходит намеренно, поэтому отсутствие в нём
+    ещё не значит «норма».
+    """
+    key = "underground"
+    if key in set(inputs.get("_parking_by_hand") or ()):
+        return True
+    if key in set(inputs.get("_parking_by_norm") or ()):
+        return False
+    return True
+
+
 def underground_tep_row(inputs: dict[str, Any],
                         tep: dict[str, dict[str, Any]]) -> dict[str, float] | None:
     """Строка ТЭП подземного паркинга — производная, и ответ у неё ОДИН.
@@ -11412,13 +11433,18 @@ def underground_tep_row(inputs: dict[str, Any],
     manual_spaces = _underground_number(inputs, "underground_manual_spaces")
     manual_area = _underground_number(inputs, "underground_manual_gns_sqm")
     guest: float | None = None
-    if manual_spaces > 0 or manual_area > 0:
+    if underground_parking_by_hand(inputs) and (manual_spaces > 0 or manual_area > 0):
         # Заданная руками площадь сильнее норматива ВСЕГДА, а не только когда
         # мест не назвали: реальный подземный этаж диктуют пятно застройки,
         # рампы и техпомещения, а норматив описывает потребность.
         spaces = manual_spaces if manual_spaces > 0 else (
             round(manual_area / per) if per > 0 else 0.0)
         area = manual_area if manual_area > 0 else spaces * per
+        # Гостевые человек не вписывал — они выводятся из его мест тем же
+        # правилом, что у читателя (S/11). Оставить в строке прежнее число
+        # значит заморозить производное: на «Донском» 44 места несли 109
+        # гостевых от давно сменившихся вводных.
+        guest = float(underground_guest_spaces({"units": spaces}))
     else:
         need = underground_parking_requirement(inputs, tep)
         if not need:
