@@ -111,7 +111,7 @@ def test_the_run_counters_are_not_reset() -> None:
     Обнулив его, мы пустили бы ответ на прошлый запрос в чистый проект.
     """
     allowed = _non_project_state()
-    for counter in ("landScreeningRun", "tepRunSequence"):
+    for counter in ("landScreeningRun", "tepRunSequence", "glavapuScenarioRun"):
         assert counter in allowed, counter
 
 

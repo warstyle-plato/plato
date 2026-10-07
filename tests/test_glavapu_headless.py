@@ -146,7 +146,10 @@ def test_only_one_browser_runs_at_a_time():
     два одновременных запуска клали бы не расчёт, а весь контейнер."""
     assert core._GLAVAPU_HEADLESS_SLOTS == 1
     import inspect
-    source = inspect.getsource(core._glavapu_headless_rows)
+    # Замок стоит на общем пути браузера: через него идут и расчёт участка,
+    # и сверка сценария — второго входа к Chromium мимо очереди нет.
+    assert "_glavapu_headless_run(" in inspect.getsource(core._glavapu_headless_rows)
+    source = inspect.getsource(core._glavapu_headless_run)
     assert "_GLAVAPU_HEADLESS_LOCK.acquire" in source
     assert "_GLAVAPU_HEADLESS_LOCK.release" in source
     # Ожидание в очереди конечно: не дождался — уходим на формулы, а не висим.
