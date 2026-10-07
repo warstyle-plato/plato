@@ -421,7 +421,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     @app.get("/market/pulse/catalog")
     async def market_pulse_catalog(
         request: Request, refresh: bool = False, q: str = "", check: bool = False
-    ) -> dict[str, Any]:
+    ) -> Response:
         """Справочник «Пульса»: из какой базы, когда обновлён, сколько по регионам.
 
         `refresh=1` — забрать карту и классы заново, мимо суточного кэша.
@@ -463,7 +463,12 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                     }
 
                 report["query"]["check"] = await run_in_threadpool(ask)
-        return report
+        # Страницу открывают в браузере телефона: без `charset` Safari читал
+        # русские причины и заголовки кракозябрами.
+        return Response(
+            content=json.dumps(report, ensure_ascii=False, indent=1, default=str),
+            media_type="application/json; charset=utf-8",
+        )
 
     @app.get("/market/pulse/regions")
     async def market_pulse_regions(request: Request) -> Response:

@@ -629,6 +629,32 @@ def _describe_map_page(path: str, page: str, index: int) -> dict[str, Any]:
     }
 
 
+_BUNDLE_PATH_RE = re.compile(
+    r"""["'`]((?:https?://[A-Za-z0-9.\-]+)?/(?:api|v\d|graphql|map|complex|objects?)"""
+    r"""(?:/[A-Za-z0-9_\-.{}$:]*)*/?(?:\?[A-Za-z0-9_=&\-]*)?)["'`]"""
+)
+_BUNDLE_HOST_RE = re.compile(r"""["'`](https?://[A-Za-z0-9.\-]*pulsprodaj\.ru[^"'`\s]{0,80})["'`]""")
+
+
+def _bundle_endpoints(code: str) -> dict[str, Any]:
+    """Пути запросов и хосты, названные в собранном скрипте приложения."""
+    paths = list(dict.fromkeys(_BUNDLE_PATH_RE.findall(code)))
+    hosts = list(dict.fromkeys(_BUNDLE_HOST_RE.findall(code)))
+    # Клиент может звать относительные пути от своего `baseURL` («complex/map/»).
+    bases = list(dict.fromkeys(re.findall(r"""baseURL\s*:\s*["'`]([^"'`]{1,80})""", code)))
+    relative = list(dict.fromkeys(
+        found for found in re.findall(r"""["'`]([a-z][a-z0-9_\-]*/[a-z0-9_\-/{}$]*)["'`]""", code)
+        if re.search(r"complex|map|object|price|sale|region|search|building", found)
+    ))
+    return {
+        "paths": paths[:60],
+        "paths_total": len(paths),
+        "hosts": hosts[:10],
+        "base_urls": bases[:5],
+        "relative": relative[:40],
+    }
+
+
 class PulseClient:
     """Клиент с сессией на диске и молчаливым отказом."""
 
@@ -992,6 +1018,14 @@ class PulseClient:
             self.errors.append(f"данные карты не разобрались: {exc}")
             return None
 
+    def _probe_bundle(self, src: str) -> dict[str, Any]:
+        """Адреса запросов, зашитые в скрипт страницы карты — для пробы."""
+        try:
+            code = self._open(src).decode("utf-8", errors="ignore")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            return {"script": src, "error": str(exc)[:200]}
+        return {"script": src, "bytes": len(code), **_bundle_endpoints(code)}
+
     def _read_map(self) -> tuple[str | None, int]:
         """Первая страница карты с данными: (страница, позиция GeoJSON).
 
@@ -1016,7 +1050,18 @@ class PulseClient:
                 self.errors.append(f"карта недоступна: {exc}")
                 return None, -1
             index = page.find(_GEOJSON_MARK)
-            self.map_probe.append(_describe_map_page(path, page, index))
+            described = _describe_map_page(path, page, index)
+            if index < 0:
+                # Всероссийская карта — одностраничное приложение: страница в
+                # 828 байт и один скрипт `/assets/index-*.js`, а проекты оно
+                # тянет запросами, которые знает только этот скрипт. Скрипт
+                # открыт только вошедшему, поэтому читаем его отсюда, с прода,
+                # и выписываем адреса, по которым он ходит.
+                described["bundles"] = [
+                    self._probe_bundle(src) for src in described["scripts"][:2]
+                    if src.startswith("/") and not src.startswith("//")
+                ]
+            self.map_probe.append(described)
             if index >= 0:
                 self.map_path = path
                 return page, index
