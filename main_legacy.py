@@ -100,7 +100,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.28"
+VERSION = "0.25.29"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -37982,6 +37982,11 @@ def _calculate_economics(req: CalcRequest) -> dict:
          + op["capex_amounts"].get("commissioning", 0.0)
          + op["capex_amounts"].get("site_maintenance", 0.0)
          + op["capex_amounts"].get("gc_fee", 0.0)),
+        # Снос и расселение — статьи CAPEX движка и книги (строки 36 и 37), и
+        # в структуре расходов их не было вовсе: итог таблицы не сходился с
+        # CAPEX ровно на них. Подписи — те же, что у статей (`_MONTHLY_CAPEX_LABELS`).
+        (_MONTHLY_CAPEX_LABELS["demolition"], op["capex_amounts"].get("demolition", 0.0)),
+        (_MONTHLY_CAPEX_LABELS["resettlement"], op["capex_amounts"].get("resettlement", 0.0)),
         ("Отдельные объекты",
          sum(op["capex_amounts"].get(_o.key, 0.0) for _o in STANDALONE_OBJECTS)),
         # Статьи гостиницы (`hotel_capex_amounts`) есть только у гостиничного
