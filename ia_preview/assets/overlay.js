@@ -66,6 +66,8 @@
   };
   var TARGET_LLCR = 1.2;
 
+  function inTelegram() { return /[#&](telegram_session|cad)=/.test(location.hash); }
+
   function need(selector, what) {
     var el = document.querySelector(selector);
     if (!el) missing.push(what + ' — ' + selector);
@@ -214,10 +216,14 @@
     }
 
     // Класс и сценарий уезжают в «Экономику»: их спрашивали раньше, чем
-    // человек ввёл участок.
+    // человек ввёл участок. Тип проекта сюда не едет — его ставит на шаг
+    // «Участок» placeProjectKind: «что строим» спрашивается раньше «где».
     var setup = document.createElement('div');
     setup.className = 'ia-setup';
-    document.querySelectorAll('.actions .scenario').forEach(function (node) { setup.appendChild(node); });
+    document.querySelectorAll('.actions .scenario').forEach(function (node) {
+      if (node.querySelector('#projectKindSelect') && !inTelegram()) return;
+      setup.appendChild(node);
+    });
 
     var note = document.querySelector('.header-note');
     if (!note) missing.push('абзац о классе и сценарии — .header-note');
@@ -370,6 +376,37 @@
       actions.appendChild(manual);
     }
 
+  }
+
+  /* Тип проекта — первым на шаге «Участок», до поля кадастра. Иначе человек
+     вводил кадастр, получал расчёт жилья и только в «Экономике» узнавал, что
+     тип можно сменить (замечание владельца). Узел переносится, а не
+     копируется: один select, один обработчик applyProjectKind, варианты
+     по-прежнему рисует syncProjectKindSelector из PROJECT_KINDS движка.
+     В телеграме тип остаётся рядом с классом: туда участок приходит кадастром
+     в ссылке, и поле участка там не первый шаг. */
+  function placeProjectKind() {
+    if (inTelegram()) return;
+    var select = need('#projectKindSelect', 'выбор типа проекта');
+    var note = need('#projectKindNoteTop', 'пояснение типа проекта');
+    var site = need('#iaSite', 'панель участка');
+    if (!select || !note || !site) return;
+    var holder = select.closest('.scenario');
+    if (!holder) { missing.push('обёртка выбора типа проекта — .scenario вокруг #projectKindSelect'); return; }
+
+    var card = document.createElement('div');
+    card.className = 'card ia-kind';
+    card.id = 'iaKind';
+    card.innerHTML = '<div class="section-title">Что строим</div>';
+    // Подпись «Проект» в шапке стояла слева от списка; в карточке её роль
+    // играет заголовок, и вторая подпись «Проект» читалась бы как опечатка.
+    Array.prototype.slice.call(holder.childNodes).forEach(function (child) {
+      if (child.nodeType === 3) holder.removeChild(child);
+    });
+    holder.classList.add('ia-kind-row');
+    note.style.textAlign = 'left';
+    card.appendChild(holder);
+    site.insertBefore(card, site.firstChild);
   }
 
   /* Холодному пользователю нужен один клик, а не выбор из четырёх способов
@@ -1587,6 +1624,7 @@
     step('шапка', rebuildHeader);
     step('подтверждение сброса', guardReset);
     step('панель участка', splitSite);
+    step('тип проекта на участке', placeProjectKind);
     step('подсказки адресов', wireSuggest);
     step('свободный текст даёт выбор', wrapObtainTep);
     step('причины пустого поиска', wrapLandLookup);
@@ -1610,7 +1648,7 @@
   // (15.08.2026): cad-путь доходит до отправки результата в чат, режим
   // правки живёт. Особенность WebView одна: внизу прибита кнопка «Обновить
   // расчёт в Telegram», и класс ia-telegram поднимает FAB Платона над ней.
-  if (/[#&](telegram_session|cad)=/.test(location.hash)) {
+  if (inTelegram()) {
     document.documentElement.classList.add('ia-telegram');
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
