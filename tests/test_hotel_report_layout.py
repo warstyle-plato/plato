@@ -440,3 +440,19 @@ def test_the_bot_card_lists_the_hotel_sections(monkeypatch) -> None:
     text = sent[0]
     assert re.findall(r"<b>\d+\. ([^<]+)</b>", text) == TITLES
     assert "Номерной фонд" in text and "18 357 ₽" in text.replace(" ", " ")
+
+
+def test_the_hotel1_rate_is_only_works_and_finishing() -> None:
+    """Ставка стройки ориентира — СМР и отделка (E263 + E271), а не итог CAPEX
+    модели (E299 − E294): в нём уже ИРД и проект (E291), техзаказчик (E297)
+    и резерв (E298), которые движок считает своими статьями — дважды."""
+    import hotel_reference as ref
+    preset = hotel_presets.preset_for("hotel1")
+    rate = preset.values["cost_th_per_sqm"].value
+    vat = 1 + ref.value("hotel1:Предпосылки!E775")
+    works = (ref.value("hotel1:Предпосылки!E263") + ref.value("hotel1:Предпосылки!E271")) / 1000
+    assert rate == pytest.approx(works * vat, rel=1e-9)
+    total = ((ref.value("hotel1:Предпосылки!E299") - ref.value("hotel1:Предпосылки!E294"))
+             / ref.value("hotel1:Предпосылки!E92") * vat)
+    assert abs(total - rate) / rate > 0.05  # прежняя формула ловится
+    assert "hotel1:Предпосылки!E299" not in preset.values["cost_th_per_sqm"].cells
