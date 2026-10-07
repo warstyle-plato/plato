@@ -123,9 +123,14 @@ def seen():
             # `tep` на лету — меряем после того, как он доехал.
             page.evaluate(DOUBLE)
             page.wait_for_timeout(1500)
+            # Тот же расчёт на лету, что и выше: на медленном раннере ответ
+            # приходил позже таймера, и стенд мерил поле посреди пересчёта
+            # (CI #626, 06.10.2026: в поле 4794 при норме 2397). Ждём тишины.
+            page.wait_for_load_state("networkidle")
             out["hand_yields"] = page.evaluate(READ)
             page.evaluate(TYPE, "700")
             page.wait_for_timeout(1500)
+            page.wait_for_load_state("networkidle")
             out["retyped"] = page.evaluate(READ)
             page.evaluate(TYPE, "")
             page.wait_for_timeout(1500)
@@ -136,6 +141,7 @@ def seen():
             frozen_before = page.evaluate(READ)
             page.evaluate(DOUBLE)
             page.wait_for_timeout(1500)
+            page.wait_for_load_state("networkidle")
             out["frozen_before"] = frozen_before
             out["frozen_after"] = page.evaluate(READ)
             ctx.close()

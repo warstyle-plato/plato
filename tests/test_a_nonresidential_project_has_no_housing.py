@@ -68,10 +68,13 @@ def test_the_kinds_are_declared_once() -> None:
     """Состав типов — из движка; на странице копии нет."""
     assert core.DEFAULT_INPUTS["project_kind"] == core.PROJECT_KIND_MIXED
     keys = [pair[0] for pair in core.PROJECT_KINDS]
-    assert keys == [core.PROJECT_KIND_MIXED, core.PROJECT_KIND_NONRESIDENTIAL]
+    # Гостиница — третий тип (владелец, 05.10.2026), а не объект жилого проекта.
+    assert keys == [core.PROJECT_KIND_MIXED, core.PROJECT_KIND_NONRESIDENTIAL,
+                    core.PROJECT_KIND_HOTEL]
     page = core.PAGE
     assert "__DEVELOPAID_PROJECT_KINDS__" not in page
     assert "__DEVELOPAID_NONRESIDENTIAL_INPUTS__" not in page
+    assert "__DEVELOPAID_HOTEL__" not in page
     # Два написанных руками `<option>` были бы копией, которую негде
     # обновлять: третий тип проекта молчал бы на странице.
     for key in keys:

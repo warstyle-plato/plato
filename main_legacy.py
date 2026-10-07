@@ -61,6 +61,15 @@ from pydantic import BaseModel
 # причине: он о выгрузках и их разборе, движок — об экономике.
 import developaid_actuals
 import developaid_nonres_strategy as nonres_strategy
+import developaid_hotel_strategy as hotel_strategy
+import hotel_presets
+from developaid_finance_math import (
+    LOSS_CARRY_USE_LIMIT as _LOSS_CARRY_USE_LIMIT,
+    equity_npv as _equity_npv,
+    monthly_irr as _monthly_irr,
+    monthly_npv as _monthly_npv,
+    profit_tax_schedule as _profit_tax_schedule,
+)
 import developaid_monitor
 import developaid_monitor_daily
 import developaid_monitor_scenarios
@@ -76,6 +85,7 @@ import v4_dashboard
 import v4_entry_sheet
 import v4_nonres_sheet
 import nonres_workbook
+import hotel_workbook
 import v4_value_cache
 import presentation as _presentation
 import teaser_pdf as _teaser_pdf
@@ -89,7 +99,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.11"
+VERSION = "0.25.20"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -763,7 +773,7 @@ def landscaping_area_per_person(inputs: dict[str, Any],
     population, basis = project_population(tep, str(inputs.get("vri_region") or "msk"))
     if given > 0:
         if population <= 0:
-            if is_nonresidential(inputs):
+            if without_housing(inputs):
                 return 0.0, ("нежилой проект: площадь задана, а делить её на "
                              "человека не на кого — двор здесь входит в "
                              "себестоимость объекта")
@@ -807,7 +817,7 @@ def landscaping_cost(inputs: dict[str, Any], tep: dict[str, Any],
     # на офиснике 19 110 м² это 210,7 млн ₽ CAPEX и LLCR 0,5427 против
     # 0,5629. Заданная руками ставка по-прежнему сильнее: посчитать двор
     # отдельно — решение человека, а не запрет методики.
-    if is_nonresidential(inputs):
+    if without_housing(inputs):
         return 0.0, ("нежилой проект: двор входит в себестоимость объекта — "
                      "отдельной статьёй не считается")
     area, basis = landscaping_area(inputs, tep)
@@ -825,7 +835,7 @@ def landscaping_area(inputs: dict[str, Any], tep: dict[str, Any]) -> tuple[float
             # населением нечем. «Благоустраивать нечего» было бы неправдой:
             # молчание методики читалось бы как отсутствие работ. База у этого
             # проекта своя и она уже есть — ставка на метр наземной ГНС.
-            if is_nonresidential(inputs):
+            if without_housing(inputs):
                 return 0.0, ("нежилой проект: двор входит в себестоимость "
                              "объекта — отдельной статьёй не считается")
             return 0.0, "квартир в проекте нет — благоустраивать нечего"
@@ -1469,7 +1479,8 @@ def _object_strategy_fields(obj: StandaloneObject) -> list[list[Any]]:
         [f"{p}_loan_spread_pp", "Спред кредита объекта",
          "п.п. к ключевой ставке сценария проекта", "number"],
         [f"{p}_loan_fee_pct", "Комиссия за выдачу", "% выборки", "number"],
-        [f"{p}_debt_repayment", "Погашение кредита объекта", "доходный метод", "select",
+        [f"{p}_debt_repayment", "Погашение кредита объекта",
+         "доходный метод; при прямой продаже кредит гасится выручкой ДКП", "select",
          [[nonres_strategy.REPAY_ANNUITY, "Аннуитет на срок кредита с баллоном в конце"],
           [nonres_strategy.REPAY_SWEEP, "Из всего NOI по мере поступления"],
           [nonres_strategy.REPAY_BULLET, "Одним платежом при выходе"]]],
@@ -1779,6 +1790,17 @@ STRATEGY_SECTION_READERS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Поля, которые читает не весь блок стратегий, а только часть. Схема погашения,
+# срок и баллон — у доходного метода: при прямой продаже кредит гасится
+# выручкой ДКП (проданное выходит из залога), и выбор «аннуитет» там ничего
+# не менял — поле, правка которого ничего не меняет, не вводная.
+STRATEGY_FIELD_READERS_BY_SUFFIX: dict[str, tuple[str, ...]] = {
+    "debt_repayment": (nonres_strategy.STRATEGY_INCOME,),
+    "loan_term_years": (nonres_strategy.STRATEGY_INCOME,),
+    "loan_balloon_pct": (nonres_strategy.STRATEGY_INCOME,),
+}
+
+
 def strategy_field_readers() -> dict[str, list[Any]]:
     """Поле объекта → [его поле стратегии, стратегии, которые поле читают]."""
     out: dict[str, list[Any]] = {}
@@ -1786,7 +1808,9 @@ def strategy_field_readers() -> dict[str, list[Any]]:
         if not obj.strategies:
             continue
         for field in standalone_object_group(obj)[1]:
-            reads = STRATEGY_SECTION_READERS.get(standalone_object_section(obj, field[0]))
+            suffix = field[0].removeprefix(f"{obj.prefix}_")
+            reads = (STRATEGY_FIELD_READERS_BY_SUFFIX.get(suffix)
+                     or STRATEGY_SECTION_READERS.get(standalone_object_section(obj, field[0])))
             if reads:
                 out[field[0]] = [f"{obj.prefix}_strategy", list(reads)]
     return out
@@ -2179,10 +2203,20 @@ def sports_is_sold(inputs: dict[str, Any] | None) -> bool:
 # бы неправдой на экране.
 PROJECT_KIND_MIXED = "mixed"
 PROJECT_KIND_NONRESIDENTIAL = "nonresidential"
+# Гостиница — ОТДЕЛЬНЫЙ тип проекта, а не объект внутри жилого проекта или
+# КРТ (владелец, 05.10.2026). Жилья, соцнагрузки и объектов у него нет, как у
+# нежилого; деньги — номера, департаменты и USALI (`developaid_hotel_strategy`).
+PROJECT_KIND_HOTEL = "hotel"
 PROJECT_KINDS: tuple[tuple[str, str], ...] = (
     (PROJECT_KIND_MIXED, "Жильё"),
     (PROJECT_KIND_NONRESIDENTIAL, "Нежилое"),
+    (PROJECT_KIND_HOTEL, "Гостиница"),
 )
+# Типы проекта без жилья. Один ответ на «считает ли проект дом»: нежилой и
+# гостиничный обнуляют МКД и соцнагрузку одним и тем же правилом
+# (`residential_excluded`), а называют остаток одной функцией
+# (`nonresidential_leftovers`).
+PROJECT_KINDS_WITHOUT_HOUSING = frozenset({PROJECT_KIND_NONRESIDENTIAL, PROJECT_KIND_HOTEL})
 
 # Что принадлежит ЖИЛЬЮ и в нежилом проекте не живёт. Список объявлен один
 # раз: по нему страница обнуляет и называет убранное, по нему же движок ищет
@@ -2229,8 +2263,18 @@ def project_kind(inputs: dict[str, Any] | None) -> str:
 
 
 def is_nonresidential(inputs: dict[str, Any] | None) -> bool:
-    """Нежилой ли проект."""
+    """Нежилой ли проект (тип «Нежилое»: ТЦ, офисы, паркинг, ФОК)."""
     return project_kind(inputs) == PROJECT_KIND_NONRESIDENTIAL
+
+
+def is_hotel(inputs: dict[str, Any] | None) -> bool:
+    """Гостиничный ли проект."""
+    return project_kind(inputs) == PROJECT_KIND_HOTEL
+
+
+def without_housing(inputs: dict[str, Any] | None) -> bool:
+    """Проект без жилья: нежилой или гостиничный. Решает, считается ли дом."""
+    return project_kind(inputs) in PROJECT_KINDS_WITHOUT_HOUSING
 
 
 def nonresidential_leftovers(inputs: dict[str, Any] | None,
@@ -2242,7 +2286,7 @@ def nonresidential_leftovers(inputs: dict[str, Any] | None,
     остаток расчёт не будет (`residential_excluded`), но и молчать нельзя:
     вводная, которой не видно в расчёте, читалась бы как потерянная.
     """
-    if not is_nonresidential(inputs):
+    if not without_housing(inputs):
         return []
     left: list[str] = []
     for key in MKD_PRODUCTS:
@@ -2265,7 +2309,54 @@ def nonresidential_leftovers(inputs: dict[str, Any] | None,
         value = n(inputs or {}, key)
         if value > 0:
             left.append(f"{label}: " + f"{value:,.0f}".replace(",", " "))
+    # Гостиничный проект — одна гостиница: включённые ТЦ, офисы, паркинг и
+    # ФОК в нём не считаются (`residential_excluded`), и это тоже остаток.
+    if is_hotel(inputs):
+        for obj in STANDALONE_OBJECTS:
+            if b(inputs or {}, obj.enabled_key):
+                left.append(f"{obj.group_label}: объект включён")
     return left
+
+
+# Группы вводных, которые гостиничный проект читает: сроки, земля, стройка
+# (ставки проекта, генподряд, резерв), налоги и финансирование (ставка
+# дисконтирования). Продажи жилья, соцнагрузка, паркинги и объекты ему не
+# принадлежат — вместо них блок «Гостиница» (`hotel_page_spec`).
+HOTEL_PROJECT_GROUPS: tuple[str, ...] = (
+    "Сделка и сроки", "Смена ВРИ и земельные права", "Строительство",
+    "Коммерческие расходы и налоги", "Финансирование",
+)
+
+
+def hotel_page_spec() -> dict[str, Any]:
+    """Блок «Гостиница» для страницы — из одного объявления полей.
+
+    Поля, группы и варианты — `developaid_hotel_strategy.FIELDS`; ориентиры и
+    их происхождение — `hotel_presets`; подсказка-диапазон пустого поля — по
+    классу. Копии подписей на странице нет.
+    """
+    fields = []
+    for f in hotel_strategy.FIELDS:
+        hints = {}
+        for stars in ("", *[c for c, _ in hotel_strategy.CLASSES]):
+            hint = hotel_presets.hint_range(f.key, stars or None)
+            if hint:
+                hints[stars] = hint
+        fields.append({
+            "key": f.key, "label": f.label, "unit": f.unit, "group": f.group,
+            "default": f.default, "origin": f.origin, "required": f.required,
+            "kind": f.kind, "choices": [list(pair) for pair in f.choices],
+            "hint": f.hint, "needed_when": list(f.needed_when) if f.needed_when else None,
+            "capex": f.capex, "ranges": hints,
+        })
+    return {
+        "fields": fields,
+        "groups": [list(pair) for pair in hotel_strategy.GROUPS],
+        "presets": hotel_presets.presets_for_page(),
+        "origins_key": hotel_presets.ORIGINS_KEY,
+        "hidden_groups": [group[0] for group in FIELD_GROUPS
+                          if group[0] not in HOTEL_PROJECT_GROUPS],
+    }
 
 
 def residential_excluded_rows(inputs: dict[str, Any] | None) -> frozenset[str]:
@@ -2276,9 +2367,13 @@ def residential_excluded_rows(inputs: dict[str, Any] | None) -> frozenset[str]:
     нулями и этим признаком: поверхность её не показывает, а ключ не
     пропадает у тех, кто ищет строку по имени.
     """
-    if not is_nonresidential(inputs):
+    if not without_housing(inputs):
         return frozenset()
-    return frozenset(MKD_PRODUCTS) | frozenset(SOCIAL_TEP_FIELDS)
+    rows = frozenset(MKD_PRODUCTS) | frozenset(SOCIAL_TEP_FIELDS)
+    if is_hotel(inputs):
+        rows |= frozenset(obj.key for obj in STANDALONE_OBJECTS)
+        rows |= frozenset(OBJECT_PARKING_PRODUCT_KEYS.values())
+    return rows
 
 
 # Количества строки ТЭП и строки продукта отчёта: строка вне состава
@@ -2364,11 +2459,14 @@ def residential_excluded(inputs: dict[str, Any],
     собиралась заново из оставшихся `underground_manual_*` — 149 мест,
     5 215 м² в строительном объёме, 834,6 млн ₽ выручки и СМР подземной части.
     """
-    if not is_nonresidential(inputs):
+    if not without_housing(inputs):
         return inputs, tep
     x = dict(inputs or {})
     for key in NONRESIDENTIAL_CLEARED_INPUTS:
         x[key] = 0
+    if is_hotel(inputs):
+        for obj in STANDALONE_OBJECTS:
+            x[obj.enabled_key] = False
     # Признак ВРИ — не количество, и страница его не обнуляет; но платы за
     # смену ВРИ у нежилого проекта нет, и тизер по признаку писал строку
     # «Плата за смену ВРИ — 0 млн ₽», будто плата есть и равна нулю.
@@ -2386,6 +2484,13 @@ def residential_excluded(inputs: dict[str, Any],
             if col in row:
                 row[col] = 0.0
         t[key] = row
+    # Гостиница — строка ТЭП своего проекта: её ГНС и есть ГНС
+    # проекта, по нему считаются ГНС сводки и удельные. Только у гостиничного
+    # проекта — у остальных строки нет вовсе, а не нулевой.
+    if is_hotel(inputs):
+        gns = n(x, "hotel_gba_sqm")
+        t[HOTEL_TEP_KEY] = {"label": "Гостиница", "gns": gns, "total_area": 0.0,
+                            "useful": 0.0, "saleable": 0.0, "transfer": 0.0, "units": 0.0}
     return x, t
 
 
@@ -12265,8 +12370,12 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
         elif item["guest_spaces"]:
             line += f", из них {item['guest_spaces']} гостевых"
         parts.append(line)
-    # Норматив считается и встроенной коммерции МКД, а своего гаража у неё нет:
-    # её места лежат в подземном паркинге дома. Без этой оговорки «положено 222,
+    # Норматив считается и встроенной коммерции МКД, а своего гаража у неё нет.
+    # Это приобъектная стоянка у дома — плоскостная парковка или сторона улицы
+    # (945-ПП п. 6.1.2.3), и в подземный паркинг МКД она не идёт: гараж дома —
+    # постоянные и гостевые (`underground_parking_requirement`, выгрузка
+    # ГлавАПУ строками 42.1–42.2). Прежде подпись клала её «в подземный паркинг
+    # дома» — о гараже, который её не содержит. Без оговорки «положено 222,
     # строим 173» читается как недострой на 49 мест.
     own_keys = {item["tep_key"] for item in own}
     in_house = sum(int(row.get("required_spaces") or 0)
@@ -12275,8 +12384,9 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
     head = (f"По нормативу {demand.get('norm_of') or ''} положено {required} мест."
             if required else "Норматив не посчитан — числа заданы руками.")
     if in_house:
-        head += (f" Из них {in_house} — встроенной коммерции МКД: её места в "
-                 "подземном паркинге дома, своего гаража у неё нет.")
+        head += (f" Из них {in_house} — встроенной коммерции МКД: приобъектная "
+                 "стоянка у дома (плоскостная парковка или улица, 945-ПП п. 6.1.2.3), "
+                 "в подземный паркинг МКД не входит.")
     text = head + f" Строим {built}, продаётся {sold}: " + "; ".join(parts) + "."
     # Оговорка живёт у числа, а не в соседнем месте. Без выгрузки ГлавАПУ норма
     # берёт верхний край (К1 = К2 = 1) — это МАКСИМУМ мест, и подписанный
@@ -16734,9 +16844,19 @@ def _layout_dscr(layout: Any) -> float | None:
     """
     if not isinstance(layout, dict) or layout.get("project_finance", True):
         return None
+    metric = layout.get("debt_metric")
+    if isinstance(metric, dict):
+        return float(metric["value"]) if metric.get("key") == "dscr" else None
     values = [float(t["value"]) for t in layout.get("nonres_tiles") or []
               if t.get("unit") == "mult" and t.get("value") is not None]
     return min(values) if values else None
+
+
+def _layout_no_debt_cover(layout: Any) -> bool:
+    """У проекта без ПФ нет показателя долга (`debt_metric.key` пуст): кредит
+    объектов гасится продажами. Вердикт тогда не говорит ни об LLCR, ни о DSCR."""
+    metric = layout.get("debt_metric") if isinstance(layout, dict) else None
+    return isinstance(metric, dict) and not metric.get("key")
 
 
 def _purchase_feasibility(
@@ -16749,6 +16869,7 @@ def _purchase_feasibility(
     pf_shortfall_mln: Any = 0.0,
     pf_shortfall_month: Any = None,
     object_dscr: Any = None,
+    no_debt_cover: bool = False,
 ) -> dict[str, str]:
     """Вердикт по вводным плюс оговорка о дефолте, если он в модели был.
 
@@ -16762,7 +16883,7 @@ def _purchase_feasibility(
     """
     verdict = _purchase_feasibility_base(
         purchase_price_mln, net_profit_mln, llcr, debt_amount, ending_debt_mln,
-        object_dscr)
+        object_dscr, no_debt_cover)
     verdict = _financing_not_closed_clause(
         verdict, pf_shortfall_mln, pf_shortfall_month)
     when = str(default_date or "").strip()
@@ -16860,6 +16981,7 @@ def _purchase_feasibility_base(
     debt_amount: Any = 0.0,
     ending_debt_mln: Any = 0.0,
     object_dscr: Any = None,
+    no_debt_cover: bool = False,
 ) -> dict[str, str]:
     """Return a short preliminary purchase-feasibility conclusion.
 
@@ -16948,6 +17070,12 @@ def _purchase_feasibility_base(
             "status": "positive",
             "title": "Предварительно целесообразна",
             "text": "При текущей цене покупки проект формирует положительную чистую прибыль, а LLCR находится не ниже целевого уровня 1,20x.",
+        }
+    if no_debt_cover:
+        return {
+            "status": "positive",
+            "title": "Предварительно целесообразна",
+            "text": "При текущей цене покупки проект формирует положительную чистую прибыль; кредит объектов гасится выручкой прямых продаж, покрытие долга NOI не меряется — погашение кредита показано в «Финансировании объекта».",
         }
     return {
         "status": "positive",
@@ -17075,8 +17203,19 @@ def _escrow_chart_legend_html() -> str:
 
 
 def _pdf_nonres_value(row: dict[str, Any]) -> str:
-    """Значение строки нежилья (`nonres_report`, `report_layout`) для PDF."""
+    """Значение строки нежилья и гостиницы (`nonres_report`, `hotel_report`,
+    `report_layout`) для PDF. Отсутствующее — «—», а не ноль."""
     unit, value = row.get("unit"), row.get("value")
+    if value is None and unit not in ("text", "section"):
+        return "—"
+    if unit == "mln":
+        return _pdf_num(float(value) / 1e6, 1) + " млн ₽"
+    if unit == "rub_unit":
+        return _pdf_num(float(value), 0) + " ₽"
+    if unit == "count":
+        return _pdf_num(float(value), 0)
+    if unit == "years":
+        return _pdf_num(float(value), 1)
     if unit == "rub":
         return _pdf_money(value)
     if unit == "pct":
@@ -17085,7 +17224,122 @@ def _pdf_nonres_value(row: dict[str, Any]) -> str:
         return "—" if value is None else _pdf_num(float(value), 2) + "x"
     if unit == "date":
         return ".".join(reversed(str(value or "—")[:7].split("-")))
+    if unit == "section":
+        return " "  # пустая клетка: «—» значило бы «нет данных»
     return str(value or "—")
+
+
+# Метки PDF у разделов объектной вёрстки: свои — `object_<ключ>`, общие
+# с жилой — финансирование (кредит объекта и собственное участие),
+# чувствительность и календарь.
+_PDF_OBJECT_SHARED = {"finance": "financing", "sensitivity": "sensitivity",
+                      "calendar": "calendar"}
+
+
+def _pdf_section_order(object_sections: dict[str, Any]) -> list[tuple[str, bool]]:
+    """Порядок разделов PDF — порядок `report_layout.sections` движка.
+
+    Жилой: разбор проекта — что за участок → что на нём выходит → на чём
+    считали → сколько стоит → сколько приносит → чем финансируется → чем
+    рискуем → когда. Объектный: девять разделов владельца; реализуемость
+    посадки — в разделе «Объект и участок».
+    """
+    if not object_sections:
+        return [
+            ("tep", False), ("vri", False), ("screening", True), ("summary", False),
+            ("phases", True), ("premises", True),
+            ("expenses", False), ("expenses_detail", False),
+            ("income", True), ("financing", True), ("sensitivity", True),
+            ("calendar", False), ("footer", False),
+        ]
+    order: list[tuple[str, bool]] = []
+    for index, key in enumerate(object_sections):
+        name = _PDF_OBJECT_SHARED.get(key, f"object_{key}")
+        order.append((name, index > 0 and key != "calendar"))
+        if key == "object":
+            order.append(("screening", False))
+    return order + [("footer", False)]
+
+
+def _pdf_object_value(row: dict[str, Any]) -> str:
+    """Значение строки объектной вёрстки: единицы `nonres_report` плюс метры,
+    места, тыс ₽/м² и вводная со своей единицей."""
+    unit, value = row.get("unit"), row.get("value")
+    if unit in ("sqm", "count", "th", "num") and value is None:
+        return "—"
+    if unit == "sqm":
+        return _pdf_num(value, 0) + " м²"
+    if unit == "count":
+        return _pdf_num(value, 0)
+    if unit == "th":
+        return _pdf_num(value, 1) + " тыс ₽/м²"
+    if unit == "num":
+        return (_pdf_num(value, 2).rstrip("0").rstrip(",") + (" " + str(row["suffix"])
+                                                             if row.get("suffix") else ""))
+    return _pdf_nonres_value(row)
+
+
+def _object_pdf_sections(story: list[Any], sections: dict[str, Any], inputs: dict[str, Any],
+                         P: Any, table: Any, h2: Any, small: Any, normal: Any,
+                         KeepTogether: Any, Spacer: Any, mm: float, *,
+                         sensitivity_done: bool) -> None:
+    """Разделы объектной вёрстки в поток PDF — блоками движка, без пересчёта."""
+    for key, section in sections.items():
+        if key in ("finance", "calendar") or (key == "sensitivity" and sensitivity_done):
+            continue
+        story.append(_PdfSection(_PDF_OBJECT_SHARED.get(key, f"object_{key}")))
+        story.append(P(str(section.get("title") or ""), h2))
+        for block in section.get("blocks") or []:
+            title = str(block.get("title") or "")
+            ref = block.get("ref")
+            if block.get("kind") == "verdict" and section.get("verdict"):
+                verdict = section["verdict"]
+                story.append(table([["Вывод", str(verdict.get("title") or "")],
+                                    ["Основание", str(verdict.get("text") or "")]],
+                                   [45*mm, 125*mm], header=False, font_size=8.0))
+                continue
+            if ref == "goal_seek":
+                goal = section.get("goal_seek") or {}
+                story.append(P(
+                    (f"{title}: подбирается на странице отчёта полным пересчётом модели — "
+                     f"наибольшая цена участка, при которой «{goal.get('label')}» не ниже "
+                     f"{_pdf_num(goal.get('target'), 2)}x.") if goal.get("metric")
+                    else f"{title}: {goal.get('reason') or 'показателя долга у проекта нет.'}",
+                    small))
+                continue
+            if ref == "site":
+                rows = []
+                area = float(inputs.get("site_area_ha") or 0)
+                if area > 0:
+                    rows.append(["Площадь участка", _pdf_num(area, 4) + " га"])
+                numbers = _project_cadastral_numbers(inputs)
+                if numbers:
+                    rows.append(["Кадастровые номера", ", ".join(numbers)])
+                if rows:
+                    story.append(KeepTogether([P(title, small),
+                                               table(rows, [60*mm, 110*mm], header=False)]))
+                continue
+            if ref == "sensitivity":
+                brief = ", ".join(str(r.get("value") or "") for r in section.get("brief") or [])
+                story.append(P("Чувствительность не рассчитана на вкладке — факторы объекта: "
+                               + (brief or "—") + ".", small))
+                continue
+            if block.get("years"):
+                columns = block.get("columns") or []
+                rows = [[str(c[1]) for c in columns]]
+                for year in block["years"]:
+                    rows.append([str(year.get(c[0])) if c[2] == "text"
+                                 else _pdf_object_value({"unit": c[2], "value": year.get(c[0])})
+                                 for c in columns])
+                width = 170 / max(1, len(columns))
+                story.append(KeepTogether([P(title, small),
+                                           table(rows, [width*mm] * len(columns), font_size=6.8)]))
+                continue
+            rows = [[title or " ", " "]]
+            for row in block.get("rows") or []:
+                rows.append([str(row.get("label") or ""), _pdf_object_value(row)])
+            story.append(table(rows, [112*mm, 58*mm], font_size=7.6))
+            story.append(Spacer(1, 2*mm))
 
 
 def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
@@ -17106,6 +17360,13 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     products = report.get("products") or []
     expense_structure = report.get("expense_structure") or []
     calendar_data = report.get("calendar") or {}
+    # Проект без жилья — свои разделы (`report.object_report`, вёрстку выбрал
+    # движок в `report_layout.kind`): PDF их печатает, а не собирает.
+    _object_sections = {str(sec.get("key")): sec
+                        for sec in (report.get("object_report") or {}).get("sections") or []}
+    _object_calendar = (_object_sections.get("calendar") or {}).get("calendar") or {}
+    if _object_calendar.get("events"):
+        calendar_data = _object_calendar
     cads = payload.get("cadastral_numbers") or []
     source_label = str(payload.get("source_label") or "ТЭП DevelopAid")
     scenario_key = str(payload.get("scenario") or "base")
@@ -17493,6 +17754,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
 
     story=[P("DevelopAid",h1),P("Инвестиционный отчёт по девелоперскому проекту",h2),P(title_scope,ParagraphStyle("scope",parent=h2,fontSize=11,textColor=colors.HexColor('#555555')))]
     meta=[["Дата расчёта",date.today().strftime("%d.%m.%Y")],["Источник ТЭП",source_label],["Класс жилья",class_label],["Сценарий",scenario_label]]
+    # Класс жилья у проекта без жилья ничего не значит (`report_layout.housing`).
+    if not (report.get("layout") or {}).get("housing", True):
+        meta=[row for row in meta if row[0]!="Класс жилья"]
     # Один расчёт — один идентификатор: у пары «PDF + книга» из одного ответа
     # бота он совпадает, и сверка начинается с него, а не со спора о версиях.
     meta.append(["Идентификатор расчёта",
@@ -17693,6 +17957,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         float(financing.get("pf_shortfall") or 0) / 1_000_000,
         financing.get("pf_shortfall_month"),
         _layout_dscr(report.get("layout")),
+        _layout_no_debt_cover(report.get("layout")),
     )
     story.append(KeepTogether([
         P("Оценка целесообразности покупки", h2),
@@ -17887,7 +18152,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Оставшееся берётся из свода, а не считается здесь заново: второй счёт
     # той же величины однажды разошёлся бы с экраном, и обе строки выглядели
     # бы верными.
-    if str(summary.get("project_kind") or "") == PROJECT_KIND_NONRESIDENTIAL:
+    _kind = str(summary.get("project_kind") or "")
+    if _kind in PROJECT_KINDS_WITHOUT_HOUSING:
         # Цены и темп проекта принадлежат продуктам МКД: у объекта свой
         # профиль продаж и своя цена места. Напечатанные у нежилого проекта,
         # они читались бы как предпосылки его расчёта.
@@ -17895,8 +18161,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                          "Цена подземного машино-места", "Доля продаж до РВЭ"}
         premise_rows = [row for row in premise_rows if row[0] not in _mkd_premises]
         premise_rows.append(["Тип проекта",
-                             dict(PROJECT_KINDS)[PROJECT_KIND_NONRESIDENTIAL]
-                             + " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет"])
+                             dict(PROJECT_KINDS)[_kind]
+                             + (" — жилья, соцнагрузки, платы за смену ВРИ и объектов "
+                                "(ТЦ, офисы, паркинг, ФОК) в расчёте нет"
+                                if _kind == PROJECT_KIND_HOTEL else
+                                " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет")])
         _left = [str(item) for item in (summary.get("project_kind_leftovers") or [])]
         if _left:
             # Остаток назван, но не посчитан (`residential_excluded`): без
@@ -17932,7 +18201,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     total_expense=sum(float(item.get('value') or 0) for item in expense_structure) or float(summary.get('total_expenses') or 0)
     for item in expense_structure:
         value=float(item.get('value') or 0)
-        if value<=0: continue
+        if value==0: continue
         # Удельные берутся из расчёта, без запасного счёта на месте. Запасной
         # счёт здесь уже стоил дорого: свод по очередям приходил без удельных,
         # печать досчитывала их сама и выглядела безупречно, а страница
@@ -18007,11 +18276,50 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # ТЦ и офисы вне ДДУ — таблицей движка (`nonres_report`), той же, что на
     # экране: прямая продажа или аренда с выходом и свой кредит объекта.
     for _nr in report.get("nonres_strategy") or []:
-        _nr_rows = [["Нежильё — стратегия реализации: " + str(_nr.get("title") or ""), ""]]
+        _nr_rows = [["Нежильё — стратегия реализации: " + str(_nr.get("title") or ""), " "]]
         for _row in _nr.get("rows") or []:
-            _nr_rows.append([str(_row.get("label") or ""), _pdf_nonres_value(_row)])
+            # Блок «Итог объекта» — заголовком строки, без значения.
+            _nr_rows.append([str(_row.get("label") or "").upper()
+                             if _row.get("unit") == "section" else str(_row.get("label") or ""),
+                             _pdf_nonres_value(_row)])
         story.append(KeepTogether([table(_nr_rows, [112*mm, 58*mm], font_size=7.6)]
                                   + [P(str(w), small) for w in _nr.get("warnings") or []]))
+    # Гостиница — таблицей движка (`hotel_report`), той же, что на экране:
+    # ключевые показатели и годовой USALI. Незаполненная — названа, не нулями.
+    _hotel = report.get("hotel")
+    if _hotel:
+        story.append(P("Гостиница — эксплуатация (USALI)", h2))
+        if not _hotel.get("computed"):
+            story.append(P("Гостиница не считается: не заданы "
+                           + ", ".join(str(m) for m in _hotel.get("missing") or []) + ".", small))
+        else:
+            _h_rows = [["Показатель", "Значение"]]
+            for _row in _hotel.get("rows") or []:
+                _h_rows.append([str(_row.get("label") or ""), _pdf_nonres_value(_row)])
+            story.append(table(_h_rows, [112*mm, 58*mm], font_size=7.4))
+            for _w in _hotel.get("warnings") or []:
+                story.append(P(str(_w), small))
+            _usali = _hotel.get("usali") or {}
+            _years = list(_usali.get("years") or [])
+            # Годы — колонками, по шесть на таблицу: пятнадцать лет на А4 не
+            # читаются. Деньги — в млн ₽, как в «Своде» эталонных моделей.
+            for _start in range(0, len(_years), 6):
+                _span = _years[_start:_start + 6]
+                _u_rows = [["USALI, млн ₽"] + [str(y) for y in _span]]
+                for _line in _usali.get("rows") or []:
+                    _vals = (_line.get("values") or [])[_start:_start + 6]
+                    _cells = []
+                    for _v in _vals:
+                        if _v is None:
+                            _cells.append("—")
+                        elif _line.get("unit") == "rub":
+                            _cells.append(_pdf_num(float(_v) / 1e6, 1))
+                        else:
+                            _cells.append(_pdf_nonres_value({"unit": _line.get("unit"), "value": _v}))
+                    _u_rows.append([str(_line.get("label") or "")] + _cells)
+                _w0 = 62*mm
+                story.append(table(_u_rows, [_w0] + [(170*mm - _w0) / max(1, len(_span))] * len(_span),
+                                   font_size=6.8))
     # Квартиры продаются штуками. «40 квартир в месяц» проверяется отделом
     # продаж и рынком, «2 400 м² в месяц» — нет, а в отчёте был только метр.
     apartment_sales = report.get("apartment_sales") or {}
@@ -18477,9 +18785,67 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         story.append(P("Финансирование", h2))
         story.append(P("Проект без продаж по ДДУ: БРИДЖа, проектного финансирования и "
                        "эскроу нет. Стройку и общие затраты финансирует кредит объекта "
-                       "на долю стоимости, остальное — собственный капитал; условия, "
-                       "DSCR, срок и баллон — в таблице «Нежильё — стратегия реализации».",
-                       small))
+                       "на долю стоимости, остальное — собственный капитал.", small))
+    # Кредит объектов вне ДДУ — в разделе «Финансирование», той же таблицей
+    # движка (`nonres_financing_report`), что на экране: условия, выборка,
+    # платёж, баллон, погашение и обслуживание по годам. Прежде раздел у
+    # нежилого проекта был пуст, а таблица стояла среди продуктов.
+    if report.get("nonres_financing"):
+        loan_chart = line_chart(
+            timeline_rows,
+            [{"label": "Кредит объектов — остаток", "key": "nonres_loan_balance",
+              "factor": 1/1_000_000_000, "color": "#171717",
+              # Месяц погашения (остаток 0) тоже точка: без него линия
+              # обрывалась на последнем остатке, и долг выглядел непогашенным.
+              "active": lambda row: (float(row.get("nonres_loan_balance", 0) or 0) > 0
+                                     or float(row.get("nonres_loan_repayment", 0) or 0) > 0)}],
+            "млрд ₽",
+            height=118,
+        )
+        if loan_chart:
+            story.append(KeepTogether([P("Кредит объектов — остаток долга", h2), loan_chart]))
+    for _nf in report.get("nonres_financing") or []:
+        _years_cols = _nf.get("columns") or []
+        _nf_rows = [["Финансирование объекта: " + str(_nf.get("title") or ""), " "]]
+        for _row in _nf.get("rows") or []:
+            _nf_rows.append([str(_row.get("label") or "").upper()
+                             if _row.get("unit") == "section" else str(_row.get("label") or ""),
+                             _pdf_nonres_value(_row)])
+        # Длинная таблица переносится со строкой заголовка, а не прыгает
+        # целиком на следующую страницу, оставляя раздел пустым.
+        story.append(table(_nf_rows, [112*mm, 58*mm], font_size=7.6))
+        _parts = []
+        if _nf.get("years") and _years_cols:
+            _yrows = [[str(c[1]) for c in _years_cols]]
+            for _y in _nf["years"]:
+                _yrows.append([str(_y.get(c[0])) if c[2] == "text"
+                               else _pdf_nonres_value({"unit": c[2], "value": _y.get(c[0])})
+                               for c in _years_cols])
+            _parts.append(P("Обслуживание кредита по годам", small))
+            _parts.append(table(_yrows, [14*mm] + [26*mm] * (len(_years_cols) - 1), font_size=6.8))
+        if _parts:
+            story.append(KeepTogether(_parts))
+    # Собственное участие — та же таблица, что на экране
+    # (`equity_participation_report`): вложения, возврат, результат, по годам.
+    _eq = report.get("equity_participation") or {}
+    if _eq.get("rows"):
+        story.append(P("Собственное участие", h2))
+        _eq_rows = [["Показатель", "Значение"]]
+        for _row in _eq["rows"]:
+            _eq_rows.append([str(_row.get("label") or "").upper()
+                             if _row.get("unit") == "section" else str(_row.get("label") or ""),
+                             _pdf_nonres_value(_row)])
+        story.append(table(_eq_rows, [112*mm, 58*mm], font_size=7.6))
+        _cols = _eq.get("columns") or []
+        if _eq.get("years") and _cols:
+            _yrows = [[str(c[1]) for c in _cols]]
+            for _y in _eq["years"]:
+                _yrows.append([str(_y.get(c[0])) if c[2] == "text"
+                               else _pdf_nonres_value({"unit": c[2], "value": _y.get(c[0])})
+                               for c in _cols])
+            story.append(KeepTogether([P("Собственный капитал по годам", small),
+                                       table(_yrows, [16*mm] + [38*mm] * (len(_cols) - 1),
+                                             font_size=6.8)]))
 
     story.append(_PdfSection("income"))
     pace_chart=sales_bar_chart(timeline_rows,height=104)
@@ -18500,10 +18866,16 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         gantt_pages=gantt_drawings(events)
         for page_index,gantt in enumerate(gantt_pages):
             story.append(PageBreak())
-            story.append(P("Календарный план проекта" if page_index==0 else "Календарный план проекта · продолжение",h2))
+            _cal_title = str((_object_sections.get("calendar") or {}).get("title")
+                             or "Календарный план проекта")
+            story.append(P(_cal_title if page_index==0 else _cal_title+" · продолжение",h2))
             story.append(gantt)
         story.append(Spacer(1,2*mm))
         story.append(P("Полосы построены по фактическим датам модели; ромбами отмечены ключевые вехи. При включённой очередности этапы каждой очереди показаны отдельными строками.",small))
+    if _object_sections:
+        _object_pdf_sections(story, _object_sections, inputs, P, table, h2, small, normal,
+                             KeepTogether, Spacer, mm, sensitivity_done=bool(
+                                 sensitivity and (sensitivity.get("items") or [])))
     story.append(_PdfSection("footer"))
     story.extend([Spacer(1,4*mm),P("Отчёт сформирован автоматически DevelopAid на основании текущих вводных модели. Перед инвестиционным решением требуется проверка исходных данных, юридических предпосылок и условий кредитования.",small)])
 
@@ -18512,13 +18884,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Разбор проекта, а не история правок: что за участок → что на нём выходит
     # → на чём считали → сколько стоит → сколько приносит → чем финансируется
     # → чем рискуем → когда.
-    story = _pdf_ordered_story(story, [
-        ("tep", False), ("vri", False), ("screening", True), ("summary", False),
-        ("phases", True), ("premises", True),
-        ("expenses", False), ("expenses_detail", False),
-        ("income", True), ("financing", True), ("sensitivity", True),
-        ("calendar", False), ("footer", False),
-    ], PageBreak)
+    story = _pdf_ordered_story(story, _pdf_section_order(_object_sections), PageBreak)
     doc.build(story,onFirstPage=footer,onLaterPages=footer)
     return buf.getvalue()
 
@@ -18579,6 +18945,8 @@ CAPEX_SHORT_NAMES: dict[str, str] = {
     "offices": "Офисы",
     "standalone_retail": "Коммерция ОСЗ",
     "sports": "ФОК / медцентр",
+    "hotel": "Гостиница — здание",
+    "hotel_ffe": "Гостиница — мебель и оборудование",
     "social": "Социальный платеж / соцобъекты",
     "gc_fee": "Генподрядчик",
     "main_above": "Основное строительство — наземная часть",
@@ -18608,6 +18976,8 @@ _MODEL_CAPEX_LABELS: list[tuple[str, str]] = [
     ("standalone_retail", "ТЦ / коммерция ОСЗ"),
     ("above_parking", "Наземный паркинг"),
     ("sports", "ФОК / медцентр"),
+    ("hotel", "Гостиница — здание"),
+    ("hotel_ffe", "Гостиница — мебель и оборудование (FF&E)"),
     ("social", "Социальная нагрузка"),
     ("project_management", "Управление проектом"),
     ("gc_fee", "Вознаграждение генподрядчика"),
@@ -18776,7 +19146,9 @@ def _model_parking_norm_rows(result: dict[str, Any]) -> list[list[_XlsxCell]]:
     # деньгами читается как объём стройки.
     rows.append([_cell_text(
         "Приобъектная стоянка — вдоль проезда, в составе благоустройства: "
-        "на кадастр не ставится, отдельных метров и выручки не даёт")])
+        "на кадастр не ставится, отдельных метров и выручки не даёт. Размещение — "
+        "плоскостная парковка или сторона улицы в красных линиях УДС до 200 м от "
+        "объекта (945-ПП п. 6.1.2.3, 6.1.2.5.3); в подземный паркинг МКД не входит")])
     own = [item for item in (parking.get("own") or []) if item.get("enabled")]
     if own:
         rows.append([_cell_text(
@@ -20395,8 +20767,12 @@ COUNT_PIECES = _presentation.PIECES_MEASURE
 # не пробел: «сколько штук у офисного центра» вопрос без смысла.
 COUNT_BY_AREA = _presentation.AREA_MEASURE
 
+HOTEL_TEP_KEY = "hotel"
 TEP_COUNT_MEASURE: dict[str, str] = {
     "apartments": COUNT_FLATS,
+    # Гостиница меряется метрами здания; номера — не «штуки» свода, их
+    # делитель — показатели «на номер» в блоке гостиницы.
+    HOTEL_TEP_KEY: COUNT_BY_AREA,
     "ground_commercial": COUNT_BY_AREA,
     "offices": COUNT_BY_AREA,
     "standalone_retail": COUNT_BY_AREA,
@@ -24735,11 +25111,17 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     if _nonres_report:
         hints["nonres"] = {
             "report": _nonres_report,
+            "financing": (_consolidated.get("report") or {}).get("nonres_financing") or [],
             "monthly": [
                 {"month": row.get("month"),
                  **{key: float(row.get(key) or 0.0) for key, _ in v4_nonres_sheet.MONTHLY_COLUMNS}}
                 for row in (_consolidated.get("finance") or {}).get("rows") or []
                 if any(float(row.get(key) or 0.0) for key, _ in v4_nonres_sheet.MONTHLY_COLUMNS)],
+            # Ряды каждого объекта — строки движка (`nonres_overlay`), не раскладка итога.
+            "objects": [{"key": item.get("key"), "title": item.get("title"),
+                         "rows": list(item.get("rows") or [])}
+                        for item in ((_consolidated.get("finance") or {}).get("nonres") or {})
+                        .get("objects") or []],
         }
     # ТЭП, на котором посчитан отчёт. Книга писала присланный страницей, а
     # движок приводит строку ТЭП к вводным: заданная руками площадь гаража
@@ -26009,6 +26391,183 @@ class _SkipValueCache(Exception):
     """Проход сохранённых значений выключен — это выбор, а не сбой."""
 
 
+# Статьи сметы, которые книга нежилого проекта формулой не повторяет:
+# благоустройство считается методикой двора, соцобъекты — программой и своими
+# графиками, рассрочка ВРИ — с процентами на остаток. Они приходят в книгу
+# значениями движка и называются в `missing`, а не выглядят посчитанными.
+NONRES_BOOK_ENGINE_ARTICLES = ("landscaping", "social", "vri_interest", "vri_security")
+
+
+def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
+                     project_name: str = "") -> dict[str, Any]:
+    """Вводные книги нежилого проекта — те же числа, которые читает движок.
+
+    Каждое значение берётся тем же вызовом `n(x, ключ, умолчание)`, что в
+    `build_operating_model` и `developaid_nonres_strategy.object_flows`; книга
+    дальше считает всё своими формулами, а лист «Сверка» сравнивает её итоги с
+    авторитетным расчётом (`consolidated`). Разойдись здесь умолчание — сверка
+    покраснеет, а не промолчит.
+    """
+    x, t, rates = prepared["x"], prepared["t"], prepared["rates"] or []
+    op = build_operating_model(x, t, rates)
+    start = op["project_start"]
+    months = [d(m) for m in (consolidated.get("cashflow") or {}).get("months") or []]
+    scenario = str(x.get("rate_scenario", "low"))
+    scenario_key = scenario if scenario in ("high", "base", "low") else "base"
+    # Прогноз — всеми тремя сценариями: выбор сценария в книге — список, и
+    # он обязан менять ставку, а не только подпись. Пропуск в строке — прежнее
+    # значение сценария, как у `rate_lookup`.
+    rate_table: list[dict[str, Any]] = []
+    held = {key: float(rates[0].get(key, 0.0)) if rates else 0.0 for key in ("low", "base", "high")}
+    for row in rates:
+        held = {key: float(row.get(key, held[key])) for key in held}
+        rate_table.append({"date": d(row["date"]), **held})
+
+    def k_of(month: date) -> int:
+        return months_between(start, month)
+
+    # Выкуп ЗУ/ОКС платится графиком покупки в той же пропорции, без цены
+    # участка — тем же графиком сам по себе: доли одни на обе суммы.
+    payments, _ = purchase_payment_plan(
+        (n(x, "purchase_price_mln") or n(x, "land_buyout_mln")) * 1_000_000,
+        x.get("purchase_schedule"), start, op["end"])
+    paid = sum(amount for _, amount in payments)
+    plan: dict[int, float] = defaultdict(float)
+    for when, amount in payments:
+        plan[k_of(when)] += amount / paid if paid else 0.0
+    vri = op.get("vri") or {}
+    vri_gross = n(x, "land_rights_cost_mln") * 1_000_000
+    relief, _net = vri_relief(x, vri_gross)
+    by_article = op.get("capex_by_article") or {}
+    engine_articles = {}
+    for key in NONRES_BOOK_ENGINE_ARTICLES + (("land_rights",) if vri.get("enabled") else ()):
+        schedule = {k_of(m): float(v) for m, v in (by_article.get(key) or {}).items() if v}
+        if schedule:
+            engine_articles[key] = schedule
+    nonres_plans = op.get("nonres_plans") or {}
+    objects = []
+    for obj in standalone_objects():
+        if not b(x, obj.enabled_key):
+            continue
+        row = t.get(obj.key) or {}
+        item: dict[str, Any] = {
+            "key": obj.key, "prefix": obj.prefix, "title": obj.tep_label or obj.label,
+            "measure": obj.measure,
+            "volume": n(x, f"{obj.prefix}_spaces") if obj.measure == "spaces" else n(x, f"{obj.prefix}_gba_sqm"),
+            "rate_cost": n(x, obj.rate_cost),
+            "garage": bool(obj.garage), "under_gns": n(row, "under_gns") if obj.garage else 0.0,
+            "start": d(x[f"{obj.prefix}_start"]),
+            "months": int(n(x, f"{obj.prefix}_months", obj.default_months)),
+            "in_tax_pool": (not obj.sale_gate) or object_is_sold(x, obj),
+            "nonres": obj.key in nonres_plans,
+        }
+        plan_item = nonres_plans.get(obj.key)
+        if plan_item:
+            params = plan_item.get("params") or {}
+            num = nonres_strategy._num
+            choice = nonres_strategy._choice
+            item.update({
+                "strategy": plan_item["strategy"],
+                "saleable_sqm": n(x, f"{obj.prefix}_saleable_sqm"),
+                "over_units": max(0.0, n(row, "parking_over_units")),
+                "over_area": (n(x, "object_parking_over_area_per_space_sqm", OBJECT_PARKING_OVER_AREA_DEFAULT)
+                              or OBJECT_PARKING_OVER_AREA_DEFAULT),
+                "price": n(x, obj.rate_price),
+                "sales_start": d(x[f"{obj.prefix}_sales_start"]),
+                "growth_pre_pct": n(x, f"{obj.prefix}_growth_pre_pct", obj.growth_pre_default),
+                # Откуда число: владелец спросил, чьё это «1 % в месяц». Умолчание
+                # объекта — `StandaloneObject.growth_pre_default` реестра; у жилья
+                # своё — `monthly_growth_pre_pct`.
+                "growth_pre_default_pct": float(obj.growth_pre_default),
+                "growth_post_pct": n(x, f"{obj.prefix}_growth_post_pct", obj.growth_post_default),
+                "parking_sellable": bool(obj.garage_sellable),
+                "parking_saleable_units": n(row, "parking_saleable_units") if obj.garage_sellable else 0.0,
+                "parking_under_units": max(0.0, n(row, "parking_under_units")),
+                "parking_over_units": max(0.0, n(row, "parking_over_units")),
+                "parking_under_mln": n(x, f"{obj.prefix}_parking_under_price_mln_per_space"),
+                "parking_over_mln": n(x, f"{obj.prefix}_parking_over_price_mln_per_space"),
+                # Умолчания — те, что у `object_flows`, а не у формы.
+                "params": {
+                    "loan_share_pct": num(params, "loan_share_pct", 60.0),
+                    "loan_spread_pp": num(params, "loan_spread_pp", 4.0),
+                    "loan_fee_pct": num(params, "loan_fee_pct", 1.0),
+                    "property_tax_pct": num(params, "property_tax_pct", 2.2),
+                    "debt_repayment": choice(params, "debt_repayment", nonres_strategy.REPAYMENTS,
+                                             nonres_strategy.REPAY_ANNUITY),
+                    "loan_term_years": num(params, "loan_term_years", 10),
+                    "loan_balloon_pct": num(params, "loan_balloon_pct", 20.0),
+                    "direct_sale_offset_months": num(params, "direct_sale_offset_months", 0),
+                    "direct_sale_months": num(params, "direct_sale_months", 12),
+                    "direct_sale_curve": choice(params, "direct_sale_curve", nonres_strategy.SALE_CURVES, "flat"),
+                    "rent_th_per_sqm_month": num(params, "rent_th_per_sqm_month", 0.0),
+                    "parking_rent_th_month": num(params, "parking_rent_th_month", 0.0),
+                    "rent_index_pct": num(params, "rent_index_pct", 0.0),
+                    "occupancy_start_pct": num(params, "occupancy_start_pct", 0.0),
+                    "occupancy_stable_pct": num(params, "occupancy_stable_pct", 0.0),
+                    "leaseup_months": num(params, "leaseup_months", 12),
+                    "opex_pct": num(params, "opex_pct", 0.0),
+                    "hold_years": num(params, "hold_years", 5),
+                    "exit_mode": choice(params, "exit_mode", (nonres_strategy.EXIT_SALE, nonres_strategy.EXIT_HOLD),
+                                        nonres_strategy.EXIT_SALE),
+                    "exit_cap_pct": num(params, "exit_cap_pct", 11.0),
+                    "exit_cost_pct": num(params, "exit_cost_pct", 1.0),
+                    "depreciation_years": num(params, "depreciation_years", 30),
+                },
+            })
+        objects.append(item)
+    missing = [f"Смета: «{key}» — значения движка, формулы в книге нет"
+               for key in engine_articles]
+    if any(op.get("revenue") or {}):
+        missing.append("Выручка продуктов по ДДУ — в книге нежилого проекта не моделируется")
+    return {
+        "name": project_name,
+        "start": start, "months": months,
+        "ird_months": int(n(x, "ird_months", 18)), "ird_min": IRD_MONTHS_MIN,
+        "construction_months": int(n(x, "construction_months", 24)),
+        "residual_months": int(n(x, "residual_sales_months", 6)),
+        "vat_pct": max(0.0, n(x, "vat_pct", 22)),
+        "profit_tax_pct": n(x, "profit_tax_pct", 25),
+        "discount_pct": n(x, "discount_rate_pct", 20),
+        "loss_limit": _LOSS_CARRY_USE_LIMIT,
+        "revenue_mult": n(x, "scenario_revenue_multiplier", 1.0),
+        "cost_mult": n(x, "scenario_cost_multiplier", 1.0),
+        "marketing_pct": n(x, "marketing_pct"), "selling_pct": n(x, "selling_pct"),
+        "rate_scenario": scenario_key, "rate_table": rate_table,
+        "core_above_gns": float(op.get("core_above_gns") or 0.0),
+        "core_under_gns": float(op.get("core_under_gns") or 0.0),
+        "parking_price_th": n(x, "parking_price_th"),
+        "main_under_th": n(x, "main_under_th_per_sqm"),
+        "cost": {
+            "ird_th": n(x, "ird_th_per_sqm"), "design_p_th": n(x, "design_p_th_per_sqm"),
+            "design_rd_th": n(x, "design_rd_th_per_sqm"),
+            "demolition_area": n(x, "demolition_area_sqm"),
+            "demolition_th": n(x, "demolition_cost_th_per_sqm"),
+            "resettlement_mln": n(x, "resettlement_cost_mln"),
+            "preparation_th": n(x, "preparation_th_per_sqm"),
+            "main_above_th": n(x, "main_above_th_per_sqm"),
+            "utilities_th": n(x, "utilities_th_per_sqm"),
+            "commissioning_th": n(x, "commissioning_th_per_sqm"),
+            "site_maintenance_th": n(x, "site_maintenance_th_per_sqm"),
+            "author_supervision_pct": n(x, "author_supervision_pct", 0.0),
+            "project_management_pct": n(x, "project_management_pct", 5.0),
+            "technical_supervision_pct": n(x, "technical_supervision_pct", 0.0),
+            "gc_fee_pct": n(x, "gc_fee_pct"), "reserve_pct": n(x, "reserve_pct"),
+        },
+        "purchase_price_mln": n(x, "purchase_price_mln"),
+        "land_buyout_mln": n(x, "land_buyout_mln"),
+        "reservation_fee_pct": n(x, "reservation_fee_pct"),
+        "limit_fee_pct": n(x, "limit_fee_pct"),
+        "purchase_plan": sorted(plan.items()),
+        "land_rights_gross_mln": n(x, "land_rights_cost_mln"),
+        "land_rights_relief_mln": relief / 1_000_000,
+        "vri_enabled": bool(vri.get("enabled")),
+        "engine_articles": engine_articles,
+        "vri_equity": {k_of(m): float(v) for m, v in (op.get("vri_equity") or {}).items() if v},
+        "objects": objects,
+        "missing": missing,
+    }
+
+
 def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
                              rates: list[dict[str, Any]] | None,
                              phasing: dict[str, Any] | None,
@@ -26023,11 +26582,34 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     layout = (consolidated.get("report") or {}).get("layout") or {}
     if layout.get("project_finance", True) or not layout.get("nonres_strategy"):
         return None
-    content = nonres_workbook.build(consolidated, project_name)
+    prepared = prepared_calculation(copy.deepcopy(inputs or {}), copy.deepcopy(tep or {}),
+                                    copy.deepcopy(rates or []))
+    spec = nonres_book_spec(prepared, consolidated, project_name)
+    phased = bool((phasing or {}).get("enabled") and int((phasing or {}).get("phase_count") or 1) > 1)
+    if phased:
+        spec["missing"].append("Очереди: книга моделирует проект одной очередью, "
+                               "сверка идёт со сводом очередей")
+    content = nonres_workbook.build(consolidated, spec)
     stem = _safe_file_stem(project_name or "project", "project")
     filename = f"DevelopAid_нежилой_{stem}_{date.today().isoformat()}.xlsx"
-    return content, filename, {"missing": [], "phased": False, "class_deviations": [],
-                               "nonres_book": True}
+    return content, filename, {"missing": list(spec["missing"]), "phased": phased,
+                               "class_deviations": [], "nonres_book": True}
+
+
+def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
+                            rates: list[dict[str, Any]] | None,
+                            phasing: dict[str, Any] | None,
+                            project_name: str) -> tuple[bytes, str, dict[str, Any]]:
+    """Книга гостиничного проекта из того же авторитетного расчёта, что отчёт."""
+    consolidated = (_run_authoritative_model(
+        inputs or {}, tep or {}, rates or [], phasing or {}) or {}).get("consolidated") or {}
+    content = hotel_workbook.build(consolidated, project_name)
+    stem = _safe_file_stem(project_name or "project", "project")
+    filename = f"DevelopAid_гостиница_{stem}_{date.today().isoformat()}.xlsx"
+    hotel = (consolidated.get("finance") or {}).get("hotel") or {}
+    missing = [f"Гостиница · {label}" for label in hotel.get("missing") or []]
+    return content, filename, {"missing": missing, "phased": False, "class_deviations": [],
+                               "hotel_book": True}
 
 
 def build_project_workbook(
@@ -26043,6 +26625,12 @@ def build_project_workbook(
     получает ту же книгу, что и до его появления в реестре (`_V4_BOOK_OBJECTS`).
     """
     merged = {**DEFAULT_INPUTS, **(inputs or {})}
+    # Гостиничный проект — своя книга (`hotel_workbook`): помесячный расчёт
+    # формулами, годовой USALI, итоги и сверка с движком. Книга v4 построена
+    # на ДДУ, эскроу и ПФ, которых у гостиницы нет.
+    if is_hotel(merged):
+        return _hotel_project_workbook(inputs, tep, rates, phasing,
+                                       str(kwargs.get("project_name") or ""))
     # Нежилой проект без ДДУ получает свою книгу (`nonres_workbook`): книга v4
     # построена на ДДУ, эскроу и ПФ, которых у него нет (владелец, 04.10.2026:
     # отчёт, тизер и книга нежилого проекта — самостоятельные).
@@ -27719,7 +28307,9 @@ def _build_project_workbook(
     _nonres_xml = ""
     _nonres = (finance_hints or {}).get("nonres") or {}
     if _nonres.get("report"):
-        _nonres_xml = v4_nonres_sheet.build_sheet(_nonres["report"], _nonres.get("monthly") or [])
+        _nonres_xml = v4_nonres_sheet.build_sheet(_nonres["report"], _nonres.get("monthly") or [],
+                                                  _nonres.get("objects") or [],
+                                                  _nonres.get("financing") or [])
         missing.append(
             "Нежильё — стратегия: " + ", ".join(
                 f"{item.get('title')} — {next((r.get('value') for r in item.get('rows') or [] if r.get('label') == 'Стратегия'), '')}"
@@ -30913,6 +31503,47 @@ def _teaser_map_png(site: dict[str, Any]) -> tuple[bytes, str] | None:
     return None
 
 
+def _telegram_object_value(row: dict[str, Any]) -> str:
+    """Строка раздела объектной вёрстки (`report.layout.sections`) для бота."""
+    unit, value = row.get("unit"), row.get("value")
+    if unit in ("rub", "mln"):
+        return "—" if value is None else _telegram_money_mln(float(value) / 1e6)
+    if unit == "sqm":
+        return "—" if value is None else _telegram_number(value, 0) + " м²"
+    if unit == "count":
+        return "—" if value is None else _telegram_number(value, 0)
+    if unit == "th":
+        return "—" if value is None else _telegram_number(value, 1) + " тыс ₽/м²"
+    if unit == "date":
+        text = str(value or "")
+        return ".".join(reversed(text[:7].split("-"))) if text else "—"
+    return _telegram_tile(row)
+
+
+def _telegram_object_sections(layout: dict[str, Any]) -> str:
+    """Карточка проекта без жилья — разделы его вёрстки в порядке движка
+    (`report_layout.kind` = объектная) с краткими строками каждого. Вердикт —
+    тот, что собрал движок в разделе «Решение»; второго здесь нет."""
+    if layout.get("kind") != REPORT_KIND_OBJECT:
+        return ""
+    sections = [s for s in layout.get("sections") or [] if s.get("brief") is not None]
+    if not sections:
+        return ""
+    out = []
+    for index, section in enumerate(sections, 1):
+        lines = [f"<b>{index}. {html.escape(str(section.get('title') or ''))}</b>"]
+        for row in section.get("brief") or []:
+            label = html.escape(str(row.get("label") or ""))
+            if section.get("key") == "decision" and row.get("label") == "Вывод":
+                lines.append(f"• <b>{html.escape(str(row.get('value') or ''))}</b>")
+            elif section.get("key") == "decision" and row.get("label") == "Основание":
+                lines.append(f"• {html.escape(str(row.get('value') or ''))}")
+            else:
+                lines.append(f"• {label} — {_telegram_object_value(row)}")
+        out.append("\n".join(lines))
+    return "\n\n".join(out) + "\n\n"
+
+
 def _telegram_tile(tile: dict[str, Any]) -> str:
     """Плитка нежилья (`report_layout`) строкой бота."""
     unit, value = tile.get("unit"), tile.get("value")
@@ -30964,6 +31595,7 @@ def telegram_result(req: TelegramResultRequest,
         summary.get("pf_shortfall_mln"),
         summary.get("pf_shortfall_month"),
         _layout_dscr(summary.get("layout")),
+        _layout_no_debt_cover(summary.get("layout")),
     )
     # Продукт с ГНС и без продаваемой площади делает вердикт бессмысленным:
     # расходы полные, выручки нет, и «нецелесообразна» относится к дырке
@@ -31055,7 +31687,14 @@ def telegram_result(req: TelegramResultRequest,
         bank_lines = "".join(
             f"• {html.escape(str(tile.get('label') or '')).lower()} — {_telegram_tile(tile)}\n"
             for tile in layout.get("nonres_tiles") or []) + "\n"
+    object_text = _telegram_object_sections(layout)
     text = (
+        "<b>Расчёт DevelopAid готов</b>\n"
+        + scope_line +
+        f"Источник ТЭП: <b>{html.escape(source_label)}</b>\n\n"
+        + object_text
+        + "<i>Вывод предварительный и основан только на текущих вводных DevelopAid; цены, сроки и себестоимость можно изменить в модели.</i>"
+    ) if object_text else (
         "<b>Расчёт DevelopAid готов</b>\n"
         + scope_line +
         f"Источник ТЭП: <b>{html.escape(source_label)}</b>\n\n"
@@ -31902,82 +32541,8 @@ def spread_evenly(target: dict[date, float], amount: float, start: date, months:
         target[add_months(start, i)] += each
 
 
-def _monthly_npv(cashflows: list[float], annual_rate: float) -> float:
-    if not cashflows:
-        return 0.0
-    monthly_rate = pow(1.0 + max(annual_rate, -0.999999), 1.0 / 12.0) - 1.0
-    return sum(cf / pow(1.0 + monthly_rate, i) for i, cf in enumerate(cashflows))
-
-
-def _equity_npv(cashflows: list[float], annual_rate: float) -> float:
-    """NPV потока собственного капитала — методикой книги.
-
-    `КОНСОЛИДАТОР!O8` = 'CF'!D25 + NPV('Вводные'!B23/12, 'CF'!E25:GA25):
-    первый месяц без дисконта, дальше ставка «годовая / 12». Тот же поток, что
-    у IRR капитала. `npv` сводки — другой вопрос (поток проекта без кредитов);
-    тизер подписывал его «NPV собственного капитала», и рядом с IRR капитала
-    две строки спорили: IRR 411 % при NPV −29,7 млн ₽ (владелец, 05.10.2026).
-    """
-    if not cashflows:
-        return 0.0
-    monthly_rate = max(annual_rate, -0.999999) / 12.0
-    return sum(cf / pow(1.0 + monthly_rate, i) for i, cf in enumerate(cashflows))
-
-
-def _monthly_irr(cashflows: list[float]) -> float | None:
-    if not cashflows or not any(v < 0 for v in cashflows) or not any(v > 0 for v in cashflows):
-        return None
-
-    # Знак NPV на ставке, уходящей к −100%, задаёт последний ненулевой поток:
-    # его знаменатель меньше всех остальных, и он перевешивает весь ряд.
-    tail_sign = next((1.0 if cf > 0 else -1.0 for cf in reversed(cashflows) if cf), 0.0)
-
-    def npv(rate: float) -> float:
-        if rate <= -0.999999:
-            return math.inf * tail_sign if tail_sign else 0.0
-        total = 0.0
-        factor = 1.0
-        base = 1.0 + rate
-        for cf in cashflows:
-            # На длинном горизонте знаменатель проваливается в ноль раньше, чем
-            # ряд кончается: 0,05 в 240-й степени — это уже машинный ноль, и
-            # деление на него роняло весь расчёт очередей (площадка КРТ
-            # «Магистральные улицы», 02.09.2026). Ноль в знаменателе — не ошибка
-            # данных, а предел арифметики: дальше ряд считает знак хвоста.
-            if factor == 0.0:
-                return math.inf * tail_sign if tail_sign else total
-            total += cf / factor
-            try:
-                factor *= base
-            except OverflowError:
-                factor = math.inf
-        return total
-
-    lo, hi = -0.95, 1.0
-    f_lo, f_hi = npv(lo), npv(hi)
-    expand = 0
-    while f_lo * f_hi > 0 and hi < 100 and expand < 30:
-        hi *= 2
-        f_hi = npv(hi)
-        expand += 1
-    if f_lo * f_hi > 0:
-        return None
-
-    for _ in range(180):
-        mid = (lo + hi) / 2
-        f_mid = npv(mid)
-        if abs(f_mid) < 1e-5:
-            lo = hi = mid
-            break
-        if f_lo * f_mid <= 0:
-            hi = mid
-            f_hi = f_mid
-        else:
-            lo = mid
-            f_lo = f_mid
-
-    monthly = (lo + hi) / 2
-    return pow(1 + monthly, 12) - 1
+# NPV и IRR — `developaid_finance_math` (одна реализация на движок и модули
+# объектов); движок зовёт их прежними именами, импорт — в шапке файла.
 
 
 # Доходность капитала при непогашенном долге (решение владельца 29.09.2026,
@@ -32820,6 +33385,14 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                 "growth_post": n(x, f"{obj.prefix}_growth_post_pct", obj.growth_post_default) / 100,
                 "parking_spaces": 0.0, "parking_price_rub": 0.0,
                 "selling_share": (n(x, "marketing_pct") + n(x, "selling_pct")) / 100,
+                # Плата за резервирование лимита — та же вводная, что у
+                # БРИДЖа и ПФ, но с лимита НКЛ объекта (владелец, 05.10.2026).
+                "reservation_fee_pct": n(x, "reservation_fee_pct"),
+                # Плата за невыбранный лимит — та же вводная, что у ПФ.
+                "limit_fee_pct": n(x, "limit_fee_pct"),
+                # РнС делит кредит объекта на две НКЛ: участок и проект — до
+                # неё, строительная — с неё.
+                "permit": permit,
                 "params": {suffix: x.get(f"{obj.prefix}_{suffix}")
                            for suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS},
             }
@@ -33015,6 +33588,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # Статьи объектов — по реестру, а не перечислением: снятый оттуда
         # объект иначе валит расчёт KeyError'ом, то есть список тут второй.
         **{obj.key: standalone_capex.get(obj.key, 0.0) for obj in standalone_objects()},
+        # Гостиница — статьи своего типа проекта: здание и мебель с
+        # оборудованием. Считаются здесь, один раз; расчёт гостиницы получает
+        # их готовыми помесячно (`hotel_plan`).
+        **hotel_capex_amounts(x),
     }
 
     social_program = effective_social_program(x)
@@ -33048,6 +33625,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     works_base = (
         amounts["main_above"] + amounts["main_under"] + amounts["social"]
         + sum(amounts[obj.key] for obj in standalone_objects())
+        # Мебель и оборудование — поставка, а не работы: генподряд и
+        # технадзор на неё не начисляются.
+        + amounts.get("hotel", 0.0)
     )
     design_base = amounts["design_p"] + amounts["design_rd"]
 
@@ -33078,6 +33658,31 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
 
     base_for_overheads = sum(amounts.values())
     amounts["reserve"] = base_for_overheads * n(x, "reserve_pct") / 100
+
+    # Смета объекта — то, что начислено ОТ его стройки: генподряд и
+    # технический заказчик берут процент с базы работ, куда объект входит
+    # своей статьёй, резерв — процент со всех статей. Доля объекта в них —
+    # тот же процент с его денег, а не распределение: сумма долей и остатка
+    # равна статье. Владельцу «Основное строительство», «Технический заказчик»
+    # и «Резерв» общими строками не говорили, что это стройка офиса
+    # (05.10.2026). Гараж — внутри статьи объекта, в той же доле, что при
+    # расчёте (статью может перебить очередь).
+    object_cost_parts: dict[str, dict[str, float]] = {}
+    for obj in standalone_objects():
+        own = float(amounts.get(obj.key) or 0.0)
+        if own <= 0:
+            continue
+        share = own / works_base if works_base else 0.0
+        gc_part = amounts["gc_fee"] * share
+        tz_part = amounts["technical_supervision"] * share
+        planned = float(standalone_capex.get(obj.key) or 0.0)
+        garage = (float(standalone_garage_capex.get(obj.key) or 0.0) * own / planned
+                  if planned else 0.0)
+        object_cost_parts[obj.key] = {
+            "building": own - garage, "garage": garage,
+            "gc_fee": gc_part, "technical_supervision": tz_part,
+            "reserve": (own + gc_part + tz_part) * n(x, "reserve_pct") / 100,
+        }
 
     capex: dict[date, float] = defaultdict(float)
     # Помесячная детализация по статьям: тот же расклад, что и в общем ряду,
@@ -33274,6 +33879,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             continue
         spread_s_curve(obj.key, amounts[obj.key], d(x[f"{obj.prefix}_start"]),
                        int(n(x, f"{obj.prefix}_months", obj.default_months)))
+    # Гостиница строится в окне проекта — от РнС до РВЭ; мебель и оборудование
+    # — последние полгода перед вводом (или вся стройка, если она короче).
+    if "hotel" in amounts:
+        spread_s_curve("hotel", amounts["hotel"], permit, construction_months)
+        ffe_window = max(1, min(HOTEL_FFE_MONTHS, construction_months))
+        spread_article("hotel_ffe", amounts["hotel_ffe"], add_months(rve, -ffe_window),
+                       ffe_window)
 
     # GC, reserve and project management belong to the construction phase rather than the pre-RnS bridge period.
     # This is closer to the timing used in the current Excel cash-flow model.
@@ -33294,6 +33906,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         })
         for key in list(amounts):
             amounts[key] *= cost_multiplier
+        for parts in object_cost_parts.values():
+            for key in parts:
+                parts[key] *= cost_multiplier
 
     # Marketing + selling expenses are also scenarioed as expenses relative to BASE,
     # not reduced merely because conservative revenue is lower.
@@ -33353,6 +33968,30 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                 plan["common_capex"][month] = common * share
             debt_capex[month] -= common * sum(shares.values())
 
+    # Гостиничный проект: всё, что проект тратит, — затраты гостиницы. Банк
+    # ПФ её не кредитует (эскроу нет); кредит — свой, гостиничный, и его
+    # считает `developaid_hotel_strategy` вместе с номерами и USALI. Участок и
+    # плата за ВРИ — без НДС и не амортизируются.
+    hotel_plan: dict[str, Any] | None = None
+    if is_hotel(x):
+        land: dict[date, float] = defaultdict(float)
+        for article in HOTEL_LAND_ARTICLES:
+            for month, value in (capex_by_article.get(article) or {}).items():
+                land[month] += value
+        hotel_params = hotel_strategy.params_from_inputs(x)
+        hotel_plan = {
+            "commissioning": rve, "start": project_start,
+            "capex": {month: value for month, value in capex.items() if value},
+            "capex_ffe": dict(capex_by_article.get("hotel_ffe") or {}),
+            "capex_land": dict(land),
+            "params": hotel_params,
+            "revenue_multiplier": revenue_multiplier,
+            "missing": [f.label for f in hotel_strategy.missing_fields(
+                hotel_params, with_capex=True)],
+        }
+        debt_capex = {month: 0.0 for month in debt_capex}
+        end = max(end, hotel_strategy.plan_horizon_end(hotel_plan))
+
     return {
         "project_start": project_start,
         "permit": permit,
@@ -33367,12 +34006,19 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "capex_by_article": {article: dict(schedule) for article, schedule in capex_by_article.items()},
         "debt_capex": debt_capex,
         "nonres_plans": nonres_plans,
+        "hotel_plan": hotel_plan,
+        # Общие затраты (участок, проект, сети) кредитует НКЛ объектов, а не
+        # БРИДЖ и ПФ: так устроен чисто нежилой проект. Читает финансирование —
+        # лимит БРИДЖа такому проекту не считается. Гостиничный проект так же:
+        # все его затраты несёт кредит гостиницы (`hotel_plan`).
+        "common_on_object_loans": bool((nonres_plans and is_nonresidential(x)) or hotel_plan),
         "operating": dict(operating),
         "capex_amounts": amounts,
         # Гараж объекта внутри его статьи, но со своей базой: здание меряется
         # своей ГНС, гараж — подземным метром. Без этой пары удельная объекта
         # молча смешивает два показателя.
         "standalone_garage_capex": dict(standalone_garage_capex),
+        "object_cost_parts": object_cost_parts,
         "object_parking_plan": list(object_parking_plan),
         # Доля статьи объекта, которая приходится на его ПРОДАВАЕМЫЙ паркинг.
         # Долей, а не суммой: статья объекта может быть перебита очередью
@@ -33594,6 +34240,11 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
         flows = nonres_strategy.object_flows(plan, key_rate, vat_rate=vat_rate)
         flows["title"] = plan.get("title") or key
         flows["params"] = dict(plan.get("params") or {})
+        flows["financing"] = object_financing(flows)
+        flows["result"] = object_result(
+            flows, start=op["project_start"],
+            discount_rate=n(x, "discount_rate_pct", 20) / 100,
+            tax_rate=n(x, "profit_tax_pct", 25) / 100)
         # Исходные данные книги нежилого проекта: что движок дал объекту
         # (CAPEX по месяцам, общие затраты, ключевая ставка), — всё остальное
         # книга считает своими формулами и сверяет с итогом движка.
@@ -33624,6 +34275,8 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
         def get(name: str, month: date) -> float:
             return float((series.get(name) or {}).get(month, 0.0) or 0.0)
 
+        object_rows: list[dict[str, Any]] = []
+        result_series = flows["result"]["monthly"]
         for month in flows["months"]:
             row = {
                 "nonres_revenue": get("sale_revenue", month) + get("rent_revenue", month)
@@ -33643,13 +34296,490 @@ def nonres_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, 
                 "nonres_cash_to_equity": get("cash_to_equity", month),
                 "nonres_capex": float(plan["capex"].get(month, 0.0) or 0.0),
                 "nonres_tax_margin": get("tax_margin", month),
+                "nonres_common_capex": float(flows["common_by_month"].get(month, 0.0) or 0.0),
             }
             for name, value in row.items():
                 monthly[name][month] += value
+            # Строка объекта для книги: те же ряды плюс его собственный итог —
+            # налог объекта и поток его капитала (`object_result`).
+            object_rows.append({
+                "month": month.isoformat(), **row,
+                **{name: float((result_series.get(name) or {}).get(month, 0.0) or 0.0)
+                   for name in OBJECT_RESULT_SERIES}})
+        flows["rows"] = object_rows
+        flows["years"] = object_years(flows)
     totals = {name: float(sum(values.values())) for name, values in monthly.items()}
     return {"objects": objects,
             "monthly": {name: dict(values) for name, values in monthly.items()},
             "totals": totals}
+
+
+def object_years(flows: dict[str, Any]) -> list[dict[str, Any]]:
+    """Ряды объекта по календарным годам — суммы месячных рядов `object_flows`.
+
+    Не второй расчёт, а свёртка: выручка ДКП, аренда, выход, эксплуатация,
+    налог на имущество и NOI года — суммы тех же месяцев; загрузка — средняя
+    по месяцам эксплуатации года; доля выручки ДКП — накопленным итогом от
+    всей выручки ДКП объекта. Схема рядов общая для любого объекта вне ДДУ.
+    """
+    series = flows.get("monthly") or {}
+    sale_total = float(sum((series.get("sale_revenue") or {}).values()))
+    years: dict[int, dict[str, Any]] = {}
+    occupancy: dict[int, list[float]] = defaultdict(list)
+    for month in flows.get("months") or []:
+        year = years.setdefault(month.year, {
+            "year": month.year, "sale_revenue": 0.0, "rent_revenue": 0.0,
+            "exit_revenue": 0.0, "opex": 0.0, "property_tax": 0.0, "noi": 0.0})
+        for name in ("sale_revenue", "rent_revenue", "exit_revenue", "opex", "property_tax"):
+            year[name] += float((series.get(name) or {}).get(month, 0.0) or 0.0)
+        if month in (series.get("occupancy") or {}):
+            occupancy[month.year].append(float(series["occupancy"][month] or 0.0))
+    sold = 0.0
+    out = []
+    for key in sorted(years):
+        year = years[key]
+        year["noi"] = (year["rent_revenue"] - year["opex"] - year["property_tax"]
+                       if year["rent_revenue"] else 0.0)
+        values = occupancy.get(key) or []
+        year["occupancy"] = sum(values) / len(values) if values else None
+        sold += year["sale_revenue"]
+        year["sold_share"] = sold / sale_total if sale_total else None
+        out.append(year)
+    return out
+
+
+# Строка расходов объектов вне ДДУ в структуре расходов и в экономике
+# проекта — одна подпись на все поверхности.
+NONRES_COSTS_LABEL = "Объекты вне ДДУ: продажи ДКП, эксплуатация, налог на имущество, выход"
+# Чистое возмещение НДС — строка структуры расходов со знаком минус.
+VAT_REFUND_LABEL = "НДС к возмещению — уменьшает расходы"
+
+
+# Помесячные ряды итога объекта (`object_result`), которые едут в строки
+# объекта для книги.
+OBJECT_RESULT_SERIES = ("object_profit_tax", "object_equity_flow")
+
+
+def _payback(flows: list[float], months: list[date]) -> dict[str, Any]:
+    """Окупаемость капитала: месяц, с которого накопленный поток больше не
+    уходит в минус. Без вложений окупаться нечему; ушёл в минус к концу —
+    «не окупается», а не «срок не задан»."""
+    first = next((i for i, value in enumerate(flows) if value < 0), None)
+    if first is None:
+        return {"month": None, "months": None, "reason": "вложений капитала нет"}
+    cumulative, last_negative = 0.0, None
+    for index, value in enumerate(flows):
+        cumulative += value
+        if cumulative < -0.5:
+            last_negative = index
+    if last_negative is None or last_negative + 1 >= len(flows):
+        return {"month": None, "months": None,
+                "reason": "не окупается за горизонт объекта"}
+    return {"month": months[last_negative + 1],
+            "months": last_negative + 1 - first, "reason": ""}
+
+
+def object_result(flows: dict[str, Any], *, start: date, discount_rate: float,
+                  tax_rate: float) -> dict[str, Any]:
+    """Итог объекта вне ДДУ — как будто он отдельный проект.
+
+    Читает только ряды объекта (`developaid_nonres_strategy.object_flows`):
+    стройку, долю общих затрат проекта, которую кредитует его кредит, кредит,
+    деньги собственнику и налоговую маржу. Схема рядов не офисная — гостиница
+    или другой объект с тем же набором рядов получает итог той же функцией.
+
+    * Затраты объекта — своя стройка и доля общих затрат; собственный капитал —
+      затраты минус выборка кредита объекта.
+    * Доля общих затрат признаётся в налоговой базе тем же графиком, что
+      стройка объекта (`cost_recognized`): продано — списано, удержано —
+      амортизируется; при удержании непризнанный остаток ждёт сделки.
+    * Налог — объекта как отдельного плательщика, тем же правилом переноса
+      убытка (`_profit_tax_schedule`), что у проекта. Проект платит налог со
+      всей базы сразу, поэтому сумма налогов объектов с налогом проекта не
+      обязана совпадать — совпадает база (`nonres_reconciliation`).
+    * IRR и NPV — на поток капитала объекта после налога, NPV — по ставке
+      дисконтирования проекта на дату начала проекта. При удержании оценка
+      стоимости — не деньги: IRR показан с ней и без неё, денежный итог и
+      окупаемость — без неё.
+    """
+    months: list[date] = list(flows["months"])
+    series = flows["monthly"]
+    capex = flows.get("capex_by_month") or {}
+    common = flows.get("common_by_month") or {}
+    cost_basis = float(flows.get("cost_basis") or 0.0)
+
+    def get(name: str, month: date) -> float:
+        return float((series.get(name) or {}).get(month, 0.0) or 0.0)
+
+    capex_total = float(sum(capex.values()))
+    common_total = float(sum(common.values()))
+    # Затраты вне месяцев объекта в его поток не попали бы молча: капитал и
+    # IRR вышли бы лучше, чем есть. Такого графика быть не должно — названо.
+    outside = sorted(mm for mm in (*capex, *common) if mm not in set(months))
+    if outside:
+        flows.setdefault("warnings", []).append(
+            "Затраты объекта вне его горизонта ("
+            + ", ".join(mm.strftime("%m.%Y") for mm in outside[:3])
+            + ") не вошли в поток капитала объекта — итог объекта неполон.")
+    common_recognized: dict[date, float] = {}
+    for month in months:
+        share = (get("cost_recognized", month) / cost_basis if cost_basis
+                 else (1.0 if month == flows["commissioning"] else 0.0))
+        common_recognized[month] = common_total * share
+    margins = {mm: get("tax_margin", mm) - common_recognized[mm] for mm in months}
+    financing = {mm: get("loan_interest_cap", mm) + get("loan_interest_paid", mm)
+                 + get("loan_fee", mm) for mm in months}
+    tax_by_month, _detail = _profit_tax_schedule(months, margins, financing, None, tax_rate)
+    profit_before_tax = float(sum(margins.values()) - sum(financing.values()))
+    profit_tax = float(sum(tax_by_month.values()))
+
+    equity_flow = {mm: (get("cash_to_equity", mm) - float(capex.get(mm, 0.0) or 0.0)
+                        - float(common.get(mm, 0.0) or 0.0) - tax_by_month.get(mm, 0.0))
+                   for mm in months}
+    residual = {mm: get("residual_value", mm) for mm in months}
+    lead = [0.0] * max(0, months_between(start, months[0])) if months else []
+    with_value = lead + [equity_flow[mm] for mm in months]
+    cash_only = lead + [equity_flow[mm] - residual[mm] for mm in months]
+    residual_total = float(sum(residual.values()))
+    loan_draw = float(sum((series.get("loan_draw") or {}).values()))
+    peak, cumulative = 0.0, 0.0
+    for value in cash_only:
+        cumulative += value
+        peak = min(peak, cumulative)
+    payback = _payback(cash_only[len(lead):], months)
+    return {
+        "capex": capex_total,
+        "common_capex": common_total,
+        "cost_total": capex_total + common_total,
+        "loan_draw": loan_draw,
+        "equity_invested": capex_total + common_total - loan_draw,
+        "equity_peak": -peak,
+        "common_recognized": float(sum(common_recognized.values())),
+        "tax_margin": float(sum(margins.values()) + sum(common_recognized.values())),
+        "financing_cost": float(sum(financing.values())),
+        "profit_before_tax": profit_before_tax,
+        "profit_tax": profit_tax,
+        "profit_after_tax": profit_before_tax - profit_tax,
+        "equity_pre_tax": float(sum(equity_flow.values()) + profit_tax),
+        "equity_cash": float(sum(cash_only)),
+        "residual_value": residual_total,
+        "equity_with_value": float(sum(with_value)),
+        "irr": _monthly_irr(with_value),
+        "irr_cash": _monthly_irr(cash_only) if residual_total else None,
+        "npv": _monthly_npv(with_value, discount_rate),
+        "discount_rate": discount_rate,
+        "payback_month": payback["month"],
+        "payback_months": payback["months"],
+        "payback_reason": payback["reason"],
+        "monthly": {"object_profit_tax": dict(tax_by_month),
+                    "object_equity_flow": dict(equity_flow)},
+    }
+
+
+REPAYMENT_LABELS = {
+    nonres_strategy.REPAY_ANNUITY: "Аннуитет на срок кредита с баллоном в конце",
+    nonres_strategy.REPAY_SWEEP: "Из всего NOI по мере поступления",
+    nonres_strategy.REPAY_BULLET: "Одним платежом при выходе",
+}
+DIRECT_REPAYMENT_LABEL = ("Из выручки ДКП по мере продаж — проданные помещения "
+                          "выходят из залога, аннуитета нет")
+
+
+def object_financing(flows: dict[str, Any]) -> dict[str, Any]:
+    """Кредит объекта вне ДДУ — как банк его увидит: условия, выборка, долг на
+    ввод, платёж, баллон, чем погашено и обслуживание по годам.
+
+    Только читает ряды `object_flows` (выборка, проценты, погашение, остаток,
+    ставка) — второго расчёта кредита нет. Погашение разложено по причине:
+    плановое тело аннуитета, баллон в срок, остаток при выходе, из выручки
+    ДКП / NOI. Сумма частей — всё погашение, и это проверяется тестом.
+    Схема не офисная: любой объект с этими рядами получает тот же отчёт.
+    """
+    series = flows["monthly"]
+    params = flows.get("params") or {}
+    months: list[date] = list(flows["months"])
+    commissioning: date = flows["commissioning"]
+    horizon_end: date = flows["horizon_end"]
+    kpi = flows.get("kpi") or {}
+    strategy = flows["strategy"]
+
+    def get(name: str, month: date) -> float:
+        return float((series.get(name) or {}).get(month, 0.0) or 0.0)
+
+    def total(name: str) -> float:
+        return float(sum((series.get(name) or {}).values()))
+
+    def num(key: str, default: float) -> float:
+        try:
+            value = params.get(key)
+            return default if value in (None, "") else float(value)
+        except (TypeError, ValueError):
+            return default
+
+    repayment = str(params.get("debt_repayment") or "").strip().lower()
+    if repayment not in REPAYMENT_LABELS:
+        repayment = nonres_strategy.REPAY_ANNUITY
+    if strategy == nonres_strategy.STRATEGY_DIRECT:
+        scheme, scheme_label = "sale", DIRECT_REPAYMENT_LABEL
+    else:
+        scheme, scheme_label = repayment, REPAYMENT_LABELS[repayment]
+    share = max(0.0, min(0.95, num("loan_share_pct", 60.0) / 100.0))
+    capex = flows.get("capex_by_month") or {}
+    draw_total = total("loan_draw")
+    draw_object = float(sum(float(v or 0.0) * share for mm, v in capex.items()
+                            if mm <= commissioning))
+    maturity: date | None = kpi.get("loan_maturity")
+    # Погашение по причине.
+    parts = {"scheduled": 0.0, "balloon": 0.0, "exit": 0.0, "cash": 0.0}
+    balloon_month: date | None = None
+    for month in months:
+        repaid = get("loan_repayment", month)
+        if not repaid:
+            continue
+        amort = get("loan_amortization", month)
+        if amort:
+            parts["scheduled"] += amort
+            repaid -= amort
+        if repaid <= 0:
+            continue
+        if scheme == nonres_strategy.REPAY_ANNUITY and maturity and month == maturity:
+            parts["balloon"] += repaid
+            balloon_month = month
+        elif month == horizon_end and scheme != "sale":
+            parts["exit"] += repaid
+        else:
+            parts["cash"] += repaid
+    after = [mm for mm in months if mm > commissioning]
+    first_payment = next(((get("loan_interest_paid", mm) + get("loan_amortization", mm), mm)
+                          for mm in after if get("loan_amortization", mm)), (0.0, None))
+    payments = [get("loan_interest_paid", mm) + get("loan_amortization", mm)
+                for mm in after if get("loan_amortization", mm)]
+    weight = sum(get("loan_balance", mm) for mm in months)
+    avg_rate = (sum(get("loan_rate", mm) * get("loan_balance", mm) for mm in months) / weight
+                if weight else 0.0)
+    # Обслуживание по календарным годам: что выбрано, начислено, погашено,
+    # остаток на конец года и покрытие платежей NOI.
+    years: list[dict[str, Any]] = []
+    for year in sorted({mm.year for mm in months}):
+        span = [mm for mm in months if mm.year == year]
+        operating = [mm for mm in span if mm >= commissioning]
+        noi = (sum(get("rent_revenue", mm) - get("opex", mm) - get("property_tax", mm)
+                   for mm in operating)
+               if strategy == nonres_strategy.STRATEGY_INCOME and operating else None)
+        interest_paid = sum(get("loan_interest_paid", mm) for mm in span)
+        amort = sum(get("loan_amortization", mm) for mm in span)
+        service = interest_paid + amort
+        years.append({
+            "year": year,
+            "draw": sum(get("loan_draw", mm) for mm in span),
+            "interest": sum(get("loan_interest_cap", mm) + get("loan_interest_paid", mm) for mm in span),
+            "interest_capitalized": sum(get("loan_interest_cap", mm) for mm in span),
+            "repayment": sum(get("loan_repayment", mm) for mm in span),
+            "scheduled": amort,
+            "balance_end": get("loan_balance", span[-1]),
+            "noi": noi,
+            "dscr": (noi / service) if (noi is not None and service > 0) else None,
+        })
+    peak = max([get("loan_balance", mm) for mm in months] or [0.0])
+    return {
+        "strategy": strategy,
+        "scheme": scheme,
+        "scheme_label": scheme_label,
+        "loan_share": share,
+        "spread": num("loan_spread_pp", 4.0) / 100.0,
+        "fee_share": num("loan_fee_pct", 1.0) / 100.0,
+        "term_years": int(num("loan_term_years", 10)) if scheme == nonres_strategy.REPAY_ANNUITY else None,
+        "balloon_share": num("loan_balloon_pct", 20.0) / 100.0 if scheme == nonres_strategy.REPAY_ANNUITY else None,
+        "maturity": maturity,
+        "horizon_end": horizon_end,
+        "commissioning": commissioning,
+        "rate_at_commissioning": get("loan_rate", commissioning),
+        "avg_rate": avg_rate,
+        "draw_total": draw_total,
+        "draw_object": min(draw_object, draw_total),
+        "draw_common": max(0.0, draw_total - draw_object),
+        # Комиссия за выдачу и плата за резервирование лимита — раздельно;
+        # в ряду `loan_fee` они лежат вместе.
+        "fee": (total("loan_fee") - total("loan_reservation_fee")
+                - total("loan_commitment_fee")),
+        "reservation_fee": total("loan_reservation_fee"),
+        "commitment_fee": total("loan_commitment_fee"),
+        "limit": float((flows.get("totals") or {}).get("loan_limit") or 0.0),
+        "limit_land": float((flows.get("totals") or {}).get("loan_limit_land") or 0.0),
+        "limit_build": float((flows.get("totals") or {}).get("loan_limit_build") or 0.0),
+        "interest_capitalized": total("loan_interest_cap"),
+        "interest_paid": total("loan_interest_paid"),
+        "debt_at_commissioning": get("loan_balance", commissioning),
+        "first_payment": first_payment[0],
+        "first_payment_month": first_payment[1],
+        "avg_payment": (sum(payments) / len(payments)) if payments else 0.0,
+        "balloon_planned": float(kpi.get("loan_balloon") or 0.0) if scheme == nonres_strategy.REPAY_ANNUITY else 0.0,
+        "balloon_paid": parts["balloon"],
+        "balloon_month": balloon_month,
+        "repaid_scheduled": parts["scheduled"],
+        "repaid_at_exit": parts["exit"],
+        "repaid_from_cash": parts["cash"],
+        "repaid_total": total("loan_repayment"),
+        "repaid_month": kpi.get("loan_repaid_month"),
+        "peak": peak,
+        "dscr_min": kpi.get("dscr_min"),
+        "icr_min": kpi.get("icr_min"),
+        "years": years,
+    }
+
+
+def nonres_reconciliation(nonres: dict[str, Any], rows: list[dict[str, Any]],
+                          tax_margin_by_product: dict[str, float]) -> dict[str, Any]:
+    """Сходится ли сумма итогов объектов с тем, что нежильё внесло в проект.
+
+    Деньги: поток капитала объектов до налога — это то, что проект получил
+    строкой `nonres_cash_to_equity`, минус стройка объектов и доля общих
+    затрат, которые проект оплатил. База налога: маржа объектов в базе проекта
+    (`tax_margin_by_product`) за вычетом процентов и комиссий кредита объектов.
+    Разошлось — итог объекта посчитан не из того, что вошло в проект, и это
+    видно в отчёте, а не только в тесте.
+    """
+    objects = list((nonres.get("objects") or {}).values())
+    if not objects:
+        return {}
+    def rows_sum(name: str) -> float:
+        return float(sum(float(row.get(name, 0.0) or 0.0) for row in rows))
+    project_equity = (rows_sum("nonres_cash_to_equity")
+                      - float((nonres.get("totals") or {}).get("nonres_capex", 0.0))
+                      - float((nonres.get("totals") or {}).get("nonres_common_capex", 0.0)))
+    objects_equity = float(sum(f["result"]["equity_pre_tax"] for f in objects))
+    project_base = (float(sum(tax_margin_by_product.get(key, 0.0)
+                              for key in (nonres.get("objects") or {})))
+                    - rows_sum("nonres_loan_interest") - rows_sum("nonres_loan_fee"))
+    objects_base = float(sum(f["result"]["profit_before_tax"] + f["result"]["common_recognized"]
+                             for f in objects))
+    ok = abs(project_equity - objects_equity) <= 1.0 and abs(project_base - objects_base) <= 1.0
+    return {"project_equity": project_equity, "objects_equity": objects_equity,
+            "project_tax_base": project_base, "objects_tax_base": objects_base, "ok": ok}
+
+
+# Гостиничный проект (`PROJECT_KIND_HOTEL`). Мебель и оборудование ставятся
+# последние полгода перед вводом; участок и плата за ВРИ — статьи без НДС и
+# без амортизации (`hotel_plan["capex_land"]`).
+HOTEL_FFE_MONTHS = 6
+HOTEL_LAND_ARTICLES = ("purchase", "land_rights", "vri_interest", "vri_security")
+
+
+def hotel_capex_amounts(x: dict[str, Any]) -> dict[str, float]:
+    """Статьи CAPEX гостиницы: здание (ГНС × ставка) и FF&E (номера × ставка).
+
+    Только у гостиничного проекта: у остальных статей нет вовсе, а не нули —
+    иначе в структуре затрат жилого проекта появились бы пустые строки.
+    """
+    if not is_hotel(x):
+        return {}
+    return {
+        "hotel": n(x, "hotel_gba_sqm") * n(x, "hotel_cost_th_per_sqm") * 1000,
+        "hotel_ffe": n(x, "hotel_keys") * n(x, "hotel_ffe_th_per_key") * 1000,
+    }
+
+
+def hotel_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, Any]:
+    """Деньги гостиничного проекта — один расчёт на проект.
+
+    План (все затраты проекта по месяцам, ввод = РВЭ, вводные гостиницы)
+    собирает `build_operating_model`; здесь он получает ключевую ставку
+    сценария, ставки налогов и дисконтирования проекта и превращается в ряды
+    `developaid_hotel_strategy.hotel_flows`. Ряды «объекта вне ДДУ»
+    (`nonres_*`) складываются с нежилыми в `simulate_financing`, итог для
+    отчёта — `finance["hotel"]`. Страница, PDF, книга и бот читают его, а не
+    считают гостиницу заново.
+
+    Незаполненные вводные не превращаются в нули: гостиница не считается, и
+    итог называет, чего не хватает (`summary["missing"]`).
+    """
+    plan = op.get("hotel_plan")
+    empty = {"flows": None, "monthly": {}, "summary": None}
+    if not plan:
+        return empty
+    if plan.get("missing"):
+        return {**empty, "summary": {"computed": False, "missing": list(plan["missing"]),
+                                     "commissioning": plan["commissioning"].isoformat()}}
+    scenario = str(x.get("rate_scenario", "low"))
+    vat_rate = max(0.0, n(x, "vat_pct", 22)) / 100
+    tax_rate = n(x, "profit_tax_pct", 25) / 100
+    discount_rate = n(x, "discount_rate_pct", 20) / 100
+
+    def key_rate(month: date) -> float:
+        return rate_lookup(rates, month, scenario)
+
+    flows = hotel_strategy.hotel_flows(plan, key_rate, vat_rate=vat_rate,
+                                       profit_tax_rate=tax_rate,
+                                       discount_rate=discount_rate)
+    series = flows["monthly"]
+
+    def get(name: str, month: date) -> float:
+        return float((series.get(name) or {}).get(month, 0.0) or 0.0)
+
+    monthly: dict[str, dict[date, float]] = defaultdict(dict)
+    for month in flows["months"]:
+        row = {
+            "nonres_revenue": get("revenue", month) + get("exit_revenue", month)
+            + get("residual_value", month),
+            "nonres_residual_value": get("residual_value", month),
+            "nonres_costs": get("opex", month) + get("property_tax", month)
+            + get("insurance", month) + get("exit_cost", month),
+            "nonres_vat_paid": get("vat_paid", month),
+            "nonres_loan_draw": get("loan_draw", month),
+            "nonres_loan_interest": get("loan_interest_cap", month)
+            + get("loan_interest_paid", month),
+            "nonres_loan_interest_paid": get("loan_interest_paid", month),
+            "nonres_loan_fee": get("loan_fee", month),
+            "nonres_loan_repayment": get("loan_repayment", month),
+            "nonres_loan_balance": get("loan_balance", month),
+            "nonres_cash_to_equity": get("cash_to_equity", month),
+            "nonres_capex": get("capex", month),
+            "nonres_tax_margin": get("tax_margin", month),
+        }
+        for name, value in row.items():
+            if value:
+                monthly[name][month] = value
+    # Исходные данные книги гостиницы: что движок дал расчёту (затраты по
+    # месяцам, ключевая ставка, ставки проекта), — остальное книга считает
+    # своими формулами и сверяет с итогом движка.
+    book = {
+        "commissioning": plan["commissioning"].isoformat(),
+        "start": plan["start"].isoformat(),
+        "params": dict(flows["params"]),
+        # Набранное в проекте как есть: пустое — пустое, а не умолчание. По
+        # нему книга пишет происхождение («умолчание: …» или ориентир).
+        "raw_params": dict(plan["params"]),
+        "origins": dict(x.get(hotel_presets.ORIGINS_KEY) or {}),
+        "vat_rate": vat_rate, "profit_tax_rate": tax_rate, "discount_rate": discount_rate,
+        "revenue_multiplier": float(plan.get("revenue_multiplier", 1.0) or 1.0),
+        "months": [{"month": mm.isoformat(),
+                    "capex": float(plan["capex"].get(mm, 0.0) or 0.0),
+                    "capex_ffe": float(plan["capex_ffe"].get(mm, 0.0) or 0.0),
+                    "capex_land": float(plan["capex_land"].get(mm, 0.0) or 0.0),
+                    "key_rate": key_rate(mm)}
+                   for mm in flows["months"]],
+    }
+    return {"flows": flows, "monthly": dict(monthly),
+            "summary": hotel_summary(flows, book)}
+
+
+def hotel_summary(flows: dict[str, Any], book: dict[str, Any]) -> dict[str, Any]:
+    """Итог гостиницы для отчёта: годовой USALI, итоги и показатели, без месяцев."""
+    def plain(value: Any) -> Any:
+        return value.isoformat() if isinstance(value, date) else value
+
+    kpi = {key: plain(value) for key, value in flows["kpi"].items()}
+    return {
+        "computed": True, "missing": [],
+        "commissioning": flows["commissioning"].isoformat(),
+        "horizon_end": flows["horizon_end"].isoformat(),
+        "annual": [dict(row) for row in flows["annual"]],
+        "totals": dict(flows["totals"]),
+        "kpi": kpi,
+        "warnings": list(flows["warnings"]),
+        "params": dict(flows["params"]),
+        "book": book,
+    }
 
 
 def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) -> dict:
@@ -33688,6 +34818,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         # подразумевается: правило живёт у читателя.
         if social_cash_payment_date(x, permit) < permit:
             bridge_limit_parts["social"] = n(x, "social_compensation_mln") * 1_000_000
+    # Чисто нежилой проект БРИДЖа не открывает: участок и проект в доле
+    # кредита берёт НКЛ объектов (`object_flows`), и плата за резервирование
+    # считается с её лимита там же. Лимит БРИДЖа от тех же оплат был второй
+    # комиссией за кредит, которого нет (владелец, 05.10.2026).
+    if op.get("common_on_object_loans"):
+        bridge_limit_parts = {key: 0.0 for key in bridge_limit_parts}
     calculated_bridge_limit = sum(bridge_limit_parts.values())
 
     # Часть первоначального финансирования может идти не из банка: собственные
@@ -34352,6 +35488,16 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # Месячные строки получают их ряды — по ним считаются поток капитала, свод
     # очередей и пик долга; итоги — в прибыль, налог и НДС ниже.
     nonres = nonres_overlay(x, rates, op)
+    # Гостиница — те же ряды «объекта вне ДДУ»: выручка мимо эскроу, свой
+    # кредит, свой НДС и налоговая маржа. Сложенные здесь один раз, они идут в
+    # поток капитала, прибыль, налог и НДС тем же путём, что ТЦ и офисы.
+    hotel = hotel_overlay(x, rates, op)
+    for name, series in hotel["monthly"].items():
+        target = nonres["monthly"].setdefault(name, {})
+        for month, value in series.items():
+            target[month] = target.get(month, 0.0) + value
+    nonres["totals"] = {name: float(sum(values.values()))
+                        for name, values in nonres["monthly"].items()}
     nonres_monthly = nonres["monthly"]
     nonres_totals = nonres["totals"]
     for row in result["rows"]:
@@ -34360,6 +35506,9 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             row[name] = float((nonres_monthly.get(name) or {}).get(month, 0.0) or 0.0)
     for key, flows in nonres["objects"].items():
         op["revenue_by_product"][key] = flows["totals"]["revenue"]
+    if hotel["flows"]:
+        op["revenue_by_product"]["hotel"] = sum(
+            (hotel["monthly"].get("nonres_revenue") or {}).values())
     nonres_capex = nonres_totals.get("nonres_capex", 0.0)
 
     # Выручка эскроу-проекта — база доли вычета НДС и LLCR; общая — прибыли.
@@ -34408,6 +35557,11 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         if any((op.get("revenue_product_schedules") or {}).get(parking_key) or {}):
             product_costs[parking_key] = 0.0
             krt_products = krt_products + (parking_key,)
+    # Гостиница признаёт ВСЕ затраты проекта сама — амортизацией здания и
+    # мебели, участок — при продаже (`developaid_hotel_strategy`). Пул дома у
+    # гостиничного проекта пуст: второй раз те же затраты не признаются.
+    if hotel["flows"]:
+        product_costs["hotel"] = total_capex
     core_cost = max(
         total_capex + commercial_costs - sum(product_costs.values()), 0.0
     )
@@ -34467,6 +35621,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     # проданным метрам, аренда — амортизацией), и маржа уже за вычетом его НДС.
     for key, flows in nonres["objects"].items():
         tax_margin_schedules[key] = dict(flows["monthly"].get("tax_margin") or {})
+    if hotel["flows"]:
+        tax_margin_schedules["hotel"] = dict(hotel["flows"]["monthly"].get("tax_margin") or {})
 
     tax_margin_by_month: dict[date, float] = defaultdict(float)
     tax_margin_by_product = {}
@@ -34680,19 +35836,32 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         "total_capex": total_capex,
         "commercial_costs": commercial_costs,
         "nonres_costs": nonres_costs,
-        "nonres": nonres_summary(nonres),
+        "nonres": nonres_summary(nonres, nonres_reconciliation(
+            nonres, result["rows"], tax_margin_by_product)),
+        "hotel": hotel["summary"],
     })
     return result
 
 
-def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
-    """Итог объектов вне ДДУ для отчёта: без помесячных рядов."""
+def nonres_summary(nonres: dict[str, Any],
+                   reconciliation: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Итог объектов вне ДДУ для отчёта; помесячно — только строки объекта для
+    книги (`rows`), сырые ряды движка остаются внутри."""
     objects = []
     for key, flows in (nonres.get("objects") or {}).items():
         kpi = dict(flows["kpi"])
         for _when in ("exit_month", "loan_repaid_month", "loan_maturity"):
             if kpi.get(_when):
                 kpi[_when] = kpi[_when].isoformat()
+        outcome = {name: value for name, value in (flows.get("result") or {}).items()
+                   if name != "monthly"}
+        if outcome.get("payback_month"):
+            outcome["payback_month"] = outcome["payback_month"].isoformat()
+        financing = dict(flows.get("financing") or {})
+        for _when in ("maturity", "horizon_end", "commissioning", "first_payment_month",
+                      "balloon_month", "repaid_month"):
+            if isinstance(financing.get(_when), date):
+                financing[_when] = financing[_when].isoformat()
         objects.append({
             "key": key, "title": flows.get("title") or key, "strategy": flows["strategy"],
             "exit_mode": (flows.get("params") or {}).get("exit_mode"),
@@ -34702,8 +35871,15 @@ def nonres_summary(nonres: dict[str, Any]) -> dict[str, Any]:
             "totals": dict(flows["totals"]), "kpi": kpi,
             "warnings": list(flows["warnings"]),
             "book": flows.get("book"),
+            "result": outcome,
+            "financing": financing,
+            "rows": list(flows.get("rows") or []),
+            "years": list(flows.get("years") or []),
         })
-    return {"objects": objects, "totals": dict(nonres.get("totals") or {})}
+    out = {"objects": objects, "totals": dict(nonres.get("totals") or {})}
+    if reconciliation:
+        out["reconciliation"] = reconciliation
+    return out
 
 
 def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
@@ -34745,13 +35921,572 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
             tiles.append({"label": "DSCR — минимум по годам", "value": min(dscr), "unit": "mult"})
         if exit_value:
             tiles.append({"label": "Стоимость объектов на выходе", "value": exit_value, "unit": "rub"})
+    # Гостиница — те же «деньги объекта» в шапке: кредит, капитал, EBITDA,
+    # DSCR, выход. Плитки читают из `finance.hotel`, итога, вошедшего в поток.
+    hotel = finance.get("hotel") or {}
+    if hotel.get("computed"):
+        kpi = hotel.get("kpi") or {}
+        cumulative = worst = 0.0
+        for value in equity_cf:
+            cumulative += float(value or 0.0)
+            worst = min(worst, cumulative)
+        sale = kpi.get("exit_mode") == hotel_strategy.EXIT_SALE
+        tiles += [
+            {"label": "Кредит гостиницы — пик", "value": kpi.get("loan_peak"), "unit": "rub"},
+            {"label": "Собственный капитал — пик потребности", "value": -worst, "unit": "rub"},
+            {"label": "EBITDA стабилизированного года", "value": kpi.get("stabilized_ebitda"),
+             "unit": "rub"},
+            {"label": "Доходность на затраты (EBITDA / CAPEX без НДС)",
+             "value": kpi.get("yield_on_cost"), "unit": "pct"},
+        ]
+        if kpi.get("dscr_min") is not None:
+            tiles.append({"label": "DSCR — минимум по годам", "value": kpi.get("dscr_min"),
+                          "unit": "mult"})
+        tiles.append({"label": ("Выход: продажа гостиницы" if sale
+                                else "Стоимость гостиницы — оценка удержания"),
+                      "value": kpi.get("exit_value"), "unit": "rub"})
     for tile in tiles:
         if tile["unit"] == "rub":
             tile["value_mln"] = float(tile["value"] or 0.0) / 1e6
-    return {"housing": not is_nonresidential(inputs),
+    housing = not without_housing(inputs)
+    # Своя вёрстка — у проекта без жилья и без ПФ, чьи объекты идут вне ДДУ
+    # (владелец, 05.10.2026: «вёрстка нежилых объектов, где они не идут в
+    # проекте с жильём, должна быть своей»). Жилой и смешанный — как были.
+    kind = (REPORT_KIND_OBJECT if not housing and not project_finance and objects
+            else REPORT_KIND_HOUSING)
+    return {"housing": housing,
             "project_finance": project_finance,
             "nonres_strategy": bool(objects),
-            "nonres_tiles": tiles}
+            "hotel": bool(hotel),
+            "nonres_tiles": tiles,
+            "debt_metric": debt_metric(finance, project_finance, objects),
+            "kind": kind,
+            "sections": [{"key": key, "title": title}
+                         for key, title in REPORT_SECTIONS[kind]]}
+
+
+# Разделы отчёта — один список на страницу, PDF, тизер и бота. Жилой — прежний
+# разбор проекта; объектный — разбор объекта вне ДДУ, утверждённый владельцем
+# (05.10.2026): решение → объект → стратегия → доходы → затраты →
+# финансирование → экономика собственника → чувствительность → календарь.
+# Список не офисный: гостиница встаёт в ту же рамку.
+REPORT_KIND_HOUSING = "housing"
+REPORT_KIND_OBJECT = "object"
+REPORT_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    REPORT_KIND_HOUSING: (
+        ("site", "Участок и продукт"), ("summary", "Итог"), ("phases", "Очереди проекта"),
+        ("expenses", "Расходы"), ("income", "Доходы"), ("finance", "Финансирование"),
+        ("sensitivity", "Чувствительность"), ("calendar", "Календарный план"),
+    ),
+    REPORT_KIND_OBJECT: (
+        ("decision", "Решение"), ("object", "Объект и участок"),
+        ("strategy", "Стратегия реализации"), ("income", "Доходы"),
+        ("costs", "Затраты"), ("finance", "Финансирование"),
+        ("owner", "Экономика собственника"), ("sensitivity", "Чувствительность"),
+        ("calendar", "Календарь"),
+    ),
+}
+
+
+def _row(label: str, value: Any, unit: str, **extra: Any) -> dict[str, Any]:
+    return {"label": label, "value": value, "unit": unit, **extra}
+
+
+def _sum_object_costs(results: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+    """Смета объектов свода — сумма очередей, а не второй расчёт."""
+    out: dict[str, dict[str, float]] = {}
+    for result in results:
+        for key, parts in ((result or {}).get("object_costs") or {}).items():
+            bucket = out.setdefault(key, {})
+            for name, value in parts.items():
+                bucket[name] = bucket.get(name, 0.0) + float(value or 0.0)
+    return out
+
+
+# Статьи общих затрат проекта в разделе «Затраты» объектной вёрстки: подпись
+# и ключи CAPEX движка. Генподряд, техзаказчик и резерв идут сюда остатком —
+# то, что начислено не от стройки объектов.
+OBJECT_COMMON_COSTS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Смена ВРИ / земельные права", ("land_rights", "vri_security")),
+    ("Проценты по рассрочке ВРИ", ("vri_interest",)),
+    ("ИРД, проектирование и авторский надзор",
+     ("ird", "design_p", "design_rd", "author_supervision")),
+    ("Снос и расселение", ("demolition", "resettlement")),
+    ("Подготовка территории", ("preparation",)),
+    ("Наружные инженерные сети", ("utilities",)),
+    ("Благоустройство", ("landscaping",)),
+    ("Сдача и ввод", ("commissioning",)),
+    ("Содержание стройплощадки", ("site_maintenance",)),
+    ("СМР основного здания проекта", ("main_above", "main_under")),
+    ("Социальные объекты", ("social",)),
+    ("Управление проектом", ("project_management",)),
+)
+# Части сметы объекта: ключ `object_cost_parts` → подпись.
+OBJECT_COST_PARTS: tuple[tuple[str, str], ...] = (
+    ("building", "Здание — СМР по ставке объекта"),
+    ("garage", "Подземный гараж объекта"),
+    ("gc_fee", "Вознаграждение генподрядчика — доля объекта"),
+    ("technical_supervision", "Технический заказчик / стройконтроль — доля объекта"),
+    ("reserve", "Резерв — доля объекта"),
+)
+_OBJECT_BY_KEY = {obj.key: obj for obj in STANDALONE_OBJECTS}
+
+
+def _object_param_rows(obj: StandaloneObject | None, params: dict[str, Any],
+                       strategy: str) -> list[dict[str, Any]]:
+    """Вводные стратегии объекта — подписи, единицы и варианты из описания
+    формы (`_object_strategy_fields`), а не своим списком."""
+    if obj is None:
+        return []
+    wanted = {nonres_strategy.STRATEGY_DIRECT: "Прямая продажа",
+              nonres_strategy.STRATEGY_INCOME: "Доходный метод"}.get(strategy)
+    rows: list[dict[str, Any]] = []
+    for field in _object_strategy_fields(obj):
+        key, label, unit, kind = field[0], field[1], field[2], field[3]
+        if key == f"{obj.prefix}_strategy" or standalone_object_section(obj, key) != wanted:
+            continue
+        value = params.get(key.removeprefix(f"{obj.prefix}_"))
+        if value is None:
+            continue
+        if kind == "select":
+            names = {str(v): str(name) for v, name in field[4]}
+            rows.append(_row(label, names.get(str(value), str(value)), "text"))
+        else:
+            rows.append(_row(label, float(value), "num",
+                             suffix=str(unit).split(";")[0].split(",")[0]))
+    return rows
+
+
+def _object_calendar(report: dict[str, Any], objects: list[dict[str, Any]]) -> dict[str, Any]:
+    """Календарь объекта: подготовка, стройка, кредит — полосы движка; продажи,
+    заполнение, аренда и выход — из рядов объекта. Жилых вех («Старт
+    продаж» эскроу, «РВЭ», «Окончание продаж» квартир) у него нет."""
+    keep_groups = {"Подготовка", "Финансирование", "Отдельные объекты"}
+    keep_milestones = {"Сделка / начало проекта", "РнС"}
+    events = [dict(e) for e in ((report.get("calendar") or {}).get("events") or [])
+              if e.get("group") in keep_groups or e.get("label") in keep_milestones]
+    for item in objects:
+        title = item.get("title") or item.get("key")
+        start = str(item.get("commissioning") or "")[:10]
+        end = str(item.get("horizon_end") or "")[:10]
+        if item.get("strategy") == nonres_strategy.STRATEGY_INCOME and start:
+            leaseup = int(float(((item.get("book") or {}).get("params") or {})
+                                .get("leaseup_months") or 0))
+            if leaseup > 0:
+                events.append({"label": f"Заполнение — {title}", "start": start,
+                               "end": _iso(add_months(d(start), leaseup)),
+                               "group": "Аренда", "kind": "bar"})
+            events.append({"label": f"Аренда — {title}", "start": start, "end": end or start,
+                           "group": "Аренда", "kind": "bar"})
+            hold = item.get("exit_mode") == nonres_strategy.EXIT_HOLD
+            if end:
+                events.append({"label": (f"Конец удержания (оценка) — {title}" if hold
+                                         else f"Выход: продажа — {title}"),
+                               "start": end, "end": end, "group": "Выход",
+                               "kind": "milestone"})
+        else:
+            sold = [r["month"] for r in item.get("rows") or []
+                    if float(r.get("nonres_revenue") or 0) > 0]
+            if sold:
+                events.append({"label": f"Продажи ДКП — {title}", "start": sold[0][:10],
+                               "end": sold[-1][:10], "group": "Продажи", "kind": "bar"})
+    if not events:
+        return {}
+    return {"start": min(e["start"] for e in events), "end": max(e["end"] for e in events),
+            "events": sorted(events, key=lambda e: (e["start"], e["end"]))}
+
+
+def _object_sensitivity(objects: list[dict[str, Any]], deal_rub: float,
+                        metric_key: str | None) -> dict[str, Any]:
+    """Факторы нежилья для чувствительности: те, что двигают ЭТИ объекты."""
+    keys: list[str] = []
+    for item in objects:
+        obj = _OBJECT_BY_KEY.get(str(item.get("key")))
+        if obj is None:
+            continue
+        for spec in _SENSITIVITY_PARAMETERS:
+            if spec.get("object") == obj.prefix and item.get("strategy") in spec["strategies"]:
+                keys.append(spec["key"])
+    if deal_rub > 0:
+        keys.append("purchase_price_mln")
+    keys.append("discount_rate_pct")
+    return {"metric": "dscr" if metric_key == "dscr" else "irr_equity_pct",
+            "parameters": keys}
+
+
+def object_report(result: dict[str, Any]) -> dict[str, Any]:
+    """Отчёт проекта без жилья — девять разделов (`REPORT_SECTIONS`) из уже
+    посчитанного: `finance.nonres`, смета объектов (`object_costs`),
+    `report.nonres_financing`, `report.equity_participation`, сводка и
+    `report.layout.debt_metric`. Второго расчёта нет — только раскладка.
+
+    Каждый раздел — `{key, title, brief, blocks}`: `brief` — несколько строк
+    для бота и тизера, `blocks` — таблицы для страницы и PDF. Блок со ссылкой
+    (`ref`) рисуется своей таблицей движка (кредит объекта, собственное
+    участие, карта, чувствительность, календарь).
+    """
+    report = result.get("report") or {}
+    layout = report.get("layout") or {}
+    if layout.get("kind") != REPORT_KIND_OBJECT:
+        return {}
+    summary = result.get("summary") or {}
+    finance = result.get("finance") or {}
+    objects = (finance.get("nonres") or {}).get("objects") or []
+    tep = {str(row.get("key")): row for row in (result.get("tep") or {}).get("rows") or []}
+    capex = result.get("capex") or {}
+    parts = result.get("object_costs") or {}
+    deal = result.get("deal") or {}
+    equity = report.get("equity_participation") or {}
+    metric = layout.get("debt_metric") or {}
+    na = equity_returns_na_label(summary)
+    deal_rub = float(deal.get("total_mln") or 0.0) * 1e6
+    income_any = any(o.get("strategy") == nonres_strategy.STRATEGY_INCOME for o in objects)
+    sections: dict[str, dict[str, Any]] = {}
+
+    # 1. Решение ------------------------------------------------------------
+    verdict = _purchase_feasibility(
+        deal.get("price_mln"), float(summary.get("net_profit") or 0) / 1e6,
+        summary.get("llcr"), 0.0, float(summary.get("ending_pf") or 0) / 1e6,
+        None, 0.0, None, _layout_dscr(layout), _layout_no_debt_cover(layout))
+    debt_row = (_row(str(metric.get("label") or "DSCR"), metric.get("value"), "mult")
+                if metric.get("key") else
+                _row(str(metric.get("label") or "Покрытие кредита"),
+                     str(metric.get("reason") or "не считается"), "text"))
+    irr = summary.get("irr_equity") if na is None else None
+    decision = [
+        _row("Чистая прибыль проекта", summary.get("net_profit"), "rub"),
+        debt_row,
+        (_row("IRR собственника", irr, "pct") if irr is not None
+         else _row("IRR собственника", na or "не считается — поток не меняет знак", "text")),
+        (_row("NPV собственника" + (f" @{float(equity.get('discount_rate') or 0) * 100:.4g}%"
+                                    .replace(".", ",") if equity else ""),
+              equity.get("npv"), "rub") if equity and na is None
+         else _row("NPV собственника", na or "—", "text")),
+        _row("Пик собственных средств", equity.get("peak") if equity else _equity_need(result), "rub"),
+        _row("Цена входа (участок, сделка)", deal_rub, "rub"),
+    ]
+    sections["decision"] = {
+        "brief": [_row("Вывод", verdict["title"], "text"),
+                  _row("Основание", verdict["text"], "text"), *decision[:4]],
+        "verdict": verdict,
+        "goal_seek": {"variable": "purchase_price_mln", "metric": metric.get("key"),
+                      "label": metric.get("label"), "target": metric.get("target"),
+                      "reason": metric.get("reason")},
+        "blocks": [{"title": "Вывод", "kind": "verdict",
+                    "rows": [_row(verdict["title"], verdict["text"], "text")]},
+                   {"title": "Ключевые показатели", "rows": decision},
+                   {"ref": "goal_seek", "title": "Максимальная цена входа по "
+                    + str(metric.get("label") or "покрытию кредита")}],
+    }
+
+    # 2. Объект и участок ---------------------------------------------------
+    object_blocks, gns_total, area_total = [], 0.0, 0.0
+    for item in objects:
+        row = tep.get(str(item.get("key"))) or {}
+        book = item.get("book") or {}
+        income = item.get("strategy") == nonres_strategy.STRATEGY_INCOME
+        area = float(book.get("area_sqm") or 0.0)
+        gns = float(row.get("gns") or 0.0)
+        gns_total += gns
+        area_total += area
+        rows = [_row("Наземная площадь в ГНС", gns, "sqm"),
+                _row("Общая площадь", row.get("total_area"), "sqm"),
+                _row("Арендопригодная площадь" if income else "Продаваемая площадь", area, "sqm")]
+        if float(row.get("under_gns") or 0):
+            rows.append(_row("Подземный гараж — площадь", row.get("under_gns"), "sqm"))
+        if float(row.get("parking_units") or 0):
+            rows.append(_row("Машино-места объекта", row.get("parking_units"), "count"))
+            for key, label in (("parking_under_units", "в т.ч. подземные"),
+                               ("parking_over_units", "в т.ч. на первых этажах"),
+                               ("parking_saleable_units",
+                                "в т.ч. сдаются / продаются" if income else "в т.ч. продаются")):
+                if float(row.get(key) or 0):
+                    rows.append(_row(label, row.get(key), "count"))
+        rows += [_row("Ввод объекта", item.get("commissioning"), "date")]
+        object_blocks.append({"title": item.get("title"), "rows": rows})
+    sections["object"] = {
+        "brief": [_row("Наземная площадь в ГНС", gns_total, "sqm"),
+                  _row("Арендопригодная / продаваемая площадь", area_total, "sqm")],
+        "blocks": [*object_blocks, {"ref": "site", "title": "Участок"}],
+    }
+
+    # 3. Стратегия реализации ----------------------------------------------
+    strategy_blocks, brief = [], []
+    for item in objects:
+        obj = _OBJECT_BY_KEY.get(str(item.get("key")))
+        book = item.get("book") or {}
+        income = item.get("strategy") == nonres_strategy.STRATEGY_INCOME
+        rows = [_row("Стратегия", item.get("strategy_label"), "text")]
+        if not income and float(book.get("price_rub_sqm") or 0):
+            rows.append(_row("Стартовая цена ДКП", float(book["price_rub_sqm"]) / 1000, "th"))
+        rows += _object_param_rows(obj, book.get("params") or {}, str(item.get("strategy")))
+        brief.append(_row(str(item.get("title")), item.get("strategy_label"), "text"))
+        years = [y for y in item.get("years") or []
+                 if (y.get("occupancy") is not None if income else y.get("sale_revenue"))]
+        columns = ([["year", "Год", "text"], ["occupancy", "Загрузка, средняя за год", "pct"]]
+                   if income else
+                   [["year", "Год", "text"], ["sale_revenue", "Выручка ДКП", "mln"],
+                    ["sold_share", "Продано накопленным итогом, доля выручки", "pct"]])
+        strategy_blocks.append({"title": item.get("title"), "rows": rows})
+        if years:
+            strategy_blocks.append({"title": ("График заполнения — " if income
+                                              else "График продаж — ") + str(item.get("title")),
+                                    "columns": columns, "years": years})
+    sections["strategy"] = {"brief": brief, "blocks": strategy_blocks}
+
+    # 4. Доходы ------------------------------------------------------------
+    income_blocks = []
+    totals = {name: sum(float((o.get("totals") or {}).get(name) or 0.0) for o in objects)
+              for name in ("sale_revenue", "rent_revenue", "exit_revenue", "noi",
+                           "opex", "property_tax", "selling_cost", "exit_cost", "vat_paid")}
+    for item in objects:
+        income = item.get("strategy") == nonres_strategy.STRATEGY_INCOME
+        hold = income and item.get("exit_mode") == nonres_strategy.EXIT_HOLD
+        t, kpi = item.get("totals") or {}, item.get("kpi") or {}
+        if income:
+            rows = [_row("Арендная выручка за срок удержания", t.get("rent_revenue"), "rub"),
+                    _row("NOI за срок удержания", t.get("noi"), "rub"),
+                    _row("Стабилизированный NOI, год", kpi.get("stabilized_noi"), "rub"),
+                    _row("Доходность на затраты (NOI / CAPEX)", kpi.get("yield_on_cost"), "pct"),
+                    _row("Стоимость объекта — оценка удержания, без сделки" if hold
+                         else "Выход: продажа по ставке капитализации",
+                         kpi.get("exit_value"), "rub")]
+            columns = [["year", "Год", "text"], ["rent_revenue", "Аренда", "mln"],
+                       ["opex", "Эксплуатация", "mln"], ["property_tax", "Налог на имущество", "mln"],
+                       ["noi", "NOI", "mln"], ["exit_revenue", "Выход", "mln"]]
+        else:
+            rows = [_row("Выручка прямых продаж (ДКП, без эскроу)", t.get("sale_revenue"), "rub"),
+                    _row("Расходы на продажу", t.get("selling_cost"), "rub")]
+            columns = [["year", "Год", "text"], ["sale_revenue", "Выручка ДКП", "mln"],
+                       ["property_tax", "Налог на имущество (непроданное)", "mln"]]
+        years = [y for y in item.get("years") or []
+                 if any(float(y.get(c[0]) or 0) for c in columns[1:])]
+        income_blocks.append({"title": item.get("title"), "rows": rows})
+        if years:
+            income_blocks.append({"title": "По годам — " + str(item.get("title")),
+                                  "columns": columns, "years": years})
+    income_brief = []
+    if totals["sale_revenue"]:
+        income_brief.append(_row("Выручка ДКП", totals["sale_revenue"], "rub"))
+    if totals["rent_revenue"]:
+        income_brief += [_row("Арендная выручка", totals["rent_revenue"], "rub"),
+                         _row("NOI за срок удержания", totals["noi"], "rub")]
+    exit_value = sum(float((o.get("kpi") or {}).get("exit_value") or 0.0) for o in objects
+                     if o.get("strategy") == nonres_strategy.STRATEGY_INCOME)
+    if exit_value:
+        income_brief.append(_row("Стоимость выхода", exit_value, "rub"))
+    sections["income"] = {"brief": income_brief, "blocks": income_blocks}
+
+    # 5. Затраты -----------------------------------------------------------
+    cost_blocks, objects_cost = [], 0.0
+    attributed: dict[str, float] = defaultdict(float)
+    for item in objects:
+        key = str(item.get("key"))
+        own = parts.get(key) or {}
+        if not own:
+            continue
+        row = tep.get(key) or {}
+        area = float((item.get("book") or {}).get("area_sqm") or 0.0)
+        gns = float(row.get("gns") or 0.0)
+        total = sum(float(v or 0.0) for v in own.values())
+        objects_cost += total
+        for name, value in own.items():
+            attributed[name] += float(value or 0.0)
+        rows = [_row(label, own.get(name), "rub") for name, label in OBJECT_COST_PARTS
+                if float(own.get(name) or 0.0)]
+        rows += [_row("Итого смета объекта", total, "rub"),
+                 _row("на м² наземной ГНС объекта", total / gns / 1000 if gns else None, "th"),
+                 _row("на м² арендопригодной / продаваемой", total / area / 1000 if area else None,
+                      "th")]
+        cost_blocks.append({"title": "Смета объекта — " + str(item.get("title")), "rows": rows})
+    common_rows = []
+    if deal_rub:
+        common_rows.append(_row("Участок — стоимость сделки", deal_rub, "rub"))
+    for label, keys in OBJECT_COMMON_COSTS:
+        value = sum(float(capex.get(k) or 0.0) for k in keys)
+        if value > 0.5:
+            common_rows.append(_row(label, value, "rub"))
+    for name, label in (("gc_fee", "Вознаграждение генподрядчика — вне объектов"),
+                        ("technical_supervision", "Технический заказчик — вне объектов"),
+                        ("reserve", "Резерв — вне объектов")):
+        rest = float(capex.get(name) or 0.0) - attributed.get(name, 0.0)
+        if rest > 0.5:
+            common_rows.append(_row(label, rest, "rub"))
+    nonres_keys = {str(o.get("key")) for o in objects}
+    for obj in STANDALONE_OBJECTS:
+        value = float(capex.get(obj.key) or 0.0)
+        if value > 0.5 and obj.key not in nonres_keys:
+            common_rows.append(_row(f"Объект {obj.label} — продаётся не этим отчётом",
+                                    value, "rub"))
+    common_total = sum(float(r["value"] or 0.0) for r in common_rows)
+    common_rows.append(_row("Итого общие затраты", common_total, "rub") if common_rows else
+                       _row("Общих затрат нет", "все затраты стройки начислены от объектов",
+                            "text"))
+    operating = [_row("Эксплуатация (OPEX)", totals["opex"], "rub"),
+                 _row("Налог на имущество", totals["property_tax"], "rub"),
+                 _row("Расходы на продажу ДКП", totals["selling_cost"], "rub"),
+                 _row("Затраты на выход", totals["exit_cost"], "rub")]
+    operating = [r for r in operating if float(r["value"] or 0.0)]
+    operating.append(_row("Итого эксплуатация, налог на имущество и продажа",
+                          sum(float(r["value"]) for r in operating), "rub"))
+    sections["costs"] = {
+        "brief": [_row("Смета объектов", objects_cost, "rub"),
+                  _row("Общие затраты", common_total, "rub"),
+                  _row("Расходы всего", summary.get("total_expenses"), "rub")],
+        "blocks": [*cost_blocks,
+                   {"title": "Общие затраты проекта — участок, ИРД, проект, сети",
+                    "rows": common_rows},
+                   {"title": "Эксплуатация и налог на имущество", "rows": operating},
+                   {"title": "Итог", "rows": [
+                       _row("Затраты стройки — смета объектов и общие",
+                            capex.get("total"), "rub"),
+                       _row("Расходы проекта всего (с процентами, НДС и налогами)",
+                            summary.get("total_expenses"), "rub")]}],
+    }
+
+    # 6. Финансирование ----------------------------------------------------
+    loan_peak = sum(float((o.get("totals") or {}).get("loan_peak") or 0.0) for o in objects)
+    sections["finance"] = {
+        "brief": [_row("Кредит объектов — пик", loan_peak, "rub"), debt_row,
+                  _row("Собственные средства до ввода",
+                       (equity.get("parts") or {}).get("in_build"), "rub")],
+        "blocks": [{"ref": "nonres_financing", "title": "Кредит объекта"},
+                   {"ref": "equity_participation", "title": "Собственное участие"}],
+    }
+
+    # 7. Экономика собственника --------------------------------------------
+    nonres_costs = next((float(e.get("value") or 0.0) for e in report.get("expense_structure") or []
+                         if e.get("label") == NONRES_COSTS_LABEL), 0.0)
+    pnl = [_row("Выручка", summary.get("revenue"), "rub")]
+    if income_any:
+        pnl.append(_row("NOI объектов за горизонт", totals["noi"], "rub"))
+    pnl += [_row("Затраты стройки (смета объектов и общие)", summary.get("capex"), "rub"),
+            _row("Эксплуатация, налог на имущество, продажа и выход", nonres_costs, "rub")]
+    if float(summary.get("commercial_costs") or 0):
+        pnl.append(_row("Коммерческие расходы", summary.get("commercial_costs"), "rub"))
+    pnl += [_row("EBITDA", summary.get("ebitda"), "rub"),
+            _row("Проценты и комиссии", summary.get("financing_cost"), "rub"),
+            _row("Прибыль до налога", summary.get("profit_before_tax"), "rub"),
+            _row("Налог на прибыль", summary.get("profit_tax"), "rub"),
+            # НДС движок вычитает после налога на прибыль: чистая прибыль =
+            # прибыль до налога − налог − НДС к уплате.
+            _row("НДС к уплате", summary.get("vat"), "rub"),
+            _row("Чистая прибыль", summary.get("net_profit"), "rub")]
+    returns = [decision[2], decision[3]]
+    if equity:
+        returns.append(_row("Окупаемость собственных средств",
+                            equity.get("payback_month") or "не окупается за горизонт проекта",
+                            "date" if equity.get("payback_month") else "text"))
+    owner_blocks = [{"title": "Отчёт о прибылях и убытках", "rows": pnl},
+                    {"title": "Доходность собственника", "rows": returns}]
+    if equity.get("years"):
+        owner_blocks.append({"title": "Поток собственника по годам",
+                             "columns": equity.get("columns") or [], "years": equity["years"]})
+    for item in objects:
+        hold = (item.get("strategy") == nonres_strategy.STRATEGY_INCOME
+                and item.get("exit_mode") == nonres_strategy.EXIT_HOLD)
+        rows = object_result_rows(item.get("result") or {}, hold=hold)
+        if rows:
+            owner_blocks.append({"title": "Итог объекта — " + str(item.get("title")),
+                                 "rows": [r for r in rows if r.get("unit") != "section"]})
+    sections["owner"] = {
+        "brief": [_row("EBITDA", summary.get("ebitda"), "rub"),
+                  _row("Чистая прибыль", summary.get("net_profit"), "rub"), *returns[:2]],
+        "blocks": owner_blocks,
+    }
+
+    # 8. Чувствительность ---------------------------------------------------
+    sensitivity = _object_sensitivity(objects, deal_rub, metric.get("key"))
+    meta_labels = {spec["key"]: _sensitivity_label(spec, {})[0] for spec in _SENSITIVITY_PARAMETERS}
+    sections["sensitivity"] = {
+        "brief": [_row("Факторы", ", ".join(meta_labels.get(k, k) for k in sensitivity["parameters"]
+                                            if k in meta_labels and _SENSITIVITY_BY_KEY[k].get("object")),
+                       "text")],
+        "sensitivity": sensitivity,
+        "blocks": [{"ref": "sensitivity", "title": "Чувствительность по факторам объекта"}],
+    }
+
+    # 9. Календарь ----------------------------------------------------------
+    calendar = _object_calendar(report, objects)
+    brief = [_row(str(e["label"]), e["start"], "date") for e in calendar.get("events") or []
+             if e.get("group") in ("Отдельные объекты", "Выход")][:4]
+    sections["calendar"] = {"brief": brief, "calendar": calendar,
+                            "blocks": [{"ref": "calendar", "title": "Календарный план объекта"}]}
+
+    return {"kind": REPORT_KIND_OBJECT,
+            "sections": [{"key": key, "title": title, **sections[key]}
+                         for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
+
+
+def _finalize_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Выход расчёта: решение о доходности капитала, затем объектный отчёт —
+    он читает уже решённые IRR и NPV. Краткие строки разделов ложатся в
+    `report.layout.sections`: их читают бот и тизер."""
+    _apply_equity_returns_to_result(result)
+    if not isinstance(result, dict):
+        return result
+    report = result.get("report")
+    if not isinstance(report, dict) or "object_report" in report:
+        return result
+    built = object_report(result)
+    report["object_report"] = built
+    layout = report.get("layout")
+    if built and isinstance(layout, dict):
+        layout["sections"] = [{"key": s["key"], "title": s["title"], "brief": s["brief"]}
+                              for s in built["sections"]]
+    return result
+
+# Пороги покрытия долга: ориентир банка и нижняя граница «на грани». У LLCR
+# проекта с ПФ — прежние пороги карточки решения; у DSCR кредита объекта — те
+# же, что у вердикта (`_purchase_feasibility_base`): ниже 1,00x NOI не
+# покрывает платежа.
+DEBT_METRIC_TARGET = 1.20
+DEBT_METRIC_FLOOR = {"llcr": 1.05, "dscr": 1.00}
+
+
+def debt_metric(finance: dict[str, Any], project_finance: bool,
+                objects: list[dict[str, Any]]) -> dict[str, Any]:
+    """Чем мерить долг проекта — одно решение для карточки решения, подбора
+    цены входа, PDF и бота.
+
+    Проект с БРИДЖем и ПФ меряет LLCR. Проект без них — DSCR кредита объектов
+    (минимум по годам и объектам): LLCR там считать не из чего, и −8,68x на
+    экране было не ответом, а делением нуля ПФ. Кредит, который гасится
+    выручкой ДКП, покрытия NOI не имеет — тогда показателя нет, и сказано
+    почему, а не печатается ноль.
+    """
+    hotel = finance.get("hotel")
+    if isinstance(hotel, dict) and not project_finance:
+        # Гостиничный проект меряет свой кредит: DSCR = EBITDA ÷ обслуживание
+        # по годам (`developaid_hotel_strategy`), тот же минимум, что в плитке.
+        kpi = hotel.get("kpi") or {}
+        if hotel.get("computed") and kpi.get("dscr_min") is not None:
+            return {"key": "dscr", "label": "DSCR кредита гостиницы — минимум по годам",
+                    "value": float(kpi["dscr_min"]), "target": DEBT_METRIC_TARGET,
+                    "floor": DEBT_METRIC_FLOOR["dscr"]}
+        if not hotel.get("computed"):
+            reason = "Гостиница не считается — не заданы её вводные, DSCR нет."
+        elif float(kpi.get("loan_peak") or 0.0) <= 0.0:
+            reason = "У гостиницы нет кредита — покрывать нечего, DSCR не считается."
+        else:
+            reason = ("Кредит гостиницы не обслуживается из EBITDA ни в одном году "
+                      "эксплуатации — DSCR не считается.")
+        return {"key": None, "label": "Покрытие кредита гостиницы", "value": None,
+                "target": DEBT_METRIC_TARGET, "floor": None, "reason": reason}
+    if project_finance or not objects:
+        return {"key": "llcr", "label": "LLCR", "value": finance.get("llcr"),
+                "target": DEBT_METRIC_TARGET, "floor": DEBT_METRIC_FLOOR["llcr"]}
+    values = [float(k["dscr_min"]) for k in ((o.get("kpi") or {}) for o in objects)
+              if k.get("dscr_min") is not None]
+    if values:
+        return {"key": "dscr", "label": "DSCR кредита объектов — минимум по годам",
+                "value": min(values), "target": DEBT_METRIC_TARGET,
+                "floor": DEBT_METRIC_FLOOR["dscr"]}
+    return {"key": None, "label": "Покрытие кредита объектов", "value": None,
+            "target": DEBT_METRIC_TARGET, "floor": None,
+            "reason": "Кредит объектов гасится выручкой прямых продаж — платежа из NOI "
+                      "нет, DSCR не считается. Проверка — что кредит погашен: "
+                      "см. «Финансирование объекта»."}
 
 
 def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -34762,6 +36497,7 @@ def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
     у прямой продажи нет NOI, у аренды — выручки ДКП.
     """
     out: list[dict[str, Any]] = []
+    reconciliation = (nonres or {}).get("reconciliation") or {}
     for item in (nonres or {}).get("objects") or []:
         totals, kpi = item.get("totals") or {}, item.get("kpi") or {}
         income = item.get("strategy") == nonres_strategy.STRATEGY_INCOME
@@ -34788,30 +36524,480 @@ def nonres_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
                            else "Выход: продажа по ставке капитализации"),
                  "value": kpi.get("exit_value"), "unit": "rub"},
             ]
-        if income and kpi.get("dscr_min") is not None:
-            rows += [
-                {"label": "DSCR — минимум по годам (NOI / проценты и тело)",
-                 "value": kpi.get("dscr_min"), "unit": "mult"},
-                {"label": "Покрытие процентов NOI (ICR) — минимум",
-                 "value": kpi.get("icr_min"), "unit": "mult"},
-            ]
-        if income and kpi.get("loan_maturity"):
-            rows += [
-                {"label": "Кредит объекта — срок погашения", "value": kpi.get("loan_maturity"), "unit": "date"},
-                {"label": "Кредит объекта — баллон в конце срока", "value": kpi.get("loan_balloon"), "unit": "rub"},
-            ]
-        rows += [
-            {"label": "Кредит объекта — выборка", "value": totals.get("loan_draw"), "unit": "rub"},
-            {"label": "Кредит объекта — пик долга", "value": totals.get("loan_peak"), "unit": "rub"},
-            {"label": "Кредит объекта — проценты и комиссии",
-             "value": float(totals.get("loan_interest") or 0) + float(totals.get("loan_fee") or 0),
-             "unit": "rub"},
-            {"label": "НДС объекта к уплате", "value": totals.get("vat_paid"), "unit": "rub"},
-        ]
+        # Кредит объекта — в своём отчёте «Финансирование объекта»
+        # (`nonres_financing_report`), здесь его не дублируем.
+        rows.append({"label": "НДС объекта к уплате", "value": totals.get("vat_paid"), "unit": "rub"})
+        rows += object_result_rows(item.get("result") or {}, hold=hold)
+        warnings = list(item.get("warnings") or [])
+        if reconciliation and not reconciliation.get("ok"):
+            warnings.append(
+                "Итог объекта не сходится с вкладом нежилья в проект: поток капитала "
+                f"объектов {reconciliation.get('objects_equity', 0) / 1e6:,.1f} млн ₽ "
+                f"против {reconciliation.get('project_equity', 0) / 1e6:,.1f} млн ₽ в проекте, "
+                f"база налога {reconciliation.get('objects_tax_base', 0) / 1e6:,.1f} "
+                f"против {reconciliation.get('project_tax_base', 0) / 1e6:,.1f} млн ₽ "
+                "(сверка `nonres_reconciliation`).".replace(",", " "))
         out.append({"key": item.get("key"), "title": item.get("title"),
                     "strategy": item.get("strategy"), "rows": rows,
-                    "warnings": list(item.get("warnings") or [])})
+                    "warnings": warnings})
     return out
+
+
+# Годовой USALI отчёта: строки в порядке USALI, деньги — в рублях.
+HOTEL_REPORT_USALI_ROWS: tuple[tuple[str, str, str], ...] = (
+    ("occupancy", "Загрузка", "pct"),
+    ("adr", "ADR, ₽ без НДС", "rub_unit"),
+    ("revpar", "RevPAR, ₽ без НДС", "rub_unit"),
+    ("rooms_revenue", "Выручка номерного фонда", "rub"),
+    ("fnb_revenue", "Выручка F&B", "rub"),
+    ("other_revenue", "Выручка прочих департаментов", "rub"),
+    ("vat_relief", "Льгота НДС на проживание", "rub"),
+    ("revenue", "Выручка всего", "rub"),
+    ("gop", "GOP", "rub"),
+    ("ebitda", "EBITDA", "rub"),
+    ("profit_tax", "Налог на прибыль", "rub"),
+    ("debt_service", "Обслуживание долга", "rub"),
+    ("dscr", "DSCR", "mult"),
+    ("fcff", "Поток до финансирования (FCFF)", "rub"),
+    ("equity_cf", "Поток капитала (FCFE)", "rub"),
+)
+
+
+def hotel_report(hotel: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Блок «Гостиница — эксплуатация»: одна таблица на страницу, PDF и бот.
+
+    Строки собираются из `finance.hotel` — того же итога, что вошёл в
+    прибыль, налог и поток проекта. Незаполненная гостиница не печатается
+    нулями: блок называет, каких вводных нет.
+    """
+    if not hotel:
+        return None
+    if not hotel.get("computed"):
+        return {"computed": False, "missing": list(hotel.get("missing") or []),
+                "rows": [], "usali": {"years": [], "rows": []}, "warnings": []}
+    kpi, totals = hotel.get("kpi") or {}, hotel.get("totals") or {}
+    params = hotel.get("params") or {}
+    stars = dict(hotel_strategy.CLASSES).get(str(params.get("stars") or ""), "не задан")
+    sale = kpi.get("exit_mode") == hotel_strategy.EXIT_SALE
+    valuation = dict(hotel_strategy.VALUATIONS).get(str(kpi.get("valuation") or ""), "")
+    financing = dict(hotel_strategy.FINANCINGS).get(str(params.get("financing") or ""), "")
+    rows: list[dict[str, Any]] = [
+        {"label": "Класс", "value": stars, "unit": "text"},
+        {"label": "Номерной фонд", "value": kpi.get("keys"), "unit": "count"},
+        {"label": "Ввод гостиницы", "value": hotel.get("commissioning"), "unit": "date"},
+        {"label": "Конец срока расчёта", "value": hotel.get("horizon_end"), "unit": "date"},
+        {"label": "Затраты проекта с НДС", "value": kpi.get("capex"), "unit": "rub"},
+        {"label": "Затраты на номер с НДС", "value": kpi.get("capex_per_key"), "unit": "rub_unit"},
+        {"label": "ADR первого года, без НДС", "value": kpi.get("adr_first_year"), "unit": "rub_unit"},
+        {"label": f"Стабилизированный год ({kpi.get('stabilized_year') or '—'}): загрузка",
+         "value": kpi.get("stabilized_occupancy"), "unit": "pct"},
+        {"label": "RevPAR стабилизированного года, без НДС",
+         "value": kpi.get("stabilized_revpar"), "unit": "rub_unit"},
+        {"label": "Выручка за срок", "value": totals.get("revenue"), "unit": "rub"},
+        {"label": "в т.ч. льгота НДС на проживание", "value": totals.get("vat_relief"), "unit": "rub"},
+        {"label": "GOP за срок (доля выручки департаментов)", "value": kpi.get("gop_margin"),
+         "unit": "pct"},
+        {"label": "EBITDA за срок", "value": totals.get("ebitda"), "unit": "rub"},
+        {"label": "Рентабельность EBITDA", "value": kpi.get("ebitda_margin"), "unit": "pct"},
+        {"label": "Доходность на затраты (EBITDA стаб. года / CAPEX без НДС)",
+         "value": kpi.get("yield_on_cost"), "unit": "pct"},
+        {"label": ("Выход: продажа — " if sale else "Оценка удержания — ") + valuation.split(":")[0].lower(),
+         "value": kpi.get("exit_value"), "unit": "rub"},
+        {"label": "Финансирование", "value": financing, "unit": "text"},
+        {"label": "Кредит — выборка", "value": totals.get("loan_draw"), "unit": "rub"},
+        {"label": "Кредит — пик долга", "value": kpi.get("loan_peak"), "unit": "rub"},
+        {"label": "Кредит — проценты и комиссии",
+         "value": float(totals.get("loan_interest") or 0) + float(totals.get("loan_fee") or 0),
+         "unit": "rub"},
+        {"label": "Кредит погашен", "value": kpi.get("loan_repaid_month"), "unit": "date"},
+        {"label": "DSCR — минимум по годам", "value": kpi.get("dscr_min"), "unit": "mult"},
+        {"label": "Налог на прибыль за срок", "value": totals.get("profit_tax"), "unit": "rub"},
+        {"label": "NPV проекта", "value": kpi.get("npv_project"), "unit": "rub"},
+        {"label": "IRR проекта", "value": kpi.get("irr_project"), "unit": "pct"},
+        {"label": "NPV собственного капитала", "value": kpi.get("npv_equity"), "unit": "rub"},
+        {"label": "IRR собственного капитала", "value": kpi.get("irr_equity"), "unit": "pct"},
+        {"label": "Срок окупаемости (PBP), лет от начала проекта", "value": kpi.get("pbp_years"),
+         "unit": "years"},
+        {"label": "Дисконтированный срок окупаемости (DPBP), лет",
+         "value": kpi.get("dpbp_years"), "unit": "years"},
+    ]
+    annual = [row for row in hotel.get("annual") or [] if row.get("rooms_available")]
+    usali = {
+        "years": [row["year"] for row in annual],
+        "rows": [{"key": key, "label": label, "unit": unit,
+                  "values": [row.get(key) for row in annual]}
+                 for key, label, unit in HOTEL_REPORT_USALI_ROWS],
+    }
+    return {"computed": True, "missing": [], "rows": rows, "usali": usali,
+            "warnings": list(hotel.get("warnings") or [])}
+
+
+def _month_label(value: Any) -> str:
+    return ".".join(reversed(str(value)[:7].split("-"))) if value else "—"
+
+
+def nonres_financing_report(nonres: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """«Финансирование объекта»: кредит каждого объекта вне ДДУ блоками.
+
+    Одна таблица на страницу, PDF, книгу и тизер; читает `object_financing`
+    из `finance.nonres`. Блоки: условия, выборка и долг на ввод, погашение
+    (платёж, тело, баллон, выход), обслуживание; плюс таблица по годам.
+    Строка, которой у схемы нет, не печатается: у прямой продажи нет
+    аннуитета и баллона, у погашения из NOI — срока и баллона.
+    """
+    out: list[dict[str, Any]] = []
+    for item in (nonres or {}).get("objects") or []:
+        f = item.get("financing") or {}
+        if not f:
+            continue
+        annuity = f.get("scheme") == nonres_strategy.REPAY_ANNUITY
+        rows: list[dict[str, Any]] = [
+            {"label": "Условия кредита", "value": None, "unit": "section"},
+            {"label": "Схема погашения", "value": f.get("scheme_label"), "unit": "text"},
+            {"label": "Доля кредита в затратах", "value": f.get("loan_share"), "unit": "pct"},
+            {"label": "Ставка", "value": "ключевая + " + f"{float(f.get('spread') or 0) * 100:.4g}".replace(".", ",") + " п.п.",
+             "unit": "text"},
+            {"label": "Ставка на вводе", "value": f.get("rate_at_commissioning"), "unit": "pct"},
+            {"label": "Средняя ставка за срок (по остатку долга)", "value": f.get("avg_rate"), "unit": "pct"},
+        ]
+        if annuity:
+            maturity_after_exit = (f.get("maturity") and f.get("horizon_end")
+                                   and str(f["maturity"]) > str(f["horizon_end"]))
+            rows += [
+                {"label": "Срок кредита",
+                 "value": f"{f.get('term_years')} лет от первой выдачи — до {_month_label(f.get('maturity'))}"
+                          + (" (позже выхода: остаток гасится при выходе)" if maturity_after_exit else ""),
+                 "unit": "text"},
+                {"label": "Баллон в конце срока", "value": f.get("balloon_share"), "unit": "pct"},
+            ]
+        rows += [
+            {"label": "Выборка и долг на ввод", "value": None, "unit": "section"},
+            {"label": "Выборка кредита", "value": f.get("draw_total"), "unit": "rub"},
+        ]
+        if f.get("draw_common"):
+            rows += [
+                {"label": "в т.ч. на стройку объекта", "value": f.get("draw_object"), "unit": "rub"},
+                {"label": "в т.ч. на общие затраты проекта", "value": f.get("draw_common"), "unit": "rub"},
+            ]
+        if f.get("limit_land") and f.get("limit_build"):
+            rows += [
+                {"label": "Лимит НКЛ на участок и проект (до РнС)", "value": f.get("limit_land"),
+                 "unit": "rub"},
+                {"label": "Лимит строительной НКЛ (с РнС)", "value": f.get("limit_build"), "unit": "rub"},
+            ]
+        if f.get("reservation_fee"):
+            rows.append({"label": "Плата за резервирование лимита НКЛ", "value": f.get("reservation_fee"),
+                         "unit": "rub"})
+        if f.get("commitment_fee"):
+            rows.append({"label": "Плата за невыбранный лимит НКЛ", "value": f.get("commitment_fee"),
+                         "unit": "rub"})
+        rows += [
+            {"label": "Комиссия за выдачу", "value": f.get("fee"), "unit": "rub"},
+            {"label": "Проценты до ввода — капитализированы в долг",
+             "value": f.get("interest_capitalized"), "unit": "rub"},
+            {"label": f"Долг на ввод ({_month_label(f.get('commissioning'))})",
+             "value": f.get("debt_at_commissioning"), "unit": "rub"},
+            {"label": "Пик долга", "value": f.get("peak"), "unit": "rub"},
+            {"label": "Погашение", "value": None, "unit": "section"},
+        ]
+        if annuity and f.get("first_payment"):
+            rows += [
+                {"label": f"Аннуитетный платёж — первый ({_month_label(f.get('first_payment_month'))}), в месяц",
+                 "value": f.get("first_payment"), "unit": "mln"},
+                {"label": "Аннуитетный платёж — средний, в месяц", "value": f.get("avg_payment"), "unit": "mln"},
+                {"label": "Погашено плановым телом аннуитета", "value": f.get("repaid_scheduled"), "unit": "rub"},
+                {"label": "Баллон по графику (доля долга на ввод)", "value": f.get("balloon_planned"), "unit": "rub"},
+            ]
+            if f.get("balloon_paid"):
+                rows.append({"label": f"Баллон погашен в срок ({_month_label(f.get('balloon_month'))})",
+                             "value": f.get("balloon_paid"), "unit": "rub"})
+        if f.get("repaid_from_cash"):
+            rows.append({"label": ("Погашено из выручки ДКП" if f.get("scheme") == "sale"
+                                   else "Погашено из NOI по мере поступления"),
+                         "value": f.get("repaid_from_cash"), "unit": "rub"})
+        if f.get("repaid_at_exit"):
+            rows.append({"label": f"Остаток долга погашен при выходе ({_month_label(f.get('horizon_end'))})",
+                         "value": f.get("repaid_at_exit"), "unit": "rub"})
+        rows += [
+            {"label": "Погашено всего", "value": f.get("repaid_total"), "unit": "rub"},
+            {"label": "Кредит погашен полностью", "value": _month_label(f.get("repaid_month")), "unit": "text"},
+            {"label": "Обслуживание", "value": None, "unit": "section"},
+            {"label": "Проценты после ввода — уплачены", "value": f.get("interest_paid"), "unit": "rub"},
+            {"label": "Проценты и комиссии — всего",
+             "value": float(f.get("interest_capitalized") or 0) + float(f.get("interest_paid") or 0)
+                      + float(f.get("fee") or 0) + float(f.get("reservation_fee") or 0)
+                      + float(f.get("commitment_fee") or 0), "unit": "rub"},
+        ]
+        if f.get("dscr_min") is not None:
+            rows += [
+                {"label": "DSCR — минимум по годам (NOI / проценты и тело)",
+                 "value": f.get("dscr_min"), "unit": "mult"},
+                {"label": "Покрытие процентов NOI (ICR) — минимум", "value": f.get("icr_min"), "unit": "mult"},
+            ]
+        years = list(f.get("years") or [])
+        # Колонка без единого значения (NOI и DSCR у прямой продажи) не рисуется.
+        columns = [list(c) for c in NONRES_FINANCING_YEAR_COLUMNS
+                   if any(y.get(c[0]) is not None for y in years)]
+        out.append({"key": item.get("key"), "title": item.get("title"),
+                    "strategy": item.get("strategy"), "rows": rows,
+                    "years": years, "columns": columns})
+    return out
+
+
+EQUITY_YEAR_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("year", "Год", "text"),
+    ("contributed", "Вложено собственником", "mln"),
+    ("returned", "Получено собственником", "mln"),
+    ("net", "Чистый поток", "mln"),
+    ("cumulative", "Накопленный на конец года", "mln"),
+)
+
+
+def equity_participation_report(months: list[date], equity_cf: list[float],
+                                finance: dict[str, Any], *, discount_rate: float,
+                                irr: float | None) -> dict[str, Any]:
+    """«Собственное участие» проекта без ПФ: сколько, когда и на что вложил
+    собственник, сколько и когда получил обратно, и чем это кончилось.
+
+    Читает поток собственного капитала проекта (`cashflow.equity`) — тот же
+    ряд, по которому считан IRR проекта, — и строки финансирования для
+    раскладки по причинам. Второго расчёта нет: сумма частей равна потоку.
+
+    Вложения: до ввода объектов — доля стройки и общих затрат сверх кредита;
+    после ввода — то, чего NOI не хватило на платежи, налоги и расходы; при
+    выходе — довнесение на погашение остатка долга. Возврат: возмещение НДС
+    стройки, деньги по ходу (продажи ДКП, аренда после обслуживания долга),
+    выход. Оценка удержанного объекта — не деньги: она названа отдельно, а
+    денежный итог показан без неё.
+    """
+    objects = (finance.get("nonres") or {}).get("objects") or []
+    if not objects or not months or not equity_cf:
+        return {}
+    # В проекте с ПФ поток капитала несёт и жильё, и раскладка «до ввода
+    # объектов / после» была бы неправдой; там собственное участие — в
+    # банковских блоках. Признак тот же, что у `report_layout`.
+    if any(float(r.get(k) or 0.0) > 0.0 for r in finance.get("rows") or []
+           for k in ("bridge_draw", "pf_draw", "escrow")):
+        return {}
+    rows = {str(r.get("month"))[:10]: r for r in finance.get("rows") or []}
+    commissioning = max(str(o.get("commissioning")) for o in objects)
+    # Выход — у доходного метода (продажа или конец удержания); у прямой
+    # продажи конец горизонта — просто последний месяц продаж.
+    exits = {str(o.get("horizon_end"))[:10] for o in objects
+             if o.get("strategy") == nonres_strategy.STRATEGY_INCOME}
+
+    def row(month: date) -> dict[str, Any]:
+        return rows.get(month.isoformat()) or {}
+
+    parts = {"in_build": 0.0, "in_operation": 0.0, "in_exit": 0.0,
+             "out_vat": 0.0, "out_running": 0.0, "out_exit": 0.0}
+    residual_total = 0.0
+    cash_only: list[float] = []
+    years: dict[int, dict[str, float]] = {}
+    for month, flow in zip(months, equity_cf):
+        key = month.isoformat()
+        residual = float(row(month).get("nonres_residual_value") or 0.0)
+        residual_total += residual
+        cash = float(flow or 0.0) - residual
+        cash_only.append(cash)
+        year = years.setdefault(month.year, {"contributed": 0.0, "returned": 0.0})
+        if cash < 0:
+            year["contributed"] += -cash
+            if key <= commissioning:
+                parts["in_build"] += -cash
+            elif key in exits:
+                parts["in_exit"] += -cash
+            else:
+                parts["in_operation"] += -cash
+        elif cash > 0:
+            year["returned"] += cash
+            refund = min(cash, max(0.0, -float(row(month).get("nonres_vat_paid") or 0.0)))
+            parts["out_vat"] += refund
+            if key in exits:
+                parts["out_exit"] += cash - refund
+            else:
+                parts["out_running"] += cash - refund
+    contributed = parts["in_build"] + parts["in_operation"] + parts["in_exit"]
+    returned = parts["out_vat"] + parts["out_running"] + parts["out_exit"]
+    cumulative = worst = 0.0
+    worst_month: date | None = None
+    last_negative: int | None = None
+    for index, (month, cash) in enumerate(zip(months, cash_only)):
+        cumulative += cash
+        if cumulative < worst:
+            worst, worst_month = cumulative, month
+        if cumulative < -0.5:
+            last_negative = index
+    payback = (months[last_negative + 1] if last_negative is not None
+               and last_negative + 1 < len(months) else None)
+    capex = float(finance.get("total_capex") or 0.0)
+    draw = float(sum(float(r.get("nonres_loan_draw") or 0.0) for r in finance.get("rows") or []))
+    hold = residual_total > 0
+    running = 0.0
+    year_rows = []
+    for year in sorted(years):
+        net = years[year]["returned"] - years[year]["contributed"]
+        running += net
+        year_rows.append({"year": year, "contributed": years[year]["contributed"],
+                          "returned": years[year]["returned"], "net": net, "cumulative": running})
+
+    def money(label: str, value: float, unit: str = "rub") -> dict[str, Any]:
+        return {"label": label, "value": value, "unit": unit}
+
+    rate_label = f"{discount_rate * 100:.4g}".replace(".", ",")
+    out_rows: list[dict[str, Any]] = [
+        {"label": "Источники финансирования стройки", "value": None, "unit": "section"},
+        money("Затраты проекта (CAPEX, с НДС)", capex),
+        money("Кредит объектов — выборка", draw),
+        money("Собственные средства до ввода", parts["in_build"]),
+        {"label": "Доля собственных средств в затратах",
+         "value": parts["in_build"] / capex if capex else None, "unit": "pct"},
+        {"label": "Вложения собственника", "value": None, "unit": "section"},
+        money("Вложено всего", contributed),
+        money("в т.ч. до ввода — стройка и общие затраты сверх кредита", parts["in_build"]),
+    ]
+    if parts["in_operation"]:
+        out_rows.append(money("в т.ч. после ввода — дефицит: NOI и продаж не хватило на платежи "
+                              "по кредиту, налоги и расходы", parts["in_operation"]))
+    if parts["in_exit"]:
+        out_rows.append(money("в т.ч. при выходе — довнесение на погашение долга", parts["in_exit"]))
+    out_rows += [
+        money("Пик потребности в собственных средствах"
+              + (f" ({_month_label(worst_month.isoformat())})" if worst_month else ""), -worst),
+        {"label": "Возврат собственнику", "value": None, "unit": "section"},
+        money("Получено всего" + (" — деньгами, без оценки" if hold else ""), returned),
+    ]
+    if parts["out_vat"]:
+        out_rows.append(money("в т.ч. возмещение НДС стройки", parts["out_vat"]))
+    if parts["out_running"]:
+        out_rows.append(money("в т.ч. по ходу — продажи ДКП, аренда после обслуживания долга и налогов",
+                              parts["out_running"]))
+    if parts["out_exit"]:
+        out_rows.append(money("в т.ч. при выходе — после погашения долга", parts["out_exit"]))
+    if hold:
+        out_rows.append(money("Оценка удержанного объекта — без сделки, не деньги", residual_total))
+    out_rows += [
+        {"label": "Результат собственника", "value": None, "unit": "section"},
+        money("Чистый денежный результат (получено − вложено)" + (", без оценки" if hold else ""),
+              returned - contributed),
+        {"label": "Мультипликатор капитала (получено / вложено)" + (", без оценки" if hold else ""),
+         "value": returned / contributed if contributed else None, "unit": "mult"},
+    ]
+    if irr is not None:
+        out_rows.append({"label": "IRR собственного капитала" + (" — с оценкой" if hold else ""),
+                         "value": irr, "unit": "pct"})
+    else:
+        out_rows.append({"label": "IRR собственного капитала",
+                         "value": "не считается — поток не меняет знак", "unit": "text"})
+    if hold:
+        cash_irr = _monthly_irr(cash_only)
+        out_rows.append({"label": "IRR собственного капитала — только деньги",
+                         "value": cash_irr if cash_irr is not None
+                         else "не считается — деньги не возвращают вложенное",
+                         "unit": "pct" if cash_irr is not None else "text"})
+    npv = _monthly_npv(list(equity_cf), discount_rate)
+    out_rows += [
+        money(f"NPV собственного капитала @{rate_label}%" + (" — с оценкой" if hold else ""),
+              npv),
+        {"label": "Окупаемость собственных средств" + (" — без оценки" if hold else ""),
+         "value": (_month_label(payback.isoformat()) if payback
+                   else "не окупается за горизонт проекта"), "unit": "text"},
+    ]
+    return {"rows": out_rows, "years": year_rows,
+            "columns": [list(c) for c in EQUITY_YEAR_COLUMNS],
+            "contributed": contributed, "returned": returned, "parts": parts,
+            "residual": residual_total,
+            # Итог собственника ключами, а не подписями строк: разделы
+            # «Решение» и «Экономика собственника» читают их отсюда.
+            "irr": irr, "npv": npv, "discount_rate": discount_rate, "hold": hold,
+            "peak": -worst, "peak_month": worst_month.isoformat() if worst_month else None,
+            "payback_month": payback.isoformat() if payback else None}
+
+
+# Колонки таблицы «по годам» — одна раскладка для страницы, PDF и книги.
+NONRES_FINANCING_YEAR_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("year", "Год", "text"),
+    ("draw", "Выборка", "mln"),
+    ("interest", "Проценты начислены", "mln"),
+    ("repayment", "Погашено тела", "mln"),
+    ("balance_end", "Долг на конец года", "mln"),
+    ("noi", "NOI", "mln"),
+    ("dscr", "DSCR", "mult"),
+)
+
+
+def object_result_rows(result: dict[str, Any], *, hold: bool) -> list[dict[str, Any]]:
+    """Блок «Итог объекта» таблицы — из `object_result`, без пересчёта.
+
+    Строки не офисные: любой объект со своим итогом печатает тот же блок.
+    Чего нет — того и не печатаем нулём: IRR без смены знака потока назван
+    причиной, окупаемость за горизонт — тоже.
+    """
+    if not result:
+        return []
+    rate = float(result.get("discount_rate") or 0.0)
+
+    def irr_row(label: str, value: Any, flow: float) -> dict[str, Any]:
+        if value is not None:
+            return {"label": label, "value": value, "unit": "pct"}
+        reason = ("не считается — поток не возвращает вложенное" if flow < 0
+                  else "не считается — поток не меняет знак")
+        return {"label": label, "value": reason, "unit": "text"}
+
+    rows: list[dict[str, Any]] = [{"label": "Итог объекта", "value": None, "unit": "section"}]
+    if result.get("common_capex"):
+        rows += [
+            {"label": "Затраты объекта — стройка и доля общих затрат проекта",
+             "value": result.get("cost_total"), "unit": "rub"},
+            {"label": "в т.ч. доля общих затрат проекта (участок, проект, сети)",
+             "value": result.get("common_capex"), "unit": "rub"},
+        ]
+    else:
+        rows.append({"label": "Затраты объекта", "value": result.get("cost_total"), "unit": "rub"})
+    rows += [
+        {"label": "Собственный капитал объекта (затраты − кредит объекта)",
+         "value": result.get("equity_invested"), "unit": "rub"},
+        {"label": "Собственный капитал объекта — пик потребности",
+         "value": result.get("equity_peak"), "unit": "rub"},
+        {"label": ("Прибыль объекта до налога — без оценки, сделки нет" if hold
+                   else "Прибыль объекта до налога"),
+         "value": result.get("profit_before_tax"), "unit": "rub"},
+        {"label": "Налог на прибыль объекта (как отдельного плательщика)",
+         "value": result.get("profit_tax"), "unit": "rub"},
+        {"label": ("Прибыль объекта после налога — без оценки" if hold
+                   else "Прибыль объекта после налога"),
+         "value": result.get("profit_after_tax"), "unit": "rub"},
+        {"label": ("Денежный поток капитала объекта — итог без оценки" if hold
+                   else "Денежный поток капитала объекта — итог"),
+         "value": result.get("equity_cash"), "unit": "rub"},
+    ]
+    if hold:
+        rows += [
+            {"label": "Оценка объекта на конец горизонта — без сделки",
+             "value": result.get("residual_value"), "unit": "rub"},
+            {"label": "Поток капитала объекта с оценкой — итог",
+             "value": result.get("equity_with_value"), "unit": "rub"},
+            irr_row("IRR капитала объекта — с оценкой (часть результата без сделки)",
+                    result.get("irr"), float(result.get("equity_with_value") or 0.0)),
+            irr_row("IRR капитала объекта — только деньги, без оценки",
+                    result.get("irr_cash"), float(result.get("equity_cash") or 0.0)),
+        ]
+    else:
+        rows.append(irr_row("IRR капитала объекта", result.get("irr"),
+                            float(result.get("equity_cash") or 0.0)))
+    rows += [
+        {"label": (f"NPV капитала объекта @{rate * 100:.4g}%"
+                   + (" — с оценкой" if hold else "")),
+         "value": result.get("npv"), "unit": "rub"},
+        {"label": ("Срок окупаемости капитала — без оценки" if hold
+                   else "Срок окупаемости капитала"),
+         "value": (f"{result['payback_months']} мес. от первого вложения — "
+                   + ".".join(reversed(str(result["payback_month"])[:7].split("-")))
+                   if result.get("payback_months") is not None
+                   else result.get("payback_reason") or "—"),
+         "unit": "text"},
+    ]
+    return rows
 
 
 # Суммы подстроки объекта, которые свод по очередям складывает. Удельные среди
@@ -35047,13 +37233,17 @@ def capex_unit_rows(capex: dict[str, float], bases: dict[str, float]) -> dict[st
 def calculate(req: CalcRequest) -> dict:
     # Решение о доходности капитала принимается один раз, на выходе расчёта:
     # у раннего выхода (наложение фактов) и у основного пути одно правило.
-    return _apply_equity_returns_to_result(_calculate_economics(req))
+    return _finalize_result(_calculate_economics(req))
 
 
-def _calculate_economics(req: CalcRequest) -> dict:
-    x = req.inputs
-    t = req.tep
-    rates = req.rates
+def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -> dict[str, Any]:
+    """Вводные, ТЭП и кривая ставки — такими, какими их считает движок.
+
+    Одна подготовка на всех читателей: расчёт (`_calculate_economics`) и книга
+    нежилого проекта (`nonres_book_spec`) берут вводные отсюда, а не
+    повторяют порядок правок ТЭП у себя. Правит переданные словари так же,
+    как правил расчёт до выноса.
+    """
     if not rates:
         rates = generate_rate_curve(
             d(x.get("rate_start_date", date.today().isoformat())),
@@ -35103,6 +37293,16 @@ def _calculate_economics(req: CalcRequest) -> dict:
     # трогает продаваемую объекта, а значит выручку, и после счёта денег
     # правка ТЭП была бы правкой того, что уже посчитано.
     object_parking = apply_object_parking(x, t)
+    return {"x": x, "t": t, "rates": rates, "kind_leftovers": kind_leftovers,
+            "instance_notes": instance_notes, "object_parking": object_parking}
+
+
+def _calculate_economics(req: CalcRequest) -> dict:
+    prepared = prepared_calculation(req.inputs, req.tep, req.rates)
+    x, t, rates = prepared["x"], prepared["t"], prepared["rates"]
+    kind_leftovers = prepared["kind_leftovers"]
+    instance_notes = prepared["instance_notes"]
+    object_parking = prepared["object_parking"]
 
     op = build_operating_model(x, t, rates)
     # Прошлое действующего проекта не выдумывается — оно случилось. Наложение
@@ -35192,14 +37392,20 @@ def _calculate_economics(req: CalcRequest) -> dict:
         "main_above", "main_under", "utilities", "landscaping",
         "commissioning", "site_maintenance", "gc_fee", "reserve"
     ))
-    full_project_cost = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
+    # Расходы объектов вне ДДУ — продажи ДКП, эксплуатация, налог на
+    # имущество, выход (`finance.nonres_costs`). Прибыль до налога их
+    # вычитала, а EBITDA, «Расходы всего» и структура расходов — нет: на
+    # экране EBITDA − проценты не давала прибыль до налога (владелец,
+    # 05.10.2026: «15,52 − 1,12 = 14,40, а у нас 12,45?»).
+    nonres_costs = float(fin.get("nonres_costs", 0.0) or 0.0)
+    full_project_cost = total_capex + fin["commercial_costs"] + nonres_costs + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
     avg_apartment_price = (
         op["revenue_by_product"].get("apartments", 0.0) / apartment_saleable_sqm / 1000
         if apartment_saleable_sqm else 0.0
     )
     full_cost_per_saleable = full_project_cost / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
     construction_cost_per_gns = construction_capex / core_gns / 1000 if core_gns else 0.0
-    ebitda = total_revenue - total_capex - fin["commercial_costs"]
+    ebitda = total_revenue - total_capex - fin["commercial_costs"] - nonres_costs
     ebitda_per_saleable = ebitda / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
     net_profit_per_saleable = net_profit / monetizable_saleable_sqm / 1000 if monetizable_saleable_sqm else 0.0
 
@@ -35218,7 +37424,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
                            + object_under_gns)
     construction_volume_sqm = sum(n(row, "gns") for row in t.values()) + object_under_gns
     project_gns_sqm = project_above_gns(t)
-    total_expenses = total_capex + fin["commercial_costs"] + fin["financing_cost"] + fin["profit_tax"] + fin.get("vat", 0.0)
+    total_expenses = full_project_cost
 
     def per_sqm_th(value: float, area: float) -> float:
         return value / area / 1000 if area else 0.0
@@ -35291,6 +37497,10 @@ def _calculate_economics(req: CalcRequest) -> dict:
          + op["capex_amounts"].get("gc_fee", 0.0)),
         ("Отдельные объекты",
          sum(op["capex_amounts"].get(_o.key, 0.0) for _o in STANDALONE_OBJECTS)),
+        # Статьи гостиницы (`hotel_capex_amounts`) есть только у гостиничного
+        # проекта; у остальных сумма ноль, и строка не встаёт.
+        ("Гостиница — здание, мебель и оборудование",
+         op["capex_amounts"].get("hotel", 0.0) + op["capex_amounts"].get("hotel_ffe", 0.0)),
         ("Социальная нагрузка", op["capex_amounts"].get("social", 0.0)),
         ("Управление проектом",
          op["capex_amounts"].get("project_management", 0.0)),
@@ -35299,12 +37509,17 @@ def _calculate_economics(req: CalcRequest) -> dict:
         ("Резерв",
          op["capex_amounts"].get("reserve", 0.0)),
         ("Маркетинг и продажи", fin["commercial_costs"]),
+        (NONRES_COSTS_LABEL, float(fin.get("nonres_costs", 0.0) or 0.0)),
         ("Проценты и комиссии", fin["financing_cost"]),
         ("Налог на прибыль", fin["profit_tax"]),
         # НДС виден отдельной строкой: он не налог на прибыль и не
         # стройка, и прятать его внутри «налогов» значит скрыть от
         # человека статью, которая растёт вместе с долей нежилого.
-        ("НДС", fin.get("vat", 0.0)),
+        # Возмещение больше начисленного (гостиница со льготой 0 % на
+        # проживание) — строка со знаком минус: «Расходы всего» его учитывают,
+        # и без строки структура расходилась бы с итогом ровно на него.
+        (VAT_REFUND_LABEL if float(fin.get("vat", 0.0) or 0.0) < 0 else "НДС",
+         fin.get("vat", 0.0)),
     ]
     # Отдельно стоящий объект меряется СВОЕЙ площадью, а наземный паркинг —
     # своими местами (владелец, 04.09.2026: «по сути это разные объекты и
@@ -35370,7 +37585,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
     expense_structure = []
     expense_base = sum(value for _, value in expense_groups)
     for label, value in expense_groups:
-        if value <= 0:
+        if value == 0 or (value < 0 and label != VAT_REFUND_LABEL):
             continue
         entry = {
             "label": label,
@@ -35644,10 +37859,23 @@ def _calculate_economics(req: CalcRequest) -> dict:
                               -min(6, max(IRD_MONTHS_MIN, int(n(x, "ird_months", 18)))))
     add_event("Проектирование П и РД", design_start, op["permit"], group="Подготовка")
     bridge_end = add_months(op["permit"], int(n(x, "bridge_repay_lag_months", 0)))
-    add_event("БРИДЖ", op["project_start"], bridge_end, group="Финансирование")
+    # Полоса финансирования — того долга, что у проекта есть. БРИДЖ рисуется,
+    # когда он выбирался; у нежилого проекта его нет, а есть кредит каждого
+    # объекта вне ДДУ — от первой выдачи до полного погашения
+    # (`object_financing`). Прежде БРИДЖ стоял в календаре любого проекта.
+    _nonres_objects = (fin.get("nonres") or {}).get("objects") or []
+    if float(fin.get("peak_bridge") or 0.0) > 0.5 or not _nonres_objects:
+        add_event("БРИДЖ", op["project_start"], bridge_end, group="Финансирование")
+    for _item in _nonres_objects:
+        _rows = [r for r in _item.get("rows") or [] if float(r.get("nonres_loan_draw") or 0) > 0]
+        _repaid = (_item.get("financing") or {}).get("repaid_month") or _item.get("horizon_end")
+        if _rows and _repaid:
+            add_event(f"Кредит объекта — {_item.get('title')}", d(_rows[0]["month"]), d(_repaid),
+                      group="Финансирование")
     add_event("РнС", op["permit"], group="Ключевые вехи", kind="milestone")
     add_event("Старт продаж", op["sales_start"], group="Ключевые вехи", kind="milestone")
-    add_event("Строительство ЖК", op["permit"], op["rve"], group="Строительство")
+    if not is_nonresidential(x):
+        add_event("Строительство ЖК", op["permit"], op["rve"], group="Строительство")
     if any(v > 0 for v in (op["capex_amounts"].get("utilities", 0), op["capex_amounts"].get("landscaping", 0))):
         add_event("Сети и благоустройство", op["permit"], op["rve"], group="Строительство")
 
@@ -35728,6 +37956,9 @@ def _calculate_economics(req: CalcRequest) -> dict:
              **{key: value for key, value in op["capex_amounts"].items()
                 if key not in ("land_rights_gross", "land_rights_relief")}}, bases),
         "vri": op["vri"],
+        # Смета каждого объекта вне ДДУ — его статья и начисленные от неё
+        # генподряд, техзаказчик и резерв (`object_cost_parts`).
+        "object_costs": op.get("object_cost_parts") or {},
         # Нормативная потребность нежилых объектов в машино-местах. Считается
         # всегда: офисник или ТЦ без парковки — это не «ноль мест», а не
         # заданный вопрос (владелец, 24.08.2026). Норма приходит готовой из
@@ -35882,6 +38113,11 @@ def _calculate_economics(req: CalcRequest) -> dict:
         },
         "report": {
             "nonres_strategy": nonres_report(fin.get("nonres")),
+            "hotel": hotel_report(fin.get("hotel")),
+            "nonres_financing": nonres_financing_report(fin.get("nonres")),
+            "nonres_costs_label": NONRES_COSTS_LABEL,
+            "equity_participation": equity_participation_report(
+                timeline, equity_cf, fin, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(x, fin, equity_cf),
             "products": products_report,
             # График платежей за покупку — как посчитано: даты, суммы, доли и
@@ -36032,6 +38268,8 @@ _MONTHLY_CAPEX_LABELS: dict[str, str] = {
     "standalone_retail": "ТЦ / коммерция ОСЗ",
     "above_parking": "Наземный паркинг",
     "sports": "ФОК / медцентр",
+    "hotel": "Гостиница — здание",
+    "hotel_ffe": "Гостиница — мебель и оборудование (FF&E)",
     "gc_fee": "Вознаграждение генподрядчика",
     "reserve": "Резерв",
 }
@@ -36593,6 +38831,18 @@ def _shift_iso(value: Any, months: int) -> Any:
         return add_months(d(value), months).isoformat()
     except Exception:
         return value
+
+
+def _merged_nonres_reconciliation(fs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Сверка итогов объектов с проектом на своде очередей: суммы — суммой,
+    «сошлось» — только если сошлось в каждой очереди."""
+    recs = [(f.get("nonres") or {}).get("reconciliation") for f in fs]
+    recs = [rec for rec in recs if rec]
+    if not recs:
+        return {}
+    return {"reconciliation": {
+        **_sum_dicts([{k: v for k, v in rec.items() if k != "ok"} for rec in recs]),
+        "ok": all(rec.get("ok") for rec in recs)}}
 
 
 def _sum_dicts(items: list[dict[str, Any]]) -> dict[str, float]:
@@ -37204,7 +39454,11 @@ def _aggregate_finance(results: list[dict[str, Any]],
         "nonres": {
             "objects": [item for f in fs for item in (f.get("nonres") or {}).get("objects") or []],
             "totals": _sum_dicts([(f.get("nonres") or {}).get("totals") or {} for f in fs]),
+            **_merged_nonres_reconciliation(fs),
         },
+        # Гостиница — одна на проект: очередей у гостиничного проекта нет, и
+        # свод берёт её итог как есть, а не складывает гостиницы очередей.
+        "hotel": next((f.get("hotel") for f in fs if f.get("hotel")), None),
         # Налог свода — пересчитанный как у одного налогоплательщика, а не
         # сумма очередей. Оставить сумму значило бы посчитать заново и не
         # применить: строки показывали бы одно, итог другое.
@@ -37266,101 +39520,9 @@ def _aggregate_finance(results: list[dict[str, Any]],
     }
 
 
-# Налог на прибыль: перенос убытка по ст. 283 НК.
-#
-# Убыток прошлых лет переносится БЕССРОЧНО — десятилетний лимит снят с 2017
-# года, и убыток расходуется столько лет, сколько нужно (подтверждено
-# владельцем 08.09.2026). Ограничение теперь не в сроке, а в доле: уменьшить
-# базу прошлым убытком можно НЕ БОЛЕЕ ЧЕМ НАПОЛОВИНУ, и половинное правило
-# продлено до конца 2030 года (владелец, 08.09.2026). Внутри одного года
-# доходы и расходы сходятся свободно: половина касается только убытка
-# ЗАКРЫТЫХ лет.
-#
-# Что будет после 2030 года, движок не гадает: половина применяется всегда,
-# без проверки года. Это допущение, и оно осторожное — налог выходит не ниже
-# должного. Цена его видна: на проекте с убыточным стартом и прибылью в
-# 2031-2033 это 2 203 млн против 137 при полном зачёте. Продлят правило ещё
-# раз или дадут ему истечь — решение владельца, а не догадка кода.
-#
-# Прежде движок вёл базу накопленной с начала проекта и гасил ею прибыль
-# целиком: это мягче закона — налог начинался позже, чем на самом деле.
-_LOSS_CARRY_USE_LIMIT = 0.5
-
-
-def _profit_tax_schedule(
-    months: list[date],
-    margin_by_month: dict[date, float],
-    financing_by_month: dict[date, float],
-    first_taxable_month: date | None,
-    tax_rate: float,
-    use_limit: float = _LOSS_CARRY_USE_LIMIT,
-) -> tuple[dict[date, float], list[dict[str, Any]]]:
-    """График налога на прибыль с переносом убытка и половинным ограничением.
-
-    Объявлен один раз и зовётся дважды: одиночным расчётом и сводом очередей.
-    Вторая реализация того же правила однажды разойдётся с первой, и обе
-    будут выглядеть верными — так уже расходились ставка ПФ и профиль
-    управления между движком и книгой.
-
-    Возвращает помесячный налог и построчную расшифровку: сколько убытка
-    прошлых лет зачтено в этом году и сколько осталось. Без расшифровки
-    «налог вырос» не отличить от «зачёт упёрся в половину».
-    """
-    schedule: dict[date, float] = {}
-    detail: list[dict[str, Any]] = []
-    prior_losses = 0.0      # убыток закрытых лет, ждущий зачёта
-    year: int | None = None
-    year_result = 0.0       # прибыль или убыток текущего года
-    year_used = 0.0         # сколько убытка прошлых лет зачтено в этом году
-    year_tax_paid = 0.0
-    # Всё, что признано ДО первого облагаемого месяца, приходит в год РВЭ, а
-    # не пропадает. Выручка по ДДУ облагается при передаче объекта, поэтому
-    # налог и начинается с РВЭ — но это ОТСРОЧКА, а не списание. Пока база
-    # была накопленной с начала проекта, разницы не было: прибыль доживала до
-    # РВЭ сама. С годовым сбросом прибыльные годы до РВЭ обнулялись молча — на
-    # проверочном проекте так пропали 4 327 и 13 407 млн, и налог вышел вдвое
-    # меньше должного при внешне исправном расчёте.
-    deferred = 0.0
-    for month in months:
-        gated = first_taxable_month is not None and month < first_taxable_month
-        if gated:
-            deferred += (margin_by_month.get(month, 0.0)
-                         - financing_by_month.get(month, 0.0))
-            schedule[month] = 0.0
-            detail.append({
-                "month": month.isoformat(), "year_result": deferred,
-                "loss_used": 0.0, "loss_carry_forward": prior_losses,
-                "taxable_base": 0.0, "profit_tax": 0.0,
-            })
-            continue
-        if year is not None and month.year != year:
-            # Год закрылся: убыточный пополняет запас, прибыльный — тратит.
-            if year_result < 0:
-                prior_losses += -year_result
-            else:
-                prior_losses -= year_used
-            year_result = year_used = year_tax_paid = 0.0
-        year = month.year
-        year_result += (margin_by_month.get(month, 0.0)
-                        - financing_by_month.get(month, 0.0)) + deferred
-        deferred = 0.0
-        year_used = (min(prior_losses, year_result * use_limit)
-                     if year_result > 0 and prior_losses > 0 else 0.0)
-        base = max(year_result - year_used, 0.0)
-        target = base * tax_rate if (
-            first_taxable_month is None or month >= first_taxable_month) else 0.0
-        tax_month = max(target - year_tax_paid, 0.0)
-        year_tax_paid += tax_month
-        schedule[month] = tax_month
-        detail.append({
-            "month": month.isoformat(),
-            "year_result": year_result,
-            "loss_used": year_used,
-            "loss_carry_forward": prior_losses - year_used,
-            "taxable_base": base,
-            "profit_tax": tax_month,
-        })
-    return schedule, detail
+# Налог на прибыль с переносом убытка по ст. 283 НК —
+# `developaid_finance_math.profit_tax_schedule` (здесь: `_profit_tax_schedule`);
+# обоснование половинного ограничения — там же.
 
 
 def _phase_tax_bases(
@@ -37570,7 +39732,8 @@ def _consolidate_phase_results(
     total_revenue = finance["total_revenue"]
     total_capex = finance["total_capex"]
     commercial_costs = finance["commercial_costs"]
-    ebitda = total_revenue - total_capex - commercial_costs
+    nonres_costs = float(finance.get("nonres_costs", 0.0) or 0.0)
+    ebitda = total_revenue - total_capex - commercial_costs - nonres_costs
     net_profit = sum(r["summary"]["net_profit"] for r in results)
     # Налог пересчитан на своде как у одного налогоплательщика, а прибыль
     # очередей посчитана с их собственным налогом. Не развести — и таблица
@@ -37591,7 +39754,7 @@ def _consolidate_phase_results(
     # НДС — такой же денежный расход проекта, как налог на прибыль: без него
     # строки структуры расходов не сходятся с итоговой строкой, и обе
     # выглядят достоверно.
-    full_cost = (total_capex + commercial_costs + finance["financing_cost"]
+    full_cost = (total_capex + commercial_costs + nonres_costs + finance["financing_cost"]
                  + finance["profit_tax"] + finance.get("vat", 0.0))
     avg_apt_price = revenue.get("apartments", 0.0) / apartment_saleable / 1000 if apartment_saleable else 0.0
 
@@ -37832,6 +39995,7 @@ def _consolidate_phase_results(
         "revenue": revenue,
         "revenue_structure": revenue_structure({**revenue, "total": total_revenue}, saleable),
         "capex": capex,
+        "object_costs": _sum_object_costs(results),
         "capex_units": capex_unit_rows(capex, bases),
         "commercial_costs": commercial_costs,
         "finance": finance,
@@ -37916,6 +40080,11 @@ def _consolidate_phase_results(
         },
         "report": {
             "nonres_strategy": nonres_report(finance.get("nonres")),
+            "hotel": hotel_report(finance.get("hotel")),
+            "nonres_financing": nonres_financing_report(finance.get("nonres")),
+            "nonres_costs_label": NONRES_COSTS_LABEL,
+            "equity_participation": equity_participation_report(
+                cf_months, equity_cf, finance, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(master_inputs, finance, equity_cf),
             "products": list(product_map.values()),
             "phase_products": phase_sales,
@@ -39209,9 +41378,9 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     """
     bundle = _calculate_phased_with_table(req)
     if isinstance(bundle, dict):
-        _apply_equity_returns_to_result(bundle.get("consolidated"))
+        _finalize_result(bundle.get("consolidated"))
         for item in bundle.get("phases") or []:
-            _apply_equity_returns_to_result((item or {}).get("result"))
+            _finalize_result((item or {}).get("result"))
     return bundle
 
 
@@ -39790,6 +41959,8 @@ def _metric_value(
     s = result.get("summary") or {}
     mapping = {
         "llcr": float(s.get("llcr", 0) or 0),
+        # DSCR кредита объектов — у проекта без ПФ (`report_layout.debt_metric`).
+        "dscr": _layout_dscr((result.get("report") or {}).get("layout")),
         "margin_pct": float(s.get("margin", 0) or 0) * 100,
         "net_profit_mln": float(s.get("net_profit", 0) or 0) / 1e6,
         "npv_mln": (float(s["npv"]) / 1e6 if s.get("npv") is not None else None),
@@ -39834,6 +42005,8 @@ def _peak_total_debt(result: dict[str, Any]) -> float:
 
 _SENSITIVITY_METRICS: dict[str, dict[str, Any]] = {
     "llcr":               {"label": "LLCR", "unit": "x", "digits": 3, "better": "higher"},
+    # Долг проекта без ПФ — кредит объектов (`report_layout.debt_metric`).
+    "dscr":               {"label": "DSCR кредита объектов — минимум", "unit": "x", "digits": 2, "better": "higher"},
     "npv_mln":            {"label": "NPV", "unit": "млн ₽", "digits": 0, "better": "higher"},
     "irr_equity_pct":     {"label": "IRR на собственный капитал", "unit": "%", "digits": 1, "better": "higher"},
     "net_profit_mln":     {"label": "Чистая прибыль", "unit": "млн ₽", "digits": 0, "better": "higher"},
@@ -39895,6 +42068,32 @@ _SENSITIVITY_PARAMETERS: list[dict[str, Any]] = [
     {"key": "discount_rate_pct", "kind": "pct", "group": "Финансирование"},
 ]
 
+# Факторы объекта вне ДДУ — вместо цены квартир (владелец, 05.10.2026):
+# ставка аренды, загрузка, ставка капитализации, цена ДКП, ставка кредита и
+# себестоимость объекта. Поле — у каждого экземпляра объекта своё; фактор
+# имеет смысл только при стратегии, которая его читает.
+_NONRES_SENSITIVITY_FACTORS: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
+    ("rent_th_per_sqm_month", "Ставка аренды", "тыс. ₽/м²/мес.", "Доходы",
+     (nonres_strategy.STRATEGY_INCOME,)),
+    ("occupancy_stable_pct", "Стабильная загрузка", "%", "Доходы",
+     (nonres_strategy.STRATEGY_INCOME,)),
+    ("exit_cap_pct", "Ставка капитализации выхода", "%", "Доходы",
+     (nonres_strategy.STRATEGY_INCOME,)),
+    ("price_th_per_sqm", "Цена ДКП", "тыс. ₽/м²", "Доходы", (nonres_strategy.STRATEGY_DIRECT,)),
+    ("cost_th_per_sqm", "Себестоимость стройки", "тыс. ₽/м²", "Затраты",
+     (nonres_strategy.STRATEGY_DIRECT, nonres_strategy.STRATEGY_INCOME)),
+    ("loan_spread_pp", "Спред кредита объекта", "п.п.", "Финансирование",
+     (nonres_strategy.STRATEGY_DIRECT, nonres_strategy.STRATEGY_INCOME)),
+)
+_SENSITIVITY_PARAMETERS += [
+    {"key": f"{obj.prefix}_{suffix}", "kind": "pct", "group": group,
+     "label": f"{label} — {obj.label}", "unit": unit, "object": obj.prefix,
+     "enabled_key": obj.enabled_key, "strategies": strategies,
+     **({"max": 100.0} if suffix == "occupancy_stable_pct" else {})}
+    for obj in STANDALONE_OBJECTS if obj.strategies
+    for suffix, label, unit, group, strategies in _NONRES_SENSITIVITY_FACTORS
+]
+
 _SENSITIVITY_BY_KEY = {item["key"]: item for item in _SENSITIVITY_PARAMETERS}
 
 
@@ -39912,6 +42111,11 @@ def _sensitivity_applicable(
         return ""
     if needs == "social_payment" and str(inputs.get("social_mode") or "") == "Строительство":  # noqa: E501
         return "социальные объекты строятся, а не компенсируются деньгами"
+    if spec.get("object"):
+        if not b(inputs, spec["enabled_key"]):
+            return "объекта нет в проекте"
+        if nonres_strategy.object_strategy(inputs, spec["object"]) not in spec["strategies"]:
+            return "стратегия объекта этот фактор не читает"
     product = spec.get("product")
     if product:
         row = tep.get(product) or {}
@@ -40737,6 +42941,25 @@ def _goal_scope_label(scope: str, label: str) -> str:
     return label or "Весь проект"
 
 
+# Метрики, по которым подбирают, но не строят Tornado: DSCR кредита объектов
+# есть только у проекта без ПФ (`report_layout.debt_metric`).
+_GOAL_ONLY_METRICS: dict[str, dict[str, Any]] = {
+    "dscr": {"label": "DSCR кредита объектов", "unit": "x", "digits": 3, "better": "higher"},
+}
+
+
+def goal_seek_debt_metric(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Каким показателем долга подбирать цену входа — тем же, что судит проект
+    (`report_layout.debt_metric` свода): LLCR у проекта с ПФ, DSCR кредита
+    объектов у нежилого. Нет показателя — подбор не делается, и сказано почему."""
+    consolidated = bundle.get("consolidated") or {}
+    layout = (consolidated.get("report") or {}).get("layout") or {}
+    metric = layout.get("debt_metric")
+    if not isinstance(metric, dict):
+        return {"key": "llcr", "label": "LLCR", "target": DEBT_METRIC_TARGET}
+    return metric
+
+
 def _goal_refusal_reason(
     scope_label: str,
     variable: str,
@@ -40750,7 +42973,8 @@ def _goal_refusal_reason(
     closest_label: str,
 ) -> str:
     """Причина отказа подбора: чьё число, какой порог, до чего дотянули и где."""
-    metric_meta = _SENSITIVITY_METRICS.get(target_metric) or {}
+    metric_meta = (_SENSITIVITY_METRICS.get(target_metric)
+                   or _GOAL_ONLY_METRICS.get(target_metric) or {})
     metric_label = str(metric_meta.get("label") or target_metric)
     unit = str(metric_meta.get("unit") or "")
     # Кратность банка читают с двумя знаками: «1,20x», а не «1,200x».
@@ -46824,7 +49048,22 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-comparison-card{display:none}
 #revenueTable tr.rs-part td:first-child{padding-left:18px;color:#555}
 #revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
-[data-needs][hidden],#nonresStrategyCard[hidden]{display:none!important}
+[data-needs][hidden],#nonresStrategyCard[hidden],#hotelReportCard[hidden]{display:none!important}
+.hotel-usali th,.hotel-usali td{white-space:nowrap;text-align:right;padding:3px 6px;font-size:11px}
+.hotel-usali td:first-child,.hotel-usali th:first-child{text-align:left;position:sticky;left:0;background:#fff}
+.hotel-kpi td:last-child{text-align:right;white-space:nowrap}
+.hint.hotel-origin{color:#1f6f43}.hint.hotel-default{color:#667085}.hint.hotel-empty{color:#a15c00}.hint.hotel-manual{color:#667085}
+.hotel-preset{display:inline-flex;gap:6px;align-items:center;margin:6px 8px 0 0}
+[data-layout][hidden]{display:none!important}
+.object-report table.object-years td,.object-report table.object-years th{text-align:right;white-space:nowrap}
+.object-report table.object-years td:first-child,.object-report table.object-years th:first-child{text-align:left}
+.object-verdict{font-size:13px;line-height:1.5}
+.object-verdict b{display:block;font-size:15px;margin-bottom:4px}
+table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:1px solid var(--line)}
+[data-nonres-finance-card][hidden],[data-equity-card][hidden]{display:none!important}
+table.nonres-finance-years{width:100%;margin:8px 0 18px;font-size:12px}
+table.nonres-finance-years td,table.nonres-finance-years th{text-align:right;padding:3px 6px;white-space:nowrap}
+table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-child{text-align:left}
 .phase-comparison-card tr.pc-block th{text-align:left;padding:9px 10px 8px;font-size:15px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;color:#fff;background:#111;border:0;border-top:14px solid #fff}
 .phase-comparison-card tr.pc-note td{padding:2px 0 6px 22px;font-size:11px;font-weight:400;color:#777;white-space:normal}
 .phase-comparison-card tr.pc-note td span{position:sticky;left:22px}
@@ -47305,6 +49544,14 @@ details.cadastral-box>summary::marker{color:#888}
     </div>
 
     <div id="finance" class="panel">
+      <div class="card" data-nonres-finance-card hidden>
+        <div class="section-title">Финансирование объекта — кредит вне ДДУ</div>
+        <div class="nonres-finance-box"></div>
+      </div>
+      <div class="card" data-equity-card hidden>
+        <div class="section-title">Собственное участие</div>
+        <div class="equity-box"></div>
+      </div>
       <div class="card" data-needs="project_finance">
         <div class="llcr-hero">
           <div><div class="section-title">LLCR — расчётный</div><div id="llcrValue" class="llcr-value">—</div></div>
@@ -47400,7 +49647,7 @@ details.cadastral-box>summary::marker{color:#888}
 
       <div class="report-toc no-print" id="reportToc"></div>
 
-      <div class="report-section" id="rsSite">
+      <div class="report-section" id="rsSite" data-layout="housing">
         <div class="report-section-title">Участок и продукт</div>
       <div class="card">
         <div class="section-title">ТЭП</div>
@@ -47432,7 +49679,7 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       </div>
 
-      <div class="report-section" id="rsSummary">
+      <div class="report-section" id="rsSummary" data-layout="housing">
         <div class="report-section-title">Итог</div>
       <div class="report-2col">
         <div class="card">
@@ -47458,7 +49705,7 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       </div>
 
-      <div class="report-section" id="rsPhases">
+      <div class="report-section" id="rsPhases" data-layout="housing">
         <div class="report-section-title">Очереди проекта</div>
       <div id="phaseReportControls" class="phase-report-nav no-print" style="display:none"></div>
       <div id="phaseComparisonCard" class="card phase-comparison-card">
@@ -47472,7 +49719,7 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       </div>
 
-      <div class="report-section" id="rsExpenses">
+      <div class="report-section" id="rsExpenses" data-layout="housing">
         <div class="report-section-title">Расходы</div>
       <div class="card">
         <div class="report-title">
@@ -47500,7 +49747,7 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       </div>
 
-      <div class="report-section" id="rsIncome">
+      <div class="report-section" id="rsIncome" data-layout="housing">
         <div class="report-section-title">Доходы</div>
       <div class="card">
         <div class="section-title">Структура выручки</div>
@@ -47510,6 +49757,10 @@ details.cadastral-box>summary::marker{color:#888}
       <div class="card" id="nonresStrategyCard" hidden>
         <div class="section-title">Нежильё — стратегия реализации</div>
         <div id="nonresStrategyTables"></div>
+      </div>
+      <div class="card" id="hotelReportCard" hidden>
+        <div class="section-title">Гостиница — эксплуатация (USALI)</div>
+        <div id="hotelReportBody"></div>
       </div>
       <div class="card">
         <div class="section-title">Темпы и цены продаж</div>
@@ -47533,9 +49784,17 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       </div>
 
-      <div class="report-section" id="rsFinance">
+      <div class="report-section" id="rsFinance" data-layout="housing">
         <div class="report-section-title">Финансирование</div>
-      <div class="report-2col">
+      <div class="card" data-nonres-finance-card hidden>
+        <div class="section-title">Финансирование объекта — кредит вне ДДУ</div>
+        <div class="nonres-finance-box"></div>
+      </div>
+      <div class="card" data-equity-card hidden>
+        <div class="section-title">Собственное участие</div>
+        <div class="equity-box"></div>
+      </div>
+      <div class="report-2col" data-needs="project_finance">
         <div class="card">
           <div class="section-title">Финансирование</div>
           <table class="metric-table metric-compact" id="reportFinanceTable"></table>
@@ -47566,6 +49825,12 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       </div>
 
+      <!-- Отчёт проекта без жилья — свои разделы (`report.object_report`
+           движка): решение → объект → стратегия → доходы → затраты →
+           финансирование → экономика собственника. Чувствительность и
+           календарь — общие разделы ниже, с заголовками из `report.layout`. -->
+      <div id="objectReport" data-layout="object" hidden></div>
+
       <div class="report-section" id="rsSensitivity">
         <div class="report-section-title">Чувствительность</div>
       <div class="card">
@@ -47581,7 +49846,7 @@ details.cadastral-box>summary::marker{color:#888}
       </div>
       </div>
 
-      <div class="note warning">LLCR, NPV и IRR в веб-модели являются расчётными показателями текущего движка. До полного отказа от Excel кредитный CF и доходность должны быть окончательно сверены помесячно с эталонной моделью.</div>
+      <div class="note warning" data-layout="housing">LLCR, NPV и IRR в веб-модели являются расчётными показателями текущего движка. До полного отказа от Excel кредитный CF и доходность должны быть окончательно сверены помесячно с эталонной моделью.</div>
     </div>
   </div>
 </div>
@@ -47687,17 +49952,17 @@ details.cadastral-box>summary::marker{color:#888}
   </div>
   <div class="ai-quick">
     <button class="ai-chip" onclick="askAgentQuick('Разложи структуру расходов проекта: CAPEX, коммерческие расходы, проценты, налог и полную себестоимость. Что формирует основные затраты?','expense_structure')">Структура расходов</button>
-    <button class="ai-chip" onclick="askAgentQuick('Почему текущий LLCR именно такой? Разложи числитель и знаменатель и назови основные причины.','llcr_breakdown')">Почему такой LLCR?</button>
-    <button class="ai-chip" onclick="askAgentQuick('За сколько максимум можно купить проект, чтобы LLCR оставался не ниже 1,20x? Сделай подбор параметра. Если проект многоочередный — контролируй слабейшую очередь.','max_purchase_price')">Макс. цена покупки при LLCR 1,20</button>
-    <button class="ai-chip" onclick="askAgentQuick('Какая максимальная ставка основного строительства допустима, чтобы LLCR был не ниже 1,20x? Сделай подбор параметра; для многоочередного проекта проверь слабейшую очередь.','max_construction_cost')">Себестоимость для LLCR 1,20</button>
+    <button class="ai-chip" data-needs="project_finance" onclick="askAgentQuick('Почему текущий LLCR именно такой? Разложи числитель и знаменатель и назови основные причины.','llcr_breakdown')">Почему такой LLCR?</button>
+    <button class="ai-chip" data-needs="project_finance" onclick="askAgentQuick('За сколько максимум можно купить проект, чтобы LLCR оставался не ниже 1,20x? Сделай подбор параметра. Если проект многоочередный — контролируй слабейшую очередь.','max_purchase_price')">Макс. цена покупки при LLCR 1,20</button>
+    <button class="ai-chip" data-needs="project_finance" onclick="askAgentQuick('Какая максимальная ставка основного строительства допустима, чтобы LLCR был не ниже 1,20x? Сделай подбор параметра; для многоочередного проекта проверь слабейшую очередь.','max_construction_cost')">Себестоимость для LLCR 1,20</button>
     <button class="ai-chip" onclick="askAgentQuick('Проверь текущую модель на очевидные аномалии: ТЭП, выручка, CAPEX, маржа, очереди и финансирование. Назови только существенные отклонения.','anomalies')">Проверить аномалии</button>
-    <button class="ai-chip" onclick="askAgentQuick('Найди слабейшую очередь. Объясни причинно, почему её LLCR ниже целевого, и сам пересчитай реальные варианты оздоровления: перенос допустимых затрат, социалки, увеличение ТЭП. Дай ранжированную рекомендацию до LLCR не ниже 1,20.','phase_recovery')">Оздоровить слабую очередь</button>
-    <button class="ai-chip" onclick="askAgentQuick('Оцени текущую цену покупки как инвестиционное решение: какой максимальный потолок цены при LLCR 1,20, насколько текущая цена от него отличается и что делать, если продавец не снижает цену.','purchase_evaluation')">Оценить цену покупки</button>
+    <button class="ai-chip" data-needs="project_finance" onclick="askAgentQuick('Найди слабейшую очередь. Объясни причинно, почему её LLCR ниже целевого, и сам пересчитай реальные варианты оздоровления: перенос допустимых затрат, социалки, увеличение ТЭП. Дай ранжированную рекомендацию до LLCR не ниже 1,20.','phase_recovery')">Оздоровить слабую очередь</button>
+    <button class="ai-chip" data-needs="project_finance" onclick="askAgentQuick('Оцени текущую цену покупки как инвестиционное решение: какой максимальный потолок цены при LLCR 1,20, насколько текущая цена от него отличается и что делать, если продавец не снижает цену.','purchase_evaluation')">Оценить цену покупки</button>
   </div>
   <div id="aiMessages" class="ai-messages"><div id="aiHero" class="ai-hero"><img src="/assets/platon-hero.webp" alt="" width="260" height="298" loading="lazy"><div class="ai-hero-say"><b>Привет! Я Платон.</b><span>Помогу настроить отчёт и отвечу на вопросы.</span></div></div><div class="ai-msg system">Платон Сергеевич анализирует проект через расчётные инструменты DevelopAid. Цифры и подбор параметров считает движок модели, а не языковая модель.</div></div>
   <div class="ai-compose">
     <textarea id="aiInput" placeholder="Например: за сколько максимум можно купить проект, чтобы LLCR слабейшей очереди был не ниже 1,20?"></textarea>
-    <div class="ai-compose-row"><small>Ориентир диагностики: LLCR 1,20x. Методика конкретного банка может отличаться.</small><input type="file" id="aiFile" accept=".pdf,application/pdf" style="display:none" onchange="sendAgentDocument(this.files&&this.files[0])"><button id="aiFileBtn" class="btn" onclick="document.getElementById('aiFile').click()" title="Тизер, справка по участку, решение ГЗК — Платон прочитает и покажет, что можно взять в модель">Приложить документ</button><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
+    <div class="ai-compose-row"><small><span data-needs="project_finance">Ориентир диагностики: LLCR 1,20x. </span>Методика конкретного банка может отличаться.</small><input type="file" id="aiFile" accept=".pdf,application/pdf" style="display:none" onchange="sendAgentDocument(this.files&&this.files[0])"><button id="aiFileBtn" class="btn" onclick="document.getElementById('aiFile').click()" title="Тизер, справка по участку, решение ГЗК — Платон прочитает и покажет, что можно взять в модель">Приложить документ</button><button id="aiSendBtn" class="btn dark" onclick="sendAgentMessage()">Отправить</button></div>
   </div>
 </aside>
 
@@ -48096,10 +50361,21 @@ function objectStrategy(key){const v=String(inputs[key]||'');return STRATEGY_VAL
 // (`nonres_report`), страница только печатает: при ДДУ таблицы нет.
 function nonresCell(row){
  const v=row.value;
+ if(v==null&&(row.unit==='rub'||row.unit==='pct'||row.unit==='mln'))return '—';
+ // Месячный платёж и годовые суммы кредита — в млн: в млрд они нули.
+ if(row.unit==='mln')return (Number(v)/1e6).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1})+' млн ₽';
  if(row.unit==='rub')return money(v);
  if(row.unit==='pct')return (Number(v||0)*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%';
  if(row.unit==='mult')return v==null?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x';
  if(row.unit==='date')return v?String(v).slice(0,7).split('-').reverse().join('.'):'—';
+ // Объектная вёрстка (`object_report`): метры, места, тыс ₽/м² и вводная со
+ // своей единицей.
+ const nf=(x,d)=>Number(x).toLocaleString('ru-RU',{minimumFractionDigits:d[0],maximumFractionDigits:d[1]});
+ if(row.unit==='sqm')return v==null?'—':nf(v,[0,0])+' м²';
+ if(row.unit==='count')return v==null?'—':nf(v,[0,0]);
+ if(row.unit==='th')return v==null?'—':nf(v,[1,1])+' тыс ₽/м²';
+ if(row.unit==='num')return v==null?'—':nf(v,[0,2])+(row.suffix?' '+escapeHtml(row.suffix):'');
+ if(row.unit==='section')return '';
  return escapeHtml(String(v??'—'));
 }
 // Какие блоки у проекта есть, решает движок (`report_layout`); результат,
@@ -48111,14 +50387,124 @@ function reportLayout(r){
 function applyReportLayout(layout){
  document.querySelectorAll('[data-needs]').forEach(el=>{el.hidden=!layout[el.dataset.needs]});
 }
+// «Финансирование объекта» — таблица движка (`nonres_financing_report`):
+// условия, выборка, платёж, баллон, погашение и обслуживание по годам.
+function renderNonresFinancing(r){
+ const report=(r||{}).report||{};
+ const items=report.nonres_financing||[];
+ document.querySelectorAll('[data-nonres-finance-card]').forEach(card=>{card.hidden=!items.length});
+ const html=items.map(item=>`<table class="nonres-strategy nonres-finance" data-object="${escapeHtml(item.key)}" data-strategy="${escapeHtml(item.strategy)}"><caption>${escapeHtml(item.title)}</caption><tbody>${
+  item.rows.map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}</tbody></table>${
+  (item.years||[]).length?`<div class="scroll"><table class="nonres-finance-years" data-object="${escapeHtml(item.key)}"><thead><tr>${
+   (item.columns||[]).map(c=>`<th>${escapeHtml(c[1])}</th>`).join('')}</tr></thead><tbody>${
+   item.years.map(y=>`<tr>${(item.columns||[]).map(c=>`<td>${c[2]==='text'?escapeHtml(String(y[c[0]])):nonresCell({unit:c[2],value:y[c[0]]})}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:''}`).join('');
+ document.querySelectorAll('.nonres-finance-box').forEach(box=>{box.innerHTML=html});
+}
+// «Собственное участие» — таблица движка (`equity_participation_report`):
+// вложения и возврат собственника по причинам, результат и поток по годам.
+function renderEquityParticipation(r){
+ const item=((r||{}).report||{}).equity_participation||{};
+ const rows=item.rows||[], columns=item.columns||[];
+ document.querySelectorAll('[data-equity-card]').forEach(card=>{card.hidden=!rows.length});
+ const html=rows.length?`<table class="nonres-strategy equity-participation"><tbody>${
+  rows.map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}</tbody></table>${
+  (item.years||[]).length?`<div class="scroll"><table class="nonres-finance-years equity-years"><thead><tr>${
+   columns.map(c=>`<th>${escapeHtml(c[1])}</th>`).join('')}</tr></thead><tbody>${
+   item.years.map(y=>`<tr>${columns.map(c=>`<td>${c[2]==='text'?escapeHtml(String(y[c[0]])):nonresCell({unit:c[2],value:y[c[0]]})}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`:''}`:'';
+ document.querySelectorAll('.equity-box').forEach(box=>{box.innerHTML=html});
+}
 function renderNonresStrategy(r){
  const card=document.getElementById('nonresStrategyCard'),box=document.getElementById('nonresStrategyTables');
  if(!card||!box)return;
  const items=((r||{}).report||{}).nonres_strategy||[];
  card.hidden=!items.length;
  box.innerHTML=items.map(item=>`<table class="nonres-strategy" data-object="${escapeHtml(item.key)}" data-strategy="${escapeHtml(item.strategy)}"><caption>${escapeHtml(item.title)}</caption><tbody>${
-  item.rows.map(row=>`<tr><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}${
+  item.rows.map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}${
   (item.warnings||[]).map(w=>`<tr class="warn"><td>${escapeHtml(w)}</td><td></td></tr>`).join('')}</tbody></table>`).join('');
+}
+// Отчёт проекта без жилья (`report.object_report`): вёрстку выбирает движок
+// (`report_layout.kind`), разделы и строки собирает он же — страница печатает.
+// Чувствительность и календарь — общие разделы, заголовки — из движка.
+const OBJECT_SHARED_SECTIONS={sensitivity:'rsSensitivity',calendar:'rsCalendar'};
+function objectReportOf(r){
+ const layout=reportLayout(r),rep=((r||{}).report||{}).object_report||{};
+ return layout.kind==='object'&&(rep.sections||[]).length?rep:null;
+}
+function objectSection(r,key){const rep=objectReportOf(r);return rep?(rep.sections.find(s=>s.key===key)||null):null}
+function objectRowsHtml(rows,cls){
+ return `<table class="nonres-strategy ${cls||'object-rows'}"><tbody>${(rows||[]).map(row=>`<tr${row.unit==='section'?' class="section"':''}><td>${escapeHtml(row.label)}</td><td>${nonresCell(row)}</td></tr>`).join('')}</tbody></table>`;
+}
+function objectYearsHtml(block){
+ const cols=block.columns||[];
+ return `<div class="scroll"><table class="object-years"><thead><tr>${cols.map(c=>`<th>${escapeHtml(c[1])}</th>`).join('')}</tr></thead><tbody>${
+  (block.years||[]).map(y=>`<tr>${cols.map(c=>`<td>${c[2]==='text'?escapeHtml(String(y[c[0]])):nonresCell({unit:c[2],value:y[c[0]]})}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+function objectRefHtml(block,section){
+ const t=`<div class="section-title">${escapeHtml(block.title||'')}</div>`;
+ if(block.ref==='nonres_financing')return `<div class="card" data-nonres-finance-card hidden>${t}<div class="nonres-finance-box"></div></div>`;
+ if(block.ref==='equity_participation')return `<div class="card" data-equity-card hidden>${t}<div class="equity-box"></div></div>`;
+ if(block.ref==='goal_seek'){
+  const g=section.goal_seek||{};
+  return `<div class="card no-print" data-object-goal-seek>${t}`+(g.metric
+   ?`<div style="font-size:12px;color:#555;margin-bottom:8px">Подбор — полный пересчёт модели движком: наибольшая цена участка, при которой «${escapeHtml(g.label||'')}» не ниже ${nonresCell({unit:'mult',value:g.target})}.</div><button class="btn" onclick="runObjectGoalSeek()">Подобрать цену входа</button> <span id="objectGoalSeekResult" style="font-size:12px"></span>`
+   :`<div style="font-size:12px;color:#777">${escapeHtml(g.reason||'Показателя долга у проекта нет — подбирать цену не по чему.')}</div>`)+'</div>';
+ }
+ if(block.ref==='site'){
+  // Участок — из вводных проекта: площадь и кадастровые номера.
+  const area=Number(inputs.site_area_ha||0),cads=String(inputs.cadastral_numbers||'').trim(),rows=[];
+  if(area>0)rows.push({label:'Площадь участка',value:area.toLocaleString('ru-RU',{maximumFractionDigits:4})+' га',unit:'text'});
+  if(cads)rows.push({label:'Кадастровые номера',value:cads,unit:'text'});
+  return rows.length?`<div class="card">${t}${objectRowsHtml(rows,'object-site')}</div>`:'';
+ }
+ return '';
+}
+function objectBlockHtml(block,section){
+ if(block.ref)return objectRefHtml(block,section);
+ if(block.kind==='verdict'&&section.verdict){
+  const v=section.verdict;
+  return `<div class="card object-verdict" data-status="${escapeHtml(v.status||'')}"><b>${escapeHtml(v.title||'')}</b>${escapeHtml(v.text||'')}</div>`;
+ }
+ const t=block.title?`<div class="section-title">${escapeHtml(block.title)}</div>`:'';
+ return `<div class="card">${t}${block.years?objectYearsHtml(block):objectRowsHtml(block.rows)}</div>`;
+}
+function renderObjectReport(r){
+ const box=document.getElementById('objectReport');
+ if(!box)return;
+ const rep=objectReportOf(r);
+ document.querySelectorAll('[data-layout]').forEach(el=>{el.hidden=rep?el.dataset.layout!=='object':el.dataset.layout==='object'});
+ Object.entries(OBJECT_SHARED_SECTIONS).forEach(([key,id])=>{
+  const title=document.querySelector('#'+id+' > .report-section-title');
+  if(!title)return;
+  if(!title.dataset.housingTitle)title.dataset.housingTitle=title.textContent;
+  const s=rep&&rep.sections.find(x=>x.key===key);
+  title.textContent=s?s.title:title.dataset.housingTitle;
+ });
+ box.innerHTML=rep?rep.sections.filter(s=>!OBJECT_SHARED_SECTIONS[s.key]).map(s=>
+  `<div class="report-section object-report" id="rsObj-${escapeHtml(s.key)}" data-section="${escapeHtml(s.key)}"><div class="report-section-title">${escapeHtml(s.title)}</div>${
+   (s.blocks||[]).map(b=>objectBlockHtml(b,s)).join('')}</div>`).join(''):'';
+ // Таблицы кредита и собственного участия рисуют свои функции во все свои
+ // ящики — и в ящики раздела «Финансирование» этой вёрстки.
+ renderNonresFinancing(r);
+ renderEquityParticipation(r);
+}
+// Разделы меню отчёта: объектная вёрстка — список движка, жилая — прежний.
+function reportTocSections(r){
+ const rep=objectReportOf(r);
+ if(!rep)return REPORT_SECTIONS;
+ return rep.sections.map(s=>[OBJECT_SHARED_SECTIONS[s.key]||('rsObj-'+s.key),s.title]);
+}
+async function runObjectGoalSeek(){
+ const out=document.getElementById('objectGoalSeekResult');
+ if(out)out.textContent='Считаю…';
+ try{
+  const response=await fetch('/ia/goal-seek',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({inputs,tep,rates,phasing,variable:'purchase_price_mln'})});
+  const data=await response.json();
+  if(!response.ok)throw new Error(data.detail||'Подбор не выполнен');
+  if(data.available===false)throw new Error(data.reason||'Показателя долга у проекта нет');
+  const v=(data.solution||{}).variable;
+  if(out)out.textContent=v!=null?('Максимальная цена входа: '+Number(v).toLocaleString('ru-RU',{maximumFractionDigits:0})+' млн ₽'):(data.reason||'Цель не достигается в границах подбора');
+ }catch(e){if(out)out.textContent=String(e.message||e)}
 }
 const STRATEGY_FIELD_READERS_SWITCHES=[...new Set(Object.values(STRATEGY_FIELD_READERS).map(r=>r[0]))];
 function strategyHides(id){const r=STRATEGY_FIELD_READERS[id];return !!r&&!r[1].includes(objectStrategy(r[0]))}
@@ -51344,7 +53730,7 @@ async function sendTelegramResult(){
  // квартиры, паркинг МКД, соцнагрузка и плата за ВРИ в расчёт не входят.
  // Сводка в чат берёт тогда посчитанное движком, а не вводные и не выгрузку,
  // иначе чат назвал бы места и деньги, которых в расчёте нет.
- const counted=isNonResidential();
+ const counted=withoutHousing();
  const countedRow=key=>((lastResult.tep&&lastResult.tep.rows)||[]).find(r=>r.key===key)||{};
  const countedTotal=(lastResult.tep&&lastResult.tep.total)||{};
   persistLocalSilently();
@@ -51719,7 +54105,7 @@ function normativeUnderground(){
 // этому отношения не имеет: он считается своей нормой (приложение 6 к
 // 945-ПП) и живёт своими полями объекта.
 function parkingRequirement(){
- if(isNonResidential())return null;
+ if(withoutHousing())return null;
  if(String(inputs.vri_region||'msk')==='mo')return moNormativeUnderground();
  return getGlavapuUnderground()||normativeUnderground();
 }
@@ -51753,7 +54139,7 @@ function repairParkingFromGlavapu(){
  // Нежилой проект здесь же: строку чистит ТОТ ЖЕ писатель, что её и
  // наполняет, иначе обнуление переключателем отменяется первой же
  // отрисовкой — `renderTep` зовёт эту функцию первой строкой.
- if(inputs.underground_parking_disabled||isNonResidential()){
+ if(inputs.underground_parking_disabled||withoutHousing()){
   ['units','gns','total_area','useful','saleable','transfer'].forEach(f=>{tep.underground_parking[f]=0});
   return true;
  }
@@ -51825,7 +54211,7 @@ function fillUndergroundFromTep(){
  //
  // Пометка — та же, что у паркинга объектов, и списки те же: тронутое руками
  // норма не трогает, своё число она обновляет вместе с ТЭП.
- if(inputs.underground_parking_disabled||isNonResidential())return false;
+ if(inputs.underground_parking_disabled||withoutHousing())return false;
  const spaces=Number(inputs.underground_manual_spaces||0);
  const area=Number(inputs.underground_manual_gns_sqm||0);
  const p=parkingRequirement();
@@ -52054,6 +54440,11 @@ function projectKind(){
  return PROJECT_KINDS.some(p=>p[0]===v)?v:'mixed';
 }
 function isNonResidential(){return projectKind()==='nonresidential'}
+function isHotel(){return projectKind()==='hotel'}
+// Проект без жилья: нежилой или гостиничный. Один ответ на «считается ли
+// дом», как у движка (`without_housing`): обнуление МКД, замок строк ТЭП и
+// пометка жилых полей у обоих типов одни и те же.
+function withoutHousing(){return projectKind()!=='mixed'}
 // Подпись типа берётся из того же списка, что и селектор: вторая копия
 // слова разошлась бы с ним молча, и кнопка звала бы режим не тем именем,
 // каким он назван в шапке.
@@ -52172,6 +54563,17 @@ function objectGroupTitles(){
 // событии разошлись бы, и оба выглядели бы верными.
 function projectKindDialogHtml(){
  const cleared=inputs._nonres_cleared||[],placed=inputs._nonres_placed||[];
+ if(isHotel()){
+  let html='<p style="margin:0 0 10px">Квартиры, встроенная коммерция, кладовые и подземный паркинг МКД '
+   +'обнулены и заперты; соцнагрузка, плата за смену ВРИ и объекты (ТЦ, офисы, паркинг, ФОК) не считаются.</p>';
+  if(cleared.length)html+='<p style="margin:0 0 10px"><b>Убрано:</b> '+escapeHtml(cleared.join(', '))+'.</p>';
+  html+='<p style="margin:0 0 10px"><b>Где теперь задавать гостиницу:</b> вкладка «Экономика», блок «Гостиница»: '
+   +'номера, площадь и стоимость здания, ADR, загрузка, доли USALI, кредит и выход. Числа эталонных моделей '
+   +'подставляются только кнопкой ориентира и помечаются происхождением; пустое поле расчёт называет, а не считает нулём.</p>';
+  html+='<p style="margin:0">Финансирование — своё у гостиницы: обычный кредит (КС + спред) или льготный по госпрограмме '
+   +'(доля КС + маржа). БРИДЖа, ПФ и эскроу у неё нет.</p>';
+  return html;
+ }
  const groups=objectGroupTitles();
  let html='<p style="margin:0 0 10px">Квартиры, встроенная коммерция, кладовые и подземный '
   +'паркинг МКД обнулены и заперты. Соцнагрузка и плата за смену ВРИ не считаются: первая идёт '
@@ -52211,6 +54613,8 @@ function openProjectKindDialog(){
  const box=document.getElementById('projectKindDialogBody');
  const dialog=document.getElementById('projectKindDialog');
  if(!box||!dialog)return;
+ const title=document.getElementById('projectKindDialogTitle');
+ if(title)title.textContent=isHotel()?'Гостиничный проект':'Нежилой проект';
  box.innerHTML=projectKindDialogHtml();
  dialog.style.display='flex';
 }
@@ -52241,6 +54645,13 @@ function cancelNonResidential(){
 // режим сейчас, что он убрал и что лежит убранным у жилого проекта.
 function projectKindNote(){
  const cleared=inputs._nonres_cleared||[],placed=inputs._nonres_placed||[];
+ if(isHotel()){
+  return '<div class="note" style="margin:0 0 12px;padding:11px 12px">'
+   +'<b>Гостиничный проект.</b> Жильё, соцнагрузка, плата за смену ВРИ и объекты (ТЦ, офисы, паркинг, ФОК) '
+   +'не считаются; гостиница — блок «Гостиница» ниже: номера, ADR, загрузка, USALI, свой кредит и выход. '
+   +'<button type="button" class="tep-refill" onclick="openProjectKindDialog()">что отключено</button>'
+   +'</div>';
+ }
  if(isNonResidential()){
   return '<div class="note" style="margin:0 0 12px;padding:11px 12px">'
    +'<b>Нежилой проект.</b> Жильё, соцнагрузка и плата за смену ВРИ не считаются; метры '
@@ -52268,13 +54679,13 @@ function syncProjectKindSelector(){
  }
  select.value=projectKind();
  const box=document.getElementById('projectKindNoteTop');
- if(box)box.textContent=isNonResidential()?'жилья, соцнагрузки и ВРИ нет':'жильё, объекты, соцнагрузка';
+ if(box)box.textContent=isHotel()?'номера, USALI, свой кредит':isNonResidential()?'жилья, соцнагрузки и ВРИ нет':'жильё, объекты, соцнагрузка';
 }
 
 function applyProjectKind(key){
  const kind=PROJECT_KINDS.some(p=>p[0]===key)?key:'mixed';
  inputs.project_kind=kind;
- if(kind==='nonresidential'){clearResidentialInputs();placeNonResidentialDefaults()}
+ if(kind!=='mixed'){clearResidentialInputs();placeNonResidentialDefaults()}
  syncTep(false);
  syncProjectKindSelector();
  renderInputs();
@@ -52283,7 +54694,7 @@ function applyProjectKind(key){
  calculate();
  // Окно после пересчёта: до него списки убранного и поставленного ещё не
  // полны — пересчёт ТЭП убирает и то, что вернули писатели.
- if(kind==='nonresidential')openProjectKindDialog();
+ if(kind!=='mixed')openProjectKindDialog();
  else closeProjectKindDialog();
 }
 
@@ -52808,8 +55219,13 @@ function renderInputs(){
  // Надпись режима стоит НАД полями: она объясняет, почему половина из них
  // заперта, и прочитать её надо до того, как человек начнёт их искать.
  box.innerHTML=projectKindNote();
+ // Гостиничный проект: блок «Гостиница» стоит первым, а группы, которых он
+ // не читает (продажи жилья, соцнагрузка, паркинги, объекты), не рисуются —
+ // поле, правка которого ничего не меняет, не вводная.
+ if(isHotel())box.appendChild(hotelInputsBlock(wasOpen));
  const vriBox=document.getElementById('vriInputGroups');if(vriBox)vriBox.innerHTML='';
  FIELD_GROUPS.forEach((grp,idx)=>{
+   if(isHotel()&&HOTEL.hidden_groups.includes(grp[0]))return;
    const ownTab=grp[0]===VRI_GROUP_NAME&&vriBox;
    // Группа, у которой все поля уехали в «Настройки класса», не рисуется
    // вовсе: пустая складка «Кладовые» читается как продукт, у которого
@@ -52826,7 +55242,7 @@ function renderInputs(){
    // Первая группа открыта только при первой отрисовке: дальше решает то,
    // что человек раскрыл сам.
    const det=document.createElement('details');
-   if(ownTab||(wasOpen.size?wasOpen.has(grp[0]):idx===0))det.open=true;
+   if(ownTab||(wasOpen.size?wasOpen.has(grp[0]):idx===0&&!isHotel()))det.open=true;
    det.dataset.group=grp[0];
    const sum=document.createElement('summary');sum.textContent=grp[0];
    const peek=groupPeek(grp[0],grp[1]);
@@ -52882,9 +55298,9 @@ function renderInputs(){
      // Жилое поле в нежилом проекте: оно обнулено и не читается, и сказано
      // это у самого поля. Запереть мало — «не тронули» читается как «убрали»,
      // а пустая клетка без слов неотличима от несработавшей правки.
-     if(isNonResidential()&&NONRESIDENTIAL_CLEARED[id]){
+     if(withoutHousing()&&NONRESIDENTIAL_CLEARED[id]){
        wrap.innerHTML+='<div class="note" style="margin:0;padding:11px 12px">'
-        +'Нежилой проект: это жильё, и в расчёт оно не идёт. Тип проекта — в шапке.</div>';
+        +'Проект «'+escapeHtml(projectKindLabel(projectKind()))+'»: это жильё, и в расчёт оно не идёт. Тип проекта — в шапке.</div>';
        grid.appendChild(wrap);return;
      }
      if(id==='construction_months'&&phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
@@ -53030,6 +55446,145 @@ function renderInputs(){
  renderObjectParkingFieldNotes();
  renderUndergroundFieldNote();
  renderLandscapingRateNote();
+}
+
+// --- гостиничный проект ----------------------------------------------------
+// Поля, группы, ориентиры и диапазоны — из движка (`hotel_page_spec`): копии
+// подписей и чисел здесь нет. Поле гостиницы — `inputs.hotel_<key>`;
+// происхождение числа — `inputs.hotel_origins[key]`. Ориентир чужой площадки
+// ставится только кнопкой и несёт свою ячейку; правка руками происхождение
+// снимает — набранное человеком не выглядит ориентиром, и наоборот.
+const HOTEL=__DEVELOPAID_HOTEL__;
+function hotelOrigins(){return inputs[HOTEL.origins_key]||{}}
+function setHotelField(key,value,origin){
+ inputs['hotel_'+key]=value;
+ const origins={...hotelOrigins()};
+ if(origin)origins[key]=origin;else delete origins[key];
+ inputs[HOTEL.origins_key]=origins;
+}
+function hotelBlank(v){return v===undefined||v===null||(typeof v==='string'&&!v.trim())}
+function hotelValue(field){
+ const v=inputs['hotel_'+field.key];
+ return hotelBlank(v)?field.default:v;
+}
+// Нужно ли поле при текущих выборах — то же правило, что у движка
+// (`_is_needed`): кредитные поля не нужны без кредита, мультипликатор — при
+// ставке капитализации.
+function hotelFieldNeeded(field){
+ if(!field.needed_when)return true;
+ const owner=HOTEL.fields.find(f=>f.key===field.needed_when[0]);
+ if(owner&&!hotelFieldNeeded(owner))return false;
+ return field.needed_when[1].includes(String(hotelValue(owner)));
+}
+function hotelRangeText(field){
+ const stars=String(inputs.hotel_stars||'');
+ const r=(field.ranges||{})[stars]||(field.ranges||{})[''];
+ if(!r)return '';
+ const fmt=v=>Number(v).toLocaleString('ru-RU',{maximumFractionDigits:2});
+ const span=r.min===r.max?fmt(r.min):fmt(r.min)+'–'+fmt(r.max);
+ return 'ориентиры'+(stars&&(field.ranges||{})[stars]?' класса '+stars+'*':'')+': '+span+' ('+r.sources.join(', ')+')';
+}
+function hotelFieldNote(field){
+ const origin=hotelOrigins()[field.key];
+ const raw=inputs['hotel_'+field.key];
+ if(origin&&!hotelBlank(raw))return {cls:'hotel-origin',text:origin.text};
+ if(hotelBlank(raw)&&field.default!==null&&field.default!==undefined)
+  return {cls:'hotel-default',text:'умолчание: '+field.origin};
+ if(hotelBlank(raw)){
+  const range=hotelRangeText(field);
+  return {cls:'hotel-empty',text:(field.required?'не задано — расчёт гостиницы ждёт это поле':'не задано')+(range?'; '+range:'')};
+ }
+ return {cls:'hotel-manual',text:'введено вручную'+(field.hint?' · '+field.hint:'')};
+}
+function applyHotelPreset(key,onlyEmpty){
+ const preset=HOTEL.presets.find(p=>p.key===key);
+ if(!preset)return;
+ Object.keys(preset.values).forEach(f=>{
+  if(onlyEmpty&&!hotelBlank(inputs['hotel_'+f]))return;
+  setHotelField(f,preset.values[f],preset.origins[f]);
+ });
+ renderInputs();refreshGroupPeeks();calculate();
+}
+function hotelInputsBlock(wasOpen){
+ const det=document.createElement('details');
+ det.dataset.group='Гостиница';det.className='hotel-block';
+ det.open=!wasOpen||!wasOpen.size||wasOpen.has('Гостиница');
+ const sum=document.createElement('summary');sum.textContent='Гостиница';det.appendChild(sum);
+ const bar=document.createElement('div');bar.className='hotel-presets note';
+ bar.innerHTML='<b>Ориентир эталонной модели.</b> Числа чужой площадки подставляются только по нажатию и '
+  +'помечаются ячейкой книги; пустое поле показывает диапазон ориентиров. '
+  +HOTEL.presets.map(p=>'<span class="hotel-preset" data-preset="'+escapeHtml(p.key)+'">'
+   +'<button type="button" class="btn" onclick="applyHotelPreset(\''+p.key+'\',true)">Заполнить пустые: '+escapeHtml(p.title)+'</button>'
+   +'<button type="button" class="tep-refill" onclick="applyHotelPreset(\''+p.key+'\',false)">заменить все</button></span>').join(' ');
+ det.appendChild(bar);
+ HOTEL.groups.forEach(([gkey,gtitle])=>{
+  const fields=HOTEL.fields.filter(f=>f.group===gkey&&hotelFieldNeeded(f));
+  if(!fields.length)return;
+  const card=document.createElement('section');card.className='field-card';card.dataset.section=gtitle;
+  const head=document.createElement('div');head.className='field-section';head.textContent=gtitle;card.appendChild(head);
+  const grid=document.createElement('div');grid.className='fields';card.appendChild(grid);
+  fields.forEach(field=>{
+   const id='hotel_'+field.key;
+   const wrap=document.createElement('div');wrap.className='field';wrap.dataset.field=id;
+   wrap.innerHTML='<label>'+escapeHtml(field.label)+' <span class="unit">'+escapeHtml(field.unit||'')+'</span></label>';
+   let el;
+   if(field.kind==='choice'){
+    el=document.createElement('select');
+    if(!field.required){const o=document.createElement('option');o.value='';o.textContent='— не задан —';el.appendChild(o)}
+    field.choices.forEach(pair=>{const o=document.createElement('option');o.value=pair[0];o.textContent=pair[1];el.appendChild(o)});
+   }else{el=document.createElement('input');el.type=field.kind==='date'?'date':'number';if(field.kind!=='date')el.step='any'}
+   // Свой префикс id: общий сборщик формы читает все `f_*` и превратил бы
+   // пустое поле гостиницы в ноль — а пустое здесь значит «не задано».
+   el.id='h_'+id;
+   const v=hotelValue(field);
+   el.value=hotelBlank(v)?'':v;
+   el.onchange=()=>{
+    const raw=el.value;
+    const value=hotelBlank(raw)?null:(field.kind==='number'?Number(raw):raw);
+    setHotelField(field.key,value,null);
+    renderInputs();refreshGroupPeeks();calculate();
+   };
+   wrap.appendChild(el);
+   const note=hotelFieldNote(field);
+   const nd=document.createElement('div');nd.className='hint '+note.cls;nd.textContent=note.text;
+   wrap.appendChild(nd);
+   grid.appendChild(wrap);
+  });
+  det.appendChild(card);
+ });
+ return det;
+}
+// Отчёт гостиницы печатает строки движка (`hotel_report`); незаполненная
+// гостиница называет, каких вводных нет, а не рисует нули.
+function hotelCell(row){
+ const v=row.value;
+ if(v===null||v===undefined||v==='')return '—';
+ if(row.unit==='rub_unit')return Number(v).toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽';
+ if(row.unit==='count')return Number(v).toLocaleString('ru-RU',{maximumFractionDigits:0});
+ if(row.unit==='years')return Number(v).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:1});
+ return nonresCell(row);
+}
+function renderHotelReport(r){
+ const card=document.getElementById('hotelReportCard'),box=document.getElementById('hotelReportBody');
+ if(!card||!box)return;
+ const h=((r||{}).report||{}).hotel;
+ card.hidden=!h;
+ if(!h){box.innerHTML='';return}
+ if(!h.computed){
+  box.innerHTML='<div class="note hotel-missing">Гостиница не считается: не заданы '
+   +escapeHtml((h.missing||[]).join(', '))+'. Заполните их в блоке «Гостиница» на вкладке «Экономика» '
+   +'или кнопкой ориентира.</div>';
+  return;
+ }
+ const keyRows='<table class="hotel-kpi"><tbody>'+h.rows.map(row=>'<tr><td>'+escapeHtml(row.label)+'</td><td>'+hotelCell(row)+'</td></tr>').join('')
+  +(h.warnings||[]).map(w=>'<tr class="warn"><td>'+escapeHtml(w)+'</td><td></td></tr>').join('')+'</tbody></table>';
+ const u=h.usali||{years:[],rows:[]};
+ const usali='<div class="scroll"><table class="hotel-usali"><thead><tr><th>USALI по годам</th>'
+  +u.years.map(y=>'<th>'+y+'</th>').join('')+'</tr></thead><tbody>'
+  +u.rows.map(row=>'<tr data-key="'+escapeHtml(row.key)+'"><td>'+escapeHtml(row.label)+'</td>'
+   +row.values.map(v=>'<td>'+hotelCell({value:v,unit:row.unit})+'</td>').join('')+'</tr>').join('')
+  +'</tbody></table></div>';
+ box.innerHTML=keyRows+usali;
 }
 
 function vriTotalsRows(t,summary){
@@ -53469,7 +56024,7 @@ function renderTep(){
    // МКД в нежилом проекте нет. Строка не убирается, а запирается и называет
    // причину: молча выброшенная читается как отсутствие такого продукта у
    // модели вообще.
-   const mkdLocked=isNonResidential()&&MKD_PRODUCTS.includes(key);
+   const mkdLocked=withoutHousing()&&MKD_PRODUCTS.includes(key);
    let label=row.label;
    if(mkdLocked){
     label+=' <span class="tep-note">Нежилой проект: МКД в нём нет — строка обнулена и заперта. Тип проекта — в шапке.</span>';
@@ -54238,6 +56793,17 @@ function applyDensityToObject(target){
  }
 }
 
+function applyDensityToHotel(){
+ const area=Number(inputs.site_area_ha||0),density=effectiveSiteDensity();
+ if(!(area>0&&density>0))return;
+ setHotelField('gba_sqm',Math.round(area*density),
+  {text:'потенциал участка: '+landNum(area,3)+' га × '+num(density)+' м²/га',cells:[]});
+ renderInputs();calculate();
+ const status=document.getElementById('siteApplyStatus');
+ if(status)status.innerHTML='<span class="import-ok">Потенциал участка положен в гостиницу: '
+  +num(area*density)+' м² ГНС.</span>';
+}
+
 function applyDensityToTep(){
  const status=document.getElementById('siteApplyStatus');
  const area=Number(inputs.site_area_ha||0);
@@ -54248,6 +56814,17 @@ function applyDensityToTep(){
  // а движок их продавал. Раскладывать потенциал по офисам и ТЦ самим нельзя:
  // доля была бы нашей догадкой, а на экране она выглядит как норматив
  // города. Поэтому отказ, и он называет, где эти метры задаются.
+ // Гостиничный проект — та же причина: метры гостиницы — её поле, и
+ // потенциал участка кладётся туда только по нажатию.
+ if(isHotel()){
+  const density=effectiveSiteDensity();
+  status.style.display='';
+  status.innerHTML='<span class="import-error">Гостиничный проект: нормативный ТЭП калькулятора — жильё, '
+   +'а метры гостиницы задаются полем «Площадь гостиницы (ГНС)» в блоке «Гостиница» на вкладке «Экономика».</span>'
+   +(area>0&&density>0?'<div style="margin-top:6px"><button type="button" class="btn" onclick="applyDensityToHotel()">'
+     +'Положить потенциал участка '+num(area*density)+' м² в гостиницу</button></div>':'');
+  return;
+ }
  if(isNonResidential()){
   const density=effectiveSiteDensity();
   status.style.display='';
@@ -55139,7 +57716,7 @@ function syncTep(rerender=true){
  // ГлавАПУ, расчёт от плотности, мост КРТ, загрузка проекта. Прежде оно
  // возвращалось молча, а на экране строки заперты и полей нет: убрать
  // вернувшееся человек не мог.
- if(isNonResidential())clearResidentialInputs();
+ if(withoutHousing())clearResidentialInputs();
  // Соцобъекты строятся и в совмещённом режиме — иначе ДОУ и школа исчезают
  // из ТЭП при выбранном «Строительство и компенсация», хотя они в проекте.
  const socialBuild=inputs.social_mode==='Строительство'
@@ -56244,7 +58821,7 @@ function renderUndergroundFieldNote(){
 function undergroundFieldNote(){
  if(inputs.underground_parking_disabled)
   return {text:'Подземного паркинга нет — потребность закрывает наземный.',short:false};
- if(isNonResidential())return {text:'',short:false};
+ if(withoutHousing())return {text:'',short:false};
  const p=parkingRequirement();
  if(!p||!(p.spaces>0))
   return {text:'Норматив появится после расчёта ТЭП: мест считается от площади квартир и коммерции.',short:false};
@@ -56403,6 +58980,7 @@ function renderResult(){
  (layout.nonres_tiles||[]).forEach(t=>reportKpis.push([t.label,nonresCell(t)]));
  reportKpi.innerHTML=reportKpis.map(x=>`<div class="kpi"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
  applyReportLayout(layout);
+ renderObjectReport(r);
 
  const rveWarning=document.getElementById('pfRveWarning');
  if(rveWarning){
@@ -56508,6 +59086,7 @@ function renderResult(){
   row('Выручка',money(r.summary.revenue))+
   row('CAPEX проекта',`(${money(r.summary.capex)})`)+
   row('Маркетинг и продажи',`(${money(r.summary.commercial_costs)})`)+
+  (Number((r.finance||{}).nonres_costs||0)>0?row(((r.report||{}).nonres_costs_label||'Расходы объектов вне ДДУ'),`(${money(r.finance.nonres_costs)})`):'')+
   `<tr><th>EBITDA</th><th>${money(r.summary.ebitda)}</th></tr>`+
   row('Проценты и комиссии',`(${money(r.summary.financing_cost)})`)+
   `<tr><th>Прибыль до налога</th><th>${money(r.summary.profit_before_tax)}</th></tr>`+
@@ -56951,13 +59530,21 @@ function renderResult(){
  // обязан быть тем же документом, что уходит в печать.
  {
   const dates=document.getElementById('reportCalendarDates');
-  if(dates)dates.innerHTML=[
+  // У проекта без жилья — свой календарь (`object_report`): стройка объекта,
+  // продажи / заполнение, кредит и выход; вех эскроу у него нет.
+  const objCal=(objectSection(r,'calendar')||{}).calendar;
+  const objItems=objCal?(((r.finance||{}).nonres||{}).objects||[]):null;
+  if(dates)dates.innerHTML=(objItems?[
+   ['Начало',r.dates.project_start],['РнС',r.dates.permit],
+   ...objItems.map(o=>['Ввод — '+escapeHtml(o.title||o.key),o.commissioning]),
+   ...objItems.map(o=>['Конец горизонта — '+escapeHtml(o.title||o.key),o.horizon_end]),
+  ]:[
    ['Начало',r.dates.project_start],['РнС',r.dates.permit],
    ['Старт продаж',r.dates.sales_start],['РВЭ',r.dates.rve]
-  ].map(x=>`<div class="datebox">${x[0]}<b>${dateRu(x[1])}</b></div>`).join('');
-  renderGantt('reportCalendarGantt',r.report.calendar);
+  ]).map(x=>`<div class="datebox">${x[0]}<b>${dateRu(x[1])}</b></div>`).join('');
+  renderGantt('reportCalendarGantt',objCal&&(objCal.events||[]).length?objCal:r.report.calendar);
   renderReportSensitivity();
-  renderReportToc();
+  renderReportToc(r);
  }
 
  {
@@ -56979,6 +59566,9 @@ function renderResult(){
   }).join('');
  }
  renderNonresStrategy(r);
+ renderHotelReport(r);
+ renderNonresFinancing(r);
+ renderEquityParticipation(r);
  // Имена статей приходят из движка плейсхолдером, как VERSION и доли ТЭП.
  const capNames=__DEVELOPAID_CAPEX_NAMES__;
  {
@@ -57129,7 +59719,7 @@ function renderReportSensitivity(){
  renderTornado(sensitivityReport,'reportTornado');
 }
 
-function renderReportToc(){
+function renderReportToc(r){
  // Ссылка, ведущая в пустоту, хуже её отсутствия: очередей у одноочередного
  // проекта нет, чувствительности — пока её не посчитали.
  //
@@ -57141,7 +59731,7 @@ function renderReportToc(){
  const toc=document.getElementById('reportToc');
  if(!toc)return;
  const shown=el=>{try{return getComputedStyle(el).display!=='none'}catch(e){return true}};
- toc.innerHTML=REPORT_SECTIONS.filter(([id])=>{
+ toc.innerHTML=reportTocSections(r||(typeof lastResult!=='undefined'?lastResult:null)).filter(([id])=>{
   const node=document.getElementById(id);
   if(!node||!shown(node))return false;
   return Array.from(node.children).some(child=>!child.classList.contains('report-section-title')
@@ -57206,7 +59796,7 @@ function renderGantt(targetId,calendar){
      const l=pos(e.start),rgt=pos(e.end),w=Math.max(.4,rgt-l);
      const phaseIndex=Number(e.phase_index||0);
      const phaseColor=phaseIndex?phasePalette[Math.min(phaseIndex-1,phasePalette.length-1)]:null;
-     let cls='';if(g==='Финансирование')cls=' finance';else if(g==='Продажи')cls=' sales';else if(g==='Социальная нагрузка')cls=' social';
+     let cls='';if(g==='Финансирование')cls=' finance';else if(g==='Продажи'||g==='Аренда')cls=' sales';else if(g==='Социальная нагрузка')cls=' social';
      const phaseClass=phaseColor?' phase-colored':'';
      const phaseStyle=phaseColor?`--phase-color:${phaseColor};`:'';
      const shape=e.kind==='milestone'
@@ -57438,12 +60028,19 @@ async function renderSensitivityForm(){
  if(!box)return;
  const options=await loadSensitivityOptions();
  const scopes=sensitivityScopes();
+ // Показатель и факторы проекта без жилья — из движка (`object_report`):
+ // DSCR кредита объектов вместо LLCR, аренда, загрузка, ставка
+ // капитализации, цена ДКП и ставка кредита вместо цены квартир.
+ const objSens=(objectSection(typeof lastResult!=='undefined'?lastResult:null,'sensitivity')||{}).sensitivity;
+ const debtKey=((reportLayout(typeof lastResult!=='undefined'?lastResult:null).debt_metric)||{}).key;
+ const bankOnly=['llcr','peak_bridge_mln','pf_draw_total_mln'];
+ const metrics=options.metrics.filter(m=>m.key==='dscr'?debtKey==='dscr':!(objSens&&bankOnly.includes(m.key)));
  const field=(label,html)=>`<div class="field"><label>${label}</label>${html}</div>`;
  const select=(id,pairs,current)=>`<select id="${id}">`+pairs.map(
    ([value,text])=>`<option value="${value}" ${String(value)===String(current)?'selected':''}>${escapeHtml(text)}</option>`
  ).join('')+'</select>';
  box.innerHTML=
-   field('Показатель',select('sensMetric',options.metrics.map(m=>[m.key,m.label]),'llcr'))
+   field('Показатель',select('sensMetric',metrics.map(m=>[m.key,m.label]),objSens?objSens.metric:'llcr'))
   +field('Что анализируем',select('sensScope',scopes,scopes[0][0]))
   +field('Отклонение процентных параметров',select('sensPct',[['5','±5%'],['10','±10%'],['20','±20%'],['custom','Своё значение']],'10'))
   +field('Отклонение сроков',select('sensMonths',[['3','±3 месяца'],['6','±6 месяцев'],['12','±12 месяцев'],['custom','Своё значение']],'6'))
@@ -57455,19 +60052,20 @@ async function renderSensitivityForm(){
  document.getElementById('sensMonths').onchange=e=>{
   document.getElementById('sensMonthsCustom').disabled=e.target.value!=='custom';
  };
- renderSensitivityPicker(options);
+ renderSensitivityPicker(options,objSens);
 }
 
-function renderSensitivityPicker(options){
+function renderSensitivityPicker(options,objSens){
  const box=document.getElementById('sensitivityParams');
  if(!box)return;
  const groups={};
- options.parameters.forEach(p=>{(groups[p.group]=groups[p.group]||[]).push(p)});
+ const picked=objSens?objSens.parameters||[]:null;
+ options.parameters.filter(p=>!picked||picked.includes(p.key)).forEach(p=>{(groups[p.group]=groups[p.group]||[]).push(p)});
  box.innerHTML='<p style="font-size:11px;color:#777;margin:0 0 8px">Ничего не отмечено — берутся все параметры, применимые к текущей модели. Продукты, которых нет в ТЭП, и нулевые значения не анализируются: их изменение ничего не поменяет.</p>'
   +Object.entries(groups).map(([group,list])=>
     `<div style="margin-bottom:10px"><div style="font-size:11px;font-weight:700;color:#555;margin-bottom:4px">${escapeHtml(group)}</div>`
     +list.map(p=>`<label style="display:inline-block;margin:0 14px 6px 0;font-size:12px">`
-      +`<input type="checkbox" class="sens-param" value="${p.key}"> ${escapeHtml(p.label)}</label>`).join('')
+      +`<input type="checkbox" class="sens-param" value="${p.key}"${picked?' checked':''}> ${escapeHtml(p.label)}</label>`).join('')
     +'</div>').join('');
 }
 
@@ -59088,6 +61686,7 @@ PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(
 # бы, и «режим включён» значило бы на экране одно, а в расчёте другое.
 PAGE = PAGE.replace("__DEVELOPAID_PROJECT_KINDS__",
                     json.dumps([list(pair) for pair in PROJECT_KINDS], ensure_ascii=False))
+PAGE = PAGE.replace("__DEVELOPAID_HOTEL__", json.dumps(hotel_page_spec(), ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_NONRESIDENTIAL_INPUTS__",
                     json.dumps(NONRESIDENTIAL_CLEARED_INPUTS, ensure_ascii=False))
 # Состав МКД — из движка, копии на странице нет.
