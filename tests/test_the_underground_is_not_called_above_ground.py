@@ -107,7 +107,9 @@ def test_the_pdf_split_counts_the_storage_too() -> None:
 def test_the_money_does_not_read_the_construction_volume() -> None:
     """`project_gns_sqm` — подпись, а не база: статьи считаются от своих."""
     source = Path(ROOT / "main_legacy.py").read_text(encoding="utf-8")
-    body = source[source.index("    amounts = {"):source.index("\n    amounts[\"author_supervision\"]")]
+    # База удельных статей (`article_gns`) объявлена строкой выше блока: у
+    # гостиницы — её ГНС, у остальных — `core_total_gns`.
+    body = source[source.index("    article_gns = "):source.index("\n    amounts[\"author_supervision\"]")]
     assert "project_gns_sqm" not in body, (
         "статья CAPEX считается от строительного объёма — тогда правка базы двигает деньги")
     for base in ("core_total_gns", "core_above_gns", "core_under_gns"):
