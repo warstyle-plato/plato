@@ -62,12 +62,14 @@ def test_the_revenue_drops_by_the_transferred_places() -> None:
     parking_before = before["revenue"]["underground_parking"]
     parking_after = after["revenue"]["underground_parking"]
     assert parking_after < parking_before
-    # 25 мест из 360 продаваемых — доля выручки паркинга совпадает до процента.
-    assert abs(parking_after / parking_before - 335 / 360) < 0.01
+    # Гостевые ручного гаража выводятся из его мест (S/11 — 36 из 400), а не
+    # берутся из строки: 25 мест из 364 продаваемых — доля выручки паркинга
+    # совпадает до процента.
+    assert abs(parking_after / parking_before - 339 / 364) < 0.01
     assert abs(after["summary"]["capex"] - before["summary"]["capex"]) < 1.0
     row = next(r for r in after["tep"]["rows"] if r["key"] == "underground_parking")
     assert row["units"] == 400 and row["transfer_units"] == 25
-    assert row["saleable_units"] == 335
+    assert row["saleable_units"] == 339
 
 
 def test_a_queue_gets_its_own_share_of_guest_and_given_places() -> None:

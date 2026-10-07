@@ -220,6 +220,17 @@ __DEVELOPAID_LAND_MAP_DIALOG__
 __DEVELOPAID_LAND_MAP_KIT__
 const state={lots:[],filtered:[],families:[],openFamilies:new Set(),coverage:[],quality:{},selected:null,ingested:null,auctionKinds:new Set(),krt:[],krtFiltered:[],krtOkrugs:new Set(),krtModels:{},krtScreening:{},krtReports:{},krtRequirements:{},krtNew:0,krtNewDays:30,krtPolls:0,krtTimer:null,krtRank:{},krtRules:0,krtRankProgress:null,krtRankTimer:null,krtPress:{},krtCards:{},krtTenderLinks:{},krtOrderBySite:{},krtTenders:{},krtOrders:[],krtOrphanLots:[],krtSort:{key:'name',dir:1},krtHidden:{small:0,unknown:0},krtPick:{stage:new Set(),entry:new Set(),renovation:new Set(),purpose:new Set()},egrnStore:null};
 const KRT_OKRUGS=['ЦАО','САО','СВАО','ВАО','ЮВАО','ЮАО','ЮЗАО','ЗАО','СЗАО','НАО','ТАО','ЗелАО'];
+// «ТиНАО» — общая метка Новой Москвы: город пишет её в части решений и
+// списков КРТ, не уточняя округ (лот 28 «Родники»). В Новой Москве два
+// округа — Новомосковский и Троицкий, — и угадывать, какой из них, нельзя.
+// Поэтому такая площадка проходит фильтр при выборе любого из двух: строгое
+// сравнение прятало её и при НАО, и при ТАО.
+const KRT_OKRUG_JOINT={'ТиНАО':['НАО','ТАО']};
+function krtOkrugPass(okrug,selected){
+ if(!selected||!selected.size)return true;
+ if(selected.has(okrug))return true;
+ return (KRT_OKRUG_JOINT[okrug]||[]).some(x=>selected.has(x));
+}
 // Типы лота — дерево, а не плоский список: «Земля» и «Объекты» — группы, под
 // ними их виды. Плоский список ставил группу и её же вид на один уровень
 // («Земля», потом снова «Продажа земли»), и владелец читал это как повтор
@@ -2210,7 +2221,7 @@ function filterKrt(){
  let small=0, unknown=0, priceBelow=0, priceUnknown=0;
  state.krtFiltered=state.krt.filter(x=>{
   if(q&&![x.name,x.district,x.okrug].join(' ').toLowerCase().includes(q))return false;
-  if(state.krtOkrugs.size&&!state.krtOkrugs.has(x.okrug))return false;
+  if(!krtOkrugPass(x.okrug,state.krtOkrugs))return false;
   if(!krtFilterPass(x))return false;
   if(minPrice!==null&&Number.isFinite(minPrice)){
    const price=krtValue(x,'market_price');
