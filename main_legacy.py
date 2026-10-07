@@ -837,11 +837,18 @@ def landscaping_cost(inputs: dict[str, Any], tep: dict[str, Any],
     # 0,5629. Заданная руками ставка по-прежнему сильнее: посчитать двор
     # отдельно — решение человека, а не запрет методики.
     if without_housing(inputs):
-        return 0.0, ("нежилой проект: двор входит в себестоимость объекта — "
-                     "отдельной статьёй не считается")
+        return 0.0, _no_yard_basis(inputs)
     area, basis = landscaping_area(inputs, tep)
     yard_rate = float(inputs.get("landscaping_th_per_sqm") or 0.0)
     return area * yard_rate * 1000, f"{yard_rate:g} тыс ₽/м² двора · {basis}"
+
+
+def _no_yard_basis(inputs: dict[str, Any]) -> str:
+    """Почему у проекта без жилья двора отдельной статьёй нет — одной фразой."""
+    if is_hotel(inputs):
+        return ("гостиничный проект: двор входит в стройку гостиницы — "
+                "отдельной статьёй не считается")
+    return "нежилой проект: двор входит в себестоимость объекта — отдельной статьёй не считается"
 
 
 def landscaping_area(inputs: dict[str, Any], tep: dict[str, Any]) -> tuple[float, str]:
@@ -855,8 +862,7 @@ def landscaping_area(inputs: dict[str, Any], tep: dict[str, Any]) -> tuple[float
             # молчание методики читалось бы как отсутствие работ. База у этого
             # проекта своя и она уже есть — ставка на метр наземной ГНС.
             if without_housing(inputs):
-                return 0.0, ("нежилой проект: двор входит в себестоимость "
-                             "объекта — отдельной статьёй не считается")
+                return 0.0, _no_yard_basis(inputs)
             return 0.0, "квартир в проекте нет — благоустраивать нечего"
         return 0.0, basis
     # Основание называет драйвер и не повторяет само себя: «11 м² × 2425 чел.»
@@ -2372,6 +2378,7 @@ def hotel_page_spec() -> dict[str, Any]:
         "fields": fields,
         "groups": [list(pair) for pair in hotel_strategy.GROUPS],
         "presets": hotel_presets.presets_for_page(),
+        "preset_aliases": dict(hotel_presets.LEGACY_KEYS),
         "origins_key": hotel_presets.ORIGINS_KEY,
         "hidden_groups": [group[0] for group in FIELD_GROUPS
                           if group[0] not in HOTEL_PROJECT_GROUPS],
@@ -34805,6 +34812,16 @@ def object_years(flows: dict[str, Any]) -> list[dict[str, Any]]:
 # Строка расходов объектов вне ДДУ в структуре расходов и в экономике
 # проекта — одна подпись на все поверхности.
 NONRES_COSTS_LABEL = "Объекты вне ДДУ: продажи ДКП, эксплуатация, налог на имущество, выход"
+# Гостиничный проект пишет в те же ряды свою эксплуатацию (`hotel_overlay`):
+# ДКП и «вне ДДУ» у неё нет, и подпись нежилья читалась бы чужой.
+HOTEL_COSTS_LABEL = ("Гостиница — эксплуатация: расходы по USALI, вознаграждение оператора, "
+                     "резерв FF&E, налог на имущество, страхование, выход")
+
+
+def nonres_costs_label(inputs: dict[str, Any]) -> str:
+    """Подпись строки расходов объектов вне ДДУ — одна на структуру расходов
+    и «Экономику проекта»."""
+    return HOTEL_COSTS_LABEL if is_hotel(inputs or {}) else NONRES_COSTS_LABEL
 # Чистое возмещение НДС — строка структуры расходов со знаком минус.
 VAT_REFUND_LABEL = "НДС к возмещению — уменьшает расходы"
 
@@ -35203,7 +35220,9 @@ def hotel_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, A
         # Набранное в проекте как есть: пустое — пустое, а не умолчание. По
         # нему книга пишет происхождение («умолчание: …» или ориентир).
         "raw_params": dict(plan["params"]),
-        "origins": dict(x.get(hotel_presets.ORIGINS_KEY) or {}),
+        # Происхождение — по текущему ориентиру: проект, сохранённый с прежним
+        # ключом, не печатает прежний текст (`hotel_presets.current_origins`).
+        "origins": hotel_presets.current_origins(x.get(hotel_presets.ORIGINS_KEY)),
         "vat_rate": vat_rate, "profit_tax_rate": tax_rate, "discount_rate": discount_rate,
         "revenue_multiplier": float(plan.get("revenue_multiplier", 1.0) or 1.0),
         "months": [{"month": mm.isoformat(),
@@ -36810,7 +36829,8 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
 
     # 7. Экономика собственника --------------------------------------------
     nonres_costs = next((float(e.get("value") or 0.0) for e in report.get("expense_structure") or []
-                         if e.get("label") == NONRES_COSTS_LABEL), 0.0)
+                         if e.get("label") == (report.get("nonres_costs_label")
+                                               or NONRES_COSTS_LABEL)), 0.0)
     pnl = [_row("Выручка", summary.get("revenue"), "rub")]
     if income_any:
         pnl.append(_row("NOI объектов за горизонт", totals["noi"], "rub"))
@@ -37963,7 +37983,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         ("Резерв",
          op["capex_amounts"].get("reserve", 0.0)),
         ("Маркетинг и продажи", fin["commercial_costs"]),
-        (NONRES_COSTS_LABEL, float(fin.get("nonres_costs", 0.0) or 0.0)),
+        (nonres_costs_label(x), float(fin.get("nonres_costs", 0.0) or 0.0)),
         ("Проценты и комиссии", fin["financing_cost"]),
         ("Налог на прибыль", fin["profit_tax"]),
         # НДС виден отдельной строкой: он не налог на прибыль и не
@@ -38570,7 +38590,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "nonres_strategy": nonres_report(fin.get("nonres")),
             "hotel": hotel_report(fin.get("hotel")),
             "nonres_financing": nonres_financing_report(fin.get("nonres")),
-            "nonres_costs_label": NONRES_COSTS_LABEL,
+            "nonres_costs_label": nonres_costs_label(x),
             "equity_participation": equity_participation_report(
                 timeline, equity_cf, fin, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(x, fin, equity_cf),
@@ -40538,7 +40558,7 @@ def _consolidate_phase_results(
             "nonres_strategy": nonres_report(finance.get("nonres")),
             "hotel": hotel_report(finance.get("hotel")),
             "nonres_financing": nonres_financing_report(finance.get("nonres")),
-            "nonres_costs_label": NONRES_COSTS_LABEL,
+            "nonres_costs_label": nonres_costs_label(master_inputs),
             "equity_participation": equity_participation_report(
                 cf_months, equity_cf, finance, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(master_inputs, finance, equity_cf),
@@ -56120,8 +56140,18 @@ function hotelRangeText(field){
  const span=r.min===r.max?fmt(r.min):fmt(r.min)+'–'+fmt(r.max);
  return 'ориентиры'+(stars&&(field.ranges||{})[stars]?' класса '+stars+'*':'')+': '+span+' ('+r.sources.join(', ')+')';
 }
+// Происхождение — по ТЕКУЩЕМУ ориентиру (то же правило, что
+// `hotel_presets.current_origins`): проект, сохранённый с прежним ключом
+// ориентира, показывает его нынешнее имя, а не сохранённый текст.
+function hotelOriginNow(key){
+ const o=hotelOrigins()[key];
+ if(!o||!o.preset)return o;
+ const name=(HOTEL.preset_aliases||{})[o.preset]||o.preset;
+ const p=HOTEL.presets.find(x=>x.key===name);
+ return p&&p.origins[key]?p.origins[key]:o;
+}
 function hotelFieldNote(field){
- const origin=hotelOrigins()[field.key];
+ const origin=hotelOriginNow(field.key);
  const raw=inputs['hotel_'+field.key];
  if(origin&&!hotelBlank(raw))return {cls:'hotel-origin',text:origin.text};
  if(hotelBlank(raw)&&field.default!==null&&field.default!==undefined)

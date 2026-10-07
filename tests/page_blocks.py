@@ -522,7 +522,7 @@ def project_kind() -> str:
                        function("projectKindNote"),
                        *(function(name) for name in (
                            "hotelOrigins", "setHotelField", "hotelBlank", "hotelValue",
-                           "hotelFieldNeeded", "hotelRangeText", "hotelFieldNote",
+                           "hotelFieldNeeded", "hotelRangeText", "hotelOriginNow", "hotelFieldNote",
                            "applyHotelPreset", "hotelInputsBlock",
                            "syncHotelClassSelector", "setHotelClass"))))
 

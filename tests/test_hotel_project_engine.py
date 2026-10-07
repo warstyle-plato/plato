@@ -31,7 +31,7 @@ import main_legacy as core  # noqa: E402
 _CACHE: dict = {}
 
 
-def _run(kind: str = "hotel", preset: str | None = "dombai", **over) -> dict:
+def _run(kind: str = "hotel", preset: str | None = "hotel1", **over) -> dict:
     key = (kind, preset, tuple(sorted(over.items())))
     if key not in _CACHE:
         x = copy.deepcopy(core.DEFAULT_INPUTS)
@@ -146,7 +146,7 @@ def test_the_pdf_and_the_teaser_print_the_stars() -> None:
     pytest.importorskip("reportlab")
     from market_search.krt_requirements import pdf_text
     x = hotel_presets.apply_preset({**copy.deepcopy(core.DEFAULT_INPUTS),
-                                    "project_kind": "hotel"}, "dombai")
+                                    "project_kind": "hotel"}, "hotel1")
     t = copy.deepcopy(core.TEP_DEFAULT)
     bundle = core._run_authoritative_model(x, t, [], {})
     pdf = core._build_developaid_pdf({"result": bundle["consolidated"], "project_name": "Отель",
@@ -214,6 +214,11 @@ def test_the_economics_lines_add_up_for_the_hotel() -> None:
     # Льгота 0 % на проживание: возмещение НДС стройки больше начисленного —
     # строка со знаком минус, а не пропажа из структуры.
     assert result["finance"]["vat"] < 0 and core.VAT_REFUND_LABEL in labels
+    # Эксплуатация гостиницы — своей подписью: ДКП и «вне ДДУ» у неё нет.
+    assert core.HOTEL_COSTS_LABEL in labels and core.NONRES_COSTS_LABEL not in labels
+    assert result["report"]["nonres_costs_label"] == core.HOTEL_COSTS_LABEL
+    assert result["summary"]["landscaping_gap"].startswith(
+        "Благоустройства в расчёте нет: гостиничный проект")
     _, mixed = _run("mixed", None)
     assert "Гостиница — здание, мебель и оборудование" not in [
         e["label"] for e in mixed["report"]["expense_structure"]]
