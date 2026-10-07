@@ -2885,14 +2885,15 @@ def _glavapu_base_costs(rows: list[list[Any]], column: int = 2) -> dict[str, flo
 
 
 def _xlsx_export_date(data: bytes) -> str | None:
-    """Дата выгрузки из свойств книги (docProps/core.xml): изменена, иначе
-    создана. Нет свойств — None: дату не угадываем ни по имени файла, ни по
-    сегодняшнему дню."""
+    """Дата выгрузки из свойств книги (docProps/core.xml): создана, иначе
+    изменена — пересохранение книги меняет «изменена», а выгрузка случилась в
+    день создания. Нет свойств — None: дату не угадываем ни по имени файла, ни
+    по сегодняшнему дню."""
     try:
         core = ET.fromstring(zipfile.ZipFile(io.BytesIO(data)).read("docProps/core.xml"))
     except Exception:
         return None
-    for tag in ("modified", "created"):
+    for tag in ("created", "modified"):
         node = core.find(f"{{http://purl.org/dc/terms/}}{tag}")
         text = (node.text or "").strip() if node is not None else ""
         if re.match(r"\d{4}-\d{2}-\d{2}", text):
