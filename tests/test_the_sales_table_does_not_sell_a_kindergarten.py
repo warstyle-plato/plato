@@ -134,7 +134,11 @@ def test_in_a_real_browser_the_sales_table_has_no_kindergarten():
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.goto(f"{base}/classic", wait_until="domcontentloaded")
-            tab.wait_for_timeout(700)
+            # Ждать конца загрузки, а не часы: `initializeApp` сам зовёт
+            # `calculate()` после ответа `/current-key-rate`. Пришёл он позже
+            # 700 мс — и загрузочный расчёт обгонял второй расчёт теста: тот
+            # возвращал null (номер устарел), а шапка оставалась от очередей.
+            tab.wait_for_function("window.__developaidBooted===true", timeout=60000)
             # Таблица продаж рисуется ДВУМЯ ветками — по очередям и сводной.
             # Проверяются обе: починенная одна выглядит как починенные обе.
             got = tab.evaluate(
@@ -149,11 +153,12 @@ def test_in_a_real_browser_the_sales_table_has_no_kindergarten():
                   };
                   Object.assign(inputs, payload.inputs);
                   phasing = payload.phasing;
-                  await calculate();
+                  const first=await calculate();
                   const phased=read();
                   phasing = {enabled:false, phases:[]};
-                  await calculate();
-                  return {phased:phased, plain:read()};
+                  const second=await calculate();
+                  return {phased:phased, plain:read(),
+                          superseded:[first===null, second===null]};
                 }""",
                 {"inputs": {k: v for k, v in _inputs().items()
                             if not k.startswith("_")},
@@ -161,6 +166,9 @@ def test_in_a_real_browser_the_sales_table_has_no_kindergarten():
         finally:
             browser.close()
 
+    # Читается то, что нарисовал СВОЙ расчёт: обогнанный другим он ничего не
+    # рисует, и проверка смотрела бы на чужую таблицу.
+    assert got["superseded"] == [False, False], got["superseded"]
     other = [line for line in errors if "Failed to fetch" not in line]
     assert not other, f"страница упала: {other[:2]}"
     for view in ("phased", "plain"):
