@@ -55019,6 +55019,29 @@ function isHotel(){return projectKind()==='hotel'}
 // дом», как у движка (`without_housing`): обнуление МКД, замок строк ТЭП и
 // пометка жилых полей у обоих типов одни и те же.
 function withoutHousing(){return projectKind()!=='mixed'}
+// Где стоит выбор типа. Отвечает одно место: в этой разметке — шапка, а слой
+// `/ia`, переставляя список на шаг «Участок», переназначает ответ здесь же.
+// Подсказки у запертых жилых полей и строк ТЭП читают его, а не пишут место
+// своей копией: копия осталась бы «в шапке», когда список уже уехал.
+let PROJECT_KIND_WHERE='в шапке';
+function projectKindWhereNote(){return 'Тип проекта — '+PROJECT_KIND_WHERE+'.'}
+// Подземный паркинг жилого дома. В нежилом проекте его поля заперты, и
+// подсказка обязана сказать, ГДЕ вводятся места объекта: «это жильё» читалось
+// как «паркинг пропал», и места офиса казалось негде ввести (владелец).
+// Принадлежность — группой «Подземный паркинг» из FIELD_GROUPS движка, а не
+// своим перечнем ключей.
+function isResidentialParkingField(id){
+ const group=FIELD_GROUPS.find(g=>g[0]==='Подземный паркинг');
+ return !!group&&group[1].some(f=>f[0]===id);
+}
+function clearedHousingNote(id){
+ if(isResidentialParkingField(id)){
+  return 'Это подземный паркинг жилого дома (МКД): в проекте «'+escapeHtml(projectKindLabel(projectKind()))
+   +'» он не считается.'+(isHotel()?'':' Места объекта вводятся выше, в блоке «Паркинг объекта».')
+   +' '+projectKindWhereNote();
+ }
+ return 'Проект «'+escapeHtml(projectKindLabel(projectKind()))+'»: это жильё, и в расчёт оно не идёт. '+projectKindWhereNote();
+}
 // Подпись типа берётся из того же списка, что и селектор: вторая копия
 // слова разошлась бы с ним молча, и кнопка звала бы режим не тем именем,
 // каким он назван в шапке.
@@ -55874,7 +55897,7 @@ function renderInputs(){
      // а пустая клетка без слов неотличима от несработавшей правки.
      if(withoutHousing()&&NONRESIDENTIAL_CLEARED[id]){
        wrap.innerHTML+='<div class="note" style="margin:0;padding:11px 12px">'
-        +'Проект «'+escapeHtml(projectKindLabel(projectKind()))+'»: это жильё, и в расчёт оно не идёт. Тип проекта — в шапке.</div>';
+        +clearedHousingNote(id)+'</div>';
        grid.appendChild(wrap);return;
      }
      if(id==='construction_months'&&phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
@@ -56601,7 +56624,7 @@ function renderTep(){
    const mkdLocked=withoutHousing()&&MKD_PRODUCTS.includes(key);
    let label=row.label;
    if(mkdLocked){
-    label+=' <span class="tep-note">Нежилой проект: МКД в нём нет — строка обнулена и заперта. Тип проекта — в шапке.</span>';
+    label+=' <span class="tep-note">Нежилой проект: МКД в нём нет — строка обнулена и заперта. '+projectKindWhereNote()+'</span>';
    }
    if(key==='underground_parking'&&inputs.underground_parking_disabled){
      const shortfall=undergroundShortfallNote();

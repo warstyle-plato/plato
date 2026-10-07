@@ -66,6 +66,16 @@ AFTER = """keys => ({
   cleared: (inputs._nonres_cleared || []).length,
 })"""
 
+# Подсказки у запертых жилых полей и строк ТЭП нежилого проекта.
+HINTS = """() => {
+  const notes = [...document.querySelectorAll('#inputs .note, #tep .tep-note')]
+    .map(n => n.textContent.trim()).filter(Boolean);
+  const parking = [...document.querySelectorAll('#inputs label')]
+    .filter(l => /Площадь подземной парковки|Машино-места — решение проекта/.test(l.textContent))
+    .map(l => { const n = l.parentElement.querySelector('.note'); return n ? n.textContent.trim() : ''; });
+  return {notes, parking};
+}"""
+
 
 @pytest.fixture(scope="module")
 def drawn() -> dict:
@@ -96,8 +106,19 @@ def drawn() -> dict:
             page.wait_for_function(
                 "() => getComputedStyle(document.getElementById('projectKindDialog')).display !== 'none'")
             out["switched"] = page.evaluate(AFTER, keys)
+            page.evaluate("() => closeProjectKindDialog()")
+            out["hints"] = page.evaluate(HINTS)
             page.evaluate("() => cancelNonResidential()")
             out["restored"] = page.evaluate(AFTER, keys)
+            # Классический вид: список остался в шапке, и подсказка говорит это.
+            classic = engine.new_page(viewport={"width": 1440, "height": 900})
+            classic.goto(base + "/classic", wait_until="domcontentloaded")
+            classic.wait_for_function("() => typeof lastResult !== 'undefined' && lastResult")
+            classic.evaluate("() => { applyProjectKind('nonresidential'); closeProjectKindDialog(); }")
+            out["classic"] = classic.evaluate(HINTS)
+            out["classicKindInHeader"] = classic.evaluate(
+                "() => !!document.querySelector('.actions #projectKindSelect')")
+            classic.close()
             out["errors"] = errors
             page.close()
     return out
@@ -140,3 +161,21 @@ def test_switching_the_kind_after_a_loaded_project_still_recalculates(drawn) -> 
     assert restored["kind"] == "mixed" and restored["select"] == "mixed"
     assert restored["dialog"] == "none"
     assert not restored["cleared"], "отмена должна вернуть убранное"
+
+
+def test_the_parking_hint_of_a_nonresidential_project_points_to_the_object_parking(drawn) -> None:
+    """«Это жильё» читалось как «паркинг пропал»: подсказка называет МКД и
+    блок «Паркинг объекта», а место выбора типа — шаг «Участок», не шапку."""
+    hints = drawn["hints"]
+    assert len(hints["parking"]) == 2, hints
+    for text in hints["parking"]:
+        assert "жилого дома" in text and "Паркинг объекта" in text, text
+        assert "Участок" in text, text
+    assert hints["notes"], "в нежилом проекте подсказки у запертых полей должны быть"
+    assert not [n for n in hints["notes"] if "шапк" in n], hints["notes"]
+
+
+def test_the_classic_view_still_points_to_the_header(drawn) -> None:
+    assert drawn["classicKindInHeader"], "в /classic список типа остаётся в шапке"
+    parking = drawn["classic"]["parking"]
+    assert parking and all("в шапке" in t and "Паркинг объекта" in t for t in parking), parking

@@ -407,6 +407,19 @@
     note.style.textAlign = 'left';
     card.appendChild(holder);
     site.insertBefore(card, site.firstChild);
+
+    // Подсказки у запертых жилых полей называют место выбора типа одним
+    // ответом страницы — PROJECT_KIND_WHERE. Список уехал, ответ меняется там
+    // же; иначе подсказка продолжала бы слать в шапку, где его больше нет.
+    if (typeof PROJECT_KIND_WHERE === 'undefined') {
+      missing.push('место выбора типа для подсказок — PROJECT_KIND_WHERE');
+      return;
+    }
+    PROJECT_KIND_WHERE = 'на шаге «Проект → Участок», карточка «Что строим»';
+    if (typeof withoutHousing === 'function' && withoutHousing()) {
+      if (typeof renderInputs === 'function') renderInputs();
+      if (typeof renderTep === 'function') renderTep();
+    }
   }
 
   /* Холодному пользователю нужен один клик, а не выбор из четырёх способов
