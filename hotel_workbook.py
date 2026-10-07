@@ -145,8 +145,14 @@ _COLUMN_LIST: tuple[tuple[str, str], ...] = (
     ("cum_draw", "Выдано всего"), ("fee", "Комиссия"), ("first_k", "Служебная: выдача"),
     ("bal_after", "Долг после выдачи"), ("prepay", "Возмещение НДС в погашение"),
     ("bal_pre", "Долг до погашения"), ("annuity", "Тело по аннуитету"),
+    ("sched", "Плановое погашение тела"),
+    ("free", "Свободные деньги после процентов и налога"),
+    ("res_open", "Удержано в проекте на начало"),
+    ("sweep", "Погашение удержанными деньгами"),
     ("repay", "Погашение тела"), ("repay_total", "Погашение всего"),
-    ("bal_close", "Долг на конец"), ("amort", "Плановое тело (для DSCR)"),
+    ("bal_close", "Долг на конец"),
+    ("res_close", "Удержано в проекте на конец"), ("retained", "Удержано за месяц"),
+    ("amort", "Плановое тело (для DSCR)"),
     ("dep", "Амортизация"), ("margin", "Налоговая маржа"), ("fin_ded", "Проценты и комиссии к вычету"),
     ("def_acc", "Расходы до ввода, к году ввода"), ("newyear", "Новый налоговый год"),
     ("prior", "Убыток прошлых лет"), ("yres", "Результат года нарастающим"),
@@ -273,15 +279,28 @@ def _row_formulas(r: int, irr_project: float | None, irr_equity: float | None
                     f"IF({v['rate']}>0,MIN({v['bal_pre']},MAX(0,{v['bal_pre']}*{r12}"
                     f"/(1-(1+{r12})^(-{left}))-{v['interest']})),"
                     f"MIN({v['bal_pre']},MAX(0,{v['bal_pre']}/{left}-{v['interest']}))),0)"),
-        "repay": (f"=IF(OR({v['bal_pre']}<=0,{A}<{i('comm')},{A}>{i('horizon')}),0,"
+        "sched": (f"=IF(OR({v['bal_pre']}<=0,{A}<{i('comm')},{A}>{i('horizon')}),0,"
                   f"IF(OR({A}={i('horizon')},{A}>={i('maturity')}),{v['bal_pre']},"
                   f"IF({A}>={i('amort_start')},"
                   f'IF({i("repayment")}="sweep",MIN({v["bal_pre"]},MAX(0,{v["ebitda"]}-{v["interest"]})),'
                   f'IF({i("repayment")}="sculpted",MIN({v["bal_pre"]},MAX(0,MAX(0,{v["ebitda"]})'
                   f"/{i('dscr')}-{v['interest']})),{v['annuity']})),0)))"),
+        # Удержание свободного потока (как в `hotel_flows`): пока долг не
+        # погашен, деньги после процентов и налога копятся в проекте и гасят
+        # кредит сверх планового платежа, когда погашение разрешено.
+        "free": (f"=IF(AND({A}>={i('comm')},{A}<{i('horizon')}),"
+                 f"{v['ebitda']}-{v['int_paid']}-{v['fee']}-{v['tax']},0)"),
+        "res_open": f"={prev('res_close')}",
+        "sweep": (f"=IF(AND({A}>={i('comm')},{A}<{i('horizon')},{v['bal_pre']}>{v['sched']},"
+                  f"OR({A}>={i('amort_start')},{A}>={i('maturity')})),"
+                  f"MIN({v['bal_pre']}-{v['sched']},MAX(0,{v['res_open']}+{v['free']}-{v['sched']})),0)"),
+        "repay": f"={v['sched']}+{v['sweep']}",
         "repay_total": f"={v['repay']}+{v['prepay']}",
         "bal_close": f"={v['bal_pre']}-{v['repay']}",
-        "amort": f"=IF({A}={i('horizon')},0,{v['repay']})",
+        "res_close": (f"=IF(OR({A}<{i('comm')},{A}>={i('horizon')},{v['bal_close']}<=0.000001),0,"
+                      f"MAX(0,{v['res_open']}+{v['free']}-{v['repay']}))"),
+        "retained": f"={v['res_close']}-{v['res_open']}",
+        "amort": f"=IF({A}={i('horizon')},0,{v['sched']})",
         "dep": f"=IF({v['in_h']}=1,{v['dep_b']}+{v['dep_f']},0)",
         "margin": (f"=IF({v['in_h']}=0,0,{v['ebitda']}+{v['exit']}-{v['exit_cost']}-{v['dep']}"
                    f'-IF(AND({A}={i("horizon")},{i("exit_mode")}="sale"),'
@@ -304,7 +323,7 @@ def _row_formulas(r: int, irr_project: float | None, irr_equity: float | None
         "operating": (f"=IF({v['in_h']}=0,0,{v['ebitda']}+{v['exit']}+{v['residual']}"
                       f"-{v['exit_cost']}-{v['vat_paid']})"),
         "to_equity": (f"={v['operating']}-{v['int_paid']}-{v['fee']}+{v['draw']}"
-                      f"-{v['repay_total']}"),
+                      f"-{v['repay_total']}-{v['retained']}"),
         "project_cf": (f"=IF({v['in_h']}=0,0,{v['operating']}-{v['capex']}-{v['int_cap']}"
                        f"-{v['int_paid']}-{v['fee']}-{v['tax']})"),
         "equity_cf": f"=IF({v['in_h']}=0,0,{v['to_equity']}-{v['capex']}-{v['tax']})",

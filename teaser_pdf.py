@@ -665,6 +665,11 @@ def _object_value(row: dict[str, Any], fm: _Formats) -> tuple[str, str]:
         return fm.th(value), "тыс ₽/м²"
     if unit == "num":
         return fm.th(value, 2), str(row.get("suffix") or "")
+    # Гостиница: рубли на единицу (ADR, RevPAR, затраты на номер) и годы.
+    if unit == "rub_unit":
+        return fm.count(value), "₽"
+    if unit == "years":
+        return fm.th(value, 1), ""
     if unit == "date":
         text = str(value or "")
         return (".".join(reversed(text[:7].split("-"))) if text else "—"), ""

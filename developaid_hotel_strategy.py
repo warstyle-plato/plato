@@ -645,12 +645,26 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
             return pref_share * kr + pref_margin
         return kr + spread
 
-    balance = drawn = peak = 0.0
+    # Налоговая маржа от кредита не зависит — она известна до него, и налог
+    # месяца (причинный: читает только прошлые месяцы) считается внутри
+    # цикла кредита той же общей функцией: он нужен до решения, сколько
+    # свободных денег уходит в погашение.
+    for month in months:
+        recognized = m["depreciation"][month]
+        if month == horizon_end and exit_mode == EXIT_SALE:
+            # Продажа списывает остаток стоимости, участок — целиком.
+            recognized += max(0.0, building_book) + max(0.0, ffe_book) + land_total
+        m["tax_margin"][month] = (m["ebitda"][month] + m["exit_revenue"][month]
+                                  - m["exit_cost"][month] - recognized)
+    margins = {mm: m["tax_margin"][mm] for mm in months}
+    financing_deduction: dict[date, float] = {}
+
+    balance = drawn = peak = reserve = 0.0
     first_draw: date | None = None
     maturity: date | None = None
     amort_start: date | None = None
     capped = 0.0
-    for month in months:
+    for index, month in enumerate(months):
         rate = rate_of(month) if loan_on else 0.0
         interest = balance * rate / 12.0
         if loan_on:
@@ -674,6 +688,9 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         if first_draw and maturity is None:
             maturity = add_months(first_draw, term_months)
             amort_start = max(commissioning, add_months(first_draw, grace))
+        financing_deduction[month] = interest + m["loan_fee"][month]
+        tax = profit_tax_schedule(months[:index + 1], margins, financing_deduction,
+                                  commissioning, profit_tax_rate)[0].get(month, 0.0)
         repay = 0.0
         # Возмещённый НДС стройки гасит кредит первым: банк дал деньги и на
         # налог в составе затрат, и возмещение возвращается ему, а не
@@ -687,11 +704,14 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
             repay_vat = prepay
         else:
             repay_vat = 0.0
+        allowed = False
         if balance > 0 and month >= commissioning:
             cash = m["ebitda"][month] - interest
             if month == horizon_end or (maturity is not None and month >= maturity):
                 repay = balance  # срок или конец расчёта: остаток платит выход или капитал
+                allowed = True
             elif amort_start is not None and month >= amort_start:
+                allowed = True
                 if repayment == REPAY_SWEEP:
                     repay = min(balance, max(0.0, cash))
                 elif repayment == REPAY_SCULPTED:
@@ -702,8 +722,30 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
                     r = rate / 12.0
                     payment = (balance * r / (1.0 - (1.0 + r) ** -left)) if r else balance / left
                     repay = min(balance, max(0.0, payment - interest))
+        # Удержание свободного потока (владелец, 07.10.2026: «как Отель 1» —
+        # «Учёт остатков денежных средств при погашении долга: да»). Пока
+        # кредит не погашен, деньги после процентов и налога собственнику не
+        # уходят: копятся в проекте (в отсрочку тела тоже) и гасят долг сверх
+        # планового платежа, как только погашение разрешено. Остаток
+        # выплачивается в месяц погашения; конец срока закрывает всё.
+        locked = commissioning <= month < horizon_end
+        free = (m["ebitda"][month] - m["loan_interest_paid"][month] - m["loan_fee"][month]
+                - tax) if locked else 0.0
+        sweep = 0.0
+        if locked and allowed and balance > repay:
+            sweep = min(balance - repay, max(0.0, reserve + free - repay))
+        repay += sweep
         if repay:
             balance -= repay
+        reserve_open = reserve
+        reserve = (max(0.0, reserve + free - repay)
+                   if locked and balance > 1e-6 else 0.0)
+        if sweep:
+            m["loan_cash_sweep"][month] = sweep
+        if reserve:
+            m["cash_reserve"][month] = reserve
+        if reserve != reserve_open:
+            m["cash_retained"][month] = reserve - reserve_open
         if repay or repay_vat:
             m["loan_repayment"][month] = repay + repay_vat
         m["loan_balance"][month] = balance
@@ -714,18 +756,8 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
             f"{capped / 1e6:,.1f} млн ₽ сверх лимита платит капитал.".replace(",", " "))
 
     # --- налог на прибыль -----------------------------------------------
-    for month in months:
-        recognized = m["depreciation"][month]
-        if month == horizon_end and exit_mode == EXIT_SALE:
-            # Продажа списывает остаток стоимости, участок — целиком.
-            recognized += max(0.0, building_book) + max(0.0, ffe_book) + land_total
-        m["tax_margin"][month] = (m["ebitda"][month] + m["exit_revenue"][month]
-                                  - m["exit_cost"][month] - recognized)
-    financing_deduction = {mm: m["loan_interest_cap"][mm] + m["loan_interest_paid"][mm]
-                           + m["loan_fee"][mm] for mm in months}
     tax_schedule, tax_detail = profit_tax_schedule(
-        months, {mm: m["tax_margin"][mm] for mm in months}, financing_deduction,
-        commissioning, profit_tax_rate)
+        months, margins, financing_deduction, commissioning, profit_tax_rate)
     for mm, value in tax_schedule.items():
         if value:
             m["profit_tax"][mm] = value
@@ -742,7 +774,8 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
                      + m["residual_value"][month] - m["exit_cost"][month] - vat_paid)
         m["cash_to_equity"][month] = (
             operating - m["loan_interest_paid"][month] - m["loan_fee"][month]
-            + m["loan_draw"][month] - m["loan_repayment"][month])
+            + m["loan_draw"][month] - m["loan_repayment"][month]
+            - m["cash_retained"][month])
         m["project_cf"][month] = (operating - m["capex"][month]
                                   - m["loan_interest_cap"][month]
                                   - m["loan_interest_paid"][month] - m["loan_fee"][month]
@@ -769,6 +802,12 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     repaid = next((mm for mm in months if mm >= commissioning
                    and m["loan_repayment"][mm] and not m["loan_balance"][mm]), None)
     revenue_total = total("revenue")
+    # Пик собственного капитала — худший накопленный поток капитала по
+    # месяцам: им меряется, сколько денег собственник вложил на деле.
+    cumulative = equity_peak = 0.0
+    for value in equity_cf:
+        cumulative += value
+        equity_peak = max(equity_peak, -cumulative)
     kpi = {
         "keys": ops.keys,
         "capex": capex_total, "capex_net": capex_net, "capex_vat": capex_vat,
@@ -788,7 +827,10 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         "forward_ebitda": forward_ebitda,
         "exit_value": exit_value, "exit_month": horizon_end,
         "exit_mode": exit_mode, "valuation": valuation,
+        "equity_peak": equity_peak,
+        "equity_share": equity_peak / capex_total if capex_total else 0.0,
         "loan_peak": peak, "loan_drawn": drawn, "loan_maturity": maturity,
+        "loan_first_draw": first_draw,
         "loan_repaid_month": repaid,
         "dscr_by_year": dscr_by_year,
         "dscr_min": min(dscr_by_year) if dscr_by_year else None,
@@ -899,17 +941,20 @@ def annual_table(months: list[date], m: dict[str, dict[date, float]]) -> list[di
                      "rooms_expense", "fnb_expense", "other_expense", "ag", "sm", "pom",
                      "utilities", "gop", "base_fee", "incentive_fee", "ffe_reserve",
                      "property_tax", "insurance", "ebitda", "depreciation", "profit_tax",
-                     "fcff", "equity_cf", "loan_repayment", "exit_revenue",
+                     "fcff", "equity_cf", "loan_draw", "loan_repayment", "exit_revenue",
                      "residual_value", "capex"):
             row[name] = float(sum(m[name].get(mm, 0.0) for mm in span))
+        row["loan_balance"] = float(m["loan_balance"].get(span[-1], 0.0))
         row["interest"] = float(sum(m["loan_interest_cap"].get(mm, 0.0)
                                     + m["loan_interest_paid"].get(mm, 0.0) for mm in span))
         paid = float(sum(m["loan_interest_paid"].get(mm, 0.0) for mm in span))
-        # Тело в DSCR — плановое: возмещённый НДС стройки и остаток, гасимый
-        # выходом в последний месяц расчёта, обслуживанием года не считаются.
+        # Тело в DSCR — плановое: возмещённый НДС стройки, досрочное
+        # погашение удержанными деньгами и остаток, гасимый выходом в последний
+        # месяц расчёта, обслуживанием года не считаются.
         last = span[-1]
         scheduled = (row["loan_repayment"]
-                     - float(sum(m["loan_vat_prepayment"].get(mm, 0.0) for mm in span))
+                     - float(sum(m["loan_vat_prepayment"].get(mm, 0.0)
+                                 + m["loan_cash_sweep"].get(mm, 0.0) for mm in span))
                      - (m["loan_repayment"].get(last, 0.0)
                         - m["loan_vat_prepayment"].get(last, 0.0)
                         if last == months[-1] else 0.0))

@@ -17740,57 +17740,64 @@ def _object_pdf_sections(story: list[Any], sections: dict[str, Any], inputs: dic
             continue
         story.append(_PdfSection(_PDF_OBJECT_SHARED.get(key, f"object_{key}")))
         story.append(P(str(section.get("title") or ""), h2))
-        for block in section.get("blocks") or []:
-            title = str(block.get("title") or "")
-            ref = block.get("ref")
-            if block.get("kind") == "verdict" and section.get("verdict"):
-                verdict = section["verdict"]
-                story.append(table([["Вывод", str(verdict.get("title") or "")],
-                                    ["Основание", str(verdict.get("text") or "")]],
-                                   [45*mm, 125*mm], header=False, font_size=8.0))
-                continue
-            if ref == "goal_seek":
-                goal = section.get("goal_seek") or {}
-                story.append(P(
-                    (f"{title}: подбирается на странице отчёта полным пересчётом модели — "
-                     f"наибольшая цена участка, при которой «{goal.get('label')}» не ниже "
-                     f"{_pdf_num(goal.get('target'), 2)}x.") if goal.get("metric")
-                    else f"{title}: {goal.get('reason') or 'показателя долга у проекта нет.'}",
-                    small))
-                continue
-            if ref == "site":
-                rows = []
-                area = float(inputs.get("site_area_ha") or 0)
-                if area > 0:
-                    rows.append(["Площадь участка", _pdf_num(area, 4) + " га"])
-                numbers = _project_cadastral_numbers(inputs)
-                if numbers:
-                    rows.append(["Кадастровые номера", ", ".join(numbers)])
-                if rows:
-                    story.append(KeepTogether([P(title, small),
-                                               table(rows, [60*mm, 110*mm], header=False)]))
-                continue
-            if ref == "sensitivity":
-                brief = ", ".join(str(r.get("value") or "") for r in section.get("brief") or [])
-                story.append(P("Чувствительность не рассчитана на вкладке — факторы объекта: "
-                               + (brief or "—") + ".", small))
-                continue
-            if block.get("years"):
-                columns = block.get("columns") or []
-                rows = [[str(c[1]) for c in columns]]
-                for year in block["years"]:
-                    rows.append([str(year.get(c[0])) if c[2] == "text"
-                                 else _pdf_object_value({"unit": c[2], "value": year.get(c[0])})
-                                 for c in columns])
-                width = 170 / max(1, len(columns))
+        _object_pdf_blocks(story, section, inputs, P, table, small, KeepTogether, Spacer, mm)
+
+
+def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[str, Any],
+                       P: Any, table: Any, small: Any, KeepTogether: Any, Spacer: Any,
+                       mm: float) -> None:
+    """Блоки одного раздела объектной вёрстки — таблицами движка."""
+    for block in section.get("blocks") or []:
+        title = str(block.get("title") or "")
+        ref = block.get("ref")
+        if block.get("kind") == "verdict" and section.get("verdict"):
+            verdict = section["verdict"]
+            story.append(table([["Вывод", str(verdict.get("title") or "")],
+                                ["Основание", str(verdict.get("text") or "")]],
+                               [45*mm, 125*mm], header=False, font_size=8.0))
+            continue
+        if ref == "goal_seek":
+            goal = section.get("goal_seek") or {}
+            story.append(P(
+                (f"{title}: подбирается на странице отчёта полным пересчётом модели — "
+                 f"наибольшая цена участка, при которой «{goal.get('label')}» не ниже "
+                 f"{_pdf_num(goal.get('target'), 2)}x.") if goal.get("metric")
+                else f"{title}: {goal.get('reason') or 'показателя долга у проекта нет.'}",
+                small))
+            continue
+        if ref == "site":
+            rows = []
+            area = float(inputs.get("site_area_ha") or 0)
+            if area > 0:
+                rows.append(["Площадь участка", _pdf_num(area, 4) + " га"])
+            numbers = _project_cadastral_numbers(inputs)
+            if numbers:
+                rows.append(["Кадастровые номера", ", ".join(numbers)])
+            if rows:
                 story.append(KeepTogether([P(title, small),
-                                           table(rows, [width*mm] * len(columns), font_size=6.8)]))
-                continue
-            rows = [[title or " ", " "]]
-            for row in block.get("rows") or []:
-                rows.append([str(row.get("label") or ""), _pdf_object_value(row)])
-            story.append(table(rows, [112*mm, 58*mm], font_size=7.6))
-            story.append(Spacer(1, 2*mm))
+                                           table(rows, [60*mm, 110*mm], header=False)]))
+            continue
+        if ref == "sensitivity":
+            brief = ", ".join(str(r.get("value") or "") for r in section.get("brief") or [])
+            story.append(P("Чувствительность не рассчитана на вкладке — факторы объекта: "
+                           + (brief or "—") + ".", small))
+            continue
+        if block.get("years"):
+            columns = block.get("columns") or []
+            rows = [[str(c[1]) for c in columns]]
+            for year in block["years"]:
+                rows.append([str(year.get(c[0])) if c[2] == "text"
+                             else _pdf_object_value({"unit": c[2], "value": year.get(c[0])})
+                             for c in columns])
+            width = 170 / max(1, len(columns))
+            story.append(KeepTogether([P(title, small),
+                                       table(rows, [width*mm] * len(columns), font_size=6.8)]))
+            continue
+        rows = [[title or " ", " "]]
+        for row in block.get("rows") or []:
+            rows.append([str(row.get("label") or ""), _pdf_object_value(row)])
+        story.append(table(rows, [112*mm, 58*mm], font_size=7.6))
+        story.append(Spacer(1, 2*mm))
 
 
 def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
@@ -19244,9 +19251,22 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         del story[_financing_start:]
         story.append(_PdfSection("financing"))
         story.append(P("Финансирование", h2))
-        story.append(P("Проект без продаж по ДДУ: БРИДЖа, проектного финансирования и "
-                       "эскроу нет. Стройку и общие затраты финансирует кредит объекта "
-                       "на долю стоимости, остальное — собственный капитал.", small))
+        _hotel_finance = ((report.get("object_report") or {}).get("hotel")
+                          and _object_sections.get("finance"))
+        if _hotel_finance:
+            # Гостиница — свой кредит и своё правило капитала; блоки раздела
+            # те же, что на странице (`hotel_object_report`).
+            story.append(P("Банк ПФ гостиницу не кредитует: стройку и общие затраты "
+                           "финансирует кредит гостиницы на долю затрат, остальное — "
+                           "собственный капитал. Пока кредит не погашен, свободный поток "
+                           "после процентов и налога гасит долг, собственнику — после "
+                           "погашения.", small))
+            _object_pdf_blocks(story, _hotel_finance, inputs, P, table, small,
+                               KeepTogether, Spacer, mm)
+        else:
+            story.append(P("Проект без продаж по ДДУ: БРИДЖа, проектного финансирования и "
+                           "эскроу нет. Стройку и общие затраты финансирует кредит объекта "
+                           "на долю стоимости, остальное — собственный капитал.", small))
     # Кредит объектов вне ДДУ — в разделе «Финансирование», той же таблицей
     # движка (`nonres_financing_report`), что на экране: условия, выборка,
     # платёж, баллон, погашение и обслуживание по годам. Прежде раздел у
@@ -31975,6 +31995,10 @@ def _telegram_object_value(row: dict[str, Any]) -> str:
         return "—" if value is None else _telegram_number(value, 0)
     if unit == "th":
         return "—" if value is None else _telegram_number(value, 1) + " тыс ₽/м²"
+    if unit == "rub_unit":
+        return "—" if value is None else _telegram_number(value, 0) + " ₽"
+    if unit == "years":
+        return "—" if value is None else _telegram_number(value, 1)
     if unit == "date":
         text = str(value or "")
         return ".".join(reversed(text[:7].split("-"))) if text else "—"
@@ -34016,11 +34040,16 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     vri_gross = n(x, "land_rights_cost_mln") * 1_000_000
     vri_relief_amount, vri_net = vri_relief(x, vri_gross)
 
+    # База удельных статей проекта (ИРД, проект П/РД, подготовка, сети, ввод,
+    # содержание площадки) — ГНС, которую строят. У гостиницы жилья нет, и
+    # база — ГНС гостиницы (владелец, 07.10.2026: «от ГНС гостиницы»), а не
+    # пустая площадь МКД, дававшая статьи нулём.
+    article_gns = n(x, "hotel_gba_sqm") if is_hotel(x) else core_total_gns
     amounts = {
         "land_rights": vri_net,
-        "ird": core_total_gns * n(x, "ird_th_per_sqm") * 1000,
-        "design_p": core_total_gns * n(x, "design_p_th_per_sqm") * 1000,
-        "design_rd": core_total_gns * n(x, "design_rd_th_per_sqm") * 1000,
+        "ird": article_gns * n(x, "ird_th_per_sqm") * 1000,
+        "design_p": article_gns * n(x, "design_p_th_per_sqm") * 1000,
+        "design_rd": article_gns * n(x, "design_rd_th_per_sqm") * 1000,
         "author_supervision": 0.0,
         "technical_supervision": 0.0,
         # Снос считается от площади СНОСИМОГО, а не от новой ГНС: это разные
@@ -34030,10 +34059,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # и входит в расчётный лимит БРИДЖа, а снос — нет.
         "demolition": n(x, "demolition_area_sqm") * n(x, "demolition_cost_th_per_sqm") * 1000,
         "resettlement": n(x, "resettlement_cost_mln") * 1_000_000,
-        "preparation": core_total_gns * n(x, "preparation_th_per_sqm") * 1000,
+        "preparation": article_gns * n(x, "preparation_th_per_sqm") * 1000,
         "main_above": core_above_gns * n(x, "main_above_th_per_sqm") * 1000,
         "main_under": core_under_gns * n(x, "main_under_th_per_sqm") * 1000,
-        "utilities": core_total_gns * n(x, "utilities_th_per_sqm") * 1000,
+        "utilities": article_gns * n(x, "utilities_th_per_sqm") * 1000,
         # Ставка на метр ГНС сильнее методики двора, когда она задана:
         # привычный сметчику показатель — просьба владельца. База — НАЗЕМНАЯ
         # ГНС ПРОЕКТА, та же, которой меряют удельные и которой считает свод
@@ -34044,8 +34073,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         # умолчаниях 140 381 м² против 145 381, то есть тот же показатель на
         # 3,5% выше при тех же деньгах.
         "landscaping": landscaping_amount,
-        "commissioning": core_total_gns * n(x, "commissioning_th_per_sqm") * 1000,
-        "site_maintenance": core_total_gns * n(x, "site_maintenance_th_per_sqm") * 1000,
+        "commissioning": article_gns * n(x, "commissioning_th_per_sqm") * 1000,
+        "site_maintenance": article_gns * n(x, "site_maintenance_th_per_sqm") * 1000,
         # Статьи объектов — по реестру, а не перечислением: снятый оттуда
         # объект иначе валит расчёт KeyError'ом, то есть список тут второй.
         **{obj.key: standalone_capex.get(obj.key, 0.0) for obj in standalone_objects()},
@@ -36399,14 +36428,11 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
     hotel = finance.get("hotel") or {}
     if hotel.get("computed"):
         kpi = hotel.get("kpi") or {}
-        cumulative = worst = 0.0
-        for value in equity_cf:
-            cumulative += float(value or 0.0)
-            worst = min(worst, cumulative)
         sale = kpi.get("exit_mode") == hotel_strategy.EXIT_SALE
         tiles += [
             {"label": "Кредит гостиницы — пик", "value": kpi.get("loan_peak"), "unit": "rub"},
-            {"label": "Собственный капитал — пик потребности", "value": -worst, "unit": "rub"},
+            {"label": "Собственный капитал — пик потребности", "value": kpi.get("equity_peak"),
+             "unit": "rub"},
             {"label": "EBITDA стабилизированного года", "value": kpi.get("stabilized_ebitda"),
              "unit": "rub"},
             {"label": "Доходность на затраты (EBITDA / CAPEX без НДС)",
@@ -36425,7 +36451,9 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
     # Своя вёрстка — у проекта без жилья и без ПФ, чьи объекты идут вне ДДУ
     # (владелец, 05.10.2026: «вёрстка нежилых объектов, где они не идут в
     # проекте с жильём, должна быть своей»). Жилой и смешанный — как были.
-    kind = (REPORT_KIND_OBJECT if not housing and not project_finance and objects
+    # Гостиница — тоже объект вне ДДУ (владелец, 07.10.2026: «тизер и отчёт
+    # не соответствуют типу гостиницы») — та же рамка, свой наполнитель.
+    kind = (REPORT_KIND_OBJECT if not housing and not project_finance and (objects or hotel)
             else REPORT_KIND_HOUSING)
     return {"housing": housing,
             "project_finance": project_finance,
@@ -36604,6 +36632,8 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
         return {}
     summary = result.get("summary") or {}
     finance = result.get("finance") or {}
+    if finance.get("hotel"):
+        return hotel_object_report(result)
     objects = (finance.get("nonres") or {}).get("objects") or []
     tep = {str(row.get("key")): row for row in (result.get("tep") or {}).get("rows") or []}
     capex = result.get("capex") or {}
@@ -36890,6 +36920,463 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     return {"kind": REPORT_KIND_OBJECT,
             "sections": [{"key": key, "title": title, **sections[key]}
                          for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
+
+
+def _hotel_verdict(hotel: dict[str, Any], metric: dict[str, Any]) -> dict[str, str]:
+    """Вывод по гостинице — по её собственным показателям: NPV проекта при
+    ставке дисконтирования и покрытие кредита (DSCR, пороги 1,00x и 1,20x).
+    Цена участка здесь не основание: у гостиницы её может не быть вовсе."""
+    if not hotel.get("computed"):
+        missing = ", ".join(hotel.get("missing") or []) or "вводные гостиницы"
+        return {"status": "not_available", "title": "Вывод не сформирован",
+                "text": f"Гостиница не считается — не заданы: {missing}."}
+    kpi = hotel.get("kpi") or {}
+    npv = float(kpi.get("npv_project") or 0.0)
+    rate = _telegram_number(float(kpi.get("discount_rate") or 0.0) * 100, 1)
+    irr = kpi.get("irr_project")
+    irr_text = (f"IRR проекта {_telegram_number(float(irr) * 100, 1)}%" if irr is not None
+                else "IRR проекта не считается")
+    dscr = metric.get("value") if metric.get("key") == "dscr" else None
+    if npv < 0:
+        return {"status": "negative", "title": "Предварительно нецелесообразна",
+                "text": f"NPV проекта при ставке {rate}% отрицательный: {irr_text} — ниже "
+                        "ставки дисконтирования."}
+    if dscr is not None and float(dscr) < DEBT_METRIC_FLOOR["dscr"]:
+        return {"status": "negative", "title": "Предварительно нецелесообразна",
+                "text": f"{irr_text}, но EBITDA не покрывает обслуживания кредита: DSCR "
+                        f"{_telegram_number(float(dscr), 2)}x — ниже 1,00x."}
+    if dscr is not None and float(dscr) < DEBT_METRIC_TARGET - 1e-9:
+        return {"status": "review", "title": "Требует пересмотра условий",
+                "text": f"NPV проекта при ставке {rate}% положительный ({irr_text}), но DSCR "
+                        f"кредита {_telegram_number(float(dscr), 2)}x — ниже целевых 1,20x: "
+                        "проверить ADR, загрузку, долю кредита, ставку и срок."}
+    tail = (f", DSCR кредита — не ниже {_telegram_number(float(dscr), 2)}x" if dscr is not None
+            else "")
+    return {"status": "positive", "title": "Предварительно целесообразна",
+            "text": f"NPV проекта при ставке {rate}% положительный, {irr_text}{tail}."}
+
+
+# Строки годовых таблиц гостиничного отчёта: (ключ годовой строки, подпись,
+# единица). Ключи — годового свода `developaid_hotel_strategy.annual_table`;
+# составные (`departments_expense` и т. п.) складывает `_hotel_years`.
+HOTEL_YEARS_RAMP = (("year", "Год", "text"), ("occupancy", "Загрузка", "pct"),
+                    ("adr", "ADR, ₽ без НДС", "rub_unit"), ("revpar", "RevPAR, ₽ без НДС", "rub_unit"),
+                    ("rooms_sold", "Проданные номеро-ночи", "count"))
+HOTEL_YEARS_INCOME = (("year", "Год", "text"), ("rooms_revenue", "Номерной фонд", "mln"),
+                      ("fnb_revenue", "F&B", "mln"), ("other_revenue", "Прочие департаменты", "mln"),
+                      ("vat_relief", "Льгота НДС", "mln"), ("revenue", "Выручка всего", "mln"))
+HOTEL_YEARS_COSTS = (("year", "Год", "text"),
+                     ("departments_expense", "Расходы департаментов", "mln"),
+                     ("undistributed", "A&G, S&M, POM, Utilities", "mln"),
+                     ("gop", "GOP", "mln"),
+                     ("operator_fees", "Вознаграждение оператора", "mln"),
+                     ("ffe_reserve", "Резерв FF&E", "mln"),
+                     ("fixed_charges", "Налог на имущество и страхование", "mln"),
+                     ("ebitda", "EBITDA", "mln"))
+HOTEL_YEARS_LOAN = (("year", "Год", "text"), ("loan_draw", "Выборка", "mln"),
+                    ("interest", "Проценты", "mln"), ("loan_repayment", "Погашение тела", "mln"),
+                    ("loan_balance", "Долг на конец года", "mln"),
+                    ("debt_service", "Обслуживание долга", "mln"), ("dscr", "DSCR", "mult"))
+HOTEL_YEARS_OWNER = (("year", "Год", "text"), ("ebitda", "EBITDA", "mln"),
+                     ("capex", "CAPEX с НДС", "mln"), ("profit_tax", "Налог на прибыль", "mln"),
+                     ("fcff", "Поток проекта до финансирования (FCFF)", "mln"),
+                     ("equity_cf", "Поток капитала (FCFE)", "mln"),
+                     ("equity_cumulative", "Поток капитала накопленным итогом", "mln"))
+
+
+def _hotel_years(annual: list[dict[str, Any]], columns: tuple[tuple[str, str, str], ...],
+                 *, operating: bool = False) -> dict[str, Any]:
+    """Годовая таблица раздела из годового свода гостиницы — без второго
+    расчёта: составные колонки — суммы строк того же года."""
+    years, cumulative = [], 0.0
+    for row in annual:
+        cumulative += float(row.get("equity_cf") or 0.0)
+        if operating and not row.get("rooms_available"):
+            continue
+        item = dict(row)
+        item["departments_expense"] = sum(float(row.get(k) or 0.0)
+                                          for k in ("rooms_expense", "fnb_expense", "other_expense"))
+        item["undistributed"] = sum(float(row.get(k) or 0.0) for k in ("ag", "sm", "pom", "utilities"))
+        item["operator_fees"] = float(row.get("base_fee") or 0.0) + float(row.get("incentive_fee") or 0.0)
+        item["fixed_charges"] = float(row.get("property_tax") or 0.0) + float(row.get("insurance") or 0.0)
+        item["equity_cumulative"] = cumulative
+        years.append({c[0]: item.get(c[0]) for c in columns})
+    return {"columns": [list(c) for c in columns], "years": years}
+
+
+def _hotel_rate_text(params: dict[str, Any]) -> str:
+    """Ставка кредита гостиницы словами — той формулой, что в `hotel_flows`."""
+    financing = str(params.get("financing") or hotel_strategy.FINANCING_COMMERCIAL)
+    num = lambda key: _telegram_number(float(params.get(key) or 0.0), 2)  # noqa: E731
+    if financing == hotel_strategy.FINANCING_PREFERENTIAL:
+        return f"{num('pref_key_share_pct')}% ключевой ставки + {num('pref_margin_pp')} п.п."
+    if financing == hotel_strategy.FINANCING_COMMERCIAL:
+        return f"ключевая ставка + {num('loan_spread_pp')} п.п."
+    return "без кредита"
+
+
+def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
+    """Отчёт гостиничного проекта — те же девять разделов объектной рамки
+    (`REPORT_SECTIONS`), наполненные гостиницей: номера, класс, ГНС, ADR,
+    загрузка и RevPAR, выручка департаментов и годовой USALI, GOP и EBITDA,
+    CAPEX (здание, FF&E, на номер), кредит гостиницы, выход, NPV/IRR/PBP/DPBP
+    и календарь «стройка → ввод → выход на загрузку → стабилизация → выход».
+
+    Все числа — из `finance.hotel` (тот же расчёт, что вошёл в поток и
+    прибыль проекта), сметы движка (`capex`) и сводки; второго расчёта нет.
+    """
+    report = result.get("report") or {}
+    layout = report.get("layout") or {}
+    finance = result.get("finance") or {}
+    summary = result.get("summary") or {}
+    hotel = finance.get("hotel") or {}
+    metric = layout.get("debt_metric") or {}
+    verdict = _hotel_verdict(hotel, metric)
+    dates = result.get("dates") or {}
+    if not hotel.get("computed"):
+        missing = _row("Гостиница не считается — не заданы",
+                       ", ".join(hotel.get("missing") or []) or "вводные гостиницы", "text")
+        sections = {key: {"brief": [missing], "blocks": [{"title": title, "rows": [missing]}]}
+                    for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]}
+        sections["decision"] = {
+            "brief": [_row("Вывод", verdict["title"], "text"),
+                      _row("Основание", verdict["text"], "text")],
+            "verdict": verdict,
+            "blocks": [{"title": "Вывод", "kind": "verdict",
+                        "rows": [_row(verdict["title"], verdict["text"], "text")]}]}
+        sections["sensitivity"]["sensitivity"] = {"metric": "npv_mln", "parameters": []}
+        sections["calendar"]["calendar"] = {}
+        return {"kind": REPORT_KIND_OBJECT, "hotel": True,
+                "sections": [{"key": key, "title": title, **sections[key]}
+                             for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
+
+    kpi, totals = hotel.get("kpi") or {}, hotel.get("totals") or {}
+    params = hotel.get("params") or {}
+    annual = list(hotel.get("annual") or [])
+    capex = result.get("capex") or {}
+    tep_row = next((r for r in (result.get("tep") or {}).get("rows") or []
+                    if r.get("key") == "hotel"), {})
+    keys = float(kpi.get("keys") or 0.0)
+    gns = float(tep_row.get("gns") or params.get("gba_sqm") or 0.0)
+    stars = hotel_strategy.class_label(params.get("stars")) or "не задан"
+    sale = kpi.get("exit_mode") == hotel_strategy.EXIT_SALE
+    multiple = kpi.get("valuation") == hotel_strategy.VALUATION_MULTIPLE
+    financing = str(params.get("financing") or hotel_strategy.FINANCING_COMMERCIAL)
+    loan_on = financing != hotel_strategy.FINANCING_NONE
+    rate_pct = _telegram_number(float(kpi.get("discount_rate") or 0.0) * 100, 1)
+    labels = {f.key: f.label for f in hotel_strategy.FIELDS}
+    choice = lambda key, pairs: dict(pairs).get(str(params.get(key) or ""), "—")  # noqa: E731
+    pct_param = lambda key: float(params.get(key) or 0.0) / 100.0  # noqa: E731
+    debt_row = (_row(str(metric.get("label") or "DSCR"), metric.get("value"), "mult")
+                if metric.get("key") else
+                _row(str(metric.get("label") or "Покрытие кредита"),
+                     str(metric.get("reason") or "не считается"), "text"))
+    irr_row = lambda label, value: (_row(label, value, "pct") if value is not None  # noqa: E731
+                                    else _row(label, "не считается — поток не меняет знак", "text"))
+    pbp_row = lambda label, value: (_row(label, value, "years") if value is not None  # noqa: E731
+                                    else _row(label, "не окупается за срок расчёта", "text"))
+    sections: dict[str, dict[str, Any]] = {}
+
+    # 1. Решение ------------------------------------------------------------
+    decision = [
+        _row(f"NPV проекта @{rate_pct}%", kpi.get("npv_project"), "rub"),
+        irr_row("IRR проекта", kpi.get("irr_project")),
+        _row(f"NPV собственного капитала @{rate_pct}%", kpi.get("npv_equity"), "rub"),
+        irr_row("IRR собственного капитала", kpi.get("irr_equity")),
+        pbp_row("Срок окупаемости проекта (PBP), лет от начала", kpi.get("pbp_years")),
+        pbp_row("Дисконтированный срок окупаемости (DPBP), лет", kpi.get("dpbp_years")),
+        pbp_row("Окупаемость собственного капитала, лет", kpi.get("equity_pbp_years")),
+        debt_row,
+        _row("Затраты проекта (CAPEX) с НДС", kpi.get("capex"), "rub"),
+        _row("Собственный капитал — пик вложений", kpi.get("equity_peak"), "rub"),
+        _row("Доля собственного капитала в CAPEX", kpi.get("equity_share"), "pct"),
+    ]
+    sections["decision"] = {
+        "brief": [_row("Вывод", verdict["title"], "text"),
+                  _row("Основание", verdict["text"], "text"),
+                  decision[0], decision[1], decision[3], debt_row],
+        "verdict": verdict,
+        "blocks": [{"title": "Вывод", "kind": "verdict",
+                    "rows": [_row(verdict["title"], verdict["text"], "text")]},
+                   {"title": "Ключевые показатели", "rows": decision}],
+    }
+
+    # 2. Объект и участок ---------------------------------------------------
+    hold_years = float(params.get("hold_years") or 0.0)
+    object_rows = [
+        _row("Класс гостиницы", stars, "text"),
+        _row("Номерной фонд", keys, "count"),
+        _row("Площадь гостиницы (ГНС)", gns, "sqm"),
+        _row("ГНС на номер", gns / keys if keys else None, "num", suffix="м²/номер"),
+        _row("Ввод гостиницы", hotel.get("commissioning"), "date"),
+        _row("Срок эксплуатации в расчёте", hold_years, "num", suffix="лет"),
+        _row("Конец срока расчёта", hotel.get("horizon_end"), "date"),
+    ]
+    sections["object"] = {
+        "brief": object_rows[:3] + [object_rows[4]],
+        "blocks": [{"title": "Гостиница", "rows": object_rows}, {"ref": "site", "title": "Участок"}],
+    }
+
+    # 3. Стратегия реализации ----------------------------------------------
+    exit_label = choice("exit_mode", hotel_strategy.EXITS)
+    strategy_text = (f"Эксплуатация {_telegram_number(hold_years, 0)} лет, затем "
+                     + ("продажа" if sale else "удержание (оценка без сделки)"))
+    market = [
+        _row("Стратегия", strategy_text, "text"),
+        _row(labels["adr_rub"] + ", ₽/сутки без НДС", params.get("adr_rub"), "rub_unit"),
+        _row("Дата цены ADR", params.get("adr_price_date") or hotel.get("book", {}).get("start")
+             or dates.get("project_start"), "date"),
+        _row(labels["index_pct"], pct_param("index_pct"), "pct"),
+        _row(labels["occ_start_pct"], pct_param("occ_start_pct"), "pct"),
+        _row(labels["occ_target_pct"], pct_param("occ_target_pct"), "pct"),
+        _row(labels["ramp_months"], params.get("ramp_months"), "num", suffix="мес."),
+        _row(labels["fnb_pct"] + ", доля выручки номеров", pct_param("fnb_pct"), "pct"),
+        _row(labels["other_pct"] + ", доля номеров и F&B", pct_param("other_pct"), "pct"),
+        _row(labels["vat_relief_years"], params.get("vat_relief_years"), "num", suffix="лет с ввода"),
+    ]
+    exit_rows = [
+        _row("Конец срока", exit_label, "text"),
+        _row("Оценка выхода", choice("valuation", hotel_strategy.VALUATIONS), "text"),
+        (_row(labels["exit_multiple"], params.get("exit_multiple"), "num", suffix="x") if multiple
+         else _row(labels["exit_cap_pct"], pct_param("exit_cap_pct"), "pct")),
+        _row("EBITDA следующих 12 месяцев после срока", kpi.get("forward_ebitda"), "rub"),
+        _row("Стоимость выхода — продажа" if sale else "Стоимость гостиницы — оценка удержания",
+             kpi.get("exit_value"), "rub"),
+    ]
+    if sale:
+        exit_rows.append(_row(labels["exit_cost_pct"], pct_param("exit_cost_pct"), "pct"))
+    sections["strategy"] = {
+        "brief": [_row("Стратегия", strategy_text, "text"), market[1], market[5], exit_rows[4]],
+        "blocks": [{"title": "Номера, цена и загрузка", "rows": market},
+                   {"title": "Выход на загрузку по годам",
+                    **_hotel_years(annual, HOTEL_YEARS_RAMP, operating=True)},
+                   {"title": "Выход", "rows": exit_rows}],
+    }
+
+    # 4. Доходы ------------------------------------------------------------
+    stab_year = kpi.get("stabilized_year")
+    income_rows = [
+        _row("Выручка номерного фонда", totals.get("rooms_revenue"), "rub"),
+        _row("Выручка F&B", totals.get("fnb_revenue"), "rub"),
+        _row("Выручка прочих департаментов", totals.get("other_revenue"), "rub"),
+        _row("Льгота НДС на проживание", totals.get("vat_relief"), "rub"),
+        _row("Выручка за срок", totals.get("revenue"), "rub"),
+    ]
+    if sale:
+        income_rows.append(_row("Выручка выхода (продажа)", totals.get("exit_revenue"), "rub"))
+    stabilized = [
+        _row("Год", str(stab_year or "—"), "text"),
+        _row("Загрузка", kpi.get("stabilized_occupancy"), "pct"),
+        _row("ADR, ₽ без НДС", kpi.get("stabilized_adr"), "rub_unit"),
+        _row("RevPAR, ₽ без НДС", kpi.get("stabilized_revpar"), "rub_unit"),
+        _row("Выручка", kpi.get("stabilized_revenue"), "rub"),
+        _row("GOP", kpi.get("stabilized_gop"), "rub"),
+        _row("EBITDA", kpi.get("stabilized_ebitda"), "rub"),
+    ]
+    sections["income"] = {
+        "brief": [_row("Выручка за срок", totals.get("revenue"), "rub"),
+                  _row(f"Выручка стабилизированного года ({stab_year or '—'})",
+                       kpi.get("stabilized_revenue"), "rub"),
+                  _row("RevPAR стабилизированного года, ₽ без НДС",
+                       kpi.get("stabilized_revpar"), "rub_unit")],
+        "blocks": [{"title": "Выручка по департаментам за срок", "rows": income_rows},
+                   {"title": "Стабилизированный год", "rows": stabilized},
+                   {"title": "Выручка по годам (USALI)",
+                    **_hotel_years(annual, HOTEL_YEARS_INCOME, operating=True)}],
+    }
+
+    # 5. Затраты -----------------------------------------------------------
+    capex_rows = [
+        _row("Здание — ГНС × ставка стройки", capex.get("hotel"), "rub"),
+        _row("Мебель и оборудование (FF&E) — номера × ставка", capex.get("hotel_ffe"), "rub"),
+    ]
+    deal_rub = float((result.get("deal") or {}).get("total_mln") or 0.0) * 1e6
+    if deal_rub:
+        capex_rows.append(_row("Участок — стоимость сделки", deal_rub, "rub"))
+    for label, article_keys in OBJECT_COMMON_COSTS:
+        value = sum(float(capex.get(k) or 0.0) for k in article_keys)
+        if value > 0.5:
+            capex_rows.append(_row(label, value, "rub"))
+    for name, label in (("gc_fee", "Вознаграждение генподрядчика"),
+                        ("technical_supervision", "Технический заказчик / стройконтроль"),
+                        ("reserve", "Резерв")):
+        if float(capex.get(name) or 0.0) > 0.5:
+            capex_rows.append(_row(label, capex.get(name), "rub"))
+    capex_total = float(kpi.get("capex") or 0.0)
+    capex_rows += [
+        _row("Итого CAPEX с НДС", capex_total, "rub"),
+        _row("в т.ч. НДС (возмещается кварталом позже)", kpi.get("capex_vat"), "rub"),
+        _row("CAPEX без НДС", kpi.get("capex_net"), "rub"),
+        _row("CAPEX на номер с НДС", kpi.get("capex_per_key"), "rub_unit"),
+        _row("CAPEX на м² ГНС с НДС", capex_total / gns / 1000 if gns else None, "th"),
+    ]
+    usali_rows = [_row(label, totals.get(key), "rub") for key, label in (
+        ("rooms_expense", "Расходы номерного фонда"), ("fnb_expense", "Расходы F&B"),
+        ("other_expense", "Расходы прочих департаментов"), ("ag", "Административные (A&G)"),
+        ("sm", "Продажи и маркетинг (S&M)"), ("pom", "Эксплуатация и ремонт (POM)"),
+        ("utilities", "Коммунальные (Utilities)"), ("base_fee", "Базовое вознаграждение оператора"),
+        ("incentive_fee", "Поощрительное вознаграждение оператора"),
+        ("ffe_reserve", "Резерв на замену FF&E"), ("property_tax", "Налог на имущество"),
+        ("insurance", "Страхование имущества"))]
+    operating_total = (float(totals.get("opex") or 0.0) + float(totals.get("property_tax") or 0.0)
+                       + float(totals.get("insurance") or 0.0))
+    usali_rows += [_row("Итого расходы эксплуатации", operating_total, "rub"),
+                   _row("GOP за срок", totals.get("gop"), "rub"),
+                   _row("GOP, доля выручки департаментов", kpi.get("gop_margin"), "pct"),
+                   _row("EBITDA за срок", totals.get("ebitda"), "rub"),
+                   _row("Рентабельность EBITDA", kpi.get("ebitda_margin"), "pct")]
+    sections["costs"] = {
+        "brief": [_row("CAPEX с НДС", capex_total, "rub"),
+                  _row("CAPEX на номер с НДС", kpi.get("capex_per_key"), "rub_unit"),
+                  _row("Расходы эксплуатации за срок", operating_total, "rub")],
+        "blocks": [{"title": "CAPEX гостиницы", "rows": capex_rows},
+                   {"title": "Расходы эксплуатации за срок (USALI)", "rows": usali_rows},
+                   {"title": "Расходы и EBITDA по годам",
+                    **_hotel_years(annual, HOTEL_YEARS_COSTS, operating=True)}],
+    }
+
+    # 6. Финансирование ----------------------------------------------------
+    terms = [_row("Финансирование", choice("financing", hotel_strategy.FINANCINGS), "text")]
+    if loan_on:
+        limit = params.get("loan_limit_th_per_key")
+        terms += [
+            _row(labels["loan_share_pct"], pct_param("loan_share_pct"), "pct"),
+            _row("Ставка", _hotel_rate_text(params), "text"),
+            (_row(labels["loan_limit_th_per_key"], float(limit) * 1000 * keys, "rub")
+             if limit not in (None, "") else _row(labels["loan_limit_th_per_key"], "без лимита", "text")),
+            _row(labels["loan_fee_pct"], pct_param("loan_fee_pct"), "pct"),
+            _row(labels["loan_term_years"], params.get("loan_term_years"), "num", suffix="лет"),
+            _row(labels["grace_months"], params.get("grace_months"), "num", suffix="мес."),
+            _row(labels["repayment"], choice("repayment", hotel_strategy.REPAYMENTS), "text"),
+        ]
+        if params.get("repayment") == hotel_strategy.REPAY_SCULPTED:
+            terms.append(_row(labels["dscr_target"], params.get("dscr_target"), "mult"))
+    loan_rows = [
+        _row("Выборка кредита", totals.get("loan_draw"), "rub"),
+        _row("Пик долга", kpi.get("loan_peak"), "rub"),
+        _row("Проценты за срок (до ввода капитализируются)", totals.get("loan_interest"), "rub"),
+        _row("Комиссия за выдачу", totals.get("loan_fee"), "rub"),
+        _row("Первая выдача", kpi.get("loan_first_draw"), "date"),
+        (_row("Кредит погашен", kpi.get("loan_repaid_month"), "date") if kpi.get("loan_repaid_month")
+         else _row("Кредит погашен", "в конце срока — выходом или капиталом", "text")),
+        debt_row,
+    ]
+    equity_rows = [
+        _row("Собственный капитал — пик вложений", kpi.get("equity_peak"), "rub"),
+        _row("Доля собственного капитала в CAPEX", kpi.get("equity_share"), "pct"),
+    ]
+    finance_blocks = [{"title": "Условия кредита гостиницы", "rows": terms}]
+    if loan_on:
+        finance_blocks += [{"title": "Выборка, долг и погашение", "rows": loan_rows},
+                           {"title": "Кредит по годам", **_hotel_years(annual, HOTEL_YEARS_LOAN)}]
+    finance_blocks.append({"title": "Собственный капитал", "rows": equity_rows})
+    sections["finance"] = {
+        "brief": [terms[0], _row("Кредит гостиницы — пик", kpi.get("loan_peak"), "rub"), debt_row,
+                  equity_rows[0]],
+        "blocks": finance_blocks,
+    }
+
+    # 7. Экономика собственника --------------------------------------------
+    pnl = [
+        _row("Выручка проекта (эксплуатация и выход)", summary.get("revenue"), "rub"),
+        _row("EBITDA гостиницы за срок (USALI)", totals.get("ebitda"), "rub"),
+        _row("Затраты стройки (CAPEX)", summary.get("capex"), "rub"),
+        _row("Проценты и комиссии", summary.get("financing_cost"), "rub"),
+        _row("Прибыль до налога", summary.get("profit_before_tax"), "rub"),
+        _row("Налог на прибыль", summary.get("profit_tax"), "rub"),
+        _row("НДС к уплате (минус — возмещение НДС стройки)", summary.get("vat"), "rub"),
+        _row("Чистая прибыль проекта", summary.get("net_profit"), "rub"),
+    ]
+    returns = [decision[0], decision[1], decision[2], decision[3], decision[4], decision[5],
+               decision[6]]
+    sections["owner"] = {
+        "brief": [_row("EBITDA гостиницы за срок", totals.get("ebitda"), "rub"),
+                  _row("Чистая прибыль проекта", summary.get("net_profit"), "rub"),
+                  decision[2], decision[3]],
+        "blocks": [{"title": "Прибыль проекта за срок", "rows": pnl},
+                   {"title": "Доходность", "rows": returns},
+                   {"title": "Потоки по годам", **_hotel_years(annual, HOTEL_YEARS_OWNER)}],
+    }
+
+    # 8. Чувствительность ---------------------------------------------------
+    parameters = [f"hotel_{key}" for key in _HOTEL_SENSITIVITY_GROUPS
+                  if hotel_strategy._is_needed(hotel_strategy.FIELD_BY_KEY[key], params)
+                  and float(params.get(key) or 0.0)]
+    if deal_rub > 0:
+        parameters.append("purchase_price_mln")
+    parameters.append("discount_rate_pct")
+    sensitivity = {"metric": "npv_mln", "parameters": parameters}
+    sections["sensitivity"] = {
+        "brief": [_row("Факторы", ", ".join(labels[key] for key in _HOTEL_SENSITIVITY_GROUPS
+                                             if f"hotel_{key}" in parameters), "text")],
+        "sensitivity": sensitivity,
+        "blocks": [{"ref": "sensitivity", "title": "Чувствительность по факторам гостиницы"}],
+    }
+
+    # 9. Календарь ----------------------------------------------------------
+    calendar = _hotel_calendar(report, hotel, dates)
+    sections["calendar"] = {
+        "brief": [_row(label, value, "date") for label, value in calendar.get("dates") or []
+                  if label != "Начало проекта"],
+        "calendar": calendar,
+        "blocks": [{"ref": "calendar", "title": "Календарный план гостиницы"}],
+    }
+
+    return {"kind": REPORT_KIND_OBJECT, "hotel": True,
+            "sections": [{"key": key, "title": title, **sections[key]}
+                         for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
+
+
+def _hotel_calendar(report: dict[str, Any], hotel: dict[str, Any],
+                    dates: dict[str, Any]) -> dict[str, Any]:
+    """Календарь гостиницы: подготовка (полосы движка) → стройка → ввод →
+    выход на загрузку → стабилизация → кредит → выход. Жилых вех (эскроу,
+    продажи квартир, БРИДЖ — банк ПФ гостиницу не кредитует) в нём нет."""
+    kpi = hotel.get("kpi") or {}
+    params = hotel.get("params") or {}
+    events = [dict(e) for e in ((report.get("calendar") or {}).get("events") or [])
+              if e.get("group") == "Подготовка"
+              or e.get("label") in ("Сделка / начало проекта", "РнС")]
+    opening = str(hotel.get("commissioning") or "")[:10]
+    end = str(hotel.get("horizon_end") or "")[:10]
+    permit = str(dates.get("permit") or "")[:10]
+    if not opening:
+        return {}
+    if permit and permit < opening:
+        events.append({"label": "Строительство гостиницы", "start": permit, "end": opening,
+                       "group": "Строительство", "kind": "bar"})
+    events.append({"label": "Ввод гостиницы", "start": opening, "end": opening,
+                   "group": "Ключевые вехи", "kind": "milestone"})
+    ramp = int(float(params.get("ramp_months") or 0))
+    ramp_end = _iso(add_months(d(opening), ramp)) if ramp > 0 else opening
+    if ramp > 0:
+        events.append({"label": "Выход на целевую загрузку", "start": opening, "end": ramp_end,
+                       "group": "Эксплуатация", "kind": "bar"})
+    stab_year = kpi.get("stabilized_year")
+    if stab_year:
+        events.append({"label": f"Стабилизированный год ({stab_year})",
+                       "start": f"{int(stab_year)}-01-01", "end": f"{int(stab_year)}-12-01",
+                       "group": "Эксплуатация", "kind": "bar"})
+    if end:
+        events.append({"label": "Эксплуатация", "start": opening, "end": end,
+                       "group": "Эксплуатация", "kind": "bar"})
+    first_draw = str(kpi.get("loan_first_draw") or "")[:10]
+    repaid = str(kpi.get("loan_repaid_month") or "")[:10] or end
+    if first_draw and repaid:
+        events.append({"label": "Кредит гостиницы", "start": first_draw, "end": repaid,
+                       "group": "Финансирование", "kind": "bar"})
+    sale = kpi.get("exit_mode") == hotel_strategy.EXIT_SALE
+    if end:
+        events.append({"label": "Выход: продажа гостиницы" if sale
+                       else "Конец срока: оценка удержания",
+                       "start": end, "end": end, "group": "Выход", "kind": "milestone"})
+    key_dates = [("Начало проекта", str(dates.get("project_start") or "")[:10]),
+                 ("РнС", permit), ("Ввод гостиницы", opening),
+                 ("Выход на целевую загрузку", ramp_end),
+                 ("Выход: продажа" if sale else "Конец срока (оценка)", end)]
+    return {"start": min(e["start"] for e in events), "end": max(e["end"] for e in events),
+            "events": sorted(events, key=lambda e: (e["start"], e["end"])),
+            "dates": [(label, value) for label, value in key_dates if value]}
 
 
 def _finalize_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -42570,6 +43057,21 @@ _SENSITIVITY_PARAMETERS += [
     for suffix, label, unit, group, strategies in _NONRES_SENSITIVITY_FACTORS
 ]
 
+# Факторы гостиницы (`hotel_object_report`): поле расчёта гостиницы, подпись
+# и единица — из описания полей (`developaid_hotel_strategy.FIELDS`).
+_HOTEL_SENSITIVITY_GROUPS = {"adr_rub": "Доходы", "occ_target_pct": "Доходы",
+                             "exit_multiple": "Доходы", "exit_cap_pct": "Доходы",
+                             "cost_th_per_sqm": "Затраты", "ffe_th_per_key": "Затраты",
+                             "loan_spread_pp": "Финансирование",
+                             "pref_margin_pp": "Финансирование"}
+_SENSITIVITY_PARAMETERS += [
+    {"key": hotel_strategy.PREFIX + key, "kind": "pct", "group": group, "hotel": key,
+     "label": hotel_strategy.FIELD_BY_KEY[key].label,
+     "unit": hotel_strategy.FIELD_BY_KEY[key].unit,
+     **({"max": 100.0} if key == "occ_target_pct" else {})}
+    for key, group in _HOTEL_SENSITIVITY_GROUPS.items()
+]
+
 _SENSITIVITY_BY_KEY = {item["key"]: item for item in _SENSITIVITY_PARAMETERS}
 
 
@@ -42587,6 +43089,12 @@ def _sensitivity_applicable(
         return ""
     if needs == "social_payment" and str(inputs.get("social_mode") or "") == "Строительство":  # noqa: E501
         return "социальные объекты строятся, а не компенсируются деньгами"
+    if spec.get("hotel"):
+        if not is_hotel(inputs):
+            return "проект — не гостиница"
+        field = hotel_strategy.FIELD_BY_KEY[spec["hotel"]]
+        if not hotel_strategy._is_needed(field, hotel_strategy.params_from_inputs(inputs)):
+            return "расчёт гостиницы это поле не читает"
     if spec.get("object"):
         if not b(inputs, spec["enabled_key"]):
             return "объекта нет в проекте"
@@ -50888,6 +51396,10 @@ function nonresCell(row){
  if(row.unit==='count')return v==null?'—':nf(v,[0,0]);
  if(row.unit==='th')return v==null?'—':nf(v,[1,1])+' тыс ₽/м²';
  if(row.unit==='num')return v==null?'—':nf(v,[0,2])+(row.suffix?' '+escapeHtml(row.suffix):'');
+ // Гостиница: рубли на единицу (ADR, RevPAR, затраты на номер) и годы
+ // окупаемости (единица — в подписи) — как у `_pdf_nonres_value`.
+ if(row.unit==='rub_unit')return v==null?'—':nf(v,[0,0])+' ₽';
+ if(row.unit==='years')return v==null?'—':nf(v,[1,1]);
  if(row.unit==='section')return '';
  return escapeHtml(String(v??'—'));
 }
@@ -60212,7 +60724,8 @@ function renderResult(){
   // продажи / заполнение, кредит и выход; вех эскроу у него нет.
   const objCal=(objectSection(r,'calendar')||{}).calendar;
   const objItems=objCal?(((r.finance||{}).nonres||{}).objects||[]):null;
-  if(dates)dates.innerHTML=(objItems?[
+  // Гостиница отдаёт свои вехи готовыми (`_hotel_calendar.dates`).
+  if(dates)dates.innerHTML=(objCal&&objCal.dates?objCal.dates.map(x=>[escapeHtml(x[0]),x[1]]):objItems?[
    ['Начало',r.dates.project_start],['РнС',r.dates.permit],
    ...objItems.map(o=>['Ввод — '+escapeHtml(o.title||o.key),o.commissioning]),
    ...objItems.map(o=>['Конец горизонта — '+escapeHtml(o.title||o.key),o.horizon_end]),
