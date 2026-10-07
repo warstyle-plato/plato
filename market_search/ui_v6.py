@@ -362,6 +362,9 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
       function say(text){if(!placed())init();(document.getElementById('daHintNote')||note).textContent=text}
       const where=locationHint();
       if(!where){say('Укажите участок — кадастровый номер или адрес.');return}
+      // Снимок поля — до запроса: ответ не перебивает число, вписанное, пока
+      // ориентир считался.
+      const since=mdApartmentPriceSnapshot();
       btn.disabled=true; say('Считаю…');
       try{
         const response=await fetch('/market/price-hint',{method:'POST',
@@ -376,7 +379,7 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
         // кнопки; «Подставлено» — только когда число стоит в поле и во
         // вводных. Иначе названо, что осталось, и число ориентира не теряется.
         const placedPrice=mdPlaceApartmentPrice(payload.price_th_per_sqm,
-          'рекомендация DevelopAid'+(when?' от '+when:''));
+          'рекомендация DevelopAid'+(when?' от '+when:''),since);
         if(!placedPrice.ok){
           say('Ориентир '+payload.price_th_per_sqm+' тыс ₽/м² не подставлен: '+placedPrice.reason+'.');
           return;
@@ -389,11 +392,25 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
         // нельзя. Для соседей достаточно даты и объёма выборки.
         if(payload.basis&&payload.basis!=='peers'&&payload.basis_title)parts.push(payload.basis_title);
         say('Подставлено: '+parts.join(' · '));
+        lastPlaced=Number(payload.price_th_per_sqm);
       }catch(error){
         say('Не удалось получить ориентир: '+String((error&&error.message)||error));
       }finally{btn.disabled=false;const live=document.getElementById('daHintBtn');if(live)live.disabled=false}
     });
   }
+  // «Подставлено: 951» у поля, где уже вписано 1300, читалось бы так, будто
+  // в расчёте ориентир. Правка поля после подстановки переписывает подпись:
+  // ориентир назван, а в расчёте — число человека.
+  let lastPlaced=null;
+  document.addEventListener('change',function(event){
+    if(lastPlaced===null||typeof mdApartmentPriceInput!=='function')return;
+    const input=mdApartmentPriceInput();
+    if(!input||event.target!==input)return;
+    if(Number(input.value)===lastPlaced)return;
+    const live=document.getElementById('daHintNote');
+    if(live)live.textContent='Ориентир DevelopAid '+lastPlaced+' тыс ₽/м² · в расчёте вписанное руками: '+(input.value||'пусто');
+    lastPlaced=null;
+  },true);
   if(document.readyState!=='loading')init();else document.addEventListener('DOMContentLoaded',init);
   // Вводные рисуются скриптом и перерисовываются потом, поэтому наблюдение не
   // кончается: прежние двадцать попыток за четырнадцать секунд покрывали

@@ -100,7 +100,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.22"
+VERSION = "0.25.28"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -11300,6 +11300,27 @@ def underground_area_per_space(inputs: dict[str, Any]) -> float:
             or fallback or 35.0)
 
 
+def glavapu_apartments_unchanged(normalized: dict[str, Any],
+                                 apartment_row: dict[str, Any]) -> bool:
+    """Квартиры те же, что у выгрузки ГлавАПУ? Импорт кладёт их в ТЭП как есть.
+
+    Сверяются и площадь, и число квартир: норма считает места по средней
+    квартире, и правка одного числа квартир при той же площади меняет её
+    («меняю количество квартир до 24 — почему не меняется количество
+    машиномест», владелец, «Донской», 07.10.2026).
+
+    Нет площади в выгрузке — сравнить не с чем, и «не меняли» не доказано:
+    отсутствие числа не равно совпадению.
+    """
+    city = _underground_number(normalized or {}, "apartment_area_sqm")
+    if city <= 0:
+        return False
+    same_area = abs(_underground_number(apartment_row or {}, "saleable") - city) < 0.5
+    same_count = abs(_underground_number(apartment_row or {}, "units")
+                     - _underground_number(normalized or {}, "apartment_units")) < 0.5
+    return same_area and same_count
+
+
 def underground_parking_requirement(inputs: dict[str, Any],
                                     tep: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
     """Потребность в подземных местах: выгрузка города первой, её нет — норма.
@@ -11337,12 +11358,16 @@ def underground_parking_requirement(inputs: dict[str, Any],
     if imported_permanent + imported_guest + imported_mfc > 0:
         permanent, guest = imported_permanent, imported_guest
         basis = "норматив ГлавАПУ по нормативному ТЭП"
-        if apartments > 0:
-            # Метры правили после выгрузки — места пересчитываются нормой от
-            # НОВОЙ площади квартир: число города посчитано на его же ТЭП.
-            permanent = float(moscow_permanent_parking_2118(apartments))
+        if apartments > 0 and not glavapu_apartments_unchanged(normalized, apartment_row):
+            # Квартиры правили после выгрузки — места пересчитываются нормой от
+            # НОВЫХ квартир: число города посчитано на его же ТЭП. Пока
+            # квартиры те же, что у города, его места и остаются (решение
+            # владельца 07.10.2026: «числа ГлавАПУ до правки»). Норма — та же,
+            # что без выгрузки: пункт 2 по средней квартире, второй формулы нет.
+            places, basis = moscow_permanent_parking_by_average(
+                apartments, _underground_number(apartment_row, "units"))
+            permanent = float(places)
             guest = float(math.ceil(permanent * _PARKING_GUEST_SHARE))
-            basis = f"2118-ПП от {apartments:,.0f} м² квартир".replace(",", " ")
         mfc = imported_mfc
         was_office = _underground_number(normalized, "office_gba_sqm")
         if imported_mfc > 0 and was_office > 0:
@@ -11371,6 +11396,27 @@ def underground_parking_requirement(inputs: dict[str, Any],
     return {"permanent": permanent, "guest": guest, "mfc": 0.0, "spaces": spaces,
             "basis": basis + "; приобъектные места нежилья не учтены",
             "gns": spaces * per}
+
+
+def underground_parking_by_hand(inputs: dict[str, Any]) -> bool:
+    """Пара «места ↔ площадь» подземного паркинга — решение человека?
+
+    Страница сама заполняет пару нормой и помечает это `_parking_by_norm`
+    (`fillUndergroundFromTep`): поле непустое, но число — нормы. Движок прежде
+    читал всякое непустое поле как ручное, и производные строки (гостевые)
+    замирали на прежних вводных. Пометка руки сильнее пометки нормы; проект без
+    пометок (до них, API, бот) — непустое поле человеческое.
+
+    От `object_parking_by_hand` отличается одним: проектный подземный посев
+    списка `_parking_by_hand` не проходит намеренно, поэтому отсутствие в нём
+    ещё не значит «норма».
+    """
+    key = "underground"
+    if key in set(inputs.get("_parking_by_hand") or ()):
+        return True
+    if key in set(inputs.get("_parking_by_norm") or ()):
+        return False
+    return True
 
 
 def underground_tep_row(inputs: dict[str, Any],
@@ -11412,13 +11458,18 @@ def underground_tep_row(inputs: dict[str, Any],
     manual_spaces = _underground_number(inputs, "underground_manual_spaces")
     manual_area = _underground_number(inputs, "underground_manual_gns_sqm")
     guest: float | None = None
-    if manual_spaces > 0 or manual_area > 0:
+    if underground_parking_by_hand(inputs) and (manual_spaces > 0 or manual_area > 0):
         # Заданная руками площадь сильнее норматива ВСЕГДА, а не только когда
         # мест не назвали: реальный подземный этаж диктуют пятно застройки,
         # рампы и техпомещения, а норматив описывает потребность.
         spaces = manual_spaces if manual_spaces > 0 else (
             round(manual_area / per) if per > 0 else 0.0)
         area = manual_area if manual_area > 0 else spaces * per
+        # Гостевые человек не вписывал — они выводятся из его мест тем же
+        # правилом, что у читателя (S/11). Оставить в строке прежнее число
+        # значит заморозить производное: на «Донском» 44 места несли 109
+        # гостевых от давно сменившихся вводных.
+        guest = float(underground_guest_spaces({"units": spaces}))
     else:
         need = underground_parking_requirement(inputs, tep)
         if not need:
@@ -27142,6 +27193,13 @@ def _build_project_workbook(
         missing.append(
             "ТЭП движка: книга пишет присланный — строка, приведённая расчётом "
             "к вводным (площадь гаража, выгрузка ГлавАПУ, соцобъект), до неё не дошла")
+        # Строку гаража выводит одна функция, и без ответа движка книга зовёт
+        # её сама: иначе она продавала бы места за вычетом гостевых присланной
+        # строки (из умолчаний шаблона), а движок — за вычетом своих.
+        # Строка правится на копии: присланный ТЭП принадлежит вызывающему.
+        tep = {key: dict(value) for key, value in (tep or {}).items()
+               if isinstance(value, dict)}
+        apply_underground_tep_row({**DEFAULT_INPUTS, **(inputs or {})}, tep)
 
     # Сетка книги конечна, а горизонт движка — нет. Не влезло — это `missing`
     # числами, а не молчание: обрезанная книга выглядит целой, и половина её
@@ -34583,16 +34641,19 @@ def underground_guest_spaces(row: dict[str, Any]) -> int:
     и гостевых остаётся S/11. На 369 местах это 34 — ровно столько, сколько
     насчитал владелец.
     """
-    known = row.get("guest_units")
-    if known not in (None, ""):
-        try:
-            return max(0, int(round(float(known))))
-        except (TypeError, ValueError):
-            pass
     try:
         total = float(row.get("units") or 0)
     except (TypeError, ValueError):
-        return 0
+        total = 0.0
+    known = row.get("guest_units")
+    if known not in (None, ""):
+        try:
+            # Гостевых не бывает больше, чем мест построено: такое число —
+            # чужое (умолчания шаблона или прежний ТЭП: 109 гостевых на 69
+            # местах), а не решение проекта, и продаж оно не обнуляет.
+            return max(0, min(int(round(float(known))), int(round(max(0.0, total)))))
+        except (TypeError, ValueError):
+            pass
     return max(0, int(round(total / 11.0))) if total > 0 else 0
 
 
@@ -54607,12 +54668,20 @@ function getGlavapuUnderground(){
  if(impPermanent+impGuest+impMfc<=0)return null;
  // Площадь квартир — продаваемая жилья: это она в норме 2118-ПП.
  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ const count=Number((tep.apartments&&tep.apartments.units)||0);
  let permanent=impPermanent,guest=impGuest,basis='норматив ГлавАПУ по нормативному ТЭП';
- if(apartments>0){
-  permanent=Math.ceil(apartments/(PARKING_2118.sqm_per_person*PARKING_2118.household)
-                      *PARKING_2118.per_flat);
+ // Пока квартиры те же, что у выгрузки (импорт кладёт площадь и число как
+ // есть), места города и остаются; правили площадь или число квартир — норма
+ // от новых, та же, что без выгрузки (`permanentByNorm`). Правило то же, что
+ // у движка (`glavapu_apartments_unchanged`).
+ const city=Number(n.apartment_area_sqm||0);
+ const unchanged=city>0&&Math.abs(apartments-city)<0.5
+  &&Math.abs(count-Number(n.apartment_units||0))<0.5;
+ if(apartments>0&&!unchanged){
+  const own=permanentByNorm(apartments,count);
+  permanent=own.permanent;
   guest=Math.ceil(permanent*PARKING_2118.guest_share);
-  basis='2118-ПП от '+num(Math.round(apartments))+' м² квартир';
+  basis=own.basis;
  }
  let mfc=impMfc;
  const wasOffice=Number(n.office_gba_sqm||0);
@@ -54640,25 +54709,30 @@ function getGlavapuUnderground(){
 // К2 квартала, которых без выгрузки у нас нет, а единица «пока не знаем»
 // отдала бы максимум, выданный за норматив. Поэтому здесь только жильё, и
 // основание это называет.
-function normativeUnderground(){
- const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
- if(apartments<=0)return null;
- const count=Number((tep.apartments&&tep.apartments.units)||0);
- let permanent,basis;
+// Постоянные места по 2118-ПП — один расчёт на обоих читателей: норму без
+// выгрузки и выгрузку, чьи квартиры поправили.
+function permanentByNorm(apartments,count){
  if(count>0){
   // Пункт 2 по средней квартире: состава квартир до АГР нет, но средняя
   // меняется вместе с их числом — все квартиры относятся к её полосе.
   const avg=apartments/count;
   const band=avg<PARKING_2118.bands.small_max?'small':(avg<=PARKING_2118.bands.medium_max?'medium':'large');
-  permanent=Math.ceil(count*PARKING_2118.mix[band]);
-  basis='2118-ПП, п. 2 по средней квартире '+avg.toFixed(1).replace('.',',')+' м² ('
-        +num(Math.round(count))+' квартир × '+String(PARKING_2118.mix[band]).replace('.',',')
-        +'), приобъектные нежилья не учтены';
- }else{
-  permanent=Math.ceil(apartments/(PARKING_2118.sqm_per_person*PARKING_2118.household)
-                      *PARKING_2118.per_flat);
-  basis='2118-ПП, п. 1 от '+num(Math.round(apartments))+' м² квартир (число квартир не задано), приобъектные нежилья не учтены';
+  return {permanent:Math.ceil(count*PARKING_2118.mix[band]),
+          basis:'2118-ПП, п. 2 по средней квартире '+avg.toFixed(1).replace('.',',')+' м² ('
+                +num(Math.round(count))+' квартир × '+String(PARKING_2118.mix[band]).replace('.',',')+')'};
  }
+ return {permanent:Math.ceil(apartments/(PARKING_2118.sqm_per_person*PARKING_2118.household)
+                             *PARKING_2118.per_flat),
+         basis:'2118-ПП, п. 1 от '+num(Math.round(apartments))+' м² квартир (число квартир не задано)'};
+}
+
+function normativeUnderground(){
+ const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(apartments<=0)return null;
+ const count=Number((tep.apartments&&tep.apartments.units)||0);
+ const own=permanentByNorm(apartments,count);
+ const permanent=own.permanent;
+ const basis=own.basis+', приобъектные нежилья не учтены';
  const guest=Math.ceil(permanent*PARKING_2118.guest_share);
  const spaces=permanent+guest;
  if(spaces<=0)return null;
@@ -55945,7 +56019,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id))syncProjectClassSelector();if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
      // не множитель в расчёте (решение владельца, 13.09.2026: «это зависит от
@@ -57271,7 +57345,7 @@ function siteDensitySourceLabel(){
  if(glavapuDensitySqmHa()>0)return 'из калькулятора ГлавАПУ (Москва)';
  return 'по умолчанию 30 000 м²/га';
 }
-async function applyNormativeTep(densityOverride){
+async function applyNormativeTep(densityOverride,keepRows){
  // Нормативный пересчёт по РНГП МО — те же формулы, что в калькуляторе
  // Подмосковья: квартиры = площадь × плотность, население 28 м²/чел, ДОО
  // 65 и СОШ 135 мест на 1000 жителей, поликлиника 17,75 пос./смену,
@@ -57313,6 +57387,13 @@ async function applyNormativeTep(densityOverride){
  const data=await response.json();
  if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать нормативный ТЭП');
  Object.entries(data.tep||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
+ // Обратный счёт от вписанных метров: строка, которую человек вписал, остаётся
+ // его. Сервер выводит ГНС и общую из продаваемой своими долями, и ответ молча
+ // заменял вписанные 215 720,6 м² ГНС на 220 781,6 — при обещании таблицы
+ // «введённое вами не перебивается». Из ответа берётся только производное:
+ // число квартир, население, социалка, паркинг, плата за ВРИ.
+ Object.entries(keepRows||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
+ if(keepRows&&keepRows.apartments)rescaleBuiltInCommercial();
  const keepLand=Number(inputs.land_rights_cost_mln||0);
  const keepRegion=inputs.vri_region;
  Object.assign(inputs,data.inputs||{});
@@ -58038,6 +58119,21 @@ function scheduleTepAutoRecalc(changedKey){
  clearTimeout(tepAutoTimer);
  tepAutoTimer=setTimeout(()=>{recalcMoFromApartments(apartments,area)},500);
 }
+// Пояснение обратного счёта: что пересчитано, что сохранено и что поменялось
+// (было → стало). Молча заменённое число неотличимо от посчитанного.
+function moBackcountNote(typed,unitsWas,offered){
+ const now=Number((tep.apartments&&tep.apartments.units)||0);
+ const parts=['Нормативы пересчитаны под '+num(Number(typed.saleable||0))+' м² квартир: '
+  +'социалка, машино-места, рабочие места и плата за ВРИ следуют за объёмом.'];
+ parts.push('Вписанные площади квартир сохранены: ГНС '+num(Number(typed.gns||0))
+  +' м², общая '+num(Number(typed.total_area||0))+' м², продаваемая '
+  +num(Number(typed.saleable||0))+' м².'
+  +(Math.abs(Number(offered.gns||0)-Number(typed.gns||0))>=0.05&&Number(offered.gns||0)>0
+    ?' Нормативные доли дали бы ГНС '+num(Number(offered.gns||0))+' м² — не подставлено.':''));
+ if(Math.abs(now-unitsWas)>=0.05)
+  parts.push('Число квартир пересчитано от продаваемой: было '+num(unitsWas)+' → стало '+num(now)+'.');
+ return parts.join(' ');
+}
 async function recalcMoFromApartments(apartments,area){
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';
@@ -58047,10 +58143,16 @@ async function recalcMoFromApartments(apartments,area){
   const density=apartments/area;
   say('Пересчитываю нормативы РНГП под '+num(apartments)+' м² квартир: '
    +'плотность '+num(density)+' м²/га, население, социалка, машино-места и плата за ВРИ…',false);
-  await applyNormativeTep(density);
+  const row=tep.apartments||{};
+  // Столбцы, которые берутся у человека, а не у ответа: это и есть вписанное.
+  // Число квартир сюда не входит — оно выход формулы от продаваемой, и
+  // прежнее число описывало бы прежний объём.
+  const typed={};
+  ['gns','total_area','saleable','useful','transfer'].forEach(col=>{typed[col]=Number(row[col]||0)});
+  const unitsWas=Number(row.units||0);
+  const data=await applyNormativeTep(density,{apartments:typed});
   moAutoApartments=Number((tep.apartments&&tep.apartments.saleable)||0);
-  say('Нормативы пересчитаны под '+num(moAutoApartments)+' м² квартир: '
-   +'социалка, машино-места, рабочие места и плата за ВРИ следуют за объёмом.',true);
+  say(moBackcountNote(typed,unitsWas,((data||{}).tep||{}).apartments||{}),true);
  }catch(e){
   // Молчать нельзя: человек уже видит новые квартиры и старую социалку рядом,
   // и без объяснения это выглядит посчитанным.
@@ -58653,6 +58755,8 @@ function hideCalcLocked(){
  if(box)box.style.display='none';
 }
 
+// Номер последнего запущенного расчёта (см. `calculate`).
+let calcRun=0;
 async function calculate(){
  // Форма забирается целиком, КРОМЕ полей, где стоит счётный показатель, а не
  // набранное число: у таких вводная равна нулю, и ноль здесь значит «считает
@@ -58686,14 +58790,25 @@ async function calculate(){
  // заполняет отчёт заново. Тот же приём, что у опоздавшего ответа Платона:
  // результат прошлого состояния в новое не пускается.
  const startedAtReset=resetRun;
+ // Номер самого расчёта. Каждая правка поля зовёт расчёт, ответы приходят в
+ // любом порядке, и опоздавший ответ ПРЕЖНИХ вводных перерисовывал итог
+ // поверх свежего: подставили рекомендацию 951, вписали 1300 — ушло 1300, а
+ // в отчёте осталась выручка по 951. Показывается только последний запущенный.
+ const calcTicket=++calcRun;
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
+   if(calcTicket!==calcRun)return null;
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
-   phaseBundle=await response.json();lastResult=phaseBundle.consolidated;
+   const bundle=await response.json();
+   if(calcTicket!==calcRun)return null;
+   phaseBundle=bundle;lastResult=phaseBundle.consolidated;
  }else{
    const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
+   if(calcTicket!==calcRun)return null;
    if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
-   lastResult=await response.json();phaseBundle=null;
+   const result=await response.json();
+   if(calcTicket!==calcRun)return null;
+   lastResult=result;phaseBundle=null;
    if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
     // Строку, которую тип проекта не считает, назад НЕ пишем: её нули —
     // участие в расчёте, а не решение человека, и записанные они стёрли бы
@@ -61701,7 +61816,7 @@ async function deleteProject(id){
 // трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
 // то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
- 'profileState','profileAskedOnResult','calcRequiresLogin','webLoginBusy',
+ 'profileState','profileAskedOnResult','calcRequiresLogin','calcRun','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
