@@ -292,8 +292,47 @@ def test_no_parcel_is_refused_before_the_browser(core, monkeypatch):
     inputs, tep = _nagatino()
     inputs.pop("_cadastral_analysis")
     answer = core.glavapu_scenario_check(core.GlavapuScenarioRequest(inputs=inputs, tep=tep))
-    assert answer["state"] == "refused" and "кадастровых" in answer["error"]
+    assert answer["state"] == "refused" and "кадастрового номера" in answer["error"]
+    # Отказ говорит, куда вписать номер, а не только чего нет.
+    assert "«Участок»" in answer["error"] and "_project_cadastral_numbers" in answer["where"]
     assert not calls
+
+
+def test_a_quarter_alone_is_named_in_the_refusal(core, monkeypatch):
+    # Калькулятор проверяет ввод выражением \d{2}:\d{2}:\d{6,7}:\d+
+    # (`genplan_assets/domain-*.js`): квартал без номера участка он не берёт.
+    calls: list = []
+    monkeypatch.setattr(core, "_glavapu_headless_run", _fake_run(calls))
+    inputs, tep = _nagatino()
+    inputs.pop("_cadastral_analysis")
+    inputs["_glavapu_import"] = {"normalized": {"cadastral_quarter": "77:05:0004001"}}
+    answer = core.glavapu_scenario_check(core.GlavapuScenarioRequest(inputs=inputs, tep=tep))
+    assert answer["state"] == "refused" and "квартал 77:05:0004001" in answer["error"]
+    assert not calls
+
+
+# Номер участка — у одного владельца, `_project_cadastral_numbers`. Сверка
+# прежде читала только расчёт ТЭП по номеру и отказывала проекту, у которого
+# номер вписан в поле или найден через ЕГРН: «кадастр не введён» при
+# введённом кадастре.
+@pytest.mark.parametrize("where", [
+    {"_cadastral_query": "77:05:0004001:1"},
+    {"_land_lookup": {"query": "77:05:0004001:1"}},
+    {"cadastral_numbers": "77:05:0004001:1"},
+    # Поиск по адресу номеров не даёт и не заслоняет вписанный номер.
+    {"_land_lookup": {"query": "Москва, Нагатинская наб."}, "_cadastral_query": "77:05:0004001:1"},
+], ids=["field", "egrn", "cadastral_numbers", "address-then-field"])
+def test_the_parcel_is_read_wherever_the_project_keeps_it(core, monkeypatch, where):
+    calls: list = []
+    monkeypatch.setattr(core, "_glavapu_headless_run", _fake_run(calls))
+    inputs, tep = _nagatino()
+    inputs.pop("_cadastral_analysis")
+    inputs.update(where)
+    req = core.GlavapuScenarioRequest(inputs=inputs, tep=tep)
+    first = core.glavapu_scenario_check(req)
+    assert first["state"] != "refused", first.get("error")
+    _wait_done(core, req)
+    assert calls and calls[0][0] == NUMBERS
 
 
 def test_render_forwards_to_the_core(core, monkeypatch):
