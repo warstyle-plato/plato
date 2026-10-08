@@ -242,7 +242,9 @@ def test_the_note_explains_where_the_built_in_commerce_places_went() -> None:
     tep = {key: dict(row) for key, row in TEP.items()}
     note = core.apply_object_parking(
         _inputs(offices_enabled=True, retail_enabled=True), tep)["note"]
-    assert "встроенной коммерции" in note and "подземном паркинге дома" in note
+    assert "встроенной коммерции" in note and "в подземный паркинг МКД не входит" in note
+    # Гараж дома — постоянные и гостевые: подпись не кладёт туда приобъектные.
+    assert "подземном паркинге дома" not in note
 
 
 def test_moscow_oblast_finally_counts_nonresidential() -> None:

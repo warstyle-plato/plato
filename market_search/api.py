@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import re
+import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +34,7 @@ from . import report_pdf
 from . import price_hint_ui
 from . import stage as stage_module
 from . import sales_deck
+from . import region_market as region_market_module
 from .subject import SubjectNotFound
 
 
@@ -176,6 +180,20 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     service = MarketDiscoveryService(data_dir)
     app.state.market_discovery_installed = True
     app.state.market_discovery_service = service
+
+    # Недельный свод рынка по регионам из кабинета «Пульса». Поток только
+    # проверяет срок раз в час; сбор идёт раз в 7 дней и берёт замок-файл,
+    # так что из двух воркеров работает один. В pytest не стартует.
+    if (
+        "pytest" not in sys.modules
+        and os.getenv(region_market_module.SWITCH_ENV, "1").strip() not in {"0", "false", "no"}
+    ):
+        threading.Thread(
+            target=region_market_module.background_loop,
+            args=(service.region_market,),
+            name="pulse-regions-weekly",
+            daemon=True,
+        ).start()
 
     @app.post("/market/price-hint")
     def market_price_hint(req: PriceHintRequest) -> dict[str, Any]:
@@ -403,7 +421,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     @app.get("/market/pulse/catalog")
     async def market_pulse_catalog(
         request: Request, refresh: bool = False, q: str = "", check: bool = False
-    ) -> dict[str, Any]:
+    ) -> Response:
         """Справочник «Пульса»: из какой базы, когда обновлён, сколько по регионам.
 
         `refresh=1` — забрать карту и классы заново, мимо суточного кэша.
@@ -445,7 +463,63 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                     }
 
                 report["query"]["check"] = await run_in_threadpool(ask)
-        return report
+        # Страницу открывают в браузере телефона: без `charset` Safari читал
+        # русские причины и заголовки кракозябрами.
+        return Response(
+            content=json.dumps(report, ensure_ascii=False, indent=1, default=str),
+            media_type="application/json; charset=utf-8",
+        )
+
+    @app.get("/market/pulse/regions")
+    async def market_pulse_regions(request: Request) -> Response:
+        """Недельный свод рынка по регионам из кабинета: когда, сколько, ошибки.
+
+        Только диск: состояние сбора и готовые своды. Сам сбор идёт фоном раз
+        в неделю или по `POST /market/pulse/regions/run`.
+
+        Кодировка названа в заголовке: эту страницу открывают прямо в
+        браузере телефона, и без `charset` Safari читал причины кракозябрами.
+        """
+        cabinet_module.require_cabinet(request)
+        status = await run_in_threadpool(service.region_market.status)
+        return Response(
+            content=json.dumps(status, ensure_ascii=False, indent=1),
+            media_type="application/json; charset=utf-8",
+        )
+
+    @app.post("/market/pulse/regions/run")
+    async def market_pulse_regions_run(
+        request: Request, region: str = "", force: bool = False
+    ) -> dict[str, Any]:
+        """Ручной запуск сбора под ключом кабинета — в фоне, не в запросе.
+
+        `force=1` начинает сбор заново, мимо недельного срока и прогресса.
+        `region=50` — только этот регион. Ответ сразу: идёт ли сбор и почему
+        нет; ход и итог — в `GET /market/pulse/regions`.
+        """
+        cabinet_module.require_cabinet(request)
+        collector = service.region_market
+        code = " ".join(str(region or "").split())
+        if code and code not in collector.regions:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Регион {code} не в настройке {region_market_module.REGIONS_ENV} "
+                    f"(сейчас: {', '.join(collector.regions)})"
+                ),
+            )
+        blocker = collector.blocker()
+        if blocker:
+            return {"started": False, "reason": blocker}
+        if collector.lock_path.exists():
+            return {"started": False, "reason": "Сбор уже идёт", "status": collector.status()}
+        threading.Thread(
+            target=collector.run_due,
+            kwargs={"force": force, "only": code or None},
+            name="pulse-regions-manual",
+            daemon=True,
+        ).start()
+        return {"started": True, "regions": [code] if code else collector.regions, "force": force}
 
     @app.get("/market/pulse/project-page")
     async def market_pulse_project_page(

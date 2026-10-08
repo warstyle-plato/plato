@@ -25,7 +25,8 @@ from .geo_resolution import RESOLVED, ProjectGeoResolver, address_signature
 from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .dynamics import DealsSummary, SalesDynamics
-from .market_reference import MoscowMarket
+from .market_reference import MarketAtlas, MoscowMarket
+from .region_market import RegionMarketCollector
 from .metrics import build_blocks
 from .narrative import analysis, findings
 from .verdict import (
@@ -188,6 +189,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # модуль работает как прежде.
         self.pulse = make_pulse_client(Path(data_dir) / "pulse")
         self.city = MoscowMarket.bundled()
+        # «Рынок региона»: Москва — из месячного отчёта, остальные регионы —
+        # из недельного сбора кабинета «Пульса» (`region_market`). Сбор
+        # ведёт фоновый поток; здесь только чтение готовых файлов.
+        regions_dir = Path(data_dir) / "pulse-regions"
+        self.region_market = RegionMarketCollector(self.pulse, regions_dir)
+        self.markets = MarketAtlas(self.city, regions_dir, explain=self.region_market.explain)
         # История продаж и остатка: живой источник её не отдаёт, она вынута из
         # помесячного отчёта и едет с кодом.
         self.dynamics = SalesDynamics.bundled()
@@ -1018,11 +1025,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # городская база не подставляется вовсе: медианы чужого города,
         # выданные молча, выглядят исправным сравнением.
         where = " ".join(filter(None, [subject_address, subject.query]))
-        city_scope = self.city.scope(where)
+        market = self.markets.for_address(where)
+        city_scope = self.markets.scope(where)
         # Сравнение с городом можно выключить. Для площадки без своего проекта
         # медиана класса по всей Москве отвечает не на тот вопрос: решают
         # соседи в трёх километрах, а город только шумит рядом с ними.
-        reference = self.city if (city_scope["covered"] and city_reference) else MoscowMarket({})
+        reference = market if (city_scope["covered"] and city_reference) else MoscowMarket({})
         blocks = build_blocks(subject_metrics, peers, reference, codes)
         notes = build_notes(blocks, subject_series)
         notes["premium_series"] = premium_series(subject_series, peers)
@@ -1188,8 +1196,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             },
             "city": {
                 "asked": bool(city_reference),
-                "source": self.city.source,
-                "observed_at": self.city.observed_at,
+                "source": market.source,
+                "observed_at": market.observed_at,
                 "scope": city_scope,
             },
             "retrieved_at": self.verified_prices.today.isoformat(),
@@ -1361,12 +1369,15 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         peers: list[dict[str, Any]] = []
         near: list[tuple[float, Any]] = []
         classes: dict[int, str] = {}
+        priceless = 0
+        errors_before = len(getattr(self.pulse, "errors", None) or [])
         if self.pulse.available:
             classes = self.pulse.segments()
             near = self.pulse.near(subject_latitude, subject_longitude, radius_km)
             for distance, project in near[:budget]:
                 price = self.pulse.price(project.complex_id)
                 if not price:
+                    priceless += 1
                     continue
                 card = self.cards.card(project.complex_id)
                 # Сроки и стадия — одним владельцем на обе поверхности:
@@ -1453,7 +1464,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             ),
         )
 
-        scope = self.city.scope(where)
+        market = self.markets.for_address(where)
+        scope = self.markets.scope(where)
+        if market is not self.city:
+            # Средняя ступень региона — муниципалитет, а не округ Москвы.
+            okrug = market.okrug_of(where)
         if selected_stages:
             # Округ и город стадию не знают. Подставить их медиану под подписью
             # «по стадии котлован» значило бы выдать за отбор то, чего не было.
@@ -1476,15 +1491,49 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 peers=peers,
                 segment=segment,
                 okrug=okrug,
-                city=self.city if scope["covered"] else MoscowMarket({}),
+                city=market if scope["covered"] else MoscowMarket({}),
                 fresh_since=fresh_since,
             )
         hint["stage_filter"] = stage_filter
         hint["source_coverage"] = _peer_source_coverage(peers)
+        # «Соседей нет» бывает тремя разными ответами: в радиусе пусто
+        # (справочник не покрывает место), соседи есть, но без прайса, или
+        # источник ответил ошибкой. Счёт и ошибки едут в ответ, а не в лог.
+        pulse_errors = list(getattr(self.pulse, "errors", None) or [])[errors_before:]
+        hint["peer_search"] = {
+            "source_available": bool(self.pulse.available),
+            "radius_km": radius_km,
+            "found": len(near),
+            "asked": min(len(near), budget),
+            "without_price": priceless,
+            "with_price": len(peers),
+            "errors": pulse_errors[:3],
+        }
+        if not hint.get("available") and not peers:
+            if not self.pulse.available:
+                found_text = "источник «Пульс» выключен: не заданы PULSE_LOGIN и PULSE_PASSWORD"
+            elif not near:
+                found_text = (
+                    f"в радиусе {radius_km:g} км справочник «Пульса» не нашёл ни одного проекта"
+                )
+            else:
+                found_text = (
+                    f"в радиусе {radius_km:g} км проектов «Пульса» {len(near)}, "
+                    f"спрошено {min(len(near), budget)}, без цены {priceless}"
+                )
+            if pulse_errors:
+                found_text += f"; ошибки источника: {'; '.join(pulse_errors[:2])}"
+            hint["reason"] = f"{hint.get('reason') or 'Ориентир не рассчитан'} ({found_text})"
         if not scope["covered"] and not hint.get("available") and not selected_stages:
+            # Регион адреса назван — причина про его свод (нет базы, идёт сбор,
+            # не собирался), а не про то, что Москва сюда не годится.
+            region_reason = (scope.get("region") or {}).get("reason")
             hint["reason"] = (
                 f"{hint.get('reason') or 'Ориентир не рассчитан'}. "
-                f"Свод рынка собран по отчёту «{scope['label']}» и для этого адреса не применяется"
+                + (
+                    region_reason
+                    or f"Свод рынка собран по отчёту «{scope['label']}» и для этого адреса не применяется"
+                )
             )
         hint["location"] = {
             "display_name": where,

@@ -83,6 +83,59 @@ PARKING_GUEST_SHARE = 0.10
 UNDERGROUND_AREA_PER_SPACE = 35.0
 ABOVE_AREA_PER_SPACE = 25.0
 OFFICE_SQM_PER_SPACE = 100.0
+
+# Какие места кладутся в подземный паркинг МКД, а какие — нет. 945-ПП, п. 6.1.2:
+# постоянные жителей — в гаражах в приоритетном порядке (6.1.2.1), гостевые — в
+# гараже или на плоскостной парковке (6.1.2.2). Приобъектные НЕ обязаны быть в
+# гараже: плоскостная парковка или сторона улицы в красных линиях УДС, до 200 м
+# (6.1.2.3, 6.1.2.5.3); места остановки — до 150 м от входа и «размещаются
+# дополнительно» (6.1.2.4, 6.2.3.5). Где именно они лягут — решение ППТ, а не
+# норма; модель держит их вне гаража, как и выгрузка ГлавАПУ (строки 42.3 и 43).
+# Ключи разбивки `tep_derived.parking` — явная карта, а не догадка по имени.
+PRESET_GARAGE_PARKING_KEYS = ("residential_permanent", "residential_guest")
+PRESET_ATTACHED_SUFFIX = "_onsite"
+PRESET_SHORT_STOP_SUFFIX = "_short"
+PARKING_PLACEMENT_BASIS = (
+    "945-ПП п. 6.1.2.3–6.1.2.5: приобъектные — плоскостная парковка или сторона "
+    "улицы в красных линиях УДС до 200 м, места остановки — до 150 м от входа; "
+    "в подземный паркинг МКД, его метры и СМР не входят")
+
+# Коэффициенты территории пресета → поля движка. Явная карта, а не догадка по
+# имени: `k2_note`, `district` и `calculation_zone` — подписи и основания, а не
+# числа норматива. К2 приходит уже выбранным (внутри ТТК или вне — решение
+# выгрузки ГлавАПУ), поэтому одно число, а не два. Пределы — то, что вообще
+# бывает у коэффициента: К1 0,75–1,0 (приложение 6), К2 до 1,0 (приложение 3);
+# число вне них — ошибка файла, и молча ставить его в норму нельзя.
+# `rent_coefficient` поля у движка нет: аренда в модели приходит суммой.
+PRESET_TERRITORY_INPUTS: dict[str, tuple[str, str, float, float]] = {
+    "k1_rail": ("parking_k1", "К1 — доступность рельсового каркаса", 0.75, 1.0),
+    "k2_business": ("parking_k2", "К2 — деловая активность района", 0.01, 1.0),
+}
+
+
+def preset_parking_split(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Разбивка мест пресета по видам: что в гараже МКД, что вне его.
+
+    Без разбивки ответа нет (None), и это не «приобъектных ноль»: пресет
+    просто не говорит, из чего сложено его число.
+    """
+    derived = data.get("tep_derived") if isinstance(data.get("tep_derived"), dict) else {}
+    parking = derived.get("parking") if isinstance(derived.get("parking"), dict) else None
+    if not parking or _number(parking.get("residential_permanent")) is None:
+        return None
+    count = lambda key: int(round(_number(parking.get(key)) or 0))  # noqa: E731
+    attached = {key[:-len(PRESET_ATTACHED_SUFFIX)]: count(key)
+                for key in parking if key.endswith(PRESET_ATTACHED_SUFFIX)}
+    short = {key[:-len(PRESET_SHORT_STOP_SUFFIX)]: count(key)
+             for key in parking if key.endswith(PRESET_SHORT_STOP_SUFFIX)}
+    return {"permanent": count("residential_permanent"),
+            "guest": count("residential_guest"),
+            "garage": sum(count(key) for key in PRESET_GARAGE_PARKING_KEYS),
+            "attached": sum(attached.values()), "attached_by": attached,
+            "short_stop": sum(short.values()), "short_stop_by": short,
+            "basis": str(parking.get("basis") or "")}
+
+
 # Средний продаваемый лот. Число квартир пресет обязан назвать сам: без него
 # на странице оставалась абсолютная величина из TEP_DEFAULT (1 361,8), снятая
 # с чужой продаваемой площади, — «поле, которого нет в карте записи, молча
@@ -325,8 +378,10 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     phase_parking_rows = []
     phasing = data.get("phasing") if isinstance(data.get("phasing"), dict) else {}
     for phase in phasing.get("phases") or []:
-        products = phase.get("products") if isinstance(phase, dict) else None
-        row = products.get("underground_parking") if isinstance(products, dict) else None
+        # Тот же читатель, что у очередей модели (`map_phasing`): у Нагатино
+        # строка паркинга лежит рядом с именем очереди, а не в `products`, и
+        # здесь её не видели — проверять гараж было бы не на чем.
+        row = _phase_products(phase).get("underground_parking") if isinstance(phase, dict) else None
         if isinstance(row, dict):
             phase_parking_rows.append(row)
     phase_spaces = sum((_number(row.get("units")) or 0.0) for row in phase_parking_rows)
@@ -341,6 +396,18 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
                                  else _number(underground_plan.get("area_m2")))
     if explicit_underground_spaces is not None:
         underground = int(round(explicit_underground_spaces))
+    split = preset_parking_split(data)
+    if split and explicit_underground_spaces is not None and underground != split["garage"]:
+        # Пресет назвал, из чего сложены места, — и его гараж с этим не сходится.
+        # Чинить молча нечем: как разложить лишнее по очередям, документ не
+        # говорит. Отказ называет разницу и её виды.
+        extra = underground - split["garage"]
+        raise PresetError(
+            f"Подземный паркинг МКД в пресете — {underground} мест, а по разбивке "
+            f"tep_derived.parking в гараж идут {split['garage']} "
+            f"({split['permanent']} постоянных + {split['guest']} гостевых); разница {extra}. "
+            f"Приобъектные ({split['attached']}) и места остановки ({split['short_stop']}) "
+            f"в подземный паркинг не кладутся — {PARKING_PLACEMENT_BASIS}.")
     underground_area = (explicit_underground_area if explicit_underground_area is not None
                         else underground * UNDERGROUND_AREA_PER_SPACE)
 
@@ -429,11 +496,64 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     else:
         notes.append(Field(TBD, "tbd",
                            "паркинг не рассчитан: пресет запрещает выводить его без исходных данных"))
+    if split:
+        # Места вне гаража — своей строкой и со своим источником: без неё общее
+        # «машино-мест N» документа читается как размер подземного паркинга.
+        def by_kind(parts: dict[str, int]) -> str:
+            labels = {"residential": "жильё", "ground_commercial": "встроенная коммерция",
+                      "office": "офисы", "retail": "ТЦ"}
+            return ", ".join(f"{labels.get(key, key)} {value}" for key, value in parts.items() if value)
+        notes.append(Field(
+            split["garage"], "source",
+            f"подземный паркинг МКД — {split['garage']} мест: {split['permanent']} постоянных "
+            f"+ {split['guest']} гостевых (tep_derived.parking)"))
+        if split["attached"] or split["short_stop"]:
+            notes.append(Field(
+                split["attached"] + split["short_stop"], "source",
+                f"вне подземного паркинга — {split['attached']} приобъектных ({by_kind(split['attached_by'])})"
+                f" и {split['short_stop']} мест остановки ({by_kind(split['short_stop_by'])}), "
+                f"tep_derived.parking; {PARKING_PLACEMENT_BASIS}"))
     if above:
         notes.append(Field(above, "derived",
                            f"наземный гараж — {_ru(garage_gns)} м² ÷ {ABOVE_AREA_PER_SPACE:.0f} м²/место, "
                            "закрывает часть потребности"))
     return tep, notes
+
+
+def _ru_k(value: float) -> str:
+    """Коэффициент с запятой: «0,75», а не «1» разрядного формата."""
+    return f"{value:g}".replace(".", ",")
+
+
+def map_territory(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
+    """К1 и К2 приобъектной парковки — из `territory_coefficients` пресета.
+
+    Без них пустые поля дают норме верхний край К1 = К2 = 1, то есть максимум
+    мест: у офиса МФОЦ Нагатино это 2 778 мест против ~1 042 по выгрузке
+    ГлавАПУ (0,75 × 0,5). Поле — то же, куда кладёт коэффициенты импорт
+    выгрузки ГлавАПУ, так что движок, страница и книга читают одно решение.
+    """
+    raw = data.get("territory_coefficients")
+    if not isinstance(raw, dict):
+        return {}, []
+    source = str(raw.get("source") or "").strip() or "пресет, territory_coefficients"
+    inputs: dict[str, Any] = {}
+    notes: list[Field] = []
+    for key, (field, label, low, high) in PRESET_TERRITORY_INPUTS.items():
+        if key not in raw:
+            continue
+        value = _number(raw.get(key))
+        if value is None or not (low <= value <= high):
+            # Неверное число не подменяется верхним краем молча: норма
+            # возьмёт край сама и назовёт его, а здесь называется причина.
+            notes.append(Field(TBD, "tbd",
+                               f"{label}: в пресете «{raw.get(key)}» — вне пределов "
+                               f"{_ru_k(low)}–{_ru_k(high)}, не перенесено; норма возьмёт верхний край"))
+            continue
+        inputs[field] = value
+        suffix = f" ({raw['k2_note']})" if key == "k2_business" and raw.get("k2_note") else ""
+        notes.append(Field(value, "source", f"{label} — {_ru_k(value)}{suffix}; {source}"))
+    return inputs, notes
 
 
 def map_inputs(data: dict[str, Any], tep: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
@@ -507,6 +627,10 @@ def map_inputs(data: dict[str, Any], tep: dict[str, Any]) -> tuple[dict[str, Any
             notes.append(Field(excluded / 1_000_000.0, "source",
                                f"из потребности исключено {excluded / 1e6:,.1f} млн ₽ — "
                                "техприсоединение объекта, который проект не строит"))
+
+    territory_inputs, territory_notes = map_territory(data)
+    inputs.update(territory_inputs)
+    notes.extend(territory_notes)
 
     if tep.get("offices", {}).get("gns"):
         inputs["offices_enabled"] = True
