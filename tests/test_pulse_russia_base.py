@@ -219,3 +219,20 @@ def test_the_catalog_route_finds_mytishchi_and_asks_its_price(monkeypatch, tmp_p
     row = opened.get("/market/project/50-001200")
     assert row.status_code == 200, row.text
     assert row.json()["name"] == "Мытищи Парк"
+
+
+def test_the_map_probe_reads_the_spa_bundle_for_its_endpoints(tmp_path: Path) -> None:
+    """Всероссийская карта — SPA: страница пустая, адреса данных — в скрипте."""
+    shell = '<html><head><title>Пульс</title><script type="module" src="/assets/index-P_cxj_7a.js"></script></head></html>'
+    bundle = ('const c=axios.create({baseURL:"/api/v2"});c.get("map/complexes/");'
+              'fetch(`/api/complex/${id}/price_stats/`);x="/assets/logo.svg"')
+    client = PulseClient(tmp_path, login="l", password="p", base=RUSSIA)
+    client._cookie = lambda name: "cookie"  # type: ignore[assignment]
+    client._open = lambda path, **kwargs: (bundle if path.endswith(".js") else shell).encode("utf-8")  # type: ignore[assignment]
+    page, index = client._read_map()
+    assert index < 0
+    found = client.map_probe[0]["bundles"][0]
+    assert found["script"] == "/assets/index-P_cxj_7a.js"
+    assert "/api/complex/${id}/price_stats/" in found["paths"]
+    assert found["base_urls"] == ["/api/v2"] and "map/complexes/" in found["relative"]
+    assert "/assets/logo.svg" not in found["paths"]
