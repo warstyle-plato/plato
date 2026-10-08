@@ -112,8 +112,15 @@ def test_the_money_does_not_read_the_construction_volume() -> None:
     body = source[source.index("    article_gns = "):source.index("\n    amounts[\"author_supervision\"]")]
     assert "project_gns_sqm" not in body, (
         "статья CAPEX считается от строительного объёма — тогда правка базы двигает деньги")
-    for base in ("core_total_gns", "core_above_gns", "core_under_gns"):
+    # Общие статьи — от своей базы `project_articles_sqm`: площадь МКД плюс,
+    # у чисто нежилого проекта, площадь объектов со ставкой СМР (решение
+    # владельца 06.10.2026). Строительного объёма в ней нет.
+    for base in ("project_articles_sqm", "core_above_gns", "core_under_gns"):
         assert base in body, base
+    head = source[:source.index("    amounts = {")]
+    definition = head[head.rindex("    project_articles_sqm = "):]
+    assert "core_total_gns + objects_area" in definition, definition[:200]
+    assert "project_gns_sqm" not in definition
 
 
 # --- книга -------------------------------------------------------------------

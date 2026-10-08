@@ -287,6 +287,17 @@ def test_project_articles_of_a_hotel_are_counted_from_its_gns() -> None:
         assert expected > 0
 
 
+def test_the_hotel_does_not_claim_an_uncounted_yard_is_in_its_building() -> None:
+    result = _run()
+    x, t = _inputs()
+    assert result["capex"]["landscaping"] == 0
+    amount, basis = core.landscaping_cost(x, t, above_gns=x["hotel_gba_sqm"])
+    assert amount == 0
+    assert "благоустройство гостиницы не учтено" in basis
+    assert "только СМР и отделку" in basis
+    assert "двор входит" not in basis
+
+
 # --- страница: page_blocks ----------------------------------------------------
 
 def test_the_page_prints_the_hotel_sections_of_the_engine() -> None:

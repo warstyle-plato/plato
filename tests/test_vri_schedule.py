@@ -385,8 +385,10 @@ def test_relief_is_applied_before_overheads_and_interest():
     full = model(vri_payment_mode="installment", vri_installment_years=6)
     cut = model(vri_payment_mode="installment", vri_installment_years=6,
                 vri_relief_mode="percent", vri_relief_pct=30)
-    # Резерв считается от суммы к оплате, а не от валового обязательства.
-    assert cut["capex"]["reserve"] < full["capex"]["reserve"]
+    # Льгота уменьшает сумму к оплате, а резерв на плату за ВРИ не
+    # начисляется вовсе (решение владельца 06.10.2026): льгота его не двигает.
+    assert cut["capex"]["land_rights"] == pytest.approx(full["capex"]["land_rights"] * 0.7, rel=1e-6)
+    assert cut["capex"]["reserve"] == pytest.approx(full["capex"]["reserve"])
     # Проценты по рассрочке — тоже.
     assert cut["capex"]["vri_interest"] == pytest.approx(full["capex"]["vri_interest"] * 0.7, rel=1e-6)
 

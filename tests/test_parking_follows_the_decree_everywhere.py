@@ -72,6 +72,7 @@ def test_the_page_counts_without_a_city_export() -> None:
         f"const tep={{apartments:{{saleable:{APARTMENTS}}}}};\n"
         "const inputs={};\n"
         + _function("undergroundAreaPerSpace") + "\n"
+        + _function("permanentByNorm") + "\n"
         + _function("normativeUnderground") + "\n"
         "process.stdout.write(JSON.stringify(normativeUnderground()));"
     )
@@ -183,7 +184,8 @@ def test_the_page_counts_by_the_average_like_the_engine() -> None:
             f"const tep={{apartments:{{saleable:{AREA},units:{count}}}}};\n"
             "const inputs={};\n"
             + _function("undergroundAreaPerSpace") + "\n"
-            + _function("normativeUnderground") + "\n"
+            + _function("permanentByNorm") + "\n"
+        + _function("normativeUnderground") + "\n"
             "process.stdout.write(JSON.stringify(normativeUnderground()));"
         )
         done = subprocess.run([node, "-e", program], capture_output=True, text=True, timeout=60)

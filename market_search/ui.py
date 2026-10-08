@@ -79,9 +79,28 @@ function mdSetNativeValue(el,value){
 // не на странице. «Встала» — это число в видимом поле И во вводных расчёта;
 // иначе ответ называет, что осталось. Происхождение (`by`) пишется страницей:
 // смена класса такое число не затирает, а у поля видно, откуда оно.
-function mdPlaceApartmentPrice(valueTh,by){
+// Что стояло в поле и во вводных в момент вопроса. Ответ ориентира приходит
+// через секунды (Пульс), и за это время человек успевает вписать своё число:
+// ответ, записанный поверх, отменял ручной ввод — в поле, во вводных и в
+// расчёте оставалась рекомендация (владелец: «ввёл руками больше, а 951 так и
+// остались»). Ручное, сделанное после нажатия, сильнее ответа на нажатие.
+function mdApartmentPriceSnapshot(){
+  const input=mdApartmentPriceInput();
+  return {field:input?String(input.value):null,
+    held:(typeof inputs==='object'&&inputs)?inputs.apartment_price_th:undefined};
+}
+function mdApartmentPriceMovedSince(since){
+  if(!since)return '';
+  const now=mdApartmentPriceSnapshot();
+  if(now.field!==null&&since.field!==null&&now.field!==since.field)return now.field||'пусто';
+  if(Number(now.held)!==Number(since.held))return String(now.held);
+  return '';
+}
+function mdPlaceApartmentPrice(valueTh,by,since){
   const value=Number(valueTh);
   if(!Number.isFinite(value)||value<=0)return {ok:false,reason:'ориентир не число ('+valueTh+')'};
+  const moved=mdApartmentPriceMovedSince(since);
+  if(moved)return {ok:false,kept:true,reason:'пока он считался, в поле встало '+moved+' — число, поставленное после нажатия, ответ не перебивает'};
   const input=mdApartmentPriceInput();
   if(!input)return {ok:false,reason:'на странице нет поля «Стартовая цена квартир» (f_apartment_price_th)'};
   mdSetNativeValue(input,String(value));

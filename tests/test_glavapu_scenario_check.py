@@ -292,8 +292,47 @@ def test_no_parcel_is_refused_before_the_browser(core, monkeypatch):
     inputs, tep = _nagatino()
     inputs.pop("_cadastral_analysis")
     answer = core.glavapu_scenario_check(core.GlavapuScenarioRequest(inputs=inputs, tep=tep))
-    assert answer["state"] == "refused" and "кадастровых" in answer["error"]
+    assert answer["state"] == "refused" and "кадастрового номера" in answer["error"]
+    # Отказ говорит, куда вписать номер, а не только чего нет.
+    assert "«Участок»" in answer["error"] and "_project_cadastral_numbers" in answer["where"]
     assert not calls
+
+
+def test_a_quarter_alone_is_named_in_the_refusal(core, monkeypatch):
+    # Калькулятор проверяет ввод выражением \d{2}:\d{2}:\d{6,7}:\d+
+    # (`genplan_assets/domain-*.js`): квартал без номера участка он не берёт.
+    calls: list = []
+    monkeypatch.setattr(core, "_glavapu_headless_run", _fake_run(calls))
+    inputs, tep = _nagatino()
+    inputs.pop("_cadastral_analysis")
+    inputs["_glavapu_import"] = {"normalized": {"cadastral_quarter": "77:05:0004001"}}
+    answer = core.glavapu_scenario_check(core.GlavapuScenarioRequest(inputs=inputs, tep=tep))
+    assert answer["state"] == "refused" and "квартал 77:05:0004001" in answer["error"]
+    assert not calls
+
+
+# Номер участка — у одного владельца, `_project_cadastral_numbers`. Сверка
+# прежде читала только расчёт ТЭП по номеру и отказывала проекту, у которого
+# номер вписан в поле или найден через ЕГРН: «кадастр не введён» при
+# введённом кадастре.
+@pytest.mark.parametrize("where", [
+    {"_cadastral_query": "77:05:0004001:1"},
+    {"_land_lookup": {"query": "77:05:0004001:1"}},
+    {"cadastral_numbers": "77:05:0004001:1"},
+    # Поиск по адресу номеров не даёт и не заслоняет вписанный номер.
+    {"_land_lookup": {"query": "Москва, Нагатинская наб."}, "_cadastral_query": "77:05:0004001:1"},
+], ids=["field", "egrn", "cadastral_numbers", "address-then-field"])
+def test_the_parcel_is_read_wherever_the_project_keeps_it(core, monkeypatch, where):
+    calls: list = []
+    monkeypatch.setattr(core, "_glavapu_headless_run", _fake_run(calls))
+    inputs, tep = _nagatino()
+    inputs.pop("_cadastral_analysis")
+    inputs.update(where)
+    req = core.GlavapuScenarioRequest(inputs=inputs, tep=tep)
+    first = core.glavapu_scenario_check(req)
+    assert first["state"] != "refused", first.get("error")
+    _wait_done(core, req)
+    assert calls and calls[0][0] == NUMBERS
 
 
 def test_render_forwards_to_the_core(core, monkeypatch):
@@ -590,10 +629,10 @@ def test_money_and_parking_are_compared_by_kind(core, monkeypatch) -> None:
     assert rows["social_comp.school"]["glavapu"] == pytest.approx(-3799.372)
     assert rows["social_comp.school"]["status"] == "reference"
     # Приобъектные по ВРИ: офис и ТЦ — каждый со своей строкой нормы.
-    office, retail = rows["parking_vri.4_1"], rows["parking_vri.4_2"]
+    office, retail = rows["parking_vri.4_1.attached"], rows["parking_vri.4_2.attached"]
     assert office["glavapu"] == 199 and retail["glavapu"] == 233
     assert office["ours"] is not None and "parking_demand" in office["ours_origin"]
-    assert rows["parking_vri.built_in"]["glavapu"] == 21
+    assert rows["parking_vri.built_in.attached"]["glavapu"] == 21
     # ВРИ по видам и льготы — по названиям строк калькулятора, справочно.
     assert rows["vri.44"]["label"] == "Многоквартирная жилые здания"
     assert rows["vri.44"]["status"] == "reference"
@@ -613,12 +652,12 @@ def test_money_and_parking_are_compared_by_kind(core, monkeypatch) -> None:
     # Баланс территории — как калькулятор разложил её под наше соотношение.
     # Нули калькулятора по видам ВРИ — не строки, а шум: их нет.
     assert "vri.45" not in rows and "vri.53" not in rows
-    assert "соцобъект" in rows["parking_vri.3_5"]["reason"]
+    assert "соцобъект" in rows["parking_vri.3_5.attached"]["reason"]
     assert rows["balance.12"]["glavapu"] == pytest.approx(7.659)
     assert rows["balance.14"]["status"] == "reference"
     groups = list(dict.fromkeys(r["group"] for r in rows.values()))
     assert groups.index("Соцнагрузка, млн ₽") < groups.index("Машино-места по видам") \
-        < groups.index("Приобъектные машино-места по ВРИ")
+        < groups.index("Машино-места по ВРИ")
 
 
 class _FakePage:

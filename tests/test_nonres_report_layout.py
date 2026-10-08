@@ -136,11 +136,16 @@ def test_the_object_estimate_and_the_common_costs_add_up_to_the_capex() -> None:
         parts = sum(v for k, v in rows.items() if k not in (
             "Итого смета объекта", "на м² наземной ГНС объекта", "на м² арендопригодной / продаваемой"))
         assert parts == pytest.approx(rows["Итого смета объекта"])
-    # Генподряд, техзаказчик и резерв проекта без жилья — целиком доли объектов:
-    # «общими» строками их больше нет.
-    for key in ("gc_fee", "technical_supervision", "reserve"):
+    # Генподряд и техзаказчик проекта без жилья — целиком доли объектов:
+    # «общими» строками их нет. Резерв — доля объекта со своей стройки, а
+    # резерв на статьи проекта (полная смета нежилого, 06.10.2026) — общей
+    # строкой «Резерв — вне объектов»; вместе — резерв проекта.
+    for key in ("gc_fee", "technical_supervision"):
         assert sum(p[key] for p in result["object_costs"].values()) == pytest.approx(result["capex"][key])
-    assert not {"Вознаграждение генподрядчика — вне объектов", "Резерв — вне объектов"} & set(common)
+    assert not {"Вознаграждение генподрядчика — вне объектов",
+                "Технический заказчик — вне объектов"} & set(common)
+    reserve_objects = sum(p["reserve"] for p in result["object_costs"].values())
+    assert reserve_objects + common["Резерв — вне объектов"] == pytest.approx(result["capex"]["reserve"])
     assert common["Участок — стоимость сделки"] == pytest.approx(1500e6)
 
 
