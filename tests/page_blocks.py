@@ -536,8 +536,9 @@ def project_kind() -> str:
                        function("projectKindNote"),
                        *(function(name) for name in (
                            "hotelOrigins", "setHotelField", "hotelBlank", "hotelValue",
-                           "hotelFieldNeeded", "hotelRangeText", "hotelFieldNote",
-                           "applyHotelPreset", "hotelInputsBlock"))))
+                           "hotelFieldNeeded", "hotelRangeText", "hotelOriginNow", "hotelFieldNote",
+                           "applyHotelPreset", "hotelInputsBlock",
+                           "syncHotelClassSelector", "setHotelClass"))))
 
 
 def auctions_function(*names: str) -> str:

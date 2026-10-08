@@ -45,6 +45,15 @@ STATE = r"""() => {
       ? lastResult.report.hotel.rows.map(r => [r.label, hotelCell(r)]) : [],
     tiles: [...document.querySelectorAll('#reportKpi .kpi span')].map(s => s.innerText.trim()),
     notes, inputs, tep,
+    header: {
+      hotelBox: getComputedStyle(document.getElementById('hotelClassBox')).display,
+      classBox: getComputedStyle(document.getElementById('projectClassBox')).display,
+      hotelClass: document.getElementById('hotelClassSelect').value,
+      blockStars: (document.getElementById('h_hotel_stars') || {}).value,
+    },
+    params: [...document.querySelectorAll('#projectParamsTable tr')].map(tr => [...tr.cells].map(c => c.textContent.trim())),
+    economics: [...document.querySelectorAll('#economicsTable tr')].map(tr => tr.cells[0] ? tr.cells[0].textContent.trim() : ''),
+    names: /Домбай|Домбая|UAI/.test(document.body.innerText),
     hotel: lastResult.report.hotel,
     hotelKeys: Object.keys(inputs).filter(k => k.startsWith('hotel_') && k !== 'hotel_origins'),
   };
@@ -83,7 +92,7 @@ def walk() -> dict:
             page.wait_for_function("() => lastResult.report && lastResult.report.hotel")
             out["empty"] = page.evaluate(STATE)
             page.evaluate(
-                "() => document.querySelector('.hotel-preset[data-preset=dombai] button').click()")
+                "() => document.querySelector('.hotel-preset[data-preset=hotel1] button').click()")
             page.wait_for_function("() => lastResult.report.hotel && lastResult.report.hotel.computed")
             state = page.evaluate(STATE)
             state["engine"] = _post(base, {"inputs": state["inputs"], "tep": state["tep"],
@@ -100,6 +109,21 @@ def walk() -> dict:
                 " && lastResult.report.hotel.rows.find(r => r.label === 'Выручка за срок').value !== before",
                 arg=next(r["value"] for r in state["hotel"]["rows"] if r["label"] == "Выручка за срок"))
             out["manual"] = page.evaluate(STATE)
+            # Класс из шапки — то же поле `hotel_stars`, что в блоке «Гостиница».
+            page.evaluate("""() => {
+              const s = document.getElementById('hotelClassSelect');
+              s.value = '4'; s.onchange();
+            }""")
+            page.wait_for_function(
+                "() => lastResult.report.project_class && lastResult.report.project_class.label === '4*'")
+            out["stars"] = page.evaluate(STATE)
+            # Проект, сохранённый до обезличивания, несёт прежний ключ ориентира.
+            page.evaluate("""() => {
+              inputs.hotel_origins.occ_start_pct = {preset: 'dombai',
+                text: 'ориентир: Домбай 5*, Предпосылки!E393', cells: ['dombai:Предпосылки!E393']};
+              renderInputs();
+            }""")
+            out["legacy"] = page.evaluate(STATE)
             page.evaluate("() => { applyProjectKind('mixed'); }")
             page.wait_for_function("() => !lastResult.report.hotel")
             out["back"] = page.evaluate(STATE)
@@ -133,7 +157,7 @@ def test_an_empty_hotel_names_what_is_missing_not_zeros(walk) -> None:
     # Пустые поля гостиницы не превращаются в нули: в вводных их нет вовсе.
     assert state["hotelKeys"] == []
     adr = state["notes"]["hotel_adr_rub"]
-    assert "hotel-empty" in adr["cls"] and "Домбай 5*" in adr["text"] and "UAI 5*" in adr["text"]
+    assert "hotel-empty" in adr["cls"] and "Отель 1 5*" in adr["text"] and "Отель 2 5*" in adr["text"]
     tax = state["notes"]["hotel_property_tax_pct"]
     assert "hotel-default" in tax["cls"] and "НК РФ" in tax["text"]
 
@@ -142,7 +166,7 @@ def test_the_preset_fills_fields_with_their_cells(walk) -> None:
     state = walk["dombai"]
     occ = state["notes"]["hotel_occ_start_pct"]
     assert "hotel-origin" in occ["cls"]
-    assert occ["text"] == "ориентир: Домбай 5*, Предпосылки!E393"
+    assert occ["text"] == "ориентир: Отель 1 5*, Предпосылки!E393"
     assert state["inputs"]["hotel_occ_start_pct"] == pytest.approx(47.0)
     assert state["inputs"]["hotel_origins"]["adr_rub"]["cells"]
 
@@ -171,3 +195,56 @@ def test_a_manual_edit_drops_the_origin(walk) -> None:
     before = next(r for r in walk["dombai"]["hotel"]["rows"] if r["label"] == "Выручка за срок")
     after = next(r for r in state["hotel"]["rows"] if r["label"] == "Выручка за срок")
     assert after["value"] > before["value"]
+
+
+def test_the_header_class_of_a_hotel_is_its_stars(walk) -> None:
+    """Класс в шапке гостиничного проекта — звёздность, класс жилья спрятан;
+    у жилого проекта — наоборот."""
+    for name in ("empty", "dombai"):
+        header = walk[name]["header"]
+        assert header["hotelBox"] != "none" and header["classBox"] == "none", name
+    assert walk["empty"]["header"]["hotelClass"] == ""
+    assert walk["dombai"]["header"]["hotelClass"] == "5"
+    for name in ("mixed", "back"):
+        header = walk[name]["header"]
+        assert header["hotelBox"] == "none" and header["classBox"] != "none", name
+
+
+def test_the_key_parameters_name_the_stars_not_a_housing_class(walk) -> None:
+    assert walk["empty"]["params"][0] == ["Класс гостиницы", "не задан"]
+    params = walk["dombai"]["params"]
+    assert params[0] == ["Класс гостиницы", "5*"]
+    labels = [row[0] for row in params]
+    # Метры продаваемой площади и цена квартир у гостиницы были бы нулями.
+    assert not {"Продаваемая площадь", "Средняя цена м² квартир", "EBITDA на метр",
+                "Строительство соцобъектов", "Социальная компенсация"} & set(labels)
+    keys = walk["dombai"]["hotel"]["rows"]
+    rooms = next(r for r in keys if r["label"] == "Номерной фонд")["value"]
+    assert ["Номерной фонд", f"{rooms:,.0f}".replace(",", "\u00a0")] in params
+    for name in ("mixed", "back"):
+        assert walk[name]["params"][0] == ["Класс проекта", "Комфорт"], name
+
+
+def test_the_header_class_edits_the_hotel_field(walk) -> None:
+    state = walk["stars"]
+    assert state["inputs"]["hotel_stars"] == "4"
+    assert state["header"]["hotelClass"] == "4" and state["header"]["blockStars"] == "4"
+    assert "hotel-manual" in state["notes"]["hotel_stars"]["cls"]
+    assert state["params"][0] == ["Класс гостиницы", "4*"]
+
+
+def test_a_saved_project_shows_the_current_preset_name(walk) -> None:
+    note = walk["legacy"]["notes"]["hotel_occ_start_pct"]
+    assert note["text"] == "ориентир: Отель 1 5*, Предпосылки!E393"
+
+
+def test_the_page_names_no_source_site(walk) -> None:
+    for name in ("empty", "dombai", "manual", "stars", "legacy"):
+        assert walk[name]["names"] is False, name
+
+
+def test_the_hotel_costs_have_their_own_label(walk) -> None:
+    labels = walk["dombai"]["economics"]
+    assert any(label.startswith("Гостиница — эксплуатация") for label in labels)
+    assert not any(label.startswith("Объекты вне ДДУ") for label in labels)
+
