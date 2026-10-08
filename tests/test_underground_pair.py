@@ -140,7 +140,10 @@ def test_the_hints_no_longer_promise_a_zero():
 def test_the_engine_still_understands_a_zero():
     """Движок не менялся: ноль означает «по нормативу», и API это сохраняет."""
     inputs = {**core.DEFAULT_INPUTS, "_glavapu_import": {
-        "normalized": {"parking_permanent": 25, "parking_guest": 3}}}
+        "normalized": {"parking_permanent": 25, "parking_guest": 3,
+                       # Квартиры, на которых город посчитал места: ТЭП о тех же.
+                       "apartment_area_sqm": 2165.0,
+                       "apartment_units": core.TEP_DEFAULT["apartments"]["units"]}}}
     tep = {key: dict(value) for key, value in core.TEP_DEFAULT.items()}
     # 2 165 м² квартир — ровно те 25 постоянных мест по 2118-ПП, что назвал
     # город: на умолчании 80 000 м² пара невозможна, норма даёт 924, и движок

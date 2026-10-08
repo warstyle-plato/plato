@@ -100,6 +100,18 @@ PARKING_PLACEMENT_BASIS = (
     "улицы в красных линиях УДС до 200 м, места остановки — до 150 м от входа; "
     "в подземный паркинг МКД, его метры и СМР не входят")
 
+# Коэффициенты территории пресета → поля движка. Явная карта, а не догадка по
+# имени: `k2_note`, `district` и `calculation_zone` — подписи и основания, а не
+# числа норматива. К2 приходит уже выбранным (внутри ТТК или вне — решение
+# выгрузки ГлавАПУ), поэтому одно число, а не два. Пределы — то, что вообще
+# бывает у коэффициента: К1 0,75–1,0 (приложение 6), К2 до 1,0 (приложение 3);
+# число вне них — ошибка файла, и молча ставить его в норму нельзя.
+# `rent_coefficient` поля у движка нет: аренда в модели приходит суммой.
+PRESET_TERRITORY_INPUTS: dict[str, tuple[str, str, float, float]] = {
+    "k1_rail": ("parking_k1", "К1 — доступность рельсового каркаса", 0.75, 1.0),
+    "k2_business": ("parking_k2", "К2 — деловая активность района", 0.01, 1.0),
+}
+
 
 def preset_parking_split(data: dict[str, Any]) -> dict[str, Any] | None:
     """Разбивка мест пресета по видам: что в гараже МКД, что вне его.
@@ -508,6 +520,42 @@ def map_tep(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     return tep, notes
 
 
+def _ru_k(value: float) -> str:
+    """Коэффициент с запятой: «0,75», а не «1» разрядного формата."""
+    return f"{value:g}".replace(".", ",")
+
+
+def map_territory(data: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
+    """К1 и К2 приобъектной парковки — из `territory_coefficients` пресета.
+
+    Без них пустые поля дают норме верхний край К1 = К2 = 1, то есть максимум
+    мест: у офиса МФОЦ Нагатино это 2 778 мест против ~1 042 по выгрузке
+    ГлавАПУ (0,75 × 0,5). Поле — то же, куда кладёт коэффициенты импорт
+    выгрузки ГлавАПУ, так что движок, страница и книга читают одно решение.
+    """
+    raw = data.get("territory_coefficients")
+    if not isinstance(raw, dict):
+        return {}, []
+    source = str(raw.get("source") or "").strip() or "пресет, territory_coefficients"
+    inputs: dict[str, Any] = {}
+    notes: list[Field] = []
+    for key, (field, label, low, high) in PRESET_TERRITORY_INPUTS.items():
+        if key not in raw:
+            continue
+        value = _number(raw.get(key))
+        if value is None or not (low <= value <= high):
+            # Неверное число не подменяется верхним краем молча: норма
+            # возьмёт край сама и назовёт его, а здесь называется причина.
+            notes.append(Field(TBD, "tbd",
+                               f"{label}: в пресете «{raw.get(key)}» — вне пределов "
+                               f"{_ru_k(low)}–{_ru_k(high)}, не перенесено; норма возьмёт верхний край"))
+            continue
+        inputs[field] = value
+        suffix = f" ({raw['k2_note']})" if key == "k2_business" and raw.get("k2_note") else ""
+        notes.append(Field(value, "source", f"{label} — {_ru_k(value)}{suffix}; {source}"))
+    return inputs, notes
+
+
 def map_inputs(data: dict[str, Any], tep: dict[str, Any]) -> tuple[dict[str, Any], list[Field]]:
     """Деньги и режимы: ВРИ, соцнагрузка, сети.
 
@@ -579,6 +627,10 @@ def map_inputs(data: dict[str, Any], tep: dict[str, Any]) -> tuple[dict[str, Any
             notes.append(Field(excluded / 1_000_000.0, "source",
                                f"из потребности исключено {excluded / 1e6:,.1f} млн ₽ — "
                                "техприсоединение объекта, который проект не строит"))
+
+    territory_inputs, territory_notes = map_territory(data)
+    inputs.update(territory_inputs)
+    notes.extend(territory_notes)
 
     if tep.get("offices", {}).get("gns"):
         inputs["offices_enabled"] = True
