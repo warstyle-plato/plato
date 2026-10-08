@@ -100,7 +100,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.34"
+VERSION = "0.25.35"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -5475,6 +5475,9 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
             "cadastral_quarter": cad_quarter.get("quarter") or "",
             "inside_moscow": inside_moscow,
             "inside_ttc": bool(payload.get("insideTTC")),
+            # Отсутствующий ключ — не «вне ТТК»: без этого признака читатель
+            # не отличил бы ответ ГлавАПУ «вне кольца» от молчания.
+            "inside_ttc_known": payload.get("insideTTC") is not None,
             "center": {
                 "lat": point.get("lat"),
                 "lng": point.get("lng"),
@@ -43041,6 +43044,7 @@ _AGENT_INSTRUCTIONS = """
 - Вопрос «как сделать», «с чего начать», «где кнопка» → get_user_guide; отвечай шагами из руководства и давай ссылку на раздел вида /guide#inputs. Не выдумывай кнопки: называй только те, что есть в руководстве.
 - «Где это править / как исправить настройку / куда вбить моё число» → where_to_edit. Спрашивай его ВСЕГДА, прежде чем сказать человеку, что и где менять, даже если ключ поля ты знаешь: вкладку и подпись ты не знаешь. Человеку называй путь и подпись («Вводные → Строительство → „Благоустройство"»), а не ключ. Ключи полей (landscaping_th_per_sqm и любые другие) — это язык инструментов, а не ответа: в тексте человеку их не пиши.
 - «Почему модель так считает», «откуда это число», «что у вас решено про…», «это ошибка или так задумано», «какой норматив у…» → search_project_knowledge (source=normative — выжимки актов города, rules — наши правила, backlog — открытые вопросы, all — везде). Там лежат наши записи: правила, выведенные из настоящих поломок, решения владельца с датами и открытые вопросы. Спрашивай их и тогда, когда своего ответа нет: придумать объяснение хуже, чем найти записанное. Это ВНУТРЕННИЕ записи — пользуйся ими, чтобы ответить верно, но не пересказывай как документ, не цитируй длинно и не называй чужие проекты, договоры и адреса. Записанное решение владельца сильнее твоего рассуждения; нет записи — так и скажи, а не выдумывай.
+- Льгота МПТ (1874-ПП): размер, Кмест, пороги, реконструкция, существующие или сносимые площади, рабочие места → calculate_mpt_benefit; текст норм — search_project_knowledge (source=normative, «МПТ 1874»). Чего в прочитанной редакции нет, так и говори со ссылкой на прочитанную редакцию (edition_read), а не «нет в выжимках».
 - Норматив города и наше решение — разные основания, и называть их надо разными словами. Норму бери из source=normative и называй с актом («приложение 5 к 945-ПП»), редакцию — у check_normatives; наше допущение называй нашим. Сказать «Москва требует», имея в виду наше умолчание, — то же самое, что назвать чужое число своим. Чего в записях нет, того не достраивай по памяти: нормативы правятся городом, и помнить их наизусть ты не можешь.
 
 Особые правила:
@@ -45721,7 +45725,8 @@ _AGENT_TOOLS = [
             "Записи проекта DevelopAid трёх видов: rules — наши правила методики и "
             "решения владельца с датами, backlog — открытые вопросы, normative — "
             "выжимки нормативных актов Москвы и области (945-ПП, 2152-ПП, РНГП, "
-            "593-ПП, плата за ВРИ, парковки, озеленение) с ссылкой на первоисточник. "
+            "593-ПП, плата за ВРИ, парковки, озеленение, 1874-ПП — льгота МПТ) "
+            "с ссылкой на первоисточник. "
             "Спрашивай, когда вопрос о том, ПОЧЕМУ модель считает так, откуда взялось "
             "число или норма, и когда своего ответа нет. Норму называй нормой города "
             "и со ссылкой на акт, наше решение — нашим; редакцию акта спрашивай "
@@ -45799,6 +45804,45 @@ _AGENT_TOOLS = [
         },
         "strict": True,
     },
+    {
+        "type": "function",
+        "name": "calculate_mpt_benefit",
+        "description": (
+            "Льгота за место приложения труда (МПТ) по 1874-ПП — тем же "
+            "калькулятором, что и страница: Sмпт, Кмест приложения 3, Кзатр "
+            "квартала, пороги п. 3.1, блокеры. Зови на любой вопрос о льготе МПТ, "
+            "её размере, существующих/сносимых площадях, реконструкции и рабочих "
+            "местах. existing_area_sqm — площадь, которая уже стоит (до "
+            "реконструкции или в сносимых зданиях); при mode=reconstruction "
+            "area_sqm — площадь ПОСЛЕ реконструкции. sqm_per_workplace — только "
+            "если плотность назвал человек: 1874-ПП её не задаёт. kterm (Ксрок) — "
+            "1, если человек не сказал о досрочной регистрации права. Ответ несёт "
+            "правила акта о существующих площадях и рабочих местах и перечень "
+            "прочитанных редакций — цитируй их, а не «нет в выжимках»."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "enum": [
+                    "office", "industrial", "social", "hotel", "mededu",
+                    "private_education", "sport", "culture"]},
+                "district": {"type": "string"},
+                "ttk_position": {"type": ["string", "null"],
+                                 "enum": ["inside", "outside", None]},
+                "mode": {"type": "string", "enum": ["new", "reconstruction"]},
+                "area_sqm": {"type": "number"},
+                "existing_area_sqm": {"type": ["number", "null"]},
+                "cadastral_number": {"type": ["string", "null"]},
+                "sqm_per_workplace": {"type": ["number", "null"]},
+                "kterm": {"type": ["number", "null"], "enum": [1, 1.05, 1.1, None]},
+            },
+            "required": ["category", "district", "ttk_position", "mode", "area_sqm",
+                         "existing_area_sqm", "cadastral_number", "sqm_per_workplace",
+                         "kterm"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
 ]
 
 
@@ -45854,6 +45898,17 @@ def _execute_agent_tool(
         return _tool_search_project_knowledge(args["query"], args["source"])
     if name == "check_normatives":
         return _tool_check_normatives(args["action"])
+    if name == "calculate_mpt_benefit":
+        import mpt_calculator
+        return mpt_calculator.agent_answer(
+            category=args["category"], district=args["district"],
+            ttk_position=args.get("ttk_position"), mode=args["mode"],
+            area_sqm=float(args["area_sqm"]),
+            existing_area_sqm=args.get("existing_area_sqm"),
+            cadastral_number=args.get("cadastral_number"),
+            sqm_per_workplace=args.get("sqm_per_workplace"),
+            kterm=args.get("kterm"),
+        )
     return {"error": f"Unknown tool: {name}"}
 
 
@@ -49528,6 +49583,7 @@ _AGENT_TOOL_LABELS = {
     "get_user_guide": "читает руководство пользователя",
     "where_to_edit": "ищет поле на экране",
     "search_project_knowledge": "читает записи проекта",
+    "calculate_mpt_benefit": "считает льготу МПТ по 1874-ПП",
 }
 
 
@@ -54897,6 +54953,24 @@ function renderStoredMo(){
  const status=document.getElementById('moStatus');
  if(status)status.innerHTML='<span class="import-ok">В проекте сохранён расчёт по Подмосковью: '+
   escapeHtml((stored.territory&&stored.territory.district)||'округ не определён')+'.</span> Нажмите «Рассчитать», чтобы обновить.';
+}
+
+// Участок проекта — один владелец ответа для блоков, которым нужны кадастр,
+// район и ТТК (льгота МПТ, льготы ВРИ). Читают его, а не соседние поля.
+// Нет кадастрового анализа — null: ТЭП собран без адреса. Чего анализ не
+// сказал — в missing с источником, а не молчаливое «вне ТТК».
+function projectParcelFacts(){
+ const a=(inputs&&inputs._cadastral_analysis)||cadastralAnalysis||null;
+ if(!a||!a.territory)return null;
+ const t=a.territory||{};
+ const numbers=((a.recognized&&a.recognized.length)?a.recognized:(a.requested||[])).map(String);
+ const district=String(t.district||'').trim();
+ const ttk=t.inside_ttc===true?'inside':(t.inside_ttc_known===true?'outside':'');
+ const missing=[];
+ if(!district)missing.push('район: кадастровый анализ (ГлавАПУ) его не вернул');
+ if(!ttk)missing.push('положение относительно ТТК: в сохранённом анализе нет признака ГлавАПУ — повторите кадастровый анализ');
+ return {cadastral:numbers[0]||'',numbers,quarter:String(t.cadastral_quarter||''),district,ttk,
+  inside_moscow:t.inside_moscow,missing,source:'кадастровый анализ проекта'};
 }
 
 function renderStoredCadastral(){
