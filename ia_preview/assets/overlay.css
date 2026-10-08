@@ -126,6 +126,8 @@
 
 .ia-setup{display:flex;gap:22px;align-items:flex-start;flex-wrap:wrap}
 .ia-setup .scenario{font-size:13px}
+.ia-kind .ia-kind-row{font-size:13px}
+.ia-kind .ia-kind-row select{min-width:220px}
 
 /* --- карточка решения -------------------------------------------------- */
 .ia-verdict{border:1px solid #111;border-top:6px solid #111;padding:20px 22px;margin-bottom:18px;background:#fff}
