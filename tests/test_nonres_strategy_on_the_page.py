@@ -151,6 +151,9 @@ LAYOUT = r"""() => {
     llcrCardHidden: document.getElementById('llcrTable').closest('[data-needs]').hidden,
     socialHidden: document.getElementById('socialTable').closest('[data-needs]').hidden,
     pfGridHidden: document.getElementById('pfTable').closest('[data-needs]').hidden,
+    reportBankHidden: document.getElementById('reportFinanceTable').closest('[data-needs]').hidden,
+    objectLoanCards: [...document.querySelectorAll('[data-nonres-finance-card]')]
+      .map(c => ({hidden: c.hidden, tables: [...c.querySelectorAll('table.nonres-finance')].map(t => t.dataset.object)})),
   };
 }"""
 
@@ -187,6 +190,8 @@ def test_a_mixed_project_keeps_the_bank_blocks(nonresidential_walk) -> None:
     state = nonresidential_walk["mixed_ddu"]
     assert state["layout"]["housing"] and state["layout"]["project_finance"]
     assert "LLCR (расчётный)" in state["tiles"]
+    assert state["reportBankHidden"] is False
+    assert all(card["hidden"] for card in state["objectLoanCards"])
     assert not state["llcrCardHidden"] and not state["socialHidden"]
 
 
@@ -201,4 +206,10 @@ def test_a_nonresidential_rent_project_reads_as_its_own_report(nonresidential_wa
     for label, value in state["expected"]:
         assert shown[label] == value
     assert state["llcrCardHidden"] and state["socialHidden"] and state["pfGridHidden"]
+    # Раздел «Финансирование» отчёта: БРИДЖ/ПФ/LLCR скрыты, кредит объекта — на месте
+    # (и в отчёте, и на вкладке «Финансирование»).
+    assert state["reportBankHidden"] is True
+    # Отчёт, вкладка «Финансирование» и раздел «Финансирование» объектной
+    # вёрстки (`object_report`) — таблица движка во всех трёх ящиках.
+    assert state["objectLoanCards"] == [{"hidden": False, "tables": ["offices"]}] * 3
     assert nonresidential_walk["errors"] == []

@@ -25,7 +25,8 @@ from .geo_resolution import RESOLVED, ProjectGeoResolver, address_signature
 from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .dynamics import DealsSummary, SalesDynamics
-from .market_reference import MoscowMarket
+from .market_reference import MarketAtlas, MoscowMarket
+from .region_market import RegionMarketCollector
 from .metrics import build_blocks
 from .narrative import analysis, findings
 from .verdict import (
@@ -38,6 +39,7 @@ from .verdict import (
 )
 from .page_price import PageFetcher
 from . import stage
+from . import timing as timing_module
 from .price_hint import price_hint
 from .pulse import make_pulse_client, pulse_id
 from .price_evidence import VerifiedPriceEnricher
@@ -137,6 +139,34 @@ def _report_extras(
     return out
 
 
+def _peer_source_coverage(peers: list[dict[str, Any]]) -> dict[str, Any]:
+    """Сколько аналогов несут стадию и сроки — и откуда.
+
+    «Стадия не указана» почти у всех соседей была на проде невидимой
+    поломкой: каждая строка выглядела честной, а доля — нет. Счёт отвечает
+    сразу: из N аналогов стадия со страницы Пульса у k, по срокам у m.
+    """
+    total = len(peers)
+
+    def share(count: int) -> dict[str, Any]:
+        return {"count": count, "pct": round(100 * count / total, 1) if total else None}
+
+    return {
+        "peers": total,
+        "stage_from_pulse": share(sum(
+            1 for row in peers if row.get("construction_stage_origin") == stage.STAGE_ORIGIN_PULSE
+        )),
+        "stage_from_calendar": share(sum(
+            1 for row in peers if row.get("construction_stage_origin") == stage.STAGE_ORIGIN_CALENDAR
+        )),
+        "stage_distribution": share(sum(
+            1 for row in peers if row.get("construction_stage_distribution")
+        )),
+        "commissioning": share(sum(1 for row in peers if row.get("commissioning"))),
+        "sales_start": share(sum(1 for row in peers if row.get("sales_start"))),
+    }
+
+
 class MarketDiscoveryService(LegacyMarketDiscoveryService):
     """Ревизованный конвейер.
 
@@ -159,6 +189,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # модуль работает как прежде.
         self.pulse = make_pulse_client(Path(data_dir) / "pulse")
         self.city = MoscowMarket.bundled()
+        # «Рынок региона»: Москва — из месячного отчёта, остальные регионы —
+        # из недельного сбора кабинета «Пульса» (`region_market`). Сбор
+        # ведёт фоновый поток; здесь только чтение готовых файлов.
+        regions_dir = Path(data_dir) / "pulse-regions"
+        self.region_market = RegionMarketCollector(self.pulse, regions_dir)
+        self.markets = MarketAtlas(self.city, regions_dir, explain=self.region_market.explain)
         # История продаж и остатка: живой источник её не отдаёт, она вынута из
         # помесячного отчёта и едет с кодом.
         self.dynamics = SalesDynamics.bundled()
@@ -680,6 +716,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         city_reference: bool = True,
         include_project_totals: bool = False,
         match_nearby_project: bool = True,
+        project_sales_start: str | None = None,
+        project_commissioning: str | None = None,
+        include_timing: bool = False,
     ) -> dict[str, Any]:
         """Конструктор: объект, сопоставимые соседи и выбранные разделы.
 
@@ -943,6 +982,29 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             hand_added += 1
         peers.sort(key=lambda row: row.get("distance_km") if row.get("distance_km") is not None else 99)
 
+        # Сроки и стадия каждого соседа — те же поля, что у «Как посчитана
+        # цена» (`analog_timing`), а не второй расчёт. Разбор страницы проекта
+        # и все кандидаты дат остаются там: отчёту нужны сами сроки.
+        # Каждому соседу это открытие страницы проекта, поэтому включает их
+        # вызывающий: кабинету они нужны, пакетному отбору КРТ — нет.
+        today = self.verified_prices.today.isoformat()
+        for row in (peers if include_timing else []):
+            cid = row.get("complex_id")
+            if cid is None or (isinstance(cid, (int, float)) and cid < 0):
+                reason = "вписан вручную — сроков и стадии у источника нет"
+                row.setdefault("commissioning_reason", reason)
+                row.setdefault("calendar_reason", reason)
+                row.setdefault("construction_stage_reason", reason)
+                continue
+            timing = self.analog_timing(cid, None, today)
+            timing.pop("page_facts", None)
+            timing.pop("date_candidates", None)
+            row.update(timing)
+        subject_timing = (
+            self._subject_timing(subject.project_id, project_sales_start, project_commissioning, today)
+            if include_timing else {}
+        )
+
         subject_metrics = own or {"name": subject.project_name or query, "segment": segment}
         subject_series = history.get(subject.project_id) or []
         subject_sales = self.dynamics.series(subject.project_id, keys=("sold", "rem", "area"))
@@ -963,11 +1025,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # городская база не подставляется вовсе: медианы чужого города,
         # выданные молча, выглядят исправным сравнением.
         where = " ".join(filter(None, [subject_address, subject.query]))
-        city_scope = self.city.scope(where)
+        market = self.markets.for_address(where)
+        city_scope = self.markets.scope(where)
         # Сравнение с городом можно выключить. Для площадки без своего проекта
         # медиана класса по всей Москве отвечает не на тот вопрос: решают
         # соседи в трёх километрах, а город только шумит рядом с ними.
-        reference = self.city if (city_scope["covered"] and city_reference) else MoscowMarket({})
+        reference = market if (city_scope["covered"] and city_reference) else MoscowMarket({})
         blocks = build_blocks(subject_metrics, peers, reference, codes)
         notes = build_notes(blocks, subject_series)
         notes["premium_series"] = premium_series(subject_series, peers)
@@ -1070,8 +1133,16 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             site=notes.get("site"),
             hint=hint,
         )
+        # Сравнение сроков — после всех разделов: оно пишет `vs_ours` в
+        # строки соседей и ничего в их числах не меняет.
+        if include_timing:
+            timing_compare = timing_module.compare(subject_timing, peers, today)
+            timing_compare["coverage"] = _peer_source_coverage(peers)
+        else:
+            timing_compare = {"available": False, "reason": "сроки этим вызовом не запрашивались"}
         return {
             "price_hint": hint,
+            "timing": timing_compare,
             "subject": {
                 **subject.to_dict(),
                 "segment": segment,
@@ -1125,11 +1196,132 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             },
             "city": {
                 "asked": bool(city_reference),
-                "source": self.city.source,
-                "observed_at": self.city.observed_at,
+                "source": market.source,
+                "observed_at": market.observed_at,
                 "scope": city_scope,
             },
             "retrieved_at": self.verified_prices.today.isoformat(),
+        }
+
+    def _subject_timing(
+        self,
+        project_id: Any,
+        sales_start: str | None,
+        commissioning: str | None,
+        today: str,
+    ) -> dict[str, Any]:
+        """Наши сроки: заданные в отчёте — первыми, иначе проекта у Пульса.
+
+        Заданное человеком так и называется: дата из формы не должна выглядеть
+        снятой у источника. Чего нет ни там, ни там — причина словами.
+        """
+        own: dict[str, Any] = {}
+        if project_id is not None:
+            own = self.analog_timing(project_id, None, today)
+            own.pop("page_facts", None)
+            own.pop("date_candidates", None)
+            own["origin"] = "pulse"
+            own["origin_title"] = own.get("date_source") or "Пульс"
+        manual = {k: v for k, v in
+                  (("sales_start", sales_start), ("commissioning", commissioning)) if v}
+        if manual:
+            own.update(manual)
+            own["origin"] = "manual"
+            own["origin_title"] = "задано в отчёте" + (
+                f"; остальное — {own['date_source']}" if own.get("date_source") and len(manual) < 2 else ""
+            )
+            if commissioning:
+                own["commissioning_reason"] = None
+            # Стадия, оценённая по срокам Пульса, при своих сроках устарела:
+            # сравнение возьмёт подсказку по заданным датам.
+            if own.get("construction_stage_origin") != stage.STAGE_ORIGIN_PULSE:
+                own["construction_stage"] = None
+        if not own.get("commissioning") and not own.get("commissioning_reason"):
+            own["commissioning_reason"] = (
+                "у площадки нет проекта в Пульсе — задайте наш плановый ввод в отчёте"
+                if project_id is None else "Пульс не назвал срок ввода нашего проекта"
+            )
+        return own
+
+    def analog_timing(
+        self, complex_id: Any, card: dict[str, Any] | None = None, today: str | None = None
+    ) -> dict[str, Any]:
+        """Сроки и стадия проекта — один владелец для всех поверхностей.
+
+        «Как посчитана цена» и «Отчёт по рынку» показывают одни и те же поля:
+        плановый ввод (последний и первый корпус), стадию строительства по
+        корпусам и календарную стадию. Считались бы они в двух местах — две
+        поверхности однажды назвали бы у одного ЖК разный ввод.
+
+        Пустое поле приходит с причиной (`commissioning_reason`,
+        `calendar_reason`): «нет данных» без причины неотличимо от поломки.
+        """
+        card = card if card is not None else self.cards.card(complex_id)
+        today = today or self.verified_prices.today.isoformat()
+        # Те же онлайн-данные Пульса, что дают текущую цену. Месячная
+        # карточка остаётся fallback на случай временного отказа ЛК.
+        live_dates_reader = getattr(self.pulse, "project_dates", None)
+        live_dates = (live_dates_reader(complex_id) if callable(live_dates_reader) else {}) or {}
+        sales_start = live_dates.get("sales_start") or card.get("sales_start")
+        commissioning = live_dates.get("commissioning") or card.get("commissioning")
+        date_source = (
+            live_dates.get("source")
+            if live_dates.get("sales_start") or live_dates.get("commissioning")
+            else ("Пульс · месячная выгрузка" if sales_start or commissioning else None)
+        )
+        progress = stage.calendar_progress(sales_start, commissioning, today)
+        coefficient = stage.factor(progress) if progress is not None else None
+        # Стадия строительства — после дат: таблица проекта к этому
+        # моменту уже в кэше, и стадия читается из неё без запроса.
+        stage_reader = getattr(self.pulse, "project_stage", None)
+        stage_answer = (stage_reader(complex_id) if callable(stage_reader) else {}) or {}
+        built_stage = stage.analog_stage(stage_answer.get("raw"), progress)
+        latest_code = stage.stage_from_text(stage_answer.get("latest_raw"))
+        facts_reader = getattr(self.pulse, "project_facts", None)
+        page_facts = (facts_reader(complex_id) if callable(facts_reader) else {}) or {}
+        online = "страницу проекта, таблицу и карту Пульса" if callable(live_dates_reader) else None
+        searched = ", ".join(filter(None, [online, "месячную выгрузку Пульса"]))
+        return {
+            "sales_start": sales_start,
+            "commissioning": commissioning,
+            "commissioning_reason": (
+                None if commissioning else f"срок ввода не назван: смотрели {searched}"
+            ),
+            "date_source": date_source,
+            "date_sources": live_dates.get("sources") or {},
+            "calendar_progress": progress,
+            "calendar_progress_pct": round(progress * 100, 1) if progress is not None else None,
+            "stage_label": stage.calendar_stage_label(progress),
+            "calendar_reason": (
+                None if progress is not None
+                else stage.calendar_gap_reason(sales_start, commissioning)
+            ),
+            "construction_stage": built_stage["code"],
+            "construction_stage_label": built_stage["label"],
+            "construction_stage_origin": built_stage["origin"],
+            "construction_stage_origin_title": built_stage["origin_title"],
+            "construction_stage_raw": built_stage["raw"],
+            # Стадия по корпусам — целиком, со страницы проекта: одно
+            # слово «каркас» у ЖК с 18 сданными корпусами и 2 строящимися
+            # без распределения читается как неправда.
+            "construction_stage_source": stage_answer.get("source"),
+            "construction_stage_as_of": stage_answer.get("as_of"),
+            "construction_stage_rule": stage_answer.get("rule"),
+            "construction_stage_distribution": stage_answer.get("distribution") or [],
+            "construction_stage_latest_label": (
+                stage.STAGE_TITLES.get(latest_code) if latest_code else None
+            ),
+            "construction_stage_reason": stage_answer.get("reason") or (
+                None if built_stage["code"]
+                else "стадии нет у Пульса, а по срокам её не оценить: "
+                + (stage.calendar_gap_reason(sales_start, commissioning) or "нет окна")
+            ),
+            "commissioning_first": live_dates.get("commissioning_first"),
+            "commissioning_raw": live_dates.get("commissioning_raw"),
+            "commissioning_rule": live_dates.get("commissioning_rule"),
+            "date_candidates": live_dates.get("candidates") or {},
+            "page_facts": page_facts,
+            "stage_factor": round(coefficient, 4) if coefficient is not None else None,
         }
 
     def price_hint(
@@ -1177,38 +1369,21 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         peers: list[dict[str, Any]] = []
         near: list[tuple[float, Any]] = []
         classes: dict[int, str] = {}
+        priceless = 0
+        errors_before = len(getattr(self.pulse, "errors", None) or [])
         if self.pulse.available:
             classes = self.pulse.segments()
             near = self.pulse.near(subject_latitude, subject_longitude, radius_km)
             for distance, project in near[:budget]:
                 price = self.pulse.price(project.complex_id)
                 if not price:
+                    priceless += 1
                     continue
                 card = self.cards.card(project.complex_id)
-                # Те же онлайн-данные Пульса, что дают текущую цену. Месячная
-                # карточка остаётся fallback на случай временного отказа ЛК.
-                live_dates_reader = getattr(self.pulse, "project_dates", None)
-                live_dates = (
-                    live_dates_reader(project.complex_id)
-                    if callable(live_dates_reader)
-                    else {}
-                )
-                sales_start = live_dates.get("sales_start") or card.get("sales_start")
-                commissioning = live_dates.get("commissioning") or card.get("commissioning")
-                date_source = (
-                    live_dates.get("source")
-                    if live_dates.get("sales_start") or live_dates.get("commissioning")
-                    else ("Пульс · месячная выгрузка" if sales_start or commissioning else None)
-                )
-                progress = stage.calendar_progress(sales_start, commissioning, today)
-                coefficient = stage.factor(progress) if progress is not None else None
-                # Стадия строительства — после дат: таблица проекта к этому
-                # моменту уже в кэше, и стадия читается из неё без запроса.
-                stage_reader = getattr(self.pulse, "project_stage", None)
-                stage_answer = (
-                    stage_reader(project.complex_id) if callable(stage_reader) else {}
-                ) or {}
-                built_stage = stage.analog_stage(stage_answer.get("raw"), progress)
+                # Сроки и стадия — одним владельцем на обе поверхности:
+                # «Как посчитана цена» и «Отчёт по рынку» читают одни поля.
+                timing = self.analog_timing(project.complex_id, card, today)
+                progress = timing["calendar_progress"]
                 row: dict[str, Any] = {
                     "complex_id": project.complex_id,
                     "name": project.name,
@@ -1222,21 +1397,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                     "lot_count": price.get("lot_count"),
                     "observed_at": price.get("observed_at"),
                     "segment": classes.get(project.complex_id) or card.get("segment"),
-                    "sales_start": sales_start,
-                    "commissioning": commissioning,
-                    "date_source": date_source,
-                    "date_sources": live_dates.get("sources") or {},
-                    "calendar_progress": progress,
-                    "calendar_progress_pct": (
-                        round(progress * 100, 1) if progress is not None else None
-                    ),
-                    "stage_label": stage.calendar_stage_label(progress),
-                    "construction_stage": built_stage["code"],
-                    "construction_stage_label": built_stage["label"],
-                    "construction_stage_origin": built_stage["origin"],
-                    "construction_stage_origin_title": built_stage["origin_title"],
-                    "construction_stage_raw": built_stage["raw"],
-                    "stage_factor": round(coefficient, 4) if coefficient is not None else None,
+                    **timing,
                     "ready_equivalent_price": (
                         int(round(stage.to_ready(price["price_per_sqm"], progress)))
                         if progress is not None
@@ -1303,7 +1464,11 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             ),
         )
 
-        scope = self.city.scope(where)
+        market = self.markets.for_address(where)
+        scope = self.markets.scope(where)
+        if market is not self.city:
+            # Средняя ступень региона — муниципалитет, а не округ Москвы.
+            okrug = market.okrug_of(where)
         if selected_stages:
             # Округ и город стадию не знают. Подставить их медиану под подписью
             # «по стадии котлован» значило бы выдать за отбор то, чего не было.
@@ -1326,14 +1491,49 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 peers=peers,
                 segment=segment,
                 okrug=okrug,
-                city=self.city if scope["covered"] else MoscowMarket({}),
+                city=market if scope["covered"] else MoscowMarket({}),
                 fresh_since=fresh_since,
             )
         hint["stage_filter"] = stage_filter
+        hint["source_coverage"] = _peer_source_coverage(peers)
+        # «Соседей нет» бывает тремя разными ответами: в радиусе пусто
+        # (справочник не покрывает место), соседи есть, но без прайса, или
+        # источник ответил ошибкой. Счёт и ошибки едут в ответ, а не в лог.
+        pulse_errors = list(getattr(self.pulse, "errors", None) or [])[errors_before:]
+        hint["peer_search"] = {
+            "source_available": bool(self.pulse.available),
+            "radius_km": radius_km,
+            "found": len(near),
+            "asked": min(len(near), budget),
+            "without_price": priceless,
+            "with_price": len(peers),
+            "errors": pulse_errors[:3],
+        }
+        if not hint.get("available") and not peers:
+            if not self.pulse.available:
+                found_text = "источник «Пульс» выключен: не заданы PULSE_LOGIN и PULSE_PASSWORD"
+            elif not near:
+                found_text = (
+                    f"в радиусе {radius_km:g} км справочник «Пульса» не нашёл ни одного проекта"
+                )
+            else:
+                found_text = (
+                    f"в радиусе {radius_km:g} км проектов «Пульса» {len(near)}, "
+                    f"спрошено {min(len(near), budget)}, без цены {priceless}"
+                )
+            if pulse_errors:
+                found_text += f"; ошибки источника: {'; '.join(pulse_errors[:2])}"
+            hint["reason"] = f"{hint.get('reason') or 'Ориентир не рассчитан'} ({found_text})"
         if not scope["covered"] and not hint.get("available") and not selected_stages:
+            # Регион адреса назван — причина про его свод (нет базы, идёт сбор,
+            # не собирался), а не про то, что Москва сюда не годится.
+            region_reason = (scope.get("region") or {}).get("reason")
             hint["reason"] = (
                 f"{hint.get('reason') or 'Ориентир не рассчитан'}. "
-                f"Свод рынка собран по отчёту «{scope['label']}» и для этого адреса не применяется"
+                + (
+                    region_reason
+                    or f"Свод рынка собран по отчёту «{scope['label']}» и для этого адреса не применяется"
+                )
             )
         hint["location"] = {
             "display_name": where,

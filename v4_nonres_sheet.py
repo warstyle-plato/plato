@@ -35,6 +35,17 @@ MONTHLY_COLUMNS: tuple[tuple[str, str], ...] = (
     ("nonres_cash_to_equity", "Деньги объекта собственнику (без CAPEX), ₽"),
 )
 
+# Ряды объекта: те же, что в итоге, плюс его стройка и собственный итог —
+# налог объекта и поток его капитала (`main_legacy.object_result`).
+OBJECT_MONTHLY_COLUMNS: tuple[tuple[str, str], ...] = MONTHLY_COLUMNS + (
+    ("nonres_capex", "Затраты стройки объекта, ₽"),
+    ("nonres_common_capex", "Доля общих затрат проекта, ₽"),
+    ("object_profit_tax", "Налог на прибыль объекта, ₽"),
+    ("object_equity_flow", "Поток капитала объекта после налога, ₽"),
+)
+
+TOTAL_TITLE = "Помесячно — все объекты вне ДДУ вместе"
+
 NOTE = ("СЧИТАЕТ ДВИЖОК · в книгу приходит результат. Формулы листов «ОБЪЕКТЫ», "
         "CF и «ОТЧЕТ» считают эти объекты продажей по ДДУ с эскроу; стратегию "
         "реализации (прямая продажа без эскроу, доходный метод, свой кредит "
@@ -67,17 +78,39 @@ def _row(number: int, cells: list[str]) -> str:
 
 def _shown(row: dict[str, Any]) -> tuple[str, Any]:
     unit, value = row.get("unit"), row.get("value")
-    if unit in ("rub", "pct", "mult"):
+    if unit in ("rub", "pct", "mult", "mln"):
         if value is None:
             return "text", "—"
         return "number", float(value or 0.0)
     if unit == "date":
         return "text", ".".join(reversed(str(value or "—")[:7].split("-")))
+    if unit == "section":
+        return "text", ""
     return "text", value if value not in (None, "") else "—"
 
 
-def build_sheet(report: list[dict[str, Any]], monthly: list[dict[str, Any]]) -> str:
-    """XML листа: пометка, таблица каждого объекта, помесячные ряды."""
+def _monthly_block(rows: list[str], n: int, title: str,
+                   columns: tuple[tuple[str, str], ...],
+                   monthly: list[dict[str, Any]]) -> int:
+    rows.append(_row(n, [_text(f"A{n}", title)]))
+    n += 1
+    rows.append(_row(n, [_text(f"A{n}", "Месяц")]
+                     + [_text(f"{_col(i + 1)}{n}", label)
+                        for i, (_, label) in enumerate(columns)]))
+    n += 1
+    for line in monthly:
+        rows.append(_row(n, [_text(f"A{n}", str(line.get("month") or "")[:7])]
+                         + [_number(f"{_col(i + 1)}{n}", line.get(key))
+                            for i, (key, _) in enumerate(columns)]))
+        n += 1
+    return n
+
+
+def build_sheet(report: list[dict[str, Any]], monthly: list[dict[str, Any]],
+                objects: list[dict[str, Any]] | None = None,
+                financing: list[dict[str, Any]] | None = None) -> str:
+    """XML листа: пометка, таблица каждого объекта, помесячные ряды — итогом
+    и по каждому объекту (`objects`: заголовок и строки объекта движка)."""
     rows: list[str] = []
     n = 1
     rows.append(_row(n, [_text(f"A{n}", SHEET)]))
@@ -97,23 +130,40 @@ def build_sheet(report: list[dict[str, Any]], monthly: list[dict[str, Any]]) -> 
             rows.append(_row(n, [_text(f"A{n}", warning)]))
             n += 1
         n += 1
-    rows.append(_row(n, [_text(f"A{n}", "Помесячно — все объекты вне ДДУ вместе")]))
-    n += 1
-    rows.append(_row(n, [_text(f"A{n}", "Месяц")]
-                     + [_text(f"{_col(i + 1)}{n}", label)
-                        for i, (_, label) in enumerate(MONTHLY_COLUMNS)]))
-    n += 1
-    for line in monthly:
-        rows.append(_row(n, [_text(f"A{n}", str(line.get("month") or "")[:7])]
-                         + [_number(f"{_col(i + 1)}{n}", line.get(key))
-                            for i, (key, _) in enumerate(MONTHLY_COLUMNS)]))
+    # Кредит объекта — таблица «Финансирование объекта» и обслуживание по годам.
+    for item in financing or []:
+        rows.append(_row(n, [_text(f"A{n}", f"Финансирование объекта: {item.get('title') or item.get('key')}")]))
         n += 1
+        for line in item.get("rows") or []:
+            kind, value = _shown(line)
+            cell = _number(f"B{n}", value) if kind == "number" else _text(f"B{n}", value)
+            rows.append(_row(n, [_text(f"A{n}", line.get("label") or ""), cell]))
+            n += 1
+        financing_columns = item.get("columns") or []
+        if item.get("years") and financing_columns:
+            rows.append(_row(n, [_text(f"{_col(i)}{n}", col[1])
+                                 for i, col in enumerate(financing_columns)]))
+            n += 1
+            for year in item["years"]:
+                cells = []
+                for i, col in enumerate(financing_columns):
+                    value = year.get(col[0])
+                    coord = f"{_col(i)}{n}"
+                    cells.append(_text(coord, value if value is not None else "—")
+                                 if col[2] == "text" or value is None else _number(coord, value))
+                rows.append(_row(n, cells))
+                n += 1
+        n += 1
+    n = _monthly_block(rows, n, TOTAL_TITLE, MONTHLY_COLUMNS, monthly)
+    for item in objects or []:
+        n = _monthly_block(rows, n + 1, f"Помесячно — {item.get('title') or item.get('key')}",
+                           OBJECT_MONTHLY_COLUMNS, item.get("rows") or [])
     return ('<?xml version="1.0" encoding="utf-8"?>'
             f'<x:worksheet {_NS}><x:sheetPr><x:tabColor rgb="FFB45309" /></x:sheetPr>'
             '<x:sheetViews><x:sheetView workbookViewId="0" /></x:sheetViews>'
             '<x:sheetFormatPr defaultRowHeight="15" />'
             '<x:cols><x:col min="1" max="1" width="56" customWidth="1" />'
-            f'<x:col min="2" max="{len(MONTHLY_COLUMNS) + 1}" width="22" customWidth="1" /></x:cols>'
+            f'<x:col min="2" max="{len(OBJECT_MONTHLY_COLUMNS) + 1}" width="22" customWidth="1" /></x:cols>'
             f'<x:sheetData>{"".join(rows)}</x:sheetData></x:worksheet>')
 
 

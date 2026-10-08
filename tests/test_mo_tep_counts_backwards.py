@@ -108,7 +108,7 @@ def _page_block(name: str) -> str:
 
 def test_the_normative_recalc_accepts_a_density():
     """Кнопка считает вперёд от плотности; обратный счёт передаёт свою."""
-    assert "async function applyNormativeTep(densityOverride)" in core.PAGE
+    assert "async function applyNormativeTep(densityOverride,keepRows)" in core.PAGE
     body = _page_block("applyNormativeTep")
     assert "Number(densityOverride)>0?Number(densityOverride):effectiveSiteDensity()" in body
 

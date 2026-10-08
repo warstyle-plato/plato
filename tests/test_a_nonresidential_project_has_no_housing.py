@@ -68,10 +68,13 @@ def test_the_kinds_are_declared_once() -> None:
     """Состав типов — из движка; на странице копии нет."""
     assert core.DEFAULT_INPUTS["project_kind"] == core.PROJECT_KIND_MIXED
     keys = [pair[0] for pair in core.PROJECT_KINDS]
-    assert keys == [core.PROJECT_KIND_MIXED, core.PROJECT_KIND_NONRESIDENTIAL]
+    # Гостиница — третий тип (владелец, 05.10.2026), а не объект жилого проекта.
+    assert keys == [core.PROJECT_KIND_MIXED, core.PROJECT_KIND_NONRESIDENTIAL,
+                    core.PROJECT_KIND_HOTEL]
     page = core.PAGE
     assert "__DEVELOPAID_PROJECT_KINDS__" not in page
     assert "__DEVELOPAID_NONRESIDENTIAL_INPUTS__" not in page
+    assert "__DEVELOPAID_HOTEL__" not in page
     # Два написанных руками `<option>` были бы копией, которую негде
     # обновлять: третий тип проекта молчал бы на странице.
     for key in keys:
@@ -156,10 +159,10 @@ def test_the_yard_says_why_it_has_no_area() -> None:
     area, basis = core.landscaping_area(x, t)
     assert area == 0.0
     assert "благоустраивать нечего" not in basis, "у нежилого проекта двор есть"
-    # Чем мерить, больше не спрашивают: двор нежилого проекта входит в
-    # себестоимость объекта и отдельной статьёй не считается (владелец,
-    # 21.09.2026). Молчания при этом нет — основание говорит, ПОЧЕМУ ноль.
-    assert "себестоимость объекта" in basis, basis
+    # Чем мерить, больше не спрашивают: двор нежилого проекта отдельно не
+    # считается (владелец, 21.09.2026); ставка объекта — СМР здания без двора,
+    # и причина — жителей нет (06.10.2026). Молчания при этом нет — основание говорит, ПОЧЕМУ ноль.
+    assert "жителей нет" in basis, basis
 
     # У жилого проекта двор по-прежнему считается населением.
     home_x = copy.deepcopy(core.DEFAULT_INPUTS)
@@ -177,6 +180,14 @@ def test_the_mode_does_not_touch_the_financing() -> None:
     единственное исключение — объекты производственного назначения.
     """
     x, t = _objects_only()
+    # Что включает ставка объекта, режим решает (06.10.2026): в нежилом —
+    # полная смета. Здесь сравнивается финансирование, поэтому статьи сверх
+    # ставки объекта обнулены в обоих режимах — CAPEX один и тот же.
+    for key in ("ird_th_per_sqm", "design_p_th_per_sqm", "design_rd_th_per_sqm",
+                "preparation_th_per_sqm", "utilities_th_per_sqm", "commissioning_th_per_sqm",
+                "site_maintenance_th_per_sqm", "gc_fee_pct", "technical_supervision_pct",
+                "project_management_pct"):
+        x[key] = 0
     mixed = core.calculate(core.CalcRequest(inputs=copy.deepcopy(x),
                                             tep=copy.deepcopy(t)))["summary"]
     x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
@@ -359,8 +370,10 @@ def test_the_nonresidential_yard_is_inside_the_object_cost() -> None:
     assert summary["landscaping_money_basis"].startswith("нежилой проект"), \
         summary["landscaping_money_basis"]
     money = summary["landscaping_money_basis"]
-    assert "себестоимость объекта" in money, money
-    assert "задайте ставку" not in money, money
+    assert "жителей нет" in money, money
+    # Ставка объекта нежилого — СМР без двора (06.10.2026): посчитать двор —
+    # своя ставка на метр ГНС, и основание это говорит.
+    assert "задайте ставку благоустройства" in money, money
     # И ставки двора класса в основании нет: она про жильё, а тут её вообще не
     # применяют. Без этого проверка зеленеет и на прежнем пути, где деньги
     # выходили нулём просто потому, что площадь двора ноль, — основание тогда
@@ -801,11 +814,18 @@ def dialog():
             # Подпись у поля ставки пишется по итогу расчёта, а он идёт своим
             # чередом: снятая раньше, она показывает ещё жилой двор.
             page.wait_for_function(
-                "() => /себестоимость объекта/.test("
+                "() => /жителей нет/.test("
                 "  (((lastResult||{}).summary||{}).landscaping_money_basis) || '')",
                 timeout=20000)
+            # Поле площади двора у нежилого проекта не рисуется (двор от
+            # населения — жилой, решение 06.10.2026): причина стоит под полем
+            # ставки на метр ГНС, где двор и можно посчитать.
             got["rateNote"] = page.evaluate(
-                "() => (document.getElementById('landscapingRateNote')||{}).textContent || ''")
+                "() => (document.getElementById('landscapingHouseRateNote')||{}).textContent || ''")
+            got["yardAreaShown"] = page.evaluate(
+                "() => !!document.querySelector('.field[data-field=\"landscaping_area_sqm\"]')")
+            got["mainAboveShown"] = page.evaluate(
+                "() => !!document.querySelector('.field[data-field=\"main_above_th_per_sqm\"]')")
             got.update(page.evaluate(PROBE_CANCEL))
             page.wait_for_timeout(300)
             page.close()
@@ -863,7 +883,14 @@ def test_the_yard_is_explained_where_the_rate_stands(dialog) -> None:
     """
     note = dialog["rateNote"].replace("\u00a0", " ")
     assert note, "подпись у поля ставки пуста"
-    assert "себестоимость объекта" in note, note
+    assert "жителей нет" in note, note
+
+
+def test_the_housing_only_fields_are_not_shown(dialog) -> None:
+    """Наземная ставка СМР МКД и площадь двора — поля жилого дома: в
+    нежилом проекте их нет на экране (решение владельца 06.10.2026)."""
+    assert dialog["yardAreaShown"] is False
+    assert dialog["mainAboveShown"] is False
 
 
 def test_the_window_says_where_the_metres_go(dialog) -> None:

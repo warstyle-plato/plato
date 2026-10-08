@@ -174,6 +174,28 @@ class MoscowMarket:
         return self.payload.get("source")
 
     COVERAGE_LABEL = "Москва старая"
+    # Откуда свод: месячный отчёт (Москва) или недельный сбор из кабинета
+    # (остальные регионы, `region_market`). Подписывается рядом с числами.
+    SOURCE_KIND = "report"
+    # Подписи ориентира по своду. `None` — прежние общие подписи
+    # `price_hint.BASIS_TITLES` («по классу в Москве»), регион их заменяет.
+    city_basis_title: str | None = None
+    okrug_basis_title: str | None = None
+
+    @property
+    def label(self) -> str:
+        return self.COVERAGE_LABEL
+
+    def _not_covered_reason(self) -> str:
+        return (
+            f"Свод собран по отчёту «{self.label}»; для этого адреса "
+            "сравнение с городом не строится — соседи и класс считаются как обычно"
+        )
+
+    def okrug_of(self, address: str | None) -> str | None:
+        """Ключ средней ступени (`by_okrug`) для адреса; у Москвы — округ."""
+        return None
+
     # Новая Москва в отчёт «Москва старая» не входит, хотя адрес там начинается
     # тем же словом. Признаки её округов перечислены явно, потому что «Москва»
     # в строке — не доказательство попадания в свод.
@@ -197,17 +219,14 @@ class MoscowMarket:
     def scope(self, address: str | None) -> dict[str, Any]:
         """Что сказать про сравнение с городом на этом адресе."""
         if not self.available:
-            return {"covered": False, "label": self.COVERAGE_LABEL,
+            return {"covered": False, "label": self.label,
                     "reason": "Свод рынка не загружен"}
         if self.covers(address):
-            return {"covered": True, "label": self.COVERAGE_LABEL, "reason": None}
+            return {"covered": True, "label": self.label, "reason": None}
         return {
             "covered": False,
-            "label": self.COVERAGE_LABEL,
-            "reason": (
-                f"Свод собран по отчёту «{self.COVERAGE_LABEL}»; для этого адреса "
-                "сравнение с городом не строится — соседи и класс считаются как обычно"
-            ),
+            "label": self.label,
+            "reason": self._not_covered_reason(),
         }
 
     def segments(self) -> list[str]:
@@ -260,3 +279,176 @@ class MoscowMarket:
         """Помесячный ряд по классу: медиана цены и продажи по городу."""
         series = (self.payload.get("by_class") or {}).get(str(segment or "")) or []
         return list(series[-months:])
+
+
+class RegionMarket(MoscowMarket):
+    """Свод региона из недельного сбора кабинета (`region_market`).
+
+    Форма та же, что у московского свода, поэтому читатели (`snapshot`,
+    `okrug`, `history`, `area_median`) работают без второго расчёта. Средняя
+    ступень — муниципалитет (городской округ/город), а не округ Москвы.
+    """
+
+    SOURCE_KIND = "cabinet"
+    okrug_basis_title = "по муниципалитету и классу"
+
+    def __init__(self, payload: dict[str, Any] | None = None):
+        payload = dict(payload or {})
+        # Эталон поглощения посчитан сбором один раз и лежит в файле; здесь
+        # он только кладётся под ключ, который читает `area_median`.
+        payload.setdefault("_area_median_by_segment", payload.get("area_median_by_segment") or {})
+        payload.setdefault("_area_median_projects", payload.get("area_median_projects") or {})
+        payload.setdefault("_area_median_source", str(payload.get("source") or ""))
+        super().__init__(payload)
+
+    @classmethod
+    def from_file(cls, path: Path) -> "RegionMarket | None":
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return cls(payload) if isinstance(payload, dict) else None
+
+    @property
+    def region(self) -> str | None:
+        return self.payload.get("region")
+
+    @property
+    def region_name(self) -> str:
+        return str(self.payload.get("region_name") or self.payload.get("region") or "")
+
+    @property
+    def label(self) -> str:
+        return f"{self.region_name} — кабинет «Пульса»"
+
+    @property
+    def city_basis_title(self) -> str:  # type: ignore[override]
+        return f"по классу: {self.region_name}"
+
+    @property
+    def collected_at(self) -> str | None:
+        return self.payload.get("collected_at")
+
+    def _not_covered_reason(self) -> str:
+        return (
+            f"Свод собран из кабинета «Пульса» по региону «{self.region_name}»; "
+            "для этого адреса он не применяется"
+        )
+
+    # Сокращения региона, которые пишут вместо полного имени.
+    _ALIASES = {"мо": "московская область", "подмосковье": "московская область",
+                "ло": "ленинградская область", "спб": "санкт-петербург"}
+
+    @classmethod
+    def region_of(cls, address: str | None) -> str | None:
+        """Регион, названный в адресе: полным именем или сокращением («МО»)."""
+        from .pulse import address_region
+
+        found = address_region(address)
+        if found:
+            return found
+        for part in str(address or "").split(","):
+            alias = cls._ALIASES.get(part.strip().casefold().strip("."))
+            if alias:
+                return alias[:1].upper() + alias[1:]
+        return None
+
+    def covers(self, address: str | None) -> bool:
+        """Адрес лежит в регионе свода: регион, названный в самом адресе."""
+        found = self.region_of(address)
+        return bool(found) and found.casefold() == self.region_name.casefold()
+
+    def okrug_of(self, address: str | None) -> str | None:
+        """Муниципалитет адреса — по пометке («г.о.», «г.») или по имени из свода."""
+        from .region_market import municipality_of
+
+        found = municipality_of(address)
+        if found:
+            return found
+        known = {name.casefold(): name for name in (self.payload.get("by_okrug") or {})}
+        for part in str(address or "").split(","):
+            name = known.get(part.strip().casefold())
+            if name:
+                return name
+        return None
+
+    def scope(self, address: str | None) -> dict[str, Any]:
+        out = super().scope(address)
+        out.update({
+            "source_kind": self.SOURCE_KIND,
+            "region": self.region,
+            "source": self.source,
+            "collected_at": self.collected_at,
+        })
+        return out
+
+
+class MarketAtlas:
+    """«Рынок региона» для адреса: Москва — из отчёта, остальные — из кабинета.
+
+    Москва проверяется первой и отвечает как прежде. Иначе — свод региона,
+    собранный недельным сбором, если адрес в нём лежит. Не нашлось — Москва
+    (её `scope` назовёт, что адрес вне покрытия), а причина отсутствия
+    регионального свода добавляется в `scope` отдельно.
+    """
+
+    def __init__(
+        self,
+        moscow: MoscowMarket,
+        directory: Path | None = None,
+        explain: Any = None,
+    ):
+        self.moscow = moscow
+        self.dir = Path(directory) if directory else None
+        # Кто знает, почему свода региона нет (`RegionMarketCollector.explain`).
+        # Без него причина — общая подсказка, а не состояние сбора.
+        self.explain = explain
+        self._cache: dict[str, tuple[float, RegionMarket | None]] = {}
+
+    def regions(self) -> list[RegionMarket]:
+        if self.dir is None or not self.dir.is_dir():
+            return []
+        out = []
+        for path in sorted(self.dir.glob("region-market-*.json")):
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                continue
+            cached = self._cache.get(str(path))
+            if cached is None or cached[0] != mtime:
+                # Файл переписывает сбор в любом из воркеров — читаем по mtime.
+                cached = (mtime, RegionMarket.from_file(path))
+                self._cache[str(path)] = cached
+            if cached[1] is not None and cached[1].available:
+                out.append(cached[1])
+        return out
+
+    def for_address(self, address: str | None) -> MoscowMarket:
+        if self.moscow.covers(address):
+            return self.moscow
+        for market in self.regions():
+            if market.covers(address):
+                return market
+        return self.moscow
+
+    def scope(self, address: str | None) -> dict[str, Any]:
+        market = self.for_address(address)
+        out = market.scope(address)
+        if market is self.moscow and not out.get("covered"):
+            from .pulse import address_region
+
+            region = RegionMarket.region_of(address)
+            if (region or "").casefold() != "москва":
+                if self.explain is not None:
+                    reason = self.explain(region)
+                elif region:
+                    reason = (
+                        f"Свода по региону «{region}» нет: он собирается из кабинета "
+                        "«Пульса» раз в неделю (настройка PULSE_REGIONS); см. "
+                        "/market/pulse/regions"
+                    )
+                else:
+                    reason = None
+                if reason:
+                    out["region"] = {"name": region, "reason": reason}
+        return out
