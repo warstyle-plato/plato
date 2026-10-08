@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -420,7 +421,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
     @app.get("/market/pulse/catalog")
     async def market_pulse_catalog(
         request: Request, refresh: bool = False, q: str = "", check: bool = False
-    ) -> dict[str, Any]:
+    ) -> Response:
         """Справочник «Пульса»: из какой базы, когда обновлён, сколько по регионам.
 
         `refresh=1` — забрать карту и классы заново, мимо суточного кэша.
@@ -462,17 +463,29 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                     }
 
                 report["query"]["check"] = await run_in_threadpool(ask)
-        return report
+        # Страницу открывают в браузере телефона: без `charset` Safari читал
+        # русские причины и заголовки кракозябрами.
+        return Response(
+            content=json.dumps(report, ensure_ascii=False, indent=1, default=str),
+            media_type="application/json; charset=utf-8",
+        )
 
     @app.get("/market/pulse/regions")
-    async def market_pulse_regions(request: Request) -> dict[str, Any]:
+    async def market_pulse_regions(request: Request) -> Response:
         """Недельный свод рынка по регионам из кабинета: когда, сколько, ошибки.
 
         Только диск: состояние сбора и готовые своды. Сам сбор идёт фоном раз
         в неделю или по `POST /market/pulse/regions/run`.
+
+        Кодировка названа в заголовке: эту страницу открывают прямо в
+        браузере телефона, и без `charset` Safari читал причины кракозябрами.
         """
         cabinet_module.require_cabinet(request)
-        return await run_in_threadpool(service.region_market.status)
+        status = await run_in_threadpool(service.region_market.status)
+        return Response(
+            content=json.dumps(status, ensure_ascii=False, indent=1),
+            media_type="application/json; charset=utf-8",
+        )
 
     @app.post("/market/pulse/regions/run")
     async def market_pulse_regions_run(
