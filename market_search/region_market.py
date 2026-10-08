@@ -54,13 +54,18 @@ DEFAULT_REGIONS = ("50",)
 DEFAULT_PAUSE_SECONDS = 2.0
 # Лимит проектов за один проход. Остальное — следующим проходом, с места.
 DEFAULT_LIMIT = 250
-# Неудачная попытка (нет проектов, сбой) повторяется не раньше чем через сутки.
-RETRY_SECONDS = 24 * 3600
+# Неудачная попытка (нет проектов, сбой) повторяется через час. Это один
+# запрос карты: сутки ожидания означали, что открытый Пульсом доступ или
+# выкаченная починка входа доезжали до свода только на следующий день.
+RETRY_SECONDS = 3600
 # Начатый сбор старше этого начинается заново: ответы недельной давности
 # в свод «на дату сбора» не годятся.
 PROGRESS_MAX_AGE_SECONDS = 2 * INTERVAL_SECONDS
 # Замок старше этого считается брошенным (воркер упал посреди прохода).
-LOCK_TTL_SECONDS = 6 * 3600
+# Замок трогается после каждого проекта, поэтому живой сбор его обновляет
+# каждые секунды. Выкатка убивает процесс посреди прохода, и замок остаётся
+# на диске: при шести часах сбор после каждой выкатки стоял бы полдня.
+LOCK_TTL_SECONDS = 15 * 60
 
 RUSSIA_HOST_PREFIX = "russia."
 RUSSIA_BASES_HINT = "PULSE_BASE_URL=https://russia.pulsprodaj.ru,https://pulsprodaj.ru"
@@ -417,6 +422,47 @@ class RegionMarketCollector:
             "limit_per_pass": self.limit,
             "busy": self.lock_path.exists(),
         }
+
+    def explain(self, region: str | None) -> str:
+        """Почему по региону адреса нет свода — для пользователя, а не для лога.
+
+        Причина берётся из того же состояния, что `status()`: база не
+        подключена, регион не в настройке, сбор идёт (сколько из скольких),
+        прошлая попытка не удалась (чем) или сбора ещё не было.
+        """
+        if not region:
+            return (
+                "Регион в адресе не распознан, поэтому свод региона не выбран — "
+                "укажите адрес с областью (например «Московская область, г.о. Мытищи»)"
+            )
+        code = next(
+            (key for key, name in REGION_NAMES.items() if name.casefold() == region.casefold()),
+            None,
+        )
+        if code is None or code not in self.regions:
+            return (
+                f"Свода по региону «{region}» нет: регион не включён в сбор "
+                f"({REGIONS_ENV}={','.join(self.regions)})"
+            )
+        blocker = self.blocker()
+        if blocker:
+            return f"Свода по региону «{region}» нет. {blocker}"
+        progress = load_json(self.progress_path(code)) or {}
+        if progress.get("ids"):
+            done = len(progress.get("records") or {}) + len(progress.get("failed") or {})
+            return (
+                f"Свод по региону «{region}» ещё собирается: опрошено {done} из "
+                f"{len(progress['ids'])} проектов кабинета; появится по окончании сбора"
+            )
+        last = load_json(self.status_path(code)) or {}
+        if last.get("reason"):
+            return f"Свода по региону «{region}» нет: {last['reason']}"
+        if self.lock_path.exists():
+            return f"Свод по региону «{region}» собирается прямо сейчас"
+        return (
+            f"Свод по региону «{region}» ещё не собирался: фоновый сбор раз в неделю "
+            "стартует после запуска сервера; ручной запуск — POST /market/pulse/regions/run"
+        )
 
     # --- запуск -------------------------------------------------------------
 

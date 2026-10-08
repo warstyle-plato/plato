@@ -90,7 +90,8 @@ def test_changed_bytes_without_its_own_words_are_not_a_new_edition(
     """
     body = "Запрашиваемая страница не найдена".encode("cp1251")
     got = _probe(monkeypatch, body, "text/html; charset=windows-1251",
-                 ["2152-ПП", "площади квартир"], {"sha256": "прежний-отпечаток"})
+                 ["2152-ПП", "площади квартир"],
+                 {"sha256": "прежний-отпечаток", "fingerprint_kind": registry.FINGERPRINT_KIND_TEXT})
     assert got["result"] == "review_required"
     assert got["found_terms"] == []
     # Сам факт смены байтов не пропадает — он остаётся полем и называется в тексте.
@@ -103,7 +104,7 @@ def test_changed_bytes_with_its_own_words_stay_a_change(
     """Починка не должна проглотить настоящую смену редакции."""
     body = "Постановление 2152-ПП, редакция 2026 года".encode("utf-8")
     got = _probe(monkeypatch, body, "text/html; charset=utf-8",
-                 ["2152-ПП"], {"sha256": "прежний-отпечаток"})
+                 ["2152-ПП"], {"sha256": "прежний-отпечаток", "fingerprint_kind": registry.FINGERPRINT_KIND_TEXT})
     assert got["result"] == "changed"
     assert got["changed"] is True
 
@@ -155,7 +156,7 @@ def test_a_page_is_recognised_by_the_acts_own_name(
     body = ('Постановление Правительства Московской области от 01.09.2026 '
             '№ 1080-ПП "О внесении изменений в нормативы градостроительного '
             'проектирования Московской области"').encode("utf-8")
-    got = _probe_entry(monkeypatch, _MO_ENTRY, body, {"sha256": "прежний"})
+    got = _probe_entry(monkeypatch, _MO_ENTRY, body, {"sha256": "прежний", "fingerprint_kind": registry.FINGERPRINT_KIND_TEXT})
     assert got["found_name"] is True
     assert got["found_terms"] == [] and got["missing_terms"] == ["713/30"]
     # Опознан — значит смена байтов снова означает смену редакции, а не
@@ -172,7 +173,7 @@ def test_a_wrapper_page_is_still_not_the_document(
     опознания превратила бы антибот-заглушку в подтверждённый документ.
     """
     body = b"<html><div class='spinner-container'></div></html>"
-    got = _probe_entry(monkeypatch, _MO_ENTRY, body, {"sha256": "прежний"})
+    got = _probe_entry(monkeypatch, _MO_ENTRY, body, {"sha256": "прежний", "fingerprint_kind": registry.FINGERPRINT_KIND_TEXT})
     assert got["found_name"] is False
     assert got["result"] == "review_required"
 
@@ -230,7 +231,8 @@ def test_our_own_link_change_is_not_the_source_changing(
     assert got["result"] == "ok" and got["changed"] is False
     assert got["source_url"] == "https://example.test/new"
     # Та же ссылка с другим телом — по-прежнему смена содержимого.
-    again = registry._probe(entry, {"sha256": "другой", "source_url": "https://example.test/new"})
+    again = registry._probe(entry, {"sha256": "другой", "source_url": "https://example.test/new",
+                                    "fingerprint_kind": registry.FINGERPRINT_KIND_TEXT})
     assert again["result"] == "changed" and again["changed"] is True
 
 
@@ -252,3 +254,48 @@ def test_a_source_that_does_not_exist_says_so_by_name() -> None:
     forgotten = registry._probe({"id": "проверочная"}, {})
     assert forgotten["result"] == "no_source"
     assert forgotten["message"] == "Источник не задан"
+
+
+_GARANT_PAGE = (
+    '<html><body><header><time> {day} октября 2026</time></header>'
+    '<div id="block_1" class="block">1874-ПП. {clause}</div>'
+    '<p>Откройте актуальную версию документа прямо сейчас</p>'
+    '<aside><div> {day} октября 2026 12:57</div><a>{news}</a></aside></body></html>'
+)
+
+
+def _garant(day: int, clause: str, news: str) -> bytes:
+    return _GARANT_PAGE.format(day=day, clause=clause, news=news).encode("cp1251")
+
+
+def test_the_page_date_and_news_feed_are_not_a_new_edition(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Страница Гаранта несёт сегодняшнюю дату и ленту новостей.
+
+    По сырым байтам 06.10.2026 сторож объявил у 1874-ПП «содержимое
+    изменилось — нужна ревизия редакции», хотя текст акта (2072-ПП) прежний.
+    """
+    header = "text/html; charset=windows-1251"
+    first = _probe(monkeypatch, _garant(5, "п. 2.1 прежний", "новость А"),
+                   header, ["1874-ПП"], {})
+    assert first["fingerprint_kind"] == registry.FINGERPRINT_KIND_GARANT
+    next_day = _probe(monkeypatch, _garant(6, "п. 2.1 прежний", "новость Б"),
+                      header, ["1874-ПП"], first)
+    assert next_day["changed"] is False
+    assert next_day["result"] == "ok"
+    # Контрпример: изменился текст самого акта — это смена, и она объявляется.
+    amended = _probe(monkeypatch, _garant(6, "п. 2.1 в новой редакции", "новость Б"),
+                     header, ["1874-ПП"], next_day)
+    assert amended["changed"] is True
+    assert amended["result"] == "changed"
+
+
+def test_a_snapshot_by_raw_bytes_is_rebaselined_not_announced(
+        monkeypatch: pytest.MonkeyPatch) -> None:
+    """Смена способа отпечатка — не смена редакции."""
+    header = "text/html; charset=windows-1251"
+    old = {"sha256": "0" * 64, "source_url": "https://example.test/doc"}
+    got = _probe(monkeypatch, _garant(6, "п. 2.1", "новость"), header, ["1874-ПП"], old)
+    assert got["changed"] is False
+    assert got["result"] == "ok"
+    assert "по тексту документа" in got["message"]

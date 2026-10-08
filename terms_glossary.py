@@ -109,8 +109,23 @@ CORE_UNDER_AREA = Term(
     formula="ГНС подземного паркинга + ГНС кладовых",
 )
 
+# Площади отдельно стоящих объектов: ГНС зданий + их подземные гаражи
+# (`objects_total_area`). База статей проекта — ИРД, П, РД, подготовка, сети,
+# сдача, содержание — у чисто нежилого проекта, где ставка объекта — только
+# СМР здания (решение владельца 06.10.2026, `object_rate_is_turnkey`).
+OBJECTS_TOTAL_AREA = Term(
+    key="objects_total_area",
+    name="Суммарная площадь объектов в ГНС",
+    full="Суммарная площадь объектов в ГНС (здания + их подземные гаражи), м²",
+    genitive="суммарной площади объектов в ГНС",
+    prepositional="суммарной площади объектов в ГНС",
+    unit="м²",
+    formula="Σ ГНС зданий включённых объектов + их подземные гаражи",
+)
+
 TERMS: dict[str, Term] = {term.key: term for term in (
-    TOTAL_AREA, CORE_TOTAL_AREA, SALEABLE_AREA, CORE_ABOVE_AREA, CORE_UNDER_AREA)}
+    TOTAL_AREA, CORE_TOTAL_AREA, SALEABLE_AREA, CORE_ABOVE_AREA, CORE_UNDER_AREA,
+    OBJECTS_TOTAL_AREA)}
 
 
 # База удельного у статьи CAPEX: СМР — на ту часть, на которую начислено,

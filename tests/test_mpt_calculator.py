@@ -38,12 +38,29 @@ def calc(**kwargs):
 
 # --- формула -----------------------------------------------------------------
 
-def test_the_formula_has_no_kterm():
-    """П. 1.14.1: Льгота = 1000 × Sмпт × Кзатр × Кмест. Множителя срока нет."""
+def test_the_formula_carries_kterm_one_by_default():
+    """П. 1.14.1 (ред. 24.04.2026): 1000 × Sмпт × Кзатр × Кмест × Ксрок, Ксрок = 1.
+
+    Прежняя проверка утверждала, что множителя срока нет, — текст редакции
+    24.04.2026 это опровергает.
+    """
     result = calc()
     expected = 1000.0 * 10_000.0 * KZATR_DEFAULT * 0.7
     assert result.benefit_rub == pytest.approx(expected)
-    assert "Ксрок" not in result.formula
+    assert result.kterm == 1.0
+    assert "Ксрок 1.00" in result.formula
+
+
+@pytest.mark.parametrize("kterm", [1.05, 1.1])
+def test_early_registration_raises_kterm_and_says_why(kterm):
+    result = calc(kterm=kterm)
+    assert result.benefit_rub == pytest.approx(1000.0 * 10_000.0 * KZATR_DEFAULT * 0.7 * kterm)
+    assert any("раньше срока" in warning for warning in result.warnings)
+
+
+def test_kterm_outside_the_decree_is_refused():
+    with pytest.raises(MptCalculationError):
+        calc(kterm=1.2)
 
 
 def test_the_ons_factor_applies_once():
