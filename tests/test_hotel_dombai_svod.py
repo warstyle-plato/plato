@@ -1,6 +1,6 @@
-"""Сверка расчёта гостиницы со «Сводом» эталонной модели Домбая 5*.
+"""Сверка расчёта гостиницы со «Сводом» эталонной модели Отеля 1 5*.
 
-Вводные — ориентир Домбая (`hotel_presets`: каждое число — ячейка книги или
+Вводные — ориентир Отеля 1 (`hotel_presets`: каждое число — ячейка книги или
 формула над ячейками) и то, что в нашем проекте дал бы движок: CAPEX по
 кварталам (Расчеты!212 + 170, без НДС → с НДС), мебель и оборудование
 (Расчеты!207) и ключевая ставка (Предпосылки!60). Сравниваются по годам
@@ -89,7 +89,7 @@ def book() -> dict:
                                          values_only=True))
     finally:
         wb.close()
-    vat = 1 + ref.value("dombai:Предпосылки!E775")
+    vat = 1 + ref.value("hotel1:Предпосылки!E775")
     capex: dict[dt.date, float] = {}
     ffe: dict[dt.date, float] = {}
     for col, start in enumerate(calc[6]):
@@ -117,7 +117,7 @@ def book() -> dict:
 
 def run(params_override: dict | None = None) -> dict:
     b = book()
-    params = {f: v.value for f, v in hotel_presets.BY_KEY["dombai"].values.items()}
+    params = {f: v.value for f, v in hotel_presets.BY_KEY["hotel1"].values.items()}
     params["exit_mode"] = hs.EXIT_HOLD
     params.update(params_override or {})
     plan = {"commissioning": dt.date(2029, 1, 1), "capex": b["capex"],
@@ -125,8 +125,8 @@ def run(params_override: dict | None = None) -> dict:
             "start": dt.date(2025, 10, 1)}
     return hs.hotel_flows(
         plan, lambda month: b["key_rate"].get(month.year, b["key_rate"][max(b["key_rate"])]),
-        vat_rate=ref.value("dombai:Предпосылки!E775"),
-        profit_tax_rate=ref.value("dombai:Предпосылки!E765"), discount_rate=0.15)
+        vat_rate=ref.value("hotel1:Предпосылки!E775"),
+        profit_tax_rate=ref.value("hotel1:Предпосылки!E765"), discount_rate=0.15)
 
 
 def compare(result: dict) -> list[str]:
@@ -164,14 +164,14 @@ def test_fifteen_year_totals_are_within_one_percent():
     result = run()
     revenue = sum(row["revenue"] for row in result["annual"]) / 1e6
     ebitda = sum(row["ebitda"] for row in result["annual"]) / 1e6
-    assert revenue == pytest.approx(ref.value("dombai:Свод!I38"), rel=0.01)
+    assert revenue == pytest.approx(ref.value("hotel1:Свод!I38"), rel=0.01)
     book_ebitda = sum(b["revenue"][y] + b["opex"][y] + b["admin"][y] for y in YEARS)
     assert ebitda == pytest.approx(book_ebitda, rel=0.01)
 
 
 def test_the_check_fails_on_a_forged_adr():
     """ADR на 5 % выше ориентира — сверка обязана это увидеть."""
-    adr = hotel_presets.BY_KEY["dombai"].values["adr_rub"].value
+    adr = hotel_presets.BY_KEY["hotel1"].values["adr_rub"].value
     assert compare(run({"adr_rub": adr * 1.05}))
 
 

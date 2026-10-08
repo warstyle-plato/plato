@@ -251,7 +251,7 @@ def build_project_presentation(
         # Разделы образца владельца (тизер + «Итог», 10.03.2026): всё ниже —
         # выбор и подпись величин движка, ни одного своего счёта.
         "site": _site_block(site or {}, inputs),
-        "profile": _profile_block(inputs, dates),
+        "profile": _profile_block(inputs, dates, report.get("project_class")),
         "land": _land_block(numbers, inputs),
         "financing": _financing_block(numbers, inputs),
         "efficiency": _efficiency_block(numbers),
@@ -328,10 +328,16 @@ def _site_block(site: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _profile_block(inputs: dict[str, Any], dates: dict[str, Any]) -> dict[str, Any]:
+def _profile_block(inputs: dict[str, Any], dates: dict[str, Any],
+                   project_class: dict[str, Any] | None = None) -> dict[str, Any]:
+    # Класс решает движок (`report.project_class`): у гостиницы — звёздность,
+    # а не класс жилья. Без него (старый результат) — класс жилья из вводных.
+    view = project_class if isinstance(project_class, dict) else {}
     return {
-        "project_class": CLASS_LABELS.get(_text(inputs.get("project_class")),
-                                          _text(inputs.get("project_class"))),
+        "project_class": (_text(view.get("label")) if view.get("label") else
+                          CLASS_LABELS.get(_text(inputs.get("project_class")),
+                                           _text(inputs.get("project_class")))),
+        "project_class_title": _text(view.get("title")) or "Класс проекта",
         "purchase_price_mln": _number(inputs.get("purchase_price_mln")),
         "land_right": _text(inputs.get("land_right")),
         "project_start": _text(dates.get("project_start")),

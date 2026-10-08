@@ -321,7 +321,8 @@ def _tep_rows(model: dict[str, Any], fm: _Formats) -> list[tuple[str, str, str]]
     site = model.get("site") or {}
     profile = model.get("profile") or {}
     land = model.get("land") or {}
-    rows: list[tuple[str, str, str]] = [("Класс проекта", profile.get("project_class") or "—", "")]
+    rows: list[tuple[str, str, str]] = [(profile.get("project_class_title") or "Класс проекта",
+                                         profile.get("project_class") or "—", "")]
     density = site.get("density_sqm_per_ha")
     gns = fm.sqm(tep.get("project_gns_sqm"))
     rows.append(("Наземная площадь ГНС", gns, "м²"))

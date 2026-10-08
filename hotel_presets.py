@@ -3,15 +3,20 @@
 Решение владельца (05.10.2026): ориентир чужой площадки не подставляется
 молча. Поле гостиницы либо пустое с подсказкой-диапазоном (`hint_range`),
 либо заполнено явным выбором ориентира — и тогда хранит, откуда число:
-«ориентир: Домбай 5*, Предпосылки!E393». Ручной ввод и ориентир на экране
+«ориентир: Отель 1 5*, Предпосылки!E393». Ручной ввод и ориентир на экране
 различимы, а сохранённое значение ориентира не превращается в ручное.
+
+Названия площадок на поверхностях не печатаются (владелец, 07.10.2026):
+ориентиры зовутся «Отель 1 5*», «Отель 2 5*». Проект, сохранённый с прежними
+ключами (`LEGACY_KEYS`), показывает происхождение по текущему ориентиру
+(`current_origins`), а не сохранённым текстом.
 
 Числа — только из `hotel_reference` (каждая ячейка сверена с книгой тестом).
 Где поле — не одна ячейка, а расчёт из нескольких (средний ADR по типам
 номеров, каналам и сезонам; доля F&B из чеков и посещаемости; расходы
 департамента со взносами на ФОТ), формула и ячейки названы в происхождении.
-Поле, которого в модели нет, в ориентир не входит и остаётся пустым: UAI не
-даёт выручку F&B — значит её нет и в его ориентире, а не ноль.
+Поле, которого в модели нет, в ориентир не входит и остаётся пустым: Отель 2
+не даёт выручку F&B — значит её нет и в его ориентире, а не ноль.
 """
 
 from __future__ import annotations
@@ -189,7 +194,7 @@ def _dombai() -> Preset:
         "valuation": PresetValue("ev_ebitda", "EV/EBITDA на выходе (E758)", (k("Предпосылки!E758"),)),
         "exit_multiple": _cell(d, "Предпосылки!E758"),
     }
-    return Preset("dombai", "Домбай 5*", "5", d, values)
+    return Preset("hotel1", "Отель 1 5*", "5", d, values)
 
 
 def _uai() -> Preset:
@@ -215,11 +220,34 @@ def _uai() -> Preset:
         "loan_term_years": _cell(u, "Предпосылки!E585"),
         "grace_months": _cell(u, "Предпосылки!E586", 3, "Предпосылки!E586 кварталов × 3"),
     }
-    return Preset("uai", "UAI 5*", "5", u, values)
+    return Preset("hotel2", "Отель 2 5*", "5", u, values)
 
 
 PRESETS: tuple[Preset, ...] = (_dombai(), _uai())
 BY_KEY: dict[str, Preset] = {p.key: p for p in PRESETS}
+# Ключи ориентиров до обезличивания (07.10.2026) — их несут сохранённые проекты.
+LEGACY_KEYS: dict[str, str] = {"dombai": "hotel1", "uai": "hotel2"}
+
+
+def preset_for(key: Any) -> Preset | None:
+    """Ориентир по ключу — текущему или прежнему."""
+    key = str(key or "")
+    return BY_KEY.get(LEGACY_KEYS.get(key, key))
+
+
+def current_origins(origins: dict[str, Any] | None) -> dict[str, Any]:
+    """Происхождение полей по ТЕКУЩЕМУ ориентиру.
+
+    Сохранённая запись несёт ключ ориентира; текст и ячейки собираются заново
+    от него — так подпись ориентира (и его обезличенное имя) одна на все
+    поверхности, а проект, сохранённый раньше, не печатает прежний текст.
+    Запись без известного ориентира остаётся как есть.
+    """
+    out: dict[str, Any] = {}
+    for field, origin in (origins or {}).items():
+        preset = preset_for((origin or {}).get("preset")) if isinstance(origin, dict) else None
+        out[field] = preset.origin(field) if preset and field in preset.values else origin
+    return out
 
 
 def apply_preset(inputs: dict[str, Any], key: str, *, only_empty: bool = False
@@ -230,7 +258,9 @@ def apply_preset(inputs: dict[str, Any], key: str, *, only_empty: bool = False
     в ориентире нет, не трогается. `only_empty` — заполнить только пустые:
     набранное руками ориентир не перетирает.
     """
-    preset = BY_KEY[key]
+    preset = preset_for(key)
+    if preset is None:
+        raise KeyError(key)
     x = dict(inputs or {})
     origins = dict(x.get(ORIGINS_KEY) or {})
     for field, item in preset.values.items():

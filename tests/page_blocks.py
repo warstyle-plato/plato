@@ -146,6 +146,10 @@ def tep_cell_stand() -> str:
         # а не про то, что проверяет.
         function("storageAreaPerUnit"),
         function("syncStoragePair"),
+        # Правка ячейки помечает поле ручным (`_field_origin`): импорт
+        # выгрузки ГлавАПУ его потом не перезаписывает.
+        function("fieldOrigins"),
+        function("markFieldManual"),
         function("tepCellChanged"),
         # Пересборка строки по долям — тот же путь, что правка ячейки:
         # «наши» и правка доли обязаны считать переданное так же.
@@ -508,11 +512,21 @@ def project_kind() -> str:
     движка — здесь они берутся со СОБРАННОЙ страницы, как реестр объектов.
     Гостиничный проект — третий тип: его предикаты (`isHotel`,
     `withoutHousing`) и блок «Гостиница» (`HOTEL`, `hotelInputsBlock`)
-    читает та же форма.
+    читает та же форма. От вида же зависят поля только жилого дома
+    (`RESIDENTIAL_ONLY_INPUTS`) и подпись ставки объекта (`OBJECT_RATE_HINTS`,
+    `objectRateUnit`) — решение владельца 06.10.2026.
     """
     return "\n".join((page_const("PROJECT_KINDS"),
                        page_const("NONRESIDENTIAL_CLEARED"),
                        page_const("HOTEL"),
+                       page_const("RESIDENTIAL_ONLY_INPUTS"),
+                       page_const("OBJECT_RATE_HINTS"),
+                       function("objectRateUnit"),
+                       # Ставки зданий нежилого проекта — в «Строительстве»
+                       # (владелец, 07.10.2026).
+                       page_const("OBJECT_SMR"),
+                       function("nonresBuildingRateFields"),
+                       function("movedToConstruction"),
                        function("projectKind"),
                        function("isNonResidential"),
                        function("isHotel"),
@@ -522,8 +536,9 @@ def project_kind() -> str:
                        function("projectKindNote"),
                        *(function(name) for name in (
                            "hotelOrigins", "setHotelField", "hotelBlank", "hotelValue",
-                           "hotelFieldNeeded", "hotelRangeText", "hotelFieldNote",
-                           "applyHotelPreset", "hotelInputsBlock"))))
+                           "hotelFieldNeeded", "hotelRangeText", "hotelOriginNow", "hotelFieldNote",
+                           "applyHotelPreset", "hotelInputsBlock",
+                           "syncHotelClassSelector", "setHotelClass"))))
 
 
 def auctions_function(*names: str) -> str:
