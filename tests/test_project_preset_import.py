@@ -493,7 +493,7 @@ def test_the_nagatino_preset_declares_its_own_numbers():
     Продаваемая жилья, машино-места и число квартир были описаны в разделе
     `tep_derived`, но не объявлены у объектов. Загрузчик их не видел и брал
     свои умолчания: продаваемая выходила 161 790 м² вместо 140 218 (доля 0,75
-    вместо 0,65), паркинг 3 004 места вместо 2 503, а количество квартир
+    вместо 0,65), паркинг 3 004 места вместо объявленных, а количество квартир
     оставалось абсолютной величиной 1 361,8 из TEP_DEFAULT — снятой с чужой
     продаваемой площади, то есть 118 м² на квартиру.
     """
@@ -503,7 +503,7 @@ def test_the_nagatino_preset_declares_its_own_numbers():
     preview = project_preset.build_preview(json.loads(path.read_text(encoding="utf-8")))
     tep = preview["tep"]
     assert tep["apartments"]["saleable"] == pytest.approx(140_218.4, abs=1.0)
-    assert tep["underground_parking"]["units"] == 2503
+    assert tep["underground_parking"]["units"] == 1781  # постоянные + гостевые, без приобъектных
     assert tep["underground_parking"]["guest_units"] == 162
     assert tep["apartments"]["units"] > 2000  # не 1 361,8 из умолчаний
     saleable = tep["apartments"]["saleable"]

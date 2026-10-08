@@ -118,6 +118,17 @@ def phasing(count: int) -> dict:
                         "construction_months": 30} for i in range(count)]}
 
 
+def engine_saleable(inputs: dict, tep: dict) -> float:
+    """Продаваемые места строки, которую строит движок, а не страница.
+
+    Пару полей заполнила норма (`_parking_by_norm`), и гостевые идут из той же
+    нормы. В строке страницы гостевых нет вовсе — там остаётся число шаблона
+    (109 от гаража в 1 199 мест), и сверка с ним проверяла бы чужой гараж.
+    """
+    row = core.underground_tep_row({**core.DEFAULT_INPUTS, **inputs}, tep)
+    return core.underground_saleable_spaces(row)
+
+
 @pytest.fixture(scope="module")
 def mytishchi():
     return live_import("Мытищи_ТЭП.xlsx")
@@ -153,7 +164,7 @@ def test_the_queues_keep_the_imported_parking(mytishchi, count):
     ниже, на строках ТЭП."""
     inputs, tep = mytishchi["inputs"], mytishchi["tep"]
     built = float(tep["underground_parking"]["units"])
-    master = core.underground_saleable_spaces(tep["underground_parking"])
+    master = engine_saleable(inputs, tep)
     assert built > 0, "в файле нет подземного паркинга — тест проверял бы ноль"
     assert master > 0
     bundle = core.calculate_phased(core.PhasedCalcRequest(
@@ -208,7 +219,7 @@ def test_no_imported_product_is_multiplied(mytishchi, count):
 def test_the_rule_holds_for_another_site():
     project = live_import("Мишина_ТЭП.xlsx")
     inputs, tep = project["inputs"], project["tep"]
-    master = core.underground_saleable_spaces(tep["underground_parking"])
+    master = engine_saleable(inputs, tep)
     built = float(tep["underground_parking"]["units"])
     bundle = core.calculate_phased(core.PhasedCalcRequest(
         inputs=inputs, tep=tep, rates=[], phasing=phasing(3)))

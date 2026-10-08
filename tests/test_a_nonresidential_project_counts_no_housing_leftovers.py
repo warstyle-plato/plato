@@ -222,7 +222,12 @@ def drawn():
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_page(viewport={"width": 1440, "height": 900})
             page.on("pageerror", lambda exc: errors.append(str(exc)))
-            page.goto(base, wait_until="domcontentloaded")
+            # Страница при загрузке сама считает проект по умолчанию. Если этот
+            # расчёт уходит в сеть уже после паузы, перехват в RENDER ловит
+            # его вторым запросом (`sent == [149, 149]`): на медленной машине
+            # CI так и было, на main тоже — гонка, а не правка страницы.
+            # Ждём тишины в сети, а не фиксированного времени.
+            page.goto(base, wait_until="networkidle")
             page.wait_for_timeout(1800)
             got = page.evaluate(RENDER, {"x": x, "t": t})
             page.close()

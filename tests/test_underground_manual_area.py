@@ -29,7 +29,11 @@ import main as wrapper  # noqa: E402
 
 core = wrapper.core
 
-_IMPORT = {"normalized": {"parking_permanent": 25, "parking_guest": 3}}
+# Выгрузка несёт и квартиры, на которых город посчитал места: пока ТЭП говорит
+# о тех же квартирах, места — города (решение владельца 07.10.2026).
+_IMPORT = {"normalized": {"parking_permanent": 25, "parking_guest": 3,
+                          "apartment_area_sqm": 2165.0,
+                          "apartment_units": core.TEP_DEFAULT["apartments"]["units"]}}
 
 
 def _calc(inputs_extra: dict):

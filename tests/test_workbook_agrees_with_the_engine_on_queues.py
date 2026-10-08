@@ -129,8 +129,11 @@ def test_both_keep_the_project_total(project):
     """И обе суммы равны исходному ТЭП — иначе они согласованно неверны."""
     inputs, tep = project
     book = workbook_queue_totals(inputs, tep, 3)
+    # Гостевые ручного гаража — S/11 его мест, а не число, оставшееся в
+    # присланной строке (у шаблона там 109 от гаража в 1 199 мест).
     assert book["parking_units"] == pytest.approx(
-        core.underground_saleable_spaces(tep["underground_parking"]), abs=1.0)
+        core.underground_saleable_spaces({"units": tep["underground_parking"]["units"]}),
+        abs=1.0)
     assert book["underground_gns"] == pytest.approx(95305, rel=0.01)
     assert book["apartments_saleable"] == pytest.approx(
         tep["apartments"]["saleable"], rel=0.01)
