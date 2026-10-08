@@ -6,7 +6,7 @@
 в структуру расходов не попадает («строка появляется вместе с числом»). Статья
 исчезала с экрана, из PDF и из разговора целиком, и её отсутствие читалось как
 ответ методики «благоустройства здесь не нужно» — при том что ответ другой:
-мерить нечем, а двор входит в себестоимость объекта.
+мерить нечем, а ставка объекта — СМР здания без двора (решение 06.10.2026).
 
 Рядом подпись под самой ставкой говорила «Расчёта ещё нет» на честно
 посчитанном нуле — то есть винила кнопку за ответ методики. Правило записано
@@ -77,10 +77,10 @@ def test_the_empty_article_is_named() -> None:
     assert float(result["capex"].get("landscaping") or 0.0) == 0.0
     gap = str(result["summary"]["landscaping_gap"])
     assert "Благоустройства в расчёте нет" in gap, gap
-    # Чем мерить, больше не спрашивают: двор нежилого проекта входит в
-    # себестоимость объекта и отдельной статьёй не считается (владелец,
-    # 21.09.2026). Пустота при этом по-прежнему названа.
-    assert "себестоимость объекта" in gap, gap
+    # Чем мерить, больше не спрашивают: двор нежилого проекта отдельно не
+    # считается (владелец, 21.09.2026); ставка объекта — СМР здания без двора,
+    # и причина — жителей нет (06.10.2026). Пустота при этом по-прежнему названа.
+    assert "жителей нет" in gap, gap
     # Нулевой строки в структуре расходов не бывает — ради этого и фраза.
     assert not [item for item in result["report"]["expense_structure"]
                 if "лагоустр" in str(item.get("label"))]
@@ -128,6 +128,7 @@ def screen() -> dict:
     Обе живут после расчёта и читают `lastResult`: стендом на node их не
     позвать, а в исходнике сломанная и починенная выглядят одинаково.
     """
+    from fastapi.encoders import jsonable_encoder
     from playwright.sync_api import sync_playwright
 
     import main as app_mod
@@ -163,6 +164,19 @@ def screen() -> dict:
                 "()=>{const e=document.getElementById('expenseStructureTable');"
                 "return e?e.textContent:''}")
             out["errors"] = page.evaluate("()=>document.querySelectorAll('.fatal').length")
+            # Структура расходов — отрисовкой страницы (`renderResult`) по
+            # результату движка: стенд на странице считает этот офисник без
+            # CAPEX, и таблица у него пуста — проверять в ней было бы нечего.
+            served = jsonable_encoder(core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[])))
+            page.evaluate("r=>{lastResult=r;phaseBundle=null;renderResult();}", served)
+            out["structure"] = page.evaluate(
+                "()=>{const e=document.getElementById('expenseStructureTable');"
+                "return e?e.textContent:''}")
+            # Строка статьи с нулём — та, что не должна была встать вовсе.
+            out["zero_rows"] = page.evaluate(
+                "()=>Array.from(document.querySelectorAll('#expenseStructureTable tr:not(.sub)'))"
+                ".map(tr=>Array.from(tr.children).map(td=>td.textContent.trim()))"
+                ".filter(c=>c.length>2&&/^[−-]?0(,0+)?( |$)/.test(c[1]||'')).map(c=>c[0])")
             browser.close()
     return out
 
@@ -172,7 +186,7 @@ def test_the_caption_tells_a_computed_zero_from_no_calculation(screen) -> None:
     assert screen["errors"] == 0, "страница не доработала"
     assert "Расчёта ещё нет" in screen["before"], screen["before"]
     assert "Расчёта ещё нет" not in screen["rate"], screen["rate"]
-    assert "себестоимость объекта" in screen["rate"], screen["rate"]
+    assert "жителей нет" in screen["rate"], screen["rate"]
     # И ставку здесь по-прежнему можно задать — методика её не запрещает.
     assert "перебьёт" in screen["rate"], screen["rate"]
 
@@ -180,6 +194,23 @@ def test_the_caption_tells_a_computed_zero_from_no_calculation(screen) -> None:
 def test_the_expense_table_names_the_empty_article(screen) -> None:
     """Пустота видна там, где человек ищет статью, — в структуре расходов."""
     assert "Благоустройства в расчёте нет" in screen["expenses"], screen["expenses"][:400]
+
+
+# Чисто нежилой проект — полная постатейная смета (решение владельца
+# 06.10.2026): ставка объекта — СМР здания, и статьи проекта, генподряд и
+# техзаказчик встают своими строками. Прежде ИРД и проектирования у офисника
+# не было вовсе, а «Основное строительство» было одним генподрядом.
+_FULL_ESTIMATE_ROWS = ("ИРД и проектирование", "Технический заказчик / стройконтроль",
+                       "Управление проектом", "Резерв")
+
+
+def test_the_expense_table_shows_the_full_estimate(screen) -> None:
+    """Живая страница: у офисника строки полной сметы и ни одной нулевой."""
+    assert screen["errors"] == 0, "страница не доработала"
+    assert "Отдельные объекты" in screen["structure"], screen["structure"][:400]
+    for label in _FULL_ESTIMATE_ROWS:
+        assert label in screen["structure"], screen["structure"][:400]
+    assert screen["zero_rows"] == [], screen["zero_rows"]
 
 
 def test_the_report_names_the_empty_article_too() -> None:
@@ -196,3 +227,7 @@ def test_the_report_names_the_empty_article_too() -> None:
     reader = pypdf.PdfReader(str(path))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
     assert "Благоустройства в расчёте нет" in text
+    # Та же структура на бумаге: полная смета.
+    # В узкой колонке PDF подпись переносится — сверяется её первая строка.
+    for label in _FULL_ESTIMATE_ROWS:
+        assert label.split(" / ")[0] in text, label

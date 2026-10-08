@@ -105,19 +105,19 @@ PROJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("rate_scenario", "Сценарий ключевой ставки"),
     ("core_above_gns", "ГНС наземная жилого ядра, м² (у нежилого проекта — 0)"),
     ("core_under_gns", "ГНС подземная ядра (паркинг, кладовые), м²"),
-    ("ird_th", "ИРД, тыс ₽/м² ГНС ядра"),
-    ("design_p_th", "Проект (П), тыс ₽/м² ГНС ядра"),
-    ("design_rd_th", "Рабочая документация, тыс ₽/м² ГНС ядра"),
+    ("ird_th", "ИРД, тыс ₽/м² базы статей проекта"),
+    ("design_p_th", "Проект (П), тыс ₽/м² базы статей проекта"),
+    ("design_rd_th", "Рабочая документация, тыс ₽/м² базы статей проекта"),
     ("author_supervision_pct", "Авторский надзор, % от П + РД"),
     ("demolition_area", "Площадь сноса, м²"),
     ("demolition_th", "Снос, тыс ₽/м²"),
     ("resettlement_mln", "Расселение, млн ₽"),
-    ("preparation_th", "Подготовка территории, тыс ₽/м² ГНС ядра"),
+    ("preparation_th", "Подготовка территории, тыс ₽/м² базы статей проекта"),
     ("main_above_th", "СМР наземной части ядра, тыс ₽/м²"),
     ("main_under_th", "СМР подземной части, тыс ₽/м² (и гаражи объектов)"),
-    ("utilities_th", "Сети, тыс ₽/м² ГНС ядра"),
-    ("commissioning_th", "Ввод в эксплуатацию, тыс ₽/м² ГНС ядра"),
-    ("site_maintenance_th", "Содержание площадки, тыс ₽/м² ГНС ядра"),
+    ("utilities_th", "Сети, тыс ₽/м² базы статей проекта"),
+    ("commissioning_th", "Ввод в эксплуатацию, тыс ₽/м² базы статей проекта"),
+    ("site_maintenance_th", "Содержание площадки, тыс ₽/м² базы статей проекта"),
     ("project_management_pct", "Управление проектом, % базы управления"),
     ("technical_supervision_pct", "Технический заказчик, % СМР"),
     ("gc_fee_pct", "Генподряд, % СМР"),
@@ -138,6 +138,7 @@ OBJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("measure", "Мера объекта (м² / места)"),
     ("volume", "ГНС объекта, м² (наземный паркинг — мест)"),
     ("rate_cost", "Стоимость строительства, тыс ₽/м² ГНС (места — млн ₽/место)"),
+    ("turnkey", "Ставка «под ключ»: статьи проекта, генподряд и техзаказчик — в ней"),
     ("under_gns", "Подземный гараж объекта, м²"),
     ("start", "Начало строительства"),
     ("months", "Срок строительства, мес."),
@@ -251,6 +252,7 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
     lists = {
         "strategy": STRATEGY.values(), "exit_mode": EXIT.values(), "repayment": REPAY.values(),
         "curve": CURVE.values(), "in_tax_pool": (YES, NO), "measure": ("м²", SPACES),
+        "turnkey": (YES, NO),
     }
     validations = {}
     for key, options in lists.items():
@@ -270,6 +272,7 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
             "volume": item["volume"], "rate_cost": item["rate_cost"],
             "under_gns": item["under_gns"], "start": item["start"], "months": item["months"],
             "in_tax_pool": YES if item["in_tax_pool"] else NO,
+            "turnkey": YES if item["turnkey"] else NO,
         }
         if nonres:
             cells.update({
@@ -308,7 +311,7 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
             cell.fill = INPUT_FILL
             if key in ("start", "sales_start"):
                 cell.number_format = "dd.mm.yyyy"
-            if key in validations and (nonres or key in ("measure", "in_tax_pool")):
+            if key in validations and (nonres or key in ("measure", "in_tax_pool", "turnkey")):
                 validations[key].add(f"{column}{O_ROW[key]}")
         ws[f"{column}{O_ROW['title']}"].font = BOLD
 
@@ -401,7 +404,18 @@ def _costs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, A
                                            "Срок, мес.", "График")):
         ws[f"{column}{head}"] = label
         ws[f"{column}{head}"].font = BOLD
-    gns = f"({_p('core_above_gns')}+{_p('core_under_gns')})"
+    # База статей проекта (ИРД, П, РД, подготовка, сети, ввод, содержание) —
+    # как в движке (`object_rate_is_turnkey`): ГНС ядра плюс ГНС здания и
+    # подземный гараж каждого объекта, чья ставка — СМР («под ключ» = «Нет»).
+    # У объекта «под ключ» статьи уже в ставке.
+    def smr_only(c: str, value: str) -> str:
+        return f'IF({_o("turnkey", c)}="{NO}",{value},0)'
+    objects_area = "+".join(
+        smr_only(item["column"], f"{_o('volume', item['column'])}+{_o('under_gns', item['column'])}")
+        for item in objects)
+    gns = f"({_p('core_above_gns')}+{_p('core_under_gns')}" + (
+        f"+{objects_area})" if objects_area else ")")
+    base_measure = "м² базы статей"
     rows: list[tuple[str, str, str, str, str, str, str, str, str]] = []
     # (статья, подпись, база, мера, ставка, сумма, начало, срок, график)
 
@@ -421,27 +435,27 @@ def _costs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, A
         article(f"{key}:garage", f"{item['title']}: подземный гараж", f"={_o('under_gns', c)}",
                 "м²", f"={_p('main_under_th')}", "=B{r}*D{r}*1000",
                 f"={_k_of(_o('start', c))}", f"=INT({_o('months', c)})", S_CURVE)
-    article("ird", "ИРД", f"={gns}", "м² ГНС ядра", f"={_p('ird_th')}", "=B{r}*D{r}*1000",
+    article("ird", "ИРД", f"={gns}", base_measure, f"={_p('ird_th')}", "=B{r}*D{r}*1000",
             "=0", f"={out.cells['ird_eff']}", EVEN)
-    article("design_p", "Проект (П)", f"={gns}", "м² ГНС ядра", f"={_p('design_p_th')}",
+    article("design_p", "Проект (П)", f"={gns}", base_measure, f"={_p('design_p_th')}",
             "=B{r}*D{r}*1000", f"={permit}-{window}", f"={window}", EVEN)
-    article("design_rd", "Рабочая документация", f"={gns}", "м² ГНС ядра", f"={_p('design_rd_th')}",
+    article("design_rd", "Рабочая документация", f"={gns}", base_measure, f"={_p('design_rd_th')}",
             "=B{r}*D{r}*1000", f"={permit}-{window}", f"={window}", EVEN)
     article("demolition", "Снос", f"={_p('demolition_area')}", "м² сноса", f"={_p('demolition_th')}",
             "=B{r}*D{r}*1000", f"={permit}-{window}", f"={window}", EVEN)
     article("resettlement", "Расселение", "=1", "млн ₽", f"={_p('resettlement_mln')}",
             "=B{r}*D{r}*1000000", f"={permit}-{window}", f"={window}", EVEN)
-    article("preparation", "Подготовка территории", f"={gns}", "м² ГНС ядра",
+    article("preparation", "Подготовка территории", f"={gns}", base_measure,
             f"={_p('preparation_th')}", "=B{r}*D{r}*1000", f"={permit}-{window}", f"={window}", EVEN)
     article("main_above", "СМР наземной части ядра", f"={_p('core_above_gns')}", "м²",
             f"={_p('main_above_th')}", "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
     article("main_under", "СМР подземной части ядра", f"={_p('core_under_gns')}", "м²",
             f"={_p('main_under_th')}", "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
-    article("utilities", "Сети", f"={gns}", "м² ГНС ядра", f"={_p('utilities_th')}",
+    article("utilities", "Сети", f"={gns}", base_measure, f"={_p('utilities_th')}",
             "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
-    article("site_maintenance", "Содержание площадки", f"={gns}", "м² ГНС ядра",
+    article("site_maintenance", "Содержание площадки", f"={gns}", base_measure,
             f"={_p('site_maintenance_th')}", "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
-    article("commissioning", "Ввод в эксплуатацию", f"={gns}", "м² ГНС ядра",
+    article("commissioning", "Ввод в эксплуатацию", f"={gns}", base_measure,
             f"={_p('commissioning_th')}", "=B{r}*D{r}*1000", f"={rve}-3", "=3", EVEN)
     engine = spec.get("engine_articles") or {}
     cost_mult = float(spec.get("cost_mult") or 1.0) or 1.0
@@ -454,13 +468,18 @@ def _costs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, A
                 "движок")
     article("author_supervision", "Авторский надзор", "=E{design_p}+E{design_rd}", "П + РД, ₽",
             f"={_p('author_supervision_pct')}/100", "=B{r}*D{r}", f"={permit}", f"={build}", S_CURVE)
-    works = "=E{main_above}+E{main_under}+E{social}+" + _sum(
-        [f"E{{{item['key']}__building}}+E{{{item['key']}__garage}}" for item in objects])
+    # База генподряда и техзаказчика — СМР ядра и соцобъектов, как в движке,
+    # плюс здание и гараж объекта, чья ставка — СМР. Ставка «под ключ» несёт
+    # генподряд и техзаказчика сама, процент сверху был бы двойным счётом.
+    object_works = "".join(
+        "+" + smr_only(item["column"], f"E{{{item['key']}__building}}+E{{{item['key']}__garage}}")
+        for item in objects)
+    works = "=E{main_above}+E{main_under}+E{social}" + object_works
     article("technical_supervision", "Технический заказчик", works, "СМР, ₽",
             f"={_p('technical_supervision_pct')}/100", "=B{r}*D{r}", f"={permit}", f"={build}", S_CURVE)
     article("project_management", "Управление проектом",
             "=E{ird}+E{design_p}+E{design_rd}+E{author_supervision}+E{preparation}+E{main_above}"
-            "+E{main_under}+E{utilities}+E{landscaping}+E{site_maintenance}",
+            "+E{main_under}+E{utilities}+E{landscaping}+E{site_maintenance}" + object_works,
             "база управления, ₽", f"={_p('project_management_pct')}/100", "=B{r}*D{r}",
             "=0", f"={rve}", "профиль расходов")
     article("gc_fee", "Генподряд", works, "СМР, ₽", f"={_p('gc_fee_pct')}/100", "=B{r}*D{r}",
@@ -473,7 +492,10 @@ def _costs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, A
         article("land_rights", "Плата за смену ВРИ к оплате", f"={_p('land_rights_gross')}", "млн ₽",
                 f"=1-IF({_p('land_rights_gross')}>0,MIN(1,{_p('land_rights_relief')}/{_p('land_rights_gross')}),0)",
                 "=B{r}*D{r}*1000000", f"={permit}", "=1", "разово в РнС")
-    reserve_parts = [key for key, *_ in rows]
+    # Плата за смену ВРИ — известная сумма, резерв на неё не начисляется
+    # (список движка `RESERVE_EXCLUDED_ARTICLES` приходит в спецификации).
+    reserve_excluded = set(spec["reserve_excluded"])
+    reserve_parts = [key for key, *_ in rows if key not in reserve_excluded]
     article("reserve", "Резерв", "=" + _sum([f"E{{{key.replace(':', '__')}}}" for key in reserve_parts]),
             "все статьи до резерва, ₽", f"={_p('reserve_pct')}/100", "=B{r}*D{r}",
             f"={permit}", f"={build}", S_CURVE)
