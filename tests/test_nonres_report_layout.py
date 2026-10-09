@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import copy
+import html
 import io
 import json
 import re
@@ -240,10 +241,12 @@ console.log(JSON.stringify(out));
     return {item["key"]: item["html"] for item in json.loads(out)}
 
 
-def _cells(html: str) -> list[tuple[str, str]]:
+def _cells(markup: str) -> list[tuple[str, str]]:
     """Строки таблиц движка (`object-rows`); участок из вводных — своя таблица."""
-    tables = "".join(re.findall(r'<table class="nonres-strategy object-rows">[\s\S]*?</table>', html))
-    return [(re.sub("<[^>]+>", "", a), re.sub("<[^>]+>", "", b)) for a, b in
+    tables = "".join(re.findall(r'<table class="nonres-strategy object-rows">[\s\S]*?</table>', markup))
+    # Подписи с «&» (F&B, FF&E) страница экранирует — сравниваем текст.
+    return [(html.unescape(re.sub("<[^>]+>", "", a)), html.unescape(re.sub("<[^>]+>", "", b)))
+            for a, b in
             re.findall(r"<tr(?: class=\"section\")?><td>([\s\S]*?)</td><td>([\s\S]*?)</td></tr>",
                        tables)]
 
