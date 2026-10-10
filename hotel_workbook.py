@@ -1,41 +1,49 @@
 """Книга гостиничного проекта: живые формулы, годовой USALI, итоги и сверка.
 
-Решения владельца (05.10.2026): шаг расчёта — месяц, как у движка; в книге
-дополнительно годовой лист USALI; итоги — как «Контр_панель» эталонных
-моделей (NPV, IRR, PBP, DPBP); лист «Сверка» сравнивает формулы книги с
-движком.
+Шаг — месяц, как у движка; смета от площадей и ставок, годовой USALI,
+кредит, налоги, денежный поток и итоги связаны формулами. NPV, IRR, PBP и
+DPBP пересчитываются в скачанном файле. Значения движка — только снимок
+для сверки, а не источник итогов книги. Изменение вводных снимает сверку
+с прежним снимком, но внутренние балансы продолжают проверяться.
 
-Методика — та же, что у движка (`developaid_hotel_strategy.hotel_flows`):
-каждая колонка листа «Расчёт» повторяет одну строку модуля формулой Excel —
-номера, департаменты, USALI, износ и налог на имущество, возмещение НДС,
-кредит (обычный или льготный, лимит, отсрочка, аннуитет / под DSCR / весь
-поток), налог на прибыль с переносом убытка (половинное ограничение, как у
-движка), потоки проекта и капитала. Значениями приходят только данные,
-которых книге не посчитать, и так и подписаны: затраты проекта по месяцам и их
-части (мебель, участок) — CAPEX считает движок; ключевая ставка сценария;
-число дней месяца (календарь). IRR — значение движка, а книга проверяет его
-формулой: NPV потока при этой ставке равен нулю.
-
-Формулы — только IF/AND/OR/MIN/MAX/SUM/SUMIF/COUNT/COUNTIF/ABS и степень,
-чтобы их считали и Excel, и вычислитель в тестах.
+Методика совпадает с `developaid_hotel_strategy.hotel_flows`: USALI,
+амортизация, НДС, кредит, удержание денег до погашения, налог на прибыль
+с переносом убытка. Дополнительные статьи без формулы поименованы отдельно.
+Формулы проверяет `xlsx_eval`; рассчитанные значения сохраняются рядом с
+формулами, чтобы книгу можно было читать и без пересчёта в Excel.
 """
 
 from __future__ import annotations
 
 import io
+import sys
 from datetime import date
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.workbook.properties import CalcProperties
 from openpyxl.utils import get_column_letter
 
 import developaid_hotel_strategy as hs
 from developaid_finance_math import LOSS_CARRY_USE_LIMIT
+import hotel_workbook_capex as capex_book
+import hotel_workbook_sensitivity as sensitivity_book
+from xlsx_eval import Evaluator
+from v4_value_cache import with_cached_values
+
+CAPEX_INPUT_DEFAULTS = capex_book.INPUT_DEFAULTS
+FORMULA_CAPEX_ARTICLES = frozenset(capex_book.ARTICLES)
 
 ENGINE_FILL = PatternFill("solid", fgColor="FFF3E0")
 INPUT_FILL = PatternFill("solid", fgColor="FFFDE7")
 BOLD = Font(bold=True)
+MONEY = '#,##0;[Red](#,##0);"—"'
+PERCENT = '0.0%;[Red](0.0%);"—"'
+# Шрифт и цвета образца Отеля 1: Контр_панель!B2, Предпосылки!B2.
+SECTION_FILL = PatternFill("solid", fgColor="A3D6C0")
+TITLE_FILL = PatternFill("solid", fgColor="00B050")
 
 INPUTS_SHEET = "Вводные"
 CALC_SHEET = "Расчёт"
@@ -44,6 +52,12 @@ TOTALS_SHEET = "Итоги"
 CHECK_SHEET = "Сверка"
 FIRST_ROW = 6  # первая строка помесячной таблицы на листе «Расчёт»
 NO_DRAW = 1_000_000  # «выдачи не было» — номер строки, которого нет
+CHOICES = {
+    "financing": {"commercial": "Обычный кредит", "preferential": "Льготный кредит", "none": "Без кредита"},
+    "repayment": {"annuity": "Аннуитет", "sculpted": "Под DSCR", "sweep": "Весь свободный поток"},
+    "exit_mode": {"sale": "Продажа", "hold": "Удержание"},
+    "valuation": {"cap_rate": "Ставка капитализации", "ev_ebitda": "EV/EBITDA"},
+}
 
 # Модельные величины листа «Вводные» (столбец C): ключ → подпись.
 MODEL: tuple[tuple[str, str], ...] = (
@@ -95,6 +109,10 @@ MODEL: tuple[tuple[str, str], ...] = (
     ("discount", "Ставка дисконтирования"),
     ("comm", "Ввод — номер строки расчёта (k)"),
     ("horizon", "Конец срока — номер строки расчёта (k)"),
+    ("hold", "Срок эксплуатации, лет"),
+    ("limit_th", "Лимит кредита, тыс. ₽/номер (0 при отсутствии лимита)"),
+    ("start", "Начало проекта"),
+    ("price_date", "Дата цены ADR"),
 )
 DERIVED: tuple[tuple[str, str], ...] = (
     ("vs", "Доля НДС в сумме с НДС"),
@@ -165,6 +183,8 @@ _COLUMN_LIST: tuple[tuple[str, str], ...] = (
     ("irr_p", "Поток проекта при IRR движка"), ("irr_e", "Поток капитала при IRR движка"),
     ("cum_p", "Поток проекта нарастающим"), ("cross_p", "Окупаемость: месяц перехода"),
     ("cum_dp", "Дисконт. поток нарастающим"), ("cross_dp", "DPBP: месяц перехода"),
+    ("cum_e", "Денежный поток капитала нарастающим"),
+    ("profit_after_tax", "Финансовый результат после налога"),
 )
 COLUMNS: dict[str, tuple[str, str]] = {
     key: (get_column_letter(i), label) for i, (key, label) in enumerate(_COLUMN_LIST, start=1)}
@@ -175,7 +195,8 @@ def _c(name: str) -> str:
 
 
 def _in(name: str) -> str:
-    return f"'{INPUTS_SHEET}'!$C${_ROWS[name]}"
+    column = "I" if name in CHOICES else "C"
+    return f"'{INPUTS_SHEET}'!${column}${_ROWS[name]}"
 
 
 def _month(text: str) -> date:
@@ -194,8 +215,7 @@ def _num(params: dict[str, Any], key: str) -> float:
         return 0.0
 
 
-def _row_formulas(r: int, irr_project: float | None, irr_equity: float | None
-                  ) -> dict[str, str]:
+def _row_formulas(r: int) -> dict[str, str]:
     """Формулы строки r — построчный пересказ `hotel_flows` языком Excel."""
     first = FIRST_ROW
     A = f"{_c('k')}{r}"
@@ -212,10 +232,11 @@ def _row_formulas(r: int, irr_project: float | None, irr_equity: float | None
     left = f"({i('maturity')}-{A})"
     refund_window = f"{_c('vatin')}{max(first, r - 3)}:{_c('vatin')}{r}"
     refund_lag = f"{_c('vatin')}{r - 3}" if r - 3 >= first else "0"
-    irr_p = "0" if irr_project is None else f"((1+{irr_project!r})^(1/12)-1)"
-    irr_e = "0" if irr_equity is None else f"((1+{irr_equity!r})^(1/12)-1)"
+    irr_p = f'IF(\'{TOTALS_SHEET}\'!$B$5="",0,(1+\'{TOTALS_SHEET}\'!$B$5)^(1/12)-1)'
+    irr_e = f'IF(\'{TOTALS_SHEET}\'!$B$7="",0,(1+\'{TOTALS_SHEET}\'!$B$7)^(1/12)-1)'
     return {
-        "in_h": f"=IF({A}<={i('horizon')},1,0)",
+        "in_h": f"=IF({A}<={i('horizon')},1,IF({A}<={i('horizon')}+12,0,-1))",
+        "profit_after_tax": f"={v['margin']}-{v['fin_ded']}-{v['tax']}",
         "year_h": f"=IF({v['in_h']}=1,{v['year']},0)",
         "open": f"=IF({A}>={i('comm')},{A}-{i('comm')}+1,0)",
         "occ": (f"=IF({open_}=0,0,IF({i('ramp')}=0,{i('occ_target')},{i('occ_start')}"
@@ -265,7 +286,7 @@ def _row_formulas(r: int, irr_project: float | None, irr_equity: float | None
         "interest": f"={v['bal_open']}*{v['rate']}/12",
         "int_cap": f"=IF({A}<{i('comm')},{v['interest']},0)",
         "int_paid": f"=IF(AND({A}>={i('comm')},{v['in_h']}=1),{v['interest']},0)",
-        "want": f"=IF(AND({A}<={i('comm')},{v['in_h']}=1),{v['capex']}*{i('loan_share')},0)",
+        "want": f'=IF(AND({A}<={i("comm")},{v["in_h"]}=1,{i("financing")}<>"none"),{v["capex"]}*{i("loan_share")},0)',
         "cum_prev": f"={prev('cum_draw')}",
         "draw": (f"=IF({i('limit_on')}=1,MIN({v['want']},MAX(0,{i('limit')}-{v['cum_prev']})),"
                  f"{v['want']})"),
@@ -302,7 +323,7 @@ def _row_formulas(r: int, irr_project: float | None, irr_equity: float | None
         "retained": f"={v['res_close']}-{v['res_open']}",
         "amort": f"=IF({A}={i('horizon')},0,{v['sched']})",
         "dep": f"=IF({v['in_h']}=1,{v['dep_b']}+{v['dep_f']},0)",
-        "margin": (f"=IF({v['in_h']}=0,0,{v['ebitda']}+{v['exit']}-{v['exit_cost']}-{v['dep']}"
+        "margin": (f"=IF({v['in_h']}<>1,0,{v['ebitda']}+{v['exit']}-{v['exit_cost']}-{v['dep']}"
                    f'-IF(AND({A}={i("horizon")},{i("exit_mode")}="sale"),'
                    f"{v['book_b_close']}+{v['book_f_close']}+{i('land_total')},0))"),
         "fin_ded": f"=IF({v['in_h']}=1,{v['int_cap']}+{v['int_paid']}+{v['fee']},0)",
@@ -316,23 +337,24 @@ def _row_formulas(r: int, irr_project: float | None, irr_equity: float | None
                  f"MIN({v['prior']},{v['yres']}*{i('loss_limit')}),0)"),
         "base": f"=IF({A}<{i('comm')},0,MAX({v['yres']}-{v['used']},0))",
         "ypaid_prev": f"=IF(OR({A}<={i('comm')},{v['newyear']}=1),0,{prev('ypaid')})",
-        "tax": (f"=IF(OR({A}<{i('comm')},{v['in_h']}=0),0,"
+        "tax": (f"=IF(OR({A}<{i('comm')},{v['in_h']}<>1),0,"
                 f"MAX({v['base']}*{i('tax_rate')}-{v['ypaid_prev']},0))"),
         "ypaid": f"={v['ypaid_prev']}+{v['tax']}",
         "vat_paid": f"=-{v['refund']}",
-        "operating": (f"=IF({v['in_h']}=0,0,{v['ebitda']}+{v['exit']}+{v['residual']}"
+        "operating": (f"=IF({v['in_h']}<>1,0,{v['ebitda']}+{v['exit']}+{v['residual']}"
                       f"-{v['exit_cost']}-{v['vat_paid']})"),
         "to_equity": (f"={v['operating']}-{v['int_paid']}-{v['fee']}+{v['draw']}"
                       f"-{v['repay_total']}-{v['retained']}"),
-        "project_cf": (f"=IF({v['in_h']}=0,0,{v['operating']}-{v['capex']}-{v['int_cap']}"
+        "project_cf": (f"=IF({v['in_h']}<>1,0,{v['operating']}-{v['capex']}-{v['int_cap']}"
                        f"-{v['int_paid']}-{v['fee']}-{v['tax']})"),
-        "equity_cf": f"=IF({v['in_h']}=0,0,{v['to_equity']}-{v['capex']}-{v['tax']})",
-        "fcff": f"=IF({v['in_h']}=0,0,{v['operating']}-{v['capex']}-{v['tax']})",
+        "equity_cf": f"=IF({v['in_h']}<>1,0,{v['to_equity']}-{v['capex']}-{v['tax']})",
+        "fcff": f"=IF({v['in_h']}<>1,0,{v['operating']}-{v['capex']}-{v['tax']})",
         "disc_p": f"={v['project_cf']}/(1+{i('rate_m')})^{A}",
         "disc_e": f"={v['equity_cf']}/(1+{i('discount')}/12)^{A}",
         "irr_p": f"={v['project_cf']}/(1+{irr_p})^{A}",
         "irr_e": f"={v['equity_cf']}/(1+{irr_e})^{A}",
         "cum_p": f"={prev('cum_p')}+{v['project_cf']}",
+        "cum_e": f"={prev('cum_e')}+{v['equity_cf']}",
         "cross_p": (f"=IF(AND({prev('cum_p')}<0,{v['cum_p']}>=0),"
                     f"{A}+(-{prev('cum_p')})/{v['project_cf']},{NO_DRAW})"),
         "cum_dp": f"={prev('cum_dp')}+{v['disc_p']}",
@@ -346,7 +368,6 @@ def _model_values(data: dict[str, Any], start: date) -> dict[str, Any]:
     pct = lambda key: _num(params, key) / 100.0  # noqa: E731
     commissioning = _month(data["commissioning"])
     financing = str(params.get("financing") or hs.FINANCING_COMMERCIAL)
-    loan_on = financing in (hs.FINANCING_COMMERCIAL, hs.FINANCING_PREFERENTIAL)
     limit_blank = params.get("loan_limit_th_per_key") in (None, "")
     keys = max(0.0, _num(params, "keys"))
     repayment = str(params.get("repayment") or hs.REPAY_ANNUITY)
@@ -377,7 +398,7 @@ def _model_values(data: dict[str, Any], start: date) -> dict[str, Any]:
         "building_months": max(1, int(_num(params, "building_years") or 30)) * 12,
         "ffe_months": max(1, int(_num(params, "ffe_years") or 8)) * 12,
         "financing": financing if financing in dict(hs.FINANCINGS) else hs.FINANCING_COMMERCIAL,
-        "loan_share": min(1.0, max(0.0, pct("loan_share_pct"))) if loan_on else 0.0,
+        "loan_share": min(1.0, max(0.0, pct("loan_share_pct"))),
         "spread": pct("loan_spread_pp"),
         "pref_share": min(1.0, max(0.0, pct("pref_key_share_pct"))),
         "pref_margin": pct("pref_margin_pp"),
@@ -395,6 +416,9 @@ def _model_values(data: dict[str, Any], start: date) -> dict[str, Any]:
         "discount": float(data["discount_rate"]),
         "comm": _index(start, commissioning),
         "horizon": _index(start, hs.add_months(commissioning, hold * 12 - 1)),
+        "hold": hold,
+        "limit_th": 0.0 if limit_blank else _num(params, "loan_limit_th_per_key"),
+        "start": start, "price_date": _month(price_date),
     }
 
 
@@ -421,8 +445,37 @@ def _inputs_sheet(book: Workbook, data: dict[str, Any], values: dict[str, Any],
     for key, label in MODEL:
         row = _ROWS[key]
         ws[f"A{row}"] = label
-        ws[f"C{row}"] = values[key]
+        ws[f"C{row}"] = CHOICES[key].get(values[key], values[key]) if key in CHOICES else values[key]
         ws[f"C{row}"].fill = INPUT_FILL
+        if key in CHOICES:
+            formula = '""'
+            for code, label in reversed(list(CHOICES[key].items())):
+                formula = f'IF(C{row}="{label}","{code}",{formula})'
+            ws[f"I{row}"] = "=" + formula
+            validation = DataValidation(type="list", formula1='"' + ",".join(CHOICES[key].values()) + '"')
+            validation.errorTitle = "Выберите вариант"
+            validation.error = "Используйте один из вариантов списка."
+            validation.showErrorMessage = True
+            validation.errorStyle = "stop"
+            ws.add_data_validation(validation)
+            validation.add(f"C{row}")
+        if "доля" in label.lower() or "спред" in label.lower() or "маржа" in label.lower() or key in ("vat", "tax_rate", "discount"):
+            ws[f"C{row}"].number_format = PERCENT
+    ws[f"C{_ROWS['limit']}"] = f"={_in('limit_th')}*1000*{_in('keys')}"
+    ws[f"C{_ROWS['price_k']}"] = (f"=(YEAR({_in('price_date')})-YEAR({_in('start')}))*12"
+                                   f"+MONTH({_in('price_date')})-MONTH({_in('start')})")
+    if not (data.get("params") or {}).get("adr_price_date"):
+        ws[f"C{_ROWS['price_date']}"] = "=" + _in("start")
+        ws[f"C{_ROWS['price_date']}"].fill = PatternFill()
+    for key in ("start", "price_date"):
+        ws[f"C{_ROWS[key]}"].number_format = "dd.mm.yyyy"
+    if data.get("capex_spec"):
+        spec = data["capex_spec"]
+        ws[f"C{_ROWS['comm']}"] = (f"=MAX({spec['ird_min']},INT({capex_book.ref('ird_months')}))"
+                                   f"+INT({capex_book.ref('construction_months')})")
+        ws[f"C{_ROWS['horizon']}"] = f"={_in('comm')}+MAX(1,INT({_in('hold')}))*12-1"
+    for key in ("limit", "comm", "horizon", "price_k"):
+        ws[f"C{_ROWS[key]}"].fill = PatternFill()
     last = f"{CALC_SHEET}"
     col = lambda name: f"'{last}'!${_c(name)}${FIRST_ROW}:${_c(name)}${FIRST_ROW + rows - 1}"  # noqa: E731
     i = _in
@@ -460,7 +513,7 @@ def _inputs_sheet(book: Workbook, data: dict[str, Any], values: dict[str, Any],
     origins = data.get("origins") or {}
     ws["E3"] = "Поле проекта"
     ws["F3"] = "Ед."
-    ws["G3"] = "Значение"
+    ws["G3"] = "Исходное значение проекта (для происхождения)"
     ws["H3"] = "Происхождение"
     for cell in ("E3", "F3", "G3", "H3"):
         ws[cell].font = BOLD
@@ -472,16 +525,26 @@ def _inputs_sheet(book: Workbook, data: dict[str, Any], values: dict[str, Any],
         if field.kind == "choice":
             shown = dict(field.choices).get(str(shown), shown)
         ws[f"G{n}"] = "" if shown is None else shown
+        ws[f"G{n}"].fill = ENGINE_FILL
         ws[f"H{n}"] = _origin_text(field, origins, raw)
     for letter, width in (("A", 54), ("B", 2), ("C", 20), ("D", 2), ("E", 46), ("F", 22),
                           ("G", 22), ("H", 90)):
         ws.column_dimensions[letter].width = width
+    ws.column_dimensions["I"].hidden = True
+    ws["A2"] = "Редактируйте жёлтые ячейки. Доли показаны в %. Оранжевое справа — происхождение исходного проекта."
+    ws["E119"] = "Прогноз ключевой ставки, выбранный в проекте"
+    horizon_validation = DataValidation(type="custom", formula1=f'$C${_ROWS["horizon"]}<={rows - 13}')
+    horizon_validation.showErrorMessage = True
+    horizon_validation.errorStyle = "stop"
+    horizon_validation.error = f"Горизонт и 12 месяцев оценки выхода должны помещаться в {rows} месяцев сетки."
+    ws.add_data_validation(horizon_validation)
+    horizon_validation.add(f"C{_ROWS['hold']}")
 
 
 def _calc_sheet(book: Workbook, data: dict[str, Any], start: date, values: dict[str, Any],
-                irr_project: float | None, irr_equity: float | None) -> int:
+                rows: int, capex_ref=None) -> int:
     ws = book.create_sheet(CALC_SHEET)
-    ws["A1"] = "Помесячный расчёт гостиницы — формулы книги; оранжевое — значения движка"
+    ws["A1"] = "Помесячный расчёт гостиницы — связанные формулы книги"
     ws["A1"].font = BOLD
     ws["A2"] = ("Строки после конца срока (В сроке = 0) — 12 месяцев для оценки выхода: "
                 "в итоги они не входят.")
@@ -489,28 +552,50 @@ def _calc_sheet(book: Workbook, data: dict[str, Any], start: date, values: dict[
     for name, (letter, label) in COLUMNS.items():
         ws[f"{letter}{head}"] = label
         ws[f"{letter}{head}"].font = BOLD
-    for name in ("capex", "capex_ffe", "capex_land", "key_rate"):
-        ws[f"{_c(name)}{head - 1}"] = "СЧИТАЕТ ДВИЖОК"
+    for name in ("capex", "capex_ffe", "capex_land"):
+        ws[f"{_c(name)}{head - 1}"] = "СМЕТА И ГРАФИК" if capex_ref else "СЧИТАЕТ ДВИЖОК"
     for name in ("year", "days"):
         ws[f"{_c(name)}{head - 1}"] = "календарь"
     months = data["months"]
-    total = values["horizon"] + 1 + 12
+    total = rows
     for idx in range(total):
         r = FIRST_ROW + idx
         month = hs.add_months(start, idx)
         source = months[idx] if idx < len(months) else {}
         ws[f"{_c('k')}{r}"] = idx
-        ws[f"{_c('month')}{r}"] = month.isoformat()[:7]
-        ws[f"{_c('year')}{r}"] = month.year
-        ws[f"{_c('days')}{r}"] = hs.month_days(month)
+        month_ref = f"{_c('month')}{r}"
+        ws[month_ref] = f"=EDATE({_in('start')},{_c('k')}{r})"
+        ws[month_ref].number_format = "mmm yyyy"
+        ws[f"{_c('year')}{r}"] = f"=YEAR({month_ref})"
+        ws[f"{_c('days')}{r}"] = f"=EDATE({month_ref},1)-{month_ref}"
         for name, key in (("capex", "capex"), ("capex_ffe", "capex_ffe"),
                           ("capex_land", "capex_land"), ("key_rate", "key_rate")):
+            if capex_ref and name != "key_rate":
+                parts = {"capex": ["total"], "capex_ffe": ["hotel_ffe"],
+                         "capex_land": ["purchase", "land_rights", "vri_interest", "vri_security"]}[name]
+                ws[f"{_c(name)}{r}"] = "=" + "+".join(capex_ref(part, idx) for part in parts)
+                continue
             value = float(source.get(key, 0.0) or 0.0)
             if name == "key_rate" and idx >= len(months) and months:
                 value = float(months[-1].get("key_rate", 0.0) or 0.0)
-            ws[f"{_c(name)}{r}"] = value
-            ws[f"{_c(name)}{r}"].fill = ENGINE_FILL
-        for name, formula in _row_formulas(r, irr_project, irr_equity).items():
+            if name == "key_rate":
+                input_row = 120 + idx
+                inp = book[INPUTS_SHEET]
+                forecast = (data.get("capex_spec") or {}).get("forecast") or []
+                if idx < len(forecast):
+                    value = float(forecast[idx][1])
+                inp[f"E{input_row}"] = month
+                inp[f"E{input_row}"].number_format = "mmm yyyy"
+                inp[f"F{input_row}"] = value
+                inp[f"F{input_row}"].fill = INPUT_FILL
+                inp[f"F{input_row}"].number_format = PERCENT
+                end = 119 + total
+                ws[f"{_c(name)}{r}"] = (f"=INDEX('{INPUTS_SHEET}'!$F$120:$F${end},"
+                                         f'MAX(1,COUNTIF(\'{INPUTS_SHEET}\'!$E$120:$E${end},"<="&{month_ref})))')
+            else:
+                ws[f"{_c(name)}{r}"] = value
+                ws[f"{_c(name)}{r}"].fill = ENGINE_FILL
+        for name, formula in _row_formulas(r).items():
             ws[f"{_c(name)}{r}"] = formula
     for idx in range(1, len(COLUMNS) + 1):
         ws.column_dimensions[get_column_letter(idx)].width = 15
@@ -554,6 +639,7 @@ USALI_LINES: tuple[tuple[str, str, str], ...] = (
     ("capex", "CAPEX с НДС", "sum"),
     ("fcff", "Поток до финансирования (FCFF)", "sum"),
     ("equity_cf", "Поток капитала (FCFE)", "sum"),
+    ("profit_after_tax", "Финансовый результат после налога", "sum"),
 )
 
 
@@ -568,7 +654,7 @@ def _usali_sheet(book: Workbook, years: list[int], rows: int) -> dict[tuple[str,
     refs: dict[tuple[str, int], str] = {}
     for j, year in enumerate(years):
         letter = get_column_letter(2 + j)
-        ws[f"{letter}3"] = year
+        ws[f"{letter}3"] = f"=YEAR({_in('start')})+{j}"
         ws[f"{letter}3"].font = BOLD
         for key, label, how in USALI_LINES:
             r = line_row[key]
@@ -619,9 +705,13 @@ def _totals(rows: int) -> dict[str, str]:
         "cash_to_equity": in_h("to_equity"),
         "forward_ebitda": f"={_in('forward_ebitda')}", "exit_value": f"={_in('exit_value')}",
         "loan_peak": f"={_in('peak')}",
+        "capex_total": f"={_in('capex_total')}",
+        "equity_peak": f"=MAX(0,-MIN({col('cum_e')}))",
         "npv_project": f"=SUM({col('disc_p')})", "npv_equity": f"=SUM({col('disc_e')})",
         "npv_at_irr_project": f"=SUM({col('irr_p')})",
         "npv_at_irr_equity": f"=SUM({col('irr_e')})",
+        "irr_project": f'=IFERROR((1+IRR({col("project_cf")},0.01))^12-1,"")',
+        "irr_equity": f'=IFERROR((1+IRR({col("equity_cf")},0.01))^12-1,"")',
         "pbp_years": f"=IF(MIN({col('cross_p')})<{NO_DRAW},MIN({col('cross_p')})/12,\"\")",
         "dpbp_years": f"=IF(MIN({col('cross_dp')})<{NO_DRAW},MIN({col('cross_dp')})/12,\"\")",
     }
@@ -655,6 +745,8 @@ CHECKS: tuple[tuple[str, str, str], ...] = (
     ("loan_peak", "Кредит — пик долга", "kpi"),
     ("npv_project", "NPV проекта", "kpi"),
     ("npv_equity", "NPV собственного капитала", "kpi"),
+    ("irr_project", "IRR проекта", "kpi"),
+    ("irr_equity", "IRR собственного капитала", "kpi"),
     ("pbp_years", "Срок окупаемости, лет", "kpi"),
     ("dpbp_years", "Дисконтированный срок окупаемости, лет", "kpi"),
     ("dscr_min", "DSCR — минимум по годам", "kpi"),
@@ -679,25 +771,29 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
     kpi = hotel.get("kpi") or {}
     start = _month(data["months"][0]["month"])
     values = _model_values(data, start)
-    rows = values["horizon"] + 1 + 12
+    # Резерв сетки позволяет менять срок эксплуатации в скачанной книге.
+    # Выход всегда ровно 12 месяцев после её текущего горизонта.
+    rows = max(360, values["horizon"] + 1 + 12)
     _inputs_sheet(book, data, values, rows)
-    _calc_sheet(book, data, start, values, kpi.get("irr_project"), kpi.get("irr_equity"))
-    years = sorted({row["year"] for row in hotel.get("annual") or [] if row.get("rooms_available")})
+    capex_ref = None
+    missing = []
+    if data.get("capex_spec"):
+        capex_book.inputs(book, data["capex_spec"], sys.modules[__name__])
+        capex_ref, missing = capex_book.build(book, data["capex_spec"], rows, sys.modules[__name__])
+    _calc_sheet(book, data, start, values, rows, capex_ref)
+    years = list(range(start.year, hs.add_months(start, rows - 13).year + 1))
     refs = _usali_sheet(book, years, rows)
     totals = _totals(rows)
 
     sheet = book.create_sheet(TOTALS_SHEET, 0)
     sheet["A1"] = f"DevelopAid · гостиница{(' · ' + project_name) if project_name else ''}"
     sheet["A1"].font = BOLD
-    sheet["A2"] = ("Итоги — формулы книги (как «Контр_панель» эталонных моделей); IRR — "
-                   "значение движка, проверенное формулой: NPV потока при нём равен нулю.")
+    sheet["A2"] = "Финансовая модель гостиницы. Изменяйте жёлтые ячейки на «Вводных»: итоги пересчитываются."
     lines = (
         ("NPV проекта", "npv_project"),
-        ("IRR проекта (движок)", None, kpi.get("irr_project")),
-        ("Проверка: NPV потока проекта при IRR движка", "npv_at_irr_project"),
+        ("IRR проекта", "irr_project"),
         ("NPV собственного капитала", "npv_equity"),
-        ("IRR собственного капитала (движок)", None, kpi.get("irr_equity")),
-        ("Проверка: NPV потока капитала при IRR движка", "npv_at_irr_equity"),
+        ("IRR собственного капитала", "irr_equity"),
         ("Срок окупаемости (PBP), лет от начала проекта", "pbp_years"),
         ("Дисконтированный срок окупаемости (DPBP), лет", "dpbp_years"),
         ("Выручка за срок", "revenue"),
@@ -707,6 +803,8 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
         ("Кредит — пик долга", "loan_peak"),
         ("Кредит — проценты", "loan_interest"),
         ("DSCR — минимум по годам", "dscr_min"),
+        ("Затраты проекта (CAPEX), ₽ с НДС", "capex_total"),
+        ("Максимальное вложение собственного капитала, ₽", "equity_peak"),
     )
     total_refs: dict[str, str] = {}
     for n, line in enumerate(lines, start=4):
@@ -723,18 +821,10 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
         else:
             sheet[f"B{n}"] = totals[key]
         total_refs[key] = f"'{TOTALS_SHEET}'!$B${n}"
-    project_rows = (
-        ("Проект: выручка (движок)", summary.get("revenue")),
-        ("Проект: чистая прибыль (движок)", summary.get("net_profit")),
-        ("Проект: NPV (движок)", summary.get("npv")),
-        ("Проект: IRR собственного капитала (движок)", summary.get("irr_equity")),
-    )
-    base = 4 + len(lines) + 1
-    for n, (label, value) in enumerate(project_rows, start=base):
-        sheet[f"A{n}"] = label
-        sheet[f"B{n}"] = float(value) if value is not None else ""
-        sheet[f"B{n}"].fill = ENGINE_FILL
-        sheet[f"C{n}"] = "СЧИТАЕТ ДВИЖОК"
+    sheet["A19"] = "Модель соответствует методике движка, а не заменяет методику исходного Отеля 1."
+    sheet["A20"] = "Оранжевое — исходный снимок для сверки. Изменение вводных требует новой сверки с движком."
+    labels = (data.get("capex_spec") or {}).get("article_labels") or {}
+    sheet["A21"] = ("Не пересчитываются формулами: " + ", ".join(labels.get(key, key) for key in missing)) if missing else "Смета гостиницы считается формулами. Благоустройство отдельно не учтено."
     sheet.column_dimensions["A"].width = 56
     sheet.column_dimensions["B"].width = 22
 
@@ -776,6 +866,206 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
     checks["H3"] = f'=IF(COUNTIF(F3:F{last},"РАСХОЖДЕНИЕ")=0,"ПРОЙДЕНО","ЕСТЬ РАСХОЖДЕНИЯ")'
     for letter, width in (("A", 40), ("B", 20), ("C", 20), ("D", 14), ("E", 12), ("F", 14)):
         checks.column_dimensions[letter].width = width
+    _snapshot(book)
+    _internal_checks(book, rows)
+    _model_sheets(book, rows)
+    scenarios = sensitivity_book.build(book, rows, sys.modules[__name__]) if capex_ref else []
+    _style(book)
+    book.calculation = CalcProperties(calcId=0, fullCalcOnLoad=True, forceFullCalc=True)
     stream = io.BytesIO()
     book.save(stream)
-    return stream.getvalue()
+    # Долг и налог читают предыдущий месяц: предварительный расчёт сверху
+    # вниз избегает глубокой рекурсии при сохранении значений для телефона.
+    evaluator = Evaluator(book)
+    for sheet_name in [CALC_SHEET, *scenarios]:
+        for row in range(FIRST_ROW, FIRST_ROW + rows):
+            for key, (letter, _) in COLUMNS.items():
+                if key not in ("irr_p", "irr_e"):
+                    evaluator.cell(sheet_name, f"{letter}{row}")
+    content, report = with_cached_values(stream.getvalue(), evaluator=evaluator)
+    if report["unresolved"]:
+        raise ValueError("Формулы гостиничной книги не пересчитаны: " + "; ".join(report["examples"]))
+    return content
+
+
+def _snapshot(book: Workbook) -> None:
+    """Сверка с исходным движком действительна только на исходных вводных."""
+    checks = book[CHECK_SHEET]
+    snapshot = book.create_sheet("Исходный снимок")
+    snapshot.sheet_state = "hidden"
+    inputs = [(ws.title, cell.coordinate, cell.value)
+              for ws in book.worksheets for row in ws.iter_rows() for cell in row
+              if cell.fill == INPUT_FILL and cell.data_type != "f"]
+    for r, (sheet, address, value) in enumerate(inputs, 3):
+        snapshot[f"A{r}"] = f"='{sheet}'!{address}"
+        snapshot[f"B{r}"] = value
+        snapshot[f"C{r}"] = f"=IF(A{r}=B{r},0,1)"
+    checks["H4"] = f"=SUM('Исходный снимок'!C3:C{2+len(inputs)})"
+    checks["H5"] = "Число изменённых вводных"
+    for r in range(3, 3 + len(CHECKS)):
+        original = checks[f"F{r}"].value[1:]
+        checks[f"F{r}"] = f'=IF($H$4>0,"ВВОДНЫЕ ИЗМЕНЕНЫ",{original})'
+    # И годовые строки сверяются с тем же исходным снимком.
+    last = max(3 + len(CHECKS), max(cell.row for cell in checks["A"] if cell.value))
+    for r in range(3 + len(CHECKS), last + 1):
+        if checks[f"F{r}"].data_type == "f":
+            original = checks[f"F{r}"].value[1:]
+            checks[f"F{r}"] = f'=IF($H$4>0,"ВВОДНЫЕ ИЗМЕНЕНЫ",{original})'
+    checks["H3"] = (f'=IF(COUNTIF(F3:F{last},"РАСХОЖДЕНИЕ")>0,"ЕСТЬ РАСХОЖДЕНИЯ",'
+                     'IF(H4>0,"ВВОДНЫЕ ИЗМЕНЕНЫ — НУЖНА НОВАЯ СВЕРКА","ПРОЙДЕНО"))')
+
+
+def _model_sheets(book: Workbook, rows: int) -> None:
+    """Читаемые денежный поток, кредит и налоги — ссылки на общий расчёт."""
+    groups = (
+        ("ОПУ", (("revenue", "Выручка эксплуатации"), ("opex", "Расходы по USALI"),
+                 ("ptax", "Налог на имущество"), ("ins", "Страхование"), ("ebitda", "EBITDA"),
+                 ("dep", "Амортизация"), ("int_cap", "Проценты капитализированные"),
+                 ("int_paid", "Проценты уплаченные"), ("fee", "Комиссия за выдачу"),
+                 ("margin", "Налоговая маржа с выходом"), ("tax", "Налог на прибыль"),
+                 ("profit_after_tax", "Финансовый результат после налога"))),
+        ("Денежный поток", (("capex", "Затраты проекта"), ("revenue", "Выручка эксплуатации"),
+                           ("ebitda", "EBITDA"), ("exit", "Продажа гостиницы"),
+                           ("residual", "Оценка при удержании"), ("tax", "Налог на прибыль"),
+                           ("project_cf", "Денежный поток проекта"), ("equity_cf", "Денежный поток собственника"),
+                           ("cum_e", "Деньги собственника нарастающим"))),
+        ("Кредит", (("key_rate", "Ключевая ставка"), ("rate", "Ставка кредита"),
+                    ("bal_open", "Долг на начало месяца"), ("draw", "Выдача кредита"),
+                    ("int_cap", "Проценты капитализированные"), ("int_paid", "Проценты уплаченные"),
+                    ("fee", "Комиссия за выдачу"), ("repay_total", "Погашение кредита"),
+                    ("bal_close", "Долг на конец месяца"))),
+        ("Налоги", (("vatin", "Входящий НДС"), ("refund", "Возмещение НДС"),
+                    ("ptax", "Налог на имущество"), ("dep", "Амортизация"),
+                    ("margin", "Налоговая маржа"), ("prior", "Убытки прошлых лет"),
+                    ("used", "Зачёт убытка"), ("base", "База налога на прибыль"), ("tax", "Налог на прибыль"))),
+    )
+    for name, lines in groups:
+        ws = book.create_sheet(name)
+        ws["A1"] = f"{name} гостиницы"
+        ws["A2"] = "Связанные формулы помесячного расчёта. Суммы в ₽; ставки — % годовых."
+        ws["A3"] = "Месяц"
+        for index, (_, label) in enumerate(lines, 2):
+            ws.cell(3, index, label)
+        for index in range(rows):
+            r = 4 + index
+            calc_r = FIRST_ROW + index
+            ws[f"A{r}"] = f"='{CALC_SHEET}'!{_c('month')}{calc_r}"
+            ws[f"A{r}"].number_format = "mmm yyyy"
+            for col, (key, _) in enumerate(lines, 2):
+                cell = ws.cell(r, col, f"='{CALC_SHEET}'!{_c(key)}{calc_r}")
+                cell.number_format = PERCENT if key in ("key_rate", "rate") else MONEY
+        ws.freeze_panes = "B4"
+        ws.column_dimensions["A"].width = 16
+        for index in range(2, len(lines) + 2):
+            ws.column_dimensions[get_column_letter(index)].width = 23
+        ws.auto_filter.ref = f"A3:{get_column_letter(1 + len(lines))}{3 + rows}"
+    order = (TOTALS_SHEET, INPUTS_SHEET, "Затраты", USALI_SHEET, "ОПУ",
+             "Денежный поток", "Кредит", "Налоги", CHECK_SHEET, CALC_SHEET, "Исходный снимок")
+    for index, name in enumerate(name for name in order if name in book.sheetnames):
+        book.move_sheet(name, offset=index - book.index(book[name]))
+
+
+def _internal_checks(book: Workbook, rows: int) -> None:
+    checks = book[CHECK_SHEET]
+    col = lambda key: f"'{CALC_SHEET}'!{_c(key)}{FIRST_ROW}:{_c(key)}{FIRST_ROW+rows-1}"
+    lines = [
+        ("Баланс долга: выдача + капитализированные проценты − погашение − остаток",
+         f"SUM({col('draw')})+SUM({col('int_cap')})-SUM({col('repay_total')})"
+         f"-'{CALC_SHEET}'!{_c('bal_close')}{FIRST_ROW+rows-1}"),
+        ("Баланс потока проекта: поступления − затраты − финансирование − налог",
+         f"SUM({col('project_cf')})-SUM({col('operating')})+SUM({col('capex')})"
+         f"+SUM({col('int_cap')})+SUM({col('int_paid')})+SUM({col('fee')})+SUM({col('tax')})"),
+    ]
+    if capex_book.SHEET in book.sheetnames:
+        lines.append(("Баланс сметы и денежного потока",
+                      f"SUM({col('capex')})-'{capex_book.SHEET}'!F24"))
+        inputs = book[INPUTS_SHEET]
+        last = max(r for r in range(77, 120) if inputs[f"G{r}"].fill == INPUT_FILL)
+        lines.append(("График покупки: сумма долей равна 100 %",
+                      f"SUM('{INPUTS_SHEET}'!G77:G{last})-1"))
+    for label, formula in lines:
+        row = checks.max_row + 1
+        checks[f"A{row}"] = label
+        checks[f"B{row}"] = "=" + formula
+        checks[f"C{row}"] = 0
+        checks[f"D{row}"] = f"=B{row}"
+        tolerance = 1e-9 if label.startswith("График покупки") else 1
+        checks[f"E{row}"] = tolerance
+        checks[f"F{row}"] = f'=IF(ABS(B{row})<=E{row},"сходится","РАСХОЖДЕНИЕ")'
+    row = checks.max_row + 1
+    checks[f"A{row}"] = "Календарь помещается в сетку, варианты выбраны из списка"
+    checks[f"F{row}"] = (f'=IF(AND({_in("horizon")}<={rows-13},{_in("hold")}>0,'
+                          + ",".join(f'{_in(key)}<>""' for key in CHOICES)
+                          + '),"сходится","РАСХОЖДЕНИЕ")')
+    checks["H3"] = (f'=IF(COUNTIF(F3:F{row},"РАСХОЖДЕНИЕ")>0,"ЕСТЬ РАСХОЖДЕНИЯ",'
+                     'IF(H4>0,"ВВОДНЫЕ ИЗМЕНЕНЫ — НУЖНА НОВАЯ СВЕРКА","ПРОЙДЕНО"))')
+
+
+def _style(book: Workbook) -> None:
+    """Шрифт/палитра образца, закрепления, единицы и печать своих листов."""
+    for ws in book.worksheets:
+        if ws.sheet_state == "hidden":
+            continue
+        ws.sheet_view.showGridLines = False
+        ws.sheet_view.zoomScale = 85
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.paperSize = ws.PAPERSIZE_A3
+        ws.page_setup.fitToWidth, ws.page_setup.fitToHeight = 1, 0
+        header = {INPUTS_SHEET: 3, CALC_SHEET: FIRST_ROW - 1, "Затраты": 4,
+                  CHECK_SHEET: 2}.get(ws.title, 3)
+        ws.print_title_rows = f"1:{header}"
+        ws.freeze_panes = ws.freeze_panes or ("B4" if ws.title != INPUTS_SHEET else "D4")
+        for row in ws.iter_rows():
+            for cell in row:
+                if cell.value is None:
+                    continue
+                bold = cell.font.bold
+                cell.font = Font(name="Montserrat", size=10, bold=bold, color="203C32")
+                cell.alignment = Alignment(vertical="center", wrap_text=cell.row <= header)
+                if cell.data_type == "f" and cell.number_format == "General":
+                    cell.number_format = MONEY
+                if cell.row == header:
+                    cell.fill = SECTION_FILL
+                    cell.font = Font(name="Montserrat", size=10, bold=True, color="203C32")
+                    cell.border = Border(bottom=Side(style="thin", color="00B050"))
+        ws.row_dimensions[header].height = 42
+        ws["A1"].font = Font(name="Montserrat", size=16, bold=True, color="FFFFFF")
+        ws["A1"].fill = TITLE_FILL
+        ws.row_dimensions[1].height = 30
+        ws.row_dimensions[2].height = 35
+        ws["A2"].alignment = Alignment(wrap_text=True, vertical="center")
+        # Титул и пояснение не раздувают печать до ширины технической сетки.
+        end = 3 if ws.title == TOTALS_SHEET else min(8, ws.max_column)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=end)
+        if ws.title != CHECK_SHEET:
+            ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=end)
+    totals = book[TOTALS_SHEET]
+    for row in (5, 7):
+        totals[f"B{row}"].number_format = PERCENT
+    for row in (8, 9, 16):
+        totals[f"B{row}"].number_format = "0.00"
+    for row in range(4, 19):
+        totals[f"A{row}"].alignment = Alignment(wrap_text=True, vertical="center")
+        totals.row_dimensions[row].height = 30
+        totals[f"B{row}"].font = Font(name="Montserrat", size=12, bold=True, color="203C32")
+    for row in (19, 20, 21):
+        totals.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
+        totals[f"A{row}"].alignment = Alignment(wrap_text=True, vertical="center")
+        totals.row_dimensions[row].height = 32
+    annual = book[USALI_SHEET]
+    for cell in annual[3]:
+        if cell.column > 1:
+            cell.number_format = "0"
+    for index, (key, _, _) in enumerate(USALI_LINES, 4):
+        for row in annual.iter_rows(min_row=index, max_row=index, min_col=2):
+            for cell in row:
+                cell.number_format = PERCENT if key == "occupancy" else "0.00" if key == "dscr" else MONEY
+    calc = book[CALC_SHEET]
+    for key, (letter, _) in COLUMNS.items():
+        if key in ("occ", "key_rate", "rate"):
+            for row in range(FIRST_ROW, calc.max_row + 1):
+                calc[f"{letter}{row}"].number_format = PERCENT
+        elif key in ("k", "year", "days"):
+            for row in range(FIRST_ROW, calc.max_row + 1):
+                calc[f"{letter}{row}"].number_format = "0"

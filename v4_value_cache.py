@@ -173,7 +173,7 @@ def _unescape(text: str) -> str:
             .replace("&quot;", '"').replace("&apos;", "'").replace("&amp;", "&"))
 
 
-def with_cached_values(content: bytes) -> tuple[bytes, dict[str, Any]]:
+def with_cached_values(content: bytes, evaluator: Evaluator | None = None) -> tuple[bytes, dict[str, Any]]:
     """Пересчитать книгу и положить значения рядом с формулами.
 
     Отдаёт новые байты и отчёт: сколько значений записано, сколько формул
@@ -182,8 +182,8 @@ def with_cached_values(content: bytes) -> tuple[bytes, dict[str, Any]]:
     несобранная выгрузка хуже обеих.
     """
     report: dict[str, Any] = {"written": 0, "unresolved": 0, "examples": []}
-    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    evaluator = Evaluator(book)
+    book = evaluator.workbook if evaluator is not None else openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    evaluator = evaluator if evaluator is not None else Evaluator(book)
     values: dict[str, dict[str, Any]] = {}
     for sheet in book.worksheets:
         computed: dict[str, Any] = {}
