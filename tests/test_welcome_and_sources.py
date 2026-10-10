@@ -21,12 +21,13 @@ import openpyxl
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 
 
 def test_the_welcome_mentions_vri_and_the_live_model():
-    source = open("main_legacy.py", encoding="utf-8").read()
+    source = engine_source()
     start = source.find("Добро пожаловать в DevelopAid")
     block = source[start:start + 3000]
     assert "плату за изменение ВРИ" in block
@@ -36,7 +37,7 @@ def test_the_welcome_mentions_vri_and_the_live_model():
 
 
 def test_the_pdf_column_names_the_project_gns():
-    source = open("main_legacy.py", encoding="utf-8").read()
+    source = engine_source()
     # База названа целиком: без неё 23 тыс ₽/м² подземной части читались как
     # ставка на подземный метр (она — 88, во вводных). С 29.09.2026 (решение 4
     # ревизии книги) у строки своя база, и колонка «База» печатает её словами

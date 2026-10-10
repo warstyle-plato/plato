@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # main.py — тонкая обёртка Telegram-слоя; расчётное ядро и эндпоинты живут
 # в main_legacy.py, который обёртка загружает как модуль core.
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 main = _wrapper.core
 
@@ -740,8 +741,7 @@ def test_a_missed_parcel_is_retried_before_giving_up(monkeypatch):
 
 def test_the_card_shouts_about_missing_parcels():
     """Площадь занижена — предупреждение стоит рядом с площадью, а не в логе."""
-    import inspect
-    module_source = inspect.getsource(main)
+    module_source = engine_source()
     card = module_source[module_source.index("Участок в Московской области") - 4000:]
     card = card[:card.index("Социальная нагрузка")]
     assert "занижены" in card, "карточка МО молчит о потерянных участках"

@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 # чужих тестов: 29 падений полного прогона при зелёных файлах поодиночке.
 
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 
@@ -309,7 +310,7 @@ def test_help_tells_what_arrives_in_the_archive(monkeypatch):
 
 def test_short_help_names_the_three_cases():
     """Кнопка «Что умеет DevelopAid» тоже разводит три случая."""
-    source = (Path(__file__).resolve().parent.parent / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert "нормативные ТЭП" in source and "калькулятору ГлавАПУ" in source
     assert "Московская область" in source and "114-Р" in source
     assert "другой регион" in source and "экспертно" in source

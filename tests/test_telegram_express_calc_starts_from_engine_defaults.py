@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 
@@ -72,7 +73,7 @@ def test_the_edit_mode_keeps_the_project_of_its_card():
 
 
 def test_the_bot_says_the_rest_are_engine_defaults():
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     button = source[source.index("def _telegram_send_cad_calculate_button"):]
     button = button[:button.index("def _telegram_mo_parsed")]
     assert "умолчания DevelopAid" in button, "бот не предупреждает про умолчания"
