@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main_legacy as core  # noqa: E402
 from xlsx_eval import Evaluator  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 ACCRUAL_KEYS = ("bridge_interest", "bridge_capitalization",
                 "pf_interest", "pf_interest_capitalization", "limit_fee")
@@ -223,7 +224,7 @@ def test_the_cash_rows_still_read_the_payment() -> None:
     не платили.
     """
     import re
-    source = ROOT.joinpath("main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     at = source.index("def _v4_apply_interest_accrual(")
     end = source.index("\ndef ", at + 1)
     body = source[at:end]

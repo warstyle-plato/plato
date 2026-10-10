@@ -132,6 +132,8 @@ GUARD_MODULE = "request_body.py"
 
 SCANNED = ("main_legacy.py", "auction_search/api.py", "market_search/api.py",
            "mpt_extension.py", "request_body.py")
+# Куски движка (engine/*.py) — тот же движок, их маршруты сканируются так же.
+SCANNED += tuple(sorted(str(path.relative_to(ROOT)) for path in (ROOT / "engine").glob("*.py")))
 
 
 def _request_argument_names(node: ast.AST) -> set[str]:

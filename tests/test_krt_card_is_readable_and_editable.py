@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 import main as wrapper  # noqa: E402
 from auction_search.krt_screening import build_krt_model_screening  # noqa: E402
 from auction_search.ui import auctions_page  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 
@@ -189,7 +190,7 @@ def test_the_link_is_built_by_the_engine():
 
 def test_the_mercator_conversion_is_declared_once():
     """Формула жила внутри `_geometry_center`; копия рядом разошлась бы молча."""
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     assert source.count("math.log(math.tan((90.0 + lat)") == 1
 
 

@@ -24,6 +24,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 
@@ -109,7 +110,7 @@ def test_the_login_carries_the_name_to_the_profile(storage, monkeypatch):
     assert "name" in inspect.signature(core._web_login_confirm).parameters
     # Обработчик бота обёртка монкей-патчит, поэтому ветка входа читается в
     # исходнике движка, а не через `inspect` живой функции.
-    engine = Path(core.__file__).read_text(encoding="utf-8")
+    engine = engine_source()
     branch = engine[engine.index('if command == "/start" and start_payload.startswith("login_")'):]
     assert "_telegram_sender_name(message))" in branch[:600]
     assert "name" in core.WebLoginConfirmRequest.model_fields

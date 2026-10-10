@@ -31,8 +31,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
-PAGE = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+PAGE = engine_source()
 
 PORT = 18265
 

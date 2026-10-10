@@ -38,6 +38,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
 import page_blocks  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 NODE = shutil.which("node")
 pytestmark = pytest.mark.skipif(not NODE, reason="node недоступен")
@@ -120,6 +121,6 @@ def test_the_lookup_names_its_reason_field() -> None:
     """Поле причины объявлено ответом поиска, а не собирается на странице."""
     body = core.PAGE
     assert "(landLookup||{}).reason" in body, "страница не читает причину поиска"
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     assert '"reason": reason,' in source, "ответ поиска не несёт причину"
     assert "if note not in _LAND_LOOKUP_STANDING_NOTES" in source

@@ -23,6 +23,7 @@ from fastapi import HTTPException
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 main = _wrapper.core
 
@@ -209,7 +210,7 @@ def test_bot_and_browser_share_one_entry_point(monkeypatch):
 
 def test_bot_does_not_reimplement_the_methodology():
     """В обработчике бота не должно быть ни нормативов, ни формул расчёта."""
-    source = Path(main.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     start = source.index("def _telegram_handle_mo_numbers")
     body = source[start:source.index("\ndef ", start + 10)]
     for forbidden in ("_mo_upks", "_mo_vri_kd", "МoNorm", "* 0.0", "/ 1000 *"):
@@ -371,7 +372,7 @@ def test_endpoints_compute_locally_without_a_core(monkeypatch):
 
 def test_mini_app_url_prefers_the_new_variable():
     """TELEGRAM_WEBAPP_URL — основное имя; прежнее оставлено, чтобы не ломать стенды."""
-    source = Path(main.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     block = source[source.index("_TELEGRAM_WEB_APP_BASE_URL = ("):]
     block = block[:block.index(").rstrip")]
     # Имя самой константы тоже содержит старое имя переменной — сверяем чтения окружения.
@@ -382,7 +383,7 @@ def test_mini_app_url_prefers_the_new_variable():
 
 def test_every_web_app_button_uses_one_builder():
     """Кнопок много, адрес один: иначе часть из них останется на старом хосте."""
-    source = Path(main.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     for match in re.finditer(r'"web_app":\s*\{"url":\s*([^}]+)\}', source):
         assert "_telegram_web_app_url" in match.group(1) or match.group(1).strip() == "url", match.group(1)
 
@@ -416,7 +417,7 @@ def test_addresses_are_still_recognized(text):
 
 def test_menu_offers_asking_platon():
     """Спросить было неоткуда: кнопка появлялась только на карточках результата."""
-    source = Path(main.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     start = source.index("def _telegram_start_message")
     menu = source[start:source.index("\ndef ", start + 10)]
     assert '"callback_data": "ask_platon"' in menu

@@ -42,6 +42,7 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 from terms_glossary import CORE_TOTAL_AREA, TOTAL_AREA  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 PORT = 18247
 
@@ -106,7 +107,7 @@ def test_the_pdf_split_counts_the_storage_too() -> None:
 
 def test_the_money_does_not_read_the_construction_volume() -> None:
     """`project_gns_sqm` — подпись, а не база: статьи считаются от своих."""
-    source = Path(ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     # База удельных статей (`article_gns`) объявлена строкой выше блока: у
     # гостиницы — её ГНС, у остальных — `core_total_gns`.
     body = source[source.index("    article_gns = "):source.index("\n    amounts[\"author_supervision\"]")]

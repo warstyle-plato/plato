@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 import normatives_registry  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def _sources_sheet(region: str) -> str:
@@ -137,7 +138,7 @@ def test_our_rows_wear_the_sheets_own_style() -> None:
 
 def test_the_sheet_is_not_a_second_registry() -> None:
     """Копии реестра в движке нет — строки собираются из него."""
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     block = source[source.index("def _v4_normative_sources_rows("):]
     block = block[:block.index("\ndef ", 10)]
     assert "_merged_registry" in block, "лист собирается не из реестра"

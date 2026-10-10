@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 
@@ -114,7 +115,7 @@ def test_the_default_branch_keeps_its_own_words() -> None:
 
 def test_the_pdf_profit_carries_the_caveat() -> None:
     """В PDF у прибыли три разных исхода, и средний прежде молчал."""
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     assert '" — условная: в модели дефолт, долг закрыт продажами "' in source
     assert "financing.get('default_date')" in source
 

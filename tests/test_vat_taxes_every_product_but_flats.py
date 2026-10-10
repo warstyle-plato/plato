@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 # Паркинг — продукт своего объекта; в этих проверках места продаёт офисник.
 OFFICE_PARKING = "object_parking_offices"
@@ -78,7 +79,7 @@ def test_the_vat_base_is_every_product_but_the_flats(report: dict) -> None:
 
 def test_the_base_is_taken_from_the_revenue_itself_not_from_a_list() -> None:
     """Перечня продуктов в базе НДС нет: следующий выпал бы так же молча."""
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     at = source.find("vat_taxable_products = tuple(")
     assert at > 0, "база НДС объявлена не там, где её искали"
     block = source[at:at + 200]

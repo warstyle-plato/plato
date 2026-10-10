@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
 from guide import install  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 _ROOT = Path(__file__).resolve().parent.parent
@@ -178,7 +179,7 @@ def test_platon_reads_the_same_guide():
     assert not core._tool_get_user_guide("nope")["available"]
     names = [tool["name"] for tool in core._AGENT_TOOLS]
     assert "get_user_guide" in names, "инструмент не объявлен модели"
-    assert "get_user_guide" in Path(core.__file__).read_text(encoding="utf-8").split(
+    assert "get_user_guide" in engine_source().split(
         "def _execute_agent_tool", 1)[1][:4000], "инструмент не диспетчеризуется"
 
 

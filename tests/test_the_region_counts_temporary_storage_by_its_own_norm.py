@@ -32,6 +32,7 @@ if str(ROOT) not in sys.path:
 
 import main_legacy as core  # noqa: E402
 import mo_rngp_reference as ref  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def test_the_engine_takes_the_rate_from_the_primary_source() -> None:
@@ -39,7 +40,7 @@ def test_the_engine_takes_the_rate_from_the_primary_source() -> None:
     assert core.MO_NORMS_DEFAULT["parking_temporary_per_1000"] == ref.PARKING_TEMPORARY_RATE["value"]
     assert ref.PARKING_TEMPORARY_RATE["unit"] == ref.UNIT_CARS_PER_1000
     assert ref.PARKING_TEMPORARY_RATE["rule_type"] == "MANDATORY_MINIMUM"
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert "parking_temporary_share" not in source, "доля осталась в расчёте"
     # Норма — пол, а не потолок: её правят как любой другой норматив области.
     assert "parking_temporary_per_1000" in core.MO_NORMS_DEFAULT
@@ -64,7 +65,7 @@ def test_the_region_builds_only_permanent_places_and_sells_them_all() -> None:
 
 def test_the_moscow_region_tep_declares_no_guest_places() -> None:
     """Перенос расчёта области в ТЭП объявляет отсутствие гостевых явно."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     place = source.index('"units": parking["permanent_spaces"],')
     assert '"guest_units": 0,' in source[place:place + 700], (
         "область не объявляет отсутствие гостевых — движок вычтет московскую 1/11")

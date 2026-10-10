@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 main = _wrapper.core
 client = TestClient(main.app)
@@ -388,7 +389,7 @@ def test_context_stays_with_the_model():
     names = {tool["name"] for tool in main._AGENT_TOOLS}
     assert names, "агент остался без инструментов"
     # Наружу уходит только вызов модели: сам цикл инструментов остаётся здесь.
-    source = Path(main.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     start = source.index("def _call_openai_tool_agent")
     body = source[start:source.index("\n@app.", start)]
     assert "_openai_responses_request" in body

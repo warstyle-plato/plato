@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 
@@ -83,7 +84,7 @@ def test_the_steps_are_not_copied_by_hand():
     получал 18 м²/место при 27 у города. Поликлинике там же было приписано
     27 м² на посещение — числа, которого у города нет вовсе.
     """
-    src = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    src = engine_source()
     for _kind, steps in core.MOSCOW_SOCIAL_AREA_PER_PLACE.items():
         for limit, value in steps:
             if limit == float("inf"):
@@ -96,7 +97,7 @@ def test_the_steps_are_not_copied_by_hand():
 
 def test_the_engine_does_not_hardcode_the_norm():
     """Зашитое число рядом с полем норматива — это второй ответ на тот же вопрос."""
-    src = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    src = engine_source()
     for key in ("social_dou_norm_sqm", "social_school_norm_sqm", "social_clinic_norm_sqm"):
         stray = re.findall(rf'"{key}"\s*,\s*\d', src)
         assert stray == [], (key, stray)

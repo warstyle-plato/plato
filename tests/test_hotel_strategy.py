@@ -24,6 +24,7 @@ import developaid_finance_math as fm  # noqa: E402
 import developaid_hotel_strategy as hs  # noqa: E402
 import hotel_presets  # noqa: E402
 import hotel_reference as ref  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 COMMISSIONING = date(2030, 1, 1)
 
@@ -264,7 +265,7 @@ def test_payback():
 def test_engine_names_are_the_shared_functions():
     """Движок зовёт ту же реализацию, а не свою копию."""
     import ast
-    tree = ast.parse((ROOT / "main_legacy.py").read_text(encoding="utf-8"))
+    tree = ast.parse(engine_source())
     defined = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
     assert not {"_monthly_npv", "_equity_npv", "_monthly_irr",
                 "_profit_tax_schedule"} & defined

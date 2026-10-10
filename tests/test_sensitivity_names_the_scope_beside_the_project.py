@@ -26,18 +26,19 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 sys.path.insert(0, str(ROOT / "tests"))
 
 
 def test_the_default_scope_for_a_phased_project_is_the_weakest_phase() -> None:
     """Умолчание остаётся прежним — меняется не выбор, а то, как он назван."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert 'scope = "weakest_phase" if base_bundle.get("mode") == "phased"' in source
 
 
 def test_the_project_value_travels_with_the_base() -> None:
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     body = source[source.index("def run_sensitivity("):source.index("def _phase_llcr(")]
     assert '"project_value"' in body and '"project_label"' in body
     assert 'scope != "consolidated"' in body, \
@@ -57,7 +58,7 @@ def test_the_screen_says_it_is_not_the_whole_project() -> None:
 
 
 def test_the_paper_says_the_same() -> None:
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     start = source.index('f"охват: {base.get(\'scope_label\')')
     fragment = source[start:start + 400]
     assert "не весь проект" in fragment
@@ -67,7 +68,7 @@ def test_the_paper_says_the_same() -> None:
 
 def test_a_single_phase_project_gets_no_second_number() -> None:
     """Одноочередной проект в эту ветку не заходит — приписке неоткуда взяться."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     body = source[source.index("def run_sensitivity("):source.index("def _phase_llcr(")]
     guard = re.search(r'if scope != "consolidated" and base_bundle\.get\("mode"\) == "phased":', body)
     assert guard, "условие должно требовать и охват, и многоочередной режим"

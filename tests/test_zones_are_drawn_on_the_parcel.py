@@ -31,6 +31,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 NODE = shutil.which("node")
@@ -89,7 +90,7 @@ def test_the_subzones_are_drawn_together():
 
 
 def test_the_screening_answer_carries_the_parcel_contour():
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     body = source[source.index('def land_screening('):]
     body = body[:body.index("def _land_zouit_findings(")]
     assert '"contour_merc": contour' in body

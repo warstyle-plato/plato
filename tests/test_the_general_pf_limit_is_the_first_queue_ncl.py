@@ -47,6 +47,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from xlsx_eval import Evaluator  # noqa: E402
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 
@@ -153,7 +154,7 @@ def test_the_surfaces_call_the_general_limit_an_expectation():
     page = core.PAGE
     assert "'Общий лимит ПФ по генеральным условиям'" in page
     assert "потолком очередей не служит" in page
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     assert "Общий лимит ПФ по генеральным условиям — ожидание, потолком очередей не служит" in source
 
 

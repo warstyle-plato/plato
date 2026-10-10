@@ -28,6 +28,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 NODE = shutil.which("node")
@@ -197,7 +198,7 @@ def test_the_report_carries_the_screening_before_the_money(monkeypatch):
     """
     order = core.PAGE  # заглушка, чтобы линтер не ругался на неиспользуемое
     assert order is not None
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     body = source[source.index("def _build_developaid_pdf"):]
     body = body[:body.index("# Состав выгружаемой модели")]
     assert 'story.append(_PdfSection("screening"))' in body
@@ -218,7 +219,7 @@ def test_the_report_headline_is_not_raw_markup():
     """P() экранирует HTML, поэтому <b> печатался буквально: «<b>Критических
     ограничений не обнаружено</b>» в боевом отчёте (18.08.2026). Жирный —
     стилем, а не тегом."""
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     body = source[source.index('story.append(_PdfSection("screening"))'):]
     body = body[:body.index('story.append(_PdfSection("summary"))')]
     assert "<b>" not in body, "разметка в тексте будет напечатана буквально"
