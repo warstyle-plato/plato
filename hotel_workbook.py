@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import sys
+from copy import copy
 from datetime import date
 from typing import Any
 
@@ -869,7 +870,7 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
     _snapshot(book)
     _internal_checks(book, rows)
     _model_sheets(book, rows)
-    scenarios = sensitivity_book.build(book, rows, sys.modules[__name__]) if capex_ref else []
+    clones = sensitivity_book.build(book, rows, sys.modules[__name__]) if capex_ref else []
     _style(book)
     book.calculation = CalcProperties(calcId=0, fullCalcOnLoad=True, forceFullCalc=True)
     stream = io.BytesIO()
@@ -877,12 +878,13 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
     # Долг и налог читают предыдущий месяц: предварительный расчёт сверху
     # вниз избегает глубокой рекурсии при сохранении значений для телефона.
     evaluator = Evaluator(book)
-    for sheet_name in [CALC_SHEET, *scenarios]:
-        for row in range(FIRST_ROW, FIRST_ROW + rows):
-            for key, (letter, _) in COLUMNS.items():
-                if key not in ("irr_p", "irr_e"):
-                    evaluator.cell(sheet_name, f"{letter}{row}")
-    content, report = with_cached_values(stream.getvalue(), evaluator=evaluator)
+    for row in range(FIRST_ROW, FIRST_ROW + rows):
+        for key, (letter, _) in COLUMNS.items():
+            if key not in ("irr_p", "irr_e"):
+                evaluator.cell(CALC_SHEET, f"{letter}{row}")
+    # Варианты чувствительности считает Excel при открытии (`excel_only`).
+    content, report = with_cached_values(stream.getvalue(), evaluator=evaluator,
+                                         left_to_excel=sensitivity_book.excel_only(clones))
     if report["unresolved"]:
         raise ValueError("Формулы гостиничной книги не пересчитаны: " + "; ".join(report["examples"]))
     return content
@@ -1016,9 +1018,21 @@ def _style(book: Workbook) -> None:
                   CHECK_SHEET: 2}.get(ws.title, 3)
         ws.print_title_rows = f"1:{header}"
         ws.freeze_panes = ws.freeze_panes or ("B4" if ws.title != INPUTS_SHEET else "D4")
+        # Итог оформления клетки зависит только от её прежнего стиля, строки и
+        # того, формула ли в ней: он считается один раз на сочетание и
+        # переносится остальным. Новый Font на каждую из десятков тысяч клеток
+        # стоил выгрузке секунды.
+        styled: dict[tuple[Any, ...], Any] = {}
         for row in ws.iter_rows():
             for cell in row:
                 if cell.value is None:
+                    continue
+                # Клетка без стиля хранит None, а не пустой набор.
+                key = (tuple(cell._style or ()), cell.row <= header, cell.row == header,
+                       cell.data_type == "f")
+                done = styled.get(key)
+                if done is not None:
+                    cell._style = copy(done)
                     continue
                 bold = cell.font.bold
                 cell.font = Font(name="Montserrat", size=10, bold=bold, color="203C32")
@@ -1029,6 +1043,7 @@ def _style(book: Workbook) -> None:
                     cell.fill = SECTION_FILL
                     cell.font = Font(name="Montserrat", size=10, bold=True, color="203C32")
                     cell.border = Border(bottom=Side(style="thin", color="00B050"))
+                styled[key] = copy(cell._style)
         ws.row_dimensions[header].height = 42
         ws["A1"].font = Font(name="Montserrat", size=16, bold=True, color="FFFFFF")
         ws["A1"].fill = TITLE_FILL

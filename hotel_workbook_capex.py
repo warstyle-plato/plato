@@ -159,6 +159,13 @@ def build(book, spec, rows, hw):
     plan_share = f"'Вводные'!$G$77:$G${plan_last}"
     def col_range(key):
         return f"${letters[key]}${FIRST}:${letters[key]}${FIRST + rows - 1}"
+    # База профиля управления — одна сумма графика на всю сетку, а не своя
+    # в каждой строке: 7 SUM по всей сетке в каждом месяце стоили выгрузке
+    # десятки секунд и Excel — столько же лишнего счёта.
+    management_row = positions["project_management"]
+    management_total = f"$I${management_row}"
+    ws["I4"] = "График базы, ₽"
+    ws[management_total.replace("$", "")] = "=" + ("+".join(f"SUM({col_range(p)})" for p in management) or "0")
     # Профиль управления исключает здание гостиницы: так задан движок.
     # Его исправление было бы изменением методики, а не ремонтом выгрузки.
     for k in range(rows):
@@ -192,8 +199,8 @@ def build(book, spec, rows, hw):
                 formula = f"IF({inside},{amount_ref}*{weight}/{denominator},0)"
             else:
                 base = "+".join(f"{letters[p]}{r}" for p in management)
-                total = "+".join(f"SUM({col_range(p)})" for p in management)
-                formula = f"IF(({total})>0,{amount_ref}*({base})/({total}),IF({inside},{amount_ref}/MAX(1,{length_ref}),0))"
+                total = management_total
+                formula = f"IF({total}>0,{amount_ref}*({base})/{total},IF({inside},{amount_ref}/MAX(1,{length_ref}),0))"
             ws[cell] = "=" + formula
         ws[f"{total_col}{r}"] = "=" + "+".join(f"{col}{r}" for col in letters.values())
     ws["F24"] = f"=SUM({total_col}{FIRST}:{total_col}{FIRST+rows-1})"

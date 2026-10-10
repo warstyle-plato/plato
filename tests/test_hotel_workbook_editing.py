@@ -1,6 +1,7 @@
 """Скачанная гостиничная модель пересчитывается от вводных, как движок."""
 import copy
 import io
+import re
 import sys
 from datetime import date
 
@@ -10,6 +11,7 @@ from openpyxl import load_workbook
 import hotel_presets
 import hotel_workbook as hw
 import hotel_workbook_capex as capex
+import hotel_workbook_sensitivity as sensitivity
 import main_legacy as core
 from xlsx_eval import Evaluator
 
@@ -123,3 +125,63 @@ def test_a_purchase_schedule_can_be_edited_without_regenerating_the_book(origina
     engine = core._run_authoritative_model(inputs, t, [], {})["consolidated"]["finance"]["hotel"]
     assert evaluator.cell(hw.TOTALS_SHEET, "B7") == pytest.approx(engine["kpi"]["irr_equity"], rel=1e-6)
     assert evaluator.cell(hw.CHECK_SHEET, "H3") == "ВВОДНЫЕ ИЗМЕНЕНЫ — НУЖНА НОВАЯ СВЕРКА"
+
+
+@pytest.mark.parametrize("field,cell,value,factor_field,row", [
+    # Вариант «ADR −10 %» читает смету базы; число номеров фактором не меняется.
+    ("hotel_keys", f"C{hw._ROWS['keys']}", 240, "hotel_adr_rub", 5),
+    # Вариант «Ставка СМР −10 %» считает свою смету — и берёт ГНС базы.
+    ("hotel_gba_sqm", f"C{capex.INPUT_ROWS['hotel_gba_sqm']}", 33000, "hotel_cost_th_per_sqm", 9),
+])
+def test_a_variant_follows_a_base_input_its_factor_does_not_touch(original, field, cell, value,
+                                                                  factor_field, row):
+    """Вводные вариантов — ссылки на «Вводные» базы, а не копии чисел:
+    правка базы в скачанной книге доходит до каждого варианта."""
+    x, t, content = original
+    book, _ = evaluate(content)
+    book[hw.INPUTS_SHEET][cell] = value
+    evaluator = Evaluator(book)
+    inputs = {**copy.deepcopy(x), field: value}
+    inputs[factor_field] = x[factor_field] * 0.9
+    engine = core._run_authoritative_model(inputs, copy.deepcopy(t), [], {})["consolidated"]["finance"]["hotel"]
+    assert evaluator.cell("Чувствительность", f"E{row}") == pytest.approx(
+        engine["kpi"]["irr_equity"], rel=1e-6)
+
+
+def test_the_variants_are_left_to_excel_and_say_so(original):
+    """Варианты — сотни тысяч формул: выгрузка их не вычисляет (иначе минута
+    на каждое скачивание), Excel пересчитывает их при открытии. Вне Excel их
+    клетки пусты, и лист это говорит; итоги базы при этом сохранены."""
+    cached = load_workbook(io.BytesIO(original[2]), data_only=True)
+    sheet = cached[sensitivity.SHEET]
+    assert isinstance(sheet["E4"].value, float)
+    assert all(sheet[f"{col}{row}"].value is None for col in "CDE" for row in range(5, 17))
+    assert sheet["A19"].value == sensitivity.EXCEL_ONLY_NOTE
+    assert cached["С5_Расчёт"][f"{hw._c('equity_cf')}{hw.FIRST_ROW + 30}"].value is None
+    # Своя смета — только у вариантов, которые её меняют.
+    assert "С5_Затраты" not in cached.sheetnames and "С9_Затраты" in cached.sheetnames
+
+
+def test_the_monthly_cost_grid_does_not_sum_the_whole_grid_in_every_month(original):
+    """База профиля управления — одна клетка, а не семь SUM по всей сетке в
+    каждом месяце: квадратичная формула стоила выгрузке десятки секунд."""
+    book = load_workbook(io.BytesIO(original[2]))
+    sheet = book[capex.SHEET]
+    grid = [cell.value for row in sheet.iter_rows(min_row=capex.FIRST) for cell in row
+            if isinstance(cell.value, str) and cell.value.startswith("=")]
+    assert grid and not [f for f in grid if re.search(r"\bSUM\(", f)]
+
+
+def test_cells_left_to_excel_are_not_evaluated_nor_counted_as_gaps():
+    from openpyxl import Workbook
+    from v4_value_cache import with_cached_values
+    book = Workbook()
+    book.active.title = "Л"
+    book["Л"]["A1"], book["Л"]["B1"], book["Л"]["C1"] = 1, "=A1*2", "=NOSUCH(B1)"
+    stream = io.BytesIO()
+    book.save(stream)
+    content, report = with_cached_values(stream.getvalue(),
+                                         left_to_excel=lambda sheet, cell: cell == "C1")
+    assert (report["unresolved"], report["left_to_excel"]) == (0, 1)
+    cached = load_workbook(io.BytesIO(content), data_only=True)["Л"]
+    assert cached["B1"].value == 2 and cached["C1"].value is None
