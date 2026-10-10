@@ -1,0 +1,436 @@
+<title>ТЭП ПЛАТО — новый ввод</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Макет: ввод слева (разделы по порядку) · ТЭП по центру (только чтение, у каждой цифры — откуда она) · итоги справа (живые). */
+:root{
+  --bg:#f3f4f5; --panel:#ffffff; --ink:#111316; --muted:#5d636b; --rule:#d8dbdf; --soft:#eceef0;
+  --accent:#111316; --accent-ink:#ffffff;
+  --manual:#2557d6; --manual-bg:#e8eefc; --norm:#5d636b; --norm-bg:#eceef0; --import:#7a4fc4; --import-bg:#f1ebfb;
+  --ok:#1d7a4c; --ok-bg:#e3f3ea; --warn:#a8650a; --warn-bg:#fbf0dd; --bad:#bf3328; --bad-bg:#fbe7e5;
+  --f-body:"Golos Text",system-ui,-apple-system,"Segoe UI",Arial,sans-serif;
+  --f-num:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f1113; --panel:#171a1d; --ink:#e9ebee; --muted:#9aa1a9; --rule:#2c3136; --soft:#202428;
+  --accent:#e9ebee; --accent-ink:#0f1113;
+  --manual:#7ea2ff; --manual-bg:#1d2740; --norm:#9aa1a9; --norm-bg:#23272b; --import:#b99af0; --import-bg:#2a2140;
+  --ok:#5cc58f; --ok-bg:#16301f; --warn:#e6a64a; --warn-bg:#33270f; --bad:#f07a6f; --bad-bg:#3a1816; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0f1113; --panel:#171a1d; --ink:#e9ebee; --muted:#9aa1a9; --rule:#2c3136; --soft:#202428;
+  --accent:#e9ebee; --accent-ink:#0f1113;
+  --manual:#7ea2ff; --manual-bg:#1d2740; --norm:#9aa1a9; --norm-bg:#23272b; --import:#b99af0; --import-bg:#2a2140;
+  --ok:#5cc58f; --ok-bg:#16301f; --warn:#e6a64a; --warn-bg:#33270f; --bad:#f07a6f; --bad-bg:#3a1816; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:14px;line-height:1.45}
+.num,input.n{font-family:var(--f-num);font-variant-numeric:tabular-nums}
+.wrap{padding-inline:16px;padding-block:12px 40px;max-width:1500px;margin:0 auto}
+header.top{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 20px;padding-block:8px 14px;border-bottom:3px solid var(--ink);margin-bottom:14px}
+.logo{font-weight:700;letter-spacing:.18em;font-size:20px}
+.steps{display:flex;gap:4px;flex-wrap:wrap}
+.steps span{padding:4px 10px;border:1px solid var(--rule);border-radius:3px;color:var(--muted);font-size:13px}
+.steps span.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.note{color:var(--muted);font-size:12.5px}
+.legend{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-left:auto}
+.grid{display:grid;grid-template-columns:minmax(330px,390px) minmax(0,1fr) minmax(250px,300px);gap:14px;align-items:start}
+@media (max-width:1180px){.grid{grid-template-columns:minmax(0,1fr) minmax(240px,300px)}.center{grid-column:1/-1;order:3}}
+@media (max-width:760px){.grid{grid-template-columns:minmax(0,1fr)}.summary{order:-1}}
+.panel{background:var(--panel);border:1px solid var(--rule);border-radius:4px;min-width:0}
+/* разделы ввода */
+details.sec{border-bottom:1px solid var(--rule)}
+details.sec:last-child{border-bottom:0}
+details.sec>summary{list-style:none;cursor:pointer;display:flex;gap:10px;align-items:center;padding:12px 14px;font-weight:600}
+details.sec>summary::-webkit-details-marker{display:none}
+.no{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:3px;background:var(--accent);color:var(--accent-ink);font-size:12px;font-family:var(--f-num)}
+.sec-state{margin-left:auto;font-weight:400;font-size:12px}
+.sec-body{padding:2px 14px 14px;display:grid;gap:10px}
+.row{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center}
+.row label{font-size:13.5px}
+.row .sub{display:block;color:var(--muted);font-size:12px}
+.fld{display:flex;flex-direction:column;gap:3px;align-items:stretch}
+input.n,select,input.t{width:100%;padding:7px 9px;border:1px solid var(--rule);border-radius:3px;background:var(--panel);color:var(--ink);font-size:14px;text-align:right}
+input.t{text-align:left;font-family:var(--f-body)}
+select{text-align:left;font-family:var(--f-body)}
+input:focus-visible,select:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--manual);outline-offset:1px}
+input.n.manual{border-color:var(--manual);background:var(--manual-bg)}
+input.n.auto{background:var(--soft)}
+.chip{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;padding:1px 7px;border-radius:10px;white-space:nowrap;border:0;font-family:var(--f-body);cursor:default;justify-self:end}
+.chip.manual{background:var(--manual-bg);color:var(--manual);cursor:pointer}
+.chip.norm{background:var(--norm-bg);color:var(--norm)}
+.chip.calc{background:var(--norm-bg);color:var(--norm)}
+.chip.import{background:var(--import-bg);color:var(--import)}
+.hint{font-size:12px;color:var(--muted)}
+.hint.warn{color:var(--warn)} .hint.bad{color:var(--bad)} .hint.ok{color:var(--ok)}
+.split{display:grid;gap:6px}
+.split input[type=range]{width:100%;accent-color:var(--ink)}
+.split .ends{display:flex;justify-content:space-between;font-size:12.5px}
+.groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.groups .fld span{font-size:12px;color:var(--muted)}
+.list{display:grid;gap:6px}
+.item{display:grid;grid-template-columns:minmax(0,1fr) minmax(120px,165px) 26px;gap:6px;align-items:center;padding:6px 8px;border:1px solid var(--rule);border-radius:3px}
+.item .code{font-family:var(--f-num);font-size:11.5px;color:var(--muted);display:block}
+.x{border:0;background:none;color:var(--muted);font-size:18px;cursor:pointer;line-height:1}
+.btn{border:1px solid var(--ink);background:var(--panel);color:var(--ink);padding:6px 10px;border-radius:3px;font:inherit;cursor:pointer}
+.btn.primary{background:var(--accent);color:var(--accent-ink)}
+.add{display:flex;gap:6px}
+.add select{flex:1}
+.cover{display:grid;gap:6px}
+.cv{display:grid;grid-template-columns:96px minmax(0,1fr) 70px;gap:8px;align-items:center;font-size:13px}
+.bar{height:6px;background:var(--soft);border-radius:3px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--ok)}
+.bar.short i{background:var(--bad)}
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:3px;overflow:hidden}
+.seg button{border:0;background:var(--panel);color:var(--ink);padding:6px 10px;font:inherit;cursor:pointer}
+.seg button.on{background:var(--accent);color:var(--accent-ink)}
+/* центр: ТЭП */
+.center h2,.summary h2{font-size:13px;letter-spacing:.08em;text-transform:uppercase;margin:0;padding:12px 14px;border-bottom:1px solid var(--rule)}
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse}
+th,td{padding:7px 14px;border-bottom:1px solid var(--soft);text-align:left;vertical-align:baseline}
+th{font-size:11.5px;color:var(--muted);font-weight:500;letter-spacing:.04em;text-transform:uppercase}
+td.v{text-align:right;font-family:var(--f-num);white-space:nowrap}
+td.u{color:var(--muted);font-size:12.5px;white-space:nowrap}
+td.o{text-align:right}
+tr.grp td{background:var(--soft);font-weight:600;font-size:12.5px;letter-spacing:.03em}
+tr.flag-bad td.v{color:var(--bad);font-weight:600}
+tr.flag-ok td.v{color:var(--ok)}
+td .why{display:block;color:var(--muted);font-size:11.5px}
+/* правая колонка */
+.summary{position:sticky;top:env(safe-area-inset-top,0px)}
+.kpis{display:grid;gap:0}
+.kpi{padding:10px 14px;border-bottom:1px solid var(--soft)}
+.kpi .k{font-size:12px;color:var(--muted)}
+.kpi .val{font-family:var(--f-num);font-size:22px;font-weight:600}
+.kpi .val small{font-size:12px;color:var(--muted);font-weight:400;margin-left:4px;font-family:var(--f-body)}
+.kpi.bad .val{color:var(--bad)} .kpi.ok .val{color:var(--ok)}
+.pills{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.pill{font-size:11.5px;padding:1px 7px;border-radius:10px}
+.pill.ok{background:var(--ok-bg);color:var(--ok)} .pill.bad{background:var(--bad-bg);color:var(--bad)} .pill.warn{background:var(--warn-bg);color:var(--warn)}
+.foot{padding:10px 14px;font-size:12px;color:var(--muted)}
+/* узкий экран: итоги — полосой, ТЭП — карточками */
+@media (max-width:760px){
+  .summary{position:sticky;top:env(safe-area-inset-top,0px);z-index:5}
+  .kpis{grid-auto-flow:column;grid-auto-columns:minmax(130px,1fr);overflow-x:auto}
+  .kpi{border-bottom:0;border-right:1px solid var(--soft)}
+  .kpi .val{font-size:18px}
+  .kpi .pills{display:none}
+  .kpi .k{white-space:nowrap}
+  .summary .foot,.summary h2{display:none}
+  table,tbody,tr,td{display:block;width:100%}
+  thead{display:none}
+  tr{display:grid!important;grid-template-columns:minmax(0,1fr) auto;padding:8px 14px;border-bottom:1px solid var(--soft)}
+  td{border:0;padding:0}
+  td.v{grid-column:2;grid-row:1}
+  td.u{grid-column:2;grid-row:2;text-align:right}
+  td.o{grid-column:1;grid-row:2;text-align:left}
+  tr.grp{display:block!important;padding:0}
+  tr.grp td{padding:7px 14px}
+  .row{grid-template-columns:minmax(0,1fr) 130px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <span class="logo">ПЛАТО</span>
+    <div class="steps" aria-label="Шаги проекта"><span class="on">1 · ТЭП</span><span>2 · Экономика</span><span>3 · Финансирование</span><span>4 · Отчёт</span></div>
+    <span class="note">Макет на примере Нагатино. Формулы упрощённые, это не движок.</span>
+    <div class="legend">
+      <span class="chip import">ЕГРН</span><span class="chip norm">норма</span><span class="chip calc">расчёт</span><span class="chip manual">🔒 вручную</span>
+    </div>
+  </header>
+
+  <div class="grid">
+    <!-- ВВОД -->
+    <section class="panel" aria-label="Ввод">
+      <details class="sec" open id="s1">
+        <summary><span class="no">1</span>Территория<span class="sec-state chip import">из ЕГРН</span></summary>
+        <div class="sec-body">
+          <div class="row"><label for="cad">Кадастровые номера</label><input id="cad" class="t" value="77:05:0004001:1 …" aria-describedby="cadh"></div>
+          <div class="hint" id="cadh">Нагатино-Садовники · Москва → методика ГлавАПУ выбрана сама</div>
+          <div class="row"><label for="area">Площадь территории<span class="sub">га</span></label><div class="fld"><input id="area" class="n" inputmode="decimal"><span id="area-o"></span></div></div>
+          <div class="hint" id="area-h"></div>
+        </div>
+      </details>
+
+      <details class="sec" open id="s2">
+        <summary><span class="no">2</span>Объём<span class="sec-state" id="s2-state"></span></summary>
+        <div class="sec-body">
+          <div class="seg" role="group" aria-label="Чем задавать объём">
+            <button type="button" id="m-spp" class="on">СПП всего</button><button type="button" id="m-den">Плотность</button>
+          </div>
+          <div class="row" id="r-total"><label for="total">СПП всего<span class="sub">м²</span></label><div class="fld"><input id="total" class="n" inputmode="decimal"><span id="total-o"></span></div></div>
+          <div class="row" id="r-den" hidden><label for="den">Плотность<span class="sub">тыс. м² СПП / га</span></label><div class="fld"><input id="den" class="n" inputmode="decimal"><span id="den-o"></span></div></div>
+          <div class="hint" id="den-h"></div>
+          <div class="split">
+            <div class="ends"><span>Жильё <b class="num" id="sh-res"></b></span><span>Нежильё <b class="num" id="sh-non"></b></span></div>
+            <input type="range" id="share" min="0" max="100" step="0.1" aria-label="Доля жилья в СПП, %">
+          </div>
+          <div class="row"><label for="res">СПП жилых зданий<span class="sub">м²</span></label><div class="fld"><input id="res" class="n" inputmode="decimal"><span id="res-o"></span></div></div>
+          <div class="row"><label>СПП нежилых зданий<span class="sub">остаток, м²</span></label><div class="fld"><input id="non" class="n auto" readonly tabindex="-1"><span class="chip calc">расчёт</span></div></div>
+        </div>
+      </details>
+
+      <details class="sec" open id="s3">
+        <summary><span class="no">3</span>Жильё<span class="sec-state" id="s3-state"></span></summary>
+        <div class="sec-body">
+          <div class="row"><label for="vpp">Коммерция 1 этажа<span class="sub">% СПП жилых</span></label><div class="fld"><input id="vpp" class="n" inputmode="decimal"><span id="vpp-o"></span></div></div>
+          <div class="row"><label for="apt">Квартиры, ГНС<span class="sub">м²</span></label><div class="fld"><input id="apt" class="n" inputmode="decimal"><span id="apt-o"></span></div></div>
+          <div class="hint" id="apt-h"></div>
+          <div class="row"><label for="com">Коммерция 1 этажа, ГНС<span class="sub">м²</span></label><div class="fld"><input id="com" class="n" inputmode="decimal"><span id="com-o"></span></div></div>
+          <div class="hint">Квартиры по размеру, % от площади квартир</div>
+          <div class="groups">
+            <div class="fld"><span>до 70 м²</span><input id="g1" class="n" inputmode="decimal"></div>
+            <div class="fld"><span>70–100 м²</span><input id="g2" class="n" inputmode="decimal"></div>
+            <div class="fld"><span>больше 100</span><input id="g3" class="n" inputmode="decimal"></div>
+          </div>
+          <div class="hint" id="g-h"></div>
+        </div>
+      </details>
+
+      <details class="sec" open id="s4">
+        <summary><span class="no">4</span>Нежильё по ВРИ<span class="sec-state" id="s4-state"></span></summary>
+        <div class="sec-body">
+          <div class="list" id="vri"></div>
+          <div class="add"><select id="vri-add" aria-label="Добавить категорию ВРИ"></select><button type="button" class="btn" id="vri-btn">+ ВРИ</button></div>
+          <div class="hint" id="vri-h"></div>
+        </div>
+      </details>
+
+      <details class="sec" open id="s5">
+        <summary><span class="no">5</span>Соцобъекты<span class="sec-state" id="s5-state"></span></summary>
+        <div class="sec-body">
+          <div class="cover" id="cover"></div>
+          <div class="list" id="soc"></div>
+          <div class="add"><select id="soc-add" aria-label="Добавить соцобъект"><option value="doo">ДОО</option><option value="school">Школа</option><option value="clinic">Поликлиника</option></select><button type="button" class="btn" id="soc-btn">+ объект</button></div>
+          <button type="button" class="btn" id="soc-auto">Подобрать типовые под потребность</button>
+        </div>
+      </details>
+
+      <details class="sec" id="s6">
+        <summary><span class="no">6</span>Права на землю<span class="sec-state" id="s6-state"></span></summary>
+        <div class="sec-body">
+          <div class="row"><label for="right">Вид права</label><select id="right"><option value="lease">Аренда</option><option value="own">Собственность</option></select></div>
+          <div class="hint">График оплаты, рассрочка и источники — на шаге «Финансирование».</div>
+        </div>
+      </details>
+    </section>
+
+    <!-- ТЭП -->
+    <section class="panel center" aria-label="ТЭП">
+      <h2>ТЭП проекта</h2>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Показатель</th><th style="text-align:right">Значение</th><th>Ед.</th><th style="text-align:right">Откуда</th></tr></thead>
+        <tbody id="tep"></tbody>
+      </table></div>
+      <div class="foot">Таблица только показывает. Править — слева. Ячейка с 🔒 вписана вручную и пересчётом не трогается; нажмите 🔒, чтобы вернуть расчёт.</div>
+    </section>
+
+    <!-- ИТОГИ -->
+    <aside class="panel summary" aria-label="Итоги">
+      <h2>Итоги</h2>
+      <div class="kpis" id="kpis"></div>
+      <div class="foot">Пересчёт идёт сразу при вводе. Тяжёлые проверки (ГлавАПУ, Excel) — фоном.</div>
+    </aside>
+  </div>
+</div>
+
+<script>
+// ---- состояние: у каждого вводимого числа есть источник ----
+const S = {
+  area:{v:14.62, src:'import'},
+  mode:'spp',
+  total:{v:415180, src:'manual'},
+  den:{v:null, src:'calc'},
+  res:{v:229490, src:'manual'},
+  vpp:{v:6, src:'norm'},
+  apt:{v:null, src:'calc'},
+  com:{v:null, src:'calc'},
+  groups:[60,30,10],
+  vri:[{code:'4.1',name:'Деловое управление',v:92845},{code:'4.2',name:'Объекты торговли',v:92845}],
+  soc:[{kind:'doo',opt:2},{kind:'school',opt:2}],
+  right:'lease'
+};
+const VRI_ALL=[['3.3','Бытовое обслуживание'],['3.4','Здравоохранение'],['4.1','Деловое управление'],['4.2','Объекты торговли'],['4.4','Магазины'],['4.6','Общественное питание'],['4.7','Гостиничное обслуживание'],['5.1','Спорт'],['6.9','Склад'],['2.7.1','Хранение автотранспорта']];
+const TYPICAL={doo:{name:'ДОО',opts:[[150,0.6],[250,0.8],[350,1.12]]},school:{name:'Школа',opts:[[525,1.0],[825,1.3],[1000,1.6],[2500,3.5]]},clinic:{name:'Поликлиника',opts:[[320,0.35],[750,0.5]]}};
+const LIMIT_DEN=23.9; // рекомендуемая плотность для площади, тыс. м²/га (как у ГлавАПУ на 14,62 га)
+const AVG=[50,85,120];
+
+const $=id=>document.getElementById(id);
+const fmt=(x,d=0)=>x==null||isNaN(x)?'—':x.toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
+const parse=s=>{const v=parseFloat(String(s).replace(/\s/g,'').replace(',','.'));return isNaN(v)?null:v};
+const chipHTML=(src,key)=>{
+  if(src==='manual'&&!['area','vpp','apt','com','den'].includes(key))return '<span class="chip manual">вручную</span>';
+  if(src==='manual')return `<button type="button" class="chip manual" data-unlock="${key||''}" title="Вписано вручную. Нажмите, чтобы вернуть расчёт">🔒 вручную</button>`;
+  if(src==='import')return '<span class="chip import">ЕГРН</span>';
+  if(src==='norm')return '<span class="chip norm">норма</span>';
+  return '<span class="chip calc">расчёт</span>';
+};
+
+// ---- расчёт: ручное значение не перезаписывается, расчётное следует за входами ----
+function compute(){
+  const C={};
+  C.area=S.area.v||0;
+  if(S.mode==='den'){
+    const den=S.den.src==='manual'?S.den.v:LIMIT_DEN;
+    C.den=den; C.total=den*C.area*1000; C.totalSrc='calc'; C.denSrc=S.den.src==='manual'?'manual':'norm';
+  }else{
+    C.total=S.total.v||0; C.totalSrc=S.total.src; C.den=C.area?C.total/C.area/1000:0; C.denSrc='calc';
+  }
+  C.res=Math.min(S.res.v||0,C.total); C.non=Math.max(0,C.total-C.res);
+  C.vpp=S.vpp.v;
+  C.aptCalc=C.res*(1-C.vpp/100); C.comCalc=C.res*C.vpp/100;
+  C.apt=S.apt.src==='manual'?S.apt.v:C.aptCalc; C.com=S.com.src==='manual'?S.com.v:C.comCalc;
+  C.sale=C.apt*0.65;
+  const g=S.groups, gs=g[0]+g[1]+g[2]||1;
+  C.avg=(g[0]*AVG[0]+g[1]*AVG[1]+g[2]*AVG[2])/gs;
+  C.units=C.sale/C.avg;
+  C.pop=C.sale/33;
+  C.need={doo:C.pop*0.044,school:C.pop*0.09,clinic:C.pop*0.0193};
+  C.have={doo:0,school:0,clinic:0}; C.socLand=0;
+  S.soc.forEach(o=>{const t=TYPICAL[o.kind].opts[o.opt];C.have[o.kind]+=t[0];C.socLand+=t[1]});
+  C.vriSum=S.vri.reduce((a,r)=>a+(r.v||0),0);
+  C.socSpp=C.have.doo*18+C.have.school*16.7+C.have.clinic*30;
+  C.parkPerm=C.units*0.6; C.parkGuest=C.parkPerm*0.1;
+  C.parkObj=S.vri.reduce((a,r)=>a+(r.v||0)/(r.code==='4.2'?250:r.code==='4.1'?400:300),0);
+  C.vriFee=(C.res/1000)*59.78*(S.right==='own'?1/0.939:1);
+  const short=k=>Math.max(0,C.need[k]-C.have[k]);
+  C.comp=short('doo')*5.4+short('school')*6.3+short('clinic')*1.2;
+  return C;
+}
+
+// ---- отрисовка ----
+function setIn(id,val,d,src,key){
+  const el=$(id); if(document.activeElement!==el)el.value=val==null?'':fmt(+val,d);
+  el.classList.toggle('manual',src==='manual'); el.classList.toggle('auto',src!=='manual');
+  const o=$(id+'-o'); if(o)o.innerHTML=chipHTML(src,key);
+}
+function render(){
+  const C=compute();
+  setIn('area',C.area,2,S.area.src,'area');
+  $('area-h').textContent=C.area>60?'Больше 60 га: предельные ТЭП определяет проект, калькулятор ГлавАПУ не считает.':C.area<=0?'Нет площади — ТЭП не считается. Введите площадь или кадастровый номер.':'';
+  $('area-h').className='hint'+(C.area>60||C.area<=0?' bad':'');
+  $('r-total').hidden=S.mode!=='spp'; $('r-den').hidden=S.mode!=='den';
+  $('m-spp').classList.toggle('on',S.mode==='spp'); $('m-den').classList.toggle('on',S.mode==='den');
+  setIn('total',C.total,0,C.totalSrc,'total'); setIn('den',C.den,2,C.denSrc,'den');
+  const over=C.den>LIMIT_DEN;
+  $('den-h').innerHTML=`Плотность <b class="num">${fmt(C.den,2)}</b> тыс. м²/га · предел <span class="num">${fmt(LIMIT_DEN,1)}</span>`+(over?' — <b>выше предела</b>':'');
+  $('den-h').className='hint'+(over?' bad':' ok');
+  $('s2-state').innerHTML=over?'<span class="pill bad">плотность выше предела</span>':'<span class="pill ok">в пределе</span>';
+  const share=C.total?C.res/C.total*100:100;
+  if(document.activeElement!==$('share'))$('share').value=share;
+  $('sh-res').textContent=fmt(share,1)+' %'; $('sh-non').textContent=fmt(100-share,1)+' %';
+  setIn('res',C.res,0,S.res.src,'res'); $('non').value=fmt(C.non,0);
+  setIn('vpp',C.vpp,1,S.vpp.src,'vpp');
+  setIn('apt',C.apt,1,S.apt.src,'apt'); setIn('com',C.com,1,S.com.src,'com');
+  const aptDiff=S.apt.src==='manual'&&Math.abs(C.apt-C.aptCalc)>1;
+  $('apt-h').innerHTML=aptDiff?`По расчёту было бы <span class="num">${fmt(C.aptCalc,1)}</span> м². Ваше число сохранено; 🔒 — вернуть расчёт.`:'';
+  $('apt-h').className='hint'+(aptDiff?' warn':'');
+  ['g1','g2','g3'].forEach((id,i)=>{if(document.activeElement!==$(id))$(id).value=S.groups[i]});
+  const gsum=S.groups.reduce((a,b)=>a+b,0);
+  $('g-h').innerHTML=`Средняя квартира <b class="num">${fmt(C.avg,1)}</b> м² → квартир <b class="num">${fmt(C.units,0)}</b>`+(Math.abs(gsum-100)>0.01?` · сумма долей ${fmt(gsum,1)} %, считаем пропорционально`:'');
+  $('s3-state').innerHTML=aptDiff?'<span class="pill warn">есть ручные значения</span>':'';
+  // ВРИ
+  $('vri').innerHTML=S.vri.map((r,i)=>`<div class="item"><div><span>${r.name}</span><span class="code">ВРИ ${r.code}</span></div><input class="n manual" data-vri="${i}" inputmode="decimal" aria-label="${r.name}, м²" value="${fmt(r.v,0)}"><button type="button" class="x" data-vri-del="${i}" aria-label="Убрать ${r.name}">×</button></div>`).join('');
+  $('vri-add').innerHTML=VRI_ALL.filter(([c])=>!S.vri.some(r=>r.code===c)).map(([c,n])=>`<option value="${c}">${n} (${c})</option>`).join('');
+  const diff=C.vriSum-C.non;
+  $('vri-h').innerHTML=Math.abs(diff)<1?`Разложено всё нежильё: <span class="num">${fmt(C.vriSum,0)}</span> м²`:`По ВРИ <span class="num">${fmt(C.vriSum,0)}</span> м², нежилых <span class="num">${fmt(C.non,0)}</span> м² · разница <b class="num">${diff>0?'+':''}${fmt(diff,0)}</b>`;
+  $('vri-h').className='hint'+(Math.abs(diff)<1?' ok':' bad');
+  $('s4-state').innerHTML=Math.abs(diff)<1?'<span class="pill ok">сходится</span>':'<span class="pill bad">не сходится</span>';
+  // соцобъекты
+  let socBad=false;
+  $('cover').innerHTML=['doo','school','clinic'].map(k=>{const h=C.have[k],n=C.need[k],ok=h>=n;if(!ok)socBad=true;
+    return `<div class="cv"><span>${TYPICAL[k].name}</span><div class="bar${ok?'':' short'}"><i style="width:${Math.min(100,n?h/n*100:100)}%"></i></div><span class="num" style="text-align:right;color:var(${ok?'--ok':'--bad'})">${fmt(h,0)}/${fmt(n,0)}</span></div>`}).join('');
+  $('soc').innerHTML=S.soc.map((o,i)=>`<div class="item"><div><span>${TYPICAL[o.kind].name}</span><span class="code">типовой объект</span></div><select data-soc="${i}" aria-label="Мощность ${TYPICAL[o.kind].name}">${TYPICAL[o.kind].opts.map((t,j)=>`<option value="${j}"${j===o.opt?' selected':''}>${t[0]} мест · ${String(t[1]).replace('.',',')} га</option>`).join('')}</select><button type="button" class="x" data-soc-del="${i}" aria-label="Убрать объект">×</button></div>`).join('');
+  $('s5-state').innerHTML=socBad?'<span class="pill bad">мест меньше нормы</span>':'<span class="pill ok">норма закрыта</span>';
+  $('right').value=S.right; $('s6-state').innerHTML=`<span class="pill ok">${S.right==='own'?'собственность':'аренда'}</span>`;
+  // таблица ТЭП
+  const rows=[
+    ['g','Территория'],
+    ['Площадь территории',C.area,2,'га',S.area.src,'кадастр 77:05:0004001:1 …'],
+    ['Плотность от СПП',C.den,2,'тыс. м²/га','calc',over?'выше предела '+fmt(LIMIT_DEN,1):'предел '+fmt(LIMIT_DEN,1),over?'bad':'ok'],
+    ['g','Объём'],
+    ['СПП всего',C.total,0,'м²',C.totalSrc],
+    ['СПП жилых зданий',C.res,0,'м²',S.res.src],
+    ['СПП нежилых зданий',C.non,0,'м²','calc','остаток'],
+    ['g','Жильё'],
+    ['Квартиры, ГНС',C.apt,1,'м²',S.apt.src,aptDiff?'по расчёту '+fmt(C.aptCalc,1):'СПП жилых − коммерция 1 эт.'],
+    ['Коммерция 1 этажа, ГНС',C.com,1,'м²',S.com.src,fmt(C.vpp,1)+' % СПП жилых'],
+    ['Квартиры, продаваемая',C.sale,1,'м²','calc','65 % ГНС'],
+    ['Квартир',C.units,0,'шт.','calc','средняя '+fmt(C.avg,1)+' м²'],
+    ['Население',C.pop,0,'чел.','norm','33 м² на человека'],
+    ['g','Нежильё по ВРИ'],
+    ...S.vri.map(r=>[r.name+' ('+r.code+')',r.v,0,'м²','manual']),
+    ['g','Соцобъекты'],
+    ['ДОО: мест / нужно',null,0,'мест','norm',fmt(C.have.doo,0)+' / '+fmt(C.need.doo,0),C.have.doo>=C.need.doo?'ok':'bad','doo'],
+    ['Школа: мест / нужно',null,0,'мест','norm',fmt(C.have.school,0)+' / '+fmt(C.need.school,0),C.have.school>=C.need.school?'ok':'bad','school'],
+    ['Поликлиника: мест / нужно',null,0,'пос./см.','norm',fmt(C.have.clinic,0)+' / '+fmt(C.need.clinic,0),C.have.clinic>=C.need.clinic?'ok':'bad','clinic'],
+    ['Участки соцобъектов',C.socLand,2,'га','calc','по типовым объектам'],
+    ['g','Машино-места'],
+    ['Постоянные',C.parkPerm,0,'м/м','norm','0,6 на квартиру'],
+    ['Гостевые',C.parkGuest,0,'м/м','norm','10 % постоянных'],
+    ['Приобъектные (нежильё)',C.parkObj,0,'м/м','norm','по ВРИ'],
+    ['g','Деньги'],
+    ['Плата за смену ВРИ',C.vriFee,0,'млн ₽','calc',S.right==='own'?'собственность':'аренда'],
+    ['Компенсация за соцобъекты',C.comp,0,'млн ₽','calc',C.comp>0?'за недостающие места':'норма закрыта объектами']
+  ];
+  $('tep').innerHTML=rows.map(r=>{
+    if(r[0]==='g')return `<tr class="grp"><td colspan="4">${r[1]}</td></tr>`;
+    const [name,val,d,unit,src,why,flag,soc]=r;
+    const shown=soc?`${fmt(C.have[soc],0)} / ${fmt(C.need[soc],0)}`:fmt(val,d);
+    return `<tr class="${flag?'flag-'+flag:''}"><td>${name}${why&&!soc?`<span class="why">${why}</span>`:''}</td><td class="v">${shown}</td><td class="u">${unit}</td><td class="o">${chipHTML(src)}</td></tr>`;
+  }).join('');
+  // итоги
+  const k=(label,val,unit,cls,extra)=>`<div class="kpi ${cls||''}"><div class="k">${label}</div><div class="val">${val}<small>${unit}</small></div>${extra||''}</div>`;
+  $('kpis').innerHTML=
+    k('Квартиры, продаваемая',fmt(C.sale,0),'м²')+
+    k('Квартир · жителей',fmt(C.units,0)+' · '+fmt(C.pop,0),'')+
+    k('Плотность',fmt(C.den,2),'тыс. м²/га',over?'bad':'ok','<div class="pills"><span class="pill '+(over?'bad':'ok')+'">предел '+fmt(LIMIT_DEN,1)+'</span></div>')+
+    k('Соцобъекты',socBad?'не хватает':'закрыто','',socBad?'bad':'ok','<div class="pills">'+['doo','school','clinic'].map(x=>`<span class="pill ${C.have[x]>=C.need[x]?'ok':'bad'}">${TYPICAL[x].name} ${fmt(C.have[x],0)}/${fmt(C.need[x],0)}</span>`).join('')+'</div>')+
+    k('Машино-места',fmt(C.parkPerm+C.parkGuest+C.parkObj,0),'м/м')+
+    k('Плата за ВРИ',fmt(C.vriFee,0),'млн ₽')+
+    k('Соцкомпенсация',fmt(C.comp,0),'млн ₽',C.comp>0?'bad':'');
+}
+
+// ---- ввод ----
+function bindNum(id,key,{onSet}={}){
+  $(id).addEventListener('input',e=>{const v=parse(e.target.value);if(v==null)return;S[key]={v,src:'manual'};onSet&&onSet(v);render()});
+  $(id).addEventListener('blur',()=>render());
+}
+bindNum('area','area');
+bindNum('total','total');
+bindNum('den','den');
+bindNum('res','res');
+bindNum('vpp','vpp',{onSet:()=>{}});
+bindNum('apt','apt');
+bindNum('com','com');
+$('share').addEventListener('input',e=>{const C=compute();S.res={v:Math.round(C.total*e.target.value/100),src:'manual'};render()});
+['g1','g2','g3'].forEach((id,i)=>$(id).addEventListener('input',e=>{const v=parse(e.target.value);if(v==null||v<0)return;S.groups[i]=v;render()}));
+$('m-spp').onclick=()=>{const C=compute();S.mode='spp';S.total={v:Math.round(C.total),src:'manual'};render()};
+$('m-den').onclick=()=>{S.mode='den';render()};
+document.addEventListener('click',e=>{
+  const u=e.target.closest('[data-unlock]');
+  if(u&&u.dataset.unlock){const key=u.dataset.unlock;
+    if(key==='area')S.area={v:14.62,src:'import'};
+    else if(key==='vpp')S.vpp={v:6,src:'norm'};
+    else if(key==='apt'||key==='com'||key==='den')S[key]={v:null,src:'calc'};
+    else return; render();}
+  const d=e.target.closest('[data-vri-del]'); if(d){S.vri.splice(+d.dataset.vriDel,1);render()}
+  const s=e.target.closest('[data-soc-del]'); if(s){S.soc.splice(+s.dataset.socDel,1);render()}
+});
+document.addEventListener('input',e=>{
+  if(e.target.dataset.vri!=null){const v=parse(e.target.value);if(v==null)return;S.vri[+e.target.dataset.vri].v=v;
+    const C=compute(); // точечно обновить сводки, не перерисовывая поле под курсором
+    const keep=document.activeElement, idx=keep.dataset.vri, pos=keep.selectionStart; render();
+    const again=document.querySelector(`[data-vri="${idx}"]`); if(again){again.focus();again.value=e.target.value;try{again.setSelectionRange(pos,pos)}catch(_){}}}
+});
+document.addEventListener('change',e=>{
+  if(e.target.dataset.soc!=null){S.soc[+e.target.dataset.soc].opt=+e.target.value;render()}
+});
+$('vri-btn').onclick=()=>{const c=$('vri-add').value;if(!c)return;const n=VRI_ALL.find(x=>x[0]===c)[1];S.vri.push({code:c,name:n,v:0});render()};
+$('soc-btn').onclick=()=>{S.soc.push({kind:$('soc-add').value,opt:0});render()};
+$('soc-auto').onclick=()=>{const C=compute();
+  S.soc=['doo','school','clinic'].map(kind=>{const opts=TYPICAL[kind].opts;let j=opts.findIndex(o=>o[0]>=C.need[kind]);if(j<0)j=opts.length-1;return {kind,opt:j}});render()};
+$('right').onchange=e=>{S.right=e.target.value;render()};
+render();
+</script>

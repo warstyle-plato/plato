@@ -477,8 +477,11 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
             "message": f"Источник недоступен: {type(exc).__name__}",
         }
 
-    digest = hashlib.sha256(body).hexdigest()
+    digest, kind = _fingerprint(body, content_type)
     old_digest = str(previous.get("sha256") or "")
+    # Снимок без вида отпечатка сделан по сырым байтам.
+    old_kind = str(previous.get("fingerprint_kind") or FINGERPRINT_KIND_RAW)
+    new_kind = bool(old_digest and old_kind != kind)
     # Отпечаток — свойство АДРЕСА. Сменили адрес в реестре (редакция 2118-ПП
     # вместо PDF 2025 года) — прежний отпечаток другого документа, и «содержимое
     # изменилось» было бы утверждением о смене редакции, которой не было.
@@ -486,7 +489,8 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
     # настоящую смену хуже одного лишнего оповещения.
     old_url = str(previous.get("source_url") or "")
     new_source = bool(old_url and old_url != url)
-    changed = bool(old_digest and old_digest != digest and not new_source)
+    changed = bool(old_digest and old_digest != digest and not new_source
+                   and not new_kind)
     terms = [str(x).strip() for x in entry.get("watch_terms", []) if str(x).strip()]
     found: list[str] = []
     missing: list[str] = []
@@ -529,6 +533,8 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
         result = "ok"
         message = ("Источник сменён в реестре; зафиксирован отпечаток нового источника"
                    if new_source
+                   else "Отпечаток теперь считается по тексту документа; зафиксирован заново"
+                   if new_kind
                    else "Источник доступен; содержимое не изменилось с предыдущей проверкой"
                    if old_digest
                    else "Источник доступен; зафиксирован контрольный отпечаток")
@@ -541,6 +547,7 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
         "charset": charset,
         "last_modified": last_modified,
         "sha256": digest,
+        "fingerprint_kind": kind,
         "source_url": url,
         "changed": changed,
         "found_terms": found,
@@ -551,6 +558,42 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
         "found_name": named,
         "message": message,
     }
+
+
+# Отпечаток считается по ТЕКСТУ ДОКУМЕНТА, а не по байтам страницы. Страница
+# Гаранта несёт сегодняшнюю дату («<time> 6 октября 2026</time>») и ленту
+# новостей с часами публикации: байты меняются каждый день, и сторож объявлял
+# «содержимое изменилось — нужна ревизия редакции» у акта, текст которого не
+# менялся (1874-ПП на источнике 2072-ПП, 06.10.2026). Вид отпечатка хранится
+# в снимке: смена способа — не смена редакции.
+FINGERPRINT_KIND_RAW = "raw"
+FINGERPRINT_KIND_TEXT = "text-v1"
+FINGERPRINT_KIND_GARANT = "garant-doc-v1"
+_GARANT_DOC_START = 'id="block_'
+_GARANT_DOC_END = "Откройте актуальную версию документа"
+
+
+def _visible_text(markup: str) -> str:
+    markup = re.sub(r"(?is)<(script|style|noscript|time)\b.*?</\1\s*>", " ", markup)
+    markup = re.sub(r"(?s)<!--.*?-->", " ", markup)
+    text = html.unescape(re.sub(r"<[^>]+>", " ", markup))
+    return " ".join(text.split())
+
+
+def _fingerprint(body: bytes, content_type: str) -> tuple[str, str]:
+    """Отпечаток содержимого: (sha256, вид отпечатка)."""
+    if "html" not in (content_type or ""):
+        return hashlib.sha256(body).hexdigest(), FINGERPRINT_KIND_RAW
+    decoded, _charset = _decode(body, content_type)
+    start = decoded.find(_GARANT_DOC_START)
+    if start >= 0:
+        end = decoded.find(_GARANT_DOC_END, start)
+        doc = _visible_text(decoded[decoded.rfind("<", 0, start):end if end > 0 else None])
+        if doc:
+            return (hashlib.sha256(doc.encode("utf-8")).hexdigest(),
+                    FINGERPRINT_KIND_GARANT)
+    return (hashlib.sha256(_visible_text(decoded).encode("utf-8")).hexdigest(),
+            FINGERPRINT_KIND_TEXT)
 
 
 def _merged_registry() -> list[dict[str, Any]]:

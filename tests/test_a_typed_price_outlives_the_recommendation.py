@@ -107,7 +107,12 @@ def _open(page, base, hint_route):
     page.wait_for_function("()=>!!document.getElementById('daHintBtn')"
                            "&&!!document.getElementById('f_apartment_price_th')",
                            timeout=20000)
-    page.wait_for_timeout(800)
+    # initializeApp сначала рисует поля, затем ждёт ключевую ставку и только
+    # после неё отправляет стартовый /calculate. Наличие кнопки и пауза не
+    # означают окончания загрузки: Calls захватывал этот запрос с ценой 350
+    # вместо первого действия сценария (951).
+    page.wait_for_function("()=>window.__developaidBooted===true&&!!lastResult",
+                           timeout=30000)
     # Как человек: «Экономика», группа с ценой открыта.
     page.get_by_text("Экономика", exact=True).first.click()
     page.evaluate("()=>{document.getElementById('f_apartment_price_th')"
@@ -123,13 +128,18 @@ def _type_price(page, text):
     field.press("Tab")
 
 
-def _settle(page, calls, count):
+def _settle(page, calls, price):
     for _ in range(100):
-        if len(calls.sent) >= count and not page.evaluate(
-                "()=>!!document.querySelector('#iaState')&&/Считаю/.test(document.getElementById('iaStateText').textContent)"):
+        if price in calls.answers:
             break
         page.wait_for_timeout(100)
-    page.wait_for_timeout(400)
+    assert price in calls.answers, (price, calls.sent)
+    # Ждём результат именно нужной цены, а не число запросов или подпись
+    # IA: оба могли относиться к предыдущему расчёту.
+    page.wait_for_function(
+        "expected=>lastResult&&lastResult.summary&&"
+        "lastResult.summary.average_apartment_price_th===expected",
+        arg=calls.answers[price], timeout=15000)
 
 
 def _reload(page):
@@ -151,7 +161,7 @@ def test_a_recommendation_answered_after_typing_does_not_overwrite_it():
             page.wait_for_timeout(100)
         assert held, "запрос /market/price-hint не ушёл"
         _type_price(page, "1300")
-        _settle(page, calls, 1)
+        _settle(page, calls, 1300)
         held[0].fulfill(status=200, content_type="application/json", body=json.dumps(HINT))
         page.wait_for_function("()=>!/Считаю/.test(document.getElementById('daHintNote').textContent)",
                                timeout=15000)
@@ -177,10 +187,10 @@ def test_typing_over_the_recommendation_goes_to_the_calculation_and_stays():
         page.locator("#daHintBtn").click()
         page.wait_for_function("()=>/Подставлено/.test(document.getElementById('daHintNote').textContent)",
                                timeout=15000)
-        _settle(page, calls, 1)
+        _settle(page, calls, 951)
         pressed = page.evaluate(STATE)
         _type_price(page, "1300")
-        _settle(page, calls, 2)
+        _settle(page, calls, 1300)
         typed = page.evaluate(STATE)
         return pressed, typed, list(calls.sent), dict(calls.answers), _reload(page)
 

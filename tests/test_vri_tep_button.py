@@ -185,8 +185,12 @@ def test_the_third_point_pins_the_mixed_clinic_norm(monkeypatch):
     labels = {str(sheet.cell(row=r, column=1).value): r for r in range(2, 92)}
     cell = lambda code: sheet.cell(row=labels[code], column=4).value
     assert cell("4") == "970"
-    assert cell("32") == "19", "смешанная поликлиника — норматив 19/1000, не сумма 13+7"
-    assert [cell(c) for c in ("33", "34")] == ["13", "7"]
+    assert cell("32") == "19", "смешанная поликлиника — норматив 19/1000, не сумма частей"
+    # Детская — 5,8 на тысячу: так считает калькулятор с осени 2026 (код копии
+    # от 28.09, выгрузка Нагатино 06.10: 45 при 7 618 жителях). Выгрузка этой
+    # точки от 16.08 давала 7 — тогда норма была 6,5. Компенсация от этого не
+    # меняется: 13 + 6 = 19, ровно смешанная.
+    assert [cell(c) for c in ("33", "34")] == ["13", "6"]
 
 
 def test_a_missing_coefficient_keeps_the_parking_honest(monkeypatch):

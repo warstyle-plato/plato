@@ -38,7 +38,7 @@ def workbook_cells() -> dict[str, object]:
     """Все ячейки, на которые ссылается модуль: ключ → значение книги.
 
     Книги открываются один раз и только на чтение; лист читается окном строк,
-    в которое попадают нужные ячейки, — книга Домбая весит 5 МБ.
+    в которое попадают нужные ячейки, — книга Отеля 1 весит 5 МБ.
     """
     wanted: dict[tuple[str, str], list[ref.Benchmark]] = defaultdict(list)
     for b in ref.BENCHMARKS:
@@ -94,7 +94,7 @@ def test_the_check_fails_on_a_forged_value():
 
 def test_the_check_fails_on_a_wrong_address():
     """Число верное, адрес чужой: ссылка на соседнюю ячейку — тоже подделка."""
-    rooms = ref.BY_KEY["dombai:Предпосылки!E116"]
+    rooms = ref.BY_KEY["hotel1:Предпосылки!E116"]
     moved = dataclasses.replace(rooms, cell="E118")
     cells = dict(workbook_cells())
     cells[moved.key] = 155  # то, что книга держит в E118
@@ -121,9 +121,9 @@ def test_derived_values_read_only_known_cells():
 
 
 def test_staff_per_room_agrees_with_the_book_where_it_states_it():
-    """UAI сам пишет «штат на номер» (E121) — частное модуля сходится с ним."""
+    """Отель 2 сам пишет «штат на номер» (E121) — частное модуля сходится с ним."""
     staff = next(d for d in ref.DERIVED if d.model == ref.UAI and d.group == "staff")
-    assert staff.value == pytest.approx(ref.value("uai:Штатное расписание!E121"))
+    assert staff.value == pytest.approx(ref.value("hotel2:Штатное расписание!E121"))
 
 
 def test_the_document_tables_are_built_from_the_module():

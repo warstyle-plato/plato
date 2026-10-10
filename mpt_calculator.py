@@ -9,15 +9,20 @@
 Кмест 0,7 для офисов за пределами ТТК и 0,8 для производственных объектов;
 таблица 2 устанавливает приоритетный Кмест 0,8 для офисов в 99 кадастровых
 кварталах. Графы образования, спорта и культуры учитываются отдельно.
-Коэффициента срока реализации «Ксрок» в формуле постановления нет.
 
-Формула (п. 1.14.1 Порядка):
+Формула (п. 1.14.1 Порядка, редакция 24.04.2026 — КонсультантПлюс):
 
-    Льгота = 1000 руб./кв.м × Sмпт × Кзатр × Кмест
+    Льгота = 1000 руб./кв.м × Sмпт × Кзатр × Кмест × Ксрок
 
 Для объекта незавершённого строительства (п. 1.14.2):
 
-    Льгота = 1000 руб./кв.м × Sмпт × (1 − Кгт/100) × Кзатр × Кмест
+    Льгота = 1000 руб./кв.м × Sмпт × (1 − Кгт/100) × Кзатр × Кмест × Ксрок
+
+Ксрок равен 1; 1,05 или 1,1 — только если инвестор при подаче документов
+уведомил о готовности зарегистрировать право собственности на МПТ раньше
+срока п. 1.9 на 6–12 месяцев или на 12 месяцев и более. Прежняя версия
+модуля считала, что Ксрока в формуле нет; текст редакции 24.04.2026 это
+опровергает.
 """
 
 from __future__ import annotations
@@ -126,9 +131,55 @@ def quarter_is_indexed(quarter: str) -> bool:
 
 NORMATIVE_SNAPSHOT = (
     "ПП Москвы № 1874-ПП от 31.12.2019 · приложение 3, таблицы 1 и 2 "
-    "в действующей редакции (Кмест), приложение 1 (формула, пороги, условия) · "
+    "в действующей редакции (Кмест), приложение 1 (формула с Ксрок, пороги, "
+    "условия) · "
     "Кзатр — приказ ДИиПП ДИПП-ПР-34/20 в редакции "
     "от 10.03.2026, со второго квартала 2026 года пересматривается ежеквартально"
+)
+
+# Что 1874-ПП говорит (и чего не говорит) о существующих площадях и рабочих
+# местах — один источник для Платона, справки и выжимки docs/normative.
+# Прочитанные тексты перечислены в EDITION_READ: утверждение «правила нет»
+# относится к ним, а не к «выжимкам».
+EDITION_READ = (
+    "1874-ПП в редакции 1159-ПП от 24.04.2026 — сводный текст КонсультантПлюс "
+    "(сохранён 04.05.2026, прислан владельцем 06.10.2026), и обе последующие "
+    "поправки: 1965-ПП от 21.07.2026 (по обзору КонсультантПлюс — перечень "
+    "земельных участков соглашения) и 2072-ПП от 30.07.2026 (прочитан целиком, "
+    "base.garant.ru/414766025)."
+)
+EXISTING_AREA_RULE = (
+    "п. 1.14.1: Sмпт — «общая площадь планируемого к строительству места "
+    "приложения труда или величина прироста общей площади по сравнению с "
+    "первоначальным размером общей площади планируемого к реконструкции места "
+    "приложения труда»; парковки, гаражи, склады и складские площадки не "
+    "учитываются (сноска 2). Реконструкция МПТ по п. 1.3.15 — изменение "
+    "параметров, «влекущие прирост общей площади реконструируемого места "
+    "приложения труда»: без прироста это не реконструкция МПТ, и льготы нет. "
+    "Порог п. 3.1 (5 000 м² для офисов) тоже применяется к приросту. Слов "
+    "«снос» и правила о зачёте сносимых площадей в тексте нет; строительство на "
+    "месте сносимых объектов — строительство (ГрК РФ, ст. 1, п. 13)."
+)
+WORKPLACES_RULE = (
+    "Словосочетание «рабочие места» в тексте 1874-ПП (редакция 24.04.2026) не "
+    "встречается ни разу. «Место приложения труда» по п. 1.3.9 — объект "
+    "капитального строительства или помещение соответствующего ВРИ, а не "
+    "рабочее место. Льгота = 1000 ₽/м² × Sмпт × Кзатр × Кмест × Ксрок "
+    "считается от площади; норматива «м² на рабочее место», правила «только по "
+    "вновь создаваемым рабочим местам» и зачёта существующих мест нет. Условие "
+    "льготы — создание МПТ, регистрация права собственности и его профильное "
+    "использование."
+)
+ROUTE_RULE = (
+    "п. 1.1 Порядка (ред. 24.04.2026): статус присваивается проекту, связанному "
+    "с реконструкцией МПТ, со строительством (реконструкцией) МПТ при "
+    "реализации договоров о КРТ, а также проекту в рамках инфраструктурного "
+    "договора; п. 1.3.14: для инфраструктурного договора создание МПТ — его "
+    "строительство. 2072-ПП (п. 2.1, с 30.07.2026) заменил в п. 1.1 "
+    "«со строительством (реконструкцией)» на «с реконструкцией» и «создание» "
+    "на «реконструкция»: соглашение МПТ теперь только о реконструкции, в том "
+    "числе в КРТ, а строительство МПТ — через инфраструктурный договор "
+    "(3135-ПП). Квалифицирует проект город: ДИиПП и Межведомственная комиссия."
 )
 
 CATEGORY_LABELS: dict[str, str] = {
@@ -187,6 +238,15 @@ MIN_AREA_SQM: dict[str, float] = {
 }
 MIXED_USE_MIN_AREA_SQM = 5_000.0  # п. 3.1.3
 HOTEL_ROOMS_MIN_SHARE = 0.75      # п. 4.2: номерной фонд не менее 75%
+# п. 1.14.1, 1.14.2: Ксрок — 1, а повышенные значения выбирает сам инвестор
+# уведомлением о досрочной регистрации права собственности на МПТ.
+KTERM_VALUES: dict[float, str] = {
+    1.0: "обычный срок регистрации права собственности на МПТ",
+    1.05: "инвестор уведомил о регистрации права собственности на МПТ "
+          "раньше срока п. 1.9 на 6–12 месяцев",
+    1.1: "инвестор уведомил о регистрации права собственности на МПТ "
+         "раньше срока п. 1.9 на 12 месяцев и более",
+}
 
 # Таблица 1 приложения 3: центральные районы, районы на границе ТТК и
 # остальные районы Москвы. Для второй строки приведены значения за внешней
@@ -347,6 +407,16 @@ class MptInput:
     kzatr_fixed_by_agreement: bool = False
     ons_readiness_pct: float = 0.0
     ons_registered_before_2019_11_01: bool | None = None
+    # Площадь МПТ, которая уже стоит на участке: до реконструкции или в
+    # сносимых зданиях. При реконструкции п. 1.14.1 берёт Sмпт как прирост, и
+    # тогда area_sqm — площадь ПОСЛЕ реконструкции. При строительстве (в том
+    # числе на месте сносимых объектов — ГрК РФ, ст. 1, п. 13) формула берёт
+    # всю планируемую площадь: зачёта сносимых площадей в ней нет, поле только
+    # показывает, что дала бы квалификация проекта как реконструкции.
+    # 0 — не задано: площадь до реконструкции уже вычтена в area_sqm.
+    existing_area_sqm: float = 0.0
+    # Ксрок (п. 1.14.1): 1, если инвестор не заявлял досрочную регистрацию.
+    kterm: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -359,7 +429,12 @@ class MptResult:
     excluded_area_sqm: float
     warehouse_counted_sqm: float
     warehouse_excluded_sqm: float
+    existing_area_sqm: float
+    # Площадь после минус существующая — со знаком: отрицательный прирост и
+    # есть ответ «строим меньше, чем было».
+    area_increment_sqm: float
     kmest: float
+    kterm: float
     kmest_source: str
     kmest_column: str
     kmest_mix: tuple[tuple[str, float, float], ...]
@@ -486,6 +561,13 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
     rooms = _finite("Площадь номерного фонда", data.hotel_rooms_sqm)
     part_business = _finite("Площадь по графе 3", data.area_business_sqm)
     part_social = _finite("Площадь по графе 4", data.area_social_sqm)
+    existing = _finite("Существующая площадь МПТ", data.existing_area_sqm)
+    if existing < 0:
+        raise MptCalculationError("Существующая площадь МПТ не может быть отрицательной.")
+    kterm = _finite("Ксрок", data.kterm)
+    kterm = next((value for value in KTERM_VALUES if abs(value - kterm) < 1e-9), kterm)
+    if kterm not in KTERM_VALUES:
+        raise MptCalculationError("Ксрок по п. 1.14.1 равен 1; 1,05 или 1,1.")
     kzatr = _finite("Кзатр", data.kzatr)
     if kzatr <= 0:
         raise MptCalculationError("Кзатр должен быть больше нуля.")
@@ -543,6 +625,13 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
         warnings.append("Сумма исключаемых компонент превышает базовую площадь — проверьте ТЭП.")
     eligible_area = max(eligible_area, 0.0)
     excluded_area = max(area - eligible_area, 0.0)
+    after_area = eligible_area
+    increment = after_area - existing
+    if data.mode == "reconstruction" and existing > 0:
+        # п. 1.14.1: при реконструкции Sмпт — прирост общей площади МПТ. Это
+        # обязательная формула, а не справка: площадь после реконструкции не
+        # больше прежней — льготы нет, и это отказ, а не ноль из ниоткуда.
+        eligible_area = max(increment, 0.0)
 
     # --- условия присвоения статуса ------------------------------------------
     # ТТК в постановлении не коэффициент, а условие: п. 1.2 и 3.5 требуют, чтобы
@@ -595,13 +684,45 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
             )
         readiness_factor = 1.0 - readiness / 100.0
 
-    if data.mode == "reconstruction":
+    if data.mode == "reconstruction" and existing > 0:
+        if increment <= 0:
+            blockers.append(
+                f"Прирост площади МПТ {_thousands(increment)} м² "
+                f"({_thousands(after_area)} м² "
+                f"после реконструкции против {_thousands(existing)} м² до неё): при "
+                "реконструкции Sмпт — прирост общей площади (п. 1.14.1), а его нет; "
+                "без прироста это и не реконструкция МПТ (п. 1.3.15)."
+            )
+        else:
+            warnings.append(
+                f"Реконструкция: Sмпт — прирост {_thousands(increment)} м² к "
+                f"существующим {_thousands(existing)} м² (п. 1.14.1)."
+            )
+    elif data.mode == "reconstruction":
         warnings.append(
             "При реконструкции Sмпт — прирост общей площади к первоначальной "
             "(п. 1.14.1), а не полная площадь объекта."
         )
+    elif existing > 0:
+        warnings.append(
+            f"Существующие (сносимые) {_thousands(existing)} м² в Sмпт не "
+            "зачитываются: при строительстве, в том числе на месте сносимых "
+            "объектов (ГрК РФ, ст. 1, п. 13), п. 1.14.1 берёт общую площадь "
+            "планируемого МПТ; правила о зачёте сносимых площадей в 1874-ПП нет. "
+            "Если проект будет квалифицирован как реконструкция, Sмпт = прирост "
+            f"{_thousands(increment)} м²"
+            + (" — льготы не будет (п. 1.3.15: реконструкция МПТ влечёт прирост)."
+               if increment <= 0 else ".")
+            + " Квалификацию и маршрут (соглашение МПТ или инфраструктурный "
+            "договор 3135-ПП) определяет город, а не калькулятор."
+        )
     if kmest == 0:
         warnings.append("Кмест = 0 по приложению 3: расчётная льгота равна нулю.")
+    if kterm != 1.0:
+        warnings.append(
+            f"Ксрок {kterm:g}: {KTERM_VALUES[kterm]} (п. 1.14.1). Это обязательство "
+            "инвестора, заявленное при подаче документов, а не свойство объекта."
+        )
     current_quarter = quarter_of(today)
     stated_quarter = str(data.kzatr_quarter or "").strip()
     if data.kzatr_fixed_by_agreement:
@@ -663,14 +784,14 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
                 "подтверждайте экспликацией."
             )
 
-    potential = 1000.0 * eligible_area * readiness_factor * kzatr * kmest
+    potential = 1000.0 * eligible_area * readiness_factor * kzatr * kmest * kterm
     eligible_for_status = not blockers
     benefit = potential if eligible_for_status else 0.0
 
     pieces = ["1 000", f"{eligible_area:.2f}"]
     if data.mode == "ons":
         pieces.append(f"{readiness_factor:.6f}")
-    pieces.extend([f"{kzatr:.5f}", f"{kmest:.2f}"])
+    pieces.extend([f"{kzatr:.5f}", f"{kmest:.2f}", f"Ксрок {kterm:.2f}"])
     formula = " × ".join(pieces) + f" = {potential:.2f} ₽"
     if not eligible_for_status:
         formula += " → 0,00 ₽: условия присвоения статуса не выполнены"
@@ -682,7 +803,10 @@ def calculate_mpt_benefit(data: MptInput, *, today: date | None = None) -> MptRe
         excluded_area_sqm=excluded_area,
         warehouse_counted_sqm=warehouse_counted,
         warehouse_excluded_sqm=warehouse_excluded,
+        existing_area_sqm=existing,
+        area_increment_sqm=increment,
         kmest=kmest,
+        kterm=kterm,
         kmest_source=kmest_source,
         kmest_column=column,
         kmest_mix=kmest_mix,
@@ -723,6 +847,8 @@ def metadata() -> dict[str, Any]:
         "minimum_area_sqm": MIN_AREA_SQM,
         "mixed_use_minimum_sqm": MIXED_USE_MIN_AREA_SQM,
         "hotel_rooms_min_share": HOTEL_ROOMS_MIN_SHARE,
+        "kterm_values": [{"value": value, "label": label}
+                         for value, label in KTERM_VALUES.items()],
         "kzatr_default": current_kzatr if current_kzatr is not None else KZATR_DEFAULT,
         # Квартал, которому дефолт соответствует: страница подставляет его в
         # поле квартала, и расчёт не ругается «значение не сверено» зря.
@@ -739,3 +865,80 @@ def metadata() -> dict[str, Any]:
         "ttk_required_outside": True,
         "normative_snapshot": NORMATIVE_SNAPSHOT,
     }
+
+
+def agent_answer(
+    *,
+    category: str,
+    district: str,
+    ttk_position: str | None,
+    mode: str,
+    area_sqm: float,
+    existing_area_sqm: float | None = None,
+    cadastral_number: str | None = None,
+    sqm_per_workplace: float | None = None,
+    kterm: float | None = None,
+    today: date | None = None,
+) -> dict[str, Any]:
+    """Расчёт льготы МПТ для Платона — тем же движком, что и страница.
+
+    Кзатр берётся действующего квартала, как на странице. Рабочие места
+    считаются только по плотности, которую назвал человек: 1874-ПП её не
+    задаёт, и своё число здесь выглядело бы нормой города.
+    """
+    today = today or date.today()
+    quarter = quarter_of(today)
+    kzatr = kzatr_for_quarter(quarter)
+    payload = MptInput(
+        category=category,  # type: ignore[arg-type]
+        district=district,
+        area_sqm=float(area_sqm),
+        cadastral_number=str(cadastral_number or ""),
+        mode=mode,  # type: ignore[arg-type]
+        ttk_position=ttk_position,  # type: ignore[arg-type]
+        existing_area_sqm=float(existing_area_sqm or 0.0),
+        kterm=float(kterm) if kterm else 1.0,
+        kzatr=kzatr if kzatr is not None else KZATR_DEFAULT,
+        kzatr_quarter=quarter if kzatr is not None else "",
+    )
+    try:
+        result = calculate_mpt_benefit(payload, today=today)
+    except MptCalculationError as error:
+        return {"available": False, "reason": str(error),
+                "edition_read": EDITION_READ}
+    answer: dict[str, Any] = {
+        "available": True,
+        "result": result.as_dict(),
+        "existing_area_rule": EXISTING_AREA_RULE,
+        "workplaces_rule": WORKPLACES_RULE,
+        "route_rule": ROUTE_RULE,
+        "kterm_rule": ("Ксрок (п. 1.14.1): " + "; ".join(
+            f"{value:g} — {label}" for value, label in KTERM_VALUES.items())),
+        "edition_read": EDITION_READ,
+    }
+    existing = float(existing_area_sqm or 0.0)
+    if existing > 0 and mode != "reconstruction":
+        # Тот же проект, квалифицированный как реконструкция: обе ветки рядом,
+        # потому что выбирает между ними город, а не калькулятор.
+        alt = calculate_mpt_benefit(
+            MptInput(**{**asdict(payload), "mode": "reconstruction"}), today=today
+        )
+        answer["if_reconstruction"] = {
+            "eligible_area_sqm": alt.eligible_area_sqm,
+            "benefit_rub": alt.benefit_rub,
+            "blockers": list(alt.blockers),
+        }
+    density = float(sqm_per_workplace or 0.0)
+    if density > 0 and math.isfinite(density):
+        before = existing / density if existing > 0 else None
+        after = float(area_sqm) / density
+        answer["workplaces_estimate"] = {
+            "basis": (f"справочно: {density:g} м² общей площади на рабочее место — "
+                      "плотность названа пользователем; 1874-ПП её не устанавливает "
+                      "и в формулу льготы рабочие места не входят"),
+            "sqm_per_workplace": density,
+            "existing": round(before) if before is not None else None,
+            "planned": round(after),
+            "delta": round(after - before) if before is not None else None,
+        }
+    return answer

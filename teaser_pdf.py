@@ -321,7 +321,8 @@ def _tep_rows(model: dict[str, Any], fm: _Formats) -> list[tuple[str, str, str]]
     site = model.get("site") or {}
     profile = model.get("profile") or {}
     land = model.get("land") or {}
-    rows: list[tuple[str, str, str]] = [("Класс проекта", profile.get("project_class") or "—", "")]
+    rows: list[tuple[str, str, str]] = [(profile.get("project_class_title") or "Класс проекта",
+                                         profile.get("project_class") or "—", "")]
     density = site.get("density_sqm_per_ha")
     gns = fm.sqm(tep.get("project_gns_sqm"))
     rows.append(("Наземная площадь ГНС", gns, "м²"))
@@ -664,6 +665,11 @@ def _object_value(row: dict[str, Any], fm: _Formats) -> tuple[str, str]:
         return fm.th(value), "тыс ₽/м²"
     if unit == "num":
         return fm.th(value, 2), str(row.get("suffix") or "")
+    # Гостиница: рубли на единицу (ADR, RevPAR, затраты на номер) и годы.
+    if unit == "rub_unit":
+        return fm.count(value), "₽"
+    if unit == "years":
+        return fm.th(value, 1), ""
     if unit == "date":
         text = str(value or "")
         return (".".join(reversed(text[:7].split("-"))) if text else "—"), ""

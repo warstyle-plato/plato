@@ -70,13 +70,14 @@ class MptCalculateRequest(BaseModel):
     kzatr_fixed_by_agreement: bool = False
     ons_readiness_pct: float = Field(default=0, ge=0, lt=100)
     ons_registered_before_2019_11_01: bool | None = None
+    existing_area_sqm: float = Field(default=0, ge=0)
+    kterm: float = 1.0
 
 
-# Коэффициента срока реализации в действующей формуле нет. Прежний флаг
-# смешанного назначения не передаёт площади по отдельным графам таблицы.
-# Кадастровый номер, напротив, используется приоритетной таблицей 2.
+# Прежний флаг смешанного назначения не передаёт площади по отдельным графам
+# таблицы. Кадастровый номер, напротив, используется приоритетной таблицей 2.
+# Ксрок в формуле п. 1.14.1 есть (редакция 24.04.2026) и снова принимается.
 _REMOVED_FIELDS = {
-    "kterm": "Ксрок в 1874-ПП отсутствует: формула п. 1.14.1 — 1000 × Sмпт × Кзатр × Кмест.",
     "mixed_use": (
         "Признак смешанного назначения заменён площадями: примечание к таблице "
         "приложения 3 требует применять коэффициенты пропорционально площади, "
@@ -193,15 +194,18 @@ _MPT_FRAGMENT = r'''
       <div class="mpt-grid">
         <div><label for="mpt-category">Тип МПТ</label><select id="mpt-category"></select></div>
         <div><label for="mpt-mode">Сценарий</label><select id="mpt-mode"><option value="new">Новое строительство</option><option value="reconstruction">Реконструкция</option><option value="ons">ОНС</option></select></div>
-        <div><label for="mpt-district">Район Москвы</label><select id="mpt-district"><option value="">— выберите район —</option></select></div>
-        <div id="mpt-ttk-wrap"><label for="mpt-ttk">Положение относительно ТТК <span style="opacity:.6">п. 1.2</span></label><select id="mpt-ttk"><option value="">— выберите —</option><option value="outside">За внешней границей ТТК</option><option value="inside">Внутри ТТК</option></select></div>
-        <div id="mpt-cadastral-wrap" class="mpt-wide"><label for="mpt-cadastral">Кадастровый номер участка или квартал <span style="opacity:.6">таблица 2: для 99 кварталов Кмест 0,8</span></label><input id="mpt-cadastral" type="text" placeholder="77:07:0012002:123"></div>
+        <div><label for="mpt-district">Район Москвы <span id="mpt-district-origin" class="mpt-origin" style="opacity:.6"></span></label><select id="mpt-district"><option value="">— выберите район —</option></select></div>
+        <div id="mpt-ttk-wrap"><label for="mpt-ttk">Положение относительно ТТК <span style="opacity:.6">п. 1.2</span> <span id="mpt-ttk-origin" class="mpt-origin" style="opacity:.6"></span></label><select id="mpt-ttk"><option value="">— выберите —</option><option value="outside">За внешней границей ТТК</option><option value="inside">Внутри ТТК</option></select></div>
+        <div id="mpt-cadastral-wrap" class="mpt-wide"><label for="mpt-cadastral">Кадастровый номер участка или квартал <span style="opacity:.6">таблица 2: для 99 кварталов Кмест 0,8</span> <span id="mpt-cadastral-origin" class="mpt-origin" style="opacity:.6"></span></label><input id="mpt-cadastral" type="text" placeholder="77:07:0012002:123"></div>
+        <p id="mpt-parcel-note" class="mpt-note mpt-wide" style="margin:0"></p>
         <div><label id="mpt-area-label" for="mpt-area">Общая площадь МПТ, м²</label><input id="mpt-area" type="number" min="0" step="1" placeholder="10000"></div>
+        <div><label for="mpt-existing">Существующая (сносимая) площадь МПТ, м² <span style="opacity:.6">п. 1.14.1</span></label><input id="mpt-existing" type="number" min="0" step="1" value="0"></div>
         <div><label for="mpt-parking">Парковки, м²</label><input id="mpt-parking" type="number" min="0" step="1" value="0"></div>
         <div><label for="mpt-garages">Гаражи, м²</label><input id="mpt-garages" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-warehouse-wrap"><label for="mpt-warehouse">Склад внутри здания, м²</label><input id="mpt-warehouse" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-yard-wrap"><label for="mpt-yard">Открытая складская площадка, м²</label><input id="mpt-yard" type="number" min="0" step="1" value="0"></div>
         <div id="mpt-rooms-wrap" class="mpt-hidden"><label for="mpt-rooms">Номерной фонд, м² <span style="opacity:.6">не менее 75%</span></label><input id="mpt-rooms" type="number" min="0" step="1" value="0"></div>
+        <div><label for="mpt-kterm">Ксрок <span style="opacity:.6">п. 1.14.1</span></label><select id="mpt-kterm"><option value="1" selected>1 — обычный срок регистрации права</option><option value="1.05">1,05 — регистрация раньше срока на 6–12 мес.</option><option value="1.1">1,1 — регистрация раньше срока на 12+ мес.</option></select></div>
         <div><label for="mpt-kzatr">Кзатр <span style="opacity:.6">приказ ДИиПП</span></label><input id="mpt-kzatr" type="number" min="0" step="0.00001" value="166.23078"></div>
         <div><label for="mpt-kzatr-quarter">Квартал, к которому относится Кзатр</label><input id="mpt-kzatr-quarter" type="text" placeholder="напр. 2026-Q1"></div>
         <div class="mpt-wide"><label><input id="mpt-kzatr-fixed" type="checkbox" style="width:auto"> Соглашение заключено до вступления приказа от 10.03.2026 в силу — Кзатр не индексируется</label>
@@ -241,6 +245,81 @@ _MPT_FRAGMENT = r'''
   const rub=v=>new Intl.NumberFormat('ru-RU',{style:'currency',currency:'RUB',maximumFractionDigits:0}).format(v||0);
   const num=(v,d=1)=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:d}).format(v||0);
   let meta=null;
+  // Происхождение полей участка: 'parcel' — подставлено из участка проекта,
+  // 'manual' — введено человеком. Ручное не затирается подстановкой.
+  const parcelOrigin={cadastral:'',district:'',ttk:''};
+  const PARCEL_FIELDS={cadastral:'mpt-cadastral',district:'mpt-district',ttk:'mpt-ttk'};
+  function districtKey(name){
+    // \b в JS не видит кириллицу — служебные слова снимаются по словам.
+    const skip=new Set(['район','поселение','муниципальный','округ']);
+    return String(name||'').replace(/ё/g,'е').toLowerCase()
+      .split(/\s+/).filter(word=>word&&!skip.has(word)).join(' ');
+  }
+  // Что поставить в поля по участку проекта. Чистая функция: участок (ответ
+  // projectParcelFacts страницы), текущие значения, их происхождение и список
+  // районов приложения 3. Ручное значение остаётся; пустое ручное снова
+  // берётся из участка.
+  function parcelPlan(facts,current,origin,districts){
+    const values={...current}, next={...origin}, missing=[];
+    let label='';
+    if(facts){
+      label=facts.cadastral||facts.quarter||'';
+      const known=(districts||[]).find(name=>districtKey(name)===districtKey(facts.district));
+      const wanted={cadastral:facts.cadastral||facts.quarter||'',district:known||'',ttk:facts.ttk||''};
+      if(facts.district&&!known) missing.push('район «'+facts.district+'» из кадастрового анализа не найден в таблице приложения 3');
+      (facts.missing||[]).forEach(item=>missing.push(item));
+      for(const key of Object.keys(PARCEL_FIELDS)){
+        if(next[key]==='manual'&&String(values[key]||'')!=='') continue;
+        values[key]=wanted[key];
+        next[key]=wanted[key]?'parcel':'';
+      }
+    }else{
+      for(const key of Object.keys(PARCEL_FIELDS)){
+        if(next[key]==='parcel'){values[key]='';next[key]='';}
+      }
+    }
+    let note;
+    if(!facts) note='Кадастр в проекте не введён: ТЭП собран без адреса — заполните кадастр, район и ТТК вручную или выполните кадастровый анализ на вкладке «Вводные».';
+    else note='Из участка проекта '+(label||'(номер не распознан)')+'.'+(missing.length?' Не определено: '+missing.join('; ')+' — укажите вручную.':'');
+    return {values,origin:next,note,label};
+  }
+  function readParcelFacts(){
+    try{return typeof projectParcelFacts==='function'?projectParcelFacts():null;}catch(_e){return null;}
+  }
+  function applyParcel(){
+    if(!meta||!q('mpt-cadastral')) return;
+    const current={};
+    for(const [key,id] of Object.entries(PARCEL_FIELDS)) current[key]=q(id).value;
+    const plan=parcelPlan(readParcelFacts(),current,parcelOrigin,meta.districts||[]);
+    for(const [key,id] of Object.entries(PARCEL_FIELDS)){
+      q(id).value=plan.values[key]||'';
+      parcelOrigin[key]=plan.origin[key];
+      const tag=q(id+'-origin');
+      if(tag) tag.textContent=plan.origin[key]==='parcel'?'из участка '+plan.label
+        :plan.origin[key]==='manual'?'введено вручную':'';
+    }
+    q('mpt-parcel-note').textContent=plan.note;
+    sync();
+  }
+  function watchParcel(){
+    for(const [key,id] of Object.entries(PARCEL_FIELDS)){
+      const mark=()=>{
+        parcelOrigin[key]=String(q(id).value||'')?'manual':'';
+        const tag=q(id+'-origin');
+        if(tag) tag.textContent=parcelOrigin[key]==='manual'?'введено вручную':'';
+      };
+      q(id)?.addEventListener('input',mark);
+      q(id)?.addEventListener('change',mark);
+    }
+    // Страница не шлёт событий о смене участка, зато каждый анализ и
+    // восстановление проекта переписывают сводку кадастра.
+    const targets=['cadastralSummary','cadastralStatus'].map(q).filter(Boolean);
+    if(targets.length&&typeof MutationObserver!=='undefined'){
+      const observer=new MutationObserver(()=>applyParcel());
+      targets.forEach(el=>observer.observe(el,{childList:true,subtree:true,characterData:true}));
+    }
+    q('mpt-benefit-panel')?.addEventListener('toggle',applyParcel);
+  }
 
   let host=null;
   function findVriHost(){
@@ -294,12 +373,17 @@ _MPT_FRAGMENT = r'''
     // постановление не предусматривает, и расчёт такой запрос отклоняет.
     q('mpt-split-wrap').classList.toggle('mpt-hidden',hotel);
     if(hotel){q('mpt-warehouse').value='0';q('mpt-yard').value='0';q('mpt-area-business').value='0';q('mpt-area-social').value='0';}
+    // С заданной существующей площадью прирост считает сервер (п. 1.14.1),
+    // и в поле площади вводится площадь ПОСЛЕ реконструкции.
+    const existing=Number(q('mpt-existing').value||0)>0;
+    const prefix=mode!=='reconstruction'?'':existing?'после реконструкции':'прирост';
     if(hotel){
-      q('mpt-area-label').textContent=mode==='reconstruction'
+      q('mpt-area-label').textContent=prefix==='прирост'
         ? 'Прирост площади допустимых помещений средства размещения, м²'
-        : 'Площадь допустимых помещений средства размещения, м²';
+        : 'Площадь допустимых помещений средства размещения'+(prefix?' '+prefix:'')+', м²';
     }else{
-      q('mpt-area-label').textContent=mode==='reconstruction'?'Прирост общей площади МПТ, м²':'Общая площадь МПТ, м²';
+      q('mpt-area-label').textContent=prefix==='прирост'?'Прирост общей площади МПТ, м²'
+        : 'Общая площадь МПТ'+(prefix?' '+prefix:'')+', м²';
     }
     q('mpt-context-note').textContent=category==='industrial'
       ? 'Приложение 3 исключает склады и складские площадки из производственного ВРИ: закрытый склад учитывается максимум в пределах 25% площади, открытая площадка, парковки и гаражи исключаются.'
@@ -322,7 +406,7 @@ _MPT_FRAGMENT = r'''
     if(meta.kzatr_source) q('mpt-kzatr-note').textContent=meta.kzatr_source;
     q('mpt-category').innerHTML=(meta.categories||[]).map(x=>`<option value="${x.value}">${x.label}</option>`).join('');
     q('mpt-district').innerHTML='<option value="">— выберите район —</option>'+(meta.districts||[]).map(x=>`<option value="${x}">${x}</option>`).join('');
-    sync();
+    applyParcel();
   }
   async function calculate(){
     const result=q('mpt-result'), warnings=q('mpt-warnings');
@@ -346,7 +430,9 @@ _MPT_FRAGMENT = r'''
       kzatr_quarter:(q('mpt-kzatr-quarter').value||'').trim(),
       kzatr_fixed_by_agreement:q('mpt-kzatr-fixed').checked,
       ons_readiness_pct:Number(q('mpt-ready').value||0),
-      ons_registered_before_2019_11_01:q('mpt-mode').value==='ons'?q('mpt-ons-date').checked:null
+      ons_registered_before_2019_11_01:q('mpt-mode').value==='ons'?q('mpt-ons-date').checked:null,
+      existing_area_sqm:Number(q('mpt-existing').value||0),
+      kterm:Number(q('mpt-kterm').value||1)
     };
     try{
       const r=await fetch('/api/mpt/calculate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)});
@@ -368,6 +454,8 @@ _MPT_FRAGMENT = r'''
   }
   function wire(){
     ['mpt-category','mpt-mode','mpt-district','mpt-ttk'].forEach(id=>q(id)?.addEventListener('change',sync));
+    q('mpt-existing')?.addEventListener('input',sync);
+    watchParcel();
     q('mpt-calc')?.addEventListener('click',calculate);
     loadMeta().catch(err=>{q('mpt-context-note').textContent=err?.message||String(err);});
     const params=new URLSearchParams(location.search);

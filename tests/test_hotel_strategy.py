@@ -280,17 +280,17 @@ def test_every_preset_value_names_known_cells():
 
 
 def test_a_preset_fills_values_with_their_origin():
-    x = hotel_presets.apply_preset({"hotel_keys": 150}, "dombai", only_empty=True)
+    x = hotel_presets.apply_preset({"hotel_keys": 150}, "hotel1", only_empty=True)
     assert x["hotel_keys"] == 150 and "keys" not in x[hotel_presets.ORIGINS_KEY]
     origin = x[hotel_presets.ORIGINS_KEY]["occ_start_pct"]
     assert x["hotel_occ_start_pct"] == pytest.approx(47.0)
-    assert origin["text"].startswith("ориентир: Домбай 5*")
-    assert "dombai:Предпосылки!E393" in origin["cells"]
+    assert origin["text"].startswith("ориентир: Отель 1 5*")
+    assert "hotel1:Предпосылки!E393" in origin["cells"]
     assert not hs.missing_fields(hs.params_from_inputs(x))
 
 
 def test_a_partial_preset_leaves_its_gaps_empty():
-    x = hotel_presets.apply_preset({}, "uai")
+    x = hotel_presets.apply_preset({}, "hotel2")
     assert "hotel_fnb_pct" not in x
     assert "fnb_pct" in {f.key for f in hs.missing_fields(hs.params_from_inputs(x))}
 
@@ -298,12 +298,35 @@ def test_a_partial_preset_leaves_its_gaps_empty():
 def test_hint_range_spans_the_presets_of_the_class():
     hint = hotel_presets.hint_range("adr_rub", "5")
     assert hint["min"] < hint["max"]
-    assert set(hint["sources"]) == {"Домбай 5*", "UAI 5*"}
+    assert set(hint["sources"]) == {"Отель 1 5*", "Отель 2 5*"}
     assert hotel_presets.hint_range("adr_rub", "3") is None
+
+
+def test_a_project_saved_with_the_old_preset_keys_shows_the_current_name() -> None:
+    """Ориентиры обезличены (владелец, 07.10.2026): проект, сохранённый с
+    прежним ключом, показывает нынешнее имя ориентира, а не сохранённый текст."""
+    old = {"adr_rub": {"preset": "dombai", "text": "ориентир: Домбай 5*, Расчеты!E419",
+                       "cells": ["dombai:Расчеты!E419"]},
+           "keys": {"preset": "чужой", "text": "своё"}}
+    now = hotel_presets.current_origins(old)
+    assert now["adr_rub"] == hotel_presets.BY_KEY["hotel1"].origin("adr_rub")
+    assert now["adr_rub"]["text"].startswith("ориентир: Отель 1 5*")
+    assert now["keys"] == old["keys"]
+    x = hotel_presets.apply_preset({}, "uai")  # прежний ключ ориентира
+    assert x["hotel_origins"]["keys"]["preset"] == "hotel2"
+
+
+def test_the_page_spec_names_no_source_site() -> None:
+    import json
+    import main_legacy as core
+    spec = json.dumps(core.hotel_page_spec(), ensure_ascii=False)
+    for name in ("Домбай", "Домбая", "UAI", "Дагестан"):
+        assert name not in spec, name
+    assert [p.title for p in hotel_presets.PRESETS] == ["Отель 1 5*", "Отель 2 5*"]
 
 
 def test_the_dombai_adr_is_the_book_chain():
     """Средний ADR ориентира × индекс I кв. 2029 книги = ADR книги (Расчеты!819)."""
-    adr_2029 = hotel_presets.BY_KEY["dombai"].values["adr_rub"].value
+    adr_2029 = hotel_presets.BY_KEY["hotel1"].values["adr_rub"].value
     q1_index = 1.04 ** 0.25  # книга индексирует на конец квартала
     assert adr_2029 * q1_index == pytest.approx(18537.827, rel=1e-4)

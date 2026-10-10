@@ -166,19 +166,27 @@ def test_v4_note_insertion_keeps_workbook_openable():
 
 def test_pdf_names_the_class_and_its_deviations():
     """Утверждение — «отчёт называет класс и отклонение», а не «в исходнике
-    стоит такая-то фраза».
+    стоит такая-то фраза»: проверяется напечатанный текст.
 
-    Держала она именно фразу, и слово «Ставки» из неё пришлось снять: профиль
-    класса перестал быть только деньгами — норматив площади на человека это
-    м²/чел., и звать его ставкой нельзя. Проверка упала бы на верной правке.
+    Прежде проверка держала именно фразу и имя функции в исходнике — и падала
+    на верной правке: класс теперь решает `project_class_view` (у гостиницы —
+    звёздность), а отклонения едут в нём же. Единица стоит у числа: профиль
+    класса перестал быть только деньгами, норматив площади на человека — это
+    м²/чел., и «5 → 8» без единицы читается ставкой.
     """
-    import inspect
-    source = inspect.getsource(core._build_developaid_pdf)
-    assert "project_class_deviations" in source
-    assert "от базы класса" in source
-    assert "Класс проекта" in source
-    # И единица едет вместе с числом: «5 → 8» без неё читается ставкой.
-    assert "item['unit']" in source
+    pytest.importorskip("reportlab")
+    from market_search.krt_requirements import pdf_text
+    inputs = dict(core.DEFAULT_INPUTS)
+    inputs.update(project_class="business", apartment_price_th=700,
+                  main_above_th_per_sqm=210, purchase_price_mln=700)
+    bundle = core._run_authoritative_model(inputs, core.TEP_DEFAULT, [], {})
+    text = " ".join(pdf_text(core._build_developaid_pdf({
+        "result": bundle["consolidated"], "inputs": inputs,
+        "tep": core.TEP_DEFAULT, "rates": [], "phasing": {},
+        "scenario": "base", "project_name": "Проверка"})).split())
+    assert "Класс проекта Бизнес" in text
+    assert "Отличается от базы класса «Бизнес»:" in text
+    assert "650,0 → 700,0 тыс. ₽/м²" in text
 
 
 def test_pdf_still_builds_with_a_deviated_class():

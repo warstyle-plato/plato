@@ -339,18 +339,24 @@ class RegionMarket(MoscowMarket):
     _ALIASES = {"мо": "московская область", "подмосковье": "московская область",
                 "ло": "ленинградская область", "спб": "санкт-петербург"}
 
-    def covers(self, address: str | None) -> bool:
-        """Адрес лежит в регионе свода: регион, названный в самом адресе."""
+    @classmethod
+    def region_of(cls, address: str | None) -> str | None:
+        """Регион, названный в адресе: полным именем или сокращением («МО»)."""
         from .pulse import address_region
 
-        wanted = self.region_name.casefold()
         found = address_region(address)
         if found:
-            return found.casefold() == wanted
-        return any(
-            self._ALIASES.get(part.strip().casefold().strip(".")) == wanted
-            for part in str(address or "").split(",")
-        )
+            return found
+        for part in str(address or "").split(","):
+            alias = cls._ALIASES.get(part.strip().casefold().strip("."))
+            if alias:
+                return alias[:1].upper() + alias[1:]
+        return None
+
+    def covers(self, address: str | None) -> bool:
+        """Адрес лежит в регионе свода: регион, названный в самом адресе."""
+        found = self.region_of(address)
+        return bool(found) and found.casefold() == self.region_name.casefold()
 
     def okrug_of(self, address: str | None) -> str | None:
         """Муниципалитет адреса — по пометке («г.о.», «г.») или по имени из свода."""
@@ -386,9 +392,17 @@ class MarketAtlas:
     регионального свода добавляется в `scope` отдельно.
     """
 
-    def __init__(self, moscow: MoscowMarket, directory: Path | None = None):
+    def __init__(
+        self,
+        moscow: MoscowMarket,
+        directory: Path | None = None,
+        explain: Any = None,
+    ):
         self.moscow = moscow
         self.dir = Path(directory) if directory else None
+        # Кто знает, почему свода региона нет (`RegionMarketCollector.explain`).
+        # Без него причина — общая подсказка, а не состояние сбора.
+        self.explain = explain
         self._cache: dict[str, tuple[float, RegionMarket | None]] = {}
 
     def regions(self) -> list[RegionMarket]:
@@ -423,14 +437,18 @@ class MarketAtlas:
         if market is self.moscow and not out.get("covered"):
             from .pulse import address_region
 
-            region = address_region(address)
-            if region and region.casefold() != "москва":
-                out["region"] = {
-                    "name": region,
-                    "reason": (
+            region = RegionMarket.region_of(address)
+            if (region or "").casefold() != "москва":
+                if self.explain is not None:
+                    reason = self.explain(region)
+                elif region:
+                    reason = (
                         f"Свода по региону «{region}» нет: он собирается из кабинета "
                         "«Пульса» раз в неделю (настройка PULSE_REGIONS); см. "
                         "/market/pulse/regions"
-                    ),
-                }
+                    )
+                else:
+                    reason = None
+                if reason:
+                    out["region"] = {"name": region, "reason": reason}
         return out

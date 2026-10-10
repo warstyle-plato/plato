@@ -31,7 +31,7 @@ openpyxl = pytest.importorskip("openpyxl")
 ALLOWED = {"IF", "AND", "OR", "MIN", "MAX", "SUM", "SUMIF", "COUNT", "COUNTIF", "ABS"}
 
 
-def _project(preset: str | None = "dombai", **over):
+def _project(preset: str | None = "hotel1", **over):
     x = copy.deepcopy(core.DEFAULT_INPUTS)
     t = copy.deepcopy(core.TEP_DEFAULT)
     x["project_kind"] = core.PROJECT_KIND_HOTEL
@@ -119,7 +119,7 @@ def test_inputs_carry_their_origin(dombai) -> None:
     sheet = book[hw.INPUTS_SHEET]
     origin = {sheet[f"E{row}"].value: sheet[f"H{row}"].value for row in range(4, 4 + 60)
               if sheet[f"E{row}"].value}
-    assert origin["Стартовая загрузка"] == "ориентир: Домбай 5*, Предпосылки!E393"
+    assert origin["Стартовая загрузка"] == "ориентир: Отель 1 5*, Предпосылки!E393"
     x, t = _project(hotel_hold_years=6)
     del x["hotel_property_tax_pct"]
     content, _, _ = core.build_project_workbook(x, t, [], {}, project_name="Отель")
@@ -127,6 +127,19 @@ def test_inputs_carry_their_origin(dombai) -> None:
     origin = {sheet[f"E{row}"].value: sheet[f"H{row}"].value for row in range(4, 4 + 60)
               if sheet[f"E{row}"].value}
     assert origin["Налог на имущество"].startswith("умолчание: НК РФ")
+
+
+def test_a_project_saved_with_the_old_names_prints_the_current_ones() -> None:
+    x, t = _project(hotel_hold_years=6)
+    x["hotel_origins"] = {
+        k: {**v, "preset": "dombai", "text": v["text"].replace("Отель 1", "Домбай"),
+            "cells": [c.replace("hotel1:", "dombai:") for c in v["cells"]]}
+        for k, v in x["hotel_origins"].items()}
+    content, _, _ = core.build_project_workbook(x, t, [], {}, project_name="Отель")
+    sheet = openpyxl.load_workbook(io.BytesIO(content))[hw.INPUTS_SHEET]
+    texts = [str(sheet[f"H{row}"].value or "") for row in range(4, 4 + 60)]
+    assert any(text.startswith("ориентир: Отель 1 5*") for text in texts)
+    assert not any("Домбай" in text for text in texts)
 
 
 def test_the_formulas_use_only_what_the_checker_computes(dombai) -> None:

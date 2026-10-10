@@ -682,6 +682,49 @@ def parking_by_vri(data: bytes) -> dict[str, Any] | None:
     return {"items": items, "totals": totals, "columns": sorted(columns)}
 
 
+# Лист «Социальные объекты»: типовые здания, которые калькулятор поставил.
+# Столбцы — по началу заголовка («Площадь участка (га)», «СПП в ГНС
+# (тыс.кв.м.)», «ДОО (мест)»…), а не по месту.
+SOCIAL_SHEET_COLUMNS = (("площадь участка", "site_ha"), ("наземная площадь", "np_ths"),
+                        ("спп", "spp_ths"), ("всего", "places"), ("доо", "kindergarten"),
+                        ("школ", "school"), ("поликлин", "clinic"))
+
+
+def social_buildings(data: bytes) -> list[dict[str, Any]] | None:
+    """Типовые соцобъекты калькулятора. Нет листа — None, а не «объектов нет».
+
+    Вид объекта — по столбцу мест его вида (ДОО / школа / поликлиника), а
+    подпись — только если такого столбца нет: имя «Школьное здание…» — подсказка,
+    столбец «Школа (мест)» — данные.
+    """
+    rows = _sheet_rows(data, "Социальные объекты")
+    if not rows:
+        return None
+    header = [str(cell or "").strip().lower() for cell in rows[0]]
+    columns: dict[str, int] = {}
+    for prefix, key in SOCIAL_SHEET_COLUMNS:
+        index = next((i for i, title in enumerate(header)
+                      if title.startswith(prefix) and i not in columns.values()), None)
+        if index is not None:
+            columns[key] = index
+    name_at = next((i for i, title in enumerate(header) if title.startswith("наименован")), 1)
+    items = []
+    for row in rows[1:]:
+        if len(row) <= name_at or not row[name_at]:
+            continue
+        item: dict[str, Any] = {"name": str(row[name_at]).strip()}
+        for key, index in columns.items():
+            item[key] = ru_number(row[index]) if index < len(row) else None
+        kind = next((k for k in ("kindergarten", "school", "clinic") if (item.get(k) or 0) > 0), "")
+        if not kind and not any(k in columns for k in ("kindergarten", "school", "clinic")):
+            low = item["name"].lower()
+            kind = ("kindergarten" if low.startswith("дошкол") else "school" if low.startswith("школ")
+                    else "clinic" if "поликлин" in low else "")
+        item["kind"] = kind
+        items.append(item)
+    return items
+
+
 def _name_key(text: Any) -> str:
     return " ".join(str(text or "").lower().replace("ё", "е").rstrip(":").split())
 
@@ -799,6 +842,8 @@ def glavapu_side(normalized: dict[str, Any], rows: dict[str, float | None],
         kind = item["code"].replace(".", "_")
         side["vri"][kind] = (item["value"], f"строка {item['code']}")
         labels[f"vri.{kind}"] = item["name"]
+        if name.startswith("многоквартирн"):
+            side["vri_mkd"] = (item["value"], f"строка {item['code']} «{item['name']}»")
         gross = (gross or 0.0) + (item["value"] or 0.0)
     if vri:
         side["vri_cost_mln"] = (None if gross is None else round(gross, 3),
@@ -815,16 +860,195 @@ def glavapu_side(normalized: dict[str, Any], rows: dict[str, float | None],
         side["balance"][kind] = (item["value"], f"строка {item['code']}, га")
         labels[f"balance.{kind}"] = item["name"]
 
-    # Приобъектные места по ВРИ — лист «Машино-места».
+    # Машино-места по ВРИ — лист «Машино-места», ВСЕ виды по каждому ВРИ:
+    # всего, приобъектные, постоянные, гостевые, кратковременные. Ноль
+    # калькулятора — его ответ («этому ВРИ такого вида не положено»), а не
+    # пропуск: он сохраняется, и пустая ячейка остаётся None.
     side["parking_vri"] = {}
     for item in side["parking_items"] or []:
         kind = parking_vri_kind(item.get("vri"))
-        if kind and item.get("attached"):
-            short = kind.split(".", 1)[1]
-            side["parking_vri"][short] = (item["attached"], "лист «Машино-места», приобъектные")
-            labels[kind] = "Приобъектные: " + str(item["vri"])
+        if not kind:
+            continue
+        code = kind.split(".", 1)[1]
+        for column in PARKING_COLUMN_ORDER:
+            if column not in item:
+                continue
+            side["parking_vri"][f"{code}.{column}"] = (
+                item[column], f"лист «Машино-места», «{PARKING_COLUMN_TITLES[column]}»")
+            labels[f"{kind}.{column}"] = f"{item['vri']}: {PARKING_COLUMN_TITLES[column].lower()}"
+
+    # Соцобъекты, которые калькулятор поставил: разделы «ДОО:», «Школы:»,
+    # «Поликлиники:» листа «ТЭП» (места, СПП, НП, участок) — по названиям.
+    side["social_obj"] = {}
+    for kind, prefix in SOCIAL_TEP_SECTIONS.items():
+        section = _section(sections, prefix)
+        for item in section.get("items") or []:
+            field = _social_field(item["name"])
+            if field:
+                side["social_obj"][f"{kind}.{field}"] = (
+                    item["value"], f"строка {item['code']} «{section['name']}: {item['name']}»")
+    side["social_typical"] = social_buildings(data) if data else None
+
+    # Расчёт объектов обслуживания — нормы калькулятора на население (33–41).
+    service = _section(sections, "расчет объектов обслуживания")
+    side["service"] = {}
+    for item in service.get("items") or []:
+        name = _name_key(item["name"])
+        kind = next((key for key, needle in SERVICE_ROWS if name.startswith(needle)), "")
+        if kind:
+            side["service"][kind] = (item["value"], f"строка {item['code']} «{item['name']}»")
+    need = [side["service"].get(k, (None, ""))[0] for k in SERVICE_COMMERCE]
+    if side["service"] and all(v is not None for v in need):
+        side["service"]["commerce_need"] = (
+            round(sum(need), 3), "строки «Объекты торговли … городских служб (ННП)», сумма")
+
+    # Элементы жилых территорий — справочно по строкам, озеленённые ЖК —
+    # против нашей площади двора (покрывает ли она городскую норму).
+    elements = _section(sections, "элементы жилых территорий")
+    side["territory"] = {}
+    for item in elements.get("items") or []:
+        name = _name_key(item["name"])
+        kind = "green_zhk" if name.startswith("озелененные территории жк") else item["code"].replace(".", "_")
+        side["territory"][kind] = (item["value"], f"строка {item['code']}, га")
+        if kind != "green_zhk":
+            labels[f"territory.{kind}"] = item["name"]
+
+    # Квартиры: всего (строка 5) и по размерам — по подписи строки, где бы
+    # калькулятор их ни поставил.
+    side["flats"] = {"total": (n.get("apartment_units"), "строка 5 «Количество квартир»")}
+    for section in sections.values():
+        for item in section.get("items") or []:
+            size = flat_size_kind(item["name"], section["name"])
+            if size:
+                side["flats"][size] = (item["value"], f"строка {item['code']} «{item['name']}»")
+
+    # Параметры территории — то, от чего калькулятор считает: К1/К2, зона и
+    # нормативы соцобъектов, квартал, аренда, УПКС и базовые по типам.
+    sheet = "лист «Параметры территории»"
+    side["params"] = {
+        "k1": (n.get("parking_k1_coefficient"), sheet + ", К1"),
+        "k2": (n.get("parking_k2_coefficient"), f"{sheet}, {n.get('parking_k2_label') or 'К2'}"),
+        "district": (n.get("district"), sheet + ", «Район»"),
+        "zone": (n.get("calculation_zone"), sheet + ", «Расчётная зона»"),
+        "kindergarten_norm": (n.get("kindergarten_norm_per_1000"), sheet + ", «Норматив ДОО»"),
+        "school_norm": (n.get("school_norm_per_1000"), sheet + ", «Норматив школ»"),
+        "quarter": (n.get("cadastral_quarter"), sheet + ", «Кадастровый квартал»"),
+        "rent": (n.get("rent_coefficient"), sheet + ", «Коэффициент аренды»"),
+        "mpt_coef": (n.get("mpt_coefficient"), sheet + ", «Коэффициент МПТ»"),
+    }
+    for use, value in (n.get("vri_upks_by_use") or {}).items():
+        side["params"][f"upks_{use}"] = (value, f"{sheet}, УПКС, руб/м²")
+    for use, value in (n.get("vri_base_costs_by_use") or {}).items():
+        side["params"][f"base_{use}"] = (value, f"{sheet}, базовая стоимость")
+    # Признак МПТ квартала — рядом с суммой льготы, как есть и с источником:
+    # «не включён» при ненулевой льготе не ошибка (он меняет только
+    # коэффициент места офисов и торговли), но читатель должен видеть оба.
+    relief = side["vri_relief"].get("mpt")
+    flag = side["params"]["mpt_coef"][0]
+    if relief and flag not in (None, ""):
+        side["vri_relief"]["mpt"] = (relief[0], f"{relief[1]}; {sheet}: «Коэффициент МПТ: {flag}»")
     side["labels"] = labels
+    side["anomalies"] = anomalies(side)
     return side
+
+
+PARKING_COLUMN_ORDER = ("total", "attached", "permanent", "guest", "short_stop")
+PARKING_COLUMN_TITLES = {"total": "Всего", "attached": "Приобъектные", "permanent": "Постоянные",
+                         "guest": "Гостевые", "short_stop": "Кратковременные"}
+
+SOCIAL_TEP_SECTIONS = {"kindergarten": "доо", "school": "школ", "clinic": "поликлин"}
+SOCIAL_FIELDS = (("количество мест", "places"), ("мощность", "places"), ("спп", "spp"),
+                 ("наземная площадь", "np"), ("площадь земельного участка", "site"))
+
+
+def _social_field(name: str) -> str:
+    key = _name_key(name)
+    return next((field for prefix, field in SOCIAL_FIELDS if key.startswith(prefix)), "")
+
+
+SERVICE_ROWS = (("clinic_adult", "поликлиника взрослая"), ("clinic_child", "поликлиника детская"),
+                ("sport_flat", "плоскостные спортивные"),
+                ("sport_indoor", "крытые объекты спорта"),
+                ("sport_indoor_500", "в радиусе пешеходной доступности до 500"),
+                ("sport_indoor_1500", "в радиусе пешеходной доступности до 1500"),
+                ("retail", "объекты торговли"), ("consumer", "объекты бытового"),
+                ("catering", "объекты общественного питания"), ("culture", "объекты культуры"),
+                ("city_services", "объекты для размещения городских служб"))
+# Нежилая площадь обслуживания, которую в жилом квартале обычно несёт
+# встроенная коммерция (строки 37–41 калькулятора).
+SERVICE_COMMERCE = ("retail", "consumer", "catering", "culture", "city_services")
+
+
+def flat_size_kind(name: str, section: str = "") -> str:
+    """«до 70 м²» / «70–100 м²» / «более 100 м²» → small / medium / large.
+
+    Только строки про квартиры (в подписи строки или её раздела): «до 500 м»
+    крытого спорта сюда не попадает.
+    """
+    text = _name_key(name)
+    if "квартир" not in text and "квартир" not in _name_key(section):
+        return ""
+    if re.search(r"(более|свыше|больше|>)\s*100", text):
+        return "large"
+    if re.search(r"70\s*[-–—]\s*100|от\s*70\s*до\s*100", text):
+        return "medium"
+    if re.search(r"(до|менее|<)\s*70", text):
+        return "small"
+    return ""
+
+
+def _ru(value: float, digits: int = 0) -> str:
+    """«23 253,958»: разряды пробелом, дробь запятой — пунктуацию не трогает."""
+    text = f"{value:,.{digits}f}"
+    return text.replace(",", " ").replace(".", ",")
+
+
+def _value(side: dict[str, Any], group: str, kind: str) -> float | None:
+    got = (side.get(group) or {}).get(kind)
+    return got[0] if isinstance(got, (tuple, list)) and got else None
+
+
+def anomalies(side: dict[str, Any]) -> list[dict[str, str]]:
+    """Странности самой выгрузки калькулятора — показать, а не скрыть.
+
+    Это не расхождение с нами: здесь калькулятор спорит сам с собой или
+    делает то, что читатель книги поймёт неверно. Каждая — с местом.
+    """
+    found: list[dict[str, str]] = []
+    labels = {"kindergarten": "ДОО", "school": "Школа", "clinic": "Поликлиника"}
+    unit = {"kindergarten": "мест", "school": "мест", "clinic": "пос./см."}
+    for kind, label in labels.items():
+        placed = _value(side, "social_obj", f"{kind}.places")
+        need = _value(side, "social", kind)
+        comp = _value(side, "social_comp", kind)
+        if placed and need is not None and placed > need:
+            typical = next((item["name"] for item in side.get("social_typical") or []
+                            if item.get("kind") == kind), "")
+            found.append({
+                "kind": f"social_surplus.{kind}",
+                "text": (f"{label}: поставлено {_ru(placed)} {unit[kind]} при потребности "
+                         f"{_ru(need)} — сверх потребности {_ru(placed - need)}"
+                         + (f" ({typical})" if typical else "")
+                         + (f"; компенсация по объекту {_ru(comp, 3)} млн ₽ — минус значит "
+                            "профицит мест, он вычитается из дефицита других объектов"
+                            if comp is not None and comp < 0 else "")),
+                "where": "лист «ТЭП», разделы «" + label + "» и «Расчёт объектов обслуживания»"})
+    total = _value(side, "social_comp", "total")
+    parts = {k: _value(side, "social_comp", k) for k in labels}
+    owed = {k: v for k, v in parts.items() if v is not None and v > 0}
+    if total is not None and abs(total) < 1e-6 and owed:
+        found.append({
+            "kind": "social_comp_offset",
+            "text": ("компенсация за соцобъекты итогом 0, хотя дефицит есть: "
+                     + ", ".join(f"{labels[k]} +{_ru(v, 3)} млн ₽" for k, v in owed.items())
+                     + ": калькулятор берёт итог как max(0, сумма по объектам), и профицит "
+                       "одного объекта гасит дефицит другого"),
+            "where": "лист «ТЭП», раздел «Расчёт компенсации за социальные объекты»"})
+    # Льгота за МПТ больше платы за ВРИ под МКД — не странность: нежилья
+    # (МФЦ, 4.1) бывает больше жилья, и 1874-ПП льготу размером платы не
+    # ограничивает (владелец, 06.10.2026). Признак МПТ квартала показывается
+    # рядом с суммой льготы, в её строке (`glavapu_side`), а не здесь.
+    return found
 
 
 # ------------------------------------------------------------------ сверка --
@@ -847,7 +1071,58 @@ KIND_LABELS = {
     "social_comp.kindergarten": "Компенсация: ДОО",
     "social_comp.school": "Компенсация: СОШ",
     "social_comp.clinic": "Компенсация: поликлиника",
-    "parking_vri.built_in": "Приобъектные: встроенная коммерция",
+    "flats.total": "Квартир, всего",
+    "flats.small": "Квартиры до 70 м²",
+    "flats.medium": "Квартиры 70–100 м²",
+    "flats.large": "Квартиры более 100 м²",
+    "social_obj.kindergarten.places": "ДОО: мест поставлено",
+    "social_obj.kindergarten.spp": "ДОО: СПП, тыс. м²",
+    "social_obj.kindergarten.np": "ДОО: наземная площадь, тыс. м²",
+    "social_obj.kindergarten.site": "ДОО: участок, га",
+    "social_obj.school.places": "Школа: мест поставлено",
+    "social_obj.school.spp": "Школа: СПП, тыс. м²",
+    "social_obj.school.np": "Школа: наземная площадь, тыс. м²",
+    "social_obj.school.site": "Школа: участок, га",
+    "social_obj.clinic.places": "Поликлиника: пос./смену поставлено",
+    "social_obj.clinic.spp": "Поликлиника: СПП, тыс. м²",
+    "social_obj.clinic.np": "Поликлиника: наземная площадь, тыс. м²",
+    "social_obj.clinic.site": "Поликлиника: участок, га",
+    "service.clinic_adult": "Поликлиника взрослая, пос./смену",
+    "service.clinic_child": "Поликлиника детская, пос./смену",
+    "service.sport_flat": "Плоскостные спортсооружения, га",
+    "service.sport_indoor": "Крытый спорт (ННП), тыс. м²",
+    "service.sport_indoor_500": "Крытый спорт до 500 м, тыс. м²",
+    "service.sport_indoor_1500": "Крытый спорт до 1500 м, тыс. м²",
+    "service.retail": "Торговля (ННП), тыс. м²",
+    "service.consumer": "Бытовое обслуживание (ННП), тыс. м²",
+    "service.catering": "Общепит (ННП), тыс. м²",
+    "service.culture": "Культура и досуг (ННП), тыс. м²",
+    "service.city_services": "Городские службы (ННП), тыс. м²",
+    "service.commerce_need": "Обслуживание (торговля … городские службы) против встроенной коммерции, тыс. м²",
+    "territory.green_zhk": "Озеленённые территории ЖК против нашего двора, га",
+    "params.k1": "К1 — доступность рельсового каркаса",
+    "params.k2": "К2 — деловая активность",
+    "params.district": "Район",
+    "params.zone": "Расчётная зона",
+    "params.kindergarten_norm": "Норматив ДОО, мест / 1000 жит.",
+    "params.school_norm": "Норматив школ, мест / 1000 жит.",
+    "params.quarter": "Кадастровый квартал",
+    "params.rent": "Коэффициент аренды",
+    "params.mpt_coef": "Коэффициент МПТ",
+    "params.upks_mkd": "УПКС: МКД, руб/м²",
+    "params.base_mkd": "Базовая стоимость: МКД",
+    "params.upks_office": "УПКС: офисы, руб/м²",
+    "params.base_office": "Базовая стоимость: офисы",
+    "params.upks_trade": "УПКС: торговля, руб/м²",
+    "params.base_trade": "Базовая стоимость: торговля",
+    "params.upks_garage": "УПКС: гаражи, руб/м²",
+    "params.base_garage": "Базовая стоимость: гаражи",
+    "params.upks_social": "УПКС: соцобъекты, руб/м²",
+    "params.base_social": "Базовая стоимость: соцобъекты",
+    "params.upks_hotel": "УПКС: временное проживание, руб/м²",
+    "params.base_hotel": "Базовая стоимость: временное проживание",
+    "params.upks_industry": "УПКС: производство, руб/м²",
+    "params.base_industry": "Базовая стоимость: производство",
     "mpt": "МПТ, рабочих мест",
     "vri_cost_mln": "Стоимость смены ВРИ до льгот",
     "vri_relief.total": "Льгота по плате за ВРИ, всего",
@@ -857,45 +1132,94 @@ KIND_LABELS = {
     "density": "Плотность от СПП, тыс. м²/га",
 }
 # Группа сверки: заголовок и префиксы видов в ней (по порядку показа).
-GROUPS = (("СПП и ГНС по видам", ("spp",)),
+GROUPS = (("Параметры территории", ("params",)),
+          ("СПП и ГНС по видам", ("spp",)),
+          ("Квартиры", ("flats",)),
           ("Соцобъекты", ("social",)),
+          ("Соцобъекты, которые поставил калькулятор", ("social_obj",)),
+          ("Объекты обслуживания", ("service",)),
           ("Соцнагрузка, млн ₽", ("social_comp",)),
           ("Машино-места по видам", ("parking",)),
-          ("Приобъектные машино-места по ВРИ", ("parking_vri",)),
+          ("Машино-места по ВРИ", ("parking_vri",)),
           ("МПТ", ("mpt",)),
           ("Стоимость смены ВРИ, млн ₽", ("vri_cost_mln", "vri_relief", "vri_net_mln", "vri")),
           ("Плотность", ("density",)),
-          ("Баланс территории (как разложил калькулятор)", ("balance",)))
-NESTED = ("spp", "social", "social_comp", "parking", "parking_vri", "vri", "vri_relief", "balance")
+          ("Баланс территории (как разложил калькулятор)", ("balance",)),
+          ("Элементы жилых территорий", ("territory",)))
+NESTED = ("params", "spp", "flats", "social", "social_obj", "service", "social_comp", "parking",
+          "parking_vri", "vri", "vri_relief", "balance", "territory")
+
+# Пояснение группы — строкой под её заголовком.
+GROUP_NOTES = {
+    "Машино-места по ВРИ": (
+        "«Приобъектные» — места для посетителей и работников нежилого объекта "
+        "(945-ПП), а не «уличные». Калькулятор считает ПОТРЕБНОСТЬ, а не "
+        "размещение: где их поставить — подземный, надземный паркинг или открытая "
+        "стоянка — решает проект. Постоянные и гостевые — места жителей МКД."),
+    "Объекты обслуживания": (
+        "Нормы калькулятора на население квартала. Своих норм на эти объекты в "
+        "модели нет; встроенная коммерция и ФОК проверяются на то, покрывают ли "
+        "они потребность."),
+    "Соцнагрузка, млн ₽": (
+        "Знак калькулятора: плюс — дефицит мест (недостающий объект, × 1,2 для ДОО "
+        "и школы), минус — места сверх потребности. Итог раздела = max(0, сумма): "
+        "профицит одного объекта гасит дефицит другого."),
+}
 
 # Допуск «совпало»: места — штучные, деньги и метры — доля.
 TOLERANCE = {"spp": ("rel", 0.002), "social": ("abs", 1.0), "social_comp": ("rel", 0.005),
              "parking": ("abs", 1.0), "parking_vri": ("abs", 1.0), "mpt": ("abs", 1.0),
              "vri_cost_mln": ("rel", 0.005), "vri": ("rel", 0.005),
              "vri_relief": ("rel", 0.005), "vri_net_mln": ("rel", 0.005),
-             "density": ("abs", 0.02), "balance": ("abs", 0.002)}
+             "density": ("abs", 0.02), "balance": ("abs", 0.002),
+             "params": ("rel", 0.0005), "flats": ("abs", 1.0), "social_obj": ("rel", 0.005),
+             "service": ("rel", 0.005), "territory": ("abs", 0.002)}
+
+# Виды, где наше число — не «то же самое», а запас: сверка спрашивает,
+# ПОКРЫВАЕТ ли наше число потребность калькулятора (наше ≥ его).
+AT_LEAST = ("service.commerce_need", "service.sport_indoor", "territory.green_zhk")
 
 # Виды, у которых своей величины в модели нет ПО УСТРОЙСТВУ: плата за ВРИ в
 # проекте одной суммой, компенсация — одной суммой, баланса территории нет.
 # Число калькулятора здесь справочное, а не «расхождение» и не «нет нашей».
 REFERENCE_PREFIXES = ("vri.", "vri_relief.mpt", "vri_relief.flats", "balance.",
                       "social_comp.kindergarten",
-                      "social_comp.school", "social_comp.clinic")
+                      "social_comp.school", "social_comp.clinic",
+                      "territory.", "params.mpt_coef", "social_obj.")
 REFERENCE_REASON = {
     "vri.": "в проекте плата за ВРИ одной суммой — по видам показано, как посчитал калькулятор",
     "vri_relief.": "в проекте льгота одной суммой, без оснований — по основаниям показано, "
-                   "как посчитал калькулятор",
+                   "как посчитал калькулятор. Льгота за МПТ может быть больше платы за МКД "
+                   "(нежилья больше жилья) — 1874-ПП её платой не ограничивает. Признак МПТ "
+                   "квартала меняет только коэффициент места офисов и торговли (0,8 при "
+                   "признаке; без него вне ТТК 0,7, внутри 0); соцобъекты (0,3), спорт (0,8) "
+                   "и производство дают льготу и без него",
     "balance.": "баланса территории в модели нет — калькулятор разложил её под наше "
                 "соотношение жилых и нежилых зданий",
     "social_comp.": "в проекте компенсация одной суммой — по объектам показано, как посчитал "
                     "калькулятор (минус — объект строится сверх потребности)",
+    "territory.": "своей величины в модели нет — показано, как посчитал калькулятор "
+                  "(на жителя: озеленённые ЖК 5,0 м², из них насаждения 3,5; общего "
+                  "пользования 0,7)",
+    "params.mpt_coef": "признака МПТ квартала модель не ведёт — он меняет только "
+                       "коэффициент места офисов и торговли в льготе за МПТ",
+    "social_obj.": "соцобъекта этого вида в ТЭП проекта нет — калькулятор поставил свой",
 }
 
 
 # Почему своей величины нет — по виду, когда частной причины не дали.
 MISSING_REASON = {
-    "parking_vri.": ("приобъектные места этого ВРИ наша норма не считает: у соцобъектов "
-                     "(ДОО, школа, поликлиника) своих приобъектных в модели нет"),
+    "parking_vri.4_4.": ("ТЦ уходит в калькулятор как «Объекты торговли (4.2)» (карта "
+                         "NONRES_VRI): строка 4.4 — магазины, такого продукта в модели нет"),
+    "parking_vri.3_": ("машино-места соцобъектов (ДОО, школа, поликлиника) наша норма не "
+                       "считает: своих приобъектных и мест остановки у них в модели нет"),
+    "parking_vri.": ("этот вид мест по этому ВРИ модель не считает"),
+    "service.": "своей нормы на этот вид обслуживания в модели нет",
+    "params.upks_": ("в проекте нет принятой выгрузки ГлавАПУ по участку — УПКС квартала не "
+                     "задан (плата за ВРИ проекта задаётся суммой)"),
+    "params.base_": ("в проекте нет принятой выгрузки ГлавАПУ по участку — базовая стоимость "
+                     "не задана (плата за ВРИ проекта задаётся суммой)"),
+    "flats.": "состава квартир по размерам в модели нет",
 }
 
 
@@ -915,8 +1239,24 @@ def _in_group(kind: str, prefixes: tuple[str, ...]) -> bool:
 
 
 def _code_order(kind: str) -> tuple:
+    """Порядок строк по коду ВРИ/строки, внутри кода — по виду мест."""
     tail = kind.split(".", 1)[1] if "." in kind else kind
-    return (tuple(int(x) if x.isdigit() else 10**6 for x in tail.split("_")), tail)
+    code, _, sub = tail.partition(".")
+    rank = PARKING_COLUMN_ORDER.index(sub) if sub in PARKING_COLUMN_ORDER else len(PARKING_COLUMN_ORDER)
+    return (tuple(int(x) if x.isdigit() else 10**6 for x in code.split("_")), code, rank, sub)
+
+
+def _as_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return ru_number(value) if re.fullmatch(r"\s*-?[\d\s\xa0]+(?:[.,]\d+)?\s*", str(value or "")) else None
+
+
+def _same_text(a: Any, b: Any) -> bool:
+    norm = lambda v: " ".join(str(v).lower().replace("ё", "е").split())  # noqa: E731
+    return norm(a) == norm(b)
 
 
 def compare(ours: dict[str, Any], theirs: dict[str, Any],
@@ -952,13 +1292,16 @@ def compare(ours: dict[str, Any], theirs: dict[str, Any],
             blocked = _blocked_by(kind, refused_params)
             if mine is None and them is None:
                 continue
-            if (mine is None and kind.startswith(REFERENCE_PREFIXES)
-                    and them is not None and abs(float(them)) < 1e-9):
-                # Справочный ноль калькулятора (ИЖС, гаражи, производство…)
-                # — шум: своей величины у нас нет, у него вида нет.
+            them_num, mine_num = _as_number(them), _as_number(mine)
+            if (mine is None and kind.startswith(REFERENCE_PREFIXES + ("parking_vri.",))
+                    and them_num is not None and abs(them_num) < 1e-9):
+                # Ноль калькулятора там, где своей величины у нас нет (ИЖС,
+                # гаражи; приобъектные у МКД, постоянные у офиса) — шум: у
+                # него этого вида нет, у нас тоже.
                 continue
             if mine is None and them is not None and kind.startswith(REFERENCE_PREFIXES):
-                why = next(v for k, v in REFERENCE_REASON.items() if kind.startswith(k))
+                why = reasons.get(kind) or next(v for k, v in REFERENCE_REASON.items()
+                                                if kind.startswith(k))
                 row.update(status="reference", reason=why)
             elif them is None:
                 row.update(status="glavapu_missing",
@@ -968,11 +1311,29 @@ def compare(ours: dict[str, Any], theirs: dict[str, Any],
                            reason=reasons.get(kind) or next(
                                (v for k, v in MISSING_REASON.items() if kind.startswith(k)),
                                "в модели нет своей величины для сверки"))
+            elif them_num is None or mine_num is None:
+                # Текст (район, квартал, признак): совпало или нет, без разницы.
+                if _same_text(mine, them):
+                    row["status"] = "match"
+                elif blocked:
+                    row.update(status="not_applied",
+                               reason="калькулятор не принял параметр сценария: " + blocked)
+                else:
+                    row.update(status="diff",
+                               reason=reasons.get(kind) or "расхождение без известной причины — разбирать")
             else:
-                delta = float(them) - float(mine)
+                delta = them_num - mine_num
                 row["delta"] = round(delta, 3)
-                limit = tol if mode == "abs" else max(abs(float(mine)), abs(float(them))) * tol
-                if abs(delta) <= limit:
+                limit = tol if mode == "abs" else max(abs(mine_num), abs(them_num)) * tol
+                if kind in AT_LEAST:
+                    # Запас, а не равенство: наше число покрывает потребность?
+                    if mine_num + limit >= them_num:
+                        row.update(status="covered", reason=reasons.get(kind, ""))
+                    else:
+                        row.update(status="short",
+                                   reason=f"не хватает {_ru(them_num - mine_num, 3)}"
+                                          + (f"; {reasons[kind]}" if reasons.get(kind) else ""))
+                elif abs(delta) <= limit:
                     row["status"] = "match"
                 elif blocked:
                     row.update(status="not_applied",
@@ -984,14 +1345,21 @@ def compare(ours: dict[str, Any], theirs: dict[str, Any],
     counts: dict[str, int] = {}
     for row in rows:
         counts[row["status"]] = counts.get(row["status"], 0) + 1
-    return {"rows": rows, "counts": counts}
+    shown = {row["group"] for row in rows}
+    return {"rows": rows, "counts": counts,
+            "notes": {title: note for title, note in GROUP_NOTES.items() if title in shown},
+            # Странности самой выгрузки: старая запись кэша их не несла —
+            # тогда они считаются заново из её же чисел.
+            "anomalies": (theirs or {}).get("anomalies") if "anomalies" in (theirs or {})
+            else anomalies(theirs or {})}
 
 
 # Какие виды зависят от каких параметров сценария: непринятый параметр
 # снимает доверие к виду, а не ко всей сверке.
 _DEPENDS = {
     "social_comp.": ("spp", "vpp_pct", "spp_residential_ths", "composition", "social"),
-    "parking_vri.": ("spp_nonres_ths", "nonres", "vpp_pct", "composition"),
+    "parking_vri.": ("spp", "spp_residential_ths", "spp_nonres_ths", "nonres", "vpp_pct",
+                     "composition", "social"),
     "vri.": ("spp", "spp_residential_ths", "spp_nonres_ths", "nonres", "land_right",
              "composition"),
     "vri_relief.": ("spp", "spp_nonres_ths", "nonres", "social", "composition"),
@@ -1007,6 +1375,12 @@ _DEPENDS = {
     "vri_cost_mln": ("spp", "spp_residential_ths", "spp_nonres_ths", "nonres", "land_right",
                      "composition"),
     "density": ("area_ha", "spp"),
+    "flats.": ("spp", "spp_residential_ths", "vpp_pct", "composition"),
+    "social_obj.": ("social", "composition"),
+    "service.": ("spp", "vpp_pct", "spp_residential_ths", "spp_nonres_ths", "nonres",
+                 "composition"),
+    "territory.": ("spp", "vpp_pct", "spp_residential_ths", "composition"),
+    "params.": (),
 }
 
 

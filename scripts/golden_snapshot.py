@@ -133,6 +133,13 @@ def s_nonresidential(core: Any, root: Path) -> dict:
              offices_parking_over_spaces=20)
     _object_tep(core, x, t)
     x["project_kind"] = getattr(core, "PROJECT_KIND_NONRESIDENTIAL", "nonresidential")
+    # Выбор нежилого вида на странице ставит умолчание СМР вместо «под ключ»
+    # (решение 06.10.2026, `adoptObjectRateKind`). Дерево до решения перевода
+    # не знает — там ставка остаётся как есть.
+    smr_rate = getattr(core, "object_smr_rate", None)
+    for key, turnkey in (getattr(core, "OBJECT_SMR_RATE_DEFAULTS", None) or {}).items():
+        if smr_rate and float(x.get(key) or 0) == turnkey:
+            x[key] = smr_rate(turnkey, x)
     return {"inputs": x, "tep": t, "phasing": {}}
 
 

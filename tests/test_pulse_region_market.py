@@ -320,9 +320,91 @@ def test_the_regions_route_is_behind_the_cabinet_key(monkeypatch, tmp_path: Path
     install(app)
     assert TestClient(app).get("/market/pulse/regions").status_code == 401
     opened = TestClient(app, headers={"X-Market-Key": "stand-key-2026"})
-    status = opened.get("/market/pulse/regions").json()
+    answer = opened.get("/market/pulse/regions")
+    assert answer.headers["content-type"] == "application/json; charset=utf-8"
+    status = answer.json()
     assert "russia.pulsprodaj.ru" in status["blocker"]
     assert status["regions"][0]["region"] == "50" and status["interval_days"] == 7
     run = opened.post("/market/pulse/regions/run").json()
     assert run["started"] is False and "PULSE_BASE_URL" in run["reason"]
     assert opened.post("/market/pulse/regions/run", params={"region": "99"}).status_code == 400
+
+
+def test_without_a_summary_the_address_gets_the_real_reason_not_old_moscow(tmp_path: Path) -> None:
+    """Мытищи без свода: причина — состояние сбора, а не «Москва старая»."""
+    moscow = MoscowMarket({"current": {"Комфорт": {"projects": 49, "price_median": 458_900}}})
+    address = "Летная улица, 15, Мытищи, Московская область, Россия"
+
+    # Всероссийская база не подключена — так и сказано.
+    off = _collector(_mo_pulse(base=MOSCOW), tmp_path / "off")
+    reason = MarketAtlas(moscow, off.dir, explain=off.explain).scope(address)["region"]["reason"]
+    assert "Московская область" in reason and "russia.pulsprodaj.ru" in reason
+    assert "Москва старая" not in reason
+
+    # Сбор идёт — сколько из скольких.
+    going = _collector(_mo_pulse(), tmp_path / "going", limit=2)
+    going.run_due()
+    reason = MarketAtlas(moscow, going.dir, explain=going.explain).scope(address)["region"]["reason"]
+    assert "собирается" in reason and "2 из 5" in reason
+
+    # Сбора ещё не было.
+    fresh = _collector(_mo_pulse(), tmp_path / "fresh")
+    reason = MarketAtlas(moscow, fresh.dir, explain=fresh.explain).scope("МО, Мытищи")["region"]["reason"]
+    assert "ещё не собирался" in reason and "/market/pulse/regions/run" in reason
+
+    # Регион не в настройке.
+    reason = MarketAtlas(moscow, fresh.dir, explain=fresh.explain).scope(
+        "Ленинградская область, г. Мурино")["region"]["reason"]
+    assert "не включён в сбор" in reason and "PULSE_REGIONS=50" in reason
+
+    # Свод готов — адрес покрыт, причины нет.
+    fresh.run_due()
+    scope = MarketAtlas(moscow, fresh.dir, explain=fresh.explain).scope(address)
+    assert scope["covered"] is True and scope["source_kind"] == "cabinet"
+
+
+def test_the_price_hint_in_mytishchi_names_the_region_reason(monkeypatch, tmp_path: Path) -> None:
+    """То, что видит владелец под полем цены: не «Москва старая», а причина региона."""
+    from market_search.service_v6 import MarketDiscoveryService
+
+    monkeypatch.delenv("PULSE_BASE_URL", raising=False)
+    service = MarketDiscoveryService(tmp_path)
+    service.pulse = SimpleNamespace(
+        available=True, segments=lambda: {}, near=lambda lat, lon, radius_km: [],
+        metrics=lambda cid: {}, price=lambda cid: None, project_totals=lambda cid: {},
+        find_project=lambda query: None, price_history=lambda ids, months=12: {},
+        remaining=lambda cid: {},
+    )
+    hint = service.price_hint(address="Летная улица, 15, Мытищи, Московская область",
+                              latitude=55.91, longitude=37.73)
+    assert hint["available"] is False
+    assert "Москва старая" not in hint["reason"]
+    assert "Свода по региону «Московская область» нет" in hint["reason"]
+    assert "russia.pulsprodaj.ru" in hint["reason"]
+    # «Соседей нет» тоже с причиной: в радиусе пусто — так и сказано.
+    assert "не нашёл ни одного проекта" in hint["reason"]
+    assert hint["peer_search"]["found"] == 0
+
+
+def test_neighbours_without_a_price_are_counted_in_the_reason(monkeypatch, tmp_path: Path) -> None:
+    from market_search.service_v6 import MarketDiscoveryService
+
+    service = MarketDiscoveryService(tmp_path)
+    near = [(0.5, _project("50-000001", "Московская область, г.о. Мытищи")),
+            (0.9, _project("50-000002", "Московская область, г.о. Мытищи"))]
+    service.pulse = SimpleNamespace(
+        available=True, segments=lambda: {}, near=lambda lat, lon, radius_km: near,
+        price=lambda cid: None, errors=["price_stats 50-000002: HTTP 502"],
+    )
+    original = service.pulse.price
+
+    def price(cid):
+        service.pulse.errors.append(f"price_stats {cid}: HTTP 502")
+        return original(cid)
+
+    service.pulse.errors = []
+    service.pulse.price = price
+    hint = service.price_hint(address="Мытищи, Московская область", latitude=55.91, longitude=37.73)
+    assert hint["peer_search"]["found"] == 2 and hint["peer_search"]["without_price"] == 2
+    assert "проектов «Пульса» 2" in hint["reason"] and "без цены 2" in hint["reason"]
+    assert "HTTP 502" in hint["reason"]

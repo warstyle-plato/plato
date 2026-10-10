@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import copy
+import html
 import io
 import json
 import re
@@ -135,11 +136,16 @@ def test_the_object_estimate_and_the_common_costs_add_up_to_the_capex() -> None:
         parts = sum(v for k, v in rows.items() if k not in (
             "Итого смета объекта", "на м² наземной ГНС объекта", "на м² арендопригодной / продаваемой"))
         assert parts == pytest.approx(rows["Итого смета объекта"])
-    # Генподряд, техзаказчик и резерв проекта без жилья — целиком доли объектов:
-    # «общими» строками их больше нет.
-    for key in ("gc_fee", "technical_supervision", "reserve"):
+    # Генподряд и техзаказчик проекта без жилья — целиком доли объектов:
+    # «общими» строками их нет. Резерв — доля объекта со своей стройки, а
+    # резерв на статьи проекта (полная смета нежилого, 06.10.2026) — общей
+    # строкой «Резерв — вне объектов»; вместе — резерв проекта.
+    for key in ("gc_fee", "technical_supervision"):
         assert sum(p[key] for p in result["object_costs"].values()) == pytest.approx(result["capex"][key])
-    assert not {"Вознаграждение генподрядчика — вне объектов", "Резерв — вне объектов"} & set(common)
+    assert not {"Вознаграждение генподрядчика — вне объектов",
+                "Технический заказчик — вне объектов"} & set(common)
+    reserve_objects = sum(p["reserve"] for p in result["object_costs"].values())
+    assert reserve_objects + common["Резерв — вне объектов"] == pytest.approx(result["capex"]["reserve"])
     assert common["Участок — стоимость сделки"] == pytest.approx(1500e6)
 
 
@@ -235,10 +241,12 @@ console.log(JSON.stringify(out));
     return {item["key"]: item["html"] for item in json.loads(out)}
 
 
-def _cells(html: str) -> list[tuple[str, str]]:
+def _cells(markup: str) -> list[tuple[str, str]]:
     """Строки таблиц движка (`object-rows`); участок из вводных — своя таблица."""
-    tables = "".join(re.findall(r'<table class="nonres-strategy object-rows">[\s\S]*?</table>', html))
-    return [(re.sub("<[^>]+>", "", a), re.sub("<[^>]+>", "", b)) for a, b in
+    tables = "".join(re.findall(r'<table class="nonres-strategy object-rows">[\s\S]*?</table>', markup))
+    # Подписи с «&» (F&B, FF&E) страница экранирует — сравниваем текст.
+    return [(html.unescape(re.sub("<[^>]+>", "", a)), html.unescape(re.sub("<[^>]+>", "", b)))
+            for a, b in
             re.findall(r"<tr(?: class=\"section\")?><td>([\s\S]*?)</td><td>([\s\S]*?)</td></tr>",
                        tables)]
 
