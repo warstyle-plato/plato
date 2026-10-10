@@ -106,11 +106,22 @@ def test_a_closed_mirror_difference_leaves_the_list(mirror) -> None:
 
 
 def test_the_mirror_jobs_follow_the_calculators_norm(mirror) -> None:
-    """МПТ встроенных помещений — 32 м² НП на место к ближайшему: 22 217 → 694."""
+    """МПТ встроенных помещений — 32 м² НП на место, вниз: 22 217 → 694."""
     analysis = {"territory": {"area_ha": I["site_area_ha"]},
                 "coefficients": {"rail": I["k1"], "business_outside_ttc": I["k2"]}}
     book = core.vri_tep_quick("msk", "77:05:0004001:1", analysis=analysis)["file"]
     assert gs.mpt_by_vri(book)["total"] == 694
+
+
+def test_the_jobs_round_down_like_the_calculators_code() -> None:
+    """Код калькулятора считает места по ВРИ через lodash `floor`. На
+    Нагатино (694,3) вниз и к ближайшему совпадают, поэтому проверка берёт
+    площадь, где они расходятся: 6 867 / 32 = 214,6 — у калькулятора 214."""
+    got = core.tep_derived_norms(apartment_area_sqm=0.0, residential_living_spp_sqm=0.0,
+                                 nonresidential_np_sqm=6867.0)
+    assert got["jobs"] == 214
+    assert core.tep_derived_norms(apartment_area_sqm=0.0, residential_living_spp_sqm=0.0,
+                                  nonresidential_np_sqm=6867.0, sqm_per_job=45.0)["jobs"] == 152
 
 
 # ------------------------------------------------------ нормативная функция --
