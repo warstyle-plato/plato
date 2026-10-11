@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 
@@ -285,5 +286,5 @@ def test_the_limit_check_knows_the_carried_debt_is_not_a_draw() -> None:
     """
     book, _ = _book(sweep=False, carry=True)
     assert book.cell("ПРОВЕРКИ", "F72") == "OK"
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     assert "_v4_relax_limit_check_for_carried_debt" in source

@@ -30,6 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
 import teaser_pdf  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 
@@ -117,7 +118,7 @@ def test_project_objects_keep_their_rows(monkeypatch) -> None:
 
 def test_the_full_pdf_reads_the_same_rule() -> None:
     """Полный PDF печатает ТЭП той же функцией — второго фильтра нет."""
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     start = source.index("def _build_developaid_pdf(")
     body = source[start:source.index("\ndef ", start + 1)]
     assert "if row_listed(row)" in body

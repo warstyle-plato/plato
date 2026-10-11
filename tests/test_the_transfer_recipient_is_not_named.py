@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import copy
-import io
 import pathlib
 import re
 
@@ -25,6 +24,7 @@ import pytest
 
 import main_legacy as core
 import developaid_v2_form as v2form
+from engine_source import engine_source  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -110,7 +110,7 @@ _ALLOWED = (
 
 def test_only_the_known_recipient_is_named_in_the_engine():
     """«Передаётся городу» осталось ровно там, где получатель известен."""
-    source = io.open(ROOT / "main_legacy.py", encoding="utf-8").read()
+    source = engine_source()
     hits = []
     for match in re.finditer(r"Передаётся городу", source):
         line_start = source.rfind("\n", 0, match.start()) + 1

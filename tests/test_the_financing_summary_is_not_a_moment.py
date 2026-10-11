@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 
@@ -114,7 +115,7 @@ def test_the_comparison_table_shows_the_rve_block() -> None:
 
 def test_the_pdf_says_the_same_thing() -> None:
     """Отчёт носят в банк — там подписи обязаны быть теми же."""
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     assert "_pdf_phased = len(result.get(\"comparison\") or []) > 1" in source
     assert 'f"{base} — всего" if _pdf_phased else f"{base} в РВЭ"' in source
     # И четвёртое число, без которого три не вычитаются, теперь в PDF тоже.

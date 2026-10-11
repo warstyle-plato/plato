@@ -20,6 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from market_search import krt_registry as registry_mod  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def _registry(tmp_path):
@@ -97,7 +98,7 @@ def test_the_bridge_clears_the_previous_cadastre() -> None:
     # Заполняет он поле ПОСЛЕ подмены проекта: она забывает территорию целиком,
     # и вписанное до неё исчезло бы.
     assert krt.index("applyProjectSnapshot(model)") < krt.index("field.value=cads.join")
-    page = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    page = engine_source()
     snapshot = page[page.index("function applyProjectSnapshot("):]
     snapshot = snapshot[: snapshot.index("\n}\n")]
     assert "forgetTerritoryState()" in snapshot

@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 PAGE = core.PAGE
 
@@ -95,7 +96,7 @@ def test_the_queue_lines_stand_under_the_summed_one() -> None:
 
 def test_the_pdf_draws_each_queue_once() -> None:
     """Отчёт носят в банк, и расходиться с экраном ему нельзя."""
-    source = inspect.getsource(core)
+    source = engine_source()
     start = source.index("for cover in (financing.get(\"escrow_cover_phases\")")
     assert source.count("financing.get(\"escrow_cover_phases\")") == 1, (
         "второй обход очередей в PDF — это второй набор графиков")

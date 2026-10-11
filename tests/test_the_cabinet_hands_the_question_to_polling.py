@@ -18,6 +18,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from engine_source import engine_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -69,7 +70,7 @@ def test_the_fast_answer_comes_back_on_the_same_request(monkeypatch) -> None:
 
 def test_one_implementation_of_the_handoff() -> None:
     """Две копии передачи работы однажды разойдутся на сроке ожидания."""
-    source = (ROOT / "main_legacy.py").read_text()
+    source = engine_source()
     assert source.count("def plato_answer_handoff(") == 1
     chat = source[source.index("def agent_chat("):]
     chat = chat[:chat.index("\n\ndef ")]
@@ -79,7 +80,7 @@ def test_one_implementation_of_the_handoff() -> None:
 
 def test_the_bot_keeps_waiting_in_its_own_thread() -> None:
     """Боту «работа принята» бесполезна: забирать результат ему неоткуда."""
-    source = (ROOT / "main_legacy.py").read_text()
+    source = engine_source()
     body = source[source.index("def plato_answer("):]
     body = body[:body.index("\n\n@app.post")]
     assert "_PLATO_AGENT_WAIT_SECONDS" in body

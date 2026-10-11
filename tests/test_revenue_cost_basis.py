@@ -26,6 +26,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 main = _wrapper.core
 
@@ -148,6 +149,6 @@ def test_silent_mo_recalc_keeps_the_phasing():
 
 def test_server_drops_storage_when_glavapu_is_silent():
     """Обратная сторона: сервер не выдумывает кладовые, если их нет в таблице."""
-    source = Path(main.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     assert 'tep_mapping.pop("storage", None)' in source
     assert 'tep_mapping.pop("offices", None)' in source

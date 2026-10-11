@@ -30,6 +30,7 @@ import main as wrapper  # noqa: E402
 
 core = wrapper.core
 from terms_glossary import TOTAL_AREA  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -121,7 +122,7 @@ def test_the_construction_cost_names_the_core_volume():
     """`construction_cost_per_gns_th` делится на `core_gns` — строительный
     объём МКД (наземная плюс подземная части ядра), а не на наземную ГНС и не
     на объём всего проекта. Обе прежние подписи называли чужую базу."""
-    source = open("main_legacy.py", encoding="utf-8").read()
+    source = engine_source()
     assert ('("construction_cost_per_gns_th", '
             'f"Строительство, тыс. ₽/м² {CORE_TOTAL_AREA.genitive}", "num"),') in source
     line = next(l for l in source.splitlines()

@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def _raise_404(*_args, **_kwargs):
@@ -82,7 +83,7 @@ def test_no_call_site_asks_for_an_object_by_id() -> None:
     Пока все вызовы — поиск, WMS и геокодеры, молчаливое 404 → None неверно
     везде. Появится вызов по идентификатору — эта проверка о нём скажет.
     """
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     assert "if exc.code == 404:\n            return None" not in source, (
         "404 снова превращается в пустой ответ")
     assert source.count("_land_fetch_json(") == 7, (

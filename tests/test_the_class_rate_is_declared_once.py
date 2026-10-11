@@ -18,8 +18,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
-BODY = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+BODY = engine_source()
 
 
 def test_the_bot_has_no_table_of_its_own() -> None:

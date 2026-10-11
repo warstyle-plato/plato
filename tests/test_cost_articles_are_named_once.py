@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def page_names() -> dict[str, str]:
@@ -52,7 +53,7 @@ def test_no_name_is_left_in_latin() -> None:
 
 def test_the_page_keeps_no_copy_of_the_list() -> None:
     """Копию негде обновлять, потому что копии нет."""
-    source = (ROOT / "main_legacy.py").read_text()
+    source = engine_source()
     assert "const capNames=__DEVELOPAID_CAPEX_NAMES__" in source
     assert source.count("const capNames={") == 0, "второй словарь имён на странице"
 

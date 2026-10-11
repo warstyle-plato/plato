@@ -41,6 +41,7 @@ import presentation  # noqa: E402
 import teaser_pdf  # noqa: E402
 import v4_dashboard  # noqa: E402
 from terms_glossary import TERMS  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 ROOT = Path(__file__).resolve().parent.parent
@@ -642,7 +643,7 @@ def test_the_teaser_map_is_the_bot_picture(monkeypatch):
 
     monkeypatch.setattr(core, "_territory_image_png", boom)
     assert core._teaser_map_png({"cadastral_numbers": ["77:01:0004023:15"]}) is None
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     bot = source[source.index("def _telegram_territory_photo("):]
     bot = bot[:bot.index("\ndef ")]
     assert "_territory_image_png(numbers)" in bot, "бот обязан брать ту же картинку, что тизер"

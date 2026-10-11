@@ -27,6 +27,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 
@@ -143,7 +144,7 @@ def test_the_block_and_the_report_show_the_share():
     assert "% участка" in page and "free_pct" in page
     assert "свободно от ограничений" in page
 
-    engine = Path(core.__file__).read_text(encoding="utf-8")
+    engine = engine_source()
     report = engine[engine.index('story.append(_PdfSection("screening"))'):]
     report = report[:report.index('story.append(_PdfSection("summary"))')]
     assert "накрывает ~" in report

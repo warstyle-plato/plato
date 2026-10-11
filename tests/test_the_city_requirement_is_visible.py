@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from engine_source import engine_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -181,7 +182,7 @@ def test_the_mixed_mode_is_not_cut_off_from_the_city_program(core):
 
 def test_social_metres_do_not_reach_the_per_metre_articles(core):
     """ГНС соцобъекта в ТЭП есть, а статьи «на м² ГНС» её не берут."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     line = re.search(r"core_above_gns = .+", source).group(0)
     assert "kindergarten" not in line and "school" not in line and "clinic" not in line
 

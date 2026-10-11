@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def render_source() -> str:
@@ -111,7 +112,7 @@ def test_nothing_was_lost_only_moved():
 
 def test_the_report_still_prints_the_debt_figures():
     """PDF — отдельная поверхность, и состав шапки страницы её не меняет."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     for kept in ("Расчётный БРИДЖ", "Фактический пик БРИДЖ",
                  "Пиковая (непокрытая эскроу) задолженность ПФ"):
         assert f'["{kept}"' in source, kept
@@ -140,7 +141,7 @@ def test_the_tile_and_the_row_below_share_the_source():
 
 def test_the_report_names_the_same_group():
     """PDF ищет ту же группу структуры расходов — по этой строке они и сходятся."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     entry = source[source.index("def _pdf_entry_cost_rows"):]
     assert '"Цена приобретения"' in entry[:1200]
 

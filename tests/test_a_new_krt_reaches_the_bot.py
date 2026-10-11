@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from auction_search.krt_ranking import KrtRanking  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def ranking() -> KrtRanking:
@@ -89,7 +90,7 @@ def test_reading_the_subscription_does_not_change_it() -> None:
 
 def test_the_core_answers_who_to_tell_in_the_same_reply() -> None:
     """Два запроса ради одного сообщения — два места, где список разъедется."""
-    source = (ROOT / "main_legacy.py").read_text()
+    source = engine_source()
     body = source[source.index("def krt_announcements("):]
     body = body[:body.index("\n\n@app.post")]
     assert '"announcements"' in body and '"subscribers"' in body
@@ -98,7 +99,7 @@ def test_the_core_answers_who_to_tell_in_the_same_reply() -> None:
 
 
 def test_the_subscribers_live_on_the_core() -> None:
-    source = (ROOT / "main_legacy.py").read_text()
+    source = engine_source()
     body = source[source.index("def _krt_subscribers_path("):]
     body = body[:body.index("\n\ndef _krt_subscribers(")]
     assert "_PROJECTS_DIR.parent" in body, "рядом с профилями, а не на диске бота"
