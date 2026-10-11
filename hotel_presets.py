@@ -21,12 +21,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import hotel_reference as ref
 
 ORIGINS_KEY = "hotel_origins"
+# Происхождение вводных движка — общий словарь страницы (`fieldOrigins()`).
+FIELD_ORIGIN_KEY = "_field_origin"
+ENGINE_ORIGIN_SOURCE = "hotel_preset"
 
 
 @dataclass(frozen=True)
@@ -43,9 +46,12 @@ class Preset:
     stars: str
     model: str
     values: dict[str, PresetValue]
+    # Вводные движка вне гостиничных полей (ставка статьи сметы): ориентир
+    # заполняет их тем же нажатием и пишет происхождение в `_field_origin`.
+    engine_values: dict[str, PresetValue] = field(default_factory=dict)
 
-    def origin(self, field: str) -> dict[str, Any]:
-        item = self.values[field]
+    def origin(self, name: str) -> dict[str, Any]:
+        item = self.values.get(name) or self.engine_values[name]
         return {"preset": self.key, "text": f"ориентир: {self.title}, {item.how}",
                 "cells": list(item.cells)}
 
@@ -200,11 +206,27 @@ def _dombai() -> Preset:
                                  (k("Предпосылки!E730"),)),
         "dscr_target": _cell(d, "Предпосылки!E730"),
         "hold_years": _cell(d, "Предпосылки!E20"),
-        "exit_mode": PresetValue("sale", "терминальная стоимость в конце срока (E759)", ()),
-        "valuation": PresetValue("ev_ebitda", "EV/EBITDA на выходе (E758)", (k("Предпосылки!E758"),)),
+        # Конец срока книги — терминальная стоимость без сделки (E759 = «да»,
+        # Расчеты!1641, 1678) по Гордону; продажи в потоке модели нет.
+        "exit_mode": PresetValue("hold", "терминальная стоимость без сделки (E759, Расчеты!1641)",
+                                 (k("Расчеты!E1634"),)),
+        "valuation": PresetValue("gordon", "Гордон: поток 4 кварталов × (1 + g) ÷ (r − g) "
+                                 "(Расчеты!1641, 1678)",
+                                 (k("Расчеты!E1634"), k("Расчеты!E1623"))),
+        "gordon_growth_pct": _cell(d, "Расчеты!E1634", 100, "Расчеты!E1634 (= Инвестор!I19)"),
+        "gordon_rate_pct": _cell(d, "Расчеты!E1623", 100),
         "exit_multiple": _cell(d, "Предпосылки!E758"),
     }
-    return Preset("hotel1", "Отель 1 5*", "5", d, values)
+    engine_values = {
+        # Коммунальная инфраструктура модели (Контр_панель!G71) — статья
+        # «Наружные сети и техприсоединение» движка, на м² ГНС гостиницы.
+        "utilities_th_per_sqm": PresetValue(
+            _v(d, "Расчеты!I170") * vat / _v(d, "Предпосылки!E92"),
+            "Расчеты!I170 (= Контр_панель!G71) × (1 + E775) ÷ Предпосылки!E92: "
+            "коммунальная инфраструктура на м² ГНС, с НДС",
+            (k("Расчеты!I170"), k("Предпосылки!E775"), k("Предпосылки!E92"))),
+    }
+    return Preset("hotel1", "Отель 1 5*", "5", d, values, engine_values)
 
 
 def _uai() -> Preset:
@@ -254,9 +276,9 @@ def current_origins(origins: dict[str, Any] | None) -> dict[str, Any]:
     Запись без известного ориентира остаётся как есть.
     """
     out: dict[str, Any] = {}
-    for field, origin in (origins or {}).items():
+    for name, origin in (origins or {}).items():
         preset = preset_for((origin or {}).get("preset")) if isinstance(origin, dict) else None
-        out[field] = preset.origin(field) if preset and field in preset.values else origin
+        out[name] = preset.origin(name) if preset and name in preset.values else origin
     return out
 
 
@@ -273,16 +295,27 @@ def apply_preset(inputs: dict[str, Any], key: str, *, only_empty: bool = False
         raise KeyError(key)
     x = dict(inputs or {})
     origins = dict(x.get(ORIGINS_KEY) or {})
-    for field, item in preset.values.items():
-        name = "hotel_" + field
+    for key, item in preset.values.items():
+        name = "hotel_" + key
         if only_empty and x.get(name) not in (None, ""):
             continue
         value = item.value
         if isinstance(value, float):
             value = round(value, 6)
         x[name] = value
-        origins[field] = preset.origin(field)
+        origins[key] = preset.origin(key)
     x[ORIGINS_KEY] = origins
+    # Вводные движка: умолчание движка — не выбор пользователя, его ориентир
+    # заменяет; вписанное руками (`_field_origin` «manual») — нет.
+    field_origin = dict(x.get(FIELD_ORIGIN_KEY) or {})
+    for key, item in preset.engine_values.items():
+        path = "inputs." + key
+        if (field_origin.get(path) or {}).get("source") == "manual":
+            continue
+        x[key] = round(float(item.value), 6)
+        field_origin[path] = {"source": ENGINE_ORIGIN_SOURCE, **preset.origin(key)}
+    if preset.engine_values:
+        x[FIELD_ORIGIN_KEY] = field_origin
     return x
 
 
@@ -303,5 +336,7 @@ def presets_for_page() -> list[dict[str, Any]]:
     return [{"key": p.key, "title": p.title, "stars": p.stars,
              "values": {f: v.value if not isinstance(v.value, float) else round(v.value, 6)
                         for f, v in p.values.items()},
-             "origins": {f: p.origin(f) for f in p.values}}
+             "origins": {f: p.origin(f) for f in p.values},
+             "engine_values": {f: round(float(v.value), 6) for f, v in p.engine_values.items()},
+             "engine_origins": {f: p.origin(f) for f in p.engine_values}}
             for p in PRESETS]

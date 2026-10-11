@@ -102,7 +102,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.49"
+VERSION = "0.25.50"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -25446,7 +25446,10 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
         "verdict": verdict,
         "blocks": [{"title": "Вывод", "kind": "verdict",
                     "rows": [_row(verdict["title"], verdict["text"], "text")]},
-                   {"title": "Ключевые показатели", "rows": decision}],
+                   {"title": "Ключевые показатели", "rows": decision},
+                   {"title": hotel_strategy.IRR_METHOD_TITLE,
+                    "rows": [_row(name, text, "text")
+                             for name, text in hotel_strategy.IRR_METHOD_NOTES]}],
     }
 
     # 2. Объект и участок ---------------------------------------------------
@@ -26970,6 +26973,11 @@ def _calculate_economics(req: CalcRequest) -> dict:
 
     discount_rate = n(x, "discount_rate_pct", 20) / 100
     project_npv = _monthly_npv(project_cf, discount_rate)
+    # Поток проекта гостиницы — FCFF её расчёта, без процентов кредита (как в
+    # модели Отеля 1): NPV проекта — её, а не ряды выше, они после процентов.
+    _hotel = fin.get("hotel") or {}
+    if _hotel.get("computed"):
+        project_npv = float(_hotel["kpi"]["npv_project"])
     equity_npv = _equity_npv(equity_cf, discount_rate)
     irr_equity = _monthly_irr(equity_cf)
 
@@ -31427,6 +31435,7 @@ _SENSITIVITY_PARAMETERS += [
 # и единица — из описания полей (`developaid_hotel_strategy.FIELDS`).
 _HOTEL_SENSITIVITY_GROUPS = {"adr_rub": "Доходы", "occ_target_pct": "Доходы",
                              "exit_multiple": "Доходы", "exit_cap_pct": "Доходы",
+                             "gordon_rate_pct": "Доходы",
                              "cost_th_per_sqm": "Затраты", "ffe_th_per_key": "Затраты",
                              "loan_spread_pp": "Финансирование",
                              "pref_margin_pp": "Финансирование"}
@@ -41825,7 +41834,7 @@ function isFieldManual(path){
 }
 function fieldOriginNote(path){
  const o=(inputs._field_origin||{})[path];
- if(!o||o.source!=='glavapu')return '';
+ if(!o||(o.source!=='glavapu'&&o.source!=='hotel_preset'))return '';
  return '<div class="glavapu-origin" style="font-size:11px;color:#666;margin-top:2px">'+escapeHtml(o.text||'ГлавАПУ')+'</div>';
 }
 // Регион проекта — поле «Регион» проекта, и только оно. Ни имя файла
@@ -43647,6 +43656,13 @@ function applyHotelPreset(key,onlyEmpty){
  Object.keys(preset.values).forEach(f=>{
   if(onlyEmpty&&!hotelBlank(inputs['hotel_'+f]))return;
   setHotelField(f,preset.values[f],preset.origins[f]);
+ });
+ // Вводные движка (ставка статьи сметы) — как `hotel_presets.apply_preset`:
+ // умолчание заменяется, вписанное руками остаётся.
+ Object.keys(preset.engine_values||{}).forEach(k=>{
+  if(isFieldManual('inputs.'+k))return;
+  inputs[k]=preset.engine_values[k];
+  fieldOrigins()['inputs.'+k]=Object.assign({source:'hotel_preset'},preset.engine_origins[k]);
  });
  renderInputs();refreshGroupPeeks();calculate();
 }

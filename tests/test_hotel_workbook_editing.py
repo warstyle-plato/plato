@@ -34,7 +34,8 @@ def evaluate(content):
 @pytest.mark.parametrize("field,cell,value", [
     ("hotel_adr_rub", f"C{hw._ROWS['adr']}", 22000),
     ("hotel_keys", f"C{hw._ROWS['keys']}", 240),
-    ("hotel_exit_multiple", f"C{hw._ROWS['multiple']}", 6),
+    # Отель 1 — Гордон (Расчеты!1641): в книге ставка r — доля, в проекте — %.
+    ("hotel_gordon_rate_pct", f"C{hw._ROWS['gordon_r']}", 0.13),
     ("hotel_financing", f"C{hw._ROWS['financing']}", "Без кредита"),
     ("hotel_repayment", f"C{hw._ROWS['repayment']}", "Аннуитет"),
     ("hotel_hold_years", f"C{hw._ROWS['hold']}", 8),
@@ -52,7 +53,7 @@ def test_editing_the_downloaded_book_reaches_the_same_answer_as_the_engine(origi
     evaluator = Evaluator(book)
     inputs = copy.deepcopy(x)
     choices = {"Без кредита": "none", "Аннуитет": "annuity"}
-    inputs[field] = choices.get(value, value)
+    inputs[field] = value * 100 if field == "hotel_gordon_rate_pct" else choices.get(value, value)
     engine = core._run_authoritative_model(inputs, copy.deepcopy(t), [], {})["consolidated"]["finance"]["hotel"]
     for row, key in ((4, "npv_project"), (5, "irr_project"), (6, "npv_equity"),
                      (7, "irr_equity"), (14, "loan_peak"), (18, "equity_peak")):
