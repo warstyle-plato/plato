@@ -278,7 +278,11 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
       var row=found[i], center=row&&row.found&&row.center;
       if(center&&center.lat!==null&&center.lat!==undefined
          &&center.lng!==null&&center.lng!==undefined){
-        return {latitude:Number(center.lat),longitude:Number(center.lng)};
+        // Кадастровый номер едет вместе с точкой: по нему сервер выбирает
+        // свод региона, а у точки адреса с областью нет.
+        var point={latitude:Number(center.lat),longitude:Number(center.lng)};
+        if(row.cadastral_number)point.cadastral=String(row.cadastral_number);
+        return point;
       }
     }
     const cad=document.getElementById('cadastralNumbers');
@@ -348,6 +352,7 @@ PRICE_HINT_SCRIPT = """<script id="market-v6-price-hint">
       }
       const query=new URLSearchParams();
       if(where.address)query.set('address',where.address);
+      if(where.cadastral)query.set('cadastral',where.cadastral);
       if(where.latitude!==undefined&&where.longitude!==undefined){
         query.set('latitude',String(where.latitude));
         query.set('longitude',String(where.longitude));

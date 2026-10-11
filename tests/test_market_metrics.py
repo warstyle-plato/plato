@@ -1857,6 +1857,13 @@ landLookup={query:'77:07:0013005:1042', results:[
 ]};
 out.loaded=locationHint();
 
+// Участок с номером: номер едет вместе с точкой — по нему выбирается свод
+// региона (#657), а у точки адреса с областью нет.
+landLookup={query:'', results:[
+  {found:true, kind:'land', cadastral_number:'50:12:0100105:1234', center:{lat:55.91, lng:37.73}},
+]};
+out.withNumber=locationHint();
+
 // Поле заполнено руками — берётся первый участок из списка.
 fields={cadastralNumbers:{value:'77:07:0013005:1042, 77:07:0013005:1043'}};
 landLookup=null;
@@ -1886,6 +1893,9 @@ console.log(JSON.stringify(out));
 
     # Координаты однозначны и разбора не требуют — они первыми.
     assert result["loaded"] == {"latitude": 55.71584, "longitude": 37.43303}
+    assert result["withNumber"] == {
+        "latitude": 55.91, "longitude": 37.73, "cadastral": "50:12:0100105:1234"
+    }
     assert result["typed"] == {"address": "77:07:0013005:1042"}
     # Адрес запятой не режется: она разделяет участки в списке номеров, а
     # внутри адреса — часть его самого.
