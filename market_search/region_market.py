@@ -35,6 +35,7 @@ from typing import Any, Callable
 
 from .http import load_json, save_json
 from .pulse import address_region, pulse_region
+from .pulse_russia import listing_owner
 from .pulse_report_import import _median, _round, _snapshot
 
 
@@ -201,6 +202,14 @@ _MUNICIPAL_MARKS = re.compile(
 )
 
 
+# Регион, склеенный с городом без запятой: «Московская область г. Мытищи» —
+# так пишет адреса всероссийский кабинет.
+_REGION_PREFIX = re.compile(
+    r"^(?:[а-яё-]+\s+(?:область|обл\.?|край)|республика\s+[а-яё-]+)\s+(.+)$",
+    re.IGNORECASE,
+)
+
+
 def municipality_of(address: str | None) -> str | None:
     """Городской округ/город из строительного адреса: «г.о. Мытищи» → «Мытищи».
 
@@ -212,6 +221,9 @@ def municipality_of(address: str | None) -> str | None:
     for part in parts:
         if address_region(part):
             continue
+        glued = _REGION_PREFIX.match(part)
+        if glued:
+            part = glued.group(1).strip()
         name = _MUNICIPAL_MARKS.sub("", part).strip()
         if name and name != part:
             name = name.strip(" .")
@@ -243,9 +255,21 @@ def build_region_market(
     failed: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Свод региона той же формы, что `moscow-market-*.json`."""
+    from .service_v6 import _fresh_price_since
+
     name = region_name(code)
+    # Цена объявлений бывает и у сданного в 2021 году дома — последний раз,
+    # когда его квартиры висели на площадке. В медиану «на дату сбора» она не
+    # входит: порог свежести тот же, что у соседей участка.
+    fresh_since = _fresh_price_since(datetime.date.fromisoformat(collected_at[:10]))
+    stale = {
+        key for key, row in records.items()
+        if row.get("price_per_sqm") and row.get("price_observed_at")
+        and str(row["price_observed_at"]) < fresh_since
+    }
     on_sale = {
-        key: row for key, row in records.items() if row.get("price_per_sqm")
+        key: row for key, row in records.items()
+        if row.get("price_per_sqm") and key not in stale
     }
     current: dict[str, list[dict[str, Any]]] = {}
     by_okrug: dict[str, dict[str, list[dict[str, Any]]]] = {}
@@ -318,7 +342,10 @@ def build_region_market(
         "months": months,
         "okrug_kind": "municipality",
         "basis": {
-            "price": "средняя цена прайс-листа проекта на дату сбора",
+            "price": (
+                "цена метра по объявлениям агрегаторов (ЦИАН, Яндекс, Домклик) — "
+                f"площадка с наибольшим числом лотов; цены не старше {fresh_since}"
+            ),
             "sold": "средний темп продаж источника, лотов в месяц",
             "area": "средний темп продаж источника, м² в месяц",
         },
@@ -337,6 +364,7 @@ def build_region_market(
             "projects_total": projects_total,
             "projects_answered": len(records),
             "projects_on_sale": len(on_sale),
+            "stale_price": len(stale),
             "without_segment": without_segment,
             "without_municipality": without_municipality,
             "failed": len(failed or {}),
@@ -622,29 +650,47 @@ class RegionMarketCollector:
             self._touch_lock()
             self.sleep(self.pause_seconds)
 
+        # Объявления, уже взятые проектами свода (и прошлых проходов тоже).
+        taken_listings: dict[str, str] = {}
+        for owner, record in records.items():
+            listing_owner(taken_listings, record, owner)
         for index, cid in enumerate(batch):
             seen = len(getattr(self.pulse, "errors", []) or [])
             price = self.pulse.price(cid) or {}
             remaining = self.pulse.remaining(cid) or {}
-            sales = self.pulse.sales(cid) or {}
+            # Темп нужен своду только у проекта с ценой: без неё проект в
+            # медианы класса не входит. Лишний запрос — лишняя нагрузка на
+            # чужой кабинет: в области сотни ЖК, и у половины цены нет.
+            sales = (self.pulse.sales(cid) or {}) if price else {}
             fresh_errors = list(getattr(self.pulse, "errors", []) or [])[seen:]
             if not (price or remaining or sales):
                 failed[cid] = "; ".join(fresh_errors[:2]) or "источник не вернул ни цены, ни остатков, ни темпа"
             else:
                 card = progress["cards"].get(cid) or {}
-                records[cid] = {
-                    **card,
-                    "price_per_sqm": price.get("price_per_sqm"),
-                    "price_observed_at": price.get("observed_at"),
-                    "lot_count": price.get("lot_count"),
-                    "remaining_units": remaining.get("remaining_units"),
-                    "remaining_area": remaining.get("remaining_area"),
-                    "units_per_month": sales.get("units_per_month"),
-                    "units_per_month_3m": sales.get("units_per_month_3m"),
-                    "area_per_month": sales.get("area_per_month"),
-                    "known_sales_for": sales.get("known_sales_for"),
-                    "history": history.get(cid) or [],
-                }
+                if not card.get("segment"):
+                    # Класс всероссийского ЖК мог прийти только с его карточкой —
+                    # уже после того, как сбор записал классы справочника.
+                    card = {**card, "segment": self.pulse.segments(fetch=False).get(cid)}
+                shared = listing_owner(taken_listings, price, cid)
+                if shared:
+                    # Кабинет делит один ЖК на несколько записей; объявления у
+                    # них одни. Вторая запись — тот же проект, а не ещё одна цена.
+                    failed[cid] = f"те же объявления, что у проекта {shared}"
+                else:
+                    records[cid] = {
+                        **card,
+                        "listings": list(price.get("listings") or []),
+                        "price_per_sqm": price.get("price_per_sqm"),
+                        "price_observed_at": price.get("observed_at"),
+                        "lot_count": price.get("lot_count"),
+                        "remaining_units": remaining.get("remaining_units"),
+                        "remaining_area": remaining.get("remaining_area"),
+                        "units_per_month": sales.get("units_per_month"),
+                        "units_per_month_3m": sales.get("units_per_month_3m"),
+                        "area_per_month": sales.get("area_per_month"),
+                        "known_sales_for": sales.get("known_sales_for"),
+                        "history": history.get(cid) or [],
+                    }
             if index % 10 == 9:
                 save_json(self.progress_path(code), progress)
             self._touch_lock()

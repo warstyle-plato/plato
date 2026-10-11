@@ -35,6 +35,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from .http import fresh, load_json, save_json
@@ -76,6 +77,10 @@ _CLOSED_MARK = "в разработке"
 # Объект строительства всероссийского кабинета — «50-004184-1»: номер
 # проектной декларации и номер объекта в ней (адрес `/object/50-004184-1`).
 _REGION_ID_RE = re.compile(r"^(\d{2,3})-(\d+)(?:-(\d+))?$")
+# ЖК всероссийского кабинета: код региона, буква «c» и внутренний номер ЖК
+# в кабинете — «50-c350624». Это не номер декларации: декларации у ЖК нет,
+# он объединяет объекты (`50-004184-1`) с разными декларациями.
+_RUSSIA_COMPLEX_RE = re.compile(r"^(\d{2,3})-c(\d+)$")
 
 
 def pulse_id(value: Any) -> str | None:
@@ -103,9 +108,16 @@ def pulse_declaration(complex_id: Any) -> str | None:
 
 
 def pulse_region(complex_id: Any) -> str | None:
-    """Код региона из номера вида «50-004184»; у голого числа — нет."""
-    found = _REGION_ID_RE.match(pulse_id(complex_id) or "")
+    """Код региона из номера вида «50-004184» или «50-c350624»; у числа — нет."""
+    text = pulse_id(complex_id) or ""
+    found = _REGION_ID_RE.match(text) or _RUSSIA_COMPLEX_RE.match(text)
     return found.group(1) if found else None
+
+
+def russia_complex(complex_id: Any) -> int | None:
+    """Внутренний номер ЖК всероссийского кабинета из «50-c350624»."""
+    found = _RUSSIA_COMPLEX_RE.match(pulse_id(complex_id) or "")
+    return int(found.group(2)) if found else None
 
 
 def _api_id(complex_id: Any) -> int | str:
@@ -156,6 +168,9 @@ _ADDRESS_REGION_RE = re.compile(
 def address_region(address: str | None) -> str | None:
     """Регион из строительного адреса — для диагностики, не для решений."""
     for part in str(address or "").split(","):
+        # Московский кабинет пишет область сокращённо: «МО, Мытищи, мкр.16».
+        if part.strip() == "МО":
+            return "Московская область"
         found = _ADDRESS_REGION_RE.fullmatch(part.strip())
         if found:
             if found.group(1):
@@ -203,7 +218,11 @@ class PulseProject:
             "sales_start": self.sales_start,
             "commissioning": self.commissioning,
             "construction_stage": self.construction_stage,
-            "url": f"{self.base}/complex/{self.complex_id}/",
+            "url": (
+                f"{self.base}/complex/{russia_complex(self.complex_id)}"
+                if russia_complex(self.complex_id) is not None
+                else f"{self.base}/complex/{self.complex_id}/"
+            ),
         }
 
 
@@ -1876,6 +1895,9 @@ class PulseNetwork:
         self._holders: dict[str, list[PulseClient]] = {}
         self.duplicates = 0
         self.conflicts: list[dict[str, Any]] = []
+        # Проекты другой базы в регионе, который покрывает всероссийский
+        # кабинет: их там отвечает он, по коду региона → сколько снято.
+        self.superseded: dict[str, int] = {}
 
     # --- совместимость с одиночным клиентом -------------------------------------
 
@@ -1933,12 +1955,46 @@ class PulseNetwork:
                         "dropped": {"base": item.base, "name": item.name},
                         "distance_km": round(gap, 1),
                     })
-        merged = list(kept.values())
+        merged, superseded = self._supersede(list(kept.values()), owner)
         self._owner, self._holders = owner, holders
         self.duplicates, self.conflicts = duplicates, conflicts
+        self.superseded = superseded
         # Пустой список не запоминается: база могла ещё не загрузиться.
         self._projects = merged or None
         return merged
+
+    @staticmethod
+    def _supersede(
+        items: list[PulseProject], owner: dict[str, PulseClient]
+    ) -> tuple[list[PulseProject], dict[str, int]]:
+        """Регион, покрытый всероссийским кабинетом, отвечает он один.
+
+        Московский кабинет знает проекты области (Мытищи, Красногорск), но на
+        их цену и темп отвечает 403. Номера у кабинетов разные: ЖК «Атлантис»
+        там «4033», здесь «50-c350624», — склеить их по номеру нельзя, а
+        оставить оба значит посчитать один ЖК двумя соседями, причём один из
+        них всегда без цены. Поэтому проект другой базы снимается, если его
+        регион (код номера или область адреса) — среди регионов, чьи ЖК
+        принёс всероссийский кабинет. Москва не снимается никогда.
+        """
+        from .region_market import _project_region
+
+        covered = {
+            item.region for item in items
+            if _russia_site(owner.get(item.complex_id)) and item.region
+        } - {"77"}
+        if not covered:
+            return items, {}
+        kept: list[PulseProject] = []
+        superseded: dict[str, int] = {}
+        for item in items:
+            if not _russia_site(owner.get(item.complex_id)):
+                code = _project_region(item)
+                if code in covered:
+                    superseded[code] = superseded.get(code, 0) + 1
+                    continue
+            kept.append(item)
+        return kept, superseded
 
     def _site(self, complex_id: Any) -> PulseClient:
         wanted = pulse_id(complex_id) or ""
@@ -2058,6 +2114,7 @@ class PulseNetwork:
             "bases": bases,
             "projects": len(merged),
             "duplicates": self.duplicates,
+            "superseded_by_russia": dict(self.superseded),
             "conflicts": len(self.conflicts),
             "conflict_sample": self.conflicts[:5],
         }
@@ -2066,7 +2123,16 @@ class PulseNetwork:
 def make_pulse_client(data_dir: Path, **kwargs: Any) -> PulseClient | PulseNetwork:
     """Клиент по `PULSE_BASE_URL`: одна база — как прежде, несколько — сеть."""
     bases = parse_bases(kwargs.pop("base", None) or os.getenv("PULSE_BASE_URL"))
-    sites = [PulseClient(data_dir, base=base, **kwargs) for base in bases]
+    from .pulse_russia import PulseRussiaClient
+
+    # Всероссийский кабинет — одностраничное приложение со своим API
+    # (`/api/v1/…`): московские адреса карты, классов и цены там отвечают 404.
+    sites = [
+        (PulseRussiaClient if _russia_site(SimpleNamespace(base=base)) else PulseClient)(
+            data_dir, base=base, **kwargs
+        )
+        for base in bases
+    ]
     # Поддомен входит через базу, чей хост — его суффикс: `russia.pulsprodaj.ru`
     # через `pulsprodaj.ru`. Связь берётся из списка баз, а не выводится из
     # имени. Поддомен без корневой базы в списке — `PULSE_AUTH_BASE_URL`.
