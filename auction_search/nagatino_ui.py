@@ -1136,6 +1136,19 @@ function sourceMarkup(){
  return bits.map(b=>`<div>${b}</div>`).join('');
 }
 
+// Слова к цветам — только у групп, чьи владельцы реально стоят на этой карте:
+// «Брынцалов красный» сказано о Нагатино, и литерал приписывал его каждой
+// площадке КРТ. Слова группы приходят из реестра площадки (`group_legend`).
+function ownerColoursNote(owners){
+ const words=S.data.group_legend||{};
+ const named=[...new Set(owners.map(o=>words[o.group]).filter(Boolean))];
+ return 'Цвет — владелец: '
+   +(named.length?escapeHtml(named.join(', '))+', остальные жёлтой гаммой':'жёлтая гамма')
+   +', у каждого свой оттенок. Участок красится своим собственником, '
+   +'а где право не зарегистрировано — владельцем строений на нём, когда он один; строения '
+   +'разных владельцев одним цветом не красим.';
+}
+
 function legendMarkup(){
  const owners=(S.data.owners||[]).filter(o=>o.objects||o.lands);
  if(owners.length)
@@ -1151,10 +1164,7 @@ function legendMarkup(){
      ?'<span><span class="key" style="border:1px dashed #8a8a8a"></span>участок входит в площадку '
       +'частью — на карте он целиком; почти прозрачный значит, что в площадке от него меньше '
       +'половины</span>':'')
-   +'<div class="source" style="flex-basis:100%">Цвет — владелец: Брынцалов красный, город зелёный, '
-   +'остальные жёлтой гаммой, у каждого свой оттенок. Участок красится своим собственником, '
-   +'а где право не зарегистрировано — владельцем строений на нём, когда он один; строения '
-   +'разных владельцев одним цветом не красим.</div>';
+   +'<div class="source" style="flex-basis:100%">'+ownerColoursNote(owners)+'</div>';
  return S.data.groups.map(g=>
   `<span title="${escapeHtml(g.note||'')}"><span class="key" style="background:${escapeHtml(g.colour)}"></span>`
   +`${escapeHtml(g.title)} — ${g.parcels} об., ${m2(g.area_sqm)}, ${mln(g.cadastral_value_rub)}`
