@@ -26,7 +26,7 @@ from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .dynamics import DealsSummary, SalesDynamics
 from .market_reference import MarketAtlas, MoscowMarket
-from .region_market import RegionMarketCollector
+from .region_market import RegionMarketCollector, site_region
 from .metrics import build_blocks
 from .narrative import analysis, findings
 from .verdict import (
@@ -1025,8 +1025,10 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         # городская база не подставляется вовсе: медианы чужого города,
         # выданные молча, выглядят исправным сравнением.
         where = " ".join(filter(None, [subject_address, subject.query]))
-        market = self.markets.for_address(where)
-        city_scope = self.markets.scope(where)
+        site = site_region(cadastre=subject.cadastre, neighbours=near, address=where)
+        region = site["name"] if site else None
+        market = self.markets.for_address(where, region)
+        city_scope = self.markets.scope(where, region)
         # Сравнение с городом можно выключить. Для площадки без своего проекта
         # медиана класса по всей Москве отвечает не на тот вопрос: решают
         # соседи в трёх километрах, а город только шумит рядом с ними.
@@ -1338,8 +1340,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         include_estimated_stage: bool = True,
         project_sales_start: str | None = None,
         project_commissioning: str | None = None,
+        cadastral: str | None = None,
     ) -> dict[str, Any]:
         """Ориентир цены для поля модели и, по запросу, его расшифровка.
+
+        `cadastral` — кадастровый номер участка, если страница прислала точку:
+        по нему выбирается свод региона (адрес у точки — только «шир., долг.»).
 
         `stages` — стадии строительства аналогов, выбранные пользователем (как
         фильтр стадии в самом Пульсе). Пусто — отбора по стадии нет. Аналог без
@@ -1360,6 +1366,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             found = self.resolve_subject(str(address or ""))
             where = found.address or found.query
             subject_latitude, subject_longitude = found.latitude, found.longitude
+            cadastral = cadastral or found.cadastre
         okrug_match = self._OKRUG_RE.search(where or "")
         okrug = okrug_match.group(1) if okrug_match else None
         selected_stages = stage.normalize_stage_codes(stages)
@@ -1464,8 +1471,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             ),
         )
 
-        market = self.markets.for_address(where)
-        scope = self.markets.scope(where)
+        # Регион участка — из кадастра, точки или адреса (в этом порядке):
+        # страница шлёт точку без адреса, и область в нём не названа.
+        site = site_region(cadastre=cadastral or address, neighbours=near, address=where)
+        region = site["name"] if site else None
+        market = self.markets.for_address(where, region)
+        scope = self.markets.scope(where, region)
         if market is not self.city:
             # Средняя ступень региона — муниципалитет, а не округ Москвы.
             okrug = market.okrug_of(where)
@@ -1542,6 +1553,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             "okrug": okrug,
             "radius_km": radius_km,
             "city_reference": scope["covered"],
+            "region": site,
         }
 
         if include_projects:
