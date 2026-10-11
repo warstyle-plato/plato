@@ -171,6 +171,19 @@ def test_the_preset_fills_fields_with_their_cells(walk) -> None:
     assert state["inputs"]["hotel_origins"]["adr_rub"]["cells"]
 
 
+def test_the_preset_fills_the_infrastructure_rate_with_its_cell(walk) -> None:
+    """Коммунальная инфраструктура модели (Расчеты!I170) — ставка «Сети» движка:
+    кнопка ориентира заполняет её, а не только поля гостиницы, и пишет ячейку.
+    Умолчание движка (10,25) не выбор пользователя — его ориентир заменяет."""
+    import hotel_presets
+    state = walk["dombai"]
+    expected = hotel_presets.BY_KEY["hotel1"].engine_values["utilities_th_per_sqm"].value
+    assert walk["empty"]["inputs"]["utilities_th_per_sqm"] != pytest.approx(expected)
+    assert state["inputs"]["utilities_th_per_sqm"] == pytest.approx(expected, rel=1e-6)
+    origin = state["inputs"]["_field_origin"]["inputs.utilities_th_per_sqm"]
+    assert origin["source"] == "hotel_preset" and "Расчеты!I170" in origin["text"]
+
+
 def test_the_card_prints_what_the_engine_returned(walk) -> None:
     state = walk["dombai"]
     engine_rows = state["engine"]["report"]["hotel"]["rows"]

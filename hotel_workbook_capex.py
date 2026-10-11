@@ -45,7 +45,7 @@ ARTICLES = (
 )
 SHEET = "Затраты"
 FIRST = 32
-INPUT_FIRST = 76
+INPUT_FIRST = 80
 INPUT_ROWS = {key: INPUT_FIRST + i for i, key in enumerate(INPUT_DEFAULTS)}
 
 
