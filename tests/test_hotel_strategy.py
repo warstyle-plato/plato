@@ -82,15 +82,12 @@ def test_reference_fields_have_no_silent_default():
             assert field.origin, field.key
     for name in ("keys", "adr_rub", "occ_start_pct", "occ_target_pct", "fnb_pct",
                  "rooms_cost_pct", "ag_pct", "base_fee_pct", "insurance_pct",
-                 "exit_multiple", "dscr_target"):
+                 "dscr_target"):
         assert hs.FIELD_BY_KEY[name].default is None, name
 
 
 def test_dependent_fields_are_needed_only_with_their_choice():
     p = params()
-    assert "exit_multiple" not in {f.key for f in hs.missing_fields(p)}
-    p["valuation"] = hs.VALUATION_MULTIPLE
-    assert "exit_multiple" in {f.key for f in hs.missing_fields(p)}
     p["repayment"] = hs.REPAY_SCULPTED
     assert "dscr_target" in {f.key for f in hs.missing_fields(p)}
     p["financing"] = hs.FINANCING_NONE
@@ -215,8 +212,8 @@ def test_the_loan_is_closed_by_the_end():
 # --- выход --------------------------------------------------------------
 
 def test_sale_and_hold_differ_by_the_deal():
-    sale = run(plan(params=params(exit_mode=hs.EXIT_SALE, exit_cap_pct=10)))
-    hold = run(plan(params=params(exit_mode=hs.EXIT_HOLD, exit_cap_pct=10)))
+    sale = run(plan(params=params(exit_mode=hs.EXIT_SALE, valuation=hs.VALUATION_CAP, exit_cap_pct=10)))
+    hold = run(plan(params=params(exit_mode=hs.EXIT_HOLD, valuation=hs.VALUATION_CAP, exit_cap_pct=10)))
     end = sale["horizon_end"]
     assert sale["kpi"]["exit_value"] == pytest.approx(hold["kpi"]["exit_value"])
     assert sale["kpi"]["exit_value"] == pytest.approx(sale["kpi"]["forward_ebitda"] / 0.10)
