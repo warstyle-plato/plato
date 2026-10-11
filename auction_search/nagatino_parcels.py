@@ -1604,6 +1604,11 @@ def payload(site: Site | None = None) -> dict[str, Any]:
         # торгах, свойства и права — из выписок ЕГРН.
         "territory": lands_and_objects,
         "owners": owners_summary(lands_and_objects, site),
+        # Слова к цветам групп — из того же реестра, что красит карту. У
+        # площадки без выгрузки владельца группы «Брынцалов» нет, значит нет и
+        # её слов: литерал на странице приписывал его каждой площадке КРТ.
+        "group_legend": {str(group.get("key")): str(group["legend"])
+                         for group in data.get("groups") or [] if group.get("legend")},
         # Второй взгляд на тех же владельцев — по участку. Считается один раз
         # и здесь: экран и книга показывают посчитанное, а не считают порознь.
         "holdings": holdings,
