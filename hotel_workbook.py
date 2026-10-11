@@ -178,14 +178,16 @@ _COLUMN_LIST: tuple[tuple[str, str], ...] = (
     ("used", "Зачтено убытка"), ("base", "База налога"), ("ypaid_prev", "Налог года до месяца"),
     ("tax", "Налог на прибыль"), ("ypaid", "Налог года с месяцем"),
     ("vat_paid", "НДС к уплате (− возмещение)"), ("operating", "Деньги эксплуатации"),
-    ("to_equity", "Деньги собственнику без CAPEX"), ("project_cf", "Поток проекта"),
+    ("to_equity", "Собственнику без CAPEX (при удержании — с оценкой)"), ("project_cf", "Поток проекта"),
     ("equity_cf", "Поток капитала"), ("fcff", "Поток до финансирования"),
     ("disc_p", "Поток проекта, дисконт."), ("disc_e", "Поток капитала, дисконт."),
     ("irr_p", "Поток проекта при IRR движка"), ("irr_e", "Поток капитала при IRR движка"),
-    ("cum_p", "Поток проекта нарастающим"), ("cross_p", "Окупаемость: месяц перехода"),
+    ("cum_p", "Поток проекта деньгами нарастающим"), ("cross_p", "Окупаемость: месяц перехода"),
     ("cum_dp", "Дисконт. поток нарастающим"), ("cross_dp", "DPBP: месяц перехода"),
     ("cum_e", "Денежный поток капитала нарастающим"),
     ("profit_after_tax", "Финансовый результат после налога"),
+    ("cash_p", "Поток проекта деньгами (без оценки удержания)"),
+    ("disc_cash_p", "Поток проекта деньгами, дисконт."),
 )
 COLUMNS: dict[str, tuple[str, str]] = {
     key: (get_column_letter(i), label) for i, (key, label) in enumerate(_COLUMN_LIST, start=1)}
@@ -354,13 +356,17 @@ def _row_formulas(r: int) -> dict[str, str]:
         "disc_e": f"={v['equity_cf']}/(1+{i('discount')}/12)^{A}",
         "irr_p": f"={v['project_cf']}/(1+{irr_p})^{A}",
         "irr_e": f"={v['equity_cf']}/(1+{irr_e})^{A}",
-        "cum_p": f"={prev('cum_p')}+{v['project_cf']}",
-        "cum_e": f"={prev('cum_e')}+{v['equity_cf']}",
+        # Окупаемость — деньгами: оценка удержания в IRR и NPV, но не в
+        # деньгах проекта (владелец, 08.10.2026).
+        "cash_p": f"={v['project_cf']}-{v['residual']}",
+        "cum_p": f"={prev('cum_p')}+{v['cash_p']}",
+        "cum_e": f"={prev('cum_e')}+{v['equity_cf']}-{v['residual']}",
         "cross_p": (f"=IF(AND({prev('cum_p')}<0,{v['cum_p']}>=0),"
-                    f"{A}+(-{prev('cum_p')})/{v['project_cf']},{NO_DRAW})"),
-        "cum_dp": f"={prev('cum_dp')}+{v['disc_p']}",
+                    f"{A}+(-{prev('cum_p')})/{v['cash_p']},{NO_DRAW})"),
+        "disc_cash_p": f"={v['cash_p']}/(1+{i('rate_m')})^{A}",
+        "cum_dp": f"={prev('cum_dp')}+{v['disc_cash_p']}",
         "cross_dp": (f"=IF(AND({prev('cum_dp')}<0,{v['cum_dp']}>=0),"
-                     f"{A}+(-{prev('cum_dp')})/{v['disc_p']},{NO_DRAW})"),
+                     f"{A}+(-{prev('cum_dp')})/{v['disc_cash_p']},{NO_DRAW})"),
     }
 
 
@@ -409,8 +415,8 @@ def _model_values(data: dict[str, Any], start: date) -> dict[str, Any]:
         "term": max(1, int(_num(params, "loan_term_years") or 1)) * 12,
         "grace": max(0, int(_num(params, "grace_months"))),
         "repayment": repayment, "dscr": dscr,
-        "exit_mode": str(params.get("exit_mode") or hs.EXIT_SALE),
-        "valuation": str(params.get("valuation") or hs.VALUATION_CAP),
+        "exit_mode": str(params.get("exit_mode") or hs.FIELD_BY_KEY["exit_mode"].default),
+        "valuation": str(params.get("valuation") or hs.FIELD_BY_KEY["valuation"].default),
         "cap": pct("exit_cap_pct"), "multiple": _num(params, "exit_multiple"),
         "exit_cost": max(0.0, pct("exit_cost_pct")),
         "tax_rate": float(data["profit_tax_rate"]), "loss_limit": LOSS_CARRY_USE_LIMIT,
@@ -740,7 +746,7 @@ CHECKS: tuple[tuple[str, str, str], ...] = (
     ("loan_repayment", "Кредит — погашение", "totals"),
     ("tax_margin", "Налоговая маржа", "totals"),
     ("profit_tax", "Налог на прибыль", "totals"),
-    ("cash_to_equity", "Деньги собственнику без CAPEX", "totals"),
+    ("cash_to_equity", "Собственнику без CAPEX (при удержании — с оценкой)", "totals"),
     ("forward_ebitda", "EBITDA 12 мес. после срока", "kpi"),
     ("exit_value", "Стоимость на выходе", "kpi"),
     ("loan_peak", "Кредит — пик долга", "kpi"),
@@ -934,7 +940,8 @@ def _model_sheets(book: Workbook, rows: int) -> None:
         ("Денежный поток", (("capex", "Затраты проекта"), ("revenue", "Выручка эксплуатации"),
                            ("ebitda", "EBITDA"), ("exit", "Продажа гостиницы"),
                            ("residual", "Оценка при удержании"), ("tax", "Налог на прибыль"),
-                           ("project_cf", "Денежный поток проекта"), ("equity_cf", "Денежный поток собственника"),
+                           ("project_cf", "Поток проекта для IRR и NPV (с оценкой удержания)"),
+                           ("equity_cf", "Поток собственника для IRR и NPV (с оценкой удержания)"),
                            ("cum_e", "Деньги собственника нарастающим"))),
         ("Кредит", (("key_rate", "Ключевая ставка"), ("rate", "Ставка кредита"),
                     ("bal_open", "Долг на начало месяца"), ("draw", "Выдача кредита"),
