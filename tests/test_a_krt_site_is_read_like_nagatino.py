@@ -819,3 +819,55 @@ def test_in_a_real_browser_a_site_without_a_composition_says_so(tmp_path, monkey
     assert "наш пробел" in ours["map"], ours["map"]
     assert "таблицы состава" in theirs["map"], theirs["map"]
     assert "наш пробел" not in theirs["map"], theirs["map"]
+
+
+def _legend(view: dict) -> dict:
+    """Легенда карты — настоящим `legendMarkup` со страницы, на ответе маршрута.
+
+    Назад приезжает пояснение к цветам и подписи ключей, а не вся разметка:
+    у Нагатино она длиннее, чем node успевает отдать в трубу до выхода.
+    """
+    sys.path.insert(0, str(ROOT / "tests"))
+    import main_legacy  # noqa: PLC0415 — помощники карты (escapeHtml) приезжают от движка
+    import page_blocks  # noqa: PLC0415
+    from auction_search.nagatino_ui import nagatino_page  # noqa: PLC0415
+
+    # Ровно то, что легенда читает: весь ответ Нагатино стенду не нужен.
+    data = {"owners": view.get("owners"), "group_legend": view.get("group_legend"),
+            "territory": {"lands": [{"part": land.get("part")}
+                                    for land in (view.get("territory") or {}).get("lands") or []]}}
+    return page_blocks.run_json(
+        "", "S.data=%s;\n" % json.dumps(data, ensure_ascii=False, default=str)
+        + "const html=legendMarkup();"
+          "const note=(html.match(/<div class=\"source\"[^>]*>([^<]*)<\\/div>/)||[])[1]||'';"
+          "process.stdout.write(JSON.stringify({note,"
+          "brynts:html.includes('Брынцалов'),polevaya:html.includes('Полевая')}));",
+        page=nagatino_page(main_legacy))
+
+
+def test_the_colour_note_names_only_the_groups_on_this_map(tmp_path):
+    """«Брынцалов красный» под картой — только у Нагатино.
+
+    Пояснение к цветам стояло литералом и читалось у каждой площадки КРТ:
+    под картой Нижних Полей выходил владелец чужой площадки. Слова берутся у
+    групп, чьи владельцы реально есть на этой карте.
+    """
+    _store(tmp_path, LAND, BUILD)
+    krt_territory.remember_notice(
+        LOT["store_key"],
+        {"lands": [{"cadastral_number": LAND["cadastral_number"], "part": False,
+                    "area_raw": "5 000", "area_sqm": 5_000.0, "objects": []}],
+         "objects": [], "rows": 1, "problem": ""},
+        document="Извещение.pdf", root=tmp_path)
+    other = _legend(nagatino_parcels.payload(_site(tmp_path)))
+    assert other["note"].startswith("Цвет — владелец"), other
+    assert not other["brynts"], other
+    assert "Брынцалов" not in other["note"], other
+    assert other["polevaya"], "владелец площадки пропал из легенды"
+
+    nagatino = nagatino_parcels.payload()
+    assert any(owner.get("group") == "bryntsalov" for owner in nagatino["owners"]), \
+        "у Нагатино нет владельцев группы Брынцалова — проверка ни о чём"
+    own = _legend(nagatino)
+    assert "Брынцалов красный" in own["note"], own
+    assert "город зелёный" in own["note"], own
