@@ -35476,7 +35476,10 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
         "verdict": verdict,
         "blocks": [{"title": "Вывод", "kind": "verdict",
                     "rows": [_row(verdict["title"], verdict["text"], "text")]},
-                   {"title": "Ключевые показатели", "rows": decision}],
+                   {"title": "Ключевые показатели", "rows": decision},
+                   {"title": hotel_strategy.IRR_METHOD_TITLE,
+                    "rows": [_row(name, text, "text")
+                             for name, text in hotel_strategy.IRR_METHOD_NOTES]}],
     }
 
     # 2. Объект и участок ---------------------------------------------------

@@ -826,6 +826,11 @@ def build(result: dict[str, Any], project_name: str = "") -> bytes:
     sheet["A20"] = "Оранжевое — исходный снимок для сверки. Изменение вводных требует новой сверки с движком."
     labels = (data.get("capex_spec") or {}).get("article_labels") or {}
     sheet["A21"] = ("Не пересчитываются формулами: " + ", ".join(labels.get(key, key) for key in missing)) if missing else "Смета гостиницы считается формулами. Благоустройство отдельно не учтено."
+    sheet["A23"] = hs.IRR_METHOD_TITLE
+    sheet["A23"].font = BOLD
+    for n, (name, text) in enumerate(hs.IRR_METHOD_NOTES, start=24):
+        sheet[f"A{n}"] = name
+        sheet[f"B{n}"] = text
     sheet.column_dimensions["A"].width = 56
     sheet.column_dimensions["B"].width = 22
 
@@ -1068,6 +1073,11 @@ def _style(book: Workbook) -> None:
         totals.merge_cells(start_row=row, start_column=1, end_row=row, end_column=3)
         totals[f"A{row}"].alignment = Alignment(wrap_text=True, vertical="center")
         totals.row_dimensions[row].height = 32
+    for row in range(24, 24 + len(hs.IRR_METHOD_NOTES)):
+        totals.merge_cells(start_row=row, start_column=2, end_row=row, end_column=3)
+        for cell in (f"A{row}", f"B{row}"):
+            totals[cell].alignment = Alignment(wrap_text=True, vertical="top")
+        totals.row_dimensions[row].height = 48
     annual = book[USALI_SHEET]
     for cell in annual[3]:
         if cell.column > 1:
