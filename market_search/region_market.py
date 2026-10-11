@@ -98,6 +98,74 @@ def region_name(code: str) -> str:
     return REGION_NAMES.get(str(code), f"регион {code}")
 
 
+_CADASTRE_RE = re.compile(r"\b(\d{2}):(\d{2}):\d{6,7}:\d{1,7}\b")
+# Кадастровые районы, отошедшие Новой Москве, сохранили номера области:
+# 50:21 (Ленинский), 50:26 (Наро-Фоминский), 50:27 (Подольский). Участок с
+# таким префиксом лежит и в Москве, и в области — регион по нему не решается.
+_SHARED_CADASTRAL_DISTRICTS = frozenset({"50:21", "50:26", "50:27"})
+
+SITE_REGION_CADASTRE = "cadastre"
+SITE_REGION_POINT = "point"
+SITE_REGION_ADDRESS = "address"
+
+
+def cadastre_region(number: str | None) -> str | None:
+    """Код региона из кадастрового номера: «50:12:…» → «50»."""
+    found = _CADASTRE_RE.search(str(number or ""))
+    if not found:
+        return None
+    if f"{found.group(1)}:{found.group(2)}" in _SHARED_CADASTRAL_DISTRICTS:
+        return None
+    return found.group(1)
+
+
+def _code_of_name(name: str | None) -> str | None:
+    wanted = str(name or "").casefold()
+    return next((code for code, title in REGION_NAMES.items() if title.casefold() == wanted), None)
+
+
+def _project_region(project: Any) -> str | None:
+    """Регион проекта «Пульса»: код номера, иначе область из его адреса."""
+    code = pulse_region(getattr(project, "complex_id", None))
+    return code or _code_of_name(address_region(getattr(project, "address", None)))
+
+
+def site_region(
+    *,
+    cadastre: str | None = None,
+    neighbours: Any = (),
+    address: str | None = None,
+) -> dict[str, Any] | None:
+    """Регион участка — один владелец ответа для свода и подписи.
+
+    Порядок доказательств: кадастровый номер участка, затем точка участка
+    (регион проектов «Пульса» вокруг неё: код номера или область их
+    строительного адреса; большинство, при равенстве — ближний), и лишь
+    затем адрес, который пользователь не обязан писать с областью.
+    `neighbours` — пары (расстояние, проект), как их отдаёт `near`.
+    """
+    code = cadastre_region(cadastre)
+    if code:
+        return {"code": code, "name": region_name(code), "source": SITE_REGION_CADASTRE,
+                "evidence": _CADASTRE_RE.search(str(cadastre)).group(0)}
+    votes: dict[str, list[float]] = {}
+    for distance, project in neighbours or ():
+        found = _project_region(project)
+        if found:
+            votes.setdefault(found, []).append(float(distance))
+    if votes:
+        code = max(votes, key=lambda key: (len(votes[key]), -min(votes[key])))
+        return {"code": code, "name": region_name(code), "source": SITE_REGION_POINT,
+                "evidence": f"проектов «Пульса» у точки участка: {len(votes[code])}"}
+    from .market_reference import RegionMarket
+
+    name = RegionMarket.region_of(address)
+    if name:
+        return {"code": _code_of_name(name), "name": name, "source": SITE_REGION_ADDRESS,
+                "evidence": address}
+    return None
+
+
 def configured_regions(value: str | None = None) -> list[str]:
     """Коды регионов из `PULSE_REGIONS` (через запятую); по умолчанию — 50."""
     raw = os.getenv(REGIONS_ENV) if value is None else value
@@ -432,8 +500,9 @@ class RegionMarketCollector:
         """
         if not region:
             return (
-                "Регион в адресе не распознан, поэтому свод региона не выбран — "
-                "укажите адрес с областью (например «Московская область, г.о. Мытищи»)"
+                "Регион участка не определён, поэтому свод региона не выбран: нет "
+                "кадастрового номера, у точки участка нет проектов «Пульса» с "
+                "регионом, а в адресе область не названа"
             )
         code = next(
             (key for key, name in REGION_NAMES.items() if name.casefold() == region.casefold()),

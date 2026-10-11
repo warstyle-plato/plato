@@ -201,7 +201,7 @@ class MoscowMarket:
     # в строке — не доказательство попадания в свод.
     _OUTSIDE = ("тао", "нао", "поселение", "новомосковск", "троицк", "зеленоград")
 
-    def covers(self, address: str | None) -> bool:
+    def covers(self, address: str | None, region: str | None = None) -> bool:
         """Лежит ли объект внутри свода.
 
         Свод собран по одному отчёту — «Москва старая». Для Мытищ, Химок и
@@ -216,12 +216,12 @@ class MoscowMarket:
             return False
         return not any(mark in text for mark in self._OUTSIDE)
 
-    def scope(self, address: str | None) -> dict[str, Any]:
+    def scope(self, address: str | None, region: str | None = None) -> dict[str, Any]:
         """Что сказать про сравнение с городом на этом адресе."""
         if not self.available:
             return {"covered": False, "label": self.label,
                     "reason": "Свод рынка не загружен"}
-        if self.covers(address):
+        if self.covers(address, region):
             return {"covered": True, "label": self.label, "reason": None}
         return {
             "covered": False,
@@ -353,9 +353,13 @@ class RegionMarket(MoscowMarket):
                 return alias[:1].upper() + alias[1:]
         return None
 
-    def covers(self, address: str | None) -> bool:
-        """Адрес лежит в регионе свода: регион, названный в самом адресе."""
-        found = self.region_of(address)
+    def covers(self, address: str | None, region: str | None = None) -> bool:
+        """Участок лежит в регионе свода.
+
+        `region` — регион участка (`region_market.site_region`: кадастр, точка,
+        адрес); без него — регион, названный в самом адресе.
+        """
+        found = region or self.region_of(address)
         return bool(found) and found.casefold() == self.region_name.casefold()
 
     def okrug_of(self, address: str | None) -> str | None:
@@ -372,8 +376,8 @@ class RegionMarket(MoscowMarket):
                 return name
         return None
 
-    def scope(self, address: str | None) -> dict[str, Any]:
-        out = super().scope(address)
+    def scope(self, address: str | None, region: str | None = None) -> dict[str, Any]:
+        out = super().scope(address, region)
         out.update({
             "source_kind": self.SOURCE_KIND,
             "region": self.region,
@@ -423,21 +427,20 @@ class MarketAtlas:
                 out.append(cached[1])
         return out
 
-    def for_address(self, address: str | None) -> MoscowMarket:
+    def for_address(self, address: str | None, region: str | None = None) -> MoscowMarket:
+        """`region` — регион участка, если он известен не из адреса."""
         if self.moscow.covers(address):
             return self.moscow
         for market in self.regions():
-            if market.covers(address):
+            if market.covers(address, region):
                 return market
         return self.moscow
 
-    def scope(self, address: str | None) -> dict[str, Any]:
-        market = self.for_address(address)
-        out = market.scope(address)
+    def scope(self, address: str | None, region: str | None = None) -> dict[str, Any]:
+        market = self.for_address(address, region)
+        out = market.scope(address, region)
         if market is self.moscow and not out.get("covered"):
-            from .pulse import address_region
-
-            region = RegionMarket.region_of(address)
+            region = region or RegionMarket.region_of(address)
             if (region or "").casefold() != "москва":
                 if self.explain is not None:
                     reason = self.explain(region)
