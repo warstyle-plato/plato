@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 RAW_INPUTS = {"purchase_price_mln": 6000, "offices_enabled": True}
 RAW_TEP = {"apartments": {"gns": 222000, "saleable": 166500}}
@@ -70,7 +71,7 @@ def test_the_normalisation_lives_in_the_fingerprint_not_in_the_callers() -> None
     Пока слияние делал звонящий, оно было у книги и не было у PDF — и это
     невозможно было заметить, глядя на любую из двух поверхностей отдельно.
     """
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     start = source.index("def _calculation_fingerprint(")
     body = source[start:source.index("\ndef ", start + 10)]
     assert "DEFAULT_INPUTS" in body and "TEP_DEFAULT" in body

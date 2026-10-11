@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import developaid_monitor_crew as crew  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 PAGE = (ROOT / "developaid_monitor_page.py").read_text(encoding="utf-8")
 
@@ -185,7 +186,7 @@ def test_nothing_matched_says_why_it_could_not() -> None:
 
 
 def test_the_route_passes_the_relation() -> None:
-    body = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    body = engine_source()
     route = body[body.index("def monitor_crew("):]
     route = route[: route.index("\n@app.")]
     assert "crew.subcontractors(" in route and "latest_retention(project)" in route
@@ -239,7 +240,7 @@ def test_a_name_known_only_to_the_registers_still_claims_its_line() -> None:
 
 
 def test_the_summary_route_hands_over_the_known_names() -> None:
-    body = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    body = engine_source()
     assert "known=_monitor_known_parties(project)" in body
     helper = body[body.index("def _monitor_known_parties("):]
     helper = helper[: helper.index("\n@app.")]

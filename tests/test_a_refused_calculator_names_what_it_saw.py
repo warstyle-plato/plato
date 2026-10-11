@@ -25,6 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def _rows(count: int, named: bool = True) -> list[dict[str, str]]:
@@ -73,7 +74,7 @@ def test_the_refusal_carries_the_snapshot():
 
 def test_the_probe_goes_through_the_same_path_as_the_calculation():
     """Второго пути наружу не заводим: он однажды ответит иначе, чем расчёт."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     body = source[source.index("def glavapu_probe("):]
     body = body[:body.index("\n@app.get(\"/glavapu/health\")")]
     assert "_glavapu_headless_rows(" in body, "проба ходит своим путём мимо расчёта"
@@ -198,7 +199,7 @@ def test_the_parcel_wait_is_shorter_than_the_whole_budget():
 
 def test_the_button_is_found_by_more_than_its_label():
     """Подпись у кнопки в этом состоянии — «…», по ней её не найти."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     body = source[source.index("def _glavapu_proceed("):]
     body = body[:body.index("\ndef _glavapu_parcel_message(")]
     assert 'data-r="map-proceed-button"' in body, "кнопка ищется только по подписи"
@@ -214,7 +215,7 @@ def test_the_snapshot_looks_at_the_parcel_dialog():
 
 def test_every_refusal_carries_a_snapshot():
     """`snapshot: {}` значит «смотреть не на что» — так выглядел стек Playwright."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     worker = source[source.index("def _glavapu_browser_worker("):]
     worker = worker[:worker.index("\ndef _glavapu_warm_up(")]
     assert 'getattr(exc, "snapshot", None) is None' in worker, \
@@ -251,7 +252,7 @@ def test_the_pause_has_a_ceiling():
 
 
 def test_a_success_resets_the_ladder():
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert '_GLAVAPU_HEADLESS_BLOCKED_UNTIL["row"] = 0' in source, \
         "лестница не сбрасывается удавшимся расчётом — связка ожила, а мы её держим"
 

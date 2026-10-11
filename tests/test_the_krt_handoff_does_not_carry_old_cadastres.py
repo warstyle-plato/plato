@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from engine_source import engine_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -60,7 +61,7 @@ def test_the_site_handoff_fills_the_field_from_the_decision() -> None:
     # Своего списка полей у моста нет: у лота номера как раз передаются, а
     # территорию площадки забывает та же функция, что грузит любой проект.
     assert "field.value=''" not in krt
-    page = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    page = engine_source()
     forget = page[page.index("function forgetTerritoryState("):]
     forget = forget[: forget.index("\n}\n")]
     assert "'cadastralNumbers'" in forget and "field.value=''" in forget

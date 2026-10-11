@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 @pytest.fixture()
@@ -109,7 +110,7 @@ def test_new_and_active_are_different_numbers(storage):
 
 def test_platon_question_carries_the_chat_id():
     """Вопрос Платону писался без chat_id — 74 живых вопроса легли под нулём."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     call = source[source.index('usage_track("question", surface="site"'):]
     assert "chat_id=_web_identity_chat_id(" in call[:400], (
         "вопрос Платону снова пишется без chat_id — автор вопроса потеряется")

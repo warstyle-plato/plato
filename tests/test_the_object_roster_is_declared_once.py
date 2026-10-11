@@ -24,8 +24,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
-SOURCE = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+SOURCE = engine_source()
 
 
 def test_the_registry_is_the_only_place_that_lists_the_objects() -> None:

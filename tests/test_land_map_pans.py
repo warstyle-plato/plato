@@ -38,6 +38,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 NODE = shutil.which("node")
@@ -189,12 +190,12 @@ def test_the_number_travels_as_an_attribute_not_as_code():
 def test_the_printed_picture_stays_the_printed_picture():
     """Карта на экране печатную картинку не подменяет."""
     assert "/land/map-image?bbox=" in core.PAGE, "миниатюра осталась на своём источнике"
-    assert "_telegram_territory_photo" in Path("main_legacy.py").read_text(encoding="utf-8")
+    assert "_telegram_territory_photo" in engine_source()
 
 
 def test_the_tile_source_is_swappable_without_touching_code():
     """Публичный OSM годится посмотреть; под поток нужен свой — одной строкой."""
-    source = Path("main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert '_env_str("OSM_TILE_URL"' in source
     route = re.search(r'(def land_tile\(.*?\n\n\n)', source, re.S)
     assert route and "OSM_TILE_URL" in route.group(1), (

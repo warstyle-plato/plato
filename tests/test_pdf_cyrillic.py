@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 main = _wrapper.core
 
@@ -132,7 +133,7 @@ def test_cyrillic_survives_into_the_document(report_pdf):
 
 def test_telegram_card_uses_the_same_generator():
     """Кнопка в боте и «Экспорт PDF» не должны расходиться в шрифтах."""
-    source = Path(main.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     assert source.count("_build_developaid_pdf(") >= 2
 
 

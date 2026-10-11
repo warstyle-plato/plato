@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 
 import main_registry  # noqa: E402  (собирает бота целиком, вместе с расширениями)
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = main_registry._base.core
 
@@ -42,8 +43,8 @@ EXTRA_NAMES = [str(item["command"]) for item in EXTRA]
 
 def sources() -> str:
     """Все модули, которые разбирают команды: движок, обёртка, расширения."""
-    files = ["main_legacy.py", "main.py", "mpt_extension.py", "telegram_user_registry.py"]
-    return "\n".join((ROOT / name).read_text(encoding="utf-8") for name in files)
+    files = ["main.py", "mpt_extension.py", "telegram_user_registry.py"]
+    return "\n".join([engine_source()] + [(ROOT / name).read_text(encoding="utf-8") for name in files])
 
 
 # --- шесть решений -------------------------------------------------------------
@@ -128,7 +129,7 @@ def test_the_vritep_screen_splits_moscow_and_the_region():
 def test_the_welcome_screen_still_shows_everything():
     """`/start` ушёл из списка команд, но кнопка Start у Telegram есть всегда, и
     за ней должен быть тот же выбор."""
-    text = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    text = engine_source()
     for callback in ("flow_cad_yes", "flow_address", "flow_cad_no", "vritep_start",
                      "tep_template", "ask_platon"):
         assert f'"callback_data": "{callback}"' in text, callback
@@ -228,7 +229,7 @@ def test_the_calculation_does_not_stand_below_the_help(monkeypatch):
 def test_the_first_button_opens_the_same_second_level_as_the_command():
     """«Расчёт модели» в приветствии и команда /calc ведут в одно меню, а не в
     два похожих."""
-    engine = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    engine = engine_source()
     branch = engine[engine.index('if data == "calc_menu"'):]
     assert "_telegram_calc_menu(chat_id)" in branch[:400]
     assert engine.count("def _telegram_calc_menu(") == 1

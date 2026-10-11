@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 
 import main as wrapper  # noqa: E402
 import normatives_registry as registry  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 
@@ -93,7 +94,7 @@ def test_an_empty_queue_is_not_a_message(queue) -> None:
 
 def test_the_core_hands_the_queue_over_by_the_shared_signature() -> None:
     """Тот же путь и та же подпись, что у знакомств и новинок КРТ."""
-    source = Path(ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert '@app.post("/internal/normatives/announcements")' in source
     block = source[source.index('@app.post("/internal/normatives/announcements")'):]
     block = block[:block.index('@app.post("/internal/krt/subscribe")')]
@@ -190,7 +191,7 @@ def test_todays_registry_has_no_link_gaps() -> None:
 
 def test_the_tool_is_declared_and_dispatched() -> None:
     assert "check_normatives" in [tool["name"] for tool in core._AGENT_TOOLS]
-    source = Path(ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     dispatch = source.split("def _execute_agent_tool", 1)[1][:5000]
     assert "check_normatives" in dispatch, "инструмент не диспетчеризуется"
 

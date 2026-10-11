@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as engine  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 @pytest.fixture()
@@ -114,7 +115,7 @@ def test_the_dialogue_survives_the_other_worker(bot, tmp_path):
 
 def test_the_intake_message_no_longer_lists_the_questions():
     """Список вопросов из карточки разбора убран — они уходят очередью."""
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     body = source[source.index("def _telegram_handle_intake_document("):]
     body = body[:body.index("\ndef _telegram_open_model_button(")]
     assert "Чего в документе нет — нужен ваш ответ" not in body

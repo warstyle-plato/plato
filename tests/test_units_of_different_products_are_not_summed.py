@@ -36,6 +36,7 @@ import main_legacy as core  # noqa: E402
 import page_blocks  # noqa: E402
 import presentation  # noqa: E402
 import v4_dashboard as vd  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def _result(**overrides):
@@ -123,7 +124,7 @@ def test_the_measure_words_have_one_owner():
     """
     assert core.COUNT_PARKING is presentation.PARKING_MEASURE
     assert core.COUNT_FLATS is presentation.FLATS_MEASURE
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     declaration = source[source.index("COUNT_FLATS = "):source.index("TEP_COUNT_MEASURE")]
     assert '"квартир"' not in declaration, "движок завёл свою копию слова меры"
     assert "_presentation." in declaration

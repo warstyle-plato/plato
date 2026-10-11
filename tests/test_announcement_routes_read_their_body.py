@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from engine_source import engine_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 ENGINE = ROOT / "main_legacy.py"
@@ -104,7 +105,7 @@ def _routes_above_their_model(source: str) -> list[tuple[str, str]]:
 
 
 def test_no_route_is_declared_above_its_model() -> None:
-    late = _routes_above_their_model(ENGINE.read_text(encoding="utf-8"))
+    late = _routes_above_their_model(engine_source())
     assert not late, (
         "модель тела объявлена ниже маршрута — FastAPI прочитает её как "
         f"параметр строки запроса: {late}"
