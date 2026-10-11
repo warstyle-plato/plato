@@ -4,7 +4,7 @@
 * конец срока — удержание без сделки: выручки выхода в деньгах нет;
 * стоимость на конец срока (EBITDA следующих 12 мес. × 9) входит в IRR и
   NPV как терминальная, но не в деньги: окупаемость считается без неё;
-* ориентир «Отель 1» хранит свои значения из книги (продажа, E758 = 4×).
+* ориентир «Отель 1» хранит метод своей книги (удержание, Гордон).
 
 Поверхности — отчёт, тизер, PDF и книга — печатают EV/EBITDA 9× и
 удержание. Каждая проверка падает на подделке.
@@ -83,13 +83,15 @@ def test_the_payback_check_fails_on_a_forgery() -> None:
 
 
 def test_the_hotel1_preset_keeps_its_book_exit() -> None:
+    """Книга Отеля 1: терминальная стоимость без сделки по Гордону (Расчеты!1641,
+    1678; g = E1634, r = E1623), а не умолчание 9×."""
     values = hotel_presets.BY_KEY["hotel1"].values
-    assert values["exit_mode"].value == hs.EXIT_SALE
-    assert values["valuation"].value == hs.VALUATION_MULTIPLE
-    assert values["exit_multiple"].value == 4
+    assert values["exit_mode"].value == hs.EXIT_HOLD
+    assert values["valuation"].value == hs.VALUATION_GORDON
+    assert values["gordon_growth_pct"].value == pytest.approx(3.9999)
+    assert values["gordon_rate_pct"].value == pytest.approx(15.0)
     x = hotel_presets.apply_preset({}, "hotel1")
-    assert (x["hotel_exit_mode"], x["hotel_valuation"], x["hotel_exit_multiple"]) == (
-        hs.EXIT_SALE, hs.VALUATION_MULTIPLE, 4)
+    assert (x["hotel_exit_mode"], x["hotel_valuation"]) == (hs.EXIT_HOLD, hs.VALUATION_GORDON)
 
 
 def test_the_exit_summary_names_hold_and_multiple() -> None:

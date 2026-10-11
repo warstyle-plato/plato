@@ -57,7 +57,7 @@ CHOICES = {
     "financing": {"commercial": "Обычный кредит", "preferential": "Льготный кредит", "none": "Без кредита"},
     "repayment": {"annuity": "Аннуитет", "sculpted": "Под DSCR", "sweep": "Весь свободный поток"},
     "exit_mode": {"sale": "Продажа", "hold": "Удержание"},
-    "valuation": {"cap_rate": "Ставка капитализации", "ev_ebitda": "EV/EBITDA"},
+    "valuation": {"cap_rate": "Ставка капитализации", "ev_ebitda": "EV/EBITDA", "gordon": "Гордон"},
 }
 
 # Модельные величины листа «Вводные» (столбец C): ключ → подпись.
@@ -101,9 +101,11 @@ MODEL: tuple[tuple[str, str], ...] = (
     ("repayment", "Погашение (annuity / sculpted / sweep)"),
     ("dscr", "Целевой DSCR (погашение «под DSCR»)"),
     ("exit_mode", "Конец срока (sale / hold)"),
-    ("valuation", "Оценка выхода (cap_rate / ev_ebitda)"),
+    ("valuation", "Оценка выхода (cap_rate / ev_ebitda / gordon)"),
     ("cap", "Ставка капитализации"),
     ("multiple", "Мультипликатор EV/EBITDA"),
+    ("growth_g", "Гордон: темп роста после срока g, доля в год"),
+    ("gordon_r", "Гордон: ставка дисконтирования стоимости r"),
     ("exit_cost", "Затраты на продажу, доля"),
     ("tax_rate", "Налог на прибыль"),
     ("loss_limit", "Зачёт убытка прошлых лет, не более доли базы"),
@@ -125,6 +127,7 @@ DERIVED: tuple[tuple[str, str], ...] = (
     ("ffe_net", "Мебель и оборудование без НДС, ₽"),
     ("building_net", "Здание без НДС, ₽ (база налога на имущество)"),
     ("insurance_month", "Страхование в месяц, ₽"),
+    ("equity_budget", "Капитал стройки до первой выдачи кредита, ₽ (капитал первым)"),
     ("first_draw", "Первая выдача кредита — k"),
     ("maturity", "Срок кредита — k"),
     ("amort_start", "Начало погашения тела — k"),
@@ -188,6 +191,10 @@ _COLUMN_LIST: tuple[tuple[str, str], ...] = (
     ("profit_after_tax", "Финансовый результат после налога"),
     ("cash_p", "Поток проекта деньгами (без оценки удержания)"),
     ("disc_cash_p", "Поток проекта деньгами, дисконт."),
+    ("cum_capex", "Затраты стройки нарастающим (до ввода)"),
+    ("shield", "Налоговый щит процентов (вне FCFF)"),
+    ("fcf_pre", "FCFF без оценки удержания"),
+    ("gordon_base", "FCFF последних 12 мес. срока (база Гордона)"),
 )
 COLUMNS: dict[str, tuple[str, str]] = {
     key: (get_column_letter(i), label) for i, (key, label) in enumerate(_COLUMN_LIST, start=1)}
@@ -279,6 +286,13 @@ def _row_formulas(r: int) -> dict[str, str]:
         "exit": f'=IF(AND({i("exit_mode")}="sale",{A}={i("horizon")}),{i("exit_value")},0)',
         "exit_cost": f"={v['exit']}*{i('exit_cost')}",
         "residual": f'=IF(AND({i("exit_mode")}="hold",{A}={i("horizon")}),{i("exit_value")},0)',
+        "cum_capex": f"={prev('cum_capex')}+IF({A}<={i('comm')},{v['capex']},0)",
+        "shield": (f"=IF(AND({v['margin']}-{v['fin_ded']}>0,{v['tax']}>0),{v['int_paid']}"
+                   f"*MIN({i('tax_rate')},{v['tax']}/({v['margin']}-{v['fin_ded']})),0)"),
+        "fcf_pre": (f"=IF({v['in_h']}<>1,0,{v['ebitda']}-{v['vat_paid']}-{v['capex']}"
+                    f"-{v['tax']}-{v['shield']})"),
+        "gordon_base": (f"=IF(AND({A}>{i('horizon')}-12,{A}<={i('horizon')}),"
+                        f"{v['fcf_pre']},0)"),
         "vatin": f"=IF({v['in_h']}=1,MAX(0,{v['capex']}-{v['capex_land']})*{i('vs')},0)",
         "refund": (f"=IF({A}>{i('horizon')},0,IF({A}={i('horizon')},SUM({refund_window}),"
                    f"{refund_lag}))"),
@@ -289,7 +303,10 @@ def _row_formulas(r: int) -> dict[str, str]:
         "interest": f"={v['bal_open']}*{v['rate']}/12",
         "int_cap": f"=IF({A}<{i('comm')},{v['interest']},0)",
         "int_paid": f"=IF(AND({A}>={i('comm')},{v['in_h']}=1),{v['interest']},0)",
-        "want": f'=IF(AND({A}<={i("comm")},{v["in_h"]}=1,{i("financing")}<>"none"),{v["capex"]}*{i("loan_share")},0)',
+        # Капитал первым, затем кредит (модель Отеля 1, Расчеты!L1381:L1383).
+        "want": (f'=IF(AND({A}<={i("comm")},{v["in_h"]}=1,{i("financing")}<>"none"),'
+                 f"MAX(0,{v['cum_capex']}-{i('equity_budget')})"
+                 f"-MAX(0,{prev('cum_capex')}-{i('equity_budget')}),0)"),
         "cum_prev": f"={prev('cum_draw')}",
         "draw": (f"=IF({i('limit_on')}=1,MIN({v['want']},MAX(0,{i('limit')}-{v['cum_prev']})),"
                  f"{v['want']})"),
@@ -348,10 +365,10 @@ def _row_formulas(r: int) -> dict[str, str]:
                       f"-{v['exit_cost']}-{v['vat_paid']})"),
         "to_equity": (f"={v['operating']}-{v['int_paid']}-{v['fee']}+{v['draw']}"
                       f"-{v['repay_total']}-{v['retained']}"),
-        "project_cf": (f"=IF({v['in_h']}<>1,0,{v['operating']}-{v['capex']}-{v['int_cap']}"
-                       f"-{v['int_paid']}-{v['fee']}-{v['tax']})"),
+        # Поток проекта — FCFF без процентов и их налогового щита (Расчеты!1637:1640).
+        "project_cf": f"={v['fcff']}",
         "equity_cf": f"=IF({v['in_h']}<>1,0,{v['to_equity']}-{v['capex']}-{v['tax']})",
-        "fcff": f"=IF({v['in_h']}<>1,0,{v['operating']}-{v['capex']}-{v['tax']})",
+        "fcff": f"=IF({v['in_h']}<>1,0,{v['operating']}-{v['capex']}-{v['tax']}-{v['shield']})",
         "disc_p": f"={v['project_cf']}/(1+{i('rate_m')})^{A}",
         "disc_e": f"={v['equity_cf']}/(1+{i('discount')}/12)^{A}",
         "irr_p": f"={v['project_cf']}/(1+{irr_p})^{A}",
@@ -375,6 +392,7 @@ def _model_values(data: dict[str, Any], start: date) -> dict[str, Any]:
     pct = lambda key: _num(params, key) / 100.0  # noqa: E731
     commissioning = _month(data["commissioning"])
     financing = str(params.get("financing") or hs.FINANCING_COMMERCIAL)
+    valuation = str(params.get("valuation") or hs.FIELD_BY_KEY["valuation"].default)
     limit_blank = params.get("loan_limit_th_per_key") in (None, "")
     keys = max(0.0, _num(params, "keys"))
     repayment = str(params.get("repayment") or hs.REPAY_ANNUITY)
@@ -415,9 +433,12 @@ def _model_values(data: dict[str, Any], start: date) -> dict[str, Any]:
         "term": max(1, int(_num(params, "loan_term_years") or 1)) * 12,
         "grace": max(0, int(_num(params, "grace_months"))),
         "repayment": repayment, "dscr": dscr,
-        "exit_mode": str(params.get("exit_mode") or hs.FIELD_BY_KEY["exit_mode"].default),
-        "valuation": str(params.get("valuation") or hs.FIELD_BY_KEY["valuation"].default),
+        # Гордон — без сделки: конец срока — удержание, как у движка.
+        "exit_mode": (hs.EXIT_HOLD if valuation == hs.VALUATION_GORDON
+                      else str(params.get("exit_mode") or hs.FIELD_BY_KEY["exit_mode"].default)),
+        "valuation": valuation,
         "cap": pct("exit_cap_pct"), "multiple": _num(params, "exit_multiple"),
+        "growth_g": pct("gordon_growth_pct"), "gordon_r": pct("gordon_rate_pct"),
         "exit_cost": max(0.0, pct("exit_cost_pct")),
         "tax_rate": float(data["profit_tax_rate"]), "loss_limit": LOSS_CARRY_USE_LIMIT,
         "discount": float(data["discount_rate"]),
@@ -501,9 +522,13 @@ def _inputs_sheet(book: Workbook, data: dict[str, Any], values: dict[str, Any],
         "amort_start": (f"=IF({i('first_draw')}<{NO_DRAW},MAX({i('comm')},{i('first_draw')}"
                         f"+{i('grace')}),{NO_DRAW})"),
         "forward_ebitda": f"=SUMIF({col('in_h')},0,{col('ebitda')})",
-        "exit_value": (f'=IF({i("forward_ebitda")}<=0,0,IF({i("valuation")}="ev_ebitda",'
+        "equity_budget": (f"=(1-{i('loan_share')})*MAX({col('cum_capex')})"),
+        "exit_value": (f'=IF({i("valuation")}="gordon",IF({i("gordon_r")}<={i("growth_g")},0,'
+                       f"MAX(0,SUM({col('gordon_base')}))*(1+{i('growth_g')})"
+                       f"/({i('gordon_r')}-{i('growth_g')})),"
+                       f'IF({i("forward_ebitda")}<=0,0,IF({i("valuation")}="ev_ebitda",'
                        f"{i('forward_ebitda')}*{i('multiple')},"
-                       f"IF({i('cap')}>0,{i('forward_ebitda')}/{i('cap')},0)))"),
+                       f"IF({i('cap')}>0,{i('forward_ebitda')}/{i('cap')},0))))"),
         "peak": f"=MAX({col('bal_close')})",
         "rate_m": f"=(1+{i('discount')})^(1/12)-1",
     }
@@ -986,9 +1011,9 @@ def _internal_checks(book: Workbook, rows: int) -> None:
         ("Баланс долга: выдача + капитализированные проценты − погашение − остаток",
          f"SUM({col('draw')})+SUM({col('int_cap')})-SUM({col('repay_total')})"
          f"-'{CALC_SHEET}'!{_c('bal_close')}{FIRST_ROW+rows-1}"),
-        ("Баланс потока проекта: поступления − затраты − финансирование − налог",
+        ("Баланс потока проекта (FCFF): поступления − затраты − налог − щит процентов",
          f"SUM({col('project_cf')})-SUM({col('operating')})+SUM({col('capex')})"
-         f"+SUM({col('int_cap')})+SUM({col('int_paid')})+SUM({col('fee')})+SUM({col('tax')})"),
+         f"+SUM({col('tax')})+SUM({col('shield')})"),
     ]
     if capex_book.SHEET in book.sheetnames:
         lines.append(("Баланс сметы и денежного потока",

@@ -78,9 +78,11 @@ EXITS: tuple[tuple[str, str], ...] = (
 
 VALUATION_CAP = "cap_rate"
 VALUATION_MULTIPLE = "ev_ebitda"
+VALUATION_GORDON = "gordon"
 VALUATIONS: tuple[tuple[str, str], ...] = (
     (VALUATION_CAP, "Ставка капитализации: EBITDA следующих 12 мес. ÷ ставка"),
     (VALUATION_MULTIPLE, "Мультипликатор EV/EBITDA × EBITDA следующих 12 мес."),
+    (VALUATION_GORDON, "Гордон: FCFF последних 12 мес. × (1 + g) ÷ (r − g), без сделки"),
 )
 
 # Класс (звёздность) по Положению о классификации гостиниц (ПП РФ № 1951).
@@ -100,28 +102,20 @@ def class_label(stars: Any) -> str | None:
     return dict(CLASSES).get(key)
 
 
-# Чем методика IRR движка отличается от модели Отеля 1 (#654). Каждая строка —
-# причина из моста `scripts/hotel_irr_bridge.py` с ячейками книги; вклад в
-# п.п. — `docs/hotel_irr_vs_hotel1.md`. Методика не меняется без решения
-# владельца — расхождение подписано на странице и в книге.
+# Методика гостиницы сведена с моделью Отеля 1 (владелец, 11.10.2026: «в жилье
+# всё сводим к минимальным расхождениям движка и книги»): поток проекта —
+# FCFF без процентов и их щита, капитал платит стройку первым, выход по
+# Гордону — способ оценки, коммунальная инфраструктура — статья сметы. Мост —
+# `scripts/hotel_irr_bridge.py`, разбор — `docs/hotel_irr_vs_hotel1.md`.
+# Остались различия шага, их и печатают страница и книга.
 IRR_METHOD_TITLE = "Методика IRR: отличия от модели Отеля 1"
 IRR_METHOD_NOTES: tuple[tuple[str, str], ...] = (
-    ("Состав затрат",
-     "смета движка — гостиница на участке; в модели Отеля 1 ещё коммунальная "
-     "инфраструктура 1 371 млн ₽ без НДС (Контр_панель!G71 = Расчеты!I170)"),
-    ("Финансирование стройки",
-     "капитал — доля каждого платежа стройки; в модели — капитал первым, "
-     "затем кредит (Расчеты!L1381:L1383)"),
-    ("Поток проекта",
-     "после процентов и комиссий кредита; в модели — FCFF без процентов и их "
-     "налогового щита (Расчеты!1637:1640)"),
-    ("Выход",
-     "стоимость = EBITDA следующих 12 мес. × EV/EBITDA или ÷ ставка; в модели — "
-     "Гордон: поток последних 4 кварталов × (1 + g) ÷ (r − g), g = 4 %, r = 15 % "
-     "(Расчеты!1641, 1678)"),
     ("Шаг IRR",
      "месячный поток; в модели — IRR годовых сумм квартальных потоков "
-     "(Расчеты!1645, 1682)"),
+     "(Расчеты!1645, 1682): у капитала около −1 п.п. против месячного"),
+    ("Шаг расчёта",
+     "месяц: загрузка растёт прямой, цена индексируется помесячно; в модели — "
+     "квартал, ступенями (Расчеты!528)"),
 )
 
 
@@ -273,6 +267,12 @@ FIELDS: tuple[HotelField, ...] = (
     HotelField("exit_multiple", "Мультипликатор EV/EBITDA", "x", "exit",
                default=9.0, origin=ORIGIN_OWNER_EXIT,
                needed_when=("valuation", (VALUATION_MULTIPLE,))),
+    HotelField("gordon_growth_pct", "Темп роста после срока (g)", "%/год", "exit",
+               hint="модель Отеля 1: Расчеты!E1634",
+               needed_when=("valuation", (VALUATION_GORDON,))),
+    HotelField("gordon_rate_pct", "Ставка дисконтирования стоимости (r)", "%", "exit",
+               hint="модель Отеля 1: требуемая доходность капитала, Расчеты!E1623",
+               needed_when=("valuation", (VALUATION_GORDON,))),
     HotelField("exit_cost_pct", "Затраты на продажу", "% цены", "exit",
                default=1.0, origin=ORIGIN_ENGINE,
                needed_when=("exit_mode", (EXIT_SALE,))),
@@ -651,7 +651,16 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     # --- выход ----------------------------------------------------------
     exit_mode = str(params.get("exit_mode") or FIELD_BY_KEY["exit_mode"].default)
     valuation = str(params.get("valuation") or FIELD_BY_KEY["valuation"].default)
-    if valuation == VALUATION_MULTIPLE:
+    gordon = valuation == VALUATION_GORDON
+    if gordon:
+        # Гордон — оценка без сделки (Расчеты!1641, 1678 модели Отеля 1): её
+        # база — поток после налога, поэтому стоимость считается ниже, когда
+        # налог известен.
+        exit_value = 0.0
+        if exit_mode == EXIT_SALE:
+            warnings.append("Оценка по Гордону — без сделки: конец срока считается удержанием.")
+            exit_mode = EXIT_HOLD
+    elif valuation == VALUATION_MULTIPLE:
         multiple = _num(params, "exit_multiple")
         exit_value = forward_ebitda * multiple if forward_ebitda > 0 else 0.0
     else:
@@ -659,7 +668,7 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         if cap <= 0:
             warnings.append("Ставка капитализации не задана — стоимость выхода не считается.")
         exit_value = forward_ebitda / cap if cap > 0 and forward_ebitda > 0 else 0.0
-    if forward_ebitda <= 0:
+    if forward_ebitda <= 0 and not gordon:
         warnings.append("EBITDA следующих 12 месяцев не положительна — стоимость выхода 0.")
     exit_cost = 0.0
     if exit_mode == EXIT_SALE:
@@ -715,6 +724,9 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     maturity: date | None = None
     amort_start: date | None = None
     capped = 0.0
+    equity_budget = (1.0 - loan_share) * sum(
+        v for mm, v in capex.items() if mm <= commissioning)
+    spent = 0.0
     for index, month in enumerate(months):
         rate = rate_of(month) if loan_on else 0.0
         interest = balance * rate / 12.0
@@ -725,7 +737,14 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
             balance += interest
         else:
             m["loan_interest_paid"][month] = interest
-        want = capex.get(month, 0.0) * loan_share if month <= commissioning else 0.0
+        # Капитал первым, затем кредит (модель Отеля 1, Расчеты!L1381:L1383):
+        # собственная доля затрат стройки платится раньше, кредит — остальное.
+        want = 0.0
+        if month <= commissioning:
+            cost = capex.get(month, 0.0)
+            want = (max(0.0, spent + cost - equity_budget)
+                    - max(0.0, spent - equity_budget))
+            spent += cost
         if want and limit is not None:
             room = max(0.0, limit - drawn)
             capped += max(0.0, want - room)
@@ -813,6 +832,30 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         if value:
             m["profit_tax"][mm] = value
 
+    # Налоговый щит процентов: FCFF проекта считается без него, как в модели
+    # Отеля 1 (Расчеты!1638: проценты × (1 − эффективная ставка налога)).
+    shield: dict[date, float] = {}
+    for mm in months:
+        before_tax = margins[mm] - financing_deduction.get(mm, 0.0)
+        tax = m["profit_tax"][mm]
+        if before_tax > 0 and tax > 0:
+            shield[mm] = m["loan_interest_paid"][mm] * min(profit_tax_rate, tax / before_tax)
+            m["interest_tax_shield"][mm] = shield[mm]
+    if gordon:
+        growth = _num(params, "gordon_growth_pct") / 100.0
+        rate = _num(params, "gordon_rate_pct") / 100.0
+        end = months.index(horizon_end)
+        last = months[max(0, end - 11):end + 1]
+        flow = sum(m["ebitda"][mm] + m["vat_refund"][mm] - m["capex"][mm]
+                   - m["profit_tax"][mm] - shield.get(mm, 0.0) for mm in last)
+        if rate <= growth:
+            warnings.append("Гордон: ставка r не выше темпа роста g — стоимость не считается.")
+        elif flow <= 0:
+            warnings.append("Гордон: поток последних 12 месяцев не положителен — стоимость 0.")
+        else:
+            exit_value = flow * (1.0 + growth) / (rate - growth)
+        m["residual_value"][horizon_end] += exit_value
+
     # --- деньги ---------------------------------------------------------
     project_cf: list[float] = []
     equity_cf: list[float] = []
@@ -827,13 +870,13 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
             operating - m["loan_interest_paid"][month] - m["loan_fee"][month]
             + m["loan_draw"][month] - m["loan_repayment"][month]
             - m["cash_retained"][month])
-        m["project_cf"][month] = (operating - m["capex"][month]
-                                  - m["loan_interest_cap"][month]
-                                  - m["loan_interest_paid"][month] - m["loan_fee"][month]
-                                  - m["profit_tax"][month])
+        # Поток проекта — FCFF, как в модели Отеля 1 (Расчеты!1637:1640): до
+        # процентов и комиссий кредита и без налогового щита процентов.
+        m["fcff"][month] = (operating - m["capex"][month] - m["profit_tax"][month]
+                            - shield.get(month, 0.0))
+        m["project_cf"][month] = m["fcff"][month]
         m["equity_cf"][month] = (m["cash_to_equity"][month] - m["capex"][month]
                                  - m["profit_tax"][month])
-        m["fcff"][month] = operating - m["capex"][month] - m["profit_tax"][month]
         project_cf.append(m["project_cf"][month])
         equity_cf.append(m["equity_cf"][month])
 
@@ -855,13 +898,14 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     revenue_total = total("revenue")
     # Пик собственного капитала — худший накопленный поток капитала по
     # месяцам: им меряется, сколько денег собственник вложил на деле.
-    cumulative = equity_peak = 0.0
-    for value in equity_cf:
-        cumulative += value
-        equity_peak = max(equity_peak, -cumulative)
     residual = [m["residual_value"][mm] for mm in months]
     project_cash = [cf - r for cf, r in zip(project_cf, residual)]
     equity_cash = [cf - r for cf, r in zip(equity_cf, residual)]
+    # Пик капитала — деньгами, без оценки удержания: она не деньги проекта.
+    cumulative = equity_peak = 0.0
+    for value in equity_cash:
+        cumulative += value
+        equity_peak = max(equity_peak, -cumulative)
     kpi = {
         "keys": ops.keys,
         "capex": capex_total, "capex_net": capex_net, "capex_vat": capex_vat,

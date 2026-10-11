@@ -8,8 +8,10 @@
 причины в п.п. Шаги накопительные: вклад причины зависит от порядка, порядок
 назван здесь и в `docs/hotel_irr_vs_hotel1.md`.
 
-Методика движка не меняется: правила книги (Гордон, FCFF без процентов,
-капитал первым, годовой IRR) применяются к потокам движка здесь, в мосте.
+Методика гостиницы сведена с книгой (владелец, 11.10.2026): FCFF без процентов,
+капитал первым, Гордон и инфраструктура в смете — правила движка. Мост идёт по
+различиям вводных (даты, ключевая ставка, смета) и шага IRR — его владелец
+оставил месячным.
 
     python3 scripts/hotel_irr_bridge.py     # напечатать таблицу моста
 """
@@ -144,14 +146,22 @@ def bridge(plan: dict[str, Any] | None = None, skip: frozenset[str] = frozenset(
            ) -> list[dict[str, Any]]:
     """Шаги моста: подпись, ячейки книги, IRR проекта и капитала после шага.
 
-    `skip` — пропустить причину («infra», «equity_first»): для проверки, что
-    мост без неё до книги не сходится."""
+    Методика движка уже та же, что у книги (FCFF, капитал первым, Гордон,
+    инфраструктура в смете), поэтому мост идёт только по вводным проекта —
+    датам, ключевой ставке, смете по кварталам — и по шагу IRR.
+
+    `skip` — подделка для проверки, что мост без причины не сходится:
+    «infra» — смета книги без инфраструктуры, «gordon» — выход продажей
+    по EV/EBITDA 4× вместо Гордона."""
     seen = plan or engine_plan()
     b = book()
     vat = 1.0 + ref.value("hotel1:Предпосылки!E775")
     kw = seen["kw"]
     rates = seen["rates"]
     first, last = min(rates), max(rates)
+    over: dict[str, Any] = {}
+    if "gordon" in skip:
+        over = {"exit_mode": hs.EXIT_SALE, "valuation": hs.VALUATION_MULTIPLE}
 
     def engine_rate(month: dt.date) -> float:
         return rates.get(month, rates[first] if month < first else rates[last])
@@ -159,7 +169,7 @@ def bridge(plan: dict[str, Any] | None = None, skip: frozenset[str] = frozenset(
     def book_rate(month: dt.date) -> float:
         return b["key_rate"].get(month.year, b["key_rate"][max(b["key_rate"])])
 
-    def flows(p: dict[str, Any], rate: Callable[[dt.date], float], **over: Any) -> dict:
+    def flows(p: dict[str, Any], rate: Callable[[dt.date], float]) -> dict:
         p = dict(p)
         p["params"] = {**p["params"], **over}
         return hs.hotel_flows(p, rate, **kw)
@@ -176,7 +186,7 @@ def bridge(plan: dict[str, Any] | None = None, skip: frozenset[str] = frozenset(
     step("engine", "Движок: ориентир «Отель 1», даты и смета проекта движка", "—",
          r["kpi"]["irr_project"], r["kpi"]["irr_equity"])
 
-    # Даты книги: ввод 01.01.2029 (Предпосылки!E24) вместо 01.07.2030 движка.
+    # Даты книги: ввод 01.01.2029 (Предпосылки!E24) вместо даты проекта движка.
     shift = hs.month_index(plan0["commissioning"], dt.date(2029, 1, 1))
     moved = {name: {hs.add_months(m, shift): v for m, v in plan0[name].items()}
              for name in ("capex", "capex_ffe", "capex_land")}
@@ -191,67 +201,22 @@ def bridge(plan: dict[str, Any] | None = None, skip: frozenset[str] = frozenset(
          r["kpi"]["irr_project"], r["kpi"]["irr_equity"])
 
     rows = b["rows"]
-    hotel = _monthly(rows["hotel_capex"], vat)
-    plan3 = {**plan1, "start": dt.date(2025, 10, 1), "capex": hotel,
+    capex = _monthly(rows["hotel_capex"], vat)
+    if "infra" not in skip:
+        for month, value in _monthly(rows["infra_capex"], vat).items():
+            capex[month] = capex.get(month, 0.0) + value
+    plan3 = {**plan1, "start": dt.date(2025, 10, 1), "capex": capex,
              "capex_ffe": _monthly(rows["ffe_capex"], vat), "capex_land": {}}
     r = flows(plan3, book_rate)
-    step("capex", "CAPEX отеля книги по кварталам вместо сметы движка",
-         "Расчеты!L212:CO212 (Контр_панель!G66), мебель — Расчеты!207",
+    step("capex", "Смета книги по кварталам вместо сметы движка: отель и инфраструктура",
+         "Расчеты!212, 170, 207 (Контр_панель!G66, G71)",
          r["kpi"]["irr_project"], r["kpi"]["irr_equity"])
 
-    capex = dict(hotel)
-    for month, value in _monthly(rows["infra_capex"], vat).items():
-        if "infra" not in skip:
-            capex[month] = capex.get(month, 0.0) + value
-    plan4 = {**plan3, "capex": capex}
-    r = flows(plan4, book_rate)
-    step("infra", "Коммунальная инфраструктура 1 371 млн ₽ без НДС",
-         "Расчеты!L170:CO170 (Контр_панель!G71)",
-         r["kpi"]["irr_project"], r["kpi"]["irr_equity"])
-
-    # Выход книги — Гордон: поток последних 4 кварталов × (1 + g) ÷ (r − g)
-    # в последнем квартале эксплуатации; продажи и её затрат нет.
-    r = flows(plan4, book_rate, exit_mode=hs.EXIT_HOLD)
     months = r["months"]
-    end = months.index(r["horizon_end"])
-    residual = r["kpi"]["exit_value"]
-    factor = (1.0 + b["growth"]) / (b["required"] - b["growth"])
-
-    def gordon(series: list[float]) -> list[float]:
-        out = list(series)
-        out[end] -= residual
-        out[end] += sum(out[end - 11:end + 1]) * factor
-        return out
-
-    project = gordon(r["project_cf"])
-    equity = gordon(r["equity_cf"])
-    step("exit", "Выход по Гордону вместо продажи по EV/EBITDA 4×",
-         f"Расчеты!1641, 1678; g = {GORDON_GROWTH_CELL}, r = {REQUIRED_RETURN_CELL}",
-         fm.monthly_irr(project), fm.monthly_irr(equity))
-
-    # Поток проекта книги — FCFF: OCF + проценты × (1 − t) + ICF. У движка
-    # поток проекта — после процентов и комиссий кредита.
-    fcff = gordon([r["monthly"]["fcff"].get(m, 0.0) for m in months])
-    step("fcff", "Поток проекта — FCFF без процентов и комиссий кредита",
-         "Расчеты!1637:1640", fm.monthly_irr(fcff), fm.monthly_irr(equity))
-    tax = kw["profit_tax_rate"]
-    fcff = [v - tax * r["monthly"]["loan_interest_paid"].get(m, 0.0)
-            for v, m in zip(fcff, months)]
-    step("shield", "FCFF без налогового щита процентов: проценты × (1 − t)",
-         "Расчеты!1638", fm.monthly_irr(fcff), fm.monthly_irr(equity))
-
-    # Финансирование стройки: книга вкладывает капитал первым (L1381), дальше
-    # платит кредит (1382:1383); у движка капитал — доля каждого платежа.
-    before = _monthly(rows["fcfe"])
-    if "equity_first" not in skip:
-        equity = [before.get(m, 0.0) if m < r["commissioning"] else v
-                  for m, v in zip(months, equity)]
-    step("equity_first", "Капитал первым, затем кредит — поток капитала книги до ввода",
-         "Расчеты!L1381:L1383, 1491, 1677", fm.monthly_irr(fcff), fm.monthly_irr(equity))
-
     step("annual", "IRR по годовым суммам вместо месячного ряда",
          "Расчеты!1645, 1651; 1682, 1689",
-         annual_irr(by_year(months, fcff)), annual_irr(by_year(months, equity)))
+         annual_irr(by_year(months, r["project_cf"])),
+         annual_irr(by_year(months, r["equity_cf"])))
     step("book", "Модель Отеля 1", "Контр_панель!G14, G20",
          b["irr_project"], b["irr_equity"])
     return steps

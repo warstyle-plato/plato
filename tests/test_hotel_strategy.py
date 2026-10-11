@@ -188,10 +188,28 @@ def test_principal_waits_for_the_grace_and_the_opening():
 
 
 def test_vat_refund_repays_the_loan_not_the_equity():
+    """Возмещение НДС гасит кредит, пока он есть. Капитал платит стройку первым
+    (модель Отеля 1), поэтому возмещение, пришедшее до первой выдачи, — его."""
     result = run()
     m = result["monthly"]
+    first_draw = result["kpi"]["loan_first_draw"]
+    before = sum(v for mm, v in m["vat_refund"].items() if mm < first_draw)
+    assert before > 0
     assert sum(m["loan_vat_prepayment"].values()) == pytest.approx(
-        result["totals"]["vat_refund"], rel=1e-9)
+        result["totals"]["vat_refund"] - before, rel=1e-9)
+
+
+def test_equity_pays_the_construction_first():
+    """Капитал первым, затем кредит (Расчеты!L1381:L1383 модели Отеля 1)."""
+    result = run()
+    m = result["monthly"]
+    capex = result["totals"]["capex"]
+    share = hs.FIELD_BY_KEY["loan_share_pct"].default / 100.0
+    first_draw = result["kpi"]["loan_first_draw"]
+    paid_before = sum(v for mm, v in m["capex"].items() if mm < first_draw)
+    assert paid_before <= capex * (1 - share) + 1e-6
+    assert paid_before + m["capex"][first_draw] > capex * (1 - share)
+    assert sum(m["loan_draw"].values()) == pytest.approx(capex * share, rel=1e-9)
 
 
 def test_sculpted_repayment_keeps_the_target_dscr():
@@ -328,3 +346,60 @@ def test_the_dombai_adr_is_the_book_chain():
     adr_2029 = hotel_presets.BY_KEY["hotel1"].values["adr_rub"].value
     q1_index = 1.04 ** 0.25  # книга индексирует на конец квартала
     assert adr_2029 * q1_index == pytest.approx(18537.827, rel=1e-4)
+
+
+# --- методика модели Отеля 1 (владелец, 11.10.2026) -----------------------
+
+def test_gordon_values_the_last_year_flow_without_a_deal():
+    """Расчеты!1641: поток последних 12 мес. × (1 + g) ÷ (r − g), без сделки."""
+    r = run(plan(params=params(valuation=hs.VALUATION_GORDON, exit_mode=hs.EXIT_SALE,
+                               gordon_growth_pct=4, gordon_rate_pct=15)))
+    m, months = r["monthly"], r["months"]
+    end = months.index(r["horizon_end"])
+    last = months[end - 11:end + 1]
+    flow = sum(m.get("fcff", {}).get(mm, 0.0) for mm in last) - m["residual_value"][r["horizon_end"]]
+    assert r["kpi"]["exit_mode"] == hs.EXIT_HOLD
+    assert not m.get("exit_revenue")
+    assert r["kpi"]["exit_value"] == pytest.approx(flow * 1.04 / 0.11, rel=1e-9)
+    assert any("Гордону" in w for w in r["warnings"])
+    # Подделка: ставка не выше роста — стоимость не считается, причина названа.
+    bad = run(plan(params=params(valuation=hs.VALUATION_GORDON, gordon_growth_pct=15,
+                                 gordon_rate_pct=15)))
+    assert bad["kpi"]["exit_value"] == 0
+    assert any("r не выше" in w for w in bad["warnings"])
+
+
+def test_the_project_flow_is_fcff_without_interest():
+    """Расчеты!1637:1640: поток проекта не видит процентов и комиссий кредита."""
+    r = run()
+    m = r["monthly"]
+    for i, mm in enumerate(r["months"]):
+        operating = (m.get("ebitda", {}).get(mm, 0.0) + m.get("vat_refund", {}).get(mm, 0.0)
+                     + m.get("residual_value", {}).get(mm, 0.0) + m.get("exit_revenue", {}).get(mm, 0.0)
+                     - m.get("exit_cost", {}).get(mm, 0.0))
+        fcff = operating - m.get("capex", {}).get(mm, 0.0) - m.get("profit_tax", {}).get(mm, 0.0)
+        assert r["project_cf"][i] <= fcff + 1e-6
+        assert r["project_cf"][i] == pytest.approx(m.get("fcff", {}).get(mm, 0.0), abs=1e-6)
+    # Щит процентов — только там, где платится налог, и не больше ставки × проценты.
+    for i, mm in enumerate(r["months"]):
+        operating = (m.get("ebitda", {}).get(mm, 0.0) + m.get("vat_refund", {}).get(mm, 0.0)
+                     + m.get("residual_value", {}).get(mm, 0.0))
+        shield = (operating - m.get("capex", {}).get(mm, 0.0)
+                  - m.get("profit_tax", {}).get(mm, 0.0) - r["project_cf"][i])
+        assert -1e-6 <= shield <= 0.25 * m.get("loan_interest_paid", {}).get(mm, 0.0) + 1e-6
+        if shield > 1e-6:
+            assert m.get("profit_tax", {}).get(mm, 0.0) > 0
+
+
+def test_the_hotel1_preset_fills_the_infrastructure_rate():
+    """Коммунальная инфраструктура модели (Расчеты!I170) — ставка «Сети» движка;
+    вписанное руками ориентир не перетирает."""
+    x = hotel_presets.apply_preset({"utilities_th_per_sqm": 10.25}, "hotel1")
+    expected = (ref.value("hotel1:Расчеты!I170") * (1 + ref.value("hotel1:Предпосылки!E775"))
+                / ref.value("hotel1:Предпосылки!E92"))
+    assert x["utilities_th_per_sqm"] == pytest.approx(expected, rel=1e-6)
+    origin = x["_field_origin"]["inputs.utilities_th_per_sqm"]
+    assert origin["source"] == "hotel_preset" and "Расчеты!I170" in origin["text"]
+    manual = {"utilities_th_per_sqm": 7.0,
+              "_field_origin": {"inputs.utilities_th_per_sqm": {"source": "manual"}}}
+    assert hotel_presets.apply_preset(manual, "hotel1")["utilities_th_per_sqm"] == 7.0

@@ -115,7 +115,7 @@ def test_the_report_speaks_of_a_hotel_not_of_housing() -> None:
     for word in HOUSING_WORDS:
         assert word not in text, word
     for word in ("Номерной фонд", "Класс гостиницы", "ADR", "RevPAR", "GOP", "EBITDA",
-                 "CAPEX на номер", "FF&E", "Кредит гостиницы", "Стоимость выхода", "DPBP"):
+                 "CAPEX на номер", "FF&E", "Кредит гостиницы", "Стоимость гостиницы", "DPBP"):
         assert word in text, word
 
 
@@ -197,7 +197,7 @@ def test_the_calendar_runs_from_construction_to_exit() -> None:
     calendar = _sections(_run())["calendar"]["calendar"]
     labels = [e["label"] for e in calendar["events"]]
     for label in ("Строительство гостиницы", "Ввод гостиницы", "Выход на целевую загрузку",
-                  "Эксплуатация", "Кредит гостиницы", "Выход: продажа гостиницы"):
+                  "Эксплуатация", "Кредит гостиницы", "Конец срока: оценка удержания"):
         assert label in labels, label
     assert any(label.startswith("Стабилизированный год") for label in labels)
     assert not {"Старт продаж", "Продажи", "БРИДЖ", "РВЭ / РНВ", "Строительство ЖК"} & set(labels)
@@ -209,10 +209,11 @@ def test_sensitivity_moves_the_hotel_factors() -> None:
     x, t = _inputs()
     sensitivity = _sections(_run())["sensitivity"]["sensitivity"]
     assert sensitivity["metric"] == "npv_mln"
-    assert {"hotel_adr_rub", "hotel_occ_target_pct", "hotel_exit_multiple"} <= set(
+    # Отель 1 — Гордон (Расчеты!1641): фактор выхода — его ставка r; ставку
+    # капитализации и мультипликатор такая оценка не читает.
+    assert {"hotel_adr_rub", "hotel_occ_target_pct", "hotel_gordon_rate_pct"} <= set(
         sensitivity["parameters"])
-    # Ставка капитализации у оценки мультипликатором не читается.
-    assert "hotel_exit_cap_pct" not in sensitivity["parameters"]
+    assert not {"hotel_exit_cap_pct", "hotel_exit_multiple"} & set(sensitivity["parameters"])
     report = core.run_sensitivity(x, t, [], {}, metric="npv_mln", change_pct=10,
                                   parameters=["hotel_adr_rub"])
     item = report["items"][0]
@@ -261,8 +262,10 @@ def test_the_retained_cash_is_the_owner_money_not_lost() -> None:
     flows = run(plan(params={**plan()["params"], "loan_share_pct": 90, "grace_months": 30}))
     totals, monthly = flows["totals"], flows["monthly"]
     assert sum(monthly.get("cash_retained", {}).values()) == pytest.approx(0.0, abs=1e-3)
+    # FCFF — без налогового щита процентов (модель Отеля 1): щит — деньги капитала.
     assert sum(flows["equity_cf"]) == pytest.approx(
-        sum(monthly["fcff"].values()) - sum(monthly["loan_interest_paid"].values())
+        sum(monthly["fcff"].values()) + sum(monthly.get("interest_tax_shield", {}).values())
+        - sum(monthly["loan_interest_paid"].values())
         - totals["loan_fee"] + totals["loan_draw"] - totals["loan_repayment"], rel=1e-9)
     assert totals["loan_draw"] == pytest.approx(totals["loan_repayment"]
                                                 - sum(flows["monthly"]["loan_interest_cap"].values()),
