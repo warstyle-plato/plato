@@ -186,6 +186,26 @@ def test_a_failed_answer_is_named_in_the_book(tmp_path, monkeypatch):
     assert store.queue() == [], "неудачный разбор не повторяется каждую минуту"
 
 
+def test_a_failure_from_before_the_release_is_retried_at_once(tmp_path, monkeypatch):
+    """Отказ, записанный прежним процессом, повторяется сразу после выката.
+
+    Шесть часов паузы — против долбёжки живого отказа источника. Отказ,
+    который вызвал наш код, после выката с починкой должен уйти из выгрузки
+    сразу, а не висеть сырым исключением ещё полдня.
+    """
+    store = rules.LotNotes(tmp_path / "market")
+    store.remember_lots([_lot("https://etp/lot/1")])
+    store.request([{"url": "https://etp/lot/1"}])
+    started = time.time()
+    monkeypatch.setattr(rules, "PROCESS_STARTED_AT", started)
+    store.save_note("https://etp/lot/1", {"failed": True, "reason": "400",
+                                          "asked_at": started - 60})
+    assert [lot["url"] for lot in store.queue(now=started + 60)] == ["https://etp/lot/1"]
+    store.save_note("https://etp/lot/1", {"failed": True, "reason": "400",
+                                          "asked_at": started + 30})
+    assert store.queue(now=started + 60) == [], "отказ этого процесса ждёт свои шесть часов"
+
+
 def test_the_krt_book_has_no_lot_comment_column():
     ws = openpyxl.load_workbook(io.BytesIO(api._xlsx([{"name": "КРТ"}], "krt"))).active
     assert not any("Комментарий Платона" in str(cell.value) for cell in ws[1])
