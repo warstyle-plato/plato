@@ -35497,8 +35497,7 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
 
     # 3. Стратегия реализации ----------------------------------------------
     exit_label = choice("exit_mode", hotel_strategy.EXITS)
-    strategy_text = (f"Эксплуатация {_telegram_number(hold_years, 0)} лет, затем "
-                     + ("продажа" if sale else "удержание (оценка без сделки)"))
+    strategy_text = hotel_strategy.exit_summary(params)
     market = [
         _row("Стратегия", strategy_text, "text"),
         _row(labels["adr_rub"] + ", ₽/сутки без НДС", params.get("adr_rub"), "rub_unit"),
