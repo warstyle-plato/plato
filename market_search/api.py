@@ -73,6 +73,9 @@ class PriceHintRequest(BaseModel):
     # Сроки НАШЕГО проекта — только для подсказки стадии, не для отбора.
     project_sales_start: str | None = None
     project_commissioning: str | None = None
+    # Кадастровый номер участка, присланный вместе с точкой: по нему
+    # выбирается свод региона (у точки адреса с областью нет).
+    cadastral: str | None = None
 
     @model_validator(mode="after")
     def address_or_coordinates(self) -> "PriceHintRequest":
@@ -210,6 +213,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 longitude=req.longitude,
                 segment=req.segment,
                 radius_km=req.radius_km,
+                cadastral=req.cadastral,
                 **req.stage_options(),
             )
         except SubjectNotFound as exc:
@@ -244,6 +248,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
                 longitude=req.longitude,
                 segment=req.segment,
                 radius_km=req.radius_km,
+                cadastral=req.cadastral,
                 include_projects=True,
                 **req.stage_options(),
             )

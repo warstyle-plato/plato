@@ -1834,6 +1834,20 @@ class PulseClient:
         }
 
 
+def _russia_site(site: Any) -> bool:
+    """Всероссийский кабинет — поддомен `russia.` (как его ищет сбор региона)."""
+    return site_key(str(getattr(site, "base", ""))).startswith("russia.")
+
+
+def _outside_moscow(project: PulseProject) -> bool:
+    """Проект известно где и не в Москве: код номера или область в адресе."""
+    code = project.region
+    if code:
+        return code != "77"
+    found = address_region(project.address)
+    return bool(found) and found != "Москва"
+
+
 class PulseNetwork:
     """Несколько баз «Пульса» под одной вывеской клиента.
 
@@ -1847,6 +1861,10 @@ class PulseNetwork:
 
     Цена, остатки и карточка проекта спрашиваются у той базы, чей
     справочник проект принёс: номер одной базы в другой ничего не значит.
+    Один и тот же проект из двух баз (дубль) вне Москвы принадлежит
+    всероссийскому кабинету, в каком бы порядке ни стояли базы: московский
+    на цену и темп проекта области отвечает 403. Не ответила база-владелец —
+    спрашивается следующая база, принёсшая тот же проект.
     """
 
     def __init__(self, sites: list[PulseClient]):
@@ -1855,6 +1873,7 @@ class PulseNetwork:
         self.sites = sites
         self._projects: list[PulseProject] | None = None
         self._owner: dict[str, PulseClient] = {}
+        self._holders: dict[str, list[PulseClient]] = {}
         self.duplicates = 0
         self.conflicts: list[dict[str, Any]] = []
 
@@ -1884,8 +1903,8 @@ class PulseNetwork:
     def projects(self, *, refresh: bool = False, fetch: bool = True) -> list[PulseProject]:
         if self._projects is not None and not refresh:
             return self._projects
-        merged: list[PulseProject] = []
         owner: dict[str, PulseClient] = {}
+        holders: dict[str, list[PulseClient]] = {}
         kept: dict[str, PulseProject] = {}
         duplicates = 0
         conflicts: list[dict[str, Any]] = []
@@ -1895,11 +1914,18 @@ class PulseNetwork:
                 if first is None:
                     kept[item.complex_id] = item
                     owner[item.complex_id] = site
-                    merged.append(item)
+                    holders[item.complex_id] = [site]
                     continue
                 gap = _distance_km(first.latitude, first.longitude, item.latitude, item.longitude)
                 if gap <= 1.0:
                     duplicates += 1
+                    holders[item.complex_id].append(site)
+                    if _russia_site(site) and not _russia_site(owner[item.complex_id]) and (
+                        _outside_moscow(first) or _outside_moscow(item)
+                    ):
+                        kept[item.complex_id] = item
+                        owner[item.complex_id] = site
+                        holders[item.complex_id].insert(0, holders[item.complex_id].pop())
                 else:
                     conflicts.append({
                         "complex_id": item.complex_id,
@@ -1907,7 +1933,9 @@ class PulseNetwork:
                         "dropped": {"base": item.base, "name": item.name},
                         "distance_km": round(gap, 1),
                     })
-        self._owner, self.duplicates, self.conflicts = owner, duplicates, conflicts
+        merged = list(kept.values())
+        self._owner, self._holders = owner, holders
+        self.duplicates, self.conflicts = duplicates, conflicts
         # Пустой список не запоминается: база могла ещё не загрузиться.
         self._projects = merged or None
         return merged
@@ -1917,6 +1945,18 @@ class PulseNetwork:
         if wanted not in self._owner:
             self.projects(fetch=False)
         return self._owner.get(wanted) or self.sites[0]
+
+    def _ask(self, method: str, complex_id: Any, *args: Any, **kwargs: Any) -> Any:
+        """Данные проекта у базы-владельца, а без ответа — у прочих его баз."""
+        wanted = pulse_id(complex_id) or ""
+        first = self._site(complex_id)
+        sites = [first] + [site for site in self._holders.get(wanted, []) if site is not first]
+        answer: Any = None
+        for site in sites:
+            answer = getattr(site, method)(complex_id, *args, **kwargs)
+            if answer:
+                return answer
+        return answer
 
     def project(self, complex_id: Any) -> PulseProject | None:
         wanted = pulse_id(complex_id)
@@ -1968,34 +2008,34 @@ class PulseNetwork:
     # --- данные проекта: у базы-владельца ----------------------------------------
 
     def metrics(self, complex_id: Any) -> dict[str, Any]:
-        return self._site(complex_id).metrics(complex_id)
+        return self._ask("metrics", complex_id)
 
     def project_totals(self, complex_id: Any) -> dict[str, Any]:
-        return self._site(complex_id).project_totals(complex_id)
+        return self._ask("project_totals", complex_id)
 
     def project_dates(self, complex_id: Any) -> dict[str, Any]:
-        return self._site(complex_id).project_dates(complex_id)
+        return self._ask("project_dates", complex_id)
 
     def project_stage(self, complex_id: Any) -> dict[str, Any]:
-        return self._site(complex_id).project_stage(complex_id)
+        return self._ask("project_stage", complex_id)
 
     def project_page(self, complex_id: Any, *, refresh: bool = False) -> dict[str, Any]:
-        return self._site(complex_id).project_page(complex_id, refresh=refresh)
+        return self._ask("project_page", complex_id, refresh=refresh)
 
     def project_facts(self, complex_id: Any) -> dict[str, Any]:
-        return self._site(complex_id).project_facts(complex_id)
+        return self._ask("project_facts", complex_id)
 
     def remaining(self, complex_id: Any) -> dict[str, Any]:
-        return self._site(complex_id).remaining(complex_id)
+        return self._ask("remaining", complex_id)
 
     def price(self, complex_id: Any) -> dict[str, Any] | None:
-        return self._site(complex_id).price(complex_id)
+        return self._ask("price", complex_id)
 
     def sales(self, complex_id: Any) -> dict[str, Any] | None:
-        return self._site(complex_id).sales(complex_id)
+        return self._ask("sales", complex_id)
 
     def exposure(self, complex_id: Any) -> list[dict[str, Any]]:
-        return self._site(complex_id).exposure(complex_id)
+        return self._ask("exposure", complex_id)
 
     def probe_object_types(self, complex_id: Any) -> dict[str, Any]:
         return self._site(complex_id).probe_object_types(complex_id)
