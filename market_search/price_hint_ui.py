@@ -102,6 +102,7 @@ dialog::backdrop{background:rgba(20,30,40,.34)}
   var params=new URLSearchParams(location.search);
   var body={radius_km:Number(params.get('radius_km')||2.5)};
   if(params.get('address')) body.address=params.get('address');
+  if(params.get('cadastral')) body.cadastral=params.get('cadastral');
   if(params.get('latitude')&&params.get('longitude')){
     body.latitude=Number(params.get('latitude')); body.longitude=Number(params.get('longitude'));
   }
