@@ -107,6 +107,9 @@ ORIGIN_LAW_PROPERTY = "НК РФ ст. 380: предельная ставка н
 ORIGIN_PROGRAM = ("госпрограмма льготного кредитования гостиниц (ПП РФ № 141): "
                   "так же в моделях Отеля 1 и Отеля 2")
 ORIGIN_DEPRECIATION = "срок полезного использования: здания — 30 лет, мебель и оборудование — 8"
+ORIGIN_OWNER_EXIT = ("решение владельца 08.10.2026: EV/EBITDA 9× (окупаемость около 10 лет; "
+                     "ставки коммерческой недвижимости МО 2П 2025 ~10,5–10,75%), "
+                     "в конце срока удержание без сделки")
 
 
 @dataclass(frozen=True)
@@ -235,14 +238,15 @@ FIELDS: tuple[HotelField, ...] = (
                needed_when=("repayment", (REPAY_SCULPTED,))),
     HotelField("hold_years", "Срок эксплуатации в расчёте", "лет", "exit",
                default=10, origin="умолчание движка"),
-    HotelField("exit_mode", "Конец срока", "", "exit", default=EXIT_SALE,
-               origin=ORIGIN_ENGINE, kind="choice", choices=EXITS),
-    HotelField("valuation", "Оценка выхода", "", "exit", default=VALUATION_CAP,
-               origin=ORIGIN_ENGINE, kind="choice", choices=VALUATIONS),
+    HotelField("exit_mode", "Конец срока", "", "exit", default=EXIT_HOLD,
+               origin=ORIGIN_OWNER_EXIT, kind="choice", choices=EXITS),
+    HotelField("valuation", "Оценка выхода", "", "exit", default=VALUATION_MULTIPLE,
+               origin=ORIGIN_OWNER_EXIT, kind="choice", choices=VALUATIONS),
     HotelField("exit_cap_pct", "Ставка капитализации", "%", "exit",
                default=11.0, origin=ORIGIN_ENGINE,
                needed_when=("valuation", (VALUATION_CAP,))),
     HotelField("exit_multiple", "Мультипликатор EV/EBITDA", "x", "exit",
+               default=9.0, origin=ORIGIN_OWNER_EXIT,
                needed_when=("valuation", (VALUATION_MULTIPLE,))),
     HotelField("exit_cost_pct", "Затраты на продажу", "% цены", "exit",
                default=1.0, origin=ORIGIN_ENGINE,
@@ -250,6 +254,27 @@ FIELDS: tuple[HotelField, ...] = (
 )
 FIELD_BY_KEY: dict[str, HotelField] = {f.key: f for f in FIELDS}
 PREFIX = "hotel_"
+
+
+def exit_summary(params: dict[str, Any]) -> str:
+    """Стратегия гостиницы одной строкой: срок, конец срока и оценка выхода.
+
+    Один источник подписи для отчёта, тизера и бота: «Эксплуатация 10 лет,
+    затем удержание (оценка без сделки, EV/EBITDA 9×)»."""
+    p = effective_params(params)
+
+    def num(value: Any) -> str:
+        x = float(value or 0.0)
+        return (f"{x:.0f}" if x.is_integer() else f"{x:.2f}".rstrip("0")).replace(".", ",")
+
+    end = ("продажа" if str(p.get("exit_mode")) == EXIT_SALE
+           else "удержание (оценка без сделки")
+    if str(p.get("valuation")) == VALUATION_MULTIPLE:
+        how = f"EV/EBITDA {num(p.get('exit_multiple'))}×"
+    else:
+        how = f"ставка капитализации {num(p.get('exit_cap_pct'))}%"
+    tail = f" по {how}" if str(p.get("exit_mode")) == EXIT_SALE else f", {how})"
+    return f"Эксплуатация {num(p.get('hold_years'))} лет, затем {end}{tail}"
 
 
 def field_defaults() -> dict[str, Any]:
@@ -599,8 +624,8 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     building_book, ffe_book = book_at_end
 
     # --- выход ----------------------------------------------------------
-    exit_mode = str(params.get("exit_mode") or EXIT_SALE)
-    valuation = str(params.get("valuation") or VALUATION_CAP)
+    exit_mode = str(params.get("exit_mode") or FIELD_BY_KEY["exit_mode"].default)
+    valuation = str(params.get("valuation") or FIELD_BY_KEY["valuation"].default)
     if valuation == VALUATION_MULTIPLE:
         multiple = _num(params, "exit_multiple")
         exit_value = forward_ebitda * multiple if forward_ebitda > 0 else 0.0
@@ -809,6 +834,9 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
     for value in equity_cf:
         cumulative += value
         equity_peak = max(equity_peak, -cumulative)
+    residual = [m["residual_value"][mm] for mm in months]
+    project_cash = [cf - r for cf, r in zip(project_cf, residual)]
+    equity_cash = [cf - r for cf, r in zip(equity_cf, residual)]
     kpi = {
         "keys": ops.keys,
         "capex": capex_total, "capex_net": capex_net, "capex_vat": capex_vat,
@@ -840,9 +868,11 @@ def hotel_flows(plan: dict[str, Any], key_rate: Callable[[date], float], *,
         "irr_project": monthly_irr(project_cf),
         "npv_equity": equity_npv(equity_cf, discount_rate),
         "irr_equity": monthly_irr(equity_cf),
-        "pbp_years": payback_years(project_cf),
-        "dpbp_years": payback_years(project_cf, discount_rate),
-        "equity_pbp_years": payback_years(equity_cf),
+        # Окупаемость — деньгами: оценка удержания в IRR и NPV, но не в
+        # деньгах проекта (владелец, 08.10.2026), и срок по ней не считается.
+        "pbp_years": payback_years(project_cash),
+        "dpbp_years": payback_years(project_cash, discount_rate),
+        "equity_pbp_years": payback_years(equity_cash),
         "discount_rate": discount_rate,
     }
     totals = {name: total(name) for name in (
