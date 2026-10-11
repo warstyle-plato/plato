@@ -273,3 +273,18 @@ def test_the_region_summary_counts_a_complex_once_and_drops_old_listings(tmp_pat
     assert set(summary["by_okrug"]) == {"Мытищи"}
     # Темп у проекта без цены не спрашивается: лишняя нагрузка на кабинет.
     assert "50-c6" not in sales_asked
+
+
+def test_an_uncovered_region_is_named_as_the_reason_for_no_neighbours(tmp_path: Path, monkeypatch) -> None:
+    """Казань при PULSE_REGIONS=50: пусто не потому, что там не строят."""
+    from market_search.service_v6 import MarketDiscoveryService
+
+    monkeypatch.setenv("PULSE_BASE_URL", RUSSIA)
+    russia, _ = _russia(tmp_path / "pulse", monkeypatch)
+    service = MarketDiscoveryService(tmp_path)
+    service.pulse = russia
+    hint = service.price_hint(
+        address=None, latitude=55.79, longitude=49.12, cadastral="16:50:011101:15",
+    )
+    assert hint["peer_search"]["found"] == 0
+    assert "собирается по регионам 50 (PULSE_REGIONS), региона 16" in hint["reason"]

@@ -26,7 +26,7 @@ from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .dynamics import DealsSummary, SalesDynamics
 from .market_reference import MarketAtlas, MoscowMarket
-from .region_market import RegionMarketCollector, site_region
+from .region_market import RegionMarketCollector, configured_regions, russia_connected, site_region
 from .metrics import build_blocks
 from .narrative import analysis, findings
 from .verdict import (
@@ -1555,6 +1555,17 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 found_text = (
                     f"в радиусе {radius_km:g} км справочник «Пульса» не нашёл ни одного проекта"
                 )
+                code = (site or {}).get("code")
+                if code and code != "77" and russia_connected(self.pulse) and (
+                    code not in configured_regions()
+                ):
+                    # Пусто не потому, что там не строят: всероссийский кабинет
+                    # собирает справочник только по регионам из списка.
+                    found_text += (
+                        f": справочник всероссийского кабинета собирается по регионам "
+                        f"{', '.join(configured_regions())} (PULSE_REGIONS), "
+                        f"региона {code} ({site.get('name')}) в нём нет"
+                    )
             else:
                 found_text = (
                     f"в радиусе {radius_km:g} км проектов «Пульса» {len(near)}, "
