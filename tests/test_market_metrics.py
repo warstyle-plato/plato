@@ -3479,7 +3479,9 @@ def test_readiness_comes_from_the_same_curve_that_spreads_the_capex() -> None:
     assert readiness_from_dates("2028-01", "2025-01", "2026-07") is None
 
     # И движок берёт профиль оттуда же, а не держит копию.
-    source = open(main_legacy.__file__, encoding="utf-8").read()
+    from engine_source import engine_source
+
+    source = engine_source()
     assert "build_curve.monthly_shares(months)" in source
     assert "0.6 if (index + 1) / months <= 0.2" not in source, "копия профиля вернулась"
 
