@@ -26,6 +26,7 @@ from datetime import date
 from typing import Any, Iterable
 
 import mpt_calculator
+import site_position
 
 # Акт, к которому относятся «приложение 3, таблица 1…» в основании Кмест:
 # `mpt_calculator` пишет пункт без акта, а в карточке проекта акт нужен.
@@ -90,29 +91,14 @@ def _sqm(value: float) -> str:
 
 
 def territory_of(inputs: dict[str, Any]) -> dict[str, Any]:
-    """Район, ТТК и квартал участка — из разбора кадастра, затем из выгрузки.
+    """Район, ТТК и квартал участка — у владельца `site_position`.
 
-    Отсутствие — это не «вне ТТК» и не «Москва»: то, чего нет, отдаётся как
+    Тот же ответ читает норма приобъектной парковки: вписанное человеком
+    главнее документа, противоречие с разбором кадастра — в `conflicts`.
+    Отсутствие — это не «за ТТК» и не «Москва»: то, чего нет, отдаётся как
     None, и отказ называет недостающее.
     """
-    analysis = (inputs or {}).get("_cadastral_analysis") or {}
-    territory = analysis.get("territory") or {}
-    coefficients = analysis.get("coefficients") or {}
-    normalized = ((inputs or {}).get("_glavapu_import") or {}).get("normalized") or {}
-    district = str(territory.get("district") or normalized.get("district") or "").strip()
-    inside: Any = territory.get("inside_ttc")
-    source_ttk = "разбор кадастра (insideTTC)" if inside is not None else ""
-    if inside is None and (inputs or {}).get("parking_inside_ttk") not in (None, ""):
-        inside = bool(inputs.get("parking_inside_ttk"))
-        source_ttk = "вводные проекта: parking_inside_ttk"
-    numbers = analysis.get("recognized") or analysis.get("requested") or []
-    quarter = str(territory.get("cadastral_quarter") or normalized.get("cadastral_quarter")
-                  or "").strip()
-    cadastral = str(numbers[0]).strip() if numbers else quarter
-    return {"district": district, "inside_ttc": inside, "ttk_source": source_ttk,
-            "cadastral": cadastral, "quarter": quarter,
-            "district_source": ("разбор кадастра" if territory.get("district")
-                                else "выгрузка ГлавАПУ" if normalized.get("district") else "")}
+    return site_position.site_position(inputs)
 
 
 def _np_of(row: dict[str, Any]) -> tuple[float, str]:
@@ -142,6 +128,9 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
         return result
     place = territory_of(inputs)
     result["territory"] = place
+    # Ручное положение против разбора кадастра — красная строка у льготы:
+    # ошибочное «за ТТК» даёт льготу за МПТ, которой у участка нет.
+    result["conflicts"] = [item["text"] for item in place["conflicts"]]
     quarter = mpt_calculator.quarter_of(today)
     kzatr = mpt_calculator.kzatr_for_quarter(quarter)
     if kzatr is None:

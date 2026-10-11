@@ -70,9 +70,11 @@ process.stdout.write(JSON.stringify({ids,values,
 """
     out = page_blocks.run_json(prelude, tail)
     assert out["ids"] == ["site_parking_k1", "site_parking_rail_distance_m",
-                          "site_parking_k2", "site_parking_design_mode"]
+                          "site_parking_k2", "site_parking_inside_ttk",
+                          "site_parking_design_mode"]
     assert out["values"][0] == 0.9 and out["values"][1] == ""
-    assert out["values"][3] == "minimum"
+    assert out["values"][3] == ""
+    assert out["values"][4] == "minimum"
     assert "Нормативы парковки нежилья (общие на объекты)" in out["hidden"]
 
 

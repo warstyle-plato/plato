@@ -54,8 +54,9 @@ def test_what_can_be_counted_is_counted(client) -> None:
     # считаются от площади квартир, гостевые — десятая часть от них.
     assert got["parking"]["permanent"] == 924 and got["parking"]["guest"] == 93
     assert got["parking"]["underground"] == 1017
-    # МПТ — 32 м² НП на место к ближайшему, как у калькулятора (8 695 / 32).
-    assert got["jobs"] == 272
+    # МПТ — 32 м² НП на место, вниз, как в коде калькулятора (lodash
+    # `floor`): 8 695 / 32 = 271,7 → 271; к ближайшему вышло бы 272.
+    assert got["jobs"] == 271
 
 
 def test_the_zone_comes_from_the_district_and_changes_the_norms(client) -> None:
