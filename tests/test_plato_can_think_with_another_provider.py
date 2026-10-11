@@ -82,6 +82,42 @@ def test_the_tools_are_translated_from_the_engine_list():
         assert "parameters" not in item, "имя поля у Anthropic другое"
 
 
+def _enums_beside_a_type_list(node, path="") -> list[str]:
+    found: list[str] = []
+    if isinstance(node, dict):
+        if isinstance(node.get("type"), list) and "enum" in node:
+            found.append(path or "<корень>")
+        for key, value in node.items():
+            found += _enums_beside_a_type_list(value, f"{path}.{key}" if path else key)
+    elif isinstance(node, list):
+        for i, value in enumerate(node):
+            found += _enums_beside_a_type_list(value, f"{path}[{i}]")
+    return found
+
+
+def test_no_tool_puts_an_enum_beside_a_type_list():
+    """`type: [string, null]` вместе с enum Anthropic отклоняет весь запрос.
+
+    400 «Enum value 'inside' does not match declared type» валил разбор лотов
+    в выгрузке торгов на проде: падает не один инструмент, а каждый вызов
+    Платона. Пустое значение у перечисления пишется через anyOf.
+    """
+    import main_legacy as core
+
+    bad = [f"{tool['name']}: {where}"
+           for tool in plato_provider.tools_for_anthropic(core._AGENT_TOOLS)
+           for where in _enums_beside_a_type_list(tool["input_schema"])]
+    assert not bad, "enum рядом со списком типов: " + "; ".join(bad)
+
+
+def test_the_enum_check_catches_the_forbidden_form():
+    """Проверка выше сама ловит запрещённую форму — иначе её зелёный пуст."""
+    assert _enums_beside_a_type_list(
+        {"properties": {"x": {"type": ["string", "null"], "enum": ["a", None]}}}) == ["properties.x"]
+    assert _enums_beside_a_type_list(
+        {"properties": {"x": {"anyOf": [{"type": "string", "enum": ["a"]}, {"type": "null"}]}}}) == []
+
+
 def test_a_strict_tool_with_an_open_schema_is_refused():
     """`strict` без закрытой схемы — отказ, а не молча снятая строгость."""
     with pytest.raises(plato_provider.ProviderError):

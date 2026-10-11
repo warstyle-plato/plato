@@ -102,7 +102,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.42"
+VERSION = "0.25.43"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -43941,14 +43941,19 @@ _AGENT_TOOLS = [
                     "office", "industrial", "social", "hotel", "mededu",
                     "private_education", "sport", "culture"]},
                 "district": {"type": "string"},
-                "ttk_position": {"type": ["string", "null"],
-                                 "enum": ["inside", "outside", None]},
+                # Пустое значение — через anyOf, а не `type: [string, null]` с enum:
+                # строгую схему с таким сочетанием Anthropic отклоняет целиком
+                # (400 «Enum value … does not match declared type»), и падал не
+                # один инструмент, а весь запрос Платона.
+                "ttk_position": {"anyOf": [{"type": "string", "enum": ["inside", "outside"]},
+                                           {"type": "null"}]},
                 "mode": {"type": "string", "enum": ["new", "reconstruction"]},
                 "area_sqm": {"type": "number"},
                 "existing_area_sqm": {"type": ["number", "null"]},
                 "cadastral_number": {"type": ["string", "null"]},
                 "sqm_per_workplace": {"type": ["number", "null"]},
-                "kterm": {"type": ["number", "null"], "enum": [1, 1.05, 1.1, None]},
+                "kterm": {"anyOf": [{"type": "number", "enum": [1, 1.05, 1.1]},
+                                    {"type": "null"}]},
             },
             "required": ["category", "district", "ttk_position", "mode", "area_sqm",
                          "existing_area_sqm", "cadastral_number", "sqm_per_workplace",
