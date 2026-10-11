@@ -33,6 +33,10 @@ NOTES_SCHEMA_VERSION = 2
 NOTE_TTL_SECONDS = 14 * 24 * 60 * 60
 # Неудачный разбор повторяется не каждую минуту, а через несколько часов.
 FAILED_RETRY_SECONDS = 6 * 60 * 60
+# …но отказ, записанный до запуска процесса, повторяется сразу: запуск — это
+# выкат, и причина отказа могла быть нашей и уже исправленной. Иначе сырое
+# исключение старого кода жило в выгрузке ещё шесть часов после починки.
+PROCESS_STARTED_AT = time.time()
 # Лот с прошедшим сроком заявок из очереди выходит, но его ответ хранится ещё
 # месяц: выгрузку могли сделать вчера и открыть сегодня.
 KEEP_AFTER_DEADLINE_SECONDS = 30 * 24 * 60 * 60
@@ -298,7 +302,8 @@ class LotNotes:
             asked = float(note.get("asked_at") or 0)
             if not note:
                 rank = 0
-            elif note.get("failed") and moment - asked >= FAILED_RETRY_SECONDS:
+            elif note.get("failed") and (moment - asked >= FAILED_RETRY_SECONDS
+                                         or asked < int(PROCESS_STARTED_AT)):
                 rank = 1
             elif not note.get("failed") and moment - asked >= NOTE_TTL_SECONDS:
                 rank = 2
