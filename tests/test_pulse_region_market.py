@@ -154,6 +154,7 @@ def test_the_region_summary_is_built_from_the_cabinet_only_for_its_region(tmp_pa
     assert summary["coverage"] == {
         "projects_total": 5, "projects_answered": 5, "projects_on_sale": 4,
         "without_segment": 0, "without_municipality": 0, "failed": 0,
+        "stale_price": 0,
     }
 
 

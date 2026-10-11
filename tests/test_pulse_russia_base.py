@@ -179,6 +179,7 @@ def test_the_catalog_route_finds_mytishchi_and_asks_its_price(monkeypatch, tmp_p
     from fastapi.testclient import TestClient
 
     from market_search.api import install
+    from market_search.pulse_russia import PulseRussiaClient
 
     cache = tmp_path / "market" / "pulse" / "russia.pulsprodaj.ru"
     cache.mkdir(parents=True)
@@ -194,8 +195,8 @@ def test_the_catalog_route_finds_mytishchi_and_asks_its_price(monkeypatch, tmp_p
     monkeypatch.setenv("PULSE_BASE_URL", RUSSIA)
     monkeypatch.setenv("PULSE_LOGIN", "l")
     monkeypatch.setenv("PULSE_PASSWORD", "p")
-    monkeypatch.setattr(PulseClient, "price", lambda self, cid: {"price_per_sqm": 251000, "observed_at": "2026-10-01"})
-    monkeypatch.setattr(PulseClient, "remaining", lambda self, cid: {"remaining_units": 120})
+    monkeypatch.setattr(PulseRussiaClient, "price", lambda self, cid: {"price_per_sqm": 251000, "observed_at": "2026-10-01"})
+    monkeypatch.setattr(PulseRussiaClient, "remaining", lambda self, cid: {"remaining_units": 120})
     app = FastAPI()
     install(app)
     opened = TestClient(app, headers={"X-Market-Key": "stand-key-2026"})
@@ -212,10 +213,10 @@ def test_the_catalog_route_finds_mytishchi_and_asks_its_price(monkeypatch, tmp_p
     assert check["ok"] is True and check["price_per_sqm"] == 251000 and check["remaining_units"] == 120
 
     # Строковый id проходит и в маршрут одного проекта: прежде он был `int`.
-    monkeypatch.setattr(PulseClient, "metrics", lambda self, cid: {})
-    monkeypatch.setattr(PulseClient, "project_totals", lambda self, cid: {})
-    monkeypatch.setattr(PulseClient, "price_history", lambda self, ids, months=12: {})
-    monkeypatch.setattr(PulseClient, "segments", lambda self, **kw: {})
+    monkeypatch.setattr(PulseRussiaClient, "metrics", lambda self, cid: {})
+    monkeypatch.setattr(PulseRussiaClient, "project_totals", lambda self, cid: {})
+    monkeypatch.setattr(PulseRussiaClient, "price_history", lambda self, ids, months=12: {})
+    monkeypatch.setattr(PulseRussiaClient, "segments", lambda self, **kw: {})
     row = opened.get("/market/project/50-001200")
     assert row.status_code == 200, row.text
     assert row.json()["name"] == "Мытищи Парк"

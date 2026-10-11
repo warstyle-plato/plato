@@ -26,7 +26,7 @@ from .geocoder import GeoPoint
 from .http import RemoteServiceError
 from .dynamics import DealsSummary, SalesDynamics
 from .market_reference import MarketAtlas, MoscowMarket
-from .region_market import RegionMarketCollector, site_region
+from .region_market import RegionMarketCollector, configured_regions, russia_connected, site_region
 from .metrics import build_blocks
 from .narrative import analysis, findings
 from .verdict import (
@@ -42,6 +42,7 @@ from . import stage
 from . import timing as timing_module
 from .price_hint import price_hint
 from .pulse import make_pulse_client, pulse_id
+from .pulse_russia import listing_owner
 from .price_evidence import VerifiedPriceEnricher
 from .recommendation import market_recommendation, official_recommendation
 from .cards import ProjectCards
@@ -52,6 +53,29 @@ from .segments import SegmentResolver, detect_district, districts_match, segment
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
 from .yandex_search import official_cards_from_docs
 from .krt_registry import KrtRegistry
+
+
+def _class_of_place(near, classes, fresh_since: str, price_of) -> str | None:
+    """Класс места по соседям — один владелец ответа для подсказки и отчёта.
+
+    Класс места — класс того, что здесь продаётся сейчас. Голосуют соседи с
+    действующей ценой (`price_of` — кэшированная цена источника); только если
+    таких нет — все соседи. У всероссийского кабинета класс есть и у домов
+    2010 года, и в Мытищах сданные «Типовые» перекрикивали «Бизнес» и
+    «Комфорт», которые там продаются.
+    """
+    votes: dict[str, int] = {}
+    everyone: dict[str, int] = {}
+    for _, project in near:
+        found = classes.get(project.complex_id)
+        if not found:
+            continue
+        everyone[found] = everyone.get(found, 0) + 1
+        price = price_of(project.complex_id) or {}
+        if price.get("price_per_sqm") and str(price.get("observed_at") or "") >= fresh_since:
+            votes[found] = votes.get(found, 0) + 1
+    votes = votes or everyone
+    return max(votes, key=lambda key: votes[key]) if votes else None
 
 
 def _fresh_price_since(today) -> str:
@@ -795,12 +819,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             if own is not None:
                 own["segment"] = segment
         if not segment:
-            votes: dict[str, int] = {}
-            for _, project in near[:20]:
-                found = classes.get(project.complex_id)
-                if found:
-                    votes[found] = votes.get(found, 0) + 1
-            segment = max(votes, key=lambda key: votes[key]) if votes else None
+            segment = _class_of_place(
+                near[:20], classes, _fresh_price_since(self.verified_prices.today), self.pulse.price
+            )
             if segment:
                 segment_source = "neighbours"
 
@@ -829,10 +850,16 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         other_peers: list[dict[str, Any]] = []
         stale = 0
         priceless = 0
+        taken_listings: dict[str, str] = {}
         for distance, project in comparable:
             if len(priced_peers) >= peers_limit and len(other_peers) >= peers_limit:
                 break
             metrics = self.pulse.metrics(project.complex_id)
+            # Тот же ЖК второй записью кабинета (общие объявления) — не сосед.
+            if metrics.get("price_per_sqm") and listing_owner(
+                taken_listings, self.pulse.price(project.complex_id), project.complex_id
+            ):
+                continue
             observed = str(metrics.get("observed_at") or "")
             # «Цены нет» и «цена устарела» — разные ответы. В Мытищах источник
             # знает проекты и их координаты, но чисел по ним у подписки нет
@@ -1377,6 +1404,8 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         near: list[tuple[float, Any]] = []
         classes: dict[int, str] = {}
         priceless = 0
+        same_listing = 0
+        taken_listings: dict[str, str] = {}
         errors_before = len(getattr(self.pulse, "errors", None) or [])
         if self.pulse.available:
             classes = self.pulse.segments()
@@ -1385,6 +1414,9 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 price = self.pulse.price(project.complex_id)
                 if not price:
                     priceless += 1
+                    continue
+                if listing_owner(taken_listings, price, project.complex_id):
+                    same_listing += 1
                     continue
                 card = self.cards.card(project.complex_id)
                 # Сроки и стадия — одним владельцем на обе поверхности:
@@ -1438,12 +1470,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 peers.append(row)
 
             if segment is None:
-                votes: dict[str, int] = {}
-                for _, project in near[:budget]:
-                    found_segment = classes.get(project.complex_id)
-                    if found_segment:
-                        votes[found_segment] = votes.get(found_segment, 0) + 1
-                segment = max(votes, key=lambda key: votes[key]) if votes else None
+                segment = _class_of_place(near[:budget], classes, fresh_since, self.pulse.price)
 
         # Та же фильтрация, что использует price_hint._fresh_prices, но теперь
         # видимая в расшифровке: пользователь должен понимать, почему сосед
@@ -1517,6 +1544,7 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             "found": len(near),
             "asked": min(len(near), budget),
             "without_price": priceless,
+            "same_listing": same_listing,
             "with_price": len(peers),
             "errors": pulse_errors[:3],
         }
@@ -1527,6 +1555,17 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 found_text = (
                     f"в радиусе {radius_km:g} км справочник «Пульса» не нашёл ни одного проекта"
                 )
+                code = (site or {}).get("code")
+                if code and code != "77" and russia_connected(self.pulse) and (
+                    code not in configured_regions()
+                ):
+                    # Пусто не потому, что там не строят: всероссийский кабинет
+                    # собирает справочник только по регионам из списка.
+                    found_text += (
+                        f": справочник всероссийского кабинета собирается по регионам "
+                        f"{', '.join(configured_regions())} (PULSE_REGIONS), "
+                        f"региона {code} ({site.get('name')}) в нём нет"
+                    )
             else:
                 found_text = (
                     f"в радиусе {radius_km:g} км проектов «Пульса» {len(near)}, "
