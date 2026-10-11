@@ -362,6 +362,8 @@ class Evaluator:
         # 180 счёт книги подорожал вместе с ней.
         self._ranges: dict[tuple[str, str, str], "RangeValue"] = {}
         self._stack: set[tuple[str, str]] = set()
+        # Лист по имени openpyxl ищет перебором всех листов — на каждую ячейку.
+        self._sheets: dict[str, Any] = {}
         self._tokens: list[tuple[str, str]] = []
         self._pos = 0
         self._sheet = ""
@@ -375,7 +377,10 @@ class Evaluator:
             return self._cache[key]
         if key in self._stack:
             raise FormulaError(f"круговая ссылка на {sheet}!{address}")
-        raw = self.workbook[sheet][address].value
+        ws = self._sheets.get(sheet)
+        if ws is None:
+            ws = self._sheets[sheet] = self.workbook[sheet]
+        raw = ws[address].value
         self._stack.add(key)
         try:
             value = self.evaluate(raw, sheet) if isinstance(raw, str) and raw.startswith("=") else raw

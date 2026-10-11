@@ -35,7 +35,7 @@ import datetime as _dt
 import io
 import re
 import zipfile
-from typing import Any
+from typing import Any, Callable
 
 import openpyxl
 
@@ -173,17 +173,23 @@ def _unescape(text: str) -> str:
             .replace("&quot;", '"').replace("&apos;", "'").replace("&amp;", "&"))
 
 
-def with_cached_values(content: bytes) -> tuple[bytes, dict[str, Any]]:
+def with_cached_values(content: bytes, evaluator: Evaluator | None = None,
+                       left_to_excel: Callable[[str, str], bool] | None = None,
+                       ) -> tuple[bytes, dict[str, Any]]:
     """Пересчитать книгу и положить значения рядом с формулами.
 
     Отдаёт новые байты и отчёт: сколько значений записано, сколько формул
     вычислитель не осилил и что это были за формулы. Любой сбой оставляет книгу
     ровно такой, какой она пришла: выгрузка без значений хуже, чем с ними, но
     несобранная выгрузка хуже обеих.
+
+    `left_to_excel(лист, адрес)` — клетки, которые книга сама объявила
+    считаемыми только в Excel: они не вычисляются и не записываются, их число
+    — в отчёте (`left_to_excel`), а не среди непонятых.
     """
-    report: dict[str, Any] = {"written": 0, "unresolved": 0, "examples": []}
-    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    evaluator = Evaluator(book)
+    report: dict[str, Any] = {"written": 0, "unresolved": 0, "examples": [], "left_to_excel": 0}
+    book = evaluator.workbook if evaluator is not None else openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    evaluator = evaluator if evaluator is not None else Evaluator(book)
     values: dict[str, dict[str, Any]] = {}
     for sheet in book.worksheets:
         computed: dict[str, Any] = {}
@@ -191,6 +197,9 @@ def with_cached_values(content: bytes) -> tuple[bytes, dict[str, Any]]:
             for cell in row:
                 formula = cell.value
                 if not (isinstance(formula, str) and formula.startswith("=")):
+                    continue
+                if left_to_excel is not None and left_to_excel(sheet.title, cell.coordinate):
+                    report["left_to_excel"] += 1
                     continue
                 try:
                     computed[cell.coordinate] = evaluator.cell(sheet.title, cell.coordinate)

@@ -101,7 +101,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.40"
+VERSION = "0.25.41"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -25363,6 +25363,10 @@ def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     filename = f"DevelopAid_гостиница_{stem}_{date.today().isoformat()}.xlsx"
     hotel = (consolidated.get("finance") or {}).get("hotel") or {}
     missing = [f"Гостиница · {label}" for label in hotel.get("missing") or []]
+    spec = (hotel.get("book") or {}).get("capex_spec") or {}
+    labels = spec.get("article_labels") or {}
+    missing += [f"Гостиница · {labels.get(key, key)}: исходный график движка, без формулы сметы"
+                for key, schedule in (spec.get("engine_articles") or {}).items() if schedule]
     return content, filename, {"missing": missing, "phased": False, "class_deviations": [],
                                "hotel_book": True}
 
@@ -33593,6 +33597,34 @@ def hotel_overlay(x: dict, rates: list[dict[str, Any]], op: dict) -> dict[str, A
         "origins": hotel_presets.current_origins(x.get(hotel_presets.ORIGINS_KEY)),
         "vat_rate": vat_rate, "profit_tax_rate": tax_rate, "discount_rate": discount_rate,
         "revenue_multiplier": float(plan.get("revenue_multiplier", 1.0) or 1.0),
+        # Книга считает смету от тех же вводных. Помесячные суммы ниже —
+        # только контрольный снимок; они больше не являются базой её CAPEX.
+        "capex_spec": {
+            "inputs": {key: n(x, key, default) for key, default in
+                       hotel_workbook.CAPEX_INPUT_DEFAULTS.items()},
+            "ird_min": IRD_MONTHS_MIN,
+            "ffe_months": HOTEL_FFE_MONTHS,
+            "reserve_excluded": sorted(RESERVE_EXCLUDED_ARTICLES),
+            "management_profile": list(MANAGEMENT_PROFILE_ARTICLES),
+            "forecast": [(add_months(plan["start"], index).isoformat(),
+                          key_rate(add_months(plan["start"], index)))
+                         for index in range(max(360, len(flows["months"]) + 12))],
+            "purchase_plan": [(months_between(plan["start"], month),
+                               value / sum((op.get("capex_by_article", {}).get("purchase") or {}).values()))
+                              for month, value in (op.get("capex_by_article", {}).get("purchase") or {}).items()
+                              if value],
+            "vri_net": float((op.get("capex_amounts") or {}).get("land_rights", 0.0))
+                       / (n(x, "scenario_cost_multiplier", 1.0) or 1.0),
+            "vri_enabled": bool((op.get("vri") or {}).get("enabled")),
+            "engine_articles": {
+                key: {months_between(plan["start"], month): value
+                      for month, value in schedule.items() if value}
+                for key, schedule in (op.get("capex_by_article") or {}).items()
+                if key not in hotel_workbook.FORMULA_CAPEX_ARTICLES
+                or (key == "land_rights" and (op.get("vri") or {}).get("enabled"))
+            },
+            "article_labels": dict(_MONTHLY_CAPEX_LABELS),
+        },
         "months": [{"month": mm.isoformat(),
                     "capex": float(plan["capex"].get(mm, 0.0) or 0.0),
                     "capex_ffe": float(plan["capex_ffe"].get(mm, 0.0) or 0.0),

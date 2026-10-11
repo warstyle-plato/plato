@@ -25,10 +25,10 @@ import hotel_presets  # noqa: E402
 import hotel_workbook as hw  # noqa: E402
 import main_legacy as core  # noqa: E402
 
-pycel = pytest.importorskip("pycel")
 openpyxl = pytest.importorskip("openpyxl")
+from xlsx_eval import Evaluator
 
-ALLOWED = {"IF", "AND", "OR", "MIN", "MAX", "SUM", "SUMIF", "COUNT", "COUNTIF", "ABS"}
+ALLOWED = {"IF", "IFERROR", "IRR", "INT", "AND", "OR", "MIN", "MAX", "SUM", "SUMIF", "COUNT", "COUNTIF", "ABS", "EDATE", "YEAR", "MONTH", "INDEX", "MATCH"}
 
 
 def _project(preset: str | None = "hotel1", **over):
@@ -54,10 +54,9 @@ def _evaluate(content: bytes, tmp_path: Path, tamper=None) -> tuple[str, list]:
         book.save(path)
     else:
         path.write_bytes(content)
-    from pycel import ExcelCompiler
     sys.setrecursionlimit(max(sys.getrecursionlimit(), 100000))
-    compiler = ExcelCompiler(filename=str(path))
     book = openpyxl.load_workbook(path)
+    compiler = Evaluator(book)
     # Долг и налог строки читают предыдущую — считаем сверху вниз, чтобы не
     # упереться в глубину рекурсии вычислителя.
     sheet = book[hw.CALC_SHEET]
@@ -65,13 +64,14 @@ def _evaluate(content: bytes, tmp_path: Path, tamper=None) -> tuple[str, list]:
         for letter, _ in hw.COLUMNS.values():
             value = sheet[f"{letter}{row}"].value
             if isinstance(value, str) and value.startswith("="):
-                compiler.evaluate(f"'{hw.CALC_SHEET}'!{letter}{row}")
+                compiler.cell(hw.CALC_SHEET, f"{letter}{row}")
     checks = book[hw.CHECK_SHEET]
-    bad = [(checks[f"A{row}"].value, compiler.evaluate(f"'{hw.CHECK_SHEET}'!B{row}"),
+    bad = [(checks[f"A{row}"].value, compiler.cell(hw.CHECK_SHEET, f"B{row}"),
             checks[f"C{row}"].value)
            for row in range(3, checks.max_row + 1)
-           if compiler.evaluate(f"'{hw.CHECK_SHEET}'!F{row}") not in ("сходится", "—")]
-    return compiler.evaluate(f"'{hw.CHECK_SHEET}'!H3"), bad
+           if checks[f"B{row}"].value is not None
+           if compiler.cell(hw.CHECK_SHEET, f"F{row}") not in ("сходится", "—", "ВВОДНЫЕ ИЗМЕНЕНЫ")]
+    return compiler.cell(hw.CHECK_SHEET, "H3"), bad
 
 
 @pytest.fixture(scope="module")
@@ -103,12 +103,20 @@ def test_another_financing_and_exit_also_agree(tmp_path) -> None:
     assert bad == [] and verdict == "ПРОЙДЕНО"
 
 
-def test_the_check_fails_on_a_forged_input(dombai, tmp_path) -> None:
+def test_changed_inputs_do_not_claim_parity_with_the_old_engine_snapshot(dombai, tmp_path) -> None:
     def forge(book) -> None:
         sheet = book[hw.INPUTS_SHEET]
         cell = f"C{hw._ROWS['adr']}"
         sheet[cell] = float(sheet[cell].value) * 1.05
 
+    verdict, bad = _evaluate(dombai[0], tmp_path, forge)
+    assert verdict == "ВВОДНЫЕ ИЗМЕНЕНЫ — НУЖНА НОВАЯ СВЕРКА"
+    assert bad == []
+
+
+def test_a_broken_formula_still_fails_the_original_parity(dombai, tmp_path) -> None:
+    def forge(book):
+        book[hw.CALC_SHEET][f"{hw._c('rooms')}{hw.FIRST_ROW + 42}"] = "=1"
     verdict, bad = _evaluate(dombai[0], tmp_path, forge)
     assert verdict == "ЕСТЬ РАСХОЖДЕНИЯ"
     assert any(label == "Выручка всего" for label, _, _ in bad)
