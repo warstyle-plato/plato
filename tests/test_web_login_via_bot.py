@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 main = _wrapper.core
 client = TestClient(main.app)
@@ -125,7 +126,7 @@ def test_the_page_wires_the_login_in():
     assert page.count("session:activeSession()") >= 3, "сессию входа шлют не все поверхности"
     assert "renderProjectsLogin();" in page
     assert "appendAiLoginButton();" in page
-    assert "start_payload.startswith(\"login_\")" in Path(main.__file__).read_text(encoding="utf-8")
+    assert "start_payload.startswith(\"login_\")" in engine_source()
 
 
 def test_the_login_is_visible_without_opening_anything():

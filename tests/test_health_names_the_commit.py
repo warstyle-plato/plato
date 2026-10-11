@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 
@@ -43,7 +44,7 @@ def test_the_commit_comes_from_the_build_not_from_the_launch():
     dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
     assert "ARG APP_COMMIT" in dockerfile
     assert "ENV APP_COMMIT=$APP_COMMIT" in dockerfile
-    source = Path("main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert 'os.getenv("APP_COMMIT")' in source
 
 

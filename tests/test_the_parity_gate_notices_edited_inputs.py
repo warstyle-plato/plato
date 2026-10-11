@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 PARITY_ROWS = range(76, 87)
 EDITED = "вводные правлены — сверять не с чем"
@@ -137,7 +138,7 @@ def test_the_parity_verdict_is_declared_once():
     «OK»/«FAIL» строки паритета собираются, и его собственный текст под запрет
     не попадает.
     """
-    source = (ROOT / "main_legacy.py").read_text()
+    source = engine_source()
     declaration = source.index("def _v4_parity_verdict(")
     body_end = source.index("\ndef ", declaration)
     outside = source[:declaration] + source[body_end:]

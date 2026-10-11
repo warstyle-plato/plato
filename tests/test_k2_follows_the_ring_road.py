@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 
@@ -75,6 +76,6 @@ def test_the_export_says_which_coefficient_it_used():
 
 def test_the_analysis_really_carries_the_flag():
     """Оговорка «анализ не отдаёт признак» была неверной — вот он."""
-    source = (Path(__file__).resolve().parent.parent / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert '"inside_ttc": bool(payload.get("insideTTC"))' in source
     assert '"business_inside_ttc": business.get("coeff_ba_inside_ttc")' in source

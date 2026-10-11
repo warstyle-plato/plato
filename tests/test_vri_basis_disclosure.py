@@ -25,13 +25,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 
 
 def test_the_card_shows_the_three_multipliers():
     """Карточка кнопки «ВРИ и ТЭП» несёт основание рядом с платой."""
-    source = open("main_legacy.py", encoding="utf-8").read()
+    source = engine_source()
     start = source.find("основание: СПП")
     assert start > 0, "в карточке нет расшифровки основания платы"
     block = source[start - 400:start + 400]

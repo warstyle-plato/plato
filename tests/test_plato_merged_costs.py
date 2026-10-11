@@ -23,6 +23,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 openpyxl = pytest.importorskip("openpyxl")
@@ -150,7 +151,7 @@ def test_both_substitutions_are_reported():
 
 def test_a_failure_is_reported_not_swallowed():
     """Молча оставить книге её собственные проценты нельзя."""
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     start = source.index("_plato_merge_management_and_smr(sheet")
 
     assert "missing.append" in source[start:start + 400]

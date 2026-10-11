@@ -19,9 +19,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from engine_source import engine_source  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-PAGE = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+PAGE = engine_source()
 
 
 def _body(name: str, until: str) -> str:

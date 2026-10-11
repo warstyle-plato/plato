@@ -21,6 +21,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 
@@ -318,7 +319,7 @@ def test_the_manual_area_and_district_are_parsed(monkeypatch, tmp_path):
 def test_the_button_lives_in_both_menus():
     """Стартовое меню бота живёт в движке, меню помощи — в обёртке: кнопка
     была только во втором, и /start её не показывал."""
-    legacy = open("main_legacy.py", encoding="utf-8").read()
+    legacy = engine_source()
     assert legacy.count('"vritep_start"') >= 1, "кнопки нет в стартовом меню"
     wrapper_src = open("main.py", encoding="utf-8").read()
     assert wrapper_src.count('"vritep_start"') >= 2, \
@@ -380,7 +381,7 @@ def test_the_native_menu_and_the_command_open_the_button(monkeypatch, tmp_path):
     assert wrapper_src.count('{"command"') == 0, \
         "у обёртки не должно быть собственного списка команд"
     assert "core.TELEGRAM_BOT_COMMANDS" in wrapper_src
-    legacy_src = open("main_legacy.py", encoding="utf-8").read()
+    legacy_src = engine_source()
     assert legacy_src.count('"commands": TELEGRAM_BOT_COMMANDS') == 1
     monkeypatch.setattr(wrapper, "_STATE_DIR", tmp_path)
     sent: list[str] = []

@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 openpyxl = pytest.importorskip("openpyxl")
 
@@ -55,7 +56,7 @@ def _tep() -> dict[str, dict[str, float]]:
 
 def test_the_engine_has_exactly_one_declaration():
     """Копия списка в коде движка — это второе мнение об одном профиле."""
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     assert source.count("MANAGEMENT_PROFILE_ARTICLES") >= 3, "список не используется"
     # Ни один из трёх потребителей не перечисляет статьи сам. Отличительный
     # признак профиля — «Благоустройство» и «Содержание стройплощадки» подряд:

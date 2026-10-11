@@ -1,4 +1,5 @@
 from pathlib import Path
+from engine_source import engine_source  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,7 +16,7 @@ def test_v2_starts_from_search_unless_a_result_was_explicitly_opened():
 
 def test_v2_template_upload_reuses_the_existing_manual_tep_importer():
     source = (ROOT / "frontend_v2" / "start_imports.js").read_text(encoding="utf-8")
-    core = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    core = engine_source()
 
     assert "/import/manual-tep?filename=" in source
     assert "/templates/tep" in source
@@ -27,7 +28,7 @@ def test_v2_template_upload_reuses_the_existing_manual_tep_importer():
 
 def test_v2_teaser_upload_keeps_the_existing_confirm_before_apply_flow():
     source = (ROOT / "frontend_v2" / "start_imports.js").read_text(encoding="utf-8")
-    core = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    core = engine_source()
 
     assert "content_b64" in source
     assert "'/agent/document'" in source

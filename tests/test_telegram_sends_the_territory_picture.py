@@ -27,6 +27,7 @@ from fastapi import HTTPException, Response
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 CHAT_ID = 515151
@@ -112,7 +113,7 @@ def test_a_failed_send_is_swallowed(monkeypatch):
 
 
 def test_both_bot_flows_send_the_photo_in_the_background():
-    source = Path(core.__file__).read_text(encoding="utf-8")
+    source = engine_source()
     moscow = source[source.index("def _telegram_handle_cadastral_numbers"):]
     moscow = moscow[:moscow.index("\ndef ")]
     assert "_telegram_territory_photo_async(chat_id, recognized)" in moscow

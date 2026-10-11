@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def test_the_manual_yardstick_is_the_market_sixty():
@@ -56,11 +57,10 @@ def test_an_unknown_source_falls_back_to_the_named_one():
 
 def test_the_number_without_a_source_is_gone():
     """58,75 стояло пятью литералами и ни одним основанием."""
-    for path in (ROOT / "main_legacy.py",):
-        code = "\n".join(
-            line for line in path.read_text(encoding="utf-8").splitlines()
-            if not line.lstrip().startswith(("#", "//")))
-        assert "58.75" not in code, f"{path.name}: литерал вернулся"
+    code = "\n".join(
+        line for line in engine_source().splitlines()
+        if not line.lstrip().startswith(("#", "//")))
+    assert "58.75" not in code, "main_legacy.py: литерал вернулся"
 
 
 def test_the_page_takes_it_from_the_engine():

@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import v4_inputs  # noqa: E402
 
 import main as wrapper  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 client = TestClient(wrapper.app)
@@ -749,7 +750,7 @@ def test_both_surfaces_carry_the_pure_apartment_unit_price():
     сверить глазами. Чисто квартирная цена на м² продаваемой — общий
     знаменатель: колонка «в т.ч. квартиры» в PDF и строка 95 книги."""
     import inspect
-    module = inspect.getsource(core)
+    module = engine_source()
     assert "в т.ч. квартиры" in module, "в PDF нет квартирной колонки"
 
     phasing = {

@@ -34,6 +34,7 @@ sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
 from tests import page_blocks  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 def _prelude(split):
     return "\n".join([
@@ -136,7 +137,7 @@ def test_the_split_is_declared_once():
     page = core.PAGE
     handwritten = re.findall(r"spp\s*\*\s*0\.(?:94|06)", page)
     assert not handwritten, f"на странице {len(handwritten)} рукописных долей СПП"
-    source = Path(ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     literals = re.findall(r"(?:project_total_gns|total_spp|spp)\s*\*\s*0\.(?:94|06)", source)
     assert not literals, f"в движке {len(literals)} рукописных долей СПП"
 

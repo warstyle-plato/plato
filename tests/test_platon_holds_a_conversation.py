@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import plato_question  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 def _surfaces() -> dict[str, str]:
@@ -190,7 +191,7 @@ def test_the_monitor_hands_the_question_to_polling() -> None:
     Правило было выведено на кабинете рынка, а в мониторе жил `plato_answer`,
     ждущий ответ целиком, — при том что его же строка обещала опрос.
     """
-    source = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     body = source[source.index("def monitor_ask("):]
     body = body[:body.index("\n\n\n")]
     assert "plato_answer_handoff(" in body, "монитор держит соединение до конца ответа"

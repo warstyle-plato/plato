@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -92,7 +93,7 @@ def test_the_layers_are_named_for_the_picture(cover: dict) -> None:
     # Имена приписываются к прежней подписи, а не заменяют её: без имён (её
     # зовут и с пустым сводом) строка обязана остаться прежней.
     assert "эскроу — слоями по очередям, снизу вверх" in core.PAGE
-    source = Path(ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert '"эскроу — слоями по очередям, снизу вверх"' in source
 
 
@@ -101,7 +102,7 @@ def test_every_queue_gets_its_own_shade() -> None:
     и верх стопки одинаковыми на вид."""
     page = core.PAGE
     assert "0.14+0.10*k" in page, "оттенок слоя на странице повторяется"
-    source = Path(ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert "fillOpacity=0.14 + 0.10 * layer" in source, "оттенок слоя в PDF повторяется"
     assert "0.16*(k%3)" not in page and "0.16 * (layer % 3)" not in source
     shades = [round(0.14 + 0.10 * k, 2) for k in range(4)]
@@ -112,7 +113,7 @@ def test_the_legend_and_the_axis_name_the_cumulative_properly() -> None:
     texts = [text for text, _colour, _style in core._ESCROW_CHART_LEGEND]
     assert not any("накопленно" in text for text in texts), texts
     assert sum("накопленным итогом" in text for text in texts) == 2, texts
-    source = Path(ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     # Правая ось без единицы читается как другая шкала: слева «млрд ₽»,
     # справа числа втрое больше.
     assert source.count('"накопленным итогом, млрд ₽"') == 1, "подпись оси PDF"
@@ -124,6 +125,6 @@ def test_the_layer_count_survives_a_short_first_month() -> None:
     ещё не у всех очередей, и слой пропал бы молча вместе с очередью."""
     page = core.PAGE
     assert "Math.max(0,...data.map(x=>(x.escrow_by_phase||[]).length))" in page
-    source = Path(ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    source = engine_source()
     assert "max((len(row.get(\"escrow_by_phase\") or []) for row in data)" in source
     assert '(data[0] or {}).get("escrow_by_phase")' not in source

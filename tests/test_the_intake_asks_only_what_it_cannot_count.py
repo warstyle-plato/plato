@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import document_intake as di  # noqa: E402
+from engine_source import engine_source  # noqa: E402
 
 
 # Ровно то, что бот прислал владельцу: четыре прочитанных поля и десять
@@ -177,7 +178,7 @@ def test_the_bot_hands_the_parcel_to_the_calculator() -> None:
     import main_legacy as core
 
     assert core._intake_cadastral_numbers(parsed()) == ["77:09:0003021:158"]
-    body = (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+    body = engine_source()
     start = body.index("def _telegram_handle_intake_document(")
     intake = body[start:body.index("\ndef _intake_cadastral_numbers(")]
     assert "_telegram_handle_cadastral_numbers(chat_id, numbers)" in intake, \
