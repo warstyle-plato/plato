@@ -345,6 +345,9 @@ def _tep_rows(model: dict[str, Any], fm: _Formats) -> list[tuple[str, str, str]]
     units = tep.get("parking_units")
     if units:
         rows.append(("Машино-места", fm.count(units), "м/м"))
+    # «N мест / M по норме = K×» — подпись движка, тизер не делит сам (#656).
+    if tep.get("parking_provision_label"):
+        rows.append(("Обеспеченность парковкой", tep["parking_provision_label"], ""))
     if tep.get("transfer_sqm"):
         rows.append(("Передаётся (не продаётся)", fm.sqm(tep.get("transfer_sqm")), "м²"))
     places = []

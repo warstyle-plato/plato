@@ -190,7 +190,10 @@ def build_project_presentation(
         "commercial_saleable_sqm": _number(_row(tep_rows, "ground_commercial").get("saleable")),
         "apartments_count": _number(_row(tep_rows, "apartments").get("units")),
         "parking_required": _number((numbers.get("parking") or {}).get("required_total")),
+        # Вся нормативная потребность проекта и обеспеченность ею — готовым
+        # ответом движка (`parking_provision`, #656) вместе с подписью.
         "parking_provision": _number((numbers.get("parking") or {}).get("provision")),
+        "parking_provision_label": str((numbers.get("parking") or {}).get("provision_label") or ""),
     }
 
     weakest = _weakest_phase(phases)

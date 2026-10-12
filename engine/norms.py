@@ -1152,6 +1152,17 @@ _PARKING_DEMAND_PRODUCTS = _PARKING_DEMAND_PRODUCTS + tuple(
     for obj in STANDALONE_OBJECTS
     if obj.family and any(item[0] == obj.family for item in _PARKING_DEMAND_PRODUCTS))
 
+# Соцобъекты квартала нормируются той же формулой приложения 6 к 945-ПП:
+# ДОО и школа — образование (ВРИ 3.5), поликлиника — здравоохранение (3.4).
+# В приобъектные места объектов (`required_total`) они не входят — у них свой
+# итог, нужный только нормативной потребности проекта целиком (#656).
+_PARKING_SOCIAL_PRODUCTS = (
+    ("kindergarten", "education", "kindergarten", False),
+    ("school", "education", "school", False),
+    ("clinic", "healthcare", "clinic", False),
+)
+_PARKING_SOCIAL_KEYS = frozenset(item[0] for item in _PARKING_SOCIAL_PRODUCTS)
+
 # Назначение отдельно стоящего объекта «ФОК / медцентр» решает его норматив.
 #
 # Объект один: двух таких в проекте разом не бывает (владелец, 15.09.2026),
@@ -1486,7 +1497,79 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
     if layout_warnings:
         demand.setdefault("warnings", []).extend(layout_warnings)
     demand["note"] = _object_parking_note(demand, own)
+    demand["project_required"] = project_parking_requirement(inputs, tep, demand)
     return demand
+
+
+def project_parking_requirement(inputs: dict[str, Any], tep: dict[str, Any],
+                                demand: dict[str, Any]) -> dict[str, Any]:
+    """Вся нормативная потребность проекта в машино-местах — знаменатель
+    обеспеченности парковкой (решение владельца, #656).
+
+    Гараж проекта строится на всех: жители, встроенная коммерция, отдельные
+    объекты, соцобъекты. Делить его на потребность одной коммерции значило
+    сравнить числитель и знаменатель разных потребителей (12,36× на
+    умолчаниях). Части берутся у своих владельцев и не пересчитываются:
+
+    - жители — постоянные и гостевые `underground_parking_requirement`
+      (выгрузка ГлавАПУ первой, нет её — 2118-ПП). Места МФЦ из выгрузки сюда
+      НЕ идут: это приобъектные места офисов, и их уже считает норма объектов;
+    - приобъектные встроенной коммерции и отдельных объектов —
+      `parking_demand.required_total`;
+    - соцобъекты — `parking_demand.social_required_total`.
+
+    Чего норма не посчитала, называется в `missing`, а не молчит нулём.
+    """
+    residents = underground_parking_requirement(inputs, tep) or {}
+    permanent = int(residents.get("permanent") or 0)
+    guest = int(residents.get("guest") or 0)
+    attached = int(demand.get("required_total") or 0)
+    social = int(demand.get("social_required_total") or 0)
+    parts = [
+        {"key": "residents", "label": "жители (постоянные и гостевые)",
+         # Оговорка «приобъектные не учтены» верна для самой нормы жителей,
+         # но здесь они учтены соседней частью — оставить её значило бы
+         # опровергнуть итог в его же расшифровке.
+         "spaces": permanent + guest,
+         "basis": str(residents.get("basis") or "").replace(
+             "; приобъектные места нежилья не учтены", "")},
+        {"key": "attached", "label": "приобъектные коммерции и объектов",
+         "spaces": attached, "basis": f"по нормативу {demand.get('norm_of') or ''}".strip()},
+        {"key": "social", "label": "соцобъекты", "spaces": social,
+         "basis": f"по нормативу {demand.get('norm_of') or ''}".strip()},
+    ]
+    return {
+        "total": permanent + guest + attached + social,
+        "residents_permanent": permanent,
+        "residents_guest": guest,
+        "attached": attached,
+        "social": social,
+        "parts": parts,
+        "missing": list(demand.get("missing") or []) + list(demand.get("social_missing") or []),
+    }
+
+
+def parking_provision(built: float, requirement: dict[str, Any] | None) -> dict[str, Any]:
+    """Обеспеченность парковкой: все места проекта / вся потребность.
+
+    Одна функция на все поверхности — страница, отчёт, PDF, тизер, Платон и
+    книга читают её ответ, а не делят сами. Подпись несёт обе величины: «во
+    сколько раз» без «чего на что» не проверить глазами.
+    """
+    required = float((requirement or {}).get("total") or 0.0)
+    built = float(built or 0.0)
+    ratio = built / required if required > 0 else None
+    if ratio is None:
+        label = (f"{_parking_count_text(built)} мест / нормативная потребность не посчитана"
+                 if built else "")
+    else:
+        label = (f"{_parking_count_text(built)} мест / {_parking_count_text(required)} по норме = "
+                 + f"{ratio:.2f}".replace(".", ",") + "×")
+    return {"built": built, "required": required, "ratio": ratio, "label": label}
+
+
+def _parking_count_text(value: float) -> str:
+    return f"{int(round(float(value or 0))):,}".replace(",", "\u00a0")
 
 def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> str:
     """Одной фразой: сколько мест положено, сколько строим и сколько продаём.
@@ -1616,7 +1699,11 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
     k1_applied = k2_applied = 0.0
     k_assumed = False
     k_origin = {"k1": "", "k2": ""}
-    for tep_key, msk_function, mo_function, built_in in _PARKING_DEMAND_PRODUCTS:
+    social_rows: list[dict[str, Any]] = []
+    social_named = 0
+    for tep_key, msk_function, mo_function, built_in in (
+            _PARKING_DEMAND_PRODUCTS + _PARKING_SOCIAL_PRODUCTS):
+        social = tep_key in _PARKING_SOCIAL_KEYS
         # Единственный продукт, у которого функция норматива зависит от вводных:
         # «ФОК / медцентр» — объект с двумя назначениями, и у каждого его
         # экземпляра назначение своё.
@@ -1641,7 +1728,14 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
         area = n(row, "total_area") or (n(row, "gns") * share if share else 0.0)
         if area <= 0:
             continue
-        if jurisdiction == parking_norms.MOSCOW:
+        if social and jurisdiction != parking_norms.MOSCOW:
+            # У области строк для ДОО, школы и поликлиники в модели нет, а
+            # правило 1/50 ДОО и поликлинику исключает прямым текстом. Нет
+            # нормы — нет и числа: ноль здесь выдал бы пробел за ответ.
+            got = {"jurisdiction": jurisdiction, "function": tep_key,
+                   "required_spaces": None,
+                   "reason": "норматив области для соцобъекта в модели не заведён"}
+        elif jurisdiction == parking_norms.MOSCOW:
             got = parking_norms.moscow_required(
                 msk_function, area, k1=k1, k2=k2, built_in=built_in,
                 district=district, inside_ttk=inside_ttk,
@@ -1653,6 +1747,10 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
                 "built_in" if built_in else mo_function, area, design_mode=design_mode)
         got["tep_key"] = tep_key
         got["label"] = row.get("label") or tep_key
+        if social:
+            social_named += int(got.get("required_spaces") or 0)
+            social_rows.append(got)
+            continue
         if got.get("k1") is not None:
             k1_applied = float(got.get("k1") or 0.0)
             k2_applied = float(got.get("k2") or 0.0)
@@ -1682,6 +1780,14 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
         "design_mode": design_mode if jurisdiction == parking_norms.MOSCOW_OBLAST else "",
         "rows": rows,
         "required_total": required_named,
+        # Соцобъекты — своим списком и своим итогом: `required_total` читают
+        # подпись гаражей объектов и сверка с ГлавАПУ, и там им не место.
+        # Нужны они одному читателю — нормативной потребности проекта
+        # (`project_parking_requirement`).
+        "social_rows": social_rows,
+        "social_required_total": social_named,
+        "social_missing": [f"{row['label']}: {row.get('reason')}"
+                           for row in social_rows if row.get("reason")],
         "missing": missing,
         "assumptions": list(dict.fromkeys(assumptions)),
     }
