@@ -5803,12 +5803,23 @@ def _land_fetch_json(
         # адреса нет у СЕРВИСА, а не что по запросу нет результатов. Отсутствие
         # ответа внешнего источника нельзя показывать как его отрицательный
         # ответ — правило старое, а эта ветка его обходила.
+        # 5xx — сбой самого сервиса, а не нашего запроса. Его сообщение вида
+        # «registers: post-objdoc-by-external_key (код=1024)» (НСПД 11–12.10.2026,
+        # тот же запрос на том же выпуске через несколько часов нашёл 20 из 20)
+        # без кода HTTP читалось как наша ошибка; называем сторону и код.
+        if exc.code == 404:
+            detail = (f"{service}: адрес сервиса ответил 404 — сервис не отдал данные. "
+                      "Это не ответ «объекта нет». О своём состоянии портал "
+                      "сообщает у себя на странице.")
+        elif exc.code >= 500:
+            detail = (f"{service}: внутренняя ошибка сервиса (HTTP {exc.code}) — сбой на "
+                      "стороне портала, не в запросе; данные не получены, повторите "
+                      f"позже. Ответ сервиса: «{_external_error_message(exc)}».")
+        else:
+            detail = f"{service}: HTTP {exc.code} — {_external_error_message(exc)}"
         raise HTTPException(
             status_code=400 if 400 <= exc.code < 500 else 502,
-            detail=(f"{service}: адрес сервиса ответил 404 — сервис не отдал данные. "
-                    "Это не ответ «объекта нет». О своём состоянии портал "
-                    "сообщает у себя на странице."
-                    if exc.code == 404 else f"{service}: {_external_error_message(exc)}"),
+            detail=detail,
         ) from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise HTTPException(
