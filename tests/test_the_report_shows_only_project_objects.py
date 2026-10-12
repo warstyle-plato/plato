@@ -174,14 +174,19 @@ RENDER = """async (arg)=>{
   Object.keys(arg.t).forEach(k=>{tep[k]=Object.assign(tep[k]||{},arg.t[k])});
   Object.assign(inputs, arg.x);
   renderInputs();
-  await calculate();
+  const calc=await calculate();
   const rows=Array.from(document.querySelectorAll('#reportTep tbody tr:not(.sub)'))
     .map(tr=>(tr.cells[0].textContent||'').trim());
   const foot=Array.from(document.querySelectorAll('#reportTep tfoot th, #reportTep tfoot td'))
     .map(th=>(th.textContent||'').trim());
   const sales=Array.from(document.querySelectorAll('#salesReportTable tr'))
     .map(tr=>(tr.cells[0].firstChild&&tr.cells[0].firstChild.textContent||'').trim());
-  return {rows:rows, foot:foot, sales:sales};
+  // Пустая таблица обязана назвать причину: расчёт не вернулся, страница
+  // требует входа или сервер отказал (текст плашки #calcLocked).
+  const box=document.getElementById('calcLocked');
+  const why={calculated:calc!=null, needsLogin:calcNeedsLogin(),
+    locked:box&&box.style.display!=='none'?(box.textContent||'').trim().slice(0,300):''};
+  return {rows:rows, foot:foot, sales:sales, why:why};
 }"""
 
 
@@ -213,7 +218,7 @@ def drawn():
 
 def test_the_drawn_report_shows_only_project_objects(drawn) -> None:
     assert drawn["errors"] == [], drawn["errors"]
-    assert drawn["rows"], "таблица отчёта пуста — мерить нечего"
+    assert drawn["rows"], f"таблица отчёта пуста — мерить нечего: {drawn['why']}"
     objects = {row for row in drawn["rows"] if row in OBJECT_LABELS}
     assert objects == SHOWN_OBJECTS, drawn["rows"]
     # Продукты дома с законным нулём — на месте.
@@ -228,4 +233,4 @@ def test_the_drawn_product_table_shows_only_project_objects(drawn) -> None:
              if not p["excluded"] and p["key"] in ("offices", "offices2")}
     assert hidden, "скрывать нечего — проверка ничего не доказывает"
     assert set(drawn["sales"]) & hidden == set(), drawn["sales"]
-    assert shown <= set(drawn["sales"]), drawn["sales"]
+    assert shown <= set(drawn["sales"]), (drawn["sales"], drawn["why"])
