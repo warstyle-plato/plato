@@ -147,6 +147,11 @@ def test_the_block_and_the_report_show_the_share():
     engine = engine_source()
     report = engine[engine.index('story.append(_PdfSection("screening"))'):]
     report = report[:report.index('story.append(_PdfSection("summary"))')]
-    assert "накрывает ~" in report
+    # Строки ограничений собирает `_pdf_screening_rows` — доля меряется по ней.
+    rows = core._pdf_screening_rows(["77:01:0001001:1"], {"parcels": [{
+        "cadastral_number": "77:01:0001001:1", "found": True, "center": {"lat": 55.7, "lng": 37.6},
+        "findings": [{"flag_class": "economic", "name": "Охранная зона", "impact": "режет",
+                      "coverage_pct": 40.0}]}]})
+    assert "накрывает ~40% участка" in rows[0][2]
     assert "Свободно от ограничений" in report
     assert "точность порядка процента" in report, "оценка названа оценкой"
