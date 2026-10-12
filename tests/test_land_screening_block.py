@@ -194,7 +194,7 @@ def test_a_dense_parcel_does_not_become_a_wall():
 def test_the_report_carries_the_screening_before_the_money(monkeypatch):
     """Раздел «Реализуемость посадки» стоит ПЕРЕД финансовым выводом
     (архитектура): сначала что мешает строить, потом деньги. Отчёт не имеет
-    права падать из-за внешнего сервиса — при сбое раздел просто пропускается.
+    права падать из-за внешнего сервиса — сбой называется по каждому участку.
     """
     order = core.PAGE  # заглушка, чтобы линтер не ругался на неиспользуемое
     assert order is not None
@@ -206,13 +206,13 @@ def test_the_report_carries_the_screening_before_the_money(monkeypatch):
         "скрининг обязан стоять раньше ключевой экономики"
     order = [name for name, _ in core._pdf_section_order({})]
     assert order.index("screening") < order.index("summary"), "порядок разделов не задан"
-    assert "except Exception:\n        screening = None" in body, "сбой сервиса не роняет отчёт"
+    assert "except Exception as exc:\n            screening_failure" in body, "сбой сервиса не роняет отчёт"
 
 
 def test_the_report_numbers_come_from_the_project(monkeypatch):
-    numbers = core._pdf_screening_numbers({"_land_lookup": {"query": "50:20:0070312:8320, мусор"}})
+    numbers = core._project_cadastral_numbers({"_land_lookup": {"query": "50:20:0070312:8320, мусор"}})
     assert numbers == ["50:20:0070312:8320"]
-    assert core._pdf_screening_numbers({}) == []
+    assert core._project_cadastral_numbers({}) == []
 
 
 def test_the_report_headline_is_not_raw_markup():

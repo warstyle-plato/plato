@@ -12135,11 +12135,29 @@ function currentPdfReportPayload(cads=[]){
 }
 
 async function exportReportPdf(){
+ // Полный PDF проверяет ограничения у каждого участка проекта; на площадке
+ // из двадцати участков это минуты НСПД, и сервер отвечает 202 с билетом —
+ // PDF забирается опросом, как у тизера, а кнопка называет стадию.
  await calculate();
- const response=await fetch('/report/pdf',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
- if(!response.ok){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
- const blob=await response.blob();const disposition=response.headers.get('Content-Disposition')||'';const utf=disposition.match(/filename\*=UTF-8''([^;]+)/i);const filename=utf?decodeURIComponent(utf[1]):`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`;const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500);
+ const button=document.querySelector('[onclick="exportReportPdf()"]');
+ const label=button?button.textContent:'';
+ const show=text=>{if(button){button.disabled=!!text;button.textContent=text||label}};
+ try{
+  let response=await fetch('/report/pdf',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(Object.assign({session:activeSession(),access_key:projectsAdminKey||''},currentPdfReportPayload()))});
+  const deadline=Date.now()+TEASER_POLL_LIMIT_MS;
+  while(response.status===202){
+   let state={};try{state=await response.json()}catch(e){}
+   if(!state.ticket)break;
+   show(state.detail||'PDF-отчёт готовится…');
+   if(Date.now()>deadline){alert('PDF-отчёт всё ещё готовится ('+(state.detail||'')+'). Нажмите «Экспорт PDF» позже.');return;}
+   await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
+   response=await fetch('/report/pdf/'+encodeURIComponent(state.ticket));
+  }
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  const blob=await response.blob();
+  downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'',`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`);
+ }finally{show('')}
 }
 
 async function exportTeaserPdf(){

@@ -1672,7 +1672,8 @@ def _land_screening_disclaimer(method: str) -> str:
 
 
 @app.get("/land/screening", include_in_schema=False)
-def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str, Any]:
+def land_screening(cad: str = "", min_area_sqm: float | None = None,
+                   limit: int = 30) -> dict[str, Any]:
     """Оценка участка до финмодели: что мешает строить, по кадастровому номеру.
 
     Самостоятельная ценность продукта: человек вводит номер и сразу видит
@@ -1680,18 +1681,24 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str
     реестровым номером и документом-основанием, без всякого расчёта экономики.
     Один участок — коротко, несколько — свод плюс разбивка (решение владельца).
     Числа и факты даёт НСПД, вывод не разрешительный.
+
+    `limit` — сколько участков проверять; ноль и меньше — все. Окну и тизеру
+    хватает тридцати, полный PDF проверяет каждый участок проекта (#655).
     """
     remote = _core_api_url("/land/screening")
     if remote:
         try:
-            query = {"cad": cad}
+            query = {"cad": cad, "limit": limit}
             if min_area_sqm is not None:
                 query["min_area_sqm"] = min_area_sqm
+            # Холодный участок — шесть десятков слоёв НСПД; на площадке из
+            # двадцати участков трёх минут ядру не хватит.
+            asked = len(re.findall(r"\d{2}:\d{2}:\d{6,8}:\d+", _land_text(cad)))
             with urllib.request.urlopen(
                     urllib.request.Request(
                         remote + "?" + urllib.parse.urlencode(query),
                         headers={"Accept": "application/json"}),
-                    timeout=180) as response:
+                    timeout=max(180, 15 * asked)) as response:
                 return json.loads(response.read().decode("utf-8"))
         except Exception as exc:
             raise HTTPException(status_code=502, detail=f"Ядро недоступно: {exc}")
@@ -1705,7 +1712,8 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None) -> dict[str
     # владельца, 19.08.2026). Усечение всё равно называется вслух: молчаливое
     # читается как «проверено всё».
     requested = len(numbers)
-    numbers = numbers[:30]
+    if limit and limit > 0:
+        numbers = numbers[:int(limit)]
     threshold = (_LAND_SCREENING_MIN_AREA_SQM if min_area_sqm is None
                  else max(0.0, float(min_area_sqm)))
 
