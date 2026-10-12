@@ -46,6 +46,7 @@ from .pulse import (
     PulseProject,
     _as_int,
     _id_file,
+    pulse_class,
     pulse_id,
     russia_complex,
 )
@@ -294,8 +295,10 @@ class PulseRussiaClient(PulseClient):
     def segments(self, *, refresh: bool = False, fetch: bool = True) -> dict[str, str]:
         """Класс ЖК — из карточек, что уже собраны; по сети отдельно не ходит.
 
-        Карточки собираются вместе со справочником. Класса у ЖК без карточки
-        или со смешанным классом нет — это «не знаем», а не «эконом».
+        Карточки собираются вместе со справочником. Класса у ЖК без карточки,
+        со смешанным или незнакомым классом нет — это «не знаем», а не
+        «эконом». Слово кабинета переводится картой `pulse_class` при чтении:
+        карточка из кэша могла быть записана до карты.
         """
         if fetch:
             # Недостающие карточки (пачка оборвалась при сборке справочника)
@@ -303,7 +306,17 @@ class PulseRussiaClient(PulseClient):
             cards = self._cards([item.complex_id for item in self.projects(refresh=refresh)])
         else:
             cards = self._load_cards()
-        return {cid: card["segment"] for cid, card in cards.items() if card.get("segment")}
+        out = {}
+        for cid, card in cards.items():
+            segment = pulse_class(card.get("segment_raw") or card.get("segment"))
+            if segment:
+                out[cid] = segment
+        return out
+
+    def segment_raw(self, complex_id: Any) -> str | None:
+        """Слово класса, как его пишет кабинет, — для диагностики, без сети."""
+        card = self._load_cards().get(pulse_id(complex_id) or "") or {}
+        return card.get("segment_raw") or None
 
     # --- данные ЖК ----------------------------------------------------------------
 
@@ -478,13 +491,15 @@ def _card(group: dict[str, Any]) -> dict[str, Any]:
     Поля группы, где объекты расходятся, кабинет склеивает через запятую
     («Сдан, Строится»). Класс «Бизнес, Комфорт» — не класс: у такого ЖК класса
     нет («не знаем»), а склейка остаётся в `segment_raw` для расшифровки.
+    Слово класса переводит в наш класс карта `pulse_class` («Типовой» —
+    «Стандарт/Эконом»); незнакомое слово тоже остаётся только в `segment_raw`.
     """
     raw = str(group.get("object_class") or "").strip()
     units = _as_int(group.get("living_count"))
     area = group.get("living_area")
     remaining_area = group.get("actual_living_remaining_area")
     return {
-        "segment": raw if raw and "," not in raw else None,
+        "segment": pulse_class(raw),
         "segment_raw": raw or None,
         "name": group.get("name"),
         "address": group.get("address"),

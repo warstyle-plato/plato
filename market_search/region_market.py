@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .http import load_json, save_json
-from .pulse import address_region, pulse_region
+from .pulse import address_region, pulse_class, pulse_region
 from .pulse_russia import listing_owner
 from .pulse_report_import import _median, _round, _snapshot
 
@@ -231,6 +231,12 @@ def municipality_of(address: str | None) -> str | None:
     return None
 
 
+def _segment_raw(pulse: Any, complex_id: str) -> str | None:
+    """Слово класса из карточки кабинета, если клиент его знает (для диагностики)."""
+    reader = getattr(pulse, "segment_raw", None)
+    return reader(complex_id) if callable(reader) else None
+
+
 # --- свод -------------------------------------------------------------------------
 
 
@@ -276,10 +282,19 @@ def build_region_market(
     areas: dict[str, list[float]] = {}
     without_segment = 0
     without_municipality = 0
-    for row in on_sale.values():
-        segment = row.get("segment")
+    # Слово класса, которого нет в карте `pulse_class`: ЖК в своде без класса,
+    # а слово — здесь, чтобы его было видно, а не чтобы оно стало классом.
+    unknown_classes: dict[str, int] = {}
+    # Класс — через карту и в сохранённых сборах: запись могла попасть в
+    # сбор словом кабинета («Типовой») до того, как карта его узнала.
+    segment_of = {key: pulse_class(row.get("segment")) for key, row in on_sale.items()}
+    for key, row in on_sale.items():
+        segment = segment_of[key]
         if not segment:
             without_segment += 1
+            word = str(row.get("segment_raw") or row.get("segment") or "").strip()
+            if word and "," not in word:
+                unknown_classes[word] = unknown_classes.get(word, 0) + 1
             continue
         point = _point(row)
         current.setdefault(segment, []).append(point)
@@ -310,8 +325,8 @@ def build_region_market(
         for month in months:
             prices = [
                 float(point["value"])
-                for row in on_sale.values()
-                if row.get("segment") == segment
+                for key, row in on_sale.items()
+                if segment_of[key] == segment
                 for point in row.get("history") or []
                 if point.get("month") == month and point.get("value")
             ]
@@ -366,6 +381,7 @@ def build_region_market(
             "projects_on_sale": len(on_sale),
             "stale_price": len(stale),
             "without_segment": without_segment,
+            "unknown_classes": unknown_classes,
             "without_municipality": without_municipality,
             "failed": len(failed or {}),
         },
@@ -624,6 +640,7 @@ class RegionMarketCollector:
                         "address": item.address,
                         "developer": item.developer,
                         "segment": classes.get(item.complex_id),
+                        "segment_raw": _segment_raw(self.pulse, item.complex_id),
                         "municipality": municipality_of(item.address),
                     }
                     for item in projects
@@ -670,7 +687,11 @@ class RegionMarketCollector:
                 if not card.get("segment"):
                     # Класс всероссийского ЖК мог прийти только с его карточкой —
                     # уже после того, как сбор записал классы справочника.
-                    card = {**card, "segment": self.pulse.segments(fetch=False).get(cid)}
+                    card = {
+                        **card,
+                        "segment": self.pulse.segments(fetch=False).get(cid),
+                        "segment_raw": _segment_raw(self.pulse, cid),
+                    }
                 shared = listing_owner(taken_listings, price, cid)
                 if shared:
                     # Кабинет делит один ЖК на несколько записей; объявления у
