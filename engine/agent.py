@@ -383,6 +383,10 @@ def _result_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         "construction_cost_per_gns_th_per_sqm": round(float(s.get("construction_cost_per_gns_th", 0) or 0), 2),
         "construction_cost_per_saleable_th_per_sqm": round(float(s.get("construction_cost_per_saleable_th", 0) or 0), 2),
         "average_apartment_price_th_per_sqm": round(float(s.get("average_apartment_price_th", 0) or 0), 2),
+        # Обеспеченность парковкой — ответ движка с подписью, Платон не делит
+        # сам: весь гараж проекта на всю нормативную потребность (#656).
+        "parking_provision": str((((result.get("parking") or {}).get("provision") or {})
+                                  .get("label")) or ""),
     }
 
 
@@ -1200,6 +1204,10 @@ def _tool_trace_metric(
             ) if imported else None,
         } if imported else None
         trace["rule"] = "При импорте ГлавАПУ: постоянные + гостевые; 35 м² ГНС/место."
+        # Обеспеченность — все места проекта на всю нормативную потребность:
+        # жители, приобъектные коммерции и объектов, соцобъекты (#656).
+        trace["provision"] = (result.get("parking") or {}).get("provision")
+        trace["project_requirement"] = (result.get("parking") or {}).get("project_required")
         return trace
 
     if metric == "social":

@@ -5111,8 +5111,10 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
     # Машино-места проекта считаются один раз и одним правилом: подземные,
     # наземные и гаражи объектов. Выражение, повторённое трижды внутри
     # словаря, читалось бы хуже и однажды разошлось бы само с собой.
-    _parking_required = float((consolidated.get("parking") or {}).get("required_total") or 0.0)
+    _parking_block = consolidated.get("parking") or {}
     _parking_built = tep_parking_spaces((consolidated.get("tep") or {}).get("rows") or [])
+    _parking_provision = (_parking_block.get("provision")
+                          or parking_provision(_parking_built, _parking_block.get("project_required")))
     apartment_sales = report.get("apartment_sales") or {}
     apartments = next((p for p in (report.get("products") or [])
                        if str(p.get("key")) == "apartments"), {})
@@ -5178,11 +5180,19 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
         # 28,98 вместо 12,36. Мера счёта у продуктов разная, и складывать их
         # было нечем — «конечно это не надо суммировать» (владелец,
         # 27.09.2026).
+        #
+        # Знаменатель — вся нормативная потребность проекта, а не приобъектные
+        # места одной коммерции: 1 199 мест гаража делились на 97 мест
+        # встроенных магазинов, и выходило 12,36× (#656). Делит один владелец
+        # (`parking_provision`), поверхности читают готовый ответ и подпись.
         "parking": {
-            "required_total": float((consolidated.get("parking") or {}).get("required_total") or 0.0),
+            "required_total": _parking_provision["required"],
+            "required_attached": float(_parking_block.get("required_total") or 0.0),
+            "required_parts": list((_parking_block.get("project_required") or {}).get("parts") or []),
+            "required_missing": list((_parking_block.get("project_required") or {}).get("missing") or []),
             "built_units": _parking_built,
-            "provision": (_parking_built / _parking_required
-                          if _parking_required > 0 else None),
+            "provision": _parking_provision["ratio"],
+            "provision_label": _parking_provision["label"],
         },
         "land": {
             "purchase_per_saleable_th": (
@@ -5939,6 +5949,13 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
             "bridge_peak_by_phase": [float(finance.get("peak_bridge", 0.0)) / 1e6],
         }
     hints["parity"] = _v4_parity_targets(bundle.get("consolidated") or {})
+    # Обеспеченность парковкой — места и вся нормативная потребность проекта
+    # числами движка (`parking_provision`): норму книга не считает.
+    _provision = (((bundle.get("consolidated") or {}).get("parking") or {})
+                  .get("provision") or {})
+    if float(_provision.get("required") or 0.0) > 0:
+        hints["parking_provision"] = {"built": float(_provision.get("built") or 0.0),
+                                      "required": float(_provision["required"])}
     # ТЦ и офисы вне ДДУ: книга получает результат движка листом
     # «Нежильё — стратегия» (`v4_nonres_sheet`) — таблицу отчёта и месячные ряды.
     _consolidated = bundle.get("consolidated") or {}
@@ -9201,7 +9218,8 @@ def _build_project_workbook(
             _V4_CAPEX_ARTICLE_ROW, _V4_CAPEX_BLOCK_STRIDE,
             _v4_dashboard_extra_products(),
             frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)),
-            hidden_products=_v4_absent_products(x, tep), queues=count)
+            hidden_products=_v4_absent_products(x, tep), queues=count,
+            parking=(finance_hints or {}).get("parking_provision"))
     except Exception as exc:  # noqa: BLE001 — дашборд без книги не выпускается молча
         missing.append("Дашборд · не собран: " + _error_location(exc))
 

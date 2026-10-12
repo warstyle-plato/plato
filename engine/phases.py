@@ -2544,6 +2544,10 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     # проход по мастер-строке увёл бы продаваемую объекта вниз.
     consolidated["parking"] = apply_object_parking(
         copy.deepcopy(x_master), copy.deepcopy(t_master))
+    # Обеспеченность — весь гараж свода на всю потребность проекта (#656).
+    consolidated["parking"]["provision"] = parking_provision(
+        tep_parking_spaces((consolidated.get("tep") or {}).get("rows") or []),
+        consolidated["parking"].get("project_required"))
     # Тип проекта — свойство ПРОЕКТА, а не очереди, и в свод он попадает
     # отсюда: свод собирается заново, и поле, заведённое в одиночном расчёте,
     # до него само не доезжает. PDF читает именно свод — без этих двух ключей
