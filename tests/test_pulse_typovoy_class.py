@@ -104,13 +104,21 @@ def test_an_unknown_class_word_is_seen_not_turned_into_a_class() -> None:
     assert summary["coverage"]["unknown_classes"] == {"Другое": 2}
 
 
-def _moscow(*items: PulseProject):
-    return SimpleNamespace(base=MOSCOW, errors=[], available=True, projects=lambda **kw: list(items))
+def _moscow(*items: PulseProject, asked: list | None = None):
+    def price(cid):
+        # Московский кабинет на цену ЖК области отвечает 403 (price_stats).
+        (asked if asked is not None else []).append(cid)
+        return None
+
+    return SimpleNamespace(
+        base=MOSCOW, errors=[], available=True, projects=lambda **kw: list(items), price=price,
+    )
 
 
 def test_atlantis_without_a_region_in_its_moscow_address_is_one_neighbour(tmp_path: Path, monkeypatch) -> None:
     russia, _ = _russia(tmp_path, monkeypatch)
     atlantis = next(item for item in russia.projects() if item.complex_id == "50-c350624")
+    asked: list[str] = []
     moscow = _moscow(
         # Живой адрес московского кабинета: области в нём нет.
         PulseProject(
@@ -119,6 +127,7 @@ def test_atlantis_without_a_region_in_its_moscow_address_is_one_neighbour(tmp_pa
                     "по Новомытищинскому пр-ту",
             base=MOSCOW,
         ),
+        asked=asked,
     )
     network = PulseNetwork([russia, moscow])
     names = [item.name for _, item in network.near(LAT, LON, 2.5)]
@@ -126,6 +135,11 @@ def test_atlantis_without_a_region_in_its_moscow_address_is_one_neighbour(tmp_pa
     assert network.superseded == {"50": 1}
     kept = next(item for _, item in network.near(LAT, LON, 2.5) if item.name == "Атлантис")
     assert kept.complex_id == "50-c350624"
+    # Цены соседей — только у всероссийского кабинета: 403 московского
+    # («pulsprodaj.ru: /api/app/complex/price_stats/») давал именно дубль.
+    for _, item in network.near(LAT, LON, 2.5):
+        network.price(item.complex_id)
+    assert asked == []
 
 
 def test_a_namesake_elsewhere_or_another_name_at_the_point_is_not_a_twin(tmp_path: Path, monkeypatch) -> None:
@@ -157,3 +171,32 @@ def test_a_summary_collected_by_another_class_map_is_due_at_once(tmp_path: Path,
     summary.pop("class_map")
     path.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
     assert collector.due("50") is True
+
+
+def _hint(tmp_path: Path, monkeypatch, segment):
+    from market_search.service_v6 import MarketDiscoveryService
+
+    monkeypatch.setenv("PULSE_BASE_URL", "https://russia.pulsprodaj.ru")
+    russia, _ = _russia(tmp_path / "pulse", monkeypatch, Cabinet(distinct=True))
+    service = MarketDiscoveryService(tmp_path)
+    service.pulse = russia
+    return service.price_hint(address=None, latitude=LAT, longitude=LON, segment=segment, include_projects=True)
+
+
+def test_the_chosen_class_selects_the_neighbours_of_the_price_hint(tmp_path: Path, monkeypatch) -> None:
+    """Прод 0.25.59, Мытищи: «Стандарт» давал 4 соседа — только «Комфорт».
+
+    Соседи «Типовой» не узнавались ни одним классом и выпадали из ориентира с
+    причиной «класс Типовой не сопоставим»: у «Стандарт/Эконом» не было ни
+    одного своего соседа, а «Комфорт» и «Бизнес» видели одну и ту же выборку.
+    """
+    economy = _hint(tmp_path / "e", monkeypatch, ECONOMY)
+    rows = {row["name"]: row for row in economy["projects"]}
+    assert rows["Ярославский"]["segment"] == ECONOMY
+    assert rows["Ярославский"]["eligible"] is True, rows["Ярославский"]["excluded_reason"]
+    assert rows["Атлантис"]["eligible"] is False  # Бизнес через ступень от эконома
+
+    business = _hint(tmp_path / "b", monkeypatch, "Бизнес")
+    rows = {row["name"]: row for row in business["projects"]}
+    assert rows["Ярославский"]["eligible"] is False
+    assert rows["Атлантис"]["eligible"] is True
