@@ -36,7 +36,9 @@ jobs:
           import re
 
           page = Path('guide/page.html').read_text(encoding='utf-8')
-          core = Path('main_legacy.py').read_text(encoding='utf-8')
+          # Страница движка лежит кусками в engine/*.py — подписи ищем во всём движке.
+          core = '\n'.join(path.read_text(encoding='utf-8') for path in
+                            [Path('main_legacy.py'), *sorted(Path('engine').glob('*.py'))])
 
           required_placeholders = [
               '__DEVELOPAID_VERSION__', '__GUIDE_CLASS_ROWS__',
