@@ -141,3 +141,19 @@ def test_a_namesake_elsewhere_or_another_name_at_the_point_is_not_a_twin(tmp_pat
     ids = {item.complex_id for item in network.projects()}
     assert {"1", "2"} <= ids
     assert network.superseded == {}
+
+
+def test_a_summary_collected_by_another_class_map_is_due_at_once(tmp_path: Path, monkeypatch) -> None:
+    """Свод на проде собран до карты: «Типовой» в нём ждал бы недели."""
+    russia, _ = _russia(tmp_path / "pulse", monkeypatch, Cabinet(distinct=True))
+    collector = RegionMarketCollector(
+        russia, tmp_path / "regions", regions=["50"], pause_seconds=0, sleep=lambda s: None,
+        clock=lambda: 1_791_158_400.0,  # 2026-10-05
+    )
+    collector.collect("50")
+    assert collector.due("50") is False
+    path = collector.summary_path("50")
+    summary = json.loads(path.read_text(encoding="utf-8"))
+    summary.pop("class_map")
+    path.write_text(json.dumps(summary, ensure_ascii=False), encoding="utf-8")
+    assert collector.due("50") is True

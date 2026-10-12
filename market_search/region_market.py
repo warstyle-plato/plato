@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .http import load_json, save_json
-from .pulse import address_region, pulse_class, pulse_region
+from .pulse import RUSSIA_CLASSES, address_region, pulse_class, pulse_region
 from .pulse_russia import listing_owner
 from .pulse_report_import import _median, _round, _snapshot
 
@@ -356,6 +356,7 @@ def build_region_market(
         "last_month": collected_at[:7],
         "months": months,
         "okrug_kind": "municipality",
+        "class_map": dict(RUSSIA_CLASSES),
         "basis": {
             "price": (
                 "цена метра по объявлениям агрегаторов (ЦИАН, Яндекс, Домклик) — "
@@ -478,10 +479,15 @@ class RegionMarketCollector:
         return None
 
     def due(self, code: str) -> bool:
-        """Пора ли собирать: свода нет, он старше недели или сбор не дошёл."""
+        """Пора ли собирать: свода нет, он старше недели, сбор не дошёл
+        или свод разложен по классам другой картой (`class_map`)."""
         if load_json(self.progress_path(code)):
             return True
         summary = load_json(self.summary_path(code)) or {}
+        if summary and summary.get("class_map") != dict(RUSSIA_CLASSES):
+            # Свод переживает релизы: собранный до карты (или по прежней)
+            # держит класс «Типовой», которого не спросит ни один участок.
+            return True
         age = _age_seconds(summary.get("collected_at"), self.clock())
         if age is None:
             # Свода нет. Но если прошлая попытка была меньше суток назад
