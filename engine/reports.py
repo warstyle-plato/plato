@@ -17,10 +17,11 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
                   equity_cf: list[float]) -> dict[str, Any]:
     """Какие блоки отчёта у проекта есть — одно решение для всех поверхностей.
 
-    Страница, PDF, тизер и бот читают его, а не решают сами. Нежилой проект
-    без ДДУ (владелец, 04.10.2026: отчёт, тизер и книга «самостоятельные»)
-    не печатает ни квартир, ни БРИДЖа, ПФ, эскроу и LLCR — их у него нет; его
-    шапка — деньги объектов: кредит, капитал, NOI, DSCR, выход.
+    Страница, PDF, тизер и бот читают его, а не решают сами. Рамку выбирает
+    тип проекта (`report_kind`): нежилой проект и гостиница не печатают
+    квартир и удельной экономики жилья; шапка — деньги объектов: кредит,
+    капитал, NOI, DSCR, выход. `project_finance` говорит, есть ли у проекта
+    БРИДЖ, ПФ и эскроу, — у нежилого это объект по ДДУ.
     """
     rows = finance.get("rows") or []
     project_finance = any(
@@ -77,13 +78,7 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
         if tile["unit"] == "rub":
             tile["value_mln"] = float(tile["value"] or 0.0) / 1e6
     housing = not without_housing(inputs)
-    # Своя вёрстка — у проекта без жилья и без ПФ, чьи объекты идут вне ДДУ
-    # (владелец, 05.10.2026: «вёрстка нежилых объектов, где они не идут в
-    # проекте с жильём, должна быть своей»). Жилой и смешанный — как были.
-    # Гостиница — тоже объект вне ДДУ (владелец, 07.10.2026: «тизер и отчёт
-    # не соответствуют типу гостиницы») — та же рамка, свой наполнитель.
-    kind = (REPORT_KIND_OBJECT if not housing and not project_finance and (objects or hotel)
-            else REPORT_KIND_HOUSING)
+    kind = report_kind(inputs)
     return {"housing": housing,
             "project_finance": project_finance,
             "nonres_strategy": bool(objects),
@@ -91,6 +86,9 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
             "nonres_tiles": tiles,
             "debt_metric": debt_metric(finance, project_finance, objects),
             "kind": kind,
+            # Решение «рамка объекта» — для поверхностей, которые читают
+            # раскладку как данные (страница): список видов живёт здесь.
+            "object_frame": kind in REPORT_OBJECT_KINDS,
             "sections": [{"key": key, "title": title}
                          for key, title in REPORT_SECTIONS[kind]]}
 
@@ -102,20 +100,51 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
 # Список не офисный: гостиница встаёт в ту же рамку.
 REPORT_KIND_HOUSING = "housing"
 REPORT_KIND_OBJECT = "object"
+REPORT_KIND_HOTEL = "hotel"
+# Рамки «по объекту» — нежилое и гостиница: девять разделов, без квартир,
+# БРИДЖа жилья и удельной экономики. Кто печатает разделы объекта, спрашивает
+# `object_frame`, а не сравнивает вид с одной строкой: иначе гостиница,
+# получив свой вид, выпала бы из рамки на той поверхности, что не знает о ней.
+REPORT_OBJECT_KINDS = frozenset({REPORT_KIND_OBJECT, REPORT_KIND_HOTEL})
+# Имя своё: `_OBJECT_SECTIONS` уже занято группами полей объекта (inputs).
+_OBJECT_FRAME_SECTIONS = (
+    ("decision", "Решение"), ("object", "Объект и участок"),
+    ("strategy", "Стратегия реализации"), ("income", "Доходы"),
+    ("costs", "Затраты"), ("finance", "Финансирование"),
+    ("owner", "Экономика собственника"), ("sensitivity", "Чувствительность"),
+    ("calendar", "Календарь"),
+)
 REPORT_SECTIONS: dict[str, tuple[tuple[str, str], ...]] = {
     REPORT_KIND_HOUSING: (
         ("site", "Участок и продукт"), ("summary", "Итог"), ("phases", "Очереди проекта"),
         ("expenses", "Расходы"), ("income", "Доходы"), ("finance", "Финансирование"),
         ("sensitivity", "Чувствительность"), ("calendar", "Календарный план"),
     ),
-    REPORT_KIND_OBJECT: (
-        ("decision", "Решение"), ("object", "Объект и участок"),
-        ("strategy", "Стратегия реализации"), ("income", "Доходы"),
-        ("costs", "Затраты"), ("finance", "Финансирование"),
-        ("owner", "Экономика собственника"), ("sensitivity", "Чувствительность"),
-        ("calendar", "Календарь"),
-    ),
+    REPORT_KIND_OBJECT: _OBJECT_FRAME_SECTIONS,
+    REPORT_KIND_HOTEL: _OBJECT_FRAME_SECTIONS,
 }
+
+
+def report_kind(inputs: dict[str, Any] | None) -> str:
+    """Рамка отчёта, тизера, PDF и книги — по типу проекта, и только по нему.
+
+    Решение владельца (10.10.2026): у каждого типа своя рамка — жильё,
+    нежилое (офис, торговля), гостиница. Прежде нежилой проект с объектом
+    по ДДУ (а ДДУ — умолчание стратегии) уходил в жилую рамку целиком: на
+    экране и в файлах были квартиры, РВЭ и нули. Теперь проект без жилья
+    всегда в рамке объекта, а ПФ и эскроу объекта по ДДУ — блок его раздела
+    «Финансирование».
+    """
+    if is_hotel(inputs):
+        return REPORT_KIND_HOTEL
+    if is_nonresidential(inputs):
+        return REPORT_KIND_OBJECT
+    return REPORT_KIND_HOUSING
+
+
+def object_frame(layout: dict[str, Any] | None) -> bool:
+    """Печатается ли проект рамкой объекта (нежилое или гостиница)."""
+    return isinstance(layout, dict) and layout.get("kind") in REPORT_OBJECT_KINDS
 
 
 def _row(label: str, value: Any, unit: str, **extra: Any) -> dict[str, Any]:
@@ -257,11 +286,11 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     """
     report = result.get("report") or {}
     layout = report.get("layout") or {}
-    if layout.get("kind") != REPORT_KIND_OBJECT:
+    if not object_frame(layout):
         return {}
     summary = result.get("summary") or {}
     finance = result.get("finance") or {}
-    if finance.get("hotel"):
+    if layout.get("kind") == REPORT_KIND_HOTEL:
         return hotel_object_report(result)
     objects = (finance.get("nonres") or {}).get("objects") or []
     tep = {str(row.get("key")): row for row in (result.get("tep") or {}).get("rows") or []}
@@ -273,13 +302,23 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     na = equity_returns_na_label(summary)
     deal_rub = float(deal.get("total_mln") or 0.0) * 1e6
     income_any = any(o.get("strategy") == nonres_strategy.STRATEGY_INCOME for o in objects)
+    ddu = _ddu_objects(result, objects)
+    financing = report.get("financing") or {}
     sections: dict[str, dict[str, Any]] = {}
 
     # 1. Решение ------------------------------------------------------------
-    verdict = _purchase_feasibility(
-        deal.get("price_mln"), float(summary.get("net_profit") or 0) / 1e6,
-        summary.get("llcr"), 0.0, float(summary.get("ending_pf") or 0) / 1e6,
-        None, 0.0, None, _layout_dscr(layout), _layout_no_debt_cover(layout))
+    if float(deal.get("price_mln") or 0.0) > 0:
+        # Объект по ДДУ — долг проекта с ПФ: LLCR меряется, только когда
+        # вердикт знает, что ПФ есть (`debt_amount`).
+        verdict = _purchase_feasibility(
+            deal.get("price_mln"), float(summary.get("net_profit") or 0) / 1e6,
+            summary.get("llcr"), float(financing.get("pf_peak") or 0) / 1e6
+            if layout.get("project_finance") else 0.0,
+            float(summary.get("ending_pf") or 0) / 1e6,
+            None, 0.0, None, _layout_dscr(layout), _layout_no_debt_cover(layout))
+    else:
+        verdict = _object_verdict_without_price(summary, equity, metric, na,
+                                                bool(objects or ddu))
     debt_row = (_row(str(metric.get("label") or "DSCR"), metric.get("value"), "mult")
                 if metric.get("key") else
                 _row(str(metric.get("label") or "Покрытие кредита"),
@@ -336,6 +375,18 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
                     rows.append(_row(label, row.get(key), "count"))
         rows += [_row("Ввод объекта", item.get("commissioning"), "date")]
         object_blocks.append({"title": item.get("title"), "rows": rows})
+    for item in ddu:
+        row = tep.get(item["key"]) or {}
+        gns_total += float(row.get("gns") or 0.0)
+        area_total += item["area"]
+        object_blocks.append({"title": item["title"], "rows": [
+            _row("Наземная площадь в ГНС", row.get("gns"), "sqm"),
+            _row("Общая площадь", row.get("total_area"), "sqm"),
+            _row("Продаваемая площадь", item["area"], "sqm")]})
+    if not objects and not ddu:
+        object_blocks.append({"title": "Объекты", "rows": [_row(
+            "Нежилых объектов в проекте нет",
+            "в ТЭП не задана площадь ни одного объекта — считать нечего", "text")]})
     sections["object"] = {
         "brief": [_row("Наземная площадь в ГНС", gns_total, "sqm"),
                   _row("Арендопригодная / продаваемая площадь", area_total, "sqm")],
@@ -364,6 +415,11 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
             strategy_blocks.append({"title": ("График заполнения — " if income
                                               else "График продаж — ") + str(item.get("title")),
                                     "columns": columns, "years": years})
+    for item in ddu:
+        label = nonres_strategy.STRATEGY_LABELS[nonres_strategy.STRATEGY_DDU]
+        strategy_blocks.append({"title": item["title"],
+                                "rows": [_row("Стратегия", label, "text")]})
+        brief.append(_row(item["title"], label, "text"))
     sections["strategy"] = {"brief": brief, "blocks": strategy_blocks}
 
     # 4. Доходы ------------------------------------------------------------
@@ -397,7 +453,13 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
         if years:
             income_blocks.append({"title": "По годам — " + str(item.get("title")),
                                   "columns": columns, "years": years})
+    ddu_revenue = sum(item["revenue"] for item in ddu)
+    for item in ddu:
+        income_blocks.append({"title": item["title"], "rows": [
+            _row("Выручка продаж по ДДУ (эскроу)", item["revenue"], "rub")]})
     income_brief = []
+    if ddu_revenue:
+        income_brief.append(_row("Выручка ДДУ", ddu_revenue, "rub"))
     if totals["sale_revenue"]:
         income_brief.append(_row("Выручка ДКП", totals["sale_revenue"], "rub"))
     if totals["rent_revenue"]:
@@ -412,13 +474,14 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     # 5. Затраты -----------------------------------------------------------
     cost_blocks, objects_cost = [], 0.0
     attributed: dict[str, float] = defaultdict(float)
-    for item in objects:
+    for item in [*objects, *ddu]:
         key = str(item.get("key"))
         own = parts.get(key) or {}
         if not own:
             continue
         row = tep.get(key) or {}
-        area = float((item.get("book") or {}).get("area_sqm") or 0.0)
+        area = float(item["area"] if "area" in item
+                     else (item.get("book") or {}).get("area_sqm") or 0.0)
         gns = float(row.get("gns") or 0.0)
         total = sum(float(v or 0.0) for v in own.values())
         objects_cost += total
@@ -444,12 +507,12 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
         rest = float(capex.get(name) or 0.0) - attributed.get(name, 0.0)
         if rest > 0.5:
             common_rows.append(_row(label, rest, "rub"))
-    nonres_keys = {str(o.get("key")) for o in objects}
+    shown = {str(o.get("key")) for o in objects} | {
+        item["key"] for item in ddu if parts.get(item["key"])}
     for obj in STANDALONE_OBJECTS:
         value = float(capex.get(obj.key) or 0.0)
-        if value > 0.5 and obj.key not in nonres_keys:
-            common_rows.append(_row(f"Объект {obj.label} — продаётся не этим отчётом",
-                                    value, "rub"))
+        if value > 0.5 and obj.key not in shown:
+            common_rows.append(_row(f"Объект {obj.label} — смета одной статьёй", value, "rub"))
     common_total = sum(float(r["value"] or 0.0) for r in common_rows)
     common_rows.append(_row("Итого общие затраты", common_total, "rub") if common_rows else
                        _row("Общих затрат нет", "все затраты стройки начислены от объектов",
@@ -478,13 +541,24 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
 
     # 6. Финансирование ----------------------------------------------------
     loan_peak = sum(float((o.get("totals") or {}).get("loan_peak") or 0.0) for o in objects)
-    sections["finance"] = {
-        "brief": [_row("Кредит объектов — пик", loan_peak, "rub"), debt_row,
-                  _row("Собственные средства до ввода",
-                       (equity.get("parts") or {}).get("in_build"), "rub")],
-        "blocks": [{"ref": "nonres_financing", "title": "Кредит объекта"},
-                   {"ref": "equity_participation", "title": "Собственное участие"}],
-    }
+    finance_brief = [_row("Кредит объектов — пик", loan_peak, "rub")] if objects else []
+    finance_blocks = ([{"ref": "nonres_financing", "title": "Кредит объекта"}] if objects else [])
+    if layout.get("project_finance"):
+        # Объект по ДДУ: БРИДЖ, ПФ и эскроу — блок этого раздела, а не жилая
+        # рамка (решение владельца, 10.10.2026). Числа — расчёта ПФ движка.
+        pf_rows = [_row("БРИДЖ — пик", finance.get("peak_bridge"), "rub"),
+                   _row("Проектное финансирование — пик", financing.get("pf_peak"), "rub"),
+                   _row("ПФ, не покрытый эскроу, — пик", financing.get("pf_uncovered_peak"), "rub"),
+                   _row("Раскрыто эскроу при вводе", financing.get("rve_escrow_release"), "rub"),
+                   _row("LLCR", summary.get("llcr"), "mult"),
+                   _row("Долг ПФ на конец проекта", summary.get("ending_pf"), "rub")]
+        finance_blocks.append({"title": "Проектное финансирование объектов по ДДУ",
+                               "rows": pf_rows})
+        finance_brief.append(pf_rows[1])
+    finance_brief += [debt_row, _row("Собственные средства до ввода",
+                                     (equity.get("parts") or {}).get("in_build"), "rub")]
+    finance_blocks.append({"ref": "equity_participation", "title": "Собственное участие"})
+    sections["finance"] = {"brief": finance_brief, "blocks": finance_blocks}
 
     # 7. Экономика собственника --------------------------------------------
     nonres_costs = next((float(e.get("value") or 0.0) for e in report.get("expense_structure") or []
@@ -549,6 +623,73 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     return {"kind": REPORT_KIND_OBJECT,
             "sections": [{"key": key, "title": title, **sections[key]}
                          for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
+
+
+def _ddu_objects(result: dict[str, Any], objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Объекты проекта без жилья, проданные по ДДУ: их нет в `finance.nonres`
+    (там аренда и прямая продажа), они идут расчётом ПФ и эскроу. Признак —
+    выручка объекта в расчёте; площадь и смета — те же поля движка."""
+    revenue = result.get("revenue") or {}
+    tep = {str(row.get("key")): row for row in (result.get("tep") or {}).get("rows") or []}
+    own = {str(o.get("key")) for o in objects}
+    out = []
+    for obj in STANDALONE_OBJECTS:
+        value = float(revenue.get(obj.key) or 0.0)
+        if obj.key in own or value <= 0.5:
+            continue
+        row = tep.get(obj.key) or {}
+        out.append({"key": obj.key, "title": str(row.get("label") or obj.label),
+                    "revenue": value, "area": float(row.get("saleable") or 0.0)})
+    return out
+
+
+def _object_verdict_without_price(summary: dict[str, Any], equity: dict[str, Any],
+                                  metric: dict[str, Any], na: str | None,
+                                  has_objects: bool) -> dict[str, str]:
+    """Вывод по проекту без жилья, у которого не задана цена сделки.
+
+    Решение владельца (10.10.2026): без цены вывод делается по экономике
+    объекта — непогашенный долг, прибыль, NPV собственника и покрытие кредита
+    (порог и цель — из `debt_metric`), — а оценка покупки прямо названа
+    несделанной. Прежде такой проект получал «Вывод не сформирован» при любой
+    экономике.
+    """
+    note = " Цена участка не задана — оценка покупки не делалась."
+    if not has_objects:
+        return {"status": "not_available", "title": "Вывод не сформирован",
+                "text": "В проекте нет нежилых объектов — в ТЭП не задана площадь ни одного."}
+    ending = float(summary.get("ending_pf") or 0.0) / 1e6
+    if ending > 0.5:
+        return {"status": "default", "title": "Дефолтный: долг не погашается",
+                "text": f"На конец проекта остаётся непогашенный долг {_telegram_number(ending, 1)} "
+                        "млн ₽ — денежного потока не хватает вернуть кредит." + note}
+    if float(summary.get("net_profit") or 0.0) <= 0:
+        return {"status": "negative", "title": "Предварительно нецелесообразна",
+                "text": "Проект не формирует положительную чистую прибыль." + note}
+    npv = equity.get("npv") if equity and na is None else None
+    rate = _telegram_number(float((equity or {}).get("discount_rate") or 0.0) * 100, 1)
+    if npv is not None and float(npv) < 0:
+        return {"status": "negative", "title": "Предварительно нецелесообразна",
+                "text": f"NPV собственника при ставке {rate}% отрицательный." + note}
+    value, label = metric.get("value"), str(metric.get("label") or "")
+    if metric.get("key") and value is not None:
+        shown = _telegram_number(float(value), 2)
+        floor, target = metric.get("floor"), metric.get("target")
+        if floor is not None and float(value) < float(floor):
+            return {"status": "negative", "title": "Предварительно нецелесообразна",
+                    "text": f"Проект прибылен, но {label} {shown}x — ниже "
+                            f"{_telegram_number(float(floor), 2)}x." + note}
+        if target is not None and float(value) < float(target) - 1e-9:
+            return {"status": "review", "title": "Требует пересмотра условий",
+                    "text": f"Проект прибылен, но {label} {shown}x — ниже целевых "
+                            f"{_telegram_number(float(target), 2)}x." + note}
+    head = "Проект формирует положительную чистую прибыль"
+    if npv is not None:
+        head += f", NPV собственника при ставке {rate}% положительный"
+    if metric.get("key") and value is not None:
+        head += f", {label} {_telegram_number(float(value), 2)}x"
+    return {"status": "positive", "title": "Предварительно целесообразна",
+            "text": head + "." + note}
 
 
 def _hotel_verdict(hotel: dict[str, Any], metric: dict[str, Any]) -> dict[str, str]:
@@ -666,7 +807,7 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
         missing = _row("Гостиница не считается — не заданы",
                        ", ".join(hotel.get("missing") or []) or "вводные гостиницы", "text")
         sections = {key: {"brief": [missing], "blocks": [{"title": title, "rows": [missing]}]}
-                    for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]}
+                    for key, title in REPORT_SECTIONS[REPORT_KIND_HOTEL]}
         sections["decision"] = {
             "brief": [_row("Вывод", verdict["title"], "text"),
                       _row("Основание", verdict["text"], "text")],
@@ -675,9 +816,9 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
                         "rows": [_row(verdict["title"], verdict["text"], "text")]}]}
         sections["sensitivity"]["sensitivity"] = {"metric": "npv_mln", "parameters": []}
         sections["calendar"]["calendar"] = {}
-        return {"kind": REPORT_KIND_OBJECT, "hotel": True,
+        return {"kind": REPORT_KIND_HOTEL, "hotel": True,
                 "sections": [{"key": key, "title": title, **sections[key]}
-                             for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
+                             for key, title in REPORT_SECTIONS[REPORT_KIND_HOTEL]]}
 
     kpi, totals = hotel.get("kpi") or {}, hotel.get("totals") or {}
     params = hotel.get("params") or {}
@@ -953,9 +1094,9 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
         "blocks": [{"ref": "calendar", "title": "Календарный план гостиницы"}],
     }
 
-    return {"kind": REPORT_KIND_OBJECT, "hotel": True,
+    return {"kind": REPORT_KIND_HOTEL, "hotel": True,
             "sections": [{"key": key, "title": title, **sections[key]}
-                         for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
+                         for key, title in REPORT_SECTIONS[REPORT_KIND_HOTEL]]}
 
 
 def _hotel_calendar(report: dict[str, Any], hotel: dict[str, Any],
@@ -1074,6 +1215,11 @@ def debt_metric(finance: dict[str, Any], project_finance: bool,
         return {"key": "dscr", "label": "DSCR кредита объектов — минимум по годам",
                 "value": min(values), "target": DEBT_METRIC_TARGET,
                 "floor": DEBT_METRIC_FLOOR["dscr"]}
+    if objects and not any(float((o.get("totals") or {}).get("loan_peak") or 0.0) > 0
+                           for o in objects):
+        return {"key": None, "label": "Покрытие кредита объектов", "value": None,
+                "target": DEBT_METRIC_TARGET, "floor": None,
+                "reason": "У объектов нет кредита — покрывать нечего, DSCR не считается."}
     return {"key": None, "label": "Покрытие кредита объектов", "value": None,
             "target": DEBT_METRIC_TARGET, "floor": None,
             "reason": "Кредит объектов гасится выручкой прямых продаж — платежа из NOI "
