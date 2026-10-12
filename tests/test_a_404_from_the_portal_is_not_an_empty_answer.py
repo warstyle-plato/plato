@@ -88,3 +88,44 @@ def test_no_call_site_asks_for_an_object_by_id() -> None:
         "404 снова превращается в пустой ответ")
     assert source.count("_land_fetch_json(") == 7, (
         "появился новый вызов — проверьте, не адресует ли он объект по номеру")
+
+
+def test_a_portal_failure_names_its_side_and_code(monkeypatch) -> None:
+    """5xx НСПД — сбой портала: причина называет сторону, код и ответ сервиса.
+
+    Образец — ответ НСПД 11–12.10.2026, когда автозагрузка 77:05:0004001:*
+    находила 0 из 20, а тот же запрос на том же выпуске позже — 20 из 20.
+    """
+    import io
+
+    def _raise_500(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            core._NSPD_BASE_URL + "/api/geoportal/v2/search/geoportal", 500,
+            "Internal Server Error", {},  # type: ignore[arg-type]
+            io.BytesIO('{"code":1024,"message":"registers: post-objdoc-by-external_key '
+                       '(код=1024)"}'.encode("utf-8")))
+
+    monkeypatch.setattr(core.urllib.request, "urlopen", _raise_500)
+    with pytest.raises(HTTPException) as fail:
+        core._land_fetch_json(core._NSPD_BASE_URL + "/api/geoportal/v2/search/geoportal?query=x",
+                              service="Сервис НСПД")
+    said = str(fail.value.detail)
+    assert fail.value.status_code == 502
+    assert "HTTP 500" in said and "стороне портала" in said, said
+    assert "post-objdoc-by-external_key" in said, said
+
+
+def test_a_4xx_is_not_blamed_on_the_portal(monkeypatch) -> None:
+    """4xx может быть нашим запросом: сбоем портала его не называем."""
+    def _raise_400(*_args, **_kwargs):
+        raise urllib.error.HTTPError(
+            core._NSPD_BASE_URL + "/api/geoportal/v2/search/geoportal", 400,
+            "Bad Request", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(core.urllib.request, "urlopen", _raise_400)
+    with pytest.raises(HTTPException) as fail:
+        core._land_fetch_json(core._NSPD_BASE_URL + "/api/geoportal/v2/search/geoportal?query=x",
+                              service="Сервис НСПД")
+    said = str(fail.value.detail)
+    assert "HTTP 400" in said, said
+    assert "стороне портала" not in said, said
