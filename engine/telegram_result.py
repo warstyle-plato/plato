@@ -93,6 +93,7 @@ def telegram_result(req: TelegramResultRequest,
             pass
     margin_text = _telegram_number(float(summary.get("margin") or 0) * 100, 1) + "%"
     parking = float(summary.get("parking_spaces") or 0)
+    provision_label = str(summary.get("parking_provision_label") or "").strip()
     project_name = str(summary.get("project_name") or "").strip()
     source_label = str(summary.get("source_label") or "ТЭП DevelopAid").strip()
     purchase_assessment = _purchase_feasibility(
@@ -216,7 +217,9 @@ def telegram_result(req: TelegramResultRequest,
         + housing_lines +
         f"• смена ВРИ — {_telegram_money_mln(summary.get('change_vri_mln'))}\n"
         + social_line +
-        f"• подземный паркинг — {_telegram_number(parking, 0)} м/м\n\n"
+        f"• подземный паркинг — {_telegram_number(parking, 0)} м/м\n"
+        + (f"• обеспеченность парковкой — {html.escape(provision_label)}\n"
+           if provision_label else "") + "\n"
         "<b>Предварительная экономика</b>\n"
         f"• цена покупки — {_telegram_money_mln(summary.get('purchase_price_mln'))}\n"
         + (f"• выкуп ЗУ/ОКС у третьих лиц — {_telegram_money_mln(summary.get('land_buyout_mln'))} "

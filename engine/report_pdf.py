@@ -1632,6 +1632,13 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                 tep_rows.append([_park_label(row),"—","—",_park_count(row)])
         tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_counts])
         story.append(table(tep_rows,_tep_widths(tep_rows,[32*mm,36*mm])))
+    # Обеспеченность — готовый ответ расчёта (`parking_provision`), а не
+    # деление здесь: страница, тизер, Платон и книга печатают то же число.
+    _provision = ((result.get("parking") or {}).get("provision") or {}).get("label")
+    if _provision:
+        story.append(P(f"Обеспеченность парковкой: {_provision} — все машино-места проекта "
+                       "на всю нормативную потребность: жители, коммерция, отдельные "
+                       "объекты и соцобъекты.", small))
 
     # Очередность меняет проект целиком — сроки, инфляцию затрат, стартовые цены
     # и нагрузку по финансированию, — а отчёт о ней молчал: сводные цифры были,

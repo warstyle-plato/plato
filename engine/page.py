@@ -5274,6 +5274,8 @@ async function sendTelegramResult(){
      :(manual||edited)?Number((tep.apartments&&tep.apartments.saleable)||0):Number(n.apartment_area_sqm||0),
     change_vri_mln:counted?0:(manual||edited)?Number(inputs.land_rights_cost_mln||0):Number(n.change_vri_mln||0),
     social_compensation_mln:counted?0:(manual||edited)?Number(inputs.social_compensation_mln||0):Number(n.social_compensation_total_mln||0),
+    // Обеспеченность парковкой — ответ движка с подписью «N мест / M по норме = K×».
+    parking_provision_label:parkingProvisionText(),
     parking_spaces:counted
      ? Number(countedRow('underground_parking').units||0)+Number(countedRow('above_parking').units||0)
        +Number(countedTotal.parking_units||0)
@@ -7641,6 +7643,11 @@ function projectParking(){
   return (phaseBundle.consolidated.parking)||{};
  return ((lastResult||{}).parking)||{};
 }
+
+// Обеспеченность парковкой — подпись движка «N мест / M по норме = K×»
+// (`parking_provision`, #656): весь гараж проекта на всю нормативную
+// потребность. Страница не делит сама — плашка и сводка в чат читают это.
+function parkingProvisionText(){return String((projectParking().provision||{}).label||'')}
 
 // Чей норматив — говорит расчёт (`PARKING_NORM_OF` движка), а не подпись:
 // у области он свой, и московское имя под областным числом было бы неправдой.
@@ -10740,7 +10747,10 @@ function renderUndergroundFieldNote(){
  const cell=document.getElementById('parkNorm_'+PROJECT_PARKING_KEY);
  if(!cell)return;
  const note=undergroundFieldNote();
- cell.textContent=note.text;
+ // Гараж проекта — главный числитель обеспеченности, и она стоит под ним.
+ const provision=parkingProvisionText();
+ cell.textContent=[note.text,provision?'Обеспеченность парковкой: '+provision+'.':'']
+  .filter(Boolean).join(' ');
  cell.style.color=note.short?'#a33':'#777';
 }
 
@@ -10798,7 +10808,10 @@ function renderObjectParkingNote(){
  const box=document.getElementById('objectParkingNote');
  if(!box)return;
  const note=projectParking().note;
- if(!note){box.innerHTML='';return;}
+ // Обеспеченность — весь гараж проекта на всю нормативную потребность. Число
+ // и подпись делит движок (`parking_provision`, #656); страница не делит сама.
+ const provision=parkingProvisionText();
+ if(!note&&!provision){box.innerHTML='';return;}
  // Тон у плашки на странице ровно один — `warning`. Придуманные `ok` и `bad`
  // отрисовались бы обычной плашкой: выглядит стилизованным, а стиля нет.
  // Число прежнего поля площади места гаража из сохранённого проекта движок
@@ -10810,7 +10823,9 @@ function renderObjectParkingNote(){
   +(saved.origin==='manual'?'Взять норматив класса':'Понятно, убрать старое число')
   +'</button>'):'';
  box.innerHTML='<div class="note" style="margin:0;padding:9px 11px;font-size:12px">'
-  +escapeHtml(note)+(drop?'<br>'+drop:'')+'</div>';
+  +(provision?'<b id="parkingProvision">Обеспеченность парковкой: '+escapeHtml(provision)+'</b>'
+    +(note?'<br>':''):'')
+  +escapeHtml(note||'')+(drop?'<br>'+drop:'')+'</div>';
  const button=document.getElementById('objectParkingAreaSavedDrop');
  if(button)button.addEventListener('click',dropSavedObjectParkingArea);
 }

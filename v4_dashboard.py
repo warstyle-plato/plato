@@ -158,8 +158,22 @@ DATA_ITEMS: tuple[tuple[str, str, str, str], ...] = (
     ("saleable_sqm", f"{SALEABLE_AREA.name} (база выручки и прибыли)", "м²", _SALEABLE),
     ("core_above_sqm", f"{CORE_ABOVE_AREA.name} (база СМР наземной части)", "м²", _CORE_ABOVE),
     ("core_under_sqm", f"{CORE_UNDER_AREA.name} (база СМР подземной части)", "м²", _CORE_UNDER),
+    # Обеспеченность парковкой (#656) — числами движка (`parking_provision`):
+    # 945-ПП и 2118-ПП книга не считает, как не считает и цель LLCR. Места
+    # тоже его: колонка штук продуктов здесь — ПРОДАННЫЕ места, без гостевых
+    # и переданных, и деление на неё дало бы 0,83× при 0,92× у движка.
+    # Пустая потребность — пустая клетка, а не ноль.
+    ("parking_built_total", "Машино-места проекта — все построенные (движок)", "м/м", ""),
+    ("parking_required_total", "Нормативная потребность проекта в машино-местах "
+     "(жители, коммерция, объекты, соцобъекты; движок)", "м/м", ""),
+    ("parking_provision", "Обеспеченность парковкой: все места проекта / вся потребность",
+     "x", ""),
 )
 DATA_ROWS: dict[str, int] = {item[0]: index + 2 for index, item in enumerate(DATA_ITEMS)}
+# Строки источника, которые несут ЧИСЛО движка, а не формулу книги: ключ
+# строки → ключ ответа `parking_provision`.
+PARKING_ENGINE_VALUES: dict[str, str] = {"parking_built_total": "built",
+                                         "parking_required_total": "required"}
 DATA_LAST_ROW = 1 + len(DATA_ITEMS)
 
 
@@ -449,7 +463,8 @@ def _capex_article(key: str, capex_rows: dict[str, int], capex_stride: int) -> s
 
 def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: str,
                      month_columns: list[str], capex_rows: dict[str, int],
-                     capex_stride: int, extra_products: tuple = ()) -> str:
+                     capex_stride: int, extra_products: tuple = (),
+                     parking: dict[str, Any] | None = None) -> str:
     """Скрытый лист-источник: каждая величина — формула на листы книги.
 
     `month_columns` — колонки месяцев листа CF (D..GA): ряды долга и эскроу
@@ -469,6 +484,14 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
         r = DATA_ROWS[key]
         if key == "llcr_target":
             value = _cell(f"C{r}", number=llcr_target)
+        elif key in PARKING_ENGINE_VALUES:
+            amount = (parking or {}).get(PARKING_ENGINE_VALUES[key])
+            value = (_cell(f"C{r}", number=float(amount)) if amount is not None
+                     else _cell(f"C{r}"))
+        elif key == "parking_provision":
+            value = _cell(f"C{r}", formula=(
+                f'IFERROR(C{DATA_ROWS["parking_built_total"]}'
+                f'/C{DATA_ROWS["parking_required_total"]},"")'))
         else:
             value = _cell(f"C{r}", formula=formula)
         rows.append(_row(r, [(f"A{r}", _cell(f"A{r}", text=key)), (f"B{r}", _cell(f"B{r}", text=label)),
@@ -1292,7 +1315,8 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
           extra_products: tuple = (),
           shown_extras: frozenset[str] | None = None,
           hidden_products: frozenset[str] = frozenset(),
-          queues: int | None = None) -> dict[str, Any]:
+          queues: int | None = None,
+          parking: dict[str, Any] | None = None) -> dict[str, Any]:
     """Собрать все части дашборда. Возвращает словарь «путь → байты» и
     новый styles.xml; лишние диаграммы шаблона названы в `dropped`.
     `capex_rows`/`capex_stride` — карта статей листа CAPEX (её владелец —
@@ -1326,7 +1350,8 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
     parts[sheet_path] = sheet_xml.encode("utf-8")
     parts[DATA_SHEET_PATH] = build_data_sheet(origin, llcr_target, last_column, month_columns,
                                               capex_rows, capex_stride,
-                                              tuple(extra_products)).encode("utf-8")
+                                              tuple(extra_products),
+                                              parking).encode("utf-8")
     added_charts = [path for _rel, path in targets if path.lstrip("/") not in {p for _r, p in existing}]
     return {"parts": parts, "styles_xml": styles.render(), "dropped": dropped,
             "added_charts": [p.lstrip("/") for p in added_charts], "styles_added": styles.added}

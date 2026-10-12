@@ -429,7 +429,10 @@ def test_the_dashboard_is_formulas_only_and_the_source_is_hidden(starved):
     assert not foreign, f"«Дашборд» читает мимо источника: {foreign[:5]}"
     data = archive.read(v4_dashboard.DATA_SHEET_PATH).decode("utf-8")
     literals = re.findall(r'<x:c r="([A-Z]+\d+)"[^>]*>\s*<x:v>', data)
-    assert literals == [f"C{v4_dashboard.DATA_ROWS['llcr_target']}"], literals
+    # Числа, а не формулы, — только то, чего книга не считает: цель LLCR и
+    # обеспеченность парковкой движка (945-ПП/2118-ПП, #656).
+    assert literals == [f"C{v4_dashboard.DATA_ROWS[key]}" for key in
+                        ("llcr_target", "parking_built_total", "parking_required_total")], literals
     # Карточки читают те же строки источника, что и паритет.
     first_card = evaluator.cell("Дашборд", "A5")
     assert abs(float(first_card) - float(evaluator.cell("ПРОВЕРКИ", "B76"))) < 1e-6

@@ -63,6 +63,34 @@ _CLASS_FILTERS = {
     5: "Элит/De Luxe",
 }
 
+# Всероссийский кабинет пишет класс словом объекта (`object_class`), а не
+# фильтром, и слова у него свои. Карта — единственное место, где они
+# становятся нашими классами: из неё читают и соседи участка, и свод
+# региона. «Типовой» — наш «Стандарт/Эконом» (решение владельца). Слово,
+# которого здесь нет («Другое»), классом не становится: ЖК идёт без класса,
+# а само слово видно в диагностике свода (`unknown_classes`).
+RUSSIA_CLASSES = {
+    "типовой": _CLASS_FILTERS[1],
+    "комфорт": _CLASS_FILTERS[2],
+    "бизнес": _CLASS_FILTERS[3],
+    "премиум": _CLASS_FILTERS[4],
+    "элитный": _CLASS_FILTERS[5],
+}
+_OUR_CLASSES = {title.casefold(): title for title in _CLASS_FILTERS.values()}
+
+
+def pulse_class(value: Any) -> str | None:
+    """Наш класс «Пульса» по метке любого кабинета; не узнали — `None`.
+
+    Принимает и наши метки («Стандарт/Эконом»): в сохранённых сборах класс
+    уже мог быть переведён. Склейка нескольких классов («Комфорт, Типовой»)
+    — не класс.
+    """
+    text = " ".join(str(value or "").split()).casefold()
+    if not text or "," in text:
+        return None
+    return _OUR_CLASSES.get(text) or RUSSIA_CLASSES.get(text)
+
 _LZ_KEY64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
 _CSRF_RE = re.compile(r"csrfmiddlewaretoken['\"]?\s+value=['\"]([^'\"]+)")
 _GEOJSON_MARK = '{"type":"FeatureCollection"'
@@ -1867,6 +1895,12 @@ def _outside_moscow(project: PulseProject) -> bool:
     return bool(found) and found != "Москва"
 
 
+# Двойник проекта в другом кабинете — та же вывеска не дальше этого от точки.
+# Кабинеты ставят один ЖК в одну точку (у «Атлантиса» координаты совпадают до
+# знака); соседний ЖК с похожим именем в 300 метрах двойником не станет.
+TWIN_KM = 0.3
+
+
 class PulseNetwork:
     """Несколько баз «Пульса» под одной вывеской клиента.
 
@@ -1976,20 +2010,40 @@ class PulseNetwork:
         них всегда без цены. Поэтому проект другой базы снимается, если его
         регион (код номера или область адреса) — среди регионов, чьи ЖК
         принёс всероссийский кабинет. Москва не снимается никогда.
+
+        Область адрес московского кабинета называет не всегда: «Атлантис»
+        там «г.о. Мытищи, мкр.10-10а…», и региона по адресу у него нет. Такой
+        проект снимается, если у всероссийского кабинета в покрытом регионе
+        есть его двойник — то же название (`same_project`) в той же точке
+        (не дальше `TWIN_KM`). Регион тогда — регион двойника.
         """
+        from .normalize import same_project
         from .region_market import _project_region
 
-        covered = {
-            item.region for item in items
-            if _russia_site(owner.get(item.complex_id)) and item.region
-        } - {"77"}
+        russia = [
+            item for item in items
+            if _russia_site(owner.get(item.complex_id)) and item.region and item.region != "77"
+        ]
+        covered = {item.region for item in russia}
         if not covered:
             return items, {}
+
+        def twin_region(item: PulseProject) -> str | None:
+            for other in russia:
+                if (
+                    _distance_km(item.latitude, item.longitude, other.latitude, other.longitude) <= TWIN_KM
+                    and same_project(item.name, other.name)
+                ):
+                    return other.region
+            return None
+
         kept: list[PulseProject] = []
         superseded: dict[str, int] = {}
         for item in items:
             if not _russia_site(owner.get(item.complex_id)):
                 code = _project_region(item)
+                if code is None:
+                    code = twin_region(item)
                 if code in covered:
                     superseded[code] = superseded.get(code, 0) + 1
                     continue
@@ -2035,6 +2089,10 @@ class PulseNetwork:
         for site in reversed(self.sites):
             out.update(site.segments(refresh=refresh, fetch=fetch))
         return out
+
+    def segment_raw(self, complex_id: Any) -> str | None:
+        reader = getattr(self._site(complex_id), "segment_raw", None)
+        return reader(complex_id) if callable(reader) else None
 
     def suggest(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         text = " ".join(str(query or "").split()).casefold()
