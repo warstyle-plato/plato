@@ -960,8 +960,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     _object_sections = {str(sec.get("key")): sec
                         for sec in (report.get("object_report") or {}).get("sections") or []}
     _object_calendar = (_object_sections.get("calendar") or {}).get("calendar") or {}
-    if _object_calendar.get("events"):
-        calendar_data = _object_calendar
+    if _object_sections:
+        # Рамка объекта печатает только свой календарь: жилой («Старт продаж»,
+        # РВЭ) на его месте читался бы вехами объекта. Нет вех — раздел
+        # «Календарь» объекта называет причину своими строками.
+        calendar_data = _object_calendar if _object_calendar.get("events") else {}
     cads = payload.get("cadastral_numbers") or []
     source_label = str(payload.get("source_label") or "ТЭП DevelopAid")
     scenario_key = str(payload.get("scenario") or "base")
@@ -2484,7 +2487,16 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             story.append(P(_cal_title if page_index==0 else _cal_title+" · продолжение",h2))
             story.append(gantt)
         story.append(Spacer(1,2*mm))
-        story.append(P("Полосы построены по фактическим датам модели; ромбами отмечены ключевые вехи. При включённой очередности этапы каждой очереди показаны отдельными строками.",small))
+        story.append(P("Полосы построены по фактическим датам модели; ромбами отмечены ключевые вехи."
+                       + ("" if _object_sections else
+                          " При включённой очередности этапы каждой очереди показаны отдельными строками."),small))
+    elif _object_sections:
+        _cal_rows = [r for b in (_object_sections.get("calendar") or {}).get("blocks") or []
+                     for r in b.get("rows") or []]
+        story.append(P("Календарь", h2))
+        story.append(P("Календаря объекта нет" + (
+            f": {_cal_rows[0]['label']} — {_cal_rows[0]['value']}." if _cal_rows else
+            " — расчёт объекта не построил ни одной вехи."), small))
     if _object_sections:
         _object_pdf_sections(story, _object_sections, inputs, P, table, h2, small, normal,
                              KeepTogether, Spacer, mm, sensitivity_done=bool(

@@ -70,6 +70,14 @@ RISK_CATALOGUE: tuple[tuple[str, str, str], ...] = (
     ("ending_debt", "Долг не погашен на конец проекта", "ending_pf_mln"),
     ("weakest_phase", "Слабейшая очередь ниже 1,00x", "weakest_phase_llcr"),
 )
+# Риски проекта без ПФ: он судится покрытием своего кредита (`debt_metric`,
+# DSCR). Прежде риски тизера проверяли у него только эскроу и ПФ, которых
+# нет, и слабое покрытие кредита объекта не называлось никогда. Каталог
+# отдельный: `RISK_CATALOGUE` раскладывает по строкам ещё и дашборд книги v4.
+OBJECT_RISK_CATALOGUE: tuple[tuple[str, str, str], ...] = (
+    ("debt_cover_below_target", "Покрытие кредита ниже цели", "debt_cover"),
+)
+OBJECT_RISKS = frozenset(key for key, _label, _value in OBJECT_RISK_CATALOGUE)
 
 
 
@@ -204,6 +212,10 @@ def build_project_presentation(
         "ending_pf_mln": _number(numbers.get("ending_pf_mln")),
         "weakest_phase_llcr": weakest.get("llcr"),
     }
+    metric = layout.get("debt_metric") or {}
+    cover = (_number(metric.get("value"))
+             if not bank and metric.get("key") == "dscr" else None)
+    risk_values["debt_cover"] = cover
     llcr = risk_values["llcr"]
     flags = {
         "default_rve": (risk_values["rve_unpaid_mln"] or 0.0) > 0.5,
@@ -212,17 +224,22 @@ def build_project_presentation(
         "ending_debt": (risk_values["ending_pf_mln"] or 0.0) > 0.5,
         "weakest_phase": (weakest.get("llcr") is not None
                           and float(weakest["llcr"]) < 1.0),
+        "debt_cover_below_target": (cover is not None
+                                    and cover < float(metric.get("target") or llcr_target)),
     }
     risks: list[dict[str, Any]] = []
-    for key, label, value_key in RISK_CATALOGUE:
+    for key, label, value_key in RISK_CATALOGUE + OBJECT_RISK_CATALOGUE:
         if key == "weakest_phase" and not weakest:
             continue
         if not bank and key in BANK_RISKS:
             continue
+        if (bank or cover is None) and key in OBJECT_RISKS:
+            continue
         risks.append({
             "key": key, "label": label, "active": bool(flags[key]),
             "value_key": value_key, "value": risk_values.get(value_key),
-            "detail": _risk_detail(key, finance, weakest),
+            "detail": (str(metric.get("label") or "") if key in OBJECT_RISKS
+                       else _risk_detail(key, finance, weakest)),
         })
 
     return {
