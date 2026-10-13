@@ -295,7 +295,8 @@ def test_the_price_hint_names_the_region_not_moscow(tmp_path: Path) -> None:
     )
     by_place = price_hint(peers=[], segment="Комфорт", okrug="Мытищи", city=region)
     assert by_place["basis"] == BASIS_OKRUG and by_place["price_per_sqm"] == 220_000
-    assert by_place["basis_title"] == "по муниципалитету и классу"
+    # Своих соседей нет — свод назван и причина замены тоже.
+    assert by_place["basis_title"] == "соседних ЖК класса «Комфорт» мало (0) — взят свод: по муниципалитету и классу"
     by_region = price_hint(peers=[], segment="Комфорт", okrug="Дубна", city=region)
     assert by_region["basis"] == BASIS_CITY and by_region["price_per_sqm"] == 240_000
     assert "Московская область" in by_region["basis_title"] and "Москве" not in by_region["basis_title"]
