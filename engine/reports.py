@@ -390,7 +390,8 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     sections["object"] = {
         "brief": [_row("Наземная площадь в ГНС", gns_total, "sqm"),
                   _row("Арендопригодная / продаваемая площадь", area_total, "sqm")],
-        "blocks": [*object_blocks, {"ref": "site", "title": "Участок"}],
+        "blocks": [*object_blocks, {"title": "Тип проекта", "rows": project_kind_rows(summary)},
+                   {"ref": "site", "title": "Участок"}],
     }
 
     # 3. Стратегия реализации ----------------------------------------------
@@ -514,6 +515,10 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
         if value > 0.5 and obj.key not in shown:
             common_rows.append(_row(f"Объект {obj.label} — смета одной статьёй", value, "rub"))
     common_total = sum(float(r["value"] or 0.0) for r in common_rows)
+    if summary.get("landscaping_gap"):
+        # Пустая статья названа и в рамке объекта (`landscaping_gap`): без
+        # строки её отсутствие читалось бы ответом методики.
+        common_rows.append(_row("Благоустройство", str(summary["landscaping_gap"]), "text"))
     common_rows.append(_row("Итого общие затраты", common_total, "rub") if common_rows else
                        _row("Общих затрат нет", "все затраты стройки начислены от объектов",
                             "text"))
@@ -623,6 +628,24 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     return {"kind": REPORT_KIND_OBJECT,
             "sections": [{"key": key, "title": title, **sections[key]}
                          for key, title in REPORT_SECTIONS[REPORT_KIND_OBJECT]]}
+
+
+def project_kind_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """Тип проекта без жилья и остаток жилья во вводных — одни строки на
+    отчёт объекта и PDF. Остаток берётся из свода (`project_kind_leftovers`),
+    а не считается заново, и помечен как не вошедший в расчёт."""
+    kind = str(summary.get("project_kind") or "")
+    if kind not in PROJECT_KINDS_WITHOUT_HOUSING:
+        return []
+    rows = [_row("Тип проекта", dict(PROJECT_KINDS)[kind] + (
+        " — жилья, соцнагрузки, платы за смену ВРИ и объектов (ТЦ, офисы, паркинг, ФОК) "
+        "в расчёте нет" if kind == PROJECT_KIND_HOTEL else
+        " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет"), "text")]
+    left = [str(item) for item in (summary.get("project_kind_leftovers") or [])]
+    if left:
+        rows.append(_row("Осталось от жилья во вводных",
+                         "; ".join(left) + " — в расчёт не входит", "text"))
+    return rows
 
 
 def _ddu_objects(result: dict[str, Any], objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -887,7 +910,9 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
     ]
     sections["object"] = {
         "brief": object_rows[:3] + [object_rows[4]],
-        "blocks": [{"title": "Гостиница", "rows": object_rows}, {"ref": "site", "title": "Участок"}],
+        "blocks": [{"title": "Гостиница", "rows": object_rows},
+                   {"title": "Тип проекта", "rows": project_kind_rows(summary)},
+                   {"ref": "site", "title": "Участок"}],
     }
 
     # 3. Стратегия реализации ----------------------------------------------

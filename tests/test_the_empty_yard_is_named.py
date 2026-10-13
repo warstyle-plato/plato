@@ -202,6 +202,8 @@ def test_the_expense_table_names_the_empty_article(screen) -> None:
 # не было вовсе, а «Основное строительство» было одним генподрядом.
 _FULL_ESTIMATE_ROWS = ("ИРД и проектирование", "Технический заказчик / стройконтроль",
                        "Управление проектом", "Резерв")
+_OBJECT_ESTIMATE_ROWS = ("ИРД, проектирование", "Технический заказчик", "Управление проектом",
+                         "Резерв")
 
 
 def test_the_expense_table_shows_the_full_estimate(screen) -> None:
@@ -227,7 +229,8 @@ def test_the_report_names_the_empty_article_too() -> None:
     reader = pypdf.PdfReader(str(path))
     text = "\n".join(page.extract_text() or "" for page in reader.pages)
     assert "Благоустройства в расчёте нет" in text
-    # Та же структура на бумаге: полная смета.
+    # Та же структура на бумаге: полная смета. Нежилой проект печатается
+    # рамкой объекта (владелец, 10.10.2026) — подписи её раздела «Затраты».
     # В узкой колонке PDF подпись переносится — сверяется её первая строка.
-    for label in _FULL_ESTIMATE_ROWS:
-        assert label.split(" / ")[0] in text, label
+    for label in _OBJECT_ESTIMATE_ROWS:
+        assert label in text, label
