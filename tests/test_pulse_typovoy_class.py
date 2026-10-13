@@ -1,6 +1,9 @@
-"""«Типовой» всероссийского кабинета — наш «Стандарт/Эконом»; «Атлантис» — один.
+"""«Типовой» всероссийского кабинета — наш «Комфорт»; «Атлантис» — один.
 
-Решение владельца 12.10.2026. Всероссийский кабинет «Пульса» пишет класс
+Решение владельца 12.10.2026 («Типовой» — «Стандарт/Эконом») пересмотрено
+13.10.2026: «Типовой» — «Комфорт». Живые Мытищи показали, что «типовые» ЖК
+по цене — комфорт и выше (Яуза парк 367 950 ₽/м², Ярославский 318 704), и
+ориентир «Стандарта» выходил дороже «Бизнеса». Всероссийский кабинет «Пульса» пишет класс
 словом объекта: «Типовой», «Комфорт», «Бизнес», «Элитный», «Другое». Наш класс
 — метка фильтра московского кабинета («Стандарт/Эконом»). Слово «Типовой»
 проходило как есть: в своде МО появлялся класс «Типовой», которого не спросит
@@ -26,12 +29,14 @@ from market_search.region_market import RegionMarketCollector, build_region_mark
 from tests.test_pulse_russia_api import LAT, LON, MOSCOW, Cabinet, _russia
 
 ECONOMY = "Стандарт/Эконом"
+COMFORT = "Комфорт"
 
 
 @pytest.mark.parametrize(
     "word, ours",
     [
-        ("Типовой", ECONOMY),
+        ("Типовой", COMFORT),
+        ("типовой", COMFORT),
         ("Комфорт", "Комфорт"),
         ("Бизнес", "Бизнес"),
         ("Элитный", "Элит/De Luxe"),
@@ -49,26 +54,28 @@ def test_the_class_map_is_explicit(word, ours) -> None:
     assert pulse_class(word) == ours
 
 
-def test_typovoy_neighbours_are_standard_economy(tmp_path: Path, monkeypatch) -> None:
+def test_typovoy_neighbours_are_comfort(tmp_path: Path, monkeypatch) -> None:
     client, _ = _russia(tmp_path, monkeypatch)
     classes = client.segments()
-    assert classes["50-c350471"] == ECONOMY  # Ярославский, «Типовой»
+    assert classes["50-c350471"] == COMFORT  # Ярославский, «Типовой»
     assert classes["50-c350624"] == "Бизнес"
     assert "Типовой" not in classes.values()
     # Слово кабинета не теряется: оно видно для расшифровки.
     assert client.segment_raw("50-c350471") == "Типовой"
 
 
-def test_a_card_cached_before_the_map_is_read_through_it(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("written", ["Типовой", ECONOMY])
+def test_a_card_cached_before_the_map_is_read_through_it(tmp_path: Path, monkeypatch, written) -> None:
     client, _ = _russia(tmp_path, monkeypatch)
     client.segments()
     cards = json.loads(client._cards_path.read_text(encoding="utf-8"))
-    cards["50-c350471"]["segment"] = "Типовой"  # как записал бы старый код
+    # Как записал бы код до карты или по прежней карте («Типовой» = эконом).
+    cards["50-c350471"]["segment"] = written
     client._cards_path.write_text(json.dumps(cards, ensure_ascii=False), encoding="utf-8")
-    assert client.segments(fetch=False)["50-c350471"] == ECONOMY
+    assert client.segments(fetch=False)["50-c350471"] == COMFORT
 
 
-def test_typovoy_is_in_the_region_summary_as_standard_economy(tmp_path: Path, monkeypatch) -> None:
+def test_typovoy_is_in_the_region_summary_as_comfort(tmp_path: Path, monkeypatch) -> None:
     russia, _ = _russia(tmp_path / "pulse", monkeypatch, Cabinet(distinct=True))
     collector = RegionMarketCollector(
         russia, tmp_path / "regions", regions=["50"], pause_seconds=0, sleep=lambda s: None,
@@ -77,7 +84,9 @@ def test_typovoy_is_in_the_region_summary_as_standard_economy(tmp_path: Path, mo
     assert collector.collect("50")["complete"] is True
     summary = json.loads(collector.summary_path("50").read_text(encoding="utf-8"))
     assert "Типовой" not in summary["current"]
-    assert summary["current"][ECONOMY]["projects"] == 2  # оба «Ярославских»
+    assert ECONOMY not in summary["current"]  # «Типовой» больше не эконом
+    # Оба «Ярославских» («Типовой») и Страна.Парковая («Комфорт»).
+    assert summary["current"][COMFORT]["projects"] == 3
     assert summary["coverage"]["unknown_classes"] == {}
 
 
@@ -90,16 +99,20 @@ def test_an_unknown_class_word_is_seen_not_turned_into_a_class() -> None:
         {
             # Сохранённый до карты сбор: слово кабинета в поле класса.
             "50-c1": record("Типовой"),
-            "50-c2": record(ECONOMY),
+            "50-c2": record(COMFORT),
+            # Сбор по прежней карте: класс записан экономом, слово — «Типовой».
+            "50-c6": record(ECONOMY, segment_raw="Типовой"),
+            "50-c7": record(ECONOMY),
             "50-c3": record("Другое"),
             "50-c4": record(None, segment_raw="Другое"),
             "50-c5": record(None, segment_raw="Комфорт, Типовой"),
         },
         collected_at="2026-10-05T00:00:00+00:00",
-        projects_total=5,
+        projects_total=7,
     )
-    assert set(summary["current"]) == {ECONOMY}
-    assert summary["current"][ECONOMY]["projects"] == 2
+    assert set(summary["current"]) == {COMFORT, ECONOMY}
+    assert summary["current"][COMFORT]["projects"] == 3
+    assert summary["current"][ECONOMY]["projects"] == 1
     assert summary["coverage"]["without_segment"] == 3
     assert summary["coverage"]["unknown_classes"] == {"Другое": 2}
 
@@ -186,17 +199,17 @@ def _hint(tmp_path: Path, monkeypatch, segment):
 def test_the_chosen_class_selects_the_neighbours_of_the_price_hint(tmp_path: Path, monkeypatch) -> None:
     """Прод 0.25.59, Мытищи: «Стандарт» давал 4 соседа — только «Комфорт».
 
-    Соседи «Типовой» не узнавались ни одним классом и выпадали из ориентира с
-    причиной «класс Типовой не сопоставим»: у «Стандарт/Эконом» не было ни
-    одного своего соседа, а «Комфорт» и «Бизнес» видели одну и ту же выборку.
+    Соседи «Типовой» не узнавались ни одним классом и выпадали из ориентира.
+    Теперь они «Комфорт» и отбираются по правилу соседних ступеней: в выборку
+    «Бизнеса» входят, «Премиума» — нет.
     """
-    economy = _hint(tmp_path / "e", monkeypatch, ECONOMY)
-    rows = {row["name"]: row for row in economy["projects"]}
-    assert rows["Ярославский"]["segment"] == ECONOMY
-    assert rows["Ярославский"]["eligible"] is True, rows["Ярославский"]["excluded_reason"]
-    assert rows["Атлантис"]["eligible"] is False  # Бизнес через ступень от эконома
-
     business = _hint(tmp_path / "b", monkeypatch, "Бизнес")
     rows = {row["name"]: row for row in business["projects"]}
-    assert rows["Ярославский"]["eligible"] is False
+    assert rows["Ярославский"]["segment"] == COMFORT
+    assert rows["Ярославский"]["eligible"] is True, rows["Ярославский"]["excluded_reason"]
+    assert rows["Атлантис"]["eligible"] is True
+
+    premium = _hint(tmp_path / "p", monkeypatch, "Премиум")
+    rows = {row["name"]: row for row in premium["projects"]}
+    assert rows["Ярославский"]["eligible"] is False  # комфорт через ступень
     assert rows["Атлантис"]["eligible"] is True
