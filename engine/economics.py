@@ -483,6 +483,10 @@ def _calculate_economics(req: CalcRequest) -> dict:
 
     # Project/equity cash flow proxy for NPV / IRR.
     row_by_month = {d(r["month"]): r for r in fin["rows"]}
+    # НДС продаж по ДДУ уходит в бюджет живыми деньгами в РВЭ; прежде он был
+    # только в чистой прибыли, а потоки, из которых считаются NPV и IRR, его
+    # не видели и завышали доходность (решение владельца, 13.10.2026).
+    vat_ddu = {d(month): float(value) for month, value in (fin.get("vat_ddu_schedule") or {}).items()}
     timeline = month_range(op["project_start"], op["end"])
     project_cf = []
     equity_cf = []
@@ -511,7 +515,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
             - float(fr.get("nonres_loan_interest", 0.0) or 0.0)
             - float(fr.get("nonres_loan_fee", 0.0) or 0.0)
         )
-        project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax + nonres_project)
+        vat_m = vat_ddu.get(month, 0.0)
+        project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax - vat_m + nonres_project)
         escrow_release = float(fr.get("escrow_release", 0.0) or 0.0)
         cash_revenue_to_equity = 0.0 if month < op["rve"] else revenue_m + escrow_release
         # Кэш-свип уходит банку с поступлений этой очереди: её долг он не
@@ -519,7 +524,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         # выбывает. Без этого вычета деньги посчитались бы дважды — здесь как
         # оставшиеся застройщику, и у следующей очереди как погашение.
         equity_cf.append(
-            cash_revenue_to_equity - capex_m - opex_m - int_pay - fees - tax
+            cash_revenue_to_equity - capex_m - opex_m - int_pay - fees - tax - vat_m
             + bridge_draw + pf_draw - bridge_repay - pf_repay
             - float(fr.get("bank_sweep_out", 0.0) or 0.0)
             + float(fr.get("bank_sweep_returned", 0.0) or 0.0)

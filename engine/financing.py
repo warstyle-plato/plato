@@ -1819,6 +1819,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         "vat_charged": vat_charged,
         "vat_input_deductible": vat_input_deductible,
         "vat_schedule": {month.isoformat(): value for month, value in vat_schedule.items()},
+        # НДС продаж по ДДУ к уплате по месяцам — без НДС объектов вне ДДУ и
+        # гостиницы: те вычитают его в своём потоке сами (`nonres_project`,
+        # `cash_to_equity`). Его читают потоки проекта и капитала (решение
+        # владельца, 13.10.2026: деньги уходят в бюджет — NPV и IRR их видят).
+        "vat_ddu_schedule": {month.isoformat(): value
+                             for month, value in vat_charged_by_month.items() if value},
         "profit_tax_schedule": {
             month.isoformat(): value for month, value in profit_tax_schedule.items()
         },

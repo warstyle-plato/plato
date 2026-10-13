@@ -1013,7 +1013,7 @@ def _build_project_workbook(
         # соседний проход переписывал середину строки 21 прежней формулой, и
         # живой месяц (AC) оказывался ровно в ней. Снаружи это выглядело как
         # «правка не сработала»: D21 в книге с правкой, а число прежнее.
-        cf_sheet_xml[_name] = _v4_apply_vat_base(
+        cf_sheet_xml[_name] = _v4_apply_vat_cash(_v4_apply_vat_base(
             _v4_apply_interest_accrual(
                 _v4_apply_core_pool_without_sales(_v4_apply_extra_objects_tax_row(
                     _v4_use_bridge_base_row(
@@ -1030,7 +1030,7 @@ def _build_project_workbook(
                     _phase, missing),
                     _phase, missing),
                 _phase, missing),
-            _phase, missing)
+            _phase, missing), _phase, missing)
 
     # Выручка очереди по продуктам: на экране разбивка есть, а в книге жила
     # только в снятой выгрузке детализации.

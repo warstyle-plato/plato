@@ -382,3 +382,42 @@ def test_a_longer_project_than_the_tables_is_caught() -> None:
 
     labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
     assert "Горизонт модели, мес." in labels
+
+
+def test_the_ddu_vat_leaves_the_engine_cash_flows(monkeypatch) -> None:
+    """НДС продаж по ДДУ уходит из потоков проекта и капитала (решение владельца 13.10.2026).
+
+    Прежде он был только в чистой прибыли, и NPV/IRR его не видели; книга
+    вычитает его в своих потоках, поэтому сверка выше сходится лишь с движком,
+    который вычитает его тоже.
+    """
+    x, t = _project(offices_strategy="ddu")
+    result = core.calculate(core.CalcRequest(inputs=x, tep=t))
+    original = core.simulate_financing
+    seen: list[float] = []
+
+    def without_vat(*args, **kwargs):
+        fin = original(*args, **kwargs)
+        seen.append(sum(fin.get("vat_ddu_schedule", {}).values()))
+        fin["vat_ddu_schedule"] = {}
+        return fin
+
+    monkeypatch.setattr(core, "simulate_financing", without_vat)
+    blind = core.calculate(core.CalcRequest(inputs=x, tep=t))
+    assert seen and seen[-1] > 1e6
+    for flow in ("project", "equity"):
+        gap = sum(blind["cashflow"][flow]) - sum(result["cashflow"][flow])
+        assert abs(gap - seen[-1]) < 1.0, flow
+
+
+def test_the_v4_book_takes_the_vat_out_of_its_flows() -> None:
+    """Книга v4 вычитает НДС к уплате (строка 21) из потоков, как движок."""
+    import openpyxl
+
+    x, t = _project(nonresidential=False, offices_strategy="ddu")
+    content, _, meta = core.build_project_workbook(x, t, [], {})
+    assert not [m for m in meta["missing"] if "CF_" in m and ("49" in m or "54" in m or "63" in m)]
+    sheet = openpyxl.load_workbook(io.BytesIO(content))["CF_1"]
+    column = core._v4_cf_columns()[0]
+    for row, _, replacement in core._V4_VAT_CASH_ROWS:
+        assert replacement.format(c=column) in str(sheet[f"{column}{row}"].value), row
