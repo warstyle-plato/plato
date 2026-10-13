@@ -1,7 +1,7 @@
 """Маршрут /report/pdf и тизер проекта.
 
-Выдача PDF-отчёта, фоновая сборка тизера (/report/teaser, опрос по
-билету), сборка тизера build_teaser_pdf, участок и карта для него.
+Фоновая сборка PDF-отчёта и тизера (/report/pdf, /report/teaser, опрос
+по билету), сборка тизера build_teaser_pdf, участок и карта для него.
 
 Не самостоятельный модуль. `main_legacy.py` выполняет этот файл в своём
 пространстве имён на том месте, где этот код стоял раньше
@@ -10,61 +10,6 @@
 Отдельно не импортировать: второй импорт поднял бы вторую копию движка.
 """
 # ruff: noqa
-
-@app.post("/report/pdf")
-async def report_pdf(request: Request) -> Response:
-    payload = await json_object(request)
-    if not isinstance(payload.get("result"), dict):
-        raise HTTPException(status_code=400, detail="Нет данных расчёта для PDF")
-    # PDF пересчитывает модель на сервере — это не бесплатно, и отчёт уносят
-    # с собой: с сайта он доступен после входа через Telegram (мягкий гейт).
-    _require_web_access(str(payload.get("session") or ""),
-                        str(payload.get("access_key") or ""), "PDF-отчёт")
-    usage_track("pdf", surface="site",
-                chat_id=_web_identity_chat_id(str(payload.get("session") or "")))
-    # Один расчёт на обе поверхности. Правило применили к боту и забыли про
-    # сайт: бот пересчитывал модель на сервере, а здесь отчёт строился по
-    # результату из браузера. Пока вкладка свежая, разницы нет; стоит ей
-    # устареть — сайт печатает своё, бот своё, и оба выглядят достоверно.
-    if isinstance(payload.get("inputs"), dict) and payload.get("tep"):
-        try:
-            from starlette.concurrency import run_in_threadpool
-            bundle = await run_in_threadpool(
-                _run_authoritative_model,
-                payload.get("inputs") or {}, payload.get("tep") or {},
-                payload.get("rates") or [], payload.get("phasing") or {})
-            server_result = bundle["consolidated"]
-            problems = _parity_mismatch(
-                {**server_result, "inputs": payload.get("inputs") or {}},
-                {**(payload.get("result") or {}), "inputs": payload.get("inputs") or {}},
-            )
-            payload = {**payload, "result": server_result,
-                       "phases": bundle.get("phases") or []}
-            if problems:
-                # В чат тут писать некому — расхождение печатается в самом
-                # отчёте: молча подменить числа нельзя, человек увидит в PDF
-                # не то, что было на экране, и не поймёт почему.
-                payload["parity_problems"] = problems
-        except Exception as exc:
-            logging.warning("report pdf recalculation failed: %s", exc)
-    # Торнадо в PDF с сайта: страница шлёт чувствительность, только если её
-    # считали в окне, а бот дообогащал отчёт сам — и его PDF выходил «лучше»
-    # при тех же вводных. Считает движок; пул потоков — чтобы десятки
-    # пересчётов чувствительности не держали event loop обоих воркеров.
-    if not payload.get("sensitivity") and isinstance(payload.get("inputs"), dict) and payload.get("tep"):
-        try:
-            from starlette.concurrency import run_in_threadpool
-            payload = {**payload, "sensitivity": await run_in_threadpool(
-                run_sensitivity,
-                payload.get("inputs") or {}, payload.get("tep") or {},
-                payload.get("rates") or [], payload.get("phasing") or {})}
-        except Exception:
-            pass  # без анализа отчёт всё равно нужен — раздела просто не будет
-    try: content=_build_developaid_pdf(payload)
-    except Exception as exc: raise HTTPException(status_code=500,detail=f"Не удалось сформировать PDF: {exc}") from exc
-    project_name=str(payload.get("project_name") or "DevelopAid").strip();safe=re.sub(r"[^0-9A-Za-zА-Яа-я_-]+","_",project_name).strip("_")[:60] or "DevelopAid";filename=f"DevelopAid_Отчет_{safe}_{date.today().isoformat()}.pdf";encoded_name=urllib.parse.quote(filename)
-    return Response(content=content,media_type="application/pdf",headers={"Content-Disposition":f"attachment; filename=DevelopAid_report.pdf; filename*=UTF-8''{encoded_name}"})
-
 
 # --- Тизер собирается в фоне, запрос его не держит --------------------------
 # На холодных кэшах тизер площадки КРТ — это скрининг НСПД по каждому участку
@@ -90,10 +35,38 @@ _TEASER_STAGES = {
     "map": "карта участка",
     "pdf": "вёрстка PDF",
 }
+# Полный PDF собирается той же машиной билетов (#655): он проверяет
+# ограничения у каждого участка проекта, и на площадке из двадцати участков
+# это те же минуты НСПД, что у тизера. `kind` — чей билет: файлы, стадии и
+# слова отказа у тизера и отчёта свои, механика одна.
+_REPORT_JOB_DIR = _TEASER_JOB_DIR.parent / "report"
+_REPORT_JOBS: dict[str, threading.Event] = {}
+_REPORT_STAGES = {
+    "model": "расчёт модели",
+    "sensitivity": "анализ чувствительности",
+    "pdf": "скрининг участков в НСПД и вёрстка PDF",
+}
+_JOB_WORDS = {
+    # кого нет (род.), кто готовится (им.), что запросить (вин.), адрес опроса
+    "teaser": ("тизера", "Тизер", "тизер", "/report/teaser/"),
+    "report": ("PDF-отчёта", "PDF-отчёт", "PDF-отчёт", "/report/pdf/"),
+}
 
 
-def _teaser_job_path(ticket: str, suffix: str) -> Path:
-    return _safe_child(_TEASER_JOB_DIR, f"teaser_{ticket}.{suffix}")
+def _job_dir(kind: str) -> Path:
+    return _TEASER_JOB_DIR if kind == "teaser" else _REPORT_JOB_DIR
+
+
+def _job_stages(kind: str) -> dict[str, str]:
+    return _TEASER_STAGES if kind == "teaser" else _REPORT_STAGES
+
+
+def _job_events(kind: str) -> dict[str, threading.Event]:
+    return _TEASER_JOBS if kind == "teaser" else _REPORT_JOBS
+
+
+def _teaser_job_path(ticket: str, suffix: str, kind: str = "teaser") -> Path:
+    return _safe_child(_job_dir(kind), f"{kind}_{ticket}.{suffix}")
 
 
 def _teaser_write(path: Path, data: bytes) -> None:
@@ -104,14 +77,14 @@ def _teaser_write(path: Path, data: bytes) -> None:
     os.replace(tmp, path)
 
 
-def _teaser_stage(ticket: str, stage: str, started: float) -> None:
-    _teaser_write(_teaser_job_path(ticket, "pending"), json.dumps(
+def _teaser_stage(ticket: str, stage: str, started: float, kind: str = "teaser") -> None:
+    _teaser_write(_teaser_job_path(ticket, "pending", kind), json.dumps(
         {"stage": stage, "started": started, "updated": time.time()}).encode("utf-8"))
 
 
-def _teaser_job_state(ticket: str) -> dict[str, Any]:
+def _teaser_job_state(ticket: str, kind: str = "teaser") -> dict[str, Any]:
     """Что с билетом сейчас: `done` (PDF на диске), `error`, `pending`, `unknown`."""
-    meta_path = _teaser_job_path(ticket, "json")
+    meta_path = _teaser_job_path(ticket, "json", kind)
     if meta_path.exists():
         try:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -120,11 +93,11 @@ def _teaser_job_state(ticket: str) -> dict[str, Any]:
         if meta.get("error"):
             return {"state": "error", "status": int(meta.get("status") or 500),
                     "detail": str(meta["error"])}
-        pdf_path = _teaser_job_path(ticket, "pdf")
+        pdf_path = _teaser_job_path(ticket, "pdf", kind)
         if pdf_path.exists():
             return {"state": "done", "pdf": pdf_path.read_bytes(),
-                    "filename": str(meta.get("filename") or "DevelopAid_Тизер.pdf")}
-    pending_path = _teaser_job_path(ticket, "pending")
+                    "filename": str(meta.get("filename") or f"DevelopAid_{_JOB_WORDS[kind][1]}.pdf")}
+    pending_path = _teaser_job_path(ticket, "pending", kind)
     if pending_path.exists():
         try:
             pending = json.loads(pending_path.read_text(encoding="utf-8"))
@@ -133,20 +106,21 @@ def _teaser_job_state(ticket: str) -> dict[str, Any]:
         quiet = time.time() - float(pending.get("updated") or pending_path.stat().st_mtime)
         stage = str(pending.get("stage") or "model")
         if quiet > _TEASER_JOB_STALL_SECONDS:
+            stages = _job_stages(kind)
             return {"state": "error", "status": 504,
-                    "detail": (f"Сборка тизера прервалась на стадии «{_TEASER_STAGES.get(stage, stage)}»: "
+                    "detail": (f"Сборка {_JOB_WORDS[kind][0]} прервалась на стадии «{stages.get(stage, stage)}»: "
                                f"нет движения {int(quiet // 60)} мин (вероятно, перезапуск сервера). "
-                               "Запросите тизер ещё раз.")}
+                               f"Запросите {_JOB_WORDS[kind][2]} ещё раз.")}
         return {"state": "pending", "stage": stage,
                 "elapsed": max(0.0, time.time() - float(pending.get("started") or time.time()))}
     return {"state": "unknown"}
 
 
-def _teaser_sweep() -> None:
+def _teaser_sweep(kind: str = "teaser") -> None:
     """Старые билеты уходят с диска: PDF проекта не должен лежать там сутками."""
     try:
         now = time.time()
-        for path in _TEASER_JOB_DIR.glob("teaser_*"):
+        for path in _job_dir(kind).glob(f"{kind}_*"):
             if now - path.stat().st_mtime > _TEASER_JOB_TTL_SECONDS:
                 path.unlink(missing_ok=True)
     except Exception as exc:
@@ -203,13 +177,15 @@ def _teaser_build(ticket: str, payload: dict[str, Any], inputs: dict[str, Any]) 
             done.set()
 
 
-def _teaser_response(ticket: str, state: dict[str, Any]) -> Response:
+def _teaser_response(ticket: str, state: dict[str, Any], kind: str = "teaser") -> Response:
+    genitive, nominative, accusative, poll = _JOB_WORDS[kind]
     if state["state"] == "done":
         encoded_name = urllib.parse.quote(state["filename"])
+        ascii_name = "DevelopAid_teaser.pdf" if kind == "teaser" else "DevelopAid_report.pdf"
         return Response(content=state["pdf"], media_type="application/pdf",
                         headers={"Content-Disposition":
-                                 f"attachment; filename=DevelopAid_teaser.pdf; filename*=UTF-8''{encoded_name}",
-                                 "X-Teaser-Ticket": ticket})
+                                 f"attachment; filename={ascii_name}; filename*=UTF-8''{encoded_name}",
+                                 "X-Teaser-Ticket" if kind == "teaser" else "X-Report-Ticket": ticket})
     if state["state"] == "error":
         raise HTTPException(status_code=state["status"], detail=state["detail"])
     if state["state"] == "pending":
@@ -217,11 +193,12 @@ def _teaser_response(ticket: str, state: dict[str, Any]) -> Response:
         return JSONResponse(status_code=202, content={
             "pending": True, "ticket": ticket, "stage": stage,
             "elapsed_seconds": round(float(state.get("elapsed") or 0.0), 1),
-            "poll": f"/report/teaser/{ticket}",
-            "detail": f"Тизер готовится: {_TEASER_STAGES.get(stage, stage)}.",
+            "poll": f"{poll}{ticket}",
+            "detail": f"{nominative} готовится: {_job_stages(kind).get(stage, stage)}.",
         })
     raise HTTPException(status_code=404, detail=(
-        "Билет тизера не найден: он истёк или сервер перезапущен. Запросите тизер ещё раз."))
+        f"Билет {genitive} не найден: он истёк или сервер перезапущен. "
+        f"Запросите {accusative} ещё раз."))
 
 
 @app.post("/report/teaser")
@@ -284,6 +261,123 @@ def report_teaser_result(ticket: str) -> Response:
     if not _TEASER_TICKET_RE.fullmatch(ticket):
         raise HTTPException(status_code=400, detail="Неверный билет тизера.")
     return _teaser_response(ticket, _teaser_job_state(ticket))
+
+
+def _report_filename(payload: dict[str, Any]) -> str:
+    project_name = str(payload.get("project_name") or "DevelopAid").strip()
+    safe = re.sub(r"[^0-9A-Za-zА-Яа-я_-]+", "_", project_name).strip("_")[:60] or "DevelopAid"
+    return f"DevelopAid_Отчет_{safe}_{date.today().isoformat()}.pdf"
+
+
+def _report_build(ticket: str, payload: dict[str, Any]) -> None:
+    """Сборка полного PDF — в своём потоке: пересчёт, чувствительность,
+    скрининг всех участков и вёрстка. Итог и отказ ложатся на диск."""
+    started = time.time()
+    stage = "model"
+    try:
+        _teaser_stage(ticket, stage, started, "report")
+        # Один расчёт на обе поверхности. Правило применили к боту и забыли
+        # про сайт: бот пересчитывал модель на сервере, а здесь отчёт строился
+        # по результату из браузера. Пока вкладка свежая, разницы нет; стоит
+        # ей устареть — сайт печатает своё, бот своё, и оба выглядят достоверно.
+        if isinstance(payload.get("inputs"), dict) and payload.get("tep"):
+            try:
+                bundle = _run_authoritative_model(
+                    payload.get("inputs") or {}, payload.get("tep") or {},
+                    payload.get("rates") or [], payload.get("phasing") or {})
+                server_result = bundle["consolidated"]
+                problems = _parity_mismatch(
+                    {**server_result, "inputs": payload.get("inputs") or {}},
+                    {**(payload.get("result") or {}), "inputs": payload.get("inputs") or {}},
+                )
+                payload = {**payload, "result": server_result,
+                           "phases": bundle.get("phases") or []}
+                if problems:
+                    # В чат тут писать некому — расхождение печатается в самом
+                    # отчёте: молча подменить числа нельзя.
+                    payload["parity_problems"] = problems
+            except Exception as exc:
+                logging.warning("report pdf recalculation failed: %s", exc)
+        # Торнадо в PDF с сайта: страница шлёт чувствительность, только если
+        # её считали в окне, а бот дообогащал отчёт сам — считает движок.
+        if not payload.get("sensitivity") and isinstance(payload.get("inputs"), dict) and payload.get("tep"):
+            stage = "sensitivity"
+            _teaser_stage(ticket, stage, started, "report")
+            try:
+                payload = {**payload, "sensitivity": run_sensitivity(
+                    payload.get("inputs") or {}, payload.get("tep") or {},
+                    payload.get("rates") or [], payload.get("phasing") or {})}
+            except Exception:
+                pass  # без анализа отчёт всё равно нужен — раздела просто не будет
+        stage = "pdf"
+        _teaser_stage(ticket, stage, started, "report")
+        content = _build_developaid_pdf(payload)
+        _teaser_write(_teaser_job_path(ticket, "pdf", "report"), content)
+        meta = {"filename": _report_filename(payload), "seconds": round(time.time() - started, 1)}
+        logging.info("report pdf %s built in %.1fs", ticket, time.time() - started)
+    except HTTPException as exc:
+        meta = {"error": str(exc.detail), "status": exc.status_code}
+    except Exception as exc:
+        logging.exception("report pdf %s failed at %s", ticket, stage)
+        meta = {"error": (f"Не удалось сформировать PDF (стадия «{_REPORT_STAGES.get(stage, stage)}»): "
+                          f"{exc}"), "status": 500}
+    try:
+        _teaser_write(_teaser_job_path(ticket, "json", "report"),
+                      json.dumps(meta, ensure_ascii=False).encode("utf-8"))
+        _teaser_job_path(ticket, "pending", "report").unlink(missing_ok=True)
+    finally:
+        with _TEASER_JOBS_LOCK:
+            done = _REPORT_JOBS.pop(ticket, None)
+        if done is not None:
+            done.set()
+
+
+@app.post("/report/pdf")
+async def report_pdf(request: Request) -> Response:
+    """Полный PDF-отчёт. Готов за `_TEASER_HANDOFF_SECONDS` — PDF тем же
+    ответом; нет — 202 с билетом, PDF забирается `GET /report/pdf/{ticket}`.
+    Холодный скрининг всех участков площадки (#655) идёт минутами, и запрос,
+    державший его целиком, получал 504 от nginx."""
+    payload = await json_object(request)
+    if not isinstance(payload.get("result"), dict):
+        raise HTTPException(status_code=400, detail="Нет данных расчёта для PDF")
+    # PDF пересчитывает модель на сервере — это не бесплатно, и отчёт уносят
+    # с собой: с сайта он доступен после входа через Telegram (мягкий гейт).
+    _require_web_access(str(payload.get("session") or ""),
+                        str(payload.get("access_key") or ""), "PDF-отчёт")
+    ticket = str(payload.get("ticket") or "").strip().lower()
+    if ticket and not _TEASER_TICKET_RE.fullmatch(ticket):
+        raise HTTPException(status_code=400, detail="Неверный билет PDF-отчёта.")
+    if ticket:
+        state = _teaser_job_state(ticket, "report")
+        if state["state"] != "unknown":
+            return _teaser_response(ticket, state, "report")
+    else:
+        ticket = os.urandom(16).hex()
+    usage_track("pdf", surface="site",
+                chat_id=_web_identity_chat_id(str(payload.get("session") or "")))
+    _teaser_sweep("report")
+    with _TEASER_JOBS_LOCK:
+        done = _REPORT_JOBS.get(ticket)
+        fresh = done is None
+        if fresh:
+            done = _REPORT_JOBS[ticket] = threading.Event()
+    if fresh:
+        _teaser_stage(ticket, "model", time.time(), "report")
+        threading.Thread(target=_report_build, args=(ticket, dict(payload)),
+                         name="report-" + ticket[:8], daemon=True).start()
+    from starlette.concurrency import run_in_threadpool
+    await run_in_threadpool(done.wait, _TEASER_HANDOFF_SECONDS)
+    return _teaser_response(ticket, _teaser_job_state(ticket, "report"), "report")
+
+
+@app.get("/report/pdf/{ticket}")
+def report_pdf_result(ticket: str) -> Response:
+    """Опрос сборки полного PDF — по билету, выданному после проверки доступа."""
+    ticket = str(ticket or "").strip().lower()
+    if not _TEASER_TICKET_RE.fullmatch(ticket):
+        raise HTTPException(status_code=400, detail="Неверный билет PDF-отчёта.")
+    return _teaser_response(ticket, _teaser_job_state(ticket, "report"), "report")
 
 
 def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],

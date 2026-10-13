@@ -707,7 +707,7 @@ def test_the_teaser_prints_the_maps_own_caption(starved):
 
 
 def test_the_site_numbers_come_from_the_same_place_as_the_full_pdf():
-    """Номера участка тизер берёт там же, где полный PDF (`_pdf_screening_numbers`),
+    """Номера участка тизер берёт там же, где полный PDF (`_project_cadastral_numbers`),
     а без них — из груза страницы."""
     inputs = {"_land_lookup": {"query": "77:01:0004023:15, 77:01:0004023:16"}}
     site = core._teaser_site({"cadastral_numbers": ["50:21:0120316:1221"]}, inputs)

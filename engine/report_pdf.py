@@ -651,11 +651,63 @@ def _project_cadastral_numbers(inputs: dict[str, Any]) -> list[str]:
     return []
 
 
-def _pdf_screening_numbers(inputs: dict[str, Any]) -> list[str]:
-    """Кадастровые номера для раздела реализуемости посадки полного PDF:
-    первые десять из `_project_cadastral_numbers` — скрининг участка стоит
-    десятки запросов к НСПД. Тизер эту обрезку не наследует."""
-    return _project_cadastral_numbers(inputs)[:10]
+_PDF_NOT_RECEIVED = "не получено от источника"
+
+
+def _pdf_screening_rows(numbers: list[str], screening: dict[str, Any] | None,
+                        failure: str = "") -> list[list[str]]:
+    """Строки ограничений полного PDF — по каждому участку проекта (#655).
+
+    Прежде скринились первые десять номеров, а таблица строилась из находок:
+    участок без ответа источника или за пределом десятки в отчёт не попадал
+    вовсе и читался как чистый. Теперь у каждого номера есть хотя бы одна
+    строка: находки, «ограничений не обнаружено», «не проверялся» с причиной
+    или «не получено от источника» с тем, что сказал источник."""
+    by_number = {str(p.get("cadastral_number") or ""): p
+                 for p in (screening or {}).get("parcels") or []}
+    threshold = (screening or {}).get("min_area_sqm")
+    rows: list[list[str]] = []
+    for number in numbers:
+        parcel = by_number.get(number)
+        if screening is None:
+            rows.append([number, _PDF_NOT_RECEIVED,
+                         "Скрининг НСПД не выполнен: " + (failure or "сервис не ответил"), "—"])
+            continue
+        if parcel is None:
+            rows.append([number, _PDF_NOT_RECEIVED,
+                         "Участка нет в ответе скрининга НСПД", "—"])
+            continue
+        if not parcel.get("found"):
+            rows.append([number, _PDF_NOT_RECEIVED,
+                         str(parcel.get("note") or "Сведения ЕГРН по номеру не получены."), "—"])
+            continue
+        if parcel.get("too_small"):
+            edge = (f" {_pdf_num(threshold, 0)} м²" if threshold else "")
+            rows.append([number, "не проверялся",
+                         f"Участок меньше порога скрининга{edge}", "—"])
+            continue
+        if not parcel.get("center"):
+            rows.append([number, "не проверялся",
+                         "Границы участка не получены — НСПД об ограничениях не спрашивали", "—"])
+            continue
+        findings = parcel.get("findings") or []
+        if not findings:
+            rows.append([number, "ограничений не обнаружено", "—", "—"])
+            continue
+        for finding in findings:
+            mark = {"killer": "СТОП", "economic": "ВЛИЯЕТ"}.get(
+                finding.get("flag_class"), "справка")
+            regs = finding.get("reg_numbers") or (
+                [finding.get("reg_number")] if finding.get("reg_number") else [])
+            basis = ", ".join(str(n) for n in regs if n)
+            if finding.get("document_number"):
+                basis = (basis + " · " if basis else "") + str(finding["document_number"])
+            share = finding.get("coverage_pct")
+            impact = str(finding.get("impact", ""))
+            if share is not None:
+                impact = f"{impact} · накрывает ~{_pdf_num(share, 0)}% участка".strip(" ·")
+            rows.append([number, f"{mark} · {finding.get('name','')}", impact, basis or "—"])
+    return rows
 
 
 def _pdf_ordered_story(story: list[Any], order: list[tuple[str, bool]],
@@ -1319,46 +1371,41 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                            textColor=colors.HexColor("#A35D00"))))
     # Реализуемость посадки идёт ПЕРЕД финансовым выводом (архитектура,
     # раздел «Места в интерфейсе»): сначала что мешает строить, потом деньги.
-    # Отчёт не имеет права падать из-за внешнего сервиса — раздел пропускается.
-    try:
-        screening_numbers = _pdf_screening_numbers(inputs)
-        screening = land_screening(cad=",".join(screening_numbers)) if screening_numbers else None
-    except Exception:
-        screening = None
-    if screening:
-        verdict = screening.get("verdict") or {}
+    # Отчёт не имеет права падать из-за внешнего сервиса: отказ называется
+    # по каждому участку, а не прячется пропуском раздела. Проверяются все
+    # участки проекта, без предела (#655).
+    screening_numbers = _project_cadastral_numbers(inputs)
+    screening = None
+    screening_failure = ""
+    if screening_numbers:
+        try:
+            screening = land_screening(cad=",".join(screening_numbers), limit=0)
+        except Exception as exc:
+            screening_failure = _land_text(getattr(exc, "detail", "") or str(exc)) or type(exc).__name__
+            logging.warning("PDF: скрининг участков не выполнен: %s", screening_failure)
+    if screening_numbers:
+        verdict = (screening or {}).get("verdict") or {}
         story.append(_PdfSection("screening"))
         story.append(P("Реализуемость посадки", h2))
-        story.append(P(verdict.get("headline", ""), ParagraphStyle(
+        headline = (verdict.get("headline", "") if screening is not None
+                    else "Скрининг не выполнен: источник ограничений не ответил")
+        story.append(P(headline, ParagraphStyle(
             "screening_head", parent=normal, fontName=bold, fontSize=9.5)))
-        rows = [["Ограничение", "Влияние", "Основание"]]
-        for parcel in screening.get("parcels") or []:
-            for finding in parcel.get("findings") or []:
-                mark = {"killer": "СТОП", "economic": "ВЛИЯЕТ"}.get(
-                    finding.get("flag_class"), "справка")
-                numbers = finding.get("reg_numbers") or (
-                    [finding.get("reg_number")] if finding.get("reg_number") else [])
-                basis = ", ".join(str(n) for n in numbers if n)
-                if finding.get("document_number"):
-                    basis = (basis + " · " if basis else "") + str(finding["document_number"])
-                share = finding.get("coverage_pct")
-                impact = str(finding.get("impact", ""))
-                if share is not None:
-                    impact = f"{impact} · накрывает ~{_pdf_num(share, 0)}% участка".strip(" ·")
-                rows.append([f"{mark} · {finding.get('name','')}", impact, basis or "—"])
-        if len(rows) > 1:
-            story.append(table(rows, [70*mm, 60*mm, 40*mm]))
-        elif verdict.get("status") == "NOT_SCREENED":
-            # Та же честность, что и на экране: не спрашивали — значит не знаем.
-            story.append(P("Ограничения не проверялись: по номеру нет сведений ЕГРН.", small))
-        else:
-            story.append(P("В НСПД ограничений на участок не обнаружено.", small))
+        rows = _pdf_screening_rows(screening_numbers, screening, screening_failure)
+        missing = len({r[0] for r in rows if r[1] == _PDF_NOT_RECEIVED})
+        story.append(P(
+            f"Проверено участков: {len(screening_numbers) - missing} из {len(screening_numbers)}"
+            + (f"; по {missing} — {_PDF_NOT_RECEIVED}, ограничения по ним неизвестны."
+               if missing else "."), small))
+        story.append(table([["Участок", "Ограничение", "Влияние", "Основание"]] + rows,
+                           [40*mm, 50*mm, 48*mm, 32*mm]))
         if verdict.get("free_pct") is not None:
             story.append(P(
                 f"Свободно от ограничений ~{_pdf_num(verdict['free_pct'], 0)}% площади участка "
                 "(оценка наложением границ зон на контур ЕГРН, точность порядка процента).",
                 small))
-        story.append(P(verdict.get("disclaimer", ""), small))
+        if verdict.get("disclaimer"):
+            story.append(P(verdict.get("disclaimer", ""), small))
         story.append(Spacer(1, 4*mm))
     story.append(_PdfSection("summary"));story.append(P("Ключевая экономика",h2))
     # Прибыль при непогашенном долге — бумажная: для инвестора проект
