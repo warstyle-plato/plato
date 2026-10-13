@@ -184,9 +184,8 @@ def test_the_teaser_takes_every_number_of_the_project(nspd):
     assert f"ещё {len(NUMBERS) - teaser_pdf.MAX_CADASTRAL_SHOWN}" in text
 
 
-def test_the_full_report_screening_still_takes_ten():
-    """Полный PDF по-прежнему скринит первые десять (скрининг дорог), а список
-    проекта — все номера: обрезка живёт у одного читателя, а не в источнике."""
+def test_the_project_list_has_every_number_once():
+    """Список проекта — все номера без повторов: и тизер, и полный PDF (#655)
+    читают его целиком."""
     inputs = {"_land_lookup": {"query": ", ".join(NUMBERS + NUMBERS[:3])}}
     assert core._project_cadastral_numbers(inputs) == NUMBERS
-    assert core._pdf_screening_numbers(inputs) == NUMBERS[:10]
