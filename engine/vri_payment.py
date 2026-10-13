@@ -65,7 +65,8 @@ def vri_benefits_for(x: dict[str, Any], t: dict[str, Any]) -> dict[str, Any]:
 
     Считаются всегда, когда в проекте есть нежилые объекты или передача
     квартир, — как предложение рядом с платой; экономику не меняют, пока
-    человек не внесёт сумму в льготу (`vri_relief_mode = amount`).
+    человек не внесёт сумму в льготу (`vri_relief_mode = amount`). В КРТ
+    итог этого расчёта входит в оплату сам (`vri_relief_basis`).
     Отказ расчёта виден с местом, а не пустым блоком.
     """
     objects = [{"key": obj.key, "product": obj.product,
@@ -81,20 +82,49 @@ def vri_benefits_for(x: dict[str, Any], t: dict[str, Any]) -> dict[str, Any]:
                 "reason": "расчёт льгот не выполнен: " + _error_location(exc)}
 
 
-def vri_relief(x: dict[str, Any], gross: float) -> tuple[float, float]:
+def krt_requirement(x: dict[str, Any]) -> bool:
+    """Режим «Требование КРТ» (`social_area_source = manual`) — тот же предикат, что на странице."""
+    return str((x or {}).get("social_area_source") or "norm") == "manual"
+
+
+def vri_relief_basis(x: dict[str, Any]) -> str:
+    """Чем задана льгота по плате за ВРИ: `percent`, `amount`, `krt_benefits` или `none`.
+
+    В КРТ плата за смену ВРИ не отменяется: её уменьшают льготы проекта — за
+    МПТ (нежилые объекты, 1874-ПП) и за передачу квартир городу. Считает их
+    `vri_benefits_for`, тот же расчёт, что карточка «Льготы» вкладки «ВРИ»;
+    в КРТ он входит в оплату сам, без кнопки. Вписанная руками льгота (доля
+    или сумма) — решение человека и главнее (решение владельца, 13.10.2026).
+    `master` — льгота уже срезана в расчёте проекта, из которого очередь
+    получила долю платы: второй раз её не применяют.
+    """
+    mode = str((x or {}).get("vri_relief_mode") or "none").strip().lower()
+    if mode in ("percent", "amount", "master"):
+        return mode
+    return "krt_benefits" if krt_requirement(x) else "none"
+
+
+def vri_relief(x: dict[str, Any], gross: float,
+               t: dict[str, Any] | None = None) -> tuple[float, float]:
     """Льгота по плате за ВРИ: доля или фиксированная сумма. Возвращает (льгота, к оплате).
 
     Обязательство может быть уменьшено решением города — например, при
     строительстве социальных объектов за свой счёт. Льгота срезается с валовой
     суммы до построения графика: рассрочка, проценты и резерв считаются уже от
     того, что реально предстоит заплатить.
+
+    В КРТ без ручной льготы — посчитанные льготы проекта (`vri_relief_basis`);
+    для них нужен ТЭП `t`, поэтому все читатели передают его.
     """
     gross = max(0.0, float(gross or 0.0))
-    mode = str(x.get("vri_relief_mode") or "none").strip().lower()
-    if mode == "percent":
+    basis = vri_relief_basis(x)
+    if basis == "percent":
         relief = gross * max(0.0, min(100.0, n(x, "vri_relief_pct", 0.0))) / 100.0
-    elif mode == "amount":
+    elif basis == "amount":
         relief = max(0.0, n(x, "vri_relief_mln", 0.0)) * 1_000_000
+    elif basis == "krt_benefits":
+        benefits = vri_benefits_for(x, t or {})
+        relief = max(0.0, float(benefits.get("total_mln") or 0.0)) * 1_000_000
     else:
         relief = 0.0
     # Передача площадей муниципалитету в зачёт платы — практика Подмосковья:

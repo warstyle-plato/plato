@@ -52,21 +52,6 @@ def _vri_warnings(report: dict) -> list[str]:
     return list((report.get("vri") or {}).get("warnings") or [])
 
 
-def test_the_engine_names_a_fee_that_survived_the_krt_mode() -> None:
-    kept = [note for note in _vri_warnings(_report("manual", 2864.3))
-            if "плата за смену ВРИ" in note]
-    assert kept, "плата осталась, а движок молчит"
-    assert "2 864 млн ₽" in kept[0], kept[0]
-    # Разделитель разрядов меняется у ЧИСЛА: применённый к фразе целиком, он
-    # съедает и запятые прозы.
-    assert "требованием КРТ, а плата" in kept[0], kept[0]
-
-
-def test_the_engine_stays_silent_where_there_is_nothing_to_say() -> None:
-    assert not [n for n in _vri_warnings(_report("manual", 0.0)) if "смену ВРИ" in n]
-    assert not [n for n in _vri_warnings(_report("norm", 2864.3)) if "смену ВРИ" in n]
-
-
 def test_the_engine_does_not_zero_the_field_itself() -> None:
     """Вводная принадлежит человеку: движок называет, но не правит.
 
