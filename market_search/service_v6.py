@@ -49,7 +49,17 @@ from .cards import ProjectCards
 from .installments import Installments
 from .registry import ProjectRegistry
 from .subject import Subject, resolve_subject
-from .segments import SegmentResolver, detect_district, districts_match, segments_comparable
+from .segments import (
+    OWN_CLASS_ENOUGH,
+    SCOPE_ADJACENT,
+    SegmentResolver,
+    class_scope,
+    class_step,
+    detect_district,
+    districts_match,
+    in_class_scope,
+    segments_comparable,
+)
 from .service import MarketDiscoveryService as LegacyMarketDiscoveryService, haversine_km
 from .yandex_search import official_cards_from_docs
 from .krt_registry import KrtRegistry
@@ -616,6 +626,12 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
         reference = requested or self._reference_segment(rows)
         known = sum(1 for row in rows if row.get("segment"))
         class_active = bool(reference) and (bool(requested) or known >= 2)
+        # Соседний уровень — только когда проектов своего класса не хватает
+        # (`class_scope`): Savvin River (премиум) возвращается к двум элитным
+        # соседям, но не к пяти.
+        scope = class_scope(
+            sum(1 for row in rows if class_step(reference, row.get("segment")) == 0)
+        )
 
         kept: list[dict[str, Any]] = []
         for row in rows:
@@ -644,12 +660,17 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                         )
                     )
                     continue
-                if not segments_comparable(row["segment"], reference):
+                if not in_class_scope(reference, row["segment"], scope):
+                    adjacent = class_step(reference, row["segment"]) == 1
                     quarantine.append(
                         self._quarantined_row(
                             row,
                             "class_mismatch",
-                            f"Класс {row['segment']} против {reference}: не соседний уровень",
+                            f"Класс {row['segment']} против {reference}: "
+                            + (
+                                f"соседний уровень, а своего класса проектов не меньше {OWN_CLASS_ENOUGH}"
+                                if adjacent else "не соседний уровень"
+                            ),
                         )
                     )
                     continue
@@ -825,16 +846,30 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
             if segment:
                 segment_source = "neighbours"
 
-        comparable = [
-            (distance, project)
-            for distance, project in near
-            if project.complex_id != subject.project_id
-            and segments_comparable(segment, classes.get(project.complex_id))
-        ]
         # Прайс старше полугода — это не цена рынка, а след того, что проект
         # давно распродан: у сданных домов он бывает 2020 года. Такой сосед
         # тянет медиану вниз и делает отчёт достоверным на вид.
         fresh_since = _fresh_price_since(self.verified_prices.today)
+        candidates = [
+            (distance, project)
+            for distance, project in near
+            if project.complex_id != subject.project_id
+        ]
+        # Соседний класс — только при нехватке своего (`class_scope`); свои —
+        # с действующей ценой, как у ориентира: иначе отчёт и подсказка
+        # отобрали бы соседей по разным правилам.
+        own_priced = 0
+        for _, project in candidates:
+            if class_step(segment, classes.get(project.complex_id)) == 0:
+                price = self.pulse.price(project.complex_id) or {}
+                if price.get("price_per_sqm") and str(price.get("observed_at") or "") >= fresh_since:
+                    own_priced += 1
+        scope = class_scope(own_priced)
+        comparable = [
+            (distance, project)
+            for distance, project in candidates
+            if in_class_scope(segment, classes.get(project.complex_id), scope)
+        ]
         # Ограничение считается по двум корзинам, а не по одной общей.
         #
         # Соседи без действующей цены нужны разделам о продукте, и с недавних
@@ -1532,6 +1567,16 @@ class MarketDiscoveryService(LegacyMarketDiscoveryService):
                 city=market if scope["covered"] else MoscowMarket({}),
                 fresh_since=fresh_since,
             )
+        if segment and hint.get("class_scope") != SCOPE_ADJACENT:
+            # Соседний класс — только при нехватке своего: если ориентир его
+            # не брал, в расшифровке он не «вошёл», а назван причиной.
+            for row in peers:
+                if row["eligible"] and class_step(segment, row.get("segment")) == 1:
+                    row["eligible"] = False
+                    row["excluded_reason"] = (
+                        f"класс {row['segment']} — соседний с {segment}; соседние классы "
+                        f"берутся, только когда своих ЖК меньше {OWN_CLASS_ENOUGH}"
+                    )
         hint["stage_filter"] = stage_filter
         hint["source_coverage"] = _peer_source_coverage(peers)
         # «Соседей нет» бывает тремя разными ответами: в радиусе пусто

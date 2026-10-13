@@ -143,17 +143,54 @@ def normalize_segment(value: str | None) -> str | None:
 
 
 def segments_comparable(left: str | None, right: str | None) -> bool:
-    """Сопоставимы ли классы: тот же уровень или соседний."""
+    """Сопоставимы ли классы вообще: тот же уровень или соседний.
+
+    Берётся ли соседний на деле, решает `class_scope`: только при нехватке
+    своего.
+    """
+    return class_step(left, right) is not None
+
+
+# Соседний уровень — только при нехватке своего (решение владельца 13.10.2026,
+# меняет решение 10.08). Пока соседний класс входил в выборку всегда,
+# «Стандарт» в Мытищах собирал дорогой «Комфорт» и выходил дороже «Бизнеса»,
+# а «Комфорт» и «Бизнес» — одну и ту же выборку. Порог — тот же, что у
+# медианы ориентира: меньше трёх наблюдений — не медиана.
+OWN_CLASS_ENOUGH = 3
+
+SCOPE_SAME = "same"
+SCOPE_ADJACENT = "adjacent"
+
+
+def class_step(left: str | None, right: str | None) -> int | None:
+    """Расстояние между уровнями: 0 — тот же, 1 — соседний; иначе `None`."""
     if not left or not right:
-        return False
+        return None
     if left == right:
-        return True
+        return 0
     first, second = normalize_segment(left), normalize_segment(right)
     if not first or not second:
+        return None
+    step = abs(_LADDER.index(first) - _LADDER.index(second))
+    return step if step <= 1 else None
+
+
+def class_scope(own_count: int) -> str:
+    """Брать ли соседний уровень: только когда своих меньше `OWN_CLASS_ENOUGH`.
+
+    Один владелец правила для всех читателей — ориентира цены, отчёта и
+    отбора аналогов. Что считать «своими» (с ценой, с известным классом),
+    решает читатель; порог и порядок — здесь.
+    """
+    return SCOPE_SAME if own_count >= OWN_CLASS_ENOUGH else SCOPE_ADJACENT
+
+
+def in_class_scope(reference: str | None, other: str | None, scope: str) -> bool:
+    """Входит ли класс `other` в выборку класса `reference` при этом охвате."""
+    step = class_step(reference, other)
+    if step is None:
         return False
-    if first == second:
-        return True
-    return abs(_LADDER.index(first) - _LADDER.index(second)) == 1
+    return step == 0 or scope == SCOPE_ADJACENT
 
 
 def districts_match(left: str | None, right: str | None) -> bool:
