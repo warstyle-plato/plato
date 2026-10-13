@@ -378,7 +378,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Льгота срезается сразу: и резерв, и график рассрочки должны считаться от
     # суммы к оплате, а не от валового обязательства.
     vri_gross = n(x, "land_rights_cost_mln") * 1_000_000
-    vri_relief_amount, vri_net = vri_relief(x, vri_gross)
+    vri_relief_amount, vri_net = vri_relief(x, vri_gross, t)
 
     # База статей проекта (ИРД, П, РД, подготовка, сети, ввод, содержание
     # площадки). У жилого и смешанного проекта — суммарная площадь МКД:
@@ -606,6 +606,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     )
     vri["totals"]["gross"] = round(vri_gross, 2)
     vri["totals"]["relief"] = round(vri_relief_amount, 2)
+    # Чем задана льгота — поверхности подписывают число, а не угадывают его
+    # происхождение: в КРТ это посчитанные льготы проекта, а не ручная сумма.
+    vri["totals"]["relief_basis"] = vri_relief_basis(x)
     if vri_relief_amount > 0 and not vri["enabled"]:
         vri["totals"]["amount"] = round(vri_net, 2)
     vri_equity_by_month: dict[date, float] = defaultdict(float)
@@ -632,26 +635,6 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             )
     else:
         add_capex("land_rights", permit, amounts["land_rights"])
-    # Проект, пришедший файлом или ссылкой, страницу не проходил, и обнулить
-    # плату там было некому. Молчать нельзя: в КРТ платы за смену ВРИ нет, и
-    # оставшееся число идёт в CAPEX, в лимит БРИДЖа и в книгу как настоящее.
-    # Сами не убираем — вводная принадлежит человеку, а не расчёту; говорим.
-    #
-    # Строка стоит ПОСЛЕ всей развилки, а не внутри неё: вставленная между
-    # `if` и `else`, она увела бы себе чужой `else` — и разовый платёж за ВРИ
-    # начислялся бы ПОВЕРХ графика рассрочки. Семьдесят проверок паритета
-    # поймали это сразу, но на экране такая правка выглядит как одна строка
-    # текста.
-    if (str(x.get("social_area_source") or "norm") == "manual"
-            and n(x, "land_rights_cost_mln") > 0):
-        # Разделитель разрядов меняется У ЧИСЛА, а не у всей фразы: применённый
-        # к строке целиком, он съедает и запятые прозы.
-        _kept = f"{n(x, 'land_rights_cost_mln'):,.0f}".replace(",", " ")
-        vri["warnings"].append(
-            "Соцобъекты заданы требованием КРТ, а плата за смену ВРИ "
-            f"{_kept} млн ₽ осталась во вводных: в КРТ вид использования "
-            "меняется условием договора, отдельного платежа городу нет. "
-            "Уберите плату или снимите режим.")
     amounts["vri_interest"] = vri["totals"]["interest"]
     amounts["vri_security"] = vri["totals"]["security_cost"]
     amounts["land_rights_gross"] = vri_gross

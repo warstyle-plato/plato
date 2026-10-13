@@ -749,7 +749,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
     # объекта вне ДДУ — от первой выдачи до полного погашения
     # (`object_financing`). Прежде БРИДЖ стоял в календаре любого проекта.
     _nonres_objects = (fin.get("nonres") or {}).get("objects") or []
-    if float(fin.get("peak_bridge") or 0.0) > 0.5 or not _nonres_objects:
+    if float(fin.get("peak_bridge") or 0.0) > 0.5 or not (_nonres_objects or without_housing(x)):
         add_event("БРИДЖ", op["project_start"], bridge_end, group="Финансирование")
     for _item in _nonres_objects:
         _rows = [r for r in _item.get("rows") or [] if float(r.get("nonres_loan_draw") or 0) > 0]
@@ -759,7 +759,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
                       group="Финансирование")
     add_event("РнС", op["permit"], group="Ключевые вехи", kind="milestone")
     add_event("Старт продаж", op["sales_start"], group="Ключевые вехи", kind="milestone")
-    if not is_nonresidential(x):
+    if not without_housing(x):
         add_event("Строительство ЖК", op["permit"], op["rve"], group="Строительство")
     if any(v > 0 for v in (op["capex_amounts"].get("utilities", 0), op["capex_amounts"].get("landscaping", 0))):
         add_event("Сети и благоустройство", op["permit"], op["rve"], group="Строительство")

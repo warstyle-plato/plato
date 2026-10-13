@@ -177,6 +177,10 @@ def _patched_front_page_flowables(payload: dict[str, Any], core: Any):
         total = _total_expenses(result)
         if total <= 0 or not flowables:
             return flowables
+        # Рамка объекта печатает свои шесть плиток (`_object_tiles`): шестая
+        # там — доходность на затраты, а не «Пиковый БРИДЖ» на замену.
+        if base.object_frame_of(result, core):
+            return flowables
 
         # Existing structure: KeepTogether -> blocks -> KPI Table -> six cell Tables.
         keep = flowables[0]

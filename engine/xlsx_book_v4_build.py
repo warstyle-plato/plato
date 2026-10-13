@@ -56,7 +56,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         plan[k_of(when)] += amount / paid if paid else 0.0
     vri = op.get("vri") or {}
     vri_gross = n(x, "land_rights_cost_mln") * 1_000_000
-    relief, _net = vri_relief(x, vri_gross)
+    relief, _net = vri_relief(x, vri_gross, t)
     by_article = op.get("capex_by_article") or {}
     engine_articles = {}
     for key in NONRES_BOOK_ENGINE_ARTICLES + (("land_rights",) if vri.get("enabled") else ()):
@@ -500,7 +500,7 @@ def _build_project_workbook(
     except Exception:
         vri_gross = 0.0
         missing.append("land_rights_cost_mln: не число")
-    relief_amount, _net = vri_relief(x, vri_gross)
+    relief_amount, _net = vri_relief(x, vri_gross, tep)
     # Книга несёт ПРИМЕНЁННОЕ размещение, а не желаемое: у выключенного объекта
     # гаража нет, сколько бы мест ни осталось в его полях. Та же развилка была
     # у переноса долга между очередями — ячейка несёт решение, которое
@@ -1273,7 +1273,8 @@ def _build_project_workbook(
         ("Доля своих средств в плате", "vri_share_equity_pct", "%",
          n(x, "vri_share_equity_pct", 0.0) / 100.0),
         ("Льгота — форма", "vri_relief_mode", "режим",
-         {"share": "Долей", "amount": "Суммой"}.get(
+         "Льготы проекта (КРТ)" if vri_relief_basis(x) == "krt_benefits"
+         else {"share": "Долей", "amount": "Суммой"}.get(
              str(x.get("vri_relief_mode") or "none"), "Нет льготы")),
         ("Льгота — доля", "vri_relief_pct", "% платы", n(x, "vri_relief_pct", 0.0) / 100.0),
         ("Зачёт переданных метров", "vri_transfer_offset_mln", "млн ₽",

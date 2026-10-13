@@ -2063,8 +2063,9 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         # стартом очереди и шестилетний график растянулся бы на срок проекта.
         p_inputs["vri_obligation_date"] = master_vri_obligation.isoformat()
         # Льгота уже срезана в базовом расчёте, из которого взята доля очереди:
-        # применять её повторно к доле нельзя.
-        p_inputs["vri_relief_mode"] = "none"
+        # применять её повторно к доле нельзя. Не «none»: в КРТ «none» значит
+        # «льготы проекта по расчёту», и очередь получила бы её второй раз.
+        p_inputs["vri_relief_mode"] = "master"
 
         if str(x_master.get("social_mode")) == "Денежная компенсация":
             p_inputs["social_mode"] = "Денежная компенсация"
@@ -2528,6 +2529,7 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     vri_summary = _consolidate_vri(phase_items)
     vri_summary["totals"]["gross"] = round(base_amounts.get("land_rights_gross", 0.0), 2)
     vri_summary["totals"]["relief"] = round(base_amounts.get("land_rights_relief", 0.0), 2)
+    vri_summary["totals"]["relief_basis"] = vri_relief_basis(x_master)
     vri_summary["benefits"] = vri_benefits_for(x_master, t_master)
     consolidated["vri"] = vri_summary
     # Норматив приобъектной парковки — обязательство ОБЪЕКТА, то есть проекта:

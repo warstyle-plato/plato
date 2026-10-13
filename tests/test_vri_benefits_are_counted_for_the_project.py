@@ -159,8 +159,10 @@ def test_the_engine_hands_the_benefits_out_without_changing_the_economics(core) 
     sys.path.insert(0, str(ROOT / "scripts"))
     import golden_snapshot
     case = golden_snapshot.s_nagatino(core, ROOT)
+    # Вне КРТ: в режиме «Требование КРТ» льготы входят в оплату сами
+    # (tests/test_krt_keeps_the_vri_fee.py), а Нагатино задано требованием.
     inputs = dict(case["inputs"], land_rights_cost_mln=5000.0, vri_required=True,
-                  _cadastral_analysis=copy.deepcopy(OUTSIDE))
+                  social_area_source="norm", _cadastral_analysis=copy.deepcopy(OUTSIDE))
     tep = case["tep"]
     result = _calc(core, inputs, tep)
     benefits = result["vri"]["benefits"]
