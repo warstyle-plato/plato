@@ -1081,10 +1081,10 @@ function dropSavedObjectParkingArea(){
 // бы в итог, как было у ФОКа.
 const TAX_MARGIN_LABELS={offices:'Маржа МФОЦ / офисов',standalone_retail:'Маржа ТЦ / ОСЗ',
  above_parking:'Маржа наземного паркинга'};
-function taxMarginRows(margins,row){
+function taxMarginRows(margins,row,onlyNonzero){
  // Порядок таблиц отчёта — офисы первыми (`standalone_objects_report_order`).
  return STANDALONE_OBJECTS.slice().sort((a,b)=>(a.product!=='offices')-(b.product!=='offices'))
-  .filter(o=>TAX_MARGIN_LABELS[o.key]||Math.abs(Number(margins[o.key]||0))>0.5)
+  .filter(o=>(!onlyNonzero&&TAX_MARGIN_LABELS[o.key])||Math.abs(Number(margins[o.key]||0))>0.5)
   .map(o=>row(TAX_MARGIN_LABELS[o.key]||('Маржа: '+o.group_label),money(margins[o.key]||0)))
   .join('');
 }
