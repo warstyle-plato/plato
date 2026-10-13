@@ -102,7 +102,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.25.62"
+VERSION = "0.25.63"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -227,10 +227,22 @@ _engine_part("xlsx_model")
 
 
 # Единая книга проекта v4 — вводные, объекты, соцобъекты, сборка книги
-# и маршрут /report/workbook — вынесена в engine/xlsx_book_v4.py и
-# выполняется здесь же, в пространстве имён движка: порядок объявлений
-# и подмены core.<имя> остаются прежними.
+# и маршрут /report/workbook — вынесена в engine/xlsx_book_v4*.py по листам
+# и помощникам. Куски выполняются здесь же, подряд и в этом порядке, в
+# пространстве имён движка: порядок объявлений и подмены core.<имя>
+# остаются прежними.
 _engine_part("xlsx_book_v4")
+_engine_part("xlsx_book_v4_xml")
+_engine_part("xlsx_book_v4_products")
+_engine_part("xlsx_book_v4_capex")
+_engine_part("xlsx_book_v4_debt_carry")
+_engine_part("xlsx_book_v4_objects")
+_engine_part("xlsx_book_v4_finance")
+_engine_part("xlsx_book_v4_presentation")
+_engine_part("xlsx_book_v4_sheets")
+_engine_part("xlsx_book_v4_social")
+_engine_part("xlsx_book_v4_registry")
+_engine_part("xlsx_book_v4_build")
 
 
 # Выгрузка в шаблон ПЛАТО — заполнение шаблона, консолидатор, новая книга,
