@@ -1750,7 +1750,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const cleared=id==='social_area_source'&&krtClearsVriFee();const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(cleared||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      {const originNote=fieldOriginNote('inputs.'+id);if(originNote)wrap.insertAdjacentHTML('beforeend',originNote);}
      // Смягчение, которое даёт ГОРОД по своему решению, — справка у числа, а
@@ -1829,7 +1829,13 @@ function renderInputs(){
       wrap.appendChild(normCell);
      }
      grid.appendChild(wrap);
-   });(ownTab?vriBox:box).appendChild(det);
+   });
+   // Подвал блока КРТ: льгота по проекту и плата за ВРИ после неё.
+   if(grp[0]==='Социальная нагрузка'&&krtRequirementEntered()){
+    const foot=document.createElement('div');foot.id='krtVriFooter';
+    foot.innerHTML=krtVriFooterHtml((lastResult||{}).vri);det.appendChild(foot);
+   }
+   (ownTab?vriBox:box).appendChild(det);
  });
  rateScenario.value=inputs.rate_scenario||'base';
  // Фокус возвращается туда, где он был: перерисовка случается ПОСРЕДИ ввода

@@ -313,7 +313,8 @@ def _plato_merge_management_and_smr(
 
 
 def _plato_fill_land_sheet(
-    workbook: Any, inputs: dict[str, Any], filled: list[dict[str, Any]]
+    workbook: Any, inputs: dict[str, Any], filled: list[dict[str, Any]],
+    tep: dict[str, Any] | None = None,
 ) -> None:
     if "ЗУ" not in workbook.sheetnames:
         return
@@ -352,7 +353,7 @@ def _plato_fill_land_sheet(
     permit = add_months(d(inputs.get("project_start", "2027-01-01")),
                         max(IRD_MONTHS_MIN, int(n(inputs, "ird_months", 18))))
     gross = n(inputs, "land_rights_cost_mln") * 1_000_000
-    relief, net = vri_relief(inputs, gross)
+    relief, net = vri_relief(inputs, gross, tep)
     schedule = build_vri_schedule(inputs, net, permit)
     labels = {
         _plato_normalize(sheet.cell(row=row, column=2).value): row
@@ -1005,7 +1006,7 @@ def fill_plato_template(
     except Exception as exc:
         missing.append("Вводные · управление и СМР: " + _error_location(exc))
 
-    _plato_fill_land_sheet(workbook, merged, filled)
+    _plato_fill_land_sheet(workbook, merged, filled, merged_tep)
     _plato_apply_pf_rate_methodology(
         workbook, filled, missing, pf_special_steps(merged.get("pf_special_steps")))
     _plato_apply_pf_cashflow(workbook, filled, missing)

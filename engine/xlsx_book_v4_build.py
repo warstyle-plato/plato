@@ -56,7 +56,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         plan[k_of(when)] += amount / paid if paid else 0.0
     vri = op.get("vri") or {}
     vri_gross = n(x, "land_rights_cost_mln") * 1_000_000
-    relief, _net = vri_relief(x, vri_gross)
+    relief, _net = vri_relief(x, vri_gross, t)
     by_article = op.get("capex_by_article") or {}
     engine_articles = {}
     for key in NONRES_BOOK_ENGINE_ARTICLES + (("land_rights",) if vri.get("enabled") else ()):
@@ -290,6 +290,27 @@ def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
                 for key, schedule in (spec.get("engine_articles") or {}).items() if schedule]
     return content, filename, {"missing": missing, "phased": False, "class_deviations": [],
                                "hotel_book": True}
+
+
+# Что за книга ушла человеку — словами: подпись вложения в боте и метка
+# ошибки читают её отсюда. Прежде обе были жилыми у любой книги: нежилая
+# с очередями обещала «очереди на листе «Вводные»», хотя считает проект одной
+# очередью, а её расхождения подписывались «Книга v4».
+def workbook_label(meta: dict[str, Any]) -> str:
+    if meta.get("hotel_book"):
+        return "Книга гостиницы"
+    if meta.get("nonres_book"):
+        return "Книга нежилого проекта"
+    return "Книга v4"
+
+
+def workbook_caption(meta: dict[str, Any]) -> str:
+    queues = ""
+    if meta.get("phased"):
+        queues = (" · проект одной очередью, сверка со сводом очередей" if meta.get("nonres_book")
+                  else " · очереди на листе «Вводные»")
+    return ("<b>Полная модель DevelopAid</b> · Excel считает формулами "
+            "из текущих вводных" + queues)
 
 
 def build_project_workbook(
@@ -532,7 +553,7 @@ def _build_project_workbook(
     except Exception:
         vri_gross = 0.0
         missing.append("land_rights_cost_mln: не число")
-    relief_amount, _net = vri_relief(x, vri_gross)
+    relief_amount, _net = vri_relief(x, vri_gross, tep)
     # Книга несёт ПРИМЕНЁННОЕ размещение, а не желаемое: у выключенного объекта
     # гаража нет, сколько бы мест ни осталось в его полях. Та же развилка была
     # у переноса долга между очередями — ячейка несёт решение, которое
@@ -1305,7 +1326,8 @@ def _build_project_workbook(
         ("Доля своих средств в плате", "vri_share_equity_pct", "%",
          n(x, "vri_share_equity_pct", 0.0) / 100.0),
         ("Льгота — форма", "vri_relief_mode", "режим",
-         {"share": "Долей", "amount": "Суммой"}.get(
+         "Льготы проекта (КРТ)" if vri_relief_basis(x) == "krt_benefits"
+         else {"share": "Долей", "amount": "Суммой"}.get(
              str(x.get("vri_relief_mode") or "none"), "Нет льготы")),
         ("Льгота — доля", "vri_relief_pct", "% платы", n(x, "vri_relief_pct", 0.0) / 100.0),
         ("Зачёт переданных метров", "vri_transfer_offset_mln", "млн ₽",
@@ -2214,7 +2236,7 @@ def report_workbook(req: WorkbookExportRequest) -> Response:
         raise HTTPException(status_code=500, detail=f"Не удалось собрать книгу: {exc}") from exc
     if meta.get("missing"):
         # Молча пропущенное поле — потерянные данные: доносим в журнал.
-        _TELEGRAM_RUNTIME["last_error"] = "Книга v4, без соответствия: " + "; ".join(
+        _TELEGRAM_RUNTIME["last_error"] = workbook_label(meta) + ", без соответствия: " + "; ".join(
             str(item) for item in meta["missing"][:6])
     encoded_name = urllib.parse.quote(filename)
     return Response(

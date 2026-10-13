@@ -1177,13 +1177,11 @@ def _send_model_archive(chat_id: int) -> None:
         )
         return
     if model_meta.get("missing"):
-        core._TELEGRAM_RUNTIME["last_error"] = "Книга v4, без соответствия: " + "; ".join(
+        core._TELEGRAM_RUNTIME["last_error"] = core.workbook_label(model_meta) + ", без соответствия: " + "; ".join(
             str(item) for item in model_meta["missing"][:6])
     core._telegram_send_document_bytes(
         chat_id, model_bytes, model_filename,
-        caption=("<b>Полная модель DevelopAid</b> · Excel считает формулами "
-                 "из текущих вводных"
-                 + (" · очереди на листе «Вводные»" if model_meta.get("phased") else "")),
+        caption=core.workbook_caption(model_meta),
         content_type=core._XLSX_MEDIA_TYPE,
     )
 

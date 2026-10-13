@@ -396,18 +396,14 @@ def _telegram_send_attachments(
             finance_hints=workbook_hints,
         )
         if model_meta.get("missing"):
-            _TELEGRAM_RUNTIME["last_error"] = "Книга v4, без соответствия: " + "; ".join(
+            _TELEGRAM_RUNTIME["last_error"] = workbook_label(model_meta) + ", без соответствия: " + "; ".join(
                 str(item) for item in model_meta["missing"][:6])
         _telegram_send_document_bytes(
             chat_id,
             model_bytes,
             model_filename,
-            caption=(
-                "<b>Полная модель DevelopAid</b> · Excel считает формулами "
-                "из текущих вводных"
-                + (" · очереди на листе «Вводные»" if model_meta.get("phased") else "")
-                + ". Откройте в Excel: предпросмотр формулы не считает."
-            ),
+            caption=(workbook_caption(model_meta)
+                     + ". Откройте в Excel: предпросмотр формулы не считает."),
             content_type=_XLSX_MEDIA_TYPE,
         )
     except Exception as exc:
