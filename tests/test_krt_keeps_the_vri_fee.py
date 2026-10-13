@@ -144,3 +144,111 @@ def test_every_reader_of_vri_relief_passes_the_tep() -> None:
             calls.append((path.name, commas + 1))
     assert len(calls) >= 5, calls
     assert all(count == 3 for _, count in calls), calls
+
+
+# ---------------------------------------------------------------- страница --
+
+def _footer(vri: dict | None) -> str:
+    import json
+
+    import page_blocks
+    out, _ = page_blocks.run("let inputs={};let lastResult=null;",
+                             "console.log(JSON.stringify(krtVriFooterHtml(%s)));"
+                             % json.dumps(vri, ensure_ascii=False))
+    return json.loads(out)
+
+
+def test_the_footer_says_there_is_no_relief_and_the_fee_is_charged(core) -> None:
+    inputs = copy.deepcopy(core.DEFAULT_INPUTS)
+    inputs.update(social_area_source="manual", land_rights_cost_mln=2864.3)
+    html = _footer(_calc(core, inputs, copy.deepcopy(core.TEP_DEFAULT))["vri"])
+    assert "Льготы нет" in html and "плата за ВРИ начисляется" in html, html
+    assert "2 864" in html or "2 864" in html, html
+
+
+def test_the_footer_names_the_objects_and_the_fee_after_the_relief(core) -> None:
+    inputs, tep, _ = _nagatino(core, social_area_source="manual", land_rights_cost_mln=30000.0)
+    vri = _calc(core, inputs, tep)["vri"]
+    html = _footer(vri)
+    named = [r["label"] for r in vri["benefits"]["rows"] if r["benefit_mln"] > 0]
+    assert named and all(label in html for label in named), html
+    assert "льгота за МПТ" in html and "к оплате" in html, html
+    assert "Льготы нет" not in html
+
+
+def test_the_footer_names_a_relief_entered_by_hand(core) -> None:
+    inputs, tep, _ = _nagatino(core, social_area_source="manual", land_rights_cost_mln=30000.0,
+                               vri_relief_mode="amount", vri_relief_mln=1200.0)
+    html = _footer(_calc(core, inputs, tep)["vri"])
+    assert "вписана руками" in html and "по проекту вышло" in html, html
+
+
+def test_a_fee_the_old_krt_mode_zeroed_comes_back_with_a_note() -> None:
+    import json
+
+    import page_blocks
+    out, _ = page_blocks.run(
+        "let inputs={land_rights_cost_mln:0,_krt_vri_cleared_mln:2864.3,social_area_source:'manual'};",
+        "const back=restoreKrtClearedVriFee();"
+        "console.log(JSON.stringify({back,inputs,note:krtVriFeeNote(),again:restoreKrtClearedVriFee()}));")
+    got = json.loads(out)
+    assert got["back"] is True and got["again"] is False
+    assert got["inputs"]["land_rights_cost_mln"] == pytest.approx(2864.3)
+    assert "_krt_vri_cleared_mln" not in got["inputs"]
+    assert "Возвращено" in got["note"] and "не отменяет" in got["note"], got["note"]
+
+
+def test_in_a_real_browser_the_krt_mode_keeps_the_fee_and_shows_the_footer() -> None:
+    """Переключение в КРТ не обнуляет плату, а подвал блока виден на экране."""
+    import threading
+    import time
+
+    from browser import chromium_or_skip
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
+    import uvicorn
+
+    import main as wrapper
+
+    port = 18251
+    server = uvicorn.Server(uvicorn.Config(wrapper.app, host="127.0.0.1", port=port,
+                                           log_level="error"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    for _ in range(200):
+        if server.started:
+            break
+        time.sleep(0.05)
+    assert server.started
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(executable_path=str(chrome))
+            page = browser.new_page(viewport={"width": 1400, "height": 1000})
+            errors: list[str] = []
+            page.on("pageerror", lambda exc: errors.append(str(exc)))
+            page.on("dialog", lambda dialog: dialog.accept())
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            page.evaluate("() => { inputs.social_area_source='norm';"
+                          " inputs.land_rights_cost_mln=2864.3; renderInputs(); }")
+            page.evaluate("() => { const el=document.getElementById('f_social_area_source');"
+                          " el.value='manual'; el.onchange(); }")
+            fee = page.evaluate("() => inputs.land_rights_cost_mln")
+            page.wait_for_function(
+                "() => lastResult && lastResult.vri && lastResult.vri.totals"
+                " && lastResult.vri.totals.relief_basis==='krt_benefits'", timeout=60000)
+            page.evaluate("() => { if(typeof showTab==='function'){try{showTab('inputs')}catch(e){}}"
+                          " const d=document.querySelector('details[data-group=\"Социальная нагрузка\"]');"
+                          " if(d)d.open=true; }")
+            footer = page.locator("#krtVriFooter")
+            footer.scroll_into_view_if_needed()
+            visible = footer.is_visible()
+            text = footer.inner_text()
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)
+
+    assert not errors, errors
+    assert fee == pytest.approx(2864.3), "режим КРТ снова обнулил плату за ВРИ"
+    assert visible, "подвал КРТ не виден на отрисованной странице"
+    assert "Плата за смену ВРИ в КРТ" in text and "начисляется" in text, text
