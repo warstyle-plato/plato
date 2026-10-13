@@ -210,7 +210,7 @@ def test_in_a_real_browser_the_krt_mode_keeps_the_fee_and_shows_the_footer() -> 
 
     import main as wrapper
 
-    port = 18251
+    port = 18271
     server = uvicorn.Server(uvicorn.Config(wrapper.app, host="127.0.0.1", port=port,
                                            log_level="error"))
     thread = threading.Thread(target=server.run, daemon=True)
@@ -236,7 +236,10 @@ def test_in_a_real_browser_the_krt_mode_keeps_the_fee_and_shows_the_footer() -> 
             page.wait_for_function(
                 "() => lastResult && lastResult.vri && lastResult.vri.totals"
                 " && lastResult.vri.totals.relief_basis==='krt_benefits'", timeout=60000)
-            page.evaluate("() => { if(typeof showTab==='function'){try{showTab('inputs')}catch(e){}}"
+            # Вкладку открывает тот же `openTab`, что и кнопка: подвал живёт
+            # в панели вводных, и на другой вкладке он не виден по праву.
+            page.evaluate("() => { const box=document.getElementById('inputGroups');"
+                          " openTab(box.closest('.panel').id);"
                           " const d=document.querySelector('details[data-group=\"Социальная нагрузка\"]');"
                           " if(d)d.open=true; }")
             footer = page.locator("#krtVriFooter")
