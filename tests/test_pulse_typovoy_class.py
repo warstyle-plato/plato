@@ -200,16 +200,39 @@ def test_the_chosen_class_selects_the_neighbours_of_the_price_hint(tmp_path: Pat
     """Прод 0.25.59, Мытищи: «Стандарт» давал 4 соседа — только «Комфорт».
 
     Соседи «Типовой» не узнавались ни одним классом и выпадали из ориентира.
-    Теперь они «Комфорт» и отбираются по правилу соседних ступеней: в выборку
-    «Бизнеса» входят, «Премиума» — нет.
+    Теперь они «Комфорт». Своих «Бизнесов» в образце два — меньше порога,
+    поэтому взят соседний класс, и это названо; «Премиуму» «Комфорт» не
+    сосед вовсе.
     """
     business = _hint(tmp_path / "b", monkeypatch, "Бизнес")
     rows = {row["name"]: row for row in business["projects"]}
     assert rows["Ярославский"]["segment"] == COMFORT
+    assert business["basis"] == "peers_adjacent"
+    assert business["basis_title"].startswith("соседних ЖК класса «Бизнес» мало (2)")
     assert rows["Ярославский"]["eligible"] is True, rows["Ярославский"]["excluded_reason"]
     assert rows["Атлантис"]["eligible"] is True
 
     premium = _hint(tmp_path / "p", monkeypatch, "Премиум")
     rows = {row["name"]: row for row in premium["projects"]}
     assert rows["Ярославский"]["eligible"] is False  # комфорт через ступень
+    assert rows["Атлантис"]["eligible"] is True
+
+
+def test_with_enough_own_class_the_adjacent_neighbour_is_named_not_used(tmp_path: Path, monkeypatch) -> None:
+    """Своих «Бизнесов» три — «Комфорт» не входит, и в расшифровке сказано почему."""
+    from market_search.service_v6 import MarketDiscoveryService
+
+    monkeypatch.setenv("PULSE_BASE_URL", "https://russia.pulsprodaj.ru")
+    russia, _ = _russia(tmp_path / "pulse", monkeypatch, Cabinet(distinct=True))
+    russia.segments()
+    cards = json.loads(russia._cards_path.read_text(encoding="utf-8"))
+    cards["50-c350441"] = {"segment": "Бизнес", "segment_raw": "Бизнес"}  # Мытищи-Сити
+    russia._cards_path.write_text(json.dumps(cards, ensure_ascii=False), encoding="utf-8")
+    service = MarketDiscoveryService(tmp_path)
+    service.pulse = russia
+    hint = service.price_hint(address=None, latitude=LAT, longitude=LON, segment="Бизнес", include_projects=True)
+    assert hint["basis"] == "peers" and hint["class_scope"] == "same"
+    rows = {row["name"]: row for row in hint["projects"]}
+    assert rows["Ярославский"]["eligible"] is False
+    assert "только когда своих ЖК меньше 3" in rows["Ярославский"]["excluded_reason"]
     assert rows["Атлантис"]["eligible"] is True
