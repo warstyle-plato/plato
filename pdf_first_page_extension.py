@@ -181,9 +181,40 @@ def _debt_metric_tile(result: dict[str, Any], core: Any) -> tuple[str, str]:
     metric = layout.get("debt_metric")
     if not isinstance(metric, dict) or metric.get("key") == "llcr":
         return "LLCR", core._pdf_num(summary.get("llcr"), 2) + "x"
+    # Подпись — движка (`debt_metric.label`): у гостиницы это её кредит, а не
+    # «кредит объектов»; без показателя — «не считается», причину называет
+    # раздел «Решение», а не плитка (прежде — «гасится выручкой ДКП» для всех).
     if metric.get("key") == "dscr" and metric.get("value") is not None:
-        return "DSCR кредита объектов (мин.)", core._pdf_num(metric["value"], 2) + "x"
-    return "Кредит объектов", "гасится выручкой ДКП"
+        return str(metric.get("label") or "DSCR"), core._pdf_num(metric["value"], 2) + "x"
+    return str(metric.get("label") or "Покрытие кредита"), "не считается"
+
+
+# Плитки рамки объекта: из шапки движка (`report_layout.nonres_tiles`) —
+# доход стабилизированного года и доходность на затраты. Новых показателей
+# нет (решение владельца, 10.10.2026), а «Маржинальность» и «Пиковый БРИДЖ»
+# у удержания в аренду и гостиницы ничего не значат.
+_OBJECT_TILE_LABELS = (("Стабилизированный NOI, год", "EBITDA стабилизированного года"),
+                       ("Доходность на затраты", "Доходность на затраты (EBITDA / CAPEX без НДС)"))
+
+
+def _object_tiles(result: dict[str, Any], core: Any) -> list[tuple[str, str]]:
+    layout = (result.get("report") or {}).get("layout") or {}
+    tiles = {str(t.get("label")): t for t in layout.get("nonres_tiles") or []}
+    out = []
+    for labels in _OBJECT_TILE_LABELS:
+        tile = next((tiles[label] for label in labels if label in tiles), None)
+        if tile is None:
+            out.append((labels[0], "не считается"))
+        elif tile.get("unit") == "pct":
+            out.append((str(tile["label"]).split(" (")[0], core._pdf_pct(tile.get("value"))))
+        else:
+            out.append((str(tile["label"]), core._pdf_money(tile.get("value"))))
+    return out
+
+
+def object_frame_of(result: dict[str, Any], core: Any) -> bool:
+    """Печатается ли проект рамкой объекта — решение движка (`object_frame`)."""
+    return bool(core.object_frame((result.get("report") or {}).get("layout")))
 
 
 def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
@@ -219,14 +250,17 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
 
     recommended = _recommended_price(result)
     purchase = _purchase_price(result)
+    frame = object_frame_of(result, core)
     kpis = [
         ("Рекомендованная цена" if recommended > 0 else "Цена приобретения",
-         core._pdf_money(recommended if recommended > 0 else purchase)),
+         core._pdf_money(recommended if recommended > 0 else purchase)
+         if recommended > 0 or purchase > 0 or not frame else "не задана"),
         ("Выручка", core._pdf_money(summary.get("revenue"))),
         ("Чистая прибыль", core._pdf_money(summary.get("net_profit"))),
-        ("Маржинальность", core._pdf_pct(summary.get("margin"))),
-        _debt_metric_tile(result, core),
-        ("Пиковый БРИДЖ", core._pdf_money(financing.get("actual_bridge"))),
+        *([_debt_metric_tile(result, core), *_object_tiles(result, core)] if frame else [
+            ("Маржинальность", core._pdf_pct(summary.get("margin"))),
+            _debt_metric_tile(result, core),
+            ("Пиковый БРИДЖ", core._pdf_money(financing.get("actual_bridge")))]),
     ]
 
     cells = []
@@ -311,11 +345,20 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
                            if others_area > 0
                            else f"{len(others)} · площадь не названа")
             info_rows.append([para(others_label, label_style), para(others_text)])
-        info_rows.extend([
-            [para(TOTAL_AREA.name, label_style), para(core._pdf_num(total_area, 0) + " м²")],
-            [para("Продаваемая", label_style), para(core._pdf_num(sold, 0) + " м²")],
-        ])
-        if transfer > 0:
+        info_rows.append(
+            [para(TOTAL_AREA.name, label_style), para(core._pdf_num(total_area, 0) + " м²")])
+        if frame:
+            # Площади объекта — строки раздела «Объект и участок» движка:
+            # «Продаваемая» и «Передаваемая бесплатно» — понятия жилья.
+            sections = {s.get("key"): s for s in
+                        ((result.get("report") or {}).get("object_report") or {}).get("sections") or []}
+            for row in ((sections.get("object") or {}).get("brief") or [])[1:3]:
+                info_rows.append([para(row.get("label"), label_style),
+                                  para(core._pdf_object_value(row))])
+        else:
+            info_rows.append([para("Продаваемая", label_style),
+                              para(core._pdf_num(sold, 0) + " м²")])
+        if transfer > 0 and not frame:
             info_rows.append([
                 para("Передаваемая бесплатно", label_style),
                 para(core._pdf_num(transfer, 0) + " м²"),

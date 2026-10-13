@@ -977,7 +977,7 @@ function resetProjectState(){
  territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
  moLastQuery='';moAutoApartments=null;
- presetPreview=null;sensitivityOptions=null;sensitivityReport=null;sensitivityPicked=null;
+ presetPreview=null;sensitivityOptions=null;sensitivityReport=null;sensitivityPicked=null;sensitivityFrameKind=null;
  // Ограничения прошлой площадки на карте новой — это чужие зоны под своим
  // контуром, и выглядят они так же убедительно, как свои.
  landScreeningLast=null;LAND_MAP=null;
