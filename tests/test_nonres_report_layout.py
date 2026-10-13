@@ -114,10 +114,56 @@ def test_housing_and_mixed_projects_keep_their_report(over) -> None:
     assert result["report"]["object_report"] == {}
 
 
-def test_a_nonresidential_object_sold_by_ddu_is_judged_as_before() -> None:
-    # ДДУ — эскроу и ПФ: банковский отчёт, своей вёрстки нет.
+def test_a_nonresidential_project_with_ddu_keeps_the_object_frame() -> None:
+    # Решение владельца (10.10.2026): проект без жилья — всегда рамка объекта.
+    # Прежде объект по ДДУ (умолчание стратегии) уводил весь проект в жилую
+    # рамку с квартирами, РВЭ и нулями. ПФ и эскроу — блок «Финансирования».
     result = _run(offices_strategy="ddu", retail_strategy="ddu")
-    assert result["report"]["layout"]["kind"] == core.REPORT_KIND_HOUSING
+    layout = result["report"]["layout"]
+    assert layout["kind"] == core.REPORT_KIND_OBJECT and layout["object_frame"] is True
+    assert layout["project_finance"] is True
+    assert [s["key"] for s in layout["sections"]] == KEYS
+    sections = _sections(result)
+    strategy = _values(_block(sections["strategy"], "Офисы"))
+    assert strategy["Стратегия"] == core.nonres_strategy.STRATEGY_LABELS["ddu"]
+    income = _values(_block(sections["income"], "Офисы"))
+    assert income["Выручка продаж по ДДУ (эскроу)"] == pytest.approx(result["revenue"]["offices"])
+    pf = _values(_block(sections["finance"], "Проектное финансирование объектов по ДДУ"))
+    assert pf["Проектное финансирование — пик"] == pytest.approx(result["report"]["financing"]["pf_peak"])
+    assert pf["БРИДЖ — пик"] == pytest.approx(result["finance"]["peak_bridge"])
+    assert pf["LLCR"] == pytest.approx(result["summary"]["llcr"])
+    costs = [r["label"] for b in sections["costs"]["blocks"] for r in b.get("rows") or []]
+    assert not any("не этим отчётом" in label for label in costs)
+    assert "Смета объекта — Офисы" in [b.get("title") for b in sections["costs"]["blocks"]]
+
+
+def test_a_hotel_has_a_frame_of_its_own() -> None:
+    x = copy.deepcopy(core.DEFAULT_INPUTS)
+    x["project_kind"] = core.PROJECT_KIND_HOTEL
+    assert core.report_kind(x) == core.REPORT_KIND_HOTEL
+    assert core.report_kind({"project_kind": core.PROJECT_KIND_NONRESIDENTIAL}) == core.REPORT_KIND_OBJECT
+    assert core.report_kind({}) == core.REPORT_KIND_HOUSING
+    assert core.object_frame({"kind": core.REPORT_KIND_HOTEL})
+    assert not core.object_frame({"kind": core.REPORT_KIND_HOUSING})
+
+
+def test_without_a_deal_price_the_decision_reads_the_object() -> None:
+    # Решение владельца (10.10.2026): без цены сделки вывод — по экономике
+    # объекта, а оценка покупки названа несделанной.
+    x, t = _two_objects()
+    x["purchase_price_mln"] = 0
+    result = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
+    assert float(result["deal"].get("price_mln") or 0) == 0
+    verdict = _sections(result)["decision"]["verdict"]
+    assert verdict["title"] != "Вывод не сформирован"
+    assert "Цена участка не задана — оценка покупки не делалась." in verdict["text"]
+
+
+def test_an_income_object_without_a_loan_is_not_said_to_repay_by_sales() -> None:
+    metric = core.debt_metric({}, False, [{"strategy": "income", "kpi": {},
+                                           "totals": {"loan_peak": 0.0}}])
+    assert metric["key"] is None
+    assert "нет кредита" in metric["reason"] and "прямых продаж" not in metric["reason"]
 
 
 # --- один источник ------------------------------------------------------------

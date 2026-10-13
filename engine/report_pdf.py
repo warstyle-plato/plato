@@ -1769,19 +1769,10 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             _mkd_premises |= {"СМР наземной части", "СМР подземной части",
                               "Наружные инженерные сети, в т.ч. техприсоединение"}
         premise_rows = [row for row in premise_rows if row[0] not in _mkd_premises]
-        premise_rows.append(["Тип проекта",
-                             dict(PROJECT_KINDS)[_kind]
-                             + (" — жилья, соцнагрузки, платы за смену ВРИ и объектов "
-                                "(ТЦ, офисы, паркинг, ФОК) в расчёте нет"
-                                if _kind == PROJECT_KIND_HOTEL else
-                                " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет")])
-        _left = [str(item) for item in (summary.get("project_kind_leftovers") or [])]
-        if _left:
-            # Остаток назван, но не посчитан (`residential_excluded`): без
-            # пометки строка читалась бы как часть расчёта — ровно так её и
-            # прочёл владелец, увидев рядом второй подземный паркинг.
-            premise_rows.append(["Осталось от жилья во вводных",
-                                 "; ".join(_left) + " — в расчёт не входит"])
+        # Тип и остаток жилья — строки движка (`project_kind_rows`), те же,
+        # что в разделе «Объект и участок» рамки объекта. Остаток назван, но
+        # не посчитан (`residential_excluded`).
+        premise_rows += [[row["label"], row["value"]] for row in project_kind_rows(summary)]
     story.append(table(premise_rows,[105*mm,65*mm]))
     if _class_dev["rows"]:
         # Ушёл от базы — скажи об этом: молча два отчёта «одного класса»
