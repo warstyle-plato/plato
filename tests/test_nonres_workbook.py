@@ -274,11 +274,94 @@ def test_switching_a_choice_in_the_book_moves_the_model() -> None:
     assert {"Выход — продажа", "Удержание — оценка"} <= labels
 
 
-def test_a_project_with_ddu_keeps_the_v4_book() -> None:
-    for x, t in (_project(nonresidential=False, offices_strategy="income"),
-                 _project(offices_strategy="ddu")):
-        _, filename, meta = core.build_project_workbook(x, t, [], {})
-        assert not meta.get("nonres_book") and "нежилой" not in filename
+def test_a_mixed_project_keeps_the_v4_book() -> None:
+    x, t = _project(nonresidential=False, offices_strategy="income")
+    _, filename, meta = core.build_project_workbook(x, t, [], {})
+    assert not meta.get("nonres_book") and "нежилой" not in filename
+
+
+# --- объект по ДДУ: продажи, эскроу, БРИДЖ и ПФ формулами --------------------
+#
+# Владелец (13.10.2026): «мне нужна рабочая книга с живыми формулами, а не
+# выгрузка в Excel хардов». Нежилой проект с объектом по ДДУ прежде получал
+# жилую книгу v4 целиком; теперь — книгу нежилого проекта, где продажи по ДДУ,
+# эскроу, БРИДЖ, ПФ со ступенями ставки и LLCR считают формулы листов «ДДУ N»
+# и «ПФ», а «Сверка» сравнивает их с движком.
+
+DDU_VARIANTS = {
+    "офис по ДДУ": dict(offices_strategy="ddu"),
+    "офис по ДДУ и ТЦ в аренде": dict(offices_strategy="ddu", retail_strategy="income", **RETAIL),
+    "ТЦ по ДДУ, офис ДКП": dict(offices_strategy="direct", retail_strategy="ddu", **RETAIL),
+    "офис по ДДУ: проценты капиталом, свои деньги, лимит, сценарий": dict(
+        offices_strategy="ddu", bridge_interest_mode="Оплата капиталом", pre_pf_own_funds_mln=300,
+        pf_limit_approved_mln=9000, scenario_revenue_multiplier=0.95, scenario_cost_multiplier=1.05,
+        rate_scenario="high"),
+    "офис по ДДУ: профиль продаж и лестница цены": dict(
+        offices_strategy="ddu", offices_sales_profile="30%@0; 50%@12; 20%@30",
+        offices_growth_stage1_pct=5, offices_growth_stage3_pct=7, offices_share_before_rve_pct=70,
+        offices_residual_months=9),
+}
+
+
+def _ddu_book(name: str) -> tuple[bytes, dict]:
+    key = "ДДУ: " + name
+    if key not in _BOOKS:
+        x, t = _project(**DDU_VARIANTS[name])
+        content, filename, meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
+        assert meta.get("nonres_book") is True and "нежилой" in filename
+        _BOOKS[key] = content, meta
+    return _BOOKS[key]
+
+
+@pytest.mark.parametrize("name", list(DDU_VARIANTS))
+def test_a_ddu_object_is_counted_by_the_book_formulas(name) -> None:
+    content, meta = _ddu_book(name)
+    assert meta["missing"] == []
+    verdict, bad, _, book = _evaluate(content)
+    assert bad == [] and verdict == nw.PASSED
+    assert nw.PF_SHEET in book.sheetnames and "ДДУ 1" in book.sheetnames
+    checks = book[nw.CHECK_SHEET]
+    compared = {checks[f"B{r}"].value: checks[f"D{r}"].value for r in range(3, checks.max_row + 1)
+                if checks[f"A{r}"].value == "ПФ"}
+    # Сверка ПФ сравнивает настоящие деньги, а не нули.
+    for label in ("Выборка ПФ всего, ₽", "ПФ — пик, ₽", "Эскроу — пик, ₽"):
+        assert compared[label] not in ("", None, 0), label
+    # Ни одного числа движка в листах ДДУ и ПФ: всё — формулы.
+    for sheet in ("ДДУ 1", nw.PF_SHEET):
+        values = [cell for row in book[sheet].iter_rows(min_row=2) for cell in row
+                  if isinstance(cell.value, (int, float)) and cell.column > 1]
+        # Числом стоит только номер месяца k (столбец A помесячной таблицы).
+        assert [cell.coordinate for cell in values if cell.column != 1] == [], sheet
+
+
+def test_a_tampered_pf_formula_is_caught() -> None:
+    """Подделка ставки ПФ на один месяц краснит сверку ПФ и итогов."""
+    letter = nw.PF_COLUMNS["p_rate"][0]
+
+    def tamper(book):
+        sheet = book[nw.PF_SHEET]
+        for row in range(nw.FIRST_ROW, sheet.max_row + 1):
+            value = sheet[f"{letter}{row}"].value
+            if isinstance(value, str) and value.startswith("=") and row > nw.FIRST_ROW + 20:
+                sheet[f"{letter}{row}"] = value + "*1.5"
+                break
+
+    content, _ = _ddu_book("офис по ДДУ")
+    verdict, bad, _, _ = _evaluate(content, tamper)
+    assert verdict == nw.FAILED
+    assert "Проценты и комиссии" in {label for _, label, _, _ in bad}
+
+
+def test_a_tampered_ddu_price_is_caught() -> None:
+    """Вводная цены объекта по ДДУ в книге двигает выручку, эскроу и ПФ."""
+    def tamper(book):
+        cell = book[nw.INPUTS_SHEET][f"C{nw.O_ROW['price']}"]
+        cell.value = cell.value * 1.1
+
+    content, _ = _ddu_book("офис по ДДУ")
+    verdict, bad, _, _ = _evaluate(content, tamper)
+    assert verdict == nw.FAILED
+    assert {"Выручка проекта", "Эскроу — пик, ₽"} <= {label for _, label, _, _ in bad}
 
 
 def test_the_evaluator_irr_matches_the_engine() -> None:
