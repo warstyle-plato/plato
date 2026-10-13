@@ -138,14 +138,15 @@ def test_an_object_outside_ddu_bypasses_the_escrow_and_the_project_loan(strategy
     ("income", {"offices_debt_repayment": "bullet"}),
 ])
 def test_the_object_money_enters_the_project_once(strategy, extra) -> None:
-    """Поток проекта минус чистая прибыль — одна и та же величина при любой
-    стратегии: НДС проекта (поток его не несёт). Объект, посчитанный дважды
-    или забытый в потоке, сдвинул бы разницу на свою выручку."""
+    """Поток проекта за весь срок равен чистой прибыли при любой стратегии:
+    НДС к уплате — и по ДДУ, и объекта вне ДДУ — поток несёт так же, как
+    прибыль (решение владельца 13.10.2026). Объект, посчитанный дважды или
+    забытый в потоке, сдвинул бы разницу на свою выручку, а НДС, вычтенный
+    дважды или забытый, — на свою сумму."""
     result = _run(offices_strategy=strategy, **extra)
     finance = result["finance"]
-    object_vat = finance["nonres"]["totals"].get("nonres_vat_paid", 0.0)
-    gap = (sum(result["cashflow"]["project"]) - result["summary"]["net_profit"]
-           - (finance["vat"] - object_vat))
+    assert abs(finance["vat"]) > 1e6  # НДС есть (у удержания — к возмещению)
+    gap = sum(result["cashflow"]["project"]) - result["summary"]["net_profit"]
     assert gap == pytest.approx(0.0, abs=1.0)
     if strategy != "ddu":
         assert result["revenue"]["offices"] == pytest.approx(
