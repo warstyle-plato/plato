@@ -285,9 +285,14 @@ def build_region_market(
     # Слово класса, которого нет в карте `pulse_class`: ЖК в своде без класса,
     # а слово — здесь, чтобы его было видно, а не чтобы оно стало классом.
     unknown_classes: dict[str, int] = {}
-    # Класс — через карту и в сохранённых сборах: запись могла попасть в
-    # сбор словом кабинета («Типовой») до того, как карта его узнала.
-    segment_of = {key: pulse_class(row.get("segment")) for key, row in on_sale.items()}
+    # Класс — через карту и в сохранённых сборах. Слово кабинета
+    # (`segment_raw`) важнее записанного класса: запись могла попасть в сбор
+    # по прежней карте («Типовой» тогда был «Стандарт/Эконом»), а свод
+    # пересобирается, продолжая начатый сбор.
+    segment_of = {
+        key: pulse_class(row.get("segment_raw") or row.get("segment"))
+        for key, row in on_sale.items()
+    }
     for key, row in on_sale.items():
         segment = segment_of[key]
         if not segment:
