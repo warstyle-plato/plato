@@ -101,10 +101,13 @@ def _texts(result: dict) -> str:
 
 # --- решение движка -----------------------------------------------------------
 
-def test_a_hotel_gets_the_object_frame_with_nine_sections() -> None:
+def test_a_hotel_gets_its_own_frame_with_nine_sections() -> None:
+    # Своя рамка (владелец, 10.10.2026): вид «гостиница», а не «объект» с
+    # гостиничным наполнителем; разделы — те же девять.
     result = _run()
     layout = result["report"]["layout"]
-    assert layout["kind"] == core.REPORT_KIND_OBJECT
+    assert layout["kind"] == core.REPORT_KIND_HOTEL and layout["object_frame"] is True
+    assert result["report"]["object_report"]["kind"] == core.REPORT_KIND_HOTEL
     assert [s["key"] for s in layout["sections"]] == KEYS
     assert [s["title"] for s in layout["sections"]] == TITLES
     assert result["report"]["object_report"]["hotel"] is True

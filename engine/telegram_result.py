@@ -37,7 +37,7 @@ def _telegram_object_sections(layout: dict[str, Any]) -> str:
     """Карточка проекта без жилья — разделы его вёрстки в порядке движка
     (`report_layout.kind` = объектная) с краткими строками каждого. Вердикт —
     тот, что собрал движок в разделе «Решение»; второго здесь нет."""
-    if layout.get("kind") != REPORT_KIND_OBJECT:
+    if not object_frame(layout):
         return ""
     sections = [s for s in layout.get("sections") or [] if s.get("brief") is not None]
     if not sections:

@@ -285,7 +285,7 @@ function renderNonresStrategy(r){
 const OBJECT_SHARED_SECTIONS={sensitivity:'rsSensitivity',calendar:'rsCalendar'};
 function objectReportOf(r){
  const layout=reportLayout(r),rep=((r||{}).report||{}).object_report||{};
- return layout.kind==='object'&&(rep.sections||[]).length?rep:null;
+ return layout.object_frame&&(rep.sections||[]).length?rep:null;
 }
 function objectSection(r,key){const rep=objectReportOf(r);return rep?(rep.sections.find(s=>s.key===key)||null):null}
 function objectRowsHtml(rows,cls){
