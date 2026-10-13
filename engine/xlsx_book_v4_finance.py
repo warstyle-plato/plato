@@ -693,6 +693,44 @@ def _v4_name_fees_paid_by_equity(xml: str, phase: int, missing: list[str]) -> st
     return xml[:found.start()] + cell + xml[found.end():]
 
 
+# НДС к уплате (строка 21) — живые деньги в бюджет в месяц РВЭ. Шаблон брал
+# его только в прибыль, налог и LLCR, а вклад и распределение капитала и поток
+# проекта его не видели: IRR и NPV книги, как и у движка, были завышены на
+# НДС продаж. Решение владельца (13.10.2026) — вычитать; движок вычитает тот
+# же НДС по ДДУ (`vat_ddu_schedule`) в `project_cf` и `equity_cf`.
+_V4_VAT_CASH_ROWS = (
+    (49, "{c}20+{c}24+", "{c}20+{c}21+{c}24+"),
+    (50, "-{c}20-{c}24-", "-{c}20-{c}21-{c}24-"),
+    (54, "{c}27-{c}20-{c}24", "{c}27-{c}20-{c}21-{c}24"),
+    (63, "-{c}20-{c}24-", "-{c}20-{c}21-{c}24-"),
+)
+
+
+def _v4_apply_vat_cash(xml: str, phase: int, missing: list[str]) -> str:
+    """Строки 49, 50, 54 и 63 видят НДС к уплате (строка 21)."""
+    sheet = f"CF_{phase}"
+    columns = _v4_cf_columns()
+    for row, pattern, replacement in _V4_VAT_CASH_ROWS:
+        formulas = _v4_row_formulas(xml, row)
+        cells: dict[str, dict[str, Any]] = {}
+        for column in columns:
+            coord = f"{column}{row}"
+            formula = formulas.get(coord)
+            if formula is None:
+                missing.append(f"{sheet}: формулы {coord} нет")
+                break
+            old = pattern.format(c=column)
+            if old not in formula:
+                missing.append(f"{sheet}: формула {coord} не опознана")
+                break
+            cells[coord] = dict(formula=formula.replace(old, replacement.format(c=column), 1))
+        if cells:
+            xml, done = _v4_set_cells(xml, row, cells)
+            if not done:
+                missing.append(f"{sheet}: строка {row} не найдена")
+    return xml
+
+
 def _v4_apply_cash_sweep(xml: str, phase: int, missing: list[str]) -> str:
     """Строка 26: сколько принято кэш-свипом с продаж предыдущей очереди.
 

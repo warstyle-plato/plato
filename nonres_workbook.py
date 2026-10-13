@@ -1468,9 +1468,8 @@ def _cash_sheet(book: Workbook, objects_refs: list[dict[str, str]], costs: _Cost
         ws[v["costs"]] = "=" + _sum([
             f"'{ref['sheet']}'!{_c(name)}{r}" for ref in objects_refs
             for name in ("selling", "opex", "ptax", "exit_cost")]) + at("operating")
-        # НДС объектов по ДДУ в поток движка не входит (`project_cf`,
-        # `equity_cf`): книга повторяет движок, а расхождение названо владельцу.
-        ws[v["vat"]] = "=" + _object_sum(objects_refs, "vat_paid", r)
+        # НДС к уплате: объектов вне ДДУ — их листы, по ДДУ — лист «ПФ» в РВЭ.
+        ws[v["vat"]] = "=" + _object_sum(objects_refs, "vat_paid", r) + at("vat")
         ws[v["interest"]] = "=" + _object_sum(objects_refs, "interest", r) + at("pay_out")
         ws[v["fee"]] = "=" + _object_sum(objects_refs, "fee", r) + (
             f"+IF(A{r}=0,{_pi('bridge_fee')},0)+IF(A{r}={_pi('permit')},{_pi('reservation_fee')},0)"
@@ -1851,12 +1850,12 @@ def _pf_sheet(book: Workbook, ddu_refs: list[dict[str, str]], objects: list[dict
         fees = f"(IF({k}=0,{_pi('bridge_fee')},0)+IF({k}={permit},{_pi('reservation_fee')},0))"
         # Поток проекта движка: выручка по ДДУ в месяц продажи, расходы,
         # уплаченные проценты и комиссии (CAPEX — у листа «Денежный поток»).
-        ws[v["project"]] = f"={v['sales']}-{v['operating']}-{v['pay_out']}-{fees}"
+        ws[v["project"]] = f"={v['sales']}-{v['operating']}-{v['pay_out']}-{fees}-{v['vat']}"
         # Поток капитала: деньги продаж — с раскрытия эскроу; выборки долга
         # покрывают затраты, погашения уходят банку.
         ws[v["equity"]] = (f"=IF({k}<{rve},0,{v['sales']}+{v['release']})-{v['operating']}"
                            f"-{v['pay_out']}+{v['b_draw']}+{v['p_draw']}-{v['b_repay']}"
-                           f"-{v['p_repay']}-{fees}")
+                           f"-{v['p_repay']}-{fees}-{v['vat']}")
         for name in PF_COLUMNS:
             if name in ("cov", "special", "p_rate", "key_rate"):
                 ws[v[name]].number_format = "0.0000"
