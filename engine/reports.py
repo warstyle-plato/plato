@@ -910,9 +910,9 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
     ]
     sections["object"] = {
         "brief": object_rows[:3] + [object_rows[4]],
-        "blocks": [{"title": "Гостиница", "rows": object_rows},
-                   {"title": "Тип проекта", "rows": project_kind_rows(summary)},
-                   {"ref": "site", "title": "Участок"}],
+        # Остаток жилья в гостиничный отчёт не идёт: владелец нашёл его в PDF
+        # гостиницы жилым хвостом (`PDF_HOUSING` в проверке отчёта гостиницы).
+        "blocks": [{"title": "Гостиница", "rows": object_rows}, {"ref": "site", "title": "Участок"}],
     }
 
     # 3. Стратегия реализации ----------------------------------------------
