@@ -506,13 +506,19 @@ def _risk_lines(model: dict[str, Any], st: _Styles, fm: _Formats) -> list[Any]:
     out: list[Any] = []
     active = [r for r in (model.get("risks") or []) if r.get("active")]
     for risk in active:
-        unit = "x" if risk.get("value_key") in ("llcr", "weakest_phase_llcr") else "млн ₽"
+        unit = "x" if risk.get("value_key") in ("llcr", "weakest_phase_llcr", "debt_cover") else "млн ₽"
         shown = fm.x(risk.get("value")) if unit == "x" else fm.mln(risk.get("value")) + " млн ₽"
         detail = f" ({risk['detail']})" if risk.get("detail") else ""
         out.append(Paragraph(f"• {risk['label']}: {shown}{detail}", st.risk_on))
     if not active and not _bank(model):
+        # Чем мерить кредит, решает движок (`debt_metric`): DSCR есть не у
+        # всех — у прямой продажи и аренды без кредита его нет, и причину он
+        # называет сам.
+        metric = (model.get("layout") or {}).get("debt_metric") or {}
+        cover = (f"{metric.get('label')} не ниже цели." if metric.get("key")
+                 else str(metric.get("reason") or "показателя покрытия кредита нет."))
         out.append(Paragraph("Рисков модель не нашла: проект без ДДУ, БРИДЖа и ПФ нет; "
-                             "покрытие кредита объекта — в DSCR.", st.risk_off))
+                             + cover, st.risk_off))
     elif not active:
         out.append(Paragraph("Рисков модель не нашла: дефолта в РВЭ нет, лимита хватает, "
                              "LLCR не ниже цели банка.", st.risk_off))

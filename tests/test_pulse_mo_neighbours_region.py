@@ -133,7 +133,7 @@ def test_mytishchi_point_with_cadastre_gets_the_mo_class_summary(tmp_path: Path)
         cadastral="50:12:0100105:1234",
     )
     assert hint["available"] is True, hint.get("reason")
-    assert hint["basis_title"] == "по классу: Московская область"
+    assert hint["basis_title"].endswith("— взят свод: по классу: Московская область")
     assert hint["location"]["region"]["source"] == "cadastre"
     assert "адрес с областью" not in str(hint)
 
