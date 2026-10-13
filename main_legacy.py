@@ -338,9 +338,23 @@ _engine_part("calc_routes")
 
 
 # Страница приложения PAGE — разметка, стили и скрипт — вынесена
-# в engine/page.py и выполняется здесь же, в пространстве имён движка:
-# порядок объявлений и подмены core.<имя> остаются прежними.
-_engine_part("page")
+# в engine/page_*.py по разделам и выполняется здесь же, в пространстве
+# имён движка: первый кусок заводит PAGE, каждый следующий дописывает свой
+# текст. Порядок строк ниже и есть порядок страницы — склейка байт в байт
+# прежняя; другого списка кусков нет.
+_engine_part("page_styles")
+_engine_part("page_markup")
+_engine_part("page_js_core")
+_engine_part("page_js_plato")
+_engine_part("page_js_phasing")
+_engine_part("page_js_land")
+_engine_part("page_js_mo_glavapu")
+_engine_part("page_js_inputs")
+_engine_part("page_js_tep")
+_engine_part("page_js_calc")
+_engine_part("page_js_results")
+_engine_part("page_js_export_projects")
+_engine_part("page_js_telegram")
 
 
 # Сборка страницы — подстановка данных движка в плейсхолдеры PAGE,
