@@ -280,16 +280,30 @@ def test_the_book_counts_what_the_engine_counts(phasing) -> None:
     assert meta["missing"] == [], meta["missing"]
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     evaluator = Evaluator(book)
+    clean_x, clean_t = _vavilov()
+    clean_t["underground_parking"].update(units=0, gns=0, total_area=0)
+    clean_x.update(underground_manual_spaces=0, underground_manual_gns_sqm=0)
+    clean = _run(clean_x, clean_t, phasing)["summary"]
+    if meta.get("nonres_book"):
+        # Нежилой проект одной очередью — книга нежилого проекта (решение
+        # владельца 13.10.2026: объект по ДДУ считают её формулы): «Сверка»
+        # сходится с движком, а выручка — та, что без остатка жилья.
+        import nonres_workbook as nw
+        checks = book[nw.CHECK_SHEET]
+        for r in range(3, checks.max_row + 1):
+            if isinstance(checks[f"C{r}"].value, str) and checks[f"C{r}"].value.startswith("="):
+                evaluator.cell(nw.CHECK_SHEET, f"C{r}")
+        assert evaluator.cell(nw.CHECK_SHEET, "I3") == nw.PASSED
+        revenue = next(checks[f"D{r}"].value for r in range(3, checks.max_row + 1)
+                       if checks[f"B{r}"].value == "Выручка проекта")
+        assert float(revenue) == pytest.approx(clean["revenue"], rel=1e-6)
+        return
     for row in range(76, 85):
         assert book["ПРОВЕРКИ"][f"C{row}"].value is not None, f"цель строки {row}"
         assert evaluator.cell("ПРОВЕРКИ", f"F{row}") == "OK", \
             str(book["ПРОВЕРКИ"][f"A{row}"].value)
     # Цели паритета — движок, и движок без остатка: книга не может сойтись
     # с ним, считая паркинг дома или плату за ВРИ.
-    clean_x, clean_t = _vavilov()
-    clean_t["underground_parking"].update(units=0, gns=0, total_area=0)
-    clean_x.update(underground_manual_spaces=0, underground_manual_gns_sqm=0)
-    clean = _run(clean_x, clean_t, phasing)["summary"]
     revenue_row = next(r for r in range(76, 85)
                        if "ыручк" in str(book["ПРОВЕРКИ"][f"A{r}"].value or ""))
     assert float(book["ПРОВЕРКИ"][f"C{revenue_row}"].value) == pytest.approx(
