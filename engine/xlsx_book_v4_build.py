@@ -239,6 +239,27 @@ def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
                                "hotel_book": True}
 
 
+# Что за книга ушла человеку — словами: подпись вложения в боте и метка
+# ошибки читают её отсюда. Прежде обе были жилыми у любой книги: нежилая
+# с очередями обещала «очереди на листе «Вводные»», хотя считает проект одной
+# очередью, а её расхождения подписывались «Книга v4».
+def workbook_label(meta: dict[str, Any]) -> str:
+    if meta.get("hotel_book"):
+        return "Книга гостиницы"
+    if meta.get("nonres_book"):
+        return "Книга нежилого проекта"
+    return "Книга v4"
+
+
+def workbook_caption(meta: dict[str, Any]) -> str:
+    queues = ""
+    if meta.get("phased"):
+        queues = (" · проект одной очередью, сверка со сводом очередей" if meta.get("nonres_book")
+                  else " · очереди на листе «Вводные»")
+    return ("<b>Полная модель DevelopAid</b> · Excel считает формулами "
+            "из текущих вводных" + queues)
+
+
 def build_project_workbook(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -2162,7 +2183,7 @@ def report_workbook(req: WorkbookExportRequest) -> Response:
         raise HTTPException(status_code=500, detail=f"Не удалось собрать книгу: {exc}") from exc
     if meta.get("missing"):
         # Молча пропущенное поле — потерянные данные: доносим в журнал.
-        _TELEGRAM_RUNTIME["last_error"] = "Книга v4, без соответствия: " + "; ".join(
+        _TELEGRAM_RUNTIME["last_error"] = workbook_label(meta) + ", без соответствия: " + "; ".join(
             str(item) for item in meta["missing"][:6])
     encoded_name = urllib.parse.quote(filename)
     return Response(
