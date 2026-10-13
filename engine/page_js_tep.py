@@ -57,7 +57,7 @@ function vriScheduleRows(rows){
 
 // Льготы по плате за ВРИ и рабочие места — таблица по объектам проекта.
 // Одна функция и для окна, и для теста; числа — с сервера (`vri.benefits`).
-function vriBenefitsHtml(b){
+function vriBenefitsHtml(b,basis){
  if(!b)return '';
  if(!b.applicable)return b.reason?'<div class="note">'+escapeHtml(b.reason)+'</div>':'';
  const rows=b.rows||[];
@@ -89,7 +89,11 @@ function vriBenefitsHtml(b){
   String(b.kzatr.value).replace('.',',')+' ('+escapeHtml(b.kzatr.quarter)+'). Рабочие места — по нормам калькулятора ГлавАПУ.</div>':'';
  const sug=b.suggestion||{};
  let action='';
- if(b.total_mln>0){
+ // В КРТ льгота входит в оплату сама (`vri_relief_basis`), кнопка не нужна.
+ if(b.total_mln>0&&basis==='krt_benefits'){
+  action='<div class="import-status" style="margin-top:8px"><span class="import-ok">Режим «Требование КРТ»: льгота '+n3(b.total_mln)+
+   ' млн ₽ входит в оплату ВРИ сама.</span></div>';
+ }else if(b.total_mln>0){
   if(sug.applied){
    action='<div class="import-status" style="margin-top:8px"><span class="import-ok">Внесено в расчёт ВРИ: льгота '+n3(b.total_mln)+' млн ₽.</span></div>';
   }else{
@@ -108,10 +112,10 @@ function vriBenefitsHtml(b){
   '<th>Объект</th><th>Площадь, м²</th><th>Рабочие места</th><th>Кмест</th><th>Льгота, млн ₽</th><th>Основание / почему нет</th></tr></thead><tbody>'+
   body+transfer+total+'</tbody></table></div>'+kz+notes+action;
 }
-function renderVriBenefits(b){
+function renderVriBenefits(b,basis){
  const card=document.getElementById('vriBenefitsCard');
  if(!card)return;
- const html=vriBenefitsHtml(b);
+ const html=vriBenefitsHtml(b,basis);
  card.style.display=html?'':'none';
  document.getElementById('vriBenefitsBody').innerHTML=html;
 }
@@ -133,7 +137,8 @@ function vriReliefSourceNote(){
  return '<div style="font-size:11px;color:#777;margin-top:4px">Сумма: '+escapeHtml(src.by||'')+'</div>';
 }
 function renderVri(vri){
- renderVriBenefits(vri&&vri.benefits);
+ renderVriBenefits(vri&&vri.benefits,((vri&&vri.totals)||{}).relief_basis);
+ renderKrtVriFooter();
  const REGION={msk:'Москва',mo:'Московская область'};
  const MODE={lump:'единовременно',installment:'рассрочка'};
  const enabled=!!(vri&&vri.enabled);
@@ -1842,65 +1847,73 @@ function krtRequirementEntered(){return String(inputs.social_area_source||'norm'
 function krtLocks(key){
  return krtRequirementEntered()&&KRT_REQUIREMENT_INPUTS.indexOf(key)>=0;
 }
-// В КРТ платы за смену ВРИ нет: вид использования меняется УСЛОВИЕМ ДОГОВОРА
-// о комплексном развитии, а не отдельным платежом городу. Режим «Требование
-// КРТ» её только ЗАПИРАЛ от пересчёта — число, попавшее в поле раньше (из
-// выгрузки ГлавАПУ или прошлого нормативного пересчёта), оставалось и шло в
-// CAPEX, в расчётный лимит БРИДЖа, в график платежей ВРИ и в книгу. На экране
-// разницы нет никакой: поле выглядит одинаково и с посчитанной платой, и с
-// платой, которой быть не должно («почему не убирается из расчёта ВРИ?»,
-// владелец, 05.09.2026). «Не тронули» читается как «убрали».
+// Режим «Требование КРТ» плату за смену ВРИ НЕ отменяет: её уменьшают льготы
+// проекта — за МПТ от нежилых объектов (1874-ПП) и за передачу квартир городу,
+// и в сумме они могут обнулить плату (владелец, 13.10.2026). Считает их движок
+// (`vri_relief` → `vri_benefits_for`), страница только показывает результат.
 //
-// Обнуляем — и говорим, что обнулили: молчаливое обнуление врёт не меньше
-// молчаливого сохранения, и вписать плату обратно должно быть можно, если по
-// этой площадке она всё-таки есть.
-function krtClearsVriFee(){
- if(!krtRequirementEntered())return false;
- const was=Number(inputs.land_rights_cost_mln||0);
+// Прежде переключение в КРТ обнуляло поле и запоминало убранное в
+// `_krt_vri_cleared_mln`. Обнулял наш код, а не человек, — поэтому у
+// сохранённых так проектов плата возвращается при загрузке и об этом
+// говорится у поля (решение владельца, 13.10.2026).
+function restoreKrtClearedVriFee(){
+ const was=Number(inputs._krt_vri_cleared_mln||0);
  if(!(was>0))return false;
- inputs._krt_vri_cleared_mln=was;
- inputs.land_rights_cost_mln=0;
+ delete inputs._krt_vri_cleared_mln;
+ if(Number(inputs.land_rights_cost_mln||0)>0)return false;
+ inputs.land_rights_cost_mln=was;
+ inputs._krt_vri_restored_mln=was;
  return true;
 }
 
-// Надпись о плате за ВРИ смотрит на ПОЛЕ, а не только на режим. Прежде она
-// говорила «платы здесь нет» безусловно — и стояла над полем с 10 166,649
-// млн ₽ (экран владельца, 07.09.2026: «надпись противоречит 10 млрд»). Число
-// при этом верное: заданная плата идёт в расчёт как есть — в CAPEX, в лимит
-// БРИДЖа, в график платежей и в книгу. Неверна была надпись: утверждение о
-// методике КРТ она подавала как утверждение о ТЕКУЩЕМ состоянии поля.
-//
-// Три состояния, и они разные: поле пусто — методика; поле заполнено — что
-// именно стоит и куда оно идёт, с кнопкой убрать; только что убрано — сколько
-// убрано. Молчаливое обнуление врёт не меньше молчаливого сохранения, поэтому
-// убирает человек нажатием, а не мы за него.
 function krtVriFeeNote(){
- const fee=Number(inputs.land_rights_cost_mln||0);
- const wasVri=Number(inputs._krt_vri_cleared_mln||0);
- const head='<div class="note" style="margin:0 0 6px;padding:11px 12px">';
- if(fee>0){
-  return head
-   +`В поле стоит <b>${num(fee)} млн ₽</b> — эта плата идёт в расчёт как есть: `
-   +`в CAPEX, в расчётный лимит БРИДЖа, в график платежей ВРИ и в книгу. `
-   +`В КРТ отдельного платежа городу за смену ВРИ нет — вид использования меняется `
-   +`условием договора о КРТ. Если это не ваш случай — уберите плату. `
-   +`<button class="btn" type="button" style="margin-top:8px" onclick="clearKrtVriFee()">Убрать плату за ВРИ</button></div>`;
- }
- return head
-  +`Режим «Требование КРТ»: платы за смену ВРИ здесь нет — вид использования меняется условием договора о КРТ, а не отдельным платежом городу.`
-  +(wasVri>0?` Убрано ${num(wasVri)} млн ₽.`:'')
-  +` Если по этой площадке плата всё-таки есть — впишите её, она пойдёт в расчёт как есть.</div>`;
+ const back=Number(inputs._krt_vri_restored_mln||0);
+ return '<div class="note krt-vri-fee-note" style="margin:0 0 6px;padding:11px 12px">'
+  +'Режим «Требование КРТ» плату за смену ВРИ не отменяет: её уменьшают льготы проекта '
+  +'за нежилые объекты (МПТ) и передачу квартир городу — расчёт в конце блока «Социальная нагрузка».'
+  +(back>0?` Возвращено ${num(back)} млн ₽, которые прежний режим КРТ обнулил.`:'')
+  +'</div>';
 }
 
-// Убирает человек — и видит, сколько убрано. Правка вводной зовёт пересчёт
-// оттуда же, откуда его зовёт всякая другая: плата сидит в CAPEX и в лимите
-// БРИДЖа, и молча оставленный прежний результат читался бы как посчитанный.
-function clearKrtVriFee(){
- if(!(Number(inputs.land_rights_cost_mln||0)>0))return;
- krtClearsVriFee();
- renderInputs();
- refreshGroupPeeks();
- calculate();
+// Подвал блока «Социальная нагрузка» в КРТ: от чего льгота, сколько, и что
+// остаётся к оплате. Все числа — из результата движка (`vri.totals`,
+// `vri.benefits`): страница не считает льготу второй раз.
+function krtVriFooterHtml(vri){
+ const head='<div class="krt-vri-footer-head" style="font-weight:600;margin-bottom:4px">Плата за смену ВРИ в КРТ</div>';
+ const wrap=html=>'<div class="note krt-vri-footer" style="margin:10px 0 0;padding:11px 12px">'+head+html+'</div>';
+ if(!vri||!vri.totals)return wrap('Пересчитайте проект — здесь появится льгота и плата к оплате.');
+ const t=vri.totals, b=vri.benefits||{};
+ const mln=v=>num(Number(v||0)/1e6);
+ const gross=Number(t.gross||0), relief=Number(t.relief||0), pay=Math.max(0,gross-relief);
+ if(!(gross>0))return wrap('Плата за смену ВРИ в проекте не задана — льготе нечего уменьшать.');
+ const basis=String(t.relief_basis||'none');
+ const rows=(b.rows||[]);
+ const lines=[];
+ rows.filter(r=>Number(r.benefit_mln||0)>0).forEach(r=>lines.push(
+  `${escapeHtml(r.label)} — ${num(r.area_sqm)} м²: льгота за МПТ ${num(r.benefit_mln)} млн ₽`));
+ if(Number(b.transfer_mln||0)>0)lines.push(
+  `Передача квартир городу — ${num((b.transfer||{}).area_sqm)} м²: ${num(b.transfer_mln)} млн ₽`);
+ const blocked=rows.filter(r=>!(Number(r.benefit_mln||0)>0)&&r.category&&(r.blockers||[]).length)
+  .map(r=>`${escapeHtml(r.label)}: ${escapeHtml(r.blockers.join('; '))}`);
+ const list=lines.length?'<ul style="margin:4px 0 6px 18px;padding:0">'+lines.map(x=>'<li>'+x+'</li>').join('')+'</ul>':'';
+ const why=blocked.length?'<div style="font-size:12px;color:#8a4b08;margin:4px 0">Без льготы: '+blocked.join('<br>')+'</div>':'';
+ const total=`Плата до льгот ${mln(gross)} млн ₽ − льгота ${mln(relief)} млн ₽ = <b>к оплате ${mln(pay)} млн ₽</b>.`;
+ if(basis==='percent'||basis==='amount'){
+  return wrap('Льгота вписана руками — она главнее расчётной'
+   +(Number(b.total_mln||0)>0?` (по проекту вышло ${num(b.total_mln)} млн ₽)`:'')+'. '+total+list+why);
+ }
+ if(!b.applicable)return wrap(escapeHtml(b.reason||'Льготы по проекту не посчитаны.')
+  +' Льготы нет — плата за ВРИ начисляется: <b>к оплате '+mln(pay)+' млн ₽</b>.');
+ if(relief>0){
+  return wrap('Льгота посчитана по проекту и уже вычтена из платы:'+list+total
+   +(Number(b.total_mln||0)*1e6>gross+1?' Льготы больше платы — к оплате ноль, остаток не переносится.':'')+why);
+ }
+ return wrap('Льготы нет: в проекте нет нежилых объектов с льготой за МПТ и передачи квартир городу. '
+  +'Режим КРТ плату не отменяет — <b>плата за ВРИ начисляется: '+mln(pay)+' млн ₽</b>.'+why);
+}
+function renderKrtVriFooter(){
+ const box=document.getElementById('krtVriFooter');
+ if(box)box.innerHTML=krtVriFooterHtml((lastResult||{}).vri);
 }
 
 // Пишет только незапертое и возвращает подпись о том, чего НЕ тронуло: молча
