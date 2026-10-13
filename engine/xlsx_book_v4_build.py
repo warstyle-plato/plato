@@ -83,6 +83,43 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             "nonres": obj.key in nonres_plans,
         }
         plan_item = nonres_plans.get(obj.key)
+        # Объект по ДДУ (решение владельца 13.10.2026: книга нежилого проекта
+        # считает его живыми формулами, а не берёт выручку движка): продаётся
+        # тем же `sales_schedule`, что в `build_operating_model`, — доля до
+        # ввода объекта, остаток после, рост цены; профиль продаж и лестница
+        # цены — вводные, которые книга получает таблицей.
+        if not plan_item and item["in_tax_pool"] and n(x, obj.rate_price) > 0:
+            sales_start = d(x[f"{obj.prefix}_sales_start"])
+            weights, factor = None, None
+            weights_raw, _notes = schedule_weights(x.get(f"{obj.prefix}_sales_profile"), sales_start)
+            factor_raw, _rows, _more = stage_ladder_factor(
+                [x.get(f"{obj.prefix}_growth_stage{k}_pct") for k in (1, 2, 3, 4)],
+                item["start"], item["months"])
+            if weights_raw is not None:
+                weights = {k_of(m): float(w) for m, w in weights_raw.items() if w}
+            if factor_raw is not None:
+                factor = {k_of(m): float(factor_raw(m)) for m in months}
+            item.update({
+                "ddu": True, "strategy": nonres_strategy.STRATEGY_DDU,
+                "saleable_sqm": n(x, f"{obj.prefix}_saleable_sqm"),
+                "over_units": max(0.0, n(row, "parking_over_units")),
+                "over_area": (n(x, "object_parking_over_area_per_space_sqm", OBJECT_PARKING_OVER_AREA_DEFAULT)
+                              or OBJECT_PARKING_OVER_AREA_DEFAULT),
+                "price": n(x, obj.rate_price),
+                "sales_start": sales_start,
+                "growth_pre_pct": n(x, f"{obj.prefix}_growth_pre_pct", obj.growth_pre_default),
+                "growth_pre_default_pct": float(obj.growth_pre_default),
+                "growth_post_pct": n(x, f"{obj.prefix}_growth_post_pct", obj.growth_post_default),
+                "share_before_pct": n(x, f"{obj.prefix}_share_before_rve_pct", 85),
+                "residual_months": int(n(x, f"{obj.prefix}_residual_months", 6)),
+                "parking_sellable": bool(obj.garage),
+                "parking_saleable_units": n(row, "parking_saleable_units") if obj.garage else 0.0,
+                "parking_under_units": max(0.0, n(row, "parking_under_units")),
+                "parking_over_units": max(0.0, n(row, "parking_over_units")),
+                "parking_under_mln": n(x, f"{obj.prefix}_parking_under_price_mln_per_space"),
+                "parking_over_mln": n(x, f"{obj.prefix}_parking_over_price_mln_per_space"),
+                "sales_weights": weights, "price_factor": factor,
+            })
         if plan_item:
             params = plan_item.get("params") or {}
             num = nonres_strategy._num
@@ -138,8 +175,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         objects.append(item)
     missing = [f"Смета: «{key}» — значения движка, формулы в книге нет"
                for key in engine_articles]
-    if any(op.get("revenue") or {}):
-        missing.append("Выручка продуктов по ДДУ — в книге нежилого проекта не моделируется")
+    steps = pf_special_steps(x.get("pf_special_steps"))
     return {
         "name": project_name,
         "start": start, "months": months,
@@ -188,6 +224,19 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         "vri_equity": {k_of(m): float(v) for m, v in (op.get("vri_equity") or {}).items() if v},
         "objects": objects,
         "missing": missing,
+        # Проектное финансирование объектов по ДДУ — те же вводные, что
+        # читает `simulate_financing`.
+        "pf": {
+            "bridge_spread_pp": n(x, "bridge_spread_pp"),
+            "bridge_cap_spread_pp": n(x, "bridge_cap_spread_pp"),
+            "pf_spread_pp": n(x, "pf_spread_pp"),
+            "pf_special_pct": n(x, "pf_special_pct"),
+            "pf_special_steps": [(float(edge), float(rate)) for edge, rate in steps],
+            "own_funds_mln": max(0.0, n(x, "pre_pf_own_funds_mln")),
+            "approved_limit_mln": max(0.0, n(x, "pf_limit_approved_mln")),
+            "interest_mode": str(x.get("bridge_interest_mode", "Капитализация в ПФ")),
+            "bridge_limit_open": not op.get("common_on_object_loans"),
+        },
     }
 
 
@@ -195,20 +244,24 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
                              rates: list[dict[str, Any]] | None,
                              phasing: dict[str, Any] | None,
                              project_name: str) -> tuple[bytes, str, dict[str, Any]] | None:
-    """Книга нежилого проекта, если у него нет ДДУ; иначе None — книга v4.
+    """Книга нежилого проекта; None — книга v4.
 
-    Решение «есть ли у проекта БРИДЖ/ПФ/эскроу» — то же `report.layout`, что
-    читают страница, PDF, тизер и бот.
+    Решение владельца (13.10.2026): объект по ДДУ — не повод отдавать жилую
+    книгу; его продажи, эскроу, БРИДЖ и ПФ книга нежилого проекта считает
+    формулами (`nonres_workbook` — листы «ДДУ N» и «ПФ»). ПФ по очередям она
+    не моделирует: проект с очередями и ПФ получает книгу v4.
     """
     consolidated = (_run_authoritative_model(
         inputs or {}, tep or {}, rates or [], phasing or {}) or {}).get("consolidated") or {}
     layout = (consolidated.get("report") or {}).get("layout") or {}
-    if layout.get("project_finance", True) or not layout.get("nonres_strategy"):
+    phased = bool((phasing or {}).get("enabled") and int((phasing or {}).get("phase_count") or 1) > 1)
+    if phased and layout.get("project_finance", True):
         return None
     prepared = prepared_calculation(copy.deepcopy(inputs or {}), copy.deepcopy(tep or {}),
                                     copy.deepcopy(rates or []))
     spec = nonres_book_spec(prepared, consolidated, project_name)
-    phased = bool((phasing or {}).get("enabled") and int((phasing or {}).get("phase_count") or 1) > 1)
+    if not any(item.get("nonres") or item.get("ddu") for item in spec["objects"]):
+        return None
     if phased:
         spec["missing"].append("Очереди: книга моделирует проект одной очередью, "
                                "сверка идёт со сводом очередей")
