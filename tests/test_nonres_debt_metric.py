@@ -168,9 +168,10 @@ def test_a_direct_sale_is_not_searched(client: TestClient, monkeypatch) -> None:
 
 def test_the_pdf_front_tile_reads_the_debt_metric() -> None:
     import pdf_first_page_extension as front
-    assert front._debt_metric_tile(_nonres(), core)[0] == "DSCR кредита объектов (мин.)"
+    # Подпись плитки — движка (`debt_metric.label`): одна на карточку и PDF.
+    assert front._debt_metric_tile(_nonres(), core)[0] == "DSCR кредита объектов — минимум по годам"
     assert front._debt_metric_tile(_nonres(offices_strategy="direct"), core) == \
-        ("Кредит объектов", "гасится выручкой ДКП")
+        ("Покрытие кредита объектов", "не считается")
     x, t = _spec(offices_strategy="ddu", retail_strategy="ddu")
     mixed = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
     assert front._debt_metric_tile(mixed, core)[0] == "LLCR"

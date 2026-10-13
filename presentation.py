@@ -78,6 +78,8 @@ OBJECT_RISK_CATALOGUE: tuple[tuple[str, str, str], ...] = (
     ("debt_cover_below_target", "Покрытие кредита ниже цели", "debt_cover"),
 )
 OBJECT_RISKS = frozenset(key for key, _label, _value in OBJECT_RISK_CATALOGUE)
+# Порядок строк рисков тизера: банковские, затем объекта.
+TEASER_RISK_CATALOGUE = (*RISK_CATALOGUE, *OBJECT_RISK_CATALOGUE)
 
 
 
@@ -228,7 +230,7 @@ def build_project_presentation(
                                     and cover < float(metric.get("target") or llcr_target)),
     }
     risks: list[dict[str, Any]] = []
-    for key, label, value_key in RISK_CATALOGUE + OBJECT_RISK_CATALOGUE:
+    for key, label, value_key in TEASER_RISK_CATALOGUE:
         if key == "weakest_phase" and not weakest:
             continue
         if not bank and key in BANK_RISKS:
