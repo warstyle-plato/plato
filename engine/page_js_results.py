@@ -170,9 +170,14 @@ PAGE += r"""function renderResult(){
   `<tr><th>LLCR</th><th>${mult(f.llcr)}</th></tr>`;
 
  const taxMargins=f.tax_margin_by_product||{};
+ // В рамке объекта нет жилого ядра: «Маржа основных продуктов» и строки
+ // объектов, которых в проекте нет, были там нулями (у гостиницы — офис и ТЦ).
+ const taxFrame=reportLayout(r).object_frame;
  const taxMarkup=
-  row('Маржа основных продуктов',money(taxMargins.core||0))+
-  taxMarginRows(taxMargins,row)+
+  // Ядро без жилья — общие затраты вне объектов: так и подписано.
+  (taxFrame&&Math.abs(Number(taxMargins.core||0))<=0.5?''
+   :row(taxFrame?'Маржа вне объектов (общие затраты)':'Маржа основных продуктов',money(taxMargins.core||0)))+
+  taxMarginRows(taxMargins,row,taxFrame)+
   row('Вычет: проценты и банковские комиссии',`(${money(f.financing_tax_deductions||f.financing_cost||0)})`)+
   `<tr><th>Итоговая прибыль до налога</th><th>${money(f.profit_before_tax)}</th></tr>`+
   // НДС из базы налога на прибыль движок вычитает помесячно: он не доход, а
@@ -636,34 +641,22 @@ PAGE += r"""function renderResult(){
   renderApartmentPaceChart(ap);
  }
 
- calendarDateBoxes.innerHTML=[
-  ['Начало',r.dates.project_start],
-  ['РнС',r.dates.permit],
-  ['Старт продаж',r.dates.sales_start],
-  ['РВЭ',r.dates.rve]
- ].map(x=>`<div class="datebox">${x[0]}<b>${dateRu(x[1])}</b></div>`).join('');
- renderGantt('calendarGantt',r.report.calendar);
- calendarRange.textContent=dateRu(r.report.calendar.start)+' — '+dateRu(r.report.calendar.end);
+ // Вкладка «Календарь» и раздел отчёта — один календарь (`calendarView`):
+ // у проекта без жилья вкладка прежде рисовала жилой — «Старт продаж»,
+ // «РВЭ», «Строительство ЖК» у гостиницы.
+ syncSensitivityFrame(r);
+ const calView=calendarView(r);
+ calendarDateBoxes.innerHTML=calView.datesHtml;
+ renderGantt('calendarGantt',calView.calendar);
+ calendarRange.textContent=calView.calendar.start?dateRu(calView.calendar.start)+' — '+dateRu(calView.calendar.end):'—';
 
  // Календарь и чувствительность жили только на своих вкладках и в PDF: человек
  // смотрел отчёт на экране, печатал его и видел два незнакомых раздела. Отчёт
  // обязан быть тем же документом, что уходит в печать.
  {
   const dates=document.getElementById('reportCalendarDates');
-  // У проекта без жилья — свой календарь (`object_report`): стройка объекта,
-  // продажи / заполнение, кредит и выход; вех эскроу у него нет.
-  const objCal=(objectSection(r,'calendar')||{}).calendar;
-  const objItems=objCal?(((r.finance||{}).nonres||{}).objects||[]):null;
-  // Гостиница отдаёт свои вехи готовыми (`_hotel_calendar.dates`).
-  if(dates)dates.innerHTML=(objCal&&objCal.dates?objCal.dates.map(x=>[escapeHtml(x[0]),x[1]]):objItems?[
-   ['Начало',r.dates.project_start],['РнС',r.dates.permit],
-   ...objItems.map(o=>['Ввод — '+escapeHtml(o.title||o.key),o.commissioning]),
-   ...objItems.map(o=>['Конец горизонта — '+escapeHtml(o.title||o.key),o.horizon_end]),
-  ]:[
-   ['Начало',r.dates.project_start],['РнС',r.dates.permit],
-   ['Старт продаж',r.dates.sales_start],['РВЭ',r.dates.rve]
-  ]).map(x=>`<div class="datebox">${x[0]}<b>${dateRu(x[1])}</b></div>`).join('');
-  renderGantt('reportCalendarGantt',objCal&&(objCal.events||[]).length?objCal:r.report.calendar);
+  if(dates)dates.innerHTML=calView.datesHtml;
+  renderGantt('reportCalendarGantt',calView.calendar);
   renderReportSensitivity();
   renderReportToc(r);
  }
@@ -860,9 +853,32 @@ function renderReportToc(r){
  }).map(([id,label])=>`<a href="#${id}" onclick="event.preventDefault();document.getElementById('${id}').scrollIntoView({behavior:'smooth',block:'start'})">${label}</a>`).join('');
 }
 
+// Календарь проекта — один на вкладку «Календарь» и раздел отчёта. У
+// проекта без жилья — свой (`object_report`): стройка объекта, продажи /
+// заполнение, кредит и выход; гостиница отдаёт вехи готовыми
+// (`_hotel_calendar.dates`). Жилого календаря рамка объекта не печатает даже
+// пустой: «Старт продаж» и «РВЭ» читались бы вехами объекта.
+function calendarView(r){
+ const frame=reportLayout(r).object_frame;
+ const objCal=(objectSection(r,'calendar')||{}).calendar||null;
+ const objItems=objCal?(((r.finance||{}).nonres||{}).objects||[]):null;
+ const dates=frame?(objCal&&objCal.dates?objCal.dates.map(x=>[escapeHtml(x[0]),x[1]]):[
+   ['Начало',r.dates.project_start],['РнС',r.dates.permit],
+   ...(objItems||[]).map(o=>['Ввод — '+escapeHtml(o.title||o.key),o.commissioning]),
+   ...(objItems||[]).map(o=>['Конец горизонта — '+escapeHtml(o.title||o.key),o.horizon_end]),
+  ]):[
+   ['Начало',r.dates.project_start],['РнС',r.dates.permit],
+   ['Старт продаж',r.dates.sales_start],['РВЭ',r.dates.rve]
+  ];
+ return {datesHtml:dates.map(x=>`<div class="datebox">${x[0]}<b>${dateRu(x[1])}</b></div>`).join(''),
+  calendar:frame?(objCal&&(objCal.events||[]).length?objCal
+   :{events:[],reason:'Календаря объекта нет: расчёт объекта не построил ни одной вехи — '
+     +'смотрите раздел «Объект и участок».'}):r.report.calendar};
+}
+
 function renderGantt(targetId,calendar){
  const target=document.getElementById(targetId);if(!target||!calendar){return}
- const events=calendar.events||[];if(!events.length){target.innerHTML='';return}
+ const events=calendar.events||[];if(!events.length){target.innerHTML=calendar.reason?`<div class="note">${escapeHtml(calendar.reason)}</div>`:'';return}
  const start=new Date(calendar.start+'T00:00:00'),end=new Date(calendar.end+'T00:00:00');
  const total=Math.max(1,(end-start)/(1000*60*60*24));
  const posDate=d=>Math.max(0,Math.min(100,(d-start)/(1000*60*60*24)/total*100));
@@ -939,7 +955,9 @@ function renderGantt(targetId,calendar){
    }
    // In the multi-phase view color encodes the queue; labels still identify event type.
    // Preserve the old type legend unchanged for a single-phase project.
-   if(typeLegend)typeLegend.style.display=phaseNames.length>1?'none':'flex';
+   // Легенда типов — жилая («Продажи»): в рамке объекта её нет.
+   const frame=typeof lastResult!=='undefined'&&reportLayout(lastResult).object_frame;
+   if(typeLegend)typeLegend.style.display=phaseNames.length>1||frame?'none':'flex';
  }
 }
 
@@ -1127,6 +1145,20 @@ function renderFinanceChart(rows,cover){
 // Десятки расчётов — только по явной команде: обычная правка вводных их не
 // запускает, иначе каждое нажатие в форме стоило бы секунду.
 let sensitivityOptions=null, sensitivityReport=null, sensitivityPicked=null, sensitivityBusy=false;
+// Рамка, под которую построены форма и последний анализ. Форма строится один
+// раз, при открытии вкладки: смена типа проекта оставляла в ней жилые
+// показатели и параметры (LLCR, цена квартир, спред ПФ), а в отчёте — жилой
+// торнадо прошлого типа.
+let sensitivityFrameKind=null;
+function syncSensitivityFrame(r){
+ const kind=reportLayout(r).kind||'housing';
+ if(sensitivityFrameKind===null||sensitivityFrameKind===kind)return;
+ sensitivityFrameKind=kind;
+ sensitivityReport=null;sensitivityPicked=null;
+ const res=document.getElementById('sensitivityResult');
+ if(res)res.style.display='none';
+ renderSensitivityForm(r);
+}
 
 async function loadSensitivityOptions(){
  if(sensitivityOptions)return sensitivityOptions;
@@ -1144,16 +1176,18 @@ function sensitivityScopes(){
  return scopes;
 }
 
-async function renderSensitivityForm(){
+async function renderSensitivityForm(given){
  const box=document.getElementById('sensitivityControls');
  if(!box)return;
+ const current=given||(typeof lastResult!=='undefined'?lastResult:null);
+ sensitivityFrameKind=reportLayout(current).kind||'housing';
  const options=await loadSensitivityOptions();
  const scopes=sensitivityScopes();
  // Показатель и факторы проекта без жилья — из движка (`object_report`):
  // DSCR кредита объектов вместо LLCR, аренда, загрузка, ставка
  // капитализации, цена ДКП и ставка кредита вместо цены квартир.
- const objSens=(objectSection(typeof lastResult!=='undefined'?lastResult:null,'sensitivity')||{}).sensitivity;
- const debtKey=((reportLayout(typeof lastResult!=='undefined'?lastResult:null).debt_metric)||{}).key;
+ const objSens=(objectSection(current,'sensitivity')||{}).sensitivity;
+ const debtKey=((reportLayout(current).debt_metric)||{}).key;
  const bankOnly=['llcr','peak_bridge_mln','pf_draw_total_mln'];
  const metrics=options.metrics.filter(m=>m.key==='dscr'?debtKey==='dscr':!(objSens&&bankOnly.includes(m.key)));
  const field=(label,html)=>`<div class="field"><label>${label}</label>${html}</div>`;

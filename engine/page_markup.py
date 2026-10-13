@@ -494,7 +494,7 @@ PAGE += r"""</head>
         </div>
       </div>
       <div class="kpis" id="financeKpi" data-needs="project_finance"></div>
-      <div class="note" style="margin-top:16px">Низкая «эффективная ставка ПФ» может возникать из-за льготной ставки при покрытии долга средствами на эскроу. Поэтому она показана отдельно от базовой ставки ПФ до эскроу.</div>
+      <div class="note" style="margin-top:16px" data-needs="project_finance">Низкая «эффективная ставка ПФ» может возникать из-за льготной ставки при покрытии долга средствами на эскроу. Поэтому она показана отдельно от базовой ставки ПФ до эскроу.</div>
 
       <div class="finance-grid" style="margin-top:18px" data-needs="project_finance">
         <div class="card"><div class="section-title">БРИДЖ</div><table class="metric-table" id="bridgeTable"></table></div>
@@ -518,14 +518,14 @@ PAGE += r"""</head>
       <div class="card">
         <div class="section-title">Налог на прибыль</div>
         <table class="metric-table" id="taxTable"></table>
-        <div class="note">Маржа объектов КРТ признаётся по реализованным м² или машино-местам. Налог начисляется накопительно не ранее РВЭ после вычета выплаченных процентов и комиссий.</div>
+        <div class="note" data-layout="housing">Маржа объектов КРТ признаётся по реализованным м² или машино-местам. Налог начисляется накопительно не ранее РВЭ после вычета выплаченных процентов и комиссий.</div>
       </div>
 
-      <div class="card">
+      <div class="card" data-needs="project_finance">
         <div class="section-title">Помесячное финансирование</div>
         <div class="scroll"><table class="monthly"><thead><tr><th>Месяц</th><th>Ключевая</th><th>БРИДЖ</th><th>Ставка БРИДЖ</th><th>% БРИДЖ</th><th>ПФ</th><th>Начислено к уплате</th><th>Эскроу</th><th>Покрытие</th><th>Ставка ПФ</th><th>% ПФ</th><th>Комиссия лимита</th><th>Погашение ПФ</th><th>Налог на прибыль</th></tr></thead><tbody id="monthlyFinance"></tbody></table></div>
       </div>
-      <div class="note warning">LLCR остаётся расчётным показателем веб-движка до завершения помесячной сверки кредитного CF с актуальной Excel-моделью.</div>
+      <div class="note warning" data-needs="project_finance">LLCR остаётся расчётным показателем веб-движка до завершения помесячной сверки кредитного CF с актуальной Excel-моделью.</div>
     </div>
 
     <div id="calendar" class="panel">

@@ -1218,7 +1218,7 @@
       + ' · IRR ' + ((result.summary.equity_returns || {}).label
         || (result.summary.irr_equity == null ? 'N/A' : fmtPct(result.summary.irr_equity)))
       + (metric.key ? ' · порог банка ' + name + ' ' + target.toFixed(2).replace('.', ',') + 'x.'
-        : '. Покрытие долга не меряется — кредит объектов гасится выручкой продаж.');
+        : '. Покрытие долга не меряется' + (metric.reason ? ': ' + metric.reason : '.'));
 
     var found = goalSeek && goalSeek.available && goalSeek.solution ? goalSeek.solution : null;
     var price = found ? goalSeek.current.variable : Number(pageInputs().purchase_price_mln || 0);
@@ -1230,13 +1230,15 @@
         : metric.key
           ? { label: byLlcr ? 'LLCR (расчётный)' : metric.label, value: fmtMult(llcr),
               note: 'Ориентир банка — ' + target.toFixed(2).replace('.', ',') + 'x'
-                + (byLlcr ? '.' : '; NOI объекта на проценты и тело кредита.') }
-          : { label: metric.label, value: 'не считается', note: 'Кредит гасится выручкой продаж: платежа из NOI нет. Погашение — в «Финансировании объекта».', wait: true },
+                + (byLlcr ? '.' : '; доход объекта на проценты и тело кредита.') }
+          // Причину называет движок (`debt_metric.reason`): у гостиницы, у
+          // аренды без кредита и у прямой продажи она своя.
+          : { label: metric.label, value: 'не считается', note: metric.reason || 'Показателя покрытия у проекта нет.', wait: true },
       price > 0
         ? { label: 'Цена входа', value: mlnLabel(price), note: 'Текущая цена приобретения.' }
         : { label: 'Цена входа', value: 'не задана', note: 'Заполните «Стоимость покупки» в Экономике — сейчас всё посчитано как для бесплатного участка.', wait: true },
       !metric.key
-        ? { label: 'Максимум цены входа', value: 'не подбирается', note: 'Потолок цены ищется по порогу покрытия долга, а у кредита, который гасится продажами, порога нет. Смотрите прибыль и IRR.', wait: true }
+        ? { label: 'Максимум цены входа', value: 'не подбирается', note: 'Потолок цены ищется по порогу покрытия долга, а показателя покрытия у проекта нет. Смотрите прибыль и IRR.', wait: true }
         : found
         ? { label: 'Максимум цены входа', value: mlnLabel(solution), note: 'При ' + name + ' не ниже ' + target.toFixed(2).replace('.', ',') + 'x' + (goalSeek.scope_label ? ' · ' + goalSeek.scope_label : '') + '.' }
         : { label: 'Максимум цены входа', value: ceilingText(), note: ceilingNote(), wait: true },
@@ -1289,9 +1291,13 @@
       var got = closest.metric == null ? '' : ' — там выходит ' + fmtMult(closest.metric)
         + (closest.scope_label && closest.scope_label !== goalSeek.scope_label ? ' (' + closest.scope_label + ')' : '');
       if (goalSeek.target_metric === null) return goalSeek.reason || '';
-      return seekName() + ' 1,20x у ' + who + ' не достигается ' + at + got + '.';
+      return seekName() + ' ' + seekTarget() + ' у ' + who + ' не достигается ' + at + got + '.';
     }
-    return 'Подбор параметра движком при ' + seekName() + ' 1,20x.';
+    return 'Подбор параметра движком при ' + seekName() + ' ' + seekTarget() + '.';
+  }
+  // Порог — из движка (`debt_metric.target`), а не числом в тексте.
+  function seekTarget() {
+    return Number(debtMetric(pageResult()).target || TARGET_LLCR).toFixed(2).replace('.', ',') + 'x';
   }
   function seekName() {
     var m = goalSeek && goalSeek.target_metric ? goalSeek.target_metric : debtMetric(pageResult()).key;
