@@ -48,7 +48,7 @@ def test_the_engine_reports_construction_articles(payload):
     report = payload["result"]["report"]
     rows = report.get("construction_costs") or []
     labels = [row["label"] for row in rows]
-    assert "СМР наземной части" in labels
+    assert "СМР наземной площади МКД" in labels
     assert "Наружные инженерные сети" in labels
     assert "Благоустройство" in labels
     bases = payload["result"]["summary"]["unit_bases"]
@@ -79,7 +79,7 @@ def test_the_pdf_prints_the_section(payload):
     text = "\n".join(page.extract_text() or ""
                      for page in pypdf.PdfReader(io.BytesIO(data)).pages)
     assert "Удельные расходы строительства" in text
-    assert "СМР наземной части" in text
+    assert "СМР наземной площади МКД" in text
     # Итога «на м²» у таблицы нет: у статей разные базы, и сумма удельных
     # была бы числом без базы.
     assert "Итого строительство" not in text

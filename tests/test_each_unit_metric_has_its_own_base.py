@@ -85,8 +85,8 @@ def _check_rows(result: dict) -> None:
         assert row["base"] == "total_area"
         assert row["per_base_th"] == pytest.approx(row["value"] / bases["total_area"] / 1000)
     costs = {row["label"]: row for row in result["report"]["construction_costs"]}
-    assert costs["СМР наземной части"]["base"] == "core_above_area"
-    assert costs["СМР подземной части"]["base"] == "core_under_area"
+    assert costs["СМР наземной площади МКД"]["base"] == "core_above_area"
+    assert costs["СМР подземной площади МКД"]["base"] == "core_under_area"
     assert costs["ИРД"]["base"] == "total_area"
     assert summary["full_cost_per_total_area_th"] == pytest.approx(
         summary["total_expenses"] / bases["total_area"] / 1000)
@@ -98,9 +98,9 @@ def test_construction_is_divided_by_the_part_it_was_charged_on(single):
     """СМР на метр своей части — это и есть введённая ставка."""
     costs = {row["label"]: row for row in single["report"]["construction_costs"]}
     inputs = _inputs()
-    assert costs["СМР наземной части"]["per_base_th"] == pytest.approx(
+    assert costs["СМР наземной площади МКД"]["per_base_th"] == pytest.approx(
         float(inputs["main_above_th_per_sqm"]))
-    assert costs["СМР подземной части"]["per_base_th"] == pytest.approx(
+    assert costs["СМР подземной площади МКД"]["per_base_th"] == pytest.approx(
         float(inputs["main_under_th_per_sqm"]))
 
 
@@ -174,7 +174,7 @@ def test_the_teaser_prints_every_cost_on_the_columns_base(single):
     assert f"на м² {tg.CORE_UNDER_AREA.genitive}" not in text
     total = float(single["summary"]["construction_volume_sqm"])
     rows = {r["label"]: r for r in single["report"]["construction_costs"]}
-    for label in ("СМР наземной части", "СМР подземной части"):
+    for label in ("СМР наземной площади МКД", "СМР подземной площади МКД"):
         row = rows[label]
         assert row["per_total_th"] == pytest.approx(row["value"] / total / 1000)
         assert row["per_base_th"] != pytest.approx(row["per_total_th"])

@@ -400,7 +400,7 @@ def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, 
     products = {p["key"]: p for p in (model.get("products") or [])}
     apartments = products.get("apartments") or {}
     costs = {c["label"]: c for c in (model.get("construction_costs") or [])}
-    smr = costs.get("СМР наземной части") or {}
+    smr = costs.get("СМР наземной площади МКД") or {}
     rows: list[tuple[str, str, str]] = []
     rows.append(("Доходная часть", fm.mln(eff.get("revenue_mln")), "млн ₽"))
     if apartments.get("avg_price_th"):
@@ -410,7 +410,7 @@ def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, 
     # СМР — на ту часть, на которую начислено; база и подпись — движка
     # (решение 4 ревизии книги).
     if smr.get("per_base_th"):
-        rows.append(("  СМР наземной части", fm.th(smr["per_base_th"], 0),
+        rows.append(("  СМР наземной площади МКД", fm.th(smr["per_base_th"], 0),
                      str(smr.get("base_label") or "").replace("тыс. ", "тыс ")))
     rows.append(("Коммерческие расходы", fm.mln(eff.get("commercial_mln")), "млн ₽"))
     rows.append(("Стоимость финансирования", fm.mln(eff.get("financing_mln")), "млн ₽"))
