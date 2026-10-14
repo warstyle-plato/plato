@@ -279,3 +279,26 @@ def test_in_a_real_browser_the_relief_recounts_applies_survives_a_reload_and_cle
     assert "Льгота — автоматически по участку проекта" in seen["cleared"], report
     assert seen["cleared_relief"] == seen["auto_relief"], report
     assert seen["missing_visible"] and "не хватает: район участка" in seen["missing"], report
+
+
+def test_the_book_takes_the_same_relief_and_names_where_the_mpt_came_from(core) -> None:
+    """Книга: B82 — льгота движка (авто и из калькулятора), подпись — её источник."""
+    import io
+
+    import openpyxl
+    import v4_inputs
+
+    base, tep = _moscow_offices(core, parking_district="Нагатино-Садовники",
+                                parking_inside_ttk="outside", land_rights_cost_mln=40000.0)
+    override = {"payload": dict(OTHER_PARCEL), "cadastral": "77:08:0009005:12"}
+    for inputs, words in ((base, "Льготы проекта: МПТ автоматически по участку проекта"),
+                          (dict(base, vri_mpt_override=override),
+                           "Льготы проекта: МПТ из калькулятора по участку 77:08:0009005:12")):
+        engine = _calc(core, inputs, tep)["vri"]["totals"]["relief"] / 1e6
+        assert engine > 0
+        data, _name, _meta = core.build_project_workbook(inputs, tep, [], {}, project_name="проба")
+        book = openpyxl.load_workbook(io.BytesIO(data), data_only=False)
+        assert float(v4_inputs.value(book, "B82")) == pytest.approx(engine, rel=1e-6)
+        texts = {cell.value for sheet in book.worksheets for row in sheet.iter_rows()
+                 for cell in row if isinstance(cell.value, str)}
+        assert words in texts, words
