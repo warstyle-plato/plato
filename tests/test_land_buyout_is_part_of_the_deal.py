@@ -131,9 +131,72 @@ def test_the_key_economics_rows_name_both_lines_and_the_total():
     rows = core._pdf_entry_cost_rows(bundle["consolidated"],
                                      bundle["consolidated"]["report"]["expense_structure"])
     labels = [row[0] for row in rows]
+    # Итог — под частями и назван итогом: три строки на равных читались как
+    # три статьи, и итог казался вторым выкупом.
     assert labels[:3] == ["Цена участка / права",
-                          "Выкуп ЗУ/ОКС у третьих лиц (кадастровая стоимость, не цена сделки)",
-                          "Стоимость сделки"]
+                          "Выкуп ЗУ/ОКС у третьих лиц — вписан вручную",
+                          "Итого стоимость сделки (цена + выкуп)"]
+    assert rows[2][1] == core._pdf_money((PRICE + BUYOUT) * 1e6)
+
+
+def _krt_marked(**overrides):
+    """Вводные, как их кладёт контур КРТ: сумма и маркер происхождения."""
+    return _inputs(**{"land_buyout_mln": BUYOUT,
+                      "_land_buyout_source": {"value": BUYOUT, "kind": "krt_contour",
+                                              "by": "оценка по кадастровой стоимости: 3 объектов"},
+                      **overrides})
+
+
+def test_the_buyout_label_names_its_origin_not_a_contradiction():
+    """Подпись выкупа — основание суммы, без «не цена сделки» рядом с итогом сделки."""
+    bundle = core._run_authoritative_model(_krt_marked(), tep_of_a_real_project(), [], {})
+    deal = bundle["consolidated"]["deal"]
+    assert deal["buyout_basis"] == "krt_cadastral"
+    assert "оценка по кадастровой стоимости" in deal["buyout_label"]
+    rows = core._pdf_entry_cost_rows(bundle["consolidated"],
+                                     bundle["consolidated"]["report"]["expense_structure"])
+    assert rows[1][0] == deal["buyout_label"]
+    assert not any("не цена сделки" in row[0] for row in rows)
+    # Правка руками — сумма уже не контурная, и подпись это говорит.
+    edited = _krt_marked(land_buyout_mln=BUYOUT + 1)
+    assert core.deal_buyout_basis(edited) == "manual"
+    assert core.deal_buyout_basis(_inputs()) == ""
+
+
+def test_a_phase_keeps_the_project_buyout_origin():
+    x = _krt_marked()
+    bundle = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=dict(x), tep=tep_of_a_real_project(), rates=[],
+        phasing={"enabled": True, "phase_count": 2, "phase_gap_months": 0}))
+    deal = bundle["consolidated"]["deal"]
+    assert deal["buyout_basis"] == "krt_cadastral", "доля очереди не делает выкуп ручным"
+    assert deal["total_label"] == core.DEAL_TOTAL_LABEL
+
+
+def test_without_a_price_the_schedule_carries_the_buyout():
+    """Цена 0, выкуп есть: график покупки — платежи выкупа, а не пустая таблица."""
+    for schedule in ("", "100%@0"):
+        op = _model(purchase_price_mln=0.0, land_buyout_mln=BUYOUT, purchase_schedule=schedule)
+        info = op["purchase_schedule"]
+        assert info["rows"], f"график «{schedule}» пуст при выкупе {BUYOUT}"
+        assert sum(r["amount_mln"] for r in info["rows"]) == pytest.approx(BUYOUT)
+        assert sum(r["buyout_mln"] for r in info["rows"]) == pytest.approx(BUYOUT)
+        assert sum(r["share"] for r in info["rows"]) == pytest.approx(1.0)
+    both = _model(land_buyout_mln=BUYOUT, purchase_schedule="40%@0; 60%@6")["purchase_schedule"]
+    assert [round(r["amount_mln"], 6) for r in both["rows"]] == [
+        pytest.approx((PRICE + BUYOUT) * 0.4), pytest.approx((PRICE + BUYOUT) * 0.6)]
+    assert core._purchase_plan_shown(both)
+    empty = _model(purchase_price_mln=0.0, purchase_schedule="100%@0")["purchase_schedule"]
+    assert not empty["rows"] and "не задана" in empty["empty_reason"]
+
+
+def test_the_telegram_deal_lines_end_with_the_total():
+    text = core._telegram_deal_lines({"purchase_price_mln": 0.0, "land_buyout_mln": 1850.0,
+                                      "land_buyout_label": core.deal_buyout_label("krt_cadastral")})
+    assert "не цена сделки" not in text
+    assert "оценка по кадастровой стоимости" in text
+    assert text.strip().splitlines()[-1].startswith("• итого стоимость сделки")
+    assert core._telegram_deal_lines({"purchase_price_mln": 700.0}).startswith("• цена покупки")
 
 
 def test_the_print_names_the_buyout():
@@ -147,12 +210,29 @@ def test_the_print_names_the_buyout():
     assert "Выкуп ЗУ/ОКС у третьих лиц" in pdf_text(pdf)
 
 
+def test_the_print_schedules_a_buyout_without_a_price():
+    """Случай 77:02:0007003:52: цена 0, выкуп 1,85 млрд — график в PDF не пуст."""
+    pytest.importorskip("reportlab", reason="reportlab нужен только для PDF")
+    from market_search.krt_requirements import pdf_text
+
+    x = _krt_marked(purchase_price_mln=0.0, purchase_schedule="100%@0")
+    bundle = core._run_authoritative_model(x, tep_of_a_real_project(), [], {})
+    text = " ".join(pdf_text(core._build_developaid_pdf(
+        {"result": bundle["consolidated"], "project_name": "П",
+         "inputs": x, "tep": tep_of_a_real_project()})).split())
+    block = text[text.index("График платежей за покупку"):][:400]
+    assert "Выкуп ЗУ/ОКС" in block and "100,0%" in block, block
+    assert "Итого стоимость сделки" in text
+    assert "не цена сделки" not in text
+
+
 def test_the_krt_estimate_fills_the_deal_line_and_names_its_origin():
     view = {"available": True, "amount_mln": 180.0, "paid_count": 3, "moscow_zero_count": 1,
             "unknown_numbers": []}
     out = contour.apply_buyout({"land_buyout_mln": 0.0}, view)
     assert out["land_buyout_mln"] == 180.0
-    assert "не цена сделки" in out["_land_buyout_source"]["by"]
+    assert "оценка по кадастровой стоимости" in out["_land_buyout_source"]["by"]
+    assert "не цена сделки" not in out["_land_buyout_source"]["by"]
     assert "у Москвы — 0" in out["_land_buyout_source"]["by"]
     assert not out["_land_buyout_source"]["warn"]
 
@@ -189,12 +269,12 @@ def test_the_inputs_page_names_the_origin_and_the_warning():
 
     out = run_json(
         "let inputs={land_buyout_mln:180,_land_buyout_source:{value:180,"
-        "by:'кадастровая стоимость, не цена сделки: 3 объектов не Москвы',"
+        "by:'оценка по кадастровой стоимости: 3 объектов не Москвы',"
         "warn:'собственник не определён у 1 объектов — в сумму не вошли: 77:05:0001001:11',"
         "kind:'krt_contour'}};",
         "const a=classFieldUnitText('land_buyout_mln','млн ₽');"
         "inputs.land_buyout_mln=90;"
         "const b=classFieldUnitText('land_buyout_mln','млн ₽');"
         "console.log(JSON.stringify([a,b]));")
-    assert "не цена сделки" in out[0] and "77:05:0001001:11" in out[0]
+    assert "оценка по кадастровой стоимости" in out[0] and "77:05:0001001:11" in out[0]
     assert out[1] == "млн ₽", "исправленное руками — уже без подписи контура"

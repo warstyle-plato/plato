@@ -11,6 +11,48 @@
 """
 # ruff: noqa
 
+# Подпись выкупа ЗУ/ОКС — по происхождению числа, а не по догадке. Сумма из
+# контура КРТ — оценка по кадастровой стоимости: она входит в стоимость
+# сделки, и подпись «не цена сделки» рядом со строкой «Стоимость сделки»
+# противоречила итогу. Одна подпись на все поверхности: страница, PDF,
+# Telegram, Платон читают `deal.buyout_label`.
+DEAL_BUYOUT_LABEL = "Выкуп ЗУ/ОКС у третьих лиц"
+# Итог сделки — строкой «Итого» под частями, а не третьей статьёй рядом с ними.
+DEAL_TOTAL_LABEL = "Итого стоимость сделки (цена + выкуп)"
+DEAL_BUYOUT_BASIS_LABELS = {
+    "krt_cadastral": "оценка по кадастровой стоимости объектов контура КРТ",
+    "manual": "вписан вручную",
+}
+
+
+def deal_buyout_basis(x: dict) -> str:
+    """Чем задан выкуп: `krt_cadastral`, `manual` или пусто, когда выкупа нет.
+
+    Контурная оценка — пока число равно записанному контуром; правка руками
+    делает его ручным. Очередь получает основание от проекта
+    (`_land_buyout_basis`): её доля выкупа с маркером контура не совпадает.
+    """
+    if n(x, "land_buyout_mln") <= 0:
+        return ""
+    inherited = str((x or {}).get("_land_buyout_basis") or "")
+    if inherited in DEAL_BUYOUT_BASIS_LABELS:
+        return inherited
+    marker = (x or {}).get("_land_buyout_source")
+    if isinstance(marker, dict) and marker.get("kind") == "krt_contour":
+        try:
+            if abs(float(marker.get("value")) - n(x, "land_buyout_mln")) < 1e-6:
+                return "krt_cadastral"
+        except (TypeError, ValueError):
+            pass
+    return "manual"
+
+
+def deal_buyout_label(basis: str) -> str:
+    """Строка выкупа с основанием суммы: «Выкуп … — оценка по кадастровой стоимости …»."""
+    note = DEAL_BUYOUT_BASIS_LABELS.get(basis)
+    return f"{DEAL_BUYOUT_LABEL} — {note}" if note else DEAL_BUYOUT_LABEL
+
+
 def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None = None) -> dict:
     project_start = d(x.get("project_start", "2027-01-01"))
     # Минимум применяется здесь, а не только при разносе расходов: РнС в день
@@ -584,16 +626,33 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                 f"выкуп ЗУ/ОКС: {w}" for w in buyout_warnings]
     for when, amount in [*purchase_payments, *buyout_payments]:
         add_capex("purchase", when, amount)
+    # График — вся сделка: цена участка и выкуп по датам. Строки только цены
+    # при нулевой цене оставляли отчёт с пустым графиком при выкупе в
+    # полтора миллиарда; доля — от стоимости сделки.
+    deal_total = (n(x, "purchase_price_mln") + n(x, "land_buyout_mln")) * 1_000_000
+    deal_by_date: dict[date, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for when, amount in purchase_payments:
+        deal_by_date[when][0] += amount
+    for when, amount in buyout_payments:
+        deal_by_date[when][1] += amount
+    buyout_basis = deal_buyout_basis(x)
     purchase_schedule_info = {
         "total_mln": n(x, "purchase_price_mln") + n(x, "land_buyout_mln"),
         "price_mln": n(x, "purchase_price_mln"),
         "buyout_mln": n(x, "land_buyout_mln"),
+        "buyout_basis": buyout_basis,
+        "buyout_label": deal_buyout_label(buyout_basis),
         "custom": bool(str(x.get("purchase_schedule") or "").strip()),
-        "rows": [{"date": when.isoformat(), "amount_mln": amount / 1_000_000,
-                  "share": (amount / (n(x, "purchase_price_mln") * 1_000_000)
-                            if n(x, "purchase_price_mln") > 0 else 0.0),
+        "rows": [{"date": when.isoformat(), "amount_mln": (price + buyout) / 1_000_000,
+                  "price_mln": price / 1_000_000, "buyout_mln": buyout / 1_000_000,
+                  "share": (price + buyout) / deal_total if deal_total > 0 else 0.0,
                   "offset_months": months_between(project_start, when)}
-                 for when, amount in purchase_payments],
+                 for when, (price, buyout) in sorted(deal_by_date.items())],
+        # Пустой график называет причину, а не печатается пустой таблицей.
+        "empty_reason": ("" if deal_by_date else
+                         "стоимость сделки не задана — платежей за покупку нет"
+                         if deal_total <= 0 else
+                         "платежи за покупку не разложены по датам"),
         "warnings": purchase_warnings,
     }
 

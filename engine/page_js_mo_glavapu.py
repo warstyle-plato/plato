@@ -702,6 +702,8 @@ async function sendTelegramResult(){
    source_label:tepSourceLabel(manual),
     purchase_price_mln:Number(inputs.purchase_price_mln||0),
     land_buyout_mln:Number(inputs.land_buyout_mln||0),
+    // Основание выкупа — из расчёта, той же подписью, что страница и PDF.
+    land_buyout_label:String(((lastResult&&lastResult.deal)||{}).buyout_label||''),
     // Источник проекта важнее сохранённого значения: в inputs могла остаться
     // площадь прошлого расчёта, и она перебивала площадь текущего участка.
     site_area_ha:Number(n.site_area_ha||(manualMeta&&manualMeta.site_area_ha)||inputs.site_area_ha||0),

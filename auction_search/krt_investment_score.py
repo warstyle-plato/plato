@@ -608,7 +608,7 @@ def _cached_cadastral_buyout(
             missing.append(f"{number}: {row['reason']}")
             continue
         row["counted_rub"] = value
-        row["reason"] = "кадастровая стоимость, не цена сделки"
+        row["reason"] = "оценка по кадастровой стоимости"
         total_rub += value
         paid_numbers.append(number)
 
