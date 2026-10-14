@@ -79,6 +79,10 @@ def unit_rates(value: float, base: str, bases: dict[str, float]) -> dict[str, An
 
     return {"base": base, "base_label": unit_label(base),
             "per_base_th": per(bases.get(base, 0.0)),
+            # На суммарную площадь в ГНС — у каждой статьи, и у той, чья база
+            # своя часть (СМР): колонка «на м² суммарной площади» в тизере
+            # печатает это число, а не ставку своей части под чужой шапкой.
+            "per_total_th": per(bases.get(UNIT_BASE_TOTAL, 0.0)),
             "per_saleable_th": per(bases.get(UNIT_BASE_SALEABLE, 0.0))}
 
 

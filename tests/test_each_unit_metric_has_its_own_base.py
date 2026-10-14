@@ -154,16 +154,32 @@ def test_the_pdf_names_each_base(single):
     assert "тыс ₽/м² наземной ГНС" not in text, "прежняя единая база вернулась"
 
 
-def test_the_teaser_names_the_construction_base(single):
+def test_the_teaser_prints_every_cost_on_the_columns_base(single):
+    """Тизер: у СМР в колонке «на м² суммарной площади» — число на эту площадь.
+
+    Владелец, 14.10.2026: «почему на м² наземной ГНС, если дальше и так
+    столбцы на м² ГНС или продаваемой». Ставка своей части (110 / 88 на
+    умолчаниях) стоит в полном отчёте с колонкой «База»; в тизере строка
+    называется просто, а число делится на базу шапки. На прежнем коде
+    падает: в клетке стояла ставка своей части, а у строки — приписка базы.
+    """
     from pypdf import PdfReader
     bundle = core._run_authoritative_model(_inputs(), _tep(), [], {})
     pdf = core.build_teaser_pdf(bundle, _inputs(), _tep(), {})
     reader = PdfReader(io.BytesIO(pdf))
     assert len(reader.pages) == 2
     text = re.sub(r"\s+", " ", " ".join(p.extract_text() for p in reader.pages))
-    assert tg.CORE_ABOVE_AREA.genitive in text and tg.CORE_UNDER_AREA.genitive in text
     assert f"тыс ₽/м² {tg.TOTAL_AREA.genitive}" in text
-    assert "тыс ₽/м² ГНС" not in text, "прежняя подпись базы вернулась"
+    assert f"на м² {tg.CORE_ABOVE_AREA.genitive}" not in text
+    assert f"на м² {tg.CORE_UNDER_AREA.genitive}" not in text
+    total = float(single["summary"]["construction_volume_sqm"])
+    rows = {r["label"]: r for r in single["report"]["construction_costs"]}
+    for label in ("СМР наземной части", "СМР подземной части"):
+        row = rows[label]
+        assert row["per_total_th"] == pytest.approx(row["value"] / total / 1000)
+        assert row["per_base_th"] != pytest.approx(row["per_total_th"])
+        shown = f"{row['per_total_th']:.1f}".replace(".", ",")
+        assert re.search(re.escape(label) + r" [\d ]+,\d " + re.escape(shown) + " ", text), label
 
 
 def test_the_page_prints_the_engines_bases():
