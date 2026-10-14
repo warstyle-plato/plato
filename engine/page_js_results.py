@@ -230,6 +230,7 @@ PAGE += r"""function renderResult(){
  const pc=(r.report||{}).project_class||{};
  const hotelProject=pc.kind==='hotel';
  const hk=(((r.finance||{}).hotel||{}).kpi)||{};
+ const dealWithBuyout=!!(r.deal&&Number(r.deal.buyout_mln)>0);
  projectParamsTable.innerHTML=
   (r.summary.phase_count?row('Очередность',r.summary.phase_count+' очереди'):'')+
   row(escapeHtml(pc.title||'Класс проекта'),escapeHtml(pc.label||'—'))+
@@ -238,11 +239,11 @@ PAGE += r"""function renderResult(){
   row('Расходы к базовому сценарию',Number(r.summary.scenario_cost_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   // Сделка с выкупом: итог и части «в т.ч.» — подписи из расчёта (`deal`),
   // те же, что в PDF и Telegram; выкуп назван основанием суммы.
-  ((r.deal&&Number(r.deal.buyout_mln)>0)
-   ?row(escapeHtml(r.deal.total_label||'Стоимость сделки'),money(expenseGroup('Цена приобретения')))
-    +row('в т.ч. цена участка / права',money(Number(r.deal.price_mln)*1e6))
+  row(dealWithBuyout?escapeHtml(r.deal.total_label||'Стоимость сделки'):'Стоимость покупки',money(expenseGroup('Цена приобретения')))+
+  (dealWithBuyout
+   ?row('в т.ч. цена участка / права',money(Number(r.deal.price_mln)*1e6))
     +row('в т.ч. '+escapeHtml(String(r.deal.buyout_label||'Выкуп ЗУ/ОКС у третьих лиц').replace(/^./,c=>c.toLowerCase())),money(Number(r.deal.buyout_mln)*1e6))
-   :row('Стоимость покупки',money(expenseGroup('Цена приобретения'))))+
+   :'')+
   row('Стоимость смены ВРИ / права',money(Number(r.capex.land_rights||0))
    +(vriRelief>0?' <span style="color:#777;font-weight:400">льгота '+money(vriRelief)+'</span>':''))+
   (hotelProject?'':row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment)))+
