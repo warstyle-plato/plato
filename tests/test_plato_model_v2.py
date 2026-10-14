@@ -624,7 +624,9 @@ CHOICE_FIELDS = [
     ("land_right", ["Собственность", "Аренда"]),
     ("vri_payment_mode", ["Единовременно", "Рассрочка"]),
     ("vri_periodicity_months", ["Ежемесячно", "Ежеквартально", "Раз в полгода", "Раз в год"]),
-    ("vri_relief_mode", ["Нет", "Доля от суммы", "Фиксированная сумма"]),
+    # Список страницы — из объявления поля (`FIELD_GROUPS`), владельца и
+    # страницы, и книги, а не копией здесь: копия отстаёт от страницы.
+    ("vri_relief_mode", "FIELD_GROUPS"),
     ("vri_financing_mode", ["Как весь проект", "Заданные доли"]),
     # Третья форма — и стройка, и компенсация: у Румянцева школа с садиком
     # строятся, а за стадион платят деньгами (решение владельца 14.08.2026).
@@ -647,6 +649,10 @@ def test_the_choice_fields_offer_the_same_list_as_the_page(book, key, expected):
              if rule.type == "list" and address in str(rule.sqref)]
     assert lists, f"у «{key}» нет выпадающего списка"
 
+    if expected == "FIELD_GROUPS":
+        expected = [label for field in (f for _, fs in core.FIELD_GROUPS for f in fs)
+                    if field[0] == key for _, label in field[4]]
+        assert expected, f"у «{key}» на странице нет списка"
     offered = lists[0].formula1.strip('"').split(",")
     assert offered == expected, f"«{key}»: в книге {offered}, на странице {expected}"
     assert sheet[address].value in expected, (

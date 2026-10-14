@@ -25,7 +25,8 @@ PAGE += r"""function vriTotalsRows(t,summary){
   const per=(area)=>area>0?num2(value/area/1000)+' тыс ₽/м²':'—';
   return row('Плата на метр',per(gns)+' ГНС · '+per(saleable)+' прод.');
  })();
- return ((Number(t.relief||0)>0)?row('Обязательство до льготы',money(t.gross))+row('Льгота',money(t.relief)):'')+
+ return ((Number(t.relief||0)>0)?row('Обязательство до льготы',money(t.gross))+
+   row('Льгота'+(t.relief_source?' — '+escapeHtml(t.relief_source):''),money(t.relief)):'')+
    row('Сумма обязательства',money(t.amount))+
    row('Основной долг',money(t.principal))+
    row('Проценты по рассрочке',money(t.interest))+
@@ -61,7 +62,7 @@ function vriBenefitsHtml(b,basis){
  if(!b)return '';
  if(!b.applicable)return b.reason?'<div class="note">'+escapeHtml(b.reason)+'</div>':'';
  const rows=b.rows||[];
- if(!rows.length&&!(b.transfer_mln>0))return '';
+ if(!rows.length&&!(b.transfer_mln>0)&&!b.override&&!b.mpt_reason)return '';
  const n0=v=>Number(v||0).toLocaleString('ru-RU',{maximumFractionDigits:0});
  const n3=v=>Number(v||0).toLocaleString('ru-RU',{maximumFractionDigits:1});
  const body=rows.map(r=>{
@@ -81,28 +82,40 @@ function vriBenefitsHtml(b,basis){
   escapeHtml((b.transfer||{}).source||'')+'</td></tr>':'';
  const total='<tr style="font-weight:600;background:#fafaf8"><td>Итого</td><td></td><td style="text-align:right">'+n0(b.jobs_total)+
   '</td><td></td><td style="text-align:right">'+n3(b.total_mln)+'</td><td style="font-size:11px">льгота МПТ '+n3(b.mpt_mln)+
+  (b.mpt_source&&b.mpt_source.text?' ('+escapeHtml(b.mpt_source.text)+')':'')+
   (b.transfer_mln>0?' + передача квартир '+n3(b.transfer_mln):'')+' млн ₽</td></tr>';
  const act=b.act||{};
  const actLink=act.url?'<a href="'+escapeHtml(act.url)+'" target="_blank" rel="noopener">'+escapeHtml(act.title||act.short||'')+'</a>':escapeHtml(act.title||'');
  const kz=b.kzatr?'<div style="font-size:11px;color:#777;margin:4px 0">Льгота за МПТ = 1000 ₽/м² × площадь × Кзатр × Кмест — '+actLink+
   '. Кмест берётся из приложения 3 к постановлению (таблица 1: графа — вид объекта, строка — группа районов; таблица 2 — приоритетные кадастровые кварталы). Кзатр '+
   String(b.kzatr.value).replace('.',',')+' ('+escapeHtml(b.kzatr.quarter)+'). Рабочие места — по нормам калькулятора ГлавАПУ.</div>':'';
- const sug=b.suggestion||{};
  let action='';
- // В КРТ льгота входит в оплату сама (`vri_relief_basis`), кнопка не нужна.
- if(b.total_mln>0&&basis==='krt_benefits'){
-  action='<div class="import-status" style="margin-top:8px"><span class="import-ok">Режим «Требование КРТ»: льгота '+n3(b.total_mln)+
-   ' млн ₽ входит в оплату ВРИ сама.</span></div>';
- }else if(b.total_mln>0){
-  if(sug.applied){
-   action='<div class="import-status" style="margin-top:8px"><span class="import-ok">Внесено в расчёт ВРИ: льгота '+n3(b.total_mln)+' млн ₽.</span></div>';
-  }else{
-   const other=sug.current_mode&&sug.current_mode!=='none'?' Сейчас в расчёте другая льгота ('+
-    (sug.current_mode==='amount'?n3(sug.current_mln)+' млн ₽':'доля от платы')+') — кнопка заменит её.':'';
-   action='<div class="toolbar" style="margin-top:8px"><button class="btn dark" onclick="applyVriBenefits()">Добавить в расчёт ВРИ суммой — '+
-    n3(b.total_mln)+' млн ₽</button><span style="font-size:12px;color:#777">Пока не нажато, льгота в экономику не входит.'+escapeHtml(other)+'</span></div>';
-  }
+ const auto=Number(b.auto_mpt_mln!==undefined?b.auto_mpt_mln:b.mpt_mln||0);
+ const ov=b.override||null;
+ // Льгота за МПТ из калькулятора по другому участку заменяет автоматическую
+ // (решение владельца, 14.10.2026): видно, откуда она, и её можно снять.
+ const override=ov?'<div class="note vri-mpt-override" style="margin-top:8px">Льгота за МПТ — '+escapeHtml(((b.mpt_source||{}).text)||'')+': <b>'+
+  n3(ov.benefit_mln)+' млн ₽</b>'+(ov.district?' · '+escapeHtml(ov.district):'')+(ov.category_label?' · '+escapeHtml(ov.category_label):'')+
+  '. Заменяет посчитанную по участку проекта ('+n3(auto)+' млн ₽), а не складывается с ней.'+
+  (ov.error?'<br><span style="color:#b3261e">'+escapeHtml(ov.error)+'</span>':'')+
+  ((ov.blockers||[]).length?'<br><span style="color:#8a4b08">'+escapeHtml(ov.blockers.join('; '))+'</span>':'')+
+  ' <button class="btn" onclick="clearMptOverride()">Снять применённую</button></div>':'';
+ // Чего не хватает для льготы за МПТ — словами и с местом, а не молчаливым нулём.
+ const missing=(!ov&&b.mpt_reason)?'<div class="note vri-mpt-missing" style="color:#8a4b08;border-color:#8a4b08;font-weight:600">'+
+  escapeHtml(b.mpt_reason)+'</div>':'';
+ if(basis==='project_benefits'){
+  action='<div class="import-status" style="margin-top:8px"><span class="'+(b.total_mln>0?'import-ok':'')+'">'+
+   (b.total_mln>0?'Льгота '+n3(b.total_mln)+' млн ₽ входит в плату за ВРИ сама (ручной льготы нет).'+
+    (b.mpt_mln>0?' Это расчёт по 1874-ПП: статус МПТ присваивает город (ДИиПП, МВК). Отказаться — «Льгота по плате: Не применять льготу».':'')
+    :'Посчитанной льготы нет — плата за ВРИ начисляется целиком.')+'</span></div>';
+ }else if(basis==='percent'||basis==='amount'){
+  action='<div class="toolbar" style="margin-top:8px"><span style="font-size:12px;color:#777">В расчёте ручная льгота — она главнее посчитанной ('+
+   n3(b.total_mln)+' млн ₽).</span><button class="btn" onclick="useProjectVriBenefits()">Вернуться к посчитанной</button></div>';
+ }else if(basis==='off'){
+  action='<div class="toolbar" style="margin-top:8px"><span style="font-size:12px;color:#777">Выбран отказ от льготы — посчитанная ('+
+   n3(b.total_mln)+' млн ₽) в плату не входит.</span><button class="btn" onclick="useProjectVriBenefits()">Применить посчитанную</button></div>';
  }
+ action=missing+override+action;
  const notes=(b.notes||[]).length?'<div class="note">'+b.notes.map(x=>escapeHtml(x)).join('<br>')+'</div>':'';
  // Вписанное положение участка против разбора кадастра — красным над
  // таблицей: ошибочное «за ТТК» дало бы льготу, которой у участка нет.
@@ -119,30 +132,45 @@ function renderVriBenefits(b,basis){
  card.style.display=html?'':'none';
  document.getElementById('vriBenefitsBody').innerHTML=html;
 }
-// Внести посчитанную льготу в расчёт: сумма уходит в «Льготу по плате»
-// режимом «Фиксированная сумма», с отметкой, откуда она. Отметка живёт, пока
-// в поле стоит именно эта сумма: правка руками делает число ручным.
-function applyVriBenefits(){
- const b=(((lastResult||{}).vri)||{}).benefits||{};
- const amount=Number(b.total_mln||0);
- if(!(amount>0))return;
- inputs.vri_relief_mode='amount';
- inputs.vri_relief_mln=amount;
- inputs._vri_relief_source={value:amount,by:'льготы за МПТ'+(b.transfer_mln>0?' и передачу квартир':'')+', посчитанные по проекту (вкладка «ВРИ»)'};
+// Вернуть посчитанную по проекту льготу: ручной нет — действует расчётная.
+function useProjectVriBenefits(){
+ inputs.vri_relief_mode='none';
+ delete inputs._vri_relief_source;
+ markFieldManual('inputs.vri_relief_mode');
+ renderInputs();refreshGroupPeeks();calculate();
+}
+// Снять льготу за МПТ, применённую из калькулятора по другому участку:
+// возвращается посчитанная по участку проекта.
+function clearMptOverride(){
+ delete inputs.vri_mpt_override;
+ renderInputs();refreshGroupPeeks();calculate();
+ if(typeof window.mptOverrideChanged==='function')window.mptOverrideChanged();
+}
+// Применить льготу за МПТ из калькулятора по другому участку: в проект
+// уходят вводные калькулятора, а сумму считает движок тем же `mpt_calculator`
+// (`vri_mpt_override`) — значение хранит происхождение и не замерзает.
+function applyMptOverride(payload,place){
+ inputs.vri_mpt_override={payload:payload,cadastral:String((place||{}).cadastral||''),
+  address:String((place||{}).address||''),applied_at:new Date().toISOString()};
  renderInputs();refreshGroupPeeks();calculate();
 }
 function vriReliefSourceNote(){
  const src=inputs._vri_relief_source;
+ if(!src)return '';
  if(!src||inputs.vri_relief_mode!=='amount'||Math.abs(Number(inputs.vri_relief_mln||0)-Number(src.value||0))>0.0005)return '';
  return '<div style="font-size:11px;color:#777;margin-top:4px">Сумма: '+escapeHtml(src.by||'')+'</div>';
 }
 function renderVri(vri){
  renderVriBenefits(vri&&vri.benefits,((vri&&vri.totals)||{}).relief_basis);
  renderKrtVriFooter();
+ if(typeof window.mptOverrideChanged==='function')window.mptOverrideChanged();
  const REGION={msk:'Москва',mo:'Московская область'};
  const MODE={lump:'единовременно',installment:'рассрочка'};
- const enabled=!!(vri&&vri.enabled);
  const t=(vri&&vri.totals)||{};
+ // Льгота на всю плату даёт «к оплате 0» и пустой график, но результат не
+ // пропадает: «до льготы − льгота = 0» видно так же, как любая другая сумма.
+ // Прежде блок прятался, и смена льготы выглядела как «ничего не пересчиталось».
+ const enabled=!!(vri&&(vri.enabled||Number(t.relief||0)>0));
  const list=(vri&&vri.warnings)||[];
 
  // Карточка в отчёте.
@@ -1479,8 +1507,11 @@ function siteParkingConflicts(id){
 }
 // Что принял расчёт для ТТК и откуда — рядом с полем, как «авто:» у К1/К2.
 function siteParkingBasis(id){
- if(id!=='parking_inside_ttk')return '';
  const basis=(projectParking()||{}).k_basis||{};
+ if(id==='parking_district')
+  return basis.district?'. Сейчас в расчёте: '+basis.district+(basis.district_source?' · '+basis.district_source:'')
+   :'. Сейчас в расчёте: района нет — разбор кадастра его не дал; без района льгота за МПТ не считается';
+ if(id!=='parking_inside_ttk')return '';
  if(basis.inside_ttk===true||basis.inside_ttk===false)
   return '. Сейчас в расчёте: '+(basis.inside_ttk?'внутри ТТК':'за ТТК')+(basis.ttk_source?' · '+basis.ttk_source:'');
  return '. Сейчас в расчёте: неизвестно — разбор кадастра признака не дал';
@@ -1889,7 +1920,8 @@ function krtVriFooterHtml(vri){
  const basis=String(t.relief_basis||'none');
  const rows=(b.rows||[]);
  const lines=[];
- rows.filter(r=>Number(r.benefit_mln||0)>0).forEach(r=>lines.push(
+ if(b.override)lines.push(`Льгота за МПТ ${escapeHtml((b.mpt_source||{}).text||'')}: ${num(b.override.benefit_mln)} млн ₽ — заменяет посчитанную по участку проекта`);
+ else rows.filter(r=>Number(r.benefit_mln||0)>0).forEach(r=>lines.push(
   `${escapeHtml(r.label)} — ${num(r.area_sqm)} м²: льгота за МПТ ${num(r.benefit_mln)} млн ₽`));
  if(Number(b.transfer_mln||0)>0)lines.push(
   `Передача квартир городу — ${num((b.transfer||{}).area_sqm)} м²: ${num(b.transfer_mln)} млн ₽`);
@@ -1902,12 +1934,16 @@ function krtVriFooterHtml(vri){
   return wrap('Льгота вписана руками — она главнее расчётной'
    +(Number(b.total_mln||0)>0?` (по проекту вышло ${num(b.total_mln)} млн ₽)`:'')+'. '+total+list+why);
  }
+ if(basis==='off')return wrap('Выбран отказ от льготы'
+  +(Number(b.total_mln||0)>0?` (по проекту вышло бы ${num(b.total_mln)} млн ₽)`:'')+'. '+total);
  if(!b.applicable)return wrap(escapeHtml(b.reason||'Льготы по проекту не посчитаны.')
   +' Льготы нет — плата за ВРИ начисляется: <b>к оплате '+mln(pay)+' млн ₽</b>.');
  if(relief>0){
   return wrap('Льгота посчитана по проекту и уже вычтена из платы:'+list+total
    +(Number(b.total_mln||0)*1e6>gross+1?' Льготы больше платы — к оплате ноль, остаток не переносится.':'')+why);
  }
+ if(b.mpt_reason&&!b.override)return wrap(escapeHtml(b.mpt_reason)
+  +' Пока льготы нет — <b>плата за ВРИ начисляется: '+mln(pay)+' млн ₽</b>.'+why);
  return wrap('Льготы нет: в проекте нет нежилых объектов с льготой за МПТ и передачи квартир городу. '
   +'Режим КРТ плату не отменяет — <b>плата за ВРИ начисляется: '+mln(pay)+' млн ₽</b>.'+why);
 }

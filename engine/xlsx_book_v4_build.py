@@ -349,6 +349,16 @@ def build_project_workbook(
         _V4_BOOK_OBJECTS.reset(token)
 
 
+def _v4_project_relief_words(x: dict[str, Any], tep: dict[str, Any]) -> str:
+    """Подпись льготы проекта в книге — откуда МПТ, словами движка (`mpt_source`)."""
+    benefits = vri_benefits_for(x, tep)
+    source = str((benefits.get("mpt_source") or {}).get("text") or "")
+    words = "Льготы проекта: МПТ" + (f" {source}" if source else "")
+    if float(benefits.get("transfer_mln") or 0.0) > 0:
+        words += " + передача квартир"
+    return words
+
+
 def _build_project_workbook(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -576,7 +586,7 @@ def _build_project_workbook(
                 missing.append(f"паркинг объектов: применённое размещение {_coord}")
 
     put(_V4_INPUT_CELLS["vri_relief_mln"], number=round(relief_amount / 1_000_000, 6),
-        label="льгота по плате за ВРИ (движковая: доля, сумма и зачёт вместе)")
+        label="льгота по плате за ВРИ (движковая: доля, сумма, МПТ и передача квартир, зачёт — вместе)")
 
     for key, coord in _V4_BOOL_CELLS.items():
         if _v4_input_in_book(key):
@@ -1326,9 +1336,9 @@ def _build_project_workbook(
         ("Доля своих средств в плате", "vri_share_equity_pct", "%",
          n(x, "vri_share_equity_pct", 0.0) / 100.0),
         ("Льгота — форма", "vri_relief_mode", "режим",
-         "Льготы проекта (КРТ)" if vri_relief_basis(x) == "krt_benefits"
-         else {"share": "Долей", "amount": "Суммой"}.get(
-             str(x.get("vri_relief_mode") or "none"), "Нет льготы")),
+         {"project_benefits": _v4_project_relief_words(x, tep),
+          "percent": "Долей", "amount": "Суммой", "off": "Отказ от льготы",
+          "master": "Срезана в расчёте проекта"}.get(vri_relief_basis(x), "Нет льготы")),
         ("Льгота — доля", "vri_relief_pct", "% платы", n(x, "vri_relief_pct", 0.0) / 100.0),
         ("Зачёт переданных метров", "vri_transfer_offset_mln", "млн ₽",
          n(x, "vri_transfer_offset_mln", 0.0)),

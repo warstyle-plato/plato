@@ -62,7 +62,7 @@ def test_krt_without_non_residential_keeps_the_whole_fee(core) -> None:
     result = _calc(core, inputs, copy.deepcopy(core.TEP_DEFAULT))
     totals = result["vri"]["totals"]
     assert result["vri"]["benefits"]["total_mln"] == 0
-    assert totals["relief_basis"] == "krt_benefits"
+    assert totals["relief_basis"] == "project_benefits"
     assert totals["relief"] == 0
     assert result["capex"]["land_rights"] == pytest.approx(2864.3 * 1e6, rel=1e-9)
     # Прежнее «в КРТ отдельного платежа городу нет» — неверное правило.
@@ -75,7 +75,7 @@ def test_krt_with_offices_cuts_the_fee_by_the_project_benefits(core) -> None:
     benefits = result["vri"]["benefits"]
     assert benefits["mpt_mln"] > 0, "у офисов и ТЦ Нагатино льгота за МПТ есть"
     totals = result["vri"]["totals"]
-    assert totals["relief_basis"] == "krt_benefits"
+    assert totals["relief_basis"] == "project_benefits"
     assert totals["relief"] == pytest.approx(benefits["total_mln"] * 1e6, rel=1e-9)
     assert result["capex"]["land_rights"] == pytest.approx(
         (30000.0 - benefits["total_mln"]) * 1e6, rel=1e-9)
@@ -89,12 +89,23 @@ def test_benefits_bigger_than_the_fee_zero_it_and_no_lower(core) -> None:
     assert result["capex"]["land_rights"] == pytest.approx(0.0, abs=1e-6)
 
 
-def test_outside_krt_the_benefits_stay_a_suggestion(core) -> None:
+def test_outside_krt_the_benefits_cut_the_fee_too(core) -> None:
+    """Расчётная льгота входит в плату в любом московском проекте (владелец, 14.10.2026)."""
     inputs, tep, _ = _nagatino(core, social_area_source="norm", land_rights_cost_mln=30000.0)
     result = _calc(core, inputs, tep)
+    benefits = result["vri"]["benefits"]
+    assert benefits["total_mln"] > 0
+    assert result["vri"]["totals"]["relief_basis"] == "project_benefits"
+    assert result["vri"]["totals"]["relief"] == pytest.approx(benefits["total_mln"] * 1e6, rel=1e-9)
+
+
+def test_an_explicit_refusal_turns_the_benefits_off(core) -> None:
+    """«Нет ручной» ≠ отказ: отказаться можно только явным режимом `off`."""
+    inputs, tep, _ = _nagatino(core, land_rights_cost_mln=30000.0, vri_relief_mode="off")
+    result = _calc(core, inputs, tep)
     assert result["vri"]["benefits"]["total_mln"] > 0
+    assert result["vri"]["totals"]["relief_basis"] == "off"
     assert result["vri"]["totals"]["relief"] == 0
-    assert result["vri"]["totals"]["relief_basis"] == "none"
 
 
 def test_a_relief_entered_by_hand_wins_in_krt(core) -> None:
@@ -114,7 +125,7 @@ def test_phases_do_not_take_the_krt_relief_twice(core) -> None:
     relief = bundle["vri"]["benefits"]["total_mln"] * 1e6
     assert totals["relief"] == pytest.approx(relief, rel=1e-9)
     assert totals["amount"] == pytest.approx(30000.0 * 1e6 - relief, rel=1e-6)
-    assert totals["relief_basis"] == "krt_benefits"
+    assert totals["relief_basis"] == "project_benefits"
 
 
 def test_every_reader_of_vri_relief_passes_the_tep() -> None:
@@ -162,7 +173,8 @@ def test_the_footer_says_there_is_no_relief_and_the_fee_is_charged(core) -> None
     inputs = copy.deepcopy(core.DEFAULT_INPUTS)
     inputs.update(social_area_source="manual", land_rights_cost_mln=2864.3)
     html = _footer(_calc(core, inputs, copy.deepcopy(core.TEP_DEFAULT))["vri"])
-    assert "Льготы нет" in html and "плата за ВРИ начисляется" in html, html
+    # У ДОО по умолчанию льгота за МПТ возможна, но района нет — названо, чего не хватает.
+    assert "не хватает: район участка" in html and "плата за ВРИ начисляется" in html, html
     assert "2 864" in html or "2 864" in html, html
 
 
@@ -235,7 +247,7 @@ def test_in_a_real_browser_the_krt_mode_keeps_the_fee_and_shows_the_footer() -> 
             fee = page.evaluate("() => inputs.land_rights_cost_mln")
             page.wait_for_function(
                 "() => lastResult && lastResult.vri && lastResult.vri.totals"
-                " && lastResult.vri.totals.relief_basis==='krt_benefits'", timeout=60000)
+                " && lastResult.vri.totals.relief_basis==='project_benefits'", timeout=60000)
             # Вкладку открывает тот же `openTab`, что и кнопка: подвал живёт
             # в панели вводных, и на другой вкладке он не виден по праву.
             page.evaluate("() => { const box=document.getElementById('inputGroups');"

@@ -1319,10 +1319,10 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
     # Наша льгота по плате за ВРИ — одна сумма (доля или фиксированная) из
     # вводных, тем же `vri_relief`, что считает модель. Режим «нет» — это не
     # «льгота ноль», а «льгота не задана»: сверке не с чем сравнивать.
-    # В КРТ льгота не задаётся, а считается по проекту (`vri_relief_basis`).
+    # Без ручной льготы она считается по проекту (`vri_relief_basis`).
     relief_mode = vri_relief_basis(inputs)
     relief_value: float | None = None
-    if vri_value is not None and relief_mode in ("percent", "amount", "krt_benefits"):
+    if vri_value is not None and relief_mode in ("percent", "amount", "project_benefits"):
         relief_value = round(vri_relief({k: v for k, v in inputs.items()
                                          if k != "vri_transfer_offset_mln"},
                                         vri_value * 1_000_000, tep)[0] / 1_000_000, 3)
@@ -1512,8 +1512,8 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
                     "× 1,2036 (= 166,23078 / 138,11132, переход с базы 2025 года) × индекс "
                     "квартала: на ~20% выше приказа, по которому считаем мы")
     reasons["vri_relief.total"] = (
-        ("наша льгота — льготы проекта за МПТ и передачу квартир (в КРТ входят в оплату "
-         "сами); " if relief_mode == "krt_benefits" else "наша льгота — доля или сумма из вводных; ")
+        ("наша льгота — льготы проекта за МПТ и передачу квартир (без ручной льготы "
+         "входят в оплату сами); " if relief_mode == "project_benefits" else "наша льгота — доля или сумма из вводных; ")
         + relief_basis if relief_value is not None
         else "в проекте льгота по плате за ВРИ не задана (vri_relief_mode = «нет»); "
              + relief_basis + " — проверить основание (3135-ПП)")

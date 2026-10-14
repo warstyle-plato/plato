@@ -58,7 +58,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Минимум применяется здесь, а не только при разносе расходов: РнС в день
     # старта — это и есть тот нулевой период, на котором книга и движок
     # расходятся целиком.
-    permit = add_months(project_start, max(IRD_MONTHS_MIN, int(n(x, "ird_months", 18))))
+    permit = project_permit_date(x)
     sales_start = add_months(permit, int(n(x, "sales_lag_months", 0)))
     rve = add_months(permit, int(n(x, "construction_months", 24)))
     residual = int(n(x, "residual_sales_months", 6))
@@ -668,6 +668,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Чем задана льгота — поверхности подписывают число, а не угадывают его
     # происхождение: в КРТ это посчитанные льготы проекта, а не ручная сумма.
     vri["totals"]["relief_basis"] = vri_relief_basis(x)
+    if vri["totals"]["relief_basis"] == "project_benefits" and vri_gross > 0:
+        # Откуда льгота и почему её нет — в самом результате: молчаливый ноль
+        # льготы за МПТ выглядел как «ничего не пересчиталось».
+        _benefits = vri_benefits_for(x, t)
+        vri["totals"]["relief_source"] = (_benefits.get("mpt_source") or {}).get("text", "")
+        if _benefits.get("mpt_reason") and not _benefits.get("override"):
+            vri.setdefault("warnings", []).append(_benefits["mpt_reason"])
     if vri_relief_amount > 0 and not vri["enabled"]:
         vri["totals"]["amount"] = round(vri_net, 2)
     vri_equity_by_month: dict[date, float] = defaultdict(float)
