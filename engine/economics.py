@@ -48,8 +48,8 @@ CONSTRUCTION_COST_ITEMS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Проектирование (П, РД) и авторский надзор",
      ("design_p", "design_rd", "author_supervision")),
     ("Подготовка территории", ("preparation",)),
-    ("СМР наземной части", ("main_above",)),
-    ("СМР подземной части", ("main_under",)),
+    ("СМР наземной площади МКД", ("main_above",)),
+    ("СМР подземной площади МКД", ("main_under",)),
     ("Наружные инженерные сети", ("utilities",)),
     ("Благоустройство", ("landscaping",)),
     ("Сдача и ввод", ("commissioning",)),
@@ -95,7 +95,12 @@ def construction_cost_rows(capex: dict[str, float], bases: dict[str, float]) -> 
         if value <= 0:
             continue
         rows.append({"label": label, "keys": list(keys), "value": value,
-                     **unit_rates(value, capex_unit_base(keys[0]), bases)})
+                     **unit_rates(value, capex_unit_base(keys[0]), bases),
+                     # На суммарную площадь в ГНС — и у статьи, чья база своя
+                     # часть (СМР): колонка «на м² суммарной площади» в тизере
+                     # печатает это число, а не ставку своей части под чужой шапкой.
+                     "per_total_th": (value / bases[UNIT_BASE_TOTAL] / 1000
+                                      if bases.get(UNIT_BASE_TOTAL) else None)})
     return rows
 
 

@@ -85,8 +85,8 @@ def _check_rows(result: dict) -> None:
         assert row["base"] == "total_area"
         assert row["per_base_th"] == pytest.approx(row["value"] / bases["total_area"] / 1000)
     costs = {row["label"]: row for row in result["report"]["construction_costs"]}
-    assert costs["СМР наземной части"]["base"] == "core_above_area"
-    assert costs["СМР подземной части"]["base"] == "core_under_area"
+    assert costs["СМР наземной площади МКД"]["base"] == "core_above_area"
+    assert costs["СМР подземной площади МКД"]["base"] == "core_under_area"
     assert costs["ИРД"]["base"] == "total_area"
     assert summary["full_cost_per_total_area_th"] == pytest.approx(
         summary["total_expenses"] / bases["total_area"] / 1000)
@@ -98,9 +98,9 @@ def test_construction_is_divided_by_the_part_it_was_charged_on(single):
     """СМР на метр своей части — это и есть введённая ставка."""
     costs = {row["label"]: row for row in single["report"]["construction_costs"]}
     inputs = _inputs()
-    assert costs["СМР наземной части"]["per_base_th"] == pytest.approx(
+    assert costs["СМР наземной площади МКД"]["per_base_th"] == pytest.approx(
         float(inputs["main_above_th_per_sqm"]))
-    assert costs["СМР подземной части"]["per_base_th"] == pytest.approx(
+    assert costs["СМР подземной площади МКД"]["per_base_th"] == pytest.approx(
         float(inputs["main_under_th_per_sqm"]))
 
 
@@ -154,16 +154,32 @@ def test_the_pdf_names_each_base(single):
     assert "тыс ₽/м² наземной ГНС" not in text, "прежняя единая база вернулась"
 
 
-def test_the_teaser_names_the_construction_base(single):
+def test_the_teaser_prints_every_cost_on_the_columns_base(single):
+    """Тизер: у СМР в колонке «на м² суммарной площади» — число на эту площадь.
+
+    Владелец, 14.10.2026: «почему на м² наземной ГНС, если дальше и так
+    столбцы на м² ГНС или продаваемой». Ставка своей части (110 / 88 на
+    умолчаниях) стоит в полном отчёте с колонкой «База»; в тизере строка
+    называется просто, а число делится на базу шапки. На прежнем коде
+    падает: в клетке стояла ставка своей части, а у строки — приписка базы.
+    """
     from pypdf import PdfReader
     bundle = core._run_authoritative_model(_inputs(), _tep(), [], {})
     pdf = core.build_teaser_pdf(bundle, _inputs(), _tep(), {})
     reader = PdfReader(io.BytesIO(pdf))
     assert len(reader.pages) == 2
     text = re.sub(r"\s+", " ", " ".join(p.extract_text() for p in reader.pages))
-    assert tg.CORE_ABOVE_AREA.genitive in text and tg.CORE_UNDER_AREA.genitive in text
     assert f"тыс ₽/м² {tg.TOTAL_AREA.genitive}" in text
-    assert "тыс ₽/м² ГНС" not in text, "прежняя подпись базы вернулась"
+    assert f"на м² {tg.CORE_ABOVE_AREA.genitive}" not in text
+    assert f"на м² {tg.CORE_UNDER_AREA.genitive}" not in text
+    total = float(single["summary"]["construction_volume_sqm"])
+    rows = {r["label"]: r for r in single["report"]["construction_costs"]}
+    for label in ("СМР наземной площади МКД", "СМР подземной площади МКД"):
+        row = rows[label]
+        assert row["per_total_th"] == pytest.approx(row["value"] / total / 1000)
+        assert row["per_base_th"] != pytest.approx(row["per_total_th"])
+        shown = f"{row['per_total_th']:.1f}".replace(".", ",")
+        assert re.search(re.escape(label) + r" [\d ]+,\d " + re.escape(shown) + " ", text), label
 
 
 def test_the_page_prints_the_engines_bases():

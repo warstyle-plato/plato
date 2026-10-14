@@ -63,6 +63,8 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
     report = consolidated.get("report") or {}
     vri_totals = (consolidated.get("vri") or {}).get("totals") or {}
     tep_total = (consolidated.get("tep") or {}).get("total") or {}
+    tep_rows_by_key = {str(row.get("key")): row
+                       for row in (consolidated.get("tep") or {}).get("rows") or []}
     # Машино-места проекта считаются один раз и одним правилом: подземные,
     # наземные и гаражи объектов. Выражение, повторённое трижды внутри
     # словаря, читалось бы хуже и однажды разошлось бы само с собой.
@@ -89,7 +91,8 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
             str((consolidated.get("dates") or {}).get("project_start") or ""),
             str((consolidated.get("dates") or {}).get("rve") or "")),
         "products": {
-            str(item.get("key")): _presentation_product_numbers(item)
+            str(item.get("key")): {**_presentation_product_numbers(item),
+                                   **_presentation_product_count(item, tep_rows_by_key)}
             for item in (report.get("products") or [])
         },
         # Строки удельной экономики и себестоимости — те же, что в полном PDF
@@ -210,6 +213,28 @@ def _presentation_product_numbers(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _presentation_product_count(item: dict[str, Any],
+                                tep_rows_by_key: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Сколько единиц продукта в ТЭП и в какой мере — как в полном PDF.
+
+    Количество продукта продаж — это объём продаж: у квартир метры, у
+    паркинга проданные места. В графе «Единиц» ТЭП стоит другое — построенное
+    в своей мере счёта (`tep_count_measure`): 90 квартир и 119 м/м, а не «—»
+    и 108 при итоге 119 под ними.
+    """
+    key = str(item.get("key") or "")
+    row = tep_rows_by_key.get(key)
+    if row is None:
+        # Паркинг объекта — продукт без своей строки ТЭП: построенные места
+        # лежат на нём самом.
+        built = item.get("built_units")
+        return {"tep_units": None if built is None else float(built),
+                "count_measure": COUNT_PARKING if built is not None else ""}
+    measure = tep_count_measure(key)
+    units = float(row.get("units") or 0.0)
+    return {"tep_units": units if measure else None, "count_measure": measure}
+
+
 def _presentation_rows_mln(rows: Any, total_key: str) -> list[dict[str, Any]]:
     """Строки отчёта с итогом в миллионах; ставки на метр — как пришли."""
     out: list[dict[str, Any]] = []
@@ -222,6 +247,7 @@ def _presentation_rows_mln(rows: Any, total_key: str) -> list[dict[str, Any]]:
             "base": str(item.get("base") or "") or None,
             "base_label": str(item.get("base_label") or "") or None,
             "per_base_th": (None if item.get("per_base_th") is None else float(item.get("per_base_th"))),
+            "per_total_th": (None if item.get("per_total_th") is None else float(item.get("per_total_th"))),
             "per_saleable_th": (None if item.get("per_saleable_th") is None
                                 else float(item.get("per_saleable_th"))),
             "share": (None if item.get("share") is None else float(item.get("share"))),
