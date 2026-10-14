@@ -283,7 +283,7 @@ function renderContour(d){
  const rows=Object.fromEntries((buy.rows||[]).map(r=>[r.cadastral_number,r]));
  const buyText=buy.available?fmt(buy.amount_mln,1)+' млн ₽':(buy.pending?'дочитываем ЕГРН':'не закрыт');
  let h='<h3 style="margin:14px 0 6px">ОКС и ЗУ в контуре КРТ — по карте НСПД</h3>';
- h+='<div class="kpis" style="grid-template-columns:repeat(4,1fr)">'+[[c.land||0,'ЗУ в контуре'],[(c.building||0)+(c.structure||0)+(c.unfinished||0),'ОКС в контуре'],[fmt(dem.area_sqm)+' м²','снос: '+(dem.label||'')],[buyText,'выкуп — кадастровая стоимость, не цена сделки']].map(x=>'<div class="kpi"><b>'+esc(x[0])+'</b><span>'+esc(x[1])+'</span></div>').join('')+'</div>';
+ h+='<div class="kpis" style="grid-template-columns:repeat(4,1fr)">'+[[c.land||0,'ЗУ в контуре'],[(c.building||0)+(c.structure||0)+(c.unfinished||0),'ОКС в контуре'],[fmt(dem.area_sqm)+' м²','снос: '+(dem.label||'')],[buyText,'выкуп — оценка по кадастровой стоимости']].map(x=>'<div class="kpi"><b>'+esc(x[0])+'</b><span>'+esc(x[1])+'</span></div>').join('')+'</div>';
  const notes=[];
  if(d.contour&&d.contour.source)notes.push('Контур: '+d.contour.source+'.');
  if(d.problem)notes.push(d.problem+'.');

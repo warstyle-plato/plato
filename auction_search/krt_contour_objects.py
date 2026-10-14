@@ -492,7 +492,7 @@ def apply_buyout(inputs: dict[str, Any], buyout: dict[str, Any] | None) -> dict[
         return out
     paid = int(buyout.get("paid_count") or 0)
     city = int(buyout.get("moscow_zero_count") or 0)
-    by = (f"кадастровая стоимость, не цена сделки: {paid} объектов не Москвы"
+    by = (f"оценка по кадастровой стоимости: {paid} объектов не Москвы"
           + (f", {city} у Москвы — 0" if city else ""))
     warn = ""
     if unknown:
@@ -690,6 +690,6 @@ def view(slug: str, requirements: dict[str, Any] | None,
                 "available", "pending", "reason", "amount_mln", "known_paid_mln",
                 "moscow_zero_count", "paid_count", "unknown_numbers", "read", "total")},
             "rows": list(state.get("rows") or []),
-            "basis": "кадастровая стоимость, не цена сделки",
+            "basis": "оценка по кадастровой стоимости",
         }
     return out

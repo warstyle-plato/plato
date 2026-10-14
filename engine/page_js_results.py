@@ -230,16 +230,20 @@ PAGE += r"""function renderResult(){
  const pc=(r.report||{}).project_class||{};
  const hotelProject=pc.kind==='hotel';
  const hk=(((r.finance||{}).hotel||{}).kpi)||{};
+ const dealWithBuyout=!!(r.deal&&Number(r.deal.buyout_mln)>0);
  projectParamsTable.innerHTML=
   (r.summary.phase_count?row('Очередность',r.summary.phase_count+' очереди'):'')+
   row(escapeHtml(pc.title||'Класс проекта'),escapeHtml(pc.label||'—'))+
   row('Сценарий',scenarioSelect.options[scenarioSelect.selectedIndex].text)+
   row('Доходы к базовому сценарию',Number(r.summary.scenario_revenue_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
   row('Расходы к базовому сценарию',Number(r.summary.scenario_cost_multiplier||1).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x')+
-  row('Стоимость покупки',money(expenseGroup('Цена приобретения')))+
-  ((r.deal&&Number(r.deal.buyout_mln)>0)
+  // Сделка с выкупом: итог и части «в т.ч.» — подписи из расчёта (`deal`),
+  // те же, что в PDF и Telegram; выкуп назван основанием суммы.
+  row(dealWithBuyout?escapeHtml(r.deal.total_label||'Стоимость сделки'):'Стоимость покупки',money(expenseGroup('Цена приобретения')))+
+  (dealWithBuyout
    ?row('в т.ч. цена участка / права',money(Number(r.deal.price_mln)*1e6))
-    +row('в т.ч. выкуп ЗУ/ОКС у третьих лиц (кадастровая стоимость, не цена сделки)',money(Number(r.deal.buyout_mln)*1e6)):'')+
+    +row('в т.ч. '+escapeHtml(String(r.deal.buyout_label||'Выкуп ЗУ/ОКС у третьих лиц').replace(/^./,c=>c.toLowerCase())),money(Number(r.deal.buyout_mln)*1e6))
+   :'')+
   row('Стоимость смены ВРИ / права',money(Number(r.capex.land_rights||0))
    +(vriRelief>0?' <span style="color:#777;font-weight:400">льгота '+money(vriRelief)+'</span>':''))+
   (hotelProject?'':row(r.summary.social_payment_mode==='Строительство'?'Строительство соцобъектов':'Социальная компенсация',socialMoney(r.summary.social_payment)))+
@@ -271,11 +275,14 @@ PAGE += r"""function renderResult(){
  // остальные блоки страницы.
  const phased=!!(phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length>1);
  // График платежей за покупку — как посчитано движком: даты, суммы, доли.
- // Одна строка в дату сделки — прежнее поведение, и её не печатаем.
+ // Одна строка в дату сделки — прежнее поведение, и её не печатаем; сделку
+ // с выкупом печатаем всегда (так же решает PDF, `_purchase_plan_shown`).
  const purchase=r.report.purchase||{};
  const purchaseRows=(purchase.rows||[]);
- const purchaseLine=(purchase.custom||(purchase.warnings||[]).length)
-  ?row('График платежей за покупку',purchaseRows.map(x=>dateRu(x.date)+' — '+money(x.amount_mln*1e6)+' ('+pct(x.share)+')').join('<br>')
+ const purchaseLine=(purchase.custom||(purchase.warnings||[]).length||Number(purchase.buyout_mln)>0)
+  ?row('График платежей за покупку',(purchaseRows.length
+     ?purchaseRows.map(x=>dateRu(x.date)+' — '+money(x.amount_mln*1e6)+' ('+pct(x.share)+')').join('<br>')
+     :'Графика нет: '+escapeHtml(purchase.empty_reason||'платежи за покупку не рассчитаны'))
      +((purchase.warnings||[]).length?'<div class="cell-sub" style="color:#A35D00">'+purchase.warnings.map(escapeHtml).join('; ')+'</div>':''))
   :'';
  reportFinanceTable.innerHTML=

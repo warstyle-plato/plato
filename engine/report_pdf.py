@@ -324,6 +324,22 @@ def _phase_comparison_pdf(table: dict[str, Any], regular: str, bold: str, colors
     return out
 
 
+def _pdf_deal_buyout_label(deal: dict[str, Any]) -> str:
+    """Подпись выкупа из расчёта; без основания — голое название строки."""
+    return str((deal or {}).get("buyout_label") or DEAL_BUYOUT_LABEL)
+
+
+def _purchase_plan_shown(plan: dict[str, Any]) -> bool:
+    """График покупки печатается, когда он что-то говорит сверх «всё в дату сделки».
+
+    Задан график, есть оговорки разбора или в сделке есть выкуп у третьих лиц:
+    у сделки из двух частей видно, когда платится каждая.
+    """
+    plan = plan or {}
+    return bool(plan.get("custom") or plan.get("warnings")
+                or float(plan.get("buyout_mln") or 0) > 0)
+
+
 def _pdf_entry_cost_rows(result: dict[str, Any],
                          expense_structure: list[dict[str, Any]]) -> list[list[str]]:
     """Цена входа и плата за ВРИ — из расчёта, а не из формы.
@@ -345,10 +361,12 @@ def _pdf_entry_cost_rows(result: dict[str, Any],
     # расчёта, итог — та же группа структуры расходов.
     deal = result.get("deal") or {}
     buyout = float(deal.get("buyout_mln") or 0) * 1_000_000
+    # Итог стоит под частями строкой «Итого … (цена + выкуп)»: три строки на
+    # равных читались как три статьи, и итог казался вторым выкупом. Подпись
+    # выкупа — основание суммы из движка (`deal.buyout_label`).
     deal_rows = ([["Цена участка / права", _pdf_money(purchase - buyout)],
-                  ["Выкуп ЗУ/ОКС у третьих лиц (кадастровая стоимость, не цена сделки)",
-                   _pdf_money(buyout)],
-                  ["Стоимость сделки", _pdf_money(purchase)]]
+                  [_pdf_deal_buyout_label(deal), _pdf_money(buyout)],
+                  [DEAL_TOTAL_LABEL, _pdf_money(purchase)]]
                  if buyout > 0 else [["Цена приобретения", _pdf_money(purchase)]])
     return [
         *deal_rows,
@@ -1995,17 +2013,30 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # всей цены, а выборка идёт за платежами, и разница между ними видна
     # только когда напечатаны сроки.
     purchase_plan = report.get("purchase") or {}
-    if purchase_plan.get("custom") or purchase_plan.get("warnings"):
-        purchase_rows = [["Дата", "Сумма", "Доля цены"]]
-        for item in purchase_plan.get("rows") or []:
-            when = str(item.get("date") or "")[:10]
-            purchase_rows.append([
-                ".".join(reversed(when.split("-"))) if when else "—",
-                _pdf_money(float(item.get("amount_mln") or 0) * 1e6),
-                _pdf_num(float(item.get("share") or 0) * 100, 1) + "%",
-            ])
-        block = [P("График платежей за покупку", h2),
-                 table(purchase_rows, [60*mm, 60*mm, 50*mm], font_size=8.0)]
+    if _purchase_plan_shown(purchase_plan):
+        plan_rows = purchase_plan.get("rows") or []
+        with_buyout = float(purchase_plan.get("buyout_mln") or 0) > 0
+        block = [P("График платежей за покупку", h2)]
+        if plan_rows:
+            head = (["Дата", "Цена участка", "Выкуп ЗУ/ОКС", "Итого", "Доля сделки"]
+                    if with_buyout else ["Дата", "Сумма", "Доля сделки"])
+            purchase_rows = [head]
+            for item in plan_rows:
+                when = str(item.get("date") or "")[:10]
+                purchase_rows.append([
+                    ".".join(reversed(when.split("-"))) if when else "—",
+                    *([_pdf_money(float(item.get("price_mln") or 0) * 1e6),
+                       _pdf_money(float(item.get("buyout_mln") or 0) * 1e6)]
+                      if with_buyout else []),
+                    _pdf_money(float(item.get("amount_mln") or 0) * 1e6),
+                    _pdf_num(float(item.get("share") or 0) * 100, 1) + "%",
+                ])
+            widths = ([30*mm, 36*mm, 36*mm, 36*mm, 32*mm] if with_buyout
+                      else [60*mm, 60*mm, 50*mm])
+            block.append(table(purchase_rows, widths, font_size=8.0))
+        else:
+            block.append(P("Графика нет: " + str(purchase_plan.get("empty_reason")
+                                                 or "платежи за покупку не рассчитаны"), small))
         for warning in purchase_plan.get("warnings") or []:
             block.append(P(str(warning), small))
         story.append(KeepTogether(block))

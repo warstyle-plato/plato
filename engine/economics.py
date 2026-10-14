@@ -874,6 +874,9 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "price_mln": n(x, "purchase_price_mln"),
             "buyout_mln": n(x, "land_buyout_mln"),
             "total_mln": n(x, "purchase_price_mln") + n(x, "land_buyout_mln"),
+            "buyout_basis": deal_buyout_basis(x),
+            "buyout_label": deal_buyout_label(deal_buyout_basis(x)),
+            "total_label": DEAL_TOTAL_LABEL,
         },
         "summary": {
             "revenue": total_revenue,

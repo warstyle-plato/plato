@@ -1515,8 +1515,12 @@ def _consolidate_phase_results(
         "commercial_costs": commercial_costs,
         "finance": finance,
         # Сделка проекта — сумма сделок очередей, строка к строке.
-        "deal": {key: sum(float((r.get("deal") or {}).get(key) or 0.0) for r in results)
-                 for key in ("price_mln", "buyout_mln", "total_mln")},
+        "deal": {**{key: sum(float((r.get("deal") or {}).get(key) or 0.0) for r in results)
+                    for key in ("price_mln", "buyout_mln", "total_mln")},
+                 **{key: next((str((r.get("deal") or {}).get(key) or "") for r in results
+                               if (r.get("deal") or {}).get("buyout_basis")), "")
+                    for key in ("buyout_basis", "buyout_label")},
+                 "total_label": DEAL_TOTAL_LABEL},
         "summary": {
             "revenue": total_revenue, "capex": total_capex,
             "commercial_costs": commercial_costs, "ebitda": ebitda,
@@ -2051,6 +2055,8 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         p_inputs["purchase_price_mln"] = shared_base_mln["purchase"]*cash_weights["purchase"][idx]/100
         # Выкуп — часть сделки: той же долей, что цена участка.
         p_inputs["land_buyout_mln"] = n(x_master, "land_buyout_mln")*cash_weights["purchase"][idx]/100
+        # Основание выкупа — проекта: доля очереди с маркером контура не совпадёт.
+        p_inputs["_land_buyout_basis"] = deal_buyout_basis(x_master)
         p_inputs["land_rights_cost_mln"] = shared_base_mln["land_rights"]*cash_weights["land_rights"][idx]/100
         # Свои средства — один котёл на проект: без деления каждая очередь
         # получила бы всю сумму, и проект «финансировал» бы себя вчетверо.

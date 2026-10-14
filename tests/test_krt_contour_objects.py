@@ -191,7 +191,7 @@ def test_buyout_gives_moscow_zero_with_a_reason_and_names_unknown_owners(monkeyp
     assert unknown["owner"] == "unknown" and unknown["counted_rub"] is None
     assert "77:05:0001001:11" in state["unknown_numbers"]
     assert state["available"] is False
-    assert rows["77:05:0001001:10"]["reason"] == "кадастровая стоимость, не цена сделки"
+    assert rows["77:05:0001001:10"]["reason"] == "оценка по кадастровой стоимости"
     # Сумма по доказанным: участок 10 (100 млн), здания 1001 (50) и 1003 (30).
     assert state["known_paid_mln"] == pytest.approx(180.0)
 
@@ -203,7 +203,7 @@ def test_the_card_view_reads_the_disk_and_one_buyout(monkeypatch):
                    lookup=_egrn_lookup, buyout=krt_investment_score._cached_cadastral_buyout)
     view = contour.view("sample", DECISION, krt_investment_score._cached_cadastral_buyout)
     assert view["available"] and view["demolition"]["area_sqm"] == pytest.approx(4500)
-    assert view["buyout"]["basis"] == "кадастровая стоимость, не цена сделки"
+    assert view["buyout"]["basis"] == "оценка по кадастровой стоимости"
     assert view["buyout"]["moscow_zero_count"] == 1
     assert view["counts"]["building"] == 3 and view["counts"]["land"] == 2
 
@@ -306,4 +306,4 @@ def test_the_card_lists_contour_objects_and_says_what_is_not_counted():
     assert "Только в перечне" in html and "77:05:0001001:1004" in html
     assert "Москва — 0" in html and "выкупать не надо" in html
     assert "Не определён собственник" in html and "77:05:0001001:11" in html
-    assert "не цена сделки" in html
+    assert "оценка по кадастровой стоимости" in html and "не цена сделки" not in html

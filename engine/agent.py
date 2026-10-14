@@ -4105,6 +4105,11 @@ def _agent_initial_snapshot(req: AgentChatRequest, bundle: dict[str, Any]) -> di
         "bank_target_llcr_x": _AGENT_BANK_LLCR_TARGET,
         "glavapu_loaded": bool((req.inputs.get("_glavapu_import") or {}).get("normalized")),
         "purchase_price_mln": round(n(req.inputs, "purchase_price_mln"), 2),
+        # Стоимость сделки частями и итогом, выкуп — с основанием суммы: те же
+        # числа и подписи, что в PDF, и Платон не складывает их второй раз.
+        "deal": {key: (selected.get("deal") or {}).get(key)
+                 for key in ("price_mln", "buyout_mln", "total_mln",
+                             "buyout_label", "total_label")},
         "project_class": req.inputs.get("project_class"),
         "preset_expert_overrides": req.inputs.get("_preset_expert_overrides"),
     }
