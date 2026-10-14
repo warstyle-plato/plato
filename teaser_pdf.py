@@ -31,7 +31,7 @@ from reportlab.platypus import (BaseDocTemplate, Frame, Image, KeepInFrame, Next
                                 PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle)
 from reportlab.platypus.doctemplate import LayoutError
 
-from terms_glossary import SALEABLE_AREA, TERMS, TOTAL_AREA
+from terms_glossary import SALEABLE_AREA, TOTAL_AREA
 
 NAVY = colors.HexColor("#17365D")
 NAVY_DARK = colors.HexColor("#0B1F33")
@@ -400,7 +400,7 @@ def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, 
     products = {p["key"]: p for p in (model.get("products") or [])}
     apartments = products.get("apartments") or {}
     costs = {c["label"]: c for c in (model.get("construction_costs") or [])}
-    smr = costs.get("СМР наземной части") or {}
+    smr = costs.get("СМР наземной площади МКД") or {}
     rows: list[tuple[str, str, str]] = []
     rows.append(("Доходная часть", fm.mln(eff.get("revenue_mln")), "млн ₽"))
     if apartments.get("avg_price_th"):
@@ -410,7 +410,7 @@ def _economy_rows(model: dict[str, Any], fm: _Formats) -> tuple[list[tuple[str, 
     # СМР — на ту часть, на которую начислено; база и подпись — движка
     # (решение 4 ревизии книги).
     if smr.get("per_base_th"):
-        rows.append(("  СМР наземной части", fm.th(smr["per_base_th"], 0),
+        rows.append(("  СМР наземной площади МКД", fm.th(smr["per_base_th"], 0),
                      str(smr.get("base_label") or "").replace("тыс. ", "тыс ")))
     rows.append(("Коммерческие расходы", fm.mln(eff.get("commercial_mln")), "млн ₽"))
     rows.append(("Стоимость финансирования", fm.mln(eff.get("financing_mln")), "млн ₽"))
@@ -821,16 +821,23 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
     col1.append(_kv(efficiency, col_w, st, label_share=0.56,
                     bold_rows=tuple(i for i, row in enumerate(efficiency) if row[0] == "LLCR проекта")))
     col1.append(_section("ТЭП", col_w, st))
+    # Единицы — построенные в мере счёта строки ТЭП, как в полном PDF: объём
+    # продаж здесь печатал «—» у квартир (они продаются метрами) и 108
+    # проданных мест над итогом 119 построенных.
     tep_rows = [[p["label"], fm.sqm(p.get("gns")) if p.get("gns") else "—",
                  fm.sqm(p.get("saleable")) if p.get("saleable") else "—",
-                 fm.count(p.get("quantity")) if p.get("unit") == "шт." else "—"] for p in products]
+                 fm.count(p.get("tep_units")) if p.get("count_measure") and p.get("tep_units")
+                 else "—"] for p in products]
     # Итог штук — разбор по мере, а не число: складывать квартиры с
     # машино-местами и местами в саду нечем.
     counts = tep.get("units_by_measure") or {}
-    tep_rows.append(["Итого", fm.sqm(tep.get("project_gns_sqm")), fm.sqm(tep.get("saleable_sqm")),
+    # Итог колонки — сумма её строк, подземная площадь в ней есть: наземная
+    # ГНС проекта (14 203 при строках на 18 666) под ними не сходилась ни с
+    # чем. Это та же суммарная площадь в ГНС, что на первой странице.
+    tep_rows.append(["Итого", fm.sqm(tep.get("construction_volume_sqm")), fm.sqm(tep.get("saleable_sqm")),
                      " · ".join(f"{fm.count(value)} {measure}"
                                 for measure, value in counts.items() if value) or "—"])
-    col1.append(_grid(["Продукт", "ГНС, м²", "Продаваемая, м²", "Единиц"], tep_rows,
+    col1.append(_grid(["Продукт", "Суммарная ГНС, м²", "Продаваемая, м²", "Единиц"], tep_rows,
                       [col_w * 0.40, col_w * 0.22, col_w * 0.22, col_w * 0.16], st, bold_last=True))
     taxes = model.get("taxes") or {}
     col1.append(_section("Финансовая деятельность и налоги", col_w, st))
@@ -885,11 +892,12 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
 
     # Колонка 3: себестоимость, структура расходов, финансовая деятельность, налоги.
     col3: list[Any] = [_section("Себестоимость строительства", col_w, st)]
-    # Статьи — на суммарную площадь в ГНС (шапка), СМР — на свою часть, и
-    # такая строка называет свою базу сама. Базы — движка.
-    cost_rows = [[c["label"] + ("" if c.get("base") in (None, TOTAL_AREA.key)
-                                else f", на м² {TERMS[c['base']].genitive}"),
-                  fm.mln(c.get("total_mln")), fm.th(c.get("per_base_th")), fm.th(c.get("per_saleable_th"))]
+    # Колонки — на суммарную площадь в ГНС и на продаваемую, у ВСЕХ статей,
+    # СМР тоже (владелец, 14.10.2026: «почему на м² наземной ГНС, если дальше
+    # и так столбцы на м² ГНС или продаваемой»). Ставка СМР на метр своей
+    # части — в полном отчёте, где у строки есть колонка «База».
+    cost_rows = [[c["label"], fm.mln(c.get("total_mln")), fm.th(c.get("per_total_th")),
+                  fm.th(c.get("per_saleable_th"))]
                  for c in (model.get("construction_costs") or [])]
     col3.append(_grid(["Статья", "млн ₽", f"тыс ₽/м² {TOTAL_AREA.genitive}", "тыс ₽/м² прод."], cost_rows,
                       [col_w * 0.49, col_w * 0.17, col_w * 0.17, col_w * 0.17], st))
@@ -914,7 +922,8 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
         f"Расчёт {origin.get('calculation_id') or '—'} · движок DevelopAid {origin.get('engine_version') or '—'} "
         f"· {origin.get('generated_at') or ''}. Удельные показатели — каждый на свою базу: расходы на "
         f"метр {TOTAL_AREA.genitive} (наземная и подземная), выручка и прибыль на метр "
-        f"{SALEABLE_AREA.genitive}, СМР — на свою часть. Считает движок; тизер их не выводит сам.", st.note))
+        f"{SALEABLE_AREA.genitive}; СМР тоже на {TOTAL_AREA.genitive}, ставка на метр своей части — "
+        "в полном отчёте. Считает движок; тизер их не выводит сам.", st.note))
     return _fit_page(story, width)
 
 

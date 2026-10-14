@@ -1768,7 +1768,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Класс — то же решение, что у карточки «Ключевые параметры»
     # (`project_class_view`): у гостиницы — звёздность, а не класс жилья.
     _class_dev=project_class_view(inputs)
-    premise_rows=[["Параметр","Значение"],[_class_dev["title"],_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной части",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м² наземной части"],["СМР подземной части",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м² подземной части"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
+    premise_rows=[["Параметр","Значение"],[_class_dev["title"],_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной площади МКД",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м²"],["СМР подземной площади МКД",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м²"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
     # Тип проекта называется только там, где он не тот, что у всех: строка
     # «Жилой / смешанный» в каждом отчёте — постоянная приписка, а такие
     # перестают читаться. Оставшееся от жилья идёт своей строкой, потому что
@@ -1787,7 +1787,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             # Стройку гостиницы считает её ставка (`hotel_cost_th_per_sqm`),
             # а не ставки жилья: СМР дома и сети класса жилья у неё не
             # участвуют, и напечатанные они читались бы её предпосылкой.
-            _mkd_premises |= {"СМР наземной части", "СМР подземной части",
+            _mkd_premises |= {"СМР наземной площади МКД", "СМР подземной площади МКД",
                               "Наружные инженерные сети, в т.ч. техприсоединение"}
         premise_rows = [row for row in premise_rows if row[0] not in _mkd_premises]
         # Тип и остаток жилья — строки движка (`project_kind_rows`), те же,

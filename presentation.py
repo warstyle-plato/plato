@@ -157,6 +157,10 @@ def build_project_presentation(
             "label": _text(product.get("label")),
             "unit": _text(product.get("unit")),
             "quantity": _number(product.get("quantity")),
+            # Графа «Единиц» ТЭП — построенное в своей мере счёта (движок),
+            # а не объём продаж: у квартир он в метрах, у паркинга — проданные.
+            "tep_units": _number((product_numbers.get(key) or {}).get("tep_units")),
+            "count_measure": _text((product_numbers.get(key) or {}).get("count_measure")),
             "gns": _number(product.get("gns")),
             "saleable": _number(product.get("saleable")),
             "revenue_mln": _number((product_numbers.get(key) or {}).get("revenue_mln")),

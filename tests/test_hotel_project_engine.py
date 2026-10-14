@@ -155,7 +155,7 @@ def test_the_pdf_and_the_teaser_print_the_stars() -> None:
     assert "Класс гостиницы 5*" in text
     assert "Класс жилья" not in text and "Класс проекта" not in text
     # Стройку гостиницы считает её ставка — ставки СМР жилья в предпосылках нет.
-    assert "тыс. ₽/м² наземной части" not in text
+    assert "СМР наземной площади МКД" not in text and "СМР подземной площади МКД" not in text
     teaser = " ".join(pdf_text(core.build_teaser_pdf(bundle, x, t, {})).split())
     assert "Класс гостиницы 5*" in teaser and "Комфорт" not in teaser
 
