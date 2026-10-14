@@ -79,10 +79,6 @@ def unit_rates(value: float, base: str, bases: dict[str, float]) -> dict[str, An
 
     return {"base": base, "base_label": unit_label(base),
             "per_base_th": per(bases.get(base, 0.0)),
-            # На суммарную площадь в ГНС — у каждой статьи, и у той, чья база
-            # своя часть (СМР): колонка «на м² суммарной площади» в тизере
-            # печатает это число, а не ставку своей части под чужой шапкой.
-            "per_total_th": per(bases.get(UNIT_BASE_TOTAL, 0.0)),
             "per_saleable_th": per(bases.get(UNIT_BASE_SALEABLE, 0.0))}
 
 
@@ -99,7 +95,12 @@ def construction_cost_rows(capex: dict[str, float], bases: dict[str, float]) -> 
         if value <= 0:
             continue
         rows.append({"label": label, "keys": list(keys), "value": value,
-                     **unit_rates(value, capex_unit_base(keys[0]), bases)})
+                     **unit_rates(value, capex_unit_base(keys[0]), bases),
+                     # На суммарную площадь в ГНС — и у статьи, чья база своя
+                     # часть (СМР): колонка «на м² суммарной площади» в тизере
+                     # печатает это число, а не ставку своей части под чужой шапкой.
+                     "per_total_th": (value / bases[UNIT_BASE_TOTAL] / 1000
+                                      if bases.get(UNIT_BASE_TOTAL) else None)})
     return rows
 
 
