@@ -1326,9 +1326,9 @@ def _build_project_workbook(
         ("Доля своих средств в плате", "vri_share_equity_pct", "%",
          n(x, "vri_share_equity_pct", 0.0) / 100.0),
         ("Льгота — форма", "vri_relief_mode", "режим",
-         "Льготы проекта (КРТ)" if vri_relief_basis(x) == "krt_benefits"
-         else {"share": "Долей", "amount": "Суммой"}.get(
-             str(x.get("vri_relief_mode") or "none"), "Нет льготы")),
+         {"project_benefits": "Льготы проекта (МПТ, передача квартир)",
+          "percent": "Долей", "amount": "Суммой", "off": "Отказ от льготы",
+          "master": "Срезана в расчёте проекта"}.get(vri_relief_basis(x), "Нет льготы")),
         ("Льгота — доля", "vri_relief_pct", "% платы", n(x, "vri_relief_pct", 0.0) / 100.0),
         ("Зачёт переданных метров", "vri_transfer_offset_mln", "млн ₽",
          n(x, "vri_transfer_offset_mln", 0.0)),

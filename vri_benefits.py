@@ -10,9 +10,13 @@
   квартир × 190,46 млн ₽ на тыс. м² (константа `uupss_flats` калькулятора
   ГлавАПУ; калькулятор включает её галочкой).
 
-Решение «применить» остаётся за человеком: здесь считается предложение и
-рядом с ним — рабочие места, как на листе «МПТ» калькулятора. Экономика
-модели от этого модуля не меняется, пока человек не внесёт сумму в льготу.
+Без ручной льготы итог входит в плату за ВРИ сам — в любом московском
+проекте (решение владельца, 14.10.2026; `vri_relief_basis` движка). Рядом —
+рабочие места, как на листе «МПТ» калькулятора. Льгота за МПТ, посчитанная
+калькулятором по ДРУГОМУ участку и применённая к проекту
+(`vri_mpt_override`), заменяет посчитанную по участку проекта, а не
+складывается с ней (решение владельца, 14.10.2026); пересчитывается здесь же
+тем же `mpt_calculator`, из сохранённых вводных калькулятора.
 
 Льготы считаются всегда, когда в проекте есть нежилые объекты или передача
 квартир, а не по флажку: льгота, о которой не сказали, — это деньги, о которых
@@ -109,12 +113,59 @@ def _np_of(row: dict[str, Any]) -> tuple[float, str]:
     return gns * NP_OF_GNS, f"ГНС × {NP_OF_GNS:g} (общей площади у строки нет)"
 
 
+OVERRIDE_KEY = "vri_mpt_override"
+# Чего не хватает для расчёта и где это взять: блокер строки → недостающее.
+MISSING_DISTRICT = ("район участка — выберите «Район участка» в карточке «Участок» "
+                    "или выполните разбор кадастра")
+MISSING_TTK = ("положение участка относительно ТТК — выберите его в карточке «Участок» "
+               "или выполните разбор кадастра")
+
+
+def _published_kzatr(quarter: str) -> tuple[float, str]:
+    """Кзатр квартала, а для неопубликованного — последний опубликованный не позже него."""
+    value = mpt_calculator.kzatr_for_quarter(quarter)
+    if value is not None:
+        return value, quarter
+    known = sorted(q for q in mpt_calculator.KZATR_INDICES_TO_DEC2025 if q <= quarter)
+    if known:
+        return float(mpt_calculator.kzatr_for_quarter(known[-1])), known[-1]
+    return mpt_calculator.KZATR_BASE, ""
+
+
+def _override(inputs: dict[str, Any], today: date) -> dict[str, Any] | None:
+    """Льгота за МПТ из калькулятора по другому участку — пересчитанная из его вводных."""
+    raw = inputs.get(OVERRIDE_KEY)
+    if not isinstance(raw, dict) or not isinstance(raw.get("payload"), dict):
+        return None
+    payload = dict(raw["payload"])
+    place = str(raw.get("cadastral") or raw.get("address") or "").strip()
+    out: dict[str, Any] = {"place": place, "address": str(raw.get("address") or ""),
+                           "cadastral": str(raw.get("cadastral") or ""),
+                           "applied_at": raw.get("applied_at"), "payload": payload,
+                           "benefit_mln": 0.0, "blockers": [], "warnings": []}
+    try:
+        fields = set(mpt_calculator.MptInput.__dataclass_fields__)
+        got = mpt_calculator.calculate_mpt_benefit(
+            mpt_calculator.MptInput(**{k: v for k, v in payload.items()
+                                       if k in fields and v is not None}), today=today)
+    except (mpt_calculator.MptCalculationError, TypeError, ValueError) as exc:
+        out["error"] = str(exc)
+        return out
+    out.update(benefit_mln=round(got.benefit_rub / 1e6, 3), kmest=got.kmest,
+               formula=got.formula, blockers=list(got.blockers), warnings=list(got.warnings),
+               district=payload.get("district") or "",
+               category_label=mpt_calculator.CATEGORY_LABELS.get(str(payload.get("category")), ""))
+    return out
+
+
 def compute(inputs: dict[str, Any], tep: dict[str, Any],
-            objects: Iterable[dict[str, Any]], *, today: date | None = None) -> dict[str, Any]:
+            objects: Iterable[dict[str, Any]], *, today: date | None = None,
+            obligation_day: date | None = None) -> dict[str, Any]:
     """Льготы и рабочие места проекта.
 
     `objects` — нежилые объекты проекта из реестра движка:
-    {key, product, label, enabled, purpose}.
+    {key, product, label, enabled, purpose}. `obligation_day` — дата
+    обязательства по ВРИ из графика: по её кварталу берётся Кзатр.
     """
     inputs = inputs or {}
     tep = tep or {}
@@ -131,13 +182,15 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
     # Ручное положение против разбора кадастра — красная строка у льготы:
     # ошибочное «за ТТК» даёт льготу за МПТ, которой у участка нет.
     result["conflicts"] = [item["text"] for item in place["conflicts"]]
-    quarter = mpt_calculator.quarter_of(today)
-    kzatr = mpt_calculator.kzatr_for_quarter(quarter)
-    if kzatr is None:
-        kzatr = mpt_calculator.KZATR_BASE
-        result["notes"].append(f"Кзатр для {quarter} не опубликован — принят базовый "
-                               f"{mpt_calculator.KZATR_BASE} (с 01.01.2026)")
-    result["kzatr"] = {"value": kzatr, "quarter": quarter}
+    wanted = mpt_calculator.quarter_of(obligation_day or today)
+    kzatr, quarter = _published_kzatr(wanted)
+    if quarter != wanted:
+        result["notes"].append(
+            f"Кзатр для {wanted} (квартал обязательства по ВРИ) ещё не опубликован — "
+            + (f"принят последний опубликованный, {quarter}" if quarter
+               else f"принят базовый {mpt_calculator.KZATR_BASE} (с 01.01.2026)"))
+    result["kzatr"] = {"value": kzatr, "quarter": quarter or wanted,
+                       "obligation_quarter": wanted}
     result["act"] = {"short": MPT_ACT, "title": MPT_ACT_TITLE, "url": MPT_ACT_URL}
     glavapu_kzatr = round(kzatr * GLAVAPU_KZATR_EXTRA, 2)
     result["kzatr"]["glavapu"] = glavapu_kzatr
@@ -203,7 +256,7 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
                     category=category, district=place["district"], area_sqm=area,
                     cadastral_number=place["cadastral"] if str(place["cadastral"]).startswith("77:") else "",
                     ttk_position="inside" if place["inside_ttc"] else "outside",
-                    kzatr=kzatr, kzatr_quarter=quarter), today=today)
+                    kzatr=kzatr, kzatr_quarter=quarter or wanted), today=today)
             except mpt_calculator.MptCalculationError as exc:
                 item["blockers"].append(str(exc))
             else:
@@ -216,6 +269,34 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
         result["rows"].append(item)
         result["jobs_total"] += int(item["jobs"])
         result["mpt_mln"] = round(result["mpt_mln"] + item["benefit_mln"], 3)
+
+    # Чего не хватает, чтобы посчитать льготу за МПТ, — одной строкой с местом,
+    # где это взять: молчаливый ноль читается как «льготы нет».
+    missing: list[str] = []
+    for item in result["rows"]:
+        if item["category"] is None:
+            continue
+        for text in item["blockers"]:
+            need = (MISSING_DISTRICT if text.startswith("нет района") else
+                    MISSING_TTK if text.startswith("неизвестно положение") else "")
+            if need and need not in missing:
+                missing.append(need)
+    result["missing"] = missing
+    result["auto_mpt_mln"] = result["mpt_mln"]
+    result["mpt_source"] = {"kind": "auto", "text": "автоматически по участку проекта"}
+    if missing:
+        result["mpt_reason"] = ("Льгота за МПТ (1874-ПП) по участку проекта не посчитана — "
+                                "не хватает: " + "; ".join(missing) + ".")
+    override = _override(inputs, today)
+    if override is not None:
+        result["override"] = override
+        where = override["place"] or "другому участку"
+        result["mpt_source"] = {"kind": "calculator",
+                                "text": f"из калькулятора по участку {where}"}
+        result["mpt_mln"] = override["benefit_mln"]
+        if override.get("error"):
+            result["notes"].append("Льгота из калькулятора МПТ не пересчитана: "
+                                   + override["error"])
 
     apartments = tep.get("apartments") if isinstance(tep.get("apartments"), dict) else {}
     transfer = _num((apartments or {}).get("transfer"))

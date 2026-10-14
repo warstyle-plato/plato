@@ -190,13 +190,15 @@ _MPT_FRAGMENT = r'''
   <details id="mpt-benefit-panel">
     <summary><span>Льгота МПТ — Москва</span><small style="opacity:.62;font-weight:500">1874-ПП</small></summary>
     <div class="mpt-body">
-      <p class="mpt-note">Отдельный расчёт льготы, создаваемой самим МПТ. Текущий ВРИ проекта и финансовая модель не изменяются.</p>
+      <p class="mpt-note">Льгота за МПТ по участку проекта считается сама и уже входит в плату за ВРИ (таблица «Льготы по плате за ВРИ» выше). Здесь — расчёт по ДРУГОМУ участку: «Рассчитать льготу» только показывает её, «Рассчитать и применить к плате за ВРИ» передаёт её в расчёт проекта вместо посчитанной по участку проекта.</p>
+      <div id="mpt-applied" class="mpt-warnings mpt-hidden" aria-live="polite"></div>
       <div class="mpt-grid">
         <div><label for="mpt-category">Тип МПТ</label><select id="mpt-category"></select></div>
         <div><label for="mpt-mode">Сценарий</label><select id="mpt-mode"><option value="new">Новое строительство</option><option value="reconstruction">Реконструкция</option><option value="ons">ОНС</option></select></div>
         <div><label for="mpt-district">Район Москвы <span id="mpt-district-origin" class="mpt-origin" style="opacity:.6"></span></label><select id="mpt-district"><option value="">— выберите район —</option></select></div>
         <div id="mpt-ttk-wrap"><label for="mpt-ttk">Положение относительно ТТК <span style="opacity:.6">п. 1.2</span> <span id="mpt-ttk-origin" class="mpt-origin" style="opacity:.6"></span></label><select id="mpt-ttk"><option value="">— выберите —</option><option value="outside">За внешней границей ТТК</option><option value="inside">Внутри ТТК</option></select></div>
         <div id="mpt-cadastral-wrap" class="mpt-wide"><label for="mpt-cadastral">Кадастровый номер участка или квартал <span style="opacity:.6">таблица 2: для 99 кварталов Кмест 0,8</span> <span id="mpt-cadastral-origin" class="mpt-origin" style="opacity:.6"></span></label><input id="mpt-cadastral" type="text" placeholder="77:07:0012002:123"></div>
+        <div class="mpt-wide"><label for="mpt-address">Адрес участка <span style="opacity:.6">для подписи применённой льготы</span></label><input id="mpt-address" type="text" placeholder="Москва, ул. …"></div>
         <p id="mpt-parcel-note" class="mpt-note mpt-wide" style="margin:0"></p>
         <div><label id="mpt-area-label" for="mpt-area">Общая площадь МПТ, м²</label><input id="mpt-area" type="number" min="0" step="1" placeholder="10000"></div>
         <div><label for="mpt-existing">Существующая (сносимая) площадь МПТ, м² <span style="opacity:.6">п. 1.14.1</span></label><input id="mpt-existing" type="number" min="0" step="1" value="0"></div>
@@ -226,6 +228,7 @@ _MPT_FRAGMENT = r'''
       </div>
       <p id="mpt-context-note" class="mpt-note" style="margin-top:10px"></p>
       <button id="mpt-calc" type="button">Рассчитать льготу</button>
+      <button id="mpt-apply" type="button">Рассчитать и применить к плате за ВРИ</button>
       <div id="mpt-result" class="mpt-hidden" aria-live="polite">
         <div class="mpt-kpis">
           <div class="mpt-kpi"><small>Расчётная льгота</small><strong id="mpt-benefit">—</strong></div>
@@ -408,10 +411,8 @@ _MPT_FRAGMENT = r'''
     q('mpt-district').innerHTML='<option value="">— выберите район —</option>'+(meta.districts||[]).map(x=>`<option value="${x}">${x}</option>`).join('');
     applyParcel();
   }
-  async function calculate(){
-    const result=q('mpt-result'), warnings=q('mpt-warnings');
-    warnings.textContent='Считаю…'; result.classList.remove('mpt-hidden');
-    const payload={
+  function payloadOf(){
+    return {
       category:q('mpt-category').value,
       district:q('mpt-district').value,
       cadastral_number:q('mpt-category').value==='office'
@@ -434,6 +435,46 @@ _MPT_FRAGMENT = r'''
       existing_area_sqm:Number(q('mpt-existing').value||0),
       kterm:Number(q('mpt-kterm').value||1)
     };
+  }
+  // Применённая к проекту льгота — из вводных проекта и ответа движка
+  // (`vri.benefits.override`): что применено, откуда, и кнопка «Снять».
+  function showApplied(){
+    const box=q('mpt-applied');
+    if(!box) return;
+    const saved=(typeof inputs==='object'&&inputs)?inputs.vri_mpt_override:null;
+    if(!saved){box.classList.add('mpt-hidden');box.textContent='';return;}
+    const b=(((typeof lastResult==='object'&&lastResult)||{}).vri||{}).benefits||{};
+    const ov=b.override||{};
+    const where=saved.cadastral||saved.address||'другому участку';
+    box.innerHTML='';
+    const text=document.createElement('div');
+    text.textContent='Применено к плате за ВРИ проекта: льгота за МПТ из калькулятора по участку '+where
+      +(ov.benefit_mln!==undefined?' — '+rub(Number(ov.benefit_mln)*1e6):'')
+      +'. Заменяет посчитанную по участку проекта'
+      +(b.auto_mpt_mln!==undefined?' ('+rub(Number(b.auto_mpt_mln)*1e6)+')':'')+'.'
+      +(ov.error?' '+ov.error:'');
+    const clear=document.createElement('button');
+    clear.type='button'; clear.id='mpt-clear'; clear.textContent='Снять применённую';
+    clear.addEventListener('click',()=>{ if(typeof clearMptOverride==='function') clearMptOverride(); showApplied(); });
+    box.append(text,clear);
+    box.classList.remove('mpt-hidden');
+  }
+  window.mptOverrideChanged=showApplied;
+  async function apply(){
+    const payload=payloadOf();
+    const data=await calculate(payload);
+    if(!data) return;
+    if(typeof applyMptOverride!=='function'){
+      q('mpt-warnings').textContent='Страница проекта не найдена — применить льготу некуда.';
+      return;
+    }
+    applyMptOverride(payload,{cadastral:(q('mpt-cadastral').value||'').trim(),address:(q('mpt-address').value||'').trim()});
+    showApplied();
+  }
+  async function calculate(given){
+    const result=q('mpt-result'), warnings=q('mpt-warnings');
+    warnings.textContent='Считаю…'; result.classList.remove('mpt-hidden');
+    const payload=given&&given.category!==undefined?given:payloadOf();
     try{
       const r=await fetch('/api/mpt/calculate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)});
       const data=await r.json();
@@ -446,6 +487,7 @@ _MPT_FRAGMENT = r'''
       blockers.classList.toggle('mpt-hidden',!(data.blockers||[]).length);
       q('mpt-formula').textContent=data.formula+'\n'+data.kmest_source+'\n'+data.normative_snapshot;
       warnings.textContent=(data.warnings||[]).length?(data.warnings||[]).map(x=>'• '+x).join('\n'):'Расчёт выполнен без дополнительных предупреждений.';
+      return data;
     }catch(err){
       q('mpt-benefit').textContent='—';q('mpt-eligible').textContent='—';q('mpt-kmest').textContent='—';
       q('mpt-formula').textContent='';q('mpt-blockers').classList.add('mpt-hidden');
@@ -456,7 +498,9 @@ _MPT_FRAGMENT = r'''
     ['mpt-category','mpt-mode','mpt-district','mpt-ttk'].forEach(id=>q(id)?.addEventListener('change',sync));
     q('mpt-existing')?.addEventListener('input',sync);
     watchParcel();
-    q('mpt-calc')?.addEventListener('click',calculate);
+    q('mpt-calc')?.addEventListener('click',()=>calculate());
+    q('mpt-apply')?.addEventListener('click',apply);
+    showApplied();
     loadMeta().catch(err=>{q('mpt-context-note').textContent=err?.message||String(err);});
     const params=new URLSearchParams(location.search);
     if(params.get('section')==='mpt'){

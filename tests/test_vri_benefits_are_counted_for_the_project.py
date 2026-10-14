@@ -155,20 +155,20 @@ def _calc(core, inputs, tep):
     return core._calculate_economics(core.CalcRequest(inputs=inputs, tep=tep))
 
 
-def test_the_engine_hands_the_benefits_out_without_changing_the_economics(core) -> None:
+def test_the_engine_cuts_the_fee_by_the_benefits_and_a_hand_relief_wins(core) -> None:
     sys.path.insert(0, str(ROOT / "scripts"))
     import golden_snapshot
     case = golden_snapshot.s_nagatino(core, ROOT)
-    # Вне КРТ: в режиме «Требование КРТ» льготы входят в оплату сами
-    # (tests/test_krt_keeps_the_vri_fee.py), а Нагатино задано требованием.
+    # Вне КРТ тоже: без ручной льготы посчитанная входит в плату сама
+    # (решение владельца, 14.10.2026).
     inputs = dict(case["inputs"], land_rights_cost_mln=5000.0, vri_required=True,
                   social_area_source="norm", _cadastral_analysis=copy.deepcopy(OUTSIDE))
     tep = case["tep"]
     result = _calc(core, inputs, tep)
     benefits = result["vri"]["benefits"]
     assert benefits["applicable"] and benefits["total_mln"] > 0 and benefits["jobs_total"] > 0
-    # Предложение, а не решение: льгота в экономику не вошла.
-    assert result["vri"]["totals"]["relief"] == 0
+    assert result["vri"]["totals"]["relief"] == pytest.approx(
+        min(5000.0, benefits["total_mln"]) * 1e6, rel=1e-9)
     applied = dict(inputs, vri_relief_mode="amount", vri_relief_mln=1200.0)
     after = _calc(core, applied, tep)
     assert after["vri"]["totals"]["relief"] == pytest.approx(1200.0 * 1e6)
@@ -185,39 +185,39 @@ def test_a_broken_benefit_is_named_with_its_place(core, monkeypatch) -> None:
 
 # ---------------------------------------------------------------- страница --
 
-def test_the_page_draws_the_table_and_the_button_writes_the_relief(core) -> None:
+def test_the_page_draws_the_table_and_the_button_returns_to_the_benefits(core) -> None:
     import page_blocks
 
     inputs, tep = _nagatino()
     benefits = vb.compute(inputs, tep, OBJECTS, today=TODAY)
-    prelude = ("let inputs={vri_relief_mode:'none',vri_relief_mln:0};"
+    prelude = ("let inputs={vri_relief_mode:'amount',vri_relief_mln:1200,"
+               "_vri_relief_source:{value:1200,by:'x'}};"
                "let lastResult={vri:{benefits:%s}};let calls=[];"
                "function renderInputs(){calls.push('renderInputs')}"
                "function refreshGroupPeeks(){calls.push('peeks')}"
+               "function markFieldManual(p){calls.push('manual:'+p)}"
                "function calculate(){calls.push('calculate')}"
                % json.dumps(benefits, ensure_ascii=False))
-    tail = ("const html=vriBenefitsHtml(lastResult.vri.benefits);applyVriBenefits();"
-            "const note=vriReliefSourceNote();inputs.vri_relief_mln+=1;"
-            "console.log(JSON.stringify({html,inputs,calls,note,stale:vriReliefSourceNote()}));")
+    tail = ("const html=vriBenefitsHtml(lastResult.vri.benefits,'amount');"
+            "const auto=vriBenefitsHtml(lastResult.vri.benefits,'project_benefits');"
+            "useProjectVriBenefits();"
+            "console.log(JSON.stringify({html,auto,inputs,calls}));")
     out, _ = page_blocks.run(prelude, tail)
     got = json.loads(out)
     html = got["html"]
     for text in ("Рабочие места", "Кмест", "Офисы", "ТЦ", "встроенные помещения",
-                 "Добавить в расчёт ВРИ суммой", "1874-ПП"):
+                 "ручная льгота — она главнее", "1874-ПП"):
         assert text in html, text
-    assert 'onclick="applyVriBenefits()"' in html
+    assert 'onclick="useProjectVriBenefits()"' in html
+    assert "входит в плату за ВРИ сама" in got["auto"]
+    assert "автоматически по участку проекта" in got["auto"]
     # Постановление названо полностью и ведёт на mos.ru.
     assert 'href="https://www.mos.ru/depr/documents/view/273915220/"' in html
     assert "приложения 3 к постановлению" in html
-    # Кнопка вписала сумму режимом «Фиксированная сумма» и отметила источник.
-    assert got["inputs"]["vri_relief_mode"] == "amount"
-    assert got["inputs"]["vri_relief_mln"] == pytest.approx(benefits["total_mln"] + 1)
-    assert got["inputs"]["_vri_relief_source"]["value"] == pytest.approx(benefits["total_mln"])
-    assert got["calls"] == ["renderInputs", "peeks", "calculate"]
-    assert "посчитанные по проекту" in got["note"]
-    # Сумму правили руками — отметка «посчитано» больше не про неё.
-    assert got["stale"] == ""
-
+    # Кнопка вернула «нет ручной» — действует посчитанная — и пересчитала.
+    assert got["inputs"]["vri_relief_mode"] == "none"
+    assert "_vri_relief_source" not in got["inputs"]
+    assert got["calls"][-1] == "calculate"
 
 def test_the_vri_tab_has_the_card_before_the_result() -> None:
     import main_legacy as legacy
