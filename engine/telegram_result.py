@@ -12,6 +12,23 @@
 """
 # ruff: noqa
 
+def _telegram_deal_lines(summary: dict[str, Any]) -> str:
+    """Стоимость сделки: части и итог под ними — подписи те же, что в PDF.
+
+    Подпись выкупа — основание суммы из расчёта (`deal.buyout_label`, страница
+    кладёт её в сводку): контурная сумма входит в стоимость сделки, и
+    «не цена сделки» рядом с итогом противоречила ему.
+    """
+    price = float(summary.get("purchase_price_mln") or 0)
+    buyout = float(summary.get("land_buyout_mln") or 0)
+    if buyout <= 0:
+        return f"• цена покупки — {_telegram_money_mln(price)}\n"
+    label = str(summary.get("land_buyout_label") or DEAL_BUYOUT_LABEL)
+    return (f"• цена участка / права — {_telegram_money_mln(price)}\n"
+            f"• {html.escape(label[:1].lower() + label[1:])} — {_telegram_money_mln(buyout)}\n"
+            f"• {html.escape(DEAL_TOTAL_LABEL.lower())} — {_telegram_money_mln(price + buyout)}\n")
+
+
 def _telegram_object_value(row: dict[str, Any]) -> str:
     """Строка раздела объектной вёрстки (`report.layout.sections`) для бота."""
     unit, value = row.get("unit"), row.get("value")
@@ -221,10 +238,7 @@ def telegram_result(req: TelegramResultRequest,
         + (f"• обеспеченность парковкой — {html.escape(provision_label)}\n"
            if provision_label else "") + "\n"
         "<b>Предварительная экономика</b>\n"
-        f"• цена покупки — {_telegram_money_mln(summary.get('purchase_price_mln'))}\n"
-        + (f"• выкуп ЗУ/ОКС у третьих лиц — {_telegram_money_mln(summary.get('land_buyout_mln'))} "
-           "(кадастровая стоимость, не цена сделки)\n"
-           if float(summary.get("land_buyout_mln") or 0) > 0 else "") +
+        + _telegram_deal_lines(summary) +
         f"• выручка — {_telegram_money_mln(summary.get('revenue_mln'))}\n"
         f"• расходы всего — {_telegram_money_mln(summary.get('total_expenses_mln'))}\n"
         f"• EBITDA — {_telegram_money_mln(summary.get('ebitda_mln'))}\n"
