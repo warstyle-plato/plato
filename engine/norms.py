@@ -586,9 +586,24 @@ def apply_underground_tep_row(inputs: dict[str, Any],
     row = (tep or {}).get("underground_parking")
     if not isinstance(row, dict) or row.get(TEP_ROW_DECLARED):
         return
+    stale = underground_stale_guests(row)
     computed = underground_tep_row(inputs, tep)
     if computed:
         row.update(computed)
+    if stale is not None:
+        # Чужое число не меняется молча: строка несёт, что было в проекте, и
+        # страница подписывает замену (`guest_units_stale`).
+        row["guest_units_stale"] = stale
+
+
+def underground_stale_guests(row: dict[str, Any]) -> float | None:
+    """Гостевые строки, которых больше, чем мест, — чужое число, или None."""
+    try:
+        guest = float(row.get("guest_units"))
+        units = float(row.get("units") or 0)
+    except (TypeError, ValueError):
+        return None
+    return guest if guest > units else None
 
 
 STORAGE_AREA_PER_UNIT_DEFAULT = 4.3
