@@ -107,7 +107,10 @@ def drawn():
                 page.goto(base, wait_until="domcontentloaded")
                 page.evaluate("localStorage.removeItem('plato_v04')")
                 page.reload(wait_until="domcontentloaded")
-                page.wait_for_timeout(1500)
+                # Загрузка страницы кончается своим calculate() и renderPhasing():
+                # фиксированная пауза на медленной машине их не дожидалась, и
+                # загрузка переписывала проект теста умолчаниями.
+                page.wait_for_function("() => window.__developaidBooted", timeout=60000)
                 out["fake" if fake else "real"] = page.evaluate(
                     RENDER, {"x": x, "t": t, "fake": fake})
                 page.close()
