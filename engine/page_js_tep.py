@@ -2051,7 +2051,7 @@ function restoreKrtClearedVriFee(){
 // (`vri_payment_active`): решает сумма платы, а не признак. Признак
 // «Требуется изменение ВРИ» — вид суммы: при плате > 0 он включён, снять его
 // — значит обнулить плату. Сохранённый старый явный false плату не обнуляет.
-function vriPaymentActive(){return Number(inputs.land_rights_cost_mln||0)>0}
+function vriPaymentActive(x){return Number((x||inputs).land_rights_cost_mln||0)>0}
 // Плата, обнулённая снятием признака на этой странице, — чтобы подпись
 // называла, что именно сделала галочка.
 let vriFeeClearedMln=0;
