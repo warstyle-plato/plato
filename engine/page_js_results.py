@@ -614,6 +614,7 @@ PAGE += r"""function renderResult(){
    // равномерных продаж, а неразобранная строка называется, а не молчит.
    const schedSub=p=>(p.sales_profile?sub('профиль продаж: '+escapeHtml(p.sales_profile)):'')
     +(p.price_ladder?sub('лестница цены: '+escapeHtml(p.price_ladder)):'')
+    +(p.price_path?sub('цена: '+escapeHtml(p.price_path)):'')
     +((p.schedule_warnings||[]).length?sub('<span style="color:#A35D00">'+p.schedule_warnings.map(escapeHtml).join('; ')+'</span>'):'');
    // Паркинг объекта — строка своего объекта; построенное и продаваемое у него
    // разные числа: у ТЦ и ФОКа места строятся, но не продаются, и «0 шт.»

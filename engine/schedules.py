@@ -451,6 +451,32 @@ def stage_ladder_text(rows: list[dict[str, Any]]) -> str:
     return "; ".join(parts)
 
 
+def _signed_pct(value: float) -> str:
+    return f"{value:+g}".replace(".", ",").replace("-", "−")
+
+
+def price_path_text(growth_pre: float, growth_post: float, ladder: bool) -> tuple[str, list[str]]:
+    """Чем средняя цена продукта отличается от стартовой — словами.
+
+    Средняя в таблице продаж — выручка ÷ объём, и без траектории цены её
+    расхождение со стартовой не объяснить: при «−2%/мес. до РВЭ» средняя
+    выходит на четверть ниже стартовой, а ни одна подпись этого не называла.
+    Ставки — доли в месяц, как их берёт `sales_schedule`.
+    """
+    after = f"после РВЭ {_signed_pct(round(growth_post * 100, 4))}%/мес."
+    if ladder:
+        text = f"до РВЭ — лестница цены, {after}"
+    else:
+        text = f"рост цены до РВЭ {_signed_pct(round(growth_pre * 100, 4))}%/мес., {after}"
+    warnings = []
+    if not ladder and growth_pre < 0:
+        warnings.append(f"рост цены до РВЭ отрицательный ({_signed_pct(round(growth_pre * 100, 4))}%/мес.) — "
+                        "цена падает от стартовой, средняя ниже стартовой")
+    if growth_post < 0:
+        warnings.append(f"рост цены после РВЭ отрицательный ({_signed_pct(round(growth_post * 100, 4))}%/мес.)")
+    return text, warnings
+
+
 def sales_weights(
     start: date,
     rve: date,

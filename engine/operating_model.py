@@ -122,13 +122,16 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     core_factor, core_stage_rows, core_ladder_warnings = stage_ladder_factor(
         [x.get(f"growth_stage{k}_pct") for k in (1, 2, 3, 4)],
         permit, int(n(x, "construction_months", 24)))
+    core_price_path, core_price_warnings = price_path_text(
+        growth_pre, growth_post, core_factor is not None)
     core_schedule_note = {
         "sales_profile": "",
+        "price_path": core_price_path,
         "price_stages": [{**row, "date": row["date"].isoformat()} for row in core_stage_rows],
         "price_ladder": stage_ladder_text(core_stage_rows),
         "profile_applied": False,
         "steps_applied": core_factor is not None,
-        "warnings": core_ladder_warnings,
+        "warnings": core_ladder_warnings + core_price_warnings,
     }
 
     def core_product(name: str, quantity: float, price_th: float) -> None:
@@ -269,6 +272,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         growth_pre = n(x, f"{obj.prefix}_growth_pre_pct", obj.growth_pre_default) / 100
         growth_post = n(x, f"{obj.prefix}_growth_post_pct", obj.growth_post_default) / 100
         weights, factor = object_schedule(obj.prefix, sales_start, build_start, months)
+        _path, _path_warnings = price_path_text(growth_pre, growth_post, factor is not None)
+        object_schedule_notes[obj.prefix]["price_path"] = _path
+        object_schedule_notes[obj.prefix]["warnings"] += _path_warnings
         add_product(obj.key, sales_schedule(
             volume, price, sales_start, end_ref, share_value, residual,
             growth_pre, growth_post,

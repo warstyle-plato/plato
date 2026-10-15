@@ -1142,6 +1142,8 @@ def _product_schedule_fields(notes: dict[str, dict[str, Any]], key: str) -> dict
     return {
         "sales_profile": item.get("sales_profile", ""),
         "price_ladder": item.get("price_ladder", ""),
+        # Траектория цены: чем средняя отличается от стартовой.
+        "price_path": item.get("price_path", ""),
         "price_stages": list(item.get("price_stages") or []),
         "schedule_applied": bool(item.get("profile_applied") or item.get("steps_applied")),
         "schedule_warnings": list(item.get("warnings") or []),

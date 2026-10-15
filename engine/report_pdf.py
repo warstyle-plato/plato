@@ -1885,6 +1885,16 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     story.append(table(product_rows,[45*mm,26*mm,28*mm,26*mm,26*mm,29*mm],font_size=7.4))
     # Профиль продаж и лестница цены объекта — под таблицей, своими словами:
     # средняя цена без них не объясняет, откуда взялась.
+    # Траектория цены — одна строка на продукты с общей траекторией: у
+    # четырёх основных она одна, и четыре одинаковых строки были бы шумом.
+    # Без неё средняя ниже стартовой ничем не объяснена.
+    _paths: dict[str, list[str]] = {}
+    for item in products:
+        if item.get('sellable') is False or item.get('excluded'): continue
+        if item.get("price_path") and float(item.get('quantity') or 0) > 0:
+            _paths.setdefault(str(item["price_path"]), []).append(str(item.get('label') or '—'))
+    for _path, _labels in _paths.items():
+        story.append(P(", ".join(_labels) + ": средняя цена — " + _path, small))
     for item in products:
         notes = []
         if item.get("sales_profile"):
