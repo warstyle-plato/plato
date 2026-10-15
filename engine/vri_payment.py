@@ -34,7 +34,7 @@ VRI_DEFAULTS: dict[str, Any] = {
     "vri_early_repay_after_pf": False,
     "vri_pf_open_date": "",               # пусто — дата РнС
     "vri_in_bank_budget": True,
-    "vri_financing_mode": "auto",         # auto — как весь проект; shares — явные доли
+    "vri_financing_mode": "auto",         # auto — по дате платежа: до ПФ БРИДЖ, после ПФ; shares — доли
     "vri_share_bridge_pct": 0.0,
     "vri_share_pf_pct": 0.0,
     "vri_share_equity_pct": 0.0,
@@ -151,7 +151,7 @@ def vri_relief(x: dict[str, Any], gross: float,
     return relief, gross - relief
 
 
-def vri_payment_active(x: dict[str, Any] | None) -> bool:
+def vri_payment_active(x: dict[str, Any] | None, amount_rub: float | None = None) -> bool:
     """Действует ли плата за смену ВРИ — один ответ для всех поверхностей.
 
     Решает сумма платы (`land_rights_cost_mln` > 0), откуда бы она ни пришла:
@@ -161,8 +161,11 @@ def vri_payment_active(x: dict[str, Any] | None) -> bool:
     страница показывала галочку снятой, сверка ГлавАПУ писала ВРИ = 0, тизер и
     книга решали по-своему. Не платить за ВРИ — значит обнулить плату.
     Движок, сверка, книга, тизер, страница (`vriPaymentActive`) и Платон
-    берут ответ здесь.
+    берут ответ здесь. `amount_rub` — сумма, уже выведенная из той же платы
+    (к оплате после льготы): тогда отвечает она.
     """
+    if amount_rub is not None:
+        return float(amount_rub or 0.0) > 0
     return n(x or {}, "land_rights_cost_mln") > 0
 
 
@@ -268,7 +271,7 @@ def _vri_settings(x: dict[str, Any], permit: date, amount: float = 0.0) -> dict[
             years = mo_range["years"]
             periodicity = mo_range["periodicity"]
     return {
-        "required": vri_payment_active(x),
+        "required": vri_payment_active(x, amount),
         "region": region,
         "land_right": str(x.get("land_right") or VRI_DEFAULTS["land_right"]),
         "obligation_date": obligation_date,
