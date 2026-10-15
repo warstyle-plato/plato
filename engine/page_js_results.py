@@ -671,8 +671,9 @@ PAGE += r"""function renderResult(){
  {
   // Рубль на метр в обеих базах: сумма сама по себе не сравнивается ни с
   // рынком, ни с себестоимостью.
-  // Выручка — на продаваемую площадь (решение 4 ревизии книги); делит
-  // движок (`revenue_structure`), страница печатает.
+  // У продукта — доля в выручке; на продаваемую проекта делятся только итоги
+  // (у строки продукта прочерк: цена на свою базу — «Средняя цена» в «Темпах
+  // и ценах продаж»). Считает движок (`revenue_structure`), страница печатает.
   // Состав, порядок и итоги групп решает движок (`revenue_structure`):
   // МКД → Итого МКД → объекты, каждый со своим паркингом → Итого ОСЗ →
   // Итого; нулевых продуктов нет. Прежде строки шли в порядке словаря.
@@ -683,7 +684,7 @@ PAGE += r"""function renderResult(){
       {label:'Итого',value:(r.revenue||{}).total,role:'total',group:'all'}];
   revenueTable.innerHTML=rs.map(x=>{
    const c=x.group==='all'?'th':'td',cls=x.role==='total'?(x.group==='all'?'':' class="rs-total"'):' class="rs-part"';
-   return `<tr${cls} data-group="${x.group}" data-role="${x.role}"><${c}>${escapeHtml(x.label)}</${c}><${c}>${money(x.value)}</${c}><${c}>${unitNum(x.per_saleable_th,2)}</${c}></tr>`;
+   return `<tr${cls} data-key="${escapeHtml(x.key||'')}" data-group="${x.group}" data-role="${x.role}"><${c}>${escapeHtml(x.label)}</${c}><${c}>${money(x.value)}</${c}><${c}>${x.share==null?'—':pct(x.share)}</${c}><${c}>${unitNum(x.per_saleable_th,2)}</${c}></tr>`;
   }).join('');
  }
  renderNonresStrategy(r);

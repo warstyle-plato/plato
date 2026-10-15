@@ -225,7 +225,7 @@ def test_the_page_prints_the_engines_bases():
     capex = {row[0]: row for row in got["before"]["capex"]}
     under = next(row for label, row in capex.items() if "подземн" in label.lower())
     assert under[2] == "88,00" and under[3] == "м² " + tg.CORE_UNDER_AREA.genitive, under
-    assert all(len(row) == 3 for row in got["before"]["revenue"]), got["before"]["revenue"][:2]
+    assert all(len(row) == 4 for row in got["before"]["revenue"]), got["before"]["revenue"][:2]
     assert got["before"]["head"] == "тыс ₽/м² " + tg.TOTAL_AREA.genitive
     after = {row[0]: row for row in got["after"]}
     assert after["Выручка"][3] == "м² " + tg.CORE_UNDER_AREA.genitive, after["Выручка"]
