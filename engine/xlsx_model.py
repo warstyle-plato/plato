@@ -74,6 +74,7 @@ CAPEX_SHORT_NAMES: dict[str, str] = {
 CAPEX_NAMES_PLACEHOLDER = "__DEVELOPAID_CAPEX_NAMES__"
 
 _MODEL_CAPEX_LABELS: list[tuple[str, str]] = [
+    ("purchase", "Покупка / цена входа"),
     ("land_rights", "Земельные правоотношения / смена ВРИ"),
     ("vri_security", "Обеспечение обязательства по ВРИ"),
     ("vri_interest", "Проценты по рассрочке ВРИ"),
