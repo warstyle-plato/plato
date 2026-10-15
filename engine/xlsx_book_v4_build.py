@@ -237,6 +237,11 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             "interest_mode": str(x.get("bridge_interest_mode", "Капитализация в ПФ")),
             "bridge_limit_open": not op.get("common_on_object_loans"),
         },
+        # Порог и подпись «IRR и NPV не числа при непогашенном долге» — те же,
+        # что у движка (`_apply_equity_returns_verdict`, решение владельца 2 от
+        # 29.09.2026): книга не держит своего порога.
+        "equity_na": {"min_ending_pf_rub": EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB,
+                      "label": EQUITY_RETURNS_NA_DEBT_LABEL},
     }
 
 
@@ -875,7 +880,14 @@ def _build_project_workbook(
         cost_per = {}
         months_by_type = {}
         _cash_start = str(x.get("project_start") or "2027-01-01")[:10]
-        social_cash_mln = n(x, "social_compensation_mln")
+        # Сумма — та же, что платит движок: в чисто денежном режиме без
+        # введённой компенсации это стоимость стройки программы, а не ноль;
+        # в режиме «Строительство» денег нет вовсе.
+        _mode = str(x.get("social_mode") or "")
+        social_cash_mln = (social_cash_compensation(x) / 1_000_000
+                           if _mode == "Денежная компенсация"
+                           else n(x, "social_compensation_mln") if _mode == SOCIAL_MODE_BOTH
+                           else 0.0)
         if social_cash_mln > 0:
             _cash_when = social_cash_payment_date(
                 x, add_months(_cash_start,
@@ -1245,11 +1257,31 @@ def _build_project_workbook(
         tep_xml = _put_extra(tep_xml, "E43",
                              number=round(social_compensation_amount, 3))
 
+    # Соцнагрузка структуры расходов — та, что лежит в CAPEX, а не вводная
+    # суммы B17: при денежной компенсации без введённой суммы B17 пуст, а
+    # движок и CAPEX платят стоимость стройки — и строка «Социальная нагрузка»
+    # показывала 0, а её деньги уезжали в «Строительство и управление»
+    # (Донской: 49,75 млн ₽). Читать строку CAPEX — значит читать то, что
+    # реально посчитано, в любом режиме.
+    report_xml, _done = _v4_set_or_insert_cell(
+        report_xml, "B36",
+        formula="SUM('CAPEX'!$B$31,'CAPEX'!$B$65,'CAPEX'!$B$99,'CAPEX'!$B$133)")
+    if not _done:
+        missing.append("структура расходов: соцнагрузка из CAPEX (ОТЧЕТ!B36)")
+    report_xml, _done = _v4_set_or_insert_cell(
+        report_xml, "E37", text="ИТОГО (= строка «Социальная нагрузка» CAPEX)")
+    if not _done:
+        missing.append("структура расходов: подпись итога соцнагрузки (ОТЧЕТ!E37)")
+
     # Лимит БРИДЖ в книге режет выборку (CF r34). Логика вводных DevelopAid —
-    # «всё финансирует банк», поэтому лимит расчётный: сделка, ВРИ, социалка
-    # и весь CAPEX. Фиксированные 3 500 млн душили проект крупнее Мишина.
+    # «всё финансирует банк», поэтому лимит расчётный: весь CAPEX и
+    # коммерческие расходы очередей. Сделка, ВРИ и социалка уже внутри
+    # «Расходов проекта всего» (CAPEX!B35 несёт строки 14, 15 и 31) —
+    # прибавленные ещё раз, они раздували оценку на их сумму (умолчания:
+    # 40 740 против 37 190 у движка) и смягчали проверку пика ПФ (ПРОВЕРКИ,
+    # строка 72). Фиксированные 3 500 млн душили проект крупнее Мишина.
     put("B24", formula=(
-        "ROUNDUP(($B$15+$B$16+$B$17+$B$83"
+        "ROUNDUP(($B$83"
         "+SUM('CAPEX'!$B$35,'CAPEX'!$B$69,'CAPEX'!$B$103,'CAPEX'!$B$137))/10,0)*10"
     ), label="bridge_limit_mln")
 

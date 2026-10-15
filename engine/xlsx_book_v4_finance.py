@@ -514,6 +514,33 @@ def _v4_apply_interest_accrual(xml: str, phase: int, missing: list[str]) -> str:
     columns = _v4_cf_columns()
     row = _V4_ACCRUAL_ROW
 
+    # Перенесённые в РнС проценты БРИДЖа капитализируются по ставке ПФ уже в
+    # месяце переноса — так считает движок (`pf_cap` от остатка к уплате после
+    # переноса). Шаблон прибавлял их после роста на (1+ставка/12), и первый
+    # месяц капитализации на них пропадал: 2,5 млн ₽ стоимости финансирования
+    # на умолчаниях. Условие переноса берётся из самой строки 48 — то же слово
+    # в слово, что у неё.
+    from xml.sax.saxutils import unescape as _xml_unescape
+    _entities = {"&quot;": '"', "&apos;": "'"}
+    transfers: dict[str, str] = {}
+
+    def compound_transfer(column: str, body: str) -> str:
+        found = re.search(
+            r"(?P<prev>[A-Z]{1,3})48\*\(1\+%s41/12\)\+%s42\+%s43\+(IF\(AND\(AND\(YEAR\(%s\$3\)"
+            r"=YEAR\(\$B\$7\),MONTH\(%s\$3\)=MONTH\(\$B\$7\)\),[^,]+,(?P=prev)37,0\))"
+            % ((column,) * 5), body)
+        if not found:
+            return body
+        previous, transfer = found.group(1), found.group(2)
+        transfers[column] = transfer
+        return body.replace(
+            found.group(0),
+            f"({previous}48+{transfer})*(1+{column}41/12)+{column}42+{column}43", 1)
+
+    xml, rewritten = _v4_rewrite_row_formulas(xml, 48, "37,0)", compound_transfer)
+    if rewritten != len(transfers) or not transfers:
+        missing.append(f"{sheet}: строка 48 — перенос процентов БРИДЖа не опознан")
+
     formulas: dict[str, str] = {}
     for index, column in enumerate(columns):
         previous = columns[index - 1] if index else "C"
@@ -524,8 +551,11 @@ def _v4_apply_interest_accrual(xml: str, phase: int, missing: list[str]) -> str:
         # Капитализация ПФ живёт, пока копится строка 48: с РнС и по РВЭ
         # включительно — в сам месяц РВЭ её начисляет строка 53, грубя
         # накопленное на (1+ставка/12).
+        transfer = transfers.get(column)
+        base = (f"({previous}48+{_xml_unescape(transfer, _entities)})"
+                if transfer else f"{previous}48")
         pf_cap = (f"IF(AND({column}$3>=$B$7,{column}$3<=$B$8),"
-                  f"{previous}48*{column}41/12,0)")
+                  f"{base}*{column}41/12,0)")
         formulas[column] = (f"{column}32+{bridge_cap}"
                             f"+{column}42+{column}43+{pf_cap}")
 

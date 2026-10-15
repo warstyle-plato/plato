@@ -2561,6 +2561,13 @@ def audit_plato_workbook(
     workbook = load_workbook(io.BytesIO(content), data_only=True)
     if "ОТЧЕТ" not in workbook.sheetnames:
         raise HTTPException(status_code=400, detail="В книге нет листа «ОТЧЕТ» — это не модель ПЛАТО")
+    if "КОНСОЛИДАТОР" in workbook.sheetnames:
+        # У книги v4 свой лист «ОТЧЕТ» с подписями в другой колонке: сверка не
+        # нашла бы ни строки и назвала бы пересчитанную книгу непересчитанной.
+        raise HTTPException(
+            status_code=400,
+            detail=("Это книга DevelopAid v4, а не модель ПЛАТО: её сверка с движком — "
+                    "строки «Паритет» листа «ПРОВЕРКИ» книги, пересчитанной в Excel"))
     sheet = workbook["ОТЧЕТ"]
     found: dict[str, float] = {}
     for row in range(1, 90):
