@@ -1758,7 +1758,7 @@ function renderInputs(){
       const offer=document.createElement('div');
       offer.id='vriReliefOffer';
       wrap.appendChild(offer);
-      fillVriReliefOffer();
+      if(typeof fillVriReliefOffer==='function')fillVriReliefOffer();
      }
      // Доля и сумма льготы читаются только в своём режиме. Оставшиеся от
      // прежнего выбора «100» рядом с «Нет ручной — по расчёту проекта»
