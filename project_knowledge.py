@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from pathlib import Path
@@ -23,6 +24,7 @@ SOURCES = {
     "backlog": ("docs/questions_backlog.md",),
 }
 NORMATIVE_DIR = _ROOT / "docs" / "normative"
+REGISTRY_RELATIVE = Path("data/normatives/registry.json")
 GLOSSARY_RELATIVE = Path("docs/glossary.md")
 SOURCE_LABELS = {
     "rules": "CLAUDE.md и его архив — правила, выведенные из поломок",
@@ -115,6 +117,60 @@ def entries(source: str | None = None) -> list[dict[str, str]]:
         paths.append(("glossary", glossary_file))
     for key, path in paths:
         found.extend(_file_entries(key, path))
+    if not source or source == "normative":
+        found.extend(_provision_entries())
+    return found
+
+
+def act_provisions(act_id: str) -> dict[str, Any]:
+    """Ключевые положения акта — так, как их записал реестр нормативов.
+
+    Владелец положений один — `key_provisions` строки реестра: пункт, род
+    требования (обязательное, порог, по договору) и цитата. Поиск по записям и
+    методика Платона читают их отсюда, а не держат своих пересказов.
+    """
+    try:
+        rows = json.loads((_ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and row.get("id") == act_id:
+            return row
+    return {}
+
+
+def provisions_text(row: dict[str, Any]) -> str:
+    """Положения акта одним текстом: каждое — с пунктом, родом и цитатой."""
+    items = [p for p in row.get("key_provisions") or [] if isinstance(p, dict)]
+    if not items:
+        return ""
+    head = row.get("short_name") or row.get("title") or row.get("id")
+    lines = [f"## {head}: ключевые положения",
+             f"{row.get('title', '')}. {row.get('latest_amendment', '')}"]
+    if row.get("provisions_use"):
+        lines.append(str(row["provisions_use"]))
+    for item in items:
+        lines.append(f"- {item.get('point')} ({item.get('kind')}) — {item.get('subject')}: "
+                     f"{item.get('text')} Цитата: «{item.get('quote')}»")
+    return "\n".join(lines)
+
+
+def _provision_entries() -> list[dict[str, str]]:
+    try:
+        rows = json.loads((_ROOT / REGISTRY_RELATIVE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    found = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        for item in row.get("key_provisions") or []:
+            if not isinstance(item, dict):
+                continue
+            title = f"{row.get('short_name') or row.get('id')}: {item.get('subject')}, {item.get('point')}"
+            body = (f"{title}\n{row.get('title', '')}\n{item.get('text')}\n"
+                    f"Род: {item.get('kind')}. Цитата: «{item.get('quote')}»")
+            found.append({"source": "normative", "title": title, "text": body})
     return found
 
 
