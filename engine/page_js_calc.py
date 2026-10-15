@@ -302,7 +302,12 @@ async function calculate(){
 // движка. Совпало с движком — подписывать нечего, и хвост забывается сразу:
 // иначе следующая правка ТЭП, честно сдвинувшая гостевые, выглядела бы
 // «исправлением при загрузке». Разошлось — подпись живёт до следующей загрузки.
-let loadedDerivedTail=null;
+// Состояние держит функция, а не верхнее `let`: так его видит и стенд страницы
+// (`tests/page_blocks`), который добирает куски по именам функций.
+function derivedState(){
+ if(!derivedState.s)derivedState.s={tail:null,fresh:false};
+ return derivedState.s;
+}
 function derivedTailField(key){
  return key==='underground_parking'?'guest_units':(SOCIAL_TEP_PRODUCTS.includes(key)?'transfer_units':null);
 }
@@ -317,15 +322,14 @@ function rememberDerivedTail(source,strip){
   tail[key]={[field]:Number(row[field]),units:Number(row.units||0)};
   if(strip&&tep[key])delete tep[key][field];
  });
- loadedDerivedTail={rows:tail,settled:false};
- derivedFromEngine=false;
+ derivedState().tail={rows:tail,settled:false};
+ derivedState().fresh=false;
 }
 // Производные поля в снимке, который уходит в файл или хранилище, — только
 // числа движка для ЭТОГО состояния. Расчёта после загрузки не было (отказ,
 // выгрузка записи из списка без открытия) — поля в снимок не идут вовсе:
 // отсутствие значит «выведет движок», а не ноль и не чужое число.
-let derivedFromEngine=false;
-function persistedTep(source,fresh){
+function persistedTep(source,fresh=derivedState().fresh){
  const out=cloneValue(source||{});
  ['underground_parking'].concat(SOCIAL_TEP_PRODUCTS).forEach(key=>{
   const row=out[key];
@@ -336,17 +340,19 @@ function persistedTep(source,fresh){
  return out;
 }
 function settleDerivedTail(rows){
- if(!loadedDerivedTail||loadedDerivedTail.settled)return;
+ const state=derivedState();
+ if(!state.tail||state.tail.settled)return;
  const kept={};
  rows.forEach(r=>{
-  const was=loadedDerivedTail.rows[r.key],field=derivedTailField(r.key);
+  const was=state.tail.rows[r.key],field=derivedTailField(r.key);
   if(!was||r.excluded||r[field]==null)return;
   if(Math.abs(Number(r[field])-was[field])>1e-9)kept[r.key]=was;
  });
- loadedDerivedTail={rows:kept,settled:true};
+ state.tail={rows:kept,settled:true};
 }
 function derivedTailOf(key){
- return loadedDerivedTail&&loadedDerivedTail.settled?(loadedDerivedTail.rows[key]||null):null;
+ const tail=derivedState().tail;
+ return tail&&tail.settled?(tail.rows[key]||null):null;
 }
 
 // Производные строки ТЭП — числа движка, и в состояние страницы пишутся ЕГО
@@ -359,7 +365,7 @@ function derivedTailOf(key){
 function adoptEngineDerivedTep(result){
  const rows=result&&result.tep&&Array.isArray(result.tep.rows)?result.tep.rows:[];
  settleDerivedTail(rows);
- if(rows.length)derivedFromEngine=true;
+ if(rows.length)derivedState().fresh=true;
  rows.forEach(r=>{
   if(!tep[r.key]||r.excluded)return;
   if(r.key==='underground_parking'&&r.guest_units!=null)tep[r.key].guest_units=Number(r.guest_units);

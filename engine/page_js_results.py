@@ -726,7 +726,7 @@ PAGE += r"""function renderResult(){
   if(Number(x.guest_units||0)>0)parts.push('гостевых '+num(x.guest_units));
   if(Number(x.transfer_units||0)>0)parts.push('передано '+num(x.transfer_units));
   // Чужое число из сохранённого проекта — подписью, а не молча. Что было в
-  // файле, помнит загрузка (`loadedDerivedTail`); движок называет своё —
+  // файле, помнит загрузка (`derivedTailOf`); движок называет своё —
   // гостевых больше, чем мест (`guest_units_stale`), — и для вызовов без
   // страницы.
   const tail=derivedTailOf(x.key);

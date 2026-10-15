@@ -127,7 +127,7 @@ async function exportModelArchive(){
 // этого браузера — ручная копия того же самого создавала ложное ощущение
 // надёжного сохранения (владелец, 16.08.2026). Настоящее сохранение, которое
 // переживает смену устройства, — «Личный кабинет».
-function persistLocalSilently(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep:persistedTep(tep,derivedFromEngine),phasing,scenario:scenarioSelect.value}))}
+function persistLocalSilently(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep:persistedTep(tep),phasing,scenario:scenarioSelect.value}))}
 function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));if(x){
  // Сохранённое состояние накладывается на умолчания, а не подменяет их целиком.
  // Иначе поле, добавленное после сохранения, в браузере просто отсутствует:
@@ -432,7 +432,7 @@ function projectCadastral(){
 }
 
 function projectStorePayload(){
- return {payload:{inputs,tep:persistedTep(tep,derivedFromEngine),phasing,scenario:scenarioSelect.value||'base'},
+ return {payload:{inputs,tep:persistedTep(tep),phasing,scenario:scenarioSelect.value||'base'},
   summary:projectSummaryForStore(),cadastral:projectCadastral()};
 }
 
@@ -841,7 +841,7 @@ async function downloadSettingsFile(id){
 function downloadCurrentSettings(){
  saveJsonFile(safeFileName(currentProjectName())+' — настройки DevelopAid.json',
   settingsFileFrom(currentProjectName(),
-   {inputs:inputs,tep:persistedTep(tep,derivedFromEngine),phasing:phasing,scenario:scenarioSelect.value}));
+   {inputs:inputs,tep:persistedTep(tep),phasing:phasing,scenario:scenarioSelect.value}));
 }
 
 // Имя берётся оттуда же, откуда его предлагает сохранение на сервер: своего
