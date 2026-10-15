@@ -35,6 +35,11 @@ EXPECTED = {
     "nonres_phase_deviation": ("пп. 2–4 приложения 1 к Порядку", "не более чем 15 процентов"),
     "residential_share_30": ("п. 7.1 приложения 1 к Порядку", "менее 30 процентов"),
     "city_operator": ("пп. 3.1–3.2 Порядка", "аренду без торгов"),
+    "implementation_method": ("п. 2.10 Порядка", "доля города Москвы составляет 100 процентов"),
+    "shtab_changes": ("п. 3.8 Порядка", "согласованию на заседании Штаба по КРТ"),
+    "rights_transfer": ("п. 3.5 Порядка", "письменного согласия Департамента"),
+    "city_operator_tenders": ("п. 3.12 Порядка", "не вправе принимать решения о проведении торгов"),
+    "contract_signing": ("пп. 3.23, 4.11 Порядка", "не ранее чем через 10 календарных дней"),
 }
 
 
@@ -57,9 +62,9 @@ def test_the_registry_holds_the_provisions_with_points():
         assert provisions[key]["point"] == point, key
         assert quoted in provisions[key]["quote"], key
         assert provisions[key]["kind"], key
-    assert "2207-ПП" in row["latest_amendment"]
-    assert [s["number"] for s in row["amendment_chain"]][-1] == "2207-ПП"
-    assert len(row["amendment_chain"]) == 11
+    assert "07.07.2026" in row["latest_amendment"]
+    assert [s["number"] for s in row["amendment_chain"]][-3:] == ["2207-ПП", "1039-ПП", "1830-ПП"]
+    assert len(row["amendment_chain"]) == 13
 
 
 def test_the_thirty_percent_is_a_threshold_not_a_cap():
@@ -121,3 +126,11 @@ def test_the_calculation_does_not_read_the_provisions():
                if p.name != "agent.py" and "key_provisions" in p.read_text(encoding="utf-8")]
     assert readers == [], readers
     assert "key_provisions" not in (ROOT / "main_legacy.py").read_text(encoding="utf-8")
+
+
+def test_plato_tells_tender_from_spv():
+    """Торги по решению Штаба и SPV по предложению инвестора — разные пути;
+    для SPV нужно решение Штаба об изменении способа реализации."""
+    rule = _krt_rule()
+    assert "SPV" in rule and "решение Штаба об изменении способа реализации" in rule
+    assert "п. 3.8" in rule and "п. 2.10" in rule
