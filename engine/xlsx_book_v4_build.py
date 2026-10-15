@@ -888,6 +888,14 @@ def _build_project_workbook(
                            if _mode == "Денежная компенсация"
                            else n(x, "social_compensation_mln") if _mode == SOCIAL_MODE_BOTH
                            else 0.0)
+        if _mode == "Денежная компенсация":
+            # B17 — вся соцнагрузка (V4_INPUTS_COMPUTED_IN_THE_CELL), её читает
+            # строка «Социальная нагрузка» ОТЧЕТа. Без введённой суммы поле
+            # компенсации пусто, а движок платит стоимость стройки: строка
+            # показывала 0, и деньги уезжали в «Строительство и управление»
+            # (Донской: 49,75 млн ₽).
+            put("B17", number=social_cash_mln,
+                label="соцнагрузка денежной компенсацией (без суммы — стоимость стройки)")
         if social_cash_mln > 0:
             _cash_when = social_cash_payment_date(
                 x, add_months(_cash_start,
@@ -1256,22 +1264,6 @@ def _build_project_workbook(
                                 number=round(social_compensation_amount, 3))
         tep_xml = _put_extra(tep_xml, "E43",
                              number=round(social_compensation_amount, 3))
-
-    # Соцнагрузка структуры расходов — та, что лежит в CAPEX, а не вводная
-    # суммы B17: при денежной компенсации без введённой суммы B17 пуст, а
-    # движок и CAPEX платят стоимость стройки — и строка «Социальная нагрузка»
-    # показывала 0, а её деньги уезжали в «Строительство и управление»
-    # (Донской: 49,75 млн ₽). Читать строку CAPEX — значит читать то, что
-    # реально посчитано, в любом режиме.
-    report_xml, _done = _v4_set_or_insert_cell(
-        report_xml, "B36",
-        formula="SUM('CAPEX'!$B$31,'CAPEX'!$B$65,'CAPEX'!$B$99,'CAPEX'!$B$133)")
-    if not _done:
-        missing.append("структура расходов: соцнагрузка из CAPEX (ОТЧЕТ!B36)")
-    report_xml, _done = _v4_set_or_insert_cell(
-        report_xml, "E37", text="ИТОГО (= строка «Социальная нагрузка» CAPEX)")
-    if not _done:
-        missing.append("структура расходов: подпись итога соцнагрузки (ОТЧЕТ!E37)")
 
     # Лимит БРИДЖ в книге режет выборку (CF r34). Логика вводных DevelopAid —
     # «всё финансирует банк», поэтому лимит расчётный: весь CAPEX и
