@@ -248,12 +248,11 @@ function vriReliefSourceNote(){
 // Почему графика ВРИ нет — настоящей причиной. Плата, снятая льготой
 // целиком, — не «изменение не требуется»: так и сказано, с суммами.
 function vriEmptyReason(vri){
- const t=(vri&&vri.totals)||{}, s=(vri&&vri.settings)||{};
+ const t=(vri&&vri.totals)||{};
  const gross=Number(t.gross||0), relief=Number(t.relief||0);
  const mln=v=>(v/1e6).toLocaleString('ru-RU',{maximumFractionDigits:1})+' млн ₽';
  if(gross>0&&relief>0&&relief>=gross-0.5)
   return 'Плата за изменение ВРИ '+mln(gross)+' снята льготой полностью — к оплате 0, график платежей не строится.';
- if(s.required===false)return 'Изменение ВРИ в проекте не требуется (снят признак «Требуется изменение ВРИ») — график не строится.';
  if(!(gross>0))return 'Плата за изменение ВРИ в проекте равна нулю: сумма платы не задана и не посчитана — график не строится.';
  return 'Сумма обязательства по ВРИ равна нулю — график не строится.';
 }
@@ -265,6 +264,7 @@ function renderVri(vri){
  renderVriBenefits(vri&&vri.benefits,reliefBasis);
  fillVriReliefOffer();
  renderKrtVriFooter();
+ syncVriRequiredBox();
  if(typeof window.mptOverrideChanged==='function')window.mptOverrideChanged();
  const REGION={msk:'Москва',mo:'Московская область'};
  const MODE={lump:'единовременно',installment:'рассрочка'};
@@ -2017,6 +2017,51 @@ function restoreKrtClearedVriFee(){
  return true;
 }
 
+// Действует ли плата за смену ВРИ — тот же ответ, что у движка
+// (`vri_payment_active`): решает сумма платы, а не признак. Признак
+// «Требуется изменение ВРИ» — вид суммы: при плате > 0 он включён, снять его
+// — значит обнулить плату. Сохранённый старый явный false плату не обнуляет.
+function vriPaymentActive(){return Number(inputs.land_rights_cost_mln||0)>0}
+// Плата, обнулённая снятием признака на этой странице, — чтобы подпись
+// называла, что именно сделала галочка.
+let vriFeeClearedMln=0;
+function vriRequiredNote(){
+ const fee=Number(inputs.land_rights_cost_mln||0);
+ const o=(inputs._field_origin||{})['inputs.land_rights_cost_mln'];
+ const from=o&&o.source==='glavapu'?' (из ГлавАПУ)':o&&o.source==='manual'?' (вписана вручную)':'';
+ const text=fee>0
+  ?`Плата ${num(fee)} млн ₽ задана${from} — смена ВРИ учитывается. Снять признак — значит обнулить плату.`
+  :vriFeeClearedMln>0
+   ?`Плата ${num(vriFeeClearedMln)} млн ₽ обнулена снятием признака — смена ВРИ не учитывается.`
+   :'Плата за смену ВРИ не задана — смена ВРИ не учитывается. Чтобы учесть, впишите сумму в «Оформление земельных правоотношений / смена ВРИ».';
+ return '<div id="vriRequiredNote" class="note" style="margin:6px 0 0;padding:8px 10px;font-size:12px">'+escapeHtml(text)+'</div>';
+}
+function syncVriRequiredBox(){
+ inputs.vri_required=vriPaymentActive();
+ const el=document.getElementById('f_vri_required');
+ if(el)el.checked=inputs.vri_required;
+ const note=document.getElementById('vriRequiredNote');
+ if(note)note.outerHTML=vriRequiredNote();
+}
+function vriRequiredToggled(el){
+ const fee=Number(inputs.land_rights_cost_mln||0);
+ if(!el.checked&&fee>0){
+  if(!confirm('Снять признак «Требуется изменение ВРИ» — значит обнулить плату за ВРИ '+num(fee)+' млн ₽.\n\nОбнулить плату?')){el.checked=true;return}
+  inputs.land_rights_cost_mln=0;
+  markFieldManual('inputs.land_rights_cost_mln');
+  vriFeeClearedMln=fee;
+ }
+ if(el.checked&&!(fee>0)){
+  // Включить признак без суммы нечем: плату решает сумма.
+  el.checked=false;
+  const field=document.getElementById('f_land_rights_cost_mln');
+  if(field)field.focus();
+ }
+ syncVriRequiredBox();
+ const land=document.getElementById('f_land_rights_cost_mln');
+ if(land)land.value=inputs.land_rights_cost_mln;
+ calculate();
+}
 function krtVriFeeNote(){
  const back=Number(inputs._krt_vri_restored_mln||0);
  return '<div class="note krt-vri-fee-note" style="margin:0 0 6px;padding:11px 12px">'

@@ -151,6 +151,21 @@ def vri_relief(x: dict[str, Any], gross: float,
     return relief, gross - relief
 
 
+def vri_payment_active(x: dict[str, Any] | None) -> bool:
+    """Действует ли плата за смену ВРИ — один ответ для всех поверхностей.
+
+    Решает сумма платы (`land_rights_cost_mln` > 0), откуда бы она ни пришла:
+    вписана руками, из выгрузки ГлавАПУ или посчитана по ставке территории.
+    Признак `vri_required` входом больше не служит: он терялся у сохранённых
+    проектов (страница писала явный `false`), и движок молча строил график, а
+    страница показывала галочку снятой, сверка ГлавАПУ писала ВРИ = 0, тизер и
+    книга решали по-своему. Не платить за ВРИ — значит обнулить плату.
+    Движок, сверка, книга, тизер, страница (`vriPaymentActive`) и Платон
+    берут ответ здесь.
+    """
+    return n(x or {}, "land_rights_cost_mln") > 0
+
+
 def _vri_flag(value: Any, default: bool) -> bool:
     if value is None or value == "":
         return default
@@ -253,7 +268,7 @@ def _vri_settings(x: dict[str, Any], permit: date, amount: float = 0.0) -> dict[
             years = mo_range["years"]
             periodicity = mo_range["periodicity"]
     return {
-        "required": _vri_flag(x.get("vri_required"), VRI_DEFAULTS["vri_required"]),
+        "required": vri_payment_active(x),
         "region": region,
         "land_right": str(x.get("land_right") or VRI_DEFAULTS["land_right"]),
         "obligation_date": obligation_date,
@@ -366,20 +381,6 @@ def build_vri_schedule(
             "pf_open": settings["pf_open"].isoformat(),
             **extra,
         }
-
-    if amount > 0 and not settings["required"]:
-        # Плата задана, а признак снят — противоречие, и разрешать его в пользу
-        # «не платим» нельзя: сумма всё равно сидит в расходах, а графика нет,
-        # то есть расход есть, а денег на него никто не занимает. Наружу это
-        # выходило расхождением объёма долга с книгой. Снятый признак при
-        # ненулевой плате чаще всего означает не «ВРИ не нужна», а поле,
-        # которого не было в сохранённом проекте: страница рисует чекбокс по
-        # `!!inputs[id]` и возвращает явный false, затирая умолчание.
-        settings["required"] = True
-        warnings.append(
-            "Признак «Требуется изменение ВРИ» снят, но плата задана — "
-            "платежи разнесены по дате обязательства."
-        )
 
     if (
         amount > 0

@@ -287,6 +287,7 @@ def project_presentation(bundle: dict[str, Any], inputs: dict[str, Any],
     # посчитал движок: у нежилого проекта сырые назвали бы садик, которого
     # он не строит.
     counted_inputs = residential_excluded(inputs or {}, {})[0]
+    land["vri_active"] = vri_payment_active(counted_inputs)
     return _presentation.build_project_presentation(
         numbers, consolidated, list(bundle.get("phases") or []),
         counted_inputs, origin, _AGENT_BANK_LLCR_TARGET, site=site or {})

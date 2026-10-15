@@ -1425,8 +1425,7 @@ def _build_project_workbook(
     put_new("M85", text="underground_manual_gns_sqm")
 
     # --- ВРИ ---------------------------------------------------------------
-    land_cost = float(x.get("land_rights_cost_mln") or 0)
-    put("B74", text="Да" if land_cost > 0 else "Нет", label="vri_required")
+    put("B74", text="Да" if vri_payment_active(x) else "Нет", label="vri_required")
     put_new("D74", text="vri_required")
     _vri_installment = str(x.get("vri_payment_mode") or "lump") == "installment"
     put("B75", text="Рассрочка" if _vri_installment else "Единовременно",
