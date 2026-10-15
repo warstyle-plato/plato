@@ -469,15 +469,18 @@ def _v4_apply_nonres_full_estimate(xml: str, inputs: dict[str, Any], missing: li
         if not done:
             missing.append(f"CAPEX · нежилой проект, {label}: B{row} не записана")
 
-    shared = "SUM('Вводные'!$AR$88:$AR$91)"
+    # Площадь кладовых в базах уже стоит с признаком размещения
+    # (`_v4_apply_storage_area_rows`): хвост базы — он, а не голая колонка AR.
+    flag = _v4_storage_under_flag()
+    shared = f"SUM('Вводные'!$AR$88:$AR$91)*{flag}"
     for phase in range(_V4_CAPEX_PHASES):
         base = _V4_CAPEX_BLOCK_STRIDE * phase
         for row in _V4_SHARED_AREA_ARTICLE_ROWS:
             patch(row + base, shared + ")", f"{shared}+{total_area})",
                   f"статья проекта очереди {phase + 1}")
-        own = f"'Вводные'!$AR${88 + phase})"
+        own = f"'Вводные'!$AR${88 + phase}*{flag})"
         for row in _V4_PHASE_AREA_ARTICLE_ROWS:
-            patch(row + base, own, f"'Вводные'!$AR${88 + phase}+{phase_area(phase)})",
+            patch(row + base, own, f"'Вводные'!$AR${88 + phase}*{flag}+{phase_area(phase)})",
                   f"статья проекта очереди {phase + 1}")
         works = phase_works(phase)
         for row in (_V4_CAPEX_TECH_SUPERVISION_ROW, _V4_CAPEX_GC_FEE_ROW):
