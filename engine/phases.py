@@ -2629,10 +2629,16 @@ def revenue_structure(revenue: dict[str, Any], saleable: float = 0.0) -> dict[st
                          "role": "total", "group": group})
     total = float((revenue or {}).get("total") or sum(values.values()))
     rows.append({"label": "Итого", "value": total, "role": "total", "group": "all"})
-    # Выручка — на продаваемую площадь проекта (решение 4 ревизии книги);
-    # нулевая база — None, а не ноль.
+    # Строка продукта — доля в выручке, а не «тыс ₽ на м²»: прежде каждый
+    # продукт делился на продаваемую ВСЕГО проекта, и коммерция 1 этажа при
+    # цене 1 790 тыс ₽/м² читалась как 85 (владелец, 15.10.2026). Цена продукта
+    # на свою базу уже есть — «Средняя цена» в «Темпах и ценах продаж», второй
+    # раз её не печатаем. На продаваемую проекта делятся только итоги — им
+    # эта база и принадлежит. Нулевая база — None, а не ноль.
     for item in rows:
-        item["per_saleable_th"] = (item["value"] / saleable / 1000) if saleable else None
+        item["share"] = (item["value"] / total) if total else None
+        item["per_saleable_th"] = (
+            (item["value"] / saleable / 1000) if saleable and item["role"] == "total" else None)
     return {"rows": rows, "base": UNIT_BASE_SALEABLE, "base_label": unit_label(UNIT_BASE_SALEABLE)}
 
 
