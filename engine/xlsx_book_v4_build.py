@@ -2088,6 +2088,37 @@ def _build_project_workbook(
         except Exception as exc:  # noqa: BLE001 — молчащая инструкция хуже отсутствующей
             missing.append("Вводные · лист инструкции не собран: " + _error_location(exc))
 
+    # Числа без формата на видимых листах — формат по смыслу строки (ревизия
+    # 15.10.2026). До дашборда: он берёт styles.xml дальше, и клоны стилей
+    # должны в нём уже быть. Сводный CF сборщик не правит — он читается здесь.
+    _shared = _v4_shared_strings(source)
+    cf_total_path = _v4_sheet_path(source, "CF")
+    cf_total_xml, styles_xml = _v4_fill_general_formats(
+        "CF", source.read(cf_total_path).decode("utf-8"), styles_xml, _shared)
+    for _name in list(cf_sheet_xml):
+        cf_sheet_xml[_name], styles_xml = _v4_fill_general_formats(
+            _name, cf_sheet_xml[_name], styles_xml, _shared)
+    consolidator_xml, styles_xml = _v4_fill_general_formats(
+        "КОНСОЛИДАТОР", consolidator_xml, styles_xml, _shared)
+    checks_xml, styles_xml = _v4_fill_general_formats("ПРОВЕРКИ", checks_xml, styles_xml, _shared)
+    objects_xml, styles_xml = _v4_fill_general_formats("ОБЪЕКТЫ", objects_xml, styles_xml, _shared)
+    sales_xml, styles_xml = _v4_fill_general_formats("Продажи", sales_xml, styles_xml, _shared)
+    tep_xml, styles_xml = _v4_fill_general_formats("ТЭП", tep_xml, styles_xml, _shared)
+    # Комментарии удельных показателей (H57–H73) стояли с переносом в колонке
+    # шириной 13: строки раздувались в десятки линий, и вторая страница ОТЧЕТа
+    # печаталась столбиком. Без переноса текст идёт в пустые колонки справа.
+    # Две длинные подписи дефолта (A21, A22) наоборот обрезались значением.
+    report_xml, styles_xml = _v4_set_wrap(
+        report_xml, styles_xml, [f"H{row}" for row in range(57, 74)], False)
+    report_xml, styles_xml = _v4_set_wrap(report_xml, styles_xml, ["A21", "A22"], True)
+    # Шапка «ГНС, м²» соцобъектов дописана нами — в стиле соседей по шапке.
+    tep_xml = _v4_copy_style(tep_xml, "E39", "F39")
+    # Заголовок блока соцобъектов обрезался по ширине колонки A — объединён
+    # на ширину своей таблицы, как заголовок объектов строкой выше (A30:H30).
+    if '<x:mergeCell ref="A38:' not in tep_xml:
+        tep_xml = _v4_add_merge(tep_xml, "A38:F38")
+    xml, styles_xml = _v4_fill_general_formats("Параметры модели", xml, styles_xml, _shared)
+
     # «Дашборд» и его скрытый источник `Dashboard_Data`: формулы на листы книги,
     # три диаграммы на диапазоны источника. Не собрался — книга выходит с
     # прежним листом шаблона, и это названо в `missing`, а не спрятано.
@@ -2102,6 +2133,8 @@ def _build_project_workbook(
             frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)),
             hidden_products=_v4_absent_products(x, tep), queues=count,
             parking=(finance_hints or {}).get("parking_provision"),
+            chart_months=(_chart_horizon + 6 if (_chart_horizon := int(
+                (finance_hints or {}).get("horizon_months") or 0)) > 0 else None),
             storage_under_flag=_v4_storage_under_flag("'Параметры модели'"))
     except Exception as exc:  # noqa: BLE001 — дашборд без книги не выпускается молча
         missing.append("Дашборд · не собран: " + _error_location(exc))
@@ -2149,6 +2182,8 @@ def _build_project_workbook(
                 payload = checks_xml.encode("utf-8")
             elif item.filename == consolidator_sheet_path:
                 payload = consolidator_xml.encode("utf-8")
+            elif item.filename == cf_total_path:
+                payload = cf_total_xml.encode("utf-8")
             elif item.filename in cf_sheet_paths.values():
                 payload = cf_sheet_xml[
                     next(k for k, v in cf_sheet_paths.items() if v == item.filename)

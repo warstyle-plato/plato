@@ -254,3 +254,64 @@ def test_the_queue_cash_flow_pays_the_engine_tax(long_tail) -> None:
     assert book.cell("CF", "B14") == pytest.approx(tax, rel=1e-4)
     contributed = sum(-v for v in engine["cashflow"]["equity"] if v < 0) / 1e6
     assert book.cell("CF", "B23") == pytest.approx(contributed, rel=1e-5)
+
+
+# --- 8. оформление: числа с форматом, текст не раздувает строки, ось по горизонту ---
+
+@pytest.fixture(scope="module")
+def styled_book():
+    x = {**core.DEFAULT_INPUTS, **DONSKOY["inputs"]}
+    content, _name, meta = core.build_project_workbook(
+        x, copy.deepcopy(DONSKOY["tep"]), [], {}, project_name="Донской")
+    assert list(meta.get("missing") or []) == [], meta.get("missing")
+    return content, openpyxl.load_workbook(io.BytesIO(content))
+
+
+@pytest.mark.parametrize("sheet, coords", [
+    ("CF", ["E32", "E33", "E36", "E37", "B32", "B37"]),
+    ("ПРОВЕРКИ", ["B76", "C76", "D76", "B82", "C82"]),
+    ("Продажи", ["E10", "F10"]),
+    ("ОБЪЕКТЫ", ["E15", "F15"]),
+    ("КОНСОЛИДАТОР", ["B34", "C30", "B38"]),
+])
+def test_numbers_on_visible_sheets_have_a_format(styled_book, sheet, coords) -> None:
+    """Строки, где «-28,42323685» и «0,8783333333» печатались как есть."""
+    _content, book = styled_book
+    bare = [coord for coord in coords if book[sheet][coord].number_format == "General"]
+    assert bare == [], f"{sheet}: без формата {bare}"
+
+
+def test_report_comments_do_not_blow_up_the_rows(styled_book) -> None:
+    _content, book = styled_book
+    report = book["ОТЧЕТ"]
+    wrapped = [f"H{row}" for row in range(57, 74) if report[f"H{row}"].alignment.wrap_text]
+    assert wrapped == [], wrapped
+    assert report["A21"].alignment.wrap_text and report["A22"].alignment.wrap_text
+
+
+def test_the_entry_sheet_has_no_empty_looking_fields(styled_book) -> None:
+    """Подпись и единица без значения выглядели полем, которое забыли заполнить."""
+    _content, book = styled_book
+    entry = book["Вводные"]
+    empty = [row for row in range(5, entry.max_row + 1)
+             if isinstance(entry[f"A{row}"].value, str) and entry[f"C{row}"].value
+             and not str(entry[f"A{row}"].value).isupper() and entry[f"B{row}"].value is None]
+    assert empty == [], [entry[f"A{row}"].value for row in empty]
+
+
+def test_the_debt_chart_ends_near_the_horizon(styled_book) -> None:
+    import re
+    import zipfile
+
+    content, _book = styled_book
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        charts = [archive.read(name).decode("utf-8") for name in archive.namelist()
+                  if "/charts/chart" in name and name.endswith(".xml")]
+    debt = next(text for text in charts if "Долг и эскроу" in text)
+    ends = set(re.findall(r"Dashboard_Data'!\$D\$\d+:\$([A-Z]+)\$\d+", debt))
+    assert ends and "GA" not in ends, ends
+
+
+def test_the_social_header_spans_its_table(styled_book) -> None:
+    _content, book = styled_book
+    assert any(str(rng).startswith("A38:") for rng in book["ТЭП"].merged_cells.ranges)

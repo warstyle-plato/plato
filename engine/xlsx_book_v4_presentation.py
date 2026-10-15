@@ -380,3 +380,203 @@ def _v4_shared_weights(
             return [1.0 if index == 0 else 0.0 for index in range(count)]
         return _v4_normalized(fallback, count)
     return _v4_normalized(weights, count)
+
+
+# --- числа без формата ------------------------------------------------------
+# Ревизия 15.10.2026 нашла на видимых листах строки, где число стоит в формате
+# General: «-28,42323685» в своде налога CF, «0,8783333333» в весе темпа
+# продаж, длинные хвосты в паритете ПРОВЕРОК и в раздаче налога КОНСОЛИДАТОРа.
+# Часть пришла из шаблона, часть — из наших дописанных строк. Формат ставится
+# только там, где его нет вовсе: заданный шаблоном формат не трогается.
+_V4_FMT_WEIGHT = "0.0000"
+_V4_FMT_CHECK = "#,##0.00;[Red](#,##0.00);-"
+_V4_FMT_YEAR = "0"
+_V4_FMT_PLACES = "#,##0.0;[Red](#,##0.0);-"
+
+
+def _v4_shared_strings(source: "zipfile.ZipFile") -> list[str]:
+    """Общие строки книги — подписи шаблона лежат в них, а не в ячейке."""
+    try:
+        text = source.read("xl/sharedStrings.xml").decode("utf-8")
+    except KeyError:
+        return []
+    out = []
+    for item in re.findall(r"<x:si>(.*?)</x:si>", text, re.S):
+        out.append(html.unescape("".join(re.findall(r"<x:t[^>]*>(.*?)</x:t>", item, re.S))))
+    return out
+
+
+def _v4_row_labels(xml: str, shared: list[str], column: str = "A") -> dict[int, str]:
+    """Текст колонки по строкам (общая строка, своя или формула-строка)."""
+    labels: dict[int, str] = {}
+    for row, attrs, body in re.findall(r'<x:c r="%s(\d+)"([^>]*)>(.*?)</x:c>' % column, xml, re.S):
+        inline = re.search(r"<x:t[^>]*>(.*?)</x:t>", body, re.S)
+        value = re.search(r"<x:v>(.*?)</x:v>", body, re.S)
+        if inline:
+            labels[int(row)] = html.unescape(inline.group(1))
+        elif value and 't="str"' in attrs:
+            labels[int(row)] = html.unescape(value.group(1))
+        elif value and 't="s"' in attrs:
+            index = int(value.group(1))
+            labels[int(row)] = shared[index] if 0 <= index < len(shared) else ""
+    return labels
+
+
+def _v4_unit_format_code(unit: str) -> str | None:
+    """Формат по единице вводной колонки L «Параметров модели»."""
+    unit = (unit or "").strip().lower()
+    if unit.startswith(("доля", "%")):
+        return _V4_FMT_PCT
+    if unit.startswith("млн"):
+        return "#,##0.00;[Red](#,##0.00);-"
+    if unit.startswith(("шт", "мест")):
+        return _V4_FMT_AREA
+    if unit.startswith("мес"):
+        return _V4_FMT_COUNT
+    if unit.startswith(("м²", "м2", "кв")):
+        return _V4_FMT_AREA
+    if unit.startswith("тыс"):
+        return _V4_FMT_AMOUNT
+    return None
+
+
+def _v4_general_format_code(sheet: str, row: int, column: str, label: str,
+                            unit: str = "") -> str | None:
+    """Формат числа по смыслу строки; None — не наше дело."""
+    if sheet == "CF":
+        return _V4_FMT_AMOUNT if 32 <= row <= 37 else None
+    if sheet.startswith("CF_"):
+        return _V4_FMT_AMOUNT if (row, column) == (53, "B") else None
+    if sheet == "КОНСОЛИДАТОР" and 4 <= row <= 8:
+        # Выручка очереди по продуктам — колонки за P (`_v4_revenue_by_product`).
+        return _V4_FMT_AMOUNT if len(column) > 1 or column >= "Q" else None
+    if sheet == "КОНСОЛИДАТОР":
+        if row < 28:
+            return None
+        if label.startswith(("Налоговый год", "Первый облагаемый")) or column == "A":
+            return _V4_FMT_YEAR
+        if 30 <= row <= 34 and column == "C":
+            return _V4_FMT_PCT
+        return _V4_FMT_AMOUNT
+    if sheet == "ТЭП" and row >= 45:
+        # Экземпляры объектов 2–5 — строки под блоком соцобъектов.
+        return {"C": _V4_FMT_AREA, "D": _V4_FMT_AREA, "E": _V4_FMT_AREA,
+                "F": _V4_FMT_AMOUNT, "G": _V4_FMT_AMOUNT}.get(column)
+    if sheet == "ПРОВЕРКИ":
+        if column not in ("B", "C", "D", "E"):
+            return None
+        if "LLCR" in label:
+            return "0.000"
+        if label.startswith("Лист ввода"):
+            return "0.000000"
+        return _V4_FMT_CHECK
+    if sheet in ("ОБЪЕКТЫ", "Продажи"):
+        if label.startswith(("Вес S-кривой", "Вес темпа продаж")):
+            return _V4_FMT_WEIGHT
+        if label.startswith("Паркинг объекта — мест"):
+            return _V4_FMT_PLACES
+        if label.startswith("Паркинг объекта — выручка"):
+            return _V4_FMT_AMOUNT
+        return None
+    if sheet == "Параметры модели":
+        if 88 <= row <= 91 and column in ("AJ", "AK", "AL", "AM"):
+            return _V4_FMT_PCT
+        if 88 <= row <= 91 and column == "AU":
+            return _V4_FMT_AREA
+        if (row, column) == (25, "F"):
+            return _V4_FMT_PCT
+        if column == "F" and label.startswith(("ДОО —", "СОШ —", "Поликлиника —",
+                                                "Денежная компенсация")):
+            return _V4_FMT_AMOUNT
+        if column == "K":
+            return _v4_unit_format_code(unit)
+    return None
+
+
+def _v4_fill_general_formats(sheet: str, xml: str, styles: str,
+                             shared: list[str]) -> tuple[str, str]:
+    """Числовым ячейкам без формата — формат по смыслу строки.
+
+    Текстовые ячейки и ячейки с форматом не трогаются; стиль клонируется с
+    новым форматом (цвет и рамка шаблона остаются), один раз на пару.
+    """
+    labels = _v4_row_labels(xml, shared)
+    units = _v4_row_labels(xml, shared, "L") if sheet == "Параметры модели" else {}
+    clones: dict[tuple[int, str], int] = {}
+    pattern = re.compile(r'<x:c r="([A-Z]{1,3})(\d+)"([^>]*?)>(?=\s*<x:[fv][\s>])')
+
+    def swap(match: "re.Match[str]") -> str:
+        nonlocal styles
+        column, row, attrs = match.group(1), int(match.group(2)), match.group(3)
+        if re.search(r'\st="(?:s|inlineStr|str|b|e)"', attrs):
+            return match.group(0)
+        code = _v4_general_format_code(sheet, row, column, labels.get(row, ""),
+                                       units.get(row, ""))
+        if code is None:
+            return match.group(0)
+        style = re.search(r'\ss="(\d+)"', attrs)
+        sid = int(style.group(1)) if style else 0
+        if v4_entry_sheet.num_fmt_id(styles, sid) != 0:
+            return match.group(0)
+        if (sid, code) not in clones:
+            styles, fmt_id = v4_entry_sheet.with_format(styles, code)
+            styles, clones[(sid, code)] = v4_entry_sheet.xf_with_format(styles, sid, fmt_id)
+        new = clones[(sid, code)]
+        attrs = (re.sub(r'\ss="\d+"', f' s="{new}"', attrs, count=1) if style
+                 else f'{attrs} s="{new}"')
+        return f'<x:c r="{column}{row}"{attrs}>'
+
+    return pattern.sub(swap, xml), styles
+
+
+def _v4_xf_with_wrap(styles: str, xf_id: int, wrap: bool) -> tuple[str, int]:
+    """Тот же стиль, но с переносом текста включённым или выключенным."""
+    block, items = v4_entry_sheet._xf_items(styles)
+    base = items[xf_id]
+    flag = "1" if wrap else "0"
+    if "<x:alignment" in base:
+        alignment = re.search(r"<x:alignment[^>]*/>", base).group(0)
+        changed = (re.sub(r'wrapText="\d"', f'wrapText="{flag}"', alignment)
+                   if "wrapText" in alignment
+                   else alignment.replace("<x:alignment", f'<x:alignment wrapText="{flag}"', 1))
+        clone = base.replace(alignment, changed, 1)
+    else:
+        if base.endswith("/>"):
+            clone = base[:-2].rstrip() + f'><x:alignment wrapText="{flag}" /></x:xf>'
+        else:
+            clone = base.replace("</x:xf>", f'<x:alignment wrapText="{flag}" /></x:xf>', 1)
+    clone = (re.sub(r'applyAlignment="\d"', 'applyAlignment="1"', clone, count=1)
+             if "applyAlignment" in clone
+             else clone.replace("<x:xf ", '<x:xf applyAlignment="1" ', 1))
+    squeeze = lambda text: re.sub(r"\s+", "", text)  # noqa: E731
+    for index, item in enumerate(items):
+        if squeeze(item) == squeeze(clone):
+            return styles, index
+    items.append(clone)
+    new_block = f'<x:cellXfs count="{len(items)}">{"".join(items)}</x:cellXfs>'
+    return styles[:block.start()] + new_block + styles[block.end():], len(items) - 1
+
+
+def _v4_set_wrap(xml: str, styles: str, coords: list[str], wrap: bool) -> tuple[str, str]:
+    """Перенос текста в ячейках `coords`; нет ячейки — нечего и менять."""
+    for coord in coords:
+        found = re.search(r'<x:c r="%s"([^>]*?)(/?>)' % re.escape(coord), xml)
+        if not found:
+            continue
+        style = re.search(r'\ss="(\d+)"', found.group(1))
+        styles, new = _v4_xf_with_wrap(styles, int(style.group(1)) if style else 0, wrap)
+        attrs = (re.sub(r'\ss="\d+"', f' s="{new}"', found.group(1), count=1) if style
+                 else f'{found.group(1)} s="{new}"')
+        xml = xml[:found.start()] + f'<x:c r="{coord}"{attrs}{found.group(2)}' + xml[found.end():]
+    return xml, styles
+
+
+def _v4_copy_style(xml: str, source: str, target: str) -> str:
+    """Стиль ячейки `source` — ячейке `target` того же листа."""
+    style = re.search(r'<x:c r="%s"[^>]*?\ss="(\d+)"' % re.escape(source), xml)
+    found = re.search(r'<x:c r="%s"([^>]*?)(/?>)' % re.escape(target), xml)
+    if not style or not found:
+        return xml
+    attrs = (re.sub(r'\ss="\d+"', f' s="{style.group(1)}"', found.group(1), count=1)
+             if re.search(r'\ss="\d+"', found.group(1)) else f'{found.group(1)} s="{style.group(1)}"')
+    return xml[:found.start()] + f'<x:c r="{target}"{attrs}{found.group(2)}' + xml[found.end():]
