@@ -167,7 +167,7 @@ PAGE = PAGE.replace(TRANSFER_LABELS_PLACEHOLDER, json.dumps(
 PAGE = PAGE.replace("__DEVELOPAID_STORAGE_AREA_PER_UNIT__",
                     json.dumps(STORAGE_AREA_PER_UNIT_DEFAULT))
 PAGE = PAGE.replace("__DEVELOPAID_UNDERGROUND_PRODUCTS__",
-                    json.dumps(list(UNDERGROUND_PRODUCTS), ensure_ascii=False))
+                    json.dumps(underground_placement_payload(), ensure_ascii=False))
 # Мера счёта продукта — из движка: страница, книга, отчёт и тизер обязаны
 # называть одно и то же одним словом.
 PAGE = PAGE.replace("__DEVELOPAID_TEP_COUNT_MEASURE__",

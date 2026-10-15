@@ -69,7 +69,7 @@ def _render() -> str:
     # Списки и слова берутся у движка, а не переписываются в стенд: копия
     # разошлась бы с объявлением молча. На странице они стоят плейсхолдерами,
     # и разрешитель их не найдёт — значит подставляем тем же значением.
-    declared = ("const UNDERGROUND_PRODUCTS=" + json.dumps(list(core.UNDERGROUND_PRODUCTS))
+    declared = ("const UNDERGROUND_PLACEMENT=" + json.dumps(core.underground_placement_payload())
                 + ";\nconst TRANSFER_NOTE_WORD=" + json.dumps(core.TRANSFER_NOTE_WORD) + ";\n"
                 # Мера счёта продукта — такой же подставленный плейсхолдером
                 # список, как и соседние: разрешитель их не находит.

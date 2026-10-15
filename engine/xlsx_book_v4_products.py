@@ -75,12 +75,54 @@ TEP_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Социальные объекты", ()),
 )
 
-# Строки ТЭП, у которых наземной площади нет вовсе: гараж и кладовые лежат под
-# землёй, и их метры в ГНС — наземную площадь здания — не входят. Число в
-# колонке ГНС у них своё, и без этого списка таблица складывает две разные
-# величины под одним именем. Список объявлен здесь и подставляется на страницу
-# плейсхолдером — копию негде обновлять, потому что копии нет.
-UNDERGROUND_PRODUCTS: tuple[str, ...] = ("underground_parking", "storage")
+# Где стоят кладовые — решение проекта, а не свойство продукта (владелец,
+# 15.10.2026): у «Донского» они на первом этаже, и подземными их считать
+# значило строить 103 м² по ставке гаража и вынимать их из наземной части.
+# Поле одно; отсутствующий ключ — умолчание «в подземной части», а не
+# «наземные»: сохранённые проекты и эталоны от появления поля не сдвигаются.
+STORAGE_PLACEMENT_FIELD = "storage_placement"
+STORAGE_UNDERGROUND = "underground"
+STORAGE_ABOVE = "above"
+STORAGE_PLACEMENT_DEFAULT = STORAGE_UNDERGROUND
+STORAGE_PLACEMENT_OPTIONS: tuple[tuple[str, str], ...] = (
+    (STORAGE_UNDERGROUND, "В подземной части"),
+    (STORAGE_ABOVE, "На наземных этажах"),
+)
+
+# Строки ТЭП, чьи метры лежат под землёй, — по размещению кладовых. Гараж
+# подземный всегда; кладовые — когда так решил проект. Ответ один на все
+# поверхности: движок, страница (плейсхолдером), PDF, тизер и книга берут его
+# у `underground_products`, а не у своей копии списка.
+UNDERGROUND_PRODUCTS_BY_PLACEMENT: dict[str, tuple[str, ...]] = {
+    STORAGE_UNDERGROUND: ("underground_parking", "storage"),
+    STORAGE_ABOVE: ("underground_parking",),
+}
+
+# Строки, чьи метры к наземной ГНС проекта НЕ прибавляются. Это другой вопрос,
+# чем «что под землёй»: наземные кладовые стоят внутри наземной ГНС здания —
+# их вырезают из площади квартир, как коммерцию, а не добавляют сверху
+# (владелец, 15.10.2026). Поэтому кладовые здесь при любом размещении.
+ROWS_OUTSIDE_ABOVE_SUM: tuple[str, ...] = ("underground_parking", "storage")
+
+
+def storage_above_ground(inputs: dict[str, Any] | None) -> bool:
+    """Кладовые на наземных этажах — только явным выбором проекта."""
+    value = (inputs or {}).get(STORAGE_PLACEMENT_FIELD)
+    return str(value or "").strip() == STORAGE_ABOVE
+
+
+def underground_products(inputs: dict[str, Any] | None) -> tuple[str, ...]:
+    """Строки ТЭП под землёй — у ЭТОГО проекта."""
+    return UNDERGROUND_PRODUCTS_BY_PLACEMENT[
+        STORAGE_ABOVE if storage_above_ground(inputs) else STORAGE_UNDERGROUND]
+
+
+def underground_placement_payload() -> dict[str, Any]:
+    """Правило «что под землёй» для страницы — плейсхолдером, не копией."""
+    return {"field": STORAGE_PLACEMENT_FIELD, "default": STORAGE_PLACEMENT_DEFAULT,
+            "by_placement": {key: list(value)
+                             for key, value in UNDERGROUND_PRODUCTS_BY_PLACEMENT.items()},
+            "outside_above": list(ROWS_OUTSIDE_ABOVE_SUM)}
 
 
 def project_above_gns(tep: dict[str, Any]) -> float:
@@ -88,14 +130,86 @@ def project_above_gns(tep: dict[str, Any]) -> float:
 
     Объявлена один раз: её читают и сводка, и удельные, и статья
     благоустройства. Второй счёт той же величины разошёлся бы с первым, и оба
-    числа выглядели бы верными.
+    числа выглядели бы верными. От размещения кладовых она не зависит:
+    подземные в неё не входят, наземные уже лежат в метрах квартир.
     """
     object_under = sum(n(row, "under_gns") for row in tep.values())
-    underground = (sum(n(tep.get(key) or {}, "gns") for key in UNDERGROUND_PRODUCTS)
-                   + object_under)
+    outside = (sum(n(tep.get(key) or {}, "gns") for key in ROWS_OUTSIDE_ABOVE_SUM)
+               + object_under)
     volume = sum(n(row, "gns") for row in tep.values()) + object_under
-    return max(0.0, volume - underground)
-_UNDERGROUND_TEP_KEYS = frozenset(UNDERGROUND_PRODUCTS)
+    return max(0.0, volume - outside)
+
+
+def mkd_part_gns(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, dict[str, float]]:
+    """ГНС продуктов МКД по частям здания: наземной и подземной.
+
+    Сумма наземной части — ГНС квартир и коммерции (`core_above_gns`), и
+    наземные кладовые в ней ВЫРЕЗАНЫ из квартир; сумма подземной —
+    `core_under_gns`. По этим метрам прямые затраты части (её СМР с
+    надбавками) делятся между продуктами этой части.
+    """
+    def gns(key: str) -> float:
+        return n(tep.get(key) or {}, "gns")
+
+    flats, storage = gns("apartments"), gns("storage")
+    if storage_above_ground(inputs):
+        inside = min(storage, flats)
+        return {"above": {"apartments": flats - inside,
+                          "ground_commercial": gns("ground_commercial"),
+                          "storage": inside},
+                "under": {"underground_parking": gns("underground_parking")}}
+    return {"above": {"apartments": flats, "ground_commercial": gns("ground_commercial")},
+            "under": {"underground_parking": gns("underground_parking"), "storage": storage}}
+
+
+PRODUCT_COST_BASIS = (
+    "Себестоимость продуктов дома: прямые затраты — СМР своей части здания "
+    "(наземной или подземной) с генподрядом, техзаказчиком, управлением и "
+    "резервом — по ГНС продукта; общие затраты проекта — по выручке продукта.")
+
+
+def cost_pool_product_costs(pool: float, direct: dict[str, float],
+                            part_gns: dict[str, dict[str, float]],
+                            revenue: dict[str, float]) -> dict[str, float]:
+    """Себестоимость продуктов общего пула МКД: прямые по месту + общие по выручке.
+
+    Решение владельца 15.10.2026. Пул делился долей проданного количества, а
+    в одной сумме стояли метры квартир и ШТУКИ паркинга: 26 мест «Донского»
+    против 3 562 м² несли 0,03 млрд ₽ при марже 94,6 %.
+
+    · Прямые — СМР части здания с её надбавками (генподряд, техзаказчик,
+      управление проектом и резерв в доле, начисленной на это СМР;
+      `op["mkd_direct_costs"]`) — продуктам этой части по их ГНС.
+    · Общие — всё остальное в пуле (покупка, ВРИ, ИРД, проект, сети,
+      благоустройство, подготовка, сдача, содержание площадки, соцнагрузка,
+      надбавки на них; в налоговой базе ещё и коммерческие расходы) — по
+      выручке продуктов пула; без выручки — по их ГНС.
+    Прямые больше пула не бывают: при пуле меньше их суммы они сжимаются до
+    пула. Остаток, который делить не по чему, не раздаётся — налоговая база
+    признаёт его в РВЭ. Книга считает тем же методом (`CF_x`, блок
+    «Себестоимость продуктов пула МКД»).
+    """
+    costs = {key: 0.0 for key in COST_POOL_PRODUCTS}
+    parts = ("above", "under")
+    raw = sum(float(direct.get(part) or 0.0) for part in parts)
+    scale = min(1.0, pool / raw) if raw > 0 and pool > 0 else 0.0
+    for part in parts:
+        metres = part_gns.get(part) or {}
+        total = sum(metres.values())
+        if total <= 0:
+            continue
+        for key, value in metres.items():
+            costs[key] += float(direct.get(part) or 0.0) * scale * value / total
+    common = pool - sum(costs.values())
+    weights = {key: max(0.0, float(revenue.get(key) or 0.0)) for key in COST_POOL_PRODUCTS}
+    if sum(weights.values()) <= 0:
+        weights = {key: sum((part_gns.get(part) or {}).get(key, 0.0) for part in parts)
+                   for key in COST_POOL_PRODUCTS}
+    total_weight = sum(weights.values())
+    if total_weight > 0:
+        for key in COST_POOL_PRODUCTS:
+            costs[key] += common * weights[key] / total_weight
+    return costs
 
 
 # Чем СЧИТАЕТСЯ продукт. Квартира, машино-место, место в детском саду и

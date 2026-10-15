@@ -146,13 +146,14 @@ def test_the_results_tep_shows_the_object_parking_row() -> None:
 
 def test_the_input_tep_counts_the_object_garage_underground() -> None:
     """Подпись «гаражи объектов» обязана видеть гараж, посчитанный движком."""
-    prelude = ("let phaseBundle=null;\n"
+    # Что под землёй, строка решает по размещению кладовых проекта — `inputs`.
+    prelude = ("let phaseBundle=null;\nlet inputs={};\n"
                "let lastResult={parking:{own:[{tep_key:'offices',enabled:true,under_gns:35000}]}};\n")
     out, _ = page_blocks.run(prelude, "process.stdout.write(String("
                              "tepRowUnderGns('offices',{gns:186180})));")
     assert float(out) == 35000, "гараж офисника не попал в подземную часть ТЭП"
     # Мёртвый контрпример: без гаража у движка подземной части у офиса нет.
-    prelude_off = "let phaseBundle=null;\nlet lastResult={parking:{own:[]}};\n"
+    prelude_off = "let phaseBundle=null;\nlet inputs={};\nlet lastResult={parking:{own:[]}};\n"
     out_off, _ = page_blocks.run(prelude_off, "process.stdout.write(String("
                                  "tepRowUnderGns('offices',{gns:186180})));")
     assert float(out_off) == 0

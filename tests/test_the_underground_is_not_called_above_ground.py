@@ -68,27 +68,28 @@ def test_the_engine_hands_over_the_underground_base() -> None:
     under = float(tep["core_under_gns"])
     assert under > 0, "проверять нечего: на этих вводных подземной части нет"
     rows = {row["key"]: float(row["gns"]) for row in tep["rows"]}
-    assert under == pytest.approx(sum(rows[key] for key in core.UNDERGROUND_PRODUCTS))
+    assert under == pytest.approx(sum(rows[key] for key in core.underground_products({})))
     assert float(tep["total"]["gns"]) > under, "итог обязан быть больше своей части"
 
 
 def test_the_underground_list_is_declared_once() -> None:
     """Список подземных строк не переписан на странице руками."""
-    assert core.UNDERGROUND_PRODUCTS == ("underground_parking", "storage")
+    assert core.underground_products({}) == ("underground_parking", "storage")
+    assert core.underground_products({"storage_placement": "above"}) == ("underground_parking",)
     assert "__DEVELOPAID_UNDERGROUND_PRODUCTS__" not in core.PAGE, "плейсхолдер не подставлен"
     piece = _renderer()
-    for key in core.UNDERGROUND_PRODUCTS:
+    for key in core.underground_products({}):
         assert f"'{key}'" not in piece and f'"{key}"' not in piece, (
             f"{key} вписан в отрисовку руками — копию негде обновлять")
-    assert "UNDERGROUND_PRODUCTS" in piece
+    assert "r.tep.underground_products" in piece
 
 
 def test_the_screen_does_not_add_up_the_underground_itself() -> None:
     """Разложение берётся у движка, а не собирается по строкам таблицы."""
     piece = _renderer()
     assert "r.tep.core_under_gns" in piece
-    assert not re.search(r"UNDERGROUND_PRODUCTS\.includes\([^)]*\)\s*\?\s*sum", piece)
-    head = piece[:piece.index("const isUnder")]
+    assert not re.search(r"underKeys\.includes\([^)]*\)\s*\?\s*sum", piece)
+    head = piece[:piece.index("const underKeys")]
     assert "reduce" not in head and "forEach" not in head, (
         "подземная часть суммируется на экране — это второй счёт той же величины")
 

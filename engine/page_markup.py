@@ -705,6 +705,7 @@ PAGE += r"""</head>
             <tbody id="salesReportTable"></tbody>
           </table>
         </div>
+        <div class="hint" id="salesCostBasis"></div>
         <!-- Квартиры продаются штуками: план отдела продаж и рыночная проверка
              живут в них, а таблица выше говорит только метрами. -->
         <table class="metric-table metric-compact" id="apartmentPaceTable"></table>

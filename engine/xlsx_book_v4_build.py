@@ -1053,7 +1053,7 @@ def _build_project_workbook(
         # «правка не сработала»: D21 в книге с правкой, а число прежнее.
         cf_sheet_xml[_name] = _v4_apply_vat_cash(_v4_apply_vat_base(
             _v4_apply_interest_accrual(
-                _v4_apply_core_pool_without_sales(_v4_apply_extra_objects_tax_row(
+                _v4_apply_core_pool_by_product(_v4_apply_core_pool_without_sales(_v4_apply_extra_objects_tax_row(
                     _v4_use_bridge_base_row(
                         _v4_apply_cash_sweep(
                             _v4_apply_pf_ceiling(
@@ -1066,7 +1066,7 @@ def _build_project_workbook(
                             _phase, missing),
                         _phase, missing),
                     _phase, missing),
-                    _phase, missing),
+                    _phase, missing), _phase, missing),
                 _phase, missing),
             _phase, missing), _phase, missing)
 
@@ -2069,7 +2069,8 @@ def _build_project_workbook(
             _v4_dashboard_extra_products(),
             frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)),
             hidden_products=_v4_absent_products(x, tep), queues=count,
-            parking=(finance_hints or {}).get("parking_provision"))
+            parking=(finance_hints or {}).get("parking_provision"),
+            storage_under_flag=_v4_storage_under_flag("'Параметры модели'"))
     except Exception as exc:  # noqa: BLE001 — дашборд без книги не выпускается молча
         missing.append("Дашборд · не собран: " + _error_location(exc))
 

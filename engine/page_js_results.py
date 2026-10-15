@@ -631,6 +631,11 @@ PAGE += r"""function renderResult(){
     <td>${p.margin==null?'—':pct(p.margin)}</td>
    </tr>`).join('');
  }
+ {
+  // Как себестоимость дома разложена по продуктам — фраза движка, та же в PDF.
+  const basis=document.getElementById('salesCostBasis');
+  if(basis)basis.textContent=r.report.product_cost_basis||'';
+ }
 
  {
   const ap=r.report.apartment_sales||{};
@@ -742,8 +747,16 @@ PAGE += r"""function renderResult(){
  // Подземную базу считает движок (core_under_gns) — экран её не собирает:
  // второй счёт той же величины однажды разошёлся бы с первым.
  const underGns=Number(r.tep.core_under_gns||0);
- const isUnder=x=>UNDERGROUND_PRODUCTS.includes(x.key);
- const aboveGns=Math.max(0,Number(r.tep.total.gns||0)-underGns);
+ // Что под землёй — ответ ЭТОГО расчёта (`underground_products` движка):
+ // кладовые бывают и наземными, тогда их метры лежат внутри ГНС квартир, и
+ // к итогу наземной они второй раз не прибавляются.
+ // Отчёт, сохранённый до поля, — умолчание размещения, а не «наземные».
+ const underKeys=r.tep.underground_products
+  ||UNDERGROUND_PLACEMENT.by_placement[UNDERGROUND_PLACEMENT.default];
+ const isUnder=x=>underKeys.includes(x.key);
+ const insideFlats=x=>!isUnder(x)&&UNDERGROUND_PLACEMENT.outside_above.includes(x.key);
+ const storageInside=r.tep.rows.filter(insideFlats).reduce((a,x)=>a+Number(x.gns||0),0);
+ const aboveGns=Math.max(0,Number(r.tep.total.gns||0)-underGns-storageInside);
  // Гараж отдельно стоящего объекта — такая же подземная площадь, как гараж
  // дома, и живёт он полем на строке объекта. В колонке его не было вовсе, при
  // том что в `summary.underground_gns_sqm` и в статье CAPEX он есть: две
@@ -788,7 +801,7 @@ PAGE += r"""function renderResult(){
   // гаражом объекта читался бы вторым паркингом), и объект, которого в проекте
   // нет — удалённые «Коммерция ОСЗ 2…5», «Офисы 2…4» стояли здесь нулями.
   r.tep.rows.filter(x=>!x.excluded).map(x=>`<tr><td>${x.label}</td>`
-   +`<td>${isUnder(x)?dash:num(x.gns)}</td>`
+   +`<td>${isUnder(x)?dash:num(x.gns)+(insideFlats(x)?'<span style="display:block;font-size:10px;color:#777">на наземных этажах, в ГНС квартир</span>':'')}</td>`
    +`<td>${isUnder(x)?num(x.gns):(objUnder(x)>0&&!objParkUnits(x)?num(objUnder(x)):dash)}</td>`
    +`<td>${num(x.saleable)}</td><td>${num(x.transfer)}</td>`
    +`<td>${countWithMeasure(x.key,x.units)}${unitNote(x)}</td>`
@@ -799,7 +812,7 @@ PAGE += r"""function renderResult(){
    +`<th>${builtCounts}</th><th>${soldCounts}</th></tr></tfoot>`;
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
-  ? `${TERMS.total_area.name} — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная. Общие статьи (ИРД, проектирование, подготовка, сети, сдача, содержание) считаются от ${TERMS.core_total_area.genitive}${r.tep.core_above_gns!==undefined?' — '+num(Number(r.tep.core_above_gns)+Number(r.tep.core_under_gns||0))+' м²':''}: квартиры, коммерция 1 этажа, подземный паркинг и кладовые. Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
+  ? `${TERMS.total_area.name} — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная. Общие статьи (ИРД, проектирование, подготовка, сети, сдача, содержание) считаются от ${TERMS.core_total_area.genitive}${r.tep.core_above_gns!==undefined?' — '+num(Number(r.tep.core_above_gns)+Number(r.tep.core_under_gns||0))+' м²':''}: квартиры, коммерция 1 этажа, подземный паркинг и кладовые${storageInside?' (кладовые — на наземных этажах, внутри ГНС квартир)':''}. Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`
   : 'ГНС — наземная площадь здания, внутренний термин DevelopAid. Город нагрузки считает от суммарной поэтажной площади.';
 }
 

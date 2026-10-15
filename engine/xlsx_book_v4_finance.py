@@ -1220,3 +1220,161 @@ def _v4_parity_targets(consolidated: dict[str, Any]) -> dict[str, float]:
         "peak_pf_mln": float(finance.get("peak_pf") or 0) / 1e6,
         "pf_shortfall_mln": float(finance.get("pf_shortfall") or 0) / 1e6,
     }
+
+
+# Продукты пула МКД на листе «Продажи»: строка объёма и строка выручки в
+# блоке очереди 1 (шаг блока — `_V4_SALES_PHASE_STRIDE`). Порядок — порядок
+# `COST_POOL_PRODUCTS`, тот же, что у слагаемых строки налоговой базы.
+_V4_POOL_SALES_ROWS: dict[str, tuple[int, int]] = {
+    "apartments": (14, 16), "ground_commercial": (17, 19),
+    "underground_parking": (20, 22), "storage": (23, 25),
+}
+_V4_POOL_LABELS: dict[str, str] = {
+    "apartments": "квартиры", "ground_commercial": "коммерция 1 этажа",
+    "underground_parking": "подземный паркинг", "storage": "кладовые",
+}
+
+
+def _v4_balanced(text: str, start: int) -> int:
+    """Индекс за закрывающей скобкой группы, открытой в `start`, или -1."""
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "(":
+            depth += 1
+        elif text[index] == ")":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return -1
+
+
+def _v4_apply_core_pool_by_product(xml: str, phase: int, missing: list[str]) -> str:
+    """Себестоимость продуктов пула МКД — «прямые по месту + общие по выручке».
+
+    Решение владельца 15.10.2026, методика движка `cost_pool_product_costs`.
+    Строка налоговой базы делила весь пул очереди долей СУММЫ проданного
+    количества — метры квартир и коммерции складывались со ШТУКАМИ паркинга и
+    кладовых. Теперь пул раскладывается по продуктам блоком внизу листа:
+      · прямые — СМР наземной и подземной части с надбавками (генподряд,
+        техзаказчик, управление проектом, резерв — тот же процент с СМР
+        части), продуктам своей части по их ГНС; наземные кладовые лежат в
+        ГНС квартир и идут с наземной частью (`storage_placement`);
+      · общие — остаток пула, по выручке продуктов (без выручки — по ГНС);
+    и каждый продукт признаёт СВОЮ себестоимость долей своего проданного
+    объёма в своих единицах. Продукт без продаж и остаток, который делить не
+    по чему, признаются в РВЭ. Проход идёт после признания дописанных
+    объектов и пула без продаж: пул к этому моменту уже окончательный.
+    """
+    sheet = f"CF_{phase}"
+    head = f"IFERROR((SUM({_v4_month_span(20)})-'ОБЪЕКТЫ'!$B${96 + 8 * (phase - 1)}"
+    numbers = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
+    base = (max(numbers) if numbers else 0) + 2
+    rows = {"pool": base + 1, "direct_above": base + 2, "direct_under": base + 3,
+            "scale": base + 4, "common": base + 5}
+    for index, key in enumerate(COST_POOL_PRODUCTS):
+        rows[key] = base + 6 + index
+    rows["unallocated"] = base + 6 + len(COST_POOL_PRODUCTS)
+    shift = _V4_SALES_PHASE_STRIDE * (phase - 1)
+    want = [_V4_POOL_SALES_ROWS[key][0] + shift for key in COST_POOL_PRODUCTS]
+    pools: list[str] = []
+
+    def build(column: str, body: str) -> str:
+        at = body.find(head)
+        if at < 0:
+            return body
+        start = at + len("IFERROR(")
+        pool_end = _v4_balanced(body, start)
+        if pool_end < 0 or not body.startswith("*(", pool_end):
+            return body
+        sold_end = _v4_balanced(body, pool_end + 1)
+        if sold_end < 0 or not body.startswith("/(", sold_end):
+            return body
+        total_end = _v4_balanced(body, sold_end + 1)
+        if total_end < 0 or not body.startswith(",IF(", total_end):
+            return body
+        call_end = _v4_balanced(body, at + len("IFERROR"))
+        if call_end < 0:
+            return body
+        sold = body[pool_end + 1:sold_end]
+        got = [int(r) for r in re.findall(r"'Продажи'!" + column + r"(\d+)", sold)]
+        if got != want:
+            return body
+        pools.append(body[start:pool_end])
+        in_rve = f"{_v4_month_offset(column, '$B$8')}=0"
+        terms = []
+        for key, volume in zip(COST_POOL_PRODUCTS, want):
+            cost = f"$B${rows[key]}"
+            terms.append(f"IFERROR({cost}*'Продажи'!{column}{volume}"
+                         f"/SUM({_v4_month_span(volume, 'Продажи')}),IF({in_rve},{cost},0))")
+        terms.append(f"IF({in_rve},$B${rows['unallocated']},0)")
+        return body[:at] + "(" + "+".join(terms) + ")" + body[call_end:]
+
+    xml, count = _v4_rewrite_row_formulas(xml, 22, head, build)
+    columns = len(_v4_cf_columns())
+    if count < columns or len(pools) < columns or len(set(pools)) != 1:
+        missing.append(f"{sheet}: строка налоговой базы не разложила пул МКД по продуктам "
+                       f"({len(pools)} из {columns})")
+        return xml
+
+    queue = _V4_CF_QUEUE_ENABLED_ROW + phase - 1
+    capex = _V4_CAPEX_BLOCK_STRIDE * (phase - 1)
+    flats, shops, garage, store = (f"'Вводные'!${col}${queue}" for col in ("I", "J", "K", "AR"))
+    under, above = _v4_storage_under_flag(), _v4_storage_above_flag()
+    inside = f"MIN({store},{flats})*{above}"
+    part_gns = {
+        "apartments": (f"({flats}-{inside})", "0"),
+        "ground_commercial": (shops, "0"),
+        "underground_parking": ("0", garage),
+        "storage": (inside, f"{store}*{under}"),
+    }
+    above_total, under_total = f"({flats}+{shops})", f"({garage}+{store}*{under})"
+    uplift = ("(1+'Вводные'!$B$50+'Вводные'!$B$53+'Вводные'!$B$52)"
+              "*(1+'Вводные'!$B$54)")
+    revenue = {key: f"'Продажи'!$B${_V4_POOL_SALES_ROWS[key][1] + shift}"
+               for key in COST_POOL_PRODUCTS}
+    revenue_total = "(" + "+".join(revenue.values()) + ")"
+    gns_total = f"({above_total}+{under_total})"
+    b = {key: f"$B${row}" for key, row in rows.items()}
+    formulas = {
+        "pool": pools[0],
+        "direct_above": f"'CAPEX'!$B${_V4_CAPEX_ARTICLE_ROW['main_above'] + capex}*{uplift}",
+        "direct_under": f"'CAPEX'!$B${_V4_CAPEX_ARTICLE_ROW['main_under'] + capex}*{uplift}",
+        "scale": (f"IF(AND({b['direct_above']}+{b['direct_under']}>0,{b['pool']}>0),"
+                  f"MIN(1,{b['pool']}/({b['direct_above']}+{b['direct_under']})),0)"),
+        "common": (f"{b['pool']}-{b['scale']}*(IF({above_total}>0,{b['direct_above']},0)"
+                   f"+IF({under_total}>0,{b['direct_under']},0))"),
+    }
+    for key in COST_POOL_PRODUCTS:
+        own_above, own_under = part_gns[key]
+        weight = (f"IF({revenue_total}>0,{revenue[key]}/{revenue_total},"
+                  f"IFERROR(({own_above}+{own_under})/{gns_total},0))")
+        formulas[key] = (f"{b['scale']}*(IFERROR({b['direct_above']}*{own_above}/{above_total},0)"
+                         f"+IFERROR({b['direct_under']}*{own_under}/{under_total},0))"
+                         f"+{b['common']}*{weight}")
+    formulas["unallocated"] = (f"{b['pool']}-SUM({b[COST_POOL_PRODUCTS[0]]}"
+                               f":{b[COST_POOL_PRODUCTS[-1]]})")
+    labels = {
+        "pool": "Пул МКД очереди: расходы без объектов",
+        "direct_above": "Прямые: СМР наземной части с надбавками",
+        "direct_under": "Прямые: СМР подземной части с надбавками",
+        "scale": "Доля прямых, вошедшая в пул (не больше 1)",
+        "common": "Общие затраты — делятся по выручке продуктов",
+        **{key: f"Себестоимость: {_V4_POOL_LABELS[key]}" for key in COST_POOL_PRODUCTS},
+        "unallocated": "Не распределено — признаётся в РВЭ",
+    }
+    parts = [f'<x:row r="{base}">' + _v4_head_cell(
+        f"A{base}", f"СЕБЕСТОИМОСТЬ ПРОДУКТОВ ПУЛА МКД · ОЧЕРЕДЬ {phase}: "
+        "прямые — по ГНС своей части, общие — по выручке") + "</x:row>"]
+    for key, row in rows.items():
+        unit = "доля" if key == "scale" else "млн ₽"
+        parts.append(
+            f'<x:row r="{row}">'
+            f'<x:c r="A{row}" t="inlineStr"><x:is><x:t>{xml_escape(labels[key])}</x:t></x:is></x:c>'
+            f'<x:c r="B{row}"><x:f>{xml_escape(formulas[key])}</x:f></x:c>'
+            f'<x:c r="C{row}" t="str"><x:v>{unit}</x:v></x:c>'
+            "</x:row>")
+    tail = "</x:sheetData>"
+    if tail not in xml:
+        missing.append(f"{sheet}: блок себестоимости продуктов не записан")
+        return xml
+    return xml.replace(tail, "".join(parts) + tail, 1)

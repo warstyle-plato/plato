@@ -114,7 +114,13 @@ _SALEABLE = "'ТЭП'!D36"
 _QUEUE_TEP_FIRST = (4, 10, 16, 22)
 _TOTAL_AREA = "'ТЭП'!C36"
 _CORE_ABOVE = "SUM(" + ",".join(f"'ТЭП'!C{r}:C{r + 1}" for r in _QUEUE_TEP_FIRST) + ")"
-_CORE_UNDER = "SUM(" + ",".join(f"'ТЭП'!C{r + 2}:C{r + 3}" for r in _QUEUE_TEP_FIRST) + ")"
+# Кладовые входят в подземную, только когда они под землёй (`storage_placement`):
+# наземные лежат в ГНС квартир. Признак — формулой от вводной книги; сборщик
+# подставляет его вместо метки (`build(..., storage_under_flag=...)`).
+STORAGE_UNDER_TOKEN = "__STORAGE_UNDER_FLAG__"
+_CORE_UNDER = ("(SUM(" + ",".join(f"'ТЭП'!C{r + 2}" for r in _QUEUE_TEP_FIRST) + ")+SUM("
+               + ",".join(f"'ТЭП'!C{r + 3}" for r in _QUEUE_TEP_FIRST) + ")*"
+               + STORAGE_UNDER_TOKEN + ")")
 # Ключ базы движка → строка Dashboard_Data с её площадью.
 _BASE_DATA_KEY = {TOTAL_AREA.key: "total_area_sqm", SALEABLE_AREA.key: "saleable_sqm",
                   CORE_ABOVE_AREA.key: "core_above_sqm", CORE_UNDER_AREA.key: "core_under_sqm"}
@@ -239,7 +245,10 @@ PRODUCT_ITEMS: tuple[tuple[str, str, str, str, str, str, str, str, str, str, str
      _tep_sum("G", 2), "'ТЭП'!F6", "'ОТЧЕТ'!B89", PARKING_MEASURE, PARKING_MEASURE),
     # Метры кладовых до сих пор не доезжали до дашборда ВООБЩЕ: наземной у них
     # нет, а подземной колонки не было.
-    ("storage", "Кладовые", "", _tep_sum("C", 3), "", _tep_sum("E", 3),
+    # Наземные кладовые (`storage_placement`) лежат в ГНС квартир: подземной
+    # площади у них нет, а в наземной колонке они сложились бы второй раз.
+    ("storage", "Кладовые", "", "(" + _tep_sum("C", 3) + ")*" + STORAGE_UNDER_TOKEN,
+     "", _tep_sum("E", 3),
      _tep_sum("G", 3), "'ТЭП'!F7", "'ОТЧЕТ'!B90", PIECES_MEASURE, PIECES_MEASURE),
     ("offices", "МФОЦ / офисный центр", "'ТЭП'!C31", "'ОТЧЕТ'!G50", "'ТЭП'!D31", "'ОТЧЕТ'!D50",
      # Штуки офисника — места его гаража, и меряются они машино-местами.
@@ -1316,7 +1325,8 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
           shown_extras: frozenset[str] | None = None,
           hidden_products: frozenset[str] = frozenset(),
           queues: int | None = None,
-          parking: dict[str, Any] | None = None) -> dict[str, Any]:
+          parking: dict[str, Any] | None = None,
+          storage_under_flag: str = "1") -> dict[str, Any]:
     """Собрать все части дашборда. Возвращает словарь «путь → байты» и
     новый styles.xml; лишние диаграммы шаблона названы в `dropped`.
     `capex_rows`/`capex_stride` — карта статей листа CAPEX (её владелец —
@@ -1347,11 +1357,12 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
         raise ValueError(f"диаграмм {len(charts)}, а мест на листе {len(anchors)}")
     parts[where["drawing_path"]] = drawing_xml(rel_ids, anchors)
     parts[where["drawing_rels_path"]] = drawing_rels_xml(targets)
-    parts[sheet_path] = sheet_xml.encode("utf-8")
+    parts[sheet_path] = sheet_xml.replace(STORAGE_UNDER_TOKEN, storage_under_flag).encode("utf-8")
     parts[DATA_SHEET_PATH] = build_data_sheet(origin, llcr_target, last_column, month_columns,
                                               capex_rows, capex_stride,
                                               tuple(extra_products),
-                                              parking).encode("utf-8")
+                                              parking).replace(
+        STORAGE_UNDER_TOKEN, storage_under_flag).encode("utf-8")
     added_charts = [path for _rel, path in targets if path.lstrip("/") not in {p for _r, p in existing}]
     return {"parts": parts, "styles_xml": styles.render(), "dropped": dropped,
             "added_charts": [p.lstrip("/") for p in added_charts], "styles_added": styles.added}

@@ -325,10 +325,13 @@ def _calculate_economics(req: CalcRequest) -> dict:
     # проекта он поехал бы по очередям чужими правилами. В наземную ГНС он не
     # входит — под землёй наружных стен не бывает и у объекта тоже.
     object_under_gns = sum(n(row, "under_gns") for row in t.values())
-    underground_gns_sqm = (sum(n(t.get(key) or {}, "gns") for key in UNDERGROUND_PRODUCTS)
+    # Подземная часть — по размещению кладовых ЭТОГО проекта. Объём — наземная
+    # плюс подземная, а не сумма строк: наземные кладовые лежат внутри метров
+    # квартир, и сумма строк считала бы их дважды.
+    underground_gns_sqm = (sum(n(t.get(key) or {}, "gns") for key in underground_products(x))
                            + object_under_gns)
-    construction_volume_sqm = sum(n(row, "gns") for row in t.values()) + object_under_gns
     project_gns_sqm = project_above_gns(t)
+    construction_volume_sqm = project_gns_sqm + underground_gns_sqm
     total_expenses = full_project_cost
 
     def per_sqm_th(value: float, area: float) -> float:
@@ -688,10 +691,13 @@ def _calculate_economics(req: CalcRequest) -> dict:
             report_krt_costs.setdefault(_key, 0.0)
     # Тот же пул, что у налоговой базы, и объявлен он там же: две копии одного
     # списка разошлись бы молча — доли расходов перестали бы давать единицу.
-    report_core_keys = COST_POOL_PRODUCTS
-    report_core_quantity = sum(float(product_specs[key]["quantity"] or 0.0)
-                               for key in report_core_keys)
+    # Делит его один метод — «прямые по месту + общие по выручке»
+    # (`cost_pool_product_costs`, решение владельца 15.10.2026); налоговая
+    # база признаёт по нему же.
     report_core_cost = max(total_capex - sum(report_krt_costs.values()), 0.0)
+    report_core_costs = cost_pool_product_costs(
+        report_core_cost, op["mkd_direct_costs"], mkd_part_gns(x, t),
+        op["revenue_by_product"])
     for key, spec in product_specs.items():
         quantity = float(spec["quantity"] or 0)
         revenue_value = op["revenue_by_product"].get(key, 0.0)
@@ -699,8 +705,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         if key in report_krt_costs:
             product_cost = report_krt_costs[key]
         else:
-            product_cost = (report_core_cost * quantity / report_core_quantity
-                            if report_core_quantity else 0.0)
+            product_cost = report_core_costs.get(key, 0.0)
         schedule = op["revenue_product_schedules"].get(key, {})
         months_pre = max(1, months_between(spec["start"], spec["end_ref"]))
         pace = quantity * spec["share"] / months_pre if quantity else 0.0
@@ -866,6 +871,10 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "total": tep_total,
             "core_above_gns": op["core_above_gns"],
             "core_under_gns": op["core_under_gns"],
+            # Чьи метры под землёй у ЭТОГО расчёта: страница, PDF и тизер
+            # подписывают «наземная / подземная» по нему, а не своей копией.
+            "underground_products": list(underground_products(x)),
+            "storage_above_ground": storage_above_ground(x),
             "project_articles_sqm": op["project_articles_sqm"],
             "project_articles_area": op["project_articles_area"],
         },
@@ -1053,6 +1062,9 @@ def _calculate_economics(req: CalcRequest) -> dict:
                 timeline, equity_cf, fin, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(x, fin, equity_cf),
             "products": products_report,
+            # Как себестоимость дома разложена по продуктам — одной фразой
+            # для экрана и PDF (`cost_pool_product_costs`).
+            "product_cost_basis": PRODUCT_COST_BASIS,
             # График платежей за покупку — как посчитано: даты, суммы, доли и
             # оговорки разбора. Одна строка в дату сделки — прежнее поведение.
             "purchase": op.get("purchase_schedule") or {},
