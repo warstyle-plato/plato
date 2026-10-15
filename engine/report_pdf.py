@@ -1600,7 +1600,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # узкой колонке на семь обрывков.
     def _count(row):
         measure = tep_count_measure(row.get('key'))
-        return _pdf_count_text(row.get('units'), measure) if measure else '—'
+        if not measure:
+            return '—'
+        text = _pdf_count_text(row.get('units'), measure)
+        # Машино-места продаются штуками, и «Продаваемая, м²» у паркинга — 0:
+        # без числа проданных мест строка читалась как «к продаже 0».
+        if row.get('key') == 'underground_parking' and float(row.get('units') or 0):
+            text += "\nк продаже " + _pdf_num(row.get('saleable_units'), 0)
+        return text
     _counts = '\n'.join(_pdf_count_text(value, measure)
                         for measure, value in (total.get('units_by_measure') or {}).items()
                         if value) or '—'

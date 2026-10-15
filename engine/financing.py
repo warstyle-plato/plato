@@ -122,9 +122,13 @@ def underground_guest_spaces(row: dict[str, Any]) -> int:
     if known not in (None, ""):
         try:
             # Гостевых не бывает больше, чем мест построено: такое число —
-            # чужое (умолчания шаблона или прежний ТЭП: 109 гостевых на 69
-            # местах), а не решение проекта, и продаж оно не обнуляет.
-            return max(0, min(int(round(float(known))), int(round(max(0.0, total)))))
+            # чужое (умолчания шаблона или прежний ТЭП: 109 гостевых на 29
+            # местах «Донского»), а не решение проекта. Обрезка до числа мест
+            # делала гостевыми ВСЕ места и обнуляла продажи — чужое число
+            # отбрасывается, и гостевые выводятся из норматива, как без него.
+            guest = int(round(float(known)))
+            if guest <= total:
+                return max(0, guest)
         except (TypeError, ValueError):
             pass
     return max(0, int(round(total / 11.0))) if total > 0 else 0
