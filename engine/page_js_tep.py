@@ -132,6 +132,23 @@ function renderVriBenefits(b,basis){
  card.style.display=html?'':'none';
  document.getElementById('vriBenefitsBody').innerHTML=html;
 }
+// Посчитанная льгота, которую сейчас перекрывает ручная (или отказ), — одна
+// функция для кнопки у поля «Льгота по плате» и строки в калькуляторе МПТ.
+// null — предлагать нечего: действует посчитанная или её нет.
+function vriProjectReliefOffer(vri){
+ const b=(vri&&vri.benefits)||{}, basis=((vri&&vri.totals)||{}).relief_basis;
+ if(!['percent','amount','off'].includes(basis))return null;
+ const mln=Number(b.total_mln||0);
+ if(!(b.applicable!==false&&mln>0))return null;
+ return {mln,text:mln.toLocaleString('ru-RU',{maximumFractionDigits:1})+' млн ₽',basis};
+}
+function fillVriReliefOffer(){
+ const box=document.getElementById('vriReliefOffer');
+ if(!box)return;
+ const offer=vriProjectReliefOffer(((typeof lastResult==='object'&&lastResult)||{}).vri);
+ box.innerHTML=offer?'<button type="button" class="btn vri-apply-project" style="margin-top:6px;font-weight:600" onclick="useProjectVriBenefits()">Применить посчитанную ('+
+  escapeHtml(offer.text)+')</button>':'';
+}
 // Вернуть посчитанную по проекту льготу: ручной нет — действует расчётная.
 function useProjectVriBenefits(){
  inputs.vri_relief_mode='none';
@@ -152,9 +169,6 @@ function clearMptOverride(){
 function applyMptOverride(payload,place){
  inputs.vri_mpt_override={payload:payload,cadastral:String((place||{}).cadastral||''),
   address:String((place||{}).address||''),applied_at:new Date().toISOString()};
- // Происхождение площадей калькулятора: взятые из ТЭП движок пересчитывает
- // с ТЭП, поправленные руками — оставляет.
- if((place||{}).origin)inputs.vri_mpt_override.origin={...place.origin};
  renderInputs();refreshGroupPeeks();calculate();
 }
 // Доля и сумма ручной льготы читаются только в своём режиме: ответ — почему
@@ -231,17 +245,17 @@ function vriReliefSourceNote(){
  if(!src||inputs.vri_relief_mode!=='amount'||Math.abs(Number(inputs.vri_relief_mln||0)-Number(src.value||0))>0.0005)return '';
  return '<div style="font-size:11px;color:#777;margin-top:4px">Сумма: '+escapeHtml(src.by||'')+'</div>';
 }
-// Почему графика ВРИ нет — названной причиной: «не требуется или ноль»
-// читалось и как «льгота съела плату», и как «плата потерялась». Льгота
-// больше платы сюда не попадает: тогда блок с «до льготы − льгота = 0» виден.
+// Почему графика ВРИ нет — настоящей причиной. Плата, снятая льготой
+// целиком, — не «изменение не требуется»: так и сказано, с суммами.
 function vriEmptyReason(vri){
  const t=(vri&&vri.totals)||{}, s=(vri&&vri.settings)||{};
- const tail=' — график не строится.';
- if(!vri)return 'Расчёт ВРИ ещё не выполнен'+tail;
- if(s.required===false&&!(Number(t.gross||0)>0))return 'Изменение ВРИ в проекте не требуется (снят признак «Требуется изменение ВРИ»)'+tail;
- if(!(Number(t.gross||0)>0))return 'Плата за изменение ВРИ в проекте равна нулю: сумма платы не задана и не посчитана'+tail+
-  ' Льгота за МПТ тут ни при чём — уменьшать нечего.';
- return 'Сумма обязательства по ВРИ равна нулю'+tail;
+ const gross=Number(t.gross||0), relief=Number(t.relief||0);
+ const mln=v=>(v/1e6).toLocaleString('ru-RU',{maximumFractionDigits:1})+' млн ₽';
+ if(gross>0&&relief>0&&relief>=gross-0.5)
+  return 'Плата за изменение ВРИ '+mln(gross)+' снята льготой полностью — к оплате 0, график платежей не строится.';
+ if(s.required===false)return 'Изменение ВРИ в проекте не требуется (снят признак «Требуется изменение ВРИ») — график не строится.';
+ if(!(gross>0))return 'Плата за изменение ВРИ в проекте равна нулю: сумма платы не задана и не посчитана — график не строится.';
+ return 'Сумма обязательства по ВРИ равна нулю — график не строится.';
 }
 function renderVri(vri){
  const reliefBasis=((vri&&vri.totals)||{}).relief_basis;
@@ -249,6 +263,7 @@ function renderVri(vri){
  // кадастра самим, а не ждать ручного выбора.
  if(sitePositionWanted(vri&&vri.benefits,reliefBasis))resolveSitePosition();
  renderVriBenefits(vri&&vri.benefits,reliefBasis);
+ fillVriReliefOffer();
  renderKrtVriFooter();
  if(typeof window.mptOverrideChanged==='function')window.mptOverrideChanged();
  const REGION={msk:'Москва',mo:'Московская область'};
@@ -281,9 +296,12 @@ function renderVri(vri){
  const empty=document.getElementById('vriTabEmpty');
  if(!tab)return;
  tab.style.display=enabled?'':'none';
- if(empty)empty.style.display=enabled?'none':'';
+ // Графика нет и тогда, когда льгота сняла плату целиком: итоги видны, а
+ // строка под ними говорит, почему платежей нет.
+ const noSchedule=!(vri&&vri.enabled);
+ if(empty)empty.style.display=noSchedule?'':'none';
  const emptyNote=document.getElementById('vriTabEmptyNote');
- if(emptyNote&&!enabled)emptyNote.textContent=vriEmptyReason(vri);
+ if(emptyNote&&noSchedule)emptyNote.textContent=vriEmptyReason(vri);
  if(!enabled)return;
  document.getElementById('vriTabTotals').innerHTML=vriTotalsRows(t,(lastResult||{}).summary);
  document.getElementById('vriTabSchedule').innerHTML=vriScheduleRows(vri.rows);
