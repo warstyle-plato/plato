@@ -199,3 +199,58 @@ def test_the_nonres_book_says_na_like_the_engine(nonres_unrepaid) -> None:
              if str(report[f"A{row}"].value or "").startswith(("NPV", "IRR"))}
     assert shown and all(value == label for value in shown.values()), shown
     assert book.cell("Сверка", "I3") == "ПРОЙДЕНО"
+
+
+# --- 6. хвост продаж объекта — от РВЭ, даже когда продажи стартуют позже стройки --
+
+@pytest.fixture(scope="module")
+def late_office():
+    x, t = _office_with_floor_places()
+    x.update(offices_start="2029-01-01", offices_sales_start="2029-07-01",
+             offices_residual_months=12, offices_months=30)
+    return _engine(x, t), _book(x, t, "Офис: продажи позже стройки")
+
+
+def test_the_late_office_sells_in_the_engine_window(late_office) -> None:
+    import datetime as _dt
+    from openpyxl.utils import get_column_letter
+
+    engine, book = late_office
+    product = next(p for p in engine["report"]["products"] if p["key"] == "offices")
+    assert product["sales_start"] == "2029-07-01" and product["sales_end"] == "2032-06-01"
+    sold = []
+    for column in map(get_column_letter, range(4, 184)):
+        month = book.cell("ОБЪЕКТЫ", f"{column}3")
+        if isinstance(month, (int, float)):            # серийная дата Excel
+            month = _dt.datetime(1899, 12, 30) + _dt.timedelta(days=float(month))
+        if isinstance(month, _dt.datetime):
+            month = month.date()
+        if isinstance(month, _dt.date) and (book.cell("ОБЪЕКТЫ", f"{column}22") or 0) > 1e-9:
+            sold.append(month.isoformat())
+    assert sold and sold[0] == "2029-07-01" and sold[-1] == "2032-06-01", sold[-3:]
+    assert book.cell("ОТЧЕТ", "B5") == pytest.approx(engine["summary"]["revenue"] / 1e6, rel=1e-6)
+
+
+# --- 7. налог в потоках единственной очереди — годами с переносом убытка ----------
+
+@pytest.fixture(scope="module")
+def long_tail():
+    """Убыточный проект с годом прибыли в хвосте продаж: половинное правило."""
+    x, t = dict(core.DEFAULT_INPUTS), copy.deepcopy(core.TEP_DEFAULT)
+    x["residual_sales_months"] = 12
+    return _engine(x, t), _book(x, t, "Длинный хвост продаж")
+
+
+def test_the_long_tail_pays_tax_under_the_half_rule(long_tail) -> None:
+    """Предохранитель: движок платит налог, хотя накопленная база — убыток."""
+    engine, _book_ = long_tail
+    assert engine["summary"]["profit_tax"] > 1e6
+    assert engine["summary"]["profit_before_tax"] < 0
+
+
+def test_the_queue_cash_flow_pays_the_engine_tax(long_tail) -> None:
+    engine, book = long_tail
+    tax = engine["summary"]["profit_tax"] / 1e6
+    assert book.cell("CF", "B14") == pytest.approx(tax, rel=1e-4)
+    contributed = sum(-v for v in engine["cashflow"]["equity"] if v < 0) / 1e6
+    assert book.cell("CF", "B23") == pytest.approx(contributed, rel=1e-5)

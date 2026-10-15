@@ -1071,7 +1071,7 @@ def _build_project_workbook(
         # соседний проход переписывал середину строки 21 прежней формулой, и
         # живой месяц (AC) оказывался ровно в ней. Снаружи это выглядело как
         # «правка не сработала»: D21 в книге с правкой, а число прежнее.
-        cf_sheet_xml[_name] = _v4_apply_vat_cash(_v4_apply_vat_base(
+        cf_sheet_xml[_name] = _v4_apply_single_queue_tax(_v4_apply_vat_cash(_v4_apply_vat_base(
             _v4_apply_interest_accrual(
                 _v4_apply_core_pool_by_product(_v4_apply_core_pool_without_sales(_v4_apply_extra_objects_tax_row(
                     _v4_use_bridge_base_row(
@@ -1088,7 +1088,7 @@ def _build_project_workbook(
                     _phase, missing),
                     _phase, missing), _phase, missing),
                 _phase, missing),
-            _phase, missing), _phase, missing)
+            _phase, missing), _phase, missing), _phase, missing)
 
     # Выручка очереди по продуктам: на экране разбивка есть, а в книге жила
     # только в снятой выгрузке детализации.
@@ -1394,9 +1394,15 @@ def _build_project_workbook(
     # свободную строку СВОЕГО блока — править объект, листая от одной его
     # половины к другой, нельзя (решение владельца, 03.09.2026), — а срок
     # становится формулой: сдвинул стройку или хвост, и он поехал.
-    for _obj_prefix, _obj_row, _obj_months, _obj_term in (
+    # Окно продаж в блоке ОБЪЕКТЫ отсчитывается от СТАРТА ПРОДАЖ, а хвост у
+    # движка — от РВЭ (`sales_weights(start, rve, …, residual)`). Поэтому срок —
+    # месяцы от старта продаж до РВЭ плюс хвост: «стройка + хвост» верно только
+    # при продажах со старта стройки, а с продажами на полгода позже хвост
+    # выходил 18 месяцев вместо 12 (ревизия 15.10.2026).
+    for _obj_prefix, _obj_row, _obj_months, _obj_term, _obj_start, _obj_sales in (
             (_lay.obj.prefix, _lay.residual_row, f"$K${_v4_input_row(_lay, 'months')}",
-             f"K{_v4_input_row(_lay, 'term')}")
+             f"K{_v4_input_row(_lay, 'term')}", f"$K${_v4_input_row(_lay, 'start')}",
+             f"$K${_v4_input_row(_lay, 'sales_start')}")
             for _lay in sorted(_v4_layouts(), key=lambda lay: lay.input_head)):
         put_new(f"J{_obj_row}", text="Остаточные продажи после РВЭ")
         put_new(f"K{_obj_row}", number=n(x, f"{_obj_prefix}_residual_months", 6.0),
@@ -1404,7 +1410,9 @@ def _build_project_workbook(
         put_new(f"L{_obj_row}", text="мес.")
         put_new(f"M{_obj_row}", text=f"{_obj_prefix}_residual_months")
         xml = _v4_mark_as_entry(xml, f"K{_obj_row}", missing)
-        put(_obj_term, formula=f"{_obj_months}+$K${_obj_row}",
+        put(_obj_term, formula=(f"{_obj_months}+$K${_obj_row}"
+                                f"-((YEAR({_obj_sales})-YEAR({_obj_start}))*12"
+                                f"+MONTH({_obj_sales})-MONTH({_obj_start}))"),
             label=f"срок продаж {_obj_prefix}")
 
     # --- подземный паркинг -------------------------------------------------
