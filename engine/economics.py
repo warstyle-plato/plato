@@ -104,6 +104,19 @@ def construction_cost_rows(capex: dict[str, float], bases: dict[str, float]) -> 
     return rows
 
 
+def capex_article_amounts(op: dict[str, Any], total_capex: float) -> dict[str, float]:
+    """Статьи CAPEX и итог одним словарём: итог — сумма статей.
+
+    Справочные величины ВРИ (валовая плата и льгота) статьями не являются и
+    в итог не входят. Покупка (цена + выкуп ЗУ/ОКС) — статья CAPEX: она
+    в потоке `op["capex"]`, из которого сложен итог.
+    """
+    purchase = sum(((op.get("capex_by_article") or {}).get("purchase") or {}).values())
+    return {"total": total_capex, "purchase": float(purchase),
+            **{key: value for key, value in op["capex_amounts"].items()
+               if key not in ("land_rights_gross", "land_rights_relief")}}
+
+
 def capex_unit_rows(capex: dict[str, float], bases: dict[str, float]) -> dict[str, dict[str, Any]]:
     """Удельные каждой статьи CAPEX и итога — для таблицы «Структура затрат»."""
     return {str(key): unit_rates(float(value or 0.0), capex_unit_base(key), bases)
@@ -356,6 +369,14 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "months": len(monthly),
             "rows": [{"month": month.isoformat(), "units": units} for month, units in monthly],
         }
+
+    # Статьи CAPEX — те же деньги, что в итоге: `total_capex` складывает
+    # помесячный поток, а в нём есть покупка (цена + выкуп). Статьи же
+    # брались из `capex_amounts`, где покупки нет, и строки «Структуры затрат»
+    # не сходились с «Итого CAPEX» ровно на стоимость сделки (владелец,
+    # 15.10.2026: «CAPEX 4,62, а сумма выше около 2»). Покупка — сумма её
+    # потока, как и в итоге (с множителем сценария расходов).
+    capex_articles = capex_article_amounts(op, total_capex)
 
     # Expense structure: categories are mutually exclusive and sum to total expenses.
     # Стоимость сделки — цена участка и выкуп ЗУ/ОКС у третьих лиц одной
@@ -849,15 +870,10 @@ def _calculate_economics(req: CalcRequest) -> dict:
         # до льготы: в total их нет, а таблица расходов на странице рисует все
         # ключи подряд — и показывала их сырыми именами. Валовая плата и льгота
         # уходят наружу полем vri.totals, не статьями CAPEX.
-        "capex": {"total": total_capex,
-                  **{key: value for key, value in op["capex_amounts"].items()
-                     if key not in ("land_rights_gross", "land_rights_relief")}},
+        "capex": capex_articles,
         # Удельные статей CAPEX — каждая на свою базу (решение 4 ревизии):
         # страница их печатает, а не делит сама.
-        "capex_units": capex_unit_rows(
-            {"total": total_capex,
-             **{key: value for key, value in op["capex_amounts"].items()
-                if key not in ("land_rights_gross", "land_rights_relief")}}, bases),
+        "capex_units": capex_unit_rows(capex_articles, bases),
         "vri": {**op["vri"], "benefits": vri_benefits_for(x, t)},
         # Смета каждого объекта вне ДДУ — его статья и начисленные от неё
         # генподряд, техзаказчик и резерв (`object_cost_parts`).

@@ -701,13 +701,14 @@ PAGE += r"""function renderResult(){
   // Порядок статей — порядок движка (`_MODEL_CAPEX_LABELS`: земля → ИРД и
   // проект → снос → СМР → объекты → соцнагрузка → надбавки → резерв), а не
   // порядок ключей ответа. Нулевая статья строку не занимает: итог её не
-  // теряет, а «0 млрд ₽» между статьями только мешает читать.
+  // теряет, а «0 млрд ₽» между статьями только мешает читать. Покупка —
+  // статья движка (`purchase`), итог — сумма строк.
   const capOrder=Object.keys(capNames);
   const capRank=key=>{const i=capOrder.indexOf(key);return i<0?capOrder.length:i};
   capexTable.innerHTML=Object.entries(r.capex).filter(([key,v])=>key!=='total'&&Math.abs(Number(v||0))>=0.5)
    .sort((a,b)=>capRank(a[0])-capRank(b[0]))
-   .map(([key,v])=>`<tr><td>${capNames[key]||key}</td><td>${money(v)}</td>${capCells(key)}</tr>`).join('')
-   +`<tr><th>Итого CAPEX</th><th>${money(r.capex.total)}</th>${capCells('total').replace(/<(\/?)td>/g,'<$1th>')}</tr>`;
+   .map(([key,v])=>`<tr data-key="${escapeHtml(key)}"><td>${capNames[key]||key}</td><td>${moneyScaled(v)}</td>${capCells(key)}</tr>`).join('')
+   +`<tr data-key="total"><th>Итого CAPEX</th><th>${money(r.capex.total)}</th>${capCells('total').replace(/<(\/?)td>/g,'<$1th>')}</tr>`;
  }
  // Построенных штук и проданных — разные числа, и до сих пор на экране стояло
  // только первое. Разниц теперь две: гостевые места (строятся, но общие) и
