@@ -2570,6 +2570,10 @@ class AgentChatRequest(BaseModel):
     rates: list[dict[str, Any]] = []
     phasing: dict[str, Any] = {}
     history: list[dict[str, Any]] = []
+    # Документ, присланный на разбор, — в разговоре до следующей загрузки
+    # (`document_intake.chat_context`). Отдельно от истории: история режется
+    # по числу реплик, и документ выпадал бы из неё через три вопроса.
+    document: dict[str, Any] = {}
     selected_view: str = "all"
     # Сценарий кнопки: известный id считается движком без вызова модели.
     scenario: str = ""

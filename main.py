@@ -58,7 +58,6 @@ _STATE_LOCK = threading.RLock()
 _PLATON_MODE: dict[int, str] = {}
 _PLATON_LAST_SESSION: dict[int, str] = {}
 _PLATON_LAST_URL: dict[int, str] = {}
-_PLATON_HISTORY: dict[int, list[dict[str, Any]]] = {}
 _PLATON_CONTEXT_BY_SESSION: dict[str, dict[str, Any]] = {}
 _PLATON_PENDING: dict[int, dict[str, Any]] = {}
 # ТЭП, собранный самим ботом (кадастр, Excel-шаблон или диалог), до открытия
@@ -80,7 +79,8 @@ def _state_file(name: str) -> Path:
     return _STATE_DIR / (hashlib.sha256(name.encode("utf-8")).hexdigest()[:32] + ".json")
 
 
-def _state_write(name: str, payload: dict[str, Any]) -> None:
+def _state_write(name: str, payload: dict[str, Any]) -> str:
+    """Записать состояние на диск. Пусто — записано; иначе — причина отказа."""
     import json
     import time
     try:
@@ -98,9 +98,11 @@ def _state_write(name: str, payload: dict[str, Any]) -> None:
                     stale.unlink()
             except OSError:
                 pass
-    except Exception:
-        # Диск — подстраховка, а не единственный источник: молча продолжаем.
-        pass
+    except Exception as exc:
+        # Диск — подстраховка, а не единственный источник: продолжаем, а
+        # причину отдаём тому, кому она важна (истории Платона).
+        return f"{type(exc).__name__}: {exc}"
+    return ""
 
 
 def _state_read(name: str) -> dict[str, Any]:
@@ -112,6 +114,49 @@ def _state_read(name: str) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8")) or {}
     except Exception:
         return {}
+
+# История Платона в чате — на диске по chat_id, без копии в памяти воркера.
+# Воркеров два: вопрос приходит в один, следующий — в другой, и история из
+# памяти первого во втором пуста. Документ, присланный на разбор, лежит рядом
+# с историей и живёт до следующей загрузки: история режется по числу реплик,
+# а документ выпадать из разговора не должен.
+_PLATON_HISTORY_LIMIT = 20
+
+
+def _platon_memory(chat_id: int) -> dict[str, Any]:
+    stored = _state_read(f"platon:{chat_id}")
+    history = [item for item in (stored.get("history") or []) if isinstance(item, dict)]
+    document = stored.get("document") if isinstance(stored.get("document"), dict) else {}
+    return {"history": history[-_PLATON_HISTORY_LIMIT:], "document": document}
+
+
+def _platon_memory_save(chat_id: int, *, history: list[dict[str, Any]] | None = None,
+                        document: dict[str, Any] | None = None) -> str:
+    """Сохранить историю и/или документ. Пусто — сохранено; иначе причина."""
+    with _STATE_LOCK:
+        stored = _platon_memory(chat_id)
+        if history is not None:
+            stored["history"] = list(history)[-_PLATON_HISTORY_LIMIT:]
+        if document is not None:
+            stored["document"] = dict(document)
+        return _state_write(f"platon:{chat_id}", stored)
+
+
+def _platon_remember_document(chat_id: int, context: dict[str, Any]) -> str:
+    """Разобранный документ — в разговор: заменяет прежний, разбор — в историю."""
+    if not context:
+        return "в документе нет текста"
+    history = _platon_memory(chat_id)["history"] + [
+        {"role": "user", "content": f"Документ на разбор: {context.get('filename')}"},
+        {"role": "assistant", "content": str(context.get("summary") or "")},
+    ]
+    return _platon_memory_save(chat_id, history=history, document=context)
+
+
+def _platon_memory_forget_history(chat_id: int) -> None:
+    """Новый проект — новый разговор; присланный документ остаётся в нём."""
+    _platon_memory_save(chat_id, history=[])
+
 
 _TEP_COMMENT_REQUEST = (
     "Прокомментируй ТЭП текущего проекта как инвестиционный консультант девелопера. "
@@ -237,7 +282,6 @@ def _dialog_start(chat_id: int, session: str) -> None:
     """
     with _STATE_LOCK:
         _PLATON_MODE[chat_id] = session
-        _PLATON_HISTORY.setdefault(chat_id, [])
     pointer = _state_read(f"chat:{chat_id}")
     pointer["dialog"] = True
     _state_write(f"chat:{chat_id}", pointer)
@@ -262,7 +306,6 @@ def _dialog_active(chat_id: int) -> bool:
     # на каждое сообщение.
     with _STATE_LOCK:
         _PLATON_MODE.setdefault(chat_id, _PLATON_LAST_SESSION.get(chat_id, ""))
-        _PLATON_HISTORY.setdefault(chat_id, [])
     return True
 
 
@@ -391,10 +434,10 @@ def _send_tep_review(chat_id: int, parsed: dict[str, Any], *, dialog_mode: bool)
     with _STATE_LOCK:
         if context:
             _PLATON_TEP_CONTEXT[chat_id] = context
-            _PLATON_HISTORY.pop(chat_id, None)
             _PLATON_PENDING.pop(chat_id, None)
         _TEP_REVIEW_CHATS.add(chat_id)
     if context:
+        _platon_memory_forget_history(chat_id)
         pointer = _state_read(f"chat:{chat_id}")
         pointer["tep_context"] = context
         _state_write(f"chat:{chat_id}", pointer)
@@ -406,6 +449,7 @@ def _send_tep_review(chat_id: int, parsed: dict[str, Any], *, dialog_mode: bool)
 
 
 core._telegram_send_tep_review = _send_tep_review
+core._telegram_platon_remember_document = _platon_remember_document
 
 
 def _start_vritep(chat_id: int) -> None:
@@ -936,7 +980,6 @@ def _start_platon(chat_id: int) -> None:
         return
     with _STATE_LOCK:
         _PLATON_MODE[chat_id] = session
-        _PLATON_HISTORY.setdefault(chat_id, [])
     _send_message(
         chat_id,
         "<b>Платон Сергеевич на связи</b>\n"
@@ -971,8 +1014,18 @@ def _request_for_agent(chat_id: int) -> Request:
 
 def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
     session, context = _resolve_context(chat_id)
-    with _STATE_LOCK:
-        history = copy.deepcopy(_PLATON_HISTORY.get(chat_id) or [])
+    memory = _platon_memory(chat_id)
+    history = memory["history"]
+    document = memory["document"]
+    if not context and document:
+        # Прислан только документ, проекта ещё нет: Платон отвечает по
+        # документу, а модель стоит на умолчаниях. Говорим это вслух, чтобы
+        # числа умолчаний не читались как расчёт этого участка.
+        context = {"inputs": dict(core.DEFAULT_INPUTS),
+                   "tep": {key: dict(value) for key, value in core.TEP_DEFAULT.items()}}
+        intro = (intro + "\n" if intro else "") + (
+            f"<i>Отвечаю по документу «{html.escape(str(document.get('filename') or ''))}». "
+            "Расчёта проекта ещё нет — числа модели в ответе стоят на умолчаниях.</i>")
     if not context:
         _send_message(
             chat_id,
@@ -1007,7 +1060,8 @@ def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
         tep=context["tep"],
         rates=context.get("rates") or [],
         phasing=context.get("phasing") or {},
-        history=history[-20:],
+        history=history[-_PLATON_HISTORY_LIMIT:],
+        document=document,
         selected_view=context.get("selected_view") or "all",
     )
     try:
@@ -1024,8 +1078,9 @@ def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
         answer = str((result or {}).get("answer") or "Платон не вернул текстового ответа.").strip()
         proposals = (result or {}).get("proposals") or []
         proposal = proposals[-1] if proposals and isinstance(proposals[-1], dict) else None
+        lost = _platon_memory_save(
+            chat_id, history=history + [{"role": "assistant", "content": answer}])
         with _STATE_LOCK:
-            _PLATON_HISTORY[chat_id] = (history + [{"role": "assistant", "content": answer}])[-20:]
             if proposal:
                 _PLATON_PENDING[chat_id] = {"session": session, "proposal": copy.deepcopy(proposal)}
         safe = html.escape(answer)
@@ -1036,6 +1091,12 @@ def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
                 chunk,
                 reply_markup=_platon_markup(chat_id, proposal=bool(proposal)) if index == len(chunks) - 1 else None,
             )
+        if lost:
+            # Молча потерянная история читается как забывчивость Платона.
+            _send_message(
+                chat_id,
+                "<i>Разговор не сохранился на сервере (" + html.escape(lost[:200])
+                + "): следующий вопрос Платон увидит без этого ответа.</i>")
     except Exception as exc:
         _send_message(
             chat_id,
@@ -2557,6 +2618,14 @@ def _handle_message(message: dict[str, Any]) -> None:
     # участка. Раньше «Какая цена объекта оптимальна?» уходило искать в ЕГРН и
     # возвращалось с «участок не найден».
     if text and not command and core._looks_like_question(text) and _has_model_context(chat_id):
+        _run_agent(chat_id, text)
+        return
+    # Вопрос по присланному документу — тоже вопрос Платону, даже когда
+    # проекта ещё нет: «а какая там IRR?» после тизера — не адрес участка.
+    # Очередь вопросов разбора отвечается своим путём и сюда не идёт.
+    if (text and not command and core._looks_like_question(text)
+            and _platon_memory(chat_id)["document"]
+            and (core._telegram_dialog_get(chat_id) or {}).get("step") != "await_intake_answer"):
         _run_agent(chat_id, text)
         return
     _ORIGINAL_HANDLE_MESSAGE(message)
