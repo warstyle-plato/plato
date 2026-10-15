@@ -1601,7 +1601,7 @@ def build_plato_model_v2(
     # входят. Книга считала их наземными, движок подземными: одна методика в
     # двух местах, и расходились они молча, пока площадь кладовых была нулём.
     core_above_keys = ("apartments", "ground_commercial")
-    core_under_keys = UNDERGROUND_PRODUCTS
+    core_under_keys = underground_products(inputs)
     base_line = total_line + 2
     ws_tep.cell(row=base_line, column=1, value="БАЗЫ ДЛЯ УДЕЛЬНЫХ СТАВОК").font = styles["section"]
     tep_base: dict[str, int] = {}

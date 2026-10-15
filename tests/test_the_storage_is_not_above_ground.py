@@ -1,7 +1,7 @@
 """Кладовые лежат под землёй и в наземную ГНС не входят.
 
 «Почему у нас кладовки попадают в ГНС? Они же в подземной части» (владелец).
-Правило объявлено один раз — `UNDERGROUND_PRODUCTS` и `project_above_gns` в
+Правило объявлено один раз — `underground_products` и `project_above_gns` в
 движке, — а страница в двух местах считала наземную сама и пропускала только
 гараж: панель «Участок и плотность» записывала кладовые в «Использовано
 наземной ГНС» и в потенциал участка, а площади для свода ставок класса —
@@ -69,7 +69,7 @@ def _run(tail: str, inputs: dict | None = None) -> dict:
 
 def test_the_engine_keeps_the_storage_underground():
     """Опора проверки: владелец ответа сам не пускает кладовые в наземную."""
-    assert "storage" in core.UNDERGROUND_PRODUCTS
+    assert "storage" in core.underground_products({})
     assert _above(_tep()) == pytest.approx(107_000)
 
 
@@ -112,7 +112,7 @@ def test_the_bot_summary_names_the_above_ground_gns():
         "commercial_saleable_sqm": 4000,
     })
     tep = parsed["tep"]
-    below = sum(float((tep.get(k) or {}).get("gns") or 0) for k in core.UNDERGROUND_PRODUCTS)
+    below = sum(float((tep.get(k) or {}).get("gns") or 0) for k in core.underground_products({}))
     assert below > 0, "стенд без подземной части ничего не проверяет"
     total = sum(float(r.get("gns") or 0) for r in tep.values())
     assert parsed["summary"]["total_gns_sqm"] == pytest.approx(core.project_above_gns(tep))

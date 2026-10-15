@@ -148,8 +148,8 @@ def _stand() -> str:
     """Списки и слова берутся у движка: копия разошлась бы с ним молча."""
     return ("const TEP_COUNT_MEASURE=" + json.dumps(core.TEP_COUNT_MEASURE, ensure_ascii=False)
             + ";\nconst COUNT_PARKING=" + json.dumps(core.COUNT_PARKING, ensure_ascii=False)
-            + ";\nconst UNDERGROUND_PRODUCTS="
-            + json.dumps(list(core.UNDERGROUND_PRODUCTS), ensure_ascii=False)
+            + ";\nconst UNDERGROUND_PLACEMENT="
+            + json.dumps(core.underground_placement_payload(), ensure_ascii=False)
             + ";\nconst TRANSFER_NOTE_WORD=" + json.dumps(core.TRANSFER_NOTE_WORD) + ";\n"
             + _const("num") + "\n")
 

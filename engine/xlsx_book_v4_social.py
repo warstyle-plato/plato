@@ -464,10 +464,12 @@ def _v4_storage_area_cells(tep_xml: str, report_xml: str, missing: list[str]
     #
     # На ТЭП колонка одна и названа честно — «ГНС / подземная площадь», —
     # поэтому там кладовые остаются в C.
+    # Наземные кладовые (`storage_placement`) лежат внутри ГНС квартир: в B
+    # их второй раз не складывают, а в подземной их нет.
     report_xml, done = _v4_set_cells(report_xml, _V4_REPORT_STORAGE_ROW, {
         f"B{_V4_REPORT_STORAGE_ROW}": dict(formula="0"),
         f"{_V4_UNDER_COLUMN}{_V4_REPORT_STORAGE_ROW}": dict(
-            formula="SUM('Вводные'!AR88:AR91)")})
+            formula=f"SUM('Вводные'!AR88:AR91)*{_v4_storage_under_flag()}")})
     if not done:
         missing.append("ОТЧЕТ · площадь кладовых")
     return tep_xml, report_xml
@@ -492,10 +494,16 @@ def _v4_apply_storage_area_rows(xml: str, missing: list[str]) -> str:
     Благоустройство сюда не входит: его база — двор, а не объём, и к этому
     моменту `_v4_apply_landscaping_base` уже сняла у него сумму трёх ГНС.
     Формула шаблона не опознана — `missing`, а не тихий счёт по прежней базе.
+    Наземные кладовые (`storage_placement`, владелец 15.10.2026) ни в одну из
+    этих баз не входят: их метры уже в ГНС квартир.
     """
-    area = "'Вводные'!$AR$%d"
+    # Наземные кладовые (`storage_placement`) уже лежат в ГНС квартир
+    # (колонка I): ни к подземной части, ни к объёму их метры не прибавляются.
+    # Решает вводная книги, а не сборка: правка размещения в книге двигает базы.
+    flag = _v4_storage_under_flag()
+    area = "'Вводные'!$AR$%d*" + flag.replace("%", "%%")
     volume_was = "SUM('Вводные'!$I$88:$K$91)"
-    volume_now = f"({volume_was}+SUM('Вводные'!$AR$88:$AR$91))"
+    volume_now = f"({volume_was}+SUM('Вводные'!$AR$88:$AR$91)*{flag})"
     xml, count = xml.replace(volume_was, volume_now), xml.count(volume_was)
     expect = len(_V4_SHARED_CASH_ARTICLES) * _V4_CAPEX_PHASES
     if count != expect:
@@ -581,11 +589,67 @@ def _v4_storage_norm_rows_xml(xml: str, inputs: dict[str, Any],
              + f'<x:c r="D{base_row + 1}" t="inlineStr"><x:is><x:t>'
              + xml_escape("storage_area_per_unit_sqm")
              + "</x:t></x:is></x:c>"
+             + "</x:row>",
+             # Где стоят кладовые — вводная проекта (`storage_placement`):
+             # от неё зависят подземная площадь, СМР части и себестоимость
+             # продуктов пула. Пишется словом, как признак «Продаётся» у ФОКа.
+             f'<x:row r="{base_row + 2}">'
+             + f'<x:c r="A{base_row + 2}" t="inlineStr"><x:is><x:t>'
+             + xml_escape("Размещение кладовых")
+             + "</x:t></x:is></x:c>"
+             + f'<x:c r="B{base_row + 2}"{_v4_entry_attr()} t="inlineStr"><x:is><x:t>'
+             + xml_escape(_v4_storage_placement_word(inputs))
+             + "</x:t></x:is></x:c>"
+             + f'<x:c r="C{base_row + 2}" t="inlineStr"><x:is><x:t>'
+             + xml_escape(f"«{_V4_STORAGE_UNDER_WORD}» или «{_V4_STORAGE_ABOVE_WORD}»; "
+                          "наземные лежат внутри ГНС квартир (колонка I), "
+                          "строятся по наземной ставке и в подземную "
+                          "площадь не входят")
+             + "</x:t></x:is></x:c>"
+             + f'<x:c r="D{base_row + 2}" t="inlineStr"><x:is><x:t>'
+             + xml_escape(STORAGE_PLACEMENT_FIELD)
+             + "</x:t></x:is></x:c>"
              + "</x:row>"]
     tail = "</x:sheetData>"
     assert tail in xml
+    _V4_STORAGE_PLACEMENT_CELL.set(f"'Вводные'!$B${base_row + 2}")
     return (xml.replace(tail, "".join(parts) + tail, 1),
             f"$B${base_row + 1}", per)
+
+
+# Слова размещения кладовых в книге — из списка вариантов поля движка.
+_V4_STORAGE_UNDER_WORD = dict(STORAGE_PLACEMENT_OPTIONS)[STORAGE_UNDERGROUND]
+_V4_STORAGE_ABOVE_WORD = dict(STORAGE_PLACEMENT_OPTIONS)[STORAGE_ABOVE]
+# Ячейка размещения в ЭТОЙ книге: её пишет блок вводных кладовых, а читают
+# базы CAPEX, ОТЧЕТ и себестоимость продуктов на CF. Без блока (книга не
+# собиралась) ответ — умолчание, а не «наземные».
+import contextvars as _contextvars
+_V4_STORAGE_PLACEMENT_CELL: "_contextvars.ContextVar[str]" = _contextvars.ContextVar(
+    "_V4_STORAGE_PLACEMENT_CELL", default="")
+
+
+def _v4_storage_placement_word(inputs: dict[str, Any]) -> str:
+    return _V4_STORAGE_ABOVE_WORD if storage_above_ground(inputs) else _V4_STORAGE_UNDER_WORD
+
+
+def _v4_storage_under_flag(sheet: str = "'Вводные'") -> str:
+    """1 — кладовые под землёй, 0 — на наземных этажах; формулой от вводной.
+
+    `sheet` — лист, на который ссылается формула: собранные ДО переезда ввода
+    пишут «Вводные» (переезд сам переведёт их на «Параметры модели»), а
+    собранные после — сразу «Параметры модели»: на новом листе ввода у
+    вводной другая строка.
+    """
+    cell = _V4_STORAGE_PLACEMENT_CELL.get()
+    if not cell:
+        return "1"
+    cell = cell.replace("'Вводные'", sheet, 1)
+    return f'IF({cell}="{_V4_STORAGE_ABOVE_WORD}",0,1)'
+
+
+def _v4_storage_above_flag() -> str:
+    """Пара к `_v4_storage_under_flag`: 1 — кладовые на наземных этажах."""
+    return f"(1-{_v4_storage_under_flag()})"
 
 
 def _v4_social_rows_xml(xml: str, rows: dict[tuple[int, str], dict[str, Any]],

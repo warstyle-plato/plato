@@ -1575,9 +1575,16 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     quantity_schedules = op.get("quantity_product_schedules", {})
     tax_margin_schedules: dict[str, dict[date, float]] = {}
 
-    core_quantity_total = sum(
-        sum(quantity_schedules.get(key, {}).values()) for key in core_products
-    )
+    # Себестоимость пула делится между продуктами тем же методом, что в
+    # отчёте (`cost_pool_product_costs`: прямые по месту + общие по выручке),
+    # и каждый продукт признаёт СВОЮ долю долей проданного количества в
+    # СВОИХ единицах — метры у метровых, штуки у штучных. Общая сумма «м² +
+    # шт.» складывала разные величины (владелец, 15.10.2026). Итог за проект
+    # тот же — весь пул; сдвигается только график. Продукт без продаж и
+    # остаток, который делить не по чему, признаются в РВЭ.
+    core_product_costs = cost_pool_product_costs(
+        core_cost, op.get("mkd_direct_costs") or {}, mkd_part_gns(x, t),
+        op.get("revenue_by_product") or {})
     core_months = set()
     for key in core_products:
         core_months.update(revenue_schedules.get(key, {}))
@@ -1585,19 +1592,21 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     core_margin: dict[date, float] = {}
     # По порядку, а не порядком множества — та же причина, что ниже у продуктов.
     for month in sorted(core_months):
-        revenue_month = sum(
-            revenue_schedules.get(key, {}).get(month, 0.0) for key in core_products
-        )
-        quantity_month = sum(
-            quantity_schedules.get(key, {}).get(month, 0.0) for key in core_products
-        )
-        recognized_cost = (
-            core_cost * quantity_month / core_quantity_total
-            if core_quantity_total else 0.0
-        )
-        core_margin[month] = revenue_month - recognized_cost
-    if core_cost and not core_quantity_total:
-        core_margin[rve] = core_margin.get(rve, 0.0) - core_cost
+        core_margin[month] = sum(
+            revenue_schedules.get(key, {}).get(month, 0.0) for key in core_products)
+    for key in core_products:
+        cost = core_product_costs.get(key, 0.0)
+        schedule = quantity_schedules.get(key, {})
+        total = sum(schedule.values())
+        if not total:
+            if cost:
+                core_margin[rve] = core_margin.get(rve, 0.0) - cost
+            continue
+        for month in sorted(schedule):
+            core_margin[month] = core_margin.get(month, 0.0) - cost * schedule[month] / total
+    unallocated = core_cost - sum(core_product_costs.get(key, 0.0) for key in core_products)
+    if abs(unallocated) > 1e-6:
+        core_margin[rve] = core_margin.get(rve, 0.0) - unallocated
     tax_margin_schedules["core"] = core_margin
 
     for key in krt_products:
@@ -1834,6 +1843,9 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         },
         "tax_rows": tax_rows,
         "tax_margin_by_product": tax_margin_by_product,
+        # Себестоимость продуктов пула МКД в налоговой базе (с коммерческими
+        # расходами) — то, что книга раскладывает блоком на листе CF.
+        "core_product_costs": core_product_costs,
         "tax_cost_by_product": tax_cost_by_product,
         "financing_tax_deductions": sum(financing_deductions.values()),
         "financing_tax_reconciliation": financing_reconciliation,

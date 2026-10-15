@@ -82,7 +82,22 @@ def _above_ground_sqm(tep_report: dict[str, Any]) -> float:
     арифметику ради подписи нельзя — она разойдётся с числами над ней.
     """
     return max(0.0, _number_or_zero((tep_report.get("total") or {}).get("gns"))
-               - _core_underground_sqm(tep_report))
+               - _core_underground_sqm(tep_report)
+               # Наземные кладовые лежат внутри метров квартир: строка их
+               # несёт, а к наземной части они второй раз не прибавляются.
+               - sum(_number_or_zero(row.get("gns"))
+                     for row in (tep_report.get("rows") or [])
+                     if str(row.get("key")) in ROWS_OUTSIDE_ABOVE_SUM
+                     and str(row.get("key")) not in _report_underground_keys(tep_report)))
+
+
+def _report_underground_keys(tep_report: dict[str, Any]) -> tuple[str, ...]:
+    """Чьи метры под землёй у ЭТОГО отчёта — ответ движка; у отчёта старого
+    формата — умолчание размещения кладовых."""
+    keys = tep_report.get("underground_products")
+    if keys is not None:
+        return tuple(str(key) for key in keys)
+    return UNDERGROUND_PRODUCTS_BY_PLACEMENT[STORAGE_PLACEMENT_DEFAULT]
 
 
 def _core_underground_sqm(tep_report: dict[str, Any]) -> float:
@@ -98,7 +113,7 @@ def _core_underground_sqm(tep_report: dict[str, Any]) -> float:
         return _number_or_zero(base)
     return sum(_number_or_zero(row.get("gns"))
                for row in (tep_report.get("rows") or [])
-               if str(row.get("key")) in _UNDERGROUND_TEP_KEYS)
+               if str(row.get("key")) in _report_underground_keys(tep_report))
 
 
 def _underground_sqm(tep_report: dict[str, Any]) -> float:
@@ -1870,7 +1885,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         story.append(P(_land_gap,ParagraphStyle("land_gap",parent=small,fontSize=8.0,
                                                 textColor=colors.HexColor("#a02418"))))
     story.append(_PdfSection("income"));story.append(P("Продажи и продукты",h2))
-    product_rows=[["Продукт","Объём","Темп до РВЭ","Стартовая цена","Средняя цена","Выручка"]]
+    # Себестоимость и маржа продукта — те же числа, что на экране и в книге:
+    # один отчёт движка (`report.products`), а не свой счёт PDF.
+    product_rows=[["Продукт","Объём","Темп до РВЭ","Стартовая цена","Средняя цена","Выручка","Себестоимость","Маржа"]]
     for item in products:
         # Непродаваемое в таблицу ПРОДАЖ не идёт: соцобъект стоял тут строкой
         # с объёмом «350 м²» и выручкой ноль, хотя 350 — это места. Его метры
@@ -1888,8 +1905,12 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             volume+=f" из {_pdf_num(built,0)} построенных"
         product_rows.append([item.get('label') or '—',volume,
                              (_pdf_num(pace,0)+' '+unit+'/мес') if pace else '—',
-                             _pdf_num(item.get('start_price_th'),0)+" тыс. ₽",_pdf_num(item.get('avg_price_th'),0)+" тыс. ₽",_pdf_money(revenue)])
-    story.append(table(product_rows,[45*mm,26*mm,28*mm,26*mm,26*mm,29*mm],font_size=7.4))
+                             _pdf_num(item.get('start_price_th'),0)+" тыс. ₽",_pdf_num(item.get('avg_price_th'),0)+" тыс. ₽",_pdf_money(revenue),
+                             _pdf_money(float(item.get('cost') or 0)),
+                             '—' if item.get('margin') is None else _pdf_num(float(item['margin'])*100,1)+'%'])
+    story.append(table(product_rows,[34*mm,24*mm,22*mm,20*mm,20*mm,22*mm,22*mm,16*mm],font_size=7.0))
+    if report.get("product_cost_basis"):
+        story.append(P(str(report["product_cost_basis"]), small))
     # Профиль продаж и лестница цены объекта — под таблицей, своими словами:
     # средняя цена без них не объясняет, откуда взялась.
     for item in products:

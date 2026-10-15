@@ -106,7 +106,7 @@ def test_the_fixture_actually_has_something_underground(built):
 def test_the_underground_metres_are_not_in_the_above_ground_column(built):
     """То, что видно на снимке: 41 965 м² под землёй в колонке «ГНС»."""
     rows, _workbook, evaluator = built
-    for key in core.UNDERGROUND_PRODUCTS:
+    for key in core.underground_products({}):
         assert _product(evaluator, key, "gns") == 0, (
             f"у {key} наземная площадь взялась ниоткуда")
         assert abs(_product(evaluator, key, "under") - rows[key]["gns"]) <= 1.0, key
@@ -135,7 +135,7 @@ def test_the_totals_do_not_mix_the_two_heights(built):
     assert under >= STORAGE_SQM + OBJECT_GARAGE_SQM
     rows_above = sum(_product(evaluator, key, "gns") for key, *_ in vd.PRODUCT_ITEMS)
     assert abs(above - rows_above) <= 1.0, "итог не равен тому, что над ним"
-    for key in core.UNDERGROUND_PRODUCTS:
+    for key in core.underground_products({}):
         assert _product(evaluator, key, "gns") == 0
 
 

@@ -74,7 +74,9 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # подземном паркинге проекта, который тут и стоит. Отдельный гараж был бы
     # вторым счётом тех же мест, а приобъектная стоянка — асфальт, метров она
     # не занимает вовсе.
-    core_under_gns = sum(n(t.get(key) or {}, "gns") for key in UNDERGROUND_PRODUCTS)
+    # Что под землёй — по размещению кладовых ЭТОГО проекта: наземные лежат
+    # внутри ГНС квартир и строятся по наземной ставке (`underground_products`).
+    core_under_gns = sum(n(t.get(key) or {}, "gns") for key in underground_products(x))
     core_total_gns = core_above_gns + core_under_gns
     # Благоустройство считается по физической площади двора: она своя база и в
     # строительный объём не входит вовсе. Ответ объявлен один раз и назван
@@ -576,6 +578,23 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
             "reserve": (own + gc_part + tz_part) * n(x, "reserve_pct") / 100,
         }
 
+    # Прямые затраты частей МКД — СМР части и то, что начислено ОТ него:
+    # генподряд и техзаказчик (процент базы работ, куда СМР входит своей
+    # статьёй), управление проектом (процент своей базы) и резерв (процент со
+    # всех статей, включая эти). Доля каждой надбавки — тот же процент с денег
+    # части, что и у сметы объекта выше. По ним пул МКД делит себестоимость
+    # продуктов «по месту» (`cost_pool_product_costs`).
+    def _part_direct(own: float) -> float:
+        if own <= 0:
+            return 0.0
+        share = own / works_base if works_base else 0.0
+        fees = (amounts["gc_fee"] + amounts["technical_supervision"]) * share
+        management = own * n(x, "project_management_pct", 5.0) / 100
+        return (own + fees + management) * (1 + n(x, "reserve_pct") / 100)
+
+    mkd_direct_costs = {"above": _part_direct(float(amounts["main_above"] or 0.0)),
+                        "under": _part_direct(float(amounts["main_under"] or 0.0))}
+
     capex: dict[date, float] = defaultdict(float)
     # Помесячная детализация по статьям: тот же расклад, что и в общем ряду,
     # но с разбивкой — нужна для выгрузки финмодели и сверки с эталоном.
@@ -927,6 +946,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "object_schedule_notes": object_schedule_notes,
         "core_above_gns": core_above_gns,
         "core_under_gns": core_under_gns,
+        "mkd_direct_costs": mkd_direct_costs,
         # База статей проекта и её имя — один ответ для PDF, страницы и книг.
         "project_articles_sqm": project_articles_sqm,
         "project_articles_area": project_articles_term.key,

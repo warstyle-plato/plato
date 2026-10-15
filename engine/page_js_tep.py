@@ -372,7 +372,7 @@ function renderTepUndergroundNote(aboveGns,underGns){
  if(!box)return;
  if(!underGns){box.textContent='';return}
  box.textContent=`Итог ГНС — наземная площадь: ${num(aboveGns)} м². `
-  +`Подземная часть (паркинг, кладовые, гаражи объектов) ${num(underGns)} м² — `
+  +`Подземная часть (${storagePlacementWords()}) ${num(underGns)} м² — `
   +`у неё своя экономика и в ГНС она не входит. `
   +`${TERMS.total_area.name} ${num(aboveGns+underGns)} м².`;
 }
@@ -800,15 +800,27 @@ function renderTep(){
 // строкой раздела — оба числа выглядели бы верными.
 function tepRowUnderGns(key,row){
  const r=row||{};
- return (UNDERGROUND_PRODUCTS.includes(key)?Number(r.gns||0):0)
+ return (undergroundProducts().includes(key)?Number(r.gns||0):0)
   +(Number(r.under_gns||0)||objectGarageUnderGns(key));
 }
-// Сколько у строки НАЗЕМНОЙ площади — пара к подземной выше. Гараж и кладовые
-// лежат под землёй целиком, и их колонка ГНС в наземную не входит; правило —
-// `UNDERGROUND_PRODUCTS` из движка (`project_above_gns`). Читатели, считавшие
-// сами, пропускали один гараж, и кладовые садились в наземную ГНС участка.
+// Сколько у строки НАЗЕМНОЙ площади — пара к подземной выше. Гараж лежит под
+// землёй целиком, кладовые — либо под землёй, либо ВНУТРИ метров квартир, и
+// к наземной ГНС их колонка не прибавляется ни в одном случае; правило —
+// `ROWS_OUTSIDE_ABOVE_SUM` из движка (`project_above_gns`). Читатели,
+// считавшие сами, пропускали один гараж, и кладовые садились в наземную ГНС.
 function tepRowAboveGns(key,row){
- return UNDERGROUND_PRODUCTS.includes(key)?0:Number((row||{}).gns||0);
+ return UNDERGROUND_PLACEMENT.outside_above.includes(key)?0:Number((row||{}).gns||0);
+}
+// Что под землёй у ЭТОГО проекта — по размещению кладовых (поле проекта).
+// Отсутствующий ключ — умолчание движка, а не «наземные».
+function undergroundProducts(source){
+ const own=(source||inputs||{})[UNDERGROUND_PLACEMENT.field];
+ return UNDERGROUND_PLACEMENT.by_placement[own]
+  ||UNDERGROUND_PLACEMENT.by_placement[UNDERGROUND_PLACEMENT.default];
+}
+function storagePlacementWords(){
+ return undergroundProducts().includes('storage')
+  ?'паркинг, кладовые, гаражи объектов':'паркинг, гаражи объектов';
 }
 // Метры гаража объекта считает движок (`apply_object_parking`), а таблица ТЭП
 // на вводных живёт своими строками, куда их никто не пишет. Подпись «гаражи
@@ -1741,8 +1753,9 @@ function socialAreaPerPlace(kind,places){
  return steps[steps.length-1][1];
 }
 const MKD_PRODUCTS=__DEVELOPAID_MKD_PRODUCTS__;
-// Строки ТЭП без наземной площади: гараж и кладовые лежат под землёй.
-const UNDERGROUND_PRODUCTS=__DEVELOPAID_UNDERGROUND_PRODUCTS__;
+// Что под землёй — по размещению кладовых, правило из движка
+// (`underground_products`); строки вне суммы наземной ГНС — оттуда же.
+const UNDERGROUND_PLACEMENT=__DEVELOPAID_UNDERGROUND_PRODUCTS__;
 // Чем считается продукт — из движка. Квартира, машино-место, место в саду и
 // посещение в смену несравнимы, и складывать их вместе нельзя; копия этого
 // списка на странице разошлась бы с движком молча.
