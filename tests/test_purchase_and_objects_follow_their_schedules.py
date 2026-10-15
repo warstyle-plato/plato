@@ -297,8 +297,10 @@ def test_the_apartment_ladder_prices_all_core_products() -> None:
         assert price["2029-01-01"] == pytest.approx(start_price * 1.05)
         assert price["2029-07-01"] == pytest.approx(start_price * 1.05 * 1.05)
         assert price["2030-01-01"] == pytest.approx(start_price * 1.05 * 1.05 * 1.10)
-        # Этап 4 нулевой; после РВЭ (июль 2030) продолжает ежемесячный рост.
-        assert price["2030-08-01"] == pytest.approx(start_price * 1.05 * 1.05 * 1.10 * 1.0025)
+        # Этап 4 нулевой; после РВЭ (июль 2030) продолжает ежемесячный рост —
+        # из годовой «Инфляции после РВЭ», одной вводной.
+        after = 1 + core.growth_post_monthly_pct(_inputs(**STAGES)) / 100
+        assert price["2030-08-01"] == pytest.approx(start_price * 1.05 * 1.05 * 1.10 * after)
     assert op["object_schedule_notes"]["core"]["steps_applied"] is True
     product = [p for p in core._run_authoritative_model(
         _inputs(**STAGES), _tep(), [], {})["consolidated"]["report"]["products"]
