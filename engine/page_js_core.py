@@ -783,11 +783,14 @@ async function loadProfile(openIfEmpty){
 }
 
 const money=v=>(Number(v||0)/1e9).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+' млрд ₽';
-const socialMoney=v=>{
+// Сумма меньше 0,1 млрд — в млн ₽: «0,01 млрд» и «0 млрд» у статьи в
+// миллионы читались как ноль.
+const moneyScaled=v=>{
  const x=Number(v||0);
  if(Math.abs(x)>0&&Math.abs(x)<100000000)return (x/1e6).toLocaleString('ru-RU',{minimumFractionDigits:1,maximumFractionDigits:2})+' млн ₽';
  return money(x);
 };
+const socialMoney=moneyScaled;
 const mln=v=>(Number(v||0)/1e6).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:1})+' млн ₽';
 const pct=v=>(Number(v||0)*100).toLocaleString('ru-RU',{minimumFractionDigits:0,maximumFractionDigits:2})+'%';
 const mult=v=>Number(v||0).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})+'x';
