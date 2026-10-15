@@ -93,7 +93,7 @@ function isFieldManual(path){
 }
 function fieldOriginNote(path){
  const o=(inputs._field_origin||{})[path];
- if(!o||(o.source!=='glavapu'&&o.source!=='hotel_preset'))return '';
+ if(!o||(o.source!=='glavapu'&&o.source!=='hotel_preset'&&o.source!=='migrated'))return '';
  return '<div class="glavapu-origin" style="font-size:11px;color:#666;margin-top:2px">'+escapeHtml(o.text||'ГлавАПУ')+'</div>';
 }
 // Регион проекта — поле «Регион» проекта, и только оно. Ни имя файла

@@ -485,7 +485,7 @@ _SENSITIVITY_PARAMETERS: list[dict[str, Any]] = [
     {"key": "pace_adjustment_pct", "kind": "pct", "group": "Доходы", "allow_negative": True},
     {"key": "share_before_rve_pct", "kind": "pct", "group": "Доходы", "max": 100.0},
     {"key": "monthly_growth_pre_pct", "kind": "pct", "group": "Доходы"},
-    {"key": "monthly_growth_post_pct", "kind": "pct", "group": "Доходы"},
+    {"key": "inflation_after_rve_pct", "kind": "pct", "group": "Доходы"},
     # Затраты
     {"key": "purchase_price_mln", "kind": "pct", "group": "Затраты"},
     {"key": "main_above_th_per_sqm", "kind": "pct", "group": "Затраты"},

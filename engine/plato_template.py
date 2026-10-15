@@ -744,6 +744,8 @@ def fill_plato_template(
     project_name: str = "",
 ) -> tuple[bytes, dict[str, Any]]:
     """Заполняет листы-вводные шаблона ПЛАТО, не трогая формулы."""
+    inputs = dict(inputs or {})
+    migrate_growth_post(inputs)
     try:
         from openpyxl import load_workbook
     except ImportError as exc:  # pragma: no cover - зависимость объявлена в requirements
@@ -1091,26 +1093,26 @@ _M2_PRODUCTS: dict[str, dict[str, Any]] = {
     "apartments": {
         "base_column": 5, "price": "apartment_price_th", "scale": 0.001, "unit": "м²",
         "share": "share_before_rve_pct", "residual": "residual_sales_months",
-        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": None,
         "core": True,
     },
     "ground_commercial": {
         "base_column": 5, "price": "commercial_price_th", "scale": 0.001, "unit": "м²",
         "share": "share_before_rve_pct", "residual": "residual_sales_months",
-        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": None,
         "core": True,
     },
     "underground_parking": {
         # Колонка 9 — «Продаётся, ед.»: гостевые места в продажи не входят.
         "base_column": 9, "price": "parking_price_th", "scale": 0.001, "unit": "м/м",
         "share": "share_before_rve_pct", "residual": "residual_sales_months",
-        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": None,
         "core": True,
     },
     "storage": {
         "base_column": 9, "price": "storage_price_th", "scale": 0.001, "unit": "шт.",
         "share": "share_before_rve_pct", "residual": "residual_sales_months",
-        "growth_pre": "monthly_growth_pre_pct", "growth_post": "monthly_growth_post_pct",
+        "growth_pre": "monthly_growth_pre_pct", "growth_post": None,
         "core": True,
     },
     "offices": {
@@ -1174,9 +1176,9 @@ _M2_RATE_SCENARIOS = [["high", "Консервативный"], ["base", "Баз
 # участвует» на «Вводных» стала бы такой же обманкой, какой была сама ставка.
 # Этапы роста цены («growth_stage1..4_pct») ушли отсюда 02.09.2026: движок
 # читает их как лестницу цены по строительной готовности.
-_M2_TEMPLATE_ONLY_INPUTS = frozenset({
-    "inflation_after_rve_pct",
-})
+# «inflation_after_rve_pct» ушла отсюда 15.10.2026: она — единственный
+# источник роста цены после РВЭ.
+_M2_TEMPLATE_ONLY_INPUTS: frozenset[str] = frozenset()
 
 # Статьи движка, на которые резерв не начисляется. Плата за смену ВРИ —
 # известная сумма по расчёту органа власти, а не смета, у которой бывает
@@ -1363,6 +1365,8 @@ def build_plato_model_v2(
     import openpyxl.styles
     import openpyxl.worksheet.datavalidation
 
+    inputs = dict(inputs or {})
+    migrate_growth_post(inputs)
     result = calculate(CalcRequest(inputs=dict(inputs), tep=dict(tep), rates=list(rates or [])))
     finance = result.get("finance") or {}
     rows = finance.get("rows") or []
@@ -1722,7 +1726,11 @@ def build_plato_model_v2(
             (8, f"={ref(spec['residual'])}", "0"),
             (9, f"={ref(spec['share'])}", percent),
             (10, f"={ref(spec['growth_pre'])}", percent),
-            (11, f"={ref(spec['growth_post'])}", percent),
+            # Основным продуктам рост после РВЭ даёт годовая инфляция — одна
+            # вводная (решение владельца, 15.10.2026), в месяц сложным ростом.
+            (11, (f"=(1+{ref('inflation_after_rve_pct')})^(1/12)-1"
+                  if spec["growth_post"] is None else f"={ref(spec['growth_post'])}"),
+             percent),
             (12, seasonal, percent),
             (13, pace, percent),
         ):

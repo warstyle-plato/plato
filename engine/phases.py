@@ -2905,7 +2905,10 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     свода ещё не приведён к очередям (см. `_calculate_phased_with_carry`).
     Очереди решены своим `calculate`.
     """
+    migrations = migrate_growth_post(req.inputs)
     bundle = _calculate_phased_with_table(req)
+    if isinstance(bundle, dict) and migrations:
+        bundle["input_migrations"] = migrations
     if isinstance(bundle, dict):
         _finalize_result(bundle.get("consolidated"))
         for item in bundle.get("phases") or []:
