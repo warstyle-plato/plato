@@ -107,7 +107,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     share = n(x, "share_before_rve_pct", 85) / 100
     # Запасное значение — то же умолчание, что видит форма, а не своя константа.
     growth_pre = n(x, "monthly_growth_pre_pct", DEFAULT_INPUTS["monthly_growth_pre_pct"]) / 100
-    growth_post = n(x, "monthly_growth_post_pct", 0.25) / 100
+    # Рост после РВЭ — из годовой «Инфляции после РВЭ», одной вводной.
+    growth_post = growth_post_monthly_pct(x) / 100
     # Сезонность и смещение темпа были в интерфейсе, но на расчёт не влияли:
     # уходили только в шаблон ПЛАТО. Из-за этого шаблон и модель по одним и тем
     # же вводным давали разную выручку.

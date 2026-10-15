@@ -279,6 +279,10 @@ async function calculate(){
     lastResult.tep.rows.forEach(r=>{if(!tep[r.key]||r.excluded)return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
    }
  }
+ // Перенос устаревших вводных решает движок (`migrate_growth_post`), а
+ // страница только принимает его ответ: иначе поле показывало бы одно
+ // число, а расчёт шёл по другому. Происхождение подписано у поля.
+ applyInputMigrations((phaseBundle||lastResult||{}).input_migrations);
  if(startedAtReset!==resetRun){
   // Между стартом расчёта и его ответом человек нажал «Сбросить».
   lastResult=null;phaseBundle=null;blankResultSurfaces();return null;
@@ -293,6 +297,21 @@ async function calculate(){
  return lastResult;
 }
 
+function applyInputMigrations(list){
+ if(!Array.isArray(list)||!list.length)return;
+ let shown=false;
+ list.forEach(m=>{
+  if(!m)return;
+  if(m.from){delete inputs[m.from];delete fieldOrigins()['inputs.'+m.from]}
+  if(m.key){
+   inputs[m.key]=m.value;
+   fieldOrigins()['inputs.'+m.key]={source:'migrated',text:String(m.text||'перенесено')};
+   const el=document.getElementById('f_'+m.key);if(el)el.value=m.value;
+   shown=true;
+  }
+ });
+ if(shown&&typeof renderInputs==='function')renderInputs();
+}
 function row(label,value){return `<tr><td>${label}</td><td>${value}</td></tr>`}
 // Ступени надбавки по покрытию эскроу. Пусто — строк нет вовсе: у большинства
 // НКЛ ставка одна, и пустая таблица «ступеней» читалась бы как их отсутствие

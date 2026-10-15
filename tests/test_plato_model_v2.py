@@ -418,7 +418,7 @@ DRIVES = [
     ("parking_price_th", 1.3, "revenue"),
     ("share_before_rve_pct", 0.9, "financing_cost"),
     ("monthly_growth_pre_pct", 1.5, "revenue"),
-    ("monthly_growth_post_pct", 3.0, "revenue"),
+    ("inflation_after_rve_pct", 3.0, "revenue"),
     ("seasonal_reduction_pct", 2.0, "financing_cost"),
     ("pace_adjustment_pct", 2.0, "financing_cost"),
     ("residual_sales_months", 2.0, "revenue"),

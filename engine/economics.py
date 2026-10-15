@@ -113,7 +113,13 @@ def capex_unit_rows(capex: dict[str, float], bases: dict[str, float]) -> dict[st
 def calculate(req: CalcRequest) -> dict:
     # Решение о доходности капитала принимается один раз, на выходе расчёта:
     # у раннего выхода (наложение фактов) и у основного пути одно правило.
-    return _finalize_result(_calculate_economics(req))
+    # Проект, сохранённый до «одной вводной роста после РВЭ», переносится
+    # до расчёта; страница применяет перенос к своему состоянию.
+    migrations = migrate_growth_post(req.inputs)
+    result = _finalize_result(_calculate_economics(req))
+    if migrations and isinstance(result, dict):
+        result["input_migrations"] = migrations
+    return result
 
 
 def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -> dict[str, Any]:

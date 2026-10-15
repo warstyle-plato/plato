@@ -43,7 +43,9 @@ def _apartments(x):
 
 def test_the_default_is_one_percent_and_the_rest_stays():
     assert core.DEFAULT_INPUTS[KEY] == 1.0
-    assert core.DEFAULT_INPUTS["monthly_growth_post_pct"] == 0.25
+    # Рост после РВЭ — из годовой инфляции, отдельного месячного поля нет.
+    assert "monthly_growth_post_pct" not in core.DEFAULT_INPUTS
+    assert core.DEFAULT_INPUTS["inflation_after_rve_pct"] == 3
     # Объекты ОСЗ ведут свой рост и правкой квартир не задеты.
     for prefix, pre, post in (("offices", 1.5, 0.25), ("retail", 1.5, 0.25),
                               ("sports", 1.5, 0.25), ("above_parking", 0.75, 0.2)):
