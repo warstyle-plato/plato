@@ -183,7 +183,17 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # проекту льготы МПТ и передачи квартир), — без этой функции форма не
         # строится.
         page_function("vriReliefSourceNote"),
+        page_const("VRI_SHARE_FIELDS"),
         page_function("vriReliefFieldIdle"),
+        # Признак ВРИ — вид суммы платы, доли источников — с подписью
+        # нормировки: обе подписи форма пишет под своими полями.
+        "let vriFeeClearedMln=0;",
+        page_function("vriPaymentActive"),
+        page_function("vriRequiredNote"),
+        page_function("fieldOptionLabel"),
+        page_function("vriSharesNote"),
+        page_function("vriNoteNode"),
+        page_function("vriNoteFill"),
         # График вводится ячейками, и `renderInputs` рисует его своим
         # редактором: без него форма не строится вовсе. Берётся блок целиком —
         # перечисление функций поимённо ломается от каждой новой, и ломается
