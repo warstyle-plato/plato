@@ -318,7 +318,7 @@ PAGE += r"""</head>
         <div id="vriTabWarnings" class="note" style="display:none"></div>
       </div>
       <div class="card" id="vriTabEmpty">
-        <div class="note">Изменение ВРИ не требуется или сумма обязательства равна нулю — график не строится.</div>
+        <div class="note" id="vriTabEmptyNote">Изменение ВРИ не требуется или сумма обязательства равна нулю — график не строится.</div>
       </div>
     </div>
 

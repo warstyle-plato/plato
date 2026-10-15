@@ -180,11 +180,15 @@ def test_a_full_relief_keeps_the_result_block_on_the_page() -> None:
                "(nodes[id]=nodes[id]||{id,style:{display:'x'},innerHTML:'',textContent:''})};")
     tail = ("renderVri(%s);"
             "console.log(JSON.stringify({card:nodes.vriTabCard.style.display,"
-            "empty:nodes.vriTabEmpty.style.display,text:nodes.vriTabTotals.innerHTML}));"
+            "empty:nodes.vriTabEmpty.style.display,note:nodes.vriTabEmptyNote.textContent,"
+            "text:nodes.vriTabTotals.innerHTML}));"
             % json.dumps(vri))
     out, _ = page_blocks.run(prelude, tail)
     got = json.loads(out)
-    assert got["card"] == "" and got["empty"] == "none", got
+    # Итоги видны, а строка под ними говорит, что плату сняла льгота, а не
+    # «изменение не требуется» (владелец, 15.10.2026).
+    assert got["card"] == "" and got["empty"] == "", got
+    assert "снята льготой полностью" in got["note"] and "не требуется" not in got["note"], got
     assert "Обязательство до льготы" in got["text"] and "Льгота" in got["text"], got
 
 

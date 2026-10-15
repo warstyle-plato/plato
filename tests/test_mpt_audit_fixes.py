@@ -101,7 +101,11 @@ def test_validation_errors_stay_readable(client):
                            json={"category": "office", "district": "Ясенево", "area_sqm": -1,
                                  "ttk_position": "outside"})
     assert response.status_code == 400
-    assert "area_sqm" in response.json()["detail"]
+    # Подпись поля, как на панели, и причина по-русски — не имя из запроса
+    # и не английский текст pydantic.
+    detail = response.json()["detail"]
+    assert "Общая площадь МПТ" in detail and "больше 0" in detail
+    assert "area_sqm" not in detail and "Input should" not in detail
 
 
 def test_the_calculator_itself_refuses_non_numbers():
