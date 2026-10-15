@@ -348,8 +348,9 @@ def test_secondary_input_block_e_to_h_is_formatted_by_field_type():
             _entry_value_cell_for_key(entry, key)
     # «Инфляция после РВЭ» — живая вводная: из неё B65 выводит рост цены
     # после РВЭ (решение владельца, 15.10.2026), значит она на листе ввода.
+    # Процентная — и стиль у неё процентной вводной.
     assert entry[_entry_value_cell_for_key(entry, "inflation_after_rve_pct")].style_id == (
-        entry[left_number].style_id)
+        entry[_entry_value_cell_for_key(entry, "monthly_growth_pre_pct")].style_id)
 
     # Заголовки шаблона, растянутые по E:H («ОЧЕРЕДИ ПРОЕКТА», «ПРОГНОЗ
     # КЛЮЧЕВОЙ СТАВКИ»), стиля ввода не получают: их F-клетка не вводная.
