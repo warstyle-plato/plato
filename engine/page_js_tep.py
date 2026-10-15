@@ -115,7 +115,7 @@ function vriBenefitsHtml(b,basis){
   action='<div class="toolbar" style="margin-top:8px"><span style="font-size:12px;color:#777">Выбран отказ от льготы — посчитанная ('+
    n3(b.total_mln)+' млн ₽) в плату не входит.</span><button class="btn" onclick="useProjectVriBenefits()">Применить посчитанную</button></div>';
  }
- action=missing+override+action;
+ action=(typeof sitePositionNote==='function'?sitePositionNote():'')+missing+override+action;
  const notes=(b.notes||[]).length?'<div class="note">'+b.notes.map(x=>escapeHtml(x)).join('<br>')+'</div>':'';
  // Вписанное положение участка против разбора кадастра — красным над
  // таблицей: ошибочное «за ТТК» дало бы льготу, которой у участка нет.
@@ -154,6 +154,74 @@ function applyMptOverride(payload,place){
   address:String((place||{}).address||''),applied_at:new Date().toISOString()};
  renderInputs();refreshGroupPeeks();calculate();
 }
+// Доля и сумма ручной льготы читаются только в своём режиме: ответ — почему
+// поле сейчас не читается, или пусто. Один ответ и для замка поля, и для его
+// подписи.
+function vriReliefFieldIdle(id){
+ const need={vri_relief_pct:'percent',vri_relief_mln:'amount'}[id];
+ if(!need)return '';
+ const mode=String(inputs.vri_relief_mode||'none');
+ if(mode===need)return '';
+ const said={none:'нет ручной — действует льгота, посчитанная по проекту',off:'не применять льготу',
+  percent:'доля от суммы',amount:'фиксированная сумма'}[mode]||mode;
+ return 'Не читается: «Льгота по плате» — '+said+'.';
+}
+
+// Район и ТТК для льготы за МПТ — из участка проекта, без ручного выбора.
+// Проект из пресета или сохранённый без разбора кадастра несёт номера
+// участков (поле участка, выписка ЕГРН), но не разбор ГлавАПУ, а район и
+// признак ТТК даёт только он. Тогда разбор запрашивается сам — один раз на
+// набор номеров — и ложится в `_cadastral_analysis`, того же владельца
+// (`site_position`), что после кнопки анализа. ТЭП и площадь он не трогает.
+let sitePositionRun={key:'',state:'',error:'',count:0};
+function sitePositionNumbers(){
+ const out=new Set(projectCadastral().map(String));
+ ((inputs._land_lookup||{}).results||[]).forEach(r=>{
+  const num=String((r||{}).cadastral_number||'');
+  if(r&&r.found!==false&&CADASTRAL_NUMBER_RE.test(num))out.add(num);
+ });
+ return Array.from(out).filter(x=>CADASTRAL_NUMBER_RE.test(x)).slice(0,30);
+}
+function sitePositionWanted(b,basis){
+ if(!b||!b.mpt_reason||b.override||basis!=='project_benefits')return false;
+ if(String(inputs.vri_region||'msk')!=='msk')return false;
+ const facts=projectParcelFacts();
+ const hand=String(inputs.parking_district||'').trim()&&String(inputs.parking_inside_ttk||'').trim();
+ return !hand&&!(facts&&facts.district&&facts.ttk);
+}
+async function resolveSitePosition(){
+ const numbers=sitePositionNumbers();
+ if(!numbers.length)return;
+ const key=numbers.join(',');
+ if(sitePositionRun.key===key)return;
+ sitePositionRun={key:key,state:'running',error:'',count:numbers.length};
+ try{
+  const response=await fetch('/cadastral/analyze',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({cadastral_numbers:numbers.join(', ')})});
+  const raw=await response.text();
+  let data={};try{data=raw?JSON.parse(raw):{}}catch(e){}
+  if(!response.ok)throw new Error('разбор кадастра ответил '+response.status+(data.detail?': '+data.detail:''));
+  // Пока шёл запрос, открыли другой проект — ответ не его.
+  if(sitePositionNumbers().join(',')!==key)return;
+  if(!(data.recognized||[]).length)throw new Error('разбор кадастра не распознал номера участка');
+  cadastralAnalysis=data;
+  inputs._cadastral_analysis=cloneValue(data);
+  const t=data.territory||{};
+  sitePositionRun.state=(t.district&&(t.inside_ttc===true||t.inside_ttc_known===true))?'done':'partial';
+  if(typeof renderCadastralPreview==='function')try{renderCadastralPreview(data)}catch(e){}
+ }catch(e){
+  sitePositionRun.state='error';
+  sitePositionRun.error=String((e&&e.message)||e);
+ }
+ calculate();
+}
+function sitePositionNote(){
+ const r=sitePositionRun;
+ if(r.state==='running')return '<div class="note vri-site-position" style="color:#555">Определяю район и положение относительно ТТК по участку проекта (разбор кадастра, номеров: '+r.count+')…</div>';
+ if(r.state==='error')return '<div class="note vri-site-position" style="color:#b3261e">Район и ТТК по участку определить не удалось: '+escapeHtml(r.error)+
+  '. Выберите «Район участка» и «Положение относительно ТТК» в карточке «Участок» или повторите разбор кадастра.</div>';
+ return '';
+}
 function vriReliefSourceNote(){
  const src=inputs._vri_relief_source;
  if(!src)return '';
@@ -161,7 +229,11 @@ function vriReliefSourceNote(){
  return '<div style="font-size:11px;color:#777;margin-top:4px">Сумма: '+escapeHtml(src.by||'')+'</div>';
 }
 function renderVri(vri){
- renderVriBenefits(vri&&vri.benefits,((vri&&vri.totals)||{}).relief_basis);
+ const reliefBasis=((vri&&vri.totals)||{}).relief_basis;
+ // Не хватает района или ТТК, а номера участка есть — спросить разбор
+ // кадастра самим, а не ждать ручного выбора.
+ if(sitePositionWanted(vri&&vri.benefits,reliefBasis))resolveSitePosition();
+ renderVriBenefits(vri&&vri.benefits,reliefBasis);
  renderKrtVriFooter();
  if(typeof window.mptOverrideChanged==='function')window.mptOverrideChanged();
  const REGION={msk:'Москва',mo:'Московская область'};
