@@ -728,6 +728,8 @@ function renderOpenedProjectButton(){
 function forgetTerritoryState(){
  cadastralAnalysis=null;landLookup=null;landScreeningLast=null;LAND_MAP=null;
  glavapuImport=null;moResult=null;
+ // Запрос района и ТТК по участку — тоже про участок: новый проект спрашивает свой.
+ sitePositionRun={key:'',state:'',error:'',count:0};
  // Отложенный пересчёт ТЭП — тоже про участок: доживи он до нового проекта, и
  // ТЭП пересчитается по выгрузке удалённого. Снимается вместе с остальным.
  clearTimeout(tepAutoTimer);tepAutoTimer=null;moAutoApartments=null;moAutoBusy=false;
