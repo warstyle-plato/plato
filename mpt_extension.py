@@ -36,6 +36,59 @@ def _strict_json(raw: bytes) -> Any:
         raise MptCalculationError(f"Тело запроса не разобралось как JSON: {exc}") from exc
 
 
+# Подписи полей — те же, что у полей панели: человек видит их, а не имена
+# из запроса.
+FIELD_LABELS = {
+    "category": "Тип МПТ",
+    "district": "Район Москвы",
+    "cadastral_number": "Кадастровый номер участка или квартал",
+    "area_sqm": "Общая площадь МПТ, м²",
+    "mode": "Сценарий",
+    "ttk_position": "Положение относительно ТТК",
+    "parking_sqm": "Парковки, м²",
+    "garages_sqm": "Гаражи, м²",
+    "warehouse_inside_sqm": "Склад внутри здания, м²",
+    "warehouse_yard_sqm": "Открытая складская площадка, м²",
+    "hotel_rooms_sqm": "Номерной фонд, м²",
+    "area_business_sqm": "Площадь по графе 3, м²",
+    "area_social_sqm": "Площадь по графе 4, м²",
+    "kzatr": "Кзатр",
+    "kzatr_quarter": "Квартал, к которому относится Кзатр",
+    "kzatr_fixed_by_agreement": "Соглашение до приказа от 10.03.2026",
+    "ons_readiness_pct": "Готовность ОНС, %",
+    "ons_registered_before_2019_11_01": "Право зарегистрировано не позднее 01.11.2019",
+    "existing_area_sqm": "Существующая (сносимая) площадь МПТ, м²",
+    "kterm": "Ксрок",
+}
+
+
+def _limit(value: Any) -> str:
+    return f"{value:g}".replace(".", ",") if isinstance(value, (int, float)) else str(value)
+
+
+def _error_text(error: dict[str, Any]) -> str:
+    """Причина по-русски по типу ошибки pydantic, а не его английский текст."""
+    kind = str(error.get("type") or "")
+    ctx = error.get("ctx") or {}
+    if kind == "missing":
+        return "не заполнено"
+    if kind == "greater_than":
+        return "должно быть больше " + _limit(ctx.get("gt", 0))
+    if kind == "greater_than_equal":
+        return "не может быть меньше " + _limit(ctx.get("ge", 0))
+    if kind == "less_than":
+        return "должно быть меньше " + _limit(ctx.get("lt", 0))
+    if kind == "less_than_equal":
+        return "не может быть больше " + _limit(ctx.get("le", 0))
+    if kind.startswith(("float", "int", "finite")):
+        return "нужно число"
+    if kind.startswith("bool"):
+        return "нужно «да» или «нет»"
+    if kind.startswith("string"):
+        return "нужен текст"
+    return "некорректное значение"
+
+
 def _first_error(exc: ValidationError) -> str:
     """Читаемая причина вместо списка словарей — её увидит человек в панели."""
     errors = exc.errors()
@@ -43,8 +96,9 @@ def _first_error(exc: ValidationError) -> str:
         return "Запрос не прошёл проверку."
     first = errors[0]
     field = ".".join(str(part) for part in first.get("loc", ()) if part != "body")
-    return f"Поле «{field}»: {first.get('msg', 'некорректное значение')}" if field else str(
-        first.get("msg", "некорректное значение"))
+    label = FIELD_LABELS.get(field) or ("Поле запроса" if field else "")
+    reason = _error_text(first)
+    return f"«{label}»: {reason}." if label else f"Запрос не прошёл проверку: {reason}."
 
 _INSTALLED = False
 _MENU_TEXT = "🏗 Льгота МПТ — Москва"
@@ -178,6 +232,7 @@ _MPT_FRAGMENT = r'''
 #mpt-benefit-panel input,#mpt-benefit-panel select{width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid rgba(127,127,127,.32);border-radius:9px;background:transparent;color:inherit;font:inherit}
 #mpt-benefit-panel .mpt-wide{grid-column:1/-1}
 #mpt-benefit-panel .mpt-hidden{display:none!important}
+#mpt-benefit-panel .mpt-invalid{border-color:#b3261e!important;box-shadow:0 0 0 1px #b3261e}
 #mpt-benefit-panel button{margin-top:12px;padding:10px 14px;border:0;border-radius:9px;background:#6f64e8;color:#fff;font-weight:700;cursor:pointer}
 #mpt-benefit-panel .mpt-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
 #mpt-benefit-panel .mpt-kpi{padding:10px;border:1px solid rgba(127,127,127,.22);border-radius:10px}
@@ -191,6 +246,7 @@ _MPT_FRAGMENT = r'''
     <summary><span>Льгота МПТ — Москва</span><small style="opacity:.62;font-weight:500">1874-ПП</small></summary>
     <div class="mpt-body">
       <p class="mpt-note">Льгота за МПТ по участку проекта считается сама и уже входит в плату за ВРИ (таблица «Льготы по плате за ВРИ» выше). Здесь — расчёт по ДРУГОМУ участку: «Рассчитать льготу» только показывает её, «Рассчитать и применить к плате за ВРИ» передаёт её в расчёт проекта вместо посчитанной по участку проекта.</p>
+      <p id="mpt-project-relief" class="mpt-note mpt-hidden" style="font-weight:600;opacity:.9"></p>
       <div id="mpt-applied" class="mpt-warnings mpt-hidden" aria-live="polite"></div>
       <div class="mpt-grid">
         <div><label for="mpt-category">Тип МПТ</label><select id="mpt-category"></select></div>
@@ -411,6 +467,21 @@ _MPT_FRAGMENT = r'''
     q('mpt-district').innerHTML='<option value="">— выберите район —</option>'+(meta.districts||[]).map(x=>`<option value="${x}">${x}</option>`).join('');
     applyParcel();
   }
+  // Проверка до отправки: пустая или нулевая площадь — подсветка поля и
+  // понятный текст, а не ответ сервера с именем поля.
+  function checkPayload(payload){
+    const problems=[], area=q('mpt-area'), district=q('mpt-district');
+    [area,district].forEach(el=>el&&el.classList.remove('mpt-invalid'));
+    if(!(payload.area_sqm>0)){
+      area&&area.classList.add('mpt-invalid');
+      problems.push('Укажите «'+q('mpt-area-label').textContent.replace(/, м²$/,'')+'» — площадь должна быть больше нуля.');
+    }
+    if(!payload.district){
+      district&&district.classList.add('mpt-invalid');
+      problems.push('Выберите район Москвы.');
+    }
+    return problems;
+  }
   function payloadOf(){
     return {
       category:q('mpt-category').value,
@@ -438,7 +509,20 @@ _MPT_FRAGMENT = r'''
   }
   // Применённая к проекту льгота — из вводных проекта и ответа движка
   // (`vri.benefits.override`): что применено, откуда, и кнопка «Снять».
+  // Посчитанная по участку проекта льгота перекрыта ручной — одна строка,
+  // где её применить. Сумму даёт та же функция страницы, что кнопке у поля.
+  function showProjectRelief(){
+    const line=q('mpt-project-relief');
+    if(!line) return;
+    let offer=null;
+    try{offer=typeof vriProjectReliefOffer==='function'
+      ?vriProjectReliefOffer(((typeof lastResult==='object'&&lastResult)||{}).vri):null;}catch(_e){}
+    line.textContent=offer?'Льгота по участку проекта уже посчитана: '+offer.text
+      +' — применить её можно кнопкой у «Льгота по плате».':'';
+    line.classList.toggle('mpt-hidden',!offer);
+  }
   function showApplied(){
+    showProjectRelief();
     const box=q('mpt-applied');
     if(!box) return;
     const saved=(typeof inputs==='object'&&inputs)?inputs.vri_mpt_override:null;
@@ -475,6 +559,13 @@ _MPT_FRAGMENT = r'''
     const result=q('mpt-result'), warnings=q('mpt-warnings');
     warnings.textContent='Считаю…'; result.classList.remove('mpt-hidden');
     const payload=given&&given.category!==undefined?given:payloadOf();
+    const problems=checkPayload(payload);
+    if(problems.length){
+      q('mpt-benefit').textContent='—';q('mpt-eligible').textContent='—';q('mpt-kmest').textContent='—';
+      q('mpt-formula').textContent='';q('mpt-blockers').classList.add('mpt-hidden');
+      warnings.textContent=problems.join('\n');
+      return null;
+    }
     try{
       const r=await fetch('/api/mpt/calculate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)});
       const data=await r.json();
@@ -497,6 +588,10 @@ _MPT_FRAGMENT = r'''
   function wire(){
     ['mpt-category','mpt-mode','mpt-district','mpt-ttk'].forEach(id=>q(id)?.addEventListener('change',sync));
     q('mpt-existing')?.addEventListener('input',sync);
+    ['mpt-area','mpt-district'].forEach(id=>{
+      const clear=()=>q(id).classList.remove('mpt-invalid');
+      q(id)?.addEventListener('input',clear); q(id)?.addEventListener('change',clear);
+    });
     watchParcel();
     q('mpt-calc')?.addEventListener('click',()=>calculate());
     q('mpt-apply')?.addEventListener('click',apply);
