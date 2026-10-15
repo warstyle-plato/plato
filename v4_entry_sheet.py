@@ -175,22 +175,6 @@ def xf_with_format(styles: str, xf_id: int, fmt_id: int) -> tuple[str, int]:
     return styles[:block.start()] + new_block + styles[block.end():], len(items) - 1
 
 
-def xf_without_wrap(styles: str, xf_id: int) -> tuple[str, int]:
-    """Тот же стиль, но без переноса текста: пометка не должна раздувать строку."""
-    block, items = _xf_items(styles)
-    base = items[xf_id]
-    if 'wrapText="1"' not in base:
-        return styles, xf_id
-    clone = base.replace('wrapText="1"', 'wrapText="0"', 1)
-    squeeze = lambda s: re.sub(r"\s+", "", s)  # noqa: E731
-    for index, item in enumerate(items):
-        if squeeze(item) == squeeze(clone):
-            return styles, index
-    items.append(clone)
-    new_block = f'<x:cellXfs count="{len(items)}">{"".join(items)}</x:cellXfs>'
-    return styles[:block.start()] + new_block + styles[block.end():], len(items) - 1
-
-
 def shared_strings(xml: str) -> list[str]:
     out: list[str] = []
     for item in re.findall(r"<x:si>(.*?)</x:si>", xml, re.S):
@@ -617,9 +601,9 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
     rows, smap = made["rows"], made["styles"]
     entry_styles, formula_style = smap["entry"], smap["formula"]
     chrome = chrome_styles(sheet, styles)
-    hint_style = chrome["note"]
-    if hint_style is not None:
-        styles, hint_style = xf_without_wrap(styles, hint_style)
+    # Пометка расчёта — стилем подписи шаблона: у пояснения (A2) перенос, и
+    # строка с пометкой раздувалась бы; свой стиль книга не выдумывает.
+    hint_style = chrome["label"]
     AUTHORED.clear()
     moved: dict[str, str] = {}
     moved_rows: dict[int, int] = {}
