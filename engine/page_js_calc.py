@@ -277,6 +277,12 @@ async function calculate(){
     // участие в расчёте, а не решение человека, и записанные они стёрли бы
     // набранное, которое вернётся с жилым типом.
     lastResult.tep.rows.forEach(r=>{if(!tep[r.key]||r.excluded)return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
+    // Гостевые места — производное движка; в сохранённом проекте жило чужое
+    // число (109 гостевых на 29 местах), и оно переезжало дальше с каждым
+    // сохранением. Пишется назад число движка; о замене говорит подпись
+    // результата (`guest_units_stale`).
+    lastResult.tep.rows.forEach(r=>{if(r.key!=='underground_parking'||!tep[r.key]||r.excluded)return;
+     if(r.guest_units!=null)tep[r.key].guest_units=Number(r.guest_units)})
    }
  }
  // Перенос устаревших вводных решает движок (`migrate_growth_post`), а

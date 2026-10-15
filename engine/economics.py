@@ -208,6 +208,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
         # считала объём продаж от всех мест и продавала гостевые вместе с
         # остальными — выручка расходилась с движком на их стоимость.
         guest = float(underground_guest_spaces(row)) if key == "underground_parking" else 0.0
+        stale_guests = (row.get("guest_units_stale") if row.get("guest_units_stale") is not None
+                        else underground_stale_guests(row))
         given = transferred_units(row)
         units = n(row, "units")
         tep_rows.append({
@@ -220,6 +222,10 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "transfer": n(row, "transfer"),
             "units": units,
             "guest_units": guest,
+            # Гостевые из сохранённого проекта, которых было больше, чем мест:
+            # отброшены, гостевые выведены из норматива (`underground_guest_spaces`).
+            **({"guest_units_stale": stale_guests}
+               if key == "underground_parking" and stale_guests is not None else {}),
             # Переданные штуки строятся и стоят денег, но не продаются — как
             # гостевые места. Число едет строкой ТЭП, а не выводится каждой
             # поверхностью заново.

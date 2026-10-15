@@ -3,7 +3,8 @@
 Число гостевых в строке ТЭП может быть чужим: умолчания шаблона несут 109
 гостевых из 1 199 мест, и на гараже в 69 мест строка говорила «109 гостевых».
 Правило Москвы для ручных мест остаётся S/11 (решение владельца 06.10.2026);
-здесь — только то, что такое число не переживает своего гаража, и что книга
+здесь — только то, что такое число не переживает своего гаража (оно
+отбрасывается, и гостевые выводятся из норматива), и что книга
 без ответа движка выводит строку той же функцией, что движок.
 """
 
@@ -12,10 +13,13 @@ from __future__ import annotations
 import main_legacy as core
 
 
-def test_a_foreign_guest_count_is_capped_by_the_garage() -> None:
+def test_a_foreign_guest_count_falls_back_to_the_norm() -> None:
+    # Обрезка до числа мест делала гостевыми все места и обнуляла продажи
+    # (владелец, 15.10.2026: «Донской», 109 гостевых на 29 местах, в PDF
+    # мест к продаже 0). Чужое число отбрасывается — гостевые по S/11.
     row = {"units": 69, "guest_units": 109}
-    assert core.underground_guest_spaces(row) == 69
-    assert core.underground_saleable_spaces(row) == 0.0
+    assert core.underground_guest_spaces(row) == 6
+    assert core.underground_saleable_spaces(row) == 63.0
 
 
 def test_a_sane_guest_count_and_the_moscow_eleventh_are_untouched() -> None:

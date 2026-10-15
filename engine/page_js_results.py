@@ -719,9 +719,13 @@ PAGE += r"""function renderResult(){
   const parts=[];
   if(Number(x.guest_units||0)>0)parts.push('гостевых '+num(x.guest_units));
   if(Number(x.transfer_units||0)>0)parts.push('передано '+num(x.transfer_units));
-  return parts.length
+  // Чужое число гостевых из сохранённого проекта — подписью, а не молча.
+  const stale=x.guest_units_stale!=null
+   ?`<span class="guest-stale" style="display:block;font-size:10px;color:#a15c00">исправлено при загрузке: было ${num(x.guest_units_stale)} гостевых при ${num(x.units)} местах — гостевые по нормативу</span>`
+   :'';
+  return (parts.length
    ? `<span style="display:block;font-size:10px;color:#777">из них ${parts.join(' · ')}</span>`
-   : '';
+   : '')+stale;
  };
  // Итога штук одним числом больше нет: квартиры, машино-места и места ДОО
  // складывались в 2 811 «штук», не значащих ничего. Ответ — разбор по мере.
