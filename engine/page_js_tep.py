@@ -152,6 +152,9 @@ function clearMptOverride(){
 function applyMptOverride(payload,place){
  inputs.vri_mpt_override={payload:payload,cadastral:String((place||{}).cadastral||''),
   address:String((place||{}).address||''),applied_at:new Date().toISOString()};
+ // Происхождение площадей калькулятора: взятые из ТЭП движок пересчитывает
+ // с ТЭП, поправленные руками — оставляет.
+ if((place||{}).origin)inputs.vri_mpt_override.origin={...place.origin};
  renderInputs();refreshGroupPeeks();calculate();
 }
 // Доля и сумма ручной льготы читаются только в своём режиме: ответ — почему
@@ -228,6 +231,18 @@ function vriReliefSourceNote(){
  if(!src||inputs.vri_relief_mode!=='amount'||Math.abs(Number(inputs.vri_relief_mln||0)-Number(src.value||0))>0.0005)return '';
  return '<div style="font-size:11px;color:#777;margin-top:4px">Сумма: '+escapeHtml(src.by||'')+'</div>';
 }
+// Почему графика ВРИ нет — названной причиной: «не требуется или ноль»
+// читалось и как «льгота съела плату», и как «плата потерялась». Льгота
+// больше платы сюда не попадает: тогда блок с «до льготы − льгота = 0» виден.
+function vriEmptyReason(vri){
+ const t=(vri&&vri.totals)||{}, s=(vri&&vri.settings)||{};
+ const tail=' — график не строится.';
+ if(!vri)return 'Расчёт ВРИ ещё не выполнен'+tail;
+ if(s.required===false&&!(Number(t.gross||0)>0))return 'Изменение ВРИ в проекте не требуется (снят признак «Требуется изменение ВРИ»)'+tail;
+ if(!(Number(t.gross||0)>0))return 'Плата за изменение ВРИ в проекте равна нулю: сумма платы не задана и не посчитана'+tail+
+  ' Льгота за МПТ тут ни при чём — уменьшать нечего.';
+ return 'Сумма обязательства по ВРИ равна нулю'+tail;
+}
 function renderVri(vri){
  const reliefBasis=((vri&&vri.totals)||{}).relief_basis;
  // Не хватает района или ТТК, а номера участка есть — спросить разбор
@@ -267,6 +282,8 @@ function renderVri(vri){
  if(!tab)return;
  tab.style.display=enabled?'':'none';
  if(empty)empty.style.display=enabled?'none':'';
+ const emptyNote=document.getElementById('vriTabEmptyNote');
+ if(emptyNote&&!enabled)emptyNote.textContent=vriEmptyReason(vri);
  if(!enabled)return;
  document.getElementById('vriTabTotals').innerHTML=vriTotalsRows(t,(lastResult||{}).summary);
  document.getElementById('vriTabSchedule').innerHTML=vriScheduleRows(vri.rows);

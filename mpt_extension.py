@@ -36,15 +36,70 @@ def _strict_json(raw: bytes) -> Any:
         raise MptCalculationError(f"Тело запроса не разобралось как JSON: {exc}") from exc
 
 
+# Подписи полей — те же, что у полей панели: человек видит их, а не имена
+# из запроса.
+FIELD_LABELS = {
+    "category": "Тип МПТ",
+    "district": "Район Москвы",
+    "cadastral_number": "Кадастровый номер участка или квартал",
+    "area_sqm": "Общая площадь МПТ, м²",
+    "mode": "Сценарий",
+    "ttk_position": "Положение относительно ТТК",
+    "parking_sqm": "Парковки, м²",
+    "garages_sqm": "Гаражи, м²",
+    "warehouse_inside_sqm": "Склад внутри здания, м²",
+    "warehouse_yard_sqm": "Открытая складская площадка, м²",
+    "hotel_rooms_sqm": "Номерной фонд, м²",
+    "area_business_sqm": "Площадь по графе 3, м²",
+    "area_social_sqm": "Площадь по графе 4, м²",
+    "kzatr": "Кзатр",
+    "kzatr_quarter": "Квартал, к которому относится Кзатр",
+    "kzatr_fixed_by_agreement": "Соглашение до приказа от 10.03.2026",
+    "ons_readiness_pct": "Готовность ОНС, %",
+    "ons_registered_before_2019_11_01": "Право зарегистрировано не позднее 01.11.2019",
+    "existing_area_sqm": "Существующая (сносимая) площадь МПТ, м²",
+    "kterm": "Ксрок",
+}
+
+
+def _limit(value: Any) -> str:
+    return f"{value:g}".replace(".", ",") if isinstance(value, (int, float)) else str(value)
+
+
+def _error_text(error: dict[str, Any]) -> str:
+    """Причина по-русски по типу ошибки pydantic, а не её английский текст."""
+    kind = str(error.get("type") or "")
+    ctx = error.get("ctx") or {}
+    if kind == "missing":
+        return "не заполнено"
+    if kind == "greater_than":
+        return "должно быть больше " + _limit(ctx.get("gt", 0)) + ("" if ctx.get("gt", 0) else " — укажите площадь")
+    if kind == "greater_than_equal":
+        return "не может быть меньше " + _limit(ctx.get("ge", 0))
+    if kind == "less_than":
+        return "должно быть меньше " + _limit(ctx.get("lt", 0))
+    if kind == "less_than_equal":
+        return "не может быть больше " + _limit(ctx.get("le", 0))
+    if kind.startswith(("float", "int", "finite")):
+        return "нужно число"
+    if kind.startswith("bool"):
+        return "нужно «да» или «нет»"
+    if kind.startswith("string"):
+        return "нужен текст"
+    return "некорректное значение"
+
+
 def _first_error(exc: ValidationError) -> str:
     """Читаемая причина вместо списка словарей — её увидит человек в панели."""
     errors = exc.errors()
     if not errors:
         return "Запрос не прошёл проверку."
     first = errors[0]
-    field = ".".join(str(part) for part in first.get("loc", ()) if part != "body")
-    return f"Поле «{field}»: {first.get('msg', 'некорректное значение')}" if field else str(
-        first.get("msg", "некорректное значение"))
+    parts = [str(part) for part in first.get("loc", ()) if part != "body"]
+    field = ".".join(parts)
+    label = FIELD_LABELS.get(field) or ("Поле запроса" if field else "")
+    reason = _error_text(first)
+    return f"«{label}»: {reason}." if label else f"Запрос не прошёл проверку: {reason}."
 
 _INSTALLED = False
 _MENU_TEXT = "🏗 Льгота МПТ — Москва"
@@ -178,6 +233,7 @@ _MPT_FRAGMENT = r'''
 #mpt-benefit-panel input,#mpt-benefit-panel select{width:100%;box-sizing:border-box;padding:9px 10px;border:1px solid rgba(127,127,127,.32);border-radius:9px;background:transparent;color:inherit;font:inherit}
 #mpt-benefit-panel .mpt-wide{grid-column:1/-1}
 #mpt-benefit-panel .mpt-hidden{display:none!important}
+#mpt-benefit-panel .mpt-invalid{border-color:#b3261e!important;box-shadow:0 0 0 1px #b3261e}
 #mpt-benefit-panel button{margin-top:12px;padding:10px 14px;border:0;border-radius:9px;background:#6f64e8;color:#fff;font-weight:700;cursor:pointer}
 #mpt-benefit-panel .mpt-kpis{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:14px}
 #mpt-benefit-panel .mpt-kpi{padding:10px;border:1px solid rgba(127,127,127,.22);border-radius:10px}
@@ -193,14 +249,15 @@ _MPT_FRAGMENT = r'''
       <p class="mpt-note">Льгота за МПТ по участку проекта считается сама и уже входит в плату за ВРИ (таблица «Льготы по плате за ВРИ» выше). Здесь — расчёт по ДРУГОМУ участку: «Рассчитать льготу» только показывает её, «Рассчитать и применить к плате за ВРИ» передаёт её в расчёт проекта вместо посчитанной по участку проекта.</p>
       <div id="mpt-applied" class="mpt-warnings mpt-hidden" aria-live="polite"></div>
       <div class="mpt-grid">
-        <div><label for="mpt-category">Тип МПТ</label><select id="mpt-category"></select></div>
+        <div><label for="mpt-category">Тип МПТ <span id="mpt-category-origin" class="mpt-origin" style="opacity:.6"></span></label><select id="mpt-category"></select></div>
         <div><label for="mpt-mode">Сценарий</label><select id="mpt-mode"><option value="new">Новое строительство</option><option value="reconstruction">Реконструкция</option><option value="ons">ОНС</option></select></div>
         <div><label for="mpt-district">Район Москвы <span id="mpt-district-origin" class="mpt-origin" style="opacity:.6"></span></label><select id="mpt-district"><option value="">— выберите район —</option></select></div>
         <div id="mpt-ttk-wrap"><label for="mpt-ttk">Положение относительно ТТК <span style="opacity:.6">п. 1.2</span> <span id="mpt-ttk-origin" class="mpt-origin" style="opacity:.6"></span></label><select id="mpt-ttk"><option value="">— выберите —</option><option value="outside">За внешней границей ТТК</option><option value="inside">Внутри ТТК</option></select></div>
         <div id="mpt-cadastral-wrap" class="mpt-wide"><label for="mpt-cadastral">Кадастровый номер участка или квартал <span style="opacity:.6">таблица 2: для 99 кварталов Кмест 0,8</span> <span id="mpt-cadastral-origin" class="mpt-origin" style="opacity:.6"></span></label><input id="mpt-cadastral" type="text" placeholder="77:07:0012002:123"></div>
         <div class="mpt-wide"><label for="mpt-address">Адрес участка <span style="opacity:.6">для подписи применённой льготы</span></label><input id="mpt-address" type="text" placeholder="Москва, ул. …"></div>
         <p id="mpt-parcel-note" class="mpt-note mpt-wide" style="margin:0"></p>
-        <div><label id="mpt-area-label" for="mpt-area">Общая площадь МПТ, м²</label><input id="mpt-area" type="number" min="0" step="1" placeholder="10000"></div>
+        <p id="mpt-tep-note" class="mpt-note mpt-wide" style="margin:0"></p>
+        <div><label for="mpt-area"><span id="mpt-area-label">Общая площадь МПТ, м²</span> <span id="mpt-area-origin" class="mpt-origin" style="opacity:.6"></span></label><input id="mpt-area" type="number" min="0" step="1" placeholder="площадь из ТЭП проекта или вручную"></div>
         <div><label for="mpt-existing">Существующая (сносимая) площадь МПТ, м² <span style="opacity:.6">п. 1.14.1</span></label><input id="mpt-existing" type="number" min="0" step="1" value="0"></div>
         <div><label for="mpt-parking">Парковки, м²</label><input id="mpt-parking" type="number" min="0" step="1" value="0"></div>
         <div><label for="mpt-garages">Гаражи, м²</label><input id="mpt-garages" type="number" min="0" step="1" value="0"></div>
@@ -215,8 +272,8 @@ _MPT_FRAGMENT = r'''
         <div id="mpt-split-wrap" class="mpt-wide">
           <p class="mpt-note" style="margin:2px 0 8px">Если назначение сразу по нескольким ВРИ из граф 2 и 3, укажите площади: коэффициенты применяются пропорционально (примечание к таблице приложения 3), а минимальная площадь поднимается до 5 000 м² (п. 3.1.3). Пустые поля — весь объект идёт по графе выбранного типа.</p>
           <div class="mpt-grid">
-            <div><label for="mpt-area-business">Площадь по графе 3 (деловое управление, наука, торговля), м²</label><input id="mpt-area-business" type="number" min="0" step="1" value="0"></div>
-            <div><label for="mpt-area-social">Площадь по графе 4 (социальное и бытовое обслуживание), м²</label><input id="mpt-area-social" type="number" min="0" step="1" value="0"></div>
+            <div><label for="mpt-area-business">Площадь по графе 3 (деловое управление, наука, торговля), м² <span id="mpt-area-business-origin" class="mpt-origin" style="opacity:.6"></span></label><input id="mpt-area-business" type="number" min="0" step="1" value="0"></div>
+            <div><label for="mpt-area-social">Площадь по графе 4 (социальное и бытовое обслуживание; ДОО и СОШ — графа 7 с тем же Кмест), м² <span id="mpt-area-social-origin" class="mpt-origin" style="opacity:.6"></span></label><input id="mpt-area-social" type="number" min="0" step="1" value="0"></div>
           </div>
         </div>
         <div id="mpt-ons-wrap" class="mpt-wide mpt-hidden">
@@ -286,8 +343,93 @@ _MPT_FRAGMENT = r'''
     else note='Из участка проекта '+(label||'(номер не распознан)')+'.'+(missing.length?' Не определено: '+missing.join('; ')+' — укажите вручную.':'');
     return {values,origin:next,note,label};
   }
+  // Льгота проекта, посчитанная движком (`vri.benefits`): её же площади и
+  // участок подставляются в калькулятор — второго расчёта на странице нет.
+  function projectBenefits(){
+    try{return (((typeof lastResult==='object'&&lastResult)||{}).vri||{}).benefits||null;}catch(_e){return null;}
+  }
+  // Район и ТТК — у того же владельца, что автоматическая льгота
+  // (`site_position` в `vri.benefits.calculator`); до первого расчёта —
+  // разбор кадастра страницы.
+  function siteFacts(prefill){
+    if(!prefill||!(prefill.district||prefill.ttk_position)) return null;
+    const missing=[];
+    if(!prefill.district) missing.push('район участка');
+    if(!prefill.ttk_position) missing.push('положение относительно ТТК');
+    return {cadastral:prefill.cadastral||'',quarter:prefill.quarter||'',district:prefill.district,
+      ttk:prefill.ttk_position,missing,source:'участок проекта'};
+  }
   function readParcelFacts(){
+    const own=siteFacts((projectBenefits()||{}).calculator);
+    if(own) return own;
     try{return typeof projectParcelFacts==='function'?projectParcelFacts():null;}catch(_e){return null;}
+  }
+  // Площади и категория из ТЭП проекта: 'tep' — подставлено из ТЭП, 'manual' —
+  // поправлено человеком. Ручное не затирается, остальное следует за ТЭП.
+  const tepOrigin={category:'',area_sqm:'',area_business_sqm:'',area_social_sqm:''};
+  const TEP_FIELDS={category:'mpt-category',area_sqm:'mpt-area',area_business_sqm:'mpt-area-business',area_social_sqm:'mpt-area-social'};
+  const TEP_EMPTY={category:'',area_sqm:'',area_business_sqm:'0',area_social_sqm:'0'};
+  // Чистая функция: подстановка движка (`vri.benefits.calculator` или null),
+  // текущие значения полей и их происхождение.
+  function tepPlan(prefill,benefits,current,origin){
+    const values={...current}, next={...origin};
+    const wanted=(prefill&&prefill.values)||{};
+    const have=Object.keys(wanted).length>0;
+    // Общая площадь введена руками — деление ТЭП между графами к ней уже не
+    // относится: сумма граф разошлась бы с площадью, и расчёт отказал бы.
+    const ownArea=next.area_sqm==='manual'&&String(values.area_sqm??'')!=='';
+    for(const key of Object.keys(TEP_FIELDS)){
+      if(next[key]==='manual'&&String(values[key]??'')!=='') continue;
+      if(ownArea&&(key==='area_business_sqm'||key==='area_social_sqm')){
+        values[key]=TEP_EMPTY[key]; next[key]=''; continue;
+      }
+      if(have&&wanted[key]!==undefined&&wanted[key]!==''){
+        values[key]=String(wanted[key]); next[key]='tep';
+      }else if(next[key]==='tep'||next[key]==='manual'){
+        values[key]=key==='category'?values[key]:TEP_EMPTY[key]; next[key]='';
+      }
+    }
+    let note;
+    if(have){
+      note='Площади '+prefill.text+'.';
+      const skipped=(prefill.skipped||[]).map(x=>x.label+' — '+x.reason);
+      if(skipped.length) note+=' Не входят: '+skipped.join('; ')+'.';
+      if(Object.values(next).includes('manual')) note+=' Поля с пометкой «введено вручную» ТЭП не меняет.';
+    }else if(benefits&&benefits.applicable===false){
+      note='Площади из ТЭП не подставлены: '+(benefits.reason||'льгота 1874-ПП только для Москвы')+'.';
+    }else if(benefits){
+      note='В ТЭП проекта нет объектов, дающих льготу за МПТ (офисы, ТЦ/коммерция ОСЗ, ДОО, СОШ) — площадь вводится вручную.';
+    }else{
+      note='ТЭП проекта ещё не посчитан — площади подставятся после расчёта, или введите их вручную.';
+    }
+    return {values,origin:next,note};
+  }
+  function tepTag(key){
+    const tag=q(TEP_FIELDS[key]+'-origin');
+    if(tag) tag.textContent=tepOrigin[key]==='tep'?'из ТЭП проекта':tepOrigin[key]==='manual'?'введено вручную':'';
+  }
+  function applyTep(){
+    if(!meta||!q('mpt-area')) return;
+    const benefits=projectBenefits();
+    const current={};
+    for(const [key,id] of Object.entries(TEP_FIELDS)) current[key]=q(id).value;
+    const plan=tepPlan((benefits||{}).calculator||null,benefits,current,tepOrigin);
+    for(const [key,id] of Object.entries(TEP_FIELDS)){
+      if(key==='category'&&plan.values.category&&![...q(id).options].some(o=>o.value===plan.values.category)) continue;
+      q(id).value=plan.values[key];
+      tepOrigin[key]=plan.origin[key];
+      tepTag(key);
+    }
+    q('mpt-tep-note').textContent=plan.note;
+    sync();
+  }
+  function watchTep(){
+    for(const [key,id] of Object.entries(TEP_FIELDS)){
+      const mark=()=>{tepOrigin[key]='manual';tepTag(key);q(id).classList.remove('mpt-invalid');};
+      q(id)?.addEventListener('input',mark);
+      if(key==='category') q(id)?.addEventListener('change',mark);
+      if(key==='area_sqm') q(id)?.addEventListener('change',applyTep);
+    }
   }
   function applyParcel(){
     if(!meta||!q('mpt-cadastral')) return;
@@ -321,7 +463,7 @@ _MPT_FRAGMENT = r'''
       const observer=new MutationObserver(()=>applyParcel());
       targets.forEach(el=>observer.observe(el,{childList:true,subtree:true,characterData:true}));
     }
-    q('mpt-benefit-panel')?.addEventListener('toggle',applyParcel);
+    q('mpt-benefit-panel')?.addEventListener('toggle',()=>{applyParcel();applyTep();});
   }
 
   let host=null;
@@ -410,6 +552,21 @@ _MPT_FRAGMENT = r'''
     q('mpt-category').innerHTML=(meta.categories||[]).map(x=>`<option value="${x.value}">${x.label}</option>`).join('');
     q('mpt-district').innerHTML='<option value="">— выберите район —</option>'+(meta.districts||[]).map(x=>`<option value="${x}">${x}</option>`).join('');
     applyParcel();
+    applyTep();
+  }
+  // Проверка до отправки: пустая или нулевая площадь — подсветка поля и
+  // понятный текст, а не ответ сервера с именем поля.
+  function checkPayload(payload){
+    const problems=[];
+    const area=q('mpt-area');
+    if(!(payload.area_sqm>0)){
+      problems.push({el:area,text:'Укажите «'+q('mpt-area-label').textContent.replace(/, м²$/,'')+'» — площадь должна быть больше нуля. '
+        +'В проекте с офисами, ТЦ, ДОО или СОШ она подставляется из ТЭП после расчёта.'});
+    }
+    if(!payload.district) problems.push({el:q('mpt-district'),text:'Выберите район Москвы.'});
+    [area,q('mpt-district')].forEach(el=>el&&el.classList.remove('mpt-invalid'));
+    problems.forEach(p=>p.el&&p.el.classList.add('mpt-invalid'));
+    return problems.map(p=>p.text);
   }
   function payloadOf(){
     return {
@@ -450,6 +607,7 @@ _MPT_FRAGMENT = r'''
     const text=document.createElement('div');
     text.textContent='Применено к плате за ВРИ проекта: льгота за МПТ из калькулятора по участку '+where
       +(ov.benefit_mln!==undefined?' — '+rub(Number(ov.benefit_mln)*1e6):'')
+      +((ov.from_tep||[]).some(k=>k!=='category')?'. Площади — из ТЭП проекта, следуют за ним':'')
       +'. Заменяет посчитанную по участку проекта'
       +(b.auto_mpt_mln!==undefined?' ('+rub(Number(b.auto_mpt_mln)*1e6)+')':'')+'.'
       +(ov.error?' '+ov.error:'');
@@ -459,8 +617,11 @@ _MPT_FRAGMENT = r'''
     box.append(text,clear);
     box.classList.remove('mpt-hidden');
   }
-  window.mptOverrideChanged=showApplied;
+  // Страница зовёт это после каждого расчёта (`renderVri`): новые ТЭП и
+  // участок доходят до калькулятора без перезагрузки.
+  window.mptOverrideChanged=()=>{showApplied();applyParcel();applyTep();};
   async function apply(){
+    applyTep();
     const payload=payloadOf();
     const data=await calculate(payload);
     if(!data) return;
@@ -468,13 +629,22 @@ _MPT_FRAGMENT = r'''
       q('mpt-warnings').textContent='Страница проекта не найдена — применить льготу некуда.';
       return;
     }
-    applyMptOverride(payload,{cadastral:(q('mpt-cadastral').value||'').trim(),address:(q('mpt-address').value||'').trim()});
+    applyMptOverride(payload,{cadastral:(q('mpt-cadastral').value||'').trim(),address:(q('mpt-address').value||'').trim(),
+      origin:{...tepOrigin}});
     showApplied();
   }
   async function calculate(given){
     const result=q('mpt-result'), warnings=q('mpt-warnings');
     warnings.textContent='Считаю…'; result.classList.remove('mpt-hidden');
+    if(!(given&&given.category!==undefined)) applyTep();
     const payload=given&&given.category!==undefined?given:payloadOf();
+    const problems=checkPayload(payload);
+    if(problems.length){
+      q('mpt-benefit').textContent='—';q('mpt-eligible').textContent='—';q('mpt-kmest').textContent='—';
+      q('mpt-formula').textContent='';q('mpt-blockers').classList.add('mpt-hidden');
+      warnings.textContent=problems.join('\n');
+      return null;
+    }
     try{
       const r=await fetch('/api/mpt/calculate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)});
       const data=await r.json();
@@ -498,6 +668,7 @@ _MPT_FRAGMENT = r'''
     ['mpt-category','mpt-mode','mpt-district','mpt-ttk'].forEach(id=>q(id)?.addEventListener('change',sync));
     q('mpt-existing')?.addEventListener('input',sync);
     watchParcel();
+    watchTep();
     q('mpt-calc')?.addEventListener('click',()=>calculate());
     q('mpt-apply')?.addEventListener('click',apply);
     showApplied();

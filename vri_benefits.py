@@ -132,16 +132,88 @@ def _published_kzatr(quarter: str) -> tuple[float, str]:
     return mpt_calculator.KZATR_BASE, ""
 
 
-def _override(inputs: dict[str, Any], today: date) -> dict[str, Any] | None:
+# Калькулятор МПТ на странице берёт площади отсюда, а не считает их сам:
+# площадь объекта — та же `area_sqm` строки, что у автоматической льготы.
+# Калькулятор делит площадь только между графами 3 и 4 (примечание к таблице
+# приложения 3). ДОО и СОШ — графа 7 («образование»), но её Кмест и порог во
+# всех районах совпадают с графой 4 (сверяет тест), поэтому они идут в графу 4
+# без изменения суммы. Остальные графы в калькулятор не помещаются — они
+# названы в `skipped`, их льгота считается автоматически по объекту.
+CALCULATOR_GRAPH = {mpt_calculator.COLUMN_BUSINESS: "business",
+                    mpt_calculator.COLUMN_SOCIAL: "social",
+                    mpt_calculator.COLUMN_MEDEDU: "social"}
+CALCULATOR_FIELDS = ("category", "area_sqm", "area_business_sqm", "area_social_sqm")
+
+
+def calculator_prefill(rows: list[dict[str, Any]], place: dict[str, Any]) -> dict[str, Any]:
+    """Что подставить в калькулятор МПТ из ТЭП проекта: площади, категорию, участок."""
+    objects: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    parts = {"business": 0.0, "social": 0.0}
+    social_category = ""
+    for row in rows:
+        category = row.get("category")
+        graph = CALCULATOR_GRAPH.get(mpt_calculator.CATEGORY_COLUMN.get(str(category or ""), ""))
+        if not graph:
+            reason = ("встроенные помещения МКД в Sмпт не входят" if row.get("key") == BUILT_IN_KEY
+                      else "льгота за МПТ для этого объекта не предусмотрена" if category is None
+                      else "графа «" + row.get("category_label", "") + "» — калькулятор делит "
+                           "площадь только между графами 3 и 4; льгота объекта считается "
+                           "автоматически")
+            skipped.append({"key": str(row.get("key") or ""), "label": str(row.get("label") or ""),
+                            "reason": reason})
+            continue
+        area = _num(row.get("area_sqm"))
+        if area <= 0:
+            continue
+        parts[graph] += area
+        if graph == "social" and not social_category:
+            social_category = str(category)
+        objects.append({"key": str(row.get("key") or ""), "label": str(row.get("label") or ""),
+                        "area_sqm": round(area, 1), "area_origin": str(row.get("area_origin") or ""),
+                        "graph": 3 if graph == "business" else 4})
+    business, social = round(parts["business"], 1), round(parts["social"], 1)
+    total = round(business + social, 1)
+    if business > 0:
+        values = {"category": "office", "area_sqm": total,
+                  "area_business_sqm": business, "area_social_sqm": social}
+    elif social > 0:
+        # Одна графа — делить нечего: категория объекта, площадь целиком.
+        values = {"category": social_category, "area_sqm": total,
+                  "area_business_sqm": 0.0, "area_social_sqm": 0.0}
+    else:
+        values = {}
+    inside = place.get("inside_ttc")
+    text = "; ".join(f"{item['label']} — {_sqm(item['area_sqm'])} м² ({item['area_origin']}, "
+                     f"графа {item['graph']})" for item in objects)
+    return {"values": values, "objects": objects, "skipped": skipped,
+            "text": ("из ТЭП проекта: " + text) if objects else "",
+            "district": str(place.get("district") or ""),
+            "ttk_position": "" if inside is None else ("inside" if inside else "outside"),
+            "cadastral": str(place.get("cadastral") or ""),
+            "quarter": str(place.get("quarter") or "")}
+
+
+def _override(inputs: dict[str, Any], today: date,
+              prefill: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """Льгота за МПТ из калькулятора по другому участку — пересчитанная из его вводных."""
     raw = inputs.get(OVERRIDE_KEY)
     if not isinstance(raw, dict) or not isinstance(raw.get("payload"), dict):
         return None
     payload = dict(raw["payload"])
+    # Площади, взятые калькулятором из ТЭП, не замерзают: изменился ТЭП —
+    # пересчитываются отсюда же. Поправленное руками остаётся как есть.
+    origin = raw.get("origin") if isinstance(raw.get("origin"), dict) else {}
+    from_tep = [key for key in CALCULATOR_FIELDS if origin.get(key) == "tep"]
+    current = (prefill or {}).get("values") or {}
+    for key in from_tep:
+        if key in current:
+            payload[key] = current[key]
     place = str(raw.get("cadastral") or raw.get("address") or "").strip()
     out: dict[str, Any] = {"place": place, "address": str(raw.get("address") or ""),
                            "cadastral": str(raw.get("cadastral") or ""),
                            "applied_at": raw.get("applied_at"), "payload": payload,
+                           "from_tep": from_tep,
                            "benefit_mln": 0.0, "blockers": [], "warnings": []}
     try:
         fields = set(mpt_calculator.MptInput.__dataclass_fields__)
@@ -287,7 +359,8 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
     if missing:
         result["mpt_reason"] = ("Льгота за МПТ (1874-ПП) по участку проекта не посчитана — "
                                 "не хватает: " + "; ".join(missing) + ".")
-    override = _override(inputs, today)
+    result["calculator"] = calculator_prefill(result["rows"], place)
+    override = _override(inputs, today, result["calculator"])
     if override is not None:
         result["override"] = override
         where = override["place"] or "другому участку"
