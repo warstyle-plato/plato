@@ -157,9 +157,8 @@ function applyMptOverride(payload,place){
 // Доля и сумма ручной льготы читаются только в своём режиме: ответ — почему
 // поле сейчас не читается, или пусто. Один ответ и для замка поля, и для его
 // подписи.
-const VRI_RELIEF_FIELD_MODE={vri_relief_pct:'percent',vri_relief_mln:'amount'};
 function vriReliefFieldIdle(id){
- const need=VRI_RELIEF_FIELD_MODE[id];
+ const need={vri_relief_pct:'percent',vri_relief_mln:'amount'}[id];
  if(!need)return '';
  const mode=String(inputs.vri_relief_mode||'none');
  if(mode===need)return '';
