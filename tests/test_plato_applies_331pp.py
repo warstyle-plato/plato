@@ -128,9 +128,10 @@ def test_the_calculation_does_not_read_the_provisions():
     assert "key_provisions" not in (ROOT / "main_legacy.py").read_text(encoding="utf-8")
 
 
-def test_plato_tells_tender_from_spv():
-    """Торги по решению Штаба и SPV по предложению инвестора — разные пути;
-    для SPV нужно решение Штаба об изменении способа реализации."""
+def test_plato_says_spv_is_not_established():
+    """Владелец требует фактов: про SPV — только подтверждённое, иначе
+    «не установлено»; толкование п. 3.2 как опоры SPV фактом не записано."""
     rule = _krt_rule()
-    assert "SPV" in rule and "решение Штаба об изменении способа реализации" in rule
-    assert "п. 3.8" in rule and "п. 2.10" in rule
+    assert "не установлено" in rule and "SPV" in rule
+    assert "п. 2.10" in rule and "п. 3.8" in rule
+    assert "трактовк" not in rule and "продаёт инвестору доли" not in rule
