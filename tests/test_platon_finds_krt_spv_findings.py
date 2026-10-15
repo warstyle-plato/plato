@@ -51,18 +51,43 @@ def test_owner_words_lead_to_the_finding(question: str, heading: str,
         assert fact in hit["text"], (fact, hit["text"][:300])
 
 
+def test_the_auction_section_names_the_2024_rewrite() -> None:
+    """Практика «ВРИ сверху» и буква 273-ПП после 2652-ПП расходятся — это сказано."""
+    top = _top("Платится ли плата за ВРИ при торгах КРТ отдельно от цены торгов")
+    hit = next(e for e in top if "при торгах КРТ" in e["title"])
+    assert "2652-ПП" in hit["text"] and "расходится с практикой" in hit["text"]
+
+
 def test_general_search_reaches_the_findings_too() -> None:
     """Без указания источника выжимка тоже первая, а не тонет в правилах."""
     top = _top("стоимость SPV опцион 511-ПП", source=None)
     assert top[0]["title"].startswith(f"{STEM}: Стоимость SPV"), [e["title"] for e in top]
 
 
-def test_open_question_keeps_its_status() -> None:
-    """ВРИ при SPV не выдаётся за установленное: статус назван явно."""
+def test_vri_under_spv_is_answered_with_its_basis_and_status() -> None:
+    """ВРИ при SPV: ответ — вывод из 273-ПП (п. 2.5 одинаково касается
+    победителя торгов и оператора), с названным статусом, а не «уже в цене
+    опциона» без нормы."""
     top = _top("Платится ли плата за ВРИ при SPV отдельно от опциона")
     hit = next(e for e in top if e["title"] == f"{STEM}: Плата за ВРИ при SPV")
-    assert "Пври" in hit["text"] and "511-ПП п. 7.9" in hit["text"]
-    assert any(status in hit["text"] for status in ("НЕ УСТАНОВЛЕНО", "ФАКТ", "ВЫВОД"))
+    assert "ВЫВОД" in hit["text"] and "сверх опциона" in hit["text"]
+    assert "П. 2.5 273-ПП" in hit["text"] and "2652-ПП" in hit["text"]
+    assert "уже в цене опциона" not in hit["text"]
+
+
+def test_auction_price_is_80_percent_of_the_same_formula() -> None:
+    top = _top("Начальная цена торгов КРТ 80 процентов от SPV")
+    hit = next(e for e in top if e["title"].startswith(f"{STEM}: НЦА торгов"))
+    assert "1465-ПП, п. 3 приложения" in hit["text"]
+    assert "ЦПТ = 0,8 x [(Ппл − Пи x 1,1 x Кн) x 1 / Ки]" in hit["text"]
+
+
+def test_every_section_fits_the_answer_budget() -> None:
+    """Раздел длиннее бюджета Платон увидит обрезанным — вывод может отрезаться."""
+    sections = [e for e in knowledge.entries("normative") if e["title"].startswith(STEM)]
+    assert len(sections) >= 6
+    assert all(len(e["text"]) <= knowledge.ENTRY_BUDGET for e in sections), [
+        (e["title"], len(e["text"])) for e in sections]
 
 
 def test_the_excerpt_points_to_the_full_review() -> None:
