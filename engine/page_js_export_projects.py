@@ -127,7 +127,7 @@ async function exportModelArchive(){
 // этого браузера — ручная копия того же самого создавала ложное ощущение
 // надёжного сохранения (владелец, 16.08.2026). Настоящее сохранение, которое
 // переживает смену устройства, — «Личный кабинет».
-function persistLocalSilently(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep,phasing,scenario:scenarioSelect.value}))}
+function persistLocalSilently(){localStorage.setItem('plato_v04',JSON.stringify({inputs,tep:persistedTep(tep,derivedFromEngine),phasing,scenario:scenarioSelect.value}))}
 function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));if(x){
  // Сохранённое состояние накладывается на умолчания, а не подменяет их целиком.
  // Иначе поле, добавленное после сохранения, в браузере просто отсутствует:
@@ -139,6 +139,7 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  Object.entries(x.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
+ rememberDerivedTail(x.tep,true);
  phasing=x.phasing||phasing;rates=[];scenarioSelect.value=x.scenario||'base';
  // v0.12.25: old browser state could silently carry a three-phase project
  // into a newly imported small site. Only an explicit user choice or the
@@ -316,6 +317,7 @@ async function applyPreset(){
  Object.entries(data.applied_tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
+ rememberDerivedTail(data.applied_tep);
  if(data.project_name)inputs._manual_tep_import={project_name:data.project_name};
  // Полный пресет приносит и собственную очередность. Оставлять прежний
  // `phasing` нельзя: тогда новый ТЭП раскладывается по долям другого проекта
@@ -430,7 +432,7 @@ function projectCadastral(){
 }
 
 function projectStorePayload(){
- return {payload:{inputs,tep,phasing,scenario:scenarioSelect.value||'base'},
+ return {payload:{inputs,tep:persistedTep(tep,derivedFromEngine),phasing,scenario:scenarioSelect.value||'base'},
   summary:projectSummaryForStore(),cadastral:projectCadastral()};
 }
 
@@ -769,6 +771,7 @@ function applyProjectSnapshot(data){
  Object.entries(data.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
+ rememberDerivedTail(data.tep,true);
  phasing=data.phasing||makeDefaultPhasing(1);
  // Список тронутых полей паркинга — от ЭТОГО снимка, а не от прошлого проекта.
  seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
@@ -830,7 +833,7 @@ async function downloadSettingsFile(id){
  catch(e){alert(String(e.message||e));return}
  const payload=record.payload||{};
  saveJsonFile(safeFileName(record.name)+' — настройки DevelopAid.json',
-              settingsFileFrom(record.name,payload));
+              settingsFileFrom(record.name,Object.assign({},payload,{tep:persistedTep(payload.tep,false)})));
 }
 
 // Текущий проект — тот, что открыт на экране, а не сохранённый. Сохранять
@@ -838,7 +841,7 @@ async function downloadSettingsFile(id){
 function downloadCurrentSettings(){
  saveJsonFile(safeFileName(currentProjectName())+' — настройки DevelopAid.json',
   settingsFileFrom(currentProjectName(),
-   {inputs:inputs,tep:tep,phasing:phasing,scenario:scenarioSelect.value}));
+   {inputs:inputs,tep:persistedTep(tep,derivedFromEngine),phasing:phasing,scenario:scenarioSelect.value}));
 }
 
 // Имя берётся оттуда же, откуда его предлагает сохранение на сервер: своего

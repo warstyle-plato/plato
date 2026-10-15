@@ -473,6 +473,17 @@ const PARKING_OWNER_FIELDS=Object.fromEntries(
   .concat([[PROJECT_PARKING_KEY,['underground_manual_spaces','underground_manual_gns_sqm']]]));
 function parkingByHand(key){return (inputs._parking_by_hand||[]).includes(key)}
 function parkingByNorm(key){return (inputs._parking_by_norm||[]).includes(key)}
+// Пара «места ↔ площадь» подземного паркинга — решение человека? Тот же
+// предикат, что у движка (`underground_parking_by_hand`): пометка руки сильнее
+// пометки нормы, пара без пометок — человеческая. Страница прежде читала
+// всякое непустое поле как ручное и ставила в строку ТЭП число поля, а движок
+// по пометке нормы считал норму: на экране 201 место и 7 538 м², в расчёте
+// 264 и 9 900 (или 7 537,5 против округлённых 7 538).
+function undergroundPairByHand(){
+ if(parkingByHand(PROJECT_PARKING_KEY))return true;
+ if(parkingByNorm(PROJECT_PARKING_KEY))return false;
+ return true;
+}
 function seedParkingByHand(){
  // Список приехал вместе с проектом — он и есть ответ, пересев затёр бы его:
  // заполненное нормой поле стало бы «тронутым руками» и замерло бы навсегда.

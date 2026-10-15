@@ -1431,7 +1431,11 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
 
         guests = 0
         if sellable and enabled:
-            guests = int(round((under + over) * n(inputs, f"{prefix}_parking_guest_pct") / 100.0))
+            # Половина — вверх, как ROUND книги (`xlsx_book_v4_objects`): round()
+            # Python ведёт её к чётному, и на 25 местах при 10% движок давал 2
+            # гостевых, а книга 3 — выручка расходилась на одно место.
+            share = (under + over) * n(inputs, f"{prefix}_parking_guest_pct") / 100.0
+            guests = int(math.floor(round(share, 9) + 0.5))
             guests = max(0, min(guests, under + over))
 
         row["under_gns"] = under * under_per_space
