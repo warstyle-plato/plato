@@ -63,12 +63,32 @@ def test_negative_growth_is_named_where_average_is_shown(falling):
         # Средняя действительно ниже стартовой — ровно случай владельца.
         assert p["avg_price_th"] < p["start_price_th"] * 0.8, p
         assert "−2%/мес." in p["price_path"], p["price_path"]
-        assert any("отрицательный" in w for w in p["schedule_warnings"]), p["schedule_warnings"]
+        # Предупреждение называет величину эффекта — ту же, что в таблице.
+        effect = f"средняя {(p['avg_price_th'] / p['start_price_th'] - 1) * 100:+.1f}% к стартовой"
+        effect = effect.replace(".", ",").replace("-", "−")
+        assert any("отрицательный" in w and effect in w for w in p["schedule_warnings"]), (
+            effect, p["schedule_warnings"])
+
+
+def test_the_rate_names_where_it_came_from(falling):
+    # Не отмеченное и не равное умолчанию — «источник не отмечен», а не
+    # «вписано вручную» и не «умолчание»: отсутствие записи не решение.
+    assert all("−2%/мес. (источник не отмечен)" in p["price_path"]
+               for p in _core_products(falling))
+    assert all("+0,25%/мес. (умолчание)" in p["price_path"]
+               for p in _core_products(falling))
+    x, t = _inputs(-2)
+    x["_field_origin"] = {"inputs.monthly_growth_pre_pct":
+                          {"source": "manual", "text": "вписано вручную"}}
+    marked = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
+    for p in _core_products(marked):
+        assert "−2%/мес. (вписано вручную)" in p["price_path"], p["price_path"]
+        assert any("вписано вручную" in w for w in p["schedule_warnings"])
 
 
 def test_positive_growth_names_path_without_warning():
     for p in _core_products(_run(1.0)):
-        assert "+1%/мес." in p["price_path"], p["price_path"]
+        assert "+1%/мес. (умолчание)" in p["price_path"], p["price_path"]
         assert not any("отрицательный" in w for w in p["schedule_warnings"])
 
 
@@ -118,6 +138,11 @@ def test_in_a_real_browser_the_sales_table_names_the_price_path():
                     if(el&&el.type!=='checkbox')el.value=v;
                   }
                   Object.assign(inputs, payload);
+                  // Рост цены вводится так, как вводит человек: правкой поля.
+                  // Её обработчик и ставит отметку происхождения.
+                  const growth=document.getElementById('f_monthly_growth_pre_pct');
+                  growth.value=payload.monthly_growth_pre_pct;
+                  growth.dispatchEvent(new Event('change'));
                   phasing = {enabled:false, phases:[]};
                   const done=await calculate();
                   const table=document.getElementById('salesReportTable');
@@ -130,5 +155,5 @@ def test_in_a_real_browser_the_sales_table_names_the_price_path():
     assert got["superseded"] is False
     other = [line for line in errors if "Failed to fetch" not in line]
     assert not other, f"страница упала: {other[:2]}"
-    assert "цена: рост цены до РВЭ −2%/мес." in got["sales"], got["sales"][:600]
+    assert "цена: рост цены до РВЭ −2%/мес. (вписано вручную)" in got["sales"], got["sales"][:600]
     assert "рост цены до РВЭ отрицательный" in got["sales"]

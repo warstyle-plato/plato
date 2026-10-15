@@ -701,7 +701,9 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "sales_end": end_date,
             # Профиль продаж и лестница цены объекта — с тем, что применилось и
             # что не разобралось: экран и PDF печатают их рядом с продуктом.
-            **_product_schedule_fields(op.get("object_schedule_notes", {}), key),
+            **_product_schedule_fields(
+                op.get("object_schedule_notes", {}), key,
+                avg_price / spec["start_price"] if spec["start_price"] and avg_price else None),
         })
 
     # Остаточные строки ТЭП — продукт, заведённый позже и не попавший в список
@@ -1136,17 +1138,24 @@ _OBJECT_SCHEDULE_PREFIX = {
 }
 
 
-def _product_schedule_fields(notes: dict[str, dict[str, Any]], key: str) -> dict[str, Any]:
+def _product_schedule_fields(notes: dict[str, dict[str, Any]], key: str,
+                             avg_ratio: float | None = None) -> dict[str, Any]:
     prefix = _OBJECT_SCHEDULE_PREFIX.get(key)
     item = (notes or {}).get(prefix or "") or {}
+    path, path_warnings = ("", [])
+    if "growth_pre" in item:
+        path, path_warnings = price_path_text(
+            float(item["growth_pre"]), float(item.get("growth_post") or 0.0),
+            bool(item.get("steps_applied")), avg_ratio,
+            str(item.get("growth_pre_origin") or ""), str(item.get("growth_post_origin") or ""))
     return {
         "sales_profile": item.get("sales_profile", ""),
         "price_ladder": item.get("price_ladder", ""),
         # Траектория цены: чем средняя отличается от стартовой.
-        "price_path": item.get("price_path", ""),
+        "price_path": path,
         "price_stages": list(item.get("price_stages") or []),
         "schedule_applied": bool(item.get("profile_applied") or item.get("steps_applied")),
-        "schedule_warnings": list(item.get("warnings") or []),
+        "schedule_warnings": list(item.get("warnings") or []) + path_warnings,
     }
 
 

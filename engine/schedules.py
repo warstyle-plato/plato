@@ -455,25 +455,56 @@ def _signed_pct(value: float) -> str:
     return f"{value:+g}".replace(".", ",").replace("-", "−")
 
 
-def price_path_text(growth_pre: float, growth_post: float, ladder: bool) -> tuple[str, list[str]]:
+def input_origin_text(inputs: dict[str, Any], key: str) -> str:
+    """Откуда значение вводной: отметка страницы, умолчание или «не отмечено».
+
+    Страница ставит `_field_origin['inputs.<ключ>']` при ручной правке поля.
+    Нет отметки и значение равно умолчанию — это умолчание; нет отметки, а
+    значение другое — источник неизвестен, и это так и называется, а не
+    выдаётся за ручной ввод или умолчание.
+    """
+    origin = ((inputs or {}).get("_field_origin") or {}).get(f"inputs.{key}")
+    if isinstance(origin, dict) and origin.get("text"):
+        return str(origin["text"])
+    default = DEFAULT_INPUTS.get(key)
+    try:
+        same = default is not None and abs(float(inputs.get(key, default)) - float(default)) < 1e-12
+    except (TypeError, ValueError):
+        same = False
+    return "умолчание" if same else "источник не отмечен"
+
+
+def price_path_text(growth_pre: float, growth_post: float, ladder: bool,
+                    avg_ratio: float | None = None, origin_pre: str = "",
+                    origin_post: str = "") -> tuple[str, list[str]]:
     """Чем средняя цена продукта отличается от стартовой — словами.
 
     Средняя в таблице продаж — выручка ÷ объём, и без траектории цены её
     расхождение со стартовой не объяснить: при «−2%/мес. до РВЭ» средняя
     выходит на четверть ниже стартовой, а ни одна подпись этого не называла.
-    Ставки — доли в месяц, как их берёт `sales_schedule`.
+    Ставки — доли в месяц, как их берёт `sales_schedule`; `avg_ratio` —
+    средняя ÷ стартовая, величина эффекта.
     """
-    after = f"после РВЭ {_signed_pct(round(growth_post * 100, 4))}%/мес."
+    def tagged(origin: str) -> str:
+        return f" ({origin})" if origin else ""
+    after = f"после РВЭ {_signed_pct(round(growth_post * 100, 4))}%/мес.{tagged(origin_post)}"
     if ladder:
         text = f"до РВЭ — лестница цены, {after}"
     else:
-        text = f"рост цены до РВЭ {_signed_pct(round(growth_pre * 100, 4))}%/мес., {after}"
+        text = (f"рост цены до РВЭ {_signed_pct(round(growth_pre * 100, 4))}%/мес."
+                f"{tagged(origin_pre)}, {after}")
+    effect = ""
+    if avg_ratio is not None:
+        effect = f"средняя {_signed_pct(round((avg_ratio - 1) * 100, 1))}% к стартовой"
+        text += f"; {effect}"
     warnings = []
     if not ladder and growth_pre < 0:
-        warnings.append(f"рост цены до РВЭ отрицательный ({_signed_pct(round(growth_pre * 100, 4))}%/мес.) — "
-                        "цена падает от стартовой, средняя ниже стартовой")
+        warnings.append(f"рост цены до РВЭ отрицательный ({_signed_pct(round(growth_pre * 100, 4))}%/мес."
+                        f"{', ' + origin_pre if origin_pre else ''}) — "
+                        "цена падает от стартовой" + (f": {effect}" if effect else ""))
     if growth_post < 0:
-        warnings.append(f"рост цены после РВЭ отрицательный ({_signed_pct(round(growth_post * 100, 4))}%/мес.)")
+        warnings.append(f"рост цены после РВЭ отрицательный ({_signed_pct(round(growth_post * 100, 4))}%/мес.)"
+                        + (f": {effect}" if effect else ""))
     return text, warnings
 
 
