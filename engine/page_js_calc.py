@@ -299,9 +299,9 @@ async function calculate(){
 }
 
 // Что принёс загруженный снимок в производных полях — до первого ответа
-// движка. Совпало с движком — подписывать нечего, и хвост забывается сразу:
-// иначе следующая правка ТЭП, честно сдвинувшая гостевые, выглядела бы
-// «исправлением при загрузке». Разошлось — подпись живёт до следующей загрузки.
+// движка. Совпало с движком — сказать нечего: иначе следующая правка ТЭП,
+// честно сдвинувшая гостевые, выглядела бы «исправлением при загрузке».
+// Разошлось — один раз уведомление и запись в журнал; таблица молчит.
 // Состояние держит функция, а не верхнее `let`: так его видит и стенд страницы
 // (`tests/page_blocks`), который добирает куски по именам функций.
 function derivedState(){
@@ -349,10 +349,55 @@ function settleDerivedTail(rows){
   if(Math.abs(Number(r[field])-was[field])>1e-9)kept[r.key]=was;
  });
  state.tail={rows:kept,settled:true};
+ announceDerivedCorrections(derivedCorrections(rows));
 }
-function derivedTailOf(key){
+// Список исправлений — ОДИН на уведомление и журнал: что было в файле и что
+// дал движок для той же строки. Строится из запомненного загрузкой хвоста и
+// ответа расчёта, второго счёта здесь нет.
+function derivedCorrections(rows){
  const tail=derivedState().tail;
- return tail&&tail.settled?(tail.rows[key]||null):null;
+ if(!tail||!tail.settled)return [];
+ return (rows||[]).filter(r=>tail.rows[r.key]).map(r=>{
+  const field=derivedTailField(r.key);
+  const name=field==='guest_units'?'гостевые места'
+   :'переданные места '+String((tep[r.key]&&tep[r.key].label)||r.label||r.key);
+  return {key:r.key,field,name,was:tail.rows[r.key][field],now:Number(r[field]||0),
+          basis:field==='guest_units'?'норматив':'соцобъект передаётся целиком'};
+ });
+}
+function derivedCorrectionsText(list){
+ return 'В файле исправлены устаревшие числа: '
+  +list.map(c=>c.name+' '+num(c.was)+' → '+num(c.now)+' ('+c.basis+')').join(', ');
+}
+function announceDerivedCorrections(list){
+ if(!list||!list.length)return;
+ const text=derivedCorrectionsText(list);
+ showPageNotice(text);
+ // Журнал пишет сервер (`usage_track`), а не консоль: ошибка только в логе
+ // браузера невидима. Сбой записи расчёт не трогает.
+ try{
+  fetch('/tep-corrections',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({session:activeSession(),text,
+    corrections:list.map(c=>({key:c.key,field:c.field,was:c.was,now:c.now}))})}).catch(()=>{});
+ }catch(e){}
+}
+// Всплывающее уведомление внизу окна: одна строка, сама уходит, закрывается
+// щелчком. Таймер живёт на функции — её можно гонять в отрыве от страницы.
+function showPageNotice(text){
+ if(showPageNotice.timer){clearTimeout(showPageNotice.timer);showPageNotice.timer=null}
+ let box=document.getElementById('pageNotice');
+ if(!box){
+  box=document.createElement('div');
+  box.id='pageNotice';
+  box.setAttribute('role','status');
+  box.style.cssText='position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:99997;'
+   +'max-width:min(720px,calc(100vw - 32px));padding:10px 14px;border-radius:8px;'
+   +'background:#2b2b2b;color:#fff;font-size:13px;line-height:1.4;box-shadow:0 6px 24px rgba(0,0,0,.25);cursor:pointer';
+  box.onclick=()=>box.remove();
+  document.body.appendChild(box);
+ }
+ box.textContent=text;
+ showPageNotice.timer=setTimeout(()=>{if(box.isConnected)box.remove()},12000);
 }
 
 // Производные строки ТЭП — числа движка, и в состояние страницы пишутся ЕГО

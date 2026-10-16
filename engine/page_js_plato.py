@@ -79,6 +79,28 @@ async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEac
 // понял, он спрашивает, а не додумывает.
 function aiEsc(value){const box=document.createElement('div');box.textContent=String(value==null?'':value);return box.innerHTML}
 let aiIntake=null;
+// Документ в разговоре: после разбора человек спрашивает дальше, и вопрос
+// уходит вместе с документом. Отдельно от aiHistory — та режется по числу
+// реплик, и документ выпадал бы из неё через несколько вопросов. Новая
+// загрузка заменяет прежний документ.
+let aiDocument=null;
+function rememberAiDocument(data){
+ const ctx=data&&data.context;
+ const had=aiDocument;
+ if(!ctx||!ctx.text){
+  aiDocument=null;
+  appendAiMessage('system','Документ в разговор не попал: '+(data&&data.reason||'разбор не вернул текста документа')
+   +(had?'. Прежний документ «'+had.filename+'» из разговора убран.':'.'));
+  return;
+ }
+ aiDocument=ctx;
+ aiHistory.push({role:'user',content:'Документ на разбор: '+ctx.filename});
+ aiHistory.push({role:'assistant',content:String(ctx.summary||'')});
+ aiHistory=aiHistory.slice(-10);
+ appendAiMessage('system','Документ «'+ctx.filename+'» в разговоре: следующие вопросы Платон видит вместе с ним'
+  +(ctx.trimmed?' (первые '+ctx.read_chars+' знаков из '+ctx.total_chars+')':'')
+  +'. Новая загрузка заменит его'+(had&&had.filename!==ctx.filename?' — «'+had.filename+'» заменён':'')+'.');
+}
 async function sendAgentDocument(file){
  if(!file||aiBusy)return;
  aiBusy=true;aiSendBtn.disabled=true;aiFileBtn.disabled=true;
@@ -100,8 +122,9 @@ async function sendAgentDocument(file){
     session:activeSession(),access_key:projectsAdminKey||''})});
   const data=await r.json().catch(()=>({}));
   thinking.remove();
-  if(!r.ok){appendAiMessage('system',data.detail||('Документ не разобрался: HTTP '+r.status));return}
-  aiIntake=data;renderAiIntake(data);
+  if(!r.ok){appendAiMessage('system',(data.detail||('Документ не разобрался: HTTP '+r.status))
+   +(aiDocument?'\nВ разговоре остаётся прежний документ «'+aiDocument.filename+'».':''));return}
+  aiIntake=data;renderAiIntake(data);rememberAiDocument(data);
  }catch(e){thinking.remove();appendAiMessage('system','Документ не разобрался: '+(e.message||e))}
  finally{document.getElementById('aiFile').value='';aiBusy=false;aiSendBtn.disabled=false;aiFileBtn.disabled=false}
 }
@@ -175,7 +198,7 @@ async function sendAgentMessage(scenario){
   await syncInputsForAgent();
   let data={},response=null;
   try{
-   response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,scenario:scenario||'',trace_id:traceId,inputs,tep,rates,phasing,history:aiHistory.slice(-8),selected_view:reportView||'all',session:activeSession(),access_key:projectsAdminKey||''})});
+   response=await fetch('/agent/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message,scenario:scenario||'',trace_id:traceId,inputs,tep,rates,phasing,history:aiHistory.slice(-8),document:aiDocument||{},selected_view:reportView||'all',session:activeSession(),access_key:projectsAdminKey||''})});
    try{data=await response.json()}catch(e){}
    if(response.ok&&data&&data.pending){
     // Сервер не держит соединение: работа принята и идёт, ответ ждёт под
