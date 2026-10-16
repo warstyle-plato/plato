@@ -1335,8 +1335,8 @@ def _build_project_workbook(
          str(x.get("vri_pf_open_date") or "")[:10] or "не задана"),
         ("ВРИ в банковском бюджете", "vri_in_bank_budget", "Да / Нет",
          "Нет" if x.get("vri_in_bank_budget") is False else "Да"),
-        ("Источник оплаты ВРИ", "vri_financing_mode", "режим",
-         "Заданы доли" if str(x.get("vri_financing_mode") or "auto") == "shares" else "Автоматически"),
+        (_input_field_label("vri_financing_mode"), "vri_financing_mode", "режим",
+         input_option_label("vri_financing_mode", str(x.get("vri_financing_mode") or "auto"))),
         ("Доля БРИДЖа в плате", "vri_share_bridge_pct", "%",
          n(x, "vri_share_bridge_pct", 0.0) / 100.0),
         ("Доля ПФ в плате", "vri_share_pf_pct", "%", n(x, "vri_share_pf_pct", 0.0) / 100.0),
@@ -1425,8 +1425,7 @@ def _build_project_workbook(
     put_new("M85", text="underground_manual_gns_sqm")
 
     # --- ВРИ ---------------------------------------------------------------
-    land_cost = float(x.get("land_rights_cost_mln") or 0)
-    put("B74", text="Да" if land_cost > 0 else "Нет", label="vri_required")
+    put("B74", text="Да" if vri_payment_active(x) else "Нет", label="vri_required")
     put_new("D74", text="vri_required")
     _vri_installment = str(x.get("vri_payment_mode") or "lump") == "installment"
     put("B75", text="Рассрочка" if _vri_installment else "Единовременно",

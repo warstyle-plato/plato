@@ -226,16 +226,18 @@ def test_vri_is_switched_off_by_a_zero_charge():
 
 
 def test_a_charge_is_paid_even_with_the_flag_off():
-    """Снятый признак при заданной плате — противоречие, а не отказ платить.
+    """Снятый признак при заданной плате — не отказ платить: плату решает сумма.
 
     Сумма всё равно остаётся в расходах, и если графика нет, расход есть, а
     занимать на него никто не занимает: книга ПЛАТО разносила такую плату
     своей рассрочкой на 72 месяца, и объём долга расходился с расчётом.
+    Признак входом больше не служит (`vri_payment_active`), поэтому и
+    противоречия, о котором предупреждать, нет.
     """
     result = schedule(vri_required=False)
     assert result["enabled"] is True
     assert result["rows"], "плата задана, а платежей нет"
-    assert any("не требу" in w.lower() or "снят" in w.lower() for w in result["warnings"])
+    assert not any("снят" in w.lower() for w in result["warnings"])
 
 
 def test_zero_amount_yields_an_empty_block():

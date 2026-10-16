@@ -52,7 +52,8 @@ def test_purchase_price_is_not_vri(imported):
     assert inputs["purchase_price_mln"] == pytest.approx(
         preset["validation_controls"]["purchase_price_rub"] / 1e6)
     assert inputs["land_rights_cost_mln"] == 0
-    assert inputs["vri_required"] is False
+    # Плату ВРИ решает сумма (`vri_payment_active`), а не признак.
+    assert core.vri_payment_active(inputs) is False
     # The KRT source gives the acquisition right, not product prices/costs.
     # Service defaults may remain on the screen, but the preset must not
     # masquerade them as project data.
