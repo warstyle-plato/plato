@@ -407,9 +407,18 @@ function repairParkingFromGlavapu(){
  // Заданная руками площадь главнее импорта: норматив описывает потребность,
  // а реальный подземный этаж диктуют пятно застройки, рампы и техпомещения.
  // Пустое поле оставляет прежнюю починку устаревших значений.
+ // Пара, поставленная нормой, идёт за нормой: поле — её число, а строка
+ // берёт ответ нормы как есть, без округления поля. Иначе загруженный проект
+ // показывал места прежних вводных, хотя движок по той же пометке считал
+ // норму (`underground_parking_by_hand`).
+ if(!undergroundPairByHand()&&fillUndergroundFromTep()){
+  ['underground_manual_spaces','underground_manual_gns_sqm'].forEach(id=>{
+   const el=document.getElementById('f_'+id);if(el)el.value=inputs[id];
+  });
+ }
  const manualSpaces=Number(inputs.underground_manual_spaces||0);
  const manualArea=Number(inputs.underground_manual_gns_sqm||0);
- if(manualSpaces>0||manualArea>0){
+ if(undergroundPairByHand()&&(manualSpaces>0||manualArea>0)){
   const per=undergroundAreaPerSpace();
   const spaces=manualSpaces>0?manualSpaces:Math.round(manualArea/per);
   // Площадь берётся так же, как её берёт движок: заданная руками сильнее

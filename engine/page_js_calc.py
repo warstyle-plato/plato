@@ -277,14 +277,9 @@ async function calculate(){
     // участие в расчёте, а не решение человека, и записанные они стёрли бы
     // набранное, которое вернётся с жилым типом.
     lastResult.tep.rows.forEach(r=>{if(!tep[r.key]||r.excluded)return;['gns','total_area','useful','saleable','transfer','units'].forEach(k=>{if(r[k]!=null)tep[r.key][k]=Number(r[k])})})
-    // Гостевые места — производное движка; в сохранённом проекте жило чужое
-    // число (109 гостевых на 29 местах), и оно переезжало дальше с каждым
-    // сохранением. Пишется назад число движка; о замене говорит подпись
-    // результата (`guest_units_stale`).
-    lastResult.tep.rows.forEach(r=>{if(r.key!=='underground_parking'||!tep[r.key]||r.excluded)return;
-     if(r.guest_units!=null)tep[r.key].guest_units=Number(r.guest_units)})
    }
  }
+ adoptEngineDerivedTep((phaseBundle&&phaseBundle.consolidated)||lastResult);
  // Перенос устаревших вводных решает движок (`migrate_growth_post`), а
  // страница только принимает его ответ: иначе поле показывало бы одно
  // число, а расчёт шёл по другому. Происхождение подписано у поля.
@@ -301,6 +296,81 @@ async function calculate(){
  // выглядело это как «предустановка не проедается в расчёт».
  persistLocalSilently();
  return lastResult;
+}
+
+// Что принёс загруженный снимок в производных полях — до первого ответа
+// движка. Совпало с движком — подписывать нечего, и хвост забывается сразу:
+// иначе следующая правка ТЭП, честно сдвинувшая гостевые, выглядела бы
+// «исправлением при загрузке». Разошлось — подпись живёт до следующей загрузки.
+// Состояние держит функция, а не верхнее `let`: так его видит и стенд страницы
+// (`tests/page_blocks`), который добирает куски по именам функций.
+function derivedState(){
+ if(!derivedState.s)derivedState.s={tail:null,fresh:false};
+ return derivedState.s;
+}
+function derivedTailField(key){
+ return key==='underground_parking'?'guest_units':(SOCIAL_TEP_PRODUCTS.includes(key)?'transfer_units':null);
+}
+// `strip` снимает производное и с живой строки: до ответа движка в ТЭП нет
+// чужого числа, которое прочёл бы кто-то, кроме подписи. Пресет своё число
+// гостевых знает из документа — его строка остаётся как пришла.
+function rememberDerivedTail(source,strip){
+ const tail={};
+ ['underground_parking'].concat(SOCIAL_TEP_PRODUCTS).forEach(key=>{
+  const field=derivedTailField(key),row=source&&source[key];
+  if(!row||typeof row!=='object'||row[field]==null||row[field]==='')return;
+  tail[key]={[field]:Number(row[field]),units:Number(row.units||0)};
+  if(strip&&tep[key])delete tep[key][field];
+ });
+ derivedState().tail={rows:tail,settled:false};
+ derivedState().fresh=false;
+}
+// Производные поля в снимке, который уходит в файл или хранилище, — только
+// числа движка для ЭТОГО состояния. Расчёта после загрузки не было (отказ,
+// выгрузка записи из списка без открытия) — поля в снимок не идут вовсе:
+// отсутствие значит «выведет движок», а не ноль и не чужое число.
+function persistedTep(source,fresh=derivedState().fresh){
+ const out=cloneValue(source||{});
+ ['underground_parking'].concat(SOCIAL_TEP_PRODUCTS).forEach(key=>{
+  const row=out[key];
+  if(!row||typeof row!=='object')return;
+  delete row.guest_units_stale;
+  if(!fresh)delete row[derivedTailField(key)];
+ });
+ return out;
+}
+function settleDerivedTail(rows){
+ const state=derivedState();
+ if(!state.tail||state.tail.settled)return;
+ const kept={};
+ rows.forEach(r=>{
+  const was=state.tail.rows[r.key],field=derivedTailField(r.key);
+  if(!was||r.excluded||r[field]==null)return;
+  if(Math.abs(Number(r[field])-was[field])>1e-9)kept[r.key]=was;
+ });
+ state.tail={rows:kept,settled:true};
+}
+function derivedTailOf(key){
+ const tail=derivedState().tail;
+ return tail&&tail.settled?(tail.rows[key]||null):null;
+}
+
+// Производные строки ТЭП — числа движка, и в состояние страницы пишутся ЕГО
+// числа: гостевые места паркинга и переданные места соцобъекта. В сохранённом
+// проекте жило чужое число (109 гостевых на 29 местах «Донского» и на 201
+// месте «Власова», 250 переданных мест ДОО при нуле мест), и оно переезжало
+// дальше с каждым сохранением. Пишется в обеих ветках расчёта — одиночной и
+// очередей: прежде запись стояла только в одиночной, и проект с очередями
+// хранил хвост вечно. О замене говорит подпись у строки ТЭП.
+function adoptEngineDerivedTep(result){
+ const rows=result&&result.tep&&Array.isArray(result.tep.rows)?result.tep.rows:[];
+ settleDerivedTail(rows);
+ if(rows.length)derivedState().fresh=true;
+ rows.forEach(r=>{
+  if(!tep[r.key]||r.excluded)return;
+  if(r.key==='underground_parking'&&r.guest_units!=null)tep[r.key].guest_units=Number(r.guest_units);
+  if(SOCIAL_TEP_PRODUCTS.includes(r.key)&&r.transfer_units!=null)tep[r.key].transfer_units=Number(r.transfer_units);
+ });
 }
 
 function applyInputMigrations(list){

@@ -127,6 +127,9 @@ function projectsCall(path,payload){
 }
 function confirm(text){asked.push(String(text));return true}
 function prompt(text,suggested){asked.push(String(text));return 'Новое имя'}
+// `storeProject` глушит ошибку своим catch — снимок для сохранения зовётся
+// здесь, где разрешитель стенда видит его ReferenceError.
+projectStorePayload();
 (async()=>{
   if(%(open)s) await loadProject('abc123');
   await %(press)s;
