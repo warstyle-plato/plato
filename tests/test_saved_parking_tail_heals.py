@@ -81,9 +81,25 @@ PROBE = r"""async ([data, phased]) => {
   // их нет — тогда снимок строкой как есть, и проверка падает на числах.
   const fileTep = (source, fresh) => typeof persistedTep === 'function'
     ? persistedTep(source, fresh) : JSON.parse(JSON.stringify(source));
+  // Расчёт ждётся по признаку, а не по времени: `calculate` возвращает null,
+  // если его перебил запущенный следом (номер расчёта), и тогда записывает
+  // тот, следующий. Признак «движок ответил на ЭТУ загрузку» — отданный хвост
+  // (`derivedState().tail.settled`); без функции (код до правки) — ответ есть.
+  const answered = async () => {
+    await calculate();
+    for (let i = 0; i < 600; i++) {
+      const tail = typeof derivedState === 'function' ? derivedState().tail : {settled: true};
+      if (tail && tail.settled && ((phaseBundle && phaseBundle.consolidated) || lastResult)) return;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    throw new Error('расчёт после загрузки так и не ответил');
+  };
+  const copy = value => JSON.parse(JSON.stringify(value === undefined ? null : value));
   applyProjectSnapshot(data);
   const beforeCalc = projectStorePayload().payload.tep.underground_parking;
-  await calculate();
+  await answered();
+  // Снимок живой строки — сразу после ответа: дальше её снимает повторная загрузка.
+  const live = copy(tep.underground_parking), kg = copy(tep.kindergarten);
   const result = (phaseBundle && phaseBundle.consolidated) || lastResult;
   const row = result.tep.rows.find(r => r.key === 'underground_parking');
   renderResult();
@@ -96,13 +112,13 @@ PROBE = r"""async ([data, phased]) => {
   const again = JSON.parse(JSON.stringify(data));
   again.tep = stored;
   applyProjectSnapshot(again);
-  await calculate();
+  await answered();
   const againEl = document.getElementById('pageNotice');
   // Выгрузка записи из списка без открытия: снимок без расчёта.
   const recordFile = fileTep(data.tep, false);
   return {phased: !!phaseBundle, row: {units: row.units, gns: row.gns, guest: row.guest_units,
           sold: row.saleable_units},
-          live: tep.underground_parking, kg: tep.kindergarten, stored: stored.underground_parking,
+          live, kg, stored: stored.underground_parking,
           storedKg: stored.kindergarten, beforeCalc, recordFile: recordFile.underground_parking,
           recordKg: recordFile.kindergarten, notice, journal: window.__journal || [],
           tableSaysFixed: /исправлено при загрузке/.test(table),
