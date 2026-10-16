@@ -572,7 +572,7 @@ def map_inputs(data: dict[str, Any], tep: dict[str, Any]) -> tuple[dict[str, Any
         remaining = _mln(vri.get("residual_principal_rub"))
     if remaining is not None:
         inputs["land_rights_cost_mln"] = remaining
-        inputs["vri_required"] = False  # сумма задана, свой расчёт не нужен
+        # Признак ВРИ не ставится: плату решает сумма (`vri_payment_active`).
         paid = _mln((vri.get("confirmed_payments") or [{}])[0].get("amount_rub")) if vri.get("confirmed_payments") else None
         notes.append(Field(remaining, "source",
                            "плата за ВРИ — остаток к оплате по соглашению"

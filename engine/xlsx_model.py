@@ -396,7 +396,7 @@ _MODEL_VRI_SETTING_ROWS: list[tuple[str, str]] = [
     ("interest_enabled", "Проценты на остаток"),
     ("pf_open", "Дата открытия ПФ"),
     ("in_bank_budget", "Включена в банковский бюджет"),
-    ("financing_mode", "Источники оплаты"),
+    ("financing_mode", "Из каких денег платим ВРИ"),
 ]
 
 _MODEL_VRI_LABELS: dict[str, str] = {

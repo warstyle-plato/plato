@@ -376,7 +376,8 @@ def _profile_block(inputs: dict[str, Any], dates: dict[str, Any],
 def _land_block(numbers: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
     land = numbers.get("land") or {}
     return {
-        "vri_required": bool(inputs.get("vri_required")),
+        # Ответ движка (`vri_payment_active`): плата задана — ВРИ действует.
+        "vri_required": bool(land.get("vri_active")),
         "vri_amount_mln": _number(land.get("vri_amount_mln")),
         "vri_relief_mln": _number(land.get("vri_relief_mln")),
         "vri_interest_mln": _number(land.get("vri_interest_mln")),

@@ -1006,7 +1006,7 @@
     },
     vri: function () {
       var i = pageInputs() || {};
-      if (!i.vri_required || !Number(i.land_rights_cost_mln || 0)) {
+      if (!Number(i.land_rights_cost_mln || 0)) {  // плату решает сумма (vri_payment_active)
         return { mark: 'opt', hint: 'По желанию: нужен, только если участку требуется смена ВРИ. Плата 0 — шаг можно пропустить.' };
       }
       return { mark: 'ok', hint: 'Смена ВРИ включена: плата посчитана, проверьте сумму, график и источники оплаты.' };
