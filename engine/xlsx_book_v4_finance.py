@@ -21,6 +21,27 @@ _V4_TAX_MONTHLY_COLUMNS = ("L", "M", "N", "O")    # запасная мера �
 _V4_TAX_RESERVE_TOTAL = "P"
 
 
+def _v4_tax_share_layout(xml: str) -> dict[str, int] | None:
+    """Где на листе КОНСОЛИДАТОР стоит блок раздачи налога по годам.
+
+    Одно место на двух читателей: сам блок (`_v4_tax_share_by_year`) и
+    строки 24 листов очередей, которые берут из него долю года
+    (`_v4_apply_single_queue_tax`). Листы очередей собираются раньше блока, и
+    второе вычисление позиции разошлось бы с первым молча — доля читалась бы
+    из чужой строки. Блок дописывается в свободный низ листа шаблона.
+    """
+    rows = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
+    if not rows:
+        return None
+    head = max(rows) + 2
+    gate = head + 2
+    years = gate + 1
+    header = years + 1 + len(_V4_TAX_QUEUE_COLUMNS)
+    first = header + 1
+    return {"head": head, "gate": gate, "years": years, "header": header,
+            "first": first, "last": first + _V4_TAX_YEARS_SPAN - 1}
+
+
 def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
     """Сводный налог раздаётся очередям ПО ГОДАМ, а не одним весом за горизонт.
 
@@ -43,11 +64,11 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
     `MAX(YEAR('CF'!D$3); первый облагаемый год)` — clamp и есть свёртка, и
     после него у каждого года простое равенство, без условий по датам.
     """
-    rows = [int(number) for number in re.findall(r'<x:row r="(\d+)"', xml)]
-    if not rows:
+    layout = _v4_tax_share_layout(xml)
+    if layout is None:
         missing.append("КОНСОЛИДАТОР: лист пуст — блок раздачи налога не дописан")
         return xml
-    at = max(rows) + 2
+    at = layout["head"]
 
     def label(coord: str, text: str) -> str:
         return (f'<x:c r="{coord}"{_v4_label_attr()} t="inlineStr">'
@@ -70,7 +91,7 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
                          "РВЭ — так же считает строка 37 листа CF. Считается, "
                          "править нечего.")
                  + "</x:row>")
-    gate = note + 1
+    gate = layout["gate"]
     # Первый облагаемый месяц объявлен на листе CF строкой 31 — оттуда его и
     # берём. Второе объявление «с какого месяца облагается» разошлось бы с
     # первым молча: у книги тогда две даты гейта, и обе выглядят верными.
@@ -81,7 +102,7 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
                  + formula(f"B{gate}",
                            "IF('CF'!$B$31>50000,0,IFERROR(YEAR('CF'!$B$31),0))")
                  + "</x:row>")
-    years = gate + 1
+    years = layout["years"]
     year_cells = [label(f"A{years}", "Налоговый год месяца")]
     for column in _v4_cf_columns():
         year_cells.append(
@@ -113,8 +134,7 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
                            for index, title in enumerate(titles))
                  + "</x:row>")
     grid = _v4_month_span(years)
-    first = header + 1
-    last = first + _V4_TAX_YEARS_SPAN - 1
+    first, last = layout["first"], layout["last"]
     for offset in range(_V4_TAX_YEARS_SPAN):
         row = first + offset
         cells = [formula(f"A{row}", f"$B${gate}" if offset == 0 else f"A{row - 1}+1"),
@@ -736,32 +756,66 @@ _V4_VAT_CASH_ROWS = (
 )
 
 
-def _v4_apply_single_queue_tax(xml: str, phase: int, missing: list[str]) -> str:
-    """Налог в потоках единственной очереди — налог свода (CF строка 37).
+def _v4_apply_single_queue_tax(xml: str, phase: int, missing: list[str],
+                               share: dict[str, int] | None = None) -> str:
+    """Налог в потоках очереди — её доля налога свода (CF строка 37).
 
-    Строка 24 шаблона считает налог накопленной базой за весь горизонт:
-    убыток прошлых лет гасит прибыль целиком. Движок и свод книги считают
-    по годам с переносом убытка не больше половины базы года (ст. 283): на
-    проекте с убыточным стартом и прибылью позже свод платит налог, а строка
-    24 — ноль. Строка 24 кормит вклад и распределение капитала (49, 50), CFADS
-    и потребность в БРИДЖе, и у проекта с одной очередью капитал выходил не
-    тем, что у движка (12 мес. остаточных продаж: 27 млн ₽).
+    Строка 24 шаблона считает налог очереди в одиночку и накопленной базой за
+    весь горизонт: убыток прошлых лет гасит прибыль целиком, а убыток соседних
+    очередей не гасит вовсе. Свод книги, ОТЧЕТ и движок считают налог одного
+    спецзастройщика — по годам, с переносом убытка не больше половины базы
+    года (ст. 283). Строка 24 кормит вклад и распределение капитала (49, 50),
+    CFADS (28) и поток проекта (54), и у проекта с очередями IRR и NPV
+    капитала выходили с налогом почти вдвое больше начисленного (Нагатино:
+    7 174 млн в потоках против 3 669 в P&L).
 
-    Только при одной включённой очереди: тогда свод и есть её налог. Раздача
-    свода по очередям годами (блок КОНСОЛИДАТОРа) тянет весь год вперёд, и
-    строка 24 через потребность БРИДЖа замкнулась бы сама на себя; там
-    остаётся формула шаблона — так считает и движок очередей.
+    Одна включённая очередь — налог свода целиком. Несколько — налог месяца
+    свода, умноженный на долю очереди в налоге ЕГО года из блока раздачи
+    КОНСОЛИДАТОРа (`_v4_tax_share_by_year`): та же доля, что у налога очереди
+    в её P&L, и тот же месяц уплаты, что у свода, — как в движке
+    (`_restate_phase_tax_cashflows`, решение владельца 16.10.2026). Цикла
+    нет: потребность БРИДЖа налога больше не видит (`_v4_bridge_need_without_tax`).
     """
     def build(column: str, body: str) -> str:
         sheet = re.search(r"('[^']+')!\$B\$21", body)
         if sheet is None:
             return body
-        return (f'IF(COUNTIF({sheet.group(1)}!$B$88:$B$91,"Да")=1,'
-                f"IF($B$5=1,'CF'!{column}37,0),{body})")
+        alone = f"'CF'!{column}37"
+        if share is None:
+            return (f'IF(COUNTIF({sheet.group(1)}!$B$88:$B$91,"Да")=1,'
+                    f"IF($B$5=1,{alone},0),{body})")
+        years = f"'КОНСОЛИДАТОР'!$A${share['first']}:$A${share['last']}"
+        year = f"'КОНСОЛИДАТОР'!{column}${share['years']}"
+        own = (f"'КОНСОЛИДАТОР'!${_V4_TAX_SHARE_COLUMNS[phase - 1]}${share['first']}:"
+               f"${_V4_TAX_SHARE_COLUMNS[phase - 1]}${share['last']}")
+        whole = f"'КОНСОЛИДАТОР'!$B${share['first']}:$B${share['last']}"
+        return (f'IF($B$5=1,IF(COUNTIF({sheet.group(1)}!$B$88:$B$91,"Да")=1,{alone},'
+                f"{alone}*IFERROR(SUMIF({years},{year},{own})"
+                f"/SUMIF({years},{year},{whole}),0)),0)")
 
     xml, count = _v4_rewrite_row_formulas(xml, 24, "$B$21", build)
     if count == 0:
         missing.append(f"CF_{phase}: строка 24 (налог) не опознана")
+    return xml
+
+
+def _v4_bridge_need_without_tax(xml: str, phase: int, missing: list[str]) -> str:
+    """Потребность БРИДЖа (строка 33) — без налога, как в движке.
+
+    Движок считает налог после выборок, и в потребность БРИДЖа он не входит.
+    Шаблон добавлял строку 24, и пока налог очереди не начинался раньше её РВЭ,
+    это ничего не стоило: потребность живёт до РнС. Доля налога свода у очереди
+    бывает и раньше её РВЭ (Нагатино: О4 платит долю 2033 года при РВЭ в
+    2035-м), а сама доля года через проценты в базе налога зависит от выборок
+    БРИДЖа — строка 24 в потребности замкнула бы книгу сама на себя.
+    """
+    def build(column: str, body: str) -> str:
+        return body.replace(f"{column}20+{column}24-{column}27",
+                            f"{column}20-{column}27", 1)
+
+    xml, count = _v4_rewrite_row_formulas(xml, 33, "24-", build)
+    if count == 0:
+        missing.append(f"CF_{phase}: строка 33 (потребность БРИДЖа) не опознана")
     return xml
 
 

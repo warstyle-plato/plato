@@ -38,6 +38,23 @@ def equity_npv(cashflows: list[float], annual_rate: float) -> float:
     return sum(cf / pow(1.0 + monthly_rate, i) for i, cf in enumerate(cashflows))
 
 
+def _irr_falling_bracket(npv: Any) -> tuple[float, float] | None:
+    """Самый правый отрезок месячных ставок, где NPV падает через ноль."""
+    grid = [-0.95 + 0.01 * i for i in range(95)]
+    rate = 0.0
+    while rate < 100:
+        grid.append(rate)
+        rate = rate + 0.005 if rate < 0.2 else rate * 1.25
+    found = None
+    previous, f_previous = grid[0], npv(grid[0])
+    for rate in grid[1:]:
+        f_rate = npv(rate)
+        if f_previous > 0 >= f_rate:
+            found = (previous, rate)
+        previous, f_previous = rate, f_rate
+    return found
+
+
 def monthly_irr(cashflows: list[float]) -> float | None:
     if not cashflows or not any(v < 0 for v in cashflows) or not any(v > 0 for v in cashflows):
         return None
@@ -75,7 +92,18 @@ def monthly_irr(cashflows: list[float]) -> float | None:
         f_hi = npv(hi)
         expand += 1
     if f_lo * f_hi > 0:
-        return None
+        # Края одного знака бывают и у ряда с корнем: вложение, большой приход
+        # и хвост расходов после него (налог свода, который очередь платит
+        # после своих продаж). У такого ряда NPV отрицателен и у −95%, где
+        # решает хвост, и у больших ставок, где решает вложение, а между ними —
+        # положителен. Ищем по сетке, где NPV переходит с плюса на минус с
+        # ростом ставки, и берём самый правый переход: это доходность
+        # вложения, а левый корень — арифметика хвоста.
+        bracket = _irr_falling_bracket(npv)
+        if bracket is None:
+            return None
+        lo, hi = bracket
+        f_lo, f_hi = npv(lo), npv(hi)
 
     for _ in range(180):
         mid = (lo + hi) / 2

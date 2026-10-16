@@ -1070,18 +1070,27 @@ def _phase_tax_base_of(row: dict[str, Any]) -> float:
             - float(row.get("financing_tax_deduction", 0.0) or 0.0))
 
 
-def _reallocate_phase_tax(
-    results: list[dict[str, Any]],
-    comparison: list[dict[str, Any]],
-    finance: dict[str, Any],
-) -> None:
-    """Сводный налог раздаётся очередям по их вкладу в облагаемую базу.
+def _phase_tax_by_year(finance: dict[str, Any]) -> dict[int, float]:
+    """Налог свода по календарным годам — из его помесячного ряда."""
+    years: dict[int, float] = {}
+    for row in finance.get("rows") or []:
+        tax = float(row.get("profit_tax", 0.0) or 0.0)
+        if tax:
+            year = int(str(row["month"])[:4])
+            years[year] = years.get(year, 0.0) + tax
+    return years
 
-    Очередь без базы налога не платит — у убыточной он остаётся нулевым, и
-    именно её убыток снизил налог остальным. Прибыль очереди правится на ту
-    же величину, иначе сумма очередей разойдётся со сводом.
 
-    Налог КАЖДОГО года раздаётся по вкладу очередей в базу ЭТОГО года. Прежде
+def _phase_tax_year_weights(
+    results: list[dict[str, Any]], finance: dict[str, Any],
+) -> dict[int, list[float]]:
+    """Доля каждой очереди в налоге свода — по годам, сумма долей года = 1.
+
+    Одно решение на два читателя: налог очереди в её P&L (`_reallocate_phase_tax`)
+    и налог в её денежных потоках (`_restate_phase_tax_cashflows`). Посчитанные
+    порознь, они разошлись бы — P&L очереди говорил бы одно, IRR другое.
+
+    Налог КАЖДОГО года делится по вкладу очередей в базу ЭТОГО года. Прежде
     веса брались суммой прибыльных лет за весь горизонт и этим весом делился
     ВЕСЬ налог: очередь, прибыльная в 2033-м, получала долю налога 2038 года,
     которого она не создавала. На двух и трёх очередях это совпадало с верным
@@ -1095,19 +1104,13 @@ def _reallocate_phase_tax(
     вынужденная и названа: год тут ответа не даёт, а терять налог нельзя —
     сумма очередей обязана сойтись со сводом.
     """
-    consolidated_tax = float(finance.get("profit_tax", 0.0) or 0.0)
     bases = _phase_tax_bases(results, finance.get("first_taxable_month"))
-    rows = list(finance.get("rows") or [])
-    tax_by_year: dict[int, float] = {}
     taxed_months: dict[int, set[str]] = {}
-    for row in rows:
-        tax = float(row.get("profit_tax", 0.0) or 0.0)
-        if tax:
-            year = int(str(row["month"])[:4])
-            tax_by_year[year] = tax_by_year.get(year, 0.0) + tax
-            taxed_months.setdefault(year, set()).add(str(row["month"]))
-    shares = [0.0] * len(results)
-    for year, tax in tax_by_year.items():
+    for row in finance.get("rows") or []:
+        if float(row.get("profit_tax", 0.0) or 0.0):
+            taxed_months.setdefault(int(str(row["month"])[:4]), set()).add(str(row["month"]))
+    weights: dict[int, list[float]] = {}
+    for year in _phase_tax_by_year(finance):
         positive = [max(base.get(year, 0.0), 0.0) for base in bases]
         if sum(positive) <= 0:
             months = taxed_months.get(year) or set()
@@ -1116,15 +1119,34 @@ def _reallocate_phase_tax(
                     for row in result["finance"]["rows"]
                     if str(row["month"]) in months)
                 for result in results]
-        total_year = sum(positive)
-        if total_year <= 0:
+        if sum(positive) <= 0:
             # Ни годовой базы, ни положительных месяцев — делить не по чему.
             # Поровну: налог в строках очередей обязан остаться, а выдумывать
             # за него основание нечем, и это сказано вслух здесь.
             positive = [1.0] * len(results)
-            total_year = float(len(results)) or 1.0
-        for index in range(len(results)):
-            shares[index] += tax * positive[index] / total_year
+        total_year = sum(positive)
+        weights[year] = [value / total_year for value in positive]
+    return weights
+
+
+def _reallocate_phase_tax(
+    results: list[dict[str, Any]],
+    comparison: list[dict[str, Any]],
+    finance: dict[str, Any],
+) -> None:
+    """Сводный налог раздаётся очередям по их вкладу в облагаемую базу.
+
+    Очередь без базы налога не платит — у убыточной он остаётся нулевым, и
+    именно её убыток снизил налог остальным. Прибыль очереди правится на ту
+    же величину, иначе сумма очередей разойдётся со сводом. Доли годов —
+    `_phase_tax_year_weights`, те же, что у налога в потоках очереди.
+    """
+    consolidated_tax = float(finance.get("profit_tax", 0.0) or 0.0)
+    weights = _phase_tax_year_weights(results, finance)
+    shares = [0.0] * len(results)
+    for year, tax in _phase_tax_by_year(finance).items():
+        for index, weight in enumerate(weights.get(year) or ()):
+            shares[index] += tax * weight
     total = sum(shares)
     for index, result in enumerate(results):
         share = (shares[index] / total) if total else 0.0
@@ -1138,6 +1160,112 @@ def _reallocate_phase_tax(
             row["profit_tax"] = now
             row["net_profit"] = float(row.get("net_profit", 0.0) or 0.0) + was - now
         _restate_phase_tax_expense(result, now)
+
+
+def _restate_phase_tax_cashflows(
+    results: list[dict[str, Any]], finance: dict[str, Any], discount_rate: float,
+) -> None:
+    """Из потоков очереди уходит её доля налога свода, в месяц уплаты свода.
+
+    Проект с очередями — один спецзастройщик и один налогоплательщик
+    (владелец, 24.08.2026: «очереди это один проект»). P&L свода платит налог
+    по годам с переносом убытка (ст. 283), а потоки капитала и проекта очереди
+    несли налог, посчитанный ею в одиночку: убыток соседних очередей его не
+    уменьшал. На Нагатино в потоках было 3 699,5 + 3 474,8 = 7 174 млн, в P&L —
+    3 669: IRR и NPV капитала считались с налогом почти вдвое больше
+    начисленного (ревизия книги v4, 15.10.2026, вопрос 5).
+
+    Налог месяца свода делится долей очереди в базе его года
+    (`_phase_tax_year_weights`) — той же, что у её налога в P&L (решение
+    владельца, 16.10.2026: «как в таблице очередей»), и уходит в тот же месяц,
+    что у свода («тогда же, когда у проекта»), даже если это раньше РВЭ самой
+    очереди: деньги ушли в бюджет тогда. Сумма потоков очередей по месяцам
+    равна налогу свода.
+
+    Финансирование очереди (БРИДЖ, ПФ, свип, касса для следующих очередей)
+    уже посчитано на её налоге в одиночку и здесь не пересчитывается: в
+    потребность БРИДЖа налог не входит вовсе (он считается после выборок), а
+    свободная касса, отданная дальше, остаётся осторожной оценкой — повторный
+    проход очередей замкнул бы налог свода сам на себя. Налог в одиночку
+    остаётся на виду полем `standalone_profit_tax`.
+    """
+    weights = _phase_tax_year_weights(results, finance)
+    schedule: list[dict[date, float]] = [defaultdict(float) for _ in results]
+    for row in finance.get("rows") or []:
+        tax = float(row.get("profit_tax", 0.0) or 0.0)
+        if not tax:
+            continue
+        month = d(row["month"])
+        for index, weight in enumerate(weights.get(month.year) or ()):
+            if weight:
+                schedule[index][month] += tax * weight
+    for result, taxes in zip(results, schedule):
+        cashflow = result.get("cashflow") or {}
+        months = [d(month) for month in cashflow.get("months") or []]
+        if not months:
+            continue
+        project = [float(v or 0.0) for v in cashflow.get("project") or []]
+        equity = [float(v or 0.0) for v in cashflow.get("equity") or []]
+        old_tax = [float(v or 0.0) for v in cashflow.get("profit_tax") or []]
+        for series in (project, equity, old_tax):
+            series.extend([0.0] * (len(months) - len(series)))
+        # Год свода может кончиться после горизонта очереди: её доля налога
+        # года уходит в бюджет позже её последнего месяца. Ряд продлевается
+        # нулями до месяца уплаты — терять налог нельзя, а сдвинуть его на
+        # чужой месяц значило бы соврать о дате.
+        last = max(taxes, default=months[-1])
+        while months[-1] < last:
+            months.append(add_months(months[-1], 1))
+            for series in (project, equity, old_tax):
+                series.append(0.0)
+        position = {month: i for i, month in enumerate(months)}
+        new_tax = [0.0] * len(months)
+        for month, value in taxes.items():
+            # Раньше первого месяца очереди базы у неё нет, и доли тоже: сюда
+            # попадает только остаток округления — в первый месяц, не мимо.
+            new_tax[position.get(month, 0)] += value
+        for i in range(len(months)):
+            delta = old_tax[i] - new_tax[i]
+            project[i] += delta
+            equity[i] += delta
+        cashflow.update({
+            "months": [month.isoformat() for month in months],
+            "project": project, "equity": equity, "profit_tax": new_tax,
+        })
+        result["cashflow"] = cashflow
+        fin = result.get("finance") or {}
+        fin["standalone_profit_tax"] = float(fin.get("profit_tax", 0.0) or 0.0)
+        fin["profit_tax"] = sum(new_tax)
+        fin["profit_tax_schedule"] = {
+            month.isoformat(): value for month, value in sorted(taxes.items()) if value}
+        for row in fin.get("rows") or []:
+            row["profit_tax"] = taxes.get(d(row["month"]), 0.0)
+        _restate_phase_returns(result, months, project, equity, discount_rate)
+
+
+def _restate_phase_returns(
+    result: dict[str, Any], months: list[date], project: list[float],
+    equity: list[float], discount_rate: float,
+) -> None:
+    """NPV и IRR очереди — по её потокам с налогом свода.
+
+    Снятые за непогашенный долг (`equity_returns`) остаются снятыми: решение
+    о дефолте старше пересчёта налога. Поток проекта гостиницы — FCFF её
+    расчёта, и NPV проекта у неё свой (как в `calculate`).
+    """
+    summary = result.get("summary") or {}
+    verdict = (summary.get("equity_returns") or {}).get("status")
+    if verdict == EQUITY_RETURNS_DEBT_UNREPAID:
+        return
+    if not ((result.get("finance") or {}).get("hotel") or {}).get("computed"):
+        summary["npv"] = _monthly_npv(project, discount_rate)
+    summary["npv_equity"] = _equity_npv(equity, discount_rate)
+    summary["irr_equity"] = _monthly_irr(equity)
+    report = result.get("report") or {}
+    if "equity_participation" in report:
+        report["equity_participation"] = equity_participation_report(
+            months, equity, result.get("finance") or {},
+            discount_rate=discount_rate, irr=summary["irr_equity"])
 
 
 def _restate_phase_tax_expense(result: dict[str, Any], profit_tax: float) -> None:
@@ -1252,9 +1380,14 @@ def _consolidate_phase_results(
     phase_tax_delta = sum(
         float((r.get("summary") or {}).get("profit_tax", 0.0) or 0.0)
         for r in results) - finance["profit_tax"]
-    if abs(phase_tax_delta) > 0.5:
-        net_profit += phase_tax_delta
-        _reallocate_phase_tax(results, comparison, finance)
+    # Раздаётся всегда, а не только когда разошлась сумма: при совпавшем итоге
+    # доли очередей бывают другими (эталон «экземпляры»: О1 89,2 в одиночку,
+    # 58,8 в своде при тех же 340,3 млн на двоих), и P&L очереди спорил бы с
+    # её потоком.
+    net_profit += phase_tax_delta
+    _reallocate_phase_tax(results, comparison, finance)
+    _restate_phase_tax_cashflows(
+        results, finance, n(master_inputs, "discount_rate_pct", 20) / 100)
 
     saleable = sum(r["summary"]["monetizable_saleable_sqm"] for r in results)
     apartment_saleable = sum(r["summary"]["apartment_saleable_sqm"] for r in results)
