@@ -1101,6 +1101,14 @@ def _tool_explain_metric(
     return {"error": f"Неизвестная метрика {metric}"}
 
 
+def _engine_tep_row(result: dict[str, Any], key: str) -> dict[str, Any] | None:
+    """Строка ТЭП из ответа движка (`result["tep"]["rows"]`) или None."""
+    for row in ((result or {}).get("tep") or {}).get("rows") or []:
+        if isinstance(row, dict) and row.get("key") == key:
+            return row
+    return None
+
+
 def _tool_trace_metric(
     req: AgentChatRequest,
     bundle: dict[str, Any],
@@ -1196,10 +1204,15 @@ def _tool_trace_metric(
         return trace
 
     if metric == "parking":
-        row = req.tep.get("underground_parking", {}) or {}
+        # Ответ расчёта, а не присланное поле страницы: места, гостевые и
+        # продаваемые — те же, что в итогах и PDF.
+        row = _engine_tep_row(result, "underground_parking") or req.tep.get("underground_parking", {}) or {}
         trace["model_value"] = {
             "spaces": round(n(row, "units"), 2),
             "gns_sqm": round(n(row, "gns"), 2),
+            **({"guest_spaces": round(n(row, "guest_units"), 2),
+                "saleable_spaces": round(n(row, "saleable_units"), 2)}
+               if "saleable_units" in row else {}),
         }
         trace["glavapu_control"] = {
             "permanent": imported.get("parking_permanent"),
@@ -2023,10 +2036,14 @@ def _tool_find_anomalies(
                 "Продаваемая коммерция 1 этажа существенно расходится с нежилой НП ГлавАПУ.",
                 {"model_saleable_sqm": round(model_comm, 2), "glavapu_np_nonresidential_sqm": round(src_nonres, 2)})
 
-        parking = req.tep.get("underground_parking", {}) or {}
+        # Строка — та, что посчитал движок, а не присланная: присланный ТЭП
+        # несёт поле страницы, а не ответ расчёта. Метров на место — норматив
+        # проекта, а не зашитые 35: при 37,5 м²/место каждая сверка «не
+        # сходилась» на 2,5 м² × места, хотя паркинг совпадал с городом.
+        parking = _engine_tep_row(result, "underground_parking") or req.tep.get("underground_parking", {}) or {}
         expected_spaces = float(imported.get("parking_permanent", 0) or 0) + float(imported.get("parking_guest", 0) or 0)
         model_spaces = n(parking, "units")
-        expected_gns = expected_spaces * 35
+        expected_gns = expected_spaces * underground_area_per_space(req.inputs)
         model_gns = n(parking, "gns")
         if expected_spaces > 0 and (abs(model_spaces - expected_spaces) > 0.5 or abs(model_gns - expected_gns) > 5):
             add("high", "PARKING_MISMATCH",
