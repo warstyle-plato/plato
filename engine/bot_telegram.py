@@ -1221,6 +1221,16 @@ def _telegram_agent_request(chat_id: int) -> Request:
     })
 
 
+def _telegram_platon_remember_document(chat_id: int, context: dict[str, Any]) -> str:
+    """Положить разобранный документ в разговор с Платоном.
+
+    Разговор Платона в чате ведёт обёртка (`main.py`): она и подменяет эту
+    функцию своим хранилищем. Без обёртки разговора нет — и класть некуда,
+    о чём сказано вслух, а не промолчано.
+    """
+    return "разговор с Платоном в этом процессе не ведётся"
+
+
 def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -> None:
     """Разбор присланного в чат документа: тизер, справка, решение ГЗК.
 
@@ -1260,9 +1270,17 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
             chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(exc)))
         return
     got = document_intake.parse_intake(str((answer or {}).get("answer") or ""))
+    # Документ остаётся в разговоре: следующий вопрос («а какая там IRR?»)
+    # Платон отвечает по нему. Не легло — причина называется, а не теряется.
+    remembered = _telegram_platon_remember_document(
+        chat_id, document_intake.chat_context(document, got))
+    in_dialog = ("\n\n<i>Документ в разговоре: спрашивайте по нему — Платон ответит "
+                 "по тексту. Новый документ заменит этот.</i>" if not remembered else
+                 "\n\n<i>Документ в разговор не попал (" + html.escape(remembered[:200])
+                 + "): следующий вопрос Платон увидит без него.</i>")
     if got.get("reason"):
         _telegram_send_message(
-            chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(got["reason"])))
+            chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(got["reason"])) + in_dialog)
         return
 
     lines = [f"<b>Разбор «{html.escape(filename)}»</b>"]
@@ -1310,6 +1328,7 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
     if numbers:
         lines.append(f"Участок: <b>{html.escape(', '.join(numbers))}</b> — считаю "
                      + ("после вопросов." if questions else "сейчас."))
+    lines.append(in_dialog.strip())
     if not questions:
         if not numbers:
             lines.append("Открыть модель — кнопкой ниже.")
