@@ -143,7 +143,7 @@ def test_the_v4_workbook_keeps_capacity_out_of_sales() -> None:
     allowed = {(params, f"F{row}") for row in range(174, 186)}
     allowed |= {("ТЭП", f"{col}{row}") for row in social_rows.values()
                 for col in "BCD"}
-    # Строительный объём очереди (ОТЧЕТ!B58:E58) делит ГНС соцобъекта по
+    # Суммарная площадь в ГНС очереди (ОТЧЕТ!B58:E58) делит ГНС соцобъекта по
     # очередям пропорционально их местам: это площадь здания — база
     # удельного CAPEX (решение владельца 16.10.2026), — а не продажи.
     allowed |= {("ОТЧЕТ", f"{col}58") for col in "BCDE"}
