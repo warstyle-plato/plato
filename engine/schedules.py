@@ -591,6 +591,7 @@ def _apply_equity_returns_verdict(summary: dict[str, Any] | None) -> dict[str, A
     if ending > EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB:
         summary["npv"] = None
         summary["npv_equity"] = None
+        summary["irr_project"] = None
         summary["irr_equity"] = None
         summary["equity_returns"] = {
             "status": EQUITY_RETURNS_DEBT_UNREPAID,
@@ -613,9 +614,81 @@ def equity_returns_na_label(summary: dict[str, Any] | None) -> str | None:
     return None
 
 
+# Показателен ли IRR капитала (решение владельца 16.10.2026, «IRR проекта +
+# пометка»). Когда всё до ПФ несёт БРИДЖ, своих денег в проекте почти нет, и
+# IRR капитала выходит 300 %+ — арифметически верно, но не доходность. Главный
+# показатель — IRR проекта (поток до финансирования), IRR капитала — второй
+# строкой и числом только при своих деньгах не меньше порога от полных затрат
+# (владелец выбрал 10 %). «Своих денег» — сумма вложений капитала, как
+# «Вложено собственного капитала» книги (ОТЧЕТ!B16). Решает одна функция ниже
+# и пишет `summary["equity_irr"]`; страница, PDF, тизер, книга, бот и Платон
+# читают её подпись, а число — только при `meaningful`.
+EQUITY_IRR_MIN_OWN_SHARE = 0.10
+EQUITY_IRR_OK = "ok"
+EQUITY_IRR_THIN_EQUITY = "thin_equity"
+EQUITY_IRR_NO_SIGN_CHANGE = "no_sign_change"
+EQUITY_IRR_NO_SIGN_CHANGE_LABEL = "не считается — поток капитала не меняет знак"
+
+
+def equity_contributed_rub(equity_cf: list[float] | None) -> float:
+    """Сколько своих денег вложено: сумма оттоков потока капитала."""
+    return -sum(min(0.0, float(v or 0.0)) for v in (equity_cf or []))
+
+
+def _ru_number(value: float, digits: int) -> str:
+    return f"{value:,.{digits}f}".replace(",", " ").replace(".", ",")
+
+
+def equity_irr_thin_label(own_funds: float, share: float) -> str:
+    return (f"не показателен: своих денег {_ru_number(own_funds / 1e6, 0)} млн ₽ "
+            f"({_ru_number(share * 100, 1)}% затрат)")
+
+
+def _apply_equity_irr_verdict(result: dict[str, Any] | None) -> None:
+    summary = (result or {}).get("summary") if isinstance(result, dict) else None
+    if not isinstance(summary, dict) or "equity_irr" in summary:
+        return
+    returns = summary.get("equity_returns") or {}
+    raw = summary.get("irr_equity")
+    cashflow = result.get("cashflow") if isinstance(result.get("cashflow"), dict) else None
+    equity_cf = (cashflow or {}).get("equity")
+    own_funds = (float(summary["equity_contributed"]) if summary.get("equity_contributed") is not None
+                 else equity_contributed_rub(equity_cf) if equity_cf is not None else None)
+    cost = float(summary.get("full_project_cost") or 0.0)
+    share = own_funds / cost if own_funds is not None and cost > 0 else None
+    verdict = {"status": EQUITY_IRR_OK, "meaningful": raw is not None, "label": None,
+               "reason": "", "own_funds": own_funds, "own_funds_share": share,
+               "min_share": EQUITY_IRR_MIN_OWN_SHARE, "raw": raw}
+    if returns.get("status") == EQUITY_RETURNS_DEBT_UNREPAID:
+        verdict.update(status=EQUITY_RETURNS_DEBT_UNREPAID, meaningful=False,
+                       label=returns.get("label") or EQUITY_RETURNS_NA_DEBT_LABEL,
+                       reason=returns.get("reason") or "")
+    elif share is not None and share < EQUITY_IRR_MIN_OWN_SHARE:
+        verdict.update(status=EQUITY_IRR_THIN_EQUITY, meaningful=False,
+                       label=equity_irr_thin_label(own_funds, share),
+                       reason=(f"своих денег меньше {_ru_number(EQUITY_IRR_MIN_OWN_SHARE * 100, 0)}% "
+                               "полных затрат: проект несут кредиты, и IRR капитала — "
+                               "отношение к почти нулю, а не доходность"))
+        summary["irr_equity"] = None
+    elif raw is None:
+        verdict.update(status=EQUITY_IRR_NO_SIGN_CHANGE, meaningful=False,
+                       label=EQUITY_IRR_NO_SIGN_CHANGE_LABEL)
+    summary["irr_equity_raw"] = raw
+    summary["equity_irr"] = verdict
+
+
+def equity_irr_label(summary: dict[str, Any] | None) -> str | None:
+    """Подпись вместо числа IRR капитала; None — число показательно."""
+    verdict = (summary or {}).get("equity_irr") or {}
+    if verdict and not verdict.get("meaningful"):
+        return str(verdict.get("label") or "")
+    return equity_returns_na_label(summary)
+
+
 def _apply_equity_returns_to_result(result: dict[str, Any]) -> dict[str, Any]:
     if isinstance(result, dict):
         _apply_equity_returns_verdict(result.get("summary"))
+        _apply_equity_irr_verdict(result)
     return result
 
 
