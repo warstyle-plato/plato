@@ -520,6 +520,7 @@
   "summary.equity_irr.own_funds": 3485802549.0782,
   "summary.equity_irr.own_funds_share": 0.0838,
   "summary.equity_irr.raw": null,
+  "summary.equity_irr_cost_base": null,
   "summary.equity_returns.ending_pf": 836805858.1825,
   "summary.financing_cost": 4333489896.0048,
   "summary.full_cost_per_saleable_th": 473.5293,

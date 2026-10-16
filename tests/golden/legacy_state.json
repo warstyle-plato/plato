@@ -554,6 +554,7 @@
   "summary.equity_irr.own_funds": 1726452872.4722,
   "summary.equity_irr.own_funds_share": 0.0317,
   "summary.equity_irr.raw": 5.0918,
+  "summary.equity_irr_cost_base": null,
   "summary.equity_returns.ending_pf": 0.0,
   "summary.equity_returns.label": null,
   "summary.financing_cost": 3771248074.7272,

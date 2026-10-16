@@ -635,13 +635,16 @@ def equity_contributed_rub(equity_cf: list[float] | None) -> float:
     return -sum(min(0.0, float(v or 0.0)) for v in (equity_cf or []))
 
 
-def _ru_number(value: float, digits: int) -> str:
+def _equity_irr_number(value: float, digits: int) -> str:
     return f"{value:,.{digits}f}".replace(",", " ").replace(".", ",")
 
 
-def equity_irr_thin_label(own_funds: float, share: float) -> str:
-    return (f"не показателен: своих денег {_ru_number(own_funds / 1e6, 0)} млн ₽ "
-            f"({_ru_number(share * 100, 1)}% затрат)")
+def equity_irr_thin_label(own_funds: float, share: float, base: str = "затрат") -> str:
+    # Доля — до десятой без пустого нуля («9%», «2,1%»): так её склеивает и
+    # формула книги (ROUND(…;1)&"%").
+    percent = _equity_irr_number(share * 100, 1).removesuffix(",0")
+    return (f"не показателен: своих денег {_equity_irr_number(own_funds / 1e6, 0)} млн ₽ "
+            f"({percent}% {base})")
 
 
 def _apply_equity_irr_verdict(result: dict[str, Any] | None) -> None:
@@ -654,7 +657,13 @@ def _apply_equity_irr_verdict(result: dict[str, Any] | None) -> None:
     equity_cf = (cashflow or {}).get("equity")
     own_funds = (float(summary["equity_contributed"]) if summary.get("equity_contributed") is not None
                  else equity_contributed_rub(equity_cf) if equity_cf is not None else None)
-    cost = float(summary.get("full_project_cost") or 0.0)
+    # База порога — полные затраты проекта. У гостиницы в них 20 лет
+    # эксплуатации, и вложения меряются CAPEX, как её «доля собственного
+    # капитала в CAPEX» (`equity_irr_cost_base`).
+    base = summary.get("equity_irr_cost_base") or {}
+    cost = float(base.get("value") if base.get("value") is not None
+                 else summary.get("full_project_cost") or 0.0)
+    base_label = str(base.get("label") or "затрат")
     share = own_funds / cost if own_funds is not None and cost > 0 else None
     verdict = {"status": EQUITY_IRR_OK, "meaningful": raw is not None, "label": None,
                "reason": "", "own_funds": own_funds, "own_funds_share": share,
@@ -665,9 +674,10 @@ def _apply_equity_irr_verdict(result: dict[str, Any] | None) -> None:
                        reason=returns.get("reason") or "")
     elif share is not None and share < EQUITY_IRR_MIN_OWN_SHARE:
         verdict.update(status=EQUITY_IRR_THIN_EQUITY, meaningful=False,
-                       label=equity_irr_thin_label(own_funds, share),
-                       reason=(f"своих денег меньше {_ru_number(EQUITY_IRR_MIN_OWN_SHARE * 100, 0)}% "
-                               "полных затрат: проект несут кредиты, и IRR капитала — "
+                       label=equity_irr_thin_label(own_funds, share, base_label),
+                       reason=(f"своих денег меньше {_equity_irr_number(EQUITY_IRR_MIN_OWN_SHARE * 100, 0)}% "
+                               f"{'полных затрат' if base_label == 'затрат' else base_label}: "
+                               "проект несут кредиты, и IRR капитала — "
                                "отношение к почти нулю, а не доходность"))
         summary["irr_equity"] = None
     elif raw is None:

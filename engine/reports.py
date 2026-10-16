@@ -881,7 +881,10 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
         _row(f"NPV проекта @{rate_pct}%", kpi.get("npv_project"), "rub"),
         irr_row("IRR проекта", kpi.get("irr_project")),
         _row(f"NPV собственного капитала @{rate_pct}%", kpi.get("npv_equity"), "rub"),
-        irr_row("IRR собственного капитала", kpi.get("irr_equity")),
+        # Тем же решением, что сводка (`summary.equity_irr`): при своих деньгах
+        # ниже порога от CAPEX — подпись, а не число.
+        (_row("IRR собственного капитала", equity_irr_label(summary), "text")
+         if equity_irr_label(summary) else irr_row("IRR собственного капитала", kpi.get("irr_equity"))),
         pbp_row("Срок окупаемости проекта (PBP), лет от начала", kpi.get("pbp_years")),
         pbp_row("Дисконтированный срок окупаемости (DPBP), лет", kpi.get("dpbp_years")),
         pbp_row("Окупаемость собственного капитала, лет", kpi.get("equity_pbp_years")),
@@ -1186,8 +1189,15 @@ def _apply_equity_irr_to_participation(result: dict[str, Any]) -> None:
     """«Собственное участие» печатает IRR капитала тем же решением, что сводка:
     при своих деньгах ниже порога — подпись движка, а не число."""
     verdict = (result.get("summary") or {}).get("equity_irr") or {}
+    if verdict.get("status") != EQUITY_IRR_THIN_EQUITY:
+        return
+    # Вкладка гостиницы печатает свои KPI строками — та же подпись.
+    for row in ((result.get("report") or {}).get("hotel") or {}).get("rows") or []:
+        if isinstance(row, dict) and row.get("label") == "IRR собственного капитала" \
+                and row.get("unit") == "pct":
+            row.update({"value": verdict.get("label"), "unit": "text"})
     equity = (result.get("report") or {}).get("equity_participation") or {}
-    if verdict.get("status") != EQUITY_IRR_THIN_EQUITY or not equity:
+    if not equity:
         return
     equity["irr"] = None
     equity["irr_label"] = verdict.get("label")

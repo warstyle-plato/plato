@@ -968,6 +968,12 @@ def _calculate_economics(req: CalcRequest) -> dict:
             # Вложено своих денег — как «Вложено собственного капитала» книги
             # (CF_n!B78): по нему решается, показателен ли IRR капитала.
             "equity_contributed": equity_contributed_rub(equity_cf),
+            # База порога «IRR капитала показателен»: у гостиницы — CAPEX
+            # (в полных затратах её 20 лет эксплуатации); иначе полные затраты.
+            "equity_irr_cost_base": ({"value": float(_hotel["kpi"].get("capex") or 0.0),
+                                      "label": "CAPEX"}
+                                     if _hotel.get("computed") and _hotel["kpi"].get("capex")
+                                     else None),
             "full_project_cost": full_project_cost,
             "monetizable_saleable_sqm": monetizable_saleable_sqm,
             "apartment_saleable_sqm": apartment_saleable_sqm,
