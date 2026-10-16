@@ -93,6 +93,7 @@ def _stand() -> str:
         page_blocks.object_roster(),
         page_blocks.function("standaloneProductSum"),
         page_blocks.krt_lock(),
+        page_blocks.function("setUndergroundFromMethod"),
         page_blocks.function("recalcFromTep"),
     ])
 
