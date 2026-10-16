@@ -315,3 +315,57 @@ def test_the_debt_chart_ends_near_the_horizon(styled_book) -> None:
 def test_the_social_header_spans_its_table(styled_book) -> None:
     _content, book = styled_book
     assert any(str(rng).startswith("A38:") for rng in book["ТЭП"].merged_cells.ranges)
+
+
+# --- 9. решения владельца 16.10.2026: НДС в полных расходах, CAPEX на объём, IRR --
+
+def test_full_costs_carry_the_vat_like_the_engine(default_book) -> None:
+    engine, book = default_book
+    summary = engine["summary"]
+    assert summary["vat"] > 1e6, "НДС нет — тест пуст"
+    full = summary["total_expenses"] / 1e6
+    assert book.cell("ОТЧЕТ", "B82") == pytest.approx(full, rel=1e-5)
+    assert book.cell("ОТЧЕТ", "B40") == pytest.approx(full, rel=1e-5)
+    assert abs(book.cell("ОТЧЕТ", "B42")) < 1e-6
+    # Выручка − полные расходы = чистая прибыль: внутри ОТЧЕТа одно равенство.
+    assert (book.cell("ОТЧЕТ", "B5") - book.cell("ОТЧЕТ", "B82")) == pytest.approx(
+        book.cell("ОТЧЕТ", "B12"), abs=1e-6)
+    assert book.cell("ОТЧЕТ", "F63") == pytest.approx(
+        summary["full_cost_per_saleable_th"], rel=1e-5)
+
+
+def test_capex_per_metre_uses_the_construction_volume(donskoy) -> None:
+    """Донской: подземные кладовые входят в объём, как у движка."""
+    engine, book = donskoy
+    summary = engine["summary"]
+    assert book.cell("ОТЧЕТ", "F58") == pytest.approx(summary["construction_volume_sqm"], rel=1e-6)
+    assert book.cell("ОТЧЕТ", "F62") == pytest.approx(summary["capex_per_total_area_th"], rel=1e-5)
+
+
+def test_the_irr_is_monthly_like_the_engine() -> None:
+    """Две очереди с объектами: XIRR по дням давал 61,4% против 61,8% движка."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import golden_snapshot
+
+    spec = golden_snapshot.s_instances(core, ROOT)
+    engine = core._run_authoritative_model(
+        dict(spec["inputs"]), copy.deepcopy(spec["tep"]), [], copy.deepcopy(spec["phasing"]))
+    content, _name, _meta = core.build_project_workbook(
+        dict(spec["inputs"]), copy.deepcopy(spec["tep"]), [], copy.deepcopy(spec["phasing"]),
+        project_name="instances")
+    irr = engine["consolidated"]["summary"]["irr_equity"]
+    assert isinstance(irr, float), "IRR нет — тест пуст"
+    # Потоки книги и движка расходятся на десятые доли млн (ГНС с ROUND шаблона),
+    # XIRR же уводил на 0,7% — допуск между ними.
+    assert _evaluate(content).cell("ОТЧЕТ", "B14") == pytest.approx(irr, rel=1e-3)
+
+
+def test_the_sold_sports_centre_counts_in_the_saleable_area() -> None:
+    x = dict(core.DEFAULT_INPUTS)
+    x.update(sports_enabled=True, sports_gba_sqm=20000.0, sports_saleable_sqm=12000.0,
+             sports_disposition="sale", sports_purpose="sport")
+    t = copy.deepcopy(core.TEP_DEFAULT)
+    t.setdefault("sports", {}).update(gns=20000, total_area=18800, useful=12000, saleable=12000)
+    engine, book = _engine(x, t), _book(x, t, "ФОК на продажу")
+    assert book.cell("ОТЧЕТ", "F57") == pytest.approx(
+        engine["summary"]["monetizable_saleable_sqm"], rel=1e-6)

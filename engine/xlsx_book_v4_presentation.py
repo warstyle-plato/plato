@@ -580,3 +580,141 @@ def _v4_copy_style(xml: str, source: str, target: str) -> str:
     attrs = (re.sub(r'\ss="\d+"', f' s="{style.group(1)}"', found.group(1), count=1)
              if re.search(r'\ss="\d+"', found.group(1)) else f'{found.group(1)} s="{style.group(1)}"')
     return xml[:found.start()] + f'<x:c r="{target}"{attrs}{found.group(2)}' + xml[found.end():]
+
+
+# --- решения владельца 16.10.2026 по ОТЧЕТу ---------------------------------
+_V4_VAT_TOTAL = "SUM('CF_1'!$B$21,'CF_2'!$B$21,'CF_3'!$B$21,'CF_4'!$B$21)"
+_V4_TAXES_LABEL = "Налоги: на прибыль и НДС к уплате"
+
+
+def _v4_report_owner_decisions(xml: str, social_base_row: int | None,
+                               missing: list[str]) -> str:
+    """НДС в полных расходах и CAPEX на строительный объём (владелец, 16.10.2026).
+
+    НДС к уплате движок держит в полных расходах и отдельной строкой структуры;
+    ОТЧЕТ его не считал, и «выручка − полные расходы» расходилась с чистой
+    прибылью на сумму НДС (Донской: 113,8 млн). Удельный CAPEX делился на GBA
+    продуктов без соцобъектов и гаражей, а движок и Дашборд по решению 4 от
+    29.09 — на строительный объём (Донской: 599,3 против 591,5 тыс. ₽/м²).
+    """
+    def put(coord: str, *, formula: str | None = None, text: str | None = None) -> None:
+        nonlocal xml
+        xml, done = _v4_set_or_insert_cell(xml, coord, formula=formula, text=text)
+        if not done:
+            missing.append(f"ОТЧЕТ: {coord} — решение владельца 16.10.2026 не записано")
+
+    # Налоги — одной строкой: на прибыль и НДС к уплате.
+    put("A39", text=_V4_TAXES_LABEL)
+    put("B39", formula=f"B11+{_V4_VAT_TOTAL}")
+    put("B42", formula="B40-(B6+B7+B9+B39)")
+    put("A81", text=_V4_TAXES_LABEL)
+    put("B81", formula="B39")
+    put("C81", formula="IFERROR((B81)*1000/$G$6,0)")
+    put("D81", formula="IFERROR((B81)*1000/$G$7,0)")
+    put("B82", formula="B6+B7+B9+B81")
+    put("C82", formula="IFERROR((B82)*1000/$G$6,0)")
+    put("D82", formula="IFERROR((B82)*1000/$G$7,0)")
+    for index, column in enumerate("BCDE", start=1):
+        full = (f"SUM('CF_{index}'!$B$68,'CF_{index}'!$B$69,'CF_{index}'!$B$74,"
+                f"'CF_{index}'!$B$76,'CF_{index}'!$B$21)")
+        put(f"{column}63", formula=f"IFERROR({full}*1000/{column}57,0)")
+        put(f"{column}64", formula=(f"IFERROR(MAX(0,({full}-('CF_{index}'!$B$67-{column}59))"
+                                    f"*1000/{column}57),0)"))
+    put("F63", formula=f"IFERROR((B6+B7+B9+B39)*1000/F57,0)")
+    put("F64", formula="IFERROR(MAX(0,((B6+B7+B9+B39)-($B$5-F59))*1000/F57),0)")
+    put("H63", text="CAPEX, коммерческие расходы, финансирование, налог на прибыль и НДС к уплате")
+
+    # Строительный объём очереди — так же, как суммарная площадь ТЭП!C36:
+    # продукты дома, объекты очереди с их подземными гаражами и соцобъекты
+    # очереди (ГНС типа делится по местам очередей).
+    objects = _v4_object_product_cells()
+    garages = {item[1]: item[5] for item in _v4_object_parking()}
+    for index, column in enumerate("BCDE", start=1):
+        row = 87 + index
+        # Кладовые под землёй — в подземной части, как в CAPEX и ТЭП (#695).
+        parts = [f"SUM('Вводные'!$I${row}:$K${row})"
+                 f"+'Вводные'!$AR${row}*IF('Вводные'!$B$456=\"На наземных этажах\",0,1)"]
+        for _key, (queue_row, _revenue_row) in sorted(objects.items(), key=lambda kv: kv[1]):
+            enabled = (f"AND('ОБЪЕКТЫ'!$B${queue_row - 1}=\"Да\","
+                       f"'ОБЪЕКТЫ'!$B${queue_row}={index})")
+            area = f"'ОБЪЕКТЫ'!$B${queue_row + 4}"
+            under = garages.get(queue_row - 1)
+            if under:
+                area += f"+'Вводные'!$K$158*'Вводные'!${under[0]}${under[1:]}"
+            parts.append(f"IF({enabled},{area},0)")
+        if social_base_row is not None:
+            for type_index in range(3):
+                rows = [_v4_social_row(social_base_row, type_index, phase) for phase in range(4)]
+                parts.append(
+                    f"IFERROR('ТЭП'!$F${40 + type_index}*'Вводные'!$B${rows[index - 1]}"
+                    f"/SUM('Вводные'!$B${rows[0]}:$B${rows[-1]}),0)")
+        put(f"{column}58", formula="+".join(parts))
+    # Подписи строк 58 и 62 — у их владельца, `_V4_REPORT_AREA_LABELS`.
+    return xml
+
+
+def _v4_monthly_irr(xml: str, row: int, missing: list[str], where: str) -> str:
+    """IRR месячным рядом в годовом выражении, как движок (владелец, 16.10.2026).
+
+    XIRR считает по фактическим дням, движок и книга нежилого —
+    `(1 + IRR месячный)^12 − 1`: разница 0,1–0,7% относительных.
+    """
+    guesses = {"0.1": "0.01", "1": "0.06", "5": "0.15"}
+    found = re.search(r'<x:c r="([A-Z]+%d)"[^>]*>\s*<x:f>([^<]*XIRR[^<]*)</x:f>' % row, xml)
+    if not found:
+        missing.append(f"{where}: IRR (XIRR) в строке {row} не найден")
+        return xml
+    formula = html.unescape(found.group(2))
+    # Последняя попытка шаблона — с отрицательными стартами: месячный IRR
+    # убыточного проекта (−28% годовых — это −2,7% в месяц, −91% — −18%) от положительной
+    # стартовой точки не находится, и клетка оставалась пустой.
+    formula = re.sub(
+        r'IFERROR\(XIRR\(([^,()]+),[^,()]+,5\),""\)',
+        lambda m: (f"IFERROR(XIRR({m.group(1)},_,5),IFERROR(((1+IRR({m.group(1)},-0.02))^12-1),"
+                   f"IFERROR(((1+IRR({m.group(1)},-0.08))^12-1),"
+                   f'IFERROR(((1+IRR({m.group(1)},-0.2))^12-1),""))))'),
+        formula)
+    new = re.sub(r"XIRR\(([^,()]+),[^,()]+,([0-9.]+)\)",
+                 lambda m: f"((1+IRR({m.group(1)},{guesses.get(m.group(2), '0.01')}))^12-1)",
+                 formula)
+    xml, done = _v4_set_or_insert_cell(xml, found.group(1), formula=new)
+    if not done or "XIRR" in new:
+        missing.append(f"{where}: IRR в строке {row} не переписан")
+    return xml
+
+
+def _v4_queue_saleable_with_extras(xml: str, missing: list[str]) -> str:
+    """Продаваемая площадь очереди (КОНСОЛИДАТОР!F4:F7) — со всеми объектами.
+
+    Шаблон знал офисы и ТЦ (K26, K46); ФОК и экземпляры 2–5 в площадь очереди
+    не входили, а их выручка входила: средняя цена и полные расходы на м²
+    продаж выходили выше движка (ФОК 12 000 м²: 428 против 403 тыс. ₽/м²).
+    Площадные объекты — те, у кого строка «Расчётная продаваемая площадь»;
+    ФОК — только когда продаётся, как в движке.
+    """
+    cells = _v4_object_product_cells()
+    for queue in range(1, 5):
+        row = 3 + queue
+        found = re.search(r'<x:c r="F%d"[^>]*>\s*<x:f>([^<]*)</x:f>' % row, xml)
+        if not found:
+            missing.append(f"КОНСОЛИДАТОР: F{row} (продаваемая площадь очереди) не найдена")
+            continue
+        formula = html.unescape(found.group(1))
+        extra = ""
+        for lay in _v4_extras():
+            key = lay.obj.key
+            if key.startswith("above_parking") or key not in cells:
+                continue
+            queue_row = cells[key][0]
+            term = (f"IF(AND('ОБЪЕКТЫ'!$B${queue_row - 1}=\"Да\",'ОБЪЕКТЫ'!$B${queue_row}={queue}),"
+                    f"'ОБЪЕКТЫ'!$B${queue_row + 5},0)")
+            if lay.disposition_row:
+                term = (f"IF('Вводные'!$K${lay.disposition_row}=\"{_V4_OBJECT_SALE_WORD}\","
+                        f"{term},0)")
+            extra += f"+{term}"
+        if not extra or extra in formula:
+            continue
+        xml, done = _v4_set_or_insert_cell(xml, f"F{row}", formula=formula + extra)
+        if not done:
+            missing.append(f"КОНСОЛИДАТОР: F{row} не записана")
+    return xml

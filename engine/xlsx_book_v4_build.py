@@ -2088,6 +2088,14 @@ def _build_project_workbook(
         except Exception as exc:  # noqa: BLE001 — молчащая инструкция хуже отсутствующей
             missing.append("Вводные · лист инструкции не собран: " + _error_location(exc))
 
+    # Решения владельца 16.10.2026: НДС в полных расходах ОТЧЕТа, CAPEX на
+    # строительный объём, IRR месячным рядом, как у движка.
+    report_xml = _v4_report_owner_decisions(report_xml, social_base_row, missing)
+    consolidator_xml = _v4_monthly_irr(consolidator_xml, 8, missing, "КОНСОЛИДАТОР")
+    consolidator_xml = _v4_queue_saleable_with_extras(consolidator_xml, missing)
+    for _name in list(cf_sheet_xml):
+        cf_sheet_xml[_name] = _v4_monthly_irr(cf_sheet_xml[_name], 80, missing, _name)
+
     # Числа без формата на видимых листах — формат по смыслу строки (ревизия
     # 15.10.2026). До дашборда: он берёт styles.xml дальше, и клоны стилей
     # должны в нём уже быть. Сводный CF сборщик не правит — он читается здесь.
