@@ -320,7 +320,11 @@ def _v4_fold_tep_rows(
             if key not in merged:
                 merged[key] = copy.deepcopy(product)
             else:
-                for field in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+                # Список полей — у свода движка (`PHASE_ADDITIVE_TEP_FIELDS`):
+                # гостевые и переданные хвоста складываются вместе с местами.
+                for field in PHASE_ADDITIVE_TEP_FIELDS:
+                    if field not in product and field not in merged[key]:
+                        continue
                     merged[key][field] = (
                         float(merged[key].get(field) or 0) + float(product.get(field) or 0))
     return rows[:book - 1] + [merged]
