@@ -94,3 +94,13 @@ def test_the_excerpt_points_to_the_full_review() -> None:
     text = (ROOT / "docs" / "normative" / f"{STEM}.md").read_text(encoding="utf-8")
     assert "docs/krt_spv_research.md" in text
     assert (ROOT / "docs" / "krt_spv_research.md").exists()
+
+
+def test_no_verdict_while_the_owner_checks_the_discrepancy() -> None:
+    """Решение владельца 16.10.2026: сначала нормы, вывода «торги выгоднее» нет,
+    пока расхождение акта и практики — на сверке у владельца."""
+    text = (ROOT / "docs" / "normative" / f"{STEM}.md").read_text(encoding="utf-8")
+    assert "на сверке у владельца" in text
+    assert "торги выгоднее" not in text
+    norms = ROOT / "docs" / "krt_spv_land_payment_norms.md"
+    assert norms.exists() and "2652-ПП" in norms.read_text(encoding="utf-8")
