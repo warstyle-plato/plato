@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import main as wrapper  # noqa: E402
+from terms_glossary import TOTAL_AREA  # noqa: E402
 import v4_book_polish  # noqa: E402
 
 core = wrapper.core
@@ -102,9 +103,12 @@ def test_the_total_style_sits_on_the_total_row(default_book):
 def test_every_per_sqm_label_names_its_divisor(default_book):
     book, _, _, _ = default_book
     report = book["ОТЧЕТ"]
-    assert report["A62"].value == "CAPEX на м² GBA продуктов"
+    # С 16.10.2026 (решение владельца) строка 62 делит на суммарную площадь в
+    # ГНС, как движок и Дашборд, — подпись называет этот делитель словом глоссария.
+    assert report["A62"].value == f"CAPEX на м² {TOTAL_AREA.genitive}"
+    assert report["F9"].value == report["A62"].value
+    assert report["A58"].value.startswith(TOTAL_AREA.name)
     assert "подземной" in report["C75"].value and "соцобъект" in report["C75"].value
-    assert "строительного объёма" not in report["A62"].value
 
 
 def test_monthly_sheets_keep_labels_and_months_in_view(default_book):
