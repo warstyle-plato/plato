@@ -271,7 +271,14 @@ def _irr(args: list[Any]) -> float:
         high *= 2
         f_high = value(high)
     if f_low * f_high > 0:
-        raise _DivZero()
+        # Вложение, приход и хвост налога после него: края одного знака, а
+        # корень есть. Тот же запасной поиск, что у движка.
+        from developaid_finance_math import _irr_falling_bracket
+        bracket = _irr_falling_bracket(value)
+        if bracket is None:
+            raise _DivZero()
+        low, high = bracket
+        f_low, f_high = value(low), value(high)
     for _ in range(200):
         mid = (low + high) / 2
         f_mid = value(mid)

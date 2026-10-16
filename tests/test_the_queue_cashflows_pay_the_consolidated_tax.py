@@ -63,15 +63,20 @@ def test_the_queues_alone_would_pay_a_different_tax(phased) -> None:
 
 
 def test_the_queue_cashflows_carry_the_consolidated_tax_month_by_month(phased) -> None:
-    """Сумма налога в потоках очередей = налог P&L свода, месяц в месяц."""
+    """Сумма налога в потоках очередей = уплата налога свода, месяц в месяц.
+
+    Уплата — авансами по итогам квартала и доплатой года в марте; её сумма
+    равна налогу P&L свода.
+    """
     total = float(phased["consolidated"]["summary"]["profit_tax"])
     cash = _cash_tax_by_month(phased)
     assert sum(cash.values()) == pytest.approx(total, rel=1e-9)
-    rows = {str(row["month"]): float(row.get("profit_tax") or 0.0)
-            for row in phased["consolidated"]["finance"]["rows"]}
-    for month, tax in rows.items():
+    paid = phased["consolidated"]["finance"]["profit_tax_payment_schedule"]
+    assert sum(paid.values()) == pytest.approx(total, rel=1e-9)
+    for month, tax in paid.items():
         assert cash.get(month, 0.0) == pytest.approx(tax, abs=1.0), month
-    assert set(cash) <= {month for month, tax in rows.items() if tax}
+    assert set(cash) <= set(paid)
+    assert {core.d(month).month for month in paid} <= {3, 4, 7, 10}
 
 
 def test_the_queue_pays_in_its_cashflow_what_its_pnl_says(phased) -> None:
@@ -132,3 +137,44 @@ def test_the_workbook_queue_rows_pay_the_engine_tax(phased) -> None:
         want = float(phase["result"]["summary"]["profit_tax"]) / 1e6
         assert got == pytest.approx(want, abs=max(1.0, want * 0.01)), (
             f"О{index}: книга {got:,.1f} против движка {want:,.1f}")
+
+
+def test_interest_before_the_rve_stays_a_loss_of_its_own_years() -> None:
+    """Проценты до РВЭ — убыток своих лет, гасит не больше половины прибыли.
+
+    Владелец, 16.10.2026: маржа дома признаётся при вводе, проценты — в месяце
+    начисления, убыток прошлых лет — не больше 50% базы года (ст. 283).
+    Прежняя мера переносила проценты в год РВЭ целиком: 1 000 − 600 = 400.
+    """
+    months = [core.d("2029-06-01"), core.d("2030-06-01")]
+    margins = {months[0]: 1_000.0}          # продано по ДДУ до ввода
+    financing = {months[0]: 600.0}          # проценты года стройки
+    gate = months[1]                        # ввод дома
+    new, detail = core._profit_tax_schedule(
+        months, margins, financing, gate, 1.0, defer_financing=False)
+    old, _ = core._profit_tax_schedule(months, margins, financing, gate, 1.0)
+    assert sum(old.values()) == pytest.approx(400.0)
+    assert sum(new.values()) == pytest.approx(500.0)
+    assert core._unused_tax_loss(detail) == pytest.approx(100.0)
+
+
+def test_the_tax_is_paid_by_quarters_and_the_year_in_march() -> None:
+    """Аванс по итогам квартала — 28-го следующего месяца, год — в марте."""
+    accrued = {core.d("2030-02-01"): 10.0, core.d("2030-03-01"): 5.0,
+               core.d("2030-05-01"): 7.0, core.d("2030-09-01"): 3.0,
+               core.d("2030-11-01"): 4.0, core.d("2030-12-01"): 1.0}
+    assert core._profit_tax_payments(accrued) == {
+        core.d("2030-04-01"): 15.0, core.d("2030-07-01"): 7.0,
+        core.d("2030-10-01"): 3.0, core.d("2031-03-01"): 5.0}
+
+
+def test_a_queue_margin_waits_for_its_own_rve() -> None:
+    """Маржа очереди — в РВЭ этой очереди, а не первой очереди проекта."""
+    first = {"dates": {"rve": "2032-01-01"}, "finance": {"rows": [
+        {"month": "2031-06-01", "taxable_margin": 10.0}]}}
+    third = {"dates": {"rve": "2034-01-01"}, "finance": {"rows": [
+        {"month": "2032-06-01", "taxable_margin": 100.0},
+        {"month": "2034-06-01", "taxable_margin": 5.0}]}}
+    assert core._phase_margins_at_own_rve([first, third]) == {
+        core.d("2032-01-01"): 10.0, core.d("2034-01-01"): 100.0,
+        core.d("2034-06-01"): 5.0}

@@ -87,8 +87,9 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
     parts.append(f'<x:row r="{note}">'
                  + label(f"A{note}",
                          "Налог каждого года делится по вкладу очередей в базу "
-                         "ЭТОГО года. Признанное до первого РВЭ отложено в год "
-                         "РВЭ — так же считает строка 37 листа CF. Считается, "
+                         "ЭТОГО года. База очереди — строка 101 её листа: маржа "
+                         "признаётся в её РВЭ, проценты — в месяце начисления, "
+                         "так же считает строка 37 листа CF. Считается, "
                          "править нечего.")
                  + "</x:row>")
     gate = layout["gate"]
@@ -120,7 +121,7 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
         for column in _v4_cf_columns():
             cells.append(formula(
                 f"{column}{row}",
-                f"IF('CF'!{column}$37>0,MAX('CF_{index + 1}'!{column}$22,0),0)"))
+                f"IF('CF'!{column}$37>0,MAX('CF_{index + 1}'!{column}${_V4_TAX_RECOGNIZED_ROW},0),0)"))
         parts.append(_v4_row_xml(row, cells))
     header = monthly + len(_V4_TAX_QUEUE_COLUMNS)
     titles = ["Год", "Налог свода"]
@@ -143,7 +144,7 @@ def _v4_tax_share_by_year(xml: str, missing: list[str]) -> str:
             cells.append(formula(
                 f"{column}{row}",
                 f"MAX(SUMIF({grid},$A{row},"
-                f"{_v4_month_span(22, f'CF_{index + 1}')}),0)"))
+                f"{_v4_month_span(_V4_TAX_RECOGNIZED_ROW, f'CF_{index + 1}')}),0)"))
         span = f"{_V4_TAX_QUEUE_COLUMNS[0]}{row}:{_V4_TAX_QUEUE_COLUMNS[-1]}{row}"
         cells.append(formula(f"G{row}", f"SUM({span})"))
         for index, column in enumerate(_V4_TAX_MONTHLY_COLUMNS):
@@ -756,6 +757,107 @@ _V4_VAT_CASH_ROWS = (
 )
 
 
+# Налоговая база очереди по месяцам ПРИЗНАНИЯ — дописанная строка листов
+# CF_n (шаблон кончается строкой 99). Её складывает свод (CF строка 32) и
+# раздача налога по годам (КОНСОЛИДАТОР).
+_V4_TAX_RECOGNIZED_ROW = 101
+# Уплата налога свода — дописанная строка листа CF под начислением (37).
+_V4_TAX_PAID_ROW = 38
+
+
+def _v4_add_recognized_tax_base_row(xml: str, phase: int, missing: list[str]) -> str:
+    """Строка 101 очереди: маржа — в месяц её РВЭ, проценты — в месяц начисления.
+
+    Строка 22 — база месяца: маржа продаж минус начисленные проценты (58),
+    комиссии выдачи (57) и НДС к уплате (21). Свод складывал её как есть и
+    откладывал всё до САМОГО РАННЕГО РВЭ проекта (CF строка 31): маржа О3
+    Нагатино за 2032–2033 гасила убыток О1 за два года до ввода самой О3, а
+    проценты всех лет до первого РВЭ уезжали в его год и гасили прибыль без
+    половинного ограничения. Правило спецзастройщика (владелец, 16.10.2026):
+    выручка по ДДУ — при вводе дома, проценты — расход месяца начисления
+    (п. 8 ст. 272). Так считает движок (`_phase_margins_at_own_rve`).
+    """
+    columns = _v4_cf_columns()
+    row = _V4_TAX_RECOGNIZED_ROW
+    if f'<x:row r="{row}"' in xml:
+        missing.append(f"CF_{phase}: строка {row} занята — база налога к признанию не дописана")
+        return xml
+    rve = "AND(YEAR({c}$3)=YEAR($B$8),MONTH({c}$3)=MONTH($B$8))"
+    formulas: dict[str, str] = {}
+    for index, column in enumerate(columns):
+        financing = f"{column}58+{column}57"
+        if index == 0:
+            earlier = "0"
+        else:
+            before = columns[index - 1]
+            earlier = (f"SUM($D22:{before}22)+SUM($D58:{before}58)"
+                       f"+SUM($D57:{before}57)")
+        formulas[column] = (
+            f"IF({column}$3<$B$8,-({financing}),"
+            f"{column}22+IF({rve.format(c=column)},{earlier},0))")
+    body = _v4_carry_row_xml(
+        row, "Налоговая база к признанию: маржа — в РВЭ очереди, проценты — в месяце", formulas)
+    tail = "</x:sheetData>"
+    if tail not in xml:
+        missing.append(f"CF_{phase}: конец sheetData не найден — строка {row} не дописана")
+        return xml
+    return xml.replace(tail, body + tail, 1)
+
+
+def _v4_consolidated_tax_rows(xml: str, missing: list[str]) -> str:
+    """Свод налога (CF 31–38) — по базам очередей, признанным в их РВЭ.
+
+    Строка 32 складывает строки 101 очередей. Отсрочка уже сделана в них,
+    поэтому общего гейта «самый ранний РВЭ» больше нет: строка 31 — первый
+    месяц сетки, и годы стройки с процентами выходят убыточными, гася
+    прибыль года ввода не больше чем наполовину (ст. 283). Строка 38 —
+    уплата: авансы по итогам квартала (апрель, июль, октябрь) и доплата года
+    в марте следующего (ст. 286, 287; владелец, 16.10.2026).
+    """
+    columns = _v4_cf_columns()
+    recognized = _V4_TAX_RECOGNIZED_ROW
+
+    def base(column: str, body: str) -> str:
+        return body.replace(f"!{column}22", f"!{column}{recognized}")
+
+    xml, count = _v4_rewrite_row_formulas(xml, 32, "22", base)
+    if count == 0:
+        missing.append("CF: строка 32 (база свода) не опознана")
+    gate = re.search(r'<x:c r="B31"([^>]*)><x:f>[^<]*</x:f>(?:<x:v>[^<]*</x:v>)?</x:c>', xml)
+    if gate is None:
+        missing.append("CF: B31 (первый облагаемый месяц) не опознан")
+    else:
+        xml = xml[:gate.start()] + f'<x:c r="B31"{gate.group(1)}><x:f>$D$3</x:f></x:c>' + xml[gate.end():]
+    was = "<x:t>Первый облагаемый месяц (самый ранний РВЭ)</x:t>"
+    if was in xml:
+        xml = xml.replace(was, "<x:t>Начало расчёта налога (маржа очереди признаётся в её "
+                               "РВЭ — строка 101 листов очередей)</x:t>", 1)
+    else:
+        missing.append("CF: подпись строки 31 не опознана")
+    row = _V4_TAX_PAID_ROW
+    if f'<x:row r="{row}"' in xml:
+        missing.append(f"CF: строка {row} занята — уплата налога не дописана")
+        return xml
+    formulas: dict[str, str] = {}
+    for index, column in enumerate(columns):
+        def span(start: int, stop: int) -> str:
+            cells = [columns[i] for i in range(index - start, index - stop + 1) if i >= 0]
+            return "+".join(f"{cell}37" for cell in cells) or "0"
+        formulas[column] = (
+            f"IF(MONTH({column}$3)=3,{span(5, 3)},"
+            f"IF(OR(MONTH({column}$3)=4,MONTH({column}$3)=7,MONTH({column}$3)=10),"
+            f"{span(3, 1)},0))")
+    body = _v4_carry_row_xml(
+        row, "Налог к уплате (свод): авансы по итогам квартала, доплата года в марте", formulas)
+    # Строка встаёт сразу за 37-й: ячейки листа идут по возрастанию строк.
+    position = xml.find('<x:row r="37"')
+    if position < 0:
+        missing.append("CF: строка 37 не найдена — уплата налога не дописана")
+        return xml
+    end = xml.find("</x:row>", position) + len("</x:row>")
+    return xml[:end] + body + xml[end:]
+
+
 def _v4_apply_single_queue_tax(xml: str, phase: int, missing: list[str],
                                share: dict[str, int] | None = None) -> str:
     """Налог в потоках очереди — её доля налога свода (CF строка 37).
@@ -769,10 +871,10 @@ def _v4_apply_single_queue_tax(xml: str, phase: int, missing: list[str],
     капитала выходили с налогом почти вдвое больше начисленного (Нагатино:
     7 174 млн в потоках против 3 669 в P&L).
 
-    Одна включённая очередь — налог свода целиком. Несколько — налог месяца
-    свода, умноженный на долю очереди в налоге ЕГО года из блока раздачи
-    КОНСОЛИДАТОРа (`_v4_tax_share_by_year`): та же доля, что у налога очереди
-    в её P&L, и тот же месяц уплаты, что у свода, — как в движке
+    Одна включённая очередь — уплата налога свода целиком (CF строка 38).
+    Несколько — уплата месяца свода, умноженная на долю очереди в налоге года
+    начисления из блока раздачи КОНСОЛИДАТОРа (`_v4_tax_share_by_year`): та же
+    доля, что у налога очереди в её P&L, и тот же месяц уплаты, что у свода, — как в движке
     (`_restate_phase_tax_cashflows`, решение владельца 16.10.2026). Цикла
     нет: потребность БРИДЖа налога больше не видит (`_v4_bridge_need_without_tax`).
     """
@@ -780,12 +882,14 @@ def _v4_apply_single_queue_tax(xml: str, phase: int, missing: list[str],
         sheet = re.search(r"('[^']+')!\$B\$21", body)
         if sheet is None:
             return body
-        alone = f"'CF'!{column}37"
+        alone = f"'CF'!{column}{_V4_TAX_PAID_ROW}"
         if share is None:
             return (f'IF(COUNTIF({sheet.group(1)}!$B$88:$B$91,"Да")=1,'
                     f"IF($B$5=1,{alone},0),{body})")
         years = f"'КОНСОЛИДАТОР'!$A${share['first']}:$A${share['last']}"
-        year = f"'КОНСОЛИДАТОР'!{column}${share['years']}"
+        # Год НАЧИСЛЕНИЯ уплаты: мартовская доплата — налог прошлого года.
+        # Формула идёт в XML как есть, без экранирования: «<» — сущностью.
+        year = f"(YEAR('CF'!{column}$3)-IF(MONTH('CF'!{column}$3)&lt;4,1,0))"
         own = (f"'КОНСОЛИДАТОР'!${_V4_TAX_SHARE_COLUMNS[phase - 1]}${share['first']}:"
                f"${_V4_TAX_SHARE_COLUMNS[phase - 1]}${share['last']}")
         whole = f"'КОНСОЛИДАТОР'!$B${share['first']}:$B${share['last']}"

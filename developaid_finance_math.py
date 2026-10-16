@@ -150,6 +150,7 @@ def profit_tax_schedule(
     first_taxable_month: date | None,
     tax_rate: float,
     use_limit: float = LOSS_CARRY_USE_LIMIT,
+    defer_financing: bool = True,
 ) -> tuple[dict[date, float], list[dict[str, Any]]]:
     """График налога на прибыль с переносом убытка и половинным ограничением.
 
@@ -161,7 +162,20 @@ def profit_tax_schedule(
     Возвращает помесячный налог и построчную расшифровку: сколько убытка
     прошлых лет зачтено в этом году и сколько осталось. Без расшифровки
     «налог вырос» не отличить от «зачёт упёрся в половину».
+
+    `defer_financing=False` — правило спецзастройщика (владелец, 16.10.2026):
+    до первого облагаемого месяца (РВЭ) откладывается только МАРЖА продаж —
+    выручка и себестоимость дома признаются при его вводе, — а проценты и
+    комиссии остаются расходом месяца начисления (п. 8 ст. 272). Годы до РВЭ
+    выходят убыточными, и этот убыток гасит прибыль года РВЭ не больше чем
+    наполовину, как любой убыток прошлых лет. Прежде (`True`, его держит
+    гостиница) проценты до РВЭ уезжали в год РВЭ целиком и гасили прибыль
+    без половинного ограничения.
     """
+    if not defer_financing:
+        return _profit_tax_schedule_margin_deferred(
+            months, margin_by_month, financing_by_month, first_taxable_month,
+            tax_rate, use_limit)
     schedule: dict[date, float] = {}
     detail: list[dict[str, Any]] = []
     prior_losses = 0.0      # убыток закрытых лет, ждущий зачёта
@@ -217,3 +231,105 @@ def profit_tax_schedule(
             "profit_tax": tax_month,
         })
     return schedule, detail
+
+
+def _profit_tax_schedule_margin_deferred(
+    months: list[date],
+    margin_by_month: dict[date, float],
+    financing_by_month: dict[date, float],
+    first_taxable_month: date | None,
+    tax_rate: float,
+    use_limit: float,
+) -> tuple[dict[date, float], list[dict[str, Any]]]:
+    """`profit_tax_schedule` спецзастройщика: до РВЭ откладывается только маржа."""
+    schedule: dict[date, float] = {}
+    detail: list[dict[str, Any]] = []
+    prior_losses = 0.0
+    year: int | None = None
+    year_result = year_used = year_tax_paid = 0.0
+    deferred = 0.0
+    for month in months:
+        if year is not None and month.year != year:
+            if year_result < 0:
+                prior_losses += -year_result
+            else:
+                prior_losses -= year_used
+            year_result = year_used = year_tax_paid = 0.0
+        year = month.year
+        margin = margin_by_month.get(month, 0.0)
+        financing = financing_by_month.get(month, 0.0)
+        if first_taxable_month is not None and month < first_taxable_month:
+            deferred += margin
+            year_result -= financing
+            schedule[month] = 0.0
+            detail.append({
+                "month": month.isoformat(), "year_result": year_result,
+                "loss_used": 0.0, "loss_carry_forward": prior_losses,
+                "taxable_base": 0.0, "profit_tax": 0.0,
+            })
+            continue
+        year_result += margin - financing + deferred
+        deferred = 0.0
+        year_used = (min(prior_losses, year_result * use_limit)
+                     if year_result > 0 and prior_losses > 0 else 0.0)
+        base = max(year_result - year_used, 0.0)
+        tax_month = max(base * tax_rate - year_tax_paid, 0.0)
+        year_tax_paid += tax_month
+        schedule[month] = tax_month
+        detail.append({
+            "month": month.isoformat(),
+            "year_result": year_result,
+            "loss_used": year_used,
+            "loss_carry_forward": prior_losses - year_used,
+            "taxable_base": base,
+            "profit_tax": tax_month,
+        })
+    return schedule, detail
+
+
+# Месяц уплаты налога, начисленного в месяце (1..12): авансы по итогам
+# квартала — до 28-го числа следующего месяца (апрель, июль, октябрь), налог
+# года за вычетом авансов — до 28 марта следующего года (ст. 286, 287 НК;
+# решение владельца 16.10.2026: «раз в квартал по факту»). Ежемесячные
+# авансы внутри квартала (треть прошлого квартала) — прогноз, а не факт, и
+# модель их не ведёт.
+_TAX_PAYMENT_MONTH = {1: 4, 2: 4, 3: 4, 4: 7, 5: 7, 6: 7, 7: 10, 8: 10, 9: 10,
+                      10: 3, 11: 3, 12: 3}
+
+
+def profit_tax_payment_month(month: date) -> date:
+    """Месяц, в котором уходит со счёта налог, начисленный в `month`."""
+    pay = _TAX_PAYMENT_MONTH[month.month]
+    return date(month.year + (1 if pay < month.month else 0), pay, 1)
+
+
+def profit_tax_payments(accrued: dict[date, float]) -> dict[date, float]:
+    """Помесячное начисление налога → помесячная уплата, квартальными авансами.
+
+    Начисление внутри года не убывает (налог года нарастающим итогом, возврата
+    нет), поэтому уплата за квартал — просто сумма его начислений, а за IV
+    квартал — доплата года в марте. Сумма уплат равна сумме начислений.
+    """
+    paid: dict[date, float] = {}
+    for month, value in accrued.items():
+        if value:
+            target = profit_tax_payment_month(month)
+            paid[target] = paid.get(target, 0.0) + value
+    return dict(sorted(paid.items()))
+
+
+def unused_tax_loss(detail: list[dict[str, Any]]) -> float:
+    """Убыток, не зачтённый к концу горизонта, — по расшифровке графика налога.
+
+    Убыток переносится без срока (ст. 283), но гасит не больше половины базы
+    года: у проекта с убыточной стройкой и одним прибыльным годом ввода он
+    остаётся, и налог платится при убытке за проект в целом. Зачесть остаток
+    можно только будущей прибылью того же ООО — поэтому он называется числом
+    (владелец, 16.10.2026: «показать остаток убытка»).
+    """
+    if not detail:
+        return 0.0
+    last = detail[-1]
+    carry = float(last.get("loss_carry_forward", 0.0) or 0.0)
+    year_result = float(last.get("year_result", 0.0) or 0.0)
+    return carry + max(-year_result, 0.0)

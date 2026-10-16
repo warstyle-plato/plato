@@ -902,6 +902,48 @@ def _tax_formulas(v: dict[str, str], p: dict[str, str], r: int, first: int,
     }
 
 
+def _project_tax_formulas(v: dict[str, str], p: dict[str, str], r: int, first: int,
+                          gate: str, rate: str, limit: str, margin: str) -> dict[str, str]:
+    """Налог проекта спецзастройщика строкой Excel (`profit_tax_schedule` с
+    `defer_financing=False`): до РВЭ откладывается только маржа — она приходит
+    в месяц РВЭ, — а проценты и комиссии остаются расходом месяца начисления и
+    дают убыток своих лет, который гасит прибыль не больше чем `limit` базы
+    года (владелец, 16.10.2026)."""
+    if r == first:
+        return {
+            "tx_gate": f"={gate}",
+            "tx_year": f"=IF({v['tx_gate']}=1,-{v['financing']},{v['tx_net']})",
+            "tx_prior": "=0",
+            "tx_used": f"=IF(AND({v['tx_year']}>0,{v['tx_prior']}>0),MIN({v['tx_prior']},{v['tx_year']}*{limit}),0)",
+            "tx_base": f"=MAX({v['tx_year']}-{v['tx_used']},0)",
+            "tx_paid": "=0",
+            "tx_tax": f"=IF({v['tx_gate']}=1,0,MAX({v['tx_base']}*{rate}-{v['tx_paid']},0))",
+        }
+    same_year = f"{v['cal_year']}={p['cal_year']}"
+    return {
+        "tx_gate": f"={gate}",
+        "tx_year": (f"=IF({same_year},{p['tx_year']},0)+IF({v['tx_gate']}=1,-{v['financing']},"
+                    f"{v['tx_net']}+IF({p['tx_gate']}=1,SUM({margin}${first}:{margin}{r - 1}),0))"),
+        "tx_prior": (f"=IF({v['cal_year']}<>{p['cal_year']},"
+                     f"{p['tx_prior']}+IF({p['tx_year']}<0,-{p['tx_year']},-{p['tx_used']}),{p['tx_prior']})"),
+        "tx_used": f"=IF(AND({v['tx_year']}>0,{v['tx_prior']}>0),MIN({v['tx_prior']},{v['tx_year']}*{limit}),0)",
+        "tx_base": f"=MAX({v['tx_year']}-{v['tx_used']},0)",
+        "tx_paid": f"=IF({same_year},{p['tx_paid']}+{p['tx_tax']},0)",
+        "tx_tax": f"=IF({v['tx_gate']}=1,0,MAX({v['tx_base']}*{rate}-{v['tx_paid']},0))",
+    }
+
+
+def _tax_payment_formula(v: dict[str, str], r: int, first: int, tax: str) -> str:
+    """Уплата налога месяца: авансы по итогам квартала (апрель, июль, октябрь)
+    и доплата года в марте следующего — `profit_tax_payments` строкой Excel."""
+    def span(start: int, stop: int) -> str:
+        cells = [f"{tax}{row}" for row in range(r - start, r - stop + 1) if row >= first]
+        return "+".join(cells) or "0"
+    month = f"MONTH({v['month']})"
+    return (f"=IF({month}=3,{span(5, 3)},IF(OR({month}=4,{month}=7,{month}=10),"
+            f"{span(3, 1)},0))")
+
+
 def _row_formulas(r: int, refs: dict[str, str]) -> dict[str, str]:
     """Формулы строки r — построчный пересказ `object_flows` и `object_result`
     языком Excel."""
@@ -1368,7 +1410,7 @@ def _tax_sheet(book: Workbook, objects_refs: list[dict[str, str]], objects: list
     # Маркетинг и продажи объектов по ДДУ — в общем пуле (`commercial_costs`).
     ws["B3"] = (f"=MAX(0,{costs.cells['capex_total']}"
                 + (f"+SUM({pf['operating']})" if pf else "") + f"-({pool}))")
-    ws["A4"] = "РВЭ — первый облагаемый месяц (k)"
+    ws["A4"] = "РВЭ — маржа объектов признаётся в этот месяц (k)"
     ws["B4"] = f"={costs.cells['rve']}"
     ws["A5"] = "Ставка налога на прибыль"
     ws["B5"] = f"={_p('profit_tax')}/100"
@@ -1383,7 +1425,8 @@ def _tax_sheet(book: Workbook, objects_refs: list[dict[str, str]], objects: list
                ("tx_net", "База месяца"), ("tx_gate", "До РВЭ"), ("tx_year", "Результат года"),
                ("tx_prior", "Убыток прошлых лет"), ("tx_used", "Зачтено убытка"),
                ("tx_base", "База года"), ("tx_paid", "Уплачено ранее в году"),
-               ("tx_tax", "Налог на прибыль"))
+               ("tx_tax", "Налог на прибыль"),
+               ("tx_pay", "Налог к уплате (авансы по кварталам, доплата года в марте)"))
     letters = {key: get_column_letter(i + 1) for i, (key, _) in enumerate(columns)}
     for key, label in columns:
         ws[f"{letters[key]}{FIRST_ROW - 1}"] = label
@@ -1409,11 +1452,13 @@ def _tax_sheet(book: Workbook, objects_refs: list[dict[str, str]], objects: list
                                          for ref in objects_refs]) + (
             f"+INDEX({pf['deduct']},{i + 1})" if pf else "")
         ws[v["tx_net"]] = f"={v['margin']}-{v['financing']}"
-        # Тот же пересказ `_profit_tax_schedule`, что у объекта, — со шлюзом РВЭ.
-        tax = _tax_formulas(v, p, r, FIRST_ROW, f"IF(A{r}<$B$4,1,0)", "$B$5", "$B$6",
-                            letters["tx_net"])
+        # Пересказ `_profit_tax_schedule` спецзастройщика: до РВЭ откладывается
+        # только маржа, проценты — в месяце начисления.
+        tax = _project_tax_formulas(v, p, r, FIRST_ROW, f"IF(A{r}<$B$4,1,0)", "$B$5", "$B$6",
+                                    letters["margin"])
         for key, formula in tax.items():
             ws[v[key]] = formula
+        ws[v["tx_pay"]] = _tax_payment_formula(v, r, FIRST_ROW, letters["tx_tax"])
         for key in letters:
             if key not in ("k", "month", "cal_year", "tx_gate"):
                 ws[v[key]].number_format = MONEY
@@ -1474,7 +1519,8 @@ def _cash_sheet(book: Workbook, objects_refs: list[dict[str, str]], costs: _Cost
         ws[v["fee"]] = "=" + _object_sum(objects_refs, "fee", r) + (
             f"+IF(A{r}=0,{_pi('bridge_fee')},0)+IF(A{r}={_pi('permit')},{_pi('reservation_fee')},0)"
             if pf else "")
-        ws[v["tax"]] = f"=INDEX({taxes['tx_tax']},{i + 1})"
+        # Поток видит уплату, а не начисление: деньги уходят по кварталам.
+        ws[v["tax"]] = f"=INDEX({taxes['tx_pay']},{i + 1})"
         ws[v["project"]] = (f"={v['revenue']}-{v['costs']}-{v['vat']}-{v['interest']}-{v['fee']}"
                             f"-{v['capex']}-{v['tax']}")
         ws[v["to_equity"]] = "=" + _object_sum(objects_refs, "to_equity", r)
@@ -2137,7 +2183,9 @@ def _check_rows(result: dict[str, Any], spec: dict[str, Any], objects_refs: list
          sum(float((o.get("totals") or {}).get("loan_peak") or 0.0) for o in engine_objects), False),
         ("identity_total", "Выручка − расходы всего − чистая прибыль", 0.0, False),
         ("identity_ebitda", "EBITDA − проценты − прибыль до налога", 0.0, False),
-        ("horizon_months", "Горизонт модели, мес.", len((result.get("cashflow") or {}).get("months") or []),
+        # Горизонт — месяцы расчёта движка (`finance.rows`); ряд потоков бывает
+        # длиннее на хвост уплаты налога (доплата года в марте следующего).
+        ("horizon_months", "Горизонт модели, мес.", len(finance.get("rows") or []),
          True),
         ("debt_metric", "LLCR" if ddu_refs else "DSCR кредита объектов — минимум",
          (((result.get("report") or {}).get("layout") or {}).get("debt_metric") or {}).get("value"), True),

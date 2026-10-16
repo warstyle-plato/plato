@@ -847,6 +847,8 @@ def _aggregate_finance(results: list[dict[str, Any]],
     # путём — через налог, и только потому, что убыток обрезается нулём.
     tax_rate = _phase_tax_rate(results)
     consolidated_profit_tax: float | None = None
+    consolidated_tax_payments: dict[date, float] = {}
+    consolidated_unused_loss: float | None = None
     # Гейт объявляется здесь и уезжает в свод: его читает раздача налога по
     # очередям. Второе объявление «с какого месяца облагается» разошлось бы с
     # первым молча — и очередь получила бы долю налога за годы, которые сама
@@ -856,17 +858,24 @@ def _aggregate_finance(results: list[dict[str, Any]],
         default=None)
     if rows and tax_rate > 0:
         months = [d(row["month"]) for row in rows]
-        margins = {d(row["month"]): float(row.get("taxable_margin", 0.0) or 0.0)
-                   for row in rows}
+        # Маржа очереди признаётся в РВЭ ЭТОЙ очереди, а не первой: продажи
+        # дома по ДДУ до его ввода прибылью не являются (владелец,
+        # 16.10.2026: «какая именно прибыль до РнВ?»). Прежде гейт свода был
+        # один — самый ранний РВЭ, — и маржа О3 Нагатино за 2032–2033 гасила
+        # убыток О1 за два года до ввода самой О3. Проценты и комиссии —
+        # расход месяца начисления у всех очередей.
+        margins = _phase_margins_at_own_rve(results)
         financings = {d(row["month"]): float(row.get("financing_tax_deduction", 0.0) or 0.0)
                       for row in rows}
         schedule, detail = _profit_tax_schedule(
-            months, margins, financings, first_taxable, tax_rate)
+            months, margins, financings, None, tax_rate, defer_financing=False)
         for row, line in zip(rows, detail):
             row["profit_tax"] = schedule.get(d(row["month"]), 0.0)
             row["taxable_profit_cumulative"] = line["taxable_base"]
             row["loss_carry_forward"] = line["loss_carry_forward"]
         consolidated_profit_tax = sum(schedule.values())
+        consolidated_tax_payments = _profit_tax_payments(schedule)
+        consolidated_unused_loss = _unused_tax_loss(detail)
 
     fs = [r["finance"] for r in results]
     bridge_weight = sum(max(f["peak_bridge"], 0.0) for f in fs)
@@ -885,6 +894,10 @@ def _aggregate_finance(results: list[dict[str, Any]],
     # что и с перенесёнными процентами БРИДЖа.
     carried_total = sum(float(f.get("carried_debt_in") or 0.0) for f in fs)
     llcr_den = sum(f["llcr_denominator"] for f in fs) - carried_total
+    # Числитель LLCR очереди вычитал её налог в одиночку; у свода налог один —
+    # пересчитанный как у одного налогоплательщика. Книга вычитает его же.
+    if consolidated_profit_tax is not None:
+        llcr_num += sum(float(f.get("profit_tax", 0.0) or 0.0) for f in fs) - consolidated_profit_tax
 
     financing_cost = sum(f["financing_cost"] for f in fs)
     return {
@@ -978,6 +991,13 @@ def _aggregate_finance(results: list[dict[str, Any]],
         # признано раньше, приходит в ГОД этого месяца, а не пропадает; раздача
         # налога по очередям обязана свернуть базы тем же правилом.
         "first_taxable_month": first_taxable,
+        # Уплата налога свода — авансами по итогам квартала и доплатой года в
+        # марте (ст. 286, 287). P&L читает начисление (`rows.profit_tax`),
+        # потоки — уплату.
+        "profit_tax_payment_schedule": {
+            month.isoformat(): value for month, value in consolidated_tax_payments.items()},
+        "tax_loss_unused": (consolidated_unused_loss if consolidated_unused_loss is not None
+                            else sum(float(f.get("tax_loss_unused", 0.0) or 0.0) for f in fs)),
         "vat": sum(f.get("vat", 0.0) for f in fs),
         "vat_charged": sum(f.get("vat_charged", 0.0) for f in fs),
         "vat_input_deductible": sum(f.get("vat_input_deductible", 0.0) for f in fs),
@@ -1037,7 +1057,7 @@ def _aggregate_finance(results: list[dict[str, Any]],
 
 def _phase_tax_bases(
     results: list[dict[str, Any]],
-    first_taxable_month: Any,
+    first_taxable_month: Any = None,
 ) -> list[dict[int, float]]:
     """База каждой очереди по НАЛОГОВЫМ годам свода.
 
@@ -1046,28 +1066,59 @@ def _phase_tax_bases(
     с начала периода (п. 7 ст. 274). Месяц объектом налогообложения не
     является вовсе — он отчётный период, и его база тоже с начала года.
 
-    Свёртка до гейта повторяет `_profit_tax_schedule`: всё, что признано до
-    первого облагаемого месяца, приходит в ГОД этого месяца. Без неё база
-    очереди живёт в годах, в которых налога не было, и раздача приписывает ей
-    долю за периоды, когда проект не был должен бюджету ничего.
+    Признание повторяет налог свода: маржа очереди до её РВЭ приходит в месяц
+    (и год) РВЭ, проценты остаются в году начисления (`_phase_recognized_base`).
     """
-    gate = str(first_taxable_month) if first_taxable_month else None
-    gate_year = int(gate[:4]) if gate else None
     bases: list[dict[int, float]] = []
     for result in results:
         years: dict[int, float] = {}
-        for row in result["finance"]["rows"]:
-            month = str(row["month"])
-            year = gate_year if (gate and month < gate) else int(month[:4])
-            years[year] = years.get(year, 0.0) + _phase_tax_base_of(row)
+        for month, value in _phase_recognized_base(result, first_taxable_month).items():
+            year = int(month[:4])
+            years[year] = years.get(year, 0.0) + value
         bases.append(years)
     return bases
+
+
+def _phase_recognized_base(result: dict[str, Any], fallback_gate: Any = None) -> dict[str, float]:
+    """Облагаемая база очереди по месяцам ПРИЗНАНИЯ — то, что складывает свод.
+
+    Маржа продаж до РВЭ очереди признаётся в месяц её РВЭ (выручка по ДДУ —
+    при передаче объекта), проценты и комиссии — в месяц начисления
+    (п. 8 ст. 272; владелец, 16.10.2026). РВЭ берётся у самой очереди;
+    `fallback_gate` — для строк без дат.
+    """
+    rve = (result.get("dates") or {}).get("rve") or fallback_gate
+    gate = d(rve).isoformat() if rve else None
+    out: dict[str, float] = {}
+    for row in (result.get("finance") or {}).get("rows") or []:
+        month = d(row["month"]).isoformat()
+        margin = float(row.get("taxable_margin", 0.0) or 0.0)
+        financing = float(row.get("financing_tax_deduction", 0.0) or 0.0)
+        target = gate if gate and month < gate else month
+        if margin:
+            out[target] = out.get(target, 0.0) + margin
+        if financing:
+            out[month] = out.get(month, 0.0) - financing
+    return out
 
 
 def _phase_tax_base_of(row: dict[str, Any]) -> float:
     """Облагаемая база месяца очереди — та же величина, что считает свод."""
     return (float(row.get("taxable_margin", 0.0) or 0.0)
             - float(row.get("financing_tax_deduction", 0.0) or 0.0))
+
+
+def _phase_margins_at_own_rve(results: list[dict[str, Any]]) -> dict[date, float]:
+    """Маржа очередей по месяцам признания: до своего РВЭ — в месяц РВЭ."""
+    margins: dict[date, float] = defaultdict(float)
+    for result in results:
+        rve = (result.get("dates") or {}).get("rve")
+        gate = d(rve) if rve else None
+        for row in (result.get("finance") or {}).get("rows") or []:
+            month = d(row["month"])
+            margin = float(row.get("taxable_margin", 0.0) or 0.0)
+            margins[gate if gate is not None and month < gate else month] += margin
+    return dict(margins)
 
 
 def _phase_tax_by_year(finance: dict[str, Any]) -> dict[int, float]:
@@ -1113,11 +1164,11 @@ def _phase_tax_year_weights(
     for year in _phase_tax_by_year(finance):
         positive = [max(base.get(year, 0.0), 0.0) for base in bases]
         if sum(positive) <= 0:
-            months = taxed_months.get(year) or set()
+            months = {d(month).isoformat() for month in taxed_months.get(year) or set()}
             positive = [
-                sum(max(_phase_tax_base_of(row), 0.0)
-                    for row in result["finance"]["rows"]
-                    if str(row["month"]) in months)
+                sum(max(value, 0.0)
+                    for month, value in _phase_recognized_base(result).items()
+                    if month in months)
                 for result in results]
         if sum(positive) <= 0:
             # Ни годовой базы, ни положительных месяцев — делить не по чему.
@@ -1177,10 +1228,10 @@ def _restate_phase_tax_cashflows(
 
     Налог месяца свода делится долей очереди в базе его года
     (`_phase_tax_year_weights`) — той же, что у её налога в P&L (решение
-    владельца, 16.10.2026: «как в таблице очередей»), и уходит в тот же месяц,
-    что у свода («тогда же, когда у проекта»), даже если это раньше РВЭ самой
-    очереди: деньги ушли в бюджет тогда. Сумма потоков очередей по месяцам
-    равна налогу свода.
+    владельца, 16.10.2026: «как в таблице очередей»), и уходит со счёта тогда
+    же, когда у свода («тогда же, когда у проекта»): авансом по итогам
+    квартала, доплатой года в марте (`_profit_tax_payments`). Сумма уплат
+    очередей по месяцам равна уплате свода.
 
     Финансирование очереди (БРИДЖ, ПФ, свип, касса для следующих очередей)
     уже посчитано на её налоге в одиночку и здесь не пересчитывается: в
@@ -1199,7 +1250,11 @@ def _restate_phase_tax_cashflows(
         for index, weight in enumerate(weights.get(month.year) or ()):
             if weight:
                 schedule[index][month] += tax * weight
-    for result, taxes in zip(results, schedule):
+    for result, accrued in zip(results, schedule):
+        # Начисление — в P&L и строки очереди, уплата (квартальные авансы и
+        # доплата года в марте) — в её потоки. Доля года считается по году
+        # начисления: мартовская доплата — налог прошлого года.
+        taxes = _profit_tax_payments(dict(accrued))
         cashflow = result.get("cashflow") or {}
         months = [d(month) for month in cashflow.get("months") or []]
         if not months:
@@ -1237,9 +1292,11 @@ def _restate_phase_tax_cashflows(
         fin["standalone_profit_tax"] = float(fin.get("profit_tax", 0.0) or 0.0)
         fin["profit_tax"] = sum(new_tax)
         fin["profit_tax_schedule"] = {
-            month.isoformat(): value for month, value in sorted(taxes.items()) if value}
+            month.isoformat(): value for month, value in sorted(accrued.items()) if value}
+        fin["profit_tax_payment_schedule"] = {
+            month.isoformat(): value for month, value in taxes.items() if value}
         for row in fin.get("rows") or []:
-            row["profit_tax"] = taxes.get(d(row["month"]), 0.0)
+            row["profit_tax"] = accrued.get(d(row["month"]), 0.0)
         _restate_phase_returns(result, months, project, equity, discount_rate)
 
 
@@ -1411,9 +1468,10 @@ def _consolidate_phase_results(
 
     master_start = d(master_inputs.get("project_start", results[0]["dates"]["project_start"]))
     cf_months, project_cf, equity_cf = _combine_cashflows(results, master_start)
+    # Ряд налога рядом с потоками — уплата, та, что из них и вычтена.
     tax_by_month = {
-        d(row["month"]): float(row.get("profit_tax", 0.0) or 0.0)
-        for row in finance["rows"]
+        d(month): float(value or 0.0)
+        for month, value in (finance.get("profit_tax_payment_schedule") or {}).items()
     }
     discount_rate = n(master_inputs, "discount_rate_pct", 20) / 100
     npv = _monthly_npv(project_cf, discount_rate) if project_cf else 0.0
@@ -1660,6 +1718,7 @@ def _consolidate_phase_results(
             "financing_cost": finance["financing_cost"],
             "profit_before_tax": finance["profit_before_tax"],
             "profit_tax": finance["profit_tax"], "vat": finance.get("vat", 0.0),
+            "tax_loss_unused": float(finance.get("tax_loss_unused", 0.0) or 0.0),
             "net_profit": net_profit,
             "margin": net_profit / total_revenue if total_revenue else 0.0,
             "llcr": finance["llcr"],
