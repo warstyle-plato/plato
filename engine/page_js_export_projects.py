@@ -1017,6 +1017,8 @@ function resetInputsWanted(){
   project_class:'comfort', rate_scenario:'base',
   scenario_revenue_multiplier:1, scenario_cost_multiplier:1});
  TERRITORY_INPUT_KEYS.forEach(key=>{if(key in want)want[key]=SITE_ONLY_INPUTS.includes(key)?'':0});
+ // Признак ВРИ — вид платы (`vriPaymentActive`): плата сброшена — снят и он.
+ want.vri_required=vriPaymentActive(want);
  return want;
 }
 // ТЭП после сброса — нули, а не пример. Строки и подписи остаются: таблица без

@@ -246,11 +246,13 @@ def test_the_utility_buildings_are_not_products():
 # --- деньги ---------------------------------------------------------------------
 
 def test_the_vri_arrives_already_calculated():
-    """Остаток посчитан с учётом льготы МПТ и сделанного платежа. Свой расчёт
-    движка выключается: пересчитав, он молча заменил бы документ."""
+    """Остаток посчитан с учётом льготы МПТ и сделанного платежа и приходит
+    суммой — её движок и платит. Признак ВРИ пресет не снимает: плату решает
+    сумма (`vri_payment_active`), а снятый признак при заданной сумме
+    показывался на странице снятой галочкой над графиком в 1,27 млрд."""
     inputs = preview()["inputs"]
     assert inputs["land_rights_cost_mln"] == pytest.approx(266.92183863)
-    assert inputs["vri_required"] is False
+    assert inputs.get("vri_required") is not False
 
 
 def test_the_connection_fees_replace_the_unit_rate():

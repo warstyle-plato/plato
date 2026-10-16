@@ -171,10 +171,14 @@ function applyMptOverride(payload,place){
   address:String((place||{}).address||''),applied_at:new Date().toISOString()};
  renderInputs();refreshGroupPeeks();calculate();
 }
-// Доля и сумма ручной льготы читаются только в своём режиме: ответ — почему
-// поле сейчас не читается, или пусто. Один ответ и для замка поля, и для его
-// подписи.
+// Поля ВРИ, которые читаются только в своём режиме: доля и сумма ручной
+// льготы, доли источников оплаты. Ответ — почему поле сейчас не читается, или
+// пусто. Один ответ и для замка поля, и для его подписи.
+const VRI_SHARE_FIELDS=['vri_share_bridge_pct','vri_share_pf_pct','vri_share_equity_pct'];
 function vriReliefFieldIdle(id){
+ if(VRI_SHARE_FIELDS.includes(id))
+  return String(inputs.vri_financing_mode||'auto')==='shares'?''
+   :'Не читается: источники — по дате платежа («'+fieldOptionLabel('vri_financing_mode','auto')+'»).';
  const need={vri_relief_pct:'percent',vri_relief_mln:'amount'}[id];
  if(!need)return '';
  const mode=String(inputs.vri_relief_mode||'none');
@@ -182,6 +186,32 @@ function vriReliefFieldIdle(id){
  const said={none:'нет ручной — действует льгота, посчитанная по проекту',off:'не применять льготу',
   percent:'доля от суммы',amount:'фиксированная сумма'}[mode]||mode;
  return 'Не читается: «Льгота по плате» — '+said+'.';
+}
+
+// Подпись варианта поля выбора — из объявления поля (`FIELD_GROUPS`), как и
+// сам список: второе название варианта разошлось бы со страницей.
+function fieldOptionLabel(field,value){
+ for(const g of FIELD_GROUPS)for(const f of (g[1]||[]))
+  if(f[0]===field&&Array.isArray(f[4])){const o=f[4].find(p=>String(p[0])===String(value));if(o)return o[1]}
+ return String(value||'');
+}
+// Как делятся платежи при «Вручную по долям» — тем же правилом, что движок
+// (`_vri_split_payment`): каждая доля делится на сумму долей, а нулевая
+// сумма возвращает разнос по дате платежа. Пусто — доли дают ровно 100%.
+function vriSharesNote(){
+ if(String(inputs.vri_financing_mode||'auto')!=='shares')return '';
+ const v=VRI_SHARE_FIELDS.map(k=>Math.max(0,Number(inputs[k]||0)));
+ const total=v[0]+v[1]+v[2];
+ if(!(total>0))return 'Доли не заданы (сумма 0) — платежи разнесены автоматически: «'
+  +fieldOptionLabel('vri_financing_mode','auto')+'».';
+ if(Math.abs(total-100)<0.001)return '';
+ const pct=x=>(x/total*100).toLocaleString('ru-RU',{maximumFractionDigits:1})+'%';
+ return 'Сумма долей '+total.toLocaleString('ru-RU',{maximumFractionDigits:1})+'%, а не 100% — каждая доля делится на сумму: БРИДЖ '
+  +pct(v[0])+', ПФ '+pct(v[1])+', капитал '+pct(v[2])+'.';
+}
+function refreshVriSharesNote(){
+ const el=document.getElementById('vriSharesNote');
+ if(el)vriNoteFill(el,vriSharesNote());
 }
 
 // Район и ТТК для льготы за МПТ — из участка проекта, без ручного выбора.
@@ -248,12 +278,11 @@ function vriReliefSourceNote(){
 // Почему графика ВРИ нет — настоящей причиной. Плата, снятая льготой
 // целиком, — не «изменение не требуется»: так и сказано, с суммами.
 function vriEmptyReason(vri){
- const t=(vri&&vri.totals)||{}, s=(vri&&vri.settings)||{};
+ const t=(vri&&vri.totals)||{};
  const gross=Number(t.gross||0), relief=Number(t.relief||0);
  const mln=v=>(v/1e6).toLocaleString('ru-RU',{maximumFractionDigits:1})+' млн ₽';
  if(gross>0&&relief>0&&relief>=gross-0.5)
   return 'Плата за изменение ВРИ '+mln(gross)+' снята льготой полностью — к оплате 0, график платежей не строится.';
- if(s.required===false)return 'Изменение ВРИ в проекте не требуется (снят признак «Требуется изменение ВРИ») — график не строится.';
  if(!(gross>0))return 'Плата за изменение ВРИ в проекте равна нулю: сумма платы не задана и не посчитана — график не строится.';
  return 'Сумма обязательства по ВРИ равна нулю — график не строится.';
 }
@@ -265,6 +294,7 @@ function renderVri(vri){
  renderVriBenefits(vri&&vri.benefits,reliefBasis);
  fillVriReliefOffer();
  renderKrtVriFooter();
+ syncVriRequiredBox();
  if(typeof window.mptOverrideChanged==='function')window.mptOverrideChanged();
  const REGION={msk:'Москва',mo:'Московская область'};
  const MODE={lump:'единовременно',installment:'рассрочка'};
@@ -2028,6 +2058,60 @@ function restoreKrtClearedVriFee(){
  return true;
 }
 
+// Действует ли плата за смену ВРИ — тот же ответ, что у движка
+// (`vri_payment_active`): решает сумма платы, а не признак. Признак
+// «Требуется изменение ВРИ» — вид суммы: при плате > 0 он включён, снять его
+// — значит обнулить плату. Сохранённый старый явный false плату не обнуляет.
+function vriPaymentActive(x){return Number((x||inputs).land_rights_cost_mln||0)>0}
+// Плата, обнулённая снятием признака на этой странице, — чтобы подпись
+// называла, что именно сделала галочка.
+let vriFeeClearedMln=0;
+function vriRequiredNote(){
+ const fee=Number(inputs.land_rights_cost_mln||0);
+ const o=(inputs._field_origin||{})['inputs.land_rights_cost_mln'];
+ const from=o&&o.source==='glavapu'?' (из ГлавАПУ)':o&&o.source==='manual'?' (вписана вручную)':'';
+ if(fee>0)return `Плата ${num(fee)} млн ₽ задана${from} — смена ВРИ учитывается. Снять признак — значит обнулить плату.`;
+ if(vriFeeClearedMln>0)return `Плата ${num(vriFeeClearedMln)} млн ₽ обнулена снятием признака — смена ВРИ не учитывается.`;
+ return 'Плата за смену ВРИ не задана — смена ВРИ не учитывается. Чтобы учесть, впишите сумму в «Оформление земельных правоотношений / смена ВРИ».';
+}
+// Подпись под полем ВРИ: узел с постоянным id, пустая — скрыта.
+function vriNoteNode(id,text){
+ const node=document.createElement('div');
+ node.id=id;node.className='hint vri-note';
+ node.style.cssText='margin:4px 0 0;color:#666;font-size:12px';
+ vriNoteFill(node,text);
+ return node;
+}
+function vriNoteFill(node,text){
+ node.textContent=text;
+ node.style.display=text?'':'none';
+}
+function syncVriRequiredBox(){
+ inputs.vri_required=vriPaymentActive();
+ const el=document.getElementById('f_vri_required');
+ if(el)el.checked=inputs.vri_required;
+ const note=document.getElementById('vriRequiredNote');
+ if(note)vriNoteFill(note,vriRequiredNote());
+}
+function vriRequiredToggled(el){
+ const fee=Number(inputs.land_rights_cost_mln||0);
+ if(!el.checked&&fee>0){
+  if(!confirm('Снять признак «Требуется изменение ВРИ» — значит обнулить плату за ВРИ '+num(fee)+' млн ₽.\n\nОбнулить плату?')){el.checked=true;return}
+  inputs.land_rights_cost_mln=0;
+  markFieldManual('inputs.land_rights_cost_mln');
+  vriFeeClearedMln=fee;
+ }
+ if(el.checked&&!(fee>0)){
+  // Включить признак без суммы нечем: плату решает сумма.
+  el.checked=false;
+  const field=document.getElementById('f_land_rights_cost_mln');
+  if(field)field.focus();
+ }
+ syncVriRequiredBox();
+ const land=document.getElementById('f_land_rights_cost_mln');
+ if(land)land.value=inputs.land_rights_cost_mln;
+ calculate();
+}
 function krtVriFeeNote(){
  const back=Number(inputs._krt_vri_restored_mln||0);
  return '<div class="note krt-vri-fee-note" style="margin:0 0 6px;padding:11px 12px">'
