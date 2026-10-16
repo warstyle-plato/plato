@@ -633,6 +633,9 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
                          "read_chars": portion["read_chars"],
                          "total_chars": portion["total_chars"],
                          "trimmed": portion["trimmed"]},
+            # Документ остаётся в разговоре: следующий вопрос окно шлёт вместе
+            # с ним, и Платон отвечает по документу, а не по пустому месту.
+            "context": document_intake.chat_context(document, got),
             **got}
 
 

@@ -2305,6 +2305,7 @@ def _clone_agent_req_with_inputs(req: AgentChatRequest, inputs: dict[str, Any]) 
     q.phasing = req.phasing
     q.selected_view = req.selected_view
     q.history = req.history
+    q.document = getattr(req, "document", {}) or {}
     q.message = req.message
     return q
 
@@ -4189,6 +4190,9 @@ def _call_openai_tool_agent(
 
     # Keep only compact dialogue; model state comes through server tools, not a giant JSON dump.
     input_items: list[dict[str, Any]] = []
+    document = document_intake.context_prompt(getattr(req, "document", None))
+    if document:
+        input_items.append({"role": "user", "content": document})
     for item in (req.history or [])[-6:]:
         role = str(item.get("role", ""))
         content = str(item.get("content", ""))[:3500]
@@ -4454,6 +4458,8 @@ def _plato_answer_key(req: AgentChatRequest, scenario: str) -> str:
     }
     if not scenario:
         payload["history"] = (req.history or [])[-6:]
+        # Тот же вопрос по другому документу — другой вопрос.
+        payload["document"] = getattr(req, "document", None) or {}
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
 

@@ -197,7 +197,7 @@ def isolated_platon_state(tmp_path, monkeypatch):
     except Exception:  # модуль монитора может быть не установлен
         pass
     for name in ("_PLATON_CONTEXT_BY_SESSION", "_PLATON_LAST_SESSION",
-                 "_PLATON_TEP_CONTEXT", "_PLATON_MODE", "_PLATON_HISTORY",
+                 "_PLATON_TEP_CONTEXT", "_PLATON_MODE",
                  "_PLATON_PENDING", "_PLATON_LAST_URL"):
         monkeypatch.setattr(_wrapper, name, {})
     yield
