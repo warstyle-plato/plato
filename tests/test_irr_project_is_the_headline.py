@@ -39,7 +39,7 @@ from browser import chromium_or_skip, serve  # noqa: E402
 from developaid_finance_math import monthly_irr, monthly_npv  # noqa: E402
 
 core = _wrapper.core
-PORT = 18803
+PORT = 18812
 THIN = "не показателен: своих денег"
 # Рост цены 3 %/мес.: долг погашен, своих денег ~916 млн ₽ — 2,1 % затрат,
 # IRR капитала 557 %. Контрпример — те же вводные и 6 млрд своих до ПФ.
