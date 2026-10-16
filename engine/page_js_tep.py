@@ -2415,7 +2415,7 @@ async function recalcFromTepByNorms(options){
  const skipped=applyDerivedInputs({kindergarten_places:d.places.kindergarten,
   school_places:d.places.school,clinic_capacity:d.places.clinic});
  if(skipped)lines.push(skipped);
- inputs.underground_manual_spaces=d.parking.underground;
+ setUndergroundFromMethod(d.parking.permanent,d.parking.guest,d.parking.underground);
  stampSocialBasis('нормативы Москвы');
  syncTep(false);renderInputs();renderTep();
  say((silent?'Пересчитано под новый ТЭП: ':'Подставлено: ')+lines.map(escapeHtml).join('<br>')
@@ -2423,6 +2423,21 @@ async function recalcFromTepByNorms(options){
    +'Это наш расчёт по нормативам, а не расчёт города: город считает штатным '
    +'калькулятором, и его выгрузка сильнее.',true);
  calculate();
+}
+
+// Метод (норматив по ТЭП или сценарий ГлавАПУ) знает не только места, но и
+// сколько из них гостевых. Пара мест при этом может быть ручной — и тогда
+// движок выводил гостевые как места/11, а не брал число метода: на 341 месте
+// 34 вместо 35, и одно гостевое уходило в продажу. Решение владельца
+// (16.10.2026): гостевые — из метода. Число едет рядом с местами, для которых
+// метод его дал; поменяли места руками — оно больше не их, и движок снова
+// считает места/11 (`underground_tep_row`).
+function setUndergroundFromMethod(permanent,guest,spaces){
+ const total=Number(spaces!=null?spaces:Number(permanent||0)+Number(guest||0));
+ inputs.underground_manual_spaces=total;
+ const g=Number(guest);
+ if(total>0&&Number.isFinite(g)&&g>=0&&g<=total)inputs._underground_method_guest={spaces:total,guest:g};
+ else delete inputs._underground_method_guest;
 }
 
 async function recalcFromTep(options){
@@ -2522,7 +2537,7 @@ async function recalcFromTep(options){
  // В подземный гараж идут постоянные и гостевые. Приобъектные — места у входа
  // для посетителей встроенной коммерции, под землю их не кладут: с ними гараж
  // выходил больше нормы, и лишние места ехали в себестоимость.
- inputs.underground_manual_spaces=d.parking.permanent+d.parking.guest;
+ setUndergroundFromMethod(d.parking.permanent,d.parking.guest);
  stampSocialBasis('выгрузка ГлавАПУ');
  syncTep(false);renderInputs();renderTep();
  const parkingNow=Number((tep.underground_parking&&tep.underground_parking.units)||0);
