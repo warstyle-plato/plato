@@ -725,21 +725,12 @@ PAGE += r"""function renderResult(){
   const parts=[];
   if(Number(x.guest_units||0)>0)parts.push('гостевых '+num(x.guest_units));
   if(Number(x.transfer_units||0)>0)parts.push('передано '+num(x.transfer_units));
-  // Чужое число из сохранённого проекта — подписью, а не молча. Что было в
-  // файле, помнит загрузка (`derivedTailOf`); движок называет своё —
-  // гостевых больше, чем мест (`guest_units_stale`), — и для вызовов без
-  // страницы.
-  const tail=derivedTailOf(x.key);
-  const wasGuest=x.guest_units_stale!=null?x.guest_units_stale:(tail&&tail.guest_units!=null?tail.guest_units:null);
-  const wasUnits=tail&&tail.units!=null?tail.units:x.units;
-  const staleNote=text=>`<span class="guest-stale" style="display:block;font-size:10px;color:#a15c00">${text}</span>`;
-  const stale=(wasGuest!=null
-    ?staleNote(`исправлено при загрузке: было ${num(wasGuest)} гостевых при ${num(wasUnits)} местах — гостевые по нормативу, ${num(x.guest_units||0)}`):'')
-   +(tail&&tail.transfer_units!=null
-    ?staleNote(`исправлено при загрузке: было передано ${num(tail.transfer_units)} при ${num(wasUnits)} местах — передаётся ${num(x.transfer_units||0)}`):'');
+  // Исправленный хвост сохранённого проекта таблица не подписывает
+  // (владелец, 16.10.2026: «Убрать из таблицы»): о нём один раз говорит
+  // уведомление при загрузке (`announceDerivedCorrections`).
   return (parts.length
    ? `<span style="display:block;font-size:10px;color:#777">из них ${parts.join(' · ')}</span>`
-   : '')+stale;
+   : '');
  };
  // Итога штук одним числом больше нет: квартиры, машино-места и места ДОО
  // складывались в 2 811 «штук», не значащих ничего. Ответ — разбор по мере.
