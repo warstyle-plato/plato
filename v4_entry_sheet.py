@@ -601,6 +601,9 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
     rows, smap = made["rows"], made["styles"]
     entry_styles, formula_style = smap["entry"], smap["formula"]
     chrome = chrome_styles(sheet, styles)
+    # Пометка расчёта — стилем подписи шаблона: у пояснения (A2) перенос, и
+    # строка с пометкой раздувалась бы; свой стиль книга не выдумывает.
+    hint_style = chrome["label"]
     AUTHORED.clear()
     moved: dict[str, str] = {}
     moved_rows: dict[int, int] = {}
@@ -627,6 +630,14 @@ def build(sheet: str, styles: str) -> tuple[str, str, dict[str, Any]]:
                 moved[cell["coord"]] = target
             elif not cell["formula"]:
                 parts.append(f'<x:c r="{target}"{cell["attrs"]}>{cell["body"]}</x:c>')
+            else:
+                # Расчётная ячейка в строке, которая едет сюда ради соседней
+                # вводной: пустое место с подписью и единицей выглядело полем,
+                # которое забыли заполнить. Число сюда не ставится — сторож
+                # «лист ввода не менялся» суммирует числа листа, — а адрес
+                # расчёта пишется словами.
+                parts.append(_text_cell(target, f"→ {PARAMS_SHEET}!{cell['coord']}",
+                                        hint_style))
         if parts:
             out.append(f'<x:row r="{at}">' + "".join(parts) + "</x:row>")
             moved_rows[number] = at

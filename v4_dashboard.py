@@ -153,7 +153,7 @@ DATA_ITEMS: tuple[tuple[str, str, str, str], ...] = (
     # Страница «Итог»: эффективность, финансовая деятельность, базы удельных.
     ("irr_equity", "IRR собственного капитала", "%", "'ОТЧЕТ'!B14"),
     ("full_project_cost_mln", "Полные расходы проекта (с НДС)", "млн ₽",
-     f"'ОТЧЕТ'!B82+'ПРОВЕРКИ'!B{_PARITY['vat_mln']}"),
+     "'ОТЧЕТ'!B82"),
     ("peak_escrow_mln", "Пик эскроу", "млн ₽", "'ОТЧЕТ'!B18"),
     ("rve_escrow_release_mln", "Раскрыто эскроу в РВЭ", "млн ₽", _rve_release()),
     ("bridge_interest_mln", "Проценты БРИДЖа", "млн ₽", "'ОТЧЕТ'!G13"),
@@ -1326,17 +1326,23 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
           hidden_products: frozenset[str] = frozenset(),
           queues: int | None = None,
           parking: dict[str, Any] | None = None,
-          storage_under_flag: str = "1") -> dict[str, Any]:
+          storage_under_flag: str = "1",
+          chart_months: int | None = None) -> dict[str, Any]:
     """Собрать все части дашборда. Возвращает словарь «путь → байты» и
     новый styles.xml; лишние диаграммы шаблона названы в `dropped`.
     `capex_rows`/`capex_stride` — карта статей листа CAPEX (её владелец —
     сборщик книги); `extra_products` — строки дописанных объектов (см.
     `build_data_sheet`); `shown_extras` — какие из них видны на листе
-    «Дашборд» (None — все)."""
+    «Дашборд» (None — все); `chart_months` — сколько месяцев показывает
+    график долга (None — все колонки)."""
     where = locate(archive, sheet_path)
     styles = Styles(styles_xml)
     last_column = month_columns[-1]
-    charts = [bridge_chart_xml(), ring_chart_xml(), debt_chart_xml(last_column)]
+    # Ось графика долга — горизонт расчёта, а не все колонки листа: проект на
+    # 44 месяца рисовался на 180, и три четверти графика были пустыми.
+    chart_column = (month_columns[max(0, min(len(month_columns), chart_months) - 1)]
+                    if chart_months else last_column)
+    charts = [bridge_chart_xml(), ring_chart_xml(), debt_chart_xml(chart_column)]
     existing = where["charts"]
     parts: dict[str, bytes] = {}
     rel_ids: list[str] = []

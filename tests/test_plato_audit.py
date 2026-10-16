@@ -127,3 +127,17 @@ def test_the_tolerance_is_respected():
 
     assert core.audit_plato_workbook(off, inputs, tep, tolerance_pct=1.0)["mismatched"] == []
     assert core.audit_plato_workbook(off, inputs, tep, tolerance_pct=0.1)["mismatched"]
+
+
+def test_a_v4_book_is_named_not_called_unrecalculated() -> None:
+    """Книга v4 — не модель ПЛАТО, и причина отказа обязана сказать это.
+
+    Пересчитанная книга v4 проходила сверку как «не пересчитана»: её «ОТЧЕТ»
+    подписан в колонке A, и ни одна строка ПЛАТО не находилась.
+    """
+    content, _name, _meta = core.build_project_workbook(
+        dict(core.DEFAULT_INPUTS), core.TEP_DEFAULT, [], {}, project_name="v4")
+    with pytest.raises(HTTPException) as caught:
+        core.audit_plato_workbook(content, dict(core.DEFAULT_INPUTS), core.TEP_DEFAULT)
+    assert "книга DevelopAid v4" in caught.value.detail
+    assert "ПРОВЕРКИ" in caught.value.detail
