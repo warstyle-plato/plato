@@ -810,8 +810,10 @@ def test_the_queue_price_multiplier_carries_the_phase_indexation():
     content, _, _ = build(phasing=phasing)
     sheet = v4_inputs.inputs(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
 
-    assert sheet["S88"].value == pytest.approx(1.0)
-    assert sheet["S89"].value == pytest.approx(1.08)
+    from xlsx_eval import Evaluator
+    evaluator = Evaluator(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
+    assert float(evaluator.cell(sheet.title, "S88")) == pytest.approx(1.0)
+    assert float(evaluator.cell(sheet.title, "S89")) == pytest.approx(1.08)
     assert sheet["AE88"].value == pytest.approx(0.0)
     assert sheet["AE89"].value == pytest.approx(0.0)
 
