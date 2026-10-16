@@ -6,7 +6,7 @@ tests/fixtures) у подземного паркинга 29 мест и 109 го
 становились гостевыми, и там, где строку не пересчитывал норматив, продажи
 паркинга обнулялись. Чужое число теперь отбрасывается, гостевые выводятся из
 норматива (S/11 = 3), продаётся 26. Страница пишет назад число движка — хвост
-не переезжает с сохранением, — а замена видна подписью у строки ТЭП. В ТЭП
+не переезжает с сохранением, — а замена видна уведомлением при загрузке. В ТЭП
 PDF у паркинга стоит число мест к продаже: «Продаваемая, м²» у него 0.
 
 Запуск: python3 -m pytest tests/test_stale_guest_spaces_are_dropped.py -q
@@ -51,10 +51,10 @@ def test_engine_names_the_dropped_value() -> None:
 PROBE = r"""async (data) => {
   applyProjectSnapshot(data);
   await calculate();
-  for (let i = 0; i < 300 && !document.querySelector('.guest-stale'); i++)
-    await new Promise(r => setTimeout(r, 100));
-  const note = document.querySelector('.guest-stale');
+  renderResult();
+  const note = document.getElementById('pageNotice');
   return {note: note ? note.innerText.trim() : '',
+          table: /исправлено при загрузке/.test((document.getElementById('report') || document.body).innerText),
           guest: tep.underground_parking.guest_units,
           sold: lastResult.tep.rows.find(r => r.key === 'underground_parking').saleable_units};
 }"""
@@ -81,9 +81,10 @@ def test_the_page_heals_the_saved_state(page_state) -> None:
     assert page_state["sold"] == 26, page_state
 
 
-def test_the_replacement_is_visible(page_state) -> None:
-    assert "было 109 гостевых при 29 местах" in page_state["note"], page_state
-
+def test_the_replacement_is_a_notice_not_a_table_note(page_state) -> None:
+    # Таблица молчит (владелец, 16.10.2026); число «было → стало» — в уведомлении.
+    assert "гостевые места 109 → 3 (норматив)" in page_state["note"], page_state
+    assert not page_state["table"], page_state
 
 def test_the_pdf_tep_names_spaces_for_sale() -> None:
     inputs = {**core.DEFAULT_INPUTS, **SETTINGS["inputs"]}

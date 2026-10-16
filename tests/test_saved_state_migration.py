@@ -88,6 +88,7 @@ def restore(saved: dict) -> dict:
     tail = (
         "fillUndergroundFromTep();\n"
         "seedParkingByHand();\n"
+        "rememberDerivedTail(null);persistedTep({});\n"
         "loadLocal();\n"
         "console.log(JSON.stringify({inputs,tep}));\n"
     )

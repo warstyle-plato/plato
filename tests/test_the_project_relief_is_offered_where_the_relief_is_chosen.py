@@ -105,7 +105,9 @@ def test_a_fee_removed_by_the_relief_is_named_so() -> None:
     assert removed.startswith("Плата за изменение ВРИ 10 170 млн ₽ снята льготой полностью")
     assert "не требуется" not in removed
     assert "равна нулю" in zero and "не задана" in zero
-    assert "Требуется изменение ВРИ" in off
+    # Признак «снят» больше не причина: плату решает сумма
+    # (`vri_payment_active`), и нулевая плата названа нулевой.
+    assert off == zero
 
 
 # --- то, что видит человек ----------------------------------------------------

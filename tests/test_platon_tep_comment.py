@@ -34,7 +34,6 @@ def clean_state(monkeypatch):
         wrapper._PLATON_TEP_CONTEXT,
         wrapper._PLATON_CONTEXT_BY_SESSION,
         wrapper._PLATON_MODE,
-        wrapper._PLATON_HISTORY,
         wrapper._PLATON_PENDING,
         wrapper._PLATON_LAST_SESSION,
         wrapper._PLATON_LAST_URL,
