@@ -1114,6 +1114,8 @@ function resetAll(){
  inputs=resetInputsWanted();
  tep=resetTepWanted();
  phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';
+ // Противоречия прошлого проекта не должны глушить раскрытие блока в новом.
+ siteParkingConflictSeen='';
  // Территория забывается тем же способом, что при подмене проекта: прежде
  // glavapuImport переживал сброс, и «чистый» проект применял ТЭП удалённого
  // участка.
