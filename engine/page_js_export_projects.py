@@ -777,6 +777,10 @@ function applyProjectSnapshot(data){
  seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
  renderInputs();renderTep();renderPhasing();
+ // Шапка — класс и вид проекта — читает те же вводные, что и форма: без этого
+ // загруженный «Пользовательский» проект показывал в шапке класс прежнего
+ // проекта с его подсказкой ставок, пока страницу не перезагрузят.
+ syncProjectClassSelector();syncProjectKindSelector();
  // Территория снимка — из его же вводных, тем же путём, что при загрузке страницы.
  renderStoredCadastralQuery();
  renderStoredGlavapu();renderStoredCadastral();renderStoredLand();renderStoredMo();
