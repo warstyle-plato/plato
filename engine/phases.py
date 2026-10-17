@@ -1311,6 +1311,10 @@ def _restate_phase_returns(
     расчёта, и NPV проекта у неё свой (как в `calculate`).
     """
     summary = result.get("summary") or {}
+    # Свои деньги очереди — по тому же потоку: свод их складывает, и книга
+    # (вклад капитала, строка 49) видит налог СЗ, а не налог в одиночку.
+    if "equity_contributed" in summary:
+        summary["equity_contributed"] = equity_contributed_rub(equity)
     verdict = (summary.get("equity_returns") or {}).get("status")
     if verdict == EQUITY_RETURNS_DEBT_UNREPAID:
         return
