@@ -201,6 +201,9 @@ def _v4_revenue_by_product(xml: str, products: list[dict[str, Any]],
     """
     if not products:
         return xml
+    # Своим импортом: прежде имя приходило в пространство движка из удалённой
+    # выгрузки ПЛАТО, и книга падала NameError без неё.
+    from openpyxl.utils import get_column_letter
     labels = {str(item.get("key")): str(item.get("label") or item.get("key"))
               for item in products}
     column = _V4_CONSOLIDATOR_FIRST_COL

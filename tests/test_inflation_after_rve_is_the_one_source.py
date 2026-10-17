@@ -103,18 +103,6 @@ def test_the_v4_book_derives_b65_from_the_inflation_cell():
     assert sheet["F59"].value == pytest.approx(0.06)
 
 
-def test_the_m2_book_derives_growth_after_rve_from_inflation():
-    data, meta = core.build_plato_model_v2(_inputs(inflation_after_rve_pct=6), _tep(), [],
-                                           project_name="П")
-    book = openpyxl.load_workbook(io.BytesIO(data))
-    sales = book["ПРОДАЖИ"]
-    formulas = [str(c.value) for row in sales.iter_rows() for c in row
-                if isinstance(c.value, str) and "^(1/12)-1" in c.value]
-    # Четыре основных продукта — по формуле от ячейки инфляции «Вводных».
-    assert len(formulas) >= 4, formulas
-    assert all("Вводные!$B$" in f for f in formulas), formulas
-
-
 def test_in_a_real_browser_a_saved_legacy_value_lands_in_the_inflation_field():
     chrome = chromium_or_skip()
     from playwright.sync_api import sync_playwright
