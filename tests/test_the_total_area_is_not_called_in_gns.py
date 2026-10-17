@@ -193,6 +193,7 @@ def test_the_rendered_page_calls_the_sum_total_area() -> None:
                          x.getAttribute('data-hint')].filter(Boolean).join(' '));
               return {before, after: head(),
                       note: document.getElementById('reportTepNote').textContent,
+                      tepNote: document.getElementById('tepUndergroundNote').textContent,
                       text: body.textContent + ' ' + attrs.join(' ')};
             }""")
         finally:
@@ -201,6 +202,12 @@ def test_the_rendered_page_calls_the_sum_total_area() -> None:
     other = [line for line in errors if "Failed to fetch" not in line]
     assert not other, f"страница упала: {other[:2]}"
     assert got["before"] == got["after"] == f"тыс ₽/м² {TOTAL_AREA.genitive}"
+    # Подпись под таблицей ТЭП (владелец, 17.10.2026, скриншот 0.25.91: «Та же
+    # ошибка»): наземная ГНС, подземная часть и их сумма словом глоссария.
+    tep_note = _flat(got["tepNote"])
+    assert tep_note.startswith("Итог ГНС — наземная площадь"), tep_note[:80]
+    assert re.search(rf"{re.escape(TOTAL_AREA.name)} [\d ]+(,\d)? м²\.$", tep_note), tep_note
+    assert not _old_in(tep_note), tep_note
     assert _flat(got["note"]).startswith(f"{TOTAL_AREA.name} — ")
     text = _flat(got["text"])
     assert not _old_in(text), _old_in(text)
