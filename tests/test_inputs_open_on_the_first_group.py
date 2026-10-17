@@ -138,6 +138,8 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # Поля участка (К1, К2, расстояние, край нормы МО) рисует карточка
         # «Участок и плотность», и форма пропускает их тем же правилом.
         page_const("SITE_ONLY_INPUTS"),
+        # Размещение кладовых — галочка у строки ТЭП, не поле формы.
+        page_const("TEP_ONLY_INPUTS"),
         # Ячейка нормы под парой подземного паркинга проекта зовётся по ключу.
         page_const("PROJECT_PARKING_KEY"),
         page_const("notOnInputs"),
@@ -268,7 +270,8 @@ def test_every_group_with_its_own_fields_is_rendered():
     исчезнет тем же правилом, а перечисление имён отстало бы на ней.
     """
     drawn = {item["name"] for item in render({})}
-    away = set(core.CLASS_ONLY_INPUTS) | set(core.SITE_ONLY_INPUTS)
+    away = (set(core.CLASS_ONLY_INPUTS) | set(core.SITE_ONLY_INPUTS)
+            | set(core.TEP_ONLY_INPUTS))
     # Экземпляр объекта своей группы не имеет: он вкладка в блоке своего типа
     # (владелец, 28.09.2026 — групп от числа объектов не прибавляется).
     expected = {name for name, fields in core.FIELD_GROUPS
