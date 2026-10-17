@@ -426,7 +426,11 @@ def _efficiency_block(numbers: dict[str, Any]) -> dict[str, Any]:
         "ebitda_mln": _number(numbers.get("ebitda_mln")),
         "net_profit_mln": _number(numbers.get("net_profit_mln")),
         "margin": _number(numbers.get("margin")),
+        "irr_project": _number(eff.get("irr_project")),
         "irr_equity": _number(eff.get("irr_equity")),
+        # Подпись движка вместо IRR капитала («не показателен: своих денег …»,
+        # «N/A — долг не погашен»); None — число показательно.
+        "irr_equity_na": _text(eff.get("irr_equity_na")) or None,
         "npv_mln": _number(numbers.get("npv_mln")),
         # «N/A — долг не погашен» от движка; None — IRR и NPV числами.
         "returns_na": _text(numbers.get("equity_returns_na")) or None,

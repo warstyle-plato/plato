@@ -559,6 +559,12 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
             "bridge_peak_by_phase": [float(finance.get("peak_bridge", 0.0)) / 1e6],
         }
     hints["parity"] = _v4_parity_targets(bundle.get("consolidated") or {})
+    # IRR проекта (до финансирования) — числом движка: поток проекта книги
+    # (CF!28) ведёт выручку по раскрытию эскроу, движок — по договорам, и
+    # формула книги дала бы второе, несогласное число.
+    _summary = (bundle.get("consolidated") or {}).get("summary") or {}
+    hints["irr_project"] = {"value": _summary.get("irr_project"),
+                            "label": equity_returns_na_label(_summary)}
     # Обеспеченность парковкой — места и вся нормативная потребность проекта
     # числами движка (`parking_provision`): норму книга не считает.
     _provision = (((bundle.get("consolidated") or {}).get("parking") or {})

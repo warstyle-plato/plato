@@ -146,10 +146,16 @@ def test_the_decision_reads_the_hotel_numbers() -> None:
     kpi = result["finance"]["hotel"]["kpi"]
     block = _block(_sections(result)["decision"], "Ключевые показатели")
     assert _value(block, "IRR проекта") == kpi["irr_project"]
-    assert _value(block, "IRR собственного капитала") == kpi["irr_equity"]
+    # IRR капитала — решением сводки (`summary.equity_irr`, база — CAPEX
+    # гостиницы): при своих деньгах ниже порога — подпись, иначе число модели.
+    verdict = result["summary"]["equity_irr"]
+    assert verdict["own_funds_share"] == pytest.approx(
+        verdict["own_funds"] / kpi["capex"], rel=1e-9), "база порога гостиницы — её CAPEX"
+    assert _value(block, "IRR собственного капитала") == (
+        kpi["irr_equity"] if verdict["meaningful"] else verdict["label"])
     assert _value(block, "Собственный капитал — пик вложений") == kpi["equity_peak"]
     # Капитал проекта и гостиницы — одни деньги: IRR сводки тот же.
-    assert result["summary"]["irr_equity"] == pytest.approx(kpi["irr_equity"], rel=1e-9)
+    assert result["summary"]["irr_equity_raw"] == pytest.approx(kpi["irr_equity"], rel=1e-9)
     worst = cumulative = 0.0
     for value in result["cashflow"]["equity"]:
         cumulative += value
