@@ -1666,6 +1666,19 @@ def _telegram_send_cad_calculate_button(chat_id: int, dialog: dict[str, Any]) ->
     )
 
 
+def _telegram_mo_vri_fee(vri: dict[str, Any]) -> str:
+    """Плата за смену ВРИ словами: сумма, а без суммы — «не рассчитана».
+
+    None у `payment_used_rub` — отсутствие ответа (нет Кд, нет Кср), и ноль на
+    его месте читался бы как ответ источника. Причину называет `payment_basis`
+    рядом — второй копии текста здесь нет.
+    """
+    amount = vri.get("payment_used_rub")
+    if amount is None:
+        return "не рассчитана"
+    return _telegram_money_mln(float(amount) / 1_000_000)
+
+
 def _telegram_mo_parsed(mo: dict[str, Any]) -> dict[str, Any]:
     """Расчёт по Подмосковью в формате карточки ТЭП бота."""
     social = mo.get("social") or {}
@@ -1684,7 +1697,7 @@ def _telegram_mo_parsed(mo: dict[str, Any]) -> dict[str, Any]:
         provided.append(f"округ — {territory['district']}")
     assumptions = [
         "социальная нагрузка рассчитана по нормативам РНГП Московской области",
-        f"плата за смену ВРИ — {_telegram_money_mln((vri.get('payment_used_rub') or 0) / 1_000_000)} "
+        f"плата за смену ВРИ — {_telegram_mo_vri_fee(vri)} "
         f"({vri.get('payment_basis') or 'не определена'})",
     ]
     assumptions.extend(str(item) for item in (mo.get("warnings") or [])[:4])
@@ -1811,7 +1824,7 @@ def _telegram_handle_mo_numbers(chat_id: int, numbers: list[str], query: str = "
         f"СОШ: {_telegram_number((social.get('school') or {}).get('places'), 0)} мест\n"
         f"Поликлиника: {_telegram_number((social.get('clinic') or {}).get('capacity'), 0)} пос./смену\n"
         f"Машино-места: {_telegram_number((social.get('parking') or {}).get('permanent_spaces'), 0)} шт.\n\n"
-        f"Смена ВРИ: <b>{_telegram_money_mln((vri.get('payment_used_rub') or 0) / 1_000_000)}</b>\n"
+        f"Смена ВРИ: <b>{_telegram_mo_vri_fee(vri)}</b>\n"
         f"Основание: {html.escape(str(vri.get('payment_basis') or '—'))}",
     )
     _telegram_send_message(chat_id, _telegram_mo_sources_message(mo))
