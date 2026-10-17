@@ -85,7 +85,10 @@ def page_state() -> dict:
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_page(viewport={"width": 1440, "height": 900})
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(1500)
+            # Ждём стартовый расчёт страницы, а не фиксированное время: при
+            # медленном раннере 1,5 с не хватало, и `lastResult` оставался null.
+            page.wait_for_function("() => typeof lastResult !== 'undefined' && lastResult",
+                                   timeout=60_000)
             got = page.evaluate(PROBE)
             page.close()
     return got
