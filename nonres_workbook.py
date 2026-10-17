@@ -83,6 +83,12 @@ def _month(value: Any) -> date:
     return date.fromisoformat(str(value)[:10]).replace(day=1)
 
 
+def _irr_label(summary: dict[str, Any]) -> str | None:
+    """Подпись движка «IRR капитала не показателен» (`summary.equity_irr`)."""
+    verdict = summary.get("equity_irr") or {}
+    return str(verdict.get("label")) if verdict.get("status") == "thin_equity" else None
+
+
 def _sum(parts: list[str]) -> str:
     return "+".join(parts) if parts else "0"
 
@@ -1521,8 +1527,9 @@ def _cash_sheet(book: Workbook, objects_refs: list[dict[str, str]], costs: _Cost
             if pf else "")
         # Поток видит уплату, а не начисление: деньги уходят по кварталам.
         ws[v["tax"]] = f"=INDEX({taxes['tx_pay']},{i + 1})"
-        ws[v["project"]] = (f"={v['revenue']}-{v['costs']}-{v['vat']}-{v['interest']}-{v['fee']}"
-                            f"-{v['capex']}-{v['tax']}")
+        # Поток проекта — до финансирования, как у движка (владелец,
+        # 16.10.2026): без процентов и комиссий; по нему NPV и IRR проекта.
+        ws[v["project"]] = f"={v['revenue']}-{v['costs']}-{v['vat']}-{v['capex']}-{v['tax']}"
         ws[v["to_equity"]] = "=" + _object_sum(objects_refs, "to_equity", r)
         ws[v["equity"]] = f"={v['to_equity']}-{v['capex']}-{v['tax']}" + (
             f"+INDEX({pf['equity']},{i + 1})" if pf else "")
@@ -1894,9 +1901,10 @@ def _pf_sheet(book: Workbook, ddu_refs: list[dict[str, str]], objects: list[dict
                            f"+IF({k}=0,{_pi('bridge_fee')},0)+IF({k}={permit},{_pi('reservation_fee')},0)")
         ws[v["vat"]] = f"=IF({k}={rve},{_pi('vat_due')},0)"
         fees = f"(IF({k}=0,{_pi('bridge_fee')},0)+IF({k}={permit},{_pi('reservation_fee')},0))"
-        # Поток проекта движка: выручка по ДДУ в месяц продажи, расходы,
-        # уплаченные проценты и комиссии (CAPEX — у листа «Денежный поток»).
-        ws[v["project"]] = f"={v['sales']}-{v['operating']}-{v['pay_out']}-{fees}-{v['vat']}"
+        # Поток проекта движка: выручка по ДДУ в месяц продажи и расходы, до
+        # финансирования — без процентов и комиссий (CAPEX — у листа
+        # «Денежный поток»).
+        ws[v["project"]] = f"={v['sales']}-{v['operating']}-{v['vat']}"
         # Поток капитала: деньги продаж — с раскрытия эскроу; выборки долга
         # покрывают затраты, погашения уходят банку.
         ws[v["equity"]] = (f"=IF({k}<{rve},0,{v['sales']}+{v['release']})-{v['operating']}"
@@ -1975,8 +1983,22 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
     line("vat", "НДС к уплате", f"=SUM({taxes['vat_paid']})")
     line("net_profit", "Чистая прибыль", f"={ref('profit_before_tax')}-{ref('profit_tax')}-{ref('vat')}")
     line("npv", "NPV проекта", na_when_unrepaid(f"SUM({cash['project_disc']})"))
-    line("irr_equity", "IRR собственного капитала",
-         na_when_unrepaid(f'IFERROR((1+IRR({cash["equity"]},0.01))^12-1,"")'), "0.00%")
+    # IRR капитала — числом, только если своих денег не меньше порога движка
+    # от полных расходов (владелец, 16.10.2026): при почти нулевых своих
+    # деньгах он выходит сотнями процентов и доходностью не является. Свои
+    # деньги — оттоки потока капитала, как `equity_contributed` движка.
+    irr_formula = f'IFERROR((1+IRR({cash["equity"]},0.01))^12-1,"")'
+    min_share = (spec.get("equity_irr") or {}).get("min_share")
+    if min_share is not None:
+        full_cost = "+".join([ref("capex"), ref("nonres_costs")]
+                             + ([ref("commercial_costs")] if pf else [])
+                             + [ref("financing_cost"), ref("profit_tax"), ref("vat")])
+        own = f'(-SUMIF({cash["equity"]},"<0"))'
+        irr_formula = (f'IF(AND(({full_cost})>0,{own}<{float(min_share):g}*({full_cost})),'
+                       f'"не показателен: своих денег "&ROUND({own}/1000000,0)&" млн ₽ ("'
+                       f'&SUBSTITUTE(ROUND({own}/({full_cost})*100,1),".",",")&"% затрат)",'
+                       f'{irr_formula})')
+    line("irr_equity", "IRR собственного капитала", na_when_unrepaid(irr_formula), "0.00%")
 
     # Горизонт: строк в помесячных таблицах столько, сколько месяцев у движка.
     # Правка вводных, уводящая проект дальше, должна краснить сверку, а не
@@ -2177,8 +2199,11 @@ def _check_rows(result: dict[str, Any], spec: dict[str, Any], objects_refs: list
         ("net_profit", "Чистая прибыль", summary.get("net_profit"), False),
         ("total_expenses", "Расходы всего", summary.get("total_expenses"), False),
         ("npv", "NPV проекта", summary.get("npv") if na_label is None else na_label, False),
+        # Подпись движка вместо IRR капитала — «N/A — долг не погашен» или
+        # «не показателен: своих денег …» (`equity_irr`).
         ("irr_equity", "IRR собственного капитала",
-         summary.get("irr_equity") if na_label is None else na_label, True),
+         summary.get("irr_equity") if na_label is None and _irr_label(summary) is None
+         else (na_label or _irr_label(summary)), True),
         ("loan_peak", "Кредит объектов — пик",
          sum(float((o.get("totals") or {}).get("loan_peak") or 0.0) for o in engine_objects), False),
         ("identity_total", "Выручка − расходы всего − чистая прибыль", 0.0, False),

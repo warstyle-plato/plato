@@ -217,8 +217,9 @@ PAGE += r"""function renderResult(){
   row('Налог на прибыль',`(${money(r.summary.profit_tax)})`)+
   `<tr><th>Чистая прибыль</th><th>${money(r.summary.net_profit)}</th></tr>`+
   row('Маржинальность',pct(r.summary.margin))+
-  row('NPV',returnsNa(r.summary)||money(r.summary.npv))+
-  row('IRR equity',returnsNa(r.summary)||irrFmt(r.summary.irr_equity));
+  row('NPV проекта (до финансирования)',returnsNa(r.summary)||money(r.summary.npv))+
+  row('IRR проекта (до финансирования)',returnsNa(r.summary)||irrFmt(r.summary.irr_project))+
+  row('IRR собственного капитала',irrEquityNa(r.summary)||irrFmt(r.summary.irr_equity));
 
  // Числа карточки — из результата, а не из формы. Форма не знает ни о льготе,
  // ни о доле очереди: при стопроцентной льготе строка показывала полную плату

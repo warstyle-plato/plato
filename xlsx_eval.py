@@ -331,6 +331,7 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "MOD": lambda args: _as_number(args[0]) - _as_number(args[1]) * _math.floor(
         _as_number(args[0]) / _as_number(args[1])),
     "ROUND": lambda args: _excel_round(_as_number(args[0]), _as_number(args[1])),
+    "SUBSTITUTE": lambda args: _text(args[0]).replace(_text(args[1]), _text(args[2])),
     "ROUNDUP": lambda args: _excel_round(_as_number(args[0]), _as_number(args[1]), up=True),
     "COUNT": lambda args: len(_numbers(args)),
     "COUNTIF": _countif,
@@ -627,6 +628,9 @@ def _text_format(args: list[Any]) -> str:
 
 
 def _text(value: Any) -> str:
+    # Целое число Excel склеивает без хвоста: 916 & "" — «916», а не «916.0».
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
     return "" if value is None else str(value)
 
 

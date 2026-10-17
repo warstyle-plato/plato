@@ -101,13 +101,22 @@ def telegram_result(req: TelegramResultRequest,
     if session_numbers and result_numbers and session_numbers != result_numbers:
         raise HTTPException(status_code=403, detail="Кадастровые номера не совпадают с Telegram-сессией")
 
-    irr = summary.get("irr_equity")
-    irr_text = "N/A"
-    if irr is not None:
+    # Главный — IRR проекта (до финансирования); IRR капитала вторым и числом
+    # только когда движок счёл его показательным (`summary.equity_irr`):
+    # подпись причины приходит со страницы готовой.
+    def _irr_text(value: Any) -> str | None:
         try:
-            irr_text = _telegram_number(float(irr) * 100, 1) + "%"
-        except Exception:
-            pass
+            return _telegram_number(float(value) * 100, 1) + "%" if value is not None else None
+        except (TypeError, ValueError):
+            return None
+    irr_lines = ""
+    if "irr_project" in summary or "irr_equity_label" in summary:
+        irr_project_text = (summary.get("equity_returns_na")
+                            or _irr_text(summary.get("irr_project")) or "не считается")
+        irr_equity_text = (summary.get("irr_equity_label")
+                           or _irr_text(summary.get("irr_equity")) or "не считается")
+        irr_lines = (f"• IRR проекта (до финансирования) — {html.escape(irr_project_text)}\n"
+                     f"• IRR собственного капитала — {html.escape(irr_equity_text)}\n")
     margin_text = _telegram_number(float(summary.get("margin") or 0) * 100, 1) + "%"
     parking = float(summary.get("parking_spaces") or 0)
     provision_label = str(summary.get("parking_provision_label") or "").strip()
@@ -244,6 +253,7 @@ def telegram_result(req: TelegramResultRequest,
         f"• EBITDA — {_telegram_money_mln(summary.get('ebitda_mln'))}\n"
         f"• чистая прибыль — {_telegram_money_mln(summary.get('net_profit_mln'))}\n"
         f"• маржинальность — {margin_text}\n"
+        + irr_lines
         + bank_lines
         + rve_warning + debt_warning +
         "<b>Оценка целесообразности покупки</b>\n"
