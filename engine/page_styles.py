@@ -88,6 +88,8 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .teptable tbody .tep-note{text-align:left}
 .teptable .tep-note{display:block;font-size:10px;line-height:1.35;color:#777;margin-top:3px;font-weight:400;text-transform:none;letter-spacing:0;text-align:right}
 .teptable .tep-note.bad{color:#a33;margin-top:2px}
+.teptable .tep-switch{display:inline-flex;margin-left:8px;align-items:center;gap:4px;font-size:11px;color:#444;cursor:pointer}
+.teptable .tep-switch input{min-width:0;width:auto;padding:0;margin:0}
 .teptable .tep-head-note{font-size:10px;color:#999;font-weight:400;text-transform:none;letter-spacing:0}
 .teptable tfoot th{background:#f2f0ea}
 /* Колонка подписей закреплена: таблица шире телефона и прокручивается сама,
