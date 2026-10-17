@@ -266,8 +266,10 @@ def test_a_group_without_its_own_fields_is_not_drawn(page_state):
     drawn = set(page_state["groups"])
     assert drawn, "групп на экране нет — мерить нечего"
     # Во «Вводных» не рисуются поля класса и поля участка (карточка «Участок
-    # и плотность», владелец 27.09.2026).
-    away = set(core.CLASS_ONLY_INPUTS) | set(core.SITE_ONLY_INPUTS)
+    # и плотность», владелец 27.09.2026) и поля строки ТЭП (размещение
+    # кладовых — галочка у строки «Кладовые», владелец 16.10.2026).
+    away = (set(core.CLASS_ONLY_INPUTS) | set(core.SITE_ONLY_INPUTS)
+            | set(core.TEP_ONLY_INPUTS))
     # Экземпляр объекта своей группы не имеет: он вкладка в блоке своего типа.
     expected = {title for title, fields in core.FIELD_GROUPS
                 if any(one[0] not in away for one in fields)
