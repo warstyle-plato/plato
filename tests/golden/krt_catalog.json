@@ -20,6 +20,7 @@
   "metrics.full_cost_per_saleable_th_per_sqm": 699.17,
   "metrics.full_cost_per_total_area_th_per_sqm": 321.61,
   "metrics.irr_equity_pct": null,
+  "metrics.irr_project_pct": null,
   "metrics.llcr_x": 0.9045,
   "metrics.margin_pct": -10.521,
   "metrics.net_profit_mln": -11697.45,

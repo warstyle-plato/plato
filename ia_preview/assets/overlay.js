@@ -1169,6 +1169,19 @@
     };
   }
 
+  /* Главный — IRR проекта: поток до финансирования, на все вложения. IRR
+     капитала — вторым, и числом только когда движок счёл его показательным
+     (`summary.equity_irr`): при почти нулевых своих деньгах (всё до ПФ несёт
+     БРИДЖ) он выходит 300 %+ и доходностью не является (владелец, 16.10.2026). */
+  function irrLead(summary) {
+    var na = (summary.equity_returns || {}).label;
+    var project = na || (summary.irr_project == null ? 'не считается' : fmtPct(summary.irr_project));
+    var verdict = summary.equity_irr;
+    var equity = verdict && verdict.meaningful === false ? (verdict.label || 'N/A')
+      : na || (summary.irr_equity == null ? 'N/A' : fmtPct(summary.irr_equity));
+    return 'IRR проекта ' + project + ' · IRR капитала ' + equity;
+  }
+
   function renderVerdict() {
     var card = document.getElementById('iaVerdict');
     var result = pageResult();
@@ -1215,8 +1228,7 @@
         + (weakest.llcr < TARGET_LLCR ? ' (ниже порога: по ней понадобится перенос долга или согласие банка)' : '') + '. ' : '')
       + 'Чистая прибыль ' + fmtMoney(result.summary.net_profit)
       + ' · маржинальность ' + fmtPct(result.summary.margin)
-      + ' · IRR ' + ((result.summary.equity_returns || {}).label
-        || (result.summary.irr_equity == null ? 'N/A' : fmtPct(result.summary.irr_equity)))
+      + ' · ' + irrLead(result.summary)
       + (metric.key ? ' · порог банка ' + name + ' ' + target.toFixed(2).replace('.', ',') + 'x.'
         : '. Покрытие долга не меряется' + (metric.reason ? ': ' + metric.reason : '.'));
 

@@ -328,8 +328,10 @@ def test_the_verdict_flags_a_broken_llcr_target():
 def test_the_verdict_flags_a_negative_npv():
     # Проект должен стоять чуть выше нуля, чтобы отклонение фактора уводило его
     # в минус. На прежних 560 после подорожания стройки он уже убыточен в базе,
-    # и вердикт говорил бы не о риске, а о состоявшемся убытке.
-    inputs, tep = project(apartment_price_th=600)
+    # и вердикт говорил бы не о риске, а о состоявшемся убытке. NPV проекта
+    # считается до финансирования (владелец, 16.10.2026) и вырос: при 600 его
+    # уже ничто не уводит в минус, при 540 — около +1,1 млрд ₽.
+    inputs, tep = project(apartment_price_th=540)
     report = core.run_sensitivity(inputs, tep, [], {}, metric="npv_mln")
 
     assert any("в минус" in line for line in report["verdict"])
