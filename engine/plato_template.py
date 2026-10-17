@@ -1385,6 +1385,12 @@ def build_plato_model_v2(
     permit = d(dates.get("permit"))
     rve = d(dates.get("rve"))
     months = [d(item["month"]) for item in rows]
+    # Ряд потоков движка длиннее строк расчёта на хвост уплаты налога
+    # (доплата года — в марте следующего): сетка книги тянется до него, иначе
+    # уплата за последний год выпала бы из CF и IRR.
+    for month_text in (result.get("cashflow") or {}).get("months") or []:
+        if d(month_text) > months[-1]:
+            months.append(d(month_text))
     span = range(len(months))
     capitalize = str(inputs.get("bridge_interest_mode", "Капитализация в ПФ")) == "Капитализация в ПФ"
     transferred = float(finance.get("transferred_bridge_interest") or 0.0)
@@ -2274,14 +2280,27 @@ def build_plato_model_v2(
 
     # --- НАЛОГИ ------------------------------------------------------------
     tax = _MonthGrid(sheets["tax"], months, styles, title="НАЛОГ НА ПРИБЫЛЬ · млн ₽")
-    tax.layout("margin", "adjust", "deduction", "margin_cum", "deduction_cum",
-               "base", "tax", "tax_cum", "vat")
+    tax.layout("margin", "adjust", "deduction", "gate", "year", "year_result", "prior",
+               "used", "base", "paid_ytd", "tax", "pay", "vat")
     tax.values("margin", "Маржа реализованных продуктов",
                [float(item.get("taxable_margin") or 0.0) / 1e6 for item in rows], money)
-    adjust = [0.0] * len(rows)
-    if rows:
-        adjust[-1] = float(finance.get("financing_tax_reconciliation") or 0.0) / 1e6
-    tax.values("adjust", "Корректировка вычетов (сверка)", adjust, money)
+    # Вычет — проценты и комиссии в месяце НАЧИСЛЕНИЯ (п. 8 ст. 272): строка
+    # «Проценты и комиссии за месяц» листа кредитования. Сверка — что движок
+    # признал сверх неё (обычно ноль): без неё книга разошлась бы с движком
+    # молча, а не строкой.
+    fees_by_index = {0: float(finance.get("bridge_fee") or 0.0)}
+    for index, item in enumerate(rows):
+        if d(item["month"]) == permit:
+            fees_by_index[index] = (fees_by_index.get(index, 0.0)
+                                    + float(finance.get("pf_reservation_fee") or 0.0))
+    adjust = [
+        (float(item.get("financing_tax_deduction") or 0.0)
+         - sum(float(item.get(key) or 0.0) for key in (
+             "bridge_interest", "bridge_capitalization", "pf_interest",
+             "pf_interest_capitalization", "limit_fee"))
+         - fees_by_index.get(index, 0.0)) / 1e6
+        for index, item in enumerate(rows)]
+    tax.values("adjust", "Корректировка вычетов (сверка с движком)", adjust, money)
     # НДС — денежный расход проекта: без него книга показывала прибыль выше
     # расчёта ровно на его величину, и обе цифры выглядели достоверно.
     vat_schedule = {d(month): value for month, value in
@@ -2289,22 +2308,60 @@ def build_plato_model_v2(
     tax.values("vat", "НДС к уплате",
                [round(vat_schedule.get(d(item["month"]), 0.0) / 1e6, 6) for item in rows],
                money)
-    tax.formula("deduction", "Вычет по финансированию (выплачено)",
-                lambda i: (f"={credit.outside('interest_payment', i)}"
-                           f"+{credit.outside('fees', i)}+{tax.at('adjust', i)}"), money)
-    tax.formula("margin_cum", "Маржа нарастающим",
-                lambda i: f"={tax.before('margin_cum', i)}+{tax.at('margin', i)}", money)
-    tax.formula("deduction_cum", "Вычеты нарастающим",
-                lambda i: f"={tax.before('deduction_cum', i)}+{tax.at('deduction', i)}", money)
-    tax.formula("base", "Налоговая база",
-                lambda i: f"=MAX({tax.at('margin_cum', i)}-{tax.at('deduction_cum', i)},0)", money)
-    # Налог платится не раньше РВЭ и с зачётом уже уплаченного.
-    tax.formula("tax", "Налог за месяц",
-                lambda i: (f"=IF({tax.month(i)}>={ref('rve')},"
+    tax.formula("deduction", "Вычет: проценты и комиссии начисленные",
+                lambda i: f"={credit.outside('cost', i)}+{tax.at('adjust', i)}", money)
+    # Налог спецзастройщика (владелец, 16.10.2026): маржа дома — в месяц РВЭ,
+    # проценты — в месяце начисления; год закрывается сменой календарного
+    # года, убыток прошлых лет гасит не больше половины базы года (ст. 283).
+    tax.formula("gate", "До РВЭ (маржа откладывается в РВЭ)",
+                lambda i: f"=IF({tax.month(i)}<{ref('rve')},1,0)", "0")
+    tax.formula("year", "Год", lambda i: f"=YEAR({tax.month(i)})", "0")
+
+    def same_year(i: int) -> str:
+        return "1=0" if i == 0 else f"{tax.at('year', i)}={tax.before('year', i)}"
+
+    def deferred(i: int) -> str:
+        if i == 0:
+            return "0"
+        return (f"IF({tax.before('gate', i)}=1,"
+                f"SUM({tax.letter(0)}{tax.rows['margin']}:{tax.letter(i - 1)}{tax.rows['margin']}),0)")
+
+    tax.formula("year_result", "Результат года нарастающим",
+                lambda i: (f"=IF({same_year(i)},{tax.before('year_result', i)},0)"
+                           f"+IF({tax.at('gate', i)}=1,-{tax.at('deduction', i)},"
+                           f"{tax.at('margin', i)}-{tax.at('deduction', i)}+{deferred(i)})"), money)
+    tax.formula("prior", "Убыток прошлых лет",
+                lambda i: ("=0" if i == 0 else
+                           f"=IF({same_year(i)},{tax.before('prior', i)},"
+                           f"{tax.before('prior', i)}+IF({tax.before('year_result', i)}<0,"
+                           f"-{tax.before('year_result', i)},-{tax.before('used', i)}))"), money)
+    tax.formula("used", "Зачтено убытка (не больше половины базы года)",
+                lambda i: (f"=IF(AND({tax.at('year_result', i)}>0,{tax.at('prior', i)}>0),"
+                           f"MIN({tax.at('prior', i)},{tax.at('year_result', i)}*{_LOSS_CARRY_USE_LIMIT}),0)"),
+                money)
+    tax.formula("base", "Налоговая база года",
+                lambda i: f"=MAX({tax.at('year_result', i)}-{tax.at('used', i)},0)", money)
+    tax.formula("paid_ytd", "Начислено ранее в году",
+                lambda i: (f"=IF({same_year(i)},{tax.before('paid_ytd', i)}+{tax.before('tax', i)},0)"),
+                money)
+    tax.formula("tax", "Налог за месяц (начисление)",
+                lambda i: (f"=IF({tax.at('gate', i)}=1,0,"
                            f"MAX({tax.at('base', i)}*{ref('profit_tax_pct')}"
-                           f"-{tax.before('tax_cum', i)},0),0)"), money, bold=True)
-    tax.formula("tax_cum", "Уплачено нарастающим",
-                lambda i: f"={tax.before('tax_cum', i)}+{tax.at('tax', i)}", money)
+                           f"-{tax.at('paid_ytd', i)},0))"), money, bold=True)
+
+    def paid(i: int) -> str:
+        def cells(start: int, stop: int) -> str:
+            picked = [tax.letter(j) + str(tax.rows["tax"])
+                      for j in range(i - start, i - stop + 1) if j >= 0]
+            return "+".join(picked) or "0"
+        month = f"MONTH({tax.month(i)})"
+        return (f"=IF({month}=3,{cells(5, 3)},IF(OR({month}=4,{month}=7,{month}=10),"
+                f"{cells(3, 1)},0))")
+
+    # Уплата: авансы по итогам квартала (28 апреля, июля, октября) и доплата
+    # года в марте следующего (ст. 286, 287). CF видит уплату.
+    tax.formula("pay", "Налог к уплате (авансы по кварталам, доплата года в марте)",
+                paid, money, bold=True)
 
     # --- CF ----------------------------------------------------------------
     flow = _MonthGrid(sheets["cf"], months, styles, title="ДВИЖЕНИЕ ДЕНЕЖНЫХ СРЕДСТВ · млн ₽")
@@ -2318,7 +2375,7 @@ def build_plato_model_v2(
     flow.formula("capex", "CAPEX", lambda i: f"=-{costs.outside('capex', i)}", money)
     flow.formula("operating", "Маркетинг, продажи и содержание",
                  lambda i: f"=-{costs.outside('operating', i)}", money)
-    flow.formula("tax", "Налог на прибыль", lambda i: f"=-{tax.outside('tax', i)}", money)
+    flow.formula("tax", "Налог на прибыль (уплата)", lambda i: f"=-{tax.outside('pay', i)}", money)
     flow.formula("vat", "НДС", lambda i: f"=-{tax.outside('vat', i)}", money)
     flow.formula("interest", "Проценты и комиссии выплаченные",
                  lambda i: f"=-{credit.outside('interest_payment', i)}-{credit.outside('fees', i)}", money)

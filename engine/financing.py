@@ -1771,12 +1771,18 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                        - vat_charged_by_month.get(month, 0.0)) for month in months}
     # Правило спецзастройщика: маржа дома — в РВЭ, проценты — в месяце
     # начисления (владелец, 16.10.2026).
+    # Гостиница не СЗ по ДДУ: её налог и потоки — расчёт её стратегии
+    # (`developaid_hotel_strategy`), и он остаётся прежним — проценты стройки
+    # в год ввода, уплата в месяц начисления.
+    is_hotel = bool(hotel["flows"])
     profit_tax_schedule, tax_detail = _profit_tax_schedule(
-        months, margins, financing_deductions, rve, tax_rate, defer_financing=False)
+        months, margins, financing_deductions, rve, tax_rate, defer_financing=is_hotel)
     # Деньги уходят в бюджет авансами по итогам квартала и доплатой года в
     # марте (ст. 286, 287), а не в месяц начисления: потоки проекта и
     # капитала читают уплату, P&L — начисление.
-    profit_tax_payment_schedule = _profit_tax_payments(profit_tax_schedule)
+    profit_tax_payment_schedule = (
+        {month: value for month, value in profit_tax_schedule.items() if value} if is_hotel
+        else _profit_tax_payments(profit_tax_schedule))
     tax_rows = []
     row_by_month = {d(row["month"]): row for row in result["rows"]}
     for month, line in zip(months, tax_detail):
