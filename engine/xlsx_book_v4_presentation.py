@@ -127,8 +127,13 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
             "profit_tax_rate": float(summary.get("profit_tax_rate") or 0.0),
         },
         "efficiency": {
+            # Главный — IRR проекта (до финансирования); IRR капитала — числом
+            # только при `summary.equity_irr.meaningful`, иначе подпись движка.
+            "irr_project": (None if summary.get("irr_project") is None
+                            else float(summary.get("irr_project"))),
             "irr_equity": (None if summary.get("irr_equity") is None
                            else float(summary.get("irr_equity"))),
+            "irr_equity_na": equity_irr_label(summary),
             "full_project_cost_mln": float(summary.get("full_project_cost") or 0.0) / 1e6,
             "commercial_mln": float(summary.get("commercial_costs") or 0.0) / 1e6,
         },
@@ -685,6 +690,38 @@ def _v4_monthly_irr(xml: str, row: int, missing: list[str], where: str) -> str:
     xml, done = _v4_set_or_insert_cell(xml, found.group(1), formula=new)
     if not done or "XIRR" in new:
         missing.append(f"{where}: IRR в строке {row} не переписан")
+    return xml
+
+
+_V4_EQUITY_IRR_DEBT_PREFIX = 'IF(\'CF\'!B19>0.5,"N/A (долг не погашен)",'
+
+
+def _v4_equity_irr_meaningful(xml: str, missing: list[str]) -> str:
+    """IRR капитала свода — числом, только если своих денег не меньше порога.
+
+    Решение владельца 16.10.2026 («IRR проекта + пометка»): при почти нулевых
+    своих деньгах IRR капитала выходит 300 %+ и доходностью не является. Порог
+    — тот же, что у движка (`EQUITY_IRR_MIN_OWN_SHARE`, доля полных затрат):
+    книга своего порога не держит. Свои деньги — «Вложено собственного
+    капитала» (M8), полные затраты — ОТЧЕТ!B82, как `full_project_cost` движка.
+    Условие встаёт после проверки долга: непогашенный долг важнее.
+    """
+    found = re.search(r'<x:c r="N8"[^>]*>\s*<x:f>([^<]*)</x:f>', xml)
+    formula = html.unescape(found.group(1)) if found else ""
+    if not formula.startswith(_V4_EQUITY_IRR_DEBT_PREFIX):
+        missing.append("КОНСОЛИДАТОР: N8 (IRR капитала) — проверка долга шаблона не найдена, "
+                       "признак «IRR капитала показателен» не записан")
+        return xml
+    cost = "'ОТЧЕТ'!$B$82"
+    share = f"{EQUITY_IRR_MIN_OWN_SHARE:g}"
+    thin = (f'IF(AND({cost}>0,M8<{share}*{cost}),'
+            f'"не показателен: своих денег "&ROUND(M8,0)&" млн ₽ ("'
+            f'&SUBSTITUTE(ROUND(M8/{cost}*100,1),".",",")&"% затрат)",')
+    rest = formula[len(_V4_EQUITY_IRR_DEBT_PREFIX):]
+    new = _V4_EQUITY_IRR_DEBT_PREFIX + thin + rest + ")"
+    xml, done = _v4_set_or_insert_cell(xml, "N8", formula=new)
+    if not done:
+        missing.append("КОНСОЛИДАТОР: N8 (IRR капитала) — признак «показателен» не записан")
     return xml
 
 
