@@ -2443,6 +2443,7 @@ async function recalcFromTepByNorms(options){
     residential_living_spp_sqm:Number((tep.apartments&&tep.apartments.gns)||0),
     nonresidential_np_sqm:nonres,
     apartment_count:Number((tep.apartments&&tep.apartments.units)||0),
+    social_population_method:String(inputs.social_population_method||'rngp_area'),
     district:String(territory.district||''),
     inside_moscow:territory.inside_moscow!==false})});
   d=await r.json();
@@ -2456,6 +2457,10 @@ async function recalcFromTepByNorms(options){
   'Машино-места подземные: '+num(d.parking.underground)
    +' ('+num(d.parking.permanent)+' постоянных + '+num(d.parking.guest)+' гостевых)',
   'Места приложения труда: '+num(d.jobs)];
+ // Население соцобъектов по требованию органа — своей строкой: оно не равно
+ // населению нормы, и места выше посчитаны от него.
+ if(d.social_population!=null&&d.social_population!==d.population)
+  lines.splice(1,0,'Население для соцобъектов: '+num(d.social_population)+' чел. — '+String(d.social_population_basis||''));
  (d.refused||[]).forEach(x=>lines.push('Не посчитано — '+x.name+': '+x.reason));
  (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
  if(!silent&&!confirm('Пересчёт по нормативам Москвы (выгрузки ГлавАПУ нет):\n\n'
@@ -2518,6 +2523,7 @@ async function recalcFromTep(options){
     apartment_count:Number((tep.apartments&&tep.apartments.units)||0),
     ground_commercial_spp_sqm:builtIn,nonresidential_np_sqm:nonres,
     land_right:String(inputs.land_right||'ownership'),
+    social_population_method:String(inputs.social_population_method||'rngp_area'),
     nonres_spp_by_use:{
      office:standaloneProductSum('gns',['offices']),
      trade:standaloneProductSum('gns',['standalone_retail'])}}})});
@@ -2556,6 +2562,8 @@ async function recalcFromTep(options){
   // местам они уже сказаны, а второй ответ на тот же вопрос разошёлся бы с
   // первым молча.
   cmp('Население, чел.',b.population,d.population)];
+ if(d.social_population!=null&&d.social_population!==d.population)
+  context.push('Население для соцобъектов: '+num(d.social_population)+' чел. — '+String(d.social_population_basis||''));
  (d.warnings||[]).forEach(w=>context.push('⚠ '+w));
  // Вопрос задаётся о НАМЕРЕНИИ: здесь подстановки ещё не было.
  const proposal=['Плата за ВРИ, млн ₽: по ставке территории '+num(d.vri_total_mln)
