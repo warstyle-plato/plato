@@ -529,9 +529,16 @@ def _calculate_economics(req: CalcRequest) -> dict:
     # не видели и завышали доходность (решение владельца, 13.10.2026).
     vat_ddu = {d(month): float(value) for month, value in (fin.get("vat_ddu_schedule") or {}).items()}
     timeline = month_range(op["project_start"], op["end"])
+    # Налог уходит со счёта авансом по итогам квартала и доплатой года в марте
+    # следующего (ст. 286, 287): уплата за последний год проекта приходится
+    # на месяцы после его горизонта. Ряд потоков продлевается до неё нулями —
+    # налог, обрезанный горизонтом, IRR и NPV не видели бы вовсе.
+    tax_paid = {d(month): float(value)
+                for month, value in (fin.get("profit_tax_payment_schedule") or {}).items()}
+    cash_timeline = month_range(op["project_start"], max([op["end"], *tax_paid]))
     project_cf = []
     equity_cf = []
-    for month in timeline:
+    for month in cash_timeline:
         revenue_m = op["revenue"].get(month, 0.0)
         capex_m = op["capex"].get(month, 0.0)
         opex_m = op["operating"].get(month, 0.0)
@@ -544,7 +551,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         # Limit fees are capitalized into interest payable inside the financing
         # engine and therefore already included in interest_payment when paid.
         fees = 0.0
-        tax = float(fr.get("profit_tax", 0.0) or 0.0)
+        tax = tax_paid.get(month, 0.0)
         # ТЦ и офисы вне ДДУ: их выручка приходит мимо эскроу, в свой месяц.
         # Проекту — начисленные проценты кредита объекта, капиталу — его
         # собственный остаток после кредита (`nonres_cash_to_equity`); CAPEX
@@ -929,6 +936,10 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "financing_cost": fin["financing_cost"],
             "profit_before_tax": after_finance_pre_tax,
             "profit_tax": fin["profit_tax"],
+            # Убыток, оставшийся незачтённым к концу проекта (ст. 283: гасит не
+            # больше половины базы года). Его можно зачесть только будущей
+            # прибылью того же ООО.
+            "tax_loss_unused": float(fin.get("tax_loss_unused", 0.0) or 0.0),
             # Ставка едет в сводке рядом с налогом: свод очередей считает
             # налог заново как один налогоплательщик и берёт ставку отсюда,
             # а не вторую копию из мастер-вводных.
@@ -1070,7 +1081,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "nonres_financing": nonres_financing_report(fin.get("nonres")),
             "nonres_costs_label": nonres_costs_label(x),
             "equity_participation": equity_participation_report(
-                timeline, equity_cf, fin, discount_rate=discount_rate, irr=irr_equity),
+                cash_timeline, equity_cf, fin, discount_rate=discount_rate, irr=irr_equity),
             "layout": report_layout(x, fin, equity_cf),
             "products": products_report,
             # Как себестоимость дома разложена по продуктам — одной фразой
@@ -1159,13 +1170,12 @@ def _calculate_economics(req: CalcRequest) -> dict:
             }
         },
         "cashflow": {
-            "months": [month.isoformat() for month in timeline],
+            "months": [month.isoformat() for month in cash_timeline],
             "project": project_cf,
             "equity": equity_cf,
-            "profit_tax": [
-                float(row_by_month.get(month, {}).get("profit_tax", 0.0) or 0.0)
-                for month in timeline
-            ],
+            # Налог, ушедший со счёта в этом месяце (уплата), — тот, что вычтен
+            # из рядов выше. Начисление по месяцам — в `finance.rows`.
+            "profit_tax": [tax_paid.get(month, 0.0) for month in cash_timeline],
         },
         # Помесячная детализация финмодели: статьи расходов, продукты продаж и
         # физические объёмы по месяцам. Суммы сходятся с итогами выше.
@@ -1174,7 +1184,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
         "notes": {
             "llcr": "LLCR рассчитан по структуре действующего листа LLCR: поступления минус операционные/инвестиционные расходы плюс ПФ, делённые на ПФ и стоимость долга.",
             "finance": "Помесячная логика БРИДЖ/ПФ/эскроу перенесена в код. До окончательной замены Excel требуется контрольная сверка нескольких сценариев по месяцам.",
-            "tax": "Налог на прибыль начисляется накопительно не ранее РВЭ: маржа реализованных основных продуктов и отдельных объектов КРТ минус выплаченные проценты и комиссии.",
+            "tax": "Налог на прибыль спецзастройщика: маржа продуктов и объектов КРТ признаётся при вводе дома (РВЭ), проценты и комиссии — в месяце начисления; убыток прошлых лет гасит не больше половины прибыли года; уплата — авансами по итогам квартала и доплатой года в марте.",
         },
     }
 

@@ -1769,8 +1769,20 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     tax_rate = n(x, "profit_tax_pct", 25) / 100
     margins = {month: (tax_margin_by_month.get(month, 0.0)
                        - vat_charged_by_month.get(month, 0.0)) for month in months}
+    # Правило спецзастройщика: маржа дома — в РВЭ, проценты — в месяце
+    # начисления (владелец, 16.10.2026).
+    # Гостиница не СЗ по ДДУ: её налог и потоки — расчёт её стратегии
+    # (`developaid_hotel_strategy`), и он остаётся прежним — проценты стройки
+    # в год ввода, уплата в месяц начисления.
+    is_hotel = bool(hotel["flows"])
     profit_tax_schedule, tax_detail = _profit_tax_schedule(
-        months, margins, financing_deductions, rve, tax_rate)
+        months, margins, financing_deductions, rve, tax_rate, defer_financing=is_hotel)
+    # Деньги уходят в бюджет авансами по итогам квартала и доплатой года в
+    # марте (ст. 286, 287), а не в месяц начисления: потоки проекта и
+    # капитала читают уплату, P&L — начисление.
+    profit_tax_payment_schedule = (
+        {month: value for month, value in profit_tax_schedule.items() if value} if is_hotel
+        else _profit_tax_payments(profit_tax_schedule))
     tax_rows = []
     row_by_month = {d(row["month"]): row for row in result["rows"]}
     for month, line in zip(months, tax_detail):
@@ -1841,6 +1853,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         "profit_tax_schedule": {
             month.isoformat(): value for month, value in profit_tax_schedule.items()
         },
+        "profit_tax_payment_schedule": {
+            month.isoformat(): value for month, value in profit_tax_payment_schedule.items()
+        },
+        "tax_loss_unused": _unused_tax_loss(tax_detail),
         "tax_rows": tax_rows,
         "tax_margin_by_product": tax_margin_by_product,
         # Себестоимость продуктов пула МКД в налоговой базе (с коммерческими

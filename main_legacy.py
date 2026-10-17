@@ -71,7 +71,10 @@ from developaid_finance_math import (
     equity_npv as _equity_npv,
     monthly_irr as _monthly_irr,
     monthly_npv as _monthly_npv,
+    profit_tax_payment_month as _profit_tax_payment_month,
+    profit_tax_payments as _profit_tax_payments,
     profit_tax_schedule as _profit_tax_schedule,
+    unused_tax_loss as _unused_tax_loss,
 )
 import developaid_monitor
 import developaid_monitor_daily
