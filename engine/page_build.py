@@ -59,6 +59,8 @@ PAGE = PAGE.replace(CLASS_ONLY_INPUTS_PLACEHOLDER,
                     json.dumps(CLASS_ONLY_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace(SITE_ONLY_INPUTS_PLACEHOLDER,
                     json.dumps(SITE_ONLY_INPUTS, ensure_ascii=False))
+PAGE = PAGE.replace(TEP_ONLY_INPUTS_PLACEHOLDER,
+                    json.dumps(TEP_ONLY_INPUTS, ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_RESIDENTIAL_ONLY_INPUTS__",
                     json.dumps(RESIDENTIAL_ONLY_INPUTS, ensure_ascii=False))
 # Имя группы ВРИ жило на странице второй копией: вкладка ВРИ узнаёт свою группу
