@@ -45,6 +45,9 @@ details{border-top:1px solid #e5e5e5;padding:4px 0}details:first-child{border-to
 summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
 .group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
 details[open]>summary>.group-peek{display:none}
+.site-parking-box{margin-top:12px}.site-parking-box>summary{font-size:13px}
+.site-parking-box>summary>.group-peek,.site-parking-box .site-conflict-mark{display:block;margin:2px 0 0 18px}
+.site-parking-box .site-conflict-mark{color:#b3261e;font-weight:600;font-size:12px}
 .object-tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0 4px}
 .object-tabs button{padding:5px 11px;border-radius:14px;border:1px solid #cfd6e0;background:#fff;cursor:pointer;font-size:13px}
 .object-tabs .object-tab.active{background:#1f4e79;color:#fff;border-color:#1f4e79}

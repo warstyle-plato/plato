@@ -61,7 +61,12 @@ _KPI_KEYS = (
     "margin",
     "llcr",
     "npv",
+    "irr_project",
     "irr_equity",
+    "irr_equity_raw",
+    # Показателен ли IRR капитала и сколько своих денег (`equity_irr`).
+    "equity_irr",
+    "equity_contributed",
     # Признак движка: IRR и NPV сняты при непогашенном долге и почему.
     "equity_returns",
     "full_project_cost",
