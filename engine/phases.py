@@ -1291,6 +1291,7 @@ def _consolidate_phase_results(
     discount_rate = n(master_inputs, "discount_rate_pct", 20) / 100
     npv = _monthly_npv(project_cf, discount_rate) if project_cf else 0.0
     npv_equity = _equity_npv(equity_cf, discount_rate) if equity_cf else 0.0
+    irr_project = _monthly_irr(project_cf) if project_cf else None
     irr_equity = _monthly_irr(equity_cf) if equity_cf else None
 
     def per_th(value: float, area: float) -> float:
@@ -1543,7 +1544,12 @@ def _consolidate_phase_results(
             "min_phase_llcr": min((r["summary"]["llcr"] for r in results), default=0.0),
             "scenario_revenue_multiplier": n(master_inputs, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(master_inputs, "scenario_cost_multiplier", 1.0),
-            "npv": npv, "npv_equity": npv_equity, "irr_equity": irr_equity,
+            "npv": npv, "npv_equity": npv_equity, "irr_project": irr_project, "irr_equity": irr_equity,
+            # Свои деньги — сумма вложений очередей, как КОНСОЛИДАТОР!M8 книги,
+            # а не оттоки сведённого потока: деньги одной очереди не гасят
+            # вложений другой.
+            "equity_contributed": sum(float((r.get("summary") or {}).get("equity_contributed") or 0.0)
+                                      for r in results),
             "full_project_cost": full_cost,
             "monetizable_saleable_sqm": saleable,
             "apartment_saleable_sqm": apartment_saleable,
