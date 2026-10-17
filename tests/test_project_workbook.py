@@ -407,7 +407,10 @@ def test_the_phases_split_the_tep_by_their_weights():
     assert sheet["F89"].value == pytest.approx(30)
     assert sheet["Q89"].value == pytest.approx(0.5)
     # Индексация очереди — множителем цены к сдвигу старта, как в движке.
-    assert sheet["S89"].value == pytest.approx(1.08)
+    # Множитель — формула от даты старта очереди: число даёт вычислитель.
+    from xlsx_eval import Evaluator
+    evaluator = Evaluator(openpyxl.load_workbook(io.BytesIO(content), data_only=False))
+    assert float(evaluator.cell(sheet.title, "S89")) == pytest.approx(1.08)
     assert sheet["AE89"].value == pytest.approx(0.0)
 
 
@@ -650,7 +653,8 @@ def test_a_fourth_queue_gets_its_own_cf_sheet():
     assert "CF_4" in book.sheetnames
     assert sheet["B91"].value == "Да"
     assert sheet["W91"].value == pytest.approx(total * 0.20, rel=1e-6)
-    assert sheet["S91"].value == pytest.approx(1.08 ** 3, rel=1e-6)
+    from xlsx_eval import Evaluator
+    assert float(Evaluator(book).cell(sheet.title, "S91")) == pytest.approx(1.08 ** 3, rel=1e-6)
     assert book["КОНСОЛИДАТОР"]["A8"].value == "КОНСОЛИДИРОВАНО"
 
 
