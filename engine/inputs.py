@@ -1800,6 +1800,25 @@ RESIDENTIAL_ONLY_INPUTS = ["main_above_th_per_sqm", "landscaping_area_sqm"]
 # берёт оттуда.
 SITE_ONLY_INPUTS = ["parking_k1", "parking_rail_distance_m", "parking_k2",
                     "parking_district", "parking_inside_ttk", "parking_design_mode"]
+# Поля, которые правятся в строке таблицы ТЭП, а не во «Вводных»: размещение
+# кладовых — галочка «над землёй» у строки «Кладовые» (владелец, 16.10.2026:
+# «Галочка в ТЭП»; группа «Кладовые» во «Вводных» была для этой величины
+# перебором). Поле остаётся ОДНО (`storage_placement`, above/underground),
+# движок, книга и PDF читают его как прежде; здесь только его второй дом:
+# строка ТЭП, подпись галочки и какие значения она пишет. Отсутствующий ключ —
+# умолчание движка (`off`), галочка снята.
+TEP_ONLY_INPUTS = {
+    "storage_placement": {
+        "row": "storage",
+        "label": "над землёй",
+        "on": "above",
+        "off": "underground",
+        "hint": ("Снята — кладовые в подземной части: строятся по подземной ставке "
+                 "и прибавляют её площадь. Стоит — на наземных этажах: входят в "
+                 "наземную ГНС (вырезаются из площади квартир) и строятся по "
+                 "наземной ставке."),
+    },
+}
 
 # --- Где это править: вкладка, группа, подпись ------------------------------
 # Платон отвечал человеку КЛЮЧАМИ полей: «ставку ставьте в landscaping_th_per_sqm,
@@ -1851,6 +1870,14 @@ def input_field_place(field: str) -> dict[str, Any] | None:
             if field in CLASS_ONLY_INPUTS:
                 where, path = CLASS_DIALOG_NAME, (
                     f"шапка модели → «{CLASS_DIALOG_NAME}» → «{item[1]}»")
+            elif field in TEP_ONLY_INPUTS:
+                # Галочка у строки таблицы ТЭП, а не поле «Вводных».
+                tep_place = TEP_ONLY_INPUTS[field]
+                row_label = str((TEP_DEFAULT.get(tep_place["row"]) or {}).get("label")
+                                or tep_place["row"])
+                where, path = "ТЭП", (
+                    f"вкладка «ТЭП» → строка «{row_label}» → галочка "
+                    f"«{tep_place['label']}»")
             elif field in SITE_ONLY_INPUTS:
                 # Поля участка рисует карточка на вкладке ТЭП, а не «Вводные».
                 where, path = "ТЭП", (
