@@ -413,7 +413,10 @@ def vri_tep_quick(region: str, query: str,
         apartments = apartments_gns * 0.65
         commerce_gns = spp * MKD_SPP_SPLIT["ground_commercial"]
         population = math.ceil(apartments / 33.0) if apartments > 0 else 0
-        units = round(population / 2.1) if population else 0
+        # Квартиры — вверх, как у калькулятора (функция bf: ceil(население /
+        # 2,1)) и у нормы `tep_derived_norms`: к ближайшему на населении 421
+        # давало 200 против 201 у города.
+        units = math.ceil(population / 2.1) if population else 0
         # Вверх, как все нормативы на тысячу: на Нагатино (7 618 жителей)
         # калькулятор даёт 336, округление к ближайшему давало 335.
         dou = math.ceil(population * 44 / 1000) if population else 0
