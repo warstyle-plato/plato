@@ -2322,13 +2322,14 @@ def build_plato_model_v2(
     flow.formula("vat", "НДС", lambda i: f"=-{tax.outside('vat', i)}", money)
     flow.formula("interest", "Проценты и комиссии выплаченные",
                  lambda i: f"=-{credit.outside('interest_payment', i)}-{credit.outside('fees', i)}", money)
-    # Проектный поток — как его считает движок: до финансирования тела долга,
-    # но после его обслуживания и НДС к уплате (решение владельца 13.10.2026).
-    # Именно он идёт в NPV.
-    flow.formula("project", "Проектный поток",
+    # Проектный поток — как его считает движок: до финансирования, без тел
+    # долга и без процентов и комиссий (владелец, 16.10.2026, «IRR проекта +
+    # пометка»), но после НДС к уплате (решение владельца 13.10.2026). Именно
+    # он идёт в NPV и IRR проекта.
+    flow.formula("project", "Проектный поток (до финансирования)",
                  lambda i: (f"={flow.at('revenue', i)}+{flow.at('capex', i)}"
                             f"+{flow.at('operating', i)}+{flow.at('tax', i)}"
-                            f"+{flow.at('vat', i)}+{flow.at('interest', i)}"), money, bold=True)
+                            f"+{flow.at('vat', i)}"), money, bold=True)
     flow.formula("project_cum", "Проектный поток нарастающим",
                  lambda i: f"={flow.before('project_cum', i)}+{flow.at('project', i)}", money)
 

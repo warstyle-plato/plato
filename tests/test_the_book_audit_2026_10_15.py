@@ -342,8 +342,13 @@ def test_capex_per_metre_uses_the_construction_volume(donskoy) -> None:
     assert book.cell("ОТЧЕТ", "F62") == pytest.approx(summary["capex_per_total_area_th"], rel=1e-5)
 
 
-def test_the_irr_is_monthly_like_the_engine() -> None:
-    """Две очереди с объектами: XIRR по дням давал 61,4% против 61,8% движка."""
+def test_the_irr_is_monthly_like_the_engine(monkeypatch) -> None:
+    """Две очереди с объектами: XIRR по дням давал 61,4% против 61,8% движка.
+
+    Здесь проверяется метод IRR, а не порог «показателен»: своих денег у
+    эталона меньше 10 % затрат, и порог снят — и в движке, и в книге (оба
+    читают одну константу)."""
+    monkeypatch.setattr(core, "EQUITY_IRR_MIN_OWN_SHARE", 0.0)
     sys.path.insert(0, str(ROOT / "scripts"))
     import golden_snapshot
 
