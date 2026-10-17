@@ -368,7 +368,7 @@ def _vri_rows(model: dict[str, Any], fm: _Formats) -> list[tuple[str, str, str]]
     land = model.get("land") or {}
     rows: list[tuple[str, str, str]] = []
     amount = land.get("vri_amount_mln") or 0.0
-    if land.get("vri_required") or amount:
+    if land.get("vri_required"):
         mode = {"lump": "разовый платёж", "installment": "рассрочка"}.get(land.get("vri_payment_mode") or "", "")
         rows.append(("Плата за смену ВРИ", fm.mln(amount), "млн ₽"))
         if mode:

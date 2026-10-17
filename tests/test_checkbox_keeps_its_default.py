@@ -31,7 +31,9 @@ import main as wrapper  # noqa: E402
 core = wrapper.core
 
 # Признаки с умолчанием «включено» — те, чья потеря молча меняет экономику.
-DEFAULT_ON = ["vri_required", "vri_in_bank_budget"]
+# «Требуется изменение ВРИ» здесь нет: этот признак — вид суммы платы
+# (`vri_payment_active`), его сторожит test_the_vri_fee_decides_the_flag.py.
+DEFAULT_ON = ["vri_in_bank_budget"]
 
 
 def render_line() -> str:

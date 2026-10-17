@@ -316,6 +316,91 @@ def intake_prompt(document: dict[str, Any], budget: int = DOCUMENT_TEXT_BUDGET) 
 --- конец документа ---"""
 
 
+# Документ в разговоре. После разбора человек спрашивает дальше («а какая там
+# IRR?», «что с ВРИ?»), и без документа Платон отвечает по пустому месту:
+# разбор уходил отдельным путём, а в историю диалога не попадал (владелец:
+# «если Платону сгружаешь тизер для разбора, он не ведёт дальше диалог в
+# контексте»). Бюджет меньше бюджета разбора: документ едет с КАЖДЫМ вопросом,
+# и навсегда раздувать им разговор нельзя.
+DOCUMENT_CONTEXT_BUDGET = 12_000
+
+
+def chat_context(document: dict[str, Any], extraction: dict[str, Any] | None = None,
+                 budget: int = DOCUMENT_CONTEXT_BUDGET) -> dict[str, Any]:
+    """Документ для продолжения разговора: что выписано и сам текст в пределе.
+
+    Один источник для сайта и бота: оба кладут в разговор одно и то же.
+    Пусто — когда в документе нет текста: в разговор нечего класть.
+    """
+    text = str(document.get("text") or "")
+    if not text.strip():
+        return {}
+    got = extraction or {}
+    lines = []
+    for item in got.get("fields") or []:
+        label = INTAKE_LABELS.get(str(item.get("key") or ""), str(item.get("key") or ""))
+        unit = f" {item['unit']}" if item.get("unit") else ""
+        lines.append(f"- {label}: {item.get('value')}{unit} — «{str(item.get('quote') or '')[:200]}»")
+    for note in got.get("notes") or []:
+        lines.append(f"- примечание разбора: {str(note)[:300]}")
+    head = ("Выписано разбором:\n" + "\n".join(lines) + "\n\n") if lines else ""
+    room = max(budget - len(head), 0)
+    excerpt = text[:room]
+    filename = str(document.get("filename") or "без имени")
+    return {
+        "filename": filename,
+        "summary": chat_summary(filename, got),
+        "pages": document.get("pages"),
+        "recognized": bool(document.get("recognized")),
+        "text": head + "Текст документа:\n" + excerpt,
+        "read_chars": len(excerpt),
+        "total_chars": len(text),
+        "trimmed": len(excerpt) < len(text),
+    }
+
+
+def context_prompt(context: dict[str, Any] | None,
+                   budget: int = DOCUMENT_CONTEXT_BUDGET) -> str:
+    """Документ в разговоре — так, как его видит модель. Пусто — документа нет.
+
+    Предел ставится и здесь: контекст приходит со страницы, и раздуть им
+    вопрос мимо бюджета нельзя.
+    """
+    if not isinstance(context, dict):
+        return ""
+    text = str(context.get("text") or "").strip()
+    if not text:
+        return ""
+    text = text[: budget + 200]
+    flags = []
+    if context.get("recognized"):
+        flags.append("текст получен распознаванием скана — цифры могут быть прочитаны неверно")
+    if context.get("trimmed"):
+        flags.append(f"в разговоре первые {context.get('read_chars')} знаков из "
+                     f"{context.get('total_chars')} — о непрочитанном так и скажи")
+    return (f"ДОКУМЕНТ В КОНТЕКСТЕ РАЗГОВОРА: «{context.get('filename') or 'без имени'}»"
+            + (f", страниц: {context.get('pages')}" if context.get("pages") else "")
+            + ".\nПользователь прислал его на разбор и спрашивает дальше. На вопросы о "
+              "документе отвечай по нему с цитатой; чего в нём нет — так и скажи. "
+              "Числа документа — это написанное в документе, а не расчёт модели."
+            + ("\n" + "; ".join(flags) + "." if flags else "")
+            + "\n--- документ ---\n" + text + "\n--- конец документа ---")
+
+
+def chat_summary(filename: str, extraction: dict[str, Any] | None = None) -> str:
+    """Ответ разбора одной репликой для истории диалога."""
+    got = extraction or {}
+    fields = got.get("fields") or []
+    names = [INTAKE_LABELS.get(str(item.get("key") or ""), str(item.get("key") or ""))
+             + f": {item.get('value')}" + (f" {item['unit']}" if item.get("unit") else "")
+             for item in fields]
+    said = ("Выписал: " + "; ".join(names) + ".") if names else "Полей модели в нём не нашлось."
+    if got.get("reason"):
+        said = f"Разбор не сложился: {got['reason']}."
+    return (f"Разобрал документ «{filename or 'без имени'}». {said} "
+            "Документ остаётся в разговоре — спрашивайте по нему.")
+
+
 def parse_intake(answer: str) -> dict[str, Any]:
     """Разбор ответа модели. Не разобралось — это отказ, а не пустой результат."""
     text = str(answer or "").strip()

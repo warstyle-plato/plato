@@ -1343,6 +1343,11 @@ class _MonthGrid:
         return row
 
 
+
+# Первый скрытый столбец «Вводных» под списки вариантов, в подписях которых
+# есть запятая (см. `put_input`).
+_M2_LIST_COLUMN = 40
+
 def build_plato_model_v2(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -1417,6 +1422,7 @@ def build_plato_model_v2(
 
     key_row: dict[str, int] = {}
     choices: dict[str, list[str]] = {}
+    list_columns: list[str] = []
 
     def options_of(key: str, field: tuple) -> list[list[str]] | None:
         # Пятый элемент поля значит разное: у «select» это варианты парами,
@@ -1455,8 +1461,20 @@ def build_plato_model_v2(
         if options:
             titles = [str(title) for _, title in options]
             choices[key] = titles
+            formula = '"' + ",".join(titles) + '"'
+            if any("," in title for title in titles):
+                # Запятая в подписи варианта («Автоматически: до ПФ — БРИДЖ,
+                # после — ПФ») резала бы список-строку на лишние пункты: такой
+                # список берётся из скрытого столбца того же листа, слова те же.
+                column = _M2_LIST_COLUMN + len(list_columns)
+                list_columns.append(key)
+                letter = openpyxl.utils.get_column_letter(column)
+                for index, title in enumerate(titles):
+                    ws_in.cell(row=5 + index, column=column, value=title)
+                ws_in.column_dimensions[letter].hidden = True
+                formula = f"${letter}$5:${letter}${4 + len(titles)}"
             rule = openpyxl.worksheet.datavalidation.DataValidation(
-                type="list", formula1='"' + ",".join(titles) + '"', allow_blank=False,
+                type="list", formula1=formula, allow_blank=False,
                 showDropDown=False, showErrorMessage=True,
                 errorTitle="Выберите из списка",
                 error="Значение должно быть одним из вариантов, как на странице DevelopAid.",
@@ -2561,6 +2579,13 @@ def audit_plato_workbook(
     workbook = load_workbook(io.BytesIO(content), data_only=True)
     if "ОТЧЕТ" not in workbook.sheetnames:
         raise HTTPException(status_code=400, detail="В книге нет листа «ОТЧЕТ» — это не модель ПЛАТО")
+    if "КОНСОЛИДАТОР" in workbook.sheetnames:
+        # У книги v4 свой лист «ОТЧЕТ» с подписями в другой колонке: сверка не
+        # нашла бы ни строки и назвала бы пересчитанную книгу непересчитанной.
+        raise HTTPException(
+            status_code=400,
+            detail=("Это книга DevelopAid v4, а не модель ПЛАТО: её сверка с движком — "
+                    "строки «Паритет» листа «ПРОВЕРКИ» книги, пересчитанной в Excel"))
     sheet = workbook["ОТЧЕТ"]
     found: dict[str, float] = {}
     for row in range(1, 90):

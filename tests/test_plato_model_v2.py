@@ -627,7 +627,7 @@ CHOICE_FIELDS = [
     # Список страницы — из объявления поля (`FIELD_GROUPS`), владельца и
     # страницы, и книги, а не копией здесь: копия отстаёт от страницы.
     ("vri_relief_mode", "FIELD_GROUPS"),
-    ("vri_financing_mode", ["Как весь проект", "Заданные доли"]),
+    ("vri_financing_mode", "FIELD_GROUPS"),
     # Третья форма — и стройка, и компенсация: у Румянцева школа с садиком
     # строятся, а за стадион платят деньгами (решение владельца 14.08.2026).
     ("social_mode", ["Строительство", "Денежная компенсация",
@@ -653,7 +653,12 @@ def test_the_choice_fields_offer_the_same_list_as_the_page(book, key, expected):
         expected = [label for field in (f for _, fs in core.FIELD_GROUPS for f in fs)
                     if field[0] == key for _, label in field[4]]
         assert expected, f"у «{key}» на странице нет списка"
-    offered = lists[0].formula1.strip('"').split(",")
+    formula = lists[0].formula1
+    if formula.startswith("$"):
+        # Подпись с запятой — список из скрытого столбца того же листа.
+        offered = [row[0].value for row in sheet[formula.replace("$", "")]]
+    else:
+        offered = formula.strip('"').split(",")
     assert offered == expected, f"«{key}»: в книге {offered}, на странице {expected}"
     assert sheet[address].value in expected, (
         f"«{key}» хранит {sheet[address].value!r}, чего нет в списке"

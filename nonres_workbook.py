@@ -1898,6 +1898,17 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
     def ref(key: str) -> str:
         return out[key].split("!")[1]
 
+    # IRR и NPV не числа, если ПФ к концу проекта не погашен (решение
+    # владельца 2 от 29.09.2026): порог и подпись — движка, из `spec`. Книга
+    # без ПФ (объекты на своих кредитах) долга ПФ не несёт — правила нет.
+    na = spec.get("equity_na") or {}
+
+    def na_when_unrepaid(formula: str) -> str:
+        if not pf or not na:
+            return f"={formula}"
+        return (f'=IF({_pi("ending_pf")}>{float(na["min_ending_pf_rub"]):g},'
+                f'"{na["label"]}",{formula})')
+
     section("Экономика проекта")
     line("revenue", "Выручка проекта", f"=SUM({cash['revenue']})")
     line("capex", "Затраты (CAPEX, с НДС)", f"=SUM({cash['capex']})")
@@ -1917,9 +1928,9 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
     line("profit_tax", "Налог на прибыль", f"=SUM({taxes['tx_tax']})")
     line("vat", "НДС к уплате", f"=SUM({taxes['vat_paid']})")
     line("net_profit", "Чистая прибыль", f"={ref('profit_before_tax')}-{ref('profit_tax')}-{ref('vat')}")
-    line("npv", "NPV проекта", f"=SUM({cash['project_disc']})")
+    line("npv", "NPV проекта", na_when_unrepaid(f"SUM({cash['project_disc']})"))
     line("irr_equity", "IRR собственного капитала",
-         f'=IFERROR((1+IRR({cash["equity"]},0.01))^12-1,"")', "0.00%")
+         na_when_unrepaid(f'IFERROR((1+IRR({cash["equity"]},0.01))^12-1,"")'), "0.00%")
 
     # Горизонт: строк в помесячных таблицах столько, сколько месяцев у движка.
     # Правка вводных, уводящая проект дальше, должна краснить сверку, а не
@@ -2028,9 +2039,10 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
          f"={ref('returned')}-{ref('contributed')}")
     line("equity_multiple", "Мультипликатор капитала (получено / вложено)",
          f'=IF({ref("contributed")}>0,{ref("returned")}/{ref("contributed")},"")', "0.00")
-    line("equity_npv", "NPV собственного капитала", f"=SUM({cash['equity_disc']})")
+    line("equity_npv", "NPV собственного капитала", na_when_unrepaid(f"SUM({cash['equity_disc']})"))
     line("equity_irr_cash", "IRR собственного капитала — только деньги",
-         f'=IF({ref("residual")}>0,IFERROR((1+IRR({cash["cash"]},0.01))^12-1,""),"")', "0.00%")
+         na_when_unrepaid(f'IF({ref("residual")}>0,IFERROR((1+IRR({cash["cash"]},0.01))^12-1,""),"")'),
+         "0.00%")
     last_neg = f"MAX({cash['neg_k']})"
     line("payback", "Окупаемость собственных средств",
          f'=IF(AND({last_neg}>=0,{last_neg}+1<={months - 1}),EDATE({_p("start")},{last_neg}+1),'
@@ -2104,6 +2116,8 @@ def _check_rows(result: dict[str, Any], spec: dict[str, Any], objects_refs: list
     summary = result.get("summary") or {}
     finance = result.get("finance") or {}
     equity = (result.get("report") or {}).get("equity_participation") or {}
+    verdict = summary.get("equity_returns") or {}
+    na_label = (verdict.get("label") or None) if verdict.get("status") == "debt_unrepaid" else None
     rows: list[tuple[str, str, str, Any, bool]] = []
     project = (
         ("revenue", "Выручка проекта", summary.get("revenue"), False),
@@ -2116,8 +2130,9 @@ def _check_rows(result: dict[str, Any], spec: dict[str, Any], objects_refs: list
         ("vat", "НДС", summary.get("vat"), False),
         ("net_profit", "Чистая прибыль", summary.get("net_profit"), False),
         ("total_expenses", "Расходы всего", summary.get("total_expenses"), False),
-        ("npv", "NPV проекта", summary.get("npv"), False),
-        ("irr_equity", "IRR собственного капитала", summary.get("irr_equity"), True),
+        ("npv", "NPV проекта", summary.get("npv") if na_label is None else na_label, False),
+        ("irr_equity", "IRR собственного капитала",
+         summary.get("irr_equity") if na_label is None else na_label, True),
         ("loan_peak", "Кредит объектов — пик",
          sum(float((o.get("totals") or {}).get("loan_peak") or 0.0) for o in engine_objects), False),
         ("identity_total", "Выручка − расходы всего − чистая прибыль", 0.0, False),
@@ -2238,6 +2253,12 @@ def _check_sheet(book: Workbook, rows: list[tuple[str, str, str, Any, bool]],
         ws[f"C{r}"] = f"={ref}"
         ws[f"D{r}"] = _engine_number(engine)
         ws[f"D{r}"].fill = ENGINE_FILL
+        if isinstance(engine, str) and engine:
+            # Движок дал не число, а вердикт («N/A — долг не погашен»): книга
+            # обязана сказать то же слово, сравнивается текст.
+            ws[f"D{r}"] = engine
+            ws[f"G{r}"] = f'=IF(C{r}=D{r},"сходится","РАСХОЖДЕНИЕ")'
+            continue
         ws[f"E{r}"] = f'=IF(OR(D{r}="",C{r}=""),"",C{r}-D{r})'
         tolerance = (f"{RATIO_TOLERANCE}" if ratio else f"MAX(1,ABS(D{r})*{TOLERANCE_SHARE})")
         ws[f"F{r}"] = f'=IF(D{r}="","",{tolerance})'

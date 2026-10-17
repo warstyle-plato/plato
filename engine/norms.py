@@ -555,6 +555,12 @@ def underground_tep_row(inputs: dict[str, Any],
         # значит заморозить производное: на «Донском» 44 места несли 109
         # гостевых от давно сменившихся вводных.
         guest = float(underground_guest_spaces({"units": spaces}))
+        # Места поставил метод (норматив по ТЭП, сценарий ГлавАПУ) — гостевые
+        # тоже его: метод их знает, места/11 только приближение (решение
+        # владельца 16.10.2026). Число действует, пока места те же самые.
+        method = underground_method_guest(inputs, spaces)
+        if method is not None:
+            guest = method
     else:
         need = underground_parking_requirement(inputs, tep)
         if not need:
@@ -574,6 +580,24 @@ def underground_tep_row(inputs: dict[str, Any],
         # незачем, а потерять значит продать их.
         computed["guest_units"] = guest
     return computed
+
+
+def underground_method_guest(inputs: dict[str, Any], spaces: float) -> float | None:
+    """Гостевые, которые метод дал вместе с этими местами, или None.
+
+    Страница пишет их рядом с местами (`setUndergroundFromMethod`). Места с
+    тех пор поменяли — число метода уже про другой гараж и не читается.
+    """
+    pinned = inputs.get("_underground_method_guest")
+    if not isinstance(pinned, dict):
+        return None
+    try:
+        at, guest = float(pinned.get("spaces")), float(pinned.get("guest"))
+    except (TypeError, ValueError):
+        return None
+    if abs(at - float(spaces)) > 1e-9 or not 0 <= guest <= at:
+        return None
+    return guest
 
 
 def apply_underground_tep_row(inputs: dict[str, Any],
@@ -1431,7 +1455,11 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
 
         guests = 0
         if sellable and enabled:
-            guests = int(round((under + over) * n(inputs, f"{prefix}_parking_guest_pct") / 100.0))
+            # Половина — вверх, как ROUND книги (`xlsx_book_v4_objects`): round()
+            # Python ведёт её к чётному, и на 25 местах при 10% движок давал 2
+            # гостевых, а книга 3 — выручка расходилась на одно место.
+            share = (under + over) * n(inputs, f"{prefix}_parking_guest_pct") / 100.0
+            guests = int(math.floor(round(share, 9) + 0.5))
             guests = max(0, min(guests, under + over))
 
         row["under_gns"] = under * under_per_space

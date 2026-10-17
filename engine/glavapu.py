@@ -1303,9 +1303,9 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
     }
     vri_value: float | None = None
     vri_origin = ""
-    if inputs.get("vri_required") in (False, 0, "0", "false"):
-        vri_value, vri_origin = 0.0, "вводные проекта: смена ВРИ не требуется"
-    elif inputs.get("land_rights_cost_mln") not in (None, ""):
+    # Плата решает сама (`vri_payment_active`): снятый признак `vri_required`
+    # при ненулевой плате не превращает её в ноль.
+    if inputs.get("land_rights_cost_mln") not in (None, ""):
         vri_value = float(n(inputs, "land_rights_cost_mln"))
         imported = ((inputs.get("_glavapu_import") or {}).get("mappings") or {}).get("inputs") or {}
         if ("land_rights_cost_mln" in imported

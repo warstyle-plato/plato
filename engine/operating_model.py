@@ -53,6 +53,27 @@ def deal_buyout_label(basis: str) -> str:
     return f"{DEAL_BUYOUT_LABEL} — {note}" if note else DEAL_BUYOUT_LABEL
 
 
+def social_construction_costs(x: dict) -> dict[str, float]:
+    """Стоимость стройки соцобъектов программы по типам, ₽."""
+    program = effective_social_program(x)
+    return {
+        "kindergarten": program["kindergarten_places"] * n(x, "kindergarten_cost_mln_per_place") * 1_000_000,
+        "school": program["school_places"] * n(x, "school_cost_mln_per_place") * 1_000_000,
+        "clinic": program["clinic_capacity"] * n(x, "clinic_cost_mln_per_unit") * 1_000_000,
+    }
+
+
+def social_cash_compensation(x: dict) -> float:
+    """Платёж чисто денежного режима, ₽: введённая сумма, а без неё — стоимость стройки.
+
+    Один владелец ответа для движка и книги: книга, читавшая одну введённую
+    сумму, при пустом поле платила ноль там, где движок платит стоимость
+    программы (Донской: 49,75 млн ₽ соцнагрузки и 57 млн ₽ CAPEX разницы).
+    """
+    imported = n(x, "social_compensation_mln") * 1_000_000
+    return imported if imported > 0 else sum(social_construction_costs(x).values())
+
+
 def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None = None) -> dict:
     project_start = d(x.get("project_start", "2027-01-01"))
     # Минимум применяется здесь, а не только при разносе расходов: РнС в день
@@ -476,16 +497,12 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     }
 
     social_program = effective_social_program(x)
-    social_construction_breakdown = {
-        "kindergarten": social_program["kindergarten_places"] * n(x, "kindergarten_cost_mln_per_place") * 1_000_000,
-        "school": social_program["school_places"] * n(x, "school_cost_mln_per_place") * 1_000_000,
-        "clinic": social_program["clinic_capacity"] * n(x, "clinic_cost_mln_per_unit") * 1_000_000,
-    }
+    social_construction_breakdown = social_construction_costs(x)
     social_construction_total = sum(social_construction_breakdown.values())
     imported_social_compensation = n(x, "social_compensation_mln") * 1_000_000
     social_mode = str(x.get("social_mode", "Строительство"))
     if social_mode == "Денежная компенсация":
-        social_total = imported_social_compensation if imported_social_compensation > 0 else social_construction_total
+        social_total = social_cash_compensation(x)
     elif social_mode == SOCIAL_MODE_BOTH:
         # Обе формы разом. Редкий, но реальный случай: школу и садик проект
         # строит сам, а за спортивный объект платит деньгами. Прежде режимы

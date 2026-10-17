@@ -237,6 +237,11 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             "interest_mode": str(x.get("bridge_interest_mode", "Капитализация в ПФ")),
             "bridge_limit_open": not op.get("common_on_object_loans"),
         },
+        # Порог и подпись «IRR и NPV не числа при непогашенном долге» — те же,
+        # что у движка (`_apply_equity_returns_verdict`, решение владельца 2 от
+        # 29.09.2026): книга не держит своего порога.
+        "equity_na": {"min_ending_pf_rub": EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB,
+                      "label": EQUITY_RETURNS_NA_DEBT_LABEL},
     }
 
 
@@ -875,7 +880,22 @@ def _build_project_workbook(
         cost_per = {}
         months_by_type = {}
         _cash_start = str(x.get("project_start") or "2027-01-01")[:10]
-        social_cash_mln = n(x, "social_compensation_mln")
+        # Сумма — та же, что платит движок: в чисто денежном режиме без
+        # введённой компенсации это стоимость стройки программы, а не ноль;
+        # в режиме «Строительство» денег нет вовсе.
+        _mode = str(x.get("social_mode") or "")
+        social_cash_mln = (social_cash_compensation(x) / 1_000_000
+                           if _mode == "Денежная компенсация"
+                           else n(x, "social_compensation_mln") if _mode == SOCIAL_MODE_BOTH
+                           else 0.0)
+        if _mode == "Денежная компенсация":
+            # B17 — вся соцнагрузка (V4_INPUTS_COMPUTED_IN_THE_CELL), её читает
+            # строка «Социальная нагрузка» ОТЧЕТа. Без введённой суммы поле
+            # компенсации пусто, а движок платит стоимость стройки: строка
+            # показывала 0, и деньги уезжали в «Строительство и управление»
+            # (Донской: 49,75 млн ₽).
+            put("B17", number=social_cash_mln,
+                label="соцнагрузка денежной компенсацией (без суммы — стоимость стройки)")
         if social_cash_mln > 0:
             _cash_when = social_cash_payment_date(
                 x, add_months(_cash_start,
@@ -1051,7 +1071,7 @@ def _build_project_workbook(
         # соседний проход переписывал середину строки 21 прежней формулой, и
         # живой месяц (AC) оказывался ровно в ней. Снаружи это выглядело как
         # «правка не сработала»: D21 в книге с правкой, а число прежнее.
-        cf_sheet_xml[_name] = _v4_apply_vat_cash(_v4_apply_vat_base(
+        cf_sheet_xml[_name] = _v4_apply_single_queue_tax(_v4_apply_vat_cash(_v4_apply_vat_base(
             _v4_apply_interest_accrual(
                 _v4_apply_core_pool_by_product(_v4_apply_core_pool_without_sales(_v4_apply_extra_objects_tax_row(
                     _v4_use_bridge_base_row(
@@ -1068,7 +1088,7 @@ def _build_project_workbook(
                     _phase, missing),
                     _phase, missing), _phase, missing),
                 _phase, missing),
-            _phase, missing), _phase, missing)
+            _phase, missing), _phase, missing), _phase, missing)
 
     # Выручка очереди по продуктам: на экране разбивка есть, а в книге жила
     # только в снятой выгрузке детализации.
@@ -1246,10 +1266,14 @@ def _build_project_workbook(
                              number=round(social_compensation_amount, 3))
 
     # Лимит БРИДЖ в книге режет выборку (CF r34). Логика вводных DevelopAid —
-    # «всё финансирует банк», поэтому лимит расчётный: сделка, ВРИ, социалка
-    # и весь CAPEX. Фиксированные 3 500 млн душили проект крупнее Мишина.
+    # «всё финансирует банк», поэтому лимит расчётный: весь CAPEX и
+    # коммерческие расходы очередей. Сделка, ВРИ и социалка уже внутри
+    # «Расходов проекта всего» (CAPEX!B35 несёт строки 14, 15 и 31) —
+    # прибавленные ещё раз, они раздували оценку на их сумму (умолчания:
+    # 40 740 против 37 190 у движка) и смягчали проверку пика ПФ (ПРОВЕРКИ,
+    # строка 72). Фиксированные 3 500 млн душили проект крупнее Мишина.
     put("B24", formula=(
-        "ROUNDUP(($B$15+$B$16+$B$17+$B$83"
+        "ROUNDUP(($B$83"
         "+SUM('CAPEX'!$B$35,'CAPEX'!$B$69,'CAPEX'!$B$103,'CAPEX'!$B$137))/10,0)*10"
     ), label="bridge_limit_mln")
 
@@ -1335,8 +1359,8 @@ def _build_project_workbook(
          str(x.get("vri_pf_open_date") or "")[:10] or "не задана"),
         ("ВРИ в банковском бюджете", "vri_in_bank_budget", "Да / Нет",
          "Нет" if x.get("vri_in_bank_budget") is False else "Да"),
-        ("Источник оплаты ВРИ", "vri_financing_mode", "режим",
-         "Заданы доли" if str(x.get("vri_financing_mode") or "auto") == "shares" else "Автоматически"),
+        (_input_field_label("vri_financing_mode"), "vri_financing_mode", "режим",
+         input_option_label("vri_financing_mode", str(x.get("vri_financing_mode") or "auto"))),
         ("Доля БРИДЖа в плате", "vri_share_bridge_pct", "%",
          n(x, "vri_share_bridge_pct", 0.0) / 100.0),
         ("Доля ПФ в плате", "vri_share_pf_pct", "%", n(x, "vri_share_pf_pct", 0.0) / 100.0),
@@ -1370,9 +1394,15 @@ def _build_project_workbook(
     # свободную строку СВОЕГО блока — править объект, листая от одной его
     # половины к другой, нельзя (решение владельца, 03.09.2026), — а срок
     # становится формулой: сдвинул стройку или хвост, и он поехал.
-    for _obj_prefix, _obj_row, _obj_months, _obj_term in (
+    # Окно продаж в блоке ОБЪЕКТЫ отсчитывается от СТАРТА ПРОДАЖ, а хвост у
+    # движка — от РВЭ (`sales_weights(start, rve, …, residual)`). Поэтому срок —
+    # месяцы от старта продаж до РВЭ плюс хвост: «стройка + хвост» верно только
+    # при продажах со старта стройки, а с продажами на полгода позже хвост
+    # выходил 18 месяцев вместо 12 (ревизия 15.10.2026).
+    for _obj_prefix, _obj_row, _obj_months, _obj_term, _obj_start, _obj_sales in (
             (_lay.obj.prefix, _lay.residual_row, f"$K${_v4_input_row(_lay, 'months')}",
-             f"K{_v4_input_row(_lay, 'term')}")
+             f"K{_v4_input_row(_lay, 'term')}", f"$K${_v4_input_row(_lay, 'start')}",
+             f"$K${_v4_input_row(_lay, 'sales_start')}")
             for _lay in sorted(_v4_layouts(), key=lambda lay: lay.input_head)):
         put_new(f"J{_obj_row}", text="Остаточные продажи после РВЭ")
         put_new(f"K{_obj_row}", number=n(x, f"{_obj_prefix}_residual_months", 6.0),
@@ -1380,7 +1410,9 @@ def _build_project_workbook(
         put_new(f"L{_obj_row}", text="мес.")
         put_new(f"M{_obj_row}", text=f"{_obj_prefix}_residual_months")
         xml = _v4_mark_as_entry(xml, f"K{_obj_row}", missing)
-        put(_obj_term, formula=f"{_obj_months}+$K${_obj_row}",
+        put(_obj_term, formula=(f"{_obj_months}+$K${_obj_row}"
+                                f"-((YEAR({_obj_sales})-YEAR({_obj_start}))*12"
+                                f"+MONTH({_obj_sales})-MONTH({_obj_start}))"),
             label=f"срок продаж {_obj_prefix}")
 
     # --- подземный паркинг -------------------------------------------------
@@ -1425,8 +1457,7 @@ def _build_project_workbook(
     put_new("M85", text="underground_manual_gns_sqm")
 
     # --- ВРИ ---------------------------------------------------------------
-    land_cost = float(x.get("land_rights_cost_mln") or 0)
-    put("B74", text="Да" if land_cost > 0 else "Нет", label="vri_required")
+    put("B74", text="Да" if vri_payment_active(x) else "Нет", label="vri_required")
     put_new("D74", text="vri_required")
     _vri_installment = str(x.get("vri_payment_mode") or "lump") == "installment"
     put("B75", text="Рассрочка" if _vri_installment else "Единовременно",
@@ -2056,6 +2087,45 @@ def _build_project_workbook(
         except Exception as exc:  # noqa: BLE001 — молчащая инструкция хуже отсутствующей
             missing.append("Вводные · лист инструкции не собран: " + _error_location(exc))
 
+    # Решения владельца 16.10.2026: НДС в полных расходах ОТЧЕТа, CAPEX на
+    # строительный объём, IRR месячным рядом, как у движка.
+    report_xml = _v4_report_owner_decisions(report_xml, social_base_row, missing)
+    consolidator_xml = _v4_monthly_irr(consolidator_xml, 8, missing, "КОНСОЛИДАТОР")
+    consolidator_xml = _v4_queue_saleable_with_extras(consolidator_xml, missing)
+    for _name in list(cf_sheet_xml):
+        cf_sheet_xml[_name] = _v4_monthly_irr(cf_sheet_xml[_name], 80, missing, _name)
+
+    # Числа без формата на видимых листах — формат по смыслу строки (ревизия
+    # 15.10.2026). До дашборда: он берёт styles.xml дальше, и клоны стилей
+    # должны в нём уже быть. Сводный CF сборщик не правит — он читается здесь.
+    _shared = _v4_shared_strings(source)
+    cf_total_path = _v4_sheet_path(source, "CF")
+    cf_total_xml, styles_xml = _v4_fill_general_formats(
+        "CF", source.read(cf_total_path).decode("utf-8"), styles_xml, _shared)
+    for _name in list(cf_sheet_xml):
+        cf_sheet_xml[_name], styles_xml = _v4_fill_general_formats(
+            _name, cf_sheet_xml[_name], styles_xml, _shared)
+    consolidator_xml, styles_xml = _v4_fill_general_formats(
+        "КОНСОЛИДАТОР", consolidator_xml, styles_xml, _shared)
+    checks_xml, styles_xml = _v4_fill_general_formats("ПРОВЕРКИ", checks_xml, styles_xml, _shared)
+    objects_xml, styles_xml = _v4_fill_general_formats("ОБЪЕКТЫ", objects_xml, styles_xml, _shared)
+    sales_xml, styles_xml = _v4_fill_general_formats("Продажи", sales_xml, styles_xml, _shared)
+    tep_xml, styles_xml = _v4_fill_general_formats("ТЭП", tep_xml, styles_xml, _shared)
+    # Комментарии удельных показателей (H57–H73) стояли с переносом в колонке
+    # шириной 13: строки раздувались в десятки линий, и вторая страница ОТЧЕТа
+    # печаталась столбиком. Без переноса текст идёт в пустые колонки справа.
+    # Две длинные подписи дефолта (A21, A22) наоборот обрезались значением.
+    report_xml, styles_xml = _v4_set_wrap(
+        report_xml, styles_xml, [f"H{row}" for row in range(57, 74)], False)
+    report_xml, styles_xml = _v4_set_wrap(report_xml, styles_xml, ["A21", "A22"], True)
+    # Шапка «ГНС, м²» соцобъектов дописана нами — в стиле соседей по шапке.
+    tep_xml = _v4_copy_style(tep_xml, "E39", "F39")
+    # Заголовок блока соцобъектов обрезался по ширине колонки A — объединён
+    # на ширину своей таблицы, как заголовок объектов строкой выше (A30:H30).
+    if '<x:mergeCell ref="A38:' not in tep_xml:
+        tep_xml = _v4_add_merge(tep_xml, "A38:F38")
+    xml, styles_xml = _v4_fill_general_formats("Параметры модели", xml, styles_xml, _shared)
+
     # «Дашборд» и его скрытый источник `Dashboard_Data`: формулы на листы книги,
     # три диаграммы на диапазоны источника. Не собрался — книга выходит с
     # прежним листом шаблона, и это названо в `missing`, а не спрятано.
@@ -2070,6 +2140,8 @@ def _build_project_workbook(
             frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)),
             hidden_products=_v4_absent_products(x, tep), queues=count,
             parking=(finance_hints or {}).get("parking_provision"),
+            chart_months=(_chart_horizon + 6 if (_chart_horizon := int(
+                (finance_hints or {}).get("horizon_months") or 0)) > 0 else None),
             storage_under_flag=_v4_storage_under_flag("'Параметры модели'"))
     except Exception as exc:  # noqa: BLE001 — дашборд без книги не выпускается молча
         missing.append("Дашборд · не собран: " + _error_location(exc))
@@ -2117,6 +2189,8 @@ def _build_project_workbook(
                 payload = checks_xml.encode("utf-8")
             elif item.filename == consolidator_sheet_path:
                 payload = consolidator_xml.encode("utf-8")
+            elif item.filename == cf_total_path:
+                payload = cf_total_xml.encode("utf-8")
             elif item.filename in cf_sheet_paths.values():
                 payload = cf_sheet_xml[
                     next(k for k, v in cf_sheet_paths.items() if v == item.filename)

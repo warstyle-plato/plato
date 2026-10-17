@@ -1220,13 +1220,17 @@ def _v4_name_debt_default_status(xml: str, missing: list[str]) -> str:
 # (ячейка, прежняя подпись шаблона, новая подпись). Прежняя сверяется: если
 # шаблон поменялся, подпись не переписывается вслепую.
 _V4_REPORT_AREA_LABELS = (
-    ("A58", "Общая площадь (GBA)", "GBA продуктов: наземная + подземная очередей"),
+    # Строка 58 — суммарная площадь очереди в ГНС (слово — у глоссария), база
+    # удельного CAPEX движка и Дашборда (решение 4 от 29.09, переход —
+    # владелец 16.10.2026).
+    ("A58", "Общая площадь (GBA)",
+     f"{TOTAL_AREA.name}: наземная + подземная, объекты с гаражами, соцобъекты"),
     ("H58", "Жилые очереди и отдельно стоящие объекты",
-     "Жилые очереди с подземной частью и наземная GBA отдельных объектов; "
-     "без соцобъектов и гаражей объектов"),
-    ("A62", "CAPEX на м² GBA", "CAPEX на м² GBA продуктов"),
-    ("H62", "CAPEX очереди / общая площадь", "CAPEX очереди / «GBA продуктов» (строка 58)"),
-    ("F9", "CAPEX на м² GBA", "CAPEX на м² GBA продуктов"),
+     f"Как {TOTAL_AREA.lower()} листа ТЭП, по очередям"),
+    ("A62", "CAPEX на м² GBA", f"CAPEX на м² {TOTAL_AREA.genitive}"),
+    ("H62", "CAPEX очереди / общая площадь",
+     f"CAPEX очереди / {TOTAL_AREA.lower()} (строка 58) — база движка"),
+    ("F9", "CAPEX на м² GBA", f"CAPEX на м² {TOTAL_AREA.genitive}"),
     ("C75", "на м² GBA, тыс. ₽", "на м² GBA с подземной и соцобъектами, тыс. ₽"),
 )
 
@@ -1404,63 +1408,53 @@ def _v4_object_checks(xml: str, missing: list[str]) -> str:
 def _v4_object_parking_in_checks(xml: str, missing: list[str]) -> str:
     """Учит проверки объекта тому, что у него есть гараж.
 
-    Гараж заведён 06.09.2026, а две проверки на объект остались прежними и с
-    тех пор кричат «FAIL» на верном расчёте: «реализованный объём» сравнивает
-    проданное с СЫРОЙ вводной продаваемой, хотя метры первых этажей из неё
-    вычтены (тот же этаж нельзя продать дважды), а «CAPEX» сравнивает
-    фактический расход с «GBA × ставка» без подземного гаража. Кричащая зря
-    проверка хуже отсутствующей — её перестают читать.
+    Гараж заведён 06.09.2026, а проверка CAPEX сравнивала фактический расход
+    с «GBA × ставка» без подземного гаража. Кричащая зря проверка хуже
+    отсутствующей — её перестают читать.
+
+    «Реализованный объём» здесь не правится: ожидаемое в нём — расчётная
+    продаваемая площадь объекта (K26 / K46), а она уже считается от GBA за
+    вычетом мест первых этажей, пропорционально, как в движке. Прежде здесь
+    вычиталось ещё раз «места × площадь своего ПОДЗЕМНОГО места»: дважды и не
+    той площадью — и проверка писала FAIL (23 400 против 22 000), а статус
+    модели «СБОЙ» на любом объекте с местами на первых этажах.
 
     Формулы не сочиняются: множители снимаются с самой формулы шаблона, а имя
     листа вводных берётся из неё же — он переименован, и зашитое имя однажды
     перестанет совпадать.
     """
-    for (label, enabled_row, _units, _revenue, _capex_cell, under, over,
+    for (label, enabled_row, _units, _revenue, _capex_cell, under, _over,
          *_rest) in _v4_object_parking():
         rows = _V4_OBJECT_CHECK_ROWS.get(enabled_row)
         if rows is None:
             continue                      # своих проверок у объекта нет
-        volume_row, capex_row = rows
-        for row, kind in ((volume_row, "объём"), (capex_row, "CAPEX")):
-            formula = _v4_cell_formula(xml, f"C{row}")
-            if formula is None or not formula.endswith(",0)"):
-                missing.append(f"ПРОВЕРКИ: C{row} ({label}, {kind}) не опознана")
-                continue
-            sheet = re.search(r"('[^']+')!", formula)
-            if sheet is None:
-                missing.append(f"ПРОВЕРКИ: C{row} ({label}) без листа вводных")
-                continue
-            params = sheet.group(1)
-            per_space = f"{params}!$K$158"
-            over_ref = f"{params}!${over[0]}${over[1:]}"
-            if kind == "объём":
-                # Площадь мест первых этажей уходит из продаваемой — тем же
-                # `MAX(0, …)`, что и в самом блоке: мест больше здания это
-                # расхождение, а не отрицательная площадь.
-                area = re.search(r",('[^']+'!\$[A-Z]+\$\d+),0\)$", formula)
-                if area is None:
-                    missing.append(f"ПРОВЕРКИ: C{row} ({label}) без продаваемой")
-                    continue
-                cell = area.group(1)
-                updated = formula.replace(
-                    f",{cell},0)", f",MAX(0,{cell}-{over_ref}*{per_space}),0)")
-            else:
-                queue = re.search(
-                    r"INDEX\('[^']+'!\$B\$88:\$B\$91,('[^']+'!\$[A-Z]+\$\d+)\)",
-                    formula)
-                if queue is None:
-                    missing.append(f"ПРОВЕРКИ: C{row} ({label}) без очереди")
-                    continue
-                phase = queue.group(1)
-                under_ref = f"{params}!${under[0]}${under[1:]}"
-                # Те же множители, что у самого CAPEX гаража: подземная ставка,
-                # инфляция затрат очереди и её коэффициент.
-                addition = (f"+{under_ref}*{per_space}*{params}!$B$45/1000"
-                            f"*{params}!$H$6"
-                            f"*INDEX({params}!$T$88:$T$91,{phase})"
-                            f"*INDEX({params}!$AH$88:$AH$91,{phase})")
-                updated = formula[:-3] + addition + ",0)"
-            xml, done = _v4_set_cell(xml, f"C{row}", formula=updated)
-            if not done:
-                missing.append(f"ПРОВЕРКИ: C{row} ({label}, {kind}) не записана")
+        _volume_row, row = rows
+        formula = _v4_cell_formula(xml, f"C{row}")
+        if formula is None or not formula.endswith(",0)"):
+            missing.append(f"ПРОВЕРКИ: C{row} ({label}, CAPEX) не опознана")
+            continue
+        sheet = re.search(r"('[^']+')!", formula)
+        if sheet is None:
+            missing.append(f"ПРОВЕРКИ: C{row} ({label}) без листа вводных")
+            continue
+        params = sheet.group(1)
+        per_space = f"{params}!$K$158"
+        queue = re.search(
+            r"INDEX\('[^']+'!\$B\$88:\$B\$91,('[^']+'!\$[A-Z]+\$\d+)\)",
+            formula)
+        if queue is None:
+            missing.append(f"ПРОВЕРКИ: C{row} ({label}) без очереди")
+            continue
+        phase = queue.group(1)
+        under_ref = f"{params}!${under[0]}${under[1:]}"
+        # Те же множители, что у самого CAPEX гаража: подземная ставка,
+        # инфляция затрат очереди и её коэффициент.
+        addition = (f"+{under_ref}*{per_space}*{params}!$B$45/1000"
+                    f"*{params}!$H$6"
+                    f"*INDEX({params}!$T$88:$T$91,{phase})"
+                    f"*INDEX({params}!$AH$88:$AH$91,{phase})")
+        updated = formula[:-3] + addition + ",0)"
+        xml, done = _v4_set_cell(xml, f"C{row}", formula=updated)
+        if not done:
+            missing.append(f"ПРОВЕРКИ: C{row} ({label}, CAPEX) не записана")
     return xml
