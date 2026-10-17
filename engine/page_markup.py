@@ -629,7 +629,7 @@ PAGE += r"""</head>
       <div class="card">
         <div class="section-title">Удельная экономика</div>
         <div style="font-size:11px;color:#777;margin:-5px 0 10px">
-          Каждая строка — на свою базу: расходы на суммарную площадь в ГНС (с подземной), выручка и прибыль на продаваемую. Расходы — ещё и на 1 м² продаваемой, для сравнения с ценой.
+          Каждая строка — на свою базу: расходы на м² __DEVELOPAID_TERM_total_area_genitive__ (наземная и подземная), выручка и прибыль на м² продаваемой. Расходы — ещё и на 1 м² продаваемой, для сравнения с ценой.
         </div>
         <div class="scroll" style="max-height:none">
           <table class="unit-table">
@@ -668,7 +668,7 @@ PAGE += r"""</head>
           <div id="expenseStructureChart" class="expense-bars"></div>
           <div class="scroll" style="max-height:none">
             <table class="metric-table metric-compact">
-              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th id="expenseBaseHead">тыс ₽/м² суммарной площади в ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th id="expenseBaseHead">тыс ₽/м² __DEVELOPAID_TERM_total_area_genitive__</th><th>тыс ₽/м² прод.</th></tr></thead>
               <tbody id="expenseStructureTable"></tbody>
               <tfoot><tr><th>Итого расходов</th><th id="expenseTotal"></th><th>100%</th><th id="expenseTotalGns"></th><th id="expenseTotalSaleable"></th></tr></tfoot>
             </table>
