@@ -98,7 +98,13 @@ def test_the_queue_returns_follow_its_restated_flow(phased) -> None:
             continue
         equity = phase["result"]["cashflow"]["equity"]
         assert summary["npv_equity"] == pytest.approx(core._equity_npv(equity, rate), rel=1e-9)
-        assert summary["irr_equity"] == core._monthly_irr(equity)
+        # Число без решения «показателен» — `irr_equity_raw`; показанное
+        # `irr_equity` бывает снято подписью «не показателен».
+        raw = summary["irr_equity_raw"] if "irr_equity_raw" in summary else summary["irr_equity"]
+        assert raw == core._monthly_irr(equity)
+        verdict = summary.get("equity_irr") or {}
+        if verdict and not verdict.get("meaningful"):
+            assert summary["irr_equity"] is None
         checked += 1
     assert checked, "ни у одной очереди нет NPV — проверять нечего"
 

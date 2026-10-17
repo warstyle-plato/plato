@@ -1324,6 +1324,13 @@ def _restate_phase_returns(
             summary["irr_project"] = _monthly_irr(project)
     summary["npv_equity"] = _equity_npv(equity, discount_rate)
     summary["irr_equity"] = _monthly_irr(equity)
+    # Решение «IRR капитала показателен» принято по прежнему потоку —
+    # принимается заново по новому, иначе число вернулось бы поверх подписи
+    # «не показателен» (`_apply_equity_irr_verdict`).
+    if "equity_irr" in summary:
+        summary.pop("equity_irr", None)
+        summary.pop("irr_equity_raw", None)
+        _apply_equity_irr_verdict(result)
     report = result.get("report") or {}
     if "equity_participation" in report:
         report["equity_participation"] = equity_participation_report(
