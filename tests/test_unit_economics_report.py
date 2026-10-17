@@ -47,7 +47,7 @@ def payload():
 def test_the_construction_articles_carry_both_bases(payload):
     """Стройка на м² своей базы и на м² продаж различается в полтора-два раза,
     и сравнивать с ценой продажи можно только вторую. Своя база — решение 4
-    ревизии книги: СМР на свою часть, прочее на суммарную площадь в ГНС."""
+    ревизии книги: СМР на свою часть, прочее на общую площадь."""
     summary = payload["result"]["summary"]
     bases = summary["unit_bases"]
     saleable = float(summary["monetizable_saleable_sqm"])
