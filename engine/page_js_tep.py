@@ -1623,6 +1623,7 @@ function setSiteDensity(value){
 function renderSiteParkingFields(){
  const box=document.getElementById('siteParkingFields');
  if(!box)return;
+ renderSiteParkingSummary();
  // Человек печатает в поле — перерисовка сняла бы с него фокус.
  if(box.contains(document.activeElement))return;
  const decl={};allFieldGroups().forEach(g=>g[1].forEach(f=>{decl[f[0]]=f}));
@@ -1657,6 +1658,33 @@ function renderSiteParkingFields(){
   });
   box.appendChild(wrap);
  });
+}
+// Заголовок свёрнутого блока: зачем он здесь и что сейчас в расчёте. Числа —
+// те же, что «авто:» в полях (`parking.k1`, `k2`, `k_basis.district` движка):
+// страница их не пересчитывает. Противоречие с разбором кадастра видно в
+// заголовке без раскрытия, а появившись впервые, раскрывает блок само — молча
+// прятать предупреждение нельзя. Закрытое человеком при том же противоречии
+// остаётся закрытым: перерисовка решение не отменяет.
+let siteParkingConflictSeen='';
+function siteParkingPeek(){
+ const p=projectParking()||{};
+ const basis=p.k_basis||{};
+ const fmt=v=>{const n=Number(v||0);return n?String(n).replace('.',','):'—'};
+ const parts=['число машино-мест нежилья','К1 '+fmt(p.k1),'К2 '+fmt(p.k2)];
+ if(basis.district)parts.push(basis.district);
+ return parts.join(' · ');
+}
+function renderSiteParkingSummary(){
+ const sum=document.getElementById('siteParkingSummary');
+ if(!sum)return;
+ const conflicts=SITE_ONLY_INPUTS.flatMap(id=>siteParkingConflicts(id));
+ sum.innerHTML='Коэффициенты парковки участка<span class="group-peek">'+escapeHtml(siteParkingPeek())+'</span>'+
+  (conflicts.length?'<span class="site-conflict-mark">⚠ '+(conflicts.length===1?'противоречие':conflicts.length+' противоречия')+
+   ' с разбором кадастра</span>':'');
+ const det=document.getElementById('siteParkingBox');
+ const key=conflicts.join('\n');
+ if(det&&key&&key!==siteParkingConflictSeen)det.open=true;
+ siteParkingConflictSeen=key;
 }
 // Противоречие вписанного с разбором кадастра — красным под полем. Решение и
 // текст — из ответа движка (`parking.k_basis.conflicts`, владелец
