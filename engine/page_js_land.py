@@ -844,10 +844,35 @@ function rememberCadastralQuery(value){
 // Единственный писатель поля: он же и запоминает. Две двери — набранное руками
 // и поставленное кодом — разошлись бы молча, и половина проектов сохраняла бы
 // участок, а половина нет.
-function writeCadastralField(value){
+// `origin` — откуда номер ({source:'document',text}); не передан — прежнее
+// происхождение остаётся: восстановление сохранённого проекта номер не
+// меняет и источник у него не отбирает.
+function writeCadastralField(value,origin){
  const field=document.getElementById('cadastralNumbers');
  if(field)field.value=String(value==null?'':value);
  rememberCadastralQuery(value);
+ if(origin)inputs._cadastral_origin=origin;
+ showCadastralOrigin();
+}
+// Набранное руками — ручное: номер из документа, исправленный человеком,
+// документу больше не принадлежит.
+function typeCadastralField(value){
+ rememberCadastralQuery(value);
+ if(inputs._cadastral_origin&&inputs._cadastral_origin.source!=='manual')
+  inputs._cadastral_origin={source:'manual',text:'вписано вручную'};
+ showCadastralOrigin();
+}
+function showCadastralOrigin(){
+ const field=document.getElementById('cadastralNumbers');
+ if(!field||!field.parentNode)return;
+ let note=document.getElementById('cadastralOrigin');
+ const o=inputs._cadastral_origin;
+ const text=o&&o.source==='document'&&inputs._cadastral_query?'Номер '+(o.text||'из документа'):'';
+ if(!text){if(note)note.remove();return}
+ if(!note){note=document.createElement('div');note.id='cadastralOrigin';note.className='glavapu-origin';
+  note.style.cssText='font-size:11px;color:#666;margin-top:4px';
+  field.parentNode.parentNode.insertBefore(note,field.parentNode.nextSibling)}
+ note.textContent=text;
 }
 
 // Запасное восстановление участка: номер без контура и без карточки. Стоит
@@ -860,6 +885,7 @@ function renderStoredCadastralQuery(){
  if(!stored)return;
  const field=document.getElementById('cadastralNumbers');
  if(field)field.value=String(stored);
+ showCadastralOrigin();
 }
 
 async function lookupLand(options){
