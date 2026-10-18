@@ -31,7 +31,7 @@ from reportlab.platypus import (BaseDocTemplate, Frame, Image, KeepInFrame, Next
                                 PageBreak, PageTemplate, Paragraph, Spacer, Table, TableStyle)
 from reportlab.platypus.doctemplate import LayoutError
 
-from terms_glossary import SALEABLE_AREA, TOTAL_AREA
+from terms_glossary import ROW_AREA_HEADER, SALEABLE_AREA, TOTAL_AREA, area_total_label
 
 NAVY = colors.HexColor("#17365D")
 NAVY_DARK = colors.HexColor("#0B1F33")
@@ -838,12 +838,12 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
     # Итог колонки — сумма её строк, подземная площадь в ней есть: наземная
     # ГНС проекта (14 203 при строках на 18 666) под ними не сходилась ни с
     # чем. Это та же общая площадь, что на первой странице.
-    tep_rows.append([f"Итого — {TOTAL_AREA.lower()}", fm.sqm(tep.get("construction_volume_sqm")), fm.sqm(tep.get("saleable_sqm")),
+    tep_rows.append([area_total_label(), fm.sqm(tep.get("construction_volume_sqm")), fm.sqm(tep.get("saleable_sqm")),
                      " · ".join(f"{fm.count(value)} {measure}"
                                 for measure, value in counts.items() if value) or "—"])
     # Колонка — ГНС строки (у паркинга и кладовых — площадь подземного этажа),
     # как ТЭП!C3 книги; итог колонки — общая площадь, и зовётся словом глоссария.
-    col1.append(_grid(["Продукт", "ГНС / подземная, м²", "Продаваемая, м²", "Единиц"], tep_rows,
+    col1.append(_grid(["Продукт", ROW_AREA_HEADER, "Продаваемая, м²", "Единиц"], tep_rows,
                       [col_w * 0.40, col_w * 0.22, col_w * 0.22, col_w * 0.16], st, bold_last=True))
     taxes = model.get("taxes") or {}
     col1.append(_section("Финансовая деятельность и налоги", col_w, st))
