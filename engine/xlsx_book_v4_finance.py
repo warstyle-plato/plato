@@ -310,11 +310,13 @@ _V4_SWEEP_SHARE_CELL = "F92"
 # предыдущих очередей, 89 — сколько её доступно на месяц.
 _V4_PROJECT_CASH_ROW = 88
 _V4_PROJECT_CASH_POOL_ROW = 89
-# 90 — налог очереди в одиночку (строка 24 шаблона), 91 — её свободная касса
-# на этом налоге: из неё берут следующие очереди. Строка 24 после прохода
-# налога свода — доля налога ВСЕХ очередей, а он зависит от процентов
-# следующих очередей, то есть от взятой ими кассы: круг. Движок копит кассу
-# на налоге в одиночку и раздаёт налог свода уже после (`_restate_phase_tax_cashflows`).
+# 90 — налог очереди в одиночку к уплате, 91 — её свободная касса на этом
+# налоге: из неё берут следующие очереди. Строка 24 после прохода налога свода
+# — доля налога ВСЕХ очередей, а он зависит от процентов следующих очередей,
+# то есть от взятой ими кассы: круг. Движок копит кассу на налоге в одиночку и
+# раздаёт налог свода уже после (`_restate_phase_tax_cashflows`). 92–96 —
+# расчёт налога в одиночку тем же порядком, что свод (CF 33–38) на своей базе
+# (строка 101): год нарастающим, убыток к зачёту, зачтено, налог года, налог.
 _V4_STANDALONE_TAX_ROW = 90
 _V4_PROJECT_FREE_CASH_ROW = 91
 
@@ -965,6 +967,50 @@ def _v4_apply_vat_cash(xml: str, phase: int, missing: list[str]) -> str:
     return xml
 
 
+_V4_STANDALONE_TAX_LABELS = (
+    (92, "Налог в одиночку: результат года нарастающим (база — строка 101)", "GA92"),
+    (93, "Налог в одиночку: убыток прошлых лет к зачёту", "GA93"),
+    (94, "Налог в одиночку: зачтено убытка в этом году", "SUM(D94:GA94)"),
+    (95, "Налог в одиночку: налог года нарастающим", "GA95"),
+    (96, "Налог в одиночку: начислено", "SUM(D96:GA96)"),
+)
+
+
+def _v4_standalone_tax_formulas(columns: list[str]) -> dict[int, dict[str, str]]:
+    """Налог очереди в одиночку — порядок свода (CF 33–38) на её строке 101.
+
+    Так считает движок у очереди до раздачи налога свода: база года с
+    переносом убытка не больше половины базы года (ст. 283), уплата —
+    авансами по итогам квартала и доплатой года в марте (ст. 286, 287).
+    Шаблонная строка 24 платила налог в месяц начисления накопленной базой —
+    касса очереди выходила раньше движковой (Нагатино О1: 1 135,1 против
+    1 141,1 млн и уплата с ноября вместо марта).
+    """
+    rate = "'Вводные'!$B$21"
+    out: dict[int, dict[str, str]] = {number: {} for number in (90, 92, 93, 94, 95, 96)}
+    for index, c in enumerate(columns):
+        if index == 0:
+            out[92][c] = f"{c}101"
+            out[93][c] = "0"
+            out[95][c] = f"{c}96"
+            out[96][c] = f"MAX(0,MAX({c}92-{c}94,0)*{rate})"
+        else:
+            p = columns[index - 1]
+            same = f"YEAR({c}$3)=YEAR({p}$3)"
+            out[92][c] = f"IF({same},{p}92+{c}101,{c}101)"
+            out[93][c] = f"IF({same},{p}93,{p}93+MAX(-{p}92,0)-IF({p}92>0,{p}94,0))"
+            out[95][c] = f"IF({same},{p}95+{c}96,{c}96)"
+            out[96][c] = f"MAX(0,MAX({c}92-{c}94,0)*{rate}-IF({same},{p}95,0))"
+        out[94][c] = f"IF(AND({c}92>0,{c}93>0),MIN({c}93,{c}92*0.5),0)"
+
+        def span(start: int, stop: int, index: int = index) -> str:
+            cells = [columns[i] for i in range(index - start, index - stop + 1) if i >= 0]
+            return "+".join(f"{cell}96" for cell in cells) or "0"
+        out[90][c] = (f"IF(MONTH({c}$3)=3,{span(5, 3)},"
+                      f"IF(OR(MONTH({c}$3)=4,MONTH({c}$3)=7,MONTH({c}$3)=10),{span(3, 1)},0))")
+    return out
+
+
 def _v4_apply_project_cash(xml: str, phase: int, missing: list[str]) -> str:
     """Единая касса проекта: расходы очереди до РнС сначала из свободной кассы.
 
@@ -1052,21 +1098,26 @@ def _v4_apply_project_cash(xml: str, phase: int, missing: list[str]) -> str:
         missing.append(f"{sheet}: касса проекта не учтена — не опознаны формулы "
                        f"{', '.join(unrecognised[:4])}")
         return xml
-    # Строки 90–91 занимаются здесь подписями, а формулы им пишет
-    # `_v4_fill_standalone_free_cash`, когда строки 24 и 50 уже окончательные
-    # (после НДС к уплате) и ещё не стали долей налога свода.
+    # Строка 91 занимается здесь, а формулу ей пишет
+    # `_v4_fill_standalone_free_cash`, когда строка 50 уже окончательная
+    # (после НДС к уплате).
     placeholder = {column: "0" for column in columns}
+    standalone = _v4_standalone_tax_formulas(columns)
     for number, label, total, formulas in (
             (row, "Касса проекта — покрытие расходов до РнС",
              f"SUM(D{row}:{_V4_LAST_COLUMN}{row})", draw),
             (pool_row, "Касса проекта — доступно на месяц (свободная касса предыдущих очередей)",
              f"MAX(D{pool_row}:{_V4_LAST_COLUMN}{pool_row})", pool),
-            (_V4_STANDALONE_TAX_ROW, "Налог очереди в одиночку — для её свободной кассы",
-             f"SUM(D{_V4_STANDALONE_TAX_ROW}:{_V4_LAST_COLUMN}{_V4_STANDALONE_TAX_ROW})", placeholder),
+            (_V4_STANDALONE_TAX_ROW,
+             "Налог очереди в одиночку к уплате — для её свободной кассы (авансы, доплата в марте)",
+             f"SUM(D{_V4_STANDALONE_TAX_ROW}:{_V4_LAST_COLUMN}{_V4_STANDALONE_TAX_ROW})",
+             standalone[_V4_STANDALONE_TAX_ROW]),
             (_V4_PROJECT_FREE_CASH_ROW,
              "Свободная касса очереди для следующих (на налоге в одиночку, как движок)",
              f"SUM(D{_V4_PROJECT_FREE_CASH_ROW}:{_V4_LAST_COLUMN}{_V4_PROJECT_FREE_CASH_ROW})",
-             placeholder)):
+             placeholder),
+            *((number, label, total, standalone[number])
+              for number, label, total in _V4_STANDALONE_TAX_LABELS)):
         body = (f'<x:c r="A{number}" s="113" t="str"><x:v>{xml_escape(label)}</x:v></x:c>'
                 f'<x:c r="B{number}" s="113" t="n"><x:f>{total}</x:f></x:c>'
                 f'<x:c r="C{number}" s="113" t="str"><x:v>млн ₽</x:v></x:c>'
@@ -1081,65 +1132,45 @@ def _v4_apply_project_cash(xml: str, phase: int, missing: list[str]) -> str:
 
 
 def _v4_fill_standalone_free_cash(xml: str, phase: int, missing: list[str]) -> str:
-    """Строки 90–91: налог очереди в одиночку и её свободная касса на нём.
+    """Строка 91: свободная касса очереди на её налоге в одиночку (строка 90).
 
     Касса, которую берут следующие очереди (строка 89), — положительный поток
     капитала очереди. Строка 50 после прохода налога свода платит долю налога
     ВСЕХ очередей, а она через проценты следующих очередей зависит от взятой
     ими кассы — Excel видит круг (LibreOffice: #VALUE! по книге). Движок копит
     кассу на потоке с налогом очереди в одиночку и раздаёт налог свода потом,
-    не пересчитывая финансирование (`_restate_phase_tax_cashflows`). Книга
-    так же: 90 — копия строки 24 до раздачи, 91 — строка 50 с ней вместо 24.
-    Проход стоит после НДС к уплате (строка 50 окончательная) и перед налогом
-    свода (строка 24 ещё своя); уплаченное раньше налог в одиночку берёт из
-    своей строки 90, а не из накопленной 25 (та — сумма доли свода).
+    не пересчитывая финансирование (`_restate_phase_tax_cashflows`). Книга так
+    же: 91 — строка 50 со строкой 90 вместо 24. Проход стоит после НДС к
+    уплате (строка 50 окончательная).
     """
     sheet = f"CF_{phase}"
     columns = _v4_cf_columns()
     tax_row, free_row = _V4_STANDALONE_TAX_ROW, _V4_PROJECT_FREE_CASH_ROW
-    found: dict[int, dict[str, str]] = {24: {}, 50: {}}
-    for row in re.finditer(r'<x:row r="(24|50)"[^>]*>(.*?)</x:row>', xml, flags=re.S):
-        number = int(row.group(1))
-        for cell in re.finditer(
-                r'<x:c r="([A-Z]{1,3})%d"[^>]*>(?:(?!</x:c>).)*?<x:f>(.*?)</x:f>' % number,
-                row.group(2), flags=re.S):
-            found[number][cell.group(1)] = html.unescape(cell.group(2))
-    standalone: dict[str, str] = {}
+    flows: dict[str, str] = {}
+    row = re.search(r'<x:row r="50"[^>]*>(.*?)</x:row>', xml, flags=re.S)
+    if row is not None:
+        for cell in re.finditer(r'<x:c r="([A-Z]{1,3})50"[^>]*>(?:(?!</x:c>).)*?<x:f>(.*?)</x:f>',
+                                row.group(1), flags=re.S):
+            flows[cell.group(1)] = html.unescape(cell.group(2))
     free_cash: dict[str, str] = {}
     for column in columns:
-        tax, flow = found[24].get(column), found[50].get(column)
-        pattern = f"-{column}24-"
-        if tax is None or flow is None or pattern not in flow:
-            missing.append(f"{sheet}: касса проекта — строки 24/50 в {column} не опознаны")
+        flow, pattern = flows.get(column), f"-{column}24-"
+        if flow is None or pattern not in flow:
+            missing.append(f"{sheet}: касса проекта — строка 50 в {column} не опознана")
             return xml
-        # Налог в одиночку вычитает уже уплаченное (накопленная строка 25 —
-        # сумма строки 24, то есть после раздачи — доля свода): своё
-        # накопленное — сумма строки 90 до прошлого месяца.
-        index = columns.index(column)
-        if index:
-            before = columns[index - 1]
-            paid = f"-{before}25)"
-            if paid not in tax:
-                missing.append(f"{sheet}: касса проекта — налог {column}24 не опознан")
-                return xml
-            tax = tax.replace(paid, f"-SUM($D${tax_row}:{before}{tax_row}))", 1)
-        standalone[column] = tax
         free_cash[column] = flow.replace(pattern, f"-{column}{tax_row}-", 1)
-    for number, formulas in ((tax_row, standalone), (free_row, free_cash)):
-        def fill(match: "re.Match[str]", formulas: dict[str, str] = formulas,
-                 number: int = number) -> str:
-            column = match.group(2)
-            if column in ("A", "B", "C"):
-                return match.group(0)
-            return f"{match.group(1)}{xml_escape(formulas[column])}</x:f>"
-        at = re.search(r'<x:row r="%d"[^>]*>.*?</x:row>' % number, xml, flags=re.S)
-        if at is None:
-            missing.append(f"{sheet}: строка {number} не найдена — касса проекта без налога в одиночку")
-            return xml
-        body = re.sub(r'(<x:c r="([A-Z]{1,3})%d"[^>]*><x:f>)[^<]*</x:f>' % number,
-                      fill, at.group(0))
-        xml = xml[:at.start()] + body + xml[at.end():]
-    return xml
+
+    def fill(match: "re.Match[str]") -> str:
+        column = match.group(2)
+        if column in ("A", "B", "C"):
+            return match.group(0)
+        return f"{match.group(1)}{xml_escape(free_cash[column])}</x:f>"
+    at = re.search(r'<x:row r="%d"[^>]*>.*?</x:row>' % free_row, xml, flags=re.S)
+    if at is None:
+        missing.append(f"{sheet}: строка {free_row} не найдена — касса проекта без налога в одиночку")
+        return xml
+    body = re.sub(r'(<x:c r="([A-Z]{1,3})%d"[^>]*><x:f>)[^<]*</x:f>' % free_row, fill, at.group(0))
+    return xml[:at.start()] + body + xml[at.end():]
 
 
 def _v4_apply_cash_sweep(xml: str, phase: int, missing: list[str]) -> str:
