@@ -248,7 +248,7 @@ _AGENT_INSTRUCTIONS = """
    variable=main_construction_cost_th_per_sqm с теми же правилами LLCR.
 5. Не говори «примерно» там, где инструмент вернул точный расчётный результат.
 6. Если инструмент сообщает ограничение/предупреждение методики — обязательно упомяни его.
-6a. Если в снимке npv_mln/irr_equity_pct равны null и есть equity_returns_na, называй их ровно так: «N/A — долг не погашен». Не подставляй ноль и не досчитывай IRR/NPV сам: при непогашенном ПФ движок их не считает.
+6a. npv_mln и irr_project_pct — NPV и IRR проекта по потоку до финансирования: они числом всегда, и при непогашенном ПФ тоже (кредита в этом потоке нет). Если irr_equity_pct равен null и есть equity_returns_na, IRR и NPV капитала называй ровно так: «N/A — долг не погашен». Не подставляй ноль и не досчитывай IRR/NPV капитала сам: при непогашенном ПФ движок их не считает.
 6b. Главный показатель доходности — irr_project_pct: IRR проекта до финансирования, на все вложения (тот же поток, что NPV проекта). IRR капитала (irr_equity_pct) называй вторым и всегда с уточнением «капитала». Если irr_equity_pct равен null и есть irr_equity_label — произнеси подпись как есть («не показателен: своих денег N млн ₽ (X% затрат)») и объясни причину из irr_equity_reason: своих денег меньше порога от полных затрат, проект несут БРИДЖ и ПФ, и IRR капитала — отношение к почти нулю, а не доходность. Никогда не называй такое число (сотни процентов) доходностью и не досчитывай его сам.
 7. Не утверждай, что банк гарантированно одобрит проект.
 8. Ты не можешь менять модель без подтверждения пользователя. prepare_model_patch только готовит изменение; реальный Input меняется после кнопки «Применить в модель».
@@ -383,8 +383,9 @@ def _result_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         "net_profit_mln": round(float(s.get("net_profit", 0) or 0) / 1e6, 2),
         "margin_pct": round(float(s.get("margin", 0) or 0) * 100, 3),
         "llcr_x": round(float(s.get("llcr", 0) or 0), 4),
-        # None — «не число»: при непогашенном долге движок снял NPV и IRR
-        # (`equity_returns`), и ноль здесь читался бы как ответ.
+        # NPV и IRR проекта — числом и при непогашенном долге (владелец,
+        # 17.10.2026); None — только «не считается», и ноль здесь читался бы
+        # как ответ. Снятые при долге IRR/NPV капитала несёт `equity_returns_na`.
         "npv_mln": round(float(s["npv"]) / 1e6, 2) if s.get("npv") is not None else None,
         "irr_project_pct": round(float(s["irr_project"]) * 100, 3) if s.get("irr_project") is not None else None,
         # IRR капитала — числом только когда движок счёл его показательным
@@ -778,9 +779,9 @@ def run_sensitivity(
         # знак, а IRR и NPV снимаются при непогашенном долге. Анализировать
         # нечего: не от чего отсчитывать отклонения. Причину называем.
         _base_summary = _scope_result(base_bundle, scope, selected_view)[1].get("summary")
-        _na = (equity_irr_label(_base_summary) if metric == "irr_equity_pct"
-               else equity_returns_na_label(_base_summary)
-               if metric in ("npv_mln", "irr_project_pct") else None)
+        # NPV и IRR проекта числом всегда; без числа они остаются, только
+        # когда поток не меняет знак — причины у движка для них нет.
+        _na = equity_irr_label(_base_summary) if metric == "irr_equity_pct" else None
         raise HTTPException(
             status_code=400,
             detail=f"Показатель «{_SENSITIVITY_METRICS[metric]['label']}» "

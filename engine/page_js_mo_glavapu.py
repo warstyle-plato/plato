@@ -738,7 +738,6 @@ async function sendTelegramResult(){
    irr_project:s.irr_project==null?null:Number(s.irr_project),
    irr_equity:s.irr_equity==null?null:Number(s.irr_equity),
    irr_equity_label:irrEquityNa(s),
-   equity_returns_na:returnsNa(s),
    llcr:Number(s.llcr||0),
    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6,

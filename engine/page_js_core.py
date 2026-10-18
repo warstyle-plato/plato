@@ -810,8 +810,10 @@ const irrFmt=v=>v==null?'N/A':pct(v);
 // ключ движка, слова — из словаря терминов (TERMS).
 const unitNum=(v,d)=>v==null?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
 const unitBase=x=>(x&&x.base&&TERMS[x.base])?'м² '+TERMS[x.base].genitive:'—';
-// IRR и NPV при непогашенном долге снимает движок (summary.equity_returns):
-// страница не сравнивает остаток долга сама, а печатает его подпись.
+// IRR и NPV КАПИТАЛА при непогашенном долге снимает движок (summary.equity_returns):
+// страница не сравнивает остаток долга сама, а печатает его подпись. NPV и IRR
+// проекта (до финансирования) — числом всегда, этот признак они не читают
+// (владелец, 17.10.2026).
 const returnsNa=s=>((s||{}).equity_returns||{}).label||null;
 // Показателен ли IRR капитала, решает движок (summary.equity_irr): при своих
 // деньгах меньше порога от затрат вместо числа — его подпись «не показателен».

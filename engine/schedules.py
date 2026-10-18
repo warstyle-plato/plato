@@ -567,31 +567,33 @@ def spread_evenly(target: dict[date, float], amount: float, start: date, months:
 
 
 # Доходность капитала при непогашенном долге (решение владельца 29.09.2026,
-# ревизия книги, решение 2): если ПФ к концу проекта не погашен, IRR и NPV не
-# числа, а «N/A — долг не погашен». Порог тот же, что у книги:
+# ревизия книги, решение 2): если ПФ к концу проекта не погашен, IRR и NPV
+# КАПИТАЛА не числа, а «N/A — долг не погашен». Порог тот же, что у книги:
 # `КОНСОЛИДАТОР!N8` = IF('CF'!B19>0.5 млн, "N/A (долг не погашен)", …), и тот
 # же, по которому PDF зовёт прибыль бумажной. Решение принимает одна функция
 # ниже; страница, PDF, тизер, Telegram и Платон читают её признак, а не
 # сравнивают остаток долга сами. Отсутствие числа — не ноль.
+# NPV и IRR ПРОЕКТА (поток до финансирования, кредита в нём нет) вердикт не
+# трогает: они числом всегда (решение владельца 17.10.2026, «Проект — числом»).
+# Читатель строки проекта печатает число и признак `equity_returns` не читает.
 EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB = 500_000.0
 EQUITY_RETURNS_DEBT_UNREPAID = "debt_unrepaid"
 EQUITY_RETURNS_NA_DEBT_LABEL = "N/A — долг не погашен"
 
 
 def _apply_equity_returns_verdict(summary: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Снимает IRR и NPV, если долг ПФ к концу проекта не погашен.
+    """Снимает IRR и NPV капитала, если долг ПФ к концу проекта не погашен.
 
     Пишет `summary["equity_returns"]` — единственный признак для всех
-    поверхностей — и при дефолте заменяет `npv`/`irr_equity` на None.
+    поверхностей — и при дефолте заменяет `npv_equity`/`irr_equity` на None.
+    `npv` и `irr_project` (поток проекта до финансирования) остаются числом.
     Повторный вызов на уже решённой сводке ничего не меняет.
     """
     if not isinstance(summary, dict) or "equity_returns" in summary:
         return summary
     ending = float(summary.get("ending_pf") or 0.0)
     if ending > EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB:
-        summary["npv"] = None
         summary["npv_equity"] = None
-        summary["irr_project"] = None
         summary["irr_equity"] = None
         summary["equity_returns"] = {
             "status": EQUITY_RETURNS_DEBT_UNREPAID,
@@ -607,7 +609,10 @@ def _apply_equity_returns_verdict(summary: dict[str, Any] | None) -> dict[str, A
 
 
 def equity_returns_na_label(summary: dict[str, Any] | None) -> str | None:
-    """Подпись вместо IRR/NPV, если движок их снял; None — числа есть."""
+    """Подпись вместо IRR/NPV КАПИТАЛА, если движок их снял; None — числа есть.
+
+    К NPV и IRR проекта не относится: те числом всегда.
+    """
     verdict = (summary or {}).get("equity_returns") or {}
     if verdict.get("status") == EQUITY_RETURNS_DEBT_UNREPAID:
         return str(verdict.get("label") or EQUITY_RETURNS_NA_DEBT_LABEL)

@@ -134,8 +134,9 @@ def telegram_result(req: TelegramResultRequest,
             return None
     irr_lines = ""
     if "irr_project" in summary or "irr_equity_label" in summary:
-        irr_project_text = (summary.get("equity_returns_na")
-                            or _irr_text(summary.get("irr_project")) or "не считается")
+        # IRR проекта — числом и при непогашенном долге (владелец, 17.10.2026);
+        # «N/A — долг не погашен» несёт только подпись капитала.
+        irr_project_text = _irr_text(summary.get("irr_project")) or "не считается"
         irr_equity_text = (summary.get("irr_equity_label")
                            or _irr_text(summary.get("irr_equity")) or "не считается")
         irr_lines = (f"• IRR проекта (до финансирования) — {html.escape(irr_project_text)}\n"
