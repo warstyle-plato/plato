@@ -1,13 +1,16 @@
-"""«Действия с ТЭП» — одно свёрнутое меню под таблицей, а не три кнопки над ней.
+"""Три действия с ТЭП — разные, и каждое стоит там, где его ищут.
 
 Владелец (17.10.2026): три конкурирующие кнопки пересчёта перед таблицей не
 объясняли, что и в каком порядке нажимать и какая из них перезапишет
-введённое. Теперь под таблицей одно меню с тремя РАЗНЫМИ действиями:
+введённое. Владелец (18.10.2026): кнопка формирования по плотности — «вверху
+сразу после самих параметров». Теперь:
 
-- «Сформировать ТЭП по плотности» — перезаписывает строки, поэтому сначала
+- «Сформировать ТЭП по плотности» — в карточке участка, сразу под площадью и
+  плотностью, которые она применяет. Перезаписывает строки, поэтому сначала
   показывает, что изменится (строка, было → будет), и меняет только по
   подтверждению; отказы (гостиница, нежилой, нет площади) идут сразу к
   объяснению отказа — там выбор, куда класть потенциал.
+- Под таблицей — свёрнутое меню «Действия с ТЭП» с двумя действиями:
 - «Пересчитать нормативы по ТЭП» — ручное действие; подсказка называет
   режим, которым оно пойдёт: ГлавАПУ, пропорция или норматив. Режим решает
   один предикат, и его читают и действие, и подсказка.
@@ -41,21 +44,22 @@ def _menu() -> str:
     return match.group(0)
 
 
-def test_the_three_actions_live_in_one_closed_menu() -> None:
+def test_each_action_stands_where_it_belongs() -> None:
     menu = _menu()
     assert " open" not in menu[:menu.index(">") + 1], "меню раскрыто по умолчанию"
-    for label, call in [("Сформировать ТЭП по плотности", "formTepByDensity()"),
-                        ("Пересчитать нормативы по ТЭП", "recalcFromTep()"),
+    for label, call in [("Пересчитать нормативы по ТЭП", "recalcFromTep()"),
                         ("Подтянуть строки из «Вводных»", "syncTep()")]:
         assert f'onclick="{call}">{label}<' in menu, f"в меню нет «{label}» → {call}"
+    assert "formTepByDensity()" not in menu, "формирование по плотности ушло в меню под таблицу"
     page = core.PAGE
     tep = page[page.index('<div id="tep" class="panel">'):page.index('<div id="vri" class="panel">')]
     for old in ("Рассчитать ТЭП от площади и плотности", "Пересчитать по параметрам исходного расчёта"):
         assert old not in tep, f"старая подпись «{old}» осталась на вкладке"
-    # Кнопки — только в меню: над таблицей их нет.
-    before_table = tep[:tep.index('id="tepBody"')]
-    assert "onclick=\"formTepByDensity()\"" not in before_table
-    assert "onclick=\"recalcFromTep()\"" not in before_table
+    # Формирование — сразу под полями площади и плотности, до таблицы.
+    form = tep.index('onclick="formTepByDensity()">Сформировать ТЭП по плотности<')
+    assert tep.index('id="siteDensity"') < form < tep.index('id="tepBody"')
+    # Пересчёт нормативов — только под таблицей.
+    assert "onclick=\"recalcFromTep()\"" not in tep[:tep.index('id="tepBody"')]
     # Экономика проекта — отдельной командой в шапке, не в меню.
     assert "calculate()" not in menu
     assert "Пересчитать модель" in page[:page.index('<div id="tep" class="panel">')]
@@ -146,9 +150,10 @@ PROBE = """()=>{
  const top=el=>Math.round(el.getBoundingClientRect().top+window.scrollY);
  const menu=document.getElementById('tepActionsMenu');
  const out={menuOpen:menu.open,menuTop:top(menu),tableTop:top(document.querySelector('#tep .teptable'))};
- menu.open=true;
+ // Кнопка формирования видна без раскрытия меню: она в карточке участка.
  const btn=document.querySelector('#tep [onclick="formTepByDensity()"]');
  out.buttonVisible=btn.getBoundingClientRect().height>0;
+ out.buttonTop=top(btn);out.densityTop=top(document.getElementById('siteDensity'));
  out.pageScroll=document.documentElement.scrollWidth-window.innerWidth;
  const was={gns:tep.apartments.gns,saleable:tep.apartments.saleable};
  inputs._glavapu_import={normalized:{}};
@@ -166,7 +171,7 @@ PROBE = """()=>{
  return out;}"""
 
 
-def test_on_a_phone_the_menu_confirms_before_it_overwrites() -> None:
+def test_on_a_phone_forming_confirms_before_it_overwrites() -> None:
     from playwright.sync_api import sync_playwright
 
     path = browser.chromium_or_skip()
@@ -183,6 +188,8 @@ def test_on_a_phone_the_menu_confirms_before_it_overwrites() -> None:
     assert got["menuOpen"] is False, "меню раскрыто по умолчанию"
     assert got["menuTop"] > got["tableTop"], "меню стоит над таблицей"
     assert got["buttonVisible"] and got["pageScroll"] <= 0
+    assert got["densityTop"] < got["buttonTop"] < got["tableTop"], \
+        "«Сформировать ТЭП по плотности» не под полями участка"
     assert got["dialogShown"] and "Квартиры" in got["dialogText"]
     assert got["untouched"], "«Отмена» изменила ТЭП"
     assert got["changed"] and got["expected"], "«Сформировать» не заменил квартиры площадью × плотностью"

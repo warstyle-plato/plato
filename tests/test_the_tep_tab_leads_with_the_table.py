@@ -1,11 +1,12 @@
-"""Вкладка «ТЭП»: компактный участок, сразу таблица, настройки и кнопки — под ней.
+"""Вкладка «ТЭП»: компактный участок с кнопкой формирования, сразу таблица, остальное — под ней.
 
 Владелец (17.10.2026): между параметрами участка и таблицей ТЭП лежали три
 кнопки пересчёта, коэффициенты парковки, параметры Подмосковья и длинные
 пояснения — на телефоне до таблицы приходилось долго прокручивать, а что и в
 каком порядке нажимать, было непонятно. Порядок теперь: карточка «Участок и
-плотность» → таблица ТЭП → свёрнутые «Паркинг и нормативы» и параметры
-Подмосковья → действия пересчёта → сверка с ГлавАПУ.
+плотность» (с кнопкой «Сформировать ТЭП по плотности» под полями —
+владелец, 18.10.2026) → таблица ТЭП → свёрнутые «Паркинг и нормативы» и
+параметры Подмосковья → меню действий пересчёта → сверка с ГлавАПУ.
 
 Проверяется отрисованная страница в Chromium на ширинах телефона и десктопа:
 порядок блоков по геометрии, свёрнутость складок, отсутствие горизонтальной
@@ -42,7 +43,7 @@ PROBE = """(ids)=>{
   out.buttons[fn]=b?top(b):null;
  }
  const site=document.getElementById('siteAreaHa').closest('.card');
- out.siteCardHeight=Math.round(site.getBoundingClientRect().height);
+ out.siteCardBottom=Math.round(site.getBoundingClientRect().bottom+window.scrollY);
  out.tableTop=top(document.querySelector('#tep .teptable'));
  out.parkingOpen=document.getElementById('siteParkingBox').open;
  out.moOpen=document.getElementById('moParamsBox').open;
@@ -82,8 +83,13 @@ def _check_order(got: dict) -> None:
     tops = [got["tops"][i] for i in ORDER]
     assert None not in tops, f"узла нет на странице: {got['tops']}"
     assert tops == sorted(tops), f"порядок блоков вкладки ТЭП нарушен: {got['tops']}"
-    # Все три кнопки пересчёта — под таблицей, ни одной над ней.
-    above = {k: v for k, v in got["buttons"].items() if v is None or v < got["tableTop"]}
+    # Формирование по плотности — под полями участка, над таблицей; пересчёт
+    # нормативов и подтягивание строк — под таблицей.
+    form = got["buttons"]["formTepByDensity"]
+    assert form is not None and got["tops"]["siteAreaHa"] < form < got["tableTop"], \
+        f"«Сформировать ТЭП по плотности» не в карточке участка: {got['buttons']}"
+    above = {k: v for k, v in got["buttons"].items()
+             if k != "formTepByDensity" and (v is None or v < got["tableTop"])}
     assert not above, f"кнопки пересчёта стоят над таблицей ТЭП: {above}"
     assert got["parkingOpen"] is False, "«Паркинг и нормативы» раскрыты по умолчанию"
     assert got["moOpen"] is False, "параметры Подмосковья раскрыты по умолчанию"
@@ -95,7 +101,7 @@ def test_on_a_phone_the_table_comes_right_after_the_site_card(phone: dict) -> No
     assert phone["pageScroll"] <= 0, "страница на телефоне прокручивается вбок"
     # Между карточкой участка и таблицей — ничего: таблица начинается там,
     # где кончается карточка (следующая карточка — отступ между ними).
-    gap = phone["tableTop"] - (phone["tops"]["siteAreaHa"] + phone["siteCardHeight"])
+    gap = phone["tableTop"] - phone["siteCardBottom"]
     assert 0 < gap < 260, f"между участком и таблицей снова что-то лежит: {gap}px"
 
 
@@ -112,7 +118,9 @@ def test_the_markup_keeps_the_order_without_a_browser() -> None:
              'id="tepActionsCard"', 'id="glavapuScenarioBox"']
     positions = [panel.index(m) for m in marks]
     assert positions == sorted(positions), "порядок блоков вкладки ТЭП в разметке нарушен"
-    # Все кнопки пересчёта — в карточке действий, между настройками и сверкой.
-    for call in ('formTepByDensity()', 'syncTep()', 'recalcFromTep()'):
+    # Формирование — в карточке участка, до таблицы.
+    assert positions[0] < panel.index('onclick="formTepByDensity()"') < positions[1]
+    # Пересчёт нормативов и подтягивание строк — в карточке действий.
+    for call in ('syncTep()', 'recalcFromTep()'):
         at = panel.index(f'onclick="{call}"')
         assert positions[4] < at < positions[5], f"кнопка {call} стоит вне карточки действий"
