@@ -325,7 +325,11 @@ def _v4_fold_tep_rows(
             if key not in merged:
                 merged[key] = copy.deepcopy(product)
             else:
-                for field in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+                # Список полей — у свода движка (`PHASE_ADDITIVE_TEP_FIELDS`):
+                # гостевые и переданные хвоста складываются вместе с местами.
+                for field in PHASE_ADDITIVE_TEP_FIELDS:
+                    if field not in product and field not in merged[key]:
+                        continue
                     merged[key][field] = (
                         float(merged[key].get(field) or 0) + float(product.get(field) or 0))
     return rows[:book - 1] + [merged]
@@ -595,13 +599,13 @@ _V4_TAXES_LABEL = "Налоги: на прибыль и НДС к уплате"
 
 def _v4_report_owner_decisions(xml: str, social_base_row: int | None,
                                missing: list[str]) -> str:
-    """НДС в полных расходах и CAPEX на суммарную площадь в ГНС (владелец, 16.10.2026).
+    """НДС в полных расходах и CAPEX на общую площадь (владелец, 16.10.2026).
 
     НДС к уплате движок держит в полных расходах и отдельной строкой структуры;
     ОТЧЕТ его не считал, и «выручка − полные расходы» расходилась с чистой
     прибылью на сумму НДС (Донской: 113,8 млн). Удельный CAPEX делился на GBA
     продуктов без соцобъектов и гаражей, а движок и Дашборд по решению 4 от
-    29.09 — на суммарную площадь в ГНС (Донской: 599,3 против 591,5 тыс. ₽/м²).
+    29.09 — на общую площадь (Донской: 599,3 против 591,5 тыс. ₽/м²).
     """
     def put(coord: str, *, formula: str | None = None, text: str | None = None) -> None:
         nonlocal xml
@@ -630,7 +634,7 @@ def _v4_report_owner_decisions(xml: str, social_base_row: int | None,
     put("F64", formula="IFERROR(MAX(0,((B6+B7+B9+B39)-($B$5-F59))*1000/F57),0)")
     put("H63", text="CAPEX, коммерческие расходы, финансирование, налог на прибыль и НДС к уплате")
 
-    # Суммарная площадь в ГНС очереди — так же, как суммарная площадь ТЭП!C36:
+    # Общая площадь очереди — так же, как общая площадь ТЭП!C36:
     # продукты дома, объекты очереди с их подземными гаражами и соцобъекты
     # очереди (ГНС типа делится по местам очередей).
     objects = _v4_object_product_cells()

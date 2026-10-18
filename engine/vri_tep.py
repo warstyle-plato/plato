@@ -416,8 +416,20 @@ def vri_tep_quick(region: str, query: str,
         units = round(population / 2.1) if population else 0
         # Вверх, как все нормативы на тысячу: на Нагатино (7 618 жителей)
         # калькулятор даёт 336, округление к ближайшему давало 335.
-        dou = math.ceil(population * 44 / 1000) if population else 0
-        school = math.ceil(population * 90 / 1000) if population else 0
+        # Нормы ДОО/СОШ — по расчётной зоне района (2151-ПП, табл. 1.4.1 и
+        # 1.4.2): зона 1 — 44/90, зона 2 (28 районов, п. 1.3.2.2 в ред.
+        # 1762-ПП) — 63/124. Прежде здесь стояли литералы зоны 1 для любого
+        # района, и Некрасовка считалась как Пресня. Числа и зона — у одного
+        # владельца, как в `tep_derived_norms`: `SOCIAL_NORMS_PER_1000` и
+        # предикат `district_zone_two` (решение владельца 16.10.2026).
+        # Район не назван — зона 1 по умолчанию, и лист параметров обязан
+        # сказать об этом вслух.
+        district_name = str(territory.get("district") or "").strip()
+        social_zone = "2" if district_zone_two(district_name) else "1"
+        social_norms = {kind: SOCIAL_NORMS_PER_1000[kind][social_zone]
+                        for kind in ("kindergarten", "school", "clinic")}
+        dou = math.ceil(population * social_norms["kindergarten"] / 1000) if population else 0
+        school = math.ceil(population * social_norms["school"] / 1000) if population else 0
         # Взрослая поликлиника — 13,2 пос./смену на тысячу, не 13,3: три
         # выгрузки (население 377, 422 и 1224 → 5, 6 и 17) сходятся только на
         # 13,2 с округлением вверх; 13,3 на населении 377 давала 6 против 5
@@ -431,7 +443,8 @@ def vri_tep_quick(region: str, query: str,
         # частях 13+7 (дрейф компенсации 190,814 против 200,857, третья точка
         # 16.08.2026); на населении 377 и 422 суммы совпадали со смешанной
         # случайно (8 = 5+3, 9 = 6+3). Компенсация считается от смешанной.
-        clinic = math.ceil(population * 19.0 / 1000) if population else 0
+        # Норматив в обеих зонах один (19), но число — из того же словаря.
+        clinic = math.ceil(population * social_norms["clinic"] / 1000) if population else 0
         per_k = lambda norm, digits: math.ceil(population * norm / 1000 * 10 ** digits) / 10 ** digits
         # Компенсация за соцобъекты — ставки из выгрузки калькулятора от
         # 01.08.2026 (188,414/19, 294,540/38 и 97,714/9): город индексирует их
@@ -624,9 +637,17 @@ def vri_tep_quick(region: str, query: str,
              coeff.get("business_inside_ttc" if bool(territory.get("inside_ttc"))
                        else "business_outside_ttc") or "", "—"],
             ["Социальные объекты", "", ""],
-            ["Район", str(territory.get("district") or ""), "—"],
-            ["Норматив ДОО", "44", "мест / 1000 жит."],
-            ["Норматив школ", "90", "мест / 1000 жит."],
+            ["Район", district_name, "—"],
+            # Зона и нормы — как на листе самого калькулятора: строку
+            # «Расчётная зона» читает импорт выгрузки (`calculation_zone`),
+            # подписи норм — по началу имени, поэтому зона в скобках им не
+            # мешает. Числа — те, которыми считали строки 30–31 выше.
+            ["Расчётная зона",
+             social_zone + ("" if district_name else " (район не назван)"), "—"],
+            [f"Норматив ДОО (зона {social_zone})",
+             str(social_norms["kindergarten"]), "мест / 1000 жит."],
+            [f"Норматив школ (зона {social_zone})",
+             str(social_norms["school"]), "мест / 1000 жит."],
             ["Стоимость смены ВРИ", "", ""],
             ["Кадастровый квартал", str(territory.get("cadastral_quarter") or ""), "—"],
             ["Коэффициент аренды", coeff.get("rent") or "", "—"],

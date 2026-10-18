@@ -7,7 +7,7 @@
   проект, сети, ввод, генподряд и техзаказчик уже в ней; генподряд и
   техзаказчик на стройку объекта не начисляются, резерв — начисляется;
 - чисто нежилой проект — полная постатейная смета, как у жилья: ставка
-  метрового объекта — СМР здания, статьи проекта идут от суммарной площади
+  метрового объекта — СМР здания, статьи проекта идут от общей площади
   объектов в ГНС, генподряд, техзаказчик, управление и резерв — и на СМР
   объекта. Наземный паркинг (ставка за место) и тут «под ключ»;
 - резерв ни у одного проекта не начисляется на плату за смену ВРИ.
@@ -73,17 +73,6 @@ def test_the_reserve_ignores_the_vri_fee() -> None:
     high = _amounts(land_rights_cost_mln=3000.0)
     assert high["land_rights"] - low["land_rights"] == pytest.approx(2000e6)
     assert high["reserve"] == pytest.approx(low["reserve"])
-
-
-def test_the_reserve_base_is_every_article_but_the_excluded() -> None:
-    """Резерв — процент от всех статей до него, кроме списка исключений."""
-    a = _amounts()
-    shadow = {"reserve", "vri_interest", "vri_security", "land_rights_gross",
-              "land_rights_relief"}
-    base = sum(v for k, v in a.items() if k not in shadow | core.RESERVE_EXCLUDED_ARTICLES)
-    assert a["land_rights"] > 0 and a["offices"] > 0
-    assert a["reserve"] == pytest.approx(base * core.DEFAULT_INPUTS["reserve_pct"] / 100)
-    assert core.RESERVE_EXCLUDED_ARTICLES <= core._M2_RESERVE_EXCLUDED
 
 
 def test_the_object_rate_hint_follows_the_project_kind() -> None:

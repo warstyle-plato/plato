@@ -52,10 +52,10 @@ def bundle():
 def test_the_glossary_owns_the_word() -> None:
     """Слово — у словаря, в движке старого нет ни в одной строке, что видна."""
     assert TOTAL_AREA.unit == "м²"
-    # Название — решение владельца (29.09.2026): СПП по ГлавАПУ только
-    # наземная, «общая площадь» у нас и у ГлавАПУ — НП.
-    assert TOTAL_AREA.full == "Суммарная площадь в ГНС (СПП + подземная), м²"
-    assert "Общая" not in TOTAL_AREA.name and not TOTAL_AREA.name.startswith("СПП")
+    # Название — решение владельца (17.10.2026): «в ГНС» читается как СПП, а
+    # СПП у ГлавАПУ — только наземные этажи; сумма с подземной — общая площадь.
+    assert TOTAL_AREA.full == "Общая площадь (наземная ГНС + подземная), м²"
+    assert "в ГНС" not in TOTAL_AREA.name and not TOTAL_AREA.name.startswith("СПП")
     # Страница получает словарь целиком, а не копию слов.
     assert "const TERMS=__DEVELOPAID_TERMS__" not in core.PAGE
     assert f'"name": "{TOTAL_AREA.name}"' in core.PAGE
@@ -112,7 +112,7 @@ def test_the_workbook_names_the_sum_by_the_glossary() -> None:
                 named += TOTAL_AREA.name.lower() in cell.value.lower()
     assert not found, found[:5]
     assert book["ОТЧЕТ"]["F6"].value == TOTAL_AREA.name
-    assert named >= 2, "подпись суммарной площади пропала из книги"
+    assert named >= 2, "подпись общей площади пропала из книги"
 
 
 def test_the_rendered_page_names_the_sum_by_the_glossary() -> None:
@@ -158,7 +158,7 @@ def test_the_rendered_page_names_the_sum_by_the_glossary() -> None:
 
 
 def test_the_shared_articles_name_their_own_base(bundle) -> None:
-    """Общие статьи считаются от суммарной площади МКД, а не проекта.
+    """Общие статьи считаются от общей площади МКД, а не проекта.
 
     Под одним именем стояли две величины: база общих статей `core_total_gns`
     (только жилые дома) и сумма всего проекта. Пояснение «на ней считаются

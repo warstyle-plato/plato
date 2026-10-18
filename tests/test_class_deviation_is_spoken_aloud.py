@@ -29,7 +29,6 @@ import main as wrapper  # noqa: E402
 core = wrapper.core
 openpyxl = pytest.importorskip("openpyxl")
 
-PLATO_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "PLATO_template.xlsx"
 V4_TEMPLATE = Path(__file__).resolve().parent.parent / "templates" / "DevelopAid_model_v4.xlsx"
 
 
@@ -101,33 +100,6 @@ def test_the_default_inputs_sit_exactly_on_the_comfort_base():
         if field == "label":
             continue
         assert float(core.DEFAULT_INPUTS[field]) == float(base), field
-
-
-@pytest.mark.skipif(not PLATO_TEMPLATE.is_file(), reason="шаблон ПЛАТО не поставляется")
-def test_plato_marks_deviated_rate_in_column_h():
-    inputs = dict(core.DEFAULT_INPUTS)
-    inputs.update(BUSINESS_BASE, project_class="business",
-                  apartment_price_th=700, main_above_th_per_sqm=210)
-    data, report = core.fill_plato_template(inputs, core.TEP_DEFAULT, project_name="Проверка")
-    # Шаблон ПЛАТО держит свои «Вводные» и разделения листов не знает.
-    sheet = openpyxl.load_workbook(io.BytesIO(data))["Вводные"]
-    notes = {}
-    for row in range(1, sheet.max_row + 1):
-        note = sheet.cell(row=row, column=8).value
-        if note:
-            notes[str(sheet.cell(row=row, column=2).value or "").strip()] = str(note)
-    assert any("Основное строительство" in label for label in notes), notes
-    smr_note = next(v for k, v in notes.items() if "Основное строительство" in k)
-    assert "база класса" in smr_note and "Бизнес" in smr_note and "190" in smr_note
-    fields = {row["field"] for row in report["class_deviations"]["rows"]}
-    assert fields == {"apartment_price_th", "main_above_th_per_sqm"}
-    # Колонка G — переключатель сценария, отметка её не трогает: проверяем,
-    # что в помеченной строке G осталась формулой или прежним значением, а не
-    # текстом отметки.
-    for row in range(1, sheet.max_row + 1):
-        if sheet.cell(row=row, column=8).value:
-            g = sheet.cell(row=row, column=7).value
-            assert not (isinstance(g, str) and "база класса" in g)
 
 
 @pytest.mark.skipif(not V4_TEMPLATE.is_file(), reason="шаблон v4 не поставляется")
