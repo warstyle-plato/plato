@@ -5,7 +5,7 @@
 введённое. Владелец (18.10.2026): кнопка формирования по плотности — «вверху
 сразу после самих параметров». Теперь:
 
-- «Сформировать ТЭП по плотности» — в карточке участка, сразу под площадью и
+- «Сформировать ТЭП по новым параметрам» — в карточке участка, сразу под площадью и
   плотностью, которые она применяет. Перезаписывает строки, поэтому сначала
   показывает, что изменится (строка, было → будет), и меняет только по
   подтверждению; отказы (гостиница, нежилой, нет площади) идут сразу к
@@ -56,7 +56,7 @@ def test_each_action_stands_where_it_belongs() -> None:
     for old in ("Рассчитать ТЭП от площади и плотности", "Пересчитать по параметрам исходного расчёта"):
         assert old not in tep, f"старая подпись «{old}» осталась на вкладке"
     # Формирование — сразу под полями площади и плотности, до таблицы.
-    form = tep.index('onclick="formTepByDensity()">Сформировать ТЭП по плотности<')
+    form = tep.index('onclick="formTepByDensity()">Сформировать ТЭП по новым параметрам<')
     assert tep.index('id="siteDensity"') < form < tep.index('id="tepBody"')
     # Пересчёт нормативов — только под таблицей.
     assert "onclick=\"recalcFromTep()\"" not in tep[:tep.index('id="tepBody"')]
@@ -189,7 +189,7 @@ def test_on_a_phone_forming_confirms_before_it_overwrites() -> None:
     assert got["menuTop"] > got["tableTop"], "меню стоит над таблицей"
     assert got["buttonVisible"] and got["pageScroll"] <= 0
     assert got["densityTop"] < got["buttonTop"] < got["tableTop"], \
-        "«Сформировать ТЭП по плотности» не под полями участка"
+        "«Сформировать ТЭП по новым параметрам» не под полями участка"
     assert got["dialogShown"] and "Квартиры" in got["dialogText"]
     assert got["untouched"], "«Отмена» изменила ТЭП"
     assert got["changed"] and got["expected"], "«Сформировать» не заменил квартиры площадью × плотностью"

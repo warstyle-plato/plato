@@ -239,12 +239,12 @@ PAGE += r"""</head>
           <summary>Как считается плотность</summary>
           <span id="siteDensityEquiv"></span>
         </details>
-        <!-- «Сформировать ТЭП по плотности» — сразу под площадью и плотностью
+        <!-- «Сформировать ТЭП по новым параметрам» — сразу под площадью и плотностью
              (владелец, 18.10.2026): кнопка применяет именно эти два поля, и
              разлучённая с ними под таблицей она терялась. Перед заменой строк
              показывает, что изменится. -->
         <div class="site-apply">
-          <button class="btn dark" onclick="formTepByDensity()">Сформировать ТЭП по плотности</button>
+          <button class="btn dark" onclick="formTepByDensity()">Сформировать ТЭП по новым параметрам</button>
           <span class="tep-action-hint" id="siteApplyHint">Заменит квартиры и коммерцию 1 этажа расчётом «площадь × плотность». Перед заменой покажет, что изменится.</span>
         </div>
         <div id="siteApplyStatus" class="import-status" style="display:none"></div>
@@ -999,14 +999,14 @@ PAGE += r"""</head>
      параметры отключены, можете выбрать ТЭП в разделе экономика»). Текст
      живёт ЗДЕСЬ и только здесь: плашка под селектором зовёт это же окно,
      иначе одно и то же сказано дважды подряд и его перестают читать. -->
-<!-- Подтверждение «Сформировать ТЭП по плотности»: действие перезаписывает
+<!-- Подтверждение «Сформировать ТЭП по новым параметрам»: действие перезаписывает
      строки таблицы, и перед заменой человек видит, что именно изменится
      (строка, было → будет) и чем. Список составляет densityTepPlan. -->
 <div id="tepConfirmDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
      z-index:91;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeTepConfirm()">
   <div style="background:#fff;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
-      <h2 id="tepConfirmTitle" style="margin:0;font-size:17px">Сформировать ТЭП по плотности</h2>
+      <h2 id="tepConfirmTitle" style="margin:0;font-size:17px">Сформировать ТЭП по новым параметрам</h2>
       <button onclick="closeTepConfirm()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button>
     </div>
     <div id="tepConfirmBody" style="font-size:13px;line-height:1.55"></div>
