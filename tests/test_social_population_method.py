@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from browser import chromium_or_skip, serve  # noqa: E402
+from browser import chromium_or_skip, serve, wait_for_result  # noqa: E402
 
 import main_legacy as core  # noqa: E402
 
@@ -125,7 +125,7 @@ def test_the_page_switch_recounts_the_places():
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.goto(f"{base}/classic", wait_until="domcontentloaded")
-            tab.wait_for_timeout(600)
+            wait_for_result(tab)
             got = tab.evaluate("""async ()=>{
               cadastralAnalysis={territory:{district:'', inside_moscow:true}};
               inputs._glavapu_import=null; inputs._social_basis=null;
