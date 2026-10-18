@@ -1592,13 +1592,17 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
 
     parking_explicit = optional_number("parking_spaces")
     if parking_explicit is None:
-        # Методика города с августа 2026: одно постоянное место на 90 м² НП
-        # жилых зданий (сверено по двум выгрузкам штатного калькулятора от
-        # 16.08.2026); здесь К1 принят 1,0 — локация ещё не известна.
-        permanent = int(math.ceil(apartment_gns * 0.9 / 90.0))
-        parking_spaces = permanent + int(math.ceil(permanent / 10.0))
-        calculated.append("паркинг рассчитан как постоянные места плюс 10% гостевых")
-        assumptions.append("коэффициент доступности рельсового каркаса К1 принят 1,0; после указания локации паркинг следует уточнить")
+        # Постоянные места жителей — приложение 5 к 945-ПП в редакции 2118-ПП,
+        # пункт 1: Nп = S / (33 × 2,1) × 0,8 от площади квартир (решение
+        # владельца 16.10.2026). Формулу объявляет движок — копии здесь нет;
+        # К1 к местам жителей в новом порядке не применяется, и локация для
+        # них не нужна. Гостевые — доля от постоянных, той же константой.
+        permanent = int(moscow_permanent_parking_2118(apartment_saleable))
+        parking_spaces = permanent + int(math.ceil(permanent * _PARKING_GUEST_SHARE))
+        calculated.append(
+            "паркинг рассчитан как постоянные места по 2118-ПП: площадь квартир / (33 × 2,1) × 0,8, "
+            "плюс 10 % гостевых"
+        )
     else:
         parking_spaces = int(parking_explicit)
         provided.append(f"подземный паркинг — {_telegram_number(parking_spaces, 0)} м/м")

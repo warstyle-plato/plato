@@ -67,7 +67,7 @@ def test_the_phased_summary_carries_it_too():
 
 
 def test_the_unit_economics_show_the_vat(result):
-    """Удельная экономика — на своей базе (расход — суммарная площадь в ГНС)
+    """Удельная экономика — на своей базе (расход — общая площадь)
     и на продаваемой, как остальные расходы отчёта."""
     line = next(item for item in result["report"]["unit_economics"]
                 if item["label"] == "НДС")
