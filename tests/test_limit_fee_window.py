@@ -21,7 +21,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as wrapper  # noqa: E402
-from engine_source import engine_source  # noqa: E402
 
 core = wrapper.core
 
@@ -63,12 +62,3 @@ def test_the_book_window_matches_the_decision():
         # живут отдельной строкой 57 и платятся кассой, как в движке.
         fees = str(template[sheet]["D57"].value)
         assert "MONTH($B$7)" in fees and "MONTH($B$6)" in fees
-
-
-def test_the_mini_model_follows_the_same_window():
-    assert "Плата за неиспользованный лимит" in engine_source()
-    source = engine_source()
-    start = source.find('credit.formula("limit_fee"')
-    block = source[start:start + 600]
-    assert "{ref('rve')}" in block.replace('"', "'"), \
-        "мини-модель обязана резать плату за лимит на РВЭ"

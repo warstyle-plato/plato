@@ -103,8 +103,8 @@ def test_the_total_style_sits_on_the_total_row(default_book):
 def test_every_per_sqm_label_names_its_divisor(default_book):
     book, _, _, _ = default_book
     report = book["ОТЧЕТ"]
-    # С 16.10.2026 (решение владельца) строка 62 делит на суммарную площадь в
-    # ГНС, как движок и Дашборд, — подпись называет этот делитель словом глоссария.
+    # С 16.10.2026 (решение владельца) строка 62 делит на общую площадь,
+    # как движок и Дашборд, — подпись называет этот делитель словом глоссария.
     assert report["A62"].value == f"CAPEX на м² {TOTAL_AREA.genitive}"
     assert report["F9"].value == report["A62"].value
     assert report["A58"].value.startswith(TOTAL_AREA.name)

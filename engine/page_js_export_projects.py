@@ -777,6 +777,10 @@ function applyProjectSnapshot(data){
  seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
  renderInputs();renderTep();renderPhasing();
+ // Шапка — класс и вид проекта — читает те же вводные, что и форма: без этого
+ // загруженный «Пользовательский» проект показывал в шапке класс прежнего
+ // проекта с его подсказкой ставок, пока страницу не перезагрузят.
+ syncProjectClassSelector();syncProjectKindSelector();
  // Территория снимка — из его же вводных, тем же путём, что при загрузке страницы.
  renderStoredCadastralQuery();
  renderStoredGlavapu();renderStoredCadastral();renderStoredLand();renderStoredMo();
@@ -1114,6 +1118,11 @@ function resetAll(){
  inputs=resetInputsWanted();
  tep=resetTepWanted();
  phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';
+ // Противоречия прошлого проекта не должны глушить раскрытие блока в новом.
+ siteParkingConflictSeen='';
+ // Открытое окно подтверждения «Сформировать ТЭП по плотности» — действие
+ // над прошлым проектом: по «Сформировать» оно легло бы в новый.
+ closeTepConfirm();
  // Территория забывается тем же способом, что при подмене проекта: прежде
  // glavapuImport переживал сброс, и «чистый» проект применял ТЭП удалённого
  // участка.

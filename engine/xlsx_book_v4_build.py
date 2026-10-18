@@ -368,6 +368,12 @@ def _v4_project_relief_words(x: dict[str, Any], tep: dict[str, Any]) -> str:
     return words
 
 
+# Годовая инфляция цены и затрат между стартами очередей — по ячейке на
+# проект, в строке первой очереди: множители S/T 88–91 читают её формулой.
+_V4_QUEUE_PRICE_INFLATION_COL = "AW"
+_V4_QUEUE_COST_INFLATION_COL = "AX"
+
+
 def _build_project_workbook(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
@@ -1637,6 +1643,21 @@ def _build_project_workbook(
     # на дефолтных вводных, которых нет в расчёте.
     price_inflation = float(p.get("sales_price_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
     cost_inflation = float(p.get("cost_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
+    # Годовая инфляция между стартами очередей — вводная множителей S/T.
+    # Не на листе ввода и не в AE/AF: AE/AF шаблон ведёт от даты базы цен
+    # (коэффициенты AG/AH), и ставка там прибавилась бы к S/T второй раз;
+    # а числа «Вводных» суммирует сторож «лист ввода не менялся».
+    for _col, _value, _title in (
+            (_V4_QUEUE_PRICE_INFLATION_COL, price_inflation,
+             "Инфляция цены между стартами очередей, доля/год · sales_price_inflation_pct"),
+            (_V4_QUEUE_COST_INFLATION_COL, cost_inflation,
+             "Инфляция затрат между стартами очередей, доля/год · cost_inflation_pct")):
+        xml, _done = _v4_set_or_insert_cell(xml, f"{_col}88", number=_value)
+        if not _done:
+            missing.append(f"инфляция между очередями ({_col}88)")
+        xml, _done = _v4_set_or_insert_cell(xml, f"{_col}87", text=_title)
+        if not _done:
+            missing.append(f"подпись колонки {_col} блока очередей")
 
     # Колонки очередей — это вводные движка, и книга их называет: «Старт» без
     # ключа читается как оформление, а по ключу видно, что правишь именно
@@ -1701,9 +1722,18 @@ def _build_project_workbook(
             if social_cash_by_phase is not None
             else shared["social_compensation"][index]) if active else 0.0,
             label="доля соцнагрузки")
-        offset_years = (offset if active else 0.0) / 12.0
-        put(f"S{row}", number=(1.0 + price_inflation) ** offset_years, label="множитель цены")
-        put(f"T{row}", number=(1.0 + cost_inflation) ** offset_years, label="множитель затрат")
+        # Множитель — формулой от даты старта очереди, а не числом: числом он
+        # не двигался, когда старт правили прямо в книге, и поздняя очередь
+        # продавала и строила по ценам прежнего сдвига. Сдвиг — месяцы от
+        # начала горизонта B8 до старта D: движок ставит старт очереди как
+        # project_start + start_offset_months, это тот же offset_months, что
+        # в _phase_*_inflation_factor, и MAX(0,…) — его же. Годовая ставка —
+        # одна ячейка на проект (AW88/AX88): у движка она одна.
+        _offset = f"MAX(0,12*(YEAR(D{row})-YEAR($B$8))+MONTH(D{row})-MONTH($B$8))/12"
+        put(f"S{row}", formula=f"(1+${_V4_QUEUE_PRICE_INFLATION_COL}$88)^({_offset})",
+            label="множитель цены")
+        put(f"T{row}", formula=f"(1+${_V4_QUEUE_COST_INFLATION_COL}$88)^({_offset})",
+            label="множитель затрат")
         # Доли лимитов — от движковых лимитов фаз, а не от квартирных весов:
         # очередь с офисами на 13,5 млрд получала 28% лимита ПФ по весу
         # квартир, и книга недосчитывала плату за невыбранный лимит вдвое.

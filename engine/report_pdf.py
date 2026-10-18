@@ -60,8 +60,8 @@ def _project_articles_term(tep_report: dict[str, Any]) -> Any:
 def _project_articles_sqm(tep_report: dict[str, Any]) -> float:
     """База общепроектных статей, м² — число движка (`project_articles_sqm`).
 
-    У жилого и смешанного проекта это суммарная площадь МКД в ГНС, у чисто
-    нежилого — суммарная площадь объектов (`object_rate_is_turnkey`). Отчёт
+    У жилого и смешанного проекта это общая площадь МКД, у чисто
+    нежилого — общая площадь объектов (`object_rate_is_turnkey`). Отчёт
     старого формата поля не несёт — тогда база по-прежнему МКД.
     """
     if tep_report.get("project_articles_sqm") is not None:
@@ -1557,7 +1557,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # Вторая база в заголовке обязательна: без неё 23 тыс ₽/м² подземной
         # части читались как ставка на подземный метр (она — 190, во вводных).
         # СМР — на ту часть, на которую начислено; прочие статьи — на
-        # суммарную площадь в ГНС. База — в строке, из движка.
+        # общую площадь. База — в строке, из движка.
         cc_rows = [["Статья", "млн ₽", "На м² своей базы", "База",
                     "тыс ₽/м² продаваемой"]]
         for item in construction_costs:
@@ -1636,9 +1636,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         over=float(row.get('parking_over_units') or 0)
         sold=float(row.get('parking_saleable_units') or 0)
         where=[]
-        if under: where.append("подземных "+_pdf_num(under,0)
-                               +(f" (гараж {_pdf_num(row.get('under_gns'),0)} м²)"
-                                 if float(row.get('under_gns') or 0) else ""))
+        if under: where.append("подземных "+_pdf_num(under,0))
         if over: where.append("на первых этажах "+_pdf_num(over,0)+" (в ГНС здания)")
         guest=float(row.get('parking_guest_units') or 0)
         tail=("продаётся "+_pdf_num(sold,0)+(", гостевых "+_pdf_num(guest,0) if guest else "")
@@ -1646,6 +1644,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         return "   в т.ч. паркинг объекта, мест: "+"; ".join(where+[tail])
     def _park_count(row):
         return _pdf_count_text(row.get('parking_units'), COUNT_PARKING)
+    # Метры гаража объекта — в колонке, как у подземного паркинга дома:
+    # колонка подписана «ГНС / подземная», и её строки складываются в итог —
+    # общую площадь. В подписи они итог не догоняли: печать показывала
+    # 187 346 при общей 191 546 (гараж 4 200 м² стоял словом).
+    def _park_area(row):
+        under_gns = float(row.get('under_gns') or 0)
+        return _pdf_num(under_gns, 0) if under_gns else "—"
+    _area_total = _pdf_num(float(total.get('gns') or 0) + float(total.get('under_gns') or 0), 0)
 
     def _tep_widths(rows, middle):
         """Колонка «Кол-во» — по своему содержимому, остаток — названию."""
@@ -1653,27 +1659,27 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                                           normal.fontSize, 5, 22*mm)
         return [170*mm - sum(middle) - count_w, *middle, count_w]
     if given > 0:
-        tep_rows=[["Продукт",TOTAL_AREA.with_unit(),"Продаваемая, м²",
+        tep_rows=[["Продукт",ROW_AREA_HEADER,"Продаваемая, м²",
                    f"{TRANSFER_WORD}, м²","Кол-во"]]
         for row in rows_data:
             tep_rows.append([row.get('label') or row.get('key') or '—',
                              _pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),
                              _pdf_num(row.get('transfer'),0),_count(row)])
             if float(row.get('parking_units') or 0):
-                tep_rows.append([_park_label(row),"—","—","—",_park_count(row)])
-        tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),
+                tep_rows.append([_park_label(row),_park_area(row),"—","—",_park_count(row)])
+        tep_rows.append([area_total_label(),_area_total,_pdf_num(total.get('saleable'),0),
                          _pdf_num(given,0),_counts])
         story.append(table(tep_rows,_tep_widths(tep_rows,[28*mm,30*mm,30*mm])))
         story.append(P("Переданные метры строятся, но не продаются: в продаваемой "
                        f"площади их нет. {TRANSFER_RECIPIENT_NOTE.capitalize()}.",
                        small))
     else:
-        tep_rows=[["Продукт",TOTAL_AREA.with_unit(),"Продаваемая, м²","Кол-во"]]
+        tep_rows=[["Продукт",ROW_AREA_HEADER,"Продаваемая, м²","Кол-во"]]
         for row in rows_data:
             tep_rows.append([row.get('label') or row.get('key') or '—',_pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),_count(row)])
             if float(row.get('parking_units') or 0):
-                tep_rows.append([_park_label(row),"—","—",_park_count(row)])
-        tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_counts])
+                tep_rows.append([_park_label(row),_park_area(row),"—",_park_count(row)])
+        tep_rows.append([area_total_label(),_area_total,_pdf_num(total.get('saleable'),0),_counts])
         story.append(table(tep_rows,_tep_widths(tep_rows,[32*mm,36*mm])))
     # Обеспеченность — готовый ответ расчёта (`parking_provision`), а не
     # деление здесь: страница, тизер, Платон и книга печатают то же число.
@@ -1839,7 +1845,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # этим статьям спорят с подрядчиком и с банком, а в долях процента спор
     # не ведут.
     # Все строки — расходы, база у них одна (решение 4 ревизии книги):
-    # суммарная площадь в ГНС; подпись — из словаря терминов.
+    # общая площадь; подпись — из словаря терминов.
     expense_rows=[["Статья","Сумма","Доля",unit_label(UNIT_BASE_TOTAL).replace("тыс. ","тыс "),"тыс ₽/м² продаваемой"]]
     total_expense=sum(float(item.get('value') or 0) for item in expense_structure) or float(summary.get('total_expenses') or 0)
     for item in expense_structure:
