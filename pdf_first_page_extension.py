@@ -319,7 +319,7 @@ def _front_page_flowables(payload: dict[str, Any], core: Any) -> list[Any]:
             area_text = (core._pdf_num(manual, 0) + " м² · " + origin
                          if manual > 0 else "—")
         total_tep = ((result.get("tep") or {}).get("total") or {})
-        # Те же величины, что в отчёте: суммарная площадь с гаражами объектов
+        # Те же величины, что в отчёте: общая площадь с гаражами объектов
         # и продаваемая — только то, что реально продаётся метрами.
         summary = result.get("summary") or {}
         total_area = summary.get("construction_volume_sqm", total_tep.get("gns"))

@@ -21,6 +21,10 @@ import openpyxl
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import terms_glossary as tg  # noqa: E402
+
 _spec = importlib.util.spec_from_file_location("prod_smoke", ROOT / "scripts" / "prod_smoke.py")
 smoke = importlib.util.module_from_spec(_spec)
 sys.modules["prod_smoke"] = smoke
@@ -230,8 +234,8 @@ def test_the_book_without_the_inputs_sheet_is_red():
 
 # --- 5. «Итог» --------------------------------------------------------------
 
-TOTAL = "суммарной площади в ГНС"
-CORE = "суммарной площади МКД в ГНС"
+TOTAL = tg.TOTAL_AREA.genitive
+CORE = tg.CORE_TOTAL_AREA.genitive
 UNIT_ROWS = [["Выручка", "120 000 млн ₽", "916,6", "м² продаваемой площади", "—"],
              ["CAPEX", "60 000 млн ₽", "274,2", f"м² {TOTAL}", "458,1"],
              ["Маркетинг и продажи", "3 000 млн ₽", "13,7", f"м² {TOTAL}", "22,9"],
@@ -275,7 +279,7 @@ def test_a_second_half_without_its_divider_is_red():
 
 
 def test_a_profit_on_the_wrong_base_is_red():
-    """Прибыль на суммарную площадь — подделка: решение 4 делит её на продаваемую."""
+    """Прибыль на общую площадь — подделка: решение 4 делит её на продаваемую."""
     check = smoke.judge_itog(_itog(**{"Чистая прибыль на метр": f"-41,4 тыс. ₽/м² {TOTAL}"}), REF)
     assert check.status == smoke.FAIL and "база не та" in check.detail
 

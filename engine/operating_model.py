@@ -447,10 +447,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     vri_relief_amount, vri_net = vri_relief(x, vri_gross, t)
 
     # База статей проекта (ИРД, П, РД, подготовка, сети, ввод, содержание
-    # площадки). У жилого и смешанного проекта — суммарная площадь МКД:
+    # площадки). У жилого и смешанного проекта — общая площадь МКД:
     # ставка объекта там «под ключ» и эти статьи уже несёт. У чисто нежилого
     # ставка объекта — только СМР здания, и статьи идут по тем же ставкам от
-    # суммарной площади объектов в ГНС (`object_rate_is_turnkey`).
+    # общей площади объектов (`object_rate_is_turnkey`).
     objects_area = objects_total_area(x, t)
     article_gns = n(x, "hotel_gba_sqm") if is_hotel(x) else core_total_gns
     project_articles_sqm = article_gns if is_hotel(x) else core_total_gns + objects_area
