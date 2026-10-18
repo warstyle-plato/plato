@@ -286,7 +286,7 @@ PAGE += r"""</head>
            «Пересчитать модель» — экономика проекта — остаётся в шапке. -->
       <div class="card" id="tepActionsCard">
         <details class="tep-actions" id="tepActionsMenu">
-          <summary>Действия с ТЭП<span class="group-peek">сформировать по плотности · пересчитать нормативы · обновить производные</span></summary>
+          <summary>Действия с ТЭП<span class="group-peek">сформировать по плотности · пересчитать нормативы · подтянуть из «Вводных»</span></summary>
           <div class="tep-action">
             <button class="btn" onclick="formTepByDensity()">Сформировать ТЭП по плотности</button>
             <span class="tep-action-hint" id="siteApplyHint">Площадь участка × плотность → квартиры и коммерция 1 этажа. Без ГлавАПУ — нормативами РНГП вместе с социалкой, паркингом и офисами. Заменяет введённые значения: перед заменой покажет, что изменится.</span>
@@ -296,8 +296,8 @@ PAGE += r"""</head>
             <span class="tep-action-hint" id="tepNormsHint"></span>
           </div>
           <div class="tep-action tep-action-secondary">
-            <button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button>
-            <span class="tep-action-hint">Офисы, ТЦ, паркинги и соцобъекты в таблице — из вводных «Экономики»; при правке полей обновляются сами. Квартиры и коммерцию 1 этажа не трогает.</span>
+            <button class="btn" onclick="syncTep()">Подтянуть строки из «Вводных»</button>
+            <span class="tep-action-hint">Нужна редко. Строки офисов, ТЦ, паркингов и соцобъектов берутся из «Вводных» и обновляются сами при правке поля. Нажмите, если число в таблице не совпадает с полем во «Вводных» — например, в давно сохранённом проекте. Квартиры и коммерцию 1 этажа не меняет.</span>
           </div>
           <div class="tep-action-note">В таблице показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг — производный: постоянные + гостевые × 35 м².</div>
         </details>
