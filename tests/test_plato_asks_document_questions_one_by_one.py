@@ -155,7 +155,7 @@ def test_on_the_page_one_question_at_a_time_and_the_number_reaches_the_site(monk
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="networkidle")
             page.evaluate("() => toggleAgent(true)")
-            page.wait_for_timeout(400)
+            page.wait_for_function("() => aiDrawer.classList.contains('open')", timeout=10_000)
             page.set_input_files("#aiFile", files=[{"name": "teaser.pdf",
                                                     "mimeType": "application/pdf",
                                                     "buffer": b"%PDF-1.4 stub"}])
