@@ -206,30 +206,47 @@ PAGE += r"""</head>
     </div>
 
     <div id="tep" class="panel">
-      <div class="card">
+      <!-- Порядок блоков вкладки — решение владельца (17.10.2026): участок и
+           плотность одной компактной карточкой, сразу под ней таблица ТЭП,
+           ниже — свёрнутые «Паркинг и нормативы» и параметры Подмосковья,
+           затем действия пересчёта и сверка с ГлавАПУ. На телефоне до таблицы
+           раньше лежали три кнопки, коэффициенты и длинные пояснения. -->
+      <div class="card site-card">
         <div class="section-title">Участок и плотность</div>
-        <div class="fields" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr))">
+        <div class="fields site-fields">
           <div class="field">
             <label>Площадь участка <span class="unit">га</span></label>
             <input type="number" step="0.0001" id="siteAreaHa" onchange="setSiteArea(this.value)">
-            <span id="siteAreaSource" style="font-size:11px;color:#777"></span>
+            <span id="siteAreaSource" class="site-source"></span>
           </div>
           <div class="field">
             <label>Плотность застройки <span class="unit" id="siteDensityUnit">м² поэтажной площади / га</span></label>
             <input type="number" step="100" id="siteDensity" onchange="setSiteDensity(this.value)">
-            <span id="siteDensitySource" style="font-size:11px;color:#777"></span>
-            <span id="siteDensityEquiv" style="display:block;font-size:11px;color:#777"></span>
+            <span id="siteDensitySource" class="site-source"></span>
           </div>
           <div class="field">
             <label><span id="sitePotentialLabel">Потенциал поэтажной площади</span> <span class="unit">м²</span></label>
-            <b id="sitePotential" style="display:block;padding:9px 0;font-size:15px">—</b>
+            <b id="sitePotential" class="site-value">—</b>
           </div>
           <div class="field">
             <label><span id="siteUsageLabel">Использовано наземной ГНС</span> <span class="unit">от потенциала</span></label>
-            <b id="siteUsage" style="display:block;padding:9px 0;font-size:15px">—</b>
+            <b id="siteUsage" class="site-value">—</b>
           </div>
         </div>
+        <!-- Эквивалент плотности по другой методике — справка, а не параметр:
+             раскрывается по желанию, чтобы не занимать экран телефона. -->
+        <details class="site-help">
+          <summary>Как считается плотность</summary>
+          <span id="siteDensityEquiv"></span>
+        </details>
         <div id="siteDensityWarn" class="note warning" style="display:none"></div>
+      </div>
+      <div class="card">
+        <div id="tepRatioNote" style="color:#777;font-size:11px;margin:2px 0 8px"></div>
+        <div id="tepDerivedNote" class="import-status" style="display:none"></div>
+        <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div><div id="tepUndergroundNote" class="hint" style="margin-top:6px"></div>
+      </div>
+      <div class="card" id="tepSettingsCard">
         <!-- Коэффициенты парковки называет город по ЭТОМУ участку, поэтому они
              здесь, а не во «Вводных». Поля рисует renderSiteParkingFields по
              объявлению FIELD_GROUPS — подписей второй копией нет. -->
@@ -238,19 +255,19 @@ PAGE += r"""</head>
              Узел статичный — перерисовка меняет только поля, и раскрытое
              человеком остаётся раскрытым. -->
         <details class="site-parking-box" id="siteParkingBox">
-          <summary id="siteParkingSummary">Коэффициенты парковки участка</summary>
+          <summary id="siteParkingSummary">Паркинг и нормативы</summary>
           <div class="fields" id="siteParkingFields" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))"></div>
         </details>
         <!-- Параметры Подмосковья стоят здесь, а не на «Вводных»: два поля из
-             шести — та же плотность и та же площадь участка, что выше, и рядом
-             видно, что правится одно и то же. На «Вводных» они разрывали путь
-             «ввёл участок — получил ТЭП». -->
+             шести — та же плотность и та же площадь участка, что в карточке
+             участка, и рядом видно, что правится одно и то же. На «Вводных» они
+             разрывали путь «ввёл участок — получил ТЭП». -->
         <details class="cadastral-box mo-box" id="moParamsBox">
           <summary>Параметры расчёта по Московской области</summary>
           <p>Заполняются из справочников автоматически. Меняйте, только если знаете фактические значения по проекту — введённое всегда важнее справочного. <b>Правка любого параметра сразу пересчитывает результат</b> по тому же участку; результат показывается на вкладке «Вводные», под сведениями ЕГРН.</p>
           <div class="mo-params">
-            <div class="field"><label>Плотность <span class="unit">м² на 1 га · то же поле, что выше</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
-            <div class="field"><label>Площадь участка вручную <span class="unit">га, если участка нет в ЕГРН · то же поле, что выше</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="из ЕГРН"></div>
+            <div class="field"><label>Плотность <span class="unit">м² на 1 га · то же поле, что в карточке участка</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
+            <div class="field"><label>Площадь участка вручную <span class="unit">га, если участка нет в ЕГРН · то же поле, что в карточке участка</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="из ЕГРН"></div>
             <div class="field"><label>Городской округ <span class="unit">для УПКС и Кср</span></label><select id="moDistrict"><option value="">определить по участку</option></select></div>
             <div class="field"><label>Средняя цена м², Кср <span class="unit" id="moPriceUnit">₽/м² · из справочника</span></label><input type="number" id="moPrice" value="" step="1000" readonly><label class="mo-manual"><input type="checkbox" id="moPriceManual" onchange="toggleMoPrice()"> задать вручную</label></div>
             <div class="field"><label>Коэффициент доходности Кд <span class="unit" id="moKdUnit">доля · из справочника</span></label><input type="number" id="moKd" value="" step="0.01" readonly><label class="mo-manual"><input type="checkbox" id="moKdManual" onchange="toggleMoKd()"> задать вручную</label></div>
@@ -258,23 +275,24 @@ PAGE += r"""</head>
           </div>
           <div class="mo-price-line"><span id="moPriceState">Справочники загружаются…</span></div>
         </details>
-        <div class="toolbar" style="margin-top:10px">
+      </div>
+      <!-- Действия пересчёта — под таблицей: формирование площадей от
+           плотности, производные строки из вводных и нормативы по ТЭП — это
+           операции над уже видимой таблицей, а не вводные. -->
+      <div class="card" id="tepActionsCard">
+        <div class="section-title">Пересчёт ТЭП</div>
+        <div class="toolbar">
           <button class="btn" onclick="applyDensityToTep()">Рассчитать ТЭП от площади и плотности</button>
           <span style="color:#777;font-size:12px" id="siteApplyHint">Работает в любом регионе: площадь и плотность можно ввести вручную. Ручной ТЭП, кадастр и проект из калькулятора Подмосковья считаются нормативами РНГП: квартиры = площадь × плотность, социалка, паркинг и офисы — от населения. Москва с ГлавАПУ: квартиры и коммерция 1 этажа по методике DevelopAid (94% / 6% СПП).</span>
         </div>
         <div id="siteApplyStatus" class="import-status" style="display:none"></div>
-      </div>
-      <div class="card">
-        <div class="toolbar"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><button class="btn dark" onclick="recalcFromTep()">Пересчитать по параметрам исходного расчёта</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
-        <div id="tepRatioNote" style="color:#777;font-size:11px;margin:2px 0 8px"></div>
-        <div id="tepDerivedNote" class="import-status" style="display:none"></div>
-        <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div><div id="tepUndergroundNote" class="hint" style="margin-top:6px"></div>
+        <div class="toolbar" style="margin-top:10px"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><button class="btn dark" onclick="recalcFromTep()">Пересчитать по параметрам исходного расчёта</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
       </div>
       <!-- Сверка сценария: калькулятору ГлавАПУ выставляются НАШИ параметры
            (доля жилья и коммерции, СПП, площадь, нежильё по ВРИ, соцобъекты,
-           вид права), и его ответ стоит рядом с нашим по видам. Карточка — под
-           таблицей ТЭП: сначала наши числа, ниже их проверка. ГлавАПУ —
-           проверка: наши значения он не заменяет. -->
+           вид права), и его ответ стоит рядом с нашим по видам. Карточка —
+           последняя на вкладке: сначала наши числа и настройки, ниже их
+           проверка. ГлавАПУ — проверка: наши значения он не заменяет. -->
       <div class="card" id="glavapuScenarioBox">
         <div class="section-title">Сверка с калькулятором ГлавАПУ</div>
         <div class="toolbar">

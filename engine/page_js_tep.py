@@ -1699,7 +1699,7 @@ function renderSiteParkingSummary(){
  const sum=document.getElementById('siteParkingSummary');
  if(!sum)return;
  const conflicts=SITE_ONLY_INPUTS.flatMap(id=>siteParkingConflicts(id));
- sum.innerHTML='Коэффициенты парковки участка<span class="group-peek">'+escapeHtml(siteParkingPeek())+'</span>'+
+ sum.innerHTML='Паркинг и нормативы<span class="group-peek">'+escapeHtml(siteParkingPeek())+'</span>'+
   (conflicts.length?'<span class="site-conflict-mark">⚠ '+(conflicts.length===1?'противоречие':conflicts.length+' противоречия')+
    ' с разбором кадастра</span>':'');
  const det=document.getElementById('siteParkingBox');
@@ -1765,6 +1765,10 @@ function renderSitePanel(){
  const equivEl=document.getElementById('siteDensityEquiv');
  if(equivEl){
    const density=effectiveSiteDensity();
+   // Справка «как считается плотность» — складкой под полями; без плотности
+   // ей нечего сказать, и пустая складка на телефоне только занимала бы строку.
+   const help=equivEl.closest?equivEl.closest('details.site-help'):null;
+   if(help)help.style.display=density>0?'':'none';
    equivEl.textContent=density>0
      ? (normative
         ? '≈ '+num(density/(0.94*0.65))+' м² поэтажной площади (СПП) / га по методике Москвы'
