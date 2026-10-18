@@ -219,7 +219,7 @@ def _summary_engine(model: dict) -> dict[str, float | None]:
         "rve_escrow_release_mln": fin.get("rve_escrow_release_mln"),
         "bridge_interest_mln": fin.get("bridge_interest_mln"),
         "pf_interest_mln": fin.get("pf_interest_mln"),
-        # База удельных расходов — суммарная площадь в ГНС (решение 4).
+        # База удельных расходов — общая площадь (решение 4).
         "total_area_sqm": tep.get("construction_volume_sqm"),
         "saleable_sqm": tep.get("saleable_sqm"),
     }

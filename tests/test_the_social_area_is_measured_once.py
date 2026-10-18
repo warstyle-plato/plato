@@ -60,7 +60,7 @@ def test_an_empty_field_falls_back_to_the_city_step():
 
 
 def test_zero_means_we_do_not_know_it():
-    """У поликлиники норматива города нет: пустое поле даёт ноль, а не догадку."""
+    """У поликлиники ступени города нет — отвечает поле: пустое даёт ноль, а не догадку."""
     x = {**core.DEFAULT_INPUTS, "clinic_capacity": 100, "social_clinic_norm_sqm": 0}
     assert core.social_area_per_place(x, "clinic") == 0.0
 
@@ -364,8 +364,8 @@ _PAGE_CASES = [
     ("норматив, школа 1200 — ступень 13", {"school_places": 1200}, "school"),
     ("требование КРТ", {"kindergarten_places": 225, "social_dou_gba_sqm": 5000,
                         "social_area_source": "manual"}, "kindergarten"),
-    ("поликлиника — норматива города нет", {"clinic_capacity": 100,
-                                            "social_clinic_norm_sqm": 15}, "clinic"),
+    ("поликлиника — сохранённое поле, а не ступень", {"clinic_capacity": 100,
+                                                     "social_clinic_norm_sqm": 15}, "clinic"),
     ("выгрузка ГлавАПУ", {"kindergarten_places": 250, "social_dou_gba_sqm": 5400,
                           "_glavapu_import": {"normalized": {
                               "actual_kindergarten_spp_sqm": 6100,
