@@ -35,6 +35,9 @@ from browser import chromium_or_skip, serve  # noqa: E402
 
 core = _wrapper.core
 LABEL = "N/A — долг не погашен"
+NPV_ROW = "NPV проекта (до финансирования)"
+IRR_PROJECT_ROW = "IRR проекта (до финансирования)"
+IRR_EQUITY_ROW = "IRR собственного капитала"
 PORT = 18799
 
 
@@ -96,6 +99,7 @@ def test_every_phase_and_the_whole_are_decided():
         assert summary["equity_returns"]["status"] == ("debt_unrepaid" if unpaid else "ok")
         if unpaid:
             assert summary["npv"] is None and summary["irr_equity"] is None
+            assert summary["irr_project"] is None
 
 
 def test_plato_reads_na_not_zero(unpaid, repaid):
@@ -165,7 +169,8 @@ def test_the_page_prints_the_engines_label():
               const s=lastResult.summary;
               const status=s.equity_returns&&s.equity_returns.status;
               s.equity_returns={status:'ok',label:null,reason:'',ending_pf:s.ending_pf};
-              s.npv=-1234.5e6; s.irr_equity=0.123;
+              s.equity_irr=Object.assign({},s.equity_irr,{status:'ok',meaningful:true,label:null});
+              s.npv=-1234.5e6; s.irr_equity=0.123; s.irr_project=0.2;
               renderResult();
               return {before, after: cells(), status, ending: s.ending_pf};
             }""")
@@ -176,14 +181,16 @@ def test_the_page_prints_the_engines_label():
     assert not other, f"страница упала: {other[:2]}"
     assert got["status"] == "debt_unrepaid" and got["ending"] > 500_000, got
     before, after = got["before"], got["after"]
-    assert before["table"].get("NPV") == LABEL, before["table"]
-    assert before["table"].get("IRR equity") == LABEL, before["table"]
+    assert before["table"].get(NPV_ROW) == LABEL, before["table"]
+    assert before["table"].get(IRR_PROJECT_ROW) == LABEL, before["table"]
+    assert before["table"].get(IRR_EQUITY_ROW) == LABEL, before["table"]
     assert LABEL in before["kpi"], before["kpi"]
     # Подделка: тот же остаток долга, но движок сказал «ok» — страница
     # печатает число, то есть решает не сама.
-    assert LABEL not in after["table"].get("NPV", ""), after["table"]
-    assert "1" in after["table"].get("NPV", "") and "N/A" not in after["table"]["NPV"]
-    assert after["table"].get("IRR equity", "").endswith("%"), after["table"]
+    assert LABEL not in after["table"].get(NPV_ROW, ""), after["table"]
+    assert "1" in after["table"].get(NPV_ROW, "") and "N/A" not in after["table"][NPV_ROW]
+    assert after["table"].get(IRR_PROJECT_ROW, "").endswith("%"), after["table"]
+    assert after["table"].get(IRR_EQUITY_ROW, "").endswith("%"), after["table"]
     assert LABEL not in after["kpi"], after["kpi"]
 
 

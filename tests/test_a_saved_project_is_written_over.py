@@ -84,6 +84,8 @@ function forgetTerritoryState(){}
 function renderInputs(){}
 function renderTep(){}
 function renderPhasing(){}
+function syncProjectClassSelector(){}
+function syncProjectKindSelector(){}
 function renderStoredGlavapu(){}
 function renderStoredCadastral(){}
 function renderStoredLand(){}
