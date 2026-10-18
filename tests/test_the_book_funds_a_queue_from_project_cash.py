@@ -50,6 +50,7 @@ from xlsx_eval import Evaluator
 
 FIXTURE = ROOT / "tests" / "fixtures" / "project_settings_nagatino_krt_0_25_91.json"
 PROJECT_CASH_ROW, POOL_ROW = 88, 89
+STANDALONE_TAX_ROW, FREE_CASH_ROW = 90, 91
 MONTHS = [get_column_letter(c) for c in range(4, 184)]
 
 
@@ -102,14 +103,22 @@ def test_the_fourth_queue_is_funded_from_project_cash_like_the_engine(unified) -
 def test_the_project_cash_pool_is_the_earlier_queues_distributions(unified) -> None:
     """Доступная касса — положительный поток капитала предыдущих очередей к
     месяцу, за вычетом уже взятого. Контрпример: касса «из ниоткуда» или без
-    вычета взятого дала бы другой ряд."""
-    _, _, evaluator = unified
+    вычета взятого дала бы другой ряд.
+
+    Поток — на налоге очереди в одиночку (строка 91), как копит кассу движок:
+    строка 50 платит долю налога свода, а он зависит от процентов следующих
+    очередей — касса на ней замкнула бы книгу в круг."""
+    bundle, _, evaluator = unified
+    for queue in (1, 2, 3):
+        alone = bundle["phases"][queue - 1]["result"]["finance"]["standalone_profit_tax"]
+        assert float(evaluator.cell(f"CF_{queue}", f"B{STANDALONE_TAX_ROW}")) == pytest.approx(
+            alone / 1e6, abs=0.05), queue
     pool = _row(evaluator, "CF_4", POOL_ROW)
     draws = _row(evaluator, "CF_4", PROJECT_CASH_ROW)
     expected, taken = [], 0.0
     for index, column in enumerate(MONTHS):
         earlier = sum(
-            sum(float(evaluator.cell(f"CF_{queue}", f"{letter}50") or 0.0)
+            sum(float(evaluator.cell(f"CF_{queue}", f"{letter}{FREE_CASH_ROW}") or 0.0)
                 for letter in MONTHS[:index + 1])
             for queue in (1, 2, 3))
         expected.append(max(0.0, earlier - taken))
@@ -138,7 +147,7 @@ def test_the_dashboard_does_not_format_llcr_with_a_dotted_text_code(unified) -> 
     formulas = [str(cell.value) for row in book["Дашборд"].iter_rows() for cell in row
                 if isinstance(cell.value, str) and cell.value.startswith("=")]
     assert not [f for f in formulas if 'TEXT(' in f and '"0.00"' in f], "TEXT с кодом «0.00»"
-    assert any("ROUND(" in f and '&"x"' in f for f in formulas), "LLCR без формулы ROUND"
+    assert any("FIXED(" in f and '&"x"' in f for f in formulas), "LLCR без формулы FIXED"
 
 
 def test_the_engine_excludes_only_the_vri_actually_paid() -> None:

@@ -271,7 +271,14 @@ def _irr(args: list[Any]) -> float:
         high *= 2
         f_high = value(high)
     if f_low * f_high > 0:
-        raise _DivZero()
+        # Вложение, приход и хвост налога после него: края одного знака, а
+        # корень есть. Тот же запасной поиск, что у движка.
+        from developaid_finance_math import _irr_falling_bracket
+        bracket = _irr_falling_bracket(value)
+        if bracket is None:
+            raise _DivZero()
+        low, high = bracket
+        f_low, f_high = value(low), value(high)
     for _ in range(200):
         mid = (low + high) / 2
         f_mid = value(mid)
@@ -332,6 +339,7 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "INDEX": _index,
     "MATCH": _match,
     "TEXT": lambda args: _text_format(args),
+    "FIXED": lambda args: _fixed(args),
     # Строковые: подпись очередей соцобъекта собирается формулой, чтобы не
     # устаревать после правки мест прямо в книге.
     "LEN": lambda args: float(len(_text(args[0]))),
@@ -618,6 +626,21 @@ def _text_format(args: list[Any]) -> str:
     digits = len(match.group(1) or "")
     value = _excel_round(_as_number(args[0]), digits)
     return f"{value:.{digits}f}".replace(".", ",")
+
+
+def _fixed(args: list[Any]) -> str:
+    """FIXED(число; знаков; без_разрядов) — текст с разделителем локали.
+
+    В отличие от TEXT, код формата не нужен, и русский Excel пишет запятую сам:
+    LLCR дашборда — «0,90x», а не «0.9x» и не #VALUE! от TEXT(…;"0.00").
+    """
+    digits = int(_as_number(args[1])) if len(args) > 1 and args[1] is not None else 2
+    if digits < 0:
+        raise FormulaError("FIXED: отрицательное число знаков вычислителю неизвестно")
+    no_groups = len(args) > 2 and bool(args[2])
+    value = _excel_round(_as_number(args[0]), digits)
+    text = f"{value:,.{digits}f}" if not no_groups else f"{value:.{digits}f}"
+    return text.replace(",", "\u00a0").replace(".", ",")
 
 
 def _text(value: Any) -> str:

@@ -1037,8 +1037,8 @@ def _build_project_workbook(
             text="Диапазоны платы за смену ВРИ по округам МО (справочник DevelopAid)")
         sources_xml, _ = _v4_set_cell(
             sources_xml, "G7",
-            text="1745-ПП: коэффициент Кд по видам использования, плата считается "
-                 "по методике области")
+            text="1745-ПП, таблица 3: коэффициент доходности Кд по городским "
+                 "округам (10 / 5 / 1 %), плата считается по методике области")
         sources_xml, _ = _v4_set_cell(
             sources_xml, "I7",
             text="Сумма платы приходит из расчёта; порядок, ставки и рассрочка — "
@@ -1064,6 +1064,10 @@ def _build_project_workbook(
     _queue_count = max(1, min(4, int(p.get("phase_count") or 1) if p.get("enabled") else 1))
     cf_sheet_paths: dict[str, str] = {}
     cf_sheet_xml: dict[str, str] = {}
+    # Где встанет блок раздачи налога по годам — его доля нужна строке 24
+    # очередей, а сам блок дописывается позже, на листе КОНСОЛИДАТОР.
+    _tax_share_layout = _v4_tax_share_layout(
+        source.read(_v4_sheet_path(source, "КОНСОЛИДАТОР")).decode("utf-8"))
     for _phase in range(1, 5):
         _name = f"CF_{_phase}"
         try:
@@ -1080,7 +1084,7 @@ def _build_project_workbook(
         # соседний проход переписывал середину строки 21 прежней формулой, и
         # живой месяц (AC) оказывался ровно в ней. Снаружи это выглядело как
         # «правка не сработала»: D21 в книге с правкой, а число прежнее.
-        cf_sheet_xml[_name] = _v4_apply_single_queue_tax(_v4_apply_vat_cash(_v4_apply_vat_base(
+        cf_sheet_xml[_name] = _v4_add_recognized_tax_base_row(_v4_bridge_need_without_tax(_v4_apply_single_queue_tax(_v4_fill_standalone_free_cash(_v4_apply_vat_cash(_v4_apply_vat_base(
             _v4_apply_interest_accrual(
                 _v4_apply_core_pool_by_product(_v4_apply_core_pool_without_sales(_v4_apply_extra_objects_tax_row(
                     _v4_apply_project_cash(_v4_use_bridge_base_row(
@@ -1097,7 +1101,8 @@ def _build_project_workbook(
                     _phase, missing),
                     _phase, missing), _phase, missing),
                 _phase, missing),
-            _phase, missing), _phase, missing), _phase, missing)
+            _phase, missing), _phase, missing), _phase, missing), _phase, missing, _tax_share_layout),
+            _phase, missing), _phase, missing)
 
     # Выручка очереди по продуктам: на экране разбивка есть, а в книге жила
     # только в снятой выгрузке детализации.
@@ -2135,7 +2140,8 @@ def _build_project_workbook(
     _shared = _v4_shared_strings(source)
     cf_total_path = _v4_sheet_path(source, "CF")
     cf_total_xml, styles_xml = _v4_fill_general_formats(
-        "CF", source.read(cf_total_path).decode("utf-8"), styles_xml, _shared)
+        "CF", _v4_consolidated_tax_rows(source.read(cf_total_path).decode("utf-8"), missing),
+        styles_xml, _shared)
     for _name in list(cf_sheet_xml):
         cf_sheet_xml[_name], styles_xml = _v4_fill_general_formats(
             _name, cf_sheet_xml[_name], styles_xml, _shared)

@@ -159,7 +159,9 @@ def test_the_tax_recognizes_each_product_in_its_own_units(under, above) -> None:
         # Признано всё, что раздано продуктам, — ни больше, ни меньше.
         assert margin == pytest.approx(revenue - sum(costs.values()), rel=1e-9)
     # Налог «Донского» при умолчании размещения — тот же, что до правки.
-    assert under["summary"]["profit_tax"] == pytest.approx(383_738_900, abs=5_000)
+    # 383,74 → 387,23 млн: база вычета НДС исключает уплаченную плату за ВРИ,
+    # а не начисленную (НДС −14,0 млн, решение владельца 18.10.2026).
+    assert under["summary"]["profit_tax"] == pytest.approx(387_226_850, abs=5_000)
 
 
 # --- поверхности -------------------------------------------------------------
@@ -252,7 +254,7 @@ PROBE = r"""async (data) => {
   if (field) field.click();
   const after = document.getElementById('tep_storage_placement');
   answer = null;
-  await calculate();
+  await settledCalculate();
   for (let i = 0; i < 300 && !answer; i++) await new Promise(r => setTimeout(r, 100));
   window.fetch = fetch0;
   const text = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
@@ -282,7 +284,7 @@ def page() -> dict:
         with pw.chromium.launch(executable_path=str(path)) as engine:
             tab = engine.new_page(viewport={"width": 1440, "height": 900})
             tab.goto(base, wait_until="domcontentloaded")
-            tab.wait_for_timeout(1500)
+            browser.wait_for_result(tab)
             got = tab.evaluate(PROBE, SETTINGS)
             tab.close()
     assert got["expected"], "страница не получила ответ расчёта"

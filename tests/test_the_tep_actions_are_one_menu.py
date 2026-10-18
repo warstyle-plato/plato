@@ -91,11 +91,14 @@ formTepByDensity();
 confirmTepAction();           // «Сформировать»
 const plan=densityTepPlan();
 inputs._glavapu_import=null;
+inputs.vri_region='mo';
 const normative=densityTepPlan();
+inputs.vri_region='';
+const moscow=densityTepPlan();
 inputs.project_kind='hotel';
 const hotel=densityTepPlan();
 formTepByDensity();           // отказ — без окна, сразу к объяснению
-process.stdout.write(JSON.stringify({shown,body,before,afterCancel,applied,plan,normative,hotel,
+process.stdout.write(JSON.stringify({shown,body,before,afterCancel,applied,plan,normative,moscow,hotel,
  closed:nodes.tepConfirmDialog.style.display}));
 """
     out = page_blocks.run_json(PRELUDE, tail)
@@ -114,6 +117,10 @@ process.stdout.write(JSON.stringify({shown,body,before,afterCancel,applied,plan,
     assert out["normative"]["mode"] == "normative"
     assert out["normative"]["rows"][0]["will"]["saleable"] == 2 * 25000
     assert any("РНГП" in n for n in out["normative"]["notes"])
+    # Москва без ГлавАПУ — свои нормативы: план не обещает ей РНГП области.
+    assert out["moscow"]["mode"] == "normative"
+    assert "нормативами Москвы" in out["moscow"]["basis"]
+    assert not any("РНГП" in n for n in out["moscow"]["notes"] + [out["moscow"]["basis"]])
     assert out["hotel"] is None
     assert out["closed"] == "none"
 
@@ -173,10 +180,9 @@ def test_on_a_phone_the_menu_confirms_before_it_overwrites() -> None:
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_page(viewport={"width": 390, "height": 900})
             page.goto(base, wait_until="load")
-            page.wait_for_function("typeof renderTep==='function'", timeout=20000)
-            page.wait_for_timeout(800)
+            browser.wait_for_result(page)
             page.evaluate("async()=>{inputs.site_area_ha=2;inputs.site_density_sqm_per_ha=25000;"
-                          "syncTep(false);await calculate();renderTep();openTab('tep');}")
+                          "syncTep(false);await settledCalculate();renderTep();openTab('tep');}")
             page.wait_for_function("document.querySelectorAll('#tepBody tr').length>3", timeout=20000)
             got = page.evaluate(PROBE)
             page.close()

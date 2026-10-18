@@ -67,11 +67,15 @@ def test_the_control_quarter_matches_the_city_export():
     assert bases["izh"] == 123651.00
 
 
-def test_the_uupss_column_is_openly_unresolved():
-    """С техприсоединением или без — свод не решает и велит сверить по приказу
-    № 141. Молча выбрать большее число нельзя."""
+def test_the_uupss_column_is_named_by_the_act():
+    """С техприсоединением или без — свод не решал, а акт решает: 3135-ПП,
+    прил. 2 п. 2.1 (ред. 2072-ПП) — с ТП. Колонка названа с основанием, а не
+    выбрана молча как большее число; в расчёт эти числа всё так же не входят."""
     uupss = core.MOSCOW_SOCIAL_UUPSS
-    assert uupss["column_unresolved"] is True
+    assert uupss["column_unresolved"] is False
+    assert uupss["column"] == "with_tp"
+    assert "3135-ПП" in uupss["column_basis"] and "2.1" in uupss["column_basis"]
+    assert uupss["column"] in uupss["values_th_rub"]["kindergarten"]
     values = uupss["values_th_rub"]
     assert values["kindergarten"]["without_tp"] == 4329.61
     assert values["kindergarten"]["with_tp"] == 4728.76
