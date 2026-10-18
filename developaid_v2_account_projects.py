@@ -228,6 +228,32 @@ def _row_to_inputs(core: Any, inputs: dict[str, Any], key: str,
     return notes
 
 
+def _underground_guests_follow(core: Any, inputs: dict[str, Any],
+                               tep: dict[str, dict[str, Any]],
+                               derived: dict[str, str]) -> None:
+    """Гостевые подземного паркинга — производное мест: правка мест их пересчитывает.
+
+    Ячейка мест оставляла в строке прежнее `guest_units` записи: 44 места и
+    109 гостевых от давно сменившихся вводных. Число гостевых — у движка
+    (`underground_tep_row`): места / 11, гостевые метода ГлавАПУ при тех же
+    местах, ноль в Подмосковье. Правка ячейки — решение человека, поэтому пара
+    помечается ручной: пометка руки сильнее пометки нормы
+    (`underground_parking_by_hand`), как и на странице.
+    """
+    hand = set(inputs.get("_parking_by_hand") or ())
+    hand.add("underground")
+    inputs["_parking_by_hand"] = sorted(hand)
+    row = tep["underground_parking"]
+    row.pop("guest_units_stale", None)
+    computed = core.underground_tep_row(inputs, tep)
+    if computed and "guest_units" in computed:
+        row["guest_units"] = float(computed["guest_units"])
+        derived["guest_units"] = "из мест по правилу движка"
+    else:
+        # Движку вывести не из чего — ключа нет: «выведет расчёт», а не ноль.
+        row.pop("guest_units", None)
+
+
 def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
     """One edited TEP cell -> the dependent cells, using live engine rules.
 
@@ -381,6 +407,8 @@ def _sync_tep(core: Any, req: TepSyncRequest) -> dict[str, Any]:
 
     tep[key] = row
     notes = _row_to_inputs(core, inputs, key, row)
+    if key == "underground_parking" and field in {"units", "gns", "total_area"}:
+        _underground_guests_follow(core, inputs, tep, derived)
     return {
         "tep": tep,
         "inputs": inputs,

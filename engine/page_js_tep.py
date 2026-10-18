@@ -755,6 +755,9 @@ function renderTep(){
    // ГНС нашими долями. Доли теперь правятся под таблицей и пересчитывают строку
    // сами, как только их поменяли (просьба владельца, 20.08.2026), — кнопка,
    // делающая то же самое чужими числами, стала лишней дверью в ту же комнату.
+   // Галочки полей, чей дом — эта строка ТЭП (`TEP_ONLY_INPUTS`): размещение
+   // кладовых правится здесь, а не складкой во «Вводных» (владелец, 16.10.2026).
+   label+=tepRowSwitches(key);
    if(key==='apartments'){
      const note=apartmentUnitsNote();
      if(note)label+=` <span class="tep-note">${escapeHtml(note)}</span>`;
@@ -886,6 +889,24 @@ function tepRowUnderGns(key,row){
 // считавшие сами, пропускали один гараж, и кладовые садились в наземную ГНС.
 function tepRowAboveGns(key,row){
  return UNDERGROUND_PLACEMENT.outside_above.includes(key)?0:Number((row||{}).gns||0);
+}
+// Галочки у строки ТЭП из `TEP_ONLY_INPUTS`. Снята — значение `off`, оно же
+// умолчание движка: отсутствующий ключ не читается как «стоит».
+function tepRowSwitches(key){
+ return Object.keys(TEP_ONLY_INPUTS).filter(id=>TEP_ONLY_INPUTS[id].row===key).map(id=>{
+  const spec=TEP_ONLY_INPUTS[id];
+  const on=String(inputs[id]||'')===spec.on;
+  return ` <label class="tep-note tep-switch" title="${escapeHtml(spec.hint)}">`
+   +`<input type="checkbox" id="tep_${id}" data-field="${id}" ${on?'checked':''} `
+   +`onchange="tepRowSwitchSet('${id}',this.checked)">${escapeHtml(spec.label)}</label>`;
+ }).join('');
+}
+function tepRowSwitchSet(id,checked){
+ const spec=TEP_ONLY_INPUTS[id];if(!spec)return;
+ inputs[id]=checked?spec.on:spec.off;
+ markFieldManual('inputs.'+id);
+ renderTep();
+ return calculate();
 }
 // Что под землёй у ЭТОГО проекта — по размещению кладовых (поле проекта).
 // Отсутствующий ключ — умолчание движка, а не «наземные».
@@ -1623,6 +1644,7 @@ function setSiteDensity(value){
 function renderSiteParkingFields(){
  const box=document.getElementById('siteParkingFields');
  if(!box)return;
+ renderSiteParkingSummary();
  // Человек печатает в поле — перерисовка сняла бы с него фокус.
  if(box.contains(document.activeElement))return;
  const decl={};allFieldGroups().forEach(g=>g[1].forEach(f=>{decl[f[0]]=f}));
@@ -1657,6 +1679,33 @@ function renderSiteParkingFields(){
   });
   box.appendChild(wrap);
  });
+}
+// Заголовок свёрнутого блока: зачем он здесь и что сейчас в расчёте. Числа —
+// те же, что «авто:» в полях (`parking.k1`, `k2`, `k_basis.district` движка):
+// страница их не пересчитывает. Противоречие с разбором кадастра видно в
+// заголовке без раскрытия, а появившись впервые, раскрывает блок само — молча
+// прятать предупреждение нельзя. Закрытое человеком при том же противоречии
+// остаётся закрытым: перерисовка решение не отменяет.
+let siteParkingConflictSeen='';
+function siteParkingPeek(){
+ const p=projectParking()||{};
+ const basis=p.k_basis||{};
+ const fmt=v=>{const n=Number(v||0);return n?String(n).replace('.',','):'—'};
+ const parts=['число машино-мест нежилья','К1 '+fmt(p.k1),'К2 '+fmt(p.k2)];
+ if(basis.district)parts.push(basis.district);
+ return parts.join(' · ');
+}
+function renderSiteParkingSummary(){
+ const sum=document.getElementById('siteParkingSummary');
+ if(!sum)return;
+ const conflicts=SITE_ONLY_INPUTS.flatMap(id=>siteParkingConflicts(id));
+ sum.innerHTML='Коэффициенты парковки участка<span class="group-peek">'+escapeHtml(siteParkingPeek())+'</span>'+
+  (conflicts.length?'<span class="site-conflict-mark">⚠ '+(conflicts.length===1?'противоречие':conflicts.length+' противоречия')+
+   ' с разбором кадастра</span>':'');
+ const det=document.getElementById('siteParkingBox');
+ const key=conflicts.join('\n');
+ if(det&&key&&key!==siteParkingConflictSeen)det.open=true;
+ siteParkingConflictSeen=key;
 }
 // Противоречие вписанного с разбором кадастра — красным под полем. Решение и
 // текст — из ответа движка (`parking.k_basis.conflicts`, владелец
@@ -1819,7 +1868,11 @@ function socialNormNote(kind){
  const unit=kind==='clinic'?'м²/(пос./смену)':'м²/место';
  const city=socialAreaPerPlace(kind,units);
  return ` Фактически ${landNum(fact,1)} ${unit}`
-  +(city?` — норматив РНГП ${landNum(city,1)}.`:` — норматива города для этого объекта нет.`);
+  +(city?` — норматив РНГП ${landNum(city,1)}.`
+   // У поликлиники ступени нет, а предел города — верхний (2150-ПП): число
+   // берётся из умолчания поля, второй копии на странице нет.
+   :kind==='clinic'?` — предел города не более ${landNum(INPUT_DEFAULT.social_clinic_norm_sqm,0)} (2150-ПП, уточняется МТЗ).`
+   :` — ступени города для этого объекта нет.`);
 }
 function socialAreaPerPlace(kind,places){
  const steps=SOCIAL_AREA_STEPS[kind];
@@ -2626,8 +2679,8 @@ function syncTep(rerender=true){
   // Норматив площади — ступень по ёмкости здания, а не одно число: маленький
   // садик стоит 27 м² на место, крупный 16 (РНГП, редакция 2579-ПП). Считается
   // от КОЛИЧЕСТВА МЕСТ (решение владельца, 02.09.2026), поэтому поле следует
-  // за мощностью, а не живёт своей жизнью. У поликлиники норматива города нет
-  // — там остаётся вводное поле.
+  // за мощностью, а не живёт своей жизнью. У поликлиники ступени нет: норма
+  // города — верхний предел (2150-ПП, разд. 1.4), и он живёт умолчанием поля.
   // Требование договора КРТ сильнее норматива: город даёт места И площадь, и
   // они с нормативом не совпадают (владелец, 03.09.2026: «в крт уже прописаны
   // требования к сош доо и поликлинике по местам и площади, и они не

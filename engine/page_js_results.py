@@ -267,7 +267,7 @@ PAGE += r"""function renderResult(){
   // теперь и эта.
   row('Средняя цена м² квартир',th(r.summary.average_apartment_price_th)+'/м² прод.')+
   // Каждый удельный — на свою базу (решение 4 ревизии книги): расходы — на
-  // суммарную площадь в ГНС и для сравнения с ценой на продаваемую; EBITDA и
+  // общую площадь и для сравнения с ценой на продаваемую; EBITDA и
   // прибыль — на продаваемую. Подписи баз — из словаря терминов.
   row('Полная себестоимость',th(r.summary.full_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.full_cost_per_total_area_th)+'/м² '+TERMS.total_area.genitive)+
   row('Строительная себестоимость',th(r.summary.construction_cost_per_saleable_th)+'/м² прод. · '+th(r.summary.construction_cost_per_gns_th)+'/м² '+TERMS.core_total_area.genitive)+
@@ -705,7 +705,7 @@ PAGE += r"""function renderResult(){
  const capNames=__DEVELOPAID_CAPEX_NAMES__;
  {
   // Удельные статей — движка (`capex_units`): СМР на свою часть, прочее на
-  // суммарную площадь в ГНС; база названа в строке.
+  // общую площадь; база названа в строке.
   const cu=r.capex_units||{};
   const capCells=key=>{const u=cu[key]||{};
    return `<td>${unitNum(u.per_base_th,2)}</td><td>${unitBase(u)}</td><td>${unitNum(u.per_saleable_th,2)}</td>`;};

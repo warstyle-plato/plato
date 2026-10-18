@@ -16,7 +16,7 @@ prepared_calculation, _calculate_economics, помесячная детализ�
 # Решение владельца 29.09.2026 (ревизия книги, решение 4): каждый удельный
 # делится на СВОЮ базу и подписывается ею; база берётся из кода — из того,
 # на что начислены деньги, а не из заголовка таблицы.
-#   полные расходы, CAPEX и все расходные строки — на суммарную площадь в ГНС
+#   полные расходы, CAPEX и все расходные строки — на общую площадь
 #     (наземная + подземная, `construction_volume_sqm`);
 #   СМР наземной части — на наземную ГНС МКД (на неё начислено);
 #   СМР подземной части — на подземную площадь МКД;
@@ -96,8 +96,8 @@ def construction_cost_rows(capex: dict[str, float], bases: dict[str, float]) -> 
             continue
         rows.append({"label": label, "keys": list(keys), "value": value,
                      **unit_rates(value, capex_unit_base(keys[0]), bases),
-                     # На суммарную площадь в ГНС — и у статьи, чья база своя
-                     # часть (СМР): колонка «на м² суммарной площади» в тизере
+                     # На общую площадь — и у статьи, чья база своя
+                     # часть (СМР): колонка «на м² общей площади» в тизере
                      # печатает это число, а не ставку своей части под чужой шапкой.
                      "per_total_th": (value / bases[UNIT_BASE_TOTAL] / 1000
                                       if bases.get(UNIT_BASE_TOTAL) else None)})
@@ -512,7 +512,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "label": label,
             "value": value,
             "share": value / expense_base if expense_base else 0.0,
-            # Расход — на суммарную площадь в ГНС и на продаваемую (решение 4).
+            # Расход — на общую площадь и на продаваемую (решение 4).
             **unit_rates(value, UNIT_BASE_TOTAL, bases),
         }
         if label == "Отдельные объекты" and standalone_items:
@@ -990,7 +990,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "apartment_saleable_sqm": apartment_saleable_sqm,
             "average_apartment_price_th": avg_apartment_price,
             # Каждый удельный — на свою базу (решение 4 ревизии книги):
-            # расходы — на суммарную площадь в ГНС и для сравнения с ценой на
+            # расходы — на общую площадь и для сравнения с ценой на
             # продаваемую; EBITDA и прибыль — на продаваемую.
             "full_cost_per_saleable_th": full_cost_per_saleable,
             "full_cost_per_total_area_th": per_sqm_th(full_project_cost, construction_volume_sqm),
