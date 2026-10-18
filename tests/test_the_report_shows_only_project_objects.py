@@ -174,7 +174,9 @@ RENDER = """async (arg)=>{
   Object.keys(arg.t).forEach(k=>{tep[k]=Object.assign(tep[k]||{},arg.t[k])});
   Object.assign(inputs, arg.x);
   renderInputs();
-  const calc=await calculate();
+  // Ответ ждётся по признаку, а не по порядку вызовов: наш расчёт может перебить
+  // расчёт загрузки страницы, и тогда отчёт рисует тот, следующий.
+  const calc=await settledCalculate();
   const rows=Array.from(document.querySelectorAll('#reportTep tbody tr:not(.sub)'))
     .map(tr=>(tr.cells[0].textContent||'').trim());
   const foot=Array.from(document.querySelectorAll('#reportTep tfoot th, #reportTep tfoot td'))
@@ -208,7 +210,7 @@ def drawn():
             page.goto(base, wait_until="domcontentloaded")
             page.evaluate("localStorage.removeItem('plato_v04')")
             page.reload(wait_until="domcontentloaded")
-            page.wait_for_timeout(1500)
+            browser.wait_for_result(page)
             got = page.evaluate(RENDER, {"x": x, "t": t})
             page.close()
     got["errors"] = errors
