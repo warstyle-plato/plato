@@ -196,7 +196,7 @@ def test_in_a_real_browser_the_relief_recounts_applies_survives_a_reload_and_cle
     """Страница владельца: 100% → «Нет ручной» → калькулятор по другому участку → снять."""
     import json
 
-    from browser import chromium_or_skip, serve
+    from browser import chromium_or_skip, serve, wait_for_result
     chrome = chromium_or_skip()
     from playwright.sync_api import sync_playwright
 
@@ -245,7 +245,7 @@ def test_in_a_real_browser_the_relief_recounts_applies_survives_a_reload_and_cle
         page.click("#mpt-apply")
         page.wait_for_function(
             "() => (lastResult.vri.benefits.mpt_source||{}).kind==='calculator'", timeout=60000)
-        page.wait_for_timeout(300)
+        wait_for_result(page)
         seen["applied"] = page.evaluate(totals)
         seen["applied_relief"] = page.evaluate("() => lastResult.vri.totals.relief")
         seen["applied_box"] = page.locator("#mpt-applied").inner_text()
