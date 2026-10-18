@@ -232,11 +232,17 @@ function glavapuScenarioHtml(a){
   const nonres=(p.nonres||[]).map(x=>escapeHtml(x.menu)+' '+glavapuScenarioNum(x.spp_ths)).join(', ')||'нет';
   const social=(p.social||[]).map(x=>escapeHtml(x.label)+' '+x.places+' мест').join(', ')||'нет';
   const ratio=(((a.applied||{}).applied)||[]).find(x=>x.param==='ratio');
+  // Квартиры: штуки уходят (галочка калькулятора «через количество квартир»),
+  // площадь квартир — нет: в режиме «СПП в ГНС» он считает её сам.
+  const origin=sc.origin||{};
+  const flats=Number(p.flats_count||0)>0?'; квартир '+glavapuScenarioNum(p.flats_count)+' шт. (галочка «через количество квартир»)'
+   :'; число квартир не передано — в ТЭП его нет, калькулятор считает квартиры сам';
   parts.push('<details style="margin-top:6px"><summary style="font-size:12px">Что передано калькулятору</summary><div class="note">'+
    'Площадь '+glavapuScenarioNum(p.area_ha)+' га; СПП жилых зданий '+glavapuScenarioNum(p.spp_residential_ths)+
    ' тыс. м², из них нежилая часть '+glavapuScenarioNum(p.vpp_pct)+'%; нежилые по ВРИ: '+nonres+
-   '; соцобъекты: '+social+(p.land_right?'; право — '+escapeHtml(p.land_right):'')+'.'+
-   (ratio?' Ползунок калькулятора «Соотношение жилых / нежилых зданий» встал на: '+escapeHtml(ratio.got)+'.':'')+'</div></details>');
+   '; соцобъекты: '+social+flats+(p.land_right?'; право — '+escapeHtml(p.land_right):'')+'.'+
+   (ratio?' Ползунок калькулятора «Соотношение жилых / нежилых зданий» встал на: '+escapeHtml(ratio.got)+'.':'')+
+   (origin.flats_area?'<div style="margin-top:4px">Не передаётся: '+escapeHtml(origin.flats_area)+'.</div>':'')+'</div></details>');
  }
  return parts.join('');
 }
