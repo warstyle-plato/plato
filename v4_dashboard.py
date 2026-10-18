@@ -1035,7 +1035,7 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
             # невалиден — K85 показывал #VALUE! (книга Нагатино, 17.10.2026).
             # FIXED пишет текст разделителем локали и ровно две цифры («0,90x»);
             # формат «0» без разделителя работает везде.
-            shown = (f'FIXED({_src("D", src)},2,TRUE)&"x"'
+            shown = (f'FIXED({_src("D", src)},2,1)&"x"'
                      if value_key in ("llcr", "weakest_phase_llcr")
                      else f'TEXT({_src("D", src)},"0")&" млн ₽"')
             items += [(None, _src("B", src), sh.td),
