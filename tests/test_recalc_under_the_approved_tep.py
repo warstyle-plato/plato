@@ -339,7 +339,9 @@ def test_the_rates_come_from_the_baseline_not_from_constants():
     rates = out["rates"]
     assert abs(rates["vri_mln_per_sqm"] - 10562.660 / 127163) < 1e-9
     assert abs(rates["social_mln_per_place"]["kindergarten"] - 1140.096 / 104) < 1e-9
-    assert abs(rates["parking_permanent_per_sqm"] - 897 / 107580) < 1e-12
+    # Ставка снимается с НП, которой потом считаются новые метры — СПП × 0,9,
+    # а не с напечатанной выгрузкой НП (она округлена до тысяч).
+    assert abs(rates["parking_permanent_per_sqm"] - 897 / (119533 * 0.9)) < 1e-12
 
 
 def test_the_standalone_building_is_shown_but_not_charged():
