@@ -648,7 +648,7 @@ function renderScheduleEditor(wrap,id,opts){
   (money?' <button type="button" class="tep-refill" onclick="scheduleUnit(\''+id+'\',\''+(percent?'0':'1')+'\')">'+
     (percent?'вводить суммами, млн ₽':'вводить долями, %')+'</button>':'')+
   (rows.length?' <button type="button" class="tep-refill" onclick="saveSchedule(\''+id+'\',[],'+(percent?'true':'false')+')">очистить</button>'
-    :' <span style="color:#777">графика нет — считается как раньше</span>')+'</div>';
+    :' <span style="color:#777">'+(opts.empty_label||'График не задан.')+'</span>')+'</div>';
  const box=document.createElement('div');box.id='sched_'+id;box.innerHTML=html;
  wrap.appendChild(box);
 }

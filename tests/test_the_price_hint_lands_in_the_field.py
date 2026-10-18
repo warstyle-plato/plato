@@ -118,7 +118,7 @@ def test_the_recommendation_stands_in_the_field_and_survives_the_class():
     assert pressed["held"] == 639.8, pressed
     assert pressed["note"].startswith("Подставлено: 639.8"), pressed
     assert "рекомендация DevelopAid" in pressed["unit"], pressed
-    assert "ставит класс" not in pressed["unit"], pressed
+    assert "задаёт класс" not in pressed["unit"], pressed
     for state in (redrawn, reclassed):
         assert state["field"] == "639.8" and state["held"] == 639.8, state
         assert "рекомендация DevelopAid от 28.09.2026" in state["unit"], state
