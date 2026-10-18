@@ -242,6 +242,8 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # 29.09.2026): книга не держит своего порога.
         "equity_na": {"min_ending_pf_rub": EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB,
                       "label": EQUITY_RETURNS_NA_DEBT_LABEL},
+        # Порог «IRR капитала показателен» — движка (`_apply_equity_irr_verdict`).
+        "equity_irr": {"min_share": EQUITY_IRR_MIN_OWN_SHARE},
     }
 
 
@@ -364,6 +366,12 @@ def _v4_project_relief_words(x: dict[str, Any], tep: dict[str, Any]) -> str:
     if float(benefits.get("transfer_mln") or 0.0) > 0:
         words += " + передача квартир"
     return words
+
+
+# Годовая инфляция цены и затрат между стартами очередей — по ячейке на
+# проект, в строке первой очереди: множители S/T 88–91 читают её формулой.
+_V4_QUEUE_PRICE_INFLATION_COL = "AW"
+_V4_QUEUE_COST_INFLATION_COL = "AX"
 
 
 def _build_project_workbook(
@@ -1634,6 +1642,21 @@ def _build_project_workbook(
     # на дефолтных вводных, которых нет в расчёте.
     price_inflation = float(p.get("sales_price_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
     cost_inflation = float(p.get("cost_inflation_pct", 8.0) or 0) / 100.0 if count > 1 else 0.0
+    # Годовая инфляция между стартами очередей — вводная множителей S/T.
+    # Не на листе ввода и не в AE/AF: AE/AF шаблон ведёт от даты базы цен
+    # (коэффициенты AG/AH), и ставка там прибавилась бы к S/T второй раз;
+    # а числа «Вводных» суммирует сторож «лист ввода не менялся».
+    for _col, _value, _title in (
+            (_V4_QUEUE_PRICE_INFLATION_COL, price_inflation,
+             "Инфляция цены между стартами очередей, доля/год · sales_price_inflation_pct"),
+            (_V4_QUEUE_COST_INFLATION_COL, cost_inflation,
+             "Инфляция затрат между стартами очередей, доля/год · cost_inflation_pct")):
+        xml, _done = _v4_set_or_insert_cell(xml, f"{_col}88", number=_value)
+        if not _done:
+            missing.append(f"инфляция между очередями ({_col}88)")
+        xml, _done = _v4_set_or_insert_cell(xml, f"{_col}87", text=_title)
+        if not _done:
+            missing.append(f"подпись колонки {_col} блока очередей")
 
     # Колонки очередей — это вводные движка, и книга их называет: «Старт» без
     # ключа читается как оформление, а по ключу видно, что правишь именно
@@ -1698,9 +1721,18 @@ def _build_project_workbook(
             if social_cash_by_phase is not None
             else shared["social_compensation"][index]) if active else 0.0,
             label="доля соцнагрузки")
-        offset_years = (offset if active else 0.0) / 12.0
-        put(f"S{row}", number=(1.0 + price_inflation) ** offset_years, label="множитель цены")
-        put(f"T{row}", number=(1.0 + cost_inflation) ** offset_years, label="множитель затрат")
+        # Множитель — формулой от даты старта очереди, а не числом: числом он
+        # не двигался, когда старт правили прямо в книге, и поздняя очередь
+        # продавала и строила по ценам прежнего сдвига. Сдвиг — месяцы от
+        # начала горизонта B8 до старта D: движок ставит старт очереди как
+        # project_start + start_offset_months, это тот же offset_months, что
+        # в _phase_*_inflation_factor, и MAX(0,…) — его же. Годовая ставка —
+        # одна ячейка на проект (AW88/AX88): у движка она одна.
+        _offset = f"MAX(0,12*(YEAR(D{row})-YEAR($B$8))+MONTH(D{row})-MONTH($B$8))/12"
+        put(f"S{row}", formula=f"(1+${_V4_QUEUE_PRICE_INFLATION_COL}$88)^({_offset})",
+            label="множитель цены")
+        put(f"T{row}", formula=f"(1+${_V4_QUEUE_COST_INFLATION_COL}$88)^({_offset})",
+            label="множитель затрат")
         # Доли лимитов — от движковых лимитов фаз, а не от квартирных весов:
         # очередь с офисами на 13,5 млрд получала 28% лимита ПФ по весу
         # квартир, и книга недосчитывала плату за невыбранный лимит вдвое.
@@ -2091,6 +2123,7 @@ def _build_project_workbook(
     # строительный объём, IRR месячным рядом, как у движка.
     report_xml = _v4_report_owner_decisions(report_xml, social_base_row, missing)
     consolidator_xml = _v4_monthly_irr(consolidator_xml, 8, missing, "КОНСОЛИДАТОР")
+    consolidator_xml = _v4_equity_irr_meaningful(consolidator_xml, missing)
     consolidator_xml = _v4_queue_saleable_with_extras(consolidator_xml, missing)
     for _name in list(cf_sheet_xml):
         cf_sheet_xml[_name] = _v4_monthly_irr(cf_sheet_xml[_name], 80, missing, _name)
@@ -2140,6 +2173,7 @@ def _build_project_workbook(
             frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)),
             hidden_products=_v4_absent_products(x, tep), queues=count,
             parking=(finance_hints or {}).get("parking_provision"),
+            irr_project=(finance_hints or {}).get("irr_project"),
             chart_months=(_chart_horizon + 6 if (_chart_horizon := int(
                 (finance_hints or {}).get("horizon_months") or 0)) > 0 else None),
             storage_under_flag=_v4_storage_under_flag("'Параметры модели'"))

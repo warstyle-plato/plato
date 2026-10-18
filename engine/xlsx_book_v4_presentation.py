@@ -127,8 +127,13 @@ def presentation_numbers(consolidated: dict[str, Any]) -> dict[str, Any]:
             "profit_tax_rate": float(summary.get("profit_tax_rate") or 0.0),
         },
         "efficiency": {
+            # Главный — IRR проекта (до финансирования); IRR капитала — числом
+            # только при `summary.equity_irr.meaningful`, иначе подпись движка.
+            "irr_project": (None if summary.get("irr_project") is None
+                            else float(summary.get("irr_project"))),
             "irr_equity": (None if summary.get("irr_equity") is None
                            else float(summary.get("irr_equity"))),
+            "irr_equity_na": equity_irr_label(summary),
             "full_project_cost_mln": float(summary.get("full_project_cost") or 0.0) / 1e6,
             "commercial_mln": float(summary.get("commercial_costs") or 0.0) / 1e6,
         },
@@ -320,7 +325,11 @@ def _v4_fold_tep_rows(
             if key not in merged:
                 merged[key] = copy.deepcopy(product)
             else:
-                for field in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+                # Список полей — у свода движка (`PHASE_ADDITIVE_TEP_FIELDS`):
+                # гостевые и переданные хвоста складываются вместе с местами.
+                for field in PHASE_ADDITIVE_TEP_FIELDS:
+                    if field not in product and field not in merged[key]:
+                        continue
                     merged[key][field] = (
                         float(merged[key].get(field) or 0) + float(product.get(field) or 0))
     return rows[:book - 1] + [merged]
@@ -590,13 +599,13 @@ _V4_TAXES_LABEL = "Налоги: на прибыль и НДС к уплате"
 
 def _v4_report_owner_decisions(xml: str, social_base_row: int | None,
                                missing: list[str]) -> str:
-    """НДС в полных расходах и CAPEX на суммарную площадь в ГНС (владелец, 16.10.2026).
+    """НДС в полных расходах и CAPEX на общую площадь (владелец, 16.10.2026).
 
     НДС к уплате движок держит в полных расходах и отдельной строкой структуры;
     ОТЧЕТ его не считал, и «выручка − полные расходы» расходилась с чистой
     прибылью на сумму НДС (Донской: 113,8 млн). Удельный CAPEX делился на GBA
     продуктов без соцобъектов и гаражей, а движок и Дашборд по решению 4 от
-    29.09 — на суммарную площадь в ГНС (Донской: 599,3 против 591,5 тыс. ₽/м²).
+    29.09 — на общую площадь (Донской: 599,3 против 591,5 тыс. ₽/м²).
     """
     def put(coord: str, *, formula: str | None = None, text: str | None = None) -> None:
         nonlocal xml
@@ -625,7 +634,7 @@ def _v4_report_owner_decisions(xml: str, social_base_row: int | None,
     put("F64", formula="IFERROR(MAX(0,((B6+B7+B9+B39)-($B$5-F59))*1000/F57),0)")
     put("H63", text="CAPEX, коммерческие расходы, финансирование, налог на прибыль и НДС к уплате")
 
-    # Суммарная площадь в ГНС очереди — так же, как суммарная площадь ТЭП!C36:
+    # Общая площадь очереди — так же, как общая площадь ТЭП!C36:
     # продукты дома, объекты очереди с их подземными гаражами и соцобъекты
     # очереди (ГНС типа делится по местам очередей).
     objects = _v4_object_product_cells()
@@ -681,6 +690,38 @@ def _v4_monthly_irr(xml: str, row: int, missing: list[str], where: str) -> str:
     xml, done = _v4_set_or_insert_cell(xml, found.group(1), formula=new)
     if not done or "XIRR" in new:
         missing.append(f"{where}: IRR в строке {row} не переписан")
+    return xml
+
+
+_V4_EQUITY_IRR_DEBT_PREFIX = 'IF(\'CF\'!B19>0.5,"N/A (долг не погашен)",'
+
+
+def _v4_equity_irr_meaningful(xml: str, missing: list[str]) -> str:
+    """IRR капитала свода — числом, только если своих денег не меньше порога.
+
+    Решение владельца 16.10.2026 («IRR проекта + пометка»): при почти нулевых
+    своих деньгах IRR капитала выходит 300 %+ и доходностью не является. Порог
+    — тот же, что у движка (`EQUITY_IRR_MIN_OWN_SHARE`, доля полных затрат):
+    книга своего порога не держит. Свои деньги — «Вложено собственного
+    капитала» (M8), полные затраты — ОТЧЕТ!B82, как `full_project_cost` движка.
+    Условие встаёт после проверки долга: непогашенный долг важнее.
+    """
+    found = re.search(r'<x:c r="N8"[^>]*>\s*<x:f>([^<]*)</x:f>', xml)
+    formula = html.unescape(found.group(1)) if found else ""
+    if not formula.startswith(_V4_EQUITY_IRR_DEBT_PREFIX):
+        missing.append("КОНСОЛИДАТОР: N8 (IRR капитала) — проверка долга шаблона не найдена, "
+                       "признак «IRR капитала показателен» не записан")
+        return xml
+    cost = "'ОТЧЕТ'!$B$82"
+    share = f"{EQUITY_IRR_MIN_OWN_SHARE:g}"
+    thin = (f'IF(AND({cost}>0,M8<{share}*{cost}),'
+            f'"не показателен: своих денег "&ROUND(M8,0)&" млн ₽ ("'
+            f'&SUBSTITUTE(ROUND(M8/{cost}*100,1),".",",")&"% затрат)",')
+    rest = formula[len(_V4_EQUITY_IRR_DEBT_PREFIX):]
+    new = _V4_EQUITY_IRR_DEBT_PREFIX + thin + rest + ")"
+    xml, done = _v4_set_or_insert_cell(xml, "N8", formula=new)
+    if not done:
+        missing.append("КОНСОЛИДАТОР: N8 (IRR капитала) — признак «показателен» не записан")
     return xml
 
 
