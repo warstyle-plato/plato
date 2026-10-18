@@ -151,6 +151,8 @@ inputs._social_basis={apartment_area_sqm:30000,source:'тест'};
 look();                                                           // база есть, квартиры изменились
 tep.apartments.saleable=30000;
 look();                                                           // база равна ТЭП — пропорции нет
+cadastralAnalysis={territory:{district:'Красногорск',inside_moscow:false}};
+look();                                                           // область, расчёт не загружен
 inputs._mo_calc={territory:{district:'Красногорск'}};
 look();                                                           // Подмосковье
 let moCalled=null;
@@ -162,16 +164,18 @@ renderTepActions();
 process.stdout.write(JSON.stringify({modes,autos,hints,moCalled,hint:nodes.tepNormsHint.textContent}));
 """
     out = page_blocks.run_json(PRELUDE, tail)
-    assert out["modes"] == ["norms", "proportion", "norms", "mo", "glavapu"]
+    assert out["modes"] == ["norms", "proportion", "norms", "region", "mo", "glavapu"]
     # Сам пересчёт идёт только там, где его зовёт scheduleTepAutoRecalc.
-    assert out["autos"] == [False, False, False, True, True]
+    assert out["autos"] == [False, False, False, False, True, True]
     for text, auto in zip(out["hints"], out["autos"]):
         assert text.startswith("Если вы ввели новые площади квартир"), text
         assert ("пересчитываются сами" in text) == auto, text
-        assert ("сами они здесь не меняются" in text) == (not auto), text
+        assert bool(re.search(r"сами (они здесь )?не", text)) == (not auto), text
         for word in JARGON:
             assert word not in text, f"в подсказке «Пересчитать по нормативам» жаргон «{word}»"
-    assert "Московской области" in out["hints"][3] and "Москвы" not in out["hints"][3].replace("Московской", "")
+    # Вне Москвы подсказка не обещает московских нормативов.
+    assert "нормативам Москвы" not in out["hints"][3] and "Впишите" in out["hints"][3]
+    assert "Московской области" in out["hints"][4] and "Москвы" not in out["hints"][4].replace("Московской", "")
     assert "ГлавАПУ" in out["hint"]
     # В Подмосковье кнопка идёт тем же пересчётом области, а не московским.
     assert out["moCalled"] == {"apartments": 30000, "area": 2}
