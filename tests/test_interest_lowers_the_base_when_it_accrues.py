@@ -136,14 +136,16 @@ def test_the_two_measures_disagree_on_a_losing_queue(phased) -> None:
 
     finance = phased["consolidated"]["finance"]
     months = [core.d(row["month"]) for row in finance["rows"]]
-    margins = {core.d(row["month"]): float(row.get("taxable_margin") or 0.0)
-               for row in finance["rows"]}
-    rate = core._phase_tax_rate([phase["result"] for phase in phased["phases"]])
-    gate = finance.get("first_taxable_month")
-    assert rate > 0 and gate, "без ставки и гейта мерить нечего"
+    results = [phase["result"] for phase in phased["phases"]]
+    # Маржа очереди — в РВЭ этой очереди, проценты — в месяц начисления
+    # (правило спецзастройщика, владелец 16.10.2026).
+    margins = core._phase_margins_at_own_rve(results)
+    rate = core._phase_tax_rate(results)
+    assert rate > 0, "без ставки мерить нечего"
 
     def tax(by_month: dict) -> float:
-        schedule, _ = core._profit_tax_schedule(months, margins, by_month, gate, rate)
+        schedule, _ = core._profit_tax_schedule(
+            months, margins, by_month, None, rate, defer_financing=False)
         return sum(schedule.values())
 
     accrued: dict = defaultdict(float)

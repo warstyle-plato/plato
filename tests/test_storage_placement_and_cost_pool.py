@@ -252,7 +252,7 @@ PROBE = r"""async (data) => {
   if (field) field.click();
   const after = document.getElementById('tep_storage_placement');
   answer = null;
-  await calculate();
+  await settledCalculate();
   for (let i = 0; i < 300 && !answer; i++) await new Promise(r => setTimeout(r, 100));
   window.fetch = fetch0;
   const text = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
@@ -282,7 +282,7 @@ def page() -> dict:
         with pw.chromium.launch(executable_path=str(path)) as engine:
             tab = engine.new_page(viewport={"width": 1440, "height": 900})
             tab.goto(base, wait_until="domcontentloaded")
-            tab.wait_for_timeout(1500)
+            browser.wait_for_result(tab)
             got = tab.evaluate(PROBE, SETTINGS)
             tab.close()
     assert got["expected"], "страница не получила ответ расчёта"

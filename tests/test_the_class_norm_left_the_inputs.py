@@ -70,7 +70,7 @@ def seen():
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_page(viewport={"width": 1440, "height": 900})
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(1200)
+            browser.wait_for_result(page)
             got = page.evaluate(PROBE, NORM)
             page.close()
     return got
