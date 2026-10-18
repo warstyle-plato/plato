@@ -808,8 +808,12 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
         ("EBITDA", fm.mln(eff.get("ebitda_mln")), "млн ₽"),
         ("Чистая прибыль", fm.mln(eff.get("net_profit_mln")), "млн ₽"),
         ("Operating margin", fm.pct(eff.get("margin")), ""),
-        ("Equity IRR", eff.get("returns_na") or (fm.pct(eff.get("irr_equity"))
-                                                 if eff.get("irr_equity") is not None else "—"), ""),
+        # Главный — IRR проекта до финансирования; IRR капитала вторым и
+        # числом, только когда движок счёл его показательным.
+        ("IRR проекта (до финансирования)", eff.get("returns_na") or (
+            fm.pct(eff.get("irr_project")) if eff.get("irr_project") is not None else "—"), ""),
+        ("IRR собственного капитала", eff.get("irr_equity_na") or eff.get("returns_na") or (
+            fm.pct(eff.get("irr_equity")) if eff.get("irr_equity") is not None else "—"), ""),
         _npv_row(eff, fm),
         ("Длительность до РВЭ", (fm.num(term / 12, 2) if term else "—"), "лет"),
         ("LLCR проекта", fm.x(eff.get("llcr")), ""),

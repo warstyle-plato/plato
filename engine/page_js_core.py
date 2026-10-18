@@ -199,10 +199,14 @@ const FIELD_SECTIONS=__DEVELOPAID_FIELD_SECTIONS__;
 const CLASS_ONLY_INPUTS=__DEVELOPAID_CLASS_ONLY_INPUTS__;
 // Поля участка — рисуются в карточке «Участок и плотность», не во «Вводных».
 const SITE_ONLY_INPUTS=__DEVELOPAID_SITE_ONLY_INPUTS__;
+// Поля, которые правятся галочкой у строки ТЭП (`TEP_ONLY_INPUTS`): поле →
+// строка, подпись и значения галочки. Во «Вводных» их нет.
+const TEP_ONLY_INPUTS=__DEVELOPAID_TEP_ONLY_INPUTS__;
 // Поля только жилого дома (`RESIDENTIAL_ONLY_INPUTS`) — не на экране
 // чисто нежилого проекта.
 const RESIDENTIAL_ONLY_INPUTS=__DEVELOPAID_RESIDENTIAL_ONLY_INPUTS__;
 const notOnInputs=id=>CLASS_ONLY_INPUTS.includes(id)||SITE_ONLY_INPUTS.includes(id)
+ ||Object.prototype.hasOwnProperty.call(TEP_ONLY_INPUTS,id)
  ||(RESIDENTIAL_ONLY_INPUTS.includes(id)&&isNonResidential());
 // Блоки объекта, которые выбранная стратегия реализации не читает (ДДУ /
 // прямая продажа / доходный метод), не рисуются. Карта — из движка
@@ -806,6 +810,9 @@ const unitBase=x=>(x&&x.base&&TERMS[x.base])?'м² '+TERMS[x.base].genitive:'—
 // IRR и NPV при непогашенном долге снимает движок (summary.equity_returns):
 // страница не сравнивает остаток долга сама, а печатает его подпись.
 const returnsNa=s=>((s||{}).equity_returns||{}).label||null;
+// Показателен ли IRR капитала, решает движок (summary.equity_irr): при своих
+// деньгах меньше порога от затрат вместо числа — его подпись «не показателен».
+const irrEquityNa=s=>{const v=(s||{}).equity_irr;return v&&v.meaningful===false?(v.label||'N/A'):returnsNa(s);};
 const inputDisplay=v=>Math.round(Number(v||0)*10)/10;
 
 function openTab(id,btn){
