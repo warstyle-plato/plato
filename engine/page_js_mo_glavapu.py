@@ -301,7 +301,7 @@ function renderMo(data){
     ' дадут школы, детсады и другие обязательные объекты, не хватает '+landNum(s.jobs.deficit,0)],
   ['Что добавить для рабочих мест',jobsGapText(s.jobs)],
   ['Компенсация в бюджет','больница на '+landNum(s.budget_compensation.hospital_beds,1)+' коек, скорая помощь '+landNum(s.budget_compensation.ambulance_cars,2)+' машин, пожарное депо '+landNum(s.budget_compensation.fire_cars,2)+' машин'],
-  ['Площадь зданий по наружным стенам',landNum(s.gns_sqm,0)+' м²']
+  ['Площадь жилой части по наружным стенам',landNum(s.gns_sqm,0)+' м²']
  ]));
  const upksSource=(data.upks||{}).source||{};
  const landSource=upksSource.land||{},oksSource=upksSource.oks||{};
