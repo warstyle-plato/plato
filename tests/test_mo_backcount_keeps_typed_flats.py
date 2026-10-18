@@ -55,7 +55,9 @@ def shown():
     tep = json.loads(json.dumps(core.TEP_DEFAULT, ensure_ascii=False))
     tep["apartments"].update(BEFORE)
     prelude = "\n".join([
-        "let inputs={site_area_ha:" + str(AREA_HA) + ",_mo_calc:{apartments_saleable:"
+        # Проект калькулятора Подмосковья несёт свой регион: без него страница
+        # считает проект московским (`classRegion()`) и зовёт нормативы города.
+        "let inputs={site_area_ha:" + str(AREA_HA) + ",vri_region:'mo',_mo_calc:{apartments_saleable:"
         + str(BEFORE["saleable"]) + "}};",
         "let tep=" + json.dumps(tep, ensure_ascii=False) + ";",
         "const SERVER=" + json.dumps(server, ensure_ascii=False) + ";",
