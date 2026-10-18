@@ -180,10 +180,9 @@ def test_on_a_phone_the_menu_confirms_before_it_overwrites() -> None:
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_page(viewport={"width": 390, "height": 900})
             page.goto(base, wait_until="load")
-            page.wait_for_function("typeof renderTep==='function'", timeout=20000)
-            page.wait_for_timeout(800)
+            browser.wait_for_result(page)
             page.evaluate("async()=>{inputs.site_area_ha=2;inputs.site_density_sqm_per_ha=25000;"
-                          "syncTep(false);await calculate();renderTep();openTab('tep');}")
+                          "syncTep(false);await settledCalculate();renderTep();openTab('tep');}")
             page.wait_for_function("document.querySelectorAll('#tepBody tr').length>3", timeout=20000)
             got = page.evaluate(PROBE)
             page.close()

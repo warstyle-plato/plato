@@ -146,7 +146,7 @@ def test_the_region_norm_is_declared_once():
     """Население — от площади квартир нормой региона, и норма не копия."""
     msk = core.project_population(core.TEP_DEFAULT, "msk")
     mo = core.project_population(core.TEP_DEFAULT, "mo")
-    assert msk[0] == 2425 and "945-ПП" in msk[1]
+    assert msk[0] == 2425 and "2152-ПП" in msk[1]
     assert mo[0] == 2858 and "РНГП" in mo[1]
     assert str(int(core._PARKING_2118_SQM_PER_PERSON)) in msk[1]
     assert str(int(core.MO_NORMS_DEFAULT["living_space_per_person_sqm"])) in mo[1]

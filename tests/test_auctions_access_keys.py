@@ -283,7 +283,7 @@ def test_rendered_auctions_page_hides_and_server_refuses(registry_app):
                           if route.request.url.startswith(base) else route.abort())
                 tab.goto(f"{base}{access_keys.ENTER_PATH}#k={secret}")
                 tab.wait_for_url(f"{base}/auctions", timeout=15000)
-                tab.wait_for_timeout(500)
+                tab.wait_for_load_state("networkidle")
                 assert not any(secret in url for url in seen), "ключ ушёл в запрос"
                 assert secret not in tab.url
 

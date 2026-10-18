@@ -59,9 +59,8 @@ def _render(width: int) -> dict:
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_page(viewport={"width": width, "height": 900})
             page.goto(base, wait_until="load")
-            page.wait_for_function("typeof renderTep==='function'", timeout=20000)
-            page.wait_for_timeout(800)
-            page.evaluate("async()=>{syncTep(false);await calculate();renderTep();openTab('tep');}")
+            browser.wait_for_result(page)
+            page.evaluate("async()=>{syncTep(false);await settledCalculate();renderTep();openTab('tep');}")
             page.wait_for_function("document.querySelectorAll('#tepBody tr').length>3",
                                    timeout=20000)
             got = page.evaluate(PROBE, ORDER)

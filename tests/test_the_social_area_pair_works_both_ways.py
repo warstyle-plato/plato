@@ -149,7 +149,7 @@ def test_the_row_says_which_number_is_which(got):
 
 
 def test_the_norm_field_shows_the_fact_in_the_manual_mode(got, core):
-    """19 998 общей на 1 000 мест — это 20,0 м²/место, а не норматив РНГП 15."""
+    """19 998 общей на 1 000 мест — это 20,0 м²/место, а не норматив 2151-ПП 15."""
     # К моменту снимка в строке стоит пережившая пересчёт правка ГНС: 22 220 в
     # габаритах наружных стен, то есть 19 998 общей.
     assert got["fact"] == pytest.approx(19998 / 1000, abs=0.01), got["fact"]
@@ -160,4 +160,7 @@ def test_the_norm_field_shows_the_fact_in_the_manual_mode(got, core):
 def test_the_row_names_the_fact_next_to_the_city_norm(got):
     """Одно число без второго читается как норматив — а это разные ответы."""
     assert "Фактически" in got["note"], got["note"]
-    assert "норматив РНГП" in got["note"], got["note"]
+    # Ступень — московская (2151-ПП); «РНГП» — слово области, и подпись его не
+    # носит.
+    assert "норматив Москвы (2151-ПП)" in got["note"], got["note"]
+    assert "РНГП" not in got["note"], got["note"]

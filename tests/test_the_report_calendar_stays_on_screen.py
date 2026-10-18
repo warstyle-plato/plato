@@ -97,7 +97,7 @@ def probe():
             for width in (1440, 390):
                 page = engine.new_page(viewport={"width": width, "height": 900})
                 page.goto(base, wait_until="domcontentloaded")
-                page.wait_for_timeout(1200)
+                browser.wait_for_result(page)
                 seen[width] = page.evaluate(PROBE, CALENDAR)
                 page.close()
     return seen
