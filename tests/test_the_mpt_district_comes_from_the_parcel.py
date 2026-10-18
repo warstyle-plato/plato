@@ -147,7 +147,7 @@ def test_relief_share_and_sum_are_locked_when_the_mode_does_not_read_them() -> N
 
 def test_in_a_real_browser_the_saved_nagatino_gets_the_relief_without_hand_input(core) -> None:
     """Сохранённый проект (старое «Нет»/100%, без района) → после загрузки МПТ посчитана."""
-    from browser import chromium_or_skip, serve
+    from browser import chromium_or_skip, serve, wait_for_result
     chrome = chromium_or_skip()
     from playwright.sync_api import sync_playwright
 
@@ -181,7 +181,7 @@ def test_in_a_real_browser_the_saved_nagatino_gets_the_relief_without_hand_input
                                timeout=60000)
         page.evaluate("() => openTab('vri')")
         page.wait_for_function("() => lastResult.vri.totals.relief>0", timeout=60000)
-        page.wait_for_timeout(300)
+        wait_for_result(page)
         seen["totals"] = page.evaluate("() => lastResult.vri.totals")
         seen["benefits"] = page.evaluate(
             "() => ({mpt:lastResult.vri.benefits.mpt_mln,total:lastResult.vri.benefits.total_mln,"
@@ -196,8 +196,7 @@ def test_in_a_real_browser_the_saved_nagatino_gets_the_relief_without_hand_input
             ".querySelector('.vri-relief-idle')||{}).textContent||''")
         seen["mode"] = page.evaluate("() => document.getElementById('f_vri_relief_mode').value")
         # Повторный расчёт не спрашивает разбор второй раз.
-        page.evaluate("() => calculate()")
-        page.wait_for_timeout(1500)
+        page.evaluate("() => settledCalculate()")
         browser.close()
 
     assert not errors, errors

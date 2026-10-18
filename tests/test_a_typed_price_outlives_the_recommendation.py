@@ -132,7 +132,7 @@ def _settle(page, calls, price):
     for _ in range(100):
         if price in calls.answers:
             break
-        page.wait_for_timeout(100)
+        page.wait_for_timeout(100)  # пауза не про расчёт: опрос перехваченного запроса
     assert price in calls.answers, (price, calls.sent)
     # Ждём результат именно нужной цены, а не число запросов или подпись
     # IA: оба могли относиться к предыдущему расчёту.
@@ -145,7 +145,7 @@ def _settle(page, calls, price):
 def _reload(page):
     page.reload(wait_until="domcontentloaded")
     page.wait_for_function("()=>!!document.getElementById('f_apartment_price_th')", timeout=20000)
-    page.wait_for_timeout(1000)
+    browser.wait_for_result(page)
     return page.evaluate(STATE)
 
 
@@ -158,14 +158,14 @@ def test_a_recommendation_answered_after_typing_does_not_overwrite_it():
         for _ in range(50):
             if held:
                 break
-            page.wait_for_timeout(100)
+            page.wait_for_timeout(100)  # пауза не про расчёт: опрос перехваченного запроса
         assert held, "запрос /market/price-hint не ушёл"
         _type_price(page, "1300")
         _settle(page, calls, 1300)
         held[0].fulfill(status=200, content_type="application/json", body=json.dumps(HINT))
         page.wait_for_function("()=>!/Считаю/.test(document.getElementById('daHintNote').textContent)",
                                timeout=15000)
-        page.wait_for_timeout(1500)
+        browser.wait_for_result(page)
         return page.evaluate(STATE), list(calls.sent), dict(calls.answers), _reload(page)
 
     state, sent, answers, reloaded = _run(scenario)
@@ -224,16 +224,18 @@ def test_a_late_calculation_of_the_recommendation_does_not_redraw_the_result():
         for _ in range(100):
             if calls.held:
                 break
-            page.wait_for_timeout(100)
+            page.wait_for_timeout(100)  # пауза не про расчёт: опрос перехваченного запроса
         assert calls.held, "расчёт по рекомендации не ушёл"
         _type_price(page, "1300")
         for _ in range(100):
             if 1300 in calls.answers:
                 break
-            page.wait_for_timeout(100)
-        page.wait_for_timeout(800)
+            page.wait_for_timeout(100)  # пауза не про расчёт: опрос перехваченного запроса
+        # Ответ на 1300 дорисован (расчёт 951 ещё держится, но он старше и в
+        # «расчёт в пути» уже не входит); затем отпускаем 951 и ждём, пока он доедет.
+        browser.wait_for_result(page)
         calls.release()
-        page.wait_for_timeout(1500)
+        page.wait_for_load_state("networkidle")
         return page.evaluate(STATE), dict(calls.answers)
 
     state, answers = _run(scenario)

@@ -44,7 +44,7 @@ SETUP = """async (yard)=>{
   set('landscaping_area_sqm',String(yard));
   phasing=makeDefaultPhasing(4);phasing.enabled=true;
   phasing.products.apartments=[32,26,22,20];
-  await calculate();
+  await settledCalculate();
   openTab('inputs');renderInputs();
   const box=document.getElementById('landscapingRateNote');
   return {note:box?box.textContent:'', area:lastResult.summary.landscaping_area_sqm,
@@ -70,7 +70,7 @@ def seen():
             for name, yard in (("typed", TYPED), ("norm", 0)):
                 page = engine.new_page(viewport={"width": 1440, "height": 900})
                 page.goto(base, wait_until="domcontentloaded")
-                page.wait_for_timeout(2000)
+                browser.wait_for_result(page)
                 out[name] = page.evaluate(SETUP, yard)
                 page.close()
     return out
