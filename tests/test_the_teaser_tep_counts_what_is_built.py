@@ -4,7 +4,7 @@
 у строки квартир стояло «—», у паркинга 108 проданных мест над итогом
 «90 квартир · 119 м/м», а итог колонки ГНС — 14 203 (наземная) под строками на
 18 666. Полный PDF печатает 90 квартир, 119 м/м и 18 666; тизер берёт те же
-числа у движка (`_presentation_product_count`, суммарная площадь в ГНС).
+числа у движка (`_presentation_product_count`, общая площадь).
 
 На прежнем коде падает: квартир в строке нет, паркинг 1 090 вместо 1 199,
 итог — наземная ГНС.
@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main as _wrapper  # noqa: E402
+from terms_glossary import TOTAL_AREA  # noqa: E402
 
 core = _wrapper.core
 
@@ -59,5 +60,5 @@ def test_total_is_the_sum_of_the_rows(teaser):
     consolidated, text = teaser
     summary = consolidated["summary"]
     assert summary["construction_volume_sqm"] != pytest.approx(summary["project_gns_sqm"])
-    assert re.search(r"Итого " + _fmt(summary["construction_volume_sqm"]) + " ", text)
-    assert not re.search(r"Итого " + _fmt(summary["project_gns_sqm"]) + " ", text)
+    assert re.search(rf"Итого — {TOTAL_AREA.lower()} " + _fmt(summary["construction_volume_sqm"]) + " ", text)
+    assert not re.search(rf"Итого — {TOTAL_AREA.lower()} " + _fmt(summary["project_gns_sqm"]) + " ", text)

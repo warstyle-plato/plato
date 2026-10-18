@@ -91,12 +91,18 @@ def _scale_tep_row_by_units(
         if key in row:
             result[key] = n(result, key) * factor
     result["units"] = float(allocated)
-    # Место неделимо и в гостевых, и в переданных: доля очереди округляется,
-    # но не может превысить её же мест — иначе очередь «продаёт» меньше нуля.
+    # Место неделимо и в гостевых, и в переданных. Делятся они тем же
+    # наибольшим остатком, что и сами места, с весами — местами очередей:
+    # сумма по очередям равна числу проекта (решение владельца 16.10.2026).
+    # Округление каждой доли отдельно теряло или добавляло место: 44 места,
+    # 4 гостевых, три очереди 15/15/14 — по одному гостевому на очередь.
+    # Доля не больше мест очереди, иначе очередь «продаёт» меньше нуля.
     for key in ("guest_units", "transfer_units"):
         if key not in row:
             continue
-        result[key] = float(min(allocated, int(round(n(row, key) * factor))))
+        split = _integer_phase_allocations(n(row, key), [float(a) for a in allocations])
+        share = split[phase_index] if phase_index < len(split) else 0
+        result[key] = float(min(allocated, share))
     return result
 
 
@@ -1176,6 +1182,19 @@ def _restate_phase_tax_expense(result: dict[str, Any], profit_tax: float) -> Non
         row["share"] = (float(row.get("value") or 0.0) / base) if base else 0.0
 
 
+# Поля строки ТЭП, которые складываются по очередям, — один список на свод
+# движка и на книгу v4, которая склеивает хвост очередей в последний свой лист
+# (`_v4_fold_tep_rows`). Книга складывала только метры и штуки, а гостевые,
+# переданные, продаваемые и паркинг объектов брала у первой из склеенных:
+# на 5 очередях гостевые 5-й пропадали, и продаваемых в книге было больше.
+PHASE_ADDITIVE_TEP_FIELDS: tuple[str, ...] = (
+    "gns", "total_area", "useful", "saleable", "transfer", "units",
+    "guest_units", "transfer_units", "saleable_units",
+    "under_gns", "parking_units",
+    "parking_saleable_units", "parking_under_units",
+    "parking_over_units", "parking_guest_units")
+
+
 def _consolidate_phase_results(
     master_inputs: dict[str, Any],
     phase_items: list[dict[str, Any]],
@@ -1218,11 +1237,7 @@ def _consolidate_phase_results(
             # очереди: объект второй очереди выключен в первой, и ответ
             # первой очереди не прячет его из свода.
             target["excluded"] = target["excluded"] and bool(row.get("excluded"))
-            for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
-                          "guest_units", "transfer_units", "saleable_units",
-                          "under_gns", "parking_units",
-                          "parking_saleable_units", "parking_under_units",
-                          "parking_over_units", "parking_guest_units"):
+            for field in PHASE_ADDITIVE_TEP_FIELDS:
                 target[field] += float(row.get(field, 0.0) or 0.0)
     tep_rows = list(tep_map.values())
     # Признак свода — по своду, а не по первой очереди: объект второй очереди
@@ -2451,7 +2466,7 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
                 (result.get("parking") or {}).get("own_under_gns") or 0.0),
             "revenue_per_saleable_th":per_th(result["summary"]["revenue"], p_saleable),
             # Базы — решение 4 ревизии книги: выручка и прибыль на
-            # продаваемую, расходы на суммарную площадь в ГНС (и на
+            # продаваемую, расходы на общую площадь (и на
             # продаваемую для сравнения с ценой).
             "capex_per_total_area_th":per_th(result["summary"]["capex"], p_total_area),
             "capex_per_saleable_th":per_th(result["summary"]["capex"], p_saleable),
