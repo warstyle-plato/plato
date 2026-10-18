@@ -16,7 +16,7 @@ prepared_calculation, _calculate_economics, помесячная детализ�
 # Решение владельца 29.09.2026 (ревизия книги, решение 4): каждый удельный
 # делится на СВОЮ базу и подписывается ею; база берётся из кода — из того,
 # на что начислены деньги, а не из заголовка таблицы.
-#   полные расходы, CAPEX и все расходные строки — на суммарную площадь в ГНС
+#   полные расходы, CAPEX и все расходные строки — на общую площадь
 #     (наземная + подземная, `construction_volume_sqm`);
 #   СМР наземной части — на наземную ГНС МКД (на неё начислено);
 #   СМР подземной части — на подземную площадь МКД;
@@ -96,8 +96,8 @@ def construction_cost_rows(capex: dict[str, float], bases: dict[str, float]) -> 
             continue
         rows.append({"label": label, "keys": list(keys), "value": value,
                      **unit_rates(value, capex_unit_base(keys[0]), bases),
-                     # На суммарную площадь в ГНС — и у статьи, чья база своя
-                     # часть (СМР): колонка «на м² суммарной площади» в тизере
+                     # На общую площадь — и у статьи, чья база своя
+                     # часть (СМР): колонка «на м² общей площади» в тизере
                      # печатает это число, а не ставку своей части под чужой шапкой.
                      "per_total_th": (value / bases[UNIT_BASE_TOTAL] / 1000
                                       if bases.get(UNIT_BASE_TOTAL) else None)})
@@ -512,7 +512,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "label": label,
             "value": value,
             "share": value / expense_base if expense_base else 0.0,
-            # Расход — на суммарную площадь в ГНС и на продаваемую (решение 4).
+            # Расход — на общую площадь и на продаваемую (решение 4).
             **unit_rates(value, UNIT_BASE_TOTAL, bases),
         }
         if label == "Отдельные объекты" and standalone_items:
@@ -549,15 +549,17 @@ def _calculate_economics(req: CalcRequest) -> dict:
         # Проекту — начисленные проценты кредита объекта, капиталу — его
         # собственный остаток после кредита (`nonres_cash_to_equity`); CAPEX
         # объекта уже в `capex_m`.
+        # Поток проекта — ДО финансирования, на все вложения (решение
+        # владельца 16.10.2026, «IRR проекта + пометка»): проценты, комиссии и
+        # тела кредитов в нём не участвуют, как в строке книги «Проектный CF
+        # до финансирования» (CF!28). По нему считаются и NPV, и IRR проекта.
         nonres_project = (
             float(fr.get("nonres_revenue", 0.0) or 0.0)
             - float(fr.get("nonres_costs", 0.0) or 0.0)
             - float(fr.get("nonres_vat_paid", 0.0) or 0.0)
-            - float(fr.get("nonres_loan_interest", 0.0) or 0.0)
-            - float(fr.get("nonres_loan_fee", 0.0) or 0.0)
         )
         vat_m = vat_ddu.get(month, 0.0)
-        project_cf.append(revenue_m - capex_m - opex_m - int_pay - fees - tax - vat_m + nonres_project)
+        project_cf.append(revenue_m - capex_m - opex_m - tax - vat_m + nonres_project)
         escrow_release = float(fr.get("escrow_release", 0.0) or 0.0)
         cash_revenue_to_equity = 0.0 if month < op["rve"] else revenue_m + escrow_release
         # Кэш-свип уходит банку с поступлений этой очереди: её долг он не
@@ -572,22 +574,21 @@ def _calculate_economics(req: CalcRequest) -> dict:
             + float(fr.get("nonres_cash_to_equity", 0.0) or 0.0)
         )
 
-    if project_cf:
-        project_cf[0] -= fin["bridge_fee"]
     if equity_cf:
         equity_cf[0] -= fin["bridge_fee"]
     permit_idx = months_between(op["project_start"], op["permit"])
-    if 0 <= permit_idx < len(project_cf):
-        project_cf[permit_idx] -= fin["pf_reservation_fee"]
+    if 0 <= permit_idx < len(equity_cf):
         equity_cf[permit_idx] -= fin["pf_reservation_fee"]
 
     discount_rate = n(x, "discount_rate_pct", 20) / 100
     project_npv = _monthly_npv(project_cf, discount_rate)
-    # Поток проекта гостиницы — FCFF её расчёта, без процентов кредита (как в
-    # модели Отеля 1): NPV проекта — её, а не ряды выше, они после процентов.
+    irr_project = _monthly_irr(project_cf)
+    # Поток проекта гостиницы — FCFF её расчёта (как в модели Отеля 1): NPV и
+    # IRR проекта — её, ряды выше не знают операционного периода гостиницы.
     _hotel = fin.get("hotel") or {}
     if _hotel.get("computed"):
         project_npv = float(_hotel["kpi"]["npv_project"])
+        irr_project = _hotel["kpi"].get("irr_project")
     equity_npv = _equity_npv(equity_cf, discount_rate)
     irr_equity = _monthly_irr(equity_cf)
 
@@ -962,13 +963,23 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "object_instance_notes": instance_notes,
             "npv": project_npv,
             "npv_equity": equity_npv,
+            "irr_project": irr_project,
             "irr_equity": irr_equity,
+            # Вложено своих денег — как «Вложено собственного капитала» книги
+            # (CF_n!B78): по нему решается, показателен ли IRR капитала.
+            "equity_contributed": equity_contributed_rub(equity_cf),
+            # База порога «IRR капитала показателен»: у гостиницы — CAPEX
+            # (в полных затратах её 20 лет эксплуатации); иначе полные затраты.
+            "equity_irr_cost_base": ({"value": float(_hotel["kpi"].get("capex") or 0.0),
+                                      "label": "CAPEX"}
+                                     if _hotel.get("computed") and _hotel["kpi"].get("capex")
+                                     else None),
             "full_project_cost": full_project_cost,
             "monetizable_saleable_sqm": monetizable_saleable_sqm,
             "apartment_saleable_sqm": apartment_saleable_sqm,
             "average_apartment_price_th": avg_apartment_price,
             # Каждый удельный — на свою базу (решение 4 ревизии книги):
-            # расходы — на суммарную площадь в ГНС и для сравнения с ценой на
+            # расходы — на общую площадь и для сравнения с ценой на
             # продаваемую; EBITDA и прибыль — на продаваемую.
             "full_cost_per_saleable_th": full_cost_per_saleable,
             "full_cost_per_total_area_th": per_sqm_th(full_project_cost, construction_volume_sqm),

@@ -527,7 +527,7 @@ def _risk_lines(model: dict[str, Any], st: _Styles, fm: _Formats) -> list[Any]:
 
 def _unit_economics_grid(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) -> Table:
     # Две базы — две колонки, подписанные словарём: расходы стоят в колонке
-    # суммарной площади в ГНС (и для сравнения с ценой — в продаваемой),
+    # общей площади (и для сравнения с ценой — в продаваемой),
     # выручка и прибыль — только в продаваемой. База строки — движка.
     rows = [[item["label"], fm.mln(item.get("total_mln")),
              fm.th(item.get("per_base_th")) if item.get("base") == TOTAL_AREA.key else "—",
@@ -808,8 +808,12 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
         ("EBITDA", fm.mln(eff.get("ebitda_mln")), "млн ₽"),
         ("Чистая прибыль", fm.mln(eff.get("net_profit_mln")), "млн ₽"),
         ("Operating margin", fm.pct(eff.get("margin")), ""),
-        ("Equity IRR", eff.get("returns_na") or (fm.pct(eff.get("irr_equity"))
-                                                 if eff.get("irr_equity") is not None else "—"), ""),
+        # Главный — IRR проекта до финансирования; IRR капитала вторым и
+        # числом, только когда движок счёл его показательным.
+        ("IRR проекта (до финансирования)", eff.get("returns_na") or (
+            fm.pct(eff.get("irr_project")) if eff.get("irr_project") is not None else "—"), ""),
+        ("IRR собственного капитала", eff.get("irr_equity_na") or eff.get("returns_na") or (
+            fm.pct(eff.get("irr_equity")) if eff.get("irr_equity") is not None else "—"), ""),
         _npv_row(eff, fm),
         ("Длительность до РВЭ", (fm.num(term / 12, 2) if term else "—"), "лет"),
         ("LLCR проекта", fm.x(eff.get("llcr")), ""),
@@ -833,11 +837,13 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
     counts = tep.get("units_by_measure") or {}
     # Итог колонки — сумма её строк, подземная площадь в ней есть: наземная
     # ГНС проекта (14 203 при строках на 18 666) под ними не сходилась ни с
-    # чем. Это та же суммарная площадь в ГНС, что на первой странице.
-    tep_rows.append(["Итого", fm.sqm(tep.get("construction_volume_sqm")), fm.sqm(tep.get("saleable_sqm")),
+    # чем. Это та же общая площадь, что на первой странице.
+    tep_rows.append([f"Итого — {TOTAL_AREA.lower()}", fm.sqm(tep.get("construction_volume_sqm")), fm.sqm(tep.get("saleable_sqm")),
                      " · ".join(f"{fm.count(value)} {measure}"
                                 for measure, value in counts.items() if value) or "—"])
-    col1.append(_grid(["Продукт", "Суммарная ГНС, м²", "Продаваемая, м²", "Единиц"], tep_rows,
+    # Колонка — ГНС строки (у паркинга и кладовых — площадь подземного этажа),
+    # как ТЭП!C3 книги; итог колонки — общая площадь, и зовётся словом глоссария.
+    col1.append(_grid(["Продукт", "ГНС / подземная, м²", "Продаваемая, м²", "Единиц"], tep_rows,
                       [col_w * 0.40, col_w * 0.22, col_w * 0.22, col_w * 0.16], st, bold_last=True))
     taxes = model.get("taxes") or {}
     col1.append(_section("Финансовая деятельность и налоги", col_w, st))
@@ -892,7 +898,7 @@ def _page_two(model: dict[str, Any], width: float, st: _Styles, fm: _Formats) ->
 
     # Колонка 3: себестоимость, структура расходов, финансовая деятельность, налоги.
     col3: list[Any] = [_section("Себестоимость строительства", col_w, st)]
-    # Колонки — на суммарную площадь в ГНС и на продаваемую, у ВСЕХ статей,
+    # Колонки — на общую площадь и на продаваемую, у ВСЕХ статей,
     # СМР тоже (владелец, 14.10.2026: «почему на м² наземной ГНС, если дальше
     # и так столбцы на м² ГНС или продаваемой»). Ставка СМР на метр своей
     # части — в полном отчёте, где у строки есть колонка «База».

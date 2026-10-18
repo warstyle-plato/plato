@@ -60,8 +60,8 @@ def _project_articles_term(tep_report: dict[str, Any]) -> Any:
 def _project_articles_sqm(tep_report: dict[str, Any]) -> float:
     """База общепроектных статей, м² — число движка (`project_articles_sqm`).
 
-    У жилого и смешанного проекта это суммарная площадь МКД в ГНС, у чисто
-    нежилого — суммарная площадь объектов (`object_rate_is_turnkey`). Отчёт
+    У жилого и смешанного проекта это общая площадь МКД, у чисто
+    нежилого — общая площадь объектов (`object_rate_is_turnkey`). Отчёт
     старого формата поля не несёт — тогда база по-прежнему МКД.
     """
     if tep_report.get("project_articles_sqm") is not None:
@@ -1557,7 +1557,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         # Вторая база в заголовке обязательна: без неё 23 тыс ₽/м² подземной
         # части читались как ставка на подземный метр (она — 190, во вводных).
         # СМР — на ту часть, на которую начислено; прочие статьи — на
-        # суммарную площадь в ГНС. База — в строке, из движка.
+        # общую площадь. База — в строке, из движка.
         cc_rows = [["Статья", "млн ₽", "На м² своей базы", "База",
                     "тыс ₽/м² продаваемой"]]
         for item in construction_costs:
@@ -1839,7 +1839,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # этим статьям спорят с подрядчиком и с банком, а в долях процента спор
     # не ведут.
     # Все строки — расходы, база у них одна (решение 4 ревизии книги):
-    # суммарная площадь в ГНС; подпись — из словаря терминов.
+    # общая площадь; подпись — из словаря терминов.
     expense_rows=[["Статья","Сумма","Доля",unit_label(UNIT_BASE_TOTAL).replace("тыс. ","тыс "),"тыс ₽/м² продаваемой"]]
     total_expense=sum(float(item.get('value') or 0) for item in expense_structure) or float(summary.get('total_expenses') or 0)
     for item in expense_structure:

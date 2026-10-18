@@ -107,7 +107,10 @@ _DevelopAid_METHODOLOGY = [
             "(«Соцобъекты и плата за ВРИ → Требование КРТ» — договор КРТ задаёт свою "
             "площадь, и она сильнее норматива) → норматив РНГП по ЁМКОСТИ здания "
             "(ДОО 27 м²/место до 125 мест, 18 до 250, дальше 16; СОШ 18 до 550, 15 до 1000, "
-            "дальше 13) → пусто. У поликлиники норматива города нет — там вводное поле. "
+            "дальше 13) → пусто. У поликлиники норма города есть, но это верхний предел, а "
+            "не ступень: 2150-ПП, разд. 1.4 (ред. 2579-ПП) — не более 27 м² ННП на "
+            "посещение в смену, уточняется МТЗ; поле по умолчанию 27 (решение владельца, "
+            "16.10.2026). "
             "В ручном режиме поле норматива показывает ФАКТИЧЕСКИЙ показатель — площадь "
             "делённая на места, — а норматив города называется рядом: это разные ответы, "
             "и второй не отменяет первого."
@@ -168,7 +171,7 @@ _DevelopAid_METHODOLOGY = [
     {
         "id": "OBJECT_RATE_IS_TURNKEY",
         "topic": "expenses",
-        "rule": "Что включает ставка строительства отдельно стоящего объекта, зависит от вида проекта (решение владельца 06.10.2026). В жилом и смешанном проекте — «под ключ»: ИРД, проект, сети, ввод, генподряд и техзаказчик уже в ней, сверху начисляется только резерв. В чисто нежилом проекте ставка офиса, ТЦ, ФОКа — СМР здания: ИРД, П, РД, подготовка, сети, ввод и содержание площадки идут своими ставками от суммарной площади объектов в ГНС, генподряд, техзаказчик, управление и резерв — и на СМР объекта; умолчание СМР — ставка класса «под ключ», уменьшенная на эти статьи. Наземный паркинг (ставка за место) везде «под ключ». Резерв ни в каком проекте не начисляется на плату за смену ВРИ — это известная сумма.",
+        "rule": f"Что включает ставка строительства отдельно стоящего объекта, зависит от вида проекта (решение владельца 06.10.2026). В жилом и смешанном проекте — «под ключ»: ИРД, проект, сети, ввод, генподряд и техзаказчик уже в ней, сверху начисляется только резерв. В чисто нежилом проекте ставка офиса, ТЦ, ФОКа — СМР здания: ИРД, П, РД, подготовка, сети, ввод и содержание площадки идут своими ставками от {OBJECTS_TOTAL_AREA.genitive}, генподряд, техзаказчик, управление и резерв — и на СМР объекта; умолчание СМР — ставка класса «под ключ», уменьшенная на эти статьи. Наземный паркинг (ставка за место) везде «под ключ». Резерв ни в каком проекте не начисляется на плату за смену ВРИ — это известная сумма.",
     },
     {
         "id": "MARKET_BENCHMARK_NORMALIZATION",
@@ -242,6 +245,7 @@ _AGENT_INSTRUCTIONS = """
 5. Не говори «примерно» там, где инструмент вернул точный расчётный результат.
 6. Если инструмент сообщает ограничение/предупреждение методики — обязательно упомяни его.
 6a. Если в снимке npv_mln/irr_equity_pct равны null и есть equity_returns_na, называй их ровно так: «N/A — долг не погашен». Не подставляй ноль и не досчитывай IRR/NPV сам: при непогашенном ПФ движок их не считает.
+6b. Главный показатель доходности — irr_project_pct: IRR проекта до финансирования, на все вложения (тот же поток, что NPV проекта). IRR капитала (irr_equity_pct) называй вторым и всегда с уточнением «капитала». Если irr_equity_pct равен null и есть irr_equity_label — произнеси подпись как есть («не показателен: своих денег N млн ₽ (X% затрат)») и объясни причину из irr_equity_reason: своих денег меньше порога от полных затрат, проект несут БРИДЖ и ПФ, и IRR капитала — отношение к почти нулю, а не доходность. Никогда не называй такое число (сотни процентов) доходностью и не досчитывай его сам.
 7. Не утверждай, что банк гарантированно одобрит проект.
 8. Ты не можешь менять модель без подтверждения пользователя. prepare_model_patch только готовит изменение; реальный Input меняется после кнопки «Применить в модель».
 8a. Если пользователь пишет «поставь», «измени», «повысить», «снизить» и значение известно — проверь эффект и подготовь patch. Не ограничивайся инструкцией пользователю, где вручную менять поле.
@@ -378,7 +382,12 @@ def _result_snapshot(result: dict[str, Any]) -> dict[str, Any]:
         # None — «не число»: при непогашенном долге движок снял NPV и IRR
         # (`equity_returns`), и ноль здесь читался бы как ответ.
         "npv_mln": round(float(s["npv"]) / 1e6, 2) if s.get("npv") is not None else None,
+        "irr_project_pct": round(float(s["irr_project"]) * 100, 3) if s.get("irr_project") is not None else None,
+        # IRR капитала — числом только когда движок счёл его показательным
+        # (`summary.equity_irr`); иначе подпись и причина, а не 300 %.
         "irr_equity_pct": round(float(s["irr_equity"]) * 100, 3) if s.get("irr_equity") is not None else None,
+        "irr_equity_label": equity_irr_label(s),
+        "irr_equity_reason": str(((s.get("equity_irr") or {}).get("reason")) or ""),
         "equity_returns_na": equity_returns_na_label(s),
         "peak_bridge_mln": round(float(f.get("peak_bridge", 0) or 0) / 1e6, 2),
         "peak_pf_mln": round(float(f.get("peak_pf", 0) or 0) / 1e6, 2),
@@ -411,6 +420,7 @@ def _metric_value(
         "margin_pct": float(s.get("margin", 0) or 0) * 100,
         "net_profit_mln": float(s.get("net_profit", 0) or 0) / 1e6,
         "npv_mln": (float(s["npv"]) / 1e6 if s.get("npv") is not None else None),
+        "irr_project_pct": (float(s["irr_project"]) * 100 if s.get("irr_project") is not None else None),
         "irr_equity_pct": (float(s["irr_equity"]) * 100 if s.get("irr_equity") is not None else None),
         # Метрики анализа чувствительности берутся отсюда же: одна выборка
         # показателя на целеподбор Платона и на Tornado.
@@ -454,8 +464,9 @@ _SENSITIVITY_METRICS: dict[str, dict[str, Any]] = {
     "llcr":               {"label": "LLCR", "unit": "x", "digits": 3, "better": "higher"},
     # Долг проекта без ПФ — кредит объектов (`report_layout.debt_metric`).
     "dscr":               {"label": "DSCR кредита объектов — минимум", "unit": "x", "digits": 2, "better": "higher"},
-    "npv_mln":            {"label": "NPV", "unit": "млн ₽", "digits": 0, "better": "higher"},
-    "irr_equity_pct":     {"label": "IRR на собственный капитал", "unit": "%", "digits": 1, "better": "higher"},
+    "npv_mln":            {"label": "NPV проекта", "unit": "млн ₽", "digits": 0, "better": "higher"},
+    "irr_project_pct":    {"label": "IRR проекта (до финансирования)", "unit": "%", "digits": 1, "better": "higher"},
+    "irr_equity_pct":     {"label": "IRR собственного капитала", "unit": "%", "digits": 1, "better": "higher"},
     "net_profit_mln":     {"label": "Чистая прибыль", "unit": "млн ₽", "digits": 0, "better": "higher"},
     "ebitda_mln":         {"label": "EBITDA", "unit": "млн ₽", "digits": 0, "better": "higher"},
     "equity_need_mln":    {"label": "Потребность в собственном капитале", "unit": "млн ₽", "digits": 0, "better": "lower"},
@@ -762,8 +773,10 @@ def run_sensitivity(
         # Например, IRR не считается, когда поток собственного капитала не меняет
         # знак, а IRR и NPV снимаются при непогашенном долге. Анализировать
         # нечего: не от чего отсчитывать отклонения. Причину называем.
-        _na = (equity_returns_na_label(_scope_result(base_bundle, scope, selected_view)[1].get("summary"))
-               if metric in ("npv_mln", "irr_equity_pct") else None)
+        _base_summary = _scope_result(base_bundle, scope, selected_view)[1].get("summary")
+        _na = (equity_irr_label(_base_summary) if metric == "irr_equity_pct"
+               else equity_returns_na_label(_base_summary)
+               if metric in ("npv_mln", "irr_project_pct") else None)
         raise HTTPException(
             status_code=400,
             detail=f"Показатель «{_SENSITIVITY_METRICS[metric]['label']}» "
@@ -2798,7 +2811,7 @@ _AGENT_TOOLS = [
                 },
                 "target_metric": {
                     "type": "string",
-                    "enum": ["llcr", "margin_pct", "net_profit_mln", "npv_mln", "irr_equity_pct"],
+                    "enum": ["llcr", "margin_pct", "net_profit_mln", "npv_mln", "irr_project_pct", "irr_equity_pct"],
                 },
                 "target_value": {"type": "number"},
                 "constraint": {

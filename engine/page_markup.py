@@ -233,8 +233,14 @@ PAGE += r"""</head>
         <!-- Коэффициенты парковки называет город по ЭТОМУ участку, поэтому они
              здесь, а не во «Вводных». Поля рисует renderSiteParkingFields по
              объявлению FIELD_GROUPS — подписей второй копией нет. -->
-        <div class="section-title" style="font-size:13px;margin-top:12px">Коэффициенты парковки участка</div>
-        <div class="fields" id="siteParkingFields" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))"></div>
+        <!-- Свёрнут по умолчанию: поля нужны редко, а в заголовке видно, что
+             принял расчёт (К1, К2, район) и есть ли противоречие с кадастром.
+             Узел статичный — перерисовка меняет только поля, и раскрытое
+             человеком остаётся раскрытым. -->
+        <details class="site-parking-box" id="siteParkingBox">
+          <summary id="siteParkingSummary">Коэффициенты парковки участка</summary>
+          <div class="fields" id="siteParkingFields" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))"></div>
+        </details>
         <!-- Параметры Подмосковья стоят здесь, а не на «Вводных»: два поля из
              шести — та же плотность и та же площадь участка, что выше, и рядом
              видно, что правится одно и то же. На «Вводных» они разрывали путь
@@ -629,7 +635,7 @@ PAGE += r"""</head>
       <div class="card">
         <div class="section-title">Удельная экономика</div>
         <div style="font-size:11px;color:#777;margin:-5px 0 10px">
-          Каждая строка — на свою базу: расходы на суммарную площадь в ГНС (с подземной), выручка и прибыль на продаваемую. Расходы — ещё и на 1 м² продаваемой, для сравнения с ценой.
+          Каждая строка — на свою базу: расходы на м² __DEVELOPAID_TERM_total_area_genitive__ (наземная и подземная), выручка и прибыль на м² продаваемой. Расходы — ещё и на 1 м² продаваемой, для сравнения с ценой.
         </div>
         <div class="scroll" style="max-height:none">
           <table class="unit-table">
@@ -668,7 +674,7 @@ PAGE += r"""</head>
           <div id="expenseStructureChart" class="expense-bars"></div>
           <div class="scroll" style="max-height:none">
             <table class="metric-table metric-compact">
-              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th id="expenseBaseHead">тыс ₽/м² суммарной площади в ГНС</th><th>тыс ₽/м² прод.</th></tr></thead>
+              <thead><tr><th>Категория</th><th>Сумма</th><th>Доля</th><th id="expenseBaseHead">тыс ₽/м² __DEVELOPAID_TERM_total_area_genitive__</th><th>тыс ₽/м² прод.</th></tr></thead>
               <tbody id="expenseStructureTable"></tbody>
               <tfoot><tr><th>Итого расходов</th><th id="expenseTotal"></th><th>100%</th><th id="expenseTotalGns"></th><th id="expenseTotalSaleable"></th></tr></tfoot>
             </table>

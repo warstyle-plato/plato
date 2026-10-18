@@ -219,7 +219,7 @@ def _summary_engine(model: dict) -> dict[str, float | None]:
         "rve_escrow_release_mln": fin.get("rve_escrow_release_mln"),
         "bridge_interest_mln": fin.get("bridge_interest_mln"),
         "pf_interest_mln": fin.get("pf_interest_mln"),
-        # База удельных расходов — суммарная площадь в ГНС (решение 4).
+        # База удельных расходов — общая площадь (решение 4).
         "total_area_sqm": tep.get("construction_volume_sqm"),
         "saleable_sqm": tep.get("saleable_sqm"),
     }
@@ -241,6 +241,12 @@ def test_the_summary_rows_read_the_same_numbers_as_the_engine(shape, request):
     engine = _summary_engine(model)
     for key in SUMMARY_KEYS:
         book = evaluator.cell(v4_dashboard.DATA_SHEET, f"C{v4_dashboard.DATA_ROWS[key]}")
+        if key == "irr_equity" and model["efficiency"].get("irr_equity_na"):
+            # IRR капитала не показателен — книга пишет ту же подпись, что
+            # движок (тысячи книга пишет без пробела).
+            label = model["efficiency"]["irr_equity_na"]
+            assert str(book).replace(" ", "") == label.replace(" ", ""), (book, label)
+            continue
         assert engine[key] is not None, key
         assert _close(float(book), float(engine[key]), key), (key, book, engine[key])
     # Комиссии книга делит иначе (плата за лимит; выдача БРИДЖа и резервирование
@@ -429,10 +435,12 @@ def test_the_dashboard_is_formulas_only_and_the_source_is_hidden(starved):
     assert not foreign, f"«Дашборд» читает мимо источника: {foreign[:5]}"
     data = archive.read(v4_dashboard.DATA_SHEET_PATH).decode("utf-8")
     literals = re.findall(r'<x:c r="([A-Z]+\d+)"[^>]*>\s*<x:v>', data)
-    # Числа, а не формулы, — только то, чего книга не считает: цель LLCR и
-    # обеспеченность парковкой движка (945-ПП/2118-ПП, #656).
+    # Числа, а не формулы, — только то, чего книга не считает: цель LLCR,
+    # IRR проекта до финансирования (поток книги CF!28 ведёт выручку по
+    # эскроу) и обеспеченность парковкой движка (945-ПП/2118-ПП, #656).
     assert literals == [f"C{v4_dashboard.DATA_ROWS[key]}" for key in
-                        ("llcr_target", "parking_built_total", "parking_required_total")], literals
+                        ("llcr_target", "irr_project", "parking_built_total",
+                         "parking_required_total")], literals
     # Карточки читают те же строки источника, что и паритет.
     first_card = evaluator.cell("Дашборд", "A5")
     assert abs(float(first_card) - float(evaluator.cell("ПРОВЕРКИ", "B76"))) < 1e-6

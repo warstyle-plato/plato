@@ -91,7 +91,8 @@ def test_tax_npv_and_irr_are_the_hotel_numbers() -> None:
     assert result["finance"]["profit_tax"] == pytest.approx(kpi["profit_tax"], rel=1e-9)
     assert summary["npv"] == pytest.approx(kpi["npv_project"], rel=1e-9)
     assert summary["npv_equity"] == pytest.approx(kpi["npv_equity"], rel=1e-9)
-    assert summary["irr_equity"] == pytest.approx(kpi["irr_equity"], rel=1e-9)
+    # Сырое число — модели гостиницы; показ решает `summary.equity_irr`.
+    assert summary["irr_equity_raw"] == pytest.approx(kpi["irr_equity"], rel=1e-9)
 
 
 def test_leftovers_name_housing_and_objects() -> None:
