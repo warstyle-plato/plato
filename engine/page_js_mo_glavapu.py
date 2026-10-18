@@ -756,6 +756,9 @@ async function sendTelegramResult(){
    // в чате печатал прибыль голым числом там, где остаточные продажи долг
    // закрыли, а банк своего погашения в РВЭ не получил.
    default_date:f.default_date||null,
+   // Чем модель гасит долг после дефолта, зависит от числа очередей: без него
+   // бот говорил «продажами следующих периодов» и проекту с одной очередью.
+   queue_count:(phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length)||1,
     report_payload:currentPdfReportPayload(cads)
  };
  try{
