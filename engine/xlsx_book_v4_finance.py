@@ -854,33 +854,51 @@ def _v4_apply_project_cash(xml: str, phase: int, missing: list[str]) -> str:
             missing.append(f"{sheet}: строка {number} занята — касса проекта не записана")
             return xml
     # Потребность после покрытия кассой: БРИДЖ (34) и собственные средства (56).
-    # Строки 43 и 57 (плата за невыбранный лимит и комиссия резервирования) брали лимит очереди как
-    # «общий авто-лимит B26 × доля очереди V»: B26 суммирует выборку ПФ ВСЕХ
-    # очередей, и через кассу (89 → строка 50 предыдущей → её 57 → B26 →
-    # выборка следующей) это замыкалось в круг. Лимит очереди — та же
-    # величина без обхода через свод: ROUNDUP(своя B45/10)×10 (V = он / B26).
+    # Строки 43 и 57 (плата за невыбранный лимит и комиссия резервирования)
+    # брали лимит очереди как «общий авто-лимит B26 × доля очереди V»: B26
+    # суммирует выборку ПФ ВСЕХ очередей, и через кассу (89 → строка 50
+    # предыдущей → её 57 → B26 → выборка следующей) это замыкалось в круг.
+    # Лимит очереди — та же величина без обхода через свод:
+    # ROUNDUP(своя B45/10)×10 (V = он / B26).
+    # Четыре строки правятся ОДНИМ проходом по листу: читать и писать их по
+    # одной — восемь проходов на лист, и сторож «гигабайт за сборку» это видит.
     queue_row = _V4_CF_QUEUE_ENABLED_ROW + (phase - 1)
-    for target, was, now in (
-            (34, "MAX(0,{c}33-{c}56)", "MAX(0,{c}33-{c}" + str(row) + "-{c}56)"),
-            (56, ",{c}33)", ",MAX(0,{c}33-{c}" + str(row) + "))"),
-            # 43 — плата за невыбранный лимит, 57 — комиссия резервирования:
-            # обе брали лимит очереди через свод.
-            (43, f"'Вводные'!$B$26*'Вводные'!$V${queue_row}", "ROUNDUP($B$45/10,0)*10"),
-            (57, f"'Вводные'!$B$26*'Вводные'!$V${queue_row}", "ROUNDUP($B$45/10,0)*10")):
-        cells: dict[str, dict[str, Any]] = {}
-        for coord, formula in _v4_row_formulas(xml, target).items():
-            column = re.match(r"[A-Z]+", coord).group(0)
+    own_limit = "ROUNDUP($B$45/10,0)*10"
+    rewrites = {
+        34: ("MAX(0,{c}33-{c}56)", "MAX(0,{c}33-{c}" + str(row) + "-{c}56)"),
+        56: (",{c}33)", ",MAX(0,{c}33-{c}" + str(row) + "))"),
+        43: (f"'Вводные'!$B$26*'Вводные'!$V${queue_row}", own_limit),
+        57: (f"'Вводные'!$B$26*'Вводные'!$V${queue_row}", own_limit),
+    }
+    unrecognised: list[str] = []
+
+    def rewrite_row(match: "re.Match[str]") -> str:
+        number = int(match.group("row"))
+        was, now = rewrites[number]
+
+        def rewrite_cell(cell: "re.Match[str]") -> str:
+            column = cell.group("col")
             if column in ("A", "B", "C"):
-                continue
-            if was.format(c=column) not in formula:
-                missing.append(f"{sheet}: строка {target} не опознана — касса проекта не учтена")
-                return xml
-            cells[coord] = dict(formula=formula.replace(
-                was.format(c=column), now.format(c=column), 1))
-        xml, done = _v4_set_cells(xml, target, cells)
-        if not done:
-            missing.append(f"{sheet}: строка {target} не записана — касса проекта не учтена")
-            return xml
+                return cell.group(0)
+            formula = html.unescape(cell.group("f"))
+            pattern = was.format(c=column)
+            if pattern not in formula:
+                unrecognised.append(f"{column}{number}")
+                return cell.group(0)
+            return (cell.group("head") + xml_escape(formula.replace(pattern, now.format(c=column), 1))
+                    + cell.group("tail"))
+
+        body = re.sub(
+            r'(?P<head><x:c r="(?P<col>[A-Z]{1,3})%d"[^>]*>(?:(?!</x:c>).)*?<x:f>)(?P<f>.*?)(?P<tail></x:f>)' % number,
+            rewrite_cell, match.group("body"), flags=re.S)
+        return match.group("open") + body + match.group("close")
+
+    xml = re.sub(
+        r'(?P<open><x:row r="(?P<row>34|43|56|57)"[^>]*>)(?P<body>.*?)(?P<close></x:row>)',
+        rewrite_row, xml, flags=re.S)
+    if unrecognised:
+        missing.append(f"{sheet}: касса проекта не учтена — не опознаны формулы "
+                       f"{', '.join(unrecognised[:4])}")
     return xml
 
 
