@@ -982,7 +982,7 @@ function resetProjectState(){
  // Открытый проект — тоже данные проекта: после сброса «Сохранить поверх»
  // записало бы пустой расчёт в чужую запись.
  openedProject=null;
- aiHistory=[];aiProposals=[];aiIntake=null;aiDocument=null;
+ aiHistory=[];aiProposals=[];aiIntake=null;aiDocument=null;aiQuestion=null;aiCadastralReady=false;
  territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
  moLastQuery='';moAutoApartments=null;

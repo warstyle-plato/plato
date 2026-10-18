@@ -159,6 +159,7 @@ def telegram_result(req: TelegramResultRequest,
         summary.get("pf_shortfall_month"),
         _layout_dscr(summary.get("layout")),
         _layout_no_debt_cover(summary.get("layout")),
+        summary.get("queue_count"),
     )
     # Продукт с ГНС и без продаваемой площади делает вердикт бессмысленным:
     # расходы полные, выручки нет, и «нецелесообразна» относится к дырке
@@ -198,7 +199,7 @@ def telegram_result(req: TelegramResultRequest,
             # осталась второй копией и продолжала читаться как правда.
             "• в эту дату банк либо переоформляет долг, либо фиксирует "
             "неисполнение; условий модель не знает и считает по допущению, что "
-            "остаток обслуживается продажами следующих периодов.\n\n"
+            f"остаток долга гасится {default_repayment_words(summary.get('queue_count'))}.\n\n"
         )
     else:
         rve_warning = ""

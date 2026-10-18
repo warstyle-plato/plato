@@ -116,8 +116,9 @@ def test_the_default_branch_keeps_its_own_words() -> None:
 def test_the_pdf_profit_carries_the_caveat() -> None:
     """В PDF у прибыли три разных исхода, и средний прежде молчал."""
     source = engine_source()
-    assert '" — условная: в модели дефолт, долг закрыт продажами "' in source
+    assert "default_profit_note(summary.get('net_profit')" in source
     assert "financing.get('default_date')" in source
+    assert core.default_profit_note(1e9).startswith(" — условная")
 
 
 def test_the_month_is_spelled_out_not_derived() -> None:
