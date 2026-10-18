@@ -27,6 +27,7 @@ import copy
 import functools
 import http.server
 import json
+import math
 import os
 import socketserver
 import sys
@@ -83,6 +84,34 @@ def test_the_nagatino_scenario_is_built_from_our_tep() -> None:
     for key in ("area_ha", "spp_residential", "vpp_pct", "spp_nonres", "land_right"):
         assert scenario["origin"][key]
     assert not scenario["not_sent"] and not scenario["problems"]
+
+
+def test_our_flats_count_is_sent_and_our_flats_area_is_named_as_not_sendable() -> None:
+    """Строка 5 калькулятора вводимая (галочка «через количество квартир») —
+    уходят наши штуки из ТЭП; строка 10 в режиме «СПП в ГНС» расчётная — не
+    уходит, и origin говорит это с коэффициентом калькулятора."""
+    inputs, tep = _nagatino()
+    scenario = gs.build_scenario(inputs, tep, numbers=NUMBERS)
+    assert scenario["params"]["flats_count"] == round(tep["apartments"]["units"]) == 2389
+    assert "через количество квартир" in scenario["origin"]["flats_count"]
+    assert "строка 5" in scenario["origin"]["flats_count"]
+    area = scenario["origin"]["flats_area"]
+    assert "не передаётся" in area and "0,65" in area and "140 218" in area
+    # Ключ кэша зависит от числа квартир: другие штуки — другой прогон.
+    other = copy.deepcopy(tep)
+    other["apartments"]["units"] = 1500
+    assert gs.scenario_key(gs.build_scenario(inputs, other, numbers=NUMBERS)) != gs.scenario_key(scenario)
+    # Без штук в ТЭП число квартир не выдумывается: 0 и причина.
+    other["apartments"]["units"] = 0
+    bare = gs.build_scenario(inputs, other, numbers=NUMBERS)
+    assert bare["params"]["flats_count"] == 0
+    assert "не передано" in bare["origin"]["flats_count"] and "2,1" in bare["origin"]["flats_count"]
+    # Непринятое число квартир снимает доверие к населению и всему от него.
+    for kind in ("social.population", "social.kindergarten", "parking.permanent",
+                 "parking_vri.2_1_1.guest", "flats.total", "service.commerce_need",
+                 "social_comp.total", "territory.green_zhk"):
+        assert gs._blocked_by(kind, {"flats_count"}) == "flats_count", kind
+    assert gs._blocked_by("vri_net_mln", {"flats_count"}) == ""
 
 
 def test_a_product_without_a_vri_is_not_sent_under_a_foreign_one() -> None:
@@ -445,12 +474,40 @@ def test_the_driver_sets_the_nagatino_scenario_on_the_calculator(calc_page) -> N
     assert rows["7.2"] == pytest.approx(13.769, abs=gs.TOL_THS)
     assert rows["8.1"] == pytest.approx(185.69, abs=gs.TOL_THS)
     assert (rows["18"], rows["22"]) == (350, 1000)
+    # Число квартир — наше (строка 5), и калькулятор перешёл на население от
+    # квартир: строка 4 = квартиры × 2,1 (его режим), а не площадь / 33.
+    assert params["flats_count"] == 2389
+    assert rows["5"] == 2389
+    assert rows["4"] == math.ceil(2389 * 2.1)
+    assert page.locator("#check-flats-builds-user").is_checked()
+    flats_step = next(x for x in report["applied"] if x["param"] == "flats_count")
+    assert flats_step["place"].endswith("строка 5")
     # Ползунок «Соотношение жилых / нежилых зданий» ушёл со 100/0 под наш сценарий.
     ratio = next(x for x in report["applied"] if x["param"] == "ratio")
     assert ratio["got"].startswith("Жилые 52") and "Нежилые 47" in ratio["got"]
     data = gs.export_xlsx(page)
     mpt = {i["vri"] for i in gs.mpt_by_vri(data)["items"]}
     assert {"Деловое управление (4.1)", "Объекты торговли (4.2)"} <= mpt
+    page.close()
+
+
+def test_without_our_flats_the_calculator_counts_them_itself(calc_page) -> None:
+    """Контрпример: штук в ТЭП нет — галочка снята, строка 5 = население / 2,1,
+    а не остаток прежнего ввода."""
+    inputs, tep = _nagatino()
+    tep = copy.deepcopy(tep)
+    tep["apartments"]["units"] = 0
+    params = gs.build_scenario(inputs, tep, numbers=NUMBERS)["params"]
+    page = calc_page.open()
+    gs._expand(page, gs.SECTION_COMPOSITION)
+    page.locator("#check-flats-builds-user").check()
+    page.locator("#id-input-flats-text-field").fill("777")
+    page.locator("#id-input-flats-text-field").press("Tab")
+    report = gs.apply_scenario(page, params)
+    assert report["refused"] == [], report["refused"]
+    rows = gs.read_rows(page)
+    assert not page.locator("#check-flats-builds-user").is_checked()
+    assert rows["5"] == math.ceil(rows["4"] / 2.1) and rows["5"] != 777
     page.close()
 
 
@@ -552,6 +609,16 @@ def test_the_page_shows_ours_and_glavapu_side_by_side(core, monkeypatch) -> None
     assert "Калькулятор не принял" in html and "раздел «Стоимость смены ВРИ»" in html
     assert "Не передано в калькулятор" in html and "Прочие обязательные объекты" in html
     assert got["status"].startswith("Сверка готова")
+    # «Что передано»: наши квартиры ушли штуками, площадь квартир — названа
+    # как не передаваемая, с коэффициентом калькулятора.
+    assert "квартир 2 389 шт." in html.replace("\u00a0", " ").replace("\u202f", " ")
+    assert "Не передаётся: площадь квартир калькулятору не передаётся" in html and "0,65" in html
+    # Причина у населения и у постоянных мест — одна и та же пара строк:
+    # его режим «через количество квартир» и его коэффициент площади квартир.
+    for kind in ("parking.permanent", "social_comp.total"):
+        start = html.index(f'data-kind="{kind}"')
+        cell = html[start:html.index("</tr>", start)]
+        assert "через количество квартир" in cell and "СПП жилая × 0,65" in cell, kind
     # Итог в карточке: счёт по статусам, предупреждение и кнопка окна.
     summary = got["summary"]
     assert "совпало:" in summary and "расходится:" in summary

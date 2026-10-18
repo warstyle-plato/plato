@@ -105,7 +105,7 @@ def _switch_class_in_browser(manual_area: float | None, to: str) -> dict:
             page = engine.new_page()
             page.goto(base, wait_until="load")
             page.wait_for_function("typeof applyProjectClassPreset==='function'")
-            page.wait_for_timeout(2000)
+            browser.wait_for_result(page)
             state = page.evaluate(
                 """([manual, to]) => {
                   inputs.underground_manual_spaces = 3194;

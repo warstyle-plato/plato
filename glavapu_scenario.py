@@ -35,6 +35,20 @@
    остаток, который проверяется;
 4. «Детализировать СПП» по умолчанию кладёт всё нежильё в «Деловое управление
    (4.1)»; остальные ВРИ добавляются меню категории.
+
+Квартиры (код калькулятора, объект констант `J`):
+
+* число квартир (строка 5) — ВВОДИМОЕ: галочка «Включить расчёт населения
+  через количество квартир» (`#check-flats-builds-user`) и поле
+  `#id-input-flats-text-field` в «Составе территории». Без галочки калькулятор
+  считает квартиры сам: население / 2,1. С галочкой население = квартиры × 2,1,
+  и от него идут соцобъекты, обслуживание и машино-места МКД. Сценарий ставит
+  галочку и передаёт наши штуки из ТЭП, когда они есть;
+* площадь квартир (строка 10) в режиме «СПП в ГНС» — РАСЧЁТНАЯ: СПП жилая ×
+  0,65. Поле для неё (`#epFlats`) есть только в режиме «Единый показатель», и
+  там наоборот СПП жилая выводится из неё (÷ 0,65) — наши ГНС перестали бы быть
+  нашими. Поэтому площадь квартир не передаётся, а её коэффициент показывается в
+  причине у каждого зависимого расхождения.
 """
 
 from __future__ import annotations
@@ -103,6 +117,13 @@ LAND_RIGHT_OPTIONS = {"ownership": "собственность", "lease": "ар�
 # тремя знаками, а плотность округляет — расхождение в последнем знаке не отказ.
 TOL_THS = 0.05      # тыс. м²
 TOL_HA = 0.001
+
+# Константы калькулятора из его кода (`genplan_assets`, объект `J`): площадь
+# квартир в режиме «СПП в ГНС» = СПП жилая × 0,65; население = площадь квартир
+# / 33 либо, при галочке «через количество квартир», квартиры × 2,1.
+CALC_FLATS_SHARE_OF_LIVING = 0.65
+CALC_SQM_PER_PERSON = 33.0
+CALC_PERSONS_PER_FLAT = 2.1
 
 
 def _num(value: Any) -> float:
@@ -193,8 +214,23 @@ def build_scenario(inputs: dict[str, Any], tep: dict[str, Any], *,
         slot["origin"] = "ТЭП проекта: ГНС " + ", ".join(
             f"«{_label(tep, k)}»" for k in slot["keys"])
 
-    transfer = _num(((tep.get("apartments") or {}) if isinstance(tep.get("apartments"), dict)
-                     else {}).get("transfer"))
+    apartments = tep.get("apartments") if isinstance(tep.get("apartments"), dict) else {}
+    transfer = _num(apartments.get("transfer"))
+    flats_count = int(round(_num(apartments.get("units"))))
+    if flats_count > 0:
+        origin["flats_count"] = ("ТЭП проекта: «Квартиры», шт. (при очередях — свод проекта) → "
+                                 "галочка калькулятора «Включить расчёт населения через "
+                                 "количество квартир» и его поле числа квартир (строка 5)")
+    else:
+        flats_count = 0
+        origin["flats_count"] = ("в ТЭП проекта нет числа квартир — калькулятору не передано, "
+                                 "он считает квартиры сам: население / 2,1 (строка 5)")
+    saleable = _num(apartments.get("saleable"))
+    share = f"{CALC_FLATS_SHARE_OF_LIVING:g}".replace(".", ",")
+    origin["flats_area"] = (
+        "площадь квартир калькулятору не передаётся: в режиме «СПП в ГНС» поля для неё "
+        f"нет, он считает её сам — СПП жилая × {share} (строка 10)"
+        + (f"; у нас {_sqm(saleable)} м² из ТЭП" if saleable > 0 else ""))
     if transfer > 0:
         # Льгота калькулятора за передачу квартир городу включается его
         # галочкой — сверка её пока не ставит, и это видно, а не молчит.
@@ -221,6 +257,7 @@ def build_scenario(inputs: dict[str, Any], tep: dict[str, Any], *,
         "nonres": sorted(nonres.values(), key=lambda item: item["code"]),
         "social": [dict(item, key=key) for key, item in sorted(social.items())],
         "land_right": LAND_RIGHT_OPTIONS.get(land_right, ""),
+        "flats_count": flats_count,
     }
     origin["restrict_ha"] = "ограничений сохранения модель не ведёт — 0"
     origin["vpp_pct"] = "ТЭП проекта: «Коммерция 1 этажа» / СПП жилых зданий"
@@ -290,6 +327,10 @@ SECTION_COMPOSITION = "Состав территории"
 SECTION_SOCIAL = "Определить социальные объекты"
 SECTION_DETAILS = "Детализировать СПП"
 SECTION_VRI = "Стоимость смены ВРИ"
+# Поле, которое видно только в раскрытом разделе, — признак «уже открыт».
+SECTION_PROBES = {SECTION_COMPOSITION: "#check-vpp-builds-user",
+                  SECTION_DETAILS: "#param-details-button-nzh",
+                  SECTION_VRI: "input[value='собственность'], input[value='аренда']"}
 
 
 class ScenarioStep:
@@ -326,6 +367,11 @@ def _expand(page: Any, title: str) -> None:
     header = page.locator("[role=button]:visible", has_text=title).first
     expanded = header.get_attribute("aria-expanded")
     if expanded == "true":
+        return
+    # Заголовок без aria-expanded: раскрыт ли раздел, говорит его поле —
+    # иначе клик по уже открытому разделу его закроет.
+    probe = SECTION_PROBES.get(title)
+    if expanded is None and probe and page.locator(probe).first.is_visible():
         return
     header.click(timeout=7000)
     _pause(page)
@@ -443,6 +489,23 @@ def apply_scenario(page: Any, params: dict[str, Any]) -> dict[str, Any]:
             log.refuse("vpp_pct", place_comp + ", поле «Нежилая часть в составе жилых зданий, %»",
                        f"поле показывает {got!r}", params["vpp_pct"], got)
     guarded("composition", place_comp, composition)
+
+    # 3а. Число квартир: галочка «через количество квартир» и поле. Без наших
+    # штук галочка снимается — иначе остался бы чужой ввод прежнего прогона.
+    flats = int(params.get("flats_count") or 0)
+    place_flats = place_comp + ", галочка «Включить расчёт населения через количество квартир»"
+
+    def flats_count() -> None:
+        if _set_checkbox(page, "#check-flats-builds-user", flats > 0) != (flats > 0):
+            log.refuse("flats_count", place_flats, "галочка не переключилась", flats > 0)
+            return
+        if flats <= 0:
+            return
+        got = _fill(page, "#id-input-flats-text-field", flats)
+        if ru_number(got) != flats:
+            log.refuse("flats_count", place_comp + ", поле числа квартир",
+                       f"поле показывает {got!r}", flats, got)
+    guarded("flats_count", place_flats, flats_count)
 
     # 4. Соцобъекты: типовой объект нужной мощности, иначе — своё число мест.
     if social:
@@ -572,6 +635,8 @@ def verify(page: Any, params: dict[str, Any], log: ScenarioStep) -> dict[str, fl
     check("vpp_pct", "7.2", built_in, TOL_THS, "СПП нежилой части жилых зданий")
     check("spp_nonres_ths", "8.1", params["spp_nonres_ths"], TOL_THS,
           "СПП общественных, производственных объектов")
+    if int(params.get("flats_count") or 0) > 0:
+        check("flats_count", "5", float(int(params["flats_count"])), 0.5, "Количество квартир")
     for item in params.get("social") or []:
         code = SOCIAL_PLACED_ROWS.get(item["key"])
         if code:
@@ -1357,9 +1422,10 @@ def compare(ours: dict[str, Any], theirs: dict[str, Any],
 # Какие виды зависят от каких параметров сценария: непринятый параметр
 # снимает доверие к виду, а не ко всей сверке.
 _DEPENDS = {
-    "social_comp.": ("spp", "vpp_pct", "spp_residential_ths", "composition", "social"),
+    "social_comp.": ("spp", "vpp_pct", "spp_residential_ths", "composition", "social",
+                     "flats_count"),
     "parking_vri.": ("spp", "spp_residential_ths", "spp_nonres_ths", "nonres", "vpp_pct",
-                     "composition", "social"),
+                     "composition", "social", "flats_count"),
     "vri.": ("spp", "spp_residential_ths", "spp_nonres_ths", "nonres", "land_right",
              "composition"),
     "vri_relief.": ("spp", "spp_nonres_ths", "nonres", "social", "composition"),
@@ -1368,18 +1434,18 @@ _DEPENDS = {
     "balance.": ("spp", "area_ha", "spp_residential_ths", "ratio", "composition"),
     "spp.": ("spp", "area_ha", "vpp_pct", "spp_residential_ths", "spp_nonres_ths",
              "nonres", "composition"),
-    "social.": ("spp", "vpp_pct", "spp_residential_ths", "composition"),
+    "social.": ("spp", "vpp_pct", "spp_residential_ths", "composition", "flats_count"),
     "parking.": ("spp", "vpp_pct", "spp_residential_ths", "spp_nonres_ths", "nonres",
-                 "composition"),
+                 "composition", "flats_count"),
     "mpt": ("spp_nonres_ths", "nonres", "vpp_pct", "composition"),
     "vri_cost_mln": ("spp", "spp_residential_ths", "spp_nonres_ths", "nonres", "land_right",
                      "composition"),
     "density": ("area_ha", "spp"),
-    "flats.": ("spp", "spp_residential_ths", "vpp_pct", "composition"),
+    "flats.": ("spp", "spp_residential_ths", "vpp_pct", "composition", "flats_count"),
     "social_obj.": ("social", "composition"),
     "service.": ("spp", "vpp_pct", "spp_residential_ths", "spp_nonres_ths", "nonres",
-                 "composition"),
-    "territory.": ("spp", "vpp_pct", "spp_residential_ths", "composition"),
+                 "composition", "flats_count"),
+    "territory.": ("spp", "vpp_pct", "spp_residential_ths", "composition", "flats_count"),
     "params.": (),
 }
 

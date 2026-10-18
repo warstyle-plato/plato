@@ -427,3 +427,61 @@ def test_a_blocked_entry_is_still_refused(monkeypatch):
     reached = _entry(monkeypatch, {**_PULL, "mergeable": True,
                                    "mergeable_state": "blocked"})
     assert reached == ["код 1"]
+
+
+def _pull_merge_ref(repo: Work, base_version: str) -> None:
+    """Коммит слияния, как его строит GitHub: первый родитель — main, второй — ветка."""
+    repo.run("git", "checkout", "-q", "--detach", "main")
+    repo.run("git", "merge", "-q", "--no-ff", "--no-edit", "work")
+    assert base_version in (repo.path / "main_legacy.py").read_text(encoding="utf-8")
+
+
+def _main_moves_on(repo: Work, version: str) -> None:
+    """Сосед слился после сборки коммита слияния: origin/main ушёл вперёд."""
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo.path,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    repo.run("git", "checkout", "-q", "main")
+    repo.commit(version, "x = 1\nz = 1\n")
+    repo.run("git", "push", "-q", "origin", "main")
+    repo.run("git", "fetch", "-q", "origin")
+    repo.run("git", "checkout", "-q", head)
+
+
+def test_a_branch_behind_a_moved_main_is_not_a_release_backwards(repo):
+    """Ветка номер не трогала, а main ушёл вперёд после сборки коммита слияния.
+
+    Против свежего main это читалось как «номер ниже базы» и будило автора
+    вливать main; против первого родителя коммита слияния — номер не выдан.
+    """
+    repo.run("git", "checkout", "-q", "-B", "work", "main")
+    (repo.path / "feature.py").write_text("y = 1\n", encoding="utf-8")
+    repo.run("git", "add", "feature.py")
+    repo.run("git", "commit", "-qm", "feature")
+    _pull_merge_ref(repo, "0.24.18")
+    _main_moves_on(repo, "0.24.19")
+
+    stale = _run(repo, "--on-branch", "--base", "origin/main")
+    assert stale.returncode == 1 and "ниже базы" in stale.stderr, stale.stdout
+
+    answer = _run(repo, "--on-branch", "--base", "HEAD^1")
+    assert answer.returncode == 0, answer.stderr
+    assert "не выдан" in answer.stdout
+
+
+def test_a_branch_that_lowers_the_number_is_still_caught_on_the_merge_ref(repo):
+    """Откат номера ветка приносит сама — он виден и против первого родителя."""
+    repo.run("git", "checkout", "-q", "-B", "work", "main")
+    repo.commit("0.24.17", "x = 2\n")
+    _pull_merge_ref(repo, "0.24.17")
+    _main_moves_on(repo, "0.24.19")
+
+    answer = _run(repo, "--on-branch", "--base", "HEAD^1")
+    assert answer.returncode == 1
+    assert "ниже базы" in answer.stderr
+
+
+def test_the_branch_guard_compares_with_the_merge_parent_not_a_fresh_main():
+    """Сторож на PR берёт базу из коммита слияния, а не скачивает main заново."""
+    guard = BRANCH_GUARD.read_text(encoding="utf-8")
+    assert '--base "HEAD^1"' in guard
+    assert 'origin/${{ github.base_ref }}' not in guard

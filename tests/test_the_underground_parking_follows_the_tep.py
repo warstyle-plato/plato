@@ -98,50 +98,37 @@ def seen():
             ctx = engine.new_context(viewport={"width": 1440, "height": 900})
             page = ctx.new_page()
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            browser.wait_for_result(page)
             page.evaluate(SAVE)
             page.reload(wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
-            # Пересчёт страницы асинхронный и на ответе переписывает `tep`.
-            # Таймера мало на медленном раннере: ответ приходил уже после
-            # правки ТЭП ниже и стирал её — «норма не изменилась». Ждём тишины
-            # в сети, то есть вернувшегося расчёта, а не времени.
-            page.wait_for_load_state("networkidle")
+            browser.wait_for_result(page)
 
             out["opened"] = page.evaluate(READ)
             page.evaluate(DOUBLE)
-            page.wait_for_timeout(1500)
+            browser.wait_for_result(page)
             out["doubled"] = page.evaluate(READ)
             page.evaluate(TYPE, "700")
             # Обработчик поля зовёт `calculate()`; он асинхронный и на лету
             # переписывает `tep` ответом сервера. Не дождавшись, стенд мерил бы
             # состояние посреди пересчёта — и правка ТЭП следом не применялась.
-            page.wait_for_timeout(1500)
-            page.wait_for_load_state("networkidle")
+            browser.wait_for_result(page)
             out["typed"] = page.evaluate(READ)
             # Правка ячейки ТЭП зовёт `calculate()`; ответ сервера переписывает
             # `tep` на лету — меряем после того, как он доехал.
             page.evaluate(DOUBLE)
-            page.wait_for_timeout(1500)
-            # Тот же расчёт на лету, что и выше: на медленном раннере ответ
-            # приходил позже таймера, и стенд мерил поле посреди пересчёта
-            # (CI #626, 06.10.2026: в поле 4794 при норме 2397). Ждём тишины.
-            page.wait_for_load_state("networkidle")
+            browser.wait_for_result(page)
             out["hand_yields"] = page.evaluate(READ)
             page.evaluate(TYPE, "700")
-            page.wait_for_timeout(1500)
-            page.wait_for_load_state("networkidle")
+            browser.wait_for_result(page)
             out["retyped"] = page.evaluate(READ)
             page.evaluate(TYPE, "")
-            page.wait_for_timeout(1500)
-            page.wait_for_load_state("networkidle")
+            browser.wait_for_result(page)
             out["restored"] = page.evaluate(READ)
             # Предохранитель: снимаем пометку и повторяем правку ТЭП.
             page.evaluate(FREEZE)
             frozen_before = page.evaluate(READ)
             page.evaluate(DOUBLE)
-            page.wait_for_timeout(1500)
-            page.wait_for_load_state("networkidle")
+            browser.wait_for_result(page)
             out["frozen_before"] = frozen_before
             out["frozen_after"] = page.evaluate(READ)
             ctx.close()
