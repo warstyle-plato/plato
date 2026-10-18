@@ -73,6 +73,12 @@ PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
 PAGE = PAGE.replace(MKD_SPP_SPLIT_PLACEHOLDER, json.dumps(MKD_SPP_SPLIT, ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_TERMS__", json.dumps(page_terms(), ensure_ascii=False))
+# Слово глоссария в разметке — `__DEVELOPAID_TERM_<ключ>_<падеж>__`: подпись до
+# первого расчёта та же, что скрипт подставит из TERMS после него, и литерала
+# в разметке нет.
+for _term_key, _term_words in page_terms().items():
+    for _case, _word in _term_words.items():
+        PAGE = PAGE.replace(f"__DEVELOPAID_TERM_{_term_key}_{_case}__", _word)
 PAGE = PAGE.replace(PRODUCT_LABELS_PLACEHOLDER,
                     json.dumps(product_labels(), ensure_ascii=False))
 PAGE = PAGE.replace(
