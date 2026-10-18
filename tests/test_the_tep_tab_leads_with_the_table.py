@@ -7,8 +7,8 @@
 плотность» → таблица ТЭП → свёрнутые «Паркинг и нормативы» и параметры
 Подмосковья → сверка с ГлавАПУ. Кнопки стоят у своих полей (владелец,
 18.10.2026): «Заполнить таблицу по площади и плотности» — в карточке участка,
-«Пересчитать по нормативам» — сразу под таблицей; кнопки «обновить
-производные» нет — правка вводных обновляет их сама.
+«Пересчитать по нормативам» и «Подтянуть значения из «Экономики»» — сразу
+под таблицей.
 
 Проверяется отрисованная страница в Chromium на ширинах телефона и десктопа:
 порядок блоков по геометрии, свёрнутость складок, отсутствие горизонтальной
@@ -87,15 +87,17 @@ def _check_order(got: dict) -> None:
     assert tops == sorted(tops), f"порядок блоков вкладки ТЭП нарушен: {got['tops']}"
     # Заполнение по плотности — в карточке участка, у полей площади и
     # плотности; пересчёт по нормативам — под таблицей, до свёрнутых
-    # настроек; отдельной кнопки производных нет.
+    # настроек; подтягивание из «Экономики» — следом за ним.
     buttons, site_top = got["buttons"], got["siteCardTop"]
-    assert buttons["syncTep"] is None, "кнопка «обновить производные» вернулась"
     assert buttons["formTepByDensity"] is not None
     assert site_top < buttons["formTepByDensity"] < site_top + got["siteCardHeight"] < got["tableTop"], \
         "кнопка заполнения по плотности стоит не в карточке участка"
     assert buttons["recalcFromTep"] is not None
     assert got["tableTop"] < buttons["recalcFromTep"] < got["tops"]["siteParkingBox"], \
         "кнопка пересчёта по нормативам стоит не сразу под таблицей"
+    assert buttons["syncTep"] is not None
+    assert buttons["recalcFromTep"] < buttons["syncTep"] < got["tops"]["siteParkingBox"], \
+        "кнопка «Подтянуть значения из «Экономики»» стоит не под таблицей"
     assert got["parkingOpen"] is False, "«Паркинг и нормативы» раскрыты по умолчанию"
     assert got["moOpen"] is False, "параметры Подмосковья раскрыты по умолчанию"
     assert got["summary"].startswith("Паркинг и нормативы")
@@ -120,8 +122,7 @@ def test_the_markup_keeps_the_order_without_a_browser() -> None:
     vri = page.index('<div id="vri" class="panel">')
     panel = page[tep:vri]
     marks = ['id="siteAreaHa"', 'onclick="formTepByDensity()"', 'id="tepBody"',
-             'onclick="recalcFromTep()"', 'id="siteParkingBox"', 'id="moParamsBox"',
+             'onclick="recalcFromTep()"', 'onclick="syncTep()"', 'id="siteParkingBox"', 'id="moParamsBox"',
              'id="glavapuScenarioBox"']
     positions = [panel.index(m) for m in marks]
     assert positions == sorted(positions), "порядок блоков вкладки ТЭП в разметке нарушен"
-    assert 'onclick="syncTep()"' not in panel, "кнопка «обновить производные» вернулась"

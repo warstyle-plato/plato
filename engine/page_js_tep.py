@@ -2444,8 +2444,12 @@ function standaloneProductSum(field,products){
 // (владелец, 30.08.2026).
 // Какой дорогой пойдёт «Пересчитать по нормативам» — один предикат на
 // действие и на подсказку у кнопки: выгрузка ГлавАПУ с платой за ВРИ — по
-// её ставкам; иначе пропорция от прежней соцнагрузки, если квартиры
-// изменились; иначе — нормативы Москвы от текущего ТЭП.
+// её ставкам; Подмосковье — нормативами области (тем же пересчётом, что идёт
+// сам после правки квартир); иначе пропорция от прежней соцнагрузки, если
+// квартиры изменились; иначе — нормативы Москвы от текущего ТЭП. Подсказка
+// говорит и то, идёт ли пересчёт сам (`scheduleTepAutoRecalc`): с выгрузкой
+// ГлавАПУ и в Подмосковье — да, в остальных случаях только по кнопке
+// (владелец, 18.10.2026: «а когда не происходит?»).
 function glavapuBaselineApplies(){
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  return !!(baseline&&Number(baseline.change_vri_mln||0));
@@ -2457,12 +2461,15 @@ function socialRescaleApplies(){
  return Math.abs(after-Number(basis.apartment_area_sqm||0))>=1;
 }
 function tepNormsMode(){
- if(glavapuBaselineApplies())return {key:'glavapu',
-  text:'Поменяли площадь квартир — нажмите: места в детсадах, школах и поликлинике, машино-места и платежи городу пересчитаются по ставкам из расчёта ГлавАПУ; перед заменой покажем, что изменится.'};
- if(socialRescaleApplies())return {key:'proportion',
-  text:'Поменяли площадь квартир — нажмите: места в детсадах, школах и поликлинике и машино-места изменятся в той же пропорции, что и число жителей; перед заменой покажем, что изменится.'};
- return {key:'norms',
-  text:'Поменяли площадь квартир — нажмите: посчитаем по нормативам Москвы, сколько нужно мест в детсадах, школах и поликлинике и машино-мест; перед заменой покажем, что изменится.'};
+ const lead='Если вы ввели новые площади квартир, ';
+ if(glavapuBaselineApplies())return {key:'glavapu',auto:true,
+  text:lead+'соцнагрузка (детсады, школы, поликлиника), машино-места и платежи городу пересчитываются сами — по ставкам из расчёта ГлавАПУ. Кнопка повторит пересчёт и покажет, что изменилось.'};
+ if(inputs._mo_calc)return {key:'mo',auto:true,
+  text:lead+'соцнагрузка (детсады, школы, поликлиника), машино-места и платежи городу пересчитываются сами — по нормативам Московской области. Кнопка повторит пересчёт вручную.'};
+ if(socialRescaleApplies())return {key:'proportion',auto:false,
+  text:lead+'пересчитайте соцнагрузку (детсады, школы, поликлиника) и машино-места — сами они здесь не меняются. Изменятся в той же пропорции, что и число жителей; перед заменой покажем, что изменится.'};
+ return {key:'norms',auto:false,
+  text:lead+'пересчитайте соцнагрузку (детсады, школы, поликлиника) и машино-места по нормативам Москвы — сами они здесь не меняются. Перед заменой покажем, что изменится.'};
 }
 function renderTepActions(){
  const hint=document.getElementById('tepNormsHint');
@@ -2585,6 +2592,15 @@ async function recalcFromTep(options){
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
+ // Подмосковье — нормативами области, тем же пересчётом, что идёт сам после
+ // правки квартир. Московские нормативы сервер к области не применяет.
+ if(tepNormsMode().key==='mo'){
+  const area=Number(inputs.site_area_ha||0);
+  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+  if(!(area>0&&apartments>0)){
+   say('Пересчитывать не от чего: нужны площадь участка и продаваемая площадь квартир.',false);return}
+  return recalcMoFromApartments(apartments,area);
+ }
  if(!glavapuBaselineApplies()){
   // Без выгрузки ГлавАПУ пересчёт не отказывается целиком. Сначала пропорция:
   // если соцнагрузка в модели уже есть, места и компенсация масштабируются по

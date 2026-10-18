@@ -53,8 +53,8 @@ details[open]>summary>.group-peek{display:none}
 .site-help{border-top:0;padding:0;margin:0 0 4px}.site-help>summary{font-size:12px;font-weight:400;color:#777;padding:4px 0}.site-help>span{display:block;font-size:11px;color:#777;padding:0 0 6px 18px}
 .site-card .note.warning{margin-top:10px}
 #tepSettingsCard .site-parking-box{margin-top:0}
-.tep-action{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;padding:10px 0;border-top:1px solid #eee}.tep-action .btn{flex:none}
-.tep-action-hint{flex:1 1 220px;font-size:12px;color:#777;line-height:1.45}
+.tep-action{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;padding:10px 0;border-top:1px solid #eee}.tep-action .btn{flex:0 1 auto;max-width:100%;white-space:normal;text-align:left}
+.tep-action-hint{flex:1 1 220px;font-size:12px;color:#777;line-height:1.45}.tep-action-secondary .btn{color:#555}
 .tep-confirm-table{width:100%;border-collapse:collapse;margin:10px 0 4px;font-size:12px}.tep-confirm-table th,.tep-confirm-table td{border-bottom:1px solid #e5e5e5;padding:6px 8px;text-align:right}.tep-confirm-table th:first-child,.tep-confirm-table td:first-child{text-align:left}.tep-confirm-table th{font-weight:600;color:#555;font-size:11px}
 .object-tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0 4px}
 .object-tabs button{padding:5px 11px;border-radius:14px;border:1px solid #cfd6e0;background:#fff;cursor:pointer;font-size:13px}

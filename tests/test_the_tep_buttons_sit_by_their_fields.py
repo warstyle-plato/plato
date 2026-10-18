@@ -12,8 +12,10 @@
   поликлиника и машино-места под нынешнюю площадь квартир. Подсказка называет
   дорогу, которой пойдёт действие (ГлавАПУ, пропорция или норматив), без
   жаргона. Дорогу решает один предикат — его читают и действие, и подсказка.
-- Кнопки «Обновить производные ТЭП из вводных» нет: правка вводных
-  обновляет производные строки сама (`TEP_DERIVED_INPUTS` → `syncTep`).
+- «Подтянуть значения из «Экономики» (МФЦ, ТЦ, паркинг и др.)» — под
+  таблицей, вторичная: правка вводных обновляет строки сама
+  (`TEP_DERIVED_INPUTS` → `syncTep`), кнопка нужна, когда число разошлось с
+  полем. Длинная подпись переносится и не вылезает за экран телефона.
 
 Проверяется настоящий код страницы: стенд на node через page_blocks и
 отрисованная страница в Chromium на ширине телефона.
@@ -43,7 +45,7 @@ def _tep_panel() -> str:
 
 # Слова, которые посетитель без подготовки не понимает: им не место ни в
 # названиях кнопок, ни в пояснениях к ним.
-JARGON = ("РНГП", "производн", "пропорции не от чего", "соцнагрузк", "ГНС", "СПП", "ТЭП по")
+JARGON = ("РНГП", "производн", "пропорции не от чего", "ГНС", "СПП", "ТЭП по")
 
 
 def test_each_button_sits_by_the_fields_it_reads() -> None:
@@ -57,7 +59,8 @@ def test_each_button_sits_by_the_fields_it_reads() -> None:
     table_card = tep[tep.index('id="tepBody"'):tep.index('id="tepSettingsCard"')]
     assert 'onclick="recalcFromTep()">Пересчитать по нормативам<' in table_card, \
         "кнопка пересчёта по нормативам не под таблицей"
-    assert 'onclick="syncTep()"' not in tep, "кнопка «обновить производные» вернулась"
+    assert 'onclick="syncTep()">Подтянуть значения из «Экономики» (МФЦ, ТЦ, паркинг и др.)<' in table_card, \
+        "кнопки «Подтянуть значения из «Экономики»» нет под таблицей"
     for old in ("Сформировать ТЭП по плотности", "Пересчитать нормативы по ТЭП",
                 "Обновить производные ТЭП из вводных"):
         assert old not in core.PAGE, f"старая подпись «{old}» осталась на странице"
@@ -78,6 +81,7 @@ def test_the_overlay_speaks_plainly_too() -> None:
     for word in JARGON:
         assert word not in said, f"слой пишет в пояснение жаргон «{word}»"
     assert "Действиях с ТЭП" not in overlay and "Сформировать ТЭП" not in overlay
+    assert "#tep [onclick=\"syncTep()\"]" in overlay, "слой не замечает пропажу кнопки «Экономики»"
 
 
 PRELUDE = """
@@ -138,31 +142,48 @@ process.stdout.write(JSON.stringify({shown,body,before,afterCancel,applied,plan,
     assert out["closed"] == "none"
 
 
-def test_the_norms_hint_names_the_route_the_action_takes() -> None:
+def test_the_norms_hint_names_the_route_and_says_whether_it_runs_by_itself() -> None:
     tail = """
-const modes=[];
-const hints=[];
-modes.push(tepNormsMode().key);hints.push(tepNormsMode().text);  // ни ГлавАПУ, ни базы
+const modes=[],autos=[],hints=[];
+const look=()=>{const m=tepNormsMode();modes.push(m.key);autos.push(m.auto);hints.push(m.text)};
+look();                                                           // ни ГлавАПУ, ни базы
 inputs._social_basis={apartment_area_sqm:30000,source:'тест'};
-modes.push(tepNormsMode().key);hints.push(tepNormsMode().text);  // база есть, квартиры изменились
+look();                                                           // база есть, квартиры изменились
 tep.apartments.saleable=30000;
-modes.push(tepNormsMode().key);                                   // база равна ТЭП — пропорции нет
+look();                                                           // база равна ТЭП — пропорции нет
+inputs._mo_calc={territory:{district:'Красногорск'}};
+look();                                                           // Подмосковье
+let moCalled=null;
+recalcMoFromApartments=(apartments,area)=>{moCalled={apartments,area}};
+recalcFromTep();
 inputs._glavapu_import={normalized:{change_vri_mln:12}};
-modes.push(tepNormsMode().key);                                   // выгрузка с платой за ВРИ
+look();                                                           // выгрузка с платой за ВРИ
 renderTepActions();
-hints.push(nodes.tepNormsHint.textContent);
-process.stdout.write(JSON.stringify({modes,hint:nodes.tepNormsHint.textContent,hints:hints.join(' ')}));
+process.stdout.write(JSON.stringify({modes,autos,hints,moCalled,hint:nodes.tepNormsHint.textContent}));
 """
     out = page_blocks.run_json(PRELUDE, tail)
-    assert out["modes"] == ["norms", "proportion", "norms", "glavapu"]
+    assert out["modes"] == ["norms", "proportion", "norms", "mo", "glavapu"]
+    # Сам пересчёт идёт только там, где его зовёт scheduleTepAutoRecalc.
+    assert out["autos"] == [False, False, False, True, True]
+    for text, auto in zip(out["hints"], out["autos"]):
+        assert text.startswith("Если вы ввели новые площади квартир"), text
+        assert ("пересчитываются сами" in text) == auto, text
+        assert ("сами они здесь не меняются" in text) == (not auto), text
+        for word in JARGON:
+            assert word not in text, f"в подсказке «Пересчитать по нормативам» жаргон «{word}»"
+    assert "Московской области" in out["hints"][3] and "Москвы" not in out["hints"][3].replace("Московской", "")
     assert "ГлавАПУ" in out["hint"]
-    for word in JARGON:
-        assert word not in out["hints"] , f"в подсказке «Пересчитать по нормативам» жаргон «{word}»"
+    # В Подмосковье кнопка идёт тем же пересчётом области, а не московским.
+    assert out["moCalled"] == {"apartments": 30000, "area": 2}
     # Решение о маршруте — один предикат: его читают и действие, и подсказка.
     assert "glavapuBaselineApplies()" in page_blocks.function("recalcFromTep")
+    assert "tepNormsMode()" in page_blocks.function("recalcFromTep")
     assert "socialRescaleApplies()" in page_blocks.function("rescaleSocialFromTep")
     assert "glavapuBaselineApplies()" in page_blocks.function("tepNormsMode")
     assert "socialRescaleApplies()" in page_blocks.function("tepNormsMode")
+    # «Сам» в подсказке — то же условие, что у автопересчёта.
+    auto = page_blocks.function("scheduleTepAutoRecalc")
+    assert "change_vri_mln" in auto and "inputs._mo_calc" in auto
 
 
 PROBE = """()=>{
@@ -176,6 +197,8 @@ PROBE = """()=>{
   normsHint:document.getElementById('tepNormsHint').textContent,
   siteHint:document.getElementById('siteApplyHint').textContent,
   sync:!!document.querySelector('#tep [onclick="syncTep()"]'),
+  syncTop:top(document.querySelector('#tep [onclick="syncTep()"]')),
+  inside:[...document.querySelectorAll('#tep .tep-action .btn')].every(b=>{const r=b.getBoundingClientRect();return r.left>=0&&r.right<=window.innerWidth}),
   menu:!!document.getElementById('tepActionsMenu')};
  out.buttonVisible=btn.getBoundingClientRect().height>0&&norms.getBoundingClientRect().height>0;
  out.pageScroll=document.documentElement.scrollWidth-window.innerWidth;
@@ -202,7 +225,7 @@ def test_on_a_phone_the_buttons_sit_by_their_fields_and_confirm_first() -> None:
     path = browser.chromium_or_skip()
     with browser.serve(core.app, PORT) as base, sync_playwright() as pw:
         with pw.chromium.launch(executable_path=str(path)) as engine:
-            page = engine.new_page(viewport={"width": 390, "height": 900})
+            page = engine.new_page(viewport={"width": 375, "height": 900})
             page.goto(base, wait_until="load")
             browser.wait_for_result(page)
             page.evaluate("async()=>{inputs.site_area_ha=2;inputs.site_density_sqm_per_ha=25000;"
@@ -214,8 +237,11 @@ def test_on_a_phone_the_buttons_sit_by_their_fields_and_confirm_first() -> None:
         "кнопка заполнения по плотности не в карточке участка"
     assert got["tableTop"] < got["normsTop"] < got["parkingTop"], \
         "кнопка пересчёта по нормативам не сразу под таблицей"
-    assert not got["sync"] and not got["menu"], "меню «Действия с ТЭП» или кнопка производных вернулись"
-    assert got["normsHint"].startswith("Поменяли площадь квартир"), got["normsHint"]
+    assert not got["menu"], "меню «Действия с ТЭП» вернулось"
+    assert got["sync"] and got["normsTop"] < got["syncTop"] < got["parkingTop"], \
+        "«Подтянуть значения из «Экономики»» не под таблицей"
+    assert got["inside"], "кнопка вылезает за экран телефона"
+    assert got["normsHint"].startswith("Если вы ввели новые площади квартир"), got["normsHint"]
     for word in JARGON:
         assert word not in got["normsHint"] + got["siteHint"], f"на экране жаргон «{word}»"
     assert got["buttonVisible"] and got["pageScroll"] <= 0
