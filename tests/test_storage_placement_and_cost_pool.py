@@ -231,9 +231,15 @@ PORT = 18987
 
 PROBE = r"""async (data) => {
   applyProjectSnapshot(data);
-  const field = document.getElementById('f_storage_placement');
-  const options = field ? [...field.options].map(o => o.value) : [];
-  const before = field ? field.value : null;
+  renderInputs();
+  renderTep();
+  // Поле живёт галочкой у строки «Кладовые» ТЭП (владелец, 16.10.2026), а
+  // группы «Кладовые» во «Вводных» нет.
+  const inInputs = !!document.getElementById('f_storage_placement');
+  const groups = [...document.querySelectorAll('details[data-group]')].map(d => d.dataset.group);
+  const field = document.getElementById('tep_storage_placement');
+  const rowText = field ? (field.closest('tr').children[0].innerText || '') : '';
+  const before = field ? field.checked : null;
   let answer = null;
   const fetch0 = window.fetch;
   window.fetch = async (...args) => {
@@ -243,10 +249,8 @@ PROBE = r"""async (data) => {
     }
     return response;
   };
-  if (field) {
-    field.value = 'above';
-    field.dispatchEvent(new Event('change', {bubbles: true}));
-  }
+  if (field) field.click();
+  const after = document.getElementById('tep_storage_placement');
   answer = null;
   await calculate();
   for (let i = 0; i < 300 && !answer; i++) await new Promise(r => setTimeout(r, 100));
@@ -255,7 +259,9 @@ PROBE = r"""async (data) => {
   const rows = [...document.querySelectorAll('#salesReportTable tr')].map(tr =>
     [...tr.children].map(text));
   return {
-    options, before, placement: inputs.storage_placement, rows,
+    before, inInputs, groups, rowText,
+    checkedAfter: after ? after.checked : null,
+    placement: inputs.storage_placement, rows,
     expected: answer ? answer.report.products.filter(p => p.sellable !== false && !p.excluded)
       .map(p => [p.label, money(p.cost || 0), p.margin == null ? '—' : pct(p.margin)]) : null,
     basis: text(document.getElementById('salesCostBasis')),
@@ -284,9 +290,14 @@ def page() -> dict:
 
 
 def test_the_page_offers_the_placement_and_keeps_the_default(page) -> None:
-    assert page["options"] == ["underground", "above"]
-    # Файл «Донского» поля не несёт: страница показывает умолчание.
-    assert page["before"] == "underground"
+    # Галочка стоит у строки «Кладовые» ТЭП, во «Вводных» поля и группы нет.
+    assert page["rowText"].startswith("Кладовые"), page["rowText"]
+    assert "над землёй" in page["rowText"]
+    assert not page["inInputs"]
+    assert page["groups"] and "Кладовые" not in page["groups"], page["groups"]
+    # Файл «Донского» поля не несёт: страница показывает умолчание — снята.
+    assert page["before"] is False
+    assert page["checkedAfter"] is True
     assert page["placement"] == "above"
     assert page["under"] == ["underground_parking"]
 
