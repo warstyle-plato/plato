@@ -289,9 +289,9 @@ def seen():
             page = engine.new_page(viewport={"width": 1440, "height": 900})
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(1800)
+            browser.wait_for_result(page)
             got = page.evaluate(PROBE)
-            page.wait_for_timeout(600)
+            page.wait_for_load_state("networkidle")
             page.close()
     got["errors"] = errors
     return got
@@ -642,9 +642,9 @@ def returned():
             page = engine.new_page(viewport={"width": 1440, "height": 900})
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(1800)
+            browser.wait_for_result(page)
             got = page.evaluate(PROBE_RETURNED)
-            page.wait_for_timeout(400)
+            page.wait_for_load_state("networkidle")
             page.close()
     got["errors"] = errors
     return got
@@ -707,9 +707,9 @@ def chosen():
             page = engine.new_page(viewport={"width": 1440, "height": 900})
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(1800)
+            browser.wait_for_result(page)
             got = page.evaluate(PROBE_TARGET)
-            page.wait_for_timeout(400)
+            page.wait_for_load_state("networkidle")
             page.close()
     got["errors"] = errors
     return got
@@ -809,7 +809,7 @@ def dialog():
             page = engine.new_page(viewport={"width": 390, "height": 760})
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(1800)
+            browser.wait_for_result(page)
             got = page.evaluate(PROBE_DIALOG)
             # Подпись у поля ставки пишется по итогу расчёта, а он идёт своим
             # чередом: снятая раньше, она показывает ещё жилой двор.
@@ -827,7 +827,7 @@ def dialog():
             got["mainAboveShown"] = page.evaluate(
                 "() => !!document.querySelector('.field[data-field=\"main_above_th_per_sqm\"]')")
             got.update(page.evaluate(PROBE_CANCEL))
-            page.wait_for_timeout(300)
+            page.wait_for_load_state("networkidle")
             page.close()
     got["errors"] = errors
     return got

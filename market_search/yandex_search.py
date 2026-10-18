@@ -92,7 +92,10 @@ class YandexSearchClient:
     def configured(self) -> bool:
         return bool(self.api_key and self.folder_id)
 
-    def search(self, query: str, *, groups_on_page: int = 10) -> list[SearchDoc]:
+    def search(self, query: str, *, groups_on_page: int = 10,
+               sort_by_date: bool = False) -> list[SearchDoc]:
+        """Поиск. `sort_by_date` — выдача по свежести, а не по релевантности:
+        так спрашивают о поправках, которые новее самого акта."""
         query = " ".join(str(query or "").split())
         if not self.configured:
             raise RemoteServiceError(
@@ -111,7 +114,10 @@ class YandexSearchClient:
             return []
 
         groups = max(1, min(int(groups_on_page), 100))
-        cache_key = hashlib.sha256(f"v2:{groups}:{query}".encode("utf-8")).hexdigest()
+        # Сортировка — часть вопроса: у выдачи по дате свой кэш, иначе второй
+        # вопрос получал бы ответ первого.
+        sort_tag = ":bytime" if sort_by_date else ""
+        cache_key = hashlib.sha256(f"v2:{groups}{sort_tag}:{query}".encode("utf-8")).hexdigest()
         cache_path = self.cache_dir / f"{cache_key}.json"
         cached = load_json(cache_path) if fresh(cache_path, self.cache_ttl) else None
         if isinstance(cached, list):
@@ -132,6 +138,8 @@ class YandexSearchClient:
             },
             "maxPassages": "3",
             "region": "225",
+            **({"sortSpec": {"sortMode": "SORT_MODE_BY_TIME",
+                             "sortOrder": "SORT_ORDER_DESC"}} if sort_by_date else {}),
             "l10N": "LOCALIZATION_RU",
             "folderId": self.folder_id,
             "responseFormat": "FORMAT_XML",

@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from browser import chromium_or_skip, serve
+from browser import chromium_or_skip, serve, wait_for_result
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -147,7 +147,7 @@ def test_the_proportion_works_outside_moscow() -> None:
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.goto(f"{base}/classic", wait_until="domcontentloaded")
-            tab.wait_for_timeout(600)
+            wait_for_result(tab)
             got = tab.evaluate("""async ()=>{
               cadastralAnalysis={territory:{district:'Одинцово', inside_moscow:false}};
               tep.apartments.saleable=80000; tep.apartments.gns=130716;

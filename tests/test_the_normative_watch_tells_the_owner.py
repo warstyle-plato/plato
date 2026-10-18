@@ -173,8 +173,9 @@ def test_todays_registry_has_no_link_gaps() -> None:
     # Пробел допустим только названный: позиция со статусом «нет ссылки»,
     # внесённая сюда поимённо. Главная страница mos.ru или чужая новость на
     # месте адреса — хуже пустоты: сторож отвечал по ним «ok», проверяя не тот
-    # документ. У 2150-ПП адрес текста пока не найден.
-    declared = {"moscow-2150-pp"}
+    # документ. У 2150-ПП адрес найден 16.10.2026 (база «Кодекс»), поимённых
+    # пробелов не осталось — множество пустое, и новый пробел не пройдёт молча.
+    declared: set[str] = set()
     blind = [str(row.get("short_name") or row.get("title"))
              for row in registry._merged_registry()
              if not str(row.get("source_url") or "").strip()
@@ -718,7 +719,9 @@ def test_the_search_says_what_it_saw(monkeypatch) -> None:
             self.url = "https://example.test/" + str(len(title))
 
     class _Client:
-        def search(self, query: str, groups_on_page: int = 10) -> list[_Doc]:
+        def search(self, query: str, **kw: object) -> list[_Doc]:
+            # Вопросов у сторожа два; выдача на оба одна и та же, адреса
+            # совпадают — строка в объединённой выдаче одна.
             return [_Doc("Постановление о чём-то другом"), _Doc("И ещё о другом")]
 
     entry = {"id": "mo-713-30", "short_name": "713/30 — РНГП Московской области",

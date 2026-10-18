@@ -236,7 +236,10 @@ def test_a_manual_tep_is_recalculated_by_the_rngp_norms():
 
     assert got["tep"] == blank_tep(), "ручной ТЭП пересчитан долями мимо нормативов"
     assert "NORM" in got["shown"], "нормативный пересчёт не вызван"
-    assert any("нормативный ТЭП по РНГП" in str(item) for item in got["shown"])
+    # Регион не назван — это Москва (`classRegion()`), и подпись не обещает
+    # ей РНГП области (решение владельца, 16.10.2026).
+    assert any("ТЭП по нормативам Москвы" in str(item) for item in got["shown"]), got["shown"]
+    assert not any("РНГП" in str(item) for item in got["shown"]), got["shown"]
 
 
 def test_a_mo_project_goes_the_same_normative_way():
@@ -244,12 +247,13 @@ def test_a_mo_project_goes_the_same_normative_way():
     машино-мест переживали уменьшение жилья втрое — доли меняли только жильё."""
     got = run_apply(
         {"site_area_ha": 22.4, "site_density_sqm_per_ha": 8900,
-         "_site_density_user_set": True,
+         "_site_density_user_set": True, "vri_region": "mo",
          "_mo_calc": {"query": "50:12:0100131:497"}},
         blank_tep(), extra_js=NORM_STUBS)
 
     assert got["tep"] == blank_tep()
     assert "NORM" in got["shown"]
+    assert any("ТЭП по нормативам РНГП Московской области" in str(item) for item in got["shown"]), got["shown"]
 
 
 def test_moscow_with_glavapu_keeps_the_share_method():

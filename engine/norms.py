@@ -171,14 +171,20 @@ MOSCOW_QUARTER_REFERENCE: dict[str, dict[str, Any]] = {
 }
 
 # УУПСС, выпуск 25, уровень цен 01.01.2026. Какая колонка нужна — с
-# технологическим присоединением или без — свод не решает и велит сверить по
-# приказу № 141 и 3135-ПП; пока не сверено, компенсация считается ставками
-# исходного расчёта, а не этими числами.
+# технологическим присоединением или без — свод не решал; ответ даёт сам акт:
+# 3135-ПП, прил. 2 п. 2.1 (ред. 2072-ПП) — «с учетом технологического
+# присоединения и дополнительных затрат» на дату решения ГЗК. Колонка названа,
+# но в расчёт эти числа по-прежнему не входят: компенсация считается ставками
+# исходного расчёта.
 MOSCOW_SOCIAL_UUPSS: dict[str, Any] = {
     "effective_from": "2026-03-03",
     "price_level": "2026-01-01",
     "document": "Приказ Москомэкспертизы МКЭ-ОД/26-14 от 03.03.2026, выпуск 25",
-    "column_unresolved": True,
+    "column_unresolved": False,
+    "column": "with_tp",
+    "column_basis": ("3135-ПП, прил. 2 п. 2.1 (ред. 2072-ПП): «с учетом "
+                     "технологического присоединения и дополнительных затрат» "
+                     "на дату решения ГЗК"),
     "values_th_rub": {
         "kindergarten": {"unit": "место", "without_tp": 4329.61, "with_tp": 4728.76},
         "school": {"unit": "место", "without_tp": 4283.72, "with_tp": 4490.91},
@@ -214,7 +220,10 @@ def moscow_price_index(at: str = "") -> dict[str, Any]:
 # 123 места против 130.
 _PARKING_2118_HOUSEHOLD = 2.1     # средний размер домовладения, чел.
 _PARKING_2118_PER_FLAT = 0.8      # D — мест на одну квартиру
-_PARKING_2118_SQM_PER_PERSON = 33.0   # S₁ — площадь квартир на жителя
+# S₁ — площадь квартир на жителя. Число — не приложения 5: его называет
+# 2152-ПП, п. 1.4.2, табл. 1.4.1 (ред. 2579-ПП от 28.10.2025), а формула
+# машино-мест лишь читает его как S₁.
+_PARKING_2118_SQM_PER_PERSON = 33.0
 _PARKING_GUEST_SHARE = 0.1        # гостевые — десятая часть постоянных
 # Пункт 2: коэффициенты по полосам площади квартиры и границы полос —
 # до 70 м², от 70 до 100, свыше 100.
@@ -309,8 +318,8 @@ def moscow_permanent_parking_by_average(apartment_area_sqm: float,
         return 0, "площади квартир нет — мест не посчитать"
     if count <= 0:
         return (moscow_permanent_parking_2118(area),
-                "приложение 5 к 945-ПП в редакции 2118-ПП, пункт 1: S / (33 × 2,1) × 0,8 "
-                "(число квартир не задано)")
+                "приложение 5 к 945-ПП в редакции 2118-ПП, пункт 1: S / (S₁ × 2,1) × 0,8, "
+                "S₁ = 33 м² по 2152-ПП, табл. 1.4.1 (число квартир не задано)")
     avg = area / count
     band = moscow_parking_band(avg)
     label = {"small": "до 70 м²", "medium": "от 70 до 100 м²", "large": "свыше 100 м²"}[band]
@@ -325,8 +334,8 @@ def moscow_permanent_parking_2118(apartment_area_sqm: float,
                                   sqm_per_person: float = _PARKING_2118_SQM_PER_PERSON) -> int:
     """Пункт 1: Nп = S / (S₁ × 2,1) × D — для градостроительного проектирования.
 
-    S — площадь квартир; S₁ — площадь квартир на жителя (33 м² по нормативам
-    города); D = 0,8 места на квартиру. Округление вверх.
+    S — площадь квартир; S₁ — площадь квартир на жителя (33 м² — 2152-ПП,
+    табл. 1.4.1 в ред. 2579-ПП); D = 0,8 места на квартиру. Округление вверх.
     """
     area = max(0.0, float(apartment_area_sqm or 0.0))
     per_person = float(sqm_per_person or 0.0)
@@ -737,6 +746,16 @@ if "underground_parking" in TEP_DEFAULT:
 _VRI_RIGHT_DIVISOR: dict[str, float] = {"ownership": 1.00001, "lease": 1.001}
 
 
+def _ceil_places(value: float) -> int:
+    """Округление мест вверх без двоичного шума.
+
+    Ставка, снятая с базы (места / НП), умноженная на ту же НП, даёт не ровно
+    целое, а 93,000…01 — и ⌈⌉ отдавал 94 там, где город сказал 93. Шестой знак
+    отсекает шум и не трогает настоящие дроби: 0,000001 места не бывает.
+    """
+    return math.ceil(round(float(value), 6))
+
+
 def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
                                       areas: dict[str, Any]) -> dict[str, Any]:
     """Пересчёт по параметрам исходного расчёта ГлавАПУ.
@@ -790,10 +809,17 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     if not any(social_rates.values()):
         warnings.append("в исходном расчёте нет компенсации за соцобъекты — ставки снять не с чего")
 
-    permanent_rate = (num(baseline, "parking_permanent") / base_res_np
-                      if base_res_np > 0 else 0.0)
-    attached_rate = (num(baseline, "parking_attached") / base_built_in_np
-                     if base_built_in_np > 0 else 0.0)
+    # Ставка снимается с той же НП, которой потом считаются новые метры —
+    # СПП × 0,9. Выгрузка печатает НП округлённой до тысяч (22,217 против
+    # 24,686 × 0,9 = 22,2174), и ставка с напечатанной НП на исходных же
+    # метрах давала 93,002 → 94 вместо 93 города. Нет СПП в базе — берём НП.
+    base_res_np_rate = base_res_spp * 0.9 if base_res_spp > 0 else base_res_np
+    base_built_in_np_rate = (base_built_in_spp * 0.9 if base_built_in_spp > 0
+                             else base_built_in_np)
+    permanent_rate = (num(baseline, "parking_permanent") / base_res_np_rate
+                      if base_res_np_rate > 0 else 0.0)
+    attached_rate = (num(baseline, "parking_attached") / base_built_in_np_rate
+                     if base_built_in_np_rate > 0 else 0.0)
     rates["parking_permanent_per_sqm"] = permanent_rate
     rates["parking_attached_per_sqm"] = attached_rate
 
@@ -829,7 +855,7 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
         # строительство, свидетельством АГР, одобренной 3D-моделью на 05.08.2026
         # или вводом до 01.01.2028 считаются по прежней редакции. Определять это
         # «примерно по дате» нельзя — режим задаётся явно.
-        permanent = math.ceil(res_spp * 0.9 * permanent_rate) if res_spp and permanent_rate else 0
+        permanent = _ceil_places(res_spp * 0.9 * permanent_rate) if res_spp and permanent_rate else 0
         parking_basis = "прежняя редакция 945-ПП: ставка исходного расчёта на метр НП жилой"
     elif any(float(flats.get(key) or 0) for key in ("small", "medium", "large")):
         permanent = moscow_permanent_parking_by_mix(
@@ -849,7 +875,7 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     # офисное здание значит выдать 109 мест за посчитанные. У отдельного здания
     # свой паркинг со своим нормативом, и он в проекте отдельным продуктом.
     built_in_np = built_in_spp * 0.9
-    attached = (math.ceil(built_in_np * attached_rate)
+    attached = (_ceil_places(built_in_np * attached_rate)
                 if built_in_np and attached_rate else 0)
     standalone_np = max(0.0, nonres_np - built_in_np)
     if standalone_np > 1:
@@ -978,6 +1004,14 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     if base_permanent:
         compare("гостевые машино-места", math.ceil(base_permanent / 10.0),
                 int(num(baseline, "parking_guest")))
+    # Приобъектные: ставка (с СПП × 0,9) на НАПЕЧАТАННОЙ НП базы обязана
+    # вернуть число базы — две записи одной площади в выгрузке согласны друг
+    # с другом; не согласны (прочитана не та строка) — это расхождение, а не
+    # расчёт. Пока строки не было, 94 против 93 на исходном ТЭП шло молча.
+    base_attached = int(num(baseline, "parking_attached"))
+    if base_attached and base_built_in_np > 0 and attached_rate > 0:
+        compare("приобъектные машино-места",
+                _ceil_places(base_built_in_np * attached_rate), base_attached)
         if regime == "2118_2026" and base_apartments > 0:
             # Настоящая проверка формулы: город посчитал 897 мест на 77 696 м²
             # квартир — ровно столько даёт пункт 1. Разойдётся — значит база
@@ -1130,7 +1164,9 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
         "parking_total": permanent + guest + onsite,
         "parking_norm_regime": regime,
         "parking_basis": parking_basis,
-        # Места приложения труда — основание льготы по плате за ВРИ (3135-ПП),
+        # Места приложения труда — основание льготы по плате за ВРИ (1874-ПП,
+        # прил. 1 п. 1.6; 593-ПП прил. 2 п. 86 / п. 2(2); 3135-ПП — про
+        # инфраструктурный договор, а не про льготу),
         # у калькулятора для неё своя строка 52 «Льгота на стр-во жилья за
         # создание МПТ». Норма — 32 м² НП на место с округлением ВНИЗ, как в
         # коде калькулятора (таблица Q, места по ВРИ — lodash `floor`;
@@ -1692,7 +1728,9 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
 # называло московский документ под областным числом (Мытищи, 04.10.2026).
 PARKING_NORM_OF: dict[str, str] = {
     parking_norms.MOSCOW: "приложения 6 к 945-ПП",
-    parking_norms.MOSCOW_OBLAST: "Московской области (СП 42.13330.2016, табл. Ж.1)",
+    parking_norms.MOSCOW_OBLAST: ("Московской области (приложение № 10 к 713/30 в ред. "
+                                  "1480/45; строки, кроме ФОК, не сверены; "
+                                  "СП 42.13330.2016 отменён с 12.07.2026)"),
 }
 
 
