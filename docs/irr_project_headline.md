@@ -19,6 +19,13 @@
   «Проектный CF до финансирования» (CF!28). По тому же потоку считается
   NPV проекта (`summary.npv`); прежде он был после процентов и комиссий.
   У гостиницы — FCFF её расчёта (`hotel.kpi.irr_project`).
+  **Числом всегда** (решение владельца 17.10.2026, «Проект — числом»): остаток
+  ПФ к концу проекта IRR и NPV проекта не снимает — кредита в потоке до
+  финансирования нет. Правило 2 от 29.09.2026 («N/A — долг не погашен»,
+  `_apply_equity_returns_verdict` → `summary.equity_returns`) снимает только
+  `npv_equity` и `irr_equity`. Читатели строк проекта признак не читают и
+  печатают число; подпись капитала — `equity_irr_label` / `equity_returns_na_label`.
+  Проверка: `tests/test_project_returns_are_a_number_when_the_debt_is_unpaid.py`.
 - **IRR капитала** — второй строкой. Решает одна функция
   `_apply_equity_irr_verdict` (`engine/schedules.py`), пишет `summary.equity_irr`:
   - `debt_unrepaid` — «N/A — долг не погашен» (решение 2 от 29.09.2026);

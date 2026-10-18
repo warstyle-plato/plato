@@ -168,7 +168,8 @@ def test_the_financing_need_counts_each_cost_once(default_book) -> None:
         engine["finance"]["pf_limit_required"] / 1e6)
 
 
-# --- 5. книга нежилого: IRR и NPV при непогашенном долге — «N/A», как у движка --
+# --- 5. книга нежилого: IRR и NPV капитала при непогашенном долге — «N/A»,
+# как у движка; NPV проекта — числом (владелец, 17.10.2026) ------------------
 
 @pytest.fixture(scope="module")
 def nonres_unrepaid():
@@ -184,10 +185,12 @@ def nonres_unrepaid():
 
 
 def test_the_nonres_engine_takes_the_returns_away(nonres_unrepaid) -> None:
-    """Предохранитель: у эталона долг ПФ не погашен, и движок снял IRR/NPV."""
+    """Предохранитель: у эталона долг ПФ не погашен, и движок снял IRR/NPV
+    капитала; NPV проекта остался числом."""
     engine, _book_ = nonres_unrepaid
     assert engine["summary"]["equity_returns"]["status"] == "debt_unrepaid"
-    assert engine["summary"]["npv"] is None
+    assert engine["summary"]["npv_equity"] is None
+    assert isinstance(engine["summary"]["npv"], float)
 
 
 def test_the_nonres_book_says_na_like_the_engine(nonres_unrepaid) -> None:
@@ -197,6 +200,10 @@ def test_the_nonres_book_says_na_like_the_engine(nonres_unrepaid) -> None:
     shown = {report[f"A{row}"].value: book.cell("Отчёт", f"B{row}")
              for row in range(1, report.max_row + 1)
              if str(report[f"A{row}"].value or "").startswith(("NPV", "IRR"))}
+    project_npv = shown.pop("NPV проекта")
+    assert isinstance(project_npv, (int, float)), project_npv
+    assert project_npv == pytest.approx(engine["summary"]["npv"], rel=0.05), (
+        project_npv, engine["summary"]["npv"])
     assert shown and all(value == label for value in shown.values()), shown
     assert book.cell("Сверка", "I3") == "ПРОЙДЕНО"
 

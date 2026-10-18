@@ -1174,8 +1174,11 @@
      (`summary.equity_irr`): при почти нулевых своих деньгах (всё до ПФ несёт
      БРИДЖ) он выходит 300 %+ и доходностью не является (владелец, 16.10.2026). */
   function irrLead(summary) {
+    /* IRR проекта — числом и при непогашенном долге: кредита в потоке до
+       финансирования нет; «N/A — долг не погашен» — только у капитала
+       (владелец, 17.10.2026). */
     var na = (summary.equity_returns || {}).label;
-    var project = na || (summary.irr_project == null ? 'не считается' : fmtPct(summary.irr_project));
+    var project = summary.irr_project == null ? 'не считается' : fmtPct(summary.irr_project);
     var verdict = summary.equity_irr;
     var equity = verdict && verdict.meaningful === false ? (verdict.label || 'N/A')
       : na || (summary.irr_equity == null ? 'N/A' : fmtPct(summary.irr_equity));

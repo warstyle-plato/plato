@@ -2,7 +2,7 @@
 
 Локальные ответы кнопок (_local_*), /agent/status, запуск разговора
 _plato_chat_launch, /agent/selftest, /agent/chat, /agent/document,
-/agent/result.
+/agent/document/answer (вопросы по документу по одному), /agent/result.
 
 Не самостоятельный модуль. `main_legacy.py` выполняет этот файл в своём
 пространстве имён на том месте, где этот код стоял раньше
@@ -636,7 +636,100 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
             # Документ остаётся в разговоре: следующий вопрос окно шлёт вместе
             # с ним, и Платон отвечает по документу, а не по пустому месту.
             "context": document_intake.chat_context(document, got),
-            **got}
+            **got,
+            "queue": _intake_queue_start(str(req.filename or ""), got.get("questions") or [])}
+
+
+# --- вопросы по документу: по одному, очередь на диске ------------------------
+# Воркеров два, и ответ на первый вопрос может прийти не в тот, что разбирал
+# документ: очередь живёт в каталоге стадий Платона, а не в памяти процесса.
+_INTAKE_QUEUE_TTL = 3 * 24 * 3600
+
+
+def _intake_queue_path(intake_id: str) -> Path:
+    if not _TRACE_ID_RE.match(str(intake_id or "")):
+        raise HTTPException(status_code=400, detail="Неверный номер очереди вопросов")
+    return _safe_child(_PLATO_STAGE_DIR, f"intake_{intake_id}.json")
+
+
+def _intake_queue_save(queue: dict[str, Any]) -> None:
+    path = _intake_queue_path(queue["id"])
+    _PLATO_STAGE_DIR.mkdir(parents=True, exist_ok=True)
+    # Через временный файл: соседний воркер не должен прочитать половину.
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(queue, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+    cutoff = time.time() - _INTAKE_QUEUE_TTL
+    for stale in _PLATO_STAGE_DIR.glob("intake_*.json"):
+        try:
+            if stale.stat().st_mtime < cutoff:
+                stale.unlink()
+        except OSError:
+            pass
+
+
+def _intake_queue_view(queue: dict[str, Any]) -> dict[str, Any]:
+    cards = queue.get("cards") or []
+    index = int(queue.get("index") or 0)
+    return {"id": queue["id"], "index": index, "total": len(cards),
+            "filename": queue.get("filename") or "",
+            "card": cards[index] if index < len(cards) else None,
+            "answers": queue.get("answers") or []}
+
+
+def _intake_queue_start(filename: str, questions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Завести очередь вопросов. Вопросов нет — очереди нет."""
+    if not questions:
+        return None
+    queue = {"id": os.urandom(16).hex(), "filename": filename, "index": 0, "answers": [],
+             "cards": [document_intake.question_card(item) for item in questions]}
+    try:
+        _intake_queue_save(queue)
+    except OSError as exc:
+        # Без диска вопросы задать можно, а принять ответ в другом воркере —
+        # нет. Говорим об этом прямо, а не теряем ответ на втором вопросе.
+        return {"error": f"очередь вопросов не записалась на диск: {exc}"}
+    return _intake_queue_view(queue)
+
+
+@app.post("/agent/document/answer")
+def agent_document_answer(req: AgentDocumentAnswerRequest) -> dict[str, Any]:
+    """Ответ на текущий вопрос: применить к полю, записать, отдать следующий."""
+    _require_web_access(req.session, req.access_key, "Разбор документа")
+    path = _intake_queue_path(req.intake_id)
+    try:
+        queue = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail=(
+            "Вопросы по этому документу не найдены на сервере (прошло больше трёх "
+            "дней или сервер перезапущен с чистого диска). Приложите документ заново."))
+    view = _intake_queue_view(queue)
+    if req.index != view["index"]:
+        # Двойное нажатие или вторая вкладка: отвечали на вопрос, который уже
+        # закрыт. Чужой вопрос этим ответом не закрываем — отдаём текущий.
+        return {"stale": True, "queue": view, "applied": [], "refused": [],
+                "inputs": req.inputs, "tep": req.tep}
+    card = view["card"]
+    if card is None:
+        return {"queue": view, "applied": [], "refused": [], "inputs": req.inputs, "tep": req.tep}
+    action = str(req.action or "answer")
+    if action == "answer":
+        got = document_intake.answer_card(card, req.inputs or {}, req.tep or {},
+                                          choice=req.choice, typed=req.value)
+    else:
+        got = {"answer": "", "inputs": req.inputs, "tep": req.tep,
+               "applied": [], "refused": []}
+    answers = list(queue.get("answers") or [])
+    answers.append({"question": card.get("question"), "answer": got["answer"],
+                    "applied": [row.get("label") or row.get("key") for row in got["applied"]]})
+    queue["answers"] = answers
+    # «Закончить» закрывает очередь целиком: отвеченное остаётся.
+    queue["index"] = len(queue.get("cards") or []) if action == "stop" else view["index"] + 1
+    _intake_queue_save(queue)
+    usage_track("document_answer", surface="site", text=str(queue.get("filename") or ""))
+    return {"queue": _intake_queue_view(queue), "answer": got["answer"],
+            "applied": got["applied"], "refused": got["refused"],
+            "inputs": got["inputs"], "tep": got["tep"]}
 
 
 @app.get("/agent/result/{trace_id}")

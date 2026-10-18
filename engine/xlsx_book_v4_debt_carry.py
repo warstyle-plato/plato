@@ -22,6 +22,13 @@ _V4_CARRY_PASSED_ROW = 65            # ПФ — долг передан след
 # Строка 29 листов CF в шаблоне пуста — ряд встаёт, не сдвигая ссылок.
 _V4_RVE_UNPAID_ROW = 29
 _V4_CARRY_FLAG_CELL = "B92"          # признак на «Вводных»
+# Единая касса проекта (financing_strategy = unified_project_cash): расходы
+# следующей очереди до РнС покрываются свободной кассой предыдущих, и только
+# остаток берётся БРИДЖем. Признак стоит в той же строке 92: это тоже условие
+# финансирования очередей, а не свойство площадки. Читают его строки 88 листов CF.
+# Третий блок вводных (подпись J, значение K, единица L, ключ M): во втором
+# блоке F92 занята долей свипа, а колонка H по соглашению листа — ключ, не ввод.
+_V4_UNIFIED_CASH_CELL = "K92"
 _V4_CF_QUEUE_ENABLED_ROW = 88        # 'Вводные'!B88 — очередь 1 включена
 _V4_BRIDGE_FEE_ROW = 57              # база комиссии выдачи = лимит БРИДЖа
 
@@ -46,7 +53,7 @@ def _v4_insert_row(xml: str, row: int, body: str, before: int | None) -> tuple[s
 
 
 def _v4_write_carry_flag(xml: str, enabled: bool, missing: list[str],
-                         sweep_share: float = 0.0) -> str:
+                         sweep_share: float = 0.0, unified_cash: bool = False) -> str:
     """Признак переноса долга на «Вводных» — своей строкой, как остальные Да/Нет.
 
     Доля кэш-свипа стоит в той же строке: это одно и то же событие — очередь
@@ -62,7 +69,15 @@ def _v4_write_carry_flag(xml: str, enabled: bool, missing: list[str],
         f'<x:c r="C{row}" t="str"><x:v>Да / Нет</x:v></x:c>'
         f'<x:c r="D{row}" t="str"><x:v>carry_debt_applied</x:v></x:c>'
         f'<x:c r="E{row}" t="str"><x:v>Кэш-свип: доля поступлений банку</x:v></x:c>'
-        f'<x:c r="F{row}"><x:v>{_v4_number(round(sweep_share, 6))}</x:v></x:c>')
+        f'<x:c r="F{row}"><x:v>{_v4_number(round(sweep_share, 6))}</x:v></x:c>'
+        # Единая касса — рядом, той же строкой: свободная касса предыдущих
+        # очередей покрывает расходы следующей до РнС (строки 88–89 CF).
+        f'<x:c r="J{row}" t="str"><x:v>Единая касса проекта: расходы очереди до РнС '
+        f'покрываются свободной кассой предыдущих</x:v></x:c>'
+        f'<x:c r="{_V4_UNIFIED_CASH_CELL}" s="12" t="str"><x:v>'
+        f'{"Да" if unified_cash else "Нет"}</x:v></x:c>'
+        f'<x:c r="L{row}" t="str"><x:v>Да / Нет</x:v></x:c>'
+        f'<x:c r="M{row}" t="str"><x:v>financing_strategy</x:v></x:c>')
     updated, done = _v4_insert_row(xml, row, body, row + 1)
     if not done:
         missing.append(f"признак переноса долга: строка {row} «Вводных» занята")
