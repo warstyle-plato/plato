@@ -755,6 +755,9 @@ function renderTep(){
    // ГНС нашими долями. Доли теперь правятся под таблицей и пересчитывают строку
    // сами, как только их поменяли (просьба владельца, 20.08.2026), — кнопка,
    // делающая то же самое чужими числами, стала лишней дверью в ту же комнату.
+   // Галочки полей, чей дом — эта строка ТЭП (`TEP_ONLY_INPUTS`): размещение
+   // кладовых правится здесь, а не складкой во «Вводных» (владелец, 16.10.2026).
+   label+=tepRowSwitches(key);
    if(key==='apartments'){
      const note=apartmentUnitsNote();
      if(note)label+=` <span class="tep-note">${escapeHtml(note)}</span>`;
@@ -886,6 +889,24 @@ function tepRowUnderGns(key,row){
 // считавшие сами, пропускали один гараж, и кладовые садились в наземную ГНС.
 function tepRowAboveGns(key,row){
  return UNDERGROUND_PLACEMENT.outside_above.includes(key)?0:Number((row||{}).gns||0);
+}
+// Галочки у строки ТЭП из `TEP_ONLY_INPUTS`. Снята — значение `off`, оно же
+// умолчание движка: отсутствующий ключ не читается как «стоит».
+function tepRowSwitches(key){
+ return Object.keys(TEP_ONLY_INPUTS).filter(id=>TEP_ONLY_INPUTS[id].row===key).map(id=>{
+  const spec=TEP_ONLY_INPUTS[id];
+  const on=String(inputs[id]||'')===spec.on;
+  return ` <label class="tep-note tep-switch" title="${escapeHtml(spec.hint)}">`
+   +`<input type="checkbox" id="tep_${id}" data-field="${id}" ${on?'checked':''} `
+   +`onchange="tepRowSwitchSet('${id}',this.checked)">${escapeHtml(spec.label)}</label>`;
+ }).join('');
+}
+function tepRowSwitchSet(id,checked){
+ const spec=TEP_ONLY_INPUTS[id];if(!spec)return;
+ inputs[id]=checked?spec.on:spec.off;
+ markFieldManual('inputs.'+id);
+ renderTep();
+ return calculate();
 }
 // Что под землёй у ЭТОГО проекта — по размещению кладовых (поле проекта).
 // Отсутствующий ключ — умолчание движка, а не «наземные».
