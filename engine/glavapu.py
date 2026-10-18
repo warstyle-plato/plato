@@ -1516,7 +1516,8 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
          "входят в оплату сами); " if relief_mode == "project_benefits" else "наша льгота — доля или сумма из вводных; ")
         + relief_basis if relief_value is not None
         else "в проекте льгота по плате за ВРИ не задана (vri_relief_mode = «нет»); "
-             + relief_basis + " — проверить основание (3135-ПП)")
+             + relief_basis + " — проверить основание (1874-ПП, прил. 1 п. 1.6; "
+                              "593-ПП прил. 2 п. 86 / п. 2(2))")
     reasons["vri_net_mln"] = ("к оплате = до льгот − льгота; расхождение складывается из "
                               "двух строк выше" if vri_value is not None else
                               reasons.get("vri_cost_mln", ""))
