@@ -242,6 +242,8 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # 29.09.2026): книга не держит своего порога.
         "equity_na": {"min_ending_pf_rub": EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB,
                       "label": EQUITY_RETURNS_NA_DEBT_LABEL},
+        # Порог «IRR капитала показателен» — движка (`_apply_equity_irr_verdict`).
+        "equity_irr": {"min_share": EQUITY_IRR_MIN_OWN_SHARE},
     }
 
 
@@ -2121,6 +2123,7 @@ def _build_project_workbook(
     # строительный объём, IRR месячным рядом, как у движка.
     report_xml = _v4_report_owner_decisions(report_xml, social_base_row, missing)
     consolidator_xml = _v4_monthly_irr(consolidator_xml, 8, missing, "КОНСОЛИДАТОР")
+    consolidator_xml = _v4_equity_irr_meaningful(consolidator_xml, missing)
     consolidator_xml = _v4_queue_saleable_with_extras(consolidator_xml, missing)
     for _name in list(cf_sheet_xml):
         cf_sheet_xml[_name] = _v4_monthly_irr(cf_sheet_xml[_name], 80, missing, _name)
@@ -2170,6 +2173,7 @@ def _build_project_workbook(
             frozenset(o.key for o in STANDALONE_OBJECTS if b(x, o.enabled_key)),
             hidden_products=_v4_absent_products(x, tep), queues=count,
             parking=(finance_hints or {}).get("parking_provision"),
+            irr_project=(finance_hints or {}).get("irr_project"),
             chart_months=(_chart_horizon + 6 if (_chart_horizon := int(
                 (finance_hints or {}).get("horizon_months") or 0)) > 0 else None),
             storage_under_flag=_v4_storage_under_flag("'Параметры модели'"))

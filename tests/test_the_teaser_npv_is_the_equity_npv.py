@@ -85,8 +85,11 @@ def test_npv_and_irr_of_equity_agree_in_sign(built) -> None:
     x, _t, bundle = built
     s = _summary(bundle)
     rate = float(x["discount_rate_pct"]) / 100
-    assert s["irr_equity"] is not None
-    assert (s["irr_equity"] > rate) == (s["npv_equity"] > 0), s
+    # Математика знака — по сырому IRR потока капитала: показывать ли его
+    # числом, решает отдельно `summary.equity_irr` (порог своих денег).
+    irr = s["irr_equity_raw"]
+    assert irr is not None
+    assert (irr > rate) == (s["npv_equity"] > 0), s
 
 
 def test_the_book_answers_the_same(built) -> None:

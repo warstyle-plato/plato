@@ -151,6 +151,10 @@ DATA_ITEMS: tuple[tuple[str, str, str, str], ...] = (
     ("project_name", "Проект", "текст", "'ОТЧЕТ'!A2"),
     ("status", "Статус модели (лист ПРОВЕРКИ)", "текст", "'ПРОВЕРКИ'!B3"),
     # Страница «Итог»: эффективность, финансовая деятельность, базы удельных.
+    # IRR проекта до финансирования — числом движка (`summary.irr_project`):
+    # поток проекта книги (CF!28) ведёт выручку по эскроу, а не по договорам.
+    ("irr_project", "IRR проекта (до финансирования; движок)", "%", ""),
+    # Порог «не показателен» — в формуле КОНСОЛИДАТОР!N8, тот же, что у движка.
     ("irr_equity", "IRR собственного капитала", "%", "'ОТЧЕТ'!B14"),
     ("full_project_cost_mln", "Полные расходы проекта (с НДС)", "млн ₽",
      "'ОТЧЕТ'!B82"),
@@ -473,7 +477,8 @@ def _capex_article(key: str, capex_rows: dict[str, int], capex_stride: int) -> s
 def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: str,
                      month_columns: list[str], capex_rows: dict[str, int],
                      capex_stride: int, extra_products: tuple = (),
-                     parking: dict[str, Any] | None = None) -> str:
+                     parking: dict[str, Any] | None = None,
+                     irr_project: dict[str, Any] | None = None) -> str:
     """Скрытый лист-источник: каждая величина — формула на листы книги.
 
     `month_columns` — колонки месяцев листа CF (D..GA): ряды долга и эскроу
@@ -497,6 +502,12 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
             amount = (parking or {}).get(PARKING_ENGINE_VALUES[key])
             value = (_cell(f"C{r}", number=float(amount)) if amount is not None
                      else _cell(f"C{r}"))
+        elif key == "irr_project":
+            _irr = (irr_project or {}).get("value")
+            _label = (irr_project or {}).get("label")
+            value = (_cell(f"C{r}", text=str(_label)) if _label
+                     else _cell(f"C{r}", number=float(_irr)) if _irr is not None
+                     else _cell(f"C{r}", text="не считается"))
         elif key == "parking_provision":
             value = _cell(f"C{r}", formula=(
                 f'IFERROR(C{DATA_ROWS["parking_built_total"]}'
@@ -889,10 +900,12 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
     sh.section_row("ПОКАЗАТЕЛИ ЭФФЕКТИВНОСТИ ПРОЕКТА", "ФИНАНСИРОВАНИЕ И СРОКИ")
     labels = {key: (label, unit) for key, label, unit in KPI_CATALOGUE}
     labels.update({key: (label, unit) for key, label, unit, _f in DATA_ITEMS if key not in labels})
-    left_keys = ["ebitda_mln", "net_profit_mln", "margin", "irr_equity", "npv_mln", "term_months",
+    # Срок — к срокам справа: место слева занял IRR проекта, и высота блока
+    # (а с ней всё, что ниже на листе) не меняется.
+    left_keys = ["ebitda_mln", "net_profit_mln", "margin", "irr_project", "irr_equity", "npv_mln",
                  "llcr", "full_project_cost_mln"]
     right_keys = ["peak_bridge_mln", "peak_pf_mln", "financing_mln", "pf_shortfall_mln",
-                  "project_start", "rve", "status"]
+                  "project_start", "rve", "term_months", "status"]
     for index in range(max(len(left_keys), len(right_keys))):
         items: list[tuple[str | None, str | None, int]] = []
         for keys in (left_keys, right_keys):
@@ -1326,6 +1339,7 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
           hidden_products: frozenset[str] = frozenset(),
           queues: int | None = None,
           parking: dict[str, Any] | None = None,
+          irr_project: dict[str, Any] | None = None,
           storage_under_flag: str = "1",
           chart_months: int | None = None) -> dict[str, Any]:
     """Собрать все части дашборда. Возвращает словарь «путь → байты» и
@@ -1367,7 +1381,7 @@ def build(archive: Any, sheet_path: str, styles_xml: str, origin: dict[str, Any]
     parts[DATA_SHEET_PATH] = build_data_sheet(origin, llcr_target, last_column, month_columns,
                                               capex_rows, capex_stride,
                                               tuple(extra_products),
-                                              parking).replace(
+                                              parking, irr_project).replace(
         STORAGE_UNDER_TOKEN, storage_under_flag).encode("utf-8")
     added_charts = [path for _rel, path in targets if path.lstrip("/") not in {p for _r, p in existing}]
     return {"parts": parts, "styles_xml": styles.render(), "dropped": dropped,
