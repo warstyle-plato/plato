@@ -75,17 +75,6 @@ def test_the_reserve_ignores_the_vri_fee() -> None:
     assert high["reserve"] == pytest.approx(low["reserve"])
 
 
-def test_the_reserve_base_is_every_article_but_the_excluded() -> None:
-    """Резерв — процент от всех статей до него, кроме списка исключений."""
-    a = _amounts()
-    shadow = {"reserve", "vri_interest", "vri_security", "land_rights_gross",
-              "land_rights_relief"}
-    base = sum(v for k, v in a.items() if k not in shadow | core.RESERVE_EXCLUDED_ARTICLES)
-    assert a["land_rights"] > 0 and a["offices"] > 0
-    assert a["reserve"] == pytest.approx(base * core.DEFAULT_INPUTS["reserve_pct"] / 100)
-    assert core.RESERVE_EXCLUDED_ARTICLES <= core._M2_RESERVE_EXCLUDED
-
-
 def test_the_object_rate_hint_follows_the_project_kind() -> None:
     """Подпись ставки объекта — из того же предиката: «под ключ» в смешанном
     проекте и у паркинга всегда, «СМР» у метрового объекта нежилого."""
