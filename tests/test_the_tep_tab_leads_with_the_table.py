@@ -37,7 +37,7 @@ PROBE = """(ids)=>{
  const top=el=>Math.round(el.getBoundingClientRect().top+window.scrollY);
  const out={tops:{},buttons:{}};
  for(const id of ids){const el=document.getElementById(id);out.tops[id]=el?top(el):null;}
- for(const fn of ['applyDensityToTep','syncTep','recalcFromTep']){
+ for(const fn of ['formTepByDensity','syncTep','recalcFromTep']){
   const b=document.querySelector(`#tep [onclick="${fn}()"]`);
   out.buttons[fn]=b?top(b):null;
  }
@@ -110,7 +110,10 @@ def test_the_markup_keeps_the_order_without_a_browser() -> None:
     vri = page.index('<div id="vri" class="panel">')
     panel = page[tep:vri]
     marks = ['id="siteAreaHa"', 'id="tepBody"', 'id="siteParkingBox"', 'id="moParamsBox"',
-             'onclick="applyDensityToTep()"', 'onclick="syncTep()"', 'onclick="recalcFromTep()"',
-             'id="glavapuScenarioBox"']
+             'id="tepActionsCard"', 'id="glavapuScenarioBox"']
     positions = [panel.index(m) for m in marks]
     assert positions == sorted(positions), "порядок блоков вкладки ТЭП в разметке нарушен"
+    # Все кнопки пересчёта — в карточке действий, между настройками и сверкой.
+    for call in ('formTepByDensity()', 'syncTep()', 'recalcFromTep()'):
+        at = panel.index(f'onclick="{call}"')
+        assert positions[4] < at < positions[5], f"кнопка {call} стоит вне карточки действий"

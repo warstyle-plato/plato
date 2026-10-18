@@ -276,17 +276,32 @@ PAGE += r"""</head>
           <div class="mo-price-line"><span id="moPriceState">Справочники загружаются…</span></div>
         </details>
       </div>
-      <!-- Действия пересчёта — под таблицей: формирование площадей от
-           плотности, производные строки из вводных и нормативы по ТЭП — это
-           операции над уже видимой таблицей, а не вводные. -->
+      <!-- Действия с ТЭП — одним свёрнутым меню под таблицей (решение
+           владельца, 17.10.2026): три разные операции, а не одна кнопка —
+           формирование площадей от плотности (перезаписывает строки, поэтому
+           с подтверждением и списком изменяемого), пересчёт нормативов по
+           текущему ТЭП (ручное действие: ГлавАПУ / пропорция / норматив —
+           режим называет подсказка) и обновление производных строк из
+           вводных (вторичное: обычно происходит само при правке полей).
+           «Пересчитать модель» — экономика проекта — остаётся в шапке. -->
       <div class="card" id="tepActionsCard">
-        <div class="section-title">Пересчёт ТЭП</div>
-        <div class="toolbar">
-          <button class="btn" onclick="applyDensityToTep()">Рассчитать ТЭП от площади и плотности</button>
-          <span style="color:#777;font-size:12px" id="siteApplyHint">Работает в любом регионе: площадь и плотность можно ввести вручную. Ручной ТЭП, кадастр и проект из калькулятора Подмосковья считаются нормативами РНГП: квартиры = площадь × плотность, социалка, паркинг и офисы — от населения. Москва с ГлавАПУ: квартиры и коммерция 1 этажа по методике DevelopAid (94% / 6% СПП).</span>
-        </div>
+        <details class="tep-actions" id="tepActionsMenu">
+          <summary>Действия с ТЭП<span class="group-peek">сформировать по плотности · пересчитать нормативы · обновить производные</span></summary>
+          <div class="tep-action">
+            <button class="btn" onclick="formTepByDensity()">Сформировать ТЭП по плотности</button>
+            <span class="tep-action-hint" id="siteApplyHint">Площадь участка × плотность → квартиры и коммерция 1 этажа. Без ГлавАПУ — нормативами РНГП вместе с социалкой, паркингом и офисами. Заменяет введённые значения: перед заменой покажет, что изменится.</span>
+          </div>
+          <div class="tep-action">
+            <button class="btn dark" onclick="recalcFromTep()">Пересчитать нормативы по ТЭП</button>
+            <span class="tep-action-hint" id="tepNormsHint"></span>
+          </div>
+          <div class="tep-action tep-action-secondary">
+            <button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button>
+            <span class="tep-action-hint">Офисы, ТЦ, паркинги и соцобъекты в таблице — из вводных «Экономики»; при правке полей обновляются сами. Квартиры и коммерцию 1 этажа не трогает.</span>
+          </div>
+          <div class="tep-action-note">В таблице показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг — производный: постоянные + гостевые × 35 м².</div>
+        </details>
         <div id="siteApplyStatus" class="import-status" style="display:none"></div>
-        <div class="toolbar" style="margin-top:10px"><button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button><button class="btn dark" onclick="recalcFromTep()">Пересчитать по параметрам исходного расчёта</button><span style="color:#777;font-size:12px">В интерфейсе показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг является производным: постоянные + гостевые × 35 м².</span></div>
       </div>
       <!-- Сверка сценария: калькулятору ГлавАПУ выставляются НАШИ параметры
            (доля жилья и коммерции, СПП, площадь, нежильё по ВРИ, соцобъекты,
@@ -981,6 +996,23 @@ PAGE += r"""</head>
      параметры отключены, можете выбрать ТЭП в разделе экономика»). Текст
      живёт ЗДЕСЬ и только здесь: плашка под селектором зовёт это же окно,
      иначе одно и то же сказано дважды подряд и его перестают читать. -->
+<!-- Подтверждение «Сформировать ТЭП по плотности»: действие перезаписывает
+     строки таблицы, и перед заменой человек видит, что именно изменится
+     (строка, было → будет) и чем. Список составляет densityTepPlan. -->
+<div id="tepConfirmDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
+     z-index:91;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeTepConfirm()">
+  <div style="background:#fff;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+      <h2 id="tepConfirmTitle" style="margin:0;font-size:17px">Сформировать ТЭП по плотности</h2>
+      <button onclick="closeTepConfirm()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button>
+    </div>
+    <div id="tepConfirmBody" style="font-size:13px;line-height:1.55"></div>
+    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn dark" type="button" id="tepConfirmOk" onclick="confirmTepAction()">Сформировать</button>
+      <button class="btn" type="button" onclick="closeTepConfirm()">Отмена</button>
+    </div>
+  </div>
+</div>
 <div id="projectKindDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
      z-index:91;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeProjectKindDialog()">
   <div style="background:#fff;max-width:660px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
