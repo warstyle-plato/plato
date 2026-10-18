@@ -140,19 +140,22 @@ def test_the_share_is_the_year_by_year_one_not_the_horizon_total(phased) -> None
         assert got == pytest.approx(want, rel=1e-9)
 
 
-def test_everything_before_the_gate_lands_in_the_year_of_the_gate() -> None:
-    """Отсрочка до РВЭ свёрнута в год РВЭ — так же, как её сворачивает налог.
+def test_the_margin_before_the_rve_lands_in_the_year_of_the_rve() -> None:
+    """Маржа до РВЭ свёрнута в год РВЭ, проценты остаются в своём году.
 
-    Без свёртки база очереди живёт в годах до первого РВЭ, в которых налога
-    не было; наивная раздача «по календарному году» отдаёт очереди 770 млн
-    там, где верно 1 847, и выглядит посчитанной.
+    Так считает налог спецзастройщика (владелец, 16.10.2026): выручка по ДДУ —
+    при вводе дома, проценты — расход месяца начисления. Без свёртки маржи
+    база очереди жила бы в годах до её РВЭ, в которых прибыли ещё нет.
     """
     rows = [{"month": "2028-05-01", "taxable_margin": 100.0,
              "financing_tax_deduction": 10.0},
             {"month": "2030-09-01", "taxable_margin": 50.0,
              "financing_tax_deduction": 0.0}]
     bases = core._phase_tax_bases([{"finance": {"rows": rows}}], "2030-07-01")
-    assert bases == [{2030: 140.0}], bases
+    assert bases == [{2028: -10.0, 2030: 150.0}], bases
+    # РВЭ самой очереди главнее общего: маржа едет в ЕЁ год ввода.
+    own = {"finance": {"rows": rows}, "dates": {"rve": "2031-01-01"}}
+    assert core._phase_tax_bases([own], "2030-07-01") == [{2028: -10.0, 2031: 150.0}]
     # Без гейта каждая строка остаётся в своём календарном году.
     assert core._phase_tax_bases([{"finance": {"rows": rows}}], None) == [
         {2028: 90.0, 2030: 50.0}]
