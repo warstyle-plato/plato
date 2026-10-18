@@ -1128,8 +1128,10 @@ MOSCOW_SOCIAL_AREA_PER_PLACE: dict[str, tuple[tuple[float, float], ...]] = {
     "kindergarten": ((125.0, 27.0), (250.0, 18.0), (float("inf"), 16.0)),
     "school": ((550.0, 18.0), (1000.0, 15.0), (float("inf"), 13.0)),
 }
-# Поликлиники в этом документе нет — он про образование. Её норматив остаётся
-# вводным полем, и выдавать его за норму города нельзя.
+# Поликлиники в этой таблице нет — она про образование. Норма города у
+# поликлиники есть, но это не ступень по ёмкости, а верхний предел: 2150-ПП,
+# разд. 1.4 (ред. 2579-ПП) — не более 27 м² ННП на посещение в смену,
+# уточняется МТЗ. Он живёт умолчанием поля `social_clinic_norm_sqm`, а не здесь.
 
 
 def moscow_social_area_per_place(kind: str, places: float) -> float | None:
@@ -1190,8 +1192,9 @@ def social_area_per_place(inputs: dict[str, Any], kind: str) -> float:
     city = float(moscow_social_area_per_place(kind, places) or 0.0)
     if city > 0:
         return city
-    # Норматива города для этого объекта нет вовсе (поликлиника) — отвечает
-    # поле; пустое поле значит «не знаем», и площадь по нему не считается.
+    # Ступени города для этого объекта нет (поликлиника: её предел по 2150-ПП
+    # живёт умолчанием поля) — отвечает поле; пустое поле значит «не знаем»,
+    # и площадь по нему не считается.
     return float(inputs.get(norm_key) or 0.0)
 
 
@@ -1591,13 +1594,17 @@ def build_freeform_tep(text: str, raw_values: dict[str, Any] | None = None) -> d
 
     parking_explicit = optional_number("parking_spaces")
     if parking_explicit is None:
-        # Методика города с августа 2026: одно постоянное место на 90 м² НП
-        # жилых зданий (сверено по двум выгрузкам штатного калькулятора от
-        # 16.08.2026); здесь К1 принят 1,0 — локация ещё не известна.
-        permanent = int(math.ceil(apartment_gns * 0.9 / 90.0))
-        parking_spaces = permanent + int(math.ceil(permanent / 10.0))
-        calculated.append("паркинг рассчитан как постоянные места плюс 10% гостевых")
-        assumptions.append("коэффициент доступности рельсового каркаса К1 принят 1,0; после указания локации паркинг следует уточнить")
+        # Постоянные места жителей — приложение 5 к 945-ПП в редакции 2118-ПП,
+        # пункт 1: Nп = S / (33 × 2,1) × 0,8 от площади квартир (решение
+        # владельца 16.10.2026). Формулу объявляет движок — копии здесь нет;
+        # К1 к местам жителей в новом порядке не применяется, и локация для
+        # них не нужна. Гостевые — доля от постоянных, той же константой.
+        permanent = int(moscow_permanent_parking_2118(apartment_saleable))
+        parking_spaces = permanent + int(math.ceil(permanent * _PARKING_GUEST_SHARE))
+        calculated.append(
+            "паркинг рассчитан как постоянные места по 2118-ПП: площадь квартир / (33 × 2,1) × 0,8, "
+            "плюс 10 % гостевых"
+        )
     else:
         parking_spaces = int(parking_explicit)
         provided.append(f"подземный паркинг — {_telegram_number(parking_spaces, 0)} м/м")

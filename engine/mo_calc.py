@@ -314,7 +314,9 @@ MO_NORMS_DEFAULT: dict[str, float] = {
     "gns_apartment_factor": 0.6351,
     "total_area_apartment_factor": 0.68,
     "gns_commercial_factor": 0.8,
-    "vri_kd": 0.1,
+    # Кд здесь нет намеренно: он задаётся таблицей 3 к 1745-ПП по округу или
+    # руками (`vri_kd` запроса). Запас 0,1 для округов вне таблицы источника
+    # не имел, и владелец решил (16.10.2026) не считать плату без Кд.
 }
 
 _MO_DENSITY_DEFAULT_SQM_PER_HA = 30000.0
@@ -550,9 +552,17 @@ def mo_vri_payment(
     upks_average_oks: float | None,
     apartments_sqm: float,
     market_price_rub_per_sqm: float | None,
-    kd: float = 0.1,
+    kd: float | None,
+    kd_missing_reason: str = "",
 ) -> dict[str, Any]:
-    """Плата за изменение ВРИ по методике приложенного расчёта."""
+    """Плата за изменение ВРИ по методике приложенного расчёта.
+
+    `kd` — коэффициент доходности (таблица 3 к 1745-ПП или ручной). Без него
+    плата не считается: умолчания у Кд нет, подставлять чужую группу нельзя
+    (решение владельца 16.10.2026), и ноль здесь не ответ, а отсутствие ответа.
+    `kd_missing_reason` — почему Кд нет, словами того, кто это знает (округ,
+    таблица); без неё предупреждение общее.
+    """
     rows: list[dict[str, Any]] = []
     total_area = 0.0
     total_kc1 = 0.0
@@ -583,12 +593,15 @@ def mo_vri_payment(
     market_price = _land_float(market_price_rub_per_sqm)
     warnings: list[str] = []
 
+    kd = _land_float(kd)
+    if kd is not None and kd <= 0:
+        kd = None
     k1 = (market_price / upks_avg) if (market_price and upks_avg) else None
     g = delta * 1.00001
-    k = (apartments * upks_avg * kd / g) if (upks_avg and g) else None
+    k = (apartments * upks_avg * kd / g) if (kd is not None and upks_avg and g) else None
     payment = delta * k1 * k if (k1 is not None and k is not None) else None
     # Алгебраически цепочка сворачивается: П = Кср × площадь квартир × Кд.
-    payment_direct = market_price * apartments * kd if market_price else None
+    payment_direct = market_price * apartments * kd if (market_price and kd is not None) else None
 
     if not rows:
         warnings.append(
@@ -606,6 +619,11 @@ def mo_vri_payment(
         warnings.append("Для округа нет УПКС ОКС многоквартирных домов — коэффициенты К и К1 не рассчитаны.")
     if not market_price:
         warnings.append("Не задана средняя цена м² (Кср) — плата за смену ВРИ не рассчитана.")
+    if kd is None:
+        warnings.append(
+            kd_missing_reason
+            or "Кд не установлен — плата за смену ВРИ не рассчитана; впишите коэффициент доходности вручную (vri_kd)."
+        )
 
     return {
         "parcels": rows,
@@ -627,7 +645,8 @@ def mo_vri_payment(
         "payment_used_mln": round(used / 1_000_000.0, 3) if used is not None else None,
         "payment_basis": (
             "методика по участкам ЕГРН" if payment is not None
-            else ("прямая формула Кср × площадь квартир × Кд" if payment_direct is not None else "не определена")
+            else ("прямая формула Кср × площадь квартир × Кд" if payment_direct is not None
+                  else ("Кд не установлен" if kd is None else "не определена"))
         ),
         "warnings": warnings,
     }
@@ -1007,7 +1026,6 @@ def _mo_tep_and_inputs(
         tep[key].update({"gns": 0, "total_area": 0, "useful": 0, "saleable": 0, "transfer": 0, "units": 0})
 
     inputs: dict[str, Any] = {
-        "land_rights_cost_mln": vri.get("payment_used_mln") or 0.0,
         # Блок по определению областной: правила рассрочки и процентов по ВРИ
         # берутся для Московской области, а не для Москвы.
         "vri_region": "mo",
@@ -1310,20 +1328,24 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
             )
     # Кд берём из таблицы 3 постановления № 1745 по округу. Явно заданное
     # значение важнее справочного; если округа в таблице нет — не подставляем
-    # чужую группу, а честно предупреждаем.
-    kd = _land_float(req.vri_kd) or 0.0
+    # чужую группу и плату не считаем: у запаса 0,1 источника не было, а Кд
+    # умножает плату на миллиарды (решение владельца 16.10.2026). Причина
+    # называется в предупреждении, поля платы остаются пустыми, не нулём.
+    kd: float | None = _land_float(req.vri_kd) or None
     kd_document = ""
     kd_basis = "задан вручную"
-    if kd <= 0:
-        table_kd, kd_document, kd_basis = _mo_vri_kd_for(district)
-        if table_kd is None:
-            kd = norms["vri_kd"]
-            warnings.append(
-                f"Округ «{district}» отсутствует в таблице 3 постановления № 1745: "
-                f"коэффициент доходности принят {kd:.0%} по умолчанию, проверьте по документу."
+    kd_missing_reason = ""
+    if kd is None or kd <= 0:
+        kd, kd_document, kd_basis = _mo_vri_kd_for(district)
+        if kd is None:
+            kd_missing_reason = (
+                (
+                    f"Кд не установлен: округ «{district}» отсутствует в таблице 3 к 1745-ПП; "
+                    if district else
+                    "Кд не установлен: округ участка не определён, по таблице 3 к 1745-ПП его не подобрать; "
+                )
+                + "впишите коэффициент доходности вручную (vri_kd)."
             )
-        else:
-            kd = table_kd
     vri = mo_vri_payment(
         parcels,
         upks_target=upks["upks_land_residential"],
@@ -1331,6 +1353,7 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
         apartments_sqm=apartments_sqm,
         market_price_rub_per_sqm=market_price,
         kd=kd,
+        kd_missing_reason=kd_missing_reason,
     )
     vri["kd_basis"] = kd_basis
     vri["kd_document"] = kd_document
@@ -1345,6 +1368,10 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
     tep, inputs_patch = _mo_tep_and_inputs(
         social, vri, site_area_ha=site_area_ha, norms=norms, average_flat_sqm=average_flat
     )
+    # Плата во вводные уходит только когда она рассчитана: без Кд (или без Кср)
+    # ключа нет вовсе, и страница не затирает ранее вписанную сумму нулём.
+    if vri.get("payment_used_mln") is not None:
+        inputs_patch["land_rights_cost_mln"] = vri["payment_used_mln"]
     balance = _mo_territory_balance(social, site_area_ha, norms)
     if balance["remaining_ha"] < 0:
         warnings.append(
