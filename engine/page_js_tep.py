@@ -1536,6 +1536,63 @@ function applyDensityToHotel(){
   +num(area*density)+' м² ГНС.</span>';
 }
 
+// Что заменит «Сформировать ТЭП по плотности» — для подтверждения перед
+// заменой. Отказы (гостиница, нежилой, нет площади) объясняет сам
+// applyDensityToTep: там и выбор, куда класть потенциал, — плана для них нет.
+function densityTepPlan(){
+ const area=Number(inputs.site_area_ha||0),density=effectiveSiteDensity();
+ if(isHotel()||isNonResidential()||!(area>0)||!(density>0))return null;
+ const spp=area*density;
+ const was=key=>({gns:Number(((tep[key])||{}).gns||0),saleable:Number(((tep[key])||{}).saleable||0)});
+ if(inputs._glavapu_import){
+  const flats=spp*MKD_SPP_SPLIT.apartments,shops=spp*MKD_SPP_SPLIT.ground_commercial;
+  return {mode:'glavapu',
+   basis:'СПП '+num(spp)+' м² = '+landNum(area,3)+' га × '+num(density)+' м²/га; квартиры '
+    +num(MKD_SPP_SPLIT.apartments*100)+'% СПП, коммерция 1 этажа '+num(MKD_SPP_SPLIT.ground_commercial*100)+'%.',
+   rows:[{label:'Квартиры',was:was('apartments'),will:{gns:flats,saleable:flats*0.65}},
+         {label:'Коммерция 1 этажа',was:was('ground_commercial'),will:{gns:shops,saleable:shops*0.9}}],
+   notes:['Общая и полезная площадь этих строк пересчитаются долями. Остальные строки таблицы не меняются.',
+          'Данные выгрузки ГлавАПУ в этих строках будут заменены; вернуть их — повторно «Получить ТЭП» на вкладке «Участок».']};
+ }
+ return {mode:'normative',
+  basis:'Квартиры '+num(spp)+' м² продаваемой = '+landNum(area,3)+' га × '+num(density)+' м² квартир/га; остальное — нормативами РНГП от населения.',
+  rows:[{label:'Квартиры',was:was('apartments'),will:{gns:null,saleable:spp}}],
+  notes:['Нормативами РНГП пересчитаются также: число квартир и население, ДОО, СОШ, поликлиника, машино-места, офисы (рабочие места), плата за изменение ВРИ и разбивка соцобъектов по очередям.',
+         'Вводные, заполненные этим расчётом, заменят прежние; строки отдельно стоящих объектов идут от их вводных на «Экономике».']};
+}
+function densityTepPlanHtml(plan){
+ const cell=v=>v===null||v===undefined?'по долям':num(v)+' м²';
+ const rows=plan.rows.map(r=>'<tr><td>'+escapeHtml(r.label)+'</td><td>'+num(r.was.gns)+' / '+num(r.was.saleable)
+   +'</td><td>'+cell(r.will.gns)+' / '+cell(r.will.saleable)+'</td></tr>').join('');
+ return '<div>'+escapeHtml(plan.basis)+'</div>'
+  +'<table class="tep-confirm-table"><thead><tr><th>Строка</th><th>Было, ГНС / продаваемая</th><th>Будет, ГНС / продаваемая</th></tr></thead><tbody>'+rows+'</tbody></table>'
+  +plan.notes.map(n=>'<div class="hint" style="margin-top:6px">'+escapeHtml(n)+'</div>').join('');
+}
+let tepConfirmAction=null;
+function openTepConfirm(title,html,okLabel,action){
+ const dialog=document.getElementById('tepConfirmDialog');
+ const body=document.getElementById('tepConfirmBody');
+ if(!dialog||!body){action();return}
+ const head=document.getElementById('tepConfirmTitle');if(head)head.textContent=title;
+ const ok=document.getElementById('tepConfirmOk');if(ok)ok.textContent=okLabel;
+ body.innerHTML=html;tepConfirmAction=action;dialog.style.display='flex';
+}
+function closeTepConfirm(){
+ const dialog=document.getElementById('tepConfirmDialog');
+ if(dialog)dialog.style.display='none';
+ tepConfirmAction=null;
+}
+function confirmTepAction(){
+ const action=tepConfirmAction;closeTepConfirm();
+ if(action)action();
+}
+// Кнопка меню «Действия с ТЭП»: сначала показать, что изменится, и только по
+// подтверждению — заменить. Без плана (отказ) — сразу к объяснению отказа.
+function formTepByDensity(){
+ const plan=densityTepPlan();
+ if(!plan){applyDensityToTep();return}
+ openTepConfirm('Сформировать ТЭП по плотности',densityTepPlanHtml(plan),'Сформировать',applyDensityToTep);
+}
 function applyDensityToTep(){
  const status=document.getElementById('siteApplyStatus');
  const area=Number(inputs.site_area_ha||0);
@@ -1699,7 +1756,7 @@ function renderSiteParkingSummary(){
  const sum=document.getElementById('siteParkingSummary');
  if(!sum)return;
  const conflicts=SITE_ONLY_INPUTS.flatMap(id=>siteParkingConflicts(id));
- sum.innerHTML='Коэффициенты парковки участка<span class="group-peek">'+escapeHtml(siteParkingPeek())+'</span>'+
+ sum.innerHTML='Паркинг и нормативы<span class="group-peek">'+escapeHtml(siteParkingPeek())+'</span>'+
   (conflicts.length?'<span class="site-conflict-mark">⚠ '+(conflicts.length===1?'противоречие':conflicts.length+' противоречия')+
    ' с разбором кадастра</span>':'');
  const det=document.getElementById('siteParkingBox');
@@ -1765,6 +1822,10 @@ function renderSitePanel(){
  const equivEl=document.getElementById('siteDensityEquiv');
  if(equivEl){
    const density=effectiveSiteDensity();
+   // Справка «как считается плотность» — складкой под полями; без плотности
+   // ей нечего сказать, и пустая складка на телефоне только занимала бы строку.
+   const help=equivEl.closest?equivEl.closest('details.site-help'):null;
+   if(help)help.style.display=density>0?'':'none';
    equivEl.textContent=density>0
      ? (normative
         ? '≈ '+num(density/(0.94*0.65))+' м² поэтажной площади (СПП) / га по методике Москвы'
@@ -1790,7 +1851,7 @@ function renderSitePanel(){
   warn.style.display='';
   warn.innerHTML=normative
    ?'Продаваемая площадь квартир <b>'+num(used)+' м²</b> превышает потенциал <b>'+num(potential)+
-    ' м²</b> при плотности '+num(effectiveSiteDensity())+' м² квартир/га. Нажмите «Рассчитать ТЭП от площади и плотности» — '+
+    ' м²</b> при плотности '+num(effectiveSiteDensity())+' м² квартир/га. Нажмите «Сформировать ТЭП по плотности» в «Действиях с ТЭП» — '+
     'проект пересчитается нормативами РНГП целиком.'
    // Превышение чаще всего создают не квартиры, а офисы/ТЦ/наземный паркинг и
    // соцобъекты: кнопка пересчёта их сознательно не трогает, а потенциал
@@ -1802,6 +1863,7 @@ function renderSitePanel(){
      num(other)+' м²</b>. Кнопка пересчёта меняет только жильё и коммерцию; отключите лишние объекты или поднимите плотность.'
      :' Проверьте плотность или состав ТЭП.');
  }else warn.style.display='none';
+ renderTepActions();
 }
 function glavapuSocialNp(row){
  const normalized=inputs._glavapu_import&&inputs._glavapu_import.normalized;
@@ -2381,14 +2443,39 @@ function standaloneProductSum(field,products){
 // ставка за место задана экспертно. Норматив здесь не применяется вовсе,
 // поэтому это работает и в Подмосковье, где московских нормативов нет
 // (владелец, 30.08.2026).
+// Какой дорогой пойдёт «Пересчитать нормативы по ТЭП» — один предикат на
+// действие и на подсказку у кнопки: выгрузка ГлавАПУ с платой за ВРИ — по
+// её ставкам; иначе пропорция от прежней соцнагрузки, если квартиры
+// изменились; иначе — нормативы Москвы от текущего ТЭП.
+function glavapuBaselineApplies(){
+ const baseline=((inputs._glavapu_import||{}).normalized)||null;
+ return !!(baseline&&Number(baseline.change_vri_mln||0));
+}
+function socialRescaleApplies(){
+ const basis=inputs._social_basis||null;
+ const after=Number((tep.apartments&&tep.apartments.saleable)||0);
+ if(!basis||!Number(basis.apartment_area_sqm||0)||!after)return false;
+ return Math.abs(after-Number(basis.apartment_area_sqm||0))>=1;
+}
+function tepNormsMode(){
+ if(glavapuBaselineApplies())return {key:'glavapu',
+  text:'По ставкам исходного расчёта ГлавАПУ: соцнагрузка, машино-места, соцкомпенсация и плата за ВРИ — под текущие метры таблицы.'};
+ if(socialRescaleApplies())return {key:'proportion',
+  text:'Пропорцией от прежней соцнагрузки по населению: ДОО, школа, поликлиника, соцкомпенсация и подземные машино-места — с подтверждением.'};
+ return {key:'norms',
+  text:'По нормативам Москвы от текущего ТЭП: соцнагрузка и машино-места; выгрузки ГлавАПУ нет, пропорции не от чего.'};
+}
+function renderTepActions(){
+ const hint=document.getElementById('tepNormsHint');
+ if(hint)hint.textContent=tepNormsMode().text;
+}
 async function rescaleSocialFromTep(options){
  const silent=!!(options&&options.silent);
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
  const basis=inputs._social_basis||null;
  const after=Number((tep.apartments&&tep.apartments.saleable)||0);
- if(!basis||!Number(basis.apartment_area_sqm||0)||!after)return false;
- if(Math.abs(after-Number(basis.apartment_area_sqm||0))<1)return false;
+ if(!socialRescaleApplies())return false;
  let d;
  try{
   const r=await fetch('/tep/rescale-social',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -2499,7 +2586,7 @@ async function recalcFromTep(options){
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
- if(!baseline||!Number(baseline.change_vri_mln||0)){
+ if(!glavapuBaselineApplies()){
   // Без выгрузки ГлавАПУ пересчёт не отказывается целиком. Сначала пропорция:
   // если соцнагрузка в модели уже есть, места и компенсация масштабируются по
   // населению — норматив тут не применяется вовсе, и это работает в любом
