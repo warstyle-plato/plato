@@ -241,7 +241,7 @@ def drawn() -> dict:
                     arg=strategy)
                 page.evaluate("() => openTab('report', document.querySelector('[data-tab=report]'))")
                 page.wait_for_function("() => document.getElementById('iaVerdict')")
-                page.wait_for_timeout(1500)
+                browser.wait_for_result(page)
                 out[strategy] = page.evaluate(VERDICT)
             out["errors"] = errors
             page.close()

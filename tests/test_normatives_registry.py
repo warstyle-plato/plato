@@ -242,3 +242,122 @@ def test_the_page_says_how_much_of_the_contour_is_covered(monkeypatch) -> None:
     for number in (cover["acts"], cover["verified"], cover["review"],
                    cover["chained"], cover["steps"], cover["steps_in_library"]):
         assert str(number) in line, f"строка охвата не называет {number}: {line}"
+
+
+# --- ревизия редакций 16.10.2026 (docs/normative_audit_msk_mo_2026-10.md, T5) --------------
+
+def _rows() -> dict[str, dict]:
+    return {row["id"]: row for row in registry._load_registry()}
+
+
+def _chain(row: dict) -> dict[str, dict]:
+    return {str(s.get("number")): s for s in registry.chain_steps(row)}
+
+
+def test_the_healthcare_card_has_a_text_and_names_the_27_sqm_ceiling() -> None:
+    """2150-ПП стоял без ссылки на текст; 16.10.2026 сводный текст прочитан.
+
+    Ссылку на источник берут у источника: адрес — тот, что читали, а не
+    сконструированный. Верхний предел 27 м² ННП на посещение (разд. 1.4 в
+    ред. 2579-ПП) — расхождение с вводным полем движка, и карточка обязана
+    его назвать, а не молчать «нормы города нет».
+    """
+    row = _rows()["moscow-2150-pp"]
+    assert row["source_url"].startswith("https://www.rnk.ru/npd/doc/docid/727795415")
+    assert row["status"] != "source_link_missing"
+    assert "27 м²" in row["latest_amendment"] and "61-ПП" in row["latest_amendment"]
+    assert "61-ПП" in row["watch_terms"]
+    modules = {u["module"]: u["usage"] for u in row["engine_usage"]}
+    assert "SOCIAL_NORMS_PER_1000" in modules.get("engine/norms.py", "")
+    assert "social_clinic_norm_sqm" in modules.get("engine/inputs.py", "")
+
+
+def test_the_945_chain_knows_2755_and_1856_and_who_counts_what() -> None:
+    """Между 2579-ПП и 2118-ПП стоят 2755-ПП и 1856-ПП — разобраны, не «не сверено».
+
+    Постоянные места считает `engine/norms.py` (moscow_permanent_parking_2118),
+    приобъектные — `parking_norms.py` (X2, К1, К2); карточка прежде приписывала
+    постоянные места parking_norms.py.
+    """
+    row = _rows()["moscow-945-pp"]
+    chain = _chain(row)
+    for number in ("2755-ПП", "1856-ПП"):
+        assert chain[number]["status"].startswith("разобран"), number
+        assert chain[number].get("touches"), number
+        assert any(number in line for line in row["amendment_history"]), number
+        assert number in row["watch_terms"], number
+    modules = {u["module"]: u["usage"] for u in row["engine_usage"]}
+    assert "moscow_permanent_parking_2118" in modules.get("engine/norms.py", "")
+    assert "К1" in modules.get("parking_norms.py", "") and "К2" in modules["parking_norms.py"]
+    assert "постоянные" not in modules["parking_norms.py"]
+
+
+def test_the_sp_42_card_is_marked_superseded() -> None:
+    """СП 42.13330.2016 заменён СП 42.13330.2026 с 12.07.2026 (приказ № 368/пр).
+
+    Словаря статусов для «заменён» в модуле нет; честный статус — «нужен
+    первичный источник» (текста 2026 года в библиотеке нет), а факт замены
+    стоит в самой карточке: в `superseded_by` и в строке редакции, которую
+    читатель видит.
+    """
+    row = _rows()["rf-sp-42"]
+    assert "СП 42.13330.2026" in row["superseded_by"] and "368/пр" in row["superseded_by"]
+    assert row["superseded_from"] == "2026-07-12"
+    assert "12.07.2026" in row["latest_amendment"]
+    assert row["status"] not in ("verified", "review_required", "current")
+    assert registry._status_label(row["status"])[0] != row["status"], "статус вне словаря модуля"
+    assert "СП 42.13330.2026" in row["watch_terms"] and "СП 42.13330.2026" in row["cited_as"]
+
+
+def test_the_593_card_describes_the_current_formula_not_the_2013_one() -> None:
+    """Формула 2013 года (П = С × (КС2 − КС1), ставки по плотности) не действует с 01.04.2022."""
+    import json
+
+    row = _rows()["moscow-593pp-vri"]
+    text = json.dumps(row, ensure_ascii=False)
+    assert "П = С" not in text and "П=С" not in text
+    assert "коэффициент местоположения" in text
+    assert "812-ПП" in row["latest_amendment"] and "812-ПП" in row["watch_terms"]
+
+
+OCTOBER_REVISION = (
+    "moscow-2152-pp", "moscow-2151-pp", "moscow-2150-pp", "moscow-945-pp", "moscow-593pp-vri",
+    "moscow-273pp-land-rent", "moscow-1874-pp", "moscow-331-pp-krt", "moscow-3135-pp",
+    "rf-sp-42", "mo-114r-market-price", "mo-713-30",
+)
+
+
+def test_the_october_revision_is_dated_and_its_chains_agree_with_the_history() -> None:
+    """Каждая тронутая карточка датирована сверкой; ряд, история и маркеры не расходятся.
+
+    Номер поправки живёт в трёх местах: ряд (`amendment_chain`), учтённые
+    изменения (`amendment_history`) и маркеры сторожа (`watch_terms`), по
+    которым проба узнаёт страницу публикатора. Разойдясь, они молчат: ряд
+    знает поправку, а сторож объявляет её новостью каждую неделю.
+    """
+    rows = _rows()
+    for key in OCTOBER_REVISION:
+        row = rows[key]
+        assert row["current_as_of"] == "2026-10-16", key
+        if key == "mo-713-30":
+            continue  # ряд 713/30 — 29 поправок, история ведётся с 774-ПП
+        history = " ".join(row.get("amendment_history") or [])
+        for number, step in _chain(row).items():
+            assert number in history, f"{key}: {number} есть в ряду, но не в истории"
+            if "16.10.2026" in str(step.get("known_from") or ""):
+                assert number in row["watch_terms"], f"{key}: {number} не в маркерах сторожа"
+    # 114-Р: номер и дата сверены по скану — карточка больше не ждёт этого.
+    assert rows["mo-114r-market-price"]["status"] == "verified"
+    assert "сверены по скану" in rows["mo-114r-market-price"]["latest_amendment"]
+    assert "16.10.2026" in rows["mo-713-30"]["notes"]
+
+
+def test_the_774_pack_names_the_mosreg_copy_without_a_click_id() -> None:
+    """Тот же скан 774-ПП лежит и на портале Правительства МО; ссылка — без хвоста поиска."""
+    import urllib.parse
+
+    text = (ROOT / "data" / "normatives" / "mo" / "pp_774_2026-07-02.md").read_text("utf-8")
+    links = [word for word in text.split() if "mosreg.ru/download/document/1363640" in word]
+    assert links, "ссылки на копию скана на mosreg.ru нет"
+    for link in links:
+        assert not urllib.parse.urlsplit(link).query, link

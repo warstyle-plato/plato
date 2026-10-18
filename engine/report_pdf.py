@@ -1645,9 +1645,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         over=float(row.get('parking_over_units') or 0)
         sold=float(row.get('parking_saleable_units') or 0)
         where=[]
-        if under: where.append("подземных "+_pdf_num(under,0)
-                               +(f" (гараж {_pdf_num(row.get('under_gns'),0)} м²)"
-                                 if float(row.get('under_gns') or 0) else ""))
+        if under: where.append("подземных "+_pdf_num(under,0))
         if over: where.append("на первых этажах "+_pdf_num(over,0)+" (в ГНС здания)")
         guest=float(row.get('parking_guest_units') or 0)
         tail=("продаётся "+_pdf_num(sold,0)+(", гостевых "+_pdf_num(guest,0) if guest else "")
@@ -1655,6 +1653,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         return "   в т.ч. паркинг объекта, мест: "+"; ".join(where+[tail])
     def _park_count(row):
         return _pdf_count_text(row.get('parking_units'), COUNT_PARKING)
+    # Метры гаража объекта — в колонке, как у подземного паркинга дома:
+    # колонка подписана «ГНС / подземная», и её строки складываются в итог —
+    # общую площадь. В подписи они итог не догоняли: печать показывала
+    # 187 346 при общей 191 546 (гараж 4 200 м² стоял словом).
+    def _park_area(row):
+        under_gns = float(row.get('under_gns') or 0)
+        return _pdf_num(under_gns, 0) if under_gns else "—"
+    _area_total = _pdf_num(float(total.get('gns') or 0) + float(total.get('under_gns') or 0), 0)
 
     def _tep_widths(rows, middle):
         """Колонка «Кол-во» — по своему содержимому, остаток — названию."""
@@ -1662,27 +1668,27 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
                                           normal.fontSize, 5, 22*mm)
         return [170*mm - sum(middle) - count_w, *middle, count_w]
     if given > 0:
-        tep_rows=[["Продукт",TOTAL_AREA.with_unit(),"Продаваемая, м²",
+        tep_rows=[["Продукт",ROW_AREA_HEADER,"Продаваемая, м²",
                    f"{TRANSFER_WORD}, м²","Кол-во"]]
         for row in rows_data:
             tep_rows.append([row.get('label') or row.get('key') or '—',
                              _pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),
                              _pdf_num(row.get('transfer'),0),_count(row)])
             if float(row.get('parking_units') or 0):
-                tep_rows.append([_park_label(row),"—","—","—",_park_count(row)])
-        tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),
+                tep_rows.append([_park_label(row),_park_area(row),"—","—",_park_count(row)])
+        tep_rows.append([area_total_label(),_area_total,_pdf_num(total.get('saleable'),0),
                          _pdf_num(given,0),_counts])
         story.append(table(tep_rows,_tep_widths(tep_rows,[28*mm,30*mm,30*mm])))
         story.append(P("Переданные метры строятся, но не продаются: в продаваемой "
                        f"площади их нет. {TRANSFER_RECIPIENT_NOTE.capitalize()}.",
                        small))
     else:
-        tep_rows=[["Продукт",TOTAL_AREA.with_unit(),"Продаваемая, м²","Кол-во"]]
+        tep_rows=[["Продукт",ROW_AREA_HEADER,"Продаваемая, м²","Кол-во"]]
         for row in rows_data:
             tep_rows.append([row.get('label') or row.get('key') or '—',_pdf_num(row.get('gns'),0),_pdf_num(row.get('saleable'),0),_count(row)])
             if float(row.get('parking_units') or 0):
-                tep_rows.append([_park_label(row),"—","—",_park_count(row)])
-        tep_rows.append(["Итого",_pdf_num(total.get('gns'),0),_pdf_num(total.get('saleable'),0),_counts])
+                tep_rows.append([_park_label(row),_park_area(row),"—",_park_count(row)])
+        tep_rows.append([area_total_label(),_area_total,_pdf_num(total.get('saleable'),0),_counts])
         story.append(table(tep_rows,_tep_widths(tep_rows,[32*mm,36*mm])))
     # Обеспеченность — готовый ответ расчёта (`parking_provision`), а не
     # деление здесь: страница, тизер, Платон и книга печатают то же число.

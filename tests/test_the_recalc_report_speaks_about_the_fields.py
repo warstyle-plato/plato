@@ -94,6 +94,8 @@ def _stand() -> str:
         page_blocks.function("standaloneProductSum"),
         page_blocks.krt_lock(),
         page_blocks.function("setUndergroundFromMethod"),
+        # Маршрут пересчёта решает предикат, общий с подсказкой у кнопки.
+        page_blocks.function("glavapuBaselineApplies"),
         page_blocks.function("recalcFromTep"),
     ])
 

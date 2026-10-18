@@ -23,7 +23,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from browser import chromium_or_skip
+from browser import chromium_or_skip, wait_for_result
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -205,7 +205,7 @@ def test_on_the_page_the_next_question_carries_the_document() -> None:
             said = page.evaluate("() => document.getElementById('aiMessages').innerText")
             # Пересчёт страницы между вопросами не должен терять разговор.
             page.evaluate("() => calculate()")
-            page.wait_for_timeout(800)
+            wait_for_result(page)
             page.evaluate("() => askAgentQuick('а какая там IRR?')")
             page.wait_for_function("() => !aiBusy", timeout=10_000)
             page.evaluate("() => askAgentQuick('что с ВРИ?')")
