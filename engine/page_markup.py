@@ -233,8 +233,14 @@ PAGE += r"""</head>
         <!-- Коэффициенты парковки называет город по ЭТОМУ участку, поэтому они
              здесь, а не во «Вводных». Поля рисует renderSiteParkingFields по
              объявлению FIELD_GROUPS — подписей второй копией нет. -->
-        <div class="section-title" style="font-size:13px;margin-top:12px">Коэффициенты парковки участка</div>
-        <div class="fields" id="siteParkingFields" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))"></div>
+        <!-- Свёрнут по умолчанию: поля нужны редко, а в заголовке видно, что
+             принял расчёт (К1, К2, район) и есть ли противоречие с кадастром.
+             Узел статичный — перерисовка меняет только поля, и раскрытое
+             человеком остаётся раскрытым. -->
+        <details class="site-parking-box" id="siteParkingBox">
+          <summary id="siteParkingSummary">Коэффициенты парковки участка</summary>
+          <div class="fields" id="siteParkingFields" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))"></div>
+        </details>
         <!-- Параметры Подмосковья стоят здесь, а не на «Вводных»: два поля из
              шести — та же плотность и та же площадь участка, что выше, и рядом
              видно, что правится одно и то же. На «Вводных» они разрывали путь
