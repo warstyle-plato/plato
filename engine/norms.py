@@ -737,6 +737,16 @@ if "underground_parking" in TEP_DEFAULT:
 _VRI_RIGHT_DIVISOR: dict[str, float] = {"ownership": 1.00001, "lease": 1.001}
 
 
+def _ceil_places(value: float) -> int:
+    """Округление мест вверх без двоичного шума.
+
+    Ставка, снятая с базы (места / НП), умноженная на ту же НП, даёт не ровно
+    целое, а 93,000…01 — и ⌈⌉ отдавал 94 там, где город сказал 93. Шестой знак
+    отсекает шум и не трогает настоящие дроби: 0,000001 места не бывает.
+    """
+    return math.ceil(round(float(value), 6))
+
+
 def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
                                       areas: dict[str, Any]) -> dict[str, Any]:
     """Пересчёт по параметрам исходного расчёта ГлавАПУ.
@@ -790,10 +800,17 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     if not any(social_rates.values()):
         warnings.append("в исходном расчёте нет компенсации за соцобъекты — ставки снять не с чего")
 
-    permanent_rate = (num(baseline, "parking_permanent") / base_res_np
-                      if base_res_np > 0 else 0.0)
-    attached_rate = (num(baseline, "parking_attached") / base_built_in_np
-                     if base_built_in_np > 0 else 0.0)
+    # Ставка снимается с той же НП, которой потом считаются новые метры —
+    # СПП × 0,9. Выгрузка печатает НП округлённой до тысяч (22,217 против
+    # 24,686 × 0,9 = 22,2174), и ставка с напечатанной НП на исходных же
+    # метрах давала 93,002 → 94 вместо 93 города. Нет СПП в базе — берём НП.
+    base_res_np_rate = base_res_spp * 0.9 if base_res_spp > 0 else base_res_np
+    base_built_in_np_rate = (base_built_in_spp * 0.9 if base_built_in_spp > 0
+                             else base_built_in_np)
+    permanent_rate = (num(baseline, "parking_permanent") / base_res_np_rate
+                      if base_res_np_rate > 0 else 0.0)
+    attached_rate = (num(baseline, "parking_attached") / base_built_in_np_rate
+                     if base_built_in_np_rate > 0 else 0.0)
     rates["parking_permanent_per_sqm"] = permanent_rate
     rates["parking_attached_per_sqm"] = attached_rate
 
@@ -829,7 +846,7 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
         # строительство, свидетельством АГР, одобренной 3D-моделью на 05.08.2026
         # или вводом до 01.01.2028 считаются по прежней редакции. Определять это
         # «примерно по дате» нельзя — режим задаётся явно.
-        permanent = math.ceil(res_spp * 0.9 * permanent_rate) if res_spp and permanent_rate else 0
+        permanent = _ceil_places(res_spp * 0.9 * permanent_rate) if res_spp and permanent_rate else 0
         parking_basis = "прежняя редакция 945-ПП: ставка исходного расчёта на метр НП жилой"
     elif any(float(flats.get(key) or 0) for key in ("small", "medium", "large")):
         permanent = moscow_permanent_parking_by_mix(
@@ -849,7 +866,7 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     # офисное здание значит выдать 109 мест за посчитанные. У отдельного здания
     # свой паркинг со своим нормативом, и он в проекте отдельным продуктом.
     built_in_np = built_in_spp * 0.9
-    attached = (math.ceil(built_in_np * attached_rate)
+    attached = (_ceil_places(built_in_np * attached_rate)
                 if built_in_np and attached_rate else 0)
     standalone_np = max(0.0, nonres_np - built_in_np)
     if standalone_np > 1:
@@ -978,6 +995,14 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     if base_permanent:
         compare("гостевые машино-места", math.ceil(base_permanent / 10.0),
                 int(num(baseline, "parking_guest")))
+    # Приобъектные: ставка (с СПП × 0,9) на НАПЕЧАТАННОЙ НП базы обязана
+    # вернуть число базы — две записи одной площади в выгрузке согласны друг
+    # с другом; не согласны (прочитана не та строка) — это расхождение, а не
+    # расчёт. Пока строки не было, 94 против 93 на исходном ТЭП шло молча.
+    base_attached = int(num(baseline, "parking_attached"))
+    if base_attached and base_built_in_np > 0 and attached_rate > 0:
+        compare("приобъектные машино-места",
+                _ceil_places(base_built_in_np * attached_rate), base_attached)
         if regime == "2118_2026" and base_apartments > 0:
             # Настоящая проверка формулы: город посчитал 897 мест на 77 696 м²
             # квартир — ровно столько даёт пункт 1. Разойдётся — значит база

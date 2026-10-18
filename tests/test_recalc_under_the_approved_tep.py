@@ -213,7 +213,7 @@ def test_a_zero_base_is_free_and_a_missing_base_is_not():
 
 def test_the_page_asks_the_server_and_says_whose_answer_it_is():
     page = core.PAGE
-    assert "Пересчитать по параметрам исходного расчёта" in page
+    assert "Пересчитать нормативы по ТЭП" in page
     assert "'/tep/recalc-from-baseline'" in page
     body = page[page.index("async function recalcFromTep("):]
     body = body[:body.index("\n}\n")]
@@ -339,7 +339,9 @@ def test_the_rates_come_from_the_baseline_not_from_constants():
     rates = out["rates"]
     assert abs(rates["vri_mln_per_sqm"] - 10562.660 / 127163) < 1e-9
     assert abs(rates["social_mln_per_place"]["kindergarten"] - 1140.096 / 104) < 1e-9
-    assert abs(rates["parking_permanent_per_sqm"] - 897 / 107580) < 1e-12
+    # Ставка снимается с НП, которой потом считаются новые метры — СПП × 0,9,
+    # а не с напечатанной выгрузкой НП (она округлена до тысяч).
+    assert abs(rates["parking_permanent_per_sqm"] - 897 / (119533 * 0.9)) < 1e-12
 
 
 def test_the_standalone_building_is_shown_but_not_charged():
@@ -411,7 +413,7 @@ def test_everything_falls_together_on_the_approved_tep():
 
 def test_the_page_calls_the_baseline_recalculation():
     page = core.PAGE
-    assert "Пересчитать по параметрам исходного расчёта" in page
+    assert "Пересчитать нормативы по ТЭП" in page
     assert "'/tep/recalc-from-baseline'" in page
     body = page[page.index("async function recalcFromTep("):]
     body = body[:body.index("\n}\n")]
