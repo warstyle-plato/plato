@@ -236,7 +236,7 @@ PAGE += r"""</head>
           </div>
         </div>
         <div class="tep-action">
-          <button class="btn" onclick="formTepByDensity()">Заполнить таблицу по площади и плотности</button>
+          <button class="btn" onclick="formTepByDensity()">Сформировать ТЭП по новым параметрам</button>
           <span class="tep-action-hint" id="siteApplyHint">Поменяли площадь или плотность — нажмите, и таблица ниже заполнится заново: квартиры, магазины на первом этаже, детсады, школы и парковка; перед заменой покажем, что изменится.</span>
         </div>
         <div id="siteApplyStatus" class="import-status" style="display:none"></div>
@@ -987,19 +987,19 @@ PAGE += r"""</head>
      параметры отключены, можете выбрать ТЭП в разделе экономика»). Текст
      живёт ЗДЕСЬ и только здесь: плашка под селектором зовёт это же окно,
      иначе одно и то же сказано дважды подряд и его перестают читать. -->
-<!-- Подтверждение «Заполнить таблицу по площади и плотности»: действие перезаписывает
+<!-- Подтверждение «Сформировать ТЭП по новым параметрам»: действие перезаписывает
      строки таблицы, и перед заменой человек видит, что именно изменится
      (строка, было → будет) и чем. Список составляет densityTepPlan. -->
 <div id="tepConfirmDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
      z-index:91;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeTepConfirm()">
   <div style="background:#fff;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
-      <h2 id="tepConfirmTitle" style="margin:0;font-size:17px">Заполнить таблицу по площади и плотности</h2>
+      <h2 id="tepConfirmTitle" style="margin:0;font-size:17px">Сформировать ТЭП по новым параметрам</h2>
       <button onclick="closeTepConfirm()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button>
     </div>
     <div id="tepConfirmBody" style="font-size:13px;line-height:1.55"></div>
     <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
-      <button class="btn dark" type="button" id="tepConfirmOk" onclick="confirmTepAction()">Заполнить</button>
+      <button class="btn dark" type="button" id="tepConfirmOk" onclick="confirmTepAction()">Сформировать</button>
       <button class="btn" type="button" onclick="closeTepConfirm()">Отмена</button>
     </div>
   </div>

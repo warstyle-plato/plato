@@ -1594,7 +1594,7 @@ function applyDensityToHotel(){
   +num(area*density)+' м² ГНС.</span>';
 }
 
-// Что заменит «Заполнить таблицу по площади и плотности» — для подтверждения перед
+// Что заменит «Сформировать ТЭП по новым параметрам» — для подтверждения перед
 // заменой. Отказы (гостиница, нежилой, нет площади) объясняет сам
 // applyDensityToTep: там и выбор, куда класть потенциал, — плана для них нет.
 function densityTepPlan(){
@@ -1654,7 +1654,7 @@ function confirmTepAction(){
 function formTepByDensity(){
  const plan=densityTepPlan();
  if(!plan){applyDensityToTep();return}
- openTepConfirm('Заполнить таблицу по площади и плотности',densityTepPlanHtml(plan),'Заполнить',applyDensityToTep);
+ openTepConfirm('Сформировать ТЭП по новым параметрам',densityTepPlanHtml(plan),'Сформировать',applyDensityToTep);
 }
 function applyDensityToTep(){
  const status=document.getElementById('siteApplyStatus');
@@ -1925,7 +1925,7 @@ function renderSitePanel(){
   warn.style.display='';
   warn.innerHTML=normative
    ?'Продаваемая площадь квартир <b>'+num(used)+' м²</b> превышает потенциал <b>'+num(potential)+
-    ' м²</b> при плотности '+num(effectiveSiteDensity())+' м² квартир/га. Нажмите «Заполнить таблицу по площади и плотности» выше — '+
+    ' м²</b> при плотности '+num(effectiveSiteDensity())+' м² квартир/га. Нажмите «Сформировать ТЭП по новым параметрам» выше — '+
     'таблица пересчитается по нормативам целиком.'
    // Превышение чаще всего создают не квартиры, а офисы/ТЦ/наземный паркинг и
    // соцобъекты: кнопка пересчёта их сознательно не трогает, а потенциал

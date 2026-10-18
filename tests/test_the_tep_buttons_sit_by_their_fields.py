@@ -4,7 +4,7 @@
 трёх кнопок с названиями, «понятными только ИИ», и телеграфными пояснениями.
 Теперь:
 
-- «Заполнить таблицу по площади и плотности» — в карточке участка, у полей
+- «Сформировать ТЭП по новым параметрам» — в карточке участка, у полей
   площади и плотности. Перезаписывает строки, поэтому сначала показывает, что
   изменится (строка, было → будет), и меняет только по подтверждению; отказы
   (гостиница, нежилой, нет площади) идут сразу к объяснению отказа.
@@ -45,7 +45,7 @@ def _tep_panel() -> str:
 
 # Слова, которые посетитель без подготовки не понимает: им не место ни в
 # названиях кнопок, ни в пояснениях к ним.
-JARGON = ("РНГП", "производн", "пропорции не от чего", "ГНС", "СПП", "ТЭП по")
+JARGON = ("РНГП", "производн", "пропорции не от чего", "ГНС", "СПП")
 
 
 def test_each_button_sits_by_the_fields_it_reads() -> None:
@@ -53,7 +53,7 @@ def test_each_button_sits_by_the_fields_it_reads() -> None:
     assert 'id="tepActionsMenu"' not in tep and "Действия с ТЭП" not in tep, \
         "отдельное меню «Действия с ТЭП» вернулось"
     site = tep[tep.index('class="card site-card"'):tep.index('id="tepBody"')]
-    assert 'onclick="formTepByDensity()">Заполнить таблицу по площади и плотности<' in site, \
+    assert 'onclick="formTepByDensity()">Сформировать ТЭП по новым параметрам<' in site, \
         "кнопка заполнения по плотности не в карточке участка"
     assert site.index('id="siteDensity"') < site.index('onclick="formTepByDensity()"')
     table_card = tep[tep.index('id="tepBody"'):tep.index('id="tepSettingsCard"')]
@@ -80,7 +80,7 @@ def test_the_overlay_speaks_plainly_too() -> None:
     assert "нажмите" in said
     for word in JARGON:
         assert word not in said, f"слой пишет в пояснение жаргон «{word}»"
-    assert "Действиях с ТЭП" not in overlay and "Сформировать ТЭП" not in overlay
+    assert "Действиях с ТЭП" not in overlay and "Сформировать ТЭП по плотности" not in overlay
     assert "#tep [onclick=\"syncTep()\"]" in overlay, "слой не замечает пропажу кнопки «Экономики»"
 
 
@@ -112,7 +112,7 @@ const before=applied;
 closeTepConfirm();            // «Отмена»
 const afterCancel=applied;
 formTepByDensity();
-confirmTepAction();           // «Заполнить»
+confirmTepAction();           // «Сформировать»
 const plan=densityTepPlan();
 inputs._glavapu_import=null;
 inputs.vri_region='mo';
@@ -257,7 +257,7 @@ def test_on_a_phone_the_buttons_sit_by_their_fields_and_confirm_first() -> None:
         assert word not in got["normsHint"] + got["siteHint"], f"на экране жаргон «{word}»"
     assert got["buttonVisible"] and got["pageScroll"] <= 0
     assert got["dialogShown"] and "Квартиры" in got["dialogText"]
-    assert got["dialogTitle"] == "Заполнить таблицу по площади и плотности"
+    assert got["dialogTitle"] == "Сформировать ТЭП по новым параметрам"
     assert got["untouched"], "«Отмена» изменила ТЭП"
-    assert got["changed"] and got["expected"], "«Заполнить» не заменил квартиры площадью × плотностью"
+    assert got["changed"] and got["expected"], "«Сформировать» не заменил квартиры площадью × плотностью"
     assert got["dialogClosed"]
