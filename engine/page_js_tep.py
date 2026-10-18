@@ -781,7 +781,7 @@ function renderTep(){
        // считается от мест, и вписанное вернулось бы к прежнему на первом же
        // пересчёте — молча, то есть неотличимо от «не сработало».
        : ` <span class="tep-note">`
-         +`Площадь считается от мест по нормативу РНГП. Чтобы вписать свою — `
+         +`Площадь считается от мест по нормативу Москвы (2151-ПП). Чтобы вписать свою — `
          +`«Социальная нагрузка → Соцобъекты и плата за ВРИ → Требование КРТ».</span>`;
    }
    if(TEP_RATIOS[key]){
@@ -1399,72 +1399,130 @@ function siteDensitySourceLabel(){
  if(glavapuDensitySqmHa()>0)return 'из калькулятора ГлавАПУ (Москва)';
  return 'по умолчанию 30 000 м²/га';
 }
+// Чьими нормативами считается ручной и кадастровый ТЭП без выгрузки ГлавАПУ —
+// один ответ на все подписи страницы. Регион решает `classRegion()`: пустой
+// регион — Москва, и подпись области под московским проектом (и наоборот)
+// стоять не должна.
+function normativeNormsLabel(){
+ return classRegion()==='mo'?'РНГП Московской области':'Москвы';
+}
+// Москва без выгрузки ГлавАПУ: квартиры — площадь × плотность, остальное —
+// нормативы ГОРОДА через `/tep/derived-by-site`, то есть та же
+// `tep_derived_norms` движка, что и у пересчёта по ТЭП: 33 м²/чел, места ДОО
+// и СОШ по зоне района, постоянные машино-места по 2118-ПП и десятая часть
+// гостевых. Прежде такой проект шёл в `/mo/calculate` и получал нормы
+// области — 28 м²/чел, ДОО 65 и СОШ 135 на тысячу — под московским адресом
+// (решение владельца, 16.10.2026). Арифметики на странице нет: что считать и
+// чем это подписать, отвечает сервер.
+async function applyMoscowNormativeTep(area,density,keepRows){
+ const row=tep.apartments;
+ const filled=tepFillByRatios('apartments',{gns:0,total_area:0,saleable:Math.round(area*density*10)/10,useful:0});
+ ['gns','total_area','saleable','useful'].forEach(f=>{row[f]=filled[f]});
+ row.transfer=0;
+ // Число квартир — делителем собранного руками ТЭП (рынок, 60 м²): норматив
+ // 33 × 2,1 меряет население, а не среднюю квартиру (см. подпись строки).
+ const yard=Number((AVERAGE_FLAT.manual||{}).sqm||0);
+ row.units=yard>0?Math.ceil(Number(row.saleable||0)/yard):0;
+ // Вписанные человеком площади квартир — его, как и в областном пересчёте.
+ Object.entries(keepRows||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
+ rescaleBuiltInCommercial();
+ const territory=((inputs._cadastral_analysis||cadastralAnalysis||{}).territory)||{};
+ const response=await fetch('/tep/derived-by-site',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({apartment_area_sqm:Number(row.saleable||0),
+   residential_living_spp_sqm:Number(row.gns||0),
+   nonresidential_np_sqm:nonresidentialAboveSqm(),
+   // Число квартир не передаётся: на стадии оценки это наша оценка по рыночной
+   // средней, а не данное города, и постоянные места идут пунктом 1 —
+   // S / (33 × 2,1) × 0,8 (решение владельца, 16.10.2026).
+   apartment_count:0,
+   district:String(territory.district||''),
+   inside_moscow:true})});
+ const data=await response.json();
+ if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать ТЭП по нормативам Москвы');
+ const places=data.places||{};
+ const skipped=applyDerivedInputs({kindergarten_places:places.kindergarten,
+  school_places:places.school,clinic_capacity:places.clinic});
+ // Посчитанные места — строящиеся объекты, как и у областного расчёта.
+ if(inputs.social_mode!=='Строительство'&&inputs.social_mode!=='Строительство и компенсация')
+  inputs.social_mode='Строительство';
+ const parking=data.parking||{};
+ setUndergroundFromMethod(parking.permanent,parking.guest,parking.underground);
+ stampSocialBasis('нормативы Москвы');
+ return Object.assign({},data,{tep:{apartments:Object.assign({},row)},
+  warnings:(data.warnings||[]).concat(skipped?[skipped]:[])});
+}
 async function applyNormativeTep(densityOverride,keepRows){
- // Нормативный пересчёт по РНГП МО — те же формулы, что в калькуляторе
- // Подмосковья: квартиры = площадь × плотность, население 28 м²/чел, ДОО
- // 65 и СОШ 135 мест на 1000 жителей, поликлиника 17,75 пос./смену,
- // паркинг 356 м/м на 1000 (90% постоянные, подземные 35 м²/место),
- // рабочие места 50% населения → офисы. Раньше ручной и кадастровый ТЭП
- // считались долями 94/6, и социалка с объектами КРТ оставались от
- // первоначального объёма квартир — очередям доставалась разбивка от
- // проекта, которого больше нет.
+ // Нормативный пересчёт ручного и кадастрового ТЭП: квартиры = площадь ×
+ // плотность, остальное — от населения нормативами региона. Чьи нормативы,
+ // решает `classRegion()`: Москва — свои (`applyMoscowNormativeTep`), область
+ // — калькулятор Подмосковья ниже: население 28 м²/чел, ДОО 65 и СОШ 135
+ // мест на 1000 жителей, поликлиника 17,75 пос./смену, паркинг 356 м/м на
+ // 1000 (90% постоянные, подземные 35 м²/место), рабочие места 50%
+ // населения → офисы. Раньше ручной и кадастровый ТЭП считались долями 94/6,
+ // и социалка с объектами КРТ оставались от первоначального объёма квартир —
+ // очередям доставалась разбивка от проекта, которого больше нет.
  const area=Number(inputs.site_area_ha||0);
  // Плотность может прийти извне: обратный счёт от заданного объёма квартир
- // считает её как метры ÷ гектары и гонит те же нормативы РНГП.
+ // считает её как метры ÷ гектары и гонит те же нормативы.
  const density=Number(densityOverride)>0?Number(densityOverride):effectiveSiteDensity();
- const stored=inputs._mo_calc||{};
- // Округ решает Кср и Кд платы за ВРИ. Без него расчёт берёт среднее по
- // области: на Мытищах это 198 907 ₽ вместо 238 052 ₽ за метр — и плата
- // расходится на четверть. Округ ищется в сохранённом расчёте МО, в поле
- // на вкладке импорта и в самом проекте (пресет несёт его отдельным ключом).
- const district=(stored.territory&&stored.territory.district)
-  ||((document.getElementById('moDistrict')||{}).value||'')
-  ||inputs.mo_district||'';
- // Кадастры проекта уезжают в запрос: сервер определяет округ по адресам
- // участков из ЕГРН, а плату за ВРИ считает по разнице кадастровых
- // стоимостей — точнее прямой формулы. Раньше запрос был пуст, если проект
- // пришёл не из калькулятора МО, и расчёт не знал, что это Мытищи.
- const analysis=inputs._cadastral_analysis||cadastralAnalysis||{};
- const projectNumbers=(analysis.recognized||analysis.requested||[]).filter(Boolean).join(', ');
- const body={
-  query:stored.query||projectNumbers||'',
-  limit:30,
-  site_area_ha:area,
-  density_sqm_per_ha:density,
-  district:district,
-  market_price_rub_per_sqm:0,
-  vri_kd:0,
-  average_flat_sqm:Number((document.getElementById('moFlat')||{}).value||0)||AVERAGE_FLAT.mo.sqm
- };
- const response=await fetch('/mo/calculate',{method:'POST',headers:{'Content-Type':'application/json'},
-  body:JSON.stringify(body)});
- const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать нормативный ТЭП');
- Object.entries(data.tep||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
- // Обратный счёт от вписанных метров: строка, которую человек вписал, остаётся
- // его. Сервер выводит ГНС и общую из продаваемой своими долями, и ответ молча
- // заменял вписанные 215 720,6 м² ГНС на 220 781,6 — при обещании таблицы
- // «введённое вами не перебивается». Из ответа берётся только производное:
- // число квартир, население, социалка, паркинг, плата за ВРИ.
- Object.entries(keepRows||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
- if(keepRows&&keepRows.apartments)rescaleBuiltInCommercial();
- const keepLand=Number(inputs.land_rights_cost_mln||0);
- const keepRegion=inputs.vri_region;
- Object.assign(inputs,data.inputs||{});
- const parcels=((data.vri||{}).parcels||[]).length;
- // Плата за ВРИ считается от УПКС конкретных участков; без кадастра расчёта
- // нет, и введённая руками сумма не затирается нулём. Регион ВРИ без
- // кадастра МО тоже остаётся прежним.
- if(!(Number((data.inputs||{}).land_rights_cost_mln||0)>0)&&keepLand>0)inputs.land_rights_cost_mln=keepLand;
- if(!parcels&&keepRegion)inputs.vri_region=keepRegion;
- inputs._mo_calc={query:body.query,territory:data.territory||{},
-  density_sqm_per_ha:data.density_sqm_per_ha,vri:data.vri||{},social:data.social||{},
-  balance:data.balance||{},warnings:data.warnings||[],
-  // Объём квартир последнего нормативного расчёта. По нему обратный счёт
-  // отличает правку человека от собственного результата и не зовёт себя по кругу.
-  apartments_saleable:Number((data.tep&&data.tep.apartments&&data.tep.apartments.saleable)||0)};
- if(data.territory&&data.territory.district)inputs.mo_district=data.territory.district;
- moResult=data;
+ let data;
+ if(classRegion()!=='mo'){
+  data=await applyMoscowNormativeTep(area,density,keepRows);
+ }else{
+  const stored=inputs._mo_calc||{};
+  // Округ решает Кср и Кд платы за ВРИ. Без него расчёт берёт среднее по
+  // области: на Мытищах это 198 907 ₽ вместо 238 052 ₽ за метр — и плата
+  // расходится на четверть. Округ ищется в сохранённом расчёте МО, в поле
+  // на вкладке импорта и в самом проекте (пресет несёт его отдельным ключом).
+  const district=(stored.territory&&stored.territory.district)
+   ||((document.getElementById('moDistrict')||{}).value||'')
+   ||inputs.mo_district||'';
+  // Кадастры проекта уезжают в запрос: сервер определяет округ по адресам
+  // участков из ЕГРН, а плату за ВРИ считает по разнице кадастровых
+  // стоимостей — точнее прямой формулы. Раньше запрос был пуст, если проект
+  // пришёл не из калькулятора МО, и расчёт не знал, что это Мытищи.
+  const analysis=inputs._cadastral_analysis||cadastralAnalysis||{};
+  const projectNumbers=(analysis.recognized||analysis.requested||[]).filter(Boolean).join(', ');
+  const body={
+   query:stored.query||projectNumbers||'',
+   limit:30,
+   site_area_ha:area,
+   density_sqm_per_ha:density,
+   district:district,
+   market_price_rub_per_sqm:0,
+   vri_kd:0,
+   average_flat_sqm:Number((document.getElementById('moFlat')||{}).value||0)||AVERAGE_FLAT.mo.sqm
+  };
+  const response=await fetch('/mo/calculate',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(body)});
+  data=await response.json();
+  if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать нормативный ТЭП');
+  Object.entries(data.tep||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
+  // Обратный счёт от вписанных метров: строка, которую человек вписал, остаётся
+  // его. Сервер выводит ГНС и общую из продаваемой своими долями, и ответ молча
+  // заменял вписанные 215 720,6 м² ГНС на 220 781,6 — при обещании таблицы
+  // «введённое вами не перебивается». Из ответа берётся только производное:
+  // число квартир, население, социалка, паркинг, плата за ВРИ.
+  Object.entries(keepRows||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
+  if(keepRows&&keepRows.apartments)rescaleBuiltInCommercial();
+  const keepLand=Number(inputs.land_rights_cost_mln||0);
+  const keepRegion=inputs.vri_region;
+  Object.assign(inputs,data.inputs||{});
+  const parcels=((data.vri||{}).parcels||[]).length;
+  // Плата за ВРИ считается от УПКС конкретных участков; без кадастра расчёта
+  // нет, и введённая руками сумма не затирается нулём. Регион ВРИ без
+  // кадастра МО тоже остаётся прежним.
+  if(!(Number((data.inputs||{}).land_rights_cost_mln||0)>0)&&keepLand>0)inputs.land_rights_cost_mln=keepLand;
+  if(!parcels&&keepRegion)inputs.vri_region=keepRegion;
+  inputs._mo_calc={query:body.query,territory:data.territory||{},
+   density_sqm_per_ha:data.density_sqm_per_ha,vri:data.vri||{},social:data.social||{},
+   balance:data.balance||{},warnings:data.warnings||[],
+   // Объём квартир последнего нормативного расчёта. По нему обратный счёт
+   // отличает правку человека от собственного результата и не зовёт себя по кругу.
+   apartments_saleable:Number((data.tep&&data.tep.apartments&&data.tep.apartments.saleable)||0)};
+  if(data.territory&&data.territory.district)inputs.mo_district=data.territory.district;
+  moResult=data;
+ }
  syncTep(false);
  // Разбивка соцобъектов по очередям пересобирается под новые мощности.
  // Старый список строил семь ДОУ на 1 562 места и СОШ на 3 250 от проекта,
@@ -1554,10 +1612,15 @@ function densityTepPlan(){
    notes:['Общая и полезная площадь этих строк пересчитаются долями. Остальные строки таблицы не меняются.',
           'Данные выгрузки ГлавАПУ в этих строках будут заменены; вернуть их — повторно «Получить ТЭП» на вкладке «Участок».']};
  }
+ // Чьи нормативы — по региону проекта: план не должен обещать Москве РНГП
+ // области, а области — московские.
+ const norms='нормативами '+normativeNormsLabel();
+ const mo=classRegion()==='mo';
  return {mode:'normative',
-  basis:'Квартиры '+num(spp)+' м² продаваемой = '+landNum(area,3)+' га × '+num(density)+' м² квартир/га; остальное — нормативами РНГП от населения.',
+  basis:'Квартиры '+num(spp)+' м² продаваемой = '+landNum(area,3)+' га × '+num(density)+' м² квартир/га; остальное — '+norms+' от населения.',
   rows:[{label:'Квартиры',was:was('apartments'),will:{gns:null,saleable:spp}}],
-  notes:['Нормативами РНГП пересчитаются также: число квартир и население, ДОО, СОШ, поликлиника, машино-места, офисы (рабочие места), плата за изменение ВРИ и разбивка соцобъектов по очередям.',
+  notes:['Н'+norms.slice(1)+' пересчитаются также: число квартир и население, ДОО, СОШ, поликлиника, машино-места'
+    +(mo?', офисы (рабочие места), плата за изменение ВРИ':'')+' и разбивка соцобъектов по очередям.',
          'Вводные, заполненные этим расчётом, заменят прежние; строки отдельно стоящих объектов идут от их вводных на «Экономике».']};
 }
 function densityTepPlanHtml(plan){
@@ -1638,26 +1701,37 @@ function applyDensityToTep(){
  const density=effectiveSiteDensity();
  if(!inputs._glavapu_import){
   // Ручной ТЭП, кадастр и проект из калькулятора Подмосковья считаются
-  // одинаково — нормативами РНГП от квартир. Долевой метод 94/6 пересчитывал
+  // одинаково — от квартир нормативами региона (`applyNormativeTep`: Москва
+  // — свои, область — РНГП). Долевой метод 94/6 пересчитывал
   // только жильё: офисы на 92 тыс. м², 7 700 машино-мест и социалка
   // оставались от первоначального объёма квартир, а разбивка на очереди
   // делила проект, которого больше нет. Москва с ГлавАПУ идёт своей веткой:
   // там нормативный расчёт делает сам калькулятор ГлавАПУ.
   status.style.display='';
-  status.innerHTML='Считаю нормативный ТЭП по РНГП: квартиры '+num(area*density)+
+  status.innerHTML='Считаю ТЭП по нормативам '+normativeNormsLabel()+': квартиры '+num(area*density)+
    ' м² продаваемой ('+num(area)+' га × '+num(density)+
-   ' м² квартир/га), социалка, паркинг и офисы — от населения…';
+   ' м² квартир/га), социалка и паркинг — от населения…';
   applyNormativeTep().then(data=>{
    // Плата за ВРИ и её основание — часть того же пересчёта: молчаливое
    // среднее по области занижало плату на четверть против цены округа.
    const priceWarn=(((data||{}).warnings)||[]).find(w=>String(w).includes('среднее значение по Московской области')||String(w).includes('Округ не определён'));
-   status.innerHTML='<span class="import-ok">ТЭП пересчитан нормативами РНГП: квартиры '+
+   // Офисы от дефицита рабочих мест и плата за ВРИ — ответ калькулятора
+   // области; у Москвы плата считается своей кнопкой, и сервер говорит это сам.
+   const mo=classRegion()==='mo';
+   const source=(data||{}).source;
+   const origin=typeof source==='string'?source:String((source||{}).service||'');
+   status.innerHTML='<span class="import-ok">ТЭП пересчитан нормативами '+normativeNormsLabel()+': квартиры '+
     num(tep.apartments.saleable)+' м² продаваемой ('+num(tep.apartments.gns)+
     ' м² ГНС), подземный паркинг '+num(tep.underground_parking.units)+' м/м, ДОО '+
-    num(tep.kindergarten.units)+' мест, СОШ '+num(tep.school.units)+' мест, офисы '+
-    num(Number(inputs.offices_gba_sqm||0))+' м² GBA. Смена ВРИ: '+
-    num(Number(inputs.land_rights_cost_mln||0))+' млн ₽.</span>'+
-    (priceWarn?'<div class="import-error" style="margin-top:4px">'+escapeHtml(String(priceWarn))+'</div>':'');
+    num(tep.kindergarten.units)+' мест, СОШ '+num(tep.school.units)+' мест'+
+    (mo?', офисы '+num(Number(inputs.offices_gba_sqm||0))+' м² GBA. Смена ВРИ: '+
+    num(Number(inputs.land_rights_cost_mln||0))+' млн ₽.':'.')+'</span>'+
+    (priceWarn?'<div class="import-error" style="margin-top:4px">'+escapeHtml(String(priceWarn))+'</div>':'')+
+    (origin||(((data||{}).basis)||[]).length
+     ?'<div class="hint" style="margin-top:4px">Чем посчитано: '
+      +escapeHtml([origin].concat((data||{}).basis||[]).filter(Boolean).join('; '))+'.</div>':'')+
+    (((data||{}).refused)||[]).map(x=>'<div class="hint">Не посчитано — '
+      +escapeHtml(String(x.name||''))+': '+escapeHtml(String(x.reason||''))+'.</div>').join('');
   }).catch(e=>{
    status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';
   });
@@ -1852,7 +1926,7 @@ function renderSitePanel(){
   warn.innerHTML=normative
    ?'Продаваемая площадь квартир <b>'+num(used)+' м²</b> превышает потенциал <b>'+num(potential)+
     ' м²</b> при плотности '+num(effectiveSiteDensity())+' м² квартир/га. Нажмите «Сформировать ТЭП по плотности» в «Действиях с ТЭП» — '+
-    'проект пересчитается нормативами РНГП целиком.'
+    'проект пересчитается нормативами '+normativeNormsLabel()+' целиком.'
    // Превышение чаще всего создают не квартиры, а офисы/ТЦ/наземный паркинг и
    // соцобъекты: кнопка пересчёта их сознательно не трогает, а потенциал
    // участка они занимают наравне с жильём. Без разбивки это выглядит как
@@ -1912,12 +1986,13 @@ function applyRequiredSocialProgramFromGlavapu(){
 // движком: доля объявлена там один раз, копии здесь нет.
 const MKD_SPP_SPLIT=__DEVELOPAID_MKD_SPP_SPLIT__;
 const TEP_RATIOS=__DEVELOPAID_TEP_RATIOS__;
-// Норматив площади соцобъекта — ступень по ёмкости здания (РНГП, редакция
-// 2579-ПП). Таблица приходит из движка подстановкой: второй копии числа нет.
+// Норматив площади соцобъекта — ступень по ёмкости здания (2151-ПП — нормативы
+// Москвы, редакция 2579-ПП). Таблица приходит из движка подстановкой: второй
+// копии числа нет.
 const SOCIAL_AREA_STEPS=__DEVELOPAID_SOCIAL_AREA_STEPS__;
 // Фактический показатель площади на место рядом с нормативом города. Одно
 // число без второго читается как норматив: 22,2 м²/место по договору КРТ и 15
-// по РНГП — разные ответы на разные вопросы, и подменять первый вторым нельзя.
+// по 2151-ПП — разные ответы на разные вопросы, и подменять первый вторым нельзя.
 function socialNormNote(kind){
  const map={kindergarten:['social_dou_gba_sqm','kindergarten_places'],
   school:['social_school_gba_sqm','school_places'],
@@ -1930,7 +2005,7 @@ function socialNormNote(kind){
  const unit=kind==='clinic'?'м²/(пос./смену)':'м²/место';
  const city=socialAreaPerPlace(kind,units);
  return ` Фактически ${landNum(fact,1)} ${unit}`
-  +(city?` — норматив РНГП ${landNum(city,1)}.`
+  +(city?` — норматив Москвы (2151-ПП) ${landNum(city,1)}.`
    // У поликлиники ступени нет, а предел города — верхний (2150-ПП): число
    // берётся из умолчания поля, второй копии на странице нет.
    :kind==='clinic'?` — предел города не более ${landNum(INPUT_DEFAULT.social_clinic_norm_sqm,0)} (2150-ПП, уточняется МТЗ).`
@@ -2772,7 +2847,7 @@ function syncTep(rerender=true){
  .forEach(([row,areaId,normId,unitsId])=>{
   const units=socialBuild?Number(inputs[unitsId]||0):0;
   // Норматив площади — ступень по ёмкости здания, а не одно число: маленький
-  // садик стоит 27 м² на место, крупный 16 (РНГП, редакция 2579-ПП). Считается
+  // садик стоит 27 м² на место, крупный 16 (2151-ПП, редакция 2579-ПП). Считается
   // от КОЛИЧЕСТВА МЕСТ (решение владельца, 02.09.2026), поэтому поле следует
   // за мощностью, а не живёт своей жизнью. У поликлиники ступени нет: норма
   // города — верхний предел (2150-ПП, разд. 1.4), и он живёт умолчанием поля.
@@ -2790,7 +2865,7 @@ function syncTep(rerender=true){
   // режиме показывает ФАКТИЧЕСКИЙ показатель (решение владельца, 03.09.2026:
   // «показывать фактически»), а не то число, которое стояло тут до вписанного
   // требования. Норматив города при этом называется рядом: 22,2 м²/место по
-  // договору и 15 по РНГП — разные ответы, и второй не отменяет первого.
+  // договору и 15 по 2151-ПП — разные ответы, и второй не отменяет первого.
   let area=socialBuild?Number(inputs[areaId]||0):0;
   // Места ввели руками, площадь — нет: считаем её нормативом на место. Прежде
   // это делал только импорт ГлавАПУ и только в режиме «Строительство», а при
