@@ -344,19 +344,15 @@ def test_the_book_prices_apartments_by_the_same_ladder() -> None:
 
 def test_the_stage_fields_are_the_ladder_and_the_engine_reads_them() -> None:
     """«Не сносить этапы, а сделать на их примере» (владелец, 02.09.2026):
-    поля шаблона ПЛАТО остались и стали рабочими, текстовой лестницы нет."""
+    поля этапов остались и стали рабочими, текстовой лестницы нет."""
     fields = {f[0]: f for _group, items in core.FIELD_GROUPS for f in items}
     assert "price_steps" not in fields and "offices_price_steps" not in fields
     assert "price_steps" not in core.DEFAULT_INPUTS
     for key in ("growth_stage1_pct", "growth_stage2_pct", "growth_stage3_pct", "growth_stage4_pct"):
         assert key in fields and key in core.DEFAULT_INPUTS
-        assert key not in core._M2_TEMPLATE_ONLY_INPUTS, f"{key} помечен как нечитаемый движком"
     # Заданный этап замещает ежемесячный рост до РВЭ: без него цену ведёт
     # ежемесячный рост, с ним — одна ступень.
     flat = _inputs(monthly_growth_pre_pct=0)
     before = core.build_operating_model(flat, _tep(), [])["revenue_by_product"]["apartments"]
     after = core.build_operating_model({**flat, "growth_stage2_pct": 10}, _tep(), [])["revenue_by_product"]["apartments"]
     assert after > before
-    # Шаблон ПЛАТО принимает этапы своими строками «Вводных».
-    assert {label for label, _key, _kind in core._PLATO_INPUT_MAP} >= {
-        "Рост цены — этап 1", "Рост цены — этап 2", "Рост цены — этап 3", "Рост цены — этап 4"}

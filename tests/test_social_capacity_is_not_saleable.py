@@ -85,37 +85,6 @@ def _social_inputs() -> dict:
     return inputs
 
 
-def test_the_model_v2_workbook_does_not_turn_capacity_into_sales() -> None:
-    """Проверяем саму книгу, а не конкретную запись условия в исходнике.
-
-    Колонка «Продаётся, ед.» есть только в книге `build_plato_model_v2`
-    (лист «ТЭП», шапка в 4-й строке): там формула `=G-H` превращала места
-    школы в продажи. Книга v4 (`build_project_workbook`) такой колонки не
-    имеет — её проверяет следующий тест.
-    """
-    openpyxl = pytest.importorskip("openpyxl")
-    content, _meta = core.build_plato_model_v2(
-        _social_inputs(), copy.deepcopy(core.TEP_DEFAULT), [],
-        project_name="Социальная мощность")
-    sheet = openpyxl.load_workbook(io.BytesIO(content), data_only=False)["ТЭП"]
-    headers = [sheet.cell(row=4, column=c).value for c in range(1, 10)]
-    sold_column = headers.index("Продаётся, ед.") + 1
-    units_column = headers.index("Единиц") + 1
-    rows = {}
-    for row in range(5, sheet.max_row + 1):
-        label = str(sheet.cell(row=row, column=1).value or "")
-        if label == "ИТОГО":
-            break
-        if label in {"ДОО", "СОШ"}:
-            rows.setdefault(label, row)
-    assert set(rows) == {"ДОО", "СОШ"}
-    # Мощность видна, но в продаже её нет — ни числом, ни формулой от мест.
-    assert sheet.cell(row=rows["ДОО"], column=units_column).value == pytest.approx(350)
-    assert sheet.cell(row=rows["СОШ"], column=units_column).value == pytest.approx(1000)
-    assert sheet.cell(row=rows["ДОО"], column=sold_column).value == 0
-    assert sheet.cell(row=rows["СОШ"], column=sold_column).value == 0
-
-
 def test_the_v4_workbook_keeps_capacity_out_of_sales() -> None:
     """В книге v4 места соцобъектов живут в «Параметры модели»!B174:B185.
 
@@ -143,7 +112,7 @@ def test_the_v4_workbook_keeps_capacity_out_of_sales() -> None:
     allowed = {(params, f"F{row}") for row in range(174, 186)}
     allowed |= {("ТЭП", f"{col}{row}") for row in social_rows.values()
                 for col in "BCD"}
-    # Суммарная площадь в ГНС очереди (ОТЧЕТ!B58:E58) делит ГНС соцобъекта по
+    # Общая площадь очереди (ОТЧЕТ!B58:E58) делит ГНС соцобъекта по
     # очередям пропорционально их местам: это площадь здания — база
     # удельного CAPEX (решение владельца 16.10.2026), — а не продажи.
     allowed |= {("ОТЧЕТ", f"{col}58") for col in "BCDE"}
