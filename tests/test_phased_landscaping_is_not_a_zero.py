@@ -58,11 +58,11 @@ def seen():
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_page(viewport={"width": 1440, "height": 900})
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            browser.wait_for_result(page)
             page.evaluate("""async ()=>{
               inputs.vri_region='mo';
               phasing=makeDefaultPhasing(3);phasing.enabled=true;
-              await calculate();
+              await settledCalculate();
             }""")
             page.wait_for_function("()=>phaseBundle&&lastResult&&lastResult.summary",
                                    timeout=60000)
