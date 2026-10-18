@@ -677,6 +677,23 @@ function applyServerPresetProjectConfig(presetId){
  return '';
 }
 
+// Машино-места в чат — по видам и из расчёта движка, как итоги и PDF
+// (решение владельца 16.10.2026): подземный паркинг (из них к продаже),
+// наземный, приобъектные. Одно число под подписью «подземный паркинг»
+// складывало все три вида, а в жилом проекте бралось из ТЭП страницы или
+// выгрузки, а не из расчёта.
+function telegramParkingByKind(result){
+ const tepResult=(result&&result.tep)||{};
+ const row=key=>(tepResult.rows||[]).find(r=>r.key===key)||{};
+ const under=row('underground_parking');
+ return {
+  underground:Number(under.units||0),
+  underground_saleable:Number(under.saleable_units||0),
+  above:Number(row('above_parking').units||0),
+  // Паркинг объектов стоит полем на их строках; сумма — у итога ТЭП.
+  attached:Number((tepResult.total||{}).parking_units||0)};
+}
+
 async function sendTelegramResult(){
  const glavapuMeta=inputs._glavapu_import||null;
  const manualMeta=inputs._manual_tep_import||null;
@@ -694,7 +711,6 @@ async function sendTelegramResult(){
  // иначе чат назвал бы места и деньги, которых в расчёте нет.
  const counted=withoutHousing();
  const countedRow=key=>((lastResult.tep&&lastResult.tep.rows)||[]).find(r=>r.key===key)||{};
- const countedTotal=(lastResult.tep&&lastResult.tep.total)||{};
   persistLocalSilently();
  const payload={
    cadastral_numbers:cads,
@@ -713,12 +729,7 @@ async function sendTelegramResult(){
     social_compensation_mln:counted?0:(manual||edited)?Number(inputs.social_compensation_mln||0):Number(n.social_compensation_total_mln||0),
     // Обеспеченность парковкой — ответ движка с подписью «N мест / M по норме = K×».
     parking_provision_label:parkingProvisionText(),
-    parking_spaces:counted
-     ? Number(countedRow('underground_parking').units||0)+Number(countedRow('above_parking').units||0)
-       +Number(countedTotal.parking_units||0)
-     :(manual||edited)
-     ? Number((tep.underground_parking&&tep.underground_parking.units)||0)+Number((tep.above_parking&&tep.above_parking.units)||0)
-     : Number(n.parking_permanent||0)+Number(n.parking_guest||0)+Number(n.mfc_parking_spaces||0),
+    parking:telegramParkingByKind(lastResult),
    revenue_mln:Number(s.revenue||0)/1e6,
     total_expenses_mln:Number(s.total_expenses||0)/1e6,
    ebitda_mln:Number(s.ebitda||0)/1e6,
