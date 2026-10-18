@@ -87,7 +87,10 @@ def test_the_unpaid_debt_keeps_the_paper_branch() -> None:
 
 def test_the_pdf_loss_is_not_called_conditional(loss_after_default) -> None:
     text = _pdf(*loss_after_default)
-    row = text[text.index("Чистая прибыль"):text.index("Маржинальность")]
+    # Строка раздела «Ключевая экономика» — та, что на скриншоте владельца;
+    # первая страница печатает своё «Чистая прибыль» раньше.
+    at = text.index("Чистая прибыль", text.index("Ключевая экономика"))
+    row = text[at:text.index("Маржинальность", at)]
     assert "следующих периодов" not in row, row
     assert "условная" not in row, row
     assert "долг закрыт" not in row, row
