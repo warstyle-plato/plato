@@ -115,11 +115,14 @@ formTepByDensity();
 confirmTepAction();           // «Заполнить»
 const plan=densityTepPlan();
 inputs._glavapu_import=null;
+inputs.vri_region='mo';
 const normative=densityTepPlan();
+inputs.vri_region='';
+const moscow=densityTepPlan();
 inputs.project_kind='hotel';
 const hotel=densityTepPlan();
 formTepByDensity();           // отказ — без окна, сразу к объяснению
-process.stdout.write(JSON.stringify({shown,body,before,afterCancel,applied,plan,normative,hotel,
+process.stdout.write(JSON.stringify({shown,body,before,afterCancel,applied,plan,normative,moscow,hotel,
  closed:nodes.tepConfirmDialog.style.display}));
 """
     out = page_blocks.run_json(PRELUDE, tail)
@@ -138,6 +141,10 @@ process.stdout.write(JSON.stringify({shown,body,before,afterCancel,applied,plan,
     assert out["normative"]["mode"] == "normative"
     assert out["normative"]["rows"][0]["will"]["saleable"] == 2 * 25000
     assert any("РНГП" in n for n in out["normative"]["notes"])
+    # Москва без ГлавАПУ — свои нормативы: план не обещает ей РНГП области.
+    assert out["moscow"]["mode"] == "normative"
+    assert "нормативами Москвы" in out["moscow"]["basis"]
+    assert not any("РНГП" in n for n in out["moscow"]["notes"] + [out["moscow"]["basis"]])
     assert out["hotel"] is None
     assert out["closed"] == "none"
 
