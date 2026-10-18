@@ -211,3 +211,37 @@ def test_the_rendered_page_calls_the_sum_total_area() -> None:
     assert _flat(got["note"]).startswith(f"{TOTAL_AREA.name} — ")
     text = _flat(got["text"])
     assert not _old_in(text), _old_in(text)
+
+
+GARAGE = {"offices_enabled": True, "offices_gba_sqm": 40000, "offices_saleable_sqm": 25000,
+          "offices_parking_under_spaces": 120, "offices_parking_over_spaces": 0,
+          "_parking_by_hand": ["offices"]}
+
+
+@pytest.mark.parametrize("extra", [{}, GARAGE], ids=["дом", "объект_с_гаражом"])
+def test_the_pdf_tep_column_is_row_area_and_its_total_is_the_total_area(extra) -> None:
+    """Таблица ТЭП PDF-отчёта (владелец, 18.10.2026, скриншот: «Суммарная площадь
+    в ГНС» над «Квартиры 23 823»): у строк — их ГНС или подземная площадь, у
+    итога — общая площадь. Слово суммы над строкой продукта читалось как общая
+    площадь квартир (у ТЭП это другая колонка, 0,9·ГНС). Итог — число движка
+    `construction_volume_sqm`: с гаражом объекта он был меньше ровно на гараж.
+    """
+    pypdf = pytest.importorskip("pypdf")
+    inputs = {**copy.deepcopy(core.DEFAULT_INPUTS), **extra}
+    tep = copy.deepcopy(core.TEP_DEFAULT)
+    result = core.calculate(core.CalcRequest(inputs=copy.deepcopy(inputs),
+                                             tep=copy.deepcopy(tep), rates=[]))
+    content = core._build_developaid_pdf({
+        "project_name": "Общая площадь", "result": result,
+        "inputs": inputs, "tep": tep, "rates": [],
+    })
+    text = _flat("\n".join(page.extract_text() or "" for page in
+                           pypdf.PdfReader(io.BytesIO(content)).pages))
+    volume = (result if isinstance(result, dict) else result.body)["summary"]["construction_volume_sqm"]
+    if extra:
+        garage = float((result if isinstance(result, dict) else result.body)["tep"]["total"]["under_gns"])
+        assert garage > 0, "у объекта нет гаража — проверять нечего"
+    head = text.index(tg.ROW_AREA_HEADER)
+    block = text[head:head + 2500]
+    assert f"{tg.area_total_label()} {core._pdf_num(volume, 0).replace(chr(160), ' ')}" in block, block
+    assert TOTAL_AREA.with_unit() not in block

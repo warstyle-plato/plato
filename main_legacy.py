@@ -31,7 +31,8 @@ import zipfile
 # перевод запроса и ответа живёт на границе поставщика.
 import plato_provider
 # Подписи величин — у словаря терминов, здесь только чтение.
-from terms_glossary import (CORE_ABOVE_AREA, CORE_TOTAL_AREA, CORE_UNDER_AREA, OBJECTS_TOTAL_AREA, SALEABLE_AREA,
+from terms_glossary import (CORE_ABOVE_AREA, CORE_TOTAL_AREA, CORE_UNDER_AREA, OBJECTS_TOTAL_AREA,
+                            ROW_AREA_HEADER, ROW_AREA_HEADER_FULL, SALEABLE_AREA, area_total_label,
                             TERMS, TOTAL_AREA, capex_unit_base, page_terms, unit_label)
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
@@ -102,7 +103,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.26.8"
+VERSION = "0.26.18"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой

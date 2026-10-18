@@ -1241,14 +1241,71 @@ def _glavapu_scenario_build(req: GlavapuScenarioRequest) -> dict[str, Any]:
         req.inputs or {}, req.tep or {}, product_of=_glavapu_scenario_product, numbers=numbers)
 
 
+def _glavapu_flats_lines(params: dict[str, Any], apartments: dict[str, Any],
+                         living_sqm: float, population: int,
+                         glavapu: dict[str, Any] | None) -> tuple[str, str]:
+    """Две строки-причины про квартиры — одни и те же у всех зависимых видов.
+
+    Площадь квартир калькулятор в режиме «СПП в ГНС» считает сам: СПП жилая ×
+    0,65 (его строка 10, коэффициент из его кода); наша — из ТЭП. Население он
+    берёт от переданных нами квартир × 2,1 (галочка «через количество
+    квартир»), без них — от своей площади квартир / 33; наша норма — площадь
+    квартир / 33 (2152-ПП). Числа калькулятора — из его выгрузки, когда она
+    уже есть; до неё — по его формуле, и это сказано словами.
+    """
+    gs = glavapu_scenario
+    rows = ((glavapu or {}).get("rows") or {})
+
+    def ru(value: float, digits: int = 0) -> str:
+        return gs._ru(value, digits)
+
+    ours_area = n(apartments, "saleable")
+    ours_gns = n(apartments, "gns")
+    calc_area_ths = rows.get("10")
+    if calc_area_ths is None:
+        calc_area_ths = living_sqm * gs.CALC_FLATS_SHARE_OF_LIVING / 1000.0
+        calc_area_src = "по его формуле, строка 10"
+    else:
+        calc_area_src = "его строка 10"
+    share = f"{gs.CALC_FLATS_SHARE_OF_LIVING:g}".replace(".", ",")
+    area_line = (f"площадь квартир: калькулятор — СПП жилая × {share} = "
+                 f"{ru(calc_area_ths, 3)} тыс. м² ({calc_area_src}); у нас "
+                 + (f"{ru(ours_area / 1000.0, 3)} тыс. м² из ТЭП"
+                    + (f" ({ours_area / ours_gns * 100:.0f} % ГНС квартир)" if ours_gns > 0 else "")
+                    if ours_area > 0 else "площади квартир в ТЭП нет"))
+    flats = int(params.get("flats_count") or 0)
+    calc_population = rows.get("4")
+    pop_src = "его строка 4" if calc_population is not None else "по его формуле"
+    if flats > 0:
+        if calc_population is None:
+            calc_population = math.ceil(flats * gs.CALC_PERSONS_PER_FLAT)
+        population_line = (f"население: калькулятор — наши {ru(flats)} квартир (строка 5) × "
+                           f"{gs.CALC_PERSONS_PER_FLAT:g} чел. = {ru(calc_population)} ({pop_src}, "
+                           "его режим «через количество квартир»); наша норма — площадь "
+                           f"квартир / 33 м² = {ru(population)} (2152-ПП)").replace("2.1", "2,1")
+    else:
+        if calc_population is None:
+            calc_population = math.ceil(calc_area_ths * 1000.0 / gs.CALC_SQM_PER_PERSON)
+        population_line = (f"население: калькулятор — своя площадь квартир / 33 = "
+                           f"{ru(calc_population)} ({pop_src}; число квартир в ТЭП не задано, "
+                           "ему не передано); наша норма — площадь квартир / 33 м² = "
+                           f"{ru(population)}")
+    return area_line, population_line
+
+
 def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
-                           scenario: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+                           scenario: dict[str, Any],
+                           glavapu: dict[str, Any] | None = None
+                           ) -> tuple[dict[str, Any], dict[str, str]]:
     """Наша сторона сверки — из тех же владельцев, что считают модель.
 
     Нормы мест, соцпотребности и МПТ — `tep_derived_norms` (её ответ подписан
     как наш расчёт по городским формулам), приобъектные места — `parking_demand`,
     плата за ВРИ — поле проекта. Своей формулы сверка не заводит: второй ответ
     на тот же вопрос был бы третьим мнением, а не проверкой.
+
+    `glavapu` — сторона калькулятора (`glavapu_side`), когда его выгрузка уже
+    есть: причины про квартиры берут его строки 4, 5 и 10 оттуда.
     """
     inputs = inputs or {}
     tep = tep or {}
@@ -1440,8 +1497,13 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
         if mix.get(size) not in (None, ""):
             ours["flats"][size] = (n(mix, size), "вводные проекта: apartment_mix")
     average = n(apartments, "saleable") / units if units > 0 else 0.0
-    extra["flats.total"] = ("калькулятор считает квартиры от населения (2,1 чел. на квартиру), "
-                              "мы — штуками ТЭП")
+    area_line, population_line = _glavapu_flats_lines(params, apartments, living,
+                                                      int(derived["population"]), glavapu)
+    extra["flats.total"] = (
+        "калькулятору переданы наши квартиры (галочка «через количество квартир», строка 5)"
+        if int(params.get("flats_count") or 0) > 0 else
+        "калькулятор считает квартиры от населения (2,1 чел. на квартиру), а в ТЭП проекта "
+        "числа квартир нет — ему не передано; " + population_line)
     if not mix:
         for size in ("small", "medium", "large"):
             extra[f"flats.{size}"] = (
@@ -1502,9 +1564,12 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
         "mpt": (f"у модели {derived['sqm_per_job']:g} м² НП на рабочее место; "
                 "калькулятор считает по ВРИ (лист «МПТ»)"),
         "parking.guest": ("гостевые — десятая часть постоянных и у нас, и у калькулятора: "
-                          "расхождение идёт от постоянных мест"),
-        "parking.permanent": ("наша норма: " + derived["parking_basis"]
-                              + "; калькулятор — от своей площади квартир (строка 10)"),
+                          "расхождение идёт от постоянных мест; " + population_line
+                          + "; " + area_line),
+        "parking.permanent": ("наша норма: " + derived["parking_basis"] + "; калькулятор — "
+                              + ("от населения (строка 4)" if int(params.get("flats_count") or 0) > 0
+                                 else "от своей площади квартир (строка 10)")
+                              + "; " + population_line + "; " + area_line),
     }
     relief_basis = ("калькулятор даёт льготу за МПТ сам: нежилые ВРИ выше порога × "
                     "коэффициент места (офисы и торговля вне ТТК 0,7, внутри 0; соцобъекты 0,3); "
@@ -1548,10 +1613,16 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
                 f"у нас ГНС {gns_text} м²")
         for kind in ("spp.social", "spp.total", "density"):
             reasons[kind] = (reasons.get(kind, "") + "; " if reasons.get(kind) else "") + line
-    population = derived["population"]
     for kind in ("social.population", "social.kindergarten", "social.school", "social.clinic"):
-        reasons.setdefault(kind, f"наша норма: население {population} = площадь квартир / 33 м²; "
-                                 "калькулятор — от своей площади квартир (строка 10)")
+        reasons.setdefault(kind, population_line + "; " + area_line)
+    # Всё, что калькулятор ведёт от населения, несёт те же две строки: иначе
+    # коэффициент площади квартир виден только у части расхождений.
+    for kind in ("social_comp.total", "service.commerce_need", "service.sport_indoor",
+                 "territory.green_zhk"):
+        if reasons.get(kind):
+            reasons[kind] = reasons[kind] + "; " + population_line + "; " + area_line
+        else:
+            reasons[kind] = population_line + "; " + area_line
     if vri_origin.startswith("вводные проекта — число из выгрузки"):
         reasons["vri_cost_mln"] = ("наше число — выгрузка ГлавАПУ с его умолчаниями, а не "
                                    "наш сценарий; расхождение показывает, сколько стоит "
@@ -1689,6 +1760,11 @@ def glavapu_scenario_check(req: GlavapuScenarioRequest) -> dict[str, Any]:
         return answer
     answer.update({k: v for k, v in record.items() if k not in ("stored_at",)})
     if record.get("state") == "done":
+        # Причины про квартиры называют строки 4, 5 и 10 самого калькулятора —
+        # они есть только в готовой выгрузке.
+        ours, reasons = _glavapu_scenario_ours(req.inputs or {}, req.tep or {}, scenario,
+                                               glavapu=record.get("glavapu") or {})
+        answer["ours"] = ours
         answer["comparison"] = glavapu_scenario.compare(
             ours, record.get("glavapu") or {}, reasons, record.get("applied"))
     return answer
