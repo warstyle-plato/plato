@@ -73,6 +73,10 @@ def _sync(source: str) -> dict:
         + json.dumps({kind: [list(pair) for pair in steps]
                       for kind, steps in core.MOSCOW_SOCIAL_AREA_PER_PLACE.items()},
                      default=lambda v: 1e12) + ";\n"
+        # Ступень — московская, и `socialAreaPerPlace` спрашивает регион проекта
+        # тем же предикатом, что движок; без региона во вводных — Москва.
+        + _function("classRegion") + "\n"
+        + _function("moscowSocialStepsApply") + "\n"
         + _function("socialAreaPerPlace") + "\n"
         # Договор КРТ: 1 100 мест и 14 300 м² — норматив на такой ёмкости даёт 13.
         f"const inputs={{social_area_source:{json.dumps(source)},"

@@ -1,4 +1,4 @@
-"""IRR и NPV при непогашенном долге — «N/A — долг не погашен», а не число.
+"""IRR и NPV капитала при непогашенном долге — «N/A — долг не погашен», а не число.
 
 Решение владельца 29.09.2026 (ревизия книги, решение 2): если ПФ к концу
 проекта не погашен, доходность капитала не считается. Книга так и делала
@@ -8,6 +8,10 @@
 Решение принимает движок один раз (`summary.equity_returns`); страница, тизер,
 Платон и Telegram печатают его подпись, а не сравнивают остаток долга сами.
 Отсутствие числа — не ноль.
+
+NPV и IRR проекта (поток до финансирования) правило не трогает: они числом
+всегда (решение владельца 17.10.2026, «Проект — числом»;
+`tests/test_project_returns_are_a_number_when_the_debt_is_unpaid.py`).
 
 Каждая проверка падает на прежнем коде (там число), а проверка страницы —
 ещё и на подделке, которая решала бы по остатку долга сама.
@@ -63,14 +67,16 @@ def test_the_engine_drops_the_numbers_and_names_the_reason(unpaid, repaid):
     summary = unpaid["consolidated"]["summary"]
     assert float(summary["ending_pf"]) > core.EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB, \
         "стенд не про непогашенный долг"
-    assert summary["npv"] is None and summary["irr_equity"] is None
+    assert summary["npv_equity"] is None and summary["irr_equity"] is None
+    assert isinstance(summary["npv"], float) and isinstance(summary["irr_project"], float), \
+        "NPV и IRR проекта — числом и при непогашенном долге"
     assert summary["equity_returns"]["status"] == "debt_unrepaid"
     assert summary["equity_returns"]["label"] == LABEL
     assert "млн ₽" in summary["equity_returns"]["reason"]
 
     ok = repaid["consolidated"]["summary"]
     assert float(ok["ending_pf"]) <= core.EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB
-    assert isinstance(ok["npv"], float), "при погашенном долге NPV — число"
+    assert isinstance(ok["npv_equity"], float), "при погашенном долге NPV капитала — число"
     assert ok["equity_returns"]["status"] == "ok" and ok["equity_returns"]["label"] is None
 
 
@@ -98,14 +104,14 @@ def test_every_phase_and_the_whole_are_decided():
         unpaid = float(summary["ending_pf"]) > core.EQUITY_RETURNS_UNREPAID_DEBT_MIN_RUB
         assert summary["equity_returns"]["status"] == ("debt_unrepaid" if unpaid else "ok")
         if unpaid:
-            assert summary["npv"] is None and summary["irr_equity"] is None
-            assert summary["irr_project"] is None
+            assert summary["npv_equity"] is None and summary["irr_equity"] is None
+            assert isinstance(summary["npv"], float)
 
 
 def test_plato_reads_na_not_zero(unpaid, repaid):
     snap = core._result_snapshot(unpaid["consolidated"])
-    assert snap["npv_mln"] is None, "отсутствие NPV читалось нулём"
-    assert snap["irr_equity_pct"] is None
+    assert isinstance(snap["npv_mln"], float), "NPV проекта — числом"
+    assert snap["irr_equity_pct"] is None, "отсутствие IRR капитала читалось нулём"
     assert snap["equity_returns_na"] == LABEL
     assert core._result_snapshot(repaid["consolidated"])["equity_returns_na"] is None
     assert "N/A — долг не погашен" in core._AGENT_INSTRUCTIONS
@@ -124,8 +130,10 @@ def _teaser_text(bundle: dict, name: str) -> str:
 
 def test_the_teaser_prints_na(unpaid, repaid):
     text = _teaser_text(unpaid, "Долг не погашен")
-    # Тизер печатает и IRR, и NPV (две строки «Итога» и строка экономики).
+    # Тизер печатает подпись у IRR и NPV капитала (строка «Итога» и плитка),
+    # а IRR проекта — числом.
     assert text.count(LABEL) >= 2, text[:400]
+    assert not re.search(r"IRR проекта \(до финансирования\) N/A", text), text[:400]
     npv = core.presentation_numbers(repaid["consolidated"])["npv_mln"]
     shown = core._pdf_num(npv, 1)
     assert shown in _teaser_text(repaid, "Долг погашен"), "контрпример: NPV числом"
@@ -133,7 +141,8 @@ def test_the_teaser_prints_na(unpaid, repaid):
 
 
 def test_the_page_prints_the_engines_label():
-    """Отрисованная страница: NPV и IRR — подписью движка.
+    """Отрисованная страница: IRR капитала — подписью движка, NPV и IRR
+    проекта — числом.
 
     Подделка: признак движка переключён на «ok» при том же остатке долга.
     Страница, решающая по `ending_pf` сама, показала бы N/A и тут — проверка
@@ -181,12 +190,14 @@ def test_the_page_prints_the_engines_label():
     assert not other, f"страница упала: {other[:2]}"
     assert got["status"] == "debt_unrepaid" and got["ending"] > 500_000, got
     before, after = got["before"], got["after"]
-    assert before["table"].get(NPV_ROW) == LABEL, before["table"]
-    assert before["table"].get(IRR_PROJECT_ROW) == LABEL, before["table"]
+    # NPV и IRR проекта — числом и при непогашенном долге (владелец, 17.10.2026).
+    assert re.search(r"-?\d", before["table"].get(NPV_ROW, "")) and \
+        "N/A" not in before["table"][NPV_ROW], before["table"]
+    assert before["table"].get(IRR_PROJECT_ROW, "").endswith("%"), before["table"]
     assert before["table"].get(IRR_EQUITY_ROW) == LABEL, before["table"]
-    assert LABEL in before["kpi"], before["kpi"]
+    assert LABEL not in before["kpi"] and re.search(r"NPV @\d+%\s*-?\d", before["kpi"]), before["kpi"]
     # Подделка: тот же остаток долга, но движок сказал «ok» — страница
-    # печатает число, то есть решает не сама.
+    # печатает число IRR капитала, то есть решает не сама.
     assert LABEL not in after["table"].get(NPV_ROW, ""), after["table"]
     assert "1" in after["table"].get(NPV_ROW, "") and "N/A" not in after["table"][NPV_ROW]
     assert after["table"].get(IRR_PROJECT_ROW, "").endswith("%"), after["table"]
@@ -195,7 +206,9 @@ def test_the_page_prints_the_engines_label():
 
 
 def test_the_chat_summary_carries_the_label():
-    """Сводка страницы для бота несёт подпись движка, а не свой вывод."""
+    """Сводка страницы для бота несёт подпись движка у IRR капитала, а не
+    свой вывод; у IRR проекта подписи нет — он числом."""
     page = core.PAGE
-    assert "equity_returns_na:returnsNa(s)," in page
+    assert "irr_equity_label:irrEquityNa(s)," in page
+    assert "equity_returns_na:" not in page
     assert "const returnsNa=s=>((s||{}).equity_returns||{}).label||null;" in page

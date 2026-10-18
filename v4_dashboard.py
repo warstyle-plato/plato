@@ -504,9 +504,7 @@ def build_data_sheet(origin: dict[str, Any], llcr_target: float, last_column: st
                      else _cell(f"C{r}"))
         elif key == "irr_project":
             _irr = (irr_project or {}).get("value")
-            _label = (irr_project or {}).get("label")
-            value = (_cell(f"C{r}", text=str(_label)) if _label
-                     else _cell(f"C{r}", number=float(_irr)) if _irr is not None
+            value = (_cell(f"C{r}", number=float(_irr)) if _irr is not None
                      else _cell(f"C{r}", text="не считается"))
         elif key == "parking_provision":
             value = _cell(f"C{r}", formula=(

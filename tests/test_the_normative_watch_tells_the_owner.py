@@ -719,7 +719,9 @@ def test_the_search_says_what_it_saw(monkeypatch) -> None:
             self.url = "https://example.test/" + str(len(title))
 
     class _Client:
-        def search(self, query: str, groups_on_page: int = 10) -> list[_Doc]:
+        def search(self, query: str, **kw: object) -> list[_Doc]:
+            # Вопросов у сторожа два; выдача на оба одна и та же, адреса
+            # совпадают — строка в объединённой выдаче одна.
             return [_Doc("Постановление о чём-то другом"), _Doc("И ещё о другом")]
 
     entry = {"id": "mo-713-30", "short_name": "713/30 — РНГП Московской области",

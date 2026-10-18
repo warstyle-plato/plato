@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -361,3 +362,130 @@ def test_the_774_pack_names_the_mosreg_copy_without_a_click_id() -> None:
     assert links, "ссылки на копию скана на mosreg.ru нет"
     for link in links:
         assert not urllib.parse.urlsplit(link).query, link
+
+
+# --- четыре документа, которых не было в библиотеке (решение владельца 18.10.2026) ----------
+#
+# Реквизиты и действующие редакции прочитаны 18.10.2026: 435/18 — по официальным
+# публикациям 1317-ПП и 869-ПП (pravo.gov.ru) и сводному тексту meganorm.ru; своды
+# правил — по ГАРАНТ, meganorm.ru, legalacts.ru и sudact.ru (Минстрой из песочницы
+# не открылся). Здесь закреплено то, что прочитано, а не то, что помнилось:
+# в рабочих записях 435/18 значился «от 17.10.2017» и «правилами благоустройства».
+
+NEW_CARDS = {
+    "mo-435-18-comfort-standards": {
+        "cited": "435/18",
+        "adopted_at": "2021-06-01",
+        "title_has": ("от 01.06.2021 № 435/18", "стандартов жилого помещения и комфортности проживания"),
+        "redaction": ("869-ПП", "1317-ПП"),
+        "source_url": "http://publication.pravo.gov.ru/document/5000202607270006",
+    },
+    "rf-sp-113": {
+        "cited": "СП 113.13330.2023",
+        "adopted_at": "2023-10-05",
+        "effective_from": "2023-11-06",
+        "title_has": ("СП 113.13330.2023", "Стоянки автомобилей"),
+        "redaction": ("584/пр", "803/пр", "938/пр", "630/пр", "718/пр"),
+        "source_url": "https://sudact.ru/law/prikaz-minstroia-rossii-ot-05102023-n-718pr/",
+    },
+    "rf-sp-396": {
+        "cited": "СП 396.1325800.2018",
+        "adopted_at": "2018-08-01",
+        "effective_from": "2019-02-02",
+        "title_has": ("СП 396.1325800.2018", "Улицы и дороги населенных пунктов"),
+        "redaction": ("927/пр", "1017/пр", "852/пр", "474/пр"),
+        "source_url": "https://base.garant.ru/72167138/",
+    },
+    "rf-sp-59": {
+        "cited": "СП 59.13330.2020",
+        "adopted_at": "2020-12-30",
+        "effective_from": "2021-07-01",
+        "title_has": ("СП 59.13330.2020", "маломобильных групп населения"),
+        "redaction": ("938/пр", "630/пр", "833/пр", "434/пр", "904/пр"),
+        "source_url": "https://base.garant.ru/400382837/",
+    },
+}
+
+
+def test_the_four_new_documents_are_in_the_registry_with_their_redaction() -> None:
+    """Карточка есть, источник назван, действующая редакция названа номерами.
+
+    Последняя поправка стоит первой в `redaction`: она обязана быть и в строке
+    редакции, которую видит читатель, и в маркерах сторожа — иначе сторож
+    будет приносить её как новость каждую неделю.
+    """
+    rows = _rows()
+    missing = [key for key in NEW_CARDS if key not in rows]
+    assert not missing, f"в реестре нет карточек: {missing}"
+    for key, want in NEW_CARDS.items():
+        row = rows[key]
+        for part in want["title_has"]:
+            assert part in row["title"], f"{key}: в заголовке нет «{part}»"
+        assert row["adopted_at"] == want["adopted_at"], key
+        if "effective_from" in want:
+            assert row["effective_from"] == want["effective_from"], key
+        assert row["source_url"] == want["source_url"], f"{key}: источник не тот, что читали"
+        assert "18.10.2026" in row["source_label"], f"{key}: не сказано, когда прочитан источник"
+        assert row["current_as_of"] == "2026-10-18", key
+        latest, *earlier = want["redaction"]
+        assert latest in row["latest_amendment"], f"{key}: действующая редакция ({latest}) не названа"
+        assert latest in row["watch_terms"], f"{key}: {latest} не в маркерах сторожа"
+        history = " ".join(row["amendment_history"])
+        for number in want["redaction"]:
+            assert number in history or number in row["latest_amendment"], f"{key}: {number}"
+        for number, step in _chain(row).items():
+            assert number in history, f"{key}: {number} есть в ряду, но не в истории"
+        # Где документ работает — названо, и «не участвует» названо причиной.
+        modules = {u["module"]: u["usage"] for u in row["engine_usage"]}
+        assert "не участвует" in modules.get("—", ""), f"{key}: не сказано, что расчёт его не применяет"
+
+
+def test_the_registry_recognises_the_numbers_of_the_new_documents() -> None:
+    """`cited_numbers` — единственный ответ на «этот номер закрыт контуром»."""
+    known = registry.cited_numbers(list(_rows().values()))
+    for key, want in NEW_CARDS.items():
+        assert want["cited"].lower() in known, f"{key}: номер {want['cited']} не опознан"
+    # Короткое написание без года — им ссылаются РНГП МО и сами своды правил.
+    for short in ("сп 113.13330", "сп 396.1325800", "сп 59.13330"):
+        assert short in known, short
+    # Заменённая редакция стоянок узнаётся тоже: на неё ссылаются старые документы.
+    assert "сп 113.13330.2016" in known
+
+
+def test_the_comfort_standards_carry_their_real_requisites() -> None:
+    """435/18 — от 01.06.2021, «стандарты … комфортности проживания», а не 17.10.2017.
+
+    Номер своего акта берётся из заголовка: у сводов правил «№» в заголовке нет,
+    и «(с изменениями № 1–4)» там стоять не должно — `own_number` прочёл бы
+    «1–4» номером самого свода.
+    """
+    rows = _rows()
+    row = rows["mo-435-18-comfort-standards"]
+    assert registry.own_number(row) == "435/18"
+    assert "17.10.2017" not in json.dumps(row, ensure_ascii=False)
+    assert row["scope"] == "Московская область"
+    chain = _chain(row)
+    assert set(chain) == {"1317-ПП", "869-ПП"}
+    assert chain["869-ПП"]["eo_number"] == "5000202607270006"
+    assert chain["1317-ПП"]["eo_number"] == "5000202312280003"
+    for key in ("rf-sp-113", "rf-sp-396", "rf-sp-59"):
+        assert registry.own_number(rows[key]) == "", key
+
+
+def test_the_kind_of_force_is_named() -> None:
+    """Обязательный норматив и свод правил добровольного применения — разные ответы.
+
+    По перечню ПП РФ № 815 (ред. № 914) обязательны части СП 59.13330.2020;
+    СП 113 и СП 396 в действующей редакции перечня нет. 435/18 обязателен в
+    сфере, которую называет сам (КРТ жилой застройки с переселением), и через
+    отсылки РНГП МО.
+    """
+    rows = _rows()
+    assert "частично обязательный" in rows["rf-sp-59"]["notes"]
+    assert "815" in rows["rf-sp-59"]["notes"]
+    for key in ("rf-sp-113", "rf-sp-396"):
+        notes = rows[key]["notes"]
+        assert "добровольного применения" in notes and "815" in notes, key
+        assert "его нет" in notes, key
+    notes = rows["mo-435-18-comfort-standards"]["notes"]
+    assert "на обязательной основе" in notes and "подлежат учету" in notes

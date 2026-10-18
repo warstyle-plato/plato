@@ -33,6 +33,9 @@ const PRODUCT_LABELS=__DEVELOPAID_PRODUCT_LABELS__;
 // Подписи величин — из словаря терминов (`terms_glossary`): страница, PDF и
 // книга называют одну величину одним словом.
 const TERMS=__DEVELOPAID_TERMS__;
+// Чем модель гасит долг после дефолта в РВЭ — слова движка
+// (`DEFAULT_REPAYMENT_WORDS`), одни для страницы, PDF и бота.
+const DEFAULT_REPAYMENT_WORDS=__DEVELOPAID_DEFAULT_REPAYMENT__;
 // Отдельно стоящие объекты — из движка. Страница знала о них четырьмя
 // рукописными перечислениями: умолчание очереди в двух местах, четыре поля
 // выбора очереди в разметке и приставки объектов с гаражом. Пятый объект в
@@ -807,8 +810,10 @@ const irrFmt=v=>v==null?'N/A':pct(v);
 // ключ движка, слова — из словаря терминов (TERMS).
 const unitNum=(v,d)=>v==null?'—':Number(v).toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
 const unitBase=x=>(x&&x.base&&TERMS[x.base])?'м² '+TERMS[x.base].genitive:'—';
-// IRR и NPV при непогашенном долге снимает движок (summary.equity_returns):
-// страница не сравнивает остаток долга сама, а печатает его подпись.
+// IRR и NPV КАПИТАЛА при непогашенном долге снимает движок (summary.equity_returns):
+// страница не сравнивает остаток долга сама, а печатает его подпись. NPV и IRR
+// проекта (до финансирования) — числом всегда, этот признак они не читают
+// (владелец, 17.10.2026).
 const returnsNa=s=>((s||{}).equity_returns||{}).label||null;
 // Показателен ли IRR капитала, решает движок (summary.equity_irr): при своих
 // деньгах меньше порога от затрат вместо числа — его подпись «не показателен».

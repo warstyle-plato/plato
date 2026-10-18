@@ -12,8 +12,6 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
 import sys
 from pathlib import Path
 
@@ -33,12 +31,12 @@ def test_exactly_125_places_take_the_second_step() -> None:
 
 
 def test_the_page_answers_the_same_as_the_engine() -> None:
-    script = (page_blocks.constant("SOCIAL_AREA_STEPS", core.PAGE)
-              + page_blocks.function("socialAreaPerPlace", core.PAGE)
-              + "\nconsole.log(JSON.stringify([124,125,126,550,551].map("
-                "n=>[socialAreaPerPlace('kindergarten',n),socialAreaPerPlace('school',n)])));")
-    got = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True)
-    page = json.loads(got.stdout.strip())
+    # Стенд добирает куски страницы по именам сам (`page_blocks.run`): ступень
+    # читает регион проекта, и перечисленный руками список отстал бы от неё.
+    page = page_blocks.run_json(
+        "let inputs={vri_region:'msk'};",
+        "console.log(JSON.stringify([124,125,126,550,551].map("
+        "n=>[socialAreaPerPlace('kindergarten',n),socialAreaPerPlace('school',n)])));")
     engine = [[core.moscow_social_area_per_place("kindergarten", n),
                core.moscow_social_area_per_place("school", n)] for n in (124, 125, 126, 550, 551)]
     assert page == engine
