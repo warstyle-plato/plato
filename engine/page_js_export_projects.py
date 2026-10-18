@@ -964,7 +964,7 @@ async function deleteProject(id){
 // трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
 // то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
- 'profileState','profileAskedOnResult','calcRequiresLogin','calcRun','webLoginBusy',
+ 'profileState','profileAskedOnResult','calcRequiresLogin','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',

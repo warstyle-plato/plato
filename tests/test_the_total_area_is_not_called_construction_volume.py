@@ -27,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 
 import main as _wrapper  # noqa: E402
 import terms_glossary  # noqa: E402
-from browser import chromium_or_skip, serve  # noqa: E402
+from browser import chromium_or_skip, serve, wait_for_result  # noqa: E402
 from terms_glossary import CORE_TOTAL_AREA, TOTAL_AREA  # noqa: E402
 
 core = _wrapper.core
@@ -130,9 +130,9 @@ def test_the_rendered_page_names_the_sum_by_the_glossary() -> None:
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.goto(f"{base}/classic", wait_until="domcontentloaded")
-            tab.wait_for_timeout(700)
+            wait_for_result(tab)
             got = tab.evaluate("""async ()=>{
-              await calculate();
+              await settledCalculate();
               const attrs=[...document.querySelectorAll('[title],[placeholder],[data-hint]')]
                 .map(x=>[x.getAttribute('title'),x.getAttribute('placeholder'),
                          x.getAttribute('data-hint')].filter(Boolean).join(' '));

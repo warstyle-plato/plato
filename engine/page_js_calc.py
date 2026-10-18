@@ -218,8 +218,14 @@ function hideCalcLocked(){
  if(box)box.style.display='none';
 }
 
-// Номер последнего запущенного расчёта (см. `calculate`).
-let calcRun=0;
+// Номер последнего запущенного расчёта и номер последнего ответившего (см.
+// `calculate`). Расчёт «в пути», пока ответивший отстаёт от запущенного: ответ
+// пришёл, отвергнут как опоздавший или упал — всё это «ответил».
+let calcRun=0,calcSettled=0;
+// Нет ли расчёта в пути. Один ответ на «расчёт закончился» для стендов и
+// всего, что ждёт итог: пауза «на глаз» на медленной машине заканчивается
+// раньше ответа, а `lastResult` после загрузки проекта ещё меняется.
+function calcIdle(){return calcSettled===calcRun}
 async function calculate(){
  // Форма забирается целиком, КРОМЕ полей, где стоит счётный показатель, а не
  // набранное число: у таких вводная равна нулю, и ноль здесь значит «считает
@@ -258,6 +264,7 @@ async function calculate(){
  // поверх свежего: подставили рекомендацию 951, вписали 1300 — ушло 1300, а
  // в отчёте осталась выручка по 951. Показывается только последний запущенный.
  const calcTicket=++calcRun;
+ try{
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
    if(calcTicket!==calcRun)return null;
@@ -296,6 +303,7 @@ async function calculate(){
  // выглядело это как «предустановка не проедается в расчёт».
  persistLocalSilently();
  return lastResult;
+ }finally{if(calcTicket>calcSettled)calcSettled=calcTicket}
 }
 
 // Что принёс загруженный снимок в производных полях — до первого ответа
@@ -864,8 +872,8 @@ function pfRveWarningHtml(r){
   const when=ruMonth(f.default_date);
   return `<b>Дефолт${when?' в '+when:' в дату раскрытия'}: раскрытого эскроу не `
    +`хватило на ${money(gap)}.</b> Дальше нужна реструктуризация — её условий `
-   +'модель не знает и считает по допущению, что остаток обслуживается продажами '
-   +'следующих периодов.';
+   +'модель не знает и считает по допущению, что остаток долга гасится '
+   +DEFAULT_REPAYMENT_WORDS.single+'.';
  }
  const outcomes=pfQueueOutcomes();
  const carry=phaseBundle.debt_carry||(phaseBundle.consolidated||{}).debt_carry||null;
@@ -913,11 +921,11 @@ function pfRveWarningHtml(r){
    ?`<b>Понадобится согласие банка.</b> Переносить долг некуда — `
     +`<b>${escapeHtml(firstDefault.name)}</b> последняя очередь, и остаётся только `
     +'реструктуризация: её условий модель не знает и считает по допущению, что '
-    +'остаток обслуживается продажами следующих периодов; пени и требование она '
+    +'остаток долга гасится '+DEFAULT_REPAYMENT_WORDS.phased+'; пени и требование она '
     +'не считает.'
    :'<b>Понадобится согласие банка</b> — на перенос долга на следующую '
     +'очередь или на реструктуризацию. Дальше модель считает по допущению, что '
-    +'остаток обслуживается продажами следующих периодов; пени и требование она '
+    +'остаток долга гасится '+DEFAULT_REPAYMENT_WORDS.phased+'; пени и требование она '
     +'не считает.');
   lines.push(ending>500000
    ?`<b>По итогу всех очередей</b> при этом допущении непогашенным остаётся <b>${money(ending)}</b>.`

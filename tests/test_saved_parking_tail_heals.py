@@ -86,7 +86,7 @@ PROBE = r"""async ([data, phased]) => {
   // тот, следующий. Признак «движок ответил на ЭТУ загрузку» — отданный хвост
   // (`derivedState().tail.settled`); без функции (код до правки) — ответ есть.
   const answered = async () => {
-    await calculate();
+    await settledCalculate();
     for (let i = 0; i < 600; i++) {
       const tail = typeof derivedState === 'function' ? derivedState().tail : {settled: true};
       if (tail && tail.settled && ((phaseBundle && phaseBundle.consolidated) || lastResult)) return;
@@ -142,9 +142,9 @@ def page_states() -> dict:
                 page.on("request", lambda r, j=journal: j.append(r.post_data_json)
                         if r.url.endswith("/tep-corrections") else None)
                 page.goto(base, wait_until="domcontentloaded")
-                page.wait_for_timeout(1500)
+                browser.wait_for_result(page)
                 got[phased] = page.evaluate(PROBE, [vlasov_settings(), phased])
-                page.wait_for_timeout(300)
+                page.wait_for_load_state("networkidle")  # запрос /tep-corrections уходит после ответа
                 got[phased]["journal"] = journal
                 page.close()
     return got

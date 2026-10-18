@@ -65,7 +65,7 @@ def dialog():
             page.goto(base, wait_until="domcontentloaded")
             page.evaluate("localStorage.removeItem('plato_v04')")
             page.reload(wait_until="domcontentloaded")
-            page.wait_for_timeout(1500)
+            browser.wait_for_result(page)
             page.evaluate("openClassDialog()")
             got = page.evaluate(SCENARIO)
             page.close()

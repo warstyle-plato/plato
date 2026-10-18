@@ -50,7 +50,7 @@ def test_engine_names_the_dropped_value() -> None:
 
 PROBE = r"""async (data) => {
   applyProjectSnapshot(data);
-  await calculate();
+  await settledCalculate();
   renderResult();
   const note = document.getElementById('pageNotice');
   return {note: note ? note.innerText.trim() : '',
@@ -70,7 +70,7 @@ def page_state() -> dict:
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_page(viewport={"width": 1440, "height": 900})
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(1500)
+            browser.wait_for_result(page)
             got = page.evaluate(PROBE, SETTINGS)
             page.close()
     return got

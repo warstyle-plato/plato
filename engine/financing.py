@@ -450,6 +450,50 @@ def object_result(flows: dict[str, Any], *, start: date, discount_rate: float,
     }
 
 
+# --- допущение после дефолта в РВЭ -------------------------------------------
+# Чем модель гасит долг, которого не хватило в дату раскрытия эскроу: после
+# РВЭ на погашение идут продажи самой очереди (`available_for_repayment =
+# sales` в `simulate_financing`) — того, что к вводу осталось нераспроданным.
+# Прежде это называлось «продажами следующих периодов», и в проекте с одной
+# очередью читалось как «следующих очередей», которых нет. Слова одни для
+# PDF, страницы и Telegram: страница получает их подстановкой
+# `__DEVELOPAID_DEFAULT_REPAYMENT__`, PDF и бот — отсюда же.
+DEFAULT_REPAYMENT_WORDS = {
+    "single": "продажами того, что осталось нераспроданным к вводу (после РВЭ)",
+    "phased": ("продажами того, что осталось нераспроданным в этой очереди к её "
+               "вводу (после её РВЭ)"),
+}
+
+
+def default_repayment_words(queue_count: Any = None) -> str:
+    """Чем гасится остаток долга после дефолта: одна очередь или несколько.
+
+    Неизвестное число очередей — не «несколько»: формулировка одной очереди
+    верна и для каждой очереди по отдельности, а лишней не обещает.
+    """
+    try:
+        phased = int(queue_count or 0) > 1
+    except (TypeError, ValueError):
+        phased = False
+    return DEFAULT_REPAYMENT_WORDS["phased" if phased else "single"]
+
+
+def default_profit_note(net_profit: Any, queue_count: Any = None) -> str:
+    """Оговорка у строки «Чистая прибыль», когда в РВЭ был дефолт, а долг закрыт.
+
+    Прибыль и убыток оговариваются по-разному. Прибыль держится на согласии
+    банка ждать продаж — она «условная». Убыток тем же допущением только
+    смягчён: пеней и досрочного требования модель не считает, и в жизни он
+    больше. «Условный убыток, долг закрыт» читался как «всё не так плохо».
+    """
+    words = default_repayment_words(queue_count)
+    if float(net_profit or 0) < 0:
+        return (" — и это без пеней и досрочного требования банка: в РВЭ дефолт, "
+                f"остаток долга модель гасит {words}; в жизни убыток больше")
+    return (" — условная: в РВЭ дефолт, прибыль показана при допущении, что банк "
+            f"согласится ждать и остаток долга погасится {words}")
+
+
 REPAYMENT_LABELS = {
     nonres_strategy.REPAY_ANNUITY: "Аннуитет на срок кредита с баллоном в конце",
     nonres_strategy.REPAY_SWEEP: "Из всего NOI по мере поступления",
@@ -1282,7 +1326,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
                         # это форс-мажор, которого в НКЛ и не могло быть.
                         # Условий реструктуризации мы не знаем, поэтому дальше
                         # считаем прежним допущением — остаток обслуживается
-                        # продажами следующих периодов, — и называем его вслух.
+                        # продажами нераспроданного к вводу, — и называем его вслух.
                         defaulted_at = month
                 elif month == rve and not line_closed:
                     # Долга в РВЭ не осталось — НКЛ закрыт: дальше расходы
@@ -1769,8 +1813,20 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     tax_rate = n(x, "profit_tax_pct", 25) / 100
     margins = {month: (tax_margin_by_month.get(month, 0.0)
                        - vat_charged_by_month.get(month, 0.0)) for month in months}
+    # Правило спецзастройщика: маржа дома — в РВЭ, проценты — в месяце
+    # начисления (владелец, 16.10.2026).
+    # Гостиница не СЗ по ДДУ: её налог и потоки — расчёт её стратегии
+    # (`developaid_hotel_strategy`), и он остаётся прежним — проценты стройки
+    # в год ввода, уплата в месяц начисления.
+    is_hotel = bool(hotel["flows"])
     profit_tax_schedule, tax_detail = _profit_tax_schedule(
-        months, margins, financing_deductions, rve, tax_rate)
+        months, margins, financing_deductions, rve, tax_rate, defer_financing=is_hotel)
+    # Деньги уходят в бюджет авансами по итогам квартала и доплатой года в
+    # марте (ст. 286, 287), а не в месяц начисления: потоки проекта и
+    # капитала читают уплату, P&L — начисление.
+    profit_tax_payment_schedule = (
+        {month: value for month, value in profit_tax_schedule.items() if value} if is_hotel
+        else _profit_tax_payments(profit_tax_schedule))
     tax_rows = []
     row_by_month = {d(row["month"]): row for row in result["rows"]}
     for month, line in zip(months, tax_detail):
@@ -1841,6 +1897,10 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         "profit_tax_schedule": {
             month.isoformat(): value for month, value in profit_tax_schedule.items()
         },
+        "profit_tax_payment_schedule": {
+            month.isoformat(): value for month, value in profit_tax_payment_schedule.items()
+        },
+        "tax_loss_unused": _unused_tax_loss(tax_detail),
         "tax_rows": tax_rows,
         "tax_margin_by_product": tax_margin_by_product,
         # Себестоимость продуктов пула МКД в налоговой базе (с коммерческими

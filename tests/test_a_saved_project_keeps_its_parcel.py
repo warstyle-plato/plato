@@ -115,7 +115,7 @@ def seen():
             page = engine.new_page(viewport={"width": 1440, "height": 900})
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(1200)
+            browser.wait_for_result(page)
             got = page.evaluate(PROBE, [TYPED, ADDRESS])
             page.close()
     assert not errors, f"страница упала: {errors[:2]}"
