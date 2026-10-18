@@ -74,6 +74,10 @@ def test_the_moscow_region_tep_declares_no_guest_places() -> None:
 def test_the_screen_says_the_temporary_places_are_not_built() -> None:
     """Посчитанное и не построенное названо, а не оставлено числом без смысла."""
     page = core.PAGE
-    assert "Паркинг временного хранения" in page
-    assert "в проекте не строим" in page
-    assert "в границах жилого района" in page
+    row = page[page.index("['Парковка для гостей'"):]
+    row = row[:row.index("],")]
+    assert "В проекте их не строим" in row
+    assert "в пределах жилого района" in row
+    # Ячейки таблицы экранируются (moTable → escapeHtml): разметка в строке
+    # выходила на экран сырыми тегами «<span style=…>».
+    assert "<" not in row, row

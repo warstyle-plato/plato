@@ -56,13 +56,13 @@ def test_the_retail_norm_is_declared_once():
 def test_the_page_calls_the_gap_a_task_and_not_a_note():
     body = core.PAGE[core.PAGE.index("function jobsGapText"):]
     body = body[:body.index("function moTable")]
-    assert "офисы" in body and "торговля" in body
+    assert "м² офисов" in body and "м² магазинов" in body
     assert "дефицита нет" in body, "нулевой дефицит должен называться нулём, а не пустотой"
 
-    block = core.PAGE[core.PAGE.index("Социальная нагрузка по РНГП МО"):]
+    block = core.PAGE[core.PAGE.index("Школы, детсады и другие объекты по нормам Московской области"):]
     block = block[:block.index("Смена ВРИ")]
-    assert "Чем закрыть дефицит" in block
-    assert "дают нормативные объекты" in block
+    assert "Что добавить для рабочих мест" in block
+    assert "дадут школы, детсады и другие обязательные объекты" in block
 
 
 def test_the_gap_reaches_the_warnings(monkeypatch):

@@ -100,30 +100,30 @@ PAGE += r"""</head>
         <div class="import-head">
           <div>
             <div class="section-title">Автозагрузка исходных данных</div>
-            <h2>Кадастровый номер или адрес — ТЭП считается сам</h2>
-            <p>Одно поле на всю страну. DevelopAid берёт сведения ЕГРН из НСПД, определяет территорию и сам выбирает методику: для Москвы, включая Троицкий и Новомосковский округа, — калькулятор нормативных ТЭП ГлавАПУ; для Московской области — нормативы РНГП МО, справочники УПКС и плата за смену ВРИ. Ничего открывать и загружать вручную не нужно; перед применением значения показываются для проверки.</p>
+            <h2>Введите адрес или кадастровый номер</h2>
+            <p>Мы возьмём данные об участке из госреестра недвижимости и посчитаем ТЭП по нормам Москвы или Московской области. Прежде чем подставить числа в модель, покажем их вам.</p>
           </div>
-          <div style="font-size:11px;color:#777;text-align:right">Источники<br><b style="color:#111">ЕГРН · ГлавАПУ · РНГП МО</b></div>
+          <div style="font-size:11px;color:#777;text-align:right">Источники<br><b style="color:#111">ЕГРН, ГлавАПУ, нормы Московской области</b></div>
         </div>
         <div class="cadastral-box">
           <h3>Участок</h3>
-          <p>Кадастровый номер, адрес или координаты «широта, долгота». Несколько номеров — через запятую, точку с запятой или с новой строки; повторы удаляются, за один запрос до 30 участков.</p>
+          <p>Подойдёт кадастровый номер, адрес или координаты «широта, долгота». Несколько номеров перечислите через запятую или с новой строки — за один раз можно до 30 участков.</p>
           <div class="cadastral-entry">
             <textarea id="cadastralNumbers" oninput="rememberCadastralQuery(this.value);dropStaleLandPreview()" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
             <button id="cadastralAnalyzeButton" class="btn dark" onclick="obtainTep()">Получить ТЭП</button>
           </div>
           <div class="import-actions" style="margin-top:8px">
-            <button class="btn" onclick="lookupLand()">Только сведения ЕГРН</button>
-            <span style="font-size:11px;color:#777">Без расчёта ТЭП: адрес, площадь, категория, ВРИ, кадастровая стоимость.</span>
+            <button class="btn" onclick="lookupLand()">Только данные об участке</button>
+            <span style="font-size:11px;color:#777">Покажем адрес, площадь, категорию земли, разрешённое использование и кадастровую стоимость — без расчёта ТЭП.</span>
           </div>
-          <div id="cadastralStatus" class="import-status">На внешние сервисы уходят только кадастровые номера или строка поиска; финансовая модель не передаётся.</div>
+          <div id="cadastralStatus" class="import-status">Наружу мы отправляем только адрес или кадастровый номер. Ваши цифры и расчёт никуда не уходят.</div>
           <div id="landPreview" class="cadastral-preview" style="display:none">
             <div id="landSummary" class="import-summary"></div>
             <div id="landScreening" class="land-screening" style="display:none"></div>
             <div id="landCards" class="land-results"></div>
             <div id="landWarnings" class="note warning"></div>
             <div class="import-actions">
-              <span style="font-size:11px;color:#777">Сведения сохранены в проекте автоматически. Расчётные вводные при этом не меняются.</span>
+              <span style="font-size:11px;color:#777">Данные об участке сохранены в проекте. Цифры расчёта от этого не изменились.</span>
             </div>
           </div>
           <div id="cadastralPreview" class="cadastral-preview" style="display:none">
@@ -131,7 +131,7 @@ PAGE += r"""</head>
             <div id="cadastralParcels" class="cadastral-parcels"></div>
             <div id="cadastralWarnings" class="note warning"></div>
             <div class="import-actions">
-              <span style="font-size:11px;color:#777">Территория сохранена в проекте автоматически. Полный ТЭП появится ниже после автоматического расчёта.</span>
+              <span style="font-size:11px;color:#777">Участок сохранён в проекте. ТЭП появится ниже, как только закончится расчёт.</span>
             </div>
           </div>
           <iframe id="genplanAutomationFrame" class="genplan-automation-frame" title="Автоматический расчёт ТЭП ГлавАПУ" aria-hidden="true"></iframe>
@@ -144,18 +144,18 @@ PAGE += r"""</head>
         <div id="moPreview" class="cadastral-preview" style="display:none">
             <div id="moSummary" class="import-summary"></div>
             <div class="import-actions">
-              <button class="btn dark" onclick="applyMo()">Применить к Вводным и ТЭП</button>
-              <span style="font-size:11px;color:#777">Заменит ТЭП, социальные мощности и стоимость смены ВРИ в текущем проекте.</span>
+              <button class="btn dark" onclick="applyMo()">Подставить в проект</button>
+              <span style="font-size:11px;color:#777">В проект встанут новый ТЭП, места в детсадах и школах и плата за смену разрешённого использования земли.</span>
             </div>
             <div id="moTables"></div>
             <div id="moWarnings" class="note warning"></div>
         </div>
-        <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше — ТЭП посчитается сам. Готовые примеры — в «Личном кабинете», свой файл ГлавАПУ — ниже.</div>
+        <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше, и ТЭП посчитается сам. Готовые примеры лежат в «Личном кабинете», а свой файл можно загрузить ниже.</div>
         <div id="glavapuPreview" class="import-preview" style="display:none">
           <div id="glavapuSummary" class="import-summary"></div>
           <div class="import-actions">
-            <button class="btn dark" onclick="applyGlavapu()">Применить к Вводным и ТЭП</button>
-            <span style="font-size:11px;color:#777">Текущие значения ТЭП квартир/коммерции будут заменены распознанными.</span>
+            <button class="btn dark" onclick="applyGlavapu()">Подставить в проект</button>
+            <span style="font-size:11px;color:#777">Площади квартир и коммерции в проекте заменятся числами из этого расчёта.</span>
           </div>
           <div class="scroll" style="max-height:360px"><table>
             <thead><tr><th>Показатель</th><th>Распознано</th><th>Ед.</th><th>Куда попадёт</th></tr></thead>
@@ -172,14 +172,14 @@ PAGE += r"""</head>
              руках, а не первый шаг. Свёрнута, чтобы не разрывать «ввёл участок
              — получил ТЭП». -->
         <details class="import-fallback">
-          <summary>Свой файл: шаблон ТЭП DevelopAid, выгрузка ГлавАПУ или пресет проекта</summary>
+          <summary>Загрузить свой файл: заполненный шаблон ТЭП, расчёт с сайта ГлавАПУ или сохранённый проект</summary>
           <!-- Готовые примеры уехали в «Личный кабинет»: и они, и сохранённые
                проекты — это «взять готовое и посмотреть», а здесь разбирают
                принесённый файл. Решение владельца (15.08.2026). -->
           <div id="presetsMovedHint" style="font-size:11px;color:#888;margin:10px 0 8px">
             Готовые примеры — Мишина, Мытищи, Румянцево — переехали в «Личный кабинет» наверху страницы.
           </div>
-          <div style="font-size:11px;color:#888;margin:7px 0 8px">шаблон ТЭП DevelopAid либо выгрузка калькулятора ГлавАПУ</div>
+          <div style="font-size:11px;color:#888;margin:7px 0 8px">Заполненный шаблон ТЭП или файл, скачанный с калькулятора ГлавАПУ:</div>
           <!-- Шаблон скачивается отсюда же, где загружается. Отказ разбора
                обещал кнопку «ниже», а её на странице не было вовсе: шаблон
                выдавал только бот командой /template, и человек с сайта узнать
@@ -192,10 +192,10 @@ PAGE += r"""</head>
           <!-- Пресет проекта — это уже собранные ГПЗУ, ППТ, соглашения ВРИ и
                МПТ и справки по техприсоединению. Он заполняет проект целиком,
                поэтому и стоит отдельной строкой от разбора одной книги. -->
-          <div style="font-size:11px;color:#888;margin:12px 0 8px">или пресет проекта .json — ТЭП, ВРИ, МПТ и техприсоединение разом</div>
+          <div style="font-size:11px;color:#888;margin:12px 0 8px">Или сохранённый проект (файл .json) — он заполнит всё сразу: ТЭП, смену разрешённого использования, подключение к сетям.</div>
           <div class="upload-line" style="margin-top:8px">
             <input type="file" id="presetFile" accept=".json,application/json">
-            <button class="btn dark" onclick="uploadPreset()">Импорт проекта / пресета</button>
+            <button class="btn dark" onclick="uploadPreset()">Загрузить проект</button>
           </div>
         </details>
       </div>

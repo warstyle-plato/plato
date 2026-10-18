@@ -128,7 +128,7 @@ def test_a_found_parcel_comes_back():
 def test_the_caller_keeps_the_real_reason():
     """`obtainTep` обязан различать null и пустой список."""
     body = core.PAGE[core.PAGE.index("async function obtainTep("):]
-    body = body[:body.index("status.textContent='Определяю территорию…'")]
+    body = body[:body.index("status.textContent='Определяю, где находится участок…'")]
     assert "if(found===null)return;" in body.replace(" ", "").replace("\n", "")
     # И только после этой проверки — сообщение о ненайденном участке.
     # Ищем строку кода, а не пояснение рядом: комментарий про неё же стоит выше.
