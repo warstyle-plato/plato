@@ -2612,6 +2612,23 @@ class AgentDocumentRequest(BaseModel):
     extraction: dict[str, Any] = {}
 
 
+class AgentDocumentAnswerRequest(BaseModel):
+    """Ответ на один вопрос по документу из очереди на диске.
+
+    `index` — номер вопроса, на который отвечают: окно и очередь сверяют его,
+    и двойное нажатие или вторая вкладка не отвечают за соседний вопрос.
+    """
+    intake_id: str
+    index: int
+    action: str = "answer"  # answer | skip | stop
+    choice: int = -1
+    value: str = ""
+    inputs: dict[str, Any] = {}
+    tep: dict[str, dict[str, Any]] = {}
+    session: str = ""
+    access_key: str = ""
+
+
 class AgentChatRequest(BaseModel):
     message: str
     inputs: dict[str, Any]
