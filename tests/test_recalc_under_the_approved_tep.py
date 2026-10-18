@@ -213,7 +213,7 @@ def test_a_zero_base_is_free_and_a_missing_base_is_not():
 
 def test_the_page_asks_the_server_and_says_whose_answer_it_is():
     page = core.PAGE
-    assert "Пересчитать по параметрам исходного расчёта" in page
+    assert "Пересчитать нормативы по ТЭП" in page
     assert "'/tep/recalc-from-baseline'" in page
     body = page[page.index("async function recalcFromTep("):]
     body = body[:body.index("\n}\n")]
@@ -413,7 +413,7 @@ def test_everything_falls_together_on_the_approved_tep():
 
 def test_the_page_calls_the_baseline_recalculation():
     page = core.PAGE
-    assert "Пересчитать по параметрам исходного расчёта" in page
+    assert "Пересчитать нормативы по ТЭП" in page
     assert "'/tep/recalc-from-baseline'" in page
     body = page[page.index("async function recalcFromTep("):]
     body = body[:body.index("\n}\n")]
