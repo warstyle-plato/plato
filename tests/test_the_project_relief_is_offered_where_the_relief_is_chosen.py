@@ -113,7 +113,7 @@ def test_a_fee_removed_by_the_relief_is_named_so() -> None:
 # --- то, что видит человек ----------------------------------------------------
 
 def test_in_a_real_browser_the_counted_relief_is_one_click_from_the_field(core) -> None:
-    from browser import chromium_or_skip, serve
+    from browser import chromium_or_skip, serve, wait_for_result
     chrome = chromium_or_skip()
     from playwright.sync_api import sync_playwright
 
@@ -144,7 +144,7 @@ def test_in_a_real_browser_the_counted_relief_is_one_click_from_the_field(core) 
             "renderInputs();calculate();}", [inputs, case["tep"]])
         page.wait_for_function(
             "() => lastResult && lastResult.vri.totals.relief_basis==='percent'", timeout=60000)
-        page.wait_for_timeout(200)
+        wait_for_result(page)
         seen["total_mln"] = page.evaluate("() => lastResult.vri.benefits.total_mln")
         # Кнопка — у самого поля «Льгота по плате» (вкладка ВРИ).
         page.evaluate("() => openTab('vri')")
@@ -164,7 +164,7 @@ def test_in_a_real_browser_the_counted_relief_is_one_click_from_the_field(core) 
         seen["mpt_line"] = page.locator("#mpt-project-relief").inner_text()
         # Пустая площадь — подсветка и текст до отправки, запроса нет.
         page.click("#mpt-calc")
-        page.wait_for_timeout(200)
+        page.wait_for_function("() => document.getElementById('mpt-warnings').innerText.trim()")
         seen["calc_text"] = page.locator("#mpt-warnings").inner_text()
         seen["area_marked"] = page.evaluate(
             "() => document.getElementById('mpt-area').classList.contains('mpt-invalid')")
@@ -176,7 +176,7 @@ def test_in_a_real_browser_the_counted_relief_is_one_click_from_the_field(core) 
         page.click("#vriReliefOffer button")
         page.wait_for_function(
             "() => lastResult.vri.totals.relief_basis==='project_benefits'", timeout=60000)
-        page.wait_for_timeout(200)
+        wait_for_result(page)
         seen["after_mode"] = page.evaluate("() => inputs.vri_relief_mode")
         seen["after_button"] = page.locator("#vriReliefOffer button").count()
         seen["after_line_visible"] = page.locator("#mpt-project-relief").is_visible()

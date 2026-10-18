@@ -150,3 +150,94 @@ def serve(app, port: int):
     finally:
         server.should_exit = True
         thread.join(timeout=10)
+
+
+# ---------------------------------------------------------------------------
+# Ожидание итога расчёта — одно на все стенды страницы.
+#
+# Расчёт страницы (`calculate`) асинхронный и нумерованный: каждая правка
+# поля и каждая загрузка зовут его заново, и ответ старшего номера
+# отбрасывается. После `domcontentloaded` страница ещё грузится — ключевая
+# ставка, расчёт, справочники, запуск из Telegram, — и на медленном раннере
+# пауза «на глаз» (1,5 с) кончалась раньше первого ответа: проба читала
+# `lastResult.tep` у null, а падение выглядело как сломанная страница.
+# Проба, зовущая `calculate()` сама, получала null, если её перебивал расчёт
+# загрузки, и отчёт рисовался по чужим вводным.
+#
+# Ответ страницы на «расчёт закончился» один: загрузка дошла до конца
+# (`__developaidBooted`), расчёта в пути нет (`calcIdle`), итог есть
+# (`lastResult`). Стенд ждёт его, а не время.
+# ---------------------------------------------------------------------------
+
+# Состояние расчёта словами — для отказа: «не дождались» без того, ЧЕГО не
+# дождались, заставляет лезть в браузер.
+CALC_STATE_JS = """() => {
+  const box = document.getElementById('calcLocked');
+  const locked = !!box && box.style.display !== 'none' && !!box.innerHTML;
+  return {
+    booted: window.__developaidBooted === true,
+    run: typeof calcRun === 'undefined' ? null : calcRun,
+    settled: typeof calcSettled === 'undefined' ? null : calcSettled,
+    result: typeof lastResult !== 'undefined' && !!lastResult,
+    locked: locked ? (box.textContent || '').trim().slice(0, 160) : '',
+  };
+}"""
+
+# Признак готовности. Строка, а не булево: экономика за входом — тоже конец
+# ожидания, но с другим ответом, и ждать её 60 с незачем.
+RESULT_READY_JS = """() => {
+  const box = document.getElementById('calcLocked');
+  if (box && box.style.display !== 'none' && box.innerHTML) return 'locked';
+  const ready = window.__developaidBooted === true
+    && typeof calcIdle === 'function' && calcIdle()
+    && typeof lastResult !== 'undefined' && !!lastResult;
+  return ready ? 'ready' : '';
+}"""
+
+# `settledCalculate` для проб, которые зовут расчёт сами: тот же `calculate`,
+# но ответ ждётся по признаку, а не по порядку вызовов. Перебил ли его
+# расчёт, запущенный следом (загрузка проекта, `onchange` перерисованного
+# поля), — неважно: возвращается итог последнего, посчитанный по текущим
+# вводным. Ставится на окно вместе с ожиданием (`wait_for_result`).
+SETTLED_CALCULATE_JS = """(limitMs) => {
+  window.settledCalculate = async function () {
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const deadline = Date.now() + limitMs;
+    await calculate();
+    while (!(calcIdle() && lastResult)) {
+      const box = document.getElementById('calcLocked');
+      if (box && box.style.display !== 'none' && box.innerHTML)
+        throw new Error('расчёт закрыт входом: ' + (box.textContent || '').trim().slice(0, 160));
+      if (Date.now() > deadline)
+        throw new Error('расчёт не ответил за ' + limitMs + ' мс: запущено ' + calcRun
+                        + ', ответило ' + calcSettled + ', итог ' + (lastResult ? 'есть' : 'нет'));
+      await sleep(50);
+    }
+    return (phaseBundle && phaseBundle.consolidated) || lastResult;
+  };
+}"""
+
+
+def wait_for_result(page, timeout_ms: int = 60_000) -> None:
+    """Дождаться конца расчёта страницы: загрузка завершена, расчёт ответил, итог есть.
+
+    Зовётся после `goto`, после правки поля и после `calculate()` из пробы —
+    везде, где прежде стояла пауза. Экономика за входом (`calcLocked`) —
+    отказ сразу, а не по таймауту; таймаут — отказ с состоянием расчёта.
+    Заодно ставит на окно `settledCalculate` для проб (см. выше).
+    """
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+    try:
+        page.wait_for_function(RESULT_READY_JS, timeout=timeout_ms)
+    except PlaywrightTimeout:
+        state = page.evaluate(CALC_STATE_JS)
+        raise AssertionError(
+            f"расчёт страницы не закончился за {timeout_ms / 1000:g} с: "
+            f"загрузка {'дошла' if state['booted'] else 'не дошла'} до конца, "
+            f"запущено расчётов {state['run']}, ответило {state['settled']}, "
+            f"итог {'есть' if state['result'] else 'нет'}") from None
+    if page.evaluate(RESULT_READY_JS) == "locked":
+        state = page.evaluate(CALC_STATE_JS)
+        raise AssertionError(f"расчёт закрыт входом: {state['locked']}")
+    page.evaluate(SETTLED_CALCULATE_JS, timeout_ms)

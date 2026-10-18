@@ -59,12 +59,12 @@ def seen():
             ctx = engine.new_context(viewport={"width": 1440, "height": 900})
             page = ctx.new_page()
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            browser.wait_for_result(page)
             page.evaluate(REGION, "msk")
-            page.wait_for_timeout(1500)
+            browser.wait_for_result(page)
             out["msk"] = page.evaluate(READ)
             page.evaluate(REGION, "mo")
-            page.wait_for_timeout(1500)
+            browser.wait_for_result(page)
             out["mo"] = page.evaluate(READ)
             ctx.close()
     return out
@@ -173,7 +173,7 @@ def applied():
                 ctx = engine.new_context(viewport={"width": 1440, "height": 900})
                 page = ctx.new_page()
                 page.goto(base, wait_until="domcontentloaded")
-                page.wait_for_timeout(2000)
+                browser.wait_for_result(page)
                 if silent:
                     # «Тот же участок»: его ТЭП уже на странице, руки вписаны
                     # при нём. Правка ТЭП возвращает норматив (владелец,

@@ -35,7 +35,7 @@ if str(ROOT) not in sys.path:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main as _wrapper  # noqa: E402
-from browser import chromium_or_skip, serve  # noqa: E402
+from browser import chromium_or_skip, serve, wait_for_result  # noqa: E402
 from developaid_finance_math import monthly_irr, monthly_npv  # noqa: E402
 
 core = _wrapper.core
@@ -238,7 +238,7 @@ def test_the_decision_card_heads_with_the_project_irr():
             page.evaluate("() => openTab('report', document.querySelector('[data-tab=report]'))")
             page.wait_for_function("() => document.getElementById('iaVerdictLead')"
                                    " && document.getElementById('iaVerdictLead').textContent")
-            page.wait_for_timeout(500)
+            wait_for_result(page)
             got = page.evaluate(VERDICT)
         finally:
             browser.close()

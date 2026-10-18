@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main as _wrapper  # noqa: E402
 import terms_glossary as tg  # noqa: E402
-from browser import chromium_or_skip, serve  # noqa: E402
+from browser import chromium_or_skip, serve, wait_for_result  # noqa: E402
 
 core = _wrapper.core
 PORT = 18801
@@ -200,9 +200,9 @@ def test_the_page_prints_the_engines_bases():
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.goto(f"{base}/classic", wait_until="domcontentloaded")
-            tab.wait_for_timeout(700)
+            wait_for_result(tab)
             got = tab.evaluate("""async ()=>{
-              await calculate();
+              await settledCalculate();
               const grab=id=>[...document.querySelectorAll('#'+id+' tr')]
                 .map(tr=>[...tr.children].map(x=>(x.textContent||'').replace(/\\s+/g,' ').trim()));
               const before={unit:grab('unitEconomicsTable'), capex:grab('capexTable'),
