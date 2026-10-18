@@ -44,7 +44,7 @@ def payload():
 def test_the_engine_reports_construction_articles(payload):
     """Статьи стройки в отчётном блоке: суммы положительны, удельные — на
     свою базу (решение 4 ревизии книги, 29.09.2026): СМР — на ту часть, на
-    которую начислено, прочие статьи — на суммарную площадь в ГНС."""
+    которую начислено, прочие статьи — на общую площадь."""
     report = payload["result"]["report"]
     rows = report.get("construction_costs") or []
     labels = [row["label"] for row in rows]
