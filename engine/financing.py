@@ -1736,7 +1736,12 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
             total_capex + commercial_costs
             - n(x, "purchase_price_mln") * 1_000_000
             - n(x, "land_buyout_mln") * 1_000_000
-            - n(x, "land_rights_cost_mln") * 1_000_000
+            # Исключается плата за ВРИ, которая ЕСТЬ в расходах, — уплаченное
+            # тело, а не начисленное: при льготе база уменьшалась на сумму,
+            # которой в CAPEX нет (Донской: −531,9 млн базы при уплаченных 0;
+            # очереди получают во вводных уже чистую плату, и свод расходился
+            # с одиночным расчётом одного и того же правила).
+            - op["capex_amounts"].get("land_rights", 0.0)
             - op["capex_amounts"].get("vri_interest", 0.0)
             - op["capex_amounts"].get("vri_security", 0.0)
             # Входящий НДС объекта вне ДДУ принимает к вычету сам объект.

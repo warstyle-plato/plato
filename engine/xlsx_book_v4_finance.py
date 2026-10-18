@@ -281,6 +281,11 @@ _V4_PF_UNCOVERED_PARITY_ROW = 87
 
 _V4_SWEEP_ROW = 26
 _V4_SWEEP_SHARE_CELL = "F92"
+# Единая касса проекта: две строки в конце листа CF (87 занята непокрытой
+# потребностью). 88 — сколько расходов до РнС покрыто свободной кассой
+# предыдущих очередей, 89 — сколько её доступно на месяц.
+_V4_PROJECT_CASH_ROW = 88
+_V4_PROJECT_CASH_POOL_ROW = 89
 
 
 # Служебная строка блока CAPEX: база лимита БРИДЖа — те же статьи, но только
@@ -787,6 +792,92 @@ def _v4_apply_vat_cash(xml: str, phase: int, missing: list[str]) -> str:
             xml, done = _v4_set_cells(xml, row, cells)
             if not done:
                 missing.append(f"{sheet}: строка {row} не найдена")
+    return xml
+
+
+def _v4_apply_project_cash(xml: str, phase: int, missing: list[str]) -> str:
+    """Единая касса проекта: расходы очереди до РнС сначала из свободной кассы.
+
+    Стратегия `unified_project_cash` жила только в расчёте: книга вела БРИДЖ
+    каждой очереди от нуля, и на четырёх очередях Нагатино четвёртая брала
+    964 млн БРИДЖа там, где движок покрыл 930,5 млн кассой первой (разбор
+    16–17.10.2026: +401,6 млн стоимости финансирования и +930 млн пика ПФ
+    против движка). Методика — движковая (`financing.py`, ветка до РнС):
+    касса идёт первой, затем заявленные собственные средства, остаток —
+    БРИДЖ; касса предыдущей очереди — её положительный поток капитала
+    (строка 50 её листа), доступный с месяца выплаты включительно; очереди
+    считаются по порядку, и касса, взятая более ранней очередью, следующей
+    уже не достаётся — списывается с самых ранних поступлений (FIFO), как
+    `_consume_project_cash_sources`.
+
+    Строка 88 — покрытие в месяц, 89 — доступная касса на месяц. Выборка
+    БРИДЖа (34) и расход собственных средств (56) считают потребность уже
+    после покрытия. Признак выключен — обе строки нули, и правленые формулы
+    сходятся к прежним.
+    """
+    columns = _v4_cf_columns()
+    sheet = f"CF_{phase}"
+    row, pool_row = _V4_PROJECT_CASH_ROW, _V4_PROJECT_CASH_POOL_ROW
+    flag = f"'Вводные'!${_V4_UNIFIED_CASH_CELL[0]}${_V4_UNIFIED_CASH_CELL[1:]}=\"Да\""
+    draw: dict[str, str] = {}
+    pool: dict[str, str] = {}
+    for index, column in enumerate(columns):
+        if phase <= 1:
+            draw[column] = pool[column] = "0"
+            continue
+        # Касса предыдущих очередей к этому месяцу включительно за вычетом
+        # того, что из неё уже взяли очереди между ними (FIFO — с ранних).
+        available = f"SUM('CF_1'!$D$50:'CF_1'!{column}50)"
+        for earlier in range(2, phase):
+            available = (f"MAX(0,{available}-'CF_{earlier}'!$B${row})"
+                         f"+SUM('CF_{earlier}'!$D$50:'CF_{earlier}'!{column}50)")
+        spent = f"-SUM($D${row}:{columns[index - 1]}{row})" if index else ""
+        pool[column] = f"MAX(0,{available}{spent})"
+        draw[column] = (f"IF(AND({flag},$B$5=1,{column}$3<$B$7),"
+                        f"MIN({column}{pool_row},{column}33),0)")
+    for number, label, total, formulas in (
+            (row, "Касса проекта — покрытие расходов до РнС",
+             f"SUM(D{row}:{_V4_LAST_COLUMN}{row})", draw),
+            (pool_row, "Касса проекта — доступно на месяц (свободная касса предыдущих очередей)",
+             f"MAX(D{pool_row}:{_V4_LAST_COLUMN}{pool_row})", pool)):
+        body = (f'<x:c r="A{number}" s="113" t="str"><x:v>{xml_escape(label)}</x:v></x:c>'
+                f'<x:c r="B{number}" s="113" t="n"><x:f>{total}</x:f></x:c>'
+                f'<x:c r="C{number}" s="113" t="str"><x:v>млн ₽</x:v></x:c>'
+                + "".join(f'<x:c r="{column}{number}" s="120"><x:f>'
+                          f"{xml_escape(formulas[column])}</x:f></x:c>"
+                          for column in columns))
+        xml, done = _v4_insert_row(xml, number, body, None)
+        if not done:
+            missing.append(f"{sheet}: строка {number} занята — касса проекта не записана")
+            return xml
+    # Потребность после покрытия кассой: БРИДЖ (34) и собственные средства (56).
+    # Строки 43 и 57 (плата за невыбранный лимит и комиссия резервирования) брали лимит очереди как
+    # «общий авто-лимит B26 × доля очереди V»: B26 суммирует выборку ПФ ВСЕХ
+    # очередей, и через кассу (89 → строка 50 предыдущей → её 57 → B26 →
+    # выборка следующей) это замыкалось в круг. Лимит очереди — та же
+    # величина без обхода через свод: ROUNDUP(своя B45/10)×10 (V = он / B26).
+    queue_row = _V4_CF_QUEUE_ENABLED_ROW + (phase - 1)
+    for target, was, now in (
+            (34, "MAX(0,{c}33-{c}56)", "MAX(0,{c}33-{c}" + str(row) + "-{c}56)"),
+            (56, ",{c}33)", ",MAX(0,{c}33-{c}" + str(row) + "))"),
+            # 43 — плата за невыбранный лимит, 57 — комиссия резервирования:
+            # обе брали лимит очереди через свод.
+            (43, f"'Вводные'!$B$26*'Вводные'!$V${queue_row}", "ROUNDUP($B$45/10,0)*10"),
+            (57, f"'Вводные'!$B$26*'Вводные'!$V${queue_row}", "ROUNDUP($B$45/10,0)*10")):
+        cells: dict[str, dict[str, Any]] = {}
+        for coord, formula in _v4_row_formulas(xml, target).items():
+            column = re.match(r"[A-Z]+", coord).group(0)
+            if column in ("A", "B", "C"):
+                continue
+            if was.format(c=column) not in formula:
+                missing.append(f"{sheet}: строка {target} не опознана — касса проекта не учтена")
+                return xml
+            cells[coord] = dict(formula=formula.replace(
+                was.format(c=column), now.format(c=column), 1))
+        xml, done = _v4_set_cells(xml, target, cells)
+        if not done:
+            missing.append(f"{sheet}: строка {target} не записана — касса проекта не учтена")
+            return xml
     return xml
 
 
