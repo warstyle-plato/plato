@@ -269,7 +269,7 @@ def _object_sensitivity(objects: list[dict[str, Any]], deal_rub: float,
     if deal_rub > 0:
         keys.append("purchase_price_mln")
     keys.append("discount_rate_pct")
-    return {"metric": "dscr" if metric_key == "dscr" else "irr_equity_pct",
+    return {"metric": "dscr" if metric_key == "dscr" else "irr_project_pct",
             "parameters": keys}
 
 
@@ -323,12 +323,18 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
                 if metric.get("key") else
                 _row(str(metric.get("label") or "Покрытие кредита"),
                      str(metric.get("reason") or "не считается"), "text"))
-    irr = summary.get("irr_equity") if na is None else None
+    # Главный — IRR проекта до финансирования; IRR собственника — вторым и
+    # числом, только если движок счёл его показательным (`equity_irr_label`).
+    irr_project = summary.get("irr_project") if na is None else None
+    irr_label = equity_irr_label(summary)
+    irr = summary.get("irr_equity") if irr_label is None else None
     decision = [
         _row("Чистая прибыль проекта", summary.get("net_profit"), "rub"),
         debt_row,
+        (_row("IRR проекта (до финансирования)", irr_project, "pct") if irr_project is not None
+         else _row("IRR проекта (до финансирования)", na or "не считается — поток не меняет знак", "text")),
         (_row("IRR собственника", irr, "pct") if irr is not None
-         else _row("IRR собственника", na or "не считается — поток не меняет знак", "text")),
+         else _row("IRR собственника", irr_label or "не считается — поток не меняет знак", "text")),
         (_row("NPV собственника" + (f" @{float(equity.get('discount_rate') or 0) * 100:.4g}%"
                                     .replace(".", ",") if equity else ""),
               equity.get("npv"), "rub") if equity and na is None
@@ -875,7 +881,10 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
         _row(f"NPV проекта @{rate_pct}%", kpi.get("npv_project"), "rub"),
         irr_row("IRR проекта", kpi.get("irr_project")),
         _row(f"NPV собственного капитала @{rate_pct}%", kpi.get("npv_equity"), "rub"),
-        irr_row("IRR собственного капитала", kpi.get("irr_equity")),
+        # Тем же решением, что сводка (`summary.equity_irr`): при своих деньгах
+        # ниже порога от CAPEX — подпись, а не число.
+        (_row("IRR собственного капитала", equity_irr_label(summary), "text")
+         if equity_irr_label(summary) else irr_row("IRR собственного капитала", kpi.get("irr_equity"))),
         pbp_row("Срок окупаемости проекта (PBP), лет от начала", kpi.get("pbp_years")),
         pbp_row("Дисконтированный срок окупаемости (DPBP), лет", kpi.get("dpbp_years")),
         pbp_row("Окупаемость собственного капитала, лет", kpi.get("equity_pbp_years")),
@@ -1176,6 +1185,28 @@ def _hotel_calendar(report: dict[str, Any], hotel: dict[str, Any],
             "dates": [(label, value) for label, value in key_dates if value]}
 
 
+def _apply_equity_irr_to_participation(result: dict[str, Any]) -> None:
+    """«Собственное участие» печатает IRR капитала тем же решением, что сводка:
+    при своих деньгах ниже порога — подпись движка, а не число."""
+    verdict = (result.get("summary") or {}).get("equity_irr") or {}
+    if verdict.get("status") != EQUITY_IRR_THIN_EQUITY:
+        return
+    # Вкладка гостиницы печатает свои KPI строками — та же подпись.
+    for row in ((result.get("report") or {}).get("hotel") or {}).get("rows") or []:
+        if isinstance(row, dict) and row.get("label") == "IRR собственного капитала" \
+                and row.get("unit") == "pct":
+            row.update({"value": verdict.get("label"), "unit": "text"})
+    equity = (result.get("report") or {}).get("equity_participation") or {}
+    if not equity:
+        return
+    equity["irr"] = None
+    equity["irr_label"] = verdict.get("label")
+    for row in equity.get("rows") or []:
+        if str(row.get("label") or "").startswith("IRR собственного капитала") \
+                and row.get("unit") == "pct" and "только деньги" not in str(row.get("label")):
+            row.update({"value": verdict.get("label"), "unit": "text"})
+
+
 def _finalize_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
     """Выход расчёта: решение о доходности капитала, затем объектный отчёт —
     он читает уже решённые IRR и NPV. Краткие строки разделов ложатся в
@@ -1183,6 +1214,7 @@ def _finalize_result(result: dict[str, Any] | None) -> dict[str, Any] | None:
     _apply_equity_returns_to_result(result)
     if not isinstance(result, dict):
         return result
+    _apply_equity_irr_to_participation(result)
     report = result.get("report")
     if not isinstance(report, dict) or "object_report" in report:
         return result
