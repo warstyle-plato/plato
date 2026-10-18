@@ -96,6 +96,8 @@ def _stand() -> str:
         page_blocks.function("setUndergroundFromMethod"),
         # Маршрут пересчёта решает предикат, общий с подсказкой у кнопки.
         page_blocks.function("glavapuBaselineApplies"),
+        page_blocks.function("socialRescaleApplies"),
+        page_blocks.function("tepNormsMode"),
         page_blocks.function("recalcFromTep"),
     ])
 
