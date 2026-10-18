@@ -160,4 +160,6 @@ def test_the_norm_field_shows_the_fact_in_the_manual_mode(got, core):
 def test_the_row_names_the_fact_next_to_the_city_norm(got):
     """Одно число без второго читается как норматив — а это разные ответы."""
     assert "Фактически" in got["note"], got["note"]
-    assert "норматив РНГП" in got["note"], got["note"]
+    # Московский проект: ступень названа своим документом — 2151-ПП в редакции
+    # 2579-ПП, а не безадресным «РНГП» (у области норматив свой, 16.10.2026).
+    assert "норматив 2151-ПП (ред. 2579-ПП)" in got["note"], got["note"]

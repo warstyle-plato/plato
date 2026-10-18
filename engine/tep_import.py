@@ -1147,6 +1147,34 @@ def moscow_social_area_per_place(kind: str, places: float) -> float | None:
     return steps[-1][1]
 
 
+# Ступени — МОСКОВСКИЕ: 2151-ПП в редакции 2579-ПП. У области нормативы свои —
+# их считает калькулятор МО и кладёт в поле `social_*_norm_sqm`, и ступень
+# города их перебивать не должна (решение владельца 16.10.2026). Пока регион
+# не спрашивали, областной садик на 250 мест получал московские 18 м²/место
+# поверх присланных калькулятором 27 — с подписью «норматив РНГП». Регион
+# проекта — `vri_region` (пусто — Москва), и спрашивают его ОДНИМ предикатом:
+# движок, книга и страница (`moscowSocialStepsApply`) отвечают им, а не каждый
+# своим чтением поля.
+MOSCOW_SOCIAL_STEPS_REGION = "msk"
+
+
+def moscow_social_steps_apply(inputs: dict[str, Any] | None) -> bool:
+    """Действуют ли на проект московские ступени площади на место."""
+    return class_region(inputs) == MOSCOW_SOCIAL_STEPS_REGION
+
+
+def social_area_step(inputs: dict[str, Any], kind: str, places: float) -> float:
+    """Ступень норматива ДЛЯ ПРОЕКТА; 0 — ступени нет (область, поликлиника, нет мест).
+
+    Единственный вход к `moscow_social_area_per_place` для читателей с
+    вводными: тот же ответ, что даёт страница функцией `socialAreaPerPlace`.
+    Ноль здесь — «ступень не отвечает», и дальше слово за полем.
+    """
+    if not moscow_social_steps_apply(inputs):
+        return 0.0
+    return float(moscow_social_area_per_place(kind, places) or 0.0)
+
+
 # Соцобъект описан тремя числами — места, площадь и норматив на место, — и
 # ответ на «сколько метров на место» обязан быть ОДИН на все поверхности:
 # страница, движок очередей и книга. Пока он был написан трижды, движок
@@ -1186,13 +1214,15 @@ def social_area_per_place(inputs: dict[str, Any], kind: str) -> float:
     # `social_area_source`, и это тот же порядок, что на странице. Пока поле
     # было сильнее, оставшиеся в нём 12 м²/место перебивали город: страница
     # переписывала поле на ступень РНГП, а движок читал прежнее, и один и тот
-    # же садик выходил разным у страницы и у книги.
-    city = float(moscow_social_area_per_place(kind, places) or 0.0)
+    # же садик выходил разным у страницы и у книги. Город здесь — Москва
+    # (2151-ПП): у области ступени нет, и отвечает поле — норматив
+    # калькулятора МО (решение владельца 16.10.2026).
+    city = social_area_step(inputs, kind, places)
     if city > 0:
         return city
-    # Ступени города для этого объекта нет (поликлиника: её предел по 2150-ПП
-    # живёт умолчанием поля) — отвечает поле; пустое поле значит «не знаем»,
-    # и площадь по нему не считается.
+    # Ступени для этого проекта нет (область) или для объекта (поликлиника:
+    # её предел по 2150-ПП живёт умолчанием поля) — отвечает поле; пустое поле
+    # значит «не знаем», и площадь по нему не считается.
     return float(inputs.get(norm_key) or 0.0)
 
 
@@ -1274,8 +1304,7 @@ def social_tep_row(inputs: dict[str, Any], kind: str,
         building = project_places
     area = float(inputs.get(area_key) or 0.0)
     manual = str(inputs.get("social_area_source") or "norm") == "manual"
-    city = 0.0 if manual else float(
-        moscow_social_area_per_place(kind, building) or 0.0)
+    city = 0.0 if manual else social_area_step(inputs, kind, building)
     # Метров на место здесь не считают: ответ на это уже есть, и второй
     # разошёлся бы с первым — книга печатает норматив именно им.
     norm = 0.0 if manual else social_area_per_place(
@@ -1343,7 +1372,7 @@ def declare_social_requirement(inputs: dict[str, Any]) -> bool:
         if places <= 0 or float(inputs.get(area_key) or 0.0) > 0:
             continue
         per_place = (float(inputs.get(norm_key) or 0.0)
-                     or float(moscow_social_area_per_place(kind, places) or 0.0))
+                     or social_area_step(inputs, kind, places))
         if per_place > 0:
             inputs[area_key] = places * per_place
     inputs["social_area_source"] = SOCIAL_AREA_BY_REQUIREMENT
