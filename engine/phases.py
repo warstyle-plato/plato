@@ -2460,7 +2460,7 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
                 (result.get("parking") or {}).get("own_under_gns") or 0.0),
             "revenue_per_saleable_th":per_th(result["summary"]["revenue"], p_saleable),
             # Базы — решение 4 ревизии книги: выручка и прибыль на
-            # продаваемую, расходы на суммарную площадь в ГНС (и на
+            # продаваемую, расходы на общую площадь (и на
             # продаваемую для сравнения с ценой).
             "capex_per_total_area_th":per_th(result["summary"]["capex"], p_total_area),
             "capex_per_saleable_th":per_th(result["summary"]["capex"], p_saleable),

@@ -30,11 +30,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import main as _wrapper  # noqa: E402
 import teaser_pdf  # noqa: E402
+from terms_glossary import TOTAL_AREA  # noqa: E402
 from engine_source import engine_source  # noqa: E402
 
 core = _wrapper.core
 
-TEP_HEADER = ["Продукт", "Суммарная ГНС, м²", "Продаваемая, м²", "Единиц"]
+TEP_HEADER = ["Продукт", "ГНС / подземная, м²", "Продаваемая, м²", "Единиц"]
+TOTAL_LABEL = f"Итого — {TOTAL_AREA.lower()}"
 ABSENT = ("Кладовые", "Офисы / МФОЦ", "Офисы 2", "Офисы 5", "Коммерция ОСЗ",
           "Наземный паркинг", "ФОК / медцентр")
 
@@ -85,7 +87,7 @@ def _drawn_tep(shape, monkeypatch) -> tuple[list[list[str]], str]:
 
 def _check_owner_project(rows: list[list[str]], text: str) -> None:
     labels = [row[0] for row in rows]
-    assert labels == ["Квартиры", "Коммерция 1 этажа", "Подземный паркинг", "Итого"], labels
+    assert labels == ["Квартиры", "Коммерция 1 этажа", "Подземный паркинг", TOTAL_LABEL], labels
     for label in ABSENT:
         assert label not in text, f"«{label}» в тизере, а в проекте его нет"
 
@@ -110,7 +112,7 @@ def test_the_counterfeit_that_lists_everything_is_caught(monkeypatch) -> None:
 def test_project_objects_keep_their_rows(monkeypatch) -> None:
     rows, _text = _drawn_tep(_objects_project, monkeypatch)
     labels = [row[0] for row in rows]
-    for label in ("Квартиры", "Офисы / МФОЦ", "Коммерция ОСЗ", "Наземный паркинг 2", "Итого"):
+    for label in ("Квартиры", "Офисы / МФОЦ", "Коммерция ОСЗ", "Наземный паркинг 2", TOTAL_LABEL):
         assert label in labels, (label, labels)
     for label in ("Кладовые", "Офисы 2", "Наземный паркинг", "ФОК / медцентр"):
         assert label not in labels, (label, labels)
