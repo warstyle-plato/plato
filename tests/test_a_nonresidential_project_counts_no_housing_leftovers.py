@@ -197,7 +197,7 @@ RENDER = """async (arg)=>{
       sent.push(Number(JSON.parse(opts.body).inputs.underground_manual_spaces||0));
     return plain(url,opts);
   };
-  await calculate();
+  await settledCalculate();
   window.fetch=plain;
   const rows=Array.from(document.querySelectorAll('#reportTep tbody tr'))
     .map(tr=>(tr.cells[0].textContent||'').trim());
@@ -228,7 +228,7 @@ def drawn():
             # CI так и было, на main тоже — гонка, а не правка страницы.
             # Ждём тишины в сети, а не фиксированного времени.
             page.goto(base, wait_until="networkidle")
-            page.wait_for_timeout(1800)
+            browser.wait_for_result(page)
             got = page.evaluate(RENDER, {"x": x, "t": t})
             page.close()
     got["errors"] = errors

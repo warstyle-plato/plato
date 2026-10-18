@@ -139,7 +139,7 @@ def test_a_field_redrawn_during_the_request_still_gets_the_number():
         for _ in range(50):
             if held:
                 break
-            page.wait_for_timeout(100)
+            page.wait_for_timeout(100)  # пауза не про расчёт: опрос перехваченного запроса
         assert held, "запрос /market/price-hint не ушёл"
         page.evaluate("()=>renderInputs()")
         held[0].fulfill(status=200, content_type="application/json",

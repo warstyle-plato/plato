@@ -157,7 +157,7 @@ console.log(JSON.stringify(OUT));
        json.dumps(_oblast(social_area_source="manual", social_dou_gba_sqm=5550),
                   ensure_ascii=False))
     out = page_blocks.run_json(PRELUDE, tail)
-    assert "норматив 2151-ПП (ред. 2579-ПП) 18" in out["msk"], out
+    assert "норматив Москвы (2151-ПП) 18" in out["msk"], out
     assert "РНГП" not in out["msk"]
     assert "норматив области (калькулятор МО)" in out["mo"], out
     assert "18" not in out["mo"], "областному садику названа московская ступень"

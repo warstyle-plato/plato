@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from browser import chromium_or_skip, serve  # noqa: E402
+from browser import chromium_or_skip, serve, wait_for_result  # noqa: E402
 
 PORT = 8794
 BUYOUT = 1850.0
@@ -42,7 +42,7 @@ def test_in_a_real_browser_the_deal_is_parts_and_a_total():
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.goto(f"{base}/classic", wait_until="domcontentloaded")
-            tab.wait_for_timeout(700)
+            wait_for_result(tab)
             got = tab.evaluate("""async (buyout)=>{
               // Расчёт забирает форму поверх `inputs` — пишем в поля, как человек.
               const put=(id,v)=>{inputs[id]=v;const el=document.getElementById('f_'+id);if(el)el.value=v;};
@@ -51,7 +51,7 @@ def test_in_a_real_browser_the_deal_is_parts_and_a_total():
               put('purchase_schedule','100%@0');
               inputs._land_buyout_source={value:buyout,kind:'krt_contour',
                 by:'оценка по кадастровой стоимости: 3 объектов'};
-              await calculate();
+              await settledCalculate();
               const rows=t=>[...t.querySelectorAll('tr')].map(x=>(x.textContent||'').replace(/\\s+/g,' ').trim());
               return {params: rows(projectParamsTable), finance: rows(reportFinanceTable),
                       deal: lastResult.deal};

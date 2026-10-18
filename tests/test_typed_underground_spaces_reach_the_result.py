@@ -60,7 +60,7 @@ def typed():
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_context(viewport={"width": 1440, "height": 900}).new_page()
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            browser.wait_for_result(page)
             page.wait_for_load_state("networkidle")
             # Ждём именно тот расчёт, который вызвал ввод, — по телу запроса.
             with page.expect_response(
