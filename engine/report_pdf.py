@@ -425,6 +425,7 @@ def _purchase_feasibility(
     pf_shortfall_month: Any = None,
     object_dscr: Any = None,
     no_debt_cover: bool = False,
+    queue_count: Any = None,
 ) -> dict[str, str]:
     """Вердикт по вводным плюс оговорка о дефолте, если он в модели был.
 
@@ -445,15 +446,21 @@ def _purchase_feasibility(
     # У ветки «Дефолтный» оговорка уже своя, и повторять её нечем.
     if not when or verdict.get("status") in ("default", "not_available"):
         return verdict
+    try:
+        loss = float(net_profit_mln or 0.0) < 0
+    except (TypeError, ValueError):
+        loss = False
     verdict = dict(verdict)
     verdict["conditional"] = True
     verdict["default_date"] = when
     verdict["text"] = verdict["text"].rstrip() + (
         f" В модели есть дефолт: {_month_in_words(when)} раскрытого эскроу не "
-        "хватило на погашение ПФ. Долг закрывается позже, продажами следующих "
-        "периодов, — но только если банк на это согласится: пени и досрочное "
-        "требование модель не считает. Значит показанная чистая прибыль — при "
-        "этом допущении, а не результат.")
+        "хватило на погашение ПФ. Долг закрывается позже, "
+        f"{default_repayment_words(queue_count)}, — но только если банк на это "
+        "согласится: пени и досрочное требование модель не считает. "
+        + ("Значит показанный убыток — при этом мягком допущении, и в жизни он "
+           "больше." if loss else
+           "Значит показанная чистая прибыль — при этом допущении, а не результат."))
     return verdict
 
 
@@ -1453,8 +1460,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # горизонта — и прибыль печаталась голым числом, хотя держится она на
     # согласии банка, которого в модели не спрашивали.
     _default_note=(" — бумажная: долг не погашен" if float(financing.get('ending_pf') or 0)>500_000
-                   else " — условная: в модели дефолт, долг закрыт продажами "
-                        "следующих периодов" if str(financing.get('default_date') or '').strip()
+                   else default_profit_note(summary.get('net_profit'),
+                                            len(result.get("comparison") or []))
+                   if str(financing.get('default_date') or '').strip()
                    else " — долг очереди принят следующей" if _carried_out>500_000 else "")
     kpis=[
         *_pdf_entry_cost_rows(result, expense_structure),
@@ -1588,6 +1596,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         financing.get("pf_shortfall_month"),
         _layout_dscr(report.get("layout")),
         _layout_no_debt_cover(report.get("layout")),
+        len(result.get("comparison") or []),
     )
     story.append(KeepTogether([
         P("Оценка целесообразности покупки", h2),
