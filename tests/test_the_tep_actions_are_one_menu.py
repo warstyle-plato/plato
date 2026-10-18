@@ -14,7 +14,7 @@
 - «Пересчитать нормативы по ТЭП» — ручное действие; подсказка называет
   режим, которым оно пойдёт: ГлавАПУ, пропорция или норматив. Режим решает
   один предикат, и его читают и действие, и подсказка.
-- «Подтянуть строки из «Вводных»» (бывшая «Обновить производные ТЭП из
+- «Подтянуть значения из «Экономики»» (бывшая «Обновить производные ТЭП из
   вводных») — вторичное действие; подпись говорит, когда она нужна.
 
 «Пересчитать модель» остаётся в шапке. Проверяется настоящий код страницы:
@@ -48,7 +48,7 @@ def test_each_action_stands_where_it_belongs() -> None:
     menu = _menu()
     assert " open" not in menu[:menu.index(">") + 1], "меню раскрыто по умолчанию"
     for label, call in [("Пересчитать нормативы по ТЭП", "recalcFromTep()"),
-                        ("Подтянуть строки из «Вводных»", "syncTep()")]:
+                        ("Подтянуть значения из «Экономики» (МФЦ, ТЦ, паркинг и др.)", "syncTep()")]:
         assert f'onclick="{call}">{label}<' in menu, f"в меню нет «{label}» → {call}"
     assert "formTepByDensity()" not in menu, "формирование по плотности ушло в меню под таблицу"
     page = core.PAGE
@@ -154,7 +154,11 @@ PROBE = """()=>{
  const btn=document.querySelector('#tep [onclick="formTepByDensity()"]');
  out.buttonVisible=btn.getBoundingClientRect().height>0;
  out.buttonTop=top(btn);out.densityTop=top(document.getElementById('siteDensity'));
+ // Раскрытое меню не распирает страницу вбок: длинные подписи переносятся.
+ menu.open=true;
  out.pageScroll=document.documentElement.scrollWidth-window.innerWidth;
+ out.menuButtonsInside=[...menu.querySelectorAll('button')].every(b=>b.getBoundingClientRect().right<=window.innerWidth);
+ menu.open=false;
  const was={gns:tep.apartments.gns,saleable:tep.apartments.saleable};
  inputs._glavapu_import={normalized:{}};
  btn.click();
@@ -171,13 +175,13 @@ PROBE = """()=>{
  return out;}"""
 
 
-def test_on_a_phone_forming_confirms_before_it_overwrites() -> None:
+def test_on_a_375_phone_forming_confirms_and_the_menu_fits() -> None:
     from playwright.sync_api import sync_playwright
 
     path = browser.chromium_or_skip()
     with browser.serve(core.app, PORT) as base, sync_playwright() as pw:
         with pw.chromium.launch(executable_path=str(path)) as engine:
-            page = engine.new_page(viewport={"width": 390, "height": 900})
+            page = engine.new_page(viewport={"width": 375, "height": 900})
             page.goto(base, wait_until="load")
             browser.wait_for_result(page)
             page.evaluate("async()=>{inputs.site_area_ha=2;inputs.site_density_sqm_per_ha=25000;"
@@ -187,7 +191,8 @@ def test_on_a_phone_forming_confirms_before_it_overwrites() -> None:
             page.close()
     assert got["menuOpen"] is False, "меню раскрыто по умолчанию"
     assert got["menuTop"] > got["tableTop"], "меню стоит над таблицей"
-    assert got["buttonVisible"] and got["pageScroll"] <= 0
+    assert got["buttonVisible"] and got["pageScroll"] <= 0, "раскрытое меню распирает страницу вбок"
+    assert got["menuButtonsInside"], "кнопка меню вылезает за край экрана"
     assert got["densityTop"] < got["buttonTop"] < got["tableTop"], \
         "«Сформировать ТЭП по новым параметрам» не под полями участка"
     assert got["dialogShown"] and "Квартиры" in got["dialogText"]
