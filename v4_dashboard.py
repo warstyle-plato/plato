@@ -1029,7 +1029,11 @@ def build_dashboard_sheet(styles: Styles, drawing_rel_id: str, phased: bool,
             flag = _src("C", src)
             # Коэффициент — две цифры и «x», деньги — целые миллионы: при «0.0»
             # LLCR 0,97 читался «1,0» рядом со словом «ниже» (ревизия 29.09.2026).
-            shown = (f'TEXT({_src("D", src)},"0.00")&"x"'
+            # Не TEXT(…,"0.00"): код формата с точкой в русском Excel
+            # невалиден — K85 показывал #VALUE! (книга Нагатино, 17.10.2026).
+            # FIXED пишет текст разделителем локали и ровно две цифры («0,90x»);
+            # формат «0» без разделителя работает везде.
+            shown = (f'FIXED({_src("D", src)},2,1)&"x"'
                      if value_key in ("llcr", "weakest_phase_llcr")
                      else f'TEXT({_src("D", src)},"0")&" млн ₽"')
             items += [(None, _src("B", src), sh.td),
