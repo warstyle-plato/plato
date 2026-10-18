@@ -178,6 +178,13 @@ def test_on_the_page_one_question_at_a_time_and_the_number_reaches_the_site(monk
             second = page.evaluate(
                 "() => [...document.querySelectorAll('.ai-question')].pop().innerText")
 
+            page.locator(".ai-question").last.get_by_text("Пропустить").click()
+            page.wait_for_function(
+                "() => !aiBusy && document.querySelectorAll('.ai-question').length===3",
+                timeout=10_000)
+            third = page.evaluate(
+                "() => [...document.querySelectorAll('.ai-question')].pop().innerText")
+
             page.evaluate("() => applyAiIntake()")
             page.wait_for_function("() => (inputs._cadastral_query||'').length>0",
                                    timeout=10_000)
@@ -196,6 +203,7 @@ def test_on_the_page_one_question_at_a_time_and_the_number_reaches_the_site(monk
     assert demolition == 2863.7, "ответ не лёг в поле расчёта"
     assert origin and origin["source"] == "document", origin
     assert "Требуется ли расселение" in second and "Вопрос 2 из 3" in second
+    assert "Вопрос 3 из 3" in third, "«Пропустить» не перевёл к следующему вопросу"
     assert field == NUMBER, "кадастровый номер из документа не лёг в поле участка"
     assert cad_origin["source"] == "document", cad_origin
     assert "teaser.pdf" in cad_note

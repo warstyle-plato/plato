@@ -228,8 +228,8 @@ function renderAiQuestion(queue){
   html+='<div style="display:flex;gap:6px;margin-top:8px;align-items:center"><input class="ai-question-value" inputmode="decimal" placeholder="своё значение'
    +(unit?', '+aiEsc(unit):'')+'" style="flex:1;min-width:0;padding:6px 8px;border:1px solid #ccc;border-radius:6px">'
    +(card.key?'<button class="btn dark" onclick="answerAiQuestion(-1)">Применить</button>':'')+'</div>';
- html+='<div style="margin-top:8px;font-size:12px"><a href="#" onclick="answerAiQuestion(-1,\'skip\');return false">Пропустить</a> · '
-  +'<a href="#" onclick="answerAiQuestion(-1,\'stop\');return false">Закончить вопросы</a></div>';
+ html+='<div style="margin-top:8px;font-size:12px"><a href="#" data-action="skip" onclick="answerAiQuestion(-1,this.dataset.action);return false">Пропустить</a> · '
+  +'<a href="#" data-action="stop" onclick="answerAiQuestion(-1,this.dataset.action);return false">Закончить вопросы</a></div>';
  box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
  queue.box=box;
 }
