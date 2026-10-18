@@ -97,13 +97,13 @@ def walk() -> dict:
             page.evaluate("() => { applyProjectKind('nonresidential'); closeProjectKindDialog(); }")
             page.wait_for_function("() => lastResult.report.layout.kind !== 'housing'"
                                    " || lastResult.report.layout.project_finance === false")
-            page.wait_for_timeout(500)
+            browser.wait_for_result(page)
             out["office_ddu"] = page.evaluate(READ)
             # Та же страница, тип уже сменён: форма чувствительности, открытая
             # на жилье, обязана перестроиться.
             page.evaluate(SET, ["offices_strategy", "income"])
             page.wait_for_function("() => lastResult.report.layout.project_finance === false")
-            page.wait_for_timeout(500)
+            browser.wait_for_result(page)
             out["office_income"] = page.evaluate(READ)
             out["sens_office"] = page.evaluate(
                 "() => [...document.querySelectorAll('#sensMetric option')].map(o => o.value)")
@@ -112,7 +112,7 @@ def walk() -> dict:
             page.wait_for_function("() => !(lastResult.report.layout.debt_metric || {}).key")
             page.evaluate("() => openTab('report', document.querySelector('[data-tab=report]'))")
             page.wait_for_function("() => document.getElementById('iaVerdictLead')")
-            page.wait_for_timeout(500)
+            browser.wait_for_result(page)
             out["office_no_loan"] = page.evaluate(READ)
             page.close()
 
@@ -124,7 +124,7 @@ def walk() -> dict:
             page.wait_for_function(
                 "() => lastResult.report.object_report && lastResult.report.object_report.hotel"
                 " && lastResult.report.hotel.computed")
-            page.wait_for_timeout(500)
+            browser.wait_for_result(page)
             out["hotel"] = page.evaluate(READ)
             page.close()
     return out

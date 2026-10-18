@@ -51,7 +51,7 @@ SETUP = r"""async (phased) => {
                {name: 'О2', start_offset_months: 12, construction_months: 24}]});
   }
   syncTep(false);
-  await calculate();
+  await settledCalculate();
   const t = document.getElementById('tep');
   for (let e = t; e; e = e.parentElement) {
     if (getComputedStyle(e).display === 'none') e.style.display = 'block';
@@ -98,7 +98,7 @@ def _measure(phased: bool) -> dict:
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_page(viewport={"width": 390, "height": 900})
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_timeout(1500)
+            browser.wait_for_result(page)
             got = page.evaluate(SETUP, phased)
             page.close()
     return got

@@ -33,7 +33,7 @@ if str(ROOT) not in sys.path:
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main_legacy as core  # noqa: E402
-from browser import chromium_or_skip, serve  # noqa: E402
+from browser import chromium_or_skip, serve, wait_for_result  # noqa: E402
 
 PORT = 8793
 
@@ -78,9 +78,9 @@ def test_in_a_real_browser_the_unit_stands_next_to_the_number():
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.goto(f"{base}/classic", wait_until="domcontentloaded")
-            tab.wait_for_timeout(700)
+            wait_for_result(tab)
             got = tab.evaluate("""async ()=>{
-              await calculate();
+              await settledCalculate();
               const rows=[...document.querySelectorAll('tr,div')]
                 .map(x=>x.textContent||'').filter(t=>t.includes('Средняя цена'));
               // Результат берётся у глобальной `lastResult`: `r` — имя
