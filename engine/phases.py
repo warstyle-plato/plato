@@ -1176,6 +1176,19 @@ def _restate_phase_tax_expense(result: dict[str, Any], profit_tax: float) -> Non
         row["share"] = (float(row.get("value") or 0.0) / base) if base else 0.0
 
 
+# Поля строки ТЭП, которые складываются по очередям, — один список на свод
+# движка и на книгу v4, которая склеивает хвост очередей в последний свой лист
+# (`_v4_fold_tep_rows`). Книга складывала только метры и штуки, а гостевые,
+# переданные, продаваемые и паркинг объектов брала у первой из склеенных:
+# на 5 очередях гостевые 5-й пропадали, и продаваемых в книге было больше.
+PHASE_ADDITIVE_TEP_FIELDS: tuple[str, ...] = (
+    "gns", "total_area", "useful", "saleable", "transfer", "units",
+    "guest_units", "transfer_units", "saleable_units",
+    "under_gns", "parking_units",
+    "parking_saleable_units", "parking_under_units",
+    "parking_over_units", "parking_guest_units")
+
+
 def _consolidate_phase_results(
     master_inputs: dict[str, Any],
     phase_items: list[dict[str, Any]],
@@ -1218,11 +1231,7 @@ def _consolidate_phase_results(
             # очереди: объект второй очереди выключен в первой, и ответ
             # первой очереди не прячет его из свода.
             target["excluded"] = target["excluded"] and bool(row.get("excluded"))
-            for field in ("gns", "total_area", "useful", "saleable", "transfer", "units",
-                          "guest_units", "transfer_units", "saleable_units",
-                          "under_gns", "parking_units",
-                          "parking_saleable_units", "parking_under_units",
-                          "parking_over_units", "parking_guest_units"):
+            for field in PHASE_ADDITIVE_TEP_FIELDS:
                 target[field] += float(row.get(field, 0.0) or 0.0)
     tep_rows = list(tep_map.values())
     # Признак свода — по своду, а не по первой очереди: объект второй очереди
@@ -1285,6 +1294,7 @@ def _consolidate_phase_results(
     discount_rate = n(master_inputs, "discount_rate_pct", 20) / 100
     npv = _monthly_npv(project_cf, discount_rate) if project_cf else 0.0
     npv_equity = _equity_npv(equity_cf, discount_rate) if equity_cf else 0.0
+    irr_project = _monthly_irr(project_cf) if project_cf else None
     irr_equity = _monthly_irr(equity_cf) if equity_cf else None
 
     def per_th(value: float, area: float) -> float:
@@ -1537,7 +1547,12 @@ def _consolidate_phase_results(
             "min_phase_llcr": min((r["summary"]["llcr"] for r in results), default=0.0),
             "scenario_revenue_multiplier": n(master_inputs, "scenario_revenue_multiplier", 1.0),
             "scenario_cost_multiplier": n(master_inputs, "scenario_cost_multiplier", 1.0),
-            "npv": npv, "npv_equity": npv_equity, "irr_equity": irr_equity,
+            "npv": npv, "npv_equity": npv_equity, "irr_project": irr_project, "irr_equity": irr_equity,
+            # Свои деньги — сумма вложений очередей, как КОНСОЛИДАТОР!M8 книги,
+            # а не оттоки сведённого потока: деньги одной очереди не гасят
+            # вложений другой.
+            "equity_contributed": sum(float((r.get("summary") or {}).get("equity_contributed") or 0.0)
+                                      for r in results),
             "full_project_cost": full_cost,
             "monetizable_saleable_sqm": saleable,
             "apartment_saleable_sqm": apartment_saleable,

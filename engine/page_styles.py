@@ -45,6 +45,9 @@ details{border-top:1px solid #e5e5e5;padding:4px 0}details:first-child{border-to
 summary{padding:11px 0;font-size:14px;font-weight:700;cursor:pointer}
 .group-peek{font-weight:400;color:#888;font-size:12px;margin-left:8px}
 details[open]>summary>.group-peek{display:none}
+.site-parking-box{margin-top:12px}.site-parking-box>summary{font-size:13px}
+.site-parking-box>summary>.group-peek,.site-parking-box .site-conflict-mark{display:block;margin:2px 0 0 18px}
+.site-parking-box .site-conflict-mark{color:#b3261e;font-weight:600;font-size:12px}
 .object-tabs{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0 4px}
 .object-tabs button{padding:5px 11px;border-radius:14px;border:1px solid #cfd6e0;background:#fff;cursor:pointer;font-size:13px}
 .object-tabs .object-tab.active{background:#1f4e79;color:#fff;border-color:#1f4e79}
@@ -85,6 +88,8 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .teptable tbody .tep-note{text-align:left}
 .teptable .tep-note{display:block;font-size:10px;line-height:1.35;color:#777;margin-top:3px;font-weight:400;text-transform:none;letter-spacing:0;text-align:right}
 .teptable .tep-note.bad{color:#a33;margin-top:2px}
+.teptable .tep-switch{display:inline-flex;margin-left:8px;align-items:center;gap:4px;font-size:11px;color:#444;cursor:pointer}
+.teptable .tep-switch input{min-width:0;width:auto;padding:0;margin:0}
 .teptable .tep-head-note{font-size:10px;color:#999;font-weight:400;text-transform:none;letter-spacing:0}
 .teptable tfoot th{background:#f2f0ea}
 /* Колонка подписей закреплена: таблица шире телефона и прокручивается сама,
