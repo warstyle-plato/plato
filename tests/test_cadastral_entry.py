@@ -124,13 +124,19 @@ def test_kd_reference_is_exposed_per_district():
 
 
 def test_district_missing_from_table_3_is_not_guessed():
-    """Подставлять чужую группу нельзя: Кд умножает плату на миллиарды."""
+    """Подставлять чужую группу нельзя: Кд умножает плату на миллиарды.
+
+    Запас 0,1 убран (решение владельца 16.10.2026): без Кд плата не считается,
+    а причина названа — округ, таблица 3 к 1745-ПП и просьба вписать руками.
+    """
     kd, _document, basis = main._mo_vri_kd_for("Городской округ Пущино")
     assert kd is None
     assert basis == "округа нет в таблице 3"
     result = main.mo_calculate(main.MoCalculateRequest(site_area_ha=6.6667, district="Пущино"))
-    assert any("1745" in text for text in result["warnings"])
+    assert any("1745" in text and "Кд не установлен" in text for text in result["warnings"])
     assert result["vri"]["kd_basis"] == "округа нет в таблице 3"
+    assert result["vri"]["kd"] is None
+    assert result["vri"]["payment_used_mln"] is None
 
 
 def test_kd_changes_the_payment():

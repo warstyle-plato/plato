@@ -31,7 +31,8 @@ import zipfile
 # перевод запроса и ответа живёт на границе поставщика.
 import plato_provider
 # Подписи величин — у словаря терминов, здесь только чтение.
-from terms_glossary import (CORE_ABOVE_AREA, CORE_TOTAL_AREA, CORE_UNDER_AREA, OBJECTS_TOTAL_AREA, SALEABLE_AREA,
+from terms_glossary import (CORE_ABOVE_AREA, CORE_TOTAL_AREA, CORE_UNDER_AREA, OBJECTS_TOTAL_AREA,
+                            ROW_AREA_HEADER, ROW_AREA_HEADER_FULL, SALEABLE_AREA, area_total_label,
                             TERMS, TOTAL_AREA, capex_unit_base, page_terms, unit_label)
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape as xml_escape
@@ -245,11 +246,10 @@ _engine_part("xlsx_book_v4_registry")
 _engine_part("xlsx_book_v4_build")
 
 
-# Выгрузка в шаблон ПЛАТО — заполнение шаблона, консолидатор, новая книга,
-# сверка audit_plato_workbook — вынесена в engine/plato_template.py и
-# выполняется здесь же, в пространстве имён движка: порядок объявлений
-# и подмены core.<имя> остаются прежними.
-_engine_part("plato_template")
+# Общие списки книги и движка (варианты полей, прогноз ставки, статьи без
+# резерва) — engine/book_constants.py, на месте удалённой выгрузки в шаблон
+# ПЛАТО: порядок объявлений и подмены core.<имя> остаются прежними.
+_engine_part("book_constants")
 
 
 # Маршрут /report/pdf и тизер — фоновая сборка, опрос по билету,

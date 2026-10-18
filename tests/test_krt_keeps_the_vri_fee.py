@@ -153,7 +153,10 @@ def test_every_reader_of_vri_relief_passes_the_tep() -> None:
                 top -= ch in ")]}"
                 commas += ch == "," and top == 0
             calls.append((path.name, commas + 1))
-    assert len(calls) >= 5, calls
+    # Читателей четыре: ГлавАПУ, две точки книги v4 и операционная модель
+    # (пятый жил в выгрузке шаблона ПЛАТО, удалённой 16.10.2026). Порог —
+    # страховка, что сканер их вообще нашёл, а не прошёл по пустому списку.
+    assert len(calls) >= 4, calls
     assert all(count == 3 for _, count in calls), calls
 
 

@@ -102,7 +102,7 @@ def test_the_construction_volume_is_named_where_it_works(report) -> None:
     assert f"Расходы — на {TOTAL_AREA.genitive}" in note
     assert int(round(summary["construction_volume_sqm"])) == int(round(
         summary["project_gns_sqm"] + summary["underground_gns_sqm"]))
-    # На суммарной площади МКД считаются общие статьи — без этого читатель не
+    # На общей площади МКД считаются общие статьи — без этого читатель не
     # знает, зачем она.
     assert "общие статьи" in note.lower()
 

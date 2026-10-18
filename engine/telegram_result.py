@@ -29,6 +29,29 @@ def _telegram_deal_lines(summary: dict[str, Any]) -> str:
             f"• {html.escape(DEAL_TOTAL_LABEL.lower())} — {_telegram_money_mln(price + buyout)}\n")
 
 
+def _telegram_parking_lines(summary: dict[str, Any]) -> str:
+    """Машино-места по видам — те, что посчитал движок (`telegramParkingByKind`).
+
+    Подземный паркинг печатается всегда (ноль мест — тоже ответ), наземный и
+    приобъектные — когда они есть. Страница прежней версии присылает одну
+    сумму `parking_spaces` всех видов: её и называем суммой, а не подземным.
+    """
+    kinds = summary.get("parking")
+    if not isinstance(kinds, dict):
+        return f"• машино-места всех видов — {_telegram_number(summary.get('parking_spaces'), 0)} м/м\n"
+    under = float(kinds.get("underground") or 0)
+    sold = float(kinds.get("underground_saleable") or 0)
+    lines = f"• подземный паркинг — {_telegram_number(under, 0)} м/м"
+    if under:
+        lines += f", из них к продаже {_telegram_number(sold, 0)}"
+    lines += "\n"
+    for key, label in (("above", "наземный паркинг"), ("attached", "приобъектные места")):
+        value = float(kinds.get(key) or 0)
+        if value:
+            lines += f"• {label} — {_telegram_number(value, 0)} м/м\n"
+    return lines
+
+
 def _telegram_object_value(row: dict[str, Any]) -> str:
     """Строка раздела объектной вёрстки (`report.layout.sections`) для бота."""
     unit, value = row.get("unit"), row.get("value")
@@ -118,7 +141,6 @@ def telegram_result(req: TelegramResultRequest,
         irr_lines = (f"• IRR проекта (до финансирования) — {html.escape(irr_project_text)}\n"
                      f"• IRR собственного капитала — {html.escape(irr_equity_text)}\n")
     margin_text = _telegram_number(float(summary.get("margin") or 0) * 100, 1) + "%"
-    parking = float(summary.get("parking_spaces") or 0)
     provision_label = str(summary.get("parking_provision_label") or "").strip()
     project_name = str(summary.get("project_name") or "").strip()
     source_label = str(summary.get("source_label") or "ТЭП DevelopAid").strip()
@@ -243,7 +265,7 @@ def telegram_result(req: TelegramResultRequest,
         + housing_lines +
         f"• смена ВРИ — {_telegram_money_mln(summary.get('change_vri_mln'))}\n"
         + social_line +
-        f"• подземный паркинг — {_telegram_number(parking, 0)} м/м\n"
+        _telegram_parking_lines(summary)
         + (f"• обеспеченность парковкой — {html.escape(provision_label)}\n"
            if provision_label else "") + "\n"
         "<b>Предварительная экономика</b>\n"

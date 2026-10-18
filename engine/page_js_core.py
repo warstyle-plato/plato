@@ -199,10 +199,14 @@ const FIELD_SECTIONS=__DEVELOPAID_FIELD_SECTIONS__;
 const CLASS_ONLY_INPUTS=__DEVELOPAID_CLASS_ONLY_INPUTS__;
 // Поля участка — рисуются в карточке «Участок и плотность», не во «Вводных».
 const SITE_ONLY_INPUTS=__DEVELOPAID_SITE_ONLY_INPUTS__;
+// Поля, которые правятся галочкой у строки ТЭП (`TEP_ONLY_INPUTS`): поле →
+// строка, подпись и значения галочки. Во «Вводных» их нет.
+const TEP_ONLY_INPUTS=__DEVELOPAID_TEP_ONLY_INPUTS__;
 // Поля только жилого дома (`RESIDENTIAL_ONLY_INPUTS`) — не на экране
 // чисто нежилого проекта.
 const RESIDENTIAL_ONLY_INPUTS=__DEVELOPAID_RESIDENTIAL_ONLY_INPUTS__;
 const notOnInputs=id=>CLASS_ONLY_INPUTS.includes(id)||SITE_ONLY_INPUTS.includes(id)
+ ||Object.prototype.hasOwnProperty.call(TEP_ONLY_INPUTS,id)
  ||(RESIDENTIAL_ONLY_INPUTS.includes(id)&&isNonResidential());
 // Блоки объекта, которые выбранная стратегия реализации не читает (ДДУ /
 // прямая продажа / доходный метод), не рисуются. Карта — из движка

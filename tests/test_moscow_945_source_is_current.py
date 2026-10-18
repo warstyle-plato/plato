@@ -14,7 +14,9 @@ def test_verified_945_card_points_at_the_2118_amendment_source() -> None:
     assert item["status"] == "verified"
     assert "2118-ПП" in item["latest_amendment"]
     assert "945-ppS1092025.pdf" not in item["source_url"]
-    assert item["source_url"] == "https://base.garant.ru/414735575/"
+    # Сводный текст в базе «Кодекс» (прочитан 16.10.2026), а не сам акт 2118-ПП
+    # на Гаранте: сторожу нужна страница, которая меняется с каждой поправкой.
+    assert item["source_url"] == "https://www.rnk.ru/npd/doc/docid/537986033/modid/80"
     assert "2118-ПП" in item["source_label"]
 
     pack = ROOT / item["source_pack"]

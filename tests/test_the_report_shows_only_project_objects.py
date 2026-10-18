@@ -174,7 +174,12 @@ RENDER = """async (arg)=>{
   Object.keys(arg.t).forEach(k=>{tep[k]=Object.assign(tep[k]||{},arg.t[k])});
   Object.assign(inputs, arg.x);
   renderInputs();
-  const calc=await calculate();
+  // `calculate` возвращает null, если его перебил запущенный следом расчёт (номер
+  // расчёта) — на медленной машине это цепочка загрузки страницы (как в #705).
+  // Тогда отчёт рисует тот, следующий, с ЕГО вводными; поэтому расчёт
+  // повторяется, пока не ответит наш: ответ ждётся по признаку, а не по порядку.
+  let calc=null;
+  for(let i=0;i<20&&!calc;i++){calc=await calculate();if(!calc)await new Promise(r=>setTimeout(r,300))}
   const rows=Array.from(document.querySelectorAll('#reportTep tbody tr:not(.sub)'))
     .map(tr=>(tr.cells[0].textContent||'').trim());
   const foot=Array.from(document.querySelectorAll('#reportTep tfoot th, #reportTep tfoot td'))
