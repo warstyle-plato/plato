@@ -1906,9 +1906,10 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
     def ref(key: str) -> str:
         return out[key].split("!")[1]
 
-    # IRR и NPV не числа, если ПФ к концу проекта не погашен (решение
+    # IRR и NPV КАПИТАЛА не числа, если ПФ к концу проекта не погашен (решение
     # владельца 2 от 29.09.2026): порог и подпись — движка, из `spec`. Книга
     # без ПФ (объекты на своих кредитах) долга ПФ не несёт — правила нет.
+    # NPV проекта (поток до финансирования) — числом всегда (владелец, 17.10.2026).
     na = spec.get("equity_na") or {}
 
     def na_when_unrepaid(formula: str) -> str:
@@ -1936,7 +1937,7 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
     line("profit_tax", "Налог на прибыль", f"=SUM({taxes['tx_tax']})")
     line("vat", "НДС к уплате", f"=SUM({taxes['vat_paid']})")
     line("net_profit", "Чистая прибыль", f"={ref('profit_before_tax')}-{ref('profit_tax')}-{ref('vat')}")
-    line("npv", "NPV проекта", na_when_unrepaid(f"SUM({cash['project_disc']})"))
+    line("npv", "NPV проекта", f"=SUM({cash['project_disc']})")
     # IRR капитала — числом, только если своих денег не меньше порога движка
     # от полных расходов (владелец, 16.10.2026): при почти нулевых своих
     # деньгах он выходит сотнями процентов и доходностью не является. Свои
@@ -2152,7 +2153,7 @@ def _check_rows(result: dict[str, Any], spec: dict[str, Any], objects_refs: list
         ("vat", "НДС", summary.get("vat"), False),
         ("net_profit", "Чистая прибыль", summary.get("net_profit"), False),
         ("total_expenses", "Расходы всего", summary.get("total_expenses"), False),
-        ("npv", "NPV проекта", summary.get("npv") if na_label is None else na_label, False),
+        ("npv", "NPV проекта", summary.get("npv"), False),
         # Подпись движка вместо IRR капитала — «N/A — долг не погашен» или
         # «не показателен: своих денег …» (`equity_irr`).
         ("irr_equity", "IRR собственного капитала",

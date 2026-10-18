@@ -561,10 +561,11 @@ def _v4_finance_hints(bundle: dict[str, Any]) -> dict[str, Any]:
     hints["parity"] = _v4_parity_targets(bundle.get("consolidated") or {})
     # IRR проекта (до финансирования) — числом движка: поток проекта книги
     # (CF!28) ведёт выручку по раскрытию эскроу, движок — по договорам, и
-    # формула книги дала бы второе, несогласное число.
+    # формула книги дала бы второе, несогласное число. Числом и при
+    # непогашенном долге: «N/A — долг не погашен» — только у капитала
+    # (владелец, 17.10.2026).
     _summary = (bundle.get("consolidated") or {}).get("summary") or {}
-    hints["irr_project"] = {"value": _summary.get("irr_project"),
-                            "label": equity_returns_na_label(_summary)}
+    hints["irr_project"] = {"value": _summary.get("irr_project")}
     # Обеспеченность парковкой — места и вся нормативная потребность проекта
     # числами движка (`parking_provision`): норму книга не считает.
     _provision = (((bundle.get("consolidated") or {}).get("parking") or {})

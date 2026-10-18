@@ -61,7 +61,9 @@ PAGE += r"""function renderResult(){
   // не только в плашке выше: плашку можно пролистать, плитку нет.
   ['Чистая прибыль',money(r.summary.net_profit)+conditionalNote],
   ['Маржинальность',pct(r.summary.margin)+conditionalShort],
-  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',returnsNa(r.summary)||(money(r.summary.npv)+conditionalShort)],
+  // NPV проекта — числом и при непогашенном долге: кредита в потоке до
+  // финансирования нет, снимается только доходность капитала (владелец, 17.10.2026).
+  ['NPV @'+Number(inputs.discount_rate_pct||20).toLocaleString('ru-RU')+'%',money(r.summary.npv)+conditionalShort],
   // Цена входа стояла только в «Параметрах проекта» ниже и в PDF первой
   // строкой ключевой экономики: экран и отчёт расходились по составу, а
   // главное число сделки в шапку не попадало вовсе.
@@ -213,8 +215,8 @@ PAGE += r"""function renderResult(){
   row('Налог на прибыль',`(${money(r.summary.profit_tax)})`)+
   `<tr><th>Чистая прибыль</th><th>${money(r.summary.net_profit)}</th></tr>`+
   row('Маржинальность',pct(r.summary.margin))+
-  row('NPV проекта (до финансирования)',returnsNa(r.summary)||money(r.summary.npv))+
-  row('IRR проекта (до финансирования)',returnsNa(r.summary)||irrFmt(r.summary.irr_project))+
+  row('NPV проекта (до финансирования)',money(r.summary.npv))+
+  row('IRR проекта (до финансирования)',irrFmt(r.summary.irr_project))+
   row('IRR собственного капитала',irrEquityNa(r.summary)||irrFmt(r.summary.irr_equity));
 
  // Числа карточки — из результата, а не из формы. Форма не знает ни о льготе,
