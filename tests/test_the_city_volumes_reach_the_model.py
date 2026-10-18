@@ -189,7 +189,8 @@ def test_the_city_norm_beats_the_flat_input(core):
     # Норматив записан в то же поле: страница обязана показывать, чем посчитано.
     assert inputs["social_school_norm_sqm"] == school["norm_sqm_per_place"]
     assert school["gba_sqm"] == pytest.approx(school["places"] * school["norm_sqm_per_place"], abs=1)
-    # У поликлиники норматива города нет — остаётся вводное поле, и это сказано.
+    # У поликлиники ступени города нет — её предел (2150-ПП) живёт полем, и
+    # скрининг не выдаёт поле за ступень по ёмкости.
     assert rows["clinic"]["norm_is_the_citys"] is False
 
 
