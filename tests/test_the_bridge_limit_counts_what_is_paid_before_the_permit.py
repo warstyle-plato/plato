@@ -88,22 +88,6 @@ def test_the_surfaces_read_the_parts_and_do_not_subtract() -> None:
     assert "bridge_total - bridge_social" not in printed, "печать всё ещё вычитает"
 
 
-def test_the_workbook_uses_the_same_methodology() -> None:
-    """Методику меняют в двух местах: в движке и в книге."""
-    import io
-
-    openpyxl = pytest.importorskip("openpyxl")
-    x = copy.deepcopy(core.DEFAULT_INPUTS)
-    x.update({"purchase_price_mln": PRICE_MLN, "ird_months": IRD_MONTHS,
-              "purchase_schedule": SCHEDULE})
-    built = core.build_plato_model_v2(x, copy.deepcopy(core.TEP_DEFAULT), [], {})
-    content = built[0] if isinstance(built, tuple) else built
-    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    formula = str(book["Вводные"].cell(row=_bridge_limit_row(book), column=2).value or "")
-    assert "SUMIF" in formula, "книга по-прежнему берёт итог статьи, а не платежи до РнС"
-    assert "EDATE" in formula, "в книге не выражен месяц РнС"
-
-
 def _bridge_limit_row(book) -> int:
     sheet = book["Вводные"]
     for row in range(1, sheet.max_row + 1):

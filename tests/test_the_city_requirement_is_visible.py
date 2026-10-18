@@ -239,5 +239,6 @@ def test_the_area_follows_the_places_by_the_city_step(core, tmp_path):
     assert got["large"]["area"] == pytest.approx(400 * 16)
     assert got["large"]["tep"] == pytest.approx(400 * 16), "ТЭП не следует за нормативом"
     assert got["school"] == 15, "школа на 900 мест — 15 м²/место"
-    # У поликлиники норматива города нет: поле остаётся вводным.
-    assert got["clinic"] == 15
+    # У поликлиники ступени нет: поле остаётся вводным и несёт умолчание
+    # (верхний предел 2150-ПП), страница его не переписывает.
+    assert got["clinic"] == core.DEFAULT_INPUTS["social_clinic_norm_sqm"]
