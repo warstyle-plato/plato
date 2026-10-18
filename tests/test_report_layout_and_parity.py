@@ -217,7 +217,7 @@ def test_no_unit_metric_without_a_named_base(payload):
                     nameless.append(path)
             for key in node:
                 # Две ставки названы своей базой в имени поля: стройка МКД — на
-                # суммарную площадь МКД, благоустройство — на ту же наземную
+                # общую площадь МКД, благоустройство — на ту же наземную
                 # ГНС, что и поле ввода его ставки.
                 if key.endswith("per_gns_th") and key not in (
                         "construction_cost_per_gns_th", "landscaping_per_gns_th"):
