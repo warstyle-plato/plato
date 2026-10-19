@@ -573,9 +573,16 @@ def _calculate_economics(req: CalcRequest) -> dict:
         # гасит (линия закрыта), поэтому в pf_repay его нет, а из кассы он
         # выбывает. Без этого вычета деньги посчитались бы дважды — здесь как
         # оставшиеся застройщику, и у следующей очереди как погашение.
+        # Принятый свип (`project_cash_sweep`) — обратная сторона того же
+        # платежа: он в pf_repay принявшей очереди, но заплачен деньгами
+        # передавшей, и из кассы принявшей не выбывает. Без возврата свип
+        # вычитался дважды: на проекте с долгом, переданным из первой
+        # очереди, поток капитала выходил на 3 367 млн ₽ меньше чистой
+        # прибыли, NPV капитала — 4 169 млн ₽ вместо 5 769.
         equity_cf.append(
             cash_revenue_to_equity - capex_m - opex_m - int_pay - fees - tax - vat_m
             + bridge_draw + pf_draw - bridge_repay - pf_repay
+            + float(fr.get("project_cash_sweep", 0.0) or 0.0)
             - float(fr.get("bank_sweep_out", 0.0) or 0.0)
             + float(fr.get("bank_sweep_returned", 0.0) or 0.0)
             + float(fr.get("nonres_cash_to_equity", 0.0) or 0.0)

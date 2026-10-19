@@ -1084,7 +1084,9 @@ def _build_project_workbook(
         # соседний проход переписывал середину строки 21 прежней формулой, и
         # живой месяц (AC) оказывался ровно в ней. Снаружи это выглядело как
         # «правка не сработала»: D21 в книге с правкой, а число прежнее.
-        cf_sheet_xml[_name] = _v4_add_recognized_tax_base_row(_v4_bridge_need_without_tax(_v4_apply_single_queue_tax(_v4_fill_standalone_free_cash(_v4_apply_vat_cash(_v4_apply_vat_base(
+        # Свип, отданный следующей очереди, вычитается самым внешним проходом:
+        # строки 49, 50 и 91 к нему уже окончательные.
+        cf_sheet_xml[_name] = _v4_send_cash_sweep(_v4_add_recognized_tax_base_row(_v4_bridge_need_without_tax(_v4_apply_single_queue_tax(_v4_fill_standalone_free_cash(_v4_apply_vat_cash(_v4_apply_vat_base(
             _v4_apply_interest_accrual(
                 _v4_apply_core_pool_by_product(_v4_apply_core_pool_without_sales(_v4_apply_extra_objects_tax_row(
                     _v4_apply_project_cash(_v4_use_bridge_base_row(
@@ -1102,7 +1104,7 @@ def _build_project_workbook(
                     _phase, missing), _phase, missing),
                 _phase, missing),
             _phase, missing), _phase, missing), _phase, missing), _phase, missing, _tax_share_layout),
-            _phase, missing), _phase, missing)
+            _phase, missing), _phase, missing), _phase, missing)
 
     # Выручка очереди по продуктам: на экране разбивка есть, а в книге жила
     # только в снятой выгрузке детализации.
@@ -1860,9 +1862,21 @@ def _build_project_workbook(
             formula=f'ROUND(AQ{row}*IF($K$81="Да",$K$15,1),0)')
         if not _done:
             missing.append(f"площадь кладовых очереди {index + 1}")
+        # Наземные метры очереди вне МКД — базой благоустройства по ставке на
+        # метр ГНС. Мера одна с движком (`project_above_gns`): разность с
+        # метрами дома, а не второй список объектов.
+        _outside_above = max(0.0, project_above_gns(crow)
+                             - num_row(crow.get("apartments"), "gns")
+                             - num_row(crow.get("ground_commercial"), "gns"))
+        xml, _done = _v4_set_or_insert_cell(
+            xml, f"{_V4_QUEUE_OUTSIDE_ABOVE_COL}{row}", number=_outside_above)
+        if not _done:
+            missing.append(f"наземная ГНС вне МКД очереди {index + 1}")
         if index == 0:
             for _col, _title in (("AQ", "База площади кладовых"),
                                  ("AR", "Площадь кладовых, м²"),
+                                 (_V4_QUEUE_OUTSIDE_ABOVE_COL,
+                                  "Наземная ГНС вне МКД (соцобъекты, офисы), м²"),
                                  (_V4_PF_QUEUE_INDIVIDUAL_COL, "Лимит НКЛ очереди, млн"),
                                  (_V4_PF_QUEUE_CAP_COL, "Потолок ПФ очереди, млн")):
                 xml, _done = _v4_set_or_insert_cell(xml, f"{_col}87", text=_title)

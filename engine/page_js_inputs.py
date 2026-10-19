@@ -1753,7 +1753,10 @@ function renderInputs(){
      let el;
      if(Array.isArray(f[4])){el=document.createElement('select');f[4].forEach(pair=>{let o=document.createElement('option');o.value=pair[0];o.textContent=pair[1];el.appendChild(o)})}
      else if(type==='select'){el=document.createElement('select');__DEVELOPAID_SOCIAL_MODES__.forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
-     else if(type==='finance_select'){el=document.createElement('select');['Капитализация в ПФ','Выплата при рефинансировании'].forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
+     else if(type==='finance_select'){el=document.createElement('select');
+      // Значения — из движка (`_M2_EXTRA_OPTIONS`), их же ждёт книга; на экране —
+      // что станет с процентами. Подпись книги переписывается вместе с Excel.
+      __DEVELOPAID_BRIDGE_INTEREST_MODES__.forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent={'Капитализация в ПФ':'Прибавить к долгу ПФ','Выплата при рефинансировании':'Заплатить сразу при переходе на ПФ'}[v]||v;el.appendChild(o)})}
      else {el=document.createElement('input');el.type=type==='checkbox'?'checkbox':type;if(type==='number')el.step='any'}
      el.id='f_'+id;
      // В Москве периодичность рассрочки по ВРИ установлена нормативно —
