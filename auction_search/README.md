@@ -73,6 +73,21 @@ underlying request parameter is not treated as a stable API contract. The mode
 does not use a participant cabinet, download every attachment, deploy, or alter
 `/auctions/discover`.
 
+The page has one history route of its own: `GET /auctions/finished?as_of=YYYY-MM-DD&months=3`
+(«Показать завершённые торги»). Only ГИС Торги answer it — the same Moscow
+filters with finished statuses (`SUCCEED`, `FAILED`, `CANCELED`,
+`DETERMINING_WINNER`), windowed by `auctionStartDate`, else `biddEndTime`.
+Other platforms report `finished_available: false` in their coverage row
+instead of an empty list. The answer is cached on disk under
+`DATA_DIR/market/auctions/` (6 h complete, 20 min partial) and stays inside the
+40 s catalogue budget. The status codes and `priceFin` were not confirmed by a
+live answer from the sandbox — check them with the torgi probe from the core.
+
+Land area from ГИС Торги goes by an explicit map (`AREA_CHARACTERISTICS`):
+`SquareZU` → land; `totalAreaRealty` → land for the service's «Земельные
+участки» rubric, building otherwise; land metres from the description only for
+that rubric. The origin of each area is kept in `provenance`.
+
 There is no second auction financial engine.
 
 ## Public-first authentication policy
