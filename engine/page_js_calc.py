@@ -662,7 +662,7 @@ function renderPfStepsEditor(wrap){
   // Ниже первой ступени лестница договора не описывает ничего — действует
   // обычная специальная ставка, и строка называет её поле по имени.
   html+='<tr><td style="padding:2px 10px 2px 0;color:#777">ниже '+pfEdgeText(steps[0].edge)+'%</td>'+
-   '<td style="padding:2px 8px;color:#777">'+special+'% — «Ставка ПФ при покрытии 1×»</td><td></td></tr>';
+   '<td style="padding:2px 8px;color:#777">'+special+'% — ставка при покрытии 1×</td><td></td></tr>';
  }
  steps.forEach((s,i)=>{
   const upper=steps[i+1]?'– '+pfEdgeText(steps[i+1].edge)+'%':'% и выше';
@@ -675,8 +675,8 @@ function renderPfStepsEditor(wrap){
  });
  html+='</table><div style="margin-top:4px"><button type="button" class="tep-refill" onclick="pfStepAdd()">+ ступень</button>'+
   (steps.length
-   ?' <button type="button" class="tep-refill" onclick="savePfSteps([])">без лестницы — одна ставка</button>'
-   :' <span style="color:#777">лестницы нет — весь долг под эскроу идёт по ставке выше</span>')+'</div>';
+   ?' <button type="button" class="tep-refill" onclick="savePfSteps([])">убрать лестницу, оставить одну ставку</button>'
+   :' <span style="color:#777">Лестницы нет: вся покрытая эскроу часть кредита идёт по ставке из поля «Ставка ПФ при покрытии эскроу 1×».</span>')+'</div>';
  const box=document.createElement('div');box.id='pfStepsEditor';box.innerHTML=html;
  wrap.appendChild(box);
 }

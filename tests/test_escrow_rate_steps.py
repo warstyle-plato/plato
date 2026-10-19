@@ -181,8 +181,9 @@ def test_the_field_is_declared_where_the_page_takes_it():
     page = core.PAGE
     assert "renderPfStepsEditor" in page and "pfStepAdd" in page
     assert "и выше" in page, "верхний диапазон назван, а не подразумевается"
-    assert "Пусто" in field[2], "пустое поле — прежнее поведение, и это сказано"
-    assert "по умолчанию" in field[2], "откуда взялись числа в поле — сказано там же"
+    assert "Если лестницу убрать, действует одна ставка" in field[2], (
+        "пустая лестница — прежнее поведение, и это сказано")
+    assert "По умолчанию" in field[2], "откуда взялись числа в поле — сказано там же"
 
 
 def test_the_formula_for_excel_matches_the_engine():
