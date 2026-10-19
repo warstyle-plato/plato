@@ -605,7 +605,7 @@ _V4_QUEUE_INPUT_FORMATS = {
     "E": _V4_FMT_COUNT, "F": _V4_FMT_COUNT, "G": _V4_FMT_COUNT,
     "W": _V4_FMT_AREA, "X": _V4_FMT_AREA, "Y": _V4_FMT_AREA,
     "Z": _V4_FMT_AREA, "AA": _V4_FMT_AREA, "AB": _V4_FMT_AREA, "AC": _V4_FMT_AREA,
-    "AS": _V4_FMT_AMOUNT,
+    "AS": _V4_FMT_AMOUNT, "AY": _V4_FMT_AREA,
 }
 # Блок соцобъектов «Вводных»: колонка → формат (заголовки пишет
 # `_v4_social_rows_xml`; F — формула стоимости, она не ввод).

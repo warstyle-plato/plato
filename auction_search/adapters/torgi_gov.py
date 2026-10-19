@@ -434,6 +434,11 @@ def areas(card: dict[str, Any]) -> dict[str, tuple[float, str, str]]:
     «площадь участка» — с подписью, что число из текста.
     """
     found: dict[str, tuple[float, str, str]] = {}
+    # Лот «единым лотом» несёт несколько участков: строки одного кода
+    # складываются — лот покупается целиком. Разные коды об одном участке
+    # («Площадь земельного участка» и «Общая площадь» у лота-земли) не
+    # складываются: побеждает явный код участка, а не сумма двух записей.
+    rows: dict[tuple[str, str], list[tuple[float, str]]] = {}
     land_category = category_is_land(card)
     for item in card.get("characteristics") or []:
         if not isinstance(item, dict):
@@ -449,7 +454,14 @@ def areas(card: dict[str, Any]) -> dict[str, tuple[float, str, str]]:
         factor = _unit_factor(item)
         if value is None or factor is None or value <= 0:
             continue
-        found.setdefault(target, (value * factor, f"characteristics:{code}", raw))
+        rows.setdefault((target, code), []).append((value * factor, raw))
+    for code in AREA_CHARACTERISTICS:
+        for target in ("land", "building"):
+            parts = rows.get((target, code))
+            if parts and target not in found:
+                found[target] = (sum(value for value, _raw in parts),
+                                 f"characteristics:{code}" + (f" ×{len(parts)}" if len(parts) > 1 else ""),
+                                 " + ".join(raw for _value, raw in parts))
     if "land" not in found and land_category:
         match = _DESCRIPTION_LAND_AREA.search(_text(card.get("lotDescription")))
         if match:
