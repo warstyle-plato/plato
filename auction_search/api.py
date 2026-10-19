@@ -54,6 +54,7 @@ from auction_search.adapters.fedresurs import (
     KNOWN_DEBTOR_INN as FEDRESURS_KNOWN_INN,
     KNOWN_MESSAGE_GUID as FEDRESURS_KNOWN_MESSAGE,
     probe as fedresurs_probe, probe_api as fedresurs_probe_api,
+    probe_backend as fedresurs_probe_backend,
     probe_browser as fedresurs_browser)
 from auction_search.adapters import source_page
 from auction_search.adapters.roseltorg_probe import (
@@ -5222,13 +5223,20 @@ def install(app: FastAPI) -> None:
         message: str = Query(default=""),
         inn: str = Query(default=""),
         seconds: float = Query(default=40.0, ge=5.0, le=90.0),
+        path: str = Query(default=""),
     ) -> dict[str, Any]:
         """JSON-бэкенд ЕФРСБ: сверенные маршруты по должнику и адреса из бандла.
 
         Страница сообщения — оболочка Angular, данные идут из `/backend/…`.
         Адрес карточки сообщения и списка торгов проба ищет в бандле самой
         страницы, а не перебирает вслепую. Разбора нет.
+
+        `path` — полный ответ одного пути бэкенда (`bankruptcy-messages/<guid>`):
+        поля сверяются по целому ответу, а не по началу тела.
         """
+        if path.strip():
+            return await run_in_threadpool(
+                lambda: fedresurs_probe_backend(path, seconds=seconds))
         return await run_in_threadpool(lambda: fedresurs_probe_api(
             message_guid=message.strip() or FEDRESURS_KNOWN_MESSAGE,
             inn=inn.strip() or FEDRESURS_KNOWN_INN, seconds=seconds))

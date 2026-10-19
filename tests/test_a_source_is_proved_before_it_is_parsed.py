@@ -404,3 +404,27 @@ def test_the_api_probe_asks_about_the_owners_message() -> None:
     assert fedresurs.KNOWN_MESSAGE_GUID == "5ea9be17-d759-407d-9802-1644c8b27f76"
     api = (ROOT / "auction_search" / "api.py").read_text()
     assert '"/auctions/fedresurs/api"' in api and "fedresurs_probe_api" in api
+
+
+def test_the_backend_window_reads_only_the_efrsb_backend(monkeypatch) -> None:
+    """Окно в публичный JSON ЕФРСБ, а не прокси куда угодно."""
+    asked: list[str] = []
+    monkeypatch.setattr(fedresurs, "_get", lambda url, context, **kw: (
+        asked.append(url) or (200, "application/json", '{"messageType": "x"}')))
+    got = fedresurs.probe_backend("/backend/bankruptcy-messages/5ea9be17-d759")
+    assert asked == ["https://fedresurs.ru/backend/bankruptcy-messages/5ea9be17-d759"]
+    assert got["json"] == {"messageType": "x"}
+    for bad in ("../../etc", "https://evil.example/x", "a b", "", "x@evil.example/"):
+        assert fedresurs.probe_backend(bad).get("reason"), bad
+    assert len(asked) == 1, "плохой путь не уходит в сеть"
+
+
+def test_the_bundle_probe_shows_the_call_around_a_path(monkeypatch) -> None:
+    """Вызов собран из базы-переменной: метод и параметры видны рядом с путём."""
+    body = 'get(this.base+"/bidding-messages/"+e,{params:{regionId:r}})'
+    monkeypatch.setattr(fedresurs, "_get", lambda url, context, **kw: (
+        (200, "text/javascript", body) if url.endswith("main.bbbb.js")
+        else (200, "text/html", _FAKE_HTML) if "bankruptmessages" in url
+        else (404, "", "")))
+    got = fedresurs._bundle_paths(None, "https://fedresurs.ru/bankruptmessages/X", 1e18)
+    assert any("regionId" in item["text"] for item in got["snippets"])
