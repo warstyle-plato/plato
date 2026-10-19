@@ -158,12 +158,13 @@ def test_a_parking_mismatch_does_not_stop_the_switch() -> None:
 # показывает строки «ДОО/СОШ/поликлиника — компенсация», а они читались прямо
 # из выгрузки и стояли на её числах: менялся только итог.
 
-_COMPENSATION = """async ([data, action])=>{
+_COMPENSATION = """async ([data, action, socialMode, patch])=>{
+  Object.assign(data.inputs._glavapu_import.normalized, patch);
   applyProjectSnapshot(data);
   const wait=()=>new Promise(r=>setTimeout(r,100));
   for(let i=0;i<30&&!glavapuBaselineApplies();i++)await wait();
   const mode=document.getElementById('f_social_mode');
-  mode.value='Денежная компенсация';mode.dispatchEvent(new Event('change'));
+  mode.value=socialMode;mode.dispatchEvent(new Event('change'));
   await settledCalculate();
   const rows=()=>{
     const out={};
@@ -174,6 +175,7 @@ _COMPENSATION = """async ([data, action])=>{
     return out;
   };
   const before=rows();
+  const placesBefore=[inputs.kindergarten_places,inputs.school_places,inputs.clinic_capacity];
   if(action==='flats'){
     tepCellChanged('apartments','saleable',Number(tep.apartments.saleable)*1.3);
     const note=()=>(document.getElementById('tepDerivedNote')||{}).textContent||'';
@@ -186,12 +188,14 @@ _COMPENSATION = """async ([data, action])=>{
   }
   await wait();
   const r=await settledCalculate();
-  return {before,after:rows(),breakdown:r.summary.social_payment_breakdown.compensation,
+  return {before,after:rows(),note:(document.getElementById('tepDerivedNote')||{}).textContent||'',
+          placesBefore,places:[inputs.kindergarten_places,inputs.school_places,inputs.clinic_capacity],breakdown:r.summary.social_payment_breakdown.compensation,
           payment:r.summary.social_payment,field:inputs.social_compensation_mln};
 }"""
 
 
-def _compensation(action: str) -> dict:
+def _compensation(action: str, mode: str = "Денежная компенсация",
+                  patch: dict | None = None) -> dict:
     chrome = chromium_or_skip()
     from playwright.sync_api import sync_playwright  # noqa: PLC0415
 
@@ -203,7 +207,7 @@ def _compensation(action: str) -> dict:
             tab = browser.new_page(viewport={"width": 390, "height": 844})
             tab.goto(f"{base}/", wait_until="domcontentloaded")
             wait_for_result(tab)
-            return tab.evaluate(_COMPENSATION, [_snapshot(), action])
+            return tab.evaluate(_COMPENSATION, [_snapshot(), action, mode, patch or {}])
         finally:
             browser.close()
 
@@ -240,3 +244,16 @@ def test_the_breakdown_splits_the_current_total_by_the_export_rates() -> None:
                                                         school_places=0, clinic_capacity=0))
     assert no_places["school_mln"] == round(1760.829 * 410.951 / 815.938, 3)
     assert set(core.social_compensation_breakdown(dict(x, social_compensation_mln=0)).values()) == {0.0}
+
+
+def test_the_flats_recount_the_places_when_the_printed_area_rounds_up() -> None:
+    """Добавка владельца: «при изменении площади жилья ничего не пересчитывается».
+
+    Пересчёт ТЭП по выгрузке отказывал по тому же общему вердикту сверки, что
+    и переключатель, а сверка приобъектных мест валилась на округлении
+    печатной НП. В обоих режимах исполнения места идут за квартирами.
+    """
+    for mode in ("Строительство", "Денежная компенсация"):
+        got = _compensation("flats", mode, ROUNDED_UP)
+        assert "не сходится" not in got["note"], (mode, got["note"])
+        assert all(now > was for now, was in zip(got["places"], got["placesBefore"])), (mode, got)
