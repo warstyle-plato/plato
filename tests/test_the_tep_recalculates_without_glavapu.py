@@ -123,7 +123,7 @@ def test_the_zone_list_is_declared_once() -> None:
 
 def test_the_page_calls_the_norms_instead_of_refusing() -> None:
     start = PAGE.index("async function recalcFromTep(options){")
-    head = PAGE[start:start + 900]
+    head = PAGE[start:PAGE.index("\n}\n", start)]
     assert "recalcFromTepByNorms(options)" in head
     assert "Нет исходного расчёта ГлавАПУ: пересчитывать не от чего" not in head
 
