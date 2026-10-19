@@ -372,7 +372,10 @@ function renderAreaNote(){
  if(Number.isNaN(a.min)){box.className='notice warn';box.textContent='Площадь участка не распознана. Введите число гектаров, например 0,5.';return}
  box.className='notice'+(a.unknown?' warn':'');
  box.textContent=`Участки от ${fmtHa(a.min)}: подходит ${a.matched} лот(ов).`
-  +(a.unknown?` Ещё у ${a.unknown} лот(ов) площадь участка неизвестна или известна не по всем участкам лота. Мы не можем ни отсеять их, ни оставить по площади, поэтому они показаны в конце списка с пометкой. Площадь, которой нет у площадки, мы постепенно берём из НСПД по кадастровым номерам.`:'');
+  +(a.hidden?` Ещё ${a.hidden} лот(ов) от ${fmtHa(a.min)} скрыты другими фильтрами (${a.hiddenKinds.join(', ')}): чтобы их увидеть, добавьте этот тип или сбросьте поиск.`:'')
+  +(a.unknown?` Ещё у ${a.unknown} лот(ов) площадь участка неизвестна или известна не по всем участкам лота. Мы не можем ни отсеять их, ни оставить по площади, поэтому они показаны в конце списка с пометкой. Площадь, которой нет у площадки, мы постепенно берём из НСПД по кадастровым номерам, а у зданий ищем участок под ними.`:'')
+  +(a.noParcel?` Доли в обществах и лоты без участка (${a.noParcel}) при фильтре по площади участка не показываются.`:'');
+ if(a.hidden&&!a.matched)box.className='notice warn';
 }
 function allAuctionLots(){
  const f=state.finished||{};
@@ -380,18 +383,32 @@ function allAuctionLots(){
  const seen=new Set(state.lots.map(l=>l.source?.lot_url||''));
  return state.lots.concat(f.lots.filter(l=>!seen.has(l.source?.lot_url||'')));
 }
+// Отбор «участок от N га»: что показать, что пометить и что скрыто другими
+// фильтрами. Одна функция без страницы — её и зовёт `filter`, и проверка.
+function areaSelection(all,list,min){
+ if(min===null||Number.isNaN(min))return {list,unknown:new Set(),summary:{min}};
+ const big=l=>landAreaKnown(l)&&Number(l.land_area_sqm)>=min;
+ const known=list.filter(big),unknown=list.filter(l=>!big(l)&&landAreaUnsure(l,min)&&!NO_PARCEL_KINDS.has(l.lot_kind));
+ // Лоты от N га, которые спрятал другой фильтр (тип, вид торгов, поиск), —
+ // называются: «подходит 0», когда восемь площадок КРТ скрыты выбором типа,
+ // читалось как «таких участков нет» (владелец, 19.10.2026).
+ const shown=new Set(list);
+ const hidden=all.filter(l=>big(l)&&!shown.has(l));
+ return {list:known.concat(unknown),unknown:new Set(unknown),summary:{min,matched:known.length,
+  unknown:unknown.length,noParcel:list.filter(l=>!big(l)&&NO_PARCEL_KINDS.has(l.lot_kind)).length,
+  hidden:hidden.length,hiddenKinds:[...new Set(hidden.map(l=>kindLabel(l.lot_kind)))]}};
+}
+// У доли в обществе и прочего без участка площади участка нет по существу —
+// при фильтре по площади участка они не «неизвестны», а не про участок.
+const NO_PARCEL_KINDS=new Set(['equity_stake','other']);
 function filter(){const q=$('search').value.trim().toLowerCase(),kinds=[...state.auctionKinds],o=$('origin').value;
- let list=allAuctionLots().filter(l=>(!kinds.length||kinds.some(k=>lotMatchesKind(l,k)))
+ const all=allAuctionLots();
+ let list=all.filter(l=>(!kinds.length||kinds.some(k=>lotMatchesKind(l,k)))
   &&(o==='all'||(l.origin||'other')===o)
   &&(!q||JSON.stringify([l.title,l.address,l.cadastral_numbers,l.source?.external_lot_id]).toLowerCase().includes(q)));
  const min=landMinSqm();
- state.areaUnknown=new Set();
- if(min!==null&&!Number.isNaN(min)){
-  const known=list.filter(l=>landAreaKnown(l)&&Number(l.land_area_sqm)>=min),unknown=list.filter(l=>!(landAreaKnown(l)&&Number(l.land_area_sqm)>=min)&&landAreaUnsure(l,min));
-  unknown.forEach(l=>state.areaUnknown.add(l));
-  list=known.concat(unknown);
-  state.areaFilter={min,matched:known.length,unknown:unknown.length};
- }else state.areaFilter={min};
+ const pick=areaSelection(all,list,min);
+ state.areaUnknown=pick.unknown;state.areaFilter=pick.summary;list=pick.list;
  state.filtered=list;
  state.families=lotFamilies(state.filtered,state.areaUnknown);
  renderAreaNote();renderRows();stats();loadSheet()}
@@ -666,7 +683,7 @@ function lotRowHtml(l){
  const sc=lotScore(l);
  const parse=lotAnalysis(l);
  const quality=l.quality||{}, qualityNote=(quality.reasons||[]).join(' · ');
- return `<td><div class="lotname">${esc(l.title||l.address||'Лот')}</div><div class="source">Почему здесь: ${esc(l.screening?.why_here||l.selection_reasons?.slice(0,4).join(' · ')||'требуется проверка')}</div>${quality.accepted===false?`<div class="source warn">${esc(quality.label||'Не входит в основную подборку')}: ${esc(qualityNote)}</div>`:''}${parse.available?'':`<div class="source warn">Разбор недоступен: ${esc(parse.reason)}</div>`}${finishedLine(l)}<div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||l.source?.external_lot_id||'')}</div></td>`
+ return `<td><div class="lotname">${esc(l.title||l.address||'Лот')}</div><div class="source">Почему здесь: ${esc(l.screening?.why_here||l.selection_reasons?.slice(0,4).join(' · ')||'требуется проверка')}</div>${quality.accepted===false?`<div class="source warn">${esc(quality.label||'Не входит в основную подборку')}: ${esc(qualityNote)}</div>`:''}${parse.available?'':`<div class="source warn">Разбор недоступен: ${esc(parse.reason)}</div>`}${(quality.notes||[]).map(n=>`<div class="source">${esc(n[0].toUpperCase()+n.slice(1))}.</div>`).join('')}${finishedLine(l)}<div class="cad">${esc((l.cadastral_numbers||[]).join(', ')||l.source?.external_lot_id||'')}</div></td>`
   +`<td><span class="fit ${sc.tone}" title="${esc('Потенциал лота '+sc.base+'; снято '+sc.cut+'%')}"><span class="light"></span>${sc.score} · ${esc(sc.label)}</span><div class="source">${esc(lotScoreNote(sc))}</div></td>`
   +`<td><span class="tag ${l.lot_kind==='krt'?'ok':''}">${esc(kindLabel(l.lot_kind))}</span>${equityNote(l)}${(l.origin&&l.origin!=='city')?`<div class="source">${esc(ORIGIN_LABEL[l.origin]||l.origin)}</div>`:''}</td>`
   +`<td>${areaLine(l)}${areaUnknownLine(l)}</td>`

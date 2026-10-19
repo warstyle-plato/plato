@@ -85,7 +85,9 @@ def catalogue_quality(lot: AuctionLot) -> dict[str, Any]:
     if missing:
         state = "incomplete"
         accepted = False
-    elif fit.get("fit") is None or int(fit.get("measured") or 0) < 2:
+    # Цена, которую честно не с чем сравнить (символическая, стартовая цена
+    # аукциона), не делает лот неполным: тогда хватает одного измерения масштаба.
+    elif fit.get("fit") is None or int(fit.get("measured") or 0) < (1 if fit.get("price_note") else 2):
         state = "incomplete"
         accepted = False
         reasons.append("для сравнения с реальными сделками измерено меньше двух показателей")
@@ -97,6 +99,7 @@ def catalogue_quality(lot: AuctionLot) -> dict[str, Any]:
     return {
         "accepted": accepted,
         "state": state,
+        "notes": [fit["price_note"]] if fit.get("price_note") else [],
         "label": {
             "ready": "Основная подборка",
             "incomplete": "Не хватает данных",

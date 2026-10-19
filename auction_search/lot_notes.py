@@ -358,9 +358,11 @@ class LotNotes:
                 point = points.get(number) or {}
                 asked = float(point.get("asked_at") or 0)
                 # Точка не стареет: участок не переезжает. Запись без вида
-                # объекта сделана до того, как фон начал брать площадь, — её
-                # переспрашивают один раз.
-                if point.get("map_url") and "kind" in point:
+                # объекта сделана до того, как фон начал брать площадь, а у
+                # здания без поиска участка под ним — до того, как фон его
+                # искал; такие переспрашивают один раз.
+                if point.get("map_url") and "kind" in point and (
+                        point.get("kind") != "building" or "under_parcels" in point):
                     continue
                 if point and moment - asked < (NSPD_NOT_FOUND_RETRY_SECONDS if point.get("not_found")
                                                else NSPD_FAILED_RETRY_SECONDS):
