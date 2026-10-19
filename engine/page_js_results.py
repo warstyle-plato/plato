@@ -388,7 +388,7 @@ PAGE += r"""function renderResult(){
     socialPerMetre(r)+socialNeedRow+
     ((Number(compensation.kindergarten_mln||0)+Number(compensation.school_mln||0)
       +Number(compensation.clinic_mln||0))>0
-      ? `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно, разбивка компенсации по ГлавАПУ: `
+      ? `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно, компенсация по объектам: `
         +`ДОО ${money(Number(compensation.kindergarten_mln||0)*1e6)}, `
         +`СОШ ${money(Number(compensation.school_mln||0)*1e6)}, `
         +`поликлиника ${money(Number(compensation.clinic_mln||0)*1e6)}</td></tr>`
@@ -401,7 +401,7 @@ PAGE += r"""function renderResult(){
     row(`Поликлиника — ${num(program.clinic_capacity||0)} пос./смену`,money(Number(construction.clinic_mln||0)*1e6))+
     `<tr><th>Стоимость строительства / всего</th><th>${socialMoney(r.summary.social_payment)}</th></tr>`+
     socialPerMetre(r)+socialNeedRow+
-    `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно: компенсация по ГлавАПУ — ${money((Number(compensation.kindergarten_mln||0)+Number(compensation.school_mln||0)+Number(compensation.clinic_mln||0))*1e6)}</td></tr>`;
+    `<tr><td colspan="2" style="color:#777;font-size:11px">Справочно: денежная компенсация вместо строительства — ${money((Number(compensation.kindergarten_mln||0)+Number(compensation.school_mln||0)+Number(compensation.clinic_mln||0))*1e6)}</td></tr>`;
  }else{
    socialTable.innerHTML=
     row('Режим','Денежная компенсация')+

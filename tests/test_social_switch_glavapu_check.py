@@ -149,3 +149,94 @@ def test_a_parking_mismatch_does_not_stop_the_switch() -> None:
     got = _switch({"ground_commercial_np_sqm": 20000.0})
     assert "не пересчитаны" not in got["note"], got["note"]
     assert got["after"]["kindergarten_places"] != got["before"]["kindergarten_places"], got
+
+
+# --- Режим «Денежная компенсация» ------------------------------------------
+# Владелец, 19.10.2026: «в режиме строительства всё работает, а если выбрана
+# компенсация — пересчёт не работает, в том числе при изменении площади
+# жилья». Поля пересчитывались, но таблица соцнагрузки при компенсации
+# показывает строки «ДОО/СОШ/поликлиника — компенсация», а они читались прямо
+# из выгрузки и стояли на её числах: менялся только итог.
+
+_COMPENSATION = """async ([data, action])=>{
+  applyProjectSnapshot(data);
+  const wait=()=>new Promise(r=>setTimeout(r,100));
+  for(let i=0;i<30&&!glavapuBaselineApplies();i++)await wait();
+  const mode=document.getElementById('f_social_mode');
+  mode.value='Денежная компенсация';mode.dispatchEvent(new Event('change'));
+  await settledCalculate();
+  const rows=()=>{
+    const out={};
+    document.querySelectorAll('#socialTable tr').forEach(tr=>{
+      const c=[...tr.children].map(x=>x.textContent.replace(/\\s+/g,' ').trim());
+      if(c.length===2)out[c[0]]=c[1];
+    });
+    return out;
+  };
+  const before=rows();
+  if(action==='flats'){
+    tepCellChanged('apartments','saleable',Number(tep.apartments.saleable)*1.3);
+    const note=()=>(document.getElementById('tepDerivedNote')||{}).textContent||'';
+    for(let i=0;i<60&&!note().startsWith('Пересчитано');i++)await wait();
+  }else{
+    const live=document.getElementById('f_social_population_method');
+    live.value='flats_household';live.dispatchEvent(new Event('change'));
+    const note=()=>(document.getElementById('socialPopulationNote')||{}).textContent||'';
+    for(let i=0;i<60&&(!note()||note().startsWith('Пересчитываю'));i++)await wait();
+  }
+  await wait();
+  const r=await settledCalculate();
+  return {before,after:rows(),breakdown:r.summary.social_payment_breakdown.compensation,
+          payment:r.summary.social_payment,field:inputs.social_compensation_mln};
+}"""
+
+
+def _compensation(action: str) -> dict:
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright  # noqa: PLC0415
+
+    from main_registry import app as registry_app  # noqa: PLC0415
+
+    with serve(registry_app, PORT) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        try:
+            tab = browser.new_page(viewport={"width": 390, "height": 844})
+            tab.goto(f"{base}/", wait_until="domcontentloaded")
+            wait_for_result(tab)
+            return tab.evaluate(_COMPENSATION, [_snapshot(), action])
+        finally:
+            browser.close()
+
+
+def _assert_compensation_rows_follow(got: dict) -> None:
+    rows = ("ДОО — компенсация", "СОШ — компенсация", "Поликлиника — компенсация")
+    for row in rows:
+        assert row in got["before"], got["before"]
+        assert got["after"][row] != got["before"][row], (row, got)
+    assert got["after"]["Компенсация / всего"] != got["before"]["Компенсация / всего"]
+    # Строки по объектам — доли той же суммы, что идёт в модель.
+    assert abs(sum(got["breakdown"].values()) - got["field"]) < 0.01, got
+    assert abs(got["payment"] - got["field"] * 1e6) < 1.0, got
+
+
+def test_compensation_rows_follow_the_flats() -> None:
+    _assert_compensation_rows_follow(_compensation("flats"))
+
+
+def test_compensation_rows_follow_the_population_switch() -> None:
+    _assert_compensation_rows_follow(_compensation("switch"))
+
+
+def test_the_breakdown_splits_the_current_total_by_the_export_rates() -> None:
+    baseline = _baseline()
+    x = {"_glavapu_import": {"normalized": baseline}, "social_compensation_mln": 1760.829,
+         "kindergarten_places": 51, "school_places": 104, "clinic_capacity": 22}
+    got = core.social_compensation_breakdown(x)
+    # Ставка за место из выгрузки × места проекта — так сумму набирает пересчёт.
+    assert got["kindergarten_mln"] == round(273.828 / 24 * 51, 3)
+    assert abs(sum(got.values()) - 1760.829) < 0.002
+    # Мест нет — доли выгрузки; нет суммы — нули, а не числа выгрузки.
+    no_places = core.social_compensation_breakdown(dict(x, kindergarten_places=0,
+                                                        school_places=0, clinic_capacity=0))
+    assert no_places["school_mln"] == round(1760.829 * 410.951 / 815.938, 3)
+    assert set(core.social_compensation_breakdown(dict(x, social_compensation_mln=0)).values()) == {0.0}
