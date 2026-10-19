@@ -206,6 +206,8 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # «жилое поле в нежилом проекте». Берётся одним куском — перечислять
         # его части поимённо значит завести седьмое падение на стенде.
         page_blocks.project_kind(),
+        # Регион проекта форма читает у поля периодичности рассрочки ВРИ.
+        page_blocks.project_region(),
         page_function("renderInputs"),
         # Подпись происхождения у поля (ГлавАПУ, выгрузка от …, строка).
         page_function("fieldOriginNote"),
