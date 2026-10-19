@@ -49,6 +49,7 @@ def _above(tep: dict) -> float:
 PRELUDE = """
 const inputs=%(inputs)s;
 let tep=%(tep)s;
+let cadastralAnalysis=null;
 const shown={};
 const el=id=>{if(!shown[id])shown[id]={id,style:{},value:'',textContent:'',innerHTML:'',placeholder:''};return shown[id];};
 const document={getElementById:el,activeElement:null};

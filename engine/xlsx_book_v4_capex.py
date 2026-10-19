@@ -286,6 +286,14 @@ def _v4_apply_vat_base(xml: str, phase: int, missing: list[str]) -> str:
              f"{_V4_CAPEX_VRI_EXTRA_ROW + _V4_CAPEX_BLOCK_STRIDE * (phase - 1)}")
     was = "(SUM($D$20:$GA$20)-"
     now = f"(SUM($D$20:$GA$20)-{extra}-"
+    # Из базы исключается плата за ВРИ, которой в расходах нет. Шаблон вычитал
+    # НАЧИСЛЕННУЮ (B16 × доля очереди): при льготе 100 % уплачено 0, а база
+    # уменьшалась на 10 166,6 млн — и книга платила на 324,7 млн НДС больше
+    # движка (Нагатино КРТ, 17.10.2026). Движок вычитает уплаченное тело —
+    # оно же стоит строкой 15 блока CAPEX очереди.
+    vri_was = (f"-'Вводные'!$B$16*'Вводные'!$Q$"
+               f"{_V4_CF_QUEUE_ENABLED_ROW + phase - 1}")
+    vri_now = f"-'CAPEX'!$B${_V4_CAPEX_VRI_ROW + _V4_CAPEX_BLOCK_STRIDE * (phase - 1)}"
     formulas = _v4_row_formulas(xml, row)
     cells: dict[str, dict[str, Any]] = {}
     for coord, formula in formulas.items():
@@ -296,9 +304,9 @@ def _v4_apply_vat_base(xml: str, phase: int, missing: list[str]) -> str:
         column = re.match(r"[A-Z]+", coord).group(0)
         if column in ("A", "B", "C"):
             continue
-        if was not in formula:
+        if was not in formula or vri_was not in formula:
             continue
-        cells[coord] = dict(formula=formula.replace(was, now, 1))
+        cells[coord] = dict(formula=formula.replace(was, now, 1).replace(vri_was, vri_now, 1))
     if not cells:
         missing.append(f"CF очереди {phase}: база НДС в строке {row} не опознана")
         return xml

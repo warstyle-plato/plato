@@ -15,7 +15,7 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 """
 # ruff: noqa
 
-PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_field_origin','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
+PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_field_origin','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query','_cadastral_origin',
  '_site_area_user_set','_site_density_user_set','_demolition_source','_land_buyout_source','_vri_relief_source','vri_mpt_override'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
@@ -93,7 +93,7 @@ function isFieldManual(path){
 }
 function fieldOriginNote(path){
  const o=(inputs._field_origin||{})[path];
- if(!o||(o.source!=='glavapu'&&o.source!=='hotel_preset'&&o.source!=='migrated'))return '';
+ if(!o||(o.source!=='glavapu'&&o.source!=='hotel_preset'&&o.source!=='migrated'&&o.source!=='document'))return '';
  return '<div class="glavapu-origin" style="font-size:11px;color:#666;margin-top:2px">'+escapeHtml(o.text||'ГлавАПУ')+'</div>';
 }
 // Регион проекта — поле «Регион» проекта, и только оно. Ни имя файла
@@ -794,7 +794,7 @@ function projectKindLabel(kind){
 // дополняет прежнее, а не переписывает его. Режим был разовым действием:
 // строки обнулялись в момент нажатия, а следующий писатель возвращал их
 // молча — выгрузка ГлавАПУ ставила подземный паркинг по жилому нормативу
-// участка, кнопка «Сформировать ТЭП по плотности» раскладывала СПП
+// участка, кнопка «Сформировать ТЭП по новым параметрам» раскладывала СПП
 // по квартирам и встроенной коммерции (15 397 и 983 м² на участке 0,546 га),
 // и убрать это человек не мог: ячейки заперты, полей на экране нет.
 function clearResidentialInputs(){

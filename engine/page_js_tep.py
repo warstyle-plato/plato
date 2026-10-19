@@ -781,7 +781,8 @@ function renderTep(){
        // считается от мест, и вписанное вернулось бы к прежнему на первом же
        // пересчёте — молча, то есть неотличимо от «не сработало».
        : ` <span class="tep-note">`
-         +`Площадь считается от мест по нормативу Москвы (2151-ПП). Чтобы вписать свою — `
+         +`Площадь считается от мест ${moscowSocialStepsApply()
+           ?'по нормативу Москвы (2151-ПП)':'по нормативу области (калькулятор МО) / поля'}. Чтобы вписать свою — `
          +`«Социальная нагрузка → Соцобъекты и плата за ВРИ → Требование КРТ».</span>`;
    }
    if(TEP_RATIOS[key]){
@@ -1594,7 +1595,7 @@ function applyDensityToHotel(){
   +num(area*density)+' м² ГНС.</span>';
 }
 
-// Что заменит «Сформировать ТЭП по плотности» — для подтверждения перед
+// Что заменит «Сформировать ТЭП по новым параметрам» — для подтверждения перед
 // заменой. Отказы (гостиница, нежилой, нет площади) объясняет сам
 // applyDensityToTep: там и выбор, куда класть потенциал, — плана для них нет.
 function densityTepPlan(){
@@ -1649,12 +1650,12 @@ function confirmTepAction(){
  const action=tepConfirmAction;closeTepConfirm();
  if(action)action();
 }
-// Кнопка меню «Действия с ТЭП»: сначала показать, что изменится, и только по
+// Кнопка в карточке участка: сначала показать, что изменится, и только по
 // подтверждению — заменить. Без плана (отказ) — сразу к объяснению отказа.
 function formTepByDensity(){
  const plan=densityTepPlan();
  if(!plan){applyDensityToTep();return}
- openTepConfirm('Сформировать ТЭП по плотности',densityTepPlanHtml(plan),'Сформировать',applyDensityToTep);
+ openTepConfirm('Сформировать ТЭП по новым параметрам',densityTepPlanHtml(plan),'Сформировать',applyDensityToTep);
 }
 function applyDensityToTep(){
  const status=document.getElementById('siteApplyStatus');
@@ -1925,8 +1926,8 @@ function renderSitePanel(){
   warn.style.display='';
   warn.innerHTML=normative
    ?'Продаваемая площадь квартир <b>'+num(used)+' м²</b> превышает потенциал <b>'+num(potential)+
-    ' м²</b> при плотности '+num(effectiveSiteDensity())+' м² квартир/га. Нажмите «Сформировать ТЭП по плотности» в «Действиях с ТЭП» — '+
-    'проект пересчитается нормативами '+normativeNormsLabel()+' целиком.'
+    ' м²</b> при плотности '+num(effectiveSiteDensity())+' м² квартир/га. Нажмите «Сформировать ТЭП по новым параметрам» выше — '+
+    'таблица пересчитается по нормативам целиком.'
    // Превышение чаще всего создают не квартиры, а офисы/ТЦ/наземный паркинг и
    // соцобъекты: кнопка пересчёта их сознательно не трогает, а потенциал
    // участка они занимают наравне с жильём. Без разбивки это выглядит как
@@ -2006,12 +2007,19 @@ function socialNormNote(kind){
  const city=socialAreaPerPlace(kind,units);
  return ` Фактически ${landNum(fact,1)} ${unit}`
   +(city?` — норматив Москвы (2151-ПП) ${landNum(city,1)}.`
+   :!moscowSocialStepsApply()?` — норматив области (калькулятор МО) / поле.`
    // У поликлиники ступени нет, а предел города — верхний (2150-ПП): число
    // берётся из умолчания поля, второй копии на странице нет.
    :kind==='clinic'?` — предел города не более ${landNum(INPUT_DEFAULT.social_clinic_norm_sqm,0)} (2150-ПП, уточняется МТЗ).`
    :` — ступени города для этого объекта нет.`);
 }
+// Ступени — московские (2151-ПП в ред. 2579-ПП). У области нормативы свои —
+// их несёт поле из калькулятора МО, и ступень города их не перебивает
+// (решение владельца 16.10.2026). Предикат тот же, что у движка
+// (`moscow_social_steps_apply`): регион проекта `vri_region`, пусто — Москва.
+function moscowSocialStepsApply(){return classRegion()==='msk'}
 function socialAreaPerPlace(kind,places){
+ if(!moscowSocialStepsApply())return 0;
  const steps=SOCIAL_AREA_STEPS[kind];
  const n=Number(places||0);
  if(!steps||!(n>0))return 0;
@@ -2517,10 +2525,15 @@ function standaloneProductSum(field,products){
 // ставка за место задана экспертно. Норматив здесь не применяется вовсе,
 // поэтому это работает и в Подмосковье, где московских нормативов нет
 // (владелец, 30.08.2026).
-// Какой дорогой пойдёт «Пересчитать нормативы по ТЭП» — один предикат на
+// Какой дорогой пойдёт «Пересчитать по нормативам» — один предикат на
 // действие и на подсказку у кнопки: выгрузка ГлавАПУ с платой за ВРИ — по
-// её ставкам; иначе пропорция от прежней соцнагрузки, если квартиры
-// изменились; иначе — нормативы Москвы от текущего ТЭП.
+// её ставкам; Подмосковье — нормативами области (тем же пересчётом, что идёт
+// сам после правки квартир); иначе пропорция от прежней соцнагрузки, если
+// квартиры изменились; иначе — нормативы Москвы от текущего ТЭП, а вне
+// Москвы без расчёта области — честный отказ. Подсказка
+// говорит и то, идёт ли пересчёт сам (`scheduleTepAutoRecalc`): с выгрузкой
+// ГлавАПУ и в Подмосковье — да, в остальных случаях только по кнопке
+// (владелец, 18.10.2026: «а когда не происходит?»).
 function glavapuBaselineApplies(){
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  return !!(baseline&&Number(baseline.change_vri_mln||0));
@@ -2532,12 +2545,19 @@ function socialRescaleApplies(){
  return Math.abs(after-Number(basis.apartment_area_sqm||0))>=1;
 }
 function tepNormsMode(){
- if(glavapuBaselineApplies())return {key:'glavapu',
-  text:'По ставкам исходного расчёта ГлавАПУ: соцнагрузка, машино-места, соцкомпенсация и плата за ВРИ — под текущие метры таблицы.'};
- if(socialRescaleApplies())return {key:'proportion',
-  text:'Пропорцией от прежней соцнагрузки по населению: ДОО, школа, поликлиника, соцкомпенсация и подземные машино-места — с подтверждением.'};
- return {key:'norms',
-  text:'По нормативам Москвы от текущего ТЭП: соцнагрузка и машино-места; выгрузки ГлавАПУ нет, пропорции не от чего.'};
+ const lead='Если вы ввели новые площади квартир, ';
+ if(glavapuBaselineApplies())return {key:'glavapu',auto:true,
+  text:lead+'соцнагрузка (детсады, школы, поликлиника), машино-места и платежи городу пересчитываются сами — по ставкам из расчёта ГлавАПУ. Кнопка повторит пересчёт и покажет, что изменилось.'};
+ if(inputs._mo_calc)return {key:'mo',auto:true,
+  text:lead+'соцнагрузка (детсады, школы, поликлиника), машино-места и платежи городу пересчитываются сами — по нормативам Московской области. Кнопка повторит пересчёт вручную.'};
+ if(socialRescaleApplies())return {key:'proportion',auto:false,
+  text:lead+'пересчитайте соцнагрузку (детсады, школы, поликлиника) и машино-места — сами они здесь не меняются. Изменятся в той же пропорции, что и число жителей; перед заменой покажем, что изменится.'};
+ // Участок вне Москвы, а расчёта области нет: московские нормативы сервер к
+ // нему не применяет, и обещать их подсказка не должна.
+ if((((cadastralAnalysis||{}).territory)||{}).inside_moscow===false)return {key:'region',auto:false,
+  text:lead+'детсады, школы, поликлинику и машино-места здесь сами не пересчитать: участок не в Москве, а нормативы его региона не загрузились. Впишите эти числа во «Вводных» вручную.'};
+ return {key:'norms',auto:false,
+  text:lead+'пересчитайте соцнагрузку (детсады, школы, поликлиника) и машино-места по нормативам Москвы — сами они здесь не меняются. Перед заменой покажем, что изменится.'};
 }
 function renderTepActions(){
  const hint=document.getElementById('tepNormsHint');
@@ -2660,6 +2680,15 @@ async function recalcFromTep(options){
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
+ // Подмосковье — нормативами области, тем же пересчётом, что идёт сам после
+ // правки квартир. Московские нормативы сервер к области не применяет.
+ if(tepNormsMode().key==='mo'){
+  const area=Number(inputs.site_area_ha||0);
+  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+  if(!(area>0&&apartments>0)){
+   say('Пересчитывать не от чего: нужны площадь участка и продаваемая площадь квартир.',false);return}
+  return recalcMoFromApartments(apartments,area);
+ }
  if(!glavapuBaselineApplies()){
   // Без выгрузки ГлавАПУ пересчёт не отказывается целиком. Сначала пропорция:
   // если соцнагрузка в модели уже есть, места и компенсация масштабируются по

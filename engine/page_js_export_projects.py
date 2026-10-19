@@ -982,7 +982,7 @@ function resetProjectState(){
  // Открытый проект — тоже данные проекта: после сброса «Сохранить поверх»
  // записало бы пустой расчёт в чужую запись.
  openedProject=null;
- aiHistory=[];aiProposals=[];aiIntake=null;aiDocument=null;
+ aiHistory=[];aiProposals=[];aiIntake=null;aiDocument=null;aiQuestion=null;aiCadastralReady=false;
  territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
  moLastQuery='';moAutoApartments=null;
@@ -1120,7 +1120,7 @@ function resetAll(){
  phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';
  // Противоречия прошлого проекта не должны глушить раскрытие блока в новом.
  siteParkingConflictSeen='';
- // Открытое окно подтверждения «Сформировать ТЭП по плотности» — действие
+ // Открытое окно подтверждения «Сформировать ТЭП по новым параметрам» — действие
  // над прошлым проектом: по «Сформировать» оно легло бы в новый.
  closeTepConfirm();
  // Территория забывается тем же способом, что при подмене проекта: прежде
