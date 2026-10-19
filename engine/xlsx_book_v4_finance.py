@@ -1255,26 +1255,44 @@ def _v4_send_cash_sweep(xml: str, phase: int, missing: list[str]) -> str:
 
     Круга нет: свип месяца читает долг и выборку принимающей очереди, а её
     касса проекта — свободную кассу этой только по предыдущий месяц.
+
+    Три строки правятся ОДНИМ проходом по листу: по проходу на строку чтения
+    и записи — это шесть проходов на лист и потолок сторожа
+    `test_the_sheet_is_not_re_read_by_the_gigabyte`.
     """
     if phase >= _V4_CAPEX_PHASES:
         return xml
     sheet, receiver = f"CF_{phase}", f"CF_{phase + 1}"
-    for row, sign in ((49, "+"), (50, "-"), (_V4_PROJECT_FREE_CASH_ROW, "-")):
-        formulas = _v4_row_formulas(xml, row)
-        cells: dict[str, dict[str, Any]] = {}
-        for column in _v4_cf_columns():
-            formula = formulas.get(f"{column}{row}")
-            if formula is None or not formula.startswith("MAX(0,") or not formula.endswith(")"):
-                missing.append(f"{sheet}: кэш-свип в следующую очередь — формула "
-                               f"{column}{row} не опознана")
-                return xml
-            cells[f"{column}{row}"] = dict(
-                formula=f"{formula[:-1]}{sign}'{receiver}'!{column}{_V4_SWEEP_ROW})")
-        xml, done = _v4_set_cells(xml, row, cells)
-        if not done:
-            missing.append(f"{sheet}: строка {row} не найдена")
-    return xml
+    signs = {"49": "+", "50": "-", str(_V4_PROJECT_FREE_CASH_ROW): "-"}
+    columns = set(_v4_cf_columns())
+    done: dict[str, int] = {row: 0 for row in signs}
+    failed: list[str] = []
 
+    def cell(match: "re.Match[str]", row: str) -> str:
+        column = match.group(2)
+        if column not in columns:
+            return match.group(0)
+        formula = html.unescape(match.group(3))
+        if not formula.startswith("MAX(0,") or not formula.endswith(")"):
+            failed.append(f"{column}{row}")
+            return match.group(0)
+        done[row] += 1
+        swept = f"{formula[:-1]}{signs[row]}'{receiver}'!{column}{_V4_SWEEP_ROW})"
+        return f"{match.group(1)}{xml_escape(swept)}</x:f>"
+
+    def row_body(match: "re.Match[str]") -> str:
+        row = match.group(1)
+        return re.sub(r'(<x:c r="([A-Z]{1,3})%s"[^>]*><x:f>)([^<]*)</x:f>' % row,
+                      lambda found: cell(found, row), match.group(0))
+
+    rows = "|".join(signs)
+    xml = re.sub(r'<x:row r="(%s)"[^>]*>.*?</x:row>' % rows, row_body, xml, flags=re.S)
+    for row, count in done.items():
+        if count != len(columns):
+            missing.append(f"{sheet}: кэш-свип в следующую очередь — строка {row}: "
+                           f"{count} из {len(columns)} формул опознано"
+                           + (f", не опознаны {failed[:3]}" if failed else ""))
+    return xml
 
 _V4_CARRY_PARITY_ROW = 85
 _V4_VAT_PARITY_ROW = 86
