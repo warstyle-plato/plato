@@ -985,7 +985,7 @@ function resetProjectState(){
  // записало бы пустой расчёт в чужую запись.
  openedProject=null;
  aiHistory=[];aiProposals=[];aiIntake=null;aiDocument=null;aiQuestion=null;aiCadastralReady=false;
- territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';
+ territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';socialPopulationNoteText='';
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
  moLastQuery='';moAutoApartments=null;
  presetPreview=null;sensitivityOptions=null;sensitivityReport=null;sensitivityPicked=null;sensitivityFrameKind=null;
