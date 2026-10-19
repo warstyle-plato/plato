@@ -70,7 +70,7 @@ import re
 import ssl
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from auction_search import deadline as clock
@@ -80,7 +80,8 @@ from auction_search.classifier import (
     origin_from_evidence,
 )
 from auction_search.models import (
-    AuctionDocument, AuctionLot, AuctionSource, LotKind, LotOrigin, SourceKind,
+    AuctionDocument, AuctionLot, AuctionSource, LotKind, LotOrigin, Provenance,
+    SourceKind,
 )
 
 
@@ -119,6 +120,19 @@ SUBJECT_CODES = ("77",)
 # card by the authoritative `subjectRFCode=77` below.
 MOSCOW_DYN_SUBJECT_IDS = ("78",)
 ACTIVE_LOT_STATUSES = ("PUBLISHED", "APPLICATIONS_SUBMISSION")
+# Статусы завершения — для истории «что продавали за последние месяцы».
+# Коды те же, что подписаны в `LOT_STATUS_WORDS`; живой ответ с ними не сверен
+# (из песочницы torgi.gov.ru не спросить), поэтому каждая карточка выдачи
+# ещё раз проверяется по своему `lotStatus` и чужой статус не проходит.
+FINISHED_LOT_STATUSES = ("SUCCEED", "FAILED", "CANCELED", "DETERMINING_WINNER")
+# История листается от новых извещений к старым. Извещение, опубликованное
+# раньше начала окна, ещё может закончиться внутри него — запас на срок
+# приёма заявок; дальше этого запаса страницы не листаются.
+HISTORY_PUBLICATION_MARGIN_DAYS = 120
+HISTORY_MAX_PAGES_PER_FILTER = 6
+# Итоговая цена. Имя поля — ожидание, не сверка: в выдаче живых лотов его не
+# было ни разу. Пришло — показываем с подписью, не пришло — так и говорим.
+RESULT_PRICE_KEYS = ("priceFin",)
 
 # Код статуса лота ГИС Торгов — внутреннее слово портала; человеку на экране и
 # в выгрузке нужен статус по-русски. Незнакомый код не прячется и не
@@ -192,6 +206,23 @@ CHAR_CADASTRE = "cadastralNumberRealty"
 CHAR_TOTAL_AREA = "totalAreaRealty"
 CHAR_FLOORS = "numberFloors"
 CHAR_YEAR = "yearCommissioning"
+# Площадь земельного участка отдельной строкой характеристик. Код живым ответом
+# НЕ сверен (в нашем образце — здание); проба считает коды по странице, и
+# расхождение будет видно там.
+CHAR_LAND_AREA = "SquareZU"
+
+# Явная карта: какая строка характеристик — площадь чего. Имя «Общая площадь»
+# у ГИС Торгов — площадь ПРЕДМЕТА торгов: у здания это метры здания, у лота
+# рубрики «Земельные участки» предмет — сам участок. Поэтому `totalAreaRealty`
+# отнесён по рубрике лота, а не по своему имени; остальное — по коду.
+AREA_CHARACTERISTICS = {
+    CHAR_LAND_AREA: "land",
+    CHAR_TOTAL_AREA: "by_category",
+}
+# Единицы измерения характеристики — по коду ОКЕИ или словам названия.
+# Незнакомая единица не пересчитывается наугад: площадь остаётся пустой.
+AREA_UNIT_FACTORS = {"055": 1.0, "059": 10_000.0, "058": 1_000.0}
+AREA_UNIT_WORDS = (("гект", 10_000.0), ("га", 10_000.0), ("кв", 1.0), ("м2", 1.0), ("м²", 1.0))
 
 # Начала кодов атрибутов. Целиком код несёт в себе форму торгов и закон
 # (`DA_limitations_PP(178)`, `DA_limitations_minpriced(178)`), да ещё и с
@@ -253,6 +284,20 @@ def _moment(value: Any) -> str | None:
         return datetime.fromisoformat(text.replace("Z", "+00:00")).isoformat()
     except ValueError:
         return None
+
+
+def _day(value: Any) -> date | None:
+    """День по московскому календарю из отметки площадки; не разобрали — None."""
+    moment = _moment(value)
+    if not moment:
+        return None
+    try:
+        parsed = datetime.fromisoformat(moment.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone(timedelta(hours=3)))
+    return parsed.date()
 
 
 def classify(card: dict[str, Any]) -> tuple[LotKind, LotOrigin]:
@@ -337,6 +382,73 @@ def attribute(card: dict[str, Any], prefix: str) -> str | None:
                 if value:
                     return value
     return None
+
+
+def _category_name(card: dict[str, Any]) -> str:
+    category = card.get("category")
+    return _text(category.get("name") if isinstance(category, dict) else category).lower()
+
+
+def category_is_land(card: dict[str, Any]) -> bool:
+    """Рубрика самого сервиса — «Земельные участки». Слова описания не в счёт."""
+    name = _category_name(card)
+    return bool(name) and any(word in name for word in LAND_WORDS)
+
+
+def _unit_factor(item: dict[str, Any]) -> float | None:
+    """Во сколько квадратных метров единица характеристики. Нет единицы — м²."""
+    unit = item.get("unit")
+    code = _text(unit.get("code") if isinstance(unit, dict) else item.get("unitCode"))
+    name = _text(unit.get("name") if isinstance(unit, dict) else unit).lower()
+    if not code and not name:
+        return 1.0
+    if code in AREA_UNIT_FACTORS:
+        return AREA_UNIT_FACTORS[code]
+    for word, factor in AREA_UNIT_WORDS:
+        if word in name:
+            return factor
+    return None
+
+
+_DESCRIPTION_LAND_AREA = re.compile(
+    r"площад\w*\s+(?:земельного\s+)?участка[^0-9]{0,20}?"
+    r"(\d[\d\s]*(?:[.,]\d+)?)\s*(кв\.?\s*м|м²|м2|га|гектар)",
+    re.I)
+
+
+def areas(card: dict[str, Any]) -> dict[str, tuple[float, str, str]]:
+    """Площади лота: {"land"|"building": (м², откуда, сырое значение)}.
+
+    Строки характеристик разносятся по явной карте `AREA_CHARACTERISTICS`.
+    Метры участка, которых в характеристиках нет, берутся из описания лота
+    только у лота рубрики «Земельные участки» и только рядом со словами
+    «площадь участка» — с подписью, что число из текста.
+    """
+    found: dict[str, tuple[float, str, str]] = {}
+    land_category = category_is_land(card)
+    for item in card.get("characteristics") or []:
+        if not isinstance(item, dict):
+            continue
+        code = _text(item.get("code"))
+        target = AREA_CHARACTERISTICS.get(code)
+        if target is None:
+            continue
+        if target == "by_category":
+            target = "land" if land_category else "building"
+        raw = _text(item.get("characteristicValue"))
+        value = _number(raw.replace(" ", "").replace(",", "."))
+        factor = _unit_factor(item)
+        if value is None or factor is None or value <= 0:
+            continue
+        found.setdefault(target, (value * factor, f"characteristics:{code}", raw))
+    if "land" not in found and land_category:
+        match = _DESCRIPTION_LAND_AREA.search(_text(card.get("lotDescription")))
+        if match:
+            value = _number(re.sub(r"\s", "", match.group(1)).replace(",", "."))
+            factor = 10_000.0 if match.group(2).lower().startswith("г") else 1.0
+            if value:
+                found["land"] = (value * factor, "lotDescription", match.group(0))
+    return found
 
 
 _CADASTRE_PATTERN = re.compile(r"\b\d{2}:\d{2}:\d{6,7}:\d+\b")
@@ -501,9 +613,24 @@ def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
             "публичное предложение: цена снижается по графику, но графика в "
             "ответе поиска нет — шаг и сроки надо смотреть в извещении")
 
+    found = areas(card)
+    land, building = found.get("land"), found.get("building")
+    provenance: dict[str, Provenance] = {}
+    lot_url = LOT_URL.format(id=urllib.parse.quote(lot_id))
+    for field_name, item in (("land_area_sqm", land), ("building_area_sqm", building)):
+        if item:
+            provenance[field_name] = Provenance(
+                source_url=lot_url, source_section=item[1],
+                fetched_at=fetched_at, raw_value=item[2])
+    result_price = None
+    for key in RESULT_PRICE_KEYS:
+        result_price = _number(card.get(key))
+        if result_price is not None:
+            break
+
     source = AuctionSource(
         platform=SourceKind.TORGI_GOV,
-        lot_url=LOT_URL.format(id=urllib.parse.quote(lot_id)),
+        lot_url=lot_url,
         external_lot_id=lot_id,
         fetched_at=fetched_at,
         source_name="ГИС Торги (torgi.gov.ru)",
@@ -518,14 +645,19 @@ def to_lot(card: dict[str, Any], fetched_at: str) -> AuctionLot | None:
         # кандидат забрал себе адрес объекта оценки и встал в ноль километров.
         address=None,
         cadastral_numbers=cadastral_numbers(card),
-        building_area_sqm=_number(characteristic(card, CHAR_TOTAL_AREA)),
+        land_area_sqm=land[0] if land else None,
+        building_area_sqm=building[0] if building else None,
         permitted_use=attribute(card, ATTR_PERMITTED_USE),
         procedure_type=" · ".join(part for part in (bidd_name, form_name) if part) or None,
         current_price_rub=price,
         application_start=_moment(card.get("biddStartTime")),
         application_deadline=_moment(card.get("biddEndTime")),
+        auction_date=_moment(card.get("auctionStartDate")),
         status=lot_status_ru(_text(card.get("lotStatus"))) or None,
+        status_code=_text(card.get("lotStatus")) or None,
+        result_price_rub=result_price,
         relevance_flags=flags,
+        provenance=provenance,
     )
 
 
@@ -572,6 +704,7 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         *,
         filter_spec: tuple[str, str, str] | None = None,
         deadline: float | None = None,
+        statuses: tuple[str, ...] = ACTIVE_LOT_STATUSES,
     ) -> dict[str, Any]:
         """Разобранная страница. Адрес собирается там же, где для пробы.
 
@@ -581,7 +714,7 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         """
         _label, cat_code, text = filter_spec or self.discovery_filters[0]
         _status, _ctype, body = self._fetch_raw(
-            self._search_url(page, cat_code=cat_code, text=text),
+            self._search_url(page, cat_code=cat_code, text=text, statuses=statuses),
             deadline=deadline,
         )
         return json.loads(body)
@@ -592,6 +725,81 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                                 "region_filter": "",
                                 "reason": f"источник выключен: {FLAG}=0"}
             return []
+        lots, report = self._sweep(
+            ACTIVE_LOT_STATUSES, deadline=deadline, max_pages=MAX_PAGES_PER_FILTER)
+        self.last_report = report
+        return lots
+
+    def discover_moscow_finished(
+        self,
+        since: date,
+        until: date,
+        *,
+        deadline: float | None = None,
+    ) -> list[AuctionLot]:
+        """Завершённые торги Москвы за окно дат: состоялись, не состоялись,
+        отменены, определяется победитель.
+
+        Окно меряется датой торгов (`auctionStartDate`), а без неё — датой
+        окончания приёма заявок (`biddEndTime`). Карточка без обеих дат в окно
+        не попадает и считается вслух: «не знаем когда» — не «в окне».
+        """
+        if since > until:
+            raise ValueError("начало окна позже его конца")
+        if not self.enabled():
+            self.last_report = {"pages": 0, "cards": 0, "kept": 0,
+                                "reason": f"источник выключен: {FLAG}=0"}
+            return []
+        oldest_notice = since - timedelta(days=HISTORY_PUBLICATION_MARGIN_DAYS)
+        undated = outside = 0
+
+        def keep(card: dict[str, Any]) -> bool:
+            nonlocal undated, outside
+            if _text(card.get("lotStatus")) not in FINISHED_LOT_STATUSES:
+                return False
+            moment = _day(card.get("auctionStartDate")) or _day(card.get("biddEndTime"))
+            if moment is None:
+                undated += 1
+                return False
+            if not (since <= moment <= until):
+                outside += 1
+                return False
+            return True
+
+        def page_too_old(content: list[dict[str, Any]]) -> bool:
+            days = [_day(card.get("noticeFirstVersionPublicationDate")) for card in content]
+            days = [day for day in days if day is not None]
+            return bool(days) and max(days) < oldest_notice
+
+        lots, report = self._sweep(
+            FINISHED_LOT_STATUSES, deadline=deadline,
+            max_pages=HISTORY_MAX_PAGES_PER_FILTER,
+            keep=keep, stop=page_too_old)
+        notes = [report.get("reason") or ""]
+        if undated:
+            notes.append(f"без даты торгов и окончания заявок пропущено: {undated}")
+        report["outside_window"] = outside
+        report["undated"] = undated
+        report["window"] = {"since": since.isoformat(), "until": until.isoformat(),
+                            "date_field": "auctionStartDate, иначе biddEndTime"}
+        report["reason"] = "; ".join(note for note in notes if note)
+        self.last_report = report
+        return lots
+
+    def _sweep(
+        self,
+        statuses: tuple[str, ...],
+        *,
+        deadline: float | None,
+        max_pages: int,
+        keep: Any = None,
+        stop: Any = None,
+    ) -> tuple[list[AuctionLot], dict[str, Any]]:
+        """Листает целевые выборки Москвы со статусами `statuses`.
+
+        Один цикл на живые лоты и на историю: остановки по времени, по
+        не двигающейся нумерации и по концу выборки объявлены здесь один раз.
+        """
         fetched_at = datetime.now(timezone.utc).isoformat()
         lots: list[AuctionLot] = []
         cards = pages = unknown_region = 0
@@ -605,13 +813,14 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             filter_pages = filter_cards = 0
             filter_total: int | None = None
             filter_reason = ""
-            for page in range(MAX_PAGES_PER_FILTER):
+            for page in range(max_pages):
                 if clock.expired(deadline):
                     filter_reason = "остановлено по времени"
                     break
                 try:
                     payload = self._fetch_page(
-                        page, filter_spec=filter_spec, deadline=deadline)
+                        page, filter_spec=filter_spec, deadline=deadline,
+                        statuses=statuses)
                 except Exception as exc:  # noqa: BLE001
                     filter_reason = f"страница {page}: {exc}"
                     break
@@ -637,6 +846,8 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                         continue
                     if not in_target_region(card, self.subject_codes):
                         continue
+                    if keep is not None and not keep(card):
+                        continue
                     lot = to_lot(card, fetched_at)
                     if lot is None:
                         continue
@@ -651,6 +862,8 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                 if isinstance(total_pages, int) and page + 1 >= total_pages:
                     break
                 if payload.get("last") is True:
+                    break
+                if stop is not None and stop(content):
                     break
             filter_reports.append({
                 "filter": label,
@@ -671,35 +884,35 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             # региона — «не знаем», и сказать это обязаны мы, а не читатель.
             note = f"пропущено без кода региона: {unknown_region}"
             reason = f"{reason}; {note}" if reason else note
-        if cards and not lots:
+        if cards and not lots and keep is None:
             # Пустой список после полной страницы читался бы как «лотов нет».
             note = (f"из {cards} карточек ни одна не прошла проверку Москвы "
                     "по subjectRFCode=77")
             reason = f"{reason}; {note}" if reason else note
-        self.last_report = {"pages": pages, "cards": cards, "kept": len(lots),
-                            # Просили 50, приходит 10 — по этому числу видно,
-                            # соблюдают ли наш размер, не заглядывая в лог.
-                            # Берётся САМАЯ полная страница, а не среднее:
-                            # пустая последняя утянула бы среднее вниз, и
-                            # соблюдённый размер стал бы неотличим от нет.
-                            "cards_per_page": widest_page,
-                            # Сохраняем общий счётчик для диагностики и
-                            # старых клиентов. Деталь по каждой выборке — в `filters`.
-                            "total_elements": sum(totals) if totals else None,
-                            "filters": filter_reports,
-                            "region_filter": "dynSubjRF=78 (Москва) + проверка "
-                                             "официального subjectRFCode=77",
-                            # Что источник СОДЕРЖИТ — часть ответа. Живой ответ
-                            # подтвердил один код вида торгов, `178FZ`: это
-                            # приватизация государственного и муниципального
-                            # имущества. Банкротных лотов — 44% рынка владельца
-                            # — здесь не найдено, и молчать об этом значит
-                            # выдавать один рынок за оба.
-                            "market": "приватизация государственного и "
-                                      "муниципального имущества (178-ФЗ); "
-                                      "банкротные лоты в выдаче не найдены",
-                            "reason": reason}
-        return lots
+        report = {"pages": pages, "cards": cards, "kept": len(lots),
+                  # Просили 50, приходит 10 — по этому числу видно,
+                  # соблюдают ли наш размер, не заглядывая в лог.
+                  # Берётся САМАЯ полная страница, а не среднее:
+                  # пустая последняя утянула бы среднее вниз, и
+                  # соблюдённый размер стал бы неотличим от нет.
+                  "cards_per_page": widest_page,
+                  # Сохраняем общий счётчик для диагностики и
+                  # старых клиентов. Деталь по каждой выборке — в `filters`.
+                  "total_elements": sum(totals) if totals else None,
+                  "filters": filter_reports,
+                  "region_filter": "dynSubjRF=78 (Москва) + проверка "
+                                   "официального subjectRFCode=77",
+                  # Что источник СОДЕРЖИТ — часть ответа. Живой ответ
+                  # подтвердил один код вида торгов, `178FZ`: это
+                  # приватизация государственного и муниципального
+                  # имущества. Банкротных лотов — 44% рынка владельца
+                  # — здесь не найдено, и молчать об этом значит
+                  # выдавать один рынок за оба.
+                  "market": "приватизация государственного и "
+                            "муниципального имущества (178-ФЗ); "
+                            "банкротные лоты в выдаче не найдены",
+                  "reason": reason}
+        return lots, report
 
     def fetch_lot(self, lot_url: str) -> AuctionLot:
         """Одна карточка ГИС Торгов по её адресу.
@@ -867,9 +1080,10 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         *,
         cat_code: str = "2",
         text: str = "",
+        statuses: tuple[str, ...] = ACTIVE_LOT_STATUSES,
     ) -> str:
         fields: list[tuple[str, Any]] = [
-            *(("lotStatus", status) for status in ACTIVE_LOT_STATUSES),
+            *(("lotStatus", status) for status in statuses),
             ("page", page),
             ("size", PAGE_SIZE),
             ("sort", "firstVersionPublicationDate,desc"),

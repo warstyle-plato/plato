@@ -3,6 +3,7 @@ from __future__ import annotations
 # Release repair after #513: VERSION is assigned only by the release-merge step.
 
 import io
+import json
 import logging
 import math
 import os
@@ -14,7 +15,7 @@ import time
 import urllib.parse
 import guide
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
@@ -773,6 +774,24 @@ def _coverage_row(adapter: Any) -> dict[str, Any]:
     row = dict(report)
     row.setdefault("source", name)
     return row
+
+
+def _moscow_today() -> date:
+    """Сегодня по московскому календарю: торги и их даты — московские."""
+    return datetime.now(timezone(timedelta(hours=3))).date()
+
+
+def _months_before(day: date, months: int) -> date:
+    """Тот же день `months` месяцев назад; короткий месяц — его последний день."""
+    month_index = day.year * 12 + day.month - 1 - months
+    year, month = divmod(month_index, 12)
+    month += 1
+    for candidate in (day.day, 30, 29, 28):
+        try:
+            return date(year, month, min(day.day, candidate))
+        except ValueError:
+            continue
+    return date(year, month, 28)
 
 
 def _public_lot_dict(lot) -> dict[str, Any]:
@@ -5448,6 +5467,31 @@ def install(app: FastAPI) -> None:
         """Сколько лотов разобрано и почему не разобраны остальные — не только в логе."""
         return await run_in_threadpool(lot_notes.status)
 
+    def _discover_row(lot) -> dict[str, Any]:
+        """Лот выдачи для страницы — одной сборкой для живых и завершённых."""
+        return {
+                **_public_lot_dict(lot),
+                "analysis": _analysis_support(lot.source.lot_url),
+                # Соответствие профилю считает сервер по измеренному
+                # эталону сделок: балл, собранный в браузере, был бы
+                # вторым счётом той же величины.
+                "fit": profile_fit(_public_lot_dict(lot)),
+                "quality": catalogue_quality(lot),
+                # Лот основной подборки: в режиме «с шумом» страница ставит
+                # такие первыми и отделяет от добавленных неполных и шума.
+                "main_selection": AuctionSearchService.in_main_selection(
+                    AuctionSearchService.screen_lot(lot), catalogue_quality(lot)),
+                # Доля в юрлице разбирается сервером: пороги владельца и
+                # разбор активов, объявленные один раз. Собранные на
+                # странице, они были бы вторым ответом на тот же вопрос.
+                "equity": equity_stake.screen(lot),
+                "screening": {
+                    **AuctionSearchService.screen_lot(lot),
+                    "documents_count": len(lot.documents),
+                    "full_document_parse_deferred": True,
+                },
+        }
+
     @app.get("/auctions/discover")
     async def auction_discover(
         source: str = Query(default="all"),
@@ -5496,32 +5540,88 @@ def install(app: FastAPI) -> None:
             "count": len(lots),
             "quality": service.last_quality_report,
             "coverage": [_coverage_row(adapter) for adapter in adapters],
-            "lots": [
-                {
-                    **_public_lot_dict(lot),
-                    "analysis": _analysis_support(lot.source.lot_url),
-                    # Соответствие профилю считает сервер по измеренному
-                    # эталону сделок: балл, собранный в браузере, был бы
-                    # вторым счётом той же величины.
-                    "fit": profile_fit(_public_lot_dict(lot)),
-                    "quality": catalogue_quality(lot),
-                    # Лот основной подборки: в режиме «с шумом» страница ставит
-                    # такие первыми и отделяет от добавленных неполных и шума.
-                    "main_selection": AuctionSearchService.in_main_selection(
-                        AuctionSearchService.screen_lot(lot), catalogue_quality(lot)),
-                    # Доля в юрлице разбирается сервером: пороги владельца и
-                    # разбор активов, объявленные один раз. Собранные на
-                    # странице, они были бы вторым ответом на тот же вопрос.
-                    "equity": equity_stake.screen(lot),
-                    "screening": {
-                        **AuctionSearchService.screen_lot(lot),
-                        "documents_count": len(lot.documents),
-                        "full_document_parse_deferred": True,
-                    },
-                }
-                for lot in lots
-            ],
+            "lots": [_discover_row(lot) for lot in lots],
         }
+
+    # История завершённых торгов. Тяжёлая выборка — до сорока страниц ГИС
+    # Торгов, — поэтому ответ кладётся на диск: второй воркер и повторное
+    # нажатие читают готовое, а не листают площадку заново. Полный ответ живёт
+    # шесть часов, неполный (не уложились в срок, источник отказал) — двадцать
+    # минут: недособранное не должно надолго выдавать себя за всю историю.
+    FINISHED_CACHE_SECONDS = 6 * 3600
+    FINISHED_PARTIAL_CACHE_SECONDS = 20 * 60
+    FINISHED_WINDOW_MONTHS = 3
+
+    def _finished_cache_path(source: str, as_of: date, months: int, noise: bool) -> str:
+        root = os.path.join(os.getenv("DATA_DIR", "data"), "market", "auctions")
+        name = re.sub(r"[^a-z0-9_]+", "_", (source or "all").lower())
+        return os.path.join(
+            root, f"finished_{name}_{as_of.isoformat()}_{months}m_{int(noise)}.json")
+
+    def _finished(source: str, as_of: date, months: int, include_noise: bool) -> dict[str, Any]:
+        path = _finished_cache_path(source, as_of, months, include_noise)
+        try:
+            with open(path, encoding="utf-8") as handle:
+                cached = json.load(handle)
+            age = time.time() - float(cached.get("saved_at") or 0)
+            ttl = FINISHED_CACHE_SECONDS if cached.get("complete") else FINISHED_PARTIAL_CACHE_SECONDS
+            if 0 <= age < ttl:
+                return {**cached["payload"], "cached": True,
+                        "cached_age_seconds": int(age)}
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        since = _months_before(as_of, months)
+        adapters = _discovery_adapters(source)
+        service = AuctionSearchService(adapters)
+        lots = service.discover_moscow_finished(
+            since, as_of, include_noise=include_noise,
+            budget_seconds=DISCOVERY_BUDGET_SECONDS)
+        coverage = [_coverage_row(adapter) for adapter in adapters]
+        payload = {
+            "source_policy": "official_etp_only",
+            "mode": "finished",
+            "source": source,
+            "window": {"since": since.isoformat(), "until": as_of.isoformat(),
+                       "months": months},
+            "count": len(lots),
+            "coverage": coverage,
+            "lots": [{**_discover_row(lot), "finished": True} for lot in lots],
+        }
+        complete = not any(
+            row.get("finished_available") and row.get("reason") for row in coverage)
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            temp = f"{path}.{os.getpid()}.tmp"
+            with open(temp, "w", encoding="utf-8") as handle:
+                json.dump({"saved_at": time.time(), "complete": complete,
+                           "payload": payload}, handle, ensure_ascii=False)
+            os.replace(temp, path)
+        except OSError:
+            logger.exception("Торги: история завершённых не записалась на диск")
+        return {**payload, "cached": False}
+
+    @app.get("/auctions/finished")
+    async def auction_finished(
+        source: str = Query(default="all"),
+        include_noise: bool = Query(default=False),
+        as_of: str = Query(default=""),
+        months: int = Query(default=FINISHED_WINDOW_MONTHS, ge=1, le=12),
+    ) -> dict[str, Any]:
+        """Завершённые торги Москвы за `months` месяцев до даты `as_of`.
+
+        Отдельный запрос, а не часть `/auctions/discover`: живой каталог не
+        ждёт истории, а история укладывается в тот же срок сорок секунд.
+        """
+        try:
+            day = date.fromisoformat(as_of) if as_of else _moscow_today()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Дата «на дату» должна быть в виде ГГГГ-ММ-ДД") from exc
+        try:
+            return await run_in_threadpool(_finished, source, day, int(months), bool(include_noise))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Не удалось получить завершённые торги: {exc}") from exc
 
     @app.post("/auctions/export.xlsx")
     async def auction_export(req: AuctionExportRequest, request: Request) -> Response:

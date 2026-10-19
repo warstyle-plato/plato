@@ -203,6 +203,57 @@ class AuctionSearchService:
                 "pages": 0, "cards": 0, "kept": 0, "reason": said,
             }
 
+    # Почему у площадки нет завершённых торгов на странице — её строкой охвата.
+    # У РАД архив читается по лоту отдельным запросом (около двадцати секунд
+    # на карточку) и в срок ответа не укладывается; у Росэлторга архив
+    # открывается только по известным адресам процедур. Обе умеют это лишь
+    # ручной выгрузкой `history_cli`.
+    FINISHED_UNAVAILABLE = (
+        "завершённые торги по этой площадке на странице недоступны: её архив "
+        "не читается одним запросом выдачи")
+
+    def discover_moscow_finished(
+        self,
+        since: date,
+        until: date,
+        *,
+        include_noise: bool = False,
+        budget_seconds: float | None = None,
+    ) -> list[AuctionLot]:
+        """Завершённые торги Москвы за окно дат — у площадок, которые это умеют.
+
+        Площадка без такой выборки не молчит: её строка охвата называет, что
+        завершённые по ней не показаны, — пустота иначе читалась бы как
+        «торгов не было».
+        """
+        deadline = clock.start(budget_seconds)
+        lots: list[AuctionLot] = []
+        for adapter in self.adapters:
+            discover = getattr(adapter, "discover_moscow_finished", None)
+            if discover is None:
+                adapter.last_report = {
+                    "source": getattr(adapter, "platform_name", adapter.__class__.__name__),
+                    "pages": 0, "cards": 0, "kept": 0, "finished_available": False,
+                    "reason": self.FINISHED_UNAVAILABLE,
+                }
+                continue
+            if clock.expired(deadline):
+                self._not_asked(adapter, budget_seconds)
+                continue
+            try:
+                found = list(discover(since, until, deadline=deadline))
+                lots.extend(found)
+            except Exception as exc:  # noqa: BLE001
+                self._failed(adapter, exc)
+            report = getattr(adapter, "last_report", None)
+            if isinstance(report, dict):
+                report["finished_available"] = True
+        lots = self._deduplicate_history(lots)
+        assessed = [(lot, self.screen_lot(lot), catalogue_quality(lot)) for lot in lots]
+        if include_noise:
+            return lots
+        return [lot for lot, screen, quality in assessed if self.in_main_selection(screen, quality)]
+
     def discover_moscow_history(
         self,
         since: date,
