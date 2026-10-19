@@ -435,6 +435,8 @@ function renderFinishedNote(){
   if(r.finished_available===false){line(`${r.source}: по этой площадке завершённые торги недоступны. Её архив нельзя прочитать одним запросом.`,'source');return}
   const c=coverageLine(r);if(c.why)warn=true;
   line(c.name+(c.said?' — '+c.said:'')+(c.why?'. Не всё получено: '+c.why:''),c.why?'source warn':'source');
+  const early=Number(r.outside_window_before)||0,late=Number(r.outside_window_after)||0;
+  if(early||late)line(`Не вошли в окно: ${early} лот(ов) закончились раньше, у ${late} дата торгов позже выбранной даты — обычно это отменённые торги, у которых в карточке остался будущий срок.`,'source');
  });
  if(warn)box.className='notice warn';
 }

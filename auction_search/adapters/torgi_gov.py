@@ -133,9 +133,12 @@ HISTORY_PUBLICATION_MARGIN_DAYS = 120
 # 19.10.2026: `size=50`, на странице 10). Шесть страниц на выборку покрывали
 # 60 извещений земли из 1 461, и завершённые за окно до проверки не доходили.
 # Земля — то, о чём спрашивают, поэтому ей отдана основная глубина; прочим
-# выборкам — по несколько страниц. Общий срок 40 с остаётся рубежом.
+# выборкам — по несколько страниц. Замер с прода: 11 страниц за 4 с, то есть
+# около 0,4 с на страницу, — 60 страниц земли укладываются в общий срок 40 с
+# вместе с прочими выборками. Раньше обычно срабатывает остановка «дальше
+# извещения старше окна».
 HISTORY_MAX_PAGES_PER_FILTER = 4
-HISTORY_MAX_PAGES_BY_FILTER = {"земельные участки": 24}
+HISTORY_MAX_PAGES_BY_FILTER = {"земельные участки": 60}
 # Итоговая цена. Имя поля — ожидание, не сверка: в выдаче живых лотов его не
 # было ни разу. Пришло — показываем с подписью, не пришло — так и говорим.
 RESULT_PRICE_KEYS = ("priceFin",)
@@ -757,18 +760,23 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                                 "reason": f"источник выключен: {FLAG}=0"}
             return []
         oldest_notice = since - timedelta(days=HISTORY_PUBLICATION_MARGIN_DAYS)
-        undated = outside = 0
+        undated = before = after = 0
 
         def keep(card: dict[str, Any]) -> bool:
-            nonlocal undated, outside
+            nonlocal undated, before, after
             if _text(card.get("lotStatus")) not in FINISHED_LOT_STATUSES:
                 return False
             moment = _day(card.get("auctionStartDate")) or _day(card.get("biddEndTime"))
             if moment is None:
                 undated += 1
                 return False
-            if not (since <= moment <= until):
-                outside += 1
+            if moment < since:
+                before += 1
+                return False
+            if moment > until:
+                # Чаще всего это отменённые лоты: торги сняты, а срок заявок
+                # в карточке остался будущим (прод, 19.10.2026).
+                after += 1
                 return False
             return True
 
@@ -785,7 +793,9 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         notes = [report.get("reason") or ""]
         if undated:
             notes.append(f"без даты торгов и окончания заявок пропущено: {undated}")
-        report["outside_window"] = outside
+        report["outside_window"] = before + after
+        report["outside_window_before"] = before
+        report["outside_window_after"] = after
         report["undated"] = undated
         report["window"] = {"since": since.isoformat(), "until": until.isoformat(),
                             "date_field": "auctionStartDate, иначе biddEndTime"}

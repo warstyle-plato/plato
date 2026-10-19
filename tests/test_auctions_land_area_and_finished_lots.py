@@ -150,6 +150,7 @@ def test_finished_lots_are_asked_by_finished_statuses_inside_the_window():
     assert got["A2"].status == "Не состоялся" and got["A2"].result_price_rub is None
     report = adapter.last_report
     assert report["undated"] == 1 and "без даты" in report["reason"]
+    assert report["outside_window_before"] == 1 and report["outside_window_after"] == 0
     assert report["window"]["since"] == "2026-07-19"
 
 
@@ -163,7 +164,7 @@ def test_the_history_stops_at_notices_too_old_for_the_window():
 
 def test_land_history_reads_deeper_than_the_other_filters_and_says_where_it_stopped():
     pages = [[_finished(f"P{page}x{i}", "SUCCEED", "2026-09-10T12:00:00Z", published="2026-09-01T10:00:00Z")
-              for i in range(10)] for page in range(40)]
+              for i in range(10)] for page in range(torgi_gov.HISTORY_MAX_PAGES_BY_FILTER["земельные участки"] + 5)]
     land = _Pages(pages)
     land.discovery_filters = (("земельные участки", "2", ""), ("здания", "7", "здание"))
     land.discover_moscow_finished(date(2026, 7, 19), date(2026, 10, 19))
@@ -370,6 +371,7 @@ def test_in_a_real_browser_the_area_filter_and_finished_lots(tmp_path, monkeypat
                 "quality": {"seen": 48, "accepted": 0, "incomplete": 40, "outside_profile": 8, "noise": 0},
                 "coverage": [{"source": "ГИС Торги (torgi.gov.ru)", "kept": 48, "cards": 106,
                               "finished_available": True, "reason": "",
+                              "outside_window_before": 36, "outside_window_after": 22,
                               "filters": [{"filter": "земельные участки", "cards": 60,
                                            "total_elements": 1461,
                                            "stopped": "прочитано 6 страниц — это предел для одной выборки"}]}]}
@@ -382,6 +384,7 @@ def test_in_a_real_browser_the_area_filter_and_finished_lots(tmp_path, monkeypat
             assert "не хватает данных у 40" in seen["finished"]
             assert "«Интересные + неполные и шум»" in seen["finished"]
             assert "60 из 1461" in seen["finished"], "предел листания назван"
+            assert "36 лот(ов) закончились раньше, у 22 дата торгов позже" in seen["finished"]
             assert page.evaluate("document.getElementById('finishedNote').classList.contains('warn')")
 
             finished_answer.update(status=502, body={"detail": "torgi.gov.ru не ответил"})
