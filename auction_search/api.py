@@ -39,7 +39,11 @@ from auction_search.adapters import (
     RoseltorgAdapter,
     SberbankASTAdapter,
 )
-from auction_search.adapters.torgi_gov import TorgiGovAdapter, lot_status_ru, trust_report as torgi_trust_report
+from auction_search.adapters.torgi_gov import (
+    ACTIVE_LOT_STATUSES as torgi_gov_active_statuses,
+    FINISHED_LOT_STATUSES as torgi_gov_finished_statuses,
+    TorgiGovAdapter, lot_status_ru, trust_report as torgi_trust_report,
+)
 from auction_search.adapters.etp_probe import (
     SLUGS as etp_slugs,
     probe as etp_probe,
@@ -797,9 +801,37 @@ def _months_before(day: date, months: int) -> date:
     return date(year, month, 28)
 
 
+def _resolved_areas(data: dict[str, Any]) -> None:
+    """Площади участка и здания лота — тем же правилом, что в книге Excel.
+
+    Площадь участка у многих лотов есть только в названии («…земельный участок
+    площадью 497 кв. м…»). Таблица и книга достраивали её оттуда
+    (`export_areas`), а фильтр «участок от N га» читал поле площадки и видел
+    пустоту: лот с 497 м² проходил фильтр 0,5 га с пометкой «площадь участка не
+    указана» (владелец, 19.10.2026). Теперь площадь разрешается один раз здесь,
+    и фильтр, балл, таблица и книга читают одно число; взятое из названия
+    подписано в `area_from_title`.
+    """
+    source = data.get("source") or {}
+    areas = export_areas({
+        "name": data.get("title") or "",
+        "url": source.get("lot_url") if isinstance(source, dict) else "",
+        "land_area_sqm": data.get("land_area_sqm"),
+        "building_area_sqm": data.get("building_area_sqm"),
+    })
+    from_title = [
+        key for key, value in (("land_area_sqm", areas.land_area_sqm),
+                               ("building_area_sqm", areas.building_area_sqm))
+        if value is not None and value != data.get(key)]
+    data["land_area_sqm"] = areas.land_area_sqm
+    data["building_area_sqm"] = areas.building_area_sqm
+    data["area_from_title"] = from_title
+
+
 def _public_lot_dict(lot) -> dict[str, Any]:
     data = lot.to_dict()
     data.pop("raw", None)
+    _resolved_areas(data)
     # Момент срока считает сервер и отдаёт его ISO рядом со строкой площадки.
     # Строка остаётся такой, какой её написала площадка, — её и печатают; а
     # разбирать русскую дату в браузере нельзя: `new Date('09.10.26 15:00')`
@@ -5133,14 +5165,33 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/auctions/torgi/probe")
-    async def auction_torgi_probe(page: int = Query(default=0)) -> dict[str, Any]:
+    async def auction_torgi_probe(
+        page: int = Query(default=0),
+        status: str = Query(default=""),
+        cat: str = Query(default="2"),
+        sort: str = Query(default=""),
+        size: int = Query(default=0, ge=0, le=200),
+        extra: str = Query(default="", max_length=500),
+    ) -> dict[str, Any]:
         """Сырой ответ ГИС Торгов и разобранный лот рядом.
 
         Из песочницы torgi.gov.ru закрыт сетевой политикой, как НСПД: сверить
         поля можно только с ядра. Показываем и сырое, и разобранное вместе —
         расхождение должно быть видно глазами, а не вылезти числом в отчёте.
+
+        `status` — коды через запятую (`finished` — статусы завершения),
+        `extra` — добавочные параметры запроса площадки строкой
+        (`biddEndFrom=…&biddEndTo=…`): так с ядра проверяется, какой фильтр даты
+        площадка понимает, прежде чем рабочий сбор на него положится.
         """
-        return await run_in_threadpool(lambda: TorgiGovAdapter().probe(page))
+        if status.strip().lower() == "finished":
+            statuses = torgi_gov_finished_statuses
+        elif status.strip():
+            statuses = tuple(code.strip().upper() for code in status.split(",") if code.strip())
+        else:
+            statuses = torgi_gov_active_statuses
+        return await run_in_threadpool(lambda: TorgiGovAdapter().probe(
+            page, statuses=statuses, cat_code=cat, sort=sort, size=size or None, extra=extra))
 
     @app.get("/auctions/torgi/regions")
     async def auction_torgi_regions(page: int = Query(default=0)) -> dict[str, Any]:
@@ -5603,6 +5654,9 @@ def install(app: FastAPI) -> None:
             "window": {"since": since.isoformat(), "until": as_of.isoformat(),
                        "months": months},
             "count": len(lots),
+            # Воронка допуска — та же, что у живого каталога: без неё «найдено
+            # 0» не отличить от «торгов не было».
+            "quality": service.last_quality_report,
             "coverage": coverage,
             "lots": [{**_discover_row(lot), "finished": True} for lot in lots],
         }

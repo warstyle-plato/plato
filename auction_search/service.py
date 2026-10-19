@@ -91,6 +91,18 @@ class AuctionSearchService:
             screening = self.screen_lot(lot)
             quality = catalogue_quality(lot)
             assessed.append((lot, screening, quality))
+        self.last_quality_report = self._quality_report(assessed)
+        if include_noise:
+            return lots
+        return [lot for lot, screen, quality in assessed if self.in_main_selection(screen, quality)]
+
+    @staticmethod
+    def _quality_report(assessed: list[tuple[AuctionLot, dict, dict]]) -> dict:
+        """Воронка допуска: сколько лотов прошло в основную подборку и чем отсеяны прочие.
+
+        Одна сборка на живой каталог и на историю: без неё «найдено 0» в истории
+        не отличалось от «торгов не было», хотя площадка отдала 48 лотов.
+        """
         # КРТ считается отдельной строкой: в общей воронке площадка КРТ
         # неотличима от гаража, а спрашивают именно про неё («в торгах по КРТ
         # на самом деле активных 12, а не 6», владелец, 03.09.2026). Отсев без
@@ -103,7 +115,7 @@ class AuctionSearchService:
                 continue
             for reason in (quality.get("reasons") or ["причина не названа"]):
                 krt_dropped[reason] = krt_dropped.get(reason, 0) + 1
-        self.last_quality_report = {
+        return {
             "krt_seen": len(krt),
             "krt_accepted": sum(1 for _l, _s, quality in krt if quality.get("accepted")),
             "krt_dropped": [{"reason": reason, "count": count}
@@ -121,9 +133,6 @@ class AuctionSearchService:
             "noise": sum(1 for _, screen, _ in assessed
                          if not screen["development_relevant"]),
         }
-        if include_noise:
-            return lots
-        return [lot for lot, screen, quality in assessed if self.in_main_selection(screen, quality)]
 
     @staticmethod
     def in_main_selection(screen: dict, quality: dict) -> bool:
@@ -250,6 +259,7 @@ class AuctionSearchService:
                 report["finished_available"] = True
         lots = self._deduplicate_history(lots)
         assessed = [(lot, self.screen_lot(lot), catalogue_quality(lot)) for lot in lots]
+        self.last_quality_report = self._quality_report(assessed)
         if include_noise:
             return lots
         return [lot for lot, screen, quality in assessed if self.in_main_selection(screen, quality)]
