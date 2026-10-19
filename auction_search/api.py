@@ -57,6 +57,7 @@ from auction_search.adapters.fedresurs import (
     probe_backend as fedresurs_probe_backend,
     probe_browser as fedresurs_browser)
 from auction_search.adapters import source_page
+from auction_search.adapters.efrsb import EfrsbAdapter
 from auction_search.adapters.roseltorg_probe import (
     CATALOGUE_URL as ROSELTORG_SECTION_URL,
     probe as roseltorg_probe,
@@ -698,6 +699,8 @@ def _adapter_for(url: str):
         return ETPRFAdapter()
     if host == SberbankASTAdapter.HOST or host.endswith("." + SberbankASTAdapter.HOST):
         return SberbankASTAdapter()
+    if host == EfrsbAdapter.HOST or host.endswith("." + EfrsbAdapter.HOST):
+        return EfrsbAdapter()
     if host == NistpAdapter.HOST or host.endswith("." + NistpAdapter.HOST):
         return NistpAdapter()
     if host == TorgiGovAdapter.HOST or host.endswith("." + TorgiGovAdapter.HOST):
@@ -748,6 +751,8 @@ def _discovery_adapters(source: str):
         return [SberbankASTAdapter()]
     if value in {"nistp", "nis"}:
         return [NistpAdapter()]
+    if value in {"efrsb", "fedresurs"}:
+        return [EfrsbAdapter()]
     if value == "all":
         # ГИС Торги — официальный источник имущественных торгов, а не
         # банкротный рынок. Это честно подписано в его отчёте, но исключать его
@@ -756,10 +761,11 @@ def _discovery_adapters(source: str):
         return [
             TorgiGovAdapter(), _lot_online_discovery_adapter(), RoseltorgAdapter(),
             InvestMoscowDiscoveryAdapter(), ETPGPBAdapter(), ETPRFAdapter(),
-            SberbankASTAdapter(), NistpAdapter(),
+            SberbankASTAdapter(), NistpAdapter(), EfrsbAdapter(),
         ]
     raise ValueError(
-        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb, etp_rf, sberbank_ast или nistp")
+        "source: all, lot_online, roseltorg, investmoscow, torgi, etp_gpb, etp_rf, sberbank_ast, "
+        "nistp или efrsb")
 
 
 def _coverage_row(adapter: Any) -> dict[str, Any]:
@@ -2320,6 +2326,16 @@ def install(app: FastAPI) -> None:
                     "moscow_discovery": True,
                     "discovery_access": "official_public_registry",
                     "note": "Публичный поиск банкротных лотов по Москве; подключён без обхода защиты.",
+                },
+                {
+                    "id": "efrsb",
+                    "name": "ЕФРСБ (fedresurs.ru) — сообщения о торгах по банкротству",
+                    "direct_lot_ingest": False,
+                    "moscow_discovery": True,
+                    "discovery_access": "official_public_json_api",
+                    "note": ("Реестр, куда управляющий выкладывает торги с любой площадки "
+                             "банкротства. Собирается в фоне и хранится на диске: сервис "
+                             "ограничивает частоту запросов."),
                 },
                 {
                     "id": "investmoscow",
