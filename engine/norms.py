@@ -470,7 +470,12 @@ def underground_parking_requirement(inputs: dict[str, Any],
     apartment_row = rows.get("apartments") or {}
     apartments = _underground_number(apartment_row, "saleable")
     normalized = (inputs.get("_glavapu_import") or {}).get("normalized") or {}
-    if str(inputs.get("vri_region") or "msk") == "mo":
+    if project_region(inputs) == "other":
+        # Другой регион: норм его у нас нет, а 2118-ПП и РНГП области — чужие.
+        # Места вписывает человек (решение владельца 19.10.2026); «не знаем» —
+        # не ноль мест.
+        return None
+    if project_region(inputs) == "mo":
         # В области норматив мест свой — РНГП МО, и он у движка уже есть
         # (`mo_social_program`): по нему же считаются соцобъекты. 2118-ПП —
         # постановление Москвы, а выгрузка ГлавАПУ — московский орган; в
@@ -616,7 +621,9 @@ def underground_tep_row(inputs: dict[str, Any],
         if not need:
             return None
         spaces, area, guest = need["spaces"], need["gns"], need["guest"]
-    if str(inputs.get("vri_region") or "msk") == "mo":
+    if project_region(inputs) != "msk":
+        # Другой регион — тоже без московской одиннадцатой части: правила
+        # гостевых мест его у нас нет, и вписанные места все постоянные.
         # Гостевых мест норматив области в квартале не строит — значит, и
         # заданные руками места все постоянные. Без явного нуля движок
         # вычел бы из них московскую одиннадцатую часть и не продал бы её.
@@ -1812,12 +1819,38 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
 # встать после «по нормативу». Подпись берётся отсюда же, откуда расчёт
 # берёт юрисдикцию: зашитое «приложение 6 к 945-ПП» на участке в области
 # называло московский документ под областным числом (Мытищи, 04.10.2026).
+PARKING_NORM_OTHER_REGION = "other_region"
 PARKING_NORM_OF: dict[str, str] = {
     parking_norms.MOSCOW: "приложения 6 к 945-ПП",
+    # Другой регион: норм парковки его у нас нет (решение владельца 19.10.2026).
+    PARKING_NORM_OTHER_REGION: "этого региона — его норм у нас нет",
     parking_norms.MOSCOW_OBLAST: ("Московской области (приложение № 10 к 713/30 в ред. "
                                   "1480/45; строки, кроме ФОК, не сверены; "
                                   "СП 42.13330.2016 отменён с 12.07.2026)"),
 }
+
+
+def _parking_demand_other_region() -> dict[str, Any]:
+    """Приобъектных мест другого региона не считаем: норм его у нас нет.
+
+    Московские 945-ПП и областные 713/30 к такому участку не относятся, и
+    число, посчитанное ими, выглядело бы нормой региона. Пустой ответ той же
+    формы, с причиной в `missing`: читатели говорят «не посчитано», а не «ноль».
+    """
+    reason = ("норм парковки этого региона у нас нет — число машино-мест "
+              "стоит нашим умолчанием, поправьте его")
+    return {
+        "jurisdiction": PARKING_NORM_OTHER_REGION,
+        "norm_of": PARKING_NORM_OF[PARKING_NORM_OTHER_REGION],
+        "k1": 0.0, "k2": 0.0, "k_input": {"k1": 0.0, "k2": 0.0},
+        "k_assumed": False, "k_origin": {"k1": "", "k2": ""},
+        "k_basis": {"district": "", "inside_ttk": None, "district_source": "",
+                    "ttk_source": "", "rail_distance_m": 0.0, "conflicts": []},
+        "design_mode": "",
+        "rows": [], "required_total": 0,
+        "social_rows": [], "social_required_total": 0, "social_missing": [reason],
+        "missing": [reason], "assumptions": [],
+    }
 
 
 def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
@@ -1841,8 +1874,10 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
     Постоянные и гостевые места жителей сюда не входят: у них своё приложение 5
     и свой расчёт, и трогать его этот модуль не должен.
     """
-    region = str((inputs or {}).get("vri_region") or "msk").strip().lower()
-    jurisdiction = parking_norms.MOSCOW_OBLAST if region in ("mo", "область") else parking_norms.MOSCOW
+    region = project_region(inputs)
+    if region == "other":
+        return _parking_demand_other_region()
+    jurisdiction = parking_norms.MOSCOW_OBLAST if region == "mo" else parking_norms.MOSCOW
     k1 = n(inputs, "parking_k1")
     k2 = n(inputs, "parking_k2")
     design_mode = str((inputs or {}).get("parking_design_mode")

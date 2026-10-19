@@ -30,6 +30,7 @@ from datetime import date
 from typing import Any, Iterable
 
 import mpt_calculator
+import project_regions
 import site_position
 
 # Акт, к которому относятся «приложение 3, таблица 1…» в основании Кмест:
@@ -170,12 +171,14 @@ def compute(inputs: dict[str, Any], tep: dict[str, Any],
     inputs = inputs or {}
     tep = tep or {}
     today = today or date.today()
-    region = str(inputs.get("vri_region") or "msk").strip().lower()
-    result: dict[str, Any] = {"applicable": region not in ("mo", "область"),
+    region = project_regions.region_of(inputs)
+    result: dict[str, Any] = {"applicable": region == project_regions.MOSCOW,
                               "rows": [], "jobs_total": 0, "mpt_mln": 0.0,
                               "transfer_mln": 0.0, "total_mln": 0.0, "notes": []}
     if not result["applicable"]:
-        result["reason"] = "льготы 1874-ПП и за передачу квартир городу — московские; проект в области"
+        result["reason"] = ("льготы 1874-ПП и за передачу квартир городу — московские; проект "
+                            + ("в области" if region == project_regions.MOSCOW_OBLAST
+                               else "не в Москве и не в Московской области"))
         return result
     place = territory_of(inputs)
     result["territory"] = place

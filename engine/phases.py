@@ -2208,7 +2208,7 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
     # Население очередей — делитель заданной руками площади двора: та же
     # норма региона, что у самого счёта двора (`project_population`).
     given_yard = float(x_master.get("landscaping_area_sqm") or 0.0)
-    _yard_region = str(x_master.get("vri_region") or "msk")
+    _yard_region = project_region(x_master)
     phase_populations = [
         project_population({"apartments": phase_product_rows[i].get("apartments")
                             or t_master.get("apartments") or {}}, _yard_region)[0]

@@ -231,7 +231,7 @@ function sitePositionNumbers(){
 }
 function sitePositionWanted(b,basis){
  if(!b||!b.mpt_reason||b.override||basis!=='project_benefits')return false;
- if(String(inputs.vri_region||'msk')!=='msk')return false;
+ if(classRegion()!=='msk')return false;
  const facts=projectParcelFacts();
  const hand=String(inputs.parking_district||'').trim()&&String(inputs.parking_inside_ttk||'').trim();
  return !hand&&!(facts&&facts.district&&facts.ttk);
@@ -397,7 +397,7 @@ function apartmentUnitsNote(){
  // ответом на его вопрос. У Подмосковья своя мера — РНГП области; у собранного
  // руками — рынок, 60 м² (решение владельца, 03.09.2026). Норматив Москвы
  // 33 × 2,1 меряет НАСЕЛЕНИЕ и на роль средней квартиры не годится.
- const region=String(inputs.vri_region||'msk')==='mo'?'mo':'manual';
+ const region=classRegion()==='mo'?'mo':'manual';
  const yard=AVERAGE_FLAT[region]||AVERAGE_FLAT.manual;
  const byYard=yard&&yard.sqm>0?Math.ceil(saleable/yard.sqm):0;
  // Выгрузка ГлавАПУ: число квартир — выход формулы города, и с 09.09.2026 оно
@@ -1396,6 +1396,7 @@ function siteAreaSourceLabel(){
 }
 function siteDensitySourceLabel(){
  if(inputs._site_density_user_set&&Number(inputs.site_density_sqm_per_ha||0)>0)return 'введена вручную';
+ if(classRegion()==='other')return 'наше допущение — 30 000 м² квартир на гектар: норм этого региона у нас нет, поправьте под свой участок';
  if(Number(inputs.site_density_sqm_per_ha||0)>0&&inputs._mo_calc)return 'из калькулятора Подмосковья';
  if(glavapuDensitySqmHa()>0)return 'из калькулятора ГлавАПУ (Москва)';
  return 'по умолчанию 30 000 м²/га';
@@ -1407,6 +1408,8 @@ function siteDensitySourceLabel(){
 function normativeNormsLabel(){
  return classRegion()==='mo'?'РНГП Московской области':'Москвы';
 }
+// Другой регион: норм у нас нет, и подписи «нормативами …» к нему не идут.
+const OTHER_REGION_TEP_NOTE='Участок не в Москве и не в Московской области, и норм его региона у нас нет. Пересчёт по плотности меняет только квартиры. Места в детских садах, школах и поликлинике, машино-места и плата за смену разрешённого использования — наши умолчания: поправьте их во «Вводных» под свой участок.';
 // Москва без выгрузки ГлавАПУ: квартиры — площадь × плотность, остальное —
 // нормативы ГОРОДА через `/tep/derived-by-site`, то есть та же
 // `tep_derived_norms` движка, что и у пересчёта по ТЭП: 33 м²/чел, места ДОО
@@ -1415,7 +1418,9 @@ function normativeNormsLabel(){
 // области — 28 м²/чел, ДОО 65 и СОШ 135 на тысячу — под московским адресом
 // (решение владельца, 16.10.2026). Арифметики на странице нет: что считать и
 // чем это подписать, отвечает сервер.
-async function applyMoscowNormativeTep(area,density,keepRows){
+// Квартиры = площадь × плотность — одна арифметика для Москвы без выгрузки и
+// для другого региона; что дальше считать нормами, решает вызывающий.
+function fillApartmentsByDensity(area,density,keepRows){
  const row=tep.apartments;
  const filled=tepFillByRatios('apartments',{gns:0,total_area:0,saleable:Math.round(area*density*10)/10,useful:0});
  ['gns','total_area','saleable','useful'].forEach(f=>{row[f]=filled[f]});
@@ -1427,6 +1432,17 @@ async function applyMoscowNormativeTep(area,density,keepRows){
  // Вписанные человеком площади квартир — его, как и в областном пересчёте.
  Object.entries(keepRows||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
  rescaleBuiltInCommercial();
+ return row;
+}
+// Другой регион (решение владельца 19.10.2026): норм его у нас нет, и
+// пересчёт по плотности трогает только квартиры. Места соцобъектов,
+// машино-места и плату за ВРИ вписывает человек — их здесь не трогаем.
+function applyOtherRegionTep(area,density,keepRows){
+ const row=fillApartmentsByDensity(area,density,keepRows);
+ return {tep:{apartments:Object.assign({},row)},warnings:[]};
+}
+async function applyMoscowNormativeTep(area,density,keepRows){
+ const row=fillApartmentsByDensity(area,density,keepRows);
  const territory=((inputs._cadastral_analysis||cadastralAnalysis||{}).territory)||{};
  const response=await fetch('/tep/derived-by-site',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({apartment_area_sqm:Number(row.saleable||0),
@@ -1467,7 +1483,9 @@ async function applyNormativeTep(densityOverride,keepRows){
  // считает её как метры ÷ гектары и гонит те же нормативы.
  const density=Number(densityOverride)>0?Number(densityOverride):effectiveSiteDensity();
  let data;
- if(classRegion()!=='mo'){
+ if(classRegion()==='other'){
+  data=applyOtherRegionTep(area,density,keepRows);
+ }else if(classRegion()!=='mo'){
   data=await applyMoscowNormativeTep(area,density,keepRows);
  }else{
   const stored=inputs._mo_calc||{};
@@ -1615,6 +1633,10 @@ function densityTepPlan(){
  }
  // Чьи нормативы — по региону проекта: план не должен обещать Москве РНГП
  // области, а области — московские.
+ if(classRegion()==='other')return {mode:'normative',
+  basis:'Квартиры '+num(spp)+' м² продаваемой = '+landNum(area,3)+' га × '+num(density)+' м² квартир/га.',
+  rows:[{label:'Квартиры',was:was('apartments'),will:{gns:null,saleable:spp}}],
+  notes:[OTHER_REGION_TEP_NOTE]};
  const norms='нормативами '+normativeNormsLabel();
  const mo=classRegion()==='mo';
  return {mode:'normative',
@@ -1709,6 +1731,15 @@ function applyDensityToTep(){
   // делила проект, которого больше нет. Москва с ГлавАПУ идёт своей веткой:
   // там нормативный расчёт делает сам калькулятор ГлавАПУ.
   status.style.display='';
+  if(classRegion()==='other'){
+   status.textContent='Считаю ТЭП по плотности…';
+   applyNormativeTep().then(()=>{
+    status.innerHTML='<span class="import-ok">Квартиры пересчитаны по плотности: '+num(tep.apartments.saleable)+
+     ' м² продаваемой площади ('+landNum(area,3)+' га × '+num(density)+' м² квартир на гектар).</span> '+
+     escapeHtml(OTHER_REGION_TEP_NOTE);
+   }).catch(e=>{status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'});
+   return;
+  }
   status.innerHTML='Считаю ТЭП по нормативам '+normativeNormsLabel()+': квартиры '+num(area*density)+
    ' м² продаваемой ('+num(area)+' га × '+num(density)+
    ' м² квартир/га), социалка и паркинг — от населения…';
@@ -1870,6 +1901,19 @@ function siteParkingPlaceholder(id){
  if(id==='parking_rail_distance_m')return 'пусто — не задано (К1 тогда по выгрузке или 1,0)';
  return '';
 }
+// Другой регион — плашкой в карточке участка, пока проект в этом режиме:
+// страница прямо говорит, что норм региона у нас нет (решение владельца
+// 19.10.2026), а не только в строке состояния, которую перепишет следующий шаг.
+function renderOtherRegionNote(){
+ const box=document.getElementById('otherRegionNote');
+ if(!box)return;
+ const other=classRegion()==='other';
+ box.style.display=other?'':'none';
+ if(!other)return;
+ const place=String(((inputs._other_region)||{}).region||'').trim();
+ box.textContent=(place?'Участок: '+place+'. ':'')+OTHER_REGION_TEP_NOTE+
+  ' Плотность для начала — 30 000 м² квартир на гектар, это наше допущение.';
+}
 function renderSitePanel(){
  renderSiteParkingFields();
  const areaEl=document.getElementById('siteAreaHa');
@@ -1890,7 +1934,8 @@ function renderSitePanel(){
  // нормирует наземную поэтажную площадь: подземный паркинг в неё не входит.
  const normative=!inputs._glavapu_import;
  const unitEl=document.getElementById('siteDensityUnit');
- if(unitEl)unitEl.textContent=normative?'м² квартир / га · нормативы РНГП':'м² поэтажной площади / га';
+ if(unitEl)unitEl.textContent=normative?(classRegion()==='other'?'м² квартир / га':'м² квартир / га · нормативы РНГП'):'м² поэтажной площади / га';
+ renderOtherRegionNote();
  // Две «плотности» под одним словом путали: московская считается в м² СПП/га,
  // подмосковная — в м² продаваемых квартир/га. Эквивалент по методике
  // ГлавАПУ-ТЭП (квартиры 94% СПП, продаваемая 65% ГНС) держит обе рядом.
@@ -2556,7 +2601,10 @@ function tepNormsMode(){
  if(socialRescaleApplies())return {key:'proportion',auto:false,
   text:lead+'пересчитайте соцнагрузку (детсады, школы, поликлиника) и машино-места — сами они здесь не меняются. Изменятся в той же пропорции, что и число жителей; перед заменой покажем, что изменится.'};
  // Участок вне Москвы, а расчёта области нет: московские нормативы сервер к
- // нему не применяет, и обещать их подсказка не должна.
+ // нему не применяет, и обещать их подсказка не должна. Другой регион — тот
+ // же ответ: норм его у нас нет.
+ if(classRegion()==='other')return {key:'region',auto:false,
+  text:lead+'детсады, школы, поликлинику и машино-места здесь сами не пересчитать: участок не в Москве и не в Московской области, а норм его региона у нас нет. Сейчас там наши умолчания — поправьте их во «Вводных».'};
  if((((cadastralAnalysis||{}).territory)||{}).inside_moscow===false)return {key:'region',auto:false,
   text:lead+'детсады, школы, поликлинику и машино-места здесь сами не пересчитать: участок не в Москве, а нормативы его региона не загрузились. Впишите эти числа во «Вводных» вручную.'};
  return {key:'norms',auto:false,
@@ -2710,6 +2758,8 @@ const SOCIAL_SWITCH_FIELDS=[['kindergarten_places','места ДОО'],['school
 async function socialPopulationSwitched(methodBefore){
  if(classRegion()==='mo')
   return sayPopulationSwitch('В Подмосковье этот переключатель не действует: соцобъекты там считаются по нормативам области.');
+ if(classRegion()==='other')
+  return sayPopulationSwitch('Этот переключатель здесь не действует: участок не в Москве и не в Московской области, норм соцобъектов его региона у нас нет, и места стоят нашими умолчаниями — поправьте их сами.');
  if(krtRequirementEntered())
   return sayPopulationSwitch('Места соцобъектов и компенсация вписаны как требование КРТ, поэтому переключатель их не меняет. Чтобы считать их от числа жителей, выберите в поле «Соцобъекты и плата за ВРИ» норматив Москвы.');
  if(!Number((tep.apartments&&tep.apartments.saleable)||0))
@@ -2796,6 +2846,9 @@ async function recalcFromTep(options){
  const silent=!!(options&&options.silent);
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
+ // Другой регион: норм у нас нет, а числа соцобъектов и машино-мест вписал
+ // человек — ни нормой, ни пропорцией их не переписываем.
+ if(classRegion()==='other'){say(escapeHtml(OTHER_REGION_TEP_NOTE),false);return}
  // Подмосковье — нормативами области, тем же пересчётом, что идёт сам после
  // правки квартир. Московские нормативы сервер к области не применяет.
  if(tepNormsMode().key==='mo'){

@@ -2289,7 +2289,7 @@ def _tool_where_to_edit(query: str, req: AgentChatRequest | None = None) -> dict
     if req is not None and per_person:
         population, basis = project_population(
             getattr(req, "tep", None) or {},
-            str((getattr(req, "inputs", None) or {}).get("vri_region") or "msk"))
+            project_region(getattr(req, "inputs", None) or {}))
     answer: dict[str, Any] = {
         "available": True,
         "query": query,

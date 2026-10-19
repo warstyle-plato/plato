@@ -98,6 +98,9 @@ def _stand() -> str:
         page_blocks.function("glavapuBaselineApplies"),
         page_blocks.function("socialRescaleApplies"),
         page_blocks.function("tepNormsMode"),
+        # Другой регион решает тот же предикат региона, что и вся страница.
+        page_blocks.project_region(),
+        page_blocks.page_const("OTHER_REGION_TEP_NOTE"),
         # Тело запроса собирает общий с переключателем населения помощник.
         page_blocks.function("baselineRecalcBody"),
         page_blocks.function("recalcFromTep"),

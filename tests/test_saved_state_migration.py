@@ -173,6 +173,7 @@ def render_periodicity(region: str, saved: float | str) -> dict:
         f"vri_periodicity_months:{json.dumps(saved)}}};\n"
         "const id='vri_periodicity_months', type='select';\n"
         "const el={value:'',disabled:false,title:''};\n"
+        + page_blocks.project_region() + "\n"
         + source[start:end] + "\n"
         "console.log(JSON.stringify({value:el.value,disabled:el.disabled,"
         "stored:inputs.vri_periodicity_months}));\n"

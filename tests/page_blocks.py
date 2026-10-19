@@ -562,3 +562,14 @@ def auctions_const(*names: str) -> str:
 
     page = ui.auctions_page()
     return "\n".join(page_const(name, page) for name in names)
+
+
+def project_region() -> str:
+    """Регион проекта: карта значений с собранной страницы и предикат `classRegion`.
+
+    Карта приезжает на страницу подстановкой из `project_regions` движка;
+    стенд, перечисляющий куски руками, без неё падал бы на «classRegion is
+    not defined» — про себя, а не про то, что он проверяет.
+    """
+    return "\n".join((page_const("PROJECT_REGIONS"), function("classRegion"),
+                      function("outsideMoscowRegion")))

@@ -1025,7 +1025,20 @@ def _build_project_workbook(
     sources_xml, _ = _v4_set_cell(sources_xml, "C6", text=_tep_source)
     sources_xml, _ = _v4_set_cell(sources_xml, "D6", text=str(
         project_name or x.get("project_name") or "текущий проект"))
-    if str(x.get("vri_region") or "msk") == "mo":
+    if project_region(x) == "other":
+        # Другой регион: порядка платы этого региона у нас нет, и московский
+        # 593-ПП основанием здесь не назван.
+        sources_xml, _ = _v4_set_cell(sources_xml, "C7", text="Другой регион")
+        sources_xml, _ = _v4_set_cell(
+            sources_xml, "D7", text="Плата за смену ВРИ — сумма, вписанная в проекте")
+        sources_xml, _ = _v4_set_cell(
+            sources_xml, "G7",
+            text="Порядка платы этого региона у DevelopAid нет; московские и "
+                 "областные правила здесь не применяются")
+        sources_xml, _ = _v4_set_cell(
+            sources_xml, "I7",
+            text="Сумма, срок и рассрочка — как их задал пользователь")
+    elif project_region(x) == "mo":
         # Правка этой строки была применена НАПОЛОВИНУ: имя источника и ссылку
         # заменили, а колонка «Применение» осталась с московским 593-ПП — то
         # есть областная книга по-прежнему называла основанием чужой акт, и
@@ -1052,7 +1065,7 @@ def _build_project_workbook(
     # Нормативные основания — строками ниже проектных источников: книга
     # владельца отвечает «чем посчитано», а нормативы это половина ответа.
     sources_xml = _v4_normative_sources_rows(
-        sources_xml, str(x.get("vri_region") or "msk"), missing)
+        sources_xml, project_region(x), missing)
 
     # Parity-блок ПРОВЕРОК: контрольные числа движка — значениями в C, допуск
     # в E; формулы книги в B посчитает Excel, и вердикт листа скажет FAIL,
@@ -1509,8 +1522,7 @@ def _build_project_workbook(
         label="vri_early_repay_after_pf")
 
     # --- плотность: базовый потенциал равен применяемому, коэффициент 1 ----
-    put("K6", text="Москва" if str(x.get("vri_region") or "msk") == "msk"
-        else "Московская область", label="vri_region")
+    put("K6", text=project_region_label(x), label="vri_region")
     put_new("M6", text="vri_region")
     area = float(x.get("site_area_ha") or 0)
     density = float(x.get("site_density_sqm_per_ha") or 0) or 30000.0
