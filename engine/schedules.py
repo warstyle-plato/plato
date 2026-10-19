@@ -825,6 +825,47 @@ def social_required_program(
     })
 
 
+# Объект → (сумма компенсации в выгрузке, его мощность в выгрузке, поле мест проекта).
+_SOCIAL_COMPENSATION_ROWS = {
+    "kindergarten_mln": ("social_compensation_kindergarten_mln",
+                         "required_kindergarten_places", "kindergarten_places"),
+    "school_mln": ("social_compensation_school_mln",
+                   "required_school_places", "school_places"),
+    "clinic_mln": ("social_compensation_clinic_mln",
+                   "required_clinic_capacity", "clinic_capacity"),
+}
+
+
+def social_compensation_breakdown(x: dict) -> dict[str, float]:
+    """Компенсация по объектам — доли ТЕКУЩЕЙ суммы `social_compensation_mln`.
+
+    Строки «ДОО/СОШ/поликлиника — компенсация» читались прямо из выгрузки
+    ГлавАПУ и застывали на её числах: пересчёт под новый ТЭП или смена способа
+    подсчёта жителей меняли итог, а три строки над ним стояли (владелец,
+    19.10.2026: «если выбрана компенсация, пересчёт не работает»). Владелец
+    суммы один — поле компенсации; разбивка только делит его. Доля объекта —
+    ставка за место из выгрузки × места проекта, то есть ровно то, чем сумму
+    набирает пересчёт по выгрузке. Мест в проекте нет — доли выгрузки; нет и
+    выгрузки — делить не по чему, и строки нулевые, а итог остаётся.
+    """
+    total = n(x, "social_compensation_mln")
+    zeros = {key: 0.0 for key in _SOCIAL_COMPENSATION_ROWS}
+    if total <= 0:
+        return zeros
+    imported = (x.get("_glavapu_import") or {}).get("normalized", {}) or {}
+    by_rate: dict[str, float] = {}
+    by_export: dict[str, float] = {}
+    for key, (money_key, places_key, input_key) in _SOCIAL_COMPENSATION_ROWS.items():
+        money, places = n(imported, money_key), n(imported, places_key)
+        by_export[key] = money
+        by_rate[key] = money / places * n(x, input_key) if places > 0 else 0.0
+    weights = by_rate if sum(by_rate.values()) > 0 else by_export
+    weight_sum = sum(weights.values())
+    if weight_sum <= 0:
+        return zeros
+    return {key: round(total * weight / weight_sum, 3) for key, weight in weights.items()}
+
+
 def effective_social_program(x: dict) -> dict[str, float]:
     imported = (x.get("_glavapu_import") or {}).get("normalized", {})
 

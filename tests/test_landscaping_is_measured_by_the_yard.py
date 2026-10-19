@@ -499,3 +499,51 @@ def test_a_fraction_is_written_with_a_russian_comma():
     _, basis_given = core.landscaping_area(given, core.TEP_DEFAULT)
     assert "3000,5" in basis_given, basis_given
     assert "чел. (" in basis_given, basis_given
+
+
+def test_the_rate_per_gns_reads_the_whole_ground_area_of_each_queue():
+    """Ставка на метр ГНС: книга и движок сходятся по каждой очереди.
+
+    База — наземная ГНС очереди целиком (`project_above_gns`): метры дома и
+    метры вне МКД — сада, школы, офисов. Ставка дорожает между очередями, как
+    ставка двора и все прочие ставки статей. Контрпримеры: книга на одних
+    метрах дома (I+J) теряет соцобъекты и офисы; движок без индексации
+    строит двор поздней очереди по цене первой. Оба расхождения были в
+    присланном проекте: 1 197,0 млн ₽ в книге против 1 308,8 в отчёте.
+    """
+    openpyxl = pytest.importorskip("openpyxl")
+    sys.setrecursionlimit(400_000)
+    from xlsx_eval import Evaluator
+
+    saved = json.loads((ROOT / "tests" / "fixtures"
+                        / "project_settings_nagatino_krt_0_25_91.json").read_text(encoding="utf-8"))
+    rate = 3.17
+    inputs = {**copy.deepcopy(core.DEFAULT_INPUTS), **saved["inputs"],
+              "landscaping_gns_th_per_sqm": rate}
+    phasing = saved["phasing"]
+    bundle = core._run_authoritative_model(inputs, saved["tep"], [], copy.deepcopy(phasing))
+    hints = core._v4_finance_hints(bundle)
+    above, outside = [], []
+    for tep in hints["tep_by_phase"]:
+        tep = {key: value for key, value in tep.items() if isinstance(value, dict)}
+        above.append(core.project_above_gns(tep))
+        outside.append(above[-1]
+                       - core.n(tep.get("apartments") or {}, "gns")
+                       - core.n(tep.get("ground_commercial") or {}, "gns"))
+    assert max(outside) > 1000, "у эталона нет метров вне МКД — проверять нечего"
+
+    phases = bundle["phases"]
+    money = [phase["result"]["capex"]["landscaping"] for phase in phases]
+    assert money[0] / above[0] / 1000 == pytest.approx(rate)
+    assert money[-1] / above[-1] / 1000 > rate * 1.01, \
+        "ставка поздней очереди не проиндексирована"
+
+    content, _name, report = core.build_project_workbook(
+        inputs, saved["tep"], [], copy.deepcopy(phasing), project_name="Двор по ГНС",
+        finance_hints=hints)
+    assert report["missing"] == [], report["missing"]
+    evaluator = Evaluator(openpyxl.load_workbook(io.BytesIO(content)))
+    for index in range(len(phases)):
+        book = float(evaluator.cell("CAPEX", f"B{24 + core._V4_CAPEX_BLOCK_STRIDE * index}"))
+        # Метры дома книга округляет (`ROUND` в I/J) — отсюда тысячи рублей.
+        assert book == pytest.approx(money[index] / 1e6, abs=0.01), index

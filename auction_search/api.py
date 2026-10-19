@@ -54,6 +54,7 @@ from auction_search.adapters.fedresurs import (
     KNOWN_DEBTOR_INN as FEDRESURS_KNOWN_INN,
     KNOWN_MESSAGE_GUID as FEDRESURS_KNOWN_MESSAGE,
     probe as fedresurs_probe, probe_api as fedresurs_probe_api,
+    probe_backend as fedresurs_probe_backend,
     probe_browser as fedresurs_browser)
 from auction_search.adapters import source_page
 from auction_search.adapters.roseltorg_probe import (
@@ -5264,13 +5265,20 @@ def install(app: FastAPI) -> None:
         message: str = Query(default=""),
         inn: str = Query(default=""),
         seconds: float = Query(default=40.0, ge=5.0, le=90.0),
+        path: str = Query(default=""),
     ) -> dict[str, Any]:
         """JSON-бэкенд ЕФРСБ: сверенные маршруты по должнику и адреса из бандла.
 
         Страница сообщения — оболочка Angular, данные идут из `/backend/…`.
         Адрес карточки сообщения и списка торгов проба ищет в бандле самой
         страницы, а не перебирает вслепую. Разбора нет.
+
+        `path` — полный ответ одного пути бэкенда (`bankruptcy-messages/<guid>`):
+        поля сверяются по целому ответу, а не по началу тела.
         """
+        if path.strip():
+            return await run_in_threadpool(
+                lambda: fedresurs_probe_backend(path, seconds=seconds))
         return await run_in_threadpool(lambda: fedresurs_probe_api(
             message_guid=message.strip() or FEDRESURS_KNOWN_MESSAGE,
             inn=inn.strip() or FEDRESURS_KNOWN_INN, seconds=seconds))
@@ -5670,10 +5678,16 @@ def install(app: FastAPI) -> None:
     # История завершённых торгов. Тяжёлая выборка — до сорока страниц ГИС
     # Торгов, — поэтому ответ кладётся на диск: второй воркер и повторное
     # нажатие читают готовое, а не листают площадку заново. Полный ответ живёт
-    # шесть часов, неполный (не уложились в срок, источник отказал) — двадцать
-    # минут: недособранное не должно надолго выдавать себя за всю историю.
-    FINISHED_CACHE_SECONDS = 6 * 3600
+    # час, неполный (не уложились в срок, источник отказал) — двадцать минут:
+    # недособранное не должно надолго выдавать себя за всю историю.
+    #
+    # Запись помечена схемой ответа и номером выпуска. Файл на диске переживает
+    # выкатку: после #754 прод три часа отдавал ответ, записанный старым кодом,
+    # — без воронки допуска, и страница снова писала голое «найдено 0»
+    # (19.10.2026). Чужая версия и запись без версии не отдаются.
+    FINISHED_CACHE_SECONDS = 60 * 60
     FINISHED_PARTIAL_CACHE_SECONDS = 20 * 60
+    FINISHED_CACHE_SCHEMA = 2
     FINISHED_WINDOW_MONTHS = 3
 
     def _finished_cache_path(source: str, as_of: date, months: int, noise: bool) -> str:
@@ -5682,11 +5696,16 @@ def install(app: FastAPI) -> None:
         return os.path.join(
             root, f"finished_{name}_{as_of.isoformat()}_{months}m_{int(noise)}.json")
 
+    def _finished_cache_version() -> str:
+        return f"{FINISHED_CACHE_SCHEMA}:{getattr(core, 'VERSION', '') or ''}"
+
     def _finished(source: str, as_of: date, months: int, include_noise: bool) -> dict[str, Any]:
         path = _finished_cache_path(source, as_of, months, include_noise)
         try:
             with open(path, encoding="utf-8") as handle:
                 cached = json.load(handle)
+            if cached.get("version") != _finished_cache_version():
+                raise ValueError("кеш записан другой версией кода")
             age = time.time() - float(cached.get("saved_at") or 0)
             ttl = FINISHED_CACHE_SECONDS if cached.get("complete") else FINISHED_PARTIAL_CACHE_SECONDS
             if 0 <= age < ttl:
@@ -5722,6 +5741,7 @@ def install(app: FastAPI) -> None:
             temp = f"{path}.{os.getpid()}.tmp"
             with open(temp, "w", encoding="utf-8") as handle:
                 json.dump({"saved_at": time.time(), "complete": complete,
+                           "version": _finished_cache_version(),
                            "payload": payload}, handle, ensure_ascii=False)
             os.replace(temp, path)
         except OSError:
