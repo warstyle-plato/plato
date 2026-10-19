@@ -165,8 +165,8 @@ function otherRegionName(found){
 function otherRegionNormsText(){
  return 'Норм этого региона у нас нет. ТЭП считается по плотности, которую задаёте вы: для начала мы берём '+
   num(OTHER_REGION_DENSITY)+' м² квартир на гектар — это наше допущение, поправьте его под свой участок на вкладке «ТЭП». '+
-  'Места в детских садах, школах и поликлинике, машино-места и плату за смену разрешённого использования впишите во «Вводных» сами: '+
-  'московские правила к этому участку не применяются.';
+  'Плату за смену разрешённого использования ставим нулём, а места в детских садах, школах и поликлинике и машино-места — '+
+  'нашими умолчаниями. Поправьте их во «Вводных» под свой участок: московские правила к нему не применяются.';
 }
 async function obtainOtherRegionTep(rejectedNote){
  const status=document.getElementById('cadastralStatus');
@@ -198,10 +198,16 @@ async function applyOtherRegion(){
  const status=document.getElementById('cadastralStatus');
  const pending=otherRegionPending;
  if(!pending)return;
- // Новый участок — территория прежнего проекта обнуляется целиком, и что
- // обнулено, называется (`territoryClearedNote`): плата за ВРИ, места
- // соцобъектов и машино-места прежней площадки сюда не переезжают.
+ // Новый участок — территория прежнего проекта обнуляется, но дальше просто:
+ // что знаем — из госреестра, плата за ВРИ — ноль, остальное — наши
+ // умолчания, которые человек правит сам (решение владельца 19.10.2026).
+ // Обнулённым называется только то, что нулём и осталось.
  resetTerritoryData();
+ const ownDefaults=TERRITORY_INPUT_KEYS.filter(key=>key in INPUT_DEFAULT&&
+  !['land_rights_cost_mln','purchase_price_mln','site_area_ha','site_density_sqm_per_ha'].includes(key));
+ ownDefaults.forEach(key=>{inputs[key]=cloneValue(INPUT_DEFAULT[key])});
+ STANDALONE_OBJECTS.forEach(o=>{const k=o.prefix+'_enabled';if(k in INPUT_DEFAULT)inputs[k]=cloneValue(INPUT_DEFAULT[k])});
+ territoryCleared=territoryCleared.filter(key=>!ownDefaults.includes(key));
  inputs.vri_region='other';
  fieldOrigins()['inputs.vri_region']={source:'document',
   text:'по кадастровому номеру: участок не в Москве и не в Московской области ('+pending.region+')'};
@@ -209,8 +215,7 @@ async function applyOtherRegion(){
  inputs.site_area_ha=pending.area_ha;
  inputs.site_density_sqm_per_ha=0;
  inputs._site_density_user_set=false;
- inputs.underground_manual_spaces=0;
- inputs.underground_manual_gns_sqm=0;
+ inputs.land_rights_cost_mln=0;
  otherRegionPending=null;
  status.textContent='Считаю ТЭП по плотности…';
  try{

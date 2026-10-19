@@ -1807,7 +1807,7 @@ def _parking_demand_other_region() -> dict[str, Any]:
     формы, с причиной в `missing`: читатели говорят «не посчитано», а не «ноль».
     """
     reason = ("норм парковки этого региона у нас нет — число машино-мест "
-              "задайте сами")
+              "стоит нашим умолчанием, поправьте его")
     return {
         "jurisdiction": PARKING_NORM_OTHER_REGION,
         "norm_of": PARKING_NORM_OF[PARKING_NORM_OTHER_REGION],

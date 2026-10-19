@@ -9,6 +9,7 @@
 ТЭП — по плотности, которую задаёт человек (стартовые 30 000 м² квартир на
 гектар — допущение), соцобъекты, парковку и плату за ВРИ человек вписывает
 сам; жители для двора — московские 33 м² на человека, подписанные допущением.
+После «Подставить в проект» плата за ВРИ — ноль, остальное — наши умолчания.
 
 Каждая проверка падает на прежнем поведении «считаем как Москву».
 
@@ -104,7 +105,7 @@ def test_no_parking_norm_for_another_region() -> None:
 def test_no_social_norm_for_another_region() -> None:
     need = core.social_required_program(OTHER, {"apartments": {"saleable": 30000.0}})
     assert need["available"] is False, need
-    assert "впишите сами" in need["basis"], need
+    assert "умолчаниями" in need["basis"], need
 
 
 def test_residents_are_counted_by_an_assumption() -> None:
@@ -205,7 +206,7 @@ def page():
 def test_the_page_takes_another_region_to_its_own_mode(page) -> None:
     import browser
     page.evaluate("""()=>{
-      inputs.land_rights_cost_mln=2864.3; inputs.kindergarten_places=250;
+      inputs.land_rights_cost_mln=2864.3; inputs.kindergarten_places=7;
       document.getElementById('cadastralNumbers').value=%s;
     }""" % json.dumps(EKATERINBURG))
     page.evaluate("()=>obtainTep()")
@@ -231,8 +232,10 @@ def test_the_page_takes_another_region_to_its_own_mode(page) -> None:
     assert got["region"] == "other" and got["classRegion"] == "other", got
     assert got["area"] == pytest.approx(1.2), got
     assert got["flats"] == pytest.approx(1.2 * 30000, rel=1e-3), got
-    # Московские умолчания платы и мест на новый участок не переезжают.
-    assert got["fee"] == 0 and got["dou"] == 0, got
+    # Решение владельца 19.10.2026: плата за ВРИ — ноль, остальное — наши
+    # умолчания, которые человек правит сам.
+    assert got["fee"] == 0, got
+    assert got["dou"] == page.evaluate("()=>Number(INPUT_DEFAULT.kindergarten_places||0)"), got
     assert got["noteShown"] and "норм его региона у нас нет" in got["note"], got
     assert "нормативам Москвы" not in got["hint"], got
     assert "допущение" in got["density"], got
