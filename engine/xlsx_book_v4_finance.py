@@ -1241,6 +1241,41 @@ def _v4_apply_cash_sweep(xml: str, phase: int, missing: list[str]) -> str:
     return xml
 
 
+def _v4_send_cash_sweep(xml: str, phase: int, missing: list[str]) -> str:
+    """Кэш-свип уходит из потока ОТДАВШЕЙ очереди: строки 49, 50 и 91.
+
+    Строка 26 следующей очереди гасит её ПФ продажами этой. Принимающая
+    сторона его видела, отдающая — нет: те же деньги гасили банк и ещё раз
+    шли собственнику (строка 50) и в кассу проекта для следующих очередей
+    (строка 91). Движок вычитает свип из потока на капитал
+    (`bank_sweep_out`). На проекте с долгом, переданным из первой очереди во
+    вторую, книга раздала 3 367 млн ₽ дважды: касса покрыла четвёртой
+    очереди 1 975,6 млн ₽ расходов против 434,4 в движке, NPV капитала —
+    7 220 против 4 169.
+
+    Круга нет: свип месяца читает долг и выборку принимающей очереди, а её
+    касса проекта — свободную кассу этой только по предыдущий месяц.
+    """
+    if phase >= _V4_CAPEX_PHASES:
+        return xml
+    sheet, receiver = f"CF_{phase}", f"CF_{phase + 1}"
+    for row, sign in ((49, "+"), (50, "-"), (_V4_PROJECT_FREE_CASH_ROW, "-")):
+        formulas = _v4_row_formulas(xml, row)
+        cells: dict[str, dict[str, Any]] = {}
+        for column in _v4_cf_columns():
+            formula = formulas.get(f"{column}{row}")
+            if formula is None or not formula.startswith("MAX(0,") or not formula.endswith(")"):
+                missing.append(f"{sheet}: кэш-свип в следующую очередь — формула "
+                               f"{column}{row} не опознана")
+                return xml
+            cells[f"{column}{row}"] = dict(
+                formula=f"{formula[:-1]}{sign}'{receiver}'!{column}{_V4_SWEEP_ROW})")
+        xml, done = _v4_set_cells(xml, row, cells)
+        if not done:
+            missing.append(f"{sheet}: строка {row} не найдена")
+    return xml
+
+
 _V4_CARRY_PARITY_ROW = 85
 _V4_VAT_PARITY_ROW = 86
 

@@ -288,3 +288,33 @@ def test_the_limit_check_knows_the_carried_debt_is_not_a_draw() -> None:
     assert book.cell("ПРОВЕРКИ", "F72") == "OK"
     source = engine_source()
     assert "_v4_relax_limit_check_for_carried_debt" in source
+
+
+def test_the_swept_money_is_spent_once_in_the_owners_flow(with_sweep) -> None:
+    """Свип — один платёж: передавшая очередь его теряет, принявшая им гасит
+    долг, но из своей кассы его не платит.
+
+    Контрпример — прежний счёт: принявшая вычитала свип в погашении ПФ, а
+    передавшая — как ушедший банку, и поток капитала проекта выходил меньше
+    чистой прибыли ровно на сумму свипа (3 367 млн ₽ на присланном проекте).
+    """
+    swept = sum(float(item["result"]["finance"].get("project_cash_sweep") or 0.0)
+                for item in with_sweep["phases"])
+    assert swept > 1e8, "предохранитель: свип обязан пойти"
+    consolidated = with_sweep["consolidated"]
+    assert float(consolidated["summary"]["ending_pf"]) == pytest.approx(0.0, abs=1.0)
+    assert sum(consolidated["cashflow"]["equity"]) == pytest.approx(
+        float(consolidated["summary"]["net_profit"]), rel=1e-6)
+
+
+def test_the_workbook_takes_the_sweep_out_of_the_queue_that_paid_it(with_sweep) -> None:
+    """Книга вычитает свип из потока передавшей очереди (строки 49, 50, 91
+    листа CF_1), как движок: иначе он и гасил долг второй очереди, и шёл
+    собственнику, и NPV капитала книги расходился с отчётом."""
+    book, meta = _book(sweep=True)
+    assert meta["missing"] == [], meta["missing"]
+    engine = with_sweep["consolidated"]
+    assert float(book.cell("CF", "B25")) == pytest.approx(
+        sum(engine["cashflow"]["equity"]) / 1e6, abs=0.5)
+    assert float(book.cell("КОНСОЛИДАТОР", "O8")) == pytest.approx(
+        float(engine["summary"]["npv_equity"]) / 1e6, abs=0.5)
