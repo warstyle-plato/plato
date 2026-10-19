@@ -232,6 +232,45 @@ def _ask(url: str, context: ssl.SSLContext, **kwargs: Any) -> dict[str, Any]:
     return answer
 
 
+# Слова, вокруг которых проба показывает бандл: ответ 19.10.2026 нашёл пути
+# `bidding-messages/${o}` и `bankruptcy-message-docs/${i}`, а сами вызовы
+# собираются из базы-переменной — их видно только в окрестности.
+SNIPPET_WORDS = ("bankruptcy-messages", "bidding-messages", "biddings", "/trades",
+                 "BiddingSearch", "regionId", "tradePlace")
+
+# Путь, который проба читает целиком. Только бэкенд fedresurs.ru и только
+# безопасные символы: это окно в публичный JSON, а не прокси куда угодно.
+_BACKEND_ASK = re.compile(r"^[A-Za-z0-9/_.\-]{1,120}(?:\?[A-Za-z0-9_.\-=&%:,+]{0,400})?$")
+_FULL_BODY = 400_000
+
+
+def probe_backend(path: str, seconds: float = 30.0) -> dict[str, Any]:
+    """Полный ответ одного пути `fedresurs.ru/backend/<path>`. Разбора нет.
+
+    Начала тела в `probe_api` хватает, чтобы узнать, что адрес жив, но не
+    хватает, чтобы сверить поля: карточка сообщения 25074336 отдала 200 и
+    обрезалась на середине. Разбор пишется по целому ответу.
+    """
+    clean = path.strip().lstrip("/")
+    if clean.startswith("backend/"):
+        clean = clean[len("backend/"):]
+    if not clean or ".." in clean or not _BACKEND_ASK.match(clean):
+        return {"path": path, "reason": "путь не похож на адрес бэкенда ЕФРСБ"}
+    url = f"{BACKEND}/{clean}"
+    try:
+        status, ctype, body = _get(url, trust_context(), limit=_FULL_BODY,
+                                   timeout=max(3.0, min(float(seconds), 60.0)))
+    except Exception as exc:  # noqa: BLE001
+        return {"url": url, "reason": f"{type(exc).__name__}: {exc}"}
+    answer: dict[str, Any] = {"url": url, "http_status": status, "content_type": ctype,
+                              "bytes": len(body), "truncated": len(body) >= _FULL_BODY}
+    try:
+        answer["json"] = json.loads(body)
+    except ValueError:
+        answer["body_head"] = body[:_BODY_SHOWN * 3]
+    return answer
+
+
 def _left(until: float) -> float:
     """Таймаут одного запроса — не дольше, чем осталось пробе."""
     return max(1.0, min(TIMEOUT_SECONDS, until - time.monotonic()))
@@ -279,8 +318,13 @@ def _bundle_paths(context: ssl.SSLContext, page_url: str, until: float) -> dict[
         found = sorted({match.strip("\"'`") for match in _BACKEND_PATH.findall(body)})
         hints = sorted({match.strip("\"'`") for match in _HINT_PATH.findall(body)
                         if "/" in match})[:200]
+        # Базовый адрес лежит переменной, а запрос собирается рядом: имя
+        # метода и параметры видны только в окрестности пути.
+        snippets = [body[max(0, at.start() - 300):at.end() + 300]
+                    for word in SNIPPET_WORDS
+                    for at in list(re.finditer(re.escape(word), body))[:6]]
         return name, {"http_status": got_status, "bytes": len(body), "paths": found,
-                      "hints": hints}
+                      "hints": hints, "snippets": snippets}
 
     with ThreadPoolExecutor(max_workers=6) as pool:
         for name, got in pool.map(one, wanted):
@@ -292,8 +336,12 @@ def _bundle_paths(context: ssl.SSLContext, page_url: str, until: float) -> dict[
     report["paths"] = sorted(report["paths"])
     report["hints"] = sorted({hint for script in report["scripts"]
                               for hint in script.get("hints") or []})[:300]
+    report["snippets"] = [{"script": script["name"], "text": text}
+                          for script in report["scripts"]
+                          for text in script.get("snippets") or []][:60]
     for script in report["scripts"]:
         script.pop("hints", None)
+        script.pop("snippets", None)
     return report
 
 
