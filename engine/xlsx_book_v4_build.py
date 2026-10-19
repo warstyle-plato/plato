@@ -626,7 +626,8 @@ def _build_project_workbook(
     # а не свойство площадки.
     xml = _v4_write_carry_flag(
         xml, bool((finance_hints or {}).get("carry_applied")), missing,
-        sweep_share=float((finance_hints or {}).get("cash_sweep_share") or 0.0))
+        sweep_share=float((finance_hints or {}).get("cash_sweep_share") or 0.0),
+        unified_cash=_phase_financing_strategy(p) == "unified_project_cash")
 
     # Ставка, ушедшая от базы класса, помечается рядом со значением: молча
     # книга и отчёт «одного класса» разойдутся, и оба будут выглядеть верно.
@@ -1083,10 +1084,10 @@ def _build_project_workbook(
         # соседний проход переписывал середину строки 21 прежней формулой, и
         # живой месяц (AC) оказывался ровно в ней. Снаружи это выглядело как
         # «правка не сработала»: D21 в книге с правкой, а число прежнее.
-        cf_sheet_xml[_name] = _v4_add_recognized_tax_base_row(_v4_bridge_need_without_tax(_v4_apply_single_queue_tax(_v4_apply_vat_cash(_v4_apply_vat_base(
+        cf_sheet_xml[_name] = _v4_add_recognized_tax_base_row(_v4_bridge_need_without_tax(_v4_apply_single_queue_tax(_v4_fill_standalone_free_cash(_v4_apply_vat_cash(_v4_apply_vat_base(
             _v4_apply_interest_accrual(
                 _v4_apply_core_pool_by_product(_v4_apply_core_pool_without_sales(_v4_apply_extra_objects_tax_row(
-                    _v4_use_bridge_base_row(
+                    _v4_apply_project_cash(_v4_use_bridge_base_row(
                         _v4_apply_cash_sweep(
                             _v4_apply_pf_ceiling(
                                 _v4_name_fees_paid_by_equity(
@@ -1096,11 +1097,11 @@ def _build_project_workbook(
                                     _phase, missing),
                                 _phase, missing),
                             _phase, missing),
-                        _phase, missing),
+                        _phase, missing), _phase, missing),
                     _phase, missing),
                     _phase, missing), _phase, missing),
                 _phase, missing),
-            _phase, missing), _phase, missing), _phase, missing, _tax_share_layout),
+            _phase, missing), _phase, missing), _phase, missing), _phase, missing, _tax_share_layout),
             _phase, missing), _phase, missing)
 
     # Выручка очереди по продуктам: на экране разбивка есть, а в книге жила

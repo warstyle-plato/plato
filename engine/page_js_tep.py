@@ -781,7 +781,8 @@ function renderTep(){
        // считается от мест, и вписанное вернулось бы к прежнему на первом же
        // пересчёте — молча, то есть неотличимо от «не сработало».
        : ` <span class="tep-note">`
-         +`Площадь считается от мест по нормативу Москвы (2151-ПП). Чтобы вписать свою — `
+         +`Площадь считается от мест ${moscowSocialStepsApply()
+           ?'по нормативу Москвы (2151-ПП)':'по нормативу области (калькулятор МО) / поля'}. Чтобы вписать свою — `
          +`«Социальная нагрузка → Соцобъекты и плата за ВРИ → Требование КРТ».</span>`;
    }
    if(TEP_RATIOS[key]){
@@ -2006,12 +2007,19 @@ function socialNormNote(kind){
  const city=socialAreaPerPlace(kind,units);
  return ` Фактически ${landNum(fact,1)} ${unit}`
   +(city?` — норматив Москвы (2151-ПП) ${landNum(city,1)}.`
+   :!moscowSocialStepsApply()?` — норматив области (калькулятор МО) / поле.`
    // У поликлиники ступени нет, а предел города — верхний (2150-ПП): число
    // берётся из умолчания поля, второй копии на странице нет.
    :kind==='clinic'?` — предел города не более ${landNum(INPUT_DEFAULT.social_clinic_norm_sqm,0)} (2150-ПП, уточняется МТЗ).`
    :` — ступени города для этого объекта нет.`);
 }
+// Ступени — московские (2151-ПП в ред. 2579-ПП). У области нормативы свои —
+// их несёт поле из калькулятора МО, и ступень города их не перебивает
+// (решение владельца 16.10.2026). Предикат тот же, что у движка
+// (`moscow_social_steps_apply`): регион проекта `vri_region`, пусто — Москва.
+function moscowSocialStepsApply(){return classRegion()==='msk'}
 function socialAreaPerPlace(kind,places){
+ if(!moscowSocialStepsApply())return 0;
  const steps=SOCIAL_AREA_STEPS[kind];
  const n=Number(places||0);
  if(!steps||!(n>0))return 0;

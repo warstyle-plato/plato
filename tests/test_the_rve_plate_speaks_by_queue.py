@@ -189,7 +189,8 @@ def _months_declaration() -> str:
 
 def _preamble() -> str:
     """Зависимости плашки — теми же именами, что на странице."""
-    return _months_declaration() + """
+    words = re.search(r"const DEFAULT_REPAYMENT_WORDS=[^\n]+;", core.PAGE).group(0)
+    return _months_declaration() + "\n" + words + """
     let phaseBundle = null;
     const escapeHtml = s => String(s);
     const money = v => (Number(v) / 1e9).toFixed(2).replace('.', ',') + ' млрд ₽';
