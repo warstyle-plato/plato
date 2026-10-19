@@ -728,7 +728,7 @@ function renderOpenedProjectButton(){
 }
 
 function forgetTerritoryState(){
- cadastralAnalysis=null;landLookup=null;landScreeningLast=null;LAND_MAP=null;
+ cadastralAnalysis=null;landLookup=null;otherRegionPending=null;landScreeningLast=null;LAND_MAP=null;
  glavapuImport=null;moResult=null;
  // Запрос района и ТТК по участку — тоже про участок: новый проект спрашивает свой.
  sitePositionRun={key:'',state:'',error:'',count:0};
