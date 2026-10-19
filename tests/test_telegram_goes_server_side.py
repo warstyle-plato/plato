@@ -95,7 +95,7 @@ def test_telegram_turns_off_before_the_iframe_starts():
     будет ждать калькулятор, которого не откроет."""
     flow = re.search(r"async function obtainCadastralTep\(.*?\n\}", core.PAGE, re.S)
     body = flow.group(0)
-    assert 0 < body.find("isTelegramWebApp()") < body.find("Открываю штатный расчёт ГлавАПУ")
+    assert 0 < body.find("isTelegramWebApp()") < body.find("frame.src='/calc/")
 
 
 def test_the_log_marks_the_client_correctly():

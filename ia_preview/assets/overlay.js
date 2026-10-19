@@ -335,15 +335,6 @@
     button.onclick = function () { window.openTab('iaSite', button); };
     tabs.insertBefore(button, tabs.firstChild);
 
-    retext('#iaSite .import-head h2', 'Кадастровый номер или адрес',
-      'Введите адрес или кадастровый номер');
-    var lead = document.querySelector('#iaSite .import-head p');
-    if (!lead) missing.push('пояснение автозагрузки — #iaSite .import-head p');
-    else {
-      lead.textContent = 'DevelopAid сам получит сведения ЕГРН и рассчитает нормативные ТЭП: '
-        + 'для Москвы — по методике ГлавАПУ, для Московской области — по РНГП. '
-        + 'Перед применением значения показываются для проверки.';
-    }
     var recognized = document.querySelector('#glavapuPreview .scroll');
     if (!recognized) missing.push('таблица распознанного — #glavapuPreview .scroll');
     else {
@@ -353,10 +344,6 @@
       recognized.parentNode.insertBefore(provenance, recognized);
       provenance.appendChild(recognized);
     }
-
-    retext('#iaSite .import-fallback summary',
-      'Свой файл: шаблон ТЭП DevelopAid, выгрузка ГлавАПУ или пресет проекта',
-      'Другие способы ввода: свой файл — шаблон ТЭП DevelopAid, выгрузка ГлавАПУ или пресет проекта');
 
     addExampleButton();
 
@@ -888,7 +875,7 @@
     renderPendingWarn(activeTab);
   }
 
-  /* Поиск выполнен, «Применить к Вводным и ТЭП» не нажато — а человек уже
+  /* Поиск выполнен, «Подставить в проект» не нажато — а человек уже
      ушёл вводить экономику. Модель в этот момент считает по прежним ТЭП, и
      на других вкладках этого не видно никак: владелец так досчитал проект на
      чужих, не обнулённых ТЭП (16.08.2026). Плашка ходит по вкладкам за
@@ -908,11 +895,11 @@
     hintBox.parentNode.insertBefore(box, hintBox.nextSibling);
     box.innerHTML = '';
     var text = document.createElement('b');
-    text.textContent = 'Найденный расчёт участка не применён — модель считает по прежним ТЭП.';
+    text.textContent = 'Расчёт по участку не подставлен в проект — модель считает по прежнему ТЭП.';
     box.appendChild(text);
     var apply = document.createElement('button');
     apply.type = 'button';
-    apply.textContent = 'Применить к Вводным и ТЭП';
+    apply.textContent = 'Подставить в проект';
     apply.onclick = function () {
       apply.disabled = true;
       var run = kind === 'glavapu' ? window.applyGlavapu : window.applyMo;
@@ -975,16 +962,16 @@
   var STEP_INFO = {
     iaSite: function () {
       if (pendingImport()) {
-        return { mark: 'warn', hint: 'Поиск выполнен, но расчёт не применён: нажмите «Применить к Вводным и ТЭП» — или сбросьте карточку. Пока в модели прежние ТЭП.' };
+        return { mark: 'warn', hint: 'Расчёт по участку готов, но ещё не подставлен в проект. Нажмите «Подставить в проект» или сбросьте карточку — пока модель считает по прежнему ТЭП.' };
       }
       if (pageGlavapu() || (pageInputs() || {})._mo_calc) {
-        return { mark: 'ok', hint: 'Участок получен, ТЭП рассчитан. Дальше — проверить его на следующем шаге.' };
+        return { mark: 'ok', hint: 'Участок найден, ТЭП посчитан. На следующем шаге проверьте его.' };
       }
-      return { mark: 'need', hint: 'Введите кадастровый номер или адрес — ТЭП посчитается сам. Нет кадастра — соберите ТЭП вручную на следующем шаге.' };
+      return { mark: 'need', hint: 'Введите адрес или кадастровый номер участка — мы сами посчитаем ТЭП. Номера нет — заполните ТЭП вручную на следующем шаге.' };
     },
     tep: function () {
       if (pendingImport()) {
-        return { mark: 'warn', hint: 'Найденный расчёт участка не применён — здесь показан прежний ТЭП. Вернитесь в «Участок» и нажмите «Применить к Вводным и ТЭП» или сбросьте карточку.' };
+        return { mark: 'warn', hint: 'Расчёт по участку ещё не подставлен в проект, поэтому здесь прежний ТЭП. Вернитесь на шаг «Участок» и нажмите «Подставить в проект» или сбросьте карточку.' };
       }
       if (tepTotalGns() > 0) {
         return { mark: 'ok', hint: 'ТЭП заполнен — проверьте цифры, вручную здесь меняют только фактические значения по проекту.' };
