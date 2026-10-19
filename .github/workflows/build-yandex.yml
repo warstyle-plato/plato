@@ -89,10 +89,14 @@ jobs:
     # любая выкатка тянет прошлое. Равенство держит проверка
     # `test_the_tests_run_before_the_merge`: оговорка без сторожа — это память.
     timeout-minutes: 80
+    # Долей столько же, сколько на PR: потолок один, а запас к нему мерят по
+    # худшей доле PR. Четыре доли против шести — каждая в полтора раза
+    # толще, и доля 4 (тяжёлые книги) упиралась в 80 минут на дереве, где PR
+    # проходил за сорок. Равенство держит `test_the_tests_run_before_the_merge`.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
