@@ -193,9 +193,12 @@ def _v4_normative_sources_rows(xml: str, region: str, missing: list[str]) -> str
     # федеральной области в реестре своё («Общие для РФ»), и спелленное здесь
     # оно молча выкинуло бы 43-ФЗ. Два субъекта названы потому, что это наше
     # поле `vri_region`, а не догадка о реестре.
-    scope_here = "Московская область" if str(region or "msk") == "mo" else "Москва"
-    other = "Москва" if scope_here == "Московская область" else "Московская область"
-    kept = [row for row in rows if str(row.get("scope") or "").strip() != other]
+    # Другой регион — ни московских, ни областных актов: его норм у нас нет,
+    # и остаются одни федеральные.
+    region = project_regions.region_code(region)
+    scope_here = project_regions.LABELS[region]
+    foreign = {"Москва", "Московская область"} - {scope_here}
+    kept = [row for row in rows if str(row.get("scope") or "").strip() not in foreign]
     if not kept:
         missing.append(f"Источники: в реестре нет актов юрисдикции «{scope_here}»")
         return xml
@@ -219,7 +222,11 @@ def _v4_normative_sources_rows(xml: str, region: str, missing: list[str]) -> str
     parts.append(
         f'<x:row r="{row_at}">'
         + cell(f"A{row_at}",
-               f"Акты реестра движка ({scope_here} и федеральный уровень), снят "
+               "Акты реестра движка ("
+               + ("только федеральный уровень: норм региона проекта у нас нет"
+                  if region == project_regions.OTHER
+                  else f"{scope_here} и федеральный уровень")
+               + f"), снят "
                f"{date.today().isoformat()}. «Применение» называет, где акт входит в "
                "расчёт; «справочно» — акт в формулы не входит. Проверять нас нужно "
                "по исходнику, ссылка в колонке рядом.", head_styles)

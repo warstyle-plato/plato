@@ -1827,6 +1827,7 @@ def cadastral_tep_server(req: CadastralAnalysisRequest) -> dict[str, Any]:
     сходятся с контрольными выгрузками до единицы, поэтому серверный расчёт —
     равноценная замена, а не суррогат."""
     numbers = _parse_cadastral_numbers(req.cadastral_numbers)
+    refuse_outside_moscow_region(numbers)
     request_started = time.monotonic()
     logging.info("tep-server rid=%s numbers=%s analysis=%s headless=%s",
                  req.request_id or "-", ", ".join(numbers),
@@ -2093,6 +2094,11 @@ def vri_tep_moscow(query: str) -> dict[str, Any]:
 
 @app.post("/cadastral/tep-from-calculator")
 def import_cadastral_tep(req: CadastralTepRequest) -> dict[str, Any]:
+    # Регион — первым: таблица московского калькулятора к участку другого
+    # региона не относится, какой бы полной она ни была.
+    _analysis = req.cadastral_analysis or {}
+    refuse_outside_moscow_region(
+        [str(number) for number in (_analysis.get("recognized") or _analysis.get("requested") or [])])
     if not 30 <= len(req.rows) <= 150:
         raise HTTPException(status_code=400, detail="Калькулятор вернул неполную таблицу ТЭП")
     table_rows: list[list[Any]] = []

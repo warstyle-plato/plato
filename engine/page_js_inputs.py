@@ -15,7 +15,7 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 """
 # ruff: noqa
 
-PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_field_origin','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query','_cadastral_origin',
+PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_other_region','_field_origin','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query','_cadastral_origin',
  '_site_area_user_set','_site_density_user_set','_demolition_source','_land_buyout_source','_vri_relief_source','vri_mpt_override'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
@@ -367,7 +367,9 @@ function normativeUnderground(){
 // 945-ПП) и живёт своими полями объекта.
 function parkingRequirement(){
  if(withoutHousing())return null;
- if(String(inputs.vri_region||'msk')==='mo')return moNormativeUnderground();
+ if(classRegion()==='mo')return moNormativeUnderground();
+ // Другой регион: норм парковки его у нас нет — места вписывает человек.
+ if(classRegion()==='other')return null;
  return getGlavapuUnderground()||normativeUnderground();
 }
 
@@ -1107,7 +1109,21 @@ let CLASS_OVERRIDES_NOTE='';
 // Что в регионе отличается от профиля, считает движок (`class_base_preset`) и
 // подставляет картой — своего правила цены нежилого у страницы нет.
 const CLASS_REGION_BASES=__DEVELOPAID_CLASS_REGION_BASES__;
-function classRegion(){return String(inputs.vri_region||'msk')==='mo'?'mo':'msk'}
+// Регион проекта: 'msk', 'mo' или 'other' — тот же предикат, что
+// `project_regions.region_code` движка, и та же карта значений. Пусто —
+// Москва (умолчание вводных); непонятное значение — не Москва: участок из
+// Екатеринбурга не должен молча получать московские правила.
+const PROJECT_REGIONS=__DEVELOPAID_PROJECT_REGIONS__;
+function classRegion(){
+ const raw=String(inputs.vri_region||'').trim().toLowerCase();
+ return raw?(PROJECT_REGIONS.aliases[raw]||'other'):'msk';
+}
+// Номер другого кадастрового округа (66:, 78:…) — не Москва и не область.
+// 50: сам по себе ничего не решает: у Новой Москвы номера тоже 50:.
+function outsideMoscowRegion(number){
+ const m=/^(\d{2}):/.exec(String(number||'').trim());
+ return !!m&&!PROJECT_REGIONS.districts.includes(m[1]);
+}
 function classBaseIn(region,c,k){
  const regional=((CLASS_REGION_BASES[region]||{})[c]||{})[k];
  return Number(regional!==undefined?regional:PROJECT_CLASS_PRESETS[c][k]);
@@ -1254,7 +1270,7 @@ function renderClassDialog(){
  // Строкой таблицы она шириной с таблицу, а на телефоне таблица шире окна:
  // справка держится ширины видимой части окна (`cqw` от `classDialogBody`)
  // и прилипает к его левому краю, иначе подпись уезжает за край экрана.
- const norms=String(inputs.vri_region||'msk')==='msk'
+ const norms=classRegion()==='msk'
   ? '<details class="note" style="margin:8px 0 0;padding:11px 12px;position:sticky;left:0;box-sizing:border-box;max-width:100cqw">'
  +'<summary style="cursor:pointer">Нормы озеленения города — справка, в расчёт не входит</summary>'
  +'<div style="margin-top:6px">Норматив двора выше — НАША ставка площади, а не норма '
@@ -1754,7 +1770,7 @@ function renderInputs(){
      // В Москве периодичность рассрочки по ВРИ установлена нормативно —
      // квартал, и движок всё равно считает по нему. Пока поле оставалось
      // свободным, выбранное значение расходилось с посчитанным.
-     const mskQuarter=id==='vri_periodicity_months'&&String(inputs.vri_region||'msk')==='msk';
+     const mskQuarter=id==='vri_periodicity_months'&&classRegion()==='msk';
      if(mskQuarter)inputs[id]=3;
      // Отсутствующий ключ — не «снято». Чекбокс рисовался по !!inputs[id], и
      // поле, которого нет в наборе, приходило снятым, а обратно уходило

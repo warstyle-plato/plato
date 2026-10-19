@@ -1834,13 +1834,18 @@ def _telegram_handle_mo_numbers(chat_id: int, numbers: list[str], query: str = "
 
 
 def cadastral_route(numbers: list[str], analysis: dict[str, Any] | None) -> str:
-    """Куда считать участок: «moscow», «mo» или «error».
+    """Куда считать участок: «moscow», «mo», «other», «mixed» или «error».
 
     Кадастровый номер 50:* принадлежит не только Московской области — у Новой
     Москвы кадастры тоже начинаются с 50. Поэтому один префикс никогда не
     выбирает областные правила: сначала спрашиваем ГлавАПУ, и только если
-    территория не московская, уходим в областной расчёт.
+    территория не московская, уходим в областной расчёт. А вот номер другого
+    кадастрового округа (66:, 78:…) — точно не Москва и не область: такой
+    участок идёт в режим «Другой регион», а не в московский калькулятор.
     """
+    outside = [number for number in numbers if project_regions.outside_moscow_region(number)]
+    if outside:
+        return "other" if len(outside) == len(numbers) else "mixed"
     if bool(((analysis or {}).get("territory") or {}).get("inside_moscow")):
         return "moscow"
     region_only = bool(numbers) and all(
@@ -1948,7 +1953,56 @@ def _telegram_handle_address(chat_id: int, query: str) -> bool:
     return True
 
 
+def _telegram_handle_other_region(chat_id: int, numbers: list[str]) -> None:
+    """Участок вне Москвы и области: данные госреестра и честный ответ о нормах.
+
+    Норм этого региона у нас нет (решение владельца 19.10.2026): ТЭП считается
+    по плотности, которую задаёт человек, а соцобъекты, парковку и плату за
+    ВРИ он вписывает сам. Это делается в мини-приложении; бот показывает, что
+    знает госреестр, и говорит, чего у нас нет.
+    """
+    try:
+        found = [item for item in (land_lookup_via_core(", ".join(numbers)).get("results") or [])
+                 if item and item.get("found")]
+    except HTTPException as exc:
+        found = []
+        _telegram_send_message(
+            chat_id, "Сведения госреестра получить не удалось: " + html.escape(str(exc.detail)))
+    lines = []
+    for item in found[:10]:
+        parts = [f"<b>{html.escape(str(item.get('cadastral_number') or ''))}</b>"]
+        if item.get("region"):
+            parts.append(html.escape(str(item["region"])))
+        if item.get("area_ha"):
+            parts.append(f"{_telegram_number(item['area_ha'], 4)} га")
+        if item.get("permitted_use"):
+            parts.append("разрешённое использование: " + html.escape(str(item["permitted_use"])))
+        if item.get("cadastral_value_mln"):
+            parts.append(f"кадастровая стоимость {_telegram_number(item['cadastral_value_mln'], 1)} млн ₽")
+        lines.append(" · ".join(parts))
+    _telegram_send_message(
+        chat_id,
+        "<b>Участок не в Москве и не в Московской области.</b>\n"
+        + ("\n".join(lines) + "\n\n" if lines else "")
+        + "Норм этого региона у нас нет, поэтому ТЭП считается по плотности, которую задаёте вы: "
+        "для начала мы берём 30 000 м² квартир на гектар — это наше допущение. Места в детских "
+        "садах, школах и поликлинике, машино-места и плату за смену ВРИ впишите сами. "
+        "Всё это делается в мини-приложении: откройте его и введите тот же номер.",
+    )
+
+
 def _telegram_handle_cadastral_numbers(chat_id: int, numbers: list[str], query: str = "") -> None:
+    route = cadastral_route(numbers, None)
+    if route == "other":
+        _telegram_handle_other_region(chat_id, numbers)
+        return
+    if route == "mixed":
+        _telegram_send_message(
+            chat_id,
+            "<b>Участки из разных регионов.</b>\nВ одном запросе есть участки Москвы или "
+            "Московской области и участки другого региона. Посчитайте их по отдельности: "
+            "для другого региона норм у нас нет, и считается он иначе.")
+        return
     analysis: dict[str, Any] | None = None
     failure = ""
     try:

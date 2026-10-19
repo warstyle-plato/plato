@@ -317,7 +317,7 @@ def _v4_landscaping_rows_xml(xml: str, inputs: dict[str, Any],
     per_person, basis = landscaping_area_per_person(inputs, tep)
     given = float(inputs.get("landscaping_area_sqm") or 0.0)
     population_norm = (MO_NORMS_DEFAULT["living_space_per_person_sqm"]
-                       if str(inputs.get("vri_region") or "msk").lower() == "mo"
+                       if project_region(inputs) == "mo"
                        else _PARKING_2118_SQM_PER_PERSON)
 
     parts.append(f'<x:row r="{base_row}">'

@@ -116,6 +116,18 @@ async function obtainTep(){
   return obtainTep();
  }
 
+ // Номер другого кадастрового округа (66:, 78:…) — не Москва и не область:
+ // калькулятор ГлавАПУ его не знает, а нормы области к нему не относятся.
+ // Такой участок идёт в режим «Другой регион» (решение владельца 19.10.2026),
+ // а не в московский калькулятор, чей отказ человеку ничего не объяснял.
+ const outside=numbers.filter(outsideMoscowRegion);
+ if(outside.length&&outside.length<numbers.length){
+  status.innerHTML='<span class="import-error">В списке есть участки Москвы или Московской области и участки другого региона. '
+   +'Посчитайте их по отдельности: для другого региона норм у нас нет, и считается он иначе.</span>'+rejectedNote;
+  return;
+ }
+ if(outside.length)return obtainOtherRegionTep(rejectedNote);
+
  status.textContent='Определяю, где находится участок…'+rejectedNote;
  let analysis=null,failure='';
  try{
@@ -132,9 +144,83 @@ async function obtainTep(){
  if(analysis)return obtainCadastralTep(analysis);
  // Тупик без выхода читается как «сервис сломан»: сведения ЕГРН по этим же
  // номерам доступны всегда, и путь дальше через них есть.
- status.innerHTML='<span class="import-error">Не удалось определить территорию: '+escapeHtml(failure)+
-  '</span><br><span style="font-size:11px;color:#777">Посчитать ТЭП по нормам мы умеем только для Москвы и Московской области. '+
-  'Данные об этих участках можно посмотреть кнопкой «Только данные об участке», а готовый ТЭП — загрузить своим файлом.</span>';
+ status.innerHTML='<span class="import-error">Не получилось определить, где находится участок. '+escapeHtml(failure)+
+  '</span> <span style="font-size:11px;color:#777">Данные об участке можно посмотреть кнопкой «Только данные об участке», '+
+  'а готовый ТЭП — загрузить своим файлом.</span>';
+}
+
+// Режим «Другой регион» — участок не в Москве и не в Московской области
+// (решение владельца 19.10.2026). Площадь, разрешённое использование и
+// кадастровая стоимость — из госреестра; ТЭП — по плотности, которую задаёт
+// человек (стартовые 30 000 м² квартир на гектар — наше допущение); места
+// соцобъектов, машино-места и плату за смену ВРИ человек вписывает сам —
+// московские правила к такому участку не применяются, а норм его региона у
+// нас нет. Прежде чем подставить числа, показываем их, как и в других путях.
+let otherRegionPending=null;
+const OTHER_REGION_DENSITY=30000;
+function otherRegionName(found){
+ const names=[...new Set((found||[]).map(x=>String(x.region||'').trim()).filter(Boolean))];
+ return names.join(', ')||'другой регион';
+}
+function otherRegionNormsText(){
+ return 'Норм этого региона у нас нет. ТЭП считается по плотности, которую задаёте вы: для начала мы берём '+
+  num(OTHER_REGION_DENSITY)+' м² квартир на гектар — это наше допущение, поправьте его под свой участок на вкладке «ТЭП». '+
+  'Места в детских садах, школах и поликлинике, машино-места и плату за смену разрешённого использования впишите во «Вводных» сами: '+
+  'московские правила к этому участку не применяются.';
+}
+async function obtainOtherRegionTep(rejectedNote){
+ const status=document.getElementById('cadastralStatus');
+ otherRegionPending=null;
+ dropGlavapuPreview();dropMoPreview();
+ const found=await lookupLand({quiet:true});
+ // Сорванный запрос — причина уже в строке состояния.
+ if(found===null)return null;
+ const parcels=(found||[]).filter(x=>x&&x.kind==='land'&&Number(x.area_ha||0)>0);
+ if(!parcels.length){
+  status.innerHTML='<span class="import-error">Участок не в Москве и не в Московской области, а в госреестре '+
+   'по этому номеру не нашлось земельного участка с площадью. Проверьте номер.</span>'+(rejectedNote||'');
+  return null;
+ }
+ const area=Math.round(parcels.reduce((s,x)=>s+Number(x.area_ha||0),0)*10000)/10000;
+ const value=parcels.reduce((s,x)=>s+Number(x.cadastral_value_mln||0),0);
+ const uses=[...new Set(parcels.map(x=>String(x.permitted_use||'').trim()).filter(Boolean))];
+ otherRegionPending={region:otherRegionName(parcels),
+  numbers:parcels.map(x=>x.cadastral_number),area_ha:area,
+  cadastral_value_mln:Math.round(value*1000)/1000,permitted_use:uses.join('; ')};
+ status.innerHTML='<span class="import-ok">Участок найден: '+escapeHtml(otherRegionPending.region)+', '+
+  landNum(area,4)+' га'+(uses.length?', разрешённое использование — '+escapeHtml(uses.join('; ')):'')+
+  (value>0?', кадастровая стоимость '+landNum(value,1)+' млн ₽':'')+'.</span> '+
+  '<div class="note warning other-region-note" style="margin:6px 0">'+escapeHtml(otherRegionNormsText())+'</div>'+
+  '<button class="btn dark" onclick="applyOtherRegion()">Подставить в проект</button>'+(rejectedNote||'');
+ return otherRegionPending;
+}
+async function applyOtherRegion(){
+ const status=document.getElementById('cadastralStatus');
+ const pending=otherRegionPending;
+ if(!pending)return;
+ // Новый участок — территория прежнего проекта обнуляется целиком, и что
+ // обнулено, называется (`territoryClearedNote`): плата за ВРИ, места
+ // соцобъектов и машино-места прежней площадки сюда не переезжают.
+ resetTerritoryData();
+ inputs.vri_region='other';
+ fieldOrigins()['inputs.vri_region']={source:'document',
+  text:'по кадастровому номеру: участок не в Москве и не в Московской области ('+pending.region+')'};
+ inputs._other_region=cloneValue(pending);
+ inputs.site_area_ha=pending.area_ha;
+ inputs.site_density_sqm_per_ha=0;
+ inputs._site_density_user_set=false;
+ inputs.underground_manual_spaces=0;
+ inputs.underground_manual_gns_sqm=0;
+ otherRegionPending=null;
+ status.textContent='Считаю ТЭП по плотности…';
+ try{
+  await applyNormativeTep();
+ }catch(e){
+  status.innerHTML='<span class="import-error">'+escapeHtml(stepFailure('ТЭП по плотности',e))+'</span>';
+  return;
+ }
+ status.innerHTML='<span class="import-ok">Участок подставлен в проект: '+landNum(pending.area_ha,4)+' га, квартиры '+
+  num(tep.apartments.saleable)+' м² продаваемой площади.</span> '+escapeHtml(otherRegionNormsText())+territoryClearedNote();
 }
 
 // Токен запуска: каждый клик «Получить ТЭП» получает свой номер, и ответ

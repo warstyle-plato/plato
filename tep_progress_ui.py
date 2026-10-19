@@ -98,7 +98,11 @@ _SCRIPT = r'''<script id="tep-progress-script">
   const said=declared(status);if(!said)return;
   const b=box(status);
   if(said.kind==='done'){b.hidden=true;return}
-  if(said.kind==='error'){paint(b,'4','100%',said.text,true);return}
+  // Причину отказа уже пишет строка состояния над полосой, и повторять её
+  // здесь целиком нельзя: `textContent` склеивал фразы без пробела, и отказ
+  // выходил на экран дважды, второй раз — слипшимся (экран владельца,
+  // 19.10.2026). Полоса говорит своё: расчёт остановлен, причина — выше.
+  if(said.kind==='error'){paint(b,'4','100%','Расчёт ТЭП остановлен. Почему и что делать дальше, написано выше.',true);return}
   if(said.kind==='step'){paint(b,String(said.stage),said.stage*25+'%',said.text,false);return}
   // Шаг без номера показываем, только пока работа идёт: полосу поднимает
   // нажатие кнопки, а спрятанную её поднимать нечему — иначе постоянная

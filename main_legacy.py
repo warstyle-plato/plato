@@ -42,6 +42,8 @@ from xml.sax.saxutils import escape as xml_escape
 import browser_launch
 import glavapu_scenario
 import site_position
+# Регион проекта: Москва, область или другой — один предикат на все модули.
+import project_regions
 import vri_benefits
 # Профиль освоения стройки: им движок разносит СМР, им же отчёт о рынке считает
 # готовность дома по датам. Одна кривая на оба вопроса.

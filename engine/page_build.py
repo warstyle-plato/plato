@@ -96,6 +96,9 @@ PAGE = PAGE.replace(
                ensure_ascii=False))
 # Имена статей расходов — из движка. Статья без короткой подписи получает
 # полную: сырой ключ на экране невозможен по построению, а не по вниманию.
+PAGE = PAGE.replace("__DEVELOPAID_PROJECT_REGIONS__", json.dumps(
+    {"aliases": project_regions._ALIASES, "labels": project_regions.LABELS,
+     "districts": sorted(project_regions.CADASTRAL_DISTRICTS)}, ensure_ascii=False))
 PAGE = PAGE.replace(CLASS_REGION_BASES_PLACEHOLDER,
                     json.dumps(CLASS_REGION_BASES, ensure_ascii=False))
 PAGE = PAGE.replace(CAPEX_NAMES_PLACEHOLDER, json.dumps(

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 from typing import Any
+import project_regions
 
 # Чем считается продукт. Слова живут ЗДЕСЬ, потому что этот модуль ниже всех,
 # кто их печатает: движок ставит их строкам ТЭП, книга и тизер их выводят.
@@ -320,7 +321,7 @@ def _phase_dates(phase: dict[str, Any]) -> dict[str, str]:
 
 
 CLASS_LABELS = {"comfort": "Комфорт", "business": "Бизнес", "elite": "Элитный"}
-REGION_LABELS = {"msk": "Москва", "mo": "Московская область"}
+REGION_LABELS = project_regions.LABELS
 
 
 LAND_RIGHT_LABELS = {"ownership": "Собственность", "lease": "Аренда"}
@@ -334,7 +335,7 @@ def _site_block(site: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
     return {
         "cadastral_numbers": numbers,
         "address": _text(site.get("address")),
-        "region": REGION_LABELS.get(_text(inputs.get("vri_region")), _text(inputs.get("vri_region"))),
+        "region": REGION_LABELS[project_regions.region_of(inputs)],
         "land_right": LAND_RIGHT_LABELS.get(_text(inputs.get("land_right")), _text(inputs.get("land_right"))),
         "land_area_sqm": _number(site.get("land_area_sqm")),
         "land_area_ha": _number(site.get("land_area_ha")),

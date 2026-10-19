@@ -203,7 +203,14 @@ def _glavapu_analysis_payload(numbers: list[str], timeout: float = 30.0) -> dict
     except urllib.error.HTTPError as exc:
         raise HTTPException(
             status_code=400 if 400 <= exc.code < 500 else 502,
-            detail=f"Калькулятор территории вернул ошибку: {_external_error_message(exc)}",
+            # Отказ калькулятора — его ответ «такой территории не знаю», и
+            # человеку он нужен своими словами, а сам ответ — в скобках.
+            detail=("Калькулятор ГлавАПУ не нашёл территорию по этим номерам. Он знает "
+                    "только участки Москвы, поэтому проверьте номер "
+                    f"(ответ калькулятора: «{_external_error_message(exc)}»)."
+                    if 400 <= exc.code < 500 else
+                    "Калькулятор ГлавАПУ не ответил как следует, повторите попытку позже "
+                    f"(ответ калькулятора: «{_external_error_message(exc)}»)."),
         ) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
         raise HTTPException(
@@ -311,6 +318,26 @@ def _glavapu_analysis_with_diagnosis(numbers: list[str]) -> tuple[dict[str, Any]
         ) from second
 
 
+def refuse_outside_moscow_region(numbers: list[str]) -> None:
+    """Калькулятор ГлавАПУ — московский: участок другого региона ему не отдаём.
+
+    Номер другого кадастрового округа (66:, 78:…) — точно не Москва и не
+    область. Прежде такой участок уходил в калькулятор, и человек получал его
+    отказ «Анализ территории не найден или БД вернула пустой результат», а
+    серверный расчёт ТЭП и перенос таблицы проверки региона не имели вовсе.
+    """
+    outside = [number for number in numbers if project_regions.outside_moscow_region(number)]
+    if not outside:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail=("Участок " + ", ".join(outside) + " находится не в Москве и не в Московской "
+                "области. Калькулятор ГлавАПУ считает только Москву, поэтому по нему мы "
+                "его не считаем. ТЭП такого участка считается по плотности, которую задаёте "
+                "вы, — кнопкой «Получить ТЭП»."),
+    )
+
+
 @app.post("/cadastral/analyze")
 def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]:
     # Как и остальные внешние справочники: если этот сервер до ГлавАПУ не
@@ -322,6 +349,7 @@ def analyze_cadastral_territory(req: CadastralAnalysisRequest) -> dict[str, Any]
             _MO_CALC_TIMEOUT_SECONDS,
         )
     cadastral_numbers = _parse_cadastral_numbers(req.cadastral_numbers)
+    refuse_outside_moscow_region(cadastral_numbers)
     payload, diagnosis = _glavapu_analysis_with_diagnosis(cadastral_numbers)
 
     cad_territory = payload.get("cadZU") or {}

@@ -401,7 +401,7 @@ _MODEL_VRI_SETTING_ROWS: list[tuple[str, str]] = [
 ]
 
 _MODEL_VRI_LABELS: dict[str, str] = {
-    "msk": "Москва", "mo": "Московская область",
+    **PROJECT_REGION_LABELS,
     "ownership": "Собственность", "lease": "Аренда",
     "lump": "Единовременно", "installment": "Рассрочка",
     "auto": "Автоматический", "shares": "Заданные доли",

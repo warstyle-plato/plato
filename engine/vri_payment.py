@@ -22,7 +22,7 @@
 
 VRI_DEFAULTS: dict[str, Any] = {
     "vri_required": True,
-    "vri_region": "msk",                  # msk | mo
+    "vri_region": "msk",                  # msk | mo | other (`project_region`)
     "land_right": "ownership",            # ownership | lease
     "vri_obligation_date": "",            # пусто — дата РнС
     "vri_payment_mode": "lump",           # lump | installment
@@ -114,8 +114,8 @@ def vri_relief_basis(x: dict[str, Any]) -> str:
     mode = str((x or {}).get("vri_relief_mode") or "none").strip().lower()
     if mode in ("percent", "amount", "master", "off"):
         return mode
-    region = str((x or {}).get("vri_region") or "msk").strip().lower()
-    return "none" if region in ("mo", "область") else "project_benefits"
+    # Льготы 1874-ПП — московские: ни в области, ни в другом регионе их нет.
+    return "project_benefits" if project_region(x) == "msk" else "none"
 
 
 def vri_relief(x: dict[str, Any], gross: float,
@@ -188,10 +188,7 @@ def _vri_date(value: Any, fallback: date) -> date:
 
 
 def _vri_region(value: Any) -> str:
-    text = str(value or "").strip().lower()
-    if text in {"mo", "50", "мо", "московская область", "подмосковье", "region", "мособласть"}:
-        return "mo"
-    return "msk"
+    return project_region({"vri_region": value})
 
 
 def _vri_mo_range(x: dict[str, Any], amount: float) -> dict[str, Any] | None:
@@ -265,7 +262,7 @@ def _vri_settings(x: dict[str, Any], permit: date, amount: float = 0.0) -> dict[
         if years not in _VRI_MSK_TERMS:
             years = min(_VRI_MSK_TERMS, key=lambda item: abs(item - years))
         periodicity = 3
-    else:
+    elif region == "mo":
         mo_range = _vri_mo_range(x, amount)
         if mo_range:
             years = mo_range["years"]
@@ -455,6 +452,12 @@ def build_vri_schedule(
                 "Диапазоны рассрочки Московской области не заданы — срок и периодичность "
                 "взяты из ввода."
             )
+    if settings["region"] == "other" and amount > 0:
+        warnings.append(
+            "Участок не в Москве и не в Московской области, а порядка платы за смену ВРИ "
+            "этого региона у нас нет: сумму, срок, периодичность и проценты рассрочки "
+            "расчёт берёт такими, как вы их ввели."
+        )
 
     rows: list[dict[str, Any]] = []
     balance = amount
