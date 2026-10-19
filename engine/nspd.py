@@ -2868,6 +2868,12 @@ def tep_derived_by_site(req: TepBySiteRequest) -> dict[str, Any]:
         "population": got.get("population"),
         "social_population": got.get("social_population"),
         "social_population_basis": got.get("social_population_basis"),
+        # Жители по каждому способу на тех же метрах: переключатель способа
+        # ведёт за ними компенсацию, когда ставки за место у этого пути нет.
+        "social_population_by_method": {
+            method: moscow_social_population(req.apartment_area_sqm, req.apartment_count,
+                                             method)[0]
+            for method in SOCIAL_POPULATION_METHODS},
         "apartment_units": got.get("apartment_units"),
         "places": {
             "kindergarten": got.get("kindergarten_places"),

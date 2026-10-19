@@ -88,7 +88,7 @@ def _stand() -> str:
         "function calculate(){}",
         "async function rescaleSocialFromTep(){return false}",
         "async function recalcFromTepByNorms(){}",
-        "function nonresidentialAboveSqm(){return 0}",
+        page_blocks.function("nonresidentialAboveSqm"),
         # Суммы «офисы и ТЦ» читают реестр: второй офисник той же семьи.
         page_blocks.object_roster(),
         page_blocks.function("standaloneProductSum"),
@@ -98,6 +98,8 @@ def _stand() -> str:
         page_blocks.function("glavapuBaselineApplies"),
         page_blocks.function("socialRescaleApplies"),
         page_blocks.function("tepNormsMode"),
+        # Тело запроса собирает общий с переключателем населения помощник.
+        page_blocks.function("baselineRecalcBody"),
         page_blocks.function("recalcFromTep"),
     ])
 

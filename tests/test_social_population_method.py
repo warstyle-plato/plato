@@ -111,8 +111,43 @@ def test_the_form_options_are_the_engine_methods():
     assert options == list(core.SOCIAL_POPULATION_METHODS)
 
 
-def test_the_page_switch_recounts_the_places():
-    """Настоящая страница: переключатель в форме меняет места в вводных."""
+_SWITCH = """async (setup)=>{
+  cadastralAnalysis={territory:{district:'', inside_moscow:true}};
+  inputs._glavapu_import=null;
+  tep.apartments.saleable=45000; tep.apartments.gns=50000; tep.apartments.units=1000;
+  Object.assign(inputs,{kindergarten_places:267,school_places:500,clinic_capacity:100,
+    social_compensation_mln:478.807,social_population_method:'rngp_area'});
+  // Соцнагрузка посчитана на других метрах: пересчёт ТЭП пошёл бы пропорцией,
+  // а она переключателя не видит.
+  inputs._social_basis={apartment_area_sqm:40000,nonresidential_sqm:0,source:'нормативы Москвы'};
+  if(setup==='manual')markFieldManual('inputs.kindergarten_places');
+  if(setup==='krt')inputs.social_area_source='manual';
+  syncTep(false);renderInputs();
+  const watched=['kindergarten_places','school_places','clinic_capacity','social_compensation_mln',
+    'land_rights_cost_mln','underground_manual_spaces'];
+  const before=Object.fromEntries(watched.map(k=>[k,inputs[k]]));
+  // Выбор — как у человека: значение в поле и событие change.
+  const live=document.getElementById('f_social_population_method');
+  live.value='flats_household';
+  live.dispatchEvent(new Event('change'));
+  const note=()=>document.getElementById('socialPopulationNote');
+  for(let i=0;i<60;i++){
+    const text=(note()&&note().textContent)||'';
+    if(text&&!text.startsWith('Пересчитываю'))break;
+    await new Promise(r=>setTimeout(r,100));
+  }
+  openTab('inputs');
+  const group=document.querySelector('details[data-group="Социальная нагрузка"]');
+  if(group)group.open=true;
+  const n=note();
+  return {before, after:Object.fromEntries(watched.map(k=>[k,inputs[k]])),
+          field:document.getElementById('f_kindergarten_places').value,
+          note:(n&&n.textContent)||''};
+}"""
+
+
+def _switch(setup: str = "") -> dict:
+    """Настоящая страница на ширине телефона: переключатель в форме вводных."""
     chrome = chromium_or_skip()
     from playwright.sync_api import sync_playwright  # noqa: PLC0415
 
@@ -121,39 +156,107 @@ def test_the_page_switch_recounts_the_places():
     with serve(registry_app, PORT) as base, sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chrome))
         try:
-            tab = browser.new_page()
+            tab = browser.new_page(viewport={"width": 390, "height": 844})
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
-            tab.goto(f"{base}/classic", wait_until="domcontentloaded")
+            tab.goto(f"{base}/", wait_until="domcontentloaded")
             wait_for_result(tab)
-            got = tab.evaluate("""async ()=>{
-              cadastralAnalysis={territory:{district:'', inside_moscow:true}};
-              inputs._glavapu_import=null; inputs._social_basis=null;
-              tep.apartments.saleable=45000; tep.apartments.gns=50000;
-              tep.apartments.units=1000;
-              inputs.kindergarten_places=0; inputs.school_places=0;
-              inputs.clinic_capacity=0;
-              renderInputs();
-              const el=document.getElementById('f_social_population_method');
-              const options=el?[...el.options].map(o=>o.value):[];
-              await recalcFromTep({silent:true});
-              const before=inputs.school_places;
-              // Пересчёт перерисовал вводные — поле берётся заново, как его
-              // видит человек.
-              const live=document.getElementById('f_social_population_method');
-              live.value='flats_household';
-              live.dispatchEvent(new Event('change'));
-              for(let i=0;i<40&&inputs.school_places===before;i++)
-                await new Promise(r=>setTimeout(r,100));
-              const note=document.getElementById('tepDerivedNote');
-              return {options, before, after:inputs.school_places,
-                      method:inputs.social_population_method,
-                      note:(note&&note.textContent)||''};
-            }""")
+            got = tab.evaluate(_SWITCH, setup)
+            # Итог виден под самим переключателем, а не на вкладке ТЭП.
+            note = tab.locator("#socialPopulationNote")
+            got["note_visible"] = note.count() == 1 and note.is_visible()
+            if got["note_visible"]:
+                select_box = tab.locator("#f_social_population_method").bounding_box()
+                note_box = note.bounding_box()
+                got["note_below_select"] = note_box["y"] >= select_box["y"] + select_box["height"] - 1
         finally:
             browser.close()
     other = [line for line in errors if "Failed to fetch" not in line]
     assert not other, f"страница упала: {other[:2]}"
-    assert got["options"] == list(core.SOCIAL_POPULATION_METHODS)
-    assert (got["before"], got["after"], got["method"]) == (123, 189, "flats_household")
-    assert "требование органа" in got["note"]
+    return got
+
+
+def test_the_page_switch_recounts_the_places_by_the_chosen_method():
+    """«Ничего не меняется при переключении» (владелец, 19.10.2026).
+
+    Соцнагрузка, посчитанная на других метрах, уводила переключатель в
+    пропорцию по площади: места менялись от метров, а не от способа, и
+    компенсация на нормативном пути не двигалась вовсе.
+    """
+    got = _switch()
+    norm = core.tep_derived_norms(apartment_area_sqm=45000, residential_living_spp_sqm=50000,
+                                  apartment_count=1000,
+                                  social_population_method="flats_household")
+    assert got["after"]["kindergarten_places"] == norm["kindergarten_places"] == 93
+    assert got["after"]["school_places"] == norm["school_places"] == 189
+    assert got["after"]["clinic_capacity"] == norm["clinic_capacity"]
+    assert got["field"] == "93"
+    # Компенсация идёт за жителями: 1 364 по норме → 2 100 по квартирам.
+    assert got["after"]["social_compensation_mln"] == round(478.807 * 2100 / 1364, 3)
+    # Машино-места и плата за ВРИ от способа не зависят.
+    for key in ("land_rights_cost_mln", "underground_manual_spaces"):
+        assert got["after"][key] == got["before"][key], key
+    assert got["note_visible"] and got["note_below_select"]
+    assert "2,1" in got["note"] and "267 → 93" in got["note"]
+    assert "1 364 → 2 100" in got["note"].replace("\xa0", " ")
+
+
+def test_places_typed_by_hand_stay_and_the_note_says_why():
+    got = _switch("manual")
+    assert got["after"]["kindergarten_places"] == 267
+    assert got["after"]["school_places"] == 189
+    assert got["note_visible"]
+    assert "Вписаны вручную, переключатель их не меняет: места ДОО" in got["note"]
+
+
+def test_the_krt_requirement_is_not_touched_and_the_note_says_why():
+    got = _switch("krt")
+    for key in ("kindergarten_places", "school_places", "clinic_capacity",
+                "social_compensation_mln"):
+        assert got["after"][key] == got["before"][key], key
+    assert got["note_visible"], got
+    assert "требование КРТ" in got["note"]
+
+
+def test_glavapu_places_follow_the_switch_and_nothing_else_moves():
+    """Снимок проекта с выгрузкой ГлавАПУ: места — по ставкам выгрузки.
+
+    Прежде переключатель звал весь пересчёт ТЭП, и он заодно переписывал
+    плату за ВРИ и машино-места — чужие для переключателя числа.
+    """
+    import json  # noqa: PLC0415
+
+    snapshot = json.loads((Path(__file__).resolve().parent.parent / "docs" / "projects"
+                           / "77_01_0006018_75_2026-09-09.json").read_text("utf-8"))
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright  # noqa: PLC0415
+
+    from main_registry import app as registry_app  # noqa: PLC0415
+
+    with serve(registry_app, PORT) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        try:
+            tab = browser.new_page(viewport={"width": 390, "height": 844})
+            tab.goto(f"{base}/", wait_until="domcontentloaded")
+            wait_for_result(tab)
+            got = tab.evaluate("""async (data)=>{
+              applyProjectSnapshot(data);
+              const wait=()=>new Promise(r=>setTimeout(r,100));
+              for(let i=0;i<30&&!glavapuBaselineApplies();i++)await wait();
+              syncTep(false);renderInputs();
+              const keys=['kindergarten_places','school_places','clinic_capacity',
+                'social_compensation_mln','land_rights_cost_mln','underground_manual_spaces'];
+              const before=Object.fromEntries(keys.map(k=>[k,inputs[k]]));
+              const live=document.getElementById('f_social_population_method');
+              live.value='flats_household';live.dispatchEvent(new Event('change'));
+              const note=()=>(document.getElementById('socialPopulationNote')||{}).textContent||'';
+              for(let i=0;i<60&&(!note()||note().startsWith('Пересчитываю'));i++)await wait();
+              return {before,after:Object.fromEntries(keys.map(k=>[k,inputs[k]])),note:note()};
+            }""", snapshot)
+        finally:
+            browser.close()
+    assert got["after"]["kindergarten_places"] != got["before"]["kindergarten_places"], got
+    assert got["after"]["social_compensation_mln"] != got["before"]["social_compensation_mln"]
+    for key in ("land_rights_cost_mln", "underground_manual_spaces"):
+        assert got["after"][key] == got["before"][key], key
+    assert "ставкам за место из выгрузки ГлавАПУ" in got["note"]
