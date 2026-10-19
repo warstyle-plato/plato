@@ -2776,9 +2776,15 @@ async function socialPopulationSwitched(methodBefore){
  }catch(e){
   return sayPopulationSwitch('Места соцобъектов не пересчитаны: '+String(e.message||e)+'.');
  }
- if(viaBaseline&&d.self_check&&d.self_check.matches_baseline===false)
-  return sayPopulationSwitch('Места соцобъектов не пересчитаны: расчёт по ставкам выгрузки ГлавАПУ не воспроизводит саму выгрузку ('
-   +(d.self_check.mismatch||[]).join('; ')+'). Нужна свежая выгрузка, или впишите места руками.');
+ // Переключатель меняет только жителей и места соцобъектов — и сверку с
+ // выгрузкой читает только по ним (`social_matches_baseline`). Машино-места
+ // он не трогает, и их расхождение не повод отказывать в пересчёте мест ДОО.
+ const socialCheck=(d.self_check&&d.self_check.mismatch_by_scope||{}).social||[];
+ if(viaBaseline&&d.self_check&&d.self_check.social_matches_baseline===false)
+  return sayPopulationSwitch('Места соцобъектов не пересчитаны: в выгрузке ГлавАПУ число жителей и места '
+   +'детского сада, школы или поликлиники не сходятся с нормативом Москвы ('+socialCheck.join('; ')
+   +'). Если пересчитать их по-своему, мы разойдёмся с городом, не зная почему. '
+   +'Загрузите выгрузку ГлавАПУ заново или впишите нужные места в поля ниже вручную.');
  const offer={kindergarten_places:d.places.kindergarten,school_places:d.places.school,
   clinic_capacity:d.places.clinic};
  let compensationBasis='';

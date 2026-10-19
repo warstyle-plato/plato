@@ -1074,11 +1074,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
                     "school_mln": op.get("social_construction_breakdown", {}).get("school", 0.0) / 1_000_000,
                     "clinic_mln": op.get("social_construction_breakdown", {}).get("clinic", 0.0) / 1_000_000,
                 },
-                "compensation": {
-                    "kindergarten_mln": n((x.get("_glavapu_import") or {}).get("normalized", {}), "social_compensation_kindergarten_mln"),
-                    "school_mln": n((x.get("_glavapu_import") or {}).get("normalized", {}), "social_compensation_school_mln"),
-                    "clinic_mln": n((x.get("_glavapu_import") or {}).get("normalized", {}), "social_compensation_clinic_mln"),
-                },
+                "compensation": social_compensation_breakdown(x),
             },
         },
         "report": {
