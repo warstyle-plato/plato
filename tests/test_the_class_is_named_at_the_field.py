@@ -133,7 +133,7 @@ def test_every_class_field_says_so_and_only_it(page_state):
     profile = {key for key in core.PROJECT_CLASS_PRESETS["comfort"] if key != "label"}
     drawn = {one["id"][2:]: one["unit"] for one in page_state["units"]}
     assert drawn, "форма не отрисовалась"
-    marked = {key for key, unit in drawn.items() if "ставит класс проекта" in unit}
+    marked = {key for key, unit in drawn.items() if "задаёт класс проекта" in unit}
     # Поля профиля, которые форма вообще рисует: `CLASS_ONLY_INPUTS` скрыты, и
     # спрашивать с них пометку не с чего.
     expected = {key for key in profile
@@ -144,7 +144,7 @@ def test_every_class_field_says_so_and_only_it(page_state):
     # Та самая жалоба: площадь машино-места.
     assert "underground_area_per_space_sqm" in marked
     # И контроль в другую сторону: цена входа классу не принадлежит.
-    assert "ставит класс проекта" not in drawn.get("purchase_price_mln", "")
+    assert "задаёт класс проекта" not in drawn.get("purchase_price_mln", "")
 
 
 def test_the_mark_says_where_the_value_is_changed(page_state):

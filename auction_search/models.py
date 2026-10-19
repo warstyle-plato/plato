@@ -192,6 +192,11 @@ class AuctionLot:
     application_deadline: Optional[str] = None
     auction_date: Optional[str] = None
     status: Optional[str] = None
+    # Код статуса так, как его прислала площадка (`SUCCEED`, `FAILED`…), рядом
+    # со словами: по словам нельзя надёжно решить, завершены ли торги.
+    status_code: Optional[str] = None
+    # Итоговая цена завершённых торгов — только если площадка её прислала.
+    result_price_rub: Optional[float] = None
     price_schedule: list[AuctionPricePeriod] = field(default_factory=list)
     documents: list[AuctionDocument] = field(default_factory=list)
     krt_program: list[KrtProgramItem] = field(default_factory=list)

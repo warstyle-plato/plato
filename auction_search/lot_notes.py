@@ -336,14 +336,18 @@ class LotNotes:
                                          "updated_at": int(time.time()), "points": points})
 
     def points_queue(self, now: float | None = None) -> list[str]:
-        """Номера лотов выгрузки, у которых точки ещё нет: ближе к сроку — раньше."""
+        """Номера лотов, у которых точки или площади из НСПД ещё нет.
+
+        Сначала лоты выгрузки (их ждёт человек), затем все лоты сбора: площадь
+        участка, которой нет ни у площадки, ни в названии, берётся из НСПД по
+        номеру — без неё фильтр «участок от N га» о лоте ничего не знает
+        (владелец, 19.10.2026). Внутри — ближе к сроку раньше.
+        """
         moment = time.time() if now is None else now
         points = self.points()
-        waiting: list[tuple[float, str]] = []
+        waiting: list[tuple[int, float, str]] = []
         seen: set[str] = set()
         for lot in self.lots().values():
-            if not lot.get("requested_at"):
-                continue
             deadline = _deadline_ts(lot)
             if deadline is not None and deadline < moment:
                 continue
@@ -353,15 +357,18 @@ class LotNotes:
                 seen.add(number)
                 point = points.get(number) or {}
                 asked = float(point.get("asked_at") or 0)
-                # Точка не стареет: участок не переезжает.
-                if point.get("map_url"):
+                # Точка не стареет: участок не переезжает. Запись без вида
+                # объекта сделана до того, как фон начал брать площадь, — её
+                # переспрашивают один раз.
+                if point.get("map_url") and "kind" in point:
                     continue
                 if point and moment - asked < (NSPD_NOT_FOUND_RETRY_SECONDS if point.get("not_found")
                                                else NSPD_FAILED_RETRY_SECONDS):
                     continue
-                waiting.append((deadline if deadline is not None else float("inf"), number))
+                waiting.append((0 if lot.get("requested_at") else 1,
+                                deadline if deadline is not None else float("inf"), number))
         waiting.sort()
-        return [number for _deadline, number in waiting]
+        return [number for _requested, _deadline, number in waiting]
 
     # --- прогоны фона -------------------------------------------------------
 

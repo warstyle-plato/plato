@@ -69,7 +69,9 @@ def test_the_field_says_the_minimum():
     """Ограничение объясняется у поля, до ввода. Заметки в расчёте нет —
     решение владельца (13.08.2026): предупреждать после того, как человек уже
     посчитал, поздно и шумно."""
-    assert "минимум 1" in core.PAGE
+    hint = next(f[2] for _g, fields in core.FIELD_GROUPS for f in fields if f[0] == "ird_months")
+    assert "Не меньше 1 месяца" in hint, hint
+    assert "Не меньше 1 месяца" in core.PAGE
     result = core.calculate(core.CalcRequest(
         inputs={**BASE, "ird_months": 0}, tep=core.TEP_DEFAULT, rates=[]))
     assert "ird_months" not in result["notes"]

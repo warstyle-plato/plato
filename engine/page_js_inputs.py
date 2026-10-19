@@ -648,17 +648,25 @@ function movedToConstruction(id){
 }
 function classFieldUnitText(id,unit){
  unit=objectRateUnit(id,unit);
+ // Пояснение к единице — отдельным предложением, а не через «·»: единица
+ // может сама кончаться точкой («мес.») или уже нести своё предложение.
+ // Внутри, а не своей функцией: стенды собирают эту функцию по имени.
+ const unitSentence=(head,sentence)=>{
+  head=String(head||'').replace(/[\s.;·]+$/,'');
+  return head?head+'. '+sentence:sentence;
+ };
  // Площадь сноса и выкуп, найденные по контуру КРТ, подписаны своим
  // происхождением, пока число в поле то же, что положил контур; исправленное —
  // уже ручное. Проверка внутри, а не своей функцией: стенды страницы собирают
  // `classFieldUnitText` по имени, и новое имя рядом роняло бы их все.
  const krtSource=id==='demolition_area_sqm'?inputs._demolition_source:(id==='land_buyout_mln'?inputs._land_buyout_source:null);
  if(krtSource&&krtSource.by&&Math.abs(Number(inputs[id])-Number(krtSource.value))<0.05)
-  return unit+' · '+krtSource.by+(krtSource.warn?' · ВНИМАНИЕ: '+krtSource.warn:'')
-   +(id==='demolition_area_sqm'?' — исправьте, если здание сохраняется':' — вписанное руками сильнее');
+  return unitSentence(unit,'Источник: '+krtSource.by+'.'+(krtSource.warn?' Внимание: '+krtSource.warn+'.':'')
+   +(id==='demolition_area_sqm'?' Исправьте, если здание сохраняется.':' Число, вписанное вручную, главнее.'));
  if(!classSetsField(id))return unit;
- if(!isClassManual(id))return unit+' · ставит класс проекта, правится в «Настройках класса»';
- return unit+' · '+(classFieldSource(id)||'вписано руками')+' — смена класса его не затрёт';
+ if(!isClassManual(id))return unitSentence(unit,'Значение задаёт класс проекта, поменять его можно в «Настройках класса».');
+ const source=classFieldSource(id)||'вписано руками';
+ return unitSentence(unit,source.charAt(0).toUpperCase()+source.slice(1)+' — смена класса его не затрёт.');
 }
 // Подпись у единицы без перерисовки вводных: перерисовка снесла бы соседние
 // с полем узлы — например, ответ кнопки рекомендации.
@@ -1554,11 +1562,16 @@ const GROUP_PEEK={
  'ФОК / медцентр':['sports_enabled','sports_purpose','sports_gba_sqm']
 };
 
+// Единица каждого поля — тот же разрез подсказки, что у классов
+// (`field_units`): пояснение после единицы стало предложением, и разрез по «;»
+// выносил его в заголовок группы целиком.
+const FIELD_UNITS=__DEVELOPAID_FIELD_UNITS__;
+
 function groupPeek(name,fields){
  const out=[];
  for(const id of (GROUP_PEEK[name]||[])){
   const f=fields.find(x=>x[0]===id);if(!f)continue;
-  const [,,unit,type]=f;
+  const [,,,type]=f;
   const v=(id in inputs)?inputs[id]:INPUT_DEFAULT[id];
   // Выключенный объект — исчерпывающая сводка: его площади ни о чём не говорят.
   if(type==='checkbox'){if(!v)return 'выключен';continue}
@@ -1567,7 +1580,7 @@ function groupPeek(name,fields){
    const n=Number(v);
    // Ноль в заголовке — это «не задано», а не сведение: показывать нечего.
    if(!Number.isFinite(n)||n===0)continue;
-   out.push({text:num(n),unit:String(unit).split(';')[0].trim()});
+   out.push({text:num(n),unit:FIELD_UNITS[id]||''});
   }else out.push({text:String(v),unit:''});
  }
  // Одинаковая единица у соседей печатается один раз: «110 · 120 тыс. ₽/м² ГНС».
@@ -1740,7 +1753,10 @@ function renderInputs(){
      let el;
      if(Array.isArray(f[4])){el=document.createElement('select');f[4].forEach(pair=>{let o=document.createElement('option');o.value=pair[0];o.textContent=pair[1];el.appendChild(o)})}
      else if(type==='select'){el=document.createElement('select');__DEVELOPAID_SOCIAL_MODES__.forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
-     else if(type==='finance_select'){el=document.createElement('select');['Капитализация в ПФ','Выплата при рефинансировании'].forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent=v;el.appendChild(o)})}
+     else if(type==='finance_select'){el=document.createElement('select');
+      // Значения — из движка (`_M2_EXTRA_OPTIONS`), их же ждёт книга; на экране —
+      // что станет с процентами. Подпись книги переписывается вместе с Excel.
+      __DEVELOPAID_BRIDGE_INTEREST_MODES__.forEach(v=>{let o=document.createElement('option');o.value=v;o.textContent={'Капитализация в ПФ':'Прибавить к долгу ПФ','Выплата при рефинансировании':'Заплатить сразу при переходе на ПФ'}[v]||v;el.appendChild(o)})}
      else {el=document.createElement('input');el.type=type==='checkbox'?'checkbox':type;if(type==='number')el.step='any'}
      el.id='f_'+id;
      // В Москве периодичность рассрочки по ВРИ установлена нормативно —
