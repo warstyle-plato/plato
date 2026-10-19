@@ -164,18 +164,18 @@ def test_first_queue_does_not_receive_all_project_pre_rns_costs(nagatino):
         phase["result"]["finance"]["peak_pf"] for phase in bundle["phases"])
 
 
-def test_strategy_is_explicit_and_independent_by_default_in_queue_tab():
+def test_strategy_is_explicit_and_independent_by_default_in_finance_group():
     page = core.PAGE
     assert "financing_strategy:'independent'" in page
     assert 'id="phaseFinancingIndependent"' in page
     assert 'id="phaseFinancingUnified"' in page
     assert "Независимое финансирование очередей" in page
     assert "Единый денежный поток проекта" in page
-    assert "Затраты до РНС" in page
-    assert "Свободный cash проекта" in page
+    assert "Расходы до разрешения на строительство" in page
+    assert "Оплачено свободными деньгами проекта" in page
     assert "Собственные средства" in page
-    assert "Новый БРИДЖ" in page
-    assert "ПФ после РНС" in page
+    assert "Новый бридж" in page
+    assert "Проектное финансирование после разрешения на строительство" in page
     assert "будущая прибыль" in page
 
 
