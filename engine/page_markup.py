@@ -361,6 +361,7 @@ PAGE += r"""</head>
           </div>
         </div>
         <div class="note">Текущий одноочередный расчёт не меняется. В многоочередном режиме каждая очередь считается отдельно тем же движком, после чего строится единый свод без двойного счёта.</div>
+        <div id="phaseFinanceHint" class="note phase-config-only">Очереди включены. Проверьте, как финансируются очереди, в разделе «Экономика → Финансирование». <button type="button" class="btn" style="margin-top:8px" onclick="openPhaseFinancing()">Перейти к финансированию очередей</button></div>
         <div class="phase-grid phase-config-only">
           <div class="field"><label>Количество очередей</label><select id="phaseCount" onchange="setPhaseCount(Number(this.value))"><option selected>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
           <div class="field"><label>Целевой размер очереди, продаваемых м²</label><input id="phaseTargetSize" type="number" step="5000" value="70000" onchange="phasing.target_size_sqm=Number(this.value);renderPhasing()"></div>

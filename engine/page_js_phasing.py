@@ -325,6 +325,15 @@ function setPhaseFinancingStrategy(value){
  phasing.financing_strategy=value==='unified_project_cash'?'unified_project_cash':'independent';
  renderPhasing();calculate();
 }
+// Переход из подсказки на вкладке «Очередность» к блоку стратегии в
+// «Экономика → Финансирование»: группа раскрывается, блок — в начале экрана.
+function openPhaseFinancing(){
+ openTab('inputs');
+ const det=document.querySelector('details[data-group="Финансирование"]');
+ if(det)det.open=true;
+ const block=document.getElementById('phaseFinancingBlock');
+ if(block)block.scrollIntoView({block:'start'});
+}
 function renderPhaseFinancing(){
  // Блок стоит в «Экономика → Финансирование» и виден только при очередности
  // на 2+ очереди — тем же условием, что настройки вкладки «Очередность».

@@ -7,6 +7,9 @@
 `phasing`, а не в узлах страницы. Разметка одна: шаблон
 `phaseFinancingTemplate`, который ставит в группу `renderInputs`.
 
+Когда очереди включены (2+), на вкладке «Очередность» стоит подсказка с
+кнопкой перехода к блоку (решение владельца, 19.10.2026).
+
 Проверяется отрисованная страница (`main_registry.app`, ширина 390).
 
 Запуск: python3 -m pytest tests/test_phasing_strategy_lives_in_finance.py -q
@@ -132,6 +135,40 @@ def test_two_queues_put_the_strategy_last_and_the_choice_reaches_the_calculation
     _phases(page, 3)
     got = _open_finance(page)
     assert got["shown"] and got["last"] and got["unified"], got
+
+
+HINT = """()=>{
+  const hint=document.getElementById('phaseFinanceHint');
+  const shown=!!hint&&!!(hint.offsetWidth||hint.offsetHeight||hint.getClientRects().length);
+  const r=hint?hint.getBoundingClientRect():null;
+  return {shown, text:hint?hint.textContent:'', left:r?r.left:null, right:r?r.right:null,
+    pageScroll:document.documentElement.scrollWidth-document.documentElement.clientWidth};
+}"""
+
+
+def test_switching_queues_on_points_to_the_finance_block(page) -> None:
+    import browser
+    page.evaluate("()=>togglePhasing(false)")
+    browser.wait_for_result(page)
+    page.evaluate("()=>openTab('phasing')")
+    assert not page.evaluate(HINT)["shown"], "подсказка видна без очередей"
+
+    page.click("#phasingEnabled")
+    browser.wait_for_result(page)
+    page.evaluate("()=>{if(Number(phasing.phase_count||1)<2)setPhaseCount(2)}")
+    browser.wait_for_result(page)
+    got = page.evaluate(HINT)
+    assert got["shown"], "после включения очередей подсказки нет"
+    assert "Очереди включены" in got["text"] and "«Экономика → Финансирование»" in got["text"], got
+    assert got["left"] >= 0 and got["right"] <= 390 and got["pageScroll"] <= 0, got
+
+    page.get_by_role("button", name="Перейти к финансированию очередей").click()
+    landed = page.evaluate("""()=>{const b=document.getElementById('phaseFinancingBlock');
+      const r=b?b.getBoundingClientRect():null;
+      return {inputs:document.getElementById('inputs').classList.contains('active'),
+        top:r?r.top:null, h:innerHeight, shown:!!b&&!b.hidden};}""")
+    assert landed["inputs"] and landed["shown"], landed
+    assert 0 <= landed["top"] < landed["h"], landed
 
 
 def test_the_markup_lives_once_in_a_template() -> None:
