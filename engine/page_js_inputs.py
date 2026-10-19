@@ -1913,8 +1913,15 @@ function renderInputs(){
     const foot=document.createElement('div');foot.id='krtVriFooter';
     foot.innerHTML=krtVriFooterHtml((lastResult||{}).vri);det.appendChild(foot);
    }
+   // Стратегия финансирования очередей — последним блоком «Финансирования».
+   // Разметка одна (шаблон в разметке страницы), выбор живёт в `phasing`;
+   // видимость и отметки ставит renderPhaseFinancing — после цикла, когда
+   // группа уже на странице.
+   const phaseTpl=grp[0]==='Финансирование'&&document.getElementById('phaseFinancingTemplate');
+   if(phaseTpl)det.appendChild(phaseTpl.content.cloneNode(true));
    (ownTab?vriBox:box).appendChild(det);
  });
+ if(typeof renderPhaseFinancing==='function')renderPhaseFinancing();
  rateScenario.value=inputs.rate_scenario||'base';
  // Фокус возвращается туда, где он был: перерисовка случается ПОСРЕДИ ввода
  // (место ДОО дописывает площадь во вводные), и без возврата человек после

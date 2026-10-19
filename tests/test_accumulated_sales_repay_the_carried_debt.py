@@ -213,7 +213,7 @@ def test_the_plate_names_what_closed_the_gap() -> None:
     # текст плашки гоняет через node test_the_rve_plate_speaks_by_queue.py.
     assert "банк забирал" in page
     assert "поступлений" in page
-    # И признак на вкладке «Очерёдность», иначе включить его негде.
+    # И признак в «Экономика → Финансирование», иначе включить его негде.
     assert 'id="phaseSweepCash"' in page
     assert "sweep_project_cash" in page
 

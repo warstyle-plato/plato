@@ -224,10 +224,10 @@ def test_the_remainder_is_not_called_unpaid_when_the_debt_moved(healthy):
     # Признак должен быть на экране: без него перенос включить нечем, и весь
     # разбор остаётся недостижимым из интерфейса.
     assert "phaseCarryDebt" in page
-    assert "Непогашенный долг очереди переходит в ПФ следующей" in page
+    assert "остаток долга переходит в проектное финансирование следующей очереди" in page
     # Книга о переносе пока не знает — об этом обязано быть сказано рядом с
     # признаком, а не только в коммите.
-    assert "Excel-книга о переносе пока не знает" in page
+    assert "Excel-файл перенос долга пока не учитывает" in page
 
 
 def test_the_pdf_prints_the_transfer_section():

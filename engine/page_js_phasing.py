@@ -326,6 +326,10 @@ function setPhaseFinancingStrategy(value){
  renderPhasing();calculate();
 }
 function renderPhaseFinancing(){
+ // Блок стоит в «Экономика → Финансирование» и виден только при очередности
+ // на 2+ очереди — тем же условием, что настройки вкладки «Очередность».
+ const block=document.getElementById('phaseFinancingBlock');
+ if(block)block.hidden=!(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1);
  const independent=document.getElementById('phaseFinancingIndependent'),unified=document.getElementById('phaseFinancingUnified'),body=document.getElementById('phaseFinancingBody'),summary=document.getElementById('phaseFinancingSummary');
  const strategy=currentPhaseFinancingStrategy();phasing.financing_strategy=strategy;
  if(independent)independent.checked=strategy==='independent';if(unified)unified.checked=strategy==='unified_project_cash';
@@ -345,8 +349,8 @@ function renderPhaseFinancing(){
  const rows=funding.rows||[],totals=funding.totals||{};
  body.innerHTML=rows.map(x=>`<tr><td>${escapeHtml(x.name||('О'+x.phase))}</td><td>${money(x.pre_rns_costs)}</td><td>${money(x.project_cash_used)}</td><td>${money(x.own_funds)}</td><td>${money(x.new_bridge)}</td><td>${money(x.peak_pf)}</td></tr>`).join('');
  summary.innerHTML=funding.enabled
-  ?`Единый поток включён: cash проекта профинансировал <b>${money(totals.project_cash_used)}</b> затрат следующих очередей до РНС. Новый БРИДЖ — ${money(totals.new_bridge)}.`
-  :`Независимый режим: каждая очередь закрывает затраты до РНС своим капиталом и БРИДЖем. Общая фактическая выборка БРИДЖ — <b>${money(totals.new_bridge)}</b>.`;
+  ?`Единый денежный поток включён: свободные деньги проекта оплатили <b>${money(totals.project_cash_used)}</b> расходов следующих очередей до разрешения на строительство. Новый бридж — ${money(totals.new_bridge)}.`
+  :`Каждая очередь финансируется отдельно: расходы до разрешения на строительство она оплачивает своими деньгами и бриджем. Всего взято бриджа — <b>${money(totals.new_bridge)}</b>.`;
 }
 const VOLUME_SHARE_ARTICLES=['ird','design','preparation','utilities'];
 // Статья «по объёму»: доли считает движок по строительному объёму очереди,
