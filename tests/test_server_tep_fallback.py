@@ -55,7 +55,7 @@ def test_the_page_goes_server_side_in_telegram_and_on_failure():
     assert flow, "obtainCadastralTep не найдена на странице"
     body = flow.group(0)
     telegram_branch = body.find("isTelegramWebApp()")
-    automation = body.find("Открываю штатный расчёт ГлавАПУ")
+    automation = body.find("frame.src='/calc/")
     assert 0 < telegram_branch < automation, \
         "Telegram обязан уходить в серверный расчёт до запуска iframe"
     # Признак телеграма — параметры, которыми бот открыл окно. Проверка по

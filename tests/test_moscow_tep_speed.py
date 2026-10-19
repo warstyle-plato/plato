@@ -285,7 +285,7 @@ def test_a_working_calculator_says_so(monkeypatch):
 def test_the_page_prints_the_reason():
     """Строка статуса говорит, кто посчитал, и если формулы — почему."""
     page = core.PAGE
-    assert "Штатный калькулятор недоступен" in page
+    assert "Калькулятор ГлавАПУ не ответил" in page
     assert "byCalculator" in page
     assert "hl.hint" in page
 

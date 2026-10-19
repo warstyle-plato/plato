@@ -46,7 +46,7 @@ def test_a_foreign_message_gets_a_place_and_a_mark():
     got = _failure("карточка территории", "TypeError",
                    "The string did not match the expected pattern.")
     assert "The string did not match the expected pattern." in got
-    assert "шаг: карточка территории" in got
+    assert "на шаге «карточка территории»" in got
     assert "TypeError" in got
     assert "сообщение браузера" in got, "чужой язык помечается как чужой"
 
@@ -54,13 +54,13 @@ def test_a_foreign_message_gets_a_place_and_a_mark():
 def test_our_own_message_is_not_marked_as_the_browsers():
     got = _failure("расчёт ТЭП", "Error", "Не удалось определить территорию")
     assert got.startswith("Не удалось определить территорию")
-    assert "шаг: расчёт ТЭП" in got
+    assert "на шаге «расчёт ТЭП»" in got
     assert "сообщение браузера" not in got
 
 
 def test_an_empty_error_still_names_the_step():
     got = _failure("перенос ТЭП в модель", "", "")
-    assert "ошибка без описания" in got and "шаг: перенос ТЭП в модель" in got
+    assert "ошибка без описания" in got and "на шаге «перенос ТЭП в модель»" in got
 
 
 def test_every_stage_of_the_tep_run_marks_itself():

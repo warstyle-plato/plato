@@ -371,7 +371,7 @@ def test_the_applied_project_is_calculable():
 
 def test_the_page_offers_the_import():
     assert 'id="presetFile"' in core.PAGE
-    assert "Импорт проекта / пресета" in core.PAGE
+    assert "Загрузить проект</button>" in core.PAGE
 
 
 def test_the_page_asks_before_applying():

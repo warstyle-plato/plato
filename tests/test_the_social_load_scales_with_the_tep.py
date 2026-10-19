@@ -103,7 +103,7 @@ def test_a_changed_commercial_area_is_named_not_scaled(client) -> None:
 
 def test_the_page_tries_the_proportion_before_the_norms() -> None:
     start = PAGE.index("async function recalcFromTep(options){")
-    head = PAGE[start:start + 1200]
+    head = PAGE[start:PAGE.index("\n}\n", start)]
     assert "await rescaleSocialFromTep(options)" in head
     assert head.index("rescaleSocialFromTep") < head.index("recalcFromTepByNorms"), \
         "норматив считается, только когда масштабировать нечего"
