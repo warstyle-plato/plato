@@ -168,7 +168,9 @@ def test_switching_queues_on_points_to_the_finance_block(page) -> None:
       return {inputs:document.getElementById('inputs').classList.contains('active'),
         top:r?r.top:null, h:innerHeight, shown:!!b&&!b.hidden};}""")
     assert landed["inputs"] and landed["shown"], landed
-    assert 0 <= landed["top"] < landed["h"], landed
+    # Верх блока — у верхнего края экрана; прокрутка округляет до долей
+    # пикселя (на CI −0,39), поэтому допуск в пиксель.
+    assert -1 <= landed["top"] < landed["h"] / 2, landed
 
 
 def test_the_markup_lives_once_in_a_template() -> None:
