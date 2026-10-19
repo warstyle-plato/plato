@@ -39,7 +39,11 @@ from auction_search.adapters import (
     RoseltorgAdapter,
     SberbankASTAdapter,
 )
-from auction_search.adapters.torgi_gov import TorgiGovAdapter, lot_status_ru, trust_report as torgi_trust_report
+from auction_search.adapters.torgi_gov import (
+    ACTIVE_LOT_STATUSES as torgi_gov_active_statuses,
+    FINISHED_LOT_STATUSES as torgi_gov_finished_statuses,
+    TorgiGovAdapter, lot_status_ru, trust_report as torgi_trust_report,
+)
 from auction_search.adapters.etp_probe import (
     SLUGS as etp_slugs,
     probe as etp_probe,
@@ -47,7 +51,11 @@ from auction_search.adapters.etp_probe import (
 )
 from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
-    probe as fedresurs_probe, probe_browser as fedresurs_browser)
+    KNOWN_DEBTOR_INN as FEDRESURS_KNOWN_INN,
+    KNOWN_MESSAGE_GUID as FEDRESURS_KNOWN_MESSAGE,
+    probe as fedresurs_probe, probe_api as fedresurs_probe_api,
+    probe_backend as fedresurs_probe_backend,
+    probe_browser as fedresurs_browser)
 from auction_search.adapters import source_page
 from auction_search.adapters.roseltorg_probe import (
     CATALOGUE_URL as ROSELTORG_SECTION_URL,
@@ -794,9 +802,79 @@ def _months_before(day: date, months: int) -> date:
     return date(year, month, 28)
 
 
+def _resolved_areas(data: dict[str, Any]) -> None:
+    """Площади участка и здания лота — тем же правилом, что в книге Excel.
+
+    Площадь участка у многих лотов есть только в названии («…земельный участок
+    площадью 497 кв. м…»). Таблица и книга достраивали её оттуда
+    (`export_areas`), а фильтр «участок от N га» читал поле площадки и видел
+    пустоту: лот с 497 м² проходил фильтр 0,5 га с пометкой «площадь участка не
+    указана» (владелец, 19.10.2026). Теперь площадь разрешается один раз здесь,
+    и фильтр, балл, таблица и книга читают одно число; взятое из названия
+    подписано в `area_from_title`.
+    """
+    source = data.get("source") or {}
+    areas = export_areas({
+        "name": data.get("title") or "",
+        "url": source.get("lot_url") if isinstance(source, dict) else "",
+        "land_area_sqm": data.get("land_area_sqm"),
+        "building_area_sqm": data.get("building_area_sqm"),
+    })
+    from_title = [
+        key for key, value in (("land_area_sqm", areas.land_area_sqm),
+                               ("building_area_sqm", areas.building_area_sqm))
+        if value is not None and value != data.get(key)]
+    data["land_area_sqm"] = areas.land_area_sqm
+    data["building_area_sqm"] = areas.building_area_sqm
+    data["area_from_title"] = from_title
+
+
+def _nspd_land_area(data: dict[str, Any], points: dict[str, dict[str, Any]]) -> None:
+    """Площадь участков лота по НСПД — когда площадка и название её не дали.
+
+    Кадастровые номера лота спрашивает фон (`points_queue`); здесь только
+    читается сохранённое. Участки лота складываются: лот покупается целиком.
+    Если НСПД ответил не по всем номерам, площадь помечается неполной
+    (`land_area_partial`) — фильтр такой лот по площади не выкидывает: сумма
+    части участков меньше площади лота. Номера, которые ещё не спрошены, —
+    `land_area_pending`: «уточняется», а не «нет».
+    """
+    numbers = [str(n).strip() for n in (data.get("cadastral_numbers") or []) if str(n).strip()]
+    land: list[float] = []
+    pending = unresolved = 0
+    for number in dict.fromkeys(numbers):
+        point = points.get(number) or {}
+        if not point or ("kind" not in point and not point.get("failed")):
+            pending += 1
+        elif point.get("kind") == "land":
+            if point.get("area_sqm"):
+                land.append(float(point["area_sqm"]))
+            else:
+                unresolved += 1
+        elif point.get("failed"):
+            unresolved += 1
+    data.setdefault("land_area_source", "площадка" if data.get("land_area_sqm") is not None else "")
+    if data.get("area_from_title") and "land_area_sqm" in data["area_from_title"]:
+        data["land_area_source"] = "название лота"
+    data["land_area_pending"] = pending
+    data["land_area_partial"] = False
+    if not land:
+        return
+    total = round(sum(land), 2)
+    complete = not pending and not unresolved
+    current = data.get("land_area_sqm")
+    if current is None or (complete and total > float(current)):
+        # НСПД знает больше участков лота, чем названо в тексте, — берём его
+        # сумму; меньшую сумму НСПД поверх названного не ставим.
+        data["land_area_sqm"] = total
+        data["land_area_source"] = f"НСПД, участков {len(land)}"
+        data["land_area_partial"] = not complete
+
+
 def _public_lot_dict(lot) -> dict[str, Any]:
     data = lot.to_dict()
     data.pop("raw", None)
+    _resolved_areas(data)
     # Момент срока считает сервер и отдаёт его ISO рядом со строкой площадки.
     # Строка остаётся такой, какой её написала площадка, — её и печатают; а
     # разбирать русскую дату в браузере нельзя: `new Date('09.10.26 15:00')`
@@ -5130,14 +5208,33 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/auctions/torgi/probe")
-    async def auction_torgi_probe(page: int = Query(default=0)) -> dict[str, Any]:
+    async def auction_torgi_probe(
+        page: int = Query(default=0),
+        status: str = Query(default=""),
+        cat: str = Query(default="2"),
+        sort: str = Query(default=""),
+        size: int = Query(default=0, ge=0, le=200),
+        extra: str = Query(default="", max_length=500),
+    ) -> dict[str, Any]:
         """Сырой ответ ГИС Торгов и разобранный лот рядом.
 
         Из песочницы torgi.gov.ru закрыт сетевой политикой, как НСПД: сверить
         поля можно только с ядра. Показываем и сырое, и разобранное вместе —
         расхождение должно быть видно глазами, а не вылезти числом в отчёте.
+
+        `status` — коды через запятую (`finished` — статусы завершения),
+        `extra` — добавочные параметры запроса площадки строкой
+        (`biddEndFrom=…&biddEndTo=…`): так с ядра проверяется, какой фильтр даты
+        площадка понимает, прежде чем рабочий сбор на него положится.
         """
-        return await run_in_threadpool(lambda: TorgiGovAdapter().probe(page))
+        if status.strip().lower() == "finished":
+            statuses = torgi_gov_finished_statuses
+        elif status.strip():
+            statuses = tuple(code.strip().upper() for code in status.split(",") if code.strip())
+        else:
+            statuses = torgi_gov_active_statuses
+        return await run_in_threadpool(lambda: TorgiGovAdapter().probe(
+            page, statuses=statuses, cat_code=cat, sort=sort, size=size or None, extra=extra))
 
     @app.get("/auctions/torgi/regions")
     async def auction_torgi_regions(page: int = Query(default=0)) -> dict[str, Any]:
@@ -5162,6 +5259,29 @@ def install(app: FastAPI) -> None:
         намеренно: ровно так ГИС Торги приехали на прод с тридцатью гаражами.
         """
         return await run_in_threadpool(fedresurs_probe)
+
+    @app.get("/auctions/fedresurs/api")
+    async def auction_fedresurs_api(
+        message: str = Query(default=""),
+        inn: str = Query(default=""),
+        seconds: float = Query(default=40.0, ge=5.0, le=90.0),
+        path: str = Query(default=""),
+    ) -> dict[str, Any]:
+        """JSON-бэкенд ЕФРСБ: сверенные маршруты по должнику и адреса из бандла.
+
+        Страница сообщения — оболочка Angular, данные идут из `/backend/…`.
+        Адрес карточки сообщения и списка торгов проба ищет в бандле самой
+        страницы, а не перебирает вслепую. Разбора нет.
+
+        `path` — полный ответ одного пути бэкенда (`bankruptcy-messages/<guid>`):
+        поля сверяются по целому ответу, а не по началу тела.
+        """
+        if path.strip():
+            return await run_in_threadpool(
+                lambda: fedresurs_probe_backend(path, seconds=seconds))
+        return await run_in_threadpool(lambda: fedresurs_probe_api(
+            message_guid=message.strip() or FEDRESURS_KNOWN_MESSAGE,
+            inn=inn.strip() or FEDRESURS_KNOWN_INN, seconds=seconds))
 
     @app.get("/auctions/fedresurs/browser")
     async def auction_fedresurs_browser(
@@ -5374,8 +5494,13 @@ def install(app: FastAPI) -> None:
         if "coordinate_x=" not in href:
             return {"asked_at": now, "failed": True, "not_found": True,
                     "reason": "НСПД нашёл номер, но не отдал его границы — точки нет"}
+        # Вид объекта и площадь — заодно: площадь участка, которой нет у
+        # площадки и в названии, лот берёт отсюда (`_nspd_land_area`).
+        area = found.get("area_sqm")
         return {"asked_at": now, "map_url": href,
-                "address": str(found.get("address") or "")[:300]}
+                "address": str(found.get("address") or "")[:300],
+                "kind": str(found.get("kind") or ""),
+                "area_sqm": float(area) if isinstance(area, (int, float)) and area > 0 else None}
 
     def _nspd_points_once(limit: int = lot_notes_rules.NSPD_POINTS_PER_RUN) -> int:
         """Получить точки для нескольких номеров из очереди. Возвращает, сколько спрошено."""
@@ -5467,15 +5592,17 @@ def install(app: FastAPI) -> None:
         """Сколько лотов разобрано и почему не разобраны остальные — не только в логе."""
         return await run_in_threadpool(lot_notes.status)
 
-    def _discover_row(lot) -> dict[str, Any]:
+    def _discover_row(lot, points: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
         """Лот выдачи для страницы — одной сборкой для живых и завершённых."""
+        data = _public_lot_dict(lot)
+        _nspd_land_area(data, lot_notes.points() if points is None else points)
         return {
-                **_public_lot_dict(lot),
+                **data,
                 "analysis": _analysis_support(lot.source.lot_url),
                 # Соответствие профилю считает сервер по измеренному
                 # эталону сделок: балл, собранный в браузере, был бы
                 # вторым счётом той же величины.
-                "fit": profile_fit(_public_lot_dict(lot)),
+                "fit": profile_fit(data),
                 "quality": catalogue_quality(lot),
                 # Лот основной подборки: в режиме «с шумом» страница ставит
                 # такие первыми и отделяет от добавленных неполных и шума.
@@ -5534,22 +5661,33 @@ def install(app: FastAPI) -> None:
         except Exception:  # noqa: BLE001 — каталог лотов не роняем очередью
             logger.exception("Торги: лоты сбора не записаны в очередь комментариев")
 
+        try:
+            nspd_points = await run_in_threadpool(lot_notes.points)
+        except Exception:  # noqa: BLE001 — каталог не роняем чтением точек
+            logger.exception("Торги: точки НСПД не прочитаны")
+            nspd_points = {}
         return {
             "source_policy": "official_etp_only",
             "source": source,
             "count": len(lots),
             "quality": service.last_quality_report,
             "coverage": [_coverage_row(adapter) for adapter in adapters],
-            "lots": [_discover_row(lot) for lot in lots],
+            "lots": [_discover_row(lot, nspd_points) for lot in lots],
         }
 
     # История завершённых торгов. Тяжёлая выборка — до сорока страниц ГИС
     # Торгов, — поэтому ответ кладётся на диск: второй воркер и повторное
     # нажатие читают готовое, а не листают площадку заново. Полный ответ живёт
-    # шесть часов, неполный (не уложились в срок, источник отказал) — двадцать
-    # минут: недособранное не должно надолго выдавать себя за всю историю.
-    FINISHED_CACHE_SECONDS = 6 * 3600
+    # час, неполный (не уложились в срок, источник отказал) — двадцать минут:
+    # недособранное не должно надолго выдавать себя за всю историю.
+    #
+    # Запись помечена схемой ответа и номером выпуска. Файл на диске переживает
+    # выкатку: после #754 прод три часа отдавал ответ, записанный старым кодом,
+    # — без воронки допуска, и страница снова писала голое «найдено 0»
+    # (19.10.2026). Чужая версия и запись без версии не отдаются.
+    FINISHED_CACHE_SECONDS = 60 * 60
     FINISHED_PARTIAL_CACHE_SECONDS = 20 * 60
+    FINISHED_CACHE_SCHEMA = 2
     FINISHED_WINDOW_MONTHS = 3
 
     def _finished_cache_path(source: str, as_of: date, months: int, noise: bool) -> str:
@@ -5558,11 +5696,16 @@ def install(app: FastAPI) -> None:
         return os.path.join(
             root, f"finished_{name}_{as_of.isoformat()}_{months}m_{int(noise)}.json")
 
+    def _finished_cache_version() -> str:
+        return f"{FINISHED_CACHE_SCHEMA}:{getattr(core, 'VERSION', '') or ''}"
+
     def _finished(source: str, as_of: date, months: int, include_noise: bool) -> dict[str, Any]:
         path = _finished_cache_path(source, as_of, months, include_noise)
         try:
             with open(path, encoding="utf-8") as handle:
                 cached = json.load(handle)
+            if cached.get("version") != _finished_cache_version():
+                raise ValueError("кеш записан другой версией кода")
             age = time.time() - float(cached.get("saved_at") or 0)
             ttl = FINISHED_CACHE_SECONDS if cached.get("complete") else FINISHED_PARTIAL_CACHE_SECONDS
             if 0 <= age < ttl:
@@ -5571,6 +5714,7 @@ def install(app: FastAPI) -> None:
         except (OSError, ValueError, KeyError, TypeError):
             pass
         since = _months_before(as_of, months)
+        nspd_points = lot_notes.points()
         adapters = _discovery_adapters(source)
         service = AuctionSearchService(adapters)
         lots = service.discover_moscow_finished(
@@ -5584,8 +5728,11 @@ def install(app: FastAPI) -> None:
             "window": {"since": since.isoformat(), "until": as_of.isoformat(),
                        "months": months},
             "count": len(lots),
+            # Воронка допуска — та же, что у живого каталога: без неё «найдено
+            # 0» не отличить от «торгов не было».
+            "quality": service.last_quality_report,
             "coverage": coverage,
-            "lots": [{**_discover_row(lot), "finished": True} for lot in lots],
+            "lots": [{**_discover_row(lot, nspd_points), "finished": True} for lot in lots],
         }
         complete = not any(
             row.get("finished_available") and row.get("reason") for row in coverage)
@@ -5594,6 +5741,7 @@ def install(app: FastAPI) -> None:
             temp = f"{path}.{os.getpid()}.tmp"
             with open(temp, "w", encoding="utf-8") as handle:
                 json.dump({"saved_at": time.time(), "complete": complete,
+                           "version": _finished_cache_version(),
                            "payload": payload}, handle, ensure_ascii=False)
             os.replace(temp, path)
         except OSError:

@@ -361,6 +361,9 @@ function landMinSqm(){
  return Number.isFinite(ha)&&ha>0?ha*10000:NaN;
 }
 function landAreaKnown(l){const v=l&&l.land_area_sqm;return v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))&&Number(v)>0}
+// Лот, чья площадь известна не по всем участкам, фильтр по площади не
+// выкидывает: сумма части участков меньше площади лота.
+function landAreaUnsure(l,min){return !landAreaKnown(l)||(!!l.land_area_partial&&Number(l.land_area_sqm)<min)}
 const fmtHa=sqm=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:2}).format(sqm/10000)+' га';
 function renderAreaNote(){
  const box=$('areaNote'),a=state.areaFilter||{};
@@ -369,7 +372,7 @@ function renderAreaNote(){
  if(Number.isNaN(a.min)){box.className='notice warn';box.textContent='Площадь участка не распознана. Введите число гектаров, например 0,5.';return}
  box.className='notice'+(a.unknown?' warn':'');
  box.textContent=`Участки от ${fmtHa(a.min)}: подходит ${a.matched} лот(ов).`
-  +(a.unknown?` Ещё у ${a.unknown} лот(ов) площадка не указала площадь участка. Мы не можем ни отсеять их, ни оставить по площади, поэтому они показаны в конце списка с пометкой «площадь участка не указана». Проверьте площадь в карточке лота.`:'');
+  +(a.unknown?` Ещё у ${a.unknown} лот(ов) площадь участка неизвестна или известна не по всем участкам лота. Мы не можем ни отсеять их, ни оставить по площади, поэтому они показаны в конце списка с пометкой. Площадь, которой нет у площадки, мы постепенно берём из НСПД по кадастровым номерам.`:'');
 }
 function allAuctionLots(){
  const f=state.finished||{};
@@ -384,7 +387,7 @@ function filter(){const q=$('search').value.trim().toLowerCase(),kinds=[...state
  const min=landMinSqm();
  state.areaUnknown=new Set();
  if(min!==null&&!Number.isNaN(min)){
-  const known=list.filter(l=>landAreaKnown(l)&&Number(l.land_area_sqm)>=min),unknown=list.filter(l=>!landAreaKnown(l));
+  const known=list.filter(l=>landAreaKnown(l)&&Number(l.land_area_sqm)>=min),unknown=list.filter(l=>!(landAreaKnown(l)&&Number(l.land_area_sqm)>=min)&&landAreaUnsure(l,min));
   unknown.forEach(l=>state.areaUnknown.add(l));
   list=known.concat(unknown);
   state.areaFilter={min,matched:known.length,unknown:unknown.length};
@@ -401,10 +404,16 @@ function finishedLine(l){
   :' Итоговую цену и победителя площадка в выдаче не сообщает, они указаны в протоколе на карточке лота.';
  return `<div class="source finished">Торги завершены: ${esc(l.status||'статус площадка не назвала')}.${esc(tail)}</div>`;
 }
-function areaUnknownLine(l){return state.areaUnknown&&state.areaUnknown.has(l)?'<div class="source warn">Площадь участка не указана</div>':''}
+function areaUnknownLine(l){
+ if(!(state.areaUnknown&&state.areaUnknown.has(l)))return '';
+ const why=landAreaKnown(l)?'Площадь участка известна не по всем участкам лота'
+  :Number(l.land_area_pending)>0?'Площадь участка не указана, уточняем её в НСПД по кадастровому номеру'
+  :'Площадь участка не указана';
+ return `<div class="source warn">${why}</div>`;
+}
 const isoDay=iso=>String(iso||'').split('-').reverse().join('.');
 function moscowTodayIso(){const p=Object.fromEntries(moscowFormat({year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`}
-state.finished={on:false,lots:[],coverage:[],window:null,error:'',loading:false,cached:null,seq:0};
+state.finished={on:false,lots:[],coverage:[],quality:{},window:null,error:'',loading:false,cached:null,seq:0};
 function renderFinishedNote(){
  const box=$('finishedNote'),f=state.finished;
  if(!f.on){box.style.display='none';box.textContent='';box.className='notice';return}
@@ -415,12 +424,28 @@ function renderFinishedNote(){
  const w=f.window||{};
  line(`Завершённые торги с ${isoDay(w.since)} по ${isoDay(w.until)}: найдено ${f.lots.length}. Они показаны вместе с текущими и помечены «Торги завершены».`);
  line('Дата торгов берётся из карточки лота, а если её там нет — дата окончания приёма заявок.','source');
+ // Сколько площадка отдала и сколько осталось после отбора «интересные».
+ // Без этого «найдено 0» читалось как «торгов не было», хотя площадка отдала
+ // 48 завершённых лотов и все они не прошли допуск.
+ const q=f.quality||{},seen=Number(q.seen)||0;
+ if(seen>f.lots.length){
+  const why=[q.incomplete?`не хватает данных у ${q.incomplete}`:'',q.outside_profile?`ниже профиля сделок ${q.outside_profile}`:'',q.noise?`не относятся к девелопменту ${q.noise}`:''].filter(Boolean).join(', ');
+  line(`Площадка отдала ${seen} завершённых лот(ов) за это окно, в основную подборку прошло ${Number(q.accepted)||0}${why?': '+why:''}. Чтобы увидеть все, выберите вверху «Интересные + неполные и шум».`,'source warn');
+  box.className='notice warn';
+ }
+ (f.coverage||[]).forEach(r=>(r.filters||[]).forEach(x=>{
+  if(!(x.stopped&&/предел/.test(x.stopped)&&x.total_elements&&x.cards<x.total_elements))return;
+  line(`${r.source}, ${x.filter}: просмотрены только самые новые извещения, ${x.cards} из ${x.total_elements}. Более старые не читались, поэтому часть завершённых торгов могла не попасть в список.`,'source warn');
+  box.className='notice warn';
+ }));
  if(f.cached!==null&&f.cached!==undefined)line(`Это сохранённый ответ ${Math.max(1,Math.round(f.cached/60))} мин назад: площадки повторно не опрашивались.`,'source');
  let warn=false;
  (f.coverage||[]).forEach(r=>{
   if(r.finished_available===false){line(`${r.source}: по этой площадке завершённые торги недоступны. Её архив нельзя прочитать одним запросом.`,'source');return}
   const c=coverageLine(r);if(c.why)warn=true;
   line(c.name+(c.said?' — '+c.said:'')+(c.why?'. Не всё получено: '+c.why:''),c.why?'source warn':'source');
+  const early=Number(r.outside_window_before)||0,late=Number(r.outside_window_after)||0;
+  if(early||late)line(`Не вошли в окно: ${early} лот(ов) закончились раньше, у ${late} дата торгов позже выбранной даты — обычно это отменённые торги, у которых в карточке остался будущий срок.`,'source');
  });
  if(warn)box.className='notice warn';
 }
@@ -432,8 +457,8 @@ async function loadFinished(){
   const qs=new URLSearchParams({source:$('source').value,include_noise:$('noise').value==='1'?'true':'false',as_of:$('finishedAsOf').value||''});
   const d=await askJson('/auctions/finished?'+qs);
   if(seq!==f.seq)return;
-  f.lots=(d.lots||[]).map(l=>({...l,finished:true}));f.coverage=d.coverage||[];f.window=d.window||null;f.cached=d.cached?Number(d.cached_age_seconds)||0:null;
- }catch(e){if(seq!==f.seq)return;f.lots=[];f.coverage=[];f.error=String(e.message||e)}
+  f.lots=(d.lots||[]).map(l=>({...l,finished:true}));f.coverage=d.coverage||[];f.quality=d.quality||{};f.window=d.window||null;f.cached=d.cached?Number(d.cached_age_seconds)||0:null;
+ }catch(e){if(seq!==f.seq)return;f.lots=[];f.coverage=[];f.quality={};f.error=String(e.message||e)}
  finally{if(seq===f.seq){f.loading=false;renderFinishedNote();filter()}}
 }
 // Батарейка снижения цены. У банкротного лота публичное предложение идёт по

@@ -294,6 +294,9 @@ def test_a_collapsed_group_shows_its_key_numbers():
         {"apartment_price_th": 350, "share_before_rve_pct": 85})}
     assert "350" in peek["Продажи"] and "85" in peek["Продажи"]
     assert "тыс. ₽/м²" in peek["Продажи"]
+    # В заголовке — единица, а не пояснение: у доли продаж после «%» идёт
+    # предложение, и разрез по «;» выносил его в заголовок целиком.
+    assert peek["Продажи"] == "350 тыс. ₽/м² · 85 %", peek["Продажи"]
 
 
 def test_a_switched_off_object_says_only_that():

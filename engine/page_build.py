@@ -51,6 +51,8 @@ PAGE = PAGE.replace(OFFICE_CLASS_PLACEHOLDER,
                     json.dumps(OFFICE_CLASS_BY_PROJECT_CLASS, ensure_ascii=False))
 PAGE = PAGE.replace(CLASS_FIELD_UNITS_PLACEHOLDER,
                     json.dumps(class_field_units(), ensure_ascii=False))
+PAGE = PAGE.replace(FIELD_UNITS_PLACEHOLDER,
+                    json.dumps(field_units(), ensure_ascii=False))
 PAGE = PAGE.replace(CLASS_DIALOG_PLACEHOLDER,
                     json.dumps(class_dialog_layout(), ensure_ascii=False))
 PAGE = PAGE.replace(INPUT_DEFAULT_PLACEHOLDER,
@@ -209,6 +211,9 @@ PAGE = PAGE.replace(FEEDBACK_FORM_PLACEHOLDER, json.dumps(
 PAGE = PAGE.replace(ESCROW_CHART_LEGEND_PLACEHOLDER, _escrow_chart_legend_html())
 PAGE = PAGE.replace(SOCIAL_MODES_PLACEHOLDER,
                     json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["social_mode"]],
+                               ensure_ascii=False))
+PAGE = PAGE.replace(BRIDGE_INTEREST_MODES_PLACEHOLDER,
+                    json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["bridge_interest_mode"]],
                                ensure_ascii=False))
 
 

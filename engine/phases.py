@@ -264,6 +264,10 @@ _PHASE_INFLATABLE_INPUTS = (
     "main_under_th_per_sqm",
     "utilities_th_per_sqm",
     "landscaping_th_per_sqm",
+    # Ставка на метр ГНС — та же статья благоустройства в другой мере, и
+    # дорожает между очередями так же, как ставка двора: без неё поздние
+    # очереди строили двор по цене первой, а книга индексировала.
+    "landscaping_gns_th_per_sqm",
     "commissioning_th_per_sqm",
     "site_maintenance_th_per_sqm",
 )
