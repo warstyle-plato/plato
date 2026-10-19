@@ -403,7 +403,7 @@ function finishedLine(l){
 }
 function areaUnknownLine(l){return state.areaUnknown&&state.areaUnknown.has(l)?'<div class="source warn">Площадь участка не указана</div>':''}
 const isoDay=iso=>String(iso||'').split('-').reverse().join('.');
-function moscowTodayIso(){return new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}
+function moscowTodayIso(){const p=Object.fromEntries(moscowFormat({year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`}
 state.finished={on:false,lots:[],coverage:[],window:null,error:'',loading:false,cached:null,seq:0};
 function renderFinishedNote(){
  const box=$('finishedNote'),f=state.finished;
