@@ -168,6 +168,13 @@ def profile_fit(lot: dict[str, Any]) -> dict[str, Any]:
     scored: list[float] = []
     misses: list[str] = []
     unknown: list[str] = []
+    # Масштаб — отдельно от цены: допуск в подборку решает масштаб, а цена
+    # только двигает балл. Дешёвый лот нужного размера — возможность, а не шум
+    # (владелец, 19.10.2026: «если ставят низкую стартовую цену, мы просто не
+    # увидим интересный лот»).
+    scale: list[float] = []
+    scale_misses: list[str] = []
+    price_miss = ""
     for band, value in checks:
         if value is None or value <= 0:
             # Неизмеренное — не «плохо». Лот без опубликованной цены не хуже
@@ -176,6 +183,12 @@ def profile_fit(lot: dict[str, Any]) -> dict[str, Any]:
             continue
         share, why = _place(value, band)
         scored.append(share)
+        if band is PRICE:
+            price_miss = why
+        else:
+            scale.append(share)
+            if why:
+                scale_misses.append(why)
         if why:
             misses.append(why)
     if not scored:
@@ -190,6 +203,10 @@ def profile_fit(lot: dict[str, Any]) -> dict[str, Any]:
         "matched": sum(1 for x in scored if x >= 0.7),
         "measured": len(scored),
         "misses": misses,
+        # Соответствие по одному масштабу — им решается допуск в подборку.
+        "scale_fit": round(sum(scale) / len(scale), 3) if scale else None,
+        "scale_misses": scale_misses,
+        "price_miss": price_miss,
         "unknown": unknown,
         "source": BENCHMARK_SOURCE,
         # Почему цена не сравнивалась — пусто, если сравнивалась.

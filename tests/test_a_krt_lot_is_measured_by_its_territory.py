@@ -80,9 +80,18 @@ def test_an_expired_procedure_is_refused() -> None:
 
 
 def test_other_kinds_keep_the_deal_benchmark() -> None:
-    """Правило заведено виду КРТ, а не всем: у покупки актива порог остаётся."""
-    lot = _krt(lot_kind=LotKind.PROPERTY_COMPLEX, land_area_sqm=None,
-               building_area_sqm=1_351, current_price_rub=4_113_340.42)
-    quality = catalogue_quality(lot)
+    """Правило заведено виду КРТ, а не всем: у покупки актива порог масштаба остаётся.
+
+    Порог — по масштабу, а не по цене: низкая цена лот нужного размера не
+    выкидывает, только снижает балл (решение владельца, 19.10.2026).
+    """
+    small = _krt(lot_kind=LotKind.PROPERTY_COMPLEX, land_area_sqm=None,
+                 building_area_sqm=120, current_price_rub=4_113_340.42)
+    quality = catalogue_quality(small)
     assert quality["accepted"] is False
     assert quality["state"] == "outside_profile", quality
+    cheap = _krt(lot_kind=LotKind.PROPERTY_COMPLEX, land_area_sqm=None,
+                 building_area_sqm=1_351, current_price_rub=4_113_340.42)
+    quality = catalogue_quality(cheap)
+    assert quality["accepted"] is True, quality
+    assert any("балл снижен" in note for note in quality["notes"])

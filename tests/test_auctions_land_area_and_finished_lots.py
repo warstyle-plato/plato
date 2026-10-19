@@ -714,3 +714,18 @@ def test_on_the_page_lots_hidden_by_the_kind_are_named_and_shares_are_not_unknow
     assert got["rows"] == ["Здание без участка"], "доля в обществе — не «площадь неизвестна»"
     assert got["area"]["hidden"] == 1 and got["area"]["hiddenKinds"] == ["КРТ"]
     assert got["area"]["noParcel"] == 1 and got["area"]["matched"] == 0
+
+
+def test_a_low_price_never_drops_a_lot_of_the_right_size():
+    """«Если ставят низкую стартовую цену, мы просто не увидим интересный лот» (владелец)."""
+    from auction_search.catalogue_quality import catalogue_quality
+
+    card = _land_card("6000", lotName="Земельный участок, г. Москва", priceMin=1_800_000)
+    card["biddForm"] = {"code": "PP", "name": "Продажа посредством публичного предложения"}
+    lot = torgi_gov.to_lot(card, "t")
+    quality = catalogue_quality(lot)
+    assert quality["accepted"] is True, quality
+    assert any("балл снижен, но лот в подборке" in note for note in quality["notes"])
+    small = torgi_gov.to_lot(_land_card("120", lotName="Земельный участок, г. Москва",
+                                        priceMin=1_800_000), "t")
+    assert catalogue_quality(small)["state"] == "outside_profile", "масштаб по-прежнему отсеивает"
