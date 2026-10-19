@@ -1,0 +1,125 @@
+{
+ "_source": "GET /backend/biddings?limit=15&offset=0&regionCode=77&onlyAvailableToParticipate=true&searchString=7713210910, 19.10.2026",
+ "answer": {
+  "pageData": [
+   {
+    "guid": "cbb43d13-5c05-4131-88a7-2a6a277679a1",
+    "dateCreate": "2026-10-15T11:40:02.657",
+    "type": "Публичное предложение",
+    "number": "3031-ОТПП-1",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "70339258-c5f3-40f8-bfb3-e3377a8eef3f",
+     "name": "ООО \"Инжтехсвязь\"",
+     "type": "Company",
+     "ogrn": "1027739100322",
+     "inn": "7713210910"
+    },
+    "tradePlace": {
+     "guid": "f9cbaede-4232-4afa-9d66-cbfd85376b84",
+     "name": "«Электронная площадка «Вердиктъ»"
+    },
+    "dateStart": "2026-10-19T12:00:00",
+    "dateFinish": "2027-03-15T12:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [
+     "Должник: ООО \"Инжтехсвязь\" Общество с ограниченной ответственностью \"Инжтехсвязь\" ИНН: <res>7713210910</res> ОГРН: 1027739100322\nСудебное дело: А40-248870/2018 74"
+    ],
+    "lotHighlights": [
+     {
+      "lotNumber": "1",
+      "highlights": [
+       "осуществлена покупателем в течение 30 дней со дня подписания этого договора в денежной форме по следующим реквизитам: ООО &laquo;Инжтехсвязь&raquo;, ИНН/КПП <res>7713210910</res>"
+      ]
+     }
+    ]
+   },
+   {
+    "guid": "a9c37ecc-dcf4-445f-a454-e43037ef218b",
+    "dateCreate": "2025-11-13T17:57:08.27",
+    "type": "Публичное предложение",
+    "number": "2684-ОТПП-1",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "70339258-c5f3-40f8-bfb3-e3377a8eef3f",
+     "name": "ООО \"Инжтехсвязь\"",
+     "type": "Company",
+     "ogrn": "1027739100322",
+     "inn": "7713210910"
+    },
+    "tradePlace": {
+     "guid": "f9cbaede-4232-4afa-9d66-cbfd85376b84",
+     "name": "«Электронная площадка «Вердиктъ»"
+    },
+    "dateStart": "2025-11-17T12:00:00",
+    "dateFinish": "2026-07-09T12:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [
+     "Должник: ООО \"Инжтехсвязь\" Общество с ограниченной ответственностью \"Инжтехсвязь\" ИНН: <res>7713210910</res> ОГРН: 1027739100322\nСудебное дело: А40-248870/2018 74"
+    ],
+    "lotHighlights": [
+     {
+      "lotNumber": "1",
+      "highlights": [
+       "осуществлена покупателем в течение 30 дней со дня подписания этого договора в денежной форме по следующим реквизитам: ООО &laquo;Инжтехсвязь&raquo;, ИНН/КПП <res>7713210910</res>"
+      ]
+     }
+    ]
+   },
+   {
+    "guid": "1535223c-07be-4c4a-bbaf-7853ea1045aa",
+    "dateCreate": "2025-03-21T14:12:06.06",
+    "type": "Открытый аукцион",
+    "number": "2354-ОАОФ-1",
+    "status": {
+     "code": "ApplicationSessionStarted",
+     "name": "Открыт прием заявок"
+    },
+    "priceForm": "OpenForm",
+    "bankrupt": {
+     "guid": "70339258-c5f3-40f8-bfb3-e3377a8eef3f",
+     "name": "ООО \"Инжтехсвязь\"",
+     "type": "Company",
+     "ogrn": "1027739100322",
+     "inn": "7713210910"
+    },
+    "tradePlace": {
+     "guid": "f9cbaede-4232-4afa-9d66-cbfd85376b84",
+     "name": "«Электронная площадка «Вердиктъ»"
+    },
+    "dateStart": "2025-03-24T10:00:00",
+    "dateFinish": "2025-04-28T10:00:00",
+    "filesWithHit": [],
+    "tradeHighlights": [],
+    "tradeOrganizerHighlights": [],
+    "tradePlaceHighlights": [],
+    "bankruptHighlights": [
+     "Должник: ООО \"Инжтехсвязь\" Общество с ограниченной ответственностью \"Инжтехсвязь\" ИНН: <res>7713210910</res> ОГРН: 1027739100322\nСудебное дело: А40-248870/2018 74"
+    ],
+    "lotHighlights": [
+     {
+      "lotNumber": "1",
+      "highlights": [
+       "осуществлена покупателем в течение 30 дней со дня подписания этого договора в денежной форме по следующим реквизитам: ООО &laquo;Инжтехсвязь&raquo;, ИНН/КПП <res>7713210910</res>"
+      ]
+     }
+    ]
+   }
+  ],
+  "found": 3
+ }
+}

@@ -143,8 +143,8 @@ def test_a_locked_field_is_never_reported_as_substituted():
     got = _run(KRT, ANSWER)
     assert got["fields"]["land_rights_cost_mln"] == 0, "запертое поле переписали"
     vri = _line(got, "Плата за ВРИ")
-    assert vri == ("Плата за ВРИ, млн ₽: осталось 0 — поле заперто требованием "
-                   "КРТ; метод дал бы 10 166,6"), vri
+    assert vri == ("Плата за ВРИ, млн ₽: осталось 0. Соцобъекты вписаны вручную, "
+                   "и пересчёт это поле не меняет. По расчёту вышло бы 10 166,6."), vri
 
 
 def test_one_field_is_not_described_twice_and_oppositely():
@@ -193,7 +193,7 @@ def test_a_field_the_method_did_not_offer_says_exactly_that():
                 "land_rights_cost_mln": 18265.9}, answer)
     vri = _line(got, "Плата за ВРИ")
     assert "метод числа не дал" in vri, vri
-    assert "КРТ" not in vri, f"замок назван там, где его нет: {vri}"
+    assert "вручную" not in vri, f"замок назван там, где его нет: {vri}"
     assert got["fields"]["land_rights_cost_mln"] == 18265.9
 
 
@@ -244,7 +244,7 @@ def test_the_lock_rule_has_a_single_owner():
 def test_the_note_is_still_said_by_the_other_writers():
     """Приписку убрали у отчёта пересчёта, а не у всех: импорту ГлавАПУ и
     пересчёту по нормативам сказать о незатронутом больше нечем."""
-    assert "Не тронуто — вписано требованием КРТ: " in core.PAGE
+    assert "Не тронуто, потому что вписано вручную: " in core.PAGE
     for name in ("rescaleSocialFromTep", "recalcFromTepByNorms"):
         body = page_blocks.function(name)
         assert "applyDerivedInputs(" in body, name

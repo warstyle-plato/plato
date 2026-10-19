@@ -10,14 +10,15 @@ from typing import Iterable
 from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.catalogue_quality import catalogue_quality
-from auction_search.models import AuctionLot, LotKind
+from auction_search.models import AuctionLot, LotKind, SourceKind
 
 
 class AuctionSearchService:
     """Primary-source-only auction orchestration.
 
-    Adapters must represent the official ETP on which the procedure is conducted.
-    Aggregators are deliberately unsupported.
+    Adapters must represent the official ETP on which the procedure is conducted,
+    or the official registry the law obliges to publish it (ЕФРСБ for
+    bankruptcy). Commercial aggregators are deliberately unsupported.
     """
 
     def __init__(self, adapters: Iterable[AuctionPlatformAdapter]):
@@ -290,13 +291,14 @@ class AuctionSearchService:
     def _deduplicate_history(lots: Iterable[AuctionLot]) -> list[AuctionLot]:
         """Keep relistings: history identity is an official procedure, not a parcel."""
         by_source: OrderedDict[str, AuctionLot] = OrderedDict()
-        for lot in lots:
+        for lot in AuctionSearchService._drop_registry_copies(list(lots)):
             key = f"{lot.source.platform.value}:{lot.source.external_lot_id}"
             by_source.setdefault(key, lot)
         return list(by_source.values())
 
     @staticmethod
     def _deduplicate(lots: Iterable[AuctionLot]) -> list[AuctionLot]:
+        lots = AuctionSearchService._drop_registry_copies(list(lots))
         by_key: OrderedDict[str, AuctionLot] = OrderedDict()
         for lot in lots:
             existing = by_key.get(lot.canonical_key)
@@ -309,6 +311,30 @@ class AuctionSearchService:
             if new_score > existing_score:
                 by_key[lot.canonical_key] = lot
         return list(by_key.values())
+
+    @staticmethod
+    def _drop_registry_copies(lots: list[AuctionLot]) -> list[AuctionLot]:
+        """Лот ЕФРСБ, который мы уже читаем с самой площадки, — не второй лот.
+
+        Сообщение в ЕФРСБ и карточка на Сбербанк-АСТ, ЭТП ГПБ, ЭТП РФ или НИС —
+        одни и те же торги. Остаётся карточка площадки: у неё документы и
+        разбор; ссылка на сообщение ЕФРСБ переходит к ней.
+        """
+        from auction_search.adapters.efrsb import same_trade
+
+        registry = [lot for lot in lots if lot.source.platform is SourceKind.EFRSB]
+        if not registry:
+            return lots
+        platforms = [lot for lot in lots if lot.source.platform is not SourceKind.EFRSB]
+        kept = list(platforms)
+        for copy in registry:
+            twin = next((lot for lot in platforms if same_trade(copy, lot)), None)
+            if twin is None:
+                kept.append(copy)
+                continue
+            twin.raw.setdefault("efrsb_message_url", copy.source.lot_url)
+        order = {id(lot): index for index, lot in enumerate(lots)}
+        return sorted(kept, key=lambda lot: order[id(lot)])
 
     @staticmethod
     def is_development_relevant(lot: AuctionLot) -> bool:
