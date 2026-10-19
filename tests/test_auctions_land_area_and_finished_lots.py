@@ -253,6 +253,39 @@ def test_the_route_answers_the_window_and_keeps_the_answer_on_disk(tmp_path, mon
     assert client.get("/auctions/finished", params={"as_of": "19.10.2026"}).status_code == 422
 
 
+def test_a_cache_written_by_another_release_is_not_served(tmp_path, monkeypatch):
+    """Прод, 19.10.2026: после выкатки #754 три часа отдавался ответ старого кода.
+
+    Запись без версии (так писал прежний код) и запись другой версии выпуска
+    не отдаются — ответ собирается заново; своя запись читается с диска.
+    """
+    import sys
+    import time
+    import types
+
+    from fastapi.testclient import TestClient
+
+    core = types.ModuleType("developaid_core")
+    core.VERSION = "9.9.1"
+    monkeypatch.setitem(sys.modules, "developaid_core", core)
+    calls: list = []
+    client = TestClient(_app(tmp_path, monkeypatch, calls))
+    params = {"as_of": "2026-10-19", "include_noise": "true"}
+    path = tmp_path / "market" / "auctions" / "finished_all_2026-10-19_3m_1.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stale = {"lots": [], "count": 0, "window": {}, "coverage": []}
+    path.write_text(json.dumps({"saved_at": time.time(), "complete": True, "payload": stale}),
+                    encoding="utf-8")
+    first = client.get("/auctions/finished", params=params).json()
+    assert first["cached"] is False and len(calls) == 1, "запись без версии не отдаётся"
+    assert first["count"] == 1 and "quality" in first
+    assert client.get("/auctions/finished", params=params).json()["cached"] is True
+    core.VERSION = "9.9.2"
+    assert client.get("/auctions/finished", params=params).json()["cached"] is False, \
+        "новый выпуск собирает ответ заново"
+    assert len(calls) == 2
+
+
 # --- отрисованная страница ------------------------------------------------------
 
 def _lot(url: str, title: str, *, land=None, building=None, **extra) -> dict:
