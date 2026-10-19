@@ -47,8 +47,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import main_legacy as core  # noqa: E402
+import page_blocks  # noqa: E402
 
 PAGE = core.PAGE
 
@@ -84,6 +86,7 @@ def _note(saleable: float, units: float, *, glavapu: bool = False,
         + f"const inputs={{{'_glavapu_import:{normalized:{}},' if glavapu else ''}vri_region:'{region}'}};\n"
         + ("const _manual_tep_import={source:{kind:'krt'}};\n" if krt
            else "const _manual_tep_import=null;\n")
+        + page_blocks.project_region() + "\n"
         + _function("apartmentUnitsNote") + "\n"
         "process.stdout.write(apartmentUnitsNote());"
     )

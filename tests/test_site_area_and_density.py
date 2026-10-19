@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -35,32 +34,21 @@ import page_blocks  # noqa: E402
 NODE = shutil.which("node")
 
 
-def page_functions() -> str:
-    """Вырезает из PAGE функции источников и эффективной плотности."""
-    match = re.search(
-        r"(function glavapuDensitySqmHa\(\).*?)\nfunction setSiteArea",
-        core.PAGE, re.S,
-    )
-    assert match, "функции участка и плотности не найдены на странице"
-    return match.group(1)
-
-
 def run_page(inputs: dict, cadastral: bool = False) -> dict:
-    if not NODE:
-        pytest.skip("node недоступен")
-    script = (
+    """Настоящие функции участка и плотности; зависимости добирает `page_blocks.run`."""
+    prelude = (
         f"const inputs={json.dumps(inputs)};\n"
         f"const cadastralAnalysis={'{}' if cadastral else 'null'};\n"
-        + page_functions() + "\n"
+    )
+    tail = (
         "console.log(JSON.stringify({\n"
         "  density: effectiveSiteDensity(),\n"
         "  densitySource: siteDensitySourceLabel(),\n"
         "  areaSource: siteAreaSourceLabel(),\n"
         "}));\n"
     )
-    done = subprocess.run([NODE, "-e", script], capture_output=True, text=True, timeout=30)
-    assert done.returncode == 0, done.stderr
-    return json.loads(done.stdout)
+    out, _ = page_blocks.run(prelude, tail)
+    return json.loads(out.strip().splitlines()[-1])
 
 
 # --- плотность -------------------------------------------------------------

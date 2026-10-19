@@ -95,5 +95,8 @@ def test_the_region_names_its_own_document(seen):
 
 
 def test_names_come_from_the_engine():
+    # Третья строка — другой регион: норм его у нас нет, и подпись это говорит.
     assert set(core.PARKING_NORM_OF) == {core.parking_norms.MOSCOW,
-                                         core.parking_norms.MOSCOW_OBLAST}
+                                         core.parking_norms.MOSCOW_OBLAST,
+                                         core.PARKING_NORM_OTHER_REGION}
+    assert "у нас нет" in core.PARKING_NORM_OF[core.PARKING_NORM_OTHER_REGION]
