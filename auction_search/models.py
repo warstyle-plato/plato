@@ -71,6 +71,9 @@ class SourceKind(str, Enum):
     ETP_RF = "etp_rf"
     OTHER_ETP = "other_etp"
     TORGI_GOV = "torgi_gov"
+    # Реестр сообщений о банкротстве, а не площадка: торги проходят на одной из
+    # десятков ЭТП, а сообщение о них одно — в ЕФРСБ.
+    EFRSB = "efrsb"
 
 
 @dataclass(frozen=True)
