@@ -108,6 +108,18 @@ def test_both_runs_share_one_ceiling():
         f"{LAST_MEASURED_SHARD_MINUTES} минутам худшей доли")
 
 
+def test_the_build_splits_the_suite_like_the_pr():
+    """Число долей одно на PR и на сборку — иначе запас к потолку мерят не там.
+
+    Потолок равен, а худшая доля измерена на PR (`LAST_MEASURED_SHARD_MINUTES`).
+    Сборка шла четырьмя долями против шести: каждая в полтора раза толще, и
+    доля, куда легли тяжёлые книги, снималась по 80 минутам при зелёном PR.
+    """
+    on_pr = _load(ON_PR)["jobs"]["test"]["strategy"]["matrix"]["shard"]
+    build = _load(BUILD)["jobs"]["test"]["strategy"]["matrix"]["shard"]
+    assert build == on_pr, f"доли разъехались: PR {on_pr}, сборка {build}"
+
+
 def test_neither_workflow_calls_pytest_by_hand():
     """Вызов pytest живёт в одном файле — иначе «та же команда» снова про текст.
 

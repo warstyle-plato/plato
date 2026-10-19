@@ -23,6 +23,12 @@
 # ЗАМЕНЯЕТ умолчание `-rfE`, и на первом же прогоне 12.09.2026 имена упавших
 # тестов исчезли из итоговой сводки — «1 failed» стояло, а какой именно,
 # приходилось искать глазами в теле лога. Отсюда `f` и `E` рядом с `s`.
+#
+# `--timeout` — срок ОДНОГО теста (pytest-timeout, requirements-dev.txt).
+# Без него зависший тест съедал долю до `timeout-minutes` раннера, и отмена
+# говорила «The operation was canceled» без имени теста. Срок с запасом над
+# самым долгим тестом набора (около двух минут в CI); свой срок тест ставит
+# меткой `@pytest.mark.timeout(...)`.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -32,7 +38,7 @@ shards="${TEST_SHARDS:-1}"
 shard="${TEST_SHARD:-1}"
 
 if [ "$shards" -le 1 ]; then
-  exec python3 -m pytest tests -q -rsfE --durations=25
+  exec python3 -m pytest tests -q -rsfE --durations=25 --timeout=600
 fi
 
 mapfile -t files < <(python3 scripts/test_shards.py --shards "$shards" --shard "$shard")
@@ -43,4 +49,4 @@ if [ "${#files[@]}" -eq 0 ]; then
   exit 1
 fi
 echo "Доля $shard из $shards: файлов ${#files[@]}"
-exec python3 -m pytest "${files[@]}" -q -rsfE --durations=25
+exec python3 -m pytest "${files[@]}" -q -rsfE --durations=25 --timeout=600
