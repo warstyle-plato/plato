@@ -1003,12 +1003,28 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     # какой бы база ни была, и такая «проверка» ничего не значит. Настоящие
     # проверки — там, где у нас своя формула против числа города: население по
     # 33 м², места по нормативам зоны и гостевые как десятая часть постоянных.
-    self_check: dict[str, Any] = {"checked": [], "mismatch": []}
+    #
+    # Каждая сверка помечена своей половиной (`scope`): население и места
+    # соцобъектов — «social», машино-места — «parking», ставка ВРИ — «vri».
+    # Переключатель населения для соцобъектов меняет только соцполовину и
+    # читает только её вердикт (`social_matches_baseline`): машино-места,
+    # которые он не трогает, не повод отказывать в пересчёте мест ДОО.
+    self_check: dict[str, Any] = {"checked": [], "mismatch": [],
+                                  "mismatch_by_scope": {"social": [], "parking": [], "vri": []}}
 
-    def compare(name: str, got: Any, want: Any) -> None:
-        self_check["checked"].append({"name": name, "baseline": want, "recalculated": got})
-        if want and got != want:
-            self_check["mismatch"].append(f"{name}: {got} против {want}")
+    def compare(name: str, got: Any, want: Any, scope: str,
+                low: Any = None, high: Any = None) -> None:
+        """`low`..`high` — что даёт та же формула на границах округления входа."""
+        entry = {"name": name, "baseline": want, "recalculated": got, "scope": scope}
+        self_check["checked"].append(entry)
+        if not want or got == want:
+            return
+        if low is not None and high is not None and low <= want <= high:
+            entry["within_rounding"] = True
+            return
+        line = f"{name}: {got} против {want}"
+        self_check["mismatch"].append(line)
+        self_check["mismatch_by_scope"][scope].append(line)
 
     # Ставка, снятая с базы, обязана сходиться с формулой города: та же плата
     # считается как 1,8964 × СПП × коэффициент аренды × базовая × индекс /
@@ -1024,44 +1040,59 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
             "baseline": round(vri_rate, 6), "recalculated": round(formula_rate, 6),
             "drift_pct": round(drift * 100, 2)})
         if drift > 0.05:
-            self_check["mismatch"].append(
-                f"ставка ВРИ {vri_rate:.6f} млн/м² расходится с формулой города "
-                f"{formula_rate:.6f} на {drift*100:.1f}% — так индексация не дрейфует, "
-                f"похоже на ошибку чтения выгрузки")
+            line = (f"ставка ВРИ {vri_rate:.6f} млн/м² расходится с формулой города "
+                    f"{formula_rate:.6f} на {drift*100:.1f}% — так индексация не дрейфует, "
+                    f"похоже на ошибку чтения выгрузки")
+            self_check["mismatch"].append(line)
+            self_check["mismatch_by_scope"]["vri"].append(line)
 
+    # Соцполовина сверяется с допуском округления норматива: площадь квартир
+    # выгрузка печатает целыми метрами (±0,5 м²), а места — ⌈норма × жители /
+    # 1000⌉. Число, которое формула даёт на границе округления входа, — не
+    # расхождение. Дальше границы — расхождение, и пересчёт мест на нём не
+    # строится.
     if base_apartments > 0:
-        compare("население", math.ceil(base_apartments / 33.0), int(num(baseline, "population")))
+        compare("население", math.ceil(base_apartments / 33.0), int(num(baseline, "population")),
+                "social", low=math.ceil((base_apartments - 0.5) / 33.0),
+                high=math.ceil((base_apartments + 0.5) / 33.0))
         base_pop = int(num(baseline, "population"))
         if base_pop:
             base_zone_two = bool(baseline.get("calculation_zone") == "2")
             compare("места ДОО",
                     math.ceil((63 if base_zone_two else 44) * base_pop / 1000),
-                    int(num(baseline, "required_kindergarten_places")))
+                    int(num(baseline, "required_kindergarten_places")), "social")
             compare("места школы",
                     math.ceil((124 if base_zone_two else 90) * base_pop / 1000),
-                    int(num(baseline, "required_school_places")))
+                    int(num(baseline, "required_school_places")), "social")
             compare("мощность поликлиники",
                     math.ceil(19 * base_pop / 1000),
-                    int(num(baseline, "required_clinic_capacity")))
+                    int(num(baseline, "required_clinic_capacity")), "social")
     base_permanent = int(num(baseline, "parking_permanent"))
     if base_permanent:
         compare("гостевые машино-места", math.ceil(base_permanent / 10.0),
-                int(num(baseline, "parking_guest")))
+                int(num(baseline, "parking_guest")), "parking")
     # Приобъектные: ставка (с СПП × 0,9) на НАПЕЧАТАННОЙ НП базы обязана
     # вернуть число базы — две записи одной площади в выгрузке согласны друг
     # с другом; не согласны (прочитана не та строка) — это расхождение, а не
     # расчёт. Пока строки не было, 94 против 93 на исходном ТЭП шло молча.
     base_attached = int(num(baseline, "parking_attached"))
+    # НП выгрузка печатает целыми метрами, а ставка снята с СПП × 0,9 — дробной:
+    # 1 365 × 0,9 = 1 228,5 печатается как 1 229, и ⌈ставка × 1 229⌉ даёт 17
+    # там, где город сказал 16. Это округление печати, а не не та строка: на
+    # границах ±0,5 м² формула обязана дать число базы, и тогда записи согласны.
     if base_attached and base_built_in_np > 0 and attached_rate > 0:
         compare("приобъектные машино-места",
-                _ceil_places(base_built_in_np * attached_rate), base_attached)
+                _ceil_places(base_built_in_np * attached_rate), base_attached, "parking",
+                low=_ceil_places((base_built_in_np - 0.5) * attached_rate),
+                high=_ceil_places((base_built_in_np + 0.5) * attached_rate))
         if regime == "2118_2026" and base_apartments > 0:
             # Настоящая проверка формулы: город посчитал 897 мест на 77 696 м²
             # квартир — ровно столько даёт пункт 1. Разойдётся — значит база
             # считалась по прежней редакции или норматив снова сменился.
             compare("постоянные машино-места",
-                    moscow_permanent_parking_2118(base_apartments), base_permanent)
+                    moscow_permanent_parking_2118(base_apartments), base_permanent, "parking")
     self_check["matches_baseline"] = not self_check["mismatch"]
+    self_check["social_matches_baseline"] = not self_check["mismatch_by_scope"]["social"]
     if self_check["mismatch"]:
         warnings.append("пересчёт не воспроизводит исходный расчёт: "
                         + "; ".join(self_check["mismatch"]))
