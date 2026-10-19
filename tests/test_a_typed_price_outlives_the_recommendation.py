@@ -197,7 +197,7 @@ def test_typing_over_the_recommendation_goes_to_the_calculation_and_stays():
     pressed, typed, sent, answers, reloaded = _run(scenario)
     assert pressed["field"] == "951" and pressed["held"] == 951, pressed
     assert sent[0] == 951 and pressed["result"] == answers[951], (sent, pressed)
-    assert "рекомендация DevelopAid" in pressed["unit"], pressed
+    assert "Рекомендация DevelopAid" in pressed["unit"], pressed
 
     assert typed["field"] == "1300" and typed["held"] == 1300, typed
     assert sent[-1] == 1300, sent
@@ -205,12 +205,12 @@ def test_typing_over_the_recommendation_goes_to_the_calculation_and_stays():
     assert typed["saved"] == 1300 and typed["stored"] == 1300, typed
     # Без перерисовки: подпись у поля и ответ кнопки уже не выдают ручное
     # число за рекомендацию.
-    assert "вписано руками" in typed["unit"] and "рекомендация" not in typed["unit"], typed
+    assert "Вписано руками" in typed["unit"] and "рекомендация" not in typed["unit"].lower(), typed
     assert not typed["note"].startswith("Подставлено"), typed
     assert "1300" in typed["note"], typed
 
     assert reloaded["field"] == "1300" and reloaded["held"] == 1300, reloaded
-    assert "вписано руками" in reloaded["unit"], reloaded
+    assert "Вписано руками" in reloaded["unit"], reloaded
 
 
 def test_a_late_calculation_of_the_recommendation_does_not_redraw_the_result():

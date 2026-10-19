@@ -648,17 +648,25 @@ function movedToConstruction(id){
 }
 function classFieldUnitText(id,unit){
  unit=objectRateUnit(id,unit);
+ // Пояснение к единице — отдельным предложением, а не через «·»: единица
+ // может сама кончаться точкой («мес.») или уже нести своё предложение.
+ // Внутри, а не своей функцией: стенды собирают эту функцию по имени.
+ const unitSentence=(head,sentence)=>{
+  head=String(head||'').replace(/[\s.;·]+$/,'');
+  return head?head+'. '+sentence:sentence;
+ };
  // Площадь сноса и выкуп, найденные по контуру КРТ, подписаны своим
  // происхождением, пока число в поле то же, что положил контур; исправленное —
  // уже ручное. Проверка внутри, а не своей функцией: стенды страницы собирают
  // `classFieldUnitText` по имени, и новое имя рядом роняло бы их все.
  const krtSource=id==='demolition_area_sqm'?inputs._demolition_source:(id==='land_buyout_mln'?inputs._land_buyout_source:null);
  if(krtSource&&krtSource.by&&Math.abs(Number(inputs[id])-Number(krtSource.value))<0.05)
-  return unit+' · '+krtSource.by+(krtSource.warn?' · ВНИМАНИЕ: '+krtSource.warn:'')
-   +(id==='demolition_area_sqm'?' — исправьте, если здание сохраняется':' — вписанное руками сильнее');
+  return unitSentence(unit,'Источник: '+krtSource.by+'.'+(krtSource.warn?' Внимание: '+krtSource.warn+'.':'')
+   +(id==='demolition_area_sqm'?' Исправьте, если здание сохраняется.':' Число, вписанное вручную, главнее.'));
  if(!classSetsField(id))return unit;
- if(!isClassManual(id))return unit+' · ставит класс проекта, правится в «Настройках класса»';
- return unit+' · '+(classFieldSource(id)||'вписано руками')+' — смена класса его не затрёт';
+ if(!isClassManual(id))return unitSentence(unit,'Значение задаёт класс проекта, поменять его можно в «Настройках класса».');
+ const source=classFieldSource(id)||'вписано руками';
+ return unitSentence(unit,source.charAt(0).toUpperCase()+source.slice(1)+' — смена класса его не затрёт.');
 }
 // Подпись у единицы без перерисовки вводных: перерисовка снесла бы соседние
 // с полем узлы — например, ответ кнопки рекомендации.
