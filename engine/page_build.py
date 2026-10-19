@@ -209,6 +209,9 @@ PAGE = PAGE.replace(ESCROW_CHART_LEGEND_PLACEHOLDER, _escrow_chart_legend_html()
 PAGE = PAGE.replace(SOCIAL_MODES_PLACEHOLDER,
                     json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["social_mode"]],
                                ensure_ascii=False))
+PAGE = PAGE.replace(BRIDGE_INTEREST_MODES_PLACEHOLDER,
+                    json.dumps([item[0] for item in _M2_EXTRA_OPTIONS["bridge_interest_mode"]],
+                               ensure_ascii=False))
 
 
 @app.get("/", response_class=HTMLResponse)
