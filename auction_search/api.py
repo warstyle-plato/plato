@@ -825,6 +825,48 @@ def _resolved_areas(data: dict[str, Any]) -> None:
     data["area_from_title"] = from_title
 
 
+def _nspd_land_area(data: dict[str, Any], points: dict[str, dict[str, Any]]) -> None:
+    """Площадь участков лота по НСПД — когда площадка и название её не дали.
+
+    Кадастровые номера лота спрашивает фон (`points_queue`); здесь только
+    читается сохранённое. Участки лота складываются: лот покупается целиком.
+    Если НСПД ответил не по всем номерам, площадь помечается неполной
+    (`land_area_partial`) — фильтр такой лот по площади не выкидывает: сумма
+    части участков меньше площади лота. Номера, которые ещё не спрошены, —
+    `land_area_pending`: «уточняется», а не «нет».
+    """
+    numbers = [str(n).strip() for n in (data.get("cadastral_numbers") or []) if str(n).strip()]
+    land: list[float] = []
+    pending = unresolved = 0
+    for number in dict.fromkeys(numbers):
+        point = points.get(number) or {}
+        if not point or ("kind" not in point and not point.get("failed")):
+            pending += 1
+        elif point.get("kind") == "land":
+            if point.get("area_sqm"):
+                land.append(float(point["area_sqm"]))
+            else:
+                unresolved += 1
+        elif point.get("failed"):
+            unresolved += 1
+    data.setdefault("land_area_source", "площадка" if data.get("land_area_sqm") is not None else "")
+    if data.get("area_from_title") and "land_area_sqm" in data["area_from_title"]:
+        data["land_area_source"] = "название лота"
+    data["land_area_pending"] = pending
+    data["land_area_partial"] = False
+    if not land:
+        return
+    total = round(sum(land), 2)
+    complete = not pending and not unresolved
+    current = data.get("land_area_sqm")
+    if current is None or (complete and total > float(current)):
+        # НСПД знает больше участков лота, чем названо в тексте, — берём его
+        # сумму; меньшую сумму НСПД поверх названного не ставим.
+        data["land_area_sqm"] = total
+        data["land_area_source"] = f"НСПД, участков {len(land)}"
+        data["land_area_partial"] = not complete
+
+
 def _public_lot_dict(lot) -> dict[str, Any]:
     data = lot.to_dict()
     data.pop("raw", None)
@@ -5425,8 +5467,13 @@ def install(app: FastAPI) -> None:
         if "coordinate_x=" not in href:
             return {"asked_at": now, "failed": True, "not_found": True,
                     "reason": "НСПД нашёл номер, но не отдал его границы — точки нет"}
+        # Вид объекта и площадь — заодно: площадь участка, которой нет у
+        # площадки и в названии, лот берёт отсюда (`_nspd_land_area`).
+        area = found.get("area_sqm")
         return {"asked_at": now, "map_url": href,
-                "address": str(found.get("address") or "")[:300]}
+                "address": str(found.get("address") or "")[:300],
+                "kind": str(found.get("kind") or ""),
+                "area_sqm": float(area) if isinstance(area, (int, float)) and area > 0 else None}
 
     def _nspd_points_once(limit: int = lot_notes_rules.NSPD_POINTS_PER_RUN) -> int:
         """Получить точки для нескольких номеров из очереди. Возвращает, сколько спрошено."""
@@ -5518,15 +5565,17 @@ def install(app: FastAPI) -> None:
         """Сколько лотов разобрано и почему не разобраны остальные — не только в логе."""
         return await run_in_threadpool(lot_notes.status)
 
-    def _discover_row(lot) -> dict[str, Any]:
+    def _discover_row(lot, points: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
         """Лот выдачи для страницы — одной сборкой для живых и завершённых."""
+        data = _public_lot_dict(lot)
+        _nspd_land_area(data, lot_notes.points() if points is None else points)
         return {
-                **_public_lot_dict(lot),
+                **data,
                 "analysis": _analysis_support(lot.source.lot_url),
                 # Соответствие профилю считает сервер по измеренному
                 # эталону сделок: балл, собранный в браузере, был бы
                 # вторым счётом той же величины.
-                "fit": profile_fit(_public_lot_dict(lot)),
+                "fit": profile_fit(data),
                 "quality": catalogue_quality(lot),
                 # Лот основной подборки: в режиме «с шумом» страница ставит
                 # такие первыми и отделяет от добавленных неполных и шума.
@@ -5585,13 +5634,18 @@ def install(app: FastAPI) -> None:
         except Exception:  # noqa: BLE001 — каталог лотов не роняем очередью
             logger.exception("Торги: лоты сбора не записаны в очередь комментариев")
 
+        try:
+            nspd_points = await run_in_threadpool(lot_notes.points)
+        except Exception:  # noqa: BLE001 — каталог не роняем чтением точек
+            logger.exception("Торги: точки НСПД не прочитаны")
+            nspd_points = {}
         return {
             "source_policy": "official_etp_only",
             "source": source,
             "count": len(lots),
             "quality": service.last_quality_report,
             "coverage": [_coverage_row(adapter) for adapter in adapters],
-            "lots": [_discover_row(lot) for lot in lots],
+            "lots": [_discover_row(lot, nspd_points) for lot in lots],
         }
 
     # История завершённых торгов. Тяжёлая выборка — до сорока страниц ГИС
@@ -5622,6 +5676,7 @@ def install(app: FastAPI) -> None:
         except (OSError, ValueError, KeyError, TypeError):
             pass
         since = _months_before(as_of, months)
+        nspd_points = lot_notes.points()
         adapters = _discovery_adapters(source)
         service = AuctionSearchService(adapters)
         lots = service.discover_moscow_finished(
@@ -5639,7 +5694,7 @@ def install(app: FastAPI) -> None:
             # 0» не отличить от «торгов не было».
             "quality": service.last_quality_report,
             "coverage": coverage,
-            "lots": [{**_discover_row(lot), "finished": True} for lot in lots],
+            "lots": [{**_discover_row(lot, nspd_points), "finished": True} for lot in lots],
         }
         complete = not any(
             row.get("finished_available") and row.get("reason") for row in coverage)

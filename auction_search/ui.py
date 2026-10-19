@@ -361,6 +361,9 @@ function landMinSqm(){
  return Number.isFinite(ha)&&ha>0?ha*10000:NaN;
 }
 function landAreaKnown(l){const v=l&&l.land_area_sqm;return v!==null&&v!==undefined&&v!==''&&Number.isFinite(Number(v))&&Number(v)>0}
+// Лот, чья площадь известна не по всем участкам, фильтр по площади не
+// выкидывает: сумма части участков меньше площади лота.
+function landAreaUnsure(l,min){return !landAreaKnown(l)||(!!l.land_area_partial&&Number(l.land_area_sqm)<min)}
 const fmtHa=sqm=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:2}).format(sqm/10000)+' га';
 function renderAreaNote(){
  const box=$('areaNote'),a=state.areaFilter||{};
@@ -369,7 +372,7 @@ function renderAreaNote(){
  if(Number.isNaN(a.min)){box.className='notice warn';box.textContent='Площадь участка не распознана. Введите число гектаров, например 0,5.';return}
  box.className='notice'+(a.unknown?' warn':'');
  box.textContent=`Участки от ${fmtHa(a.min)}: подходит ${a.matched} лот(ов).`
-  +(a.unknown?` Ещё у ${a.unknown} лот(ов) площадка не указала площадь участка. Мы не можем ни отсеять их, ни оставить по площади, поэтому они показаны в конце списка с пометкой «площадь участка не указана». Проверьте площадь в карточке лота.`:'');
+  +(a.unknown?` Ещё у ${a.unknown} лот(ов) площадь участка неизвестна или известна не по всем участкам лота. Мы не можем ни отсеять их, ни оставить по площади, поэтому они показаны в конце списка с пометкой. Площадь, которой нет у площадки, мы постепенно берём из НСПД по кадастровым номерам.`:'');
 }
 function allAuctionLots(){
  const f=state.finished||{};
@@ -384,7 +387,7 @@ function filter(){const q=$('search').value.trim().toLowerCase(),kinds=[...state
  const min=landMinSqm();
  state.areaUnknown=new Set();
  if(min!==null&&!Number.isNaN(min)){
-  const known=list.filter(l=>landAreaKnown(l)&&Number(l.land_area_sqm)>=min),unknown=list.filter(l=>!landAreaKnown(l));
+  const known=list.filter(l=>landAreaKnown(l)&&Number(l.land_area_sqm)>=min),unknown=list.filter(l=>!(landAreaKnown(l)&&Number(l.land_area_sqm)>=min)&&landAreaUnsure(l,min));
   unknown.forEach(l=>state.areaUnknown.add(l));
   list=known.concat(unknown);
   state.areaFilter={min,matched:known.length,unknown:unknown.length};
@@ -401,7 +404,13 @@ function finishedLine(l){
   :' Итоговую цену и победителя площадка в выдаче не сообщает, они указаны в протоколе на карточке лота.';
  return `<div class="source finished">Торги завершены: ${esc(l.status||'статус площадка не назвала')}.${esc(tail)}</div>`;
 }
-function areaUnknownLine(l){return state.areaUnknown&&state.areaUnknown.has(l)?'<div class="source warn">Площадь участка не указана</div>':''}
+function areaUnknownLine(l){
+ if(!(state.areaUnknown&&state.areaUnknown.has(l)))return '';
+ const why=landAreaKnown(l)?'Площадь участка известна не по всем участкам лота'
+  :Number(l.land_area_pending)>0?'Площадь участка не указана, уточняем её в НСПД по кадастровому номеру'
+  :'Площадь участка не указана';
+ return `<div class="source warn">${why}</div>`;
+}
 const isoDay=iso=>String(iso||'').split('-').reverse().join('.');
 function moscowTodayIso(){const p=Object.fromEntries(moscowFormat({year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`}
 state.finished={on:false,lots:[],coverage:[],quality:{},window:null,error:'',loading:false,cached:null,seq:0};

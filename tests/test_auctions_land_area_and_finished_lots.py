@@ -86,6 +86,19 @@ def test_a_separate_land_row_and_its_unit_are_read_by_code():
     assert lot.building_area_sqm == 86.3, "здание остаётся зданием"
 
 
+def test_several_parcels_of_one_lot_add_up_and_one_parcel_is_not_counted_twice():
+    card = _land_card("4000")
+    card["characteristics"] += [
+        {"code": "SquareZU", "name": "Площадь земельного участка", "characteristicValue": "3000",
+         "unit": {"code": "055"}},
+        {"code": "SquareZU", "name": "Площадь земельного участка", "characteristicValue": "2500",
+         "unit": {"code": "055"}},
+    ]
+    lot = torgi_gov.to_lot(card, "t")
+    assert lot.land_area_sqm == 5500, "два участка лота — сумма; «Общая площадь» о них же не прибавляется"
+    assert lot.provenance["land_area_sqm"].source_section == "characteristics:SquareZU ×2"
+
+
 def test_an_unknown_unit_leaves_the_area_empty_instead_of_guessing():
     card = _land_card("12")
     card["characteristics"][0]["unit"] = {"code": "999", "name": "сотка"}
@@ -337,7 +350,7 @@ def test_in_a_real_browser_the_area_filter_and_finished_lots(tmp_path, monkeypat
             assert "Площадь участка не указана" in seen["names"][1]
             assert not any("0,2 га" in name for name in seen["names"])
             assert seen["areaShown"] and "подходит 1 лот" in seen["area"]
-            assert "не указала площадь участка" in seen["area"]
+            assert "площадь участка неизвестна" in seen["area"]
             # Подделка: фильтр, который молча выкидывает лот без площади, ловится.
             page.evaluate("state.filtered = state.filtered.filter(l => l.land_area_sqm); loadSheet()")
             fake = _rows(page, 1)
@@ -441,3 +454,116 @@ def test_the_land_area_in_the_title_reaches_the_filter_not_only_the_table(tmp_pa
     assert export_areas({"name": title, "url": lot["source"]["lot_url"],
                          "land_area_sqm": lot["land_area_sqm"],
                          "building_area_sqm": lot["building_area_sqm"]}).land_area_sqm == 396
+
+
+# --- площадь участков лота из НСПД --------------------------------------------
+
+def _points(**by_number):
+    return {number.replace("_", ":"): point for number, point in by_number.items()}
+
+
+LAND_A, LAND_B, BUILD = "77:04:0002004:86", "77:04:0002004:29", "77:04:0002004:1062"
+
+
+def test_nspd_adds_up_the_land_parcels_of_a_lot_and_skips_the_building():
+    from auction_search.api import _nspd_land_area
+
+    data = {"title": "нежилое здание пл.2020,9кв.м", "cadastral_numbers": [BUILD, LAND_A, LAND_B],
+            "land_area_sqm": None, "building_area_sqm": 2020.9}
+    points = {BUILD: {"kind": "building", "area_sqm": 2020.9, "map_url": "x"},
+              LAND_A: {"kind": "land", "area_sqm": 3200.0, "map_url": "x"},
+              LAND_B: {"kind": "land", "area_sqm": 2100.0, "map_url": "x"}}
+    _nspd_land_area(data, points)
+    assert data["land_area_sqm"] == 5300, "участки лота — сумма, здание не участок"
+    assert data["land_area_source"] == "НСПД, участков 2"
+    assert data["land_area_partial"] is False and data["land_area_pending"] == 0
+
+
+def test_nspd_marks_a_lot_partial_while_some_parcels_are_not_known():
+    from auction_search.api import _nspd_land_area
+
+    data = {"cadastral_numbers": [LAND_A, LAND_B], "land_area_sqm": None}
+    _nspd_land_area(data, {LAND_A: {"kind": "land", "area_sqm": 3200.0, "map_url": "x"}})
+    assert data["land_area_sqm"] == 3200
+    assert data["land_area_partial"] is True, "второй участок не спрошен — сумма неполная"
+    assert data["land_area_pending"] == 1
+
+
+def test_nspd_does_not_shrink_a_named_area_and_widens_it_only_when_complete():
+    from auction_search.api import _nspd_land_area
+
+    named = {"cadastral_numbers": [LAND_A, LAND_B], "land_area_sqm": 396.0,
+             "area_from_title": ["land_area_sqm"]}
+    _nspd_land_area(named, {LAND_A: {"kind": "land", "area_sqm": 300.0, "map_url": "x"}})
+    assert named["land_area_sqm"] == 396 and named["land_area_source"] == "название лота"
+    wider = {"cadastral_numbers": [LAND_A, LAND_B], "land_area_sqm": 396.0,
+             "area_from_title": ["land_area_sqm"]}
+    _nspd_land_area(wider, {LAND_A: {"kind": "land", "area_sqm": 396.0, "map_url": "x"},
+                            LAND_B: {"kind": "land", "area_sqm": 5000.0, "map_url": "x"}})
+    assert wider["land_area_sqm"] == 5396, "НСПД знает оба участка — берём полную сумму"
+
+
+def test_the_background_asks_every_seen_lot_and_once_more_for_old_points(tmp_path):
+    from auction_search import lot_notes as rules
+
+    store = rules.LotNotes(tmp_path / "market")
+    soon = "2099-01-10T12:00:00+03:00"
+    store.remember_lots([{"title": "Здание", "cadastral_numbers": [BUILD, LAND_A],
+                          "application_deadline_iso": soon,
+                          "source": {"lot_url": "https://torgi.gov.ru/lot/1"}}])
+    store.request([{"section": "Торги", "name": "Лот выгрузки", "cadastre": LAND_B,
+                    "application_deadline_iso": soon, "url": "https://etp/lot/2"}])
+    assert store.points_queue() == [LAND_B, BUILD, LAND_A], "лот выгрузки — первым, лот сбора — тоже в очереди"
+    store.save_point(BUILD, {"asked_at": 1, "map_url": "x"})  # запись до площадей
+    store.save_point(LAND_A, {"asked_at": 1, "map_url": "x", "kind": "land", "area_sqm": 3200.0})
+    assert store.points_queue() == [LAND_B, BUILD], "старая запись без вида переспрашивается один раз"
+
+
+def test_the_point_keeps_the_kind_and_the_area_of_the_parcel(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from fastapi import FastAPI
+
+    from auction_search import api
+    from auction_search import lot_notes as rules
+
+    href = "https://nspd.gov.ru/map?thematic=PKK&zoom=17&coordinate_x=1&coordinate_y=2"
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    core = types.ModuleType("developaid_core")
+    core._land_lookup_by_numbers = lambda numbers: [
+        {"found": True, "cadastral_number": numbers[0], "map_url": href, "kind": "land", "area_sqm": 3200.0}]
+    core._core_api_url = lambda path: ""
+    monkeypatch.setitem(sys.modules, "developaid_core", core)
+    app = FastAPI()
+    app.state.market_discovery_service = types.SimpleNamespace(search=None, krt=None)
+    api.install(app)
+    store = rules.LotNotes(tmp_path / "market")
+    store.remember_lots([{"title": "Участок", "cadastral_numbers": [LAND_A],
+                          "application_deadline_iso": "2099-01-10T12:00:00+03:00",
+                          "source": {"lot_url": "https://torgi.gov.ru/lot/1"}}])
+    assert app.state.auction_nspd_points_once() == 1
+    point = store.points()[LAND_A]
+    assert point["kind"] == "land" and point["area_sqm"] == 3200.0
+
+
+def test_on_the_page_a_partial_area_below_the_threshold_stays_with_its_note():
+    from auction_search import ui
+    from tests import page_blocks
+
+    lots = [_lot("https://torgi.gov.ru/lot/P1", "Два участка, известен один", land=3200,
+                 land_area_partial=True, land_area_pending=1),
+            _lot("https://torgi.gov.ru/lot/S1", "Маленький участок", land=3200),
+            _lot("https://torgi.gov.ru/lot/U1", "Без площади", land_area_pending=2)]
+    out, _ = page_blocks.run(
+        "const LOTS=%s;" % json.dumps(lots, ensure_ascii=False),
+        "state.lots=LOTS;state.areaUnknown=new Set();"
+        "const kept=LOTS.filter(l=>landAreaUnsure(l,5000));"
+        "kept.forEach(l=>state.areaUnknown.add(l));"
+        "console.log(JSON.stringify(kept.map(l=>[l.title,areaUnknownLine(l)])))",
+        page=ui.auctions_page())
+    got = json.loads(out.strip().splitlines()[-1])
+    titles = [title for title, _note in got]
+    assert titles == ["Два участка, известен один", "Без площади"], "известный маленький участок уходит"
+    assert "известна не по всем участкам" in got[0][1]
+    assert "уточняем её в НСПД" in got[1][1]
