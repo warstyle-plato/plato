@@ -112,8 +112,15 @@ def test_the_result_lives_on_disk_for_the_other_worker(cold):
     inputs, tep = _inputs()
     client = TestClient(core.app)
     ticket = _post(client, inputs, tep).json()["ticket"]
+    # Итог ложится на диск РАНЬШЕ, чем поток сборки снимает билет из памяти:
+    # опрос видит PDF, а `_TEASER_JOBS.pop` ещё впереди. Ждём само событие
+    # конца сборки — его поток ставит последним, — а не угадываем паузу.
+    with core._TEASER_JOBS_LOCK:
+        finished = core._TEASER_JOBS.get(ticket)
+    assert finished is not None, "сборка не встала в память воркера: холодный путь не начался"
     release.set()
     _poll(client, ticket)
+    assert finished.wait(30), "поток сборки тизера не закончился за 30 с"
     with core._TEASER_JOBS_LOCK:
         assert ticket not in core._TEASER_JOBS  # в памяти пусто — отвечает диск
     again = client.get(f"/report/teaser/{ticket}")

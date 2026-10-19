@@ -323,16 +323,18 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
                 if metric.get("key") else
                 _row(str(metric.get("label") or "Покрытие кредита"),
                      str(metric.get("reason") or "не считается"), "text"))
-    # Главный — IRR проекта до финансирования; IRR собственника — вторым и
-    # числом, только если движок счёл его показательным (`equity_irr_label`).
-    irr_project = summary.get("irr_project") if na is None else None
+    # Главный — IRR проекта до финансирования, числом и при непогашенном
+    # долге (владелец, 17.10.2026): «N/A — долг не погашен» — только у
+    # собственника. IRR собственника — вторым и числом, только если движок
+    # счёл его показательным (`equity_irr_label`).
+    irr_project = summary.get("irr_project")
     irr_label = equity_irr_label(summary)
     irr = summary.get("irr_equity") if irr_label is None else None
     decision = [
         _row("Чистая прибыль проекта", summary.get("net_profit"), "rub"),
         debt_row,
         (_row("IRR проекта (до финансирования)", irr_project, "pct") if irr_project is not None
-         else _row("IRR проекта (до финансирования)", na or "не считается — поток не меняет знак", "text")),
+         else _row("IRR проекта (до финансирования)", "не считается — поток не меняет знак", "text")),
         (_row("IRR собственника", irr, "pct") if irr is not None
          else _row("IRR собственника", irr_label or "не считается — поток не меняет знак", "text")),
         (_row("NPV собственника" + (f" @{float(equity.get('discount_rate') or 0) * 100:.4g}%"

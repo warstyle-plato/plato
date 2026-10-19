@@ -438,8 +438,43 @@ def name_recognised(text: str, entry: dict[str, Any], share: float) -> bool:
     return name_run(text, words) >= need
 
 
+# --- какой адрес сверяет отпечаток -------------------------------------------
+#
+# У большинства карточек `source_url` — публикация ПОПРАВКИ на pravo.gov.ru.
+# Страница публикации заморожена днём выхода и не изменится никогда, поэтому
+# отпечаток с неё новую редакцию увидеть не может по построению: 713/30 молчал
+# и о 774-ПП, и о 1080-ПП (ревизия 16.10.2026, §8). Меняется с редакцией текст
+# консолидированный, и когда его адрес назван (`consolidated_url`), отпечаток
+# снимается с него. Ответ на «что сверяет отпечаток» живёт здесь ОДИН раз:
+# проба, диагностика и страница его читают, а не выбирают поле каждая сама.
+WATCH_FIELD_CONSOLIDATED = "consolidated_url"
+WATCH_FIELD_SOURCE = "source_url"
+
+
+def watch_target(entry: dict[str, Any]) -> dict[str, str]:
+    """Адрес, с которого сторож снимает отпечаток, и откуда он взят.
+
+    `field` — имя поля карточки, `label` — подпись для читателя. Пустой `url`
+    значит, что сверять нечего; причину называет проба, а не этот выбор.
+    """
+    consolidated = str(entry.get(WATCH_FIELD_CONSOLIDATED) or "").strip()
+    if consolidated:
+        return {"url": consolidated, "field": WATCH_FIELD_CONSOLIDATED,
+                "label": str(entry.get("consolidated_label")
+                             or "Действующая редакция").strip()}
+    return {"url": str(entry.get(WATCH_FIELD_SOURCE) or "").strip(),
+            "field": WATCH_FIELD_SOURCE,
+            "label": str(entry.get("source_label") or "Источник").strip()}
+
+
+def watch_url(entry: dict[str, Any]) -> str:
+    """Адрес отпечатка — строкой; читатели не выбирают поле сами."""
+    return watch_target(entry)["url"]
+
+
 def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
-    url = str(entry.get("source_url") or "").strip()
+    target = watch_target(entry)
+    url = target["url"]
     checked_at = _now_iso()
     if not url:
         # «Адрес забыт» и «адреса нет вовсе» — разные ответы, и второй
@@ -548,7 +583,11 @@ def _probe(entry: dict[str, Any], previous: dict[str, Any]) -> dict[str, Any]:
         "last_modified": last_modified,
         "sha256": digest,
         "fingerprint_kind": kind,
+        # Адрес, с которого снят отпечаток, и поле карточки, откуда он взят:
+        # без второго «проверено» не говорит, публикацию поправки сверили или
+        # действующий текст.
         "source_url": url,
+        "watch_field": target["field"],
         "changed": changed,
         "found_terms": found,
         "missing_terms": missing,
@@ -697,6 +736,7 @@ def watch_state() -> dict[str, Any]:
     results: dict[str, int] = {}
     signals = 0
     asked = 0
+    search_queries = 0
     for item_id, item in checks.items():
         if isinstance(item, dict):
             key = str(item.get("result") or "unknown")
@@ -705,6 +745,12 @@ def watch_state() -> dict[str, Any]:
             if isinstance(sources, dict):
                 if sources.get("asked"):
                     asked += 1
+                # Сколько запросов ушло, а не только скольких актов спросили:
+                # один запрос на акт поправок не находил, и снаружи это
+                # читалось как «поправок нет».
+                search_queries += sum(
+                    1 for q in (sources.get("queries") or [])
+                    if isinstance(q, dict) and q.get("asked"))
                 # Считаем то же, что показывает карточка: учтённая редакция в
                 # счётчике находок — это находка, которой на экране нет.
                 if source_signals(item, entries.get(str(item_id) or "")):
@@ -732,8 +778,16 @@ def watch_state() -> dict[str, Any]:
         # находок при пятнадцати спрошенных — разные ответы, а снаружи оба
         # выглядели молчанием.
         "searched": asked,
+        "search_queries": search_queries,
         "signals": signals,
         "queued": queued_count(),
+        # Какой адрес сверяет отпечаток у каждого акта и из какого поля он
+        # взят: публикация поправки не меняется никогда, и без этого списка
+        # «отпечаток не изменился» неотличимо от «сверяли замороженную страницу».
+        "watched": [
+            {"id": entry_id, **watch_target(entry)}
+            for entry_id, entry in entries.items()
+        ],
     }
 
 
@@ -770,7 +824,7 @@ def _changes_between(before: dict[str, Any], after: dict[str, Any],
                 "result": "repealed" if first["kind"] == "repealed" else "amended",
                 "was": "",
                 "message": first["quote"],
-                "source_url": first.get("url") or str(entry.get("source_url") or ""),
+                "source_url": first.get("url") or watch_url(entry),
                 "checked_at": str((check or {}).get("checked_at") or ""),
             })
         result = str((check or {}).get("result") or "")
@@ -787,7 +841,7 @@ def _changes_between(before: dict[str, Any], after: dict[str, Any],
             "result": result,
             "was": was,
             "message": str((check or {}).get("message") or ""),
-            "source_url": str(entry.get("source_url") or ""),
+            "source_url": watch_url(entry),
             "checked_at": str((check or {}).get("checked_at") or ""),
         })
     return changes
@@ -840,6 +894,47 @@ def watch_query(entry: dict[str, Any]) -> str:
     if not name:
         name = str(entry.get("title") or "")[:60]
     return f"{name} утратил силу или внесены изменения"
+
+
+def act_kind(entry: dict[str, Any]) -> str:
+    """Вид акта словами его заголовка: «постановление Правительства Московской области».
+
+    Берётся до даты или номера, как в заголовке, — вид акта в реестре уже
+    есть, и второй его экземпляр полем разошёлся бы с первым молча.
+    """
+    title = str(entry.get("title") or "").strip()
+    head = re.split(r"\s+от\s+\d|\s*№", title, maxsplit=1)[0].strip()
+    return head[:1].lower() + head[1:] if head else ""
+
+
+def amendment_query(entry: dict[str, Any]) -> str:
+    """Второй вопрос — так, как озаглавлена САМА поправка.
+
+    Первый запрос спрашивает пересказ о судьбе акта и приносит Гарант, Главбух
+    и проекты: на проде по 713/30 он не принёс ни 774-ПП, ни 1080-ПП. Карточка
+    поправки озаглавлена «О внесении изменений в постановление … № 713/30» —
+    и ищется своими словами, по дате. Без вида акта или номера запроса нет:
+    «О внесении изменений в …» без реквизитов нашёл бы чужие поправки.
+    """
+    kind = act_kind(entry)
+    match = re.search(r"№\s*([0-9][^\s,«»]*)", str(entry.get("title") or ""))
+    number = match.group(1).rstrip(".,;") if match else ""
+    if not kind or not number:
+        return ""
+    return f"О внесении изменений в {kind} № {number}"
+
+
+def watch_queries(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Все вопросы поиска об акте — одним списком, в порядке задавания.
+
+    Второй — по дате: поправка новее базового акта, и ранжирование по
+    релевантности ставит выше сам акт и пересказы о нём.
+    """
+    queries = [{"query": watch_query(entry), "sort_by_date": False}]
+    amendment = amendment_query(entry)
+    if amendment:
+        queries.append({"query": amendment, "sort_by_date": True})
+    return queries
 
 
 def _sentences(text: str) -> list[str]:
@@ -996,16 +1091,39 @@ def _search_signals(entry: dict[str, Any], client: Any) -> dict[str, Any]:
     """
     if client is None:
         return {"asked": False, "reason": "поиск не настроен"}
-    query = watch_query(entry)
-    try:
-        docs = client.search(query, groups_on_page=10)
-    except Exception as error:                       # noqa: BLE001
-        return {"asked": False, "query": query, "reason": f"поиск не ответил: {error}"}
-    rows = []
-    for doc in docs or []:
-        rows.append({"title": getattr(doc, "title", "") or "",
-                     "snippet": getattr(doc, "snippet", "") or "",
-                     "url": getattr(doc, "url", "") or ""})
+    # Вопросов два (см. `watch_queries`), выдачи складываются: один адрес —
+    # одна строка, и находка ищется по объединённой выдаче. Сколько запросов
+    # ушло и что каждый принёс — часть ответа: «запрос один и он не находит
+    # поправок» снаружи выглядело как «поправок нет».
+    asked_queries: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for item in watch_queries(entry):
+        query = str(item["query"])
+        try:
+            docs = client.search(query, groups_on_page=10,
+                                 sort_by_date=bool(item["sort_by_date"]))
+        except Exception as error:                   # noqa: BLE001
+            asked_queries.append({**item, "asked": False,
+                                  "reason": f"поиск не ответил: {error}"})
+            continue
+        got = 0
+        for doc in docs or []:
+            row = {"title": getattr(doc, "title", "") or "",
+                   "snippet": getattr(doc, "snippet", "") or "",
+                   "url": getattr(doc, "url", "") or ""}
+            got += 1
+            key = row["url"].strip().lower()
+            if key and key in seen_urls:
+                continue
+            if key:
+                seen_urls.add(key)
+            rows.append(row)
+        asked_queries.append({**item, "asked": True, "checked": got})
+    query = str(watch_queries(entry)[0]["query"])
+    if not any(q["asked"] for q in asked_queries):
+        return {"asked": False, "query": query, "queries": asked_queries,
+                "reason": str(asked_queries[0].get("reason") or "поиск не ответил")}
     signals = find_repeal_signals(entry, rows)
     # Немой отказ чинить нечем. «Спросили, принесено десять, наш акт не назван
     # ни в одном» и «поиск не ответил» снаружи выглядят одним нулём находок, а
@@ -1013,6 +1131,7 @@ def _search_signals(entry: dict[str, Any], client: Any) -> dict[str, Any]:
     # заголовки того, что принесли, лежат рядом с числом; это публичная выдача,
     # секретов в ней нет.
     return {"asked": True, "asked_at": _now_iso(), "query": query,
+            "queries": asked_queries,
             "checked": len(rows), "signals": signals,
             "seen": [{"title": row["title"][:160], "url": row["url"]} for row in rows[:5]]}
 
@@ -1121,13 +1240,22 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     # Сообщение пробы и HTTP-код — тоже рабочий контур: читателю «HTTP 200»
     # не говорит ничего, а «источник не отвечает» он узнает из подписи выше.
     check_html = ""
+    target = watch_target(entry)
     if admin:
+        # Какой адрес сверял отпечаток — часть «проверено»: публикация поправки
+        # и действующий текст отвечают на разные вопросы, и без подписи
+        # «не изменилось» про замороженную страницу читается как про редакцию.
+        watched = (
+            "<small>Отпечаток снят с: <a href=\"%s\" target=\"_blank\" rel=\"noopener\">%s ↗</a></small>"
+            % (html.escape(target["url"], quote=True), html.escape(target["label"]))
+            if target["url"] else "<small>Отпечаток снять не с чего: адреса нет</small>")
         check_html = (
-            "<div class='probe'><span>%s</span><small>Проверено: %s · HTTP %s</small></div>"
+            "<div class='probe'><span>%s</span><small>Проверено: %s · HTTP %s</small>%s</div>"
             % (
                 html.escape(str(check.get("message") or "")),
                 html.escape(str(check.get("checked_at") or "—").replace("T", " ")),
                 html.escape(str(check.get("http_status") or "—")),
+                watched,
             )
         ) if check else (
             "<div class='probe'><span>Техническая проверка источника "
@@ -1201,6 +1329,12 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
         act_label = html.escape(str(entry.get("act_page_label") or "Страница акта"))
         source_link += (f' <a href="{html.escape(act_page, quote=True)}" '
                         f'target="_blank" rel="noopener">{act_label} ↗</a>')
+    # Действующий (консолидированный) текст — третий адрес, когда он назван:
+    # по нему сторож снимает отпечаток, и читателю он нужен тем же — там
+    # редакция, а не публикация одной поправки.
+    if target["field"] == WATCH_FIELD_CONSOLIDATED and target["url"].startswith("http"):
+        source_link += (f' <a href="{html.escape(target["url"], quote=True)}" '
+                        f'target="_blank" rel="noopener">{html.escape(target["label"])} ↗</a>')
     # Тринадцать развёрнутых карточек — стена, которую не читают (владелец,
     # 07.09.2026: «вся информация должна быть свернута и при необходимости
     # только открыта из списка»). Свёрнутая строка отвечает на «что это и на
@@ -1314,6 +1448,8 @@ def _watch_note(watch: dict[str, Any]) -> str:
     parts.append("Ссылки сверены: " + when("last_run_at"))
     if watch.get("search_available"):
         parts.append("открытые источники спрошены: " + when("last_search_at"))
+        if int(watch.get("searched") or 0):
+            parts.append("запросов поиска за заход: %d" % int(watch.get("search_queries") or 0))
     else:
         parts.append("открытые источники не спрашиваются — поиск не настроен")
     signals = int(watch.get("signals") or 0)

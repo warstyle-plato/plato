@@ -1330,7 +1330,8 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
         nonresidential_np_sqm=nonres_np + n(tep.get("ground_commercial") or {}, "total_area"),
         k1=float(demand.get("k1") or 1.0), k2=float(demand.get("k2") or 1.0),
         zone_two=str(normalized.get("calculation_zone") or "").strip() == "2",
-        apartment_count=n(apartments, "units"))
+        apartment_count=n(apartments, "units"),
+        social_population_method=str(inputs.get("social_population_method") or ""))
     tep_src = "ТЭП проекта, ГНС"
     norm_src = "наша норма (tep_derived_norms)"
     ours: dict[str, Any] = {
@@ -1342,7 +1343,8 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
             "social": (round(social_gns / 1000.0, 3), tep_src + ": ДОО, СОШ, поликлиника"),
         },
         "social": {
-            "population": (derived["population"], norm_src + ": площадь квартир / 33 м²"),
+            "population": (derived["social_population"],
+                           norm_src + ": " + derived["social_population_basis"]),
             "kindergarten": (derived["kindergarten_places"], norm_src),
             "school": (derived["school_places"], norm_src),
             "clinic": (derived["clinic_capacity"], norm_src),
@@ -1614,6 +1616,11 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
                 f"у нас ГНС {gns_text} м²")
         for kind in ("spp.social", "spp.total", "density"):
             reasons[kind] = (reasons.get(kind, "") + "; " if reasons.get(kind) else "") + line
+    if derived.get("social_population_method") not in (None, "", "rngp_area"):
+        # Проект считает соцобъекты альтернативным расчётом — это сказано рядом
+        # с нормой, а не вместо неё.
+        population_line += ("; соцобъекты проекта — " + str(derived["social_population"])
+                            + " чел.: " + str(derived["social_population_basis"]))
     for kind in ("social.population", "social.kindergarten", "social.school", "social.clinic"):
         reasons.setdefault(kind, population_line + "; " + area_line)
     # Всё, что калькулятор ведёт от населения, несёт те же две строки: иначе

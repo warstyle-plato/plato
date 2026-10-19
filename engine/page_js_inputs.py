@@ -15,7 +15,7 @@ engine/page_build.py. Стенды на node берут куски скрипт�
 """
 # ruff: noqa
 
-PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_field_origin','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query',
+PAGE += r"""const TERRITORY_MARKERS=['_glavapu_import','_field_origin','_manual_tep_import','_mo_calc','_cadastral_analysis','_cadastral_query','_cadastral_origin',
  '_site_area_user_set','_site_density_user_set','_demolition_source','_land_buyout_source','_vri_relief_source','vri_mpt_override'];
 
 // Предпосылки аналитика — цены, себестоимость, ставки, сроки, налоги — это не
@@ -93,7 +93,7 @@ function isFieldManual(path){
 }
 function fieldOriginNote(path){
  const o=(inputs._field_origin||{})[path];
- if(!o||(o.source!=='glavapu'&&o.source!=='hotel_preset'&&o.source!=='migrated'))return '';
+ if(!o||(o.source!=='glavapu'&&o.source!=='hotel_preset'&&o.source!=='migrated'&&o.source!=='document'))return '';
  return '<div class="glavapu-origin" style="font-size:11px;color:#666;margin-top:2px">'+escapeHtml(o.text||'ГлавАПУ')+'</div>';
 }
 // Регион проекта — поле «Регион» проекта, и только оно. Ни имя файла
@@ -802,7 +802,7 @@ function projectKindLabel(kind){
 // дополняет прежнее, а не переписывает его. Режим был разовым действием:
 // строки обнулялись в момент нажатия, а следующий писатель возвращал их
 // молча — выгрузка ГлавАПУ ставила подземный паркинг по жилому нормативу
-// участка, кнопка «Сформировать ТЭП по плотности» раскладывала СПП
+// участка, кнопка «Сформировать ТЭП по новым параметрам» раскладывала СПП
 // по квартирам и встроенной коммерции (15 397 и 983 м² на участке 0,546 га),
 // и убрать это человек не мог: ячейки заперты, полей на экране нет.
 function clearResidentialInputs(){
@@ -1768,12 +1768,15 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{if(id==='vri_required')return vriRequiredToggled(el);const classRegionBefore=classRegion();inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='land_rights_cost_mln'){vriFeeClearedMln=0;syncVriRequiredBox()}if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(id==='vri_relief_mode'||id==='vri_financing_mode'){renderInputs();return calculate()}if(VRI_SHARE_FIELDS.includes(id))refreshVriSharesNote();if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{if(id==='vri_required')return vriRequiredToggled(el);const classRegionBefore=classRegion();const valueBefore=inputs[id];inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='land_rights_cost_mln'){vriFeeClearedMln=0;syncVriRequiredBox()}if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='social_population_method')socialPopulationSwitched(valueBefore);{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else markParkingByHand(parkOwner);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(id==='vri_relief_mode'||id==='vri_financing_mode'){renderInputs();return calculate()}if(VRI_SHARE_FIELDS.includes(id))refreshVriSharesNote();if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Подписи признака ВРИ и нормировки долей — узлами, как подпись замка
      // ниже: `innerHTML+=` пересоздал бы уже вставленное поле без обработчиков.
      if(id==='vri_required')wrap.appendChild(vriNoteNode('vriRequiredNote',vriRequiredNote()));
      if(id==='vri_share_equity_pct')wrap.appendChild(vriNoteNode('vriSharesNote',vriSharesNote()));
+     // Итог переключателя населения — под ним; стенды без блока ТЭП его не несут.
+     if(id==='social_population_method'&&typeof socialPopulationNoteText==='string')
+      wrap.appendChild(vriNoteNode('socialPopulationNote',socialPopulationNoteText));
      // Ручная льгота при посчитанной — кнопка «Применить посчитанную» у
      // самого поля: искать её внизу вкладки владелец не стал (15.10.2026).
      if(id==='vri_relief_mode'){

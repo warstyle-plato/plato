@@ -134,8 +134,9 @@ def telegram_result(req: TelegramResultRequest,
             return None
     irr_lines = ""
     if "irr_project" in summary or "irr_equity_label" in summary:
-        irr_project_text = (summary.get("equity_returns_na")
-                            or _irr_text(summary.get("irr_project")) or "не считается")
+        # IRR проекта — числом и при непогашенном долге (владелец, 17.10.2026);
+        # «N/A — долг не погашен» несёт только подпись капитала.
+        irr_project_text = _irr_text(summary.get("irr_project")) or "не считается"
         irr_equity_text = (summary.get("irr_equity_label")
                            or _irr_text(summary.get("irr_equity")) or "не считается")
         irr_lines = (f"• IRR проекта (до финансирования) — {html.escape(irr_project_text)}\n"
@@ -158,6 +159,7 @@ def telegram_result(req: TelegramResultRequest,
         summary.get("pf_shortfall_month"),
         _layout_dscr(summary.get("layout")),
         _layout_no_debt_cover(summary.get("layout")),
+        summary.get("queue_count"),
     )
     # Продукт с ГНС и без продаваемой площади делает вердикт бессмысленным:
     # расходы полные, выручки нет, и «нецелесообразна» относится к дырке
@@ -197,7 +199,7 @@ def telegram_result(req: TelegramResultRequest,
             # осталась второй копией и продолжала читаться как правда.
             "• в эту дату банк либо переоформляет долг, либо фиксирует "
             "неисполнение; условий модель не знает и считает по допущению, что "
-            "остаток обслуживается продажами следующих периодов.\n\n"
+            f"остаток долга гасится {default_repayment_words(summary.get('queue_count'))}.\n\n"
         )
     else:
         rve_warning = ""

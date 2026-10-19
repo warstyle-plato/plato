@@ -116,7 +116,7 @@ async function obtainTep(){
   return obtainTep();
  }
 
- status.textContent='Определяю территорию…'+rejectedNote;
+ status.textContent='Определяю, где находится участок…'+rejectedNote;
  let analysis=null,failure='';
  try{
   const response=await fetch('/cadastral/analyze',{
@@ -133,8 +133,8 @@ async function obtainTep(){
  // Тупик без выхода читается как «сервис сломан»: сведения ЕГРН по этим же
  // номерам доступны всегда, и путь дальше через них есть.
  status.innerHTML='<span class="import-error">Не удалось определить территорию: '+escapeHtml(failure)+
-  '</span><br><span style="font-size:11px;color:#777">Нормативный ТЭП считается по Москве и Московской области. '+
-  'Сведения ЕГРН по этим номерам доступны — кнопка «Только сведения ЕГРН» рядом; готовый ТЭП можно загрузить файлом.</span>';
+  '</span><br><span style="font-size:11px;color:#777">Посчитать ТЭП по нормам мы умеем только для Москвы и Московской области. '+
+  'Данные об этих участках можно посмотреть кнопкой «Только данные об участке», а готовый ТЭП — загрузить своим файлом.</span>';
 }
 
 // Токен запуска: каждый клик «Получить ТЭП» получает свой номер, и ответ
@@ -331,12 +331,12 @@ async function obtainServerTep(analysis,status,runId){
  // почему. Браузер живёт на ядре, и с телефона его состояние иначе не увидеть.
  const hl=((payload.source||{}).headless)||{};
  const byCalculator=/Штатный калькулятор/i.test(String((payload.source||{}).format||''));
- const why=byCalculator?'':' <span style="color:#8a4b08">Штатный калькулятор недоступен ('+
+ const why=byCalculator?'':' <span style="color:#8a4b08">Калькулятор ГлавАПУ не ответил, поэтому посчитали по его формулам у себя ('+
    escapeHtml(hl.state||'нет данных')+', '+escapeHtml(hl.where||'—')+').'+
    (hl.hint?' '+escapeHtml(hl.hint):'')+'</span>';
- status.innerHTML='<span class="import-ok">ТЭП посчитан '+(byCalculator?'штатным калькулятором ГлавАПУ':'формулами ГлавАПУ')+': '+areaText+
-  ' га.</span>'+why+' Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
- glavapuStatus.innerHTML='<span class="import-ok">ТЭП посчитан '+(byCalculator?'штатным калькулятором ГлавАПУ':'формулами ГлавАПУ')+' на сервере.</span>'+why+' Проверьте значения перед применением.';
+ status.innerHTML='<span class="import-ok">ТЭП посчитан '+(byCalculator?'калькулятором ГлавАПУ':'по формулам ГлавАПУ')+' для участка '+areaText+
+  ' га.</span>'+why+' Проверьте числа ниже и нажмите «Подставить в проект».';
+ glavapuStatus.innerHTML='<span class="import-ok">ТЭП посчитан '+(byCalculator?'калькулятором ГлавАПУ':'по формулам ГлавАПУ')+'.</span>'+why+' Проверьте числа, прежде чем подставлять их в проект.';
  tepRunLog(runId,'серверный расчёт: получен', areaText+' га');
  return payload;
 }
@@ -360,7 +360,7 @@ async function obtainCadastralTep(preAnalysis){
  // не говорит ни что сломалось, ни где.
  let tepStep='сведения по кадастровым номерам';
  try{
-   status.textContent='1 из 4 · Формирую территорию по кадастровым номерам…';
+   status.textContent='1 из 4 · Определяю границы участка по кадастровым номерам…';
    let analysis=preAnalysis;
    if(!analysis){
      const analysisResponse=await fetch('/cadastral/analyze',{
@@ -388,7 +388,7 @@ async function obtainCadastralTep(preAnalysis){
    }
 
    tepStep='штатный калькулятор ГлавАПУ';
-   status.textContent='2 из 4 · Открываю штатный расчёт ГлавАПУ…';
+   status.textContent='2 из 4 · Открываю калькулятор ГлавАПУ…';
    const area=Number((analysis.territory||{}).area_ha||0).toFixed(4);
    frame.src='/calc/?terrArea='+encodeURIComponent(area)+'&restrictArea=0&plato='+Date.now();
    const parcelButton=await waitForGenplan(()=>{
@@ -410,7 +410,7 @@ async function obtainCadastralTep(preAnalysis){
    proceedButton.click();
 
    tepStep='чтение таблицы ГлавАПУ';
-   status.textContent='3 из 4 · Считываю готовую таблицу ТЭП ГлавАПУ…';
+   status.textContent='3 из 4 · Забираю из калькулятора готовую таблицу ТЭП…';
    const rows=await waitForGenplan(()=>{
      const extracted=readGenplanRows(frame.contentDocument);
      const codes=new Set(extracted.map(row=>row.code));
@@ -424,14 +424,14 @@ async function obtainCadastralTep(preAnalysis){
    if(runId!==tepRunSequence){tepRunLog(runId,'ответ устаревшего запуска отброшен');return null}
 
    tepStep='перенос ТЭП в модель';
-   status.textContent='4 из 4 · Подготавливаю сверку перед применением…';
+   status.textContent='4 из 4 · Готовлю числа для проверки…';
    glavapuImport=payload;
    inputs._cadastral_analysis=cloneValue(analysis);
    renderGlavapuPreview(payload);
    drawLandPreviewQuiet();
    const areaText=Number((analysis.territory||{}).area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4});
-   status.innerHTML='<span class="import-ok">ТЭП получены из ГлавАПУ: '+areaText+' га.</span> Проверьте значения ниже и нажмите «Применить к Вводным и ТЭП».';
-   glavapuStatus.innerHTML='<span class="import-ok">Расчёт ГлавАПУ получен автоматически по кадастровым номерам.</span> Проверьте значения перед применением.';
+   status.innerHTML='<span class="import-ok">ТЭП посчитан калькулятором ГлавАПУ для участка '+areaText+' га.</span> Проверьте числа ниже и нажмите «Подставить в проект».';
+   glavapuStatus.innerHTML='<span class="import-ok">ГлавАПУ посчитал ТЭП по кадастровым номерам.</span> Проверьте числа, прежде чем подставлять их в проект.';
    tepRunLog(runId,'штатный калькулятор: получено', areaText+' га');
    return payload;
  }catch(e){
@@ -461,8 +461,8 @@ function stepFailure(step, error){
  const name=String((error&&error.name)||'').trim();
  const text=String((error&&error.message)||error||'').trim()||'ошибка без описания';
  const known=/^[А-Яа-яЁё]/.test(text);      // наши сообщения уже по-русски
- const tail=known?'':' · сообщение браузера';
- return text+' — шаг: '+step+(name?' · '+name:'')+tail;
+ const detail=[name,known?'':'сообщение браузера'].filter(Boolean).join(', ');
+ return text+' — на шаге «'+step+'»'+(detail?' ('+detail+')':'')+'.';
 }
 
 function renderCadastralPreview(data){
@@ -844,10 +844,35 @@ function rememberCadastralQuery(value){
 // Единственный писатель поля: он же и запоминает. Две двери — набранное руками
 // и поставленное кодом — разошлись бы молча, и половина проектов сохраняла бы
 // участок, а половина нет.
-function writeCadastralField(value){
+// `origin` — откуда номер ({source:'document',text}); не передан — прежнее
+// происхождение остаётся: восстановление сохранённого проекта номер не
+// меняет и источник у него не отбирает.
+function writeCadastralField(value,origin){
  const field=document.getElementById('cadastralNumbers');
  if(field)field.value=String(value==null?'':value);
  rememberCadastralQuery(value);
+ if(origin)inputs._cadastral_origin=origin;
+ showCadastralOrigin();
+}
+// Набранное руками — ручное: номер из документа, исправленный человеком,
+// документу больше не принадлежит.
+function typeCadastralField(value){
+ rememberCadastralQuery(value);
+ if(inputs._cadastral_origin&&inputs._cadastral_origin.source!=='manual')
+  inputs._cadastral_origin={source:'manual',text:'вписано вручную'};
+ showCadastralOrigin();
+}
+function showCadastralOrigin(){
+ const field=document.getElementById('cadastralNumbers');
+ if(!field||!field.parentNode)return;
+ let note=document.getElementById('cadastralOrigin');
+ const o=inputs._cadastral_origin;
+ const text=o&&o.source==='document'&&inputs._cadastral_query?'Номер '+(o.text||'из документа'):'';
+ if(!text){if(note)note.remove();return}
+ if(!note){note=document.createElement('div');note.id='cadastralOrigin';note.className='glavapu-origin';
+  note.style.cssText='font-size:11px;color:#666;margin-top:4px';
+  field.parentNode.parentNode.insertBefore(note,field.parentNode.nextSibling)}
+ note.textContent=text;
 }
 
 // Запасное восстановление участка: номер без контура и без карточки. Стоит
@@ -860,6 +885,7 @@ function renderStoredCadastralQuery(){
  if(!stored)return;
  const field=document.getElementById('cadastralNumbers');
  if(field)field.value=String(stored);
+ showCadastralOrigin();
 }
 
 async function lookupLand(options){
@@ -869,14 +895,14 @@ async function lookupLand(options){
  const raw=(field&&field.value||'').trim();
  if(!raw){status.innerHTML='<span class="import-error">Введите кадастровый номер, адрес или координаты.</span>';return}
  button.disabled=true;button.textContent='Ищу…';
- status.textContent='Запрашиваю сведения ЕГРН в НСПД…';
+ status.textContent='Запрашиваю данные об участке в госреестре…';
  hideLandPreview();
  try{
   const response=await fetch('/land/lookup',{
    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})
   });
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Не удалось получить сведения ЕГРН');
+  if(!response.ok)throw new Error(data.detail||'Не удалось получить данные об участке из госреестра');
   landLookup=data;
   // Снимок сохраняется в проект сразу: отдельная кнопка «Сохранить участок»
   // была лишним шагом, и забытая, она молча теряла сведения при закрытии.
@@ -890,8 +916,8 @@ async function lookupLand(options){
   const found=Number(data.found_count||0);
   if(!(options&&options.quiet)){
    status.innerHTML=found
-    ?'<span class="import-ok">Найдено объектов ЕГРН: '+found+'.</span> Проверьте сведения ниже.'
-    :'<span class="import-error">Сведения ЕГРН не найдены.</span> Уточните номер или адрес.';
+    ?'<span class="import-ok">Найдено объектов в госреестре: '+found+'.</span> Проверьте данные ниже.'
+    :'<span class="import-error">В госреестре ничего не нашлось.</span> Уточните номер или адрес.';
   }
   return (data.results||[]).filter(x=>x&&x.found);
  }catch(e){
@@ -1309,7 +1335,7 @@ function landCardHtml(item,showContour){
  // а не тридцать (замечание владельца, 17.08.2026). Одиночный участок — со своей.
  if(showContour===undefined)showContour=true;
  const mapLink=item.map_url
-  ?`<div class="land-links"><a href="${escapeHtml(item.map_url)}" target="_blank" rel="noopener">Открыть на публичной карте НСПД</a></div>`
+  ?`<div class="land-links"><a href="${escapeHtml(item.map_url)}" target="_blank" rel="noopener">Открыть на публичной кадастровой карте</a></div>`
   :'';
  if(!item.found){
   const rows=[['Регион по коду округа',item.region||'—'],['Кадастровый квартал',item.quarter||'—']];
@@ -1370,7 +1396,7 @@ function useLandForTep(){
  writeCadastralField(numbers.join(', '));
  const field=document.getElementById('cadastralNumbers');
  if(field)field.scrollIntoView({behavior:'smooth',block:'center'});
- status.innerHTML='<span class="import-ok">Номера перенесены в блок ТЭП ГлавАПУ ('+numbers.length+').</span> Нормативный ТЭП считается только по Москве.';
+ status.innerHTML='<span class="import-ok">Номера участков ('+numbers.length+') перенесены в поле выше.</span> Нажмите «Получить ТЭП», чтобы посчитать ТЭП по нормам.';
 }
 
 function renderStoredLand(){

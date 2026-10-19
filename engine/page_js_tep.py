@@ -781,7 +781,8 @@ function renderTep(){
        // считается от мест, и вписанное вернулось бы к прежнему на первом же
        // пересчёте — молча, то есть неотличимо от «не сработало».
        : ` <span class="tep-note">`
-         +`Площадь считается от мест по нормативу Москвы (2151-ПП). Чтобы вписать свою — `
+         +`Площадь считается от мест ${moscowSocialStepsApply()
+           ?'по нормативу Москвы (2151-ПП)':'по нормативу области (калькулятор МО) / поля'}. Чтобы вписать свою — `
          +`«Социальная нагрузка → Соцобъекты и плата за ВРИ → Требование КРТ».</span>`;
    }
    if(TEP_RATIOS[key]){
@@ -1594,7 +1595,7 @@ function applyDensityToHotel(){
   +num(area*density)+' м² ГНС.</span>';
 }
 
-// Что заменит «Сформировать ТЭП по плотности» — для подтверждения перед
+// Что заменит «Сформировать ТЭП по новым параметрам» — для подтверждения перед
 // заменой. Отказы (гостиница, нежилой, нет площади) объясняет сам
 // applyDensityToTep: там и выбор, куда класть потенциал, — плана для них нет.
 function densityTepPlan(){
@@ -1649,12 +1650,12 @@ function confirmTepAction(){
  const action=tepConfirmAction;closeTepConfirm();
  if(action)action();
 }
-// Кнопка меню «Действия с ТЭП»: сначала показать, что изменится, и только по
+// Кнопка в карточке участка: сначала показать, что изменится, и только по
 // подтверждению — заменить. Без плана (отказ) — сразу к объяснению отказа.
 function formTepByDensity(){
  const plan=densityTepPlan();
  if(!plan){applyDensityToTep();return}
- openTepConfirm('Сформировать ТЭП по плотности',densityTepPlanHtml(plan),'Сформировать',applyDensityToTep);
+ openTepConfirm('Сформировать ТЭП по новым параметрам',densityTepPlanHtml(plan),'Сформировать',applyDensityToTep);
 }
 function applyDensityToTep(){
  const status=document.getElementById('siteApplyStatus');
@@ -1925,8 +1926,8 @@ function renderSitePanel(){
   warn.style.display='';
   warn.innerHTML=normative
    ?'Продаваемая площадь квартир <b>'+num(used)+' м²</b> превышает потенциал <b>'+num(potential)+
-    ' м²</b> при плотности '+num(effectiveSiteDensity())+' м² квартир/га. Нажмите «Сформировать ТЭП по плотности» в «Действиях с ТЭП» — '+
-    'проект пересчитается нормативами '+normativeNormsLabel()+' целиком.'
+    ' м²</b> при плотности '+num(effectiveSiteDensity())+' м² квартир/га. Нажмите «Сформировать ТЭП по новым параметрам» выше — '+
+    'таблица пересчитается по нормативам целиком.'
    // Превышение чаще всего создают не квартиры, а офисы/ТЦ/наземный паркинг и
    // соцобъекты: кнопка пересчёта их сознательно не трогает, а потенциал
    // участка они занимают наравне с жильём. Без разбивки это выглядит как
@@ -2006,12 +2007,19 @@ function socialNormNote(kind){
  const city=socialAreaPerPlace(kind,units);
  return ` Фактически ${landNum(fact,1)} ${unit}`
   +(city?` — норматив Москвы (2151-ПП) ${landNum(city,1)}.`
+   :!moscowSocialStepsApply()?` — норматив области (калькулятор МО) / поле.`
    // У поликлиники ступени нет, а предел города — верхний (2150-ПП): число
    // берётся из умолчания поля, второй копии на странице нет.
    :kind==='clinic'?` — предел города не более ${landNum(INPUT_DEFAULT.social_clinic_norm_sqm,0)} (2150-ПП, уточняется МТЗ).`
    :` — ступени города для этого объекта нет.`);
 }
+// Ступени — московские (2151-ПП в ред. 2579-ПП). У области нормативы свои —
+// их несёт поле из калькулятора МО, и ступень города их не перебивает
+// (решение владельца 16.10.2026). Предикат тот же, что у движка
+// (`moscow_social_steps_apply`): регион проекта `vri_region`, пусто — Москва.
+function moscowSocialStepsApply(){return classRegion()==='msk'}
 function socialAreaPerPlace(kind,places){
+ if(!moscowSocialStepsApply())return 0;
  const steps=SOCIAL_AREA_STEPS[kind];
  const n=Number(places||0);
  if(!steps||!(n>0))return 0;
@@ -2395,6 +2403,9 @@ function applyDerivedInputs(values,options){
    keepManual.push(TERRITORY_CLEARED_LABELS[key]||key);return;
   }
   inputs[key]=values[key];
+  // Записанное пересчётом больше не ручное: отметка «вписано вручную»
+  // пережила бы своё число и заперла бы поле от следующего пересчёта.
+  if(isFieldManual('inputs.'+key))delete fieldOrigins()['inputs.'+key];
   if(options&&options.written)options.written(key);
  });
  return skipped.length
@@ -2517,10 +2528,15 @@ function standaloneProductSum(field,products){
 // ставка за место задана экспертно. Норматив здесь не применяется вовсе,
 // поэтому это работает и в Подмосковье, где московских нормативов нет
 // (владелец, 30.08.2026).
-// Какой дорогой пойдёт «Пересчитать нормативы по ТЭП» — один предикат на
+// Какой дорогой пойдёт «Пересчитать по нормативам» — один предикат на
 // действие и на подсказку у кнопки: выгрузка ГлавАПУ с платой за ВРИ — по
-// её ставкам; иначе пропорция от прежней соцнагрузки, если квартиры
-// изменились; иначе — нормативы Москвы от текущего ТЭП.
+// её ставкам; Подмосковье — нормативами области (тем же пересчётом, что идёт
+// сам после правки квартир); иначе пропорция от прежней соцнагрузки, если
+// квартиры изменились; иначе — нормативы Москвы от текущего ТЭП, а вне
+// Москвы без расчёта области — честный отказ. Подсказка
+// говорит и то, идёт ли пересчёт сам (`scheduleTepAutoRecalc`): с выгрузкой
+// ГлавАПУ и в Подмосковье — да, в остальных случаях только по кнопке
+// (владелец, 18.10.2026: «а когда не происходит?»).
 function glavapuBaselineApplies(){
  const baseline=((inputs._glavapu_import||{}).normalized)||null;
  return !!(baseline&&Number(baseline.change_vri_mln||0));
@@ -2532,12 +2548,19 @@ function socialRescaleApplies(){
  return Math.abs(after-Number(basis.apartment_area_sqm||0))>=1;
 }
 function tepNormsMode(){
- if(glavapuBaselineApplies())return {key:'glavapu',
-  text:'По ставкам исходного расчёта ГлавАПУ: соцнагрузка, машино-места, соцкомпенсация и плата за ВРИ — под текущие метры таблицы.'};
- if(socialRescaleApplies())return {key:'proportion',
-  text:'Пропорцией от прежней соцнагрузки по населению: ДОО, школа, поликлиника, соцкомпенсация и подземные машино-места — с подтверждением.'};
- return {key:'norms',
-  text:'По нормативам Москвы от текущего ТЭП: соцнагрузка и машино-места; выгрузки ГлавАПУ нет, пропорции не от чего.'};
+ const lead='Если вы ввели новые площади квартир, ';
+ if(glavapuBaselineApplies())return {key:'glavapu',auto:true,
+  text:lead+'соцнагрузка (детсады, школы, поликлиника), машино-места и платежи городу пересчитываются сами — по ставкам из расчёта ГлавАПУ. Кнопка повторит пересчёт и покажет, что изменилось.'};
+ if(inputs._mo_calc)return {key:'mo',auto:true,
+  text:lead+'соцнагрузка (детсады, школы, поликлиника), машино-места и платежи городу пересчитываются сами — по нормативам Московской области. Кнопка повторит пересчёт вручную.'};
+ if(socialRescaleApplies())return {key:'proportion',auto:false,
+  text:lead+'пересчитайте соцнагрузку (детсады, школы, поликлиника) и машино-места — сами они здесь не меняются. Изменятся в той же пропорции, что и число жителей; перед заменой покажем, что изменится.'};
+ // Участок вне Москвы, а расчёта области нет: московские нормативы сервер к
+ // нему не применяет, и обещать их подсказка не должна.
+ if((((cadastralAnalysis||{}).territory)||{}).inside_moscow===false)return {key:'region',auto:false,
+  text:lead+'детсады, школы, поликлинику и машино-места здесь сами не пересчитать: участок не в Москве, а нормативы его региона не загрузились. Впишите эти числа во «Вводных» вручную.'};
+ return {key:'norms',auto:false,
+  text:lead+'пересчитайте соцнагрузку (детсады, школы, поликлиника) и машино-места по нормативам Москвы — сами они здесь не меняются. Перед заменой покажем, что изменится.'};
 }
 function renderTepActions(){
  const hint=document.getElementById('tepNormsHint');
@@ -2590,27 +2613,48 @@ async function rescaleSocialFromTep(options){
  return true;
 }
 
+// Тела запросов пересчёта — по одному на маршрут. Их читают и кнопка
+// пересчёта ТЭП, и переключатель населения для соцобъектов: собранное в двух
+// местах тело однажды разошлось бы полем.
+function bySiteBody(){
+ const territory=((cadastralAnalysis||{}).territory)||{};
+ return {apartment_area_sqm:Number((tep.apartments&&tep.apartments.saleable)||0),
+  residential_living_spp_sqm:Number((tep.apartments&&tep.apartments.gns)||0),
+  nonresidential_np_sqm:nonresidentialAboveSqm(),
+  apartment_count:Number((tep.apartments&&tep.apartments.units)||0),
+  social_population_method:String(inputs.social_population_method||'rngp_area'),
+  district:String(territory.district||''),
+  inside_moscow:territory.inside_moscow!==false};
+}
+function baselineRecalcBody(){
+ // Нежилая наземная — встроенные помещения плюс отдельные объекты: приобъектные
+ // места считаются от неё, а МПТ от неё же дают льготу по плате за ВРИ.
+ return {baseline:((inputs._glavapu_import||{}).normalized)||null,areas:{
+  apartment_area_sqm:Number((tep.apartments&&tep.apartments.saleable)||0),
+  residential_living_spp_sqm:Number((tep.apartments&&tep.apartments.gns)||0),
+  apartment_count:Number((tep.apartments&&tep.apartments.units)||0),
+  ground_commercial_spp_sqm:Number((tep.ground_commercial&&tep.ground_commercial.gns)||0),
+  nonresidential_np_sqm:nonresidentialAboveSqm(),
+  land_right:String(inputs.land_right||'ownership'),
+  social_population_method:String(inputs.social_population_method||'rngp_area'),
+  nonres_spp_by_use:{
+   office:standaloneProductSum('gns',['offices']),
+   trade:standaloneProductSum('gns',['standalone_retail'])}}};
+}
+
 async function recalcFromTepByNorms(options){
  const silent=!!(options&&options.silent);
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
- const territory=((cadastralAnalysis||{}).territory)||{};
  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
  if(!apartments){
   if(!silent)say('Пересчитывать не от чего: в ТЭП нет продаваемой площади квартир.',false);
   return;
  }
- const nonres=Number((tep.ground_commercial&&tep.ground_commercial.total_area)||0)
-   +standaloneProductSum('total_area',['offices','standalone_retail']);
  let d;
  try{
   const r=await fetch('/tep/derived-by-site',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({apartment_area_sqm:apartments,
-    residential_living_spp_sqm:Number((tep.apartments&&tep.apartments.gns)||0),
-    nonresidential_np_sqm:nonres,
-    apartment_count:Number((tep.apartments&&tep.apartments.units)||0),
-    district:String(territory.district||''),
-    inside_moscow:territory.inside_moscow!==false})});
+   body:JSON.stringify(bySiteBody())});
   d=await r.json();
   if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
  }catch(e){say('Пересчёт по нормативам не выполнен: '+escapeHtml(String(e.message||e)),false);return}
@@ -2622,6 +2666,10 @@ async function recalcFromTepByNorms(options){
   'Машино-места подземные: '+num(d.parking.underground)
    +' ('+num(d.parking.permanent)+' постоянных + '+num(d.parking.guest)+' гостевых)',
   'Места приложения труда: '+num(d.jobs)];
+ // Население соцобъектов по требованию органа — своей строкой: оно не равно
+ // населению нормы, и места выше посчитаны от него.
+ if(d.social_population!=null&&d.social_population!==d.population)
+  lines.splice(1,0,'Население для соцобъектов: '+num(d.social_population)+' чел. — '+String(d.social_population_basis||''));
  (d.refused||[]).forEach(x=>lines.push('Не посчитано — '+x.name+': '+x.reason));
  (d.warnings||[]).forEach(w=>lines.push('⚠ '+w));
  if(!silent&&!confirm('Пересчёт по нормативам Москвы (выгрузки ГлавАПУ нет):\n\n'
@@ -2637,6 +2685,89 @@ async function recalcFromTepByNorms(options){
    +'<br><b>Чем посчитано:</b> '+(d.basis||[]).map(escapeHtml).join('; ')+'. '
    +'Это наш расчёт по нормативам, а не расчёт города: город считает штатным '
    +'калькулятором, и его выгрузка сильнее.',true);
+ calculate();
+}
+
+// Переключатель «Население для соцобъектов» меняет только места ДОО, школы,
+// поликлиники и компенсацию за них — машино-места, плата за ВРИ и население
+// нормы от него не зависят, и пересчёт ТЭП целиком здесь был бы чужой
+// правкой. Пропорция от прежней соцнагрузки переключатель не видит вовсе:
+// она масштабирует метры, а метры не менялись. Поэтому дорога своя: с
+// выгрузкой ГлавАПУ — ставки выгрузки, без неё — нормативы Москвы.
+// Итог или причина отказа пишутся ПОД переключателем: заметка на вкладке ТЭП
+// с вводных не видна, и «ничего не меняется» (владелец, 19.10.2026) было
+// неотличимо от молчаливого отказа. Места, вписанные руками или требованием
+// КРТ, переключатель не трогает и говорит об этом (решение владельца,
+// 19.10.2026); места из выгрузки ГлавАПУ пересчитывает.
+let socialPopulationNoteText='';
+function sayPopulationSwitch(text){
+ socialPopulationNoteText=String(text||'');
+ const node=document.getElementById('socialPopulationNote');
+ if(node)vriNoteFill(node,socialPopulationNoteText);
+}
+const SOCIAL_SWITCH_FIELDS=[['kindergarten_places','места ДОО'],['school_places','места в школе'],
+ ['clinic_capacity','мощность поликлиники'],['social_compensation_mln','компенсация, млн ₽']];
+async function socialPopulationSwitched(methodBefore){
+ if(String(inputs.vri_region||'msk')==='mo')
+  return sayPopulationSwitch('В Подмосковье этот переключатель не действует: соцобъекты там считаются по нормативам области.');
+ if(krtRequirementEntered())
+  return sayPopulationSwitch('Места соцобъектов и компенсация вписаны как требование КРТ, поэтому переключатель их не меняет. Чтобы считать их от числа жителей, выберите в поле «Соцобъекты и плата за ВРИ» норматив Москвы.');
+ if(!Number((tep.apartments&&tep.apartments.saleable)||0))
+  return sayPopulationSwitch('Места соцобъектов не пересчитаны: в ТЭП не задана продаваемая площадь квартир, а число жителей считается от неё.');
+ sayPopulationSwitch('Пересчитываю места соцобъектов под выбранный способ…');
+ const viaBaseline=glavapuBaselineApplies();
+ let d;
+ try{
+  const r=await fetch(viaBaseline?'/tep/recalc-from-baseline':'/tep/derived-by-site',
+   {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(viaBaseline?baselineRecalcBody():bySiteBody())});
+  d=await r.json();
+  if(!r.ok)throw new Error(d.detail||('сервер ответил '+r.status));
+ }catch(e){
+  return sayPopulationSwitch('Места соцобъектов не пересчитаны: '+String(e.message||e)+'.');
+ }
+ if(viaBaseline&&d.self_check&&d.self_check.matches_baseline===false)
+  return sayPopulationSwitch('Места соцобъектов не пересчитаны: расчёт по ставкам выгрузки ГлавАПУ не воспроизводит саму выгрузку ('
+   +(d.self_check.mismatch||[]).join('; ')+'). Нужна свежая выгрузка, или впишите места руками.');
+ const offer={kindergarten_places:d.places.kindergarten,school_places:d.places.school,
+  clinic_capacity:d.places.clinic};
+ let compensationBasis='';
+ const compensationWas=Number(inputs.social_compensation_mln||0);
+ if(viaBaseline){
+  if(d.compensation_mln>0){offer.social_compensation_mln=d.compensation_mln;
+   compensationBasis='компенсация — по ставкам за место из выгрузки ГлавАПУ'}
+ }else if(compensationWas>0){
+  // Ставки за место у нормативного пути нет: компенсация вписана экспертно или
+  // пришла с выгрузкой. Места линейны по числу жителей — компенсация идёт за
+  // ними в той же пропорции, ставка за место остаётся прежней.
+  const byMethod=d.social_population_by_method||{};
+  const was=Number(byMethod[String(methodBefore||'rngp_area')]||0);
+  const now=Number(d.social_population||0);
+  if(was>0&&now>0&&was!==now){
+   offer.social_compensation_mln=Math.round(compensationWas*now/was*1000)/1000;
+   compensationBasis='компенсация — в той же пропорции, что число жителей ('+num(was)+' → '+num(now)+'), ставка за место прежняя';
+  }
+ }
+ const before={};SOCIAL_SWITCH_FIELDS.forEach(([key])=>{before[key]=Number(inputs[key]||0)});
+ const kept=SOCIAL_SWITCH_FIELDS.filter(([key])=>(key in offer)&&isFieldManual('inputs.'+key)).map(([,label])=>label);
+ applyDerivedInputs(offer,{keepManual:[]});
+ const moved=[],same=[];
+ SOCIAL_SWITCH_FIELDS.forEach(([key,label])=>{
+  if(!(key in offer)||kept.includes(label))return;
+  const now=Number(inputs[key]||0);
+  if(Math.abs(now-before[key])<0.0005)same.push(label+' '+num(now));
+  else moved.push(label+' '+num(before[key])+' → '+num(now));
+ });
+ const parts=['Жителей для соцобъектов: '+num(d.social_population)+' — '+String(d.social_population_basis||'')+'.'];
+ if(moved.length)parts.push('Пересчитано: '+moved.join(', ')+'.');
+ if(same.length)parts.push('Не изменились — при этом числе жителей норматив даёт столько же: '+same.join(', ')+'.');
+ if(kept.length)parts.push('Вписаны вручную, переключатель их не меняет: '+kept.join(', ')+'. Чтобы считать их от жителей, очистите поле и нажмите пересчёт ТЭП.');
+ if(compensationWas>0&&!('social_compensation_mln' in offer))
+  parts.push('Компенсация не пересчитана: '+(viaBaseline?'выгрузка ГлавАПУ не дала ставок за место.':'число жителей при этом способе то же.'));
+ if(compensationBasis)parts.push('Чем посчитано: '+compensationBasis+'.');
+ stampSocialBasis(viaBaseline?'выгрузка ГлавАПУ':'нормативы Москвы');
+ socialPopulationNoteText=parts.join(' ');
+ syncTep(false);renderInputs();renderTep();
  calculate();
 }
 
@@ -2659,7 +2790,15 @@ async function recalcFromTep(options){
  const silent=!!(options&&options.silent);
  const note=document.getElementById('tepDerivedNote');
  const say=(html,ok)=>{if(!note)return;note.style.display='';note.innerHTML=ok?('<span class="import-ok">'+html+'</span>'):html};
- const baseline=((inputs._glavapu_import||{}).normalized)||null;
+ // Подмосковье — нормативами области, тем же пересчётом, что идёт сам после
+ // правки квартир. Московские нормативы сервер к области не применяет.
+ if(tepNormsMode().key==='mo'){
+  const area=Number(inputs.site_area_ha||0);
+  const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
+  if(!(area>0&&apartments>0)){
+   say('Пересчитывать не от чего: нужны площадь участка и продаваемая площадь квартир.',false);return}
+  return recalcMoFromApartments(apartments,area);
+ }
  if(!glavapuBaselineApplies()){
   // Без выгрузки ГлавАПУ пересчёт не отказывается целиком. Сначала пропорция:
   // если соцнагрузка в модели уже есть, места и компенсация масштабируются по
@@ -2668,25 +2807,11 @@ async function recalcFromTep(options){
   if(await rescaleSocialFromTep(options))return;
   return recalcFromTepByNorms(options);
  }
- const apartments=Number((tep.apartments&&tep.apartments.saleable)||0);
- const livingSpp=Number((tep.apartments&&tep.apartments.gns)||0);
- const builtIn=Number((tep.ground_commercial&&tep.ground_commercial.gns)||0);
- // Нежилая наземная — встроенные помещения плюс отдельные объекты: приобъектные
- // места считаются от неё, а МПТ от неё же дают льготу по плате за ВРИ.
- const nonres=Number((tep.ground_commercial&&tep.ground_commercial.total_area)||0)
-   +standaloneProductSum('total_area',['offices','standalone_retail']);
  if(!silent)say('Пересчитываю по параметрам исходного расчёта…',false);
  let d;
  try{
   const r=await fetch('/tep/recalc-from-baseline',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({baseline:baseline,areas:{
-    apartment_area_sqm:apartments,residential_living_spp_sqm:livingSpp,
-    apartment_count:Number((tep.apartments&&tep.apartments.units)||0),
-    ground_commercial_spp_sqm:builtIn,nonresidential_np_sqm:nonres,
-    land_right:String(inputs.land_right||'ownership'),
-    nonres_spp_by_use:{
-     office:standaloneProductSum('gns',['offices']),
-     trade:standaloneProductSum('gns',['standalone_retail'])}}})});
+   body:JSON.stringify(baselineRecalcBody())});
   d=await r.json();
   if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
  }catch(e){say('Пересчёт не выполнен: '+escapeHtml(String(e.message||e)),false);return}
@@ -2722,6 +2847,8 @@ async function recalcFromTep(options){
   // местам они уже сказаны, а второй ответ на тот же вопрос разошёлся бы с
   // первым молча.
   cmp('Население, чел.',b.population,d.population)];
+ if(d.social_population!=null&&d.social_population!==d.population)
+  context.push('Население для соцобъектов: '+num(d.social_population)+' чел. — '+String(d.social_population_basis||''));
  (d.warnings||[]).forEach(w=>context.push('⚠ '+w));
  // Вопрос задаётся о НАМЕРЕНИИ: здесь подстановки ещё не было.
  const proposal=['Плата за ВРИ, млн ₽: по ставке территории '+num(d.vri_total_mln)

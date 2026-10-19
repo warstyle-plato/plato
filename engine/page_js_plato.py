@@ -148,16 +148,133 @@ function renderAiIntake(data){
    +'<td style="color:#666">'+(doc.recognized?'распознано: ':'')+'«'+aiEsc(f.quote)+'»</td></tr>'});
   html+='</table><button class="btn dark" style="margin-top:8px" onclick="applyAiIntake()">Применить отмеченное</button></div>';
  }
- (data.questions||[]).forEach(q=>{
-  html+='<div style="margin-top:8px"><b>Вопрос:</b> '+aiEsc(q.question)+'</div>';
-  if((q.options||[]).length)html+='<div style="color:#666;font-size:12px">'+q.options.map(aiEsc).join(' · ')+'</div>';
- });
+ // Вопросы — по одному, и не здесь: список вопросов подряд, каждый со своими
+ // вариантами, не отвечается — человек не знает, на какой отвечает, а ответить
+ // некуда (владелец, 18.10.2026). Здесь только сколько их; первый задаёт
+ // `renderAiQuestion` после таблицы.
+ const queue=data.queue||null;
+ if(queue&&queue.error)html+='<div style="margin-top:8px;color:#8a4b08">Вопросы по документу не заданы: '+aiEsc(queue.error)+'</div>';
+ else if(queue&&queue.total)html+='<div style="margin-top:8px">Остальное спрошу по одному — вопросов '+aiEsc(queue.total)+'.</div>';
  (data.notes||[]).forEach(note=>{html+='<div style="margin-top:6px;color:#666;font-size:12px">'+aiEsc(note)+'</div>'});
  // Отброшенное называется вслух: молча пропущенное поле читается как
  // «в документе такого нет».
  (data.dropped||[]).forEach(line=>{html+='<div style="margin-top:4px;color:#8a4b08;font-size:12px">Не взято — '+aiEsc(line)+'</div>'});
  if(!fields.length&&!(data.questions||[]).length&&!note)html+='<div style="margin-top:6px">В документе не нашлось полей, которые понимает модель.</div>';
  box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
+ if(queue&&queue.card)renderAiQuestion(queue);
+}
+// Происхождение подставленного из документа: значение нормы или импорта после
+// сохранения не должно выглядеть ручным, а документ — источник, а не человек.
+function aiDocumentOrigin(filename,how){
+ return {source:'document',text:'из документа «'+(filename||'документ')+'»'+(how?' · '+how:'')};
+}
+// Ответ сервера на применение — в модель, одним путём для таблицы разбора и
+// для вопросов: два пути разошлись бы ровно на том поле, где важно.
+function mergeAiIntakeResult(data,filename,how){
+ Object.assign(inputs,data.inputs||{});
+ Object.keys(data.tep||{}).forEach(key=>{tep[key]=Object.assign(tep[key]||{},data.tep[key])});
+ const lines=[];
+ (data.applied||[]).forEach(a=>{
+  if(a.key==='cadastral_numbers'){lines.push(applyAiCadastral(a,filename));return}
+  const path=a.key==='apartments_gns_sqm'?'tep.apartments.gns':'inputs.'+a.key;
+  fieldOrigins()[path]=aiDocumentOrigin(filename,how);
+  // Имя поля, а не ключ, и рядом — как значение было написано в документе:
+  // молчаливый перевод единиц («1 650 000 000 ₽» → 1650 млн ₽) неотличим от
+  // ошибки переписывания, а неприменённое без причины — от непрочитанного.
+  lines.push((a.label||a.key)+': '+(a.was===undefined||a.was===null?'—':a.was)
+   +' → '+a.now+(a.unit?' '+a.unit:'')+(a.as_written?' (в документе: '+a.as_written+')':''));
+ });
+ (data.refused||[]).forEach(x=>lines.push('не применено — '+(x.label||x.key)+': '+x.reason));
+ syncTep(false);renderInputs();renderTep();calculate();
+ return lines;
+}
+// Кадастровый номер из документа — в поле участка (вкладка «Проект» →
+// «Участок»), с происхождением «из документа». Прежде применение отвечало
+// «участок применяется отдельным запросом ЕГРН», а запроса не было: номер в
+// проект не попадал вовсе (владелец, 18.10.2026).
+function applyAiCadastral(a,filename){
+ const raw=Array.isArray(a.value)?a.value.join(', '):String(a.value==null?'':a.value);
+ const numbers=[...new Set(cadastralNumbersIn(raw))];
+ if(!numbers.length)return 'не применено — '+(a.label||'кадастровые номера')+': в «'+raw+'» не опознан кадастровый номер';
+ writeCadastralField(numbers.join(', '),aiDocumentOrigin(filename));
+ dropStaleLandPreview();
+ aiCadastralReady=true;
+ return (a.label||'Кадастровые номера')+' → '+numbers.join(', ')+' — во вкладке «Проект», поле участка. '
+  +'Сведения ЕГРН и ТЭП по нему ещё не получены — кнопка ниже';
+}
+let aiCadastralReady=false;
+function appendAiCadastralButton(){
+ if(!aiCadastralReady)return;aiCadastralReady=false;
+ const d=document.createElement('div');d.className='ai-msg system';
+ d.innerHTML='<button class="btn dark" onclick="this.disabled=true;toggleAgent(false);obtainTep()">Получить ТЭП по участку из документа</button>';
+ aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;
+}
+// Один вопрос — одна карточка: варианты кнопками, своё число полем, ответ
+// применяется к полю модели и только потом приходит следующий вопрос.
+let aiQuestion=null;
+function renderAiQuestion(queue){
+ aiQuestion=queue;
+ const card=queue.card||{};
+ const box=document.createElement('div');box.className='ai-msg system ai-question';
+ let html='<b>Вопрос '+aiEsc(queue.index+1)+' из '+aiEsc(queue.total)+'</b><div style="margin-top:4px">'+aiEsc(card.question)+'</div>';
+ html+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">';
+ (card.options||[]).forEach((o,i)=>{
+  html+='<button class="btn ai-question-option" data-choice="'+i+'" onclick="answerAiQuestion('+i+')" title="'
+   +aiEsc(o.target?(o.value===null||o.value===undefined?'впишите значение ниже':'в модель: '+o.value+' '+(o.unit||'')):o.why||'')+'">'+aiEsc(o.label)+'</button>';
+ });
+ html+='</div>';
+ const unit=card.unit||((card.options||[]).find(o=>o.target)||{}).unit||'';
+ if(card.key||(card.options||[]).some(o=>o.target&&(o.value===null||o.value===undefined)))
+  html+='<div style="display:flex;gap:6px;margin-top:8px;align-items:center"><input class="ai-question-value" inputmode="decimal" placeholder="своё значение'
+   +(unit?', '+aiEsc(unit):'')+'" style="flex:1;min-width:0;padding:6px 8px;border:1px solid #ccc;border-radius:6px">'
+   +(card.key?'<button class="btn dark" onclick="answerAiQuestion(-1)">Применить</button>':'')+'</div>';
+ html+='<div style="margin-top:8px;font-size:12px"><a href="#" data-action="skip" onclick="answerAiQuestion(-1,this.dataset.action);return false">Пропустить</a> · '
+  +'<a href="#" data-action="stop" onclick="answerAiQuestion(-1,this.dataset.action);return false">Закончить вопросы</a></div>';
+ box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
+ queue.box=box;
+}
+async function answerAiQuestion(choice,action){
+ const queue=aiQuestion;if(!queue||!queue.card||aiBusy)return;
+ const box=queue.box;const typedEl=box&&box.querySelector('.ai-question-value');
+ const typed=action?'':String(typedEl&&typedEl.value||'').trim();
+ const option=(queue.card.options||[])[choice];
+ if(!action&&option&&option.target&&(option.value===null||option.value===undefined)&&!typed){
+  appendAiMessage('system','У варианта «'+option.label+'» нет числа — впишите значение в поле под вопросом и нажмите вариант ещё раз.');return}
+ if(!action&&choice<0&&!typed){appendAiMessage('system','Впишите значение или выберите вариант.');return}
+ aiBusy=true;
+ if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=true;el.style.pointerEvents='none'});
+ try{
+  await syncInputsForAgent();
+  const r=await fetch('/agent/document/answer',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({intake_id:queue.id,index:queue.index,action:action||'answer',choice,value:typed,
+    inputs,tep,session:activeSession(),access_key:projectsAdminKey||''})});
+  const data=await r.json().catch(()=>({}));
+  if(!r.ok){appendAiMessage('system','Ответ не принят: '+(data.detail||('HTTP '+r.status)));
+   if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=false;el.style.pointerEvents=''});return}
+  if(data.stale){appendAiMessage('system','На этот вопрос уже ответили — продолжаю с текущего.');
+   if(data.queue&&data.queue.card)renderAiQuestion(data.queue);return}
+  const said=action==='skip'?'пропущено':(action==='stop'?'вопросы закончены':(data.answer||typed));
+  if(action!=='stop'){
+   aiHistory.push({role:'user',content:'Ответ на вопрос по документу «'+queue.card.question+'»: '+said});
+   aiHistory=aiHistory.slice(-10);
+  }
+  const lines=action?[]:mergeAiIntakeResult(data,queue.filename,'ответ на вопрос');
+  appendAiMessage('system',(action==='skip'?'Пропущено.':action==='stop'?'Вопросы закончены.':'Ответ: '+said)
+   +(lines.length?'\n'+lines.join('\n'):''));
+  const next=data.queue||{};
+  if(next.card)renderAiQuestion(next);
+  else{aiQuestion=null;appendAiIntakeSummary(next)}
+ }catch(e){appendAiMessage('system','Ответ не принят: '+(e.message||e));
+  if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=false;el.style.pointerEvents=''})}
+ finally{aiBusy=false}
+}
+// Итог честный: что легло в модель, что записано только в разговор.
+function appendAiIntakeSummary(queue){
+ const answers=queue.answers||[];
+ if(!answers.length)return;
+ const lines=answers.map(a=>'• '+a.question+' — '+(a.answer||'пропущено')
+  +((a.applied||[]).length?' → в модели: '+a.applied.join(', '):(a.answer?' → в модель не легло':'')));
+ appendAiMessage('system','Вопросы по «'+(queue.filename||'документу')+'» закончились.\n'+lines.join('\n'));
 }
 async function applyAiIntake(){
  if(!aiIntake)return;
@@ -169,16 +286,9 @@ async function applyAiIntake(){
     inputs,tep,session:activeSession(),access_key:projectsAdminKey||''})});
   const data=await r.json().catch(()=>({}));
   if(!r.ok){appendAiMessage('system',data.detail||'Не применилось');return}
-  Object.assign(inputs,data.inputs||{});
-  Object.keys(data.tep||{}).forEach(key=>{tep[key]=Object.assign(tep[key]||{},data.tep[key])});
-  syncTep(false);renderInputs();renderTep();calculate();
-  // Имя поля, а не ключ, и рядом — как значение было написано в документе:
-  // молчаливый перевод единиц («1 650 000 000 ₽» → 1650 млн ₽) неотличим от
-  // ошибки переписывания, а неприменённое без причины — от непрочитанного.
-  const lines=(data.applied||[]).map(a=>(a.label||a.key)+': '+(a.was===undefined?'—':a.was)
-   +' → '+a.now+(a.unit?' '+a.unit:'')+(a.as_written?' (в документе: '+a.as_written+')':''));
-  (data.refused||[]).forEach(x=>lines.push('не применено — '+(x.label||x.key)+': '+x.reason));
+  const lines=mergeAiIntakeResult(data,(aiIntake.document||{}).filename,'');
   appendAiMessage('system','Подставлено:\n'+lines.join('\n'));
+  appendAiCadastralButton();
  }catch(e){appendAiMessage('system','Не применилось: '+(e.message||e))}
 }
 async function sendAgentMessage(scenario){

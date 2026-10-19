@@ -291,6 +291,9 @@ def intake_prompt(document: dict[str, Any], budget: int = DOCUMENT_TEXT_BUDGET) 
    человека и расчёт города разошлись бы, и оба выглядели бы верными.
    Вопрос уместен только о том, чего не знает ни документ, ни город: цена
    сделки, расселение, снос и то, куда отнести обязательство.
+   Вопрос о поле модели несёт его имя в key. У варианта value — число в
+   единице unit, если вариант сам его называет (снос всего здания — его
+   площадь, «не требуется» — 0), и null, если число впишет человек.
 6. underground_manual_spaces — ТОЛЬКО места подземного паркинга жилья:
    постоянные и гостевые одним числом, как оно стоит в документе. Итог
    «машино-мест», в который входят приобъектные или места остановки
@@ -305,7 +308,9 @@ def intake_prompt(document: dict[str, Any], budget: int = DOCUMENT_TEXT_BUDGET) 
 Верни ТОЛЬКО JSON такого вида, без пояснений вокруг:
 {{"fields": [{{"key": "...", "value": "как в документе", "unit": "...",
    "quote": "дословная строка"}}],
- "questions": [{{"key": "...", "question": "...", "options": ["...", "..."]}}],
+ "questions": [{{"key": "поле модели или пусто", "question": "...",
+   "options": [{{"label": "подпись варианта", "value": "число или null",
+                "unit": "единица числа"}}]}}],
  "notes": ["что важно, но в поля модели не ложится"]}}
 
 Документ «{document.get('filename') or 'без имени'}», страниц: {document.get('pages')}.
@@ -483,8 +488,14 @@ def parse_intake(answer: str) -> dict[str, Any]:
         text = str(row.get("question") or "").strip()
         if not text:
             continue
+        # Вариант приходит строкой или объектом с числом. Подписи остаются
+        # строками — их читают бот и отбор вопросов; число едет рядом.
+        choices = [option if isinstance(option, dict) else {"label": str(option)}
+                   for option in (row.get("options") or []) if option is not None]
         item = {"key": str(row.get("key") or ""), "question": text,
-                "options": [str(option) for option in (row.get("options") or [])]}
+                "options": [str(option.get("label") or option.get("value") or "")
+                            for option in choices],
+                "choices": choices}
         origin = question_origin(item)
         if origin == "document":
             questions.append(item)
@@ -614,8 +625,14 @@ def apply_intake(
         if key not in wanted:
             continue
         if key == "cadastral_numbers":
-            applied.append({"key": key, "value": item.get("value"),
-                            "note": "участок применяется отдельным запросом ЕГРН"})
+            # Номер ложится в поле участка (вкладка «Проект» → «Участок»), а
+            # сведения ЕГРН и ТЭП по нему — отдельным действием: здесь только
+            # то, что написано. Прежде окно получало «применяется запросом
+            # ЕГРН» и не делало ничего — номер в проект не попадал вовсе.
+            applied.append({"key": key, "label": INTAKE_LABELS.get(key, key),
+                            "value": item.get("value"), "target": "land",
+                            "note": "записан в поле участка; сведения ЕГРН и ТЭП — "
+                                    "кнопкой «Получить ТЭП»"})
             continue
         if key == "underground_manual_spaces" and _counts_outside_garage(item):
             refused.append({"key": key, "label": INTAKE_LABELS.get(key, key),
@@ -649,3 +666,108 @@ def apply_intake(
                         "unit": INTAKE_UNITS.get(key, ""), "as_written": as_written})
     return {"inputs": new_inputs, "tep": new_tep,
             "applied": applied, "refused": refused}
+
+
+# ---------------------------------------------------------------------------
+# Вопросы по документу — по одному, и ответ ложится в поле модели.
+#
+# Разбор отдавал вопросы списком, и окно печатало их подряд, каждый со своими
+# вариантами, а ответить было некуда: варианты были подписями, не кнопками, и
+# ни один ответ до полей модели не доходил (владелец, 18.10.2026: «задаёт все
+# вопросы подряд, вместо того чтобы дожидаться ответа пошагово… реальной
+# передачи данных в движок не происходит»). Карточка вопроса несёт для каждого
+# варианта поле модели и число в его единицах — или причину, почему числа нет.
+
+# Число в конце варианта после тире: «Снос всего здания — 2863,7 м²»,
+# «Расселение не требуется — 0». Только хвост после тире: число внутри подписи
+# («ООО «Народного 29 (СЗ)»») — часть имени, а не ответ.
+_OPTION_TAIL_RE = re.compile(
+    r"[—–-]\s*(-?\d[\d\s ]*(?:[.,]\d+)?)\s*([^\d—–-]{0,16})$")
+
+
+def obligation_target(label: str) -> str:
+    """Куда вариант относит обязательство — по своим словам, иначе никуда."""
+    said = str(label or "").lower()
+    if "нагрузк" in said or "соцкомпенс" in said:
+        return "social_compensation_mln"
+    if "цен" in said and ("сделк" in said or "вход" in said):
+        return "purchase_price_mln"
+    return ""
+
+
+def _option_number(target: str, value: Any, unit: str) -> tuple[float | None, str]:
+    if value is None or str(value).strip() == "":
+        return None, "в варианте нет числа — впишите значение"
+    if to_number(value) == 0:
+        # Ноль — ноль в любой единице; отказывать ему за неназванную единицу
+        # значило бы не принять «расселение не требуется».
+        return 0.0, ""
+    return to_field_number(target, value, unit)
+
+
+def question_card(item: dict[str, Any]) -> dict[str, Any]:
+    """Вопрос с вариантами, у каждого варианта — поле модели и число.
+
+    Поле берётся из ключа вопроса, а у вопроса без ключа (куда отнести
+    обязательство) — из слов варианта. Поля нет — ответ записывается в
+    разговор и честно называется неприменённым.
+    """
+    key = str(item.get("key") or "").strip()
+    field = key if key in ASKABLE_KEYS and key != "cadastral_numbers" else ""
+    options = []
+    for raw in item.get("choices") or item.get("options") or []:
+        if isinstance(raw, dict) and "value" in raw:
+            label = str(raw.get("label") or raw.get("value") or "").strip()
+            value, unit = raw.get("value"), str(raw.get("unit") or "")
+        else:
+            label = str((raw.get("label") if isinstance(raw, dict) else raw) or "").strip()
+            tail = _OPTION_TAIL_RE.search(label)
+            value, unit = (tail.group(1), tail.group(2).strip()) if tail else (None, "")
+        if not label:
+            continue
+        target = field or obligation_target(label)
+        number, why = (_option_number(target, value, unit) if target
+                       else (None, "у ответа нет поля в модели — записан в разговор"))
+        options.append({"label": label, "target": target, "value": number,
+                        "unit": INTAKE_UNITS.get(target, ""), "why": why})
+    return {"question": str(item.get("question") or ""), "key": field,
+            "label": INTAKE_LABELS.get(field, ""), "unit": INTAKE_UNITS.get(field, ""),
+            "options": options}
+
+
+def answer_card(card: dict[str, Any], inputs: dict[str, Any],
+                tep: dict[str, dict[str, Any]], *, choice: int = -1,
+                typed: str = "") -> dict[str, Any]:
+    """Применить ответ на один вопрос — тем же писателем, что и таблица разбора.
+
+    `choice` — номер варианта, `typed` — значение, вписанное человеком в
+    единицах поля. Ничего не применилось — причина называется, а ответ всё
+    равно записывается: человек его дал.
+    """
+    options = card.get("options") or []
+    option = options[choice] if 0 <= choice < len(options) else None
+    target = (option or {}).get("target") or card.get("key") or ""
+    said = str(typed or "").strip()
+    answer = " — ".join(part for part in (
+        (option or {}).get("label") or "", said) if part)
+    if said and target:
+        number, why = to_field_number(target, said, INTAKE_UNITS.get(target, ""))
+    elif option is not None:
+        number, why = option.get("value"), option.get("why") or ""
+    else:
+        number, why = None, "ответа нет"
+    if not target or number is None:
+        return {"answer": answer, "inputs": dict(inputs or {}),
+                "tep": {k: dict(v) for k, v in (tep or {}).items()}, "applied": [],
+                "refused": [{"key": target, "label": INTAKE_LABELS.get(target, target)
+                             or "ответ", "value": answer,
+                             "reason": why or "у ответа нет поля в модели"}]}
+    got = apply_intake(
+        {"fields": [{"key": target, "value": number,
+                     "unit": INTAKE_UNITS.get(target, ""), "quote": card.get("question")}]},
+        inputs, tep, accept=[target])
+    # «В документе: …» здесь неправда — это ответ человека, и окно печатает
+    # его само строкой «Ответ: …».
+    for row in got["applied"]:
+        row.pop("as_written", None)
+    return {"answer": answer, **got}

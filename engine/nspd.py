@@ -2679,6 +2679,8 @@ class TepDerivedRequest(BaseModel):
     parking_norm_regime: str = "2118_2026"
     # Число квартир: задано — постоянные места пунктом 2 по средней квартире.
     apartment_count: float = 0.0
+    # Население соцобъектов: норма РНГП или «квартиры × 2,1» (требование органа).
+    social_population_method: str = "rngp_area"
 
 
 @app.post("/tep/derived")
@@ -2692,7 +2694,8 @@ def tep_derived(req: TepDerivedRequest) -> dict[str, Any]:
         k1=req.k1, k2=req.k2, zone_two=req.zone_two,
         upks_rub=req.upks_rub, sqm_per_job=req.sqm_per_job,
         parking_norm_regime=req.parking_norm_regime,
-        apartment_count=req.apartment_count)
+        apartment_count=req.apartment_count,
+        social_population_method=req.social_population_method)
 
 
 class TepRescaleRequest(BaseModel):
@@ -2798,6 +2801,7 @@ class TepBySiteRequest(BaseModel):
     sqm_per_job: float = 32.0
     parking_norm_regime: str = "2118_2026"
     apartment_count: float = 0.0
+    social_population_method: str = "rngp_area"
 
 
 @app.post("/tep/derived-by-site")
@@ -2841,9 +2845,10 @@ def tep_derived_by_site(req: TepBySiteRequest) -> dict[str, Any]:
         k1=1.0, k2=1.0, zone_two=zone_two, upks_rub=0.0,
         sqm_per_job=req.sqm_per_job,
         parking_norm_regime=req.parking_norm_regime,
-        apartment_count=req.apartment_count)
+        apartment_count=req.apartment_count,
+        social_population_method=req.social_population_method)
     basis = [
-        "население — 33 м² квартир на человека",
+        "население соцобъектов — " + str(got.get("social_population_basis") or ""),
         f"нормативы мест — зона {'2' if zone_two else '1'}"
         + (f" по району «{district}»" if district else " (район не назван)"),
         str(got.get("parking_basis") or ""),
@@ -2861,6 +2866,14 @@ def tep_derived_by_site(req: TepBySiteRequest) -> dict[str, Any]:
         "district": district,
         "zone_two": zone_two,
         "population": got.get("population"),
+        "social_population": got.get("social_population"),
+        "social_population_basis": got.get("social_population_basis"),
+        # Жители по каждому способу на тех же метрах: переключатель способа
+        # ведёт за ними компенсацию, когда ставки за место у этого пути нет.
+        "social_population_by_method": {
+            method: moscow_social_population(req.apartment_area_sqm, req.apartment_count,
+                                             method)[0]
+            for method in SOCIAL_POPULATION_METHODS},
         "apartment_units": got.get("apartment_units"),
         "places": {
             "kindergarten": got.get("kindergarten_places"),

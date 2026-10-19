@@ -22,7 +22,7 @@ const GLAVAPU_STATUS_DEFAULT=document.getElementById('glavapuStatus').textConten
 
 // Смена территории снимает карточку другой методики. Расчёт МО оставлял на
 // экране карточку ГлавАПУ прошлого запроса: под свежим итогом Подмосковья
-// висел чужой московский участок, а его «Применить к Вводным и ТЭП» унёс бы
+// висел чужой московский участок, а его «Подставить в проект» унёс бы
 // в модель старый ТЭП. В обратную сторону — то же с блоком МО. Данные
 // чистятся вместе с карточкой: карточка без кнопки безопасна, только когда
 // ей нечего применять.
@@ -194,7 +194,7 @@ async function calculateMo(queryText){
  }
  button.disabled=true;button.textContent='Считаю…';
  dropGlavapuPreview();
- status.textContent='Участок в Московской области · считаю нормативы РНГП МО, УПКС и плату за ВРИ…';
+ status.textContent='Участок в Московской области. Считаю по нормам области ТЭП, школы и детсады и плату за смену разрешённого использования…';
  try{
   const response=await fetch('/mo/calculate',{
    method:'POST',headers:{'Content-Type':'application/json'},
@@ -221,9 +221,9 @@ async function calculateMo(queryText){
   if(moStatus)moStatus.style.display='none';
   const parcels=((data.vri||{}).parcels||[]).length;
   const asked=cadastralNumbersIn(query).length;
-  const parcelNote=asked?' · участков в расчёте: '+parcels+' из '+asked:(parcels?' · участков: '+parcels:'');
-  status.innerHTML='<span class="import-ok">Московская область · расчёт готов: '+landNum(data.territory.site_area_ha,4)+' га, '+
-   landNum(data.social.apartments_sqm,0)+' м² квартир'+parcelNote+'.</span> Проверьте значения и примените к модели.';
+  const parcelNote=asked?', участков в расчёте: '+parcels+' из '+asked:(parcels?', участков: '+parcels:'');
+  status.innerHTML='<span class="import-ok">Расчёт по Московской области готов: '+landNum(data.territory.site_area_ha,4)+' га, '+
+   landNum(data.social.apartments_sqm,0)+' м² квартир'+parcelNote+'.</span> Проверьте числа и нажмите «Подставить в проект».';
   // Если расчёт МО уже применён к проекту, правка плотности или Кд обязана
   // доехать до модели сама: иначе блок показывает новые числа, модель считает
   // по старым, и в Telegram уходит расчёт, которого пользователь не видел.
@@ -260,10 +260,10 @@ function syncMoParams(data){
 // 19.08.2026).
 function jobsGapText(jobs){
  const gap=Number((jobs||{}).deficit||0);
- if(gap<=0)return 'дефицита нет: нормативные объекты закрывают потребность';
+ if(gap<=0)return 'дефицита нет: школы, детсады и другие обязательные объекты дают достаточно рабочих мест';
  const office=Number(jobs.office_sqm||0),retail=Number(jobs.retail_sqm||0);
- return 'офисы ≈ '+landNum(office,0)+' м² ГНС или торговля ≈ '+landNum(retail,0)+
-  ' м² — или их сочетание на '+landNum(gap,0)+' мест';
+ return 'около '+landNum(office,0)+' м² офисов или около '+landNum(retail,0)+
+  ' м² магазинов или их сочетание — этого хватит на недостающие рабочие места';
 }
 
 function moTable(title,rows){
@@ -278,31 +278,30 @@ function renderMo(data){
   ['Площадь участка',landNum(t.site_area_ha,4)+' га'],
   ['Площадь квартир',landNum(s.apartments_sqm,0)+' м²'],
   ['Население',landNum(s.population,0)+' чел.'],
-  ['Смена ВРИ',v.payment_used_mln!=null?landNum(v.payment_used_mln,1)+' млн ₽':'—']
+  ['Плата за смену ВРИ',v.payment_used_mln!=null?landNum(v.payment_used_mln,1)+' млн ₽':'—']
  ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
  const tables=[];
  tables.push(moTable('Территория',[
   ['Кадастровые номера',(t.cadastral_numbers||[]).join(', ')||'—'],
-  ['Городской округ',(t.district||'—')+(t.district_source?' · '+t.district_source:'')],
+  ['Городской округ',(t.district||'—')+(t.district_source?' ('+t.district_source+')':'')],
   ['Кадастровый квартал',t.quarter||'—'],
-  ['Адрес по ЕГРН',t.address||'—'],
+  ['Адрес по госреестру',t.address||'—'],
   ['Плотность',landNum(data.density_sqm_per_ha,0)+' м² квартир на 1 га']
  ]));
- tables.push(moTable('Социальная нагрузка по РНГП МО',[
-  ['ДОО',landNum(s.kindergarten.places,0)+' мест · участок '+landNum(s.kindergarten.site_ha,4)+' га · '+landNum(s.kindergarten.gba_sqm,0)+' м²'],
-  ['СОШ',landNum(s.school.places,0)+' мест · участок '+landNum(s.school.site_ha,4)+' га · '+landNum(s.school.gba_sqm,0)+' м²'],
-  ['Поликлиника',landNum(s.clinic.capacity,0)+' пос./смену · '+landNum(s.clinic.gba_sqm,0)+' м²'],
-  ['Паркинг постоянного хранения',landNum(s.parking.permanent_spaces,0)+' м/м · подземный '+landNum(s.parking.underground_sqm,0)+' м²'],
-  ['Паркинг временного хранения',landNum(s.parking.temporary_spaces,0)+' м/м'
-    +' <span style="color:#777">— не менее 30 м/м на 1000 жителей; в проекте не строим:'
-    +' норматив разрешает разместить их в границах жилого района</span>'],
-  ['Озеленение',landNum(s.green.quarter_sqm,0)+' м² · общего пользования '+landNum(s.green.public_sqm,0)+' м²'],
+ tables.push(moTable('Школы, детсады и другие объекты по нормам Московской области',[
+  ['Детский сад',landNum(s.kindergarten.places,0)+' мест, участок '+landNum(s.kindergarten.site_ha,4)+' га, здание '+landNum(s.kindergarten.gba_sqm,0)+' м²'],
+  ['Школа',landNum(s.school.places,0)+' мест, участок '+landNum(s.school.site_ha,4)+' га, здание '+landNum(s.school.gba_sqm,0)+' м²'],
+  ['Поликлиника',landNum(s.clinic.capacity,0)+' посещений в смену, здание '+landNum(s.clinic.gba_sqm,0)+' м²'],
+  ['Парковка для жителей',landNum(s.parking.permanent_spaces,0)+' машино-мест, подземная '+landNum(s.parking.underground_sqm,0)+' м²'],
+  ['Парковка для гостей',landNum(s.parking.temporary_spaces,0)+' машино-мест. Норма — не меньше 30 мест'
+    +' на 1000 жителей. В проекте их не строим: норма разрешает поставить их в пределах жилого района.'],
+  ['Озеленение',landNum(s.green.quarter_sqm,0)+' м², из них общего пользования '+landNum(s.green.public_sqm,0)+' м²'],
   ['Нежилые помещения общественные',landNum(s.public_premises_sqm,0)+' м²'],
-  ['Рабочие места',landNum(s.jobs.required,0)+' требуется · '+landNum(s.jobs.from_objects,0)+
-    ' дают нормативные объекты · дефицит '+landNum(s.jobs.deficit,0)],
-  ['Чем закрыть дефицит',jobsGapText(s.jobs)],
-  ['Компенсация в бюджет','стационар '+landNum(s.budget_compensation.hospital_beds,1)+' коек · скорая '+landNum(s.budget_compensation.ambulance_cars,2)+' маш. · депо '+landNum(s.budget_compensation.fire_cars,2)+' маш.'],
-  ['СПП ГНС',landNum(s.gns_sqm,0)+' м²']
+  ['Рабочие места',landNum(s.jobs.required,0)+' нужно по норме, '+landNum(s.jobs.from_objects,0)+
+    ' дадут школы, детсады и другие обязательные объекты, не хватает '+landNum(s.jobs.deficit,0)],
+  ['Что добавить для рабочих мест',jobsGapText(s.jobs)],
+  ['Компенсация в бюджет','больница на '+landNum(s.budget_compensation.hospital_beds,1)+' коек, скорая помощь '+landNum(s.budget_compensation.ambulance_cars,2)+' машин, пожарное депо '+landNum(s.budget_compensation.fire_cars,2)+' машин'],
+  ['Площадь жилой части по наружным стенам',landNum(s.gns_sqm,0)+' м²']
  ]));
  const upksSource=(data.upks||{}).source||{};
  const landSource=upksSource.land||{},oksSource=upksSource.oks||{};
@@ -738,7 +737,6 @@ async function sendTelegramResult(){
    irr_project:s.irr_project==null?null:Number(s.irr_project),
    irr_equity:s.irr_equity==null?null:Number(s.irr_equity),
    irr_equity_label:irrEquityNa(s),
-   equity_returns_na:returnsNa(s),
    llcr:Number(s.llcr||0),
    calculated_bridge_mln:Number(f.calculated_bridge||0)/1e6,
    pf_uncovered_peak_mln:Number(f.pf_uncovered_peak||0)/1e6,
@@ -756,6 +754,9 @@ async function sendTelegramResult(){
    // в чате печатал прибыль голым числом там, где остаточные продажи долг
    // закрыли, а банк своего погашения в РВЭ не получил.
    default_date:f.default_date||null,
+   // Чем модель гасит долг после дефолта, зависит от числа очередей: без него
+   // бот говорил «продажами следующих периодов» и проекту с одной очередью.
+   queue_count:(phaseBundle&&phaseBundle.mode==='phased'&&(phaseBundle.comparison||[]).length)||1,
     report_payload:currentPdfReportPayload(cads)
  };
  try{

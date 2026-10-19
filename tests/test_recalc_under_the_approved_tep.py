@@ -213,7 +213,7 @@ def test_a_zero_base_is_free_and_a_missing_base_is_not():
 
 def test_the_page_asks_the_server_and_says_whose_answer_it_is():
     page = core.PAGE
-    assert "Пересчитать нормативы по ТЭП" in page
+    assert "Пересчитать по нормативам" in page
     assert "'/tep/recalc-from-baseline'" in page
     body = page[page.index("async function recalcFromTep("):]
     body = body[:body.index("\n}\n")]
@@ -413,7 +413,7 @@ def test_everything_falls_together_on_the_approved_tep():
 
 def test_the_page_calls_the_baseline_recalculation():
     page = core.PAGE
-    assert "Пересчитать нормативы по ТЭП" in page
+    assert "Пересчитать по нормативам" in page
     assert "'/tep/recalc-from-baseline'" in page
     body = page[page.index("async function recalcFromTep("):]
     body = body[:body.index("\n}\n")]
@@ -515,7 +515,9 @@ def test_the_page_substitutes_the_lease_payment_too():
     page = core.PAGE
     body = page[page.index("async function recalcFromTep("):]
     body = body[:body.index("\n}\n")]
-    assert "land_right:String(inputs.land_right" in body
+    # Тело запроса собирает помощник, общий с переключателем населения.
+    assert "baselineRecalcBody()" in body
+    assert "land_right:String(inputs.land_right" in page_blocks.function("baselineRecalcBody", page)
     assert "делитель 1,001" in body, "право видно в строке «было → стало»"
     # Прежде это была одна строка присваивания. Теперь пересчёт пишет вводные
     # общим правилом — оно же не трогает то, что вписано требованием КРТ, — но

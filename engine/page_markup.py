@@ -100,30 +100,30 @@ PAGE += r"""</head>
         <div class="import-head">
           <div>
             <div class="section-title">Автозагрузка исходных данных</div>
-            <h2>Кадастровый номер или адрес — ТЭП считается сам</h2>
-            <p>Одно поле на всю страну. DevelopAid берёт сведения ЕГРН из НСПД, определяет территорию и сам выбирает методику: для Москвы, включая Троицкий и Новомосковский округа, — калькулятор нормативных ТЭП ГлавАПУ; для Московской области — нормативы РНГП МО, справочники УПКС и плата за смену ВРИ. Ничего открывать и загружать вручную не нужно; перед применением значения показываются для проверки.</p>
+            <h2>Введите адрес или кадастровый номер</h2>
+            <p>Мы возьмём данные об участке из госреестра недвижимости и посчитаем ТЭП по нормам Москвы или Московской области. Прежде чем подставить числа в модель, покажем их вам.</p>
           </div>
-          <div style="font-size:11px;color:#777;text-align:right">Источники<br><b style="color:#111">ЕГРН · ГлавАПУ · РНГП МО</b></div>
+          <div style="font-size:11px;color:#777;text-align:right">Источники<br><b style="color:#111">ЕГРН, ГлавАПУ, нормы Московской области</b></div>
         </div>
         <div class="cadastral-box">
           <h3>Участок</h3>
-          <p>Кадастровый номер, адрес или координаты «широта, долгота». Несколько номеров — через запятую, точку с запятой или с новой строки; повторы удаляются, за один запрос до 30 участков.</p>
+          <p>Подойдёт кадастровый номер, адрес или координаты «широта, долгота». Несколько номеров перечислите через запятую или с новой строки — за один раз можно до 30 участков.</p>
           <div class="cadastral-entry">
-            <textarea id="cadastralNumbers" oninput="rememberCadastralQuery(this.value);dropStaleLandPreview()" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
+            <textarea id="cadastralNumbers" oninput="typeCadastralField(this.value);dropStaleLandPreview()" placeholder="77:02:0016009:1934, 77:02:0016009:1935&#10;или: 50:12:0100131:497&#10;или: Московская область, г. Мытищи, ул. Мира, 1"></textarea>
             <button id="cadastralAnalyzeButton" class="btn dark" onclick="obtainTep()">Получить ТЭП</button>
           </div>
           <div class="import-actions" style="margin-top:8px">
-            <button class="btn" onclick="lookupLand()">Только сведения ЕГРН</button>
-            <span style="font-size:11px;color:#777">Без расчёта ТЭП: адрес, площадь, категория, ВРИ, кадастровая стоимость.</span>
+            <button class="btn" onclick="lookupLand()">Только данные об участке</button>
+            <span style="font-size:11px;color:#777">Покажем адрес, площадь, категорию земли, разрешённое использование и кадастровую стоимость — без расчёта ТЭП.</span>
           </div>
-          <div id="cadastralStatus" class="import-status">На внешние сервисы уходят только кадастровые номера или строка поиска; финансовая модель не передаётся.</div>
+          <div id="cadastralStatus" class="import-status">Наружу мы отправляем только адрес или кадастровый номер. Ваши цифры и расчёт никуда не уходят.</div>
           <div id="landPreview" class="cadastral-preview" style="display:none">
             <div id="landSummary" class="import-summary"></div>
             <div id="landScreening" class="land-screening" style="display:none"></div>
             <div id="landCards" class="land-results"></div>
             <div id="landWarnings" class="note warning"></div>
             <div class="import-actions">
-              <span style="font-size:11px;color:#777">Сведения сохранены в проекте автоматически. Расчётные вводные при этом не меняются.</span>
+              <span style="font-size:11px;color:#777">Данные об участке сохранены в проекте. Цифры расчёта от этого не изменились.</span>
             </div>
           </div>
           <div id="cadastralPreview" class="cadastral-preview" style="display:none">
@@ -131,7 +131,7 @@ PAGE += r"""</head>
             <div id="cadastralParcels" class="cadastral-parcels"></div>
             <div id="cadastralWarnings" class="note warning"></div>
             <div class="import-actions">
-              <span style="font-size:11px;color:#777">Территория сохранена в проекте автоматически. Полный ТЭП появится ниже после автоматического расчёта.</span>
+              <span style="font-size:11px;color:#777">Участок сохранён в проекте. ТЭП появится ниже, как только закончится расчёт.</span>
             </div>
           </div>
           <iframe id="genplanAutomationFrame" class="genplan-automation-frame" title="Автоматический расчёт ТЭП ГлавАПУ" aria-hidden="true"></iframe>
@@ -144,18 +144,18 @@ PAGE += r"""</head>
         <div id="moPreview" class="cadastral-preview" style="display:none">
             <div id="moSummary" class="import-summary"></div>
             <div class="import-actions">
-              <button class="btn dark" onclick="applyMo()">Применить к Вводным и ТЭП</button>
-              <span style="font-size:11px;color:#777">Заменит ТЭП, социальные мощности и стоимость смены ВРИ в текущем проекте.</span>
+              <button class="btn dark" onclick="applyMo()">Подставить в проект</button>
+              <span style="font-size:11px;color:#777">В проект встанут новый ТЭП, места в детсадах и школах и плата за смену разрешённого использования земли.</span>
             </div>
             <div id="moTables"></div>
             <div id="moWarnings" class="note warning"></div>
         </div>
-        <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше — ТЭП посчитается сам. Готовые примеры — в «Личном кабинете», свой файл ГлавАПУ — ниже.</div>
+        <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше, и ТЭП посчитается сам. Готовые примеры лежат в «Личном кабинете», а свой файл можно загрузить ниже.</div>
         <div id="glavapuPreview" class="import-preview" style="display:none">
           <div id="glavapuSummary" class="import-summary"></div>
           <div class="import-actions">
-            <button class="btn dark" onclick="applyGlavapu()">Применить к Вводным и ТЭП</button>
-            <span style="font-size:11px;color:#777">Текущие значения ТЭП квартир/коммерции будут заменены распознанными.</span>
+            <button class="btn dark" onclick="applyGlavapu()">Подставить в проект</button>
+            <span style="font-size:11px;color:#777">Площади квартир и коммерции в проекте заменятся числами из этого расчёта.</span>
           </div>
           <div class="scroll" style="max-height:360px"><table>
             <thead><tr><th>Показатель</th><th>Распознано</th><th>Ед.</th><th>Куда попадёт</th></tr></thead>
@@ -172,14 +172,14 @@ PAGE += r"""</head>
              руках, а не первый шаг. Свёрнута, чтобы не разрывать «ввёл участок
              — получил ТЭП». -->
         <details class="import-fallback">
-          <summary>Свой файл: шаблон ТЭП DevelopAid, выгрузка ГлавАПУ или пресет проекта</summary>
+          <summary>Загрузить свой файл: заполненный шаблон ТЭП, расчёт с сайта ГлавАПУ или сохранённый проект</summary>
           <!-- Готовые примеры уехали в «Личный кабинет»: и они, и сохранённые
                проекты — это «взять готовое и посмотреть», а здесь разбирают
                принесённый файл. Решение владельца (15.08.2026). -->
           <div id="presetsMovedHint" style="font-size:11px;color:#888;margin:10px 0 8px">
             Готовые примеры — Мишина, Мытищи, Румянцево — переехали в «Личный кабинет» наверху страницы.
           </div>
-          <div style="font-size:11px;color:#888;margin:7px 0 8px">шаблон ТЭП DevelopAid либо выгрузка калькулятора ГлавАПУ</div>
+          <div style="font-size:11px;color:#888;margin:7px 0 8px">Заполненный шаблон ТЭП или файл, скачанный с калькулятора ГлавАПУ:</div>
           <!-- Шаблон скачивается отсюда же, где загружается. Отказ разбора
                обещал кнопку «ниже», а её на странице не было вовсе: шаблон
                выдавал только бот командой /template, и человек с сайта узнать
@@ -192,10 +192,10 @@ PAGE += r"""</head>
           <!-- Пресет проекта — это уже собранные ГПЗУ, ППТ, соглашения ВРИ и
                МПТ и справки по техприсоединению. Он заполняет проект целиком,
                поэтому и стоит отдельной строкой от разбора одной книги. -->
-          <div style="font-size:11px;color:#888;margin:12px 0 8px">или пресет проекта .json — ТЭП, ВРИ, МПТ и техприсоединение разом</div>
+          <div style="font-size:11px;color:#888;margin:12px 0 8px">Или сохранённый проект (файл .json) — он заполнит всё сразу: ТЭП, смену разрешённого использования, рабочие места и подключение к сетям.</div>
           <div class="upload-line" style="margin-top:8px">
             <input type="file" id="presetFile" accept=".json,application/json">
-            <button class="btn dark" onclick="uploadPreset()">Импорт проекта / пресета</button>
+            <button class="btn dark" onclick="uploadPreset()">Загрузить проект</button>
           </div>
         </details>
       </div>
@@ -209,8 +209,10 @@ PAGE += r"""</head>
       <!-- Порядок блоков вкладки — решение владельца (17.10.2026): участок и
            плотность одной компактной карточкой, сразу под ней таблица ТЭП,
            ниже — свёрнутые «Паркинг и нормативы» и параметры Подмосковья,
-           затем действия пересчёта и сверка с ГлавАПУ. На телефоне до таблицы
-           раньше лежали три кнопки, коэффициенты и длинные пояснения. -->
+           затем сверка с ГлавАПУ. Каждая кнопка стоит у полей, которые она
+           читает (владелец, 18.10.2026): заполнение по плотности — в карточке
+           участка, пересчёт соцобъектов и парковки и подтягивание строк из
+           «Экономики» — под таблицей. -->
       <div class="card site-card">
         <div class="section-title">Участок и плотность</div>
         <div class="fields site-fields">
@@ -233,6 +235,11 @@ PAGE += r"""</head>
             <b id="siteUsage" class="site-value">—</b>
           </div>
         </div>
+        <div class="tep-action">
+          <button class="btn" onclick="formTepByDensity()">Сформировать ТЭП по новым параметрам</button>
+          <span class="tep-action-hint" id="siteApplyHint">Поменяли площадь или плотность — нажмите, и таблица ниже заполнится заново: квартиры, магазины на первом этаже, детсады, школы и парковка; перед заменой покажем, что изменится.</span>
+        </div>
+        <div id="siteApplyStatus" class="import-status" style="display:none"></div>
         <!-- Эквивалент плотности по другой методике — справка, а не параметр:
              раскрывается по желанию, чтобы не занимать экран телефона. -->
         <details class="site-help">
@@ -245,6 +252,17 @@ PAGE += r"""</head>
         <div id="tepRatioNote" style="color:#777;font-size:11px;margin:2px 0 8px"></div>
         <div id="tepDerivedNote" class="import-status" style="display:none"></div>
         <div class="scroll"><table class="teptable"><thead><tr><th>Продукт</th><th>ГНС, м²</th><th>Общая площадь, м²</th><th>Полезная площадь, м²</th><th>Продаваемая площадь, м²</th><th>Передаваемая площадь, м²</th><th>Количество, шт.</th></tr></thead><tbody id="tepBody"></tbody><tfoot><tr><th>Итого</th><th id="tg"></th><th id="ta"></th><th id="tu"></th><th id="ts"></th><th id="tt"></th><th id="tn"></th></tr></tfoot></table></div><div id="tepUndergroundNote" class="hint" style="margin-top:6px"></div>
+        <div class="tep-action" id="tepNormsAction">
+          <button class="btn" onclick="recalcFromTep()">Пересчитать по нормативам</button>
+          <span class="tep-action-hint" id="tepNormsHint"></span>
+        </div>
+        <!-- Синхронизация строк с «Экономикой» — решение владельца (18.10.2026):
+             кнопку оставить, хотя правка полей обновляет строки сама: нужна,
+             когда число в таблице разошлось с полем (давно сохранённый проект). -->
+        <div class="tep-action tep-action-secondary">
+          <button class="btn" onclick="syncTep()">Подтянуть значения из «Экономики» (МФЦ, ТЦ, паркинг и др.)</button>
+          <span class="tep-action-hint">Нужна редко: при правке полей в «Экономике» эти строки обновляются сами. Нажмите, если число в таблице не совпадает с полем — например, в давно сохранённом проекте. Квартиры и коммерцию 1 этажа не меняет.</span>
+        </div>
       </div>
       <div class="card" id="tepSettingsCard">
         <!-- Коэффициенты парковки называет город по ЭТОМУ участку, поэтому они
@@ -275,33 +293,6 @@ PAGE += r"""</head>
           </div>
           <div class="mo-price-line"><span id="moPriceState">Справочники загружаются…</span></div>
         </details>
-      </div>
-      <!-- Действия с ТЭП — одним свёрнутым меню под таблицей (решение
-           владельца, 17.10.2026): три разные операции, а не одна кнопка —
-           формирование площадей от плотности (перезаписывает строки, поэтому
-           с подтверждением и списком изменяемого), пересчёт нормативов по
-           текущему ТЭП (ручное действие: ГлавАПУ / пропорция / норматив —
-           режим называет подсказка) и обновление производных строк из
-           вводных (вторичное: обычно происходит само при правке полей).
-           «Пересчитать модель» — экономика проекта — остаётся в шапке. -->
-      <div class="card" id="tepActionsCard">
-        <details class="tep-actions" id="tepActionsMenu">
-          <summary>Действия с ТЭП<span class="group-peek">сформировать по плотности · пересчитать нормативы · обновить производные</span></summary>
-          <div class="tep-action">
-            <button class="btn" onclick="formTepByDensity()">Сформировать ТЭП по плотности</button>
-            <span class="tep-action-hint" id="siteApplyHint">Площадь участка × плотность → квартиры и коммерция 1 этажа. Без ГлавАПУ — нормативами РНГП вместе с социалкой, паркингом и офисами. Заменяет введённые значения: перед заменой покажет, что изменится.</span>
-          </div>
-          <div class="tep-action">
-            <button class="btn dark" onclick="recalcFromTep()">Пересчитать нормативы по ТЭП</button>
-            <span class="tep-action-hint" id="tepNormsHint"></span>
-          </div>
-          <div class="tep-action tep-action-secondary">
-            <button class="btn" onclick="syncTep()">Обновить производные ТЭП из вводных</button>
-            <span class="tep-action-hint">Офисы, ТЦ, паркинги и соцобъекты в таблице — из вводных «Экономики»; при правке полей обновляются сами. Квартиры и коммерцию 1 этажа не трогает.</span>
-          </div>
-          <div class="tep-action-note">В таблице показывается 1 знак после запятой. При загруженном ГлавАПУ подземный паркинг — производный: постоянные + гостевые × 35 м².</div>
-        </details>
-        <div id="siteApplyStatus" class="import-status" style="display:none"></div>
       </div>
       <!-- Сверка сценария: калькулятору ГлавАПУ выставляются НАШИ параметры
            (доля жилья и коммерции, СПП, площадь, нежильё по ВРИ, соцобъекты,
@@ -996,14 +987,14 @@ PAGE += r"""</head>
      параметры отключены, можете выбрать ТЭП в разделе экономика»). Текст
      живёт ЗДЕСЬ и только здесь: плашка под селектором зовёт это же окно,
      иначе одно и то же сказано дважды подряд и его перестают читать. -->
-<!-- Подтверждение «Сформировать ТЭП по плотности»: действие перезаписывает
+<!-- Подтверждение «Сформировать ТЭП по новым параметрам»: действие перезаписывает
      строки таблицы, и перед заменой человек видит, что именно изменится
      (строка, было → будет) и чем. Список составляет densityTepPlan. -->
 <div id="tepConfirmDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
      z-index:91;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeTepConfirm()">
   <div style="background:#fff;max-width:560px;width:100%;max-height:86vh;overflow:auto;padding:22px 24px;border-radius:10px">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
-      <h2 id="tepConfirmTitle" style="margin:0;font-size:17px">Сформировать ТЭП по плотности</h2>
+      <h2 id="tepConfirmTitle" style="margin:0;font-size:17px">Сформировать ТЭП по новым параметрам</h2>
       <button onclick="closeTepConfirm()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button>
     </div>
     <div id="tepConfirmBody" style="font-size:13px;line-height:1.55"></div>

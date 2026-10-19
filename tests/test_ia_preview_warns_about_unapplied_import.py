@@ -115,8 +115,8 @@ def test_the_steps_and_the_banner_carry_the_warning():
     banner = _OVERLAY[_OVERLAY.index("function renderPendingWarn"):]
     banner = banner[:banner.index("\n  }\n", banner.index("box.appendChild(drop)"))]
     # Подпись кнопки — дословно кнопка страницы: плашка не выдумывает интерфейс.
-    assert banner.count("Применить к Вводным и ТЭП") == 1
-    assert "Применить к Вводным и ТЭП" in core.PAGE
+    assert banner.count("Подставить в проект") == 1
+    assert "Подставить в проект</button>" in core.PAGE
     assert "Сбросить карточку" in banner
     assert "activeTab === 'iaSite'" in banner, "на «Участке» плашка должна сниматься"
     assert "renderPendingWarn(activeTab)" in _OVERLAY.split("function renderPendingWarn")[0], (
