@@ -51,7 +51,10 @@ from auction_search.adapters.etp_probe import (
 )
 from auction_search.adapters.fedresurs import (
     SEARCH_PAGE as FEDRESURS_SEARCH_PAGE,
-    probe as fedresurs_probe, probe_browser as fedresurs_browser)
+    KNOWN_DEBTOR_INN as FEDRESURS_KNOWN_INN,
+    KNOWN_MESSAGE_GUID as FEDRESURS_KNOWN_MESSAGE,
+    probe as fedresurs_probe, probe_api as fedresurs_probe_api,
+    probe_browser as fedresurs_browser)
 from auction_search.adapters import source_page
 from auction_search.adapters.roseltorg_probe import (
     CATALOGUE_URL as ROSELTORG_SECTION_URL,
@@ -5255,6 +5258,22 @@ def install(app: FastAPI) -> None:
         намеренно: ровно так ГИС Торги приехали на прод с тридцатью гаражами.
         """
         return await run_in_threadpool(fedresurs_probe)
+
+    @app.get("/auctions/fedresurs/api")
+    async def auction_fedresurs_api(
+        message: str = Query(default=""),
+        inn: str = Query(default=""),
+        seconds: float = Query(default=40.0, ge=5.0, le=90.0),
+    ) -> dict[str, Any]:
+        """JSON-бэкенд ЕФРСБ: сверенные маршруты по должнику и адреса из бандла.
+
+        Страница сообщения — оболочка Angular, данные идут из `/backend/…`.
+        Адрес карточки сообщения и списка торгов проба ищет в бандле самой
+        страницы, а не перебирает вслепую. Разбора нет.
+        """
+        return await run_in_threadpool(lambda: fedresurs_probe_api(
+            message_guid=message.strip() or FEDRESURS_KNOWN_MESSAGE,
+            inn=inn.strip() or FEDRESURS_KNOWN_INN, seconds=seconds))
 
     @app.get("/auctions/fedresurs/browser")
     async def auction_fedresurs_browser(

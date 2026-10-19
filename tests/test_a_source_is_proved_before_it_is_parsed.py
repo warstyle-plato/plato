@@ -363,3 +363,44 @@ def test_the_sberbank_addresses_are_the_ones_that_do_not_redirect() -> None:
     # туда, куда написано.
     assert not any("google.com" in url for url in urls)
     assert all(url.startswith("https://") for url in urls)
+
+
+# --- проба JSON-бэкенда: адреса берутся из бандла страницы, а не из догадки ---
+
+_FAKE_HTML = ('<html><base href="/"><script src="runtime.aaaa.js" type="module"></script>'
+              '<script src="main.bbbb.js" type="module"></script></html>')
+_FAKE_RUNTIME = ('f.u=e=>(8592===e?"common":e)+"."+{609:"d5bcee1aabab943c",'
+                 '8592:"0123456789abcdef"}[e]+".js"')
+_FAKE_FILES = {
+    "main.bbbb.js": 'get(`/backend/companies/${e}/bankruptcy`);x="/backend/companies"',
+    "609.d5bcee1aabab943c.js": 'this.http.get(this.base+"/bankruptmessages/"+e)',
+    "common.0123456789abcdef.js": 'u="/api/whatever"',
+}
+
+
+def test_the_api_probe_reads_paths_from_the_bundle(monkeypatch) -> None:
+    """Пути ищутся в бандле и его ленивых чанках — включая чанк «common»."""
+    def fake_get(url, context, **kwargs):
+        name = url.rsplit("/", 1)[-1]
+        if name == "runtime.aaaa.js":
+            return 200, "text/javascript", _FAKE_RUNTIME
+        if name in _FAKE_FILES:
+            return 200, "text/javascript", _FAKE_FILES[name]
+        if "bankruptmessages" in url or url.endswith("fedresurs.ru/"):
+            return 200, "text/html", _FAKE_HTML
+        return 404, "", ""
+
+    monkeypatch.setattr(fedresurs, "_get", fake_get)
+    got = fedresurs._bundle_paths(None, "https://fedresurs.ru/bankruptmessages/X", 1e18)
+    assert "/backend/companies/${e}/bankruptcy" in got["paths"]
+    assert "/api/whatever" in got["paths"], "чанк 8592 зовётся «common», а не номером"
+    assert "/bankruptmessages/" in got["hints"], "путь, склеенный с базой, тоже виден"
+    assert {s["name"] for s in got["scripts"]} >= {
+        "main.bbbb.js", "609.d5bcee1aabab943c.js", "common.0123456789abcdef.js"}
+
+
+def test_the_api_probe_asks_about_the_owners_message() -> None:
+    """Сообщение 25074336 владелец не нашёл в «Торгах» — проба спрашивает именно его."""
+    assert fedresurs.KNOWN_MESSAGE_GUID == "5ea9be17-d759-407d-9802-1644c8b27f76"
+    api = (ROOT / "auction_search" / "api.py").read_text()
+    assert '"/auctions/fedresurs/api"' in api and "fedresurs_probe_api" in api

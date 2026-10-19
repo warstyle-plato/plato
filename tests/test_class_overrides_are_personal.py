@@ -108,7 +108,7 @@ def test_the_class_button_explains_where_the_rates_come_from():
     overlay = (Path(__file__).resolve().parent.parent
                / "ia_preview" / "assets" / "overlay.js").read_text(encoding="utf-8")
     assert "Как считаются класс и сценарий" in overlay
-    assert "Откуда себестоимость СМР" in overlay
+    assert "Откуда берётся стоимость строительства" in overlay
     assert "к её базе площади" in overlay
     assert "/statistics" in overlay
 
