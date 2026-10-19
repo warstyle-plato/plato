@@ -1766,7 +1766,9 @@ function renderInputs(){
      // ниже: `innerHTML+=` пересоздал бы уже вставленное поле без обработчиков.
      if(id==='vri_required')wrap.appendChild(vriNoteNode('vriRequiredNote',vriRequiredNote()));
      if(id==='vri_share_equity_pct')wrap.appendChild(vriNoteNode('vriSharesNote',vriSharesNote()));
-     if(id==='social_population_method')wrap.appendChild(vriNoteNode('socialPopulationNote',socialPopulationNoteText));
+     // Итог переключателя населения — под ним; стенды без блока ТЭП его не несут.
+     if(id==='social_population_method'&&typeof socialPopulationNoteText==='string')
+      wrap.appendChild(vriNoteNode('socialPopulationNote',socialPopulationNoteText));
      // Ручная льгота при посчитанной — кнопка «Применить посчитанную» у
      // самого поля: искать её внизу вкладки владелец не стал (15.10.2026).
      if(id==='vri_relief_mode'){
