@@ -404,7 +404,7 @@ function finishedLine(l){
 function areaUnknownLine(l){return state.areaUnknown&&state.areaUnknown.has(l)?'<div class="source warn">Площадь участка не указана</div>':''}
 const isoDay=iso=>String(iso||'').split('-').reverse().join('.');
 function moscowTodayIso(){const p=Object.fromEntries(moscowFormat({year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).map(x=>[x.type,x.value]));return `${p.year}-${p.month}-${p.day}`}
-state.finished={on:false,lots:[],coverage:[],window:null,error:'',loading:false,cached:null,seq:0};
+state.finished={on:false,lots:[],coverage:[],quality:{},window:null,error:'',loading:false,cached:null,seq:0};
 function renderFinishedNote(){
  const box=$('finishedNote'),f=state.finished;
  if(!f.on){box.style.display='none';box.textContent='';box.className='notice';return}
@@ -415,6 +415,20 @@ function renderFinishedNote(){
  const w=f.window||{};
  line(`Завершённые торги с ${isoDay(w.since)} по ${isoDay(w.until)}: найдено ${f.lots.length}. Они показаны вместе с текущими и помечены «Торги завершены».`);
  line('Дата торгов берётся из карточки лота, а если её там нет — дата окончания приёма заявок.','source');
+ // Сколько площадка отдала и сколько осталось после отбора «интересные».
+ // Без этого «найдено 0» читалось как «торгов не было», хотя площадка отдала
+ // 48 завершённых лотов и все они не прошли допуск.
+ const q=f.quality||{},seen=Number(q.seen)||0;
+ if(seen>f.lots.length){
+  const why=[q.incomplete?`не хватает данных у ${q.incomplete}`:'',q.outside_profile?`ниже профиля сделок ${q.outside_profile}`:'',q.noise?`не относятся к девелопменту ${q.noise}`:''].filter(Boolean).join(', ');
+  line(`Площадка отдала ${seen} завершённых лот(ов) за это окно, в основную подборку прошло ${Number(q.accepted)||0}${why?': '+why:''}. Чтобы увидеть все, выберите вверху «Интересные + неполные и шум».`,'source warn');
+  box.className='notice warn';
+ }
+ (f.coverage||[]).forEach(r=>(r.filters||[]).forEach(x=>{
+  if(!(x.stopped&&/предел/.test(x.stopped)&&x.total_elements&&x.cards<x.total_elements))return;
+  line(`${r.source}, ${x.filter}: просмотрены только самые новые извещения, ${x.cards} из ${x.total_elements}. Более старые не читались, поэтому часть завершённых торгов могла не попасть в список.`,'source warn');
+  box.className='notice warn';
+ }));
  if(f.cached!==null&&f.cached!==undefined)line(`Это сохранённый ответ ${Math.max(1,Math.round(f.cached/60))} мин назад: площадки повторно не опрашивались.`,'source');
  let warn=false;
  (f.coverage||[]).forEach(r=>{
@@ -432,8 +446,8 @@ async function loadFinished(){
   const qs=new URLSearchParams({source:$('source').value,include_noise:$('noise').value==='1'?'true':'false',as_of:$('finishedAsOf').value||''});
   const d=await askJson('/auctions/finished?'+qs);
   if(seq!==f.seq)return;
-  f.lots=(d.lots||[]).map(l=>({...l,finished:true}));f.coverage=d.coverage||[];f.window=d.window||null;f.cached=d.cached?Number(d.cached_age_seconds)||0:null;
- }catch(e){if(seq!==f.seq)return;f.lots=[];f.coverage=[];f.error=String(e.message||e)}
+  f.lots=(d.lots||[]).map(l=>({...l,finished:true}));f.coverage=d.coverage||[];f.quality=d.quality||{};f.window=d.window||null;f.cached=d.cached?Number(d.cached_age_seconds)||0:null;
+ }catch(e){if(seq!==f.seq)return;f.lots=[];f.coverage=[];f.quality={};f.error=String(e.message||e)}
  finally{if(seq===f.seq){f.loading=false;renderFinishedNote();filter()}}
 }
 // Батарейка снижения цены. У банкротного лота публичное предложение идёт по

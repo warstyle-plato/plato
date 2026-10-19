@@ -39,7 +39,11 @@ from auction_search.adapters import (
     RoseltorgAdapter,
     SberbankASTAdapter,
 )
-from auction_search.adapters.torgi_gov import TorgiGovAdapter, lot_status_ru, trust_report as torgi_trust_report
+from auction_search.adapters.torgi_gov import (
+    ACTIVE_LOT_STATUSES as torgi_gov_active_statuses,
+    FINISHED_LOT_STATUSES as torgi_gov_finished_statuses,
+    TorgiGovAdapter, lot_status_ru, trust_report as torgi_trust_report,
+)
 from auction_search.adapters.etp_probe import (
     SLUGS as etp_slugs,
     probe as etp_probe,
@@ -5130,14 +5134,33 @@ def install(app: FastAPI) -> None:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get("/auctions/torgi/probe")
-    async def auction_torgi_probe(page: int = Query(default=0)) -> dict[str, Any]:
+    async def auction_torgi_probe(
+        page: int = Query(default=0),
+        status: str = Query(default=""),
+        cat: str = Query(default="2"),
+        sort: str = Query(default=""),
+        size: int = Query(default=0, ge=0, le=200),
+        extra: str = Query(default="", max_length=500),
+    ) -> dict[str, Any]:
         """Сырой ответ ГИС Торгов и разобранный лот рядом.
 
         Из песочницы torgi.gov.ru закрыт сетевой политикой, как НСПД: сверить
         поля можно только с ядра. Показываем и сырое, и разобранное вместе —
         расхождение должно быть видно глазами, а не вылезти числом в отчёте.
+
+        `status` — коды через запятую (`finished` — статусы завершения),
+        `extra` — добавочные параметры запроса площадки строкой
+        (`biddEndFrom=…&biddEndTo=…`): так с ядра проверяется, какой фильтр даты
+        площадка понимает, прежде чем рабочий сбор на него положится.
         """
-        return await run_in_threadpool(lambda: TorgiGovAdapter().probe(page))
+        if status.strip().lower() == "finished":
+            statuses = torgi_gov_finished_statuses
+        elif status.strip():
+            statuses = tuple(code.strip().upper() for code in status.split(",") if code.strip())
+        else:
+            statuses = torgi_gov_active_statuses
+        return await run_in_threadpool(lambda: TorgiGovAdapter().probe(
+            page, statuses=statuses, cat_code=cat, sort=sort, size=size or None, extra=extra))
 
     @app.get("/auctions/torgi/regions")
     async def auction_torgi_regions(page: int = Query(default=0)) -> dict[str, Any]:
@@ -5584,6 +5607,9 @@ def install(app: FastAPI) -> None:
             "window": {"since": since.isoformat(), "until": as_of.isoformat(),
                        "months": months},
             "count": len(lots),
+            # Воронка допуска — та же, что у живого каталога: без неё «найдено
+            # 0» не отличить от «торгов не было».
+            "quality": service.last_quality_report,
             "coverage": coverage,
             "lots": [{**_discover_row(lot), "finished": True} for lot in lots],
         }

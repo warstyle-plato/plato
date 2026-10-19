@@ -129,7 +129,13 @@ FINISHED_LOT_STATUSES = ("SUCCEED", "FAILED", "CANCELED", "DETERMINING_WINNER")
 # раньше начала окна, ещё может закончиться внутри него — запас на срок
 # приёма заявок; дальше этого запаса страницы не листаются.
 HISTORY_PUBLICATION_MARGIN_DAYS = 120
-HISTORY_MAX_PAGES_PER_FILTER = 6
+# Площадка отдаёт по 10 карточек, сколько бы ни просили (живой ответ с прода
+# 19.10.2026: `size=50`, на странице 10). Шесть страниц на выборку покрывали
+# 60 извещений земли из 1 461, и завершённые за окно до проверки не доходили.
+# Земля — то, о чём спрашивают, поэтому ей отдана основная глубина; прочим
+# выборкам — по несколько страниц. Общий срок 40 с остаётся рубежом.
+HISTORY_MAX_PAGES_PER_FILTER = 4
+HISTORY_MAX_PAGES_BY_FILTER = {"земельные участки": 24}
 # Итоговая цена. Имя поля — ожидание, не сверка: в выдаче живых лотов его не
 # было ни разу. Пришло — показываем с подписью, не пришло — так и говорим.
 RESULT_PRICE_KEYS = ("priceFin",)
@@ -774,6 +780,7 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         lots, report = self._sweep(
             FINISHED_LOT_STATUSES, deadline=deadline,
             max_pages=HISTORY_MAX_PAGES_PER_FILTER,
+            max_pages_by_filter=HISTORY_MAX_PAGES_BY_FILTER,
             keep=keep, stop=page_too_old)
         notes = [report.get("reason") or ""]
         if undated:
@@ -792,6 +799,7 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         *,
         deadline: float | None,
         max_pages: int,
+        max_pages_by_filter: dict[str, int] | None = None,
         keep: Any = None,
         stop: Any = None,
     ) -> tuple[list[AuctionLot], dict[str, Any]]:
@@ -813,7 +821,9 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             filter_pages = filter_cards = 0
             filter_total: int | None = None
             filter_reason = ""
-            for page in range(max_pages):
+            filter_stop = ""
+            limit = (max_pages_by_filter or {}).get(label, max_pages)
+            for page in range(limit):
                 if clock.expired(deadline):
                     filter_reason = "остановлено по времени"
                     break
@@ -864,12 +874,16 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                 if payload.get("last") is True:
                     break
                 if stop is not None and stop(content):
+                    filter_stop = "дальше извещения старше окна"
                     break
+            else:
+                filter_stop = f"прочитано {limit} страниц — это предел для одной выборки"
             filter_reports.append({
                 "filter": label,
                 "pages": filter_pages,
                 "cards": filter_cards,
                 "total_elements": filter_total,
+                "stopped": filter_stop,
                 "reason": filter_reason,
             })
             if filter_reason:
@@ -954,7 +968,16 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         lot.raw = dict(card)
         return lot
 
-    def probe(self, page: int = 0) -> dict[str, Any]:
+    def probe(
+        self,
+        page: int = 0,
+        *,
+        statuses: tuple[str, ...] = ACTIVE_LOT_STATUSES,
+        cat_code: str = "2",
+        sort: str = "",
+        size: int | None = None,
+        extra: str = "",
+    ) -> dict[str, Any]:
         """Сырой ответ и разобранный лот рядом — для сверки с ядра.
 
         Проба существует, чтобы ПОКАЗАТЬ ответ, поэтому она ничего не
@@ -969,7 +992,8 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         и это говорится вслух. Иначе неверная догадка об оболочке читалась бы
         как «лотов нет».
         """
-        url = self._search_url(page)
+        url = self._search_url(page, cat_code=cat_code, statuses=statuses,
+                               sort=sort, size=size, extra=extra)
         try:
             status, ctype, body = self._fetch_raw(url)
         except Exception as exc:  # noqa: BLE001
@@ -1015,6 +1039,14 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             "array_key": array_key,
             "envelope_note": envelope_note,
             "on_page": len(cards),
+            "total_elements": payload.get("totalElements"),
+            # Даты и статусы карточек страницы — чтобы по одной пробе было
+            # видно, применился ли фильтр по дате или сортировка.
+            "dates_seen": [
+                {key: _text(card.get(key)) for key in (
+                    "lotStatus", "noticeFirstVersionPublicationDate",
+                    "biddEndTime", "auctionStartDate") if _text(card.get(key))}
+                for card in cards],
             # Даже при серверном `dynSubjRF` проба показывает фактические
             # `subjectRFCode`: ошибка внутреннего id не должна выглядеть успехом.
             "in_target_region": sum(1 for card in cards if in_target_region(card)),
@@ -1081,12 +1113,15 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         cat_code: str = "2",
         text: str = "",
         statuses: tuple[str, ...] = ACTIVE_LOT_STATUSES,
+        sort: str = "",
+        size: int | None = None,
+        extra: str = "",
     ) -> str:
         fields: list[tuple[str, Any]] = [
             *(("lotStatus", status) for status in statuses),
             ("page", page),
-            ("size", PAGE_SIZE),
-            ("sort", "firstVersionPublicationDate,desc"),
+            ("size", size or PAGE_SIZE),
+            ("sort", sort or "firstVersionPublicationDate,desc"),
             ("catCode", cat_code),
         ]
         if text:
@@ -1096,6 +1131,12 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         if name:
             values = self.dyn_subject_ids if name == "dynSubjRF" else self.subject_codes
             fields.extend((name, value) for value in values)
+        # Добавочные параметры — только для пробы: так с ядра проверяются
+        # фильтры даты, которых рабочий сбор ещё не знает. Свои ключи ими не
+        # подменяются.
+        own = {key for key, _value in fields}
+        fields.extend((key, value) for key, value in urllib.parse.parse_qsl(extra)
+                      if key not in own)
         query = urllib.parse.urlencode(fields)
         return f"https://{HOST}{SEARCH_PATH}?{query}"
 

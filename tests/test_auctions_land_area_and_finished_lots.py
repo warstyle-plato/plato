@@ -161,6 +161,41 @@ def test_the_history_stops_at_notices_too_old_for_the_window():
     assert len(adapter.urls) == 1, "страницы старше окна с запасом не листаются"
 
 
+def test_land_history_reads_deeper_than_the_other_filters_and_says_where_it_stopped():
+    pages = [[_finished(f"P{page}x{i}", "SUCCEED", "2026-09-10T12:00:00Z", published="2026-09-01T10:00:00Z")
+              for i in range(10)] for page in range(40)]
+    land = _Pages(pages)
+    land.discovery_filters = (("земельные участки", "2", ""), ("здания", "7", "здание"))
+    land.discover_moscow_finished(date(2026, 7, 19), date(2026, 10, 19))
+    by_filter = {row["filter"]: row for row in land.last_report["filters"]}
+    assert by_filter["земельные участки"]["pages"] == torgi_gov.HISTORY_MAX_PAGES_BY_FILTER["земельные участки"]
+    assert by_filter["здания"]["pages"] == torgi_gov.HISTORY_MAX_PAGES_PER_FILTER
+    assert "предел" in by_filter["земельные участки"]["stopped"]
+
+
+def test_the_probe_asks_finished_statuses_and_extra_date_params_without_overriding_its_own():
+    adapter = _Pages([[_finished("A1", "SUCCEED", "2026-09-10T12:00:00Z")]])
+    seen = adapter.probe(0, statuses=torgi_gov.FINISHED_LOT_STATUSES, size=100,
+                         sort="biddEndTime,desc", extra="biddEndFrom=2026-07-19&page=7")
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(seen["url"]).query)
+    assert sorted(query["lotStatus"]) == sorted(torgi_gov.FINISHED_LOT_STATUSES)
+    assert query["biddEndFrom"] == ["2026-07-19"]
+    assert query["page"] == ["0"], "добавочный параметр не подменяет свой"
+    assert query["size"] == ["100"] and query["sort"] == ["biddEndTime,desc"]
+    assert seen["dates_seen"][0]["lotStatus"] == "SUCCEED"
+
+
+def test_the_selection_funnel_of_the_history_is_reported():
+    from auction_search.service import AuctionSearchService
+
+    torgi = _Pages([[_finished("A1", "SUCCEED", "2026-09-10T12:00:00Z")]])
+    service = AuctionSearchService([torgi])
+    shown = service.discover_moscow_finished(date(2026, 7, 19), date(2026, 10, 19), budget_seconds=5)
+    report = service.last_quality_report
+    assert report["seen"] == 1, "сколько отдала площадка — до отбора"
+    assert report["accepted"] == len(shown)
+
+
 def test_live_discovery_still_asks_only_live_statuses():
     adapter = _Pages([[_land_card(id="L1", lotStatus="PUBLISHED")]])
     adapter.discover_moscow()
@@ -211,6 +246,7 @@ def test_the_route_answers_the_window_and_keeps_the_answer_on_disk(tmp_path, mon
     assert [lot["source"]["external_lot_id"] for lot in first["lots"]] == ["A1"]
     assert first["lots"][0]["finished"] is True and first["lots"][0]["land_area_sqm"] == 6000
     assert first["cached"] is False
+    assert first["quality"]["seen"] == 1, "воронка допуска в ответе истории"
     second = client.get("/auctions/finished", params={"as_of": "2026-10-19", "include_noise": "true"}).json()
     assert second["cached"] is True and len(calls) == 1, "второй запрос читает диск, а не площадку"
     assert client.get("/auctions/finished", params={"as_of": "19.10.2026"}).status_code == 422
@@ -327,6 +363,27 @@ def test_in_a_real_browser_the_area_filter_and_finished_lots(tmp_path, monkeypat
             assert any("as_of=2026-09-30" in url for url in asked)
 
             # Площадка не ответила — причина на экране, текущие торги на месте.
+            # Площадка отдала 48 завершённых, отбор «интересные» снял все:
+            # на экране причина, а не голое «найдено 0» (прод, 19.10.2026).
+            finished_answer["body"] = {
+                **finished_answer["body"], "lots": [], "count": 0,
+                "quality": {"seen": 48, "accepted": 0, "incomplete": 40, "outside_profile": 8, "noise": 0},
+                "coverage": [{"source": "ГИС Торги (torgi.gov.ru)", "kept": 48, "cards": 106,
+                              "finished_available": True, "reason": "",
+                              "filters": [{"filter": "земельные участки", "cards": 60,
+                                           "total_elements": 1461,
+                                           "stopped": "прочитано 6 страниц — это предел для одной выборки"}]}]}
+            page.fill("#finishedAsOf", "2026-09-29")
+            page.dispatch_event("#finishedAsOf", "change")
+            page.wait_for_function("document.getElementById('finishedNote').innerText.includes('Площадка отдала')")
+            seen = page.evaluate(READ)
+            assert "найдено 0" in seen["finished"]
+            assert "Площадка отдала 48 завершённых" in seen["finished"]
+            assert "не хватает данных у 40" in seen["finished"]
+            assert "«Интересные + неполные и шум»" in seen["finished"]
+            assert "60 из 1461" in seen["finished"], "предел листания назван"
+            assert page.evaluate("document.getElementById('finishedNote').classList.contains('warn')")
+
             finished_answer.update(status=502, body={"detail": "torgi.gov.ru не ответил"})
             page.fill("#finishedAsOf", "2026-10-01")
             page.dispatch_event("#finishedAsOf", "change")
