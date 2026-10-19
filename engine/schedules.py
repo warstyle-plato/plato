@@ -794,6 +794,14 @@ def social_required_program(
         })
     zone_two = district_zone_two(district)
     population = apartments / 33.0
+    population_note = ""
+    if str(x.get("social_population_method") or "") == "flats_household":
+        # Требование органа «1 квартира = 2,1 жителя» — выбор проекта, а не
+        # норма; владелец числа и подписи — `moscow_social_population`.
+        people, population_basis, _ = moscow_social_population(
+            apartments, n((t or {}).get("apartments") or {}, "units"), "flats_household")
+        population = float(people)
+        population_note = "; население — " + population_basis
     return with_gap({
         "available": True,
         "source": "norm",
@@ -803,6 +811,7 @@ def social_required_program(
             + " зона нормирования"
             + (f", район «{district}»" if district
                else "; район не назван — принята первая зона")
+            + population_note
         ),
         "district": district,
         "zone_two": zone_two,

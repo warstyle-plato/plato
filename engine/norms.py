@@ -287,6 +287,47 @@ def average_flat_sqm(source: str) -> tuple[float, str]:
     return value, basis
 
 
+# Население для соцнагрузки Москвы (ДОО, СОШ, поликлиника и компенсация за
+# них). Норма — п. 1.4.2 и табл. 1.4.1 2152-ПП в ред. 2579-ПП: площадь квартир
+# / 33 м². Город же на деле требует «1 квартира = 2,1 жителя» (решение
+# владельца, 16.10.2026: умолчание — норма, требование органа — переключателем
+# проекта). Это НЕ норма РНГП, и основание говорит это вслух; разбор —
+# docs/rngp_social_load_population.md. Машино-места и двор считаются своими
+# нормами и этим полем не меняются.
+SOCIAL_POPULATION_METHODS: dict[str, str] = {
+    "rngp_area": "По РНГП: площадь квартир / 33 м²",
+    "flats_household": "Альтернативный расчёт «1 квартира = 2,1 жителя» (Москва)",
+}
+SOCIAL_POPULATION_DEFAULT = "rngp_area"
+
+
+def moscow_social_population(apartment_area_sqm: float, apartment_count: float = 0.0,
+                             method: str = SOCIAL_POPULATION_DEFAULT) -> tuple[int, str, str]:
+    """→ (жителей, основание, способ). Неизвестный способ — норма РНГП."""
+    area = max(0.0, float(apartment_area_sqm or 0.0))
+    chosen = str(method or SOCIAL_POPULATION_DEFAULT).strip().lower()
+    if chosen not in SOCIAL_POPULATION_METHODS:
+        chosen = SOCIAL_POPULATION_DEFAULT
+    by_area = math.ceil(area / _PARKING_2118_SQM_PER_PERSON) if area > 0 else 0
+    if chosen == "rngp_area":
+        return by_area, (f"площадь квартир / {_PARKING_2118_SQM_PER_PERSON:g} м² "
+                         "(п. 1.4.2, табл. 1.4.1 2152-ПП)"), chosen
+    count = max(0.0, float(apartment_count or 0.0))
+    if count > 0:
+        flats, origin = math.ceil(count), "число квартир из ТЭП"
+    else:
+        flat_sqm, _ = average_flat_sqm("manual")
+        if area <= 0 or flat_sqm <= 0:
+            return 0, "квартир нет — население 0", chosen
+        flats = math.ceil(area / flat_sqm)
+        origin = (f"число квартир в ТЭП не задано — площадь / {flat_sqm:g} м² "
+                  "средней квартиры")
+    population = math.ceil(round(flats * _PARKING_2118_HOUSEHOLD, 6))
+    household = f"{_PARKING_2118_HOUSEHOLD:g}".replace(".", ",")
+    return population, (f"{flats} квартир × {household} — требование органа, не РНГП "
+                        f"({origin}; по норме было бы {by_area})"), chosen
+
+
 _PARKING_REGIMES = ("2118_2026", "legacy_945")
 
 
@@ -836,7 +877,9 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
     zone_two = bool(areas.get("zone_two") or baseline.get("calculation_zone") == "2")
     norms = tep_derived_norms(
         apartment_area_sqm=apartments, residential_living_spp_sqm=res_spp,
-        nonresidential_np_sqm=nonres_np, k1=1.0, k2=1.0, zone_two=zone_two)
+        nonresidential_np_sqm=nonres_np, k1=1.0, k2=1.0, zone_two=zone_two,
+        apartment_count=float(areas.get("apartment_count") or 0.0),
+        social_population_method=str(areas.get("social_population_method") or ""))
     places = {"kindergarten": norms["kindergarten_places"],
               "school": norms["school_places"],
               "clinic": norms["clinic_capacity"]}
@@ -1027,6 +1070,9 @@ def recalculate_from_glavapu_baseline(baseline: dict[str, Any],
         "method": "glavapu_baseline_rescale",
         "title": "Пересчёт по параметрам исходного расчёта ГлавАПУ",
         "population": norms["population"],
+        "social_population": norms["social_population"],
+        "social_population_basis": norms["social_population_basis"],
+        "social_population_method": norms["social_population_method"],
         "places": places,
         "compensation_mln": round(sum(compensation.values()), 3),
         "compensation_breakdown_mln": compensation,
@@ -1075,7 +1121,8 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
                       upks_rub: float = 0.0,
                       sqm_per_job: float = 32.0,
                       parking_norm_regime: str = "2118_2026",
-                      apartment_count: float = 0.0) -> dict[str, Any]:
+                      apartment_count: float = 0.0,
+                      social_population_method: str = SOCIAL_POPULATION_DEFAULT) -> dict[str, Any]:
     """Что следует из введённого руками ТЭП: население, соцпотребность,
     компенсация, машино-места, места приложения труда.
 
@@ -1106,13 +1153,17 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
     upks = max(0.0, float(upks_rub or 0.0))
 
     population = math.ceil(apartments / 33.0) if apartments > 0 else 0
+    # Соцобъекты — от населения выбранным способом; число квартир для
+    # машино-мест по-прежнему из населения по норме (2118-ПП).
+    social_population, social_basis, social_method = moscow_social_population(
+        apartments, apartment_count, social_population_method)
     zone = "2" if zone_two else "1"
-    dou = (math.ceil(SOCIAL_NORMS_PER_1000["kindergarten"][zone] * population / 1000)
-           if population else 0)
-    school = (math.ceil(SOCIAL_NORMS_PER_1000["school"][zone] * population / 1000)
-              if population else 0)
-    clinic = (math.ceil(SOCIAL_NORMS_PER_1000["clinic"][zone] * population / 1000)
-              if population else 0)
+    dou = (math.ceil(SOCIAL_NORMS_PER_1000["kindergarten"][zone] * social_population / 1000)
+           if social_population else 0)
+    school = (math.ceil(SOCIAL_NORMS_PER_1000["school"][zone] * social_population / 1000)
+              if social_population else 0)
+    clinic = (math.ceil(SOCIAL_NORMS_PER_1000["clinic"][zone] * social_population / 1000)
+              if social_population else 0)
 
     residential_np = residential_spp * 0.9
     regime = str(parking_norm_regime or "2118_2026").strip().lower()
@@ -1140,8 +1191,9 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
     # 150 мест, дальше 32; школа 19 до 900, 16 до 1 500, дальше 14. Мощность
     # поликлиники в компенсации — взрослая (13,2) + детская (5,8) на тысячу:
     # на Нагатино 101 + 45 = 146 при смешанной 145 (выгрузка 06.10.2026).
-    clinic_parts = ((math.ceil(13.2 * population / 1000) + math.ceil(5.8 * population / 1000))
-                    if population else 0)
+    clinic_parts = ((math.ceil(13.2 * social_population / 1000)
+                     + math.ceil(5.8 * social_population / 1000))
+                    if social_population else 0)
     comp_dou = compensation(dou, 4799.71, 35.0 if dou <= 150 else 32.0, 1.2)
     comp_school = compensation(school, 4578.69,
                                19.0 if school <= 900 else 16.0 if school <= 1500 else 14.0, 1.2)
@@ -1149,6 +1201,9 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
     return {
         "population": population,
         "apartment_units": math.ceil(population / 2.1) if population else 0,
+        "social_population": social_population,
+        "social_population_basis": social_basis,
+        "social_population_method": social_method,
         "kindergarten_places": dou,
         "school_places": school,
         "clinic_capacity": clinic,
