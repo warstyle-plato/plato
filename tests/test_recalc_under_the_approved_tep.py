@@ -515,7 +515,9 @@ def test_the_page_substitutes_the_lease_payment_too():
     page = core.PAGE
     body = page[page.index("async function recalcFromTep("):]
     body = body[:body.index("\n}\n")]
-    assert "land_right:String(inputs.land_right" in body
+    # Тело запроса собирает помощник, общий с переключателем населения.
+    assert "baselineRecalcBody()" in body
+    assert "land_right:String(inputs.land_right" in page_blocks.function("baselineRecalcBody", page)
     assert "делитель 1,001" in body, "право видно в строке «было → стало»"
     # Прежде это была одна строка присваивания. Теперь пересчёт пишет вводные
     # общим правилом — оно же не трогает то, что вписано требованием КРТ, — но

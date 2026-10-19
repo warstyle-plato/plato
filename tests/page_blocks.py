@@ -106,7 +106,10 @@ def krt_lock() -> str:
     end = page.find("function applyDerivedInputs(", start)
     if end < 0:
         raise AssertionError("на странице нет общего писателя вводных applyDerivedInputs")
-    return page[start:end] + function("applyDerivedInputs")
+    # Писатель снимает с записанного поля отметку «вписано вручную» — ему
+    # нужны читатель и хранилище отметок.
+    return (page[start:end] + function("fieldOrigins") + function("isFieldManual")
+            + function("applyDerivedInputs"))
 
 
 def tep_cell_stand() -> str:
