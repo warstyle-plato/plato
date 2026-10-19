@@ -33,7 +33,6 @@ PAGE = r"""<!doctype html>
 .title h1{font-size:22px;margin:0;font-weight:620;letter-spacing:.01em}.title p{margin:5px 0 0;color:var(--muted);font-size:13px}
 .actions{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .header-note{margin:0 34px 12px;padding:11px 14px;border:1px solid #ddd;background:#fafaf8;font-size:11px;line-height:1.5;color:#555}
-.header-note-detail{display:block;margin-top:4px}
 .tabs{padding:0 34px;border-bottom:1px solid var(--line);display:flex;gap:28px;overflow:auto;background:#fff}
 .tab{border:0;background:none;padding:15px 0 12px;font-size:14px;font-weight:620;color:#777;white-space:nowrap;border-bottom:3px solid transparent;cursor:pointer}
 .tab.active{color:#000;border-color:#000}
