@@ -260,3 +260,53 @@ def test_glavapu_places_follow_the_switch_and_nothing_else_moves():
     for key in ("land_rights_cost_mln", "underground_manual_spaces"):
         assert got["after"][key] == got["before"][key], key
     assert "ставкам за место из выгрузки ГлавАПУ" in got["note"]
+
+
+_REGION_VIEW = """(region) => {
+  inputs.vri_region=region;
+  inputs.social_population_method='flats_household';
+  renderInputs();
+  openTab('inputs');
+  const group=document.querySelector('details[data-group="Социальная нагрузка"]');
+  if(group)group.open=true;
+  const note=document.getElementById('socialPopulationRegionNote');
+  return {select:!!document.getElementById('f_social_population_method'),
+          note:(note&&note.textContent)||'',
+          kept:inputs.social_population_method};
+}"""
+
+
+def _region_view(region: str) -> dict:
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright  # noqa: PLC0415
+
+    from main_registry import app as registry_app  # noqa: PLC0415
+
+    with serve(registry_app, PORT) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        try:
+            tab = browser.new_page(viewport={"width": 390, "height": 844})
+            tab.goto(f"{base}/", wait_until="domcontentloaded")
+            wait_for_result(tab)
+            got = tab.evaluate(_REGION_VIEW, region)
+            got["note_visible"] = tab.locator("#socialPopulationRegionNote").is_visible() if got["note"] else False
+        finally:
+            browser.close()
+    return got
+
+
+def test_outside_moscow_the_switch_gives_way_to_the_regional_rule():
+    """Участок в Подмосковье: переключатель там ничего не меняет и сбивал
+    (владелец, 19.10.2026). Вместо него — строка о нормативе области, а
+    сохранённый выбор проекта не стирается."""
+    got = _region_view("mo")
+    assert not got["select"], got
+    assert got["note_visible"], got
+    per_person = core.MO_NORMS_DEFAULT["living_space_per_person_sqm"]
+    assert f"один житель на {per_person:g} м² площади квартир" in got["note"], got
+    assert got["kept"] == "flats_household"
+
+
+def test_in_moscow_the_switch_stays():
+    got = _region_view("msk")
+    assert got["select"] and not got["note"], got
