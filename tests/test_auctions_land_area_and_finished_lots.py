@@ -405,3 +405,39 @@ def test_in_a_real_browser_the_area_filter_and_finished_lots(tmp_path, monkeypat
             assert not errors, errors
         finally:
             browser.close()
+
+
+# --- одна площадь участка на фильтр, таблицу и книгу ---------------------------
+
+def test_the_land_area_in_the_title_reaches_the_filter_not_only_the_table(tmp_path, monkeypatch):
+    """Лот «здание 634,4 м² + участок 396 м²» — с площадью участка в выдаче.
+
+    Прод, 19.10.2026: таблица показывала 396 м² (их достраивал `export_areas`
+    из названия), а фильтр читал пустое поле площадки, и лот проходил фильтр
+    0,5 га с пометкой «площадь участка не указана».
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auction_search import api
+
+    title = ("Продажа единым лотом имущества, находящегося в собственности города Москвы: "
+             "нежилое здание площадью 634,4 кв. м и земельный участок площадью 396 кв. м")
+    card = _card()
+    card.update(id="ROW1", lotName=title, lotDescription=title, subjectRFCode="77")
+    card["characteristics"] = [{**item, "characteristicValue": "634.4"} if item["code"] == "totalAreaRealty"
+                               else item for item in card["characteristics"]]
+
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(api, "_discovery_adapters", lambda source: [_Pages([[card]])])
+    app = FastAPI()
+    api.install(app)
+    lot = TestClient(app).get("/auctions/discover", params={"include_noise": "true"}).json()["lots"][0]
+    assert lot["land_area_sqm"] == 396, "площадь участка из названия дошла до лота выдачи"
+    assert lot["building_area_sqm"] == 634.4
+    assert lot["area_from_title"] == ["land_area_sqm"]
+    # Тот же лот в книге — то же число: правило одно.
+    from auction_search.export_areas import export_areas
+    assert export_areas({"name": title, "url": lot["source"]["lot_url"],
+                         "land_area_sqm": lot["land_area_sqm"],
+                         "building_area_sqm": lot["building_area_sqm"]}).land_area_sqm == 396

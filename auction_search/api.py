@@ -798,9 +798,37 @@ def _months_before(day: date, months: int) -> date:
     return date(year, month, 28)
 
 
+def _resolved_areas(data: dict[str, Any]) -> None:
+    """Площади участка и здания лота — тем же правилом, что в книге Excel.
+
+    Площадь участка у многих лотов есть только в названии («…земельный участок
+    площадью 497 кв. м…»). Таблица и книга достраивали её оттуда
+    (`export_areas`), а фильтр «участок от N га» читал поле площадки и видел
+    пустоту: лот с 497 м² проходил фильтр 0,5 га с пометкой «площадь участка не
+    указана» (владелец, 19.10.2026). Теперь площадь разрешается один раз здесь,
+    и фильтр, балл, таблица и книга читают одно число; взятое из названия
+    подписано в `area_from_title`.
+    """
+    source = data.get("source") or {}
+    areas = export_areas({
+        "name": data.get("title") or "",
+        "url": source.get("lot_url") if isinstance(source, dict) else "",
+        "land_area_sqm": data.get("land_area_sqm"),
+        "building_area_sqm": data.get("building_area_sqm"),
+    })
+    from_title = [
+        key for key, value in (("land_area_sqm", areas.land_area_sqm),
+                               ("building_area_sqm", areas.building_area_sqm))
+        if value is not None and value != data.get(key)]
+    data["land_area_sqm"] = areas.land_area_sqm
+    data["building_area_sqm"] = areas.building_area_sqm
+    data["area_from_title"] = from_title
+
+
 def _public_lot_dict(lot) -> dict[str, Any]:
     data = lot.to_dict()
     data.pop("raw", None)
+    _resolved_areas(data)
     # Момент срока считает сервер и отдаёт его ISO рядом со строкой площадки.
     # Строка остаётся такой, какой её написала площадка, — её и печатают; а
     # разбирать русскую дату в браузере нельзя: `new Date('09.10.26 15:00')`
