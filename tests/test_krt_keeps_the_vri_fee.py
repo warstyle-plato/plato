@@ -269,4 +269,4 @@ def test_in_a_real_browser_the_krt_mode_keeps_the_fee_and_shows_the_footer() -> 
     assert not errors, errors
     assert fee == pytest.approx(2864.3), "режим КРТ снова обнулил плату за ВРИ"
     assert visible, "подвал КРТ не виден на отрисованной странице"
-    assert "Плата за смену ВРИ в КРТ" in text and "начисляется" in text, text
+    assert "Плата за смену ВРИ при ручном вводе соцобъектов" in text and "начисляется" in text, text

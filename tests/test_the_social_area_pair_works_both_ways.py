@@ -120,7 +120,7 @@ def test_the_cells_are_open_by_hand_and_shut_by_norm(got):
     assert got["open"] == [False, False], got["open"]
     assert got["shut"] == [True, True], got["shut"]
     assert "норматив" in got["shutNote"].lower(), got["shutNote"]
-    assert "Требование КРТ" in got["shutNote"], got["shutNote"]
+    assert "«Ручной ввод»" in got["shutNote"], got["shutNote"]
 
 
 def test_editing_the_gns_recomputes_the_total(got):

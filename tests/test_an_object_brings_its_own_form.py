@@ -109,7 +109,7 @@ def test_the_hint_rides_on_the_object_not_on_the_form() -> None:
         if f[0] == f"{o.prefix}_{key}")
     sports = core.standalone_objects(("sports",))[0]
     offices = core.standalone_objects(("offices",))[0]
-    assert "при продаже" in hint(sports, "saleable_sqm")
+    assert "только если объект продаётся" in hint(sports, "saleable_sqm")
     assert hint(offices, "saleable_sqm") == "м²"
 
 
