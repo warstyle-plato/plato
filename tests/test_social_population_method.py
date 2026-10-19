@@ -215,7 +215,7 @@ def test_the_krt_requirement_is_not_touched_and_the_note_says_why():
                 "social_compensation_mln"):
         assert got["after"][key] == got["before"][key], key
     assert got["note_visible"], got
-    assert "требование КРТ" in got["note"]
+    assert "вписаны вручную" in got["note"]
 
 
 def test_glavapu_places_follow_the_switch_and_nothing_else_moves():

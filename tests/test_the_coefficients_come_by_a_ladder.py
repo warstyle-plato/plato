@@ -200,4 +200,4 @@ def test_the_distance_is_a_field_people_can_see() -> None:
     assert "parking_rail_distance_m" in core.DEFAULT_INPUTS
     label = next(f for group, rows in core.FIELD_GROUPS for f in rows
                  if f[0] == "parking_rail_distance_m")
-    assert "пешеходным путям" in label[2], "оговорка о прямой не доехала до подсказки"
+    assert "Норматив меряет путь пешком" in label[2], "оговорка о прямой не доехала до подсказки"

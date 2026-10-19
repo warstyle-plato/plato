@@ -70,9 +70,10 @@ def test_the_book_row_of_the_population_norm_names_2152(sheets: str) -> None:
 def test_the_page_calls_the_steps_by_the_moscow_act() -> None:
     page = core.PAGE
     # Подсказки полей и подпись режима — из реестра полей движка.
-    assert "2151-ПП (нормативы Москвы, табл. 1.4.1 в ред. 2579-ПП): 27 до 124 мест" in page
-    assert "2151-ПП (нормативы Москвы, табл. 1.4.2 в ред. 2579-ПП): 18 до 550 мест" in page
-    assert "Норматив Москвы (2151-ПП) — считать от числа мест" in page
+    assert "27 м² на место, если мест до 124" in page
+    assert "(2151-ПП, табл. 1.4.1 в ред. 2579-ПП)" in page
+    assert "18 м² на место, если мест до 550" in page
+    assert "(2151-ПП, табл. 1.4.2 в ред. 2579-ПП)" in page
     # Подписи рядом с полем площади — из JS страницы.
     assert "норматив Москвы (2151-ПП)" in page
     assert "по нормативу Москвы (2151-ПП)" in page

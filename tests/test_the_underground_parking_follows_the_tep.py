@@ -164,7 +164,7 @@ def test_a_typed_number_wins_until_the_tep_changes(seen):
         "вписанное руками не помечено — норма затрёт его на следующем пересчёте"
     assert typed["row"] == 700, f"строка ТЭП {typed['row']} — вписанное число не доехало"
     assert typed["note"].startswith("Задано руками: 700"), typed["note"]
-    assert f"Понормативу:{typed['norm']}" in re.sub(r"\s", "", typed["note"]), (
+    assert f"Понормативунужно{typed['norm']}" in re.sub(r"\s", "", typed["note"]), (
         "под вписанным числом нет серого ориентира с нормой: " + typed["note"])
 
 
@@ -179,7 +179,7 @@ def test_a_tep_edit_returns_the_norm_over_the_typed_number(seen):
     assert now["byNorm"] and not now["byHand"], "замок не снят после правки ТЭП"
     # Меряется то, что видит человек: само поле и подпись под ним, а не `inputs`.
     assert now["field"] == now["norm"], f"в поле на экране {now['field']} при норме {now['norm']}"
-    assert now["note"].startswith("По нормативу:"), now["note"]
+    assert now["note"].startswith("По нормативу нужно "), now["note"]
 
 
 def test_the_number_can_be_typed_again_after_the_tep_edit(seen):
