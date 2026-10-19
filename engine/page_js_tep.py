@@ -2708,7 +2708,7 @@ function sayPopulationSwitch(text){
 const SOCIAL_SWITCH_FIELDS=[['kindergarten_places','места ДОО'],['school_places','места в школе'],
  ['clinic_capacity','мощность поликлиники'],['social_compensation_mln','компенсация, млн ₽']];
 async function socialPopulationSwitched(methodBefore){
- if(String(inputs.vri_region||'msk')==='mo')
+ if(classRegion()==='mo')
   return sayPopulationSwitch('В Подмосковье этот переключатель не действует: соцобъекты там считаются по нормативам области.');
  if(krtRequirementEntered())
   return sayPopulationSwitch('Места соцобъектов и компенсация вписаны как требование КРТ, поэтому переключатель их не меняет. Чтобы считать их от числа жителей, выберите в поле «Соцобъекты и плата за ВРИ» норматив Москвы.');

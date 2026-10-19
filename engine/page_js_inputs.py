@@ -1746,6 +1746,15 @@ function renderInputs(){
      if(id==='vri_relief_mln'){
        wrap.innerHTML+=vriReliefSourceNote();
      }
+     // Способ счёта жителей — московский выбор: в Подмосковье жителей считает
+     // норматив области, и переключатель, который ничего не меняет, сбивал
+     // (владелец, 19.10.2026). Вне Москвы вместо поля — строка о том, как
+     // считается; сохранённый выбор не трогается и вернётся с московским участком.
+     if(id==='social_population_method'&&classRegion()==='mo'){
+      wrap.innerHTML='<div class="hint" id="socialPopulationRegionNote" style="color:#666;font-size:12px">Жителей для детских садов и школ считаем по нормативам Подмосковья: один житель на '
+       +num(PARKING_2118.mo.living_space_per_person_sqm)+' м² площади квартир.</div>';
+      grid.appendChild(wrap);return;
+     }
      if(type==='pf_steps'){renderPfStepsEditor(wrap);grid.appendChild(wrap);return;}
      // График — ячейками, а не строкой: значение, единица и срок отдельными
      // полями, строки добавляются и убираются.
