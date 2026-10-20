@@ -86,8 +86,12 @@ def test_the_document_opens_with_findings_and_has_charts():
     assert titles == [
         "Выполнение по графику работ: план и факт на дату каждого ГПР-факта",
         "Продажи нарастающим итогом по кварталам, сумма договоров",
+        "Темп продаж: м² договоров по месяцам",
+        "Средняя цена квартир по месяцам",
         "Выборка кредита и эскроу нарастающим итогом по месяцам",
+        "Покрытие кредита эскроу: факт и план по месяцам",
         "Бюджет на октябрь 2026: план и оплачено по статьям",
+        "Стройка и проектирование: план и оплачено по месяцам",
     ]
     # Числа графика — те же, что в таблице блока: столбец «Оплачено» стройки.
     budget = page[page.index("Бюджет на октябрь 2026"):]
@@ -173,3 +177,66 @@ def test_a_work_without_growth_is_flagged():
     built = report.build(PROJECT, "week", "2026-10-25")
     stalled = built["physical"]["breakdown"]["stalled"]
     assert [row["name"] for row in stalled] == ["Монолит"]
+
+
+def test_budget_sales_and_funding_depth():
+    built = _full()
+    budget = built["budget"]
+    # Тренд за шесть месяцев: где бюджета на месяц нет — план None, а не ноль.
+    assert len(budget["trend"]) == 6
+    assert budget["trend"][-1]["plan"]["construction"] == pytest.approx(400e6)
+    assert budget["trend"][0]["plan"]["construction"] is None
+    assert budget["trend"][-1]["fact"]["construction"] == pytest.approx(200e6)
+    # Прогноз до конца месяца по темпу: 200 млн за 18 из 31 дня.
+    forecast = report._budget_forecast(budget, datetime.date(2026, 10, 18))
+    assert forecast[0]["forecast"] == pytest.approx(200e6 / (18 / 31))
+    assert budget["recipients"][0]["name"] == "СтройКо"
+    # Тестовая книга без группировки строк — статьи не угадываются.
+    assert budget["articles"]["known"] is False
+    sales = built["sales"]
+    flats = next(item for item in sales["products"] if item["product"] == "Квартира")
+    assert flats["total"]["area"] == pytest.approx(200.0)
+    assert [p["month"] for p in sales["pace"]][-1] <= "2026-10"
+    escrow = built["funding"]["escrow"]
+    assert escrow["inflow_month"] == pytest.approx(5e6)
+    assert escrow["inflow_total"] == pytest.approx(65e6)
+    found = {item["topic"]: item for item in built["findings"]}
+    assert "по нынешнему темпу к концу месяца стройке оплатят около" in found["Бюджет месяца"]["text"]
+    assert "на эскроу за октябрь 2026 поступило 5,0 млн ₽" in found["Финансирование"]["text"]
+
+
+def test_budget_articles_from_the_outline():
+    from openpyxl import Workbook
+    import io
+
+    book = Workbook()
+    sheet = book.active
+    sheet.cell(row=4, column=5, value="Сентябрь 2026")
+    sheet.cell(row=5, column=5, value="ПЛАН")
+    sheet.cell(row=5, column=6, value="ФАКТ")
+    rows = [("Стоимость строительства и проектирования", 2, -300e6, -200e6),
+            ("Основные объекты строительства", 3, -280e6, -190e6),
+            ("Подрядчик", 4, -280e6, -190e6),
+            ("Наружные сети и сооружения", 3, -20e6, None),
+            ("Содержание службы заказчика", 3, -6e6, -6e6),
+            ("Коммерческие расходы", 2, -10e6, -9e6),
+            ("Реклама и PR (КС) - Группа", 3, -10e6, -9e6),
+            ("Административно-хозяйственные расходы", 2, -5e6, -5e6)]
+    for r, (name, level, plan, fact) in enumerate(rows, 6):
+        sheet.cell(row=r, column=1, value=name)
+        sheet.cell(row=r, column=5, value=plan)
+        if fact is not None:
+            sheet.cell(row=r, column=6, value=fact)
+        sheet.row_dimensions[r].outline_level = level
+    blob = io.BytesIO()
+    book.save(blob)
+    monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-02")
+    got = monthly_budget._articles(PROJECT, datetime.date(2026, 10, 18))
+    assert got["known"] and got["month"] == "2026-09-01"
+    by_name = {row["article"]: row for row in got["rows"]}
+    # Подрядчик (уровень ниже) и АХР (другая группа) — не статьи сводки.
+    assert set(by_name) == {"Основные объекты строительства", "Наружные сети и сооружения",
+                            "Содержание службы заказчика", "Реклама и PR (КС)"}
+    assert by_name["Основные объекты строительства"]["delta"] == pytest.approx(-90e6)
+    assert by_name["Наружные сети и сооружения"]["fact_blank"] is True
+    assert got["rows"][0]["article"] == "Основные объекты строительства"
