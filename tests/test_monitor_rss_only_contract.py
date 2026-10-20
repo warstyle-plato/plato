@@ -19,7 +19,9 @@ def test_monitor_page_exposes_fixed_benchmark_then_rss_and_sales():
     assert 'id="finance"' in html
     assert 'id="pm"' in html
     assert 'id="rss"' in html
-    assert 'id="sales"' in html
+    # Продажи живут в «Отчёте о продажах»: загрузка в мониторе убрана
+    # (владелец, 20.10.2026), прежние данные читаются как раньше.
+    assert 'id="sales"' not in html
     assert 'id="programmeFile"' not in html
     assert 'id="proposalFile"' not in html
     assert "Реестр выполненных работ" in html

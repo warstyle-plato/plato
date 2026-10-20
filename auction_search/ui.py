@@ -190,7 +190,7 @@ __DEVELOPAID_CONTOUR__
   <div class="stats" id="auctionStats">
     <div class="stat"><b id="sCount">—</b><span>лотов в выборке</span></div>
     <div class="stat"><b id="sKrt">—</b><span>КРТ</span></div>
-    <div class="stat"><b id="sLand">—</b><span>земля / аренда</span></div>
+    <div class="stat"><b id="sLand">—</b><span>земельных участков (продажа и аренда)</span></div>
     <div class="stat"><b id="sDeadline">—</b><span>ближайший дедлайн</span></div>
   </div>
   <div id="coverage" class="notice coverage"></div>
@@ -374,7 +374,7 @@ function renderAreaNote(){
  box.textContent=`Участки от ${fmtHa(a.min)}: подходит ${a.matched} лот(ов).`
   +(a.hidden?` Ещё ${a.hidden} лот(ов) от ${fmtHa(a.min)} скрыты другими фильтрами (${a.hiddenKinds.join(', ')}): чтобы их увидеть, добавьте этот тип или сбросьте поиск.`:'')
   +(a.unknown?` Ещё у ${a.unknown} лот(ов) площадь участка неизвестна или известна не по всем участкам лота. Мы не можем ни отсеять их, ни оставить по площади, поэтому они показаны в конце списка с пометкой. Площадь, которой нет у площадки, мы постепенно берём из НСПД по кадастровым номерам, а у зданий ищем участок под ними.`:'')
-  +(a.noParcel?` Доли в обществах и лоты без участка (${a.noParcel}) при фильтре по площади участка не показываются.`:'');
+  +(a.noParcel?` Лоты, в которых участок не продаётся и не сдаётся в аренду (${a.noParcel}), при фильтре по площади участка не показываются: это доли в обществах, помещения, аренда помещений и прочее.`:'');
  if(a.hidden&&!a.matched)box.className='notice warn';
 }
 function allAuctionLots(){
@@ -387,31 +387,38 @@ function allAuctionLots(){
 // фильтрами. Одна функция без страницы — её и зовёт `filter`, и проверка.
 function areaSelection(all,list,min){
  if(min===null||Number.isNaN(min))return {list,unknown:new Set(),summary:{min}};
- const big=l=>landAreaKnown(l)&&Number(l.land_area_sqm)>=min;
- const known=list.filter(big),unknown=list.filter(l=>!big(l)&&landAreaUnsure(l,min)&&!NO_PARCEL_KINDS.has(l.lot_kind));
+ const big=l=>landInDeal(l)&&landAreaKnown(l)&&Number(l.land_area_sqm)>=min;
+ const known=list.filter(big),unknown=list.filter(l=>!big(l)&&landAreaUnsure(l,min)&&landInDeal(l));
  // Лоты от N га, которые спрятал другой фильтр (тип, вид торгов, поиск), —
  // называются: «подходит 0», когда восемь площадок КРТ скрыты выбором типа,
  // читалось как «таких участков нет» (владелец, 19.10.2026).
  const shown=new Set(list);
  const hidden=all.filter(l=>big(l)&&!shown.has(l));
  return {list:known.concat(unknown),unknown:new Set(unknown),summary:{min,matched:known.length,
-  unknown:unknown.length,noParcel:list.filter(l=>!big(l)&&NO_PARCEL_KINDS.has(l.lot_kind)).length,
+  unknown:unknown.length,noParcel:list.filter(l=>!landInDeal(l)).length,
   hidden:hidden.length,hiddenKinds:[...new Set(hidden.map(l=>kindLabel(l.lot_kind)))]}};
 }
-// У доли в обществе и прочего без участка площади участка нет по существу —
-// при фильтре по площади участка они не «неизвестны», а не про участок.
+// Участок — предмет лота: решает сервер полем land_in_deal (у аренды и
+// продажи помещения участок под домом — справка о здании, а не то, что
+// получает победитель). Нет поля — значит, не знаем, и тогда отвечает вид
+// лота: у доли в обществе и прочего участка нет по существу.
 const NO_PARCEL_KINDS=new Set(['equity_stake','other']);
+function landInDeal(l){
+ const v=l&&l.land_in_deal;
+ return v===true||v===false?v:!NO_PARCEL_KINDS.has(l&&l.lot_kind);
+}
 function filter(){const q=$('search').value.trim().toLowerCase(),kinds=[...state.auctionKinds],o=$('origin').value;
  const all=allAuctionLots();
  let list=all.filter(l=>(!kinds.length||kinds.some(k=>lotMatchesKind(l,k)))
   &&(o==='all'||(l.origin||'other')===o)
   &&(!q||JSON.stringify([l.title,l.address,l.cadastral_numbers,l.source?.external_lot_id]).toLowerCase().includes(q)));
  const min=landMinSqm();
+ state.beforeArea=new Set(list);
  const pick=areaSelection(all,list,min);
  state.areaUnknown=pick.unknown;state.areaFilter=pick.summary;list=pick.list;
  state.filtered=list;
  state.families=lotFamilies(state.filtered,state.areaUnknown);
- renderAreaNote();renderRows();stats();loadSheet()}
+ renderAreaNote();renderFinishedNote();renderRows();stats();loadSheet()}
 // Завершённые торги: что с ними стало и по какой цене, если площадка это сказала.
 function finishedLine(l){
  if(!l||!l.finished)return '';
@@ -439,7 +446,32 @@ function renderFinishedNote(){
  if(f.loading){line(`Ищу завершённые торги за три месяца до ${isoDay($('finishedAsOf').value||moscowTodayIso())}. Это может занять до минуты, текущие торги уже показаны.`);return}
  if(f.error){box.className='notice warn';line(`Завершённые торги не получены: ${f.error}. Текущие торги показаны как обычно.`);return}
  const w=f.window||{};
- line(`Завершённые торги с ${isoDay(w.since)} по ${isoDay(w.until)}: найдено ${f.lots.length}. Они показаны вместе с текущими и помечены «Торги завершены».`);
+ // Счёт — по тому, что реально на экране после всех фильтров: «показаны»
+ // при скрытых фильтром площади лотах было неправдой (владелец, 20.10.2026).
+ const total=f.lots.length,shownSet=new Set(state.filtered||[]),pre=state.beforeArea||new Set();
+ const inAll=new Set(allAuctionLots()),a=state.areaFilter||{},hasMin=a.min!==null&&a.min!==undefined&&!Number.isNaN(a.min);
+ const shown=f.lots.filter(l=>shownSet.has(l)).length;
+ if(shown===total){line(`Завершённые торги с ${isoDay(w.since)} по ${isoDay(w.until)}: найдено ${total}. Они показаны вместе с текущими и помечены «Торги завершены».`)}
+ else{
+  let small=0,noParcel=0,other=0,dups=0;
+  f.lots.forEach(l=>{
+   if(shownSet.has(l))return;
+   if(!inAll.has(l))dups++;
+   else if(!pre.has(l))other++;
+   else if(hasMin&&!landInDeal(l))noParcel++;
+   else small++;
+  });
+  const hidden=total-shown;
+  line(`Завершённые торги с ${isoDay(w.since)} по ${isoDay(w.until)}: найдено ${total}, под выбранные фильтры подходит ${shown}.`
+   +(shown?' Подходящие показаны вместе с текущими и помечены «Торги завершены».':''));
+  const why=[small&&hasMin?`у ${small} площадь участка меньше ${fmtHa(a.min)}`:'',
+   noParcel?`у ${noParcel} участок не входит в лот`:'',
+   other?`${other} не подходят по выбранному типу, виду торгов или поиску`:'',
+   dups?`${dups} уже показаны среди текущих торгов`:''].filter(Boolean).join('; ');
+  line((hidden===total?`Не показан ни один из ${total}: `:`Не показаны ${hidden} из ${total}: `)+why+'.'
+   +(small&&hasMin?' Чтобы их увидеть, уменьшите площадь в фильтре или очистите это поле.':''),'source warn');
+  box.className='notice warn';
+ }
  line('Дата торгов берётся из карточки лота, а если её там нет — дата окончания приёма заявок.','source');
  // Сколько площадка отдала и сколько осталось после отбора «интересные».
  // Без этого «найдено 0» читалось как «торгов не было», хотя площадка отдала
@@ -450,9 +482,18 @@ function renderFinishedNote(){
   line(`Площадка отдала ${seen} завершённых лот(ов) за это окно, в основную подборку прошло ${Number(q.accepted)||0}${why?': '+why:''}. Чтобы увидеть все, выберите вверху «Интересные + неполные и шум».`,'source warn');
   box.className='notice warn';
  }
+ // Прочитано не всё — называем, сколько из скольких и почему, будь то
+ // предел листания или оборвавшийся запрос: крупный участок мог оказаться
+ // в непрочитанных извещениях.
  (f.coverage||[]).forEach(r=>(r.filters||[]).forEach(x=>{
-  if(!(x.stopped&&/предел/.test(x.stopped)&&x.total_elements&&x.cards<x.total_elements))return;
-  line(`${r.source}, ${x.filter}: просмотрены только самые новые извещения, ${x.cards} из ${x.total_elements}. Более старые не читались, поэтому часть завершённых торгов могла не попасть в список.`,'source warn');
+  if(!(x.total_elements&&x.cards<x.total_elements))return;
+  const limit=x.stopped&&/предел/.test(x.stopped);
+  if(!limit&&!x.reason)return;
+  const cause=limit?'дальше мы не листаем'
+   :/timed out|timeout|тайм-аут/i.test(x.reason)?'площадка не ответила вовремя, и чтение прервалось'
+   :/по времени/.test(x.reason)?'закончилось время, отведённое на поиск'
+   :`чтение прервалось: ${x.reason}`;
+  line(`${r.source}, ${x.filter}: просмотрены только самые новые извещения, ${x.cards} из ${x.total_elements} — ${cause}. Более старые не читались, поэтому часть завершённых торгов, в том числе крупные участки, могла не попасть в список.`,'source warn');
   box.className='notice warn';
  }));
  if(f.cached!==null&&f.cached!==undefined)line(`Это сохранённый ответ ${Math.max(1,Math.round(f.cached/60))} мин назад: площадки повторно не опрашивались.`,'source');

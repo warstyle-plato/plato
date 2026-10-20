@@ -205,12 +205,15 @@ def test_the_upload_stands_with_the_other_uploads() -> None:
     всех загрузок?» (владелец, 30.08.2026) — верный вопрос: источник, стоящий
     в стороне от источников, читается как отдельная кнопка неизвестно чего.
     """
+    # С 20.10.2026 реестр ГУ — в свёрнутом блоке «Прочие загрузки» вкладки
+    # данных (решение владельца: на виду только ГПР, РСС и бюджет месяца).
+    # Он по-прежнему среди загрузок, а не в стороне от них.
     page = PAGE
-    weekly = page[page.index("<b>Еженедельно</b>"):]
-    weekly = weekly[: weekly.index('<div class="msg"')]
-    assert 'id="retention"' in weekly, "загрузка ГУ стоит не с остальными загрузками"
-    assert 'id="retentionBtn"' in weekly
-    assert "Реестр гарантийных удержаний" in weekly, "и блок называет этот источник"
+    other = page[page.index('id="otherUploads"'):]
+    other = other[: other.index("</details>")]
+    assert 'id="retention"' in other, "загрузка ГУ стоит не с остальными загрузками"
+    assert 'id="retentionBtn"' in other
+    assert "Реестр гарантийных удержаний" in other, "и блок называет этот источник"
     # А в верхней панели её нет: там управление срезом, а не файлы.
     controls = page[page.index('<div class="controls">'):]
     controls = controls[: controls.index("</div></div>")]
