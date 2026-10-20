@@ -76,7 +76,7 @@ def test_the_engine_keeps_the_storage_underground():
 
 def test_the_site_usage_does_not_count_the_storage():
     out = _run("renderSitePanel();console.log(JSON.stringify(shown));")
-    assert out["siteUsageLabel"]["textContent"] == "Использовано наземной ГНС"
+    assert out["siteUsageLabel"]["textContent"] == "Использовано наземными зданиями"
     # Потенциал 100 000 м² — процент прямо равен тысячам наземных метров.
     assert out["siteUsage"]["textContent"] == num_pct(_above(_tep()) / 100_000 * 100)
     warn = out["siteDensityWarn"]["innerHTML"]
@@ -142,5 +142,5 @@ def test_the_site_panel_repeats_the_tep_total():
     total = out["tg"]["textContent"]
     assert total == str(round(_above(_tep())))
     warn = out["siteDensityWarn"]["innerHTML"]
-    assert f"Наземная ГНС проекта <b>{total} м²</b>" in warn
+    assert f"Площадь наземных зданий проекта <b>{total} м²</b>" in warn
     assert out["siteUsage"]["textContent"] == f"{round(int(total) / 100_000 * 100)}%"
