@@ -210,8 +210,12 @@ def _metrics(
     }
 
 
-def _baseline_status(project: str) -> dict[str, dict[str, Any]]:
-    """Approved GPR status is schedule metadata, not physical RSS fact."""
+def _baseline_status(project: str, upto: str = "") -> dict[str, dict[str, Any]]:
+    """Approved GPR status is schedule metadata, not physical RSS fact.
+
+    ``upto`` — дата ГГГГ-ММ-ДД: состояние на этот день (снимки не позднее него).
+    Сводка руководству сравнивает начало и конец периода одним и тем же счётом.
+    """
     try:
         baseline = monitor._read_baseline_gpr(project)
     except Exception:
@@ -220,7 +224,7 @@ def _baseline_status(project: str) -> dict[str, dict[str, Any]]:
     # план не меняется, меняется выполнение. Без снимка работает сам baseline.
     rows = list(baseline.get("works") or [])
     try:
-        fact = monitor.latest_schedule_fact(project)
+        fact = monitor.latest_schedule_fact(project, upto)
     except Exception:
         fact = None
     if fact:
@@ -231,7 +235,7 @@ def _baseline_status(project: str) -> dict[str, dict[str, Any]]:
     # Точечные проценты со страницы — поверх всего: в акте РСС нет имени
     # работы, и последнее слово о конкретной работе остаётся за человеком.
     try:
-        manual = monitor.work_facts(project)
+        manual = monitor.work_facts(project, upto)
     except Exception:
         manual = {}
     if manual:

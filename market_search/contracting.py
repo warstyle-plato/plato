@@ -1855,10 +1855,12 @@ def accumulate(rows: list[dict[str, Any]], opening: dict[str, Any] | None = None
                 row[f"{line}_{metric}_cum"] = total
 
 
-def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
-    """Ряд кварталов: факт, план финмодели, план банка — в ₽, м² и ₽/м²."""
-    fm = summary.get("fm_plan") or {}
-    bank = summary.get("bank_plan") or {}
+def fm_plan_by_month(fm: dict[str, Any] | None) -> dict[str, dict[str, float]]:
+    """План финмодели по месяцам: деньги и метры всего проекта.
+
+    Один счёт на квартальное сравнение и на сводку руководству.
+    """
+    fm = fm or {}
     plan = (fm.get("plan") or {}).get("Итого") or {}
     # У «Итого» финмодели нет метров: строка «м2» есть у продуктов. Метры плана
     # складываются по продуктам, деньги берутся из «Итого», если оно есть.
@@ -1873,6 +1875,14 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
     for month, values in plan.items():
         by_month.setdefault(month, {"amount": 0.0, "area": 0.0})["amount"] = \
             float(values.get("amount") or 0.0)
+    return by_month
+
+
+def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
+    """Ряд кварталов: факт, план финмодели, план банка — в ₽, м² и ₽/м²."""
+    fm = summary.get("fm_plan") or {}
+    bank = summary.get("bank_plan") or {}
+    by_month = fm_plan_by_month(fm)
 
     fact_quarter = {q["quarter"]: q for q in (summary.get("by_quarter") or [])}
     fact_flats = summary.get("by_quarter_flats") or {}
