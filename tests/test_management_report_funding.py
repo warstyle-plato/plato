@@ -117,13 +117,14 @@ def test_the_limit_is_the_monitor_finance_card(monkeypatch):
     _project()
     seen = {}
 
-    def card(project, end):
+    def panel(project, end):
         seen["args"] = (project, end)
-        return {"known": True, "bank_limit": 3_970 * M, "paid_actual": 2_100 * M,
+        return {"funding": {"known": True, "bank_limit": 3_970 * M, "paid_actual": 2_100 * M,
                 "bank_remaining": 1_500 * M, "reserve": 138 * M,
-                "additional_financing": 230 * M, "additional_financing_from": "2027-03-01"}
+                "additional_financing": 230 * M, "additional_financing_from": "2027-03-01"}}
 
-    monkeypatch.setattr(report, "_monitor_funding", card)
+    # Панель Монитора — один расчёт на всю сводку (срок и финансирование).
+    monkeypatch.setattr(report, "_monitor_dashboard", panel)
     text = report.render_text(report.build(PROJECT, "week", "2026-10-18"))
     assert seen["args"] == (PROJECT, datetime.date(2026, 10, 18))
     assert ("Лимит банка по РСС (главы 2–3): 3,97 млрд ₽, оплачено с начала проекта "

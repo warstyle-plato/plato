@@ -29,6 +29,7 @@ import developaid_monitor as monitor
 import developaid_monitor_manager as manager
 import developaid_monthly_budget as monthly_budget
 import developaid_project_notes as project_notes
+import developaid_report_charts as charts
 from market_search import contracting, sales_store
 
 PERIODS = {"week": "неделю", "month": "месяц"}
@@ -60,6 +61,11 @@ def period_bounds(kind: str, end: Any) -> dict[str, datetime.date]:
             "before": first - datetime.timedelta(days=1)}
 
 
+def previous_bounds(kind: str, bounds: dict[str, datetime.date]) -> dict[str, datetime.date]:
+    """Предыдущий период той же длины — для «неделя к неделе», «месяц к месяцу»."""
+    return period_bounds(kind, bounds["before"])
+
+
 def _missing(reason: str) -> dict[str, Any]:
     return {"state": "missing", "reason": reason}
 
@@ -80,12 +86,53 @@ def _snapshot_day(project: str, upto: datetime.date) -> str:
     return path.stem if path is not None else ""
 
 
+def _dated(baseline: dict[str, Any]) -> list[tuple[str, dict[str, Any], float]]:
+    """Работы утверждённого ГПР с датами: (id, работа, вес по длительности)."""
+    out = []
+    for work in baseline.get("works") or []:
+        start, finish = work.get("start"), work.get("finish")
+        tid = str(work.get("id") or work.get("wbs") or "").strip()
+        if tid and start and finish:
+            out.append((tid, work, float(max(1, (finish - start).days))))
+    return out
+
+
+def _progress(works: list[tuple[str, dict[str, Any], float]],
+              statuses: dict[str, dict[str, Any]], day: datetime.date) -> dict[str, Any]:
+    """Факт и план на день по работам, у которых процент известен."""
+    fact, plan, unknown = [], [], 0
+    objects: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    for tid, work, weight in works:
+        progress = (statuses.get(tid) or {}).get("progress")
+        if progress is None:
+            unknown += 1
+            continue
+        planned = monitor._plan_progress(work["start"], work["finish"], day)
+        fact.append((weight, progress))
+        plan.append((weight, planned))
+        group = objects.setdefault(str(work.get("object") or "").strip()
+                                   or "Без объекта", {"plan": [], "fact": []})
+        group["plan"].append((weight, planned))
+        group["fact"].append((weight, progress))
+    return {"fact": _weighted(fact), "plan": _weighted(plan), "works": len(fact),
+            "unknown": unknown,
+            "objects": [{"object": name, "plan": _weighted(g["plan"]),
+                         "fact": _weighted(g["fact"])} for name, g in sorted(objects.items())]}
+
+
+def _plan_curve(works: list[tuple[str, dict[str, Any], float]],
+                days: list[datetime.date]) -> list[float | None]:
+    return [_weighted([(w, monitor._plan_progress(work["start"], work["finish"], day))
+                       for _, work, w in works]) for day in days]
+
+
 def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
     """Физическое выполнение: факт ГПР на конец и начало периода против плана.
 
     Процент работы — тот, что прораб ставит в ГПР-факте (или точечный факт со
     страницы). Общий процент — среднее по работам, взвешенное длительностью
-    работы по утверждённому ГПР: стоимости у работы в ГПР нет.
+    работы по утверждённому ГПР: стоимости у работы в ГПР нет. Отставание —
+    факт минус план на ту же дату; его изменение за период — динамика.
     """
     bounds = period_bounds(kind, end)
     try:
@@ -97,41 +144,18 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
         return _missing(
             "Не загружен ни один ГПР-факт с процентами выполнения "
             f"на {bounds['end']:%d.%m.%Y}.")
-    before_day = _snapshot_day(project, bounds["before"])
-    now = manager._baseline_status(project, bounds["end"].isoformat())
-    before = (manager._baseline_status(project, bounds["before"].isoformat())
-              if before_day else {})
-
-    fact_now: list[tuple[float, float]] = []
-    fact_before: list[tuple[float, float]] = []
-    plan_now: list[tuple[float, float]] = []
-    objects: dict[str, dict[str, list[tuple[float, float]]]] = {}
-    unknown = 0
-    for work in baseline.get("works") or []:
-        start, finish = work.get("start"), work.get("finish")
-        tid = str(work.get("id") or work.get("wbs") or "").strip()
-        if not tid or not start or not finish:
-            continue
-        weight = float(max(1, (finish - start).days))
-        plan = monitor._plan_progress(start, finish, bounds["end"])
-        progress = (now.get(tid) or {}).get("progress")
-        if progress is None:
-            unknown += 1
-            continue
-        plan_now.append((weight, plan))
-        fact_now.append((weight, progress))
-        group = objects.setdefault(str(work.get("object") or "").strip()
-                                   or "Без объекта", {"plan": [], "fact": []})
-        group["plan"].append((weight, plan))
-        group["fact"].append((weight, progress))
-        if before_day:
-            earlier = (before.get(tid) or {}).get("progress")
-            fact_before.append((weight, earlier if earlier is not None else 0.0))
-    if not fact_now:
+    works = _dated(baseline)
+    now = _progress(works, manager._baseline_status(project, bounds["end"].isoformat()),
+                    bounds["end"])
+    if not now["works"]:
         return _missing(f"В ГПР-факте от {now_day} нет процентов выполнения "
                         "ни у одной работы.")
-    fact = _weighted(fact_now)
-    earlier = _weighted(fact_before) if before_day else None
+    before_day = _snapshot_day(project, bounds["before"])
+    before = (_progress(works, manager._baseline_status(project, bounds["before"].isoformat()),
+                        bounds["before"]) if before_day else None)
+    lag = now["fact"] - now["plan"]
+    lag_before = (before["fact"] - before["plan"]
+                  if before and before["fact"] is not None else None)
     return {
         "state": "ok",
         "snapshot": now_day,
@@ -139,17 +163,42 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
         # Новый ГПР-факт за период не пришёл — прирост ноль не наблюдён,
         # а просто не измерен заново.
         "fresh": now_day >= bounds["start"].isoformat(),
-        "plan": _weighted(plan_now),
-        "fact": fact,
-        "fact_before": earlier,
-        "delta": (fact - earlier) if earlier is not None else None,
-        "works": len(fact_now),
-        "works_unknown": unknown,
-        "objects": [
-            {"object": name, "plan": _weighted(group["plan"]),
-             "fact": _weighted(group["fact"])}
-            for name, group in sorted(objects.items())],
+        "plan": now["plan"],
+        "fact": now["fact"],
+        "lag": lag,
+        "fact_before": before["fact"] if before else None,
+        "plan_before": before["plan"] if before else None,
+        "lag_before": lag_before,
+        "delta": (now["fact"] - before["fact"]) if before else None,
+        "works": now["works"],
+        "works_unknown": now["unknown"],
+        "objects": now["objects"],
+        "series": _physical_series(project, works, bounds["end"]),
     }
+
+
+def _physical_series(project: str, works: list[tuple[str, dict[str, Any], float]],
+                     end: datetime.date) -> dict[str, Any]:
+    """S-кривая: план по утверждённому ГПР помесячно и факт каждого ГПР-факта."""
+    folder = monitor._project_dir(project) / "schedule_fact"
+    days = sorted(path.stem for path in folder.glob("*.xlsx")) if folder.exists() else []
+    days = [day for day in days if day <= end.isoformat()]
+    facts = []
+    for day in days:
+        moment = _date(day)
+        point = _progress(works, manager._baseline_status(project, day), moment)
+        facts.append({"day": day, "fact": point["fact"], "plan": point["plan"]})
+    first = min(work["start"] for _, work, _ in works)
+    last = max(work["finish"] for _, work, _ in works)
+    months = []
+    cursor = first.replace(day=1)
+    while cursor <= last:
+        months.append(cursor)
+        cursor = (cursor.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+    months.append(last)
+    return {"plan": [{"day": day.isoformat(), "plan": value}
+                     for day, value in zip(months, _plan_curve(works, months))],
+            "fact": facts}
 
 
 # --------------------------------------------------------------------------
@@ -194,32 +243,54 @@ def _sums(rows: list[dict[str, Any]], bounds: dict[str, datetime.date],
     return out
 
 
-def _monitor_funding(project: str, end: datetime.date) -> dict[str, Any]:
-    """Финансирование стройки так, как его считает панель Монитора."""
+def _monitor_dashboard(project: str, end: datetime.date) -> dict[str, Any]:
+    """Панель Монитора на конец периода: срок, финансирование — его расчётом."""
     import developaid_monitor_page  # noqa: F401 — ставит слои среза, как на странице
 
     view = monitor.build(project, cut=end.isoformat(), upto=end.isoformat())
-    return ((view.get("dashboard") or {}).get("funding")) or {
+    return view.get("dashboard") or {}
+
+
+def _monitor_funding(project: str, end: datetime.date) -> dict[str, Any]:
+    """Финансирование стройки так, как его считает панель Монитора."""
+    return (_monitor_dashboard(project, end).get("funding")) or {
         "known": False, "reason": "панель Монитора не собрала финансирование"}
+
+
+def _credit_parts(sales_project: str, data_dir: Path | None) -> tuple[list, Any]:
+    kept = sales_store.load(data_dir or sales_store.default_dir(), sales_project)
+    sources = kept.get("sources") or {}
+    contracts = ((sources.get("contracting") or {}).get("data")) or {}
+    credit = ((sources.get("credit") or {}).get("data")) or None
+    return contracts.get("rows") or [], credit
 
 
 def _escrow(sales_project: str, data_dir: Path | None) -> dict[str, Any]:
     if not str(sales_project or "").strip():
         return _missing("Проект не связан с отчётом о продажах — эскроу и план "
                         "кредита взять неоткуда.")
-    kept = sales_store.load(data_dir or sales_store.default_dir(), sales_project)
-    sources = kept.get("sources") or {}
-    contracts = ((sources.get("contracting") or {}).get("data")) or {}
-    credit = ((sources.get("credit") or {}).get("data")) or None
-    got = contracting.escrow_sufficiency({}, contracts.get("rows") or [], credit)
+    rows, credit = _credit_parts(sales_project, data_dir)
+    got = contracting.escrow_sufficiency({}, rows, credit)
     if got.get("missing"):
         return _missing("Эскроу: " + "; ".join(got["missing"]) + ".")
+    plan_escrow: dict[str, float] = {}
+    plan_pf: dict[str, float] = {}
+    for queue in (credit or {}).get("queues") or []:
+        for month, value in (queue.get("escrow") or {}).items():
+            plan_escrow[month] = plan_escrow.get(month, 0.0) + float(value or 0.0)
+        for month, value in (queue.get("pf") or {}).items():
+            plan_pf[month] = plan_pf.get(month, 0.0) + float(value or 0.0)
     return {"state": "ok", "queues": got.get("queues") or [],
-            "partial_month": got.get("partial_month")}
+            "partial_month": got.get("partial_month"),
+            # Помесячно: план эскроу и остатка кредита (нарастающим, сумма
+            # очередей) и поступления на эскроу по договорам.
+            "plan_escrow": plan_escrow, "plan_pf": plan_pf,
+            "actual_escrow": contracting.escrow_actual(rows)}
 
 
 def funding(project: str, kind: str, end: Any, sales_project: str = "",
-            data_dir: Path | None = None) -> dict[str, Any]:
+            data_dir: Path | None = None,
+            dashboard: dict[str, Any] | None = None) -> dict[str, Any]:
     """Финансирование: лимит банка и дефицит, выборка кредита, проценты, эскроу.
 
     Выборка — платежи РСС из заёмных средств (кредит банк перечисляет сразу
@@ -233,16 +304,31 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
         return _missing("Не загружен ни один отчёт РСС с реестром платежей "
                         f"на {bounds['end']:%d.%m.%Y}.")
     payments = actuals.read_payments(rss)["rows"]
+    previous = previous_bounds(kind, bounds)
+    monthly: dict[str, float] = {}
+    for row in payments:
+        day = row.get("date")
+        if day and day <= bounds["end"] and _borrowed(row.get("source")):
+            key = day.strftime("%Y-%m")
+            monthly[key] = monthly.get(key, 0.0) + float(row.get("amount") or 0.0)
     out: dict[str, Any] = {
         "state": "ok", "rss": rss.stem,
         "draws": _sums(payments, bounds, lambda row: _borrowed(row.get("source"))),
+        "draws_previous": _sums(payments, previous,
+                                lambda row: _borrowed(row.get("source")))["period"],
+        "draws_monthly": monthly,
         "interest": _sums(payments, bounds, lambda row: monthly_budget._under(
             str(row.get("estimate_code") or "").rstrip("."), "3.5")),
     }
-    try:
-        out["limit"] = _monitor_funding(project, bounds["end"])
-    except Exception as exc:  # noqa: BLE001 — причина уходит в сводку
-        out["limit"] = {"known": False, "reason": f"{type(exc).__name__}: {exc}"}
+    if dashboard is not None:
+        out["limit"] = dashboard.get("funding") or {
+            "known": False, "reason": dashboard.get("error")
+            or "панель Монитора не собрала финансирование"}
+    else:
+        try:
+            out["limit"] = _monitor_funding(project, bounds["end"])
+        except Exception as exc:  # noqa: BLE001 — причина уходит в сводку
+            out["limit"] = {"known": False, "reason": f"{type(exc).__name__}: {exc}"}
     out["escrow"] = _escrow(sales_project, data_dir)
     return out
 
@@ -291,9 +377,12 @@ def sales(sales_project: str, kind: str, end: Any,
     dated = [(row, _signed(row)) for row in rows]
     undated = sum(1 for _, day in dated if day is None)
 
-    def between(first: datetime.date) -> list[dict[str, Any]]:
+    def between(first: datetime.date, last: datetime.date | None = None) -> list[dict[str, Any]]:
+        last = last or bounds["end"]
         return [row for row, day in dated
-                if day is not None and first <= day <= bounds["end"]]
+                if day is not None and first <= day <= last]
+
+    previous = previous_bounds(kind, bounds)
 
     month_start = bounds["end"].replace(day=1)
     quarter_start = month_start.replace(month=(month_start.month - 1) // 3 * 3 + 1)
@@ -311,13 +400,15 @@ def sales(sales_project: str, kind: str, end: Any,
     bank = part("bank_plan") or {}
     bank_quarter = None
     bank_reason = ""
+    # Ряд «факт против планов» нарастающим итогом — тот же, что рисует отчёт
+    # о продажах: один счёт кварталов и остатка банка на дату его плана.
+    comparison = contracting.plan_comparison(
+        dict(contracting.summarise(contracts, part("ledger") or {}),
+             fm_plan=part("fm_plan"), bank_plan=bank or None))
+    opening = comparison.get("bank_opening") or {}
     if not bank:
         bank_reason = "План банка не загружен."
     elif quarter in (bank.get("gross_by_quarter") or {}):
-        comparison = contracting.plan_comparison(
-            dict(contracting.summarise(contracts, part("ledger") or {}),
-                 fm_plan=part("fm_plan"), bank_plan=bank))
-        opening = comparison.get("bank_opening") or {}
         if opening.get("quarter") == quarter:
             bank_reason = ("В первом квартале плана банка лежат продажи с начала "
                            "проекта — с кварталом его сравнивать нельзя.")
@@ -338,6 +429,13 @@ def sales(sales_project: str, kind: str, end: Any,
         "stale": bool(uploaded) and uploaded[:10] < bounds["end"].isoformat(),
         "undated": undated,
         "period": _fact(between(bounds["start"])),
+        "previous": _fact(between(previous["start"], previous["end"])),
+        "series": [{"label": q["label"],
+                    "fact": q.get("fact_amount_cum"), "fm": q.get("fm_amount_cum"),
+                    "bank": q.get("bank_amount_cum"),
+                    "fact_area": q.get("fact_area_cum"), "fm_area": q.get("fm_area_cum"),
+                    "bank_area": q.get("bank_area_cum"), "partial": q.get("partial")}
+                   for q in comparison.get("quarters") or []],
         "month": {"key": month_key, "fact": _fact(between(month_start)),
                   "fm": fm_month},
         "quarter": {"key": quarter, "fact": _fact(between(quarter_start)),
@@ -350,17 +448,37 @@ def sales(sales_project: str, kind: str, end: Any,
 # Сводка целиком
 # --------------------------------------------------------------------------
 
+def schedule(dashboard: dict[str, Any]) -> dict[str, Any]:
+    """Срок ввода: утверждённый и прогноз Монитора по темпу (его расчёт)."""
+    if dashboard.get("error"):
+        return _missing(f"Прогноз срока не посчитан: {dashboard['error']}")
+    block = dashboard.get("schedule") or {}
+    if not block.get("approved_finish") and not block.get("forecast_finish"):
+        return _missing("Прогноз срока не посчитан: нет утверждённого срока и прогноза.")
+    return {"state": "ok", "approved": block.get("approved_finish"),
+            "forecast": block.get("forecast_finish"),
+            "known": block.get("forecast_known", True),
+            "source": block.get("forecast_source") or "",
+            "delay_days": block.get("rnv_delay_days")}
+
+
 def build(project: str, kind: str, end: Any, sales_project: str = "",
           sales_dir: Path | None = None) -> dict[str, Any]:
     """Сводка за неделю или месяц по проекту мониторинга ``project``."""
     bounds = period_bounds(kind, end)
     blocks: dict[str, Any] = {}
+    # Панель Монитора — один расчёт на всю сводку: срок и финансирование.
+    try:
+        dashboard = _monitor_dashboard(project, bounds["end"])
+    except Exception as exc:  # noqa: BLE001 — причина уходит в сводку
+        dashboard = {"error": f"{type(exc).__name__}: {exc}"}
     for name, collect in (
             ("physical", lambda: physical(project, kind, bounds["end"])),
+            ("schedule", lambda: schedule(dashboard)),
             ("budget", lambda: budget(project, kind, bounds["end"])),
             ("sales", lambda: sales(sales_project, kind, bounds["end"], sales_dir)),
             ("funding", lambda: funding(project, kind, bounds["end"], sales_project,
-                                        sales_dir)),
+                                        sales_dir, dashboard)),
             ("notes", lambda: dict(project_notes.for_period(
                 project, bounds["start"], bounds["end"]), state="ok"))):
         try:
@@ -370,9 +488,151 @@ def build(project: str, kind: str, end: Any, sales_project: str = "",
             # причина должна дойти до читателя, а не остаться в логе.
             blocks[name] = _missing(
                 f"Блок не собран: {type(exc).__name__}: {exc}")
+    blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
             "end": bounds["end"].isoformat(), **blocks}
+
+
+# --------------------------------------------------------------------------
+# Главное за период
+# --------------------------------------------------------------------------
+
+def _share(part: float | None, whole: float | None) -> float | None:
+    return part / whole if part is not None and whole else None
+
+
+def findings(report: dict[str, Any]) -> list[dict[str, str]]:
+    """Выводы для первой страницы — из посчитанных блоков, с числом и источником.
+
+    Ничего нового здесь не считается: только сравнение того, что уже есть в
+    блоках. Нет данных — вывод говорит, чего нет.
+    """
+    out: list[dict[str, str]] = []
+    period = PERIODS[report["kind"]]
+
+    def add(topic: str, text: str, source: str, tone: str = "") -> None:
+        out.append({"topic": topic, "text": text, "source": source, "tone": tone})
+
+    block = report.get("physical") or {}
+    if block.get("state") == "ok":
+        lag = block["lag"]
+        text = _sentence(f"Выполнено {_pct(block['fact'])} работ по графику при плане "
+                         f"{_pct(block['plan'])} — " + (f"отставание {_pp(-lag)[1:]}" if lag < 0
+                                                       else f"опережение {_pp(lag)[1:]}"))
+        if block.get("lag_before") is not None:
+            change = lag - block["lag_before"]
+            if abs(change) < 0.0005:
+                text += f" За {period} отставание не изменилось."
+            else:
+                text += _sentence(f" За {period} отставание "
+                                  f"{'сократилось' if change > 0 else 'выросло'} на "
+                                  f"{_pp(abs(change))[1:]}")
+        add("Стройка", text, f"ГПР-факт от {_day(block['snapshot'])}",
+            "bad" if lag < -0.02 else "")
+    else:
+        add("Стройка", block.get("reason") or "Данных нет.", "", "missing")
+
+    block = report.get("schedule") or {}
+    if block.get("state") == "ok" and block.get("forecast"):
+        delay = block.get("delay_days")
+        late = isinstance(delay, (int, float)) and delay > 0
+        if block.get("approved"):
+            text = (f"Ввод по утверждённому графику — {_day(block['approved'])}, "
+                    f"прогноз при нынешнем темпе — {_day(block['forecast'])}")
+            text += f": на {delay:.0f} дн. позже." if late else ": в срок."
+        else:
+            text = (f"Прогноз ввода при нынешнем темпе — {_day(block['forecast'])}; "
+                    "утверждённого срока ввода в данных Монитора нет, сравнить не с чем.")
+        add("Срок", text, "прогноз Монитора по темпу работ",
+            "bad" if late else "")
+    elif block.get("reason"):
+        add("Срок", block["reason"], "", "missing")
+
+    block = report.get("budget") or {}
+    if block.get("state") in {"ok", "partial"}:
+        month = _date(block["month"])
+        end = _date(report["end"])
+        days = ((month.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+                - month).days
+        elapsed = min(1.0, (end - month).days / days + 1 / days) if end >= month else 0.0
+        parts = []
+        for line in block["lines"]:
+            if line.get("plan"):
+                parts.append(f"{line['label'].lower()} — оплачено {_rub(line['fact'])} из "
+                             f"{_rub(line['plan'])} ({_pct(_share(line['fact'], line['plan']))}), "
+                             f"осталось {_rub(line['remaining'])}")
+        if parts:
+            add("Бюджет месяца", "; ".join(parts).capitalize()
+                + f". Прошло {_pct(elapsed)} месяца.",
+                f"план-факт БДДС от {_day(block.get('budget_file'))}, РСС от {_day(block['rss'])}")
+        else:
+            add("Бюджет месяца", block.get("reason") or "Плана на месяц нет.",
+                f"РСС от {_day(block['rss'])}", "missing")
+    else:
+        add("Бюджет месяца", block.get("reason") or "Данных нет.", "", "missing")
+
+    block = report.get("sales") or {}
+    if block.get("state") == "ok":
+        quarter = block["quarter"]
+        fact = quarter["fact"]
+        pieces = [f"С начала квартала продано {fact['contracts']} "
+                  f"{_plural(fact['contracts'], 'договор', 'договора', 'договоров')} на "
+                  f"{_rub(fact['amount'])}, {_area(fact['area'])}"]
+        for name, plan in (("финмодели", quarter.get("fm")), ("банка", quarter.get("bank"))):
+            if plan and plan.get("amount"):
+                gap = fact["amount"] - plan["amount"]
+                piece = (f"план {name} выполнен на {_pct(_share(fact['amount'], plan['amount']))} "
+                         f"({'больше' if gap >= 0 else 'меньше'} на {_rub(abs(gap))}")
+                if plan.get("area"):
+                    piece += f", {_area(abs(fact['area'] - plan['area']))}"
+                pieces.append(piece + ")")
+        text = "; ".join(pieces) + "."
+        previous = block.get("previous") or {}
+        text += (f" За {period} — {_rub(block['period']['amount'])}, "
+                 f"за предыдущий такой же период — {_rub(previous.get('amount'))}.")
+        add("Продажи", text, f"контрактация от {_day(block.get('uploaded'))}, планы ФМ и банка",
+            "bad" if quarter.get("fm") and fact["amount"] < quarter["fm"]["amount"] else "")
+    else:
+        add("Продажи", block.get("reason") or "Данных нет.", "", "missing")
+
+    block = report.get("funding") or {}
+    if block.get("state") == "ok":
+        limit = block.get("limit") or {}
+        pieces = []
+        if limit.get("known"):
+            extra = float(limit.get("additional_financing") or 0.0)
+            pieces.append(f"не хватает на достройку {_rub(extra)} с "
+                          f"{_months_label(limit.get('additional_financing_from'))}"
+                          if extra > 0 else "лимитов и резерва хватает до ввода")
+        pieces.append(f"выборка кредита за {period} — {_rub(block['draws']['period'])} "
+                      f"(за предыдущий такой же период — {_rub(block.get('draws_previous'))})")
+        escrow = block.get("escrow") or {}
+        for queue in (escrow.get("queues") or [])[:2]:
+            if queue.get("plan_coverage_at") is not None:
+                text = (f"эскроу очереди «{queue['queue']}» покроет кредит на "
+                        f"{_times(queue['plan_coverage_at'])} по плану")
+                if queue.get("keeping_pace_coverage") is not None:
+                    text += f" и на {_times(queue['keeping_pace_coverage'])} при нынешнем темпе"
+                pieces.append(text)
+        add("Финансирование", "; ".join(pieces).capitalize() + ".",
+            f"РСС от {_day(block['rss'])}, карточка финансирования Монитора, план «КРЕДИТЫ»",
+            "bad" if limit.get("known") and float(limit.get("additional_financing") or 0) > 0
+            else "")
+    else:
+        add("Финансирование", block.get("reason") or "Данных нет.", "", "missing")
+
+    block = report.get("notes") or {}
+    if block.get("state") == "ok":
+        opened = block.get("open") or []
+        fresh = [n for n in opened if n.get("changed")]
+        if opened:
+            text = f"Открытых вопросов: {len(opened)}"
+            if fresh:
+                text += (f", новых или изменённых за {period}: {len(fresh)} — "
+                         + ", ".join(f"«{n['topic']}»" for n in fresh[:3]))
+            add("Открытые вопросы", text + ".", "общая информация по проекту")
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -381,6 +641,18 @@ def build(project: str, kind: str, end: Any, sales_project: str = "",
 
 def _pct(value: float | None) -> str:
     return "—" if value is None else f"{value * 100:.1f}".replace(".", ",") + "%"
+
+
+def _sentence(text: str) -> str:
+    """Точка в конце — одна: «п. п.» уже кончается точкой."""
+    return text if text.endswith(".") else text + "."
+
+
+def _plural(count: int, one: str, few: str, many: str) -> str:
+    tail = count % 100
+    if 11 <= tail <= 14:
+        return many
+    return {1: one, 2: few, 3: few, 4: few}.get(count % 10, many)
 
 
 def _pp(value: float) -> str:
@@ -420,7 +692,8 @@ def _title(report: dict[str, Any]) -> str:
 def _sales_line(label: str, fact: dict[str, Any]) -> str:
     price = (f", квартиры в среднем по {_rub(fact['price_flats'])} за м²"
              if fact.get("price_flats") else "")
-    return (f"{label}: {fact['contracts']} договоров на {_rub(fact['amount'])}, "
+    word = _plural(fact["contracts"], "договор", "договора", "договоров")
+    return (f"{label}: {fact['contracts']} {word} на {_rub(fact['amount'])}, "
             f"{_area(fact['area'])}{price}.")
 
 
@@ -531,14 +804,20 @@ def render_text(report: dict[str, Any]) -> str:
     esc = html.escape
     lines = [f"<b>Сводка по проекту «{esc(report['project'])}» {_title(report)}</b>"]
 
+    lines += ["", "<b>Главное</b>"]
+    for item in report.get("findings") or []:
+        lines.append(f"• <b>{esc(item['topic'])}.</b> {esc(item['text'])}")
+
     lines += ["", "<b>Стройка</b>"]
     block = report.get("physical") or {}
     if block.get("state") == "ok":
         lines.append(f"Выполнено по графику работ {_pct(block['fact'])}, "
                      f"по плану к этой дате должно быть {_pct(block['plan'])}.")
         if block.get("delta") is not None:
-            lines.append(f"За {PERIODS[report['kind']]} выполнение выросло "
-                         f"на {_pp(block['delta'])}.")
+            lines.append(_sentence(
+                f"За {PERIODS[report['kind']]} выполнение "
+                f"{'выросло' if block['delta'] >= 0 else 'снизилось'} на "
+                f"{_pp(abs(block['delta']))[1:]}"))
         else:
             lines.append("Прирост за период посчитать не из чего: на начало "
                          "периода не было ни одного графика с процентами выполнения.")
@@ -617,12 +896,18 @@ def render_text(report: dict[str, Any]) -> str:
 
 REPORT_STYLE = """
 body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#17202a;font-size:12px;margin:0}
-h1{font-size:18px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px;border-bottom:1px solid #d6dde6;padding-bottom:3px}
+h1{font-size:18px;margin:0 0 2px}h2{break-after:avoid;page-break-after:avoid;font-size:14px;margin:18px 0 6px;border-bottom:1px solid #d6dde6;padding-bottom:3px}
 .sub{color:#5b6b7d;font-size:11px;margin-bottom:8px}
 table{border-collapse:collapse;width:100%;margin:4px 0}th,td{border:1px solid #d6dde6;padding:4px 6px;text-align:right}
 th:first-child,td:first-child{text-align:left}th{background:#f2f5f8;font-weight:600}
 .note{color:#5b6b7d;font-size:11px;margin:4px 0}.warn{color:#9a5b00}.missing{color:#9a5b00;font-style:italic}
 .item{margin:4px 0}.item b{font-weight:600}
+.findings{display:block}.finding{border-left:3px solid #1f4e8c;padding:5px 9px;margin:7px 0;background:#f6f8fb}
+.finding.bad{border-left-color:#b2541a}.finding.missing{border-left-color:#9aa5b1;color:#5b6b7d}
+.finding b{display:block;font-size:12.5px;margin-bottom:2px}.finding .source{color:#6b7785;font-size:10px;margin-top:2px}
+.pagebreak{break-after:page;page-break-after:always}
+figure.chart{margin:8px 0 4px;break-inside:avoid}figure.chart figcaption{font-size:11px;color:#333;margin-bottom:2px;font-weight:600}
+svg.chart{display:block;max-width:100%}
 """
 
 
@@ -647,6 +932,101 @@ def _table(head: list[str], rows: list[list[str]]) -> str:
     return "<table>" + _row(head, True) + "".join(_row(row) for row in rows) + "</table>"
 
 
+def _scale(values: list[float | None]) -> tuple[float, str]:
+    """Делитель и подпись единицы — по величине чисел, одна пара на график."""
+    peak = max((abs(v) for v in values if v is not None), default=0.0)
+    return (1e9, "млрд ₽") if peak >= 2e9 else (1e6, "млн ₽")
+
+
+def _physical_chart(block: dict[str, Any]) -> str:
+    facts = (block.get("series") or {}).get("fact") or []
+    if not facts:
+        return ""
+    facts = facts[-26:]
+    labels = [_date(p["day"]).strftime("%d.%m") for p in facts]
+    return charts.line_chart(
+        "Выполнение по графику работ: план и факт на дату каждого ГПР-факта",
+        labels,
+        [{"name": "План", "values": [p["plan"] * 100 if p["plan"] is not None else None
+                                     for p in facts]},
+         {"name": "Факт", "values": [p["fact"] * 100 if p["fact"] is not None else None
+                                     for p in facts]}],
+        "%", label_every=charts.every(len(labels)))
+
+
+def _sales_chart(block: dict[str, Any]) -> str:
+    series = block.get("series") or []
+    if block.get("state") != "ok" or not series:
+        return ""
+    values = [q[k] for q in series for k in ("fact", "fm", "bank")]
+    divisor, unit = _scale(values)
+    labels = [_quarter_name(q["label"]).replace(" квартал ", " кв. ") for q in series]
+    lines = [{"name": "Факт", "values": charts.scaled([q["fact"] for q in series], divisor)},
+             {"name": "План финмодели", "values": charts.scaled([q["fm"] for q in series], divisor)},
+             {"name": "План банка", "values": charts.scaled([q["bank"] for q in series], divisor)}]
+    return charts.line_chart("Продажи нарастающим итогом по кварталам, сумма договоров",
+                             labels, [line for line in lines if any(
+                                 v is not None for v in line["values"])],
+                             unit, digits=1 if divisor == 1e9 else 0,
+                             label_every=charts.every(len(labels)))
+
+
+def _cumulative(monthly: dict[str, float], months: list[str]) -> list[float]:
+    total = sum(v for m, v in monthly.items() if months and m < months[0])
+    out = []
+    for month in months:
+        total += monthly.get(month, 0.0)
+        out.append(total)
+    return out
+
+
+def _funding_chart(report: dict[str, Any]) -> str:
+    block = report.get("funding") or {}
+    if block.get("state") != "ok":
+        return ""
+    end = _date(report["end"]).strftime("%Y-%m")
+    escrow = block.get("escrow") or {}
+    known = (set(block.get("draws_monthly") or {}) | set(escrow.get("actual_escrow") or {})
+             | {m for m in (escrow.get("plan_pf") or {}) if m <= end})
+    months = sorted(m for m in known if m <= end)[-18:]
+    if not months:
+        return ""
+    lines = [{"name": "Выборка кредита, факт",
+              "values": _cumulative(block.get("draws_monthly") or {}, months)}]
+    if escrow.get("state") == "ok":
+        lines.append({"name": "Кредит по плану ФМ",
+                      "values": [escrow["plan_pf"].get(m) for m in months]})
+        lines.append({"name": "Эскроу, факт",
+                      "values": _cumulative(escrow.get("actual_escrow") or {}, months)})
+        lines.append({"name": "Эскроу по плану ФМ",
+                      "values": [escrow["plan_escrow"].get(m) for m in months]})
+    values = [v for line in lines for v in line["values"]]
+    divisor, unit = _scale(values)
+    for line in lines:
+        line["values"] = charts.scaled(line["values"], divisor)
+    return charts.line_chart("Выборка кредита и эскроу нарастающим итогом по месяцам",
+                             [_month_short(m) for m in months], lines, unit,
+                             digits=1 if divisor == 1e9 else 0,
+                             label_every=charts.every(len(months)))
+
+
+def _month_short(key: str) -> str:
+    return f"{key[5:7]}.{key[2:4]}"
+
+
+def _budget_chart(block: dict[str, Any]) -> str:
+    if block.get("state") not in {"ok", "partial"}:
+        return ""
+    lines = block.get("lines") or []
+    divisor, unit = _scale([v for line in lines for v in (line.get("plan"), line["fact"])])
+    return charts.bar_chart(
+        f"Бюджет на {_months_label(block['month'])}: план и оплачено по статьям",
+        [line["label"] for line in lines],
+        [{"name": "План", "values": charts.scaled([line.get("plan") for line in lines], divisor)},
+         {"name": "Оплачено", "values": charts.scaled([line["fact"] for line in lines], divisor)}],
+        unit, digits=1)
+
+
 def render_html(report: dict[str, Any]) -> str:
     """Тело документа сводки — те же числа, что в сообщении, таблицами."""
     esc = html.escape
@@ -655,6 +1035,15 @@ def render_html(report: dict[str, Any]) -> str:
 
     def missing(block: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
+
+    out.append("<h2>Главное за период</h2><div class='findings'>")
+    for item in report.get("findings") or []:
+        tone = f" {item['tone']}" if item.get("tone") else ""
+        source = (f"<div class='source'>Источник: {esc(item['source'])}</div>"
+                  if item.get("source") else "")
+        out.append(f"<div class='finding{tone}'><b>{esc(item['topic'])}</b>"
+                   f"<div>{esc(item['text'])}</div>{source}</div>")
+    out.append("</div><div class='pagebreak'></div>")
 
     out.append("<h2>Стройка</h2>")
     block = report.get("physical") or {}
@@ -666,8 +1055,9 @@ def render_html(report: dict[str, Any]) -> str:
                 _pp(item["fact"] - item["plan"]) if item.get("plan") is not None else "—"]
                for item in block.get("objects") or []]))
         if block.get("delta") is not None:
-            out.append(f"<p class='note'>За {PERIODS[report['kind']]} выполнение выросло "
-                       f"на {_pp(block['delta'])}. Проценты — из графика работ от "
+            out.append(f"<p class='note'>За {PERIODS[report['kind']]} выполнение "
+                       f"{'выросло' if block['delta'] >= 0 else 'снизилось'} на "
+                       f"{_pp(abs(block['delta']))[1:]} Проценты — из графика работ от "
                        f"{_day(block['snapshot'])}.</p>")
         else:
             out.append("<p class='note'>Прирост за период посчитать не из чего: на начало "
@@ -675,8 +1065,18 @@ def render_html(report: dict[str, Any]) -> str:
         if not block.get("fresh"):
             out.append(f"<p class='note warn'>За этот период новый график с процентами "
                        f"не загружали, последний — от {_day(block['snapshot'])}.</p>")
+        out.append(_physical_chart(block))
     else:
         out.append(missing(block))
+    block = report.get("schedule") or {}
+    if block.get("state") == "ok" and block.get("forecast"):
+        delay = block.get("delay_days")
+        lead = (f"по утверждённому графику {_day(block['approved'])}, "
+                if block.get("approved") else "утверждённого срока в данных нет, ")
+        out.append(f"<p class='note'>Ввод: {lead}прогноз Монитора при нынешнем темпе "
+                   f"{_day(block['forecast'])}"
+                   + (f" — на {delay:.0f} дн. позже." if isinstance(delay, (int, float))
+                      and delay > 0 else ".") + "</p>")
 
     out.append("<h2>Продажи</h2>")
     block = report.get("sales") or {}
@@ -713,8 +1113,11 @@ def render_html(report: dict[str, Any]) -> str:
     else:
         out.append(missing(block))
 
+    out.append(_sales_chart(report.get("sales") or {}))
+
     out.append("<h2>Финансирование</h2>")
     out.append(_funding_html(report))
+    out.append(_funding_chart(report))
 
     out.append("<h2>Бюджет месяца</h2>")
     block = report.get("budget") or {}
@@ -729,6 +1132,8 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(f"<p class='note'>Оплаты — из отчёта РСС от {_day(block['rss'])}.</p>")
     else:
         out.append(missing(block))
+
+    out.append(_budget_chart(report.get("budget") or {}))
 
     out.append("<h2>Общая информация</h2>")
     block = report.get("notes") or {}
