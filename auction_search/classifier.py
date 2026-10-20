@@ -28,6 +28,37 @@ _DEVELOPMENT_ASSET_RE = re.compile(
 )
 _UNFINISHED_RE = re.compile(r"(?:объект\w*\s+незавершенн\w*\s+строительств\w*|незавершенн\w*)", re.I)
 _LAND_RE = re.compile(r"(?:земельн\w*|участ\w*)", re.I)
+# Продажа в собственность, названная самим лотом. Нужна, чтобы общая рубрика
+# процедуры («Аренда и продажа земельных участков») не делала арендой лот,
+# который в своём названии назван продажей.
+_SALE_RE = re.compile(r"(?:продаж\w*|купл\w*|в\s+собственност\w*)", re.I)
+_LEASED_LAND_RE = re.compile(r"земельн\w*", re.I)
+
+
+def names_lease(title: str, *context: str) -> bool:
+    """Лот продаёт право аренды, а не саму вещь.
+
+    Решает название лота: «право заключения договора аренды…» — аренда,
+    «Продажа земельного участка…» — продажа, что бы ни писала рубрика
+    процедуры. Только когда название молчит, решает остальной текст
+    (описание, процедура, документы). Предикат один на все площадки, иначе
+    один и тот же лот у двух площадок окажется разного вида.
+    """
+    name = re.sub(r"\s+", " ", (title or "").lower())
+    if _LEASE_RE.search(name):
+        return True
+    if _SALE_RE.search(name):
+        return False
+    return any(_LEASE_RE.search((text or "").lower()) for text in context)
+
+
+def lease_kind(*texts: str, land: bool = False) -> LotKind:
+    """Вид арендного лота: аренда земли — `LAND_LEASE`, аренда помещения или
+    имущества — `OTHER`. Аренда помещения — не имущественный комплекс и не
+    земля; своего вида у неё нет, и подгонять её под ближайший нельзя."""
+    if land or any(_LEASED_LAND_RE.search(text or "") for text in texts):
+        return LotKind.LAND_LEASE
+    return LotKind.OTHER
 
 
 def classify_lot(title: str, procedure_text: str = "", document_titles: list[str] | None = None) -> LotKind:
@@ -52,8 +83,8 @@ def classify_lot(title: str, procedure_text: str = "", document_titles: list[str
         return LotKind.EQUITY_STAKE
     if _PROPERTY_RE.search(compact):
         return LotKind.PROPERTY_COMPLEX
-    if _LEASE_RE.search(compact):
-        return LotKind.LAND_LEASE
+    if names_lease(title, procedure_text, *(document_titles or [])):
+        return lease_kind(compact)
     if _LAND_RE.search(compact):
         return LotKind.LAND_SALE
     return LotKind.OTHER

@@ -77,6 +77,8 @@ from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.classifier import (
     BANKRUPTCY_WORDS as _BANKRUPTCY_WORDS,
+    lease_kind,
+    names_lease,
     origin_from_evidence,
 )
 from auction_search.models import (
@@ -343,6 +345,12 @@ def classify(card: dict[str, Any]) -> tuple[LotKind, LotOrigin]:
                      if isinstance(card.get("category"), dict)
                      else card.get("category")).lower()
     kind = LotKind.OTHER
+    # Аренда — раньше всех рубрик: рубрика процедуры «Аренда и продажа
+    # земельных участков» общая, и право аренды участка уходило в продажу
+    # земли, а аренда помещения — в имущественный комплекс. Признак аренды
+    # общий для всех площадок (`classifier.names_lease`).
+    if names_lease(_text(card.get("lotName")), _text(card.get("lotDescription"))):
+        return lease_kind(blob, land=category_is_land(card)), origin
     if any(word in blob for word in ("незавершен", "незавершён")):
         kind = LotKind.UNFINISHED
     elif "комплекс" in blob:

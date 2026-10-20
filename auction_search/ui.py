@@ -190,7 +190,7 @@ __DEVELOPAID_CONTOUR__
   <div class="stats" id="auctionStats">
     <div class="stat"><b id="sCount">—</b><span>лотов в выборке</span></div>
     <div class="stat"><b id="sKrt">—</b><span>КРТ</span></div>
-    <div class="stat"><b id="sLand">—</b><span>земля / аренда</span></div>
+    <div class="stat"><b id="sLand">—</b><span>земельных участков (продажа и аренда)</span></div>
     <div class="stat"><b id="sDeadline">—</b><span>ближайший дедлайн</span></div>
   </div>
   <div id="coverage" class="notice coverage"></div>
