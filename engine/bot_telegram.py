@@ -631,6 +631,12 @@ def _telegram_download_document(
     file_id = str(document.get("file_id") or "")
     if not file_id:
         raise ValueError("Telegram не передал идентификатор файла")
+    return _telegram_file_bytes(file_id, max_bytes), filename
+
+
+def _telegram_file_bytes(file_id: str, max_bytes: int) -> bytes:
+    """Скачать файл Telegram по ``file_id``: одна дорога для документов и фото."""
+    limit_mb = max(1, max_bytes // (1024 * 1024))
     info = _telegram_api("getFile", {"file_id": file_id}) or {}
     file_path = str(info.get("file_path") or "")
     if not file_path:
@@ -643,7 +649,7 @@ def _telegram_download_document(
         raise RuntimeError(f"Не удалось скачать файл из Telegram: {exc}") from exc
     if len(data) > max_bytes:
         raise ValueError(f"Файл слишком большой. Лимит — {limit_mb} МБ")
-    return data, filename
+    return data
 
 
 def _telegram_money_mln(value: Any) -> str:
@@ -2072,6 +2078,74 @@ def _site_chat_store(chat_id: int, text: str, taken_at: str,
     return internal_monitor_daily(SiteChatReportRequest(**payload))
 
 
+# Снимок для сводки: самый крупный размер не длиннее этой стороны. В PDF фото
+# идёт на полстраницы (около 9 см) — 1280 точек хватает с запасом, а полный
+# размер занимал бы диск ядра в разы больше.
+_SITE_PHOTO_SIDE = 1280
+
+
+def _site_photo_size(sizes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not sizes:
+        return None
+    fit = [s for s in sizes if max(int(s.get("width") or 0), int(s.get("height") or 0))
+           <= _SITE_PHOTO_SIDE]
+    pick = fit or sizes
+    return max(pick, key=lambda s: int(s.get("width") or 0) * int(s.get("height") or 0))
+
+
+def _site_photo_store(chat: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
+    """Скачать фото из чата стройки и отдать ядру — та же дорога, что у отчётов."""
+    import developaid_site_photos as site_photos
+
+    size = _site_photo_size(list(message.get("photo") or []))
+    if not size:
+        return {"bound": "", "error": "в сообщении нет размеров фото"}
+    data = _telegram_file_bytes(str(size.get("file_id") or ""), site_photos.MAX_BYTES)
+    stamp = message.get("date")
+    try:
+        moment = datetime.fromtimestamp(int(stamp), _TELEGRAM_MOSCOW)
+    except (TypeError, ValueError, OSError):
+        moment = datetime.now(_TELEGRAM_MOSCOW)
+    sender = message.get("from") or {}
+    author = " ".join(str(sender.get(k) or "").strip()
+                      for k in ("first_name", "last_name")).strip()
+    chat_id = int((chat or {}).get("id") or 0)
+    payload = {
+        "chat_id": chat_id,
+        "sign": _web_login_sign("monitor-photo", chat_id),
+        "photo_id": str(size.get("file_unique_id") or "")[:80],
+        "data": base64.b64encode(data).decode("ascii"),
+        "day": moment.date().isoformat(),
+        "at": moment.isoformat(timespec="seconds"),
+        "author": author or str(sender.get("username") or ""),
+        "caption": str(message.get("caption") or ""),
+        "message_id": int(message.get("message_id") or 0),
+    }
+    url = _core_api_url("/internal/monitor/photo")
+    if url:
+        return _core_post(url, payload, 60.0)
+    return internal_monitor_photo(SitePhotoRequest(**payload))
+
+
+def _site_photo_job(chat: dict[str, Any], message: dict[str, Any]) -> None:
+    """Фоном: вебхук не ждёт скачивания. Исход — в счётчике `/status`."""
+    try:
+        answer = _site_photo_store(chat, message)
+    except Exception as exc:  # noqa: BLE001 — причина уходит в /status
+        _telegram_group_seen(chat, "фото не сохранено: " + str(exc)[:80])
+        return
+    if answer.get("bound"):
+        _telegram_group_seen(chat, "фото сохранено для сводки проекта «"
+                             + str(answer["bound"]) + "»")
+    else:
+        _telegram_group_seen(chat, "фото не сохранено: чат не привязан — нужен /site")
+
+
+def _site_photo_async(chat: dict[str, Any], message: dict[str, Any]) -> None:
+    threading.Thread(target=_site_photo_job, args=(chat, message),
+                     name="site-photo", daemon=True).start()
+
+
 def _telegram_group_seen(chat: dict[str, Any], outcome: str = "") -> None:
     """Счётчик увиденного в группах — иначе молчание нечем объяснить.
 
@@ -2158,6 +2232,11 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
     chat_id = int((chat or {}).get("id") or 0)
     if not chat_id:
         return
+    if message.get("photo"):
+        # Фото из чата стройки — кандидат в сводку руководству. Выбирает
+        # человек на странице сводки; здесь только сохраняем. Подпись к фото
+        # дальше читается как обычно: вдруг это и есть отчёт.
+        _site_photo_async(chat, message)
     text = str(message.get("text") or message.get("caption") or "").strip()
     if not text:
         _telegram_group_seen(chat)

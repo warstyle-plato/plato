@@ -897,6 +897,20 @@ class SiteChatReportRequest(BaseModel):
     taken_at: str = ""
 
 
+class SitePhotoRequest(BaseModel):
+    """Снимок из чата стройки — от бота к ядру (выше маршрута, см. выше)."""
+
+    chat_id: int = 0
+    sign: str = ""
+    photo_id: str = ""
+    data: str = ""
+    day: str = ""
+    at: str = ""
+    author: str = ""
+    caption: str = ""
+    message_id: int = 0
+
+
 # Имя проекта из чата становится ИМЕНЕМ КАТАЛОГА на диске (`_project_dir` у
 # монитора). Внутри оно чистится, но чистка — это молчаливая правка чужого
 # значения: «Гродненская/../../etc» превратилась бы в другое имя, и человек
@@ -1248,6 +1262,31 @@ def internal_monitor_daily(req: SiteChatReportRequest) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"bound": project, "stored": stored}
+
+
+@app.post("/internal/monitor/photo", include_in_schema=False)
+def internal_monitor_photo(req: SitePhotoRequest) -> dict[str, Any]:
+    """Снимок из чата стройки: бот на Render скачал, ядро сохранило.
+
+    Подпись — общим токеном бота, как у отчётов (`internal_monitor_daily`),
+    но своим кодом: подпись отчёта не должна открывать дорогу файлам.
+    """
+    expected = _web_login_sign("monitor-photo", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
+    if not project:
+        return {"bound": ""}
+    import developaid_site_photos as site_photos
+
+    try:
+        data = base64.b64decode(req.data or "", validate=True)
+        stored = site_photos.store(project, data, req.photo_id, req.day, req.author,
+                                   req.caption, req.at, req.message_id)
+    except ValueError as exc:  # и binascii.Error — он подкласс ValueError
+        raise HTTPException(400, str(exc))
+    return {"bound": project, "stored": {k: v for k, v in stored.items() if k != "data"}}
 
 
 @app.post("/internal/krt/subscribe")

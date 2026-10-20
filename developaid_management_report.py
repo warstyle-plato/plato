@@ -29,6 +29,7 @@ import developaid_monitor as monitor
 import developaid_monitor_manager as manager
 import developaid_monthly_budget as monthly_budget
 import developaid_project_notes as project_notes
+import developaid_site_photos as site_photos
 import developaid_report_charts as charts
 from market_search import contracting, sales_store
 
@@ -677,6 +678,8 @@ def build(project: str, kind: str, end: Any, sales_project: str = "",
             ("funding", lambda: funding(project, kind, bounds["end"], sales_project,
                                         sales_dir, dashboard)),
             ("notes", lambda: dict(project_notes.for_period(
+                project, bounds["start"], bounds["end"]), state="ok")),
+            ("photos", lambda: dict(site_photos.for_report(
                 project, bounds["start"], bounds["end"]), state="ok"))):
         try:
             blocks[name] = collect()
@@ -1122,6 +1125,9 @@ def render_text(report: dict[str, Any]) -> str:
         more = len(group["lines"]) - 3
         lines.append(esc(f"Работы {group['contractor']}: {shown}"
                          + (f" и ещё {more}" if more > 0 else "") + "."))
+    chosen = len((report.get("photos") or {}).get("items") or [])
+    if chosen:
+        lines.append(f"Фото со стройки: {chosen} — в PDF.")
     breakdown = (report.get("physical") or {}).get("breakdown") or {}
     for row in breakdown.get("laggards", [])[:3]:
         lines.append(esc(f"Отстаёт: {row['name']}"
@@ -1207,6 +1213,9 @@ th,td{border-bottom:1px solid #e1e6ec;padding:4px 6px;text-align:right;font-vari
 th:first-child,td:first-child{text-align:left;white-space:normal}
 .keep{break-inside:avoid;page-break-inside:avoid}th{background:#eef2f7;font-weight:600;color:#334155;border-bottom:1px solid #c5cfdb}
 .neg{color:#b42318;font-weight:600}
+.photos{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:6px 0}
+figure.photo{margin:0;break-inside:avoid;page-break-inside:avoid}figure.photo img{width:100%;height:230px;object-fit:cover;border-radius:4px;border:1px solid #d6dde6;display:block}
+figure.photo figcaption{font-size:10.5px;margin-top:3px}
 table.works td{vertical-align:top}table.works td:nth-child(2),table.works th:nth-child(2){text-align:left;white-space:normal}table.works td:nth-child(3){color:#5b6b7d;font-size:10.5px;white-space:normal}
 table.articles tr.chapter td{background:#f4f7fb;font-weight:600}
 table.articles tr.total td{border-top:2px solid #1f4e8c;font-weight:600}
@@ -1343,6 +1352,23 @@ def _works_html(block: dict[str, Any], kind: str) -> str:
             + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows)
             + "</table><p class='note'>Строки — как их написали в отчёте; одинаковая строка "
               "за несколько дней показана один раз с датами.</p>")
+
+
+def _photos_html(block: dict[str, Any], kind: str) -> str:
+    """Фото со стройки, отмеченные на странице сводки. Не отмечено — блока нет."""
+    esc = html.escape
+    items = block.get("items") or []
+    if not items:
+        return ""
+    cells = []
+    for item in items:
+        note = " · ".join(part for part in (_date(item["day"]).strftime("%d.%m.%Y"),
+                                            item.get("author") or "") if part)
+        caption = (f"{esc(item['caption'])}<br>" if item.get("caption") else "")
+        cells.append(f"<figure class='photo'><img src='{item['src']}' alt='{esc(item.get('caption') or 'фото со стройки')}'>"
+                     f"<figcaption>{caption}<span class='note'>{esc(note)}</span></figcaption></figure>")
+    return (f"<h3>Фото со стройки за {PERIODS[kind]}</h3><div class='photos'>"
+            + "".join(cells) + "</div>")
 
 
 def _month_elapsed(month: datetime.date, end: datetime.date) -> float:
@@ -1833,6 +1859,8 @@ def render_html(report: dict[str, Any]) -> str:
                    f"{_day(block['forecast'])}"
                    + (f" — на {delay:.0f} дн. позже." if isinstance(delay, (int, float))
                       and delay > 0 else ".") + "</p>")
+
+    out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 
     out.append("<h2>Продажи</h2>")
     block = report.get("sales") or {}

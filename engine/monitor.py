@@ -224,6 +224,16 @@ class MonitorNotesRequest(BaseModel):
     key: str = ""
 
 
+class MonitorPhotosRequest(BaseModel):
+    project: str
+    kind: str = "week"
+    end: str = ""
+    photo_id: str = ""
+    chosen: bool | None = None
+    session: str = ""
+    key: str = ""
+
+
 class MonitorReportRequest(BaseModel):
     project: str
     kind: str = "week"
@@ -574,6 +584,47 @@ def monitor_notes(req: MonitorNotesRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
     return {"notes": project_notes.notes(req.project),
             "statuses": project_notes.STATUSES}
+
+
+@app.post("/monitor/photos", include_in_schema=False)
+def monitor_photos(req: MonitorPhotosRequest) -> dict[str, Any]:
+    """Фото из чата стройки за период сводки; с ``photo_id`` и ``chosen`` — отметка.
+
+    Выбирает человек: в сводку попадает только отмеченное (владелец, 20.10.2026).
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    import datetime as _dt
+
+    import developaid_management_report as management_report
+    import developaid_site_photos as site_photos
+    end = (req.end or "").strip() or _dt.date.today().isoformat()
+    try:
+        bounds = management_report.period_bounds(req.kind, end)
+        if req.photo_id and req.chosen is not None:
+            site_photos.select(req.project, req.photo_id, req.chosen,
+                               _monitor_note_author(req.session, req.key))
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"photos": site_photos.photos(req.project, bounds["start"], bounds["end"]),
+            "start": bounds["start"].isoformat(), "end": bounds["end"].isoformat()}
+
+
+@app.post("/monitor/photo", include_in_schema=False)
+def monitor_photo(req: MonitorPhotosRequest) -> Response:
+    """Сам снимок — для ленты на странице сводки."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    import developaid_site_photos as site_photos
+    try:
+        data = site_photos.read(req.project, req.photo_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    kind = "image/png" if data[:4] == b"\x89PNG" else "image/jpeg"
+    return Response(content=data, media_type=kind,
+                    headers={"Cache-Control": "private, max-age=86400"})
 
 
 def _monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
