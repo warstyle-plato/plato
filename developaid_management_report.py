@@ -102,6 +102,8 @@ def _progress(works: list[tuple[str, dict[str, Any], float]],
     """Факт и план на день по работам, у которых процент известен."""
     fact, plan, unknown = [], [], 0
     objects: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    sections: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    each: dict[str, dict[str, Any]] = {}
     for tid, work, weight in works:
         progress = (statuses.get(tid) or {}).get("progress")
         if progress is None:
@@ -110,14 +112,55 @@ def _progress(works: list[tuple[str, dict[str, Any], float]],
         planned = monitor._plan_progress(work["start"], work["finish"], day)
         fact.append((weight, progress))
         plan.append((weight, planned))
-        group = objects.setdefault(str(work.get("object") or "").strip()
-                                   or "Без объекта", {"plan": [], "fact": []})
-        group["plan"].append((weight, planned))
-        group["fact"].append((weight, progress))
+        each[tid] = {"plan": planned, "fact": progress}
+        for groups, key in ((objects, "object"), (sections, "section")):
+            group = groups.setdefault(str(work.get(key) or "").strip()
+                                      or "Без названия", {"plan": [], "fact": []})
+            group["plan"].append((weight, planned))
+            group["fact"].append((weight, progress))
     return {"fact": _weighted(fact), "plan": _weighted(plan), "works": len(fact),
-            "unknown": unknown,
+            "unknown": unknown, "each": each,
             "objects": [{"object": name, "plan": _weighted(g["plan"]),
-                         "fact": _weighted(g["fact"])} for name, g in sorted(objects.items())]}
+                         "fact": _weighted(g["fact"])} for name, g in sorted(objects.items())],
+            "sections": {name: {"plan": _weighted(g["plan"]), "fact": _weighted(g["fact"]),
+                                "weight": sum(w for w, _ in g["fact"])}
+                         for name, g in sections.items()}}
+
+
+def _breakdown(works: list[tuple[str, dict[str, Any], float]], now: dict[str, Any],
+               before: dict[str, Any] | None) -> dict[str, Any]:
+    """Разделы ГПР, самые отстающие работы и работы без прироста за период."""
+    sections = []
+    for name, item in now["sections"].items():
+        earlier = ((before or {}).get("sections") or {}).get(name) or {}
+        sections.append({"section": name, "plan": item["plan"], "fact": item["fact"],
+                         "lag": item["fact"] - item["plan"],
+                         "delta": (item["fact"] - earlier["fact"])
+                         if earlier.get("fact") is not None else None,
+                         "weight": item["weight"]})
+    sections.sort(key=lambda row: -row["weight"])
+    laggards, stalled = [], []
+    for tid, work, _ in works:
+        point = now["each"].get(tid)
+        if not point:
+            continue
+        row = {"name": str(work.get("name") or tid), "object": str(work.get("object") or ""),
+               "section": str(work.get("section") or ""), "plan": point["plan"],
+               "fact": point["fact"], "lag": point["fact"] - point["plan"],
+               "finish": work["finish"].isoformat()}
+        if row["lag"] < -0.005:
+            laggards.append(row)
+        earlier = ((before or {}).get("each") or {}).get(tid)
+        # Без прироста: работа идёт по плану (план вырос за период), не
+        # закончена, а процент тот же, что на начало периода.
+        if (earlier and point["fact"] < 0.999 and point["plan"] > earlier["plan"] + 1e-6
+                and abs(point["fact"] - earlier["fact"]) < 1e-6):
+            stalled.append(row)
+    laggards.sort(key=lambda row: row["lag"])
+    stalled.sort(key=lambda row: row["lag"])
+    return {"sections": sections, "laggards": laggards[:8], "laggards_total": len(laggards),
+            "stalled": stalled[:8], "stalled_total": len(stalled),
+            "stalled_known": before is not None}
 
 
 def _plan_curve(works: list[tuple[str, dict[str, Any], float]],
@@ -173,6 +216,7 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
         "works": now["works"],
         "works_unknown": now["unknown"],
         "objects": now["objects"],
+        "breakdown": _breakdown(works, now, before),
         "series": _physical_series(project, works, bounds["end"]),
     }
 
@@ -199,6 +243,69 @@ def _physical_series(project: str, works: list[tuple[str, dict[str, Any], float]
     return {"plan": [{"day": day.isoformat(), "plan": value}
                      for day, value in zip(months, _plan_curve(works, months))],
             "fact": facts}
+
+
+# --------------------------------------------------------------------------
+# Люди на площадке
+# --------------------------------------------------------------------------
+
+def _crew_rows(reports: list[dict[str, Any]], first: datetime.date,
+               last: datetime.date) -> list[dict[str, Any]]:
+    return [r for r in reports if first.isoformat() <= str(r.get("date") or "") <= last.isoformat()]
+
+
+def _crew_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    workers = [float((r.get("parsed") or {}).get("workers_total") or 0) for r in rows]
+    itr = [float((r.get("parsed") or {}).get("itr_total") or 0) for r in rows]
+    return {"days": len(rows),
+            "workers_avg": sum(workers) / len(workers) if workers else None,
+            "workers_max": max(workers) if workers else None,
+            "itr_avg": sum(itr) / len(itr) if itr else None}
+
+
+def crew(project: str, kind: str, end: Any) -> dict[str, Any]:
+    """Численность на площадке из ежедневных отчётов, которые приносит бот.
+
+    Тот же разбор, что у карточки «Люди на площадке». День без отчёта —
+    пропуск, а не ноль: средняя считается по дням, когда отчёт был.
+    Плановой численности в ГПР нет — сравнение «план против факта» не
+    выдумывается.
+    """
+    import developaid_monitor_daily as daily
+
+    bounds = period_bounds(kind, end)
+    reports = daily._load_reports(project)
+    if not reports:
+        return _missing("Ежедневные отчёты со стройки не приходили: чат стройки "
+                        "не связан с ботом или отчётов ещё не было.")
+    now = _crew_rows(reports, bounds["start"], bounds["end"])
+    previous = previous_bounds(kind, bounds)
+    before = _crew_rows(reports, previous["start"], previous["end"])
+    last = max((str(r.get("date") or "") for r in reports
+                if str(r.get("date") or "") <= bounds["end"].isoformat()), default="")
+    contractors: dict[str, dict[str, float]] = {}
+    for report_row in now:
+        for item in (report_row.get("parsed") or {}).get("contractors") or []:
+            block = contractors.setdefault(item.get("name") or "без имени",
+                                           {"workers": 0.0, "itr": 0.0, "days": 0})
+            block["workers"] += float(item.get("workers") or 0)
+            block["itr"] += float(item.get("itr") or 0)
+            block["days"] += 1
+    by_contractor = sorted(
+        ({"name": name, "workers_avg": b["workers"] / b["days"], "itr_avg": b["itr"] / b["days"],
+          "days": b["days"]} for name, b in contractors.items()),
+        key=lambda row: -row["workers_avg"])
+    window = 31 if kind == "month" else 28
+    days = [bounds["end"] - datetime.timedelta(days=n) for n in range(window - 1, -1, -1)]
+    by_day = {str(r.get("date")): r for r in reports}
+    series = [{"day": day.isoformat(),
+               "workers": (float((by_day[day.isoformat()].get("parsed") or {})
+                                 .get("workers_total") or 0)
+                           if day.isoformat() in by_day else None)} for day in days]
+    return {"state": "ok", "now": _crew_stats(now), "previous": _crew_stats(before),
+            "period_days": (bounds["end"] - bounds["start"]).days + 1,
+            "last_report": last or None, "by_contractor": by_contractor[:10],
+            "series": series}
 
 
 # --------------------------------------------------------------------------
@@ -474,6 +581,7 @@ def build(project: str, kind: str, end: Any, sales_project: str = "",
         dashboard = {"error": f"{type(exc).__name__}: {exc}"}
     for name, collect in (
             ("physical", lambda: physical(project, kind, bounds["end"])),
+            ("crew", lambda: crew(project, kind, bounds["end"])),
             ("schedule", lambda: schedule(dashboard)),
             ("budget", lambda: budget(project, kind, bounds["end"])),
             ("sales", lambda: sales(sales_project, kind, bounds["end"], sales_dir)),
@@ -532,6 +640,46 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             "bad" if lag < -0.02 else "")
     else:
         add("Стройка", block.get("reason") or "Данных нет.", "", "missing")
+
+    stroika = report.get("physical") or {}
+    block = report.get("crew") or {}
+    if block.get("state") == "ok":
+        now, before = block["now"], block["previous"]
+        if now["days"]:
+            text = (f"В среднем {now['workers_avg']:.0f} рабочих и {now['itr_avg']:.0f} ИТР в день, "
+                    f"максимум {now['workers_max']:.0f} — по {now['days']} "
+                    f"{_plural(now['days'], 'отчёту', 'отчётам', 'отчётам')} из "
+                    f"{block['period_days']} дней периода")
+            tone = ""
+            if before["days"] and before["workers_avg"]:
+                change = now["workers_avg"] / before["workers_avg"] - 1
+                text += (f"; в предыдущий такой же период — {before['workers_avg']:.0f} "
+                         f"({'+' if change >= 0 else '−'}{abs(change) * 100:.0f}%)")
+                worse = (stroika.get("lag_before") is not None
+                         and stroika["lag"] < stroika["lag_before"])
+                if change < -0.05 and worse:
+                    text += ". Людей стало меньше, а отставание выросло — под нужный темп их не хватает"
+                    tone = "bad"
+            add("Люди на площадке", _sentence(text),
+                "ежедневные отчёты со стройки (бот)", tone)
+        else:
+            add("Люди на площадке",
+                f"За период ни одного отчёта со стройки; последний — от "
+                f"{_day(block.get('last_report'))}.", "ежедневные отчёты со стройки (бот)",
+                "missing")
+    elif block.get("reason"):
+        add("Люди на площадке", block["reason"], "", "missing")
+    breakdown = stroika.get("breakdown") or {}
+    if breakdown.get("laggards"):
+        worst = "; ".join(f"{row['name']}{(' (' + row['object'] + ')') if row['object'] else ''} — "
+                          f"{_pp(-row['lag'])[1:]}" for row in breakdown["laggards"][:3])
+        text = f"Больше всего отстают: {worst}"
+        if breakdown.get("stalled_total"):
+            text += (f". Без прироста за {period} при идущем плане — "
+                     f"{breakdown['stalled_total']} "
+                     f"{_plural(breakdown['stalled_total'], 'работа', 'работы', 'работ')}")
+        add("Отстающие работы", _sentence(text), f"ГПР-факт от {_day(stroika['snapshot'])}",
+            "bad")
 
     block = report.get("schedule") or {}
     if block.get("state") == "ok" and block.get("forecast"):
@@ -827,6 +975,19 @@ def render_text(report: dict[str, Any]) -> str:
     else:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
+    block = report.get("crew") or {}
+    if block.get("state") == "ok" and block["now"]["days"]:
+        now = block["now"]
+        lines.append(f"Люди: в среднем {now['workers_avg']:.0f} рабочих и {now['itr_avg']:.0f} ИТР "
+                     f"в день по {now['days']} отчётам, максимум {now['workers_max']:.0f}.")
+    elif block.get("reason"):
+        lines.append(esc(block["reason"]))
+    breakdown = (report.get("physical") or {}).get("breakdown") or {}
+    for row in breakdown.get("laggards", [])[:3]:
+        lines.append(esc(f"Отстаёт: {row['name']}"
+                         + (f" ({row['object']})" if row["object"] else "")
+                         + f" — {_pct(row['fact'])} при плане {_pct(row['plan'])}."))
+
     lines += ["", "<b>Продажи</b>"]
     block = report.get("sales") or {}
     if block.get("state") == "ok":
@@ -905,7 +1066,7 @@ th:first-child,td:first-child{text-align:left}th{background:#f2f5f8;font-weight:
 .findings{display:block}.finding{border-left:3px solid #1f4e8c;padding:5px 9px;margin:7px 0;background:#f6f8fb}
 .finding.bad{border-left-color:#b2541a}.finding.missing{border-left-color:#9aa5b1;color:#5b6b7d}
 .finding b{display:block;font-size:12.5px;margin-bottom:2px}.finding .source{color:#6b7785;font-size:10px;margin-top:2px}
-.pagebreak{break-after:page;page-break-after:always}
+h3{font-size:12.5px;margin:12px 0 4px}.pagebreak{break-after:page;page-break-after:always}
 figure.chart{margin:8px 0 4px;break-inside:avoid}figure.chart figcaption{font-size:11px;color:#333;margin-bottom:2px;font-weight:600}
 svg.chart{display:block;max-width:100%}
 """
@@ -930,6 +1091,76 @@ def _row(cells: list[str], head: bool = False) -> str:
 
 def _table(head: list[str], rows: list[list[str]]) -> str:
     return "<table>" + _row(head, True) + "".join(_row(row) for row in rows) + "</table>"
+
+
+def _breakdown_html(breakdown: dict[str, Any], kind: str) -> str:
+    esc = html.escape
+    out = []
+    sections = breakdown.get("sections") or []
+    if len(sections) > 1:
+        out.append("<h3>По разделам графика работ</h3>")
+        out.append(_table(["Раздел", "План к дате", "Выполнено", "Отставание",
+                           f"Прирост за {PERIODS[kind]}"], [
+            [esc(row["section"]), _pct(row["plan"]), _pct(row["fact"]), _pp(row["lag"]),
+             _pp(row["delta"]) if row.get("delta") is not None else "—"]
+            for row in sections[:12]]))
+        shown = sections[:8]
+        out.append(charts.bar_chart(
+            "Разделы графика: план и факт выполнения", [row["section"][:22] for row in shown],
+            [{"name": "План", "values": [row["plan"] * 100 for row in shown]},
+             {"name": "Факт", "values": [row["fact"] * 100 for row in shown]}], "%", digits=0))
+    if breakdown.get("laggards"):
+        total = breakdown["laggards_total"]
+        out.append(f"<h3>Больше всего отстают (с отставанием {total} "
+                   f"{_plural(total, 'работа', 'работы', 'работ')})</h3>")
+        out.append(_table(["Работа", "Объект", "План к дате", "Выполнено", "Отставание", "Окончание по плану"], [
+            [esc(row["name"]), esc(row["object"]), _pct(row["plan"]), _pct(row["fact"]),
+             _pp(row["lag"]), _day(row["finish"])] for row in breakdown["laggards"]]))
+    if breakdown.get("stalled"):
+        out.append(f"<h3>Без прироста за {PERIODS[kind]} ({breakdown['stalled_total']})</h3>")
+        out.append("<p class='note'>План работы за период вырос, а процент выполнения тот же, "
+                   "что на начало периода.</p>")
+        out.append(_table(["Работа", "Объект", "План к дате", "Выполнено"], [
+            [esc(row["name"]), esc(row["object"]), _pct(row["plan"]), _pct(row["fact"])]
+            for row in breakdown["stalled"]]))
+    elif breakdown and not breakdown.get("stalled_known"):
+        out.append("<p class='note'>Работы без прироста не выделены: на начало периода не было "
+                   "графика с процентами.</p>")
+    return "\n".join(out)
+
+
+def _crew_html(block: dict[str, Any], kind: str) -> str:
+    esc = html.escape
+    if block.get("state") != "ok":
+        return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
+    now, before = block["now"], block["previous"]
+    out = []
+    if not now["days"]:
+        out.append(f"<p class='missing'>За период ни одного отчёта со стройки; последний — "
+                   f"от {_day(block.get('last_report'))}.</p>")
+    else:
+        def num(value: float | None) -> str:
+            return "—" if value is None else f"{value:.0f}"
+
+        out.append(_table(["", f"За {PERIODS[kind]}", "Предыдущий такой же период"], [
+            ["Дней с отчётом", f"{now['days']} из {block['period_days']}", str(before["days"])],
+            ["Рабочих в среднем в день", num(now["workers_avg"]), num(before["workers_avg"])],
+            ["Рабочих максимум", num(now["workers_max"]), num(before["workers_max"])],
+            ["ИТР в среднем в день", num(now["itr_avg"]), num(before["itr_avg"])]]))
+        if block.get("by_contractor"):
+            out.append(_table(["Подрядчик", "Рабочих в среднем", "ИТР в среднем", "Дней в отчётах"], [
+                [esc(row["name"]), f"{row['workers_avg']:.0f}", f"{row['itr_avg']:.0f}",
+                 str(row["days"])] for row in block["by_contractor"]]))
+    series = block.get("series") or []
+    if any(point["workers"] is not None for point in series):
+        out.append(charts.line_chart(
+            "Рабочих на площадке по дням (пропуск — дня без отчёта)",
+            [_date(p["day"]).strftime("%d.%m") for p in series],
+            [{"name": "Рабочие", "values": [p["workers"] for p in series]}],
+            "чел.", label_every=charts.every(len(series))))
+    out.append("<p class='note'>Плановой численности в графике работ нет — сравнение с "
+               "планом не приводится.</p>")
+    return "\n".join(out)
 
 
 def _scale(values: list[float | None]) -> tuple[float, str]:
@@ -1066,8 +1297,11 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<p class='note warn'>За этот период новый график с процентами "
                        f"не загружали, последний — от {_day(block['snapshot'])}.</p>")
         out.append(_physical_chart(block))
+        out.append(_breakdown_html(block.get("breakdown") or {}, report["kind"]))
     else:
         out.append(missing(block))
+    out.append("<h3>Люди на площадке</h3>")
+    out.append(_crew_html(report.get("crew") or {}, report["kind"]))
     block = report.get("schedule") or {}
     if block.get("state") == "ok" and block.get("forecast"):
         delay = block.get("delay_days")

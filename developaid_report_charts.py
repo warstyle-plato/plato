@@ -114,11 +114,15 @@ def line_chart(title: str, labels: Sequence[str], series: Sequence[dict[str, Any
         style = STYLES[index % len(STYLES)]
         styles.append(style)
         path, points = [], []
+        broken = True
         for i, value in enumerate(item["values"]):
             if value is None:
+                # Пропуск — разрыв линии: дня без данных нет, а не ноль.
+                broken = True
                 continue
             x, y = x_at(i), y_at(value)
-            path.append(f'{"M" if not path else "L"}{x:.1f},{y:.1f}')
+            path.append(f'{"M" if broken else "L"}{x:.1f},{y:.1f}')
+            broken = False
             points.append(_marker(style["marker"], x, y, style["color"]))
         if not path:
             continue

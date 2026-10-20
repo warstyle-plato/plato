@@ -62,8 +62,8 @@ def test_the_lag_and_its_change_over_the_period():
 def test_findings_carry_numbers_and_sources():
     built = _full()
     found = {item["topic"]: item for item in built["findings"]}
-    assert list(found) == ["Стройка", "Срок", "Бюджет месяца", "Продажи", "Финансирование",
-                           "Открытые вопросы"]
+    assert list(found) == ["Стройка", "Люди на площадке", "Отстающие работы", "Срок",
+                           "Бюджет месяца", "Продажи", "Финансирование", "Открытые вопросы"]
     assert "прогноз Монитора по темпу работ" == found["Срок"]["source"]
     lag = built["physical"]["lag"]
     assert f"отставание {report._pp(-lag)[1:]}" in found["Стройка"]["text"]
@@ -108,3 +108,68 @@ def test_axis_ticks_cover_the_data():
     for high in (0.73, 412.5, 17, 1, 2_999):
         ticks = charts._ticks(0, high)
         assert ticks[0] <= 0 and ticks[-1] >= high, (high, ticks)
+
+
+REPORT = """Добрый день.
+1. СПМ : Итр- 3чел., Рабочие - 6 чел.
+2. НУР:ИТР- 11чел.;
+Рабочие - 54чел.;
+3. Клодо ( кладка) - Итр- 2 чел.Рабочие - 12чел.
+По работам:
+1. НУР: Корпус 1 монолит
+"""
+
+
+def test_people_on_site_from_the_bots_reports():
+    import developaid_monitor_daily as daily
+
+    _full()
+    for day in ("2026-10-06", "2026-10-07", "2026-10-13", "2026-10-15"):
+        daily.store_daily_report(PROJECT, REPORT, day)
+    daily.store_daily_report(PROJECT, REPORT.replace("54чел", "24чел"), "2026-10-16")
+    got = report.crew(PROJECT, "week", "2026-10-18")
+    # Три отчёта за неделю: 72, 72, 42 рабочих; дни без отчёта не нули.
+    assert got["now"]["days"] == 3
+    assert got["now"]["workers_avg"] == pytest.approx((72 + 72 + 42) / 3)
+    assert got["now"]["workers_max"] == 72
+    assert got["previous"]["days"] == 2
+    assert got["previous"]["workers_avg"] == pytest.approx(72)
+    nur = next(row for row in got["by_contractor"] if "НУР" in row["name"])
+    assert nur["workers_avg"] == pytest.approx((54 + 54 + 24) / 3)
+    points = {p["day"]: p["workers"] for p in got["series"]}
+    assert points["2026-10-14"] is None and points["2026-10-16"] == 42
+    built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
+    found = {item["topic"]: item for item in built["findings"]}
+    assert "В среднем 62 рабочих" in found["Люди на площадке"]["text"]
+    assert "в предыдущий такой же период — 72 (−14%)" in found["Люди на площадке"]["text"]
+    page = report.render_html(built)
+    assert "Рабочих на площадке по дням" in page
+    assert "Плановой численности в графике работ нет" in page
+
+
+def test_no_reports_is_a_reason_not_zero():
+    _full()
+    got = report.crew(PROJECT, "week", "2026-10-18")
+    assert got["state"] == "missing"
+    assert "отчёты со стройки не приходили" in got["reason"].lower()
+
+
+def test_breakdown_by_works():
+    built = _full()
+    breakdown = built["physical"]["breakdown"]
+    # Обе работы отстают: «Фасад» (40% при плане ~54%) сильнее «Монолита».
+    names = [row["name"] for row in breakdown["laggards"]]
+    assert names[0] == "Фасад"
+    assert breakdown["laggards"][0]["lag"] < breakdown["laggards"][1]["lag"]
+    found = {item["topic"]: item for item in built["findings"]}
+    assert found["Отстающие работы"]["text"].startswith("Больше всего отстают: Фасад (Корпус 2)")
+
+
+def test_a_work_without_growth_is_flagged():
+    _project()
+    # Неделя назад и сейчас у «Монолита» 55% — прироста нет при идущем плане.
+    monitor.store_schedule_fact(PROJECT, _gpr_book({"1": 0.55, "2": 0.30}, cash=False),
+                                "2026-10-23")
+    built = report.build(PROJECT, "week", "2026-10-25")
+    stalled = built["physical"]["breakdown"]["stalled"]
+    assert [row["name"] for row in stalled] == ["Монолит"]
