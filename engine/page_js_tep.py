@@ -1881,12 +1881,12 @@ function siteParkingConflicts(id){
 function siteParkingBasis(id){
  const basis=(projectParking()||{}).k_basis||{};
  if(id==='parking_district')
-  return basis.district?'. Сейчас в расчёте: '+basis.district+(basis.district_source?' · '+basis.district_source:'')
-   :'. Сейчас в расчёте: района нет — разбор кадастра его не дал; без района льгота за МПТ не считается';
+  return basis.district?'. Сейчас в расчёте: '+basis.district+(basis.district_source?', источник — '+basis.district_source:'')
+   :'. Сейчас в расчёте района нет: по кадастровому номеру его определить не удалось. Без района льгота по плате за ВРИ за нежилые объекты не считается';
  if(id!=='parking_inside_ttk')return '';
  if(basis.inside_ttk===true||basis.inside_ttk===false)
-  return '. Сейчас в расчёте: '+(basis.inside_ttk?'внутри ТТК':'за ТТК')+(basis.ttk_source?' · '+basis.ttk_source:'');
- return '. Сейчас в расчёте: неизвестно — разбор кадастра признака не дал';
+  return '. Сейчас в расчёте: '+(basis.inside_ttk?'внутри ТТК':'за ТТК')+(basis.ttk_source?', источник — '+basis.ttk_source:'');
+ return '. Сейчас в расчёте положение неизвестно: по кадастровому номеру его определить не удалось';
 }
 // Что принял расчёт при пустом поле — из ответа движка (`parking.k1`, `k_origin`).
 function siteParkingPlaceholder(id){
@@ -1934,7 +1934,7 @@ function renderSitePanel(){
  // нормирует наземную поэтажную площадь: подземный паркинг в неё не входит.
  const normative=!inputs._glavapu_import;
  const unitEl=document.getElementById('siteDensityUnit');
- if(unitEl)unitEl.textContent=normative?(classRegion()==='other'?'м² квартир / га':'м² квартир / га · нормативы РНГП'):'м² поэтажной площади / га';
+ if(unitEl)unitEl.textContent=normative?(classRegion()==='other'?'м² квартир / га':'м² квартир / га по нормативам РНГП'):'м² поэтажной площади / га';
  renderOtherRegionNote();
  // Две «плотности» под одним словом путали: московская считается в м² СПП/га,
  // подмосковная — в м² продаваемых квартир/га. Эквивалент по методике
@@ -1948,14 +1948,17 @@ function renderSitePanel(){
    if(help)help.style.display=density>0?'':'none';
    equivEl.textContent=density>0
      ? (normative
-        ? '≈ '+num(density/(0.94*0.65))+' м² поэтажной площади (СПП) / га по методике Москвы'
-        : '≈ '+num(density*0.94*0.65)+' м² квартир / га в нормативах РНГП')
+        ? 'Здесь плотность — это метры квартир, которые можно продать, на гектар участка. '+
+          'По методике Москвы, где плотность меряют поэтажной площадью всех наземных зданий, это примерно '+
+          num(density/(0.94*0.65))+' м² на гектар.'
+        : 'Здесь плотность — это поэтажная площадь всех наземных зданий на гектар участка, как её меряет Москва. '+
+          'По нормативам РНГП, где считают только метры квартир на продажу, это примерно '+num(density*0.94*0.65)+' м² квартир на гектар.')
      : '';
  }
  const potLabel=document.getElementById('sitePotentialLabel');
  if(potLabel)potLabel.textContent=normative?'Потенциал продаваемой площади квартир':'Потенциал поэтажной площади';
  const useLabel=document.getElementById('siteUsageLabel');
- if(useLabel)useLabel.textContent=normative?'Использовано квартирами':'Использовано наземной ГНС';
+ if(useLabel)useLabel.textContent=normative?'Использовано квартирами':'Использовано наземными зданиями';
  let above=0,core=0;
  Object.entries(tep).forEach(([key,row])=>{
    const gns=tepRowAboveGns(key,row);above+=gns;
@@ -1977,7 +1980,7 @@ function renderSitePanel(){
    // соцобъекты: кнопка пересчёта их сознательно не трогает, а потенциал
    // участка они занимают наравне с жильём. Без разбивки это выглядит как
    // ошибка пересчёта.
-   :'Наземная ГНС проекта <b>'+num(above)+' м²</b> превышает потенциал участка <b>'+num(potential)+
+   :'Площадь наземных зданий проекта <b>'+num(above)+' м²</b> превышает потенциал участка <b>'+num(potential)+
     ' м²</b> при плотности '+num(effectiveSiteDensity())+' м²/га.'+
     (other>0.5?' В составе: жильё и коммерция 1 этажа — <b>'+num(core)+' м²</b>, прочие наземные (офисы, ТЦ, наземный паркинг, соцобъекты) — <b>'+
      num(other)+' м²</b>. Кнопка пересчёта меняет только жильё и коммерцию; отключите лишние объекты или поднимите плотность.'

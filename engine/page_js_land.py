@@ -248,8 +248,8 @@ function tepSourceLabel(manual){
  // выдавал бы каталог города за то, что человек вписал сам.
  if(manual){const src=((inputs._manual_tep_import||{}).source||{});return String(src.label||'Ручной шаблон DevelopAid')}
  const fmt=String(((glavapuImport||{}).source||{}).format||'');
- return /серверн/i.test(fmt)?'ГлавАПУ · серверный расчёт DevelopAid'
-                            :'ГлавАПУ · штатный калькулятор';
+ return /серверн/i.test(fmt)?'ГлавАПУ: расчёт по его формулам на сервере DevelopAid'
+                            :'ГлавАПУ: калькулятор на сайте';
 }
 // Сверка «наше / ГлавАПУ». Сервер ставит задание браузеру и отвечает сразу;
 // страница спрашивает тот же маршрут, пока задание не кончится. Таблицу
@@ -274,8 +274,8 @@ function glavapuScenarioHtml(a){
  if(a.state==='done'||a.comparison){
   const c=a.comparison||{rows:[],counts:{}};
   const counts=c.counts||{};
-  parts.push('<div class="note" style="margin:6px 0">ГлавАПУ — проверка (роль '+escapeHtml(a.role||'validation_only')+
-   '): его числа стоят рядом и ничего в проекте не заменяют. Совпало: '+(counts.match||0)+
+  parts.push('<div class="note" style="margin:6px 0">Калькулятор ГлавАПУ здесь только проверяет: его числа стоят рядом '+
+   'с нашими и ничего в проекте не заменяют. Совпало: '+(counts.match||0)+
    ', расходится: '+(counts.diff||0)+(counts.not_applied?', не принят параметр: '+counts.not_applied:'')+
    (counts.short?', не хватает: '+counts.short:'')+'.</div>');
   // Странности самой выгрузки — над таблицей: это не расхождение с нами,
@@ -295,9 +295,9 @@ function glavapuScenarioHtml(a){
     head='<tr class="glavapu-scenario-group"><td colspan="5" style="font-weight:600;background:#fafaf8">'+escapeHtml(r.group)+
      (notes[r.group]?'<div style="font-weight:400;font-size:11px;color:#555">'+escapeHtml(notes[r.group])+'</div>':'')+
      (r.group==='Соцобъекты, которые поставил калькулятор'&&typical.length?
-      '<div style="font-weight:400;font-size:11px;color:#555">Типовые здания калькулятора: '+typical.map(t=>
-       escapeHtml(t.name)+' — участок '+glavapuScenarioNum(t.site_ha)+' га, НП '+glavapuScenarioNum(t.np_ths)+
-       ', СПП '+glavapuScenarioNum(t.spp_ths)+' тыс. м², '+glavapuScenarioNum(t.places)+' мест').join('; ')+'</div>':'')+
+      '<div style="font-weight:400;font-size:11px;color:#555">Типовые здания калькулятора. '+typical.map(t=>
+       escapeHtml(t.name)+': участок '+glavapuScenarioNum(t.site_ha)+' га, полезная площадь '+glavapuScenarioNum(t.np_ths)+
+       ' тыс. м², поэтажная площадь '+glavapuScenarioNum(t.spp_ths)+' тыс. м², '+glavapuScenarioNum(t.places)+' мест.').join(' ')+'</div>':'')+
      '</td></tr>';
    }
    group=r.group;
@@ -326,12 +326,12 @@ function glavapuScenarioHtml(a){
   // Квартиры: штуки уходят (галочка калькулятора «через количество квартир»),
   // площадь квартир — нет: в режиме «СПП в ГНС» он считает её сам.
   const origin=sc.origin||{};
-  const flats=Number(p.flats_count||0)>0?'; квартир '+glavapuScenarioNum(p.flats_count)+' шт. (галочка «через количество квартир»)'
-   :'; число квартир не передано — в ТЭП его нет, калькулятор считает квартиры сам';
+  const flats=Number(p.flats_count||0)>0?' Квартир — '+glavapuScenarioNum(p.flats_count)+' шт. (галочка «через количество квартир»).'
+   :' Число квартир не передано: в ТЭП его нет, и калькулятор считает квартиры сам.';
   parts.push('<details style="margin-top:6px"><summary style="font-size:12px">Что передано калькулятору</summary><div class="note">'+
-   'Площадь '+glavapuScenarioNum(p.area_ha)+' га; СПП жилых зданий '+glavapuScenarioNum(p.spp_residential_ths)+
-   ' тыс. м², из них нежилая часть '+glavapuScenarioNum(p.vpp_pct)+'%; нежилые по ВРИ: '+nonres+
-   '; соцобъекты: '+social+flats+(p.land_right?'; право — '+escapeHtml(p.land_right):'')+'.'+
+   'Площадь участка — '+glavapuScenarioNum(p.area_ha)+' га. Поэтажная площадь жилых зданий — '+glavapuScenarioNum(p.spp_residential_ths)+
+   ' тыс. м², из них нежилая часть — '+glavapuScenarioNum(p.vpp_pct)+'%. Нежилые объекты по виду использования: '+nonres+
+   '. Соцобъекты: '+social+'.'+flats+(p.land_right?' Право на землю — '+escapeHtml(p.land_right)+'.':'')+
    (ratio?' Ползунок калькулятора «Соотношение жилых / нежилых зданий» встал на: '+escapeHtml(ratio.got)+'.':'')+
    (origin.flats_area?'<div style="margin-top:4px">Не передаётся: '+escapeHtml(origin.flats_area)+'.</div>':'')+'</div></details>');
  }
@@ -392,7 +392,7 @@ function glavapuScenarioSummaryHtml(a){
  const odd=(a.comparison.anomalies||[]).length;
  const warn=(refused?' Калькулятор не принял полей: '+refused+'.':'')+(notSent?' Не передано: '+notSent+'.':'')+
   (odd?' Найдено странностей калькулятора: '+odd+'.':'');
- return '<div class="toolbar" style="margin-top:8px"><span style="font-size:13px">'+escapeHtml(parts.join(' · '))+'.'+
+ return '<div class="toolbar" style="margin-top:8px"><span style="font-size:13px">'+escapeHtml(parts.join(', '))+'.'+
   (warn?'<span style="color:#8a4b08">'+escapeHtml(warn)+'</span>':'')+
   '</span><button class="btn dark" onclick="openGlavapuScenario()">Открыть сверку</button></div>';
 }
@@ -478,7 +478,7 @@ async function obtainCadastralTep(preAnalysis){
      return await obtainServerTep(analysis,status,runId);
    }
 
-   tepStep='штатный калькулятор ГлавАПУ';
+   tepStep='расчёт в калькуляторе ГлавАПУ';
    status.textContent='2 из 4 · Открываю калькулятор ГлавАПУ…';
    const area=Number((analysis.territory||{}).area_ha||0).toFixed(4);
    frame.src='/calc/?terrArea='+encodeURIComponent(area)+'&restrictArea=0&plato='+Date.now();
@@ -559,14 +559,14 @@ function stepFailure(step, error){
 function renderCadastralPreview(data){
  if(!data)return;
  const territory=data.territory||{},coeff=data.coefficients||{};
- const district=[territory.administrative_district,territory.district].filter(Boolean).join(' · ')||'—';
+ const district=[territory.administrative_district,territory.district].filter(Boolean).join(', ')||'—';
  const rail=coeff.rail==null?'—':Number(coeff.rail).toLocaleString('ru-RU',{maximumFractionDigits:4});
  cadastralSummary.innerHTML=[
    ['Участков',String(territory.parcel_count||0)],
    ['Площадь',Number(territory.area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4})+' га'],
    ['Район',district],
    ['Кадастровый квартал',territory.cadastral_quarter||'—'],
-   ['Коэффициент К1',rail+(coeff.rail_zone?' · '+coeff.rail_zone:'')]
+   ['Коэффициент К1',rail+(coeff.rail_zone?' ('+coeff.rail_zone+')':'')]
  ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
  const parcels=data.parcels||[];
  cadastralParcels.innerHTML=parcels.length?`<table><thead><tr><th>Кадастровый номер</th><th>Площадь, га</th></tr></thead><tbody>${parcels.map(x=>`<tr><td>${escapeHtml(x.cadastral_number)}</td><td>${Number(x.area_ha||0).toLocaleString('ru-RU',{minimumFractionDigits:4,maximumFractionDigits:4})}</td></tr>`).join('')}</tbody></table>`:'<div style="padding:10px;color:#777">Участки не распознаны.</div>';
@@ -678,13 +678,13 @@ function screeningWorkingHtml(numbers,finished,seconds){
  // участок, оценивать нечем — и мы не выдумываем.
  const left=done&&done<total?Math.round(seconds/done*(total-done)):0;
  const head='Проверяю градостроительные ограничения'+
-  (total>1?' — участок '+current+' из '+total:'')+' · '+seconds+' с'+
-  (left?' · осталось примерно '+left+' с':'');
+  (total>1?': участок '+current+' из '+total+', прошло ':'. Прошло ')+seconds+' с'+
+  (left?', осталось примерно '+left+' с':'')+'.';
  const steps=finished.map(item=>{
   const parcel=item.parcel;
-  let mark='сведений ЕГРН нет';
+  let mark='в ЕГРН нет сведений';
   if(parcel&&parcel.too_small){
-   mark='меньше порога — не проверялся';
+   mark='не проверялся: участок меньше порога';
   }else if(parcel&&parcel.found){
    const flags=parcel.findings||[];
    const killers=flags.filter(f=>f.flag_class==='killer').length;
@@ -696,10 +696,11 @@ function screeningWorkingHtml(numbers,finished,seconds){
   html:'<header>'+escapeHtml(head)+'</header>'+
    '<div class="progress"><i style="width:'+Math.round(100*done/total)+'%"></i></div>'+
    steps+
-   '<footer>Опрашиваются слои НСПД: ЗОУИТ, ООПТ, лесничества, красные линии, '+
-   'территориальные зоны — по шесть десятков слоёв на участок'+
-   (total>1?', и так '+total+' раза'.replace('раза', total<5?'раза':'раз'):'')+
-   '. Обычно две-три секунды на участок.</footer>'};
+   '<footer>Спрашиваем НСПД о зонах с особыми условиями использования территории, охраняемых природных '+
+   'территориях, лесничествах, красных линиях и территориальных зонах. Это около шестидесяти слоёв карты '+
+   'на каждый участок'+
+   (total>1?', а участков '+total:'')+
+   '. Обычно уходит две-три секунды на участок.</footer>'};
 }
 
 // Пятно застройки: контур участка и зоны поверх него, в одной плоскости.
@@ -738,7 +739,7 @@ function screeningSpotSvg(parcel){
   const colour=paint[zone.flag_class]||'#777';
   return `<span class="spot-key"><i style="background:${colour}"></i>`+
    `${escapeHtml(zone.name||zone.type_zone||'зона')}`+
-   `${zone.coverage_pct!=null?' · '+landNum(zone.coverage_pct,0)+'%':''}</span>`;
+   `${zone.coverage_pct!=null?', '+landNum(zone.coverage_pct,0)+'%':''}</span>`;
  }).join('');
  return `<div class="land-spot"><div class="land-spot-stage" `+
   `style="aspect-ratio:${w.toFixed(1)} / ${h.toFixed(1)};max-width:${Math.round(260*w/h)}px">`+
@@ -747,10 +748,10 @@ function screeningSpotSvg(parcel){
   `<path d="${toPath(rings)}" fill="none" stroke="#111" stroke-width="2.5" `+
   `fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
   `<div class="spot-legend">${legend}</div>`+
-  `<small>Границы участка — ЕГРН, зоны — НСПД. Наложение приблизительное: `+
-  `оценка по сетке, точность порядка процента.`+
-  ` · <a href="#" data-cad="${escapeHtml(parcel.cadastral_number||'')}"`+
-  ` onclick="landMapFromContour(this.dataset.cad);return false">развернуть карту</a></small></div>`;
+  `<small>Границы участка взяты из ЕГРН, зоны — из НСПД. Наложение приблизительное: `+
+  `мы оцениваем его по сетке, с точностью около процента. `+
+  `<a href="#" data-cad="${escapeHtml(parcel.cadastral_number||'')}"`+
+  ` onclick="landMapFromContour(this.dataset.cad);return false">Развернуть карту</a></small></div>`;
 }
 
 function screeningFlagLabel(cls){
@@ -771,9 +772,9 @@ function renderLandScreening(data){
  // Почему участок не проверен, если не проверен. «Чисто» на непроверенном —
  // тот же разрешительный вывод на пустоте, что и зелёный экран без запросов.
  const skipReason=p=>{
-  if(p.probe_failed)return 'запрос в НСПД не прошёл — не проверялся';
-  if(!p.found)return 'нет сведений ЕГРН — не проверялся';
-  if(p.too_small)return 'меньше '+landNum((data.min_area_sqm||0)/100,0)+' соток — не проверялся';
+  if(p.probe_failed)return 'не проверялся: запрос в НСПД не прошёл';
+  if(!p.found)return 'не проверялся: нет сведений ЕГРН';
+  if(p.too_small)return 'не проверялся: участок меньше '+landNum((data.min_area_sqm||0)/100,0)+' соток';
   if(p.verdict&&p.verdict.probed===false)return 'не проверялся';
   return '';
  };
@@ -785,8 +786,8 @@ function renderLandScreening(data){
    // одинаково выглядит и при срезанном угле, и при съеденном участке.
    `${f.coverage_pct!=null?' <span class="share">'+landNum(f.coverage_pct,0)+'% участка</span>':''}`+
    `<div class="meta">${escapeHtml(f.impact||'')}`+
-   `${f.reg_number?' · реестров'+((f.reg_numbers&&f.reg_numbers.length>1)?'ые №№ '+escapeHtml(f.reg_numbers.join(', '))+(f.reg_numbers_more>0?' и ещё '+f.reg_numbers_more:''):'ый № '+escapeHtml(f.reg_number)):''}`+
-   `${f.document_number?' · '+escapeHtml(f.document||'документ')+' № '+escapeHtml(f.document_number):''}`+
+   `${f.reg_number?', реестров'+((f.reg_numbers&&f.reg_numbers.length>1)?'ые №№ '+escapeHtml(f.reg_numbers.join(', '))+(f.reg_numbers_more>0?' и ещё '+f.reg_numbers_more:''):'ый № '+escapeHtml(f.reg_number)):''}`+
+   `${f.document_number?', '+escapeHtml(f.document||'документ')+' № '+escapeHtml(f.document_number):''}`+
    `${f.document_date?' от '+escapeHtml(f.document_date):''}</div></li>`;
  // Больше шести строк брокер не читает, а на плотном участке их бывает
  // три десятка: показываем главные, остальные — счётчиком (18.08.2026).
@@ -838,8 +839,8 @@ function renderLandScreening(data){
    const flags=p.findings||[];
    const skipped=skipReason(p);
    const head=`<div class="parcel">${escapeHtml(p.cadastral_number)}`+
-    `${p.area_ha!=null?' · '+landNum(p.area_ha,4)+' га':''}`+
-    ` · ${skipped?escapeHtml(skipped):(flags.filter(f=>f.flag_class==='killer').length?'есть запрет':(flags.length?flags.length+' ограничени'+(flags.length===1?'е':'й'):'чисто'))}</div>`;
+    `${p.area_ha!=null?', '+landNum(p.area_ha,4)+' га':''}`+
+    `: ${skipped?escapeHtml(skipped):(flags.filter(f=>f.flag_class==='killer').length?'есть запрет':(flags.length?flags.length+' ограничени'+(flags.length===1?'е':'й'):'чисто'))}</div>`;
    return head+(!skipped&&flags.length?list(flags):'');
   }).join('');
  }
@@ -854,15 +855,13 @@ function renderLandScreening(data){
  const asked=data.requested_count||data.parcels.length;
  const cut=Math.max(0,(data.requested_count||0)-(data.checked_count||0));
  box.className='land-screening '+tone;
- box.innerHTML=`<header>${escapeHtml(v.headline||'Оценка участка')}`+
-  `${asked>1?' · участков: '+asked:''}`+
-  `${asked>1?' · проверено: '+screened:''}`+
-  `${data.small_count?' · мелких пропущено: '+data.small_count:''}`+
-  `${missed?' · без сведений ЕГРН: '+missed:''}`+
-  `${unreached?' · НСПД не ответил: '+unreached:''}`+
-  `${cut?' · не поместилось в запрос: '+cut:''}`+
-  `${v.free_pct!=null?' · свободно от ограничений ~'+landNum(v.free_pct,0)+'% площади'+
-    (screened<asked?' (по проверенным)':''):''}</header>`+
+ const counts=[asked>1?'участков: '+asked:'',asked>1?'проверено: '+screened:'',
+  data.small_count?'мелких пропущено: '+data.small_count:'',missed?'без сведений ЕГРН: '+missed:'',
+  unreached?'НСПД не ответил: '+unreached:'',cut?'не поместилось в запрос: '+cut:''].filter(Boolean);
+ box.innerHTML=`<header>${escapeHtml(v.headline||'Оценка участка')}.`+
+  `${counts.length?' Всего '+counts.join(', ')+'.':''}`+
+  `${v.free_pct!=null?' Свободно от ограничений около '+landNum(v.free_pct,0)+'% площади'+
+    (screened<asked?' проверенных участков':'')+'.':''}</header>`+
   body+spot+
   `<footer>${escapeHtml(v.disclaimer||'')}`+
   `${data.small_count?' Участки мельче '+landNum((data.min_area_sqm||0)/100,0)+' соток не проверялись: '+
@@ -1036,9 +1035,9 @@ function landMapLost(img){
   // для номера участка сносило ровно тогда, когда НСПД молчит, — то есть в
   // том самом случае, ради которого функция и написана.
   const note=box&&box.querySelector('.land-map-note');
-  if(note){note.textContent='карта НСПД не ответила — чистый контур';return}
+  if(note){note.textContent='Карта НСПД не ответила, показан только контур.';return}
   const cap=box&&box.querySelector('small');
-  if(cap)cap.textContent=cap.textContent.replace('подложка — публичная карта НСПД','карта НСПД не ответила — чистый контур');
+  if(cap)cap.textContent=cap.textContent.replace('Фон — публичная карта НСПД.','Карта НСПД не ответила, показан только контур.');
  }catch(e){}
 }
 
@@ -1100,16 +1099,16 @@ function landTerritorySvg(found){
   // Номер показывается подписью, а не одной лишь всплывающей подсказкой SVG:
   // её ждать секунду, а на телефоне не бывает вовсе — «наведите, увидите
   // номер» обещало то, чего человек не видел.
-  `<small>Территория из ${items.length} участков в одном масштабе · `+
-  `<span class="land-map-note">подложка — публичная карта НСПД</span> · `+
-  `<a href="#" onclick="landMapFromTerritory();return false">развернуть карту</a> · `+
-  `<b id="landTerritoryLabel" style="color:#111">наведите на контур — увидите номер</b></small></div>`;
+  `<small>Территория из ${items.length} участков в одном масштабе. `+
+  `<span class="land-map-note">Фон — публичная карта НСПД.</span> `+
+  `<a href="#" onclick="landMapFromTerritory();return false">Развернуть карту</a>. `+
+  `<b id="landTerritoryLabel" style="color:#111">Наведите на контур, чтобы увидеть номер участка.</b></small></div>`;
 }
 
 function landTerritoryHover(path){
  const label=document.getElementById('landTerritoryLabel');
  if(!label)return;
- label.textContent=(path&&path.dataset.cad)||'наведите на контур — увидите номер';
+ label.textContent=(path&&path.dataset.cad)||'Наведите на контур, чтобы увидеть номер участка.';
 }
 
 function landMapFromTerritory(){
@@ -1149,7 +1148,7 @@ function landContourSvg(item){
   .join(' L ')+' Z').join(' ');
  const cosLat=item.center&&item.center.lat?Math.cos(item.center.lat*Math.PI/180):0;
  const widthM=cosLat?Math.round(spanX*cosLat):0;
- const scaleNote=widthM?` · ~${widthM.toLocaleString('ru-RU')} м по ширине`:'';
+ const scaleNote=widthM?` Ширина — около ${widthM.toLocaleString('ru-RU')} м.`:'';
  // Подложка — кадастровая карта НСПД под тем же bbox: соседи и кварталы
  // дают контекст «где это». Не загрузилась — картинка молча исчезает, и
  // остаётся чистый контур: подложка — украшение, а не данные.
@@ -1160,13 +1159,13 @@ function landContourSvg(item){
   `<img class="land-contour-map" src="${mapSrc}" alt="" loading="lazy" decoding="async" onerror="landMapLost(this)">`+
   `<svg viewBox="0 0 ${w.toFixed(1)} ${h.toFixed(1)}" preserveAspectRatio="none" role="img" aria-label="Границы участка по ЕГРН">`+
   `<path d="${paths}" fill="rgba(245,245,243,.35)" stroke="#111" stroke-width="2.5" fill-rule="evenodd" vector-effect="non-scaling-stroke"/></svg></div>`+
-  `<small>Границы по сведениям ЕГРН · `+
-  `<span class="land-map-note">подложка — публичная карта НСПД</span>${scaleNote}`+
+  `<small>Границы по сведениям ЕГРН. `+
+  `<span class="land-map-note">Фон — публичная карта НСПД.</span>${scaleNote}`+
   // Номер едет атрибутом, а не подстановкой в JS-строку обработчика:
   // escapeHtml превращает кавычку в &#39;, браузер раскодирует её обратно ДО
   // разбора скрипта — и экранированное значение снова становится кодом.
-  ` · <a href="#" data-cad="${escapeHtml(item.cadastral_number||'')}"`+
-  ` onclick="landMapFromContour(this.dataset.cad);return false">развернуть карту</a></small></div>`;
+  ` <a href="#" data-cad="${escapeHtml(item.cadastral_number||'')}"`+
+  ` onclick="landMapFromContour(this.dataset.cad);return false">Развернуть карту</a></small></div>`;
 }
 
 // Карта, которую крутят. Миниатюра отвечает на «как выглядит участок», а на
@@ -1394,8 +1393,8 @@ function renderLandMap(){
  const note=document.getElementById('landMapNote');
  if(note){
   note.textContent=LAND_MAP.measuring
-   ?'Линейка включена: щёлкните две точки — покажу расстояние по прямой. Оно же нужно для К1 приобъектной парковки, только там меряют по пешеходным путям до входа на станцию.'
-   :(LAND_MAP.note||'Тяните карту мышью или пальцем, колесо — увеличение. Границы — ЕГРН, зоны — НСПД, подложка — OpenStreetMap.');
+   ?'Линейка включена: щёлкните две точки, и мы покажем расстояние между ними по прямой. Для коэффициента К1 парковки расстояние до входа на станцию меряют пешком, поэтому оно будет длиннее.'
+   :(LAND_MAP.note||'Тяните карту мышью или пальцем, колесом мыши меняйте масштаб. Границы участков взяты из ЕГРН, зоны — из НСПД, фон — карта OpenStreetMap.');
  }
  const button=document.getElementById('landMapRuler');
  if(button)button.textContent=LAND_MAP.measuring?'Линейка включена':'Линейка';
@@ -1437,7 +1436,7 @@ function landCardHtml(item,showContour){
  }
  const rows=[
   ['Адрес',item.address||'—'],
-  ['Площадь',item.area_sqm!=null?landNum(item.area_sqm,0)+' м² · '+landNum(item.area_ha,4)+' га':'—'],
+  ['Площадь',item.area_sqm!=null?landNum(item.area_sqm,0)+' м² ('+landNum(item.area_ha,4)+' га)':'—'],
   ['Категория земель',item.category||'—'],
   ['Разрешённое использование',item.permitted_use||'—'],
   ['Кадастровая стоимость',item.cadastral_value_mln!=null?landNum(item.cadastral_value_mln,3)+' млн ₽':'—'],
@@ -1449,9 +1448,9 @@ function landCardHtml(item,showContour){
   ['Субъект РФ',item.region||'—'],
   ['Координаты центра',landCoords(item.center)]
  ];
- if(item.matched_address)rows.push(['Адрес по геокодеру',item.matched_address+(item.geocoder?' · '+item.geocoder:'')]);
+ if(item.matched_address)rows.push(['Адрес по геокодеру',item.matched_address+(item.geocoder?' ('+item.geocoder+')':'')]);
  return `<div class="land-item"><header><h4>${escapeHtml(item.cadastral_number||'—')}</h4>`+
-  `<span class="land-kind">${escapeHtml(item.kind_label||'')}${item.cadastral_value_date?' · оценка от '+escapeHtml(landDate(item.cadastral_value_date)):''}</span></header>`+
+  `<span class="land-kind">${escapeHtml(item.kind_label||'')}${item.cadastral_value_date?', оценка от '+escapeHtml(landDate(item.cadastral_value_date)):''}</span></header>`+
   `<div class="land-grid">${rows.map(r=>`<div><small>${escapeHtml(r[0])}</small><b>${escapeHtml(r[1])}</b></div>`).join('')}</div>${showContour?landContourSvg(item):''}${mapLink}</div>`;
 }
 
@@ -1466,7 +1465,7 @@ function renderLandLookup(data){
   ['Найдено',found.length+' из '+results.length],
   ['Суммарная площадь',totalHa?landNum(totalHa,4)+' га':'—'],
   ['Кадастровая стоимость',totalValue?landNum(totalValue,1)+' млн ₽':'—'],
-  ['Субъект РФ',regions.join(' · ')||'—']
+  ['Субъект РФ',regions.join(', ')||'—']
  ].map(x=>`<div><small>${escapeHtml(x[0])}</small><b>${escapeHtml(x[1])}</b></div>`).join('');
  // Несколько участков — общий вид территории один на всех, карточки без своих
 // мини-карт: иначе на 30 участков вышло бы 30 повторов той же подложки.
