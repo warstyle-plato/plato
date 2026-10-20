@@ -74,11 +74,11 @@ function syncMoPrice(){
  if(found&&found.price){
   field.value=Math.round(found.price);
   if(unit)unit.textContent=found.basis==='округ'
-   ? '₽/м² · по округу, распоряжение 114-Р'
-   : '₽/м² · среднее по области: округа нет в распоряжении';
+   ? '₽/м². Цена по округу участка из распоряжения 114-Р'
+   : '₽/м². Округа нет в распоряжении 114-Р, поэтому взято среднее по области';
  }else{
   field.value='';
-  if(unit)unit.textContent='₽/м² · определится по округу участка';
+  if(unit)unit.textContent='₽/м². Определится по округу участка';
  }
 }
 
@@ -126,13 +126,13 @@ function syncMoKd(){
  const found=moDistrictPrices[district];
  if(found&&found.kd!=null){
   field.value=found.kd;
-  if(unit)unit.textContent='доля · '+(Math.round(found.kd*1000)/10)+'% по таблице 3 постановления № 1745';
+  if(unit)unit.textContent='доля. Это '+String(Math.round(found.kd*1000)/10).replace('.',',')+'% по таблице 3 постановления № 1745-ПП';
  }else if(district){
   field.value='';
-  if(unit)unit.textContent='доля · округа нет в таблице 3, задайте вручную';
+  if(unit)unit.textContent='доля. Округа нет в таблице 3 постановления № 1745-ПП, задайте коэффициент вручную';
  }else{
   field.value='';
-  if(unit)unit.textContent='доля · определится по округу участка';
+  if(unit)unit.textContent='доля. Определится по округу участка';
  }
 }
 
@@ -143,7 +143,7 @@ function toggleMoKd(){
  if(!field||!manual)return;
  field.readOnly=!manual.checked;
  if(manual.checked){
-  if(unit)unit.textContent='доля · задано вручную, справочник не применяется';
+  if(unit)unit.textContent='доля. Задано вручную, справочник не применяется';
   field.focus();
  }else{
   syncMoKd();
@@ -158,7 +158,7 @@ function toggleMoPrice(){
  if(!field||!manual)return;
  field.readOnly=!manual.checked;
  if(manual.checked){
-  if(unit)unit.textContent='₽/м² · задано вручную, справочник не применяется';
+  if(unit)unit.textContent='₽/м². Задано вручную, справочник не применяется';
   field.focus();
  }else{
   syncMoPrice();
@@ -171,14 +171,15 @@ function renderMoPriceState(state,kdState){
  if(!node)return;
  const count=Number(state.count||0);
  node.innerHTML=count
-  ?'<b>Справочник Кср: '+count+' муниципальных образований</b>'+(state.period?' · '+escapeHtml(state.period):'')+
-   (state.region_average?' · среднее по области '+landNum(state.region_average,0)+' ₽/м²':'')+
+  ?'<b>Средняя цена метра жилья (Кср) известна для '+count+' муниципальных образований'+
+   (state.period?' на '+escapeHtml(state.period):'')+'.</b>'+
+   (state.region_average?' В среднем по области — '+landNum(state.region_average,0)+' ₽/м².':'')+
    (state.document?'<br><span style="color:#888">'+escapeHtml(state.document)+'</span>':'')+
-   '<br>Кср и УПКС подставляются по округу автоматически, загружать ничего не нужно.'
-  :'Справочник Кср недоступен — Кср берётся из поля выше или из УПКС округа.';
+   '<br>Цена метра и кадастровая стоимость подставляются по округу сами, загружать ничего не нужно.'
+  :'Справочник цен на жильё сейчас недоступен. Цену метра возьмём из поля выше, а если оно пустое — из удельного показателя кадастровой стоимости (УПКС) жилья в округе.';
  const kd=Number((kdState||{}).count||0);
  if(kd){
-  node.innerHTML+='<br><br><b>Коэффициент доходности Кд: '+kd+' муниципальных образований</b>'+
+  node.innerHTML+='<br><br><b>Коэффициент доходности (Кд) известен для '+kd+' муниципальных образований.</b>'+
    ((kdState||{}).document?'<br><span style="color:#888">'+escapeHtml(kdState.document)+'</span>':'');
  }
 }

@@ -141,7 +141,7 @@ def test_the_page_draws_the_contradiction_in_red(core) -> None:
     got = json.loads(out)
     assert len(got["conflicts"]) == 1 and "«за ТТК»" in got["conflicts"][0]
     assert got["other"] == []
-    assert "Сейчас в расчёте: за ТТК · вписано в проекте" in got["basis"]
+    assert "Сейчас в расчёте: за ТТК, источник — вписано в проекте" in got["basis"]
     card = got["card"]
     assert 'class="note vri-benefits-conflict"' in card and "#b3261e" in card
     assert card.index("vri-benefits-conflict") < card.index("<table")

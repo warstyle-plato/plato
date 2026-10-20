@@ -171,7 +171,7 @@ def test_the_map_reuses_the_geometry_already_drawn():
 def test_the_minature_offers_to_open_the_map():
     assert 'onclick="landMapFromContour(' in core.PAGE
     assert 'id="landMapStage"' in core.PAGE
-    assert core.PAGE.count("развернуть карту") >= 2, (
+    assert core.PAGE.count("Развернуть карту") >= 2, (
         "кнопка нужна и у миниатюры участка, и у пятна застройки")
 
 

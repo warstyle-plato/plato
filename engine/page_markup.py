@@ -230,7 +230,7 @@ PAGE += r"""</head>
             <b id="sitePotential" class="site-value">—</b>
           </div>
           <div class="field">
-            <label><span id="siteUsageLabel">Использовано наземной ГНС</span> <span class="unit">от потенциала</span></label>
+            <label><span id="siteUsageLabel">Использовано наземными зданиями</span> <span class="unit">от потенциала</span></label>
             <b id="siteUsage" class="site-value">—</b>
           </div>
         </div>
@@ -281,13 +281,13 @@ PAGE += r"""</head>
              разрывали путь «ввёл участок — получил ТЭП». -->
         <details class="cadastral-box mo-box" id="moParamsBox">
           <summary>Параметры расчёта по Московской области</summary>
-          <p>Заполняются из справочников автоматически. Меняйте, только если знаете фактические значения по проекту — введённое всегда важнее справочного. <b>Правка любого параметра сразу пересчитывает результат</b> по тому же участку; результат показывается на вкладке «Вводные», под сведениями ЕГРН.</p>
+          <p>Плотность, площадь участка и средняя площадь квартиры дают ТЭП: сколько метров квартир можно построить, сколько нужно мест в детских садах и школах и сколько машино-мест. Плата за смену разрешённого использования участка (ВРИ) в Подмосковье считается так: средняя цена метра жилья в округе (Кср) × площадь квартир × коэффициент доходности (Кд). Числа подставляются из справочников сами. Меняйте их, только если знаете точные значения по своему проекту: введённое вами важнее справочного. <b>Правка любого параметра сразу пересчитывает ТЭП участка.</b></p>
           <div class="mo-params">
-            <div class="field"><label>Плотность <span class="unit">м² на 1 га · то же поле, что в карточке участка</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
-            <div class="field"><label>Площадь участка вручную <span class="unit">га, если участка нет в ЕГРН · то же поле, что в карточке участка</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="из ЕГРН"></div>
-            <div class="field"><label>Городской округ <span class="unit">для УПКС и Кср</span></label><select id="moDistrict"><option value="">определить по участку</option></select></div>
-            <div class="field"><label>Средняя цена м², Кср <span class="unit" id="moPriceUnit">₽/м² · из справочника</span></label><input type="number" id="moPrice" value="" step="1000" readonly><label class="mo-manual"><input type="checkbox" id="moPriceManual" onchange="toggleMoPrice()"> задать вручную</label></div>
-            <div class="field"><label>Коэффициент доходности Кд <span class="unit" id="moKdUnit">доля · из справочника</span></label><input type="number" id="moKd" value="" step="0.01" readonly><label class="mo-manual"><input type="checkbox" id="moKdManual" onchange="toggleMoKd()"> задать вручную</label></div>
+            <div class="field"><label>Плотность <span class="unit">м² квартир на гектар. Это то же поле, что в карточке «Участок и плотность»</span></label><input type="number" id="moDensity" value="30000" step="500"></div>
+            <div class="field"><label>Площадь участка вручную <span class="unit">га. Заполните, если участка нет в ЕГРН. Это то же поле, что в карточке «Участок и плотность»</span></label><input type="number" id="moArea" value="" step="0.0001" placeholder="из ЕГРН"></div>
+            <div class="field"><label>Городской округ <span class="unit">по нему берутся цена метра жилья и кадастровая стоимость</span></label><select id="moDistrict"><option value="">определить по участку</option></select></div>
+            <div class="field"><label>Средняя цена м², Кср <span class="unit" id="moPriceUnit">₽/м². Берётся из справочника</span></label><input type="number" id="moPrice" value="" step="1000" readonly><label class="mo-manual"><input type="checkbox" id="moPriceManual" onchange="toggleMoPrice()"> задать вручную</label></div>
+            <div class="field"><label>Коэффициент доходности Кд <span class="unit" id="moKdUnit">доля. Берётся из справочника</span></label><input type="number" id="moKd" value="" step="0.01" readonly><label class="mo-manual"><input type="checkbox" id="moKdManual" onchange="toggleMoKd()"> задать вручную</label></div>
             <div class="field"><label>Средняя площадь квартиры <span class="unit">м²</span></label><input type="number" id="moFlat" value="" step="0.25"><span class="hint" id="moFlatBasis"></span></div>
           </div>
           <div class="mo-price-line"><span id="moPriceState">Справочники загружаются…</span></div>
