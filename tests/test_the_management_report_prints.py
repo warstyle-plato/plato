@@ -80,9 +80,18 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
         from pypdf import PdfReader
     except ImportError:
         return
-    text = " ".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(pdf)).pages)
+    text = " ".join(" ".join((page.extract_text() or "").split())
+                    for page in PdfReader(io.BytesIO(pdf)).pages)
     assert "Сводка по проекту" in text and "Бюджет месяца" in text
     # Блок финансирования: выборка кредита — те же числа, что на странице.
     assert "Финансирование" in text and "Выборка кредита" in text
+    # Первая страница — «Главное», графики напечатаны (их подписи — текст SVG).
+    first = PdfReader(io.BytesIO(pdf)).pages[0].extract_text() or ""
+    assert "Главное за период" in first
+    # Подпись и столбцы графика бюджета напечатаны текстом SVG: те же 400,0 и
+    # 150,0 млн ₽, что в таблице (pypdf теряет двоеточие, поэтому без него).
+    chart = text[text.index("Бюджет на октябрь 2026"):]
+    assert "план и оплачено по статьям" in chart[:80]
+    assert "400,0 150,0 Стройка и проектирование" in chart
     assert "Финансирование" in month
     assert "400,0" in text, "в PDF не те числа, что на странице"
