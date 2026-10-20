@@ -596,7 +596,8 @@ def test_the_page_shows_ours_and_glavapu_side_by_side(core, monkeypatch) -> None
     out, _ = page_blocks.run(prelude, tail)
     got = json.loads(out)
     html = got["html"]
-    assert "validation_only" in html and "ничего в проекте не заменяют" in html
+    assert "здесь только проверяет" in html and "ничего в проекте не заменяют" in html
+    assert "validation_only" not in html, "служебное имя роли на экран не выходит"
     # Все шесть групп сверки на месте и в порядке задания владельца.
     order = [html.find(t) for t in ("СПП и ГНС по видам", "Соцобъекты", "Машино-места по видам",
                                     ">МПТ<", "Стоимость смены ВРИ", ">Плотность<")]
