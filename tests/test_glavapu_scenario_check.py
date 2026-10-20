@@ -596,7 +596,8 @@ def test_the_page_shows_ours_and_glavapu_side_by_side(core, monkeypatch) -> None
     out, _ = page_blocks.run(prelude, tail)
     got = json.loads(out)
     html = got["html"]
-    assert "validation_only" in html and "ничего в проекте не заменяют" in html
+    assert "здесь только проверяет" in html and "ничего в проекте не заменяют" in html
+    assert "validation_only" not in html, "служебное имя роли на экран не выходит"
     # Все шесть групп сверки на месте и в порядке задания владельца.
     order = [html.find(t) for t in ("СПП и ГНС по видам", "Соцобъекты", "Машино-места по видам",
                                     ">МПТ<", "Стоимость смены ВРИ", ">Плотность<")]
@@ -611,7 +612,7 @@ def test_the_page_shows_ours_and_glavapu_side_by_side(core, monkeypatch) -> None
     assert got["status"].startswith("Сверка готова")
     # «Что передано»: наши квартиры ушли штуками, площадь квартир — названа
     # как не передаваемая, с коэффициентом калькулятора.
-    assert "квартир 2 389 шт." in html.replace("\u00a0", " ").replace("\u202f", " ")
+    assert "Квартир — 2 389 шт." in html.replace("\u00a0", " ").replace("\u202f", " ")
     assert "Не передаётся: площадь квартир калькулятору не передаётся" in html and "0,65" in html
     # Причина у населения и у постоянных мест — одна и та же пара строк:
     # его режим «через количество квартир» и его коэффициент площади квартир.
