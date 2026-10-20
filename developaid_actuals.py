@@ -57,8 +57,11 @@
 
 from __future__ import annotations
 
+import collections
 import datetime
+import hashlib
 import os
+import pickle
 import re
 from pathlib import Path
 from typing import Any
@@ -215,13 +218,81 @@ def _sheet(path: Any, name: str) -> Any:
 # и тот же РСС двадцать раз (смета ×4, платежи ×3, акты ×5 — 29 секунд на
 # запрос), а тренд повторяет это на каждом снимке. Файлы снимков не
 # перезаписываются, поэтому ключ надёжен; поток из памяти не кэшируется.
-# Наружу уходит глубокая копия — чтобы правка результата не портила кэш.
-_READ_CACHE: dict[tuple, Any] = {}
-_READ_CACHE_LIMIT = 24
+#
+# Помнится в два слоя. В памяти — сериализованный результат (наружу уходит
+# свежая распаковка, поэтому правка результата не портит кэш), с пределом по
+# объёму, а не по числу записей: прежний предел в 24 записи при четырёх
+# читателях на снимок вмещал шесть снимков, и тренд по пятнадцати неделям
+# вытеснял сам себя — каждый срез заново разбирал все РСС, около двух минут
+# (владелец, 20.10.2026). На диске — рядом с файлом, в `.parsed/`: воркеров
+# два, память у них раздельная, и после перезапуска первый срез не должен
+# разбирать всю историю. Ключ диска включает отпечаток этого модуля: правка
+# читателя делает старые разборы невидимыми.
+_READ_CACHE: "collections.OrderedDict[tuple, bytes]" = collections.OrderedDict()
+_READ_CACHE_BYTES = 256 * 1024 * 1024
+_READ_CACHE_DIR = ".parsed"
+_SOURCE_PRINT = hashlib.sha1(Path(__file__).read_bytes()).hexdigest()[:12]
+# Где разбор можно класть на диск: каталоги снимков, а не любой файл (иначе
+# `.parsed/` вырос бы рядом с образцами в репозитории). Каталог отдаёт функция
+# — его владелец (монитор) спрашивается при обращении, а не на импорте.
+DISK_CACHE_ROOTS: list = []
+
+
+def _disk_allowed(path: Path) -> bool:
+    try:
+        target = os.path.realpath(path)
+    except (TypeError, OSError):
+        return False
+    for root in DISK_CACHE_ROOTS:
+        try:
+            base = os.path.realpath(root())
+        except Exception:  # noqa: BLE001
+            continue
+        if target.startswith(base.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def _disk_cache_path(fn_name: str, path: Path, stat: os.stat_result,
+                     args: tuple, kwargs: dict) -> Path:
+    extra = hashlib.sha1(repr((args, sorted(kwargs.items()))).encode("utf-8")).hexdigest()[:8]
+    name = (f"{path.stem}.{fn_name}.{stat.st_mtime_ns}.{stat.st_size}."
+            f"{extra}.{_SOURCE_PRINT}.pickle")
+    return path.parent / _READ_CACHE_DIR / name
+
+
+def _disk_load(place: Path) -> bytes | None:
+    try:
+        return place.read_bytes()
+    except OSError:
+        return None
+
+
+def _disk_store(place: Path, blob: bytes) -> None:
+    """Положить разбор рядом с файлом; не вышло — работаем без диска."""
+    try:
+        place.parent.mkdir(exist_ok=True)
+        prefix = place.name.split(".", 2)[:2]
+        for old in place.parent.glob(f"{prefix[0]}.{prefix[1]}.*.pickle"):
+            if old.name != place.name:
+                old.unlink(missing_ok=True)
+        temp = place.with_name(f"{place.name}.{os.getpid()}.tmp")
+        temp.write_bytes(blob)
+        os.replace(temp, place)
+    except OSError:
+        pass
+
+
+def _remember(key: tuple, blob: bytes) -> None:
+    _READ_CACHE[key] = blob
+    _READ_CACHE.move_to_end(key)
+    total = sum(len(value) for value in _READ_CACHE.values())
+    while total > _READ_CACHE_BYTES and len(_READ_CACHE) > 1:
+        _, dropped = _READ_CACHE.popitem(last=False)
+        total -= len(dropped)
 
 
 def _cached_read(fn):
-    import copy as _copy
     import functools
 
     @functools.wraps(fn)
@@ -232,11 +303,27 @@ def _cached_read(fn):
             return fn(path, *args, **kwargs)
         key = (fn.__name__, str(path), stat.st_mtime_ns, stat.st_size,
                args, tuple(sorted(kwargs.items())))
-        if key not in _READ_CACHE:
-            if len(_READ_CACHE) >= _READ_CACHE_LIMIT:
-                _READ_CACHE.pop(next(iter(_READ_CACHE)))
-            _READ_CACHE[key] = fn(path, *args, **kwargs)
-        return _copy.deepcopy(_READ_CACHE[key])
+        blob = _READ_CACHE.get(key)
+        if blob is not None:
+            _READ_CACHE.move_to_end(key)
+            return pickle.loads(blob)
+        place = (_disk_cache_path(fn.__name__, Path(path), stat, args, kwargs)
+                 if _disk_allowed(Path(path)) else None)
+        blob = _disk_load(place) if place is not None else None
+        if blob is not None:
+            try:
+                result = pickle.loads(blob)
+            except Exception:  # noqa: BLE001 — битый разбор: читаем файл заново
+                blob = None
+            else:
+                _remember(key, blob)
+                return result
+        result = fn(path, *args, **kwargs)
+        blob = pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL)
+        _remember(key, blob)
+        if place is not None:
+            _disk_store(place, blob)
+        return pickle.loads(blob)
     return wrapper
 
 
