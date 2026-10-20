@@ -225,6 +225,10 @@ class AuctionLot:
         value["lot_kind"] = self.lot_kind.value
         value["origin"] = self.origin.value if isinstance(self.origin, LotOrigin) else str(self.origin)
         value["subject"] = lot_subject(self.lot_kind)
+        # Участок — предмет лота: им читается фильтр «участок от N га».
+        # Правило одно, в классификаторе; страница своей копии не держит.
+        from auction_search.classifier import land_in_deal
+        value["land_in_deal"] = land_in_deal(self.lot_kind, self.title)
         value["source"]["platform"] = self.source.platform.value
         return value
 
