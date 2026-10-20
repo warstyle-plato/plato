@@ -579,7 +579,7 @@ def _v4_input_format_code(kind: str, unit: str, value: Any = None) -> str | None
 
     if unit.startswith("%") or unit.startswith("п.п."):
         return _V4_FMT_PCT_FINE if decimals(100) > 1 else _V4_FMT_PCT
-    if re.match(r"(мес|лет|год|шт|мест|пос\.)", unit):
+    if re.match(r"(мес|лет|год|шт|мест|пос\.|посещ)", unit):
         return _V4_FMT_COUNT
     if (unit.startswith("м²") and unit[2:3] not in ("/", "(")) or unit.startswith("м "):
         return _V4_FMT_AREA

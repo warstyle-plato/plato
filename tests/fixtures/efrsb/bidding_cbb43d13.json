@@ -1,0 +1,47 @@
+{
+ "_source": "GET /backend/biddings/cbb43d13-5c05-4131-88a7-2a6a277679a1, 19.10.2026",
+ "answer": {
+  "priceForm": "OpenForm",
+  "message": {
+   "guid": "5ea9be17-d759-407d-9802-1644c8b27f76",
+   "number": "25074336",
+   "datePublish": "2026-10-15T11:23:53.903"
+  },
+  "type": {
+   "code": "PublicOffer",
+   "name": "Публичное предложение"
+  },
+  "applicationPeriod": {
+   "startDate": "2026-10-19T12:00:00",
+   "endDate": "2027-03-15T12:00:00"
+  },
+  "biddingPeriod": {
+   "startDate": "2026-10-19T12:00:00"
+  },
+  "tradePlace": {
+   "name": "«Электронная площадка «Вердиктъ»",
+   "guid": "f9cbaede-4232-4afa-9d66-cbfd85376b84",
+   "url": "www.vertrades.ru"
+  },
+  "organizer": {
+   "name": "Маслов Игорь Николаевич"
+  },
+  "arbitrManager": {
+   "type": "Person",
+   "guid": "f7606128-02c3-4699-a788-40e58f993728",
+   "name": "Маслов Игорь Николаевич",
+   "inn": "571800270101"
+  },
+  "debtor": {
+   "ogrn": "1027739100322",
+   "type": "Company",
+   "guid": "70339258-c5f3-40f8-bfb3-e3377a8eef3f",
+   "name": "ООО \"ИНЖТЕХСВЯЗЬ\"",
+   "inn": "7713210910"
+  },
+  "legalCase": {
+   "guid": "4edf6580-dc74-47e9-842f-2f3a9a355593",
+   "number": "А40-248870/2018"
+  }
+ }
+}

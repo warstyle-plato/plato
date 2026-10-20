@@ -1155,13 +1155,13 @@ function undergroundFieldNote(){
  const per=undergroundAreaPerSpace();
  const normSpaces=Math.round(p.spaces);
  const normArea=Math.round(p.gns||p.spaces*per);
- const norm=`По нормативу: ${num(normSpaces)} м/м · ${num(normArea)} м²`;
+ const norm=`По нормативу нужно ${num(normSpaces)} машино-мест на ${num(normArea)} м²`;
  if(!parkingByHand(PROJECT_PARKING_KEY))
-  return {text:norm+'. Оба числа выше поставил норматив — они следуют за ТЭП. Впишите своё, чтобы перебить.',short:false};
+  return {text:norm+'. Оба числа выше поставил норматив, и они меняются вместе с ТЭП. Чтобы задать своё, впишите его в поле.',short:false};
  const spaces=Number(inputs.underground_manual_spaces||0);
  const gap=spaces-normSpaces;
- const diff=gap<0?` — дефицит ${num(-gap)} м/м`:gap>0?` — на ${num(gap)} м/м больше положенного`:'';
- return {text:`Задано руками: ${num(spaces)} м/м${diff}. ${norm}. Правка ТЭП вернёт норматив; очистить поле — вернуться к нему сейчас.`,short:gap<0};
+ const diff=gap<0?`, это на ${num(-gap)} меньше нормы`:gap>0?`, это на ${num(gap)} больше нормы`:'';
+ return {text:`Задано руками: ${num(spaces)} машино-мест${diff}. ${norm}. Если поменять ТЭП, вернётся норматив. Чтобы вернуться к нему сразу, очистите поле.`,short:gap<0};
 }
 
 function renderObjectParkingNote(){

@@ -361,6 +361,7 @@ PAGE += r"""</head>
           </div>
         </div>
         <div class="note">Текущий одноочередный расчёт не меняется. В многоочередном режиме каждая очередь считается отдельно тем же движком, после чего строится единый свод без двойного счёта.</div>
+        <div id="phaseFinanceHint" class="note phase-config-only">Очереди включены. Проверьте, как финансируются очереди, в разделе «Экономика → Финансирование». <button type="button" class="btn" style="margin-top:8px" onclick="openPhaseFinancing()">Перейти к финансированию очередей</button></div>
         <div class="phase-grid phase-config-only">
           <div class="field"><label>Количество очередей</label><select id="phaseCount" onchange="setPhaseCount(Number(this.value))"><option selected>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select></div>
           <div class="field"><label>Целевой размер очереди, продаваемых м²</label><input id="phaseTargetSize" type="number" step="5000" value="70000" onchange="phasing.target_size_sqm=Number(this.value);renderPhasing()"></div>
@@ -388,27 +389,32 @@ PAGE += r"""</head>
         <div class="scroll" style="max-height:none"><table class="phase-table"><thead id="phaseTepHead"></thead><tbody id="phaseTepBody"></tbody></table></div>
       </div>
 
-      <div class="card phase-config-only">
-        <div class="report-title">
-          <div><div class="section-title">Стратегия финансирования очередей</div><h2>Независимые линии или единый денежный поток проекта</h2></div>
-        </div>
-        <div style="display:grid;gap:8px;margin:10px 0">
-          <label><input id="phaseFinancingIndependent" name="phaseFinancingStrategy" type="radio" value="independent" onchange="setPhaseFinancingStrategy(this.value)"> Независимое финансирование очередей <small>— по умолчанию</small></label>
-          <label><input id="phaseFinancingUnified" name="phaseFinancingStrategy" type="radio" value="unified_project_cash" onchange="setPhaseFinancingStrategy(this.value)"> Единый денежный поток проекта</label>
-        </div>
-        <div class="note">В едином потоке уже полученный свободный cash предыдущих очередей после обслуживания их долга уменьшает затраты следующей очереди до РНС. Эскроу, будущая прибыль, лимиты БРИДЖ/ПФ и банковский долг другой очереди не используются.</div>
-        <div style="display:grid;gap:8px;margin:12px 0 4px">
-          <label><input id="phaseCarryDebt" type="checkbox" onchange="setPhaseCarryDebt(this.checked)"> Непогашенный долг очереди переходит в ПФ следующей</label>
-          <label title="Очередь передала долг, но продавать не перестала. Банк забирает долю её поступлений напрямую в погашение; остальное остаётся резервом проекта."><input id="phaseSweepCash" type="checkbox" onchange="setPhaseSweepCash(this.checked)"> Кэш-свип: банк забирает долю поступлений очереди, передавшей долг</label>
-          <label style="margin-left:18px">доля банку, %: <input id="phaseSweepPct" type="number" min="0" max="100" step="5" style="width:64px" onchange="setPhaseSweepPct(this.value)"></label>
-        </div>
-        <div class="note">Долг принимается в дату открытия ПФ следующей очереди по генеральному соглашению: лимита он не выбирает, но проценты несёт как тело и разбавляет покрытие эскроу, а в знаменателе LLCR принявшей очереди стоит. Перенос допустим только если общий LLCR проекта не ниже 1,00x — иначе банк не спасает проект, а откладывает дефолт, и перенос отказывается с названной причиной. Excel-книга о переносе пока не знает: с включённым признаком её финансирование разойдётся с отчётом.</div>
-        <div id="phaseFinancingSummary" class="phase-status" style="margin:10px 0">Выполните расчёт очередей.</div>
-        <div class="scroll"><table class="phase-table">
-          <thead><tr><th>Очередь</th><th>Затраты до РНС</th><th>Свободный cash проекта</th><th>Собственные средства</th><th>Новый БРИДЖ</th><th>ПФ после РНС</th></tr></thead>
-          <tbody id="phaseFinancingBody"></tbody>
-        </table></div>
-      </div>
+      <!-- Стратегия финансирования очередей живёт в «Экономика → Финансирование»
+           последним блоком группы: её туда ставит renderInputs из этого шаблона
+           (одна разметка), и только при очередности на 2+ очереди. Выбор хранится
+           в `phasing`, а не в узлах, поэтому скрытый блок значений не теряет. -->
+      <template id="phaseFinancingTemplate">
+        <section class="field-card" id="phaseFinancingBlock">
+          <div class="field-section">Стратегия финансирования очередей</div>
+          <div class="hint" style="color:#666;font-size:12px">Каждая очередь финансируется отдельно или деньги проекта общие для всех очередей.</div>
+          <div style="display:grid;gap:8px;margin:10px 0">
+            <label><input id="phaseFinancingIndependent" name="phaseFinancingStrategy" type="radio" value="independent" onchange="setPhaseFinancingStrategy(this.value)"> Независимое финансирование очередей <small>— по умолчанию</small></label>
+            <label><input id="phaseFinancingUnified" name="phaseFinancingStrategy" type="radio" value="unified_project_cash" onchange="setPhaseFinancingStrategy(this.value)"> Единый денежный поток проекта</label>
+          </div>
+          <div class="note">В едином потоке деньги, которые предыдущие очереди уже заработали и которые остались у них после выплат по кредитам, идут на расходы следующей очереди до разрешения на строительство (РнС). Деньги покупателей на счетах эскроу, будущая прибыль, ещё не взятые кредиты — бридж (кредит на старт проекта до проектного финансирования) и проектное финансирование (ПФ, банковский кредит на стройку) — и кредит другой очереди на это не тратятся.</div>
+          <div style="display:grid;gap:8px;margin:12px 0 4px">
+            <label><input id="phaseCarryDebt" type="checkbox" onchange="setPhaseCarryDebt(this.checked)"> Если очередь не успела вернуть кредит, остаток долга переходит в проектное финансирование следующей очереди</label>
+            <label title="Очередь передала долг, но продолжает продавать квартиры. Банк забирает долю её выручки сразу в погашение долга, а остальное остаётся в запасе проекта."><input id="phaseSweepCash" type="checkbox" onchange="setPhaseSweepCash(this.checked)"> Банк забирает долю выручки очереди, которая передала свой долг следующей</label>
+            <label style="margin-left:18px">Сколько выручки забирает банк, %: <input id="phaseSweepPct" type="number" min="0" max="100" step="5" style="width:64px" onchange="setPhaseSweepPct(this.value)"></label>
+          </div>
+          <div class="note">Долг переходит в тот день, когда банк по общему договору открывает проектное финансирование следующей очереди. Лимит кредита этой очереди он не расходует, но проценты на него начисляются как на обычный долг. Из-за него деньги покупателей на эскроу покрывают меньшую часть кредита, и он учитывается в коэффициенте покрытия долга очереди, которая его приняла (LLCR — во сколько раз деньги, которые проект ещё получит, перекрывают долг). Перенос разрешён, только если этот коэффициент по всему проекту не ниже 1,00. Иначе банк не спасает проект, а только откладывает дефолт, и расчёт откажет в переносе, назвав причину. Excel-файл перенос долга пока не учитывает: если его включить, финансирование в файле разойдётся с отчётом.</div>
+          <div id="phaseFinancingSummary" class="phase-status" style="margin:10px 0">Расчёт очередей ещё не выполнен.</div>
+          <div class="scroll"><table class="phase-table">
+            <thead><tr><th>Очередь</th><th>Расходы до разрешения на строительство</th><th>Оплачено свободными деньгами проекта</th><th>Собственные средства</th><th>Новый бридж</th><th>Проектное финансирование после разрешения на строительство</th></tr></thead>
+            <tbody id="phaseFinancingBody"></tbody>
+          </table></div>
+        </section>
+      </template>
 
       <div class="card phase-config-only">
         <div class="section-title">Общепроектные расходы — фактический Cash Flow</div>

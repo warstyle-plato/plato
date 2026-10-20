@@ -166,7 +166,7 @@ __DEVELOPAID_CONTOUR__
    </div>
   </div>
   <div class="filters" id="auctionFilters">
-    <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option><option value="torgi_gov">ГИС Торги</option><option value="etp_gpb">ЭТП ГПБ</option><option value="etp_rf">ЭТП РФ</option><option value="sberbank_ast">Сбербанк-АСТ</option><option value="nistp">НИС</option></select>
+    <select id="source"><option value="all">Все официальные источники</option><option value="investmoscow">Торги Москвы → ЭТП</option><option value="lot_online">РАД / Lot-online</option><option value="roseltorg">Росэлторг</option><option value="torgi_gov">ГИС Торги</option><option value="etp_gpb">ЭТП ГПБ</option><option value="etp_rf">ЭТП РФ</option><option value="sberbank_ast">Сбербанк-АСТ</option><option value="nistp">НИС</option><option value="efrsb">ЕФРСБ</option></select>
     <select id="origin" title="Городские торги и банкротные — разные рынки: у города цена не снижается, у банкротного лота она ползёт от начальной к минимальной по графику"><option value="all">Все торги</option><option value="city">Городские</option><option value="bankruptcy">Банкротные</option><option value="seized">Арест и ИП</option><option value="other">Прочие</option></select>
     <div class="multi" id="auctionKindBox">
       <button type="button" class="multi-toggle" id="auctionKindToggle" aria-haspopup="true" aria-expanded="false" aria-controls="auctionKindMenu">Все типы</button>

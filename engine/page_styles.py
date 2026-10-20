@@ -375,7 +375,7 @@ details.cadastral-box>summary::marker{color:#888}
 .phase-comparison-card{display:none}
 #revenueTable tr.rs-part td:first-child{padding-left:18px;color:#555}
 #revenueTable tr.rs-total td{font-weight:700;border-top:1.5px solid #111}
-[data-needs][hidden],#nonresStrategyCard[hidden],#hotelReportCard[hidden]{display:none!important}
+[data-needs][hidden],#nonresStrategyCard[hidden],#hotelReportCard[hidden],#phaseFinancingBlock[hidden]{display:none!important}
 .hotel-usali th,.hotel-usali td{white-space:nowrap;text-align:right;padding:3px 6px;font-size:11px}
 .hotel-usali td:first-child,.hotel-usali th:first-child{text-align:left;position:sticky;left:0;background:#fff}
 .hotel-kpi td:last-child{text-align:right;white-space:nowrap}

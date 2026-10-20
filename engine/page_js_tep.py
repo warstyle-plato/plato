@@ -783,7 +783,7 @@ function renderTep(){
        : ` <span class="tep-note">`
          +`Площадь считается от мест ${moscowSocialStepsApply()
            ?'по нормативу Москвы (2151-ПП)':'по нормативу области (калькулятор МО) / поля'}. Чтобы вписать свою — `
-         +`«Социальная нагрузка → Соцобъекты и плата за ВРИ → Требование КРТ».</span>`;
+         +`в блоке «Социальная нагрузка» выберите в поле «Как задаются соцобъекты» вариант «Ручной ввод».</span>`;
    }
    if(TEP_RATIOS[key]){
      const own=tepNoteText(key);
@@ -2358,9 +2358,9 @@ function vriRequiredToggled(el){
 function krtVriFeeNote(){
  const back=Number(inputs._krt_vri_restored_mln||0);
  return '<div class="note krt-vri-fee-note" style="margin:0 0 6px;padding:11px 12px">'
-  +'Режим «Требование КРТ» плату за смену ВРИ не отменяет: её уменьшают льготы проекта '
-  +'за нежилые объекты (МПТ) и передачу квартир городу — расчёт в конце блока «Социальная нагрузка».'
-  +(back>0?` Возвращено ${num(back)} млн ₽, которые прежний режим КРТ обнулил.`:'')
+  +'Ручной ввод соцобъектов плату за смену ВРИ не отменяет. Её уменьшают льготы проекта '
+  +'за нежилые объекты (МПТ) и за передачу квартир городу. Расчёт — в конце блока «Социальная нагрузка».'
+  +(back>0?` Возвращено ${num(back)} млн ₽: прежняя версия расчёта при ручном вводе соцобъектов обнуляла плату.`:'')
   +'</div>';
 }
 
@@ -2368,7 +2368,7 @@ function krtVriFeeNote(){
 // остаётся к оплате. Все числа — из результата движка (`vri.totals`,
 // `vri.benefits`): страница не считает льготу второй раз.
 function krtVriFooterHtml(vri){
- const head='<div class="krt-vri-footer-head" style="font-weight:600;margin-bottom:4px">Плата за смену ВРИ в КРТ</div>';
+ const head='<div class="krt-vri-footer-head" style="font-weight:600;margin-bottom:4px">Плата за смену ВРИ при ручном вводе соцобъектов</div>';
  const wrap=html=>'<div class="note krt-vri-footer" style="margin:10px 0 0;padding:11px 12px">'+head+html+'</div>';
  if(!vri||!vri.totals)return wrap('Пересчитайте проект — здесь появится льгота и плата к оплате.');
  const t=vri.totals, b=vri.benefits||{};
@@ -2403,7 +2403,7 @@ function krtVriFooterHtml(vri){
  if(b.mpt_reason&&!b.override)return wrap(escapeHtml(b.mpt_reason)
   +' Пока льготы нет — <b>плата за ВРИ начисляется: '+mln(pay)+' млн ₽</b>.'+why);
  return wrap('Льготы нет: в проекте нет нежилых объектов с льготой за МПТ и передачи квартир городу. '
-  +'Режим КРТ плату не отменяет — <b>плата за ВРИ начисляется: '+mln(pay)+' млн ₽</b>.'+why);
+  +'Ручной ввод соцобъектов плату не отменяет, поэтому <b>плата за ВРИ начисляется: '+mln(pay)+' млн ₽</b>.'+why);
 }
 function renderKrtVriFooter(){
  const box=document.getElementById('krtVriFooter');
@@ -2428,8 +2428,8 @@ function renderKrtVriFooter(){
 function derivedLine(name,key,counted,offered){
  const kept=Number(inputs[key]||0),now=Number(counted||0);
  if(krtLocks(key))
-  return name+': осталось '+num(kept)+' — поле заперто требованием КРТ'
-   +(Math.abs(kept-now)<0.001?'':'; метод дал бы '+num(now));
+  return name+': осталось '+num(kept)+'. Соцобъекты вписаны вручную, и пересчёт это поле не меняет.'
+   +(Math.abs(kept-now)<0.001?'':' По расчёту вышло бы '+num(now)+'.');
  if(!offered)
   return name+': осталось '+num(kept)+' — метод числа не дал, поле не тронуто';
  return name+': '+num(kept);
@@ -2454,7 +2454,7 @@ function applyDerivedInputs(values,options){
   if(options&&options.written)options.written(key);
  });
  return skipped.length
-  ?'Не тронуто — вписано требованием КРТ: '+skipped.join(', ')+'.'
+  ?'Не тронуто, потому что вписано вручную: '+skipped.join(', ')+'.'
   :'';
 }
 // Отложенный пересчёт ТЭП. Объявление обязано быть: `clearTimeout(tepAutoTimer)`
@@ -2761,7 +2761,7 @@ async function socialPopulationSwitched(methodBefore){
  if(classRegion()==='other')
   return sayPopulationSwitch('Этот переключатель здесь не действует: участок не в Москве и не в Московской области, норм соцобъектов его региона у нас нет, и места стоят нашими умолчаниями — поправьте их сами.');
  if(krtRequirementEntered())
-  return sayPopulationSwitch('Места соцобъектов и компенсация вписаны как требование КРТ, поэтому переключатель их не меняет. Чтобы считать их от числа жителей, выберите в поле «Соцобъекты и плата за ВРИ» норматив Москвы.');
+  return sayPopulationSwitch('Места соцобъектов и компенсация вписаны вручную, поэтому переключатель их не меняет. Чтобы считать их от числа жителей, выберите в поле «Как задаются соцобъекты» вариант «По нормативу».');
  if(!Number((tep.apartments&&tep.apartments.saleable)||0))
   return sayPopulationSwitch('Места соцобъектов не пересчитаны: в ТЭП не задана продаваемая площадь квартир, а число жителей считается от неё.');
  sayPopulationSwitch('Пересчитываю места соцобъектов под выбранный способ…');
@@ -2950,7 +2950,7 @@ async function recalcFromTep(options){
  // о подстановке, которой не было, только крупнее.
  const wrote=Object.keys(derived).some(key=>!krtLocks(key))||parkingNow!==parkingWas;
  const head=wrote?(silent?'Пересчитано под новый ТЭП: ':'Подставлено: ')
-  :'Подставлять нечего — поля заперты требованием КРТ, а машино-места не изменились: ';
+  :'Подставлять нечего: соцобъекты вписаны вручную, а машино-места не изменились. ';
  say(head+lines.map(escapeHtml).join('<br>')
    +'<br>Ставки территории взяты из исходного расчёта ГлавАПУ и применены к новым метрам. '
    +'Проверено обратным ходом: на исходном ТЭП метод воспроизводит его числа.',true);
