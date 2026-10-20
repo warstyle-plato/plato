@@ -906,13 +906,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     def _cabinet_dir() -> Path:
-        """Где лежит склад источников — спрашивается при обращении.
-
-        Замороженный на импорте путь означает, что проверка кабинета пишет в
-        рабочее дерево репозитория: приложение собирается один раз, а `DATA_DIR`
-        у проверки свой.
-        """
-        return Path(os.getenv("DATA_DIR", "data")) / "market"
+        return sales_store.default_dir()
 
     def _sales_view(kept: dict[str, Any]) -> dict[str, Any]:
         """Свод продаж из того, что лежит на складе.

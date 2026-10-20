@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,16 @@ KINDS = {
     "plan": "план продаж и отчёт правлению",
     "salesroom": "чат отдела продаж",
 }
+
+def default_dir() -> Path:
+    """Где лежит склад источников — спрашивается при обращении.
+
+    Замороженный на импорте путь означает, что проверка кабинета пишет в
+    рабочее дерево репозитория: приложение собирается один раз, а `DATA_DIR`
+    у проверки свой. Кабинет и сводка руководству читают один и тот же склад.
+    """
+    return Path(os.getenv("DATA_DIR", "data")) / "market"
+
 
 _SLUG = re.compile(r"[^a-zа-яё0-9]+", re.I)
 
