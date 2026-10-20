@@ -757,11 +757,31 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                 - month).days
         elapsed = min(1.0, (end - month).days / days + 1 / days) if end >= month else 0.0
         parts = []
-        for line in block["lines"]:
-            if line.get("plan"):
-                parts.append(f"{line['label'].lower()} — оплачено {_rub(line['fact'])} из "
-                             f"{_rub(line['plan'])} ({_pct(_share(line['fact'], line['plan']))}), "
-                             f"осталось {_rub(line['remaining'])}")
+        table = block.get("by_budget_article") or {}
+        total = table.get("total") or {}
+        if total.get("plan"):
+            # Итог и статьи — из той же таблицы, что в документе.
+            parts.append(f"по стройке и коммерческим расходам оплачено {_rub(total['fact'])} "
+                         f"из {_rub(total['plan'])} ({_pct(total['share'])}), "
+                         f"осталось {_rub(total['remaining'])}")
+            for chapter in table["chapters"]:
+                line = chapter["total"]
+                if chapter["key"] != "service" and line.get("plan"):
+                    parts.append(f"{chapter['label'].lower()} — оплачено {_rub(line['fact'])} "
+                                 f"из {_rub(line['plan'])} ({_pct(line['share'])})")
+            rows = {row["key"]: row for chapter in table["chapters"] for row in chapter["rows"]}
+            over = [rows[key] for key in table.get("overrun") or []]
+            if over:
+                parts.append("перерасход: " + ", ".join(
+                    f"«{row['label']}» на {_rub(-row['remaining'])}" for row in over[:3]))
+            left = rows.get(table.get("largest_left") or "")
+            if left:
+                parts.append(f"больше всего не оплачено по статье «{left['label']}» — "
+                             f"{_rub(left['remaining'])} из {_rub(left['plan'])}")
+            loose = [row for chapter in table["chapters"] for row in chapter["rows"]
+                     if row["key"] == "unplanned" and chapter["key"] != "service"]
+            if loose:
+                parts.append(f"без плана в бюджете оплачено {_rub(sum(r['fact'] for r in loose))}")
         forecast = _budget_forecast(block, end)
         build = next((row for row in forecast if row["label"].startswith("Стройка")), None)
         if build:
@@ -769,17 +789,13 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                          f"{_rub(build['forecast'])} — "
                          + (f"на {_rub(build['gap'])} больше плана" if build["gap"] > 0
                             else f"на {_rub(-build['gap'])} меньше плана"))
-        articles = block.get("articles") or {}
-        if articles.get("known") and articles["rows"] and articles["rows"][0].get("delta"):
-            top = articles["rows"][0]
-            parts.append(f"самое большое отклонение за {_months_label(articles['month'])} — "
-                         f"«{top['article']}»: "
-                         + (f"перерасход {_rub(top['delta'])}" if top["delta"] > 0
-                            else f"недоосвоение {_rub(-top['delta'])}"))
         if parts:
-            add("Бюджет месяца", "; ".join(parts).capitalize()
+            text = "; ".join(parts)
+            add("Бюджет месяца", text[:1].upper() + text[1:]
                 + f". Прошло {_pct(elapsed)} месяца.",
-                f"план-факт БДДС от {_day(block.get('budget_file'))}, РСС от {_day(block['rss'])}")
+                f"план-факт БДДС от {_day(block.get('budget_file'))}, РСС от {_day(block['rss'])}",
+                "bad" if (table.get("overrun") or (total.get("share") is not None
+                                                   and total["share"] > elapsed + 0.1)) else "")
         else:
             add("Бюджет месяца", block.get("reason") or "Плана на месяц нет.",
                 f"РСС от {_day(block['rss'])}", "missing")
@@ -1138,18 +1154,35 @@ def render_text(report: dict[str, Any]) -> str:
 # --------------------------------------------------------------------------
 
 REPORT_STYLE = """
-body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#17202a;font-size:12px;margin:0}
-h1{font-size:18px;margin:0 0 2px}h2{break-after:avoid;page-break-after:avoid;font-size:14px;margin:18px 0 6px;border-bottom:1px solid #d6dde6;padding-bottom:3px}
+body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#17202a;font-size:11.5px;line-height:1.4;margin:0}
+h1{font-size:20px;margin:0 0 2px;color:#0f2a4d}
+h2{break-after:avoid;page-break-after:avoid;font-size:15px;color:#1f4e8c;margin:20px 0 8px;border-bottom:2px solid #1f4e8c;padding-bottom:3px}
+h3{break-after:avoid;page-break-after:avoid;font-size:12px;margin:14px 0 4px;color:#17202a}
 .sub{color:#5b6b7d;font-size:11px;margin-bottom:8px}
-table{border-collapse:collapse;width:100%;margin:4px 0}th,td{border:1px solid #d6dde6;padding:4px 6px;text-align:right}
-th:first-child,td:first-child{text-align:left}th{background:#f2f5f8;font-weight:600}
-.note{color:#5b6b7d;font-size:11px;margin:4px 0}.warn{color:#9a5b00}.missing{color:#9a5b00;font-style:italic}
+table{border-collapse:collapse;width:100%;margin:4px 0 6px;break-inside:avoid;page-break-inside:avoid}
+tr{break-inside:avoid;page-break-inside:avoid}
+th,td{border-bottom:1px solid #e1e6ec;padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+th:first-child,td:first-child{text-align:left;white-space:normal}
+.keep{break-inside:avoid;page-break-inside:avoid}th{background:#eef2f7;font-weight:600;color:#334155;border-bottom:1px solid #c5cfdb}
+.neg{color:#b42318;font-weight:600}
+table.articles tr.chapter td{background:#f4f7fb;font-weight:600}
+table.articles tr.total td{border-top:2px solid #1f4e8c;font-weight:600}
+table.articles tr.over td{background:#fdecea}table.articles tr.left td{background:#fff6dd}
+.note{color:#5b6b7d;font-size:10.5px;margin:4px 0}.warn{color:#9a5b00}.missing{color:#9a5b00;font-style:italic}
 .item{margin:4px 0}.item b{font-weight:600}
-.findings{display:block}.finding{border-left:3px solid #1f4e8c;padding:5px 9px;margin:7px 0;background:#f6f8fb}
-.finding.bad{border-left-color:#b2541a}.finding.missing{border-left-color:#9aa5b1;color:#5b6b7d}
-.finding b{display:block;font-size:12.5px;margin-bottom:2px}.finding .source{color:#6b7785;font-size:10px;margin-top:2px}
-h3{font-size:12.5px;margin:12px 0 4px}.pagebreak{break-after:page;page-break-after:always}
-figure.chart{margin:8px 0 4px;break-inside:avoid}figure.chart figcaption{font-size:11px;color:#333;margin-bottom:2px;font-weight:600}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0 4px}
+.tile{border:1px solid #d6dde6;border-top:4px solid #1f4e8c;border-radius:4px;padding:7px 9px;break-inside:avoid;background:#fff}
+.tile.good{border-top-color:#2e7d32}.tile.bad{border-top-color:#b42318;background:#fff8f7}.tile.missing{border-top-color:#9aa5b1}
+.tile .k{font-size:10px;color:#5b6b7d;text-transform:uppercase;letter-spacing:.02em}
+.tile .v{font-size:20px;font-weight:700;margin:2px 0;color:#0f2a4d}.tile.bad .v{color:#b42318}.tile.missing .v{font-size:13px;color:#7b8794;font-weight:600}
+.tile .n{font-size:10px;color:#475569}
+ul.findings{margin:6px 0;padding-left:18px}ul.findings li{margin:5px 0;padding-left:2px}
+ul.findings li.bad::marker{color:#b42318}ul.findings li.missing{color:#5b6b7d}
+ul.findings li b{font-weight:700}ul.findings li.bad b{color:#b42318}
+.finding .source{color:#7b8794;font-size:10px}
+.pagebreak{break-after:page;page-break-after:always}
+section{break-inside:auto}
+figure.chart{margin:10px 0 6px;break-inside:avoid;page-break-inside:avoid}figure.chart figcaption{font-size:11.5px;color:#17202a;margin-bottom:3px;font-weight:600}
 svg.chart{display:block;max-width:100%}
 """
 
@@ -1263,6 +1296,172 @@ def _budget_forecast(block: dict[str, Any], end: datetime.date) -> list[dict[str
     return out
 
 
+def _signed_rub(value: float | None) -> str:
+    """Отклонение: минус — красным (перерасход, отставание, недобор)."""
+    if value is None:
+        return "—"
+    return f"<span class='neg'>{_rub(value)}</span>" if value < -0.5 else _rub(value)
+
+
+def _budget_articles_html(table: dict[str, Any]) -> str:
+    """Бюджет месяца по статьям БДДС: план, оплачено по РСС, остаток, процент."""
+    esc = html.escape
+    if not table.get("chapters"):
+        return ""
+    over = set(table.get("overrun") or [])
+    left = table.get("largest_left")
+    rows = []
+
+    def cells(row: dict[str, Any], label: str, codes: str = "") -> list[str]:
+        if row.get("plan") is not None:
+            plan = _rub(row["plan"])
+        elif row.get("key") == "unplanned":
+            plan = "без плана"
+        elif row.get("in_budget") is False:
+            plan = "нет в бюджете"
+        else:
+            plan = "—"
+        return [label, esc(codes), plan, _rub(row["fact"]), _signed_rub(row.get("remaining")),
+                _pct(row.get("share"))]
+
+    for chapter in table["chapters"]:
+        single = chapter["key"] == "service"
+        if not single:
+            rows.append(("chapter", cells(chapter["total"], f"<b>{esc(chapter['label'])}</b>")))
+        for row in chapter["rows"]:
+            if row.get("plan") is None and not row["fact"]:
+                continue
+            tone = "over" if row["key"] in over else ("left" if row["key"] == left else "")
+            label = esc(row["label"]) if single else "&nbsp;&nbsp;" + esc(row["label"])
+            rows.append((tone, cells(row, label, row.get("rss", ""))))
+    rows.append(("total", cells(table["total"], f"<b>{esc(table['total']['label'])}</b>")))
+    head = ["Статья бюджета", "Коды РСС", "План месяца", "Оплачено", "Осталось", "Выполнено"]
+    body = "".join(f"<tr class='{tone}'>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>"
+                   for tone, row in rows)
+    out = [f"<table class='articles'>{_row(head, True)}{body}</table>"]
+    notes = ["Красным — статьи с перерасходом, жёлтым — статья с самым большим "
+             "неоплаченным остатком."]
+    if any(chapter["key"] == "service" for chapter in table["chapters"]):
+        notes.append("Служба заказчика в итог не входит: в статье 2.6 РСС кроме службы "
+                     "заказчика и охраны лежат зарплаты офиса и связь, которые бюджет "
+                     "относит к административным расходам, — её процент с планом не сравним.")
+    if not table.get("has_plan"):
+        notes.append("Бюджета на этот месяц нет — показаны только оплаты.")
+    out.append("<p class='note'>" + " ".join(notes) + "</p>")
+    return "\n".join(out)
+
+
+def _quarter_elapsed(end: datetime.date) -> float:
+    start = datetime.date(end.year, (end.month - 1) // 3 * 3 + 1, 1)
+    stop = _month_shift_up(start, 3)
+    return min(1.0, ((end - start).days + 1) / (stop - start).days)
+
+
+def _month_shift_up(month: datetime.date, ahead: int) -> datetime.date:
+    index = month.year * 12 + month.month - 1 + ahead
+    return datetime.date(index // 12, index % 12 + 1, 1)
+
+
+def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
+    """Плитки первой страницы: главное число блока и тон отклонения.
+
+    Числа — из уже посчитанных блоков, как и выводы; нет данных — плитка так и
+    говорит, а не показывает ноль.
+    """
+    end = _date(report["end"])
+    out: list[dict[str, str]] = []
+
+    def add(label: str, value: str | None, note: str, tone: str = "") -> None:
+        if value is None:
+            out.append({"label": label, "value": "нет данных", "note": note, "tone": "missing"})
+        else:
+            out.append({"label": label, "value": value, "note": note, "tone": tone})
+
+    block = report.get("physical") or {}
+    if block.get("state") == "ok":
+        lag = block.get("lag")
+        add("Стройка: выполнено", _pct(block["fact"]),
+            f"план {_pct(block.get('plan'))}"
+            + (f", {_pp(lag)}" if lag is not None else ""),
+            "bad" if lag is not None and lag < -0.02 else "good")
+    else:
+        add("Стройка: выполнено", None, "нет графика с процентами")
+
+    block = report.get("crew") or {}
+    now = (block.get("now") or {}) if block.get("state") == "ok" else {}
+    if now.get("days"):
+        before = block["previous"]
+        change = (now["workers_avg"] / before["workers_avg"] - 1
+                  if before.get("days") and before.get("workers_avg") else None)
+        add("Рабочих в среднем в день", f"{now['workers_avg']:.0f}",
+            f"в прошлый период {before['workers_avg']:.0f}" if change is not None
+            else f"по {now['days']} отчётам",
+            "bad" if change is not None and change < -0.05 else "")
+    else:
+        add("Рабочих в среднем в день", None, "отчётов со стройки за период нет")
+
+    block = report.get("sales") or {}
+    quarter = (block.get("quarter") or {}) if block.get("state") == "ok" else {}
+    pace = _quarter_elapsed(end)
+    for name, key in (("финмодели", "fm"), ("банка", "bank")):
+        plan = (quarter.get(key) or {}).get("amount")
+        if quarter and plan:
+            share = quarter["fact"]["amount"] / plan
+            add(f"Продажи квартала к плану {name}", _pct(share),
+                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)}; прошло {_pct(pace)} квартала",
+                "bad" if share < pace - 0.05 else "good")
+        else:
+            add(f"Продажи квартала к плану {name}", None,
+                "плана нет" if quarter else "отчёт о продажах не подключён")
+
+    block = report.get("funding") or {}
+    limit = (block.get("limit") or {}) if block.get("state") == "ok" else {}
+    if limit.get("known"):
+        extra = float(limit.get("additional_financing") or 0.0)
+        add("Остаток лимита банка", _rub(limit.get("bank_remaining")),
+            f"не хватает {_rub(extra)} с {_months_label(limit.get('additional_financing_from'))}"
+            if extra > 0 else "хватает до ввода по прогнозу", "bad" if extra > 0 else "good")
+    else:
+        add("Остаток лимита банка", None, "лимит не посчитан")
+    queues = ((block.get("escrow") or {}).get("queues") or []) if block else []
+    cover = next((q for q in queues if q.get("plan_coverage_at") is not None), None)
+    if cover:
+        pace_cover = cover.get("keeping_pace_coverage")
+        worst = min(v for v in (cover["plan_coverage_at"], pace_cover) if v is not None)
+        add("Эскроу покрывает кредит", _times(cover["plan_coverage_at"]),
+            f"по плану; при нынешнем темпе {_times(pace_cover)}" if pace_cover is not None
+            else "по плану финмодели", "bad" if worst < 1 else "good")
+    else:
+        add("Эскроу покрывает кредит", None, "нет плана кредита или эскроу")
+
+    block = report.get("budget") or {}
+    table = block.get("by_budget_article") or {}
+    elapsed = (_month_elapsed(_date(block["month"]), end)
+               if block.get("state") in {"ok", "partial"} else 0.0)
+    over = set(table.get("overrun") or [])
+    for key, label in (("construction", "Бюджет стройки"), ("commercial", "Бюджет коммерции")):
+        chapter = next((c for c in table.get("chapters") or [] if c["key"] == key), None)
+        line = (chapter or {}).get("total") or {}
+        if line.get("plan"):
+            hit = [row for row in chapter["rows"] if row["key"] in over]
+            add(f"{label} за месяц", _pct(line["share"]),
+                f"оплачено {_rub(line['fact'])} из {_rub(line['plan'])}; прошло {_pct(elapsed)} месяца"
+                + (f"; перерасход по {len(hit)} "
+                   f"{_plural(len(hit), 'статье', 'статьям', 'статьям')}" if hit else ""),
+                "bad" if hit or line["share"] > elapsed + 0.1 else "")
+        else:
+            add(f"{label} за месяц", None, "плана месяца нет")
+    return out
+
+
+def _tiles_html(items: list[dict[str, str]]) -> str:
+    esc = html.escape
+    return ("<div class='tiles'>" + "".join(
+        f"<div class='tile {esc(item['tone'])}'><div class='k'>{esc(item['label'])}</div>"
+        f"<div class='v'>{esc(item['value'])}</div><div class='n'>{esc(item['note'])}</div></div>"
+        for item in items) + "</div>")
+
+
 def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
     esc = html.escape
     out = []
@@ -1275,6 +1474,9 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
              ("+" if row["gap"] >= 0 else "") + _rub(row["gap"])] for row in forecast]))
     trend = block.get("trend") or []
     if any(point["fact"]["construction"] or point["plan"]["construction"] for point in trend):
+        def money(value: float | None, gap: str) -> str:
+            return gap if value is None else _rub(value)
+
         divisor, unit = _scale([v for p in trend for v in
                                 (p["plan"]["construction"], p["fact"]["construction"])])
         out.append(charts.bar_chart(
@@ -1286,9 +1488,12 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
                  [p["fact"]["construction"] for p in trend], divisor)}], unit, digits=0))
         out.append(_table(["Месяц", "Стройка: план", "Стройка: оплачено",
                            "Коммерция: план", "Коммерция: оплачено"], [
-            [_months_label(p["month"]), _rub(p["plan"]["construction"]),
-             _rub(p["fact"]["construction"]), _rub(p["plan"]["commercial"]),
-             _rub(p["fact"]["commercial"])] for p in trend]))
+            [_months_label(p["month"]), money(p["plan"]["construction"], "нет плана"),
+             money(p["fact"]["construction"], "нет данных"),
+             money(p["plan"]["commercial"], "нет плана"),
+             money(p["fact"]["commercial"], "нет данных")] for p in trend]))
+        out.append("<p class='note'>«Нет данных» — месяц раньше первой оплаты в реестре РСС; "
+                   "«нет плана» — месяца нет ни в одном загруженном бюджете.</p>")
     articles = block.get("articles") or {}
     if articles.get("known"):
         out.append(f"<h3>Отклонения по статьям бюджета за {_months_label(articles['month'])}</h3>")
@@ -1303,8 +1508,8 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
         out.append(f"<p class='note'>Отклонения по статьям бюджета: {esc(articles['reason'])}.</p>")
     if block.get("by_article"):
         out.append("<h3>Оплачено с начала месяца по статьям РСС</h3>")
-        out.append(_table(["Код", "Статья РСС", "Оплачено"], [
-            [esc(row["code"]), esc(row["name"]), _rub(row["amount"])]
+        out.append(_table(["Статья РСС", "Оплачено"], [
+            [f"{esc(row['code'])} {esc(row['name'])}", _rub(row["amount"])]
             for row in block["by_article"][:10]]))
     if block.get("recipients"):
         out.append("<h3>Крупнейшие получатели оплат с начала месяца</h3>")
@@ -1515,14 +1720,15 @@ def render_html(report: dict[str, Any]) -> str:
     def missing(block: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
 
-    out.append("<h2>Главное за период</h2><div class='findings'>")
+    out.append(_tiles_html(tiles(report)))
+    out.append("<h2>Главное за период</h2><ul class='findings'>")
     for item in report.get("findings") or []:
         tone = f" {item['tone']}" if item.get("tone") else ""
-        source = (f"<div class='source'>Источник: {esc(item['source'])}</div>"
+        source = (f" <span class='source'>Источник: {esc(item['source'])}.</span>"
                   if item.get("source") else "")
-        out.append(f"<div class='finding{tone}'><b>{esc(item['topic'])}</b>"
-                   f"<div>{esc(item['text'])}</div>{source}</div>")
-    out.append("</div><div class='pagebreak'></div>")
+        out.append(f"<li class='finding{tone}'><b>{esc(item['topic'])}.</b> "
+                   f"{esc(item['text'])}{source}</li>")
+    out.append("</ul><div class='pagebreak'></div>")
 
     out.append("<h2>Стройка</h2>")
     block = report.get("physical") or {}
@@ -1604,18 +1810,22 @@ def render_html(report: dict[str, Any]) -> str:
     out.append(_funding_chart(report))
     out.append(_funding_depth_html(report))
 
-    out.append("<h2>Бюджет месяца</h2>")
     block = report.get("budget") or {}
     if block.get("state") in {"ok", "partial"}:
         month = _date(block["month"])
-        out.append(f"<div class='sub'>{_MONTHS[month.month - 1]} {month.year}</div>")
-        out.append(_table(["Статья", "План", "Оплачено", "Осталось"], [
-            [esc(line["label"]), _rub(line.get("plan")), _rub(line["fact"]),
-             _rub(line.get("remaining"))] for line in block["lines"]]))
+        elapsed = _month_elapsed(month, _date(report["end"]))
+        # Заголовок, подпись и таблица статей — одним куском: заголовок внизу
+        # страницы без таблицы под ним читается как пустой раздел.
+        out.append("<div class='keep'><h2>Бюджет месяца</h2>"
+                   f"<div class='sub'>{_MONTHS[month.month - 1]} {month.year}: план — "
+                   f"план-факт БДДС, оплачено — реестр платежей РСС на "
+                   f"{_day(report['end'])}; прошло {_pct(elapsed)} месяца</div>"
+                   + _budget_articles_html(block.get("by_budget_article") or {}) + "</div>")
         if block.get("reason"):
             out.append(f"<p class='note warn'>{esc(block['reason'])}</p>")
         out.append(f"<p class='note'>Оплаты — из отчёта РСС от {_day(block['rss'])}.</p>")
     else:
+        out.append("<h2>Бюджет месяца</h2>")
         out.append(missing(block))
 
     out.append(_budget_chart(report.get("budget") or {}))
@@ -1638,4 +1848,19 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<div class='item'><b>{esc(note['topic'])}</b> — вопрос закрыт: "
                        f"{esc(note['text'])} <span class='note'>— {_day(note['at'])}, "
                        f"{esc(note['author'])}</span></div>")
-    return "\n".join(out)
+    return "\n".join(_keep_headings([part for part in out if part]))
+
+
+def _keep_headings(parts: list[str]) -> list[str]:
+    """Заголовок раздела — вместе с первым блоком под ним, чтобы не висел внизу страницы."""
+    out: list[str] = []
+    index = 0
+    while index < len(parts):
+        part = parts[index]
+        if part.startswith("<h2>") and part.endswith("</h2>") and index + 1 < len(parts):
+            out.append(f"<div class='keep'>{part}{parts[index + 1]}</div>")
+            index += 2
+            continue
+        out.append(part)
+        index += 1
+    return out

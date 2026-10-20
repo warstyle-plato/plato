@@ -16,16 +16,42 @@ import math
 from typing import Any, Sequence
 
 WIDTH = 680
-HEIGHT = 230
-PAD_LEFT, PAD_RIGHT, PAD_TOP, PAD_BOTTOM = 62, 34, 24, 46
+HEIGHT = 270
+PAD_LEFT, PAD_RIGHT, PAD_TOP, PAD_BOTTOM = 58, 64, 24, 48
 
 # Цвет, штрих и маркер каждой линии: в ч/б печати различаются штрих и маркер.
+# План — всегда пунктир, факт — сплошная (`_style`).
 STYLES = (
     {"color": "#1f4e8c", "dash": "", "marker": "circle"},
     {"color": "#b2541a", "dash": "6 4", "marker": "square"},
     {"color": "#3f7d3a", "dash": "2 3", "marker": "triangle"},
     {"color": "#6b4c9a", "dash": "10 3 2 3", "marker": "diamond"},
 )
+
+
+def _is_plan(name: str) -> bool:
+    lowered = name.lower()
+    if lowered.startswith("факт"):
+        return False
+    return lowered.startswith("план") or "по плану" in lowered
+
+
+def _style(index: int, name: str) -> dict[str, str]:
+    style = dict(STYLES[index % len(STYLES)])
+    style["dash"] = "6 4" if _is_plan(name) else ""
+    return style
+
+
+def _end_labels(labels: list[tuple[float, float, str, str]]) -> list[str]:
+    """Подписи значений у последних точек линий; разведены, чтобы не слиплись."""
+    placed: list[float] = []
+    out = []
+    for x, y, text, color in sorted(labels, key=lambda item: item[1]):
+        y = max(y, placed[-1] + 12) if placed else y
+        placed.append(y)
+        out.append(f'<text x="{x + 7:.1f}" y="{y + 3.5:.1f}" font-size="10.5" font-weight="600" '
+                   f'fill="{color}">{html.escape(text)}</text>')
+    return out
 
 
 def _num(value: float, digits: int = 0) -> str:
@@ -71,7 +97,7 @@ def _legend(names: Sequence[str], styles: Sequence[dict[str, str]], bars: bool =
             parts.append(f'<line x1="{x}" y1="{y-4}" x2="{x+22}" y2="{y-4}" stroke="{style["color"]}" '
                          f'stroke-width="2"{dash}/>' + _marker(style["marker"], x + 11, y - 4, style["color"]))
         label = html.escape(name)
-        parts.append(f'<text x="{x+28}" y="{y}" font-size="10" fill="#333">{label}</text>')
+        parts.append(f'<text x="{x+28}" y="{y}" font-size="10.5" fill="#333">{label}</text>')
         x += 36 + 6 * len(name)
     return "".join(parts)
 
@@ -101,18 +127,23 @@ def line_chart(title: str, labels: Sequence[str], series: Sequence[dict[str, Any
         y = y_at(tick)
         out.append(f'<line x1="{PAD_LEFT}" y1="{y:.1f}" x2="{WIDTH-PAD_RIGHT}" y2="{y:.1f}" '
                    f'stroke="#e1e6ec" stroke-width="1"/>')
-        out.append(f'<text x="{PAD_LEFT-6}" y="{y+3:.1f}" font-size="9.5" fill="#555" '
+        out.append(f'<text x="{PAD_LEFT-6}" y="{y+3:.1f}" font-size="10.5" fill="#555" '
                    f'text-anchor="end">{_num(tick, digits)}</text>')
-    out.append(f'<text x="8" y="11" font-size="9.5" fill="#555">{html.escape(unit)}</text>')
+    out.append(f'<text x="8" y="11" font-size="10.5" fill="#555">{html.escape(unit)}</text>')
     for i, label in enumerate(labels):
         if i % max(1, label_every) and i != len(labels) - 1:
             continue
-        out.append(f'<text x="{x_at(i):.1f}" y="{HEIGHT-PAD_BOTTOM+14}" font-size="9" fill="#555" '
+        out.append(f'<text x="{x_at(i):.1f}" y="{HEIGHT-PAD_BOTTOM+14}" font-size="10" fill="#555" '
                    f'text-anchor="middle">{html.escape(label)}</text>')
     styles = []
+    ends = []
     for index, item in enumerate(series):
-        style = STYLES[index % len(STYLES)]
+        style = _style(index, item["name"])
         styles.append(style)
+        last = next(((i, v) for i, v in reversed(list(enumerate(item["values"])))
+                     if v is not None), None)
+        if last is not None:
+            ends.append((x_at(last[0]), y_at(last[1]), _num(last[1], digits), style["color"]))
         path, points = [], []
         broken = True
         for i, value in enumerate(item["values"]):
@@ -131,6 +162,7 @@ def line_chart(title: str, labels: Sequence[str], series: Sequence[dict[str, Any
                    f'stroke-width="2"{dash}/>')
         if len(points) <= 40:
             out.extend(points)
+    out.extend(_end_labels(ends))
     out.append(_legend([s["name"] for s in series], styles))
     out.append("</svg>")
     return f'<figure class="chart"><figcaption>{html.escape(title)}</figcaption>{"".join(out)}</figure>'
@@ -164,9 +196,9 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
         y = y_at(tick)
         out.append(f'<line x1="{PAD_LEFT}" y1="{y:.1f}" x2="{WIDTH-PAD_RIGHT}" y2="{y:.1f}" '
                    f'stroke="#e1e6ec" stroke-width="1"/>')
-        out.append(f'<text x="{PAD_LEFT-6}" y="{y+3:.1f}" font-size="9.5" fill="#555" '
+        out.append(f'<text x="{PAD_LEFT-6}" y="{y+3:.1f}" font-size="10.5" fill="#555" '
                    f'text-anchor="end">{_num(tick, digits)}</text>')
-    out.append(f'<text x="8" y="11" font-size="9.5" fill="#555">{html.escape(unit)}</text>')
+    out.append(f'<text x="8" y="11" font-size="10.5" fill="#555">{html.escape(unit)}</text>')
     zero = y_at(0.0)
     for g, group in enumerate(groups):
         left = PAD_LEFT + g * slot + (slot - bar * len(series)) / 2
@@ -180,10 +212,10 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
             out.append(f'<rect x="{left + s*bar:.1f}" y="{top:.1f}" width="{bar-2:.1f}" '
                        f'height="{max(height, 0.5):.1f}" fill="{style["fill"]}" stroke="#333" '
                        f'stroke-width="0.6"/>')
-            out.append(f'<text x="{left + s*bar + bar/2 - 1:.1f}" y="{top-3:.1f}" font-size="8.5" '
+            out.append(f'<text x="{left + s*bar + bar/2 - 1:.1f}" y="{top-3:.1f}" font-size="10" '
                        f'fill="#333" text-anchor="middle">{_num(value, digits)}</text>')
         out.append(f'<text x="{PAD_LEFT + g*slot + slot/2:.1f}" y="{HEIGHT-PAD_BOTTOM+14}" '
-                   f'font-size="9.5" fill="#333" text-anchor="middle">{html.escape(group)}</text>')
+                   f'font-size="10.5" fill="#333" text-anchor="middle">{html.escape(group)}</text>')
     out.append(_legend([s["name"] for s in series], BAR_STYLES, bars=True))
     out.append("</svg>")
     return f'<figure class="chart"><figcaption>{html.escape(title)}</figcaption>{"".join(out)}</figure>'

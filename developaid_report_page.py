@@ -16,9 +16,28 @@
 
 from __future__ import annotations
 
+import re
+
+from developaid_management_report import REPORT_STYLE
 from developaid_monitor_page import MONITOR_PAGE as _MONITOR
 
 _STYLE = _MONITOR[_MONITOR.index("<style>") + len("<style>"):_MONITOR.index("</style>")]
+
+
+def _scoped(style: str, scope: str) -> str:
+    """Стиль документа сводки внутри ``scope``: тот же, что печатается в PDF.
+
+    Документ рисует сервер одной разметкой для страницы и PDF; если бы у
+    страницы был свой список правил, плитки и цвета отклонений однажды
+    разошлись бы с PDF.
+    """
+    out = []
+    for selectors, body in re.findall(r"([^{}]+)\{([^{}]*)\}", style):
+        names = [name.strip() for name in selectors.split(",")]
+        out.append(",".join(scope if name == "body" else f"{scope} {name}" for name in names)
+                   + "{" + body + "}")
+    return "\n".join(out)
+
 
 REPORT_PAGE = """<!doctype html>
 <html lang="ru">
@@ -27,15 +46,10 @@ REPORT_PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DevelopAid · Сводка руководству</title>
 <style>""" + _STYLE + """
-#reportBox{background:#fff;padding:14px 18px;border:1px solid var(--line);border-radius:10px;margin-top:10px}
-#reportBox h1{font-size:18px;margin:0 0 2px}#reportBox h2{font-size:14px;margin:18px 0 6px;border-bottom:1px solid #d6dde6;padding-bottom:3px}
-#reportBox table{border-collapse:collapse;width:100%;margin:4px 0}#reportBox th,#reportBox td{border:1px solid #d6dde6;padding:4px 6px;text-align:right}
-#reportBox th:first-child,#reportBox td:first-child{text-align:left}#reportBox th{background:#f2f5f8}
-#reportBox .finding{border-left:3px solid #1f4e8c;padding:5px 9px;margin:7px 0;background:#f6f8fb}
-#reportBox .finding.bad{border-left-color:#b2541a;color:inherit}#reportBox .sub{color:#5b6b7d;font-size:12px}#reportBox .finding.missing{border-left-color:#9aa5b1;color:#5b6b7d}
-#reportBox .finding b{display:block}#reportBox .source,#reportBox .note{color:#6b7785;font-size:11px}
-#reportBox .missing{color:#9a5b00;font-style:italic}#reportBox figure.chart{margin:8px 0;max-width:760px}
-#reportBox figcaption{font-weight:600;font-size:12px}
+""" + _scoped(REPORT_STYLE, "#reportBox") + """
+#reportBox{background:#fff;padding:14px 18px;border:1px solid var(--line);border-radius:10px;margin-top:10px;max-width:980px}
+#reportBox .finding.bad{color:inherit}#reportBox .pagebreak{height:0}
+@media (max-width:700px){#reportBox .tiles{grid-template-columns:repeat(2,1fr)}}
 .files{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 </style>
 </head>
