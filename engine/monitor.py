@@ -505,6 +505,21 @@ def monitor_store_schedule_fact(req: MonitorScheduleFactRequest) -> dict[str, An
         raise HTTPException(400, str(exc))
 
 
+@app.post("/monitor/budget", include_in_schema=False)
+def monitor_store_budget(req: MonitorEstimateRequest) -> dict[str, Any]:
+    """Бюджет месяцев: план-факт БДДС, план стройки и коммерческих расходов."""
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    import developaid_monthly_budget as monthly_budget
+    try:
+        return monthly_budget.store_budget(
+            req.project, base64.b64decode(req.content_base64), req.taken_at,
+            req.filename)
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/monitor/gantt", include_in_schema=False)
 def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
     """Гант по последнему снимку графика. Считает сервер, страница рисует."""

@@ -7,8 +7,8 @@
 * физическое выполнение — проценты работ из еженедельного ГПР-факта и
   точечных фактов страницы (`manager._baseline_status`), план — по датам
   утверждённого ГПР (`monitor._plan_progress`);
-* бюджет месяца — план платежей «CF ПЛАН-ФАКТ» против реестра платежей РСС
-  (`monitor._payment_plan_fact`);
+* бюджет месяца — план из план-факта БДДС против реестра платежей РСС
+  (`developaid_monthly_budget`);
 * продажи — договоры контрактации, план финмодели по месяцам
   (`contracting.fm_plan_by_month`) и квартальный план банка.
 
@@ -24,6 +24,7 @@ from typing import Any
 
 import developaid_monitor as monitor
 import developaid_monitor_manager as manager
+import developaid_monthly_budget as monthly_budget
 from market_search import contracting, sales_store
 
 PERIODS = {"week": "неделю", "month": "месяц"}
@@ -152,32 +153,12 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 def budget(project: str, kind: str, end: Any) -> dict[str, Any]:
-    """План платежей месяца, сколько оплачено и сколько осталось.
+    """План месяца из план-факта БДДС против оплат по РСС: стройка и коммерция.
 
-    Месяц — тот, в котором кончается период. План — «CF ПЛАН-ФАКТ»
-    утверждённого графика, факт — реестр платежей последнего РСС не позднее
-    конца периода.
+    Месяц — тот, в котором кончается период. Карта строк и кодов РСС живёт в
+    `developaid_monthly_budget`.
     """
-    bounds = period_bounds(kind, end)
-    rss = monitor._latest(project, "estimate", ".xlsx", bounds["end"].isoformat())
-    if rss is None:
-        return _missing("Не загружен ни один отчёт РСС с реестром платежей "
-                        f"на {bounds['end']:%d.%m.%Y}.")
-    cash = monitor._payment_plan_fact(project, rss, bounds["end"])
-    month = bounds["end"].replace(day=1).isoformat()
-    row = next((item for item in cash.get("rows") or []
-                if item.get("month") == month), None)
-    fact = float((row or {}).get("fact") or 0.0)
-    if not cash.get("known"):
-        return {"state": "partial", "month": month, "rss": rss.stem,
-                "plan": None, "fact": fact, "remaining": None,
-                "last_payment": cash.get("last_fact") or None,
-                "reason": "В утверждённом графике нет листа «CF ПЛАН-ФАКТ» — "
-                          "плана платежей на месяц нет."}
-    plan = float((row or {}).get("plan") or 0.0)
-    return {"state": "ok", "month": month, "rss": rss.stem,
-            "plan": plan, "fact": fact, "remaining": plan - fact,
-            "last_payment": cash.get("last_fact") or None}
+    return monthly_budget.month_budget(project, period_bounds(kind, end)["end"])
 
 
 # --------------------------------------------------------------------------
@@ -375,19 +356,21 @@ def render_text(report: dict[str, Any]) -> str:
     else:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
-    lines += ["", "<b>Деньги на стройку</b>"]
+    lines += ["", "<b>Бюджет месяца</b>"]
     block = report.get("budget") or {}
     if block.get("state") in {"ok", "partial"}:
         month = _date(block["month"])
         name = f"{_MONTHS[month.month - 1]} {month.year}"
-        if block.get("plan") is not None:
-            lines.append(f"Бюджет на {name}: план {_rub(block['plan'])}, "
-                         f"оплачено {_rub(block['fact'])}, "
-                         f"осталось {_rub(block['remaining'])}.")
-        else:
-            lines.append(f"Оплачено за {name}: {_rub(block['fact'])}. "
-                         + esc(block.get("reason") or ""))
-        lines.append(f"Платежи взяты из отчёта РСС от {_day(block['rss'])}.")
+        for line in block["lines"]:
+            if line.get("plan") is not None:
+                lines.append(f"{line['label']} за {name}: план {_rub(line['plan'])}, "
+                             f"оплачено {_rub(line['fact'])}, "
+                             f"осталось {_rub(line['remaining'])}.")
+            else:
+                lines.append(f"{line['label']} за {name}: оплачено {_rub(line['fact'])}.")
+        if block.get("reason"):
+            lines.append(esc(block["reason"]))
+        lines.append(f"Оплаты взяты из отчёта РСС от {_day(block['rss'])}.")
     else:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
