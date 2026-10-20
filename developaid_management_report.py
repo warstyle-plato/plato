@@ -102,6 +102,8 @@ def _progress(works: list[tuple[str, dict[str, Any], float]],
     """Факт и план на день по работам, у которых процент известен."""
     fact, plan, unknown = [], [], 0
     objects: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    sections: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    each: dict[str, dict[str, Any]] = {}
     for tid, work, weight in works:
         progress = (statuses.get(tid) or {}).get("progress")
         if progress is None:
@@ -110,14 +112,55 @@ def _progress(works: list[tuple[str, dict[str, Any], float]],
         planned = monitor._plan_progress(work["start"], work["finish"], day)
         fact.append((weight, progress))
         plan.append((weight, planned))
-        group = objects.setdefault(str(work.get("object") or "").strip()
-                                   or "Без объекта", {"plan": [], "fact": []})
-        group["plan"].append((weight, planned))
-        group["fact"].append((weight, progress))
+        each[tid] = {"plan": planned, "fact": progress}
+        for groups, key in ((objects, "object"), (sections, "section")):
+            group = groups.setdefault(str(work.get(key) or "").strip()
+                                      or "Без названия", {"plan": [], "fact": []})
+            group["plan"].append((weight, planned))
+            group["fact"].append((weight, progress))
     return {"fact": _weighted(fact), "plan": _weighted(plan), "works": len(fact),
-            "unknown": unknown,
+            "unknown": unknown, "each": each,
             "objects": [{"object": name, "plan": _weighted(g["plan"]),
-                         "fact": _weighted(g["fact"])} for name, g in sorted(objects.items())]}
+                         "fact": _weighted(g["fact"])} for name, g in sorted(objects.items())],
+            "sections": {name: {"plan": _weighted(g["plan"]), "fact": _weighted(g["fact"]),
+                                "weight": sum(w for w, _ in g["fact"])}
+                         for name, g in sections.items()}}
+
+
+def _breakdown(works: list[tuple[str, dict[str, Any], float]], now: dict[str, Any],
+               before: dict[str, Any] | None) -> dict[str, Any]:
+    """Разделы ГПР, самые отстающие работы и работы без прироста за период."""
+    sections = []
+    for name, item in now["sections"].items():
+        earlier = ((before or {}).get("sections") or {}).get(name) or {}
+        sections.append({"section": name, "plan": item["plan"], "fact": item["fact"],
+                         "lag": item["fact"] - item["plan"],
+                         "delta": (item["fact"] - earlier["fact"])
+                         if earlier.get("fact") is not None else None,
+                         "weight": item["weight"]})
+    sections.sort(key=lambda row: -row["weight"])
+    laggards, stalled = [], []
+    for tid, work, _ in works:
+        point = now["each"].get(tid)
+        if not point:
+            continue
+        row = {"name": str(work.get("name") or tid), "object": str(work.get("object") or ""),
+               "section": str(work.get("section") or ""), "plan": point["plan"],
+               "fact": point["fact"], "lag": point["fact"] - point["plan"],
+               "finish": work["finish"].isoformat()}
+        if row["lag"] < -0.005:
+            laggards.append(row)
+        earlier = ((before or {}).get("each") or {}).get(tid)
+        # Без прироста: работа идёт по плану (план вырос за период), не
+        # закончена, а процент тот же, что на начало периода.
+        if (earlier and point["fact"] < 0.999 and point["plan"] > earlier["plan"] + 1e-6
+                and abs(point["fact"] - earlier["fact"]) < 1e-6):
+            stalled.append(row)
+    laggards.sort(key=lambda row: row["lag"])
+    stalled.sort(key=lambda row: row["lag"])
+    return {"sections": sections, "laggards": laggards[:8], "laggards_total": len(laggards),
+            "stalled": stalled[:8], "stalled_total": len(stalled),
+            "stalled_known": before is not None}
 
 
 def _plan_curve(works: list[tuple[str, dict[str, Any], float]],
@@ -173,6 +216,7 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
         "works": now["works"],
         "works_unknown": now["unknown"],
         "objects": now["objects"],
+        "breakdown": _breakdown(works, now, before),
         "series": _physical_series(project, works, bounds["end"]),
     }
 
@@ -199,6 +243,69 @@ def _physical_series(project: str, works: list[tuple[str, dict[str, Any], float]
     return {"plan": [{"day": day.isoformat(), "plan": value}
                      for day, value in zip(months, _plan_curve(works, months))],
             "fact": facts}
+
+
+# --------------------------------------------------------------------------
+# Люди на площадке
+# --------------------------------------------------------------------------
+
+def _crew_rows(reports: list[dict[str, Any]], first: datetime.date,
+               last: datetime.date) -> list[dict[str, Any]]:
+    return [r for r in reports if first.isoformat() <= str(r.get("date") or "") <= last.isoformat()]
+
+
+def _crew_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    workers = [float((r.get("parsed") or {}).get("workers_total") or 0) for r in rows]
+    itr = [float((r.get("parsed") or {}).get("itr_total") or 0) for r in rows]
+    return {"days": len(rows),
+            "workers_avg": sum(workers) / len(workers) if workers else None,
+            "workers_max": max(workers) if workers else None,
+            "itr_avg": sum(itr) / len(itr) if itr else None}
+
+
+def crew(project: str, kind: str, end: Any) -> dict[str, Any]:
+    """Численность на площадке из ежедневных отчётов, которые приносит бот.
+
+    Тот же разбор, что у карточки «Люди на площадке». День без отчёта —
+    пропуск, а не ноль: средняя считается по дням, когда отчёт был.
+    Плановой численности в ГПР нет — сравнение «план против факта» не
+    выдумывается.
+    """
+    import developaid_monitor_daily as daily
+
+    bounds = period_bounds(kind, end)
+    reports = daily._load_reports(project)
+    if not reports:
+        return _missing("Ежедневные отчёты со стройки не приходили: чат стройки "
+                        "не связан с ботом или отчётов ещё не было.")
+    now = _crew_rows(reports, bounds["start"], bounds["end"])
+    previous = previous_bounds(kind, bounds)
+    before = _crew_rows(reports, previous["start"], previous["end"])
+    last = max((str(r.get("date") or "") for r in reports
+                if str(r.get("date") or "") <= bounds["end"].isoformat()), default="")
+    contractors: dict[str, dict[str, float]] = {}
+    for report_row in now:
+        for item in (report_row.get("parsed") or {}).get("contractors") or []:
+            block = contractors.setdefault(item.get("name") or "без имени",
+                                           {"workers": 0.0, "itr": 0.0, "days": 0})
+            block["workers"] += float(item.get("workers") or 0)
+            block["itr"] += float(item.get("itr") or 0)
+            block["days"] += 1
+    by_contractor = sorted(
+        ({"name": name, "workers_avg": b["workers"] / b["days"], "itr_avg": b["itr"] / b["days"],
+          "days": b["days"]} for name, b in contractors.items()),
+        key=lambda row: -row["workers_avg"])
+    window = 31 if kind == "month" else 28
+    days = [bounds["end"] - datetime.timedelta(days=n) for n in range(window - 1, -1, -1)]
+    by_day = {str(r.get("date")): r for r in reports}
+    series = [{"day": day.isoformat(),
+               "workers": (float((by_day[day.isoformat()].get("parsed") or {})
+                                 .get("workers_total") or 0)
+                           if day.isoformat() in by_day else None)} for day in days]
+    return {"state": "ok", "now": _crew_stats(now), "previous": _crew_stats(before),
+            "period_days": (bounds["end"] - bounds["start"]).days + 1,
+            "last_report": last or None, "by_contractor": by_contractor[:10],
+            "series": series}
 
 
 # --------------------------------------------------------------------------
@@ -330,6 +437,12 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
         except Exception as exc:  # noqa: BLE001 — причина уходит в сводку
             out["limit"] = {"known": False, "reason": f"{type(exc).__name__}: {exc}"}
     out["escrow"] = _escrow(sales_project, data_dir)
+    escrow = out["escrow"]
+    if escrow.get("state") == "ok":
+        month = bounds["end"].strftime("%Y-%m")
+        actual = escrow.get("actual_escrow") or {}
+        escrow["inflow_month"] = actual.get(month)
+        escrow["inflow_total"] = sum(v for m, v in actual.items() if m <= month)
     return out
 
 
@@ -402,9 +515,9 @@ def sales(sales_project: str, kind: str, end: Any,
     bank_reason = ""
     # Ряд «факт против планов» нарастающим итогом — тот же, что рисует отчёт
     # о продажах: один счёт кварталов и остатка банка на дату его плана.
+    summary = contracting.summarise(contracts, part("ledger") or {})
     comparison = contracting.plan_comparison(
-        dict(contracting.summarise(contracts, part("ledger") or {}),
-             fm_plan=part("fm_plan"), bank_plan=bank or None))
+        dict(summary, fm_plan=part("fm_plan"), bank_plan=bank or None))
     opening = comparison.get("bank_opening") or {}
     if not bank:
         bank_reason = "План банка не загружен."
@@ -430,6 +543,14 @@ def sales(sales_project: str, kind: str, end: Any,
         "undated": undated,
         "period": _fact(between(bounds["start"])),
         "previous": _fact(between(previous["start"], previous["end"])),
+        "products": _by_product(between(bounds["start"]), between(datetime.date(1900, 1, 1)),
+                                part("fm_plan"), quarter),
+        "pace": [{"month": m["month"], "area": m.get("area"), "amount": m.get("amount"),
+                  "price_flats": m.get("price_flats")}
+                 for m in summary.get("dynamics") or [] if m["month"] <= month_key][-12:],
+        "payments": [{"name": item["name"], "count": item["count"], "amount": item["amount"],
+                      "area": item["area"]} for item in summary.get("by_payment") or []],
+        "pool": _pool(contracting.pool_progress(summary, rows, part("fm_plan"), part("pool"))),
         "series": [{"label": q["label"],
                     "fact": q.get("fact_amount_cum"), "fm": q.get("fm_amount_cum"),
                     "bank": q.get("bank_amount_cum"),
@@ -442,6 +563,44 @@ def sales(sales_project: str, kind: str, end: Any,
                     "fm": fm_quarter, "bank": bank_quarter,
                     "bank_reason": bank_reason or None},
     }
+
+
+def _by_product(period: list[dict[str, Any]], total: list[dict[str, Any]],
+                fm: dict[str, Any] | None, quarter: str) -> list[dict[str, Any]]:
+    """По типам (как их называет отчёт о продажах): период, с начала, план ФМ квартала."""
+    out: dict[str, dict[str, Any]] = {}
+    for scope, rows in (("period", period), ("total", total)):
+        for row in rows:
+            name = contracting.product_name(row["product"])
+            item = out.setdefault(name, {"product": name,
+                                         "measure": contracting.product_measure(name)})
+            block = item.setdefault(scope, {"units": 0.0, "area": 0.0, "amount": 0.0})
+            block["units"] += float(row.get("units") or 0.0)
+            block["area"] += float(row.get("area") or 0.0)
+            block["amount"] += float(row.get("amount") or 0.0)
+    plans = (fm or {}).get("plan") or {}
+    for name, item in out.items():
+        for scope in ("period", "total"):
+            block = item.setdefault(scope, {"units": 0.0, "area": 0.0, "amount": 0.0})
+            divisor = block["units"] if item["measure"] == "units" else block["area"]
+            block["price"] = block["amount"] / divisor if divisor else None
+        months = [v for m, v in (plans.get(name) or {}).items()
+                  if contracting.quarter_of(m) == quarter]
+        item["fm_quarter"] = ({"amount": sum(float(v.get("amount") or 0.0) for v in months),
+                               "area": sum(float(v.get("area") or 0.0) for v in months),
+                               "units": sum(float(v.get("units") or 0.0) for v in months)}
+                              if months else None)
+    return sorted(out.values(), key=lambda item: -item["total"]["amount"])
+
+
+def _pool(got: dict[str, Any]) -> dict[str, Any]:
+    """Остаток нераспроданного по продуктам — из счёта отчёта о продажах."""
+    products = [{"product": p["product"], "sold_units": p["sold_units"],
+                 "pool_units": p["pool_units"], "sold_area": p["sold_area"],
+                 "pool_area": p["pool_area"], "area_share": p["area_share"]}
+                for p in got.get("products") or [] if p.get("pool_area") or p.get("pool_units")]
+    return {"products": products, "total": got.get("total") or {},
+            "missing": got.get("missing") or []}
 
 
 # --------------------------------------------------------------------------
@@ -474,6 +633,7 @@ def build(project: str, kind: str, end: Any, sales_project: str = "",
         dashboard = {"error": f"{type(exc).__name__}: {exc}"}
     for name, collect in (
             ("physical", lambda: physical(project, kind, bounds["end"])),
+            ("crew", lambda: crew(project, kind, bounds["end"])),
             ("schedule", lambda: schedule(dashboard)),
             ("budget", lambda: budget(project, kind, bounds["end"])),
             ("sales", lambda: sales(sales_project, kind, bounds["end"], sales_dir)),
@@ -533,6 +693,46 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
     else:
         add("Стройка", block.get("reason") or "Данных нет.", "", "missing")
 
+    stroika = report.get("physical") or {}
+    block = report.get("crew") or {}
+    if block.get("state") == "ok":
+        now, before = block["now"], block["previous"]
+        if now["days"]:
+            text = (f"В среднем {now['workers_avg']:.0f} рабочих и {now['itr_avg']:.0f} ИТР в день, "
+                    f"максимум {now['workers_max']:.0f} — по {now['days']} "
+                    f"{_plural(now['days'], 'отчёту', 'отчётам', 'отчётам')} из "
+                    f"{block['period_days']} дней периода")
+            tone = ""
+            if before["days"] and before["workers_avg"]:
+                change = now["workers_avg"] / before["workers_avg"] - 1
+                text += (f"; в предыдущий такой же период — {before['workers_avg']:.0f} "
+                         f"({'+' if change >= 0 else '−'}{abs(change) * 100:.0f}%)")
+                worse = (stroika.get("lag_before") is not None
+                         and stroika["lag"] < stroika["lag_before"])
+                if change < -0.05 and worse:
+                    text += ". Людей стало меньше, а отставание выросло — под нужный темп их не хватает"
+                    tone = "bad"
+            add("Люди на площадке", _sentence(text),
+                "ежедневные отчёты со стройки (бот)", tone)
+        else:
+            add("Люди на площадке",
+                f"За период ни одного отчёта со стройки; последний — от "
+                f"{_day(block.get('last_report'))}.", "ежедневные отчёты со стройки (бот)",
+                "missing")
+    elif block.get("reason"):
+        add("Люди на площадке", block["reason"], "", "missing")
+    breakdown = stroika.get("breakdown") or {}
+    if breakdown.get("laggards"):
+        worst = "; ".join(f"{row['name']}{(' (' + row['object'] + ')') if row['object'] else ''} — "
+                          f"{_pp(-row['lag'])[1:]}" for row in breakdown["laggards"][:3])
+        text = f"Больше всего отстают: {worst}"
+        if breakdown.get("stalled_total"):
+            text += (f". Без прироста за {period} при идущем плане — "
+                     f"{breakdown['stalled_total']} "
+                     f"{_plural(breakdown['stalled_total'], 'работа', 'работы', 'работ')}")
+        add("Отстающие работы", _sentence(text), f"ГПР-факт от {_day(stroika['snapshot'])}",
+            "bad")
+
     block = report.get("schedule") or {}
     if block.get("state") == "ok" and block.get("forecast"):
         delay = block.get("delay_days")
@@ -562,6 +762,20 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                 parts.append(f"{line['label'].lower()} — оплачено {_rub(line['fact'])} из "
                              f"{_rub(line['plan'])} ({_pct(_share(line['fact'], line['plan']))}), "
                              f"осталось {_rub(line['remaining'])}")
+        forecast = _budget_forecast(block, end)
+        build = next((row for row in forecast if row["label"].startswith("Стройка")), None)
+        if build:
+            parts.append(f"по нынешнему темпу к концу месяца стройке оплатят около "
+                         f"{_rub(build['forecast'])} — "
+                         + (f"на {_rub(build['gap'])} больше плана" if build["gap"] > 0
+                            else f"на {_rub(-build['gap'])} меньше плана"))
+        articles = block.get("articles") or {}
+        if articles.get("known") and articles["rows"] and articles["rows"][0].get("delta"):
+            top = articles["rows"][0]
+            parts.append(f"самое большое отклонение за {_months_label(articles['month'])} — "
+                         f"«{top['article']}»: "
+                         + (f"перерасход {_rub(top['delta'])}" if top["delta"] > 0
+                            else f"недоосвоение {_rub(-top['delta'])}"))
         if parts:
             add("Бюджет месяца", "; ".join(parts).capitalize()
                 + f". Прошло {_pct(elapsed)} месяца.",
@@ -591,6 +805,19 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         previous = block.get("previous") or {}
         text += (f" За {period} — {_rub(block['period']['amount'])}, "
                  f"за предыдущий такой же период — {_rub(previous.get('amount'))}.")
+        pace = [p for p in block.get("pace") or [] if p.get("area")]
+        if len(pace) >= 4:
+            last, before = pace[-2], pace[-5:-2]
+            average = sum(p["area"] for p in before) / len(before)
+            if average:
+                change = last["area"] / average - 1
+                text += (f" Темп за {_months_label(last['month'])} — {_area(last['area'])}, "
+                         f"{'выше' if change >= 0 else 'ниже'} среднего трёх месяцев до него "
+                         f"на {abs(change) * 100:.0f}%.")
+        pool = (block.get("pool") or {}).get("total") or {}
+        if pool.get("pool_area"):
+            text += (f" Продано {_pct(pool.get('area_share'))} площади, осталось "
+                     f"{_area(pool['pool_area'] - pool['sold_area'])}.")
         add("Продажи", text, f"контрактация от {_day(block.get('uploaded'))}, планы ФМ и банка",
             "bad" if quarter.get("fm") and fact["amount"] < quarter["fm"]["amount"] else "")
     else:
@@ -615,6 +842,9 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                 if queue.get("keeping_pace_coverage") is not None:
                     text += f" и на {_times(queue['keeping_pace_coverage'])} при нынешнем темпе"
                 pieces.append(text)
+        if escrow.get("state") == "ok" and escrow.get("inflow_month") is not None:
+            pieces.append(f"на эскроу за {_months_label(report['end'])} поступило "
+                          f"{_rub(escrow['inflow_month'])}")
         add("Финансирование", "; ".join(pieces).capitalize() + ".",
             f"РСС от {_day(block['rss'])}, карточка финансирования Монитора, план «КРЕДИТЫ»",
             "bad" if limit.get("known") and float(limit.get("additional_financing") or 0) > 0
@@ -827,6 +1057,19 @@ def render_text(report: dict[str, Any]) -> str:
     else:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
+    block = report.get("crew") or {}
+    if block.get("state") == "ok" and block["now"]["days"]:
+        now = block["now"]
+        lines.append(f"Люди: в среднем {now['workers_avg']:.0f} рабочих и {now['itr_avg']:.0f} ИТР "
+                     f"в день по {now['days']} отчётам, максимум {now['workers_max']:.0f}.")
+    elif block.get("reason"):
+        lines.append(esc(block["reason"]))
+    breakdown = (report.get("physical") or {}).get("breakdown") or {}
+    for row in breakdown.get("laggards", [])[:3]:
+        lines.append(esc(f"Отстаёт: {row['name']}"
+                         + (f" ({row['object']})" if row["object"] else "")
+                         + f" — {_pct(row['fact'])} при плане {_pct(row['plan'])}."))
+
     lines += ["", "<b>Продажи</b>"]
     block = report.get("sales") or {}
     if block.get("state") == "ok":
@@ -905,7 +1148,7 @@ th:first-child,td:first-child{text-align:left}th{background:#f2f5f8;font-weight:
 .findings{display:block}.finding{border-left:3px solid #1f4e8c;padding:5px 9px;margin:7px 0;background:#f6f8fb}
 .finding.bad{border-left-color:#b2541a}.finding.missing{border-left-color:#9aa5b1;color:#5b6b7d}
 .finding b{display:block;font-size:12.5px;margin-bottom:2px}.finding .source{color:#6b7785;font-size:10px;margin-top:2px}
-.pagebreak{break-after:page;page-break-after:always}
+h3{font-size:12.5px;margin:12px 0 4px}.pagebreak{break-after:page;page-break-after:always}
 figure.chart{margin:8px 0 4px;break-inside:avoid}figure.chart figcaption{font-size:11px;color:#333;margin-bottom:2px;font-weight:600}
 svg.chart{display:block;max-width:100%}
 """
@@ -930,6 +1173,242 @@ def _row(cells: list[str], head: bool = False) -> str:
 
 def _table(head: list[str], rows: list[list[str]]) -> str:
     return "<table>" + _row(head, True) + "".join(_row(row) for row in rows) + "</table>"
+
+
+def _breakdown_html(breakdown: dict[str, Any], kind: str) -> str:
+    esc = html.escape
+    out = []
+    sections = breakdown.get("sections") or []
+    if len(sections) > 1:
+        out.append("<h3>По разделам графика работ</h3>")
+        out.append(_table(["Раздел", "План к дате", "Выполнено", "Отставание",
+                           f"Прирост за {PERIODS[kind]}"], [
+            [esc(row["section"]), _pct(row["plan"]), _pct(row["fact"]), _pp(row["lag"]),
+             _pp(row["delta"]) if row.get("delta") is not None else "—"]
+            for row in sections[:12]]))
+        shown = sections[:8]
+        out.append(charts.bar_chart(
+            "Разделы графика: план и факт выполнения", [row["section"][:22] for row in shown],
+            [{"name": "План", "values": [row["plan"] * 100 for row in shown]},
+             {"name": "Факт", "values": [row["fact"] * 100 for row in shown]}], "%", digits=0))
+    if breakdown.get("laggards"):
+        total = breakdown["laggards_total"]
+        out.append(f"<h3>Больше всего отстают (с отставанием {total} "
+                   f"{_plural(total, 'работа', 'работы', 'работ')})</h3>")
+        out.append(_table(["Работа", "Объект", "План к дате", "Выполнено", "Отставание", "Окончание по плану"], [
+            [esc(row["name"]), esc(row["object"]), _pct(row["plan"]), _pct(row["fact"]),
+             _pp(row["lag"]), _day(row["finish"])] for row in breakdown["laggards"]]))
+    if breakdown.get("stalled"):
+        out.append(f"<h3>Без прироста за {PERIODS[kind]} ({breakdown['stalled_total']})</h3>")
+        out.append("<p class='note'>План работы за период вырос, а процент выполнения тот же, "
+                   "что на начало периода.</p>")
+        out.append(_table(["Работа", "Объект", "План к дате", "Выполнено"], [
+            [esc(row["name"]), esc(row["object"]), _pct(row["plan"]), _pct(row["fact"])]
+            for row in breakdown["stalled"]]))
+    elif breakdown and not breakdown.get("stalled_known"):
+        out.append("<p class='note'>Работы без прироста не выделены: на начало периода не было "
+                   "графика с процентами.</p>")
+    return "\n".join(out)
+
+
+def _crew_html(block: dict[str, Any], kind: str) -> str:
+    esc = html.escape
+    if block.get("state") != "ok":
+        return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
+    now, before = block["now"], block["previous"]
+    out = []
+    if not now["days"]:
+        out.append(f"<p class='missing'>За период ни одного отчёта со стройки; последний — "
+                   f"от {_day(block.get('last_report'))}.</p>")
+    else:
+        def num(value: float | None) -> str:
+            return "—" if value is None else f"{value:.0f}"
+
+        out.append(_table(["", f"За {PERIODS[kind]}", "Предыдущий такой же период"], [
+            ["Дней с отчётом", f"{now['days']} из {block['period_days']}", str(before["days"])],
+            ["Рабочих в среднем в день", num(now["workers_avg"]), num(before["workers_avg"])],
+            ["Рабочих максимум", num(now["workers_max"]), num(before["workers_max"])],
+            ["ИТР в среднем в день", num(now["itr_avg"]), num(before["itr_avg"])]]))
+        if block.get("by_contractor"):
+            out.append(_table(["Подрядчик", "Рабочих в среднем", "ИТР в среднем", "Дней в отчётах"], [
+                [esc(row["name"]), f"{row['workers_avg']:.0f}", f"{row['itr_avg']:.0f}",
+                 str(row["days"])] for row in block["by_contractor"]]))
+    series = block.get("series") or []
+    if any(point["workers"] is not None for point in series):
+        out.append(charts.line_chart(
+            "Рабочих на площадке по дням (пропуск — дня без отчёта)",
+            [_date(p["day"]).strftime("%d.%m") for p in series],
+            [{"name": "Рабочие", "values": [p["workers"] for p in series]}],
+            "чел.", label_every=charts.every(len(series))))
+    out.append("<p class='note'>Плановой численности в графике работ нет — сравнение с "
+               "планом не приводится.</p>")
+    return "\n".join(out)
+
+
+def _month_elapsed(month: datetime.date, end: datetime.date) -> float:
+    days = ((month.replace(day=28) + datetime.timedelta(days=4)).replace(day=1) - month).days
+    return min(1.0, max(0.0, ((end - month).days + 1) / days))
+
+
+def _budget_forecast(block: dict[str, Any], end: datetime.date) -> list[dict[str, Any]]:
+    """Сколько оплатят к концу месяца, если темп с начала месяца сохранится."""
+    elapsed = _month_elapsed(_date(block["month"]), end)
+    out = []
+    for line in block.get("lines") or []:
+        if not line.get("plan") or not elapsed:
+            continue
+        forecast = line["fact"] / elapsed
+        out.append({"label": line["label"], "plan": line["plan"], "fact": line["fact"],
+                    "forecast": forecast, "gap": forecast - line["plan"]})
+    return out
+
+
+def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
+    esc = html.escape
+    out = []
+    forecast = _budget_forecast(block, end)
+    if forecast:
+        out.append("<h3>Прогноз освоения до конца месяца по нынешнему темпу</h3>")
+        out.append(_table(["Строка", "План месяца", "Оплачено", "Прогноз к концу месяца",
+                           "Против плана"], [
+            [esc(row["label"]), _rub(row["plan"]), _rub(row["fact"]), _rub(row["forecast"]),
+             ("+" if row["gap"] >= 0 else "") + _rub(row["gap"])] for row in forecast]))
+    trend = block.get("trend") or []
+    if any(point["fact"]["construction"] or point["plan"]["construction"] for point in trend):
+        divisor, unit = _scale([v for p in trend for v in
+                                (p["plan"]["construction"], p["fact"]["construction"])])
+        out.append(charts.bar_chart(
+            "Стройка и проектирование: план и оплачено по месяцам",
+            [_month_short(p["month"][:7]) for p in trend],
+            [{"name": "План", "values": charts.scaled(
+                [p["plan"]["construction"] for p in trend], divisor)},
+             {"name": "Оплачено", "values": charts.scaled(
+                 [p["fact"]["construction"] for p in trend], divisor)}], unit, digits=0))
+        out.append(_table(["Месяц", "Стройка: план", "Стройка: оплачено",
+                           "Коммерция: план", "Коммерция: оплачено"], [
+            [_months_label(p["month"]), _rub(p["plan"]["construction"]),
+             _rub(p["fact"]["construction"]), _rub(p["plan"]["commercial"]),
+             _rub(p["fact"]["commercial"])] for p in trend]))
+    articles = block.get("articles") or {}
+    if articles.get("known"):
+        out.append(f"<h3>Отклонения по статьям бюджета за {_months_label(articles['month'])}</h3>")
+        out.append(_table(["Статья", "План", "Факт", "Отклонение"], [
+            [esc(row["article"]), _rub(row.get("plan")),
+             "не платили" if row.get("fact_blank") else _rub(row.get("fact")),
+             ("+" if (row.get("delta") or 0) >= 0 else "") + _rub(row.get("delta"))
+             if row.get("delta") is not None else "—"] for row in articles["rows"][:10]]))
+        out.append("<p class='note'>Плюс — перерасход, минус — недоосвоение. Данные — из "
+                   f"план-факта БДДС от {_day(articles['file'])}.</p>")
+    elif articles.get("reason"):
+        out.append(f"<p class='note'>Отклонения по статьям бюджета: {esc(articles['reason'])}.</p>")
+    if block.get("by_article"):
+        out.append("<h3>Оплачено с начала месяца по статьям РСС</h3>")
+        out.append(_table(["Код", "Статья РСС", "Оплачено"], [
+            [esc(row["code"]), esc(row["name"]), _rub(row["amount"])]
+            for row in block["by_article"][:10]]))
+    if block.get("recipients"):
+        out.append("<h3>Крупнейшие получатели оплат с начала месяца</h3>")
+        out.append(_table(["Контрагент", "Оплачено"], [
+            [esc(row["name"]), _rub(row["amount"])] for row in block["recipients"]]))
+    return "\n".join(out)
+
+
+def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
+    esc = html.escape
+    out = []
+    products = block.get("products") or []
+    if products:
+        def price(item: dict[str, Any], scope: str) -> str:
+            value = item[scope].get("price")
+            if value is None:
+                return "—"
+            return _rub(value) + (" за лот" if item["measure"] == "units" else " за м²")
+
+        out.append("<h3>По типам помещений</h3>")
+        out.append(_table(["Тип", f"За {PERIODS[kind]}: лотов", "м²", "сумма",
+                           "С начала продаж: лотов", "м²", "сумма", "Средняя цена",
+                           "План ФМ на квартал"], [
+            [esc(item["product"]), f"{item['period']['units']:.0f}", _area(item["period"]["area"]),
+             _rub(item["period"]["amount"]), f"{item['total']['units']:.0f}",
+             _area(item["total"]["area"]), _rub(item["total"]["amount"]), price(item, "total"),
+             _rub((item.get("fm_quarter") or {}).get("amount")) if item.get("fm_quarter") else "—"]
+            for item in products]))
+    pace = block.get("pace") or []
+    if pace:
+        out.append(charts.bar_chart("Темп продаж: м² договоров по месяцам",
+                                    [_month_short(p["month"]) for p in pace],
+                                    [{"name": "м²", "values": [p.get("area") for p in pace]}],
+                                    "м²", digits=0))
+        prices = [p.get("price_flats") for p in pace]
+        if any(prices):
+            out.append(charts.line_chart(
+                "Средняя цена квартир по месяцам", [_month_short(p["month"]) for p in pace],
+                [{"name": "Цена квартир", "values": charts.scaled(prices, 1e3)}],
+                "тыс. ₽/м²", label_every=charts.every(len(pace))))
+    payments = block.get("payments") or []
+    total = sum(item["amount"] for item in payments)
+    if payments and total:
+        out.append("<h3>Формы оплаты (с начала продаж)</h3>")
+        out.append(_table(["Форма оплаты", "Договоров", "Сумма", "Доля"], [
+            [esc(item["name"]), str(item["count"]), _rub(item["amount"]),
+             _pct(item["amount"] / total)] for item in payments]))
+    pool = block.get("pool") or {}
+    if pool.get("products"):
+        out.append("<h3>Остаток нераспроданного</h3>")
+        out.append(_table(["Тип", "Продано лотов", "Всего лотов", "Продано м²", "Всего м²",
+                           "Осталось м²"], [
+            [esc(p["product"]), f"{p['sold_units']:.0f}",
+             f"{p['pool_units']:.0f}" if p.get("pool_units") else "—",
+             _area(p["sold_area"]), _area(p["pool_area"]),
+             _area(max(0.0, p["pool_area"] - p["sold_area"])) if p["pool_area"] else "—"]
+            for p in pool["products"]]))
+    elif block.get("state") == "ok":
+        out.append("<p class='note'>Остаток нераспроданного не посчитан: в отчёте о продажах "
+                   "нет квартирографии или плана финмодели по объёмам.</p>")
+    return "\n".join(out)
+
+
+def _funding_depth_html(report: dict[str, Any]) -> str:
+    block = report.get("funding") or {}
+    if block.get("state") != "ok":
+        return ""
+    out = []
+    escrow = block.get("escrow") or {}
+    if escrow.get("state") == "ok":
+        out.append(f"<p class='note'>Поступления на эскроу по графикам договоров: за "
+                   f"{_months_label(_date(report['end']).isoformat())} — "
+                   f"{_rub(escrow.get('inflow_month'))}, всего — {_rub(escrow.get('inflow_total'))}. "
+                   "Поступления видны помесячно, поэтому за неделю их не выделить.</p>")
+        end = _date(report["end"]).strftime("%Y-%m")
+        months = sorted(m for m in escrow.get("plan_pf") or {} if m <= end
+                        and (escrow["plan_pf"].get(m) or 0) > 0)[-18:]
+        if months:
+            actual = _cumulative(escrow.get("actual_escrow") or {}, months)
+            out.append(charts.line_chart(
+                "Покрытие кредита эскроу: факт и план по месяцам",
+                [_month_short(m) for m in months],
+                [{"name": "Факт (эскроу / кредит по плану)",
+                  "values": [a / escrow["plan_pf"][m] for a, m in zip(actual, months)]},
+                 {"name": "План ФМ", "values": [(escrow["plan_escrow"].get(m) or 0) / escrow["plan_pf"][m]
+                                               for m in months]}],
+                "раз", digits=2, label_every=charts.every(len(months))))
+    limit = block.get("limit") or {}
+    if limit.get("known"):
+        balance = limit.get("monthly_reserve_balance") or {}
+        unfunded = limit.get("monthly_unfunded") or {}
+        months = sorted(set(balance) | set(unfunded))[:24]
+        if months:
+            values = [balance.get(m) for m in months] + [unfunded.get(m) for m in months]
+            divisor, unit = _scale(values)
+            out.append(charts.line_chart(
+                "Резерв и непокрытая потребность по месяцам (расчёт Монитора)",
+                [_month_short(m[:7]) for m in months],
+                [{"name": "Остаток резерва", "values": charts.scaled(
+                    [balance.get(m) for m in months], divisor)},
+                 {"name": "Не хватает в месяц", "values": charts.scaled(
+                     [unfunded.get(m) for m in months], divisor)}],
+                unit, digits=1 if divisor == 1e9 else 0, label_every=charts.every(len(months))))
+    return "\n".join(out)
 
 
 def _scale(values: list[float | None]) -> tuple[float, str]:
@@ -1066,8 +1545,11 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<p class='note warn'>За этот период новый график с процентами "
                        f"не загружали, последний — от {_day(block['snapshot'])}.</p>")
         out.append(_physical_chart(block))
+        out.append(_breakdown_html(block.get("breakdown") or {}, report["kind"]))
     else:
         out.append(missing(block))
+    out.append("<h3>Люди на площадке</h3>")
+    out.append(_crew_html(report.get("crew") or {}, report["kind"]))
     block = report.get("schedule") or {}
     if block.get("state") == "ok" and block.get("forecast"):
         delay = block.get("delay_days")
@@ -1114,10 +1596,13 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(missing(block))
 
     out.append(_sales_chart(report.get("sales") or {}))
+    if (report.get("sales") or {}).get("state") == "ok":
+        out.append(_sales_depth_html(report["sales"], report["kind"]))
 
     out.append("<h2>Финансирование</h2>")
     out.append(_funding_html(report))
     out.append(_funding_chart(report))
+    out.append(_funding_depth_html(report))
 
     out.append("<h2>Бюджет месяца</h2>")
     block = report.get("budget") or {}
@@ -1134,6 +1619,8 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(missing(block))
 
     out.append(_budget_chart(report.get("budget") or {}))
+    if (report.get("budget") or {}).get("state") in {"ok", "partial"}:
+        out.append(_budget_depth_html(report["budget"], _date(report["end"])))
 
     out.append("<h2>Общая информация</h2>")
     block = report.get("notes") or {}

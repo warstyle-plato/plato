@@ -62,8 +62,8 @@ def test_the_lag_and_its_change_over_the_period():
 def test_findings_carry_numbers_and_sources():
     built = _full()
     found = {item["topic"]: item for item in built["findings"]}
-    assert list(found) == ["Стройка", "Срок", "Бюджет месяца", "Продажи", "Финансирование",
-                           "Открытые вопросы"]
+    assert list(found) == ["Стройка", "Люди на площадке", "Отстающие работы", "Срок",
+                           "Бюджет месяца", "Продажи", "Финансирование", "Открытые вопросы"]
     assert "прогноз Монитора по темпу работ" == found["Срок"]["source"]
     lag = built["physical"]["lag"]
     assert f"отставание {report._pp(-lag)[1:]}" in found["Стройка"]["text"]
@@ -86,8 +86,12 @@ def test_the_document_opens_with_findings_and_has_charts():
     assert titles == [
         "Выполнение по графику работ: план и факт на дату каждого ГПР-факта",
         "Продажи нарастающим итогом по кварталам, сумма договоров",
+        "Темп продаж: м² договоров по месяцам",
+        "Средняя цена квартир по месяцам",
         "Выборка кредита и эскроу нарастающим итогом по месяцам",
+        "Покрытие кредита эскроу: факт и план по месяцам",
         "Бюджет на октябрь 2026: план и оплачено по статьям",
+        "Стройка и проектирование: план и оплачено по месяцам",
     ]
     # Числа графика — те же, что в таблице блока: столбец «Оплачено» стройки.
     budget = page[page.index("Бюджет на октябрь 2026"):]
@@ -108,3 +112,131 @@ def test_axis_ticks_cover_the_data():
     for high in (0.73, 412.5, 17, 1, 2_999):
         ticks = charts._ticks(0, high)
         assert ticks[0] <= 0 and ticks[-1] >= high, (high, ticks)
+
+
+REPORT = """Добрый день.
+1. СПМ : Итр- 3чел., Рабочие - 6 чел.
+2. НУР:ИТР- 11чел.;
+Рабочие - 54чел.;
+3. Клодо ( кладка) - Итр- 2 чел.Рабочие - 12чел.
+По работам:
+1. НУР: Корпус 1 монолит
+"""
+
+
+def test_people_on_site_from_the_bots_reports():
+    import developaid_monitor_daily as daily
+
+    _full()
+    for day in ("2026-10-06", "2026-10-07", "2026-10-13", "2026-10-15"):
+        daily.store_daily_report(PROJECT, REPORT, day)
+    daily.store_daily_report(PROJECT, REPORT.replace("54чел", "24чел"), "2026-10-16")
+    got = report.crew(PROJECT, "week", "2026-10-18")
+    # Три отчёта за неделю: 72, 72, 42 рабочих; дни без отчёта не нули.
+    assert got["now"]["days"] == 3
+    assert got["now"]["workers_avg"] == pytest.approx((72 + 72 + 42) / 3)
+    assert got["now"]["workers_max"] == 72
+    assert got["previous"]["days"] == 2
+    assert got["previous"]["workers_avg"] == pytest.approx(72)
+    nur = next(row for row in got["by_contractor"] if "НУР" in row["name"])
+    assert nur["workers_avg"] == pytest.approx((54 + 54 + 24) / 3)
+    points = {p["day"]: p["workers"] for p in got["series"]}
+    assert points["2026-10-14"] is None and points["2026-10-16"] == 42
+    built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
+    found = {item["topic"]: item for item in built["findings"]}
+    assert "В среднем 62 рабочих" in found["Люди на площадке"]["text"]
+    assert "в предыдущий такой же период — 72 (−14%)" in found["Люди на площадке"]["text"]
+    page = report.render_html(built)
+    assert "Рабочих на площадке по дням" in page
+    assert "Плановой численности в графике работ нет" in page
+
+
+def test_no_reports_is_a_reason_not_zero():
+    _full()
+    got = report.crew(PROJECT, "week", "2026-10-18")
+    assert got["state"] == "missing"
+    assert "отчёты со стройки не приходили" in got["reason"].lower()
+
+
+def test_breakdown_by_works():
+    built = _full()
+    breakdown = built["physical"]["breakdown"]
+    # Обе работы отстают: «Фасад» (40% при плане ~54%) сильнее «Монолита».
+    names = [row["name"] for row in breakdown["laggards"]]
+    assert names[0] == "Фасад"
+    assert breakdown["laggards"][0]["lag"] < breakdown["laggards"][1]["lag"]
+    found = {item["topic"]: item for item in built["findings"]}
+    assert found["Отстающие работы"]["text"].startswith("Больше всего отстают: Фасад (Корпус 2)")
+
+
+def test_a_work_without_growth_is_flagged():
+    _project()
+    # Неделя назад и сейчас у «Монолита» 55% — прироста нет при идущем плане.
+    monitor.store_schedule_fact(PROJECT, _gpr_book({"1": 0.55, "2": 0.30}, cash=False),
+                                "2026-10-23")
+    built = report.build(PROJECT, "week", "2026-10-25")
+    stalled = built["physical"]["breakdown"]["stalled"]
+    assert [row["name"] for row in stalled] == ["Монолит"]
+
+
+def test_budget_sales_and_funding_depth():
+    built = _full()
+    budget = built["budget"]
+    # Тренд за шесть месяцев: где бюджета на месяц нет — план None, а не ноль.
+    assert len(budget["trend"]) == 6
+    assert budget["trend"][-1]["plan"]["construction"] == pytest.approx(400e6)
+    assert budget["trend"][0]["plan"]["construction"] is None
+    assert budget["trend"][-1]["fact"]["construction"] == pytest.approx(200e6)
+    # Прогноз до конца месяца по темпу: 200 млн за 18 из 31 дня.
+    forecast = report._budget_forecast(budget, datetime.date(2026, 10, 18))
+    assert forecast[0]["forecast"] == pytest.approx(200e6 / (18 / 31))
+    assert budget["recipients"][0]["name"] == "СтройКо"
+    # Тестовая книга без группировки строк — статьи не угадываются.
+    assert budget["articles"]["known"] is False
+    sales = built["sales"]
+    flats = next(item for item in sales["products"] if item["product"] == "Квартира")
+    assert flats["total"]["area"] == pytest.approx(200.0)
+    assert [p["month"] for p in sales["pace"]][-1] <= "2026-10"
+    escrow = built["funding"]["escrow"]
+    assert escrow["inflow_month"] == pytest.approx(5e6)
+    assert escrow["inflow_total"] == pytest.approx(65e6)
+    found = {item["topic"]: item for item in built["findings"]}
+    assert "по нынешнему темпу к концу месяца стройке оплатят около" in found["Бюджет месяца"]["text"]
+    assert "на эскроу за октябрь 2026 поступило 5,0 млн ₽" in found["Финансирование"]["text"]
+
+
+def test_budget_articles_from_the_outline():
+    from openpyxl import Workbook
+    import io
+
+    book = Workbook()
+    sheet = book.active
+    sheet.cell(row=4, column=5, value="Сентябрь 2026")
+    sheet.cell(row=5, column=5, value="ПЛАН")
+    sheet.cell(row=5, column=6, value="ФАКТ")
+    rows = [("Стоимость строительства и проектирования", 2, -300e6, -200e6),
+            ("Основные объекты строительства", 3, -280e6, -190e6),
+            ("Подрядчик", 4, -280e6, -190e6),
+            ("Наружные сети и сооружения", 3, -20e6, None),
+            ("Содержание службы заказчика", 3, -6e6, -6e6),
+            ("Коммерческие расходы", 2, -10e6, -9e6),
+            ("Реклама и PR (КС) - Группа", 3, -10e6, -9e6),
+            ("Административно-хозяйственные расходы", 2, -5e6, -5e6)]
+    for r, (name, level, plan, fact) in enumerate(rows, 6):
+        sheet.cell(row=r, column=1, value=name)
+        sheet.cell(row=r, column=5, value=plan)
+        if fact is not None:
+            sheet.cell(row=r, column=6, value=fact)
+        sheet.row_dimensions[r].outline_level = level
+    blob = io.BytesIO()
+    book.save(blob)
+    monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-02")
+    got = monthly_budget._articles(PROJECT, datetime.date(2026, 10, 18))
+    assert got["known"] and got["month"] == "2026-09-01"
+    by_name = {row["article"]: row for row in got["rows"]}
+    # Подрядчик (уровень ниже) и АХР (другая группа) — не статьи сводки.
+    assert set(by_name) == {"Основные объекты строительства", "Наружные сети и сооружения",
+                            "Содержание службы заказчика", "Реклама и PR (КС)"}
+    assert by_name["Основные объекты строительства"]["delta"] == pytest.approx(-90e6)
+    assert by_name["Наружные сети и сооружения"]["fact_blank"] is True
+    assert got["rows"][0]["article"] == "Основные объекты строительства"

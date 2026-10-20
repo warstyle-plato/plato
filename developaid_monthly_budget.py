@@ -228,8 +228,149 @@ def month_budget(project: str, end: datetime.date) -> dict[str, Any]:
                       "remaining": planned - spent if planned is not None else None})
     out = {"state": "ok" if plan else "partial", "month": month, "rss": rss.stem,
            "budget_file": (plan or {}).get("file"), "lines": lines,
-           "last_payment": fact["last_payment"]}
+           "last_payment": fact["last_payment"],
+           "trend": _trend(project, rss, end),
+           "by_article": _by_article(rss, month, end),
+           "recipients": _recipients(rss, month, end),
+           "articles": _articles(project, end)}
     if not plan:
         out["reason"] = (f"Не загружен бюджет (план-факт БДДС), в котором есть "
                          f"{datetime.date.fromisoformat(month):%m.%Y} — плана на месяц нет.")
     return out
+
+
+def _month_shift(month: datetime.date, back: int) -> datetime.date:
+    index = month.year * 12 + month.month - 1 - back
+    return datetime.date(index // 12, index % 12 + 1, 1)
+
+
+def _trend(project: str, rss: Path, end: datetime.date, months: int = 6) -> list[dict[str, Any]]:
+    """План и оплачено по строкам сводки за последние месяцы (столбцы тренда).
+
+    План месяца — из свежайшего бюджета, где этот месяц есть; факт — из того же
+    РСС на конец периода. Нет бюджета на месяц — план None, а не ноль.
+    """
+    current = end.replace(day=1)
+    out = []
+    for back in range(months - 1, -1, -1):
+        month = _month_shift(current, back).isoformat()
+        plan = _plan(project, month, end.isoformat())
+        fact = month_fact(rss, month)["fact"]
+        out.append({"month": month,
+                    "plan": {key: (plan or {}).get("plan", {}).get(key)
+                             for key in ("construction", "commercial")},
+                    "fact": {key: fact[key] for key in ("construction", "commercial")}})
+    return out
+
+
+def _month_rows(rss: Path, month: str, end: datetime.date) -> list[dict[str, Any]]:
+    first = datetime.date.fromisoformat(month)
+    return [row for row in actuals.read_payments(rss)["rows"]
+            if row.get("date") and first <= row["date"] <= end
+            and line_of(row.get("estimate_code") or "")]
+
+
+def _by_article(rss: Path, month: str, end: datetime.date) -> list[dict[str, Any]]:
+    """Оплачено с начала месяца по статьям РСС внутри строк сводки."""
+    sums: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in _month_rows(rss, month, end):
+        code = str(row.get("estimate_code") or "").rstrip(".")
+        key = (line_of(code) or "", code)
+        item = sums.setdefault(key, {"line": key[0], "code": code,
+                                     "name": row.get("article_name") or "", "amount": 0.0})
+        item["amount"] += float(row.get("amount") or 0.0)
+    return sorted(sums.values(), key=lambda item: -item["amount"])
+
+
+def _recipients(rss: Path, month: str, end: datetime.date, top: int = 8) -> list[dict[str, Any]]:
+    """Крупнейшие получатели оплат с начала месяца (контрагенты реестра РСС)."""
+    sums: dict[str, dict[str, Any]] = {}
+    for row in _month_rows(rss, month, end):
+        name = str(row.get("contractor") or "").strip() or "не указан"
+        item = sums.setdefault(name, {"name": name, "amount": 0.0, "lines": set()})
+        item["amount"] += float(row.get("amount") or 0.0)
+        item["lines"].add(line_of(row.get("estimate_code") or ""))
+    out = sorted(sums.values(), key=lambda item: -item["amount"])[:top]
+    for item in out:
+        item["lines"] = sorted(item["lines"])
+    return out
+
+
+def read_articles(data: bytes) -> dict[str, Any]:
+    """Статьи БДДС третьего уровня под стройкой и коммерцией: план и факт по месяцам.
+
+    Уровень берётся из группировки строк (outline) — по ней бюджет и собран.
+    Без группировки статьи не выделить, и это сказано, а не угадано по отступам.
+    """
+    from openpyxl import load_workbook
+
+    book = load_workbook(io.BytesIO(data), data_only=True)
+    sheet = book.worksheets[0]
+    parsed = read_budget(data)
+    header = None
+    for index in range(1, 21):
+        if any(_MONTH_HEADER.match(str(sheet.cell(index, c).value or ""))
+               for c in range(1, sheet.max_column + 1)):
+            header = index
+            break
+    levels = [sheet.row_dimensions[r].outline_level for r in range(1, sheet.max_row + 1)]
+    if header is None or not any(levels):
+        return {"known": False, "reason": "в файле бюджета нет группировки строк по уровням"}
+    columns = {}
+    for column in range(1, sheet.max_column + 1):
+        match = _MONTH_HEADER.match(str(sheet.cell(header, column).value or ""))
+        if match and match.group(1).lower() in _MONTHS:
+            month = datetime.date(int(match.group(2)), _MONTHS[match.group(1).lower()], 1)
+            columns[month.isoformat()] = column
+    groups = {_norm(_BUDGET_ROWS["construction_with_service"]): "construction",
+              _norm(_BUDGET_ROWS["commercial"]): "commercial"}
+    current, group_level = None, None
+    out: dict[str, list[dict[str, Any]]] = {month: [] for month in columns}
+    for r in range(header + 2, sheet.max_row + 1):
+        name = _norm(sheet.cell(r, 1).value)
+        level = sheet.row_dimensions[r].outline_level
+        if name in groups:
+            current, group_level = groups[name], level
+            continue
+        if current is None:
+            continue
+        if level <= group_level:
+            current = None
+            continue
+        if level != group_level + 1 or not name:
+            continue
+        for month, column in columns.items():
+            # Подписи «ПЛАН»/«ФАКТ» стоят в той же раскладке, что у read_budget.
+            plan = _amount(sheet.cell(r, column).value)
+            fact = _amount(sheet.cell(r, column + 1).value)
+            if plan is None and fact is None:
+                continue
+            out[month].append({"line": current, "article": str(sheet.cell(r, 1).value).strip(),
+                               "plan": -plan if plan is not None else None,
+                               "fact": -fact if fact is not None else None})
+    return {"known": True, "title": parsed["title"], "months": out}
+
+
+def _articles(project: str, end: datetime.date) -> dict[str, Any]:
+    """Отклонения по статьям БДДС в последнем месяце, где бюджет уже несёт факт."""
+    folder = monitor._project_dir(project) / "budget"
+    files = sorted((p for p in folder.glob("*.xlsx") if p.stem <= end.isoformat()),
+                   reverse=True) if folder.exists() else []
+    if not files:
+        return {"known": False, "reason": "бюджет не загружен"}
+    got = read_articles(files[0].read_bytes())
+    if not got.get("known"):
+        return got
+    for month in sorted(got["months"], reverse=True):
+        rows = got["months"][month]
+        if any(row.get("fact") is not None for row in rows):
+            # Месяц закрыт: у части статей факт есть. Пустая ячейка факта в
+            # закрытом месяце бюджета значит «не платили», и это помечено.
+            for row in rows:
+                row["article"] = re.sub(r"\s*-\s*Группа$", "", row["article"])
+                row["fact_blank"] = row.get("fact") is None
+                fact = row.get("fact") or 0.0
+                row["delta"] = (fact - row["plan"]) if row.get("plan") is not None else None
+            rows.sort(key=lambda row: -abs(row.get("delta") or 0.0))
+            return {"known": True, "month": month, "file": files[0].stem, "rows": rows}
+    return {"known": False, "reason": "в бюджете ещё нет месяца с фактом"}
