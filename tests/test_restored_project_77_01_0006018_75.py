@@ -46,7 +46,7 @@ def result(snapshot: dict) -> dict:
 def test_the_file_is_a_settings_file_of_the_page(snapshot: dict):
     assert snapshot["kind"] == "developaid.project.settings"
     assert snapshot["inputs"]["_cadastral_query"] == "77:01:0006018:75"
-    # Источник ТЭП в шапке отчёта — «ГлавАПУ · серверный расчёт DevelopAid»:
+    # Источник ТЭП в шапке отчёта — «ГлавАПУ: расчёт по его формулам на сервере DevelopAid»:
     # страница выводит подпись из формата выгрузки (`tepSourceLabel`).
     fmt = snapshot["inputs"]["_glavapu_import"]["source"]["format"]
     assert "серверн" in fmt.lower()

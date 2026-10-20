@@ -219,8 +219,8 @@ def test_the_two_tep_sources_are_labelled_apart():
     единого признака, какой расчёт откуда."""
     page = core.PAGE
     assert "function tepSourceLabel(" in page
-    assert "ГлавАПУ · серверный расчёт DevelopAid" in page
-    assert "ГлавАПУ · штатный калькулятор" in page
+    assert "ГлавАПУ: расчёт по его формулам на сервере DevelopAid" in page
+    assert "ГлавАПУ: калькулятор на сайте" in page
     # Старая безусловная метка не должна вернуться ни в одну из точек сборки.
     assert "source_label:manual?'Ручной шаблон DevelopAid':'ГлавАПУ'" not in page
 

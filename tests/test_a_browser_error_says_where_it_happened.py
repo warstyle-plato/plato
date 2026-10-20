@@ -69,7 +69,7 @@ def test_every_stage_of_the_tep_run_marks_itself():
     body = core.PAGE[core.PAGE.index("async function obtainCadastralTep("):]
     body = body[:body.index("function stepFailure(")]
     for step in ("сведения по кадастровым номерам", "карточка территории",
-                 "штатный калькулятор ГлавАПУ", "чтение таблицы ГлавАПУ",
+                 "расчёт в калькуляторе ГлавАПУ", "чтение таблицы ГлавАПУ",
                  "перенос ТЭП в модель"):
         assert f"tepStep='{step}'" in body, step
     assert "stepFailure(tepStep" in body, "в сообщение уходит именно текущий шаг"
