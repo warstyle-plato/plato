@@ -244,3 +244,39 @@ def test_closed_month_deviations_by_article_name_without_outline():
     assert by_name["Основные объекты строительства"]["delta"] == pytest.approx(-90e6)
     assert by_name["Наружные сети и сооружения"]["fact_blank"] is True
     assert got["rows"][0]["article"] == "Основные объекты строительства"
+
+def test_works_of_the_week_from_the_bots_reports():
+    """«А выполняемые за неделю работы?» (владелец, 20.10.2026) — из отчётов бота."""
+    import developaid_monitor_daily as daily
+
+    _full()
+    text = REPORT + "2. СПМ: Корпус 2 кладка 3 эт.\n"
+    daily.store_daily_report(PROJECT, text, "2026-10-13")
+    daily.store_daily_report(PROJECT, text.replace("кладка 3 эт.", "кладка 4 эт."), "2026-10-15")
+    # Отчёт до начала недели — не её работа.
+    daily.store_daily_report(PROJECT, REPORT.replace("монолит", "котлован"), "2026-10-09")
+    built = report.build(PROJECT, "week", "2026-10-18")
+    works = {group["contractor"]: group for group in built["crew"]["works"]}
+    assert set(works) == {"НУР", "СПМ"}
+    # Одна строка за два дня — одна строка с двумя датами, без имени подрядчика.
+    assert works["НУР"]["lines"] == [{"line": "Корпус 1 монолит",
+                                      "days": ["2026-10-13", "2026-10-15"]}]
+    assert [e["line"] for e in works["СПМ"]["lines"]] == ["Корпус 2 кладка 3 эт",
+                                                           "Корпус 2 кладка 4 эт"]
+    page = report.render_html(built)
+    part = page[page.index("Выполненные работы за неделю"):]
+    assert "Корпус 1 монолит" in part and "13.10, 15.10" in part and "котлован" not in part
+    assert "Работы НУР: Корпус 1 монолит." in report.render_text(built)
+
+
+def test_reports_without_works_say_so_and_do_not_go_blank():
+    import developaid_monitor_daily as daily
+
+    _full()
+    people_only = REPORT[:REPORT.index("По работам")]
+    daily.store_daily_report(PROJECT, people_only, "2026-10-14")
+    built = report.build(PROJECT, "week", "2026-10-18")
+    assert built["crew"]["works"] == []
+    page = report.render_html(built)
+    assert ("Работы не перечислены: в отчётах за период нет раздела «По работам»"
+            in page)

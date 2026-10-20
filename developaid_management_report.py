@@ -263,6 +263,43 @@ def _crew_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "itr_avg": sum(itr) / len(itr) if itr else None}
 
 
+def _works_done(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Работы за период из раздела «По работам» ежедневных отчётов бота.
+
+    Строка приписана подрядчику тем же правилом, что в карточке Монитора
+    (`daily.attribute_works`). Одна и та же строка в разные дни — одна строка
+    с числом дней: прораб пишет «Корпус 1 монолит» каждый день, повтор не
+    новая работа.
+    """
+    import developaid_monitor_daily as daily
+
+    groups: dict[str, dict[str, Any]] = {}
+    for report_row in sorted(rows, key=lambda r: str(r.get("date") or "")):
+        parsed = report_row.get("parsed") or {}
+        known = [c["name"] for c in parsed.get("contractors") or []]
+        for item in daily.attribute_works(parsed.get("works") or [], known):
+            line = str(item.get("line") or "")
+            if item.get("named_inline"):
+                # Имя подрядчика уже в колонке «Подрядчик» — в строке оно лишнее.
+                line = daily._split_inline(line)[-1]
+            line = " ".join(line.split()).strip(" ;.")
+            if not line:
+                continue
+            name = item.get("contractor") or "подрядчик не назван"
+            group = groups.setdefault(name, {"contractor": name, "lines": {}})
+            entry = group["lines"].setdefault(line.lower(), {"line": line, "days": []})
+            day = str(report_row.get("date") or "")
+            if day not in entry["days"]:
+                entry["days"].append(day)
+    out = []
+    for group in groups.values():
+        lines = sorted(group["lines"].values(), key=lambda e: (-len(e["days"]), e["days"][0]))
+        out.append({"contractor": group["contractor"], "lines": lines,
+                    "days": len({d for e in lines for d in e["days"]})})
+    out.sort(key=lambda g: (-g["days"], -len(g["lines"])))
+    return out
+
+
 def crew(project: str, kind: str, end: Any) -> dict[str, Any]:
     """Численность на площадке из ежедневных отчётов, которые приносит бот.
 
@@ -305,7 +342,7 @@ def crew(project: str, kind: str, end: Any) -> dict[str, Any]:
     return {"state": "ok", "now": _crew_stats(now), "previous": _crew_stats(before),
             "period_days": (bounds["end"] - bounds["start"]).days + 1,
             "last_report": last or None, "by_contractor": by_contractor[:10],
-            "series": series}
+            "series": series, "works": _works_done(now)}
 
 
 # --------------------------------------------------------------------------
@@ -1080,6 +1117,11 @@ def render_text(report: dict[str, Any]) -> str:
                      f"в день по {now['days']} отчётам, максимум {now['workers_max']:.0f}.")
     elif block.get("reason"):
         lines.append(esc(block["reason"]))
+    for group in (block.get("works") or [])[:4]:
+        shown = "; ".join(entry["line"] for entry in group["lines"][:3])
+        more = len(group["lines"]) - 3
+        lines.append(esc(f"Работы {group['contractor']}: {shown}"
+                         + (f" и ещё {more}" if more > 0 else "") + "."))
     breakdown = (report.get("physical") or {}).get("breakdown") or {}
     for row in breakdown.get("laggards", [])[:3]:
         lines.append(esc(f"Отстаёт: {row['name']}"
@@ -1165,6 +1207,7 @@ th,td{border-bottom:1px solid #e1e6ec;padding:4px 6px;text-align:right;font-vari
 th:first-child,td:first-child{text-align:left;white-space:normal}
 .keep{break-inside:avoid;page-break-inside:avoid}th{background:#eef2f7;font-weight:600;color:#334155;border-bottom:1px solid #c5cfdb}
 .neg{color:#b42318;font-weight:600}
+table.works td{vertical-align:top}table.works td:nth-child(2),table.works th:nth-child(2){text-align:left;white-space:normal}table.works td:nth-child(3){color:#5b6b7d;font-size:10.5px;white-space:normal}
 table.articles tr.chapter td{background:#f4f7fb;font-weight:600}
 table.articles tr.total td{border-top:2px solid #1f4e8c;font-weight:600}
 table.articles tr.over td{background:#fdecea}table.articles tr.left td{background:#fff6dd}
@@ -1276,6 +1319,30 @@ def _crew_html(block: dict[str, Any], kind: str) -> str:
     out.append("<p class='note'>Плановой численности в графике работ нет — сравнение с "
                "планом не приводится.</p>")
     return "\n".join(out)
+
+
+def _works_html(block: dict[str, Any], kind: str) -> str:
+    """Выполненные работы за период — как их назвали прорабы в отчётах бота."""
+    esc = html.escape
+    if block.get("state") != "ok":
+        return ""
+    title = f"<h3>Выполненные работы за {PERIODS[kind]} — по ежедневным отчётам со стройки</h3>"
+    groups = block.get("works") or []
+    if not groups:
+        days = (block.get("now") or {}).get("days")
+        why = ("в отчётах за период нет раздела «По работам»" if days
+               else "за период не было ни одного отчёта со стройки")
+        return title + f"<p class='missing'>Работы не перечислены: {why}.</p>"
+    rows = []
+    for group in groups:
+        for index, entry in enumerate(group["lines"]):
+            dates = ", ".join(_date(day).strftime("%d.%m") for day in entry["days"])
+            rows.append([f"<b>{esc(group['contractor'])}</b>" if index == 0 else "",
+                         esc(entry["line"]), dates])
+    return (title + "<table class='works'>" + _row(["Подрядчик", "Работы", "Дни в отчётах"], True)
+            + "".join("<tr>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>" for row in rows)
+            + "</table><p class='note'>Строки — как их написали в отчёте; одинаковая строка "
+              "за несколько дней показана один раз с датами.</p>")
 
 
 def _month_elapsed(month: datetime.date, end: datetime.date) -> float:
@@ -1756,6 +1823,7 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(missing(block))
     out.append("<h3>Люди на площадке</h3>")
     out.append(_crew_html(report.get("crew") or {}, report["kind"]))
+    out.append(_works_html(report.get("crew") or {}, report["kind"]))
     block = report.get("schedule") or {}
     if block.get("state") == "ok" and block.get("forecast"):
         delay = block.get("delay_days")
