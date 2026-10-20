@@ -30,6 +30,7 @@
 | План выполнения | даты утверждённого ГПР | `monitor._plan_progress` |
 | Бюджет месяца: план | план-факт БДДС (файл раз в месяц, `POST /monitor/budget`) | `developaid_monthly_budget.read_budget` |
 | Бюджет месяца: факт | реестр платежей РСС по явной карте кодов | `developaid_monthly_budget.line_of` |
+| Общая информация | журнал записей `notes/log.jsonl` проекта мониторинга (`POST /monitor/notes`) | `developaid_project_notes.for_period` |
 | Продажи факт | контрактация из склада отчёта о продажах | `contracting._totals` |
 | План ФМ | помесячный план финмодели | `contracting.fm_plan_by_month` |
 | План банка | квартальный, валовые продажи | `bank_plan.gross_by_quarter`; первый квартал банка — остаток, не квартал |

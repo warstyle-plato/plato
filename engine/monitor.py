@@ -214,6 +214,16 @@ def monitor_store_schedule(req: MonitorScheduleRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
 
 
+class MonitorNotesRequest(BaseModel):
+    project: str
+    note_id: str = ""
+    topic: str = ""
+    text: str | None = None
+    status: str | None = None
+    session: str = ""
+    key: str = ""
+
+
 class MonitorScheduleFactRequest(BaseModel):
     project: str
     taken_at: str
@@ -518,6 +528,43 @@ def monitor_store_budget(req: MonitorEstimateRequest) -> dict[str, Any]:
         raise HTTPException(409, str(exc))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+def _monitor_note_author(session: str, key: str) -> str:
+    """Кто пишет запись: имя из анкеты, имя из Telegram, иначе — как вошёл."""
+    chat = _web_identity_chat_id(session)
+    if chat:
+        record = profile_read(chat) or {}
+        name = str(record.get("name") or record.get("telegram_name") or "").strip()
+        return name or f"пользователь Telegram {chat}"
+    if str(key or "").strip():
+        return "администратор"
+    return "не указан"
+
+
+@app.post("/monitor/notes", include_in_schema=False)
+def monitor_notes(req: MonitorNotesRequest) -> dict[str, Any]:
+    """Общая информация по проекту: записи с датой и автором.
+
+    Без ``note_id`` и без темы — только список; с темой — новая запись; с
+    ``note_id`` — новая версия записи (текст и/или статус).
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    import developaid_project_notes as project_notes
+    author = _monitor_note_author(req.session, req.key)
+    try:
+        if req.note_id:
+            project_notes.update(req.project, req.note_id, author,
+                                 text=req.text, status=req.status)
+        elif req.topic or req.text:
+            project_notes.add(req.project, req.topic, req.text or "", author,
+                              status=req.status or "open")
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"notes": project_notes.notes(req.project),
+            "statuses": project_notes.STATUSES}
 
 
 @app.post("/monitor/gantt", include_in_schema=False)
