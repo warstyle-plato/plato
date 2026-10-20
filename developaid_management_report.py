@@ -419,3 +419,138 @@ def render_text(report: dict[str, Any]) -> str:
             lines.append(f"• <b>{esc(note['topic'])}</b> — вопрос закрыт: "
                          f"{esc(note['text'])} — {_day(note['at'])}, {esc(note['author'])}.")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Документ для PDF и для просмотра на странице
+# --------------------------------------------------------------------------
+
+REPORT_STYLE = """
+body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#17202a;font-size:12px;margin:0}
+h1{font-size:18px;margin:0 0 2px}h2{font-size:14px;margin:18px 0 6px;border-bottom:1px solid #d6dde6;padding-bottom:3px}
+.sub{color:#5b6b7d;font-size:11px;margin-bottom:8px}
+table{border-collapse:collapse;width:100%;margin:4px 0}th,td{border:1px solid #d6dde6;padding:4px 6px;text-align:right}
+th:first-child,td:first-child{text-align:left}th{background:#f2f5f8;font-weight:600}
+.note{color:#5b6b7d;font-size:11px;margin:4px 0}.warn{color:#9a5b00}.missing{color:#9a5b00;font-style:italic}
+.item{margin:4px 0}.item b{font-weight:600}
+"""
+
+
+def _month_name(key: str) -> str:
+    """«2026-10» → «октябрь 2026»."""
+    year, month = str(key).split("-")[:2]
+    return f"{_MONTHS[int(month) - 1]} {year}"
+
+
+def _quarter_name(key: str) -> str:
+    """«2026 Q4» → «4 квартал 2026»."""
+    year, number = str(key).split(" Q")
+    return f"{number} квартал {year}"
+
+
+def _row(cells: list[str], head: bool = False) -> str:
+    tag = "th" if head else "td"
+    return "<tr>" + "".join(f"<{tag}>{cell}</{tag}>" for cell in cells) + "</tr>"
+
+
+def _table(head: list[str], rows: list[list[str]]) -> str:
+    return "<table>" + _row(head, True) + "".join(_row(row) for row in rows) + "</table>"
+
+
+def render_html(report: dict[str, Any]) -> str:
+    """Тело документа сводки — те же числа, что в сообщении, таблицами."""
+    esc = html.escape
+    out = [f"<h1>Сводка по проекту «{esc(report['project'])}»</h1>",
+           f"<div class='sub'>{esc(_title(report))}</div>"]
+
+    def missing(block: dict[str, Any]) -> str:
+        return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
+
+    out.append("<h2>Стройка</h2>")
+    block = report.get("physical") or {}
+    if block.get("state") == "ok":
+        out.append(_table(["", "План к дате", "Выполнено", "Отставание"], [[
+            "Весь проект", _pct(block["plan"]), _pct(block["fact"]),
+            _pp(block["fact"] - block["plan"]) if block.get("plan") is not None else "—"]]
+            + [[esc(item["object"]), _pct(item["plan"]), _pct(item["fact"]),
+                _pp(item["fact"] - item["plan"]) if item.get("plan") is not None else "—"]
+               for item in block.get("objects") or []]))
+        if block.get("delta") is not None:
+            out.append(f"<p class='note'>За {PERIODS[report['kind']]} выполнение выросло "
+                       f"на {_pp(block['delta'])}. Проценты — из графика работ от "
+                       f"{_day(block['snapshot'])}.</p>")
+        else:
+            out.append("<p class='note'>Прирост за период посчитать не из чего: на начало "
+                       "периода не было графика с процентами выполнения.</p>")
+        if not block.get("fresh"):
+            out.append(f"<p class='note warn'>За этот период новый график с процентами "
+                       f"не загружали, последний — от {_day(block['snapshot'])}.</p>")
+    else:
+        out.append(missing(block))
+
+    out.append("<h2>Бюджет месяца</h2>")
+    block = report.get("budget") or {}
+    if block.get("state") in {"ok", "partial"}:
+        month = _date(block["month"])
+        out.append(f"<div class='sub'>{_MONTHS[month.month - 1]} {month.year}</div>")
+        out.append(_table(["Статья", "План", "Оплачено", "Осталось"], [
+            [esc(line["label"]), _rub(line.get("plan")), _rub(line["fact"]),
+             _rub(line.get("remaining"))] for line in block["lines"]]))
+        if block.get("reason"):
+            out.append(f"<p class='note warn'>{esc(block['reason'])}</p>")
+        out.append(f"<p class='note'>Оплаты — из отчёта РСС от {_day(block['rss'])}.</p>")
+    else:
+        out.append(missing(block))
+
+    out.append("<h2>Продажи</h2>")
+    block = report.get("sales") or {}
+    if block.get("state") == "ok":
+        def fact_cells(fact: dict[str, Any]) -> list[str]:
+            return [str(fact["contracts"]), _rub(fact["amount"]), _area(fact["area"]),
+                    _rub(fact.get("price_flats")) if fact.get("price_flats") else "—"]
+
+        month, quarter = block["month"], block["quarter"]
+        rows = [[f"За {PERIODS[report['kind']]}", *fact_cells(block["period"])]]
+        if report["kind"] != "month":
+            rows.append([f"С начала месяца ({_month_name(month['key'])})",
+                         *fact_cells(month["fact"])])
+        rows.append([f"С начала квартала ({_quarter_name(quarter['key'])})",
+                     *fact_cells(quarter["fact"])])
+        out.append(_table(["Факт", "Договоров", "Сумма", "Площадь", "Цена квартир, ₽/м²"], rows))
+        plans = []
+        if month.get("fm"):
+            plans.append(["План финмодели на месяц", _rub(month["fm"]["amount"]),
+                          _area(month["fm"]["area"])])
+        if quarter.get("fm"):
+            plans.append(["План финмодели на квартал", _rub(quarter["fm"]["amount"]),
+                          _area(quarter["fm"]["area"])])
+        if quarter.get("bank"):
+            plans.append(["План банка на квартал", _rub(quarter["bank"]["amount"]),
+                          _area(quarter["bank"].get("area"))])
+        if plans:
+            out.append(_table(["План", "Сумма", "Площадь"], plans))
+        if quarter.get("bank_reason"):
+            out.append(f"<p class='note'>{esc(quarter['bank_reason'])}</p>")
+        if block.get("stale"):
+            out.append(f"<p class='note warn'>Договоры загружены {_day(block['uploaded'])}, "
+                       "более поздние сделки в сводку не попали.</p>")
+    else:
+        out.append(missing(block))
+
+    out.append("<h2>Общая информация</h2>")
+    block = report.get("notes") or {}
+    if block.get("state") != "ok":
+        out.append(missing(block))
+    elif not block.get("open") and not block.get("closed"):
+        out.append("<p class='note'>Открытых вопросов нет, за период записей не было.</p>")
+    else:
+        for note in block.get("open") or []:
+            mark = " (новое)" if note.get("changed") else ""
+            out.append(f"<div class='item'><b>{esc(note['topic'])}</b>{mark}: "
+                       f"{esc(note['text'])} <span class='note'>— {_day(note['at'])}, "
+                       f"{esc(note['author'])}</span></div>")
+        for note in block.get("closed") or []:
+            out.append(f"<div class='item'><b>{esc(note['topic'])}</b> — вопрос закрыт: "
+                       f"{esc(note['text'])} <span class='note'>— {_day(note['at'])}, "
+                       f"{esc(note['author'])}</span></div>")
+    return "\n".join(out)

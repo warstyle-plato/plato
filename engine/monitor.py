@@ -224,6 +224,15 @@ class MonitorNotesRequest(BaseModel):
     key: str = ""
 
 
+class MonitorReportRequest(BaseModel):
+    project: str
+    kind: str = "week"
+    end: str = ""
+    sales_project: str = ""
+    session: str = ""
+    key: str = ""
+
+
 class MonitorScheduleFactRequest(BaseModel):
     project: str
     taken_at: str
@@ -565,6 +574,52 @@ def monitor_notes(req: MonitorNotesRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
     return {"notes": project_notes.notes(req.project),
             "statuses": project_notes.STATUSES}
+
+
+def _monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
+    import datetime as _dt
+
+    import developaid_management_report as management_report
+    end = (req.end or "").strip() or _dt.date.today().isoformat()
+    try:
+        return management_report.build(req.project, req.kind, end,
+                                       sales_project=req.sales_project)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/report", include_in_schema=False)
+def monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
+    """Сводка руководству: числа, текст для бота и разметка документа."""
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    import developaid_management_report as management_report
+    report = _monitor_report(req)
+    return {"report": report, "text": management_report.render_text(report),
+            "html": management_report.render_html(report)}
+
+
+@app.post("/monitor/report.pdf", include_in_schema=False)
+def monitor_report_pdf(req: MonitorReportRequest) -> Response:
+    """Сводка руководству в PDF — та же разметка, что на странице.
+
+    Маршрут синхронный, поэтому FastAPI выполняет его в пуле потоков: печать
+    не держит цикл событий, а очередь печати общая с отчётом о продажах.
+    """
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    import developaid_management_report as management_report
+    from market_search import report_pdf
+    report = _monitor_report(req)
+    title = f"Сводка {report['project']} {report['start']}—{report['end']}"
+    document = report_pdf.document(management_report.render_html(report),
+                                   style=management_report.REPORT_STYLE, title=title)
+    try:
+        raw = report_pdf.render(document, footer=f"Сводка руководству · {report['project']}")
+    except report_pdf.PdfUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    name = "".join(ch for ch in title if ch.isalnum() or ch in " -_")[:80].strip() or "svodka"
+    from urllib.parse import quote
+    return Response(raw, media_type="application/pdf", headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.pdf"})
 
 
 @app.post("/monitor/gantt", include_in_schema=False)
