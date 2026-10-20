@@ -847,6 +847,8 @@ def _nspd_land_area(data: dict[str, Any], points: dict[str, dict[str, Any]]) -> 
     """
     numbers = [str(n).strip() for n in (data.get("cadastral_numbers") or []) if str(n).strip()]
     land: list[float] = []
+    counted: set[str] = set()
+    under_building = False
     pending = unresolved = 0
     for number in dict.fromkeys(numbers):
         point = points.get(number) or {}
@@ -854,9 +856,22 @@ def _nspd_land_area(data: dict[str, Any], points: dict[str, dict[str, Any]]) -> 
             pending += 1
         elif point.get("kind") == "land":
             if point.get("area_sqm"):
-                land.append(float(point["area_sqm"]))
+                if number not in counted:
+                    counted.add(number)
+                    land.append(float(point["area_sqm"]))
             else:
                 unresolved += 1
+        elif point.get("kind") == "building":
+            # Участок под зданием — когда в лоте только номер здания. Участок,
+            # который уже стоит в лоте своим номером, второй раз не считается.
+            for parcel in point.get("under_parcels") or []:
+                parcel_number = str(parcel.get("cadastral_number") or "")
+                if parcel_number and parcel_number not in counted and parcel.get("area_sqm"):
+                    counted.add(parcel_number)
+                    land.append(float(parcel["area_sqm"]))
+                    under_building = True
+            if "under_parcels" not in point:
+                pending += 1
         elif point.get("failed"):
             unresolved += 1
     data.setdefault("land_area_source", "площадка" if data.get("land_area_sqm") is not None else "")
@@ -873,7 +888,8 @@ def _nspd_land_area(data: dict[str, Any], points: dict[str, dict[str, Any]]) -> 
         # НСПД знает больше участков лота, чем названо в тексте, — берём его
         # сумму; меньшую сумму НСПД поверх названного не ставим.
         data["land_area_sqm"] = total
-        data["land_area_source"] = f"НСПД, участков {len(land)}"
+        data["land_area_source"] = (f"НСПД, участков {len(land)}"
+                                    + (", в том числе под зданием" if under_building else ""))
         data["land_area_partial"] = not complete
 
 
@@ -5518,6 +5534,30 @@ def install(app: FastAPI) -> None:
                 "kind": str(found.get("kind") or ""),
                 "area_sqm": float(area) if isinstance(area, (int, float)) and area > 0 else None}
 
+    def _parcels_under(number: str) -> tuple[list[dict[str, Any]], str]:
+        """Участки под зданием по номеру здания — тем же `_land_lot_context`, что карточка лота.
+
+        У лота «нежилое здание» в лоте только номер здания, и площадь участка
+        не находилась нигде (прод, 19.10.2026: три здания при фильтре 0,5 га
+        стояли с пометкой «площадь не указана»). Участок ищется по связи в
+        ЕГРН, а без неё — в центре контура здания; способ сохраняется.
+        """
+        context_of = getattr(core, "_land_lot_context", None)
+        if core is None or not callable(context_of):
+            return [], "движок расчёта не загружен — участок под зданием искать нечем"
+        try:
+            context = context_of([number])
+        except Exception as exc:  # noqa: BLE001
+            return [], f"НСПД не ответил: {getattr(exc, 'detail', None) or exc}"[:300]
+        parcels = []
+        for parcel in (context or {}).get("land_parcels") or []:
+            area = parcel.get("area_sqm")
+            if parcel.get("cadastral_number") and isinstance(area, (int, float)) and area > 0:
+                parcels.append({"cadastral_number": str(parcel["cadastral_number"]),
+                                "area_sqm": float(area),
+                                "method": ", ".join(parcel.get("lookup_methods") or [])})
+        return parcels, "" if parcels else "НСПД не определила участок под зданием"
+
     def _nspd_points_once(limit: int = lot_notes_rules.NSPD_POINTS_PER_RUN) -> int:
         """Получить точки для нескольких номеров из очереди. Возвращает, сколько спрошено."""
         numbers = lot_notes.points_queue()[:limit]
@@ -5525,6 +5565,10 @@ def install(app: FastAPI) -> None:
         last_reason = ""
         for number in numbers:
             point = _nspd_point(number)
+            if point.get("kind") == "building":
+                point["under_parcels"], under_reason = _parcels_under(number)
+                if under_reason:
+                    point["under_reason"] = under_reason
             lot_notes.save_point(number, point)
             if point.get("map_url"):
                 found += 1

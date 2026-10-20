@@ -85,18 +85,26 @@ def catalogue_quality(lot: AuctionLot) -> dict[str, Any]:
     if missing:
         state = "incomplete"
         accepted = False
-    elif fit.get("fit") is None or int(fit.get("measured") or 0) < 2:
+    # Цена выкинуть лот не может: дешёвый лот нужного размера — возможность, а
+    # не шум (решение владельца, 19.10.2026). Низкая цена только снижает балл и
+    # называется в пометке. Вытянуть может: высокая цена входа оставляет у
+    # нижней границы небольшой объект — такие сделки в эталоне есть. Поэтому
+    # ниже профиля лот, только если ниже и масштаб, и общее соответствие.
+    elif fit.get("scale_fit") is None:
         state = "incomplete"
         accepted = False
-        reasons.append("для сравнения с реальными сделками измерено меньше двух показателей")
-    elif float(fit["fit"]) < MIN_PROFILE_FIT:
+        reasons.append("для сравнения с реальными сделками не измерен масштаб")
+    elif float(fit["scale_fit"]) < MIN_PROFILE_FIT and float(fit["fit"]) < MIN_PROFILE_FIT:
         state = "outside_profile"
         accepted = False
-        reasons.extend(fit.get("misses") or ["масштаб и цена ниже профиля реальных сделок"])
+        reasons.extend(fit.get("scale_misses") or ["масштаб ниже профиля реальных сделок"])
 
     return {
         "accepted": accepted,
         "state": state,
+        "notes": ([fit["price_note"]] if fit.get("price_note") else [])
+                 + ([f"{fit['price_miss']} — балл снижен, но лот в подборке"]
+                    if fit.get("price_miss") and accepted else []),
         "label": {
             "ready": "Основная подборка",
             "incomplete": "Не хватает данных",

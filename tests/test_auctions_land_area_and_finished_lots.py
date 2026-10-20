@@ -391,6 +391,13 @@ def test_in_a_real_browser_the_area_filter_and_finished_lots(tmp_path, monkeypat
             page.fill("#landMinHa", "0,5")
             page.dispatch_event("#landMinHa", "input")
             _rows(page, 2)
+            # Участок от 0,5 га спрятан выбором типа — пояснение это называет.
+            page.evaluate("state.auctionKinds=new Set(['property_complex']);filter()")
+            hidden = _rows(page, 1)
+            assert "подходит 0 лот" in hidden["area"]
+            assert "скрыты другими фильтрами (Продажа земли)" in hidden["area"], hidden["area"]
+            page.evaluate("state.auctionKinds=new Set();filter()")
+            _rows(page, 2)
 
             # Завершённые торги: дата по умолчанию — сегодня, лот помечен,
             # площадка без истории названа.
@@ -503,7 +510,7 @@ def test_nspd_adds_up_the_land_parcels_of_a_lot_and_skips_the_building():
 
     data = {"title": "нежилое здание пл.2020,9кв.м", "cadastral_numbers": [BUILD, LAND_A, LAND_B],
             "land_area_sqm": None, "building_area_sqm": 2020.9}
-    points = {BUILD: {"kind": "building", "area_sqm": 2020.9, "map_url": "x"},
+    points = {BUILD: {"kind": "building", "area_sqm": 2020.9, "map_url": "x", "under_parcels": []},
               LAND_A: {"kind": "land", "area_sqm": 3200.0, "map_url": "x"},
               LAND_B: {"kind": "land", "area_sqm": 2100.0, "map_url": "x"}}
     _nspd_land_area(data, points)
@@ -600,3 +607,125 @@ def test_on_the_page_a_partial_area_below_the_threshold_stays_with_its_note():
     assert titles == ["Два участка, известен один", "Без площади"], "известный маленький участок уходит"
     assert "известна не по всем участкам" in got[0][1]
     assert "уточняем её в НСПД" in got[1][1]
+
+
+# --- честная цена в отборе «Интересные» -----------------------------------------
+
+def test_a_symbolic_price_and_an_auction_start_price_are_not_compared_with_deals():
+    from auction_search.profile_fit import comparable_price, profile_fit
+
+    maip = {"land_area_sqm": 9094, "current_price_rub": 1.0, "procedure_type": "Иной вид торгов · Аукцион"}
+    price, note = comparable_price(maip)
+    assert price is None and note.startswith("цена 1 ₽ — символическая")
+    fit = profile_fit(maip)
+    assert fit["fit"] == 1.0 and fit["misses"] == [], "участок 0,9 га — не «ниже сделок в 48 млн раз»"
+    start = {"land_area_sqm": 6964, "current_price_rub": 78_971.76,
+             "procedure_type": "Аренда и продажа земельных участков · Электронный аукцион"}
+    assert comparable_price(start)[0] is None and "стартовая цена аукциона" in comparable_price(start)[1]
+    sold = {**start, "land_area_sqm": 50_000, "current_price_rub": 543_000, "result_price_rub": 25_010_580}
+    assert comparable_price(sold) == (25_010_580, ""), "у завершённых торгов — итоговая цена"
+    offer = {"land_area_sqm": 900, "current_price_rub": 2_000_000,
+             "procedure_type": "Продажа имущества · Публичное предложение"}
+    assert comparable_price(offer) == (2_000_000, ""), "цена публичного предложения — цена, не нижняя граница"
+
+
+def test_the_main_selection_keeps_large_land_with_a_symbolic_price():
+    card = _finished("MAIP", "FAILED", "2026-09-10T12:00:00Z")
+    card["characteristics"][0]["characteristicValue"] = "9094"
+    card.update(priceMin=1, lotName="Право заключения договора о реализации масштабного инвестиционного проекта, "
+                                    "земельный участок, г. Москва")
+    lot = torgi_gov.to_lot(card, "t")
+    from auction_search.catalogue_quality import catalogue_quality
+
+    quality = catalogue_quality(lot)
+    assert quality["accepted"] is True, quality
+    assert quality["notes"] and "символическая" in quality["notes"][0]
+
+
+# --- участок под зданием -------------------------------------------------------
+
+def test_the_parcel_under_a_building_gives_the_lot_its_land_area():
+    from auction_search.api import _nspd_land_area
+
+    data = {"cadastral_numbers": [BUILD], "land_area_sqm": None, "building_area_sqm": 595.8}
+    _nspd_land_area(data, {BUILD: {"kind": "building", "map_url": "x"}})
+    assert data["land_area_sqm"] is None and data["land_area_pending"] == 1, \
+        "участок под зданием ещё не искали — «уточняется»"
+    _nspd_land_area(data, {BUILD: {"kind": "building", "map_url": "x", "under_parcels": [
+        {"cadastral_number": LAND_A, "area_sqm": 440.0, "method": "building_center"}]}})
+    assert data["land_area_sqm"] == 440
+    assert data["land_area_source"].endswith("в том числе под зданием")
+    both = {"cadastral_numbers": [BUILD, LAND_A], "land_area_sqm": None}
+    _nspd_land_area(both, {BUILD: {"kind": "building", "map_url": "x", "under_parcels": [
+        {"cadastral_number": LAND_A, "area_sqm": 440.0}]},
+        LAND_A: {"kind": "land", "area_sqm": 440.0, "map_url": "x"}})
+    assert both["land_area_sqm"] == 440, "участок, стоящий в лоте своим номером, не считается дважды"
+
+
+def test_the_background_looks_for_the_parcel_under_a_building(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    from fastapi import FastAPI
+
+    from auction_search import api
+    from auction_search import lot_notes as rules
+
+    href = "https://nspd.gov.ru/map?thematic=PKK&zoom=17&coordinate_x=1&coordinate_y=2"
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    core = types.ModuleType("developaid_core")
+    core._land_lookup_by_numbers = lambda numbers: [
+        {"found": True, "cadastral_number": numbers[0], "map_url": href, "kind": "building", "area_sqm": 595.8}]
+    core._core_api_url = lambda path: ""
+    core._land_lot_context = lambda numbers: {"land_parcels": [
+        {"cadastral_number": LAND_A, "area_sqm": 440.0, "lookup_methods": ["building_center"]}]}
+    monkeypatch.setitem(sys.modules, "developaid_core", core)
+    app = FastAPI()
+    app.state.market_discovery_service = types.SimpleNamespace(search=None, krt=None)
+    api.install(app)
+    store = rules.LotNotes(tmp_path / "market")
+    store.remember_lots([{"title": "Здание", "cadastral_numbers": [BUILD],
+                          "application_deadline_iso": "2099-01-10T12:00:00+03:00",
+                          "source": {"lot_url": "https://torgi.gov.ru/lot/1"}}])
+    assert app.state.auction_nspd_points_once() == 1
+    point = store.points()[BUILD]
+    assert point["under_parcels"] == [{"cadastral_number": LAND_A, "area_sqm": 440.0,
+                                       "method": "building_center"}]
+    assert store.points_queue() == [], "здание с найденным участком больше не спрашивается"
+
+
+# --- страница: что скрыто другими фильтрами ------------------------------------
+
+def test_on_the_page_lots_hidden_by_the_kind_are_named_and_shares_are_not_unknown():
+    from auction_search import ui
+    from tests import page_blocks
+
+    lots = [_lot("https://rts/lot/K1", "КРТ 22 га", land=227_900, lot_kind="krt"),
+            _lot("https://torgi.gov.ru/lot/B1", "Здание без участка", building=595.8,
+                 lot_kind="property_complex", land_area_pending=1),
+            _lot("https://lot-online/lot/E1", "Пакет акций 50%", lot_kind="equity_stake")]
+    out, _ = page_blocks.run(
+        "const LOTS=%s;" % json.dumps(lots, ensure_ascii=False),
+        "const list=LOTS.filter(l=>['property_complex','equity_stake'].some(k=>lotMatchesKind(l,k)));"
+        "const pick=areaSelection(LOTS,list,5000);"
+        "console.log(JSON.stringify({rows:pick.list.map(l=>l.title),area:pick.summary}))",
+        page=ui.auctions_page())
+    got = json.loads(out.strip().splitlines()[-1])
+    assert got["rows"] == ["Здание без участка"], "доля в обществе — не «площадь неизвестна»"
+    assert got["area"]["hidden"] == 1 and got["area"]["hiddenKinds"] == ["КРТ"]
+    assert got["area"]["noParcel"] == 1 and got["area"]["matched"] == 0
+
+
+def test_a_low_price_never_drops_a_lot_of_the_right_size():
+    """«Если ставят низкую стартовую цену, мы просто не увидим интересный лот» (владелец)."""
+    from auction_search.catalogue_quality import catalogue_quality
+
+    card = _land_card("6000", lotName="Земельный участок, г. Москва", priceMin=1_800_000)
+    card["biddForm"] = {"code": "PP", "name": "Продажа посредством публичного предложения"}
+    lot = torgi_gov.to_lot(card, "t")
+    quality = catalogue_quality(lot)
+    assert quality["accepted"] is True, quality
+    assert any("балл снижен, но лот в подборке" in note for note in quality["notes"])
+    small = torgi_gov.to_lot(_land_card("120", lotName="Земельный участок, г. Москва",
+                                        priceMin=1_800_000), "t")
+    assert catalogue_quality(small)["state"] == "outside_profile", "масштаб по-прежнему отсеивает"

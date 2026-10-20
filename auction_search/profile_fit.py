@@ -114,6 +114,41 @@ def _short(value: float, unit: str) -> str:
     return f"{value:,.0f} {unit}".replace(",", " ")
 
 
+# Цена до тысячи рублей — не цена участка, а знак: договор о масштабном
+# инвестпроекте выставляют за 1 ₽ (прод, 19.10.2026: участки 0,6–1,7 га с ценой
+# «1 ₽» отбор снимал как «ниже сделок в 48 миллионов раз»).
+SYMBOLIC_PRICE_RUB = 1_000
+_NOT_ASCENDING = ("публичн", "минимальн", "снижен")
+
+
+def comparable_price(lot: dict[str, Any]) -> tuple[float | None, str]:
+    """Цена, которую честно сравнивать с ценами сделок, и пометка, если её нет.
+
+    - Итог завершённых торгов — цена сделки; стартовая рядом с ним не нужна.
+    - Символическая цена (до 1 000 ₽) — не цена участка: не сравниваем.
+    - Стартовая цена аукциона на повышение — нижняя граница, а не цена
+      сделки: ниже профиля она лот не роняет, а называется вслух.
+    """
+    result = _number(lot.get("result_price_rub"))
+    if result is not None and result > SYMBOLIC_PRICE_RUB:
+        return result, ""
+    price = _number(lot.get("current_price_rub"))
+    if price is None:
+        price = _number(lot.get("start_price_rub"))
+    if price is None or price <= 0:
+        return None, ""
+    if price <= SYMBOLIC_PRICE_RUB:
+        shown = f"{price:,.0f}".replace(",", " ")
+        return None, (f"цена {shown} ₽ — символическая, это не цена участка; "
+                      "с ценами сделок её не сравниваем")
+    procedure = str(lot.get("procedure_type") or "").lower()
+    ascending = "аукцион" in procedure and not any(word in procedure for word in _NOT_ASCENDING)
+    if ascending and _place(price, PRICE)[0] < 0.7:
+        return None, (f"стартовая цена аукциона {_short(price, '₽')} — итог торгов "
+                      "неизвестен, поэтому с ценами сделок её не сравниваем")
+    return price, ""
+
+
 def profile_fit(lot: dict[str, Any]) -> dict[str, Any]:
     """Соответствие лота профилю сделок: доля, объяснение и что не измерено.
 
@@ -122,9 +157,7 @@ def profile_fit(lot: dict[str, Any]) -> dict[str, Any]:
     """
     land = _number(lot.get("land_area_sqm"))
     building = _number(lot.get("building_area_sqm"))
-    price = _number(lot.get("current_price_rub"))
-    if price is None:
-        price = _number(lot.get("start_price_rub"))
+    price, price_note = comparable_price(lot)
     per_sqm = price / building if price and building else None
 
     # Удельная цена в соответствие НЕ входит. Она измерена и показывается, но
@@ -135,6 +168,13 @@ def profile_fit(lot: dict[str, Any]) -> dict[str, Any]:
     scored: list[float] = []
     misses: list[str] = []
     unknown: list[str] = []
+    # Масштаб — отдельно от цены: допуск в подборку решает масштаб, а цена
+    # только двигает балл. Дешёвый лот нужного размера — возможность, а не шум
+    # (владелец, 19.10.2026: «если ставят низкую стартовую цену, мы просто не
+    # увидим интересный лот»).
+    scale: list[float] = []
+    scale_misses: list[str] = []
+    price_miss = ""
     for band, value in checks:
         if value is None or value <= 0:
             # Неизмеренное — не «плохо». Лот без опубликованной цены не хуже
@@ -143,11 +183,17 @@ def profile_fit(lot: dict[str, Any]) -> dict[str, Any]:
             continue
         share, why = _place(value, band)
         scored.append(share)
+        if band is PRICE:
+            price_miss = why
+        else:
+            scale.append(share)
+            if why:
+                scale_misses.append(why)
         if why:
             misses.append(why)
     if not scored:
         return {"fit": None, "matched": 0, "measured": 0, "misses": [],
-                "unknown": unknown, "source": BENCHMARK_SOURCE,
+                "unknown": unknown, "source": BENCHMARK_SOURCE, "price_note": price_note,
                 "note": "сравнивать не с чем: у лота нет ни площади, ни цены"}
     fit = sum(scored) / len(scored)
     return {
@@ -157,8 +203,14 @@ def profile_fit(lot: dict[str, Any]) -> dict[str, Any]:
         "matched": sum(1 for x in scored if x >= 0.7),
         "measured": len(scored),
         "misses": misses,
+        # Соответствие по одному масштабу — им решается допуск в подборку.
+        "scale_fit": round(sum(scale) / len(scale), 3) if scale else None,
+        "scale_misses": scale_misses,
+        "price_miss": price_miss,
         "unknown": unknown,
         "source": BENCHMARK_SOURCE,
+        # Почему цена не сравнивалась — пусто, если сравнивалась.
+        "price_note": price_note,
         "note": "",
     }
 
