@@ -103,7 +103,7 @@ def test_the_page_draws_the_polygon():
     assert '<img class="land-contour-map" src="/land/map-image?bbox=' in svg
     assert 'onerror="landMapLost(this)"' in svg
     # Меркаторные 100 м на широте Мытищ — около 56 настоящих метров.
-    width = re.search(r"~(\d+)", svg)
+    width = re.search(r"Ширина — около (\d+) м\.", svg)
     assert width and 50 <= int(width.group(1)) <= 60, svg
 
 
