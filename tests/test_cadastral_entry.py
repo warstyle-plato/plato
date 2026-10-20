@@ -184,7 +184,10 @@ def test_recalculation_reuses_the_stored_query():
 
 
 def test_parameter_block_says_that_edits_recalculate():
-    assert "Правка любого параметра сразу пересчитывает результат" in main.PAGE
+    assert "Правка любого параметра сразу пересчитывает ТЭП участка." in main.PAGE
+    # Говорит это сама разметка: подмены слоем /ia больше нет.
+    overlay = (Path(__file__).resolve().parents[1] / "ia_preview/assets/overlay.js").read_text(encoding="utf-8")
+    assert "#moParamsBox p b" not in overlay
 
 
 # --- сколько участков берётся в расчёт --------------------------------------

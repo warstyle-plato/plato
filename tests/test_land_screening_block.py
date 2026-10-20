@@ -302,7 +302,8 @@ def test_the_waiting_plate_is_visible_at_all():
     assert "working" in cls, "без тона шапка белым по белому"
     assert "Проверяю градостроительные ограничения" in html
     assert "3 с" in html, "сколько идёт — видно"
-    assert "ЗОУИТ" in html, "видно, что именно проверяется"
+    assert "зонах с особыми условиями использования территории" in html, "видно, что именно проверяется"
+    assert "ЗОУИТ" not in html and "ООПТ" not in html, "сокращения не расшифрованы"
 
     css = core.PAGE[core.PAGE.index(".land-screening{"):core.PAGE.index(".land-screening ul{")]
     assert ".land-screening.working header{background:" in css
@@ -326,7 +327,7 @@ def test_the_progress_moves_with_the_parcels():
         {"number": "50:20:1:2", "parcel": {"found": False}},
     ], 20)
     assert "50:20:1:1 — ограничений не найдено" in third
-    assert "50:20:1:2 — сведений ЕГРН нет" in third
+    assert "50:20:1:2 — в ЕГРН нет сведений" in third
 
 
 def test_the_screening_asks_parcel_by_parcel():
@@ -390,8 +391,8 @@ def test_the_waiting_plate_estimates_what_is_left():
 def test_the_waiting_plate_says_how_much_work_it_is():
     numbers = [f"50:12:0100131:{n}" for n in range(1, 23)]
     _, html = _working(numbers, [], 2)
-    assert "шесть десятков слоёв" in html
-    assert "22 раз" in html
+    assert "около шестидесяти слоёв" in html
+    assert "а участков 22" in html
 
 
 # --- мелкие участки не стоят шести десятков запросов ------------------------------
@@ -462,7 +463,7 @@ def test_the_progress_line_names_the_skip():
     _, html = _working(numbers, [
         {"number": "50:12:0100131:29", "parcel": {"found": True, "too_small": True, "findings": []}},
     ], 5)
-    assert "50:12:0100131:29 — меньше порога — не проверялся" in html
+    assert "50:12:0100131:29 — не проверялся: участок меньше порога" in html
 
 
 def test_the_counts_add_up_to_what_was_typed():

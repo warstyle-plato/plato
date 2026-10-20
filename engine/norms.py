@@ -269,8 +269,9 @@ AVERAGE_FLAT_SOURCES: dict[str, tuple[float, str]] = {
     # число из чужого документа неотличимо от числа этого.
     "mo": (AVERAGE_FLAT_MO_SQM,
            "РНГП Московской области — "
-           f"{MO_NORMS_DEFAULT['living_space_per_person_sqm']:g} м² на человека "
-           f"при размере домовладения {_PARKING_2118_HOUSEHOLD:g} (2118-ПП)".replace(".", ",")),
+           f"{MO_NORMS_DEFAULT['living_space_per_person_sqm']:g} м² "
+           f"жилья на человека, в квартире в среднем {_PARKING_2118_HOUSEHOLD:g} человека "
+           "(2118-ПП)".replace(".", ",")),
 }
 AVERAGE_FLAT_PLACEHOLDER = "__DEVELOPAID_AVERAGE_FLAT__"
 
