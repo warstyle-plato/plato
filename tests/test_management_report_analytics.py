@@ -68,7 +68,8 @@ def test_findings_carry_numbers_and_sources():
     lag = built["physical"]["lag"]
     assert f"отставание {report._pp(-lag)[1:]}" in found["Стройка"]["text"]
     assert "ГПР-факт от 16.10.2026" == found["Стройка"]["source"]
-    assert "оплачено 200,0 млн ₽ из 400,0 млн ₽ (50,0%)" in found["Бюджет месяца"]["text"]
+    # Оплата 19.10 уже в реестре, но после конца недели — в сводку не входит.
+    assert "оплачено 150,0 млн ₽ из 400,0 млн ₽ (37,5%)" in found["Бюджет месяца"]["text"]
     assert "Выборка кредита за неделю — 48,0 млн ₽ (за предыдущий такой же период — " \
            "120,0 млн ₽)" in found["Финансирование"]["text"]
     assert "«Арбитраж с подрядчиком»" in found["Открытые вопросы"]["text"]
@@ -95,7 +96,7 @@ def test_the_document_opens_with_findings_and_has_charts():
     ]
     # Числа графика — те же, что в таблице блока: столбец «Оплачено» стройки.
     budget = page[page.index("Бюджет на октябрь 2026"):]
-    assert ">200,0<" in budget and ">400,0<" in budget
+    assert ">150,0<" in budget and ">400,0<" in budget
     text = report.render_text(built)
     assert text.index("<b>Главное</b>") < text.index("<b>Стройка</b>")
     assert "п. п.." not in text and "п. п.." not in page
@@ -182,17 +183,20 @@ def test_a_work_without_growth_is_flagged():
 def test_budget_sales_and_funding_depth():
     built = _full()
     budget = built["budget"]
-    # Тренд за шесть месяцев: где бюджета на месяц нет — план None, а не ноль.
-    assert len(budget["trend"]) == 6
+    # Тренд: месяцы раньше первой оплаты и без плана не показаны (реестр
+    # начинается в сентябре, бюджет — тоже), «нет данных» не рисуется нулём.
+    assert [p["month"] for p in budget["trend"]] == ["2026-09-01", "2026-10-01"]
     assert budget["trend"][-1]["plan"]["construction"] == pytest.approx(400e6)
-    assert budget["trend"][0]["plan"]["construction"] is None
-    assert budget["trend"][-1]["fact"]["construction"] == pytest.approx(200e6)
-    # Прогноз до конца месяца по темпу: 200 млн за 18 из 31 дня.
+    assert budget["trend"][-1]["fact"]["construction"] == pytest.approx(150e6)
+    # Прогноз до конца месяца по темпу: 150 млн за 18 из 31 дня.
     forecast = report._budget_forecast(budget, datetime.date(2026, 10, 18))
-    assert forecast[0]["forecast"] == pytest.approx(200e6 / (18 / 31))
+    assert forecast[0]["forecast"] == pytest.approx(150e6 / (18 / 31))
     assert budget["recipients"][0]["name"] == "СтройКо"
-    # Тестовая книга без группировки строк — статьи не угадываются.
-    assert budget["articles"]["known"] is False
+    # В тестовой книге из статей — только служба заказчика; остальной план
+    # главы стройки — строкой «не разнесены по карте», план главы не теряется.
+    build = budget["by_budget_article"]["chapters"][0]
+    assert build["total"]["plan"] == pytest.approx(400e6)
+    assert build["rows"][-1]["key"] == "rest"
     sales = built["sales"]
     flats = next(item for item in sales["products"] if item["product"] == "Квартира")
     assert flats["total"]["area"] == pytest.approx(200.0)
@@ -205,7 +209,7 @@ def test_budget_sales_and_funding_depth():
     assert "на эскроу за октябрь 2026 поступило 5,0 млн ₽" in found["Финансирование"]["text"]
 
 
-def test_budget_articles_from_the_outline():
+def test_closed_month_deviations_by_article_name_without_outline():
     from openpyxl import Workbook
     import io
 
@@ -214,29 +218,29 @@ def test_budget_articles_from_the_outline():
     sheet.cell(row=4, column=5, value="Сентябрь 2026")
     sheet.cell(row=5, column=5, value="ПЛАН")
     sheet.cell(row=5, column=6, value="ФАКТ")
-    rows = [("Стоимость строительства и проектирования", 2, -300e6, -200e6),
-            ("Основные объекты строительства", 3, -280e6, -190e6),
-            ("Подрядчик", 4, -280e6, -190e6),
-            ("Наружные сети и сооружения", 3, -20e6, None),
-            ("Содержание службы заказчика", 3, -6e6, -6e6),
-            ("Коммерческие расходы", 2, -10e6, -9e6),
-            ("Реклама и PR (КС) - Группа", 3, -10e6, -9e6),
-            ("Административно-хозяйственные расходы", 2, -5e6, -5e6)]
-    for r, (name, level, plan, fact) in enumerate(rows, 6):
+    rows = [("Стоимость строительства и проектирования", -300e6, -200e6),
+            ("Основные объекты строительства", -280e6, -190e6),
+            ("Подрядчик", -280e6, -190e6),
+            ("Наружные сети и сооружения", -20e6, None),
+            ("Содержание службы заказчика", -6e6, -6e6),
+            ("Коммерческие расходы", -10e6, -9e6),
+            ("Реклама и PR (КС) - Группа", -10e6, -9e6),
+            ("Административно-хозяйственные расходы", -5e6, -5e6)]
+    # Группировки строк нет — статьи всё равно находятся по имени.
+    for r, (name, plan, fact) in enumerate(rows, 6):
         sheet.cell(row=r, column=1, value=name)
         sheet.cell(row=r, column=5, value=plan)
         if fact is not None:
             sheet.cell(row=r, column=6, value=fact)
-        sheet.row_dimensions[r].outline_level = level
     blob = io.BytesIO()
     book.save(blob)
     monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-02")
     got = monthly_budget._articles(PROJECT, datetime.date(2026, 10, 18))
     assert got["known"] and got["month"] == "2026-09-01"
     by_name = {row["article"]: row for row in got["rows"]}
-    # Подрядчик (уровень ниже) и АХР (другая группа) — не статьи сводки.
+    # Подрядчик и АХР — не статьи карты.
     assert set(by_name) == {"Основные объекты строительства", "Наружные сети и сооружения",
-                            "Содержание службы заказчика", "Реклама и PR (КС)"}
+                            "Служба заказчика, охрана и офис", "Реклама и PR"}
     assert by_name["Основные объекты строительства"]["delta"] == pytest.approx(-90e6)
     assert by_name["Наружные сети и сооружения"]["fact_blank"] is True
     assert got["rows"][0]["article"] == "Основные объекты строительства"

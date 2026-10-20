@@ -49,6 +49,39 @@ LINES = (
 )
 _COMMERCIAL_CODES = ("3.1", "3.2", "3.4", "3.7")
 
+# Статьи бюджета ↔ коды РСС (карта принята владельцем 20.10.2026 по сверке
+# сентября). Статья бюджета ищется по точному имени строки внутри своей главы;
+# «- Группа» в конце имени выгрузка дописывает сама. Код РСС относится к
+# статье по самому длинному совпавшему коду: «Содержание стройплощадки»
+# (2.2.1.10, 2.2.2.8) — в «Прочих работах», хотя лежит внутри 2.2.
+ARTICLES = (
+    {"key": "design", "label": "Проектные и изыскательские работы, авторский надзор",
+     "line": "construction", "budget": ("Проектные и изыскательские работы, авторский надзор",),
+     "rss": ("2.7",)},
+    {"key": "objects", "label": "Основные объекты строительства", "line": "construction",
+     "budget": ("Основные объекты строительства",), "rss": ("2.2", "2.3", "2.5")},
+    {"key": "upkeep", "label": "Прочие работы и затраты (содержание стройплощадки)",
+     "line": "construction", "budget": ("Прочие работы и затраты",),
+     "rss": ("2.2.1.10", "2.2.2.8")},
+    {"key": "networks", "label": "Наружные сети и сооружения", "line": "construction",
+     "budget": ("Наружные сети и сооружения",), "rss": ("2.4",)},
+    {"key": "temporary", "label": "Временные здания и сооружения", "line": "construction",
+     "budget": ("Временные здания и сооружения",), "rss": ("2.1",)},
+    {"key": "ads", "label": "Реклама и PR", "line": "commercial",
+     "budget": ("Реклама и PR (КС)",), "rss": ("3.1",)},
+    {"key": "selling", "label": "Расходы на продажу", "line": "commercial",
+     "budget": ("Расходы на продажу (КС)",), "rss": ("3.2", "3.4")},
+    {"key": "sales_staff", "label": "Персонал и офис отдела продаж", "line": "commercial",
+     "budget": ("Расходы на персонал отдела продаж (КС)",
+                "Расходы отдела продаж на содержание офиса (КС)"), "rss": ("3.7",)},
+    {"key": "service", "label": "Служба заказчика, охрана и офис", "line": "service",
+     "budget": ("Содержание службы заказчика",), "rss": ("2.6",)},
+)
+_ARTICLE = {article["key"]: article for article in ARTICLES}
+# Глава бюджета, внутри которой ищется статья строки сводки.
+_CHAPTER = {"construction": "construction_with_service",
+            "service": "construction_with_service", "commercial": "commercial"}
+
 
 def _norm(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip().lower()
@@ -68,6 +101,27 @@ def line_of(code: str) -> str | None:
     if any(_under(code, root) for root in _COMMERCIAL_CODES):
         return "commercial"
     return None
+
+
+def article_of(code: str) -> str | None:
+    """Статья бюджета для кода РСС; None — платёж вне строк сводки или без статьи.
+
+    Код внутри строки сводки, но не из карты (например, новая статья 2.8 РСС), —
+    тоже None: такой платёж идёт строкой «без плана», а не в чужую статью.
+    """
+    code = str(code or "").strip().rstrip(".")
+    if line_of(code) is None:
+        return None
+    best, size = None, -1
+    for article in ARTICLES:
+        for root in article["rss"]:
+            if _under(code, root) and len(root) > size:
+                best, size = article["key"], len(root)
+    return best
+
+
+def _label(value: Any) -> str:
+    return _norm(re.sub(r"\s*-\s*Группа\s*$", "", str(value or "")))
 
 
 def _amount(value: Any) -> float | None:
@@ -141,6 +195,22 @@ def read_budget(data: bytes) -> dict[str, Any]:
     if lost:
         raise ValueError("в бюджете нет строк: " + ", ".join(f"«{x}»" for x in lost))
 
+    # Статьи — по точному имени, первая строка с этим именем после строки
+    # своей главы. Группировка строк (outline) не нужна: без неё статьи те же.
+    starts = {}
+    for index, row in enumerate(rows):
+        key = wanted.get(_norm(row[0] if row else "")) if index > header + 1 else None
+        if key and key not in starts:
+            starts[key] = index
+    article_rows: dict[str, list[list[Any]]] = {}
+    for article in ARTICLES:
+        start = starts[_CHAPTER[article["line"]]]
+        for name in article["budget"]:
+            found = next((row for row in rows[start + 1:]
+                          if row and _label(row[0]) == _norm(name)), None)
+            if found is not None:
+                article_rows.setdefault(article["key"], []).append(found)
+
     out: dict[str, dict[str, dict[str, float | None]]] = {}
     for month, block in columns.items():
         values = {}
@@ -151,8 +221,19 @@ def read_budget(data: bytes) -> dict[str, Any]:
                 # Расход в файле со знаком минус; наружу — сколько потрачено.
                 pair[kind] = -value if value is not None else None
             values[key] = pair
+        articles = {}
+        for key, found in article_rows.items():
+            pair = {}
+            for kind, column in block.items():
+                cells = [_amount(row[column] if column < len(row) else None) for row in found]
+                known = [value for value in cells if value is not None]
+                pair[kind] = -sum(known) if known else None
+            articles[key] = pair
+        values["articles"] = articles
         out[month] = values
-    return {"title": title, "months": out}
+    return {"title": title, "months": out,
+            "articles_missing": [article["label"] for article in ARTICLES
+                                 if article["key"] not in article_rows]}
 
 
 def store_budget(project: str, data: bytes, taken_at: Any,
@@ -172,14 +253,16 @@ def store_budget(project: str, data: bytes, taken_at: Any,
             "months": sorted(month[:7] for month in parsed["months"])}
 
 
-def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
-    """План месяца из свежайшего бюджета, в котором этот месяц есть."""
+def _budget_files(project: str, upto: str) -> list[Path]:
     folder = monitor._project_dir(project) / "budget"
     if not folder.exists():
-        return None
-    for path in sorted(folder.glob("*.xlsx"), reverse=True):
-        if path.stem > upto:
-            continue
+        return []
+    return sorted((path for path in folder.glob("*.xlsx") if path.stem <= upto), reverse=True)
+
+
+def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
+    """План месяца из свежайшего бюджета, в котором этот месяц есть."""
+    for path in _budget_files(project, upto):
         parsed = read_budget(path.read_bytes())
         values = parsed["months"].get(month)
         if values is None:
@@ -190,18 +273,26 @@ def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
                         else with_service - (service or 0.0))
         return {"file": path.stem, "title": parsed["title"],
                 "plan": {"construction": construction,
-                         "commercial": values["commercial"]["plan"]}}
+                         "commercial": values["commercial"]["plan"]},
+                "articles": {key: pair["plan"] for key, pair in values["articles"].items()},
+                "articles_missing": parsed["articles_missing"]}
     return None
 
 
-def month_fact(rss: Path, month: str) -> dict[str, Any]:
-    """Оплачено за месяц по строкам сводки — из реестра платежей РСС."""
+def month_fact(rss: Path, month: str, upto: datetime.date | None = None) -> dict[str, Any]:
+    """Оплачено за месяц по строкам сводки — из реестра платежей РСС.
+
+    ``upto`` — дата сводки: оплата позже неё в сводку не входит, даже если
+    реестр её уже несёт (те же границы, что у таблицы статей).
+    """
     payments = actuals.read_payments(rss)
     first = datetime.date.fromisoformat(month)
     sums = {line["key"]: 0.0 for line in LINES}
     for row in payments["rows"]:
         day = row.get("date")
         if not day or (day.year, day.month) != (first.year, first.month):
+            continue
+        if upto is not None and day > upto:
             continue
         key = line_of(row.get("estimate_code") or "")
         if key:
@@ -218,7 +309,7 @@ def month_budget(project: str, end: datetime.date) -> dict[str, Any]:
         return {"state": "missing",
                 "reason": "Не загружен ни один отчёт РСС с реестром платежей "
                           f"на {end:%d.%m.%Y}."}
-    fact = month_fact(rss, month)
+    fact = month_fact(rss, month, end)
     plan = _plan(project, month, end.isoformat())
     lines = []
     for line in LINES:
@@ -229,6 +320,7 @@ def month_budget(project: str, end: datetime.date) -> dict[str, Any]:
     out = {"state": "ok" if plan else "partial", "month": month, "rss": rss.stem,
            "budget_file": (plan or {}).get("file"), "lines": lines,
            "last_payment": fact["last_payment"],
+           "by_budget_article": month_articles(rss, month, end, plan),
            "trend": _trend(project, rss, end),
            "by_article": _by_article(rss, month, end),
            "recipients": _recipients(rss, month, end),
@@ -237,6 +329,96 @@ def month_budget(project: str, end: datetime.date) -> dict[str, Any]:
         out["reason"] = (f"Не загружен бюджет (план-факт БДДС), в котором есть "
                          f"{datetime.date.fromisoformat(month):%m.%Y} — плана на месяц нет.")
     return out
+
+
+def _names(rss: Path) -> dict[str, str]:
+    """Имя статьи РСС по коду — из листа расчёта стоимости, он хранит имена."""
+    return {row["code"]: row["article"] for row in actuals.read_estimate(rss)["rows"]
+            if row.get("article")}
+
+
+def _row(label: str, planned: float | None, paid: float) -> dict[str, Any]:
+    remaining = planned - paid if planned is not None else None
+    return {"label": label, "plan": planned, "fact": paid, "remaining": remaining,
+            "share": paid / planned if planned else None,
+            "over": planned is not None and paid > planned + 0.5}
+
+
+def month_articles(rss: Path, month: str, end: datetime.date,
+                   plan: dict[str, Any] | None) -> dict[str, Any]:
+    """Бюджет месяца по статьям: план БДДС, оплачено по РСС, остаток, процент.
+
+    Оплаты кода РСС, которого нет в карте статей, — строкой «без плана» с кодом
+    и именем статьи РСС: молча отнесённые в соседнюю статью, они исказили бы её
+    процент. Статья, которой нет в бюджете, — план «нет в бюджете», не ноль.
+    """
+    names = _names(rss)
+    paid: dict[str, float] = {article["key"]: 0.0 for article in ARTICLES}
+    loose: dict[str, dict[str, Any]] = {}
+    for row in _month_rows(rss, month, end):
+        code = str(row.get("estimate_code") or "").strip().rstrip(".")
+        amount = float(row.get("amount") or 0.0)
+        key = article_of(code)
+        if key:
+            paid[key] += amount
+            continue
+        item = loose.setdefault(code, {
+            "code": code, "line": line_of(code),
+            "name": names.get(code) or row.get("article_name") or ""})
+        item["amount"] = item.get("amount", 0.0) + amount
+    planned = (plan or {}).get("articles") or {}
+    missing = set((plan or {}).get("articles_missing") or [])
+    chapters = []
+    for line in LINES:
+        rows = []
+        for article in ARTICLES:
+            if article["line"] != line["key"]:
+                continue
+            row = _row(article["label"], planned.get(article["key"]), paid[article["key"]])
+            row.update({"key": article["key"], "rss": ", ".join(article["rss"]),
+                        "in_budget": article["label"] not in missing})
+            rows.append(row)
+        for item in sorted(loose.values(), key=lambda x: -x["amount"]):
+            if item["line"] == line["key"]:
+                row = _row(f"Без плана: {item['code']} "
+                           f"{item['name'] or 'статья без названия в РСС'}",
+                           None, item["amount"])
+                row.update({"key": "unplanned", "rss": item["code"], "in_budget": False})
+                rows.append(row)
+        # План главы — строка главы бюджета (тот же план, что у строк сводки),
+        # а не сумма найденных статей: статья, которой нет в карте, не должна
+        # молча уменьшать план главы. Расхождение — отдельной строкой.
+        known = [row["plan"] for row in rows if row["plan"] is not None]
+        chapter_plan = ((plan or {}).get("plan") or {}).get(line["key"])
+        if chapter_plan is None and known:
+            chapter_plan = sum(known)
+        rest = chapter_plan - sum(known) if chapter_plan is not None else 0.0
+        if abs(rest) > 0.5:
+            row = _row("Прочие статьи бюджета главы (не разнесены по карте)", rest, 0.0)
+            row.update({"key": "rest", "rss": "", "in_budget": True})
+            rows.append(row)
+        if not any(row["plan"] or row["fact"] for row in rows):
+            continue
+        total = _row(line["label"], chapter_plan, sum(row["fact"] for row in rows))
+        chapters.append({"key": line["key"], "label": line["label"], "total": total,
+                         "rows": rows})
+    # Итог — стройка и коммерция: у службы заказчика факт РСС шире плана
+    # (в 2.6 и офис), её процент с планом не сравним.
+    comparable = [chapter["total"] for chapter in chapters
+                  if chapter["key"] in {"construction", "commercial"}]
+    known = [row["plan"] for row in comparable if row["plan"] is not None]
+    total = _row("Итого стройка и коммерческие расходы", sum(known) if known else None,
+                 sum(row["fact"] for row in comparable))
+    rows = [row for chapter in chapters if chapter["key"] != "service"
+            for row in chapter["rows"] if row["plan"] and row["key"] != "rest"]
+    over = sorted((row for row in rows if row["over"]),
+                  key=lambda row: row["remaining"])
+    under = sorted((row for row in rows if not row["over"]),
+                   key=lambda row: -row["remaining"])
+    return {"month": month, "chapters": chapters, "total": total,
+            "overrun": [row["key"] for row in over],
+            "largest_left": under[0]["key"] if under else None,
+            "has_plan": bool(plan)}
 
 
 def _month_shift(month: datetime.date, back: int) -> datetime.date:
@@ -248,18 +430,29 @@ def _trend(project: str, rss: Path, end: datetime.date, months: int = 6) -> list
     """План и оплачено по строкам сводки за последние месяцы (столбцы тренда).
 
     План месяца — из свежайшего бюджета, где этот месяц есть; факт — из того же
-    РСС на конец периода. Нет бюджета на месяц — план None, а не ноль.
+    РСС на конец периода. Нет бюджета на месяц — план None, а не ноль. Месяц до
+    первой оплаты в реестре — факт None: реестр его не покрывает, это «нет
+    данных», а не «ничего не платили». Месяцы без плана и без факта в начале
+    ряда не показываются.
     """
+    dated = [row["date"] for row in actuals.read_payments(rss)["rows"] if row.get("date")]
+    first = min(dated).replace(day=1) if dated else None
     current = end.replace(day=1)
     out = []
     for back in range(months - 1, -1, -1):
-        month = _month_shift(current, back).isoformat()
+        start = _month_shift(current, back)
+        month = start.isoformat()
         plan = _plan(project, month, end.isoformat())
-        fact = month_fact(rss, month)["fact"]
-        out.append({"month": month,
-                    "plan": {key: (plan or {}).get("plan", {}).get(key)
-                             for key in ("construction", "commercial")},
-                    "fact": {key: fact[key] for key in ("construction", "commercial")}})
+        covered = first is not None and start >= first
+        fact = month_fact(rss, month, end)["fact"] if covered else {}
+        point = {"month": month,
+                 "plan": {key: (plan or {}).get("plan", {}).get(key)
+                          for key in ("construction", "commercial")},
+                 "fact": {key: fact.get(key) for key in ("construction", "commercial")}}
+        if not out and all(value is None for part in ("plan", "fact")
+                           for value in point[part].values()):
+            continue
+        out.append(point)
     return out
 
 
@@ -271,13 +464,20 @@ def _month_rows(rss: Path, month: str, end: datetime.date) -> list[dict[str, Any
 
 
 def _by_article(rss: Path, month: str, end: datetime.date) -> list[dict[str, Any]]:
-    """Оплачено с начала месяца по статьям РСС внутри строк сводки."""
+    """Оплачено с начала месяца по статьям РСС внутри строк сводки.
+
+    Имя статьи — из листа расчёта стоимости РСС: в реестре платежей колонка
+    имени бывает пустой.
+    """
+    names = _names(rss)
     sums: dict[tuple[str, str], dict[str, Any]] = {}
     for row in _month_rows(rss, month, end):
         code = str(row.get("estimate_code") or "").rstrip(".")
         key = (line_of(code) or "", code)
-        item = sums.setdefault(key, {"line": key[0], "code": code,
-                                     "name": row.get("article_name") or "", "amount": 0.0})
+        item = sums.setdefault(key, {
+            "line": key[0], "code": code,
+            "name": names.get(code) or row.get("article_name") or "статья без названия в РСС",
+            "amount": 0.0})
         item["amount"] += float(row.get("amount") or 0.0)
     return sorted(sums.values(), key=lambda item: -item["amount"])
 
@@ -296,81 +496,29 @@ def _recipients(rss: Path, month: str, end: datetime.date, top: int = 8) -> list
     return out
 
 
-def read_articles(data: bytes) -> dict[str, Any]:
-    """Статьи БДДС третьего уровня под стройкой и коммерцией: план и факт по месяцам.
-
-    Уровень берётся из группировки строк (outline) — по ней бюджет и собран.
-    Без группировки статьи не выделить, и это сказано, а не угадано по отступам.
-    """
-    from openpyxl import load_workbook
-
-    book = load_workbook(io.BytesIO(data), data_only=True)
-    sheet = book.worksheets[0]
-    parsed = read_budget(data)
-    header = None
-    for index in range(1, 21):
-        if any(_MONTH_HEADER.match(str(sheet.cell(index, c).value or ""))
-               for c in range(1, sheet.max_column + 1)):
-            header = index
-            break
-    levels = [sheet.row_dimensions[r].outline_level for r in range(1, sheet.max_row + 1)]
-    if header is None or not any(levels):
-        return {"known": False, "reason": "в файле бюджета нет группировки строк по уровням"}
-    columns = {}
-    for column in range(1, sheet.max_column + 1):
-        match = _MONTH_HEADER.match(str(sheet.cell(header, column).value or ""))
-        if match and match.group(1).lower() in _MONTHS:
-            month = datetime.date(int(match.group(2)), _MONTHS[match.group(1).lower()], 1)
-            columns[month.isoformat()] = column
-    groups = {_norm(_BUDGET_ROWS["construction_with_service"]): "construction",
-              _norm(_BUDGET_ROWS["commercial"]): "commercial"}
-    current, group_level = None, None
-    out: dict[str, list[dict[str, Any]]] = {month: [] for month in columns}
-    for r in range(header + 2, sheet.max_row + 1):
-        name = _norm(sheet.cell(r, 1).value)
-        level = sheet.row_dimensions[r].outline_level
-        if name in groups:
-            current, group_level = groups[name], level
-            continue
-        if current is None:
-            continue
-        if level <= group_level:
-            current = None
-            continue
-        if level != group_level + 1 or not name:
-            continue
-        for month, column in columns.items():
-            # Подписи «ПЛАН»/«ФАКТ» стоят в той же раскладке, что у read_budget.
-            plan = _amount(sheet.cell(r, column).value)
-            fact = _amount(sheet.cell(r, column + 1).value)
-            if plan is None and fact is None:
-                continue
-            out[month].append({"line": current, "article": str(sheet.cell(r, 1).value).strip(),
-                               "plan": -plan if plan is not None else None,
-                               "fact": -fact if fact is not None else None})
-    return {"known": True, "title": parsed["title"], "months": out}
-
-
 def _articles(project: str, end: datetime.date) -> dict[str, Any]:
-    """Отклонения по статьям БДДС в последнем месяце, где бюджет уже несёт факт."""
-    folder = monitor._project_dir(project) / "budget"
-    files = sorted((p for p in folder.glob("*.xlsx") if p.stem <= end.isoformat()),
-                   reverse=True) if folder.exists() else []
+    """Отклонения по статьям БДДС в последнем месяце, где бюджет уже несёт факт.
+
+    Статьи — те же, что у бюджета месяца (`ARTICLES`, по точному имени строки).
+    """
+    files = _budget_files(project, end.isoformat())
     if not files:
         return {"known": False, "reason": "бюджет не загружен"}
-    got = read_articles(files[0].read_bytes())
-    if not got.get("known"):
-        return got
-    for month in sorted(got["months"], reverse=True):
-        rows = got["months"][month]
-        if any(row.get("fact") is not None for row in rows):
-            # Месяц закрыт: у части статей факт есть. Пустая ячейка факта в
-            # закрытом месяце бюджета значит «не платили», и это помечено.
-            for row in rows:
-                row["article"] = re.sub(r"\s*-\s*Группа$", "", row["article"])
-                row["fact_blank"] = row.get("fact") is None
-                fact = row.get("fact") or 0.0
-                row["delta"] = (fact - row["plan"]) if row.get("plan") is not None else None
-            rows.sort(key=lambda row: -abs(row.get("delta") or 0.0))
-            return {"known": True, "month": month, "file": files[0].stem, "rows": rows}
+    parsed = read_budget(files[0].read_bytes())
+    for month in sorted(parsed["months"], reverse=True):
+        found = parsed["months"][month]["articles"]
+        if not any(pair.get("fact") is not None for pair in found.values()):
+            continue
+        rows = []
+        # Месяц закрыт: у части статей факт есть. Пустая ячейка факта в
+        # закрытом месяце бюджета значит «не платили», и это помечено.
+        for key, pair in found.items():
+            if pair.get("plan") is None and pair.get("fact") is None:
+                continue
+            fact = pair.get("fact") or 0.0
+            rows.append({"article": _ARTICLE[key]["label"], "plan": pair.get("plan"),
+                         "fact": pair.get("fact"), "fact_blank": pair.get("fact") is None,
+                         "delta": fact - pair["plan"] if pair.get("plan") is not None else None})
+        rows.sort(key=lambda row: -abs(row.get("delta") or 0.0))
+        return {"known": True, "month": month, "file": files[0].stem, "rows": rows}
     return {"known": False, "reason": "в бюджете ещё нет месяца с фактом"}
