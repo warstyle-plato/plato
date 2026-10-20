@@ -82,4 +82,7 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
         return
     text = " ".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(pdf)).pages)
     assert "Сводка по проекту" in text and "Бюджет месяца" in text
+    # Блок финансирования: выборка кредита — те же числа, что на странице.
+    assert "Финансирование" in text and "Выборка кредита" in text
+    assert "Финансирование" in month
     assert "400,0" in text, "в PDF не те числа, что на странице"
