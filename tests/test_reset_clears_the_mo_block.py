@@ -110,8 +110,8 @@ def test_the_density_default_lives_in_the_field_not_in_the_markup_of_the_note() 
 
 def test_the_note_says_current_density_when_it_differs_from_the_default() -> None:
     """«По умолчанию» рядом с не-умолчанием — неверное слово, а не неточное."""
-    assert "посадка сейчас — " in OVERLAY
-    assert "посадка по умолчанию — " in OVERLAY
+    assert "Плотность сейчас — " in OVERLAY
+    assert "Плотность по умолчанию — " in OVERLAY
 
 
 def test_the_mo_density_field_still_declares_its_default() -> None:

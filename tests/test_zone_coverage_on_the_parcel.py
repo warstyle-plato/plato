@@ -142,7 +142,7 @@ def test_the_worst_parcel_sets_the_free_spot():
 def test_the_block_and_the_report_show_the_share():
     page = core.PAGE
     assert "% участка" in page and "free_pct" in page
-    assert "свободно от ограничений" in page
+    assert "Свободно от ограничений около " in page
 
     engine = engine_source()
     report = engine[engine.index('story.append(_PdfSection("screening"))'):]
