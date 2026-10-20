@@ -9,6 +9,8 @@
   утверждённого ГПР (`monitor._plan_progress`);
 * бюджет месяца — план из план-факта БДДС против реестра платежей РСС
   (`developaid_monthly_budget`);
+* общая информация — записи, введённые руками на странице проекта
+  (`developaid_project_notes`);
 * продажи — договоры контрактации, план финмодели по месяцам
   (`contracting.fm_plan_by_month`) и квартальный план банка.
 
@@ -25,6 +27,7 @@ from typing import Any
 import developaid_monitor as monitor
 import developaid_monitor_manager as manager
 import developaid_monthly_budget as monthly_budget
+import developaid_project_notes as project_notes
 from market_search import contracting, sales_store
 
 PERIODS = {"week": "неделю", "month": "месяц"}
@@ -272,7 +275,9 @@ def build(project: str, kind: str, end: Any, sales_project: str = "",
     for name, collect in (
             ("physical", lambda: physical(project, kind, bounds["end"])),
             ("budget", lambda: budget(project, kind, bounds["end"])),
-            ("sales", lambda: sales(sales_project, kind, bounds["end"], sales_dir))):
+            ("sales", lambda: sales(sales_project, kind, bounds["end"], sales_dir)),
+            ("notes", lambda: dict(project_notes.for_period(
+                project, bounds["start"], bounds["end"]), state="ok"))):
         try:
             blocks[name] = collect()
         except Exception as exc:  # noqa: BLE001
@@ -398,4 +403,19 @@ def render_text(report: dict[str, Any]) -> str:
                          "более поздние сделки в сводку не попали.")
     else:
         lines.append(esc(block.get("reason") or "Данных нет."))
+
+    block = report.get("notes") or {}
+    lines += ["", "<b>Общая информация</b>"]
+    if block.get("state") != "ok":
+        lines.append(esc(block.get("reason") or "Данных нет."))
+    elif not block.get("open") and not block.get("closed"):
+        lines.append("Открытых вопросов нет, за период записей не было.")
+    else:
+        for note in block.get("open") or []:
+            mark = " (новое)" if note.get("changed") else ""
+            lines.append(f"• <b>{esc(note['topic'])}</b>{mark}: {esc(note['text'])} "
+                         f"— {_day(note['at'])}, {esc(note['author'])}.")
+        for note in block.get("closed") or []:
+            lines.append(f"• <b>{esc(note['topic'])}</b> — вопрос закрыт: "
+                         f"{esc(note['text'])} — {_day(note['at'])}, {esc(note['author'])}.")
     return "\n".join(lines)
