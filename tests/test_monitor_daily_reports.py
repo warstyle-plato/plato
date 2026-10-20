@@ -130,10 +130,16 @@ def test_doubts_consult_the_daily_reports():
 
 
 def test_the_monitor_page_carries_the_daily_ui():
+    """Отчёт со стройки приходит через бота; ручной вставки на странице нет.
+
+    «Отчёт со стройки читает бот» (владелец, 20.10.2026): бот кладёт отчёт
+    туда же, откуда читает монитор (`/internal/monitor/daily` →
+    `store_daily_report`), поэтому поле вставки убрано с вкладки данных.
+    Маршрут `/monitor/daily` остаётся — им пользуется бот и прежние клиенты.
+    """
     page = monitor_page.MONITOR_PAGE
-    assert 'id="dailyText"' in page
-    assert "/monitor/daily" in page
+    assert 'id="dailyText"' not in page
+    assert "приходят через бота" in page
     assert 'id="peopleCard"' in page
-    assert "Фото не обязательны" in page
     # Живость в сомнениях рисуется, когда сервер её прислал.
     assert "r.daily" in page

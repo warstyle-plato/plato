@@ -56,14 +56,14 @@ def test_the_budget_is_uploaded_from_the_rendered_page(tmp_path, monkeypatch):
             tab.set_input_files("#budget", str(wrong))
             tab.click("#budgetBtn")
             tab.wait_for_function(
-                "document.getElementById('weeklyMsg').textContent.includes('шапки')")
-            refused = tab.inner_text("#weeklyMsg")
+                "document.getElementById('budgetMsg').textContent.includes('шапки')")
+            refused = tab.inner_text("#budgetMsg")
 
             tab.set_input_files("#budget", str(good))
             tab.click("#budgetBtn")
             tab.wait_for_function(
-                "document.getElementById('weeklyMsg').textContent.includes('Бюджет загружен')")
-            stored = tab.inner_text("#weeklyMsg")
+                "document.getElementById('budgetMsg').textContent.includes('Бюджет загружен')")
+            stored = tab.inner_text("#budgetMsg")
         finally:
             browser.close()
 
