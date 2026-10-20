@@ -28,6 +28,89 @@ _DEVELOPMENT_ASSET_RE = re.compile(
 )
 _UNFINISHED_RE = re.compile(r"(?:объект\w*\s+незавершенн\w*\s+строительств\w*|незавершенн\w*)", re.I)
 _LAND_RE = re.compile(r"(?:земельн\w*|участ\w*)", re.I)
+# Продажа в собственность, названная самим лотом. Нужна, чтобы общая рубрика
+# процедуры («Аренда и продажа земельных участков») не делала арендой лот,
+# который в своём названии назван продажей.
+_SALE_RE = re.compile(r"(?:продаж\w*|купл\w*|в\s+собственност\w*)", re.I)
+# Аренда — когда её ПРАВО и есть предмет лота: «право (заключения договора)
+# аренды…», «Аренда нежилого помещения…». Обременение предметом не является:
+# «Имеется аренда», «помещение сдано в аренду», «ограничения прав (…, аренда)»
+# у ЕФРСБ превращали проданное помещение в аренду земли.
+_LEASE_RIGHT_RE = re.compile(
+    r"прав\w*\s+(?:на\s+)?(?:заключени\w*\s+)?(?:договор\w*\s+(?:\([^)]*\)\s+)?)?аренд\w*", re.I)
+_LEASE_HEAD_RE = re.compile(r"^\W*аренд\w*", re.I)
+# Масштабный инвестиционный проект: участок под него город даёт в аренду без
+# торгов, продажи земли здесь нет.
+_MAIP_RE = re.compile(r"масштабн\w*\s+инвестиционн\w*\s+проект\w*", re.I)
+# Аренда именно ЗЕМЕЛЬНОГО УЧАСТКА, а не любое слово «земельный» рядом.
+_LAND_LEASE_RE = re.compile(
+    r"(?:аренд\w*\s+(?:\S+\s+){0,2}?(?:земельн\w*\s+участ\w*|земл\w*)|"
+    r"масштабн\w*\s+инвестиционн\w*\s+проект\w*)", re.I)
+# Строение как ОТДЕЛЬНЫЙ предмет перечня: «…: Здание, …», «1) Нежилое
+# помещение…». Упоминание здания внутри описания участка («для эксплуатации
+# здания») предметом не является.
+_BUILDING_ITEM_RE = re.compile(
+    r"(?:^|[:;]|\d\))\s*-?\s*(?:(?:не)?жил\w*\s+)?(?:здани\w*|помещени\w*|сооружени\w*)", re.I)
+# Лот — помещение или его часть: участок под домом арендатору или покупателю
+# комнаты не переходит.
+_PREMISES_HEAD_RE = re.compile(r"^\W*(?:(?:не)?жил\w*\s+)?(?:част\w*\s+)?помещени\w*", re.I)
+_LAND_PARCEL_RE = re.compile(r"земельн\w*\s+участ\w*", re.I)
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+
+def names_lease(title: str, *context: str) -> bool:
+    """Лот продаёт право аренды (или МаИП), а не саму вещь.
+
+    Решает название лота: «право заключения договора аренды…» — аренда,
+    «Продажа земельного участка…» — продажа, что бы ни писала рубрика
+    процедуры. Только когда название молчит, решает остальной текст
+    (описание, документы) — и тоже по праву аренды, а не по слову. Предикат
+    один на все площадки, иначе один и тот же лот у двух площадок окажется
+    разного вида.
+    """
+    name = _norm(title)
+    if _LEASE_RIGHT_RE.search(name) or _LEASE_HEAD_RE.search(name) or _MAIP_RE.search(name):
+        return True
+    if _SALE_RE.search(name):
+        return False
+    return any(_LEASE_RIGHT_RE.search(_norm(text)) for text in context)
+
+
+def lease_kind(text: str, *, land: bool = False) -> LotKind:
+    """Вид лота, предмет которого — право аренды.
+
+    Аренда земельного участка (и МаИП) — `LAND_LEASE`; та же аренда участка
+    вместе с проданными зданиями или помещениями — имущественный комплекс;
+    аренда помещения или имущества — `OTHER`: это не земля и не ЗИК, своего
+    вида у неё нет, и подгонять её под ближайший нельзя.
+    """
+    name = _norm(text)
+    if land or _LAND_LEASE_RE.search(name):
+        return LotKind.PROPERTY_COMPLEX if _BUILDING_ITEM_RE.search(name) else LotKind.LAND_LEASE
+    return LotKind.OTHER
+
+
+def land_in_deal(kind: LotKind | str, title: str) -> bool:
+    """Участок (или право на него) — предмет лота.
+
+    Фильтр «участок от N га» осмыслен только для таких лотов. У аренды
+    помещения и у продажи помещения площадь участка под домом — справка о
+    здании, а не то, что получает победитель торгов.
+    """
+    value = kind.value if isinstance(kind, LotKind) else str(kind or "")
+    if value in {LotKind.LAND_SALE.value, LotKind.LAND_LEASE.value, LotKind.KRT.value}:
+        return True
+    if value not in {LotKind.PROPERTY_COMPLEX.value, LotKind.UNFINISHED.value}:
+        return False
+    name = _norm(title)
+    if names_lease(name) and not _LAND_LEASE_RE.search(name):
+        return False
+    if _PREMISES_HEAD_RE.search(name):
+        return bool(_LAND_LEASE_RE.search(name) or _LAND_PARCEL_RE.search(name))
+    return True
 
 
 def classify_lot(title: str, procedure_text: str = "", document_titles: list[str] | None = None) -> LotKind:
@@ -52,8 +135,8 @@ def classify_lot(title: str, procedure_text: str = "", document_titles: list[str
         return LotKind.EQUITY_STAKE
     if _PROPERTY_RE.search(compact):
         return LotKind.PROPERTY_COMPLEX
-    if _LEASE_RE.search(compact):
-        return LotKind.LAND_LEASE
+    if names_lease(title, procedure_text, *(document_titles or [])):
+        return lease_kind(compact)
     if _LAND_RE.search(compact):
         return LotKind.LAND_SALE
     return LotKind.OTHER

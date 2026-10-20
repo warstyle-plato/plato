@@ -67,6 +67,7 @@ import json
 import os
 import pathlib
 import re
+import socket
 import ssl
 import urllib.parse
 import urllib.request
@@ -77,6 +78,8 @@ from auction_search import deadline as clock
 from auction_search.adapters.base import AuctionPlatformAdapter
 from auction_search.classifier import (
     BANKRUPTCY_WORDS as _BANKRUPTCY_WORDS,
+    lease_kind,
+    names_lease,
     origin_from_evidence,
 )
 from auction_search.models import (
@@ -343,6 +346,12 @@ def classify(card: dict[str, Any]) -> tuple[LotKind, LotOrigin]:
                      if isinstance(card.get("category"), dict)
                      else card.get("category")).lower()
     kind = LotKind.OTHER
+    # Аренда — раньше всех рубрик: рубрика процедуры «Аренда и продажа
+    # земельных участков» общая, и право аренды участка уходило в продажу
+    # земли, а аренда помещения — в имущественный комплекс. Признак аренды
+    # общий для всех площадок (`classifier.names_lease`).
+    if names_lease(_text(card.get("lotName")), _text(card.get("lotDescription"))):
+        return lease_kind(_text(card.get("lotName")), land=category_is_land(card)), origin
     if any(word in blob for word in ("незавершен", "незавершён")):
         kind = LotKind.UNFINISHED
     elif "комплекс" in blob:
@@ -740,6 +749,21 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
         )
         return json.loads(body)
 
+    def _fetch_page_retrying(self, page: int, **kwargs: Any) -> dict[str, Any]:
+        """Страница с одним повтором после тайм-аута.
+
+        Глубокое листание истории обрывалось на восьмой странице одиночным
+        «timed out» (прод, 20.10.2026), и всё, что дальше, — в том числе
+        крупные участки — не читалось. Повтор один: площадка, которая не
+        отвечает дважды, не отвечает, и время сбора на неё не тратится.
+        """
+        try:
+            return self._fetch_page(page, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if not _timed_out(exc) or clock.expired(kwargs.get("deadline")):
+                raise
+        return self._fetch_page(page, **kwargs)
+
     def discover_moscow(self, *, deadline: float | None = None) -> Iterable[AuctionLot]:
         if not self.enabled():
             self.last_report = {"pages": 0, "cards": 0, "kept": 0,
@@ -850,7 +874,7 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
                     filter_reason = "остановлено по времени"
                     break
                 try:
-                    payload = self._fetch_page(
+                    payload = self._fetch_page_retrying(
                         page, filter_spec=filter_spec, deadline=deadline,
                         statuses=statuses)
                 except Exception as exc:  # noqa: BLE001
@@ -1171,6 +1195,13 @@ class TorgiGovAdapter(AuctionPlatformAdapter):
             body = response.read().decode("utf-8", "replace")
             ctype = response.headers.get("Content-Type", "")
             return int(getattr(response, "status", 0) or 0), ctype, body
+
+
+def _timed_out(exc: BaseException) -> bool:
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return True
+    reason = getattr(exc, "reason", None)
+    return isinstance(reason, (TimeoutError, socket.timeout)) or "timed out" in str(exc)
 
 
 def _short(value: Any, limit: int = 300) -> Any:
