@@ -83,6 +83,7 @@ import developaid_monitor
 import developaid_monitor_daily
 import developaid_monitor_scenarios
 from developaid_monitor_page import MONITOR_PAGE as _MONITOR_PAGE_RAW
+from developaid_report_page import REPORT_PAGE as _REPORT_PAGE_RAW
 
 # Перевод документов проекта (ГПЗУ, ППТ, соглашения ВРИ и МПТ, справки по
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о

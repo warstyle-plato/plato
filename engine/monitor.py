@@ -685,6 +685,12 @@ def monitor_store_proposal(req: MonitorProposalRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
 
 
+@app.get("/report", include_in_schema=False)
+def report_page() -> HTMLResponse:
+    """Страница «Сводка руководству». Оболочка открыта, числа — за входом."""
+    return HTMLResponse(REPORT_PAGE_HTML)
+
+
 @app.get("/monitor", include_in_schema=False)
 def monitor_page() -> HTMLResponse:
     """Страница монитора. Скрыта, как и его маршруты; данные — за входом.
