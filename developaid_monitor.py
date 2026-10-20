@@ -36,6 +36,11 @@ _SNAPSHOT_DIR = Path(
 )
 
 
+# Разобранные РСС снимков кладутся рядом со снимками (`.parsed/`): каталог
+# спрашивается при обращении — проверки подменяют `_SNAPSHOT_DIR`.
+actuals.DISK_CACHE_ROOTS.append(lambda: _SNAPSHOT_DIR)
+
+
 def _slug(name: str) -> str:
     cleaned = re.sub(r"[^0-9a-zA-Zа-яА-ЯёЁ _-]+", "", str(name or "")).strip()
     cleaned = re.sub(r"\s+", "-", cleaned).strip("-.")
@@ -181,19 +186,26 @@ def store_estimate(project: str, data: bytes, taken_at: Any,
     day = _iso(taken_at)
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
         raise ValueError("дата среза РСС нужна в виде ГГГГ-ММ-ДД")
-    # Validate the one file that drives the whole weekly update before storing.
-    try:
-        actuals.read_estimate(io.BytesIO(data))
-        actuals.read_payments(io.BytesIO(data))
-        actuals.read_completed_works(io.BytesIO(data))
-    except (KeyError, ValueError) as exc:
-        raise ValueError(f"это не полная выгрузка РСС 6.1.2: {exc}") from exc
     folder = _project_dir(project) / "estimate"
     folder.mkdir(parents=True, exist_ok=True)
     path = _inside(folder, f"{day}.xlsx")
     if path.exists():
         raise FileExistsError(f"снимок РСС на {day} уже загружен")
     path.write_bytes(data)
+    # Проверка того единственного файла, что двигает недельное обновление, —
+    # чтением с диска: разбор ложится в кэш снимка, и первый срез после
+    # загрузки не разбирает РСС заново. Не прочитался — снимка нет.
+    try:
+        actuals.read_estimate(path)
+        actuals.read_payments(path)
+        actuals.read_completed_works(path)
+    except (KeyError, ValueError) as exc:
+        path.unlink(missing_ok=True)
+        raise ValueError(f"это не полная выгрузка РСС 6.1.2: {exc}") from exc
+    try:
+        actuals.read_contracts(path)  # только прогрев кэша; срез без него живёт
+    except (KeyError, ValueError):
+        pass
     _inside(folder, f"{day}.json").write_text(json.dumps({
         "taken_at": day,
         "filename": filename,
