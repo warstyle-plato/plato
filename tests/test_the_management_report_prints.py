@@ -51,10 +51,11 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
-            tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
+            # Сводка — своя страница рядом с Монитором (владелец, 20.10.2026).
+            tab.goto(f"{base}/report", wait_until="domcontentloaded")
             tab.fill("#project", PROJECT)
             tab.fill("#cut", "2026-10-18")
-            tab.click("#refresh")
+            tab.click("#reportBtn")
             tab.wait_for_selector("#reportBox h1")
             week = tab.inner_text("#reportBox")
             tab.select_option("#reportKind", "month")
@@ -95,3 +96,13 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
     assert "400,0 150,0 Стройка и проектирование" in chart
     assert "Финансирование" in month
     assert "400,0" in text, "в PDF не те числа, что на странице"
+
+
+def test_the_monitor_does_not_carry_the_summary():
+    """Сводка и записи — не в Мониторе стройки, а на своей странице с входом в контуре."""
+    import management_contour
+    from developaid_monitor_page import MONITOR_PAGE
+
+    assert 'id="reportCard"' not in MONITOR_PAGE and 'id="notesCard"' not in MONITOR_PAGE
+    builder = next(role for role in management_contour.ROLES if role["role"] == "Строителю")
+    assert [link["href"] for link in builder["links"]] == ["/monitor", "/report"]

@@ -27,7 +27,7 @@ import management_contour as contour  # noqa: E402
 
 # Внутренние поверхности контура. Публичный расчёт сюда не входит намеренно:
 # на нём стоят посторонние люди, и управленческое оглавление им не показывают.
-INSIDE = ("/monitor", "/auctions", "/statistics", "/cabinet")
+INSIDE = ("/monitor", "/report", "/auctions", "/statistics", "/cabinet")
 
 
 def test_every_role_the_owner_named_has_its_entrance() -> None:

@@ -27,6 +27,13 @@ MONITOR_PAGE_HTML = (
     # не должно: «Платон должен везде уметь вести диалог, а не один ответ».
     .replace(plato_question.PLACEHOLDER, plato_question.SCRIPT)
 )
+# Сводка руководству — своя страница рядом с Монитором (владелец, 20.10.2026:
+# «отдельной страницей, не смешивая со стройкой»), контур тот же.
+REPORT_PAGE_HTML = (
+    _REPORT_PAGE_RAW.replace("__VERSION__", VERSION)
+    .replace("__DEVELOPAID_CONTOUR_STYLE__", management_contour.STYLE)
+    .replace(management_contour.PLACEHOLDER, management_contour.markup("/report"))
+)
 # Странице — группы ТИПОВ: экземпляр рисуется вкладкой внутри блока своего
 # типа, и его поля страница выводит из полей типа (`objectFields`). Число групп
 # вводных от числа объектов не растёт (владелец, 28.09.2026).

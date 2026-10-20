@@ -141,10 +141,13 @@ def test_notes_on_the_rendered_page(monkeypatch):
             errors: list[str] = []
             tab.on("pageerror", lambda e: errors.append(str(e)))
             tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
-            tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
+            # Записи живут на странице «Сводка руководству», а не в Мониторе
+            # стройки (владелец, 20.10.2026).
+            tab.goto(f"{base}/report", wait_until="domcontentloaded")
             tab.fill("#project", PROJECT)
-            tab.click("#refresh")
-            tab.wait_for_selector("#notesCard:not(.hidden)")
+            tab.click("#reportBtn")
+            tab.wait_for_function(
+                "document.getElementById('notesList').textContent.includes('Записей пока нет')")
             empty = tab.inner_text("#notesList")
 
             tab.fill("#noteTopic", "Арбитраж с подрядчиком")
@@ -172,5 +175,5 @@ def test_notes_on_the_rendered_page(monkeypatch):
     assert "Арбитраж с подрядчиком" in added and "Вопрос открыт" in added
     assert cleared == ""
     assert "Заседание 12.11" in final and "правок: 2" in final
-    assert state == "открытых вопросов: 0 из 1"
+    assert state == "Открытых вопросов: 0 из 1."
     assert button == "Открыть снова"
