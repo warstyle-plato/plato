@@ -346,7 +346,11 @@ def test_the_krt_economics_reads_the_same_decision(monkeypatch):
     use(A1)
     paid = registry.get("/auctions/krt/ranking", headers={"X-Developaid-Session": session()})
     assert paid.status_code == 402 and "по подписке" in paid.json()["detail"]
-    core.access_grant(CHAT, subscription=True, payment_id="sub-krt")
+    # Раздел торгов берёт движок из `sys.modules["developaid_core"]`, а соседняя
+    # проверка (`test_a_decision_site_is_modelled_too`) кладёт туда свою копию.
+    # На проде копия одна; здесь выдаём подписку в каждой, какую мог взять раздел.
+    for engine in {id(m): m for m in (core, sys.modules.get("developaid_core")) if m}.values():
+        engine.access_grant(CHAT, subscription=True, payment_id="sub-krt")
     assert registry.get("/auctions/krt/ranking",
                         headers={"X-Developaid-Session": session()}).status_code == 200
     team = registry.get("/auctions/krt/ranking", headers={"X-Market-Key": "team-test-key"})
