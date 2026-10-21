@@ -38,6 +38,8 @@ def _status(row: dict[str, Any], cut: datetime.date, predicted: datetime.date | 
     if progress is not None and progress >= 0.999999:
         return "ЗАВЕРШЕНО ПО КС"
     if predicted is None:
+        if forecast.pace_finish(row, cut)[1] == "stalled_pace":
+            return "ПОЧТИ СТОИТ: ТЕМП НЕ ЭКСТРАПОЛИРУЕТСЯ"
         if progress is not None and progress <= 1e-9:
             return "НЕТ ТЕМПА КС / РИСК"
         return "НЕТ ДОСТАТОЧНОГО ТЕМПА ДЛЯ FORECAST"
@@ -104,10 +106,13 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
     local_forecasts: dict[str, datetime.date] = {}
     local_methods: dict[str, str] = {}
     late_seeds: dict[str, datetime.date] = {}
+    stalled: list[dict[str, Any]] = []
 
     for row in rows:
         tid = str(row.get("id") or row.get("wbs") or "").strip()
         predicted, method = _pace_finish(row, cut)
+        if method == "stalled_pace":
+            stalled.append(forecast.stalled_item(row))
         row["pace_progress"] = row.get("rss_accepted_ratio")
         row["pace_forecast_known"] = predicted is not None
         row["pace_forecast_method"] = method
@@ -161,7 +166,11 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         method = None
         if network and plan and network > plan:
             effective = max([d for d in (own, network) if d]) if own else network
-        if effective is None and network and plan and not row.get("baseline_closed"):
+        stalled_row = row.get("pace_forecast_method") == "stalled_pace"
+        if (effective is None and network and plan and not row.get("baseline_closed")
+                and not stalled_row):
+            # Работа, которая почти стоит, «по плану» не идёт: подставить ей
+            # плановый срок значило бы спрятать остановку.
             # Работа без собственного темпа КС — не «без прогноза»: её прогноз
             # строится от плановой длительности, а старт сдвигается задержкой
             # предшественников по PM-сети (сдвинутые ловятся веткой выше, здесь
@@ -220,6 +229,10 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
         "темп актов КС + PM-зависимости"
         if pm.get("known") else "темп актов КС; PM-выгрузки нет"
     )
+    if stalled:
+        graph["pace_forecast_source"] += (
+            f"; без {len(stalled)} работ, которые почти стоят — их темп не экстраполируется")
+    graph["pace_stalled"] = stalled
     graph["pace_evidence_tasks"] = evidence
     graph["pace_network_affected_tasks"] = affected
     graph["pace_rnv_forecast"] = monitor._iso(network_rnv) if network_rnv else None
@@ -235,6 +248,7 @@ def _apply_pace(project: str, view: dict[str, Any], cut: datetime.date) -> dict[
     dash_schedule["forecast_finish"] = monitor._iso(network_rnv) if network_rnv else None
     dash_schedule["forecast_source"] = graph["pace_forecast_source"]
     dash_schedule["rnv_delay_days"] = graph["pace_rnv_delay_days"]
+    dash_schedule["stalled"] = stalled
     return view
 
 
