@@ -238,7 +238,8 @@ class MonitorReportRequest(BaseModel):
     project: str
     kind: str = "week"
     end: str = ""
-    sales_project: str = ""
+    # Не передан — сводка берёт сохранённую связь проекта (`/monitor/report/link`).
+    sales_project: str | None = None
     session: str = ""
     key: str = ""
 
@@ -637,6 +638,53 @@ def _monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
                                        sales_project=req.sales_project)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+
+
+class MonitorReportLinkRequest(BaseModel):
+    project: str = ""
+    sales_project: str = ""
+    session: str = ""
+    key: str = ""
+
+
+def _monitor_report_projects() -> dict[str, Any]:
+    import developaid_management_report as management_report
+    return {
+        "projects": [dict(item, sales=management_report.sales_link(item["project"]))
+                     for item in developaid_monitor.projects()],
+        "sales_projects": management_report.sales_projects(),
+    }
+
+
+@app.post("/monitor/report/projects", include_in_schema=False)
+def monitor_report_projects(req: MonitorReportLinkRequest) -> dict[str, Any]:
+    """Проекты для выбора на странице сводки: Монитора и отчёта о продажах.
+
+    У каждого проекта Монитора — его связь с отчётом о продажах (``None`` —
+    ещё не выбрана), чтобы имя не приходилось вводить руками дважды.
+    """
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    return _monitor_report_projects()
+
+
+@app.post("/monitor/report/link", include_in_schema=False)
+def monitor_report_link(req: MonitorReportLinkRequest) -> dict[str, Any]:
+    """Запомнить проект отчёта о продажах для проекта Монитора — для всех.
+
+    Пустое ``sales_project`` — решение «продаж в сводке нет».
+    """
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    import developaid_management_report as management_report
+    if not req.project.strip():
+        raise HTTPException(400, "Не выбран проект Монитора.")
+    if not any(item["project"] == req.project for item in developaid_monitor.projects()):
+        raise HTTPException(404, f"В Мониторе нет проекта «{req.project}».")
+    try:
+        management_report.link_sales(req.project, req.sales_project,
+                                     _monitor_note_author(req.session, req.key))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _monitor_report_projects()
 
 
 @app.post("/monitor/report", include_in_schema=False)

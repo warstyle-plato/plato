@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import datetime
 import html
+import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -512,7 +515,8 @@ def sales(sales_project: str, kind: str, end: Any,
           data_dir: Path | None = None) -> dict[str, Any]:
     """Продажи за период и с начала квартала против плана ФМ и банка."""
     if not str(sales_project or "").strip():
-        return _missing("Проект не связан с отчётом о продажах.")
+        return _missing("Проект не связан с отчётом о продажах: выберите его "
+                        "на странице «Сводка руководству».")
     bounds = period_bounds(kind, end)
     kept = sales_store.load(data_dir or sales_store.default_dir(), sales_project)
     sources = kept.get("sources") or {}
@@ -659,10 +663,72 @@ def schedule(dashboard: dict[str, Any]) -> dict[str, Any]:
             "delay_days": block.get("rnv_delay_days")}
 
 
-def build(project: str, kind: str, end: Any, sales_project: str = "",
+# --------------------------------------------------------------------------
+# Связь проекта Монитора с проектом отчёта о продажах
+# --------------------------------------------------------------------------
+#
+# Склады разные и имена в них разные («Гродненская» в Мониторе, «ЖК
+# Гродненская» в отчёте о продажах), поэтому связь — явная запись, сделанная
+# человеком один раз, а не догадка по имени. Лежит на сервере в каталоге
+# проекта Монитора: её читают страница, PDF и рассылка, у всех одна.
+
+_SALES_LINK = "sales_link.json"
+
+
+def sales_projects(data_dir: Path | None = None) -> list[str]:
+    """Проекты, по которым загружен отчёт о продажах."""
+    return [item["project"] for item in sales_store.projects(data_dir or sales_store.default_dir())
+            if str(item.get("project") or "").strip()]
+
+
+def sales_link(project: str) -> dict[str, Any] | None:
+    """Связь с отчётом о продажах; ``None`` — её ещё не задавали.
+
+    Пустое ``sales_project`` в записи — решение «продаж в сводке нет», а не
+    отсутствие решения.
+    """
+    place = monitor._project_dir(project) / _SALES_LINK
+    if not place.exists():
+        return None
+    try:
+        got = json.loads(place.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    if not isinstance(got, dict) or not isinstance(got.get("sales_project"), str):
+        return None
+    return got
+
+
+def link_sales(project: str, sales_project: str, author: str,
+               data_dir: Path | None = None) -> dict[str, Any]:
+    """Запомнить, какой проект отчёта о продажах у проекта Монитора."""
+    name = str(sales_project or "").strip()
+    if name and name not in sales_projects(data_dir):
+        raise ValueError(f"В отчёте о продажах нет проекта «{name}».")
+    record = {"sales_project": name, "by": author,
+              "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+    folder = monitor._project_dir(project)
+    # Два воркера: запись через временный файл и замену, читатель видит
+    # либо старую связь, либо новую, но не половину файла.
+    handle, tmp = tempfile.mkstemp(dir=folder, prefix=".sales_link.", suffix=".tmp")
+    with os.fdopen(handle, "w", encoding="utf-8") as out:
+        json.dump(record, out, ensure_ascii=False)
+    os.replace(tmp, folder / _SALES_LINK)
+    return record
+
+
+def build(project: str, kind: str, end: Any, sales_project: str | None = None,
           sales_dir: Path | None = None) -> dict[str, Any]:
-    """Сводка за неделю или месяц по проекту мониторинга ``project``."""
+    """Сводка за неделю или месяц по проекту мониторинга ``project``.
+
+    ``sales_project`` не передан — берётся сохранённая связь проекта.
+    """
     bounds = period_bounds(kind, end)
+    declined = False
+    if sales_project is None:
+        link = sales_link(project)
+        sales_project = (link or {}).get("sales_project") or ""
+        declined = link is not None and not sales_project
     blocks: dict[str, Any] = {}
     # Панель Монитора — один расчёт на всю сводку: срок и финансирование.
     try:
@@ -688,6 +754,9 @@ def build(project: str, kind: str, end: Any, sales_project: str = "",
             # причина должна дойти до читателя, а не остаться в логе.
             blocks[name] = _missing(
                 f"Блок не собран: {type(exc).__name__}: {exc}")
+    if declined:
+        blocks["sales"] = _missing("Продажи в сводку не входят: так выбрано на "
+                                   "странице «Сводка руководству».")
     blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
