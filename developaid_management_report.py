@@ -31,6 +31,7 @@ import developaid_actuals as actuals
 import developaid_monitor as monitor
 import developaid_monitor_manager as manager
 import developaid_monthly_budget as monthly_budget
+import developaid_legal_cases as legal_cases
 import developaid_project_notes as project_notes
 import developaid_site_photos as site_photos
 import developaid_report_charts as charts
@@ -820,6 +821,8 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
             ("sales", lambda: sales(sales_project, kind, bounds["end"], sales_dir)),
             ("funding", lambda: funding(project, kind, bounds["end"], sales_project,
                                         sales_dir, dashboard)),
+            ("legal", lambda: dict(legal_cases.for_report(
+                project, bounds["start"], bounds["end"]), state="ok")),
             ("notes", lambda: dict(project_notes.for_period(
                 project, bounds["start"], bounds["end"]), state="ok")),
             ("photos", lambda: dict(site_photos.for_report(
@@ -1066,6 +1069,25 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             else "")
     else:
         add("Финансирование", block.get("reason") or "Данных нет.", "", "missing")
+
+    block = report.get("legal") or {}
+    if block.get("state") == "ok" and block.get("open"):
+        opened = block["open"]
+        ours = sum(item["totals"]["to_them"] for item in opened)
+        theirs = sum(item["totals"]["to_us"] for item in opened)
+        text = (f"Открытых споров: {len(opened)}; наши требования — {_rub(ours)}"
+                + (f", требования к нам — {_rub(theirs)}" if theirs else ""))
+        growing = [item["card"]["counterparty"] for item in opened
+                   if any(claim["growing"] for claim in item["card"]["claims"])]
+        if growing:
+            text += f"; неустойка продолжает расти: {', '.join(growing)}"
+        dated = sorted((item for item in opened if item["card"]["deadline"]),
+                       key=lambda item: item["card"]["deadline"])
+        if dated:
+            first = dated[0]["card"]
+            text += (f". Ближайший срок — {_day(first['deadline'])}, "
+                     f"{first['counterparty']}: {first['next_step'] or 'следующий шаг не записан'}")
+        add("Споры", _sentence(text), "реестр споров, карточки подтверждены по документам")
 
     block = report.get("notes") or {}
     if block.get("state") == "ok":
@@ -1339,8 +1361,9 @@ def render_text(report: dict[str, Any]) -> str:
     else:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
-    block = report.get("notes") or {}
     lines += ["", "<b>Общая информация</b>"]
+    lines.extend(_legal_lines(report.get("legal") or {}))
+    block = report.get("notes") or {}
     if block.get("state") != "ok":
         lines.append(esc(block.get("reason") or "Данных нет."))
     elif not block.get("open") and not block.get("closed"):
@@ -1375,6 +1398,7 @@ th:first-child,td:first-child{text-align:left;white-space:normal}
 .photos{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:6px 0}
 figure.photo{margin:0;break-inside:avoid;page-break-inside:avoid}figure.photo img{width:100%;height:230px;object-fit:cover;border-radius:4px;border:1px solid #d6dde6;display:block}
 figure.photo figcaption{font-size:10.5px;margin-top:3px}
+table.legal td{vertical-align:top;text-align:left;white-space:normal}table.legal td:first-child{width:28%;color:#5b6b7d}
 table.works td{vertical-align:top}table.works td:nth-child(2),table.works th:nth-child(2){text-align:left;white-space:normal}table.works td:nth-child(3){color:#5b6b7d;font-size:10.5px;white-space:normal}
 table.articles tr.chapter td{background:#f4f7fb;font-weight:600}
 table.articles tr.total td{border-top:2px solid #1f4e8c;font-weight:600}
@@ -2103,6 +2127,7 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(_budget_depth_html(report["budget"], _date(report["end"])))
 
     out.append("<h2>Общая информация</h2>")
+    out.append(_legal_html(report.get("legal") or {}))
     block = report.get("notes") or {}
     if block.get("state") != "ok":
         out.append(missing(block))
@@ -2119,6 +2144,79 @@ def render_html(report: dict[str, Any]) -> str:
                        f"{esc(note['text'])} <span class='note'>— {_day(note['at'])}, "
                        f"{esc(note['author'])}</span></div>")
     return "\n".join(_keep_headings([part for part in out if part]))
+
+
+def _claims_words(card: dict[str, Any], direction: str) -> str:
+    items = [claim for claim in card["claims"] if claim["direction"] == direction]
+    return "; ".join(f"{claim['label']} — {_rub(claim['amount'])}"
+                     + (" (растёт)" if claim["growing"] else "") for claim in items)
+
+
+def _legal_lines(block: dict[str, Any]) -> list[str]:
+    """Споры для сообщения: строка на спор, события за период."""
+    esc = html.escape
+    if block.get("state") != "ok":
+        return [esc(block.get("reason") or "Реестр споров не собран.")] if block else []
+    names = block.get("statuses") or {}
+    out = []
+    for item in (block.get("open") or []) + (block.get("closed") or []):
+        card, totals = item["card"], item["totals"]
+        line = (f"• <b>Спор: {esc(card['counterparty'])}</b>"
+                + (f" ({esc(card['contract'])})" if card["contract"] else "")
+                + (f", дело {esc(card['court_case'])}" if card.get("court_case") else "")
+                + f" — {esc(names.get(card['status'], card['status']).lower())}. "
+                + (esc(_sentence(card["subject"])) if card["subject"] else ""))
+        if totals["to_them"]:
+            line += f" Наши требования: {_rub(totals['to_them'])}."
+        if totals["to_us"]:
+            line += f" Требования к нам: {_rub(totals['to_us'])}."
+        if card["next_step"]:
+            line += (f" Дальше: {esc(_sentence(card['next_step']))}"
+                     + (f" Срок — {_day(card['deadline'])}." if card["deadline"] else ""))
+        out.append(line)
+    return out
+
+
+def _legal_html(block: dict[str, Any]) -> str:
+    """Споры и претензии: по блоку на спор — суть, требования, что дальше, события."""
+    esc = html.escape
+    if block.get("state") != "ok":
+        return f"<p class='missing'>{esc(block.get('reason') or 'Реестр споров не собран.')}</p>"
+    items = (block.get("open") or []) + (block.get("closed") or [])
+    if not items:
+        return ""
+    names = block.get("statuses") or {}
+    out = ["<h3>Споры и претензии</h3>"]
+    for item in items:
+        card, totals = item["card"], item["totals"]
+        rows = []
+        for direction, label in (("to_them", "Наши требования"), ("to_us", "Требования к нам")):
+            claims = [claim for claim in card["claims"] if claim["direction"] == direction]
+            if claims:
+                rows.append([label + (f", всего {_rub(totals[direction])}"
+                                      if len(claims) > 1 else ""),
+                             "<br>".join(f"{esc(claim['label'])} — {_rub(claim['amount'])}"
+                                         + (" <b>(растёт)</b>" if claim["growing"] else "")
+                                         for claim in claims)])
+        if card["next_step"] or card["deadline"]:
+            rows.append(["Что дальше", esc(card["next_step"] or "—")
+                         + (f" — <b>до {_day(card['deadline'])}</b>" if card["deadline"] else "")])
+        if item["fresh"]:
+            rows.append(["За период", "<br>".join(
+                f"{_day(event['date'])} — {esc(event['summary'])}"
+                + (f" ({esc(event['document'])})" if event["document"] else "")
+                for event in item["fresh"])])
+        if card["position"]:
+            rows.append(["Позиция и риск", esc(card["position"])])
+        out.append(
+            f"<div class='item'><b>{esc(card['counterparty'])}</b>"
+            + (f" · {esc(card['contract'])}" if card["contract"] else "")
+            + (f" · дело {esc(card['court_case'])}" if card.get("court_case") else "")
+            + (f" · наша сторона: {esc(card['our_side'])}" if card.get("our_side") else "")
+            + f" · <b>{esc(names.get(card['status'], card['status']))}</b>"
+            + (f"<br>{esc(card['subject'])}" if card["subject"] else "") + "</div>"
+            + "<table class='legal'>" + "".join(_row(row) for row in rows) + "</table>")
+    return "".join(out)
 
 
 def _keep_headings(parts: list[str]) -> list[str]:
