@@ -40,7 +40,7 @@ def test_the_pool_table_does_not_overwrite_the_price() -> None:
 def test_gross_is_price_times_volume_not_the_installment_row() -> None:
     """Две разные величины под одним словом «план» — на этом мы уже обжигались."""
     body = SOURCE.read_text()
-    block = body[body.index("    # Валовые продажи плана"):body.index("    return {\"sheet\": BANK_SHEET")]
+    block = body[body.index("    # Валовые продажи плана"):body.index("    return {\"sheet\": sheet")]
     assert "metres * rate" in block
     assert "учётом рассрочки" in block, "почему это разные строки — сказано"
     compare = body[body.index("def plan_comparison("):body.index("# ------", body.index("def plan_comparison("))]

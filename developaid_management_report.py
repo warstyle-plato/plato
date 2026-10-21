@@ -490,6 +490,54 @@ def _escrow(sales_project: str, data_dir: Path | None) -> dict[str, Any]:
             "actual_escrow": contracting.escrow_actual(rows)}
 
 
+def _quarter_end(quarter: str) -> str:
+    """«2026 Q3» → «2026-09»: месяц, на конец которого банк ставит остаток."""
+    year, part = quarter.split(" Q")
+    return f"{year}-{int(part) * 3:02d}"
+
+
+def _bank_escrow(sales_project: str, data_dir: Path | None,
+                 end: datetime.date) -> dict[str, Any]:
+    """Эскроу против плана банка: на конец закрытого квартала и на сейчас.
+
+    План — строка «…(утверждено по CF)» листа плана банка, нарастающим по
+    кварталам; факт — поступления на эскроу по графикам договоров, тоже
+    нарастающим. План финмодели (лист «КРЕДИТЫ») — другой документ, и под
+    словом «план банка» он не показывается.
+    """
+    if not str(sales_project or "").strip():
+        return _missing("Проект не связан с отчётом о продажах — плана банка нет.")
+    kept = sales_store.load(data_dir or sales_store.default_dir(), sales_project)
+    sources = kept.get("sources") or {}
+    bank = ((sources.get("bank_plan") or {}).get("data")) or None
+    if not bank:
+        return _missing("План банка не загружен: в книге проекта нужен лист "
+                        + " или ".join(f"«{name}»" for name in contracting.BANK_SHEETS) + ".")
+    plan = contracting.bank_escrow_plan(bank)
+    if not plan:
+        return _missing(f"В плане банка (лист «{bank.get('sheet') or ''}») нет строки "
+                        f"«{contracting.BANK_ESCROW_LABEL}».")
+    contracts = ((sources.get("contracting") or {}).get("data")) or {}
+    inflow = contracting.escrow_actual(contracts.get("rows") or [])
+    month = end.strftime("%Y-%m")
+
+    def accumulated(upto: str) -> float:
+        return sum(value for key, value in inflow.items() if key <= upto)
+
+    closed = [q for q in sorted(plan, key=_quarter_end) if _quarter_end(q) < month]
+    current = next((q for q in sorted(plan, key=_quarter_end) if _quarter_end(q) >= month), None)
+    out: dict[str, Any] = {"state": "ok", "sheet": bank.get("sheet") or "", "plan": plan}
+    if closed:
+        last = closed[-1]
+        actual = accumulated(_quarter_end(last))
+        out["closed"] = {"quarter": last, "plan": plan[last], "actual": actual,
+                         "gap": actual - plan[last]}
+    if current:
+        out["current"] = {"quarter": current, "plan": plan[current],
+                          "actual": accumulated(month), "measured_at": month}
+    return out
+
+
 def funding(project: str, kind: str, end: Any, sales_project: str = "",
             data_dir: Path | None = None,
             dashboard: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -532,6 +580,7 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
         except Exception as exc:  # noqa: BLE001 — причина уходит в сводку
             out["limit"] = {"known": False, "reason": f"{type(exc).__name__}: {exc}"}
     out["escrow"] = _escrow(sales_project, data_dir)
+    out["escrow_bank"] = _bank_escrow(sales_project, data_dir, bounds["end"])
     escrow = out["escrow"]
     if escrow.get("state") == "ok":
         month = bounds["end"].strftime("%Y-%m")
@@ -1074,6 +1123,11 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                     text = (f"эскроу очереди «{queue['queue']}» покроет кредит на "
                             f"{_times(queue['plan_coverage_at'])} по плану финмодели")
                 pieces.append(text)
+        closed = (block.get("escrow_bank") or {}).get("closed")
+        if closed:
+            pieces.append(f"эскроу на конец {closed['quarter']} "
+                          f"{'выше' if closed['gap'] >= 0 else 'ниже'} плана банка на "
+                          f"{_rub(abs(closed['gap']))}")
         if escrow.get("state") == "ok" and escrow.get("inflow_month") is not None:
             pieces.append(f"на эскроу за {_months_label(report['end'])} поступило "
                           f"{_rub(escrow['inflow_month'])}")
@@ -1191,6 +1245,28 @@ def _times(value: float | None) -> str:
     return "—" if value is None else f"{value:.2f}".replace(".", ",") + "×"
 
 
+def _bank_escrow_lines(block: dict[str, Any]) -> list[str]:
+    """Эскроу против плана банка словами: закрытый квартал и текущий."""
+    if not block:
+        return []
+    if block.get("state") != "ok":
+        return [block.get("reason") or "План банка по эскроу: данных нет."]
+    out = []
+    closed = block.get("closed")
+    if closed:
+        gap = closed["gap"]
+        out.append(f"Эскроу по плану банка (лист «{block['sheet']}», утверждено по CF): "
+                   f"на конец {closed['quarter']} план {_rub(closed['plan'])}, накоплено "
+                   f"{_rub(closed['actual'])} — {'больше' if gap >= 0 else 'меньше'} плана "
+                   f"на {_rub(abs(gap))}.")
+    current = block.get("current")
+    if current:
+        out.append(f"План банка на конец {current['quarter']} — {_rub(current['plan'])}; "
+                   f"на {_months_label(current['measured_at'])} накоплено "
+                   f"{_rub(current['actual'])}.")
+    return out
+
+
 def _approved_need(limit: dict[str, Any]) -> dict[str, float] | None:
     """Потребность по утверждённому бюджету — из расчёта Монитора, не заново.
 
@@ -1251,6 +1327,7 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     lines.append(f"Услуги банка (статья 3.5 РСС, в том числе проценты): за {period} "
                  f"{_rub(interest['period'])}, с начала месяца {_rub(interest['month'])}, "
                  f"с начала проекта {_rub(interest['total'])}.")
+    lines.extend(_bank_escrow_lines(block.get("escrow_bank") or {}))
     escrow = block.get("escrow") or {}
     if escrow.get("state") != "ok":
         lines.append(escrow.get("reason") or "Эскроу: данных нет.")
@@ -1258,7 +1335,7 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
         text = (f"Эскроу, очередь «{queue['queue']}»: на {_months_label(queue['measured_at'])} "
                 f"накоплено {_rub(queue.get('actual'))}")
         if queue.get("plan") is not None:
-            text += f" при плане {_rub(queue['plan'])}"
+            text += f" при плане финмодели (лист «КРЕДИТЫ») {_rub(queue['plan'])}"
             if queue.get("gap") is not None:
                 text += f" ({'больше' if queue['gap'] >= 0 else 'меньше'} плана на {_rub(abs(queue['gap']))})"
         text += "."
@@ -1314,11 +1391,28 @@ def _funding_html(report: dict[str, Any]) -> str:
          _rub(draws["month"]), _rub(draws["total"])],
         ["Услуги банка, статья 3.5 (в том числе проценты)", _rub(interest["period"]),
          _rub(interest["month"]), _rub(interest["total"])]]))
+    bank = block.get("escrow_bank") or {}
+    if bank.get("state") == "ok":
+        rows = []
+        if bank.get("closed"):
+            c = bank["closed"]
+            rows.append([f"На конец {c['quarter']}", _rub(c["plan"]), _rub(c["actual"]),
+                         _signed_rub(c["gap"])])
+        if bank.get("current"):
+            c = bank["current"]
+            rows.append([f"На конец {c['quarter']} (накоплено на "
+                         f"{_months_label(c['measured_at'])})", _rub(c["plan"]),
+                         _rub(c["actual"]), "—"])
+        out.append(_table([f"Эскроу против плана банка (лист «{esc(bank['sheet'])}», "
+                           "утверждено по CF)", "План банка", "Накоплено", "Против плана"], rows))
+    elif bank:
+        out.append(f"<p class='missing'>{esc(bank.get('reason') or '')}</p>")
     escrow = block.get("escrow") or {}
     if escrow.get("state") != "ok":
         out.append(f"<p class='missing'>{esc(escrow.get('reason') or 'Эскроу: данных нет.')}</p>")
     elif escrow.get("queues"):
-        out.append(_table(["Эскроу, очередь", "Месяц", "Накоплено", "План", "Покрытие кредита по плану",
+        out.append(_table(["Эскроу, очередь", "Месяц", "Накоплено", "План финмодели («КРЕДИТЫ»)",
+                           "Покрытие кредита по плану",
                            "При нынешнем темпе"], [
             [esc(q["queue"]), _months_label(q.get("measured_at")), _rub(q.get("actual")),
              _rub(q.get("plan")), _times(q.get("plan_coverage_at")),
