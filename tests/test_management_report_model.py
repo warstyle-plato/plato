@@ -421,3 +421,25 @@ def test_several_periods_load_the_same_day_and_the_latest_period_wins():
     # Сентябрь — из файла за сентябрь—октябрь, хотя он загружен раньше.
     plan = monthly_budget._plan(PROJECT, "2026-09-01", "2026-10-31")
     assert plan["file"] == "2026-10-02"
+
+
+def test_past_months_loaded_later_reach_an_earlier_report():
+    # «Почему бюджеты, которые я положил с апреля по август, не учитываются»
+    # (владелец, 21.10.2026): файлы прошлых месяцев, загруженные 21.10, не
+    # попадали в сводку на 20.10 — сводка брала только загруженное к её дате.
+    _project()
+    for months in ((("Апрель 2026", (-101, -10, -30), (-90, -10, -30)),
+                    ("Май 2026", (-102, -10, -30), (-95, -10, -30))),
+                   (("Июль 2026", (-104, -10, -30), (-99, -10, -30)),
+                    ("Август 2026", (-105, -10, -30), (-98, -10, -30)))):
+        monthly_budget.store_budget(PROJECT, budget_book(months=months), "2026-10-21")
+    # А будущий период, загруженный позже даты сводки, в неё не попадает.
+    monthly_budget.store_budget(PROJECT, budget_book(months=(
+        ("Ноябрь 2026", (-500, -10, -30), (None, None, None)),)), "2026-10-21")
+    plan = monthly_budget._plan(PROJECT, "2026-04-01", "2026-10-20")
+    assert plan["plan"]["construction"] == pytest.approx(91 * M)
+    assert monthly_budget._plan(PROJECT, "2026-08-01", "2026-10-20") is not None
+    assert monthly_budget._plan(PROJECT, "2026-11-01", "2026-10-20") is None
+    # Отклонения за прошлый закрытый месяц сводки на 15.09 — из файла с августом.
+    articles = monthly_budget._articles(PROJECT, datetime.date(2026, 9, 15))
+    assert articles["known"] or "нет месяца" not in articles["reason"]
