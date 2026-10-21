@@ -73,7 +73,7 @@ def _project() -> None:
     monitor.store_estimate(PROJECT, _rss_with_sources(), "2026-10-18")
 
 
-def _sales(credit: bool = True) -> None:
+def _sales(credit: bool = True, bank: bool = False) -> None:
     rows = [_contract("2026-07-10", "Квартира", 100.0, 25 * M),
             _contract("2026-08-10", "Квартира", 100.0, 25 * M)]
     rows[0]["escrow_schedule"] = [{"month": "2026-07", "amount": 10 * M},
@@ -89,6 +89,14 @@ def _sales(credit: bool = True) -> None:
             "escrow": {m: 15 * M * (i + 1) for i, m in enumerate(months)},
             "pf": {m: 100 * M for m in months},
             "coverage": {}, "rate": {}, "drawn_from": "2026-01", "repay_from": "2027-02"}]}
+    if bank:
+        # Лист банка в тысячах рублей, остатки на эскроу — нарастающим по кварталам.
+        parts["bank_plan"] = {"sheet": "План банка_new", "quarters": ["2026 Q3", "2026 Q4"],
+                              "lines": [
+            {"label": "Итого остатки на эскроу накопительным итогом (расчетное)",
+             "values": {"2026 Q3": 999_000.0, "2026 Q4": 999_000.0}},
+            {"label": "Итого остатки на эскроу накопительным итогом (утверждено по CF)",
+             "values": {"2026 Q3": 70_000.0, "2026 Q4": 120_000.0}}]}
     sales_store.save(sales_store.default_dir(), "ЖК", parts, "test.xlsx")
 
 
@@ -144,7 +152,7 @@ def test_escrow_against_the_credit_plan():
     assert queue["plan"] == pytest.approx(45 * M)
     text = report.render_text(report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК"))
     assert "Эскроу, очередь «1 очередь»: на сентябрь 2026 накоплено 60,0 млн ₽ при плане " \
-           "45,0 млн ₽ (больше плана на 15,0 млн ₽)." in text
+           "финмодели (лист «КРЕДИТЫ») 45,0 млн ₽ (больше плана на 15,0 млн ₽)." in text
 
 
 def test_no_credit_plan_is_named():
@@ -165,3 +173,49 @@ def test_blocks_go_in_the_owners_order():
     page = report.render_html(built)
     assert [page.index(f"<h2>{name}</h2>") for name in order] == \
         sorted(page.index(f"<h2>{name}</h2>") for name in order)
+
+
+def test_escrow_against_the_bank_plan():
+    # «План по эскроу 1,98 млрд не соответствует плану банка. Откуда тянется?»
+    # (финансист, 21.10.2026): план брался из листа «КРЕДИТЫ» финмодели, а план
+    # банка лежит в книге на листе «План банка_new».
+    _project()
+    _sales(bank=True)
+    got = report.funding(PROJECT, "week", "2026-10-18", sales_project="ЖК")["escrow_bank"]
+    assert got["closed"] == {"quarter": "2026 Q3", "plan": pytest.approx(70 * M),
+                             "actual": pytest.approx(60 * M), "gap": pytest.approx(-10 * M)}
+    assert got["current"]["plan"] == pytest.approx(120 * M)
+    assert got["current"]["actual"] == pytest.approx(65 * M)
+    built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
+    text = report.render_text(built)
+    assert ("Эскроу по плану банка (лист «План банка_new», утверждено по CF): на конец "
+            "2026 Q3 план 70,0 млн ₽, накоплено 60,0 млн ₽ — меньше плана на 10,0 млн ₽.") in text
+    assert "План банка на конец 2026 Q4 — 120,0 млн ₽; на октябрь 2026 накоплено 65,0 млн ₽." in text
+    assert "План банка" in report.render_html(built)
+
+
+def test_no_bank_plan_is_named():
+    _project()
+    _sales()
+    got = report.funding(PROJECT, "week", "2026-10-18", sales_project="ЖК")["escrow_bank"]
+    assert got["state"] == "missing" and "План банка_new" in got["reason"]
+
+
+def test_the_renamed_bank_sheet_is_read():
+    import io
+
+    from openpyxl import Workbook
+
+    from market_search import contracting
+
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "План банка_new"
+    sheet.append([None, "ЖК", "2026 Q3", "2026 Q4"])
+    sheet.append(["Эскроу", contracting.BANK_ESCROW_LABEL, 1_628_540.0, 2_172_270.0])
+    data = io.BytesIO()
+    book.save(data)
+    got = contracting.read_bank_plan(data.getvalue())
+    assert got["sheet"] == "План банка_new"
+    assert contracting.bank_escrow_plan(got) == {"2026 Q3": pytest.approx(1_628_540_000.0),
+                                                 "2026 Q4": pytest.approx(2_172_270_000.0)}
