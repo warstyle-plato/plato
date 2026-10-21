@@ -1155,6 +1155,12 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             first = dated[0]["card"]
             text += (f". Ближайший срок — {_day(first['deadline'])}, "
                      f"{first['counterparty']}: {first['next_step'] or 'следующий шаг не записан'}")
+        waiting = sum(1 for item in opened if item.get("unchecked"))
+        add("Споры", _sentence(text),
+            f"реестр споров; {waiting} из {len(opened)} карточек внесены по документам "
+            "владельца и ждут проверки юриста" if waiting
+            else "реестр споров, карточки подтверждены по документам")
+
         add("Споры", _sentence(text), "реестр споров, карточки подтверждены по документам")
     elif block.get("state") == "ok" and not block.get("recorded"):
         add("Споры", LEGAL_EMPTY, "реестр споров", "missing")
@@ -2343,6 +2349,9 @@ def _claims_words(card: dict[str, Any], direction: str) -> str:
                      + (" (растёт)" if claim["growing"] else "") for claim in items)
 
 
+LEGAL_UNCHECKED = ("(Внесено по документам владельца, юрист ещё не проверил — "
+                   "проверьте и подтвердите на странице сводки.)")
+
 LEGAL_EMPTY = ("Споры в реестр пока не внесены, поэтому в сводке их нет. Загрузите "
                "документы спора на странице сводки, проверьте карточку, которую "
                "предложит Платон, и подтвердите её.")
@@ -2374,6 +2383,8 @@ def _legal_lines(block: dict[str, Any]) -> list[str]:
         if card["next_step"]:
             line += (f" Дальше: {esc(_sentence(card['next_step']))}"
                      + (f" Срок — {_day(card['deadline'])}." if card["deadline"] else ""))
+        if item.get("unchecked"):
+            line += " " + LEGAL_UNCHECKED
         out.append(line)
     return out
 
@@ -2417,7 +2428,8 @@ def _legal_html(block: dict[str, Any]) -> str:
             + (f" · дело {esc(card['court_case'])}" if card.get("court_case") else "")
             + (f" · наша сторона: {esc(card['our_side'])}" if card.get("our_side") else "")
             + f" · <b>{esc(names.get(card['status'], card['status']))}</b>"
-            + (f"<br>{esc(card['subject'])}" if card["subject"] else "") + "</div>"
+            + (f"<br>{esc(card['subject'])}" if card["subject"] else "")
+            + (f"<br><i>{esc(LEGAL_UNCHECKED)}</i>" if item.get("unchecked") else "") + "</div>"
             + "<table class='legal'>" + "".join(_row(row) for row in rows) + "</table>")
     return "".join(out)
 

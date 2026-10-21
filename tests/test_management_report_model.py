@@ -392,9 +392,8 @@ def test_budget_route_stores_and_refuses_by_name(monkeypatch):
         content_base64=base64.b64encode(budget_book()).decode())
     stored = core.monitor_store_budget(good)
     assert stored["months"] == ["2026-09", "2026-10"]
-    with pytest.raises(HTTPException) as again:
-        core.monitor_store_budget(good)
-    assert again.value.status_code == 409
+    # Тот же период тем же днём — замена, прежний файл в архиве.
+    assert core.monitor_store_budget(good)["replaced"] is True
     broken = core.MonitorEstimateRequest(
         project=PROJECT, taken_at="2026-10-03",
         content_base64=base64.b64encode(_rss_book([])).decode())
@@ -402,3 +401,23 @@ def test_budget_route_stores_and_refuses_by_name(monkeypatch):
         core.monitor_store_budget(broken)
     assert bad.value.status_code == 400
     assert "шапки с месяцами" in bad.value.detail
+
+
+def test_several_periods_load_the_same_day_and_the_latest_period_wins():
+    # «Эти я загрузить через форму не смог: он не принял новые файлы вообще,
+    # сказал что октябрь уже загружен» (владелец, 21.10.2026). Файлы БДДС за
+    # прошлые периоды догружаются пачкой в один день.
+    _project()
+    monthly_budget.store_budget(PROJECT, budget_book(), "2026-10-02")  # сентябрь—октябрь
+    for months in ((("Июль 2026", (-100, -10, -30), (-90, -10, -30)),
+                    ("Август 2026", (-111, -10, -30), (None, None, None))),
+                   (("Август 2026", (-222, -10, -30), (-200, -10, -30)),
+                    ("Сентябрь 2026", (-777, -10, -30), (None, None, None)))):
+        stored = monthly_budget.store_budget(PROJECT, budget_book(months=months), "2026-10-21")
+        assert stored["replaced"] is False
+    # Август — из файла за август—сентябрь (период позже), а не за июль—август.
+    plan = monthly_budget._plan(PROJECT, "2026-08-01", "2026-10-31")
+    assert plan["plan"]["construction"] == pytest.approx(212 * M)
+    # Сентябрь — из файла за сентябрь—октябрь, хотя он загружен раньше.
+    plan = monthly_budget._plan(PROJECT, "2026-09-01", "2026-10-31")
+    assert plan["file"] == "2026-10-02"
