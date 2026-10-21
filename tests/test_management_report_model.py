@@ -179,11 +179,16 @@ def test_an_old_snapshot_is_flagged_as_not_refreshed():
     assert "новый график с процентами не загружали" in text
 
 
-def test_no_schedule_fact_is_a_named_reason():
-    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
+def test_without_a_schedule_fact_the_report_shows_what_the_monitor_shows():
+    """Нет недельного ГПР-факта — проценты из утверждённого ГПР, как в Мониторе,
+    и сводка прямо говорит, откуда они и от какой даты версия графика."""
+    monitor.store_schedule(PROJECT, _gpr_book({"1": 0.30}), None, "2026-07-01")
     got = report.physical(PROJECT, "week", "2026-10-18")
-    assert got["state"] == "missing"
-    assert "ГПР-факт" in got["reason"]
+    assert got["state"] == "ok" and got["fact_snapshot"] is None
+    assert got["source"]["label"] == "утверждённый ГПР от 01.07.2026"
+    text = report.render_text(report.build(PROJECT, "week", "2026-10-18"))
+    assert "Проценты — утверждённый ГПР от 01.07.2026" in text
+    assert "Недельный ГПР-факт с процентами в Монитор не загружали" in text
 
 
 def budget_book(months=(("Сентябрь 2026", (-300, -10, -20), (-280, -9, -21)),
