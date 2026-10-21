@@ -47,6 +47,37 @@ def _slug(name: str) -> str:
     return cleaned[:64] or "project"
 
 
+# Псевдонимы проектов: один проект, загруженный под двумя именами, сводится
+# к одному каталогу (`developaid_monitor_merge`). Старое имя остаётся рабочим —
+# чат стройки, бот и ссылки, знающие его, попадают в главный каталог, — потому
+# что подмена стоит в единственной двери к данным проекта, `_project_dir`.
+_ALIASES_FILE = ".aliases.json"
+_ALIAS_CACHE: dict[str, Any] = {"key": None, "map": {}}
+
+
+def _aliases() -> dict[str, str]:
+    """Каталог-псевдоним → главный каталог; перечитывается, когда файл изменился."""
+    path = _SNAPSHOT_DIR / _ALIASES_FILE
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return {}
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if _ALIAS_CACHE["key"] != key:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            raw = {}
+        _ALIAS_CACHE.update(key=key, map={str(name): str(main) for name, main in
+                                          ((raw or {}).get("aliases") or {}).items()})
+    return _ALIAS_CACHE["map"]
+
+
+def _resolved_slug(project: str) -> str:
+    name = _slug(project)
+    return _aliases().get(name, name)
+
+
 def _project_dir(project: str) -> Path:
     # Имя каталога чистит `_slug`, и чистит честно: из «../../etc/passwd»
     # выходит «etcpasswd», из «..» — «project». Но защита эта регулярочная, а
@@ -69,7 +100,7 @@ def _project_dir(project: str) -> Path:
     # утверждение «ровно один сегмент» (`dirname`). Разделитель в конце базы
     # обязателен: без него `/data/monitor-чужое` проходит как «внутри».
     base = os.path.normpath(_SNAPSHOT_DIR)
-    target = os.path.normpath(os.path.join(base, _slug(project)))
+    target = os.path.normpath(os.path.join(base, _resolved_slug(project)))
     if not target.startswith(base + os.sep) or os.path.dirname(target) != base:
         raise ValueError(
             f"Имя проекта не годится для каталога на диске: {project!r}")
