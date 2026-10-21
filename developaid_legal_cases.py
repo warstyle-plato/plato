@@ -468,6 +468,70 @@ def ensure_seed(project: str, seed_file: Path | None = None) -> int:
     return len(entry.get("cases") or [])
 
 
+def _card_key(card: dict[str, Any]) -> str:
+    """Один спор — одна карточка: контрагент, договор и номер дела без регистра и пробелов."""
+    def norm(value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+    return "|".join(norm(card.get(field)) for field in ("counterparty", "contract", "court_case"))
+
+
+def import_cards(project: str, data: bytes | str, author: str) -> dict[str, Any]:
+    """Занести готовые карточки из файла (формат `legal_seed.json`) в реестр проекта.
+
+    Файл с сервера положить некому — выкатка идёт образом из main (контроль
+    очереди, 21.10.2026), поэтому тот же файл владелец загружает кнопкой на
+    странице сводки. Карточки проверяются той же схемой, что подтверждённые
+    руками, и получают ту же пометку «внесено по документам владельца». Повторная
+    загрузка дублей не плодит: спор, который уже есть в реестре (контрагент,
+    договор, дело), пропускается — его правят на странице, а не файлом.
+    """
+    try:
+        raw = json.loads(data.decode("utf-8-sig") if isinstance(data, bytes) else data)
+    except (UnicodeDecodeError, ValueError):
+        raise ValueError("Файл не читается как JSON — нужен файл карточек споров (legal_seed.json).")
+    if not isinstance(raw, dict):
+        raise ValueError("В файле нет карточек споров.")
+    wanted = monitor._resolved_slug(project)
+    if "projects" in raw:
+        entry = next((item for item in raw.get("projects") or [] if isinstance(item, dict)
+                      and monitor._resolved_slug(str(item.get("project") or "")) == wanted), None)
+        if entry is None:
+            names = ", ".join(f"«{item.get('project')}»" for item in raw.get("projects") or []
+                              if isinstance(item, dict))
+            raise ValueError(f"В файле нет карточек для проекта «{project}» (в файле: {names or 'ничего'}).")
+    else:
+        entry = raw
+    items = [item.get("card") if isinstance(item, dict) and "card" in item else item
+             for item in entry.get("cases") or []]
+    if not items:
+        raise ValueError("В файле нет карточек споров.")
+    cards = []
+    for number, card in enumerate(items, 1):
+        try:
+            cards.append(clean(card if isinstance(card, dict) else {}))
+        except ValueError as exc:
+            raise ValueError(f"Карточка {number}: {exc}")
+    at = str(entry.get("at") or "")
+    added, skipped = [], []
+    with (_root(project) / ".import.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            known = {_card_key(row["card"]) for row in _versions(project)}
+            for card in cards:
+                key = _card_key(card)
+                if key in known:
+                    skipped.append(card["counterparty"])
+                    continue
+                saved = save(project, card, [], author, at=at)
+                _mark_seeded(project, saved["id"])
+                known.add(key)
+                added.append(card["counterparty"])
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    return {"added": added, "skipped": skipped}
+
+
 def _mark_seeded(project: str, case_id: str) -> None:
     path = _root(project) / "seeded.json"
     known = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
