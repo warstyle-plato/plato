@@ -348,6 +348,10 @@ _engine_part("bot_users")
 # engine/access_rights.py и выполняются здесь же, в пространстве имён движка.
 _engine_part("access_rights")
 
+# Оплата доступа через ЮKassa — платёж, возврат, уведомление, чек — и
+# реквизиты продукта лежат в engine/payments.py.
+_engine_part("payments")
+
 
 # Локальные сценарии кнопок Платона и маршруты /agent/* вынесены
 # в engine/agent_routes.py и выполняются здесь же, в пространстве имён
