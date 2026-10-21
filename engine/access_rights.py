@@ -481,6 +481,42 @@ def require_calc_access(session: str, key: str, what: str, *,
     return calc_access_for_chat(chat, what, inputs=inputs, cadastral=cadastral, surface=surface)
 
 
+_ACCESS_SESSION_HEADER = "x-developaid-session"
+
+
+def _access_scope_session() -> str:
+    """Сессия входа из заголовка запроса — для поверхностей, которые шлют GET
+    без тела (каталог КРТ): страница кладёт её в `X-Developaid-Session`."""
+    scope = _ACCESS_SCOPE.get()
+    if not scope:
+        return ""
+    try:
+        return str(Request(scope).headers.get(_ACCESS_SESSION_HEADER) or "")
+    except Exception:
+        return ""
+
+
+def catalog_economics_access(session: str = "", key: str = "", *,
+                             cadastral: list[str] | None = None) -> dict[str, Any]:
+    """Экономика каталога КРТ — под тем же решением, что и расчёт (решение
+    владельца 21.10.2026). Площадка — её кадастровые номера, как участок
+    расчёта; рейтинг всего каталога — без участка, и при включённом замке он
+    открыт подписке, администраторам и команде. Отказ — исключение со словами."""
+    session = session or _access_scope_session()
+    if cadastral:
+        return require_calc_access(session, key, "Экономика площадки КРТ",
+                                   cadastral=cadastral, surface="krt")
+    try:
+        return require_calc_access(session, key, "Экономика каталога КРТ", surface="krt")
+    except HTTPException as exc:
+        if exc.status_code != 402:
+            raise
+        raise HTTPException(
+            status_code=402,
+            detail=("Экономика всего каталога КРТ открыта по подписке. Экономику отдельной "
+                    "площадки можно открыть доступом к её участку — в разделе «Тарифы».")) from exc
+
+
 def require_payload_access(payload: dict[str, Any], what: str, *,
                            surface: str = "site") -> dict[str, Any]:
     """То же решение для запросов сырым JSON (PDF, тизер): номера — из вводных,

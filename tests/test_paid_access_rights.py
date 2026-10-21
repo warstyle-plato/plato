@@ -326,3 +326,44 @@ def test_the_market_cabinet_key_opens_everything(monkeypatch):
     assert cookie_client.post("/calculate", json=model_for(B)).status_code == 200
     wrong = client.post("/calculate", json=model_for(B), headers={"X-Market-Key": "wrong-key"})
     assert wrong.status_code == 401
+
+
+# --- экономика каталога КРТ ---------------------------------------------------
+
+def _registry_client(**kw) -> TestClient:
+    import main_registry  # noqa: PLC0415 — полное приложение с разделом торгов
+
+    return TestClient(main_registry.app, **kw)
+
+
+def test_the_krt_economics_reads_the_same_decision(monkeypatch):
+    """Рейтинг каталога КРТ — экономика: без входа закрыт, при включённом замке
+    весь каталог — по подписке, а ключ кабинета рынка открывает всё."""
+    monkeypatch.setenv("MARKET_CABINET_KEY", "team-test-key")
+    registry = _registry_client()
+    refused = registry.get("/auctions/krt/ranking")
+    assert refused.status_code == 401 and "Telegram" in refused.json()["detail"]
+    use(A1)
+    paid = registry.get("/auctions/krt/ranking", headers={"X-Developaid-Session": session()})
+    assert paid.status_code == 402 and "по подписке" in paid.json()["detail"]
+    core.access_grant(CHAT, subscription=True, payment_id="sub-krt")
+    assert registry.get("/auctions/krt/ranking",
+                        headers={"X-Developaid-Session": session()}).status_code == 200
+    team = registry.get("/auctions/krt/ranking", headers={"X-Market-Key": "team-test-key"})
+    assert team.status_code == 200
+
+
+def test_with_the_paywall_off_the_krt_economics_needs_only_a_login(monkeypatch):
+    monkeypatch.delenv("DEVELOPAID_PAYWALL")
+    registry = _registry_client()
+    assert registry.get("/auctions/krt/ranking").status_code == 401
+    assert registry.get("/auctions/krt/ranking",
+                        headers={"X-Developaid-Session": session()}).status_code == 200
+
+
+def test_the_catalog_pages_send_the_session():
+    from auction_search import krt_investment_card, ui  # noqa: PLC0415
+
+    for source in (Path(ui.__file__).read_text(encoding="utf-8"),
+                   Path(krt_investment_card.__file__).read_text(encoding="utf-8")):
+        assert "'X-Developaid-Session'" in source
