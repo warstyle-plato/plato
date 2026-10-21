@@ -525,18 +525,27 @@ def _recipients(rss: Path, month: str, end: datetime.date, top: int = 8) -> list
 
 
 def _articles(project: str, end: datetime.date) -> dict[str, Any]:
-    """Отклонения по статьям БДДС в последнем месяце, где бюджет уже несёт факт.
+    """Отклонения по статьям БДДС за прошлый месяц — последний закрытый.
 
     Статьи — те же, что у бюджета месяца (`ARTICLES`, по точному имени строки).
+    Месяц — тот, что перед месяцем сводки, а не «последний, где в файле есть
+    факт»: в октябрьской сводке стояла таблица за апрель, и её план читался как
+    октябрьский (финансист, 21.10.2026: «неверный план апреля, не могу понять,
+    откуда он подтянут»). Факта за прошлый месяц в файле нет — так и сказано.
     """
     files = _budget_files(project, end.isoformat())
     if not files:
         return {"known": False, "reason": "бюджет не загружен"}
     parsed = read_budget(files[0].read_bytes())
-    for month in sorted(parsed["months"], reverse=True):
+    month = (end.replace(day=1) - datetime.timedelta(days=1)).replace(day=1).isoformat()
+    label = f"{datetime.date.fromisoformat(month):%m.%Y}"
+    if month not in parsed["months"]:
+        return {"known": False, "reason": f"в бюджете от {files[0].stem[:10]} нет месяца {label}"}
+    for month in (month,):
         found = parsed["months"][month]["articles"]
         if not any(pair.get("fact") is not None for pair in found.values()):
-            continue
+            return {"known": False,
+                    "reason": f"в бюджете от {files[0].stem[:10]} не заполнен факт за {label}"}
         rows = []
         # Месяц закрыт: у части статей факт есть. Пустая ячейка факта в
         # закрытом месяце бюджета значит «не платили», и это помечено.
@@ -549,4 +558,4 @@ def _articles(project: str, end: datetime.date) -> dict[str, Any]:
                          "delta": fact - pair["plan"] if pair.get("plan") is not None else None})
         rows.sort(key=lambda row: -abs(row.get("delta") or 0.0))
         return {"known": True, "month": month, "file": files[0].stem[:10], "rows": rows}
-    return {"known": False, "reason": "в бюджете ещё нет месяца с фактом"}
+    return {"known": False, "reason": "в бюджете нет месяца с фактом"}

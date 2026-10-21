@@ -606,9 +606,23 @@ def _fact(rows: list[dict[str, Any]]) -> dict[str, Any]:
     flats = contracting._totals(
         [row for row in rows
          if contracting.product_name(row["product"]) == "Квартира"])
+    # Метры — только у товаров, которые продаются метром (квартиры, помещения).
+    # Машиноместа и кладовые продаются штукой: их деньги в сумме, а метры в
+    # «площади» смешали бы паркинг с жильём, и общая строка не сходилась бы ни
+    # с одним планом (финансист, 21.10.2026: «сумма учитывает машиноместа, а
+    # площадь машиномест не учитывается»). Штуки названы рядом.
+    measured = [row for row in rows if contracting.product_measure(
+        contracting.product_name(row["product"])) == "area"]
+    pieces: dict[str, float] = {}
+    for row in rows:
+        name = contracting.product_name(row["product"])
+        if contracting.product_measure(name) == "units":
+            pieces[name] = pieces.get(name, 0.0) + float(row.get("units") or 1.0)
     return {"contracts": int(totals["contracts"]), "units": totals["units"],
-            "area": totals["area"], "amount": totals["amount"],
-            "area_unknown": int(totals["area_unknown"]),
+            "area": sum(float(row["area"] or 0.0) for row in measured),
+            "amount": totals["amount"],
+            "area_unknown": sum(1 for row in measured if not row["area"]),
+            "pieces": pieces,
             # Цена — по квартирам: банк и финмодель называют её так же, а
             # общая цена метра смешала бы паркинг с жильём.
             "price_flats": flats["price_per_sqm"] or None}
@@ -1232,12 +1246,27 @@ def _title(report: dict[str, Any]) -> str:
     return f"за неделю {start:%d.%m} — {end:%d.%m.%Y}"
 
 
+_PIECE_WORDS = {"Машиноместо": ("машиноместо", "машиноместа", "машиномест"),
+                "Кладовая": ("кладовая", "кладовые", "кладовых")}
+
+
+def _pieces(fact: dict[str, Any]) -> str:
+    """«3 машиноместа, 1 кладовая» — то, что продаётся штукой."""
+    out = []
+    for name, count in sorted((fact.get("pieces") or {}).items()):
+        words = _PIECE_WORDS.get(name, (name.lower(),) * 3)
+        out.append(f"{count:.0f} {_plural(int(count), *words)}")
+    return ", ".join(out)
+
+
 def _sales_line(label: str, fact: dict[str, Any]) -> str:
     price = (f", квартиры в среднем по {_rub(fact['price_flats'])} за м²"
              if fact.get("price_flats") else "")
     word = _plural(fact["contracts"], "договор", "договора", "договоров")
-    return (f"{label}: {fact['contracts']} {word} на {_rub(fact['amount'])}, "
-            f"{_area(fact['area'])}{price}.")
+    pieces = _pieces(fact)
+    return (f"{label}: {fact['contracts']} {word} на {_rub(fact['amount'])}: "
+            f"квартиры и помещения — {_area(fact['area'])}"
+            + (f", {pieces}" if pieces else "") + f"{price}.")
 
 
 def _months_label(key: str | None) -> str:
@@ -2262,6 +2291,7 @@ def render_html(report: dict[str, Any]) -> str:
     if block.get("state") == "ok":
         def fact_cells(fact: dict[str, Any]) -> list[str]:
             return [str(fact["contracts"]), _rub(fact["amount"]), _area(fact["area"]),
+                    _pieces(fact) or "—",
                     _rub(fact.get("price_flats")) if fact.get("price_flats") else "—"]
 
         month, quarter = block["month"], block["quarter"]
@@ -2271,7 +2301,8 @@ def render_html(report: dict[str, Any]) -> str:
                          *fact_cells(month["fact"])])
         rows.append([f"С начала квартала ({_quarter_name(quarter['key'])})",
                      *fact_cells(quarter["fact"])])
-        out.append(_table(["Факт", "Договоров", "Сумма", "Площадь", "Цена квартир, ₽/м²"], rows))
+        out.append(_table(["Факт", "Договоров", "Сумма", "Площадь квартир и помещений",
+                           "Машиноместа и кладовые", "Цена квартир, ₽/м²"], rows))
         plans = []
         if month.get("fm"):
             plans.append(["План финмодели на месяц", _rub(month["fm"]["amount"]),
