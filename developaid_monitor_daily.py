@@ -405,6 +405,47 @@ def _load_reports(project: str) -> list[dict[str, Any]]:
     return reports
 
 
+def known_parties(project: str, upto: Any = None) -> list[str]:
+    """Подрядчики, известные проекту: кому строку работ можно приписать по имени.
+
+    Источники — реестры РСС (акты и платежи), реестр ГУ и численность всех
+    ежедневных отчётов проекта до даты. Подрядчик, названный в строке работ, но
+    не выводивший людей в этот день, в численности отчёта не значится — и без
+    этого списка его строка доставалась заголовку выше: «Моэк (теплосети) —
+    монтаж ограждения» уходила Клодо (владелец, 21.10.2026: «МОЭК — это не
+    Клодо, это отдельный подрядчик»). Список один для карточки Монитора и для
+    сводки руководству.
+    """
+    import developaid_actuals as actuals
+
+    names: list[str] = []
+
+    def add(value: Any) -> None:
+        name = str(value or "").strip()
+        if name and name not in names:
+            names.append(name)
+
+    rss = monitor._latest(project, "estimate", ".xlsx", "")
+    if rss is not None:
+        try:
+            for register in (actuals.read_completed_works(rss), actuals.read_payments(rss)):
+                for row in register.get("rows") or []:
+                    add(row.get("contractor"))
+        except (KeyError, ValueError):
+            pass
+    register = monitor.latest_retention(project)
+    for row in ((register or {}).get("rows") or []):
+        add(row.get("counterparty"))
+        add(row.get("customer"))
+    last = _day(upto).isoformat() if upto else ""
+    for report in _load_reports(project):
+        if last and str(report.get("date") or "") > last:
+            continue
+        for contractor in (report.get("parsed") or {}).get("contractors") or []:
+            add(contractor.get("name"))
+    return names
+
+
 def daily_summary(project: str, upto: Any = None, days: int = 45,
                   known: list[str] | None = None) -> dict[str, Any]:
     """Ряды для плитки «Люди на площадке» и последний день словами."""

@@ -313,11 +313,13 @@ def _crew_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "itr_avg": sum(itr) / len(itr) if itr else None}
 
 
-def _works_done(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _works_done(rows: list[dict[str, Any]], parties: list[str] | None = None
+                ) -> list[dict[str, Any]]:
     """Работы за период из раздела «По работам» ежедневных отчётов бота.
 
-    Строка приписана подрядчику тем же правилом, что в карточке Монитора
-    (`daily.attribute_works`). Одна и та же строка в разные дни — одна строка
+    Строка приписана подрядчику тем же правилом и по тому же списку известных
+    подрядчиков, что в карточке Монитора (`daily.attribute_works`,
+    `daily.known_parties`). Одна и та же строка в разные дни — одна строка
     с числом дней: прораб пишет «Корпус 1 монолит» каждый день, повтор не
     новая работа.
     """
@@ -326,7 +328,7 @@ def _works_done(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     groups: dict[str, dict[str, Any]] = {}
     for report_row in sorted(rows, key=lambda r: str(r.get("date") or "")):
         parsed = report_row.get("parsed") or {}
-        known = [c["name"] for c in parsed.get("contractors") or []]
+        known = [c["name"] for c in parsed.get("contractors") or []] + list(parties or [])
         for item in daily.attribute_works(parsed.get("works") or [], known):
             line = str(item.get("line") or "")
             if item.get("named_inline"):
@@ -392,7 +394,8 @@ def crew(project: str, kind: str, end: Any) -> dict[str, Any]:
     return {"state": "ok", "now": _crew_stats(now), "previous": _crew_stats(before),
             "period_days": (bounds["end"] - bounds["start"]).days + 1,
             "last_report": last or None, "by_contractor": by_contractor[:10],
-            "series": series, "works": _works_done(now)}
+            "series": series,
+            "works": _works_done(now, daily.known_parties(project, bounds["end"]))}
 
 
 # --------------------------------------------------------------------------
