@@ -1330,13 +1330,15 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     lines = []
     limit = block.get("limit") or {}
     if limit.get("known"):
-        lines.append(f"Лимит банка по РСС (главы 2–3): {_rub(limit.get('bank_limit'))}, "
+        lines.append(f"Лимит банка по РСС (главы {limit.get('chapters_label') or '2–3'}): "
+                     f"{_rub(limit.get('bank_limit'))}, "
                      f"оплачено с начала проекта {_rub(limit.get('paid_actual'))}, "
                      f"остаток лимитов статей {_rub(limit.get('bank_remaining'))}, "
                      f"резерв {_rub(limit.get('reserve'))}.")
         need = _approved_need(limit)
         if need:
-            line = (f"Утверждённый бюджет (главы 2–3, финмодель): {_rub(need['approved'])}; "
+            line = (f"Утверждённый бюджет (главы {limit.get('chapters_label') or '2–3'}, финмодель): "
+                    f"{_rub(need['approved'])}; "
                     f"остаток потребности (бюджет минус оплаченное) {_rub(need['remaining'])} "
                     f"при лимитах статей и резерве {_rub(need['fuel'])}")
             if need["deficit"] is not None:
@@ -1396,7 +1398,7 @@ def _funding_html(report: dict[str, Any]) -> str:
     limit = block.get("limit") or {}
     if limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
-        out.append(_table(["Лимит банка (РСС, главы 2–3)", "Сумма"], [
+        out.append(_table([f"Лимит банка (РСС, главы {limit.get('chapters_label') or '2–3'})", "Сумма"], [
             ["Лимит", _rub(limit.get("bank_limit"))],
             ["Оплачено с начала проекта", _rub(limit.get("paid_actual"))],
             ["Остаток лимитов статей", _rub(limit.get("bank_remaining"))],
@@ -1406,7 +1408,8 @@ def _funding_html(report: dict[str, Any]) -> str:
               if extra > 0 else "хватает до ввода")]]))
         need = _approved_need(limit)
         if need:
-            out.append(_table(["Утверждённый бюджет (главы 2–3, финмодель)", "Сумма"], [
+            out.append(_table([f"Утверждённый бюджет (главы {limit.get('chapters_label') or '2–3'}, финмодель)",
+                               "Сумма"], [
                 ["Утверждённый бюджет", _rub(need["approved"])],
                 ["Оплачено с начала проекта", _rub(limit.get("paid_actual"))],
                 ["Остаток потребности (бюджет минус оплаченное)", _rub(need["remaining"])],
@@ -1889,9 +1892,11 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     limit = (block.get("limit") or {}) if block.get("state") == "ok" else {}
     need = _approved_need(limit) if limit.get("known") else None
     add("Утверждённый бюджет", _rub(need["approved"]) if need else None,
-        "главы 2–3, финмодель" if need else "финансовая книга не загружена")
+        f"главы {limit.get('chapters_label') or '2–3'}, финмодель" if need
+        else "финансовая книга не загружена")
     if limit.get("known"):
-        add("Лимит банка", _rub(limit.get("bank_limit")), "по РСС, главы 2–3")
+        add("Лимит банка", _rub(limit.get("bank_limit")),
+            f"по РСС, главы {limit.get('chapters_label') or '2–3'}")
     else:
         add("Лимит банка", None, limit.get("reason") or "лимит не посчитан")
     draws = block.get("draws") if block.get("state") == "ok" else None
