@@ -65,6 +65,7 @@ PAGE += r"""</head>
            вовсе (замечание владельца, 18.08.2026). Кнопка стоит в шапке, пока
            никто не вошёл, и прячется после входа. -->
       <button class="btn dark" id="loginButton" style="display:none" onclick="openLogin()">Войти через Telegram</button>
+      <button class="btn" id="tariffsButton" onclick="openTariffs()">Тарифы</button>
       <button class="btn" onclick="resetProject()">Сбросить</button>
       <a class="btn" href="/guide">Руководство</a>
       <button class="btn dark" onclick="calculateAndOpen('report')">Пересчитать модель</button>
@@ -899,6 +900,22 @@ PAGE += r"""</head>
          сессия лежит в localStorage, а кнопки не было (замечание владельца,
          18.08.2026). -->
     <div id="accountBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px"></div>
+    <!-- Тарифы, мои участки и подписка: условия и права приходят с сервера. -->
+    <div id="tariffsBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px"></div>
+    <!-- Администрирование доступа — только администраторам (решает сервер). -->
+    <div id="accessAdminBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px">
+      <div class="section-title" style="margin-bottom:8px">Администрирование доступа</div>
+      <div class="upload-line" style="align-items:center;margin-bottom:8px">
+        <input id="grantChat" type="number" placeholder="Telegram ID" style="width:130px">
+        <select id="grantKind"><option value="plot">Участок</option><option value="subscription">Подписка</option></select>
+        <input id="grantCadastral" placeholder="Кадастровые номера через запятую" style="min-width:260px">
+        <input id="grantDays" type="number" placeholder="Дней (по умолчанию — как в тарифе)" style="width:120px">
+        <input id="grantNote" placeholder="Комментарий" style="min-width:160px">
+        <button class="btn dark" onclick="accessAdminGrant()">Выдать доступ</button>
+      </div>
+      <div id="accessAdminStatus" style="font-size:12px;margin-bottom:8px"></div>
+      <div id="accessAdminList"></div>
+    </div>
     <div id="projectsStored">
       <div class="section-title" style="margin-bottom:8px">Мои проекты</div>
       <div style="font-size:11px;color:#777;margin-bottom:10px">
@@ -956,6 +973,9 @@ PAGE += r"""</head>
   <a href="/privacy" style="color:#888">Политика конфиденциальности</a>
   <a href="/ads-consent" style="color:#888">Согласие на рекламные материалы</a>
   <a href="/guide" style="color:#888">Руководство</a>
+  <a href="/offer" style="color:#888">Лицензионный договор</a>
+  <a href="/refund" style="color:#888">Условия возврата</a>
+  <span>__DEVELOPAID_PRODUCT_REGISTRATION__</span>
   <!-- Перечень нормативной базы: какая редакция учтена, на какое число она
        влияет и в каком модуле применяется. Страница была, а дойти до неё с
        калькулятора было нельзя — только из руководства или по ссылке в

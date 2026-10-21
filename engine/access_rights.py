@@ -472,3 +472,138 @@ def internal_access_use(req: InternalAccessRequest) -> dict[str, Any]:
     if plot["key"] != str(req.key or ""):
         raise HTTPException(status_code=400, detail="Участок запроса не совпал с подписью.")
     return access_use(chat, plot, surface=str(req.surface or "")[:40])
+
+
+# --- кабинет и администрирование ----------------------------------------------
+#
+# Права лежат на ядре, поэтому кабинет и админка на Render пересылают запрос
+# туда целиком: ядро само проверяет сессию (тот же токен бота) и ключ.
+
+class AccessRequest(BaseModel):
+    session: str = ""
+    key: str = ""
+    chat: int = 0
+    kind: str = "plot"
+    cadastral: list[str] = []
+    days: int = 0
+    note: str = ""
+
+
+def _access_forward(path: str, req: AccessRequest) -> dict[str, Any] | None:
+    remote = _projects_remote_url(path)
+    return _core_post(remote, req.model_dump(), 30.0) if remote else None
+
+
+def _access_admin(req: AccessRequest) -> int:
+    """Кто администрирует: вошедший из `DEVELOPAID_ADMIN_IDS` или ключ владельца."""
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    if secret and req.key and hmac.compare_digest(str(req.key).encode("utf-8"),
+                                                  secret.encode("utf-8")):
+        return min(usage_admin_ids() or {0})
+    chat = _web_identity_chat_id(req.session)
+    if chat and chat in usage_admin_ids():
+        return chat
+    raise HTTPException(status_code=403,
+                        detail="Раздел доступен только администраторам DevelopAid.")
+
+
+def _access_records() -> list[dict[str, Any]]:
+    rows = []
+    for path in sorted(_access_dir().glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and int(record.get("chat") or 0):
+            rows.append(record)
+    return rows
+
+
+@app.post("/access/me")
+def access_me(req: AccessRequest) -> dict[str, Any]:
+    """Кабинет: мои участки, подписка, остаток бесплатных — и условия."""
+    payments = globals().get("payments_available")
+    offer = {"terms": access_terms(),
+             "payments_available": bool(callable(payments) and payments())}
+    if callable(globals().get("payment_offer_item")):
+        offer["plot_offer"] = payment_offer_item("plot")
+        offer["subscription_offer"] = payment_offer_item("subscription")
+        offer["registration"] = product_registration_line()
+    chat = _web_identity_chat_id(req.session)
+    if not chat:
+        return {**offer, "signed_in": False}
+    forwarded = _access_forward("/internal/access/me", req)
+    status = forwarded if forwarded is not None else access_status(chat)
+    return {**offer, "signed_in": True, "status": status,
+            "is_admin": chat in usage_admin_ids()}
+
+
+@app.post("/internal/access/me", include_in_schema=False)
+def internal_access_me(req: AccessRequest) -> dict[str, Any]:
+    chat = _web_identity_chat_id(req.session)
+    if not chat:
+        raise HTTPException(status_code=403, detail="Сессия входа недействительна.")
+    return access_status(chat)
+
+
+@app.post("/access/admin/overview")
+def access_admin_overview(req: AccessRequest) -> dict[str, Any]:
+    """Владельцу: люди, их права и последние выдачи (оплаты — с номером платежа)."""
+    forwarded = _access_forward("/access/admin/overview", req)
+    if forwarded is not None:
+        return forwarded
+    _access_admin(req)
+    now = time.time()
+    names: dict[int, dict[str, Any]] = {}
+    for path in sorted(_users_dir().glob("*.json")) if _users_dir().is_dir() else []:
+        try:
+            user = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(user, dict) and int(user.get("chat") or 0):
+            names[int(user["chat"])] = user
+    rights = {int(r["chat"]): r for r in _access_records()}
+    people = []
+    for chat in sorted(set(names) | set(rights), key=lambda c: -float(
+            (names.get(c) or {}).get("last_seen") or 0)):
+        record = rights.get(chat) or {}
+        grants = record.get("grants") or []
+        profile = profile_read(chat) if callable(globals().get("profile_read")) else {}
+        people.append({
+            "chat": chat,
+            "name": str((profile or {}).get("name") or (names.get(chat) or {}).get("name") or ""),
+            "company": str((profile or {}).get("company") or ""),
+            "last_seen": (names.get(chat) or {}).get("last_seen"),
+            "free_used": sum(1 for g in grants if g.get("source") == "free"),
+            "active_plots": [{"label": g.get("label") or "", "until": g.get("until"),
+                              "source": g.get("source") or ""}
+                             for g in grants if float(g.get("until") or 0) > now],
+            "subscription_until": (record.get("subscription") or {}).get("until"),
+        })
+    journal = access_journal_read(300)
+    payments = [row for row in journal if row.get("event") == "grant" and row.get("payment_id")]
+    return {"people": people[:500], "payments": payments[-100:][::-1],
+            "journal": journal[-100:][::-1], "terms": access_terms()}
+
+
+@app.post("/access/admin/grant")
+def access_admin_grant(req: AccessRequest) -> dict[str, Any]:
+    """Выдать доступ вручную: участок (номера) или подписку, на N дней."""
+    forwarded = _access_forward("/access/admin/grant", req)
+    if forwarded is not None:
+        return forwarded
+    admin = _access_admin(req)
+    chat = int(req.chat or 0)
+    if chat <= 0:
+        raise HTTPException(status_code=400, detail="Укажите Telegram ID пользователя.")
+    subscription = req.kind == "subscription"
+    plot = None
+    if not subscription:
+        plot = access_plot(cadastral=list(req.cadastral or []))
+        if not plot.get("key"):
+            raise HTTPException(status_code=400,
+                                detail="Укажите кадастровые номера участка или выберите подписку.")
+    note = f"вручную, администратор {admin}" + (f": {req.note}" if req.note else "")
+    result = access_grant(chat, plot=plot, subscription=subscription,
+                          days=int(req.days or 0) or None, source="admin", note=note)
+    return {**result, "status": access_status(chat)}
