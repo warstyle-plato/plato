@@ -279,3 +279,10 @@ def test_the_page_sends_the_session_with_every_calculation():
         start = page.index(anchor)
         assert "activeSession()" in page[start:start + 600], anchor
     assert "inputs._project_uid=newProjectUid()" in page
+
+
+def test_without_a_bot_token_every_surface_is_open(monkeypatch):
+    """Решение одно и для сайта, и для бота: без токена выключено везде."""
+    use(A1)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    assert core.calc_access_for_chat(CHAT, "Расчёт", cadastral=[B])["basis"] == "open"

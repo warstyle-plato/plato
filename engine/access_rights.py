@@ -394,6 +394,10 @@ def calc_access_for_chat(chat: int, what: str, *, inputs: dict[str, Any] | None 
     Его читают все маршруты расчёта: страница, мини-приложение, бот, Платон,
     PDF, тизер, Excel, подбор цены. Отказ — 402 со словами, что делать.
     """
+    # Без токена бота механизм честно выключен на всех поверхностях сразу, как
+    # и вход (`_require_web_access`): проверять подпись нечем.
+    if not _telegram_token():
+        return {"allowed": True, "code": "open", "basis": "open"}
     chat = int(chat)
     plot = access_plot(inputs, cadastral)
     if chat in usage_admin_ids():
