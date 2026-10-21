@@ -274,6 +274,20 @@ def _period_end(path: Path) -> str:
         return ""
 
 
+def _known_by(path: Path, upto: str) -> bool:
+    """Бюджет годится для сводки на ``upto``.
+
+    Загружен к этой дате — годится. Загружен позже, но все его месяцы уже
+    прошли к месяцу сводки — тоже: это догруженный прошлый период, а не
+    пересмотр текущего плана (владелец, 21.10.2026: бюджеты апреля—августа,
+    загруженные в октябре, не попадали в сводку на дату раньше дня загрузки).
+    """
+    if path.stem[:10] <= upto:
+        return True
+    parts = path.stem.split("_")
+    return len(parts) == 3 and parts[2] < upto[:7]
+
+
 def _budget_files(project: str, upto: str) -> list[Path]:
     """Бюджеты, загруженные до ``upto``: сначала с более поздним периодом.
 
@@ -284,7 +298,7 @@ def _budget_files(project: str, upto: str) -> list[Path]:
     folder = monitor._project_dir(project) / "budget"
     if not folder.exists():
         return []
-    found = [path for path in folder.glob("*.xlsx") if path.stem[:10] <= upto]
+    found = [path for path in folder.glob("*.xlsx") if _known_by(path, upto)]
     return sorted(found, key=lambda path: (_period_end(path), path.stem[:10]), reverse=True)
 
 
@@ -454,8 +468,10 @@ def _month_shift(month: datetime.date, back: int) -> datetime.date:
     return datetime.date(index // 12, index % 12 + 1, 1)
 
 
-def _trend(project: str, rss: Path, end: datetime.date, months: int = 6) -> list[dict[str, Any]]:
+def _trend(project: str, rss: Path, end: datetime.date, months: int = 12) -> list[dict[str, Any]]:
     """План и оплачено по строкам сводки за последние месяцы (столбцы тренда).
+
+    Окно — год: бюджеты с апреля должны быть видны и в октябрьской сводке.
 
     План месяца — из свежайшего бюджета, где этот месяц есть; факт — из того же
     РСС на конец периода. Нет бюджета на месяц — план None, а не ноль. Месяц до
@@ -536,9 +552,11 @@ def _articles(project: str, end: datetime.date) -> dict[str, Any]:
     files = _budget_files(project, end.isoformat())
     if not files:
         return {"known": False, "reason": "бюджет не загружен"}
-    parsed = read_budget(files[0].read_bytes())
     month = (end.replace(day=1) - datetime.timedelta(days=1)).replace(day=1).isoformat()
     label = f"{datetime.date.fromisoformat(month):%m.%Y}"
+    # Свежайший бюджет, где этот месяц есть, — как у плана месяца (`_plan`).
+    files = [path for path in files if month in read_budget(path.read_bytes())["months"]] or files
+    parsed = read_budget(files[0].read_bytes())
     if month not in parsed["months"]:
         return {"known": False, "reason": f"в бюджете от {files[0].stem[:10]} нет месяца {label}"}
     for month in (month,):
