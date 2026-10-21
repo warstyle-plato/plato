@@ -71,6 +71,9 @@ def paid(monkeypatch):
     monkeypatch.setenv("DEVELOPAID_ADMIN_IDS", "777")
     monkeypatch.setenv("DEVELOPAID_ADMIN_KEY", "kluch")
     monkeypatch.delenv("DEVELOPAID_FREE_PLOTS", raising=False)
+    # Замок включается вместе с оплатой (`DEVELOPAID_PAYWALL`); здесь проверяется
+    # он сам, а выключенный — отдельными проверками ниже.
+    monkeypatch.setenv("DEVELOPAID_PAYWALL", "1")
     monkeypatch.setattr(core, "_MO_CALC_API_URL", "")
     core._ACCESS_REMOTE_CACHE.clear()
     yield
@@ -286,3 +289,81 @@ def test_without_a_bot_token_every_surface_is_open(monkeypatch):
     use(A1)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     assert core.calc_access_for_chat(CHAT, "Расчёт", cadastral=[B])["basis"] == "open"
+
+
+# --- выключатель замка и ключ команды ----------------------------------------
+
+def test_with_the_paywall_off_the_calculation_works_as_before(monkeypatch):
+    """Замок выключен по умолчанию: вошедший считает любой участок, а без входа
+    расчёт закрыт, как и прежде."""
+    use(A1)
+    monkeypatch.delenv("DEVELOPAID_PAYWALL")
+    assert not core.paywall_enabled()
+    answer = client.post("/calculate", json=model_for(B) | {"session": session()})
+    assert answer.status_code == 200, answer.text
+    assert client.post("/calculate", json=model_for(B)).status_code == 401
+    # Учёт в выключенном режиме ничего не тратит и не пишет.
+    assert [g["label"] for g in core.access_status(CHAT)["plots"]] == [A1]
+
+
+def test_with_the_paywall_on_the_refusal_names_the_reason():
+    use(A1)
+    answer = client.post("/calculate", json=model_for(B) | {"session": session()})
+    assert answer.status_code == 402
+    assert "Бесплатный участок уже использован" in answer.json()["detail"]
+
+
+def test_the_market_cabinet_key_opens_everything(monkeypatch):
+    """Ключ кабинета рынка — команда владельца: полный доступ, как у администратора."""
+    monkeypatch.setenv("MARKET_CABINET_KEY", "team-test-key")
+    use(A1)
+    body = model_for(B) | {"session": session()}
+    assert client.post("/calculate", json=body).status_code == 402
+    answer = client.post("/calculate", json=body, headers={"X-Market-Key": "team-test-key"})
+    assert answer.status_code == 200, answer.text
+    # И без входа через Telegram — ключ сам по себе пропуск, как ключ администратора.
+    cookie_client = TestClient(core.app, cookies={"market_cabinet": "team-test-key"})
+    assert cookie_client.post("/calculate", json=model_for(B)).status_code == 200
+    wrong = client.post("/calculate", json=model_for(B), headers={"X-Market-Key": "wrong-key"})
+    assert wrong.status_code == 401
+
+
+# --- экономика каталога КРТ ---------------------------------------------------
+
+def _registry_client(**kw) -> TestClient:
+    import main_registry  # noqa: PLC0415 — полное приложение с разделом торгов
+
+    return TestClient(main_registry.app, **kw)
+
+
+def test_the_krt_economics_reads_the_same_decision(monkeypatch):
+    """Рейтинг каталога КРТ — экономика: без входа закрыт, при включённом замке
+    весь каталог — по подписке, а ключ кабинета рынка открывает всё."""
+    monkeypatch.setenv("MARKET_CABINET_KEY", "team-test-key")
+    registry = _registry_client()
+    refused = registry.get("/auctions/krt/ranking")
+    assert refused.status_code == 401 and "Telegram" in refused.json()["detail"]
+    use(A1)
+    paid = registry.get("/auctions/krt/ranking", headers={"X-Developaid-Session": session()})
+    assert paid.status_code == 402 and "по подписке" in paid.json()["detail"]
+    core.access_grant(CHAT, subscription=True, payment_id="sub-krt")
+    assert registry.get("/auctions/krt/ranking",
+                        headers={"X-Developaid-Session": session()}).status_code == 200
+    team = registry.get("/auctions/krt/ranking", headers={"X-Market-Key": "team-test-key"})
+    assert team.status_code == 200
+
+
+def test_with_the_paywall_off_the_krt_economics_needs_only_a_login(monkeypatch):
+    monkeypatch.delenv("DEVELOPAID_PAYWALL")
+    registry = _registry_client()
+    assert registry.get("/auctions/krt/ranking").status_code == 401
+    assert registry.get("/auctions/krt/ranking",
+                        headers={"X-Developaid-Session": session()}).status_code == 200
+
+
+def test_the_catalog_pages_send_the_session():
+    from auction_search import krt_investment_card, ui  # noqa: PLC0415
+
+    for source in (Path(ui.__file__).read_text(encoding="utf-8"),
+                   Path(krt_investment_card.__file__).read_text(encoding="utf-8")):
+        assert "'X-Developaid-Session'" in source
