@@ -85,3 +85,70 @@ def test_the_monitor_and_the_report_share_one_list(monkeypatch):
     assert any("МОЭК" in name for name in daily.known_parties(PROJECT))
     # Отчёт после даты сводки в список этой сводки не попадает.
     assert not any("МОЭК" in name for name in daily.known_parties(PROJECT, "2026-10-07"))
+
+
+def test_a_contractor_named_by_hand_gets_its_line():
+    # «Конкретно МОЭК это подрядчик» (владелец, 21.10.2026): ни реестры, ни
+    # численность его не знают — имя, названное руками, решает.
+    daily.store_daily_report(PROJECT, WEEK, "2026-10-14")
+    assert "МОЭК" not in _groups("2026-10-18")
+    daily.declare_party(PROJECT, "  МОЭК ", "Иванов")
+    daily.declare_party(PROJECT, "моэк", "Петров")  # повтор не плодит записей
+    assert [(r["name"], r["by"]) for r in daily.declared_parties(PROJECT)] == [("моэк", "Петров")]
+    groups = _groups("2026-10-18")
+    assert groups.get("моэк") == ["монтаж ограждения"]
+    daily.declare_party(PROJECT, "МОЭК", "Петров", remove=True)
+    assert daily.declared_parties(PROJECT) == []
+    assert "моэк" not in _groups("2026-10-18")
+    with pytest.raises(ValueError):
+        daily.declare_party(PROJECT, " ", "Петров")
+
+
+def test_the_monitor_page_adds_a_contractor(monkeypatch):
+    from browser import chromium_or_skip, serve
+
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
+
+    import main_legacy as core
+
+    daily.store_daily_report(PROJECT, WEEK, "2026-10-14")
+    monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    with serve(core.app, 18807) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        try:
+            tab = browser.new_page()
+            errors: list[str] = []
+            tab.on("pageerror", lambda e: errors.append(str(e)))
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.goto(f"{base}/monitor", wait_until="domcontentloaded")
+            tab.evaluate(f"""async()=>{{document.getElementById('project').value='{PROJECT}';
+                                       document.getElementById('cut').value='2026-10-18';
+                                       await renderPeople()}}""")
+            tab.wait_for_selector("#partyAdd")
+            before = tab.text_content("#peopleLatest")
+            tab.fill("#partyName", "МОЭК")
+            tab.click("#partyAdd")
+            tab.wait_for_selector("#partiesList .party")
+            tab.wait_for_function(
+                "document.getElementById('peopleLatest').textContent.includes('МОЭК:')")
+            after = tab.text_content("#peopleLatest")
+            chip = tab.inner_text("#partiesList")
+        finally:
+            browser.close()
+    assert not errors, errors
+    assert "МОЭК:" not in before and "МОЭК" in chip
+    assert [r["name"] for r in daily.declared_parties(PROJECT)] == ["МОЭК"]
+    assert "МОЭК: Моэк ( теплосети)- монтаж ограждения" in after
+
+
+def test_the_route_names_an_unknown_project(monkeypatch):
+    from fastapi import HTTPException
+
+    import main_legacy as core
+
+    monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    with pytest.raises(HTTPException) as unknown:
+        core.monitor_declare_contractor(core.MonitorContractorRequest(project="Нет такого",
+                                                                      name="МОЭК"))
+    assert unknown.value.status_code == 404
