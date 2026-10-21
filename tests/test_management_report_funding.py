@@ -188,3 +188,24 @@ def test_the_approved_budget_and_its_deficit_come_from_the_monitor(monkeypatch):
         in found["Финансирование"].lower()
     page = report.render_html(built)
     assert "Не хватает по утверждённому бюджету" in page and "2,46 млрд ₽" in page
+    # Плашки сверху — деньги стройки пятью числами подряд (владелец, 21.10.2026).
+    money = {item["label"]: item["value"] for item in report.tiles(built)}
+    assert [money[label] for label in ("Утверждённый бюджет", "Лимит банка",
+                                       "Остаток лимита банка", "Дефицит на достройку")] == [
+        "6,20 млрд ₽", "3,97 млрд ₽", "1,50 млрд ₽", "2,46 млрд ₽"]
+    assert money["Выбрано у банка"] == report._rub(built["funding"]["draws"]["total"])
+
+
+def test_escrow_at_the_current_pace_leads():
+    # «Эскроу НЕ покрывает кредит в текущем темпе, это важнее, что по плану
+    # 0,95» (владелец, 21.10.2026).
+    _project()
+    _sales()
+    built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
+    queue = built["funding"]["escrow"]["queues"][0]
+    tile = next(item for item in report.tiles(built) if item["label"].startswith("Эскроу"))
+    assert tile["label"] == "Эскроу при нынешнем темпе"
+    assert tile["value"] == report._times(queue["keeping_pace_coverage"])
+    assert "по плану финмодели" in tile["note"]
+    found = {item["topic"]: item["text"] for item in built["findings"]}
+    assert "при нынешнем темпе эскроу очереди «1 очередь»" in found["Финансирование"].lower()
