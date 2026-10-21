@@ -287,6 +287,34 @@ def test_a_court_case_of_the_developer_is_not_mixed_with_the_general_contractor(
 
 
 
+def test_a_seed_on_the_server_fills_an_empty_register_once(tmp_path, monkeypatch):
+    # «Эти споры должны отображаться в текущем отчёте уже сами по себе»
+    # (владелец, 21.10.2026). Карточки лежат файлом на сервере, не в репозитории.
+    seed = tmp_path / "seed.json"
+    seed.write_text(json.dumps({"projects": [{"project": PROJECT, "at": "2026-10-01T00:00:00+00:00",
+                                              "cases": [{"card": CARD}]}]}, ensure_ascii=False),
+                    encoding="utf-8")
+    monkeypatch.setenv("DEVELOPAID_LEGAL_SEED", str(seed))
+    assert legal.cases("Другой проект") == []
+    got = legal.cases(PROJECT)
+    assert len(got) == 1 and got[0]["unchecked"] and got[0]["by"] == legal.SEED_AUTHOR
+    built = report.build(PROJECT, "week", "2026-10-04")
+    assert report.LEGAL_UNCHECKED in report.render_text(built)
+    # Второй раз не заносится; правка снимает пометку; удалённое не возвращается.
+    assert legal.ensure_seed(PROJECT) == 0 and len(legal.cases(PROJECT)) == 1
+    legal.save(PROJECT, dict(CARD, status="talks"), [], "Иванова", case_id=got[0]["id"])
+    assert legal.cases(PROJECT)[0]["unchecked"] is False
+    assert report.LEGAL_UNCHECKED not in report.render_text(report.build(PROJECT, "week", "2026-10-25"))
+
+
+def test_a_register_kept_by_hand_is_not_seeded(tmp_path, monkeypatch):
+    seed = tmp_path / "seed.json"
+    seed.write_text(json.dumps({"projects": [{"project": PROJECT, "cases": [{"card": CARD}]}]}),
+                    encoding="utf-8")
+    legal.save(PROJECT, CARD, [], "Иванова")
+    monkeypatch.setenv("DEVELOPAID_LEGAL_SEED", str(seed))
+    assert legal.ensure_seed(PROJECT) == 0 and len(legal.cases(PROJECT)) == 1
+
 def test_an_empty_register_is_named_not_hidden():
     # «А где юридическая сводка то?» (владелец, 21.10.2026): пустой реестр
     # прятал раздел целиком — будто споров нет.

@@ -216,7 +216,8 @@ function renderCalcLocked(reason,status){
  // человек уже вошёл. Причину и что делать называет сервер.
  if(status===402){
   box.innerHTML='<h3>Экономика этого участка пока закрыта</h3>'+
-   '<p>'+escapeHtml(reason||'Нет доступа к расчёту этого участка.')+'</p>';
+   '<p>'+escapeHtml(reason||'Нет доступа к расчёту этого участка.')+'</p>'+
+   '<button class="btn dark" onclick="openTariffs()">Тарифы и оплата</button>';
   return;
  }
  box.innerHTML='<h3>Экономика проекта — после входа через Telegram</h3>'+

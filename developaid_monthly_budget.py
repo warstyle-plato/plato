@@ -243,21 +243,49 @@ def store_budget(project: str, data: bytes, taken_at: Any,
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
         raise ValueError("дата бюджета нужна в виде ГГГГ-ММ-ДД")
     parsed = read_budget(data)
+    months = sorted(month[:7] for month in parsed["months"])
     folder = monitor._project_dir(project) / "budget"
     folder.mkdir(parents=True, exist_ok=True)
-    path = monitor._inside(folder, f"{day}.xlsx")
-    if path.exists():
-        raise FileExistsError(f"бюджет на {day} уже загружен")
+    # Файл БДДС покрывает два-три месяца, и за прошлые периоды их догружают
+    # пачкой в один день (владелец, 21.10.2026: файлы за апрель—сентябрь «не
+    # принял, сказал что октябрь уже загружен»). Имя — дата загрузки и месяцы
+    # файла: разные периоды одного дня не спорят, а тот же период заменяется,
+    # прежний файл уходит в архив `.replaced/`, а не стирается.
+    path = monitor._inside(folder, f"{day}_{months[0]}_{months[-1]}.xlsx")
+    replaced = path.exists()
+    if replaced:
+        archive = folder / ".replaced"
+        archive.mkdir(exist_ok=True)
+        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S")
+        path.rename(monitor._inside(archive, f"{path.stem}-{stamp}.xlsx"))
     path.write_bytes(data)
     return {"taken_at": day, "title": parsed["title"], "filename": filename,
-            "months": sorted(month[:7] for month in parsed["months"])}
+            "months": months, "replaced": replaced}
+
+
+def _period_end(path: Path) -> str:
+    """Последний месяц файла: из имени, у старых файлов (имя — дата) — из книги."""
+    parts = path.stem.split("_")
+    if len(parts) == 3:
+        return parts[2]
+    try:
+        return max(read_budget(path.read_bytes())["months"])[:7]
+    except (ValueError, OSError):
+        return ""
 
 
 def _budget_files(project: str, upto: str) -> list[Path]:
+    """Бюджеты, загруженные до ``upto``: сначала с более поздним периодом.
+
+    Порядок — по месяцам файла, а не по дню загрузки: догруженный в октябре
+    файл за июль—август не должен перекрывать сентябрь из файла за
+    сентябрь—октябрь. При равном периоде свежее тот, что загружен позже.
+    """
     folder = monitor._project_dir(project) / "budget"
     if not folder.exists():
         return []
-    return sorted((path for path in folder.glob("*.xlsx") if path.stem <= upto), reverse=True)
+    found = [path for path in folder.glob("*.xlsx") if path.stem[:10] <= upto]
+    return sorted(found, key=lambda path: (_period_end(path), path.stem[:10]), reverse=True)
 
 
 def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
@@ -271,7 +299,7 @@ def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
         service = values["service"]["plan"]
         construction = (None if with_service is None
                         else with_service - (service or 0.0))
-        return {"file": path.stem, "title": parsed["title"],
+        return {"file": path.stem[:10], "title": parsed["title"],
                 "plan": {"construction": construction,
                          "commercial": values["commercial"]["plan"]},
                 "articles": {key: pair["plan"] for key, pair in values["articles"].items()},
@@ -512,12 +540,12 @@ def _articles(project: str, end: datetime.date) -> dict[str, Any]:
     month = (end.replace(day=1) - datetime.timedelta(days=1)).replace(day=1).isoformat()
     label = f"{datetime.date.fromisoformat(month):%m.%Y}"
     if month not in parsed["months"]:
-        return {"known": False, "reason": f"в бюджете от {files[0].stem} нет месяца {label}"}
+        return {"known": False, "reason": f"в бюджете от {files[0].stem[:10]} нет месяца {label}"}
     for month in (month,):
         found = parsed["months"][month]["articles"]
         if not any(pair.get("fact") is not None for pair in found.values()):
             return {"known": False,
-                    "reason": f"в бюджете от {files[0].stem} не заполнен факт за {label}"}
+                    "reason": f"в бюджете от {files[0].stem[:10]} не заполнен факт за {label}"}
         rows = []
         # Месяц закрыт: у части статей факт есть. Пустая ячейка факта в
         # закрытом месяце бюджета значит «не платили», и это помечено.
@@ -529,5 +557,5 @@ def _articles(project: str, end: datetime.date) -> dict[str, Any]:
                          "fact": pair.get("fact"), "fact_blank": pair.get("fact") is None,
                          "delta": fact - pair["plan"] if pair.get("plan") is not None else None})
         rows.sort(key=lambda row: -abs(row.get("delta") or 0.0))
-        return {"known": True, "month": month, "file": files[0].stem, "rows": rows}
+        return {"known": True, "month": month, "file": files[0].stem[:10], "rows": rows}
     return {"known": False, "reason": "в бюджете нет месяца с фактом"}
