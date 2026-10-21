@@ -21,6 +21,9 @@ from __future__ import annotations
 
 import datetime
 import html
+import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +88,51 @@ def _weighted(items: list[tuple[float, float]]) -> float | None:
 def _snapshot_day(project: str, upto: datetime.date) -> str:
     path = monitor._latest(project, "schedule_fact", ".xlsx", upto.isoformat())
     return path.stem if path is not None else ""
+
+
+def _physical_notes(block: dict[str, Any]) -> list[str]:
+    """Откуда проценты и чего не хватает — одни слова для сообщения и PDF."""
+    source = block.get("source") or {}
+    out = [f"Проценты — {source.get('label') or 'из графика работ'}: то же, что "
+           "показывает Монитор на эту дату."]
+    if not block.get("fact_snapshot"):
+        out.append("Недельный ГПР-факт с процентами в Монитор не загружали: выполнение "
+                   "взято из утверждённого ГПР и решений, принятых в Мониторе.")
+    elif not block.get("fresh"):
+        out.append(f"За этот период новый график с процентами не загружали, "
+                   f"последний — от {_day(block['fact_snapshot'])}.")
+    return out
+
+
+def _gpr_source(project: str, end: datetime.date, fact_day: str) -> dict[str, Any]:
+    """Откуда проценты: тот же набор, что у Монитора (`manager._baseline_status`).
+
+    Утверждённый ГПР, поверх — свежайший ГПР-факт не позднее даты, поверх —
+    точечные решения в Мониторе (в том числе «закрыть сомнительные»). Сводка
+    называет каждый слой с датой, чтобы число можно было сверить с Монитором.
+    """
+    meta = monitor._project_dir(project) / "baseline" / "meta.json"
+    try:
+        baseline_day = str(json.loads(meta.read_text(encoding="utf-8")).get("taken_at") or "")
+    except (OSError, ValueError):
+        found = monitor._baseline_file(project)
+        baseline_day = found.stem if found is not None and found.stem[:1].isdigit() else ""
+    folder = monitor._project_dir(project) / "work_fact"
+    days = sorted(path.stem.split(".", 1)[0] for path in folder.glob("*.json")) \
+        if folder.exists() else []
+    days = [day for day in days if day <= end.isoformat()]
+    manual = len(monitor.work_facts(project, end.isoformat()))
+    label = (f"ГПР-факт от {_day(fact_day)}" if fact_day else
+             f"утверждённый ГПР{' от ' + _day(baseline_day) if baseline_day else ''}")
+    if manual:
+        label += (f" и решения в Мониторе по {manual} "
+                  f"{_plural(manual, 'работе', 'работам', 'работам')} (последнее — "
+                  f"{_day(days[-1])})")
+    return {"baseline": baseline_day or None, "fact": fact_day or None,
+            "manual_works": manual, "manual_last": days[-1] if days else None,
+            "day": max(filter(None, [fact_day, days[-1] if days else "", baseline_day]),
+                       default=""),
+            "label": label}
 
 
 def _dated(baseline: dict[str, Any]) -> list[tuple[str, dict[str, Any], float]]:
@@ -184,15 +232,12 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
     except FileNotFoundError:
         return _missing("Не загружен утверждённый ГПР проекта.")
     now_day = _snapshot_day(project, bounds["end"])
-    if not now_day:
-        return _missing(
-            "Не загружен ни один ГПР-факт с процентами выполнения "
-            f"на {bounds['end']:%d.%m.%Y}.")
+    source = _gpr_source(project, bounds["end"], now_day)
     works = _dated(baseline)
     now = _progress(works, manager._baseline_status(project, bounds["end"].isoformat()),
                     bounds["end"])
     if not now["works"]:
-        return _missing(f"В ГПР-факте от {now_day} нет процентов выполнения "
+        return _missing(f"В графике ({source['label']}) нет процентов выполнения "
                         "ни у одной работы.")
     before_day = _snapshot_day(project, bounds["before"])
     before = (_progress(works, manager._baseline_status(project, bounds["before"].isoformat()),
@@ -202,11 +247,14 @@ def physical(project: str, kind: str, end: Any) -> dict[str, Any]:
                   if before and before["fact"] is not None else None)
     return {
         "state": "ok",
-        "snapshot": now_day,
+        # На какой день состояние графика: ГПР-факт или решение в Мониторе.
+        "snapshot": source["day"],
+        "fact_snapshot": now_day or None,
+        "source": source,
         "snapshot_before": before_day or None,
         # Новый ГПР-факт за период не пришёл — прирост ноль не наблюдён,
         # а просто не измерен заново.
-        "fresh": now_day >= bounds["start"].isoformat(),
+        "fresh": bool(now_day) and now_day >= bounds["start"].isoformat(),
         "plan": now["plan"],
         "fact": now["fact"],
         "lag": lag,
@@ -512,7 +560,8 @@ def sales(sales_project: str, kind: str, end: Any,
           data_dir: Path | None = None) -> dict[str, Any]:
     """Продажи за период и с начала квартала против плана ФМ и банка."""
     if not str(sales_project or "").strip():
-        return _missing("Проект не связан с отчётом о продажах.")
+        return _missing("Проект не связан с отчётом о продажах: выберите его "
+                        "на странице «Сводка руководству».")
     bounds = period_bounds(kind, end)
     kept = sales_store.load(data_dir or sales_store.default_dir(), sales_project)
     sources = kept.get("sources") or {}
@@ -659,10 +708,72 @@ def schedule(dashboard: dict[str, Any]) -> dict[str, Any]:
             "delay_days": block.get("rnv_delay_days")}
 
 
-def build(project: str, kind: str, end: Any, sales_project: str = "",
+# --------------------------------------------------------------------------
+# Связь проекта Монитора с проектом отчёта о продажах
+# --------------------------------------------------------------------------
+#
+# Склады разные и имена в них разные («Гродненская» в Мониторе, «ЖК
+# Гродненская» в отчёте о продажах), поэтому связь — явная запись, сделанная
+# человеком один раз, а не догадка по имени. Лежит на сервере в каталоге
+# проекта Монитора: её читают страница, PDF и рассылка, у всех одна.
+
+_SALES_LINK = "sales_link.json"
+
+
+def sales_projects(data_dir: Path | None = None) -> list[str]:
+    """Проекты, по которым загружен отчёт о продажах."""
+    return [item["project"] for item in sales_store.projects(data_dir or sales_store.default_dir())
+            if str(item.get("project") or "").strip()]
+
+
+def sales_link(project: str) -> dict[str, Any] | None:
+    """Связь с отчётом о продажах; ``None`` — её ещё не задавали.
+
+    Пустое ``sales_project`` в записи — решение «продаж в сводке нет», а не
+    отсутствие решения.
+    """
+    place = monitor._project_dir(project) / _SALES_LINK
+    if not place.exists():
+        return None
+    try:
+        got = json.loads(place.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    if not isinstance(got, dict) or not isinstance(got.get("sales_project"), str):
+        return None
+    return got
+
+
+def link_sales(project: str, sales_project: str, author: str,
+               data_dir: Path | None = None) -> dict[str, Any]:
+    """Запомнить, какой проект отчёта о продажах у проекта Монитора."""
+    name = str(sales_project or "").strip()
+    if name and name not in sales_projects(data_dir):
+        raise ValueError(f"В отчёте о продажах нет проекта «{name}».")
+    record = {"sales_project": name, "by": author,
+              "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+    folder = monitor._project_dir(project)
+    # Два воркера: запись через временный файл и замену, читатель видит
+    # либо старую связь, либо новую, но не половину файла.
+    handle, tmp = tempfile.mkstemp(dir=folder, prefix=".sales_link.", suffix=".tmp")
+    with os.fdopen(handle, "w", encoding="utf-8") as out:
+        json.dump(record, out, ensure_ascii=False)
+    os.replace(tmp, folder / _SALES_LINK)
+    return record
+
+
+def build(project: str, kind: str, end: Any, sales_project: str | None = None,
           sales_dir: Path | None = None) -> dict[str, Any]:
-    """Сводка за неделю или месяц по проекту мониторинга ``project``."""
+    """Сводка за неделю или месяц по проекту мониторинга ``project``.
+
+    ``sales_project`` не передан — берётся сохранённая связь проекта.
+    """
     bounds = period_bounds(kind, end)
+    declined = False
+    if sales_project is None:
+        link = sales_link(project)
+        sales_project = (link or {}).get("sales_project") or ""
+        declined = link is not None and not sales_project
     blocks: dict[str, Any] = {}
     # Панель Монитора — один расчёт на всю сводку: срок и финансирование.
     try:
@@ -688,6 +799,9 @@ def build(project: str, kind: str, end: Any, sales_project: str = "",
             # причина должна дойти до читателя, а не остаться в логе.
             blocks[name] = _missing(
                 f"Блок не собран: {type(exc).__name__}: {exc}")
+    if declined:
+        blocks["sales"] = _missing("Продажи в сводку не входят: так выбрано на "
+                                   "странице «Сводка руководству».")
     blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
@@ -728,7 +842,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                 text += _sentence(f" За {period} отставание "
                                   f"{'сократилось' if change > 0 else 'выросло'} на "
                                   f"{_pp(abs(change))[1:]}")
-        add("Стройка", text, f"ГПР-факт от {_day(block['snapshot'])}",
+        add("Стройка", text, block["source"]["label"],
             "bad" if lag < -0.02 else "")
     else:
         add("Стройка", block.get("reason") or "Данных нет.", "", "missing")
@@ -770,7 +884,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             text += (f". Без прироста за {period} при идущем плане — "
                      f"{breakdown['stalled_total']} "
                      f"{_plural(breakdown['stalled_total'], 'работа', 'работы', 'работ')}")
-        add("Отстающие работы", _sentence(text), f"ГПР-факт от {_day(stroika['snapshot'])}",
+        add("Отстающие работы", _sentence(text), stroika["source"]["label"],
             "bad")
 
     block = report.get("schedule") or {}
@@ -1107,9 +1221,7 @@ def render_text(report: dict[str, Any]) -> str:
         else:
             lines.append("Прирост за период посчитать не из чего: на начало "
                          "периода не было ни одного графика с процентами выполнения.")
-        if not block.get("fresh"):
-            lines.append(f"Внимание: за этот период новый график с процентами "
-                         f"не загружали, последний — от {_day(block['snapshot'])}.")
+        lines.extend(esc(line) for line in _physical_notes(block))
     else:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
@@ -1835,14 +1947,13 @@ def render_html(report: dict[str, Any]) -> str:
         if block.get("delta") is not None:
             out.append(f"<p class='note'>За {PERIODS[report['kind']]} выполнение "
                        f"{'выросло' if block['delta'] >= 0 else 'снизилось'} на "
-                       f"{_pp(abs(block['delta']))[1:]} Проценты — из графика работ от "
-                       f"{_day(block['snapshot'])}.</p>")
+                       f"{_pp(abs(block['delta']))[1:]}</p>")
         else:
             out.append("<p class='note'>Прирост за период посчитать не из чего: на начало "
                        "периода не было графика с процентами выполнения.</p>")
-        if not block.get("fresh"):
-            out.append(f"<p class='note warn'>За этот период новый график с процентами "
-                       f"не загружали, последний — от {_day(block['snapshot'])}.</p>")
+        notes = _physical_notes(block)
+        out.append(f"<p class='note'>{esc(notes[0])}</p>")
+        out.extend(f"<p class='note warn'>{esc(line)}</p>" for line in notes[1:])
         out.append(_physical_chart(block))
         out.append(_breakdown_html(block.get("breakdown") or {}, report["kind"]))
     else:

@@ -839,6 +839,30 @@ def snapshots(project: str) -> dict[str, list[str]]:
     }
 
 
+def projects() -> list[dict[str, Any]]:
+    """Проекты, по которым в Мониторе что-то лежит, и что именно.
+
+    Каталог создаётся и при чтении (`_project_dir`), поэтому проект — это
+    каталог хотя бы с одним непустым разделом, а не просто каталог. Имя на
+    диске прошло `_slug`: пробелы стали «-». Для списка они возвращаются
+    пробелами, если такое имя ведёт в тот же каталог; иначе имя — как на диске.
+    """
+    if not _SNAPSHOT_DIR.exists():
+        return []
+    out = []
+    for folder in sorted(_SNAPSHOT_DIR.iterdir(), key=lambda item: item.name.lower()):
+        if not folder.is_dir() or folder.name.startswith("."):
+            continue
+        kinds = sorted(part.name for part in folder.iterdir()
+                       if part.is_dir() and any(part.iterdir()))
+        if not kinds:
+            continue
+        label = folder.name.replace("-", " ")
+        out.append({"project": label if _slug(label) == folder.name else folder.name,
+                    "data": kinds})
+    return out
+
+
 def trend(project: str, cut: Any, programme: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     points = []
     for day in snapshots(project)["estimate"]:

@@ -133,6 +133,10 @@ def test_notes_on_the_rendered_page(monkeypatch):
 
     import main_legacy as core
 
+    from test_management_report_model import _gpr_book
+
+    # Проект выбирается из списка Монитора — у него должен быть хоть график.
+    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
     monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
     with serve(core.app, PORT) as base, sync_playwright() as pw:
         browser = pw.chromium.launch(executable_path=str(chrome))
@@ -144,7 +148,8 @@ def test_notes_on_the_rendered_page(monkeypatch):
             # Записи живут на странице «Сводка руководству», а не в Мониторе
             # стройки (владелец, 20.10.2026).
             tab.goto(f"{base}/report", wait_until="domcontentloaded")
-            tab.fill("#project", PROJECT)
+            tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")
+            tab.select_option("#project", PROJECT)
             tab.click("#reportBtn")
             tab.wait_for_function(
                 "document.getElementById('notesList').textContent.includes('Записей пока нет')")
