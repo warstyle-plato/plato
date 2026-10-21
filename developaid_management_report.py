@@ -34,6 +34,7 @@ import developaid_monthly_budget as monthly_budget
 import developaid_project_notes as project_notes
 import developaid_site_photos as site_photos
 import developaid_report_charts as charts
+import developaid_report_gantt as report_gantt
 from market_search import contracting, sales_store
 
 PERIODS = {"week": "неделю", "month": "месяц"}
@@ -436,12 +437,16 @@ def _sums(rows: list[dict[str, Any]], bounds: dict[str, datetime.date],
     return out
 
 
-def _monitor_dashboard(project: str, end: datetime.date) -> dict[str, Any]:
-    """Панель Монитора на конец периода: срок, финансирование — его расчётом."""
+def _monitor_view(project: str, end: datetime.date) -> dict[str, Any]:
+    """Срез Монитора на конец периода — со всеми слоями, как на его странице."""
     import developaid_monitor_page  # noqa: F401 — ставит слои среза, как на странице
 
-    view = monitor.build(project, cut=end.isoformat(), upto=end.isoformat())
-    return view.get("dashboard") or {}
+    return monitor.build(project, cut=end.isoformat(), upto=end.isoformat())
+
+
+def _monitor_dashboard(project: str, end: datetime.date) -> dict[str, Any]:
+    """Панель Монитора на конец периода: срок, финансирование — его расчётом."""
+    return _monitor_view(project, end).get("dashboard") or {}
 
 
 def _monitor_funding(project: str, end: datetime.date) -> dict[str, Any]:
@@ -708,6 +713,13 @@ def schedule(dashboard: dict[str, Any]) -> dict[str, Any]:
             "delay_days": block.get("rnv_delay_days")}
 
 
+def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
+    """Сроки работ по корпусам — из дерева графика Монитора (`report_gantt`)."""
+    if dashboard.get("error"):
+        return _missing(f"Монитор не собрал срез: {dashboard['error']}")
+    return report_gantt.model((view.get("schedule") or {}).get("management") or [])
+
+
 # --------------------------------------------------------------------------
 # Связь проекта Монитора с проектом отчёта о продажах
 # --------------------------------------------------------------------------
@@ -775,15 +787,19 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
         sales_project = (link or {}).get("sales_project") or ""
         declined = link is not None and not sales_project
     blocks: dict[str, Any] = {}
-    # Панель Монитора — один расчёт на всю сводку: срок и финансирование.
+    # Срез Монитора — один расчёт на всю сводку: срок, график по корпусам и
+    # финансирование.
     try:
-        dashboard = _monitor_dashboard(project, bounds["end"])
+        view = _monitor_view(project, bounds["end"])
+        dashboard = view.get("dashboard") or {}
     except Exception as exc:  # noqa: BLE001 — причина уходит в сводку
+        view = {}
         dashboard = {"error": f"{type(exc).__name__}: {exc}"}
     for name, collect in (
             ("physical", lambda: physical(project, kind, bounds["end"])),
             ("crew", lambda: crew(project, kind, bounds["end"])),
             ("schedule", lambda: schedule(dashboard)),
+            ("gantt", lambda: gantt(view, dashboard)),
             ("budget", lambda: budget(project, kind, bounds["end"])),
             ("sales", lambda: sales(sales_project, kind, bounds["end"], sales_dir)),
             ("funding", lambda: funding(project, kind, bounds["end"], sales_project,
@@ -902,6 +918,17 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             "bad" if late else "")
     elif block.get("reason"):
         add("Срок", block["reason"], "", "missing")
+    late = [corpus for corpus in (report.get("gantt") or {}).get("corpora") or []
+            if (corpus.get("delta_days") or 0) > 0]
+    if late:
+        worst = max(late, key=lambda corpus: corpus["delta_days"])
+        when = ("по работам с известным темпом" if worst.get("forecast_partial")
+                else f"работы по прогнозу закончатся {_day(worst['forecast_finish'])}")
+        add("Корпуса", f"Сильнее всех опаздывает {worst['name']}: {when} — на "
+            f"{worst['delta_days']} дн. позже утверждённого графика"
+            + (f"; всего с опозданием {len(late)} "
+               f"{_plural(len(late), 'корпус', 'корпуса', 'корпусов')}." if len(late) > 1 else "."),
+            "график Монитора по корпусам, прогноз по темпу", "bad")
 
     block = report.get("budget") or {}
     if block.get("state") in {"ok", "partial"}:
@@ -1245,6 +1272,8 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(esc(f"Отстаёт: {row['name']}"
                          + (f" ({row['object']})" if row["object"] else "")
                          + f" — {_pct(row['fact'])} при плане {_pct(row['plan'])}."))
+
+    lines.extend(esc(line) for line in report_gantt.text_lines(report.get("gantt") or {}))
 
     lines += ["", "<b>Продажи</b>"]
     block = report.get("sales") or {}
@@ -1659,6 +1688,19 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
+def _gantt_html(report: dict[str, Any]) -> str:
+    block = report.get("gantt") or {}
+    out = ["<h3>Сроки работ по корпусам</h3>"]
+    if block.get("state") != "ok":
+        out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
+        return "".join(out)
+    rnv = report.get("schedule") if (report.get("schedule") or {}).get("state") == "ok" else {}
+    out.append(report_gantt.svg(block, report.get("end"), rnv))
+    out.extend(f"<p class='note'>{html.escape(line)}</p>"
+               for line in report_gantt.notes(block, rnv))
+    return "".join(out)
+
+
 def _tiles_html(items: list[dict[str, str]]) -> str:
     esc = html.escape
     return ("<div class='tiles'>" + "".join(
@@ -1961,6 +2003,7 @@ def render_html(report: dict[str, Any]) -> str:
     out.append("<h3>Люди на площадке</h3>")
     out.append(_crew_html(report.get("crew") or {}, report["kind"]))
     out.append(_works_html(report.get("crew") or {}, report["kind"]))
+    out.append(_gantt_html(report))
     block = report.get("schedule") or {}
     if block.get("state") == "ok" and block.get("forecast"):
         delay = block.get("delay_days")
