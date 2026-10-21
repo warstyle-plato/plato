@@ -170,6 +170,28 @@ def unsubscribe(chat_id: int, project: str | None = None) -> list[str]:
     return gone
 
 
+def rename_project(source: str, target: str) -> int:
+    """Проект слит в другой (`developaid_monitor_merge`): подписчики и ссылка
+    старого имени переходят к главному; сколько получателей перешло."""
+    moved = 0
+    with _locked():
+        book = _read(_subscribers(), {})
+        people = book.pop(source, [])
+        have = {int(row["chat_id"]) for row in book.get(target, [])}
+        fresh = [row for row in people if int(row["chat_id"]) not in have]
+        if people:
+            book[target] = book.get(target, []) + fresh
+            moved = len(fresh)
+            _write(_subscribers(), book)
+        invites = _read(_invites(), {})
+        if any(value.get("project") == source for value in invites.values()):
+            # Разосланная ссылка старого имени продолжает подписывать — на главный.
+            _write(_invites(), {token: (dict(value, project=target)
+                                        if value.get("project") == source else value)
+                                for token, value in invites.items()})
+    return moved
+
+
 def subscribers(project: str) -> list[dict[str, Any]]:
     return list(_read(_subscribers(), {}).get(project, []))
 
