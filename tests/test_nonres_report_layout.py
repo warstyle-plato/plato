@@ -402,14 +402,24 @@ def walk() -> dict:
             page = engine.new_page(viewport={"width": 1440, "height": 900})
             errors: list[str] = []
             page.on("pageerror", lambda e: errors.append(str(e)))
+            # После каждого шага — конец расчёта (`wait_for_result`), а не
+            # признак в итоге. Признак «вёрстка объекта» истинен уже у итога
+            # шага перед сменой стратегии (ДДУ — тоже рамка объекта): успей
+            # тот ответ до правки поля, ожидание кончалось сразу, и страница
+            # читалась по ДДУ, а движок сверялся по аренде.
             page.goto(base, wait_until="domcontentloaded")
-            page.wait_for_function("() => typeof lastResult !== 'undefined' && lastResult")
+            browser.wait_for_result(page)
             out["housing"] = page.evaluate(READ)
             page.evaluate(SET, ["offices_enabled", True])
-            page.wait_for_function("() => lastResult && lastResult.revenue.offices > 0")
+            browser.wait_for_result(page)
+            assert page.evaluate("() => lastResult.revenue.offices > 0")
             page.evaluate("() => { applyProjectKind('nonresidential'); closeProjectKindDialog(); }")
+            browser.wait_for_result(page)
             page.evaluate(SET, ["offices_strategy", "income"])
-            page.wait_for_function("() => lastResult.report.layout && lastResult.report.layout.kind === 'object'")
+            browser.wait_for_result(page)
+            # Аренда — без проектного финансирования: итог ДДУ здесь не пройдёт.
+            assert page.evaluate("() => lastResult.report.layout.kind === 'object'"
+                                 " && lastResult.report.layout.project_finance === false")
             state = page.evaluate(READ)
             state["engine"] = _post(base, {"inputs": state["inputs"], "tep": state["tep"], "rates": []})
             out["object"] = state
