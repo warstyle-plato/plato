@@ -36,7 +36,9 @@ CHAT_ID = 5150
 
 # Настоящие вводные движка: гейт проверяется на работающем расчёте, иначе
 # «401» и «падение от неполных данных» неотличимы.
-MODEL = {"inputs": dict(core.DEFAULT_INPUTS), "tep": {k: dict(v) for k, v in core.TEP_DEFAULT.items()},
+# С 21.10.2026 расчёт открывается на участок (`access_rights`): номер в вводных
+# — первый, бесплатный участок вошедшего.
+MODEL = {"inputs": {**core.DEFAULT_INPUTS, "cadastral_numbers": "50:20:0010101:5150"}, "tep": {k: dict(v) for k, v in core.TEP_DEFAULT.items()},
          "rates": []}
 
 
