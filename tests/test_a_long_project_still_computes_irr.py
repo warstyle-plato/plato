@@ -19,11 +19,20 @@ sys.path.insert(0, str(ROOT))
 
 @pytest.fixture(scope="module")
 def core():
+    # Своя копия движка кладётся в `sys.modules` только на время файла: иначе
+    # соседние проверки (права на расчёт) берут её вместо движка приложения.
     spec = importlib.util.spec_from_file_location("developaid_core", ROOT / "main_legacy.py")
     module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get("developaid_core")
     sys.modules["developaid_core"] = module
-    spec.loader.exec_module(module)
-    return module
+    try:
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        if previous is None:
+            sys.modules.pop("developaid_core", None)
+        else:
+            sys.modules["developaid_core"] = previous
 
 
 def test_a_three_hundred_month_series_does_not_divide_by_zero(core):
