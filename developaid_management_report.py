@@ -711,7 +711,23 @@ def schedule(dashboard: dict[str, Any]) -> dict[str, Any]:
             "forecast": block.get("forecast_finish"),
             "known": block.get("forecast_known", True),
             "source": block.get("forecast_source") or "",
-            "delay_days": block.get("rnv_delay_days")}
+            "delay_days": block.get("rnv_delay_days"),
+            "stalled": list(block.get("stalled") or [])}
+
+
+def _stalled_words(block: dict[str, Any]) -> str:
+    """Работы, которые почти стоят: прогноз ввода их не учитывает (Монитор)."""
+    items = block.get("stalled") or []
+    if not items:
+        return ""
+    shown = ", ".join(f"«{item['name']}»" + (f" ({item['object']})" if item.get("object") else "")
+                      for item in items[:3])
+    more = len(items) - 3
+    return (f"Прогноз не учитывает {len(items)} "
+            f"{_plural(len(items), 'работу', 'работы', 'работ')}, которые почти стоят: "
+            f"актов по ним так мало, что при нынешнем темпе они растянулись бы на годы, "
+            f"и такой темп не продлевается в будущее — {shown}"
+            + (f" и ещё {more}" if more > 0 else "") + ".")
 
 
 def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
@@ -917,6 +933,8 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         else:
             text = (f"Прогноз ввода при нынешнем темпе — {_day(block['forecast'])}; "
                     "утверждённого срока ввода в данных Монитора нет, сравнить не с чем.")
+        if block.get("stalled"):
+            text += " " + _stalled_words(block)
         add("Срок", text, "прогноз Монитора по темпу работ",
             "bad" if late else "")
     elif block.get("reason"):
@@ -2037,6 +2055,8 @@ def render_html(report: dict[str, Any]) -> str:
                    f"{_day(block['forecast'])}"
                    + (f" — на {delay:.0f} дн. позже." if isinstance(delay, (int, float))
                       and delay > 0 else ".") + "</p>")
+        if block.get("stalled"):
+            out.append(f"<p class='note warn'>{html.escape(_stalled_words(block))}</p>")
 
     out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 

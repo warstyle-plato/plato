@@ -277,6 +277,7 @@ def doubts(project: str, cut: Any) -> dict[str, Any]:
     seeded = forecast.current_seeds(rows, cut_date)
     seeds = seeded["seeds"]
     forecasts = seeded["forecasts"]
+    stalled_ids = {item["id"] for item in seeded.get("stalled") or []}
 
     suspicious: list[dict[str, Any]] = []
     for row in rows:
@@ -292,7 +293,9 @@ def doubts(project: str, cut: Any) -> dict[str, Any]:
             continue
         predicted = forecasts.get(tid)
         local_delay = (predicted - plan_finish).days if predicted else None
-        if tid not in seeds and (local_delay or 0) < 60:
+        # Работа, которая почти стоит, прогноза по темпу не получает, но как
+        # раз она — первый кандидат в сомнительные: «срок прошёл, актов нет».
+        if tid not in seeds and (local_delay or 0) < 60 and tid not in stalled_ids:
             continue
 
         ratio = row.get("rss_accepted_ratio")
