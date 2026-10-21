@@ -687,6 +687,33 @@ def monitor_report_link(req: MonitorReportLinkRequest) -> dict[str, Any]:
     return _monitor_report_projects()
 
 
+class MonitorMergeRequest(BaseModel):
+    source: str
+    target: str
+    apply: bool = False
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/merge", include_in_schema=False)
+def monitor_merge(req: MonitorMergeRequest) -> dict[str, Any]:
+    """Один проект под двумя именами: план объединения, с ``apply`` — объединить.
+
+    Ничего в главном проекте не перезаписывается; старое имя остаётся
+    псевдонимом (`developaid_monitor_merge`).
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    import developaid_monitor_merge as monitor_merge_files
+    try:
+        return monitor_merge_files.merge(req.source, req.target,
+                                         _monitor_note_author(req.session, req.key),
+                                         apply=req.apply)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 @app.post("/monitor/report", include_in_schema=False)
 def monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
     """Сводка руководству: числа, текст для бота и разметка документа."""
