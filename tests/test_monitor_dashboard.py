@@ -351,3 +351,48 @@ def test_the_need_of_an_article_is_counted_from_the_cut_and_adds_up():
     from developaid_monitor_page import MONITOR_PAGE
     assert "<th>Потребность после среза</th><th>Из своего лимита</th>" in MONITOR_PAGE
     assert "каждая строка складывается" in MONITOR_PAGE
+
+
+def test_chapter_one_counts_when_the_finance_book_has_it(tmp_path):
+    """Глава 1 РСС — тоже деньги стройки (владелец, 21.10.2026).
+
+    Итог финкниги — «глава 2, 3»; глава 1 прибавляется своей строкой. Без неё
+    главы остаются 2–3 и у РСС: оплаченное по главе 1 против бюджета без неё
+    дало бы ложный дефицит.
+    """
+    from openpyxl import Workbook
+
+    def book(with_one: bool) -> Path:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Расчет стоимости строительства"
+        ws.cell(row=9, column=7, value="Утвержденная фин.модель проекта")
+        ws.cell(row=8, column=11, value="Средства на завершение согласно бюджету")
+        ws.cell(row=8, column=9, value="Оплачено по состоянию")
+        row = 10
+        if with_one:
+            ws.cell(row=row, column=1, value="1")
+            ws.cell(row=row, column=7, value=500.0)
+            ws.cell(row=row, column=9, value=100.0)
+            ws.cell(row=row, column=11, value=400.0)
+            row += 1
+        ws.cell(row=row, column=2, value="Всего инвестиционные расходы глава 2, 3")
+        ws.cell(row=row, column=7, value=6000.0)
+        ws.cell(row=row, column=9, value=2000.0)
+        ws.cell(row=row, column=11, value=4000.0)
+        path = tmp_path / f"finance_{with_one}.xlsx"
+        wb.save(path)
+        return path
+
+    full = dashboard._read_finance_baseline(book(True))
+    assert full["chapters"] == ["1", "2", "3"]
+    assert (full["approved"], full["paid_at_baseline"], full["completion_need_at_baseline"]) \
+        == (6500.0, 2100.0, 4400.0)
+    old = dashboard._read_finance_baseline(book(False))
+    assert old["chapters"] == ["2", "3"] and old["approved"] == 6000.0
+    estimate = {"by_code": {"1": {"estimate": 50.0, "paid": 5.0, "contracted": 7.0},
+                            "2": {"estimate": 100.0, "paid": 10.0, "contracted": 20.0},
+                            "3": {"estimate": 30.0, "paid": 3.0, "contracted": 4.0}}}
+    assert dashboard._rss_ch23(estimate, full["chapters"])["limit"] == 180.0
+    assert dashboard._rss_ch23(estimate, old["chapters"])["limit"] == 130.0
+    assert dashboard.chapters_label(full["chapters"]) == "1–3"

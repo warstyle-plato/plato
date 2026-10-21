@@ -243,14 +243,14 @@ function fundingStructure(f,hasBook,approved,paid,remainingBudget){
  // (владелец, 01.09.2026).
  html+='<details class="fundmore" open><summary>Откуда эти числа</summary>';
  html+='<div class="fundblock"><div class="muted" style="margin-bottom:6px"><b>РСС</b> — утверждённый банком бюджет всей стройки по статьям; суммы ПФ в нём нет, она из НКЛ</div>'
-  +row('Общая сметная стоимость глав 2–3',money2(f.bank_limit),'колонка РСС, а не лимит кредитной линии')
+  +row(`Общая сметная стоимость глав ${f.chapters_label||'2–3'}`,money2(f.bank_limit),'колонка РСС, а не лимит кредитной линии')
   +row('Оплачено по реестру',money2(f.paid_actual!=null?f.paid_actual:paid))
-  +row('Остаток лимитов на завершение',money2(f.bank_remaining),'по статьям глав 2–3: лимит минус оплачено; это и есть то, что банк готов дать')
+  +row('Остаток лимитов на завершение',money2(f.bank_remaining),`по статьям глав ${f.chapters_label||'2–3'}: лимит минус оплачено; это и есть то, что банк готов дать`)
   +row('Резерв 2.8/2.9',money2(f.reserve),f.reserve_exhaustion?`исчерпание ${dt(f.reserve_exhaustion)}`:'')
   +(Number(f.opening_article_deficit)>0?row('Статьи с исчерпанным лимитом на срез',money2(f.opening_article_deficit),'их не закрывает свободный лимит соседней статьи','bad'):'')
   +'</div>';
  html+='<div class="fundblock"><div class="muted" style="margin:10px 0 6px"><b>Утверждённый бюджет</b> — внутренний контур</div>'
-  +(hasBook?row('Утверждённый бюджет глав 2–3',money2(approved))
+  +(hasBook?row(`Утверждённый бюджет глав ${f.chapters_label||'2–3'}`,money2(approved))
      +row('Оплачено',money2(paid))
      +row('Остаток потребности по утверждённому бюджету',money2(remainingBudget),'это потребность, а не деньги')
    :'<div class="notice">Нет финансовой книги — утверждённый бюджет сравнивать не с чем.</div>')

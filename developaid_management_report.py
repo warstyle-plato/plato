@@ -1186,7 +1186,8 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     lines = []
     limit = block.get("limit") or {}
     if limit.get("known"):
-        lines.append(f"Лимит банка по РСС (главы 2–3): {_rub(limit.get('bank_limit'))}, "
+        lines.append(f"Лимит банка по РСС (главы {limit.get('chapters_label') or '2–3'}): "
+                     f"{_rub(limit.get('bank_limit'))}, "
                      f"оплачено с начала проекта {_rub(limit.get('paid_actual'))}, "
                      f"остаток лимитов статей {_rub(limit.get('bank_remaining'))}, "
                      f"резерв {_rub(limit.get('reserve'))}.")
@@ -1239,7 +1240,7 @@ def _funding_html(report: dict[str, Any]) -> str:
     limit = block.get("limit") or {}
     if limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
-        out.append(_table(["Лимит банка (РСС, главы 2–3)", "Сумма"], [
+        out.append(_table([f"Лимит банка (РСС, главы {limit.get('chapters_label') or '2–3'})", "Сумма"], [
             ["Лимит", _rub(limit.get("bank_limit"))],
             ["Оплачено с начала проекта", _rub(limit.get("paid_actual"))],
             ["Остаток лимитов статей", _rub(limit.get("bank_remaining"))],
