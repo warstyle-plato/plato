@@ -1017,6 +1017,11 @@ def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
     memory = _platon_memory(chat_id)
     history = memory["history"]
     document = memory["document"]
+    # Платон пересчитывает модель проекта на каждом вопросе — это расчёт
+    # участка. Ответ по одному документу без проекта (ниже) идёт на умолчаниях
+    # движка, участка в нём нет, и права он не тратит.
+    if context and not _bot_calc_allowed(chat_id, context, "Ответ Платона"):
+        return
     if not context and document:
         # Прислан только документ, проекта ещё нет: Платон отвечает по
         # документу, а модель стоит на умолчаниях. Говорим это вслух, чтобы
@@ -1204,6 +1209,30 @@ def _apply_proposal(chat_id: int) -> dict[str, Any]:
     return {"changes": changes, "url": new_url, "error": error}
 
 
+def _bot_calc_allowed(chat_id: int, context: dict[str, Any], what: str) -> bool:
+    """Право на участок для расчёта из бота — то же решение, что у страницы
+    (`core.calc_access_for_chat`). Отказ уходит человеку своими словами."""
+    # Участок контекста бота: номера сессии, а без них — проект по имени (ТЭП,
+    # присланный файлом или собранный диалогом, во вводных имени не несёт).
+    inputs = dict(context.get("inputs") or {})
+    name = str(context.get("project_name") or "").strip()
+    if name and not inputs.get("_manual_tep_import"):
+        inputs["_manual_tep_import"] = {"project_name": name}
+    numbers = list((context.get("session_data") or {}).get("cad") or [])
+    try:
+        core.calc_access_for_chat(chat_id, what, inputs=inputs,
+                                  cadastral=None if core._project_cadastral_numbers(inputs)
+                                  else (numbers or None),
+                                  surface="telegram")
+    except HTTPException as exc:
+        reason = str(exc.detail)
+        if reason.startswith(f"{what}: "):
+            reason = reason[len(what) + 2:]
+        _send_message(chat_id, f"<b>{html.escape(what)} — нет доступа.</b>\n{html.escape(reason)}")
+        return False
+    return True
+
+
 def _send_model_archive(chat_id: int) -> None:
     """Собирает Excel-модель по последнему расчёту чата и присылает её.
 
@@ -1219,6 +1248,8 @@ def _send_model_archive(chat_id: int) -> None:
             "Сначала посчитайте проект: отправьте кадастровые номера, адрес "
             "или заполненный Excel-шаблон.",
         )
+        return
+    if not _bot_calc_allowed(chat_id, context, "Расчёт Excel-модели"):
         return
     _send_message(chat_id, "<i>Собираю Excel-модель…</i>")
     try:

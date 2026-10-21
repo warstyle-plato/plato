@@ -151,6 +151,10 @@ class CalculateRequest(BaseModel):
     # анализа и не нужен при каждом нажатии «пересчитать».
     sensitivity: bool = True
     sensitivity_metric: str = "llcr"
+    # Вводные человека считаются после входа и при праве на участок — тем же
+    # решением, что у `/calculate` (`require_calc_access`).
+    session: str = ""
+    access_key: str = ""
 
 
 def install(app: FastAPI) -> None:
@@ -211,6 +215,10 @@ def install(app: FastAPI) -> None:
     def developaid_v2_calculate(req: CalculateRequest) -> JSONResponse:
         """Вводные → живой движок → ProjectResult. Один вызов на один расчёт."""
         core = _core()
+        own_numbers = core._project_cadastral_numbers(req.inputs or {})
+        core.require_calc_access(req.session, req.access_key, "Расчёт экономики",
+                                 inputs=req.inputs,
+                                 cadastral=None if own_numbers else (req.cadastral_numbers or None))
         try:
             payload = project_result.build_project_result(
                 core,

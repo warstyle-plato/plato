@@ -82,6 +82,8 @@ class GoalSeekRequest(BaseModel):
     phasing: dict[str, Any] = {}
     variable: str = "purchase_price_mln"
     target_llcr: float = _TARGET_LLCR
+    session: str = ""
+    access_key: str = ""
 
 
 def _asset(name: str, media_type: str) -> Response:
@@ -198,6 +200,9 @@ def install(app, core) -> None:
         уходит в карточку решения, а карточка переживает свои вводные.
         """
 
+        # Подбор — многократный расчёт участка: за входом и правом на участок.
+        core.require_calc_access(request.session, request.access_key, "Подбор цены",
+                                 inputs=request.inputs)
         return await run_in_threadpool(_goal_seek, core, request)
 
 

@@ -145,6 +145,10 @@
   function pageTep() { return typeof tep === 'undefined' ? {} : tep; }
   function pageRates() { return typeof rates === 'undefined' ? [] : rates; }
   function pagePhasing() { return typeof phasing === 'undefined' ? {} : phasing; }
+  // Подбор цены — тот же расчёт участка: сервер пускает его по сессии входа
+  // и праву на участок, как `/calculate` страницы.
+  function pageSession() { return typeof activeSession === 'function' ? activeSession() : ''; }
+  function pageAccessKey() { return typeof projectsAdminKey === 'undefined' ? '' : projectsAdminKey; }
 
   var fmtMoney = function (v) { return typeof money === 'function' ? money(v) : String(v); };
   var fmtMult = function (v) { return typeof mult === 'function' ? mult(v) : String(v); };
@@ -1333,7 +1337,8 @@
       body: JSON.stringify({
         inputs: pageInputs(), tep: pageTep(),
         rates: pageRates(), phasing: pagePhasing(),
-        variable: 'purchase_price_mln', target_llcr: TARGET_LLCR
+        variable: 'purchase_price_mln', target_llcr: TARGET_LLCR,
+        session: pageSession(), access_key: pageAccessKey()
       })
     }).then(function (response) { return response.json(); })
       .then(function (data) { goalSeek = data; goalSeekStale = false; })
