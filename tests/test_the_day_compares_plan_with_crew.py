@@ -244,4 +244,10 @@ def test_the_summary_route_hands_over_the_known_names() -> None:
     assert "known=_monitor_known_parties(project)" in body
     helper = body[body.index("def _monitor_known_parties("):]
     helper = helper[: helper.index("\n@app.")]
-    assert "read_completed_works" in helper and "latest_retention" in helper
+    # Список один на Монитор и сводку руководству: маршрут отдаёт общее правило.
+    assert "developaid_monitor_daily.known_parties(project)" in helper
+    import inspect
+
+    import developaid_monitor_daily as daily
+    rule = inspect.getsource(daily.known_parties)
+    assert "read_completed_works" in rule and "latest_retention" in rule

@@ -117,16 +117,17 @@ def test_the_limit_is_the_monitor_finance_card(monkeypatch):
     _project()
     seen = {}
 
-    def panel(project, end):
-        seen["args"] = (project, end)
-        return {"funding": {"known": True, "bank_limit": 3_970 * M, "paid_actual": 2_100 * M,
-                "bank_remaining": 1_500 * M, "reserve": 138 * M,
-                "additional_financing": 230 * M, "additional_financing_from": "2027-03-01"}}
+    def view(project, end):
+        seen.setdefault("args", []).append((project, end))
+        return {"dashboard": {"funding": {
+            "known": True, "bank_limit": 3_970 * M, "paid_actual": 2_100 * M,
+            "bank_remaining": 1_500 * M, "reserve": 138 * M,
+            "additional_financing": 230 * M, "additional_financing_from": "2027-03-01"}}}
 
-    # Панель Монитора — один расчёт на всю сводку (срок и финансирование).
-    monkeypatch.setattr(report, "_monitor_dashboard", panel)
+    # Срез Монитора — один расчёт на всю сводку (срок, корпуса, финансирование).
+    monkeypatch.setattr(report, "_monitor_view", view)
     text = report.render_text(report.build(PROJECT, "week", "2026-10-18"))
-    assert seen["args"] == (PROJECT, datetime.date(2026, 10, 18))
+    assert seen["args"] == [(PROJECT, datetime.date(2026, 10, 18))]
     assert ("Лимит банка по РСС (главы 2–3): 3,97 млрд ₽, оплачено с начала проекта "
             "2,10 млрд ₽, остаток лимитов статей 1,50 млрд ₽, резерв 138,0 млн ₽.") in text
     assert "Не хватает на достройку: 230,0 млн ₽, начиная с март 2027." in text
