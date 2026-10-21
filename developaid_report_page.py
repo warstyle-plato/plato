@@ -49,7 +49,15 @@ REPORT_PAGE = """<!doctype html>
 """ + _scoped(REPORT_STYLE, "#reportBox") + """
 #reportBox{background:#fff;padding:14px 18px;border:1px solid var(--line);border-radius:10px;margin-top:10px;max-width:980px}
 #reportBox .finding.bad{color:inherit}#reportBox .pagebreak{height:0}
-@media (max-width:700px){#reportBox .tiles{grid-template-columns:repeat(2,1fr)}}
+@media (max-width:700px){#reportBox .tiles{grid-template-columns:repeat(2,1fr)}
+#reportBox{padding:12px 10px}
+#reportBox table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+#reportBox td,#reportBox th{overflow-wrap:normal;word-break:normal}
+#reportBox td:first-child,#reportBox th:first-child{min-width:150px}
+#reportBox svg,#reportBox img{max-width:100%;height:auto}}
+#reportBox{overflow-wrap:anywhere;min-width:0}
+.files .field{min-width:0;max-width:100%}.files select,.files input{max-width:100%}
+@media (max-width:700px){.files>.field{flex:1 1 100%}.files select,.files input{width:100%;box-sizing:border-box}}
 .files{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .photo-pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:8px}
 .photo-pick label{display:block;border:2px solid #d6dde6;border-radius:8px;padding:4px;cursor:pointer;font-size:11px}
