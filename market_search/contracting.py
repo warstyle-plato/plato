@@ -698,6 +698,13 @@ def _payment_structure(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 FM_SHEET = "Продажи ФМ_new Банников"
 BANK_SHEET = "Модель банка_new"
+# Лист плана банка в книге переименовали: «План банка_new» (21.10.2026, книга
+# «Кутузов Сити»). Имена — явным списком, первым находится новое; лист под
+# чужим именем молча не угадывается.
+BANK_SHEETS = ("План банка_new", BANK_SHEET)
+# План эскроу банка: остатки на эскроу нарастающим по кварталам, утверждённые
+# по CF. Строка «(расчетное)» рядом — пересчёт из продаж, не план.
+BANK_ESCROW_LABEL = "Итого остатки на эскроу накопительным итогом (утверждено по CF)"
 
 # Лист ФМ идёт парами колонок: строка дат общая, а строка ниже говорит, план
 # это или факт. Разбирать по чётности колонок нельзя — в листе есть пустые
@@ -827,9 +834,18 @@ _BANK_QUARTER = re.compile(r"^(20\d{2})\s*Q([1-4])$", re.I)
 
 def read_bank_plan(data: bytes) -> dict[str, Any]:
     """Квартальный план банка: подписи строк как есть, значения по кварталам."""
-    rows = _rows(data, BANK_SHEET)
+    rows, sheet = None, ""
+    for name in BANK_SHEETS:
+        try:
+            rows, sheet = _rows(data, name), name
+            break
+        except KeyError:
+            continue
+    if rows is None:
+        raise KeyError("в книге нет листа плана банка: искали "
+                       + ", ".join(f"«{name}»" for name in BANK_SHEETS))
     if not rows:
-        raise KeyError(f"лист «{BANK_SHEET}» пуст")
+        raise KeyError(f"лист «{sheet}» пуст")
     header = rows[_BANK_PERIOD_ROW - 1]
     quarters: list[tuple[int, str]] = []
     for index, cell in enumerate(header):
@@ -837,7 +853,7 @@ def read_bank_plan(data: bytes) -> dict[str, Any]:
         if match:
             quarters.append((index, f"{match.group(1)} Q{match.group(2)}"))
     if not quarters:
-        raise KeyError(f"в листе «{BANK_SHEET}» не нашлось кварталов вида «2026 Q1»")
+        raise KeyError(f"в листе «{sheet}» не нашлось кварталов вида «2026 Q1»")
     lines: list[dict[str, Any]] = []
     for row in rows[_BANK_PERIOD_ROW:]:
         label = _text(row[1] if len(row) > 1 else "")
@@ -937,7 +953,7 @@ def read_bank_plan(data: bytes) -> dict[str, Any]:
     # все метры, смешало бы паркинг с жильём и дало бы третье число, не
     # сравнимое ни с чем.
     price_plan = dict((products.get("Квартира") or {}).get("price") or {})
-    return {"sheet": BANK_SHEET, "quarters": [q for _, q in quarters], "lines": lines,
+    return {"sheet": sheet, "quarters": [q for _, q in quarters], "lines": lines,
             "revenue_by_quarter": revenue, "revenue_rows": summed,
             "products": products, "pool": pool,
             "gross_by_quarter": gross, "area_by_quarter": area_plan,
@@ -2041,6 +2057,20 @@ def read_credit_plan(data: bytes) -> dict[str, Any]:
     live = [q for q in queues if has_money(q)]
     return {"sheet": CREDIT_SHEET, "queues": live,
             "empty_queues": [q["queue"] for q in queues if q not in live]}
+
+
+def bank_escrow_plan(bank: dict[str, Any] | None) -> dict[str, float]:
+    """План банка по остаткам на эскроу: квартал → рубли нарастающим итогом.
+
+    Читается из строк плана банка по точной подписи — и для плана, загруженного
+    до появления этой функции: строки хранятся вместе с разбором.
+    """
+    for line in (bank or {}).get("lines") or []:
+        if _text(line.get("label")) == BANK_ESCROW_LABEL:
+            # Лист банка в тысячах рублей.
+            return {quarter: float(value) * 1000.0
+                    for quarter, value in (line.get("values") or {}).items()}
+    return {}
 
 
 def escrow_actual(rows: list[dict[str, Any]]) -> dict[str, float]:
