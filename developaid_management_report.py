@@ -1091,6 +1091,8 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             text += (f". Ближайший срок — {_day(first['deadline'])}, "
                      f"{first['counterparty']}: {first['next_step'] or 'следующий шаг не записан'}")
         add("Споры", _sentence(text), "реестр споров, карточки подтверждены по документам")
+    elif block.get("state") == "ok" and not block.get("recorded"):
+        add("Споры", LEGAL_EMPTY, "реестр споров", "missing")
 
     block = report.get("notes") or {}
     if block.get("state") == "ok":
@@ -2155,11 +2157,21 @@ def _claims_words(card: dict[str, Any], direction: str) -> str:
                      + (" (растёт)" if claim["growing"] else "") for claim in items)
 
 
+LEGAL_EMPTY = ("Споры в реестр пока не внесены, поэтому в сводке их нет. Загрузите "
+               "документы спора на странице сводки, проверьте карточку, которую "
+               "предложит Платон, и подтвердите её.")
+LEGAL_NONE_OPEN = "Открытых споров нет, за период ни один спор не закрыт."
+
+
 def _legal_lines(block: dict[str, Any]) -> list[str]:
     """Споры для сообщения: строка на спор, события за период."""
     esc = html.escape
     if block.get("state") != "ok":
         return [esc(block.get("reason") or "Реестр споров не собран.")] if block else []
+    if not block.get("recorded"):
+        return [LEGAL_EMPTY]
+    if not block.get("open") and not block.get("closed"):
+        return [LEGAL_NONE_OPEN]
     names = block.get("statuses") or {}
     out = []
     for item in (block.get("open") or []) + (block.get("closed") or []):
@@ -2186,8 +2198,10 @@ def _legal_html(block: dict[str, Any]) -> str:
     if block.get("state") != "ok":
         return f"<p class='missing'>{esc(block.get('reason') or 'Реестр споров не собран.')}</p>"
     items = (block.get("open") or []) + (block.get("closed") or [])
+    if not block.get("recorded"):
+        return f"<h3>Споры и претензии</h3><p class='missing'>{esc(LEGAL_EMPTY)}</p>"
     if not items:
-        return ""
+        return f"<h3>Споры и претензии</h3><p>{esc(LEGAL_NONE_OPEN)}</p>"
     names = block.get("statuses") or {}
     out = ["<h3>Споры и претензии</h3>"]
     for item in items:
