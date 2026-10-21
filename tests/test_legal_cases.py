@@ -165,9 +165,14 @@ def test_only_confirmed_cards_reach_the_report_by_period():
                at="2026-10-20T09:00:00+00:00")
     assert legal.case(PROJECT, first["id"])["version"] == 2
     week = legal.for_report(PROJECT, datetime.date(2026, 10, 5), datetime.date(2026, 10, 11))
-    assert week["open"][0]["card"]["status"] == "claim"  # правка 20.10 сюда не попала
-    assert [event["date"] for event in week["open"][0]["fresh"]] == []
-    assert week["open"][0]["totals"] == {"to_them": 8_000_000, "to_us": 500_000}
+    mine = next(item for item in week["open"] if item["id"] == first["id"])
+    assert mine["card"]["status"] == "claim"  # правка 20.10 сюда не попала
+    assert [event["date"] for event in mine["fresh"]] == []
+    assert mine["totals"] == {"to_them": 8_000_000, "to_us": 500_000}
+    # Два спора с одним подрядчиком — две карточки, по договору каждая.
+    other = legal.save(PROJECT, dict(CARD, contract="Договор № 2-ГРН на грунты", claims=[]),
+                       [], "Иванова", at="2026-10-06T09:00:00+00:00")
+    assert other["id"] != first["id"] and len(legal.cases(PROJECT)) == 2
     with pytest.raises(ValueError, match="контрагент"):
         legal.save(PROJECT, dict(CARD, counterparty=""), [], "Иванова")
 
