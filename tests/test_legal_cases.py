@@ -72,13 +72,22 @@ def _isolated(tmp_path, monkeypatch):
 
 
 def _docx(*paragraphs: str) -> bytes:
-    import docx
+    """Минимальный документ Word без сторонних библиотек: zip с document.xml."""
+    import html
+    import zipfile
 
-    document = docx.Document()
-    for text in paragraphs:
-        document.add_paragraph(text)
+    body = "".join(f"<w:p><w:r><w:t>{html.escape(text)}</w:t></w:r></w:p>"
+                   for text in paragraphs)
     blob = io.BytesIO()
-    document.save(blob)
+    with zipfile.ZipFile(blob, "w") as zf:
+        zf.writestr("[Content_Types].xml",
+                    '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.'
+                    'openxmlformats.org/package/2006/content-types"><Default Extension="xml" '
+                    'ContentType="application/xml"/></Types>')
+        zf.writestr("word/document.xml",
+                    '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.'
+                    'openxmlformats.org/wordprocessingml/2006/main"><w:body>'
+                    + body + "</w:body></w:document>")
     return blob.getvalue()
 
 
