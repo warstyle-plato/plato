@@ -419,23 +419,34 @@ class _AccessScopeMiddleware:
 app.add_middleware(_AccessScopeMiddleware)
 
 
-def _access_team_key() -> bool:
+def _access_request(request: Request | None = None) -> Request | None:
+    """Запрос решения: переданный явно, а нет — тот, что положил слой выше.
+    Явный надёжнее: раздел торгов может держать свою копию движка, и тогда
+    слой этой копии пишет не в ту переменную, которую читает решение."""
+    if request is not None:
+        return request
+    scope = _ACCESS_SCOPE.get()
+    return Request(scope) if scope else None
+
+
+def _access_team_key(request: Request | None = None) -> bool:
     """Ключ кабинета рынка (`MARKET_CABINET_KEY`) у этого запроса? Его держит
     команда владельца, и доступ у неё полный, как по ключу администратора
     (решение владельца, 21.10.2026). Проверку делает сам кабинет."""
-    scope = _ACCESS_SCOPE.get()
-    if not scope:
+    current = _access_request(request)
+    if current is None:
         return False
     try:
         from market_search import cabinet as _market_cabinet  # noqa: PLC0415
 
-        return bool(_market_cabinet.authorised(Request(scope)))
+        return bool(_market_cabinet.authorised(current))
     except Exception:
         return False
 
 
 def calc_access_for_chat(chat: int, what: str, *, inputs: dict[str, Any] | None = None,
-                         cadastral: list[str] | None = None, surface: str = "site") -> dict[str, Any]:
+                         cadastral: list[str] | None = None, surface: str = "site",
+                         request: Request | None = None) -> dict[str, Any]:
     """ЕДИНСТВЕННОЕ решение «можно ли считать этот участок» для человека.
 
     Его читают все маршруты расчёта: страница, мини-приложение, бот, Платон,
@@ -451,7 +462,7 @@ def calc_access_for_chat(chat: int, what: str, *, inputs: dict[str, Any] | None 
     plot = access_plot(inputs, cadastral)
     if chat in usage_admin_ids():
         return {"allowed": True, "code": "admin", "basis": "admin", "plot": plot}
-    if _access_team_key():
+    if _access_team_key(request):
         return {"allowed": True, "code": "team", "basis": "market_cabinet_key", "plot": plot}
     remote = _projects_remote_url("/internal/access/use")
     decision = (_access_use_remote(remote, chat, plot, surface) if remote
@@ -465,7 +476,8 @@ def calc_access_for_chat(chat: int, what: str, *, inputs: dict[str, Any] | None 
 def require_calc_access(session: str, key: str, what: str, *,
                         inputs: dict[str, Any] | None = None,
                         cadastral: list[str] | None = None,
-                        surface: str = "site") -> dict[str, Any]:
+                        surface: str = "site",
+                        request: Request | None = None) -> dict[str, Any]:
     """Вход + право на участок. Без токена бота механизм честно выключен, как
     и вход (`_require_web_access`): проверять подпись нечем."""
     if not _telegram_token():
@@ -473,41 +485,44 @@ def require_calc_access(session: str, key: str, what: str, *,
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
     if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
         return {"allowed": True, "code": "admin", "basis": "admin_key"}
-    if _access_team_key():
+    if _access_team_key(request):
         return {"allowed": True, "code": "team", "basis": "market_cabinet_key"}
     chat = _web_identity_chat_id(session)
     if not chat:
         _require_web_access("", "", what)  # отказ «войдите» — теми же словами, что везде
-    return calc_access_for_chat(chat, what, inputs=inputs, cadastral=cadastral, surface=surface)
+    return calc_access_for_chat(chat, what, inputs=inputs, cadastral=cadastral, surface=surface,
+                                request=request)
 
 
 _ACCESS_SESSION_HEADER = "x-developaid-session"
 
 
-def _access_scope_session() -> str:
+def _access_scope_session(request: Request | None = None) -> str:
     """Сессия входа из заголовка запроса — для поверхностей, которые шлют GET
     без тела (каталог КРТ): страница кладёт её в `X-Developaid-Session`."""
-    scope = _ACCESS_SCOPE.get()
-    if not scope:
+    current = _access_request(request)
+    if current is None:
         return ""
     try:
-        return str(Request(scope).headers.get(_ACCESS_SESSION_HEADER) or "")
+        return str(current.headers.get(_ACCESS_SESSION_HEADER) or "")
     except Exception:
         return ""
 
 
 def catalog_economics_access(session: str = "", key: str = "", *,
-                             cadastral: list[str] | None = None) -> dict[str, Any]:
+                             cadastral: list[str] | None = None,
+                             request: Request | None = None) -> dict[str, Any]:
     """Экономика каталога КРТ — под тем же решением, что и расчёт (решение
     владельца 21.10.2026). Площадка — её кадастровые номера, как участок
     расчёта; рейтинг всего каталога — без участка, и при включённом замке он
     открыт подписке, администраторам и команде. Отказ — исключение со словами."""
-    session = session or _access_scope_session()
+    session = session or _access_scope_session(request)
     if cadastral:
         return require_calc_access(session, key, "Экономика площадки КРТ",
-                                   cadastral=cadastral, surface="krt")
+                                   cadastral=cadastral, surface="krt", request=request)
     try:
-        return require_calc_access(session, key, "Экономика каталога КРТ", surface="krt")
+        return require_calc_access(session, key, "Экономика каталога КРТ", surface="krt",
+                                   request=request)
     except HTTPException as exc:
         if exc.status_code != 402:
             raise

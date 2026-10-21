@@ -2151,7 +2151,7 @@ def install(app: FastAPI) -> None:
             project = finder(f"krt:{slug}") if callable(finder) else None
         if not project:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
-        await run_in_threadpool(_krt_economics_gate, slug)
+        await run_in_threadpool(_krt_economics_gate, request, slug)
 
         # ensure_model используется именно массовой кнопкой каталога. Тяжёлый
         # burden lookup тоже относится к этому явному пересчёту и требует тот
@@ -2951,7 +2951,7 @@ def install(app: FastAPI) -> None:
             # выбрасывают» здесь то же самое.
             return stored or fresh
 
-    def _krt_economics_gate(slug: str | None) -> None:
+    def _krt_economics_gate(request: Request, slug: str | None) -> None:
         """Экономика каталога — под тем же решением доступа, что и расчёт
         (`core.catalog_economics_access`): площадка — её кадастровые номера,
         весь рейтинг — без участка. Движка нет — решать нечем, как и прежде."""
@@ -2964,7 +2964,7 @@ def install(app: FastAPI) -> None:
                 numbers = [str(n) for n in ((_requirements_for(slug) or {}).get("cadastral_numbers") or [])]
             except Exception:  # noqa: BLE001 — без номеров решает правило всего каталога
                 logger.exception("KRT economics gate: cadastral numbers of %s", slug)
-        decide(cadastral=numbers or None)
+        decide(cadastral=numbers or None, request=request)
 
     def _requirements_for(slug: str) -> dict[str, Any] | None:
         """Обязательства площадки. Один ответ на модуль, а не у каждой двери.
@@ -4517,13 +4517,13 @@ def install(app: FastAPI) -> None:
         }
 
     @app.get("/auctions/krt/ranking")
-    async def auction_krt_ranking() -> dict[str, Any]:
+    async def auction_krt_ranking(request: Request) -> dict[str, Any]:
         """Балл по всем КРТ: потолок цены входа на метр продаваемой.
 
         Отдаёт посчитанное сразу — даже на ходу прогона: половина рейтинга с
         честным ходом полезнее пустого экрана, который ничего не объясняет.
         """
-        await run_in_threadpool(_krt_economics_gate, None)
+        await run_in_threadpool(_krt_economics_gate, request, None)
         rating_version = str(krt_investment_score.methodology().get("version") or "")
         try:
             # Список собирается из каталога и решений — не в цикле событий.
