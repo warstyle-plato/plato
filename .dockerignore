@@ -32,6 +32,10 @@ docs
 !docs/questions_backlog.md
 !docs/normative/*.md
 !docs/glossary.md
+# Реквизиты продукта, оферта и политика возврата — их читает сервер
+# (`engine/payments.py`): без них оплата честно выключена.
+!docs/legal/*.json
+!docs/legal/*.md
 
 .pytest_cache
 .venv
