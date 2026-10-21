@@ -473,10 +473,38 @@ def monitor_daily_summary(project: str, upto: str = "",
     """Люди на площадке по дням и последний отчёт словами."""
     _require_web_access(session, key, "Монитор проекта")
     try:
-        return developaid_monitor_daily.daily_summary(
+        out = developaid_monitor_daily.daily_summary(
             project, upto or None, known=_monitor_known_parties(project))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    out["declared"] = developaid_monitor_daily.declared_parties(project)
+    return out
+
+
+class MonitorContractorRequest(BaseModel):
+    project: str
+    name: str
+    remove: bool = False
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/contractors", include_in_schema=False)
+def monitor_declare_contractor(req: MonitorContractorRequest) -> dict[str, Any]:
+    """Назвать подрядчика проекта руками (или убрать названного).
+
+    Работы, где он назван в строке, приписываются ему, даже если ни реестры,
+    ни численность отчётов его не знают.
+    """
+    _require_web_access(req.session, req.key, "Монитор проекта")
+    if not any(item["project"] == req.project for item in developaid_monitor.projects()):
+        raise HTTPException(404, f"В Мониторе нет проекта «{req.project}».")
+    try:
+        rows = developaid_monitor_daily.declare_party(
+            req.project, req.name, _monitor_note_author(req.session, req.key), req.remove)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"declared": rows}
 
 
 def _monitor_known_parties(project: str) -> list[str]:

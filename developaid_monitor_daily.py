@@ -405,10 +405,61 @@ def _load_reports(project: str) -> list[dict[str, Any]]:
     return reports
 
 
+_DECLARED = "contractors.json"
+
+
+def declared_parties(project: str) -> list[dict[str, Any]]:
+    """Подрядчики, которых владелец назвал руками: имя, кто и когда.
+
+    Доказательство сильнее реестров: МОЭК выполнял работы, но в реестрах РСС и
+    ГУ и в численности отчётов его нет — а подрядчик он отдельный (владелец,
+    21.10.2026: «конкретно МОЭК это подрядчик»).
+    """
+    place = monitor._project_dir(project) / _DECLARED
+    try:
+        got = json.loads(place.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [row for row in (got.get("names") or []) if isinstance(row, dict)
+            and str(row.get("name") or "").strip()] if isinstance(got, dict) else []
+
+
+def declare_party(project: str, name: str, author: str,
+                  remove: bool = False) -> list[dict[str, Any]]:
+    """Добавить (или убрать) подрядчика проекта, названного руками."""
+    import fcntl
+    import os
+    import tempfile
+
+    name = " ".join(str(name or "").split())
+    if not name:
+        raise ValueError("Не указано имя подрядчика.")
+    folder = monitor._project_dir(project)
+    folder.mkdir(parents=True, exist_ok=True)
+    # Два воркера: чтение-правка-запись под замком, замена файла целиком.
+    with (folder / ".contractors.lock").open("a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            rows = [row for row in declared_parties(project)
+                    if row["name"].casefold() != name.casefold()]
+            if not remove:
+                rows.append({"name": name, "by": author,
+                             "at": datetime.datetime.now(datetime.timezone.utc)
+                             .isoformat(timespec="seconds")})
+            handle, tmp = tempfile.mkstemp(dir=folder, prefix=".contractors.", suffix=".tmp")
+            with os.fdopen(handle, "w", encoding="utf-8") as out:
+                json.dump({"names": rows}, out, ensure_ascii=False)
+            os.replace(tmp, folder / _DECLARED)
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    return rows
+
+
 def known_parties(project: str, upto: Any = None) -> list[str]:
     """Подрядчики, известные проекту: кому строку работ можно приписать по имени.
 
-    Источники — реестры РСС (акты и платежи), реестр ГУ и численность всех
+    Источники — подрядчики, названные владельцем руками (`declared_parties`),
+    реестры РСС (акты и платежи), реестр ГУ и численность всех
     ежедневных отчётов проекта до даты. Подрядчик, названный в строке работ, но
     не выводивший людей в этот день, в численности отчёта не значится — и без
     этого списка его строка доставалась заголовку выше: «Моэк (теплосети) —
@@ -425,6 +476,8 @@ def known_parties(project: str, upto: Any = None) -> list[str]:
         if name and name not in names:
             names.append(name)
 
+    for row in declared_parties(project):
+        add(row.get("name"))
     rss = monitor._latest(project, "estimate", ".xlsx", "")
     if rss is not None:
         try:
