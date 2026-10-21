@@ -562,6 +562,125 @@ def monitor_notes(req: MonitorNotesRequest) -> dict[str, Any]:
             "statuses": project_notes.STATUSES}
 
 
+# --- споры и претензии (реестр по документам) --------------------------------
+
+class MonitorLegalRequest(BaseModel):
+    project: str
+    files: list[dict[str, str]] = []
+    case_id: str = ""
+    job_id: str = ""
+    doc_id: str = ""
+    doc_ids: list[str] = []
+    card: dict[str, Any] | None = None
+    session: str = ""
+    key: str = ""
+
+
+def _legal_complete(instructions: str, text: str, schema: dict[str, Any]) -> str:
+    """Один вызов Платона со строгой схемой — тот же маршрут, что у всех вызовов модели."""
+    model = (os.getenv("OPENAI_LEGAL_MODEL") or os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6")).strip()
+    payload = {"model": model, "instructions": instructions,
+               "input": [{"role": "user", "content": text}],
+               "text": {"format": {"type": "json_schema", "name": "plato_legal_case",
+                                   "strict": True, "schema": schema}},
+               "max_output_tokens": 6000, "store": False}
+    return _extract_openai_text(_openai_responses_request(payload))
+
+
+def _legal_listing(project: str) -> dict[str, Any]:
+    import developaid_legal_cases as legal
+    return {"cases": legal.cases(project), "documents": legal.documents(project),
+            "statuses": legal.STATUSES, "directions": legal.DIRECTIONS}
+
+
+@app.post("/monitor/legal", include_in_schema=False)
+def monitor_legal(req: MonitorLegalRequest) -> dict[str, Any]:
+    """Споры и претензии проекта: подтверждённые карточки и документы."""
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    return _legal_listing(req.project)
+
+
+@app.post("/monitor/legal/upload", include_in_schema=False)
+def monitor_legal_upload(req: MonitorLegalRequest) -> dict[str, Any]:
+    """Положить документы спора и отдать их Платону читать — в фоне.
+
+    Распознавание сканов и ответ модели — минуты: запрос их не ждёт, страница
+    спрашивает `/monitor/legal/job`.
+    """
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    import developaid_legal_cases as legal
+    author = _monitor_note_author(req.session, req.key)
+    if not req.files:
+        raise HTTPException(400, "Выберите документы спора.")
+    stored = []
+    try:
+        if req.case_id:
+            legal.case(req.project, req.case_id)
+        for item in req.files:
+            try:
+                data = base64.b64decode(item.get("content_base64") or "", validate=True)
+            except ValueError:
+                raise HTTPException(400, f"«{item.get('filename')}»: файл пришёл повреждённым.")
+            stored.append(legal.store_document(req.project, data, item.get("filename") or "",
+                                               author))
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    job = legal.start_job(req.project, [doc["id"] for doc in stored], req.case_id, author)
+    threading.Thread(target=legal.finish_job, args=(req.project, job["id"], _legal_complete),
+                     name=f"legal-{job['id']}", daemon=True).start()
+    return {"job": job, "documents": stored}
+
+
+@app.post("/monitor/legal/job", include_in_schema=False)
+def monitor_legal_job(req: MonitorLegalRequest) -> dict[str, Any]:
+    """Как идёт чтение документов: running / done (черновик карточки) / failed."""
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    import developaid_legal_cases as legal
+    try:
+        return legal.job(req.project, req.job_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/monitor/legal/case", include_in_schema=False)
+def monitor_legal_case(req: MonitorLegalRequest) -> dict[str, Any]:
+    """Подтвердить карточку спора (новую или новую версию). В сводку идёт только она."""
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    import developaid_legal_cases as legal
+    try:
+        legal.save(req.project, req.card or {}, req.doc_ids,
+                   _monitor_note_author(req.session, req.key), case_id=req.case_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _legal_listing(req.project)
+
+
+@app.post("/monitor/legal/doc", include_in_schema=False)
+def monitor_legal_doc(req: MonitorLegalRequest) -> Response:
+    """Документ спора как его загрузили."""
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    import developaid_legal_cases as legal
+    from urllib.parse import quote
+    try:
+        meta, data = legal.document(req.project, req.doc_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    kinds = {".pdf": "application/pdf",
+             ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+             ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"}
+    return Response(data, media_type=kinds.get(meta["ext"], "application/octet-stream"),
+                    headers={"Content-Disposition":
+                             f"attachment; filename*=UTF-8''{quote(meta['filename'])}"})
+
+
 @app.post("/monitor/photos", include_in_schema=False)
 def monitor_photos(req: MonitorPhotosRequest) -> dict[str, Any]:
     """Фото из чата стройки за период сводки; с ``photo_id`` и ``chosen`` — отметка.

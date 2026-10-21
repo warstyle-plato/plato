@@ -105,7 +105,8 @@ async function exportModelArchive(){
     inputs,tep,rates,
     phasing:(typeof phasing!=='undefined'?phasing:{}),
     project_name:(manualMeta&&manualMeta.project_name)||'',
-    scenario:scenarioSelect.value||'base'
+    scenario:scenarioSelect.value||'base',
+    session:activeSession(),access_key:projectsAdminKey
    })
   });
   if(!response.ok){
@@ -319,6 +320,9 @@ async function applyPreset(){
  });
  rememberDerivedTail(data.applied_tep);
  if(data.project_name)inputs._manual_tep_import={project_name:data.project_name};
+ // Новый загруженный проект — новый идентификатор: доступ к прежнему на
+ // него не переходит (`access_plot` на сервере).
+ inputs._project_uid=newProjectUid();
  // Полный пресет приносит и собственную очередность. Оставлять прежний
  // `phasing` нельзя: тогда новый ТЭП раскладывается по долям другого проекта
  // (например, 40/13,1/34/12,9 вместо 25/25/25/25), хотя предпросмотр обещал

@@ -2377,6 +2377,9 @@ class WorkbookExportRequest(BaseModel):
     phasing: dict[str, Any] = {}
     project_name: str = ""
     scenario: str = "base"
+    # Книга пересчитывает модель — за входом и правом на участок.
+    session: str = ""
+    access_key: str = ""
 
 
 _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -2384,6 +2387,7 @@ _XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.
 
 @app.post("/report/workbook")
 def report_workbook(req: WorkbookExportRequest) -> Response:
+    require_calc_access(req.session, req.access_key, "Excel-модель", inputs=req.inputs)
     try:
         content, filename, meta = build_project_workbook(
             req.inputs, req.tep, req.rates, req.phasing,

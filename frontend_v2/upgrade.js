@@ -24,7 +24,10 @@
     const url = typeof input === 'string' ? input : String((input && input.url) || '');
     let path = url;
     try { path = new URL(url, location.href).pathname; } catch (error) { /* relative is fine */ }
-    if (path === '/agent/chat' && String(options.method || 'GET').toUpperCase() === 'POST' && options.body) {
+    // Расчёт вводных человека — за той же сессией и правом на участок, что у
+    // основной страницы: сессия добавляется сюда же.
+    if ((path === '/agent/chat' || path === '/api/v2/calculate')
+        && String(options.method || 'GET').toUpperCase() === 'POST' && options.body) {
       try {
         const body = JSON.parse(options.body);
         const session = webSession();
