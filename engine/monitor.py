@@ -480,33 +480,8 @@ def monitor_daily_summary(project: str, upto: str = "",
 
 
 def _monitor_known_parties(project: str) -> list[str]:
-    """Имена подрядчиков, известные проекту: из реестров РСС и реестра ГУ.
-
-    Нужны разбору ежедневного отчёта: подрядчик, названный в строке работ, но
-    не выводивший людей в этот день, в численности отчёта не значится — и без
-    этого списка его строка достаётся заголовку выше.
-    """
-    import developaid_monitor_crew as crew
-
-    names: list[str] = []
-    rss = developaid_monitor._latest(project, "estimate", ".xlsx", "")
-    if rss is not None:
-        try:
-            for register in (developaid_actuals.read_completed_works(rss),
-                             developaid_actuals.read_payments(rss)):
-                for row in register.get("rows") or []:
-                    name = str(row.get("contractor") or "").strip()
-                    if name and name not in names:
-                        names.append(name)
-        except (KeyError, ValueError):
-            pass
-    register = developaid_monitor.latest_retention(project)
-    for row in ((register or {}).get("rows") or []):
-        for field in ("counterparty", "customer"):
-            name = str(row.get(field) or "").strip()
-            if name and name not in names:
-                names.append(name)
-    return names
+    """Имена подрядчиков, известные проекту — правило одно (`daily.known_parties`)."""
+    return developaid_monitor_daily.known_parties(project)
 
 
 @app.post("/monitor/work-fact/stage", include_in_schema=False)
