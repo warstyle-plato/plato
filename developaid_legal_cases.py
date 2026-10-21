@@ -416,10 +416,79 @@ def save(project: str, card: dict[str, Any], doc_ids: list[str], author: str,
     return entry
 
 
+# --------------------------------------------------------------------------
+# Стартовое наполнение реестра
+# --------------------------------------------------------------------------
+#
+# «Эти споры должны отображаться в текущем отчёте уже сами по себе»
+# (владелец, 21.10.2026): документы владелец прислал в разработку, а не на
+# сайт, и реестр на сайте был пуст. Карточки, составленные по этим документам,
+# заносятся в реестр проекта ОДИН раз — только если реестр пуст. Файл с
+# карточками в репозиторий НЕ кладётся (репозиторий открытый, а это позиции по
+# судам): он лежит на сервере, путь — `DEVELOPAID_LEGAL_SEED`, по умолчанию
+# `legal_seed.json` в каталоге снимков Монитора. Метка `.seeded` занимается атомарно:
+# два воркера не занесут карточки дважды, а удалённая или исправленная
+# карточка не вернётся при следующей выкатке. Каждая карточка помечена
+# `seeded` — сводка просит её проверить.
+
+SEED_AUTHOR = "по документам владельца"
+
+
+def _seed_file() -> Path:
+    named = os.environ.get("DEVELOPAID_LEGAL_SEED", "").strip()
+    return Path(named) if named else monitor._SNAPSHOT_DIR / "legal_seed.json"
+
+
+def ensure_seed(project: str, seed_file: Path | None = None) -> int:
+    """Занести стартовые карточки проекта, если реестр пуст. Сколько занесено."""
+    source = seed_file or _seed_file()
+    if not source.exists():
+        return 0
+    try:
+        seeds = json.loads(source.read_text(encoding="utf-8"))
+    except ValueError:
+        return 0
+    wanted = monitor._resolved_slug(project)
+    entry = next((item for item in seeds.get("projects") or []
+                  if monitor._resolved_slug(str(item.get("project") or "")) == wanted), None)
+    if not entry:
+        return 0
+    marker = _root(project) / ".seeded"
+    try:
+        handle = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return 0
+    os.close(handle)
+    if _versions(project):
+        return 0  # реестр уже ведут руками — стартовое не нужно
+    at = str(entry.get("at") or "")
+    for item in entry.get("cases") or []:
+        saved = save(project, item["card"], [], SEED_AUTHOR, at=at)
+        _mark_seeded(project, saved["id"])
+    return len(entry.get("cases") or [])
+
+
+def _mark_seeded(project: str, case_id: str) -> None:
+    path = _root(project) / "seeded.json"
+    known = json.loads(path.read_text(encoding="utf-8")) if path.exists() else []
+    known.append(case_id)
+    path.write_text(json.dumps(known), encoding="utf-8")
+
+
+def seeded_ids(project: str) -> set[str]:
+    path = _root(project) / "seeded.json"
+    try:
+        return set(json.loads(path.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        return set()
+
+
 def cases(project: str) -> list[dict[str, Any]]:
+    ensure_seed(project)
+    seeded = seeded_ids(project)
     current: dict[str, dict[str, Any]] = {}
     for row in _versions(project):
-        current[row["id"]] = row
+        current[row["id"]] = dict(row, unchecked=row["id"] in seeded and row["version"] == 1)
     return sorted(current.values(),
                   key=lambda row: (row["card"]["status"] == "closed", row["card"]["counterparty"]))
 
@@ -444,6 +513,8 @@ def for_report(project: str, start: datetime.date, end: datetime.date) -> dict[s
     Версия берётся последняя на конец периода — правка после него в сводку
     этого периода не попадает.
     """
+    ensure_seed(project)
+    seeded = seeded_ids(project)
     last = end.isoformat()
     current: dict[str, dict[str, Any]] = {}
     for row in _versions(project):
@@ -455,7 +526,9 @@ def for_report(project: str, start: datetime.date, end: datetime.date) -> dict[s
         fresh = [event for event in card["events"]
                  if event["date"] and start.isoformat() <= event["date"] <= last]
         item = dict(row, totals=totals(card), fresh=fresh,
-                    changed=row["at"][:10] >= start.isoformat())
+                    changed=row["at"][:10] >= start.isoformat(),
+                    # Не подтверждена человеком: внесена с выкаткой и не правилась.
+                    unchecked=row["id"] in seeded and row["version"] == 1)
         if card["status"] == "closed":
             if row["at"][:10] >= start.isoformat():
                 closed.append(item)
