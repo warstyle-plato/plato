@@ -263,3 +263,19 @@ def test_escrow_at_the_current_pace_leads():
     assert "по плану финмодели" in tile["note"]
     found = {item["topic"]: item["text"] for item in built["findings"]}
     assert "при нынешнем темпе эскроу очереди «1 очередь»" in found["Финансирование"].lower()
+
+
+def test_the_chapter_label_comes_from_the_monitor(monkeypatch):
+    # Глава 1 РСС (владелец, 21.10.2026): подписи «главы 1–3» — из расчёта Монитора.
+    _project()
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {"funding": {
+        "known": True, "bank_limit": 4_100 * M, "paid_actual": 2_200 * M, "chapters_label": "1–3",
+        "bank_remaining": 1_500 * M, "reserve": 138 * M, "additional_financing": 0.0,
+        "approved": 6_500 * M, "approved_remaining": 4_300 * M,
+        "deficit_ladder": {"total": 2_662 * M}}}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    text = report.render_text(built)
+    assert "Лимит банка по РСС (главы 1–3)" in text
+    assert "Утверждённый бюджет (главы 1–3, финмодель)" in text and "2–3" not in text
+    notes = {item["label"]: item["note"] for item in report.tiles(built)}
+    assert notes["Лимит банка"] == "по РСС, главы 1–3"
