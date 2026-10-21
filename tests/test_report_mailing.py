@@ -252,7 +252,8 @@ def test_the_page_shows_the_link_and_the_recipients(monkeypatch):
             tab.on("dialog", lambda d: d.accept())
             tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
             tab.goto(f"{base}/report", wait_until="domcontentloaded")
-            tab.fill("#project", PROJECT)
+            tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")
+            tab.select_option("#project", PROJECT)
             tab.click("#reportBtn")
             tab.wait_for_function(
                 "document.getElementById('mailingList').textContent.includes('Получателей пока нет')")
