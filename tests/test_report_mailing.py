@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import sys
 import threading
 from pathlib import Path
@@ -262,6 +263,8 @@ def test_the_page_shows_the_link_and_the_recipients(monkeypatch):
             link = tab.input_value("#mailingLinkText")
             mailing.subscribe(link.split("start=")[1], 501, "Пётр Петров")
             tab.click("#mailingInviteBtn")
+            tab.wait_for_function(
+                f"document.getElementById('mailingLinkText').value !== {json.dumps(link)}")
             tab.wait_for_selector("#mailingList .mailingPerson")
             person = tab.inner_text("#mailingList")
             new_link = tab.input_value("#mailingLinkText")
