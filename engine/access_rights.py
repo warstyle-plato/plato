@@ -387,6 +387,53 @@ def _access_use_remote(url: str, chat: int, plot: dict[str, Any], surface: str) 
     return decision
 
 
+def paywall_enabled() -> bool:
+    """Замок платного доступа включён? Решение владельца (21.10.2026): замок
+    включается только вместе с работающей оплатой, поэтому по умолчанию он
+    ВЫКЛЮЧЕН (`DEVELOPAID_PAYWALL`). Выключен — расчёт ведёт себя как прежде:
+    после входа без счёта участков."""
+    return _env_str("DEVELOPAID_PAYWALL", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Запрос, внутри которого принимается решение: ключ кабинета рынка едет кукой
+# и заголовком, а не полем тела, и прокидывать его через каждый маршрут
+# значило бы завести второе место решения. Слой ниже кладёт сюда scope запроса.
+_ACCESS_SCOPE: contextvars.ContextVar = contextvars.ContextVar("developaid_access_scope", default=None)
+
+
+class _AccessScopeMiddleware:
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        token = _ACCESS_SCOPE.set(scope)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _ACCESS_SCOPE.reset(token)
+
+
+app.add_middleware(_AccessScopeMiddleware)
+
+
+def _access_team_key() -> bool:
+    """Ключ кабинета рынка (`MARKET_CABINET_KEY`) у этого запроса? Его держит
+    команда владельца, и доступ у неё полный, как по ключу администратора
+    (решение владельца, 21.10.2026). Проверку делает сам кабинет."""
+    scope = _ACCESS_SCOPE.get()
+    if not scope:
+        return False
+    try:
+        from market_search import cabinet as _market_cabinet  # noqa: PLC0415
+
+        return bool(_market_cabinet.authorised(Request(scope)))
+    except Exception:
+        return False
+
+
 def calc_access_for_chat(chat: int, what: str, *, inputs: dict[str, Any] | None = None,
                          cadastral: list[str] | None = None, surface: str = "site") -> dict[str, Any]:
     """ЕДИНСТВЕННОЕ решение «можно ли считать этот участок» для человека.
@@ -398,10 +445,14 @@ def calc_access_for_chat(chat: int, what: str, *, inputs: dict[str, Any] | None 
     # и вход (`_require_web_access`): проверять подпись нечем.
     if not _telegram_token():
         return {"allowed": True, "code": "open", "basis": "open"}
+    if not paywall_enabled():
+        return {"allowed": True, "code": "paywall_off", "basis": "paywall_off"}
     chat = int(chat)
     plot = access_plot(inputs, cadastral)
     if chat in usage_admin_ids():
         return {"allowed": True, "code": "admin", "basis": "admin", "plot": plot}
+    if _access_team_key():
+        return {"allowed": True, "code": "team", "basis": "market_cabinet_key", "plot": plot}
     remote = _projects_remote_url("/internal/access/use")
     decision = (_access_use_remote(remote, chat, plot, surface) if remote
                 else access_use(chat, plot, surface=surface))
@@ -422,6 +473,8 @@ def require_calc_access(session: str, key: str, what: str, *,
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
     if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
         return {"allowed": True, "code": "admin", "basis": "admin_key"}
+    if _access_team_key():
+        return {"allowed": True, "code": "team", "basis": "market_cabinet_key"}
     chat = _web_identity_chat_id(session)
     if not chat:
         _require_web_access("", "", what)  # отказ «войдите» — теми же словами, что везде
