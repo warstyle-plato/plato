@@ -59,3 +59,36 @@ Excel-модель (`_send_model_archive`) и Платон (`_run_agent`), че�
   открытыми;
 - тексты оферты (лицензионного договора) и политики возврата — места под них, оплата
   включается только с ними.
+
+## Оплата (ЮKassa)
+
+`engine/payments.py`. Оплата включается, только когда выполнено всё сразу
+(`payments_missing()` называет, чего нет):
+
+- заданы `YOOKASSA_SHOP_ID` и `YOOKASSA_SECRET_KEY` (вносит владелец; в коде и журнале их нет);
+- вписаны `docs/legal/offer.md` и `docs/legal/refund.md` (пока в файле строка `ЗАГОТОВКА:` —
+  выключено);
+- для ставки `DEVELOPAID_VAT_PCT` есть код чека.
+
+Маршруты: `POST /payments/create` (вход обязателен, нужна почта для чека),
+`GET /payments/return` (страница возврата спрашивает статус), `POST /payments/status`,
+`POST /payments/yookassa/webhook`, `GET /payments/terms`, `GET /offer`, `GET /refund`.
+
+- Права выдаёт только платёж, **перечитанный из API** (`GET /v3/payments/{id}`) со статусом
+  `succeeded` и суммой, равной цене заказа. Тело уведомления и возврат браузера прав не дают.
+- Уведомление принимается с адресов ЮKassa (за прокси — последний адрес `X-Forwarded-For`);
+  временная ошибка — 503, ЮKassa повторяет сутки. Повтор не продлевает доступ (`payment_id`).
+- Всё для выдачи лежит в `metadata` платежа; Render передаёт выдачу на ядро подписанным
+  `POST /internal/access/grant`.
+- Чек 54-ФЗ: `vat_code` 7 («НДС по ставке 5%»: цена включает налог, расчёт полный),
+  `payment_mode=full_payment`, `payment_subject` — `DEVELOPAID_RECEIPT_SUBJECT`
+  (по умолчанию `intellectual_activity`, уточнить у бухгалтера), выключатель
+  `DEVELOPAID_RECEIPTS`.
+- Адрес возврата — `DEVELOPAID_PUBLIC_URL` + `/payments/return`.
+- В кабинете ЮKassa: адрес уведомлений `https://<сайт>/payments/yookassa/webhook`, события
+  `payment.succeeded` и `payment.canceled`.
+- Подписка продлевается повторной оплатой; автоплатёж требует согласования с ЮKassa и
+  отдельного текста согласия — не сделан.
+
+Реквизиты программы — `docs/legal/product.json` (`product_info()`,
+`product_registration_line()`).
