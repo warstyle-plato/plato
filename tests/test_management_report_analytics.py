@@ -64,7 +64,8 @@ def test_findings_carry_numbers_and_sources():
     built = _full()
     found = {item["topic"]: item for item in built["findings"]}
     assert list(found) == ["Стройка", "Люди на площадке", "Отстающие работы", "Срок",
-                           "Корпуса", "Бюджет месяца", "Продажи", "Финансирование", "Открытые вопросы"]
+                           "Корпуса", "Бюджет месяца", "Продажи", "Финансирование", "Споры",
+                           "Открытые вопросы"]
     assert "прогноз Монитора по темпу работ" == found["Срок"]["source"]
     lag = built["physical"]["lag"]
     assert f"отставание {report._pp(-lag)[1:]}" in found["Стройка"]["text"]
