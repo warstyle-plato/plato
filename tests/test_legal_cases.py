@@ -39,7 +39,9 @@ PROJECT = "Кутузов Сити"
 PORT = 18806
 
 CARD = {
+    "our_side": "ООО «СП Менеджмент» (генподрядчик)",
     "counterparty": "ООО «Ромашка-Строй»",
+    "court_case": "",
     "contract": "Договор подряда № 1-ТСТ от 01.04.2026",
     "subject": "Работы не завершены в срок, подрядчик ушёл с объекта.",
     "status": "claim",
@@ -249,3 +251,23 @@ def test_the_page_reads_edits_and_confirms(monkeypatch, tmp_path):
     assert "Подать иск 10.10" in listed and "Претензия.docx" in listed
     assert "Ромашка-Строй" in box
     assert legal.cases(PROJECT)[0]["card"]["next_step"] == "Подать иск 10.10"
+
+
+def test_a_court_case_of_the_developer_is_not_mixed_with_the_general_contractor():
+    """Спор может вести и застройщик, и генподрядчик; суд называется номером дела."""
+    court = dict(CARD, our_side="ООО «СЗ «Пример»» (застройщик)",
+                 counterparty="АО «Проектный институт»", status="court",
+                 court_case="А40-1/2026",
+                 claims=[{"label": "Неотработанный аванс", "amount": 26_000_000,
+                          "direction": "to_them", "growing": False},
+                         {"label": "Встречный иск за работы", "amount": 8_400_000,
+                          "direction": "to_us", "growing": False}])
+    legal.save(PROJECT, court, [], "Иванова", at="2026-10-01T09:00:00+00:00")
+    got = report.build(PROJECT, "week", "2026-10-04")
+    assert "дело А40-1/2026" in report.render_text(got)
+    page = report.render_html(got)
+    assert "дело А40-1/2026" in page and "наша сторона: ООО «СЗ «Пример»» (застройщик)" in page
+    assert "Встречный иск за работы — 8,4 млн ₽" in page
+    assert "застройщик и генеральный подрядчик" in legal.INSTRUCTIONS
+    assert {"our_side", "court_case"} <= set(legal.CASE_SCHEMA["required"])
+

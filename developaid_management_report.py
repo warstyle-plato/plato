@@ -2143,6 +2143,7 @@ def _legal_lines(block: dict[str, Any]) -> list[str]:
         card, totals = item["card"], item["totals"]
         line = (f"• <b>Спор: {esc(card['counterparty'])}</b>"
                 + (f" ({esc(card['contract'])})" if card["contract"] else "")
+                + (f", дело {esc(card['court_case'])}" if card.get("court_case") else "")
                 + f" — {esc(names.get(card['status'], card['status']).lower())}. "
                 + (esc(_sentence(card["subject"])) if card["subject"] else ""))
         if totals["to_them"]:
@@ -2190,6 +2191,8 @@ def _legal_html(block: dict[str, Any]) -> str:
         out.append(
             f"<div class='item'><b>{esc(card['counterparty'])}</b>"
             + (f" · {esc(card['contract'])}" if card["contract"] else "")
+            + (f" · дело {esc(card['court_case'])}" if card.get("court_case") else "")
+            + (f" · наша сторона: {esc(card['our_side'])}" if card.get("our_side") else "")
             + f" · <b>{esc(names.get(card['status'], card['status']))}</b>"
             + (f"<br>{esc(card['subject'])}" if card["subject"] else "") + "</div>"
             + "<table class='legal'>" + "".join(_row(row) for row in rows) + "</table>")
