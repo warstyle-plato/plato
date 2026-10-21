@@ -311,7 +311,9 @@ def scoped(request) -> dict[str, Any] | None:
 _EXTRA_GET = frozenset({"/land/basemap", "/land/map-image",
                         # Юридические документы из подвала страницы торгов:
                         # согласие и политику человек вправе прочитать.
-                        "/consent", "/privacy", "/ads-consent"})
+                        "/consent", "/privacy", "/ads-consent",
+                        # Договор и условия возврата — те же документы подвала.
+                        "/offer", "/refund"})
 _EXTRA_POST = frozenset({"/land/lot-context"})
 # Статика оформления (логотип и т.п.) — не данные.
 _STATIC_PREFIXES = ("/guide/assets/",)

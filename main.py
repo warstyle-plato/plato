@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1232,6 +1232,68 @@ def _bot_calc_allowed(chat_id: int, context: dict[str, Any], what: str) -> bool:
         _send_message(chat_id, f"<b>{html.escape(what)} — нет доступа.</b>\n{html.escape(reason)}")
         return False
     return True
+
+
+def _tariffs_message(chat_id: int) -> None:
+    """Тарифы и мой доступ в боте — из тех же условий и прав, что у сайта."""
+    data = core.access_me(core.AccessRequest(session=core._telegram_session(chat_id, [])))
+    terms = data.get("terms") or {}
+    status = data.get("status") or {}
+    vat = (data.get("plot_offer") or {}).get("vat_note") or ""
+
+    def rub(value: Any) -> str:
+        return f"{int(value or 0):,}".replace(",", "\u00a0") + "\u00a0₽"
+
+    def day(ts: Any) -> str:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone(
+            timezone(timedelta(hours=3))).strftime("%d.%m.%Y") if ts else ""
+
+    lines = ["<b>Тарифы DevelopAid</b>",
+             f"Один участок можно посчитать бесплатно. Участок — это кадастровый номер "
+             f"или набор номеров, которые вы считаете вместе.",
+             f"• Один участок — <b>{rub(terms.get('plot_price_rub'))}</b>"
+             f"{' (' + vat + ')' if vat else ''}: доступ на {terms.get('plot_days')} дней, "
+             "любое число пересчётов, PDF-отчёт и Excel-модель.",
+             f"• Подписка — <b>{rub(terms.get('subscription_price_rub'))} в месяц</b>: "
+             "любые участки без ограничений.", "", "<b>Мой доступ</b>"]
+    if status.get("subscription_active"):
+        lines.append(f"Подписка действует до {day(status.get('subscription_until'))}.")
+    lines.append(f"Бесплатных участков осталось: {status.get('free_left', 0)} "
+                 f"из {status.get('free_plots', 0)}.")
+    for plot in [p for p in status.get("plots") or [] if p.get("active")]:
+        lines.append(f"• {html.escape(str(plot.get('label') or 'участок'))} — до {day(plot.get('until'))}")
+    lines.append("")
+    lines.append("Оплатить можно на сайте: «Личный кабинет» → «Тарифы и доступ»."
+                 if data.get("payments_available") else
+                 "Оплата на сайте пока не подключена. Чтобы открыть участок, напишите "
+                 "сюда, что хотите посчитать, — администратор откроет доступ.")
+    if data.get("registration"):
+        lines.append(f"<i>{html.escape(str(data['registration']))}.</i>")
+    _send_message(chat_id, "\n".join(lines))
+
+
+def _grant_command(chat_id: int, user_id: int, argument: str) -> None:
+    """/grant ID дней номера… | /grant ID дней подписка — ручная выдача (администраторы)."""
+    if user_id not in core.usage_admin_ids():
+        _send_message(chat_id, "Выдавать доступ могут только администраторы DevelopAid.")
+        return
+    parts = argument.split()
+    if len(parts) < 3 or not parts[0].lstrip("-").isdigit() or not parts[1].isdigit():
+        _send_message(chat_id, "Как выдать доступ:\n<code>/grant ID дней кадастровые_номера</code>\n"
+                               "<code>/grant ID дней подписка</code>")
+        return
+    subscription = parts[2].lower() in {"подписка", "subscription"}
+    try:
+        result = core.access_admin_grant(core.AccessRequest(
+            session=core._telegram_session(user_id, []), chat=int(parts[0]),
+            kind="subscription" if subscription else "plot",
+            cadastral=[] if subscription else parts[2:], days=int(parts[1])))
+    except HTTPException as exc:
+        _send_message(chat_id, f"Доступ не выдан: {html.escape(str(exc.detail))}")
+        return
+    until = datetime.fromtimestamp(float(result.get("until") or 0), tz=timezone.utc).astimezone(
+        timezone(timedelta(hours=3))).strftime("%d.%m.%Y")
+    _send_message(chat_id, f"Доступ выдан пользователю {int(parts[0])} до {until}.")
 
 
 def _send_model_archive(chat_id: int) -> None:
@@ -2676,6 +2738,12 @@ def _handle_message(message: dict[str, Any]) -> None:
         return
     if command in {"/stats", "/статистика"}:
         _stats_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
+        return
+    if command in {"/tariffs", "/тарифы"}:
+        _tariffs_message(chat_id)
+        return
+    if command in {"/grant", "/доступ"}:
+        _grant_command(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
         return
     if command in {"/platon", "/платон"}:
         _start_platon(chat_id)
