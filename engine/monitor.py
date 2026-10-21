@@ -615,17 +615,47 @@ def _legal_complete(instructions: str, text: str, schema: dict[str, Any]) -> str
     return _extract_openai_text(_openai_responses_request(payload))
 
 
-def _legal_listing(project: str) -> dict[str, Any]:
+def _legal_listing(project: str, session: str = "", key: str = "") -> dict[str, Any]:
     import developaid_legal_cases as legal
     return {"cases": legal.cases(project), "documents": legal.documents(project),
-            "statuses": legal.STATUSES, "directions": legal.DIRECTIONS}
+            "statuses": legal.STATUSES, "directions": legal.DIRECTIONS,
+            # Кнопка «Загрузить готовые карточки» — только владельцу сервиса.
+            "can_import": _is_admin_request(session, key)}
+
+
+class MonitorLegalImportRequest(BaseModel):
+    project: str
+    content_base64: str
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/legal/import", include_in_schema=False)
+def monitor_legal_import(req: MonitorLegalImportRequest) -> dict[str, Any]:
+    """Готовые карточки споров файлом (формат legal_seed.json) — только владельцу.
+
+    Карточки получают пометку «внесено по документам владельца»; спор, который
+    уже есть в реестре, повторно не заносится.
+    """
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    if not _is_admin_request(req.session, req.key):
+        raise HTTPException(403, "Загружать готовые карточки споров может только владелец сервиса.")
+    import developaid_legal_cases as legal
+    if not any(item["project"] == req.project for item in developaid_monitor.projects()):
+        raise HTTPException(404, f"В Мониторе нет проекта «{req.project}».")
+    try:
+        got = legal.import_cards(req.project, base64.b64decode(req.content_base64),
+                                 legal.SEED_AUTHOR)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return dict(_legal_listing(req.project, req.session, req.key), imported=got)
 
 
 @app.post("/monitor/legal", include_in_schema=False)
 def monitor_legal(req: MonitorLegalRequest) -> dict[str, Any]:
     """Споры и претензии проекта: подтверждённые карточки и документы."""
     _require_web_access(req.session, req.key, "Сводка руководству")
-    return _legal_listing(req.project)
+    return _legal_listing(req.project, req.session, req.key)
 
 
 @app.post("/monitor/legal/upload", include_in_schema=False)
@@ -686,7 +716,7 @@ def monitor_legal_case(req: MonitorLegalRequest) -> dict[str, Any]:
         raise HTTPException(404, str(exc.args[0]))
     except ValueError as exc:
         raise HTTPException(400, str(exc))
-    return _legal_listing(req.project)
+    return _legal_listing(req.project, req.session, req.key)
 
 
 @app.post("/monitor/legal/doc", include_in_schema=False)
