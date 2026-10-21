@@ -31,9 +31,11 @@ import developaid_actuals as actuals
 import developaid_monitor as monitor
 import developaid_monitor_manager as manager
 import developaid_monthly_budget as monthly_budget
+import developaid_legal_cases as legal_cases
 import developaid_project_notes as project_notes
 import developaid_site_photos as site_photos
 import developaid_report_charts as charts
+import developaid_report_gantt as report_gantt
 from market_search import contracting, sales_store
 
 PERIODS = {"week": "неделю", "month": "месяц"}
@@ -436,12 +438,16 @@ def _sums(rows: list[dict[str, Any]], bounds: dict[str, datetime.date],
     return out
 
 
-def _monitor_dashboard(project: str, end: datetime.date) -> dict[str, Any]:
-    """Панель Монитора на конец периода: срок, финансирование — его расчётом."""
+def _monitor_view(project: str, end: datetime.date) -> dict[str, Any]:
+    """Срез Монитора на конец периода — со всеми слоями, как на его странице."""
     import developaid_monitor_page  # noqa: F401 — ставит слои среза, как на странице
 
-    view = monitor.build(project, cut=end.isoformat(), upto=end.isoformat())
-    return view.get("dashboard") or {}
+    return monitor.build(project, cut=end.isoformat(), upto=end.isoformat())
+
+
+def _monitor_dashboard(project: str, end: datetime.date) -> dict[str, Any]:
+    """Панель Монитора на конец периода: срок, финансирование — его расчётом."""
+    return _monitor_view(project, end).get("dashboard") or {}
 
 
 def _monitor_funding(project: str, end: datetime.date) -> dict[str, Any]:
@@ -705,7 +711,30 @@ def schedule(dashboard: dict[str, Any]) -> dict[str, Any]:
             "forecast": block.get("forecast_finish"),
             "known": block.get("forecast_known", True),
             "source": block.get("forecast_source") or "",
-            "delay_days": block.get("rnv_delay_days")}
+            "delay_days": block.get("rnv_delay_days"),
+            "stalled": list(block.get("stalled") or [])}
+
+
+def _stalled_words(block: dict[str, Any]) -> str:
+    """Работы, которые почти стоят: прогноз ввода их не учитывает (Монитор)."""
+    items = block.get("stalled") or []
+    if not items:
+        return ""
+    shown = ", ".join(f"«{item['name']}»" + (f" ({item['object']})" if item.get("object") else "")
+                      for item in items[:3])
+    more = len(items) - 3
+    return (f"Прогноз не учитывает {len(items)} "
+            f"{_plural(len(items), 'работу', 'работы', 'работ')}, которые почти стоят: "
+            f"актов по ним так мало, что при нынешнем темпе они растянулись бы на годы, "
+            f"и такой темп не продлевается в будущее — {shown}"
+            + (f" и ещё {more}" if more > 0 else "") + ".")
+
+
+def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
+    """Сроки работ по корпусам — из дерева графика Монитора (`report_gantt`)."""
+    if dashboard.get("error"):
+        return _missing(f"Монитор не собрал срез: {dashboard['error']}")
+    return report_gantt.model((view.get("schedule") or {}).get("management") or [])
 
 
 # --------------------------------------------------------------------------
@@ -775,19 +804,25 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
         sales_project = (link or {}).get("sales_project") or ""
         declined = link is not None and not sales_project
     blocks: dict[str, Any] = {}
-    # Панель Монитора — один расчёт на всю сводку: срок и финансирование.
+    # Срез Монитора — один расчёт на всю сводку: срок, график по корпусам и
+    # финансирование.
     try:
-        dashboard = _monitor_dashboard(project, bounds["end"])
+        view = _monitor_view(project, bounds["end"])
+        dashboard = view.get("dashboard") or {}
     except Exception as exc:  # noqa: BLE001 — причина уходит в сводку
+        view = {}
         dashboard = {"error": f"{type(exc).__name__}: {exc}"}
     for name, collect in (
             ("physical", lambda: physical(project, kind, bounds["end"])),
             ("crew", lambda: crew(project, kind, bounds["end"])),
             ("schedule", lambda: schedule(dashboard)),
+            ("gantt", lambda: gantt(view, dashboard)),
             ("budget", lambda: budget(project, kind, bounds["end"])),
             ("sales", lambda: sales(sales_project, kind, bounds["end"], sales_dir)),
             ("funding", lambda: funding(project, kind, bounds["end"], sales_project,
                                         sales_dir, dashboard)),
+            ("legal", lambda: dict(legal_cases.for_report(
+                project, bounds["start"], bounds["end"]), state="ok")),
             ("notes", lambda: dict(project_notes.for_period(
                 project, bounds["start"], bounds["end"]), state="ok")),
             ("photos", lambda: dict(site_photos.for_report(
@@ -898,10 +933,23 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         else:
             text = (f"Прогноз ввода при нынешнем темпе — {_day(block['forecast'])}; "
                     "утверждённого срока ввода в данных Монитора нет, сравнить не с чем.")
+        if block.get("stalled"):
+            text += " " + _stalled_words(block)
         add("Срок", text, "прогноз Монитора по темпу работ",
             "bad" if late else "")
     elif block.get("reason"):
         add("Срок", block["reason"], "", "missing")
+    late = [corpus for corpus in (report.get("gantt") or {}).get("corpora") or []
+            if (corpus.get("delta_days") or 0) > 0]
+    if late:
+        worst = max(late, key=lambda corpus: corpus["delta_days"])
+        when = ("по работам с известным темпом" if worst.get("forecast_partial")
+                else f"работы по прогнозу закончатся {_day(worst['forecast_finish'])}")
+        add("Корпуса", f"Сильнее всех опаздывает {worst['name']}: {when} — на "
+            f"{worst['delta_days']} дн. позже утверждённого графика"
+            + (f"; всего с опозданием {len(late)} "
+               f"{_plural(len(late), 'корпус', 'корпуса', 'корпусов')}." if len(late) > 1 else "."),
+            "график Монитора по корпусам, прогноз по темпу", "bad")
 
     block = report.get("budget") or {}
     if block.get("state") in {"ok", "partial"}:
@@ -1021,6 +1069,25 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             else "")
     else:
         add("Финансирование", block.get("reason") or "Данных нет.", "", "missing")
+
+    block = report.get("legal") or {}
+    if block.get("state") == "ok" and block.get("open"):
+        opened = block["open"]
+        ours = sum(item["totals"]["to_them"] for item in opened)
+        theirs = sum(item["totals"]["to_us"] for item in opened)
+        text = (f"Открытых споров: {len(opened)}; наши требования — {_rub(ours)}"
+                + (f", требования к нам — {_rub(theirs)}" if theirs else ""))
+        growing = [item["card"]["counterparty"] for item in opened
+                   if any(claim["growing"] for claim in item["card"]["claims"])]
+        if growing:
+            text += f"; неустойка продолжает расти: {', '.join(growing)}"
+        dated = sorted((item for item in opened if item["card"]["deadline"]),
+                       key=lambda item: item["card"]["deadline"])
+        if dated:
+            first = dated[0]["card"]
+            text += (f". Ближайший срок — {_day(first['deadline'])}, "
+                     f"{first['counterparty']}: {first['next_step'] or 'следующий шаг не записан'}")
+        add("Споры", _sentence(text), "реестр споров, карточки подтверждены по документам")
 
     block = report.get("notes") or {}
     if block.get("state") == "ok":
@@ -1246,6 +1313,8 @@ def render_text(report: dict[str, Any]) -> str:
                          + (f" ({row['object']})" if row["object"] else "")
                          + f" — {_pct(row['fact'])} при плане {_pct(row['plan'])}."))
 
+    lines.extend(esc(line) for line in report_gantt.text_lines(report.get("gantt") or {}))
+
     lines += ["", "<b>Продажи</b>"]
     block = report.get("sales") or {}
     if block.get("state") == "ok":
@@ -1292,8 +1361,9 @@ def render_text(report: dict[str, Any]) -> str:
     else:
         lines.append(esc(block.get("reason") or "Данных нет."))
 
-    block = report.get("notes") or {}
     lines += ["", "<b>Общая информация</b>"]
+    lines.extend(_legal_lines(report.get("legal") or {}))
+    block = report.get("notes") or {}
     if block.get("state") != "ok":
         lines.append(esc(block.get("reason") or "Данных нет."))
     elif not block.get("open") and not block.get("closed"):
@@ -1328,6 +1398,7 @@ th:first-child,td:first-child{text-align:left;white-space:normal}
 .photos{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:6px 0}
 figure.photo{margin:0;break-inside:avoid;page-break-inside:avoid}figure.photo img{width:100%;height:230px;object-fit:cover;border-radius:4px;border:1px solid #d6dde6;display:block}
 figure.photo figcaption{font-size:10.5px;margin-top:3px}
+table.legal td{vertical-align:top;text-align:left;white-space:normal}table.legal td:first-child{width:28%;color:#5b6b7d}
 table.works td{vertical-align:top}table.works td:nth-child(2),table.works th:nth-child(2){text-align:left;white-space:normal}table.works td:nth-child(3){color:#5b6b7d;font-size:10.5px;white-space:normal}
 table.articles tr.chapter td{background:#f4f7fb;font-weight:600}
 table.articles tr.total td{border-top:2px solid #1f4e8c;font-weight:600}
@@ -1659,6 +1730,19 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     return out
 
 
+def _gantt_html(report: dict[str, Any]) -> str:
+    block = report.get("gantt") or {}
+    out = ["<h3>Сроки работ по корпусам</h3>"]
+    if block.get("state") != "ok":
+        out.append(f"<p class='note'>{html.escape(block.get('reason') or 'Графика работ нет.')}</p>")
+        return "".join(out)
+    rnv = report.get("schedule") if (report.get("schedule") or {}).get("state") == "ok" else {}
+    out.append(report_gantt.svg(block, report.get("end"), rnv))
+    out.extend(f"<p class='note'>{html.escape(line)}</p>"
+               for line in report_gantt.notes(block, rnv))
+    return "".join(out)
+
+
 def _tiles_html(items: list[dict[str, str]]) -> str:
     esc = html.escape
     return ("<div class='tiles'>" + "".join(
@@ -1961,6 +2045,7 @@ def render_html(report: dict[str, Any]) -> str:
     out.append("<h3>Люди на площадке</h3>")
     out.append(_crew_html(report.get("crew") or {}, report["kind"]))
     out.append(_works_html(report.get("crew") or {}, report["kind"]))
+    out.append(_gantt_html(report))
     block = report.get("schedule") or {}
     if block.get("state") == "ok" and block.get("forecast"):
         delay = block.get("delay_days")
@@ -1970,6 +2055,8 @@ def render_html(report: dict[str, Any]) -> str:
                    f"{_day(block['forecast'])}"
                    + (f" — на {delay:.0f} дн. позже." if isinstance(delay, (int, float))
                       and delay > 0 else ".") + "</p>")
+        if block.get("stalled"):
+            out.append(f"<p class='note warn'>{html.escape(_stalled_words(block))}</p>")
 
     out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 
@@ -2040,6 +2127,7 @@ def render_html(report: dict[str, Any]) -> str:
         out.append(_budget_depth_html(report["budget"], _date(report["end"])))
 
     out.append("<h2>Общая информация</h2>")
+    out.append(_legal_html(report.get("legal") or {}))
     block = report.get("notes") or {}
     if block.get("state") != "ok":
         out.append(missing(block))
@@ -2056,6 +2144,79 @@ def render_html(report: dict[str, Any]) -> str:
                        f"{esc(note['text'])} <span class='note'>— {_day(note['at'])}, "
                        f"{esc(note['author'])}</span></div>")
     return "\n".join(_keep_headings([part for part in out if part]))
+
+
+def _claims_words(card: dict[str, Any], direction: str) -> str:
+    items = [claim for claim in card["claims"] if claim["direction"] == direction]
+    return "; ".join(f"{claim['label']} — {_rub(claim['amount'])}"
+                     + (" (растёт)" if claim["growing"] else "") for claim in items)
+
+
+def _legal_lines(block: dict[str, Any]) -> list[str]:
+    """Споры для сообщения: строка на спор, события за период."""
+    esc = html.escape
+    if block.get("state") != "ok":
+        return [esc(block.get("reason") or "Реестр споров не собран.")] if block else []
+    names = block.get("statuses") or {}
+    out = []
+    for item in (block.get("open") or []) + (block.get("closed") or []):
+        card, totals = item["card"], item["totals"]
+        line = (f"• <b>Спор: {esc(card['counterparty'])}</b>"
+                + (f" ({esc(card['contract'])})" if card["contract"] else "")
+                + (f", дело {esc(card['court_case'])}" if card.get("court_case") else "")
+                + f" — {esc(names.get(card['status'], card['status']).lower())}. "
+                + (esc(_sentence(card["subject"])) if card["subject"] else ""))
+        if totals["to_them"]:
+            line += f" Наши требования: {_rub(totals['to_them'])}."
+        if totals["to_us"]:
+            line += f" Требования к нам: {_rub(totals['to_us'])}."
+        if card["next_step"]:
+            line += (f" Дальше: {esc(_sentence(card['next_step']))}"
+                     + (f" Срок — {_day(card['deadline'])}." if card["deadline"] else ""))
+        out.append(line)
+    return out
+
+
+def _legal_html(block: dict[str, Any]) -> str:
+    """Споры и претензии: по блоку на спор — суть, требования, что дальше, события."""
+    esc = html.escape
+    if block.get("state") != "ok":
+        return f"<p class='missing'>{esc(block.get('reason') or 'Реестр споров не собран.')}</p>"
+    items = (block.get("open") or []) + (block.get("closed") or [])
+    if not items:
+        return ""
+    names = block.get("statuses") or {}
+    out = ["<h3>Споры и претензии</h3>"]
+    for item in items:
+        card, totals = item["card"], item["totals"]
+        rows = []
+        for direction, label in (("to_them", "Наши требования"), ("to_us", "Требования к нам")):
+            claims = [claim for claim in card["claims"] if claim["direction"] == direction]
+            if claims:
+                rows.append([label + (f", всего {_rub(totals[direction])}"
+                                      if len(claims) > 1 else ""),
+                             "<br>".join(f"{esc(claim['label'])} — {_rub(claim['amount'])}"
+                                         + (" <b>(растёт)</b>" if claim["growing"] else "")
+                                         for claim in claims)])
+        if card["next_step"] or card["deadline"]:
+            rows.append(["Что дальше", esc(card["next_step"] or "—")
+                         + (f" — <b>до {_day(card['deadline'])}</b>" if card["deadline"] else "")])
+        if item["fresh"]:
+            rows.append(["За период", "<br>".join(
+                f"{_day(event['date'])} — {esc(event['summary'])}"
+                + (f" ({esc(event['document'])})" if event["document"] else "")
+                for event in item["fresh"])])
+        if card["position"]:
+            rows.append(["Позиция и риск", esc(card["position"])])
+        out.append(
+            f"<div class='item'><b>{esc(card['counterparty'])}</b>"
+            + (f" · {esc(card['contract'])}" if card["contract"] else "")
+            + (f" · дело {esc(card['court_case'])}" if card.get("court_case") else "")
+            + (f" · наша сторона: {esc(card['our_side'])}" if card.get("our_side") else "")
+            + f" · <b>{esc(names.get(card['status'], card['status']))}</b>"
+            + (f"<br>{esc(card['subject'])}" if card["subject"] else "") + "</div>"
+            + "<table class='legal'>" + "".join(_row(row) for row in rows) + "</table>")
+    return "".join(out)
 
 
 def _keep_headings(parts: list[str]) -> list[str]:

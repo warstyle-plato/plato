@@ -34,6 +34,9 @@ PACE_WORDS = {
     "baseline_closed": "базовый план по работе закрыт",
     "future": "работа ещё не начиналась",
     "no_pace": "темпа нет: актов КС по работе не было",
+    "stalled_pace": ("работа почти стоит: при нынешнем темпе актов она закончилась бы "
+                     "позже трёх своих плановых длительностей после плана — такой темп "
+                     "не экстраполируется"),
 }
 
 _MAX_NAMED = 3
@@ -75,7 +78,7 @@ def delay_reason(node: dict[str, Any]) -> dict[str, Any] | None:
 
     if kind in {"own", "both"} and method:
         parts.append("прогноз построен " + PACE_WORDS.get(method, f"методом «{method}»")
-                     if method not in {"no_pace", "mixed_lifecycle_rss", "future",
+                     if method not in {"no_pace", "stalled_pace", "mixed_lifecycle_rss", "future",
                                        "baseline_closed", "accepted_complete"}
                      else PACE_WORDS.get(method, method))
 
