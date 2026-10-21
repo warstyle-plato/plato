@@ -1292,6 +1292,10 @@ async function askJson(url, init){
  // the expected pattern» — ровно эту фразу владелец увидел вместо каталога
  // торгов (27.08.2026). Разбирать вслепую значит показать поломку разбора
  // вместо причины отказа.
+ // Сессия входа едет заголовком: экономика каталога открывается тем же
+ // решением доступа, что и расчёт, а запросы каталога — GET без тела.
+ let sess='';try{sess=localStorage.getItem('developaid_web_session')||''}catch(_){}
+ if(sess){init=Object.assign({},init||{});init.headers=Object.assign({},init.headers||{},{'X-Developaid-Session':sess})}
  const r=await fetch(url, init);
  const raw=await r.text();
  let d=null;
