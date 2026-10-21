@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import hashlib
 import hmac
@@ -1666,6 +1667,62 @@ def _usage_digest_loop() -> None:
         time.sleep(900)
 
 
+def _split_message(text: str, limit: int = 3900) -> list[str]:
+    """Длинное сообщение — частями по строкам: у Telegram предел 4096 знаков,
+    а строки сводки — целые фразы со своей разметкой, их не разрываем."""
+    parts, current = [], ""
+    for line in text.split("\n"):
+        if current and len(current) + len(line) + 1 > limit:
+            parts.append(current)
+            current = ""
+        current = f"{current}\n{line}" if current else line
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _deliver_management_reports() -> list[dict[str, Any]]:
+    """Сводки руководству с ядра — подписчикам: сообщение и PDF.
+
+    Ядро собирает их в 9:00 МСК и отдаёт каждую ровно один раз (второй воркер
+    получает пустую очередь). Что дошло и что нет, с причиной, возвращается
+    ядру: владелец видит это в списке получателей на странице сводки.
+    """
+    if not core._telegram_token() or not core._telegram_webhook_enabled():
+        return []
+    got = core._report_mailing_call("/internal/report/outbox", "report-outbox", 0)
+    done = []
+    for item in got.get("items") or []:
+        pdf = base64.b64decode(item["pdf"]) if item.get("pdf") else b""
+        results: dict[str, str] = {}
+        for chat in item.get("chats") or []:
+            try:
+                for part in _split_message(item["text"]):
+                    core._telegram_send_message(int(chat), part)
+                if pdf:
+                    core._telegram_send_document_bytes(
+                        int(chat), pdf, item.get("filename") or "svodka.pdf",
+                        caption=f"Сводка «{html.escape(item['project'])}» — PDF")
+                elif item.get("error"):
+                    core._telegram_send_message(int(chat), html.escape(item["error"]))
+                results[str(chat)] = ""
+            except Exception as exc:  # noqa: BLE001 — причина уходит владельцу
+                results[str(chat)] = f"{type(exc).__name__}: {exc}"
+        core._report_mailing_call("/internal/report/sent", "report-sent", 0,
+                                  slot=item["slot"], project=item["project"], results=results)
+        done.append({"slot": item["slot"], "project": item["project"], "results": results})
+    return done
+
+
+def _management_report_loop() -> None:
+    while True:
+        try:
+            _deliver_management_reports()
+        except Exception:
+            pass  # отданное ядром помечено «не подтверждено» — это видно владельцу
+        time.sleep(60)
+
+
 def _notification_overrides() -> dict[str, dict[str, bool]]:
     """Что человек сказал про рассылки. Карта живёт на ядре, рядом с профилями.
 
@@ -2705,6 +2762,10 @@ def _start_usage_digest() -> None:
     """Сводка сама приходит раз в сутки — иначе «отслеживать» означает не
     забывать спрашивать."""
     threading.Thread(target=_usage_digest_loop, name="usage-digest", daemon=True).start()
+    # Сводка руководству ждёт 9:00 — пятнадцатиминутный круг сводки для неё
+    # слишком редкий, у неё свой.
+    threading.Thread(target=_management_report_loop, name="management-report",
+                     daemon=True).start()
 
 
 @app.on_event("startup")

@@ -705,20 +705,171 @@ def monitor_report_pdf(req: MonitorReportRequest) -> Response:
     не держит цикл событий, а очередь печати общая с отчётом о продажах.
     """
     _require_web_access(req.session, req.key, "Сводка руководству")
-    import developaid_management_report as management_report
     from market_search import report_pdf
     report = _monitor_report(req)
+    try:
+        raw, name = _monitor_report_pdf(report)
+    except report_pdf.PdfUnavailable as exc:
+        raise HTTPException(503, str(exc)) from exc
+    from urllib.parse import quote
+    return Response(raw, media_type="application/pdf", headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
+
+
+def _monitor_report_pdf(report: dict[str, Any]) -> tuple[bytes, str]:
+    """PDF сводки и имя файла — одни для кнопки на странице и для рассылки."""
+    import developaid_management_report as management_report
+    from market_search import report_pdf
     title = f"Сводка {report['project']} {report['start']}—{report['end']}"
     document = report_pdf.document(management_report.render_html(report),
                                    style=management_report.REPORT_STYLE, title=title)
-    try:
-        raw = report_pdf.render(document, footer=f"Сводка руководству · {report['project']}")
-    except report_pdf.PdfUnavailable as exc:
-        raise HTTPException(503, str(exc)) from exc
+    raw = report_pdf.render(document, footer=f"Сводка руководству · {report['project']}")
     name = "".join(ch for ch in title if ch.isalnum() or ch in " -_")[:80].strip() or "svodka"
-    from urllib.parse import quote
-    return Response(raw, media_type="application/pdf", headers={
-        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}.pdf"})
+    return raw, f"{name}.pdf"
+
+
+# --- рассылка сводки ---------------------------------------------------------
+#
+# Ядро собирает, бот на Render рассылает: до Telegram отсюда не дойти.
+# Устройство, замки и отметки — в `developaid_report_mailing`.
+
+_REPORT_UNSUBSCRIBE = "/report_stop"
+
+
+def _mailing_make(project: str, kind: str, end: str) -> dict[str, Any]:
+    """Сводка срока рассылки: текст для сообщения и PDF. Только из фона."""
+    import developaid_management_report as management_report
+    from market_search import report_pdf
+    report = management_report.build(project, kind, end)
+    text = (management_report.render_text(report)
+            + f"\n\nОтписаться от сводки: {_REPORT_UNSUBSCRIBE}")
+    try:
+        raw, name = _monitor_report_pdf(report)
+    except report_pdf.PdfUnavailable as exc:
+        return {"text": text, "pdf": None, "filename": "", "retry": True,
+                "error": f"PDF не напечатался: {exc}"}
+    return {"text": text, "pdf": raw, "filename": name, "error": ""}
+
+
+def _mailing_loop() -> None:
+    import time as _time
+
+    import developaid_report_mailing as mailing
+    while True:
+        try:
+            mailing.build_due(_mailing_make)
+        except Exception as exc:  # noqa: BLE001 — поток не должен умереть
+            _MAILING_STATE["error"] = f"{type(exc).__name__}: {exc}"
+        else:
+            _MAILING_STATE["error"] = ""
+        _MAILING_STATE["checked_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        _time.sleep(120)
+
+
+_MAILING_STATE: dict[str, str] = {"error": "", "checked_at": ""}
+
+
+@app.on_event("startup")
+def _start_report_mailing() -> None:
+    """Сборка рассылки — на ядре, где данные Монитора и печать PDF."""
+    import sys as _sys
+    if _projects_remote_url("/internal/report/outbox") or "pytest" in _sys.modules:
+        return
+    threading.Thread(target=_mailing_loop, name="report-mailing", daemon=True).start()
+
+
+class MonitorMailingRequest(BaseModel):
+    project: str
+    invite: bool = False
+    remove_chat: int = 0
+    session: str = ""
+    key: str = ""
+
+
+@app.post("/monitor/report/mailing", include_in_schema=False)
+def monitor_report_mailing(req: MonitorMailingRequest) -> dict[str, Any]:
+    """Рассылка проекта для страницы сводки: ссылка, получатели, отписка.
+
+    ``invite`` — выдать новую ссылку (прежняя перестаёт действовать),
+    ``remove_chat`` — отписать получателя.
+    """
+    _require_web_access(req.session, req.key, "Сводка руководству")
+    import developaid_report_mailing as mailing
+    if not req.project.strip():
+        raise HTTPException(400, "Не указан проект.")
+    if req.invite:
+        mailing.invite(req.project, _monitor_note_author(req.session, req.key))
+    if req.remove_chat:
+        mailing.unsubscribe(req.remove_chat, req.project)
+    out = mailing.status(req.project)
+    bot = _web_login_bot_username()
+    invite = out.get("invite")
+    out["link"] = f"https://t.me/{bot}?start={invite['start']}" if invite and bot else ""
+    out["link_reason"] = ("" if out["link"] or not invite else
+                          "Имя бота неизвестно ядру: задайте переменную TELEGRAM_BOT_USERNAME.")
+    out["builder"] = dict(_MAILING_STATE)
+    return out
+
+
+class ReportMailingInternalRequest(BaseModel):
+    chat_id: int = 0
+    sign: str = ""
+    start: str = ""
+    name: str = ""
+    slot: str = ""
+    project: str = ""
+    results: dict[str, str] = {}
+
+
+def _mailing_signed(req: ReportMailingInternalRequest, code: str) -> None:
+    expected = _web_login_sign(code, int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+
+
+@app.post("/internal/report/subscribe", include_in_schema=False)
+def internal_report_subscribe(req: ReportMailingInternalRequest) -> dict[str, Any]:
+    """Бот: человек пришёл по ссылке-приглашению «/start rep_<код>»."""
+    _mailing_signed(req, "report-subscribe")
+    import developaid_report_mailing as mailing
+    try:
+        project = mailing.subscribe(req.start, req.chat_id, req.name)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {"project": project, "next": mailing.next_slot()}
+
+
+@app.post("/internal/report/unsubscribe", include_in_schema=False)
+def internal_report_unsubscribe(req: ReportMailingInternalRequest) -> dict[str, Any]:
+    """Бот: «/report_stop» — отписка ото всех сводок."""
+    _mailing_signed(req, "report-unsubscribe")
+    import developaid_report_mailing as mailing
+    return {"projects": mailing.unsubscribe(req.chat_id)}
+
+
+@app.post("/internal/report/outbox", include_in_schema=False)
+def internal_report_outbox(req: ReportMailingInternalRequest) -> dict[str, Any]:
+    """Бот: забрать неотправленное. Отданное больше никому не отдаётся."""
+    _mailing_signed(req, "report-outbox")
+    import developaid_report_mailing as mailing
+    items = mailing.take()
+    for item in items:
+        item["pdf"] = base64.b64encode(item["pdf"]).decode("ascii") if item["pdf"] else ""
+    return {"items": items}
+
+
+@app.post("/internal/report/sent", include_in_schema=False)
+def internal_report_sent(req: ReportMailingInternalRequest) -> dict[str, Any]:
+    """Бот: что дошло, что нет — с причиной, её видит владелец на странице."""
+    _mailing_signed(req, "report-sent")
+    import developaid_report_mailing as mailing
+    try:
+        mailing.confirm(req.slot, req.project, req.results)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    return {"ok": True}
 
 
 @app.post("/monitor/gantt", include_in_schema=False)
