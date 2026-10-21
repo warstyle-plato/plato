@@ -26,7 +26,8 @@ import developaid_monthly_budget as monthly_budget  # noqa: E402
 import developaid_project_notes as notes  # noqa: E402
 import developaid_report_charts as charts  # noqa: E402
 from test_management_report_funding import _rss_with_sources, _sales as _credit_sales  # noqa: E402
-from test_management_report_model import PROJECT, _gpr_book, _project, budget_book  # noqa: E402
+from test_management_report_model import (  # noqa: E402
+    M, PROJECT, _contract, _gpr_book, _project, budget_book)
 
 
 @pytest.fixture(autouse=True)
@@ -280,3 +281,50 @@ def test_reports_without_works_say_so_and_do_not_go_blank():
     page = report.render_html(built)
     assert ("Работы не перечислены: в отчётах за период нет раздела «По работам»"
             in page)
+
+
+def test_deviations_are_for_last_month_not_the_last_month_with_a_fact():
+    # «В блоке Бюджет месяца неверный план апреля, не могу понять, откуда он
+    # подтянут» (финансист, 21.10.2026): в октябрьской сводке стояла таблица за
+    # апрель — последний месяц файла с заполненным фактом.
+    from openpyxl import Workbook
+    import io
+
+    book = Workbook()
+    sheet = book.active
+    for column, month in ((5, "Апрель 2026"), (7, "Сентябрь 2026")):
+        sheet.cell(row=4, column=column, value=month)
+        sheet.cell(row=5, column=column, value="ПЛАН")
+        sheet.cell(row=5, column=column + 1, value="ФАКТ")
+    rows = [("Стоимость строительства и проектирования", -300e6, -200e6),
+            ("Основные объекты строительства", -280e6, -190e6),
+            ("Содержание службы заказчика", -6e6, -6e6),
+            ("Коммерческие расходы", -10e6, -9e6),
+            ("Расходы на продажу (КС) - Группа", -5e6, -4e6)]
+    for r, (name, plan, fact) in enumerate(rows, 6):
+        sheet.cell(row=r, column=1, value=name)
+        sheet.cell(row=r, column=5, value=plan)
+        sheet.cell(row=r, column=6, value=fact)
+        sheet.cell(row=r, column=7, value=plan * 4)  # сентябрь: план есть, факта нет
+    blob = io.BytesIO()
+    book.save(blob)
+    monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-02")
+    got = monthly_budget._articles(PROJECT, datetime.date(2026, 10, 18))
+    assert got == {"known": False,
+                   "reason": "в бюджете от 2026-10-02 не заполнен факт за 09.2026"}
+    got = monthly_budget._articles(PROJECT, datetime.date(2026, 12, 5))
+    assert got == {"known": False, "reason": "в бюджете от 2026-10-02 нет месяца 11.2026"}
+
+
+def test_sales_area_is_of_goods_sold_by_the_metre():
+    # «Сумма учитывает машиноместа, а площадь машиномест не учитывается»
+    # (финансист, 21.10.2026). Машиноместа и кладовые — штуками рядом.
+    rows = [_contract("2026-10-10", "Квартира", 50.0, 20 * M),
+            _contract("2026-10-11", "Машиноместо", 14.0, 3 * M),
+            _contract("2026-10-12", "Машиноместо", 0.0, 3 * M)]
+    fact = report._fact(rows)
+    assert fact["area"] == pytest.approx(50.0) and fact["amount"] == pytest.approx(26 * M)
+    assert fact["pieces"] == {"Машиноместо": 2.0} and fact["area_unknown"] == 0
+    assert report._sales_line("За неделю", fact) == (
+        "За неделю: 3 договора на 26,0 млн ₽: квартиры и помещения — 50 м², 2 машиноместа, "
+        "квартиры в среднем по 400 000 ₽ за м².")
