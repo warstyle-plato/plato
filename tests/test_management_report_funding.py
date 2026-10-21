@@ -138,7 +138,8 @@ def test_the_limit_is_the_monitor_finance_card(monkeypatch):
     assert seen["args"] == [(PROJECT, datetime.date(2026, 10, 18))]
     assert ("Лимит банка по РСС (главы 2–3): 3,97 млрд ₽, оплачено с начала проекта "
             "2,10 млрд ₽, остаток лимитов статей 1,50 млрд ₽, резерв 138,0 млн ₽.") in text
-    assert "Не хватает на достройку: 230,0 млн ₽, начиная с март 2027." in text
+    assert "По РСС не хватает: 230,0 млн ₽, начиная с март 2027." in text
+    assert "Утверждённый бюджет не загружен" in text
 
 
 def test_escrow_against_the_credit_plan():
@@ -219,3 +220,46 @@ def test_the_renamed_bank_sheet_is_read():
     assert got["sheet"] == "План банка_new"
     assert contracting.bank_escrow_plan(got) == {"2026 Q3": pytest.approx(1_628_540_000.0),
                                                  "2026 Q4": pytest.approx(2_172_270_000.0)}
+
+
+def test_the_approved_budget_and_its_deficit_come_from_the_monitor(monkeypatch):
+    # «В мониторе есть бюджет строительства по утверждённому бюджету, 6 с
+    # лишним млрд. Где это учтено?» (владелец, 21.10.2026): в сводке его не было.
+    _project()
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {"funding": {
+        "known": True, "bank_limit": 3_970 * M, "paid_actual": 2_100 * M,
+        "bank_remaining": 1_500 * M, "reserve": 138 * M, "additional_financing": 0.0,
+        "approved": 6_200 * M, "approved_remaining": 4_100 * M,
+        "deficit_ladder": {"total": 2_462 * M}}}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    text = report.render_text(built)
+    assert ("Утверждённый бюджет (главы 2–3, финмодель): 6,20 млрд ₽; остаток потребности "
+            "(бюджет минус оплаченное) 4,10 млрд ₽ при лимитах статей и резерве 1,64 млрд ₽ — "
+            "не хватает по утверждённому бюджету 2,46 млрд ₽.") in text
+    assert "По РСС лимитов и резерва хватает до ввода" in text
+    found = {item["topic"]: item["text"] for item in built["findings"]}
+    assert "по утверждённому бюджету 6,20 млрд ₽ не хватает на достройку 2,46 млрд ₽" \
+        in found["Финансирование"].lower()
+    page = report.render_html(built)
+    assert "Не хватает по утверждённому бюджету" in page and "2,46 млрд ₽" in page
+    # Плашки сверху — деньги стройки пятью числами подряд (владелец, 21.10.2026).
+    money = {item["label"]: item["value"] for item in report.tiles(built)}
+    assert [money[label] for label in ("Утверждённый бюджет", "Лимит банка",
+                                       "Остаток лимита банка", "Дефицит на достройку")] == [
+        "6,20 млрд ₽", "3,97 млрд ₽", "1,50 млрд ₽", "2,46 млрд ₽"]
+    assert money["Выбрано у банка"] == report._rub(built["funding"]["draws"]["total"])
+
+
+def test_escrow_at_the_current_pace_leads():
+    # «Эскроу НЕ покрывает кредит в текущем темпе, это важнее, что по плану
+    # 0,95» (владелец, 21.10.2026).
+    _project()
+    _sales()
+    built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
+    queue = built["funding"]["escrow"]["queues"][0]
+    tile = next(item for item in report.tiles(built) if item["label"].startswith("Эскроу"))
+    assert tile["label"] == "Эскроу при нынешнем темпе"
+    assert tile["value"] == report._times(queue["keeping_pace_coverage"])
+    assert "по плану финмодели" in tile["note"]
+    found = {item["topic"]: item["text"] for item in built["findings"]}
+    assert "при нынешнем темпе эскроу очереди «1 очередь»" in found["Финансирование"].lower()
