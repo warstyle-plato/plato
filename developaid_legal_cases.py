@@ -535,5 +535,7 @@ def for_report(project: str, start: datetime.date, end: datetime.date) -> dict[s
         else:
             open_.append(item)
     by_amount = lambda item: -(item["totals"]["to_them"] + item["totals"]["to_us"])
+    # Сколько карточек подтверждено к концу периода: ноль — реестр не заполняли,
+    # и сводка говорит это прямо, а не прячет раздел, будто споров нет.
     return {"open": sorted(open_, key=by_amount), "closed": sorted(closed, key=by_amount),
-            "statuses": STATUSES}
+            "recorded": len(current), "statuses": STATUSES}

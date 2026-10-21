@@ -256,7 +256,7 @@ def test_the_page_reads_edits_and_confirms(monkeypatch, tmp_path):
             tab.wait_for_selector("#legalList .legal-case")
             listed = tab.inner_text("#legalList")
             tab.wait_for_function(
-                "document.getElementById('reportBox').textContent.includes('Споры и претензии')")
+                "document.getElementById('reportBox').textContent.includes('Ромашка-Строй')")
             box = tab.inner_text("#reportBox")
         finally:
             browser.close()
@@ -314,3 +314,19 @@ def test_a_register_kept_by_hand_is_not_seeded(tmp_path, monkeypatch):
     legal.save(PROJECT, CARD, [], "Иванова")
     monkeypatch.setenv("DEVELOPAID_LEGAL_SEED", str(seed))
     assert legal.ensure_seed(PROJECT) == 0 and len(legal.cases(PROJECT)) == 1
+
+def test_an_empty_register_is_named_not_hidden():
+    # «А где юридическая сводка то?» (владелец, 21.10.2026): пустой реестр
+    # прятал раздел целиком — будто споров нет.
+    got = report.build(PROJECT, "week", "2026-10-04")
+    found = {item["topic"]: item for item in got["findings"]}
+    assert found["Споры"]["text"] == report.LEGAL_EMPTY and found["Споры"]["tone"] == "missing"
+    assert report.LEGAL_EMPTY in report.render_text(got)
+    assert "Споры и претензии" in report.render_html(got)
+    # Реестр заполнен, но всё закрыто раньше периода — это «открытых нет», а не «не внесены».
+    legal.save(PROJECT, dict(CARD, status="closed"), [], "Иванова",
+               at="2026-09-01T09:00:00+00:00")
+    got = report.build(PROJECT, "week", "2026-10-04")
+    assert "Споры" not in {item["topic"] for item in got["findings"]}
+    assert report.LEGAL_NONE_OPEN in report.render_text(got)
+    assert report.LEGAL_EMPTY not in report.render_html(got)
