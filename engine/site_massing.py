@@ -28,6 +28,12 @@
 import math as _math
 
 import mo_land_capacity as _mo_land_capacity
+import site_massing_book as _massing_book
+
+# Выше этого здание расчёт не ставит, когда предел участка не задан
+# (владелец 22.10.2026). Один источник с книгой и объёмной схемой.
+STOREYS_LIMIT_DEFAULT = _massing_book.STOREYS_LIMIT_DEFAULT
+COVERAGE_PCT_DEFAULT = _massing_book.COVERAGE_PCT_DEFAULT
 
 # Нижняя граница двора по региону. Москва — 2152-ПП: 5,0 м² озеленённых
 # территорий ЖК на жителя (её же требует калькулятор ГлавАПУ, строка 57).
@@ -176,16 +182,22 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     notes: list[str] = []
 
-    # Двор — та же площадь, что у благоустройства (один источник), но не меньше
-    # нормы региона.
-    yard_sqm, yard_basis = landscaping_area(x, tep)
-    floor_sqm, floor_basis = _yard_floor(x, tep, site_sqm)
-    if floor_sqm > yard_sqm + 0.5:
-        yard_basis = (f"Площадь благоустройства ({_fmt_ru(yard_sqm)} м²) меньше нормы "
-                      f"региона, поэтому взята норма: {floor_basis}.")
-        yard_sqm = floor_sqm
-    elif yard_sqm <= 0 and without_housing(x):
+    # Двор на участке рядом со зданием — норма региона (владелец 22.10.2026):
+    # благоустройство сверх нормы может быть на кровле стилобата и места на
+    # участке не занимает. Площадь и деньги благоустройства в смете — прежние
+    # (`landscaping_area`, один источник).
+    landscaping_sqm, _ = landscaping_area(x, tep)
+    yard_sqm, floor_basis = _yard_floor(x, tep, site_sqm)
+    yard_roof_sqm = max(0.0, landscaping_sqm - yard_sqm)
+    if yard_sqm > 0:
+        yard_basis = f"Норма региона: {floor_basis}."
+        if yard_roof_sqm > 0.5:
+            yard_basis += (f" Остальное благоустройство ({_fmt_ru(yard_roof_sqm)} м²) может быть "
+                           "на кровле стилобата и места на участке не занимает.")
+    elif without_housing(x):
         yard_basis = "В проекте нет жителей, поэтому двор по их числу не считается."
+    else:
+        yard_basis = "Жителей в ТЭП нет, поэтому двора по норме нет."
 
     drive_pct, _ = _massing_value(x, "site_driveways_pct")
     setback_m, _ = _massing_value(x, "site_setback_m")
@@ -201,24 +213,64 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     setbacks_sqm = setback_area(site_sqm, setback_m)
     estimate = site_sqm - yard_sqm - drive_sqm - parking_sqm - setbacks_sqm
 
+    max_storeys = _massing_number(x, "max_storeys_allowed")
+    limit = max_storeys if max_storeys > 0 else float(STOREYS_LIMIT_DEFAULT)
+    room = max(0.0, estimate)
+    # Остаток участка — наибольшее возможное пятно, а не пятно: жилой дом
+    # обычно занимает процент застройки из градплана или ПЗЗ (без него — 30 %).
+    # У нежилого проекта умолчания нет (владелец 22.10.2026): плотный офис на
+    # маленьком участке занимает его почти целиком; процент — только заданный.
+    given_coverage = _massing_number(x, "site_coverage_max_pct")
+    if given_coverage > 0:
+        coverage_pct, coverage_origin = given_coverage, "manual"
+    elif without_housing(x):
+        coverage_pct, coverage_origin = 0.0, "none"
+    else:
+        coverage_pct, coverage_origin = COVERAGE_PCT_DEFAULT, "default"
+    coverage_sqm = site_sqm * coverage_pct / 100.0 if coverage_pct > 0 else site_sqm
+    base = min(room, coverage_sqm)
     manual_footprint = _massing_number(x, "building_footprint_sqm")
+    shortage = 0.0
     if manual_footprint > 0:
         footprint, footprint_origin = manual_footprint, "manual"
+    elif site_sqm > 0 and above_gns > 0 and (base <= 0 or above_gns / base > limit + 1e-9):
+        # Остаток участка дал бы здание выше предела (51 этаж на гектаре —
+        # не ответ): пятно — по пределу, нехватка земли названа числом.
+        footprint, footprint_origin = above_gns / limit, "limit"
+        shortage = max(0.0, footprint - room)
+        cap = (f"на участке разрешено не выше {_fmt_ru(limit)} этажей" if max_storeys > 0 else
+               f"выше {_fmt_ru(limit)} этажей расчёт здание не ставит: предельная этажность "
+               "участка не задана")
+        if shortage > 0:
+            tall = (f"Здание с наземной площадью {_fmt_ru(above_gns)} м² встало бы на него в "
+                    f"{_fmt_ru(above_gns / room, 1)} этажа, а " if room > 0 else
+                    f"Здание с наземной площадью {_fmt_ru(above_gns)} м² ставить некуда, а ")
+            warnings.append(
+                f"На участке после двора, проездов, открытых стоянок и отступов под здание "
+                f"остаётся {_fmt_ru(room)} м². {tall}{cap}. Поэтому пятно взято по пределу — "
+                f"{_fmt_ru(footprint)} м², и здание не помещается: не хватает {_fmt_ru(shortage)} м². "
+                "Сократите проезды или отступы, уменьшите площадь здания или задайте пятно "
+                "застройки вручную.")
+        else:
+            warnings.append(
+                f"При проценте застройки {_fmt_ru(coverage_pct)}% под здание идёт "
+                f"{_fmt_ru(coverage_sqm)} м², и здание с наземной площадью {_fmt_ru(above_gns)} м² "
+                f"было бы выше предела, а {cap}. Поэтому пятно взято по пределу — "
+                f"{_fmt_ru(footprint)} м², это {_fmt_ru(footprint / site_sqm * 100)}% участка. "
+                "Место на участке для этого есть, но процент застройки выше "
+                f"{'заданного' if given_coverage > 0 else 'обычного'}: проверьте его по "
+                "градплану или уменьшите площадь здания.")
+    elif coverage_sqm < room:
+        footprint, footprint_origin = coverage_sqm, "coverage"
     else:
-        footprint, footprint_origin = max(0.0, estimate), "estimate"
+        footprint, footprint_origin = room, "estimate"
 
     if site_sqm <= 0:
         warnings.append("Площадь участка не задана, поэтому пятно застройки, этажность "
                         "и число подземных уровней не посчитаны. Укажите площадь участка "
                         "во вкладке «ТЭП».")
-    elif footprint_origin == "estimate" and estimate <= 0:
-        warnings.append(
-            f"На участке не остаётся места под здание: двор, проезды, стоянки и отступы "
-            f"занимают {_fmt_ru(site_sqm - estimate)} м² из {_fmt_ru(site_sqm)} м². "
-            "Проверьте допущения или задайте пятно застройки вручную.")
 
     storeys = _mo_land_capacity.average_storeys(above_gns, footprint) if footprint > 0 else 0.0
-    max_storeys = _massing_number(x, "max_storeys_allowed")
     if max_storeys > 0 and storeys > max_storeys + 1e-9:
         warnings.append(
             f"Средняя этажность по расчёту — {_fmt_ru(storeys, 1)}, а на участке разрешено "
@@ -226,8 +278,8 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
             f"{_fmt_ru(above_gns)} м² на этом участке не помещается: уменьшите площадь "
             "здания или проверьте допущения по пятну застройки.")
     elif max_storeys <= 0 and storeys > 0:
-        notes.append("Предельная этажность участка не задана, поэтому сравнить с ней "
-                     "расчётную этажность нельзя.")
+        notes.append(f"Предельная этажность участка не задана, поэтому расчёт не ставит здание "
+                     f"выше {_fmt_ru(limit)} этажей. Задайте предел из градплана, если он известен.")
 
     contour = max(0.0, site_sqm - setbacks_sqm)
     capacity = contour * use_factor
@@ -272,6 +324,8 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "above_gns_sqm": above_gns,
         "yard_sqm": yard_sqm,
         "yard_basis": yard_basis,
+        "landscaping_sqm": landscaping_sqm,
+        "yard_roof_sqm": yard_roof_sqm,
         "driveways_sqm": drive_sqm,
         "driveways_pct": drive_pct,
         "surface_parking_spaces": spaces,
@@ -283,9 +337,15 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "footprint_estimate_sqm": max(0.0, estimate),
         "footprint_sqm": footprint,
         "footprint_origin": footprint_origin,
+        "footprint_shortage_sqm": shortage,
+        "coverage_pct": coverage_pct,
+        "coverage_origin": coverage_origin,
+        "coverage_sqm": coverage_sqm,
         "footprint_share": footprint / site_sqm if site_sqm > 0 else 0.0,
         "average_storeys": storeys,
         "max_storeys_allowed": max_storeys,
+        "storeys_limit": limit,
+        "storeys_limit_origin": "manual" if max_storeys > 0 else "default",
         "underground_contour_sqm": contour,
         "underground_use_factor": use_factor,
         "underground_sqm": under_sqm,

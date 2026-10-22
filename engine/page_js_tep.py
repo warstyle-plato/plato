@@ -1382,7 +1382,10 @@ function siteMassingResult(){
  return (((typeof lastResult==='object'&&lastResult)||{}).tep||{}).site_massing||null;
 }
 function siteMassingOrigin(origin){
- return origin==='manual'?'Задано вручную.':'Оценка по балансу территории.';
+ if(origin==='manual')return 'Задано вручную.';
+ if(origin==='limit')return 'Взято по предельной этажности: иначе здание было бы выше предела.';
+ if(origin==='coverage')return 'Процент застройки участка. Свободного места больше, но здание обычно занимает не всё.';
+ return 'Оценка по балансу территории.';
 }
 function renderSiteMassing(){
  const body=document.getElementById('siteMassingBody');
@@ -1401,14 +1404,21 @@ function renderSiteMassing(){
  const site=Number(m.site_sqm||0);
  const rows=[];
  rows.push(row('Площадь участка',sq(site),'Из карточки «Участок и плотность».'));
- rows.push(row('− Двор: озеленение и площадки',sq(m.yard_sqm),m.yard_basis));
+ rows.push(row('− Двор рядом со зданием по норме',sq(m.yard_sqm),m.yard_basis));
+ if(Number(m.yard_roof_sqm||0)>0.5)rows.push(row('Благоустройство на кровле стилобата',sq(m.yard_roof_sqm),
+  'Площадь благоустройства в смете ('+sq(m.landscaping_sqm)+') больше нормы. Разница может быть на кровле стилобата и места рядом со зданием не занимает.'));
  rows.push(row('− Проезды, тротуары и пожарные проезды',sq(m.driveways_sqm),
   'Это '+num(m.driveways_pct)+'% участка. Доля — экспертная оценка: в нормативах её нет.'));
  rows.push(row('− Открытые стоянки',sq(m.surface_parking_sqm),
   'Машино-мест на земле: '+num(m.surface_parking_spaces)+'. На одно место нужно '+num(m.surface_parking_sqm_per_space)+' м² ('+m.surface_parking_basis+').'));
  rows.push(row('− Отступы от границ участка',sq(m.setbacks_sqm),'Полоса шириной '+num(m.setback_m)+' м вдоль границ участка.'));
+ rows.push(row('Свободно под здание после двора, проездов и отступов',sq(m.footprint_estimate_sqm),
+  'Это наибольшее возможное пятно. '+(m.coverage_origin==='none'?'Процент застройки не задан: у нежилого проекта пятно — всё свободное место.':
+   'Процент застройки — '+num(m.coverage_pct)+'%'+(m.coverage_origin==='manual'?', задан в проекте.':', обычное значение для жилья, если градплан не задаёт другое.'))));
  rows.push(row('Пятно застройки',sq(m.footprint_sqm)+(site>0?', это '+pct(m.footprint_share)+' участка':''),
   siteMassingOrigin(m.footprint_origin),true));
+ if(Number(m.footprint_shortage_sqm||0)>0.5)rows.push(row('Не хватает земли под пятно',sq(m.footprint_shortage_sqm),
+  'Столько не хватает, чтобы здание не было выше '+num(m.storeys_limit)+' этажей. Подробности — в красной плашке выше.'));
  rows.push(row('Средняя этажность',Number(m.average_storeys||0)>0?'≈ '+Number(m.average_storeys).toLocaleString('ru-RU',{maximumFractionDigits:1}):'—',
   'Наземная площадь здания ('+sq(m.above_gns_sqm)+'), делённая на пятно застройки.',true));
  rows.push(row('Подземный контур',sq(m.underground_contour_sqm),'Участок без отступов. Под машино-места идёт '+
@@ -1471,7 +1481,7 @@ function renderSiteMassingScheme(m){
 // Поля допущений: подпись и единица — из FIELD_GROUPS. Поля «пусто — по
 // расчёту» (пятно, уровни, предельная этажность, земля на место) показывают
 // пустоту, а не ноль.
-const SITE_MASSING_AUTO=['surface_parking_sqm_per_space','building_footprint_sqm','underground_levels','max_storeys_allowed'];
+const SITE_MASSING_AUTO=['surface_parking_sqm_per_space','building_footprint_sqm','underground_levels','max_storeys_allowed','site_coverage_max_pct'];
 function renderSiteMassingFields(){
  const box=document.getElementById('siteMassingFields');
  if(!box||(typeof box.contains==='function'&&box.contains(document.activeElement)))return;
@@ -1479,7 +1489,7 @@ function renderSiteMassingFields(){
  const m=siteMassingResult()||{};
  const auto={building_footprint_sqm:m.footprint_estimate_sqm?'оценка '+num(Math.round(m.footprint_estimate_sqm)):'',
   underground_levels:m.underground_sqm?'по расчёту':'',surface_parking_sqm_per_space:m.surface_parking_sqm_per_space?String(m.surface_parking_sqm_per_space).replace('.',','):'',
-  max_storeys_allowed:'не задана'};
+  max_storeys_allowed:'не выше '+num(m.storeys_limit||25),site_coverage_max_pct:m.coverage_origin==='none'?'не задан':String(m.coverage_pct||30).replace('.',',')+'%'};
  box.innerHTML='';
  SITE_MASSING_INPUTS.forEach(id=>{
   const f=decl[id];if(!f)return;

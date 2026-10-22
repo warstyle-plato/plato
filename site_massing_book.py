@@ -1,7 +1,9 @@
 """Пятно застройки, этажность и подземные уровни — формулами книги.
 
 Методика та же, что у движка (`engine/site_massing.py`): пятно = участок −
-двор − проезды − открытые стоянки − отступы; средняя этажность = наземная ГНС ÷
+двор по норме − проезды − открытые стоянки − отступы, не больше процента
+застройки (без него — 30 %) и не меньше наземной ГНС ÷ предел этажности (без
+предела — 25); средняя этажность = наземная ГНС ÷
 пятно; уровни = вверх(подземная площадь ÷ (контур × коэффициент)); надбавка за
 глубину — средневзвешенная по площадям уровней. Здесь один список строк и одни
 формулы на обе книги — жилую v4 и нежилую: две копии одной методики разошлись
@@ -18,10 +20,17 @@ from typing import Callable
 
 INPUT, FORMULA = "input", "formula"
 
+# Выше этого здание расчёт не ставит, когда предел участка не задан
+# (владелец 22.10.2026); движок читает это же число.
+STOREYS_LIMIT_DEFAULT = 25
+# Процент застройки участка, когда градплан или ПЗЗ его не задают (владелец
+# 22.10.2026, экспертное умолчание).
+COVERAGE_PCT_DEFAULT = 30.0
+
 # (ключ, подпись, вид). Порядок — порядок строк в книге.
 ROWS: tuple[tuple[str, str, str], ...] = (
     ("site_sqm", "Площадь участка, м²", INPUT),
-    ("yard_sqm", "Двор: озеленение и площадки, м²", INPUT),
+    ("yard_sqm", "Двор на участке по норме региона, м²", INPUT),
     ("driveways_pct", "Проезды, тротуары и пожарные проезды, % участка", INPUT),
     ("setback_m", "Отступ от границ участка, м", INPUT),
     ("surface_parking_sqm", "Открытые стоянки, м² земли", INPUT),
@@ -34,9 +43,12 @@ ROWS: tuple[tuple[str, str, str], ...] = (
     ("markup3_pct", "Надбавка к ставке за третий уровень и ниже, %", INPUT),
     ("rate_by_hand", "Ставка подземной части задана вручную (Да — без надбавок)", INPUT),
     ("max_storeys", "Предельная этажность участка (0 — не задана)", INPUT),
+    ("coverage_pct", "Процент застройки участка, % (0 — без ограничения)", INPUT),
     ("setbacks_sqm", "Отступы, м² (полоса по периметру квадрата той же площади)", FORMULA),
     ("footprint_estimate_sqm", "Пятно застройки — оценка по балансу, м²", FORMULA),
-    ("footprint_sqm", "Пятно застройки, м²", FORMULA),
+    ("coverage_sqm", "Пятно по проценту застройки, м²", FORMULA),
+    ("footprint_sqm", "Пятно застройки, м² (не меньше наземной ГНС ÷ предел этажности)", FORMULA),
+    ("footprint_shortage_sqm", "Не хватает земли под пятно по пределу этажности, м²", FORMULA),
     ("average_storeys", "Средняя этажность", FORMULA),
     ("contour_sqm", "Подземный контур (участок без отступов), м²", FORMULA),
     ("capacity_sqm", "Помещается на одном уровне, м²", FORMULA),
@@ -56,6 +68,7 @@ ROWS: tuple[tuple[str, str, str], ...] = (
 # показал бы 1 500 % — у них служебный ключ и формат «0.0», а поле движка
 # названо в пояснении (`PERCENT_FIELDS`).
 PERCENT_FIELDS: dict[str, str] = {
+    "coverage_pct": "site_coverage_max_pct",
     "driveways_pct": "site_driveways_pct",
     "markup2_pct": "underground_level2_markup_pct",
     "markup3_pct": "underground_level3_markup_pct",
@@ -81,14 +94,27 @@ NO = "Нет"
 def formulas(ref: Callable[[str], str]) -> dict[str, str]:
     """Формулы расчётных строк (без «=») через ссылки `ref(key)`."""
     r = ref
+    cap = f"IF({r('max_storeys')}>0,{r('max_storeys')},{STOREYS_LIMIT_DEFAULT})"
+    # Пятно — меньшее из процента застройки и остатка участка, но не меньше
+    # наземной ГНС ÷ предел этажности.
+    base = f"MIN({r('coverage_sqm')},{r('footprint_estimate_sqm')})"
     return {
         "setbacks_sqm": (f"IF(AND({r('site_sqm')}>0,{r('setback_m')}>0),{r('site_sqm')}"
                          f"-MAX(0,SQRT({r('site_sqm')})-2*{r('setback_m')})^2,0)"),
         "footprint_estimate_sqm": (f"MAX(0,{r('site_sqm')}-{r('yard_sqm')}"
                                    f"-{r('site_sqm')}*{r('driveways_pct')}/100"
                                    f"-{r('surface_parking_sqm')}-{r('setbacks_sqm')})"),
+        # Остаток участка дал бы здание выше предела (без предела — порог) —
+        # пятно по пределу.
+        "coverage_sqm": (f"IF({r('coverage_pct')}>0,{r('site_sqm')}*{r('coverage_pct')}/100,"
+                         f"{r('site_sqm')})"),
         "footprint_sqm": (f"IF({r('footprint_manual_sqm')}>0,{r('footprint_manual_sqm')},"
-                          f"{r('footprint_estimate_sqm')})"),
+                          f"IF(AND({r('site_sqm')}>0,{r('above_gns_sqm')}>0,"
+                          f"OR({base}<=0,{r('above_gns_sqm')}"
+                          f"/MAX({base},0.000001)>{cap}+0.000000001)),"
+                          f"{r('above_gns_sqm')}/{cap},{base}))"),
+        "footprint_shortage_sqm": (f"IF({r('footprint_manual_sqm')}>0,0,"
+                                   f"MAX(0,{r('footprint_sqm')}-{r('footprint_estimate_sqm')}))"),
         "average_storeys": (f"IF({r('footprint_sqm')}>0,{r('above_gns_sqm')}"
                             f"/{r('footprint_sqm')},0)"),
         "contour_sqm": f"MAX(0,{r('site_sqm')}-{r('setbacks_sqm')})",
@@ -140,6 +166,7 @@ def input_values(massing: dict, inputs: dict) -> dict[str, object]:
         "markup3_pct": _markup(massing, 3),
         "rate_by_hand": YES if massing.get("underground_rate_by_hand") else NO,
         "max_storeys": float(massing.get("max_storeys_allowed") or 0.0),
+        "coverage_pct": float(massing.get("coverage_pct") or 0.0),
     }
 
 

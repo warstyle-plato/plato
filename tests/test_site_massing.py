@@ -133,18 +133,85 @@ def _housing(region):
     return x, t
 
 
-def test_the_yard_is_the_landscaping_area_but_not_below_the_region_norm():
+def test_the_yard_beside_the_building_is_the_region_norm():
+    """Рядом со зданием — двор по норме региона; благоустройство сверх нормы
+    может быть на кровле стилобата (владелец 22.10.2026) и пятна не съедает."""
     for region, needle in (("msk", "2152-ПП"), ("mo", "Московской области"),
                            ("other", "СП 42.13330")):
         x, t = _housing(region)
         m = core.site_massing(x, t)
         assert needle in m["yard_basis"], region
-        assert m["yard_sqm"] > core.landscaping_area(x, t)[0]
-    # Двор благоустройства больше нормы — он и берётся, один источник.
+        assert m["yard_roof_sqm"] == 0.0
     x, t = _housing("msk")
     x["landscaping_area_per_person_sqm"] = 20
     m = core.site_massing(x, t)
-    assert m["yard_sqm"] == pytest.approx(core.landscaping_area(x, t)[0])
+    norm = core._yard_floor(x, t, m["site_sqm"])[0]
+    landscaping = core.landscaping_area(x, t)[0]
+    assert m["yard_sqm"] == pytest.approx(norm) and landscaping > norm
+    assert m["yard_roof_sqm"] == pytest.approx(landscaping - norm)
+    assert m["landscaping_sqm"] == pytest.approx(landscaping)
+    assert "кровле стилобата" in m["yard_basis"]
+
+
+def _one_hectare(**extra):
+    """Случай владельца: 1 га в Москве, плотность 28 000 м²/га — 26 410 м² наземной
+    ГНС. Прежний расчёт дал пятно 511 м² и 51,7 этажа."""
+    x = copy.deepcopy(core.DEFAULT_INPUTS)
+    x.update(project_kind="residential", site_area_ha=1.0, project_region="msk",
+             vri_region="msk", landscaping_area_per_person_sqm=11)
+    x.update(extra)
+    t = {"apartments": {"gns": 23076.9, "saleable": 14123.0, "units": 241},
+         "ground_commercial": {"gns": 3333.3, "saleable": 2700.0},
+         "underground_parking": {"units": 206, "gns": 7200.0}}
+    return x, t
+
+
+def test_a_hectare_with_28000_density_is_not_a_fifty_storey_tower():
+    x, t = _one_hectare()
+    m = core.site_massing(x, t)
+    assert m["above_gns_sqm"] == pytest.approx(26410.2)
+    # Рядом со зданием — двор по норме (5 м² на жителя), остальное
+    # благоустройство — на кровле стилобата; свободно около половины участка,
+    # но жилой дом занимает процент застройки — 30 %: этажность около 8,8.
+    assert m["yard_roof_sqm"] > 0 and m["footprint_estimate_sqm"] > 3000
+    assert (m["footprint_origin"], m["coverage_pct"], m["coverage_origin"]) == (
+        "coverage", 30.0, "default")
+    assert m["footprint_sqm"] == pytest.approx(3000)
+    assert m["average_storeys"] == pytest.approx(26410.2 / 3000)
+    assert not m["warnings"]
+
+
+def test_the_coverage_from_the_town_plan_wins_and_offices_have_no_default():
+    m = core.site_massing(*_one_hectare(site_coverage_max_pct=40))
+    assert (m["footprint_sqm"], m["coverage_origin"]) == (pytest.approx(4000), "manual")
+    # Нежилой проект: процента по умолчанию нет — пятно всё свободное место.
+    office = core.site_massing(*_office())
+    assert office["coverage_origin"] == "none" and office["footprint_origin"] == "estimate"
+    capped = core.site_massing(*_office(site_coverage_max_pct=50))
+    assert capped["footprint_origin"] == "coverage"
+    assert capped["footprint_sqm"] == pytest.approx(2430 * 0.5)
+
+
+def test_a_remainder_too_small_takes_the_footprint_by_the_limit():
+    """Остаток участка дал бы здание выше 25 этажей — пятно по пределу, нехватка числом."""
+    x, t = _one_hectare(surface_parking_spaces=200)
+    m = core.site_massing(x, t)
+    assert m["footprint_estimate_sqm"] < 26410.2 / 25
+    assert m["footprint_origin"] == "limit"
+    assert m["storeys_limit"] == 25 and m["storeys_limit_origin"] == "default"
+    assert m["average_storeys"] == pytest.approx(25)
+    assert m["footprint_sqm"] == pytest.approx(26410.2 / 25)
+    assert m["footprint_shortage_sqm"] == pytest.approx(
+        m["footprint_sqm"] - m["footprint_estimate_sqm"])
+    [warning] = m["warnings"]
+    assert "выше 25 этажей расчёт здание не ставит" in warning and "не хватает" in warning
+    # С пределом участка — по нему.
+    m9 = core.site_massing(*_one_hectare(surface_parking_spaces=200, max_storeys_allowed=9))
+    assert m9["average_storeys"] == pytest.approx(9)
+    assert any("разрешено не выше 9 этажей" in w for w in m9["warnings"])
+    # Места нет вовсе — то же правило, а не пятно 0.
+    m0 = core.site_massing(*_one_hectare(surface_parking_spaces=400))
+    assert m0["footprint_estimate_sqm"] == 0 and m0["footprint_sqm"] == pytest.approx(26410.2 / 25)
 
 
 def test_surface_parking_land_by_region():

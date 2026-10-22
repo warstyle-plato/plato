@@ -142,3 +142,29 @@ def test_the_nonresidential_book_counts_the_same_levels():
     rate = float(x["main_under_th_per_sqm"])
     assert float(evaluator.cell("Затраты", f"E{row}")) == pytest.approx(
         2380.0 * rate * m["underground_depth_factor"] * 1000, rel=1e-9)
+
+
+@pytest.mark.parametrize("extra, origin", [({"max_storeys_allowed": 9}, "limit"),
+                                           ({"site_coverage_max_pct": 50}, "coverage")])
+def test_the_book_takes_the_footprint_like_the_engine(extra, origin):
+    """Пятно по пределу этажности и по проценту застройки — книга = движок."""
+    sys.setrecursionlimit(400000)
+    openpyxl = pytest.importorskip("openpyxl")
+    from xlsx_eval import Evaluator
+
+    x, t = _office()
+    x.update(extra)
+    bundle = core._run_authoritative_model(x, t, [], None)
+    m = bundle["consolidated"]["tep"]["site_massing"]
+    assert m["footprint_origin"] == origin, m
+    content, _, _ = core.build_project_workbook(
+        x, t, [], None, project_name="Пролетарский",
+        finance_hints=core._v4_finance_hints(bundle))
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    cells = _block(book, "Вводные")
+    evaluator = Evaluator(book)
+    got = lambda key: float(evaluator.cell("Вводные", cells[key]) or 0)  # noqa: E731
+    assert got("footprint_sqm") == pytest.approx(m["footprint_sqm"], rel=1e-9)
+    assert got("footprint_shortage_sqm") == pytest.approx(m["footprint_shortage_sqm"], rel=1e-9)
+    assert got("average_storeys") == pytest.approx(m["average_storeys"], rel=1e-9)
+    assert got("coverage_sqm") == pytest.approx(m["coverage_sqm"], rel=1e-9)
