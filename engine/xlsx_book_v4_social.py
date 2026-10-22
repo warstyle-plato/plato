@@ -534,8 +534,10 @@ def _v4_apply_storage_area_rows(xml: str, missing: list[str]) -> str:
             missing.append(f"CAPEX · СМР подземной части: формула строки {row} не опознана")
         else:
             now = f"({was}+{area % queue_row})"
+            # Тем же проходом ставка получает надбавку за глубину
+            # (`_v4_under_depth_formula`): второй проход по листу дороже.
             xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(
-                formula=found.replace(was, now, 1))})
+                formula=_v4_under_depth_formula(found.replace(was, now, 1), row, missing))})
             if not done:
                 missing.append(f"CAPEX · СМР подземной части: строка {row} не записана")
         # Строительный объём очереди: (I+J+K) → (I+J+K+площадь кладовых).

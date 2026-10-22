@@ -156,6 +156,31 @@ def _row(label: str, value: Any, unit: str, **extra: Any) -> dict[str, Any]:
     return {"label": label, "value": value, "unit": unit, **extra}
 
 
+def _site_massing_block(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Пятно застройки, этажность и подземные уровни — блоком объектного отчёта.
+
+    Числа — ответ движка (`tep.site_massing`), тот же, что в ТЭП страницы и в
+    PDF жилого отчёта; предупреждения едут строками текста, а не теряются.
+    """
+    m = ((result or {}).get("tep") or {}).get("site_massing") or {}
+    if not m or float(m.get("footprint_sqm") or 0.0) <= 0:
+        return []
+    share = float(m.get("footprint_share") or 0.0)
+    rows = [_row("Пятно застройки", m.get("footprint_sqm"), "sqm"),
+            _row("Доля участка под зданием", f"{share * 100:.0f}%", "text"),
+            _row("Средняя этажность", round(float(m.get("average_storeys") or 0.0), 1), "num"),
+            _row("Подземная часть", m.get("underground_sqm"), "sqm"),
+            _row("Подземных уровней", m.get("underground_levels"), "count")]
+    rows += [_row("Внимание", str(w), "text") for w in m.get("warnings") or []]
+    rows.append(_row("Как посчитано", "оценка по балансу территории, а не проект", "text"))
+    blocks = [{"title": "Пятно застройки и этажность", "rows": rows}]
+    if ((m.get("scheme") or {}).get("axonometry") or {}).get("shapes"):
+        # Объёмная схема — та же картинка движка, что во вкладке «ТЭП».
+        blocks.append({"ref": "massing_scheme", "title": "Объёмная схема застройки",
+                       "scheme": m["scheme"]})
+    return blocks
+
+
 def _sum_object_costs(results: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     """Смета объектов свода — сумма очередей, а не второй расчёт."""
     out: dict[str, dict[str, float]] = {}
@@ -407,7 +432,7 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
         "brief": [_row("Наземная площадь в ГНС", gns_total, "sqm"),
                   _row("Арендопригодная / продаваемая площадь", area_total, "sqm")],
         "blocks": [*object_blocks, {"title": "Тип проекта", "rows": project_kind_rows(summary)},
-                   {"ref": "site", "title": "Участок"}],
+                   *_site_massing_block(result), {"ref": "site", "title": "Участок"}],
     }
 
     # 3. Стратегия реализации ----------------------------------------------
@@ -933,7 +958,8 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
         "brief": object_rows[:3] + [object_rows[4]],
         # Остаток жилья в гостиничный отчёт не идёт: владелец нашёл его в PDF
         # гостиницы жилым хвостом (`PDF_HOUSING` в проверке отчёта гостиницы).
-        "blocks": [{"title": "Гостиница", "rows": object_rows}, {"ref": "site", "title": "Участок"}],
+        "blocks": [{"title": "Гостиница", "rows": object_rows}, *_site_massing_block(result),
+                   {"ref": "site", "title": "Участок"}],
     }
 
     # 3. Стратегия реализации ----------------------------------------------

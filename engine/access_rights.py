@@ -638,8 +638,10 @@ def access_me(req: AccessRequest) -> dict[str, Any]:
         return {**offer, "signed_in": False}
     forwarded = _access_forward("/internal/access/me", req)
     status = forwarded if forwarded is not None else access_status(chat)
+    demo = callable(globals().get("demo_chat")) and demo_chat(chat)
     return {**offer, "signed_in": True, "status": status,
-            "is_admin": chat in usage_admin_ids()}
+            "is_admin": chat in usage_admin_ids(), "demo": bool(demo),
+            "demo_payments": demo_payments_mode() if demo else ""}
 
 
 @app.post("/internal/access/me", include_in_schema=False)
@@ -699,7 +701,16 @@ def access_admin_grant(req: AccessRequest) -> dict[str, Any]:
     admin = _access_admin(req)
     chat = int(req.chat or 0)
     if chat <= 0:
-        raise HTTPException(status_code=400, detail="Укажите Telegram ID пользователя.")
+        raise HTTPException(status_code=400, detail="Выберите, кому выдать доступ.")
+    # Выдача незнакомому ID уходила в пустоту: опечатка в номере открывала
+    # подписку несуществующему человеку, и в журнале это выглядело выдачей.
+    who = _access_known_user(chat)
+    if who is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Пользователя с Telegram ID {chat} у нас ещё не было. Попросите его "
+                    "написать боту DevelopAid или войти на сайт — после этого он появится "
+                    "в списке и доступ можно будет выдать."))
     subscription = req.kind == "subscription"
     plot = None
     if not subscription:
@@ -710,4 +721,25 @@ def access_admin_grant(req: AccessRequest) -> dict[str, Any]:
     note = f"вручную, администратор {admin}" + (f": {req.note}" if req.note else "")
     result = access_grant(chat, plot=plot, subscription=subscription,
                           days=int(req.days or 0) or None, source="admin", note=note)
-    return {**result, "status": access_status(chat)}
+    return {**result, "status": access_status(chat), "who": who,
+            "what": "подписка" if subscription else f"участок {plot['label']}"}
+
+
+def _access_known_user(chat: int) -> str | None:
+    """Имя человека, которого мы уже видели (бот, вход на сайт, анкета, права);
+    None — такого человека у нас не было."""
+    chat = int(chat)
+    names = []
+    try:
+        user_path = _users_dir() / f"{chat}.json"
+        if user_path.is_file():
+            names.append(str((json.loads(user_path.read_text(encoding="utf-8")) or {}).get("name") or ""))
+    except (OSError, ValueError):
+        pass
+    profile = profile_read(chat) if callable(globals().get("profile_read")) else {}
+    known = bool(names) or bool(profile) or _access_path(chat).is_file()
+    if not known:
+        return None
+    name = str((profile or {}).get("name") or (profile or {}).get("telegram_name") or "") or next(
+        (n for n in names if n), "")
+    return f"{name} (ID {chat})" if name else f"ID {chat}"

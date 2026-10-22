@@ -31,6 +31,7 @@ _TEASER_JOBS: dict[str, threading.Event] = {}
 _TEASER_JOBS_LOCK = threading.Lock()
 _TEASER_STAGES = {
     "model": "расчёт модели",
+    "ceiling": "подбор максимальной цены входа",
     "screening": "скрининг участков в НСПД",
     "map": "карта участка",
     "pdf": "вёрстка PDF",
@@ -43,6 +44,7 @@ _REPORT_JOB_DIR = _TEASER_JOB_DIR.parent / "report"
 _REPORT_JOBS: dict[str, threading.Event] = {}
 _REPORT_STAGES = {
     "model": "расчёт модели",
+    "ceiling": "подбор максимальной цены входа",
     "sensitivity": "анализ чувствительности",
     "pdf": "скрининг участков в НСПД и вёрстка PDF",
 }
@@ -142,6 +144,13 @@ def _teaser_build(ticket: str, payload: dict[str, Any], inputs: dict[str, Any]) 
         bundle = _run_authoritative_model(inputs, payload.get("tep") or {},
                                           payload.get("rates") or [],
                                           payload.get("phasing") or {})
+        # Потолок цены входа: ответ страницы для тех же вводных — как есть,
+        # иначе подбор здесь, в фоне (`entry_price_for_report`).
+        stage = "ceiling"
+        _teaser_stage(ticket, stage, started)
+        entry_price = entry_price_block(bundle, inputs, entry_price_for_report(
+            bundle, inputs, payload.get("tep") or {}, payload.get("rates") or [],
+            payload.get("phasing") or {}, payload.get("goal_seek")))
         site = _teaser_site(payload, inputs)
         # Карта и скрининг ходят в НСПД (с Render — через ядро); их отказ
         # тизер называет сам и не падает.
@@ -156,7 +165,8 @@ def _teaser_build(ticket: str, payload: dict[str, Any], inputs: dict[str, Any]) 
         stage = "pdf"
         _teaser_stage(ticket, stage, started)
         content = build_teaser_pdf(bundle, inputs, payload.get("tep") or {},
-                                   payload.get("phasing") or {}, facts, map_png)
+                                   payload.get("phasing") or {}, facts, map_png,
+                                   entry_price=entry_price)
         _teaser_write(_teaser_job_path(ticket, "pdf"), content)
         meta = {"filename": _teaser_filename(inputs), "seconds": round(time.time() - started, 1)}
         logging.info("teaser %s built in %.1fs", ticket, time.time() - started)
@@ -291,6 +301,13 @@ def _report_build(ticket: str, payload: dict[str, Any]) -> None:
                 )
                 payload = {**payload, "result": server_result,
                            "phases": bundle.get("phases") or []}
+                stage = "ceiling"
+                _teaser_stage(ticket, stage, started, "report")
+                payload["entry_price"] = entry_price_block(
+                    bundle, payload.get("inputs") or {}, entry_price_for_report(
+                        bundle, payload.get("inputs") or {}, payload.get("tep") or {},
+                        payload.get("rates") or [], payload.get("phasing") or {},
+                        payload.get("goal_seek")))
                 if problems:
                     # В чат тут писать некому — расхождение печатается в самом
                     # отчёте: молча подменить числа нельзя.
@@ -382,13 +399,19 @@ def report_pdf_result(ticket: str) -> Response:
 def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
                      tep: dict[str, Any], phasing: dict[str, Any] | None,
                      site: dict[str, Any] | None = None,
-                     map_png: bytes | tuple[bytes, str] | None = None) -> bytes:
+                     map_png: bytes | tuple[bytes, str] | None = None,
+                     entry_price: dict[str, Any] | None = None) -> bytes:
     """Тизер из уже посчитанного: модель представления → две страницы.
 
     `map_png` — картинка участка с контурами ЕГРН (`_territory_image_png`),
     одна или вместе с подписью, называющей подложку; нет картинки — тизер
-    говорит об этом на её месте, а не молчит."""
+    говорит об этом на её месте, а не молчит.
+
+    `entry_price` — блок «Инвестиционное решение» (`entry_price_block`) с уже
+    подобранным потолком цены; нет его — плитки говорят, что подбор для этого
+    документа не выполнялся. Сам подбор здесь не идёт: это вёрстка."""
     presentation = project_presentation(bundle, inputs, tep, phasing, site=site)
+    presentation["decision_tiles"] = entry_price or entry_price_block(bundle, inputs, None)
     caption = None
     if isinstance(map_png, tuple):
         map_png, caption = map_png

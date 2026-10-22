@@ -454,3 +454,43 @@ def test_the_funding_card_explains_the_remaining_limit(monkeypatch):
     assert got["bank_remaining"] == 300.0
     assert got["remaining_check"] == {"plain": 300.0, "overpaid": 50.0,
                                       "book_gap": pytest.approx(-50.0), "remaining": 300.0}
+
+
+def test_chapter_one_comes_from_the_rss_when_the_book_lacks_it(monkeypatch):
+    """«Что за бред на плашках. Разве в РСС нет 1 главы?» (владелец, 22.10.2026):
+    в финкниге строки главы 1 нет, в РСС она есть — лимит, оплачено, выбрано и
+    утверждённый бюджет берут её из РСС, а дефицит главы 1 не добавляет."""
+    def baseline(_):
+        return {
+            "known": True, "source": "f.xlsx", "completion_need_at_baseline": 1000.0,
+            "paid_at_baseline": 100.0, "reserve": 0.0, "reserve_parts": {}, "monthly_need": {},
+            "tail_after_apr": 0.0, "chapters": ["2", "3"], "approved": 900.0,
+            "chapters_reason": "без главы 1: в финансовой книге нет строки главы 1",
+            "articles": {"2.2": {"rss_limit": 500.0, "paid_at_baseline": 0.0,
+                                 "monthly_need": {}}}}
+    monkeypatch.setattr(dashboard, "_finance_baseline", baseline)
+    monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {
+        "rows": [], "by_code": {"1": {"estimate": 200.0}, "2": {"estimate": 500.0},
+                                "3": {"estimate": 50.0}}})
+
+    def paid(_rss, _estimate, chapters=("2", "3")):
+        return ({"total": 150.0, "borrowed": 100.0} if tuple(chapters) == ("1",)
+                else {"total": 200.0, "borrowed": 180.0})
+    monkeypatch.setattr(dashboard, "_paid_in_chapters", paid)
+    monkeypatch.setattr(dashboard, "_payment_by_code", lambda _: {"2.2": 200.0})
+    view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
+    got = dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 8, 20), view)
+    assert got["chapters"] == ["1", "2", "3"] and got["chapters_label"] == "1–3"
+    assert "по смете и оплатам РСС" in got["chapters_reason"]
+    assert got["bank_limit"] == 750.0
+    assert got["paid_actual"] == 350.0 and got["paid_borrowed"] == 280.0
+    assert got["approved"] == 1100.0 and got["approved_remaining"] == 750.0
+    # Остаток лимита: 300 по книге (500 − 200) + 50 по главе 1 (200 − 150).
+    assert got["bank_remaining"] == 350.0
+    # Дефицит по утверждённому бюджету — по главам книги: у главы 1 своего нет.
+    monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {
+        "rows": [], "by_code": {"2": {"estimate": 500.0}, "3": {"estimate": 50.0}}})
+    without = dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 8, 20), view)
+    assert without["chapters"] == ["2", "3"] and without["bank_limit"] == 550.0
+    assert got["deficit_ladder"] == without["deficit_ladder"]
+    assert got["bank_need_check"] == without["bank_need_check"]

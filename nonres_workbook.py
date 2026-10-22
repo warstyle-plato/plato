@@ -41,6 +41,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 import developaid_nonres_strategy as ns
+import site_massing_book as massing_book
 
 ENGINE_FILL = PatternFill("solid", fgColor="FFF3E0")
 INPUT_FILL = PatternFill("solid", fgColor="FFFDE7")
@@ -122,7 +123,8 @@ PROJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("resettlement_mln", "Расселение, млн ₽"),
     ("preparation_th", "Подготовка территории, тыс ₽/м² базы статей проекта"),
     ("main_above_th", "СМР наземной части ядра, тыс ₽/м²"),
-    ("main_under_th", "СМР подземной части, тыс ₽/м² (и гаражи объектов)"),
+    ("main_under_th", "СМР подземной части, тыс ₽/м² (и гаражи объектов; надбавка за глубину — "
+                      "в блоке пятна застройки ниже)"),
     ("utilities_th", "Сети, тыс ₽/м² базы статей проекта"),
     ("commissioning_th", "Ввод в эксплуатацию, тыс ₽/м² базы статей проекта"),
     ("site_maintenance_th", "Содержание площадки, тыс ₽/м² базы статей проекта"),
@@ -145,7 +147,13 @@ PROJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("own_funds", "Собственные средства до ПФ (идут раньше БРИДЖа), млн ₽"),
     ("pf_limit_approved", "Одобренный лимит ПФ, млн ₽ (0 — лимит по выборке)"),
     ("interest_mode", "Проценты БРИДЖа при открытии ПФ"),
+    # Пятно застройки, этажность и подземные уровни (`site_massing_book`):
+    # вводные — числа движка, расчётные строки — формулы, общие с книгой v4.
+    *((f"massing_{key}", label) for key, label, _ in massing_book.ROWS),
 )
+# Расчётные строки блока пятна — формулы, а не жёлтые вводные.
+MASSING_FORMULAS = {f"massing_{key}" for key, _, kind in massing_book.ROWS
+                    if kind == massing_book.FORMULA}
 
 # Объект: ключ → подпись. Значения — столбцы C, D, … по объектам.
 OBJECT_INPUTS: tuple[tuple[str, str], ...] = (
@@ -272,11 +280,22 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
             "commissioning_th", "site_maintenance_th", "project_management_pct",
             "technical_supervision_pct", "gc_fee_pct", "reserve_pct")},
     }
+    massing = spec.get("massing") or {}
+    values.update({f"massing_{key}": massing.get(key, 0.0)
+                   for key, _, kind in massing_book.ROWS if kind == massing_book.INPUT})
+    values.update({f"massing_{key}": "=" + formula for key, formula in
+                   massing_book.formulas(lambda key: f"$B${P_ROW['massing_' + key]}").items()})
+    # Подземная площадь — формулой от вводных книги: ядро и гаражи объектов.
+    if objects:
+        garages = "+".join(_o("under_gns", item["column"]) for item in objects)
+        values["massing_underground_sqm"] = f"={_p('core_under_gns')}+{garages}"
+    formula_keys = MASSING_FORMULAS | ({"massing_underground_sqm"} if objects else set())
     for key, label in PROJECT_INPUTS:
         row = P_ROW[key]
         ws[f"A{row}"] = label
         ws[f"B{row}"] = values[key]
-        ws[f"B{row}"].fill = INPUT_FILL
+        if key not in formula_keys:
+            ws[f"B{row}"].fill = INPUT_FILL
     ws[f"B{P_ROW['start']}"].number_format = "dd.mm.yyyy"
     scenario_list = DataValidation(type="list", formula1='"' + ",".join(SCENARIO.values()) + '"',
                                    allow_blank=False)
@@ -530,7 +549,7 @@ def _costs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, A
                 f'=B{{r}}*D{{r}}*IF({_o("measure", c)}="{SPACES}",1000000,1000)',
                 f"={_k_of(_o('start', c))}", f"=INT({_o('months', c)})", S_CURVE)
         article(f"{key}:garage", f"{item['title']}: подземный гараж", f"={_o('under_gns', c)}",
-                "м²", f"={_p('main_under_th')}", "=B{r}*D{r}*1000",
+                "м²", f"={_p('main_under_th')}*{_p('massing_depth_factor')}", "=B{r}*D{r}*1000",
                 f"={_k_of(_o('start', c))}", f"=INT({_o('months', c)})", S_CURVE)
     article("ird", "ИРД", f"={gns}", base_measure, f"={_p('ird_th')}", "=B{r}*D{r}*1000",
             "=0", f"={out.cells['ird_eff']}", EVEN)
@@ -547,7 +566,7 @@ def _costs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, A
     article("main_above", "СМР наземной части ядра", f"={_p('core_above_gns')}", "м²",
             f"={_p('main_above_th')}", "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
     article("main_under", "СМР подземной части ядра", f"={_p('core_under_gns')}", "м²",
-            f"={_p('main_under_th')}", "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
+            f"={_p('main_under_th')}*{_p('massing_depth_factor')}", "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
     article("utilities", "Сети", f"={gns}", base_measure, f"={_p('utilities_th')}",
             "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
     article("site_maintenance", "Содержание площадки", f"={gns}", base_measure,

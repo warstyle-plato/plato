@@ -716,7 +716,7 @@ def sales(sales_project: str, kind: str, end: Any,
         "products": _by_product(between(bounds["start"]), between(datetime.date(1900, 1, 1)),
                                 part("fm_plan"), quarter),
         "pace": [{"month": m["month"], "area": m.get("area"), "amount": m.get("amount"),
-                  "price_flats": m.get("price_flats")}
+                  "units": m.get("units"), "price_flats": m.get("price_flats")}
                  for m in summary.get("dynamics") or [] if m["month"] <= month_key][-12:],
         "payments": [{"name": item["name"], "count": item["count"], "amount": item["amount"],
                       "area": item["area"]} for item in summary.get("by_payment") or []],
@@ -1114,7 +1114,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         if pool.get("pool_area"):
             text += (f" Продано {_pct(pool.get('area_share'))} площади, осталось "
                      f"{_area(pool['pool_area'] - pool['sold_area'])}.")
-        add("Продажи", text, f"контрактация от {_day(block.get('uploaded'))}, планы ФМ и банка",
+        add("Продажи", text, f"отчёт о продажах от {_day(block.get('uploaded'))}, планы финмодели и банка",
             "bad" if quarter.get("fm") and fact["amount"] < quarter["fm"]["amount"] else "")
     else:
         add("Продажи", block.get("reason") or "Данных нет.", "", "missing")
@@ -1158,7 +1158,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             pieces.append(f"на эскроу за {_months_label(report['end'])} поступило "
                           f"{_rub(escrow['inflow_month'])}")
         add("Финансирование", "; ".join(pieces).capitalize() + ".",
-            f"РСС от {_day(block['rss'])}, карточка финансирования Монитора, план «КРЕДИТЫ»",
+            f"РСС от {_day(block['rss'])}, расчёт Монитора, план финмодели",
             "bad" if limit.get("known") and float(limit.get("additional_financing") or 0) > 0
             else "")
     else:
@@ -1314,7 +1314,7 @@ def _bank_escrow_lines(block: dict[str, Any]) -> list[str]:
     closed = block.get("closed")
     if closed:
         gap = closed["gap"]
-        out.append(f"Эскроу по плану банка (лист «{block['sheet']}», утверждено по CF): "
+        out.append(f"Эскроу по плану банка: "
                    f"на конец {closed['quarter']} план {_rub(closed['plan'])}, накоплено "
                    f"{_rub(closed['actual'])} — {'больше' if gap >= 0 else 'меньше'} плана "
                    f"на {_rub(abs(gap))}.")
@@ -1324,13 +1324,6 @@ def _bank_escrow_lines(block: dict[str, Any]) -> list[str]:
                    f"на {_months_label(current['measured_at'])} накоплено "
                    f"{_rub(current['actual'])}.")
     return out
-
-
-def _chapters_words(limit: dict[str, Any]) -> str:
-    """«главы 1–3» из расчёта Монитора; без главы 1 — и почему."""
-    words = f"главы {limit.get('chapters_label') or '2–3'}"
-    reason = limit.get("chapters_reason")
-    return f"{words} ({reason})" if reason else words
 
 
 def _remaining_words(limit: dict[str, Any], borrowed: float | None = None,
@@ -1356,8 +1349,8 @@ def _remaining_words(limit: dict[str, Any], borrowed: float | None = None,
         words += f"; перерасход по статьям {_rub(check['overpaid'])} остаток не уменьшает"
     gap = float(check.get("book_gap") or 0.0)
     if abs(gap) > tiny:
-        words += (f"; лимиты статей в финкниге {'больше' if gap > 0 else 'меньше'} "
-                  f"сметы РСС на {_rub(abs(gap))}")
+        words += (f"; лимиты по статьям {'больше' if gap > 0 else 'меньше'} "
+                  f"общего лимита на {_rub(abs(gap))}")
     return words
 
 
@@ -1389,14 +1382,13 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     lines = []
     limit = block.get("limit") or {}
     if limit.get("known"):
-        lines.append(f"Лимит банка по смете РСС ({_chapters_words(limit)}): "
-                     f"{_rub(limit.get('bank_limit'))}; "
-                     f"остаток лимитов статей {_rub(limit.get('bank_remaining'))} — "
+        lines.append(f"Лимит банка: {_rub(limit.get('bank_limit'))}; "
+                     f"остаток лимитов {_rub(limit.get('bank_remaining'))} — "
                      f"{_remaining_words(limit, (block.get('draws') or {}).get('total'))}; "
                      f"резерв {_rub(limit.get('reserve'))}.")
         need = _approved_need(limit)
         if need:
-            line = (f"Утверждённый бюджет ({_chapters_words(limit)}, финмодель): "
+            line = (f"Утверждённый бюджет: "
                     f"{_rub(need['approved'])}; "
                     f"остаток потребности (бюджет минус оплаченное) {_rub(need['remaining'])} "
                     f"при лимитах статей и резерве {_rub(need['fuel'])}")
@@ -1405,8 +1397,8 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
                          if need["deficit"] > 0 else " — хватает")
             lines.append(line + ".")
         else:
-            lines.append("Утверждённый бюджет не загружен (финансовая книга, лист «Расчет "
-                         "стоимости строительства»): дефицит посчитан только по РСС.")
+            lines.append("Утверждённый бюджет не загружен (нет финансовой книги): дефицит "
+                         "посчитан только по РСС.")
         extra = float(limit.get("additional_financing") or 0.0)
         if extra > 0:
             lines.append(f"По РСС не хватает: {_rub(extra)}, "
@@ -1417,11 +1409,10 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
         lines.append(f"Лимит и дефицит не посчитаны: {limit.get('reason') or 'нет данных'}.")
     period = PERIODS[report["kind"]]
     draws, interest = block["draws"], block["interest"]
-    lines.append(f"Выборка кредита (платежи РСС из заёмных средств"
-                 + (f", {_chapters_words(limit)}" if limit.get("known") else "") + f"): за {period} "
+    lines.append(f"Выборка кредита: за {period} "
                  f"{_rub(draws['period'])}, с начала месяца {_rub(draws['month'])}, "
                  f"с начала проекта {_rub(draws['total'])}.")
-    lines.append(f"Услуги банка (статья 3.5 РСС, в том числе проценты): за {period} "
+    lines.append(f"Услуги банка и проценты: за {period} "
                  f"{_rub(interest['period'])}, с начала месяца {_rub(interest['month'])}, "
                  f"с начала проекта {_rub(interest['total'])}.")
     lines.extend(_bank_escrow_lines(block.get("escrow_bank") or {}))
@@ -1432,7 +1423,7 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
         text = (f"Эскроу, очередь «{queue['queue']}»: на {_months_label(queue['measured_at'])} "
                 f"накоплено {_rub(queue.get('actual'))}")
         if queue.get("plan") is not None:
-            text += f" при плане финмодели (лист «КРЕДИТЫ») {_rub(queue['plan'])}"
+            text += f" при плане финмодели {_rub(queue['plan'])}"
             if queue.get("gap") is not None:
                 text += f" ({'больше' if queue['gap'] >= 0 else 'меньше'} плана на {_rub(abs(queue['gap']))})"
         text += "."
@@ -1459,15 +1450,15 @@ def _funding_html(report: dict[str, Any]) -> str:
     if limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
         check = limit.get("remaining_check") or {}
-        rows = [["Лимит по смете РСС", _rub(limit.get("bank_limit"))],
+        rows = [["Лимит", _rub(limit.get("bank_limit"))],
                 ["Оплачено с начала проекта (кредитом и своими деньгами)", _rub(limit.get("paid_actual"))]]
         rows.append(["в том числе кредитом", _rub((block.get("draws") or {}).get("total"))])
         tiny = 0.001 * float(limit.get("bank_limit") or 0.0)
         if float(check.get("overpaid") or 0.0) > tiny:
             rows.append(["Перерасход по статьям (остаток не уменьшает)", _rub(check["overpaid"])])
         if abs(float(check.get("book_gap") or 0.0)) > tiny:
-            rows.append(["Лимиты статей финкниги против сметы РСС", _signed_rub(check["book_gap"])])
-        out.append(_table([f"Лимит банка ({esc(_chapters_words(limit))})", "Сумма"], rows + [
+            rows.append(["Лимиты по статьям против общего лимита", _signed_rub(check["book_gap"])])
+        out.append(_table(["Лимит банка", "Сумма"], rows + [
             ["Остаток лимитов статей", _rub(limit.get("bank_remaining"))],
             ["Резерв", _rub(limit.get("reserve"))],
             ["Не хватает по РСС",
@@ -1475,8 +1466,7 @@ def _funding_html(report: dict[str, Any]) -> str:
               if extra > 0 else "хватает до ввода")]]))
         need = _approved_need(limit)
         if need:
-            out.append(_table([f"Утверждённый бюджет ({esc(_chapters_words(limit))}, финмодель)",
-                               "Сумма"], [
+            out.append(_table(["Утверждённый бюджет", "Сумма"], [
                 ["Утверждённый бюджет", _rub(need["approved"])],
                 ["Оплачено с начала проекта", _rub(limit.get("paid_actual"))],
                 ["Остаток потребности (бюджет минус оплаченное)", _rub(need["remaining"])],
@@ -1486,16 +1476,15 @@ def _funding_html(report: dict[str, Any]) -> str:
                  else (_rub(need["deficit"]) if need["deficit"] > 0 else "хватает")]]))
         else:
             out.append("<p class='missing'>Утверждённый бюджет не загружен (финансовая книга, "
-                       "лист «Расчет стоимости строительства»): дефицит посчитан только по РСС.</p>")
+                       "нет финансовой книги): дефицит посчитан только по РСС.</p>")
     else:
         out.append(f"<p class='missing'>Лимит и дефицит не посчитаны: "
                    f"{esc(limit.get('reason') or 'нет данных')}.</p>")
     draws, interest = block["draws"], block["interest"]
     out.append(_table(["", f"За {PERIODS[report['kind']]}", "С начала месяца", "С начала проекта"], [
-        ["Выборка кредита (платежи из заёмных средств"
-         + (f", {esc(_chapters_words(limit))}" if limit.get("known") else "") + ")", _rub(draws["period"]),
+        ["Выборка кредита", _rub(draws["period"]),
          _rub(draws["month"]), _rub(draws["total"])],
-        ["Услуги банка, статья 3.5 (в том числе проценты)", _rub(interest["period"]),
+        ["Услуги банка и проценты", _rub(interest["period"]),
          _rub(interest["month"]), _rub(interest["total"])]]))
     bank = block.get("escrow_bank") or {}
     if bank.get("state") == "ok":
@@ -1509,15 +1498,15 @@ def _funding_html(report: dict[str, Any]) -> str:
             rows.append([f"На конец {c['quarter']} (накоплено на "
                          f"{_months_label(c['measured_at'])})", _rub(c["plan"]),
                          _rub(c["actual"]), "—"])
-        out.append(_table([f"Эскроу против плана банка (лист «{esc(bank['sheet'])}», "
-                           "утверждено по CF)", "План банка", "Накоплено", "Против плана"], rows))
+        out.append(_table(["Эскроу против плана банка", "План банка", "Накоплено",
+                           "Против плана"], rows))
     elif bank:
         out.append(f"<p class='missing'>{esc(bank.get('reason') or '')}</p>")
     escrow = block.get("escrow") or {}
     if escrow.get("state") != "ok":
         out.append(f"<p class='missing'>{esc(escrow.get('reason') or 'Эскроу: данных нет.')}</p>")
     elif escrow.get("queues"):
-        out.append(_table(["Эскроу, очередь", "Месяц", "Накоплено", "План финмодели («КРЕДИТЫ»)",
+        out.append(_table(["Эскроу, очередь", "Месяц", "Накоплено", "План финмодели",
                            "Покрытие кредита по плану",
                            "При нынешнем темпе"], [
             [esc(q["queue"]), _months_label(q.get("measured_at")), _rub(q.get("actual")),
@@ -1657,7 +1646,7 @@ h3{break-after:avoid;page-break-after:avoid;font-size:12px;margin:14px 0 4px;col
 table{border-collapse:collapse;width:100%;margin:4px 0 6px;break-inside:avoid;page-break-inside:avoid}
 tr{break-inside:avoid;page-break-inside:avoid}
 th,td{border-bottom:1px solid #e1e6ec;padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-th:first-child,td:first-child{text-align:left;white-space:normal}
+th:first-child,td:first-child{text-align:left;white-space:normal;min-width:110px}
 .keep{break-inside:avoid;page-break-inside:avoid}th{background:#eef2f7;font-weight:600;color:#334155;border-bottom:1px solid #c5cfdb}
 .neg{color:#b42318;font-weight:600}
 .photos{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:6px 0}
@@ -1684,6 +1673,7 @@ ul.findings li b{font-weight:700}ul.findings li.bad b{color:#b42318}
 h2.block{break-before:page;page-break-before:always}h2.block.first{break-before:auto;page-break-before:auto}
 ol.toc{margin:6px 0 10px;padding-left:22px;columns:2;column-gap:24px}ol.toc li{margin:2px 0;break-inside:avoid}ol.toc a{color:#1f4e8c;text-decoration:none}
 section{break-inside:auto}
+.switch-charts .switch{display:none}
 figure.chart{margin:10px 0 6px;break-inside:avoid;page-break-inside:avoid}figure.chart figcaption{font-size:11.5px;color:#17202a;margin-bottom:3px;font-weight:600}
 svg.chart{display:block;max-width:100%}
 """
@@ -1843,6 +1833,46 @@ def _budget_forecast(block: dict[str, Any], end: datetime.date) -> list[dict[str
     return out
 
 
+# Меры темпа продаж — одна таблица для кнопок и графиков. Порядок — порядок
+# кнопок; первая мера открыта на странице.
+PACE_MEASURES = (
+    ("area", "м²", "м² договоров", 1.0, 0),
+    ("units", "лоты", "лотов всех типов (квартиры, помещения, машиноместа, кладовые)", 1.0, 0),
+    ("amount", "млн ₽", "сумма договоров, млн ₽", 1e6, 1),
+)
+
+
+def _pace_charts(pace: list[dict[str, Any]]) -> str:
+    """Темп продаж по месяцам — один предмет в трёх мерах, цена линией на каждом.
+
+    Владелец (22.10.2026): «может совместить для экономии места? и отдельно
+    лотами и млн рублей сделать такие же графики? на странице переключением как
+    в отчёте о продажах, а в пдф подряд три графика». Разметка одна: страница
+    показывает одну меру и кнопки, документ — все три подряд без кнопок.
+    """
+    if not pace:
+        return ""
+    months = [_month_short(p["month"]) for p in pace]
+    prices = [p.get("price_flats") for p in pace]
+    line = ({"name": "Цена квартир, тыс. ₽/м²", "values": charts.scaled(prices, 1e3),
+             "unit": "тыс. ₽/м²", "digits": 0} if any(prices) else None)
+    buttons, panes = [], []
+    for index, (key, name, words, divisor, digits) in enumerate(PACE_MEASURES):
+        figure = charts.bar_chart(
+            f"Темп продаж по месяцам: {words}" + (" и цена квартир" if line else ""),
+            months, [{"name": name, "values": charts.scaled([p.get(key) for p in pace], divisor)}],
+            name, digits=digits, line=line)
+        if not figure:
+            continue
+        on = " on" if not panes else ""
+        buttons.append(f'<button type="button" data-pane="{key}" class="{on.strip()}">{name}</button>')
+        panes.append(f'<div class="pane{on}" data-pane="{key}">{figure}</div>')
+    if not panes:
+        return ""
+    return ('<div class="switch-charts" data-switch="sales-pace">'
+            f'<div class="switch">{"".join(buttons)}</div>{"".join(panes)}</div>')
+
+
 def _signed_rub(value: float | None) -> str:
     """Отклонение: минус — красным (перерасход, отставание, недобор)."""
     if value is None:
@@ -1904,16 +1934,16 @@ def _budget_articles_html(table: dict[str, Any]) -> str:
     notes = ["Красным — статьи с перерасходом, жёлтым — статья с самым большим "
              "неоплаченным остатком."]
     if any(chapter["key"] == "service" for chapter in table["chapters"]):
-        notes.append("Служба заказчика в итог стройки и коммерческих расходов не входит: в статье 2.6 РСС кроме службы "
-                     "заказчика и охраны лежат зарплаты офиса и связь, которые бюджет "
-                     "относит к административным расходам, — её процент с планом не сравним.")
+        notes.append("Служба заказчика в итог стройки и коммерческих расходов не входит: "
+                     "в её оплатах кроме самой службы и охраны лежат зарплаты офиса и связь, "
+                     "которые бюджет относит к административным расходам, — её процент с "
+                     "планом не сравним.")
     if whole:
-        notes.append("«Всего по бюджету месяца» — строка «РАСХОДЫ» бюджета: стройка, "
-                     "коммерческие расходы, служба заказчика, земля (глава 1) и "
+        notes.append("«Всего по бюджету месяца» — все расходы бюджета: стройка, "
+                     "коммерческие расходы, служба заказчика, земля и "
                      "административно-хозяйственные расходы. Оплачено по земле и "
-                     "административно-хозяйственным расходам — из колонки «ФАКТ» "
-                     "бюджета (их платят мимо реестра РСС); если факта в бюджете нет, "
-                     "земля — по главе 1 РСС.")
+                     "административно-хозяйственным расходам — по факту бюджета "
+                     "(их платят мимо РСС); если факта в бюджете нет, земля — по РСС.")
     if not table.get("has_plan"):
         notes.append("Бюджета на этот месяц нет — показаны только оплаты.")
     out.append("<p class='note'>" + " ".join(notes) + "</p>")
@@ -1991,17 +2021,15 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     block = report.get("funding") or {}
     limit = (block.get("limit") or {}) if block.get("state") == "ok" else {}
     need = _approved_need(limit) if limit.get("known") else None
-    chapters = _chapters_words(limit)
     add("Утверждённый бюджет", _rub(need["approved"]) if need else None,
-        f"{chapters}, финмодель" if need else "финансовая книга не загружена")
+        "по финмодели" if need else "финансовая книга не загружена")
     if limit.get("known"):
-        add("Лимит банка", _rub(limit.get("bank_limit")), f"смета РСС, {chapters}")
+        add("Лимит банка", _rub(limit.get("bank_limit")), "по смете РСС")
     else:
         add("Лимит банка", None, limit.get("reason") or "лимит не посчитан")
     draws = block.get("draws") if block.get("state") == "ok" else None
     if draws:
-        note = f"кредитом, {chapters}; за {period} — {_rub(draws['period'])}" \
-            if limit.get("known") else f"кредитом, все главы РСС; за {period} — {_rub(draws['period'])}"
+        note = f"за {period} — {_rub(draws['period'])}"
         over = draws["total"] - float(limit.get("bank_limit") or 0.0)
         if limit.get("known") and over > 0:
             note += f"; больше лимита на {_rub(over)}"
@@ -2196,18 +2224,7 @@ def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
              _area(item["total"]["area"]), _rub(item["total"]["amount"]), price(item, "total"),
              _rub((item.get("fm_quarter") or {}).get("amount")) if item.get("fm_quarter") else "—"]
             for item in products]))
-    pace = block.get("pace") or []
-    if pace:
-        out.append(charts.bar_chart("Темп продаж: м² договоров по месяцам",
-                                    [_month_short(p["month"]) for p in pace],
-                                    [{"name": "м²", "values": [p.get("area") for p in pace]}],
-                                    "м²", digits=0))
-        prices = [p.get("price_flats") for p in pace]
-        if any(prices):
-            out.append(charts.line_chart(
-                "Средняя цена квартир по месяцам", [_month_short(p["month"]) for p in pace],
-                [{"name": "Цена квартир", "values": charts.scaled(prices, 1e3)}],
-                "тыс. ₽/м²", label_every=charts.every(len(pace))))
+    out.append(_pace_charts(block.get("pace") or []))
     payments = block.get("payments") or []
     total = sum(item["amount"] for item in payments)
     if payments and total:
@@ -2516,7 +2533,7 @@ def render_html(report: dict[str, Any]) -> str:
         # страницы без таблицы под ним читается как пустой раздел.
         out.append("<div class='keep'>" + _block_heading("budget")
                    + f"<div class='sub'>{_MONTHS[month.month - 1]} {month.year}: план — "
-                   f"план-факт БДДС, оплачено — реестр платежей РСС на "
+                   f"БДДС, оплачено — РСС на "
                    f"{_day(report['end'])}; прошло {_pct(elapsed)} месяца</div>"
                    + _budget_articles_html(block.get("by_budget_article") or {}) + "</div>")
         if block.get("reason"):
