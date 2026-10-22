@@ -49,6 +49,11 @@ REPORT_PAGE = """<!doctype html>
 """ + _scoped(REPORT_STYLE, "#reportBox") + """
 #reportBox{background:#fff;padding:14px 18px;border:1px solid var(--line);border-radius:10px;margin-top:10px;max-width:980px}
 #reportBox .finding.bad{color:inherit}#reportBox .pagebreak{height:0}
+#reportBox .switch-charts .switch{display:flex;gap:0;border:1px solid #d7e2ec;border-radius:6px;overflow:hidden;width:max-content;margin:10px 0 0}
+#reportBox .switch-charts .switch button{border:0;background:#fff;color:#5b6b7d;font:inherit;font-size:12px;padding:4px 10px;cursor:pointer}
+#reportBox .switch-charts .switch button+button{border-left:1px solid #edf1f5}
+#reportBox .switch-charts .switch button.on{background:#1f4e8c;color:#fff}
+#reportBox .switch-charts .pane{display:none}#reportBox .switch-charts .pane.on{display:block}
 @media (max-width:700px){#reportBox .tiles{grid-template-columns:repeat(2,1fr)}
 #reportBox{padding:12px 10px}
 #reportBox table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
@@ -111,6 +116,10 @@ $('mergeCheckBtn').onclick=()=>mergeRun(false);$('mergeApplyBtn').onclick=()=>me
 async function loadProjects(){try{drawProjects(await post('/monitor/report/projects',{}));if(!projectList.length)msg('reportMsg','В Мониторе пока нет проектов. Загрузите РСС или график работ на странице Монитора — проект появится в списке.','warn');return projectList.length>0}catch(e){msg('reportMsg',e.message,'bad');return false}}
 function reportPayload(){remember('mgmt_report_project',$('project').value);return {project:$('project').value,kind:$('reportKind').value,end:$('cut').value||''}}
 let reportSeq=0;
+// Переключатель мер темпа продаж — орудие страницы: в документе кнопок нет и
+// там все меры подряд. Обработчик один на карточку: разметка приходит с
+// сервера заново при каждой сборке.
+$('reportBox').addEventListener('click',e=>{const b=e.target.closest('.switch-charts .switch button');if(!b)return;const box=b.closest('.switch-charts');box.querySelectorAll('.switch button').forEach(x=>x.classList.toggle('on',x===b));box.querySelectorAll('.pane').forEach(p=>p.classList.toggle('on',p.dataset.pane===b.dataset.pane))});
 async function renderReport(quiet){const p=$('project').value;if(!p)return msg('reportMsg','Выберите проект в списке.','bad');const seq=++reportSeq;msg('reportMsg','Собираю сводку…','warn');try{const r=await post('/monitor/report',reportPayload());if(seq!==reportSeq)return;$('reportBox').innerHTML=r.html;msg('reportMsg','','')}catch(e){if(seq!==reportSeq)return;msg('reportMsg',e.message,'bad')}renderNotes();loadMailing();loadLegal();if(!quiet)loadPhotos()}
 const photoUrls={};
 async function photoSrc(id){if(photoUrls[id])return photoUrls[id];const r=await fetch('/monitor/photo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(Object.assign(auth(),{project:$('project').value.trim(),photo_id:id}))});if(!r.ok)return '';photoUrls[id]=URL.createObjectURL(await r.blob());return photoUrls[id]}
