@@ -92,12 +92,17 @@ def test_the_first_column_is_not_crushed_on_a_tablet():
             tab.set_content(REPORT_PAGE)
             tab.evaluate("html => { document.getElementById('reportBox').innerHTML = html; "
                          "document.getElementById('privateArea').classList.remove('hidden') }", body)
-            width, lines = tab.evaluate("""() => {
+            width, lines, outside = tab.evaluate("""() => {
                 const th = [...document.querySelectorAll('#reportBox th')]
                     .find(c => c.textContent.trim() === 'Эскроу, очередь');
                 const r = th.getBoundingClientRect();
-                return [r.width, Math.round(r.height / (parseFloat(getComputedStyle(th).fontSize) * 1.4))] }""")
+                const edge = document.getElementById('reportBox').getBoundingClientRect().right;
+                const out = [...document.querySelectorAll('#reportBox table')]
+                    .filter(t => t.getBoundingClientRect().right > edge + 0.5).length;
+                return [r.width, Math.round(r.height / (parseFloat(getComputedStyle(th).fontSize) * 1.4)), out] }""")
         finally:
             browser.close()
     assert width >= 100, f"первая колонка сжата до {width}px"
     assert lines <= 2, f"заголовок первой колонки разбит на {lines} строк"
+    # Шесть колонок не влезают в 760px — таблица прокручивается внутри рамки, а не вылезает.
+    assert outside == 0, "таблица вылезает за карточку отчёта"
