@@ -196,7 +196,8 @@ def test_the_field_catalogue_matches_the_engine() -> None:
     """Поле, которого нет в движке, применилось бы в пустоту."""
     import main_legacy as core
     known = set(core.DEFAULT_INPUTS) | {
-        "cadastral_numbers", "site_area_ha", "apartments_gns_sqm"}
+        "cadastral_numbers", "site_area_ha", "apartments_gns_sqm",
+        "residential_spp_sqm"}
     for row in di.INTAKE_FIELDS:
         assert row["key"] in known, row["key"]
 

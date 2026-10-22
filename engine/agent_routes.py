@@ -591,7 +591,8 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
     # прочитала документ заново и могла ответить иначе на тех же страницах.
     if req.accept:
         got = document_intake.apply_intake(
-            req.extraction or {}, req.inputs or {}, req.tep or {}, accept=req.accept)
+            req.extraction or {}, req.inputs or {}, req.tep or {}, accept=req.accept,
+            spp_split=MKD_SPP_SPLIT)
         usage_track("document_apply", surface="site",
                     text=str(req.filename or ""))
         return {"applied": got["applied"], "refused": got["refused"],
@@ -716,14 +717,26 @@ def agent_document_answer(req: AgentDocumentAnswerRequest) -> dict[str, Any]:
         return {"queue": view, "applied": [], "refused": [], "inputs": req.inputs, "tep": req.tep}
     action = str(req.action or "answer")
     if action == "answer":
+        ledger = dict(queue.get("ledger") or {})
         got = document_intake.answer_card(card, req.inputs or {}, req.tep or {},
-                                          choice=req.choice, typed=req.value)
+                                          choice=req.choice, typed=req.value,
+                                          ledger=ledger, mode=str(req.mode or ""))
+        if got.get("confirm"):
+            # В поле уже своё число: прибавить или заменить — решает человек,
+            # и вопрос остаётся открытым, пока он не ответит.
+            return {"queue": view, "confirm": got["confirm"], "answer": got["answer"],
+                    "applied": [], "refused": [], "inputs": req.inputs, "tep": req.tep}
+        queue["ledger"] = ledger
     else:
         got = {"answer": "", "inputs": req.inputs, "tep": req.tep,
                "applied": [], "refused": []}
     answers = list(queue.get("answers") or [])
+    # Итог по документу печатает было → стало каждого поля, а не одни имена:
+    # «→ в модели: Цена сделки» не говорит, какое число туда легло.
     answers.append({"question": card.get("question"), "answer": got["answer"],
-                    "applied": [row.get("label") or row.get("key") for row in got["applied"]]})
+                    "applied": [row.get("label") or row.get("key") for row in got["applied"]],
+                    "changes": got["applied"],
+                    "refused": got["refused"]})
     queue["answers"] = answers
     # «Закончить» закрывает очередь целиком: отвеченное остаётся.
     queue["index"] = len(queue.get("cards") or []) if action == "stop" else view["index"] + 1
