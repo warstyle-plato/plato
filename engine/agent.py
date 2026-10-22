@@ -1397,11 +1397,42 @@ def _get_variable_value(inputs: dict[str, Any], variable: str) -> float:
     return n(inputs, variable)
 
 
+def _purchase_schedule_as_shares(inputs: dict[str, Any]) -> str | None:
+    """График покупки суммами → тот же график долями текущей сделки.
+
+    Суммы графика платятся как есть, а разница с ценой ложится на дату сделки
+    (`purchase_payment_plan`). Подбор цены, менявший одну цену, получал при
+    любой цене выше нуля те же платежи по графику плюс «возврат» в дату сделки,
+    а при нулевой — ни одного платежа: LLCR прыгал у нуля с 1,21 на 1,17, и
+    потолком выходило «0 млн ₽» (прод 0.27.7, 22.10.2026). Цену подбирают с
+    тем же профилем оплаты: доля каждого платежа — от текущей сделки (с
+    остатком в дату сделки), а если график больше цены — от суммы графика."""
+    items, is_percent, _ = parse_month_schedule(inputs.get("purchase_schedule"))
+    if not items or is_percent:
+        return None
+    total = sum(amount for amount, _ in items)
+    if total <= 0:
+        return None
+    price = n(inputs, "purchase_price_mln")
+    payments = [(month, amount) for amount, month in items]
+    if price > total:
+        payments.insert(0, (0, price - total))
+        total = price
+    shares: dict[int, float] = defaultdict(float)
+    for month, amount in payments:
+        shares[int(month)] += amount / total * 100.0
+    return "; ".join(f"{share:.10g}%@{month}" for month, share in sorted(shares.items()))
+
+
 def _apply_variable(inputs: dict[str, Any], variable: str, value: float) -> None:
     if variable == "main_construction_cost_th_per_sqm":
         inputs["main_above_th_per_sqm"] = value
         inputs["main_under_th_per_sqm"] = value
     else:
+        if variable == "purchase_price_mln":
+            shares = _purchase_schedule_as_shares(inputs)
+            if shares is not None:
+                inputs["purchase_schedule"] = shares
         inputs[variable] = value
 
 
@@ -1523,6 +1554,19 @@ def _goal_refusal_reason(
     )
 
 
+def _goal_feasible_ranges(sampled: list[tuple[float, Any, bool]]) -> list[list[float]]:
+    """Отрезки сетки подбора, где условие выполнено: [от, до] по точкам сетки."""
+    ranges: list[list[float]] = []
+    for index, (value, _, ok) in enumerate(sampled):
+        if not ok:
+            continue
+        if ranges and index > 0 and sampled[index - 1][2]:
+            ranges[-1][1] = round(value, 4)
+        else:
+            ranges.append([round(value, 4), round(value, 4)])
+    return ranges
+
+
 def _tool_goal_seek(
     req: AgentChatRequest,
     bundle: dict[str, Any],
@@ -1578,6 +1622,11 @@ def _tool_goal_seek(
         sampled.append((p, mv, _constraint_ok(mv, target_value, constraint)))
 
     feasible = [item for item in sampled if item[2]]
+    # Порог выполняется на нескольких отрезках — показатель меняется с
+    # переменной неровно. Ответ (крайнее значение) верен, но отрезки
+    # называются, а не прячутся за одним числом.
+    switches = sum(1 for left, right in zip(sampled, sampled[1:]) if left[2] != right[2])
+    non_monotonic = switches > 1
     if not feasible:
         closest = min(
             sampled,
@@ -1697,6 +1746,8 @@ def _tool_goal_seek(
         },
         "search_bounds": [round(lo, 4), round(hi, 4)],
         "threshold_beyond_bound": threshold_beyond,
+        "non_monotonic": non_monotonic,
+        "feasible_ranges": _goal_feasible_ranges(sampled) if non_monotonic else [],
         "calculation_method": "Детерминированный Goal Seek: многократный полный пересчёт DevelopAid на копии текущей модели; исходная модель не изменяется.",
         "phase_llcr_at_solution": _phase_llcr(chosen_bundle),
     }
