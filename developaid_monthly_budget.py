@@ -37,6 +37,15 @@ _BUDGET_ROWS = {
     "service": "Содержание службы заказчика",
     "commercial": "Коммерческие расходы",
 }
+# Строки, которых может не быть в старых выгрузках: их отсутствие — «нет в
+# бюджете», а не ошибка. «РАСХОДЫ» — итог бюджета месяца целиком; без главы 1
+# и АХР сводка показывала 419 млн вместо 505 млн плана октября (владелец,
+# 22.10.2026).
+_EXTRA_ROWS = {
+    "land": "Стоимость приобретения проекта",
+    "admin": "Административно-хозяйственные расходы",
+    "expenses": "РАСХОДЫ",
+}
 
 # Строки сводки: имя для человека, коды РСС факта, как строится план.
 LINES = (
@@ -211,6 +220,13 @@ def read_budget(data: bytes) -> dict[str, Any]:
             if found is not None:
                 article_rows.setdefault(article["key"], []).append(found)
 
+    extra_names = {_norm(label): key for key, label in _EXTRA_ROWS.items()}
+    extra_rows: dict[str, list[Any]] = {}
+    for row in rows[header + 2:]:
+        key = extra_names.get(_norm(row[0] if row else ""))
+        if key and key not in extra_rows:
+            extra_rows[key] = row
+
     out: dict[str, dict[str, dict[str, float | None]]] = {}
     for month, block in columns.items():
         values = {}
@@ -230,6 +246,14 @@ def read_budget(data: bytes) -> dict[str, Any]:
                 pair[kind] = -sum(known) if known else None
             articles[key] = pair
         values["articles"] = articles
+        extra = {}
+        for key, row in extra_rows.items():
+            pair = {}
+            for kind, column in block.items():
+                value = _amount(row[column] if column < len(row) else None)
+                pair[kind] = -value if value is not None else None
+            extra[key] = pair
+        values["extra"] = extra
         out[month] = values
     return {"title": title, "months": out,
             "articles_missing": [article["label"] for article in ARTICLES
@@ -317,6 +341,8 @@ def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
                 "plan": {"construction": construction,
                          "commercial": values["commercial"]["plan"]},
                 "articles": {key: pair["plan"] for key, pair in values["articles"].items()},
+                "extra": {key: pair["plan"] for key, pair in values.get("extra", {}).items()},
+                "service": service,
                 "articles_missing": parsed["articles_missing"]}
     return None
 
@@ -451,13 +477,39 @@ def month_articles(rss: Path, month: str, end: datetime.date,
     known = [row["plan"] for row in comparable if row["plan"] is not None]
     total = _row("Итого стройка и коммерческие расходы", sum(known) if known else None,
                  sum(row["fact"] for row in comparable))
-    rows = [row for chapter in chapters if chapter["key"] != "service"
+    # Остальной бюджет месяца: глава 1 (земля — глава 1 РСС) и АХР (в РСС их
+    # нет: оплачено — «нет в РСС», а не ноль).
+    extra = (plan or {}).get("extra") or {}
+    land_paid = sum(item["amount"] for code, item in loose.items()
+                    if code == "1" or code.startswith("1."))
+    for key, label, paid_here in (
+            ("land", "Приобретение проекта (земля)", land_paid),
+            ("admin", "Административно-хозяйственные расходы", None)):
+        planned_here = extra.get(key)
+        if planned_here is None and not paid_here:
+            continue
+        row = _row(label, planned_here, paid_here or 0.0)
+        if paid_here is None:
+            row.update({"fact": None, "remaining": None, "share": None, "over": False})
+        row.update({"key": key, "rss": "глава 1" if key == "land" else "нет в РСС",
+                    "in_budget": planned_here is not None})
+        chapters.append({"key": key, "label": label, "total": row, "rows": [row]})
+    # Всего — строка «РАСХОДЫ» бюджета (один источник с файлом), оплачено — то,
+    # что видно в РСС: стройка, коммерция, служба заказчика и земля.
+    whole_plan = extra.get("expenses")
+    if whole_plan is None:
+        parts = [chapter["total"]["plan"] for chapter in chapters
+                 if chapter["total"]["plan"] is not None]
+        whole_plan = sum(parts) if parts else None
+    whole_paid = sum(chapter["total"]["fact"] or 0.0 for chapter in chapters)
+    whole = _row("Всего по бюджету месяца", whole_plan, whole_paid)
+    rows = [row for chapter in chapters if chapter["key"] in {"construction", "commercial"}
             for row in chapter["rows"] if row["plan"] and row["key"] != "rest"]
     over = sorted((row for row in rows if row["over"]),
                   key=lambda row: row["remaining"])
     under = sorted((row for row in rows if not row["over"]),
                    key=lambda row: -row["remaining"])
-    return {"month": month, "chapters": chapters, "total": total,
+    return {"month": month, "chapters": chapters, "total": total, "whole": whole,
             "overrun": [row["key"] for row in over],
             "largest_left": under[0]["key"] if under else None,
             "has_plan": bool(plan)}

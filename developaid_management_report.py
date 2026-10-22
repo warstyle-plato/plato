@@ -1772,6 +1772,11 @@ def _signed_rub(value: float | None) -> str:
     return f"<span class='neg'>{_rub(value)}</span>" if value < -0.5 else _rub(value)
 
 
+# Строки бюджета месяца под итогом «стройка и коммерческие расходы»: они идут
+# во «Всего по бюджету месяца», но не в сравнимый итог.
+_BELOW_TOTAL = {"service", "land", "admin"}
+
+
 def _budget_articles_html(table: dict[str, Any]) -> str:
     """Бюджет месяца по статьям БДДС: план, оплачено по РСС, остаток, процент."""
     esc = html.escape
@@ -1790,10 +1795,14 @@ def _budget_articles_html(table: dict[str, Any]) -> str:
             plan = "нет в бюджете"
         else:
             plan = "—"
-        return [label, esc(codes), plan, _rub(row["fact"]), _signed_rub(row.get("remaining")),
+        fact = _rub(row["fact"]) if row["fact"] is not None else "нет в РСС"
+        return [label, esc(codes), plan, fact, _signed_rub(row.get("remaining")),
                 _pct(row.get("share"))]
 
+    whole = table.get("whole")
     for chapter in table["chapters"]:
+        if whole and chapter["key"] in _BELOW_TOTAL:
+            continue
         single = chapter["key"] == "service"
         if not single:
             rows.append(("chapter", cells(chapter["total"], f"<b>{esc(chapter['label'])}</b>")))
@@ -1804,6 +1813,12 @@ def _budget_articles_html(table: dict[str, Any]) -> str:
             label = esc(row["label"]) if single else "&nbsp;&nbsp;" + esc(row["label"])
             rows.append((tone, cells(row, label, row.get("rss", ""))))
     rows.append(("total", cells(table["total"], f"<b>{esc(table['total']['label'])}</b>")))
+    if whole:
+        for chapter in table["chapters"]:
+            if chapter["key"] in _BELOW_TOTAL:
+                row = chapter["total"]
+                rows.append(("", cells(row, esc(row["label"]), row.get("rss", ""))))
+        rows.append(("total", cells(whole, f"<b>{esc(whole['label'])}</b>")))
     head = ["Статья бюджета", "Коды РСС", "План месяца", "Оплачено", "Осталось", "Выполнено"]
     body = "".join(f"<tr class='{tone}'>" + "".join(f"<td>{c}</td>" for c in row) + "</tr>"
                    for tone, row in rows)
@@ -1811,9 +1826,14 @@ def _budget_articles_html(table: dict[str, Any]) -> str:
     notes = ["Красным — статьи с перерасходом, жёлтым — статья с самым большим "
              "неоплаченным остатком."]
     if any(chapter["key"] == "service" for chapter in table["chapters"]):
-        notes.append("Служба заказчика в итог не входит: в статье 2.6 РСС кроме службы "
+        notes.append("Служба заказчика в итог стройки и коммерческих расходов не входит: в статье 2.6 РСС кроме службы "
                      "заказчика и охраны лежат зарплаты офиса и связь, которые бюджет "
                      "относит к административным расходам, — её процент с планом не сравним.")
+    if whole:
+        notes.append("«Всего по бюджету месяца» — строка «РАСХОДЫ» бюджета: стройка, "
+                     "коммерческие расходы, служба заказчика, земля (глава 1) и "
+                     "административно-хозяйственные расходы. Оплаты административно-"
+                     "хозяйственных расходов в РСС нет, поэтому в «Оплачено» их не видно.")
     if not table.get("has_plan"):
         notes.append("Бюджета на этот месяц нет — показаны только оплаты.")
     out.append("<p class='note'>" + " ".join(notes) + "</p>")
