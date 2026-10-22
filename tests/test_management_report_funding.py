@@ -136,9 +136,10 @@ def test_the_limit_is_the_monitor_finance_card(monkeypatch):
     monkeypatch.setattr(report, "_monitor_view", view)
     text = report.render_text(report.build(PROJECT, "week", "2026-10-18"))
     assert seen["args"] == [(PROJECT, datetime.date(2026, 10, 18))]
-    assert ("Лимит банка по РСС (главы 2–3): 3,97 млрд ₽, оплачено с начала проекта "
-            "2,10 млрд ₽, остаток лимитов статей 1,50 млрд ₽, резерв 138,0 млн ₽.") in text
-    assert "По РСС не хватает: 230,0 млн ₽, начиная с март 2027." in text
+    assert ("Лимит банка по смете РСС (главы 2–3): 3,97 млрд ₽; остаток лимитов статей "
+            "1,50 млрд ₽ — лимит минус всё оплаченное 2,10 млрд ₽ (кредитом 448,0 млн ₽, "
+            "своими деньгами 1,65 млрд ₽); резерв 138,0 млн ₽.") in text
+    assert "По РСС не хватает: 230,0 млн ₽, начиная с марта 2027." in text
     assert "Утверждённый бюджет не загружен" in text
 
 
@@ -275,7 +276,72 @@ def test_the_chapter_label_comes_from_the_monitor(monkeypatch):
         "deficit_ladder": {"total": 2_662 * M}}}})
     built = report.build(PROJECT, "week", "2026-10-18")
     text = report.render_text(built)
-    assert "Лимит банка по РСС (главы 1–3)" in text
+    assert "Лимит банка по смете РСС (главы 1–3)" in text
     assert "Утверждённый бюджет (главы 1–3, финмодель)" in text and "2–3" not in text
     notes = {item["label"]: item["note"] for item in report.tiles(built)}
-    assert notes["Лимит банка"] == "по РСС, главы 1–3"
+    assert notes["Лимит банка"] == "смета РСС, главы 1–3"
+
+
+def test_the_draws_follow_the_chapters_of_the_limit(monkeypatch):
+    """«Лимит 4,64, выбрано 4,80, остаток 1,00 — так не сходится» (владелец,
+    22.10.2026): выборка считалась по всем главам РСС, лимит — по главам
+    Монитора. Теперь выборка — по тем же главам, что лимит, а плашка остатка
+    говорит, из чего он получился."""
+    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
+    # В РСС стенда у платежей коды 2.x и 3.x; глава 1 — отдельный платёж.
+    import io
+    from openpyxl import load_workbook
+    data = _rss_with_sources()
+    book = load_workbook(io.BytesIO(data))
+    paid = book["Реестр платежей"]
+    r = paid.max_row + 1
+    for c, v in ((2, "ЗемКо"), (3, "З-1"), (7, "1.1"), (9, datetime.date(2026, 10, 13)),
+                 (10, 900 * M), (11, "Заемные средства")):
+        paid.cell(row=r, column=c, value=v)
+    blob = io.BytesIO(); book.save(blob)
+    monitor.store_estimate(PROJECT, blob.getvalue(), "2026-10-18")
+
+    def card(chapters):
+        return {"dashboard": {"funding": {
+            "known": True, "chapters": chapters, "chapters_label": "–".join((chapters[0], chapters[-1])),
+            "bank_limit": 1_000 * M, "paid_actual": 1_448 * M, "paid_borrowed": 1_348 * M,
+            "bank_remaining": 1_000 * M, "reserve": 306 * M, "additional_financing": 1_060 * M,
+            "additional_financing_from": "2026-11-01",
+            "remaining_check": {"plain": -260 * M, "overpaid": 1_200 * M, "book_gap": 60 * M,
+                                "remaining": 1_000 * M}}}}
+
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: card(["2", "3"]))
+    built = report.build(PROJECT, "week", "2026-10-18")
+    assert built["funding"]["draws"]["total"] == pytest.approx(280 * M + 168 * M)
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: card(["1", "2", "3"]))
+    built = report.build(PROJECT, "week", "2026-10-18")
+    assert built["funding"]["draws"]["total"] == pytest.approx(280 * M + 168 * M + 900 * M)
+    tiles = {item["label"]: item for item in report.tiles(built)}
+    assert tiles["Выбрано у банка"]["note"].startswith("кредитом, главы 1–3; за неделю")
+    assert "больше лимита на 348,0 млн ₽" in tiles["Выбрано у банка"]["note"]
+    assert tiles["Выбрано у банка"]["tone"] == "bad"
+    note = tiles["Остаток лимита банка"]["note"]
+    assert note == ("лимит минус всё оплаченное 1,45 млрд ₽ (кредитом 1,35 млрд ₽, "
+                    "своими деньгами 100,0 млн ₽); резерв 306,0 млн ₽; по РСС не хватает "
+                    "1,06 млрд ₽ с ноября 2026")
+    text = report.render_text(built)
+    assert ("перерасход по статьям 1,20 млрд ₽ остаток не уменьшает; лимиты статей в "
+            "финкниге больше сметы РСС на 60,0 млн ₽") in text
+    assert "с ноябрь" not in text
+    page = report.render_html(built)
+    assert "в том числе кредитом" in page and "Перерасход по статьям" in page
+    assert "с ноября 2026" in page and "с ноябрь" not in page
+
+
+def test_without_chapter_one_the_reason_is_named(monkeypatch):
+    """Нет строки главы 1 в финкниге — подпись «2–3» с причиной, а не молча."""
+    _project()
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {"funding": {
+        "known": True, "chapters": ["2", "3"], "chapters_label": "2–3",
+        "chapters_reason": "без главы 1: в финансовой книге нет строки главы 1",
+        "bank_limit": 4_640 * M, "paid_actual": 2_000 * M, "bank_remaining": 2_640 * M,
+        "reserve": 0.0, "additional_financing": 0.0}}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    notes = {item["label"]: item["note"] for item in report.tiles(built)}
+    assert notes["Лимит банка"] == ("смета РСС, главы 2–3 (без главы 1: в финансовой книге "
+                                    "нет строки главы 1)")
