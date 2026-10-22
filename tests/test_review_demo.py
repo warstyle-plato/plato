@@ -12,6 +12,7 @@
 - оплата в демо не берёт денег: тестовый магазин ЮKassa или пояснение, а
   тестовый платёж не открывает доступ настоящему человеку;
 - монитор и сводка команды демо-сессии закрыты всегда;
+- кнопка «Скопировать» кладёт адрес ссылки в буфер, адрес на странице один;
 - в браузере ссылка ведёт в кабинет на «Тарифы и доступ».
 
 Запуск: python3 -m pytest tests/test_review_demo.py -q
@@ -19,6 +20,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -174,6 +176,40 @@ def test_a_demo_session_never_sees_the_team_data(path, monkeypatch):
 
 
 # --- на отрисованной странице -----------------------------------------------------
+
+def test_the_admin_copies_the_demo_link_with_one_button():
+    """Адрес на странице один, кнопка кладёт его в буфер целиком."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import browser
+
+    admin = core._telegram_session(OWNER, [])
+    path = browser.chromium_or_skip()
+    with browser.serve(core.app, 18976) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            context = engine.new_context(viewport={"width": 390, "height": 844})
+            context.grant_permissions(["clipboard-read", "clipboard-write"], origin=base)
+            page = context.new_page()
+            page.add_init_script(
+                f"localStorage.setItem('developaid_web_session', {json.dumps(admin)})")
+            page.goto(base, wait_until="networkidle")
+            page.click("#tariffsButton")
+            page.fill("#demoInviteNote", "ЮKassa")
+            page.click("button:has-text('Создать демо-ссылку')")
+            page.wait_for_selector("#demoInviteList button:has-text('Скопировать')")
+            expected = f"{base}/demo/" + client.post(
+                "/access/admin/demo/list", json={"key": "kluch"}).json()["invites"][0]["code"]
+            text = page.inner_text("#accessAdminBox")
+            assert text.count("/demo/") == 1, "адрес показан дважды"
+            assert "Скопировать" in page.inner_text("#demoInviteStatus")
+            page.click("#demoInviteList button:has-text('Скопировать')")
+            page.wait_for_function(
+                "document.querySelector('#demoInviteList button').textContent === 'Скопировано'")
+            assert page.evaluate("navigator.clipboard.readText()") == expected
+            page.close()
+
 
 def test_the_demo_link_leads_into_the_cabinet_in_a_browser():
     pytest.importorskip("playwright.sync_api")
