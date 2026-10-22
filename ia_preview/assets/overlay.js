@@ -1266,13 +1266,27 @@
         : { label: 'Запас к цене', value: '—', note: refused() ? 'Порог не достигается ни при какой цене входа' + (goalSeek.scope_label ? ' у ' + scopeGenitive(goalSeek.scope_label) : '') + ' — дело не в цене.' : 'Считается после подбора максимума.', wait: true }
     ];
 
+    /* Пришёл ответ подбора для этих вводных — плитки, вердикт и подпись
+       рисуются из него: их текст собирает движок (`entry_price_block`), и
+       тизер с PDF печатают тот же. Свои клетки выше — только пока ответа нет. */
+    var server = goalSeek && !goalSeekStale && goalSeek.tiles ? goalSeek : null;
+    if (server) {
+      cells = server.tiles;
+      if (server.verdict && server.verdict.title) {
+        card.classList.remove('pass', 'edge', 'fail');
+        if (server.verdict.tone) card.classList.add(server.verdict.tone);
+        title.textContent = server.verdict.title;
+      }
+    }
     document.getElementById('iaVerdictGrid').innerHTML = cells.map(function (cell) {
       return '<div class="ia-verdict-cell' + (cell.wait ? ' wait' : '') + '"><span>' + cell.label + '</span><b>'
         + cell.value + '</b><small>' + cell.note + '</small></div>';
     }).join('');
 
     var stamp = document.getElementById('iaVerdictStamp');
-    if (!metric.key) {
+    if (server) {
+      stamp.textContent = server.stamp || '';
+    } else if (!metric.key) {
       stamp.textContent = '';
     } else if (goalSeek && goalSeek.available === false) {
       stamp.textContent = 'Подбор выполнен движком DevelopAid ' + (goalSeek.engine_version || '')
@@ -1359,6 +1373,11 @@
       })
       .then(function () { goalSeekBusy = false; renderVerdict(); });
   }
+
+  /* Тизер и PDF берут найденный здесь потолок без пересчёта, если сервер
+     узнаёт в нём подбор тех же вводных (отпечаток и подпись); нет — подбирают
+     сами в фоне. */
+  window.pageGoalSeek = function () { return goalSeek && goalSeek.fingerprint ? goalSeek : null; };
 
   function wrapRenderResult() {
     var original = window.renderResult;
