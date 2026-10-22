@@ -1305,6 +1305,11 @@ def _party_key(contractor: Any, contract: Any = None) -> str:
     return clean(contractor) + ("|" + clean(contract) if contract is not None else "")
 
 
+def borrowed(source: Any) -> bool:
+    """Платёж из заёмных средств — выборка кредита (банк платит подрядчику)."""
+    return "заем" in str(source or "").lower().replace("ё", "е")
+
+
 def read_payments(path: str | Path) -> dict[str, Any]:
     """Реестр платежей РСС: дата, сумма, код ССР, договор и источник средств."""
     rows: list[dict[str, Any]] = []
