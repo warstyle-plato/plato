@@ -214,8 +214,10 @@ def _goal_seek(core, request: GoalSeekRequest) -> dict[str, Any]:
     bundle = core._run_authoritative_model(request.inputs, request.tep, request.rates, request.phasing)
     # Показатель долга и его порог выбирает движок (`report_layout.debt_metric`):
     # LLCR у проекта с ПФ, DSCR кредита объектов у нежилого.
+    # Порог по умолчанию — порог движка (`debt_metric.target`); свой порог
+    # страница шлёт, только если просит другой.
     target = (None if request.variable == core.ENTRY_PRICE_VARIABLE
-              and abs(float(request.target_llcr) - _TARGET_LLCR) < 1e-9 else float(request.target_llcr))
+              and float(request.target_llcr) == _TARGET_LLCR else float(request.target_llcr))
     data = core.entry_price_ceiling(bundle, request.inputs, request.tep, request.rates,
                                     request.phasing, request.variable, target)
     data.update(core.entry_price_block(bundle, request.inputs, data))
