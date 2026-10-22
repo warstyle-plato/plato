@@ -933,10 +933,10 @@ PAGE += r"""</head>
       </div>
       <div id="accessAdminStatus" style="font-size:12px;margin-bottom:8px"></div>
       <div id="accessAdminList"></div>
-      <div class="section-title" style="margin:14px 0 6px">Демо-доступ для проверяющих ЮKassa</div>
-      <div style="font-size:12px;color:#777;margin-bottom:6px">Ссылка открывает кабинет без Telegram на 14 дней: права нового клиента, оплата без списания. Отзыв действует сразу.</div>
+      <div class="section-title" style="margin:14px 0 6px">Демо-доступ по ссылке</div>
+      <div style="font-size:12px;color:#777;margin-bottom:6px">Ссылку можно отправить кому угодно: клиенту, партнёру, проверяющему ЮKassa. Она открывает кабинет без Telegram на 14 дней. По ней человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. Если отозвать ссылку, вход по ней закроется сразу.</div>
       <div class="upload-line" style="align-items:center;margin-bottom:6px">
-        <input id="demoInviteNote" placeholder="Для кого (необязательно)" style="min-width:220px">
+        <input id="demoInviteNote" placeholder="Для кого, например «ЮKassa» или «ООО Ромашка»" style="min-width:220px">
         <button class="btn dark" onclick="accessDemoCreate()">Создать демо-ссылку</button>
       </div>
       <div id="demoInviteStatus" style="font-size:12px;margin-bottom:6px"></div>

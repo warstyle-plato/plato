@@ -1244,7 +1244,7 @@ function tariffsHtml(data){
  // тестовый магазин ЮKassa или пояснение, где откроется форма.
  if(data.demo){
   html+='<p style="background:#eef6ff;border:1px solid #b9d6f5;padding:8px 10px;margin:0 0 8px">'+
-   '<b>Демо-доступ для проверки.</b> '+(data.demo_payments==='test'
+   '<b>Это демо-доступ.</b> '+(data.demo_payments==='test'
     ?'Оплата идёт через тестовый магазин ЮKassa — деньги не списываются.'
     :'Кнопки оплаты показывают, где откроется платёжная форма ЮKassa; деньги не списываются.')+'</p>';
  }
@@ -1335,7 +1335,7 @@ async function renderAccessAdmin(){
   '<div class="section-title" style="margin:12px 0 6px">Оплаты</div><div class="scroll"><table><thead><tr><th>Дата</th><th>Кто</th><th>Что</th><th>Платёж</th></tr></thead><tbody>'+
   (payments||'<tr><td colspan="4">Оплат пока не было.</td></tr>')+'</tbody></table></div>';
 }
-// Демо-доступ для проверяющих ЮKassa: ссылка-приглашение со сроком, отзыв.
+// Демо-доступ по ссылке (клиенту, партнёру, ЮKassa): ссылка-приглашение со сроком, отзыв.
 async function renderDemoInvites(){
  const box=document.getElementById('demoInviteList');
  if(!box)return;
@@ -1354,7 +1354,7 @@ async function accessDemoCreate(){
  const note=String((document.getElementById('demoInviteNote')||{}).value||'');
  try{
   const data=await accessAdminCall('/access/admin/demo/create',{days:14,note});
-  if(status)status.textContent='Ссылка для проверяющих: '+location.origin+data.path+' — действует до '+accessDate(data.expires)+'.';
+  if(status)status.textContent='Демо-ссылка: '+location.origin+data.path+' — действует до '+accessDate(data.expires)+'.';
   renderDemoInvites();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }

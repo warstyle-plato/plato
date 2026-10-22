@@ -401,7 +401,7 @@ def payments_create(req: PaymentCreateRequest, request: Request) -> dict[str, An
             return {"preview": True, "message": (
                 f"Здесь откроется платёжная форма ЮKassa на {price}\u00a0₽"
                 f"{' (' + item['vat_note'] + ')' if item['vat_note'] else ''}: оплата картой "
-                "или через СБП, чек придёт на указанную почту. Это демо-доступ для проверки, "
+                "или через СБП, чек придёт на указанную почту. Это демо-доступ, "
                 "поэтому деньги не списываются.")}
         return payment_create(chat, req.kind, plot, req.email, _payment_return_url(request),
                               test=True)

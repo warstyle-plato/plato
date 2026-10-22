@@ -1,4 +1,4 @@
-"""Публичные «Тарифы» и «Контакты» и демо-доступ для проверяющих ЮKassa.
+"""Публичные «Тарифы» и «Контакты» и демо-доступ по ссылке (клиенту, партнёру, ЮKassa).
 
 Решение владельца 22.10.2026: проверяющему магазина нужно видеть без входа цены,
 оферту, политику возврата и реквизиты, а в кабинете — как клиент входит и где
@@ -186,7 +186,7 @@ def test_the_demo_link_leads_into_the_cabinet_in_a_browser():
             page.click("#demoEnter")
             page.wait_for_function(
                 "document.getElementById('tariffsBox') && "
-                "document.getElementById('tariffsBox').textContent.includes('Демо-доступ для проверки')",
+                "document.getElementById('tariffsBox').textContent.includes('Это демо-доступ')",
                 timeout=60_000)
             assert page.locator("#projectsDialog").is_visible()
             assert not page.locator("#accessAdminBox").is_visible()

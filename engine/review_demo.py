@@ -1,4 +1,4 @@
-"""Публичные «Тарифы» и «Контакты» и демо-доступ для проверяющих ЮKassa.
+"""Публичные «Тарифы» и «Контакты» и демо-доступ по ссылке (клиенту, партнёру, ЮKassa).
 
 Не самостоятельный модуль. `main_legacy.py` выполняет этот файл в своём
 пространстве имён сразу после `payments` (`_engine_part("review_demo")`).
@@ -204,7 +204,8 @@ def demo_claim(req: DemoRequest) -> dict[str, Any]:
     record["last_claim"] = round(time.time(), 3)
     _demo_write(record)
     chat = int(record["chat"])
-    _profile_remember_telegram_name(chat, "Проверяющий ЮKassa (демо)")
+    note = str(record.get("note") or "").strip()
+    _profile_remember_telegram_name(chat, f"Демо-доступ: {note}" if note else "Демо-доступ")
     lifetime = max(60, int(float(record["expires"]) - time.time()))
     return {"session": _telegram_session(chat, [], lifetime_seconds=lifetime), "chat_id": chat,
             "expires": record["expires"]}
@@ -300,7 +301,7 @@ def contacts_page() -> HTMLResponse:
     return _public_page("Контакты", body)
 
 
-_DEMO_PAGE = """<h1>Демо-доступ для проверки</h1>
+_DEMO_PAGE = """<h1>Демо-доступ DevelopAid</h1>
 <div class="card"><b>Как входит клиент.</b>
 <ol>
 <li>На сайте нажимает «Войти через Telegram».</li>
@@ -309,9 +310,9 @@ _DEMO_PAGE = """<h1>Демо-доступ для проверки</h1>
 <li>В «Личном кабинете» → «Тарифы и доступ» он видит остаток бесплатного участка,
 свои участки и кнопки оплаты. Оплата идёт через платёжную форму ЮKassa.</li>
 </ol></div>
-<p>Эта ссылка открывает тот же кабинет без Telegram — для проверяющих. У демо-доступа
-права нового клиента, своих проектов у него нет, чужие проекты и администрирование ему
-закрыты. Оплата в демо-доступе не списывает деньги.</p>
+<p>Эта ссылка открывает тот же кабинет без Telegram, чтобы вы увидели сервис глазами
+клиента. В демо-доступе можно посчитать один участок, как новому клиенту. Чужие проекты
+и администрирование закрыты. Кнопки оплаты работают, но деньги не списываются.</p>
 <p><button id="demoEnter" style="padding:10px 16px;border-radius:10px;border:0;background:#132031;color:#fff;font:inherit;cursor:pointer">Войти по демо-ссылке</button></p>
 <p id="demoStatus" class="muted"></p>
 <script>
