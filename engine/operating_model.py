@@ -102,6 +102,11 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Пятно, этажность и подземные уровни — один расчёт на проект; СМР
     # подземной части читает из него надбавку за глубину (`site_massing`).
     massing = site_massing(x, t)
+    # Объёмная схема проекта без очередей — одно здание; свод очередей
+    # раскладывает корпуса по очередям сам (`_consolidate_phase_results`).
+    if not x.get("_site_massing_project"):
+        massing["scheme"] = site_massing_scheme(
+            x, massing, [{"phase": 1, "above_gns_sqm": massing["above_gns_sqm"]}])
     depth_factor = float(massing["underground_depth_factor"])
     # Благоустройство считается по физической площади двора: она своя база и в
     # строительный объём не входит вовсе. Ответ объявлен один раз и назван

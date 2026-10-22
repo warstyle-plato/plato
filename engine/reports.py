@@ -168,7 +168,12 @@ def _site_massing_block(result: dict[str, Any]) -> list[dict[str, Any]]:
             _row("Подземных уровней", m.get("underground_levels"), "count")]
     rows += [_row("Внимание", str(w), "text") for w in m.get("warnings") or []]
     rows.append(_row("Как посчитано", "оценка по балансу территории, а не проект", "text"))
-    return [{"title": "Пятно застройки и этажность", "rows": rows}]
+    blocks = [{"title": "Пятно застройки и этажность", "rows": rows}]
+    if ((m.get("scheme") or {}).get("axonometry") or {}).get("shapes"):
+        # Объёмная схема — та же картинка движка, что во вкладке «ТЭП».
+        blocks.append({"ref": "massing_scheme", "title": "Объёмная схема застройки",
+                       "scheme": m["scheme"]})
+    return blocks
 
 
 def _sum_object_costs(results: list[dict[str, Any]]) -> dict[str, dict[str, float]]:

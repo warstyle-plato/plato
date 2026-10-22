@@ -937,6 +937,45 @@ def _entry_price_pdf(story: list[Any], block: dict[str, Any], P: Any, table: Any
     story.append(KeepTogether(parts))
 
 
+def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
+                            KeepTogether: Any, mm: float) -> list[Any]:
+    """Объёмная схема застройки картинкой PDF: многоугольники, номера и легенда —
+    готовый ответ движка (`site_massing_scheme`), тот же, что рисует страница."""
+    from reportlab.graphics.shapes import Circle, Drawing, Polygon, String
+    from reportlab.lib import colors
+
+    ax = (scheme or {}).get("axonometry") or {}
+    layout = (scheme or {}).get("layout") or {}
+    if not ax.get("shapes"):
+        return []
+    vx, vy, vw, vh = (float(v) for v in ax["viewbox"])
+    scale = min(150 * mm / vw, 95 * mm / vh)
+    drawing = Drawing(vw * scale, vh * scale)
+
+    def flat(points: list[list[float]]) -> list[float]:
+        return [c for p in points for c in ((p[0] - vx) * scale, (vy + vh - p[1]) * scale)]
+
+    unit = vw / 400 * scale
+    for shape in ax["shapes"]:
+        drawing.add(Polygon(flat(shape["points"]), fillColor=colors.HexColor(shape["fill"]),
+                            strokeColor=colors.HexColor(shape["stroke"]),
+                            strokeWidth=float(shape.get("width") or 1) * unit,
+                            strokeDashArray=[d * unit for d in shape["dash"]] if shape.get("dash") else None,
+                            strokeLineJoin=1))
+    radius = float(ax.get("label_radius") or 5) * scale
+    for label in ax.get("labels") or []:
+        cx, cy = flat([[label["x"], label["y"]]])
+        drawing.add(Circle(cx, cy, radius, fillColor=colors.white, strokeColor=colors.HexColor("#222222"),
+                           strokeWidth=radius / 8))
+        drawing.add(String(cx, cy - radius * 0.42, str(label["text"]), fontName="Helvetica-Bold",
+                           fontSize=radius * 1.2, textAnchor="middle"))
+    parts = [P("Объёмная схема застройки", small), drawing, P(str(ax.get("caption") or ""), small)]
+    parts += [P(str(item.get("line") or ""), small) for item in ax.get("legend") or []]
+    parts += [P(str(note), small) for note in layout.get("notes") or []]
+    parts.append(P(str(ax.get("footer") or ""), small))
+    return [KeepTogether(parts)]
+
+
 def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[str, Any],
                        P: Any, table: Any, small: Any, KeepTogether: Any, Spacer: Any,
                        mm: float, entry_price: dict[str, Any] | None = None) -> None:
@@ -977,6 +1016,9 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
             if rows:
                 story.append(KeepTogether([P(title, small),
                                            table(rows, [60*mm, 110*mm], header=False)]))
+            continue
+        if ref == "massing_scheme":
+            story.extend(_site_massing_scheme_pdf(block.get("scheme"), P, small, KeepTogether, mm))
             continue
         if ref == "sensitivity":
             brief = ", ".join(str(r.get("value") or "") for r in section.get("brief") or [])
@@ -1731,6 +1773,7 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     _massing = tep_report.get("site_massing") or {}
     if _massing.get("summary"):
         story.append(P(str(_massing["summary"]), small))
+    story.extend(_site_massing_scheme_pdf(_massing.get("scheme"), P, small, KeepTogether, mm))
     for _warn in _massing.get("warnings") or []:
         story.append(P(str(_warn), ParagraphStyle("massing_warn", parent=small, fontSize=8.0,
                                                  textColor=colors.HexColor("#a02418"))))

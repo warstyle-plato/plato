@@ -295,6 +295,9 @@ _engine_part("vri_payment")
 # Баланс территории: пятно застройки, этажность и подземные уровни —
 # engine/site_massing.py; надбавку за глубину читает операционная модель.
 _engine_part("site_massing")
+# Объёмная схема: корпуса очередей на участке и их аксонометрия —
+# engine/site_massing_layout.py; один ответ для страницы и PDF.
+_engine_part("site_massing_layout")
 
 
 _engine_part("operating_model")
