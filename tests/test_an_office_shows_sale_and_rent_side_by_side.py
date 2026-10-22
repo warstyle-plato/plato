@@ -166,11 +166,12 @@ def test_the_defaults_are_the_comfort_office_class() -> None:
 
 
 def test_the_rent_from_the_price_is_the_named_arithmetic() -> None:
-    """Аренда из цены: здание по NOI / ставке капитализации стоит ровно цену."""
-    scale = ns.OFFICE_CLASS_SCALE["B+"]
-    rent = ns.office_rent_from_price(scale)
-    value = rent * 12 * 0.92 * (1 - 0.18) / 0.105
-    assert value == pytest.approx(550.0, abs=0.5)
+    """Аренда из цены по окупаемости 10–12 лет (владелец): 400 / 11 / 12."""
+    assert ns.OFFICE_GROSS_PAYBACK_YEARS == 11.0
+    rent = ns.office_rent_from_price(ns.OFFICE_CLASS_SCALE["B"])
+    assert rent == round(400 / 11 / 12, 2)
+    # Класс B — около 36 тыс ₽/м² в год, а не 64, как из ставки капитализации.
+    assert 30 < rent * 12 < 40
 
 
 # --- чувствительность ------------------------------------------------------------
