@@ -293,3 +293,36 @@ def test_the_service_line_carries_its_budget_plan():
     # Прогноз против плана для службы заказчика не строится: факт шире плана.
     assert all(row["label"] != lines["service"]["label"]
                for row in report._budget_forecast(built["budget"], datetime.date(2026, 10, 18)))
+
+
+def test_land_and_admin_paid_come_from_the_budget_fact():
+    # «78,1 по факту оплачено, а в бюджете стоит как не оплачено» (владелец,
+    # 22.10.2026): землю платят мимо реестра РСС — оплачено берётся из
+    # колонки «ФАКТ» бюджета.
+    october_fact = {"Стоимость приобретения проекта": -50, "Административно-хозяйственные расходы": -3}
+    book = Workbook()
+    sheet = book.active
+    for col, name in ((5, "Август 2026"), (8, "Октябрь 2026")):
+        sheet.cell(row=4, column=col, value=name)
+        sheet.cell(row=5, column=col, value="ПЛАН")
+        sheet.cell(row=5, column=col + 1, value="ФАКТ")
+    for r, (name, august, october, fact) in enumerate(BUDGET_ROWS, 6):
+        sheet.cell(row=r, column=1, value=name)
+        for col, value in ((5, august), (6, fact), (8, october),
+                           (9, october_fact.get(name))):
+            if value is not None:
+                sheet.cell(row=r, column=col, value=value * M)
+    blob = io.BytesIO()
+    book.save(blob)
+    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
+    monitor.store_estimate(PROJECT, articles_rss(), "2026-10-18")
+    monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-01")
+    built = report.build(PROJECT, "week", "2026-10-18")
+    table = built["budget"]["by_budget_article"]
+    chapters = {chapter["key"]: chapter["total"] for chapter in table["chapters"]}
+    assert chapters["land"]["fact"] == pytest.approx(50 * M)
+    assert chapters["land"]["remaining"] == pytest.approx(0)
+    assert chapters["land"]["rss"] == "факт БДДС"
+    assert chapters["admin"]["fact"] == pytest.approx(3 * M)
+    assert table["whole"]["fact"] == pytest.approx(
+        sum(chapter["fact"] or 0 for chapter in chapters.values()))
