@@ -241,7 +241,9 @@ def test_month_budget_plan_comes_from_the_budget_and_fact_from_rss():
     assert lines["construction"]["remaining"] == pytest.approx(250 * M)
     assert lines["commercial"]["plan"] == pytest.approx(25 * M)
     assert lines["commercial"]["fact"] == pytest.approx(10 * M)
-    assert lines["service"]["plan"] is None
+    # План службы заказчика — её строка бюджета (владелец, 22.10.2026); факт
+    # РСС 2.6 шире плана, это объяснено примечанием строки.
+    assert lines["service"]["plan"] == pytest.approx(10 * M)
     assert lines["service"]["fact"] == pytest.approx(20 * M)
 
 
