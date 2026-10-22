@@ -114,6 +114,10 @@ def payments_missing() -> list[str]:
         missing.append("не вписан текст оферты (docs/legal/offer.md)")
     if not legal_text("refund")[1]:
         missing.append("не вписан текст политики возврата (docs/legal/refund.md)")
+    for name in ("offer", "refund"):
+        unknown = legal_fill(legal_text(name)[0])[1]
+        if unknown:
+            missing.append(f"в docs/legal/{name}.md нет данных для полей: {', '.join(sorted(set(unknown)))}")
     if access_terms()["vat_pct"] not in _YOOKASSA_VAT_CODES:
         missing.append(f"для ставки НДС {access_terms()['vat_pct']} % нет кода чека ЮKassa")
     return missing
@@ -517,8 +521,38 @@ def payments_return() -> HTMLResponse:
     return HTMLResponse(_payments_dressed(_PAYMENT_RETURN_PAGE), headers={"Cache-Control": "no-store"})
 
 
+_LEGAL_FIELD_RE = re.compile(r"\{\{\s*([a-z_]+)\.([a-z_]+)\s*\}\}")
+
+
+def legal_fill(text: str) -> tuple[str, list[str]]:
+    """Подставляет в юридический текст реквизиты и цены из их единственных
+    источников: `{{seller.*}}` и `{{product.*}}` — `docs/legal/product.json`,
+    `{{terms.*}}` — `access_terms()` (цены — `*_price` словами «10 000 ₽»).
+    Возвращает текст и список полей, которых в источнике нет: пустота вместо
+    реквизита в договоре — ошибка, а не «как-нибудь»."""
+    terms = access_terms()
+    sources = {
+        "seller": seller_info(),
+        "product": product_info(),
+        "terms": {**{k: str(v) for k, v in terms.items()},
+                  "plot_price": _access_rub(terms["plot_price_rub"]),
+                  "subscription_price": _access_rub(terms["subscription_price_rub"])},
+    }
+    missing: list[str] = []
+
+    def value(match: re.Match) -> str:
+        found = str((sources.get(match.group(1)) or {}).get(match.group(2)) or "")
+        if not found:
+            missing.append(f"{match.group(1)}.{match.group(2)}")
+            return f"[не задано: {match.group(1)}.{match.group(2)}]"
+        return found
+
+    return _LEGAL_FIELD_RE.sub(value, text), missing
+
+
 def _legal_page(name: str, title: str) -> HTMLResponse:
     text, filled = legal_text(name)
+    text, _missing = legal_fill(text)
     body = re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()
     paragraphs = []
     for block in re.split(r"\n\s*\n", body):
@@ -527,6 +561,8 @@ def _legal_page(name: str, title: str) -> HTMLResponse:
             continue
         if block.startswith("# "):
             paragraphs.append(f"<h1>{html.escape(block[2:].strip())}</h1>")
+        elif block.startswith("## "):
+            paragraphs.append(f"<h2>{html.escape(block[3:].strip())}</h2>")
         else:
             paragraphs.append(f"<p>{html.escape(block).replace(chr(10), '<br>')}</p>")
     if not filled:
