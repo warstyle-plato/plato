@@ -18,7 +18,15 @@
 (MutationObserver). Вторая линия — настройка счётчика «Записывать все поля»
 в интерфейсе Метрики должна оставаться выключенной.
 
-Telegram. В мини-приложении счётчик не запускается. Признак тот же, по
+Согласие. Метрика ставит свои cookie, поэтому без согласия она не
+запускается: внизу страницы — плашка (та же прослойка, тот же код), и только
+«Согласен» загружает `tag.js` и вызывает `init`. «Только необходимые» —
+Метрики нет и после перезагрузки; выбор хранится в браузере
+(`localStorage`). Пустая переменная — нет и плашки: кроме технических cookie
+спрашивать не о чем. На странице политики кнопка «Изменить выбор о cookie»
+(атрибут `data-cookie-reset`) показывает плашку снова.
+
+Telegram. В мини-приложении счётчик не запускается и плашки нет. Признак тот же, по
 которому себя узнаёт IA-слой: `telegram_session` или `cad` в хеше; плюс
 параметр `tgWebAppData`, который дописывает сам Telegram, и непустой
 `Telegram.WebApp.initData` — на случай, если скрипт Telegram подключён.
@@ -35,6 +43,30 @@ ENV_NAME = "YANDEX_METRIKA_ID"
 MARKER = "<!-- Yandex.Metrika counter -->"
 MASK_CLASS = "ym-disable-keys"
 
+# Плашка согласия на cookie. Ключ выбора в браузере, id плашки и атрибут
+# кнопки «Изменить выбор» на странице политики — одни на код и тесты.
+CHOICE_KEY = "developaid_cookie_choice"
+BANNER_ID = "daCookieBar"
+RESET_ATTR = "data-cookie-reset"
+_BAR_TEXT = (
+    "Мы используем файлы cookie. Технические нужны для работы сайта: без них "
+    "не сохранятся вход и ваши расчёты. Яндекс.Метрика — чтобы понимать, как "
+    "улучшить сервис: она считает посещения и записывает, как вы пользуетесь "
+    "страницей, но не то, что вы вводите в поля. Метрику мы включим, только "
+    "если вы согласитесь."
+)
+_BAR_CSS = (
+    "position:fixed;left:16px;right:16px;bottom:16px;z-index:2147483000;"
+    "max-width:760px;margin:0 auto;box-sizing:border-box;padding:14px 16px;"
+    "background:#fff;color:#1f2933;border:1px solid #d5dbe1;border-radius:12px;"
+    "box-shadow:0 8px 28px rgba(15,23,42,.18);"
+    "font:14px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Arial,sans-serif;"
+)
+_BTN_CSS = (
+    "font:inherit;font-weight:600;padding:8px 16px;border-radius:8px;"
+    "border:1px solid #9aa5b1;cursor:pointer;"
+)
+
 # Признак Telegram — одно выражение для кода и для тестов.
 TELEGRAM_HASH_RE = r"[#&](telegram_session|cad|tgWebAppData)="
 
@@ -48,12 +80,18 @@ def counter_id() -> str:
 
 
 def snippet(cid: str) -> str:
-    """Код счётчика. Порядок и параметры `init` — как в коде владельца."""
+    """Код счётчика с плашкой согласия. Параметры `init` — как в коде владельца.
+
+    Метрика запускается только после «Согласен» на плашке; выбор живёт в
+    `localStorage` под `CHOICE_KEY` (`all` или `necessary`). Без выбора
+    счётчика нет: ни загрузчика, ни `ym`, ни пикселя для браузера без
+    скриптов — согласие без скриптов спросить нечем.
+    """
     return (
         MARKER
         + '<script type="text/javascript">'
         + "(function(){"
-        # Telegram-мини-приложение: ни загрузчика, ни ym.
+        # Telegram-мини-приложение: ни загрузчика, ни ym, ни плашки.
         + "try{if(/" + TELEGRAM_HASH_RE + "/.test(location.hash))return;"
         + "var w=window.Telegram&&window.Telegram.WebApp;"
         + "if(w&&String(w.initData||'').length)return;}catch(e){return;}"
@@ -68,6 +106,12 @@ def snippet(cid: str) -> str:
         + "var a=r[i].addedNodes;for(var j=0;j<a.length;j++)mark(a[j]);}})"
         + ".observe(document.documentElement,{childList:true,subtree:true});}catch(e){}"
         + "document.addEventListener('DOMContentLoaded',function(){mark(document.documentElement);});"
+        # Выбор посетителя: читается и пишется только через try — в приватном
+        # окне хранилище может бросать, тогда плашка просто спросит снова.
+        + "var KEY='" + CHOICE_KEY + "',BAR='" + BANNER_ID + "',started=false;"
+        + "function get(){try{return localStorage.getItem(KEY)||'';}catch(e){return '';}}"
+        + "function put(v){try{localStorage.setItem(KEY,v);}catch(e){}}"
+        + "function start(){if(started)return;started=true;"
         + "(function(m,e,t,r,i,k,a){"
         + "m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};"
         + "m[i].l=1*new Date();"
@@ -76,11 +120,47 @@ def snippet(cid: str) -> str:
         + "})(window,document,'script','https://mc.yandex.ru/metrika/tag.js?id=" + cid + "','ym');"
         + "ym(" + cid + ",'init',{ssr:true,webvisor:true,clickmap:true,"
         + 'ecommerce:"dataLayer",referrer:document.referrer,url:location.href,'
-        + "accurateTrackBounce:true,trackLinks:true});"
+        + "accurateTrackBounce:true,trackLinks:true});}"
+        # Отказ: убрать cookie, которые Метрика могла поставить раньше
+        # (на этом адресе и на родительских доменах).
+        + "function wipe(){try{var h=location.hostname.split('.'),c=document.cookie.split(';');"
+        + "for(var i=0;i<c.length;i++){var n=c[i].split('=')[0].replace(/^\\s+/,'');"
+        + "if(n.indexOf('_ym')!==0)continue;"
+        + "for(var j=0;j<h.length;j++){var d=h.slice(j).join('.');"
+        + "document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/;domain='+d;}"
+        + "document.cookie=n+'=;expires=Thu, 01 Jan 1970 00:00:00 GMT;path=/';}}catch(e){}}"
+        + "function hide(){var b=document.getElementById(BAR);if(b&&b.parentNode)b.parentNode.removeChild(b);}"
+        + "function choose(v){put(v);hide();if(v==='all'){start();return;}"
+        + "wipe();if(started)location.reload();}"
+        + "function el(t,css,text){var n=document.createElement(t);"
+        + "if(css)n.style.cssText=css;if(text)n.textContent=text;return n;}"
+        + "function show(){if(document.getElementById(BAR)||!document.body)return;"
+        + "var b=el('div','" + _BAR_CSS + "');b.id=BAR;"
+        + "b.setAttribute('role','region');b.setAttribute('aria-label','Выбор файлов cookie');"
+        + "var p=el('p','margin:0 0 10px');"
+        + "p.appendChild(document.createTextNode('" + _BAR_TEXT + " Подробнее — в '));"
+        + "var l=el('a','color:inherit;text-decoration:underline','Политике конфиденциальности');"
+        + "l.href='/privacy';p.appendChild(l);p.appendChild(document.createTextNode('.'));b.appendChild(p);"
+        + "var r=el('div','display:flex;flex-wrap:wrap;gap:8px');"
+        + "var y=el('button','" + _BTN_CSS + "background:#1f2933;color:#fff;border-color:#1f2933','Согласен');"
+        + "y.type='button';y.setAttribute('data-cookie-choice','all');"
+        + "y.addEventListener('click',function(){choose('all');});"
+        + "var n=el('button','" + _BTN_CSS + "background:#fff;color:#1f2933','Только необходимые');"
+        + "n.type='button';n.setAttribute('data-cookie-choice','necessary');"
+        + "n.addEventListener('click',function(){choose('necessary');});"
+        + "r.appendChild(y);r.appendChild(n);b.appendChild(r);document.body.appendChild(b);}"
+        + "function ready(f){if(document.body)f();else document.addEventListener('DOMContentLoaded',f);}"
+        # «Изменить выбор» на странице политики: показать плашку снова.
+        + "ready(function(){var z=document.querySelectorAll('[" + RESET_ATTR + "]');"
+        + "for(var i=0;i<z.length;i++){z[i].hidden=false;"
+        + "var q=z[i].querySelector('button')||z[i];"
+        + "q.addEventListener('click',function(e){e.preventDefault();"
+        + "try{localStorage.removeItem(KEY);}catch(x){}show();});}});"
+        + "var c=get();if(c==='all')start();"
+        + "else if(c==='necessary')wipe();"
+        + "else ready(show);"
         + "})();"
         + "</script>"
-        + '<noscript><div><img src="https://mc.yandex.ru/watch/' + cid
-        + '" style="position:absolute; left:-9999px;" alt="" /></div></noscript>'
         + "<!-- /Yandex.Metrika counter -->"
     )
 
