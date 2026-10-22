@@ -140,6 +140,11 @@ def test_the_limit_is_the_monitor_finance_card(monkeypatch):
             "1,50 млрд ₽ — лимит минус всё оплаченное 2,10 млрд ₽ (кредитом 448,0 млн ₽, "
             "своими деньгами 1,65 млрд ₽); резерв 138,0 млн ₽.") in text
     assert "По РСС не хватает: 230,0 млн ₽, начиная с марта 2027." in text
+    # В «Главном» регистр аббревиатур цел: capitalize() давал «по рсс» (владелец, 22.10.2026).
+    found = {item["topic"]: item["text"] for item in
+             report.build(PROJECT, "week", "2026-10-18")["findings"]}
+    assert "По РСС не хватает 230,0 млн ₽ с марта 2027" in found["Финансирование"]
+    assert found["Финансирование"][:1].isupper()
     assert "Утверждённый бюджет не загружен" in text
 
 
