@@ -222,7 +222,10 @@ def test_the_decision_reads_the_engine() -> None:
     layout, equity = result["report"]["layout"], result["report"]["equity_participation"]
     metric = layout["debt_metric"]
     assert rows[metric["label"]] == metric["value"]
-    assert rows["IRR собственника"] == result["summary"]["irr_equity"]
+    irr = result["summary"]["irr_equity"]
+    # Нет IRR — строка называет причину, а не молчит пустой клеткой.
+    assert rows["IRR собственника"] == irr if irr is not None \
+        else str(rows["IRR собственника"]).startswith("не считается")
     assert rows["NPV собственника @20%"] == equity["npv"]
     assert rows["Пик собственных средств"] == equity["peak"]
     assert rows["Чистая прибыль проекта"] == result["summary"]["net_profit"]
@@ -238,7 +241,7 @@ def test_strategy_and_income_come_from_the_object_rows() -> None:
     sections = _sections(result)
     objects = {o["title"]: o for o in result["finance"]["nonres"]["objects"]}
     offices = _values(_block(sections["strategy"], "Офисы"))
-    assert offices["Ставка аренды"] == 4.5 and offices["Выход"] == "Продажа по ставке капитализации"
+    assert offices["Ставка аренды"] == core.DEFAULT_INPUTS["offices_rent_th_per_sqm_month"] and offices["Выход"] == "Продажа по ставке капитализации"
     retail = _values(_block(sections["strategy"], "Коммерция ОСЗ"))
     assert retail["Стартовая цена ДКП"] == pytest.approx(450.0)
     years = _block(sections["income"], "По годам — Офисы")["years"]

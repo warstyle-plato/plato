@@ -269,6 +269,9 @@ PAGE += r"""</head>
            (`tep.site_massing`) и его допущения рядом. -->
       <div class="card" id="siteMassingCard">
         <div class="section-title">Пятно застройки, этажность и подземная часть</div>
+        <!-- Объёмная схема: корпуса очередей на участке — готовые многоугольники
+             движка (`tep.site_massing.scheme`), страница их только рисует. -->
+        <div id="siteMassingScheme" class="site-massing-scheme"></div>
         <div id="siteMassingBody" class="site-massing"></div>
         <details class="site-parking-box" id="siteMassingBox">
           <summary>Допущения расчёта</summary>

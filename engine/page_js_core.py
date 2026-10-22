@@ -607,6 +607,28 @@ function makeDefaultPhasing(count=1){
   social_objects:[],discrete:discreteDefaults(count)
  };
 }
+// Очередность из сохранённого (браузер, проект, снимок Платона, импорт) —
+// только через эту функцию: сохранённое накладывается на умолчания своего
+// числа очередей, а словари (`products`, `shared_cash`, `shared_allocation`,
+// `discrete`) — поключево. Старое состояние без `discrete` иначе роняло вкладку
+// ТЭП на чтении `phasing.discrete[o.key]`.
+function phasingFromSaved(saved){
+ if(!saved||typeof saved!=='object'||Array.isArray(saved))return makeDefaultPhasing(1);
+ const src=cloneValue(saved);
+ const count=Math.max(1,Math.min(5,Number(src.phase_count)||(Array.isArray(src.phases)?src.phases.length:0)||1));
+ const out=makeDefaultPhasing(count);
+ delete src.phase_count;
+ const dictKeys=['products','shared_cash','shared_allocation','discrete'];
+ Object.keys(src).forEach(key=>{
+  const v=src[key];
+  if(v===undefined||v===null)return;
+  if(dictKeys.includes(key)){if(typeof v==='object'&&!Array.isArray(v))Object.assign(out[key],v);return}
+  if(key==='phases'){if(Array.isArray(v))out.phases=out.phases.map((p,i)=>v[i]&&typeof v[i]==='object'?Object.assign(p,v[i]):p);return}
+  if(key==='social_objects'){if(Array.isArray(v))out.social_objects=v;return}
+  out[key]=v;
+ });
+ return out;
+}
 // structuredClone есть не везде: в Safari он появился в 15.4, а стоял этот
 // вызов ВТОРОЙ строкой состояния — до объявления всего остального. Браузер без
 // него ронял скрипт целиком, а поскольку кнопку «Личный кабинет» показывает
