@@ -910,19 +910,36 @@ def _pdf_object_value(row: dict[str, Any]) -> str:
 def _object_pdf_sections(story: list[Any], sections: dict[str, Any], inputs: dict[str, Any],
                          P: Any, table: Any, h2: Any, small: Any, normal: Any,
                          KeepTogether: Any, Spacer: Any, mm: float, *,
-                         sensitivity_done: bool) -> None:
+                         sensitivity_done: bool,
+                         entry_price: dict[str, Any] | None = None) -> None:
     """Разделы объектной вёрстки в поток PDF — блоками движка, без пересчёта."""
     for key, section in sections.items():
         if key in ("finance", "calendar") or (key == "sensitivity" and sensitivity_done):
             continue
         story.append(_PdfSection(_PDF_OBJECT_SHARED.get(key, f"object_{key}")))
         story.append(P(str(section.get("title") or ""), h2))
-        _object_pdf_blocks(story, section, inputs, P, table, small, KeepTogether, Spacer, mm)
+        _object_pdf_blocks(story, section, inputs, P, table, small, KeepTogether, Spacer, mm,
+                           entry_price)
+
+
+def _entry_price_pdf(story: list[Any], block: dict[str, Any], P: Any, table: Any, small: Any,
+                     KeepTogether: Any, mm: float, *, title: str,
+                     tiles: list[dict[str, Any]] | None = None) -> None:
+    """Плитки «Инвестиционного решения» строками PDF: подпись, число, пояснение
+    — тот же текст, что на странице и в тизере (`entry_price_block`)."""
+    rows = [[str(t.get("label") or ""), str(t.get("value") or ""), str(t.get("note") or "")]
+            for t in (block.get("tiles") if tiles is None else tiles)]
+    if not rows:
+        return
+    parts = [P(title, small), table(rows, [45*mm, 30*mm, 95*mm], header=False, font_size=8.0)]
+    if block.get("stamp"):
+        parts.append(P(str(block["stamp"]), small))
+    story.append(KeepTogether(parts))
 
 
 def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[str, Any],
                        P: Any, table: Any, small: Any, KeepTogether: Any, Spacer: Any,
-                       mm: float) -> None:
+                       mm: float, entry_price: dict[str, Any] | None = None) -> None:
     """Блоки одного раздела объектной вёрстки — таблицами движка."""
     for block in section.get("blocks") or []:
         title = str(block.get("title") or "")
@@ -935,12 +952,19 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
             continue
         if ref == "goal_seek":
             goal = section.get("goal_seek") or {}
-            story.append(P(
-                (f"{title}: подбирается на странице отчёта полным пересчётом модели — "
-                 f"наибольшая цена участка, при которой «{goal.get('label')}» не ниже "
-                 f"{_pdf_num(goal.get('target'), 2)}x.") if goal.get("metric")
-                else f"{title}: {goal.get('reason') or 'показателя долга у проекта нет.'}",
-                small))
+            if entry_price and entry_price.get("tiles"):
+                # Потолок и запас — тот же подбор, что у страницы и тизера
+                # (`entry_price_block`); покрытие и цена уже стоят строками выше.
+                _entry_price_pdf(story, entry_price, P, table, small, KeepTogether, mm,
+                                 title=title, tiles=entry_price["tiles"][2:])
+            else:
+                story.append(P(
+                    (f"{title}: для этого документа не подбиралась — наибольшая цена "
+                     f"участка, при которой «{goal.get('label')}» не ниже "
+                     f"{_pdf_num(goal.get('target'), 2)}x, есть на странице результатов.")
+                    if goal.get("metric")
+                    else f"{title}: {goal.get('reason') or 'показателя долга у проекта нет.'}",
+                    small))
             continue
         if ref == "site":
             rows = []
@@ -1605,6 +1629,11 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
             ["Основание", purchase_assessment["text"]],
         ], [45*mm, 125*mm], header=False, font_size=8.0),
     ]))
+    # Потолок цены входа — подбор сборки PDF или страницы для тех же вводных
+    # (`entry_price_for_report`); у объектной вёрстки он стоит в её «Решении».
+    if payload.get("entry_price") and not _object_sections:
+        _entry_price_pdf(story, payload["entry_price"], P, table, small, KeepTogether, mm,
+                         title=str(payload["entry_price"].get("title") or ""))
     story.append(_PdfSection("tep"));story.append(P("ТЭП",h2))
     # Переданные метры строятся и не продаются: в продаваемой их нет.
     # В книге колонка переданного была с самого начала, а отчёт о
@@ -2582,7 +2611,8 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     if _object_sections:
         _object_pdf_sections(story, _object_sections, inputs, P, table, h2, small, normal,
                              KeepTogether, Spacer, mm, sensitivity_done=bool(
-                                 sensitivity and (sensitivity.get("items") or [])))
+                                 sensitivity and (sensitivity.get("items") or [])),
+                             entry_price=payload.get("entry_price"))
     story.append(_PdfSection("footer"))
     story.extend([Spacer(1,4*mm),P("Отчёт сформирован автоматически DevelopAid на основании текущих вводных модели. Перед инвестиционным решением требуется проверка исходных данных, юридических предпосылок и условий кредитования.",small)])
 

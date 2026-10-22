@@ -21,7 +21,10 @@ PAGE += r"""function currentPdfReportPayload(cads=[]){
  return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:tepSourceLabel(!!manualMeta),
    // Чувствительность попадает в отчёт только если её считали: гнать полсотни
    // расчётов внутри сборки PDF ради раздела, который никто не просил, незачем.
-   sensitivity:sensitivityReport};
+   sensitivity:sensitivityReport,
+   // Потолок цены входа, уже подобранный на странице: сервер возьмёт его без
+   // пересчёта, только если отпечаток вводных и подпись совпали.
+   goal_seek:typeof window.pageGoalSeek==='function'?window.pageGoalSeek():null};
 }
 
 async function exportReportPdf(){

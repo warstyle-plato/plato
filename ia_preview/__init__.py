@@ -32,15 +32,16 @@
 - `GET  /ia/suggest?q=…`         — подсказки адресов по мере ввода (DaData);
 - `POST /ia/goal-seek`           — максимальная цена входа при целевом LLCR.
 
-Экономику `/ia/goal-seek` не считает: он зовёт `_tool_goal_seek` движка — ту
-же функцию, которой пользуется Платон Сергеевич. Смысл маршрута в том, что
+Экономику `/ia/goal-seek` не считает: он зовёт `entry_price_ceiling` движка
+(внутри — `_tool_goal_seek`, которым пользуется Платон Сергеевич); тем же
+подбором тизер и полный PDF печатают потолок цены, а плитки карточки решения
+приходят в ответе готовыми (`entry_price_block`). Смысл маршрута в том, что
 число, ради которого модель и открывают, перестаёт быть доступным только из
 чата.
 """
 
 from __future__ import annotations
 
-import datetime as _dt
 import os
 from pathlib import Path
 from typing import Any
@@ -207,39 +208,17 @@ def install(app, core) -> None:
 
 
 def _goal_seek(core, request: GoalSeekRequest) -> dict[str, Any]:
-    req = core.AgentChatRequest(
-        message="",
-        inputs=request.inputs,
-        tep=request.tep,
-        rates=request.rates,
-        phasing=request.phasing,
-    )
-    bundle = core._run_authoritative_model(req.inputs, req.tep, req.rates, req.phasing)
-    # Показатель долга выбирает движок (`report_layout.debt_metric`): LLCR у
-    # проекта с ПФ, DSCR кредита объектов у нежилого. Подбирать цену нежилого
-    # проекта по LLCR, которого у него нет, значило отвечать «не достигается»
-    # ни про что.
-    metric = core.goal_seek_debt_metric(bundle)
-    if not metric.get("key"):
-        return {"available": False, "target_metric": None,
-                "metric_label": metric.get("label"),
-                "reason": metric.get("reason") or "Показателя долга у проекта нет.",
-                "engine_version": core.VERSION,
-                "computed_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")}
-    data = core._tool_goal_seek(
-        req,
-        bundle,
-        request.variable,
-        metric["key"],
-        float(request.target_llcr),
-        "at_least",
-        "maximum_variable",
-        core._agent_scope_of(bundle),
-        None,
-        None,
-    )
-    data = dict(data)
-    data["metric_label"] = metric.get("label")
-    data["engine_version"] = core.VERSION
-    data["computed_at"] = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    """Подбор — `core.entry_price_ceiling`, тот же, что у тизера и PDF; ответ
+    несёт и готовые плитки «Инвестиционного решения» с подписью под ними:
+    их текст живёт в движке, а не в странице."""
+    bundle = core._run_authoritative_model(request.inputs, request.tep, request.rates, request.phasing)
+    # Показатель долга и его порог выбирает движок (`report_layout.debt_metric`):
+    # LLCR у проекта с ПФ, DSCR кредита объектов у нежилого.
+    # Порог по умолчанию — порог движка (`debt_metric.target`); свой порог
+    # страница шлёт, только если просит другой.
+    target = (None if request.variable == core.ENTRY_PRICE_VARIABLE
+              and float(request.target_llcr) == _TARGET_LLCR else float(request.target_llcr))
+    data = core.entry_price_ceiling(bundle, request.inputs, request.tep, request.rates,
+                                    request.phasing, request.variable, target)
+    data.update(core.entry_price_block(bundle, request.inputs, data))
     return data
