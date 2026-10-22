@@ -124,4 +124,5 @@ def test_the_model_page_has_that_shared_function() -> None:
     body = body[:body.index("\n}\n")]
     assert "Object.assign(cloneValue(INPUT_DEFAULT)" in body
     assert "cloneValue(TEP_DEFAULT)" in body
-    assert "makeDefaultPhasing(1)" in body
+    # Очерёдность снимка ложится на умолчания (`phasingFromSaved` → `makeDefaultPhasing`).
+    assert "phasing=phasingFromSaved(data.phasing)" in body
