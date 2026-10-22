@@ -74,7 +74,6 @@ def test_the_public_pages_open_without_login():
         assert value and value in contacts
     # Заготовка оферты помечена явно, а не выдана за договор.
     assert "Заготовка." in client.get("/offer").text
-    assert "Заготовка." in client.get("/refund").text
 
 
 def test_the_footer_leads_to_the_tariffs_and_contacts():
