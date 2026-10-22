@@ -269,3 +269,37 @@ def test_the_pdf_prints_the_engine_line():
                     .split())
     assert "Пятно застройки и этажность" in text and "Подземных уровней 2" in text, text[:3000]
     assert "разрешено не выше 9 этажей" in text
+
+
+def _with_glavapu(x, green_ha, units):
+    x["_glavapu_import"] = {"source": {"export_date": "06.10.2026"},
+                            "normalized": {"green_zhk_ha": green_ha, "apartment_units": units}}
+    return x
+
+
+def test_the_yard_norm_is_the_larger_of_ours_and_the_glavapu_row_57():
+    """Москва с выгрузкой ГлавАПУ: двор по норме — большее из нашей нормы и строки 57
+    (владелец 22.10.2026); строка посчитана для квартир выгрузки."""
+    x, t = _housing("msk")
+    ours = core.site_massing(x, t)["yard_sqm"]
+    assert ours == pytest.approx(5.0 * 1364)
+    m = core.site_massing(_with_glavapu(x, 1.0, 900), t)
+    assert m["yard_sqm"] == pytest.approx(10000.0)
+    assert "ГлавАПУ, выгрузка от 06.10.2026, лист «ТЭП», строка 57" in m["yard_basis"]
+    assert "квартиры × 2,1" in m["yard_basis"]
+    # Строка 57 меньше нашей нормы — остаётся наша.
+    x, t = _housing("msk")
+    assert core.site_massing(_with_glavapu(x, 0.5, 900), t)["yard_sqm"] == pytest.approx(ours)
+    # Квартир в ТЭП уже не столько, сколько в выгрузке, — снимок устарел и не берётся.
+    x, t = _housing("msk")
+    stale = core.site_massing(_with_glavapu(x, 1.0, 1856), t)
+    assert stale["yard_sqm"] == pytest.approx(ours)
+    assert "для двора она не берётся" in stale["yard_basis"]
+
+
+def test_the_row_57_is_read_from_the_glavapu_export(tmp_path):
+    import test_glavapu_full_check as owner
+
+    parsed = core.parse_glavapu_xlsx(owner._owner_book(tmp_path), "owner.xlsx")
+    assert parsed["normalized"]["green_zhk_ha"] == pytest.approx(1.9485)
+    assert core._GLAVAPU_SOURCE_ROWS["green_zhk_ha"][1].startswith("строка 57")

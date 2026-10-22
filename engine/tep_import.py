@@ -185,6 +185,16 @@ def _find_named(rows: list[list[Any]], needle: str, value_col: int = 3) -> Any:
     return None
 
 
+def _green_zhk_ha(rows: list[list[Any]]) -> float | None:
+    """Строка 57 «Озеленённые территории ЖК» (га) — по подписи: коды 57–64 в
+    файлах ГлавАПУ заняты и другими показателями. «ё» и «е» не различаются."""
+    for row in rows:
+        label = str(row[1] if len(row) > 1 else "").lower().replace("ё", "е").strip()
+        if label.startswith("озелененные территории жк") and len(row) > 3:
+            return _ru_number(row[3])
+    return None
+
+
 def _find_named_num(
     rows: list[list[Any]],
     needle: str,
@@ -329,6 +339,7 @@ _GLAVAPU_SOURCE_ROWS: dict[str, tuple[str, str]] = {
     "ground_commercial_np_sqm": ("ТЭП", "строка 9.1.2"),
     "standalone_nonres_np_sqm": ("ТЭП", "строка 9.2.1"),
     "apartment_area_sqm": ("ТЭП", "строка 10"),
+    "green_zhk_ha": ("ТЭП", "строка 57 «Озеленённые территории ЖК»"),
     "nonresidential_aboveground_sqm": ("ТЭП", "строка 11"),
     "actual_kindergarten_places": ("ТЭП", "строка 18"),
     "actual_kindergarten_spp_sqm": ("ТЭП", "строка 19"),
@@ -456,6 +467,9 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
 
         "apartment_area_sqm": _row_num(by, "10", 1000),
         "nonresidential_aboveground_sqm": _row_num(by, "11", 1000),
+        # Двор по норме у калькулятора: 5 м² на его жителя (квартиры × 2,1).
+        # Пятно застройки берёт большее из него и своей нормы (`site_massing`).
+        "green_zhk_ha": _green_zhk_ha(all_rows),
 
         # Optional DevelopAid extension rows used by server project presets.
         # Read ONLY by semantic label. Codes 57–64 exist in standard ГлавАПУ files

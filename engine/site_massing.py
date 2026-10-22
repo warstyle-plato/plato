@@ -91,9 +91,16 @@ def _yard_floor(x: dict[str, Any], tep: dict[str, Any], site_sqm: float) -> tupl
     if population <= 0:
         return 0.0, ""
     if region == "msk":
-        return (MSK_GREEN_ZHK_SQM_PER_PERSON * population,
-                f"норма Москвы (2152-ПП): {MSK_GREEN_ZHK_SQM_PER_PERSON:g} м² на жителя "
-                f"× {population} чел.".replace(".", ","))
+        ours = MSK_GREEN_ZHK_SQM_PER_PERSON * population
+        basis = (f"норма Москвы (2152-ПП): {MSK_GREEN_ZHK_SQM_PER_PERSON:g} м² на жителя "
+                 f"× {population} чел.".replace(".", ","))
+        city, city_basis = _glavapu_green_zhk(x, tep)
+        if city > ours + 0.5:
+            return city, (f"{city_basis} — больше нашей нормы ({basis}, {_fmt_ru(ours)} м²): "
+                          "калькулятор считает жителей как квартиры × 2,1, поэтому взята его")
+        if city_basis and city <= 0:
+            return ours, f"{basis}. {city_basis}"
+        return ours, basis
     if region == "mo":
         per = float(MO_NORMS_DEFAULT["green_quarter_sqm_per_person"])
         return (per * population,
@@ -101,6 +108,34 @@ def _yard_floor(x: dict[str, Any], tep: dict[str, Any], site_sqm: float) -> tupl
                 .replace(".", ","))
     return (OTHER_REGION_GREEN_SHARE * site_sqm,
             "СП 42.13330.2016, п. 7.4: озеленение жилого квартала — не меньше 25% участка")
+
+
+def _glavapu_green_zhk(x: dict[str, Any], tep: dict[str, Any]) -> tuple[float, str]:
+    """Строка 57 выгрузки ГлавАПУ «Озеленённые территории ЖК» → (м², основание).
+
+    Решение владельца 22.10.2026: двор по норме — большее из нашей нормы и
+    строки 57. Строка посчитана для квартир выгрузки; ТЭП с другим числом
+    квартир — снимок устарел, число не берётся, и это сказано (0, причина).
+    Выгрузки нет — (0, "").
+    """
+    imported = x.get("_glavapu_import") or {}
+    normalized = imported.get("normalized") or {}
+    try:
+        green_ha = float(normalized.get("green_zhk_ha") or 0.0)
+    except (TypeError, ValueError):
+        green_ha = 0.0
+    if green_ha <= 0:
+        return 0.0, ""
+    when = (imported.get("source") or {}).get("export_date")
+    where = (f"ГлавАПУ, {'выгрузка от ' + when if when else 'выгрузка (дата в файле не указана)'}, "
+             "лист «ТЭП», строка 57")
+    units_export = int(float(normalized.get("apartment_units") or 0))
+    units_tep = int(round(float((tep.get("apartments") or {}).get("units") or 0)))
+    if units_export <= 0 or units_export != units_tep:
+        return 0.0, (f"Строка 57 калькулятора ГлавАПУ ({_fmt_ru(green_ha * 10000)} м²) посчитана "
+                     f"для {units_export or 'неизвестного числа'} квартир, а в ТЭП сейчас "
+                     f"{units_tep} — для двора она не берётся")
+    return green_ha * 10000.0, f"{where}: {_fmt_ru(green_ha * 10000)} м² озеленённых территорий ЖК"
 
 
 def setback_area(site_sqm: float, setback_m: float) -> float:
