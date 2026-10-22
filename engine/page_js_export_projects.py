@@ -144,7 +144,7 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
  rememberDerivedTail(x.tep,true);
- phasing=x.phasing||phasing;rates=[];scenarioSelect.value=x.scenario||'base';
+ phasing=x.phasing?phasingFromSaved(x.phasing):phasing;rates=[];scenarioSelect.value=x.scenario||'base';
  // v0.12.25: old browser state could silently carry a three-phase project
  // into a newly imported small site. Only an explicit user choice or the
  // Mytishchi preset may restore phasing after this migration.
@@ -331,17 +331,9 @@ async function applyPreset(){
  // (например, 40/13,1/34/12,9 вместо 25/25/25/25), хотя предпросмотр обещал
  // применить очереди пресета.
  if(data.phasing){
-  const importedPhasing=cloneValue(data.phasing);
-  const phaseDefaults=makeDefaultPhasing(Number(importedPhasing.phase_count||1));
-  phasing=Object.assign(phaseDefaults,importedPhasing);
-  // Продуктовые доли пресета заменяют старый проект целиком; служебные
-  // аллокации расходов, которых в файле нет, добираются из безопасных
-  // умолчаний, чтобы таблицы очередности оставались рабочими.
-  phasing.products=importedPhasing.products||phaseDefaults.products;
-  phasing.shared_cash=Object.assign(phaseDefaults.shared_cash,importedPhasing.shared_cash||{});
-  phasing.shared_allocation=Object.assign(phaseDefaults.shared_allocation,importedPhasing.shared_allocation||{});
-  phasing.discrete=Object.assign(phaseDefaults.discrete,importedPhasing.discrete||{});
-  phasing.social_objects=importedPhasing.social_objects||[];
+  // Продуктовые доли и служебные аллокации, которых в файле нет, добираются
+  // из безопасных умолчаний, чтобы таблицы очередности оставались рабочими.
+  phasing=phasingFromSaved(data.phasing);
  }else phasing=makeDefaultPhasing(1);
  renderInputs();renderTep();renderPhasing();persistLocalSilently();
  closePreset();
@@ -788,7 +780,7 @@ function applyProjectSnapshot(data){
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
  rememberDerivedTail(data.tep,true);
- phasing=data.phasing||makeDefaultPhasing(1);
+ phasing=phasingFromSaved(data.phasing);
  // Список тронутых полей паркинга — от ЭТОГО снимка, а не от прошлого проекта.
  seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
