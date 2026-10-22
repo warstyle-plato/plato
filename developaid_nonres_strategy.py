@@ -51,33 +51,50 @@ REPAY_BULLET = "bullet"
 REPAYMENTS = (REPAY_ANNUITY, REPAY_SWEEP, REPAY_BULLET)
 SALE_CURVES = ("flat", "bell", "front_loaded", "back_loaded")
 
-# Шкала класса офиса (владелец, 22.10.2026: «они зависят от класса офиса»).
-# Класс проекта — это и класс его офисника (`OFFICE_CLASS_BY_PROJECT_CLASS`):
-# комфорт — B и ниже, бизнес — B+ и A−, элитный — A и выше. Числа — стартовые
-# допущения по Москве с НДС, утверждённые владельцем; правятся во вводных, и
-# правка руками сильнее класса. Умолчания офиса ниже и есть комфорт.
+# Шкала класса офиса (владелец, 22.10.2026: «они зависят от класса офиса»;
+# цены — «400 класс В, 500–600 следующая ступень и далее 750 и 1000 — А и А+»).
+# Класс офиса — свои четыре ступени; по умолчанию он идёт за классом проекта
+# (`OFFICE_CLASS_BY_PROJECT_CLASS`). Цена продажи — тыс ₽/м² с НДС, заданная
+# владельцем; ставка аренды выводится из неё (`office_rent_from_price`), чтобы
+# два пути — продать или сдавать — сравнивались на одной стоимости метра.
+# Заполняемость, срок заполнения, эксплуатация и ставка капитализации —
+# стартовые допущения по Москве; всё правится во вводных, правка руками
+# сильнее класса.
+OFFICE_CLASSES: tuple[str, ...] = ("B", "B+", "A", "A+")
 OFFICE_CLASS_SCALE: dict[str, dict[str, float]] = {
-    "comfort": {"rent_th_per_sqm_month": 2.0, "occupancy_stable_pct": 90.0,
-                "leaseup_months": 18, "opex_pct": 20.0, "exit_cap_pct": 11.5},
-    "business": {"rent_th_per_sqm_month": 2.5, "occupancy_stable_pct": 92.0,
-                 "leaseup_months": 15, "opex_pct": 18.0, "exit_cap_pct": 10.5},
-    "elite": {"rent_th_per_sqm_month": 3.5, "occupancy_stable_pct": 94.0,
-              "leaseup_months": 12, "opex_pct": 16.0, "exit_cap_pct": 9.5},
+    "B": {"price_th_per_sqm": 400.0, "occupancy_stable_pct": 90.0,
+          "leaseup_months": 18, "opex_pct": 20.0, "exit_cap_pct": 11.5},
+    "B+": {"price_th_per_sqm": 550.0, "occupancy_stable_pct": 92.0,
+           "leaseup_months": 15, "opex_pct": 18.0, "exit_cap_pct": 10.5},
+    "A": {"price_th_per_sqm": 750.0, "occupancy_stable_pct": 94.0,
+          "leaseup_months": 12, "opex_pct": 16.0, "exit_cap_pct": 9.5},
+    "A+": {"price_th_per_sqm": 1000.0, "occupancy_stable_pct": 95.0,
+           "leaseup_months": 12, "opex_pct": 15.0, "exit_cap_pct": 9.0},
 }
+# Класс проекта → класс офиса по умолчанию.
+OFFICE_CLASS_BY_PROJECT: dict[str, str] = {"comfort": "B", "business": "B+", "elite": "A"}
+DEFAULT_OFFICE_CLASS = "B"
 
 
-def office_price_from_rent(scale: dict[str, float]) -> float:
-    """Стартовая цена продажи метра офиса — стоимость метра по аренде класса.
+def office_rent_from_price(scale: dict[str, float]) -> float:
+    """Ставка аренды класса, тыс ₽/м² в МЕСЯЦ с НДС, — из цены продажи.
 
-    Владелец, 22.10.2026: цена продажи офиса по умолчанию идёт из аренды, а
-    не из цены жилья, — иначе два пути (продать или сдавать) сравнивались бы
-    на несогласованных числах. Стоимость = годовая аренда × заполняемость ×
-    (1 − доля расходов эксплуатации) / ставка капитализации, тыс ₽/м² с НДС.
+    Стоимость метра = годовая аренда × заполняемость × (1 − доля расходов
+    эксплуатации) / ставка капитализации; отсюда аренда = цена × ставка /
+    (заполняемость × (1 − эксплуатация)) / 12. Поле движка — в месяц,
+    поверхности показывают его в год, как принято на рынке.
     """
-    rent_year = float(scale["rent_th_per_sqm_month"]) * 12.0
     noi_share = (float(scale["occupancy_stable_pct"]) / 100.0
                  * (1.0 - float(scale["opex_pct"]) / 100.0))
-    return round(rent_year * noi_share / (float(scale["exit_cap_pct"]) / 100.0), 1)
+    yearly = float(scale["price_th_per_sqm"]) * float(scale["exit_cap_pct"]) / 100.0 / noi_share
+    return round(yearly / 12.0, 2)
+
+
+def office_class_fields(office_class: str) -> dict[str, float]:
+    """Поля стратегии офиса (без приставки) для класса офиса."""
+    scale = OFFICE_CLASS_SCALE.get(office_class) or OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]
+    return {"rent_th_per_sqm_month": office_rent_from_price(scale),
+            **{k: v for k, v in scale.items() if k != "price_th_per_sqm"}}
 
 
 # Поля стратегии у объекта: суффикс → (умолчание офиса, умолчание ТЦ).
@@ -93,17 +110,17 @@ STRATEGY_FIELD_DEFAULTS: dict[str, tuple[Any, Any]] = {
     "direct_sale_offset_months": (0, 0),
     "direct_sale_months": (12, 12),
     "direct_sale_curve": ("flat", "flat"),
-    # Офис — комфорт шкалы класса (`OFFICE_CLASS_SCALE`), ТЦ — умолчания PR #531.
-    "rent_th_per_sqm_month": (OFFICE_CLASS_SCALE["comfort"]["rent_th_per_sqm_month"], 3.8),
+    # Офис — класс B шкалы (`OFFICE_CLASS_SCALE`, класс офиса комфорта), ТЦ — умолчания PR #531.
+    "rent_th_per_sqm_month": (office_class_fields(DEFAULT_OFFICE_CLASS)["rent_th_per_sqm_month"], 3.8),
     "rent_index_pct": (5.0, 5.0),
     "occupancy_start_pct": (55.0, 60.0),
-    "occupancy_stable_pct": (OFFICE_CLASS_SCALE["comfort"]["occupancy_stable_pct"], 94.0),
-    "leaseup_months": (OFFICE_CLASS_SCALE["comfort"]["leaseup_months"], 12),
-    "opex_pct": (OFFICE_CLASS_SCALE["comfort"]["opex_pct"], 24.0),
+    "occupancy_stable_pct": (OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]["occupancy_stable_pct"], 94.0),
+    "leaseup_months": (OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]["leaseup_months"], 12),
+    "opex_pct": (OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]["opex_pct"], 24.0),
     "parking_rent_th_month": (8.0, 0.0),
     "hold_years": (5, 5),
     "exit_mode": (EXIT_SALE, EXIT_SALE),
-    "exit_cap_pct": (OFFICE_CLASS_SCALE["comfort"]["exit_cap_pct"], 11.0),
+    "exit_cap_pct": (OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]["exit_cap_pct"], 11.0),
     "exit_cost_pct": (1.0, 1.0),
     # Удержание: кредит после ввода — долгосрочный, проценты и тело ежемесячно
     # аннуитетом, в конце срока — «баллон» (владелец, 04.10.2026: «кредит

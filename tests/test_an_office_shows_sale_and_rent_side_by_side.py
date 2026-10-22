@@ -5,7 +5,8 @@
 
 * офис показывает два пути бок о бок — продажу блоками после ввода и аренду
   с продажей здания, — и видно, какой выгоднее (`calculate()["office_paths"]`);
-* допущения аренды зависят от класса офиса, цена продажи — из аренды класса;
+* допущения зависят от класса офиса (B, B+, A, A+), цена продажи — цена
+  класса в нежилом проекте, ставка аренды — из неё;
 * доходность на затраты — NOI на ВСЕ затраты создания, а не на стройку здания;
 * чувствительность цены входа двигает и цену участка, и выкуп участков и
   зданий: прежде «±68 млн» сдвигали 5 млн цены участка, размах выходил нулём,
@@ -135,33 +136,41 @@ def test_the_yield_on_cost_divides_by_every_creation_cost() -> None:
 # --- шкала класса ---------------------------------------------------------------
 
 def test_the_office_assumptions_follow_the_class() -> None:
-    for key, scale in ns.OFFICE_CLASS_SCALE.items():
+    """Класс проекта → класс офиса → шкала; цена класса — только в нежилом."""
+    for key, office_class in ns.OFFICE_CLASS_BY_PROJECT.items():
         preset = core.PROJECT_CLASS_PRESETS[key]
-        for field, value in scale.items():
+        for field, value in ns.office_class_fields(office_class).items():
             assert preset[f"offices_{field}"] == value
             assert preset[f"offices2_{field}"] == value  # второй офис — тем же классом
-        # Цена офиса из аренды — только в нежилом проекте; в жилом офис на
-        # правиле от цены жилья (владелец, 22.10.2026).
+        price = ns.OFFICE_CLASS_SCALE[office_class]["price_th_per_sqm"]
         nonres = core.class_base_preset(key, kind=core.PROJECT_KIND_NONRESIDENTIAL)
-        assert nonres["offices_price_th_per_sqm"] == ns.office_price_from_rent(scale)
-        assert nonres["offices3_price_th_per_sqm"] == ns.office_price_from_rent(scale)
+        assert nonres["offices_price_th_per_sqm"] == price
+        assert nonres["offices3_price_th_per_sqm"] == price
+        # В жилом проекте офис — на правиле от цены жилья (владелец, 22.10.2026).
         assert core.class_base_preset(key)["offices_price_th_per_sqm"] == \
             core.nonresidential_price_th(preset["apartment_price_th"])
-    rents = [ns.OFFICE_CLASS_SCALE[k]["rent_th_per_sqm_month"] for k in ("comfort", "business", "elite")]
-    assert rents == sorted(rents) and len(set(rents)) == 3
 
 
-def test_the_defaults_are_the_comfort_class() -> None:
-    for field, value in ns.OFFICE_CLASS_SCALE["comfort"].items():
+def test_the_owner_prices_by_office_class() -> None:
+    prices = {c: ns.OFFICE_CLASS_SCALE[c]["price_th_per_sqm"] for c in ns.OFFICE_CLASSES}
+    assert prices == {"B": 400.0, "B+": 550.0, "A": 750.0, "A+": 1000.0}
+    rents = [ns.office_rent_from_price(ns.OFFICE_CLASS_SCALE[c]) for c in ns.OFFICE_CLASSES]
+    assert rents == sorted(rents) and len(set(rents)) == 4
+
+
+def test_the_defaults_are_the_comfort_office_class() -> None:
+    for field, value in ns.office_class_fields(ns.OFFICE_CLASS_BY_PROJECT["comfort"]).items():
         assert core.DEFAULT_INPUTS[f"offices_{field}"] == value
     assert core.DEFAULT_INPUTS["offices_price_th_per_sqm"] == \
         core.PROJECT_CLASS_PRESETS["comfort"]["offices_price_th_per_sqm"]
 
 
-def test_the_price_from_rent_is_the_named_arithmetic() -> None:
-    scale = {"rent_th_per_sqm_month": 2.5, "occupancy_stable_pct": 92.0,
-             "opex_pct": 18.0, "exit_cap_pct": 10.5}
-    assert ns.office_price_from_rent(scale) == round(2.5 * 12 * 0.92 * 0.82 / 0.105, 1)
+def test_the_rent_from_the_price_is_the_named_arithmetic() -> None:
+    """Аренда из цены: здание по NOI / ставке капитализации стоит ровно цену."""
+    scale = ns.OFFICE_CLASS_SCALE["B+"]
+    rent = ns.office_rent_from_price(scale)
+    value = rent * 12 * 0.92 * (1 - 0.18) / 0.105
+    assert value == pytest.approx(550.0, abs=0.5)
 
 
 # --- чувствительность ------------------------------------------------------------
@@ -221,18 +230,18 @@ def test_two_offices_do_not_guess_whose_parking_it_is() -> None:
     assert moves == []
 
 
-def test_the_page_prices_the_office_from_rent_only_without_housing() -> None:
-    """На отрисованной странице: нежилой вид ставит цену офиса из аренды
-    класса, возврат к смешанному — прежнее правило от цены жилья."""
+def test_the_page_prices_the_office_by_its_class_only_without_housing() -> None:
+    """На отрисованной странице: нежилой вид ставит цену класса офиса,
+    возврат к смешанному — прежнее правило от цены жилья."""
     sys.path.insert(0, str(ROOT / "tests"))
     from browser import chromium_or_skip, serve  # noqa: PLC0415
     from playwright.sync_api import sync_playwright  # noqa: PLC0415
     import main as wrapper  # noqa: PLC0415
 
-    rent_price = core.class_base_preset("business", kind=core.PROJECT_KIND_NONRESIDENTIAL)[
+    class_price = core.class_base_preset("business", kind=core.PROJECT_KIND_NONRESIDENTIAL)[
         "offices_price_th_per_sqm"]
     housing_price = core.PROJECT_CLASS_PRESETS["business"]["offices_price_th_per_sqm"]
-    assert rent_price != housing_price
+    assert class_price != housing_price
     with serve(wrapper.app, 18961):
         with sync_playwright() as pw:
             browser = pw.chromium.launch(executable_path=chromium_or_skip())
@@ -250,4 +259,4 @@ def test_the_page_prices_the_office_from_rent_only_without_housing() -> None:
             back = page.evaluate("()=>inputs.offices_price_th_per_sqm")
             browser.close()
     assert errors == []
-    assert (before, nonres, back) == (housing_price, rent_price, housing_price)
+    assert (before, nonres, back) == (housing_price, class_price, housing_price)

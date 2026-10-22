@@ -283,10 +283,12 @@ OFFICE_CLASS_PLACEHOLDER = "__DEVELOPAID_OFFICE_CLASS__"
 for _key, _office in OFFICE_CLASS_BY_PROJECT_CLASS.items():
     PROJECT_CLASS_PRESETS[_key]["offices_cost_th_per_sqm"] = _office["cost_th_per_sqm"]
     # Аренда, заполнение, эксплуатация и ставка капитализации офиса — шкала
-    # класса (`nonres_strategy.OFFICE_CLASS_SCALE`). Цена продажи из неё же —
-    # только в нежилом проекте (`NONRES_KIND_CLASS_PRICES`); в жилом офис
-    # остаётся на правиле от цены жилья (владелец, 22.10.2026).
-    for _field, _value in nonres_strategy.OFFICE_CLASS_SCALE[_key].items():
+    # класса офиса (`nonres_strategy.OFFICE_CLASS_SCALE`, аренда — из цены
+    # класса). Цена продажи класса — только в нежилом проекте
+    # (`NONRES_KIND_CLASS_PRICES`); в жилом офис остаётся на правиле от цены
+    # жилья (владелец, 22.10.2026).
+    for _field, _value in nonres_strategy.office_class_fields(
+            nonres_strategy.OFFICE_CLASS_BY_PROJECT[_key]).items():
         PROJECT_CLASS_PRESETS[_key][f"offices_{_field}"] = _value
     # Место на первых этажах ОСЗ — норматив класса рядом с подземным местом;
     # пока одно число на все классы (владелец, 27.09.2026: «пока оставляем
@@ -1452,7 +1454,8 @@ for _preset in PROJECT_CLASS_PRESETS.values():
         for _own, _theirs in ((_obj.rate_price, _family.rate_price),
                               (_obj.rate_cost, _family.rate_cost),
                               *((f"{_obj.prefix}_{_field}", f"{_family.prefix}_{_field}")
-                                for _field in nonres_strategy.OFFICE_CLASS_SCALE["comfort"])):
+                                for _field in nonres_strategy.office_class_fields(
+                                    nonres_strategy.DEFAULT_OFFICE_CLASS))):
             if _theirs in _preset:
                 _preset[_own] = _preset[_theirs]
 del _preset
@@ -1470,14 +1473,14 @@ CLASS_NONRES_PRICE_FIELDS: tuple[str, ...] = tuple(
        and _BY_KEY[o.family].rate_price in ("retail_price_th_per_sqm",
                                             "offices_price_th_per_sqm")])
 
-# Цена продажи офиса в НЕЖИЛОМ проекте — из аренды класса (владелец,
-# 22.10.2026: «цена из аренды», «только в нежилом проекте»): два пути офиса
-# — продать или сдавать — сравниваются на согласованных числах. Регион её не
-# двигает. В жилом проекте офис остаётся на правиле от цены жилья.
+# Цена продажи офиса в НЕЖИЛОМ проекте — цена класса офиса (владелец,
+# 22.10.2026: B 400, B+ 550, A 750, A+ 1 000 тыс ₽/м²; «только в нежилом
+# проекте»). Регион её не двигает. В жилом проекте офис остаётся на правиле
+# от цены жилья.
 NONRES_KIND_CLASS_PRICES: dict[str, dict[str, float]] = {
-    key: {o.rate_price: nonres_strategy.office_price_from_rent(scale)
+    key: {o.rate_price: nonres_strategy.OFFICE_CLASS_SCALE[office_class]["price_th_per_sqm"]
           for o in STANDALONE_OBJECTS if o.product == "offices"}
-    for key, scale in nonres_strategy.OFFICE_CLASS_SCALE.items()}
+    for key, office_class in nonres_strategy.OFFICE_CLASS_BY_PROJECT.items()}
 
 # Окно «Настройки классов» — разделами, а не подряд (владелец, 29.09.2026:
 # «не структурированный набор вводных»; «Площадь на 1 место на первых этажах,
