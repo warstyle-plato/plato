@@ -416,11 +416,18 @@ def budget(project: str, kind: str, end: Any) -> dict[str, Any]:
 # Финансирование
 # --------------------------------------------------------------------------
 
-_BORROWED = "заем"
-
-
 def _borrowed(source: Any) -> bool:
-    return _BORROWED in str(source or "").lower().replace("ё", "е")
+    return actuals.borrowed(source)
+
+
+def _borrowed_rows(rss: Path, chapters: Any):
+    """Платежи кредитом; с главами — только по этим главам РСС (их признак — Монитора)."""
+    if not chapters:
+        return lambda row: _borrowed(row.get("source"))
+    import developaid_monitor_dashboard as dashboard
+
+    inside = dashboard.payment_in_chapters(actuals.read_estimate(rss), chapters)
+    return lambda row: _borrowed(row.get("source")) and inside(row)
 
 
 def _sums(rows: list[dict[str, Any]], bounds: dict[str, datetime.date],
@@ -555,30 +562,34 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
                         f"на {bounds['end']:%d.%m.%Y}.")
     payments = actuals.read_payments(rss)["rows"]
     previous = previous_bounds(kind, bounds)
-    monthly: dict[str, float] = {}
-    for row in payments:
-        day = row.get("date")
-        if day and day <= bounds["end"] and _borrowed(row.get("source")):
-            key = day.strftime("%Y-%m")
-            monthly[key] = monthly.get(key, 0.0) + float(row.get("amount") or 0.0)
-    out: dict[str, Any] = {
-        "state": "ok", "rss": rss.stem,
-        "draws": _sums(payments, bounds, lambda row: _borrowed(row.get("source"))),
-        "draws_previous": _sums(payments, previous,
-                                lambda row: _borrowed(row.get("source")))["period"],
-        "draws_monthly": monthly,
-        "interest": _sums(payments, bounds, lambda row: monthly_budget._under(
-            str(row.get("estimate_code") or "").rstrip("."), "3.5")),
-    }
     if dashboard is not None:
-        out["limit"] = dashboard.get("funding") or {
+        limit = dashboard.get("funding") or {
             "known": False, "reason": dashboard.get("error")
             or "панель Монитора не собрала финансирование"}
     else:
         try:
-            out["limit"] = _monitor_funding(project, bounds["end"])
+            limit = _monitor_funding(project, bounds["end"])
         except Exception as exc:  # noqa: BLE001 — причина уходит в сводку
-            out["limit"] = {"known": False, "reason": f"{type(exc).__name__}: {exc}"}
+            limit = {"known": False, "reason": f"{type(exc).__name__}: {exc}"}
+    # Выборка — по тем же главам РСС, что лимит Монитора (владелец,
+    # 22.10.2026: «лимит 4,64, выбрано 4,80, остаток 1,00 — так не
+    # сходится»). Лимит не посчитан — все главы, как раньше.
+    keep = _borrowed_rows(rss, limit.get("chapters") if limit.get("known") else None)
+    monthly: dict[str, float] = {}
+    for row in payments:
+        day = row.get("date")
+        if day and day <= bounds["end"] and keep(row):
+            key = day.strftime("%Y-%m")
+            monthly[key] = monthly.get(key, 0.0) + float(row.get("amount") or 0.0)
+    out: dict[str, Any] = {
+        "state": "ok", "rss": rss.stem,
+        "draws": _sums(payments, bounds, keep),
+        "draws_previous": _sums(payments, previous, keep)["period"],
+        "draws_monthly": monthly,
+        "interest": _sums(payments, bounds, lambda row: monthly_budget._under(
+            str(row.get("estimate_code") or "").rstrip("."), "3.5")),
+        "limit": limit,
+    }
     out["escrow"] = _escrow(sales_project, data_dir)
     out["escrow_bank"] = _bank_escrow(sales_project, data_dir, bounds["end"])
     escrow = out["escrow"]
@@ -1034,7 +1045,8 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                          f"осталось {_rub(total['remaining'])}")
             for chapter in table["chapters"]:
                 line = chapter["total"]
-                if chapter["key"] != "service" and line.get("plan"):
+                if (chapter["key"] != "service" and line.get("plan")
+                        and line.get("fact") is not None):
                     parts.append(f"{chapter['label'].lower()} — оплачено {_rub(line['fact'])} "
                                  f"из {_rub(line['plan'])} ({_pct(line['share'])})")
             rows = {row["key"]: row for chapter in table["chapters"] for row in chapter["rows"]}
@@ -1119,8 +1131,8 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                               if need["deficit"] > 0 else
                               f"утверждённый бюджет {_rub(need['approved'])} покрыт лимитами и резервом")
             extra = float(limit.get("additional_financing") or 0.0)
-            pieces.append(f"по РСС не хватает {_rub(extra)} с "
-                          f"{_months_label(limit.get('additional_financing_from'))}"
+            pieces.append(f"по РСС не хватает {_rub(extra)} "
+                          f"{_since(limit.get('additional_financing_from'))}"
                           if extra > 0 else "по РСС лимитов и резерва хватает до ввода")
         pieces.append(f"выборка кредита за {period} — {_rub(block['draws']['period'])} "
                       f"(за предыдущий такой же период — {_rub(block.get('draws_previous'))})")
@@ -1276,6 +1288,18 @@ def _months_label(key: str | None) -> str:
     return f"{_MONTHS[int(month) - 1]} {year}"
 
 
+_MONTHS_SINCE = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+                 "августа", "сентября", "октября", "ноября", "декабря")
+
+
+def _since(key: str | None) -> str:
+    """«с ноября 2026» — месяц после предлога «с»."""
+    if not key:
+        return "—"
+    year, month = str(key)[:7].split("-")
+    return f"с {_MONTHS_SINCE[int(month) - 1]} {year}"
+
+
 def _times(value: float | None) -> str:
     return "—" if value is None else f"{value:.2f}".replace(".", ",") + "×"
 
@@ -1300,6 +1324,41 @@ def _bank_escrow_lines(block: dict[str, Any]) -> list[str]:
                    f"на {_months_label(current['measured_at'])} накоплено "
                    f"{_rub(current['actual'])}.")
     return out
+
+
+def _chapters_words(limit: dict[str, Any]) -> str:
+    """«главы 1–3» из расчёта Монитора; без главы 1 — и почему."""
+    words = f"главы {limit.get('chapters_label') or '2–3'}"
+    reason = limit.get("chapters_reason")
+    return f"{words} ({reason})" if reason else words
+
+
+def _remaining_words(limit: dict[str, Any], borrowed: float | None = None,
+                     short: bool = False) -> str:
+    """Как из лимита получился остаток — словами, чтобы вычитание читалось.
+
+    Остаток считается по статьям: лимит статьи минус всё оплаченное по ней —
+    кредитом и своими деньгами, а статья с перерасходом идёт нулём. Разницу
+    раскладывает Монитор (`remaining_check`); здесь она только называется.
+    """
+    check = limit.get("remaining_check") or {}
+    paid = float(limit.get("paid_actual") or 0.0)
+    if borrowed is None:
+        borrowed = limit.get("paid_borrowed")
+    words = f"лимит минус всё оплаченное {_rub(paid)}"
+    if borrowed is not None:
+        words += f" (кредитом {_rub(borrowed)}, своими деньгами {_rub(paid - float(borrowed))})"
+    if short:
+        return words
+    # Поправка меньше 0,1% лимита — округление, а не отдельная строка.
+    tiny = 0.001 * float(limit.get("bank_limit") or 0.0)
+    if float(check.get("overpaid") or 0.0) > tiny:
+        words += f"; перерасход по статьям {_rub(check['overpaid'])} остаток не уменьшает"
+    gap = float(check.get("book_gap") or 0.0)
+    if abs(gap) > tiny:
+        words += (f"; лимиты статей в финкниге {'больше' if gap > 0 else 'меньше'} "
+                  f"сметы РСС на {_rub(abs(gap))}")
+    return words
 
 
 def _approved_need(limit: dict[str, Any]) -> dict[str, float] | None:
@@ -1330,14 +1389,14 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     lines = []
     limit = block.get("limit") or {}
     if limit.get("known"):
-        lines.append(f"Лимит банка по РСС (главы {limit.get('chapters_label') or '2–3'}): "
-                     f"{_rub(limit.get('bank_limit'))}, "
-                     f"оплачено с начала проекта {_rub(limit.get('paid_actual'))}, "
-                     f"остаток лимитов статей {_rub(limit.get('bank_remaining'))}, "
+        lines.append(f"Лимит банка по смете РСС ({_chapters_words(limit)}): "
+                     f"{_rub(limit.get('bank_limit'))}; "
+                     f"остаток лимитов статей {_rub(limit.get('bank_remaining'))} — "
+                     f"{_remaining_words(limit, (block.get('draws') or {}).get('total'))}; "
                      f"резерв {_rub(limit.get('reserve'))}.")
         need = _approved_need(limit)
         if need:
-            line = (f"Утверждённый бюджет (главы {limit.get('chapters_label') or '2–3'}, финмодель): "
+            line = (f"Утверждённый бюджет ({_chapters_words(limit)}, финмодель): "
                     f"{_rub(need['approved'])}; "
                     f"остаток потребности (бюджет минус оплаченное) {_rub(need['remaining'])} "
                     f"при лимитах статей и резерве {_rub(need['fuel'])}")
@@ -1351,14 +1410,15 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
         extra = float(limit.get("additional_financing") or 0.0)
         if extra > 0:
             lines.append(f"По РСС не хватает: {_rub(extra)}, "
-                         f"начиная с {_months_label(limit.get('additional_financing_from'))}.")
+                         f"начиная {_since(limit.get('additional_financing_from'))}.")
         else:
             lines.append("По РСС лимитов и резерва хватает до ввода по прогнозу Монитора.")
     else:
         lines.append(f"Лимит и дефицит не посчитаны: {limit.get('reason') or 'нет данных'}.")
     period = PERIODS[report["kind"]]
     draws, interest = block["draws"], block["interest"]
-    lines.append(f"Выборка кредита (платежи РСС из заёмных средств): за {period} "
+    lines.append(f"Выборка кредита (платежи РСС из заёмных средств"
+                 + (f", {_chapters_words(limit)}" if limit.get("known") else "") + f"): за {period} "
                  f"{_rub(draws['period'])}, с начала месяца {_rub(draws['month'])}, "
                  f"с начала проекта {_rub(draws['total'])}.")
     lines.append(f"Услуги банка (статья 3.5 РСС, в том числе проценты): за {period} "
@@ -1398,17 +1458,24 @@ def _funding_html(report: dict[str, Any]) -> str:
     limit = block.get("limit") or {}
     if limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
-        out.append(_table([f"Лимит банка (РСС, главы {limit.get('chapters_label') or '2–3'})", "Сумма"], [
-            ["Лимит", _rub(limit.get("bank_limit"))],
-            ["Оплачено с начала проекта", _rub(limit.get("paid_actual"))],
+        check = limit.get("remaining_check") or {}
+        rows = [["Лимит по смете РСС", _rub(limit.get("bank_limit"))],
+                ["Оплачено с начала проекта (кредитом и своими деньгами)", _rub(limit.get("paid_actual"))]]
+        rows.append(["в том числе кредитом", _rub((block.get("draws") or {}).get("total"))])
+        tiny = 0.001 * float(limit.get("bank_limit") or 0.0)
+        if float(check.get("overpaid") or 0.0) > tiny:
+            rows.append(["Перерасход по статьям (остаток не уменьшает)", _rub(check["overpaid"])])
+        if abs(float(check.get("book_gap") or 0.0)) > tiny:
+            rows.append(["Лимиты статей финкниги против сметы РСС", _signed_rub(check["book_gap"])])
+        out.append(_table([f"Лимит банка ({esc(_chapters_words(limit))})", "Сумма"], rows + [
             ["Остаток лимитов статей", _rub(limit.get("bank_remaining"))],
             ["Резерв", _rub(limit.get("reserve"))],
             ["Не хватает по РСС",
-             (f"{_rub(extra)} с {_months_label(limit.get('additional_financing_from'))}"
+             (f"{_rub(extra)} {_since(limit.get('additional_financing_from'))}"
               if extra > 0 else "хватает до ввода")]]))
         need = _approved_need(limit)
         if need:
-            out.append(_table([f"Утверждённый бюджет (главы {limit.get('chapters_label') or '2–3'}, финмодель)",
+            out.append(_table([f"Утверждённый бюджет ({esc(_chapters_words(limit))}, финмодель)",
                                "Сумма"], [
                 ["Утверждённый бюджет", _rub(need["approved"])],
                 ["Оплачено с начала проекта", _rub(limit.get("paid_actual"))],
@@ -1425,7 +1492,8 @@ def _funding_html(report: dict[str, Any]) -> str:
                    f"{esc(limit.get('reason') or 'нет данных')}.</p>")
     draws, interest = block["draws"], block["interest"]
     out.append(_table(["", f"За {PERIODS[report['kind']]}", "С начала месяца", "С начала проекта"], [
-        ["Выборка кредита (платежи из заёмных средств)", _rub(draws["period"]),
+        ["Выборка кредита (платежи из заёмных средств"
+         + (f", {esc(_chapters_words(limit))}" if limit.get("known") else "") + ")", _rub(draws["period"]),
          _rub(draws["month"]), _rub(draws["total"])],
         ["Услуги банка, статья 3.5 (в том числе проценты)", _rub(interest["period"]),
          _rub(interest["month"]), _rub(interest["total"])]]))
@@ -1542,7 +1610,10 @@ def render_text(report: dict[str, Any]) -> str:
         month = _date(block["month"])
         name = f"{_MONTHS[month.month - 1]} {month.year}"
         for line in block["lines"]:
-            if line.get("plan") is not None:
+            if line.get("plan") is not None and line.get("fact") is None:
+                lines.append(f"{line['label']} за {name}: план {_rub(line['plan'])}, "
+                             "оплат в РСС нет.")
+            elif line.get("plan") is not None:
                 lines.append(f"{line['label']} за {name}: план {_rub(line['plan'])}, "
                              f"оплачено {_rub(line['fact'])}, "
                              f"осталось {_rub(line['remaining'])}"
@@ -1610,6 +1681,8 @@ ul.findings li.bad::marker{color:#b42318}ul.findings li.missing{color:#5b6b7d}
 ul.findings li b{font-weight:700}ul.findings li.bad b{color:#b42318}
 .finding .source{color:#7b8794;font-size:10px}
 .pagebreak{break-after:page;page-break-after:always}
+h2.block{break-before:page;page-break-before:always}h2.block.first{break-before:auto;page-break-before:auto}
+ol.toc{margin:6px 0 10px;padding-left:22px;columns:2;column-gap:24px}ol.toc li{margin:2px 0;break-inside:avoid}ol.toc a{color:#1f4e8c;text-decoration:none}
 section{break-inside:auto}
 .switch-charts .switch{display:none}
 figure.chart{margin:10px 0 6px;break-inside:avoid;page-break-inside:avoid}figure.chart figcaption{font-size:11.5px;color:#17202a;margin-bottom:3px;font-weight:600}
@@ -1761,7 +1834,9 @@ def _budget_forecast(block: dict[str, Any], end: datetime.date) -> list[dict[str
     for line in block.get("lines") or []:
         # Служба заказчика: факт РСС шире плана (см. примечание строки) —
         # прогноз против плана был бы ложной тревогой.
-        if not line.get("plan") or not elapsed or line["key"] == "service":
+        # Земля и АХР платятся разово, темп месяца к ним не применим.
+        if (not line.get("plan") or not elapsed
+                or line["key"] in {"service", "land", "admin"}):
             continue
         forecast = line["fact"] / elapsed
         out.append({"label": line["label"], "plan": line["plan"], "fact": line["fact"],
@@ -1876,8 +1951,10 @@ def _budget_articles_html(table: dict[str, Any]) -> str:
     if whole:
         notes.append("«Всего по бюджету месяца» — строка «РАСХОДЫ» бюджета: стройка, "
                      "коммерческие расходы, служба заказчика, земля (глава 1) и "
-                     "административно-хозяйственные расходы. Оплаты административно-"
-                     "хозяйственных расходов в РСС нет, поэтому в «Оплачено» их не видно.")
+                     "административно-хозяйственные расходы. Оплачено по земле и "
+                     "административно-хозяйственным расходам — из колонки «ФАКТ» "
+                     "бюджета (их платят мимо реестра РСС); если факта в бюджете нет, "
+                     "земля — по главе 1 РСС.")
     if not table.get("has_plan"):
         notes.append("Бюджета на этот месяц нет — показаны только оплаты.")
     out.append("<p class='note'>" + " ".join(notes) + "</p>")
@@ -1955,22 +2032,29 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     block = report.get("funding") or {}
     limit = (block.get("limit") or {}) if block.get("state") == "ok" else {}
     need = _approved_need(limit) if limit.get("known") else None
+    chapters = _chapters_words(limit)
     add("Утверждённый бюджет", _rub(need["approved"]) if need else None,
-        f"главы {limit.get('chapters_label') or '2–3'}, финмодель" if need
-        else "финансовая книга не загружена")
+        f"{chapters}, финмодель" if need else "финансовая книга не загружена")
     if limit.get("known"):
-        add("Лимит банка", _rub(limit.get("bank_limit")),
-            f"по РСС, главы {limit.get('chapters_label') or '2–3'}")
+        add("Лимит банка", _rub(limit.get("bank_limit")), f"смета РСС, {chapters}")
     else:
         add("Лимит банка", None, limit.get("reason") or "лимит не посчитан")
     draws = block.get("draws") if block.get("state") == "ok" else None
-    add("Выбрано у банка", _rub(draws["total"]) if draws else None,
-        f"за {period} — {_rub(draws['period'])}" if draws else "отчёт РСС не загружен")
+    if draws:
+        note = f"кредитом, {chapters}; за {period} — {_rub(draws['period'])}" \
+            if limit.get("known") else f"кредитом, все главы РСС; за {period} — {_rub(draws['period'])}"
+        over = draws["total"] - float(limit.get("bank_limit") or 0.0)
+        if limit.get("known") and over > 0:
+            note += f"; больше лимита на {_rub(over)}"
+        add("Выбрано у банка", _rub(draws["total"]), note, "bad" if limit.get("known") and over > 0 else "")
+    else:
+        add("Выбрано у банка", None, "отчёт РСС не загружен")
     if limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
         add("Остаток лимита банка", _rub(limit.get("bank_remaining")),
-            f"и резерв {_rub(limit.get('reserve'))}; по РСС "
-            + (f"не хватает {_rub(extra)} с {_months_label(limit.get('additional_financing_from'))}"
+            _remaining_words(limit, draws["total"] if draws else None, short=True)
+            + f"; резерв {_rub(limit.get('reserve'))}; по РСС "
+            + (f"не хватает {_rub(extra)} {_since(limit.get('additional_financing_from'))}"
                if extra > 0 else "хватает до ввода"), "bad" if extra > 0 else "good")
     else:
         add("Остаток лимита банка", None, "лимит не посчитан")
@@ -2041,6 +2125,15 @@ def _tiles_html(items: list[dict[str, str]]) -> str:
         for item in items) + "</div>")
 
 
+def _delta(value: float | None) -> str:
+    """Отклонение со знаком; меньше рубля — ноль без знака, а не «−0 ₽»."""
+    if value is None:
+        return "—"
+    if abs(value) < 0.5:
+        return "0 ₽"
+    return ("+" if value > 0 else "") + _rub(value)
+
+
 def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
     esc = html.escape
     out = []
@@ -2080,29 +2173,47 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
             out.append(_table(["Глава бюджета", "План", "Факт", "Отклонение"], [
                 [(f"<b>{esc(row['label'])}</b>" if row["key"] == "expenses" else esc(row["label"])),
                  _rub(row.get("plan")), _rub(row.get("fact")),
-                 ("+" if (row["fact"] or 0) - (row["plan"] or 0) >= 0 else "")
-                 + _rub((row["fact"] or 0) - (row["plan"] or 0))
+                 _delta(row["fact"] - row["plan"])
                  if row.get("plan") is not None and row.get("fact") is not None else "—"]
                 for row in articles["chapters"]]))
         out.append(f"<h3>Отклонения по статьям бюджета за {_months_label(articles['month'])}</h3>")
-        out.append(_table(["Статья", "План", "Факт", "Отклонение"], [
+        body = [
             [esc(row["article"]), _rub(row.get("plan")),
              "не платили" if row.get("fact_blank") else _rub(row.get("fact")),
-             ("+" if (row.get("delta") or 0) >= 0 else "") + _rub(row.get("delta"))
-             if row.get("delta") is not None else "—"] for row in articles["rows"][:10]]))
+             _delta(row.get("delta"))] for row in articles["rows"][:10]]
+        # Итог — по всем статьям, а не по показанным десяти (владелец,
+        # 22.10.2026: «тут нет нигде итого»).
+        every = articles["rows"]
+        plan_sum = sum(row["plan"] for row in every if row.get("plan") is not None)
+        fact_sum = sum(row["fact"] or 0.0 for row in every)
+        body.append(["<b>Итого по статьям</b>", f"<b>{_rub(plan_sum)}</b>",
+                     f"<b>{_rub(fact_sum)}</b>", f"<b>{_delta(fact_sum - plan_sum)}</b>"])
+        out.append(_table(["Статья", "План", "Факт", "Отклонение"], body))
         out.append("<p class='note'>Плюс — перерасход, минус — недоосвоение. Данные — из "
                    f"план-факта БДДС от {_day(articles['file'])}.</p>")
     elif articles.get("reason"):
         out.append(f"<p class='note'>Отклонения по статьям бюджета: {esc(articles['reason'])}.</p>")
     if block.get("by_article"):
         out.append("<h3>Оплачено с начала месяца по статьям РСС</h3>")
-        out.append(_table(["Статья РСС", "Оплачено"], [
-            [f"{esc(row['code'])} {esc(row['name'])}", _rub(row["amount"])]
-            for row in block["by_article"][:10]]))
+        shown = block["by_article"][:10]
+        paid = sum(row["amount"] for row in block["by_article"])
+        body = [[f"{esc(row['code'])} {esc(row['name'])}", _rub(row["amount"])] for row in shown]
+        rest = paid - sum(row["amount"] for row in shown)
+        if abs(rest) >= 0.5:
+            body.append([f"Остальные статьи ({len(block['by_article']) - len(shown)})",
+                         _rub(rest)])
+        body.append(["<b>Итого оплачено с начала месяца</b>", f"<b>{_rub(paid)}</b>"])
+        out.append(_table(["Статья РСС", "Оплачено"], body))
     if block.get("recipients"):
         out.append("<h3>Крупнейшие получатели оплат с начала месяца</h3>")
-        out.append(_table(["Контрагент", "Оплачено"], [
-            [esc(row["name"]), _rub(row["amount"])] for row in block["recipients"]]))
+        body = [[esc(row["name"]), _rub(row["amount"])] for row in block["recipients"]]
+        top = sum(row["amount"] for row in block["recipients"])
+        body.append([f"<b>Итого по {len(block['recipients'])} крупнейшим</b>",
+                     f"<b>{_rub(top)}</b>"])
+        paid = sum(row["amount"] for row in block.get("by_article") or [])
+        if paid > top + 0.5:
+            body.append(["Все остальные получатели", _rub(paid - top)])
+        out.append(_table(["Контрагент", "Оплачено"], body))
     return "\n".join(out)
 
 
@@ -2290,26 +2401,57 @@ def _budget_chart(block: dict[str, Any]) -> str:
             for line in lines if line.get("note") and line.get("plan") is not None)
 
 
+# Блоки документа по порядку владельца: ключ якоря и заголовок. Содержание,
+# заголовки и якоря берут этот список — второй перечень разошёлся бы с первым.
+BLOCKS = (
+    ("main", "Главное за период"),
+    ("build", "Стройка"),
+    ("sales", "Продажи"),
+    ("funding", "Финансирование"),
+    ("budget", "Бюджет месяца"),
+    ("legal", "Споры и претензии"),
+    ("info", "Общая информация"),
+)
+
+
+def _block_heading(key: str) -> str:
+    """Заголовок блока с якорем; в документе блок начинается с новой страницы."""
+    title = dict(BLOCKS)[key]
+    # «Главное» остаётся на первой странице под плитками (решение владельца об
+    # оформлении); остальные блоки — каждый с новой страницы.
+    classes = "block first" if key == BLOCKS[0][0] else "block"
+    return f"<h2 class='{classes}' id='block-{key}'>{html.escape(title)}</h2>"
+
+
+def _toc_html() -> str:
+    """Содержание — в начале документа (владелец, 22.10.2026: «а в начало
+    содержание?»). Номеров страниц нет: Chromium при печати их не считает, а
+    блоки идут в этом же порядке, каждый с новой страницы; строки — ссылки."""
+    return ("<ol class='toc'>" + "".join(
+        f"<li><a href='#block-{key}'>{html.escape(title)}</a></li>" for key, title in BLOCKS)
+        + "</ol>")
+
+
 def render_html(report: dict[str, Any]) -> str:
     """Тело документа сводки — те же числа, что в сообщении, таблицами."""
     esc = html.escape
     out = [f"<h1>Сводка по проекту «{esc(report['project'])}»</h1>",
-           f"<div class='sub'>{esc(_title(report))}</div>"]
+           f"<div class='sub'>{esc(_title(report))}</div>", _toc_html()]
 
     def missing(block: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
 
     out.append(_tiles_html(tiles(report)))
-    out.append("<h2>Главное за период</h2><ul class='findings'>")
+    out.append(_block_heading("main") + "<ul class='findings'>")
     for item in report.get("findings") or []:
         tone = f" {item['tone']}" if item.get("tone") else ""
         source = (f" <span class='source'>Источник: {esc(item['source'])}.</span>"
                   if item.get("source") else "")
         out.append(f"<li class='finding{tone}'><b>{esc(item['topic'])}.</b> "
                    f"{esc(item['text'])}{source}</li>")
-    out.append("</ul><div class='pagebreak'></div>")
+    out.append("</ul>")
 
-    out.append("<h2>Стройка</h2>")
+    out.append(_block_heading("build"))
     block = report.get("physical") or {}
     if block.get("state") == "ok":
         out.append(_table(["", "План к дате", "Выполнено", "Отставание"], [[
@@ -2350,7 +2492,7 @@ def render_html(report: dict[str, Any]) -> str:
 
     out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 
-    out.append("<h2>Продажи</h2>")
+    out.append(_block_heading("sales"))
     block = report.get("sales") or {}
     if block.get("state") == "ok":
         def fact_cells(fact: dict[str, Any]) -> list[str]:
@@ -2391,7 +2533,7 @@ def render_html(report: dict[str, Any]) -> str:
     if (report.get("sales") or {}).get("state") == "ok":
         out.append(_sales_depth_html(report["sales"], report["kind"]))
 
-    out.append("<h2>Финансирование</h2>")
+    out.append(_block_heading("funding"))
     out.append(_funding_html(report))
     out.append(_funding_chart(report))
     out.append(_funding_depth_html(report))
@@ -2402,8 +2544,8 @@ def render_html(report: dict[str, Any]) -> str:
         elapsed = _month_elapsed(month, _date(report["end"]))
         # Заголовок, подпись и таблица статей — одним куском: заголовок внизу
         # страницы без таблицы под ним читается как пустой раздел.
-        out.append("<div class='keep'><h2>Бюджет месяца</h2>"
-                   f"<div class='sub'>{_MONTHS[month.month - 1]} {month.year}: план — "
+        out.append("<div class='keep'>" + _block_heading("budget")
+                   + f"<div class='sub'>{_MONTHS[month.month - 1]} {month.year}: план — "
                    f"план-факт БДДС, оплачено — реестр платежей РСС на "
                    f"{_day(report['end'])}; прошло {_pct(elapsed)} месяца</div>"
                    + _budget_articles_html(block.get("by_budget_article") or {}) + "</div>")
@@ -2411,15 +2553,16 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<p class='note warn'>{esc(block['reason'])}</p>")
         out.append(f"<p class='note'>Оплаты — из отчёта РСС от {_day(block['rss'])}.</p>")
     else:
-        out.append("<h2>Бюджет месяца</h2>")
+        out.append(_block_heading("budget"))
         out.append(missing(block))
 
     out.append(_budget_chart(report.get("budget") or {}))
     if (report.get("budget") or {}).get("state") in {"ok", "partial"}:
         out.append(_budget_depth_html(report["budget"], _date(report["end"])))
 
-    out.append("<h2>Общая информация</h2>")
+    out.append(_block_heading("legal"))
     out.append(_legal_html(report.get("legal") or {}))
+    out.append(_block_heading("info"))
     block = report.get("notes") or {}
     if block.get("state") != "ok":
         out.append(missing(block))
@@ -2491,11 +2634,11 @@ def _legal_html(block: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(block.get('reason') or 'Реестр споров не собран.')}</p>"
     items = (block.get("open") or []) + (block.get("closed") or [])
     if not block.get("recorded"):
-        return f"<h3>Споры и претензии</h3><p class='missing'>{esc(LEGAL_EMPTY)}</p>"
+        return f"<p class='missing'>{esc(LEGAL_EMPTY)}</p>"
     if not items:
-        return f"<h3>Споры и претензии</h3><p>{esc(LEGAL_NONE_OPEN)}</p>"
+        return f"<p>{esc(LEGAL_NONE_OPEN)}</p>"
     names = block.get("statuses") or {}
-    out = ["<h3>Споры и претензии</h3>"]
+    out = []
     for item in items:
         card, totals = item["card"], item["totals"]
         rows = []
@@ -2535,7 +2678,7 @@ def _keep_headings(parts: list[str]) -> list[str]:
     index = 0
     while index < len(parts):
         part = parts[index]
-        if part.startswith("<h2>") and part.endswith("</h2>") and index + 1 < len(parts):
+        if part.startswith("<h2") and part.endswith("</h2>") and index + 1 < len(parts):
             out.append(f"<div class='keep'>{part}{parts[index + 1]}</div>")
             index += 2
             continue

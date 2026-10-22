@@ -35,13 +35,24 @@ BRIDGE_SCRIPT = r'''
    // вл. 37 решение называет 60 номеров, из них 20 участков.
    const cads=(pending.krt_cadastres||[]).filter(Boolean);
    const cadNote=pending.krt_cadastre_note||{};
+   const ha=v=>Number(v).toLocaleString('ru-RU',{maximumFractionDigits:4});
+   const territoryHa=Number((model.inputs||{}).site_area_ha||0);
+   const landHa=Number(cadNote.land_area_ha||0);
+   // Перечень решения не обязан покрывать территорию: два участка на 512 м²
+   // у площадки в 5 га — не «вся площадка». Это сказано до подмены проекта,
+   // а площадь территории остаётся из карточки, а не из участков.
+   const partial=cads.length&&territoryHa>0&&cadNote.covers_territory===false;
    const cadLine=cads.length
     ?('Участок: '+cads.length+' кадастровых номеров из перечня проекта решения'
       +(cadNote.buildings?' ('+cadNote.buildings+' номеров перечня — здания, они не в счёт площади)':'')
-      +' — поле участка заполнится ими.')
+      +' — поле участка заполнится ими.'
+      +(partial?(' Эти участки занимают '+(landHa>0?ha(landHa)+' га':'неизвестную площадь')
+        +' из '+ha(territoryHa)+' га территории КРТ: остальная земля перечнем не названа. '
+        +'Площадь территории берётся из карточки КРТ, а плату за смену ВРИ по этим участкам '
+        +'калькулятор ГлавАПУ посчитает только за их часть — её нужно будет вписать.'):''))
     :('Кадастровых номеров у площадки не прочитано'
       +(cadNote.problem?': '+String(cadNote.problem):'')
-      +' — поле участка очистится, впишите номера сами.');
+      +' — границы территории участками не получены, поле участка очистится, впишите номера сами.');
    if(!confirm('Открыть площадку КРТ «'+String(pending.krt_name||'без названия')+'» в модели?\n\n'
      +'Вводные посчитаны предварительным прогоном: цена входа принята нулём, '
      +'обязательства КРТ сверх опубликованных не учтены. '+cadLine+'\n\n'
@@ -66,6 +77,12 @@ BRIDGE_SCRIPT = r'''
    if(typeof inputs!=='undefined')inputs._manual_tep_import={
     project_name:String(pending.krt_name||''),
     site_area_ha:Number((model.inputs||{}).site_area_ha||0),
+    // Чем территория представлена участками — происхождение поля участка:
+    // подписи ВРИ и площади читают его, а не угадывают по числу номеров.
+    territory:{cadastral_numbers:cads,land_area_ha:landHa,
+      covers_territory:cadNote.covers_territory===true,
+      listed:Number(cadNote.listed||0),buildings:Number(cadNote.buildings||0),
+      problem:String(cadNote.problem||'')},
     // Источник назван: подпись площади и шапка PDF читают его отсюда, а не
     // пишут «ручной шаблон» про каталог города.
     source:{kind:'krt',label:'Площадка КРТ · '

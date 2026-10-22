@@ -83,8 +83,7 @@ def test_findings_carry_numbers_and_sources():
 def test_the_document_opens_with_findings_and_has_charts():
     built = _full()
     page = report.render_html(built)
-    assert page.index("Главное за период") < page.index("<h2>Стройка</h2>")
-    assert "pagebreak" in page[:page.index("<h2>Стройка</h2>")]
+    assert page.index("Главное за период") < page.index(">Стройка</h2>")
     titles = re.findall(r"<figcaption>([^<]+)</figcaption>", page)
     assert titles == [
         "Выполнение по графику работ: план и факт на дату каждого ГПР-факта",

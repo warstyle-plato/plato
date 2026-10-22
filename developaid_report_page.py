@@ -54,6 +54,7 @@ REPORT_PAGE = """<!doctype html>
 #reportBox .switch-charts .switch button+button{border-left:1px solid #edf1f5}
 #reportBox .switch-charts .switch button.on{background:#1f4e8c;color:#fff}
 #reportBox .switch-charts .pane{display:none}#reportBox .switch-charts .pane.on{display:block}
+#reportBox h2.block{break-before:auto;page-break-before:auto}#reportBox h2.block{scroll-margin-top:12px}
 @media (max-width:700px){#reportBox .tiles{grid-template-columns:repeat(2,1fr)}
 #reportBox{padding:12px 10px}
 #reportBox table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
