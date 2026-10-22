@@ -121,7 +121,7 @@ def test_a_manual_area_is_not_overwritten_by_the_cadastre():
     """Ручной ввод сильнее автоподстановки: строка заполнения проверяет флаг."""
     snippet = re.search(
         r"const cadArea=Number\(\(\(analysis\|\|\{\}\)\.territory\|\|\{\}\)\.area_ha\|\|0\);\s*\n\s*"
-        r"if\(cadArea>0&&!inputs\._site_area_user_set&&!inputs\._glavapu_import\)"
+        r"if\(cadArea>0&&!inputs\._site_area_user_set&&!inputs\._glavapu_import&&!importedSiteAreaHa\(\)\)"
         r"inputs\.site_area_ha=cadArea;",
         core.PAGE,
     )
