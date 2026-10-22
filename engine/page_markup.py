@@ -1053,6 +1053,7 @@ PAGE += r"""</head>
   <div style="background:#fff;max-width:1100px;width:100%;border-radius:10px;padding:14px 16px 12px">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
       <h2 id="landMapTitle" style="margin:0;font-size:16px">Участок и окружение</h2>
+      <span id="landMapLayers" style="display:inline-flex;gap:4px;margin-left:12px" aria-label="Вид карты"></span>
       <button id="landMapRuler" onclick="landMapMeasureToggle()" style="margin-left:auto;border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:12px">Линейка</button>
       <button onclick="landMapZoomBy(-1)" style="border:1px solid #ddd;background:#fff;border-radius:6px;padding:4px 11px;cursor:pointer">−</button>
       <button onclick="landMapZoomBy(1)" style="border:1px solid #ddd;background:#fff;border-radius:6px;padding:4px 11px;cursor:pointer">+</button>
