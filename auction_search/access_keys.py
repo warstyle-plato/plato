@@ -315,7 +315,7 @@ _EXTRA_GET = frozenset({"/land/basemap", "/land/map-image",
                         # согласие и политику человек вправе прочитать.
                         "/consent", "/privacy", "/ads-consent",
                         # Договор и условия возврата — те же документы подвала.
-                        "/offer", "/refund"})
+                        "/offer", "/refund", "/tariffs", "/contacts"})
 _EXTRA_POST = frozenset({"/land/lot-context"})
 # Статика оформления (логотип и т.п.) — не данные.
 _STATIC_PREFIXES = ("/guide/assets/",)

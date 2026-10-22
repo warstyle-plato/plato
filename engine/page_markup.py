@@ -906,16 +906,42 @@ PAGE += r"""</head>
     <!-- Администрирование доступа — только администраторам (решает сервер). -->
     <div id="accessAdminBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px">
       <div class="section-title" style="margin-bottom:8px">Администрирование доступа</div>
-      <div class="upload-line" style="align-items:center;margin-bottom:8px">
-        <input id="grantChat" type="number" placeholder="Telegram ID" style="width:130px">
-        <select id="grantKind"><option value="plot">Участок</option><option value="subscription">Подписка</option></select>
-        <input id="grantCadastral" placeholder="Кадастровые номера через запятую" style="min-width:260px">
-        <input id="grantDays" type="number" placeholder="Дней (по умолчанию — как в тарифе)" style="width:120px">
-        <input id="grantNote" placeholder="Комментарий" style="min-width:160px">
-        <button class="btn dark" onclick="accessAdminGrant()">Выдать доступ</button>
+      <!-- Подписи стоят над полями, а не подсказкой внутри: подсказка исчезала
+           после ввода, и по заполненной форме нельзя было понять, кому и что
+           выдаётся (замечание владельца, 22.10.2026). -->
+      <div class="grant-form" style="display:grid;gap:8px;max-width:640px;margin-bottom:8px">
+        <label>Кому выдать доступ
+          <select id="grantChat" style="width:100%"><option value="">Загружаю пользователей…</option></select>
+          <small class="muted">В списке — все, кто писал боту или входил на сайт. Нет нужного человека — попросите его сначала написать боту DevelopAid.</small>
+        </label>
+        <label>Что выдать
+          <select id="grantKind" onchange="grantKindChanged()" style="width:100%">
+            <option value="plot">Доступ к участку</option>
+            <option value="subscription">Подписку — все участки</option>
+          </select>
+        </label>
+        <label id="grantCadastralRow">Кадастровые номера участка
+          <input id="grantCadastral" placeholder="например, 77:09:0004001:5578, 77:09:0004001:5579" style="width:100%">
+          <small class="muted">Если в расчёте несколько участков, впишите все номера через запятую: это один участок-набор, доступ откроется ко всему набору и к любой его части.</small>
+        </label>
+        <label>Срок доступа, дней
+          <input id="grantDays" type="number" min="1" value="30" style="width:120px">
+        </label>
+        <label>Комментарий для журнала (необязательно)
+          <input id="grantNote" placeholder="например, пилот для компании" style="width:100%">
+        </label>
+        <div><button class="btn dark" onclick="accessAdminGrant()">Выдать доступ</button></div>
       </div>
       <div id="accessAdminStatus" style="font-size:12px;margin-bottom:8px"></div>
       <div id="accessAdminList"></div>
+      <div class="section-title" style="margin:14px 0 6px">Демо-доступ по ссылке</div>
+      <div style="font-size:12px;color:#777;margin-bottom:6px">Ссылку можно отправить кому угодно: клиенту, партнёру, проверяющему ЮKassa. Она открывает кабинет без Telegram на 14 дней. По ней человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. Если отозвать ссылку, вход по ней закроется сразу.</div>
+      <div class="upload-line" style="align-items:center;margin-bottom:6px">
+        <input id="demoInviteNote" placeholder="Для кого, например «ЮKassa» или «ООО Ромашка»" style="min-width:220px">
+        <button class="btn dark" onclick="accessDemoCreate()">Создать демо-ссылку</button>
+      </div>
+      <div id="demoInviteStatus" style="font-size:12px;margin-bottom:6px"></div>
+      <div id="demoInviteList"></div>
     </div>
     <div id="projectsStored">
       <div class="section-title" style="margin-bottom:8px">Мои проекты</div>
@@ -974,6 +1000,8 @@ PAGE += r"""</head>
   <a href="/privacy" style="color:#888">Политика конфиденциальности</a>
   <a href="/ads-consent" style="color:#888">Согласие на рекламные материалы</a>
   <a href="/guide" style="color:#888">Руководство</a>
+  <a href="/tariffs" style="color:#888">Тарифы</a>
+  <a href="/contacts" style="color:#888">Контакты</a>
   <a href="/offer" style="color:#888">Лицензионный договор</a>
   <a href="/refund" style="color:#888">Условия возврата</a>
   <span>__DEVELOPAID_PRODUCT_REGISTRATION__</span>
