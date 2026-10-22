@@ -172,8 +172,8 @@ def test_blocks_go_in_the_owners_order():
     assert [text.index(f"<b>{name}</b>") for name in order] == \
         sorted(text.index(f"<b>{name}</b>") for name in order)
     page = report.render_html(built)
-    assert [page.index(f"<h2>{name}</h2>") for name in order] == \
-        sorted(page.index(f"<h2>{name}</h2>") for name in order)
+    assert [page.index(f">{name}</h2>") for name in order] == \
+        sorted(page.index(f">{name}</h2>") for name in order)
 
 
 def test_escrow_against_the_bank_plan():
