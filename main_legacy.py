@@ -248,6 +248,7 @@ _engine_part("xlsx_book_v4_finance")
 _engine_part("xlsx_book_v4_presentation")
 _engine_part("xlsx_book_v4_sheets")
 _engine_part("xlsx_book_v4_social")
+_engine_part("xlsx_book_v4_massing")
 _engine_part("xlsx_book_v4_registry")
 _engine_part("xlsx_book_v4_build")
 
@@ -291,6 +292,11 @@ _engine_part("vri_payment")
 # engine/operating_model.py
 # и выполняются здесь же, в пространстве имён движка: порядок
 # объявлений и подмены core.<имя> остаются прежними.
+# Баланс территории: пятно застройки, этажность и подземные уровни —
+# engine/site_massing.py; надбавку за глубину читает операционная модель.
+_engine_part("site_massing")
+
+
 _engine_part("operating_model")
 
 
@@ -351,6 +357,10 @@ _engine_part("access_rights")
 # Оплата доступа через ЮKassa — платёж, возврат, уведомление, чек — и
 # реквизиты продукта лежат в engine/payments.py.
 _engine_part("payments")
+
+# Публичные «Тарифы» и «Контакты» и демо-доступ для проверяющих ЮKassa —
+# engine/review_demo.py.
+_engine_part("review_demo")
 
 
 # Локальные сценарии кнопок Платона и маршруты /agent/* вынесены

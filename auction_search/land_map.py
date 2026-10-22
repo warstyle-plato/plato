@@ -33,6 +33,11 @@ FUNCTIONS = (
     "openLandMap", "closeLandMap", "landMapZoomBy", "landMapMeasureToggle",
     "landMapPoint", "landMapClick", "landMapDown", "landMapMove", "landMapUp",
     "landMapWheel", "renderLandMap",
+    # Вид подложки «Схема / Гибрид»: гибрид Яндекса живёт только здесь, и
+    # чужая страница получает его вместе с картой, а не своей копией.
+    "landMapGeo", "landMapMerc", "landMapViews", "landMapLayerPref",
+    "landMapLayerBar", "landMapYandex", "landMapSetLayer", "landMapHybridOpen",
+    "landMapHybridClose", "landMapNote",
     # Помощники, которыми карта пользуется. Своих на странице торгов нет, а
     # завести вторые значило бы получить два разных округления одного числа.
     "landNum", "escapeHtml",
@@ -105,7 +110,7 @@ def script(core) -> str:
     page = getattr(core, "PAGE", "") if core is not None else ""
     if not page:
         return ""
-    parts = ["let LAND_MAP=null;"]
+    parts = ["let LAND_MAP=null;", "let LAND_MAP_VIEWS=null;"]
     parts += [_constant(page, name) for name in CONSTANTS]
     parts += [_function(page, name) for name in FUNCTIONS]
     return "\n".join(parts)
@@ -114,3 +119,22 @@ def script(core) -> str:
 def markup(core) -> str:
     page = getattr(core, "PAGE", "") if core is not None else ""
     return dialog_markup(page) if page else ""
+
+
+def standalone(core) -> str:
+    """Карта целиком одним скриптом — для страницы, собранной не из `PAGE`.
+
+    Новый интерфейс участка (`frontend_v2`) живёт своими файлами, и вставить в
+    него код плейсхолдером нечем. Он берёт этот скрипт по адресу
+    `/land/live-map.js`: код и окно те же, что у торгов, — переключатель
+    «Схема / Гибрид» один на весь сервис. Нет движка — пустой скрипт, и
+    страница сама говорит, что карты нет.
+    """
+    import json
+
+    code = script(core)
+    if not code:
+        return ""
+    return (code + "\n(function(){if(!document.getElementById('landMapDialog'))"
+            "document.body.insertAdjacentHTML('beforeend'," + json.dumps(markup(core), ensure_ascii=False)
+            + ")})();\n")

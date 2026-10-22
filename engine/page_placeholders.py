@@ -32,6 +32,7 @@ INPUT_DEFAULT_PLACEHOLDER = "__DEVELOPAID_INPUT_DEFAULT__"
 # а в настройках класса нормы на человека»).
 CLASS_ONLY_INPUTS_PLACEHOLDER = "__DEVELOPAID_CLASS_ONLY_INPUTS__"
 SITE_ONLY_INPUTS_PLACEHOLDER = "__DEVELOPAID_SITE_ONLY_INPUTS__"
+SITE_MASSING_INPUTS_PLACEHOLDER = "__DEVELOPAID_SITE_MASSING_INPUTS__"
 TEP_ONLY_INPUTS_PLACEHOLDER = "__DEVELOPAID_TEP_ONLY_INPUTS__"
 # Состав ТЭП страница держала своей копией — и та отстала: продукта
 # «Прочие обязательные объекты» в ней не было вовсе. Движок его считал,

@@ -224,6 +224,9 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         "vri_equity": {k_of(m): float(v) for m, v in (op.get("vri_equity") or {}).items() if v},
         "objects": objects,
         "missing": missing,
+        # Пятно, этажность и подземные уровни: вводные блока — числа того же
+        # расчёта (`site_massing`), уровни и надбавку книга считает формулами.
+        "massing": _massing_book.input_values(op["site_massing"], x),
         # Проектное финансирование объектов по ДДУ — те же вводные, что
         # читает `simulate_financing`.
         "pf": {
@@ -936,6 +939,16 @@ def _build_project_workbook(
     # Метры кладовых книга считает от их штук, а не принимает числом: иначе
     # правка штук внутри книги не двигает ни подземной площади, ни СМР.
     xml, _storage_per_unit, _storage_per_unit_value = _v4_storage_norm_rows_xml(xml, x, tep)
+
+    # Пятно застройки, этажность и подземные уровни: вводные блока — числа
+    # расчёта (`site_massing`), уровни и надбавка за глубину — формулы книги;
+    # ставка подземной части читается дальше с этой надбавкой.
+    # Пометки ручной ставки (`_field_origin`, `_class_manual`) книга из вводных
+    # убирает вместе с прочими служебными ключами — а решают они, ручная ли
+    # ставка подземной части. Берутся из присланных вводных.
+    xml, _site_massing = _v4_site_massing_rows_xml(xml, {
+        **x, **{key: (inputs or {})[key] for key in ("_field_origin", "_class_manual")
+                if key in (inputs or {})}}, tep)
 
     # --- расшифровка соцнагрузки: ОТЧЕТ (E31:H37) и ТЭП (38–44) -----------
     # «Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал

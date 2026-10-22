@@ -115,7 +115,7 @@
       .land-v2-wrap{margin-top:18px}.land-v2-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.land-v2-card{overflow:hidden}.land-v2-card .panel-heading{margin-bottom:10px}
       .land-live-map{position:relative;aspect-ratio:16/9;border:1px solid rgba(255,255,255,.09);border-radius:13px;overflow:hidden;background:#0b1725;touch-action:none;user-select:none}
       .land-live-map img,.land-live-map svg{position:absolute;inset:0;width:100%;height:100%;display:block}.land-live-map img{object-fit:fill}.land-live-map svg{pointer-events:none}
-      .land-map-controls{position:absolute;z-index:4;top:10px;right:10px;display:flex;flex-direction:column;gap:6px}.land-map-controls button{width:34px;height:34px;border:1px solid rgba(255,255,255,.18);border-radius:9px;background:rgba(7,17,31,.9);color:#fff;font-size:19px;cursor:pointer}
+      .land-map-controls{position:absolute;z-index:4;top:10px;right:10px;display:flex;flex-direction:column;gap:6px}.land-map-controls button{width:34px;height:34px;border:1px solid rgba(255,255,255,.18);border-radius:9px;background:rgba(7,17,31,.9);color:#fff;font-size:19px;cursor:pointer}.land-map-controls button[data-map-layer]{width:auto;padding:0 8px;font-size:12px}
       .land-map-caption{position:absolute;z-index:4;left:9px;bottom:8px;padding:4px 7px;border-radius:7px;background:rgba(7,17,31,.82);color:#dbe9f7;font-size:10px}.land-map-status{padding:28px 16px;text-align:center;color:#91a4ba}
       .land-restrictions{margin-top:12px;display:grid;gap:8px}.land-restriction{padding:10px 11px;border:1px solid rgba(255,255,255,.08);border-radius:11px;background:rgba(255,255,255,.025)}
       .land-restriction-head{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.land-restriction-head strong{font-size:12px}.land-flag{font-size:9px;font-weight:800;letter-spacing:.04em;padding:2px 6px;border-radius:999px;text-transform:uppercase}.land-flag.killer{background:rgba(255,102,122,.14);color:#ff8fa0}.land-flag.economic{background:rgba(255,185,87,.14);color:#ffc979}.land-flag.info{background:rgba(56,215,255,.12);color:#8ddfff}
@@ -454,13 +454,36 @@
     }).join(' ');
   }
 
+  // Снимок со спутника живёт в общей живой карте движка (`/land/live-map.js`):
+  // там переключатель «Схема / Гибрид», ключ Яндекса и перевод контура в
+  // широту и долготу. Своей копии здесь нет — проекции разошлись бы молча.
+  let sharedMapLoad = null;
+  function openSharedLiveMap(rings, zones, caption) {
+    if (!sharedMapLoad) {
+      sharedMapLoad = typeof window.openLandMap === 'function' ? Promise.resolve() : new Promise((ok, fail) => {
+        const tag = document.createElement('script');
+        tag.src = '/land/live-map.js';
+        tag.onload = () => (typeof window.openLandMap === 'function' ? ok() : fail(new Error('сервер не отдал код карты')));
+        tag.onerror = () => fail(new Error('код карты не загрузился'));
+        document.head.appendChild(tag);
+      });
+    }
+    sharedMapLoad.then(() => {
+      try { localStorage.setItem('plato.basemap', 'hybrid'); } catch (error) { /* выбор просто не запомнится */ }
+      window.openLandMap({ rings, zones, title: 'Участок и окружение' });
+    }).catch((error) => {
+      sharedMapLoad = null;
+      if (caption) caption.textContent = `Карта со снимком не открылась: ${error.message}.`;
+    });
+  }
+
   function mountLiveMap(host, options) {
     if (!host || !options.rings || !options.rings.length) return;
     let bbox = options.bbox.slice();
     const parcelRings = options.rings;
     const zones = options.zones || [];
     host.className = 'land-live-map';
-    host.innerHTML = '<img alt=""><svg viewBox="0 0 1000 562.5" preserveAspectRatio="none" aria-hidden="true"></svg><div class="land-map-controls"><button type="button" data-map-zoom="in" aria-label="Приблизить">+</button><button type="button" data-map-zoom="out" aria-label="Отдалить">−</button><button type="button" data-map-zoom="reset" aria-label="Вернуть участок">⌂</button></div><div class="land-map-caption"></div>';
+    host.innerHTML = '<img alt=""><svg viewBox="0 0 1000 562.5" preserveAspectRatio="none" aria-hidden="true"></svg><div class="land-map-controls"><button type="button" data-map-zoom="in" aria-label="Приблизить">+</button><button type="button" data-map-zoom="out" aria-label="Отдалить">−</button><button type="button" data-map-zoom="reset" aria-label="Вернуть участок">⌂</button>' + (options.kind === 'osm' ? '<button type="button" data-map-layer="hybrid" aria-label="Открыть карту с переключателем «Схема / Гибрид»" title="Схема или снимок со спутника — Яндекс Карты">Гибрид</button>' : '') + '</div><div class="land-map-caption"></div>';
     const image = host.querySelector('img');
     const svg = host.querySelector('svg');
     const caption = host.querySelector('.land-map-caption');
@@ -500,6 +523,8 @@
     host.querySelector('[data-map-zoom="out"]').addEventListener('click', () => zoom(1.62));
     host.querySelector('[data-map-zoom="reset"]').addEventListener('click', () => { bbox = initial.slice(); paint(); });
     host.addEventListener('wheel', (event) => { event.preventDefault(); zoom(event.deltaY > 0 ? 1.25 : .8); }, { passive: false });
+    const layerButton = host.querySelector('[data-map-layer="hybrid"]');
+    if (layerButton) layerButton.addEventListener('click', () => openSharedLiveMap(parcelRings, zones, caption));
 
     let drag = null;
     host.addEventListener('pointerdown', (event) => {

@@ -48,7 +48,7 @@ details[open]>summary>.group-peek{display:none}
 .site-parking-box>summary>.group-peek,.site-parking-box .site-conflict-mark{display:block;margin:2px 0 0 18px}
 .site-parking-box .site-conflict-mark{color:#b3261e;font-weight:600;font-size:12px}
 .site-card .site-fields{grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px 14px;padding:0 0 4px}
-.site-source{display:block;font-size:11px;color:#777;min-height:14px}.site-value{display:block;padding:9px 0;font-size:15px}
+.site-massing-table,.site-massing-levels{width:100%;border-collapse:collapse;font-size:13px}.site-massing-table td,.site-massing-levels td,.site-massing-levels th{padding:4px 6px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}.site-massing-table td.num,.site-massing-levels td.num{text-align:right;white-space:nowrap}.site-massing-table td.hint{font-size:11px;color:#777}.site-massing-sum td{font-weight:600}.site-massing-levels{margin-top:8px;max-width:520px}.site-massing-hint{font-size:12px;color:#666;margin:6px 0}.site-source{display:block;font-size:11px;color:#777;min-height:14px}.site-value{display:block;padding:9px 0;font-size:15px}
 .site-help{border-top:0;padding:0;margin:0 0 4px}.site-help>summary{font-size:12px;font-weight:400;color:#777;padding:4px 0}.site-help>span{display:block;font-size:11px;color:#777;padding:0 0 6px 18px}
 .site-card .note.warning{margin-top:10px}
 #tepSettingsCard .site-parking-box{margin-top:0}
