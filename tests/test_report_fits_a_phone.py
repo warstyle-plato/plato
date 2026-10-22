@@ -67,3 +67,37 @@ def test_the_report_fits_a_phone_screen():
     assert visible > 5, "отчёт должен быть виден, иначе проверка пустая"
     assert outside == 0, "таблица вылезает за карточку отчёта"
     assert narrow >= 120, f"первая колонка сжата до {narrow}px"
+
+
+def test_the_first_column_is_not_crushed_on_a_tablet():
+    """На ширине планшета (760px) первая колонка таблицы с шестью столбцами
+    сжималась до буквы в строку («Э-с-к-р-о-у»): у первой колонки есть
+    минимальная ширина, слова в ней читаются."""
+    from browser import chromium_or_skip
+
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
+    from test_management_report_funding import _project, _sales, PROJECT
+
+    _project()
+    _sales()
+    body = report.render_html(report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК"))
+    assert "Эскроу, очередь" in body
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        try:
+            tab = browser.new_page(viewport={"width": 760, "height": 1200})
+            tab.route("**/*", lambda route: route.fulfill(status=200, body="{}",
+                                                           content_type="application/json"))
+            tab.set_content(REPORT_PAGE)
+            tab.evaluate("html => { document.getElementById('reportBox').innerHTML = html; "
+                         "document.getElementById('privateArea').classList.remove('hidden') }", body)
+            width, lines = tab.evaluate("""() => {
+                const th = [...document.querySelectorAll('#reportBox th')]
+                    .find(c => c.textContent.trim() === 'Эскроу, очередь');
+                const r = th.getBoundingClientRect();
+                return [r.width, Math.round(r.height / (parseFloat(getComputedStyle(th).fontSize) * 1.4))] }""")
+        finally:
+            browser.close()
+    assert width >= 100, f"первая колонка сжата до {width}px"
+    assert lines <= 2, f"заголовок первой колонки разбит на {lines} строк"

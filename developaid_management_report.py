@@ -1646,7 +1646,7 @@ h3{break-after:avoid;page-break-after:avoid;font-size:12px;margin:14px 0 4px;col
 table{border-collapse:collapse;width:100%;margin:4px 0 6px;break-inside:avoid;page-break-inside:avoid}
 tr{break-inside:avoid;page-break-inside:avoid}
 th,td{border-bottom:1px solid #e1e6ec;padding:4px 6px;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-th:first-child,td:first-child{text-align:left;white-space:normal}
+th:first-child,td:first-child{text-align:left;white-space:normal;min-width:110px}
 .keep{break-inside:avoid;page-break-inside:avoid}th{background:#eef2f7;font-weight:600;color:#334155;border-bottom:1px solid #c5cfdb}
 .neg{color:#b42318;font-weight:600}
 .photos{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:6px 0}
