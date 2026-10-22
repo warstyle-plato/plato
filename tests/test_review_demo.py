@@ -11,6 +11,7 @@
   админка закрыта;
 - оплата в демо не берёт денег: тестовый магазин ЮKassa или пояснение, а
   тестовый платёж не открывает доступ настоящему человеку;
+- монитор и сводка команды демо-сессии закрыты всегда;
 - в браузере ссылка ведёт в кабинет на «Тарифы и доступ».
 
 Запуск: python3 -m pytest tests/test_review_demo.py -q
@@ -159,6 +160,20 @@ def test_a_test_payment_never_opens_a_real_client():
     result = core.payment_apply(paid)
     assert result["granted"] is False and "демо" in result["reason"]
     assert not core.access_status(4242)["subscription_active"]
+
+
+@pytest.mark.parametrize("path", ["/monitor/report", "/monitor/legal", "/monitor/notes",
+                                  "/monitor/budget", "/monitor/report/projects", "/monitor/merge"])
+def test_a_demo_session_never_sees_the_team_data(path, monkeypatch):
+    session = claim(invite())
+    chat = core._web_identity_chat_id(session)
+    # Даже ошибочно вписанный в команду демо-номер команды не открывает.
+    monkeypatch.setenv("DEVELOPAID_TEAM_IDS", str(chat))
+    answer = TestClient(core.app, raise_server_exceptions=False).post(path, json={
+        "project": "проверка", "session": session, "sources": [], "target": "проверка",
+        "source": "проверка", "taken_at": "2026-10-22", "content_base64": ""})
+    assert answer.status_code == 403, answer.text
+    assert "для команды владельца" in answer.json()["detail"]
 
 
 # --- на отрисованной странице -----------------------------------------------------

@@ -1133,6 +1133,8 @@ function resetAll(){
  phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';
  // Противоречия прошлого проекта не должны глушить раскрытие блока в новом.
  siteParkingConflictSeen='';
+ // Подсказка «галочка ВРИ без платы» относится к прошлому проекту.
+ vriFeeAskedWithoutSum=false;vriFeeClearedMln=0;
  // Открытое окно подтверждения «Сформировать ТЭП по новым параметрам» — действие
  // над прошлым проектом: по «Сформировать» оно легло бы в новый.
  closeTepConfirm();

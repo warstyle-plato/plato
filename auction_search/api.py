@@ -65,6 +65,7 @@ from auction_search.adapters.roseltorg_probe import (
 )
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.catalogue_quality import catalogue_quality
+from auction_search.developaid_mapper import krt_territory_coverage
 from auction_search.parsing import (
     cadastral_numbers, deadline_iso, deadline_moment, parse_hectares_sqm,
 )
@@ -5025,6 +5026,12 @@ def install(app: FastAPI) -> None:
                 "missing": int(counts.get("missing") or 0),
                 "source": str(outline.get("numbers_source") or "none"),
                 "problem": str(outline.get("problem") or ""),
+                # Какую часть территории эти участки покрывают: перечень не
+                # обязан совпадать с границами КРТ, и поле участка с двумя
+                # номерами не должно читаться как «вся площадка».
+                **krt_territory_coverage(
+                    outline.get("parcels") or [],
+                    (model.get("inputs") or {}).get("site_area_ha")),
             },
         }
 
