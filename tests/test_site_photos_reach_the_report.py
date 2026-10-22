@@ -67,7 +67,7 @@ def test_only_the_chosen_photos_of_the_period_reach_the_report():
     built = report.build(PROJECT, "week", "2026-10-18")
     assert [item["id"] for item in built["photos"]["items"]] == ["AQAD1"]
     page = report.render_html(built)
-    part = page[page.index("Фото со стройки за неделю"):page.index("<h2>Продажи</h2>")]
+    part = page[page.index("Фото со стройки за неделю"):page.index(">Продажи</h2>")]
     assert part.count("<img ") == 1 and "data:image/jpeg;base64," in part
     assert "Монолит 5 эт." in part and "14.10.2026 · Иван Прораб" in part
     assert "Фото со стройки: 1 — в PDF." in report.render_text(built)

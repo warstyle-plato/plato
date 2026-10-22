@@ -173,7 +173,7 @@ def test_the_finding_names_the_overrun_and_the_largest_remainder():
 def test_the_document_shows_every_article_and_colours_the_overrun():
     built = _setup()
     page = report.render_html(built)
-    part = page[page.index("<h2>Бюджет месяца</h2>"):]
+    part = page[page.index(">Бюджет месяца</h2>"):]
     table = part[part.index("<table class='articles'>"):part.index("</table>")]
     for label in ("Проектные и изыскательские работы, авторский надзор",
                   "Основные объекты строительства", "Реклама и PR",
@@ -214,7 +214,7 @@ def test_the_tiles_lead_the_first_page():
     # Нет отчёта о продажах — плитка так и говорит, а не показывает ноль.
     assert by_label["Продажи квартала к плану финмодели"]["value"] == "нет данных"
     page = report.render_html(built)
-    assert page.index("class='tiles'") < page.index("Главное за период")
+    assert page.index("class='tiles'") < page.index(">Главное за период</h2>")
     empty = report.tiles(report.build("Пусто", "week", "2026-10-18"))
     assert {item["value"] for item in empty} == {"нет данных"}
 
@@ -234,7 +234,7 @@ def test_the_whole_month_budget_matches_the_file():
     # Оплат АХР в РСС нет — это не ноль.
     assert chapters["admin"]["fact"] is None
     page = report.render_html(built)
-    part = page[page.index("<h2>Бюджет месяца</h2>"):]
+    part = page[page.index(">Бюджет месяца</h2>"):]
     table_html = part[part.index("<table class='articles'>"):part.index("</table>")]
     assert table_html.index("Итого стройка и коммерческие расходы") \
         < table_html.index("Приобретение проекта (земля)") \

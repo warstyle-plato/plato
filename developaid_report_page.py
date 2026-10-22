@@ -49,6 +49,7 @@ REPORT_PAGE = """<!doctype html>
 """ + _scoped(REPORT_STYLE, "#reportBox") + """
 #reportBox{background:#fff;padding:14px 18px;border:1px solid var(--line);border-radius:10px;margin-top:10px;max-width:980px}
 #reportBox .finding.bad{color:inherit}#reportBox .pagebreak{height:0}
+#reportBox h2.block{break-before:auto;page-break-before:auto}#reportBox h2.block{scroll-margin-top:12px}
 @media (max-width:700px){#reportBox .tiles{grid-template-columns:repeat(2,1fr)}
 #reportBox{padding:12px 10px}
 #reportBox table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
