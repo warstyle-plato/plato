@@ -51,6 +51,35 @@ REPAY_BULLET = "bullet"
 REPAYMENTS = (REPAY_ANNUITY, REPAY_SWEEP, REPAY_BULLET)
 SALE_CURVES = ("flat", "bell", "front_loaded", "back_loaded")
 
+# Шкала класса офиса (владелец, 22.10.2026: «они зависят от класса офиса»).
+# Класс проекта — это и класс его офисника (`OFFICE_CLASS_BY_PROJECT_CLASS`):
+# комфорт — B и ниже, бизнес — B+ и A−, элитный — A и выше. Числа — стартовые
+# допущения по Москве с НДС, утверждённые владельцем; правятся во вводных, и
+# правка руками сильнее класса. Умолчания офиса ниже и есть комфорт.
+OFFICE_CLASS_SCALE: dict[str, dict[str, float]] = {
+    "comfort": {"rent_th_per_sqm_month": 2.0, "occupancy_stable_pct": 90.0,
+                "leaseup_months": 18, "opex_pct": 20.0, "exit_cap_pct": 11.5},
+    "business": {"rent_th_per_sqm_month": 2.5, "occupancy_stable_pct": 92.0,
+                 "leaseup_months": 15, "opex_pct": 18.0, "exit_cap_pct": 10.5},
+    "elite": {"rent_th_per_sqm_month": 3.5, "occupancy_stable_pct": 94.0,
+              "leaseup_months": 12, "opex_pct": 16.0, "exit_cap_pct": 9.5},
+}
+
+
+def office_price_from_rent(scale: dict[str, float]) -> float:
+    """Стартовая цена продажи метра офиса — стоимость метра по аренде класса.
+
+    Владелец, 22.10.2026: цена продажи офиса по умолчанию идёт из аренды, а
+    не из цены жилья, — иначе два пути (продать или сдавать) сравнивались бы
+    на несогласованных числах. Стоимость = годовая аренда × заполняемость ×
+    (1 − доля расходов эксплуатации) / ставка капитализации, тыс ₽/м² с НДС.
+    """
+    rent_year = float(scale["rent_th_per_sqm_month"]) * 12.0
+    noi_share = (float(scale["occupancy_stable_pct"]) / 100.0
+                 * (1.0 - float(scale["opex_pct"]) / 100.0))
+    return round(rent_year * noi_share / (float(scale["exit_cap_pct"]) / 100.0), 1)
+
+
 # Поля стратегии у объекта: суффикс → (умолчание офиса, умолчание ТЦ).
 # Аренда, загрузка, OPEX и ставка капитализации — умолчания PR #531
 # (`ASSET_DEFAULTS` / `COMMON_DEFAULTS`), переведённые в тыс. ₽; это стартовые
@@ -64,16 +93,17 @@ STRATEGY_FIELD_DEFAULTS: dict[str, tuple[Any, Any]] = {
     "direct_sale_offset_months": (0, 0),
     "direct_sale_months": (12, 12),
     "direct_sale_curve": ("flat", "flat"),
-    "rent_th_per_sqm_month": (4.5, 3.8),
+    # Офис — комфорт шкалы класса (`OFFICE_CLASS_SCALE`), ТЦ — умолчания PR #531.
+    "rent_th_per_sqm_month": (OFFICE_CLASS_SCALE["comfort"]["rent_th_per_sqm_month"], 3.8),
     "rent_index_pct": (5.0, 5.0),
     "occupancy_start_pct": (55.0, 60.0),
-    "occupancy_stable_pct": (92.0, 94.0),
-    "leaseup_months": (12, 12),
-    "opex_pct": (18.0, 24.0),
+    "occupancy_stable_pct": (OFFICE_CLASS_SCALE["comfort"]["occupancy_stable_pct"], 94.0),
+    "leaseup_months": (OFFICE_CLASS_SCALE["comfort"]["leaseup_months"], 12),
+    "opex_pct": (OFFICE_CLASS_SCALE["comfort"]["opex_pct"], 24.0),
     "parking_rent_th_month": (8.0, 0.0),
     "hold_years": (5, 5),
     "exit_mode": (EXIT_SALE, EXIT_SALE),
-    "exit_cap_pct": (11.0, 11.0),
+    "exit_cap_pct": (OFFICE_CLASS_SCALE["comfort"]["exit_cap_pct"], 11.0),
     "exit_cost_pct": (1.0, 1.0),
     # Удержание: кредит после ввода — долгосрочный, проценты и тело ежемесячно
     # аннуитетом, в конце срока — «баллон» (владелец, 04.10.2026: «кредит
@@ -251,6 +281,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # финансируются кредитом, но не входят ни в НДС, ни в себестоимость
     # объекта — их учитывает проект.
     common: dict[date, float] = {mm: float(v) for mm, v in (plan.get("common_capex") or {}).items() if v}
+    common_total = sum(common.values())
 
     first = min([commissioning, *capex, *(plan.get("common_capex") or {})])
     m = defaultdict(lambda: defaultdict(float))  # ряд → месяц → значение
@@ -574,7 +605,13 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "stabilized_noi": stabilized_noi,
             "forward_noi": forward_noi,
             "exit_value": exit_value,
-            "yield_on_cost": stabilized_noi / capex_total if capex_total else 0.0,
+            # Доходность на затраты — NOI года после заполнения на ВСЕ затраты
+            # создания: стройку здания и его долю общих затрат с участком.
+            # Делитель «только стройка» давал 12,1% вместо 6,6% (Пролетарский
+            # пр., 22.10.2026) и прятал, что здание стоит дешевле стройки.
+            "cost_total": capex_total + common_total,
+            "yield_on_cost": (stabilized_noi / (capex_total + common_total)
+                              if capex_total + common_total else 0.0),
             "exit_month": exit_month,
             "equity_cash_flow_sum": sum(equity_cf),
             "icr_min": min(icr_by_year) if icr_by_year else None,

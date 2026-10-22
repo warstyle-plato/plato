@@ -504,7 +504,11 @@ _SENSITIVITY_PARAMETERS: list[dict[str, Any]] = [
     {"key": "monthly_growth_pre_pct", "kind": "pct", "group": "Доходы"},
     {"key": "inflation_after_rve_pct", "kind": "pct", "group": "Доходы"},
     # Затраты
-    {"key": "purchase_price_mln", "kind": "pct", "group": "Затраты"},
+    # Цена входа — участок И выкуп участков и зданий у третьих лиц: движок
+    # платит обе суммы (`capex.purchase`). Прежде сдвигалась одна цена
+    # участка: у офиса на Пролетарском пр. это 5 млн из 680, и «±10%» давало
+    # ±0,5 млн при подписи о ±68 млн — размах выходил нулевым.
+    {"key": "purchase_price_mln", "kind": "pct", "group": "Затраты", "where": "deal"},
     {"key": "main_above_th_per_sqm", "kind": "pct", "group": "Затраты"},
     {"key": "main_under_th_per_sqm", "kind": "pct", "group": "Затраты"},
     {"key": "utilities_th_per_sqm", "kind": "pct", "group": "Затраты"},
@@ -606,6 +610,8 @@ def _sensitivity_applicable(
         row = tep.get(product) or {}
         if not (float(row.get("saleable") or 0) or float(row.get("units") or 0)):
             return "продукта нет в ТЭП"
+    if spec.get("where") == "deal" and not _deal_total(inputs):
+        return "значение равно нулю"
     if spec.get("where") in (None, "inputs") and spec["kind"] == "pct":
         if not float(n(inputs, spec["key"], 0.0)):
             # Ноль, умноженный на процент, остаётся нулём: расчёт не изменится.
@@ -621,7 +627,17 @@ def _sensitivity_base_value(
         return float(phasing.get(spec["key"]) or 0)
     if where == "date":
         return 0.0
+    if where == "deal":
+        return _deal_total(inputs)
     return n(inputs, spec["key"], 0.0)
+
+
+_DEAL_FIELDS = ("purchase_price_mln", "land_buyout_mln")
+
+
+def _deal_total(inputs: dict[str, Any]) -> float:
+    """Цена входа: участок плюс выкуп участков и зданий, млн ₽."""
+    return sum(max(0.0, n(inputs, key, 0.0)) for key in _DEAL_FIELDS)
 
 
 def _sensitivity_shift(spec: dict[str, Any], base: float, direction: int,
@@ -655,6 +671,13 @@ def _sensitivity_apply(
         start = _vri_date(inputs.get("project_start"), date.today())
         inputs["project_start"] = add_months(start, int(round(value))).isoformat()
         return
+    if where == "deal":
+        # Обе суммы — в одной пропорции: доля выкупа в цене входа не меняется.
+        total = _deal_total(inputs)
+        if total > 0:
+            for key in _DEAL_FIELDS:
+                inputs[key] = max(0.0, n(inputs, key, 0.0)) * value / total
+        return
     inputs[spec["key"]] = value
 
 
@@ -685,6 +708,15 @@ def _sensitivity_verdict(
     digits = int(info["digits"])
     better_higher = info["better"] == "higher"
     lines: list[str] = []
+    # Параметр, который показатель не сдвинул, «наибольшим влиянием» не
+    # назначается: прежде вывод писал «меняет с 1,062 до 1,062 в худшую
+    # сторону» про строку с нулевым размахом (офис на Пролетарском пр., LLCR
+    # не зависел от цены входа).
+    items = [row for row in items if row["impact"] >= 0.5 * 10 ** -digits]
+    if not items:
+        return [f"Ни один параметр не изменил «{info['label']}»: показатель остаётся "
+                f"{_sensitivity_number(base_value, digits)} при любом из отклонений. "
+                "Он не зависит от этих вводных — выберите другой показатель."]
 
     def worst_of(row: dict[str, Any]) -> tuple[float | None, float]:
         """Худшее из двух плеч и то, на сколько для этого сдвинут параметр."""
@@ -739,7 +771,61 @@ def _sensitivity_verdict(
     return lines
 
 
-def run_sensitivity(
+def run_sensitivity(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Tornado — без сравнения путей офиса в каждом сценарии (`OFFICE_PATHS_ON`)."""
+    token = OFFICE_PATHS_ON.set(False)
+    try:
+        return _run_sensitivity(*args, **kwargs)
+    finally:
+        OFFICE_PATHS_ON.reset(token)
+
+
+def report_sensitivity(inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
+                       rates: list[dict[str, Any]], phasing: dict[str, Any],
+                       result: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Чувствительность для отчёта и бота — тем показателем и теми факторами,
+    что подходят проекту, а не LLCR по всем параметрам подряд.
+
+    * Офисный проект: торнадо по NPV проекта для КАЖДОГО пути
+      (`OFFICE_PATHS`) — аренда, заполняемость, ставка капитализации или цена
+      продажи, стройка и цена входа. Основное поле `items` — путь проекта,
+      пути целиком — в `office_paths`.
+    * Другой проект без жилья: факторы и показатель раздела «Чувствительность»
+      отчёта объекта (`_object_sensitivity`).
+    * Остальное — прежний разбор по LLCR.
+
+    Прежде отчёт по офису на ДДУ считал размах LLCR от цены входа и получал
+    ноль: показатель от неё не зависел, а вывод называл её главной.
+    """
+    prefixes = office_path_prefixes(inputs)
+    if prefixes:
+        out: dict[str, Any] = {}
+        current = nonres_strategy.object_strategy(inputs, prefixes[0])
+        for key, label in OFFICE_PATHS:
+            x = copy.deepcopy(inputs)
+            for prefix in prefixes:
+                x[f"{prefix}_strategy"] = key
+            params = [spec["key"] for spec in _SENSITIVITY_PARAMETERS
+                      if spec.get("object") in prefixes and key in spec["strategies"]
+                      and not spec["key"].endswith("_loan_spread_pp")]
+            params.append("purchase_price_mln")
+            try:
+                out[key] = {"label": label, **run_sensitivity(
+                    x, tep, rates, phasing, metric="npv_mln", parameters=params)}
+            except HTTPException as exc:
+                out[key] = {"label": label, "error": str(exc.detail)}
+        main = out.get(current) or next(iter(out.values()))
+        return {**main, "office_paths": out}
+    sections = {str(sec.get("key")): sec for sec in
+                (((result or {}).get("report") or {}).get("object_report") or {}).get("sections") or []}
+    spec = (sections.get("sensitivity") or {}).get("sensitivity") or {}
+    if spec.get("metric") and spec.get("parameters"):
+        return run_sensitivity(inputs, tep, rates, phasing, metric=spec["metric"],
+                               parameters=list(spec["parameters"]))
+    return run_sensitivity(inputs, tep, rates, phasing)
+
+
+def _run_sensitivity(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
     rates: list[dict[str, Any]],

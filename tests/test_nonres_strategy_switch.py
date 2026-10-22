@@ -29,7 +29,10 @@ sys.path.insert(0, str(ROOT))
 import developaid_nonres_strategy as ns  # noqa: E402
 import main_legacy as core  # noqa: E402
 
+# Цена задана числом: умолчание офиса — из аренды класса и мало для проверок
+# НДС и налога на ДДУ-ветке.
 OFFICE = dict(offices_enabled=True, offices_gba_sqm=40000.0, offices_saleable_sqm=24000.0,
+              offices_price_th_per_sqm=450.0,
               offices_parking_under_spaces=200, offices_parking_over_spaces=40,
               offices_parking_guest_pct=10)
 

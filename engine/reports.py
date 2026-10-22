@@ -38,7 +38,11 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
         kpis = [item.get("kpi") or {} for item in objects]
         dscr = [k["dscr_min"] for k in kpis if k.get("dscr_min") is not None]
         noi = sum(float(k.get("stabilized_noi") or 0.0) for k in kpis)
-        capex = sum(float(t.get("capex") or 0.0) for t in totals)
+        # Делитель доходности — все затраты создания тех объектов, что дают
+        # NOI (`kpi.cost_total`: стройка и доля общих затрат с участком), как
+        # у `yield_on_cost` объекта: одно правило, а не второе здесь.
+        noi_cost = sum(float(k.get("cost_total") or 0.0) for k in kpis
+                       if float(k.get("stabilized_noi") or 0.0))
         exit_value = sum(float(k.get("exit_value") or 0.0) for k in kpis)
         tiles = [
             {"label": "Кредит объектов — пик", "value": sum(float(t.get("loan_peak") or 0.0) for t in totals), "unit": "rub"},
@@ -47,7 +51,8 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
         if noi:
             tiles += [
                 {"label": "Стабилизированный NOI, год", "value": noi, "unit": "rub"},
-                {"label": "Доходность на затраты", "value": noi / capex if capex else 0.0, "unit": "pct"},
+                {"label": "Доходность на затраты (NOI / все затраты с участком)",
+                 "value": noi / noi_cost if noi_cost else 0.0, "unit": "pct"},
             ]
         if dscr:
             tiles.append({"label": "DSCR — минимум по годам", "value": min(dscr), "unit": "mult"})
@@ -649,6 +654,8 @@ def project_kind_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
         " — жилья, соцнагрузки, платы за смену ВРИ и объектов (ТЦ, офисы, паркинг, ФОК) "
         "в расчёте нет" if kind == PROJECT_KIND_HOTEL else
         " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет"), "text")]
+    for move in summary.get("project_kind_moves") or []:
+        rows.append(_row("Паркинг", str(move), "text"))
     left = [str(item) for item in (summary.get("project_kind_leftovers") or [])]
     if left:
         rows.append(_row("Осталось от жилья во вводных",

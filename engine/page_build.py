@@ -153,6 +153,8 @@ PAGE = PAGE.replace("__DEVELOPAID_TEP_DERIVED_OBJECT_INPUTS__", _js_keys(
 # Формула одна — `object_smr_conversion`; страница только применяет (c, m).
 PAGE = PAGE.replace("__DEVELOPAID_OBJECT_SMR__", json.dumps({
     "defaults": OBJECT_SMR_RATE_DEFAULTS,
+    # Цена офиса в нежилом проекте — из аренды класса (`NONRES_KIND_CLASS_PRICES`).
+    "kind_prices": NONRES_KIND_CLASS_PRICES,
     "conversion": {key: list(object_smr_conversion(preset))
                    for key, preset in PROJECT_CLASS_PRESETS.items()},
     "custom": list(object_smr_conversion({})),

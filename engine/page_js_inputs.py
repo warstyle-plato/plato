@@ -1162,7 +1162,12 @@ function objectRateForKind(c,k,turnkey,kind){
 }
 function classValueForKind(c,k,kind){
  const own=CLASS_OVERRIDES&&CLASS_OVERRIDES[c]?Number(CLASS_OVERRIDES[c][k]):NaN;
- return objectRateForKind(c,k,isFinite(own)&&own>0?own:classBase(c,k),kind);
+ if(isFinite(own)&&own>0)return objectRateForKind(c,k,own,kind);
+ // Цена офиса в нежилом проекте — из аренды класса, не от цены жилья
+ // (`NONRES_KIND_CLASS_PRICES`, владелец 22.10.2026).
+ const kindPrice=kind==='nonresidential'?((OBJECT_SMR.kind_prices||{})[c]||{})[k]:undefined;
+ if(kindPrice!==undefined)return Number(kindPrice);
+ return objectRateForKind(c,k,classBase(c,k),kind);
 }
 function classValue(c,k){return classValueForKind(c,k,projectKind())}
 // Умолчание ставки объекта для вида проекта: число класса, если поле ставит
@@ -1175,10 +1180,12 @@ function objectRateDefault(k,kind){
 // Вид проекта сменился — ставка объекта, стоящая на умолчании прежнего вида,
 // идёт за умолчанием нового. Вписанное руками (или другое число) — своё.
 function followObjectRateKind(previousKind,kind){
- Object.keys(OBJECT_SMR.defaults).forEach(k=>{
+ const priced=Object.keys((OBJECT_SMR.kind_prices||{})[inputs.project_class]||{});
+ [...Object.keys(OBJECT_SMR.defaults),...priced].forEach(k=>{
   if(isClassManual(k)||!isFinite(Number(inputs[k])))return;
-  if(Math.abs(Number(inputs[k])-objectRateDefault(k,previousKind))<1e-9)
-   inputs[k]=objectRateDefault(k,kind);
+  const was=objectRateDefault(k,previousKind),now=objectRateDefault(k,kind);
+  if(!isFinite(was)||!isFinite(now))return;
+  if(Math.abs(Number(inputs[k])-was)<1e-9)inputs[k]=now;
  });
 }
 // Под какой вид проекта положены умолчания ставок объектов — пометка
