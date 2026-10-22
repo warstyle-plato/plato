@@ -402,6 +402,8 @@ def save(project: str, card: dict[str, Any], doc_ids: list[str], author: str,
                 if _safe_id(case_id) not in current:
                     raise KeyError("Спор не найден.")
                 before = current[case_id]
+                if before.get("deleted"):
+                    raise KeyError("Спор удалён.")
                 ids = list(dict.fromkeys(before.get("doc_ids", []) + ids))
                 entry = {"id": case_id, "version": before["version"] + 1,
                          "created_at": before["created_at"], "created_by": before["created_by"]}
@@ -547,12 +549,32 @@ def seeded_ids(project: str) -> set[str]:
         return set()
 
 
+def remove(project: str, case_id: str, author: str, at: str = "") -> dict[str, Any]:
+    """Удалить карточку спора: последняя версия с пометкой `deleted`, журнал цел."""
+    case_id = _safe_id(case_id)
+    with _log(project).open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            current = {row["id"]: row for row in _versions(project)}
+            before = current.get(case_id)
+            if before is None or before.get("deleted"):
+                raise KeyError("Спор не найден.")
+            entry = dict(before, version=before["version"] + 1, at=at or _now(), by=author,
+                         deleted=True)
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            handle.flush()
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    return entry
+
+
 def cases(project: str) -> list[dict[str, Any]]:
     ensure_seed(project)
     seeded = seeded_ids(project)
     current: dict[str, dict[str, Any]] = {}
     for row in _versions(project):
         current[row["id"]] = dict(row, unchecked=row["id"] in seeded and row["version"] == 1)
+    current = {key: row for key, row in current.items() if not row.get("deleted")}
     return sorted(current.values(),
                   key=lambda row: (row["card"]["status"] == "closed", row["card"]["counterparty"]))
 
@@ -585,6 +607,7 @@ def for_report(project: str, start: datetime.date, end: datetime.date) -> dict[s
         if row["at"][:10] <= last:
             current[row["id"]] = row
     open_, closed = [], []
+    current = {key: row for key, row in current.items() if not row.get("deleted")}
     for row in current.values():
         card = row["card"]
         fresh = [event for event in card["events"]
