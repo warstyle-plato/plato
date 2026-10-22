@@ -263,6 +263,16 @@ PAGE += r"""</head>
           <span class="tep-action-hint">Нужна редко: при правке полей в «Экономике» эти строки обновляются сами. Нажмите, если число в таблице не совпадает с полем — например, в давно сохранённом проекте. Квартиры и коммерцию 1 этажа не меняет.</span>
         </div>
       </div>
+      <!-- Пятно застройки, этажность и подземные уровни — ответ движка
+           (`tep.site_massing`) и его допущения рядом. -->
+      <div class="card" id="siteMassingCard">
+        <div class="section-title">Пятно застройки, этажность и подземная часть</div>
+        <div id="siteMassingBody" class="site-massing"></div>
+        <details class="site-parking-box" id="siteMassingBox">
+          <summary>Допущения расчёта</summary>
+          <div class="fields" id="siteMassingFields" style="grid-template-columns:repeat(auto-fit,minmax(170px,1fr))"></div>
+        </details>
+      </div>
       <div class="card" id="tepSettingsCard">
         <!-- Коэффициенты парковки называет город по ЭТОМУ участку, поэтому они
              здесь, а не во «Вводных». Поля рисует renderSiteParkingFields по
@@ -623,6 +633,7 @@ PAGE += r"""</head>
         <div class="section-title">ТЭП</div>
         <div class="scroll" style="max-height:none"><table id="reportTep"></table></div>
         <div id="reportTepNote" style="font-size:11px;color:#777;margin-top:6px"></div>
+        <div id="reportMassingNote" style="font-size:12px;margin-top:6px"></div>
       </div>
       <div class="card" id="vriCard" style="display:none">
         <div class="report-title">

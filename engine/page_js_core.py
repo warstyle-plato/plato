@@ -208,7 +208,11 @@ const TEP_ONLY_INPUTS=__DEVELOPAID_TEP_ONLY_INPUTS__;
 // Поля только жилого дома (`RESIDENTIAL_ONLY_INPUTS`) — не на экране
 // чисто нежилого проекта.
 const RESIDENTIAL_ONLY_INPUTS=__DEVELOPAID_RESIDENTIAL_ONLY_INPUTS__;
+// Допущения баланса территории — в карточке «Пятно застройки и подземная
+// часть» вкладки «ТЭП», рядом с ответом (`SITE_MASSING_INPUTS`).
+const SITE_MASSING_INPUTS=__DEVELOPAID_SITE_MASSING_INPUTS__;
 const notOnInputs=id=>CLASS_ONLY_INPUTS.includes(id)||SITE_ONLY_INPUTS.includes(id)
+ ||SITE_MASSING_INPUTS.includes(id)
  ||Object.prototype.hasOwnProperty.call(TEP_ONLY_INPUTS,id)
  ||(RESIDENTIAL_ONLY_INPUTS.includes(id)&&isNonResidential());
 // Блоки объекта, которые выбранная стратегия реализации не читает (ДДУ /

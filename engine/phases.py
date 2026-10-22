@@ -1730,6 +1730,9 @@ def _consolidate_phase_results(
             # Вид проекта у очередей один — имя базы берётся у первой.
             "project_articles_area": next((r["tep"].get("project_articles_area")
                                            for r in results), CORE_TOTAL_AREA.key),
+            # Пятно и уровни — проекта: очереди несут один и тот же расчёт.
+            "site_massing": next((r["tep"].get("site_massing") for r in results
+                                  if r["tep"].get("site_massing")), None),
         },
         "revenue": revenue,
         "revenue_structure": revenue_structure({**revenue, "total": total_revenue}, saleable),
@@ -2580,6 +2583,9 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             p_inputs["pf_limit_approved_mln"] = 0.0
         p_inputs["pf_limit_individual_mln"] = _individual_cap
 
+        # Участок у очередей один: пятно, уровни и надбавку за глубину очередь
+        # берёт у проекта, а не считает по своей доле подземной площади.
+        p_inputs["_site_massing_project"] = base_op["site_massing"]
         result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
 
         project_cash_transfers.extend(_consume_project_cash_sources(
