@@ -109,7 +109,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.27.3"
+VERSION = "0.27.4"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -248,6 +248,7 @@ _engine_part("xlsx_book_v4_finance")
 _engine_part("xlsx_book_v4_presentation")
 _engine_part("xlsx_book_v4_sheets")
 _engine_part("xlsx_book_v4_social")
+_engine_part("xlsx_book_v4_massing")
 _engine_part("xlsx_book_v4_registry")
 _engine_part("xlsx_book_v4_build")
 
@@ -291,6 +292,11 @@ _engine_part("vri_payment")
 # engine/operating_model.py
 # и выполняются здесь же, в пространстве имён движка: порядок
 # объявлений и подмены core.<имя> остаются прежними.
+# Баланс территории: пятно застройки, этажность и подземные уровни —
+# engine/site_massing.py; надбавку за глубину читает операционная модель.
+_engine_part("site_massing")
+
+
 _engine_part("operating_model")
 
 

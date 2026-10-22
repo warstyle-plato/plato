@@ -816,6 +816,13 @@ PAGE += r"""function renderResult(){
   `</tbody><tfoot><tr><th>Итого</th><th>${num(aboveGns)}</th><th>${num(underTotal)}</th>`
   +`<th>${num(r.tep.total.saleable)}</th><th>${num(transferTotal)}</th>`
    +`<th>${builtCounts}</th><th>${soldCounts}</th></tr></tfoot>`;
+ // Пятно, этажность и подземные уровни — фраза движка, как в PDF.
+ const massingNote=document.getElementById('reportMassingNote');
+ if(massingNote){
+  const m=(r.tep||{}).site_massing||{};
+  massingNote.innerHTML=(m.summary?escapeHtml(m.summary):'')+
+   (m.warnings||[]).map(w=>'<div class="note warning">'+escapeHtml(w)+'</div>').join('');
+ }
  const tepNote=document.getElementById('reportTepNote');
  if(tepNote)tepNote.innerHTML=underTotal>0
   ? `${TERMS.total_area.name} — ${num(Number(r.summary.construction_volume_sqm!==undefined?r.summary.construction_volume_sqm:r.tep.total.gns))} м², наземная плюс подземная. Общие статьи (ИРД, проектирование, подготовка, сети, сдача, содержание) считаются от ${TERMS.core_total_area.genitive}${r.tep.core_above_gns!==undefined?' — '+num(Number(r.tep.core_above_gns)+Number(r.tep.core_under_gns||0))+' м²':''}: квартиры, коммерция 1 этажа, подземный паркинг и кладовые${storageInside?' (кладовые — на наземных этажах, внутри ГНС квартир)':''}. Удельные «на метр» считаются на наземной ГНС: подземная в неё не входит — у неё своя себестоимость метра и свой продукт, продаваемый местами. ГНС — внутренний термин DevelopAid; город нагрузки считает от суммарной поэтажной площади.`

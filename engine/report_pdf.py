@@ -1697,6 +1697,14 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         story.append(P(f"Обеспеченность парковкой: {_provision} — все машино-места проекта "
                        "на всю нормативную потребность: жители, коммерция, отдельные "
                        "объекты и соцобъекты.", small))
+    # Пятно, этажность и подземные уровни — фраза движка (`site_massing_line`)
+    # и его же предупреждения: тот расчёт, по которому взята ставка под землёй.
+    _massing = tep_report.get("site_massing") or {}
+    if _massing.get("summary"):
+        story.append(P(str(_massing["summary"]), small))
+    for _warn in _massing.get("warnings") or []:
+        story.append(P(str(_warn), ParagraphStyle("massing_warn", parent=small, fontSize=8.0,
+                                                 textColor=colors.HexColor("#a02418"))))
 
     # Очередность меняет проект целиком — сроки, инфляцию затрат, стартовые цены
     # и нагрузку по финансированию, — а отчёт о ней молчал: сводные цифры были,

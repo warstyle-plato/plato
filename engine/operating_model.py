@@ -99,6 +99,10 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # внутри ГНС квартир и строятся по наземной ставке (`underground_products`).
     core_under_gns = sum(n(t.get(key) or {}, "gns") for key in underground_products(x))
     core_total_gns = core_above_gns + core_under_gns
+    # Пятно, этажность и подземные уровни — один расчёт на проект; СМР
+    # подземной части читает из него надбавку за глубину (`site_massing`).
+    massing = site_massing(x, t)
+    depth_factor = float(massing["underground_depth_factor"])
     # Благоустройство считается по физической площади двора: она своя база и в
     # строительный объём не входит вовсе. Ответ объявлен один раз и назван
     # основанием — «столько-то на человека × столько-то человек».
@@ -200,7 +204,8 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         которого никто не задавал. Метры считаются по ставке подземной части
         проекта, и это названо на экране.
         """
-        return n(object_parking_row(tep_key), "under_gns") * n(x, "main_under_th_per_sqm") * 1000
+        return (n(object_parking_row(tep_key), "under_gns") * n(x, "main_under_th_per_sqm")
+                * depth_factor * 1000)
 
     def object_schedule(prefix: str, sales_start: date, construction_start: date,
                         construction_months: int,
@@ -473,7 +478,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "resettlement": n(x, "resettlement_cost_mln") * 1_000_000,
         "preparation": project_articles_sqm * n(x, "preparation_th_per_sqm") * 1000,
         "main_above": core_above_gns * n(x, "main_above_th_per_sqm") * 1000,
-        "main_under": core_under_gns * n(x, "main_under_th_per_sqm") * 1000,
+        "main_under": core_under_gns * n(x, "main_under_th_per_sqm") * depth_factor * 1000,
         "utilities": project_articles_sqm * n(x, "utilities_th_per_sqm") * 1000,
         # Ставка на метр ГНС сильнее методики двора, когда она задана:
         # привычный сметчику показатель — просьба владельца. База — НАЗЕМНАЯ
@@ -963,6 +968,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
         "object_schedule_notes": object_schedule_notes,
         "core_above_gns": core_above_gns,
         "core_under_gns": core_under_gns,
+        "site_massing": massing,
         "mkd_direct_costs": mkd_direct_costs,
         # База статей проекта и её имя — один ответ для PDF, страницы и книг.
         "project_articles_sqm": project_articles_sqm,
