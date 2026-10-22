@@ -758,12 +758,42 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     reserve_start = waterfall["reserve_start"]
     reserve_exhaustion = waterfall["reserve_exhaustion"]
     unspent_view = _unspent(project, rss, estimate, rnv, waterfall, articles, cut, chapters)
+    approved = float(baseline.get("approved") or 0.0)
+    book_remaining = max(0.0, approved - paid_actual) if approved > 0 else None
+    # Глава 1 есть в РСС, а в финансовой книге её строки нет — она всё равно
+    # деньги проекта (владелец, 22.10.2026: «что за бред на плашках. Разве в
+    # РСС нет 1 главы?»). Тогда лимит, оплачено и выбрано у банка берут главу
+    # 1 из РСС, а её утверждённый бюджет — смета РСС; подпись это называет.
+    # Постатейная программа и дефицит остаются по главам книги: у главы 1
+    # утверждённое равно лимиту, своего дефицита она не добавляет.
+    shown = chapters
+    reason = baseline.get("chapters_reason") or ""
+    waterfall_book = waterfall
+    one = (estimate.get("by_code") or {}).get("1")
+    chapter_one = None
+    if "1" not in chapters and one is not None:
+        one_limit = float(one.get("estimate") or 0.0)
+        one_paid = _paid_in_chapters(rss, estimate, ("1",))
+        chapter_one = {"limit": one_limit, "paid": one_paid["total"],
+                       "borrowed": one_paid["borrowed"]}
+        shown = ("1",) + tuple(chapters)
+        reason = ("глава 1 — по смете и оплатам РСС: в финансовой книге её строки нет")
+        current = {**current, "limit": current["limit"] + one_limit}
+        paid = {**paid, "borrowed": paid["borrowed"] + one_paid["borrowed"]}
+        paid_actual += one_paid["total"]
+        approved += one_limit
+        waterfall = {**waterfall,
+                     "opening_bank_remaining": float(waterfall["opening_bank_remaining"])
+                     + max(0.0, one_limit - one_paid["total"]),
+                     "opening_article_deficit": float(waterfall["opening_article_deficit"])
+                     + max(0.0, one_paid["total"] - one_limit)}
     return {
         "known": True,
         "source": baseline["source"],
-        "chapters": list(chapters),
-        "chapters_label": chapters_label(chapters),
-        "chapters_reason": baseline.get("chapters_reason") or "",
+        "chapters": list(shown),
+        "chapters_label": chapters_label(shown),
+        "chapters_reason": reason,
+        "chapter_one_from_rss": chapter_one,
         "bank_limit": current["limit"],
         "paid_actual": paid_actual,
         # Выборка кредита по тем же главам, что лимит: «лимит − выбрано» и
@@ -773,8 +803,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         # Второй остаток потребности по тем же главам 2–3: утверждённый бюджет
         # минус оплаченное. С «средствами на завершение» они расходятся, и обе
         # величины считает сервер — экран их только показывает.
-        "approved": float(baseline.get("approved") or 0.0),
-        "approved_remaining": max(0.0, float(baseline.get("approved") or 0.0) - paid_actual),
+        "approved": approved,
+        "approved_remaining": max(0.0, approved - paid_actual),
         "bank_remaining": waterfall["opening_bank_remaining"],
         "opening_article_deficit": waterfall["opening_article_deficit"],
         "remaining_need": remaining_need,
@@ -798,13 +828,11 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         # Колонка банка против нашего остатка — разложенная разница, а не две
         # цифры рядом.
         "bank_need_check": _bank_need_check(
-            remaining_need, float(baseline.get("reserve") or 0.0), waterfall),
+            remaining_need, float(baseline.get("reserve") or 0.0), waterfall_book),
         # Лестница от структурного дефицита к «не хватает на достройку»:
         # считается здесь, экран только показывает.
         "deficit_ladder": _deficit_ladder(
-            waterfall, float(baseline.get("reserve") or 0.0),
-            (max(0.0, float(baseline.get("approved") or 0.0) - paid_actual)
-             if float(baseline.get("approved") or 0.0) > 0 else None),
+            waterfall_book, float(baseline.get("reserve") or 0.0), book_remaining,
             unspent_view),
         "forecast_to": monitor._iso(rnv),
         "monthly_need": waterfall["monthly_need"],
