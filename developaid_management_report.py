@@ -716,7 +716,7 @@ def sales(sales_project: str, kind: str, end: Any,
         "products": _by_product(between(bounds["start"]), between(datetime.date(1900, 1, 1)),
                                 part("fm_plan"), quarter),
         "pace": [{"month": m["month"], "area": m.get("area"), "amount": m.get("amount"),
-                  "price_flats": m.get("price_flats")}
+                  "units": m.get("units"), "price_flats": m.get("price_flats")}
                  for m in summary.get("dynamics") or [] if m["month"] <= month_key][-12:],
         "payments": [{"name": item["name"], "count": item["count"], "amount": item["amount"],
                       "area": item["area"]} for item in summary.get("by_payment") or []],
@@ -1681,7 +1681,10 @@ ul.findings li.bad::marker{color:#b42318}ul.findings li.missing{color:#5b6b7d}
 ul.findings li b{font-weight:700}ul.findings li.bad b{color:#b42318}
 .finding .source{color:#7b8794;font-size:10px}
 .pagebreak{break-after:page;page-break-after:always}
+h2.block{break-before:page;page-break-before:always}h2.block.first{break-before:auto;page-break-before:auto}
+ol.toc{margin:6px 0 10px;padding-left:22px;columns:2;column-gap:24px}ol.toc li{margin:2px 0;break-inside:avoid}ol.toc a{color:#1f4e8c;text-decoration:none}
 section{break-inside:auto}
+.switch-charts .switch{display:none}
 figure.chart{margin:10px 0 6px;break-inside:avoid;page-break-inside:avoid}figure.chart figcaption{font-size:11.5px;color:#17202a;margin-bottom:3px;font-weight:600}
 svg.chart{display:block;max-width:100%}
 """
@@ -1839,6 +1842,46 @@ def _budget_forecast(block: dict[str, Any], end: datetime.date) -> list[dict[str
         out.append({"label": line["label"], "plan": line["plan"], "fact": line["fact"],
                     "forecast": forecast, "gap": forecast - line["plan"]})
     return out
+
+
+# Меры темпа продаж — одна таблица для кнопок и графиков. Порядок — порядок
+# кнопок; первая мера открыта на странице.
+PACE_MEASURES = (
+    ("area", "м²", "м² договоров", 1.0, 0),
+    ("units", "лоты", "лотов всех типов (квартиры, помещения, машиноместа, кладовые)", 1.0, 0),
+    ("amount", "млн ₽", "сумма договоров, млн ₽", 1e6, 1),
+)
+
+
+def _pace_charts(pace: list[dict[str, Any]]) -> str:
+    """Темп продаж по месяцам — один предмет в трёх мерах, цена линией на каждом.
+
+    Владелец (22.10.2026): «может совместить для экономии места? и отдельно
+    лотами и млн рублей сделать такие же графики? на странице переключением как
+    в отчёте о продажах, а в пдф подряд три графика». Разметка одна: страница
+    показывает одну меру и кнопки, документ — все три подряд без кнопок.
+    """
+    if not pace:
+        return ""
+    months = [_month_short(p["month"]) for p in pace]
+    prices = [p.get("price_flats") for p in pace]
+    line = ({"name": "Цена квартир, тыс. ₽/м²", "values": charts.scaled(prices, 1e3),
+             "unit": "тыс. ₽/м²", "digits": 0} if any(prices) else None)
+    buttons, panes = [], []
+    for index, (key, name, words, divisor, digits) in enumerate(PACE_MEASURES):
+        figure = charts.bar_chart(
+            f"Темп продаж по месяцам: {words}" + (" и цена квартир" if line else ""),
+            months, [{"name": name, "values": charts.scaled([p.get(key) for p in pace], divisor)}],
+            name, digits=digits, line=line)
+        if not figure:
+            continue
+        on = " on" if not panes else ""
+        buttons.append(f'<button type="button" data-pane="{key}" class="{on.strip()}">{name}</button>')
+        panes.append(f'<div class="pane{on}" data-pane="{key}">{figure}</div>')
+    if not panes:
+        return ""
+    return ('<div class="switch-charts" data-switch="sales-pace">'
+            f'<div class="switch">{"".join(buttons)}</div>{"".join(panes)}</div>')
 
 
 def _signed_rub(value: float | None) -> str:
@@ -2194,18 +2237,7 @@ def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
              _area(item["total"]["area"]), _rub(item["total"]["amount"]), price(item, "total"),
              _rub((item.get("fm_quarter") or {}).get("amount")) if item.get("fm_quarter") else "—"]
             for item in products]))
-    pace = block.get("pace") or []
-    if pace:
-        out.append(charts.bar_chart("Темп продаж: м² договоров по месяцам",
-                                    [_month_short(p["month"]) for p in pace],
-                                    [{"name": "м²", "values": [p.get("area") for p in pace]}],
-                                    "м²", digits=0))
-        prices = [p.get("price_flats") for p in pace]
-        if any(prices):
-            out.append(charts.line_chart(
-                "Средняя цена квартир по месяцам", [_month_short(p["month"]) for p in pace],
-                [{"name": "Цена квартир", "values": charts.scaled(prices, 1e3)}],
-                "тыс. ₽/м²", label_every=charts.every(len(pace))))
+    out.append(_pace_charts(block.get("pace") or []))
     payments = block.get("payments") or []
     total = sum(item["amount"] for item in payments)
     if payments and total:
@@ -2369,26 +2401,57 @@ def _budget_chart(block: dict[str, Any]) -> str:
             for line in lines if line.get("note") and line.get("plan") is not None)
 
 
+# Блоки документа по порядку владельца: ключ якоря и заголовок. Содержание,
+# заголовки и якоря берут этот список — второй перечень разошёлся бы с первым.
+BLOCKS = (
+    ("main", "Главное за период"),
+    ("build", "Стройка"),
+    ("sales", "Продажи"),
+    ("funding", "Финансирование"),
+    ("budget", "Бюджет месяца"),
+    ("legal", "Споры и претензии"),
+    ("info", "Общая информация"),
+)
+
+
+def _block_heading(key: str) -> str:
+    """Заголовок блока с якорем; в документе блок начинается с новой страницы."""
+    title = dict(BLOCKS)[key]
+    # «Главное» остаётся на первой странице под плитками (решение владельца об
+    # оформлении); остальные блоки — каждый с новой страницы.
+    classes = "block first" if key == BLOCKS[0][0] else "block"
+    return f"<h2 class='{classes}' id='block-{key}'>{html.escape(title)}</h2>"
+
+
+def _toc_html() -> str:
+    """Содержание — в начале документа (владелец, 22.10.2026: «а в начало
+    содержание?»). Номеров страниц нет: Chromium при печати их не считает, а
+    блоки идут в этом же порядке, каждый с новой страницы; строки — ссылки."""
+    return ("<ol class='toc'>" + "".join(
+        f"<li><a href='#block-{key}'>{html.escape(title)}</a></li>" for key, title in BLOCKS)
+        + "</ol>")
+
+
 def render_html(report: dict[str, Any]) -> str:
     """Тело документа сводки — те же числа, что в сообщении, таблицами."""
     esc = html.escape
     out = [f"<h1>Сводка по проекту «{esc(report['project'])}»</h1>",
-           f"<div class='sub'>{esc(_title(report))}</div>"]
+           f"<div class='sub'>{esc(_title(report))}</div>", _toc_html()]
 
     def missing(block: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
 
     out.append(_tiles_html(tiles(report)))
-    out.append("<h2>Главное за период</h2><ul class='findings'>")
+    out.append(_block_heading("main") + "<ul class='findings'>")
     for item in report.get("findings") or []:
         tone = f" {item['tone']}" if item.get("tone") else ""
         source = (f" <span class='source'>Источник: {esc(item['source'])}.</span>"
                   if item.get("source") else "")
         out.append(f"<li class='finding{tone}'><b>{esc(item['topic'])}.</b> "
                    f"{esc(item['text'])}{source}</li>")
-    out.append("</ul><div class='pagebreak'></div>")
+    out.append("</ul>")
 
-    out.append("<h2>Стройка</h2>")
+    out.append(_block_heading("build"))
     block = report.get("physical") or {}
     if block.get("state") == "ok":
         out.append(_table(["", "План к дате", "Выполнено", "Отставание"], [[
@@ -2429,7 +2492,7 @@ def render_html(report: dict[str, Any]) -> str:
 
     out.append(_photos_html(report.get("photos") or {}, report["kind"]))
 
-    out.append("<h2>Продажи</h2>")
+    out.append(_block_heading("sales"))
     block = report.get("sales") or {}
     if block.get("state") == "ok":
         def fact_cells(fact: dict[str, Any]) -> list[str]:
@@ -2470,7 +2533,7 @@ def render_html(report: dict[str, Any]) -> str:
     if (report.get("sales") or {}).get("state") == "ok":
         out.append(_sales_depth_html(report["sales"], report["kind"]))
 
-    out.append("<h2>Финансирование</h2>")
+    out.append(_block_heading("funding"))
     out.append(_funding_html(report))
     out.append(_funding_chart(report))
     out.append(_funding_depth_html(report))
@@ -2481,8 +2544,8 @@ def render_html(report: dict[str, Any]) -> str:
         elapsed = _month_elapsed(month, _date(report["end"]))
         # Заголовок, подпись и таблица статей — одним куском: заголовок внизу
         # страницы без таблицы под ним читается как пустой раздел.
-        out.append("<div class='keep'><h2>Бюджет месяца</h2>"
-                   f"<div class='sub'>{_MONTHS[month.month - 1]} {month.year}: план — "
+        out.append("<div class='keep'>" + _block_heading("budget")
+                   + f"<div class='sub'>{_MONTHS[month.month - 1]} {month.year}: план — "
                    f"план-факт БДДС, оплачено — реестр платежей РСС на "
                    f"{_day(report['end'])}; прошло {_pct(elapsed)} месяца</div>"
                    + _budget_articles_html(block.get("by_budget_article") or {}) + "</div>")
@@ -2490,15 +2553,16 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<p class='note warn'>{esc(block['reason'])}</p>")
         out.append(f"<p class='note'>Оплаты — из отчёта РСС от {_day(block['rss'])}.</p>")
     else:
-        out.append("<h2>Бюджет месяца</h2>")
+        out.append(_block_heading("budget"))
         out.append(missing(block))
 
     out.append(_budget_chart(report.get("budget") or {}))
     if (report.get("budget") or {}).get("state") in {"ok", "partial"}:
         out.append(_budget_depth_html(report["budget"], _date(report["end"])))
 
-    out.append("<h2>Общая информация</h2>")
+    out.append(_block_heading("legal"))
     out.append(_legal_html(report.get("legal") or {}))
+    out.append(_block_heading("info"))
     block = report.get("notes") or {}
     if block.get("state") != "ok":
         out.append(missing(block))
@@ -2570,11 +2634,11 @@ def _legal_html(block: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(block.get('reason') or 'Реестр споров не собран.')}</p>"
     items = (block.get("open") or []) + (block.get("closed") or [])
     if not block.get("recorded"):
-        return f"<h3>Споры и претензии</h3><p class='missing'>{esc(LEGAL_EMPTY)}</p>"
+        return f"<p class='missing'>{esc(LEGAL_EMPTY)}</p>"
     if not items:
-        return f"<h3>Споры и претензии</h3><p>{esc(LEGAL_NONE_OPEN)}</p>"
+        return f"<p>{esc(LEGAL_NONE_OPEN)}</p>"
     names = block.get("statuses") or {}
-    out = ["<h3>Споры и претензии</h3>"]
+    out = []
     for item in items:
         card, totals = item["card"], item["totals"]
         rows = []
@@ -2614,7 +2678,7 @@ def _keep_headings(parts: list[str]) -> list[str]:
     index = 0
     while index < len(parts):
         part = parts[index]
-        if part.startswith("<h2>") and part.endswith("</h2>") and index + 1 < len(parts):
+        if part.startswith("<h2") and part.endswith("</h2>") and index + 1 < len(parts):
             out.append(f"<div class='keep'>{part}{parts[index + 1]}</div>")
             index += 2
             continue

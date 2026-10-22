@@ -1344,6 +1344,12 @@ function tepCellChanged(key,col,value){
   if(key==='apartments'){rescaleApartmentUnits();rescaleBuiltInCommercial()}
   renderInputs();
   renderTep();
+ }else if(key==='apartments'){
+  // Число квартир — вход нормы мест (2118-ПП, п. 2 по средней квартире), и
+  // считает её сама страница (`parkingRequirement`). Перерисовка ждала ответа
+  // расчёта: долгий или отказавший расчёт оставлял места, подписи и поле мест
+  // от прежнего числа (владелец, 22.10.2026: «машиноместа даже не дрогнули»).
+  tepRowToInputs(key);renderInputs();renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
  scheduleTepAutoRecalc(key);
  calculate();

@@ -3595,6 +3595,14 @@ def install(app: FastAPI) -> None:
         code = await run_in_threadpool(nagatino_parcels.issue_share_code)
         return {"code": code, "revoked": False}
 
+    @app.get("/land/live-map.js", include_in_schema=False)
+    async def land_live_map_script() -> Response:
+        """Живая карта движка со «Схема / Гибрид» — для нового интерфейса участка."""
+        from auction_search import land_map
+
+        return Response(land_map.standalone(core), media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
+
     @app.get("/krt/nagatino", response_class=HTMLResponse, include_in_schema=False)
     async def nagatino_parcels_home() -> HTMLResponse:
         """Оболочка страницы. Проверки здесь нет по той же причине, что у
