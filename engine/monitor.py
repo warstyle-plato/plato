@@ -220,6 +220,7 @@ class MonitorNotesRequest(BaseModel):
     topic: str = ""
     text: str | None = None
     status: str | None = None
+    remove: bool = False
     session: str = ""
     key: str = ""
 
@@ -576,7 +577,9 @@ def monitor_notes(req: MonitorNotesRequest) -> dict[str, Any]:
     import developaid_project_notes as project_notes
     author = _monitor_note_author(req.session, req.key)
     try:
-        if req.note_id:
+        if req.note_id and req.remove:
+            project_notes.remove(req.project, req.note_id, author)
+        elif req.note_id:
             project_notes.update(req.project, req.note_id, author,
                                  text=req.text, status=req.status)
         elif req.topic or req.text:
@@ -600,6 +603,7 @@ class MonitorLegalRequest(BaseModel):
     doc_id: str = ""
     doc_ids: list[str] = []
     card: dict[str, Any] | None = None
+    remove: bool = False
     session: str = ""
     key: str = ""
 
@@ -709,9 +713,12 @@ def monitor_legal_case(req: MonitorLegalRequest) -> dict[str, Any]:
     """Подтвердить карточку спора (новую или новую версию). В сводку идёт только она."""
     _require_web_access(req.session, req.key, "Сводка руководству")
     import developaid_legal_cases as legal
+    author = _monitor_note_author(req.session, req.key)
     try:
-        legal.save(req.project, req.card or {}, req.doc_ids,
-                   _monitor_note_author(req.session, req.key), case_id=req.case_id)
+        if req.remove:
+            legal.remove(req.project, req.case_id, author)
+        else:
+            legal.save(req.project, req.card or {}, req.doc_ids, author, case_id=req.case_id)
     except KeyError as exc:
         raise HTTPException(404, str(exc.args[0]))
     except ValueError as exc:
