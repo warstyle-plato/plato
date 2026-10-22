@@ -136,14 +136,11 @@ def test_the_yield_on_cost_divides_by_every_creation_cost() -> None:
 # --- шкала класса ---------------------------------------------------------------
 
 def test_the_office_assumptions_follow_the_class() -> None:
-    """Класс проекта → класс офиса → шкала; цена класса — только в нежилом."""
+    """Класс проекта → класс офиса; цена класса офиса — только в нежилом."""
     for key, office_class in ns.OFFICE_CLASS_BY_PROJECT.items():
         preset = core.PROJECT_CLASS_PRESETS[key]
-        for field, value in ns.office_class_fields(office_class).items():
-            if field == "rent_date":
-                continue
-            assert preset[f"offices_{field}"] == value
-            assert preset[f"offices2_{field}"] == value  # второй офис — тем же классом
+        # Шкала — у класса офиса, а не в профиле класса проекта.
+        assert "offices_rent_th_per_sqm_month" not in preset
         price = ns.OFFICE_CLASS_SCALE[office_class]["price_th_per_sqm"]
         nonres = core.class_base_preset(key, kind=core.PROJECT_KIND_NONRESIDENTIAL)
         assert nonres["offices_price_th_per_sqm"] == price
@@ -160,11 +157,10 @@ def test_the_owner_prices_by_office_class() -> None:
     assert rents == sorted(rents) and len(set(rents)) == 4
 
 
-def test_the_defaults_are_the_comfort_office_class() -> None:
-    for field, value in ns.office_class_fields(ns.OFFICE_CLASS_BY_PROJECT["comfort"]).items():
+def test_the_defaults_are_office_class_b() -> None:
+    for field, value in ns.office_class_fields(ns.DEFAULT_OFFICE_CLASS).items():
         assert core.DEFAULT_INPUTS[f"offices_{field}"] == value
-    assert core.DEFAULT_INPUTS["offices_price_th_per_sqm"] == \
-        core.PROJECT_CLASS_PRESETS["comfort"]["offices_price_th_per_sqm"]
+        assert core.DEFAULT_INPUTS[f"offices2_{field}"] == value
 
 
 def test_the_rent_is_the_market_rate_per_year_indexed_to_commissioning() -> None:

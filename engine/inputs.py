@@ -282,17 +282,11 @@ OFFICE_CLASS_BY_PROJECT_CLASS: dict[str, dict[str, Any]] = {
 OFFICE_CLASS_PLACEHOLDER = "__DEVELOPAID_OFFICE_CLASS__"
 for _key, _office in OFFICE_CLASS_BY_PROJECT_CLASS.items():
     PROJECT_CLASS_PRESETS[_key]["offices_cost_th_per_sqm"] = _office["cost_th_per_sqm"]
-    # Аренда, заполнение, эксплуатация и ставка капитализации офиса — шкала
-    # класса офиса (`nonres_strategy.OFFICE_CLASS_SCALE`, аренда — из цены
-    # класса). Цена продажи класса — только в нежилом проекте
-    # (`NONRES_KIND_CLASS_PRICES`); в жилом офис остаётся на правиле от цены
-    # жилья (владелец, 22.10.2026).
-    for _field, _value in nonres_strategy.office_class_fields(
-            nonres_strategy.OFFICE_CLASS_BY_PROJECT[_key]).items():
-        # Профиль класса — числа; дата ставки аренды у всех классов одна и
-        # живёт в умолчаниях объекта.
-        if isinstance(_value, (int, float)):
-            PROJECT_CLASS_PRESETS[_key][f"offices_{_field}"] = _value
+    # Аренда, заполнение, эксплуатация и ставка капитализации офиса — не
+    # профиль класса проекта, а шкала СВОЕГО класса офиса (владелец,
+    # 22.10.2026: «свой выбор класса офиса», `nonres_strategy.OFFICE_CLASS_SCALE`).
+    # Цена продажи класса офиса — только в нежилом проекте
+    # (`NONRES_KIND_CLASS_PRICES`); в жилом офис на правиле от цены жилья.
     # Место на первых этажах ОСЗ — норматив класса рядом с подземным местом;
     # пока одно число на все классы (владелец, 27.09.2026: «пока оставляем
     # как есть 25»). Правится в «Настройках класса».
@@ -1458,10 +1452,7 @@ for _preset in PROJECT_CLASS_PRESETS.values():
         if _family is None:
             continue
         for _own, _theirs in ((_obj.rate_price, _family.rate_price),
-                              (_obj.rate_cost, _family.rate_cost),
-                              *((f"{_obj.prefix}_{_field}", f"{_family.prefix}_{_field}")
-                                for _field in nonres_strategy.office_class_fields(
-                                    nonres_strategy.DEFAULT_OFFICE_CLASS))):
+                              (_obj.rate_cost, _family.rate_cost)):
             if _theirs in _preset:
                 _preset[_own] = _preset[_theirs]
 del _preset
