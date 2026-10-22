@@ -983,7 +983,6 @@ def _build_project_workbook(
         capex_xml, _landscaping_per_person, _landscaping_norm,
         _landscaping_gns_rate, missing)
     capex_xml = _v4_apply_storage_area_rows(capex_xml, missing)
-    capex_xml = _v4_apply_underground_depth(capex_xml, missing)
     capex_xml = _v4_apply_bridge_limit_before_permit(capex_xml, missing)
     capex_xml = _v4_apply_vri_interest_row(capex_xml, missing)
     capex_xml = _v4_apply_turnkey_overheads(capex_xml, missing)

@@ -24,6 +24,12 @@ _V4_DEPTH_FACTOR_CELL: "_massing_contextvars.ContextVar[str]" = _massing_context
     "_V4_DEPTH_FACTOR_CELL", default="")
 
 
+# Формат числа служебных вводных блока (`_v4_type_input_formats`): метры.
+_V4_KEYED_INPUT_FORMATS.update({key: _v4_input_format_code("number", "м²", 1000.0)
+                                for key in _massing_book.AREA_KEYS})
+_V4_KEYED_INPUT_FORMATS.update({key: "0.0" for key in _massing_book.PERCENT_KEYS})
+
+
 def _v4_under_rate_ref(params_name: str = "'Вводные'") -> str:
     """Ставка подземной части с надбавкой за глубину — ссылкой книги."""
     rate = f"{params_name}!$B$45"
@@ -61,13 +67,15 @@ def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
              + "</x:row>"]
     basis = {
         "yard_sqm": str(massing.get("yard_basis") or ""),
-        "driveways_pct": "экспертная оценка, согласована владельцем",
+        "driveways_pct": "поле site_driveways_pct; экспертная оценка, согласована владельцем",
         "setback_m": "полоса по периметру; градплан может задать другой отступ",
-        "surface_parking_sqm": str(massing.get("surface_parking_basis") or ""),
+        "surface_parking_sqm": (f"мест на земле × земля на место (surface_parking_spaces × "
+                                f"surface_parking_sqm_per_space); "
+                                f"{massing.get('surface_parking_basis') or ''}"),
         "above_gns_sqm": "из ТЭП проекта",
         "underground_sqm": "паркинг с рампами и проездами, подземные кладовые и гаражи объектов",
-        "markup2_pct": "экспертная оценка, согласована владельцем",
-        "markup3_pct": "экспертная оценка, согласована владельцем",
+        "markup2_pct": "поле underground_level2_markup_pct; экспертная оценка, согласована владельцем",
+        "markup3_pct": "поле underground_level3_markup_pct; экспертная оценка, согласована владельцем",
         "depth_factor": "умножает ставку подземной части в CAPEX очередей и гаражей объектов",
     }
     for key, label, kind in _massing_book.ROWS:
@@ -84,6 +92,8 @@ def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
             cells += f'<x:c r="B{row}"><x:f>{xml_escape(formulas[key])}</x:f></x:c>'
         if basis.get(key):
             cells += text_cell(f"C{row}", basis[key])
+        if key in _massing_book.BOOK_KEYS:
+            cells += text_cell(f"D{row}", _massing_book.BOOK_KEYS[key])
         parts.append(f'<x:row r="{row}">{cells}</x:row>')
     tail = "</x:sheetData>"
     assert tail in xml
@@ -91,22 +101,17 @@ def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
     return xml.replace(tail, "".join(parts) + tail, 1), massing
 
 
-def _v4_apply_underground_depth(xml: str, missing: list[str]) -> str:
-    """СМР подземной части очередей (CAPEX, строка 22 каждого блока) — по
-    ставке с надбавкой за глубину. Не опознали формулу — `missing`."""
-    if not _V4_DEPTH_FACTOR_CELL.get():
-        return xml
+def _v4_under_depth_formula(formula: str, row: int, missing: list[str]) -> str:
+    """СМР подземной части очереди (CAPEX, строка 22 блока) — по ставке с
+    надбавкой за глубину. Зовётся проходом площади кладовых
+    (`_v4_apply_storage_area_rows`), который эту формулу уже держит в руках.
+    Не опознали ставку — `missing`, формула остаётся прежней."""
     import re as _re
+    if not _V4_DEPTH_FACTOR_CELL.get():
+        return formula
     # Граница по цифре: `$B$457` (размещение кладовых) начинается с `$B$45`.
     rate = _re.compile(r"'Вводные'!\$B\$45(?!\d)")
-    for phase in range(_V4_CAPEX_PHASES):
-        row = _V4_CAPEX_ARTICLE_ROW["main_under"] + _V4_CAPEX_BLOCK_STRIDE * phase
-        found = _re_search_cell_formula(xml, f"B{row}")
-        if found is None or len(rate.findall(found)) != 1:
-            missing.append(f"CAPEX · надбавка за глубину: формула строки {row} не опознана")
-            continue
-        xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(
-            formula=rate.sub(lambda _m: _v4_under_rate_ref("'Вводные'"), found, count=1))})
-        if not done:
-            missing.append(f"CAPEX · надбавка за глубину: строка {row} не записана")
-    return xml
+    if len(rate.findall(formula)) != 1:
+        missing.append(f"CAPEX · надбавка за глубину: формула строки {row} не опознана")
+        return formula
+    return rate.sub(lambda _m: _v4_under_rate_ref("'Вводные'"), formula, count=1)

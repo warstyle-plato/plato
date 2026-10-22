@@ -1427,7 +1427,7 @@ function renderSiteMassing(){
 const SITE_MASSING_AUTO=['surface_parking_sqm_per_space','building_footprint_sqm','underground_levels','max_storeys_allowed'];
 function renderSiteMassingFields(){
  const box=document.getElementById('siteMassingFields');
- if(!box||box.contains(document.activeElement))return;
+ if(!box||(typeof box.contains==='function'&&box.contains(document.activeElement)))return;
  const decl={};allFieldGroups().forEach(g=>g[1].forEach(f=>{decl[f[0]]=f}));
  const m=siteMassingResult()||{};
  const auto={building_footprint_sqm:m.footprint_estimate_sqm?'оценка '+num(Math.round(m.footprint_estimate_sqm)):'',

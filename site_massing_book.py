@@ -33,6 +33,7 @@ ROWS: tuple[tuple[str, str, str], ...] = (
     ("markup2_pct", "Надбавка к ставке за второй подземный уровень, %", INPUT),
     ("markup3_pct", "Надбавка к ставке за третий уровень и ниже, %", INPUT),
     ("rate_by_hand", "Ставка подземной части задана вручную (Да — без надбавок)", INPUT),
+    ("max_storeys", "Предельная этажность участка (0 — не задана)", INPUT),
     ("setbacks_sqm", "Отступы, м² (полоса по периметру квадрата той же площади)", FORMULA),
     ("footprint_estimate_sqm", "Пятно застройки — оценка по балансу, м²", FORMULA),
     ("footprint_sqm", "Пятно застройки, м²", FORMULA),
@@ -45,7 +46,33 @@ ROWS: tuple[tuple[str, str, str], ...] = (
     ("level2_sqm", "Уровень −2, м²", FORMULA),
     ("level3_sqm", "Уровни −3 и ниже, м²", FORMULA),
     ("depth_factor", "Множитель ставки подземной части за глубину", FORMULA),
+    ("over_limit", "Этажность выше предельной", FORMULA),
 )
+
+# Ключ вводной блока в книге: поле движка, если вводная — его число, иначе
+# служебное имя книги (`massing_…`). По ключу книга ставит формат числа, а
+# проверки охвата находят поле.
+# Проценты движка (15 = 15 %) книга держит тем же числом, а формат процента
+# показал бы 1 500 % — у них служебный ключ и формат «0.0», а поле движка
+# названо в пояснении (`PERCENT_FIELDS`).
+PERCENT_FIELDS: dict[str, str] = {
+    "driveways_pct": "site_driveways_pct",
+    "markup2_pct": "underground_level2_markup_pct",
+    "markup3_pct": "underground_level3_markup_pct",
+}
+ENGINE_FIELDS: dict[str, str] = {
+    "setback_m": "site_setback_m",
+    "footprint_manual_sqm": "building_footprint_sqm",
+    "use_factor": "underground_contour_use_factor",
+    "levels_manual": "underground_levels",
+    "max_storeys": "max_storeys_allowed",
+}
+BOOK_KEYS: dict[str, str] = {
+    key: ENGINE_FIELDS.get(key, f"massing_{key}") for key, _, kind in ROWS if kind == INPUT}
+# Служебные ключи книги, чьи вводные — метры.
+PERCENT_KEYS = tuple(f"massing_{key}" for key in PERCENT_FIELDS)
+AREA_KEYS = ("massing_site_sqm", "massing_yard_sqm", "massing_surface_parking_sqm",
+             "massing_above_gns_sqm", "massing_underground_sqm")
 
 YES = "Да"
 NO = "Нет"
@@ -85,6 +112,8 @@ def formulas(ref: Callable[[str], str]) -> dict[str, str]:
                          f"+{r('level2_sqm')}*(1+{r('markup2_pct')}/100)"
                          f"+{r('level3_sqm')}*(1+{r('markup3_pct')}/100))"
                          f"/{r('underground_sqm')})"),
+        "over_limit": (f"IF(AND({r('max_storeys')}>0,{r('average_storeys')}>{r('max_storeys')}),"
+                       f"\"{YES}\",\"{NO}\")"),
     }
 
 
@@ -110,6 +139,7 @@ def input_values(massing: dict, inputs: dict) -> dict[str, object]:
         "markup2_pct": _markup(massing, 2),
         "markup3_pct": _markup(massing, 3),
         "rate_by_hand": YES if massing.get("underground_rate_by_hand") else NO,
+        "max_storeys": float(massing.get("max_storeys_allowed") or 0.0),
     }
 
 
