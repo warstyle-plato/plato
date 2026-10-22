@@ -1323,6 +1323,7 @@ async function renderAccessAdmin(){
  let data;
  try{data=await accessAdminCall('/access/admin/overview')}
  catch(e){box.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';return}
+ fillGrantRecipients(data.people||[]);
  const people=(data.people||[]).map(p=>'<tr><td>'+escapeHtml(p.name||'—')+'<br><small>ID '+p.chat+
   (p.company?' · '+escapeHtml(p.company):'')+'</small></td><td>'+(p.free_used?'использован':'не использован')+
   '</td><td>'+((p.active_plots||[]).map(g=>escapeHtml(g.label)+' до '+accessDate(g.until)).join('<br>')||'—')+
@@ -1362,6 +1363,21 @@ async function accessDemoRevoke(code){
  try{await accessAdminCall('/access/admin/demo/revoke',{code});renderDemoInvites()}
  catch(e){alert(String(e.message||e))}
 }
+// Кому выдать — выбором из тех, кого мы знаем, а не голым номером: опечатка
+// в номере открывала доступ несуществующему человеку.
+function fillGrantRecipients(people){
+ const select=document.getElementById('grantChat');
+ if(!select)return;
+ const keep=select.value;
+ select.innerHTML='<option value="">— выберите пользователя —</option>'+people.filter(p=>Number(p.chat)>0&&Number(p.chat)<1e15).map(p=>
+  '<option value="'+Number(p.chat)+'">'+escapeHtml((p.name||'Без имени')+(p.company?', '+p.company:'')+' — ID '+p.chat)+'</option>').join('');
+ if(keep)select.value=keep;
+}
+function grantKindChanged(){
+ const row=document.getElementById('grantCadastralRow');
+ const kind=(document.getElementById('grantKind')||{}).value;
+ if(row)row.style.display=kind==='subscription'?'none':'';
+}
 async function accessAdminGrant(){
  const status=document.getElementById('accessAdminStatus');
  const chat=Number((document.getElementById('grantChat')||{}).value||0);
@@ -1370,8 +1386,9 @@ async function accessAdminGrant(){
  const days=Number((document.getElementById('grantDays')||{}).value||0);
  const note=String((document.getElementById('grantNote')||{}).value||'');
  try{
-  const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral,days,note});
-  if(status)status.textContent='Доступ выдан до '+accessDate(data.until)+'.';
+  if(!chat){if(status)status.textContent='Выберите, кому выдать доступ.';return}
+  const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral:kind==='subscription'?[]:cadastral,days,note});
+  if(status)status.textContent='Выдано: '+(data.what||'доступ')+' — '+(data.who||('ID '+chat))+', до '+accessDate(data.until)+'.';
   renderAccessAdmin();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }
