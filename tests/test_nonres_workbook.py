@@ -29,9 +29,13 @@ from xlsx_eval import Evaluator  # noqa: E402
 
 openpyxl = pytest.importorskip("openpyxl")
 
+# Аренда задана числами: умолчания класса B (22.10.2026) слишком малы, чтобы
+# сценарии удержания платили налог и гасили кредит из NOI — а это и проверяется.
 OFFICE = dict(offices_enabled=True, offices_gba_sqm=40000.0, offices_saleable_sqm=24000.0,
               offices_parking_under_spaces=200, offices_parking_over_spaces=40,
-              offices_parking_guest_pct=10)
+              offices_parking_guest_pct=10, offices_rent_th_per_sqm_month=4.5,
+              offices_occupancy_stable_pct=92.0, offices_leaseup_months=12,
+              offices_opex_pct=18.0, offices_exit_cap_pct=11.0)
 RETAIL = dict(retail_enabled=True, retail_gba_sqm=15000.0, retail_saleable_sqm=11000.0)
 
 
@@ -187,6 +191,16 @@ def test_a_tampered_input_is_caught() -> None:
         sheet = book[nw.INPUTS_SHEET]
         cell = sheet[f"C{nw.O_ROW['rent']}"]
         cell.value = cell.value * 1.1
+
+    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
+    assert {"Арендная выручка", "NOI за срок удержания"} <= labels
+
+
+def test_the_rent_date_moves_the_book_like_the_engine() -> None:
+    """Ставка аренды дана на свою дату и до ввода индексируется: стёртая в
+    книге дата снимает индексацию до ввода, и аренда расходится с движком."""
+    def tamper(book):
+        book[nw.INPUTS_SHEET][f"C{nw.O_ROW['rent_date']}"].value = None
 
     labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
     assert {"Арендная выручка", "NOI за срок удержания"} <= labels
@@ -404,10 +418,12 @@ def test_the_ddu_vat_leaves_the_engine_cash_flows(monkeypatch) -> None:
 
     monkeypatch.setattr(core, "simulate_financing", without_vat)
     blind = core.calculate(core.CalcRequest(inputs=x, tep=t))
-    assert seen and seen[-1] > 1e6
+    # Первый вызов — основной расчёт; следом считаются пути офиса
+    # (`office_paths`), у которых ДДУ нет.
+    assert seen and seen[0] > 1e6
     for flow in ("project", "equity"):
         gap = sum(blind["cashflow"][flow]) - sum(result["cashflow"][flow])
-        assert abs(gap - seen[-1]) < 1.0, flow
+        assert abs(gap - seen[0]) < 1.0, flow
 
 
 def test_the_v4_book_takes_the_vat_out_of_its_flows() -> None:
