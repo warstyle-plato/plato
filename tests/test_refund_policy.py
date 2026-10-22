@@ -1,4 +1,4 @@
-"""Политика возврата: опубликованный текст, реквизиты и цены из одного источника.
+"""Оферта и политика возврата: опубликованный текст, реквизиты и цены из одного источника.
 
 Решение владельца 22.10.2026: полный возврат — 14 дней, пока участок не
 посчитан; частному лицу после расчёта — остаток дней минус половина цены.
@@ -61,3 +61,19 @@ def test_an_unknown_field_is_an_error_and_blocks_payment(monkeypatch, tmp_path):
     filled, missing = core.legal_fill(core.legal_text("refund")[0])
     assert missing == ["seller.fax"] and "[не задано: seller.fax]" in filled
     assert any("seller.fax" in m for m in core.payments_missing())
+
+
+def test_the_offer_is_published_with_the_same_sources(monkeypatch):
+    assert core.legal_text("offer")[1], "в offer.md осталась пометка заготовки"
+    assert not any("оферты" in m or "offer.md" in m for m in core.payments_missing())
+    page = client.get("/offer").text
+    assert "Заготовка." not in page and "{{" not in page and "не задано" not in page
+    assert "<h2>4. Тарифы и оплата</h2>" in page
+    seller = core.seller_info()
+    for value in (seller["inn"], seller["ogrnip"], seller["email"],
+                  core.product_info()["certificate_number"]):
+        assert value in page
+    monkeypatch.setenv("DEVELOPAID_SUBSCRIPTION_DAYS", "31")
+    monkeypatch.setenv("DEVELOPAID_SUBSCRIPTION_PRICE_RUB", "90000")
+    plain = client.get("/offer").text.replace("\u00a0", " ")
+    assert "Подписка стоит 90 000 ₽" in plain and "составляет 31 дней" in plain
