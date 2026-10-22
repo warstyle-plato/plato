@@ -2136,15 +2136,21 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
         def money(value: float | None, gap: str) -> str:
             return gap if value is None else _rub(value)
 
-        divisor, unit = _scale([v for p in trend for v in
-                                (p["plan"]["construction"], p["fact"]["construction"])])
-        out.append(charts.bar_chart(
-            "Стройка и проектирование: план и оплачено по месяцам",
-            [_month_short(p["month"][:7]) for p in trend],
-            [{"name": "План", "values": charts.scaled(
-                [p["plan"]["construction"] for p in trend], divisor)},
-             {"name": "Оплачено", "values": charts.scaled(
-                 [p["fact"]["construction"] for p in trend], divisor)}], unit, digits=0))
+        # Тренд — по обеим главам бюджета, не только по стройке (владелец,
+        # 22.10.2026: «А почему такого же нет для 3 главы?»). Без плана и
+        # оплат по коммерции второй график не рисуется.
+        for key, title in (("construction", "Стройка и проектирование"),
+                           ("commercial", "Коммерческие расходы")):
+            if not any(p["fact"][key] or p["plan"][key] for p in trend):
+                continue
+            divisor, unit = _scale([v for p in trend for v in (p["plan"][key], p["fact"][key])])
+            out.append(charts.bar_chart(
+                f"{title}: план и оплачено по месяцам",
+                [_month_short(p["month"][:7]) for p in trend],
+                [{"name": "План", "values": charts.scaled(
+                    [p["plan"][key] for p in trend], divisor)},
+                 {"name": "Оплачено", "values": charts.scaled(
+                     [p["fact"][key] for p in trend], divisor)}], unit, digits=0))
         out.append(_table(["Месяц", "Стройка: план", "Стройка: оплачено",
                            "Коммерция: план", "Коммерция: оплачено"], [
             [_months_label(p["month"]), money(p["plan"]["construction"], "нет плана"),
