@@ -141,7 +141,8 @@ def test_funding_risk_uses_article_waterfall(monkeypatch):
     monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {
         "rows": [], "by_code": {"2": {"estimate": 700.0}, "3": {"estimate": 100.0}}
     })
-    monkeypatch.setattr(dashboard, "_payment_total_ch23", lambda *_: 200.0)
+    monkeypatch.setattr(dashboard, "_paid_in_chapters",
+                        lambda *_: {"total": 200.0, "borrowed": 150.0})
     monkeypatch.setattr(dashboard, "_payment_by_code", lambda _: {})
     view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
 
@@ -396,3 +397,60 @@ def test_chapter_one_counts_when_the_finance_book_has_it(tmp_path):
     assert dashboard._rss_ch23(estimate, full["chapters"])["limit"] == 180.0
     assert dashboard._rss_ch23(estimate, old["chapters"])["limit"] == 130.0
     assert dashboard.chapters_label(full["chapters"]) == "1–3"
+
+
+def test_chapter_one_is_found_by_its_articles_and_a_numeric_code(tmp_path):
+    """Плитки на проде остались «главы 2–3» при строке «1.1» в книге и коде
+    числом (владелец, 22.10.2026: «здесь данные тоже без первой главы»)."""
+    from openpyxl import Workbook
+
+    def book(rows) -> Path:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Расчет стоимости строительства"
+        ws.cell(row=9, column=7, value="Утвержденная фин.модель проекта")
+        ws.cell(row=8, column=11, value="Средства на завершение согласно бюджету")
+        ws.cell(row=8, column=9, value="Оплачено по состоянию")
+        row = 10
+        for code, approved in rows:
+            ws.cell(row=row, column=1, value=code)
+            ws.cell(row=row, column=7, value=approved)
+            row += 1
+        ws.cell(row=row, column=2, value="Всего инвестиционные расходы глава 2, 3")
+        ws.cell(row=row, column=7, value=6000.0)
+        path = tmp_path / f"finance_{row}.xlsx"
+        wb.save(path)
+        return path
+
+    # Код главы числом 1.0 — та же строка «1».
+    got = dashboard._read_finance_baseline(book([(1.0, 500.0), ("1.1", 300.0)]))
+    assert got["chapters"] == ["1", "2", "3"] and got["approved"] == 6500.0
+    # Нет строки «1», есть статьи 1.1 и 1.2 — глава 1 из них, без двойного счёта.
+    got = dashboard._read_finance_baseline(book([("1.1", 300.0), ("1.1.1", 100.0), ("1.2", 200.0)]))
+    assert got["chapters"] == ["1", "2", "3"] and got["approved"] == 6500.0
+    assert got["chapters_reason"] == ""
+    got = dashboard._read_finance_baseline(book([("2.1", 10.0)]))
+    assert got["chapters"] == ["2", "3"] and "нет строки главы 1" in got["chapters_reason"]
+
+
+def test_the_funding_card_explains_the_remaining_limit(monkeypatch):
+    """Остаток лимита — лимит минус оплаченное с поправками, и они названы."""
+    monkeypatch.setattr(dashboard, "_finance_baseline", lambda _: {
+        "known": True, "source": "f.xlsx", "completion_need_at_baseline": 1000.0,
+        "paid_at_baseline": 100.0, "reserve": 0.0, "reserve_parts": {}, "monthly_need": {},
+        "tail_after_apr": 0.0, "chapters": ["1", "2", "3"], "chapters_reason": "",
+        "articles": {"1.1": {"rss_limit": 100.0, "paid_at_baseline": 0.0, "monthly_need": {}},
+                     "2.2": {"rss_limit": 500.0, "paid_at_baseline": 0.0, "monthly_need": {}}}})
+    monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {
+        "rows": [], "by_code": {"1": {"estimate": 100.0}, "2": {"estimate": 500.0},
+                                "3": {"estimate": 50.0}}})
+    monkeypatch.setattr(dashboard, "_paid_in_chapters",
+                        lambda *_: {"total": 350.0, "borrowed": 300.0})
+    monkeypatch.setattr(dashboard, "_payment_by_code", lambda _: {"1.1": 150.0, "2.2": 200.0})
+    view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
+    got = dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 8, 20), view)
+    assert got["chapters_label"] == "1–3" and got["paid_borrowed"] == 300.0
+    # Статья 1.1 перерасходована на 50 — идёт нулём; остаток 300 = 650 − 350 − 50(перерасход) + 50(книга без 3)
+    assert got["bank_remaining"] == 300.0
+    assert got["remaining_check"] == {"plain": 300.0, "overpaid": 50.0,
+                                      "book_gap": pytest.approx(-50.0), "remaining": 300.0}

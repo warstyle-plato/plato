@@ -215,6 +215,7 @@ PAGE += r"""</head>
       <div class="card site-card">
         <div class="section-title">Участок и плотность</div>
         <div id="otherRegionNote" class="note warning" style="display:none"></div>
+        <div id="siteAreaWarning" class="note warning" style="display:none"></div>
         <div class="fields site-fields">
           <div class="field">
             <label>Площадь участка <span class="unit">га</span></label>
