@@ -55,7 +55,19 @@ def product_info() -> dict[str, str]:
         data = json.loads((_LEGAL_DIR / "product.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    return ({str(k): str(v) for k, v in data.items() if not isinstance(v, (dict, list))}
+            if isinstance(data, dict) else {})
+
+
+def seller_info() -> dict[str, str]:
+    """Реквизиты продавца — из того же `docs/legal/product.json` (блок `seller`).
+    Пустое значение — «не задано», страница так и пишет, а не выдумывает."""
+    try:
+        data = json.loads((_LEGAL_DIR / "product.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    seller = data.get("seller") if isinstance(data, dict) else None
+    return {str(k): str(v or "") for k, v in seller.items()} if isinstance(seller, dict) else {}
 
 
 def product_registration_line() -> str:
@@ -77,9 +89,19 @@ def legal_text(name: str) -> tuple[str, bool]:
 
 # --- настройки ----------------------------------------------------------------
 
-def _yookassa_keys() -> tuple[str, str]:
-    return (_env_str("YOOKASSA_SHOP_ID", "").strip(),
-            _env_str("YOOKASSA_SECRET_KEY", "").strip())
+def _yookassa_keys(test: bool = False) -> tuple[str, str]:
+    """Ключи магазина. `test` — тестовый магазин ЮKassa: им пользуется только
+    демо-доступ для проверяющих, настоящих денег там нет."""
+    prefix = "YOOKASSA_TEST_" if test else "YOOKASSA_"
+    return (_env_str(f"{prefix}SHOP_ID", "").strip(),
+            _env_str(f"{prefix}SECRET_KEY", "").strip())
+
+
+def demo_payments_mode() -> str:
+    """Как платит демо-доступ: `test` — тестовый магазин ЮKassa (ключи заданы),
+    `preview` — без магазина: показываем, где откроется форма, без списания."""
+    shop, secret = _yookassa_keys(test=True)
+    return "test" if shop and secret else "preview"
 
 
 def payments_missing() -> list[str]:
@@ -133,8 +155,8 @@ def payment_offer_item(kind: str, plot: dict[str, Any] | None = None) -> dict[st
 # --- API ЮKassa -----------------------------------------------------------------
 
 def _yookassa_call(method: str, path: str, body: dict[str, Any] | None = None,
-                   idempotence_key: str = "") -> dict[str, Any]:
-    shop, secret = _yookassa_keys()
+                   idempotence_key: str = "", test: bool = False) -> dict[str, Any]:
+    shop, secret = _yookassa_keys(test)
     token = base64.b64encode(f"{shop}:{secret}".encode("utf-8")).decode("ascii")
     headers = {"Authorization": f"Basic {token}", "Accept": "application/json"}
     data = None
@@ -162,9 +184,11 @@ def _yookassa_call(method: str, path: str, body: dict[str, Any] | None = None,
 
 
 def payment_create(chat: int, kind: str, plot: dict[str, Any] | None, email: str,
-                   return_url: str) -> dict[str, Any]:
-    """Создать платёж. Права не выдаёт: их выдаст подтверждённый платёж."""
-    _payments_refuse()
+                   return_url: str, test: bool = False) -> dict[str, Any]:
+    """Создать платёж. Права не выдаёт: их выдаст подтверждённый платёж.
+    `test` — тестовый магазин для демо-доступа: денег нет, договор не нужен."""
+    if not test:
+        _payments_refuse()
     email = str(email or "").strip()
     if not _PAYMENT_EMAIL_RE.fullmatch(email):
         raise HTTPException(status_code=400,
@@ -172,6 +196,8 @@ def payment_create(chat: int, kind: str, plot: dict[str, Any] | None, email: str
     item = payment_offer_item(kind, plot)
     metadata = {"chat": str(int(chat)), "kind": item["kind"], "days": str(item["days"]),
                 "price": str(item["price_rub"])}
+    if test:
+        metadata["demo"] = "1"
     if item["kind"] == "plot":
         if not plot or not plot.get("key"):
             raise HTTPException(
@@ -205,7 +231,8 @@ def payment_create(chat: int, kind: str, plot: dict[str, Any] | None, email: str
                                             "intellectual_activity").strip(),
             }],
         }
-    payment = _yookassa_call("POST", "/payments", body, idempotence_key=uuid.uuid4().hex)
+    payment = _yookassa_call("POST", "/payments", body, idempotence_key=uuid.uuid4().hex,
+                             test=test)
     url = str(((payment.get("confirmation") or {}).get("confirmation_url")) or "")
     if not url:
         raise HTTPException(status_code=502, detail="ЮKassa не вернула страницу оплаты.")
@@ -264,6 +291,13 @@ def payment_apply(payment: dict[str, Any]) -> dict[str, Any]:
         _PAYMENTS_LOG.error("Платёж %s не выдан: metadata или сумма не сошлись", payment.get("id"))
         return {"granted": False, "status": status,
                 "reason": "сумма или назначение платежа не сошлись с заказом"}
+    # Платёж тестового магазина открывает только демо-доступ, и наоборот: иначе
+    # тестовая «оплата» без денег открыла бы участок настоящему человеку.
+    if (meta.get("demo") == "1") != demo_chat(chat):
+        _PAYMENTS_LOG.error("Платёж %s не выдан: тестовый платёж и демо-доступ не совпали",
+                            payment.get("id"))
+        return {"granted": False, "status": status,
+                "reason": "тестовый платёж открывает только демо-доступ"}
     subscription = meta.get("kind") == "subscription"
     plot = None if subscription else _payment_plot(meta)
     result = _access_grant_routed(chat, plot=plot, subscription=subscription, days=days,
@@ -273,10 +307,10 @@ def payment_apply(payment: dict[str, Any]) -> dict[str, Any]:
             "repeated": bool(result.get("repeated"))}
 
 
-def _payment_fetch(payment_id: str) -> dict[str, Any]:
+def _payment_fetch(payment_id: str, test: bool = False) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f-]{20,64}", str(payment_id or "")):
         raise HTTPException(status_code=400, detail="Неверный номер платежа.")
-    return _yookassa_call("GET", f"/payments/{payment_id}")
+    return _yookassa_call("GET", f"/payments/{payment_id}", test=test)
 
 
 def _webhook_ip_allowed(request: Request) -> bool:
@@ -358,6 +392,19 @@ def payments_create(req: PaymentCreateRequest, request: Request) -> dict[str, An
         own = _project_cadastral_numbers(req.inputs or {})
         plot = access_plot(req.inputs, None if own else (list(req.cadastral or []) or None))
     usage_track("payment_create", surface="site", chat_id=chat, tariff=req.kind)
+    if demo_chat(chat):
+        # Демо-доступ проверяющих: тестовый магазин, а без него — пояснение,
+        # где откроется форма. Настоящих денег демо не платит никогда.
+        if demo_payments_mode() == "preview":
+            item = payment_offer_item(req.kind, plot)
+            price = f"{int(item['price_rub']):,}".replace(",", "\u00a0")
+            return {"preview": True, "message": (
+                f"Здесь откроется платёжная форма ЮKassa на {price}\u00a0₽"
+                f"{' (' + item['vat_note'] + ')' if item['vat_note'] else ''}: оплата картой "
+                "или через СБП, чек придёт на указанную почту. Это демо-доступ, "
+                "поэтому деньги не списываются.")}
+        return payment_create(chat, req.kind, plot, req.email, _payment_return_url(request),
+                              test=True)
     return payment_create(chat, req.kind, plot, req.email, _payment_return_url(request))
 
 
@@ -367,8 +414,10 @@ def payments_status(req: PaymentStatusRequest) -> dict[str, Any]:
     chat = _web_identity_chat_id(req.session)
     if not chat:
         _require_web_access("", "", "Проверка оплаты")
-    _payments_refuse()
-    payment = _payment_fetch(req.payment_id)
+    demo = demo_chat(chat)
+    if not demo:
+        _payments_refuse()
+    payment = _payment_fetch(req.payment_id, test=demo)
     if str((payment.get("metadata") or {}).get("chat") or "") != str(chat):
         raise HTTPException(status_code=403, detail="Этот платёж оформлен другим пользователем.")
     result = payment_apply(payment)
@@ -481,7 +530,10 @@ def _legal_page(name: str, title: str) -> HTMLResponse:
         else:
             paragraphs.append(f"<p>{html.escape(block).replace(chr(10), '<br>')}</p>")
     if not filled:
-        paragraphs.append("<p><i>Текст документа готовится. До его публикации оплата на сайте не принимается.</i></p>")
+        paragraphs.insert(0, (
+            "<p style=\"background:#fff4e5;border:1px solid #f0c27a;padding:10px 12px\"><b>Заготовка.</b> "
+            "Текст документа готовится и ещё не опубликован. До его публикации оплата на сайте "
+            "не принимается.</p>"))
     registration = product_registration_line()
     if registration:
         paragraphs.append(f"<p style=\"color:#666\">{html.escape(registration)}.</p>")

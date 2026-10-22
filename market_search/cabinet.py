@@ -594,6 +594,7 @@ __DEVELOPAID_BNMAP__
        каком блоке спросит — написано на самой кнопке; груз даёт он же. -->
 __DEVELOPAID_PLATO_LAUNCHER__
 __DEVELOPAID_PLATO_DRAWER__
+__DEVELOPAID_LAND_MAP_DIALOG__
   <footer class="plato-footer">
     <img src="/assets/platon-quote.webp" alt="Платон Сергеевич Федоскин: «Хорошие дома начинаются с правильных вопросов»" loading="lazy">
   </footer>
@@ -601,6 +602,7 @@ __DEVELOPAID_PLATO_DRAWER__
 </main>
 <script>
 __DEVELOPAID_PLATO_PACK__
+__DEVELOPAID_LAND_MAP_KIT__
 const $=s=>document.querySelector(s);
 // Кабинет отдаётся тремя видами, и элемента на этом виде может не быть
 // вовсе. Необработанная ошибка в этом скрипте гасит страницу целиком —
@@ -1453,13 +1455,43 @@ function essayCard(d){
 // Карта соседей и «Карта рынка» — общие для обеих поверхностей, как вердикт и
 // разбор. Контейнер пузырьков задаётся именем: на одной странице две карточки,
 // и повторённый `id="bubble"` сделал бы вторую невидимой для переключателя.
+// Живая карта соседей — та же движковая, что у участка и КРТ (`openLandMap`):
+// там переключатель «Схема / Гибрид», и снимок Яндекса виден только в ней.
+// Печатная схема выше остаётся картой улиц: снимок в отчёт не уходит.
+const GEO_LIVE=[];
+function geoDot(lat, lon, metres){
+  // Точка — маленьким восьмиугольником: живая карта рисует контуры, а не
+  // значки. Радиус в метрах земли, переведённых в меркаторные.
+  const k=Math.cos(lat*Math.PI/180), r=metres/k, x=mercX(lon), y=mercY(lat);
+  return [[...Array(9).keys()].map(i=>[x+r*Math.cos(i*Math.PI/4), y+r*Math.sin(i*Math.PI/4)])];
+}
+function openGeoLive(index){
+  const item=GEO_LIVE[index];
+  if(!item||typeof openLandMap!=='function') return;
+  const {market, subject}=item;
+  const pts=(market||[]).filter(p=>!p.__own&&p.latitude!=null&&p.longitude!=null);
+  openLandMap({
+    rings:geoDot(subject.latitude, subject.longitude, 40),
+    shapes:pts.map((p,i)=>({rings:geoDot(p.latitude, p.longitude, 30),
+      colour:CLASS_COLOR[p.segment]||'#9dc2e6', key:String(i),
+      title:[p.name, p.segment, p.address].filter(Boolean).join(' — ')})),
+    title:'Соседи на карте',
+    note:'Тяните карту мышью или пальцем, колесом мыши меняйте масштаб. Объект оценки — в тёмной '
+      +'обводке, соседи — цветом класса; имя соседа видно при наведении.',
+  });
+}
 function geoCard(market, subject, peers){
   const geoSvg=mapChart(market, subject);
   if(!geoSvg) return '';
+  const live=GEO_LIVE.push({market, subject})-1;
   // Сосед без координат в схему не попадает, и молчать об этом нельзя:
   // отсутствие точки читается как отсутствие соседа.
   const noGeo=(peers||[]).filter(p=>p.latitude==null||p.longitude==null).length;
   return `<div class="card"><h2>Где соседи</h2>`+geoSvg
+    +(typeof openLandMap==='function'
+      ?`<div class="noprint" style="margin-top:8px"><button type="button" class="pdfbtn"`
+        +` onclick="openGeoLive(${live})">Открыть живую карту — схема или снимок со спутника</button></div>`
+      :'')
     +`<div class="muted" style="font-size:12.5px;margin-top:8px">Кольца — расстояние`
     +` от объекта по прямой, а не по дороге: через реку или пути восемьсот метров`
     +` бывают тремя километрами. Цвет точки — класс, обводка — отмеченный на графиках.`
@@ -5018,6 +5050,7 @@ def cabinet_page(view: str = "home") -> str:
     import plato_question
 
     from . import bnmap_ui
+    from auction_search import land_map
 
     if view not in _KEEP:
         raise ValueError(f"неизвестный вид кабинета: {view}")
@@ -5044,7 +5077,20 @@ def cabinet_page(view: str = "home") -> str:
         # пока «Пульс» и bnMAP не сверены на живых числах, в сборке
         # отчёта менять нечего (владелец, 30.08.2026).
         .replace(bnmap_ui.PLACEHOLDER, bnmap_ui.markup())
+        # Живая карта движка — та же, что у участка и КРТ: копии здесь нет.
+        .replace(land_map.PLACEHOLDER, land_map.script(_engine_core()))
+        .replace(land_map.MARKUP_PLACEHOLDER, land_map.markup(_engine_core()))
     )
+
+
+def _engine_core():
+    """Движок для живой карты; нет движка — карты нет, и кнопка не рисуется."""
+    try:
+        import main_legacy
+
+        return main_legacy
+    except Exception:
+        return None
 
 
 def login_page(error: str = "") -> str:

@@ -90,6 +90,7 @@ def test_the_admin_section_is_for_admins_only():
 
 
 def test_the_admin_grants_by_hand_and_sees_it():
+    core.users_touch(CHAT, surface="telegram", name="Иван Петров")
     session = core._telegram_session(ADMIN, [])
     answer = client.post("/access/admin/grant", json={
         "session": session, "chat": CHAT, "kind": "plot", "cadastral": [A1], "days": 7,
@@ -116,6 +117,7 @@ def test_the_bot_shows_the_same_tariffs(monkeypatch):
 
 
 def test_the_bot_grant_is_for_admins(monkeypatch):
+    core.users_touch(CHAT, surface="telegram", name="Иван Петров")
     sent: list[str] = []
     monkeypatch.setattr(_wrapper, "_send_message", lambda chat, text, **kw: sent.append(text))
     _wrapper._grant_command(CHAT, CHAT, f"{CHAT} 30 {A1}")
@@ -168,3 +170,56 @@ def test_the_tariffs_open_on_the_drawn_page(monkeypatch, tmp_path):
     assert "войдите через Telegram" in text
     assert "свидетельство № 2026691589" in footer
     assert not errors, errors
+
+
+def test_a_grant_to_an_unknown_id_is_refused_and_names_the_recipient():
+    """Опечатка в номере не открывает доступ несуществующему человеку, а удачная
+    выдача говорит, кому и что выдано (замечание владельца, 22.10.2026)."""
+    refused = client.post("/access/admin/grant", json={"key": "kluch", "chat": 1,
+                                                       "kind": "subscription"})
+    assert refused.status_code == 400 and "ещё не было" in refused.json()["detail"]
+    assert not core.access_status(1)["subscription_active"]
+    core.users_touch(CHAT, surface="telegram", name="Иван Петров")
+    granted = client.post("/access/admin/grant", json={
+        "key": "kluch", "chat": CHAT, "kind": "plot",
+        "cadastral": [A1, "50:20:0010101:32"]}).json()
+    assert granted["who"] == f"Иван Петров (ID {CHAT})"
+    assert granted["what"].startswith("участок 50:20:0010101:31, 50:20:0010101:32")
+    # Набор открывает и любую свою часть.
+    assert core.access_use(CHAT, core.access_plot(cadastral=[A1]))["allowed"]
+
+
+def test_the_grant_form_names_its_fields_on_the_drawn_page(monkeypatch):
+    """Подписи полей видны и после ввода; подписка прячет поле номеров; срок — 30."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import browser
+
+    core.users_touch(CHAT, surface="telegram", name="Иван Петров")
+    admin_session = core._telegram_session(ADMIN, [])
+    path = browser.chromium_or_skip()
+    with browser.serve(core.app, 18975) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            page = engine.new_page(viewport={"width": 1280, "height": 900})
+            page.add_init_script(
+                f"localStorage.setItem('developaid_web_session', {json.dumps(admin_session)})")
+            page.goto(base, wait_until="networkidle")
+            page.click("#tariffsButton")
+            page.wait_for_function(
+                "document.querySelector('#grantChat option[value=\"" + str(CHAT) + "\"]')")
+            form = page.inner_text(".grant-form")
+            assert "Кому выдать доступ" in form and "Кадастровые номера участка" in form
+            assert "несколько участков" in form
+            assert page.input_value("#grantDays") == "30"
+            assert "Иван Петров" in page.inner_text("#grantChat")
+            page.select_option("#grantKind", "subscription")
+            assert not page.locator("#grantCadastralRow").is_visible()
+            page.select_option("#grantChat", str(CHAT))
+            page.click(".grant-form button:has-text('Выдать доступ')")
+            page.wait_for_function(
+                "document.getElementById('accessAdminStatus').textContent.includes('Выдано')")
+            status = page.inner_text("#accessAdminStatus")
+            page.close()
+    assert "подписка" in status and "Иван Петров" in status

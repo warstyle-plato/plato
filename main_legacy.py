@@ -352,6 +352,10 @@ _engine_part("access_rights")
 # реквизиты продукта лежат в engine/payments.py.
 _engine_part("payments")
 
+# Публичные «Тарифы» и «Контакты» и демо-доступ для проверяющих ЮKassa —
+# engine/review_demo.py.
+_engine_part("review_demo")
+
 
 # Локальные сценарии кнопок Платона и маршруты /agent/* вынесены
 # в engine/agent_routes.py и выполняются здесь же, в пространстве имён

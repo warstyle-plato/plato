@@ -309,11 +309,13 @@ def scoped(request) -> dict[str, Any] | None:
 # Запросы вне /auctions, без которых страница торгов не работает: подложка
 # карты, снимок карты и контекст участка лота. Все — чтение.
 _EXTRA_GET = frozenset({"/land/basemap", "/land/map-image",
+                        # Какие виды подложки есть у живой карты (схема/гибрид).
+                        "/land/basemap-views",
                         # Юридические документы из подвала страницы торгов:
                         # согласие и политику человек вправе прочитать.
                         "/consent", "/privacy", "/ads-consent",
                         # Договор и условия возврата — те же документы подвала.
-                        "/offer", "/refund"})
+                        "/offer", "/refund", "/tariffs", "/contacts"})
 _EXTRA_POST = frozenset({"/land/lot-context"})
 # Статика оформления (логотип и т.п.) — не данные.
 _STATIC_PREFIXES = ("/guide/assets/",)
