@@ -57,9 +57,11 @@ REPORT_PAGE = """<!doctype html>
 #reportBox h2.block{break-before:auto;page-break-before:auto}#reportBox h2.block{scroll-margin-top:12px}
 @media (max-width:700px){#reportBox .tiles{grid-template-columns:repeat(2,1fr)}
 #reportBox{padding:12px 10px}
-#reportBox table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+#reportBox td:first-child,#reportBox th:first-child{min-width:150px}}
+/* Широкая таблица прокручивается внутри своей рамки и на планшете: при 760px
+   шесть колонок эскроу обрезались справа, а первая сжималась до буквы в строку. */
+@media (max-width:900px){#reportBox table{display:block;max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
 #reportBox td,#reportBox th{overflow-wrap:normal;word-break:normal}
-#reportBox td:first-child,#reportBox th:first-child{min-width:150px}
 #reportBox svg,#reportBox img{max-width:100%;height:auto}}
 #reportBox{overflow-wrap:anywhere;min-width:0}
 .files .field{min-width:0;max-width:100%}.files select,.files input{max-width:100%}
