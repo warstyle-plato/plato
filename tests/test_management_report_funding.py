@@ -346,6 +346,26 @@ def test_the_draws_follow_the_chapters_of_the_limit(monkeypatch):
     assert "с ноября 2026" in page and "с ноябрь" not in page
 
 
+def test_a_gap_equal_to_the_reserve_is_not_shown(monkeypatch):
+    """«Зачем эта запись?» (владелец, 22.10.2026) — строка «Лимиты статей финкниги
+    против сметы РСС −306,2 млн ₽» равнялась резерву 306,1 млн ₽: Монитор
+    теперь учитывает резерв, а сводка строку с нулевой разницей не печатает."""
+    import developaid_monitor_dashboard as dashboard
+
+    waterfall = {"opening_bank_remaining": 1_240 * M, "opening_article_deficit": 0.0}
+    check = dashboard._remaining_check(6_810 * M, 5_264 * M, waterfall, reserve=306.1 * M)
+    assert abs(check["book_gap"]) < 0.001 * 6_810 * M
+    _project()
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {"funding": {
+        "known": True, "chapters": ["1", "2", "3"], "chapters_label": "1–3",
+        "bank_limit": 6_810 * M, "paid_actual": 5_264 * M, "bank_remaining": 1_240 * M,
+        "reserve": 306.1 * M, "additional_financing": 1_080 * M,
+        "additional_financing_from": "2026-11-01", "remaining_check": check}}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    assert "Лимиты по статьям против общего лимита" not in report.render_html(built)
+    assert "лимиты по статьям" not in report.render_text(built)
+
+
 def test_without_chapter_one_the_report_stays_plain(monkeypatch):
     """Причина «без главы 1» — для команды в Мониторе; сводка её не печатает."""
     _project()

@@ -667,7 +667,8 @@ def _deficit_ladder(waterfall: dict[str, Any], reserve: float,
     return out
 
 
-def _remaining_check(limit: float, paid: float, waterfall: dict[str, Any]) -> dict[str, float]:
+def _remaining_check(limit: float, paid: float, waterfall: dict[str, Any],
+                     reserve: float = 0.0) -> dict[str, float]:
     """Из чего складывается остаток лимита: лимит − оплачено + поправки.
 
     Плашки «лимит 4,64 · выбрано 4,80 · остаток 1,00» не сходились
@@ -675,12 +676,18 @@ def _remaining_check(limit: float, paid: float, waterfall: dict[str, Any]) -> di
     всё оплаченное по ней (кредит и свои деньги), а статья с перерасходом
     идёт нулём. Здесь разница названа: перерасход статей и расхождение
     смет статей финкниги с итогом РСС — остаток, а не округление.
+
+    Резерв (статьи 2.8/2.9) из статей вынут и стоит своей строкой, поэтому
+    сумма статей меньше сметы РСС ровно на него; это не расхождение книги со
+    сметой, а то же число второй раз (владелец, 22.10.2026, строка
+    «−306,2 млн ₽»: «Зачем эта запись?»). Разница считается с его учётом.
     """
     remaining = float(waterfall.get("opening_bank_remaining") or 0.0)
     overpaid = float(waterfall.get("opening_article_deficit") or 0.0)
     plain = float(limit or 0.0) - float(paid or 0.0)
     return {"plain": plain, "overpaid": overpaid,
-            "book_gap": remaining - plain - overpaid, "remaining": remaining}
+            "book_gap": remaining - plain - overpaid + float(reserve or 0.0),
+            "remaining": remaining}
 
 
 def _bank_need_check(remaining_need: float, reserve: float,
@@ -799,7 +806,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         # Выборка кредита по тем же главам, что лимит: «лимит − выбрано» и
         # «лимит − оплачено» читаются от одной базы.
         "paid_borrowed": paid["borrowed"],
-        "remaining_check": _remaining_check(current["limit"], paid_actual, waterfall),
+        "remaining_check": _remaining_check(current["limit"], paid_actual, waterfall,
+                                            float(baseline.get("reserve") or 0.0)),
         # Второй остаток потребности по тем же главам 2–3: утверждённый бюджет
         # минус оплаченное. С «средствами на завершение» они расходятся, и обе
         # величины считает сервер — экран их только показывает.
