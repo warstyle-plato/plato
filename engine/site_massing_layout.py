@@ -152,11 +152,12 @@ def _largest_rectangle(rings: list[list[list[float]]]) -> tuple[float, float, fl
     return (min_x + c0 * step, min_y + r0 * step, min_x + c1 * step, min_y + r1 * step)
 
 
-def _site_rings_m(x: dict[str, Any]) -> list[list[list[float]]]:
-    """Контур участка из ЕГРН (`_land_lookup`) в метрах от его центра.
+def _site_rings_m(x: dict[str, Any]) -> tuple[list[list[list[float]]], dict[str, float]]:
+    """Контур участка из ЕГРН (`_land_lookup`) в метрах от его центра → (кольца, рамка).
 
     Кольца приходят в веб-меркаторе: метр в нём растянут на 1/cos(широты),
-    поэтому координаты умножаются на cos(широты центра).
+    поэтому координаты умножаются на cos(широты центра). Рамка — центр и
+    множитель: по ней корпуса возвращаются в меркатор для карты участка.
     """
     lookup = x.get("_land_lookup") or {}
     items = lookup.get("results") if isinstance(lookup, dict) else None
@@ -167,14 +168,14 @@ def _site_rings_m(x: dict[str, Any]) -> list[list[list[float]]]:
              for ring in (item.get("contour_merc") or [])
              if isinstance(ring, list) and len(ring) >= 3]
     if not rings:
-        return []
+        return [], {}
     xs = [p[0] for ring in rings for p in ring]
     ys = [p[1] for ring in rings for p in ring]
     cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
     lat = _math.degrees(2 * _math.atan(_math.exp(cy / 6378137.0)) - _math.pi / 2)
     k = _math.cos(_math.radians(lat))
     out = [_clean_ring([[(p[0] - cx) * k, (p[1] - cy) * k] for p in ring]) for ring in rings]
-    return [ring for ring in out if len(ring) >= 3]
+    return [ring for ring in out if len(ring) >= 3], {"cx": cx, "cy": cy, "k": k}
 
 
 def _rotate(rings: list[list[list[float]]], angle: float) -> list[list[list[float]]]:
@@ -293,10 +294,11 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
     limit = given_limit if given_limit > 0 else float(LAYOUT_STOREYS_LIMIT_DEFAULT)
     notes: list[str] = []
 
-    rings = _site_rings_m(x)
+    rings, frame = _site_rings_m(x)
     if rings:
         shape_origin = "contour"
-        rings = _rotate(rings, -_main_direction(rings))
+        frame["angle"] = _main_direction(rings)
+        rings = _rotate(rings, -frame["angle"])
         contour_sqm = sum(abs(_ring_area(r)) for r in rings)
         if site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
             notes.append(f"Площадь контура из ЕГРН ({_fmt_ru(contour_sqm)} м²) заметно отличается "
@@ -323,6 +325,8 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
             c["rect_m"] = [round(r[0] + x0, 2), round(r[1] + y0, 2),
                            round(r[2] + x0, 2), round(r[3] + y0, 2)]
             c["rect_origin"] = "schema"
+            if frame:
+                c["ring_merc"] = _to_merc(c["rect_m"], frame)
     if shrink > 1.0001:
         notes.append("Корпуса такой площади не помещаются на участке рядами, поэтому на схеме "
                      f"они уменьшены в {_fmt_ru(shrink ** 2, 1)} раза. Площади и этажность "
@@ -346,9 +350,31 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
         "storeys_limit_origin": "manual" if given_limit > 0 else "default",
         "schema_shrink": shrink,
         "underground_levels": int(massing.get("underground_levels") or 0),
+        # Уровни под землёй — те же, по которым взята ставка: площадь уровня и
+        # полезная площадь одного уровня в контуре.
+        "underground_level_rows": [{"level": int(r.get("level") or 0),
+                                    "area_sqm": float(r.get("area_sqm") or 0.0)}
+                                   for r in massing.get("underground_level_rows") or []],
+        "underground_level_capacity_sqm": float(massing.get("underground_contour_sqm") or 0.0)
+        * float(massing.get("underground_use_factor") or 0.0),
         "buildings": corpora,
         "notes": notes,
     }
+
+
+def _to_merc(rect: list[float], frame: dict[str, float]) -> list[list[float]]:
+    """Прямоугольник схемы → кольцо в метрах веб-меркатора (карта участка).
+
+    Обратное к `_site_rings_m` и повороту схемы: поворот назад, деление на
+    cos(широты), сдвиг к центру контура.
+    """
+    x0, y0, x1, y1 = rect
+    c, s = _math.cos(frame["angle"]), _math.sin(frame["angle"])
+    out = []
+    for px, py in ((x0, y0), (x1, y0), (x1, y1), (x0, y1)):
+        rx, ry = px * c - py * s, px * s + py * c
+        out.append([round(frame["cx"] + rx / frame["k"], 2), round(frame["cy"] + ry / frame["k"], 2)])
+    return out
 
 
 def _storeys_word(count: int) -> str:
@@ -362,6 +388,12 @@ def _storeys_word(count: int) -> str:
     else:
         word = "этажей"
     return f"{count} {word}"
+
+
+def _levels_word(count: int) -> str:
+    words = {1: "один подземный уровень", 2: "два подземных уровня", 3: "три подземных уровня",
+             4: "четыре подземных уровня"}
+    return words.get(count, f"{count} подземных уровней")
 
 
 def _shade(color: str, factor: float) -> str:
@@ -390,12 +422,58 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
         return [round((px - py) * cos30, 2), round(-(px + py) * sin30 - pz, 2)]
 
     shapes: list[dict[str, Any]] = []
+    texts: list[dict[str, Any]] = []
+    under = [r for r in layout.get("underground_rings") or [] if len(r) >= 3]
+    rows = layout.get("underground_level_rows") or []
+    capacity = float(layout.get("underground_level_capacity_sqm") or 0.0)
+    h = LAYOUT_STOREY_HEIGHT_M
+    # Подземные уровни — плиты под участком, раздвинутые по высоте, чтобы
+    # каждая была видна: шаг — не меньше двух этажей и около пятой части
+    # размера подземного контура. Плита неполного уровня сжата к центру по
+    # своей площади. Земля над ними полупрозрачная.
+    inner_pts = [p for ring in under for p in ring]
+    extent = max((max(p[i] for p in inner_pts) - min(p[i] for p in inner_pts) for i in (0, 1)),
+                 default=0.0)
+    step = max(2 * h, 0.2 * extent)
+    for row in sorted(rows, key=lambda r: r["level"]):
+        depth = abs(int(row["level"]))
+        z_top = -depth * step + h
+        z_bottom = z_top - h
+        share = min(1.0, row["area_sqm"] / capacity) if capacity > 0 else 1.0
+        k = _math.sqrt(share)
+        fill = _shade("#a89f8f", 1.0 + 0.12 * (depth - 1))
+        for ring in under:
+            cx = sum(p[0] for p in ring) / len(ring)
+            cy = sum(p[1] for p in ring) / len(ring)
+            level_ring = [[cx + (p[0] - cx) * k, cy + (p[1] - cy) * k] for p in ring]
+            sign = 1.0 if _ring_area(level_ring) > 0 else -1.0
+            for i in range(len(level_ring)):
+                (ax, ay), (bx, by) = level_ring[i], level_ring[(i + 1) % len(level_ring)]
+                # Наружная нормаль стороны смотрит к зрителю (к малым x + y).
+                nx, ny = (by - ay) * sign, -(bx - ax) * sign
+                if nx + ny >= 0:
+                    continue
+                shapes.append({"kind": "underground_wall", "level": row["level"],
+                               "points": [project(ax, ay, z_top), project(bx, by, z_top),
+                                          project(bx, by, z_bottom), project(ax, ay, z_bottom)],
+                               "fill": _shade(fill, 0.8 if abs(nx) > abs(ny) else 0.66),
+                               "stroke": "#6f6759", "width": 0.6})
+            shapes.append({"kind": "underground_level", "level": row["level"],
+                           "points": [project(px, py, z_top) for px, py in level_ring],
+                           "fill": _shade(fill, 1.35), "stroke": "#6f6759", "width": 0.6})
+        front = min(inner_pts, key=lambda p: p[0] - p[1], default=None)
+        if front:
+            tx, ty = project(front[0], front[1], z_top - h / 2)
+            texts.append({"x": tx, "y": ty, "anchor": "end", "level": row["level"],
+                          "text": f"−{depth}: {_fmt_ru(row['area_sqm'])} м²"})
     for ring in site:
         shapes.append({"kind": "site", "points": [project(*p) for p in ring],
-                       "fill": "#f3f4ee", "stroke": "#6c8a52", "width": 1.2})
-    for ring in layout.get("underground_rings") or []:
+                       "fill": "#f3f4ee", "stroke": "#6c8a52", "width": 1.2,
+                       "opacity": 0.6 if texts else 1.0})
+    for ring in under:
         shapes.append({"kind": "underground", "points": [project(*p) for p in ring],
-                       "fill": "#dbe7cd", "stroke": "#55606b", "width": 1.0, "dash": [5, 4]})
+                       "fill": "#dbe7cd", "stroke": "#55606b", "width": 1.0, "dash": [5, 4],
+                       "opacity": 0.6 if texts else 1.0})
     labels: list[dict[str, Any]] = []
     order = sorted(range(len(buildings)),
                    key=lambda i: -((buildings[i]["rect_m"][0] + buildings[i]["rect_m"][2])
@@ -421,7 +499,21 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
         labels.append({"x": cx, "y": cy, "text": str(b["number"]), "building": b["number"]})
     xs = [p[0] for s in shapes for p in s["points"]]
     ys = [p[1] for s in shapes for p in s["points"]]
-    pad = 0.04 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+    size = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+    font = round(0.045 * size, 2)
+    last_y = None
+    for t in sorted(texts, key=lambda t: -t["level"]):
+        # Подпись уровня стоит левее стены, подписи не наезжают друг на друга;
+        # место под них входит в рамку.
+        t["x"] = round(t["x"] - 0.4 * font, 2)
+        t["y"] = t["y"] + 0.35 * font
+        if last_y is not None and t["y"] < last_y + 1.2 * font:
+            t["y"] = last_y + 1.2 * font
+        last_y = t["y"]
+        t["y"] = round(t["y"], 2)
+        xs.append(t["x"] - 0.56 * font * len(t["text"]))
+        ys.extend([t["y"] - font, t["y"] + 0.3 * font])
+    pad = 0.04 * size
     legend = [{"number": b["number"], "phase": b["phase"], "text": b["label"],
                "line": f"{b['number']} — {b['label']}, пятно {_fmt_ru(b['area_sqm'])} м²",
                "area_sqm": b["area_sqm"],
@@ -429,14 +521,17 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
               for b in buildings]
     levels = int(layout.get("underground_levels") or 0)
     caption = ("Зелёное — участок без отступов, светлая полоса вдоль границ — отступ, пунктир — "
-               "граница подземной части" + (f" (подземных уровней: {levels})" if levels > 0 else "")
-               + ". Корпуса окрашены по очередям, номер на крыше — номер строки в списке под схемой.")
+               "граница подземной части. "
+               + (f"Под участком — {_levels_word(levels)} с площадью каждого; по высоте они "
+                  "раздвинуты, чтобы был виден каждый. " if texts else "")
+               + "Корпуса окрашены по очередям, номер на крыше — номер строки в списке под схемой.")
     footer = ("Корпуса расставлены рядами для наглядности: реальный генплан расчёт не угадывает. "
               f"Высота на схеме — по {_fmt_ru(LAYOUT_STOREY_HEIGHT_M)} м на этаж.")
     return {"caption": caption, "footer": footer,
             "viewbox": [round(min(xs) - pad, 2), round(min(ys) - pad, 2),
                         round(max(xs) - min(xs) + 2 * pad, 2), round(max(ys) - min(ys) + 2 * pad, 2)],
-            "shapes": shapes, "labels": labels, "legend": legend,
+            "shapes": shapes, "labels": labels, "legend": legend, "texts": texts,
+            "font_size": font,
             "label_radius": round(0.032 * max(max(xs) - min(xs), max(ys) - min(ys)), 2)}
 
 

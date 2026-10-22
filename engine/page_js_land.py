@@ -1126,7 +1126,7 @@ function landMapFromTerritory(){
  if(!rings.length)return;
  const zones=((landScreeningLast&&landScreeningLast.parcels)||[])
   .flatMap(p=>(p&&p.findings)||[]);
- openLandMap({rings:rings,zones:zones,
+ openLandMap({rings:rings,zones:zones,massing:siteMassingMapShapes(),
   title:`Территория из ${items.length} участков и окружение`});
 }
 
@@ -1365,11 +1365,15 @@ function landMapNote(){
   text=LAND_MAP.note||'Тяните карту мышью или пальцем, колесом мыши меняйте масштаб. Границы участков взяты из ЕГРН, зоны — из НСПД, фон — карта OpenStreetMap.';
  }
  if(LAND_MAP.layerNote&&LAND_MAP.layer!=='hybrid')text=LAND_MAP.layerNote+' '+text;
+ if((LAND_MAP.massing||[]).length&&LAND_MAP.layer!=='hybrid')
+  text='Цветные прямоугольники с номерами — корпуса объёмной схемы из вкладки «ТЭП». Они расставлены рядами для наглядности, это не генплан. '+text;
  note.textContent=text;
 }
 
 function openLandMap(payload){
- // payload: {rings, zones, title, note, shapes, onPick}
+ // payload: {rings, zones, title, note, shapes, onPick, massing}
+ // `massing` — корпуса объёмной схемы проекта (`siteMassingMapShapes`): та же
+ // раскладка движка, что на схеме во вкладке «ТЭП», в метрах меркатора.
  // `shapes` — чужие контуры со своим цветом и подписью: ими карту КРТ рисует
  // страница торгов. Второй живой карты не заводим: тайлы, проекция, линейка и
  // масштаб объявлены здесь один раз, и копию было бы негде обновлять.
@@ -1394,6 +1398,7 @@ function openLandMap(payload){
  LAND_MAP={
   rings:rings,zones:(payload&&payload.zones)||[],
   shapes:shapes,onPick:(payload&&payload.onPick)||null,
+  massing:(payload&&payload.massing)||[],
   title:(payload&&payload.title)||'Участок и окружение',
   note:(payload&&payload.note)||'',
   cx:(minX+maxX)/2,cy:(minY+maxY)/2,
@@ -1548,6 +1553,13 @@ function renderLandMap(){
     +`<title>${escapeHtml(String(shape.title||''))}</title></path>`;
   }).join('');
  const contour=`<path d="${toPath(LAND_MAP.rings)}" fill="rgba(245,245,243,.18)" stroke="#111" stroke-width="2.5" fill-rule="evenodd"/>`;
+ // Корпуса схемы — поверх контура: пятно цвета очереди и номер строки легенды.
+ const massing=(LAND_MAP.massing||[]).map(b=>{
+  const pts=b.ring.map(project);
+  const cx=pts.reduce((a,p)=>a+p[0],0)/pts.length,cy=pts.reduce((a,p)=>a+p[1],0)/pts.length;
+  return `<g class="land-map-corpus" data-building="${b.number}"><path d="${toPath([b.ring])}" fill="${b.colour}" fill-opacity="0.78" stroke="#1d1d1d" stroke-width="1"><title>${escapeHtml(b.title)}</title></path>`
+   +`<text x="${cx.toFixed(1)}" y="${(cy+4).toFixed(1)}" font-size="12" font-weight="700" text-anchor="middle" fill="#fff">${b.number}</text></g>`;
+ }).join('');
  let ruler='',rulerNote='';
  if(LAND_MAP.measure.length){
   const pts=LAND_MAP.measure.map(project);
@@ -1565,7 +1577,7 @@ function renderLandMap(){
  const barM=nice.filter(v=>v/perPx<=W*0.35).pop()||nice[0];
  const barPx=Math.round(barM/perPx);
  stage.innerHTML=`<div style="position:absolute;inset:0;overflow:hidden">${tiles}</div>`+
-  `<svg width="${W}" height="${H}" style="position:absolute;inset:0;pointer-events:none">${shapeLayers}${zoneLayers}${contour}${ruler}</svg>`+
+  `<svg width="${W}" height="${H}" style="position:absolute;inset:0;pointer-events:none">${shapeLayers}${zoneLayers}${contour}${massing}${ruler}</svg>`+
   `<div style="position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.88);padding:4px 8px;border-radius:4px;font-size:11px;color:#333">`+
   `<div style="border:2px solid #333;border-top:0;height:5px;width:${barPx}px;margin-bottom:2px"></div>${landNum(barM,0)} м · © OpenStreetMap</div>`+
   (rulerNote?`<div style="position:absolute;right:12px;bottom:12px;background:#3b6db4;color:#fff;padding:4px 10px;border-radius:4px;font-size:12px">${escapeHtml(rulerNote)}</div>`:'');
@@ -1590,6 +1602,7 @@ function landMapFromContour(cad){
  openLandMap({
   rings:item.contour_merc,
   zones:(screened&&screened.findings)||[],
+  massing:siteMassingMapShapes(),
   title:item.cadastral_number?('Участок '+item.cadastral_number+' и окружение'):'Участок и окружение',
  });
 }

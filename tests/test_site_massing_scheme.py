@@ -80,6 +80,24 @@ def test_the_proletarsky_office_is_one_building_of_fifteen_storeys():
     assert [g["text"] for g in ax["legend"]] == ["Здание, 15 этажей"]
 
 
+def test_the_underground_levels_are_drawn_with_their_areas():
+    """Под участком — плита на каждый уровень расчёта с его площадью."""
+    _, _, bundle = _office_bundle()
+    m = bundle["consolidated"]["tep"]["site_massing"]
+    ax = m["scheme"]["axonometry"]
+    rows = m["underground_level_rows"]
+    assert len(rows) == 2
+    plates = [s for s in ax["shapes"] if s["kind"] == "underground_level"]
+    assert sorted(s["level"] for s in plates) == [-2, -1]
+    texts = {t["level"]: t["text"] for t in ax["texts"]}
+    assert texts == {-1: f"−1: {core._fmt_ru(rows[0]['area_sqm'])} м²",
+                     -2: f"−2: {core._fmt_ru(rows[1]['area_sqm'])} м²"}
+    # Неполный нижний уровень — плита меньше верхней.
+    area = {s["level"]: abs(core._ring_area(s["points"])) for s in plates}
+    assert area[-2] < area[-1]
+    assert "два подземных уровня" in ax["caption"]
+
+
 def test_a_big_site_with_three_phases_and_a_limit_of_17_gets_more_corpora_than_phases():
     bundle = _big_site_three_phases()
     m = bundle["consolidated"]["tep"]["site_massing"]
@@ -126,6 +144,12 @@ def test_the_corpora_stand_inside_the_egrn_contour_without_setbacks():
     layout = core.site_massing_layout(x, m, [{"phase": 1, "above_gns_sqm": 90000.0},
                                              {"phase": 2, "above_gns_sqm": 60000.0}])
     assert layout["site_shape_origin"] == "contour"
+    # Корпус на карте — то же место в меркаторе: внутри контура ЕГРН.
+    for b in layout["buildings"]:
+        for corner in b["ring_merc"]:
+            assert core._inside(tuple(corner), [ring]), (b["label"], corner)
+        assert abs(core._ring_area(b["ring_merc"])) * k * k == pytest.approx(
+            _rect_area(b["rect_m"]), rel=0.01)
     contour = sum(abs(core._ring_area(r)) for r in layout["site_rings"])
     assert contour == pytest.approx(site, rel=0.01)
     inner = layout["underground_rings"]
@@ -187,6 +211,29 @@ READ = """()=>{
          m:((lastResult.tep||{}).site_massing||{}).scheme||null};
 }"""
 
+def _office_contour_merc():
+    """Квадрат 0,243 га у Пролетарского проспекта — контур в веб-меркаторе."""
+    lat, lng = 55.645, 37.665
+    k = math.cos(math.radians(lat))
+    y0 = math.log(math.tan((90 + lat) * math.pi / 360)) / (math.pi / 180) * 20037508.34 / 180
+    x0 = lng * 20037508.34 / 180
+    side = math.sqrt(2430.0)
+    return [[x0 + a / k, y0 + b / k] for a, b in ((0, 0), (side, 0), (side, side), (0, side))]
+
+
+CONTOUR = """async (ring)=>{
+ const data={query:'77:05:0000000:1',results:[{found:true,kind:'land',cadastral_number:'77:05:0000000:1',contour_merc:[ring]}]};
+ inputs._land_lookup=cloneValue(data); landLookup=cloneValue(data);
+ await settledCalculate();
+ openTab('tep'); renderTep();
+ const button=document.getElementById('siteMassingMapButton');
+ if(button)button.click();
+ const corpora=Array.from(document.querySelectorAll('#landMapStage .land-map-corpus')).map(n=>n.dataset.building);
+ const m=(lastResult.tep||{}).site_massing||{};
+ return {button:!!button, corpora:corpora, levels:Array.from(document.querySelectorAll('#siteMassingScheme .site-massing-level')).map(n=>n.textContent),
+         layout:(m.scheme||{}).layout||null};
+}"""
+
 STRIP = """()=>{delete lastResult.tep.site_massing.scheme; renderTep();
  return document.querySelectorAll('#siteMassingScheme svg').length;}"""
 
@@ -208,6 +255,7 @@ def seen():
             page.dispatch_event("#f_offices_parking_under_spaces", "change")
             browser.wait_for_result(page)
             out["example"] = page.evaluate(READ)
+            out["map"] = page.evaluate(CONTOUR, _office_contour_merc())
             out["stripped"] = page.evaluate(STRIP)
     return out
 
@@ -235,3 +283,19 @@ def test_the_scheme_reads_on_a_phone(seen):
 
 def test_the_counterfeit_draws_nothing(seen):
     assert seen["stripped"] == 0
+
+
+def test_the_page_draws_the_underground_levels(seen):
+    m = seen["example"]["m"]
+    texts = [t["text"] for t in m["axonometry"]["texts"]]
+    assert len(texts) == 2
+    levels = seen["map"]["levels"]
+    assert [t.replace("\xa0", " ") for t in levels] == texts, levels
+
+
+def test_the_corpora_stand_on_the_land_map(seen):
+    got = seen["map"]
+    layout = got["layout"]
+    assert layout and layout["site_shape_origin"] == "contour"
+    assert got["button"], "кнопки «Показать корпуса на карте участка» нет"
+    assert got["corpora"] == [str(b["number"]) for b in layout["buildings"]]

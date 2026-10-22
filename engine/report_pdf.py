@@ -961,6 +961,7 @@ def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
                             strokeColor=colors.HexColor(shape["stroke"]),
                             strokeWidth=float(shape.get("width") or 1) * unit,
                             strokeDashArray=[d * unit for d in shape["dash"]] if shape.get("dash") else None,
+                            fillOpacity=float(shape.get("opacity") or 1.0),
                             strokeLineJoin=1))
     radius = float(ax.get("label_radius") or 5) * scale
     for label in ax.get("labels") or []:
@@ -969,6 +970,13 @@ def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
                            strokeWidth=radius / 8))
         drawing.add(String(cx, cy - radius * 0.42, str(label["text"]), fontName="Helvetica-Bold",
                            fontSize=radius * 1.2, textAnchor="middle"))
+    regular, _bold = _pdf_font_names()
+    for text in ax.get("texts") or []:
+        tx, ty = flat([[text["x"], text["y"]]])
+        drawing.add(String(tx, ty, str(text["text"]), fontName=regular,
+                           fontSize=float(ax.get("font_size") or 8) * scale,
+                           textAnchor=str(text.get("anchor") or "start"),
+                           fillColor=colors.HexColor("#333333")))
     parts = [P("Объёмная схема застройки", small), drawing, P(str(ax.get("caption") or ""), small)]
     parts += [P(str(item.get("line") or ""), small) for item in ax.get("legend") or []]
     parts += [P(str(note), small) for note in layout.get("notes") or []]
