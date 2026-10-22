@@ -263,3 +263,33 @@ def test_the_whole_comes_from_the_expenses_row_when_the_file_has_it():
     monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-01")
     whole = report.build(PROJECT, "week", "2026-10-18")["budget"]["by_budget_article"]["whole"]
     assert whole["plan"] == pytest.approx(505 * M)
+
+
+def test_the_closed_month_is_shown_by_chapters_as_in_the_file():
+    # «По сентябрю в бюджете написано: расходы 221, из них 2 глава 191,
+    # 1 глава 0,285, коммерческие 13,93, АХР 15,478» (владелец, 22.10.2026).
+    monthly_budget.store_budget(PROJECT, articles_budget(), "2026-09-01")
+    articles = monthly_budget._articles(PROJECT, datetime.date(2026, 9, 15))
+    chapters = {row["key"]: row for row in articles["chapters"]}
+    assert chapters["construction_with_service"]["fact"] == pytest.approx(100 * M)
+    assert chapters["commercial"]["fact"] == pytest.approx(4 * M)
+    assert chapters["admin"]["fact"] == pytest.approx(9 * M)
+    assert "land" not in chapters  # в августе земли нет ни в плане, ни в факте
+    page = report._budget_depth_html({"month": "2026-09-01", "articles": articles},
+                                     datetime.date(2026, 9, 15))
+    assert "Бюджет за август 2026 по главам" in page
+    assert "<td>Административно-хозяйственные расходы</td><td>9,0 млн ₽</td>" in page
+
+
+def test_the_service_line_carries_its_budget_plan():
+    # «В службе заказчика на октябрь стоит 6,4 млн, а тут 11» (владелец,
+    # 22.10.2026): на графике у службы заказчика не было плана вовсе.
+    built = _setup()
+    lines = {line["key"]: line for line in built["budget"]["lines"]}
+    assert lines["service"]["plan"] == pytest.approx(13 * M)
+    assert lines["service"]["fact"] == pytest.approx(20 * M)
+    page = report.render_html(built)
+    assert "зарплаты офиса и связь" in page
+    # Прогноз против плана для службы заказчика не строится: факт шире плана.
+    assert all(row["label"] != lines["service"]["label"]
+               for row in report._budget_forecast(built["budget"], datetime.date(2026, 10, 18)))

@@ -54,7 +54,10 @@ LINES = (
     {"key": "commercial", "label": "Коммерческие расходы",
      "rss": "статьи 3.1, 3.2, 3.4, 3.7"},
     {"key": "service", "label": "Служба заказчика, охрана и офис",
-     "rss": "статья 2.6"},
+     "rss": "статья 2.6",
+     "note": "в статье 2.6 РСС кроме службы заказчика и охраны оплачиваются зарплаты "
+             "офиса и связь, которые бюджет относит к административно-хозяйственным "
+             "расходам, поэтому оплачено здесь больше плана службы заказчика"},
 )
 _COMMERCIAL_CODES = ("3.1", "3.2", "3.4", "3.7")
 
@@ -383,6 +386,10 @@ def month_budget(project: str, end: datetime.date) -> dict[str, Any]:
     for line in LINES:
         spent = fact["fact"][line["key"]]
         planned = (plan or {}).get("plan", {}).get(line["key"])
+        if line["key"] == "service":
+            # План службы заказчика — её строка в бюджете (владелец, 22.10.2026:
+            # «в службе заказчика на октябрь стоит 6,4 млн»), а не пусто.
+            planned = (plan or {}).get("service")
         lines.append({**line, "plan": planned, "fact": spent,
                       "remaining": planned - spent if planned is not None else None})
     out = {"state": "ok" if plan else "partial", "month": month, "rss": rss.stem,
@@ -592,6 +599,32 @@ def _recipients(rss: Path, month: str, end: datetime.date, top: int = 8) -> list
     return out
 
 
+# Главы бюджета месяца в порядке строк БДДС; итог — строка «РАСХОДЫ».
+_MONTH_CHAPTERS = (
+    ("land", "Глава 1 — приобретение проекта (земля)"),
+    ("construction_with_service", "Глава 2 — стройка и проектирование, со службой заказчика"),
+    ("commercial", "Глава 3 — коммерческие расходы"),
+    ("admin", "Административно-хозяйственные расходы"),
+)
+
+
+def _month_chapters(values: dict[str, Any]) -> list[dict[str, Any]]:
+    """План и факт закрытого месяца по главам БДДС и всего — как в самом файле.
+
+    Владелец (22.10.2026) сверяет сентябрь по файлу: «расходы 221, из них
+    2 глава 191, 1 глава 0,285, коммерческие 13,93, АХР 15,478».
+    """
+    extra = values.get("extra") or {}
+    out = []
+    for key, label in _MONTH_CHAPTERS + (("expenses", "Всего расходов по бюджету"),):
+        pair = values.get(key) if key in _BUDGET_ROWS else extra.get(key)
+        if not pair or (pair.get("plan") is None and pair.get("fact") is None):
+            continue
+        out.append({"key": key, "label": label, "plan": pair.get("plan"),
+                    "fact": pair.get("fact")})
+    return out
+
+
 def _articles(project: str, end: datetime.date) -> dict[str, Any]:
     """Отклонения по статьям БДДС за прошлый месяц — последний закрытый.
 
@@ -627,5 +660,6 @@ def _articles(project: str, end: datetime.date) -> dict[str, Any]:
                          "fact": pair.get("fact"), "fact_blank": pair.get("fact") is None,
                          "delta": fact - pair["plan"] if pair.get("plan") is not None else None})
         rows.sort(key=lambda row: -abs(row.get("delta") or 0.0))
-        return {"known": True, "month": month, "file": files[0].stem[:10], "rows": rows}
+        return {"known": True, "month": month, "file": files[0].stem[:10], "rows": rows,
+                "chapters": _month_chapters(parsed["months"][month])}
     return {"known": False, "reason": "в бюджете нет месяца с фактом"}

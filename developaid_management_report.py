@@ -1545,7 +1545,8 @@ def render_text(report: dict[str, Any]) -> str:
             if line.get("plan") is not None:
                 lines.append(f"{line['label']} за {name}: план {_rub(line['plan'])}, "
                              f"оплачено {_rub(line['fact'])}, "
-                             f"осталось {_rub(line['remaining'])}.")
+                             f"осталось {_rub(line['remaining'])}"
+                             + (f" — {line['note']}." if line.get("note") else "."))
             else:
                 lines.append(f"{line['label']} за {name}: оплачено {_rub(line['fact'])}.")
         if block.get("reason"):
@@ -1757,7 +1758,9 @@ def _budget_forecast(block: dict[str, Any], end: datetime.date) -> list[dict[str
     elapsed = _month_elapsed(_date(block["month"]), end)
     out = []
     for line in block.get("lines") or []:
-        if not line.get("plan") or not elapsed:
+        # Служба заказчика: факт РСС шире плана (см. примечание строки) —
+        # прогноз против плана был бы ложной тревогой.
+        if not line.get("plan") or not elapsed or line["key"] == "service":
             continue
         forecast = line["fact"] / elapsed
         out.append({"label": line["label"], "plan": line["plan"], "fact": line["fact"],
@@ -2031,6 +2034,15 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
                    "«нет плана» — месяца нет ни в одном загруженном бюджете.</p>")
     articles = block.get("articles") or {}
     if articles.get("known"):
+        if articles.get("chapters"):
+            out.append(f"<h3>Бюджет за {_months_label(articles['month'])} по главам</h3>")
+            out.append(_table(["Глава бюджета", "План", "Факт", "Отклонение"], [
+                [(f"<b>{esc(row['label'])}</b>" if row["key"] == "expenses" else esc(row["label"])),
+                 _rub(row.get("plan")), _rub(row.get("fact")),
+                 ("+" if (row["fact"] or 0) - (row["plan"] or 0) >= 0 else "")
+                 + _rub((row["fact"] or 0) - (row["plan"] or 0))
+                 if row.get("plan") is not None and row.get("fact") is not None else "—"]
+                for row in articles["chapters"]]))
         out.append(f"<h3>Отклонения по статьям бюджета за {_months_label(articles['month'])}</h3>")
         out.append(_table(["Статья", "План", "Факт", "Отклонение"], [
             [esc(row["article"]), _rub(row.get("plan")),
@@ -2243,7 +2255,9 @@ def _budget_chart(block: dict[str, Any]) -> str:
         [line["label"] for line in lines],
         [{"name": "План", "values": charts.scaled([line.get("plan") for line in lines], divisor)},
          {"name": "Оплачено", "values": charts.scaled([line["fact"] for line in lines], divisor)}],
-        unit, digits=1)
+        unit, digits=1) + "".join(
+            f"<p class='note'>{html.escape(line['label'])}: {html.escape(line['note'])}.</p>"
+            for line in lines if line.get("note") and line.get("plan") is not None)
 
 
 def render_html(report: dict[str, Any]) -> str:
