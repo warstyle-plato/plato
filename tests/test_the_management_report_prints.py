@@ -53,10 +53,12 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
             tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
             # Сводка — своя страница рядом с Монитором (владелец, 20.10.2026).
             tab.goto(f"{base}/report", wait_until="domcontentloaded")
-            tab.fill("#project", PROJECT)
+            tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")
+            tab.select_option("#project", PROJECT)
             tab.fill("#cut", "2026-10-18")
             tab.click("#reportBtn")
-            tab.wait_for_selector("#reportBox h1")
+            tab.wait_for_function(
+                "document.getElementById('reportBox').textContent.includes('12.10 — 18.10.2026')")
             week = tab.inner_text("#reportBox")
             tab.select_option("#reportKind", "month")
             tab.wait_for_function(
@@ -91,7 +93,8 @@ def test_the_report_card_and_its_pdf(tmp_path, monkeypatch):
     assert "Главное за период" in first
     # Плитки с главными числами — на первой странице, над «Главным».
     first = " ".join(first.split())
-    assert first.index("БЮДЖЕТ СТРОЙКИ ЗА МЕСЯЦ") < first.index("Главное за период")
+    # Содержание в начале тоже называет «Главное»; ищется сам заголовок — после плиток.
+    assert first.index("БЮДЖЕТ СТРОЙКИ ЗА МЕСЯЦ") < first.rindex("Главное за период")
     # Бюджет по статьям напечатан с итогом стройки и коммерции.
     assert "Итого стройка и коммерческие расходы" in text
     # Подпись и столбцы графика бюджета напечатаны текстом SVG: те же 400,0 и

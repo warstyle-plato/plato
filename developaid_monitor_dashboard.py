@@ -166,7 +166,7 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
         source_rows: list[dict[str, Any]] = []
         stack: list[dict[str, Any]] = []
         for r, values in enumerate(ws.iter_rows(values_only=True), 1):
-            code = actuals._code(values[0] if values else None)
+            code = _book_code(values[0] if values else None)
             article = _norm(values[1] if len(values) > 1 else None)
             if total_row is None and "всего инвестиционные расходы глава 2, 3" in article:
                 total_row = r
@@ -192,10 +192,34 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
         if total_row is None:
             return {"known": False, "reason": "не найдена итоговая строка глав 2+3"}
 
-        approved = actuals._money(ws.cell(total_row, approved_col).value)
-        completion_need = actuals._money(ws.cell(total_row, need_col).value)
-        paid_at_baseline = actuals._money(ws.cell(total_row, paid_col).value)
-        tail_after_apr = actuals._money(ws.cell(total_row, tail_col).value)
+        # Глава 1 РСС тоже деньги стройки (владелец, 21.10.2026: «она тоже
+        # должна учитываться, в мониторе просто упор был на 2–3 главы»). Итог
+        # книги — «глава 2, 3», и глава 1 прибавляется своей строкой «1». Нет
+        # такой строки — главы остаются 2–3 и для РСС тоже: оплаченное по
+        # главе 1 против бюджета без неё дало бы ложный дефицит.
+        #
+        # Строкой главы считаются её верхние строки: «1», а без неё — «1.1»,
+        # «1.2»…, у которых нет старшей строки главы 1 в книге. Нет ни одной —
+        # причина уходит на экран и в сводку, а не подпись «2–3» молча.
+        chapter_one_codes = {meta["code"] for meta in source_rows
+                             if meta["code"] == "1" or meta["code"].startswith("1.")}
+        chapter_one = [meta["row"] for meta in source_rows
+                       if meta["code"] in chapter_one_codes
+                       and not any(meta["code"].startswith(other + ".")
+                                   for other in chapter_one_codes)]
+        total_rows = [total_row] + chapter_one
+        chapters = CHAPTERS if chapter_one else ("2", "3")
+        chapters_reason = "" if chapter_one else (
+            "без главы 1: в финансовой книге (лист «Расчет стоимости строительства») "
+            "нет строки главы 1")
+
+        def total(col: int) -> float:
+            return sum(actuals._money(ws.cell(r, col).value) for r in total_rows)
+
+        approved = total(approved_col)
+        completion_need = total(need_col)
+        paid_at_baseline = total(paid_col)
+        tail_after_apr = total(tail_col)
 
         reserve = 0.0
         reserve_parts: dict[str, float] = {}
@@ -234,7 +258,7 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
 
         monthly_total: dict[str, float] = {}
         for c, month in month_columns:
-            monthly_total[month.isoformat()] = actuals._money(ws.cell(total_row, c).value)
+            monthly_total[month.isoformat()] = total(c)
 
         # Only terminal rows are financing buckets. Parent rows (2.2, 2.2.2,
         # 2.3...) repeat the same programme and would double-count need.
@@ -252,7 +276,7 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
         for meta in source_rows:
             code = meta["code"]
             chapter = code.split(".")[0]
-            if meta["has_children"] or chapter not in {"2", "3"} or code in _RESERVE_CODES:
+            if meta["has_children"] or chapter not in chapters or code in _RESERVE_CODES:
                 continue
             r = meta["row"]
             month_need = {
@@ -289,23 +313,44 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
             "monthly_need": monthly_total,
             "tail_after_apr": tail_after_apr,
             "articles": articles,
+            "chapters": list(chapters),
+            "chapters_reason": chapters_reason,
         }
     finally:
         wb.close()
 
 
-def _rss_ch23(estimate: dict[str, Any]) -> dict[str, float]:
+# Главы РСС, которые считаются деньгами стройки, — если финансовая книга
+# несёт и главу 1 (`_read_finance_baseline`). Одно место для всех читателей.
+CHAPTERS = ("1", "2", "3")
+
+
+def _book_code(value: Any) -> str:
+    """Код строки финкниги: число 1 или 1.0 в ячейке — тот же код «1»."""
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    return actuals._code(value)
+
+
+def chapters_label(chapters: Any) -> str:
+    """«1–3» или «2–3» — для подписей на экране и в сводке."""
+    got = sorted(str(c) for c in (chapters or ("2", "3")))
+    return f"{got[0]}–{got[-1]}" if len(got) > 1 else got[0]
+
+
+def _rss_ch23(estimate: dict[str, Any], chapters: Any = ("2", "3")) -> dict[str, float]:
     rows = estimate.get("by_code") or {}
     return {
-        "limit": sum(float((rows.get(code) or {}).get("estimate") or 0.0) for code in ("2", "3")),
-        "paid_bank_sheet": sum(float((rows.get(code) or {}).get("paid") or 0.0) for code in ("2", "3")),
-        "contracted": sum(float((rows.get(code) or {}).get("contracted") or 0.0) for code in ("2", "3")),
+        "limit": sum(float((rows.get(code) or {}).get("estimate") or 0.0) for code in chapters),
+        "paid_bank_sheet": sum(float((rows.get(code) or {}).get("paid") or 0.0) for code in chapters),
+        "contracted": sum(float((rows.get(code) or {}).get("contracted") or 0.0) for code in chapters),
     }
 
 
-def _payment_total_ch23(rss: Path, estimate: dict[str, Any]) -> float:
-    payments = actuals.read_payments(rss)
+def payment_in_chapters(estimate: dict[str, Any], chapters: Any):
+    """Признак «платёж РСС относится к этим главам» — один для Монитора и сводки."""
     parents = {row["code"]: row.get("parent") for row in estimate.get("rows") or []}
+    wanted = {str(c) for c in chapters}
 
     def root(code: str) -> str:
         seen = set()
@@ -317,11 +362,17 @@ def _payment_total_ch23(rss: Path, estimate: dict[str, Any]) -> float:
             code = parent
         return code.split(".")[0] if code else ""
 
-    return sum(
-        float(row.get("amount") or 0.0)
-        for row in payments.get("rows") or []
-        if root(str(row.get("estimate_code") or "").rstrip(".")) in {"2", "3"}
-    )
+    return lambda row: root(str(row.get("estimate_code") or "").rstrip(".")) in wanted
+
+
+def _paid_in_chapters(rss: Path, estimate: dict[str, Any],
+                      chapters: Any = ("2", "3")) -> dict[str, float]:
+    """Оплачено по главам: всего и та часть, что заплачена кредитом."""
+    keep = payment_in_chapters(estimate, chapters)
+    rows = [row for row in actuals.read_payments(rss).get("rows") or [] if keep(row)]
+    return {"total": sum(float(row.get("amount") or 0.0) for row in rows),
+            "borrowed": sum(float(row.get("amount") or 0.0) for row in rows
+                            if actuals.borrowed(row.get("source")))}
 
 
 def _payment_by_code(rss: Path) -> dict[str, float]:
@@ -540,7 +591,8 @@ def _programme_left(articles: dict[str, dict[str, Any]], cut: datetime.date) -> 
 def _unspent(project: str, rss: Path, estimate: dict[str, Any],
              horizon: Any, waterfall: dict[str, Any],
              baseline_articles: dict[str, dict[str, Any]] | None = None,
-             cut: datetime.date | None = None) -> dict[str, Any] | None:
+             cut: datetime.date | None = None,
+             chapters: Any = ("2", "3")) -> dict[str, Any] | None:
     """Постатейно: откуда лимит можно просить и кому его не хватает.
 
     Реестра ГУ может не быть, реестра договоров в РСС может не быть — свободное
@@ -562,7 +614,7 @@ def _unspent(project: str, rss: Path, estimate: dict[str, Any],
     programme_left = (_programme_left(baseline_articles, cut)
                       if baseline_articles is not None and cut is not None else None)
     got = unspent_mod.unspent(estimate, contracts=contracts, retention=register,
-                              horizon=horizon, needy=needy,
+                              horizon=horizon, needy=needy, roots=tuple(chapters),
                               programme_left=programme_left,
                               not_articles=_RESERVE_CODES)
     return got if (got["sources"] or got["excluded"] or got["needy"]
@@ -615,6 +667,22 @@ def _deficit_ladder(waterfall: dict[str, Any], reserve: float,
     return out
 
 
+def _remaining_check(limit: float, paid: float, waterfall: dict[str, Any]) -> dict[str, float]:
+    """Из чего складывается остаток лимита: лимит − оплачено + поправки.
+
+    Плашки «лимит 4,64 · выбрано 4,80 · остаток 1,00» не сходились
+    (владелец, 22.10.2026): остаток считается по статьям — лимит статьи минус
+    всё оплаченное по ней (кредит и свои деньги), а статья с перерасходом
+    идёт нулём. Здесь разница названа: перерасход статей и расхождение
+    смет статей финкниги с итогом РСС — остаток, а не округление.
+    """
+    remaining = float(waterfall.get("opening_bank_remaining") or 0.0)
+    overpaid = float(waterfall.get("opening_article_deficit") or 0.0)
+    plain = float(limit or 0.0) - float(paid or 0.0)
+    return {"plain": plain, "overpaid": overpaid,
+            "book_gap": remaining - plain - overpaid, "remaining": remaining}
+
+
 def _bank_need_check(remaining_need: float, reserve: float,
                      waterfall: dict[str, Any]) -> dict[str, Any]:
     """Сверка «Средств на завершение» банка с нашим остатком лимитов.
@@ -651,14 +719,21 @@ def _bank_need_check(remaining_need: float, reserve: float,
     }
 
 
+def _payment_total_ch23(rss: Path, estimate: dict[str, Any],
+                        chapters: Any = ("2", "3")) -> float:
+    return _paid_in_chapters(rss, estimate, chapters)["total"]
+
+
 def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
     baseline = _finance_baseline(project)
     if not baseline.get("known"):
         return {"known": False, "reason": baseline.get("reason", "нет финансового baseline")}
 
     estimate = actuals.read_estimate(rss)
-    current = _rss_ch23(estimate)
-    paid_actual = _payment_total_ch23(rss, estimate)
+    chapters = tuple(baseline.get("chapters") or ("2", "3"))
+    current = _rss_ch23(estimate, chapters)
+    paid = _paid_in_chapters(rss, estimate, chapters)
+    paid_actual = paid["total"]
     paid_delta = max(0.0, paid_actual - float(baseline["paid_at_baseline"] or 0.0))
     remaining_need = max(0.0, float(baseline["completion_need_at_baseline"] or 0.0) - paid_delta)
 
@@ -682,12 +757,19 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
 
     reserve_start = waterfall["reserve_start"]
     reserve_exhaustion = waterfall["reserve_exhaustion"]
-    unspent_view = _unspent(project, rss, estimate, rnv, waterfall, articles, cut)
+    unspent_view = _unspent(project, rss, estimate, rnv, waterfall, articles, cut, chapters)
     return {
         "known": True,
         "source": baseline["source"],
+        "chapters": list(chapters),
+        "chapters_label": chapters_label(chapters),
+        "chapters_reason": baseline.get("chapters_reason") or "",
         "bank_limit": current["limit"],
         "paid_actual": paid_actual,
+        # Выборка кредита по тем же главам, что лимит: «лимит − выбрано» и
+        # «лимит − оплачено» читаются от одной базы.
+        "paid_borrowed": paid["borrowed"],
+        "remaining_check": _remaining_check(current["limit"], paid_actual, waterfall),
         # Второй остаток потребности по тем же главам 2–3: утверждённый бюджет
         # минус оплаченное. С «средствами на завершение» они расходятся, и обе
         # величины считает сервер — экран их только показывает.
@@ -952,7 +1034,7 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
 def _dashboard(project: str, rss: Path, cut: datetime.date, view: dict[str, Any]) -> dict[str, Any]:
     estimate = actuals.read_estimate(rss)
     finance = _finance_baseline(project)
-    current = _rss_ch23(estimate)
+    current = _rss_ch23(estimate, tuple(finance.get("chapters") or ("2", "3")))
     physical = _physical_smr(rss, estimate, cut)
     approved = float(finance.get("approved") or 0.0)
     funding = _funding_risk(project, rss, cut, view)

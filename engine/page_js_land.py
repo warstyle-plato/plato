@@ -464,9 +464,13 @@ async function obtainCadastralTep(preAnalysis){
    cadastralAnalysis=analysis;
    inputs._cadastral_analysis=cloneValue(analysis);
    // Площадь из ЕГРН — пока нет ГлавАПУ и ручного ввода, участок мерится ей.
+   // Территорию, приехавшую с источником (площадка КРТ, загруженный ТЭП),
+   // разобранные номера не перемеряют: они могут быть её частью. Так один
+   // участок 66 м² из перечня встал площадью КРТ на 5 га, а ТЭП на
+   // десятки тысяч метров остался — и расчёт пошёл по нему молча.
    {
     const cadArea=Number(((analysis||{}).territory||{}).area_ha||0);
-    if(cadArea>0&&!inputs._site_area_user_set&&!inputs._glavapu_import)inputs.site_area_ha=cadArea;
+    if(cadArea>0&&!inputs._site_area_user_set&&!inputs._glavapu_import&&!importedSiteAreaHa())inputs.site_area_ha=cadArea;
    }
    tepStep='карточка территории';
    field.value=(analysis.requested||[]).join(', ');

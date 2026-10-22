@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import hashlib
 import hmac
@@ -14,7 +15,7 @@ import sys
 import threading
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1017,6 +1018,11 @@ def _run_agent(chat_id: int, text: str, *, intro: str = "") -> None:
     memory = _platon_memory(chat_id)
     history = memory["history"]
     document = memory["document"]
+    # Платон пересчитывает модель проекта на каждом вопросе — это расчёт
+    # участка. Ответ по одному документу без проекта (ниже) идёт на умолчаниях
+    # движка, участка в нём нет, и права он не тратит.
+    if context and not _bot_calc_allowed(chat_id, context, "Ответ Платона"):
+        return
     if not context and document:
         # Прислан только документ, проекта ещё нет: Платон отвечает по
         # документу, а модель стоит на умолчаниях. Говорим это вслух, чтобы
@@ -1204,6 +1210,92 @@ def _apply_proposal(chat_id: int) -> dict[str, Any]:
     return {"changes": changes, "url": new_url, "error": error}
 
 
+def _bot_calc_allowed(chat_id: int, context: dict[str, Any], what: str) -> bool:
+    """Право на участок для расчёта из бота — то же решение, что у страницы
+    (`core.calc_access_for_chat`). Отказ уходит человеку своими словами."""
+    # Участок контекста бота: номера сессии, а без них — проект по имени (ТЭП,
+    # присланный файлом или собранный диалогом, во вводных имени не несёт).
+    inputs = dict(context.get("inputs") or {})
+    name = str(context.get("project_name") or "").strip()
+    if name and not inputs.get("_manual_tep_import"):
+        inputs["_manual_tep_import"] = {"project_name": name}
+    numbers = list((context.get("session_data") or {}).get("cad") or [])
+    try:
+        core.calc_access_for_chat(chat_id, what, inputs=inputs,
+                                  cadastral=None if core._project_cadastral_numbers(inputs)
+                                  else (numbers or None),
+                                  surface="telegram")
+    except HTTPException as exc:
+        reason = str(exc.detail)
+        if reason.startswith(f"{what}: "):
+            reason = reason[len(what) + 2:]
+        _send_message(chat_id, f"<b>{html.escape(what)} — нет доступа.</b>\n{html.escape(reason)}")
+        return False
+    return True
+
+
+def _tariffs_message(chat_id: int) -> None:
+    """Тарифы и мой доступ в боте — из тех же условий и прав, что у сайта."""
+    data = core.access_me(core.AccessRequest(session=core._telegram_session(chat_id, [])))
+    terms = data.get("terms") or {}
+    status = data.get("status") or {}
+    vat = (data.get("plot_offer") or {}).get("vat_note") or ""
+
+    def rub(value: Any) -> str:
+        return f"{int(value or 0):,}".replace(",", "\u00a0") + "\u00a0₽"
+
+    def day(ts: Any) -> str:
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).astimezone(
+            timezone(timedelta(hours=3))).strftime("%d.%m.%Y") if ts else ""
+
+    lines = ["<b>Тарифы DevelopAid</b>",
+             f"Один участок можно посчитать бесплатно. Участок — это кадастровый номер "
+             f"или набор номеров, которые вы считаете вместе.",
+             f"• Один участок — <b>{rub(terms.get('plot_price_rub'))}</b>"
+             f"{' (' + vat + ')' if vat else ''}: доступ на {terms.get('plot_days')} дней, "
+             "любое число пересчётов, PDF-отчёт и Excel-модель.",
+             f"• Подписка — <b>{rub(terms.get('subscription_price_rub'))} в месяц</b>: "
+             "любые участки без ограничений.", "", "<b>Мой доступ</b>"]
+    if status.get("subscription_active"):
+        lines.append(f"Подписка действует до {day(status.get('subscription_until'))}.")
+    lines.append(f"Бесплатных участков осталось: {status.get('free_left', 0)} "
+                 f"из {status.get('free_plots', 0)}.")
+    for plot in [p for p in status.get("plots") or [] if p.get("active")]:
+        lines.append(f"• {html.escape(str(plot.get('label') or 'участок'))} — до {day(plot.get('until'))}")
+    lines.append("")
+    lines.append("Оплатить можно на сайте: «Личный кабинет» → «Тарифы и доступ»."
+                 if data.get("payments_available") else
+                 "Оплата на сайте пока не подключена. Чтобы открыть участок, напишите "
+                 "сюда, что хотите посчитать, — администратор откроет доступ.")
+    if data.get("registration"):
+        lines.append(f"<i>{html.escape(str(data['registration']))}.</i>")
+    _send_message(chat_id, "\n".join(lines))
+
+
+def _grant_command(chat_id: int, user_id: int, argument: str) -> None:
+    """/grant ID дней номера… | /grant ID дней подписка — ручная выдача (администраторы)."""
+    if user_id not in core.usage_admin_ids():
+        _send_message(chat_id, "Выдавать доступ могут только администраторы DevelopAid.")
+        return
+    parts = argument.split()
+    if len(parts) < 3 or not parts[0].lstrip("-").isdigit() or not parts[1].isdigit():
+        _send_message(chat_id, "Как выдать доступ:\n<code>/grant ID дней кадастровые_номера</code>\n"
+                               "<code>/grant ID дней подписка</code>")
+        return
+    subscription = parts[2].lower() in {"подписка", "subscription"}
+    try:
+        result = core.access_admin_grant(core.AccessRequest(
+            session=core._telegram_session(user_id, []), chat=int(parts[0]),
+            kind="subscription" if subscription else "plot",
+            cadastral=[] if subscription else parts[2:], days=int(parts[1])))
+    except HTTPException as exc:
+        _send_message(chat_id, f"Доступ не выдан: {html.escape(str(exc.detail))}")
+        return
+    until = datetime.fromtimestamp(float(result.get("until") or 0), tz=timezone.utc).astimezone(
+        timezone(timedelta(hours=3))).strftime("%d.%m.%Y")
+    _send_message(chat_id, f"Доступ выдан пользователю {int(parts[0])} до {until}.")
+
+
 def _send_model_archive(chat_id: int) -> None:
     """Собирает Excel-модель по последнему расчёту чата и присылает её.
 
@@ -1219,6 +1311,8 @@ def _send_model_archive(chat_id: int) -> None:
             "Сначала посчитайте проект: отправьте кадастровые номера, адрес "
             "или заполненный Excel-шаблон.",
         )
+        return
+    if not _bot_calc_allowed(chat_id, context, "Расчёт Excel-модели"):
         return
     _send_message(chat_id, "<i>Собираю Excel-модель…</i>")
     try:
@@ -1664,6 +1758,62 @@ def _usage_digest_loop() -> None:
         except Exception:
             pass  # рассылка — удобство: молчание лучше падения фонового потока
         time.sleep(900)
+
+
+def _split_message(text: str, limit: int = 3900) -> list[str]:
+    """Длинное сообщение — частями по строкам: у Telegram предел 4096 знаков,
+    а строки сводки — целые фразы со своей разметкой, их не разрываем."""
+    parts, current = [], ""
+    for line in text.split("\n"):
+        if current and len(current) + len(line) + 1 > limit:
+            parts.append(current)
+            current = ""
+        current = f"{current}\n{line}" if current else line
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _deliver_management_reports() -> list[dict[str, Any]]:
+    """Сводки руководству с ядра — подписчикам: сообщение и PDF.
+
+    Ядро собирает их в 9:00 МСК и отдаёт каждую ровно один раз (второй воркер
+    получает пустую очередь). Что дошло и что нет, с причиной, возвращается
+    ядру: владелец видит это в списке получателей на странице сводки.
+    """
+    if not core._telegram_token() or not core._telegram_webhook_enabled():
+        return []
+    got = core._report_mailing_call("/internal/report/outbox", "report-outbox", 0)
+    done = []
+    for item in got.get("items") or []:
+        pdf = base64.b64decode(item["pdf"]) if item.get("pdf") else b""
+        results: dict[str, str] = {}
+        for chat in item.get("chats") or []:
+            try:
+                for part in _split_message(item["text"]):
+                    core._telegram_send_message(int(chat), part)
+                if pdf:
+                    core._telegram_send_document_bytes(
+                        int(chat), pdf, item.get("filename") or "svodka.pdf",
+                        caption=f"Сводка «{html.escape(item['project'])}» — PDF")
+                elif item.get("error"):
+                    core._telegram_send_message(int(chat), html.escape(item["error"]))
+                results[str(chat)] = ""
+            except Exception as exc:  # noqa: BLE001 — причина уходит владельцу
+                results[str(chat)] = f"{type(exc).__name__}: {exc}"
+        core._report_mailing_call("/internal/report/sent", "report-sent", 0,
+                                  slot=item["slot"], project=item["project"], results=results)
+        done.append({"slot": item["slot"], "project": item["project"], "results": results})
+    return done
+
+
+def _management_report_loop() -> None:
+    while True:
+        try:
+            _deliver_management_reports()
+        except Exception:
+            pass  # отданное ядром помечено «не подтверждено» — это видно владельцу
+        time.sleep(60)
 
 
 def _notification_overrides() -> dict[str, dict[str, bool]]:
@@ -2589,6 +2739,12 @@ def _handle_message(message: dict[str, Any]) -> None:
     if command in {"/stats", "/статистика"}:
         _stats_message(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
         return
+    if command in {"/tariffs", "/тарифы"}:
+        _tariffs_message(chat_id)
+        return
+    if command in {"/grant", "/доступ"}:
+        _grant_command(chat_id, user_id, text.split(maxsplit=1)[1] if " " in text else "")
+        return
     if command in {"/platon", "/платон"}:
         _start_platon(chat_id)
         return
@@ -2705,6 +2861,10 @@ def _start_usage_digest() -> None:
     """Сводка сама приходит раз в сутки — иначе «отслеживать» означает не
     забывать спрашивать."""
     threading.Thread(target=_usage_digest_loop, name="usage-digest", daemon=True).start()
+    # Сводка руководству ждёт 9:00 — пятнадцатиминутный круг сводки для неё
+    # слишком редкий, у неё свой.
+    threading.Thread(target=_management_report_loop, name="management-report",
+                     daemon=True).start()
 
 
 @app.on_event("startup")

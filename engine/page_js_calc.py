@@ -199,11 +199,27 @@ async function calcRefusal(response){
  try{const data=await response.json();return String(data.detail||'')}catch(e){return ''}
 }
 
-function renderCalcLocked(reason){
+// Идентификатор проекта без кадастрового номера (ТЭП загружен файлом): по
+// нему сервер узнаёт тот же проект при пересчёте, и доступ к нему один.
+function newProjectUid(){
+ const bytes=new Uint8Array(12);
+ try{crypto.getRandomValues(bytes)}catch(e){for(let i=0;i<bytes.length;i++)bytes[i]=Math.floor(Math.random()*256)}
+ return 'p'+Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
+}
+
+function renderCalcLocked(reason,status){
  lastResult=null;phaseBundle=null;
  const box=document.getElementById('calcLocked');
  if(!box)return;
  box.style.display='';
+ // 402 — вход есть, а права на этот участок нет: просить войти бессмысленно,
+ // человек уже вошёл. Причину и что делать называет сервер.
+ if(status===402){
+  box.innerHTML='<h3>Экономика этого участка пока закрыта</h3>'+
+   '<p>'+escapeHtml(reason||'Нет доступа к расчёту этого участка.')+'</p>'+
+   '<button class="btn dark" onclick="openTariffs()">Тарифы и оплата</button>';
+  return;
+ }
  box.innerHTML='<h3>Экономика проекта — после входа через Telegram</h3>'+
   '<p>'+escapeHtml(reason||'Участок, ТЭП и градостроительные ограничения считаются без входа — '+
    'они на вкладках «Участок» и «ТЭП». Экономика, вердикт, LLCR, отчёт и выгрузки '+
@@ -268,14 +284,14 @@ async function calculate(){
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
    const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
    if(calcTicket!==calcRun)return null;
-   if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
+   if(!response.ok){renderCalcLocked(await calcRefusal(response),response.status);return null}
    const bundle=await response.json();
    if(calcTicket!==calcRun)return null;
    phaseBundle=bundle;lastResult=phaseBundle.consolidated;
  }else{
    const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
    if(calcTicket!==calcRun)return null;
-   if(!response.ok){renderCalcLocked(await calcRefusal(response));return null}
+   if(!response.ok){renderCalcLocked(await calcRefusal(response),response.status);return null}
    const result=await response.json();
    if(calcTicket!==calcRun)return null;
    lastResult=result;phaseBundle=null;

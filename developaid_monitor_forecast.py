@@ -37,6 +37,13 @@ import developaid_monitor_schedule_graph as schedule_graph
 # обязано действовать одинаково в обоих контурах, поэтому живёт здесь.
 MIXED_LIFECYCLE_PREFIX = "2.1"
 _MONTH_DAYS = 30.4375
+# Работа «почти стоит», если по нынешнему темпу она закончилась бы позже, чем
+# через STALL_SPANS своих плановых длительностей после планового финиша
+# (владелец, 21.10.2026). Остаток, делённый на почти нулевой темп актов, давал
+# по Кутузов Сити РНВ 26.04.2045 — «на 6418 дн. позже»: это не прогноз, а
+# деление на ноль. Такая работа РНВ числом не двигает, а называется риском.
+STALL_SPANS = 3
+_MIN_SPAN_DAYS = 30
 
 
 def _clamp(value: Any, low: float = 0.0, high: float = 1.0) -> float | None:
@@ -99,7 +106,29 @@ def pace_finish(row: dict[str, Any], cut: datetime.date) -> tuple[datetime.date 
     if monthly_rate <= 1e-9:
         return None, "no_pace"
     remaining_months = max(0.0, (1.0 - progress) / monthly_rate)
-    return cut + datetime.timedelta(days=round(remaining_months * _MONTH_DAYS)), method
+    predicted = cut + datetime.timedelta(days=round(min(remaining_months, 12_000) * _MONTH_DAYS))
+    if stalled(row, predicted):
+        return None, "stalled_pace"
+    return predicted, method
+
+
+def stalled(row: dict[str, Any], predicted: datetime.date) -> bool:
+    """Прогноз по темпу дальше STALL_SPANS плановых длительностей после плана."""
+    start = monitor._day(row.get("plan_start"))
+    finish = monitor._day(row.get("plan_finish"))
+    if start is None or finish is None:
+        return False
+    span = max((finish - start).days, _MIN_SPAN_DAYS)
+    return predicted > finish + datetime.timedelta(days=STALL_SPANS * span)
+
+
+def stalled_item(row: dict[str, Any]) -> dict[str, Any]:
+    """Работа, которая почти стоит, — для подписи прогноза и списка риска."""
+    return {"id": _row_id(row), "name": str(row.get("name") or ""),
+            "object": str(row.get("object") or ""),
+            "plan_finish": monitor._iso(monitor._day(row.get("plan_finish"))),
+            "progress": _clamp(row.get("rss_accepted_ratio")),
+            "monthly_rate": row.get("rss_act_cost_rate_3m") or row.get("rate_3m")}
 
 
 def _row_id(row: dict[str, Any]) -> str:
@@ -117,6 +146,7 @@ def current_seeds(rows: list[dict[str, Any]], cut: datetime.date) -> dict[str, A
     forecasts: dict[str, datetime.date] = {}
     methods: dict[str, str] = {}
     excluded: list[str] = []
+    stalled_rows: list[dict[str, Any]] = []
 
     for row in rows:
         tid = _row_id(row)
@@ -125,6 +155,8 @@ def current_seeds(rows: list[dict[str, Any]], cut: datetime.date) -> dict[str, A
         if is_mixed_lifecycle(row):
             excluded.append(tid)
         predicted, method = pace_finish(row, cut)
+        if method == "stalled_pace":
+            stalled_rows.append(stalled_item(row))
         if predicted is not None:
             forecasts[tid] = predicted
             methods[tid] = method
@@ -144,7 +176,7 @@ def current_seeds(rows: list[dict[str, Any]], cut: datetime.date) -> dict[str, A
             seeds[tid] = max(approved, seeds.get(tid, approved))
 
     return {"seeds": seeds, "forecasts": forecasts, "methods": methods,
-            "excluded_rss_codes": sorted(set(excluded))}
+            "stalled": stalled_rows, "excluded_rss_codes": sorted(set(excluded))}
 
 
 def network_rnv(pm: dict[str, Any], tasks: dict[str, dict[str, Any]],
@@ -174,6 +206,7 @@ def current_forecast(view: dict[str, Any], pm: dict[str, Any],
     return {
         "seeds": built["seeds"],
         "forecasts": built["forecasts"],
+        "stalled": built["stalled"],
         "methods": built["methods"],
         "approved_tasks": approved_tasks,
         "current_tasks": current_tasks,

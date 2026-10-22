@@ -39,8 +39,9 @@ DASH = (ROOT / "developaid_monitor_dashboard.py").read_text(encoding="utf-8")
 def test_the_structure_names_both_contours_and_both_deficits() -> None:
     body = PAGE[PAGE.index("function fundingStructure("):]
     body = body[: body.index("\n}\n")]
-    for line in ("Общая сметная стоимость глав 2–3", "Остаток лимитов на завершение",
-                 "Утверждённый бюджет глав 2–3",
+    # Главы — из расчёта (`chapters_label`: «1–3», если финкнига несёт главу 1).
+    for line in ("Общая сметная стоимость глав ${f.chapters_label", "Остаток лимитов на завершение",
+                 "Утверждённый бюджет глав ${f.chapters_label",
                  "Остаток потребности по утверждённому бюджету",
                  "Надо достроить по утверждённой модели", "Есть: остаток лимитов + резерв",
                  "row('ДЕФИЦИТ'", "Нехватка по статьям РСС"):
@@ -407,7 +408,7 @@ def test_the_estimate_column_is_not_called_a_credit_limit() -> None:
     """
     body = PAGE[PAGE.index("function fundingStructure("):]
     body = body[: body.index("\n}\n")]
-    assert "Общая сметная стоимость глав 2–3" in body
+    assert "Общая сметная стоимость глав ${f.chapters_label" in body
     assert "Лимит РСС" not in body, "сметная стоимость названа кредитным лимитом"
     assert "колонка РСС, а не лимит кредитной линии" in body
     assert "суммы ПФ в нём нет, она из НКЛ" in body

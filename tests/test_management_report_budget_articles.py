@@ -173,7 +173,7 @@ def test_the_finding_names_the_overrun_and_the_largest_remainder():
 def test_the_document_shows_every_article_and_colours_the_overrun():
     built = _setup()
     page = report.render_html(built)
-    part = page[page.index("<h2>Бюджет месяца</h2>"):]
+    part = page[page.index(">Бюджет месяца</h2>"):]
     table = part[part.index("<table class='articles'>"):part.index("</table>")]
     for label in ("Проектные и изыскательские работы, авторский надзор",
                   "Основные объекты строительства", "Реклама и PR",
@@ -206,7 +206,7 @@ def test_months_without_data_are_not_zero():
 def test_the_tiles_lead_the_first_page():
     built = _setup()
     items = report.tiles(built)
-    assert len(items) == 8
+    assert len(items) == 12
     by_label = {item["label"]: item for item in items}
     build = by_label["Бюджет стройки за месяц"]
     assert build["value"] == "33,6%"
@@ -214,6 +214,151 @@ def test_the_tiles_lead_the_first_page():
     # Нет отчёта о продажах — плитка так и говорит, а не показывает ноль.
     assert by_label["Продажи квартала к плану финмодели"]["value"] == "нет данных"
     page = report.render_html(built)
-    assert page.index("class='tiles'") < page.index("Главное за период")
+    assert page.index("class='tiles'") < page.index(">Главное за период</h2>")
     empty = report.tiles(report.build("Пусто", "week", "2026-10-18"))
     assert {item["value"] for item in empty} == {"нет данных"}
+
+
+def test_the_whole_month_budget_matches_the_file():
+    # «Сумма 505, 1 глава 78, 2 — 398, 3 — 27, АУР 1,6» (владелец, 22.10.2026):
+    # сводка показывала только стройку и коммерцию — 419 млн. Всего по бюджету
+    # месяца — все его главы: стройка 220, коммерция 12, служба заказчика 13,
+    # земля 50, АХР 9.
+    built = _setup()
+    table = built["budget"]["by_budget_article"]
+    assert table["total"]["plan"] == pytest.approx(232 * M)
+    assert table["whole"]["plan"] == pytest.approx(304 * M)
+    chapters = {chapter["key"]: chapter["total"] for chapter in table["chapters"]}
+    assert chapters["land"]["plan"] == pytest.approx(50 * M)
+    assert chapters["admin"]["plan"] == pytest.approx(9 * M)
+    # Оплат АХР в РСС нет — это не ноль.
+    assert chapters["admin"]["fact"] is None
+    page = report.render_html(built)
+    part = page[page.index(">Бюджет месяца</h2>"):]
+    table_html = part[part.index("<table class='articles'>"):part.index("</table>")]
+    assert table_html.index("Итого стройка и коммерческие расходы") \
+        < table_html.index("Приобретение проекта (земля)") \
+        < table_html.index("Всего по бюджету месяца")
+    assert "нет в РСС" in table_html
+    assert "304,0 млн ₽" in table_html
+
+
+def test_the_whole_comes_from_the_expenses_row_when_the_file_has_it():
+    rows = [("РАСХОДЫ", -130, -505, -120)] + BUDGET_ROWS
+    book = Workbook()
+    sheet = book.active
+    for col, name in ((5, "Август 2026"), (8, "Октябрь 2026")):
+        sheet.cell(row=4, column=col, value=name)
+        sheet.cell(row=5, column=col, value="ПЛАН")
+        sheet.cell(row=5, column=col + 1, value="ФАКТ")
+    for r, (name, august, october, fact) in enumerate(rows, 6):
+        sheet.cell(row=r, column=1, value=name)
+        for col, value in ((5, august), (6, fact), (8, october)):
+            if value is not None:
+                sheet.cell(row=r, column=col, value=value * M)
+    blob = io.BytesIO()
+    book.save(blob)
+    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
+    monitor.store_estimate(PROJECT, articles_rss(), "2026-10-18")
+    monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-01")
+    whole = report.build(PROJECT, "week", "2026-10-18")["budget"]["by_budget_article"]["whole"]
+    assert whole["plan"] == pytest.approx(505 * M)
+
+
+def test_the_closed_month_is_shown_by_chapters_as_in_the_file():
+    # «По сентябрю в бюджете написано: расходы 221, из них 2 глава 191,
+    # 1 глава 0,285, коммерческие 13,93, АХР 15,478» (владелец, 22.10.2026).
+    monthly_budget.store_budget(PROJECT, articles_budget(), "2026-09-01")
+    articles = monthly_budget._articles(PROJECT, datetime.date(2026, 9, 15))
+    chapters = {row["key"]: row for row in articles["chapters"]}
+    assert chapters["construction_with_service"]["fact"] == pytest.approx(100 * M)
+    assert chapters["commercial"]["fact"] == pytest.approx(4 * M)
+    assert chapters["admin"]["fact"] == pytest.approx(9 * M)
+    assert "land" not in chapters  # в августе земли нет ни в плане, ни в факте
+    page = report._budget_depth_html({"month": "2026-09-01", "articles": articles},
+                                     datetime.date(2026, 9, 15))
+    assert "Бюджет за август 2026 по главам" in page
+    assert "<td>Административно-хозяйственные расходы</td><td>9,0 млн ₽</td>" in page
+
+
+def test_the_service_line_carries_its_budget_plan():
+    # «В службе заказчика на октябрь стоит 6,4 млн, а тут 11» (владелец,
+    # 22.10.2026): на графике у службы заказчика не было плана вовсе.
+    built = _setup()
+    lines = {line["key"]: line for line in built["budget"]["lines"]}
+    assert lines["service"]["plan"] == pytest.approx(13 * M)
+    assert lines["service"]["fact"] == pytest.approx(20 * M)
+    page = report.render_html(built)
+    assert "зарплаты офиса и связь" in page
+    # Прогноз против плана для службы заказчика не строится: факт шире плана.
+    assert all(row["label"] != lines["service"]["label"]
+               for row in report._budget_forecast(built["budget"], datetime.date(2026, 10, 18)))
+
+
+def test_land_and_admin_paid_come_from_the_budget_fact():
+    # «78,1 по факту оплачено, а в бюджете стоит как не оплачено» (владелец,
+    # 22.10.2026): землю платят мимо реестра РСС — оплачено берётся из
+    # колонки «ФАКТ» бюджета.
+    october_fact = {"Стоимость приобретения проекта": -50, "Административно-хозяйственные расходы": -3}
+    book = Workbook()
+    sheet = book.active
+    for col, name in ((5, "Август 2026"), (8, "Октябрь 2026")):
+        sheet.cell(row=4, column=col, value=name)
+        sheet.cell(row=5, column=col, value="ПЛАН")
+        sheet.cell(row=5, column=col + 1, value="ФАКТ")
+    for r, (name, august, october, fact) in enumerate(BUDGET_ROWS, 6):
+        sheet.cell(row=r, column=1, value=name)
+        for col, value in ((5, august), (6, fact), (8, october),
+                           (9, october_fact.get(name))):
+            if value is not None:
+                sheet.cell(row=r, column=col, value=value * M)
+    blob = io.BytesIO()
+    book.save(blob)
+    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
+    monitor.store_estimate(PROJECT, articles_rss(), "2026-10-18")
+    monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-01")
+    built = report.build(PROJECT, "week", "2026-10-18")
+    table = built["budget"]["by_budget_article"]
+    chapters = {chapter["key"]: chapter["total"] for chapter in table["chapters"]}
+    assert chapters["land"]["fact"] == pytest.approx(50 * M)
+    assert chapters["land"]["remaining"] == pytest.approx(0)
+    assert chapters["land"]["rss"] == "факт БДДС"
+    assert chapters["admin"]["fact"] == pytest.approx(3 * M)
+    assert table["whole"]["fact"] == pytest.approx(
+        sum(chapter["fact"] or 0 for chapter in chapters.values()))
+
+
+def test_chapter_one_reaches_the_month_chart_and_text():
+    # «1 глава есть только в факте предыдущего месяца, а в таблицах и сравнении
+    # текущего месяца её нет» (владелец, 22.10.2026).
+    built = _setup()
+    lines = {line["key"]: line for line in built["budget"]["lines"]}
+    assert lines["land"]["plan"] == pytest.approx(50 * M)
+    assert lines["admin"]["plan"] == pytest.approx(9 * M)
+    chart = report._budget_chart(built["budget"])
+    assert "Приобретение проекта (земля)" in chart
+    text = report.render_text(built)
+    assert "Приобретение проекта (земля) за октябрь 2026: план 50,0 млн ₽" in text
+    assert "Административно-хозяйственные расходы за октябрь 2026: план 9,0 млн ₽, " \
+           "оплат в РСС нет." in text
+    assert all(row["label"] != lines["land"]["label"]
+               for row in report._budget_forecast(built["budget"], datetime.date(2026, 10, 18)))
+
+
+def test_the_tables_carry_totals():
+    # «Тут нет нигде итого (суммирования)» (владелец, 22.10.2026).
+    built = _setup()
+    page = report.render_html(built)
+    # Итог — по всем статьям месяца, не только по показанным десяти.
+    paid = sum(row["amount"] for row in built["budget"]["by_article"])
+    assert paid > 0
+    assert ("<td><b>Итого оплачено с начала месяца</b></td>"
+            f"<td><b>{report._rub(paid)}</b></td>") in page
+    assert "Итого по " in page and "крупнейшим" in page
+    monthly_budget.store_budget(PROJECT, articles_budget(), "2026-09-01")
+    articles = monthly_budget._articles(PROJECT, datetime.date(2026, 9, 15))
+    html_part = report._budget_depth_html({"month": "2026-09-01", "articles": articles},
+                                          datetime.date(2026, 9, 15))
+    plan = sum(row["plan"] for row in articles["rows"] if row.get("plan") is not None)
+    assert f"<td><b>Итого по статьям</b></td><td><b>{report._rub(plan)}</b></td>" in html_part
+    assert "−0 ₽" not in html_part

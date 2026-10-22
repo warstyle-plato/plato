@@ -2645,6 +2645,10 @@ class SensitivityRequest(BaseModel):
     parameters: list[str] = []
     change_pct: float = 10.0
     duration_change_months: float = 6.0
+    # Чувствительность — тот же расчёт, только многократный: за входом и правом
+    # на участок (`require_calc_access`).
+    session: str = ""
+    access_key: str = ""
 
 
 class AgentDocumentRequest(BaseModel):
