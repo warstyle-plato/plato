@@ -161,7 +161,8 @@ def test_init_keeps_owner_parameters():
                    "referrer:document.referrer", "url:location.href",
                    "accurateTrackBounce:true", "trackLinks:true"]:
         assert option in code, option
-    assert f"https://mc.yandex.ru/watch/{CID}" in code
+    # Пиксель для браузера без скриптов считал бы посещение без согласия.
+    assert "mc.yandex.ru/watch/" not in code
     assert "ym-disable-keys" in code
     # Маскировка ставится раньше, чем запускается Вебвизор.
     assert code.index("ym-disable-keys") < code.index("'init'")
@@ -175,7 +176,7 @@ _DYNAMIC = """<!doctype html><html><head><title>t</title></head><body>
 document.body.appendChild(i);},50)</script></body></html>"""
 
 
-def _browser_state(url_or_file, fragment: str):
+def _browser_state(url_or_file, fragment: str, choice: str = ""):
     playwright = pytest.importorskip("playwright.sync_api")
     import browser_launch
 
@@ -200,6 +201,9 @@ def _browser_state(url_or_file, fragment: str):
             tab.route("**/*", route)
             tab.goto(url_or_file.as_uri() + fragment)
             tab.wait_for_timeout(300)
+            if choice:
+                tab.click(f"[data-cookie-choice={choice}]")
+                tab.wait_for_timeout(200)
             state = tab.evaluate("""() => ({
                 ym: typeof window.ym,
                 calls: (window.ym && window.ym.a || []).map(a => Array.from(a).map(x => typeof x === 'object' ? JSON.stringify(x) : String(x))),
@@ -221,7 +225,7 @@ def _write(tmp_path, name: str, html: str):
 
 def test_browser_runs_counter_and_masks_every_field(tmp_path, client):
     page = _write(tmp_path, "root.html", client.get("/").text)
-    state = _browser_state(page, "")
+    state = _browser_state(page, "", choice="all")
     assert state["ym"] == "function"
     assert any(call[:2] == [CID, "init"] and '"webvisor":true' in call[2] for call in state["calls"])
     assert state["requested"], "загрузчик tag.js не запрошен"
