@@ -1805,7 +1805,7 @@ function renderInputs(){
      wrap.appendChild(el);
      // Подписи признака ВРИ и нормировки долей — узлами, как подпись замка
      // ниже: `innerHTML+=` пересоздал бы уже вставленное поле без обработчиков.
-     if(id==='vri_required')wrap.appendChild(vriNoteNode('vriRequiredNote',vriRequiredNote()));
+     if(id==='vri_required'){wrap.appendChild(vriNoteNode('vriRequiredNote',vriRequiredNote()));wrap.appendChild(vriFeeGoNode())}
      if(id==='vri_share_equity_pct')wrap.appendChild(vriNoteNode('vriSharesNote',vriSharesNote()));
      // Итог переключателя населения — под ним; стенды без блока ТЭП его не несут.
      if(id==='social_population_method'&&typeof socialPopulationNoteText==='string')

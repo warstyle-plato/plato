@@ -345,6 +345,8 @@ def _plan(project: str, month: str, upto: str) -> dict[str, Any] | None:
                          "commercial": values["commercial"]["plan"]},
                 "articles": {key: pair["plan"] for key, pair in values["articles"].items()},
                 "extra": {key: pair["plan"] for key, pair in values.get("extra", {}).items()},
+                "extra_fact": {key: pair["fact"]
+                               for key, pair in values.get("extra", {}).items()},
                 "service": service,
                 "articles_missing": parsed["articles_missing"]}
     return None
@@ -392,10 +394,21 @@ def month_budget(project: str, end: datetime.date) -> dict[str, Any]:
             planned = (plan or {}).get("service")
         lines.append({**line, "plan": planned, "fact": spent,
                       "remaining": planned - spent if planned is not None else None})
+    table = month_articles(rss, month, end, plan)
+    # Земля и АХР — те же строки, что в таблице статей (один источник): без них
+    # график, текст и плитки месяца теряли главу 1 (владелец, 22.10.2026: «1
+    # глава есть только в факте предыдущего месяца, а в таблицах и сравнении
+    # текущего месяца её нет»).
+    for chapter in table["chapters"]:
+        if chapter["key"] in {"land", "admin"}:
+            row = chapter["total"]
+            lines.append({"key": chapter["key"], "label": chapter["label"],
+                          "rss": row.get("rss", ""), "plan": row["plan"],
+                          "fact": row["fact"], "remaining": row["remaining"]})
     out = {"state": "ok" if plan else "partial", "month": month, "rss": rss.stem,
            "budget_file": (plan or {}).get("file"), "lines": lines,
            "last_payment": fact["last_payment"],
-           "by_budget_article": month_articles(rss, month, end, plan),
+           "by_budget_article": table,
            "trend": _trend(project, rss, end),
            "by_article": _by_article(rss, month, end),
            "recipients": _recipients(rss, month, end),
@@ -487,22 +500,30 @@ def month_articles(rss: Path, month: str, end: datetime.date,
     # Остальной бюджет месяца: глава 1 (земля — глава 1 РСС) и АХР (в РСС их
     # нет: оплачено — «нет в РСС», а не ноль).
     extra = (plan or {}).get("extra") or {}
+    # Оплачено по земле и АХР — факт самого БДДС, если он в файле есть: землю
+    # платят мимо реестра РСС (владелец, 22.10.2026: «78,1 по факту оплачено,
+    # а в бюджете стоит как не оплачено»). Без факта в файле земля — глава 1
+    # РСС, АХР — «нет в РСС».
+    booked = (plan or {}).get("extra_fact") or {}
     land_paid = sum(item["amount"] for code, item in loose.items()
                     if code == "1" or code.startswith("1."))
-    for key, label, paid_here in (
-            ("land", "Приобретение проекта (земля)", land_paid),
-            ("admin", "Административно-хозяйственные расходы", None)):
+    for key, label, paid_here, source in (
+            ("land", "Приобретение проекта (земля)",
+             booked.get("land") if booked.get("land") is not None else land_paid,
+             "факт БДДС" if booked.get("land") is not None else "глава 1"),
+            ("admin", "Административно-хозяйственные расходы", booked.get("admin"),
+             "факт БДДС" if booked.get("admin") is not None else "нет в РСС")):
         planned_here = extra.get(key)
         if planned_here is None and not paid_here:
             continue
         row = _row(label, planned_here, paid_here or 0.0)
         if paid_here is None:
             row.update({"fact": None, "remaining": None, "share": None, "over": False})
-        row.update({"key": key, "rss": "глава 1" if key == "land" else "нет в РСС",
-                    "in_budget": planned_here is not None})
+        row.update({"key": key, "rss": source, "in_budget": planned_here is not None})
         chapters.append({"key": key, "label": label, "total": row, "rows": [row]})
-    # Всего — строка «РАСХОДЫ» бюджета (один источник с файлом), оплачено — то,
-    # что видно в РСС: стройка, коммерция, служба заказчика и земля.
+    # Всего — строка «РАСХОДЫ» бюджета (один источник с файлом), оплачено —
+    # сумма строк: РСС по стройке, коммерции и службе заказчика, земля и АХР —
+    # как выше.
     whole_plan = extra.get("expenses")
     if whole_plan is None:
         parts = [chapter["total"]["plan"] for chapter in chapters
