@@ -1286,7 +1286,8 @@ async function runSensitivity(){
  button.disabled=true;button.textContent='Считаю…';status.textContent='';
  try{
   const response=await fetch('/analysis/sensitivity',{method:'POST',
-    headers:{'Content-Type':'application/json'},body:JSON.stringify(sensitivityRequestBody())});
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(Object.assign({},sensitivityRequestBody(),{session:activeSession(),access_key:projectsAdminKey}))});
   const report=await response.json();
   if(!response.ok)throw new Error(report.detail||'Не удалось посчитать чувствительность');
   sensitivityReport=report;

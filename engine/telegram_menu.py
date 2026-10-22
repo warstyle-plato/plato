@@ -44,6 +44,7 @@ TELEGRAM_EXTRA_COMMANDS = [
     {"command": "template", "description": "Скачать Excel-шаблон ТЭП"},
     {"command": "comment", "description": "Платон о текущем ТЭП"},
     {"command": "cancel", "description": "Прервать диалог и начать заново"},
+    {"command": "tariffs", "description": "Тарифы и мой доступ к участкам"},
     {"command": "status", "description": "Статус и версия"},
     {"command": "notify", "description": "Что бот пишет сам — и как выключить"},
 ]

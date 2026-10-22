@@ -26,7 +26,8 @@ import developaid_monthly_budget as monthly_budget  # noqa: E402
 import developaid_project_notes as notes  # noqa: E402
 import developaid_report_charts as charts  # noqa: E402
 from test_management_report_funding import _rss_with_sources, _sales as _credit_sales  # noqa: E402
-from test_management_report_model import PROJECT, _gpr_book, _project, budget_book  # noqa: E402
+from test_management_report_model import (  # noqa: E402
+    M, PROJECT, _contract, _gpr_book, _project, budget_book)
 
 
 @pytest.fixture(autouse=True)
@@ -63,7 +64,8 @@ def test_findings_carry_numbers_and_sources():
     built = _full()
     found = {item["topic"]: item for item in built["findings"]}
     assert list(found) == ["Стройка", "Люди на площадке", "Отстающие работы", "Срок",
-                           "Бюджет месяца", "Продажи", "Финансирование", "Открытые вопросы"]
+                           "Корпуса", "Бюджет месяца", "Продажи", "Финансирование", "Споры",
+                           "Открытые вопросы"]
     assert "прогноз Монитора по темпу работ" == found["Срок"]["source"]
     lag = built["physical"]["lag"]
     assert f"отставание {report._pp(-lag)[1:]}" in found["Стройка"]["text"]
@@ -81,14 +83,15 @@ def test_findings_carry_numbers_and_sources():
 def test_the_document_opens_with_findings_and_has_charts():
     built = _full()
     page = report.render_html(built)
-    assert page.index("Главное за период") < page.index("<h2>Стройка</h2>")
-    assert "pagebreak" in page[:page.index("<h2>Стройка</h2>")]
+    assert page.index("Главное за период") < page.index(">Стройка</h2>")
     titles = re.findall(r"<figcaption>([^<]+)</figcaption>", page)
     assert titles == [
         "Выполнение по графику работ: план и факт на дату каждого ГПР-факта",
         "Продажи нарастающим итогом по кварталам, сумма договоров",
-        "Темп продаж: м² договоров по месяцам",
-        "Средняя цена квартир по месяцам",
+        "Темп продаж по месяцам: м² договоров и цена квартир",
+        "Темп продаж по месяцам: лотов всех типов (квартиры, помещения, машиноместа, кладовые) "
+        "и цена квартир",
+        "Темп продаж по месяцам: сумма договоров, млн ₽ и цена квартир",
         "Выборка кредита и эскроу нарастающим итогом по месяцам",
         "Покрытие кредита эскроу: факт и план по месяцам",
         "Бюджет на октябрь 2026: план и оплачено по статьям",
@@ -280,3 +283,86 @@ def test_reports_without_works_say_so_and_do_not_go_blank():
     page = report.render_html(built)
     assert ("Работы не перечислены: в отчётах за период нет раздела «По работам»"
             in page)
+
+
+def test_deviations_are_for_last_month_not_the_last_month_with_a_fact():
+    # «В блоке Бюджет месяца неверный план апреля, не могу понять, откуда он
+    # подтянут» (финансист, 21.10.2026): в октябрьской сводке стояла таблица за
+    # апрель — последний месяц файла с заполненным фактом.
+    from openpyxl import Workbook
+    import io
+
+    book = Workbook()
+    sheet = book.active
+    for column, month in ((5, "Апрель 2026"), (7, "Сентябрь 2026")):
+        sheet.cell(row=4, column=column, value=month)
+        sheet.cell(row=5, column=column, value="ПЛАН")
+        sheet.cell(row=5, column=column + 1, value="ФАКТ")
+    rows = [("Стоимость строительства и проектирования", -300e6, -200e6),
+            ("Основные объекты строительства", -280e6, -190e6),
+            ("Содержание службы заказчика", -6e6, -6e6),
+            ("Коммерческие расходы", -10e6, -9e6),
+            ("Расходы на продажу (КС) - Группа", -5e6, -4e6)]
+    for r, (name, plan, fact) in enumerate(rows, 6):
+        sheet.cell(row=r, column=1, value=name)
+        sheet.cell(row=r, column=5, value=plan)
+        sheet.cell(row=r, column=6, value=fact)
+        sheet.cell(row=r, column=7, value=plan * 4)  # сентябрь: план есть, факта нет
+    blob = io.BytesIO()
+    book.save(blob)
+    monthly_budget.store_budget(PROJECT, blob.getvalue(), "2026-10-02")
+    got = monthly_budget._articles(PROJECT, datetime.date(2026, 10, 18))
+    assert got == {"known": False,
+                   "reason": "в бюджете от 2026-10-02 не заполнен факт за 09.2026"}
+    got = monthly_budget._articles(PROJECT, datetime.date(2026, 12, 5))
+    assert got == {"known": False, "reason": "в бюджете от 2026-10-02 нет месяца 11.2026"}
+
+
+def test_sales_area_is_of_goods_sold_by_the_metre():
+    # «Сумма учитывает машиноместа, а площадь машиномест не учитывается»
+    # (финансист, 21.10.2026). Машиноместа и кладовые — штуками рядом.
+    rows = [_contract("2026-10-10", "Квартира", 50.0, 20 * M),
+            _contract("2026-10-11", "Машиноместо", 14.0, 3 * M),
+            _contract("2026-10-12", "Машиноместо", 0.0, 3 * M)]
+    fact = report._fact(rows)
+    assert fact["area"] == pytest.approx(50.0) and fact["amount"] == pytest.approx(26 * M)
+    assert fact["pieces"] == {"Машиноместо": 2.0} and fact["area_unknown"] == 0
+    assert report._sales_line("За неделю", fact) == (
+        "За неделю: 3 договора на 26,0 млн ₽: квартиры и помещения — 50 м², 2 машиноместа, "
+        "квартиры в среднем по 400 000 ₽ за м².")
+
+
+def test_the_sales_pace_is_one_subject_in_three_measures():
+    """«Может совместить для экономии места? и отдельно лотами и млн рублей
+    сделать такие же графики?» (владелец, 22.10.2026): цена — линией на каждом
+    графике темпа, меры — панели одного переключателя; первая открыта."""
+    built = _full()
+    page = report.render_html(built)
+    block = page[page.index('<div class="switch-charts" data-switch="sales-pace">'):]
+    block = block[:block.index("<h3>") if "<h3>" in block else len(block)]
+    panes = re.findall(r'<div class="pane( on)?" data-pane="(\w+)">', block)
+    assert panes == [(" on", "area"), ("", "units"), ("", "amount")]
+    assert re.findall(r'data-pane="(\w+)" class="(on)?">([^<]+)</button>', block) == [
+        ("area", "on", "м²"), ("units", "", "лоты"), ("amount", "", "млн ₽")]
+    # На каждом графике — линия цены на правой шкале и её значение у последней точки.
+    assert block.count('class="line"') == 3 and block.count(">тыс. ₽/м²<") == 3
+    pace = built["sales"]["pace"]
+    last = next(p for p in reversed(pace) if p.get("price_flats"))
+    assert f">{charts._num(last['price_flats'] / 1e3)}<" in block
+    # Лоты и миллионы — те же числа, что в данных блока, не второй счёт.
+    assert f">{charts._num(sum(p['units'] for p in pace))}<" not in block  # не итог, а по месяцам
+    assert f">{charts._num(pace[-1]['units'])}<" in block
+    assert f">{charts._num(pace[-1]['amount'] / 1e6, 1)}<" in block
+
+
+def test_a_bar_chart_carries_a_price_line_on_its_own_scale():
+    svg = charts.bar_chart("t", ["01.26", "02.26"], [{"name": "м²", "values": [100.0, 200.0]}],
+                           "м²", line={"name": "Цена", "values": [650.0, 817.0],
+                                       "unit": "тыс. ₽/м²", "digits": 0})
+    assert 'class="line"' in svg and ">817<" in svg and ">тыс. ₽/м²<" in svg
+    # Левая шкала — от нуля; правая — от своего минимума, а не от нуля.
+    assert ">0<" in svg and ">650<" in svg and ">850<" in svg
+    # Без цены — обычные столбики, без правой шкалы.
+    plain = charts.bar_chart("t", ["01.26"], [{"name": "м²", "values": [100.0]}], "м²",
+                             line={"name": "Цена", "values": [None], "unit": "x"})
+    assert 'class="line"' not in plain

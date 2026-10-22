@@ -65,6 +65,7 @@ from auction_search.adapters.roseltorg_probe import (
 )
 from auction_search.bridge import auction_page_with_handoff, install_page_bridge
 from auction_search.catalogue_quality import catalogue_quality
+from auction_search.developaid_mapper import krt_territory_coverage
 from auction_search.parsing import (
     cadastral_numbers, deadline_iso, deadline_moment, parse_hectares_sqm,
 )
@@ -2151,6 +2152,7 @@ def install(app: FastAPI) -> None:
             project = finder(f"krt:{slug}") if callable(finder) else None
         if not project:
             raise HTTPException(status_code=404, detail="Территория КРТ не найдена")
+        await run_in_threadpool(_krt_economics_gate, request, slug)
 
         # ensure_model используется именно массовой кнопкой каталога. Тяжёлый
         # burden lookup тоже относится к этому явному пересчёту и требует тот
@@ -2950,6 +2952,21 @@ def install(app: FastAPI) -> None:
             # выбрасывают» здесь то же самое.
             return stored or fresh
 
+    def _krt_economics_gate(request: Request, slug: str | None) -> None:
+        """Экономика каталога — под тем же решением доступа, что и расчёт
+        (`core.catalog_economics_access`): площадка — её кадастровые номера,
+        весь рейтинг — без участка. Движка нет — решать нечем, как и прежде."""
+        decide = getattr(core, "catalog_economics_access", None) if core is not None else None
+        if not callable(decide):
+            return
+        numbers: list[str] = []
+        if slug:
+            try:
+                numbers = [str(n) for n in ((_requirements_for(slug) or {}).get("cadastral_numbers") or [])]
+            except Exception:  # noqa: BLE001 — без номеров решает правило всего каталога
+                logger.exception("KRT economics gate: cadastral numbers of %s", slug)
+        decide(cadastral=numbers or None, request=request)
+
     def _requirements_for(slug: str) -> dict[str, Any] | None:
         """Обязательства площадки. Один ответ на модуль, а не у каждой двери.
 
@@ -3577,6 +3594,14 @@ def install(app: FastAPI) -> None:
             return {"code": "", "revoked": True}
         code = await run_in_threadpool(nagatino_parcels.issue_share_code)
         return {"code": code, "revoked": False}
+
+    @app.get("/land/live-map.js", include_in_schema=False)
+    async def land_live_map_script() -> Response:
+        """Живая карта движка со «Схема / Гибрид» — для нового интерфейса участка."""
+        from auction_search import land_map
+
+        return Response(land_map.standalone(core), media_type="application/javascript",
+                        headers={"Cache-Control": "no-cache"})
 
     @app.get("/krt/nagatino", response_class=HTMLResponse, include_in_schema=False)
     async def nagatino_parcels_home() -> HTMLResponse:
@@ -4501,12 +4526,13 @@ def install(app: FastAPI) -> None:
         }
 
     @app.get("/auctions/krt/ranking")
-    async def auction_krt_ranking() -> dict[str, Any]:
+    async def auction_krt_ranking(request: Request) -> dict[str, Any]:
         """Балл по всем КРТ: потолок цены входа на метр продаваемой.
 
         Отдаёт посчитанное сразу — даже на ходу прогона: половина рейтинга с
         честным ходом полезнее пустого экрана, который ничего не объясняет.
         """
+        await run_in_threadpool(_krt_economics_gate, request, None)
         rating_version = str(krt_investment_score.methodology().get("version") or "")
         try:
             # Список собирается из каталога и решений — не в цикле событий.
@@ -5008,6 +5034,12 @@ def install(app: FastAPI) -> None:
                 "missing": int(counts.get("missing") or 0),
                 "source": str(outline.get("numbers_source") or "none"),
                 "problem": str(outline.get("problem") or ""),
+                # Какую часть территории эти участки покрывают: перечень не
+                # обязан совпадать с границами КРТ, и поле участка с двумя
+                # номерами не должно читаться как «вся площадка».
+                **krt_territory_coverage(
+                    outline.get("parcels") or [],
+                    (model.get("inputs") or {}).get("site_area_ha")),
             },
         }
 

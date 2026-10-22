@@ -124,7 +124,8 @@ async function sendAgentDocument(file){
   thinking.remove();
   if(!r.ok){appendAiMessage('system',(data.detail||('Документ не разобрался: HTTP '+r.status))
    +(aiDocument?'\nВ разговоре остаётся прежний документ «'+aiDocument.filename+'».':''));return}
-  aiIntake=data;renderAiIntake(data);rememberAiDocument(data);
+  aiIntake=data;aiIntakeApplied=[];aiDocBaseline=aiSnapshot();
+  renderAiIntake(data);rememberAiDocument(data);
  }catch(e){thinking.remove();appendAiMessage('system','Документ не разобрался: '+(e.message||e))}
  finally{document.getElementById('aiFile').value='';aiBusy=false;aiSendBtn.disabled=false;aiFileBtn.disabled=false}
 }
@@ -141,9 +142,12 @@ function renderAiIntake(data){
  if(fields.length){
   html+='<div style="margin-top:8px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
    +'<tr><th></th><th style="text-align:left">Поле</th><th style="text-align:left">Значение</th><th style="text-align:left">Откуда взято</th></tr>';
+  // Подпись поля, а не его ключ: человек читает «Офисы — общая площадь», а
+  // не offices_gba_sqm. Галочку снимает сам разбор там, где число документа —
+  // заявление, а не ответ (льгота МПТ: её считает и модель).
   fields.forEach((f,i)=>{html+='<tr>'
-   +'<td><input type="checkbox" class="ai-intake-pick" data-key="'+aiEsc(f.key)+'" checked></td>'
-   +'<td>'+aiEsc(f.key)+'</td>'
+   +'<td><input type="checkbox" class="ai-intake-pick" data-key="'+aiEsc(f.key)+'"'+(f.checked===false?'':' checked')+'></td>'
+   +'<td>'+aiEsc(f.label||f.key)+(f.hint?'<div style="color:#8a4b08;font-size:11px">'+aiEsc(f.hint)+'</div>':'')+'</td>'
    +'<td><b>'+aiEsc(f.value)+'</b> '+aiEsc(f.unit||'')+'</td>'
    +'<td style="color:#666">'+(doc.recognized?'распознано: ':'')+'«'+aiEsc(f.quote)+'»</td></tr>'});
   html+='</table><button class="btn dark" style="margin-top:8px" onclick="applyAiIntake()">Применить отмеченное</button></div>';
@@ -170,19 +174,32 @@ function aiDocumentOrigin(filename,how){
 }
 // Ответ сервера на применение — в модель, одним путём для таблицы разбора и
 // для вопросов: два пути разошлись бы ровно на том поле, где важно.
+function aiNum(v){
+ if(v===undefined||v===null||v==='')return '—';
+ const n=Number(v);return Number.isFinite(n)&&typeof v!=='boolean'?n.toLocaleString('ru-RU',{maximumFractionDigits:2}):String(v);
+}
+// «Было → стало» одной строкой и в единицах поля; у суммы обязательств —
+// из чего она сложилась, у вписанного числа — как его прочли.
+function aiChangeLine(a){
+ const now=a.shown||aiNum(a.now);
+ let line=(a.label||a.key)+': '+aiNum(a.was)+' → '+now+(a.unit&&!a.shown?' '+a.unit:'');
+ if(a.parts&&a.parts.length>1||(a.parts&&a.base))
+  line+=' (сумма: '+(a.base?aiNum(a.base)+' уже стояло в проекте + ':'')+a.parts.map(p=>aiNum(p.value)).join(' + ')+')';
+ if(a.read_as)line+=' — '+a.read_as;
+ return line;
+}
 function mergeAiIntakeResult(data,filename,how){
  Object.assign(inputs,data.inputs||{});
  Object.keys(data.tep||{}).forEach(key=>{tep[key]=Object.assign(tep[key]||{},data.tep[key])});
  const lines=[];
  (data.applied||[]).forEach(a=>{
   if(a.key==='cadastral_numbers'){lines.push(applyAiCadastral(a,filename));return}
-  const path=a.key==='apartments_gns_sqm'?'tep.apartments.gns':'inputs.'+a.key;
-  fieldOrigins()[path]=aiDocumentOrigin(filename,how);
+  const path=a.path||(a.key==='apartments_gns_sqm'?'tep.apartments.gns':'inputs.'+a.key);
+  fieldOrigins()[path]=aiDocumentOrigin(filename,how+(a.parts&&a.parts.length>1?' · сумма '+a.parts.length+' обязательств':''));
   // Имя поля, а не ключ, и рядом — как значение было написано в документе:
   // молчаливый перевод единиц («1 650 000 000 ₽» → 1650 млн ₽) неотличим от
   // ошибки переписывания, а неприменённое без причины — от непрочитанного.
-  lines.push((a.label||a.key)+': '+(a.was===undefined||a.was===null?'—':a.was)
-   +' → '+a.now+(a.unit?' '+a.unit:'')+(a.as_written?' (в документе: '+a.as_written+')':''));
+  lines.push(aiChangeLine(a)+(a.as_written?' (в документе: '+a.as_written+')':''));
  });
  (data.refused||[]).forEach(x=>lines.push('не применено — '+(x.label||x.key)+': '+x.reason));
  syncTep(false);renderInputs();renderTep();calculate();
@@ -233,10 +250,10 @@ function renderAiQuestion(queue){
  box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
  queue.box=box;
 }
-async function answerAiQuestion(choice,action){
+async function answerAiQuestion(choice,action,mode){
  const queue=aiQuestion;if(!queue||!queue.card||aiBusy)return;
  const box=queue.box;const typedEl=box&&box.querySelector('.ai-question-value');
- const typed=action?'':String(typedEl&&typedEl.value||'').trim();
+ const typed=action?'':(mode?queue.typed||'':String(typedEl&&typedEl.value||'').trim());
  const option=(queue.card.options||[])[choice];
  if(!action&&option&&option.target&&(option.value===null||option.value===undefined)&&!typed){
   appendAiMessage('system','У варианта «'+option.label+'» нет числа — впишите значение в поле под вопросом и нажмите вариант ещё раз.');return}
@@ -247,34 +264,128 @@ async function answerAiQuestion(choice,action){
   await syncInputsForAgent();
   const r=await fetch('/agent/document/answer',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({intake_id:queue.id,index:queue.index,action:action||'answer',choice,value:typed,
-    inputs,tep,session:activeSession(),access_key:projectsAdminKey||''})});
+    mode:mode||'',inputs,tep,session:activeSession(),access_key:projectsAdminKey||''})});
   const data=await r.json().catch(()=>({}));
   if(!r.ok){appendAiMessage('system','Ответ не принят: '+(data.detail||('HTTP '+r.status)));
    if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=false;el.style.pointerEvents=''});return}
   if(data.stale){appendAiMessage('system','На этот вопрос уже ответили — продолжаю с текущего.');
    if(data.queue&&data.queue.card)renderAiQuestion(data.queue);return}
+  if(data.confirm){queue.typed=typed;renderAiConfirm(queue,choice,data.confirm);return}
   const said=action==='skip'?'пропущено':(action==='stop'?'вопросы закончены':(data.answer||typed));
   if(action!=='stop'){
    aiHistory.push({role:'user',content:'Ответ на вопрос по документу «'+queue.card.question+'»: '+said});
    aiHistory=aiHistory.slice(-10);
   }
   const lines=action?[]:mergeAiIntakeResult(data,queue.filename,'ответ на вопрос');
+  if(!action)(data.applied||[]).forEach(a=>aiIntakeApplied.push(a));
   appendAiMessage('system',(action==='skip'?'Пропущено.':action==='stop'?'Вопросы закончены.':'Ответ: '+said)
    +(lines.length?'\n'+lines.join('\n'):''));
   const next=data.queue||{};
   if(next.card)renderAiQuestion(next);
-  else{aiQuestion=null;appendAiIntakeSummary(next)}
+  else{aiQuestion=null;await appendAiIntakeSummary(next)}
  }catch(e){appendAiMessage('system','Ответ не принят: '+(e.message||e));
   if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=false;el.style.pointerEvents=''})}
  finally{aiBusy=false}
 }
-// Итог честный: что легло в модель, что записано только в разговор.
-function appendAiIntakeSummary(queue){
+// В поле обязательства уже стоит своё число: прибавить ответ к нему или
+// заменить — решает человек. Молча прибавленное к ручному числу или молча
+// затёртое им одинаково неотличимы от ошибки.
+function renderAiConfirm(queue,choice,c){
+ const box=document.createElement('div');box.className='ai-msg system ai-confirm';
+ box.innerHTML='В поле «'+aiEsc(c.label)+'» уже стоит '+aiEsc(aiNum(c.current))+' '+aiEsc(c.unit)
+  +(c.origin?' ('+aiEsc(c.origin)+')':'')+'. Ответ добавляет '+aiEsc(aiNum(c.adding))+' '+aiEsc(c.unit)+'. Как поступить?'
+  +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">'
+  +'<button class="btn dark" data-mode="add">Прибавить: будет '+aiEsc(aiNum(Number(c.current)+Number(c.adding)))+' '+aiEsc(c.unit)+'</button>'
+  +'<button class="btn" data-mode="replace">Заменить: будет '+aiEsc(aiNum(c.adding))+' '+aiEsc(c.unit)+'</button></div>';
+ box.querySelectorAll('button').forEach(b=>b.onclick=()=>{box.querySelectorAll('button').forEach(x=>x.disabled=true);answerAiQuestion(choice,'',b.dataset.mode)});
+ aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
+}
+// Состояние модели до документа — для «было → стало» итога и для отмены
+// одной кнопкой. Снимок вводных, ТЭП и ключевых показателей.
+let aiDocBaseline=null,aiIntakeApplied=[];
+function aiSnapshot(){
+ return {inputs:JSON.parse(JSON.stringify(inputs)),tep:JSON.parse(JSON.stringify(tep)),
+  metrics:aiMetrics(lastResult)};
+}
+function aiMetrics(r){
+ const s=r&&r.summary;if(!s)return null;
+ return [['Чистая прибыль',money(s.net_profit)],['NPV проекта',money(s.npv)],
+  ['IRR проекта',irrFmt(s.irr_project)],['LLCR',mult(s.llcr)]];
+}
+// Итог по документу: что изменилось в модели, пересчитана ли она и что
+// получилось, и что делать дальше. Прежде здесь стоял список вопросов с
+// пометкой «→ в модели: имя поля», и человек не знал, легло ли число, какое
+// и что теперь (владелец, 22.10.2026: «а что дальше то?»).
+async function appendAiIntakeSummary(queue){
  const answers=queue.answers||[];
- if(!answers.length)return;
- const lines=answers.map(a=>'• '+a.question+' — '+(a.answer||'пропущено')
-  +((a.applied||[]).length?' → в модели: '+a.applied.join(', '):(a.answer?' → в модель не легло':'')));
- appendAiMessage('system','Вопросы по «'+(queue.filename||'документу')+'» закончились.\n'+lines.join('\n'));
+ const box=document.createElement('div');box.className='ai-msg system ai-intake-summary';
+ // Одно поле — одна строка: первое «было» и последнее «стало».
+ const byField={};const order=[];
+ aiIntakeApplied.forEach(a=>{const k=a.path||a.key;if(!byField[k]){byField[k]=Object.assign({},a);order.push(k)}
+  else{const w=byField[k].was;byField[k]=Object.assign({},a,{was:w})}});
+ const refused=[];answers.forEach(a=>(a.refused||[]).forEach(x=>refused.push(x)));
+ let html='<b>Вопросы по «'+aiEsc(queue.filename||'документу')+'» закончились.</b>';
+ if(order.length){
+  html+='<div style="margin-top:6px">Что изменилось в модели:</div><ul style="margin:4px 0 0 18px;padding:0">'
+   +order.map(k=>'<li>'+aiEsc(aiChangeLine(byField[k]))+'</li>').join('')+'</ul>';
+ }else html+='<div style="margin-top:6px">В модель из ответов ничего не легло.</div>';
+ if(refused.length)html+='<div style="margin-top:6px;color:#8a4b08">Не применено:<br>'
+  +refused.map(x=>aiEsc((x.label||x.key)+' — '+x.reason)).join('<br>')+'</div>';
+ // Строки таблицы разбора, которые так и не применены, — на виду, с кнопкой.
+ // Кнопка берёт только отмеченные: неотмеченное разбором (льгота МПТ —
+ // заявление продавца) ложится лишь по галочке самого человека.
+ const pending=aiPendingIntakeFields();
+ const ticked=pending.filter(f=>aiIntakePick(f.key)&&aiIntakePick(f.key).checked);
+ const unticked=pending.filter(f=>!ticked.includes(f));
+ if(ticked.length)html+='<div style="margin-top:6px">Ещё не применено из таблицы разбора: '
+  +aiEsc(ticked.map(aiFieldText).join('; '))+'. Кнопка «Применить к расчёту» запишет это в модель.</div>';
+ if(unticked.length)html+='<div style="margin-top:6px;color:#666">Не отмечено в таблице разбора и в модель не идёт: '
+  +aiEsc(unticked.map(f=>aiFieldText(f)+(f.hint?' ('+f.hint+')':'')).join('; '))+'. Чтобы взять, поставьте галочку в таблице выше и нажмите «Применить отмеченное».</div>';
+ html+='<div class="ai-intake-recalc" style="margin-top:6px">'+(order.length?'Пересчитываю модель…':'')+'</div>'
+  +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">'
+  +(ticked.length?'<button class="btn dark" data-act="apply">Применить к расчёту</button>':'')
+  +'<button class="btn'+(ticked.length?'':' dark')+'" data-act="report">Открыть результат</button>'
+  +'<button class="btn" data-act="inputs">Проверить вводные</button>'
+  +(order.length&&aiDocBaseline?'<button class="btn" data-act="undo">Отменить изменения документа</button>':'')+'</div>';
+ box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
+ box.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>{
+  const act=b.dataset.act;
+  if(act==='apply'){b.disabled=true;applyAiIntake()}
+  else if(act==='report'){toggleAgent(false);openTab('report')}
+  else if(act==='inputs'){toggleAgent(false);openTab('inputs')}
+  else if(act==='undo'){b.disabled=true;undoAiDocument()}
+ });
+ if(order.length)await aiRecalcInto(box.querySelector('.ai-intake-recalc'));
+}
+// Пересчёт после документа и ключевые показатели «до документа → сейчас».
+async function aiRecalcInto(recalc){
+ recalc.textContent='Пересчитываю модель…';
+ const before=aiDocBaseline&&aiDocBaseline.metrics;
+ const got=await calculate().catch(e=>({error:e}));
+ // null — расчёт отказал (вход, доступ): прежний результат тогда остаётся
+ // на месте и выдавать его за пересчитанный нельзя.
+ const after=got===null?null:aiMetrics(lastResult);
+ if(!after){recalc.textContent='Модель не пересчиталась'+(got&&got.error?': '+(got.error.message||got.error):' — результат расчёта не получен')+'. Значения уже стоят во вводных; нажмите «Рассчитать».';return}
+ recalc.innerHTML='Модель пересчитана.'+'<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:4px">'
+  +'<tr><th style="text-align:left">Показатель</th><th style="text-align:right">До документа</th><th style="text-align:right">Сейчас</th></tr>'
+  +after.map((m,i)=>'<tr><td>'+aiEsc(m[0])+'</td><td style="text-align:right">'+aiEsc(before?before[i][1]:'—')+'</td><td style="text-align:right"><b>'+aiEsc(m[1])+'</b></td></tr>').join('')
+  +'</table>'+(before?'':'<div style="color:#666;font-size:12px">До документа расчёта не было, сравнить не с чем.</div>');
+ aiMessages.scrollTop=aiMessages.scrollHeight;
+}
+function aiIntakePick(key){return document.querySelector('.ai-intake-pick[data-key="'+key+'"]')}
+function aiFieldText(f){return (f.label||f.key)+' — '+String(f.value==null?'':f.value).trim()+' '+String(f.unit||'').trim().replace(/\.$/,'')}
+function aiPendingIntakeFields(){
+ const done=new Set((aiIntake&&aiIntake._applied)||[]);
+ return ((aiIntake&&aiIntake.fields)||[]).filter(f=>f.key!=='cadastral_numbers'&&!done.has(f.key));
+}
+// Отмена — назад к снимку до документа: вводные, ТЭП и происхождение полей.
+async function undoAiDocument(){
+ if(!aiDocBaseline)return;
+ Object.keys(inputs).forEach(k=>delete inputs[k]);Object.assign(inputs,JSON.parse(JSON.stringify(aiDocBaseline.inputs)));
+ Object.keys(tep).forEach(k=>delete tep[k]);Object.assign(tep,JSON.parse(JSON.stringify(aiDocBaseline.tep)));
+ aiIntakeApplied=[];if(aiIntake)aiIntake._applied=[];
+ syncTep(false);renderInputs();renderTep();await calculate();
+ appendAiMessage('system','Изменения из документа отменены: вводные и ТЭП вернулись к состоянию до документа, модель пересчитана.');
 }
 async function applyAiIntake(){
  if(!aiIntake)return;
@@ -287,8 +398,12 @@ async function applyAiIntake(){
   const data=await r.json().catch(()=>({}));
   if(!r.ok){appendAiMessage('system',data.detail||'Не применилось');return}
   const lines=mergeAiIntakeResult(data,(aiIntake.document||{}).filename,'');
+  aiIntake._applied=((aiIntake._applied)||[]).concat(accept);
+  (data.applied||[]).forEach(a=>aiIntakeApplied.push(a));
   appendAiMessage('system','Подставлено:\n'+lines.join('\n'));
   appendAiCadastralButton();
+  const recalc=document.createElement('div');recalc.className='ai-msg system ai-intake-recalc';
+  aiMessages.appendChild(recalc);await aiRecalcInto(recalc);
  }catch(e){appendAiMessage('system','Не применилось: '+(e.message||e))}
 }
 async function sendAgentMessage(scenario){

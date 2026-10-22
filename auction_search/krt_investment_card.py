@@ -149,7 +149,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const safeUrl=u=>/^https?:\/\//i.test(String(u??'').trim())?String(u).trim():'#';
 const num=v=>v===null||v===undefined||v===''||!Number.isFinite(Number(v))?null:Number(v);
 const fmt=(v,d=0)=>num(v)===null?'—':Number(v).toLocaleString('ru-RU',{maximumFractionDigits:d});
-async function get(url){const r=await fetch(url,{cache:'no-store'});let b={};try{b=await r.json()}catch(_){ }if(!r.ok){const e=new Error((b&&b.detail)||url+' → '+r.status);e.status=r.status;throw e}return b}
+async function get(url){let sess='';try{sess=localStorage.getItem('developaid_web_session')||''}catch(_){}const r=await fetch(url,{cache:'no-store',headers:sess?{'X-Developaid-Session':sess}:{}});let b={};try{b=await r.json()}catch(_){ }if(!r.ok){const e=new Error((b&&b.detail)||url+' → '+r.status);e.status=r.status;throw e}return b}
 function findProject(cat){return (cat.projects||[]).find(x=>String(x.slug||'')===SLUG)||null}
 /*__DEVELOPAID_LIVE_LOT__*/
 function activeTender(row){return liveTenderLot(row.tender_lots)}

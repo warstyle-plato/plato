@@ -83,6 +83,9 @@ PAGE = PAGE.replace(TEP_DEFAULT_PLACEHOLDER,
                     json.dumps(TEP_DEFAULT, ensure_ascii=False))
 PAGE = PAGE.replace(TEP_RATIOS_PLACEHOLDER, json.dumps(TEP_RATIOS, ensure_ascii=False))
 PAGE = PAGE.replace(MKD_SPP_SPLIT_PLACEHOLDER, json.dumps(MKD_SPP_SPLIT, ensure_ascii=False))
+# Строка о регистрации программы — из `docs/legal/product.json`, одного
+# источника реквизитов (`product_registration_line`).
+PAGE = PAGE.replace("__DEVELOPAID_PRODUCT_REGISTRATION__", html.escape(product_registration_line()))
 PAGE = PAGE.replace("__DEVELOPAID_TERMS__", json.dumps(page_terms(), ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_DEFAULT_REPAYMENT__",
                     json.dumps(DEFAULT_REPAYMENT_WORDS, ensure_ascii=False))

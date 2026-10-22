@@ -3320,12 +3320,13 @@ def _calculate_phased_with_carry(req: PhasedCalcRequest) -> dict[str, Any]:
 @app.post("/calculate-phased")
 def calculate_phased_api(req: PhasedCalcRequest) -> dict[str, Any]:
     # Очерёдность — тот же расчёт экономики, и та же граница входа.
-    _require_web_access(req.session, req.access_key, "Расчёт экономики")
+    require_calc_access(req.session, req.access_key, "Расчёт экономики", inputs=req.inputs)
     return calculate_phased(req)
 
 
 @app.post("/analysis/sensitivity")
 def sensitivity_api(req: SensitivityRequest) -> dict[str, Any]:
+    require_calc_access(req.session, req.access_key, "Анализ чувствительности", inputs=req.inputs)
     return run_sensitivity(
         req.inputs, req.tep, req.rates, req.phasing,
         metric=req.metric, scope=req.scope, selected_view=req.selected_view,

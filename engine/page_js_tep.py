@@ -1344,6 +1344,12 @@ function tepCellChanged(key,col,value){
   if(key==='apartments'){rescaleApartmentUnits();rescaleBuiltInCommercial()}
   renderInputs();
   renderTep();
+ }else if(key==='apartments'){
+  // Число квартир — вход нормы мест (2118-ПП, п. 2 по средней квартире), и
+  // считает её сама страница (`parkingRequirement`). Перерисовка ждала ответа
+  // расчёта: долгий или отказавший расчёт оставлял места, подписи и поле мест
+  // от прежнего числа (владелец, 22.10.2026: «машиноместа даже не дрогнули»).
+  tepRowToInputs(key);renderInputs();renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
  scheduleTepAutoRecalc(key);
  calculate();
@@ -1470,13 +1476,61 @@ function effectiveSiteDensity(){
  const g=glavapuDensitySqmHa();
  return g>0?g:30000;
 }
+// Площадь территории, приехавшая вместе с загруженным ТЭП (площадка КРТ,
+// файл ТЭП), — или 0. Она владеет площадью, пока человек не вписал свою:
+// разбор кадастровых номеров отвечает за свои участки, а не за территорию.
+function importedSiteAreaHa(){
+ return Math.max(0,Number((inputs._manual_tep_import||{}).site_area_ha||0));
+}
+function siteAreaIsImported(){
+ const own=importedSiteAreaHa();
+ return own>0&&Math.abs(Number(inputs.site_area_ha||0)-own)<0.00005;
+}
+// Застройка во столько раз больше участка не бывает: даже башни Сити дают
+// около 20 метров поэтажной площади на метр земли. Порог взят с запасом —
+// предупреждение про явную подмену территории, а не про плотный проект.
+const SITE_GNS_PER_SQM_IMPLAUSIBLE=40;
+function siteAreaTepMismatch(){
+ const area=Number(inputs.site_area_ha||0);
+ const gns=Object.values(tep||{}).reduce((s,r)=>s+Math.max(0,Number((r||{}).gns||0)),0);
+ if(!(area>0&&gns>0))return null;
+ const ratio=gns/(area*10000);
+ if(ratio<=SITE_GNS_PER_SQM_IMPLAUSIBLE)return null;
+ return {area_ha:area,gns:gns,ratio:ratio,source:siteAreaSourceLabel(),imported_ha:siteAreaIsImported()?0:importedSiteAreaHa()};
+}
+function siteAreaWarningHtml(){
+ const m=siteAreaTepMismatch();
+ if(!m)return '';
+ const ha=v=>Number(v).toLocaleString('ru-RU',{maximumFractionDigits:4});
+ let html='<b>Площадь участка не сходится с ТЭП.</b> На участке '+ha(m.area_ha)+' га ('
+  +num(m.area_ha*10000)+' м²) в ТЭП стоит '+num(m.gns)+' м² — застройки в '+num(m.ratio)
+  +' раз больше самого участка. Так не бывает: площадь, скорее всего, взята у другой или '
+  +'неполной территории (сейчас она '+escapeHtml(m.source)+'). Расчёт идёт по этим числам — '
+  +'проверьте поле «Площадь участка» здесь, на шаге «ТЭП».';
+ if(m.imported_ha>0){
+  const krt=((inputs._manual_tep_import||{}).source||{}).kind==='krt';
+  html+=' <button type="button" class="btn" id="siteAreaRestore" onclick="restoreImportedSiteArea()">Вернуть площадь '
+   +(krt?'территории КРТ':'из загруженного ТЭП')+' — '+ha(m.imported_ha)+' га</button>';
+ }
+ return html;
+}
+function restoreImportedSiteArea(){
+ const own=importedSiteAreaHa();
+ if(!(own>0))return;
+ inputs.site_area_ha=own;
+ inputs._site_area_user_set=false;
+ renderSitePanel();
+ calculate();
+}
 function siteAreaSourceLabel(){
  if(inputs._site_area_user_set)return 'введена вручную';
  {
   const krt=((inputs._manual_tep_import||{}).source||{});
   // Источник приезжает вместе с площадкой: половина каталога КРТ — площадки
   // без карточки, у них это проект решения на mos.ru, а не krt.mos.ru.
-  if(krt.kind==='krt')return 'из площадки КРТ ('+String(krt.origin||'карточка krt.mos.ru')+')';
+  // Подпись — только пока площадь та самая: перемеренная разбором номеров
+  // площадь «из площадки КРТ» не происходит.
+  if(krt.kind==='krt'&&siteAreaIsImported())return 'из площадки КРТ ('+String(krt.origin||'карточка krt.mos.ru')+')';
  }
  if(inputs._glavapu_import)return 'из калькулятора ГлавАПУ';
  if(inputs._mo_calc)return 'из калькулятора Подмосковья';
@@ -2014,6 +2068,10 @@ function renderSitePanel(){
  if(document.activeElement!==densityEl)densityEl.value=stored>0?stored:'';
  densityEl.placeholder=num(effectiveSiteDensity());
  document.getElementById('siteAreaSource').textContent=siteAreaSourceLabel();
+ {
+  const warn=document.getElementById('siteAreaWarning');
+  if(warn){const html=siteAreaWarningHtml();warn.innerHTML=html;warn.style.display=html?'':'none'}
+ }
  document.getElementById('siteDensitySource').textContent=siteDensitySourceLabel();
  const potential=area*effectiveSiteDensity();
  // Семантика плотности зависит от источника. В нормативном расчёте (РНГП —
@@ -2401,13 +2459,68 @@ function vriPaymentActive(x){return Number((x||inputs).land_rights_cost_mln||0)>
 // Плата, обнулённая снятием признака на этой странице, — чтобы подпись
 // называла, что именно сделала галочка.
 let vriFeeClearedMln=0;
+// Галочку пытались поставить без суммы: клик не откатывается молча, а
+// объясняет, откуда взять плату (владелец, 22.10.2026: «почему не могу
+// нажать кнопку ВРИ?»).
+let vriFeeAskedWithoutSum=false;
+// Откуда в этом проекте берётся плата за смену ВРИ, если её нет. Московский
+// участок — из калькулятора ГлавАПУ (строка 44 ТЭП) по его кадастровым
+// номерам; площадка КРТ, чьи участки перечня не покрывают территорию,
+// плату оттуда не получит — это сказано прямо.
+function vriFeeWhereFrom(){
+ const imp=inputs._manual_tep_import||{};
+ const terr=imp.territory||{};
+ if(((imp.source||{}).kind)==='krt'){
+  const land=Number(terr.land_area_ha||0),all=Number(imp.site_area_ha||0);
+  const ha=v=>Number(v).toLocaleString('ru-RU',{maximumFractionDigits:4});
+  const part=all>0&&land>0&&land<all*0.9
+   ?' Участки из перечня проекта решения занимают '+ha(land)+' га из '+ha(all)+' га территории — по ним калькулятор ГлавАПУ посчитает плату только за эту часть.'
+   :all>0&&!(land>0)?' Участков с границами в проекте решения не нашлось, поэтому посчитать плату по ним нечем.':'';
+  return 'Для площадки КРТ плата за смену ВРИ в карточке торгов не считается.'+part
+   +' Впишите сумму из расчёта ГлавАПУ или договора КРТ.';
+ }
+ if(classRegion()==='msk')return 'В Москве плату считает калькулятор ГлавАПУ: на шаге «Участок» введите кадастровые номера и нажмите «Получить ТЭП» — плата придёт вместе с ТЭП. Или впишите сумму сами.';
+ return 'Впишите сумму платы в поле ниже.';
+}
 function vriRequiredNote(){
  const fee=Number(inputs.land_rights_cost_mln||0);
  const o=(inputs._field_origin||{})['inputs.land_rights_cost_mln'];
  const from=o&&o.source==='glavapu'?' (из ГлавАПУ)':o&&o.source==='manual'?' (вписана вручную)':'';
  if(fee>0)return `Плата ${num(fee)} млн ₽ задана${from} — смена ВРИ учитывается. Снять признак — значит обнулить плату.`;
  if(vriFeeClearedMln>0)return `Плата ${num(vriFeeClearedMln)} млн ₽ обнулена снятием признака — смена ВРИ не учитывается.`;
- return 'Плата за смену ВРИ не задана — смена ВРИ не учитывается. Чтобы учесть, впишите сумму в «Оформление земельных правоотношений / смена ВРИ».';
+ // Льгота без платы ни на что не действует — и молча стоять не должна.
+ const relief=inputs.vri_relief_mode==='amount'?Number(inputs.vri_relief_mln||0):0;
+ const reliefLine=relief>0?` Вписанная льгота ${num(relief)} млн ₽ без платы ни на что не действует.`:'';
+ if(vriFeeAskedWithoutSum)
+  return 'Галочка ставится сама, когда задана сумма платы: смену ВРИ в расчёте включает сумма, а не галочка. Сейчас плата — 0. '
+   +vriFeeWhereFrom()+reliefLine;
+ return 'Плата за смену ВРИ не задана — смена ВРИ не учитывается. Чтобы учесть, впишите сумму в «Оформление земельных правоотношений / смена ВРИ».'+reliefLine;
+}
+// Кнопка у подписи: ведёт к полю суммы. Узел постоянный, виден только
+// после попытки поставить галочку без платы.
+function vriFeeGoNode(){
+ const b=document.createElement('button');
+ b.type='button';b.id='vriFeeGo';b.className='btn';
+ b.textContent='Вписать сумму платы';
+ b.style.cssText='margin:6px 0 0';
+ b.onclick=focusVriFeeField;
+ b.style.display=vriFeeAskedWithoutSum&&!vriPaymentActive()?'':'none';
+ return b;
+}
+function focusVriFeeField(){
+ const field=document.getElementById('f_land_rights_cost_mln');
+ if(!field)return;
+ // Поле суммы стоит на другой вкладке (вводные), а скрытое поле фокус не
+ // принимает: прежний откат с фокусом поэтому не делал ничего видимого.
+ const panel=field.closest?field.closest('.panel'):null;
+ if(panel&&!panel.classList.contains('active')){
+  const tab=document.querySelector('.tabs [data-tab="'+panel.id+'"]');
+  if(tab)tab.click();
+ }
+ const group=field.closest?field.closest('details'):null;
+ if(group&&!group.open)group.open=true;
+ if(field.scrollIntoView)field.scrollIntoView({block:'center'});
+ field.focus();
 }
 // Подпись под полем ВРИ: узел с постоянным id, пустая — скрыта.
 function vriNoteNode(id,text){
@@ -2425,8 +2538,11 @@ function syncVriRequiredBox(){
  inputs.vri_required=vriPaymentActive();
  const el=document.getElementById('f_vri_required');
  if(el)el.checked=inputs.vri_required;
+ if(inputs.vri_required)vriFeeAskedWithoutSum=false;
  const note=document.getElementById('vriRequiredNote');
  if(note)vriNoteFill(note,vriRequiredNote());
+ const go=document.getElementById('vriFeeGo');
+ if(go)go.style.display=vriFeeAskedWithoutSum&&!inputs.vri_required?'':'none';
 }
 function vriRequiredToggled(el){
  const fee=Number(inputs.land_rights_cost_mln||0);
@@ -2437,10 +2553,10 @@ function vriRequiredToggled(el){
   vriFeeClearedMln=fee;
  }
  if(el.checked&&!(fee>0)){
-  // Включить признак без суммы нечем: плату решает сумма.
+  // Включить признак без суммы нечем: плату решает сумма. Но молча
+  // откатывать клик нельзя — подпись и кнопка говорят, что сделать.
   el.checked=false;
-  const field=document.getElementById('f_land_rights_cost_mln');
-  if(field)field.focus();
+  vriFeeAskedWithoutSum=true;
  }
  syncVriRequiredBox();
  const land=document.getElementById('f_land_rights_cost_mln');

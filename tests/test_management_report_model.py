@@ -179,11 +179,16 @@ def test_an_old_snapshot_is_flagged_as_not_refreshed():
     assert "новый график с процентами не загружали" in text
 
 
-def test_no_schedule_fact_is_a_named_reason():
-    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
+def test_without_a_schedule_fact_the_report_shows_what_the_monitor_shows():
+    """Нет недельного ГПР-факта — проценты из утверждённого ГПР, как в Мониторе,
+    и сводка прямо говорит, откуда они и от какой даты версия графика."""
+    monitor.store_schedule(PROJECT, _gpr_book({"1": 0.30}), None, "2026-07-01")
     got = report.physical(PROJECT, "week", "2026-10-18")
-    assert got["state"] == "missing"
-    assert "ГПР-факт" in got["reason"]
+    assert got["state"] == "ok" and got["fact_snapshot"] is None
+    assert got["source"]["label"] == "утверждённый ГПР от 01.07.2026"
+    text = report.render_text(report.build(PROJECT, "week", "2026-10-18"))
+    assert "Проценты — утверждённый ГПР от 01.07.2026" in text
+    assert "Недельный ГПР-факт с процентами в Монитор не загружали" in text
 
 
 def budget_book(months=(("Сентябрь 2026", (-300, -10, -20), (-280, -9, -21)),
@@ -236,7 +241,9 @@ def test_month_budget_plan_comes_from_the_budget_and_fact_from_rss():
     assert lines["construction"]["remaining"] == pytest.approx(250 * M)
     assert lines["commercial"]["plan"] == pytest.approx(25 * M)
     assert lines["commercial"]["fact"] == pytest.approx(10 * M)
-    assert lines["service"]["plan"] is None
+    # План службы заказчика — её строка бюджета (владелец, 22.10.2026); факт
+    # РСС 2.6 шире плана, это объяснено примечанием строки.
+    assert lines["service"]["plan"] == pytest.approx(10 * M)
     assert lines["service"]["fact"] == pytest.approx(20 * M)
 
 
@@ -387,9 +394,8 @@ def test_budget_route_stores_and_refuses_by_name(monkeypatch):
         content_base64=base64.b64encode(budget_book()).decode())
     stored = core.monitor_store_budget(good)
     assert stored["months"] == ["2026-09", "2026-10"]
-    with pytest.raises(HTTPException) as again:
-        core.monitor_store_budget(good)
-    assert again.value.status_code == 409
+    # Тот же период тем же днём — замена, прежний файл в архиве.
+    assert core.monitor_store_budget(good)["replaced"] is True
     broken = core.MonitorEstimateRequest(
         project=PROJECT, taken_at="2026-10-03",
         content_base64=base64.b64encode(_rss_book([])).decode())
@@ -397,3 +403,45 @@ def test_budget_route_stores_and_refuses_by_name(monkeypatch):
         core.monitor_store_budget(broken)
     assert bad.value.status_code == 400
     assert "шапки с месяцами" in bad.value.detail
+
+
+def test_several_periods_load_the_same_day_and_the_latest_period_wins():
+    # «Эти я загрузить через форму не смог: он не принял новые файлы вообще,
+    # сказал что октябрь уже загружен» (владелец, 21.10.2026). Файлы БДДС за
+    # прошлые периоды догружаются пачкой в один день.
+    _project()
+    monthly_budget.store_budget(PROJECT, budget_book(), "2026-10-02")  # сентябрь—октябрь
+    for months in ((("Июль 2026", (-100, -10, -30), (-90, -10, -30)),
+                    ("Август 2026", (-111, -10, -30), (None, None, None))),
+                   (("Август 2026", (-222, -10, -30), (-200, -10, -30)),
+                    ("Сентябрь 2026", (-777, -10, -30), (None, None, None)))):
+        stored = monthly_budget.store_budget(PROJECT, budget_book(months=months), "2026-10-21")
+        assert stored["replaced"] is False
+    # Август — из файла за август—сентябрь (период позже), а не за июль—август.
+    plan = monthly_budget._plan(PROJECT, "2026-08-01", "2026-10-31")
+    assert plan["plan"]["construction"] == pytest.approx(212 * M)
+    # Сентябрь — из файла за сентябрь—октябрь, хотя он загружен раньше.
+    plan = monthly_budget._plan(PROJECT, "2026-09-01", "2026-10-31")
+    assert plan["file"] == "2026-10-02"
+
+
+def test_past_months_loaded_later_reach_an_earlier_report():
+    # «Почему бюджеты, которые я положил с апреля по август, не учитываются»
+    # (владелец, 21.10.2026): файлы прошлых месяцев, загруженные 21.10, не
+    # попадали в сводку на 20.10 — сводка брала только загруженное к её дате.
+    _project()
+    for months in ((("Апрель 2026", (-101, -10, -30), (-90, -10, -30)),
+                    ("Май 2026", (-102, -10, -30), (-95, -10, -30))),
+                   (("Июль 2026", (-104, -10, -30), (-99, -10, -30)),
+                    ("Август 2026", (-105, -10, -30), (-98, -10, -30)))):
+        monthly_budget.store_budget(PROJECT, budget_book(months=months), "2026-10-21")
+    # А будущий период, загруженный позже даты сводки, в неё не попадает.
+    monthly_budget.store_budget(PROJECT, budget_book(months=(
+        ("Ноябрь 2026", (-500, -10, -30), (None, None, None)),)), "2026-10-21")
+    plan = monthly_budget._plan(PROJECT, "2026-04-01", "2026-10-20")
+    assert plan["plan"]["construction"] == pytest.approx(91 * M)
+    assert monthly_budget._plan(PROJECT, "2026-08-01", "2026-10-20") is not None
+    assert monthly_budget._plan(PROJECT, "2026-11-01", "2026-10-20") is None
+    # Отклонения за прошлый закрытый месяц сводки на 15.09 — из файла с августом.
+    articles = monthly_budget._articles(PROJECT, datetime.date(2026, 9, 15))
+    assert articles["known"] or "нет месяца" not in articles["reason"]

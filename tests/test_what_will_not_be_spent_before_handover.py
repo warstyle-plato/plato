@@ -278,7 +278,8 @@ def test_the_screen_opens_the_detail_and_shows_the_answer() -> None:
     assert "Надо достроить по утверждённой модели" in top
     assert "Есть: остаток лимитов + резерв" in top
     assert "row('ДЕФИЦИТ'" in top
-    for hidden in ("Общая сметная стоимость глав 2–3", "Резерв 2.8/2.9",
+    # Главы — из расчёта (`chapters_label`: «1–3», если финкнига несёт главу 1).
+    for hidden in ("Общая сметная стоимость глав ${f.chapters_label", "Резерв 2.8/2.9",
                    "Гарантийные удержания", "Средства на завершение"):
         assert hidden not in top, f"«{hidden}» осталась в верхнем блоке"
         assert hidden in body, f"«{hidden}» пропала совсем, а не свернулась"

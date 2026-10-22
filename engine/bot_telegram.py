@@ -223,6 +223,11 @@ def _telegram_verify_session(value: str) -> dict[str, Any]:
         calc_overrides = payload.get("calc_overrides")
         if calc_overrides is not None and not isinstance(calc_overrides, dict):
             raise ValueError("calc_overrides")
+        # Демо-доступ проверяющих (`engine/review_demo.py`) отзывается владельцем
+        # раньше срока подписи: отозванная ссылка гасит и выданную по ней сессию.
+        demo_alive = globals().get("demo_session_alive")
+        if callable(demo_alive) and not demo_alive(payload["chat_id"]):
+            raise ValueError("demo revoked")
         return payload
     except Exception as exc:
         raise HTTPException(status_code=403, detail="Telegram-сессия недействительна или истекла") from exc
@@ -1069,6 +1074,62 @@ def _telegram_calc_menu(chat_id: int) -> None:
     )
 
 
+def _report_mailing_call(path: str, code: str, chat_id: int, **fields: Any) -> dict[str, Any]:
+    """Маршрут рассылки сводки на ядре — по сети с Render, напрямую на ядре."""
+    payload = {"chat_id": int(chat_id), "sign": _web_login_sign(code, int(chat_id)), **fields}
+    remote = _projects_remote_url(path)
+    if remote:
+        return _core_post(remote, payload, 60.0)
+    handler = {"/internal/report/subscribe": internal_report_subscribe,
+               "/internal/report/unsubscribe": internal_report_unsubscribe,
+               "/internal/report/outbox": internal_report_outbox,
+               "/internal/report/sent": internal_report_sent}[path]
+    return handler(ReportMailingInternalRequest(**payload))
+
+
+def _report_slot_words(slot: dict[str, Any]) -> str:
+    when = datetime.fromisoformat(str(slot.get("at"))).strftime("%d.%m.%Y")
+    what = "за неделю" if slot.get("kind") == "week" else "за месяц"
+    return f"{when} в 9:00 по Москве ({what})"
+
+
+def _telegram_report_subscribe(chat_id: int, start: str, name: str) -> None:
+    try:
+        got = _report_mailing_call("/internal/report/subscribe", "report-subscribe",
+                                   chat_id, start=start, name=name)
+    except HTTPException as exc:
+        _telegram_send_message(chat_id, "<b>Подписка не оформлена.</b>\n"
+                               + html.escape(str(exc.detail)))
+        return
+    except Exception as exc:  # noqa: BLE001 — человек должен узнать, что не вышло
+        _telegram_send_message(chat_id, "<b>Подписка не оформлена.</b>\n"
+                               + html.escape(f"Сервер сводок не ответил: {exc}"))
+        return
+    _telegram_send_message(
+        chat_id,
+        f"<b>Вы подписаны на сводку руководству по проекту «{html.escape(got['project'])}».</b>\n"
+        "Сводка приходит сообщением и PDF: за неделю — по понедельникам, за месяц — "
+        "1-го числа, в 9:00 по Москве. Ближайшая — "
+        f"{_report_slot_words(got.get('next') or {})}.\n"
+        "Отписаться: /report_stop")
+
+
+def _telegram_report_unsubscribe(chat_id: int) -> None:
+    try:
+        got = _report_mailing_call("/internal/report/unsubscribe", "report-unsubscribe", chat_id)
+    except Exception as exc:  # noqa: BLE001
+        detail = exc.detail if isinstance(exc, HTTPException) else exc
+        _telegram_send_message(chat_id, "<b>Отписка не прошла.</b>\n"
+                               + html.escape(f"Сервер сводок не ответил: {detail}"))
+        return
+    projects = got.get("projects") or []
+    _telegram_send_message(
+        chat_id,
+        ("<b>Вы отписаны от сводки</b> по "
+         + ", ".join(f"«{html.escape(name)}»" for name in projects) + ".")
+        if projects else "Подписок на сводку руководству у этого чата нет.")
+
+
 _INVITE_SOURCE_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 
 
@@ -1080,7 +1141,7 @@ def _telegram_invite_source(payload: str) -> str:
     (`login_…`) меткой не считается — это другой сценарий.
     """
     value = str(payload or "").strip()
-    if not value or value.startswith("login_"):
+    if not value or value.startswith(("login_", "rep_")):
         return ""
     return value if _INVITE_SOURCE_RE.match(value) else ""
 
@@ -2362,6 +2423,11 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
                 _telegram_send_message(
                     chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc)))
             return
+        # «/start rep_<код>» — приглашение на сводку руководству по проекту:
+        # ссылку создаёт владелец на странице сводки. Подписка живёт на ядре.
+        if command == "/start" and start_payload.startswith("rep_"):
+            _telegram_report_subscribe(chat_id, start_payload, _telegram_sender_name(message))
+            return
         # «/start <метка>» — переход по приглашению: ссылку кладут в канал, и
         # адрес сайта человек заранее не знает. Метка приезжает в payload, и с
         # первого нажатия известно, кто пришёл и откуда: chat_id, имя, источник.
@@ -2372,6 +2438,9 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
             usage_track("invite", surface="bot", chat_id=chat_id, user_id=user_id,
                         name=_telegram_sender_name(message), source=source)
         _telegram_start_message(chat_id, user_id, source=source)
+        return
+    if command == "/report_stop":
+        _telegram_report_unsubscribe(chat_id)
         return
     if command == "/status":
         status = "подключён" if _TELEGRAM_RUNTIME.get("configured") else "запускается"

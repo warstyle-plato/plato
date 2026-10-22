@@ -2652,6 +2652,10 @@ class SensitivityRequest(BaseModel):
     parameters: list[str] = []
     change_pct: float = 10.0
     duration_change_months: float = 6.0
+    # Чувствительность — тот же расчёт, только многократный: за входом и правом
+    # на участок (`require_calc_access`).
+    session: str = ""
+    access_key: str = ""
 
 
 class AgentDocumentRequest(BaseModel):
@@ -2683,6 +2687,9 @@ class AgentDocumentAnswerRequest(BaseModel):
     action: str = "answer"  # answer | skip | stop
     choice: int = -1
     value: str = ""
+    # Поле обязательства уже несёт своё число: «add» — прибавить ответ к
+    # нему, «replace» — заменить. Пусто — сервер сначала спросит.
+    mode: str = ""
     inputs: dict[str, Any] = {}
     tep: dict[str, dict[str, Any]] = {}
     session: str = ""

@@ -194,6 +194,12 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # Признак ВРИ — вид суммы платы, доли источников — с подписью
         # нормировки: обе подписи форма пишет под своими полями.
         "let vriFeeClearedMln=0;",
+        # Галочку без платы пытались поставить — подпись и кнопка к полю
+        # суммы: форма рисует их под признаком ВРИ.
+        "let vriFeeAskedWithoutSum=false;",
+        page_function("vriFeeWhereFrom"),
+        page_function("vriFeeGoNode"),
+        page_function("focusVriFeeField"),
         page_function("vriPaymentActive"),
         page_function("vriRequiredNote"),
         page_function("fieldOptionLabel"),

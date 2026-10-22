@@ -145,6 +145,10 @@
   function pageTep() { return typeof tep === 'undefined' ? {} : tep; }
   function pageRates() { return typeof rates === 'undefined' ? [] : rates; }
   function pagePhasing() { return typeof phasing === 'undefined' ? {} : phasing; }
+  // Подбор цены — тот же расчёт участка: сервер пускает его по сессии входа
+  // и праву на участок, как `/calculate` страницы.
+  function pageSession() { return typeof activeSession === 'function' ? activeSession() : ''; }
+  function pageAccessKey() { return typeof projectsAdminKey === 'undefined' ? '' : projectsAdminKey; }
 
   var fmtMoney = function (v) { return typeof money === 'function' ? money(v) : String(v); };
   var fmtMult = function (v) { return typeof mult === 'function' ? mult(v) : String(v); };
@@ -994,6 +998,17 @@
     vri: function () {
       var i = pageInputs() || {};
       if (!Number(i.land_rights_cost_mln || 0)) {  // плату решает сумма (vri_payment_active)
+        /* «Можно пропустить» — правда не везде. В Москве под жильё плата
+           обычно есть, а у площадки КРТ карточка торгов её не считает
+           вовсе: ноль там значит «не посчитано», а не «не нужно». */
+        var region = typeof classRegion === 'function' ? classRegion() : 'msk';
+        var krt = ((i._manual_tep_import || {}).source || {}).kind === 'krt';
+        if (krt) {
+          return { mark: 'warn', hint: 'Плата за смену ВРИ не посчитана: карточка торгов КРТ её не считает, а в Москве под жильё она обычно есть. Без неё расчёт её не учитывает — впишите сумму из расчёта ГлавАПУ или договора КРТ.' };
+        }
+        if (region === 'msk') {
+          return { mark: 'warn', hint: 'Плата за смену ВРИ не задана, и расчёт её не учитывает. В Москве она обычно есть, если участок меняет назначение под жильё. Получите ТЭП калькулятором ГлавАПУ на шаге «Участок» — плата придёт с ним — или впишите сумму сами.' };
+        }
         return { mark: 'opt', hint: 'По желанию: нужен, только если участку требуется смена ВРИ. Плата 0 — шаг можно пропустить.' };
       }
       return { mark: 'ok', hint: 'Смена ВРИ включена: плата посчитана, проверьте сумму, график и источники оплаты.' };
@@ -1333,7 +1348,8 @@
       body: JSON.stringify({
         inputs: pageInputs(), tep: pageTep(),
         rates: pageRates(), phasing: pagePhasing(),
-        variable: 'purchase_price_mln', target_llcr: TARGET_LLCR
+        variable: 'purchase_price_mln', target_llcr: TARGET_LLCR,
+        session: pageSession(), access_key: pageAccessKey()
       })
     }).then(function (response) { return response.json(); })
       .then(function (data) { goalSeek = data; goalSeekStale = false; })

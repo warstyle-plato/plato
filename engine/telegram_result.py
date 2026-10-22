@@ -123,6 +123,11 @@ def telegram_result(req: TelegramResultRequest,
     numbers = session_numbers or result_numbers
     if session_numbers and result_numbers and session_numbers != result_numbers:
         raise HTTPException(status_code=403, detail="Кадастровые номера не совпадают с Telegram-сессией")
+    # Карточка, PDF и Excel в чат — тот же расчёт участка: право решает та же
+    # функция, что пустила мини-приложение к `/calculate`.
+    calc_access_for_chat(chat_id, "Отчёт в Telegram",
+                         inputs=(summary.get("report_payload") or {}).get("inputs") or {},
+                         cadastral=list(numbers) or None, surface="telegram")
 
     # Главный — IRR проекта (до финансирования); IRR капитала вторым и числом
     # только когда движок счёл его показательным (`summary.equity_irr`):

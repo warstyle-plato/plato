@@ -50,6 +50,7 @@ let projectsStorageReady=true, projectsAdminKey='key', openedProject=null;
 const projectsDialog={style:{}};
 const projectsBody={innerHTML:''};
 function renderAccountBox(){}
+function renderTariffsBox(){}
 function renderOpenedProjectButton(){}
 function renderProjectsLogin(){}
 function hideProjectsLogin(){}
