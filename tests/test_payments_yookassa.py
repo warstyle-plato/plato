@@ -53,7 +53,7 @@ def shop(monkeypatch, tmp_path):
     store: dict[str, dict] = {}
     calls: list[tuple] = []
 
-    def fake_call(method, path, body=None, idempotence_key=""):
+    def fake_call(method, path, body=None, idempotence_key="", test=False):
         calls.append((method, path, body, idempotence_key))
         if method == "POST":
             payment = {"id": PAY_ID, "status": "pending", "paid": False,
