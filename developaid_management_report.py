@@ -1034,7 +1034,8 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                          f"осталось {_rub(total['remaining'])}")
             for chapter in table["chapters"]:
                 line = chapter["total"]
-                if chapter["key"] != "service" and line.get("plan"):
+                if (chapter["key"] != "service" and line.get("plan")
+                        and line.get("fact") is not None):
                     parts.append(f"{chapter['label'].lower()} — оплачено {_rub(line['fact'])} "
                                  f"из {_rub(line['plan'])} ({_pct(line['share'])})")
             rows = {row["key"]: row for chapter in table["chapters"] for row in chapter["rows"]}
@@ -1542,7 +1543,10 @@ def render_text(report: dict[str, Any]) -> str:
         month = _date(block["month"])
         name = f"{_MONTHS[month.month - 1]} {month.year}"
         for line in block["lines"]:
-            if line.get("plan") is not None:
+            if line.get("plan") is not None and line.get("fact") is None:
+                lines.append(f"{line['label']} за {name}: план {_rub(line['plan'])}, "
+                             "оплат в РСС нет.")
+            elif line.get("plan") is not None:
                 lines.append(f"{line['label']} за {name}: план {_rub(line['plan'])}, "
                              f"оплачено {_rub(line['fact'])}, "
                              f"осталось {_rub(line['remaining'])}"
@@ -1760,7 +1764,9 @@ def _budget_forecast(block: dict[str, Any], end: datetime.date) -> list[dict[str
     for line in block.get("lines") or []:
         # Служба заказчика: факт РСС шире плана (см. примечание строки) —
         # прогноз против плана был бы ложной тревогой.
-        if not line.get("plan") or not elapsed or line["key"] == "service":
+        # Земля и АХР платятся разово, темп месяца к ним не применим.
+        if (not line.get("plan") or not elapsed
+                or line["key"] in {"service", "land", "admin"}):
             continue
         forecast = line["fact"] / elapsed
         out.append({"label": line["label"], "plan": line["plan"], "fact": line["fact"],
@@ -1835,8 +1841,10 @@ def _budget_articles_html(table: dict[str, Any]) -> str:
     if whole:
         notes.append("«Всего по бюджету месяца» — строка «РАСХОДЫ» бюджета: стройка, "
                      "коммерческие расходы, служба заказчика, земля (глава 1) и "
-                     "административно-хозяйственные расходы. Оплаты административно-"
-                     "хозяйственных расходов в РСС нет, поэтому в «Оплачено» их не видно.")
+                     "административно-хозяйственные расходы. Оплачено по земле и "
+                     "административно-хозяйственным расходам — из колонки «ФАКТ» "
+                     "бюджета (их платят мимо реестра РСС); если факта в бюджете нет, "
+                     "земля — по главе 1 РСС.")
     if not table.get("has_plan"):
         notes.append("Бюджета на этот месяц нет — показаны только оплаты.")
     out.append("<p class='note'>" + " ".join(notes) + "</p>")
@@ -2000,6 +2008,15 @@ def _tiles_html(items: list[dict[str, str]]) -> str:
         for item in items) + "</div>")
 
 
+def _delta(value: float | None) -> str:
+    """Отклонение со знаком; меньше рубля — ноль без знака, а не «−0 ₽»."""
+    if value is None:
+        return "—"
+    if abs(value) < 0.5:
+        return "0 ₽"
+    return ("+" if value > 0 else "") + _rub(value)
+
+
 def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
     esc = html.escape
     out = []
@@ -2039,29 +2056,47 @@ def _budget_depth_html(block: dict[str, Any], end: datetime.date) -> str:
             out.append(_table(["Глава бюджета", "План", "Факт", "Отклонение"], [
                 [(f"<b>{esc(row['label'])}</b>" if row["key"] == "expenses" else esc(row["label"])),
                  _rub(row.get("plan")), _rub(row.get("fact")),
-                 ("+" if (row["fact"] or 0) - (row["plan"] or 0) >= 0 else "")
-                 + _rub((row["fact"] or 0) - (row["plan"] or 0))
+                 _delta(row["fact"] - row["plan"])
                  if row.get("plan") is not None and row.get("fact") is not None else "—"]
                 for row in articles["chapters"]]))
         out.append(f"<h3>Отклонения по статьям бюджета за {_months_label(articles['month'])}</h3>")
-        out.append(_table(["Статья", "План", "Факт", "Отклонение"], [
+        body = [
             [esc(row["article"]), _rub(row.get("plan")),
              "не платили" if row.get("fact_blank") else _rub(row.get("fact")),
-             ("+" if (row.get("delta") or 0) >= 0 else "") + _rub(row.get("delta"))
-             if row.get("delta") is not None else "—"] for row in articles["rows"][:10]]))
+             _delta(row.get("delta"))] for row in articles["rows"][:10]]
+        # Итог — по всем статьям, а не по показанным десяти (владелец,
+        # 22.10.2026: «тут нет нигде итого»).
+        every = articles["rows"]
+        plan_sum = sum(row["plan"] for row in every if row.get("plan") is not None)
+        fact_sum = sum(row["fact"] or 0.0 for row in every)
+        body.append(["<b>Итого по статьям</b>", f"<b>{_rub(plan_sum)}</b>",
+                     f"<b>{_rub(fact_sum)}</b>", f"<b>{_delta(fact_sum - plan_sum)}</b>"])
+        out.append(_table(["Статья", "План", "Факт", "Отклонение"], body))
         out.append("<p class='note'>Плюс — перерасход, минус — недоосвоение. Данные — из "
                    f"план-факта БДДС от {_day(articles['file'])}.</p>")
     elif articles.get("reason"):
         out.append(f"<p class='note'>Отклонения по статьям бюджета: {esc(articles['reason'])}.</p>")
     if block.get("by_article"):
         out.append("<h3>Оплачено с начала месяца по статьям РСС</h3>")
-        out.append(_table(["Статья РСС", "Оплачено"], [
-            [f"{esc(row['code'])} {esc(row['name'])}", _rub(row["amount"])]
-            for row in block["by_article"][:10]]))
+        shown = block["by_article"][:10]
+        paid = sum(row["amount"] for row in block["by_article"])
+        body = [[f"{esc(row['code'])} {esc(row['name'])}", _rub(row["amount"])] for row in shown]
+        rest = paid - sum(row["amount"] for row in shown)
+        if abs(rest) >= 0.5:
+            body.append([f"Остальные статьи ({len(block['by_article']) - len(shown)})",
+                         _rub(rest)])
+        body.append(["<b>Итого оплачено с начала месяца</b>", f"<b>{_rub(paid)}</b>"])
+        out.append(_table(["Статья РСС", "Оплачено"], body))
     if block.get("recipients"):
         out.append("<h3>Крупнейшие получатели оплат с начала месяца</h3>")
-        out.append(_table(["Контрагент", "Оплачено"], [
-            [esc(row["name"]), _rub(row["amount"])] for row in block["recipients"]]))
+        body = [[esc(row["name"]), _rub(row["amount"])] for row in block["recipients"]]
+        top = sum(row["amount"] for row in block["recipients"])
+        body.append([f"<b>Итого по {len(block['recipients'])} крупнейшим</b>",
+                     f"<b>{_rub(top)}</b>"])
+        paid = sum(row["amount"] for row in block.get("by_article") or [])
+        if paid > top + 0.5:
+            body.append(["Все остальные получатели", _rub(paid - top)])
+        out.append(_table(["Контрагент", "Оплачено"], body))
     return "\n".join(out)
 
 
