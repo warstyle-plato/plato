@@ -1389,6 +1389,7 @@ function renderSiteMassing(){
  if(!body)return;
  renderSiteMassingFields();
  const m=siteMassingResult();
+ renderSiteMassingScheme(m);
  if(!m){
   body.innerHTML='<p class="site-massing-hint">Здесь появятся пятно застройки, средняя этажность и число подземных уровней, когда проект будет посчитан.</p>';
   return;
@@ -1426,6 +1427,46 @@ function renderSiteMassing(){
  const notes=(m.notes||[]).map(w=>'<p class="site-massing-hint">'+escapeHtml(w)+'</p>').join('');
  body.innerHTML=warn+'<div class="scroll"><table class="site-massing-table"><tbody>'+rows.join('')+'</tbody></table></div>'+levels+notes+
   '<p class="site-massing-hint">Это оценка по балансу территории, а не проект: формы участка расчёт не знает.</p>';
+}
+// Объёмная схема: многоугольники, номера и легенда — ответ движка
+// (`site_massing_scheme`); тот же ответ рисует PDF. Здесь ничего не
+// раскладывается и не проецируется.
+function siteMassingSchemeSvg(ax){
+ const vb=ax.viewbox||[0,0,1,1];const u=vb[2]/400;
+ const shapes=(ax.shapes||[]).map(s=>'<polygon data-kind="'+s.kind+'"'+(s.building?' data-building="'+s.building+'"':'')+
+  ' points="'+s.points.map(p=>p[0]+','+p[1]).join(' ')+'" fill="'+s.fill+'" stroke="'+s.stroke+'" stroke-width="'+(s.width*u)+'"'+
+  (s.dash?' stroke-dasharray="'+s.dash.map(d=>d*u).join(' ')+'"':'')+(s.opacity&&s.opacity<1?' fill-opacity="'+s.opacity+'"':'')+' stroke-linejoin="round"></polygon>').join('');
+ const r=Number(ax.label_radius||5);
+ const labels=(ax.labels||[]).map(l=>'<g class="site-massing-mark" data-building="'+l.building+'"><circle cx="'+l.x+'" cy="'+l.y+'" r="'+r+
+  '" fill="#fff" stroke="#222" stroke-width="'+(r/8)+'"></circle><text x="'+l.x+'" y="'+(l.y+r*0.42)+'" font-size="'+(r*1.2)+
+  '" text-anchor="middle" font-weight="700" font-family="sans-serif">'+escapeHtml(l.text)+'</text></g>').join('');
+ const fs=Number(ax.font_size||8);
+ const texts=(ax.texts||[]).map(t=>'<text class="site-massing-level" data-level="'+t.level+'" x="'+t.x+'" y="'+t.y+'" font-size="'+fs+
+  '" text-anchor="'+(t.anchor||'start')+'" fill="#333" font-family="sans-serif">'+escapeHtml(t.text)+'</text>').join('');
+ return '<svg viewBox="'+vb.join(' ')+'" role="img" aria-label="Объёмная схема застройки участка">'+shapes+texts+labels+'</svg>';
+}
+// Корпуса схемы для карты участка: кольца в меркаторе — ответ движка
+// (`ring_merc`), есть только у схемы по контуру из ЕГРН.
+function siteMassingMapShapes(){
+ const m=siteMassingResult()||{};const scheme=m.scheme||{};
+ const legend={};((scheme.axonometry||{}).legend||[]).forEach(g=>{legend[g.number]=g});
+ return ((scheme.layout||{}).buildings||[]).filter(b=>Array.isArray(b.ring_merc)&&b.ring_merc.length)
+  .map(b=>({ring:b.ring_merc,number:b.number,title:b.label,colour:(legend[b.number]||{}).color||'#555'}));
+}
+function siteMassingOpenMap(){
+ const many=((typeof landLookup==='object'&&landLookup&&landLookup.results)||[]).filter(x=>x&&x.found).length>1;
+ if(many)landMapFromTerritory();else landMapFromContour();
+}
+function renderSiteMassingScheme(m){
+ const box=document.getElementById('siteMassingScheme');
+ if(!box)return;
+ const scheme=(m&&m.scheme)||{};const ax=scheme.axonometry||{};const layout=scheme.layout||{};
+ if(!(ax.shapes||[]).length){box.innerHTML='';return;}
+ const legend=(ax.legend||[]).map(g=>'<li data-building="'+g.number+'"><i style="background:'+g.color+'"></i>'+escapeHtml(g.line||'')+'</li>').join('');
+ const notes=(layout.notes||[]).map(t=>'<p class="site-massing-hint">'+escapeHtml(t)+'</p>').join('');
+ box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
+  '<p class="site-massing-hint">'+escapeHtml(ax.footer||'')+'</p>'+
+  (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':'');
 }
 // Поля допущений: подпись и единица — из FIELD_GROUPS. Поля «пусто — по
 // расчёту» (пятно, уровни, предельная этажность, земля на место) показывают
