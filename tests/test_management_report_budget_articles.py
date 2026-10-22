@@ -326,3 +326,39 @@ def test_land_and_admin_paid_come_from_the_budget_fact():
     assert chapters["admin"]["fact"] == pytest.approx(3 * M)
     assert table["whole"]["fact"] == pytest.approx(
         sum(chapter["fact"] or 0 for chapter in chapters.values()))
+
+
+def test_chapter_one_reaches_the_month_chart_and_text():
+    # «1 глава есть только в факте предыдущего месяца, а в таблицах и сравнении
+    # текущего месяца её нет» (владелец, 22.10.2026).
+    built = _setup()
+    lines = {line["key"]: line for line in built["budget"]["lines"]}
+    assert lines["land"]["plan"] == pytest.approx(50 * M)
+    assert lines["admin"]["plan"] == pytest.approx(9 * M)
+    chart = report._budget_chart(built["budget"])
+    assert "Приобретение проекта (земля)" in chart
+    text = report.render_text(built)
+    assert "Приобретение проекта (земля) за октябрь 2026: план 50,0 млн ₽" in text
+    assert "Административно-хозяйственные расходы за октябрь 2026: план 9,0 млн ₽, " \
+           "оплат в РСС нет." in text
+    assert all(row["label"] != lines["land"]["label"]
+               for row in report._budget_forecast(built["budget"], datetime.date(2026, 10, 18)))
+
+
+def test_the_tables_carry_totals():
+    # «Тут нет нигде итого (суммирования)» (владелец, 22.10.2026).
+    built = _setup()
+    page = report.render_html(built)
+    # Итог — по всем статьям месяца, не только по показанным десяти.
+    paid = sum(row["amount"] for row in built["budget"]["by_article"])
+    assert paid > 0
+    assert ("<td><b>Итого оплачено с начала месяца</b></td>"
+            f"<td><b>{report._rub(paid)}</b></td>") in page
+    assert "Итого по " in page and "крупнейшим" in page
+    monthly_budget.store_budget(PROJECT, articles_budget(), "2026-09-01")
+    articles = monthly_budget._articles(PROJECT, datetime.date(2026, 9, 15))
+    html_part = report._budget_depth_html({"month": "2026-09-01", "articles": articles},
+                                          datetime.date(2026, 9, 15))
+    plan = sum(row["plan"] for row in articles["rows"] if row.get("plan") is not None)
+    assert f"<td><b>Итого по статьям</b></td><td><b>{report._rub(plan)}</b></td>" in html_part
+    assert "−0 ₽" not in html_part

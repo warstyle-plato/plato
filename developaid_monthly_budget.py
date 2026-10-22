@@ -394,10 +394,21 @@ def month_budget(project: str, end: datetime.date) -> dict[str, Any]:
             planned = (plan or {}).get("service")
         lines.append({**line, "plan": planned, "fact": spent,
                       "remaining": planned - spent if planned is not None else None})
+    table = month_articles(rss, month, end, plan)
+    # Земля и АХР — те же строки, что в таблице статей (один источник): без них
+    # график, текст и плитки месяца теряли главу 1 (владелец, 22.10.2026: «1
+    # глава есть только в факте предыдущего месяца, а в таблицах и сравнении
+    # текущего месяца её нет»).
+    for chapter in table["chapters"]:
+        if chapter["key"] in {"land", "admin"}:
+            row = chapter["total"]
+            lines.append({"key": chapter["key"], "label": chapter["label"],
+                          "rss": row.get("rss", ""), "plan": row["plan"],
+                          "fact": row["fact"], "remaining": row["remaining"]})
     out = {"state": "ok" if plan else "partial", "month": month, "rss": rss.stem,
            "budget_file": (plan or {}).get("file"), "lines": lines,
            "last_payment": fact["last_payment"],
-           "by_budget_article": month_articles(rss, month, end, plan),
+           "by_budget_article": table,
            "trend": _trend(project, rss, end),
            "by_article": _by_article(rss, month, end),
            "recipients": _recipients(rss, month, end),
