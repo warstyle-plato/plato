@@ -504,7 +504,11 @@ _SENSITIVITY_PARAMETERS: list[dict[str, Any]] = [
     {"key": "monthly_growth_pre_pct", "kind": "pct", "group": "Доходы"},
     {"key": "inflation_after_rve_pct", "kind": "pct", "group": "Доходы"},
     # Затраты
-    {"key": "purchase_price_mln", "kind": "pct", "group": "Затраты"},
+    # Цена входа — участок И выкуп участков и зданий у третьих лиц: движок
+    # платит обе суммы (`capex.purchase`). Прежде сдвигалась одна цена
+    # участка: у офиса на Пролетарском пр. это 5 млн из 680, и «±10%» давало
+    # ±0,5 млн при подписи о ±68 млн — размах выходил нулевым.
+    {"key": "purchase_price_mln", "kind": "pct", "group": "Затраты", "where": "deal"},
     {"key": "main_above_th_per_sqm", "kind": "pct", "group": "Затраты"},
     {"key": "main_under_th_per_sqm", "kind": "pct", "group": "Затраты"},
     {"key": "utilities_th_per_sqm", "kind": "pct", "group": "Затраты"},
@@ -606,6 +610,8 @@ def _sensitivity_applicable(
         row = tep.get(product) or {}
         if not (float(row.get("saleable") or 0) or float(row.get("units") or 0)):
             return "продукта нет в ТЭП"
+    if spec.get("where") == "deal" and not _deal_total(inputs):
+        return "значение равно нулю"
     if spec.get("where") in (None, "inputs") and spec["kind"] == "pct":
         if not float(n(inputs, spec["key"], 0.0)):
             # Ноль, умноженный на процент, остаётся нулём: расчёт не изменится.
@@ -621,7 +627,17 @@ def _sensitivity_base_value(
         return float(phasing.get(spec["key"]) or 0)
     if where == "date":
         return 0.0
+    if where == "deal":
+        return _deal_total(inputs)
     return n(inputs, spec["key"], 0.0)
+
+
+_DEAL_FIELDS = ("purchase_price_mln", "land_buyout_mln")
+
+
+def _deal_total(inputs: dict[str, Any]) -> float:
+    """Цена входа: участок плюс выкуп участков и зданий, млн ₽."""
+    return sum(max(0.0, n(inputs, key, 0.0)) for key in _DEAL_FIELDS)
 
 
 def _sensitivity_shift(spec: dict[str, Any], base: float, direction: int,
@@ -655,6 +671,13 @@ def _sensitivity_apply(
         start = _vri_date(inputs.get("project_start"), date.today())
         inputs["project_start"] = add_months(start, int(round(value))).isoformat()
         return
+    if where == "deal":
+        # Обе суммы — в одной пропорции: доля выкупа в цене входа не меняется.
+        total = _deal_total(inputs)
+        if total > 0:
+            for key in _DEAL_FIELDS:
+                inputs[key] = max(0.0, n(inputs, key, 0.0)) * value / total
+        return
     inputs[spec["key"]] = value
 
 
@@ -685,6 +708,15 @@ def _sensitivity_verdict(
     digits = int(info["digits"])
     better_higher = info["better"] == "higher"
     lines: list[str] = []
+    # Параметр, который показатель не сдвинул, «наибольшим влиянием» не
+    # назначается: прежде вывод писал «меняет с 1,062 до 1,062 в худшую
+    # сторону» про строку с нулевым размахом (офис на Пролетарском пр., LLCR
+    # не зависел от цены входа).
+    items = [row for row in items if row["impact"] >= 0.5 * 10 ** -digits]
+    if not items:
+        return [f"Ни один параметр не изменил «{info['label']}»: показатель остаётся "
+                f"{_sensitivity_number(base_value, digits)} при любом из отклонений. "
+                "Он не зависит от этих вводных — выберите другой показатель."]
 
     def worst_of(row: dict[str, Any]) -> tuple[float | None, float]:
         """Худшее из двух плеч и то, на сколько для этого сдвинут параметр."""
@@ -739,7 +771,61 @@ def _sensitivity_verdict(
     return lines
 
 
-def run_sensitivity(
+def run_sensitivity(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    """Tornado — без сравнения путей офиса в каждом сценарии (`OFFICE_PATHS_ON`)."""
+    token = OFFICE_PATHS_ON.set(False)
+    try:
+        return _run_sensitivity(*args, **kwargs)
+    finally:
+        OFFICE_PATHS_ON.reset(token)
+
+
+def report_sensitivity(inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
+                       rates: list[dict[str, Any]], phasing: dict[str, Any],
+                       result: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Чувствительность для отчёта и бота — тем показателем и теми факторами,
+    что подходят проекту, а не LLCR по всем параметрам подряд.
+
+    * Офисный проект: торнадо по NPV проекта для КАЖДОГО пути
+      (`OFFICE_PATHS`) — аренда, заполняемость, ставка капитализации или цена
+      продажи, стройка и цена входа. Основное поле `items` — путь проекта,
+      пути целиком — в `office_paths`.
+    * Другой проект без жилья: факторы и показатель раздела «Чувствительность»
+      отчёта объекта (`_object_sensitivity`).
+    * Остальное — прежний разбор по LLCR.
+
+    Прежде отчёт по офису на ДДУ считал размах LLCR от цены входа и получал
+    ноль: показатель от неё не зависел, а вывод называл её главной.
+    """
+    prefixes = office_path_prefixes(inputs)
+    if prefixes:
+        out: dict[str, Any] = {}
+        current = nonres_strategy.object_strategy(inputs, prefixes[0])
+        for key, label in OFFICE_PATHS:
+            x = copy.deepcopy(inputs)
+            for prefix in prefixes:
+                x[f"{prefix}_strategy"] = key
+            params = [spec["key"] for spec in _SENSITIVITY_PARAMETERS
+                      if spec.get("object") in prefixes and key in spec["strategies"]
+                      and not spec["key"].endswith("_loan_spread_pp")]
+            params.append("purchase_price_mln")
+            try:
+                out[key] = {"label": label, **run_sensitivity(
+                    x, tep, rates, phasing, metric="npv_mln", parameters=params)}
+            except HTTPException as exc:
+                out[key] = {"label": label, "error": str(exc.detail)}
+        main = out.get(current) or next(iter(out.values()))
+        return {**main, "office_paths": out}
+    sections = {str(sec.get("key")): sec for sec in
+                (((result or {}).get("report") or {}).get("object_report") or {}).get("sections") or []}
+    spec = (sections.get("sensitivity") or {}).get("sensitivity") or {}
+    if spec.get("metric") and spec.get("parameters"):
+        return run_sensitivity(inputs, tep, rates, phasing, metric=spec["metric"],
+                               parameters=list(spec["parameters"]))
+    return run_sensitivity(inputs, tep, rates, phasing)
+
+
+def _run_sensitivity(
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
     rates: list[dict[str, Any]],
@@ -1397,11 +1483,42 @@ def _get_variable_value(inputs: dict[str, Any], variable: str) -> float:
     return n(inputs, variable)
 
 
+def _purchase_schedule_as_shares(inputs: dict[str, Any]) -> str | None:
+    """График покупки суммами → тот же график долями текущей сделки.
+
+    Суммы графика платятся как есть, а разница с ценой ложится на дату сделки
+    (`purchase_payment_plan`). Подбор цены, менявший одну цену, получал при
+    любой цене выше нуля те же платежи по графику плюс «возврат» в дату сделки,
+    а при нулевой — ни одного платежа: LLCR прыгал у нуля с 1,21 на 1,17, и
+    потолком выходило «0 млн ₽» (прод 0.27.7, 22.10.2026). Цену подбирают с
+    тем же профилем оплаты: доля каждого платежа — от текущей сделки (с
+    остатком в дату сделки), а если график больше цены — от суммы графика."""
+    items, is_percent, _ = parse_month_schedule(inputs.get("purchase_schedule"))
+    if not items or is_percent:
+        return None
+    total = sum(amount for amount, _ in items)
+    if total <= 0:
+        return None
+    price = n(inputs, "purchase_price_mln")
+    payments = [(month, amount) for amount, month in items]
+    if price > total:
+        payments.insert(0, (0, price - total))
+        total = price
+    shares: dict[int, float] = defaultdict(float)
+    for month, amount in payments:
+        shares[int(month)] += amount / total * 100.0
+    return "; ".join(f"{share:.10g}%@{month}" for month, share in sorted(shares.items()))
+
+
 def _apply_variable(inputs: dict[str, Any], variable: str, value: float) -> None:
     if variable == "main_construction_cost_th_per_sqm":
         inputs["main_above_th_per_sqm"] = value
         inputs["main_under_th_per_sqm"] = value
     else:
+        if variable == "purchase_price_mln":
+            shares = _purchase_schedule_as_shares(inputs)
+            if shares is not None:
+                inputs["purchase_schedule"] = shares
         inputs[variable] = value
 
 
@@ -1523,6 +1640,19 @@ def _goal_refusal_reason(
     )
 
 
+def _goal_feasible_ranges(sampled: list[tuple[float, Any, bool]]) -> list[list[float]]:
+    """Отрезки сетки подбора, где условие выполнено: [от, до] по точкам сетки."""
+    ranges: list[list[float]] = []
+    for index, (value, _, ok) in enumerate(sampled):
+        if not ok:
+            continue
+        if ranges and index > 0 and sampled[index - 1][2]:
+            ranges[-1][1] = round(value, 4)
+        else:
+            ranges.append([round(value, 4), round(value, 4)])
+    return ranges
+
+
 def _tool_goal_seek(
     req: AgentChatRequest,
     bundle: dict[str, Any],
@@ -1578,6 +1708,11 @@ def _tool_goal_seek(
         sampled.append((p, mv, _constraint_ok(mv, target_value, constraint)))
 
     feasible = [item for item in sampled if item[2]]
+    # Порог выполняется на нескольких отрезках — показатель меняется с
+    # переменной неровно. Ответ (крайнее значение) верен, но отрезки
+    # называются, а не прячутся за одним числом.
+    switches = sum(1 for left, right in zip(sampled, sampled[1:]) if left[2] != right[2])
+    non_monotonic = switches > 1
     if not feasible:
         closest = min(
             sampled,
@@ -1697,6 +1832,8 @@ def _tool_goal_seek(
         },
         "search_bounds": [round(lo, 4), round(hi, 4)],
         "threshold_beyond_bound": threshold_beyond,
+        "non_monotonic": non_monotonic,
+        "feasible_ranges": _goal_feasible_ranges(sampled) if non_monotonic else [],
         "calculation_method": "Детерминированный Goal Seek: многократный полный пересчёт DevelopAid на копии текущей модели; исходная модель не изменяется.",
         "phase_llcr_at_solution": _phase_llcr(chosen_bundle),
     }

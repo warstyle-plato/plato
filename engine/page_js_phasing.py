@@ -516,6 +516,9 @@ function phaseObjectListed(key){
 function renderPhaseObjects(){
  // Узел — как у `tepBody` в `syncTep`: стенд страницы зовёт её без разметки.
  if(typeof assignObjects==='undefined'||!assignObjects)return;
+ // Очередность пришла не через `phasingFromSaved` (старое состояние) — словарь
+ // очередей объектов добирается из умолчаний, а не роняет вкладку.
+ if(!phasing.discrete||typeof phasing.discrete!=='object')phasing.discrete=discreteDefaults((phasing.phases||[]).length||1);
  assignObjects.innerHTML=projectObjects().filter(o=>phaseObjectListed(o.key)).map(o=>
   `<div class="field"><label>${escapeHtml(productName(o.key))}</label>`
   +`<select data-object="${escapeHtml(o.key)}">${phaseOptions(phasing.discrete[o.key])}</select></div>`).join('');

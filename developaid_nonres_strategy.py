@@ -51,6 +51,46 @@ REPAY_BULLET = "bullet"
 REPAYMENTS = (REPAY_ANNUITY, REPAY_SWEEP, REPAY_BULLET)
 SALE_CURVES = ("flat", "bell", "front_loaded", "back_loaded")
 
+# Шкала класса офиса (владелец, 22.10.2026: «они зависят от класса офиса»;
+# цены — «400 класс В, 500–600 следующая ступень и далее 750 и 1000 — А и А+»).
+# Класс офиса — свои четыре ступени; по умолчанию он идёт за классом проекта
+# (`OFFICE_CLASS_BY_PROJECT`). Цена продажи — тыс ₽/м² с НДС, заданная
+# владельцем. Ставка аренды — рыночная ставка Москвы на конец 2025 года
+# «всё включено» (базовая ставка, эксплуатация и НДС), тыс ₽/м² в ГОД;
+# источник на поверхностях не подписывается (решение владельца). Ставка
+# дана на дату `OFFICE_RENT_DATE` и до ввода растёт на индексацию аренды —
+# как цена продажи растёт до ввода. Заполняемость, срок заполнения,
+# эксплуатация и ставка капитализации — стартовые допущения; всё правится во
+# вводных, правка руками сильнее класса.
+OFFICE_CLASSES: tuple[str, ...] = ("B", "B+", "A", "A+")
+OFFICE_RENT_DATE = "2025-12-01"
+OFFICE_CLASS_SCALE: dict[str, dict[str, float]] = {
+    "B": {"price_th_per_sqm": 400.0, "rent_th_per_sqm_year": 28.348, "occupancy_stable_pct": 90.0,
+          "leaseup_months": 18, "opex_pct": 20.0, "exit_cap_pct": 11.5},
+    "B+": {"price_th_per_sqm": 550.0, "rent_th_per_sqm_year": 39.874, "occupancy_stable_pct": 92.0,
+           "leaseup_months": 15, "opex_pct": 18.0, "exit_cap_pct": 10.5},
+    "A": {"price_th_per_sqm": 750.0, "rent_th_per_sqm_year": 53.436, "occupancy_stable_pct": 94.0,
+          "leaseup_months": 12, "opex_pct": 16.0, "exit_cap_pct": 9.5},
+    "A+": {"price_th_per_sqm": 1000.0, "rent_th_per_sqm_year": 89.958, "occupancy_stable_pct": 95.0,
+           "leaseup_months": 12, "opex_pct": 15.0, "exit_cap_pct": 9.0},
+}
+# Класс проекта → класс офиса по умолчанию.
+OFFICE_CLASS_BY_PROJECT: dict[str, str] = {"comfort": "B", "business": "B+", "elite": "A"}
+DEFAULT_OFFICE_CLASS = "B"
+
+
+def office_class_fields(office_class: str) -> dict[str, Any]:
+    """Поля стратегии офиса (без приставки) для класса офиса.
+
+    Ставка аренды движка — в МЕСЯЦ; шкала держит её в год, как принято на
+    рынке, и так же её показывают поверхности.
+    """
+    scale = OFFICE_CLASS_SCALE.get(office_class) or OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]
+    return {"rent_th_per_sqm_month": round(scale["rent_th_per_sqm_year"] / 12.0, 3),
+            "rent_date": OFFICE_RENT_DATE,
+            **{k: v for k, v in scale.items() if k not in ("price_th_per_sqm", "rent_th_per_sqm_year")}}
+
+
 # Поля стратегии у объекта: суффикс → (умолчание офиса, умолчание ТЦ).
 # Аренда, загрузка, OPEX и ставка капитализации — умолчания PR #531
 # (`ASSET_DEFAULTS` / `COMMON_DEFAULTS`), переведённые в тыс. ₽; это стартовые
@@ -64,16 +104,20 @@ STRATEGY_FIELD_DEFAULTS: dict[str, tuple[Any, Any]] = {
     "direct_sale_offset_months": (0, 0),
     "direct_sale_months": (12, 12),
     "direct_sale_curve": ("flat", "flat"),
-    "rent_th_per_sqm_month": (4.5, 3.8),
+    # Офис — класс B шкалы (`OFFICE_CLASS_SCALE`, класс офиса комфорта), ТЦ — умолчания PR #531.
+    "rent_th_per_sqm_month": (office_class_fields(DEFAULT_OFFICE_CLASS)["rent_th_per_sqm_month"], 3.8),
+    # Дата, на которую указана ставка аренды; до ввода ставка растёт на
+    # индексацию. Пусто (ТЦ) — ставка уже на дату ввода, как было.
+    "rent_date": (OFFICE_RENT_DATE, ""),
     "rent_index_pct": (5.0, 5.0),
     "occupancy_start_pct": (55.0, 60.0),
-    "occupancy_stable_pct": (92.0, 94.0),
-    "leaseup_months": (12, 12),
-    "opex_pct": (18.0, 24.0),
+    "occupancy_stable_pct": (OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]["occupancy_stable_pct"], 94.0),
+    "leaseup_months": (OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]["leaseup_months"], 12),
+    "opex_pct": (OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]["opex_pct"], 24.0),
     "parking_rent_th_month": (8.0, 0.0),
     "hold_years": (5, 5),
     "exit_mode": (EXIT_SALE, EXIT_SALE),
-    "exit_cap_pct": (11.0, 11.0),
+    "exit_cap_pct": (OFFICE_CLASS_SCALE[DEFAULT_OFFICE_CLASS]["exit_cap_pct"], 11.0),
     "exit_cost_pct": (1.0, 1.0),
     # Удержание: кредит после ввода — долгосрочный, проценты и тело ежемесячно
     # аннуитетом, в конце срока — «баллон» (владелец, 04.10.2026: «кредит
@@ -156,7 +200,9 @@ def operating_month(p: dict[str, float], months_open: int) -> dict[str, float]:
     продал бы по ДДУ. Места гаража сдаются по своей ставке за место.
     """
     occ = occupancy(months_open, p["occ_start"], p["occ_stable"], p["leaseup"])
-    growth = growth_factor(p["rent_index"], months_open)
+    # Индексация — от даты ставки: месяцы до ввода (`rent_pre`) плюс месяцы
+    # эксплуатации. Без даты ставки отсчёт с первого месяца эксплуатации.
+    growth = growth_factor(p["rent_index"], months_open + int(p.get("rent_pre", 0)))
     space_rent = p["area"] * p["rent"] * growth * occ
     parking_rent = p["parking_spaces"] * p["parking_rent"] * growth * occ
     revenue = (space_rent + parking_rent) * p["revenue_multiplier"]
@@ -191,6 +237,17 @@ def plan_horizon_end(plan: dict[str, Any]) -> date:
     hold_years = max(1, int(_num(params, "hold_years", 5)))
     return _add_months(commissioning, hold_years * 12 - 1)
 
+
+
+def rent_months_before(params: dict[str, Any], commissioning: date) -> int:
+    """Месяцев от даты ставки аренды до ввода: столько ставка индексируется
+    до открытия. Нет даты или она позже ввода — ноль."""
+    raw = str((params or {}).get("rent_date") or "").strip()
+    try:
+        when = date.fromisoformat(raw[:10])
+    except ValueError:
+        return 0
+    return max(0, _month_index(date(when.year, when.month, 1), commissioning))
 
 
 def _num(params: dict[str, Any], key: str, default: float) -> float:
@@ -251,6 +308,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
     # финансируются кредитом, но не входят ни в НДС, ни в себестоимость
     # объекта — их учитывает проект.
     common: dict[date, float] = {mm: float(v) for mm, v in (plan.get("common_capex") or {}).items() if v}
+    common_total = sum(common.values())
 
     first = min([commissioning, *capex, *(plan.get("common_capex") or {})])
     m = defaultdict(lambda: defaultdict(float))  # ряд → месяц → значение
@@ -309,6 +367,7 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "leaseup": max(1, int(_num(params, "leaseup_months", 12))),
             "opex_share": max(0.0, _num(params, "opex_pct", 0.0) / 100.0),
             "revenue_multiplier": revenue_multiplier,
+            "rent_pre": rent_months_before(params, commissioning),
         }
         hold_months = hold_years * 12
         horizon_end = plan_horizon_end(plan)
@@ -574,7 +633,13 @@ def object_flows(plan: dict[str, Any], key_rate: Callable[[date], float],
             "stabilized_noi": stabilized_noi,
             "forward_noi": forward_noi,
             "exit_value": exit_value,
-            "yield_on_cost": stabilized_noi / capex_total if capex_total else 0.0,
+            # Доходность на затраты — NOI года после заполнения на ВСЕ затраты
+            # создания: стройку здания и его долю общих затрат с участком.
+            # Делитель «только стройка» давал 12,1% вместо 6,6% (Пролетарский
+            # пр., 22.10.2026) и прятал, что здание стоит дешевле стройки.
+            "cost_total": capex_total + common_total,
+            "yield_on_cost": (stabilized_noi / (capex_total + common_total)
+                              if capex_total + common_total else 0.0),
             "exit_month": exit_month,
             "equity_cash_flow_sum": sum(equity_cf),
             "icr_min": min(icr_by_year) if icr_by_year else None,

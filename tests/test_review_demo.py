@@ -9,9 +9,11 @@
   уже выданную сессию;
 - демо-пользователь — новый клиент: своих проектов нет, чужих не видит,
   админка закрыта;
+- уведомление тестового магазина (`test: true`) перечитывается его ключами;
 - оплата в демо не берёт денег: тестовый магазин ЮKassa или пояснение, а
   тестовый платёж не открывает доступ настоящему человеку;
 - монитор и сводка команды демо-сессии закрыты всегда;
+- кнопка «Скопировать» кладёт адрес ссылки в буфер, адрес на странице один;
 - в браузере ссылка ведёт в кабинет на «Тарифы и доступ».
 
 Запуск: python3 -m pytest tests/test_review_demo.py -q
@@ -19,6 +21,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -149,6 +152,36 @@ def test_with_test_keys_the_demo_pays_in_the_test_shop(monkeypatch):
     assert calls[0][2]["metadata"]["demo"] == "1"
 
 
+def test_a_test_shop_notification_is_read_in_the_test_shop(monkeypatch):
+    """Уведомление с `test: true` перечитывается ключами тестового магазина —
+    даже когда боевых ключей на сервере ещё нет — и открывает демо-доступ."""
+    monkeypatch.setenv("YOOKASSA_TEST_SHOP_ID", "test-shop")
+    monkeypatch.setenv("YOOKASSA_TEST_SECRET_KEY", "test-secret")
+    monkeypatch.delenv("YOOKASSA_SHOP_ID", raising=False)
+    monkeypatch.delenv("YOOKASSA_SECRET_KEY", raising=False)
+    session = claim(invite())
+    chat = core._web_identity_chat_id(session)
+    pay_id = "2f6c1a2b-000f-5000-8000-1a2b3c4d5e6f"
+    calls: list[tuple] = []
+
+    def fake_call(method, path, body=None, idempotence_key="", test=False):
+        calls.append((method, path, test))
+        return {"id": pay_id, "status": "succeeded", "paid": True, "test": True,
+                "amount": {"value": "100000.00", "currency": "RUB"},
+                "metadata": {"chat": str(chat), "kind": "subscription", "days": "30",
+                             "price": "100000", "demo": "1"}}
+
+    monkeypatch.setattr(core, "_yookassa_call", fake_call)
+    answer = TestClient(core.app, client=("185.71.76.5", 50000)).post(
+        "/payments/yookassa/webhook",
+        json={"type": "notification", "event": "payment.succeeded",
+              "object": {"id": pay_id, "status": "succeeded", "paid": True, "test": True}})
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["granted"] is True
+    assert calls == [("GET", f"/payments/{pay_id}", True)], "перечитан не в тестовом магазине"
+    assert core.access_status(chat)["subscription_active"]
+
+
 def test_a_test_payment_never_opens_a_real_client():
     paid = {"id": "x", "status": "succeeded", "paid": True,
             "amount": {"value": "100000.00", "currency": "RUB"},
@@ -174,6 +207,40 @@ def test_a_demo_session_never_sees_the_team_data(path, monkeypatch):
 
 
 # --- на отрисованной странице -----------------------------------------------------
+
+def test_the_admin_copies_the_demo_link_with_one_button():
+    """Адрес на странице один, кнопка кладёт его в буфер целиком."""
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import browser
+
+    admin = core._telegram_session(OWNER, [])
+    path = browser.chromium_or_skip()
+    with browser.serve(core.app, 18976) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            context = engine.new_context(viewport={"width": 390, "height": 844})
+            context.grant_permissions(["clipboard-read", "clipboard-write"], origin=base)
+            page = context.new_page()
+            page.add_init_script(
+                f"localStorage.setItem('developaid_web_session', {json.dumps(admin)})")
+            page.goto(base, wait_until="networkidle")
+            page.click("#tariffsButton")
+            page.fill("#demoInviteNote", "ЮKassa")
+            page.click("button:has-text('Создать демо-ссылку')")
+            page.wait_for_selector("#demoInviteList button:has-text('Скопировать')")
+            expected = f"{base}/demo/" + client.post(
+                "/access/admin/demo/list", json={"key": "kluch"}).json()["invites"][0]["code"]
+            text = page.inner_text("#accessAdminBox")
+            assert text.count("/demo/") == 1, "адрес показан дважды"
+            assert "Скопировать" in page.inner_text("#demoInviteStatus")
+            page.click("#demoInviteList button:has-text('Скопировать')")
+            page.wait_for_function(
+                "document.querySelector('#demoInviteList button').textContent === 'Скопировано'")
+            assert page.evaluate("navigator.clipboard.readText()") == expected
+            page.close()
+
 
 def test_the_demo_link_leads_into_the_cabinet_in_a_browser():
     pytest.importorskip("playwright.sync_api")

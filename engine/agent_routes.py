@@ -116,6 +116,10 @@ def _local_goal_seek(req: AgentChatRequest, bundle: dict[str, Any], variable: st
     ]
     if data.get("threshold_beyond_bound"):
         lines += ["", "Порог упёрся в границу поиска — реальный предел может лежать дальше."]
+    if data.get("non_monotonic"):
+        ranges = ", ".join(f"{_agent_num(a, 1)}–{_agent_num(b, 1)}" for a, b in data.get("feasible_ranges") or [])
+        lines += ["", f"LLCR меняется неровно: порог держится на нескольких отрезках ({ranges}); "
+                      "показан наибольший."]
     lines += ["", "Подбор выполнен полным пересчётом модели DevelopAid; текущая модель не изменена."]
     return "\n".join(lines)
 
