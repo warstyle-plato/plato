@@ -140,6 +140,8 @@ def test_the_office_assumptions_follow_the_class() -> None:
     for key, office_class in ns.OFFICE_CLASS_BY_PROJECT.items():
         preset = core.PROJECT_CLASS_PRESETS[key]
         for field, value in ns.office_class_fields(office_class).items():
+            if field == "rent_date":
+                continue
             assert preset[f"offices_{field}"] == value
             assert preset[f"offices2_{field}"] == value  # второй офис — тем же классом
         price = ns.OFFICE_CLASS_SCALE[office_class]["price_th_per_sqm"]
@@ -154,7 +156,7 @@ def test_the_office_assumptions_follow_the_class() -> None:
 def test_the_owner_prices_by_office_class() -> None:
     prices = {c: ns.OFFICE_CLASS_SCALE[c]["price_th_per_sqm"] for c in ns.OFFICE_CLASSES}
     assert prices == {"B": 400.0, "B+": 550.0, "A": 750.0, "A+": 1000.0}
-    rents = [ns.office_rent_from_price(ns.OFFICE_CLASS_SCALE[c]) for c in ns.OFFICE_CLASSES]
+    rents = [ns.office_class_fields(c)["rent_th_per_sqm_month"] for c in ns.OFFICE_CLASSES]
     assert rents == sorted(rents) and len(set(rents)) == 4
 
 
@@ -165,13 +167,19 @@ def test_the_defaults_are_the_comfort_office_class() -> None:
         core.PROJECT_CLASS_PRESETS["comfort"]["offices_price_th_per_sqm"]
 
 
-def test_the_rent_from_the_price_is_the_named_arithmetic() -> None:
-    """Аренда из цены по окупаемости 10–12 лет (владелец): 400 / 11 / 12."""
-    assert ns.OFFICE_GROSS_PAYBACK_YEARS == 11.0
-    rent = ns.office_rent_from_price(ns.OFFICE_CLASS_SCALE["B"])
-    assert rent == round(400 / 11 / 12, 2)
-    # Класс B — около 36 тыс ₽/м² в год, а не 64, как из ставки капитализации.
-    assert 30 < rent * 12 < 40
+def test_the_rent_is_the_market_rate_per_year_indexed_to_commissioning() -> None:
+    """Ставка — рыночная на конец 2025 года в год; до ввода она растёт на
+    индексацию аренды, как цена продажи до ввода (владелец, 22.10.2026)."""
+    assert ns.office_class_fields("B")["rent_th_per_sqm_month"] == round(28.348 / 12, 3)
+    assert core.DEFAULT_INPUTS["offices_rent_date"] == "2025-12-01"
+    commissioning = __import__("datetime").date(2030, 7, 1)
+    assert ns.rent_months_before({"rent_date": "2025-12-01"}, commissioning) == 55
+    assert ns.rent_months_before({"rent_date": ""}, commissioning) == 0
+    dated = _calc(offices_strategy=ns.STRATEGY_INCOME, offices_rent_date="2025-12-01")
+    undated = _calc(offices_strategy=ns.STRATEGY_INCOME, offices_rent_date="")
+    rent = lambda r: r["finance"]["nonres"]["objects"][0]["totals"]["rent_revenue"]
+    months = ns.rent_months_before({"rent_date": "2025-12-01"}, commissioning)
+    assert rent(dated) / rent(undated) == pytest.approx(1.05 ** (months / 12), rel=1e-6)
 
 
 # --- чувствительность ------------------------------------------------------------

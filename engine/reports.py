@@ -215,6 +215,9 @@ def _object_param_rows(obj: StandaloneObject | None, params: dict[str, Any],
         if kind == "select":
             names = {str(v): str(name) for v, name in field[4]}
             rows.append(_row(label, names.get(str(value), str(value)), "text"))
+        elif kind == "date":
+            if str(value).strip():
+                rows.append(_row(label, str(value)[:10], "date"))
         else:
             rows.append(_row(label, float(value), "num",
                              suffix=str(unit).split(";")[0].split(",")[0]))

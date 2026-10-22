@@ -289,7 +289,10 @@ for _key, _office in OFFICE_CLASS_BY_PROJECT_CLASS.items():
     # жилья (владелец, 22.10.2026).
     for _field, _value in nonres_strategy.office_class_fields(
             nonres_strategy.OFFICE_CLASS_BY_PROJECT[_key]).items():
-        PROJECT_CLASS_PRESETS[_key][f"offices_{_field}"] = _value
+        # Профиль класса — числа; дата ставки аренды у всех классов одна и
+        # живёт в умолчаниях объекта.
+        if isinstance(_value, (int, float)):
+            PROJECT_CLASS_PRESETS[_key][f"offices_{_field}"] = _value
     # Место на первых этажах ОСЗ — норматив класса рядом с подземным местом;
     # пока одно число на все классы (владелец, 27.09.2026: «пока оставляем
     # как есть 25»). Правится в «Настройках класса».
@@ -1185,7 +1188,7 @@ _OBJECT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
                      "sales_profile")),
     ("Прямая продажа", ("direct_sale_offset_months", "direct_sale_months",
                         "direct_sale_curve")),
-    ("Доходный метод", ("rent_th_per_sqm_month", "parking_rent_th_month",
+    ("Доходный метод", ("rent_th_per_sqm_month", "rent_date", "parking_rent_th_month",
                         "rent_index_pct", "occupancy_start_pct",
                         "occupancy_stable_pct", "leaseup_months", "opex_pct",
                         "hold_years", "exit_mode", "exit_cap_pct", "exit_cost_pct",
@@ -1377,6 +1380,9 @@ def _object_strategy_fields(obj: StandaloneObject) -> list[list[Any]]:
           ["front_loaded", "С упором на начало"], ["back_loaded", "С упором на конец"]]],
         [f"{p}_rent_th_per_sqm_month", "Ставка аренды",
          "тыс. ₽/м²/мес. с НДС, на продаваемую (арендопригодную) площадь", "number"],
+        [f"{p}_rent_date", "Дата ставки аренды",
+         "дата. На какую дату указана ставка. До ввода объекта она растёт на "
+         "индексацию аренды. Пусто — ставка уже на дату ввода.", "date"],
     ]
     if obj.garage_sellable:
         out.append([f"{p}_parking_rent_th_month", "Аренда машино-места объекта",

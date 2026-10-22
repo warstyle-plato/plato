@@ -177,6 +177,7 @@ OBJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("rent", "Ставка аренды, тыс ₽/м²/мес. с НДС"),
     ("parking_rent", "Аренда машино-места, тыс ₽/мес. с НДС"),
     ("rent_index", "Индексация аренды, % в год"),
+    ("rent_date", "Дата ставки аренды (пусто — на дату ввода)"),
     ("occ_start", "Загрузка на открытии, %"),
     ("occ_stable", "Стабильная загрузка, %"),
     ("leaseup", "Срок заполнения, мес."),
@@ -211,6 +212,14 @@ def _p(key: str) -> str:
 
 def _o(key: str, column: str) -> str:
     return f"'{INPUTS_SHEET}'!${column}${O_ROW[key]}"
+
+
+def _date_or_none(raw: Any) -> date | None:
+    """Дата вводной или пусто: пустая дата ставки — «на дату ввода»."""
+    try:
+        return date.fromisoformat(str(raw or "").strip()[:10])
+    except ValueError:
+        return None
 
 
 def _k_of(date_ref: str) -> str:
@@ -318,6 +327,7 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
                 "parking_over_mln": item["parking_over_mln"],
                 "rent": params["rent_th_per_sqm_month"], "parking_rent": params["parking_rent_th_month"],
                 "rent_index": params["rent_index_pct"], "occ_start": params["occupancy_start_pct"],
+                "rent_date": _date_or_none(params.get("rent_date")),
                 "occ_stable": params["occupancy_stable_pct"], "leaseup": params["leaseup_months"],
                 "opex": params["opex_pct"], "property_tax": params["property_tax_pct"],
                 "hold_years": params["hold_years"], "exit_mode": EXIT[params["exit_mode"]],
@@ -354,7 +364,7 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
             cell = ws[f"{column}{O_ROW[key]}"]
             cell.value = value
             cell.fill = INPUT_FILL
-            if key in ("start", "sales_start"):
+            if key in ("start", "sales_start", "rent_date"):
                 cell.number_format = "dd.mm.yyyy"
             if key in validations and (nonres or key in ("measure", "in_tax_pool", "turnkey")):
                 validations[key].add(f"{column}{O_ROW[key]}")
@@ -758,6 +768,7 @@ INPUTS: dict[str, tuple[int, str]] = {key: (2 + i, label) for i, (key, label) in
     ("rent", "Ставка аренды, ₽/м²/мес. с НДС"),
     ("parking_rent", "Аренда машино-места, ₽/мес. с НДС"),
     ("rent_index", "Индексация аренды, доля в год"),
+    ("rent_from", "Месяц ставки аренды (k); без даты — месяц ввода"),
     ("occ_start", "Загрузка на открытии, доля"),
     ("occ_stable", "Стабильная загрузка, доля"),
     ("leaseup", "Срок заполнения, мес."),
@@ -978,7 +989,8 @@ def _row_formulas(r: int, refs: dict[str, str]) -> dict[str, str]:
         "occ": (f"=IF({v['open']}=0,0,MIN({_in('occ_start')},{_in('occ_stable')})"
                 f"+({_in('occ_stable')}-MIN({_in('occ_start')},{_in('occ_stable')}))"
                 f"*IF({_in('leaseup')}=1,1,MAX(0,MIN(1,({v['open']}-1)/({_in('leaseup')}-1)))))"),
-        "growth": f"=(1+MAX(-0.95,{_in('rent_index')}))^(MAX(0,{v['open']}-1)/12)",
+        "growth": (f"=(1+MAX(-0.95,{_in('rent_index')}))^((MAX(0,{v['open']}-1)"
+                   f"+MAX(0,{_in('comm')}-{_in('rent_from')}))/12)"),
         "op_rev": (f"=({_in('area')}*{_in('rent')}+{_in('spaces')}*{_in('parking_rent')})"
                    f"*{v['growth']}*{v['occ']}*{_in('rev_mult')}"),
         "rent": f"=IF(AND({income},{v['open']}>=1,{v['open']}<={_in('hold')}),{v['op_rev']},0)",
@@ -1122,6 +1134,8 @@ def _object_sheet(book: Workbook, item: dict[str, Any], title: str, costs: _Cost
         "rent": f"={_o('rent', c)}*1000",
         "parking_rent": f"={_o('parking_rent', c)}*1000",
         "rent_index": f"={_o('rent_index', c)}/100",
+        # Ставка дана на свою дату и до ввода индексируется (`rent_months_before`).
+        "rent_from": f'=IF({_o("rent_date", c)}="",{comm},{_k_of(_o("rent_date", c))})',
         "occ_start": f"=MIN(1,MAX(0,{_o('occ_start', c)}/100))",
         "occ_stable": f"=MIN(1,MAX(0,{_o('occ_stable', c)}/100))",
         "leaseup": f"=MAX(1,INT({_o('leaseup', c)}))",

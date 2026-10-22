@@ -160,6 +160,8 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
                     "rent_th_per_sqm_month": num(params, "rent_th_per_sqm_month", 0.0),
                     "parking_rent_th_month": num(params, "parking_rent_th_month", 0.0),
                     "rent_index_pct": num(params, "rent_index_pct", 0.0),
+                    # Месяцы индексации до ввода — тем же правилом, что движок.
+                    "rent_date": str(params.get("rent_date") or ""),
                     "occupancy_start_pct": num(params, "occupancy_start_pct", 0.0),
                     "occupancy_stable_pct": num(params, "occupancy_stable_pct", 0.0),
                     "leaseup_months": num(params, "leaseup_months", 12),
