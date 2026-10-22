@@ -1764,6 +1764,49 @@ def _web_access_allowed(session: str, key: str) -> bool:
                 and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")))
 
 
+def team_chat_ids() -> set[int]:
+    """Команда владельца: администраторы и явный список `DEVELOPAID_TEAM_IDS`
+    (по умолчанию пуст — решение владельца 22.10.2026)."""
+    ids = set(usage_admin_ids())
+    for piece in re.split(r"[,\s;]+", _env_str("DEVELOPAID_TEAM_IDS", "") or ""):
+        if piece.strip().lstrip("-").isdigit():
+            ids.add(int(piece.strip()))
+    return ids
+
+
+def team_access_allowed(session: str, key: str) -> bool:
+    """«Команда владельца» — отдельный от «вошёл» уровень: данные проектов
+    владельца (монитор, сводка руководству, споры, бюджеты, рассылка) не для
+    клиентов. Команда — ключ администратора, ключ кабинета рынка или вход
+    человека из `team_chat_ids()`. Демо-доступ проверяющих — никогда."""
+    secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
+    if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
+        return True
+    team_key = globals().get("_access_team_key")
+    if callable(team_key) and team_key():
+        return True
+    chat = _web_identity_chat_id(session)
+    demo = globals().get("demo_chat")
+    if not chat or (callable(demo) and demo(chat)):
+        return False
+    return chat in team_chat_ids()
+
+
+def _require_team_access(session: str, key: str, what: str) -> None:
+    """Пропуск к данным команды. Без токена бота механизм выключен, как и вход."""
+    if not _telegram_token():
+        return
+    if team_access_allowed(session, key):
+        return
+    if _web_identity_chat_id(session):
+        raise HTTPException(
+            status_code=403,
+            detail=(f"{what} — раздел для команды владельца DevelopAid. Вход через Telegram "
+                    "открывает расчёт и ваш личный кабинет, а данные проектов команды закрыты. "
+                    "Если вы в команде, попросите владельца добавить вас."))
+    _require_web_access("", "", what)
+
+
 def _require_web_access(session: str, key: str, what: str) -> None:
     # Без токена бота проверять подпись нечем — механизм честно выключен, и
     # поведение остаётся прежним (открытым), а не запертым для всех.

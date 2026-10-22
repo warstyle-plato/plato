@@ -716,7 +716,7 @@ def sales(sales_project: str, kind: str, end: Any,
         "products": _by_product(between(bounds["start"]), between(datetime.date(1900, 1, 1)),
                                 part("fm_plan"), quarter),
         "pace": [{"month": m["month"], "area": m.get("area"), "amount": m.get("amount"),
-                  "price_flats": m.get("price_flats")}
+                  "units": m.get("units"), "price_flats": m.get("price_flats")}
                  for m in summary.get("dynamics") or [] if m["month"] <= month_key][-12:],
         "payments": [{"name": item["name"], "count": item["count"], "amount": item["amount"],
                       "area": item["area"]} for item in summary.get("by_payment") or []],
@@ -1684,6 +1684,7 @@ ul.findings li b{font-weight:700}ul.findings li.bad b{color:#b42318}
 h2.block{break-before:page;page-break-before:always}h2.block.first{break-before:auto;page-break-before:auto}
 ol.toc{margin:6px 0 10px;padding-left:22px;columns:2;column-gap:24px}ol.toc li{margin:2px 0;break-inside:avoid}ol.toc a{color:#1f4e8c;text-decoration:none}
 section{break-inside:auto}
+.switch-charts .switch{display:none}
 figure.chart{margin:10px 0 6px;break-inside:avoid;page-break-inside:avoid}figure.chart figcaption{font-size:11.5px;color:#17202a;margin-bottom:3px;font-weight:600}
 svg.chart{display:block;max-width:100%}
 """
@@ -1841,6 +1842,46 @@ def _budget_forecast(block: dict[str, Any], end: datetime.date) -> list[dict[str
         out.append({"label": line["label"], "plan": line["plan"], "fact": line["fact"],
                     "forecast": forecast, "gap": forecast - line["plan"]})
     return out
+
+
+# Меры темпа продаж — одна таблица для кнопок и графиков. Порядок — порядок
+# кнопок; первая мера открыта на странице.
+PACE_MEASURES = (
+    ("area", "м²", "м² договоров", 1.0, 0),
+    ("units", "лоты", "лотов всех типов (квартиры, помещения, машиноместа, кладовые)", 1.0, 0),
+    ("amount", "млн ₽", "сумма договоров, млн ₽", 1e6, 1),
+)
+
+
+def _pace_charts(pace: list[dict[str, Any]]) -> str:
+    """Темп продаж по месяцам — один предмет в трёх мерах, цена линией на каждом.
+
+    Владелец (22.10.2026): «может совместить для экономии места? и отдельно
+    лотами и млн рублей сделать такие же графики? на странице переключением как
+    в отчёте о продажах, а в пдф подряд три графика». Разметка одна: страница
+    показывает одну меру и кнопки, документ — все три подряд без кнопок.
+    """
+    if not pace:
+        return ""
+    months = [_month_short(p["month"]) for p in pace]
+    prices = [p.get("price_flats") for p in pace]
+    line = ({"name": "Цена квартир, тыс. ₽/м²", "values": charts.scaled(prices, 1e3),
+             "unit": "тыс. ₽/м²", "digits": 0} if any(prices) else None)
+    buttons, panes = [], []
+    for index, (key, name, words, divisor, digits) in enumerate(PACE_MEASURES):
+        figure = charts.bar_chart(
+            f"Темп продаж по месяцам: {words}" + (" и цена квартир" if line else ""),
+            months, [{"name": name, "values": charts.scaled([p.get(key) for p in pace], divisor)}],
+            name, digits=digits, line=line)
+        if not figure:
+            continue
+        on = " on" if not panes else ""
+        buttons.append(f'<button type="button" data-pane="{key}" class="{on.strip()}">{name}</button>')
+        panes.append(f'<div class="pane{on}" data-pane="{key}">{figure}</div>')
+    if not panes:
+        return ""
+    return ('<div class="switch-charts" data-switch="sales-pace">'
+            f'<div class="switch">{"".join(buttons)}</div>{"".join(panes)}</div>')
 
 
 def _signed_rub(value: float | None) -> str:
@@ -2196,18 +2237,7 @@ def _sales_depth_html(block: dict[str, Any], kind: str) -> str:
              _area(item["total"]["area"]), _rub(item["total"]["amount"]), price(item, "total"),
              _rub((item.get("fm_quarter") or {}).get("amount")) if item.get("fm_quarter") else "—"]
             for item in products]))
-    pace = block.get("pace") or []
-    if pace:
-        out.append(charts.bar_chart("Темп продаж: м² договоров по месяцам",
-                                    [_month_short(p["month"]) for p in pace],
-                                    [{"name": "м²", "values": [p.get("area") for p in pace]}],
-                                    "м²", digits=0))
-        prices = [p.get("price_flats") for p in pace]
-        if any(prices):
-            out.append(charts.line_chart(
-                "Средняя цена квартир по месяцам", [_month_short(p["month"]) for p in pace],
-                [{"name": "Цена квартир", "values": charts.scaled(prices, 1e3)}],
-                "тыс. ₽/м²", label_every=charts.every(len(pace))))
+    out.append(_pace_charts(block.get("pace") or []))
     payments = block.get("payments") or []
     total = sum(item["amount"] for item in payments)
     if payments and total:
