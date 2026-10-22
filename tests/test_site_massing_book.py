@@ -145,7 +145,8 @@ def test_the_nonresidential_book_counts_the_same_levels():
 
 
 @pytest.mark.parametrize("extra, origin", [({"max_storeys_allowed": 9}, "limit"),
-                                           ({"site_coverage_max_pct": 50}, "coverage")])
+                                           ({"site_coverage_max_pct": 50}, "coverage"),
+                                           ({"building_footprint_sqm": 2000}, "manual")])
 def test_the_book_takes_the_footprint_like_the_engine(extra, origin):
     """Пятно по пределу этажности и по проценту застройки — книга = движок."""
     sys.setrecursionlimit(400000)

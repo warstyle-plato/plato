@@ -183,17 +183,13 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     notes: list[str] = []
 
     # Двор на участке рядом со зданием — норма региона (владелец 22.10.2026):
-    # благоустройство сверх нормы может быть на кровле стилобата и места на
-    # участке не занимает. Площадь и деньги благоустройства в смете — прежние
-    # (`landscaping_area`, один источник).
+    # благоустройство сверх нормы, которому не хватит земли рядом со зданием,
+    # может быть на кровле стилобата (`yard_roof_sqm`, считается ниже, от пятна).
+    # Площадь и деньги благоустройства в смете — прежние (`landscaping_area`).
     landscaping_sqm, _ = landscaping_area(x, tep)
     yard_sqm, floor_basis = _yard_floor(x, tep, site_sqm)
-    yard_roof_sqm = max(0.0, landscaping_sqm - yard_sqm)
     if yard_sqm > 0:
         yard_basis = f"Норма региона: {floor_basis}."
-        if yard_roof_sqm > 0.5:
-            yard_basis += (f" Остальное благоустройство ({_fmt_ru(yard_roof_sqm)} м²) может быть "
-                           "на кровле стилобата и места на участке не занимает.")
     elif without_housing(x):
         yard_basis = "В проекте нет жителей, поэтому двор по их числу не считается."
     else:
@@ -233,6 +229,13 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     shortage = 0.0
     if manual_footprint > 0:
         footprint, footprint_origin = manual_footprint, "manual"
+        shortage = max(0.0, footprint - room) if site_sqm > 0 else 0.0
+        if shortage > 0.5:
+            warnings.append(
+                f"Пятно застройки, заданное вручную ({_fmt_ru(footprint)} м²), больше места, "
+                f"которое остаётся на участке после двора по норме, проездов, открытых стоянок "
+                f"и отступов ({_fmt_ru(room)} м²): не хватает {_fmt_ru(shortage)} м², и двор по "
+                "норме на участке не помещается. Уменьшите пятно, проезды или отступы.")
     elif site_sqm > 0 and above_gns > 0 and (base <= 0 or above_gns / base > limit + 1e-9):
         # Остаток участка дал бы здание выше предела (51 этаж на гектаре —
         # не ответ): пятно — по пределу, нехватка земли названа числом.
@@ -248,9 +251,9 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
             warnings.append(
                 f"На участке после двора, проездов, открытых стоянок и отступов под здание "
                 f"остаётся {_fmt_ru(room)} м². {tall}{cap}. Поэтому пятно взято по пределу — "
-                f"{_fmt_ru(footprint)} м², и здание не помещается: не хватает {_fmt_ru(shortage)} м². "
-                "Сократите проезды или отступы, уменьшите площадь здания или задайте пятно "
-                "застройки вручную.")
+                f"{_fmt_ru(footprint)} м², и здание не помещается: не хватает {_fmt_ru(shortage)} м², "
+                "и двор по норме на участке тогда не помещается. Сократите проезды или отступы, "
+                "уменьшите площадь здания или задайте пятно застройки вручную.")
         else:
             warnings.append(
                 f"При проценте застройки {_fmt_ru(coverage_pct)}% под здание идёт "
@@ -269,6 +272,19 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         warnings.append("Площадь участка не задана, поэтому пятно застройки, этажность "
                         "и число подземных уровней не посчитаны. Укажите площадь участка "
                         "во вкладке «ТЭП».")
+
+    # Земля участка без здания, проездов, стоянок и отступов — на ней двор по
+    # норме и благоустройство сверх неё. Что не помещается сверх нормы — на
+    # кровлю стилобата; не помещается сама норма — это нехватка выше.
+    ground_sqm = max(0.0, site_sqm - footprint - drive_sqm - parking_sqm - setbacks_sqm)
+    yard_roof_sqm = max(0.0, landscaping_sqm - max(ground_sqm, yard_sqm))
+    if yard_sqm > 0 and yard_roof_sqm > 0.5:
+        yard_basis += (f" Всё благоустройство проекта ({_fmt_ru(landscaping_sqm)} м²) рядом со "
+                       f"зданием не помещается: на участке для него {_fmt_ru(ground_sqm)} м². "
+                       f"Остальное ({_fmt_ru(yard_roof_sqm)} м²) может быть на кровле стилобата.")
+    elif yard_sqm > 0 and landscaping_sqm > yard_sqm + 0.5:
+        yard_basis += (f" Всё благоустройство проекта ({_fmt_ru(landscaping_sqm)} м²) помещается "
+                       f"на участке рядом со зданием: для него там {_fmt_ru(ground_sqm)} м².")
 
     storeys = _mo_land_capacity.average_storeys(above_gns, footprint) if footprint > 0 else 0.0
     if max_storeys > 0 and storeys > max_storeys + 1e-9:
@@ -326,6 +342,7 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "yard_basis": yard_basis,
         "landscaping_sqm": landscaping_sqm,
         "yard_roof_sqm": yard_roof_sqm,
+        "yard_ground_sqm": ground_sqm,
         "driveways_sqm": drive_sqm,
         "driveways_pct": drive_pct,
         "surface_parking_spaces": spaces,

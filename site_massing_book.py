@@ -48,7 +48,7 @@ ROWS: tuple[tuple[str, str, str], ...] = (
     ("footprint_estimate_sqm", "Пятно застройки — оценка по балансу, м²", FORMULA),
     ("coverage_sqm", "Пятно по проценту застройки, м²", FORMULA),
     ("footprint_sqm", "Пятно застройки, м² (не меньше наземной ГНС ÷ предел этажности)", FORMULA),
-    ("footprint_shortage_sqm", "Не хватает земли под пятно по пределу этажности, м²", FORMULA),
+    ("footprint_shortage_sqm", "Не хватает земли: пятно больше свободного места, м²", FORMULA),
     ("average_storeys", "Средняя этажность", FORMULA),
     ("contour_sqm", "Подземный контур (участок без отступов), м²", FORMULA),
     ("capacity_sqm", "Помещается на одном уровне, м²", FORMULA),
@@ -113,8 +113,10 @@ def formulas(ref: Callable[[str], str]) -> dict[str, str]:
                           f"OR({base}<=0,{r('above_gns_sqm')}"
                           f"/MAX({base},0.000001)>{cap}+0.000000001)),"
                           f"{r('above_gns_sqm')}/{cap},{base}))"),
-        "footprint_shortage_sqm": (f"IF({r('footprint_manual_sqm')}>0,0,"
-                                   f"MAX(0,{r('footprint_sqm')}-{r('footprint_estimate_sqm')}))"),
+        # Пятно (по пределу или заданное руками) больше свободного места —
+        # двору по норме не хватает этой площади.
+        "footprint_shortage_sqm": (f"IF({r('site_sqm')}>0,"
+                                   f"MAX(0,{r('footprint_sqm')}-{r('footprint_estimate_sqm')}),0)"),
         "average_storeys": (f"IF({r('footprint_sqm')}>0,{r('above_gns_sqm')}"
                             f"/{r('footprint_sqm')},0)"),
         "contour_sqm": f"MAX(0,{r('site_sqm')}-{r('setbacks_sqm')})",

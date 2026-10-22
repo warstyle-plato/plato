@@ -148,9 +148,12 @@ def test_the_yard_beside_the_building_is_the_region_norm():
     norm = core._yard_floor(x, t, m["site_sqm"])[0]
     landscaping = core.landscaping_area(x, t)[0]
     assert m["yard_sqm"] == pytest.approx(norm) and landscaping > norm
-    assert m["yard_roof_sqm"] == pytest.approx(landscaping - norm)
     assert m["landscaping_sqm"] == pytest.approx(landscaping)
-    assert "кровле стилобата" in m["yard_basis"]
+    # На кровлю уходит только то, чему не хватило земли рядом со зданием.
+    ground = (m["site_sqm"] - m["footprint_sqm"] - m["driveways_sqm"]
+              - m["surface_parking_sqm"] - m["setbacks_sqm"])
+    assert m["yard_ground_sqm"] == pytest.approx(ground)
+    assert m["yard_roof_sqm"] == pytest.approx(max(0.0, landscaping - max(ground, norm)))
 
 
 def _one_hectare(**extra):
@@ -173,12 +176,27 @@ def test_a_hectare_with_28000_density_is_not_a_fifty_storey_tower():
     # Рядом со зданием — двор по норме (5 м² на жителя), остальное
     # благоустройство — на кровле стилобата; свободно около половины участка,
     # но жилой дом занимает процент застройки — 30 %: этажность около 8,8.
-    assert m["yard_roof_sqm"] > 0 and m["footprint_estimate_sqm"] > 3000
+    assert m["footprint_estimate_sqm"] > 3000
+    # Благоустройство 11 м² × 428 жителей = 4 708 м²; рядом со зданием для него
+    # 10 000 − 3 000 − 1 500 − 1 164 = 4 336 м², на кровлю — остаток 372 м².
+    assert m["yard_ground_sqm"] == pytest.approx(10000 - 3000 - 1500 - m["setbacks_sqm"])
+    assert m["yard_roof_sqm"] == pytest.approx(m["landscaping_sqm"] - m["yard_ground_sqm"])
+    assert "кровле стилобата" in m["yard_basis"]
     assert (m["footprint_origin"], m["coverage_pct"], m["coverage_origin"]) == (
         "coverage", 30.0, "default")
     assert m["footprint_sqm"] == pytest.approx(3000)
     assert m["average_storeys"] == pytest.approx(26410.2 / 3000)
     assert not m["warnings"]
+
+
+def test_a_hand_footprint_that_eats_the_norm_yard_is_said_aloud():
+    """Пятно руками больше свободного места — двор по норме не помещается, и это сказано."""
+    x, t = _one_hectare(building_footprint_sqm=6000)
+    m = core.site_massing(x, t)
+    assert m["footprint_origin"] == "manual"
+    assert m["footprint_shortage_sqm"] == pytest.approx(6000 - m["footprint_estimate_sqm"])
+    assert any("двор по норме на участке не помещается" in w for w in m["warnings"])
+    assert not core.site_massing(*_one_hectare(building_footprint_sqm=3000))["warnings"]
 
 
 def test_the_coverage_from_the_town_plan_wins_and_offices_have_no_default():
