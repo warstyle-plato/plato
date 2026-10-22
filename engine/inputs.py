@@ -2680,6 +2680,9 @@ class AgentDocumentAnswerRequest(BaseModel):
     action: str = "answer"  # answer | skip | stop
     choice: int = -1
     value: str = ""
+    # Поле обязательства уже несёт своё число: «add» — прибавить ответ к
+    # нему, «replace» — заменить. Пусто — сервер сначала спросит.
+    mode: str = ""
     inputs: dict[str, Any] = {}
     tep: dict[str, dict[str, Any]] = {}
     session: str = ""

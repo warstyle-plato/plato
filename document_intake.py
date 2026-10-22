@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import date
 from typing import Any
 
 import pdf_ocr
@@ -147,12 +148,29 @@ INTAKE_FIELDS: tuple[dict[str, Any], ...] = (
      "unit": "млн ₽", "target": "inputs", "origin": "glavapu"},
     {"key": "land_rights_cost_mln", "label": "Плата за смену ВРИ",
      "unit": "млн ₽", "target": "inputs", "origin": "glavapu"},
+    # Льгота по плате за смену ВРИ (МПТ и иные основания). Поле в модели было,
+    # а в этом перечне — нет: тизер «Светлый 4» называл «Льгота МПТ – 2,57 млрд
+    # руб.», и Платону некуда было её положить — он советовал вписать её руками
+    # (владелец, 22.10.2026). Сумма из документа — то, что ЗАЯВЛЕНО: без ручной
+    # суммы модель считает льготу МПТ по 1874-ПП сама, поэтому строка приходит
+    # без галочки (решение владельца) и ложится только по явному выбору.
+    {"key": "vri_relief_mln", "label": "Льгота по плате за смену ВРИ (МПТ и иные)",
+     "unit": "млн ₽", "target": "inputs", "origin": "document", "unchecked": True,
+     "hint": ("заявлено в документе; без этой суммы модель считает льготу МПТ "
+              "по 1874-ПП сама — отметьте, если берёте сумму документа")},
     {"key": "resettlement_cost_mln", "label": "Расселение", "unit": "млн ₽",
      "target": "inputs", "origin": "document"},
     {"key": "demolition_area_sqm", "label": "Площадь сносимого", "unit": "м²",
      "target": "inputs", "origin": "document"},
-    {"key": "apartments_gns_sqm", "label": "СПП / ГНС жилой части", "unit": "м²",
-     "target": "tep", "origin": "glavapu"},
+    {"key": "apartments_gns_sqm", "label": "ГНС квартир (без коммерции 1 этажа)",
+     "unit": "м²", "target": "tep", "origin": "glavapu"},
+    # Жилой дом целиком — квартиры вместе с коммерцией первого этажа. Тизер
+    # «Светлый 4» писал «жилой комплекс – 82 840 м2», число легло в квартиры, а
+    # коммерция встала сверху: дом вырос до 92 504 м² (владелец, 22.10.2026).
+    # Дом делится тем же правилом, что и потенциал участка (`MKD_SPP_SPLIT`).
+    {"key": "residential_spp_sqm",
+     "label": "СПП жилого дома целиком (квартиры и коммерция 1 этажа)",
+     "unit": "м²", "target": "tep", "origin": "glavapu"},
     {"key": "offices_gba_sqm", "label": "Офисы — общая площадь", "unit": "м²",
      "target": "inputs", "origin": "project"},
     {"key": "retail_gba_sqm", "label": "ТЦ / ОСЗ — общая площадь", "unit": "м²",
@@ -294,7 +312,12 @@ def intake_prompt(document: dict[str, Any], budget: int = DOCUMENT_TEXT_BUDGET) 
    Вопрос о поле модели несёт его имя в key. У варианта value — число в
    единице unit, если вариант сам его называет (снос всего здания — его
    площадь, «не требуется» — 0), и null, если число впишет человек.
-6. underground_manual_spaces — ТОЛЬКО места подземного паркинга жилья:
+   Сумму обязательства пиши в тексте вопроса так, как в документе, с её
+   единицей («2,55 млрд руб.»), и график оплаты рядом («49% оплачено,
+   остаток 51% в феврале 2028»): число ответа берётся оттуда.
+6. Льгота по плате за смену ВРИ (МПТ и иные основания) — поле vri_relief_mln,
+   суммой с единицей, как в документе. Долю покрытия («на 65%») назови в notes.
+7. underground_manual_spaces — ТОЛЬКО места подземного паркинга жилья:
    постоянные и гостевые одним числом, как оно стоит в документе. Итог
    «машино-мест», в который входят приобъектные или места остановки
    (кратковременные), сюда не выписывай: они в подземный паркинг не идут.
@@ -406,6 +429,15 @@ def chat_summary(filename: str, extraction: dict[str, Any] | None = None) -> str
             "Документ остаётся в разговоре — спрашивайте по нему.")
 
 
+_WHOLE_HOUSE_MARKS = ("жилой комплекс", "жилого комплекса", "жилой дом", "жилого дома",
+                      "жилая часть", "жилой части", "жк ", "жк–", "жк -", "мкд")
+
+
+def _names_whole_house(quote: str) -> bool:
+    text = f" {quote} ".lower().replace("\u00a0", " ")
+    return "квартир" not in text and any(mark in text for mark in _WHOLE_HOUSE_MARKS)
+
+
 def parse_intake(answer: str) -> dict[str, Any]:
     """Разбор ответа модели. Не разобралось — это отказ, а не пустой результат."""
     text = str(answer or "").strip()
@@ -438,8 +470,15 @@ def parse_intake(answer: str) -> dict[str, Any]:
             # Значение без цитаты — воспоминание, а не чтение.
             dropped.append(f"{key}: нет цитаты из документа")
             continue
-        fields.append({"key": key, "value": item.get("value"),
-                       "unit": str(item.get("unit") or ""), "quote": quote})
+        if key == "apartments_gns_sqm" and _names_whole_house(quote):
+            # Цитата называет дом, а не квартиры: в квартиры такое число
+            # положило бы коммерцию первого этажа дважды.
+            key = "residential_spp_sqm"
+        row = next(field for field in INTAKE_FIELDS if field["key"] == key)
+        fields.append({"key": key, "label": row["label"], "value": item.get("value"),
+                       "unit": str(item.get("unit") or ""), "quote": quote,
+                       "checked": not row.get("unchecked"),
+                       **({"hint": row["hint"]} if row.get("hint") else {})})
     # Модель иногда возвращает каждый кадастровый номер отдельной строкой с
     # одним и тем же key. Дальше бот выбирает поле кадастров один раз и такой
     # ответ схлопывался до первого участка. Для документа это одна территория:
@@ -541,8 +580,8 @@ _MONEY_SCALE = (("млрд", 1_000.0), ("миллиард", 1_000.0),
 _AREA_SCALE = (("га", 10_000.0), ("гект", 10_000.0), ("м2", 1.0), ("м²", 1.0),
                ("кв.м", 1.0), ("кв. м", 1.0), ("кв м", 1.0))
 _MONEY_FIELDS = {"purchase_price_mln", "social_compensation_mln",
-                 "land_rights_cost_mln", "resettlement_cost_mln"}
-_AREA_SQM_FIELDS = {"demolition_area_sqm", "apartments_gns_sqm",
+                 "land_rights_cost_mln", "resettlement_cost_mln", "vri_relief_mln"}
+_AREA_SQM_FIELDS = {"demolition_area_sqm", "apartments_gns_sqm", "residential_spp_sqm",
                     "offices_gba_sqm", "retail_gba_sqm"}
 
 
@@ -602,12 +641,19 @@ def _counts_outside_garage(item: dict[str, Any]) -> bool:
     return any(mark in text for mark in OUTSIDE_GARAGE_MARKS)
 
 
+# Площадь нежилого объекта и его включатель с продаваемой — те же вводные,
+# что пишет страница (`NONRES_TARGET_INPUTS`).
+_OBJECT_SWITCH = {"offices_gba_sqm": ("offices_enabled", "offices_saleable_sqm"),
+                  "retail_gba_sqm": ("retail_enabled", "retail_saleable_sqm")}
+
+
 def apply_intake(
     extraction: dict[str, Any],
     inputs: dict[str, Any],
     tep: dict[str, dict[str, Any]],
     *,
     accept: list[str] | None = None,
+    spp_split: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Подставить принятые человеком значения. Ничего не применяется молча.
 
@@ -644,6 +690,24 @@ def apply_intake(
                             "value": item.get("value"), "reason": why})
             continue
         as_written = f"{item.get('value')} {item.get('unit') or ''}".strip()
+        if key == "residential_spp_sqm":
+            if not spp_split:
+                refused.append({"key": key, "label": INTAKE_LABELS.get(key, key),
+                                "value": item.get("value"),
+                                "reason": "не задано деление дома на квартиры и коммерцию"})
+                continue
+            for part in ("apartments", "ground_commercial"):
+                row = new_tep.setdefault(part, {})
+                was = row.get("gns")
+                row["gns"] = round(number * float(spp_split.get(part) or 0.0), 2)
+                applied.append({"key": f"{part}_gns_sqm", "path": f"tep.{part}.gns",
+                                "label": ("ГНС квартир" if part == "apartments"
+                                          else "ГНС коммерции 1 этажа"),
+                                "was": was, "now": row["gns"], "target": "tep",
+                                "unit": "м²", "as_written": as_written,
+                                "read_as": (f"{round(float(spp_split.get(part) or 0) * 100):g}% "
+                                            f"от дома {_fmt_mln(number)} м²")})
+            continue
         if key == "apartments_gns_sqm":
             row = new_tep.setdefault("apartments", {})
             was = row.get("gns")
@@ -664,6 +728,30 @@ def apply_intake(
         applied.append({"key": key, "label": INTAKE_LABELS.get(key, key),
                         "was": was, "now": number, "target": "inputs",
                         "unit": INTAKE_UNITS.get(key, ""), "as_written": as_written})
+        if key in _OBJECT_SWITCH and number > 0:
+            # Площадь выключенного объекта в расчёт не идёт: офисы «Светлого 4»
+            # легли в выключенный объект и из модели пропали (владелец,
+            # 22.10.2026). Продаваемая обнуляется — её пересчитают доли
+            # объекта, как при «Положить потенциал в объект».
+            flag, sale = _OBJECT_SWITCH[key]
+            if not new_inputs.get(flag):
+                applied.append({"key": flag, "label": f"{INTAKE_LABELS.get(key, key)} — объект",
+                                "was": new_inputs.get(flag), "now": True, "target": "inputs",
+                                "unit": "", "shown": "включён"})
+            new_inputs[flag] = True
+            if new_inputs.get(sale):
+                applied.append({"key": sale, "label": "Продаваемая площадь объекта",
+                                "was": new_inputs.get(sale), "now": 0, "target": "inputs",
+                                "unit": "м²", "shown": "пересчитается долями объекта"})
+            new_inputs[sale] = 0
+        if key == "vri_relief_mln" and number > 0:
+            # Сумма льготы действует только в режиме «Фиксированная сумма» —
+            # то же правило, что у предложения Платона (`vri_relief_mln`).
+            was_mode = new_inputs.get("vri_relief_mode")
+            new_inputs["vri_relief_mode"] = "amount"
+            applied.append({"key": "vri_relief_mode", "label": "Льгота по плате — режим",
+                            "was": was_mode, "now": "amount", "target": "inputs",
+                            "unit": "", "shown": "фиксированная сумма"})
     return {"inputs": new_inputs, "tep": new_tep,
             "applied": applied, "refused": refused}
 
@@ -705,6 +793,86 @@ def _option_number(target: str, value: Any, unit: str) -> tuple[float | None, st
     return to_field_number(target, value, unit)
 
 
+# Сумма, названная в самом вопросе: «Платёж 2,55 млрд руб. за SPV…». Вариант
+# «В цену сделки» числа не несёт, и человек вписывал его сам — в поле с
+# подписью «млн ₽», глядя на «2,55 млрд»: в модель легло 2,55 млн ₽ вместо
+# 2 550 (владелец, 22.10.2026, «Светлый 4»). Число вопроса — ответ документа:
+# вариант берёт его сам, а вписанное число, совпавшее с ним, читается в его
+# единице.
+_AMOUNT_RE = re.compile(
+    r"(?<![\d.,])(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*"
+    r"(млрд|миллиард\w*|млн|миллион\w*|тыс\.?|тысяч\w*)\s*(?:руб\w*\.?|₽)?",
+    re.I)
+
+
+def question_amounts(text: str) -> list[dict[str, Any]]:
+    """Денежные суммы вопроса в миллионах рублей, с тем, как они написаны."""
+    out = []
+    for match in _AMOUNT_RE.finditer(str(text or "")):
+        written = match.group(0).strip()
+        number, _why = to_field_number("purchase_price_mln", match.group(1), match.group(2))
+        if number is not None:
+            out.append({"mln": number, "number": to_number(match.group(1)),
+                        "written": written})
+    return out
+
+
+_MONTHS = (("январ", 1), ("феврал", 2), ("март", 3), ("апрел", 4), ("мая", 5),
+           ("мае", 5), ("май", 5), ("июн", 6), ("июл", 7), ("август", 8),
+           ("сентябр", 9), ("октябр", 10), ("ноябр", 11), ("декабр", 12))
+_MONTH_YEAR_RE = re.compile(r"([а-яё]+)\s+(20\d\d)", re.I)
+_SHARE_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*%")
+_PAID_MARKS = ("оплачен", "уплачен", "внесен", "внесён", "выплачен", "перечислен")
+
+
+def _month_of(text: str) -> tuple[int, int] | None:
+    for match in _MONTH_YEAR_RE.finditer(text.lower()):
+        for stem, month in _MONTHS:
+            if match.group(1).startswith(stem):
+                return int(match.group(2)), month
+    return None
+
+
+def payment_schedule(text: str, project_start: Any) -> tuple[list[tuple[float, int]], str]:
+    """Доли платежа и месяцы от начала проекта из слов документа.
+
+    «49% оплачено, остаток 51% в феврале 2028» → [(49, 0), (51, 13)] при
+    начале проекта в январе 2027. Уже оплаченное — месяц 0: деньги ушли до
+    начала расчёта. Чего нельзя прочитать — причина, а не догадка.
+    """
+    said = str(text or "")
+    shares = list(_SHARE_RE.finditer(said))
+    if not shares:
+        return [], ""
+    try:
+        start = date.fromisoformat(str(project_start or "")[:10])
+    except ValueError:
+        return [], "начало проекта не задано — месяцы графика не от чего отсчитать"
+    out = []
+    for i, match in enumerate(shares):
+        before = said[(shares[i - 1].end() if i else 0):match.start()].lower()
+        after = said[match.end():(shares[i + 1].start() if i + 1 < len(shares) else len(said))]
+        when = _month_of(after)
+        if when is not None:
+            month = max(0, (when[0] - start.year) * 12 + when[1] - start.month)
+        elif any(mark in after.lower() or mark in before for mark in _PAID_MARKS):
+            month = 0
+        elif _month_of(before) is not None:
+            year, mon = _month_of(before)
+            month = max(0, (year - start.year) * 12 + mon - start.month)
+        else:
+            return [], f"у доли {match.group(0)} не названа дата платежа"
+        out.append((float(match.group(1).replace(",", ".")), month))
+    total = sum(share for share, _ in out)
+    if abs(total - 100.0) > 0.5:
+        return [], f"доли платежа дают {total:g}%, а не 100%"
+    return out, ""
+
+
+def _fmt_mln(value: float) -> str:
+    return f"{value:,.2f}".rstrip("0").rstrip(".").replace(",", " ").replace(".", ",")
+
+
 def question_card(item: dict[str, Any]) -> dict[str, Any]:
     """Вопрос с вариантами, у каждого варианта — поле модели и число.
 
@@ -714,6 +882,7 @@ def question_card(item: dict[str, Any]) -> dict[str, Any]:
     """
     key = str(item.get("key") or "").strip()
     field = key if key in ASKABLE_KEYS and key != "cadastral_numbers" else ""
+    amounts = question_amounts(str(item.get("question") or ""))
     options = []
     for raw in item.get("choices") or item.get("options") or []:
         if isinstance(raw, dict) and "value" in raw:
@@ -728,21 +897,69 @@ def question_card(item: dict[str, Any]) -> dict[str, Any]:
         target = field or obligation_target(label)
         number, why = (_option_number(target, value, unit) if target
                        else (None, "у ответа нет поля в модели — записан в разговор"))
+        from_question = ""
+        if not field and target and number is None and len(amounts) == 1:
+            # Обязательство без своего числа — сумма вопроса, в единицах поля.
+            number, why, from_question = amounts[0]["mln"], "", amounts[0]["written"]
         options.append({"label": label, "target": target, "value": number,
-                        "unit": INTAKE_UNITS.get(target, ""), "why": why})
+                        "unit": INTAKE_UNITS.get(target, ""), "why": why,
+                        **({"from_question": from_question} if from_question else {})})
     return {"question": str(item.get("question") or ""), "key": field,
             "label": INTAKE_LABELS.get(field, ""), "unit": INTAKE_UNITS.get(field, ""),
+            # Обязательство складывается с тем, что уже стоит в поле: три
+            # обязательства «в соцнагрузку» — три слагаемых, а не три замены.
+            "adds": not field,
             "options": options}
+
+
+def _typed_number(card: dict[str, Any], target: str, said: str) -> tuple[float | None, str, str]:
+    """Вписанное человеком число в единицах поля: (число, причина отказа, как прочтено).
+
+    Число без единицы — в единице поля («млн ₽» стоит в подсказке), кроме
+    одного случая: оно совпало с суммой из текста вопроса. «2,55» под
+    вопросом «Платёж 2,55 млрд руб.» — это 2,55 млрд, а не 2,55 млн.
+    """
+    unit = INTAKE_UNITS.get(target, "")
+    bare = not re.search(r"[a-zа-яё₽]", said.lower())
+    if bare and target in _MONEY_FIELDS:
+        typed = to_number(said)
+        for amount in question_amounts(str(card.get("question") or "")):
+            if typed is not None and amount["number"] == typed and amount["mln"] != typed:
+                return (amount["mln"], "",
+                        f"вписано «{said}» — в вопросе «{amount['written']}», "
+                        f"значит {_fmt_mln(amount['mln'])} {unit}")
+    number, why = to_field_number(target, said, unit)
+    return number, why, ""
+
+
+def _part_label(question: str) -> str:
+    text = re.split(r"\s[—–-]\s|\?", str(question or ""), maxsplit=1)[0].strip()
+    return text if len(text) <= 90 else text[:87].rstrip() + "…"
+
+
+def _schedule_text(payments: list[tuple[float, int]]) -> str:
+    merged: dict[int, float] = {}
+    for amount, month in payments:
+        merged[month] = merged.get(month, 0.0) + amount
+    return "; ".join(f"{round(amount, 3):g}@{month}" for month, amount in sorted(merged.items())
+                     if amount > 0)
 
 
 def answer_card(card: dict[str, Any], inputs: dict[str, Any],
                 tep: dict[str, dict[str, Any]], *, choice: int = -1,
-                typed: str = "") -> dict[str, Any]:
+                typed: str = "", ledger: dict[str, Any] | None = None,
+                mode: str = "") -> dict[str, Any]:
     """Применить ответ на один вопрос — тем же писателем, что и таблица разбора.
 
     `choice` — номер варианта, `typed` — значение, вписанное человеком в
     единицах поля. Ничего не применилось — причина называется, а ответ всё
     равно записывается: человек его дал.
+
+    Обязательство (`card["adds"]`) складывается с прежними ответами того же
+    документа: `ledger` — их книга, она живёт в очереди на диске. Три ответа
+    «в соцнагрузку» писали одно поле по очереди, и в модели оставался
+    последний — 100 вместо 765 (владелец, 22.10.2026). Если в поле уже стоит
+    своё число, сперва спрашиваем: прибавить к нему или заменить (`mode`).
     """
     options = card.get("options") or []
     option = options[choice] if 0 <= choice < len(options) else None
@@ -750,24 +967,109 @@ def answer_card(card: dict[str, Any], inputs: dict[str, Any],
     said = str(typed or "").strip()
     answer = " — ".join(part for part in (
         (option or {}).get("label") or "", said) if part)
+    read_as = ""
     if said and target:
-        number, why = to_field_number(target, said, INTAKE_UNITS.get(target, ""))
+        number, why, read_as = _typed_number(card, target, said)
     elif option is not None:
         number, why = option.get("value"), option.get("why") or ""
+        if option.get("from_question") and number is not None:
+            read_as = f"сумма из вопроса: «{option['from_question']}»"
     else:
         number, why = None, "ответа нет"
+    new_inputs = dict(inputs or {})
     if not target or number is None:
-        return {"answer": answer, "inputs": dict(inputs or {}),
+        return {"answer": answer, "inputs": new_inputs,
                 "tep": {k: dict(v) for k, v in (tep or {}).items()}, "applied": [],
                 "refused": [{"key": target, "label": INTAKE_LABELS.get(target, target)
                              or "ответ", "value": answer,
                              "reason": why or "у ответа нет поля в модели"}]}
+    entry: dict[str, Any] | None = None
+    write = number
+    if card.get("adds") and ledger is not None:
+        entry = ledger.get(target)
+        if entry is None:
+            current = to_number(new_inputs.get(target)) or 0.0
+            if current and mode not in ("add", "replace"):
+                origin = ((new_inputs.get("_field_origin") or {})
+                          .get(f"inputs.{target}") or {})
+                return {"answer": answer, "inputs": new_inputs,
+                        "tep": {k: dict(v) for k, v in (tep or {}).items()},
+                        "applied": [], "refused": [],
+                        "confirm": {"key": target, "label": INTAKE_LABELS.get(target, target),
+                                    "unit": INTAKE_UNITS.get(target, ""),
+                                    "current": current, "adding": number,
+                                    "origin": str(origin.get("text") or "")}}
+            entry = {"base": current if mode == "add" else 0.0, "parts": [],
+                     "base_origin": str(((new_inputs.get("_field_origin") or {})
+                                         .get(f"inputs.{target}") or {}).get("text") or ""),
+                     "schedule_was": str(new_inputs.get("purchase_schedule") or "")}
+        entry = {**entry, "parts": list(entry.get("parts") or []) + [
+            {"label": _part_label(card.get("question")), "value": number}]}
+        write = float(entry["base"]) + sum(float(part["value"]) for part in entry["parts"])
     got = apply_intake(
-        {"fields": [{"key": target, "value": number,
+        {"fields": [{"key": target, "value": write,
                      "unit": INTAKE_UNITS.get(target, ""), "quote": card.get("question")}]},
-        inputs, tep, accept=[target])
+        new_inputs, tep, accept=[target])
     # «В документе: …» здесь неправда — это ответ человека, и окно печатает
     # его само строкой «Ответ: …».
     for row in got["applied"]:
         row.pop("as_written", None)
+        if row["key"] != target:
+            continue
+        if read_as:
+            row["read_as"] = read_as
+        if entry is not None:
+            row["parts"] = entry["parts"]
+            row["base"] = entry["base"]
+            row["base_origin"] = entry.get("base_origin") or ""
+    if entry is not None and target == "purchase_price_mln":
+        _apply_purchase_schedule(card, number, entry, got)
+    if entry is not None:
+        ledger[target] = entry
     return {"answer": answer, **got}
+
+
+def _apply_purchase_schedule(card: dict[str, Any], number: float,
+                             entry: dict[str, Any], got: dict[str, Any]) -> None:
+    """График платежа покупки из слов вопроса — в `purchase_schedule`, суммами.
+
+    Суммы, а не доли: цена сделки складывается из нескольких ответов и
+    прежнего значения, и доли одного платежа не доли всей цены.
+    """
+    shares, why = payment_schedule(card.get("question") or "", got["inputs"].get("project_start"))
+    payments = list(entry.get("payments") or [])
+    if shares:
+        payments += [(number * share / 100.0, month) for share, month in shares]
+    else:
+        payments.append((number, 0))
+    entry["payments"] = payments
+    if why:
+        got["refused"].append({"key": "purchase_schedule", "label": "График платежей за покупку",
+                               "value": card.get("question"), "reason": why})
+    if not any(month for _amount, month in payments):
+        return
+    if entry["base"] and entry.get("schedule_was"):
+        got["refused"].append({
+            "key": "purchase_schedule", "label": "График платежей за покупку",
+            "value": card.get("question"),
+            "reason": ("в проекте уже задан свой график покупки — платёж документа в него "
+                       "не вписан; поправьте график во вкладке «Вводные»")})
+        return
+    text = _schedule_text([(float(entry["base"]), 0)] + payments)
+    was = got["inputs"].get("purchase_schedule")
+    got["inputs"]["purchase_schedule"] = text
+    got["applied"].append({"key": "purchase_schedule", "label": "График платежей за покупку",
+                           "was": was, "now": text, "target": "inputs", "unit": "",
+                           "shown": "; ".join(
+                               f"{_fmt_mln(amount)} млн ₽ — "
+                               + ("в начале проекта" if month == 0 else f"через {month} мес.")
+                               for amount, month in sorted(
+                                   ((a, m) for m, a in _merge(payments, entry["base"]).items()),
+                                   key=lambda pair: pair[1]))})
+
+
+def _merge(payments: list[tuple[float, int]], base: float) -> dict[int, float]:
+    merged: dict[int, float] = {0: float(base)} if base else {}
+    for amount, month in payments:
+        merged[month] = merged.get(month, 0.0) + amount
+    return merged
