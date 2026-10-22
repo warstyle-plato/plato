@@ -110,32 +110,56 @@ def _yard_floor(x: dict[str, Any], tep: dict[str, Any], site_sqm: float) -> tupl
             "СП 42.13330.2016, п. 7.4: озеленение жилого квартала — не меньше 25% участка")
 
 
+def _glavapu_territory_value(cell: Any) -> float:
+    """Ячейка территории калькулятора — число га или пара [га, строка]."""
+    value = cell[0] if isinstance(cell, (list, tuple)) and cell else cell
+    try:
+        return max(0.0, float(value or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _glavapu_green_zhk(x: dict[str, Any], tep: dict[str, Any]) -> tuple[float, str]:
-    """Строка 57 выгрузки ГлавАПУ «Озеленённые территории ЖК» → (м², основание).
+    """Строка 57 калькулятора ГлавАПУ «Озеленённые территории ЖК» → (м², основание).
 
     Решение владельца 22.10.2026: двор по норме — большее из нашей нормы и
-    строки 57. Строка посчитана для квартир выгрузки; ТЭП с другим числом
-    квартир — снимок устарел, число не берётся, и это сказано (0, причина).
-    Выгрузки нет — (0, "").
+    строки 57. Источники: сверка сценария (`_glavapu_scenario`, кнопка
+    «Сверить сценарий») и загруженная выгрузка (`_glavapu_import`). Строка 57 —
+    5 м² × квартиры × 2,1, поэтому берётся, только если калькулятор считал для
+    того же числа квартир, что сейчас в ТЭП; иначе снимок устарел — (0, причина).
+    Ни сверки, ни выгрузки — (0, "").
     """
+    units_tep = int(round(float((tep.get("apartments") or {}).get("units") or 0)))
+    reasons: list[str] = []
+    check = x.get("_glavapu_scenario") or {}
+    territory = check.get("territory") or {}
+    green = _glavapu_territory_value(territory.get("green_zhk")) * 10000.0
+    if green > 0:
+        flats = int(float(check.get("flats_count") or 0))
+        if flats > 0 and flats == units_tep:
+            plants = _glavapu_territory_value(territory.get("57_1")) * 10000.0
+            grounds = _glavapu_territory_value(territory.get("57_2")) * 10000.0
+            parts = (f" (зелёные насаждения {_fmt_ru(plants)} м², площадки и дорожки "
+                     f"{_fmt_ru(grounds)} м²)" if plants > 0 or grounds > 0 else "")
+            return green, (f"ГлавАПУ, сверка сценария, строка 57: {_fmt_ru(green)} м² "
+                           f"озеленённых территорий ЖК{parts}")
+        reasons.append(f"Строка 57 сверки с калькулятором ГлавАПУ ({_fmt_ru(green)} м²) посчитана "
+                       f"для {flats or 'неизвестного числа'} квартир, а в ТЭП сейчас {units_tep} — "
+                       "для двора она не берётся, повторите сверку")
     imported = x.get("_glavapu_import") or {}
     normalized = imported.get("normalized") or {}
-    try:
-        green_ha = float(normalized.get("green_zhk_ha") or 0.0)
-    except (TypeError, ValueError):
-        green_ha = 0.0
-    if green_ha <= 0:
-        return 0.0, ""
-    when = (imported.get("source") or {}).get("export_date")
-    where = (f"ГлавАПУ, {'выгрузка от ' + when if when else 'выгрузка (дата в файле не указана)'}, "
-             "лист «ТЭП», строка 57")
-    units_export = int(float(normalized.get("apartment_units") or 0))
-    units_tep = int(round(float((tep.get("apartments") or {}).get("units") or 0)))
-    if units_export <= 0 or units_export != units_tep:
-        return 0.0, (f"Строка 57 калькулятора ГлавАПУ ({_fmt_ru(green_ha * 10000)} м²) посчитана "
-                     f"для {units_export or 'неизвестного числа'} квартир, а в ТЭП сейчас "
-                     f"{units_tep} — для двора она не берётся")
-    return green_ha * 10000.0, f"{where}: {_fmt_ru(green_ha * 10000)} м² озеленённых территорий ЖК"
+    green_ha = _glavapu_territory_value(normalized.get("green_zhk_ha"))
+    if green_ha > 0:
+        units_export = int(float(normalized.get("apartment_units") or 0))
+        if units_export > 0 and units_export == units_tep:
+            when = (imported.get("source") or {}).get("export_date")
+            where = (f"ГлавАПУ, {'выгрузка от ' + when if when else 'выгрузка (дата в файле не указана)'}, "
+                     "лист «ТЭП», строка 57")
+            return green_ha * 10000.0, f"{where}: {_fmt_ru(green_ha * 10000)} м² озеленённых территорий ЖК"
+        reasons.append(f"Строка 57 выгрузки ГлавАПУ ({_fmt_ru(green_ha * 10000)} м²) посчитана "
+                       f"для {units_export or 'неизвестного числа'} квартир, а в ТЭП сейчас "
+                       f"{units_tep} — для двора она не берётся")
+    return 0.0, ". ".join(reasons)
 
 
 def setback_area(site_sqm: float, setback_m: float) -> float:

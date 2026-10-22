@@ -303,3 +303,20 @@ def test_the_row_57_is_read_from_the_glavapu_export(tmp_path):
     parsed = core.parse_glavapu_xlsx(owner._owner_book(tmp_path), "owner.xlsx")
     assert parsed["normalized"]["green_zhk_ha"] == pytest.approx(1.9485)
     assert core._GLAVAPU_SOURCE_ROWS["green_zhk_ha"][1].startswith("строка 57")
+
+
+def test_the_scenario_check_row_57_counts_for_the_same_flats():
+    """Сверка сценария («Сверить сценарий») — тот же источник строки 57, с разбивкой."""
+    x, t = _housing("msk")
+    x["_glavapu_scenario"] = {"key": "k", "flats_count": 900, "territory": {
+        "green_zhk": [1.2, "строка 57, га"], "57_1": [0.84, "строка 57.1, га"],
+        "57_2": [0.36, "строка 57.2, га"]}}
+    m = core.site_massing(x, t)
+    assert m["yard_sqm"] == pytest.approx(12000.0)
+    assert "сверка сценария, строка 57" in m["yard_basis"]
+    assert "зелёные насаждения 8 400 м², площадки и дорожки 3 600 м²" in m["yard_basis"]
+    # Квартир в ТЭП стало другое число — сверка устарела, и это сказано.
+    x["_glavapu_scenario"]["flats_count"] = 901
+    stale = core.site_massing(x, t)
+    assert stale["yard_sqm"] == pytest.approx(5.0 * 1364)
+    assert "повторите сверку" in stale["yard_basis"]
