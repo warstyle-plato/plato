@@ -915,6 +915,14 @@ PAGE += r"""</head>
       </div>
       <div id="accessAdminStatus" style="font-size:12px;margin-bottom:8px"></div>
       <div id="accessAdminList"></div>
+      <div class="section-title" style="margin:14px 0 6px">Демо-доступ для проверяющих ЮKassa</div>
+      <div style="font-size:12px;color:#777;margin-bottom:6px">Ссылка открывает кабинет без Telegram на 14 дней: права нового клиента, оплата без списания. Отзыв действует сразу.</div>
+      <div class="upload-line" style="align-items:center;margin-bottom:6px">
+        <input id="demoInviteNote" placeholder="Для кого (необязательно)" style="min-width:220px">
+        <button class="btn dark" onclick="accessDemoCreate()">Создать демо-ссылку</button>
+      </div>
+      <div id="demoInviteStatus" style="font-size:12px;margin-bottom:6px"></div>
+      <div id="demoInviteList"></div>
     </div>
     <div id="projectsStored">
       <div class="section-title" style="margin-bottom:8px">Мои проекты</div>
@@ -973,6 +981,8 @@ PAGE += r"""</head>
   <a href="/privacy" style="color:#888">Политика конфиденциальности</a>
   <a href="/ads-consent" style="color:#888">Согласие на рекламные материалы</a>
   <a href="/guide" style="color:#888">Руководство</a>
+  <a href="/tariffs" style="color:#888">Тарифы</a>
+  <a href="/contacts" style="color:#888">Контакты</a>
   <a href="/offer" style="color:#888">Лицензионный договор</a>
   <a href="/refund" style="color:#888">Условия возврата</a>
   <span>__DEVELOPAID_PRODUCT_REGISTRATION__</span>

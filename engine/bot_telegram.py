@@ -223,6 +223,11 @@ def _telegram_verify_session(value: str) -> dict[str, Any]:
         calc_overrides = payload.get("calc_overrides")
         if calc_overrides is not None and not isinstance(calc_overrides, dict):
             raise ValueError("calc_overrides")
+        # Демо-доступ проверяющих (`engine/review_demo.py`) отзывается владельцем
+        # раньше срока подписи: отозванная ссылка гасит и выданную по ней сессию.
+        demo_alive = globals().get("demo_session_alive")
+        if callable(demo_alive) and not demo_alive(payload["chat_id"]):
+            raise ValueError("demo revoked")
         return payload
     except Exception as exc:
         raise HTTPException(status_code=403, detail="Telegram-сессия недействительна или истекла") from exc

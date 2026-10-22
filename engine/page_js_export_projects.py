@@ -400,6 +400,12 @@ async function initProjects(){
  const actions=document.getElementById('projectsStorageActions');
  if(actions)actions.style.display=projectsStorageReady?'inline-flex':'none';
  renderLoginButton();
+ // Демо-ссылка проверяющего ведёт сюда с `#tariffs`: кабинет открывается
+ // сразу на «Тарифах и доступе», как клиент увидит его после входа.
+ if(location.hash==='#tariffs'){
+  try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}
+  openTariffs();
+ }
  // Личные значения классов подгружаются сразу: класс выбирают из селектора и
  // без открытых настроек, а перекрышка обязана примениться и там.
  loadClassOverrides();
@@ -1234,6 +1240,14 @@ function tariffsHtml(data){
  if(!data.signed_in){
   return html+'<p class="muted">Чтобы посчитать участок, войдите через Telegram — это кнопка вверху страницы.</p>';
  }
+ // Демо-доступ проверяющих: тот же кабинет, но оплата без настоящих денег —
+ // тестовый магазин ЮKassa или пояснение, где откроется форма.
+ if(data.demo){
+  html+='<p style="background:#eef6ff;border:1px solid #b9d6f5;padding:8px 10px;margin:0 0 8px">'+
+   '<b>Демо-доступ для проверки.</b> '+(data.demo_payments==='test'
+    ?'Оплата идёт через тестовый магазин ЮKassa — деньги не списываются.'
+    :'Кнопки оплаты показывают, где откроется платёжная форма ЮKassa; деньги не списываются.')+'</p>';
+ }
  const status=data.status||{};
  const active=(status.plots||[]).filter(p=>p.active);
  html+='<div style="margin:8px 0"><b>Мой доступ</b></div>';
@@ -1247,7 +1261,7 @@ function tariffsHtml(data){
  }else if(!status.subscription_active){
   html+='<p class="muted" style="margin:0 0 8px">Открытых участков пока нет.</p>';
  }
- if(data.payments_available){
+ if(data.payments_available||data.demo){
   html+='<div class="upload-line" style="align-items:center;margin-top:8px">'+
    '<input id="payEmail" type="email" placeholder="Почта для чека" style="min-width:220px">'+
    '<button class="btn dark" onclick="payForAccess(\'plot\')">Оплатить текущий участок</button>'+
@@ -1271,7 +1285,7 @@ async function renderTariffsBox(){
  catch(e){box.innerHTML='<div class="import-error">'+escapeHtml(String(e.message||e))+'</div>';return}
  box.innerHTML=tariffsHtml(data);
  const admin=document.getElementById('accessAdminBox');
- if(admin){admin.style.display=(data.is_admin||projectsAdminKey)?'':'none';if(data.is_admin||projectsAdminKey)renderAccessAdmin()}
+ if(admin){admin.style.display=(data.is_admin||projectsAdminKey)?'':'none';if(data.is_admin||projectsAdminKey){renderAccessAdmin();renderDemoInvites()}}
 }
 async function openTariffs(){
  await openProjects();
@@ -1288,6 +1302,7 @@ async function payForAccess(kind){
    body:JSON.stringify({session:activeSession(),kind,inputs,email})});
   const data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Оплату начать не удалось');
+  if(data.preview){if(status)status.textContent=data.message;return}
   try{localStorage.setItem('developaid_pending_payment',data.payment_id)}catch(e){}
   location.href=data.confirmation_url;
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
@@ -1318,6 +1333,34 @@ async function renderAccessAdmin(){
   (people||'<tr><td colspan="4">Пока никого.</td></tr>')+'</tbody></table></div>'+
   '<div class="section-title" style="margin:12px 0 6px">Оплаты</div><div class="scroll"><table><thead><tr><th>Дата</th><th>Кто</th><th>Что</th><th>Платёж</th></tr></thead><tbody>'+
   (payments||'<tr><td colspan="4">Оплат пока не было.</td></tr>')+'</tbody></table></div>';
+}
+// Демо-доступ для проверяющих ЮKassa: ссылка-приглашение со сроком, отзыв.
+async function renderDemoInvites(){
+ const box=document.getElementById('demoInviteList');
+ if(!box)return;
+ let data;
+ try{data=await accessAdminCall('/access/admin/demo/list')}
+ catch(e){box.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';return}
+ const rows=(data.invites||[]).map(r=>'<tr><td>'+escapeHtml(location.origin+r.path)+
+  (r.note?'<br><small>'+escapeHtml(r.note)+'</small>':'')+'</td><td>до '+accessDate(r.expires)+'</td><td>'+
+  (r.active?'действует':'не действует')+', входов: '+Number(r.claims||0)+'</td><td>'+
+  (r.active?'<button class="btn" data-code="'+escapeHtml(r.code)+'" onclick="accessDemoRevoke(this.dataset.code)">Отозвать</button>':'')+
+  '</td></tr>').join('');
+ box.innerHTML=rows?'<div class="scroll"><table><tbody>'+rows+'</tbody></table></div>':'<div class="muted">Ссылок ещё не выдавали.</div>';
+}
+async function accessDemoCreate(){
+ const status=document.getElementById('demoInviteStatus');
+ const note=String((document.getElementById('demoInviteNote')||{}).value||'');
+ try{
+  const data=await accessAdminCall('/access/admin/demo/create',{days:14,note});
+  if(status)status.textContent='Ссылка для проверяющих: '+location.origin+data.path+' — действует до '+accessDate(data.expires)+'.';
+  renderDemoInvites();
+ }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
+}
+async function accessDemoRevoke(code){
+ if(!confirm('Отозвать демо-ссылку? Вход по ней перестанет работать сразу.'))return;
+ try{await accessAdminCall('/access/admin/demo/revoke',{code});renderDemoInvites()}
+ catch(e){alert(String(e.message||e))}
 }
 async function accessAdminGrant(){
  const status=document.getElementById('accessAdminStatus');

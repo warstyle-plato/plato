@@ -638,8 +638,10 @@ def access_me(req: AccessRequest) -> dict[str, Any]:
         return {**offer, "signed_in": False}
     forwarded = _access_forward("/internal/access/me", req)
     status = forwarded if forwarded is not None else access_status(chat)
+    demo = callable(globals().get("demo_chat")) and demo_chat(chat)
     return {**offer, "signed_in": True, "status": status,
-            "is_admin": chat in usage_admin_ids()}
+            "is_admin": chat in usage_admin_ids(), "demo": bool(demo),
+            "demo_payments": demo_payments_mode() if demo else ""}
 
 
 @app.post("/internal/access/me", include_in_schema=False)
