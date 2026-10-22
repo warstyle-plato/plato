@@ -1340,10 +1340,13 @@ async function renderDemoInvites(){
  let data;
  try{data=await accessAdminCall('/access/admin/demo/list')}
  catch(e){box.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';return}
- const rows=(data.invites||[]).map(r=>'<tr><td>'+escapeHtml(location.origin+r.path)+
+ // Адрес показан один раз и копируется кнопкой: на телефоне длинная ссылка
+ // обрезается, и выделять её пальцем неудобно.
+ const rows=(data.invites||[]).map(r=>'<tr><td><span class="demo-link" style="word-break:break-all">'+escapeHtml(location.origin+r.path)+'</span>'+
   (r.note?'<br><small>'+escapeHtml(r.note)+'</small>':'')+'</td><td>до '+accessDate(r.expires)+'</td><td>'+
-  (r.active?'действует':'не действует')+', входов: '+Number(r.claims||0)+'</td><td>'+
-  (r.active?'<button class="btn" data-code="'+escapeHtml(r.code)+'" onclick="accessDemoRevoke(this.dataset.code)">Отозвать</button>':'')+
+  (r.active?'действует':'не действует')+', входов: '+Number(r.claims||0)+'</td><td style="white-space:nowrap">'+
+  (r.active?'<button class="btn" data-link="'+escapeHtml(location.origin+r.path)+'" onclick="accessDemoCopy(this)">Скопировать</button> '+
+  '<button class="btn" data-code="'+escapeHtml(r.code)+'" onclick="accessDemoRevoke(this.dataset.code)">Отозвать</button>':'')+
   '</td></tr>').join('');
  box.innerHTML=rows?'<div class="scroll"><table><tbody>'+rows+'</tbody></table></div>':'<div class="muted">Ссылок ещё не выдавали.</div>';
 }
@@ -1352,9 +1355,20 @@ async function accessDemoCreate(){
  const note=String((document.getElementById('demoInviteNote')||{}).value||'');
  try{
   const data=await accessAdminCall('/access/admin/demo/create',{days:14,note});
-  if(status)status.textContent='Демо-ссылка: '+location.origin+data.path+' — действует до '+accessDate(data.expires)+'.';
+  if(status)status.textContent='Ссылка создана, действует до '+accessDate(data.expires)+'. Она в списке ниже — нажмите «Скопировать».';
   renderDemoInvites();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
+}
+async function accessDemoCopy(button){
+ const link=String(button.dataset.link||'');
+ const done=()=>{const was=button.textContent;button.textContent='Скопировано';setTimeout(()=>{button.textContent=was},1500)};
+ try{await navigator.clipboard.writeText(link);done();return}catch(e){}
+ // Старый браузер или страница без разрешения на буфер: выделяем адрес,
+ // чтобы его можно было скопировать штатной командой.
+ const span=button.closest('tr')&&button.closest('tr').querySelector('.demo-link');
+ if(span&&window.getSelection){const range=document.createRange();range.selectNodeContents(span);const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);
+  try{if(document.execCommand('copy')){done();return}}catch(e){}}
+ button.textContent='Выделите адрес и скопируйте';
 }
 async function accessDemoRevoke(code){
  if(!confirm('Отозвать демо-ссылку? Вход по ней перестанет работать сразу.'))return;

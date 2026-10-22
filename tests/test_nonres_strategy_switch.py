@@ -29,7 +29,10 @@ sys.path.insert(0, str(ROOT))
 import developaid_nonres_strategy as ns  # noqa: E402
 import main_legacy as core  # noqa: E402
 
+# Цена задана числом: умолчание офиса — из аренды класса и мало для проверок
+# НДС и налога на ДДУ-ветке.
 OFFICE = dict(offices_enabled=True, offices_gba_sqm=40000.0, offices_saleable_sqm=24000.0,
+              offices_price_th_per_sqm=450.0,
               offices_parking_under_spaces=200, offices_parking_over_spaces=40,
               offices_parking_guest_pct=10)
 
@@ -207,7 +210,8 @@ def _plan(strategy: str, **params) -> dict:
 def test_rent_noi_and_exit_follow_the_named_formulas() -> None:
     plan = _plan("income", rent_th_per_sqm_month=4.0, occupancy_start_pct=50,
                  occupancy_stable_pct=90, leaseup_months=7, rent_index_pct=6,
-                 opex_pct=20, hold_years=3, exit_cap_pct=10, property_tax_pct=2.0)
+                 opex_pct=20, hold_years=3, exit_cap_pct=10, property_tax_pct=2.0,
+                 rent_date="")  # ставка на дату ввода: индексация с первого месяца
     flows = ns.object_flows(plan, lambda m: 0.10, vat_rate=0.22)
     monthly = flows["monthly"]
     # Месяц 4 эксплуатации: загрузка 50 + (90−50)·3/6 = 70%, индексация 1,06^(3/12).
@@ -221,6 +225,10 @@ def test_rent_noi_and_exit_follow_the_named_formulas() -> None:
                   for k in range(1, 13)) - basis * 0.02
     assert flows["kpi"]["exit_value"] == pytest.approx(forward / 0.10)
     assert monthly["exit_revenue"][date(2030, 12, 1)] == pytest.approx(forward / 0.10)
+    # Ставка на 12.2025 до ввода 01.2028 растёт 25 месяцев индексации.
+    dated = ns.object_flows({**plan, "params": {**plan["params"], "rent_date": "2025-12-01"}},
+                            lambda m: 0.10, vat_rate=0.22)
+    assert dated["monthly"]["rent_revenue"][month4] == pytest.approx(rent * 1.06 ** (25 / 12))
 
 
 def test_direct_sale_starts_at_commissioning_and_sells_everything() -> None:
