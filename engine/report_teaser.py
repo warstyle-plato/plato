@@ -320,9 +320,10 @@ def _report_build(ticket: str, payload: dict[str, Any]) -> None:
             stage = "sensitivity"
             _teaser_stage(ticket, stage, started, "report")
             try:
-                payload = {**payload, "sensitivity": run_sensitivity(
+                payload = {**payload, "sensitivity": report_sensitivity(
                     payload.get("inputs") or {}, payload.get("tep") or {},
-                    payload.get("rates") or [], payload.get("phasing") or {})}
+                    payload.get("rates") or [], payload.get("phasing") or {},
+                    payload.get("result") if isinstance(payload.get("result"), dict) else None)}
             except Exception:
                 pass  # без анализа отчёт всё равно нужен — раздела просто не будет
         stage = "pdf"

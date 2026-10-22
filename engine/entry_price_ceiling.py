@@ -245,6 +245,13 @@ def entry_price_tiles(bundle: dict[str, Any], inputs: dict[str, Any],
     elif found:
         ceiling = {"label": "Максимум цены входа", "value": _tile_mln(found.get("variable")),
                    "note": f"При {name} не ниже {target_text}" + (f" · {scope}" if scope else "") + "."}
+        if goal.get("non_monotonic") and goal.get("feasible_ranges"):
+            # Решатель нашёл несколько отрезков цены, где порог держится:
+            # показан наибольший, а отрезки названы.
+            ranges = ", ".join(f"от {_tile_mln(a)} до {_tile_mln(b)}" if a != b else _tile_mln(a)
+                               for a, b in goal["feasible_ranges"])
+            ceiling["note"] += (f" {name} меняется с ценой неровно: порог держится на нескольких "
+                                f"отрезках цены ({ranges}), здесь показан наибольший.")
         change = float(found.get("change_abs") or 0.0)
         margin = {"label": "Запас к цене", "value": _tile_mln(change),
                   "note": "Цена ниже потолка." if change >= 0
