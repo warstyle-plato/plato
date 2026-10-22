@@ -1344,7 +1344,14 @@ function tepCellChanged(key,col,value){
   if(key==='apartments'){rescaleApartmentUnits();rescaleBuiltInCommercial()}
   renderInputs();
   renderTep();
- }else{tepRowToInputs(key);updateTepTotals()}
+ }else{
+  // Перерисовка, а не одни итоги: число квартир — вход нормы паркинга (п. 2
+  // 2118-ПП) и подписи средней квартиры. Итоги пересчитывали места в `tep`, а
+  // строка «Подземный паркинг» оставалась с прежней потребностью — «машиноместа
+  // даже не дрогнули при изменении кол-ва квартир» (владелец, 22.10.2026).
+  tepRowToInputs(key);
+  renderTep();
+ }
  scheduleTepAutoRecalc(key);
  calculate();
 }
