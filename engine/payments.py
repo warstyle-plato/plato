@@ -441,9 +441,14 @@ async def payments_webhook(request: Request) -> dict[str, Any]:
     payment_id = str((payload.get("object") or {}).get("id") or "")
     if not event.startswith("payment.") or not payment_id:
         return {"ok": True, "ignored": event}
-    if not payments_available():
+    # Тестовый магазин — другие ключи: платёж демо-доступа перечитываем в нём,
+    # иначе боевой магазин ответит «нет такого платежа» (или ключей ещё нет).
+    test = bool((payload.get("object") or {}).get("test"))
+    if test and demo_payments_mode() != "test":
+        raise HTTPException(status_code=503, detail="Тестовый магазин ЮKassa на этом сервере не настроен.")
+    if not test and not payments_available():
         raise HTTPException(status_code=503, detail="Оплата на этом сервере не настроена.")
-    payment = await run_in_threadpool(_payment_fetch, payment_id)
+    payment = await run_in_threadpool(_payment_fetch, payment_id, test)
     result = await run_in_threadpool(payment_apply, payment)
     _PAYMENTS_LOG.info("Уведомление %s по платежу %s: %s", event, payment_id, result)
     return {"ok": True, "granted": bool(result.get("granted"))}
