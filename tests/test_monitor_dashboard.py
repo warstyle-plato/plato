@@ -437,7 +437,8 @@ def test_the_funding_card_explains_the_remaining_limit(monkeypatch):
     """Остаток лимита — лимит минус оплаченное с поправками, и они названы."""
     monkeypatch.setattr(dashboard, "_finance_baseline", lambda _: {
         "known": True, "source": "f.xlsx", "completion_need_at_baseline": 1000.0,
-        "paid_at_baseline": 100.0, "reserve": 0.0, "reserve_parts": {}, "monthly_need": {},
+        "paid_at_baseline": 100.0, "reserve": 40.0, "reserve_parts": {"2.8": 40.0},
+        "monthly_need": {},
         "tail_after_apr": 0.0, "chapters": ["1", "2", "3"], "chapters_reason": "",
         "articles": {"1.1": {"rss_limit": 100.0, "paid_at_baseline": 0.0, "monthly_need": {}},
                      "2.2": {"rss_limit": 500.0, "paid_at_baseline": 0.0, "monthly_need": {}}}})
@@ -452,8 +453,11 @@ def test_the_funding_card_explains_the_remaining_limit(monkeypatch):
     assert got["chapters_label"] == "1–3" and got["paid_borrowed"] == 300.0
     # Статья 1.1 перерасходована на 50 — идёт нулём; остаток 300 = 650 − 350 − 50(перерасход) + 50(книга без 3)
     assert got["bank_remaining"] == 300.0
+    # Смета 650 = статьи 600 + резерв 40 + ещё 10 вне статей: расхождение книги
+    # со сметой — эти 10, а не резерв (владелец, 22.10.2026: «Зачем эта запись?»
+    # про строку, равную резерву). Книга «меньше сметы» → знак минус.
     assert got["remaining_check"] == {"plain": 300.0, "overpaid": 50.0,
-                                      "book_gap": pytest.approx(-50.0), "remaining": 300.0}
+                                      "book_gap": pytest.approx(-10.0), "remaining": 300.0}
 
 
 def test_chapter_one_comes_from_the_rss_when_the_book_lacks_it(monkeypatch):
