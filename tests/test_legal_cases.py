@@ -330,3 +330,16 @@ def test_an_empty_register_is_named_not_hidden():
     assert "Споры" not in {item["topic"] for item in got["findings"]}
     assert report.LEGAL_NONE_OPEN in report.render_text(got)
     assert report.LEGAL_EMPTY not in report.render_html(got)
+
+
+def test_a_confirmed_register_gives_one_finding_not_two():
+    """«Задвоение» (владелец, 22.10.2026): при подтверждённых карточках
+    «Споры» в «Главном» добавлялись дважды."""
+    from test_management_report_model import _gpr_book
+
+    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
+    legal.save(PROJECT, CARD, [], "Иванова", at="2026-10-05T09:00:00+00:00")
+    built = report.build(PROJECT, "week", "2026-10-18")
+    topics = [item["topic"] for item in built["findings"]]
+    assert topics.count("Споры") == 1, topics
+    assert report.render_text(built).count("<b>Споры.</b>") == 1

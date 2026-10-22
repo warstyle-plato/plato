@@ -75,6 +75,11 @@ def test_findings_carry_numbers_and_sources():
     assert "Выборка кредита за неделю — 48,0 млн ₽ (за предыдущий такой же период — " \
            "120,0 млн ₽)" in found["Финансирование"]["text"]
     assert "«Арбитраж с подрядчиком»" in found["Открытые вопросы"]["text"]
+    # Каждая тема — один раз (владелец, 22.10.2026: «Задвоение» — «Споры» шли
+    # дважды), и аббревиатуры не теряют регистр («по РСС», а не «по рсс»).
+    topics = [item["topic"] for item in built["findings"]]
+    assert len(topics) == len(set(topics)), topics
+    assert "«1 очередь»" in found["Финансирование"]["text"]
     # Нет данных — вывод говорит об этом, а не молчит.
     empty = report.build("Пусто", "week", "2026-10-18")
     assert {item["tone"] for item in empty["findings"]} == {"missing"}
