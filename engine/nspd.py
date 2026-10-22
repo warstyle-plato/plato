@@ -2089,8 +2089,78 @@ def _basemap_png(min_x: float, min_y: float, max_x: float, max_y: float, width: 
     return buffer.getvalue()
 
 
+# Гибрид Яндекса (снимок + улицы и подписи) — только в браузере, через
+# JavaScript API 2.1 и только с ключом. Склеить его здесь, как OSM, нельзя по
+# двум причинам сразу: серверные API Яндекса (Static API и Tiles API) отдают
+# одну схему, а условия использования (п. 5.1.2 и 5.1.6) запрещают сохранять и
+# видоизменять полученные картинки. Поэтому в PDF и в бот уходит схема OSM, а
+# снимок живёт в живой карте страницы. Ключ — браузерный по природе: Яндекс
+# грузит карту по нему в самом браузере, а защищается он ограничением по
+# адресу сайта в кабинете разработчика. Значение ключа в журнал не пишется.
+_YANDEX_MAPS_KEY_ENV = "YANDEX_MAPS_API_KEY"
+_YANDEX_MAPS_SCRIPT = "https://api-maps.yandex.ru/2.1/?lang=ru_RU&coordorder=latlong&apikey="
+BASEMAP_LAYERS = ("map", "hybrid")
+_HYBRID_SERVER_REASON = (
+    "Снимок со спутника Яндекс показывает только на живой карте страницы: "
+    "картинкой на сервер он его не отдаёт, а сохранять его в файлы условия "
+    "Яндекса запрещают. Поэтому в отчёт и в бот уходит карта улиц."
+)
+_HYBRID_NO_KEY_REASON = (
+    "Вид со снимком со спутника пока не подключён: для карт Яндекса нужен "
+    "ключ доступа, а его ещё не оформили. Карта улиц работает как обычно."
+)
+
+
+def _basemap_views_local() -> dict[str, Any]:
+    key = _env_str(_YANDEX_MAPS_KEY_ENV, "").strip()
+    hybrid: dict[str, Any] = {
+        "available": bool(key),
+        "provider": "Яндекс Карты",
+        "reason": "" if key else _HYBRID_NO_KEY_REASON,
+        "script": (_YANDEX_MAPS_SCRIPT + urllib.parse.quote(key, safe="")) if key else "",
+        "print_reason": _HYBRID_SERVER_REASON,
+    }
+    return {
+        "default": "map",
+        "map": {"available": True, "provider": "OpenStreetMap", "reason": ""},
+        "hybrid": hybrid,
+    }
+
+
+@app.get("/land/basemap-views", include_in_schema=False)
+def land_basemap_views() -> dict[str, Any]:
+    """Какие виды подложки есть у живой карты: «Схема» всегда, «Гибрид» — с ключом.
+
+    Один ответ на вопрос «предлагать ли гибрид», и все карты страницы читают
+    его, а не проверяют ключ сами. Нет ключа — гибрид не предлагается, и
+    причина названа словами: молча подменить снимок схемой значило бы показать
+    не то, что выбрали. Ключ лежит на ядре; Render спрашивает ядро.
+    """
+    views = _basemap_views_local()
+    if views["hybrid"]["available"]:
+        return views
+    remote = _core_api_url("/land/basemap-views")
+    if not remote:
+        return views
+    try:
+        with urllib.request.urlopen(
+                urllib.request.Request(remote, headers={"Accept": "application/json"}),
+                timeout=_NSPD_TIMEOUT_SECONDS) as response:
+            answer = json.loads(response.read(64 * 1024).decode("utf-8"))
+        if isinstance(answer, dict) and isinstance(answer.get("hybrid"), dict):
+            return answer
+        raise ValueError("ответ без описания видов")
+    except Exception as exc:
+        views["hybrid"]["reason"] = (
+            "Вид со снимком со спутника сейчас недоступен: сервер расчётов не "
+            f"ответил, есть ли ключ Яндекс Карт ({type(exc).__name__}). "
+            "Карта улиц работает как обычно."
+        )
+        return views
+
+
 @app.get("/land/basemap", include_in_schema=False)
-def land_basemap(bbox: str = "", width: int = 1024) -> Response:
+def land_basemap(bbox: str = "", width: int = 1024, layer: str = "map") -> Response:
     """Карта улиц под меркаторный bbox — одной картинкой.
 
     Тот же договор, что у /land/map-image: страница передаёт bbox, в котором
@@ -2101,7 +2171,15 @@ def land_basemap(bbox: str = "", width: int = 1024) -> Response:
     Любой сбой — 502, и карта на странице заменяется схемой с кольцами
     расстояний. Подложка — то, на чём рисуют, а не то, что считают: без неё
     ответ остаётся верным, просто читается хуже.
+
+    `layer=hybrid` — отказ с названной причиной (422), а не 502 и не карта
+    улиц вместо снимка: гибрид Яндекса картинкой на сервер не отдаётся.
     """
+    layer = str(layer or "map").strip().lower()
+    if layer not in BASEMAP_LAYERS:
+        raise HTTPException(status_code=400, detail="layer: map или hybrid.")
+    if layer == "hybrid":
+        raise HTTPException(status_code=422, detail=_HYBRID_SERVER_REASON)
     remote = _core_api_url("/land/basemap")
     if remote:
         # Как /land/map-image: на Render внешние карты не ходят, пересылаем.

@@ -59,10 +59,12 @@ def _num(value: float, digits: int = 0) -> str:
     return text.replace("-", "−")
 
 
-def _ticks(low: float, high: float, count: int = 5) -> list[float]:
+def _ticks(low: float, high: float, count: int = 5, min_step: float = 0.0) -> list[float]:
+    """Деления шкалы. ``min_step`` — не мельче разряда подписи: при целых
+    подписях шаг 0,2 давал «0, 0, 0, 1, 1» на графике из двух лотов."""
     if high <= low:
         high = low + 1.0
-    raw = (high - low) / count
+    raw = max((high - low) / count, min_step)
     power = 10 ** math.floor(math.log10(raw))
     step = next(m * power for m in (1, 2, 2.5, 5, 10) if m * power >= raw)
     start = (low // step) * step
@@ -109,7 +111,7 @@ def line_chart(title: str, labels: Sequence[str], series: Sequence[dict[str, Any
     if not labels or not values:
         return ""
     low, high = min(0.0, min(values)), max(values)
-    ticks = _ticks(low, high)
+    ticks = _ticks(low, high, min_step=10 ** -digits)
     low, high = ticks[0], ticks[-1]
     inner_w = WIDTH - PAD_LEFT - PAD_RIGHT
     inner_h = HEIGHT - PAD_TOP - PAD_BOTTOM
@@ -172,12 +174,22 @@ BAR_STYLES = ({"fill": "#9db7d6"}, {"fill": "#1f4e8c"}, {"fill": "url(#hatch)"})
 
 
 def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]],
-              unit: str, digits: int = 0) -> str:
-    """Сгруппированные столбцы: группа — подпись X, серия — столбец в группе."""
+              unit: str, digits: int = 0, line: dict[str, Any] | None = None) -> str:
+    """Сгруппированные столбцы: группа — подпись X, серия — столбец в группе.
+
+    ``line`` — линия на своей шкале справа (``{"name", "values", "unit",
+    "digits"}``): объём и цена на одном графике, как в отчёте о продажах
+    (владелец, 22.10.2026: «может совместить для экономии места?»). Левая шкала
+    объёма всегда от нуля, шкала цены — от своего минимума: у объёма ноль —
+    настоящее начало отсчёта, а у цены нет.
+    """
     values = [v for s in series for v in s["values"] if v is not None]
     if not groups or not values:
         return ""
-    ticks = _ticks(min(0.0, min(values)), max(values))
+    line_values = [v for v in (line or {}).get("values") or [] if v is not None]
+    if not line_values:
+        line = None
+    ticks = _ticks(min(0.0, min(values)), max(values), min_step=10 ** -digits)
     low, high = ticks[0], ticks[-1]
     inner_w = WIDTH - PAD_LEFT - PAD_RIGHT
     inner_h = HEIGHT - PAD_TOP - PAD_BOTTOM
@@ -216,7 +228,48 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
                        f'fill="#333" text-anchor="middle">{_num(value, digits)}</text>')
         out.append(f'<text x="{PAD_LEFT + g*slot + slot/2:.1f}" y="{HEIGHT-PAD_BOTTOM+14}" '
                    f'font-size="10.5" fill="#333" text-anchor="middle">{html.escape(group)}</text>')
-    out.append(_legend([s["name"] for s in series], BAR_STYLES, bars=True))
+    legend = _legend([s["name"] for s in series], BAR_STYLES, bars=True)
+    if line:
+        style = STYLES[1]
+        line_digits = int(line.get("digits") or 0)
+        right_ticks = _ticks(min(line_values), max(line_values), count=4,
+                             min_step=10 ** -line_digits)
+        r_low, r_high = right_ticks[0], right_ticks[-1]
+
+        def ry_at(v: float) -> float:
+            return PAD_TOP + inner_h * (1 - (v - r_low) / (r_high - r_low or 1))
+
+        for tick in right_ticks:
+            out.append(f'<text x="{WIDTH-PAD_RIGHT+6}" y="{ry_at(tick)+3:.1f}" font-size="10.5" '
+                       f'fill="{style["color"]}" text-anchor="start">{_num(tick, line_digits)}</text>')
+        out.append(f'<text x="{WIDTH-PAD_RIGHT+6}" y="11" font-size="10.5" fill="{style["color"]}">'
+                   f'{html.escape(str(line.get("unit") or ""))}</text>')
+        path, points = [], []
+        broken = True
+        for g, value in enumerate(line["values"]):
+            if value is None:
+                broken = True
+                continue
+            x, y = PAD_LEFT + g * slot + slot / 2, ry_at(value)
+            path.append(f'{"M" if broken else "L"}{x:.1f},{y:.1f}')
+            broken = False
+            points.append(_marker(style["marker"], x, y, style["color"]))
+        out.append(f'<path d="{" ".join(path)}" fill="none" stroke="{style["color"]}" '
+                   f'stroke-width="2" class="line"/>')
+        out.extend(points)
+        # Подпись у последней точки — внутри поля: справа стоит шкала цены.
+        last = next((g, v) for g, v in reversed(list(enumerate(line["values"]))) if v is not None)
+        out.append(f'<text x="{PAD_LEFT + last[0]*slot + slot/2:.1f}" y="{ry_at(last[1])-8:.1f}" '
+                   f'font-size="10.5" font-weight="600" fill="{style["color"]}" text-anchor="middle">'
+                   f'{_num(last[1], line_digits)}</text>')
+        swatch = (f'<line x1="{{x}}" y1="{{y}}" x2="{{x2}}" y2="{{y}}" stroke="{style["color"]}" '
+                  f'stroke-width="2"/>')
+        x = PAD_LEFT + sum(36 + 6 * len(s["name"]) for s in series)
+        y = HEIGHT - 10
+        legend += (swatch.format(x=x, y=y - 4, x2=x + 22)
+                   + _marker(style["marker"], x + 11, y - 4, style["color"])
+                   + f'<text x="{x+28}" y="{y}" font-size="10.5" fill="#333">{html.escape(line["name"])}</text>')
+    out.append(legend)
     out.append("</svg>")
     return f'<figure class="chart"><figcaption>{html.escape(title)}</figcaption>{"".join(out)}</figure>'
 
