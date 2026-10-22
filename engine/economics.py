@@ -892,6 +892,9 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "storage_above_ground": storage_above_ground(x),
             "project_articles_sqm": op["project_articles_sqm"],
             "project_articles_area": op["project_articles_area"],
+            # Пятно застройки, этажность и подземные уровни — тот же расчёт,
+            # по которому СМР подземной части взяло надбавку за глубину.
+            "site_massing": op["site_massing"],
         },
         "revenue": {"total": total_revenue, **op["revenue_by_product"]},
         "revenue_structure": revenue_structure({"total": total_revenue, **op["revenue_by_product"]},
