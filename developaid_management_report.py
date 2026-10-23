@@ -1157,7 +1157,10 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         if escrow.get("state") == "ok" and escrow.get("inflow_month") is not None:
             pieces.append(f"на эскроу за {_months_label(report['end'])} поступило "
                           f"{_rub(escrow['inflow_month'])}")
-        add("Финансирование", "; ".join(pieces).capitalize() + ".",
+        # Заглавная — только первая буква: capitalize() ронял регистр всего
+        # текста («по рсс», «2026 q3»).
+        text = "; ".join(pieces)
+        add("Финансирование", text[:1].upper() + text[1:] + ".",
             f"РСС от {_day(block['rss'])}, расчёт Монитора, план финмодели",
             "bad" if limit.get("known") and float(limit.get("additional_financing") or 0) > 0
             else "")
@@ -1186,8 +1189,6 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
             f"реестр споров; {waiting} из {len(opened)} карточек внесены по документам "
             "владельца и ждут проверки юриста" if waiting
             else "реестр споров, карточки подтверждены по документам")
-
-        add("Споры", _sentence(text), "реестр споров, карточки подтверждены по документам")
     elif block.get("state") == "ok" and not block.get("recorded"):
         add("Споры", LEGAL_EMPTY, "реестр споров", "missing")
 
