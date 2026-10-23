@@ -173,17 +173,14 @@ def office_path_prefixes(inputs: dict[str, Any] | None) -> tuple[str, ...]:
 def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...]) -> dict[str, Any]:
     """Итоги пути: числа сводки движка и деньги офисов, без своей арифметики.
 
-    Пик собственных денег — худший накопленный поток капитала, тем же
-    правилом, что плитка «Собственный капитал — пик потребности»."""
+    Пик собственных денег — худший накопленный поток собственника деньгами,
+    без оценки удержанного здания (`owner_cash_peak`), тем же правилом, что
+    плитка «Собственный капитал — пик потребности»."""
     summary = result.get("summary") or {}
     objects = [o for o in ((result.get("finance") or {}).get("nonres") or {}).get("objects") or []
                if o.get("key") in {p for p in prefixes} or o.get("prefix") in prefixes]
     totals = [o.get("totals") or {} for o in objects]
     kpis = [o.get("kpi") or {} for o in objects]
-    cumulative = worst = 0.0
-    for value in ((result.get("cashflow") or {}).get("equity") or []):
-        cumulative += float(value or 0.0)
-        worst = min(worst, cumulative)
     noi = sum(float(k.get("stabilized_noi") or 0.0) for k in kpis)
     noi_cost = sum(float(k.get("cost_total") or 0.0) for k in kpis if k.get("stabilized_noi"))
     dscr = [k["dscr_min"] for k in kpis if k.get("dscr_min") is not None]
@@ -199,7 +196,8 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...]) -> d
         "npv": summary.get("npv"),
         "irr_project": summary.get("irr_project"),
         "npv_equity": summary.get("npv_equity"),
-        "equity_peak": -worst,
+        "equity_peak": owner_cash_peak(result.get("finance") or {},
+                                       (result.get("cashflow") or {}).get("equity") or []),
         "rent_revenue": total("rent_revenue"),
         "sale_revenue": total("sale_revenue"),
         "exit_revenue": total("exit_revenue"),

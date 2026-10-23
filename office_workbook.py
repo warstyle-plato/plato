@@ -1096,9 +1096,9 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
         default = f"{ref('in.parking_price_th')}*0.001"
         under_price = f"IF({i('parking_under_mln')}>0,{i('parking_under_mln')},{default})"
         over_price = f"IF({i('parking_over_mln')}>0,{i('parking_over_mln')},{default})"
-        param("price", "Цена продажи «в расчёт»",
-              f"={_class_pick(info, item, 'price')}*IF({spaces},1,0.001)", "млн ₽ за м² / место", "0.0000")
-        param("parking_price", "Цена машино-места, средняя по гаражу",
+        param("price", "Цена продажи «в расчёт» (места — млн ₽ за место)",
+              f"={_class_pick(info, item, 'price')}", "тыс ₽/м² с НДС", NUM)
+        param("parking_price", "Цена машино-места, средняя по гаражу (млн ₽)",
               f"=IF(MAX(0,{under})+MAX(0,{over})>0,(MAX(0,{under})*{under_price}+MAX(0,{over})*{over_price})"
               f"/(MAX(0,{under})+MAX(0,{over})),{default})", "млн ₽", NUM3)
         param("growth_pre", "Рост цены до ввода", f"={i('growth_pre')}", "в месяц", PCT2)
@@ -1117,9 +1117,9 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
         param("horizon", "Последний месяц пути, №",
               f"=MAX({b('comm')},{b('sale_start')}+{b('sale_months')}-1)", "№", INT)
     else:
-        param("rent_rate", "Ставка аренды «в расчёт»", f"={_class_pick(info, item, 'rent')}*0.001",
-              "млн ₽ за м² в месяц", "0.000000")
-        param("parking_rent", "Аренда машино-места", f"={i('parking_rent')}*0.001", "млн ₽ в месяц", "0.0000")
+        param("rent_rate", "Ставка аренды «в расчёт»", f"={_class_pick(info, item, 'rent')}",
+              "тыс ₽/м² в месяц", NUM3)
+        param("parking_rent", "Аренда машино-места", f"={i('parking_rent')}", "тыс ₽ в месяц", NUM)
         param("rent_index", "Индексация аренды", f"={i('rent_index')}", "в год", PCT)
         # Ставка дана на свою дату и до ввода индексируется (`rent_months_before`).
         param("rent_from", "Месяц ставки аренды, № (без даты — ввод)",
@@ -1153,7 +1153,8 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
         month("factor", "Индекс цены",
               f"(1+{b('growth_pre')})^MAX(0,MIN({k}-{ps},{comm}-{ps}))"
               f"*(1+{b('growth_post')})^MAX(0,{k}-MAX({ps},{comm}))", unit="×", fmt="0.000", total=False)
-        base = f"({b('area')}*{b('price')}+{b('spaces')}*{b('parking_price')})*{b('factor')}*{b('weight')}"
+        price = f"{b('price')}*IF({spaces},1,0.001)"
+        base = f"({b('area')}*{price}+{b('spaces')}*{b('parking_price')})*{b('factor')}*{b('weight')}"
         month("sale", "Выручка продаж", f"{base}*{b('rev_mult')}", bold=True)
         month("selling", "Маркетинг и брокеры", f"{base}*{b('selling_share')}*{b('cost_mult')}")
         month("unsold", "Не продано на начало месяца", f"MAX(0,1-SUM({b('weight', ':p')}))",
@@ -1181,7 +1182,7 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
           f"(1+MAX(-0.95,{b('rent_index')}))^((MAX(0,{b('open')}-1)+MAX(0,{comm}-{b('rent_from')}))/12)",
           unit="×", fmt="0.000", total=False)
     month("op_rev", "Доход аренды по всем месяцам эксплуатации",
-          f"({b('area')}*{b('rent_rate')}+{b('spaces')}*{b('parking_rent')})*{b('growth')}*{b('occ')}*{b('rev_mult')}",
+          f"({b('area')}*{b('rent_rate')}+{b('spaces')}*{b('parking_rent')})*0.001*{b('growth')}*{b('occ')}*{b('rev_mult')}",
           total=False)
     month("hold_on", "Удержание", f"IF(AND({b('open')}>=1,{b('open')}<={hold}),1,0)",
           unit="0/1", fmt=FLAG, total=False)
@@ -1548,7 +1549,7 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
 def _block_totals(rows: _Rows, block: _Block) -> None:
     """Итоги объекта на пути — те же величины, что `object_flows` отдаёт в
     `totals`, `kpi` и `financing`: по ним «ПРОВЕРКИ» сверяют объект с движком."""
-    b, z = block.r, block.z
+    b = block.r
     param, _ = _track(rows, block)
     s = lambda key: f"SUM({b(key, ':')})" if block.n(key) in block.names else "0"  # noqa: E731
     k_all = ref("k", ":")
@@ -2073,6 +2074,9 @@ def _check_rows(result: dict[str, Any], current: str | None, blocks: dict[str, l
             if label.startswith("Пик потребности"):
                 rows.append(("Собственное участие", "Пик потребности", ref(f"{code}.peak"),
                              _engine_number(line.get("value"), False), False))
+            elif label.startswith("NPV собственного капитала"):
+                rows.append(("Собственное участие", "NPV собственного капитала", ref(f"{code}.npv_eq"),
+                             _engine_number(line.get("value"), False), False))
             elif label.startswith("IRR собственного капитала — только деньги") and line.get("unit") == "pct":
                 rows.append(("Собственное участие", "IRR — только деньги", ref(f"{code}.e_irr_cash"),
                              _engine_number(line.get("value"), True), True))
@@ -2183,20 +2187,34 @@ def _horizon_months(spec: dict[str, Any], objects: list[dict[str, Any]], start: 
     return max(len(spec.get("months") or []), max(ends) + 1 + TAX_TAIL) + EXTRA_MONTHS
 
 
-def _evaluate(content: bytes, n: int) -> Evaluator:
+def evaluate(workbook) -> Evaluator:
     """Вычислитель книги, прогретый по месяцам слева направо: ряд долга читает
     прошлый месяц, и счёт подряд не упирается в глубину рекурсии."""
-    workbook = load_workbook(io.BytesIO(content))
     evaluator = Evaluator(workbook)
-    monthly = [ws for ws in workbook.worksheets if ws.max_column >= FIRST_COL + n - 1 and ws["D4"].value is not None]
-    for col in range(FIRST_COL, FIRST_COL + n):
-        letter = L(col)
-        for ws in monthly:
-            for r in range(1, ws.max_row + 1):
-                value = ws[f"{letter}{r}"].value
-                if isinstance(value, str) and value.startswith("="):
-                    evaluator.cell(ws.title, f"{letter}{r}")
+    n = workbook[TIME_SHEET].max_column - FIRST_COL + 1
+    monthly = [ws for ws in workbook.worksheets
+               if ws.max_column >= FIRST_COL + n - 1 and ws.cell(K_ROW, FIRST_COL).value is not None]
+    limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(max(limit, 20000))
+    try:
+        for col in range(FIRST_COL, FIRST_COL + n):
+            letter = L(col)
+            for ws in monthly:
+                for r in range(1, ws.max_row + 1):
+                    value = ws[f"{letter}{r}"].value
+                    if isinstance(value, str) and value.startswith("="):
+                        evaluator.cell(ws.title, f"{letter}{r}")
+    finally:
+        sys.setrecursionlimit(limit)
     return evaluator
+
+
+def verdict(evaluator: Evaluator) -> tuple[str, list[tuple[str, str]]]:
+    """Вердикт «ПРОВЕРОК» и строки, которые не сошлись: (раздел, показатель)."""
+    sheet = evaluator.workbook[CHECK_SHEET]
+    bad = [(sheet[f"A{r}"].value, sheet[f"B{r}"].value) for r in range(5, sheet.max_row + 1)
+           if sheet[f"G{r}"].value and evaluator.cell(CHECK_SHEET, f"G{r}") not in (AGREE, "—")]
+    return evaluator.cell(CHECK_SHEET, "I5"), bad
 
 
 def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -> tuple[bytes, dict[str, Any]]:
@@ -2306,18 +2324,15 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
     book.wb._sheets = [book.wb[name] for name in order]
     book.wb.active = 0
     content = book.to_bytes()
+    evaluator = evaluate(load_workbook(io.BytesIO(content)))
     limit = sys.getrecursionlimit()
     sys.setrecursionlimit(max(limit, 20000))
     try:
-        evaluator = _evaluate(content, book.n)
         content, cache = with_cached_values(content, evaluator=evaluator)
-        sheet = evaluator.workbook[CHECK_SHEET]
-        verdict = evaluator.cell(CHECK_SHEET, "I5")
-        bad = [f"{sheet[f'A{r}'].value}: {sheet[f'B{r}'].value}"
-               for r in range(5, sheet.max_row + 1)
-               if sheet[f"G{r}"].value and evaluator.cell(CHECK_SHEET, f"G{r}") not in (AGREE, "—")]
+        verdict_, bad_rows = verdict(evaluator)
     finally:
         sys.setrecursionlimit(limit)
-    return content, {"verdict": verdict, "mismatches": bad, "missing": missing,
+    bad = [f"{section}: {label}" for section, label in bad_rows]
+    return content, {"verdict": verdict_, "mismatches": bad, "missing": missing,
                      "unresolved": cache["unresolved"], "unresolved_examples": cache["examples"],
                      "months": book.n}
