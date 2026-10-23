@@ -192,6 +192,7 @@ details.cadastral-box>summary::marker{color:#888}
 .login-qr{display:flex;gap:12px;align-items:center;margin-top:12px}
 .login-qr img{width:132px;height:132px;border:1px solid #e5e5e3;background:#fff}
 .login-qr span{font-size:11px;color:#777;max-width:260px}
+.login-code{margin-top:8px;font-size:13px}
 .prof-l{display:block;font-size:12px;color:#555;margin-top:10px}
 .prof-i{display:block;width:100%;margin-top:4px;padding:8px 10px;border:1px solid #cfcfcf;font-size:13px}
 .prof-i:focus{outline:2px solid #111;outline-offset:-1px}
