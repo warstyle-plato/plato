@@ -36,7 +36,9 @@ sys.path.insert(0, str(ROOT))
 import main_legacy as core  # noqa: E402
 import page_blocks  # noqa: E402
 
-PRESETS = ROOT / "presets"
+# Настоящие выгрузки ГлавАПУ — тестовые данные: серверных предустановок в
+# продукте больше нет (решение владельца, 23.10.2026).
+PRESETS = ROOT / "tests" / "fixtures" / "glavapu_owner"
 
 
 def page_function(name: str) -> str:
@@ -75,7 +77,6 @@ def live_import(preset_name: str) -> dict:
         "let phasing=null;let cadastralAnalysis=null;let moResult=null;\n"
         "function makeDefaultPhasing(){return {enabled:false,phase_count:1}}\n"
         "function applyRequiredSocialProgramFromGlavapu(){}\nfunction syncTep(){}\n"
-        "function applyServerPresetProjectConfig(){return ''}\n"
         "function applyTelegramCalcOverrides(){}\nfunction renderInputs(){}\n"
         "function renderTep(){}\nfunction renderPhasing(){}\n"
         "function renderGlavapuPreview(){}\n"

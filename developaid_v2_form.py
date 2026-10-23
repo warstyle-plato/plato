@@ -236,8 +236,4 @@ def form_description(core: Any) -> dict[str, Any]:
             {"value": key, "label": str(preset.get("label") or key)}
             for key, preset in core.PROJECT_CLASS_PRESETS.items()
         ],
-        "presets": [
-            {"id": key, "name": str(meta["name"]), "description": str(meta["description"])}
-            for key, meta in core.SERVER_TEP_PRESETS.items()
-        ],
     }

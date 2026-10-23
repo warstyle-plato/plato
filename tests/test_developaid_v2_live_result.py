@@ -34,7 +34,6 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import developaid_v2_demo as demo  # noqa: E402
 import developaid_v2_result as project_result  # noqa: E402
 import main as wrapper  # noqa: E402
 from developaid_v2 import install  # noqa: E402
@@ -185,7 +184,6 @@ def test_the_response_is_never_cached(client):
     for response in (
         client.post("/api/v2/calculate", json=simple_payload()),
         client.get("/api/v2/projects"),
-        client.get("/api/v2/projects/mishina?sensitivity=false"),
     ):
         assert response.status_code == 200, response.text
         assert "no-store" in response.headers.get("cache-control", "")
@@ -276,38 +274,24 @@ def test_the_tornado_comes_from_the_engine(client):
 
 # --- fixtures вне production --------------------------------------------------
 
-def test_production_endpoints_do_not_serve_fixtures(client):
-    """Контрольные показатели прототипа не могут прийти как расчёт."""
-    from developaid_v2_prototype_fixtures import PROTOTYPE_PROJECTS
+def test_the_demo_and_prototype_projects_are_gone(client):
+    """Настоящие проекты владельца с ценами /v2 не отдаёт никому.
 
-    fixture = PROTOTYPE_PROJECTS["mishina"]["kpi"]
-    result = client.get("/api/v2/projects/mishina?sensitivity=false").json()
-
-    assert result["source"] == "engine"
-    assert result["prototype"] is False
-    # Fixture держит миллиарды, движок — рубли: совпасть они могут только
-    # если fixture подставили в ответ.
-    assert result["kpi"]["revenue"] != fixture["revenue"]
-    assert result["kpi"]["llcr"] != fixture["llcr"]
-    body = json.dumps(result, ensure_ascii=False)
-    assert "Контрольный PDF DevelopAid" not in body
-
-
-def test_the_prototype_fixtures_are_off_by_default(client, monkeypatch):
-    monkeypatch.delenv("DEVELOPAID_V2_PROTOTYPE_FIXTURES", raising=False)
-    response = client.get("/api/v2/prototype/projects/mishina")
-
-    assert response.status_code == 404
-    assert "fixtures" in response.json()["detail"].lower()
-
-
-def test_the_prototype_fixtures_are_available_for_development(client, monkeypatch):
-    monkeypatch.setenv("DEVELOPAID_V2_PROTOTYPE_FIXTURES", "1")
-    response = client.get("/api/v2/prototype/projects/mishina")
-
-    assert response.status_code == 200
-    assert response.json()["source"] == "prototype_fixture"
-    assert response.json()["prototype"] is True
+    «Мишина» и «Мытищи» считались движком по адресу без входа, а их
+    показатели из приёмочных PDF лежали fixtures прототипа (решение
+    владельца, 23.10.2026: «Пресеты можно везде удалить»). Маршрутов нет —
+    ответ 404 самого роутера, а не обработчика.
+    """
+    for path in ("/api/v2/projects/mishina", "/api/v2/projects/mytishchi",
+                 "/api/v2/prototype/projects/mishina",
+                 "/api/v2/prototype/projects/mytishchi"):
+        response = client.get(path)
+        assert response.status_code == 404, path
+        assert response.json()["detail"] == "Not Found", path
+    assert client.get("/api/v2/projects").json() == []
+    root = Path(__file__).resolve().parent.parent
+    for name in ("developaid_v2_demo.py", "developaid_v2_prototype_fixtures.py"):
+        assert not (root / name).exists(), name
 
 
 # --- участок становится проектом ----------------------------------------------
@@ -318,8 +302,8 @@ def test_the_found_parcel_becomes_a_project(client, monkeypatch):
     Прежде участок был тупиком: посчитали ТЭП и плату за ВРИ — а чтобы
     получить экономику, всё приходилось вводить заново.
     """
-    data = (Path(__file__).resolve().parent.parent
-            / "presets" / "Мишина_ТЭП.xlsx").read_bytes()
+    data = (Path(__file__).resolve().parent
+            / "fixtures" / "glavapu_owner" / "Мишина_ТЭП.xlsx").read_bytes()
     monkeypatch.setattr(core, "vri_tep_quick", lambda region, query, **kw: {
         "card": "<b>карточка</b>", "file": data, "filename": "Мишина_ТЭП.xlsx"})
 
@@ -362,8 +346,8 @@ def test_the_transfer_matches_the_engine_page(tmp_path):
     if not node:
         pytest.skip("node недоступен")
 
-    data = (Path(__file__).resolve().parent.parent
-            / "presets" / "Мишина_ТЭП.xlsx").read_bytes()
+    data = (Path(__file__).resolve().parent
+            / "fixtures" / "glavapu_owner" / "Мишина_ТЭП.xlsx").read_bytes()
     parsed = core.parse_glavapu_xlsx(data, "Мишина_ТЭП.xlsx")
     mine = form_module.inputs_from_glavapu(core, json.loads(json.dumps(parsed)))
 
@@ -379,7 +363,6 @@ def test_the_transfer_matches_the_engine_page(tmp_path):
         "function makeDefaultPhasing(){return {enabled:false,phase_count:1}}\n"
         "function applyRequiredSocialProgramFromGlavapu(){}\nfunction syncTep(){}\n"
         "function repairParkingFromGlavapu(){}\n"
-        "function applyServerPresetProjectConfig(){return ''}\n"
         "function applyTelegramCalcOverrides(){}\nfunction renderInputs(){}\n"
         "function renderTep(){}\nfunction renderPhasing(){}\n"
         "function renderGlavapuPreview(){}\nfunction fillUndergroundFromTep(){}\n"
@@ -417,8 +400,8 @@ def test_the_parcel_does_not_carry_objects_it_has_no_data_for():
 
     import developaid_v2_form as form_module
 
-    data = (Path(__file__).resolve().parent.parent
-            / "presets" / "Мишина_ТЭП.xlsx").read_bytes()
+    data = (Path(__file__).resolve().parent
+            / "fixtures" / "glavapu_owner" / "Мишина_ТЭП.xlsx").read_bytes()
     parsed = core.parse_glavapu_xlsx(data, "Мишина_ТЭП.xlsx")
     inputs = form_module.inputs_from_glavapu(
         core, json.loads(json.dumps(parsed)))["inputs"]
@@ -432,18 +415,18 @@ def test_the_parcel_does_not_carry_objects_it_has_no_data_for():
 
 
 def test_the_transfer_from_glavapu_has_one_place():
-    """Предустановка и найденный участок доезжают одним путём.
+    """Найденный участок доезжает до вводных одним путём — через форму.
 
     Два переноса ТЭП в вводные — это два набора умолчаний и два места, где
     поле молча теряется.
     """
-    import developaid_v2_demo as demo_module
     import developaid_v2_form as form_module
 
     assert hasattr(form_module, "inputs_from_glavapu")
-    source = Path(demo_module.__file__).read_text(encoding="utf-8")
-    assert "inputs_from_glavapu" in source
-    assert "_glavapu_import" not in source, "перенос ГлавАПУ продублирован в демо"
+    root = Path(__file__).resolve().parent.parent
+    source = (root / "developaid_v2.py").read_text(encoding="utf-8")
+    assert "form.inputs_from_glavapu(" in source
+    assert "_glavapu_import" not in source, "перенос ГлавАПУ продублирован в маршруте"
 
 
 def test_the_page_can_turn_a_parcel_into_a_project():
@@ -649,49 +632,6 @@ def test_the_frontend_does_not_calculate():
     # Прежний прототип держал вердикты и ответы Платона строками в коде.
     assert "Сильная третья очередь" not in script
     assert "LLCR 1,12x ниже цели" not in script
-
-
-# --- контрольные проекты ------------------------------------------------------
-
-@pytest.mark.parametrize("slug,mode,queues", [("mishina", "single", 0),
-                                              ("mytishchi", "phased", 3)])
-def test_the_control_projects_are_calculated_by_the_engine(slug, mode, queues, client):
-    """Мишина и Мытищи считаются движком на демонстрационных вводных."""
-    payload = demo.scenario_payload(core, slug)
-    result = client.get(f"/api/v2/projects/{slug}?sensitivity=false").json()
-    summary = core._run_authoritative_model(
-        payload["inputs"], payload["tep"], payload["rates"], payload["phasing"],
-    )["consolidated"]["summary"]
-
-    assert result["mode"] == mode
-    assert len(result["queues"]) == queues
-    assert result["project"]["slug"] == slug
-    assert result["kpi"]["revenue"] == pytest.approx(summary["revenue"])
-    assert result["kpi"]["llcr"] == pytest.approx(summary["llcr"])
-    assert result["kpi"]["net_profit"] == pytest.approx(summary["net_profit"])
-    assert result["monthly"]["months"], "помесячный ряд пуст"
-
-
-def test_the_mishina_demo_carries_its_cadastre_and_vri():
-    payload = demo.scenario_payload(core, "mishina")
-
-    assert payload["cadastral_numbers"] == ["77:09:0004014:13"]
-    assert payload["inputs"]["land_rights_cost_mln"] == pytest.approx(1267.539)
-    assert payload["inputs"]["vri_required"] is True
-    assert payload["tep"]["apartments"]["saleable"] == pytest.approx(13920)
-    assert not payload["phasing"], "Мишина — одноочередной проект"
-
-
-def test_the_mytishchi_demo_carries_three_queues_and_offices():
-    payload = demo.scenario_payload(core, "mytishchi")
-
-    assert payload["phasing"]["phase_count"] == 3
-    assert payload["phasing"]["products"]["apartments"] == [40, 32, 28]
-    assert payload["inputs"]["offices_enabled"] is True
-    assert payload["inputs"]["offices_saleable_sqm"] == pytest.approx(21360)
-    assert payload["inputs"]["mo_district"] == "Городской округ Мытищи"
-    assert payload["inputs"]["vri_region"] == "mo"
-    assert payload["tep"]["offices"]["saleable"] == pytest.approx(21360)
 
 
 def test_a_missing_project_is_a_404(client):

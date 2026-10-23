@@ -993,7 +993,8 @@ async function init() {
   state.projects = await projectsResponse.json();
   renderProjectMenu();
   const requested = new URLSearchParams(location.search).get('project');
-  const fallback = (state.projects[0] || {}).slug;
+  // Демонстрационных проектов нет: пустой каталог открывает новый проект.
+  const fallback = (state.projects[0] || {}).slug || 'new';
   const slug = state.projects.some((project) => project.slug === requested) ? requested : fallback;
   await loadProject(slug);
   await initForm();

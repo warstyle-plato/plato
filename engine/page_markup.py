@@ -176,7 +176,7 @@ PAGE += r"""</head>
                проекты — это «взять готовое и посмотреть», а здесь разбирают
                принесённый файл. Решение владельца (15.08.2026). -->
           <div id="presetsMovedHint" style="font-size:11px;color:#888;margin:10px 0 8px">
-            Готовые примеры — Мишина, Мытищи, Румянцево — переехали в «Личный кабинет» наверху страницы.
+            Готовые примеры проектов теперь открываются в «Личном кабинете» — кнопка наверху страницы.
           </div>
           <div style="font-size:11px;color:#888;margin:7px 0 8px">Заполненный шаблон ТЭП или файл, скачанный с калькулятора ГлавАПУ:</div>
           <!-- Шаблон скачивается отсюда же, где загружается. Отказ разбора
@@ -896,14 +896,9 @@ PAGE += r"""</head>
          Ключа они не требуют: это витрина, а не чужие данные. -->
     <div id="projectsExamples" style="border:1px solid var(--line);padding:14px;margin-bottom:14px">
       <div class="section-title" style="margin-bottom:8px">Готовые примеры</div>
-      <div class="upload-line" style="align-items:center">
-        <select id="serverPresetSelect" style="min-width:240px">
-          <option value="">Предустановка ТЭП…</option>
-        </select>
-        <button class="btn dark" onclick="loadServerPreset()">Открыть</button>
-        <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
-      </div>
-      <div style="font-size:11px;color:#888;margin:9px 0 8px">или пресет проекта целиком — ТЭП, ВРИ, МПТ и техприсоединение разом</div>
+      <!-- Серверных предустановок ТЭП здесь больше нет: это были настоящие
+           проекты владельца (решение владельца, 23.10.2026). -->
+      <div style="font-size:11px;color:#888;margin:0 0 8px">Пресет открывает проект целиком: ТЭП, плату за ВРИ, МПТ и техприсоединение сразу.</div>
       <div class="upload-line" style="align-items:center">
         <select id="projectPresetSelect" style="min-width:240px">
           <option value="">Пресет проекта…</option>
