@@ -249,6 +249,22 @@ def _object_param_rows(obj: StandaloneObject | None, params: dict[str, Any],
     return rows
 
 
+def _object_unit_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Строки удельной экономики для рамки объекта: тыс ₽ на м² своей базы,
+    база — в подписи (`unit_economics.base_label`), а не угадана заголовком."""
+    rows: list[dict[str, Any]] = []
+    for item in report.get("unit_economics") or []:
+        base = str(item.get("base_label") or "")
+        tail = base.split("м²", 1)[1].strip() if "м²" in base else base
+        rows.append(_row(f"{item.get('label')} — на м² {tail}".strip(), item.get("per_base_th"), "th"))
+        # Вторая база — продаваемая, как вторая колонка жилой таблицы: с ней
+        # сравнивают цену продажи. У строк на продаваемую не повторяется.
+        if item.get("base") != UNIT_BASE_SALEABLE:
+            rows.append(_row(f"{item.get('label')} — на м² продаваемой площади",
+                             item.get("per_saleable_th"), "th"))
+    return rows
+
+
 def _object_calendar(report: dict[str, Any], objects: list[dict[str, Any]]) -> dict[str, Any]:
     """Календарь объекта: подготовка, стройка, кредит — полосы движка; продажи,
     заполнение, аренда и выход — из рядов объекта. Жилых вех («Старт
@@ -570,11 +586,21 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     operating = [r for r in operating if float(r["value"] or 0.0)]
     operating.append(_row("Итого эксплуатация, налог на имущество и продажа",
                           sum(float(r["value"]) for r in operating), "rub"))
+    # Удельная экономика — та же таблица движка (`report.unit_economics`), что
+    # в жилом «Итоге»: рамка объекта прятала «Итог» целиком и теряла её
+    # (владелец, 23.10.2026: «почему в результатах нет удельной экономики
+    # вообще»). Каждая строка — на свою базу, и база названа в подписи.
+    unit = _object_unit_rows(report)
+    unit_brief = [_row(f"{item['label']} на м² продаваемой", item.get("per_saleable_th"), "th")
+                  for item in report.get("unit_economics") or []
+                  if item.get("key") in ("total_expenses", "net_profit")]
     sections["costs"] = {
         "brief": [_row("Смета объектов", objects_cost, "rub"),
                   _row("Общие затраты", common_total, "rub"),
-                  _row("Расходы всего", summary.get("total_expenses"), "rub")],
+                  _row("Расходы всего", summary.get("total_expenses"), "rub"),
+                  *unit_brief],
         "blocks": [*cost_blocks,
+                   *([{"title": "Удельная экономика", "rows": unit}] if unit else []),
                    {"title": "Общие затраты проекта — участок, ИРД, проект, сети",
                     "rows": common_rows},
                    {"title": "Эксплуатация и налог на имущество", "rows": operating},

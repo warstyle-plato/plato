@@ -453,6 +453,20 @@ def test_the_rendered_numbers_are_the_engine_numbers(walk) -> None:
         r[0] for r in estimate if r[0].startswith("Вознаграждение генподрядчика")]
 
 
+def test_the_object_frame_shows_the_unit_economics(walk) -> None:
+    """Удельная экономика — в разделе «Затраты» рамки объекта (владелец,
+    23.10.2026: «почему в результатах нет удельной экономики вообще»): жилой
+    «Итог», где она жила, рамка объекта прячет целиком."""
+    state, engine = walk["object"], walk["object"]["engine"]
+    rows = dict(r for r in next(s for s in state["sections"] if s["id"] == "rsObj-costs")["rows"]
+                if len(r) == 2)
+    net = next(u for u in engine["report"]["unit_economics"] if u["key"] == "net_profit")
+    drawn = rows["Чистая прибыль — на м² продаваемой площади"]
+    expected = f"{net['per_saleable_th']:,.1f}".replace(",", " ").replace(".", ",").replace("-", "−")
+    assert drawn.replace("\u00a0", " ").replace("-", "−").startswith(expected), (drawn, expected)
+    assert any(label.startswith("Выручка — на м²") for label in rows)
+
+
 def test_a_housing_project_keeps_its_page(walk) -> None:
     state = walk["housing"]
     assert [s["id"] for s in state["sections"]][:2] == ["rsSite", "rsSummary"]
