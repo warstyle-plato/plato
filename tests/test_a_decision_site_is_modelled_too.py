@@ -168,11 +168,19 @@ def test_an_unread_decision_is_not_an_empty_one(tmp_path: Path) -> None:
 
 @pytest.fixture(scope="module")
 def core():
+    # Своя копия движка — только на время этого файла: оставленная в
+    # `sys.modules`, она подменяла движок разделу торгов в следующих файлах
+    # доли (`test_paid_access_rights` получал 200 вместо 402).
+    before = sys.modules.get("developaid_core")
     spec = importlib.util.spec_from_file_location("developaid_core", ROOT / "main_legacy.py")
     module = importlib.util.module_from_spec(spec)
     sys.modules["developaid_core"] = module
     spec.loader.exec_module(module)
-    return module
+    yield module
+    if before is None:
+        sys.modules.pop("developaid_core", None)
+    else:
+        sys.modules["developaid_core"] = before
 
 
 _REPORT = {

@@ -1428,6 +1428,10 @@ function renderSiteMassing(){
  rows.push(row(objects.length?'Пятно жилых домов':'Пятно застройки',
   sq(m.footprint_sqm)+(site>0?', это '+pct(m.footprint_share)+(objects.length?' жилой территории':' участка'):''),
   siteMassingOrigin(m.footprint_origin),true));
+ // Все пятна на участке — тот же итог, что сумма корпусов на схеме (`built_sqm`).
+ if(objects.length)rows.push(row('Всего под зданиями на участке',
+  sq(m.built_sqm)+(site>0?', это '+pct(m.built_share)+' участка':''),
+  'Жилые дома — '+sq(m.footprint_sqm)+'; '+objects.map(o=>o.label.toLowerCase()+' — '+sq(o.footprint_sqm)).join('; ')+'.',true));
  if(Number(m.footprint_shortage_sqm||0)>0.5)rows.push(row('Не хватает земли под пятно',sq(m.footprint_shortage_sqm),
   'Пятно больше места, которое остаётся после двора по норме, проездов и отступов: на столько двор по норме не помещается. Подробности — в красной плашке выше.'));
  rows.push(row('Средняя этажность',Number(m.average_storeys||0)>0?'≈ '+Number(m.average_storeys).toLocaleString('ru-RU',{maximumFractionDigits:1}):'—',

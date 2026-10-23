@@ -690,6 +690,11 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "footprint_sqm": footprint,
         "footprint_origin": footprint_origin,
         "footprint_shortage_sqm": shortage,
+        # Всё, что стоит на участке: пятно жилых домов и пятна отдельных зданий
+        # (владелец 23.10.2026) — тот же итог, что сумма корпусов на схеме.
+        "built_sqm": footprint + sum(o["footprint_sqm"] for o in objects),
+        "built_share": ((footprint + sum(o["footprint_sqm"] for o in objects)) / site_sqm
+                        if site_sqm > 0 else 0.0),
         "coverage_pct": coverage_pct,
         "coverage_origin": coverage_origin,
         "coverage_sqm": coverage_sqm,

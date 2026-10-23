@@ -381,6 +381,9 @@ def market_price_xlsx(rows: list[tuple[str, str]]) -> bytes:
 @pytest.fixture(autouse=True)
 def clean_market_price(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "_MO_MARKET_PRICE_PATH", tmp_path / "mo_market_price.csv")
+    # Эти тесты — про разбор и применение справочника; кто вправе его писать,
+    # проверяет tests/test_mo_market_price_is_owner_only.py.
+    monkeypatch.setattr(main, "_mo_market_price_writer", lambda session, key: None)
     monkeypatch.setattr(main, "_mo_market_price", None)
     yield
     monkeypatch.setattr(main, "_mo_market_price", None)
