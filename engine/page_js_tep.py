@@ -1506,8 +1506,12 @@ function renderSiteMassingScheme(m){
 // страница спрашивает его состояние и, когда план готов (или отклонён),
 // пересчитывает — схему строит движок, страница её только рисует.
 let siteMassingPlanTimer=null,siteMassingPlanKey='',siteMassingPlanTries=0;
+function siteMassingPlanStop(){
+ if(siteMassingPlanTimer)clearTimeout(siteMassingPlanTimer);
+ siteMassingPlanTimer=null;siteMassingPlanKey='';siteMassingPlanTries=0;
+}
 function siteMassingPlanWatch(plan){
- if(plan.status!=='pending'||!plan.key){if(siteMassingPlanTimer){clearTimeout(siteMassingPlanTimer);siteMassingPlanTimer=null}siteMassingPlanKey='';return}
+ if(plan.status!=='pending'||!plan.key){siteMassingPlanStop();return}
  if(siteMassingPlanKey===plan.key&&siteMassingPlanTimer)return;
  if(siteMassingPlanKey!==plan.key)siteMassingPlanTries=0;
  siteMassingPlanKey=plan.key;
