@@ -201,11 +201,13 @@ def _wrap(label: str, width: float) -> list[str]:
     return lines or [label]
 
 
-def _group_label(x: float, y: float, lines: Sequence[str]) -> str:
+def _group_label(x: float, y: float, label: str, lines: Sequence[str]) -> str:
+    # Полное название — в aria-label: строки переноса склеиваются без пробела,
+    # а читатели разметки (и тесты) ищут название целиком.
     spans = "".join(f'<tspan x="{x:.1f}" dy="{0 if i == 0 else LABEL_LINE_H}">{html.escape(t)}</tspan>'
                     for i, t in enumerate(lines))
     return (f'<text x="{x:.1f}" y="{y}" font-size="10.5" fill="#333" text-anchor="middle" '
-            f'class="group">{spans}</text>')
+            f'class="group" aria-label="{html.escape(label)}">{spans}</text>')
 
 
 def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]],
@@ -265,7 +267,7 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
                        f'stroke-width="0.6"/>')
             out.append(f'<text x="{left + s*bar + bar/2 - 1:.1f}" y="{top-3:.1f}" font-size="10" '
                        f'fill="#333" text-anchor="middle">{_num(value, digits)}</text>')
-        out.append(_group_label(PAD_LEFT + g * slot + slot / 2, HEIGHT - PAD_BOTTOM + 14, labels[g]))
+        out.append(_group_label(PAD_LEFT + g * slot + slot / 2, HEIGHT - PAD_BOTTOM + 14, group, labels[g]))
     legend = _legend([s["name"] for s in series], BAR_STYLES, bars=True)
     if line:
         style = STYLES[1]
