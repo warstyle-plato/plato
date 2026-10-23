@@ -415,11 +415,12 @@ def _telegram_send_attachments(
 
     if not report_payload.get("sensitivity"):
         try:
-            report_payload = {**report_payload, "sensitivity": run_sensitivity(
+            report_payload = {**report_payload, "sensitivity": report_sensitivity(
                 report_payload.get("inputs") or {},
                 report_payload.get("tep") or {},
                 report_payload.get("rates") or [],
                 report_payload.get("phasing") or {},
+                report_payload.get("result") if isinstance(report_payload.get("result"), dict) else None,
             )}
         except Exception as exc:
             # Без анализа отчёт всё равно нужен: раздел просто не появится.

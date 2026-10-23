@@ -75,6 +75,18 @@ def test_findings_carry_numbers_and_sources():
     assert "Выборка кредита за неделю — 48,0 млн ₽ (за предыдущий такой же период — " \
            "120,0 млн ₽)" in found["Финансирование"]["text"]
     assert "«Арбитраж с подрядчиком»" in found["Открытые вопросы"]["text"]
+    # Продают лоты, договоры заключают (владелец, 23.10.2026: «Проданы договоры?»).
+    fact = built["sales"]["quarter"]["fact"]
+    lots, contracts = int(round(fact["units"])), fact["contracts"]
+    assert (f"продано {lots} {report._plural(lots, 'лот', 'лота', 'лотов')} ({contracts} "
+            f"{report._plural(contracts, 'договор', 'договора', 'договоров')}) на"
+            ) in found["Продажи"]["text"]
+    assert "продано " + str(contracts) + " договор" not in found["Продажи"]["text"]
+    # Каждая тема — один раз (владелец, 22.10.2026: «Задвоение» — «Споры» шли
+    # дважды), и аббревиатуры не теряют регистр («по РСС», а не «по рсс»).
+    topics = [item["topic"] for item in built["findings"]]
+    assert len(topics) == len(set(topics)), topics
+    assert "«1 очередь»" in found["Финансирование"]["text"]
     # Нет данных — вывод говорит об этом, а не молчит.
     empty = report.build("Пусто", "week", "2026-10-18")
     assert {item["tone"] for item in empty["findings"]} == {"missing"}
@@ -96,6 +108,7 @@ def test_the_document_opens_with_findings_and_has_charts():
         "Покрытие кредита эскроу: факт и план по месяцам",
         "Бюджет на октябрь 2026: план и оплачено по статьям",
         "Стройка и проектирование: план и оплачено по месяцам",
+        "Коммерческие расходы: план и оплачено по месяцам",
     ]
     # Числа графика — те же, что в таблице блока: столбец «Оплачено» стройки.
     budget = page[page.index("Бюджет на октябрь 2026"):]
@@ -366,3 +379,22 @@ def test_a_bar_chart_carries_a_price_line_on_its_own_scale():
     plain = charts.bar_chart("t", ["01.26"], [{"name": "м²", "values": [100.0]}], "м²",
                              line={"name": "Цена", "values": [None], "unit": "x"})
     assert 'class="line"' not in plain
+
+
+def test_the_commercial_trend_chart_shows_the_same_months_as_the_table():
+    """«А почему такого же нет для 3 главы?» (владелец, 22.10.2026): график
+    тренда был только по стройке, таблица рядом несла обе главы."""
+    built = _full()
+    page = report.render_html(built)
+    trend = built["budget"]["trend"]
+    commercial = page[page.index("Коммерческие расходы: план и оплачено по месяцам"):]
+    commercial = commercial[:commercial.index("</figure>")]
+    paid = [p["fact"]["commercial"] for p in trend if p["fact"]["commercial"]]
+    assert paid, "в стенде должны быть оплаты по коммерции"
+    for value in paid:
+        assert f">{charts._num(value / 1e6, 0)}<" in commercial or \
+            f">{charts._num(value / 1e6, 1)}<" in commercial
+    # Стройка — по-прежнему первой, коммерция — сразу за ней, перед таблицей месяцев.
+    assert page.index("Стройка и проектирование: план и оплачено по месяцам") \
+        < page.index("Коммерческие расходы: план и оплачено по месяцам") \
+        < page.index("Коммерция: план")

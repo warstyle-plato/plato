@@ -217,12 +217,24 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
             return sum(actuals._money(ws.cell(r, col).value) for r in total_rows)
 
         approved = total(approved_col)
+        # Утверждённый бюджет по главам — для плиток сводки (владелец,
+        # 22.10.2026: «лучше писать из них по 2 главе и по 3 главе столько-то»).
+        # Глава 1 — её верхние строки, главы 2 и 3 — строки с кодом «2» и «3».
+        approved_by_chapter: dict[str, float] = {}
+        if chapter_one:
+            approved_by_chapter["1"] = sum(actuals._money(ws.cell(r, approved_col).value)
+                                           for r in chapter_one)
+        for meta in source_rows:
+            if meta["code"] in ("2", "3"):
+                approved_by_chapter[meta["code"]] = actuals._money(
+                    ws.cell(meta["row"], approved_col).value)
         completion_need = total(need_col)
         paid_at_baseline = total(paid_col)
         tail_after_apr = total(tail_col)
 
         reserve = 0.0
         reserve_parts: dict[str, float] = {}
+        reserve_names: dict[str, str] = {}
         # Резерв ищется по трём колонкам по убыванию доверия: «на завершение
         # согласно бюджету», «согласно лимитам», «Общая сметная стоимость
         # Увеличенная». Первоначальная смета — последней: на Кутузове бюджетная
@@ -244,6 +256,7 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
                     break
             reserve += max(0.0, amount)
             reserve_parts[code] = max(0.0, amount)
+            reserve_names[code] = str(ws.cell(r, 2).value or "").strip()
 
         month_row = (programme_hdr[0] + 1) if programme_hdr else 9
         month_columns: list[tuple[int, datetime.date]] = []
@@ -310,6 +323,8 @@ def _read_finance_baseline(path: Path) -> dict[str, Any]:
             "paid_at_baseline": paid_at_baseline,
             "reserve": reserve,
             "reserve_parts": reserve_parts,
+            "reserve_names": reserve_names,
+            "approved_by_chapter": approved_by_chapter,
             "monthly_need": monthly_total,
             "tail_after_apr": tail_after_apr,
             "articles": articles,
@@ -342,6 +357,8 @@ def _rss_ch23(estimate: dict[str, Any], chapters: Any = ("2", "3")) -> dict[str,
     rows = estimate.get("by_code") or {}
     return {
         "limit": sum(float((rows.get(code) or {}).get("estimate") or 0.0) for code in chapters),
+        "by_chapter": {str(code): float((rows.get(code) or {}).get("estimate") or 0.0)
+                       for code in chapters},
         "paid_bank_sheet": sum(float((rows.get(code) or {}).get("paid") or 0.0) for code in chapters),
         "contracted": sum(float((rows.get(code) or {}).get("contracted") or 0.0) for code in chapters),
     }
@@ -667,7 +684,8 @@ def _deficit_ladder(waterfall: dict[str, Any], reserve: float,
     return out
 
 
-def _remaining_check(limit: float, paid: float, waterfall: dict[str, Any]) -> dict[str, float]:
+def _remaining_check(limit: float, paid: float, waterfall: dict[str, Any],
+                     reserve: float = 0.0) -> dict[str, float]:
     """Из чего складывается остаток лимита: лимит − оплачено + поправки.
 
     Плашки «лимит 4,64 · выбрано 4,80 · остаток 1,00» не сходились
@@ -675,12 +693,18 @@ def _remaining_check(limit: float, paid: float, waterfall: dict[str, Any]) -> di
     всё оплаченное по ней (кредит и свои деньги), а статья с перерасходом
     идёт нулём. Здесь разница названа: перерасход статей и расхождение
     смет статей финкниги с итогом РСС — остаток, а не округление.
+
+    Резерв (статьи 2.8/2.9) из статей вынут и стоит своей строкой, поэтому
+    сумма статей меньше сметы РСС ровно на него; это не расхождение книги со
+    сметой, а то же число второй раз (владелец, 22.10.2026, строка
+    «−306,2 млн ₽»: «Зачем эта запись?»). Разница считается с его учётом.
     """
     remaining = float(waterfall.get("opening_bank_remaining") or 0.0)
     overpaid = float(waterfall.get("opening_article_deficit") or 0.0)
     plain = float(limit or 0.0) - float(paid or 0.0)
     return {"plain": plain, "overpaid": overpaid,
-            "book_gap": remaining - plain - overpaid, "remaining": remaining}
+            "book_gap": remaining - plain - overpaid + float(reserve or 0.0),
+            "remaining": remaining}
 
 
 def _bank_need_check(remaining_need: float, reserve: float,
@@ -799,7 +823,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         # Выборка кредита по тем же главам, что лимит: «лимит − выбрано» и
         # «лимит − оплачено» читаются от одной базы.
         "paid_borrowed": paid["borrowed"],
-        "remaining_check": _remaining_check(current["limit"], paid_actual, waterfall),
+        "remaining_check": _remaining_check(current["limit"], paid_actual, waterfall,
+                                            float(baseline.get("reserve") or 0.0)),
         # Второй остаток потребности по тем же главам 2–3: утверждённый бюджет
         # минус оплаченное. С «средствами на завершение» они расходятся, и обе
         # величины считает сервер — экран их только показывает.
@@ -810,6 +835,9 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "remaining_need": remaining_need,
         "reserve": float(baseline.get("reserve") or 0.0),
         "reserve_parts": baseline.get("reserve_parts") or {},
+        "reserve_names": baseline.get("reserve_names") or {},
+        "limit_by_chapter": current.get("by_chapter") or {},
+        "approved_by_chapter": baseline.get("approved_by_chapter") or {},
         "reserve_start": monitor._iso(reserve_start),
         "reserve_exhaustion": monitor._iso(reserve_exhaustion),
         # Backward-compatible field used by the red marker/card. It now means

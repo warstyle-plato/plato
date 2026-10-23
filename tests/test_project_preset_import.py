@@ -412,9 +412,12 @@ def test_applying_replaces_stale_phasing_with_the_preset_phasing():
     """
     body = core.PAGE[core.PAGE.index("async function applyPreset("):]
     body = body[:body.index("// --- хранилище проектов")]
-    assert "const importedPhasing=cloneValue(data.phasing)" in body
-    assert "phasing.products=importedPhasing.products||phaseDefaults.products" in body
-    assert "phasing.shared_cash=Object.assign" in body
+    # Очерёдность пресета ложится на умолчания через общий вход сохранённого
+    # (`phasingFromSaved`): доли пресета заменяют старый проект, а служебные
+    # аллокации и очереди объектов, которых в файле нет, добираются из
+    # умолчаний — поведение наложения проверено на странице в
+    # test_a_saved_phasing_lies_over_the_defaults.py.
+    assert "phasing=phasingFromSaved(data.phasing)" in body
     assert "renderPhasing()" in body
 
 

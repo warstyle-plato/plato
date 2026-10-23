@@ -129,10 +129,112 @@ def calculate(req: CalcRequest) -> dict:
     # Проект, сохранённый до «одной вводной роста после РВЭ», переносится
     # до расчёта; страница применяет перенос к своему состоянию.
     migrations = migrate_growth_post(req.inputs)
+    # Расчёт правит переданные словари (`prepared_calculation`), а второму и
+    # третьему пути офиса нужны вводные такими, какими их прислали.
+    original = (copy.deepcopy((req.inputs, req.tep, req.rates))
+                if office_path_prefixes(req.inputs) else None)
     result = _finalize_result(_calculate_economics(req))
     if migrations and isinstance(result, dict):
         result["input_migrations"] = migrations
+    if original is not None and isinstance(result, dict) and result.get("summary"):
+        result["office_paths"] = office_paths(original, result)
     return result
+
+
+# --- Офис: продажа и аренда рядом --------------------------------------------
+# Владелец, 22.10.2026: офисный проект показывает два пути бок о бок — продажу
+# блоками по договорам купли-продажи после ввода и аренду с продажей здания
+# через срок удержания, — и видно, какой выгоднее. Оба пути — тот же расчёт
+# движка с другой стратегией офисов; поверхности читают этот блок, а не
+# пересчитывают сами. Путь, совпавший со стратегией проекта, берётся из
+# основного расчёта, а не считается второй раз.
+OFFICE_PATHS: tuple[tuple[str, str], ...] = (
+    (nonres_strategy.STRATEGY_DIRECT, "Продажа блоками после ввода"),
+    (nonres_strategy.STRATEGY_INCOME, "Аренда и продажа здания"),
+)
+
+
+# Анализ чувствительности гоняет расчёт десятки раз и сравнения путей в каждом
+# сценарии не читает: он выключает его на время своих прогонов, иначе каждый
+# сценарий стоил бы трёх расчётов.
+OFFICE_PATHS_ON: contextvars.ContextVar[bool] = contextvars.ContextVar("office_paths_on", default=True)
+
+
+def office_path_prefixes(inputs: dict[str, Any] | None) -> tuple[str, ...]:
+    """Приставки включённых офисов нежилого проекта; пусто — сравнения нет."""
+    if not OFFICE_PATHS_ON.get() or not isinstance(inputs, dict) or not is_nonresidential(inputs):
+        return ()
+    return tuple(obj.prefix for obj in STANDALONE_OBJECTS
+                 if obj.strategies and obj.product == "offices"
+                 and inputs.get(f"{obj.prefix}_enabled")
+                 and n(inputs, f"{obj.prefix}_gba_sqm", 0.0) > 0)
+
+
+def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...]) -> dict[str, Any]:
+    """Итоги пути: числа сводки движка и деньги офисов, без своей арифметики.
+
+    Пик собственных денег — худший накопленный поток капитала, тем же
+    правилом, что плитка «Собственный капитал — пик потребности»."""
+    summary = result.get("summary") or {}
+    objects = [o for o in ((result.get("finance") or {}).get("nonres") or {}).get("objects") or []
+               if o.get("key") in {p for p in prefixes} or o.get("prefix") in prefixes]
+    totals = [o.get("totals") or {} for o in objects]
+    kpis = [o.get("kpi") or {} for o in objects]
+    cumulative = worst = 0.0
+    for value in ((result.get("cashflow") or {}).get("equity") or []):
+        cumulative += float(value or 0.0)
+        worst = min(worst, cumulative)
+    noi = sum(float(k.get("stabilized_noi") or 0.0) for k in kpis)
+    noi_cost = sum(float(k.get("cost_total") or 0.0) for k in kpis if k.get("stabilized_noi"))
+    dscr = [k["dscr_min"] for k in kpis if k.get("dscr_min") is not None]
+    total = lambda name: sum(float(t.get(name) or 0.0) for t in totals)
+    return {
+        "revenue": float(summary.get("revenue") or 0.0),
+        "capex": float(summary.get("capex") or 0.0),
+        "selling_cost": total("selling_cost"),
+        "operating_cost": total("opex") + total("property_tax") + total("exit_cost"),
+        "financing_cost": float(summary.get("financing_cost") or 0.0),
+        "profit_tax": float(summary.get("profit_tax") or 0.0),
+        "net_profit": float(summary.get("net_profit") or 0.0),
+        "npv": summary.get("npv"),
+        "irr_project": summary.get("irr_project"),
+        "npv_equity": summary.get("npv_equity"),
+        "equity_peak": -worst,
+        "rent_revenue": total("rent_revenue"),
+        "sale_revenue": total("sale_revenue"),
+        "exit_revenue": total("exit_revenue"),
+        "stabilized_noi": noi or None,
+        "yield_on_cost": noi / noi_cost if noi and noi_cost else None,
+        "exit_value": sum(float(k.get("exit_value") or 0.0) for k in kpis) or None,
+        "dscr_min": min(dscr) if dscr else None,
+        "loan_peak": total("loan_peak"),
+    }
+
+
+def office_paths(original: tuple[dict, dict, list], result: dict[str, Any]) -> dict[str, Any]:
+    """Оба пути офиса одним расчётом: основной + недостающие стратегии."""
+    inputs, tep, rates = original
+    prefixes = office_path_prefixes(inputs)
+    current = {nonres_strategy.object_strategy(inputs, prefix) for prefix in prefixes}
+    current_key = current.pop() if len(current) == 1 else None
+    paths = []
+    for key, label in OFFICE_PATHS:
+        if key == current_key:
+            run = result
+        else:
+            x, t, r = copy.deepcopy((inputs, tep, rates))
+            for prefix in prefixes:
+                x[f"{prefix}_strategy"] = key
+            try:
+                run = _finalize_result(_calculate_economics(CalcRequest(inputs=x, tep=t, rates=r)))
+            except Exception as exc:  # путь не посчитался — сказать почему, а не молчать
+                paths.append({"key": key, "label": label, "error": f"{type(exc).__name__}: {exc}"})
+                continue
+        paths.append({"key": key, "label": label, **_office_path_metrics(run, prefixes)})
+    scored = [p for p in paths if isinstance(p.get("npv"), (int, float))]
+    better = max(scored, key=lambda p: p["npv"])["key"] if scored else None
+    return {"current": current_key, "paths": paths, "better": better,
+            "better_basis": "NPV проекта при ставке дисконтирования"}
 
 
 def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -> dict[str, Any]:
@@ -170,6 +272,10 @@ def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -
     # заново из оставшихся мест) и до соцобъектов (их строки идут от мест,
     # которые здесь обнуляются). Остаток называется по присланному — это
     # расхождение вводных с типом, а не часть расчёта.
+    # Паркинг проекта без жилья — паркинг его офиса, если офис один
+    # (`office_takes_project_parking`); перенос — до списка остатка, иначе
+    # места назывались бы «оставшимися от жилья».
+    x, t, kind_moves = office_takes_project_parking(x, t)
     kind_leftovers = nonresidential_leftovers(x, t)
     x, t = residential_excluded(x, t)
     # Состав объектов — тем же порядком: экземпляр вне проекта не считается,
@@ -193,6 +299,7 @@ def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -
     # правка ТЭП была бы правкой того, что уже посчитано.
     object_parking = apply_object_parking(x, t)
     return {"x": x, "t": t, "rates": rates, "kind_leftovers": kind_leftovers,
+            "kind_moves": kind_moves,
             "instance_notes": instance_notes, "object_parking": object_parking}
 
 
@@ -978,6 +1085,7 @@ def _calculate_economics(req: CalcRequest) -> dict:
             # жилые метры, которые расчёт не считает (`residential_excluded`).
             "project_kind": project_kind(x),
             "project_kind_leftovers": kind_leftovers,
+            "project_kind_moves": prepared["kind_moves"],
             # Состав объектов, которым считал расчёт, и непринятое из
             # присланного — с причиной, а не молчаливым пропуском.
             "object_instances": list(project_object_instances(x)),

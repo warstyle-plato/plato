@@ -282,6 +282,11 @@ OFFICE_CLASS_BY_PROJECT_CLASS: dict[str, dict[str, Any]] = {
 OFFICE_CLASS_PLACEHOLDER = "__DEVELOPAID_OFFICE_CLASS__"
 for _key, _office in OFFICE_CLASS_BY_PROJECT_CLASS.items():
     PROJECT_CLASS_PRESETS[_key]["offices_cost_th_per_sqm"] = _office["cost_th_per_sqm"]
+    # Аренда, заполнение, эксплуатация и ставка капитализации офиса — не
+    # профиль класса проекта, а шкала СВОЕГО класса офиса (владелец,
+    # 22.10.2026: «свой выбор класса офиса», `nonres_strategy.OFFICE_CLASS_SCALE`).
+    # Цена продажи класса офиса — только в нежилом проекте
+    # (`NONRES_KIND_CLASS_PRICES`); в жилом офис на правиле от цены жилья.
     # Место на первых этажах ОСЗ — норматив класса рядом с подземным местом;
     # пока одно число на все классы (владелец, 27.09.2026: «пока оставляем
     # как есть 25»). Правится в «Настройках класса».
@@ -1189,7 +1194,7 @@ _OBJECT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
                      "sales_profile")),
     ("Прямая продажа", ("direct_sale_offset_months", "direct_sale_months",
                         "direct_sale_curve")),
-    ("Доходный метод", ("rent_th_per_sqm_month", "parking_rent_th_month",
+    ("Доходный метод", ("rent_th_per_sqm_month", "rent_date", "parking_rent_th_month",
                         "rent_index_pct", "occupancy_start_pct",
                         "occupancy_stable_pct", "leaseup_months", "opex_pct",
                         "hold_years", "exit_mode", "exit_cap_pct", "exit_cost_pct",
@@ -1381,6 +1386,9 @@ def _object_strategy_fields(obj: StandaloneObject) -> list[list[Any]]:
           ["front_loaded", "С упором на начало"], ["back_loaded", "С упором на конец"]]],
         [f"{p}_rent_th_per_sqm_month", "Ставка аренды",
          "тыс. ₽/м²/мес. с НДС, на продаваемую (арендопригодную) площадь", "number"],
+        [f"{p}_rent_date", "Дата ставки аренды",
+         "дата. На какую дату указана ставка. До ввода объекта она растёт на "
+         "индексацию аренды. Пусто — ставка уже на дату ввода.", "date"],
     ]
     if obj.garage_sellable:
         out.append([f"{p}_parking_rent_th_month", "Аренда машино-места объекта",
@@ -1473,6 +1481,15 @@ CLASS_NONRES_PRICE_FIELDS: tuple[str, ...] = tuple(
        if o.family and _BY_KEY.get(o.family) is not None
        and _BY_KEY[o.family].rate_price in ("retail_price_th_per_sqm",
                                             "offices_price_th_per_sqm")])
+
+# Цена продажи офиса в НЕЖИЛОМ проекте — цена класса офиса (владелец,
+# 22.10.2026: B 400, B+ 550, A 750, A+ 1 000 тыс ₽/м²; «только в нежилом
+# проекте»). Регион её не двигает. В жилом проекте офис остаётся на правиле
+# от цены жилья.
+NONRES_KIND_CLASS_PRICES: dict[str, dict[str, float]] = {
+    key: {o.rate_price: nonres_strategy.OFFICE_CLASS_SCALE[office_class]["price_th_per_sqm"]
+          for o in STANDALONE_OBJECTS if o.product == "offices"}
+    for key, office_class in nonres_strategy.OFFICE_CLASS_BY_PROJECT.items()}
 
 # Окно «Настройки классов» — разделами, а не подряд (владелец, 29.09.2026:
 # «не структурированный набор вводных»; «Площадь на 1 место на первых этажах,
@@ -1626,6 +1643,7 @@ def class_base_preset(key: str, region: str = "msk",
         for field in OBJECT_SMR_RATE_DEFAULTS:
             if field in out:
                 out[field] = object_smr_rate(out[field], out)
+        out.update(NONRES_KIND_CLASS_PRICES.get(str(key), {}))
     return out
 
 
@@ -2404,6 +2422,48 @@ OBJECT_SMR_RATE_DEFAULTS: dict[str, float] = {
     for obj in STANDALONE_OBJECTS
     if not object_rate_is_turnkey({"project_kind": PROJECT_KIND_NONRESIDENTIAL}, obj)
 }
+
+
+def office_takes_project_parking(inputs: dict[str, Any],
+                                 tep: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    """Подземный паркинг нежилого проекта — паркинг его офиса.
+
+    Владелец, 22.10.2026: у офиса паркинг — часть продукта (места продаются
+    вместе с ним или сдаются), а не «остаток жилья». Прежде 68 мест и 2 380 м²
+    Пролетарского пр. стояли строкой «осталось от жилья во вводных — в расчёт
+    не входит», и паркинг не строился и не приносил денег.
+
+    Места переходят, только когда адресат один: офис в проекте единственный и
+    своих подземных мест у него не задано (ноль у офиса — «по нормативу», а
+    названные человеком места проекта точнее норматива). Иначе места остаются названным
+    остатком — угадывать, чьи они, расчёт не берётся. Возвращает копии
+    вводных и ТЭП и строку о переносе.
+    """
+    if not is_nonresidential(inputs):
+        return inputs, tep, []
+    offices = [obj for obj in STANDALONE_OBJECTS if obj.product == "offices"
+               and b(inputs, obj.enabled_key) and n(inputs, f"{obj.prefix}_gba_sqm") > 0]
+    if len(offices) != 1:
+        return inputs, tep, []
+    prefix = offices[0].prefix
+    if n(inputs, f"{prefix}_parking_under_spaces") > 0:
+        return inputs, tep, []
+    row = (tep or {}).get("underground_parking") or {}
+    spaces = max(n(inputs, "underground_manual_spaces"), n(row, "units"))
+    if spaces <= 0:
+        return inputs, tep, []
+    x = dict(inputs)
+    t = {key: dict(value) if isinstance(value, dict) else value for key, value in (tep or {}).items()}
+    x[f"{prefix}_parking_under_spaces"] = int(round(spaces))
+    x["underground_manual_spaces"] = 0
+    x["underground_manual_gns_sqm"] = 0
+    if "underground_parking" in t:
+        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            t["underground_parking"][col] = 0
+    count = f"{spaces:,.0f}".replace(",", " ")
+    note = (f"Подземный паркинг проекта, {count} машино-мест, отнесён к объекту «{offices[0].tep_label}»: "
+            "места продаются вместе с ним или сдаются в аренду.")
+    return x, t, [note]
 
 
 def nonresidential_leftovers(inputs: dict[str, Any] | None,
