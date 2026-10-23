@@ -1086,9 +1086,12 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
     if block.get("state") == "ok":
         quarter = block["quarter"]
         fact = quarter["fact"]
-        pieces = [f"С начала квартала продано {fact['contracts']} "
-                  f"{_plural(fact['contracts'], 'договор', 'договора', 'договоров')} на "
-                  f"{_rub(fact['amount'])}, {_area(fact['area'])}"]
+        # Продают лоты, а договоры заключают (владелец, 23.10.2026: «Проданы
+        # договоры?»).
+        lots = int(round(float(fact.get("units") or 0.0)))
+        pieces = [f"С начала квартала продано {lots} {_plural(lots, 'лот', 'лота', 'лотов')} "
+                  f"({fact['contracts']} {_plural(fact['contracts'], 'договор', 'договора', 'договоров')}) "
+                  f"на {_rub(fact['amount'])}, {_area(fact['area'])}"]
         for name, plan in (("финмодели", quarter.get("fm")), ("банка", quarter.get("bank"))):
             if plan and plan.get("amount"):
                 gap = fact["amount"] - plan["amount"]
@@ -1170,20 +1173,12 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
     block = report.get("legal") or {}
     if block.get("state") == "ok" and block.get("open"):
         opened = block["open"]
-        ours = sum(item["totals"]["to_them"] for item in opened)
-        theirs = sum(item["totals"]["to_us"] for item in opened)
-        text = (f"Открытых споров: {len(opened)}; наши требования — {_rub(ours)}"
-                + (f", требования к нам — {_rub(theirs)}" if theirs else ""))
-        growing = [item["card"]["counterparty"] for item in opened
-                   if any(claim["growing"] for claim in item["card"]["claims"])]
-        if growing:
-            text += f"; неустойка продолжает расти: {', '.join(growing)}"
-        dated = sorted((item for item in opened if item["card"]["deadline"]),
-                       key=lambda item: item["card"]["deadline"])
-        if dated:
-            first = dated[0]["card"]
-            text += (f". Ближайший срок — {_day(first['deadline'])}, "
-                     f"{first['counterparty']}: {first['next_step'] or 'следующий шаг не записан'}")
+        # В «Главном» — перечень споров со стадией, без сумм и шагов (владелец,
+        # 23.10.2026: «просто перечисление всех со стадией, без деталей. Типа
+        # поданы иски, суд тогда-то, или идёт претензионная работа»). Суммы,
+        # требования и хронология — в блоке «Споры и претензии».
+        text = f"Открытых споров: {len(opened)} — " + "; ".join(
+            f"{item['card']['counterparty']} — {_legal_stage(item['card'])}" for item in opened)
         waiting = sum(1 for item in opened if item.get("unchecked"))
         add("Споры", _sentence(text),
             f"реестр споров; {waiting} из {len(opened)} карточек внесены по документам "
@@ -1211,6 +1206,19 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
 
 def _pct(value: float | None) -> str:
     return "—" if value is None else f"{value * 100:.1f}".replace(".", ",") + "%"
+
+
+# Стадия спора словами для «Главного»: одно слово на статус, у суда и у
+# претензии — ближайший срок, если он записан.
+LEGAL_STAGES = {"claim": "претензионная работа", "talks": "переговоры о мировом",
+                "court": "суд", "closed": "закрыт"}
+
+
+def _legal_stage(card: dict[str, Any]) -> str:
+    stage = LEGAL_STAGES.get(card.get("status") or "", card.get("status") or "")
+    if card.get("deadline"):
+        stage += f", ближайший срок {_day(card['deadline'])}"
+    return stage
 
 
 def _sentence(text: str) -> str:
