@@ -107,7 +107,11 @@ def test_without_an_owner_to_recognise_the_route_refuses_and_says_why(app, monke
     monkeypatch.delenv("DEVELOPAID_ADMIN_KEY", raising=False)
     monkeypatch.delenv("DEVELOPAID_ADMIN_IDS", raising=False)
     application, ranking = app
-    answer = _post(TestClient(application), params={"key": OWNER_KEY})
+    # Ключ кабинета пропускает через ворота раздела: отказ должен дать сам
+    # маршрут и назвать свою причину.
+    monkeypatch.setenv("MARKET_CABINET_KEY", "team-cabinet-key-for-test")
+    answer = _post(TestClient(application, headers={"X-Market-Key": "team-cabinet-key-for-test"}),
+                   params={"key": OWNER_KEY})
     assert answer.status_code == 403, answer.text
     detail = answer.json()["detail"]
     assert "ни списка владельцев, ни ключа владельца" in detail, detail
