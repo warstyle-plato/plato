@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import math
+import re
 from typing import Any, Sequence
 
 WIDTH = 680
@@ -173,6 +174,40 @@ def line_chart(title: str, labels: Sequence[str], series: Sequence[dict[str, Any
 BAR_STYLES = ({"fill": "#9db7d6"}, {"fill": "#1f4e8c"}, {"fill": "url(#hatch)"})
 
 
+# Ширина знака подписи группы (шрифт 10.5px, кириллица) и шаг строки переноса.
+LABEL_CHAR_W = 6.0
+LABEL_LINE_H = 11
+
+
+def _wrap(label: str, width: float) -> list[str]:
+    """Подпись группы в несколько строк по словам, чтобы уместиться в слот.
+
+    Владелец (23.10.2026, график «Бюджет: план и оплачено по статьям»):
+    «Смазалось» — пять длинных названий статей налезали друг на друга.
+    Слово длиннее строки остаётся целым: резать слова хуже, чем выйти за слот.
+    """
+    limit = max(1, int(width / LABEL_CHAR_W))
+    lines: list[str] = []
+    for word in label.split():
+        # Составное слово («Административно-хозяйственные») делится по дефису.
+        for part in re.split(r"(?<=-)", word):
+            if not part:
+                continue
+            glue = "" if lines and lines[-1].endswith("-") else " "
+            if lines and len(lines[-1]) + len(glue) + len(part) <= limit:
+                lines[-1] += glue + part
+            else:
+                lines.append(part)
+    return lines or [label]
+
+
+def _group_label(x: float, y: float, lines: Sequence[str]) -> str:
+    spans = "".join(f'<tspan x="{x:.1f}" dy="{0 if i == 0 else LABEL_LINE_H}">{html.escape(t)}</tspan>'
+                    for i, t in enumerate(lines))
+    return (f'<text x="{x:.1f}" y="{y}" font-size="10.5" fill="#333" text-anchor="middle" '
+            f'class="group">{spans}</text>')
+
+
 def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]],
               unit: str, digits: int = 0, line: dict[str, Any] | None = None) -> str:
     """Сгруппированные столбцы: группа — подпись X, серия — столбец в группе.
@@ -195,11 +230,15 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
     inner_h = HEIGHT - PAD_TOP - PAD_BOTTOM
     slot = inner_w / len(groups)
     bar = min(42.0, slot * 0.8 / max(1, len(series)))
+    labels = [_wrap(group, slot - 6) for group in groups]
+    # Лишние строки подписей опускают легенду и удлиняют рисунок, а не поле.
+    extra = (max(len(lines) for lines in labels) - 1) * LABEL_LINE_H
+    height = HEIGHT + extra
 
     def y_at(v: float) -> float:
         return PAD_TOP + inner_h * (1 - (v - low) / (high - low or 1))
 
-    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {HEIGHT}" '
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {height}" '
            f'width="100%" role="img" aria-label="{html.escape(title)}" class="chart">',
            '<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" '
            'patternTransform="rotate(45)"><rect width="6" height="6" fill="#fff"/>'
@@ -226,8 +265,7 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
                        f'stroke-width="0.6"/>')
             out.append(f'<text x="{left + s*bar + bar/2 - 1:.1f}" y="{top-3:.1f}" font-size="10" '
                        f'fill="#333" text-anchor="middle">{_num(value, digits)}</text>')
-        out.append(f'<text x="{PAD_LEFT + g*slot + slot/2:.1f}" y="{HEIGHT-PAD_BOTTOM+14}" '
-                   f'font-size="10.5" fill="#333" text-anchor="middle">{html.escape(group)}</text>')
+        out.append(_group_label(PAD_LEFT + g * slot + slot / 2, HEIGHT - PAD_BOTTOM + 14, labels[g]))
     legend = _legend([s["name"] for s in series], BAR_STYLES, bars=True)
     if line:
         style = STYLES[1]
@@ -269,7 +307,7 @@ def bar_chart(title: str, groups: Sequence[str], series: Sequence[dict[str, Any]
         legend += (swatch.format(x=x, y=y - 4, x2=x + 22)
                    + _marker(style["marker"], x + 11, y - 4, style["color"])
                    + f'<text x="{x+28}" y="{y}" font-size="10.5" fill="#333">{html.escape(line["name"])}</text>')
-    out.append(legend)
+    out.append(f'<g transform="translate(0,{extra})">{legend}</g>' if extra else legend)
     out.append("</svg>")
     return f'<figure class="chart"><figcaption>{html.escape(title)}</figcaption>{"".join(out)}</figure>'
 
