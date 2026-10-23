@@ -220,9 +220,13 @@ def test_the_fm_plan_reads_plan_and_fact_by_month() -> None:
 
 
 def test_the_bank_plan_stays_quarterly() -> None:
-    """Раскладывать квартал по месяцам можно тремя способами — все наши."""
+    """Раскладывать квартал по месяцам можно тремя способами — все наши.
+
+    Квартальный лист модели банка читается по кварталам; помесячный лист книги
+    cf складывается в кварталы (это настоящие суммы, а не раскладка).
+    """
     source = (Path(__file__).resolve().parent.parent / "market_search" / "contracting.py").read_text()
-    body = source[source.index("def read_bank_plan("):]
+    body = source[source.index("def _read_bank_quarterly("):]
     body = body[:body.index("\n\ndef ")]
     assert "quarters" in body
     assert "month" not in body.split('"""')[2], "квартал не приводится к месяцам"
