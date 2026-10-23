@@ -2413,20 +2413,11 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         # по ссылке со страницы, код связывается с его chat_id, и страница
         # забирает сессию. Отвечаем по делу и не разворачиваем меню.
         start_payload = text.split(maxsplit=1)[1].strip() if " " in text else ""
+        # Сразу вход не подтверждается: ссылку мог прислать чужой человек,
+        # запросивший код у себя, — тогда молчаливое подтверждение отдало бы
+        # ему сессию этого чата. Бот спрашивает и показывает код для сверки.
         if command == "/start" and start_payload.startswith("login_"):
-            try:
-                _web_login_confirm(start_payload[len("login_"):], chat_id,
-                                   _telegram_sender_name(message))
-                _telegram_send_message(
-                    chat_id,
-                    "<b>Вход на сайт подтверждён.</b> Вернитесь во вкладку браузера — "
-                    "она подхватит вход сама в течение пары секунд.")
-            except HTTPException as exc:
-                _telegram_send_message(
-                    chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc.detail)))
-            except Exception as exc:
-                _telegram_send_message(
-                    chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc)))
+            _telegram_web_login_ask(chat_id, start_payload[len("login_"):])
             return
         # «/start rep_<код>» — приглашение на сводку руководству по проекту:
         # ссылку создаёт владелец на странице сводки. Подписка живёт на ядре.
@@ -2515,6 +2506,56 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
     _telegram_handle_cadastral_numbers(chat_id, numbers, text)
 
 
+_WEB_LOGIN_CODE_RE = re.compile(r"[0-9a-f]{6,64}")
+
+
+def _telegram_web_login_ask(chat_id: int, code: str) -> None:
+    """Вопрос «войти на сайт?» с кодом для сверки и двумя кнопками."""
+    code = str(code or "").strip().lower()
+    if not _WEB_LOGIN_CODE_RE.fullmatch(code):
+        _telegram_send_message(
+            chat_id, "<b>Вход не подтверждён.</b>\nВ ссылке нет кода входа — "
+                     "нажмите «Войти» на сайте ещё раз.")
+        return
+    _telegram_send_message(
+        chat_id,
+        "<b>Войти на сайт DevelopAid под вашим Telegram?</b>\n\n"
+        f"Код входа: <b>{html.escape(_web_login_display(code))}</b>\n\n"
+        "Подтверждайте, только если вы сами только что нажали «Войти» на сайте "
+        "и на вашем экране виден этот же код. Если ссылку прислал другой "
+        "человек, нажмите «Нет»: иначе он войдёт на сайт от вашего имени и "
+        "увидит ваши проекты.",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Да, это я — войти", "callback_data": f"login_ok:{code}"}],
+            [{"text": "Нет, я не входил", "callback_data": f"login_no:{code}"}],
+        ]})
+
+
+def _telegram_web_login_answer(chat_id: int, data: str, name: str) -> None:
+    """Ответ на кнопку вопроса о входе: подтверждение — только по «Да»."""
+    verdict, _, code = data.partition(":")
+    if verdict != "login_ok":
+        _telegram_send_message(
+            chat_id, "<b>Вход отклонён.</b> На сайт по этой ссылке никто не войдёт: "
+                     "код сгорит сам через несколько минут.")
+        return
+    if not _WEB_LOGIN_CODE_RE.fullmatch(code):
+        _telegram_send_message(chat_id, "<b>Вход не подтверждён.</b>\nКод входа не похож на код.")
+        return
+    try:
+        _web_login_confirm(code, chat_id, name)
+        _telegram_send_message(
+            chat_id,
+            "<b>Вход на сайт подтверждён.</b> Вернитесь во вкладку браузера — "
+            "она подхватит вход сама в течение пары секунд.")
+    except HTTPException as exc:
+        _telegram_send_message(
+            chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc.detail)))
+    except Exception as exc:
+        _telegram_send_message(
+            chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc)))
+
+
 def _telegram_handle_update(update: dict[str, Any]) -> None:
     message = update.get("message")
     if isinstance(message, dict):
@@ -2534,6 +2575,12 @@ def _telegram_handle_update(update: dict[str, Any]) -> None:
             except Exception:
                 pass
         if not chat_id:
+            return
+        # Вход на сайт — только из личного чата: сессия выдаётся на chat_id, а
+        # кнопку в группе может нажать любой её участник.
+        if data.startswith(("login_ok:", "login_no:")):
+            if chat_id > 0 and chat_id == user_id:
+                _telegram_web_login_answer(chat_id, data, _telegram_sender_name(query))
             return
         if not _telegram_user_allowed(user_id):
             _telegram_start_message(chat_id, user_id)
