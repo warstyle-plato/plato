@@ -328,7 +328,8 @@ _V4_PROJECT_FREE_CASH_ROW = 91
 _V4_CAPEX_BRIDGE_BASE_ROW = 39
 
 
-def _v4_apply_bridge_limit_before_permit(xml: str, missing: list[str]) -> str:
+def _v4_apply_bridge_limit_before_permit(xml: str, missing: list[str],
+                                         social_base_row: int | None = None) -> str:
     """Лимит БРИДЖа в книге — по платежам ДО РнС, как у движка.
 
     «Бридж по определению это только то, что ДО РнС» (владелец, 04.09.2026).
@@ -342,6 +343,13 @@ def _v4_apply_bridge_limit_before_permit(xml: str, missing: list[str]) -> str:
     проекта переваливает за РнС. При совмещённом режиме соцнагрузки денежная
     часть идёт профилем строки 31 в той доле, в какой она денежная, — сумма за
     месяцы до РнС выходит той же, что у движка.
+
+    Когда блок соцобъектов дописан (`social_base_row`), денежная часть
+    совмещённого режима платится первой очередью целиком, одним платежом в
+    дату строки компенсации «Вводных». В базу идёт вся денежная часть (B56) в
+    этот месяц, как у движка (`social_compensation_mln`, плательщик —
+    первая), а не доля строки 31 по `R` очереди: на Нагатино доля брала 48
+    млн из 768, и комиссия выдачи БРИДЖа выходила на 0,72 млн меньше.
     """
     from openpyxl.utils import get_column_letter as _col
 
@@ -364,10 +372,19 @@ def _v4_apply_bridge_limit_before_permit(xml: str, missing: list[str]) -> str:
         styles = {f"A{row}": label_style, f"B{row}": amount_style, f"C{row}": None}
         for index in range(_V4_CAPEX_MONTH_COLUMNS):
             column = _col(4 + index)
+            if social_base_row is None:
+                both = f"{column}{31 + base}*IFERROR(({cash})/{social_total},0)"
+            elif phase == 0:
+                cash_row = _v4_social_cash_row(social_base_row)
+                both = (f"IF(AND('Вводные'!$B$56>0,"
+                        f"YEAR({column}$3)=YEAR('Вводные'!$D${cash_row}),"
+                        f"MONTH({column}$3)=MONTH('Вводные'!$D${cash_row})),"
+                        f"'Вводные'!$B$56*'Вводные'!$H$6,0)")
+            else:
+                both = "0"
             social = (
                 f"IF('Вводные'!$B$37=\"Денежная компенсация\",{column}{31 + base},"
-                f"IF('Вводные'!$B$37=\"{SOCIAL_MODE_BOTH}\","
-                f"{column}{31 + base}*IFERROR(({cash})/{social_total},0),0))")
+                f"IF('Вводные'!$B$37=\"{SOCIAL_MODE_BOTH}\",{both},0))")
             cells[f"{column}{row}"] = dict(formula=(
                 f"IF({column}$3<{permit},"
                 f"{column}{14 + base}+{column}{17 + base}+{column}{18 + base}+{social},0)"))
