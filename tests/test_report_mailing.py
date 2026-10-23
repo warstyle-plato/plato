@@ -264,8 +264,9 @@ def test_the_page_shows_the_link_and_the_recipients(monkeypatch):
             mailing.subscribe(link.split("start=")[1], 501, "Пётр Петров")
             tab.click("#mailingInviteBtn")
             tab.wait_for_function(
-                f"document.getElementById('mailingLinkText').value !== {json.dumps(link)}")
-            tab.wait_for_selector("#mailingList .mailingPerson")
+                "old => { const f = document.getElementById('mailingLinkText');"
+                " return f && f.value !== old && document.querySelector('#mailingList .mailingPerson'); }",
+                arg=link)
             person = tab.inner_text("#mailingList")
             new_link = tab.input_value("#mailingLinkText")
             tab.click("#mailingList .mailingRemove")
@@ -280,6 +281,64 @@ def test_the_page_shows_the_link_and_the_recipients(monkeypatch):
     assert "Пётр Петров" in person and "сводок ещё не было" in person
     assert nxt.startswith("Ближайшая рассылка")
     assert mailing.subscribers(PROJECT) == []
+
+
+def test_a_late_refresh_does_not_bring_back_the_old_link(monkeypatch):
+    """Обновление блока, запрошенное до выдачи ссылки и пришедшее после неё,
+    не возвращает на страницу прежнюю ссылку."""
+    from browser import chromium_or_skip, serve
+
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
+
+    import main_legacy as core
+
+    _project()
+    monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    held: list = []
+
+    def hold_plain_refresh(route):
+        body = json.loads(route.request.post_data or "{}")
+        if body.get("invite") or body.get("remove_chat") or not held_on:
+            return route.continue_()
+        held.append((route, route.fetch()))
+
+    held_on = False
+    with serve(core.app, PORT) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        try:
+            tab = browser.new_page()
+            tab.on("dialog", lambda d: d.accept())
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.route("**/monitor/report/mailing", hold_plain_refresh)
+            tab.goto(f"{base}/report", wait_until="domcontentloaded")
+            tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")
+            tab.select_option("#project", PROJECT)
+            tab.click("#reportBtn")
+            tab.wait_for_function(
+                "document.getElementById('mailingList').textContent.includes('Получателей пока нет')")
+            tab.click("#mailingInviteBtn")
+            tab.wait_for_selector("#mailingLinkText")
+            old_link = tab.input_value("#mailingLinkText")
+            held_on = True
+            tab.click("#reportBtn")
+            while not held:
+                tab.wait_for_timeout(20)
+            held_on = False
+            tab.click("#mailingInviteBtn")
+            tab.wait_for_function(
+                "old => { const f = document.getElementById('mailingLinkText');"
+                " return f && f.value !== old; }", arg=old_link)
+            new_link = tab.input_value("#mailingLinkText")
+            for route, response in held:
+                with tab.expect_response("**/monitor/report/mailing"):
+                    route.fulfill(response=response)
+            tab.wait_for_timeout(200)
+            shown = tab.input_value("#mailingLinkText")
+        finally:
+            browser.close()
+    assert new_link != old_link
+    assert shown == new_link
 
 
 def test_the_internal_routes_read_their_body_over_http():
