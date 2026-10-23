@@ -66,18 +66,10 @@ SOCIAL_BUILD_MODES = ("Строительство", SOCIAL_MODE_BOTH)
 SOCIAL_BUILDING_PLACES = "_social_building_places"
 
 MANUAL_TEP_TEMPLATE_VERSION = "DevelopAid_TEP_2"
-SERVER_TEP_PRESETS = {
-    "mishina": {
-        "name": "Мишина",
-        "filename": "Мишина_ТЭП.xlsx",
-        "description": "Актуальный ТЭП Мишина: 13 920 м² квартир, ВРИ 1 267,539 млн ₽, соцкомпенсация 575,379 млн ₽.",
-    },
-    "mytishchi": {
-        "name": "Мытищи",
-        "filename": "Мытищи_ТЭП.xlsx",
-        "description": "Пересобранный preset Мытищи: 200 тыс. м² квартир, МФК/офисы 26,7/21,36 тыс. м², 2 723 подземных м/м, 3 очереди 40/32/28, рабочая социалка ДОО 465 + СОШ 675.",
-    },
-}
+# Серверных предустановок ТЭП («Мишина», «Мытищи») в продукте больше нет:
+# это настоящие проекты владельца с ценами, и /v2 отдавал их расчёт без входа
+# (решение владельца, 23.10.2026: «Пресеты можно везде удалить»). Выгрузки
+# остались только тестовыми данными в `tests/fixtures/glavapu_owner/`.
 
 SCENARIOS = {
     'conservative': {'scenario_revenue_multiplier': 0.90, 'scenario_cost_multiplier': 1.10},

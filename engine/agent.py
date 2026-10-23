@@ -143,11 +143,6 @@ _DevelopAid_METHODOLOGY = [
         "rule": "В сводном CF общепроектный расход учитывается один раз. Для аналитики очередей различать кассовое несение расхода и экономическую аллокацию.",
     },
     {
-        "id": "EXPERT_PRESET_OVERRIDE",
-        "topic": "tep",
-        "rule": "Если серверный проектный preset содержит явно помеченную экспертную корректировку, в рабочем сценарии она имеет приоритет над исходным ТЭП, но исходное значение должно сохраняться и показываться как контрольный источник.",
-    },
-    {
         "id": "WEAK_PHASE_LOGIC",
         "topic": "phasing",
         "rule": "Если LLCR отдельной очереди ниже цели, сначала определить дисбаланс между долей выручки/ТЭП и долей ранней нагрузки. Реальные меры проверять в порядке: корректность cash-аллокации и сроков → перенос реально переносимых затрат/соцобъектов → увеличение выручечного ТЭП слабой очереди → изменение сроков → цена входа/себестоимость. Не переносить покупку/ВРИ косметически ради улучшения коэффициента.",
@@ -191,11 +186,6 @@ _DevelopAid_METHODOLOGY = [
         "id": "PURCHASE_OFFER_DECISION",
         "topic": "financing",
         "rule": "На конкретную цену продавца Платон должен дать управленческое решение одним сценарием: экономика при офере → потолок цены при LLCR 1,20 → если офер выше, требуемые изменения цены продаж/себестоимости. Не запускать повторную полную диагностику без необходимости.",
-    },
-    {
-        "id": "MYTISHCHI_MFC",
-        "topic": "tep",
-        "rule": "В preset Мытищи МФК/офисы — отдельный дискретный продукт: 26 700 м² GBA/ГНС и 21 360 м² полезной/продаваемой площади. Его нельзя одновременно учитывать как standalone retail. Парковка МФК 434 м/м добавляется к жилому подземному паркингу 2 289 м/м.",
     },
     {
         # Список ниже короткий, и он обязан сказать, где лежит остальное: без
@@ -2177,12 +2167,6 @@ def _tool_find_anomalies(
                 {"total_area_sqm": round(total, 2), "gns_sqm": round(gns, 2)})
 
     if imported:
-        expert_override = req.inputs.get("_preset_expert_overrides") or {}
-        if expert_override:
-            add("info", "EXPERT_PRESET_OVERRIDE",
-                str(expert_override.get("note") or "В проекте применена экспертная корректировка preset."),
-                expert_override)
-
         comm = req.tep.get("ground_commercial", {}) or {}
         model_comm = n(comm, "saleable")
         src_nonres = float(imported.get("np_nonresidential_sqm", 0) or 0)
@@ -4337,7 +4321,6 @@ def _agent_initial_snapshot(req: AgentChatRequest, bundle: dict[str, Any]) -> di
                  for key in ("price_mln", "buyout_mln", "total_mln",
                              "buyout_label", "total_label")},
         "project_class": req.inputs.get("project_class"),
-        "preset_expert_overrides": req.inputs.get("_preset_expert_overrides"),
     }
 
 

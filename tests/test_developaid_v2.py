@@ -1,9 +1,9 @@
-"""Прототип /v2: статика, «Поиск ТЭП» и контрольные fixtures как dev-данные.
+"""Прототип /v2: статика и «Поиск ТЭП».
 
-Показатели, с которыми принималась архитектура 2.0, переехали в
-`developaid_v2_prototype_fixtures`. Production их не отдаёт — это охраняет
-`tests/test_developaid_v2_live_result.py`. Здесь проверяется, что снимок
-приёмки не потерян и что статика с «Поиском ТЭП» на месте.
+Контрольные fixtures прототипа (показатели приёмочных PDF «Мишина» и
+«Мытищи») удалены вместе с серверными предустановками: это настоящие проекты
+владельца с ценами (решение владельца, 23.10.2026). Production считает
+движком — это охраняет `tests/test_developaid_v2_live_result.py`.
 
 Запуск: python3 -m pytest tests -q
 """
@@ -12,46 +12,23 @@ from __future__ import annotations
 
 import base64
 import sys
-import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from developaid_v2 import _FRONTEND  # noqa: E402
-from developaid_v2_prototype_fixtures import PROTOTYPE_PROJECTS  # noqa: E402
 
 
-class DevelopAidV2PrototypeTests(unittest.TestCase):
-    def test_acceptance_projects_are_present(self) -> None:
-        self.assertEqual(set(PROTOTYPE_PROJECTS), {"mishina", "mytishchi"})
-
-    def test_control_kpis_match_accepted_reports(self) -> None:
-        mishina = PROTOTYPE_PROJECTS["mishina"]["kpi"]
-        mytishchi = PROTOTYPE_PROJECTS["mytishchi"]["kpi"]
-        self.assertEqual(mishina["revenue"], 12.74)
-        self.assertEqual(mishina["llcr"], 1.12)
-        self.assertEqual(mytishchi["revenue"], 123.50)
-        self.assertEqual(mytishchi["llcr"], 1.11)
-        self.assertEqual(len(PROTOTYPE_PROJECTS["mytishchi"]["queues"]), 3)
-
-    def test_fixtures_are_marked_as_prototype(self) -> None:
-        for project in PROTOTYPE_PROJECTS.values():
-            self.assertTrue(project["prototype"], project["slug"])
-
-    def test_frontend_assets_exist(self) -> None:
-        for filename in ("index.html", "styles.css", "app.js"):
-            self.assertTrue((_FRONTEND / filename).is_file(), filename)
-
-    def test_series_have_consistent_length(self) -> None:
-        for project in PROTOTYPE_PROJECTS.values():
-            expected = len(project["timeline"])
-            self.assertEqual(len(project["cashflow"]), expected)
-            self.assertEqual(len(project["debt"]), expected)
-            self.assertEqual(len(project["escrow"]), expected)
+def test_frontend_assets_exist() -> None:
+    for filename in ("index.html", "styles.css", "app.js"):
+        assert (_FRONTEND / filename).is_file(), filename
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_an_empty_catalog_opens_the_new_project() -> None:
+    """Без демонстрационных проектов /v2 открывается новым проектом, а не
+    запросом `/api/v2/projects/undefined`."""
+    script = (_FRONTEND / "app.js").read_text(encoding="utf-8")
+    assert "const fallback = (state.projects[0] || {}).slug || 'new';" in script
 
 
 # --- Поиск ТЭП в левом меню --------------------------------------------------

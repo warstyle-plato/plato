@@ -8,11 +8,13 @@
 Маршруты:
 
 - `POST /api/v2/calculate` — production: вводные → ProjectResult;
-- `GET  /api/v2/projects` — каталог демонстрационных **вводных** (не цифр);
-- `GET  /api/v2/projects/{slug}` — те же вводные, посчитанные движком;
-- `POST /api/v2/tep-search` — «Поиск ТЭП», точка бота «Посчитать ВРИ и ТЭП»;
-- `GET  /api/v2/prototype/projects/...` — контрольные fixtures прототипа,
-  только при `DEVELOPAID_V2_PROTOTYPE_FIXTURES=1`.
+- `GET  /api/v2/projects` — каталог проектов для меню (здесь пустой: новый
+  проект добавляет `developaid_v2_upgrade`, сохранённые — личный кабинет);
+- `POST /api/v2/tep-search` — «Поиск ТЭП», точка бота «Посчитать ВРИ и ТЭП».
+
+Демонстрационных проектов «Мишина» и «Мытищи» больше нет: это настоящие
+проекты владельца с ценами, и `/api/v2/projects/{slug}` отдавал их расчёт без
+входа (решение владельца, 23.10.2026).
 
 Формулы движка, Excel, PDF и Telegram-сценарии этот модуль не трогает.
 """
@@ -20,7 +22,6 @@
 from __future__ import annotations
 
 import base64
-import os
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +29,6 @@ from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-import developaid_v2_demo as demo
 import developaid_v2_form as form
 import developaid_v2_result as project_result
 
@@ -57,13 +57,6 @@ _REVALIDATE = {"Cache-Control": "no-cache, must-revalidate"}
 # Иконки приложения. Список закрытый: имя из адреса иначе склеивается с путём
 # и превращает маршрут в чтение файлов сервера.
 _ICONS = frozenset({"icon-192.png", "icon-512.png", "maskable-512.png"})
-
-
-def _prototype_fixtures_enabled() -> bool:
-    """Контрольные fixtures — dev-only, по явному переключателю."""
-    return str(os.getenv("DEVELOPAID_V2_PROTOTYPE_FIXTURES", "")).strip().lower() in {
-        "1", "true", "yes", "on",
-    }
 
 
 def _core() -> Any:
@@ -263,65 +256,8 @@ def install(app: FastAPI) -> None:
 
     @app.get("/api/v2/projects")
     def developaid_v2_projects() -> JSONResponse:
-        """Каталог демонстрационных вводных. Показателей здесь нет."""
-        return JSONResponse(demo.list_scenarios(), headers=_NO_STORE)
-
-    @app.get("/api/v2/projects/{slug}")
-    def developaid_v2_project(slug: str, sensitivity: bool = True) -> JSONResponse:
-        """Демонстрационные вводные, посчитанные движком.
-
-        Ответ — тот же ProjectResult, что у `/api/v2/calculate`: fixtures в
-        нём не участвуют, цифры считает движок при каждом запросе.
-        """
-        core = _core()
-        try:
-            payload = demo.scenario_payload(core, slug)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="Проект не найден") from None
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise _fail(core, exc) from exc
-        try:
-            result = project_result.build_project_result(
-                core,
-                inputs=payload["inputs"],
-                tep=payload["tep"],
-                rates=payload["rates"],
-                phasing=payload["phasing"],
-                project_name=payload["project_name"],
-                region=payload["region"],
-                cadastral_numbers=payload["cadastral_numbers"],
-                source_label=payload["source_label"],
-                scenario=payload["scenario"],
-                sensitivity=sensitivity,
-            )
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise _fail(core, exc) from exc
-        result["project"]["slug"] = slug
-        result["project"]["demo_inputs"] = True
-        return JSONResponse(result, headers=_NO_STORE)
-
-    @app.get("/api/v2/prototype/projects/{slug}", include_in_schema=False)
-    def developaid_v2_prototype_project(slug: str) -> JSONResponse:
-        """Контрольные fixtures прототипа. Dev-only, по переключателю."""
-        if not _prototype_fixtures_enabled():
-            raise HTTPException(
-                status_code=404,
-                detail="Контрольные fixtures отключены: production отдаёт только "
-                       "расчёт движка. Включаются DEVELOPAID_V2_PROTOTYPE_FIXTURES=1.",
-            )
-        from developaid_v2_prototype_fixtures import PROTOTYPE_PROJECTS
-
-        project = PROTOTYPE_PROJECTS.get(slug)
-        if project is None:
-            raise HTTPException(status_code=404, detail="Project not found")
-        return JSONResponse(
-            {**project, "prototype": True, "source": "prototype_fixture"},
-            headers=_NO_STORE,
-        )
+        """Каталог проектов меню. Демонстрационных проектов в продукте нет."""
+        return JSONResponse([], headers=_NO_STORE)
 
     @app.post("/api/v2/tep-search")
     def developaid_v2_tep_search(req: TepSearchRequest) -> dict[str, Any]:
