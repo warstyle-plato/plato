@@ -947,7 +947,11 @@ def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
     ax = (scheme or {}).get("axonometry") or {}
     layout = (scheme or {}).get("layout") or {}
     if not ax.get("shapes"):
-        return []
+        if not layout.get("skipped"):
+            return []
+        # Корпусов слишком много — картинки нет, причина и строка на очередь.
+        return [KeepTogether([P("Объёмная схема застройки", small), P(str(layout["skipped"]), small),
+                              *[P(str(line), small) for line in layout.get("phase_lines") or []]])]
     vx, vy, vw, vh = (float(v) for v in ax["viewbox"])
     scale = min(150 * mm / vw, 95 * mm / vh)
     drawing = Drawing(vw * scale, vh * scale)

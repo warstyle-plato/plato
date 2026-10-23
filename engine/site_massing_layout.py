@@ -18,8 +18,9 @@
 
 import math as _math
 
-# Порог этажности корпуса, когда предел участка не задан (владелец 22.10.2026).
-LAYOUT_STOREYS_LIMIT_DEFAULT = 25
+# Порог этажности корпуса, когда предел участка не задан (владелец 22.10.2026),
+# — тот же, что у пятна застройки (`STOREYS_LIMIT_DEFAULT`).
+LAYOUT_STOREYS_LIMIT_DEFAULT = STOREYS_LIMIT_DEFAULT
 # Ширина корпуса, к которой тянется раскладка (типовая жилая секция), и разрывы
 # между корпусами в ряду и между рядами (проезд и пожарный разрыв), м.
 LAYOUT_CORPUS_DEPTH_M = 18.0
@@ -27,10 +28,19 @@ LAYOUT_GAP_IN_ROW_M = 12.0
 LAYOUT_GAP_BETWEEN_ROWS_M = 15.0
 # Самый длинный корпус; длиннее — очередь делится на корпуса по длине.
 LAYOUT_CORPUS_MAX_LENGTH_M = 100.0
+# Больше корпусов схема не рисует (владелец 23.10.2026: «в таких масштабных
+# случаях лучше и не рисовать»); до этого корпуса расставлены сеткой по всему
+# участку, а номера и легенда — по группам (очередь, отдельное здание).
+LAYOUT_MAX_DRAWN_CORPORA = 40
 # Высота этажа только для картинки: этажность считает ТЭП, не она.
 LAYOUT_STOREY_HEIGHT_M = 3.0
+# Полоса на картинке: ось участка поворачивается на −30° от оси x схемы, и в
+# изометрии полоса идёт слева направо с лёгким подъёмом.
+LAYOUT_STRIP_SCREEN_TURN_DEG = 30.0
 # Цвета очередей: одна палитра для страницы и PDF.
 LAYOUT_PHASE_COLORS = ("#2f6fb3", "#d9822b", "#3f9a5b", "#9b59b6", "#c0392b", "#16a2a2")
+# Отдельные здания на своих участках: соцобъекты и прочие — свои цвета.
+LAYOUT_OBJECT_COLORS = {"social": "#a1745a", "other": "#6f7f8c"}
 
 
 def _ring_area(ring: list[list[float]]) -> float:
@@ -232,12 +242,100 @@ def _phase_corpora(phases: list[dict[str, Any]], footprint: float, limit: float,
     return out
 
 
+def _object_corpora(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Школа, детский сад, офисы — корпусами схемы; длиннее 100 м — по длине."""
+    out: list[dict[str, Any]] = []
+    longest = LAYOUT_CORPUS_DEPTH_M * LAYOUT_CORPUS_MAX_LENGTH_M
+    for obj in objects or []:
+        spot = float(obj.get("footprint_sqm") or 0.0)
+        if spot <= 0:
+            continue
+        parts = max(1, int(_math.ceil(spot / longest - 1e-9)))
+        storeys = float(obj.get("storeys") or 1.0)
+        shown = int(_math.floor(storeys + 0.5))
+        for j in range(parts):
+            corpus = f", корпус {j + 1}" if parts > 1 else ""
+            out.append({
+                "phase": 0, "object": obj.get("key"), "object_kind": obj.get("kind"),
+                "corpus": j + 1, "corpora_in_phase": parts,
+                "area_sqm": spot / parts, "area_origin": "estimate",
+                "storeys": storeys, "storeys_shown": shown, "storeys_origin": "default",
+                "above_gns_sqm": float(obj.get("gns_sqm") or 0.0) / parts,
+                "color": LAYOUT_OBJECT_COLORS.get(str(obj.get("kind")), LAYOUT_OBJECT_COLORS["other"]),
+                "label": f"{obj.get('label')}{corpus}, {_storeys_word(shown)}",
+            })
+    return out
+
+
+def _grid_place(corpora: list[dict[str, Any]], rings: list[list[list[float]]]) -> bool:
+    """Корпуса — сеткой равномерно по всему участку без отступов (владелец 23.10.2026:
+    «на больших участках распределять равномерно, а не в одну кучу»).
+
+    Шаг сетки не меньше корпуса плюс разрыв (вдоль — 12 м, поперёк — 15 м или
+    0,8 высоты, ориентир инсоляции) и растягивается, пока на участке есть место
+    для всех корпусов; лишние места пропускаются равномерно. Корпуса идут
+    группами (отдельные здания, затем очереди) по строкам. Не помещаются и при
+    наименьшем шаге — False: раскладка рядами (`_pack_rows`).
+    """
+    if not corpora or not rings:
+        return False
+    depth = LAYOUT_CORPUS_DEPTH_M
+    lengths = [c["area_sqm"] / depth for c in corpora]
+    longest = max(lengths)
+    tallest = max(c["storeys_shown"] for c in corpora) * LAYOUT_STOREY_HEIGHT_M
+    px0 = longest + LAYOUT_GAP_IN_ROW_M
+    py0 = depth + max(LAYOUT_GAP_BETWEEN_ROWS_M, 0.8 * tallest)
+    points = [p for ring in rings for p in ring]
+    min_x, max_x = min(p[0] for p in points), max(p[0] for p in points)
+    min_y, max_y = min(p[1] for p in points), max(p[1] for p in points)
+
+    def spots(scale: float) -> list[tuple[float, float]]:
+        px, py = px0 * scale, py0 * scale
+        cols, rows = int((max_x - min_x) // px), int((max_y - min_y) // py)
+        if cols < 1 or rows < 1:
+            return []
+        ox = min_x + (max_x - min_x - cols * px) / 2.0 + px / 2.0
+        oy = min_y + (max_y - min_y - rows * py) / 2.0 + py / 2.0
+        found = []
+        for j in range(rows):
+            for i in range(cols):
+                cx, cy = ox + i * px, oy + j * py
+                hx, hy = longest / 2.0, depth / 2.0
+                if all(_inside(corner, rings) for corner in
+                       ((cx - hx, cy - hy), (cx + hx, cy - hy), (cx + hx, cy + hy),
+                        (cx - hx, cy + hy), (cx, cy))):
+                    found.append((cx, cy))
+        return found
+
+    count = len(corpora)
+    if len(spots(1.0)) < count:
+        return False
+    low, high = 1.0, max(max_x - min_x, max_y - min_y) / min(px0, py0)
+    for _ in range(30):
+        mid = (low + high) / 2.0
+        if len(spots(mid)) >= count:
+            low = mid
+        else:
+            high = mid
+    chosen = spots(low)
+    if len(chosen) > count:
+        step = (len(chosen) - 1) / (count - 1) if count > 1 else 0.0
+        chosen = [chosen[int(round(k * step))] for k in range(count)] if count > 1 \
+            else [chosen[len(chosen) // 2]]
+    for c, length, (cx, cy) in zip(corpora, lengths, chosen):
+        c["rect_m"] = [round(cx - length / 2.0, 2), round(cy - depth / 2.0, 2),
+                       round(cx + length / 2.0, 2), round(cy + depth / 2.0, 2)]
+    return True
+
+
 def _pack_rows(corpora: list[dict[str, Any]], width: float, height: float) -> float:
     """Раскладка рядами в прямоугольник W×H; → во сколько раз корпуса пришлось уменьшить.
 
-    Число рядов — то, при котором корпуса помещаются и ширина ряда ближе всего
-    к ширине секции. Не помещаются ни при каком числе — уменьшаются все поровну,
-    и схема об этом говорит.
+    Число рядов — то, при котором корпуса помещаются, ширина ряда ближе всего
+    к ширине секции, а свободное место делится поровну по ширине и по высоте.
+    Ряды и корпуса в ряду разнесены по всему прямоугольнику с равными
+    промежутками, а не сдвинуты в кучу (владелец 23.10.2026). Не помещаются ни
+    при каком числе — уменьшаются все поровну, и схема об этом говорит.
     """
     count = len(corpora)
     best = None
@@ -257,25 +355,34 @@ def _pack_rows(corpora: list[dict[str, Any]], width: float, height: float) -> fl
                 overflow = max(overflow, 10.0)
             else:
                 overflow = max(overflow, need / room, area / (slot * room))
+        # Свободное место по ширине и по высоте — поровну: ряды не жмутся друг
+        # к другу, когда корпуса стоят редко.
+        free_x = sum((width - sum(c["area_sqm"] / d for c in g)) / (len(g) + 1)
+                     for g, d in zip(groups, depths)) / len(groups)
+        free_y = (height - sum(depths)) / (rows + 1)
         score = (round(overflow, 3) if overflow > 1.0 else 1.0,
-                 sum(abs(d - LAYOUT_CORPUS_DEPTH_M) for d in depths))
+                 round(sum(abs(d - LAYOUT_CORPUS_DEPTH_M) for d in depths), 1),
+                 abs(free_x - free_y))
         if best is None or score < best[0]:
             best = (score, rows, slot, groups)
     if best is None:
         return 1.0
-    (overflow, _), rows, slot, groups = best
+    (overflow, _, _), rows, slot, groups = best
     shrink = _math.sqrt(overflow) if overflow > 1.0 else 1.0
     for r, group in enumerate(groups):
         room = width - (len(group) - 1) * LAYOUT_GAP_IN_ROW_M
         area = sum(c["area_sqm"] for c in group) / shrink ** 2
         depth = min(slot, max(LAYOUT_CORPUS_DEPTH_M, area / room if room > 0 else slot))
         lengths = [c["area_sqm"] / shrink ** 2 / depth for c in group]
-        used = sum(lengths) + (len(group) - 1) * LAYOUT_GAP_IN_ROW_M
+        # Промежутки поровну по всей ширине (не меньше разрыва в ряду).
+        gap = max(LAYOUT_GAP_IN_ROW_M if len(group) > 1 else 0.0,
+                  (width - sum(lengths)) / (len(group) + 1))
+        used = sum(lengths) + (len(group) - 1) * gap
         x0 = (width - used) / 2.0
         y0 = r * (slot + LAYOUT_GAP_BETWEEN_ROWS_M) + (slot - depth) / 2.0
         for c, length in zip(group, lengths):
             c["rect_m"] = [round(x0, 2), round(y0, 2), round(x0 + length, 2), round(y0 + depth, 2)]
-            x0 += length + LAYOUT_GAP_IN_ROW_M
+            x0 += length + gap
     return shrink
 
 
@@ -296,37 +403,63 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
 
     rings, frame = _site_rings_m(x)
     if rings:
-        shape_origin = "contour"
-        frame["angle"] = _main_direction(rings)
-        rings = _rotate(rings, -frame["angle"])
         contour_sqm = sum(abs(_ring_area(r)) for r in rings)
         if site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
+            # Контур другой площади — не вся территория проекта (часть участков
+            # или чужой участок): рисовать по нему значит рисовать не то.
             notes.append(f"Площадь контура из ЕГРН ({_fmt_ru(contour_sqm)} м²) заметно отличается "
-                         f"от площади участка в расчёте ({_fmt_ru(site_sqm)} м²). Схема нарисована "
-                         "по контуру, а числа взяты из расчёта.")
+                         f"от площади участка в расчёте ({_fmt_ru(site_sqm)} м²): похоже, это не "
+                         "вся территория проекта. Поэтому участок показан квадратом той же площади, "
+                         "что в расчёте.")
+            rings, frame = [], {}
+    axis = None
+    if rings:
+        shape_origin = "contour"
+        axis = massing_strip_axis(rings)
+        if axis and axis["strip"]:
+            # Полоса: её ось на картинке идёт слева направо с лёгким подъёмом
+            # (в изометрии экранная горизонталь — направление (1, −1)).
+            frame["angle"] = axis["angle"] + _math.radians(LAYOUT_STRIP_SCREEN_TURN_DEG)
+        else:
+            frame["angle"] = _main_direction(rings)
+        rings = _rotate(rings, -frame["angle"])
     elif site_sqm > 0:
         shape_origin = "square"
         half = _math.sqrt(site_sqm) / 2.0
         rings = [[[-half, -half], [half, -half], [half, half], [-half, half]]]
-        notes.append("Контура участка из ЕГРН нет, поэтому участок показан квадратом той же площади.")
+        if not notes:
+            notes.append("Контура участка из ЕГРН нет, поэтому участок показан квадратом той же "
+                         "площади.")
     else:
         return {"buildings": [], "site_rings": [], "notes": [], "storeys_limit": limit}
 
     inner = [r for r in (inset_ring(ring, setback) for ring in rings) if len(r) >= 3]
-    rect = _largest_rectangle(inner or rings)
-    corpora = _phase_corpora(phases, footprint, limit,
-                             str(massing.get("footprint_origin") or "estimate"))
+    objects = massing.get("objects") or []
+    corpora = _object_corpora(objects) + _phase_corpora(
+        phases, footprint, limit, str(massing.get("footprint_origin") or "estimate"))
+    for c in corpora:
+        if c["phase"] == 0:
+            continue
+        name = (f"Очередь {c['phase']}" if len(phases) > 1 else
+                "Жилой дом" if objects else "Здание")
+        corpus = f", корпус {c['corpus']}" if c["corpora_in_phase"] > 1 else ""
+        c["label"] = f"{name}{corpus}, {_storeys_word(c['storeys_shown'])}"
+        c["id"] = f"p{c['phase']}-{c['corpus']}"
+    for c in corpora:
+        c.setdefault("id", f"o-{c.get('object')}-{c['corpus']}")
     shrink = 1.0
-    if rect and corpora:
-        x0, y0, x1, y1 = rect
-        shrink = _pack_rows(corpora, x1 - x0, y1 - y0)
-        for c in corpora:
-            r = c["rect_m"]
-            c["rect_m"] = [round(r[0] + x0, 2), round(r[1] + y0, 2),
-                           round(r[2] + x0, 2), round(r[3] + y0, 2)]
-            c["rect_origin"] = "schema"
-            if frame:
-                c["ring_merc"] = _to_merc(c["rect_m"], frame)
+    plan: dict[str, Any] = {}
+    if corpora and len(corpora) <= LAYOUT_MAX_DRAWN_CORPORA:
+        plan, shrink = _place_corpora(x, corpora, rings, inner, setback, shape_origin)
+    for c in corpora:
+        ring = c.get("ring_m")
+        if not ring:
+            continue
+        c["rect_m"] = [round(min(p[0] for p in ring), 2), round(min(p[1] for p in ring), 2),
+                       round(max(p[0] for p in ring), 2), round(max(p[1] for p in ring), 2)]
+        c["rect_origin"] = "schema"
+        if frame:
+            c["ring_merc"] = _ring_to_merc(ring, frame)
     if shrink > 1.0001:
         notes.append("Корпуса такой площади не помещаются на участке рядами, поэтому на схеме "
                      f"они уменьшены в {_fmt_ru(shrink ** 2, 1)} раза. Площади и этажность "
@@ -337,10 +470,8 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
                      f"{'' if given_limit > 0 else ', предел участка не задан, взят порог'}), "
                      f"поэтому очереди разделены на корпуса не выше предела. Пятно корпусов — "
                      f"{_fmt_ru(spot)} м², это больше пятна застройки в расчёте ({_fmt_ru(footprint)} м²).")
-    for c in corpora:
-        name = f"Очередь {c['phase']}" if len(phases) > 1 else "Здание"
-        corpus = f", корпус {c['corpus']}" if c["corpora_in_phase"] > 1 else ""
-        c["label"] = f"{name}{corpus}, {_storeys_word(c['storeys_shown'])}"
+    if plan.get("note"):
+        notes.append(plan["note"])
     return {
         "site_rings": [[[round(p[0], 2), round(p[1], 2)] for p in r] for r in rings],
         "site_shape_origin": shape_origin,
@@ -359,7 +490,99 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
         * float(massing.get("underground_use_factor") or 0.0),
         "buildings": corpora,
         "notes": notes,
+        "plan": plan,
     }
+
+
+def _place_corpora(x: dict[str, Any], corpora: list[dict[str, Any]],
+                   rings: list[list[list[float]]], inner: list[list[list[float]]],
+                   setback: float, shape_origin: str) -> tuple[dict[str, Any], float]:
+    """Корпуса на участке → (план, во сколько раз пришлось уменьшить).
+
+    Порядок: план Платона, если он есть, свежий и прошёл проверку движка
+    (`engine/site_massing_plan.py`); иначе расстановка движка по кварталам
+    (`massing_place_engine`); не встали и так — прежние ряды в наибольшем
+    прямоугольнике, с уменьшением как последним средством, и схема это
+    называет. У каждого корпуса — `placement_origin`: `plato` или `engine`."""
+    site = inner or rings
+    axis = massing_strip_axis(site)
+    blocks = massing_blocks(site, axis)
+    # Расстановка движка нужна всегда: она запасная и она же — образец,
+    # который получает Платон.
+    engine_ok = _engine_layout_cached(corpora, site, blocks, axis)
+    plan = site_massing_plan_lookup(x, corpora, site, setback, blocks, shape_origin)
+    if plan.get("status") == "ready":
+        reason = massing_place_plan(corpora, blocks, plan.get("placements")) \
+            or massing_check(corpora, site)
+        if reason is None:
+            for c in corpora:
+                c["placement_origin"] = "plato"
+            return site_massing_plan_note(plan), 1.0
+        plan = {**plan, "status": "rejected", "reason": reason}
+        engine_ok = _engine_layout_cached(corpora, site, blocks, axis)
+    shrink = 1.0
+    if not engine_ok:
+        for c in corpora:
+            for key in ("ring_m", "block", "front", "shape", "place"):
+                c.pop(key, None)
+        shrink = _legacy_place(corpora, site)
+    for c in corpora:
+        c["placement_origin"] = "engine"
+    return site_massing_plan_note(plan, shrink), shrink
+
+
+_ENGINE_LAYOUT_CACHE: dict[str, list[Any]] = {}
+
+
+def _engine_layout_cached(corpora: list[dict[str, Any]], site: list[list[list[float]]],
+                          blocks: list[dict[str, Any]], axis: dict[str, float] | None) -> bool:
+    """Расстановка движка с памятью по входам: расчёт зовёт схему на каждом
+    пересчёте (подбор цены — десятки раз), а входы схемы при этом те же."""
+    key = hashlib.sha256(json.dumps(
+        [[[round(p[0], 2), round(p[1], 2)] for p in r] for r in site]
+        + [[c["id"], round(c["area_sqm"], 2), c["storeys_shown"]] for c in corpora],
+        separators=(",", ":")).encode("utf-8")).hexdigest()
+    hit = _ENGINE_LAYOUT_CACHE.get(key)
+    if hit is None:
+        ok = massing_place_engine(corpora, blocks, axis)
+        hit = [ok, [{k: c.get(k) for k in ("ring_m", "block", "front", "shape", "place")}
+                    for c in corpora]]
+        if len(_ENGINE_LAYOUT_CACHE) > 64:
+            _ENGINE_LAYOUT_CACHE.clear()
+        _ENGINE_LAYOUT_CACHE[key] = hit
+    ok, rows = hit
+    if ok:
+        for c, row in zip(corpora, rows):
+            c.update(copy.deepcopy(row))
+    return ok
+
+
+def _legacy_place(corpora: list[dict[str, Any]], site: list[list[list[float]]]) -> float:
+    """Прежняя раскладка: сетка по участку, иначе ряды в наибольшем
+    прямоугольнике (с уменьшением, если и так не помещаются)."""
+    shrink = 1.0
+    if not _grid_place(corpora, site):
+        rect = _largest_rectangle(site)
+        if not rect:
+            return shrink
+        x0, y0, x1, y1 = rect
+        shrink = _pack_rows(corpora, x1 - x0, y1 - y0)
+        for c in corpora:
+            r = c["rect_m"]
+            c["rect_m"] = [r[0] + x0, r[1] + y0, r[2] + x0, r[3] + y0]
+    for c in corpora:
+        r = c.pop("rect_m", None)
+        if r:
+            c["ring_m"] = [[round(r[0], 2), round(r[1], 2)], [round(r[2], 2), round(r[1], 2)],
+                           [round(r[2], 2), round(r[3], 2)], [round(r[0], 2), round(r[3], 2)]]
+    return shrink
+
+
+def _ring_to_merc(ring: list[list[float]], frame: dict[str, float]) -> list[list[float]]:
+    """Многоугольник схемы → кольцо в метрах веб-меркатора (карта участка)."""
+    c, s = _math.cos(frame["angle"]), _math.sin(frame["angle"])
+    return [[round(frame["cx"] + (px * c - py * s) / frame["k"], 2),
+             round(frame["cy"] + (px * s + py * c) / frame["k"], 2)] for px, py in ring]
 
 
 def _to_merc(rect: list[float], frame: dict[str, float]) -> list[list[float]]:
@@ -434,7 +657,7 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
     inner_pts = [p for ring in under for p in ring]
     extent = max((max(p[i] for p in inner_pts) - min(p[i] for p in inner_pts) for i in (0, 1)),
                  default=0.0)
-    step = max(2 * h, 0.2 * extent)
+    step = max(2 * h, min(0.2 * extent, 8 * h))
     for row in sorted(rows, key=lambda r: r["level"]):
         depth = abs(int(row["level"]))
         z_top = -depth * step + h
@@ -474,33 +697,52 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
         shapes.append({"kind": "underground", "points": [project(*p) for p in ring],
                        "fill": "#dbe7cd", "stroke": "#55606b", "width": 1.0, "dash": [5, 4],
                        "opacity": 0.6 if texts else 1.0})
-    labels: list[dict[str, Any]] = []
-    order = sorted(range(len(buildings)),
-                   key=lambda i: -((buildings[i]["rect_m"][0] + buildings[i]["rect_m"][2])
-                                   + (buildings[i]["rect_m"][1] + buildings[i]["rect_m"][3])))
-    for number, b in enumerate(buildings, 1):
-        b["number"] = number
+    def centre(b: dict[str, Any]) -> tuple[float, float]:
+        ring = b["ring_m"]
+        return sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring)
+
+    order = sorted(range(len(buildings)), key=lambda i: -sum(centre(buildings[i])))
+    # Номер — группы (отдельное здание или очередь), а не корпуса: двадцать
+    # кружков с разными номерами на телефоне не читаются.
+    groups: dict[Any, int] = {}
+    for b in buildings:
+        key = ("object", b.get("object")) if b["phase"] == 0 else ("phase", b["phase"])
+        b["number"] = groups.setdefault(key, len(groups) + 1)
+    roofs: dict[int, tuple[float, float]] = {}
     for i in order:
         b = buildings[i]
-        x0, y0, x1, y1 = b["rect_m"]
+        ring = b["ring_m"]
         h = b["storeys_shown"] * LAYOUT_STOREY_HEIGHT_M
-        color = LAYOUT_PHASE_COLORS[(b["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]
-        # Видны крыша и две стены, обращённые к зрителю: у малого x и у малого y.
-        faces = (
-            ("wall", [project(x0, y0, 0), project(x1, y0, 0), project(x1, y0, h), project(x0, y0, h)], 0.78),
-            ("wall", [project(x0, y0, 0), project(x0, y1, 0), project(x0, y1, h), project(x0, y0, h)], 0.62),
-            ("roof", [project(x0, y0, h), project(x1, y0, h), project(x1, y1, h), project(x0, y1, h)], 1.25),
-        )
-        for kind, points, factor in faces:
-            shapes.append({"kind": kind, "points": points, "fill": _shade(color, factor),
-                           "stroke": _shade(color, 0.45), "width": 0.6,
-                           "building": b["number"], "phase": b["phase"]})
-        cx, cy = project((x0 + x1) / 2, (y0 + y1) / 2, h)
-        labels.append({"x": cx, "y": cy, "text": str(b["number"]), "building": b["number"]})
+        color = b.get("color") or LAYOUT_PHASE_COLORS[(b["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]
+        sign = 1.0 if _ring_area(ring) > 0 else -1.0
+        # Видны крыша и стены, обращённые к зрителю (наружная нормаль — к
+        # малым x + y); корпус может стоять под любым углом к оси схемы.
+        for k in range(len(ring)):
+            (ax_, ay_), (bx_, by_) = ring[k], ring[(k + 1) % len(ring)]
+            nx, ny = (by_ - ay_) * sign, -(bx_ - ax_) * sign
+            if nx + ny >= 0:
+                continue
+            length = _math.hypot(nx, ny) or 1.0
+            # Свет слева: стена, глядящая к малым x, темнее.
+            factor = 0.62 + 0.16 * (1 + (ny - nx) / length / _math.sqrt(2)) / 2
+            shapes.append({"kind": "wall",
+                           "points": [project(ax_, ay_, 0), project(bx_, by_, 0),
+                                      project(bx_, by_, h), project(ax_, ay_, h)],
+                           "fill": _shade(color, round(factor, 3)), "stroke": _shade(color, 0.45),
+                           "width": 0.6, "building": b["number"], "phase": b["phase"]})
+        shapes.append({"kind": "roof", "points": [project(px, py, h) for px, py in ring],
+                       "fill": _shade(color, 1.25), "stroke": _shade(color, 0.45), "width": 0.6,
+                       "building": b["number"], "phase": b["phase"]})
+        roofs[i] = tuple(project(*centre(b), h))
     xs = [p[0] for s in shapes for p in s["points"]]
     ys = [p[1] for s in shapes for p in s["points"]]
     size = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
     font = round(0.045 * size, 2)
+    radius = round(0.032 * size, 2)
+    labels = _group_labels(buildings, roofs, radius)
+    for label in labels:
+        xs.extend([label["x"] - radius, label["x"] + radius])
+        ys.extend([label["y"] - radius, label["y"] + radius])
     last_y = None
     for t in sorted(texts, key=lambda t: -t["level"]):
         # Подпись уровня стоит левее стены, подписи не наезжают друг на друга;
@@ -514,31 +756,114 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
         xs.append(t["x"] - 0.56 * font * len(t["text"]))
         ys.extend([t["y"] - font, t["y"] + 0.3 * font])
     pad = 0.04 * size
-    legend = [{"number": b["number"], "phase": b["phase"], "text": b["label"],
-               "line": f"{b['number']} — {b['label']}, пятно {_fmt_ru(b['area_sqm'])} м²",
-               "area_sqm": b["area_sqm"],
-               "color": LAYOUT_PHASE_COLORS[(b["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]}
-              for b in buildings]
+    legend = []
+    for number in sorted({b["number"] for b in buildings}):
+        own = [b for b in buildings if b["number"] == number]
+        first = own[0]
+        area = sum(b["area_sqm"] for b in own)
+        if len(own) == 1:
+            text = first["label"]
+        else:
+            name = first["label"].split(",")[0]
+            text = f"{name}: {_corpora_word(len(own))} по {_storeys_word(first['storeys_shown'])}"
+        legend.append({"number": number, "phase": first["phase"], "text": text, "area_sqm": area,
+                       "corpora": len(own),
+                       "line": f"{number} — {text}, пятно {_fmt_ru(area)} м²",
+                       "color": first.get("color") or
+                       LAYOUT_PHASE_COLORS[(first["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]})
     levels = int(layout.get("underground_levels") or 0)
     caption = ("Зелёное — участок без отступов, светлая полоса вдоль границ — отступ, пунктир — "
                "граница подземной части. "
                + (f"Под участком — {_levels_word(levels)} с площадью каждого; по высоте они "
                   "раздвинуты, чтобы был виден каждый. " if texts else "")
                + "Корпуса окрашены по очередям, номер на крыше — номер строки в списке под схемой.")
-    footer = ("Корпуса расставлены рядами для наглядности: реальный генплан расчёт не угадывает. "
-              f"Высота на схеме — по {_fmt_ru(LAYOUT_STOREY_HEIGHT_M)} м на этаж.")
+    plan = layout.get("plan") or {}
+    who = ("Расстановку предложил Платон, движок её проверил" if plan.get("origin") == "plato"
+           else "Корпуса расставил движок")
+    footer = (f"{who} для наглядности: это не генплан, а схема того, как корпуса могут встать "
+              f"на участке. Высота на схеме — по {_fmt_ru(LAYOUT_STOREY_HEIGHT_M)} м на этаж.")
     return {"caption": caption, "footer": footer,
             "viewbox": [round(min(xs) - pad, 2), round(min(ys) - pad, 2),
                         round(max(xs) - min(xs) + 2 * pad, 2), round(max(ys) - min(ys) + 2 * pad, 2)],
             "shapes": shapes, "labels": labels, "legend": legend, "texts": texts,
-            "font_size": font,
-            "label_radius": round(0.032 * max(max(xs) - min(xs), max(ys) - min(ys)), 2)}
+            "font_size": font, "label_radius": radius}
+
+
+def _group_labels(buildings: list[dict[str, Any]], roofs: dict[int, tuple[float, float]],
+                  radius: float) -> list[dict[str, Any]]:
+    """Один номер на группу — на крыше корпуса ближе всех к середине группы;
+    кружки не налезают друг на друга: занятое место — следующий корпус группы,
+    а если свободного нет, кружок поднимается над крышами."""
+    placed: list[dict[str, Any]] = []
+    for number in sorted({b["number"] for b in buildings}):
+        own = [i for i, b in enumerate(buildings) if b["number"] == number and i in roofs]
+        if not own:
+            continue
+        mx = sum(roofs[i][0] for i in own) / len(own)
+        my = sum(roofs[i][1] for i in own) / len(own)
+        spots = sorted((roofs[i] for i in own), key=lambda p: _math.hypot(p[0] - mx, p[1] - my))
+
+        def free(p):
+            return all(_math.hypot(p[0] - q["x"], p[1] - q["y"]) >= 2.2 * radius for q in placed)
+
+        spot = next((p for p in spots if free(p)), None)
+        if spot is None:
+            spot = spots[0]
+            while not free(spot):
+                spot = (spot[0], spot[1] - radius)
+        placed.append({"x": round(spot[0], 2), "y": round(spot[1], 2), "text": str(number),
+                       "building": number})
+    return placed
+
+
+def _corpora_word(count: int) -> str:
+    tail = count % 100
+    if count % 10 == 1 and tail != 11:
+        return f"{count} корпус"
+    if 2 <= count % 10 <= 4 and not 12 <= tail <= 14:
+        return f"{count} корпуса"
+    return f"{count} корпусов"
+
+
+def site_massing_phase_lines(layout: dict[str, Any], phases_count: int) -> list[str]:
+    """Корпуса по очередям одной строкой на очередь — когда схему не рисуем."""
+    lines: list[str] = []
+    buildings = layout.get("buildings") or []
+    has_objects = any(b["phase"] == 0 for b in buildings)
+    for key in dict.fromkeys(b.get("object") for b in buildings if b["phase"] == 0):
+        own = [b for b in buildings if b["phase"] == 0 and b.get("object") == key]
+        label = own[0]["label"].split(",")[0]
+        lines.append(f"{label}: {_corpora_word(len(own))} по {_storeys_word(own[0]['storeys_shown'])}, "
+                     f"пятно {_fmt_ru(sum(b['area_sqm'] for b in own))} м²")
+    for phase in sorted({b["phase"] for b in buildings if b["phase"] > 0}):
+        own = [b for b in buildings if b["phase"] == phase]
+        storeys = max(b["storeys_shown"] for b in own)
+        name = (f"Очередь {phase}" if phases_count > 1 else
+                "Жилой дом" if has_objects else "Здание")
+        lines.append(f"{name}: {_corpora_word(len(own))} по {_storeys_word(storeys)}, пятно "
+                     f"{_fmt_ru(sum(b['area_sqm'] for b in own))} м²")
+    return lines
 
 
 def site_massing_scheme(x: dict[str, Any], massing: dict[str, Any],
                         phases: list[dict[str, Any]]) -> dict[str, Any]:
-    """Раскладка и картинка одним ответом: `tep.site_massing.scheme`."""
+    """Раскладка и картинка одним ответом: `tep.site_massing.scheme`.
+
+    Корпусов больше `LAYOUT_MAX_DRAWN_CORPORA` — схему не рисуем (владелец
+    23.10.2026: «в таких масштабных случаях лучше и не рисовать»): ряды из
+    десятков корпусов нечитаемы и ничего не говорят. Тогда вместо картинки —
+    причина и строка на очередь, а корпусов на карте участка нет.
+    """
     layout = site_massing_layout(x, massing, phases)
-    if not layout.get("buildings"):
+    buildings = layout.get("buildings") or []
+    if not buildings:
+        return {"layout": layout, "axonometry": {}}
+    if len(buildings) > LAYOUT_MAX_DRAWN_CORPORA:
+        for b in buildings:
+            b.pop("ring_merc", None)
+        layout["skipped"] = (f"Схему не рисуем: корпусов получилось {len(buildings)}, и их "
+                             "расстановка рядами на таком участке ничего не покажет. Корпуса по "
+                             "очередям:")
+        layout["phase_lines"] = site_massing_phase_lines(layout, len(phases))
         return {"layout": layout, "axonometry": {}}
     return {"layout": layout, "axonometry": site_massing_axonometry(layout)}

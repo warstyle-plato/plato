@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Споры: образец</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#1f2937;--muted:#5b6b7d;--line:#e5e7eb;--warn:#fff7e6;--warnb:#f0b44c;--bad:#b42318;--acc:#1d4ed8}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#111418;--card:#1a1f26;--ink:#e5e7eb;--muted:#9aa8b8;--line:#2b333d;--warn:#3a2f17;--warnb:#a87a2a;--bad:#f97066;--acc:#7aa2ff}}
+:root[data-theme="dark"]{--bg:#111418;--card:#1a1f26;--ink:#e5e7eb;--muted:#9aa8b8;--line:#2b333d;--warn:#3a2f17;--warnb:#a87a2a;--bad:#f97066;--acc:#7aa2ff}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 12px}h2{font-size:16px;margin:22px 0 8px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:8px 0}
+.muted{color:var(--muted)}.small{font-size:12px}
+.case{border-top:1px solid var(--line);padding:10px 0;display:grid;grid-template-columns:1fr auto;gap:2px 12px}
+.case:first-of-type{border-top:0}
+.stage{display:inline-block;border-radius:999px;padding:1px 8px;font-size:12px;background:#e8eefc;color:#1e3a8a}
+.stage.closed{background:#e7f6ec;color:#166534}
+.amt{text-align:right;white-space:nowrap}
+details{grid-column:1/-1;font-size:12px;color:var(--muted)}summary{cursor:pointer}
+.btn{border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:6px;padding:4px 10px;font-size:12px;cursor:pointer}
+.btn.main{background:var(--acc);color:#fff;border-color:var(--acc)}
+.suspect{background:var(--warn);border:1px solid var(--warnb)}
+table{width:100%;border-collapse:collapse;font-size:13px}td,th{border-bottom:1px solid var(--line);padding:6px 4px;text-align:left;vertical-align:top}th{color:var(--muted);font-weight:600}
+.wrap{overflow-x:auto}
+ol li,ul li{margin:4px 0}
+</style></head><body><main>
+<h1>Споры и претензии — образец новой карточки и сводки</h1>
+<p class="muted">Названия и суммы ниже вымышлены для образца; настоящих карточек с ядра у разработки нет.</p>
+
+<h2>1. Что нашёл аудит: откуда берётся путаница</h2>
+<div class="card"><ol>
+<li><b>Одна карточка на всю пачку документов.</b> Платон читает все выбранные файлы разом и обязан вернуть ровно одного контрагента. Если в пачке письма «Арктик» и «КИМАКГ», требования и хронология обоих попадают в одну карточку под одним именем.</li>
+<li><b>«Дополнить» склеивает.</b> Если в списке выбрано «Дополнить: Арктик», а файлы — от КИМАКГ, Платону передаётся карточка Арктика с указанием «обнови её». Документы КИМАКГ навсегда приписываются к Арктику: при сохранении список документов только растёт, исправление руками его не очищает.</li>
+<li><b>Импорт файлом сравнивает по тексту имени.</b> Совпадение ищется по строке «контрагент + договор + дело». «ООО «Арктик»» и «Арктик» — уже два разных спора (дубль). Поправили в файле номер дела — появляется вторая карточка рядом со старой. А если всё совпало, строка файла просто пропускается: исправление из файла в реестр не доходит никогда.</li>
+<li><b>Переименование не замечается.</b> В «Изменить» можно вписать другого контрагента, и карточка Арктика продолжит жить под именем КИМАКГ со всей историей Арктика.</li>
+<li><b>Сводка тяжёлая.</b> В блоке «Споры» по каждому спору выводятся требования по пунктам, хронология за период, следующий шаг и «позиция и риск». Два спора с одним контрагентом в «Главном» не различить: номер дела не пишется.</li>
+<li><b>Стадия «Суд» одна.</b> Первая инстанция, апелляция и исполнение не различаются.</li>
+</ol></div>
+
+<h2>2. Что меняется</h2>
+<div class="card"><ul>
+<li>Один спор — одна карточка с постоянным номером. Обновление — только по этому номеру: из формы, из файла (в выгрузке номер есть) или по явному выбору владельца.</li>
+<li>Платон, увидев в документах двух контрагентов или два номера дела, не склеивает их, а говорит об этом и предлагает разнести.</li>
+<li>Импорт без номера карточки: строка, совпавшая с карточкой полностью, пропускается; похожая (тот же контрагент или тот же номер дела) — не склеивается, а выводится вопросом с кнопками «Обновить эту карточку» / «Внести новым спором».</li>
+<li>Кнопка «Выгрузить карточки файлом» — для проверки и правки в файле; загруженный обратно файл обновляет карточки по их номерам.</li>
+<li>Уже перепутанные карточки молча не правятся: они собраны в список «Проверьте эти карточки» с кнопками.</li>
+</ul></div>
+
+<h2>3. Карточки на странице сводки</h2>
+<div class="card suspect">
+<b>Проверьте эти карточки (2)</b>
+<div class="small muted">Похоже, в них смешаны разные споры. Ничего не исправлено само: решите по каждой.</div>
+<div class="case"><div><b>ООО «Арктик»</b> · <span class="muted">дело А40-123456/2026</span><br>
+<span class="small">В карточке упомянуты два контрагента: «Арктик» и «КИМАКГ» (в требованиях и хронологии), и два номера дела: А40-123456/2026 и А41-98765/2026.</span></div>
+<div class="amt"><button class="btn main">Разнести на две карточки</button><br><button class="btn" style="margin-top:4px">Это один спор</button> <button class="btn">Открыть</button></div></div>
+<div class="case"><div><b>АО «КИМАКГ»</b><br><span class="small">Стадия записана как «суд», без инстанции. Укажите: первая инстанция, апелляция или исполнение.</span></div>
+<div class="amt"><button class="btn main">Указать стадию</button></div></div>
+</div>
+
+<div class="card">
+<div class="case"><div><b>ООО «Арктик»</b> <span class="stage">Суд первой инстанции</span><br>
+Неустойка за срыв сроков монтажа фасада<br>
+<span class="small muted">Ближайшая дата: 12.11.2026 — заседание · дело А40-123456/2026</span></div>
+<div class="amt"><b>14,2 млн ₽</b><br><span class="small muted">наши требования</span></div>
+<details><summary>Подробности и история</summary>Договор № 15-Ф от 01.03.2025 · наша сторона: генподрядчик · требования по пунктам · хронология писем · позиция и риск · документы · версии карточки</details>
+<div style="grid-column:1/-1"><button class="btn">Изменить</button> <button class="btn">Удалить</button></div></div>
+
+<div class="case"><div><b>АО «КИМАКГ»</b> <span class="stage">Претензия</span><br>
+Возврат аванса за недопоставленные конструкции<br>
+<span class="small muted">Ближайшая дата: 05.11.2026 — срок ответа на претензию</span></div>
+<div class="amt"><b>3,8 млн ₽</b><br><span class="small muted">требования к нам</span></div>
+<details><summary>Подробности и история</summary>…</details></div>
+
+<div class="case"><div><b>ООО «Стройресурс»</b> <span class="stage closed">Закрыт</span><br>
+Оплата дополнительных работ<br><span class="small muted">Закрыт мировым соглашением 18.10.2026</span></div>
+<div class="amt"><b>—</b></div></div>
+</div>
+
+<h2>4. Блок «Споры и претензии» в сводке и PDF</h2>
+<div class="card wrap"><table>
+<tr><th>Контрагент</th><th>Предмет</th><th>Стадия</th><th>Ближайшая дата</th><th style="text-align:right">Сумма</th></tr>
+<tr><td>ООО «Арктик»<br><span class="small muted">дело А40-123456/2026</span></td><td>Неустойка за срыв сроков фасада</td><td>Суд первой инстанции</td><td>12.11.2026</td><td style="text-align:right">14,2 млн ₽<br><span class="small muted">наши</span></td></tr>
+<tr><td>АО «КИМАКГ»</td><td>Возврат аванса за конструкции</td><td>Претензия</td><td>05.11.2026</td><td style="text-align:right">3,8 млн ₽<br><span class="small muted">к нам</span></td></tr>
+<tr><td>ООО «Стройресурс»</td><td>Оплата дополнительных работ</td><td>Закрыт за период</td><td>—</td><td style="text-align:right">—</td></tr>
+</table>
+<p class="small muted">Без хронологии, пунктов требований и «позиции и риска» — они остаются в карточке на странице.</p></div>
+
+<h2>5. «Главное»</h2>
+<div class="card">Открытых споров: 2 — ООО «Арктик» — суд первой инстанции, 12.11.2026; АО «КИМАКГ» — претензия, ответ до 05.11.2026.</div>
+</main></body></html>

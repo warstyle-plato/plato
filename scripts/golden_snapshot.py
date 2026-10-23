@@ -162,6 +162,33 @@ def s_instances(core: Any, root: Path) -> dict:
     return {"inputs": x, "tep": t, "phasing": phasing}
 
 
+def s_office_rent(core: Any, root: Path) -> dict:
+    """Нежилой офис класса A: аренда с выходом, ставка на дату, паркинг проекта — офису (#837)."""
+    spec = s_nonresidential(core, root)
+    x = spec["inputs"]
+    strategy = getattr(core, "nonres_strategy", None)  # дерево до #837 шкалы не знает
+    if strategy is not None and hasattr(strategy, "office_class_fields"):
+        x.update({f"offices_{key}": value
+                  for key, value in strategy.office_class_fields("A").items()})
+        x["offices_price_th_per_sqm"] = strategy.OFFICE_CLASS_SCALE["A"]["price_th_per_sqm"]
+    # Свои подземные места у офиса не заданы: места проекта переходят ему
+    # (`office_takes_project_parking`), как на Пролетарском.
+    x.update(offices_strategy="income", offices_parking_under_spaces=0,
+             underground_manual_spaces=120, site_area_ha=2.0, offices_saleable_sqm=42000.0)
+    _object_tep(core, x, spec["tep"])
+    return spec
+
+
+def s_deep_underground(core: Any, root: Path) -> dict:
+    """Жильё в две очереди, три подземных уровня с надбавкой за глубину (#823)."""
+    x, t = _base(core)
+    x.update(site_area_ha=4.5, underground_levels=3)
+    phasing = {"enabled": True, "phase_count": 2, "phase_gap_months": 12,
+               "phases": [{"name": f"О{i + 1}", "start_offset_months": 12 * i,
+                           "construction_months": 24} for i in range(2)]}
+    return {"inputs": x, "tep": t, "phasing": phasing}
+
+
 def s_legacy_state(core: Any, root: Path) -> dict:
     """Проект, сохранённый до 28.09: только поля того времени, наложенные на умолчания."""
     saved = json.loads(LEGACY_STATE.read_text("utf-8"))
@@ -191,6 +218,8 @@ SCENARIOS: dict[str, Callable[[Any, Path], dict]] = {
     "nonresidential": s_nonresidential,
     "instances": s_instances,
     "legacy_state": s_legacy_state,
+    "office_rent": s_office_rent,
+    "deep_underground": s_deep_underground,
 }
 
 
