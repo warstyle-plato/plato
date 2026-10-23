@@ -28,6 +28,9 @@ LAYOUT_GAP_IN_ROW_M = 12.0
 LAYOUT_GAP_BETWEEN_ROWS_M = 15.0
 # Самый длинный корпус; длиннее — очередь делится на корпуса по длине.
 LAYOUT_CORPUS_MAX_LENGTH_M = 100.0
+# Больше корпусов схема не рисует: ряды из десятков корпусов нечитаемы
+# (владелец 23.10.2026).
+LAYOUT_MAX_DRAWN_CORPORA = 12
 # Высота этажа только для картинки: этажность считает ТЭП, не она.
 LAYOUT_STOREY_HEIGHT_M = 3.0
 # Цвета очередей: одна палитра для страницы и PDF.
@@ -297,19 +300,26 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
 
     rings, frame = _site_rings_m(x)
     if rings:
+        contour_sqm = sum(abs(_ring_area(r)) for r in rings)
+        if site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
+            # Контур другой площади — не вся территория проекта (часть участков
+            # или чужой участок): рисовать по нему значит рисовать не то.
+            notes.append(f"Площадь контура из ЕГРН ({_fmt_ru(contour_sqm)} м²) заметно отличается "
+                         f"от площади участка в расчёте ({_fmt_ru(site_sqm)} м²): похоже, это не "
+                         "вся территория проекта. Поэтому участок показан квадратом той же площади, "
+                         "что в расчёте.")
+            rings, frame = [], {}
+    if rings:
         shape_origin = "contour"
         frame["angle"] = _main_direction(rings)
         rings = _rotate(rings, -frame["angle"])
-        contour_sqm = sum(abs(_ring_area(r)) for r in rings)
-        if site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
-            notes.append(f"Площадь контура из ЕГРН ({_fmt_ru(contour_sqm)} м²) заметно отличается "
-                         f"от площади участка в расчёте ({_fmt_ru(site_sqm)} м²). Схема нарисована "
-                         "по контуру, а числа взяты из расчёта.")
     elif site_sqm > 0:
         shape_origin = "square"
         half = _math.sqrt(site_sqm) / 2.0
         rings = [[[-half, -half], [half, -half], [half, half], [-half, half]]]
-        notes.append("Контура участка из ЕГРН нет, поэтому участок показан квадратом той же площади.")
+        if not notes:
+            notes.append("Контура участка из ЕГРН нет, поэтому участок показан квадратом той же "
+                         "площади.")
     else:
         return {"buildings": [], "site_rings": [], "notes": [], "storeys_limit": limit}
 
@@ -536,10 +546,46 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
             "label_radius": round(0.032 * max(max(xs) - min(xs), max(ys) - min(ys)), 2)}
 
 
+def _corpora_word(count: int) -> str:
+    tail = count % 100
+    if count % 10 == 1 and tail != 11:
+        return f"{count} корпус"
+    if 2 <= count % 10 <= 4 and not 12 <= tail <= 14:
+        return f"{count} корпуса"
+    return f"{count} корпусов"
+
+
+def site_massing_phase_lines(layout: dict[str, Any], phases_count: int) -> list[str]:
+    """Корпуса по очередям одной строкой на очередь — когда схему не рисуем."""
+    lines: list[str] = []
+    for phase in sorted({b["phase"] for b in layout.get("buildings") or []}):
+        own = [b for b in layout["buildings"] if b["phase"] == phase]
+        storeys = max(b["storeys_shown"] for b in own)
+        name = f"Очередь {phase}" if phases_count > 1 else "Здание"
+        lines.append(f"{name}: {_corpora_word(len(own))} по {_storeys_word(storeys)}, пятно "
+                     f"{_fmt_ru(sum(b['area_sqm'] for b in own))} м²")
+    return lines
+
+
 def site_massing_scheme(x: dict[str, Any], massing: dict[str, Any],
                         phases: list[dict[str, Any]]) -> dict[str, Any]:
-    """Раскладка и картинка одним ответом: `tep.site_massing.scheme`."""
+    """Раскладка и картинка одним ответом: `tep.site_massing.scheme`.
+
+    Корпусов больше `LAYOUT_MAX_DRAWN_CORPORA` — схему не рисуем (владелец
+    23.10.2026: «в таких масштабных случаях лучше и не рисовать»): ряды из
+    десятков корпусов нечитаемы и ничего не говорят. Тогда вместо картинки —
+    причина и строка на очередь, а корпусов на карте участка нет.
+    """
     layout = site_massing_layout(x, massing, phases)
-    if not layout.get("buildings"):
+    buildings = layout.get("buildings") or []
+    if not buildings:
+        return {"layout": layout, "axonometry": {}}
+    if len(buildings) > LAYOUT_MAX_DRAWN_CORPORA:
+        for b in buildings:
+            b.pop("ring_merc", None)
+        layout["skipped"] = (f"Схему не рисуем: корпусов получилось {len(buildings)}, и их "
+                             "расстановка рядами на таком участке ничего не покажет. Корпуса по "
+                             "очередям:")
+        layout["phase_lines"] = site_massing_phase_lines(layout, len(phases))
         return {"layout": layout, "axonometry": {}}
     return {"layout": layout, "axonometry": site_massing_axonometry(layout)}

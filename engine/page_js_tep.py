@@ -1471,7 +1471,13 @@ function renderSiteMassingScheme(m){
  const box=document.getElementById('siteMassingScheme');
  if(!box)return;
  const scheme=(m&&m.scheme)||{};const ax=scheme.axonometry||{};const layout=scheme.layout||{};
- if(!(ax.shapes||[]).length){box.innerHTML='';return;}
+ if(!(ax.shapes||[]).length){
+  // Корпусов слишком много — схему не рисуем, а говорим почему и даём
+  // строку на очередь (`site_massing_scheme`).
+  box.innerHTML=layout.skipped?'<p class="site-massing-hint site-massing-skipped">'+escapeHtml(layout.skipped)+'</p>'+
+   '<ul class="site-massing-legend">'+(layout.phase_lines||[]).map(t=>'<li>'+escapeHtml(t)+'</li>').join('')+'</ul>':'';
+  return;
+ }
  const legend=(ax.legend||[]).map(g=>'<li data-building="'+g.number+'"><i style="background:'+g.color+'"></i>'+escapeHtml(g.line||'')+'</li>').join('');
  const notes=(layout.notes||[]).map(t=>'<p class="site-massing-hint">'+escapeHtml(t)+'</p>').join('');
  box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
