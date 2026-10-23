@@ -209,6 +209,7 @@ def test_the_book_puts_the_garden_on_its_own_plot_like_the_engine():
     t = copy.deepcopy(core.TEP_DEFAULT)
     m = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))["tep"]["site_massing"]
     assert m["objects_plot_sqm"] > 0 and m["residential_site_sqm"] < m["site_sqm"]
+    assert m["social_plot_sqm"] > 0
     content, _, _ = core.build_project_workbook(x, t, [], {}, project_name="Сад")
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
     cells = _block(book, "Параметры модели")
@@ -218,5 +219,7 @@ def test_the_book_puts_the_garden_on_its_own_plot_like_the_engine():
                         ("footprint_estimate_sqm", "footprint_estimate_sqm"),
                         ("coverage_sqm", "coverage_sqm"), ("footprint_sqm", "footprint_sqm"),
                         ("average_storeys", "average_storeys"),
-                        ("landscaping_room_sqm", "landscaping_room_sqm")):
+                        ("landscaping_room_sqm", "landscaping_room_sqm"),
+                        # Подземный контур — без участка сада (владелец 23.10.2026).
+                        ("contour_sqm", "underground_contour_sqm")):
         assert got(key) == pytest.approx(m[engine], rel=1e-9), key

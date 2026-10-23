@@ -76,6 +76,8 @@ OTHER_OBJECT_PLOT_PER_FOOTPRINT = 2.0
 # Строки ТЭП жилых домов (квартиры, кладовые, встроенная коммерция) и
 # подземные — остальное с наземной ГНС стоит отдельными зданиями.
 RESIDENTIAL_TEP_KEYS = ("apartments", "storage", "ground_commercial")
+# Соцобъекты, чьи участки передаются городу: под ними подземного контура нет.
+SOCIAL_PLOT_KEYS = ("kindergarten", "school", "clinic")
 NOT_ABOVE_TEP_KEYS = ("underground_parking",)
 
 def _massing_number(x: dict[str, Any], key: str) -> float:
@@ -613,7 +615,12 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         notes.append(f"Предельная этажность участка не задана, поэтому расчёт не ставит здание "
                      f"выше {_fmt_ru(limit)} этажей. Задайте предел из градплана, если он известен.")
 
-    contour = max(0.0, site_sqm - setbacks_sqm)
+    # Подземный контур — участок без отступов и без участков соцобъектов
+    # (владелец 23.10.2026): под школой, садом и поликлиникой паркинг жилья не
+    # строят, их участки передаются городу. Полоса отступа — по доле.
+    social_plot = sum(o["plot_sqm"] for o in objects if o["key"] in SOCIAL_PLOT_KEYS)
+    contour = (max(0.0, site_sqm - social_plot) * (site_sqm - setbacks_sqm) / site_sqm
+               if site_sqm > 0 else 0.0)
     capacity = contour * use_factor
     manual_levels = int(_massing_number(x, "underground_levels"))
     if under_sqm <= 0:
@@ -657,6 +664,7 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         # Отдельные здания на своих участках и жилой баланс на остатке.
         "objects": objects,
         "objects_plot_sqm": objects_plot,
+        "social_plot_sqm": social_plot,
         "objects_gns_sqm": objects_gns,
         "residential_site_sqm": home_sqm,
         "residential_gns_sqm": home_gns,
@@ -696,6 +704,9 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "underground_contour_sqm": contour,
         "underground_use_factor": use_factor,
         "underground_sqm": under_sqm,
+        # Из чего она: подземные продукты проекта и гаражи отдельных объектов.
+        "underground_garages_sqm": sum(n(row, "under_gns") for row in tep.values()
+                                       if isinstance(row, dict)),
         "underground_levels": levels,
         "underground_levels_origin": levels_origin,
         "underground_level_rows": level_rows,
