@@ -174,18 +174,15 @@ def test_a_hectare_with_28000_density_is_not_a_fifty_storey_tower():
     m = core.site_massing(x, t)
     assert m["above_gns_sqm"] == pytest.approx(26410.2)
     # Рядом со зданием — двор по норме (5 м² на жителя), остальное
-    # благоустройство — на кровле стилобата; свободно около половины участка,
-    # но жилой дом занимает процент застройки — 30 %: этажность около 8,8.
+    # благоустройство — на кровле стилобата. Жилые дома — типовой этажности
+    # 17 (владелец 23.10.2026): пятно 26 410 ÷ 17, это меньше 30 % участка и
+    # свободного места.
     assert m["footprint_estimate_sqm"] > 3000
-    # Благоустройство 11 м² × 428 жителей = 4 708 м²; рядом со зданием для него
-    # 10 000 − 3 000 − 1 500 − 1 164 = 4 336 м², на кровлю — остаток 372 м².
-    assert m["yard_ground_sqm"] == pytest.approx(10000 - 3000 - 1500 - m["setbacks_sqm"])
-    assert m["yard_roof_sqm"] == pytest.approx(m["landscaping_sqm"] - m["yard_ground_sqm"])
-    assert "кровле стилобата" in m["yard_basis"]
-    assert (m["footprint_origin"], m["coverage_pct"], m["coverage_origin"]) == (
-        "coverage", 30.0, "default")
-    assert m["footprint_sqm"] == pytest.approx(3000)
-    assert m["average_storeys"] == pytest.approx(26410.2 / 3000)
+    assert m["yard_ground_sqm"] == pytest.approx(10000 - m["footprint_sqm"] - 1500 - m["setbacks_sqm"])
+    assert (m["footprint_origin"], m["typical_storeys"], m["typical_storeys_origin"]) == (
+        "typical", 17.0, "default")
+    assert m["footprint_sqm"] == pytest.approx(26410.2 / 17)
+    assert m["average_storeys"] == pytest.approx(17)
     assert not m["warnings"]
 
 
@@ -200,8 +197,16 @@ def test_a_hand_footprint_that_eats_the_norm_yard_is_said_aloud():
 
 
 def test_the_coverage_from_the_town_plan_wins_and_offices_have_no_default():
-    m = core.site_massing(*_one_hectare(site_coverage_max_pct=40))
-    assert (m["footprint_sqm"], m["coverage_origin"]) == (pytest.approx(4000), "manual")
+    # Процент застройки — верхняя граница: 12 % участка меньше пятна по 17 этажам.
+    m = core.site_massing(*_one_hectare(site_coverage_max_pct=12))
+    assert (m["footprint_sqm"], m["coverage_origin"], m["footprint_origin"]) == (
+        pytest.approx(1200), "manual", "coverage")
+    assert m["average_storeys"] == pytest.approx(26410.2 / 1200)
+    # Типовая этажность, заданная руками, и предел участка ниже неё.
+    hand = core.site_massing(*_one_hectare(residential_storeys_typical=12))
+    assert hand["footprint_sqm"] == pytest.approx(26410.2 / 12)
+    capped = core.site_massing(*_one_hectare(max_storeys_allowed=9))
+    assert capped["average_storeys"] == pytest.approx(9)
     # Нежилой проект: процента по умолчанию нет — пятно всё свободное место.
     office = core.site_massing(*_office())
     assert office["coverage_origin"] == "none" and office["footprint_origin"] == "estimate"

@@ -28,9 +28,10 @@ LAYOUT_GAP_IN_ROW_M = 12.0
 LAYOUT_GAP_BETWEEN_ROWS_M = 15.0
 # Самый длинный корпус; длиннее — очередь делится на корпуса по длине.
 LAYOUT_CORPUS_MAX_LENGTH_M = 100.0
-# Больше корпусов схема не рисует: ряды из десятков корпусов нечитаемы
-# (владелец 23.10.2026).
-LAYOUT_MAX_DRAWN_CORPORA = 12
+# Больше корпусов схема не рисует (владелец 23.10.2026: «в таких масштабных
+# случаях лучше и не рисовать»); до этого корпуса расставлены сеткой по всему
+# участку, а номера и легенда — по группам (очередь, отдельное здание).
+LAYOUT_MAX_DRAWN_CORPORA = 40
 # Высота этажа только для картинки: этажность считает ТЭП, не она.
 LAYOUT_STOREY_HEIGHT_M = 3.0
 # Цвета очередей: одна палитра для страницы и PDF.
@@ -263,12 +264,75 @@ def _object_corpora(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
+def _grid_place(corpora: list[dict[str, Any]], rings: list[list[list[float]]]) -> bool:
+    """Корпуса — сеткой равномерно по всему участку без отступов (владелец 23.10.2026:
+    «на больших участках распределять равномерно, а не в одну кучу»).
+
+    Шаг сетки не меньше корпуса плюс разрыв (вдоль — 12 м, поперёк — 15 м или
+    0,8 высоты, ориентир инсоляции) и растягивается, пока на участке есть место
+    для всех корпусов; лишние места пропускаются равномерно. Корпуса идут
+    группами (отдельные здания, затем очереди) по строкам. Не помещаются и при
+    наименьшем шаге — False: раскладка рядами (`_pack_rows`).
+    """
+    if not corpora or not rings:
+        return False
+    depth = LAYOUT_CORPUS_DEPTH_M
+    lengths = [c["area_sqm"] / depth for c in corpora]
+    longest = max(lengths)
+    tallest = max(c["storeys_shown"] for c in corpora) * LAYOUT_STOREY_HEIGHT_M
+    px0 = longest + LAYOUT_GAP_IN_ROW_M
+    py0 = depth + max(LAYOUT_GAP_BETWEEN_ROWS_M, 0.8 * tallest)
+    points = [p for ring in rings for p in ring]
+    min_x, max_x = min(p[0] for p in points), max(p[0] for p in points)
+    min_y, max_y = min(p[1] for p in points), max(p[1] for p in points)
+
+    def spots(scale: float) -> list[tuple[float, float]]:
+        px, py = px0 * scale, py0 * scale
+        cols, rows = int((max_x - min_x) // px), int((max_y - min_y) // py)
+        if cols < 1 or rows < 1:
+            return []
+        ox = min_x + (max_x - min_x - cols * px) / 2.0 + px / 2.0
+        oy = min_y + (max_y - min_y - rows * py) / 2.0 + py / 2.0
+        found = []
+        for j in range(rows):
+            for i in range(cols):
+                cx, cy = ox + i * px, oy + j * py
+                hx, hy = longest / 2.0, depth / 2.0
+                if all(_inside(corner, rings) for corner in
+                       ((cx - hx, cy - hy), (cx + hx, cy - hy), (cx + hx, cy + hy),
+                        (cx - hx, cy + hy), (cx, cy))):
+                    found.append((cx, cy))
+        return found
+
+    count = len(corpora)
+    if len(spots(1.0)) < count:
+        return False
+    low, high = 1.0, max(max_x - min_x, max_y - min_y) / min(px0, py0)
+    for _ in range(30):
+        mid = (low + high) / 2.0
+        if len(spots(mid)) >= count:
+            low = mid
+        else:
+            high = mid
+    chosen = spots(low)
+    if len(chosen) > count:
+        step = (len(chosen) - 1) / (count - 1) if count > 1 else 0.0
+        chosen = [chosen[int(round(k * step))] for k in range(count)] if count > 1 \
+            else [chosen[len(chosen) // 2]]
+    for c, length, (cx, cy) in zip(corpora, lengths, chosen):
+        c["rect_m"] = [round(cx - length / 2.0, 2), round(cy - depth / 2.0, 2),
+                       round(cx + length / 2.0, 2), round(cy + depth / 2.0, 2)]
+    return True
+
+
 def _pack_rows(corpora: list[dict[str, Any]], width: float, height: float) -> float:
     """Раскладка рядами в прямоугольник W×H; → во сколько раз корпуса пришлось уменьшить.
 
-    Число рядов — то, при котором корпуса помещаются и ширина ряда ближе всего
-    к ширине секции. Не помещаются ни при каком числе — уменьшаются все поровну,
-    и схема об этом говорит.
+    Число рядов — то, при котором корпуса помещаются, ширина ряда ближе всего
+    к ширине секции, а свободное место делится поровну по ширине и по высоте.
+    Ряды и корпуса в ряду разнесены по всему прямоугольнику с равными
+    промежутками, а не сдвинуты в кучу (владелец 23.10.2026). Не помещаются ни
+    при каком числе — уменьшаются все поровну, и схема об этом говорит.
     """
     count = len(corpora)
     best = None
@@ -288,25 +352,34 @@ def _pack_rows(corpora: list[dict[str, Any]], width: float, height: float) -> fl
                 overflow = max(overflow, 10.0)
             else:
                 overflow = max(overflow, need / room, area / (slot * room))
+        # Свободное место по ширине и по высоте — поровну: ряды не жмутся друг
+        # к другу, когда корпуса стоят редко.
+        free_x = sum((width - sum(c["area_sqm"] / d for c in g)) / (len(g) + 1)
+                     for g, d in zip(groups, depths)) / len(groups)
+        free_y = (height - sum(depths)) / (rows + 1)
         score = (round(overflow, 3) if overflow > 1.0 else 1.0,
-                 sum(abs(d - LAYOUT_CORPUS_DEPTH_M) for d in depths))
+                 round(sum(abs(d - LAYOUT_CORPUS_DEPTH_M) for d in depths), 1),
+                 abs(free_x - free_y))
         if best is None or score < best[0]:
             best = (score, rows, slot, groups)
     if best is None:
         return 1.0
-    (overflow, _), rows, slot, groups = best
+    (overflow, _, _), rows, slot, groups = best
     shrink = _math.sqrt(overflow) if overflow > 1.0 else 1.0
     for r, group in enumerate(groups):
         room = width - (len(group) - 1) * LAYOUT_GAP_IN_ROW_M
         area = sum(c["area_sqm"] for c in group) / shrink ** 2
         depth = min(slot, max(LAYOUT_CORPUS_DEPTH_M, area / room if room > 0 else slot))
         lengths = [c["area_sqm"] / shrink ** 2 / depth for c in group]
-        used = sum(lengths) + (len(group) - 1) * LAYOUT_GAP_IN_ROW_M
+        # Промежутки поровну по всей ширине (не меньше разрыва в ряду).
+        gap = max(LAYOUT_GAP_IN_ROW_M if len(group) > 1 else 0.0,
+                  (width - sum(lengths)) / (len(group) + 1))
+        used = sum(lengths) + (len(group) - 1) * gap
         x0 = (width - used) / 2.0
         y0 = r * (slot + LAYOUT_GAP_BETWEEN_ROWS_M) + (slot - depth) / 2.0
         for c, length in zip(group, lengths):
             c["rect_m"] = [round(x0, 2), round(y0, 2), round(x0 + length, 2), round(y0 + depth, 2)]
-            x0 += length + LAYOUT_GAP_IN_ROW_M
+            x0 += length + gap
     return shrink
 
 
@@ -356,7 +429,12 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
     corpora = _object_corpora(objects) + _phase_corpora(
         phases, footprint, limit, str(massing.get("footprint_origin") or "estimate"))
     shrink = 1.0
-    if rect and corpora:
+    if corpora and _grid_place(corpora, inner or rings):
+        for c in corpora:
+            c["rect_origin"] = "schema"
+            if frame:
+                c["ring_merc"] = _to_merc(c["rect_m"], frame)
+    elif rect and corpora:
         x0, y0, x1, y1 = rect
         shrink = _pack_rows(corpora, x1 - x0, y1 - y0)
         for c in corpora:
@@ -520,8 +598,12 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
     order = sorted(range(len(buildings)),
                    key=lambda i: -((buildings[i]["rect_m"][0] + buildings[i]["rect_m"][2])
                                    + (buildings[i]["rect_m"][1] + buildings[i]["rect_m"][3])))
-    for number, b in enumerate(buildings, 1):
-        b["number"] = number
+    # Номер — группы (отдельное здание или очередь), а не корпуса: двадцать
+    # кружков с разными номерами на телефоне не читаются.
+    groups: dict[Any, int] = {}
+    for b in buildings:
+        key = ("object", b.get("object")) if b["phase"] == 0 else ("phase", b["phase"])
+        b["number"] = groups.setdefault(key, len(groups) + 1)
     for i in order:
         b = buildings[i]
         x0, y0, x1, y1 = b["rect_m"]
@@ -556,11 +638,21 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
         xs.append(t["x"] - 0.56 * font * len(t["text"]))
         ys.extend([t["y"] - font, t["y"] + 0.3 * font])
     pad = 0.04 * size
-    legend = [{"number": b["number"], "phase": b["phase"], "text": b["label"],
-               "line": f"{b['number']} — {b['label']}, пятно {_fmt_ru(b['area_sqm'])} м²",
-               "area_sqm": b["area_sqm"],
-               "color": b.get("color") or LAYOUT_PHASE_COLORS[(b["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]}
-              for b in buildings]
+    legend = []
+    for number in sorted({b["number"] for b in buildings}):
+        own = [b for b in buildings if b["number"] == number]
+        first = own[0]
+        area = sum(b["area_sqm"] for b in own)
+        if len(own) == 1:
+            text = first["label"]
+        else:
+            name = first["label"].split(",")[0]
+            text = f"{name}: {_corpora_word(len(own))} по {_storeys_word(first['storeys_shown'])}"
+        legend.append({"number": number, "phase": first["phase"], "text": text, "area_sqm": area,
+                       "corpora": len(own),
+                       "line": f"{number} — {text}, пятно {_fmt_ru(area)} м²",
+                       "color": first.get("color") or
+                       LAYOUT_PHASE_COLORS[(first["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]})
     levels = int(layout.get("underground_levels") or 0)
     caption = ("Зелёное — участок без отступов, светлая полоса вдоль границ — отступ, пунктир — "
                "граница подземной части. "

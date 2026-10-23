@@ -1385,6 +1385,7 @@ function siteMassingOrigin(origin){
  if(origin==='manual')return 'Задано вручную.';
  if(origin==='limit')return 'Взято по предельной этажности: иначе здание было бы выше предела.';
  if(origin==='coverage')return 'Процент застройки участка. Свободного места больше, но здание обычно занимает не всё.';
+ if(origin==='typical')return 'Жилая площадь, делённая на типовую этажность жилых домов. Свободного места и процента застройки на это хватает.';
  return 'Оценка по балансу территории.';
 }
 function renderSiteMassing(){
@@ -1498,7 +1499,7 @@ function renderSiteMassingScheme(m){
 // Поля допущений: подпись и единица — из FIELD_GROUPS. Поля «пусто — по
 // расчёту» (пятно, уровни, предельная этажность, земля на место) показывают
 // пустоту, а не ноль.
-const SITE_MASSING_AUTO=['surface_parking_sqm_per_space','building_footprint_sqm','underground_levels','max_storeys_allowed','site_coverage_max_pct'];
+const SITE_MASSING_AUTO=['surface_parking_sqm_per_space','building_footprint_sqm','underground_levels','max_storeys_allowed','site_coverage_max_pct','residential_storeys_typical'];
 function renderSiteMassingFields(){
  const box=document.getElementById('siteMassingFields');
  if(!box||(typeof box.contains==='function'&&box.contains(document.activeElement)))return;
@@ -1506,7 +1507,8 @@ function renderSiteMassingFields(){
  const m=siteMassingResult()||{};
  const auto={building_footprint_sqm:m.footprint_estimate_sqm?'оценка '+num(Math.round(m.footprint_estimate_sqm)):'',
   underground_levels:m.underground_sqm?'по расчёту':'',surface_parking_sqm_per_space:m.surface_parking_sqm_per_space?String(m.surface_parking_sqm_per_space).replace('.',','):'',
-  max_storeys_allowed:'не выше '+num(m.storeys_limit||25),site_coverage_max_pct:m.coverage_origin==='none'?'не задан':String(m.coverage_pct||30).replace('.',',')+'%'};
+  max_storeys_allowed:'не выше '+num(m.storeys_limit||25),site_coverage_max_pct:m.coverage_origin==='none'?'не задан':String(m.coverage_pct||30).replace('.',',')+'%',
+  residential_storeys_typical:m.typical_storeys_origin==='none'?'нет жилья':String(m.typical_storeys||17)};
  box.innerHTML='';
  SITE_MASSING_INPUTS.forEach(id=>{
   const f=decl[id];if(!f)return;

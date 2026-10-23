@@ -35,6 +35,7 @@ import site_massing_book as _massing_book
 # (владелец 22.10.2026). Один источник с книгой и объёмной схемой.
 STOREYS_LIMIT_DEFAULT = _massing_book.STOREYS_LIMIT_DEFAULT
 COVERAGE_PCT_DEFAULT = _massing_book.COVERAGE_PCT_DEFAULT
+RESIDENTIAL_STOREYS_DEFAULT = _massing_book.RESIDENTIAL_STOREYS_DEFAULT
 
 # Нижняя граница двора по региону. Москва — 2152-ПП: 5,0 м² озеленённых
 # территорий ЖК на жителя (её же требует калькулятор ГлавАПУ, строка 57).
@@ -520,6 +521,17 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         coverage_pct, coverage_origin = COVERAGE_PCT_DEFAULT, "default"
     coverage_sqm = home_sqm * coverage_pct / 100.0 if coverage_pct > 0 else home_sqm
     base = min(room, coverage_sqm)
+    # Жилые дома — типовой этажности (владелец 23.10.2026: 17 этажей, одно число
+    # для всех классов), но не выше предела; процент застройки и свободное
+    # место — верхняя граница пятна. У проекта без жилья типовой нет.
+    given_typical = _massing_number(x, "residential_storeys_typical")
+    if without_housing(x):
+        typical, typical_origin = 0.0, "none"
+    elif given_typical > 0:
+        typical, typical_origin = given_typical, "manual"
+    else:
+        typical, typical_origin = RESIDENTIAL_STOREYS_DEFAULT, "default"
+    typical_target = home_gns / min(typical, limit) if typical > 0 and home_gns > 0 else 0.0
     manual_footprint = _massing_number(x, "building_footprint_sqm")
     shortage = 0.0
     if manual_footprint > 0:
@@ -565,6 +577,8 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
                 "Место на участке для этого есть, но процент застройки выше "
                 f"{'заданного' if given_coverage > 0 else 'обычного'}: проверьте его по "
                 "градплану или уменьшите площадь здания.")
+    elif typical_target > 0 and typical_target <= base + 1e-9:
+        footprint, footprint_origin = typical_target, "typical"
     elif coverage_sqm < room:
         footprint, footprint_origin = coverage_sqm, "coverage"
     else:
@@ -671,6 +685,8 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "coverage_pct": coverage_pct,
         "coverage_origin": coverage_origin,
         "coverage_sqm": coverage_sqm,
+        "typical_storeys": typical,
+        "typical_storeys_origin": typical_origin,
         # Доля жилой территории (у проекта без отдельных зданий — участка).
         "footprint_share": footprint / home_sqm if home_sqm > 0 else 0.0,
         "average_storeys": storeys,
