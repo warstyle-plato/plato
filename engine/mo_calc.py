@@ -827,6 +827,23 @@ class MoMarketPriceRequest(BaseModel):
     rows: list[dict[str, Any]] = []
     period: str = ""
     document: str = ""
+    session: str = ""
+    key: str = ""
+
+
+def _mo_market_price_writer(session: str, key: str) -> None:
+    """Справочник Кср меняет только владелец сервиса.
+
+    Кср — множитель платы за смену ВРИ (Кср × площадь квартир × Кд) в каждом
+    расчёте по Подмосковью, и запись ложится на диск для всех. Открытая запись
+    давала любому посетителю подменить плату в чужих расчётах и PDF. Закрыто и
+    там, где владелец не настроен: справочник тогда правят файлом на сервере,
+    а не запросом с улицы.
+    """
+    if not _is_admin_request(session, key):
+        raise HTTPException(
+            status_code=403,
+            detail="Справочник средней цены м² (Кср) меняет только владелец сервиса.")
 
 
 @app.get("/mo/market-price")
@@ -856,6 +873,7 @@ def mo_market_price() -> dict[str, Any]:
 @app.post("/mo/market-price")
 def mo_market_price_set(req: MoMarketPriceRequest) -> dict[str, Any]:
     """Ручная загрузка справочника Кср списком строк."""
+    _mo_market_price_writer(req.session, req.key)
     rows: list[dict[str, Any]] = []
     for item in req.rows or []:
         name = _land_text(item.get("municipality"))
@@ -871,8 +889,10 @@ def mo_market_price_set(req: MoMarketPriceRequest) -> dict[str, Any]:
 
 
 @app.post("/mo/market-price/import")
-async def mo_market_price_import(request: Request, period: str = "", document: str = "") -> dict[str, Any]:
+async def mo_market_price_import(request: Request, period: str = "", document: str = "",
+                                 session: str = "", key: str = "") -> dict[str, Any]:
     """Импорт приложения к распоряжению: .xlsx с таблицей «МО — стоимость»."""
+    _mo_market_price_writer(session, key)
     data = await request.body()
     if not data:
         raise HTTPException(status_code=400, detail="Файл не передан")
