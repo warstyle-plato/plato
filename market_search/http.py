@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import socket
@@ -121,3 +122,35 @@ def fresh(path: Path, ttl_seconds: int) -> bool:
         return time.time() - path.stat().st_mtime <= ttl_seconds
     except OSError:
         return False
+
+
+def public_url_problem(url: str) -> str:
+    """Почему по этому адресу пробе ходить нельзя; пусто — можно.
+
+    Пробы открывают адрес, присланный в запросе, и показывают ответ. Без этой
+    проверки они читали бы то, что видно только изнутри сервера: служебные
+    маршруты на localhost, метаданные облака (169.254.169.254), соседние машины
+    сети. Пускаем только https на публичный адрес, без логина в адресе.
+    """
+    try:
+        parts = urlsplit(str(url or "").strip())
+        port = parts.port
+    except ValueError:
+        return "адрес не разбирается"
+    if parts.scheme != "https":
+        return "проба открывает только адреса https://"
+    if parts.username or parts.password:
+        return "в адресе не должно быть логина и пароля"
+    host = parts.hostname or ""
+    if not host:
+        return "в адресе нет имени сервера"
+    try:
+        infos = socket.getaddrinfo(host, port or 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return f"имя сервера {host} не разрешается"
+    for info in infos:
+        address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+        if not address.is_global:
+            return f"{host} ведёт во внутреннюю сеть ({address}) — туда проба не ходит"
+    return ""
+
