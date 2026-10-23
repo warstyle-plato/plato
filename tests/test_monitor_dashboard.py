@@ -498,3 +498,35 @@ def test_chapter_one_comes_from_the_rss_when_the_book_lacks_it(monkeypatch):
     assert without["chapters"] == ["2", "3"] and without["bank_limit"] == 550.0
     assert got["deficit_ladder"] == without["deficit_ladder"]
     assert got["bank_need_check"] == without["bank_need_check"]
+
+
+def test_the_finance_book_gives_chapters_and_reserve_names(tmp_path):
+    """Для плиток сводки: утверждённый бюджет по главам 1–3 и имена резервов
+    из строк 2.8/2.9 финкниги; смета РСС по главам — из РСС."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Расчет стоимости строительства"
+    ws.cell(row=9, column=7, value="Утвержденная фин.модель проекта")
+    ws.cell(row=8, column=11, value="Средства на завершение согласно бюджету")
+    ws.cell(row=8, column=9, value="Оплачено по состоянию")
+    rows = [("1", "Приобретение проекта", 500.0), ("2", "Стройка", 6000.0),
+            ("2.8", "Непредвиденные расходы", 40.0), ("3", "Коммерция", 700.0)]
+    for offset, (code, name, approved) in enumerate(rows):
+        ws.cell(row=10 + offset, column=1, value=code)
+        ws.cell(row=10 + offset, column=2, value=name)
+        ws.cell(row=10 + offset, column=7, value=approved)
+        ws.cell(row=10 + offset, column=11, value=approved)
+    ws.cell(row=15, column=2, value="Всего инвестиционные расходы глава 2, 3")
+    ws.cell(row=15, column=7, value=6700.0)
+    path = tmp_path / "finance.xlsx"
+    wb.save(path)
+    got = dashboard._read_finance_baseline(path)
+    assert got["approved_by_chapter"] == {"1": 500.0, "2": 6000.0, "3": 700.0}
+    assert got["reserve_names"] == {"2.8": "Непредвиденные расходы"}
+    assert got["reserve_parts"] == {"2.8": 40.0}
+    estimate = {"by_code": {"1": {"estimate": 50.0}, "2": {"estimate": 100.0},
+                            "3": {"estimate": 30.0}}}
+    assert dashboard._rss_ch23(estimate, ("1", "2", "3"))["by_chapter"] == {
+        "1": 50.0, "2": 100.0, "3": 30.0}

@@ -1327,6 +1327,28 @@ def _bank_escrow_lines(block: dict[str, Any]) -> list[str]:
     return out
 
 
+def _by_chapter_words(parts: dict[str, Any] | None) -> str:
+    """«из них по 1 главе …, по 2 главе …, по 3 главе …» — только главы с числом."""
+    items = [(code, float(value)) for code, value in sorted((parts or {}).items())
+             if value]
+    if not items:
+        return ""
+    return "из них " + ", ".join(f"по {code} главе {_rub(value)}" for code, value in items)
+
+
+def _reserve_words(limit: dict[str, Any]) -> str:
+    """«резервы: Непредвиденные 209,7 млн ₽ и Удорожание 96,4 млн ₽» — по строкам книги."""
+    parts = {code: float(value) for code, value in (limit.get("reserve_parts") or {}).items()
+             if value}
+    if not parts:
+        return f"резерв {_rub(limit.get('reserve'))}" if limit.get("reserve") else ""
+    names = limit.get("reserve_names") or {}
+    pieces = [f"{names.get(code) or 'статья ' + code} {_rub(value)}"
+              for code, value in sorted(parts.items())]
+    word = "резерв" if len(pieces) == 1 else "резервы"
+    return f"{word}: " + " и ".join(pieces)
+
+
 def _remaining_words(limit: dict[str, Any], borrowed: float | None = None,
                      short: bool = False) -> str:
     """Как из лимита получился остаток — словами, чтобы вычитание читалось.
@@ -2022,15 +2044,23 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     block = report.get("funding") or {}
     limit = (block.get("limit") or {}) if block.get("state") == "ok" else {}
     need = _approved_need(limit) if limit.get("known") else None
+    # Подписи плиток — коротко (владелец, 22.10.2026: «Слишком много текста.
+    # Лучше писать из них по 2 главе и по 3 главе столько-то в лимитах РСС. И
+    # отдельно резервы такие-то. Выбрано у банка можно писать из них за неделю
+    # и за месяц»).
     add("Утверждённый бюджет", _rub(need["approved"]) if need else None,
-        "по финмодели" if need else "финансовая книга не загружена")
+        (_by_chapter_words(limit.get("approved_by_chapter")) or "по финмодели") if need
+        else "финансовая книга не загружена")
     if limit.get("known"):
-        add("Лимит банка", _rub(limit.get("bank_limit")), "по смете РСС")
+        add("Лимит банка", _rub(limit.get("bank_limit")),
+            "; ".join(filter(None, [_by_chapter_words(limit.get("limit_by_chapter")) or "по смете РСС",
+                                    _reserve_words(limit)])))
     else:
         add("Лимит банка", None, limit.get("reason") or "лимит не посчитан")
     draws = block.get("draws") if block.get("state") == "ok" else None
     if draws:
-        note = f"за {period} — {_rub(draws['period'])}"
+        note = (f"из них за {period} {_rub(draws['period'])} и за месяц {_rub(draws['month'])}"
+                if report["kind"] != "month" else f"из них за месяц {_rub(draws['period'])}")
         over = draws["total"] - float(limit.get("bank_limit") or 0.0)
         if limit.get("known") and over > 0:
             note += f"; больше лимита на {_rub(over)}"
@@ -2040,8 +2070,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     if limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
         add("Остаток лимита банка", _rub(limit.get("bank_remaining")),
-            _remaining_words(limit, draws["total"] if draws else None, short=True)
-            + f"; резерв {_rub(limit.get('reserve'))}; по РСС "
+            f"лимит без оплаченного {_rub(limit.get('paid_actual'))}; по РСС "
             + (f"не хватает {_rub(extra)} {_since(limit.get('additional_financing_from'))}"
                if extra > 0 else "хватает до ввода"), "bad" if extra > 0 else "good")
     else:
