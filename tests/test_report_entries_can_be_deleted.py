@@ -106,14 +106,14 @@ def test_the_page_deletes_and_names_a_lost_connection(monkeypatch):
             tab.wait_for_selector("#legalList .legal-case .legalRemove")
             # Обрыв связи при сохранении: причина словами, форма с правками остаётся.
             tab.click("#legalList .legal-case .legalEdit")
-            tab.wait_for_selector("#legalForm:not(.hidden) #lfNext")
-            tab.fill("#lfNext", "Подать иск 30.10")
+            tab.wait_for_selector("#legalForm:not(.hidden) #lfSubject")
+            tab.fill("#lfSubject", "Подать иск 30.10")
             tab.route("**/monitor/legal/case", lambda route: route.abort("failed"))
             tab.click("#lfSave")
             tab.wait_for_function(
                 "document.getElementById('legalMsg').textContent.includes('связь прервалась')")
             lost = tab.inner_text("#legalMsg")
-            still_open = tab.is_visible("#legalForm") and tab.input_value("#lfNext")
+            still_open = tab.is_visible("#legalForm") and tab.input_value("#lfSubject")
             tab.unroute("**/monitor/legal/case")
             tab.click("#lfSave")
             tab.wait_for_function(
