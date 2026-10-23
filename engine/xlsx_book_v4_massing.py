@@ -28,6 +28,8 @@ _V4_DEPTH_FACTOR_CELL: "_massing_contextvars.ContextVar[str]" = _massing_context
 _V4_KEYED_INPUT_FORMATS.update({key: _v4_input_format_code("number", "м²", 1000.0)
                                 for key in _massing_book.AREA_KEYS})
 _V4_KEYED_INPUT_FORMATS.update({key: "0.0" for key in _massing_book.PERCENT_KEYS})
+# Типовая этажность жилых домов — целые этажи, как предел участка.
+_V4_KEYED_INPUT_FORMATS["massing_typical_storeys"] = _v4_input_format_code("number", "этажей", 17)
 
 
 def _v4_under_rate_ref(params_name: str = "'Вводные'") -> str:
