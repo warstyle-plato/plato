@@ -1254,14 +1254,20 @@ def _tariffs_message(chat_id: int) -> None:
              f"• Один участок — <b>{rub(terms.get('plot_price_rub'))}</b>"
              f"{' (' + vat + ')' if vat else ''}: доступ на {terms.get('plot_days')} дней, "
              "любое число пересчётов, PDF-отчёт и Excel-модель.",
+             f"• Несколько участков вперёд — по {rub(terms.get('plot_price_rub'))} за участок, "
+             f"до {int(data.get('package_max_plots') or 10)} за один раз: текущий участок "
+             "откроется сразу, остальные останутся в запасе и откроются при первом расчёте "
+             "нового участка.",
              f"• Подписка — <b>{rub(terms.get('subscription_price_rub'))} в месяц</b>: "
              "любые участки без ограничений.", "", "<b>Мой доступ</b>"]
     if status.get("subscription_active"):
         lines.append(f"Подписка действует до {day(status.get('subscription_until'))}.")
     lines.append(f"Бесплатных участков осталось: {status.get('free_left', 0)} "
                  f"из {status.get('free_plots', 0)}.")
+    lines.append(f"В запасе участков: {int(status.get('reserve') or 0)}.")
     for plot in [p for p in status.get("plots") or [] if p.get("active")]:
-        lines.append(f"• {html.escape(str(plot.get('label') or 'участок'))} — до {day(plot.get('until'))}")
+        tail = " (из запаса)" if plot.get("source") == "reserve" else ""
+        lines.append(f"• {html.escape(str(plot.get('label') or 'участок'))} — до {day(plot.get('until'))}{tail}")
     lines.append("")
     lines.append("Оплатить можно на сайте: «Личный кабинет» → «Тарифы и доступ»."
                  if data.get("payments_available") else
@@ -1273,23 +1279,37 @@ def _tariffs_message(chat_id: int) -> None:
 
 
 def _grant_command(chat_id: int, user_id: int, argument: str) -> None:
-    """/grant ID дней номера… | /grant ID дней подписка — ручная выдача (администраторы)."""
+    """/grant ID дней номера… | /grant ID дней подписка | /grant ID запас N —
+    ручная выдача (администраторы); запас — пакет участков вперёд."""
     if user_id not in core.usage_admin_ids():
         _send_message(chat_id, "Выдавать доступ могут только администраторы DevelopAid.")
         return
     parts = argument.split()
-    if len(parts) < 3 or not parts[0].lstrip("-").isdigit() or not parts[1].isdigit():
-        _send_message(chat_id, "Как выдать доступ:\n<code>/grant ID дней кадастровые_номера</code>\n"
-                               "<code>/grant ID дней подписка</code>")
+    usage = ("Как выдать доступ:\n<code>/grant ID дней кадастровые_номера</code>\n"
+             "<code>/grant ID дней подписка</code>\n<code>/grant ID запас N</code> — N участков вперёд")
+    reserve = len(parts) >= 2 and parts[1].lower() in {"запас", "reserve"}
+    if len(parts) < 3 or not parts[0].lstrip("-").isdigit() or not (parts[1].isdigit() or reserve) \
+            or (reserve and not parts[2].isdigit()):
+        _send_message(chat_id, usage)
         return
-    subscription = parts[2].lower() in {"подписка", "subscription"}
+    subscription = not reserve and parts[2].lower() in {"подписка", "subscription"}
     try:
-        result = core.access_admin_grant(core.AccessRequest(
-            session=core._telegram_session(user_id, []), chat=int(parts[0]),
-            kind="subscription" if subscription else "plot",
-            cadastral=[] if subscription else parts[2:], days=int(parts[1])))
+        if reserve:
+            request = core.AccessRequest(session=core._telegram_session(user_id, []),
+                                         chat=int(parts[0]), kind="reserve", count=int(parts[2]))
+        else:
+            request = core.AccessRequest(
+                session=core._telegram_session(user_id, []), chat=int(parts[0]),
+                kind="subscription" if subscription else "plot",
+                cadastral=[] if subscription else parts[2:], days=int(parts[1]))
+        result = core.access_admin_grant(request)
     except HTTPException as exc:
         _send_message(chat_id, f"Доступ не выдан: {html.escape(str(exc.detail))}")
+        return
+    if reserve:
+        _send_message(chat_id, f"Пользователю {int(parts[0])} положено в запас: {int(parts[2])} "
+                               f"{core._access_plots_word(int(parts[2]))}. Теперь в запасе: "
+                               f"{int(result.get('reserve') or 0)}.")
         return
     until = datetime.fromtimestamp(float(result.get("until") or 0), tz=timezone.utc).astimezone(
         timezone(timedelta(hours=3))).strftime("%d.%m.%Y")

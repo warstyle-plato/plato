@@ -604,6 +604,10 @@ class MonitorLegalRequest(BaseModel):
     doc_ids: list[str] = []
     card: dict[str, Any] | None = None
     remove: bool = False
+    # Разнесение перепутанной карточки и «это один спор» (список «Проверьте
+    # эти карточки»).
+    part: dict[str, Any] | None = None
+    codes: list[str] = []
     session: str = ""
     key: str = ""
 
@@ -622,7 +626,8 @@ def _legal_complete(instructions: str, text: str, schema: dict[str, Any]) -> str
 def _legal_listing(project: str, session: str = "", key: str = "") -> dict[str, Any]:
     import developaid_legal_cases as legal
     return {"cases": legal.cases(project), "documents": legal.documents(project),
-            "statuses": legal.STATUSES, "directions": legal.DIRECTIONS,
+            "statuses": legal.STATUSES, "stages": legal.STAGES,
+            "directions": legal.DIRECTIONS, "suspects": legal.suspicions(project),
             # Кнопка «Загрузить готовые карточки» — только владельцу сервиса.
             "can_import": _is_admin_request(session, key)}
 
@@ -630,6 +635,8 @@ def _legal_listing(project: str, session: str = "", key: str = "") -> dict[str, 
 class MonitorLegalImportRequest(BaseModel):
     project: str
     content_base64: str
+    # Ответы владельца на вопросы импорта: номер строки файла → id карточки или "new".
+    decisions: dict[str, str] = {}
     session: str = ""
     key: str = ""
 
@@ -638,8 +645,9 @@ class MonitorLegalImportRequest(BaseModel):
 def monitor_legal_import(req: MonitorLegalImportRequest) -> dict[str, Any]:
     """Готовые карточки споров файлом (формат legal_seed.json) — только владельцу.
 
-    Карточки получают пометку «внесено по документам владельца»; спор, который
-    уже есть в реестре, повторно не заносится.
+    Карточки получают пометку «внесено по документам владельца». Строка с
+    номером карточки обновляет её; похожая строка без номера возвращается
+    вопросом, а не склеивается (`legal.import_cards`).
     """
     _require_team_access(req.session, req.key, "Сводка руководству")
     if not _is_admin_request(req.session, req.key):
@@ -649,7 +657,7 @@ def monitor_legal_import(req: MonitorLegalImportRequest) -> dict[str, Any]:
         raise HTTPException(404, f"В Мониторе нет проекта «{req.project}».")
     try:
         got = legal.import_cards(req.project, base64.b64decode(req.content_base64),
-                                 legal.SEED_AUTHOR)
+                                 legal.SEED_AUTHOR, decisions=req.decisions)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return dict(_legal_listing(req.project, req.session, req.key), imported=got)
@@ -724,6 +732,40 @@ def monitor_legal_case(req: MonitorLegalRequest) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return _legal_listing(req.project, req.session, req.key)
+
+
+@app.post("/monitor/legal/split", include_in_schema=False)
+def monitor_legal_split(req: MonitorLegalRequest) -> dict[str, Any]:
+    """Разнести перепутанную карточку на две или снять признак («это один спор»)."""
+    _require_team_access(req.session, req.key, "Сводка руководству")
+    import developaid_legal_cases as legal
+    author = _monitor_note_author(req.session, req.key)
+    made = None
+    try:
+        if req.part is not None:
+            made = legal.split(req.project, req.case_id, req.part, author)
+        else:
+            legal.acknowledge(req.project, req.case_id, req.codes)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc.args[0]))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return dict(_legal_listing(req.project, req.session, req.key),
+                made=made["id"] if made else "")
+
+
+@app.post("/monitor/legal/export", include_in_schema=False)
+def monitor_legal_export(req: MonitorLegalRequest) -> Response:
+    """Карточки споров файлом с номерами — для проверки и правки; загрузка
+    обратно обновляет карточки по номеру. Только команде."""
+    _require_team_access(req.session, req.key, "Сводка руководству")
+    import developaid_legal_cases as legal
+    from urllib.parse import quote
+    body = json.dumps(legal.export_cards(req.project), ensure_ascii=False, indent=1)
+    name = f"Споры {req.project}.json"
+    return Response(body.encode("utf-8"), media_type="application/json",
+                    headers={"Content-Disposition":
+                             f"attachment; filename*=UTF-8''{quote(name)}"})
 
 
 @app.post("/monitor/legal/doc", include_in_schema=False)
