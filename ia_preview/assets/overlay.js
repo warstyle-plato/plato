@@ -998,6 +998,17 @@
     vri: function () {
       var i = pageInputs() || {};
       if (!Number(i.land_rights_cost_mln || 0)) {  // плату решает сумма (vri_payment_active)
+        /* «Можно пропустить» — правда не везде. В Москве под жильё плата
+           обычно есть, а у площадки КРТ карточка торгов её не считает
+           вовсе: ноль там значит «не посчитано», а не «не нужно». */
+        var region = typeof classRegion === 'function' ? classRegion() : 'msk';
+        var krt = ((i._manual_tep_import || {}).source || {}).kind === 'krt';
+        if (krt) {
+          return { mark: 'warn', hint: 'Плата за смену ВРИ не посчитана: карточка торгов КРТ её не считает, а в Москве под жильё она обычно есть. Без неё расчёт её не учитывает — впишите сумму из расчёта ГлавАПУ или договора КРТ.' };
+        }
+        if (region === 'msk') {
+          return { mark: 'warn', hint: 'Плата за смену ВРИ не задана, и расчёт её не учитывает. В Москве она обычно есть, если участок меняет назначение под жильё. Получите ТЭП калькулятором ГлавАПУ на шаге «Участок» — плата придёт с ним — или впишите сумму сами.' };
+        }
         return { mark: 'opt', hint: 'По желанию: нужен, только если участку требуется смена ВРИ. Плата 0 — шаг можно пропустить.' };
       }
       return { mark: 'ok', hint: 'Смена ВРИ включена: плата посчитана, проверьте сумму, график и источники оплаты.' };
@@ -1131,6 +1142,9 @@
   var goalSeekStale = true;
   var goalSeekBusy = false;
   var goalSeekAbort = null;
+  /* Номер расчёта, для которого просили подбор: ответ, пришедший после
+     следующего пересчёта, относится к прежним вводным и не рисуется. */
+  var goalSeekRound = 0;
 
   function buildVerdict() {
     var report = need('#report', 'панель отчёта');
@@ -1255,13 +1269,28 @@
         : { label: 'Запас к цене', value: '—', note: refused() ? 'Порог не достигается ни при какой цене входа' + (goalSeek.scope_label ? ' у ' + scopeGenitive(goalSeek.scope_label) : '') + ' — дело не в цене.' : 'Считается после подбора максимума.', wait: true }
     ];
 
+    /* Пришёл ответ подбора для этих вводных — плитки, вердикт и подпись
+       рисуются из него: их текст собирает движок (`entry_price_block`), и
+       тизер с PDF печатают тот же. Свои клетки выше — только пока ответа нет. */
+    var server = goalSeek && !goalSeekStale && goalSeek.tiles && metric.key
+      && goalSeek.target_metric === metric.key ? goalSeek : null;
+    if (server) {
+      cells = server.tiles;
+      if (server.verdict && server.verdict.title) {
+        card.classList.remove('pass', 'edge', 'fail');
+        if (server.verdict.tone) card.classList.add(server.verdict.tone);
+        title.textContent = server.verdict.title;
+      }
+    }
     document.getElementById('iaVerdictGrid').innerHTML = cells.map(function (cell) {
       return '<div class="ia-verdict-cell' + (cell.wait ? ' wait' : '') + '"><span>' + cell.label + '</span><b>'
         + cell.value + '</b><small>' + cell.note + '</small></div>';
     }).join('');
 
     var stamp = document.getElementById('iaVerdictStamp');
-    if (!metric.key) {
+    if (server) {
+      stamp.textContent = server.stamp || '';
+    } else if (!metric.key) {
       stamp.textContent = '';
     } else if (goalSeek && goalSeek.available === false) {
       stamp.textContent = 'Подбор выполнен движком DevelopAid ' + (goalSeek.engine_version || '')
@@ -1329,6 +1358,7 @@
     if (goalSeekAbort) goalSeekAbort.abort();
     goalSeekAbort = new AbortController();
     goalSeekBusy = true;
+    var round = goalSeekRound;
     renderVerdict();
     fetch('/ia/goal-seek', {
       method: 'POST',
@@ -1341,13 +1371,26 @@
         session: pageSession(), access_key: pageAccessKey()
       })
     }).then(function (response) { return response.json(); })
-      .then(function (data) { goalSeek = data; goalSeekStale = false; })
+      .then(function (data) {
+        if (round !== goalSeekRound) return;
+        goalSeek = data; goalSeekStale = false;
+      })
       .catch(function (error) {
         if (error && error.name === 'AbortError') return;
         goalSeek = { available: false, reason: String(error && error.message || error) };
       })
-      .then(function () { goalSeekBusy = false; renderVerdict(); });
+      .then(function () {
+        goalSeekBusy = false;
+        renderVerdict();
+        // Пока подбор шёл, модель пересчитали: просим подбор новых вводных.
+        if (round !== goalSeekRound && currentSection === 'result') ensureGoalSeek();
+      });
   }
+
+  /* Тизер и PDF берут найденный здесь потолок без пересчёта, если сервер
+     узнаёт в нём подбор тех же вводных (отпечаток и подпись); нет — подбирают
+     сами в фоне. */
+  window.pageGoalSeek = function () { return goalSeek && goalSeek.fingerprint ? goalSeek : null; };
 
   function wrapRenderResult() {
     var original = window.renderResult;
@@ -1356,6 +1399,7 @@
       var out = original.apply(this, arguments);
       try {
         goalSeekStale = true;
+        goalSeekRound += 1;
         renderVerdict();
         relabelBridge();
         if (currentSection) {

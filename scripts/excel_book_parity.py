@@ -12,8 +12,9 @@ Excel, и только потом чинить книгу.
 
 Печатает по каждой книге: статус модели, строки ПРОВЕРКИ с FAIL/WARN, ячейки
 с ошибками (#REF!, #DIV/0! …) и строки ОТЧЕТа, расходящиеся с движком больше
-чем на 0,01% (абсолютно — больше 1 тыс. ₽). Разбор прошлой сверки —
-docs/excel_book_audit_2026-10-15.md.
+чем на 0,01% (абсолютно — больше 1 тыс. ₽), и строки «Сверки» нежилой книги,
+кроме «сходится» и «—». Разбор последней сверки —
+docs/excel_book_audit_2026-10-23.md.
 """
 
 from __future__ import annotations
@@ -137,7 +138,13 @@ def report(name: str, book_path: Path, consolidated: dict) -> list[str]:
                 lines.append(f"  {verdict}: {checks.cell(row, 1).value}: "
                              f"{checks.cell(row, 2).value} против {checks.cell(row, 3).value}")
     if "Сверка" in book.sheetnames:            # книга нежилого проекта
-        lines.append(f"  сверка книги нежилого: {book['Сверка']['I3'].value}")
+        checks = book["Сверка"]
+        lines.append(f"  сверка книги нежилого: {checks['I3'].value}")
+        for row in range(3, checks.max_row + 1):
+            verdict = checks.cell(row, 7).value
+            if verdict not in ("сходится", "—", None):
+                lines.append(f"  Сверка!G{row} {checks.cell(row, 2).value}: книга "
+                             f"{checks.cell(row, 3).value!r}, движок {checks.cell(row, 4).value!r}")
         return lines
     sheet = book["ОТЧЕТ"]
     rows = {}
@@ -145,6 +152,15 @@ def report(name: str, book_path: Path, consolidated: dict) -> list[str]:
         label = sheet.cell(row, 1).value
         if isinstance(label, str):
             rows.setdefault(label.strip(), (row, sheet.cell(row, 2).value))
+    return lines + compare_report(rows, consolidated)
+
+
+def compare_report(rows: dict[str, tuple[int, Any]], consolidated: dict) -> list[str]:
+    """Строки ОТЧЕТ (подпись → (строка, значение B)) против сводки движка в допуске.
+
+    Одна мера и для пересчёта LibreOffice, и для `xlsx_eval` в тестах.
+    """
+    lines = []
     for label, path, scale in REPORT_ROWS:
         found = next((value for key, value in rows.items() if key.startswith(label)), None)
         engine = _path(consolidated, path)

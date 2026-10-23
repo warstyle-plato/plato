@@ -18,7 +18,13 @@
 - проект без кадастрового номера (ТЭП загружен файлом) — участок сам по себе,
   его опознаёт идентификатор проекта;
 - администраторы (`DEVELOPAID_ADMIN_IDS`, ключ `DEVELOPAID_ADMIN_KEY`)
-  считают без ограничений, и журнал это отмечает.
+  считают без ограничений, и журнал это отмечает;
+- несколько участков вперёд (решение владельца 23.10.2026): пакет из N
+  участков стоит N × цена участка; текущий участок открывается сразу, остальные
+  ложатся в ЗАПАС (`record["reserve"]`, по записи на участок с `happened_at` и
+  `payment_id`). Участок из запаса привязывается при первом расчёте участка без
+  действующего права — после бесплатного и до отказа «нужна оплата» — на
+  `plot_days` от момента привязки. Решает это только `access_use`.
 
 Решение «можно ли считать этот участок» принимает одна функция —
 `calc_access_for_chat`; маршруты зовут её через `require_calc_access`.
@@ -160,6 +166,8 @@ def _access_load(chat: int) -> dict[str, Any]:
         record["grants"] = []
     if not isinstance(record.get("payments"), list):
         record["payments"] = []
+    if not isinstance(record.get("reserve"), list):
+        record["reserve"] = []
     return record
 
 
@@ -234,18 +242,24 @@ def _access_decide(record: dict[str, Any], plot: dict[str, Any], now: float) -> 
     price = _access_rub(terms["plot_price_rub"])
     subscription_price = _access_rub(terms["subscription_price_rub"])
     offer = (f"оплатите доступ к нему — {price} за {terms['plot_days']} дней с любым числом "
-             f"пересчётов, PDF и Excel — или подписку за {subscription_price} в месяц без "
-             f"ограничения участков. {_access_payment_hint()}")
+             f"пересчётов, PDF и Excel, можно сразу несколько участков вперёд — или подписку "
+             f"за {subscription_price} в месяц без ограничения участков. {_access_payment_hint()}")
     expired = [g for g in record.get("grants") or [] if _access_covers(g, plot)]
+    used = _access_free_used(record)
+    if not expired and len(used) < terms["free_plots"]:
+        return {"allowed": True, "code": "free_granted", "basis": "free", "grant_free": True}
+    # Запас оплаченных вперёд участков: участок без действующего права —
+    # новый или с закончившимся сроком — берёт один из запаса. Это единственное
+    # место, где решается привязка; выдачу делает `access_use`.
+    if record.get("reserve"):
+        return {"allowed": True, "code": "reserve_granted", "basis": "reserve",
+                "grant_reserve": True}
     if expired:
         last = max(expired, key=lambda g: float(g.get("until") or 0))
         return {"allowed": False, "code": "expired",
                 "detail": (f"Доступ к участку {plot['label']} закончился "
                            f"{_access_date(float(last.get('until') or 0))}. Чтобы считать "
                            f"его дальше, {offer}")}
-    used = _access_free_used(record)
-    if len(used) < terms["free_plots"]:
-        return {"allowed": True, "code": "free_granted", "basis": "free", "grant_free": True}
     if terms["free_plots"] and used:
         spent = "Бесплатный участок уже использован" if terms["free_plots"] == 1 \
             else "Бесплатные участки уже использованы"
@@ -267,7 +281,9 @@ def access_use(chat: int, plot: dict[str, Any], *, surface: str = "") -> dict[st
     with _access_locked(chat):
         record = _access_load(chat)
         decision = _access_decide(record, plot, now)
-        if decision.pop("grant_free", False):
+        free = decision.pop("grant_free", False)
+        from_reserve = decision.pop("grant_reserve", False)
+        if free or from_reserve:
             terms = access_terms()
             grant = {
                 "id": hashlib.sha256(f"{chat}:{plot['key']}:{now}".encode("utf-8")).hexdigest()[:12],
@@ -275,11 +291,23 @@ def access_use(chat: int, plot: dict[str, Any], *, surface: str = "") -> dict[st
                 "label": plot.get("label") or "", "source": "free",
                 "granted_at": round(now, 3), "until": round(now + terms["plot_days"] * _ACCESS_DAY_SECONDS, 3),
             }
+            journal = {"event": "grant", "chat": chat, "source": "free", "key": plot["key"],
+                       "label": grant["label"], "until": grant["until"], "surface": surface}
+            if from_reserve:
+                # Самый старый участок запаса — первым: оплата, сделанная
+                # раньше, и тратится раньше. Выдача помнит платёж, которым
+                # участок был оплачен: по нему считают возврат.
+                slot = record["reserve"].pop(0)
+                grant.update({"source": "reserve", "payment_id": str(slot.get("payment_id") or ""),
+                              "reserve_id": str(slot.get("id") or ""),
+                              "paid_at": slot.get("happened_at")})
+                journal.update({"source": "reserve", "payment_id": grant["payment_id"],
+                                "reserve_left": len(record["reserve"])})
             record["grants"].append(grant)
             _access_store(chat, record)
-            decision.update({"until": grant["until"], "grant": grant["id"]})
-            _access_journal({"event": "grant", "chat": chat, "source": "free", "key": plot["key"],
-                             "label": grant["label"], "until": grant["until"], "surface": surface})
+            decision.update({"until": grant["until"], "grant": grant["id"],
+                             "reserve_left": len(record["reserve"])})
+            _access_journal(journal)
         elif not decision["allowed"]:
             _access_journal({"event": "refuse", "chat": chat, "code": decision["code"],
                              "key": plot.get("key") or "", "surface": surface})
@@ -289,16 +317,22 @@ def access_use(chat: int, plot: dict[str, Any], *, surface: str = "") -> dict[st
 
 def access_grant(chat: int, *, plot: dict[str, Any] | None = None, subscription: bool = False,
                  days: int | None = None, source: str = "payment", payment_id: str = "",
-                 note: str = "") -> dict[str, Any]:
-    """Выдать доступ: к участку или подписку. Повтор того же `payment_id` —
-    без второй выдачи: уведомление об оплате приходит не один раз."""
+                 note: str = "", reserve: int = 0) -> dict[str, Any]:
+    """Выдать доступ: к участку, подписку или `reserve` участков в запас (пакет
+    «несколько участков вперёд»: текущий участок — `plot`, остальные — запас;
+    без текущего участка весь пакет ложится в запас). Повтор того же
+    `payment_id` — без второй выдачи: уведомление об оплате приходит не один
+    раз, а запас от повтора удваиваться не должен."""
     chat = int(chat)
     terms = access_terms()
     now = time.time()
+    reserve = max(0, int(reserve or 0))
     with _access_locked(chat):
         record = _access_load(chat)
         if payment_id and payment_id in record["payments"]:
             return {"ok": True, "repeated": True}
+        until: float | None = None
+        key = label = ""
         if subscription:
             length = int(days or terms["subscription_days"]) * _ACCESS_DAY_SECONDS
             current = record.get("subscription") or {}
@@ -307,7 +341,7 @@ def access_grant(chat: int, *, plot: dict[str, Any] | None = None, subscription:
                                       "granted_at": round(now, 3)}
             until = record["subscription"]["until"]
             key, label = "subscription", "подписка"
-        else:
+        elif plot or not reserve:
             if not plot or not plot.get("key"):
                 raise HTTPException(status_code=400, detail="Не указан участок для доступа.")
             length = int(days or terms["plot_days"]) * _ACCESS_DAY_SECONDS
@@ -328,14 +362,26 @@ def access_grant(chat: int, *, plot: dict[str, Any] | None = None, subscription:
                 grant["note"] = str(note)[:200]
             record["grants"].append(grant)
             until, key, label = grant["until"], plot["key"], grant["label"]
+        if reserve:
+            for index in range(reserve):
+                record["reserve"].append({
+                    "id": hashlib.sha256(f"{chat}:reserve:{now}:{payment_id}:{index}".encode("utf-8")).hexdigest()[:12],
+                    "happened_at": round(now, 3), "payment_id": payment_id, "source": source,
+                    "note": str(note or "")[:200]})
         if payment_id:
             record["payments"].append(payment_id)
         _access_store(chat, record)
-        _access_journal({"event": "grant", "chat": chat, "source": source, "key": key,
-                         "label": label, "until": until, "payment_id": payment_id,
-                         "note": str(note or "")[:200]})
+        if reserve:
+            _access_journal({"event": "reserve", "chat": chat, "source": source, "count": reserve,
+                             "reserve_total": len(record["reserve"]), "payment_id": payment_id,
+                             "note": str(note or "")[:200]})
+        if key:
+            _access_journal({"event": "grant", "chat": chat, "source": source, "key": key,
+                             "label": label, "until": until, "payment_id": payment_id,
+                             "note": str(note or "")[:200]})
+        reserve_total = len(record["reserve"])
     _ACCESS_REMOTE_CACHE.clear()
-    return {"ok": True, "until": until}
+    return {"ok": True, "until": until, "reserve": reserve_total}
 
 
 def access_status(chat: int) -> dict[str, Any]:
@@ -350,11 +396,16 @@ def access_status(chat: int) -> dict[str, Any]:
               "source": g.get("source") or "", "until": float(g.get("until") or 0),
               "active": float(g.get("until") or 0) > now}
              for g in record.get("grants") or []]
+    reserve = [{"happened_at": float(r.get("happened_at") or 0), "payment_id": r.get("payment_id") or "",
+                "source": r.get("source") or ""} for r in record.get("reserve") or []]
     return {
         "chat": chat,
         "free_plots": terms["free_plots"],
         "free_left": max(0, terms["free_plots"] - len(_access_free_used(record))),
         "plots": sorted(plots, key=lambda p: -p["until"]),
+        # Запас — участки, оплаченные вперёд и ещё не привязанные.
+        "reserve": len(reserve),
+        "reserve_items": reserve,
         "subscription_until": float(subscription.get("until") or 0) or None,
         "subscription_active": float(subscription.get("until") or 0) > now,
         "terms": terms,
@@ -591,6 +642,8 @@ class AccessRequest(BaseModel):
     cadastral: list[str] = []
     days: int = 0
     note: str = ""
+    # Пакет «несколько участков вперёд» — сколько участков положить в запас.
+    count: int = 0
 
 
 def _access_forward(path: str, req: AccessRequest) -> dict[str, Any] | None:
@@ -633,13 +686,16 @@ def access_me(req: AccessRequest) -> dict[str, Any]:
         offer["plot_offer"] = payment_offer_item("plot")
         offer["subscription_offer"] = payment_offer_item("subscription")
         offer["registration"] = product_registration_line()
+        offer["package_max_plots"] = int(globals().get("_PAYMENT_MAX_PLOTS") or 10)
     chat = _web_identity_chat_id(req.session)
     if not chat:
         return {**offer, "signed_in": False}
     forwarded = _access_forward("/internal/access/me", req)
     status = forwarded if forwarded is not None else access_status(chat)
+    demo = callable(globals().get("demo_chat")) and demo_chat(chat)
     return {**offer, "signed_in": True, "status": status,
-            "is_admin": chat in usage_admin_ids()}
+            "is_admin": chat in usage_admin_ids(), "demo": bool(demo),
+            "demo_payments": demo_payments_mode() if demo else ""}
 
 
 @app.post("/internal/access/me", include_in_schema=False)
@@ -683,31 +739,83 @@ def access_admin_overview(req: AccessRequest) -> dict[str, Any]:
                               "source": g.get("source") or ""}
                              for g in grants if float(g.get("until") or 0) > now],
             "subscription_until": (record.get("subscription") or {}).get("until"),
+            "reserve": len(record.get("reserve") or []),
         })
     journal = access_journal_read(300)
-    payments = [row for row in journal if row.get("event") == "grant" and row.get("payment_id")]
+    payments = [row for row in journal if row.get("event") in {"grant", "reserve"}
+                and row.get("payment_id")]
     return {"people": people[:500], "payments": payments[-100:][::-1],
             "journal": journal[-100:][::-1], "terms": access_terms()}
 
 
 @app.post("/access/admin/grant")
 def access_admin_grant(req: AccessRequest) -> dict[str, Any]:
-    """Выдать доступ вручную: участок (номера) или подписку, на N дней."""
+    """Выдать доступ вручную: участок (номера) или подписку на N дней, либо
+    запас из `count` участков вперёд (срок каждого — от его привязки)."""
     forwarded = _access_forward("/access/admin/grant", req)
     if forwarded is not None:
         return forwarded
     admin = _access_admin(req)
     chat = int(req.chat or 0)
     if chat <= 0:
-        raise HTTPException(status_code=400, detail="Укажите Telegram ID пользователя.")
+        raise HTTPException(status_code=400, detail="Выберите, кому выдать доступ.")
+    # Выдача незнакомому ID уходила в пустоту: опечатка в номере открывала
+    # подписку несуществующему человеку, и в журнале это выглядело выдачей.
+    who = _access_known_user(chat)
+    if who is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"Пользователя с Telegram ID {chat} у нас ещё не было. Попросите его "
+                    "написать боту DevelopAid или войти на сайт — после этого он появится "
+                    "в списке и доступ можно будет выдать."))
     subscription = req.kind == "subscription"
+    reserve = req.kind == "reserve"
     plot = None
+    note = f"вручную, администратор {admin}" + (f": {req.note}" if req.note else "")
+    if reserve:
+        count = int(req.count or 0)
+        if not 1 <= count <= 10:
+            raise HTTPException(status_code=400,
+                                detail="Укажите, сколько участков положить в запас: от 1 до 10.")
+        result = access_grant(chat, reserve=count, source="admin", note=note)
+        return {**result, "status": access_status(chat), "who": who,
+                "what": f"запас: {count} {_access_plots_word(count)}"}
     if not subscription:
         plot = access_plot(cadastral=list(req.cadastral or []))
         if not plot.get("key"):
             raise HTTPException(status_code=400,
                                 detail="Укажите кадастровые номера участка или выберите подписку.")
-    note = f"вручную, администратор {admin}" + (f": {req.note}" if req.note else "")
     result = access_grant(chat, plot=plot, subscription=subscription,
                           days=int(req.days or 0) or None, source="admin", note=note)
-    return {**result, "status": access_status(chat)}
+    return {**result, "status": access_status(chat), "who": who,
+            "what": "подписка" if subscription else f"участок {plot['label']}"}
+
+
+def _access_plots_word(count: int) -> str:
+    """«1 участок», «2 участка», «5 участков» — для текстов о запасе."""
+    count = abs(int(count))
+    if count % 10 == 1 and count % 100 != 11:
+        return "участок"
+    if count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return "участка"
+    return "участков"
+
+
+def _access_known_user(chat: int) -> str | None:
+    """Имя человека, которого мы уже видели (бот, вход на сайт, анкета, права);
+    None — такого человека у нас не было."""
+    chat = int(chat)
+    names = []
+    try:
+        user_path = _users_dir() / f"{chat}.json"
+        if user_path.is_file():
+            names.append(str((json.loads(user_path.read_text(encoding="utf-8")) or {}).get("name") or ""))
+    except (OSError, ValueError):
+        pass
+    profile = profile_read(chat) if callable(globals().get("profile_read")) else {}
+    known = bool(names) or bool(profile) or _access_path(chat).is_file()
+    if not known:
+        return None
+    name = str((profile or {}).get("name") or (profile or {}).get("telegram_name") or "") or next(
+        (n for n in names if n), "")
+    return f"{name} (ID {chat})" if name else f"ID {chat}"

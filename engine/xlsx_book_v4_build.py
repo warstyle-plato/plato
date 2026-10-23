@@ -160,6 +160,8 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
                     "rent_th_per_sqm_month": num(params, "rent_th_per_sqm_month", 0.0),
                     "parking_rent_th_month": num(params, "parking_rent_th_month", 0.0),
                     "rent_index_pct": num(params, "rent_index_pct", 0.0),
+                    # Месяцы индексации до ввода — тем же правилом, что движок.
+                    "rent_date": str(params.get("rent_date") or ""),
                     "occupancy_start_pct": num(params, "occupancy_start_pct", 0.0),
                     "occupancy_stable_pct": num(params, "occupancy_stable_pct", 0.0),
                     "leaseup_months": num(params, "leaseup_months", 12),
@@ -224,6 +226,9 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         "vri_equity": {k_of(m): float(v) for m, v in (op.get("vri_equity") or {}).items() if v},
         "objects": objects,
         "missing": missing,
+        # Пятно, этажность и подземные уровни: вводные блока — числа того же
+        # расчёта (`site_massing`), уровни и надбавку книга считает формулами.
+        "massing": _massing_book.input_values(op["site_massing"], x),
         # Проектное финансирование объектов по ДДУ — те же вводные, что
         # читает `simulate_financing`.
         "pf": {
@@ -937,6 +942,19 @@ def _build_project_workbook(
     # правка штук внутри книги не двигает ни подземной площади, ни СМР.
     xml, _storage_per_unit, _storage_per_unit_value = _v4_storage_norm_rows_xml(xml, x, tep)
 
+    # Пятно застройки, этажность и подземные уровни: вводные блока — числа
+    # расчёта (`site_massing`), уровни и надбавка за глубину — формулы книги;
+    # ставка подземной части читается дальше с этой надбавкой.
+    # Пометки ручной ставки (`_field_origin`, `_class_manual`) книга из вводных
+    # убирает вместе с прочими служебными ключами — а решают они, ручная ли
+    # ставка подземной части. Берутся из присланных вводных.
+    xml, _site_massing = _v4_site_massing_rows_xml(xml, {
+        **x, **{key: (inputs or {})[key] for key in ("_field_origin", "_class_manual")
+                if key in (inputs or {})}}, tep)
+    if _V4_LANDSCAPING_ROOM_TOKEN in xml:
+        missing.append("Вводные · благоустройство: ячейка «помещается благоустройства» блока "
+                       "пятна застройки не подставлена в формулу «Применяется, м²/чел.»")
+
     # --- расшифровка соцнагрузки: ОТЧЕТ (E31:H37) и ТЭП (38–44) -----------
     # «Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал
     # одной цифрой. Расшифровка — формулы от блока «Вводных», а не числа на
@@ -970,7 +988,9 @@ def _build_project_workbook(
         capex_xml, _landscaping_per_person, _landscaping_norm,
         _landscaping_gns_rate, missing)
     capex_xml = _v4_apply_storage_area_rows(capex_xml, missing)
-    capex_xml = _v4_apply_bridge_limit_before_permit(capex_xml, missing)
+    capex_xml = _v4_apply_bridge_limit_before_permit(
+        capex_xml, missing,
+        social_base_row if social_monthly_by_phase is not None else None)
     capex_xml = _v4_apply_vri_interest_row(capex_xml, missing)
     capex_xml = _v4_apply_turnkey_overheads(capex_xml, missing)
     capex_xml = _v4_apply_nonres_full_estimate(capex_xml, x, missing)
@@ -1791,6 +1811,17 @@ def _build_project_workbook(
         # наружных стен не бывает. Здесь площадь подземного этажа.
         put(f"Y{row}", number=num_row(crow.get("underground_parking"), "gns"),
             label="Подземная площадь")
+        # Площади очереди — без округления до метра: шаблон резал ГНС
+        # ROUND(…,0), движок метры не округляет. На четырёх очередях Нагатино
+        # срезанные полметра давали CAPEX −0,57 и, через проценты, ЧП +1,31
+        # млн против движка. Целыми остаются штуки (N, O, AV), не метры.
+        # Одной строкой за проход: сборка следит, сколько раз читается лист.
+        xml, _done = _v4_set_cells(xml, row, {
+            f"I{row}": dict(formula=f"W{row}*$K$15"),
+            f"J{row}": dict(formula=f"X{row}*$K$15"),
+            f"K{row}": dict(formula=f'Y{row}*IF($K$80="Да",$K$15,1)')})
+        if not _done:
+            missing.append(f"площади очереди {index + 1}")
         put(f"Z{row}", number=num_row(crow.get("apartments"), "saleable"),
             label="прод. квартир")
         put(f"AA{row}", number=num_row(crow.get("ground_commercial"), "saleable"),
@@ -2092,6 +2123,8 @@ def _build_project_workbook(
     # красило пустое место, и блок уезжал на лист ввода без стилей.
     report_xml, tep_xml, styles_xml = _v4_report_number_formats(
         report_xml, tep_xml, consolidator_xml, styles_xml)
+    # Блок пятна застройки — на своё место до стилей вводных и листа ввода.
+    xml = _v4_site_massing_flush(xml, missing)
     xml = _v4_mirror_secondary_input_styles(xml)
     xml, styles_xml = _v4_type_input_formats(xml, styles_xml, _v4_block_input_formats(
         social_base_row, _ladder_refs, _landscaping_norm))

@@ -208,7 +208,11 @@ const TEP_ONLY_INPUTS=__DEVELOPAID_TEP_ONLY_INPUTS__;
 // Поля только жилого дома (`RESIDENTIAL_ONLY_INPUTS`) — не на экране
 // чисто нежилого проекта.
 const RESIDENTIAL_ONLY_INPUTS=__DEVELOPAID_RESIDENTIAL_ONLY_INPUTS__;
+// Допущения баланса территории — в карточке «Пятно застройки и подземная
+// часть» вкладки «ТЭП», рядом с ответом (`SITE_MASSING_INPUTS`).
+const SITE_MASSING_INPUTS=__DEVELOPAID_SITE_MASSING_INPUTS__;
 const notOnInputs=id=>CLASS_ONLY_INPUTS.includes(id)||SITE_ONLY_INPUTS.includes(id)
+ ||SITE_MASSING_INPUTS.includes(id)
  ||Object.prototype.hasOwnProperty.call(TEP_ONLY_INPUTS,id)
  ||(RESIDENTIAL_ONLY_INPUTS.includes(id)&&isNonResidential());
 // Блоки объекта, которые выбранная стратегия реализации не читает (ДДУ /
@@ -602,6 +606,28 @@ function makeDefaultPhasing(count=1){
   shared_allocation:{purchase:[...w],land_rights:[...w],ird:[...w],design:[...w],preparation:[...w],utilities:[...w],social_compensation:[...w],social_construction:[...w]},
   social_objects:[],discrete:discreteDefaults(count)
  };
+}
+// Очередность из сохранённого (браузер, проект, снимок Платона, импорт) —
+// только через эту функцию: сохранённое накладывается на умолчания своего
+// числа очередей, а словари (`products`, `shared_cash`, `shared_allocation`,
+// `discrete`) — поключево. Старое состояние без `discrete` иначе роняло вкладку
+// ТЭП на чтении `phasing.discrete[o.key]`.
+function phasingFromSaved(saved){
+ if(!saved||typeof saved!=='object'||Array.isArray(saved))return makeDefaultPhasing(1);
+ const src=cloneValue(saved);
+ const count=Math.max(1,Math.min(5,Number(src.phase_count)||(Array.isArray(src.phases)?src.phases.length:0)||1));
+ const out=makeDefaultPhasing(count);
+ delete src.phase_count;
+ const dictKeys=['products','shared_cash','shared_allocation','discrete'];
+ Object.keys(src).forEach(key=>{
+  const v=src[key];
+  if(v===undefined||v===null)return;
+  if(dictKeys.includes(key)){if(typeof v==='object'&&!Array.isArray(v))Object.assign(out[key],v);return}
+  if(key==='phases'){if(Array.isArray(v))out.phases=out.phases.map((p,i)=>v[i]&&typeof v[i]==='object'?Object.assign(p,v[i]):p);return}
+  if(key==='social_objects'){if(Array.isArray(v))out.social_objects=v;return}
+  out[key]=v;
+ });
+ return out;
 }
 // structuredClone есть не везде: в Safari он появился в 15.4, а стоял этот
 // вызов ВТОРОЙ строкой состояния — до объявления всего остального. Браузер без

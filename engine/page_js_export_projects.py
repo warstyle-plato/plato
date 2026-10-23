@@ -21,7 +21,10 @@ PAGE += r"""function currentPdfReportPayload(cads=[]){
  return {result:lastResult,inputs:inputs,tep:tep,rates:rates,phasing:phasing,scenario:scenarioSelect.value||'base',cadastral_numbers:cads.length?cads:((cadastralAnalysis&&cadastralAnalysis.recognized)||source.cadastral_numbers||[]),project_name:(manualMeta&&manualMeta.project_name)||'',source_label:tepSourceLabel(!!manualMeta),
    // Чувствительность попадает в отчёт только если её считали: гнать полсотни
    // расчётов внутри сборки PDF ради раздела, который никто не просил, незачем.
-   sensitivity:sensitivityReport};
+   sensitivity:sensitivityReport,
+   // Потолок цены входа, уже подобранный на странице: сервер возьмёт его без
+   // пересчёта, только если отпечаток вводных и подпись совпали.
+   goal_seek:typeof window.pageGoalSeek==='function'?window.pageGoalSeek():null};
 }
 
 async function exportReportPdf(){
@@ -141,7 +144,7 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
  rememberDerivedTail(x.tep,true);
- phasing=x.phasing||phasing;rates=[];scenarioSelect.value=x.scenario||'base';
+ phasing=x.phasing?phasingFromSaved(x.phasing):phasing;rates=[];scenarioSelect.value=x.scenario||'base';
  // v0.12.25: old browser state could silently carry a three-phase project
  // into a newly imported small site. Only an explicit user choice or the
  // Mytishchi preset may restore phasing after this migration.
@@ -328,17 +331,9 @@ async function applyPreset(){
  // (например, 40/13,1/34/12,9 вместо 25/25/25/25), хотя предпросмотр обещал
  // применить очереди пресета.
  if(data.phasing){
-  const importedPhasing=cloneValue(data.phasing);
-  const phaseDefaults=makeDefaultPhasing(Number(importedPhasing.phase_count||1));
-  phasing=Object.assign(phaseDefaults,importedPhasing);
-  // Продуктовые доли пресета заменяют старый проект целиком; служебные
-  // аллокации расходов, которых в файле нет, добираются из безопасных
-  // умолчаний, чтобы таблицы очередности оставались рабочими.
-  phasing.products=importedPhasing.products||phaseDefaults.products;
-  phasing.shared_cash=Object.assign(phaseDefaults.shared_cash,importedPhasing.shared_cash||{});
-  phasing.shared_allocation=Object.assign(phaseDefaults.shared_allocation,importedPhasing.shared_allocation||{});
-  phasing.discrete=Object.assign(phaseDefaults.discrete,importedPhasing.discrete||{});
-  phasing.social_objects=importedPhasing.social_objects||[];
+  // Продуктовые доли и служебные аллокации, которых в файле нет, добираются
+  // из безопасных умолчаний, чтобы таблицы очередности оставались рабочими.
+  phasing=phasingFromSaved(data.phasing);
  }else phasing=makeDefaultPhasing(1);
  renderInputs();renderTep();renderPhasing();persistLocalSilently();
  closePreset();
@@ -400,6 +395,12 @@ async function initProjects(){
  const actions=document.getElementById('projectsStorageActions');
  if(actions)actions.style.display=projectsStorageReady?'inline-flex':'none';
  renderLoginButton();
+ // Демо-ссылка проверяющего ведёт сюда с `#tariffs`: кабинет открывается
+ // сразу на «Тарифах и доступе», как клиент увидит его после входа.
+ if(location.hash==='#tariffs'){
+  try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}
+  openTariffs();
+ }
  // Личные значения классов подгружаются сразу: класс выбирают из селектора и
  // без открытых настроек, а перекрышка обязана примениться и там.
  loadClassOverrides();
@@ -779,7 +780,7 @@ function applyProjectSnapshot(data){
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
  });
  rememberDerivedTail(data.tep,true);
- phasing=data.phasing||makeDefaultPhasing(1);
+ phasing=phasingFromSaved(data.phasing);
  // Список тронутых полей паркинга — от ЭТОГО снимка, а не от прошлого проекта.
  seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
@@ -970,6 +971,7 @@ async function deleteProject(id){
 // а не тем, что о ней вспомнили. Список, ведомый памятью, уже подводил
 // трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
 // то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
+// LAND_MAP_VIEWS — ответ сервера, есть ли ключ Яндекс Карт для гибрида: не проект.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
  'profileState','profileAskedOnResult','calcRequiresLogin','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
@@ -978,7 +980,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'landScreeningRun','tepRunSequence','glavapuScenarioRun',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
- 'PROJECT_KIND_WHERE'];
+ 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
@@ -989,7 +991,7 @@ function resetProjectState(){
  // Открытый проект — тоже данные проекта: после сброса «Сохранить поверх»
  // записало бы пустой расчёт в чужую запись.
  openedProject=null;
- aiHistory=[];aiProposals=[];aiIntake=null;aiDocument=null;aiQuestion=null;aiCadastralReady=false;
+ aiHistory=[];aiProposals=[];aiIntake=null;aiDocument=null;aiDocBaseline=null;aiIntakeApplied=[];aiQuestion=null;aiCadastralReady=false;
  territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';socialPopulationNoteText='';
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
  moLastQuery='';moAutoApartments=null;
@@ -1127,6 +1129,11 @@ function resetAll(){
  phasing=makeDefaultPhasing(1);phaseBundle=null;reportView='all';
  // Противоречия прошлого проекта не должны глушить раскрытие блока в новом.
  siteParkingConflictSeen='';
+ // Подсказка «галочка ВРИ без платы» относится к прошлому проекту.
+ vriFeeAskedWithoutSum=false;vriFeeClearedMln=0;
+ // Ожидание плана расстановки — ожидание прошлого проекта: его ответ
+ // пересчитал бы новый.
+ siteMassingPlanStop();
  // Открытое окно подтверждения «Сформировать ТЭП по новым параметрам» — действие
  // над прошлым проектом: по «Сформировать» оно легло бы в новый.
  closeTepConfirm();
@@ -1229,10 +1236,20 @@ function tariffsHtml(data){
   '<ul style="margin:0 0 10px 18px;padding:0">'+
   '<li><b>Один участок — '+accessRub(terms.plot_price_rub)+'</b>'+vat+': доступ на '+terms.plot_days+
   ' дней, пересчитывать можно сколько угодно, PDF-отчёт и Excel-модель входят в цену.</li>'+
+  '<li><b>Несколько участков вперёд</b>: каждый по '+accessRub(terms.plot_price_rub)+vat+', до '+Number(data.package_max_plots||10)+' за один раз. '+
+  'Текущий участок откроется сразу, остальные останутся в запасе и откроются при первом расчёте нового участка — '+terms.plot_days+' дней с этого момента.</li>'+
   '<li><b>Подписка — '+accessRub(terms.subscription_price_rub)+' в месяц</b>'+(subOffer.vat_note?' ('+escapeHtml(subOffer.vat_note)+')':'')+
   ': любые участки без ограничений.</li></ul>';
  if(!data.signed_in){
   return html+'<p class="muted">Чтобы посчитать участок, войдите через Telegram — это кнопка вверху страницы.</p>';
+ }
+ // Демо-доступ проверяющих: тот же кабинет, но оплата без настоящих денег —
+ // тестовый магазин ЮKassa или пояснение, где откроется форма.
+ if(data.demo){
+  html+='<p style="background:#eef6ff;border:1px solid #b9d6f5;padding:8px 10px;margin:0 0 8px">'+
+   '<b>Это демо-доступ.</b> '+(data.demo_payments==='test'
+    ?'Оплата идёт через тестовый магазин ЮKassa — деньги не списываются.'
+    :'Кнопки оплаты показывают, где откроется платёжная форма ЮKassa; деньги не списываются.')+'</p>';
  }
  const status=data.status||{};
  const active=(status.plots||[]).filter(p=>p.active);
@@ -1241,17 +1258,24 @@ function tariffsHtml(data){
   html+='<p style="margin:0 0 6px">Подписка действует до '+accessDate(status.subscription_until)+'.</p>';
  }
  html+='<p style="margin:0 0 6px">Бесплатных участков осталось: '+Number(status.free_left||0)+' из '+Number(status.free_plots||0)+'.</p>';
+ // Запас — участки, оплаченные вперёд и ещё не привязанные: число идёт с
+ // сервера (`access_status`), страница его не считает.
+ html+='<p id="accessReserve" style="margin:0 0 6px">В запасе участков: '+Number(status.reserve||0)+'.'+
+  (Number(status.reserve||0)>0?' Участок из запаса откроется сам при первом расчёте нового участка.':'')+'</p>';
  if(active.length){
   html+='<ul id="accessPlots" style="margin:0 0 8px 18px;padding:0">'+active.map(p=>'<li>'+escapeHtml(p.label||'участок')+
-   ' — доступ до '+accessDate(p.until)+(p.source==='free'?' (бесплатный)':'')+'</li>').join('')+'</ul>';
+   ' — доступ до '+accessDate(p.until)+(p.source==='free'?' (бесплатный)':(p.source==='reserve'?' (из запаса)':''))+'</li>').join('')+'</ul>';
  }else if(!status.subscription_active){
   html+='<p class="muted" style="margin:0 0 8px">Открытых участков пока нет.</p>';
  }
- if(data.payments_available){
+ if(data.payments_available||data.demo){
   html+='<div class="upload-line" style="align-items:center;margin-top:8px">'+
    '<input id="payEmail" type="email" placeholder="Почта для чека" style="min-width:220px">'+
-   '<button class="btn dark" onclick="payForAccess(\'plot\')">Оплатить текущий участок</button>'+
+   '<label for="payCount" style="white-space:nowrap">Сколько участков</label>'+
+   '<input id="payCount" type="number" min="1" max="'+Number(data.package_max_plots||10)+'" value="1" style="width:64px" oninput="payCountChanged()" onchange="payCountChanged()">'+
+   '<button class="btn dark" id="payPlotButton" onclick="payForAccess(\'plot\')">Оплатить текущий участок</button>'+
    '<button class="btn" onclick="payForAccess(\'subscription\')">Оформить подписку</button></div>'+
+   '<div id="payTotal" data-unit="'+Number(terms.plot_price_rub||0)+'" data-vat="'+escapeHtml(plotOffer.vat_note||'')+'" style="font-size:12px;margin-top:6px"></div>'+
    '<div id="payStatus" style="font-size:12px;margin-top:6px"></div>'+
    '<p style="font-size:11px;color:#777;margin:6px 0 0">Оплачивая, вы принимаете <a href="/offer" target="_blank" rel="noopener">лицензионный договор</a>'+
    ' и <a href="/refund" target="_blank" rel="noopener">условия возврата</a>. Чек придёт на указанную почту.</p>';
@@ -1270,8 +1294,9 @@ async function renderTariffsBox(){
  try{data=await loadAccessMe()}
  catch(e){box.innerHTML='<div class="import-error">'+escapeHtml(String(e.message||e))+'</div>';return}
  box.innerHTML=tariffsHtml(data);
+ payCountChanged();
  const admin=document.getElementById('accessAdminBox');
- if(admin){admin.style.display=(data.is_admin||projectsAdminKey)?'':'none';if(data.is_admin||projectsAdminKey)renderAccessAdmin()}
+ if(admin){admin.style.display=(data.is_admin||projectsAdminKey)?'':'none';if(data.is_admin||projectsAdminKey){renderAccessAdmin();renderDemoInvites()}}
 }
 async function openTariffs(){
  await openProjects();
@@ -1279,15 +1304,46 @@ async function openTariffs(){
  const box=document.getElementById('tariffsBox');
  if(box&&box.scrollIntoView)box.scrollIntoView({block:'start'});
 }
+function plotsWord(count){
+ count=Math.abs(Number(count)||0);
+ if(count%10===1&&count%100!==11)return 'участок';
+ if(count%10>=2&&count%10<=4&&(count%100<12||count%100>14))return 'участка';
+ return 'участков';
+}
+function payCount(){
+ const field=document.getElementById('payCount');
+ if(!field)return 1;
+ const max=Number(field.max||10)||10;
+ const count=Math.floor(Number(field.value)||1);
+ return Math.min(max,Math.max(1,count));
+}
+// Строка «К оплате»: сумма пакета — число участков, умноженное на цену
+// участка; сам платёж и чек считает сервер (`payment_offer_item`).
+function payCountChanged(){
+ const total=document.getElementById('payTotal'),button=document.getElementById('payPlotButton');
+ if(!total)return;
+ const count=payCount(),unit=Number(total.dataset.unit||0),vat=total.dataset.vat?' ('+total.dataset.vat+')':'';
+ if(count>1){
+  total.textContent='К оплате: '+accessRub(unit*count)+' за '+count+' '+plotsWord(count)+vat+'. Текущий участок откроется сразу, '+
+   (count-1)+' '+plotsWord(count-1)+' останется в запасе; если текущего участка нет, весь пакет ляжет в запас.';
+  if(button)button.textContent='Оплатить '+count+' '+plotsWord(count);
+ }else{
+  total.textContent='К оплате: '+accessRub(unit)+' за один участок'+vat+'.';
+  if(button)button.textContent='Оплатить текущий участок';
+ }
+}
 async function payForAccess(kind){
  const status=document.getElementById('payStatus');
  const email=String((document.getElementById('payEmail')||{}).value||'').trim();
+ const count=kind==='subscription'?1:payCount();
  if(status)status.textContent='Готовлю оплату…';
  try{
   const response=await fetch('/payments/create',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({session:activeSession(),kind,inputs,email})});
+   body:JSON.stringify({session:activeSession(),kind,inputs,email,count})});
   const data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Оплату начать не удалось');
+  if(data.preview){if(status)status.textContent=data.message;return}
+  if(status&&data.price_rub)status.textContent='Переходим к оплате '+accessRub(data.price_rub)+(count>1?' за '+count+' '+plotsWord(count):'')+'…';
   try{localStorage.setItem('developaid_pending_payment',data.payment_id)}catch(e){}
   location.href=data.confirmation_url;
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
@@ -1308,9 +1364,11 @@ async function renderAccessAdmin(){
  let data;
  try{data=await accessAdminCall('/access/admin/overview')}
  catch(e){box.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';return}
+ fillGrantRecipients(data.people||[]);
  const people=(data.people||[]).map(p=>'<tr><td>'+escapeHtml(p.name||'—')+'<br><small>ID '+p.chat+
   (p.company?' · '+escapeHtml(p.company):'')+'</small></td><td>'+(p.free_used?'использован':'не использован')+
   '</td><td>'+((p.active_plots||[]).map(g=>escapeHtml(g.label)+' до '+accessDate(g.until)).join('<br>')||'—')+
+  (Number(p.reserve||0)?'<br><small>в запасе: '+Number(p.reserve)+'</small>':'')+
   '</td><td>'+(p.subscription_until&&p.subscription_until*1000>Date.now()?'до '+accessDate(p.subscription_until):'—')+'</td></tr>').join('');
  const payments=(data.payments||[]).map(r=>'<tr><td>'+accessDate(r.at)+'</td><td>ID '+r.chat+'</td><td>'+
   escapeHtml(r.label||'')+'</td><td>'+escapeHtml(r.note||'')+'</td></tr>').join('');
@@ -1319,16 +1377,79 @@ async function renderAccessAdmin(){
   '<div class="section-title" style="margin:12px 0 6px">Оплаты</div><div class="scroll"><table><thead><tr><th>Дата</th><th>Кто</th><th>Что</th><th>Платёж</th></tr></thead><tbody>'+
   (payments||'<tr><td colspan="4">Оплат пока не было.</td></tr>')+'</tbody></table></div>';
 }
+// Демо-доступ по ссылке (клиенту, партнёру, ЮKassa): ссылка-приглашение со сроком, отзыв.
+async function renderDemoInvites(){
+ const box=document.getElementById('demoInviteList');
+ if(!box)return;
+ let data;
+ try{data=await accessAdminCall('/access/admin/demo/list')}
+ catch(e){box.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';return}
+ // Адрес показан один раз и копируется кнопкой: на телефоне длинная ссылка
+ // обрезается, и выделять её пальцем неудобно.
+ const rows=(data.invites||[]).map(r=>'<tr><td><span class="demo-link" style="word-break:break-all">'+escapeHtml(location.origin+r.path)+'</span>'+
+  (r.note?'<br><small>'+escapeHtml(r.note)+'</small>':'')+'</td><td>до '+accessDate(r.expires)+'</td><td>'+
+  (r.active?'действует':'не действует')+', входов: '+Number(r.claims||0)+'</td><td style="white-space:nowrap">'+
+  (r.active?'<button class="btn" data-link="'+escapeHtml(location.origin+r.path)+'" onclick="accessDemoCopy(this)">Скопировать</button> '+
+  '<button class="btn" data-code="'+escapeHtml(r.code)+'" onclick="accessDemoRevoke(this.dataset.code)">Отозвать</button>':'')+
+  '</td></tr>').join('');
+ box.innerHTML=rows?'<div class="scroll"><table><tbody>'+rows+'</tbody></table></div>':'<div class="muted">Ссылок ещё не выдавали.</div>';
+}
+async function accessDemoCreate(){
+ const status=document.getElementById('demoInviteStatus');
+ const note=String((document.getElementById('demoInviteNote')||{}).value||'');
+ try{
+  const data=await accessAdminCall('/access/admin/demo/create',{days:14,note});
+  if(status)status.textContent='Ссылка создана, действует до '+accessDate(data.expires)+'. Она в списке ниже — нажмите «Скопировать».';
+  renderDemoInvites();
+ }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
+}
+async function accessDemoCopy(button){
+ const link=String(button.dataset.link||'');
+ const done=()=>{const was=button.textContent;button.textContent='Скопировано';setTimeout(()=>{button.textContent=was},1500)};
+ try{await navigator.clipboard.writeText(link);done();return}catch(e){}
+ // Старый браузер или страница без разрешения на буфер: выделяем адрес,
+ // чтобы его можно было скопировать штатной командой.
+ const span=button.closest('tr')&&button.closest('tr').querySelector('.demo-link');
+ if(span&&window.getSelection){const range=document.createRange();range.selectNodeContents(span);const sel=window.getSelection();sel.removeAllRanges();sel.addRange(range);
+  try{if(document.execCommand('copy')){done();return}}catch(e){}}
+ button.textContent='Выделите адрес и скопируйте';
+}
+async function accessDemoRevoke(code){
+ if(!confirm('Отозвать демо-ссылку? Вход по ней перестанет работать сразу.'))return;
+ try{await accessAdminCall('/access/admin/demo/revoke',{code});renderDemoInvites()}
+ catch(e){alert(String(e.message||e))}
+}
+// Кому выдать — выбором из тех, кого мы знаем, а не голым номером: опечатка
+// в номере открывала доступ несуществующему человеку.
+function fillGrantRecipients(people){
+ const select=document.getElementById('grantChat');
+ if(!select)return;
+ const keep=select.value;
+ select.innerHTML='<option value="">— выберите пользователя —</option>'+people.filter(p=>Number(p.chat)>0&&Number(p.chat)<1e15).map(p=>
+  '<option value="'+Number(p.chat)+'">'+escapeHtml((p.name||'Без имени')+(p.company?', '+p.company:'')+' — ID '+p.chat)+'</option>').join('');
+ if(keep)select.value=keep;
+}
+function grantKindChanged(){
+ const row=document.getElementById('grantCadastralRow'),countRow=document.getElementById('grantCountRow'),
+  daysRow=document.getElementById('grantDaysRow');
+ const kind=(document.getElementById('grantKind')||{}).value;
+ if(row)row.style.display=kind==='plot'?'':'none';
+ if(countRow)countRow.style.display=kind==='reserve'?'':'none';
+ if(daysRow)daysRow.style.display=kind==='reserve'?'none':'';
+}
 async function accessAdminGrant(){
  const status=document.getElementById('accessAdminStatus');
  const chat=Number((document.getElementById('grantChat')||{}).value||0);
  const kind=(document.getElementById('grantKind')||{}).value||'plot';
  const cadastral=String((document.getElementById('grantCadastral')||{}).value||'').split(/[\s,;]+/).filter(Boolean);
  const days=Number((document.getElementById('grantDays')||{}).value||0);
+ const count=Number((document.getElementById('grantCount')||{}).value||0);
  const note=String((document.getElementById('grantNote')||{}).value||'');
  try{
-  const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral,days,note});
-  if(status)status.textContent='Доступ выдан до '+accessDate(data.until)+'.';
+  if(!chat){if(status)status.textContent='Выберите, кому выдать доступ.';return}
+  const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral:kind==='plot'?cadastral:[],days,count,note});
+  if(status)status.textContent='Выдано: '+(data.what||'доступ')+' — '+(data.who||('ID '+chat))+
+   (data.until?', до '+accessDate(data.until):', срок каждого участка пойдёт с его первого расчёта')+'.';
   renderAccessAdmin();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }

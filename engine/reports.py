@@ -38,7 +38,11 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
         kpis = [item.get("kpi") or {} for item in objects]
         dscr = [k["dscr_min"] for k in kpis if k.get("dscr_min") is not None]
         noi = sum(float(k.get("stabilized_noi") or 0.0) for k in kpis)
-        capex = sum(float(t.get("capex") or 0.0) for t in totals)
+        # Делитель доходности — все затраты создания тех объектов, что дают
+        # NOI (`kpi.cost_total`: стройка и доля общих затрат с участком), как
+        # у `yield_on_cost` объекта: одно правило, а не второе здесь.
+        noi_cost = sum(float(k.get("cost_total") or 0.0) for k in kpis
+                       if float(k.get("stabilized_noi") or 0.0))
         exit_value = sum(float(k.get("exit_value") or 0.0) for k in kpis)
         tiles = [
             {"label": "Кредит объектов — пик", "value": sum(float(t.get("loan_peak") or 0.0) for t in totals), "unit": "rub"},
@@ -47,7 +51,8 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
         if noi:
             tiles += [
                 {"label": "Стабилизированный NOI, год", "value": noi, "unit": "rub"},
-                {"label": "Доходность на затраты", "value": noi / capex if capex else 0.0, "unit": "pct"},
+                {"label": "Доходность на затраты (NOI / все затраты с участком)",
+                 "value": noi / noi_cost if noi_cost else 0.0, "unit": "pct"},
             ]
         if dscr:
             tiles.append({"label": "DSCR — минимум по годам", "value": min(dscr), "unit": "mult"})
@@ -151,6 +156,32 @@ def _row(label: str, value: Any, unit: str, **extra: Any) -> dict[str, Any]:
     return {"label": label, "value": value, "unit": unit, **extra}
 
 
+def _site_massing_block(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Пятно застройки, этажность и подземные уровни — блоком объектного отчёта.
+
+    Числа — ответ движка (`tep.site_massing`), тот же, что в ТЭП страницы и в
+    PDF жилого отчёта; предупреждения едут строками текста, а не теряются.
+    """
+    m = ((result or {}).get("tep") or {}).get("site_massing") or {}
+    if not m or float(m.get("footprint_sqm") or 0.0) <= 0:
+        return []
+    share = float(m.get("footprint_share") or 0.0)
+    rows = [_row("Пятно застройки", m.get("footprint_sqm"), "sqm"),
+            _row("Доля участка под зданием", f"{share * 100:.0f}%", "text"),
+            _row("Средняя этажность", round(float(m.get("average_storeys") or 0.0), 1), "num"),
+            _row("Подземная часть", m.get("underground_sqm"), "sqm"),
+            _row("Подземных уровней", m.get("underground_levels"), "count")]
+    rows += [_row("Внимание", str(w), "text") for w in m.get("warnings") or []]
+    rows.append(_row("Как посчитано", "оценка по балансу территории, а не проект", "text"))
+    blocks = [{"title": "Пятно застройки и этажность", "rows": rows}]
+    scheme = m.get("scheme") or {}
+    if (scheme.get("axonometry") or {}).get("shapes") or (scheme.get("layout") or {}).get("skipped"):
+        # Объёмная схема — та же картинка движка, что во вкладке «ТЭП».
+        blocks.append({"ref": "massing_scheme", "title": "Объёмная схема застройки",
+                       "scheme": m["scheme"]})
+    return blocks
+
+
 def _sum_object_costs(results: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
     """Смета объектов свода — сумма очередей, а не второй расчёт."""
     out: dict[str, dict[str, float]] = {}
@@ -210,9 +241,28 @@ def _object_param_rows(obj: StandaloneObject | None, params: dict[str, Any],
         if kind == "select":
             names = {str(v): str(name) for v, name in field[4]}
             rows.append(_row(label, names.get(str(value), str(value)), "text"))
+        elif kind == "date":
+            if str(value).strip():
+                rows.append(_row(label, str(value)[:10], "date"))
         else:
             rows.append(_row(label, float(value), "num",
                              suffix=str(unit).split(";")[0].split(",")[0]))
+    return rows
+
+
+def _object_unit_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Строки удельной экономики для рамки объекта: тыс ₽ на м² своей базы,
+    база — в подписи (`unit_economics.base_label`), а не угадана заголовком."""
+    rows: list[dict[str, Any]] = []
+    for item in report.get("unit_economics") or []:
+        base = str(item.get("base_label") or "")
+        tail = base.split("м²", 1)[1].strip() if "м²" in base else base
+        rows.append(_row(f"{item.get('label')} — на м² {tail}".strip(), item.get("per_base_th"), "th"))
+        # Вторая база — продаваемая, как вторая колонка жилой таблицы: с ней
+        # сравнивают цену продажи. У строк на продаваемую не повторяется.
+        if item.get("base") != UNIT_BASE_SALEABLE:
+            rows.append(_row(f"{item.get('label')} — на м² продаваемой площади",
+                             item.get("per_saleable_th"), "th"))
     return rows
 
 
@@ -399,7 +449,7 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
         "brief": [_row("Наземная площадь в ГНС", gns_total, "sqm"),
                   _row("Арендопригодная / продаваемая площадь", area_total, "sqm")],
         "blocks": [*object_blocks, {"title": "Тип проекта", "rows": project_kind_rows(summary)},
-                   {"ref": "site", "title": "Участок"}],
+                   *_site_massing_block(result), {"ref": "site", "title": "Участок"}],
     }
 
     # 3. Стратегия реализации ----------------------------------------------
@@ -537,11 +587,21 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     operating = [r for r in operating if float(r["value"] or 0.0)]
     operating.append(_row("Итого эксплуатация, налог на имущество и продажа",
                           sum(float(r["value"]) for r in operating), "rub"))
+    # Удельная экономика — та же таблица движка (`report.unit_economics`), что
+    # в жилом «Итоге»: рамка объекта прятала «Итог» целиком и теряла её
+    # (владелец, 23.10.2026: «почему в результатах нет удельной экономики
+    # вообще»). Каждая строка — на свою базу, и база названа в подписи.
+    unit = _object_unit_rows(report)
+    unit_brief = [_row(f"{item['label']} на м² продаваемой", item.get("per_saleable_th"), "th")
+                  for item in report.get("unit_economics") or []
+                  if item.get("key") in ("total_expenses", "net_profit")]
     sections["costs"] = {
         "brief": [_row("Смета объектов", objects_cost, "rub"),
                   _row("Общие затраты", common_total, "rub"),
-                  _row("Расходы всего", summary.get("total_expenses"), "rub")],
+                  _row("Расходы всего", summary.get("total_expenses"), "rub"),
+                  *unit_brief],
         "blocks": [*cost_blocks,
+                   *([{"title": "Удельная экономика", "rows": unit}] if unit else []),
                    {"title": "Общие затраты проекта — участок, ИРД, проект, сети",
                     "rows": common_rows},
                    {"title": "Эксплуатация и налог на имущество", "rows": operating},
@@ -649,6 +709,8 @@ def project_kind_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
         " — жилья, соцнагрузки, платы за смену ВРИ и объектов (ТЦ, офисы, паркинг, ФОК) "
         "в расчёте нет" if kind == PROJECT_KIND_HOTEL else
         " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет"), "text")]
+    for move in summary.get("project_kind_moves") or []:
+        rows.append(_row("Паркинг", str(move), "text"))
     left = [str(item) for item in (summary.get("project_kind_leftovers") or [])]
     if left:
         rows.append(_row("Осталось от жилья во вводных",
@@ -923,7 +985,8 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
         "brief": object_rows[:3] + [object_rows[4]],
         # Остаток жилья в гостиничный отчёт не идёт: владелец нашёл его в PDF
         # гостиницы жилым хвостом (`PDF_HOUSING` в проверке отчёта гостиницы).
-        "blocks": [{"title": "Гостиница", "rows": object_rows}, {"ref": "site", "title": "Участок"}],
+        "blocks": [{"title": "Гостиница", "rows": object_rows}, *_site_massing_block(result),
+                   {"ref": "site", "title": "Участок"}],
     }
 
     # 3. Стратегия реализации ----------------------------------------------

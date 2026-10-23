@@ -372,9 +372,36 @@ async function glavapuScenarioCheck(force){
   return;
  }
  box.innerHTML=glavapuScenarioHtml(answer);
+ glavapuScenarioKeepTerritory(answer);
  const summary=document.getElementById('glavapuScenarioSummary');
  summary.innerHTML=glavapuScenarioSummaryHtml(answer);
  summary.style.display=summary.innerHTML?'':'none';
+}
+// Строки 57–58 калькулятора («Озеленённые территории ЖК» и разбивка) —
+// в проект: двор по норме пятна застройки берёт большее из нашей нормы и
+// строки 57 (решение владельца 22.10.2026). Строка 57 — 5 м² × квартиры × 2,1,
+// поэтому с ней хранится число квартир, принятое калькулятором: движок берёт
+// её, только пока в ТЭП столько же квартир. Поле не принято — не храним.
+// Участки соцобъектов (разделы «ДОО:», «Школы:») и баланс территории
+// (строка 14) хранятся рядом: пятно ставит школу, сад и офисы на их участки,
+// пока калькулятор считал те же места и ту же нежилую площадь.
+function glavapuScenarioKeepTerritory(a){
+ a=a||{};
+ if(a.state!=='done')return;
+ const side=a.glavapu||{};
+ const params=((a.scenario||{}).params)||{};
+ const refused=((a.applied||{}).refused||[]).map(r=>r&&r.param);
+ const flats=refused.includes('flats_count')?0:Number(params.flats_count||0);
+ const keep={key:a.key||'',done_at:a.finished_at||a.done_at||new Date().toISOString(),
+  flats_count:flats,territory:cloneValue(side.territory||{}),social_obj:cloneValue(side.social_obj||{}),
+  balance:cloneValue(side.balance||{}),
+  spp_nonres_ths:refused.some(p=>String(p||'').startsWith('nonres'))?0:Number(params.spp_nonres_ths||0)};
+ if(!Object.keys(keep.territory).length&&!Object.keys(keep.social_obj).length&&!Object.keys(keep.balance).length){
+  if(inputs._glavapu_scenario){delete inputs._glavapu_scenario;calculate()}
+  return;
+ }
+ inputs._glavapu_scenario=keep;
+ calculate();
 }
 // Короткий итог для карточки: сколько совпало и разошлось, и кнопка окна.
 // Отказ сюда не пишется — его причина и место уже в строке статуса.
@@ -464,9 +491,13 @@ async function obtainCadastralTep(preAnalysis){
    cadastralAnalysis=analysis;
    inputs._cadastral_analysis=cloneValue(analysis);
    // Площадь из ЕГРН — пока нет ГлавАПУ и ручного ввода, участок мерится ей.
+   // Территорию, приехавшую с источником (площадка КРТ, загруженный ТЭП),
+   // разобранные номера не перемеряют: они могут быть её частью. Так один
+   // участок 66 м² из перечня встал площадью КРТ на 5 га, а ТЭП на
+   // десятки тысяч метров остался — и расчёт пошёл по нему молча.
    {
     const cadArea=Number(((analysis||{}).territory||{}).area_ha||0);
-    if(cadArea>0&&!inputs._site_area_user_set&&!inputs._glavapu_import)inputs.site_area_ha=cadArea;
+    if(cadArea>0&&!inputs._site_area_user_set&&!inputs._glavapu_import&&!importedSiteAreaHa())inputs.site_area_ha=cadArea;
    }
    tepStep='карточка территории';
    field.value=(analysis.requested||[]).join(', ');
@@ -582,6 +613,7 @@ let landScreeningRun=0;
 // что показано в списке ограничений.
 let landScreeningLast=null;
 let LAND_MAP=null;
+let LAND_MAP_VIEWS=null;
 
 // Карточка участка с контуром и картой — при любом пути получения ТЭП, а не
 // только при поиске по адресу: кадастровый «Получить ТЭП» оставлял человека
@@ -1121,7 +1153,7 @@ function landMapFromTerritory(){
  if(!rings.length)return;
  const zones=((landScreeningLast&&landScreeningLast.parcels)||[])
   .flatMap(p=>(p&&p.findings)||[]);
- openLandMap({rings:rings,zones:zones,
+ openLandMap({rings:rings,zones:zones,massing:siteMassingMapShapes(),
   title:`Территория из ${items.length} участков и окружение`});
 }
 
@@ -1213,8 +1245,162 @@ function landMapView(){
 function landMapGround(mercatorMetres,y){return mercatorMetres*Math.cos(landMapLat(y)*Math.PI/180)}
 function landMapMetres(pixels,zoom,y){return landMapGround(pixels*landMapScale(zoom),y)}
 
+// Гибрид Яндекса — снимок со спутника с улицами и подписями. Отдаёт его только
+// JavaScript API Яндекса, и только в браузере: серверная склейка (`/land/basemap`)
+// снимка не получит, а условия Яндекса запрещают его сохранять. Поэтому гибрид —
+// вид живой карты, а не картинка; в отчёт и в бот уходит карта улиц.
+//
+// Проекция здесь главная ловушка. Тайлы Яндекса лежат в эллиптическом
+// меркаторе (EPSG:3395), а контуры ЕГРН у нас — в сферическом (EPSG:3857).
+// Нарисовать контур нашими пикселями поверх снимка Яндекса значит увести его
+// на ~200 м к северу на широте Москвы, и выглядело бы это как неточность ЕГРН.
+// Поэтому контуры уходят в Яндекс широтой и долготой, а проекцию API считает
+// сам: метры сферического меркатора переводятся обратной формулой ТОЙ ЖЕ
+// сферы (`landMapGeo`), и никакой своей эллиптической формулы здесь нет.
+function landMapGeo(point){
+ return [landMapLat(point[1]),point[0]/6378137*180/Math.PI];
+}
+function landMapMerc(geo){
+ return [geo[1]*Math.PI/180*6378137,6378137*Math.log(Math.tan(Math.PI/4+geo[0]*Math.PI/360))];
+}
+// Один вопрос — один ответ: предлагать ли гибрид, решает сервер по ключу, и
+// спрашивается он один раз на страницу. Сбой вопроса — тоже ответ с причиной,
+// а не молча спрятанная кнопка.
+function landMapViews(){
+ if(!LAND_MAP_VIEWS){
+  LAND_MAP_VIEWS=fetch('/land/basemap-views',{credentials:'same-origin'})
+   .then(r=>r.ok?r.json():Promise.reject(new Error('сервер ответил '+r.status)))
+   .catch(e=>({map:{available:true},hybrid:{available:false,
+     reason:'Не удалось узнать, подключён ли снимок со спутника ('+String(e.message||e)
+       +'). Карта улиц работает как обычно.'}}));
+ }
+ return LAND_MAP_VIEWS;
+}
+function landMapLayerPref(){
+ try{return localStorage.getItem('plato.basemap')==='hybrid'?'hybrid':'map'}catch(e){return 'map'}
+}
+function landMapLayerBar(){
+ const bar=document.getElementById('landMapLayers');
+ if(!bar||!LAND_MAP)return;
+ const hybrid=(LAND_MAP.views&&LAND_MAP.views.hybrid)||null;
+ const on=LAND_MAP.layer;
+ const btn=(layer,label,enabled,hint)=>`<button type="button" data-layer="${layer}"`
+  +` onclick="landMapSetLayer('${layer}')"${enabled?'':' disabled'} title="${escapeHtml(hint||'')}"`
+  +` aria-pressed="${on===layer?'true':'false'}" style="border:1px solid #3b6db4;`
+  +`background:${on===layer?'#3b6db4':'#fff'};color:${on===layer?'#fff':(enabled?'#3b6db4':'#999')};`
+  +`border-radius:6px;padding:4px 10px;cursor:${enabled?'pointer':'not-allowed'};font-size:12px">${label}</button>`;
+ bar.innerHTML=btn('map','Схема',true,'Карта улиц OpenStreetMap')
+  +btn('hybrid','Гибрид',!!(hybrid&&hybrid.available),
+       hybrid?(hybrid.available?'Снимок со спутника с улицами — Яндекс Карты':hybrid.reason):'Проверяем, подключён ли снимок…');
+}
+function landMapYandex(src){
+ if(window.ymaps&&window.ymaps.ready)return new Promise(ok=>window.ymaps.ready(()=>ok(window.ymaps)));
+ return new Promise((ok,fail)=>{
+  const tag=document.createElement('script');
+  tag.src=src;tag.async=true;
+  tag.onload=()=>window.ymaps?window.ymaps.ready(()=>ok(window.ymaps)):fail(new Error('скрипт пришёл без карты'));
+  tag.onerror=()=>fail(new Error('Карты Яндекса не загрузились'));
+  document.head.appendChild(tag);
+ });
+}
+function landMapSetLayer(layer){
+ if(!LAND_MAP||(layer!=='map'&&layer!=='hybrid'))return;
+ const hybrid=LAND_MAP.views&&LAND_MAP.views.hybrid;
+ LAND_MAP.layerNote='';
+ if(layer==='hybrid'&&!(hybrid&&hybrid.available)){
+  // Не предлагали — не включаем, и не подменяем схемой молча: причина в подписи.
+  LAND_MAP.layerNote=(hybrid&&hybrid.reason)||'Снимок со спутника не подключён.';
+  layer='map';
+ }
+ try{localStorage.setItem('plato.basemap',layer)}catch(e){}
+ if(layer===LAND_MAP.layer&&(layer==='map'||LAND_MAP.ymap)){landMapLayerBar();renderLandMap();return}
+ if(LAND_MAP.layer==='hybrid')landMapHybridClose();
+ LAND_MAP.layer=layer;
+ landMapLayerBar();
+ if(layer==='map'){renderLandMap();return}
+ landMapHybridOpen();
+}
+function landMapHybridOpen(){
+ const stage=document.getElementById('landMapStage');
+ const state=LAND_MAP;
+ if(!stage||!state)return;
+ stage.innerHTML='<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#555;font-size:13px">Загружаем снимок со спутника…</div>';
+ landMapNote();
+ landMapYandex(state.views.hybrid.script).then(ymaps=>{
+  if(LAND_MAP!==state||state.layer!=='hybrid')return;
+  stage.innerHTML='<div id="landMapYandex" style="position:absolute;inset:0"></div>';
+  // Проекцию не задаём: у Яндекса она своя (эллиптическая), и снимок с
+  // контуром совпадают только тогда, когда обоих считает API.
+  const map=new ymaps.Map('landMapYandex',{
+   center:landMapGeo([state.cx,state.cy]),zoom:Math.round(state.zoom),
+   type:'yandex#hybrid',controls:['zoomControl','rulerControl'],
+  });
+  const geo=rings=>(rings||[]).map(ring=>(ring||[]).filter(p=>Array.isArray(p)&&p.length>=2).map(landMapGeo));
+  (state.shapes||[]).filter(s=>Array.isArray(s.rings)&&s.rings.length).forEach((shape,i)=>{
+   const colour=shape.colour||'#777777';
+   const poly=new ymaps.Polygon(geo(shape.rings),{hintContent:String(shape.title||'')},
+    {fillColor:colour,fillOpacity:0.34,strokeColor:colour,strokeWidth:1.5});
+   if(typeof state.onPick==='function')poly.events.add('click',()=>state.onPick(String(shape.key||i)));
+   map.geoObjects.add(poly);
+  });
+  const paint={killer:'#b3261e',economic:'#a05a00',info:'#777777'};
+  (state.zones||[]).filter(z=>Array.isArray(z.outline_merc)&&z.outline_merc.length).forEach(zone=>{
+   const colour=paint[zone.flag_class]||'#777777';
+   map.geoObjects.add(new ymaps.Polygon(geo(zone.outline_merc),{},
+    {fillColor:colour,fillOpacity:0.22,strokeColor:colour,strokeWidth:1.5}));
+  });
+  if((state.rings||[]).length){
+   // На снимке тёмный контур теряется — граница участка жёлтая, как на кадастре.
+   map.geoObjects.add(new ymaps.Polygon(geo(state.rings),{},
+    {fillColor:'#ffffff',fillOpacity:0.12,strokeColor:'#ffd400',strokeWidth:3}));
+  }
+  if(state.measuring)map.behaviors.enable('ruler');
+  state.ymap=map;
+  landMapNote();
+ }).catch(e=>{
+  if(LAND_MAP!==state)return;
+  state.layer='map';
+  state.layerNote='Снимок со спутника не открылся: '+String(e.message||e)+'. Показана карта улиц.';
+  landMapLayerBar();
+  renderLandMap();
+ });
+}
+function landMapHybridClose(){
+ const state=LAND_MAP;
+ if(!state||!state.ymap)return;
+ // Вид не прыгает при переключении: центр и масштаб забираем у Яндекса обратно.
+ try{
+  const merc=landMapMerc(state.ymap.getCenter());
+  state.cx=merc[0];state.cy=merc[1];
+  state.zoom=Math.max(3,Math.min(19,Math.round(state.ymap.getZoom())));
+  state.ymap.destroy();
+ }catch(e){}
+ state.ymap=null;
+}
+function landMapNote(){
+ const note=document.getElementById('landMapNote');
+ if(!note||!LAND_MAP)return;
+ let text;
+ if(LAND_MAP.layer==='hybrid'){
+  // Почему снимка нет в отчёте, говорит сервер (`print_reason`): правило одно.
+  const hybrid=(LAND_MAP.views&&LAND_MAP.views.hybrid)||{};
+  text='Снимок со спутника, улицы и подписи — Яндекс Карты. Границы участков взяты из ЕГРН, зоны — из НСПД.'
+   +(hybrid.print_reason?' '+hybrid.print_reason:'');
+ }else if(LAND_MAP.measuring){
+  text='Линейка включена: щёлкните две точки, и мы покажем расстояние между ними по прямой. Для коэффициента К1 парковки расстояние до входа на станцию меряют пешком, поэтому оно будет длиннее.';
+ }else{
+  text=LAND_MAP.note||'Тяните карту мышью или пальцем, колесом мыши меняйте масштаб. Границы участков взяты из ЕГРН, зоны — из НСПД, фон — карта OpenStreetMap.';
+ }
+ if(LAND_MAP.layerNote&&LAND_MAP.layer!=='hybrid')text=LAND_MAP.layerNote+' '+text;
+ if((LAND_MAP.massing||[]).length&&LAND_MAP.layer!=='hybrid')
+  text='Цветные прямоугольники с номерами — корпуса объёмной схемы из вкладки «ТЭП». Они расставлены рядами для наглядности, это не генплан. '+text;
+ note.textContent=text;
+}
+
 function openLandMap(payload){
- // payload: {rings, zones, title, note, shapes, onPick}
+ // payload: {rings, zones, title, note, shapes, onPick, massing}
+ // `massing` — корпуса объёмной схемы проекта (`siteMassingMapShapes`): та же
+ // раскладка движка, что на схеме во вкладке «ТЭП», в метрах меркатора.
  // `shapes` — чужие контуры со своим цветом и подписью: ими карту КРТ рисует
  // страница торгов. Второй живой карты не заводим: тайлы, проекция, линейка и
  // масштаб объявлены здесь один раз, и копию было бы негде обновлять.
@@ -1239,6 +1425,7 @@ function openLandMap(payload){
  LAND_MAP={
   rings:rings,zones:(payload&&payload.zones)||[],
   shapes:shapes,onPick:(payload&&payload.onPick)||null,
+  massing:(payload&&payload.massing)||[],
   title:(payload&&payload.title)||'Участок и окружение',
   note:(payload&&payload.note)||'',
   cx:(minX+maxX)/2,cy:(minY+maxY)/2,
@@ -1246,16 +1433,32 @@ function openLandMap(payload){
  // момент, когда его открыли посмотреть целиком.
  zoom:Math.max(3,Math.min(19,Math.floor(zoom))),
   measure:[],measuring:false,drag:null,moved:0,
+  layer:'map',views:null,ymap:null,layerNote:'',
  };
  renderLandMap();
+ landMapLayerBar();
+ // Вид выбирается тем, что человек выбрал в прошлый раз, но только когда сервер
+ // подтвердил, что гибрид есть: до ответа показана схема, а не пустое поле.
+ const state=LAND_MAP;
+ landMapViews().then(views=>{
+  if(LAND_MAP!==state)return;
+  state.views=views;
+  landMapLayerBar();
+  if(landMapLayerPref()==='hybrid')landMapSetLayer('hybrid');
+ });
 }
 function closeLandMap(){
+ landMapHybridClose();
  const box=document.getElementById('landMapDialog');
  if(box)box.style.display='none';
  LAND_MAP=null;
 }
 function landMapZoomBy(step){
  if(!LAND_MAP)return;
+ if(LAND_MAP.layer==='hybrid'){
+  if(LAND_MAP.ymap)LAND_MAP.ymap.setZoom(Math.max(3,Math.min(19,LAND_MAP.ymap.getZoom()+step)));
+  return;
+ }
  LAND_MAP.zoom=Math.max(3,Math.min(19,LAND_MAP.zoom+step));
  renderLandMap();
 }
@@ -1263,6 +1466,11 @@ function landMapMeasureToggle(){
  if(!LAND_MAP)return;
  LAND_MAP.measuring=!LAND_MAP.measuring;
  if(!LAND_MAP.measuring)LAND_MAP.measure=[];
+ if(LAND_MAP.ymap){
+  // На снимке линейка — своя у Яндекса: она меряет в его же проекции.
+  if(LAND_MAP.measuring)LAND_MAP.ymap.behaviors.enable('ruler');
+  else LAND_MAP.ymap.behaviors.disable('ruler');
+ }
  renderLandMap();
 }
 function landMapPoint(event){
@@ -1271,7 +1479,7 @@ function landMapPoint(event){
  return landMapUnproject(event.clientX-view.left,event.clientY-view.top,view);
 }
 function landMapClick(event){
- if(!LAND_MAP)return;
+ if(!LAND_MAP||LAND_MAP.layer==='hybrid')return;
  // Щелчок по чужой фигуре — выбор площадки, а не точка линейки.
  const pick=event.target&&event.target.getAttribute&&event.target.getAttribute('data-pick');
  if(pick!==null&&pick!==undefined&&!LAND_MAP.measuring&&typeof LAND_MAP.onPick==='function'){
@@ -1293,6 +1501,9 @@ function landMapClick(event){
  renderLandMap();
 }
 function landMapDown(event){
+ // В гибриде карту двигает Яндекс: захват указателя сценой отнял бы у него
+ // перетаскивание.
+ if(LAND_MAP&&LAND_MAP.layer==='hybrid')return;
  // Двигать карту можно и с включённой линейкой: иначе, чтобы дотянуться до
  // станции, её пришлось бы выключать, тянуть и включать заново — а меряют
  // как раз то, что в один экран не помещается.
@@ -1302,7 +1513,7 @@ function landMapDown(event){
  try{event.currentTarget.setPointerCapture(event.pointerId)}catch(e){}
 }
 function landMapMove(event){
- if(!LAND_MAP||!LAND_MAP.drag)return;
+ if(!LAND_MAP||!LAND_MAP.drag||LAND_MAP.layer==='hybrid')return;
  const scale=landMapScale(LAND_MAP.zoom);
  const dx=event.clientX-LAND_MAP.drag.x,dy=event.clientY-LAND_MAP.drag.y;
  LAND_MAP.moved+=Math.abs(dx)+Math.abs(dy);
@@ -1313,7 +1524,7 @@ function landMapMove(event){
 }
 function landMapUp(){if(LAND_MAP)LAND_MAP.drag=null}
 function landMapWheel(event){
- if(!LAND_MAP)return;
+ if(!LAND_MAP||LAND_MAP.layer==='hybrid')return;
  event.preventDefault();
  // Колесо увеличивает к курсору, а не к центру: иначе разглядываемое место
  // уезжает из кадра ровно тогда, когда его разглядывают.
@@ -1331,6 +1542,8 @@ function renderLandMap(){
  const stage=document.getElementById('landMapStage');
  const view=landMapView();
  if(!stage||!view)return;
+ // Гибрид рисует Яндекс в своём контейнере; перерисовка сцены его бы стёрла.
+ if(LAND_MAP.layer==='hybrid'){landMapNote();return}
  const W=view.width,H=view.height,zoom=view.zoom,scale=landMapScale(zoom);
  const left=landMapWorldPx(view.cx,zoom)-W/2,top=landMapWorldPy(view.cy,zoom)-H/2;
  const project=p=>landMapProject(p,view);
@@ -1367,6 +1580,13 @@ function renderLandMap(){
     +`<title>${escapeHtml(String(shape.title||''))}</title></path>`;
   }).join('');
  const contour=`<path d="${toPath(LAND_MAP.rings)}" fill="rgba(245,245,243,.18)" stroke="#111" stroke-width="2.5" fill-rule="evenodd"/>`;
+ // Корпуса схемы — поверх контура: пятно цвета очереди и номер строки легенды.
+ const massing=(LAND_MAP.massing||[]).map(b=>{
+  const pts=b.ring.map(project);
+  const cx=pts.reduce((a,p)=>a+p[0],0)/pts.length,cy=pts.reduce((a,p)=>a+p[1],0)/pts.length;
+  return `<g class="land-map-corpus" data-building="${b.number}"><path d="${toPath([b.ring])}" fill="${b.colour}" fill-opacity="0.78" stroke="#1d1d1d" stroke-width="1"><title>${escapeHtml(b.title)}</title></path>`
+   +`<text x="${cx.toFixed(1)}" y="${(cy+4).toFixed(1)}" font-size="12" font-weight="700" text-anchor="middle" fill="#fff">${b.number}</text></g>`;
+ }).join('');
  let ruler='',rulerNote='';
  if(LAND_MAP.measure.length){
   const pts=LAND_MAP.measure.map(project);
@@ -1384,18 +1604,13 @@ function renderLandMap(){
  const barM=nice.filter(v=>v/perPx<=W*0.35).pop()||nice[0];
  const barPx=Math.round(barM/perPx);
  stage.innerHTML=`<div style="position:absolute;inset:0;overflow:hidden">${tiles}</div>`+
-  `<svg width="${W}" height="${H}" style="position:absolute;inset:0;pointer-events:none">${shapeLayers}${zoneLayers}${contour}${ruler}</svg>`+
+  `<svg width="${W}" height="${H}" style="position:absolute;inset:0;pointer-events:none">${shapeLayers}${zoneLayers}${contour}${massing}${ruler}</svg>`+
   `<div style="position:absolute;left:12px;bottom:12px;background:rgba(255,255,255,.88);padding:4px 8px;border-radius:4px;font-size:11px;color:#333">`+
   `<div style="border:2px solid #333;border-top:0;height:5px;width:${barPx}px;margin-bottom:2px"></div>${landNum(barM,0)} м · © OpenStreetMap</div>`+
   (rulerNote?`<div style="position:absolute;right:12px;bottom:12px;background:#3b6db4;color:#fff;padding:4px 10px;border-radius:4px;font-size:12px">${escapeHtml(rulerNote)}</div>`:'');
  const head=document.getElementById('landMapTitle');
  if(head)head.textContent=LAND_MAP.title;
- const note=document.getElementById('landMapNote');
- if(note){
-  note.textContent=LAND_MAP.measuring
-   ?'Линейка включена: щёлкните две точки, и мы покажем расстояние между ними по прямой. Для коэффициента К1 парковки расстояние до входа на станцию меряют пешком, поэтому оно будет длиннее.'
-   :(LAND_MAP.note||'Тяните карту мышью или пальцем, колесом мыши меняйте масштаб. Границы участков взяты из ЕГРН, зоны — из НСПД, фон — карта OpenStreetMap.');
- }
+ landMapNote();
  const button=document.getElementById('landMapRuler');
  if(button)button.textContent=LAND_MAP.measuring?'Линейка включена':'Линейка';
 }
@@ -1414,6 +1629,7 @@ function landMapFromContour(cad){
  openLandMap({
   rings:item.contour_merc,
   zones:(screened&&screened.findings)||[],
+  massing:siteMassingMapShapes(),
   title:item.cadastral_number?('Участок '+item.cadastral_number+' и окружение'):'Участок и окружение',
  });
 }

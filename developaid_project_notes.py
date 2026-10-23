@@ -100,7 +100,7 @@ def update(project: str, note_id: str, author: str, text: str | None = None,
 
     def build(rows: list[dict[str, Any]]) -> None:
         versions = [row for row in rows if row.get("id") == note_id]
-        if not versions:
+        if not versions or versions[-1].get("deleted"):
             raise KeyError(f"записи {note_id} в проекте нет")
         last = versions[-1]
         entry.update({
@@ -116,6 +116,28 @@ def update(project: str, note_id: str, author: str, text: str | None = None,
     return _append(path, entry, build)
 
 
+def remove(project: str, note_id: str, author: str, at: str = "") -> dict[str, Any]:
+    """Удалить запись (владелец, 22.10.2026: «это был тест, как его удалить»).
+
+    Журнал ничего не теряет: удаление — последняя версия с пометкой `deleted`,
+    в ней кто и когда удалил. Список и сводка такую запись не показывают.
+    """
+    path = _log(project)
+    entry: dict[str, Any] = {}
+
+    def build(rows: list[dict[str, Any]]) -> None:
+        versions = [row for row in rows if row.get("id") == note_id]
+        if not versions or versions[-1].get("deleted"):
+            raise KeyError(f"записи {note_id} в проекте нет")
+        last = versions[-1]
+        entry.update({"id": note_id, "at": at or _now(),
+                      "author": str(author or "").strip() or "не указан",
+                      "topic": last["topic"], "text": last["text"], "status": last["status"],
+                      "version": len(versions) + 1, "deleted": True})
+
+    return _append(path, entry, build)
+
+
 def notes(project: str) -> list[dict[str, Any]]:
     """Текущие записи: последняя версия каждой, с датой создания и автором первой."""
     current: dict[str, dict[str, Any]] = {}
@@ -123,7 +145,7 @@ def notes(project: str) -> list[dict[str, Any]]:
         first = current.get(row["id"], {})
         current[row["id"]] = dict(row, created_at=first.get("created_at", row["at"]),
                                   created_by=first.get("created_by", row["author"]))
-    out = list(current.values())
+    out = [row for row in current.values() if not row.get("deleted")]
     # Открытые выше закрытых, свежие правки выше старых.
     open_rows = sorted([r for r in out if r["status"] == "open"],
                        key=lambda r: r["at"], reverse=True)
@@ -146,7 +168,8 @@ def for_period(project: str, start: datetime.date,
             continue
         current[row["id"]] = row
     first = start.isoformat()
-    rows = sorted(current.values(), key=lambda r: r["at"], reverse=True)
+    rows = sorted((r for r in current.values() if not r.get("deleted")),
+                  key=lambda r: r["at"], reverse=True)
     return {
         # Открытые — все; «changed» отмечает новые и поправленные за период.
         "open": [dict(r, changed=r["at"][:10] >= first)

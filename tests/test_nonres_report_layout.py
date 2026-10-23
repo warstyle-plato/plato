@@ -222,7 +222,10 @@ def test_the_decision_reads_the_engine() -> None:
     layout, equity = result["report"]["layout"], result["report"]["equity_participation"]
     metric = layout["debt_metric"]
     assert rows[metric["label"]] == metric["value"]
-    assert rows["IRR собственника"] == result["summary"]["irr_equity"]
+    irr = result["summary"]["irr_equity"]
+    # Нет IRR — строка называет причину, а не молчит пустой клеткой.
+    assert rows["IRR собственника"] == irr if irr is not None \
+        else str(rows["IRR собственника"]).startswith("не считается")
     assert rows["NPV собственника @20%"] == equity["npv"]
     assert rows["Пик собственных средств"] == equity["peak"]
     assert rows["Чистая прибыль проекта"] == result["summary"]["net_profit"]
@@ -238,7 +241,7 @@ def test_strategy_and_income_come_from_the_object_rows() -> None:
     sections = _sections(result)
     objects = {o["title"]: o for o in result["finance"]["nonres"]["objects"]}
     offices = _values(_block(sections["strategy"], "Офисы"))
-    assert offices["Ставка аренды"] == 4.5 and offices["Выход"] == "Продажа по ставке капитализации"
+    assert offices["Ставка аренды"] == core.DEFAULT_INPUTS["offices_rent_th_per_sqm_month"] and offices["Выход"] == "Продажа по ставке капитализации"
     retail = _values(_block(sections["strategy"], "Коммерция ОСЗ"))
     assert retail["Стартовая цена ДКП"] == pytest.approx(450.0)
     years = _block(sections["income"], "По годам — Офисы")["years"]
@@ -448,6 +451,20 @@ def test_the_rendered_numbers_are_the_engine_numbers(walk) -> None:
     estimate = next(r for r in state["sections"] if r["id"] == "rsObj-costs")["rows"]
     assert ["Вознаграждение генподрядчика — доля объекта", ] == [
         r[0] for r in estimate if r[0].startswith("Вознаграждение генподрядчика")]
+
+
+def test_the_object_frame_shows_the_unit_economics(walk) -> None:
+    """Удельная экономика — в разделе «Затраты» рамки объекта (владелец,
+    23.10.2026: «почему в результатах нет удельной экономики вообще»): жилой
+    «Итог», где она жила, рамка объекта прячет целиком."""
+    state, engine = walk["object"], walk["object"]["engine"]
+    rows = dict(r for r in next(s for s in state["sections"] if s["id"] == "rsObj-costs")["rows"]
+                if len(r) == 2)
+    net = next(u for u in engine["report"]["unit_economics"] if u["key"] == "net_profit")
+    drawn = rows["Чистая прибыль — на м² продаваемой площади"]
+    expected = f"{net['per_saleable_th']:,.1f}".replace(",", " ").replace(".", ",").replace("-", "−")
+    assert drawn.replace("\u00a0", " ").replace("-", "−").startswith(expected), (drawn, expected)
+    assert any(label.startswith("Выручка — на м²") for label in rows)
 
 
 def test_a_housing_project_keeps_its_page(walk) -> None:

@@ -1344,6 +1344,12 @@ function tepCellChanged(key,col,value){
   if(key==='apartments'){rescaleApartmentUnits();rescaleBuiltInCommercial()}
   renderInputs();
   renderTep();
+ }else if(key==='apartments'){
+  // Число квартир — вход нормы мест (2118-ПП, п. 2 по средней квартире), и
+  // считает её сама страница (`parkingRequirement`). Перерисовка ждала ответа
+  // расчёта: долгий или отказавший расчёт оставлял места, подписи и поле мест
+  // от прежнего числа (владелец, 22.10.2026: «машиноместа даже не дрогнули»).
+  tepRowToInputs(key);renderInputs();renderTep();
  }else{tepRowToInputs(key);updateTepTotals()}
  scheduleTepAutoRecalc(key);
  calculate();
@@ -1367,6 +1373,197 @@ function updateTepTotals(){
  renderTepUndergroundNote(sums.gns,underGns);
  tg.textContent=num(sums.gns);ta.textContent=num(sums.total_area);tu.textContent=num(sums.useful);ts.textContent=num(sums.saleable);tt.textContent=num(sums.transfer);tn.textContent=num(sums.units);
  renderSitePanel();
+ renderSiteMassing();
+}
+// Пятно застройки, этажность и подземная часть: ответ движка
+// (`tep.site_massing`, тот же расчёт, по которому СМР подземной части взяло
+// надбавку за глубину). Страница ничего не пересчитывает, только показывает.
+function siteMassingResult(){
+ return (((typeof lastResult==='object'&&lastResult)||{}).tep||{}).site_massing||null;
+}
+function siteMassingOrigin(origin){
+ if(origin==='manual')return 'Задано вручную.';
+ if(origin==='limit')return 'Взято по предельной этажности: иначе здание было бы выше предела.';
+ if(origin==='coverage')return 'Процент застройки участка. Свободного места больше, но здание обычно занимает не всё.';
+ if(origin==='typical')return 'Жилая площадь, делённая на типовую этажность жилых домов. Свободного места и процента застройки на это хватает.';
+ return 'Оценка по балансу территории.';
+}
+function renderSiteMassing(){
+ const body=document.getElementById('siteMassingBody');
+ if(!body)return;
+ renderSiteMassingFields();
+ const m=siteMassingResult();
+ renderSiteMassingScheme(m);
+ if(!m){
+  body.innerHTML='<p class="site-massing-hint">Здесь появятся пятно застройки, средняя этажность и число подземных уровней, когда проект будет посчитан.</p>';
+  return;
+ }
+ const sq=v=>num(Math.round(Number(v||0)))+' м²';
+ const pct=v=>num(Math.round(Number(v||0)*100))+'%';
+ const row=(label,value,basis,strong)=>'<tr'+(strong?' class="site-massing-sum"':'')+'><td>'+escapeHtml(label)+
+  '</td><td class="num">'+escapeHtml(value)+'</td><td class="hint">'+escapeHtml(basis||'')+'</td></tr>';
+ const site=Number(m.site_sqm||0);
+ const rows=[];
+ rows.push(row('Площадь участка',sq(site),'Из карточки «Участок и плотность».'));
+ // Школа, детский сад и отдельные нежилые здания — на своих участках; жилой
+ // баланс ниже считается на остатке (`site_massing.objects`).
+ const objects=m.objects||[];
+ const floors=v=>{const k=Math.round(Number(v||0));return k+' '+(k%10===1&&k%100!==11?'этаж':(k%10>=2&&k%10<=4&&(k%100<12||k%100>14))?'этажа':'этажей')};
+ objects.forEach(o=>rows.push(row('− '+o.label+' на своём участке',sq(o.plot_sqm),
+  floors(o.storeys)+', пятно '+sq(o.footprint_sqm)+'. Участок: '+o.plot_basis+'.')));
+ if(objects.length)rows.push(row('Жилая территория',sq(m.residential_site_sqm),
+  'Участок без участков отдельных зданий. Двор, проезды, отступы и пятно жилых домов ниже — на ней.',true));
+ rows.push(row('− Двор рядом со зданием по норме',sq(m.yard_sqm),m.yard_basis));
+ if(Number(m.yard_roof_sqm||0)>0.5)rows.push(row('Благоустройство на кровле стилобата',sq(m.yard_roof_sqm),
+  'Благоустройство проекта в смете — '+sq(m.landscaping_sqm)+', а на участке рядом со зданием для него '+sq(m.yard_ground_sqm)+'. Разница может быть на кровле стилобата.'));
+ rows.push(row('− Проезды, тротуары и пожарные проезды',sq(m.driveways_sqm),
+  'Это '+num(m.driveways_pct)+'% участка. Доля — экспертная оценка: в нормативах её нет.'));
+ rows.push(row('− Открытые стоянки',sq(m.surface_parking_sqm),
+  'Машино-мест на земле: '+num(m.surface_parking_spaces)+'. На одно место нужно '+num(m.surface_parking_sqm_per_space)+' м² ('+m.surface_parking_basis+').'));
+ rows.push(row('− Отступы от границ участка',sq(objects.length?m.residential_setbacks_sqm:m.setbacks_sqm),
+  'Полоса шириной '+num(m.setback_m)+' м вдоль границ участка.'+(objects.length?' Жилой территории достаётся её доля.':'')));
+ rows.push(row('Свободно под здание после двора, проездов и отступов',sq(m.footprint_estimate_sqm),
+  'Это наибольшее возможное пятно. '+(m.coverage_origin==='none'?'Процент застройки не задан: у нежилого проекта пятно — всё свободное место.':
+   'Процент застройки — '+num(m.coverage_pct)+'%'+(m.coverage_origin==='manual'?', задан в проекте.':', обычное значение для жилья, если градплан не задаёт другое.'))));
+ rows.push(row(objects.length?'Пятно жилых домов':'Пятно застройки',
+  sq(m.footprint_sqm)+(site>0?', это '+pct(m.footprint_share)+(objects.length?' жилой территории':' участка'):''),
+  siteMassingOrigin(m.footprint_origin),true));
+ if(Number(m.footprint_shortage_sqm||0)>0.5)rows.push(row('Не хватает земли под пятно',sq(m.footprint_shortage_sqm),
+  'Пятно больше места, которое остаётся после двора по норме, проездов и отступов: на столько двор по норме не помещается. Подробности — в красной плашке выше.'));
+ rows.push(row('Средняя этажность',Number(m.average_storeys||0)>0?'≈ '+Number(m.average_storeys).toLocaleString('ru-RU',{maximumFractionDigits:1}):'—',
+  (objects.length?'Наземная площадь жилых домов ('+sq(m.residential_gns_sqm)+'), делённая на их пятно.':
+   'Наземная площадь здания ('+sq(m.above_gns_sqm)+'), делённая на пятно застройки.'),true));
+ rows.push(row('Подземный контур',sq(m.underground_contour_sqm),
+  (Number(m.social_plot_sqm||0)>0?'Участок без отступов и без участков школы, детского сада и поликлиники: под ними паркинг не строят, они передаются городу. ':'Участок без отступов. ')+
+  'Под машино-места идёт '+num(Math.round(Number(m.underground_use_factor||0)*100))+'% этой площади, остальное — стены, лестницы и шахты. '+
+  'От этой доли зависит только число уровней: пока подземная часть помещается на один уровень, уровней и стоимости она не меняет.'));
+ const garages=Number(m.underground_garages_sqm||0);
+ rows.push(row('Площадь подземной части',sq(m.underground_sqm),garages>0?
+  'Паркинг с рампами и проездами и подземные кладовые из ТЭП ('+sq(Number(m.underground_sqm||0)-garages)+') и подземные гаражи отдельных объектов ('+sq(garages)+').':
+  'Паркинг с рампами и проездами и подземные кладовые из ТЭП.'));
+ rows.push(row('Подземных уровней',String(m.underground_levels||0),
+  m.underground_levels_origin==='manual'?'Задано вручную.':'Площадь подземной части, делённая на полезную площадь одного уровня, с округлением вверх.',true));
+ let levels='';
+ if((m.underground_level_rows||[]).length){
+  levels='<table class="site-massing-levels"><thead><tr><th>Уровень</th><th>Площадь</th><th>Ставка СМР</th></tr></thead><tbody>'+
+   m.underground_level_rows.map(r=>'<tr><td>−'+Math.abs(Number(r.level))+(Number(r.markup_pct)>0?' (надбавка +'+num(r.markup_pct)+'%)':'')+
+    '</td><td class="num">'+sq(r.area_sqm)+'</td><td class="num">'+num(r.rate_th)+' тыс ₽/м²</td></tr>').join('')+
+   '</tbody></table>'+(m.underground_depth_basis?'<p class="site-massing-hint">'+escapeHtml(m.underground_depth_basis)+'</p>':'');
+ }
+ const warn=(m.warnings||[]).map(w=>'<div class="note warning site-massing-warning">'+escapeHtml(w)+'</div>').join('');
+ const notes=(m.notes||[]).map(w=>'<p class="site-massing-hint">'+escapeHtml(w)+'</p>').join('');
+ body.innerHTML=warn+'<div class="scroll"><table class="site-massing-table"><tbody>'+rows.join('')+'</tbody></table></div>'+levels+notes+
+  '<p class="site-massing-hint">Это оценка по балансу территории, а не проект: формы участка расчёт не знает.</p>';
+}
+// Объёмная схема: многоугольники, номера и легенда — ответ движка
+// (`site_massing_scheme`); тот же ответ рисует PDF. Здесь ничего не
+// раскладывается и не проецируется.
+function siteMassingSchemeSvg(ax){
+ const vb=ax.viewbox||[0,0,1,1];const u=vb[2]/400;
+ const shapes=(ax.shapes||[]).map(s=>'<polygon data-kind="'+s.kind+'"'+(s.building?' data-building="'+s.building+'"':'')+
+  ' points="'+s.points.map(p=>p[0]+','+p[1]).join(' ')+'" fill="'+s.fill+'" stroke="'+s.stroke+'" stroke-width="'+(s.width*u)+'"'+
+  (s.dash?' stroke-dasharray="'+s.dash.map(d=>d*u).join(' ')+'"':'')+(s.opacity&&s.opacity<1?' fill-opacity="'+s.opacity+'"':'')+' stroke-linejoin="round"></polygon>').join('');
+ const r=Number(ax.label_radius||5);
+ const labels=(ax.labels||[]).map(l=>'<g class="site-massing-mark" data-building="'+l.building+'"><circle cx="'+l.x+'" cy="'+l.y+'" r="'+r+
+  '" fill="#fff" stroke="#222" stroke-width="'+(r/8)+'"></circle><text x="'+l.x+'" y="'+(l.y+r*0.42)+'" font-size="'+(r*1.2)+
+  '" text-anchor="middle" font-weight="700" font-family="sans-serif">'+escapeHtml(l.text)+'</text></g>').join('');
+ const fs=Number(ax.font_size||8);
+ const texts=(ax.texts||[]).map(t=>'<text class="site-massing-level" data-level="'+t.level+'" x="'+t.x+'" y="'+t.y+'" font-size="'+fs+
+  '" text-anchor="'+(t.anchor||'start')+'" fill="#333" font-family="sans-serif">'+escapeHtml(t.text)+'</text>').join('');
+ return '<svg viewBox="'+vb.join(' ')+'" role="img" aria-label="Объёмная схема застройки участка">'+shapes+texts+labels+'</svg>';
+}
+// Корпуса схемы для карты участка: кольца в меркаторе — ответ движка
+// (`ring_merc`), есть только у схемы по контуру из ЕГРН.
+function siteMassingMapShapes(){
+ const m=siteMassingResult()||{};const scheme=m.scheme||{};
+ const legend={};((scheme.axonometry||{}).legend||[]).forEach(g=>{legend[g.number]=g});
+ return ((scheme.layout||{}).buildings||[]).filter(b=>Array.isArray(b.ring_merc)&&b.ring_merc.length)
+  .map(b=>({ring:b.ring_merc,number:b.number,title:b.label,colour:(legend[b.number]||{}).color||'#555'}));
+}
+function siteMassingOpenMap(){
+ const many=((typeof landLookup==='object'&&landLookup&&landLookup.results)||[]).filter(x=>x&&x.found).length>1;
+ if(many)landMapFromTerritory();else landMapFromContour();
+}
+function renderSiteMassingScheme(m){
+ const box=document.getElementById('siteMassingScheme');
+ if(!box)return;
+ const scheme=(m&&m.scheme)||{};const ax=scheme.axonometry||{};const layout=scheme.layout||{};
+ if(!(ax.shapes||[]).length){
+  // Корпусов слишком много — схему не рисуем, а говорим почему и даём
+  // строку на очередь (`site_massing_scheme`).
+  box.innerHTML=layout.skipped?'<p class="site-massing-hint site-massing-skipped">'+escapeHtml(layout.skipped)+'</p>'+
+   '<ul class="site-massing-legend">'+(layout.phase_lines||[]).map(t=>'<li>'+escapeHtml(t)+'</li>').join('')+'</ul>':'';
+  return;
+ }
+ const legend=(ax.legend||[]).map(g=>'<li data-building="'+g.number+'"><i style="background:'+g.color+'"></i>'+escapeHtml(g.line||'')+'</li>').join('');
+ const notes=(layout.notes||[]).map(t=>'<p class="site-massing-hint">'+escapeHtml(t)+'</p>').join('');
+ box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
+  '<p class="site-massing-hint">'+escapeHtml(ax.footer||'')+'</p>'+
+  (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':'');
+ siteMassingPlanWatch(layout.plan||{});
+}
+// План расстановки от Платона готовится фоном (`engine/site_massing_plan.py`):
+// страница спрашивает его состояние и, когда план готов (или отклонён),
+// пересчитывает — схему строит движок, страница её только рисует.
+let siteMassingPlanTimer=null,siteMassingPlanKey='',siteMassingPlanTries=0;
+function siteMassingPlanStop(){
+ if(siteMassingPlanTimer)clearTimeout(siteMassingPlanTimer);
+ siteMassingPlanTimer=null;siteMassingPlanKey='';siteMassingPlanTries=0;
+}
+function siteMassingPlanWatch(plan){
+ if(plan.status!=='pending'||!plan.key){siteMassingPlanStop();return}
+ if(siteMassingPlanKey===plan.key&&siteMassingPlanTimer)return;
+ if(siteMassingPlanKey!==plan.key)siteMassingPlanTries=0;
+ siteMassingPlanKey=plan.key;
+ const ask=async()=>{
+  siteMassingPlanTimer=null;
+  if(siteMassingPlanTries++>=60)return;
+  try{
+   const r=await fetch('/site-massing/plan/'+encodeURIComponent(siteMassingPlanKey));
+   const s=r.ok?await r.json():{};
+   if(s.key!==siteMassingPlanKey)return;
+   if(s.status&&s.status!=='pending'){siteMassingPlanKey='';calculate();return}
+  }catch(e){}
+  siteMassingPlanTimer=setTimeout(ask,5000);
+ };
+ siteMassingPlanTimer=setTimeout(ask,5000);
+}
+// Поля допущений: подпись и единица — из FIELD_GROUPS. Поля «пусто — по
+// расчёту» (пятно, уровни, предельная этажность, земля на место) показывают
+// пустоту, а не ноль.
+const SITE_MASSING_AUTO=['surface_parking_sqm_per_space','building_footprint_sqm','underground_levels','max_storeys_allowed','site_coverage_max_pct','residential_storeys_typical'];
+function renderSiteMassingFields(){
+ const box=document.getElementById('siteMassingFields');
+ if(!box||(typeof box.contains==='function'&&box.contains(document.activeElement)))return;
+ const decl={};allFieldGroups().forEach(g=>g[1].forEach(f=>{decl[f[0]]=f}));
+ const m=siteMassingResult()||{};
+ const auto={building_footprint_sqm:m.footprint_estimate_sqm?'оценка '+num(Math.round(m.footprint_estimate_sqm)):'',
+  underground_levels:m.underground_sqm?'по расчёту':'',surface_parking_sqm_per_space:m.surface_parking_sqm_per_space?String(m.surface_parking_sqm_per_space).replace('.',','):'',
+  max_storeys_allowed:'не выше '+num(m.storeys_limit||25),site_coverage_max_pct:m.coverage_origin==='none'?'не задан':String(m.coverage_pct||30).replace('.',',')+'%',
+  residential_storeys_typical:m.typical_storeys_origin==='none'?'нет жилья':String(m.typical_storeys||17)};
+ box.innerHTML='';
+ SITE_MASSING_INPUTS.forEach(id=>{
+  const f=decl[id];if(!f)return;
+  const [,label,unit]=f;
+  const wrap=document.createElement('div');wrap.className='field';
+  wrap.innerHTML='<label>'+escapeHtml(label)+'</label>';
+  const el=document.createElement('input');el.type='number';el.step='any';el.id='massing_'+id;
+  const v=inputs[id];
+  const isAuto=SITE_MASSING_AUTO.includes(id);
+  el.value=(v===undefined||v===null||v===''||(isAuto&&Number(v)===0))?'':v;
+  el.placeholder=isAuto?(auto[id]||''):String(INPUT_DEFAULT[id]??'');
+  el.onchange=()=>{
+   const raw=String(el.value).trim();
+   inputs[id]=raw===''?(isAuto?0:INPUT_DEFAULT[id]):Number(raw);
+   if(raw!=='')markFieldManual('inputs.'+id);
+   else if(inputs._field_origin)delete inputs._field_origin['inputs.'+id];
+   calculate();
+  };
+  wrap.appendChild(el);
+  const hint=document.createElement('span');hint.style.cssText='display:block;font-size:11px;color:#777';hint.textContent=unit;
+  wrap.appendChild(hint);
+  box.appendChild(wrap);
+ });
 }
 // Участок и плотность. Площадь приходит из ГлавАПУ, из кадастра (ЕГРН) или
 // руками; плотность для Москвы — из калькулятора ГлавАПУ, для площади из
@@ -1381,13 +1578,61 @@ function effectiveSiteDensity(){
  const g=glavapuDensitySqmHa();
  return g>0?g:30000;
 }
+// Площадь территории, приехавшая вместе с загруженным ТЭП (площадка КРТ,
+// файл ТЭП), — или 0. Она владеет площадью, пока человек не вписал свою:
+// разбор кадастровых номеров отвечает за свои участки, а не за территорию.
+function importedSiteAreaHa(){
+ return Math.max(0,Number((inputs._manual_tep_import||{}).site_area_ha||0));
+}
+function siteAreaIsImported(){
+ const own=importedSiteAreaHa();
+ return own>0&&Math.abs(Number(inputs.site_area_ha||0)-own)<0.00005;
+}
+// Застройка во столько раз больше участка не бывает: даже башни Сити дают
+// около 20 метров поэтажной площади на метр земли. Порог взят с запасом —
+// предупреждение про явную подмену территории, а не про плотный проект.
+const SITE_GNS_PER_SQM_IMPLAUSIBLE=40;
+function siteAreaTepMismatch(){
+ const area=Number(inputs.site_area_ha||0);
+ const gns=Object.values(tep||{}).reduce((s,r)=>s+Math.max(0,Number((r||{}).gns||0)),0);
+ if(!(area>0&&gns>0))return null;
+ const ratio=gns/(area*10000);
+ if(ratio<=SITE_GNS_PER_SQM_IMPLAUSIBLE)return null;
+ return {area_ha:area,gns:gns,ratio:ratio,source:siteAreaSourceLabel(),imported_ha:siteAreaIsImported()?0:importedSiteAreaHa()};
+}
+function siteAreaWarningHtml(){
+ const m=siteAreaTepMismatch();
+ if(!m)return '';
+ const ha=v=>Number(v).toLocaleString('ru-RU',{maximumFractionDigits:4});
+ let html='<b>Площадь участка не сходится с ТЭП.</b> На участке '+ha(m.area_ha)+' га ('
+  +num(m.area_ha*10000)+' м²) в ТЭП стоит '+num(m.gns)+' м² — застройки в '+num(m.ratio)
+  +' раз больше самого участка. Так не бывает: площадь, скорее всего, взята у другой или '
+  +'неполной территории (сейчас она '+escapeHtml(m.source)+'). Расчёт идёт по этим числам — '
+  +'проверьте поле «Площадь участка» здесь, на шаге «ТЭП».';
+ if(m.imported_ha>0){
+  const krt=((inputs._manual_tep_import||{}).source||{}).kind==='krt';
+  html+=' <button type="button" class="btn" id="siteAreaRestore" onclick="restoreImportedSiteArea()">Вернуть площадь '
+   +(krt?'территории КРТ':'из загруженного ТЭП')+' — '+ha(m.imported_ha)+' га</button>';
+ }
+ return html;
+}
+function restoreImportedSiteArea(){
+ const own=importedSiteAreaHa();
+ if(!(own>0))return;
+ inputs.site_area_ha=own;
+ inputs._site_area_user_set=false;
+ renderSitePanel();
+ calculate();
+}
 function siteAreaSourceLabel(){
  if(inputs._site_area_user_set)return 'введена вручную';
  {
   const krt=((inputs._manual_tep_import||{}).source||{});
   // Источник приезжает вместе с площадкой: половина каталога КРТ — площадки
   // без карточки, у них это проект решения на mos.ru, а не krt.mos.ru.
-  if(krt.kind==='krt')return 'из площадки КРТ ('+String(krt.origin||'карточка krt.mos.ru')+')';
+  // Подпись — только пока площадь та самая: перемеренная разбором номеров
+  // площадь «из площадки КРТ» не происходит.
+  if(krt.kind==='krt'&&siteAreaIsImported())return 'из площадки КРТ ('+String(krt.origin||'карточка krt.mos.ru')+')';
  }
  if(inputs._glavapu_import)return 'из калькулятора ГлавАПУ';
  if(inputs._mo_calc)return 'из калькулятора Подмосковья';
@@ -1925,6 +2170,10 @@ function renderSitePanel(){
  if(document.activeElement!==densityEl)densityEl.value=stored>0?stored:'';
  densityEl.placeholder=num(effectiveSiteDensity());
  document.getElementById('siteAreaSource').textContent=siteAreaSourceLabel();
+ {
+  const warn=document.getElementById('siteAreaWarning');
+  if(warn){const html=siteAreaWarningHtml();warn.innerHTML=html;warn.style.display=html?'':'none'}
+ }
  document.getElementById('siteDensitySource').textContent=siteDensitySourceLabel();
  const potential=area*effectiveSiteDensity();
  // Семантика плотности зависит от источника. В нормативном расчёте (РНГП —
@@ -2312,13 +2561,68 @@ function vriPaymentActive(x){return Number((x||inputs).land_rights_cost_mln||0)>
 // Плата, обнулённая снятием признака на этой странице, — чтобы подпись
 // называла, что именно сделала галочка.
 let vriFeeClearedMln=0;
+// Галочку пытались поставить без суммы: клик не откатывается молча, а
+// объясняет, откуда взять плату (владелец, 22.10.2026: «почему не могу
+// нажать кнопку ВРИ?»).
+let vriFeeAskedWithoutSum=false;
+// Откуда в этом проекте берётся плата за смену ВРИ, если её нет. Московский
+// участок — из калькулятора ГлавАПУ (строка 44 ТЭП) по его кадастровым
+// номерам; площадка КРТ, чьи участки перечня не покрывают территорию,
+// плату оттуда не получит — это сказано прямо.
+function vriFeeWhereFrom(){
+ const imp=inputs._manual_tep_import||{};
+ const terr=imp.territory||{};
+ if(((imp.source||{}).kind)==='krt'){
+  const land=Number(terr.land_area_ha||0),all=Number(imp.site_area_ha||0);
+  const ha=v=>Number(v).toLocaleString('ru-RU',{maximumFractionDigits:4});
+  const part=all>0&&land>0&&land<all*0.9
+   ?' Участки из перечня проекта решения занимают '+ha(land)+' га из '+ha(all)+' га территории — по ним калькулятор ГлавАПУ посчитает плату только за эту часть.'
+   :all>0&&!(land>0)?' Участков с границами в проекте решения не нашлось, поэтому посчитать плату по ним нечем.':'';
+  return 'Для площадки КРТ плата за смену ВРИ в карточке торгов не считается.'+part
+   +' Впишите сумму из расчёта ГлавАПУ или договора КРТ.';
+ }
+ if(classRegion()==='msk')return 'В Москве плату считает калькулятор ГлавАПУ: на шаге «Участок» введите кадастровые номера и нажмите «Получить ТЭП» — плата придёт вместе с ТЭП. Или впишите сумму сами.';
+ return 'Впишите сумму платы в поле ниже.';
+}
 function vriRequiredNote(){
  const fee=Number(inputs.land_rights_cost_mln||0);
  const o=(inputs._field_origin||{})['inputs.land_rights_cost_mln'];
  const from=o&&o.source==='glavapu'?' (из ГлавАПУ)':o&&o.source==='manual'?' (вписана вручную)':'';
  if(fee>0)return `Плата ${num(fee)} млн ₽ задана${from} — смена ВРИ учитывается. Снять признак — значит обнулить плату.`;
  if(vriFeeClearedMln>0)return `Плата ${num(vriFeeClearedMln)} млн ₽ обнулена снятием признака — смена ВРИ не учитывается.`;
- return 'Плата за смену ВРИ не задана — смена ВРИ не учитывается. Чтобы учесть, впишите сумму в «Оформление земельных правоотношений / смена ВРИ».';
+ // Льгота без платы ни на что не действует — и молча стоять не должна.
+ const relief=inputs.vri_relief_mode==='amount'?Number(inputs.vri_relief_mln||0):0;
+ const reliefLine=relief>0?` Вписанная льгота ${num(relief)} млн ₽ без платы ни на что не действует.`:'';
+ if(vriFeeAskedWithoutSum)
+  return 'Галочка ставится сама, когда задана сумма платы: смену ВРИ в расчёте включает сумма, а не галочка. Сейчас плата — 0. '
+   +vriFeeWhereFrom()+reliefLine;
+ return 'Плата за смену ВРИ не задана — смена ВРИ не учитывается. Чтобы учесть, впишите сумму в «Оформление земельных правоотношений / смена ВРИ».'+reliefLine;
+}
+// Кнопка у подписи: ведёт к полю суммы. Узел постоянный, виден только
+// после попытки поставить галочку без платы.
+function vriFeeGoNode(){
+ const b=document.createElement('button');
+ b.type='button';b.id='vriFeeGo';b.className='btn';
+ b.textContent='Вписать сумму платы';
+ b.style.cssText='margin:6px 0 0';
+ b.onclick=focusVriFeeField;
+ b.style.display=vriFeeAskedWithoutSum&&!vriPaymentActive()?'':'none';
+ return b;
+}
+function focusVriFeeField(){
+ const field=document.getElementById('f_land_rights_cost_mln');
+ if(!field)return;
+ // Поле суммы стоит на другой вкладке (вводные), а скрытое поле фокус не
+ // принимает: прежний откат с фокусом поэтому не делал ничего видимого.
+ const panel=field.closest?field.closest('.panel'):null;
+ if(panel&&!panel.classList.contains('active')){
+  const tab=document.querySelector('.tabs [data-tab="'+panel.id+'"]');
+  if(tab)tab.click();
+ }
+ const group=field.closest?field.closest('details'):null;
+ if(group&&!group.open)group.open=true;
+ if(field.scrollIntoView)field.scrollIntoView({block:'center'});
+ field.focus();
 }
 // Подпись под полем ВРИ: узел с постоянным id, пустая — скрыта.
 function vriNoteNode(id,text){
@@ -2336,8 +2640,11 @@ function syncVriRequiredBox(){
  inputs.vri_required=vriPaymentActive();
  const el=document.getElementById('f_vri_required');
  if(el)el.checked=inputs.vri_required;
+ if(inputs.vri_required)vriFeeAskedWithoutSum=false;
  const note=document.getElementById('vriRequiredNote');
  if(note)vriNoteFill(note,vriRequiredNote());
+ const go=document.getElementById('vriFeeGo');
+ if(go)go.style.display=vriFeeAskedWithoutSum&&!inputs.vri_required?'':'none';
 }
 function vriRequiredToggled(el){
  const fee=Number(inputs.land_rights_cost_mln||0);
@@ -2348,10 +2655,10 @@ function vriRequiredToggled(el){
   vriFeeClearedMln=fee;
  }
  if(el.checked&&!(fee>0)){
-  // Включить признак без суммы нечем: плату решает сумма.
+  // Включить признак без суммы нечем: плату решает сумма. Но молча
+  // откатывать клик нельзя — подпись и кнопка говорят, что сделать.
   el.checked=false;
-  const field=document.getElementById('f_land_rights_cost_mln');
-  if(field)field.focus();
+  vriFeeAskedWithoutSum=true;
  }
  syncVriRequiredBox();
  const land=document.getElementById('f_land_rights_cost_mln');

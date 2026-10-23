@@ -41,6 +41,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 import developaid_nonres_strategy as ns
+import site_massing_book as massing_book
 
 ENGINE_FILL = PatternFill("solid", fgColor="FFF3E0")
 INPUT_FILL = PatternFill("solid", fgColor="FFFDE7")
@@ -122,7 +123,8 @@ PROJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("resettlement_mln", "Расселение, млн ₽"),
     ("preparation_th", "Подготовка территории, тыс ₽/м² базы статей проекта"),
     ("main_above_th", "СМР наземной части ядра, тыс ₽/м²"),
-    ("main_under_th", "СМР подземной части, тыс ₽/м² (и гаражи объектов)"),
+    ("main_under_th", "СМР подземной части, тыс ₽/м² (и гаражи объектов; надбавка за глубину — "
+                      "в блоке пятна застройки ниже)"),
     ("utilities_th", "Сети, тыс ₽/м² базы статей проекта"),
     ("commissioning_th", "Ввод в эксплуатацию, тыс ₽/м² базы статей проекта"),
     ("site_maintenance_th", "Содержание площадки, тыс ₽/м² базы статей проекта"),
@@ -145,7 +147,13 @@ PROJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("own_funds", "Собственные средства до ПФ (идут раньше БРИДЖа), млн ₽"),
     ("pf_limit_approved", "Одобренный лимит ПФ, млн ₽ (0 — лимит по выборке)"),
     ("interest_mode", "Проценты БРИДЖа при открытии ПФ"),
+    # Пятно застройки, этажность и подземные уровни (`site_massing_book`):
+    # вводные — числа движка, расчётные строки — формулы, общие с книгой v4.
+    *((f"massing_{key}", label) for key, label, _ in massing_book.ROWS),
 )
+# Расчётные строки блока пятна — формулы, а не жёлтые вводные.
+MASSING_FORMULAS = {f"massing_{key}" for key, _, kind in massing_book.ROWS
+                    if kind == massing_book.FORMULA}
 
 # Объект: ключ → подпись. Значения — столбцы C, D, … по объектам.
 OBJECT_INPUTS: tuple[tuple[str, str], ...] = (
@@ -177,6 +185,7 @@ OBJECT_INPUTS: tuple[tuple[str, str], ...] = (
     ("rent", "Ставка аренды, тыс ₽/м²/мес. с НДС"),
     ("parking_rent", "Аренда машино-места, тыс ₽/мес. с НДС"),
     ("rent_index", "Индексация аренды, % в год"),
+    ("rent_date", "Дата ставки аренды (пусто — на дату ввода)"),
     ("occ_start", "Загрузка на открытии, %"),
     ("occ_stable", "Стабильная загрузка, %"),
     ("leaseup", "Срок заполнения, мес."),
@@ -211,6 +220,14 @@ def _p(key: str) -> str:
 
 def _o(key: str, column: str) -> str:
     return f"'{INPUTS_SHEET}'!${column}${O_ROW[key]}"
+
+
+def _date_or_none(raw: Any) -> date | None:
+    """Дата вводной или пусто: пустая дата ставки — «на дату ввода»."""
+    try:
+        return date.fromisoformat(str(raw or "").strip()[:10])
+    except ValueError:
+        return None
 
 
 def _k_of(date_ref: str) -> str:
@@ -263,11 +280,22 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
             "commissioning_th", "site_maintenance_th", "project_management_pct",
             "technical_supervision_pct", "gc_fee_pct", "reserve_pct")},
     }
+    massing = spec.get("massing") or {}
+    values.update({f"massing_{key}": massing.get(key, 0.0)
+                   for key, _, kind in massing_book.ROWS if kind == massing_book.INPUT})
+    values.update({f"massing_{key}": "=" + formula for key, formula in
+                   massing_book.formulas(lambda key: f"$B${P_ROW['massing_' + key]}").items()})
+    # Подземная площадь — формулой от вводных книги: ядро и гаражи объектов.
+    if objects:
+        garages = "+".join(_o("under_gns", item["column"]) for item in objects)
+        values["massing_underground_sqm"] = f"={_p('core_under_gns')}+{garages}"
+    formula_keys = MASSING_FORMULAS | ({"massing_underground_sqm"} if objects else set())
     for key, label in PROJECT_INPUTS:
         row = P_ROW[key]
         ws[f"A{row}"] = label
         ws[f"B{row}"] = values[key]
-        ws[f"B{row}"].fill = INPUT_FILL
+        if key not in formula_keys:
+            ws[f"B{row}"].fill = INPUT_FILL
     ws[f"B{P_ROW['start']}"].number_format = "dd.mm.yyyy"
     scenario_list = DataValidation(type="list", formula1='"' + ",".join(SCENARIO.values()) + '"',
                                    allow_blank=False)
@@ -318,6 +346,7 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
                 "parking_over_mln": item["parking_over_mln"],
                 "rent": params["rent_th_per_sqm_month"], "parking_rent": params["parking_rent_th_month"],
                 "rent_index": params["rent_index_pct"], "occ_start": params["occupancy_start_pct"],
+                "rent_date": _date_or_none(params.get("rent_date")),
                 "occ_stable": params["occupancy_stable_pct"], "leaseup": params["leaseup_months"],
                 "opex": params["opex_pct"], "property_tax": params["property_tax_pct"],
                 "hold_years": params["hold_years"], "exit_mode": EXIT[params["exit_mode"]],
@@ -354,7 +383,7 @@ def _inputs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
             cell = ws[f"{column}{O_ROW[key]}"]
             cell.value = value
             cell.fill = INPUT_FILL
-            if key in ("start", "sales_start"):
+            if key in ("start", "sales_start", "rent_date"):
                 cell.number_format = "dd.mm.yyyy"
             if key in validations and (nonres or key in ("measure", "in_tax_pool", "turnkey")):
                 validations[key].add(f"{column}{O_ROW[key]}")
@@ -520,7 +549,7 @@ def _costs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, A
                 f'=B{{r}}*D{{r}}*IF({_o("measure", c)}="{SPACES}",1000000,1000)',
                 f"={_k_of(_o('start', c))}", f"=INT({_o('months', c)})", S_CURVE)
         article(f"{key}:garage", f"{item['title']}: подземный гараж", f"={_o('under_gns', c)}",
-                "м²", f"={_p('main_under_th')}", "=B{r}*D{r}*1000",
+                "м²", f"={_p('main_under_th')}*{_p('massing_depth_factor')}", "=B{r}*D{r}*1000",
                 f"={_k_of(_o('start', c))}", f"=INT({_o('months', c)})", S_CURVE)
     article("ird", "ИРД", f"={gns}", base_measure, f"={_p('ird_th')}", "=B{r}*D{r}*1000",
             "=0", f"={out.cells['ird_eff']}", EVEN)
@@ -537,7 +566,7 @@ def _costs_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, A
     article("main_above", "СМР наземной части ядра", f"={_p('core_above_gns')}", "м²",
             f"={_p('main_above_th')}", "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
     article("main_under", "СМР подземной части ядра", f"={_p('core_under_gns')}", "м²",
-            f"={_p('main_under_th')}", "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
+            f"={_p('main_under_th')}*{_p('massing_depth_factor')}", "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
     article("utilities", "Сети", f"={gns}", base_measure, f"={_p('utilities_th')}",
             "=B{r}*D{r}*1000", f"={permit}", f"={build}", S_CURVE)
     article("site_maintenance", "Содержание площадки", f"={gns}", base_measure,
@@ -758,6 +787,7 @@ INPUTS: dict[str, tuple[int, str]] = {key: (2 + i, label) for i, (key, label) in
     ("rent", "Ставка аренды, ₽/м²/мес. с НДС"),
     ("parking_rent", "Аренда машино-места, ₽/мес. с НДС"),
     ("rent_index", "Индексация аренды, доля в год"),
+    ("rent_from", "Месяц ставки аренды (k); без даты — месяц ввода"),
     ("occ_start", "Загрузка на открытии, доля"),
     ("occ_stable", "Стабильная загрузка, доля"),
     ("leaseup", "Срок заполнения, мес."),
@@ -978,7 +1008,8 @@ def _row_formulas(r: int, refs: dict[str, str]) -> dict[str, str]:
         "occ": (f"=IF({v['open']}=0,0,MIN({_in('occ_start')},{_in('occ_stable')})"
                 f"+({_in('occ_stable')}-MIN({_in('occ_start')},{_in('occ_stable')}))"
                 f"*IF({_in('leaseup')}=1,1,MAX(0,MIN(1,({v['open']}-1)/({_in('leaseup')}-1)))))"),
-        "growth": f"=(1+MAX(-0.95,{_in('rent_index')}))^(MAX(0,{v['open']}-1)/12)",
+        "growth": (f"=(1+MAX(-0.95,{_in('rent_index')}))^((MAX(0,{v['open']}-1)"
+                   f"+MAX(0,{_in('comm')}-{_in('rent_from')}))/12)"),
         "op_rev": (f"=({_in('area')}*{_in('rent')}+{_in('spaces')}*{_in('parking_rent')})"
                    f"*{v['growth']}*{v['occ']}*{_in('rev_mult')}"),
         "rent": f"=IF(AND({income},{v['open']}>=1,{v['open']}<={_in('hold')}),{v['op_rev']},0)",
@@ -1122,6 +1153,8 @@ def _object_sheet(book: Workbook, item: dict[str, Any], title: str, costs: _Cost
         "rent": f"={_o('rent', c)}*1000",
         "parking_rent": f"={_o('parking_rent', c)}*1000",
         "rent_index": f"={_o('rent_index', c)}/100",
+        # Ставка дана на свою дату и до ввода индексируется (`rent_months_before`).
+        "rent_from": f'=IF({_o("rent_date", c)}="",{comm},{_k_of(_o("rent_date", c))})',
         "occ_start": f"=MIN(1,MAX(0,{_o('occ_start', c)}/100))",
         "occ_stable": f"=MIN(1,MAX(0,{_o('occ_stable', c)}/100))",
         "leaseup": f"=MAX(1,INT({_o('leaseup', c)}))",
@@ -2345,9 +2378,13 @@ def _check_sheet(book: Workbook, rows: list[tuple[str, str, str, Any, bool]],
     last = ws.max_row
     ws["I2"] = "Вердикт"
     ws["I2"].font = BOLD
-    ws["I3"] = f'=IF(COUNTIF(G3:G{last},"РАСХОЖДЕНИЕ")=0,"{PASSED}","{FAILED}")'
-    ws["I4"] = "Расхождений"
-    ws["J4"] = f'=COUNTIF(G3:G{last},"РАСХОЖДЕНИЕ")'
+    # Пройдено — когда КАЖДАЯ строка сказала «сходится» или «—». Счёт слова
+    # «РАСХОЖДЕНИЕ» пропускал строку с ошибкой (#VALUE!, цикл): она его не
+    # содержит, и книга с ошибками в итогах выходила «ПРОЙДЕНО».
+    agreed = f'COUNTIF(G3:G{last},"сходится")+COUNTIF(G3:G{last},"—")'
+    ws["I3"] = f'=IF({agreed}={last - 2},"{PASSED}","{FAILED}")'
+    ws["I4"] = "Расхождений и ошибок"
+    ws["J4"] = f'={last - 2}-({agreed})'
     ws["I6"] = "Формулы нет — значения движка (missing)"
     ws["I6"].font = BOLD
     for i, text in enumerate(missing or ["нет"], start=7):

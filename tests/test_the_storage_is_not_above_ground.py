@@ -55,6 +55,7 @@ const el=id=>{if(!shown[id])shown[id]={id,style:{},value:'',textContent:'',inner
 const document={getElementById:el,activeElement:null};
 const num=v=>String(Math.round(v));
 function renderSiteParkingFields(){}
+function renderSiteMassing(){}
 function projectParking(){return {own:[]};}
 """
 

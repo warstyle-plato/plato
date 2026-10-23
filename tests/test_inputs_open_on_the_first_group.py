@@ -138,6 +138,8 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # Поля участка (К1, К2, расстояние, край нормы МО) рисует карточка
         # «Участок и плотность», и форма пропускает их тем же правилом.
         page_const("SITE_ONLY_INPUTS"),
+        # Допущения пятна застройки — в своей карточке на вкладке «ТЭП».
+        page_const("SITE_MASSING_INPUTS"),
         # Размещение кладовых — галочка у строки ТЭП, не поле формы.
         page_const("TEP_ONLY_INPUTS"),
         # Ячейка нормы под парой подземного паркинга проекта зовётся по ключу.
@@ -192,6 +194,12 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # Признак ВРИ — вид суммы платы, доли источников — с подписью
         # нормировки: обе подписи форма пишет под своими полями.
         "let vriFeeClearedMln=0;",
+        # Галочку без платы пытались поставить — подпись и кнопка к полю
+        # суммы: форма рисует их под признаком ВРИ.
+        "let vriFeeAskedWithoutSum=false;",
+        page_function("vriFeeWhereFrom"),
+        page_function("vriFeeGoNode"),
+        page_function("focusVriFeeField"),
         page_function("vriPaymentActive"),
         page_function("vriRequiredNote"),
         page_function("fieldOptionLabel"),
@@ -275,7 +283,7 @@ def test_every_group_with_its_own_fields_is_rendered():
     """
     drawn = {item["name"] for item in render({})}
     away = (set(core.CLASS_ONLY_INPUTS) | set(core.SITE_ONLY_INPUTS)
-            | set(core.TEP_ONLY_INPUTS))
+            | set(core.SITE_MASSING_INPUTS) | set(core.TEP_ONLY_INPUTS))
     # Экземпляр объекта своей группы не имеет: он вкладка в блоке своего типа
     # (владелец, 28.09.2026 — групп от числа объектов не прибавляется).
     expected = {name for name, fields in core.FIELD_GROUPS

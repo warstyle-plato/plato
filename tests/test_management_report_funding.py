@@ -136,9 +136,15 @@ def test_the_limit_is_the_monitor_finance_card(monkeypatch):
     monkeypatch.setattr(report, "_monitor_view", view)
     text = report.render_text(report.build(PROJECT, "week", "2026-10-18"))
     assert seen["args"] == [(PROJECT, datetime.date(2026, 10, 18))]
-    assert ("Лимит банка по РСС (главы 2–3): 3,97 млрд ₽, оплачено с начала проекта "
-            "2,10 млрд ₽, остаток лимитов статей 1,50 млрд ₽, резерв 138,0 млн ₽.") in text
-    assert "По РСС не хватает: 230,0 млн ₽, начиная с март 2027." in text
+    assert ("Лимит банка: 3,97 млрд ₽; остаток лимитов "
+            "1,50 млрд ₽ — лимит минус всё оплаченное 2,10 млрд ₽ (кредитом 448,0 млн ₽, "
+            "своими деньгами 1,65 млрд ₽); резерв 138,0 млн ₽.") in text
+    assert "По РСС не хватает: 230,0 млн ₽, начиная с марта 2027." in text
+    # В «Главном» регистр аббревиатур цел: capitalize() давал «по рсс» (владелец, 22.10.2026).
+    found = {item["topic"]: item["text"] for item in
+             report.build(PROJECT, "week", "2026-10-18")["findings"]}
+    assert "По РСС не хватает 230,0 млн ₽ с марта 2027" in found["Финансирование"]
+    assert found["Финансирование"][:1].isupper()
     assert "Утверждённый бюджет не загружен" in text
 
 
@@ -153,7 +159,7 @@ def test_escrow_against_the_credit_plan():
     assert queue["plan"] == pytest.approx(45 * M)
     text = report.render_text(report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК"))
     assert "Эскроу, очередь «1 очередь»: на сентябрь 2026 накоплено 60,0 млн ₽ при плане " \
-           "финмодели (лист «КРЕДИТЫ») 45,0 млн ₽ (больше плана на 15,0 млн ₽)." in text
+           "финмодели 45,0 млн ₽ (больше плана на 15,0 млн ₽)." in text
 
 
 def test_no_credit_plan_is_named():
@@ -172,8 +178,8 @@ def test_blocks_go_in_the_owners_order():
     assert [text.index(f"<b>{name}</b>") for name in order] == \
         sorted(text.index(f"<b>{name}</b>") for name in order)
     page = report.render_html(built)
-    assert [page.index(f"<h2>{name}</h2>") for name in order] == \
-        sorted(page.index(f"<h2>{name}</h2>") for name in order)
+    assert [page.index(f">{name}</h2>") for name in order] == \
+        sorted(page.index(f">{name}</h2>") for name in order)
 
 
 def test_escrow_against_the_bank_plan():
@@ -189,7 +195,7 @@ def test_escrow_against_the_bank_plan():
     assert got["current"]["actual"] == pytest.approx(65 * M)
     built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
     text = report.render_text(built)
-    assert ("Эскроу по плану банка (лист «План банка_new», утверждено по CF): на конец "
+    assert ("Эскроу по плану банка: на конец "
             "2026 Q3 план 70,0 млн ₽, накоплено 60,0 млн ₽ — меньше плана на 10,0 млн ₽.") in text
     assert "План банка на конец 2026 Q4 — 120,0 млн ₽; на октябрь 2026 накоплено 65,0 млн ₽." in text
     assert "План банка" in report.render_html(built)
@@ -233,7 +239,7 @@ def test_the_approved_budget_and_its_deficit_come_from_the_monitor(monkeypatch):
         "deficit_ladder": {"total": 2_462 * M}}}})
     built = report.build(PROJECT, "week", "2026-10-18")
     text = report.render_text(built)
-    assert ("Утверждённый бюджет (главы 2–3, финмодель): 6,20 млрд ₽; остаток потребности "
+    assert ("Утверждённый бюджет: 6,20 млрд ₽; остаток потребности "
             "(бюджет минус оплаченное) 4,10 млрд ₽ при лимитах статей и резерве 1,64 млрд ₽ — "
             "не хватает по утверждённому бюджету 2,46 млрд ₽.") in text
     assert "По РСС лимитов и резерва хватает до ввода" in text
@@ -265,17 +271,142 @@ def test_escrow_at_the_current_pace_leads():
     assert "при нынешнем темпе эскроу очереди «1 очередь»" in found["Финансирование"].lower()
 
 
-def test_the_chapter_label_comes_from_the_monitor(monkeypatch):
-    # Глава 1 РСС (владелец, 21.10.2026): подписи «главы 1–3» — из расчёта Монитора.
+def test_the_report_names_no_chapters_sheets_or_codes(monkeypatch):
+    """«Зачем эти технические пояснения руководству? И здесь и везде по тексту»
+    (владелец, 22.10.2026): главы РСС, имена листов, коды статей и «утверждено
+    по CF» — для команды на странице Монитора, не в сводке."""
     _project()
     monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {"funding": {
         "known": True, "bank_limit": 4_100 * M, "paid_actual": 2_200 * M, "chapters_label": "1–3",
         "bank_remaining": 1_500 * M, "reserve": 138 * M, "additional_financing": 0.0,
         "approved": 6_500 * M, "approved_remaining": 4_300 * M,
         "deficit_ladder": {"total": 2_662 * M}}}})
-    built = report.build(PROJECT, "week", "2026-10-18")
+    _sales(bank=True)
+    built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
     text = report.render_text(built)
-    assert "Лимит банка по РСС (главы 1–3)" in text
-    assert "Утверждённый бюджет (главы 1–3, финмодель)" in text and "2–3" not in text
+    page = report.render_html(built)
+    for banned in ("главы 1–3", "главы 2–3", "глава 1", "лист «", "по CF", "статья 3.5",
+                   "финкниг", "КРЕДИТЫ", "заёмных средств", "по смете и оплатам"):
+        assert banned not in text, banned
+        assert banned not in page, banned
+    assert "Лимит банка: 4,10 млрд ₽" in text and "Утверждённый бюджет: 6,50 млрд ₽" in text
+    assert "Эскроу по плану банка: " in text and "Услуги банка и проценты" in page
     notes = {item["label"]: item["note"] for item in report.tiles(built)}
-    assert notes["Лимит банка"] == "по РСС, главы 1–3"
+    assert notes["Лимит банка"] == "по смете РСС; резерв 138,0 млн ₽"
+    assert notes["Утверждённый бюджет"] == "по финмодели"
+
+
+def test_the_draws_follow_the_chapters_of_the_limit(monkeypatch):
+    """«Лимит 4,64, выбрано 4,80, остаток 1,00 — так не сходится» (владелец,
+    22.10.2026): выборка считалась по всем главам РСС, лимит — по главам
+    Монитора. Теперь выборка — по тем же главам, что лимит, а плашка остатка
+    говорит, из чего он получился."""
+    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
+    # В РСС стенда у платежей коды 2.x и 3.x; глава 1 — отдельный платёж.
+    import io
+    from openpyxl import load_workbook
+    data = _rss_with_sources()
+    book = load_workbook(io.BytesIO(data))
+    paid = book["Реестр платежей"]
+    r = paid.max_row + 1
+    for c, v in ((2, "ЗемКо"), (3, "З-1"), (7, "1.1"), (9, datetime.date(2026, 10, 13)),
+                 (10, 900 * M), (11, "Заемные средства")):
+        paid.cell(row=r, column=c, value=v)
+    blob = io.BytesIO(); book.save(blob)
+    monitor.store_estimate(PROJECT, blob.getvalue(), "2026-10-18")
+
+    def card(chapters):
+        return {"dashboard": {"funding": {
+            "known": True, "chapters": chapters, "chapters_label": "–".join((chapters[0], chapters[-1])),
+            "bank_limit": 1_000 * M, "paid_actual": 1_448 * M, "paid_borrowed": 1_348 * M,
+            "bank_remaining": 1_000 * M, "reserve": 306 * M, "additional_financing": 1_060 * M,
+            "additional_financing_from": "2026-11-01",
+            "remaining_check": {"plain": -260 * M, "overpaid": 1_200 * M, "book_gap": 60 * M,
+                                "remaining": 1_000 * M}}}}
+
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: card(["2", "3"]))
+    built = report.build(PROJECT, "week", "2026-10-18")
+    assert built["funding"]["draws"]["total"] == pytest.approx(280 * M + 168 * M)
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: card(["1", "2", "3"]))
+    built = report.build(PROJECT, "week", "2026-10-18")
+    assert built["funding"]["draws"]["total"] == pytest.approx(280 * M + 168 * M + 900 * M)
+    tiles = {item["label"]: item for item in report.tiles(built)}
+    assert tiles["Выбрано у банка"]["note"].startswith("из них за неделю 948,0 млн ₽ и за месяц 1,07 млрд ₽")
+    assert "больше лимита на 348,0 млн ₽" in tiles["Выбрано у банка"]["note"]
+    assert tiles["Выбрано у банка"]["tone"] == "bad"
+    note = tiles["Остаток лимита банка"]["note"]
+    assert note == "лимит без оплаченного 1,45 млрд ₽; по РСС не хватает 1,06 млрд ₽ с ноября 2026"
+    text = report.render_text(built)
+    assert ("перерасход по статьям 1,20 млрд ₽ остаток не уменьшает; лимиты по статьям "
+            "больше общего лимита на 60,0 млн ₽") in text
+    assert "с ноябрь" not in text
+    page = report.render_html(built)
+    assert "в том числе кредитом" in page and "Перерасход по статьям" in page
+    assert "с ноября 2026" in page and "с ноябрь" not in page
+
+
+def test_a_gap_equal_to_the_reserve_is_not_shown(monkeypatch):
+    """«Зачем эта запись?» (владелец, 22.10.2026) — строка «Лимиты статей финкниги
+    против сметы РСС −306,2 млн ₽» равнялась резерву 306,1 млн ₽: Монитор
+    теперь учитывает резерв, а сводка строку с нулевой разницей не печатает."""
+    import developaid_monitor_dashboard as dashboard
+
+    waterfall = {"opening_bank_remaining": 1_240 * M, "opening_article_deficit": 0.0}
+    check = dashboard._remaining_check(6_810 * M, 5_264 * M, waterfall, reserve=306.1 * M)
+    assert abs(check["book_gap"]) < 0.001 * 6_810 * M
+    _project()
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {"funding": {
+        "known": True, "chapters": ["1", "2", "3"], "chapters_label": "1–3",
+        "bank_limit": 6_810 * M, "paid_actual": 5_264 * M, "bank_remaining": 1_240 * M,
+        "reserve": 306.1 * M, "additional_financing": 1_080 * M,
+        "additional_financing_from": "2026-11-01", "remaining_check": check}}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    assert "Лимиты по статьям против общего лимита" not in report.render_html(built)
+    assert "лимиты по статьям" not in report.render_text(built)
+
+
+def test_without_chapter_one_the_report_stays_plain(monkeypatch):
+    """Причина «без главы 1» — для команды в Мониторе; сводка её не печатает."""
+    _project()
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {"funding": {
+        "known": True, "chapters": ["2", "3"], "chapters_label": "2–3",
+        "chapters_reason": "без главы 1: в финансовой книге нет строки главы 1",
+        "bank_limit": 4_640 * M, "paid_actual": 2_000 * M, "bank_remaining": 2_640 * M,
+        "reserve": 0.0, "additional_financing": 0.0}}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    notes = {item["label"]: item["note"] for item in report.tiles(built)}
+    assert notes["Лимит банка"] == "по смете РСС"
+    assert "главы 2–3" not in report.render_html(built)
+
+
+def test_the_money_tiles_name_chapters_reserves_and_periods(monkeypatch):
+    """«Слишком много текста. Лучше писать из них по 2 главе и по 3 главе
+    столько-то в лимитах РСС. И отдельно резервы такие-то. Выбрано у банка
+    можно писать из них за неделю и за месяц» (владелец, 22.10.2026)."""
+    _project()
+    monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {"funding": {
+        "known": True, "chapters": ["1", "2", "3"], "chapters_label": "1–3",
+        "bank_limit": 6_810 * M, "paid_actual": 5_264 * M, "bank_remaining": 1_240 * M,
+        "limit_by_chapter": {"1": 1_200 * M, "2": 5_100 * M, "3": 510 * M},
+        "reserve": 306.1 * M, "reserve_parts": {"2.8": 209.7 * M, "2.9": 96.4 * M},
+        "reserve_names": {"2.8": "Непредвиденные расходы", "2.9": "Резерв на удорожание"},
+        "additional_financing": 1_080 * M, "additional_financing_from": "2026-11-01",
+        "approved": 8_810 * M, "approved_remaining": 3_546 * M,
+        "approved_by_chapter": {"1": 1_300 * M, "2": 6_900 * M, "3": 610 * M},
+        "deficit_ladder": {"total": 2_000 * M}}}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    notes = {item["label"]: item["note"] for item in report.tiles(built)}
+    assert notes["Утверждённый бюджет"] == ("из них по 1 главе 1,30 млрд ₽, по 2 главе 6,90 млрд ₽, "
+                                             "по 3 главе 610,0 млн ₽")
+    assert notes["Лимит банка"] == ("из них по 1 главе 1,20 млрд ₽, по 2 главе 5,10 млрд ₽, "
+                                    "по 3 главе 510,0 млн ₽; резервы: Непредвиденные расходы "
+                                    "209,7 млн ₽ и Резерв на удорожание 96,4 млн ₽")
+    draws = built["funding"]["draws"]
+    assert notes["Выбрано у банка"] == (f"из них за неделю {report._rub(draws['period'])} и "
+                                        f"за месяц {report._rub(draws['month'])}")
+    assert notes["Остаток лимита банка"] == ("лимит без оплаченного 5,26 млрд ₽; по РСС не хватает "
+                                             "1,08 млрд ₽ с ноября 2026")
+    # В месячной сводке «за неделю» нет — только за месяц.
+    month = report.build(PROJECT, "month", "2026-10-18")
+    notes = {item["label"]: item["note"] for item in report.tiles(month)}
+    assert notes["Выбрано у банка"].startswith("из них за месяц ") and "за неделю" not in notes["Выбрано у банка"]

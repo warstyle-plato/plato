@@ -1397,6 +1397,21 @@ PHASE_ADDITIVE_TEP_FIELDS: tuple[str, ...] = (
     "parking_over_units", "parking_guest_units")
 
 
+def _consolidated_site_massing(master_inputs: dict[str, Any],
+                               phase_items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Пятно и уровни — проекта (очереди несут один и тот же расчёт), а
+    объёмная схема — по очередям: пятно очереди пропорционально её наземной ГНС
+    жилых домов; школа, сад и отдельные здания — своими корпусами."""
+    massing = next((item["result"]["tep"].get("site_massing") for item in phase_items
+                    if item["result"]["tep"].get("site_massing")), None)
+    if not massing:
+        return None
+    phases = [{"phase": int(item.get("index") or i + 1), "name": str(item.get("name") or ""),
+               "above_gns_sqm": residential_above_gns(master_inputs, item.get("tep") or {})}
+              for i, item in enumerate(phase_items)]
+    return {**massing, "scheme": site_massing_scheme(master_inputs, massing, phases)}
+
+
 def _consolidate_phase_results(
     master_inputs: dict[str, Any],
     phase_items: list[dict[str, Any]],
@@ -1730,6 +1745,8 @@ def _consolidate_phase_results(
             # Вид проекта у очередей один — имя базы берётся у первой.
             "project_articles_area": next((r["tep"].get("project_articles_area")
                                            for r in results), CORE_TOTAL_AREA.key),
+            # Пятно и уровни — проекта: очереди несут один и тот же расчёт.
+            "site_massing": _consolidated_site_massing(master_inputs, phase_items),
         },
         "revenue": revenue,
         "revenue_structure": revenue_structure({**revenue, "total": total_revenue}, saleable),
@@ -2580,6 +2597,9 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
             p_inputs["pf_limit_approved_mln"] = 0.0
         p_inputs["pf_limit_individual_mln"] = _individual_cap
 
+        # Участок у очередей один: пятно, уровни и надбавку за глубину очередь
+        # берёт у проекта, а не считает по своей доле подземной площади.
+        p_inputs["_site_massing_project"] = base_op["site_massing"]
         result = calculate(CalcRequest(inputs=p_inputs, tep=p_tep, rates=rates))
 
         project_cash_transfers.extend(_consume_project_cash_sources(

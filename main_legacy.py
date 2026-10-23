@@ -248,6 +248,7 @@ _engine_part("xlsx_book_v4_finance")
 _engine_part("xlsx_book_v4_presentation")
 _engine_part("xlsx_book_v4_sheets")
 _engine_part("xlsx_book_v4_social")
+_engine_part("xlsx_book_v4_massing")
 _engine_part("xlsx_book_v4_registry")
 _engine_part("xlsx_book_v4_build")
 
@@ -291,6 +292,19 @@ _engine_part("vri_payment")
 # engine/operating_model.py
 # и выполняются здесь же, в пространстве имён движка: порядок
 # объявлений и подмены core.<имя> остаются прежними.
+# Баланс территории: пятно застройки, этажность и подземные уровни —
+# engine/site_massing.py; надбавку за глубину читает операционная модель.
+_engine_part("site_massing")
+# Объёмная схема: корпуса очередей на участке и их аксонометрия —
+# engine/site_massing_layout.py; один ответ для страницы и PDF.
+_engine_part("site_massing_layout")
+# Кварталы и фронты участка, расстановка корпусов и её проверка —
+# engine/site_massing_blocks.py; план расстановки от Платона (фоновый запрос,
+# хранение по отпечатку) — engine/site_massing_plan.py.
+_engine_part("site_massing_blocks")
+_engine_part("site_massing_plan")
+
+
 _engine_part("operating_model")
 
 
@@ -352,11 +366,19 @@ _engine_part("access_rights")
 # реквизиты продукта лежат в engine/payments.py.
 _engine_part("payments")
 
+# Публичные «Тарифы» и «Контакты» и демо-доступ для проверяющих ЮKassa —
+# engine/review_demo.py.
+_engine_part("review_demo")
+
 
 # Локальные сценарии кнопок Платона и маршруты /agent/* вынесены
 # в engine/agent_routes.py и выполняются здесь же, в пространстве имён
 # движка: порядок объявлений и подмены core.<имя> остаются прежними.
 _engine_part("agent_routes")
+
+# Потолок цены входа — один подбор и одни плитки «Инвестиционного решения»
+# для страницы, тизера и полного PDF.
+_engine_part("entry_price_ceiling")
 
 
 # Маршруты /current-key-rate и /calculate вынесены в engine/calc_routes.py

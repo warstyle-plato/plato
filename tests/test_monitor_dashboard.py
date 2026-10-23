@@ -141,7 +141,8 @@ def test_funding_risk_uses_article_waterfall(monkeypatch):
     monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {
         "rows": [], "by_code": {"2": {"estimate": 700.0}, "3": {"estimate": 100.0}}
     })
-    monkeypatch.setattr(dashboard, "_payment_total_ch23", lambda *_: 200.0)
+    monkeypatch.setattr(dashboard, "_paid_in_chapters",
+                        lambda *_: {"total": 200.0, "borrowed": 150.0})
     monkeypatch.setattr(dashboard, "_payment_by_code", lambda _: {})
     view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
 
@@ -396,3 +397,136 @@ def test_chapter_one_counts_when_the_finance_book_has_it(tmp_path):
     assert dashboard._rss_ch23(estimate, full["chapters"])["limit"] == 180.0
     assert dashboard._rss_ch23(estimate, old["chapters"])["limit"] == 130.0
     assert dashboard.chapters_label(full["chapters"]) == "1–3"
+
+
+def test_chapter_one_is_found_by_its_articles_and_a_numeric_code(tmp_path):
+    """Плитки на проде остались «главы 2–3» при строке «1.1» в книге и коде
+    числом (владелец, 22.10.2026: «здесь данные тоже без первой главы»)."""
+    from openpyxl import Workbook
+
+    def book(rows) -> Path:
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Расчет стоимости строительства"
+        ws.cell(row=9, column=7, value="Утвержденная фин.модель проекта")
+        ws.cell(row=8, column=11, value="Средства на завершение согласно бюджету")
+        ws.cell(row=8, column=9, value="Оплачено по состоянию")
+        row = 10
+        for code, approved in rows:
+            ws.cell(row=row, column=1, value=code)
+            ws.cell(row=row, column=7, value=approved)
+            row += 1
+        ws.cell(row=row, column=2, value="Всего инвестиционные расходы глава 2, 3")
+        ws.cell(row=row, column=7, value=6000.0)
+        path = tmp_path / f"finance_{row}.xlsx"
+        wb.save(path)
+        return path
+
+    # Код главы числом 1.0 — та же строка «1».
+    got = dashboard._read_finance_baseline(book([(1.0, 500.0), ("1.1", 300.0)]))
+    assert got["chapters"] == ["1", "2", "3"] and got["approved"] == 6500.0
+    # Нет строки «1», есть статьи 1.1 и 1.2 — глава 1 из них, без двойного счёта.
+    got = dashboard._read_finance_baseline(book([("1.1", 300.0), ("1.1.1", 100.0), ("1.2", 200.0)]))
+    assert got["chapters"] == ["1", "2", "3"] and got["approved"] == 6500.0
+    assert got["chapters_reason"] == ""
+    got = dashboard._read_finance_baseline(book([("2.1", 10.0)]))
+    assert got["chapters"] == ["2", "3"] and "нет строки главы 1" in got["chapters_reason"]
+
+
+def test_the_funding_card_explains_the_remaining_limit(monkeypatch):
+    """Остаток лимита — лимит минус оплаченное с поправками, и они названы."""
+    monkeypatch.setattr(dashboard, "_finance_baseline", lambda _: {
+        "known": True, "source": "f.xlsx", "completion_need_at_baseline": 1000.0,
+        "paid_at_baseline": 100.0, "reserve": 40.0, "reserve_parts": {"2.8": 40.0},
+        "monthly_need": {},
+        "tail_after_apr": 0.0, "chapters": ["1", "2", "3"], "chapters_reason": "",
+        "articles": {"1.1": {"rss_limit": 100.0, "paid_at_baseline": 0.0, "monthly_need": {}},
+                     "2.2": {"rss_limit": 500.0, "paid_at_baseline": 0.0, "monthly_need": {}}}})
+    monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {
+        "rows": [], "by_code": {"1": {"estimate": 100.0}, "2": {"estimate": 500.0},
+                                "3": {"estimate": 50.0}}})
+    monkeypatch.setattr(dashboard, "_paid_in_chapters",
+                        lambda *_: {"total": 350.0, "borrowed": 300.0})
+    monkeypatch.setattr(dashboard, "_payment_by_code", lambda _: {"1.1": 150.0, "2.2": 200.0})
+    view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
+    got = dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 8, 20), view)
+    assert got["chapters_label"] == "1–3" and got["paid_borrowed"] == 300.0
+    # Статья 1.1 перерасходована на 50 — идёт нулём; остаток 300 = 650 − 350 − 50(перерасход) + 50(книга без 3)
+    assert got["bank_remaining"] == 300.0
+    # Смета 650 = статьи 600 + резерв 40 + ещё 10 вне статей: расхождение книги
+    # со сметой — эти 10, а не резерв (владелец, 22.10.2026: «Зачем эта запись?»
+    # про строку, равную резерву). Книга «меньше сметы» → знак минус.
+    assert got["remaining_check"] == {"plain": 300.0, "overpaid": 50.0,
+                                      "book_gap": pytest.approx(-10.0), "remaining": 300.0}
+
+
+def test_chapter_one_comes_from_the_rss_when_the_book_lacks_it(monkeypatch):
+    """«Что за бред на плашках. Разве в РСС нет 1 главы?» (владелец, 22.10.2026):
+    в финкниге строки главы 1 нет, в РСС она есть — лимит, оплачено, выбрано и
+    утверждённый бюджет берут её из РСС, а дефицит главы 1 не добавляет."""
+    def baseline(_):
+        return {
+            "known": True, "source": "f.xlsx", "completion_need_at_baseline": 1000.0,
+            "paid_at_baseline": 100.0, "reserve": 0.0, "reserve_parts": {}, "monthly_need": {},
+            "tail_after_apr": 0.0, "chapters": ["2", "3"], "approved": 900.0,
+            "chapters_reason": "без главы 1: в финансовой книге нет строки главы 1",
+            "articles": {"2.2": {"rss_limit": 500.0, "paid_at_baseline": 0.0,
+                                 "monthly_need": {}}}}
+    monkeypatch.setattr(dashboard, "_finance_baseline", baseline)
+    monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {
+        "rows": [], "by_code": {"1": {"estimate": 200.0}, "2": {"estimate": 500.0},
+                                "3": {"estimate": 50.0}}})
+
+    def paid(_rss, _estimate, chapters=("2", "3")):
+        return ({"total": 150.0, "borrowed": 100.0} if tuple(chapters) == ("1",)
+                else {"total": 200.0, "borrowed": 180.0})
+    monkeypatch.setattr(dashboard, "_paid_in_chapters", paid)
+    monkeypatch.setattr(dashboard, "_payment_by_code", lambda _: {"2.2": 200.0})
+    view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
+    got = dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 8, 20), view)
+    assert got["chapters"] == ["1", "2", "3"] and got["chapters_label"] == "1–3"
+    assert "по смете и оплатам РСС" in got["chapters_reason"]
+    assert got["bank_limit"] == 750.0
+    assert got["paid_actual"] == 350.0 and got["paid_borrowed"] == 280.0
+    assert got["approved"] == 1100.0 and got["approved_remaining"] == 750.0
+    # Остаток лимита: 300 по книге (500 − 200) + 50 по главе 1 (200 − 150).
+    assert got["bank_remaining"] == 350.0
+    # Дефицит по утверждённому бюджету — по главам книги: у главы 1 своего нет.
+    monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {
+        "rows": [], "by_code": {"2": {"estimate": 500.0}, "3": {"estimate": 50.0}}})
+    without = dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 8, 20), view)
+    assert without["chapters"] == ["2", "3"] and without["bank_limit"] == 550.0
+    assert got["deficit_ladder"] == without["deficit_ladder"]
+    assert got["bank_need_check"] == without["bank_need_check"]
+
+
+def test_the_finance_book_gives_chapters_and_reserve_names(tmp_path):
+    """Для плиток сводки: утверждённый бюджет по главам 1–3 и имена резервов
+    из строк 2.8/2.9 финкниги; смета РСС по главам — из РСС."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Расчет стоимости строительства"
+    ws.cell(row=9, column=7, value="Утвержденная фин.модель проекта")
+    ws.cell(row=8, column=11, value="Средства на завершение согласно бюджету")
+    ws.cell(row=8, column=9, value="Оплачено по состоянию")
+    rows = [("1", "Приобретение проекта", 500.0), ("2", "Стройка", 6000.0),
+            ("2.8", "Непредвиденные расходы", 40.0), ("3", "Коммерция", 700.0)]
+    for offset, (code, name, approved) in enumerate(rows):
+        ws.cell(row=10 + offset, column=1, value=code)
+        ws.cell(row=10 + offset, column=2, value=name)
+        ws.cell(row=10 + offset, column=7, value=approved)
+        ws.cell(row=10 + offset, column=11, value=approved)
+    ws.cell(row=15, column=2, value="Всего инвестиционные расходы глава 2, 3")
+    ws.cell(row=15, column=7, value=6700.0)
+    path = tmp_path / "finance.xlsx"
+    wb.save(path)
+    got = dashboard._read_finance_baseline(path)
+    assert got["approved_by_chapter"] == {"1": 500.0, "2": 6000.0, "3": 700.0}
+    assert got["reserve_names"] == {"2.8": "Непредвиденные расходы"}
+    assert got["reserve_parts"] == {"2.8": 40.0}
+    estimate = {"by_code": {"1": {"estimate": 50.0}, "2": {"estimate": 100.0},
+                            "3": {"estimate": 30.0}}}
+    assert dashboard._rss_ch23(estimate, ("1", "2", "3"))["by_chapter"] == {
+        "1": 50.0, "2": 100.0, "3": 30.0}

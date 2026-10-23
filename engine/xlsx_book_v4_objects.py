@@ -612,7 +612,7 @@ def _v4_object_parking_block(xml: str, missing: list[str]) -> str:
         params_name = sheet.group(1) if sheet else "'Вводные'"
         under_ref = f"{params_name}!${under[0]}${under[1:]}"
         area_ref = f"{params_name}!$K$158"
-        rate_ref = f"{params_name}!$B$45"
+        rate_ref = _v4_under_rate_ref(params_name)
         # Опознаём формулу по её базе: у офисов это $B$12, у ТЦ — $B$40, то есть
         # строка «Расчётная общая площадь» СВОЕГО блока. Зашитый номер одной из
         # них принял бы чужую формулу за неопознанную.
@@ -1449,7 +1449,7 @@ def _v4_object_parking_in_checks(xml: str, missing: list[str]) -> str:
         under_ref = f"{params}!${under[0]}${under[1:]}"
         # Те же множители, что у самого CAPEX гаража: подземная ставка,
         # инфляция затрат очереди и её коэффициент.
-        addition = (f"+{under_ref}*{per_space}*{params}!$B$45/1000"
+        addition = (f"+{under_ref}*{per_space}*{_v4_under_rate_ref(params)}/1000"
                     f"*{params}!$H$6"
                     f"*INDEX({params}!$T$88:$T$91,{phase})"
                     f"*INDEX({params}!$AH$88:$AH$91,{phase})")

@@ -223,6 +223,11 @@ def _telegram_verify_session(value: str) -> dict[str, Any]:
         calc_overrides = payload.get("calc_overrides")
         if calc_overrides is not None and not isinstance(calc_overrides, dict):
             raise ValueError("calc_overrides")
+        # Демо-доступ проверяющих (`engine/review_demo.py`) отзывается владельцем
+        # раньше срока подписи: отозванная ссылка гасит и выданную по ней сессию.
+        demo_alive = globals().get("demo_session_alive")
+        if callable(demo_alive) and not demo_alive(payload["chat_id"]):
+            raise ValueError("demo revoked")
         return payload
     except Exception as exc:
         raise HTTPException(status_code=403, detail="Telegram-сессия недействительна или истекла") from exc
@@ -1563,11 +1568,16 @@ def _telegram_handle_freeform_tep(chat_id: int, text: str) -> None:
     try:
         parsed = build_freeform_tep(text)
     except (ValueError, RuntimeError) as exc:
+        # Сбой модели — не нехватка данных: заголовок «не хватает» отправлял
+        # человека переписывать верный текст, хотя дело было не в нём.
+        title = ("Не удалось распознать текст."
+                 if isinstance(exc, FreeformTepRecognitionError)
+                 else "Не хватает исходных данных.")
         _telegram_send_message(
             chat_id,
-            "<b>Не хватает исходных данных.</b>\n"
+            f"<b>{title}</b>\n"
             + html.escape(str(exc))
-            + ".\n\nПример: <code>Участок 2,4 га. Квартиры 42 000 м², коммерция 2 500 м².</code>",
+            + f".\n\nПример: <code>{html.escape(FREEFORM_TEP_EXAMPLE)}</code>",
         )
         return
 

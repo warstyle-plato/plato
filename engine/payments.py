@@ -16,7 +16,11 @@
   повтор того же платежа права не продлевает (`access_grant(payment_id=...)`);
 - права выдаются там, где они лежат, — на ядре (`/internal/access/grant`);
 - оплата включается, только когда заданы ключи И вписаны оферта и политика
-  возврата (`docs/legal/offer.md`, `refund.md`): продавать без договора нельзя.
+  возврата (`docs/legal/offer.md`, `refund.md`): продавать без договора нельзя;
+- пакет «несколько участков вперёд» (решение владельца 23.10.2026): `count`
+  участков по цене участка каждый, чек — одна позиция `quantity=count` по цене
+  за единицу; текущий участок открывается сразу, остальные ложатся в запас
+  (`access_grant(reserve=...)`), а без текущего участка — весь пакет в запас.
 
 Предмет расчёта — право использования программы для ЭВМ (простая
 неисключительная лицензия на срок); реквизиты программы — `product_info()`.
@@ -45,6 +49,8 @@ _YOOKASSA_TIMEOUT = 30.0
 _LEGAL_DIR = Path(__file__).resolve().parent / "docs" / "legal"
 _LEGAL_PLACEHOLDER = "ЗАГОТОВКА:"
 _PAYMENT_EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s.]{2,24}")
+# Сколько участков можно оплатить вперёд одним платежом (решение владельца 23.10.2026).
+_PAYMENT_MAX_PLOTS = 10
 
 
 # --- реквизиты продукта и юридические тексты --------------------------------
@@ -55,7 +61,19 @@ def product_info() -> dict[str, str]:
         data = json.loads((_LEGAL_DIR / "product.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+    return ({str(k): str(v) for k, v in data.items() if not isinstance(v, (dict, list))}
+            if isinstance(data, dict) else {})
+
+
+def seller_info() -> dict[str, str]:
+    """Реквизиты продавца — из того же `docs/legal/product.json` (блок `seller`).
+    Пустое значение — «не задано», страница так и пишет, а не выдумывает."""
+    try:
+        data = json.loads((_LEGAL_DIR / "product.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    seller = data.get("seller") if isinstance(data, dict) else None
+    return {str(k): str(v or "") for k, v in seller.items()} if isinstance(seller, dict) else {}
 
 
 def product_registration_line() -> str:
@@ -77,9 +95,19 @@ def legal_text(name: str) -> tuple[str, bool]:
 
 # --- настройки ----------------------------------------------------------------
 
-def _yookassa_keys() -> tuple[str, str]:
-    return (_env_str("YOOKASSA_SHOP_ID", "").strip(),
-            _env_str("YOOKASSA_SECRET_KEY", "").strip())
+def _yookassa_keys(test: bool = False) -> tuple[str, str]:
+    """Ключи магазина. `test` — тестовый магазин ЮKassa: им пользуется только
+    демо-доступ для проверяющих, настоящих денег там нет."""
+    prefix = "YOOKASSA_TEST_" if test else "YOOKASSA_"
+    return (_env_str(f"{prefix}SHOP_ID", "").strip(),
+            _env_str(f"{prefix}SECRET_KEY", "").strip())
+
+
+def demo_payments_mode() -> str:
+    """Как платит демо-доступ: `test` — тестовый магазин ЮKassa (ключи заданы),
+    `preview` — без магазина: показываем, где откроется форма, без списания."""
+    shop, secret = _yookassa_keys(test=True)
+    return "test" if shop and secret else "preview"
 
 
 def payments_missing() -> list[str]:
@@ -92,6 +120,10 @@ def payments_missing() -> list[str]:
         missing.append("не вписан текст оферты (docs/legal/offer.md)")
     if not legal_text("refund")[1]:
         missing.append("не вписан текст политики возврата (docs/legal/refund.md)")
+    for name in ("offer", "refund"):
+        unknown = legal_fill(legal_text(name)[0])[1]
+        if unknown:
+            missing.append(f"в docs/legal/{name}.md нет данных для полей: {', '.join(sorted(set(unknown)))}")
     if access_terms()["vat_pct"] not in _YOOKASSA_VAT_CODES:
         missing.append(f"для ставки НДС {access_terms()['vat_pct']} % нет кода чека ЮKassa")
     return missing
@@ -111,30 +143,52 @@ def _payments_refuse() -> None:
                     "нам в бот — администратор откроет участок."))
 
 
-def payment_offer_item(kind: str, plot: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Что продаётся: цена, срок и назначение платежа — одно для экрана, счёта и чека."""
+def payment_count(value: Any) -> int:
+    """Сколько участков в заказе: 1–`_PAYMENT_MAX_PLOTS`; пусто — один."""
+    try:
+        count = 1 if value is None or value == "" else int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail="Укажите, сколько участков оплатить: число от 1 до 10.")
+    if not 1 <= count <= _PAYMENT_MAX_PLOTS:
+        raise HTTPException(status_code=400,
+                            detail=f"За один раз можно оплатить от 1 до {_PAYMENT_MAX_PLOTS} участков.")
+    return count
+
+
+def payment_offer_item(kind: str, plot: dict[str, Any] | None = None,
+                       count: int = 1) -> dict[str, Any]:
+    """Что продаётся: цена, срок и назначение платежа — одно для экрана, счёта и чека.
+
+    `count` > 1 — пакет «несколько участков вперёд»: цена без скидки, `count` ×
+    цена участка; `unit_price_rub` — цена за единицу для строки чека."""
     terms = access_terms()
     name = product_info().get("short_name") or "DevelopAid"
+    count = payment_count(count) if kind != "subscription" else 1
     if kind == "subscription":
-        price, days = terms["subscription_price_rub"], terms["subscription_days"]
+        unit, days = terms["subscription_price_rub"], terms["subscription_days"]
         what = f"подписка на {days} дней"
+    elif count > 1:
+        unit, days = terms["plot_price_rub"], terms["plot_days"]
+        what = f"доступ к {count} участкам, {days} дней на каждый"
     else:
-        price, days = terms["plot_price_rub"], terms["plot_days"]
+        unit, days = terms["plot_price_rub"], terms["plot_days"]
         what = f"участок {((plot or {}).get('label') or '')[:40]} на {days} дней"
     # Назначение платежа и строка чека — не длиннее 128 знаков (документация ЮKassa).
     description = f"Право использования программы для ЭВМ {name} (неискл. лицензия): {what}"[:128]
     vat = ""
     if terms["vat_pct"] and terms["vat_included"]:
         vat = f"в том числе НДС {terms['vat_pct']} %"
-    return {"kind": "subscription" if kind == "subscription" else "plot", "price_rub": price,
+    return {"kind": "subscription" if kind == "subscription" else "plot",
+            "price_rub": unit * count, "unit_price_rub": unit, "count": count,
             "days": days, "description": description, "vat_note": vat}
 
 
 # --- API ЮKassa -----------------------------------------------------------------
 
 def _yookassa_call(method: str, path: str, body: dict[str, Any] | None = None,
-                   idempotence_key: str = "") -> dict[str, Any]:
-    shop, secret = _yookassa_keys()
+                   idempotence_key: str = "", test: bool = False) -> dict[str, Any]:
+    shop, secret = _yookassa_keys(test)
     token = base64.b64encode(f"{shop}:{secret}".encode("utf-8")).decode("ascii")
     headers = {"Authorization": f"Basic {token}", "Accept": "application/json"}
     data = None
@@ -162,29 +216,38 @@ def _yookassa_call(method: str, path: str, body: dict[str, Any] | None = None,
 
 
 def payment_create(chat: int, kind: str, plot: dict[str, Any] | None, email: str,
-                   return_url: str) -> dict[str, Any]:
-    """Создать платёж. Права не выдаёт: их выдаст подтверждённый платёж."""
-    _payments_refuse()
+                   return_url: str, test: bool = False, count: int = 1) -> dict[str, Any]:
+    """Создать платёж. Права не выдаёт: их выдаст подтверждённый платёж.
+    `test` — тестовый магазин для демо-доступа: денег нет, договор не нужен.
+    `count` > 1 — пакет участков вперёд: без текущего участка весь пакет — в запас."""
+    if not test:
+        _payments_refuse()
     email = str(email or "").strip()
     if not _PAYMENT_EMAIL_RE.fullmatch(email):
         raise HTTPException(status_code=400,
                             detail="Укажите адрес электронной почты: на него придёт чек об оплате.")
-    item = payment_offer_item(kind, plot)
+    item = payment_offer_item(kind, plot, count)
     metadata = {"chat": str(int(chat)), "kind": item["kind"], "days": str(item["days"]),
-                "price": str(item["price_rub"])}
+                "price": str(item["price_rub"]), "count": str(item["count"])}
+    if test:
+        metadata["demo"] = "1"
     if item["kind"] == "plot":
-        if not plot or not plot.get("key"):
+        if plot and plot.get("key"):
+            metadata.update({"plot_kind": plot["kind"], "plot_key": plot["key"][:500],
+                             "plot_label": str(plot.get("label") or "")[:200]})
+            if len(plot["key"]) > 500:
+                raise HTTPException(status_code=400,
+                                    detail="В участке слишком много кадастровых номеров для одного платежа.")
+        elif item["count"] == 1:
             raise HTTPException(
                 status_code=400,
                 detail=("Не понятно, за какой участок платить: укажите кадастровый номер на "
-                        "вкладке «Участок» или загрузите ТЭП проекта."))
-        metadata.update({"plot_kind": plot["kind"], "plot_key": plot["key"][:500],
-                         "plot_label": str(plot.get("label") or "")[:200]})
-        if len(plot["key"]) > 500:
-            raise HTTPException(status_code=400,
-                                detail="В участке слишком много кадастровых номеров для одного платежа.")
+                        "вкладке «Участок» или загрузите ТЭП проекта. Можно также оплатить "
+                        "несколько участков вперёд — они лягут в запас и откроются при "
+                        "первом расчёте."))
     terms = access_terms()
     value = f"{item['price_rub']:.2f}"
+    unit_value = f"{item['unit_price_rub']:.2f}"
     body: dict[str, Any] = {
         "amount": {"value": value, "currency": "RUB"},
         "capture": True,
@@ -195,23 +258,28 @@ def payment_create(chat: int, kind: str, plot: dict[str, Any] | None, email: str
     if _env_str("DEVELOPAID_RECEIPTS", "1").strip() not in {"0", "false", "no"}:
         body["receipt"] = {
             "customer": {"email": email},
+            # Пакет — одна позиция: `quantity` участков по цене за единицу
+            # (`items[].amount` у ЮKassa — цена единицы, не строки).
             "items": [{
                 "description": item["description"],
-                "quantity": "1.00",
-                "amount": {"value": value, "currency": "RUB"},
+                "quantity": f"{item['count']}.00",
+                "amount": {"value": unit_value, "currency": "RUB"},
                 "vat_code": _YOOKASSA_VAT_CODES[terms["vat_pct"]],
                 "payment_mode": "full_payment",
                 "payment_subject": _env_str("DEVELOPAID_RECEIPT_SUBJECT",
                                             "intellectual_activity").strip(),
             }],
         }
-    payment = _yookassa_call("POST", "/payments", body, idempotence_key=uuid.uuid4().hex)
+    payment = _yookassa_call("POST", "/payments", body, idempotence_key=uuid.uuid4().hex,
+                             test=test)
     url = str(((payment.get("confirmation") or {}).get("confirmation_url")) or "")
     if not url:
         raise HTTPException(status_code=502, detail="ЮKassa не вернула страницу оплаты.")
-    _PAYMENTS_LOG.info("Платёж %s создан: chat=%s, %s", payment.get("id"), chat, item["kind"])
+    _PAYMENTS_LOG.info("Платёж %s создан: chat=%s, %s × %s", payment.get("id"), chat,
+                       item["kind"], item["count"])
     return {"payment_id": str(payment.get("id") or ""), "confirmation_url": url,
-            "status": str(payment.get("status") or "")}
+            "status": str(payment.get("status") or ""), "price_rub": item["price_rub"],
+            "count": item["count"]}
 
 
 def _payment_plot(meta: dict[str, Any]) -> dict[str, Any]:
@@ -225,21 +293,28 @@ def _payment_plot(meta: dict[str, Any]) -> dict[str, Any]:
     return plot
 
 
+def _grant_sign_text(payment_id: str, key: str, reserve: int) -> str:
+    """Что подписывается в выдаче: платёж, участок и — у пакета — число участков
+    в запас, иначе подделанный запрос мог бы дописать запас к чужому платежу."""
+    base = f"grant:{payment_id}:{key}"
+    return f"{base}:reserve={int(reserve)}" if int(reserve or 0) > 0 else base
+
+
 def _access_grant_routed(chat: int, *, plot: dict[str, Any] | None, subscription: bool,
                          days: int, payment_id: str, source: str = "payment",
-                         note: str = "") -> dict[str, Any]:
+                         note: str = "", reserve: int = 0) -> dict[str, Any]:
     """Выдать права там, где они лежат: на ядре, а у себя — если мы ядро."""
     remote = _projects_remote_url("/internal/access/grant")
     if not remote:
         return access_grant(chat, plot=plot, subscription=subscription, days=days,
-                            source=source, payment_id=payment_id, note=note)
+                            source=source, payment_id=payment_id, note=note, reserve=reserve)
     key = "subscription" if subscription else str((plot or {}).get("key") or "")
     return _core_post(remote, {
         "chat": int(chat), "subscription": bool(subscription), "days": int(days),
         "kind": (plot or {}).get("kind") or "", "key": key,
         "cadastral": (plot or {}).get("cadastral") or [], "label": (plot or {}).get("label") or "",
-        "payment_id": payment_id, "source": source, "note": note,
-        "sign": _web_login_sign(f"grant:{payment_id}:{key}", int(chat)),
+        "payment_id": payment_id, "source": source, "note": note, "reserve": int(reserve or 0),
+        "sign": _web_login_sign(_grant_sign_text(payment_id, key, reserve), int(chat)),
     }, 30.0)
 
 
@@ -264,19 +339,44 @@ def payment_apply(payment: dict[str, Any]) -> dict[str, Any]:
         _PAYMENTS_LOG.error("Платёж %s не выдан: metadata или сумма не сошлись", payment.get("id"))
         return {"granted": False, "status": status,
                 "reason": "сумма или назначение платежа не сошлись с заказом"}
+    # Платёж тестового магазина открывает только демо-доступ, и наоборот: иначе
+    # тестовая «оплата» без денег открыла бы участок настоящему человеку.
+    if (meta.get("demo") == "1") != demo_chat(chat):
+        _PAYMENTS_LOG.error("Платёж %s не выдан: тестовый платёж и демо-доступ не совпали",
+                            payment.get("id"))
+        return {"granted": False, "status": status,
+                "reason": "тестовый платёж открывает только демо-доступ"}
     subscription = meta.get("kind") == "subscription"
-    plot = None if subscription else _payment_plot(meta)
+    plot = None
+    reserve = 0
+    if not subscription:
+        try:
+            count = payment_count(meta.get("count") or 1)
+        except HTTPException:
+            _PAYMENTS_LOG.error("Платёж %s не выдан: число участков не распознано", payment.get("id"))
+            return {"granted": False, "status": status, "reason": "число участков в платеже не распознано"}
+        # Сумма — ровно `count` участков по цене, записанной в заказе: иначе
+        # платёж за один участок с подправленным `count` открыл бы десять.
+        if abs(paid - price) > 0.005 or price % count:
+            _PAYMENTS_LOG.error("Платёж %s не выдан: сумма не делится на число участков", payment.get("id"))
+            return {"granted": False, "status": status,
+                    "reason": "сумма платежа не сошлась с числом участков"}
+        plot = _payment_plot(meta) if meta.get("plot_key") else None
+        if plot is None and count == 1:
+            _PAYMENTS_LOG.error("Платёж %s не выдан: участок не указан", payment.get("id"))
+            return {"granted": False, "status": status, "reason": "участок платежа не распознан"}
+        reserve = count - (1 if plot else 0)
     result = _access_grant_routed(chat, plot=plot, subscription=subscription, days=days,
                                   payment_id=str(payment.get("id") or ""),
-                                  note=f"ЮKassa, {paid:.2f} ₽")
+                                  note=f"ЮKassa, {paid:.2f} ₽", reserve=reserve)
     return {"granted": True, "status": status, "chat": chat, "until": result.get("until"),
-            "repeated": bool(result.get("repeated"))}
+            "repeated": bool(result.get("repeated")), "reserve": result.get("reserve")}
 
 
-def _payment_fetch(payment_id: str) -> dict[str, Any]:
+def _payment_fetch(payment_id: str, test: bool = False) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f-]{20,64}", str(payment_id or "")):
         raise HTTPException(status_code=400, detail="Неверный номер платежа.")
-    return _yookassa_call("GET", f"/payments/{payment_id}")
+    return _yookassa_call("GET", f"/payments/{payment_id}", test=test)
 
 
 def _webhook_ip_allowed(request: Request) -> bool:
@@ -312,6 +412,8 @@ class PaymentCreateRequest(BaseModel):
     inputs: dict[str, Any] = {}
     cadastral: list[str] = []
     email: str = ""
+    # Сколько участков оплатить: 1 — как раньше, больше — пакет вперёд.
+    count: int = 1
 
 
 class PaymentStatusRequest(BaseModel):
@@ -330,6 +432,7 @@ class InternalGrantRequest(BaseModel):
     payment_id: str = ""
     source: str = "payment"
     note: str = ""
+    reserve: int = 0
     sign: str = ""
 
 
@@ -357,8 +460,24 @@ def payments_create(req: PaymentCreateRequest, request: Request) -> dict[str, An
     if req.kind != "subscription":
         own = _project_cadastral_numbers(req.inputs or {})
         plot = access_plot(req.inputs, None if own else (list(req.cadastral or []) or None))
+    count = payment_count(req.count) if req.kind != "subscription" else 1
     usage_track("payment_create", surface="site", chat_id=chat, tariff=req.kind)
-    return payment_create(chat, req.kind, plot, req.email, _payment_return_url(request))
+    if demo_chat(chat):
+        # Демо-доступ проверяющих: тестовый магазин, а без него — пояснение,
+        # где откроется форма. Настоящих денег демо не платит никогда.
+        if demo_payments_mode() == "preview":
+            item = payment_offer_item(req.kind, plot, count)
+            price = f"{int(item['price_rub']):,}".replace(",", "\u00a0")
+            package = (f" за {count} {_access_plots_word(count)}" if count > 1 else "")
+            return {"preview": True, "message": (
+                f"Здесь откроется платёжная форма ЮKassa на {price}\u00a0₽{package}"
+                f"{' (' + item['vat_note'] + ')' if item['vat_note'] else ''}: оплата картой "
+                "или через СБП, чек придёт на указанную почту. Это демо-доступ, "
+                "поэтому деньги не списываются.")}
+        return payment_create(chat, req.kind, plot, req.email, _payment_return_url(request),
+                              test=True, count=count)
+    return payment_create(chat, req.kind, plot, req.email, _payment_return_url(request),
+                          count=count)
 
 
 @app.post("/payments/status")
@@ -367,8 +486,10 @@ def payments_status(req: PaymentStatusRequest) -> dict[str, Any]:
     chat = _web_identity_chat_id(req.session)
     if not chat:
         _require_web_access("", "", "Проверка оплаты")
-    _payments_refuse()
-    payment = _payment_fetch(req.payment_id)
+    demo = demo_chat(chat)
+    if not demo:
+        _payments_refuse()
+    payment = _payment_fetch(req.payment_id, test=demo)
     if str((payment.get("metadata") or {}).get("chat") or "") != str(chat):
         raise HTTPException(status_code=403, detail="Этот платёж оформлен другим пользователем.")
     result = payment_apply(payment)
@@ -388,9 +509,14 @@ async def payments_webhook(request: Request) -> dict[str, Any]:
     payment_id = str((payload.get("object") or {}).get("id") or "")
     if not event.startswith("payment.") or not payment_id:
         return {"ok": True, "ignored": event}
-    if not payments_available():
+    # Тестовый магазин — другие ключи: платёж демо-доступа перечитываем в нём,
+    # иначе боевой магазин ответит «нет такого платежа» (или ключей ещё нет).
+    test = bool((payload.get("object") or {}).get("test"))
+    if test and demo_payments_mode() != "test":
+        raise HTTPException(status_code=503, detail="Тестовый магазин ЮKassa на этом сервере не настроен.")
+    if not test and not payments_available():
         raise HTTPException(status_code=503, detail="Оплата на этом сервере не настроена.")
-    payment = await run_in_threadpool(_payment_fetch, payment_id)
+    payment = await run_in_threadpool(_payment_fetch, payment_id, test)
     result = await run_in_threadpool(payment_apply, payment)
     _PAYMENTS_LOG.info("Уведомление %s по платежу %s: %s", event, payment_id, result)
     return {"ok": True, "granted": bool(result.get("granted"))}
@@ -401,20 +527,24 @@ def internal_access_grant(req: InternalGrantRequest) -> dict[str, Any]:
     """Выдача прав на ядре. Подпись — токеном бота, как у остальных внутренних."""
     chat = int(req.chat or 0)
     key = "subscription" if req.subscription else str(req.key or "")
-    expected = _web_login_sign(f"grant:{req.payment_id}:{key}", chat)
+    reserve = max(0, int(req.reserve or 0))
+    expected = _web_login_sign(_grant_sign_text(str(req.payment_id or ""), key, reserve), chat)
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
     if not chat:
         raise HTTPException(status_code=400, detail="Нужен chat.")
+    if reserve > _PAYMENT_MAX_PLOTS:
+        raise HTTPException(status_code=400, detail="Слишком большой запас для одной выдачи.")
     plot = None
-    if not req.subscription:
+    if not req.subscription and (key or not reserve):
         plot = (access_plot(cadastral=list(req.cadastral or [])) if req.kind == "cadastral"
                 else {"kind": "project", "key": key, "cadastral": [], "label": str(req.label or "")[:120]})
         if plot.get("key") != key:
             raise HTTPException(status_code=400, detail="Участок не совпал с подписью.")
     return access_grant(chat, plot=plot, subscription=bool(req.subscription),
                         days=int(req.days or 0) or None, source=str(req.source or "payment")[:40],
-                        payment_id=str(req.payment_id or "")[:80], note=str(req.note or "")[:200])
+                        payment_id=str(req.payment_id or "")[:80], note=str(req.note or "")[:200],
+                        reserve=reserve)
 
 
 _PAYMENT_RETURN_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
@@ -468,8 +598,39 @@ def payments_return() -> HTMLResponse:
     return HTMLResponse(_payments_dressed(_PAYMENT_RETURN_PAGE), headers={"Cache-Control": "no-store"})
 
 
+_LEGAL_FIELD_RE = re.compile(r"\{\{\s*([a-z_]+)\.([a-z_]+)\s*\}\}")
+
+
+def legal_fill(text: str) -> tuple[str, list[str]]:
+    """Подставляет в юридический текст реквизиты и цены из их единственных
+    источников: `{{seller.*}}` и `{{product.*}}` — `docs/legal/product.json`,
+    `{{terms.*}}` — `access_terms()` (цены — `*_price` словами «10 000 ₽»).
+    Возвращает текст и список полей, которых в источнике нет: пустота вместо
+    реквизита в договоре — ошибка, а не «как-нибудь»."""
+    terms = access_terms()
+    sources = {
+        "seller": seller_info(),
+        "product": product_info(),
+        "terms": {**{k: str(v) for k, v in terms.items()},
+                  "plot_price": _access_rub(terms["plot_price_rub"]),
+                  "subscription_price": _access_rub(terms["subscription_price_rub"]),
+                  "package_max_plots": str(_PAYMENT_MAX_PLOTS)},
+    }
+    missing: list[str] = []
+
+    def value(match: re.Match) -> str:
+        found = str((sources.get(match.group(1)) or {}).get(match.group(2)) or "")
+        if not found:
+            missing.append(f"{match.group(1)}.{match.group(2)}")
+            return f"[не задано: {match.group(1)}.{match.group(2)}]"
+        return found
+
+    return _LEGAL_FIELD_RE.sub(value, text), missing
+
+
 def _legal_page(name: str, title: str) -> HTMLResponse:
     text, filled = legal_text(name)
+    text, _missing = legal_fill(text)
     body = re.sub(r"<!--.*?-->", "", text, flags=re.S).strip()
     paragraphs = []
     for block in re.split(r"\n\s*\n", body):
@@ -478,10 +639,15 @@ def _legal_page(name: str, title: str) -> HTMLResponse:
             continue
         if block.startswith("# "):
             paragraphs.append(f"<h1>{html.escape(block[2:].strip())}</h1>")
+        elif block.startswith("## "):
+            paragraphs.append(f"<h2>{html.escape(block[3:].strip())}</h2>")
         else:
             paragraphs.append(f"<p>{html.escape(block).replace(chr(10), '<br>')}</p>")
     if not filled:
-        paragraphs.append("<p><i>Текст документа готовится. До его публикации оплата на сайте не принимается.</i></p>")
+        paragraphs.insert(0, (
+            "<p style=\"background:#fff4e5;border:1px solid #f0c27a;padding:10px 12px\"><b>Заготовка.</b> "
+            "Текст документа готовится и ещё не опубликован. До его публикации оплата на сайте "
+            "не принимается.</p>"))
     registration = product_registration_line()
     if registration:
         paragraphs.append(f"<p style=\"color:#666\">{html.escape(registration)}.</p>")

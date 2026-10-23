@@ -181,15 +181,18 @@ def test_the_report_names_sums_growth_and_the_nearest_deadline():
     legal.save(PROJECT, CARD, [], "Иванова", at="2026-10-01T09:00:00+00:00")
     got = report.build(PROJECT, "week", "2026-10-04")
     found = {item["topic"]: item["text"] for item in got["findings"]}
-    assert "Открытых споров: 1; наши требования — 8,0 млн ₽" in found["Споры"]
-    assert "требования к нам — 500 000 ₽" in found["Споры"]
-    assert "неустойка продолжает расти: ООО «Ромашка-Строй»" in found["Споры"]
-    assert "Ближайший срок — 09.10.2026" in found["Споры"]
+    # «Главное» — перечень со стадией, без сумм и шагов (владелец, 23.10.2026).
+    assert found["Споры"] == ("Открытых споров: 1 — ООО «Ромашка-Строй» — претензия, "
+                              "ближайшая дата 09.10.2026.")
+    assert "млн ₽" not in found["Споры"] and "неустойка" not in found["Споры"]
     text = report.render_text(got)
-    assert "Спор: ООО «Ромашка-Строй»" in text and "Наши требования: 8,0 млн ₽" in text
+    assert "<b>ООО «Ромашка-Строй»</b> — претензия" in text
+    assert "Наши требования 8,0 млн ₽; требования к нам 500 000 ₽." in text
     page = report.render_html(got)
-    assert "Споры и претензии" in page and "Неустойка за остановку работ — 2,0 млн ₽ <b>(растёт)</b>" in page
-    assert "02.10.2026 — Направили претензию (Исх. № 7)" in page
+    # Сводка — текущий статус: сумма с направлением, без пунктов и хронологии
+    # (владелец, 23.10.2026: «надо текущий статус только»).
+    assert "Споры и претензии" in page and "Наши требования 8,0 млн ₽" in page
+    assert "Неустойка за остановку работ" not in page and "Направили претензию" not in page
 
 
 def test_upload_reads_in_the_background_through_the_model_route(monkeypatch):
@@ -251,10 +254,12 @@ def test_the_page_reads_edits_and_confirms(monkeypatch, tmp_path):
             tab.wait_for_selector("#legalForm:not(.hidden) #lfParty")
             party = tab.input_value("#lfParty")
             claims = tab.locator("#lfClaims .claimRow").count()
-            tab.fill("#lfNext", "Подать иск 10.10")
+            tab.fill("#lfSubject", "Подать иск 10.10")
             tab.click("#lfSave")
             tab.wait_for_selector("#legalList .legal-case")
             listed = tab.inner_text("#legalList")
+            # Документы — в свёрнутых «Подробностях», не на виду в карточке.
+            details = tab.text_content("#legalList .lc-more")
             tab.wait_for_function(
                 "document.getElementById('reportBox').textContent.includes('Ромашка-Строй')")
             box = tab.inner_text("#reportBox")
@@ -262,9 +267,10 @@ def test_the_page_reads_edits_and_confirms(monkeypatch, tmp_path):
             browser.close()
     assert not errors, errors
     assert party == CARD["counterparty"] and claims == 3
-    assert "Подать иск 10.10" in listed and "Претензия.docx" in listed
+    assert "Подать иск 10.10" in listed and "Претензия.docx" not in listed
+    assert "Претензия.docx" in details
     assert "Ромашка-Строй" in box
-    assert legal.cases(PROJECT)[0]["card"]["next_step"] == "Подать иск 10.10"
+    assert legal.cases(PROJECT)[0]["card"]["subject"] == "Подать иск 10.10"
 
 
 def test_a_court_case_of_the_developer_is_not_mixed_with_the_general_contractor():
@@ -280,8 +286,8 @@ def test_a_court_case_of_the_developer_is_not_mixed_with_the_general_contractor(
     got = report.build(PROJECT, "week", "2026-10-04")
     assert "дело А40-1/2026" in report.render_text(got)
     page = report.render_html(got)
-    assert "дело А40-1/2026" in page and "наша сторона: ООО «СЗ «Пример»» (застройщик)" in page
-    assert "Встречный иск за работы — 8,4 млн ₽" in page
+    assert "дело А40-1/2026" in page and "Суд, инстанция не указана" in page
+    assert "Требования к нам 8,4 млн ₽" in page
     assert "застройщик и генеральный подрядчик" in legal.INSTRUCTIONS
     assert {"our_side", "court_case"} <= set(legal.CASE_SCHEMA["required"])
 
@@ -330,3 +336,39 @@ def test_an_empty_register_is_named_not_hidden():
     assert "Споры" not in {item["topic"] for item in got["findings"]}
     assert report.LEGAL_NONE_OPEN in report.render_text(got)
     assert report.LEGAL_EMPTY not in report.render_html(got)
+
+
+def test_a_confirmed_register_gives_one_finding_not_two():
+    """«Задвоение» (владелец, 22.10.2026): при подтверждённых карточках
+    «Споры» в «Главном» добавлялись дважды."""
+    from test_management_report_model import _gpr_book
+
+    monitor.store_schedule(PROJECT, _gpr_book({}), None, "2026-07-01")
+    legal.save(PROJECT, CARD, [], "Иванова", at="2026-10-05T09:00:00+00:00")
+    built = report.build(PROJECT, "week", "2026-10-18")
+    topics = [item["topic"] for item in built["findings"]]
+    assert topics.count("Споры") == 1, topics
+    assert report.render_text(built).count("<b>Споры.</b>") == 1
+
+
+def test_the_finding_lists_every_open_case_with_its_stage():
+    """Несколько споров — каждый со своей стадией; суммы и шаги — в блоке, не в «Главном»."""
+    import datetime
+
+    legal.save(PROJECT, CARD, [], "Иванова", at="2026-10-05T09:00:00+00:00")
+    legal.save(PROJECT, dict(CARD, counterparty="АО «Проект»", contract="Д-2", status="court",
+                             court_case="А40-1/2026", deadline="2026-11-18"),
+               [], "Иванова", at="2026-10-06T09:00:00+00:00")
+    legal.save(PROJECT, dict(CARD, counterparty="ООО «Сосед»", contract="Д-3", status="talks",
+                             deadline=None), [], "Иванова", at="2026-10-07T09:00:00+00:00")
+    got = report.build(PROJECT, "week", "2026-10-18")
+    found = {item["topic"]: item["text"] for item in got["findings"]}
+    assert found["Споры"].startswith("Открытых споров: 3 — ")
+    for piece in ("ООО «Ромашка-Строй» — претензия, ближайшая дата 09.10.2026",
+                  "АО «Проект» — суд, инстанция не указана, ближайшая дата 18.11.2026",
+                  "ООО «Сосед» — переговоры"):
+        assert piece in found["Споры"], piece
+    assert "Получить" not in found["Споры"] and "₽" not in found["Споры"]
+    assert "А40-1/2026" not in found["Споры"]
+    # Подробности остались в блоке «Споры и претензии».
+    assert "Наши требования 8,0 млн ₽" in report.render_text(got)

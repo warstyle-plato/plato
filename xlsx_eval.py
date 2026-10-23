@@ -315,6 +315,7 @@ FUNCTIONS: dict[str, Callable[[list[Any]], Any]] = {
     "MAX": lambda args: max(_numbers(args) or [0.0]),
     "MIN": lambda args: min(_numbers(args) or [0.0]),
     "ABS": lambda args: abs(_as_number(args[0])),
+    "SQRT": lambda args: _math.sqrt(max(0.0, _as_number(args[0]))),
     "AND": lambda args: all(bool(_as_number(a)) for a in _flatten(args)),
     "OR": lambda args: any(bool(_as_number(a)) for a in _flatten(args)),
     "IF": lambda args: args[1] if bool(_as_number(args[0]))

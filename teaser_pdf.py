@@ -1,6 +1,7 @@
 """Тизер проекта — две страницы из модели представления.
 
-Страница 1, «Девелоперский проект» (A4 книжная): карта участка с контурами
+Страница 1, «Девелоперский проект» (A4 книжная): «Инвестиционное решение»
+(те же четыре плитки, что на странице результатов), карта участка с контурами
 ЕГРН, паспорт участка и ограничения, расчётный ТЭП, экономика, удельная
 экономика, финансирование, риски. Страница 2, «Итог» (A4 альбомная): показатели
 эффективности, ТЭП по продуктам, доходы и себестоимость на метр своей базы и
@@ -139,6 +140,8 @@ class _Styles:
         self.th_r = ParagraphStyle("th_r", fontName=bold, fontSize=6.8, leading=8.6, textColor=NAVY, alignment=2)
         self.risk_on = ParagraphStyle("risk_on", fontName=bold, fontSize=7.4, leading=9.2, textColor=RED)
         self.risk_off = ParagraphStyle("risk_off", fontName=regular, fontSize=7.4, leading=9.2, textColor=GREEN)
+        self.tile = ParagraphStyle("tile", fontName=bold, fontSize=11, leading=14, textColor=NAVY_DARK)
+        self.tile_wait = ParagraphStyle("tile_wait", fontName=bold, fontSize=9, leading=12, textColor=GREY)
         self.big = ParagraphStyle("big", fontName=bold, fontSize=10.5, leading=13, textColor=NAVY_DARK, alignment=2)
 
 
@@ -714,6 +717,45 @@ def _object_brief(section: dict[str, Any], width: float, st: _Styles, fm: _Forma
     return out
 
 
+TONE_COLOR = {"pass": GREEN, "edge": colors.HexColor("#A35D00"), "fail": RED}
+
+
+def decision_tiles_block(block: dict[str, Any] | None, width: float, st: _Styles) -> list[Any]:
+    """Блок «Инвестиционное решение» — те же четыре плитки, что на странице
+    результатов: покрытие долга, цена входа, максимум цены входа, запас к цене.
+
+    Текст плиток, вердикт и подпись под ними собирает движок
+    (`entry_price_block`) — здесь только вёрстка. Блок общий для любой
+    вёрстки тизера: жилой, объектной и всякой новой."""
+    if not block or not block.get("tiles"):
+        return []
+    verdict = block.get("verdict") or {}
+    title = _esc(block.get("title") or "")
+    if verdict.get("title"):
+        tone = TONE_COLOR.get(str(verdict.get("tone") or ""), NAVY)
+        title += f' · <font color="{tone.hexval().replace("0x", "#")}">{_esc(verdict["title"])}</font>'
+    out: list[Any] = [_section(title, width, st)]
+    tiles = list(block["tiles"])
+    cell_w = width / len(tiles)
+    cells = []
+    for tile in tiles:
+        cells.append([Paragraph(_esc(tile.get("label")), st.note),
+                      Paragraph(_esc(tile.get("value")), st.tile_wait if tile.get("wait") else st.tile),
+                      Paragraph(_esc(tile.get("note")), st.note)])
+    t = Table([cells], colWidths=[cell_w] * len(tiles))
+    t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                           ("BACKGROUND", (0, 0), (-1, -1), LIGHT),
+                           ("LINEAFTER", (0, 0), (-2, -1), 2, colors.white),
+                           ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                           ("TOPPADDING", (0, 0), (-1, -1), 3), ("BOTTOMPADDING", (0, 0), (-1, -1), 3)]))
+    out.append(Spacer(1, 1 * mm))
+    out.append(t)
+    if block.get("stamp"):
+        out.append(Paragraph(_esc(block["stamp"]), st.note))
+    out.append(Spacer(1, 2 * mm))
+    return out
+
+
 def _esc(value: Any) -> str:
     return (str(value or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
@@ -728,6 +770,7 @@ def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _S
         f"{model.get('project_name') or 'Проект'} · расчёт {origin.get('calculation_id') or '—'} · "
         f"движок DevelopAid {origin.get('engine_version') or '—'} · {origin.get('generated_at') or ''}", st.sub))
     story.append(Spacer(1, 2 * mm))
+    story += decision_tiles_block(model.get("decision_tiles"), width, st)
     gutter = 5 * mm
     left_w = (width - gutter) * 0.47
     right_w = width - gutter - left_w

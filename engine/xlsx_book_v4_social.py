@@ -375,8 +375,14 @@ def _v4_landscaping_rows_xml(xml: str, inputs: dict[str, Any],
     flats = "+".join(f"$L${_V4_CF_QUEUE_ENABLED_ROW + phase}"
                      for phase in range(_V4_CAPEX_PHASES))
     applied_row = base_row + 6
-    applied = (f'IF($B${given_row}&gt;0,$B${given_row}/MAX(1,ROUNDUP(({flats})'
-               f'/MAX(1,$B${norm_row}),0)),$B${per_row})')
+    # Норматив класса не даёт больше, чем помещается на участке (владелец
+    # 22.10.2026): ячейка «помещается благоустройства» блока пятна застройки —
+    # та же величина, что `landscaping_room` движка; метку заменит тот блок.
+    people = f'MAX(1,ROUNDUP(({flats})/MAX(1,$B${norm_row}),0))'
+    room = _V4_LANDSCAPING_ROOM_TOKEN
+    applied = (f'IF($B${given_row}&gt;0,$B${given_row}/{people},'
+               f'IF(AND({room}&gt;0,$B${per_row}*{people}&gt;{room}+0.5),{room}/{people},'
+               f'$B${per_row}))')
     parts.append(f'<x:row r="{applied_row}">'
                  + text_cell(f"A{applied_row}", "Применяется, м²/чел.")
                  + f'<x:c r="B{applied_row}"><x:f>{applied}</x:f></x:c>'
@@ -534,8 +540,10 @@ def _v4_apply_storage_area_rows(xml: str, missing: list[str]) -> str:
             missing.append(f"CAPEX · СМР подземной части: формула строки {row} не опознана")
         else:
             now = f"({was}+{area % queue_row})"
+            # Тем же проходом ставка получает надбавку за глубину
+            # (`_v4_under_depth_formula`): второй проход по листу дороже.
             xml, done = _v4_set_cells(xml, row, {f"B{row}": dict(
-                formula=found.replace(was, now, 1))})
+                formula=_v4_under_depth_formula(found.replace(was, now, 1), row, missing))})
             if not done:
                 missing.append(f"CAPEX · СМР подземной части: строка {row} не записана")
         # Строительный объём очереди: (I+J+K) → (I+J+K+площадь кладовых).
