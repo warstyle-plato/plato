@@ -101,13 +101,18 @@ def test_the_underground_levels_are_drawn_with_their_areas():
 def test_a_big_site_with_three_phases_and_a_limit_of_17_gets_more_corpora_than_phases():
     bundle = _big_site_three_phases()
     m = bundle["consolidated"]["tep"]["site_massing"]
-    buildings = m["scheme"]["layout"]["buildings"]
+    every = m["scheme"]["layout"]["buildings"]
+    # Детский сад ТЭП по умолчанию — отдельным зданием на своём участке.
+    garden = [b for b in every if b["phase"] == 0]
+    assert [b["label"] for b in garden] == ["Детский сад, 3 этажа"]
+    buildings = [b for b in every if b["phase"] > 0]
     assert {b["phase"] for b in buildings} == {1, 2, 3}
     assert len(buildings) > 3
     assert all(b["storeys_shown"] <= 17 for b in buildings)
-    # Пятно очереди — пропорционально её наземной ГНС; этажность не выше предела.
+    # Пятно очереди — пропорционально её наземной ГНС жилых домов; этажность не
+    # выше предела.
     for item in bundle["phases"]:
-        gns = core.project_above_gns(item["tep"])
+        gns = core.residential_above_gns(item["inputs"], item["tep"])
         own = [b for b in buildings if b["phase"] == item["index"]]
         assert sum(b["area_sqm"] * b["storeys"] for b in own) == pytest.approx(gns)
     assert all(b["label"].startswith(f"Очередь {b['phase']}, корпус ") for b in buildings)
@@ -157,6 +162,43 @@ def test_the_corpora_stand_inside_the_egrn_contour_without_setbacks():
         x0r, y0r, x1r, y1r = b["rect_m"]
         for corner in ((x0r, y0r), (x1r, y0r), (x1r, y1r), (x0r, y1r)):
             assert core._inside(corner, inner), (b["label"], corner)
+
+
+def test_a_scheme_of_dozens_of_corpora_is_not_drawn():
+    """Нагатино-подобный случай: 17,8 га, четыре очереди, десятки корпусов —
+    схему не рисуем (владелец 23.10.2026), строка на очередь вместо неё."""
+    m = {"site_sqm": 178110.0, "footprint_sqm": 125680.0, "setback_m": 3.0,
+         "footprint_origin": "estimate", "underground_levels": 1}
+    phases = [{"phase": i, "above_gns_sqm": gns} for i, gns in
+              enumerate((120000.0, 110000.0, 110000.0, 103700.0), 1)]
+    scheme = core.site_massing_scheme({}, m, phases)
+    layout = scheme["layout"]
+    assert len(layout["buildings"]) > core.LAYOUT_MAX_DRAWN_CORPORA
+    assert scheme["axonometry"] == {}
+    assert "Схему не рисуем" in layout["skipped"]
+    assert len(layout["phase_lines"]) == 4
+    assert layout["phase_lines"][0].startswith("Очередь 1: ")
+    assert " корпус" in layout["phase_lines"][0] and "этаж" in layout["phase_lines"][0]
+    assert not any("ring_merc" in b for b in layout["buildings"])
+    # PDF печатает причину и строки, а не картинку.
+    parts = core._site_massing_scheme_pdf(scheme, lambda text, style=None: text, None,
+                                          lambda items: items, 1.0)
+    assert parts == [["Объёмная схема застройки", layout["skipped"], *layout["phase_lines"]]]
+
+
+def test_a_contour_of_another_size_is_not_drawn_as_the_site():
+    """Контур из ЕГРН сильно другой площади — не вся территория: участок квадратом."""
+    lat = 55.70
+    k = math.cos(math.radians(lat))
+    y0 = math.log(math.tan((90 + lat) * math.pi / 360)) / (math.pi / 180) * 20037508.34 / 180
+    x0 = 37.65 * 20037508.34 / 180
+    ring = [[x0 + a / k, y0 + b / k] for a, b in ((0, 0), (40, 0), (40, 300), (0, 300))]
+    x = {"_land_lookup": {"results": [{"found": True, "contour_merc": [ring]}]}}
+    m = {"site_sqm": 178110.0, "footprint_sqm": 9000.0, "setback_m": 3.0}
+    layout = core.site_massing_layout(x, m, [{"phase": 1, "above_gns_sqm": 90000.0}])
+    assert layout["site_shape_origin"] == "square"
+    assert any("не вся территория проекта" in n for n in layout["notes"])
+    assert not any("ring_merc" in b for b in layout["buildings"])
 
 
 def test_the_pdf_draws_the_scheme():
@@ -234,6 +276,14 @@ CONTOUR = """async (ring)=>{
          layout:(m.scheme||{}).layout||null};
 }"""
 
+SKIPPED = """()=>{
+ renderSiteMassingScheme({scheme:{axonometry:{},layout:{skipped:'Схему не рисуем: корпусов получилось 72.',
+  phase_lines:['Очередь 1: 18 корпусов по 4 этажа, пятно 31 140 м²','Очередь 2: 18 корпусов по 4 этажа, пятно 31 140 м²']}}});
+ const box=document.getElementById('siteMassingScheme');
+ return {svg:box.querySelectorAll('svg').length, text:box.innerText,
+         lines:box.querySelectorAll('.site-massing-legend li').length};
+}"""
+
 STRIP = """()=>{delete lastResult.tep.site_massing.scheme; renderTep();
  return document.querySelectorAll('#siteMassingScheme svg').length;}"""
 
@@ -256,6 +306,7 @@ def seen():
             browser.wait_for_result(page)
             out["example"] = page.evaluate(READ)
             out["map"] = page.evaluate(CONTOUR, _office_contour_merc())
+            out["skipped"] = page.evaluate(SKIPPED)
             out["stripped"] = page.evaluate(STRIP)
     return out
 
@@ -299,3 +350,9 @@ def test_the_corpora_stand_on_the_land_map(seen):
     assert layout and layout["site_shape_origin"] == "contour"
     assert got["button"], "кнопки «Показать корпуса на карте участка» нет"
     assert got["corpora"] == [str(b["number"]) for b in layout["buildings"]]
+
+
+def test_the_page_says_why_there_is_no_scheme(seen):
+    got = seen["skipped"]
+    assert got["svg"] == 0 and got["lines"] == 2
+    assert "Схему не рисуем" in got["text"] and "Очередь 2: 18 корпусов" in got["text"]

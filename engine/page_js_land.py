@@ -372,9 +372,36 @@ async function glavapuScenarioCheck(force){
   return;
  }
  box.innerHTML=glavapuScenarioHtml(answer);
+ glavapuScenarioKeepTerritory(answer);
  const summary=document.getElementById('glavapuScenarioSummary');
  summary.innerHTML=glavapuScenarioSummaryHtml(answer);
  summary.style.display=summary.innerHTML?'':'none';
+}
+// Строки 57–58 калькулятора («Озеленённые территории ЖК» и разбивка) —
+// в проект: двор по норме пятна застройки берёт большее из нашей нормы и
+// строки 57 (решение владельца 22.10.2026). Строка 57 — 5 м² × квартиры × 2,1,
+// поэтому с ней хранится число квартир, принятое калькулятором: движок берёт
+// её, только пока в ТЭП столько же квартир. Поле не принято — не храним.
+// Участки соцобъектов (разделы «ДОО:», «Школы:») и баланс территории
+// (строка 14) хранятся рядом: пятно ставит школу, сад и офисы на их участки,
+// пока калькулятор считал те же места и ту же нежилую площадь.
+function glavapuScenarioKeepTerritory(a){
+ a=a||{};
+ if(a.state!=='done')return;
+ const side=a.glavapu||{};
+ const params=((a.scenario||{}).params)||{};
+ const refused=((a.applied||{}).refused||[]).map(r=>r&&r.param);
+ const flats=refused.includes('flats_count')?0:Number(params.flats_count||0);
+ const keep={key:a.key||'',done_at:a.finished_at||a.done_at||new Date().toISOString(),
+  flats_count:flats,territory:cloneValue(side.territory||{}),social_obj:cloneValue(side.social_obj||{}),
+  balance:cloneValue(side.balance||{}),
+  spp_nonres_ths:refused.some(p=>String(p||'').startsWith('nonres'))?0:Number(params.spp_nonres_ths||0)};
+ if(!Object.keys(keep.territory).length&&!Object.keys(keep.social_obj).length&&!Object.keys(keep.balance).length){
+  if(inputs._glavapu_scenario){delete inputs._glavapu_scenario;calculate()}
+  return;
+ }
+ inputs._glavapu_scenario=keep;
+ calculate();
 }
 // Короткий итог для карточки: сколько совпало и разошлось, и кнопка окна.
 // Отказ сюда не пишется — его причина и место уже в строке статуса.

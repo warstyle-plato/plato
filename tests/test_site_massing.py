@@ -133,18 +133,108 @@ def _housing(region):
     return x, t
 
 
-def test_the_yard_is_the_landscaping_area_but_not_below_the_region_norm():
+def test_the_yard_beside_the_building_is_the_region_norm():
+    """Рядом со зданием — двор по норме региона; благоустройство сверх нормы
+    может быть на кровле стилобата (владелец 22.10.2026) и пятна не съедает."""
     for region, needle in (("msk", "2152-ПП"), ("mo", "Московской области"),
                            ("other", "СП 42.13330")):
         x, t = _housing(region)
         m = core.site_massing(x, t)
         assert needle in m["yard_basis"], region
-        assert m["yard_sqm"] > core.landscaping_area(x, t)[0]
-    # Двор благоустройства больше нормы — он и берётся, один источник.
+        assert m["yard_roof_sqm"] == 0.0
     x, t = _housing("msk")
     x["landscaping_area_per_person_sqm"] = 20
     m = core.site_massing(x, t)
-    assert m["yard_sqm"] == pytest.approx(core.landscaping_area(x, t)[0])
+    norm = core._yard_floor(x, t, m["site_sqm"])[0]
+    landscaping = core.landscaping_area(x, t)[0]
+    assert m["yard_sqm"] == pytest.approx(norm) and landscaping > norm
+    assert m["landscaping_sqm"] == pytest.approx(landscaping)
+    # На кровлю уходит только то, чему не хватило земли рядом со зданием.
+    ground = (m["site_sqm"] - m["footprint_sqm"] - m["driveways_sqm"]
+              - m["surface_parking_sqm"] - m["setbacks_sqm"])
+    assert m["yard_ground_sqm"] == pytest.approx(ground)
+    assert m["yard_roof_sqm"] == pytest.approx(max(0.0, landscaping - max(ground, norm)))
+
+
+def _one_hectare(**extra):
+    """Случай владельца: 1 га в Москве, плотность 28 000 м²/га — 26 410 м² наземной
+    ГНС. Прежний расчёт дал пятно 511 м² и 51,7 этажа."""
+    x = copy.deepcopy(core.DEFAULT_INPUTS)
+    x.update(project_kind="residential", site_area_ha=1.0, project_region="msk",
+             vri_region="msk", landscaping_area_per_person_sqm=11)
+    x.update(extra)
+    t = {"apartments": {"gns": 23076.9, "saleable": 14123.0, "units": 241},
+         "ground_commercial": {"gns": 3333.3, "saleable": 2700.0},
+         "underground_parking": {"units": 206, "gns": 7200.0}}
+    return x, t
+
+
+def test_a_hectare_with_28000_density_is_not_a_fifty_storey_tower():
+    x, t = _one_hectare()
+    m = core.site_massing(x, t)
+    assert m["above_gns_sqm"] == pytest.approx(26410.2)
+    # Рядом со зданием — двор по норме (5 м² на жителя), остальное
+    # благоустройство — на кровле стилобата. Жилые дома — типовой этажности
+    # 17 (владелец 23.10.2026): пятно 26 410 ÷ 17, это меньше 30 % участка и
+    # свободного места.
+    assert m["footprint_estimate_sqm"] > 3000
+    assert m["yard_ground_sqm"] == pytest.approx(10000 - m["footprint_sqm"] - 1500 - m["setbacks_sqm"])
+    assert (m["footprint_origin"], m["typical_storeys"], m["typical_storeys_origin"]) == (
+        "typical", 17.0, "default")
+    assert m["footprint_sqm"] == pytest.approx(26410.2 / 17)
+    assert m["average_storeys"] == pytest.approx(17)
+    assert not m["warnings"]
+
+
+def test_a_hand_footprint_that_eats_the_norm_yard_is_said_aloud():
+    """Пятно руками больше свободного места — двор по норме не помещается, и это сказано."""
+    x, t = _one_hectare(building_footprint_sqm=6000)
+    m = core.site_massing(x, t)
+    assert m["footprint_origin"] == "manual"
+    assert m["footprint_shortage_sqm"] == pytest.approx(6000 - m["footprint_estimate_sqm"])
+    assert any("двор по норме на участке не помещается" in w for w in m["warnings"])
+    assert not core.site_massing(*_one_hectare(building_footprint_sqm=3000))["warnings"]
+
+
+def test_the_coverage_from_the_town_plan_wins_and_offices_have_no_default():
+    # Процент застройки — верхняя граница: 12 % участка меньше пятна по 17 этажам.
+    m = core.site_massing(*_one_hectare(site_coverage_max_pct=12))
+    assert (m["footprint_sqm"], m["coverage_origin"], m["footprint_origin"]) == (
+        pytest.approx(1200), "manual", "coverage")
+    assert m["average_storeys"] == pytest.approx(26410.2 / 1200)
+    # Типовая этажность, заданная руками, и предел участка ниже неё.
+    hand = core.site_massing(*_one_hectare(residential_storeys_typical=12))
+    assert hand["footprint_sqm"] == pytest.approx(26410.2 / 12)
+    capped = core.site_massing(*_one_hectare(max_storeys_allowed=9))
+    assert capped["average_storeys"] == pytest.approx(9)
+    # Нежилой проект: процента по умолчанию нет — пятно всё свободное место.
+    office = core.site_massing(*_office())
+    assert office["coverage_origin"] == "none" and office["footprint_origin"] == "estimate"
+    capped = core.site_massing(*_office(site_coverage_max_pct=50))
+    assert capped["footprint_origin"] == "coverage"
+    assert capped["footprint_sqm"] == pytest.approx(2430 * 0.5)
+
+
+def test_a_remainder_too_small_takes_the_footprint_by_the_limit():
+    """Остаток участка дал бы здание выше 25 этажей — пятно по пределу, нехватка числом."""
+    x, t = _one_hectare(surface_parking_spaces=200)
+    m = core.site_massing(x, t)
+    assert m["footprint_estimate_sqm"] < 26410.2 / 25
+    assert m["footprint_origin"] == "limit"
+    assert m["storeys_limit"] == 25 and m["storeys_limit_origin"] == "default"
+    assert m["average_storeys"] == pytest.approx(25)
+    assert m["footprint_sqm"] == pytest.approx(26410.2 / 25)
+    assert m["footprint_shortage_sqm"] == pytest.approx(
+        m["footprint_sqm"] - m["footprint_estimate_sqm"])
+    [warning] = m["warnings"]
+    assert "выше 25 этажей расчёт здание не ставит" in warning and "не хватает" in warning
+    # С пределом участка — по нему.
+    m9 = core.site_massing(*_one_hectare(surface_parking_spaces=200, max_storeys_allowed=9))
+    assert m9["average_storeys"] == pytest.approx(9)
+    assert any("разрешено не выше 9 этажей" in w for w in m9["warnings"])
+    # Места нет вовсе — то же правило, а не пятно 0.
+    m0 = core.site_massing(*_one_hectare(surface_parking_spaces=400))
+    assert m0["footprint_estimate_sqm"] == 0 and m0["footprint_sqm"] == pytest.approx(26410.2 / 25)
 
 
 def test_surface_parking_land_by_region():
@@ -184,3 +274,140 @@ def test_the_pdf_prints_the_engine_line():
                     .split())
     assert "Пятно застройки и этажность" in text and "Подземных уровней 2" in text, text[:3000]
     assert "разрешено не выше 9 этажей" in text
+
+
+def _with_glavapu(x, green_ha, units):
+    x["_glavapu_import"] = {"source": {"export_date": "06.10.2026"},
+                            "normalized": {"green_zhk_ha": green_ha, "apartment_units": units}}
+    return x
+
+
+def test_the_yard_norm_is_the_larger_of_ours_and_the_glavapu_row_57():
+    """Москва с выгрузкой ГлавАПУ: двор по норме — большее из нашей нормы и строки 57
+    (владелец 22.10.2026); строка посчитана для квартир выгрузки."""
+    x, t = _housing("msk")
+    ours = core.site_massing(x, t)["yard_sqm"]
+    assert ours == pytest.approx(5.0 * 1364)
+    m = core.site_massing(_with_glavapu(x, 1.0, 900), t)
+    assert m["yard_sqm"] == pytest.approx(10000.0)
+    assert "ГлавАПУ, выгрузка от 06.10.2026, лист «ТЭП», строка 57" in m["yard_basis"]
+    assert "квартиры × 2,1" in m["yard_basis"]
+    # Строка 57 меньше нашей нормы — остаётся наша.
+    x, t = _housing("msk")
+    assert core.site_massing(_with_glavapu(x, 0.5, 900), t)["yard_sqm"] == pytest.approx(ours)
+    # Квартир в ТЭП уже не столько, сколько в выгрузке, — снимок устарел и не берётся.
+    x, t = _housing("msk")
+    stale = core.site_massing(_with_glavapu(x, 1.0, 1856), t)
+    assert stale["yard_sqm"] == pytest.approx(ours)
+    assert "для двора она не берётся" in stale["yard_basis"]
+
+
+def test_the_row_57_is_read_from_the_glavapu_export(tmp_path):
+    import test_glavapu_full_check as owner
+
+    parsed = core.parse_glavapu_xlsx(owner._owner_book(tmp_path), "owner.xlsx")
+    assert parsed["normalized"]["green_zhk_ha"] == pytest.approx(1.9485)
+    assert core._GLAVAPU_SOURCE_ROWS["green_zhk_ha"][1].startswith("строка 57")
+
+
+def test_the_scenario_check_row_57_counts_for_the_same_flats():
+    """Сверка сценария («Сверить сценарий») — тот же источник строки 57, с разбивкой."""
+    x, t = _housing("msk")
+    x["_glavapu_scenario"] = {"key": "k", "flats_count": 900, "territory": {
+        "green_zhk": [1.2, "строка 57, га"], "57_1": [0.84, "строка 57.1, га"],
+        "57_2": [0.36, "строка 57.2, га"]}}
+    m = core.site_massing(x, t)
+    assert m["yard_sqm"] == pytest.approx(12000.0)
+    assert "сверка сценария, строка 57" in m["yard_basis"]
+    assert "зелёные насаждения 8 400 м², площадки и дорожки 3 600 м²" in m["yard_basis"]
+    # Квартир в ТЭП стало другое число — сверка устарела, и это сказано.
+    x["_glavapu_scenario"]["flats_count"] = 901
+    stale = core.site_massing(x, t)
+    assert stale["yard_sqm"] == pytest.approx(5.0 * 1364)
+    assert "повторите сверку" in stale["yard_basis"]
+
+
+def test_other_regions_take_the_larger_of_sp42_and_the_moscow_norm():
+    """Прочие регионы: большее из СП 42 (25 % участка) и нормы Москвы на жителя —
+    допущением, с подписью (владелец 22.10.2026)."""
+    x, t = _housing("other")                     # 1 364 жителя
+    x["site_area_ha"] = 4.0                      # 25 % — 10 000 м², норма Москвы — 6 820 м²
+    m = core.site_massing(x, t)
+    assert m["yard_sqm"] == pytest.approx(0.25 * 40000)
+    assert "СП 42.13330.2016" in m["yard_basis"] and "допущением" in m["yard_basis"]
+    x["site_area_ha"] = 0.5                      # 25 % — 1 250 м², норма Москвы — 6 820 м²
+    dense = core.site_massing(x, t)
+    assert dense["yard_sqm"] == pytest.approx(5.0 * 1364)
+    assert "допущение: норма Москвы" in dense["yard_basis"]
+
+
+def test_the_landscaping_budget_fits_the_site_and_adds_up_by_queues():
+    """Норматив класса не даёт больше благоустройства, чем помещается на участке;
+    мера на человека одна, и очереди складываются в проект."""
+    x = {**core.DEFAULT_INPUTS, "site_area_ha": 1.5, "project_region": "msk"}
+    t = copy.deepcopy(core.TEP_DEFAULT)
+    area, basis = core.landscaping_area(x, t)
+    room, people = core.landscaping_room(x, t)
+    assert area == pytest.approx(room) and room < x["landscaping_area_per_person_sqm"] * people
+    assert "на участке помещается" in basis
+    single = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))["capex"]["landscaping"]
+    phased = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=x, tep=t, rates=[],
+        phasing={"enabled": True, "phase_count": 3, "phase_gap_months": 24,
+                 "cost_inflation_pct": 0}))
+    assert sum(p["result"]["capex"]["landscaping"] for p in phased["phases"]) == \
+        pytest.approx(single)
+    # Площадь, заданная руками, остаётся как есть.
+    x["landscaping_area_sqm"] = 30000
+    assert core.landscaping_area(x, t)[0] == pytest.approx(30000)
+    # Без площади участка потолка нет.
+    free = {**core.DEFAULT_INPUTS}
+    assert core.landscaping_area(free, t)[0] == pytest.approx(
+        free["landscaping_area_per_person_sqm"] * core.project_population(t, "msk")[0])
+
+
+
+def _with_objects(**extra):
+    """Жилой проект с школой на 2 500 мест, садом на 250 мест и офисами."""
+    x, t = _one_hectare(site_area_ha=17.811, **extra)
+    t.update({"apartments": {"gns": 300000.0, "saleable": 200000.0, "units": 3500},
+              "kindergarten": {"gns": 5000.0, "units": 250},
+              "school": {"gns": 36111.0, "units": 2500},
+              "offices": {"gns": 60000.0, "total_area": 60000.0}})
+    return x, t
+
+
+def test_the_school_the_garden_and_the_offices_stand_on_their_own_plots():
+    """Владелец 23.10.2026: школа, сад и офисы — на своих участках, жилой баланс на остатке."""
+    x, t = _with_objects()
+    m = core.site_massing(x, t)
+    by = {o["key"]: o for o in m["objects"]}
+    assert by["school"]["plot_sqm"] == pytest.approx(14.0 * 2500)
+    assert by["kindergarten"]["plot_sqm"] == pytest.approx(32.0 * 250)
+    assert (by["school"]["storeys"], by["kindergarten"]["storeys"]) == (4, 3)
+    assert by["offices"]["storeys"] == 12
+    assert by["offices"]["plot_sqm"] == pytest.approx(2 * 60000.0 / 12)
+    assert all(o["plot_origin"] == "default" for o in m["objects"])
+    assert m["residential_site_sqm"] == pytest.approx(178110 - 35000 - 8000 - 10000)
+    assert m["residential_gns_sqm"] == pytest.approx(m["above_gns_sqm"] - 5000 - 36111 - 60000)
+    assert m["average_storeys"] == pytest.approx(m["residential_gns_sqm"] / m["footprint_sqm"])
+    assert m["footprint_sqm"] <= 0.3 * m["residential_site_sqm"] + 0.5
+    assert "Школа — участок 35 000 м²" in m["summary"]
+    # Проект без жилья — отдельных зданий нет, всё наземное и есть здание.
+    office = core.site_massing(*_office())
+    assert office["objects"] == [] and office["residential_gns_sqm"] == office["above_gns_sqm"]
+
+
+def test_glavapu_plots_are_taken_for_the_same_places_and_area():
+    x, t = _with_objects()
+    x["_glavapu_import"] = {"source": {"export_date": "06.10.2026"}, "normalized": {
+        "actual_school_places": 2500, "actual_school_land_ha": 3.5,
+        "actual_kindergarten_places": 300, "actual_kindergarten_land_ha": 0.9,
+        "standalone_nonres_spp_sqm": 60000.0, "balance_public_ha": 4.401}}
+    by = {o["key"]: o for o in core.site_massing(x, t)["objects"]}
+    assert by["school"]["plot_origin"] == "glavapu"
+    assert "строка 25" in by["school"]["plot_basis"]
+    # Сад в выгрузке на другое число мест — не берётся.
+    assert by["kindergarten"]["plot_origin"] == "default"
+    assert by["offices"]["plot_sqm"] == pytest.approx(44010.0)
+    assert "строка 14" in by["offices"]["plot_basis"]

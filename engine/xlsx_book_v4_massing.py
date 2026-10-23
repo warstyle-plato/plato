@@ -28,6 +28,8 @@ _V4_DEPTH_FACTOR_CELL: "_massing_contextvars.ContextVar[str]" = _massing_context
 _V4_KEYED_INPUT_FORMATS.update({key: _v4_input_format_code("number", "м²", 1000.0)
                                 for key in _massing_book.AREA_KEYS})
 _V4_KEYED_INPUT_FORMATS.update({key: "0.0" for key in _massing_book.PERCENT_KEYS})
+# Типовая этажность жилых домов — целые этажи, как предел участка.
+_V4_KEYED_INPUT_FORMATS["massing_typical_storeys"] = _v4_input_format_code("number", "этажей", 17)
 
 
 def _v4_under_rate_ref(params_name: str = "'Вводные'") -> str:
@@ -37,6 +39,17 @@ def _v4_under_rate_ref(params_name: str = "'Вводные'") -> str:
     if not cell:
         return rate
     return f"({rate}*{params_name}!{cell})"
+
+
+# Ячейка «помещается благоустройства» блока пятна застройки нужна формуле
+# блока благоустройства, а тот пишется раньше: формула несёт метку, и блок
+# пятна ставит на её место свою ячейку.
+_V4_LANDSCAPING_ROOM_TOKEN = "__MASSING_LANDSCAPING_ROOM__"
+# Строки блока ждут вставки до сборки листа ввода (`_v4_site_massing_flush`):
+# пока лист перечитывают сотни раз, вместо девяти тысяч знаков блока на нём
+# стоит одна пустая строка, держащая его номера.
+_V4_MASSING_PENDING: "_massing_contextvars.ContextVar[tuple[str, str]]" = \
+    _massing_contextvars.ContextVar("v4_massing_pending", default=("", ""))
 
 
 def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
@@ -72,7 +85,10 @@ def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
         "surface_parking_sqm": (f"мест на земле × земля на место (surface_parking_spaces × "
                                 f"surface_parking_sqm_per_space); "
                                 f"{massing.get('surface_parking_basis') or ''}"),
-        "above_gns_sqm": "из ТЭП проекта",
+        "above_gns_sqm": "из ТЭП, без отдельных зданий",
+        "objects_plot_sqm": ", ".join(o["label"] for o in massing.get("objects") or []),
+        "coverage_pct": "поле site_coverage_max_pct",
+        "typical_storeys": "поле residential_storeys_typical",
         "underground_sqm": "паркинг с рампами и проездами, подземные кладовые и гаражи объектов",
         "markup2_pct": "поле underground_level2_markup_pct; экспертная оценка, согласована владельцем",
         "markup3_pct": "поле underground_level3_markup_pct; экспертная оценка, согласована владельцем",
@@ -98,7 +114,25 @@ def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
     tail = "</x:sheetData>"
     assert tail in xml
     _V4_DEPTH_FACTOR_CELL.set(f"$B${rows['depth_factor']}")
-    return xml.replace(tail, "".join(parts) + tail, 1), massing
+    xml = xml.replace(_V4_LANDSCAPING_ROOM_TOKEN, f"$B${rows['landscaping_room_sqm']}")
+    # Номера строк заняты сейчас (следующие блоки встанут ниже), а сами строки
+    # ждут `_v4_site_massing_flush`: сборка перечитывает лист сотни раз.
+    last = max(rows.values())
+    placeholder = f'<x:row r="{last}"></x:row>'
+    _V4_MASSING_PENDING.set((placeholder, "".join(parts)))
+    return xml.replace(tail, placeholder + tail, 1), massing
+
+
+def _v4_site_massing_flush(xml: str, missing: list[str]) -> str:
+    """Строки блока пятна — на место пустой строки, державшей их номера."""
+    placeholder, rows_xml = _V4_MASSING_PENDING.get()
+    if not placeholder:
+        return xml
+    _V4_MASSING_PENDING.set(("", ""))
+    if xml.count(placeholder) != 1:
+        missing.append("Вводные · пятно застройки: место блока не найдено, блок не вписан")
+        return xml
+    return xml.replace(placeholder, rows_xml, 1)
 
 
 def _v4_under_depth_formula(formula: str, row: int, missing: list[str]) -> str:

@@ -1482,12 +1482,13 @@ def _glavapu_scenario_ours(inputs: dict[str, Any], tep: dict[str, Any],
                                             "обслуживание квартала нечем покрыть")
 
     # Озеленённые территории ЖК (город: 5,0 м² на жителя) против площади
-    # нашего двора — той, что считает благоустройство.
+    # благоустройства в смете: оплачено ли столько, сколько требует город.
+    # Это не двор на участке — его считает пятно застройки (`site_massing`).
     yard_sqm, yard_basis = landscaping_area(inputs, tep)
     ours["territory"] = {"green_zhk": (round(yard_sqm / 10000.0, 4) if yard_sqm > 0 else None,
-                                       "наш двор (landscaping_area): " + yard_basis)}
+                                       "благоустройство в смете (landscaping_area): " + yard_basis)}
     extra["territory.green_zhk"] = (
-        "наш двор — площадь благоустройства по ставке класса; город (2152-ПП) требует "
+        "наша площадь благоустройства в смете — по ставке класса; город (2152-ПП) требует "
         f"{MSK_GREEN_ZHK_SQM_PER_PERSON:.1f} м² озеленённых территорий ЖК на жителя, ".replace(".", ",")
         + "из них 3,5 — насаждения"
         if yard_sqm > 0 else "площадь двора в проекте не посчитана: " + yard_basis)
