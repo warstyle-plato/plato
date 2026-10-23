@@ -1051,9 +1051,122 @@ def _freeform_tep_schema() -> dict[str, Any]:
     }
 
 
+# Образец свободного ввода. Его печатает бот в подсказке, и его же обязан
+# разбирать `_simple_freeform_tep` без модели: подсказка, на которую бот сам
+# отвечает отказом, хуже, чем никакой. Один литерал — тесты сверяют оба места.
+FREEFORM_TEP_EXAMPLE = "Участок 2,4 га. Квартиры 42 000 м², коммерция 2 500 м²."
+
+_FREEFORM_NUMBER = r"(\d{1,3}(?:[   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?)"
+_FREEFORM_DASH = r"\s*(?:[—–:-]\s*)?"
+_FREEFORM_AREA_UNIT = r"(?:\s*(тыс\.?))?(?:\s*(?:м²|м2|кв\.?\s*м\.?))?"
+# Простая запись: участок в гектарах, квартиры и встроенная коммерция в м².
+# Всё, что не легло в эти три строки (ГНС, СПП, паркинг, деньги, название),
+# отдаётся модели целиком: молча потерять сказанное хуже, чем спросить её.
+_FREEFORM_SIMPLE_FIELDS = (
+    ("site_area_ha", re.compile(
+        r"(?:площадь\s+)?(?:участ(?:ок|ка)|территори[яи])" + _FREEFORM_DASH
+        + _FREEFORM_NUMBER + r"\s*(?:га|гa)(?![а-яё])", re.IGNORECASE)),
+    ("apartments_saleable_sqm", re.compile(
+        r"квартир(?:ы|ам)?" + _FREEFORM_DASH + _FREEFORM_NUMBER + _FREEFORM_AREA_UNIT
+        + r"(?:\s+продаваемой\s+площади)?", re.IGNORECASE)),
+    ("commercial_saleable_sqm", re.compile(
+        r"коммерци[яи]" + _FREEFORM_DASH + _FREEFORM_NUMBER + _FREEFORM_AREA_UNIT,
+        re.IGNORECASE)),
+)
+_FREEFORM_FILLER = re.compile(r"[\s.,;:—–\-]+|(?<![а-яё])и(?![а-яё])", re.IGNORECASE)
+
+
+def _freeform_number(raw: str) -> float:
+    return float(re.sub(r"[   ]", "", raw).replace(",", "."))
+
+
+def _simple_freeform_tep(text: str) -> dict[str, Any] | None:
+    """Разбор простой записи без модели; None — запись не простая.
+
+    Простой считается запись, где кроме участка, квартир и коммерции нет ни
+    одного слова: остаток после вырезания распознанного должен быть пустым.
+    """
+    rest = str(text or "")
+    values: dict[str, Any] = {}
+    for key, pattern in _FREEFORM_SIMPLE_FIELDS:
+        matches = list(pattern.finditer(rest))
+        if len(matches) != 1:
+            if matches:
+                return None
+            continue
+        match = matches[0]
+        if re.search(r"[.,]\d{3}$", match.group(1)):
+            # «42,000» — тысячи по-английски или 42 м² по-русски: не гадаем.
+            return None
+        value = _freeform_number(match.group(1))
+        if key != "site_area_ha" and match.group(2):
+            value *= 1000.0
+        values[key] = value
+        rest = rest[:match.start()] + " " + rest[match.end():]
+    if "site_area_ha" not in values or _FREEFORM_FILLER.sub("", rest):
+        return None
+    raw: dict[str, Any] = {key: None for key in _freeform_tep_schema()["properties"]}
+    raw.update({"project_name": "", "district": ""})
+    raw.update(values)
+    return raw
+
+
+class FreeformTepRecognitionError(RuntimeError):
+    """Сбой распознавания, а не нехватка данных: причина и место в тексте."""
+
+
+_FREEFORM_TEP_PLACE = "распознавание свободного ТЭП"
+_FREEFORM_TEP_TOKENS = (4000, 12000)
+_TEP_LOG = logging.getLogger("developaid.tep")
+
+
+def _freeform_tep_incomplete_reason(response: dict[str, Any]) -> str:
+    """Причина обрыва ответа модели; пусто — ответ дописан.
+
+    OpenAI сообщает обрыв полем `status`, ответ Anthropic приводится к той же
+    форме в `plato_provider.response_to_internal`.
+    """
+    if str(response.get("status") or "") != "incomplete":
+        return ""
+    details = response.get("incomplete_details") or {}
+    return str(details.get("reason") or "не названа")
+
+
+def _freeform_tep_json(result_text: str) -> dict[str, Any]:
+    cleaned = result_text.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.DOTALL)
+    if fenced:
+        cleaned = fenced.group(1)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        first, last = cleaned.find("{"), cleaned.rfind("}")
+        parsed = None
+        if 0 <= first < last:
+            try:
+                parsed = json.loads(cleaned[first:last + 1])
+            except json.JSONDecodeError:
+                parsed = None
+        if parsed is None:
+            _TEP_LOG.warning("Freeform TEP: model answer is not JSON (%d chars): %.200r",
+                             len(result_text), result_text)
+            raise FreeformTepRecognitionError(
+                f"Модель вернула ответ не в формате JSON ({len(result_text)} символов) — "
+                f"{_FREEFORM_TEP_PLACE}"
+            )
+    if not isinstance(parsed, dict):
+        raise FreeformTepRecognitionError(
+            f"Модель вернула JSON, но не объект с показателями — {_FREEFORM_TEP_PLACE}"
+        )
+    return parsed
+
+
 def _recognize_freeform_tep_text(text: str) -> dict[str, Any]:
+    simple = _simple_freeform_tep(text)
+    if simple is not None:
+        return simple
     model = os.getenv("OPENAI_TEP_MODEL", os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6")).strip() or "gpt-5.6"
-    payload = {
+    payload: dict[str, Any] = {
         "model": model,
         "instructions": (
             "Извлеки только явно сообщённые пользователем исходные градостроительные показатели для DevelopAid. "
@@ -1063,7 +1176,8 @@ def _recognize_freeform_tep_text(text: str) -> dict[str, Any]:
             "Различай коммерцию в первом этаже и отдельно стоящие объекты. "
             "В commercial_* помещай только встроенную коммерцию МКД. Площади приводи к м²: 42 тыс. м² = 42000. "
             "Плотность оставляй в тыс. м²/га. Деньги приводи к млн ₽: 1,2 млрд = 1200. "
-            "Паркинг, кладовые и социальные мощности — количество единиц/мест. Район извлекай только если он назван."
+            "Паркинг, кладовые и социальные мощности — количество единиц/мест. Район извлекай только если он назван. "
+            "Ответ — только JSON-объект по схеме, без пояснений."
         ),
         "input": [{"role": "user", "content": str(text or "")[:6000]}],
         "text": {
@@ -1074,17 +1188,40 @@ def _recognize_freeform_tep_text(text: str) -> dict[str, Any]:
                 "schema": _freeform_tep_schema(),
             }
         },
-        "max_output_tokens": 1800,
         "store": False,
     }
-    response = _openai_responses_request(payload)
+    # Reasoning-модель тратит потолок ответа и на размышление: при 1800
+    # токенах она не дописывала JSON, и обрыв читался как «не удалось
+    # разобрать». Бюджет размышлений тот же, что у Платона (один источник),
+    # потолок с запасом, а обрыв по потолку повторяется один раз с большим.
+    effort = _agent_reasoning_effort(model)
+    if effort:
+        payload["reasoning"] = {"effort": effort}
+    reason = ""
+    for limit in _FREEFORM_TEP_TOKENS:
+        payload["max_output_tokens"] = limit
+        try:
+            response = _openai_responses_request(payload)
+        except HTTPException as exc:
+            raise FreeformTepRecognitionError(
+                f"Модель недоступна: {str(exc.detail)[:300]} — {_FREEFORM_TEP_PLACE}"
+            ) from exc
+        reason = _freeform_tep_incomplete_reason(response)
+        if reason != "max_output_tokens":
+            break
+        _TEP_LOG.warning("Freeform TEP: answer cut at max_output_tokens=%d", limit)
+    if reason:
+        raise FreeformTepRecognitionError(
+            f"Модель оборвала ответ, не дописав показатели (incomplete: {reason}) — "
+            f"{_FREEFORM_TEP_PLACE}"
+        )
     result_text = _extract_openai_text(response)
     if not result_text:
-        raise ValueError("Не удалось распознать показатели")
-    try:
-        return json.loads(result_text)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Не удалось разобрать распознанные показатели") from exc
+        raise FreeformTepRecognitionError(
+            f"Модель вернула пустой ответ (status: {response.get('status') or 'не указан'}) — "
+            f"{_FREEFORM_TEP_PLACE}"
+        )
+    return _freeform_tep_json(result_text)
 
 
 # Зона нормирования соцобеспеченности Москвы. Во второй зоне нормативы выше:
