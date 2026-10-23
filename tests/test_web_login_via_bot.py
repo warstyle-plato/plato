@@ -226,3 +226,76 @@ def test_the_library_is_declared():
     requirements = (Path(main.__file__).resolve().parent / "requirements.txt").read_text(encoding="utf-8")
     assert "segno" in requirements, "образ соберётся без QR, а маршрут ответит 503"
 
+
+
+# --- Чужая ссылка входа ------------------------------------------------------
+# Код входа запрашивает любой браузер. Если бот подтверждал вход сразу по
+# «/start login_<код>», человек, открывший присланную кем-то ссылку, отдавал
+# сессию своего чата тому, кто её прислал. Теперь бот спрашивает и показывает
+# код для сверки, а вход подтверждает только кнопка «Да» в личном чате.
+
+def _bot(monkeypatch):
+    sent: list[dict] = []
+
+    def fake_send(chat_id, text, *, reply_markup=None):
+        sent.append({"chat_id": chat_id, "text": text, "reply_markup": reply_markup})
+
+    monkeypatch.setattr(main, "_telegram_send_message", fake_send)
+    monkeypatch.setattr(main, "_telegram_api", lambda *a, **k: {})
+    return sent
+
+
+def _start_message(code: str, chat_id: int = CHAT_ID) -> dict:
+    return {"message": {"chat": {"id": chat_id, "type": "private"},
+                        "from": {"id": chat_id, "first_name": "Жертва"},
+                        "text": f"/start login_{code}"}}
+
+
+def _button(data: str, chat_id: int = CHAT_ID, user_id: int = CHAT_ID) -> dict:
+    return {"callback_query": {"id": "q1", "data": data,
+                               "from": {"id": user_id, "first_name": "Жертва"},
+                               "message": {"chat": {"id": chat_id}}}}
+
+
+def test_opening_a_login_link_alone_logs_nobody_in(monkeypatch):
+    sent = _bot(monkeypatch)
+    data = start_login()  # браузер того, кто прислал ссылку
+    main._telegram_handle_update(_start_message(data["code"]))
+    assert claim(data["code"]).json() == {"ready": False}
+    question = sent[-1]
+    assert data["display_code"] in question["text"]
+    buttons = [b["callback_data"] for row in question["reply_markup"]["inline_keyboard"] for b in row]
+    assert buttons == [f"login_ok:{data['code']}", f"login_no:{data['code']}"]
+
+
+def test_only_the_yes_button_confirms(monkeypatch):
+    _bot(monkeypatch)
+    data = start_login()
+    main._telegram_handle_update(_button(f"login_no:{data['code']}"))
+    assert claim(data["code"]).json() == {"ready": False}
+    main._telegram_handle_update(_button(f"login_ok:{data['code']}"))
+    result = claim(data["code"]).json()
+    assert result["ready"] and result["chat_id"] == CHAT_ID
+
+
+def test_a_group_button_does_not_confirm(monkeypatch):
+    _bot(monkeypatch)
+    data = start_login()
+    main._telegram_handle_update(_button(f"login_ok:{data['code']}", chat_id=-100500))
+    main._telegram_handle_update(_button(f"login_ok:{data['code']}", user_id=CHAT_ID + 1))
+    assert claim(data["code"]).json() == {"ready": False}
+
+
+def test_the_wrapper_passes_the_login_button_to_the_bot(monkeypatch):
+    # Прод зовёт обёртку main.py: кнопка не должна в ней потеряться.
+    _bot(monkeypatch)
+    monkeypatch.setattr(_wrapper, "_user_to_core", lambda *a, **k: None)
+    data = start_login()
+    _wrapper._handle_update(_button(f"login_ok:{data['code']}"))
+    assert claim(data["code"]).json()["ready"]
+
+
+def test_the_page_shows_the_code_to_compare():
+    data = start_login()
+    assert data["display_code"] == main._web_login_display(data["code"])
+    assert "d.display_code" in main.PAGE and "коды совпадают" in main.PAGE

@@ -178,6 +178,11 @@ def probe_browser(url: str, seconds: float = 45.0, save_to: str = "",
     `secrets` — значения, которых в отчёте быть не должно: логин и пароль
     вычищаются из него целиком, включая адреса и тела запросов.
     """
+    from market_search.http import public_url_problem
+
+    problem = public_url_problem(url)
+    if problem:
+        return {"ok": False, "url": url, "reason": problem}
     try:
         from playwright.sync_api import sync_playwright
     except Exception as exc:  # noqa: BLE001
