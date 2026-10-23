@@ -1131,6 +1131,9 @@ function resetAll(){
  siteParkingConflictSeen='';
  // Подсказка «галочка ВРИ без платы» относится к прошлому проекту.
  vriFeeAskedWithoutSum=false;vriFeeClearedMln=0;
+ // Ожидание плана расстановки — ожидание прошлого проекта: его ответ
+ // пересчитал бы новый.
+ siteMassingPlanStop();
  // Открытое окно подтверждения «Сформировать ТЭП по новым параметрам» — действие
  // над прошлым проектом: по «Сформировать» оно легло бы в новый.
  closeTepConfirm();
@@ -1233,6 +1236,8 @@ function tariffsHtml(data){
   '<ul style="margin:0 0 10px 18px;padding:0">'+
   '<li><b>Один участок — '+accessRub(terms.plot_price_rub)+'</b>'+vat+': доступ на '+terms.plot_days+
   ' дней, пересчитывать можно сколько угодно, PDF-отчёт и Excel-модель входят в цену.</li>'+
+  '<li><b>Несколько участков вперёд</b>: каждый по '+accessRub(terms.plot_price_rub)+vat+', до '+Number(data.package_max_plots||10)+' за один раз. '+
+  'Текущий участок откроется сразу, остальные останутся в запасе и откроются при первом расчёте нового участка — '+terms.plot_days+' дней с этого момента.</li>'+
   '<li><b>Подписка — '+accessRub(terms.subscription_price_rub)+' в месяц</b>'+(subOffer.vat_note?' ('+escapeHtml(subOffer.vat_note)+')':'')+
   ': любые участки без ограничений.</li></ul>';
  if(!data.signed_in){
@@ -1253,17 +1258,24 @@ function tariffsHtml(data){
   html+='<p style="margin:0 0 6px">Подписка действует до '+accessDate(status.subscription_until)+'.</p>';
  }
  html+='<p style="margin:0 0 6px">Бесплатных участков осталось: '+Number(status.free_left||0)+' из '+Number(status.free_plots||0)+'.</p>';
+ // Запас — участки, оплаченные вперёд и ещё не привязанные: число идёт с
+ // сервера (`access_status`), страница его не считает.
+ html+='<p id="accessReserve" style="margin:0 0 6px">В запасе участков: '+Number(status.reserve||0)+'.'+
+  (Number(status.reserve||0)>0?' Участок из запаса откроется сам при первом расчёте нового участка.':'')+'</p>';
  if(active.length){
   html+='<ul id="accessPlots" style="margin:0 0 8px 18px;padding:0">'+active.map(p=>'<li>'+escapeHtml(p.label||'участок')+
-   ' — доступ до '+accessDate(p.until)+(p.source==='free'?' (бесплатный)':'')+'</li>').join('')+'</ul>';
+   ' — доступ до '+accessDate(p.until)+(p.source==='free'?' (бесплатный)':(p.source==='reserve'?' (из запаса)':''))+'</li>').join('')+'</ul>';
  }else if(!status.subscription_active){
   html+='<p class="muted" style="margin:0 0 8px">Открытых участков пока нет.</p>';
  }
  if(data.payments_available||data.demo){
   html+='<div class="upload-line" style="align-items:center;margin-top:8px">'+
    '<input id="payEmail" type="email" placeholder="Почта для чека" style="min-width:220px">'+
-   '<button class="btn dark" onclick="payForAccess(\'plot\')">Оплатить текущий участок</button>'+
+   '<label for="payCount" style="white-space:nowrap">Сколько участков</label>'+
+   '<input id="payCount" type="number" min="1" max="'+Number(data.package_max_plots||10)+'" value="1" style="width:64px" oninput="payCountChanged()" onchange="payCountChanged()">'+
+   '<button class="btn dark" id="payPlotButton" onclick="payForAccess(\'plot\')">Оплатить текущий участок</button>'+
    '<button class="btn" onclick="payForAccess(\'subscription\')">Оформить подписку</button></div>'+
+   '<div id="payTotal" data-unit="'+Number(terms.plot_price_rub||0)+'" data-vat="'+escapeHtml(plotOffer.vat_note||'')+'" style="font-size:12px;margin-top:6px"></div>'+
    '<div id="payStatus" style="font-size:12px;margin-top:6px"></div>'+
    '<p style="font-size:11px;color:#777;margin:6px 0 0">Оплачивая, вы принимаете <a href="/offer" target="_blank" rel="noopener">лицензионный договор</a>'+
    ' и <a href="/refund" target="_blank" rel="noopener">условия возврата</a>. Чек придёт на указанную почту.</p>';
@@ -1282,6 +1294,7 @@ async function renderTariffsBox(){
  try{data=await loadAccessMe()}
  catch(e){box.innerHTML='<div class="import-error">'+escapeHtml(String(e.message||e))+'</div>';return}
  box.innerHTML=tariffsHtml(data);
+ payCountChanged();
  const admin=document.getElementById('accessAdminBox');
  if(admin){admin.style.display=(data.is_admin||projectsAdminKey)?'':'none';if(data.is_admin||projectsAdminKey){renderAccessAdmin();renderDemoInvites()}}
 }
@@ -1291,16 +1304,46 @@ async function openTariffs(){
  const box=document.getElementById('tariffsBox');
  if(box&&box.scrollIntoView)box.scrollIntoView({block:'start'});
 }
+function plotsWord(count){
+ count=Math.abs(Number(count)||0);
+ if(count%10===1&&count%100!==11)return 'участок';
+ if(count%10>=2&&count%10<=4&&(count%100<12||count%100>14))return 'участка';
+ return 'участков';
+}
+function payCount(){
+ const field=document.getElementById('payCount');
+ if(!field)return 1;
+ const max=Number(field.max||10)||10;
+ const count=Math.floor(Number(field.value)||1);
+ return Math.min(max,Math.max(1,count));
+}
+// Строка «К оплате»: сумма пакета — число участков, умноженное на цену
+// участка; сам платёж и чек считает сервер (`payment_offer_item`).
+function payCountChanged(){
+ const total=document.getElementById('payTotal'),button=document.getElementById('payPlotButton');
+ if(!total)return;
+ const count=payCount(),unit=Number(total.dataset.unit||0),vat=total.dataset.vat?' ('+total.dataset.vat+')':'';
+ if(count>1){
+  total.textContent='К оплате: '+accessRub(unit*count)+' за '+count+' '+plotsWord(count)+vat+'. Текущий участок откроется сразу, '+
+   (count-1)+' '+plotsWord(count-1)+' останется в запасе; если текущего участка нет, весь пакет ляжет в запас.';
+  if(button)button.textContent='Оплатить '+count+' '+plotsWord(count);
+ }else{
+  total.textContent='К оплате: '+accessRub(unit)+' за один участок'+vat+'.';
+  if(button)button.textContent='Оплатить текущий участок';
+ }
+}
 async function payForAccess(kind){
  const status=document.getElementById('payStatus');
  const email=String((document.getElementById('payEmail')||{}).value||'').trim();
+ const count=kind==='subscription'?1:payCount();
  if(status)status.textContent='Готовлю оплату…';
  try{
   const response=await fetch('/payments/create',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({session:activeSession(),kind,inputs,email})});
+   body:JSON.stringify({session:activeSession(),kind,inputs,email,count})});
   const data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Оплату начать не удалось');
   if(data.preview){if(status)status.textContent=data.message;return}
+  if(status&&data.price_rub)status.textContent='Переходим к оплате '+accessRub(data.price_rub)+(count>1?' за '+count+' '+plotsWord(count):'')+'…';
   try{localStorage.setItem('developaid_pending_payment',data.payment_id)}catch(e){}
   location.href=data.confirmation_url;
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
@@ -1325,6 +1368,7 @@ async function renderAccessAdmin(){
  const people=(data.people||[]).map(p=>'<tr><td>'+escapeHtml(p.name||'—')+'<br><small>ID '+p.chat+
   (p.company?' · '+escapeHtml(p.company):'')+'</small></td><td>'+(p.free_used?'использован':'не использован')+
   '</td><td>'+((p.active_plots||[]).map(g=>escapeHtml(g.label)+' до '+accessDate(g.until)).join('<br>')||'—')+
+  (Number(p.reserve||0)?'<br><small>в запасе: '+Number(p.reserve)+'</small>':'')+
   '</td><td>'+(p.subscription_until&&p.subscription_until*1000>Date.now()?'до '+accessDate(p.subscription_until):'—')+'</td></tr>').join('');
  const payments=(data.payments||[]).map(r=>'<tr><td>'+accessDate(r.at)+'</td><td>ID '+r.chat+'</td><td>'+
   escapeHtml(r.label||'')+'</td><td>'+escapeHtml(r.note||'')+'</td></tr>').join('');
@@ -1386,9 +1430,12 @@ function fillGrantRecipients(people){
  if(keep)select.value=keep;
 }
 function grantKindChanged(){
- const row=document.getElementById('grantCadastralRow');
+ const row=document.getElementById('grantCadastralRow'),countRow=document.getElementById('grantCountRow'),
+  daysRow=document.getElementById('grantDaysRow');
  const kind=(document.getElementById('grantKind')||{}).value;
- if(row)row.style.display=kind==='subscription'?'none':'';
+ if(row)row.style.display=kind==='plot'?'':'none';
+ if(countRow)countRow.style.display=kind==='reserve'?'':'none';
+ if(daysRow)daysRow.style.display=kind==='reserve'?'none':'';
 }
 async function accessAdminGrant(){
  const status=document.getElementById('accessAdminStatus');
@@ -1396,11 +1443,13 @@ async function accessAdminGrant(){
  const kind=(document.getElementById('grantKind')||{}).value||'plot';
  const cadastral=String((document.getElementById('grantCadastral')||{}).value||'').split(/[\s,;]+/).filter(Boolean);
  const days=Number((document.getElementById('grantDays')||{}).value||0);
+ const count=Number((document.getElementById('grantCount')||{}).value||0);
  const note=String((document.getElementById('grantNote')||{}).value||'');
  try{
   if(!chat){if(status)status.textContent='Выберите, кому выдать доступ.';return}
-  const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral:kind==='subscription'?[]:cadastral,days,note});
-  if(status)status.textContent='Выдано: '+(data.what||'доступ')+' — '+(data.who||('ID '+chat))+', до '+accessDate(data.until)+'.';
+  const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral:kind==='plot'?cadastral:[],days,count,note});
+  if(status)status.textContent='Выдано: '+(data.what||'доступ')+' — '+(data.who||('ID '+chat))+
+   (data.until?', до '+accessDate(data.until):', срок каждого участка пойдёт с его первого расчёта')+'.';
   renderAccessAdmin();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }

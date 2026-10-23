@@ -418,8 +418,9 @@ def replace_finance_baseline(project: str, data: bytes,
     except Exception:
         raise ValueError("файл не читается как книга Excel")
     try:
-        if "Расчет стоимости строительства" not in wb.sheetnames:
-            raise ValueError("в книге нет листа «Расчет стоимости строительства»")
+        import developaid_monitor_dashboard as dashboard
+        if not any(name in wb.sheetnames for name in dashboard.FINANCE_SHEETS):
+            raise ValueError(dashboard.finance_sheets_reason())
     finally:
         wb.close()
     folder = _project_dir(project) / "baseline"
