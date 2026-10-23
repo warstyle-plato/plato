@@ -949,6 +949,9 @@ def _build_project_workbook(
     xml, _site_massing = _v4_site_massing_rows_xml(xml, {
         **x, **{key: (inputs or {})[key] for key in ("_field_origin", "_class_manual")
                 if key in (inputs or {})}}, tep)
+    if _V4_LANDSCAPING_ROOM_TOKEN in xml:
+        missing.append("Вводные · благоустройство: ячейка «помещается благоустройства» блока "
+                       "пятна застройки не подставлена в формулу «Применяется, м²/чел.»")
 
     # --- расшифровка соцнагрузки: ОТЧЕТ (E31:H37) и ТЭП (38–44) -----------
     # «Где в Excel расходы на садик и школы?» — раньше нигде: B17 приезжал

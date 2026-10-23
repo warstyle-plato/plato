@@ -626,6 +626,18 @@ def landscaping_area_per_person(inputs: dict[str, Any],
     if per_person <= 0:
         return 0.0, "норматив на человека не задан — площадь не посчитана"
     shown_norm = f"{per_person:g}".replace(".", ",")
+    # Норматив класса не даёт больше, чем помещается на участке (владелец
+    # 22.10.2026): земля без проездов, стоянок и отступов вместе с кровлей
+    # стилобата, но не меньше двора по норме (`landscaping_room`). Участок и
+    # жители — проекта, поэтому мера на человека одна у проекта и очередей.
+    room, people = landscaping_room(inputs, tep)
+    if room > 0 and people > 0 and per_person * people > room + 0.5:
+        capped = room / people
+        return capped, (
+            f"норматив класса {shown_norm} м² на человека дал бы "
+            f"{_fmt_ru(per_person * people)} м², а на участке помещается {_fmt_ru(room)} м² "
+            "(земля без проездов, стоянок и отступов вместе с кровлей стилобата, не меньше "
+            f"двора по норме) — {_fmt_ru(capped, 2)} м² на человека ({basis})")
     return per_person, f"норматив {shown_norm} м² на человека ({basis})"
 
 
@@ -689,7 +701,7 @@ def landscaping_area(inputs: dict[str, Any], tep: dict[str, Any]) -> tuple[float
     # и «норматив 11 м² на человека» подряд — это одно, сказанное дважды. А
     # заданная руками площадь — другое основание, и короткая форма про
     # норматив сказала бы о ней неправду.
-    if float(inputs.get("landscaping_area_sqm") or 0.0) > 0:
+    if float(inputs.get("landscaping_area_sqm") or 0.0) > 0 or basis.startswith("норматив класса"):
         return per_person * population, basis
     shown = f"{per_person:g}".replace(".", ",")
     return per_person * population, f"{shown} м²/чел. × {population} чел."

@@ -39,6 +39,12 @@ def _v4_under_rate_ref(params_name: str = "'Вводные'") -> str:
     return f"({rate}*{params_name}!{cell})"
 
 
+# Ячейка «помещается благоустройства» блока пятна застройки нужна формуле
+# блока благоустройства, а тот пишется раньше: формула несёт метку, и блок
+# пятна ставит на её место свою ячейку.
+_V4_LANDSCAPING_ROOM_TOKEN = "__MASSING_LANDSCAPING_ROOM__"
+
+
 def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
                               tep: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """Блок «Пятно застройки и подземные уровни» внизу «Вводных» → (xml, расчёт движка).
@@ -98,6 +104,7 @@ def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
     tail = "</x:sheetData>"
     assert tail in xml
     _V4_DEPTH_FACTOR_CELL.set(f"$B${rows['depth_factor']}")
+    xml = xml.replace(_V4_LANDSCAPING_ROOM_TOKEN, f"$B${rows['landscaping_room_sqm']}")
     return xml.replace(tail, "".join(parts) + tail, 1), massing
 
 

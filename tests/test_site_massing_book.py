@@ -169,3 +169,30 @@ def test_the_book_takes_the_footprint_like_the_engine(extra, origin):
     assert got("footprint_shortage_sqm") == pytest.approx(m["footprint_shortage_sqm"], rel=1e-9)
     assert got("average_storeys") == pytest.approx(m["average_storeys"], rel=1e-9)
     assert got("coverage_sqm") == pytest.approx(m["coverage_sqm"], rel=1e-9)
+
+
+def test_the_landscaping_area_fits_the_site_in_the_engine_and_the_book():
+    """Площадь благоустройства в смете — не больше, чем помещается на участке
+    (владелец 22.10.2026), и книга считает тот же потолок своей формулой."""
+    sys.setrecursionlimit(400000)
+    openpyxl = pytest.importorskip("openpyxl")
+    from xlsx_eval import Evaluator
+
+    x = {**core.DEFAULT_INPUTS, "site_area_ha": 1.5, "project_region": "msk"}
+    t = copy.deepcopy(core.TEP_DEFAULT)
+    result = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
+    m = result["tep"]["site_massing"]
+    norm_area = x["landscaping_area_per_person_sqm"] * m["landscaping_room_population"]
+    assert norm_area > m["landscaping_room_sqm"], "пример должен упираться в потолок"
+    assert m["landscaping_sqm"] == pytest.approx(m["landscaping_room_sqm"])
+    rate = float(x["landscaping_th_per_sqm"])
+    assert result["capex"]["landscaping"] == pytest.approx(m["landscaping_room_sqm"] * rate * 1000)
+    content, _, meta = core.build_project_workbook(x, t, [], {}, project_name="Двор")
+    assert not [s for s in meta.get("missing") or [] if "благоустрой" in s.lower()], meta
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    cells = _block(book, "Параметры модели")
+    evaluator = Evaluator(book)
+    assert float(evaluator.cell("Параметры модели", cells["landscaping_room_sqm"])) == \
+        pytest.approx(m["landscaping_room_sqm"], rel=1e-9)
+    assert float(evaluator.cell("CAPEX", "B24")) == pytest.approx(
+        result["capex"]["landscaping"] / 1e6, rel=1e-6)

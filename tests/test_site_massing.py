@@ -320,3 +320,42 @@ def test_the_scenario_check_row_57_counts_for_the_same_flats():
     stale = core.site_massing(x, t)
     assert stale["yard_sqm"] == pytest.approx(5.0 * 1364)
     assert "повторите сверку" in stale["yard_basis"]
+
+
+def test_other_regions_take_the_larger_of_sp42_and_the_moscow_norm():
+    """Прочие регионы: большее из СП 42 (25 % участка) и нормы Москвы на жителя —
+    допущением, с подписью (владелец 22.10.2026)."""
+    x, t = _housing("other")                     # 1 364 жителя
+    x["site_area_ha"] = 4.0                      # 25 % — 10 000 м², норма Москвы — 6 820 м²
+    m = core.site_massing(x, t)
+    assert m["yard_sqm"] == pytest.approx(0.25 * 40000)
+    assert "СП 42.13330.2016" in m["yard_basis"] and "допущением" in m["yard_basis"]
+    x["site_area_ha"] = 0.5                      # 25 % — 1 250 м², норма Москвы — 6 820 м²
+    dense = core.site_massing(x, t)
+    assert dense["yard_sqm"] == pytest.approx(5.0 * 1364)
+    assert "допущение: норма Москвы" in dense["yard_basis"]
+
+
+def test_the_landscaping_budget_fits_the_site_and_adds_up_by_queues():
+    """Норматив класса не даёт больше благоустройства, чем помещается на участке;
+    мера на человека одна, и очереди складываются в проект."""
+    x = {**core.DEFAULT_INPUTS, "site_area_ha": 1.5, "project_region": "msk"}
+    t = copy.deepcopy(core.TEP_DEFAULT)
+    area, basis = core.landscaping_area(x, t)
+    room, people = core.landscaping_room(x, t)
+    assert area == pytest.approx(room) and room < x["landscaping_area_per_person_sqm"] * people
+    assert "на участке помещается" in basis
+    single = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))["capex"]["landscaping"]
+    phased = core.calculate_phased(core.PhasedCalcRequest(
+        inputs=x, tep=t, rates=[],
+        phasing={"enabled": True, "phase_count": 3, "phase_gap_months": 24,
+                 "cost_inflation_pct": 0}))
+    assert sum(p["result"]["capex"]["landscaping"] for p in phased["phases"]) == \
+        pytest.approx(single)
+    # Площадь, заданная руками, остаётся как есть.
+    x["landscaping_area_sqm"] = 30000
+    assert core.landscaping_area(x, t)[0] == pytest.approx(30000)
+    # Без площади участка потолка нет.
+    free = {**core.DEFAULT_INPUTS}
+    assert core.landscaping_area(free, t)[0] == pytest.approx(
+        free["landscaping_area_per_person_sqm"] * core.project_population(t, "msk")[0])

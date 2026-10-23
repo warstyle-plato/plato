@@ -106,8 +106,19 @@ def _yard_floor(x: dict[str, Any], tep: dict[str, Any], site_sqm: float) -> tupl
         return (per * population,
                 f"норма Московской области: {per:g} м² на жителя × {population} чел."
                 .replace(".", ","))
-    return (OTHER_REGION_GREEN_SHARE * site_sqm,
-            "СП 42.13330.2016, п. 7.4: озеленение жилого квартала — не меньше 25% участка")
+    # Прочие регионы — большее из федерального СП 42 (25 % участка) и нормы
+    # Москвы на жителя: своих норм региона у нас нет (владелец 22.10.2026).
+    share = OTHER_REGION_GREEN_SHARE * site_sqm
+    per_person = MSK_GREEN_ZHK_SQM_PER_PERSON * population
+    if per_person > share + 0.5:
+        return (per_person,
+                f"допущение: норма Москвы {MSK_GREEN_ZHK_SQM_PER_PERSON:g} м² на жителя × "
+                f"{population} чел. — норм этого региона у нас нет; это больше, чем требует "
+                "СП 42.13330.2016, п. 7.4 (25% участка)")
+    return (share,
+            "СП 42.13330.2016, п. 7.4: озеленение жилого квартала — не меньше 25% участка "
+            f"(это не меньше нормы Москвы {MSK_GREEN_ZHK_SQM_PER_PERSON:g} м² на жителя × "
+            f"{population} чел., которую берём допущением: норм этого региона у нас нет)")
 
 
 def _glavapu_territory_value(cell: Any) -> float:
@@ -160,6 +171,35 @@ def _glavapu_green_zhk(x: dict[str, Any], tep: dict[str, Any]) -> tuple[float, s
                        f"для {units_export or 'неизвестного числа'} квартир, а в ТЭП сейчас "
                        f"{units_tep} — для двора она не берётся")
     return 0.0, ". ".join(reasons)
+
+
+def landscaping_room(x: dict[str, Any], tep: dict[str, Any]) -> tuple[float, int]:
+    """Сколько благоустройства помещается на участке → (м², жителей проекта).
+
+    Земля участка без проездов, открытых стоянок и отступов — вместе с кровлей
+    стилобата (она не больше пятна, поэтому пятно здесь не вычитается), — но
+    не меньше двора по норме. Решение владельца 22.10.2026: площадь
+    благоустройства в смете не больше этого (`landscaping_area_per_person`).
+    Участок и жители — ПРОЕКТА: очередь читает их у проекта
+    (`_site_massing_project`), как пятно и уровни. Участок не задан — (0, 0):
+    ограничения нет.
+    """
+    project = x.get("_site_massing_project")
+    if isinstance(project, dict) and project:
+        return (float(project.get("landscaping_room_sqm") or 0.0),
+                int(project.get("landscaping_room_population") or 0))
+    site_sqm = _massing_number(x, "site_area_ha") * 10000.0
+    if site_sqm <= 0:
+        return 0.0, 0
+    drive_pct, _ = _massing_value(x, "site_driveways_pct")
+    setback_m, _ = _massing_value(x, "site_setback_m")
+    parking_sqm = (_massing_number(x, "surface_parking_spaces")
+                   * surface_parking_sqm_per_space(x)[0])
+    yard_sqm, _ = _yard_floor(x, tep or {}, site_sqm)
+    room = max(yard_sqm, site_sqm - site_sqm * drive_pct / 100.0 - parking_sqm
+               - setback_area(site_sqm, setback_m))
+    population, _ = project_population(tep or {}, project_region(x))
+    return max(0.0, room), population
 
 
 def setback_area(site_sqm: float, setback_m: float) -> float:
@@ -246,6 +286,7 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     # может быть на кровле стилобата (`yard_roof_sqm`, считается ниже, от пятна).
     # Площадь и деньги благоустройства в смете — прежние (`landscaping_area`).
     landscaping_sqm, _ = landscaping_area(x, tep)
+    room_sqm, room_population = landscaping_room(x, tep)
     yard_sqm, floor_basis = _yard_floor(x, tep, site_sqm)
     if yard_sqm > 0:
         yard_basis = f"Норма региона: {floor_basis}."
@@ -401,6 +442,10 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "yard_basis": yard_basis,
         "landscaping_sqm": landscaping_sqm,
         "yard_roof_sqm": yard_roof_sqm,
+        # Потолок площади благоустройства в смете и жители проекта — очередь
+        # читает их отсюда (`landscaping_room`).
+        "landscaping_room_sqm": room_sqm,
+        "landscaping_room_population": room_population,
         "yard_ground_sqm": ground_sqm,
         "driveways_sqm": drive_sqm,
         "driveways_pct": drive_pct,

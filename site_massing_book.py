@@ -47,6 +47,8 @@ ROWS: tuple[tuple[str, str, str], ...] = (
     ("setbacks_sqm", "Отступы, м² (полоса по периметру квадрата той же площади)", FORMULA),
     ("footprint_estimate_sqm", "Пятно застройки — оценка по балансу, м²", FORMULA),
     ("coverage_sqm", "Пятно по проценту застройки, м²", FORMULA),
+    ("landscaping_room_sqm", "Помещается благоустройства (без проездов, стоянок и отступов, "
+     "с кровлей стилобата), м²", FORMULA),
     ("footprint_sqm", "Пятно застройки, м² (не меньше наземной ГНС ÷ предел этажности)", FORMULA),
     ("footprint_shortage_sqm", "Не хватает земли: пятно больше свободного места, м²", FORMULA),
     ("average_storeys", "Средняя этажность", FORMULA),
@@ -106,6 +108,10 @@ def formulas(ref: Callable[[str], str]) -> dict[str, str]:
                                    f"-{r('surface_parking_sqm')}-{r('setbacks_sqm')})"),
         # Остаток участка дал бы здание выше предела (без предела — порог) —
         # пятно по пределу.
+        # Потолок площади благоустройства в смете — не меньше двора по норме.
+        "landscaping_room_sqm": (f"IF({r('site_sqm')}>0,MAX({r('yard_sqm')},{r('site_sqm')}"
+                                 f"-{r('site_sqm')}*{r('driveways_pct')}/100"
+                                 f"-{r('surface_parking_sqm')}-{r('setbacks_sqm')}),0)"),
         "coverage_sqm": (f"IF({r('coverage_pct')}>0,{r('site_sqm')}*{r('coverage_pct')}/100,"
                          f"{r('site_sqm')})"),
         "footprint_sqm": (f"IF({r('footprint_manual_sqm')}>0,{r('footprint_manual_sqm')},"
