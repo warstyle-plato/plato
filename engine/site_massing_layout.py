@@ -35,6 +35,8 @@ LAYOUT_MAX_DRAWN_CORPORA = 12
 LAYOUT_STOREY_HEIGHT_M = 3.0
 # Цвета очередей: одна палитра для страницы и PDF.
 LAYOUT_PHASE_COLORS = ("#2f6fb3", "#d9822b", "#3f9a5b", "#9b59b6", "#c0392b", "#16a2a2")
+# Отдельные здания на своих участках: соцобъекты и прочие — свои цвета.
+LAYOUT_OBJECT_COLORS = {"social": "#a1745a", "other": "#6f7f8c"}
 
 
 def _ring_area(ring: list[list[float]]) -> float:
@@ -236,6 +238,31 @@ def _phase_corpora(phases: list[dict[str, Any]], footprint: float, limit: float,
     return out
 
 
+def _object_corpora(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Школа, детский сад, офисы — корпусами схемы; длиннее 100 м — по длине."""
+    out: list[dict[str, Any]] = []
+    longest = LAYOUT_CORPUS_DEPTH_M * LAYOUT_CORPUS_MAX_LENGTH_M
+    for obj in objects or []:
+        spot = float(obj.get("footprint_sqm") or 0.0)
+        if spot <= 0:
+            continue
+        parts = max(1, int(_math.ceil(spot / longest - 1e-9)))
+        storeys = float(obj.get("storeys") or 1.0)
+        shown = int(_math.floor(storeys + 0.5))
+        for j in range(parts):
+            corpus = f", корпус {j + 1}" if parts > 1 else ""
+            out.append({
+                "phase": 0, "object": obj.get("key"), "object_kind": obj.get("kind"),
+                "corpus": j + 1, "corpora_in_phase": parts,
+                "area_sqm": spot / parts, "area_origin": "estimate",
+                "storeys": storeys, "storeys_shown": shown, "storeys_origin": "default",
+                "above_gns_sqm": float(obj.get("gns_sqm") or 0.0) / parts,
+                "color": LAYOUT_OBJECT_COLORS.get(str(obj.get("kind")), LAYOUT_OBJECT_COLORS["other"]),
+                "label": f"{obj.get('label')}{corpus}, {_storeys_word(shown)}",
+            })
+    return out
+
+
 def _pack_rows(corpora: list[dict[str, Any]], width: float, height: float) -> float:
     """Раскладка рядами в прямоугольник W×H; → во сколько раз корпуса пришлось уменьшить.
 
@@ -325,8 +352,9 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
 
     inner = [r for r in (inset_ring(ring, setback) for ring in rings) if len(r) >= 3]
     rect = _largest_rectangle(inner or rings)
-    corpora = _phase_corpora(phases, footprint, limit,
-                             str(massing.get("footprint_origin") or "estimate"))
+    objects = massing.get("objects") or []
+    corpora = _object_corpora(objects) + _phase_corpora(
+        phases, footprint, limit, str(massing.get("footprint_origin") or "estimate"))
     shrink = 1.0
     if rect and corpora:
         x0, y0, x1, y1 = rect
@@ -349,7 +377,10 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
                      f"поэтому очереди разделены на корпуса не выше предела. Пятно корпусов — "
                      f"{_fmt_ru(spot)} м², это больше пятна застройки в расчёте ({_fmt_ru(footprint)} м²).")
     for c in corpora:
-        name = f"Очередь {c['phase']}" if len(phases) > 1 else "Здание"
+        if c["phase"] == 0:
+            continue
+        name = (f"Очередь {c['phase']}" if len(phases) > 1 else
+                "Жилой дом" if objects else "Здание")
         corpus = f", корпус {c['corpus']}" if c["corpora_in_phase"] > 1 else ""
         c["label"] = f"{name}{corpus}, {_storeys_word(c['storeys_shown'])}"
     return {
@@ -495,7 +526,7 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
         b = buildings[i]
         x0, y0, x1, y1 = b["rect_m"]
         h = b["storeys_shown"] * LAYOUT_STOREY_HEIGHT_M
-        color = LAYOUT_PHASE_COLORS[(b["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]
+        color = b.get("color") or LAYOUT_PHASE_COLORS[(b["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]
         # Видны крыша и две стены, обращённые к зрителю: у малого x и у малого y.
         faces = (
             ("wall", [project(x0, y0, 0), project(x1, y0, 0), project(x1, y0, h), project(x0, y0, h)], 0.78),
@@ -528,7 +559,7 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
     legend = [{"number": b["number"], "phase": b["phase"], "text": b["label"],
                "line": f"{b['number']} — {b['label']}, пятно {_fmt_ru(b['area_sqm'])} м²",
                "area_sqm": b["area_sqm"],
-               "color": LAYOUT_PHASE_COLORS[(b["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]}
+               "color": b.get("color") or LAYOUT_PHASE_COLORS[(b["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]}
               for b in buildings]
     levels = int(layout.get("underground_levels") or 0)
     caption = ("Зелёное — участок без отступов, светлая полоса вдоль границ — отступ, пунктир — "
@@ -558,10 +589,18 @@ def _corpora_word(count: int) -> str:
 def site_massing_phase_lines(layout: dict[str, Any], phases_count: int) -> list[str]:
     """Корпуса по очередям одной строкой на очередь — когда схему не рисуем."""
     lines: list[str] = []
-    for phase in sorted({b["phase"] for b in layout.get("buildings") or []}):
-        own = [b for b in layout["buildings"] if b["phase"] == phase]
+    buildings = layout.get("buildings") or []
+    has_objects = any(b["phase"] == 0 for b in buildings)
+    for key in dict.fromkeys(b.get("object") for b in buildings if b["phase"] == 0):
+        own = [b for b in buildings if b["phase"] == 0 and b.get("object") == key]
+        label = own[0]["label"].split(",")[0]
+        lines.append(f"{label}: {_corpora_word(len(own))} по {_storeys_word(own[0]['storeys_shown'])}, "
+                     f"пятно {_fmt_ru(sum(b['area_sqm'] for b in own))} м²")
+    for phase in sorted({b["phase"] for b in buildings if b["phase"] > 0}):
+        own = [b for b in buildings if b["phase"] == phase]
         storeys = max(b["storeys_shown"] for b in own)
-        name = f"Очередь {phase}" if phases_count > 1 else "Здание"
+        name = (f"Очередь {phase}" if phases_count > 1 else
+                "Жилой дом" if has_objects else "Здание")
         lines.append(f"{name}: {_corpora_word(len(own))} по {_storeys_word(storeys)}, пятно "
                      f"{_fmt_ru(sum(b['area_sqm'] for b in own))} м²")
     return lines

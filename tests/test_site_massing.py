@@ -359,3 +359,50 @@ def test_the_landscaping_budget_fits_the_site_and_adds_up_by_queues():
     free = {**core.DEFAULT_INPUTS}
     assert core.landscaping_area(free, t)[0] == pytest.approx(
         free["landscaping_area_per_person_sqm"] * core.project_population(t, "msk")[0])
+
+
+
+def _with_objects(**extra):
+    """Жилой проект с школой на 2 500 мест, садом на 250 мест и офисами."""
+    x, t = _one_hectare(site_area_ha=17.811, **extra)
+    t.update({"apartments": {"gns": 300000.0, "saleable": 200000.0, "units": 3500},
+              "kindergarten": {"gns": 5000.0, "units": 250},
+              "school": {"gns": 36111.0, "units": 2500},
+              "offices": {"gns": 60000.0, "total_area": 60000.0}})
+    return x, t
+
+
+def test_the_school_the_garden_and_the_offices_stand_on_their_own_plots():
+    """Владелец 23.10.2026: школа, сад и офисы — на своих участках, жилой баланс на остатке."""
+    x, t = _with_objects()
+    m = core.site_massing(x, t)
+    by = {o["key"]: o for o in m["objects"]}
+    assert by["school"]["plot_sqm"] == pytest.approx(14.0 * 2500)
+    assert by["kindergarten"]["plot_sqm"] == pytest.approx(32.0 * 250)
+    assert (by["school"]["storeys"], by["kindergarten"]["storeys"]) == (4, 3)
+    assert by["offices"]["storeys"] == 12
+    assert by["offices"]["plot_sqm"] == pytest.approx(2 * 60000.0 / 12)
+    assert all(o["plot_origin"] == "default" for o in m["objects"])
+    assert m["residential_site_sqm"] == pytest.approx(178110 - 35000 - 8000 - 10000)
+    assert m["residential_gns_sqm"] == pytest.approx(m["above_gns_sqm"] - 5000 - 36111 - 60000)
+    assert m["average_storeys"] == pytest.approx(m["residential_gns_sqm"] / m["footprint_sqm"])
+    assert m["footprint_sqm"] <= 0.3 * m["residential_site_sqm"] + 0.5
+    assert "Школа — участок 35 000 м²" in m["summary"]
+    # Проект без жилья — отдельных зданий нет, всё наземное и есть здание.
+    office = core.site_massing(*_office())
+    assert office["objects"] == [] and office["residential_gns_sqm"] == office["above_gns_sqm"]
+
+
+def test_glavapu_plots_are_taken_for_the_same_places_and_area():
+    x, t = _with_objects()
+    x["_glavapu_import"] = {"source": {"export_date": "06.10.2026"}, "normalized": {
+        "actual_school_places": 2500, "actual_school_land_ha": 3.5,
+        "actual_kindergarten_places": 300, "actual_kindergarten_land_ha": 0.9,
+        "standalone_nonres_spp_sqm": 60000.0, "balance_public_ha": 4.401}}
+    by = {o["key"]: o for o in core.site_massing(x, t)["objects"]}
+    assert by["school"]["plot_origin"] == "glavapu"
+    assert "строка 25" in by["school"]["plot_basis"]
+    # Сад в выгрузке на другое число мест — не берётся.
+    assert by["kindergarten"]["plot_origin"] == "default"
+    assert by["offices"]["plot_sqm"] == pytest.approx(44010.0)
+    assert "строка 14" in by["offices"]["plot_basis"]

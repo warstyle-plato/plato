@@ -7,8 +7,8 @@
 `glavapuScenarioKeepTerritory` страницы на ответе сверки, а двор читается из
 ответа движка и из карточки «Пятно застройки».
 
-Предохранитель: калькулятор не принял число квартир — строка не хранится, и
-двор остаётся нашей нормой.
+Предохранитель: калькулятор не принял число квартир — строка хранится без
+числа квартир, и двор остаётся нашей нормой.
 
 Запуск: python3 -m pytest tests/test_site_massing_glavapu_yard.py -q
 """
@@ -39,6 +39,7 @@ RUN = """async (refused)=>{
  const m=(lastResult.tep||{}).site_massing||{};
  return {units:units, before:before.yard_sqm, yard:m.yard_sqm, basis:m.yard_basis||'',
          kept:!!inputs._glavapu_scenario,
+         flats:Number((inputs._glavapu_scenario||{}).flats_count||0),
          card:(document.getElementById('siteMassingBody')||{}).innerText||''};
 }"""
 
@@ -72,6 +73,8 @@ def test_the_scenario_check_row_57_becomes_the_yard(seen):
 
 
 def test_a_refused_flats_field_keeps_our_norm(seen):
+    """Калькулятор не принял число квартир — строка 57 хранится без квартир и
+    в двор не идёт."""
     got = seen[True]
-    assert not got["kept"]
+    assert got["kept"] and got["flats"] == 0
     assert got["yard"] == pytest.approx(got["before"])

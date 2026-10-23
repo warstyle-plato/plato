@@ -196,3 +196,27 @@ def test_the_landscaping_area_fits_the_site_in_the_engine_and_the_book():
         pytest.approx(m["landscaping_room_sqm"], rel=1e-9)
     assert float(evaluator.cell("CAPEX", "B24")) == pytest.approx(
         result["capex"]["landscaping"] / 1e6, rel=1e-6)
+
+
+def test_the_book_puts_the_garden_on_its_own_plot_like_the_engine():
+    """Детский сад ТЭП по умолчанию стоит на своём участке; жилой баланс книги —
+    на остатке участка, как в движке (владелец 23.10.2026)."""
+    sys.setrecursionlimit(400000)
+    openpyxl = pytest.importorskip("openpyxl")
+    from xlsx_eval import Evaluator
+
+    x = {**core.DEFAULT_INPUTS, "site_area_ha": 4.0, "project_region": "msk"}
+    t = copy.deepcopy(core.TEP_DEFAULT)
+    m = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))["tep"]["site_massing"]
+    assert m["objects_plot_sqm"] > 0 and m["residential_site_sqm"] < m["site_sqm"]
+    content, _, _ = core.build_project_workbook(x, t, [], {}, project_name="Сад")
+    book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
+    cells = _block(book, "Параметры модели")
+    evaluator = Evaluator(book)
+    got = lambda key: float(evaluator.cell("Параметры модели", cells[key]) or 0)  # noqa: E731
+    for key, engine in (("residential_site_sqm", "residential_site_sqm"),
+                        ("footprint_estimate_sqm", "footprint_estimate_sqm"),
+                        ("coverage_sqm", "coverage_sqm"), ("footprint_sqm", "footprint_sqm"),
+                        ("average_storeys", "average_storeys"),
+                        ("landscaping_room_sqm", "landscaping_room_sqm")):
+        assert got(key) == pytest.approx(m[engine], rel=1e-9), key

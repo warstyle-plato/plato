@@ -28,6 +28,7 @@
 import math as _math
 
 import mo_land_capacity as _mo_land_capacity
+import glavapu_scenario as _glavapu_scenario
 import site_massing_book as _massing_book
 
 # Выше этого здание расчёт не ставит, когда предел участка не задан
@@ -48,6 +49,33 @@ OTHER_REGION_GREEN_SHARE = 0.25
 # что `MO_NORMS_DEFAULT["parking_surface_sqm_per_space"]`); Москва и прочие —
 # экспертное умолчание (место и проезд к нему), владелец 22.10.2026.
 SURFACE_PARKING_SQM_DEFAULT = 25.0
+
+# Отдельные здания на своих участках (владелец 23.10.2026): школа, детский
+# сад и прочие нежилые здания жилого проекта не входят в жилой баланс —
+# двор, процент застройки и этажность жилья считаются на остатке участка.
+# Без данных ГлавАПУ участок на место — как у типовых зданий калькулятора
+# (выгрузка Нагатино 06.10.2026: ДОО на 250 мест — 0,8 га, школа на 2 500
+# мест — 3,5 га), этажность — экспертное умолчание.
+SOCIAL_SITE_OBJECTS: dict[str, dict[str, Any]] = {
+    "kindergarten": {"label": "Детский сад", "sqm_per_place": 32.0, "storeys": 3,
+                     "typical": "типовой детский сад калькулятора ГлавАПУ: 250 мест на 0,8 га"},
+    "school": {"label": "Школа", "sqm_per_place": 14.0, "storeys": 4,
+               "typical": "типовая школа калькулятора ГлавАПУ: 2 500 мест на 3,5 га"},
+}
+# Строки ГлавАПУ с участками соцобъектов: ключ ТЭП → (места, участок) в выгрузке.
+GLAVAPU_SOCIAL_ROWS: dict[str, tuple[str, str, str]] = {
+    "kindergarten": ("actual_kindergarten_places", "actual_kindergarten_land_ha", "строка 21"),
+    "school": ("actual_school_places", "actual_school_land_ha", "строка 25"),
+    "clinic": ("actual_clinic_capacity", "actual_clinic_land_ha", "строка 29"),
+}
+# Прочие отдельные нежилые здания (офисы, ТЦ, наземный паркинг, ФОК,
+# поликлиника без строки ГлавАПУ): этажность и участок — два пятна.
+OTHER_OBJECT_STOREYS_DEFAULT = 12
+OTHER_OBJECT_PLOT_PER_FOOTPRINT = 2.0
+# Строки ТЭП жилых домов (квартиры, кладовые, встроенная коммерция) и
+# подземные — остальное с наземной ГНС стоит отдельными зданиями.
+RESIDENTIAL_TEP_KEYS = ("apartments", "storage", "ground_commercial")
+NOT_ABOVE_TEP_KEYS = ("underground_parking",)
 
 def _massing_number(x: dict[str, Any], key: str) -> float:
     """Число поля; пустое и ноль — «по умолчанию», а не «нет величины»."""
@@ -177,6 +205,147 @@ def _glavapu_green_zhk(x: dict[str, Any], tep: dict[str, Any]) -> tuple[float, s
     return 0.0, ". ".join(reasons)
 
 
+def _object_rows(x: dict[str, Any], tep: dict[str, Any]) -> list[tuple[str, dict[str, Any], float]]:
+    """Строки ТЭП отдельных зданий жилого проекта → [(ключ, строка, наземная ГНС)].
+
+    У проекта без жилья отдельных зданий нет: всё наземное и есть здание.
+    """
+    if without_housing(x):
+        return []
+    out = []
+    for key, row in (tep or {}).items():
+        if (not isinstance(row, dict) or key in RESIDENTIAL_TEP_KEYS
+                or key in NOT_ABOVE_TEP_KEYS):
+            continue
+        gns = n(row, "gns")
+        if gns > 0:
+            out.append((key, row, gns))
+    return out
+
+
+def residential_above_gns(x: dict[str, Any], tep: dict[str, Any]) -> float:
+    """Наземная ГНС жилых домов: наземная ГНС проекта без отдельных зданий."""
+    return max(0.0, project_above_gns(tep or {}) - sum(g for _, _, g in _object_rows(x, tep)))
+
+
+def _glavapu_ha(cell: Any) -> float:
+    """Число га из строки ГлавАПУ: число, пара [га, строка] или «4,401 (24,7%)»."""
+    value = cell[0] if isinstance(cell, (list, tuple)) and cell else cell
+    if isinstance(value, str):
+        head = value.strip().split(" ")[0].replace("\u00a0", "").replace(",", ".")
+        try:
+            return max(0.0, float(head))
+        except ValueError:
+            return 0.0
+    return _glavapu_territory_value(value)
+
+
+def _glavapu_when(x: dict[str, Any]) -> str:
+    when = ((x.get("_glavapu_import") or {}).get("source") or {}).get("export_date")
+    return f"выгрузка от {when}" if when else "выгрузка (дата в файле не указана)"
+
+
+def _glavapu_social_plot(x: dict[str, Any], key: str, places: int) -> tuple[float, str]:
+    """Участок соцобъекта из ГлавАПУ, если калькулятор считал то же число мест."""
+    check = x.get("_glavapu_scenario") or {}
+    social = check.get("social_obj") or {}
+    got = int(round(_glavapu_ha(social.get(f"{key}.places"))))
+    site = _glavapu_ha(social.get(f"{key}.site"))
+    if site > 0 and got > 0 and got == places:
+        return site * 10000.0, "ГлавАПУ, сверка сценария: участок калькулятора для того же числа мест"
+    row = GLAVAPU_SOCIAL_ROWS.get(key)
+    normalized = (x.get("_glavapu_import") or {}).get("normalized") or {}
+    if row:
+        got = int(round(_glavapu_territory_value(normalized.get(row[0]))))
+        site = _glavapu_territory_value(normalized.get(row[1]))
+        if site > 0 and got > 0 and got == places:
+            return site * 10000.0, f"ГлавАПУ, {_glavapu_when(x)}, лист «ТЭП», {row[2]}"
+    return 0.0, ""
+
+
+def _glavapu_public_plots(x: dict[str, Any], gns_total: float) -> tuple[float, str]:
+    """Строка 14 ГлавАПУ «Участки общественных, производственных объектов» —
+    если калькулятор считал ту же наземную площадь отдельных нежилых зданий."""
+    if gns_total <= 0:
+        return 0.0, ""
+    check = x.get("_glavapu_scenario") or {}
+    spp = float(check.get("spp_nonres_ths") or 0.0) * 1000.0
+    plots = _glavapu_ha((check.get("balance") or {}).get("14"))
+    if plots > 0 and abs(spp - gns_total) <= 0.01 * gns_total:
+        return plots * 10000.0, "ГлавАПУ, сверка сценария, баланс территории, строка 14"
+    normalized = (x.get("_glavapu_import") or {}).get("normalized") or {}
+    spp = _glavapu_territory_value(normalized.get("standalone_nonres_spp_sqm"))
+    plots = _glavapu_territory_value(normalized.get("balance_public_ha"))
+    if plots > 0 and abs(spp - gns_total) <= 0.01 * gns_total:
+        return plots * 10000.0, f"ГлавАПУ, {_glavapu_when(x)}, лист «ТЭП», строка 14"
+    return 0.0, ""
+
+
+def site_objects(x: dict[str, Any], tep: dict[str, Any], limit: float) -> list[dict[str, Any]]:
+    """Отдельные здания жилого проекта на своих участках (владелец 23.10.2026).
+
+    Школа и детский сад — участок из ГлавАПУ (строки 21, 25 — если калькулятор
+    считал то же число мест), иначе как у типовых зданий калькулятора;
+    этажность 4 и 3. Прочие (офисы, ТЦ, наземный паркинг, ФОК, поликлиника без
+    строки ГлавАПУ) — 12 этажей, но не выше предела участка; участок — строка
+    14 ГлавАПУ, разделённая по наземной площади, иначе два пятна здания.
+    """
+    rows = _object_rows(x, tep)
+    objects: list[dict[str, Any]] = []
+    others: list[dict[str, Any]] = []
+    for key, row, gns in rows:
+        places = int(round(n(row, "units")))
+        social = SOCIAL_SITE_OBJECTS.get(key)
+        plot, plot_basis = _glavapu_social_plot(x, key, places) if key in GLAVAPU_SOCIAL_ROWS \
+            else (0.0, "")
+        if social:
+            storeys = float(min(social["storeys"], limit))
+            item = {"key": key, "label": social["label"], "kind": "social", "gns_sqm": gns,
+                    "places": places, "storeys": storeys, "storeys_origin": "default",
+                    "footprint_sqm": gns / storeys}
+            if plot > 0:
+                item.update(plot_sqm=plot, plot_origin="glavapu", plot_basis=plot_basis)
+            elif places > 0:
+                item.update(plot_sqm=places * social["sqm_per_place"], plot_origin="default",
+                            plot_basis=(f"{_norm_ru(social['sqm_per_place'])} м² на место × "
+                                        f"{places} мест — {social['typical']}"))
+            else:
+                item.update(plot_sqm=OTHER_OBJECT_PLOT_PER_FOOTPRINT * item["footprint_sqm"],
+                            plot_origin="default",
+                            plot_basis="мест в ТЭП нет, поэтому участок — два пятна здания")
+            objects.append(item)
+            continue
+        storeys = float(min(OTHER_OBJECT_STOREYS_DEFAULT, limit))
+        label = SOCIAL_SITE_OBJECTS.get(key, {}).get("label") or (
+            "Поликлиника" if key == "clinic" else _glavapu_scenario._label(tep, key))
+        item = {"key": key, "label": label, "kind": "other", "gns_sqm": gns, "places": places,
+                "storeys": storeys, "storeys_origin": "default", "footprint_sqm": gns / storeys}
+        if plot > 0:
+            item.update(plot_sqm=plot, plot_origin="glavapu", plot_basis=plot_basis)
+            objects.append(item)
+        else:
+            others.append(item)
+    others_gns = sum(o["gns_sqm"] for o in others)
+    public, public_basis = _glavapu_public_plots(x, others_gns)
+    for item in others:
+        if public > 0:
+            item.update(plot_sqm=public * item["gns_sqm"] / others_gns, plot_origin="glavapu",
+                        plot_basis=f"{public_basis}: доля по наземной площади")
+        else:
+            item.update(plot_sqm=OTHER_OBJECT_PLOT_PER_FOOTPRINT * item["footprint_sqm"],
+                        plot_origin="default",
+                        plot_basis=(f"{_fmt_ru(item['storeys'])} этажей, участок — два пятна "
+                                    "здания (застройка 50%, остальное — проезды и территория "
+                                    "у здания); экспертное умолчание"))
+        objects.append(item)
+    return objects
+
+
+def _storeys_limit(x: dict[str, Any]) -> float:
+    given = _massing_number(x, "max_storeys_allowed")
+    return given if given > 0 else float(STOREYS_LIMIT_DEFAULT)
+
+
 def landscaping_room(x: dict[str, Any], tep: dict[str, Any]) -> tuple[float, int]:
     """Сколько благоустройства помещается на участке → (м², жителей проекта).
 
@@ -195,13 +364,17 @@ def landscaping_room(x: dict[str, Any], tep: dict[str, Any]) -> tuple[float, int
     site_sqm = _massing_number(x, "site_area_ha") * 10000.0
     if site_sqm <= 0:
         return 0.0, 0
+    # Жилая территория — участок без участков отдельных зданий: у школы и сада
+    # своё благоустройство в их стоимости.
+    plots = sum(o["plot_sqm"] for o in site_objects(x, tep or {}, _storeys_limit(x)))
+    home = max(0.0, site_sqm - plots)
     drive_pct, _ = _massing_value(x, "site_driveways_pct")
     setback_m, _ = _massing_value(x, "site_setback_m")
     parking_sqm = (_massing_number(x, "surface_parking_spaces")
                    * surface_parking_sqm_per_space(x)[0])
-    yard_sqm, _ = _yard_floor(x, tep or {}, site_sqm)
-    room = max(yard_sqm, site_sqm - site_sqm * drive_pct / 100.0 - parking_sqm
-               - setback_area(site_sqm, setback_m))
+    yard_sqm, _ = _yard_floor(x, tep or {}, home)
+    room = (max(yard_sqm, home - home * drive_pct / 100.0 - parking_sqm
+                - setback_area(site_sqm, setback_m) * home / site_sqm) if home > 0 else yard_sqm)
     population, _ = project_population(tep or {}, project_region(x))
     return max(0.0, room), population
 
@@ -284,6 +457,23 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     under_sqm = underground_area_of(x, tep)
     warnings: list[str] = []
     notes: list[str] = []
+    max_storeys = _massing_number(x, "max_storeys_allowed")
+    limit = max_storeys if max_storeys > 0 else float(STOREYS_LIMIT_DEFAULT)
+
+    # Школа, детский сад и прочие отдельные здания — на своих участках
+    # (владелец 23.10.2026); жилой баланс — на остатке участка и по жилой ГНС.
+    objects = site_objects(x, tep, limit)
+    objects_plot = sum(o["plot_sqm"] for o in objects)
+    objects_gns = sum(o["gns_sqm"] for o in objects)
+    home_sqm = max(0.0, site_sqm - objects_plot)
+    home_gns = max(0.0, above_gns - objects_gns)
+    home_share = home_sqm / site_sqm if site_sqm > 0 else 0.0
+    subject = "Жилые дома" if objects else "Здание"
+    if objects and site_sqm > 0 and objects_plot >= site_sqm - 0.5:
+        warnings.append(
+            f"Участки отдельных зданий ({', '.join(o['label'].lower() for o in objects)}) "
+            f"занимают {_fmt_ru(objects_plot)} м² — весь участок ({_fmt_ru(site_sqm)} м²), и "
+            "жилым домам места не остаётся. Проверьте площадь участка и состав ТЭП.")
 
     # Двор на участке рядом со зданием — норма региона (владелец 22.10.2026):
     # благоустройство сверх нормы, которому не хватит земли рядом со зданием,
@@ -291,7 +481,7 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     # Площадь и деньги благоустройства в смете — прежние (`landscaping_area`).
     landscaping_sqm, _ = landscaping_area(x, tep)
     room_sqm, room_population = landscaping_room(x, tep)
-    yard_sqm, floor_basis = _yard_floor(x, tep, site_sqm)
+    yard_sqm, floor_basis = _yard_floor(x, tep, home_sqm)
     if yard_sqm > 0:
         yard_basis = f"Норма региона: {floor_basis}."
     elif without_housing(x):
@@ -308,13 +498,14 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     markup2, _ = _massing_value(x, "underground_level2_markup_pct")
     markup3, _ = _massing_value(x, "underground_level3_markup_pct")
 
-    drive_sqm = site_sqm * drive_pct / 100.0
+    drive_sqm = home_sqm * drive_pct / 100.0
     parking_sqm = spaces * per_space
     setbacks_sqm = setback_area(site_sqm, setback_m)
-    estimate = site_sqm - yard_sqm - drive_sqm - parking_sqm - setbacks_sqm
+    # Полоса отступа идёт по границе всего участка; жилой территории достаётся
+    # её доля.
+    home_setbacks = setbacks_sqm * home_share
+    estimate = home_sqm - yard_sqm - drive_sqm - parking_sqm - home_setbacks
 
-    max_storeys = _massing_number(x, "max_storeys_allowed")
-    limit = max_storeys if max_storeys > 0 else float(STOREYS_LIMIT_DEFAULT)
     room = max(0.0, estimate)
     # Остаток участка — наибольшее возможное пятно, а не пятно: жилой дом
     # обычно занимает процент застройки из градплана или ПЗЗ (без него — 30 %).
@@ -327,31 +518,36 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         coverage_pct, coverage_origin = 0.0, "none"
     else:
         coverage_pct, coverage_origin = COVERAGE_PCT_DEFAULT, "default"
-    coverage_sqm = site_sqm * coverage_pct / 100.0 if coverage_pct > 0 else site_sqm
+    coverage_sqm = home_sqm * coverage_pct / 100.0 if coverage_pct > 0 else home_sqm
     base = min(room, coverage_sqm)
     manual_footprint = _massing_number(x, "building_footprint_sqm")
     shortage = 0.0
     if manual_footprint > 0:
         footprint, footprint_origin = manual_footprint, "manual"
         shortage = max(0.0, footprint - room) if site_sqm > 0 else 0.0
+        if objects:
+            notes.append("Пятно, заданное вручную, — пятно жилых домов: школа, детский сад и "
+                         "другие отдельные здания стоят на своих участках.")
         if shortage > 0.5:
             warnings.append(
                 f"Пятно застройки, заданное вручную ({_fmt_ru(footprint)} м²), больше места, "
                 f"которое остаётся на участке после двора по норме, проездов, открытых стоянок "
                 f"и отступов ({_fmt_ru(room)} м²): не хватает {_fmt_ru(shortage)} м², и двор по "
                 "норме на участке не помещается. Уменьшите пятно, проезды или отступы.")
-    elif site_sqm > 0 and above_gns > 0 and (base <= 0 or above_gns / base > limit + 1e-9):
+    elif site_sqm > 0 and home_gns > 0 and (base <= 0 or home_gns / base > limit + 1e-9):
         # Остаток участка дал бы здание выше предела (51 этаж на гектаре —
         # не ответ): пятно — по пределу, нехватка земли названа числом.
-        footprint, footprint_origin = above_gns / limit, "limit"
+        footprint, footprint_origin = home_gns / limit, "limit"
         shortage = max(0.0, footprint - room)
         cap = (f"на участке разрешено не выше {_fmt_ru(limit)} этажей" if max_storeys > 0 else
                f"выше {_fmt_ru(limit)} этажей расчёт здание не ставит: предельная этажность "
                "участка не задана")
         if shortage > 0:
-            tall = (f"Здание с наземной площадью {_fmt_ru(above_gns)} м² встало бы на него в "
-                    f"{_fmt_ru(above_gns / room, 1)} этажа, а " if room > 0 else
-                    f"Здание с наземной площадью {_fmt_ru(above_gns)} м² ставить некуда, а ")
+            tall = (f"{subject} с наземной площадью {_fmt_ru(home_gns)} м² встали бы на него в "
+                    f"{_fmt_ru(home_gns / room, 1)} этажа, а " if room > 0 and objects else
+                    f"{subject} с наземной площадью {_fmt_ru(home_gns)} м² встало бы на него в "
+                    f"{_fmt_ru(home_gns / room, 1)} этажа, а " if room > 0 else
+                    f"{subject} с наземной площадью {_fmt_ru(home_gns)} м² ставить некуда, а ")
             warnings.append(
                 f"На участке после двора, проездов, открытых стоянок и отступов под здание "
                 f"остаётся {_fmt_ru(room)} м². {tall}{cap}. Поэтому пятно взято по пределу — "
@@ -361,9 +557,11 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         else:
             warnings.append(
                 f"При проценте застройки {_fmt_ru(coverage_pct)}% под здание идёт "
-                f"{_fmt_ru(coverage_sqm)} м², и здание с наземной площадью {_fmt_ru(above_gns)} м² "
-                f"было бы выше предела, а {cap}. Поэтому пятно взято по пределу — "
-                f"{_fmt_ru(footprint)} м², это {_fmt_ru(footprint / site_sqm * 100)}% участка. "
+                f"{_fmt_ru(coverage_sqm)} м², и {subject.lower()} с наземной площадью "
+                f"{_fmt_ru(home_gns)} м² были бы выше предела, а {cap}. Поэтому пятно взято по "
+                f"пределу — {_fmt_ru(footprint)} м², это "
+                f"{_fmt_ru(footprint / max(home_sqm, 1.0) * 100)}% "
+                f"{'жилой территории' if objects else 'участка'}. "
                 "Место на участке для этого есть, но процент застройки выше "
                 f"{'заданного' if given_coverage > 0 else 'обычного'}: проверьте его по "
                 "градплану или уменьшите площадь здания.")
@@ -380,7 +578,7 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     # Земля участка без здания, проездов, стоянок и отступов — на ней двор по
     # норме и благоустройство сверх неё. Что не помещается сверх нормы — на
     # кровлю стилобата; не помещается сама норма — это нехватка выше.
-    ground_sqm = max(0.0, site_sqm - footprint - drive_sqm - parking_sqm - setbacks_sqm)
+    ground_sqm = max(0.0, home_sqm - footprint - drive_sqm - parking_sqm - home_setbacks)
     yard_roof_sqm = max(0.0, landscaping_sqm - max(ground_sqm, yard_sqm))
     if yard_sqm > 0 and yard_roof_sqm > 0.5:
         yard_basis += (f" Всё благоустройство проекта ({_fmt_ru(landscaping_sqm)} м²) рядом со "
@@ -390,12 +588,12 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         yard_basis += (f" Всё благоустройство проекта ({_fmt_ru(landscaping_sqm)} м²) помещается "
                        f"на участке рядом со зданием: для него там {_fmt_ru(ground_sqm)} м².")
 
-    storeys = _mo_land_capacity.average_storeys(above_gns, footprint) if footprint > 0 else 0.0
+    storeys = _mo_land_capacity.average_storeys(home_gns, footprint) if footprint > 0 else 0.0
     if max_storeys > 0 and storeys > max_storeys + 1e-9:
         warnings.append(
             f"Средняя этажность по расчёту — {_fmt_ru(storeys, 1)}, а на участке разрешено "
-            f"не выше {_fmt_ru(max_storeys)} этажей. Здание с наземной площадью "
-            f"{_fmt_ru(above_gns)} м² на этом участке не помещается: уменьшите площадь "
+            f"не выше {_fmt_ru(max_storeys)} этажей. {subject} с наземной площадью "
+            f"{_fmt_ru(home_gns)} м² на этом участке не помещается: уменьшите площадь "
             "здания или проверьте допущения по пятну застройки.")
     elif max_storeys <= 0 and storeys > 0:
         notes.append(f"Предельная этажность участка не задана, поэтому расчёт не ставит здание "
@@ -442,6 +640,13 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     return {
         "site_sqm": site_sqm,
         "above_gns_sqm": above_gns,
+        # Отдельные здания на своих участках и жилой баланс на остатке.
+        "objects": objects,
+        "objects_plot_sqm": objects_plot,
+        "objects_gns_sqm": objects_gns,
+        "residential_site_sqm": home_sqm,
+        "residential_gns_sqm": home_gns,
+        "residential_setbacks_sqm": home_setbacks,
         "yard_sqm": yard_sqm,
         "yard_basis": yard_basis,
         "landscaping_sqm": landscaping_sqm,
@@ -466,7 +671,8 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "coverage_pct": coverage_pct,
         "coverage_origin": coverage_origin,
         "coverage_sqm": coverage_sqm,
-        "footprint_share": footprint / site_sqm if site_sqm > 0 else 0.0,
+        # Доля жилой территории (у проекта без отдельных зданий — участка).
+        "footprint_share": footprint / home_sqm if home_sqm > 0 else 0.0,
         "average_storeys": storeys,
         "max_storeys_allowed": max_storeys,
         "storeys_limit": limit,
@@ -485,9 +691,9 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "warnings": warnings,
         "notes": notes,
         "summary": site_massing_line({
-            "footprint_sqm": footprint, "site_sqm": site_sqm,
+            "footprint_sqm": footprint, "site_sqm": home_sqm,
             "average_storeys": storeys, "underground_sqm": under_sqm,
-            "underground_levels": levels}),
+            "underground_levels": levels, "objects": objects}),
     }
 
 
@@ -502,7 +708,14 @@ def site_massing_line(m: dict[str, Any]) -> str:
     words = {1: "одном уровне", 2: "двух уровнях", 3: "трёх уровнях", 4: "четырёх уровнях"}
     tail = (f", подземная часть {_fmt_ru(under)} м² на "
             f"{words.get(levels, f'{levels} уровнях')}" if levels > 0 and under > 0 else "")
-    return (f"Здание: пятно застройки около {_fmt_ru(footprint)} м² "
-            f"({_fmt_ru(footprint / site * 100)}% участка), средняя этажность около "
-            f"{_fmt_ru(float(m.get('average_storeys') or 0.0), 1)}{tail}. "
-            "Это оценка по балансу территории, а не проект.")
+    objects = m.get("objects") or []
+    head = ("Жилые дома: пятно застройки около {fp} м² ({share}% жилой территории)"
+            if objects else "Здание: пятно застройки около {fp} м² ({share}% участка)")
+    rest = (". " + "; ".join(f"{o['label']} — участок {_fmt_ru(o['plot_sqm'])} м², "
+                              f"{_fmt_ru(o['storeys'])} этажа" if o["storeys"] < 5 else
+                              f"{o['label']} — участок {_fmt_ru(o['plot_sqm'])} м², "
+                              f"{_fmt_ru(o['storeys'])} этажей" for o in objects)
+            if objects else "")
+    return (head.format(fp=_fmt_ru(footprint), share=_fmt_ru(footprint / site * 100))
+            + f", средняя этажность около {_fmt_ru(float(m.get('average_storeys') or 0.0), 1)}"
+            f"{tail}{rest}. Это оценка по балансу территории, а не проект.")

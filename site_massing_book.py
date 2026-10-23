@@ -30,12 +30,13 @@ COVERAGE_PCT_DEFAULT = 30.0
 # (ключ, подпись, вид). Порядок — порядок строк в книге.
 ROWS: tuple[tuple[str, str, str], ...] = (
     ("site_sqm", "Площадь участка, м²", INPUT),
+    ("objects_plot_sqm", "Участки школы, детского сада и отдельных нежилых зданий, м²", INPUT),
     ("yard_sqm", "Двор на участке по норме региона, м²", INPUT),
     ("driveways_pct", "Проезды, тротуары и пожарные проезды, % участка", INPUT),
     ("setback_m", "Отступ от границ участка, м", INPUT),
     ("surface_parking_sqm", "Открытые стоянки, м² земли", INPUT),
     ("footprint_manual_sqm", "Пятно застройки вручную, м² (0 — оценка)", INPUT),
-    ("above_gns_sqm", "Наземная ГНС проекта, м²", INPUT),
+    ("above_gns_sqm", "Наземная ГНС жилых домов, м² (без отдельных зданий)", INPUT),
     ("underground_sqm", "Площадь подземной части, м²", INPUT),
     ("use_factor", "Полезная часть подземного контура, доля", INPUT),
     ("levels_manual", "Подземных уровней вручную (0 — по расчёту)", INPUT),
@@ -45,6 +46,8 @@ ROWS: tuple[tuple[str, str, str], ...] = (
     ("max_storeys", "Предельная этажность участка (0 — не задана)", INPUT),
     ("coverage_pct", "Процент застройки участка, % (0 — без ограничения)", INPUT),
     ("setbacks_sqm", "Отступы, м² (полоса по периметру квадрата той же площади)", FORMULA),
+    ("residential_site_sqm", "Жилая территория (участок без участков отдельных зданий), м²",
+     FORMULA),
     ("footprint_estimate_sqm", "Пятно застройки — оценка по балансу, м²", FORMULA),
     ("coverage_sqm", "Пятно по проценту застройки, м²", FORMULA),
     ("landscaping_room_sqm", "Помещается благоустройства (без проездов, стоянок и отступов, "
@@ -86,7 +89,8 @@ BOOK_KEYS: dict[str, str] = {
     key: ENGINE_FIELDS.get(key, f"massing_{key}") for key, _, kind in ROWS if kind == INPUT}
 # Служебные ключи книги, чьи вводные — метры.
 PERCENT_KEYS = tuple(f"massing_{key}" for key in PERCENT_FIELDS)
-AREA_KEYS = ("massing_site_sqm", "massing_yard_sqm", "massing_surface_parking_sqm",
+AREA_KEYS = ("massing_site_sqm", "massing_objects_plot_sqm", "massing_yard_sqm",
+             "massing_surface_parking_sqm",
              "massing_above_gns_sqm", "massing_underground_sqm")
 
 YES = "Да"
@@ -97,23 +101,27 @@ def formulas(ref: Callable[[str], str]) -> dict[str, str]:
     """Формулы расчётных строк (без «=») через ссылки `ref(key)`."""
     r = ref
     cap = f"IF({r('max_storeys')}>0,{r('max_storeys')},{STOREYS_LIMIT_DEFAULT})"
+    # Жилой баланс — на жилой территории; полоса отступа — её доля.
+    home = r("residential_site_sqm")
+    home_setbacks = f"{r('setbacks_sqm')}*{home}/MAX({r('site_sqm')},0.000001)"
     # Пятно — меньшее из процента застройки и остатка участка, но не меньше
     # наземной ГНС ÷ предел этажности.
     base = f"MIN({r('coverage_sqm')},{r('footprint_estimate_sqm')})"
     return {
         "setbacks_sqm": (f"IF(AND({r('site_sqm')}>0,{r('setback_m')}>0),{r('site_sqm')}"
                          f"-MAX(0,SQRT({r('site_sqm')})-2*{r('setback_m')})^2,0)"),
-        "footprint_estimate_sqm": (f"MAX(0,{r('site_sqm')}-{r('yard_sqm')}"
-                                   f"-{r('site_sqm')}*{r('driveways_pct')}/100"
-                                   f"-{r('surface_parking_sqm')}-{r('setbacks_sqm')})"),
+        "residential_site_sqm": f"MAX(0,{r('site_sqm')}-{r('objects_plot_sqm')})",
+        "footprint_estimate_sqm": (f"MAX(0,{home}-{r('yard_sqm')}"
+                                   f"-{home}*{r('driveways_pct')}/100"
+                                   f"-{r('surface_parking_sqm')}-{home_setbacks})"),
         # Остаток участка дал бы здание выше предела (без предела — порог) —
         # пятно по пределу.
         # Потолок площади благоустройства в смете — не меньше двора по норме.
-        "landscaping_room_sqm": (f"IF({r('site_sqm')}>0,MAX({r('yard_sqm')},{r('site_sqm')}"
-                                 f"-{r('site_sqm')}*{r('driveways_pct')}/100"
-                                 f"-{r('surface_parking_sqm')}-{r('setbacks_sqm')}),0)"),
-        "coverage_sqm": (f"IF({r('coverage_pct')}>0,{r('site_sqm')}*{r('coverage_pct')}/100,"
-                         f"{r('site_sqm')})"),
+        "landscaping_room_sqm": (f"IF({r('site_sqm')}>0,MAX({r('yard_sqm')},{home}"
+                                 f"-{home}*{r('driveways_pct')}/100"
+                                 f"-{r('surface_parking_sqm')}-{home_setbacks}),0)"),
+        "coverage_sqm": (f"IF({r('coverage_pct')}>0,{home}*{r('coverage_pct')}/100,"
+                         f"{home})"),
         "footprint_sqm": (f"IF({r('footprint_manual_sqm')}>0,{r('footprint_manual_sqm')},"
                           f"IF(AND({r('site_sqm')}>0,{r('above_gns_sqm')}>0,"
                           f"OR({base}<=0,{r('above_gns_sqm')}"
@@ -166,7 +174,9 @@ def input_values(massing: dict, inputs: dict) -> dict[str, object]:
         "setback_m": float(massing.get("setback_m") or 0.0),
         "surface_parking_sqm": float(massing.get("surface_parking_sqm") or 0.0),
         "footprint_manual_sqm": max(0.0, num("building_footprint_sqm")),
-        "above_gns_sqm": float(massing.get("above_gns_sqm") or 0.0),
+        "objects_plot_sqm": float(massing.get("objects_plot_sqm") or 0.0),
+        "above_gns_sqm": float(massing.get("residential_gns_sqm",
+                                           massing.get("above_gns_sqm")) or 0.0),
         "underground_sqm": float(massing.get("underground_sqm") or 0.0),
         "use_factor": float(massing.get("underground_use_factor") or 0.0),
         "levels_manual": float(int(max(0.0, num("underground_levels")))),

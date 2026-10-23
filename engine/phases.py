@@ -1400,13 +1400,14 @@ PHASE_ADDITIVE_TEP_FIELDS: tuple[str, ...] = (
 def _consolidated_site_massing(master_inputs: dict[str, Any],
                                phase_items: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Пятно и уровни — проекта (очереди несут один и тот же расчёт), а
-    объёмная схема — по очередям: пятно очереди пропорционально её наземной ГНС."""
+    объёмная схема — по очередям: пятно очереди пропорционально её наземной ГНС
+    жилых домов; школа, сад и отдельные здания — своими корпусами."""
     massing = next((item["result"]["tep"].get("site_massing") for item in phase_items
                     if item["result"]["tep"].get("site_massing")), None)
     if not massing:
         return None
     phases = [{"phase": int(item.get("index") or i + 1), "name": str(item.get("name") or ""),
-               "above_gns_sqm": project_above_gns(item.get("tep") or {})}
+               "above_gns_sqm": residential_above_gns(master_inputs, item.get("tep") or {})}
               for i, item in enumerate(phase_items)]
     return {**massing, "scheme": site_massing_scheme(master_inputs, massing, phases)}
 

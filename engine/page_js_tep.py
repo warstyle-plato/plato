@@ -1404,6 +1404,14 @@ function renderSiteMassing(){
  const site=Number(m.site_sqm||0);
  const rows=[];
  rows.push(row('Площадь участка',sq(site),'Из карточки «Участок и плотность».'));
+ // Школа, детский сад и отдельные нежилые здания — на своих участках; жилой
+ // баланс ниже считается на остатке (`site_massing.objects`).
+ const objects=m.objects||[];
+ const floors=v=>{const k=Math.round(Number(v||0));return k+' '+(k%10===1&&k%100!==11?'этаж':(k%10>=2&&k%10<=4&&(k%100<12||k%100>14))?'этажа':'этажей')};
+ objects.forEach(o=>rows.push(row('− '+o.label+' на своём участке',sq(o.plot_sqm),
+  floors(o.storeys)+', пятно '+sq(o.footprint_sqm)+'. Участок: '+o.plot_basis+'.')));
+ if(objects.length)rows.push(row('Жилая территория',sq(m.residential_site_sqm),
+  'Участок без участков отдельных зданий. Двор, проезды, отступы и пятно жилых домов ниже — на ней.',true));
  rows.push(row('− Двор рядом со зданием по норме',sq(m.yard_sqm),m.yard_basis));
  if(Number(m.yard_roof_sqm||0)>0.5)rows.push(row('Благоустройство на кровле стилобата',sq(m.yard_roof_sqm),
   'Благоустройство проекта в смете — '+sq(m.landscaping_sqm)+', а на участке рядом со зданием для него '+sq(m.yard_ground_sqm)+'. Разница может быть на кровле стилобата.'));
@@ -1411,16 +1419,19 @@ function renderSiteMassing(){
   'Это '+num(m.driveways_pct)+'% участка. Доля — экспертная оценка: в нормативах её нет.'));
  rows.push(row('− Открытые стоянки',sq(m.surface_parking_sqm),
   'Машино-мест на земле: '+num(m.surface_parking_spaces)+'. На одно место нужно '+num(m.surface_parking_sqm_per_space)+' м² ('+m.surface_parking_basis+').'));
- rows.push(row('− Отступы от границ участка',sq(m.setbacks_sqm),'Полоса шириной '+num(m.setback_m)+' м вдоль границ участка.'));
+ rows.push(row('− Отступы от границ участка',sq(objects.length?m.residential_setbacks_sqm:m.setbacks_sqm),
+  'Полоса шириной '+num(m.setback_m)+' м вдоль границ участка.'+(objects.length?' Жилой территории достаётся её доля.':'')));
  rows.push(row('Свободно под здание после двора, проездов и отступов',sq(m.footprint_estimate_sqm),
   'Это наибольшее возможное пятно. '+(m.coverage_origin==='none'?'Процент застройки не задан: у нежилого проекта пятно — всё свободное место.':
    'Процент застройки — '+num(m.coverage_pct)+'%'+(m.coverage_origin==='manual'?', задан в проекте.':', обычное значение для жилья, если градплан не задаёт другое.'))));
- rows.push(row('Пятно застройки',sq(m.footprint_sqm)+(site>0?', это '+pct(m.footprint_share)+' участка':''),
+ rows.push(row(objects.length?'Пятно жилых домов':'Пятно застройки',
+  sq(m.footprint_sqm)+(site>0?', это '+pct(m.footprint_share)+(objects.length?' жилой территории':' участка'):''),
   siteMassingOrigin(m.footprint_origin),true));
  if(Number(m.footprint_shortage_sqm||0)>0.5)rows.push(row('Не хватает земли под пятно',sq(m.footprint_shortage_sqm),
   'Пятно больше места, которое остаётся после двора по норме, проездов и отступов: на столько двор по норме не помещается. Подробности — в красной плашке выше.'));
  rows.push(row('Средняя этажность',Number(m.average_storeys||0)>0?'≈ '+Number(m.average_storeys).toLocaleString('ru-RU',{maximumFractionDigits:1}):'—',
-  'Наземная площадь здания ('+sq(m.above_gns_sqm)+'), делённая на пятно застройки.',true));
+  (objects.length?'Наземная площадь жилых домов ('+sq(m.residential_gns_sqm)+'), делённая на их пятно.':
+   'Наземная площадь здания ('+sq(m.above_gns_sqm)+'), делённая на пятно застройки.'),true));
  rows.push(row('Подземный контур',sq(m.underground_contour_sqm),'Участок без отступов. Под машино-места идёт '+
   num(Math.round(Number(m.underground_use_factor||0)*100))+'% этой площади, остальное — стены, лестницы и шахты.'));
  rows.push(row('Площадь подземной части',sq(m.underground_sqm),'Паркинг с рампами и проездами и подземные кладовые из ТЭП.'));

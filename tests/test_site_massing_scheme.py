@@ -101,13 +101,18 @@ def test_the_underground_levels_are_drawn_with_their_areas():
 def test_a_big_site_with_three_phases_and_a_limit_of_17_gets_more_corpora_than_phases():
     bundle = _big_site_three_phases()
     m = bundle["consolidated"]["tep"]["site_massing"]
-    buildings = m["scheme"]["layout"]["buildings"]
+    every = m["scheme"]["layout"]["buildings"]
+    # Детский сад ТЭП по умолчанию — отдельным зданием на своём участке.
+    garden = [b for b in every if b["phase"] == 0]
+    assert [b["label"] for b in garden] == ["Детский сад, 3 этажа"]
+    buildings = [b for b in every if b["phase"] > 0]
     assert {b["phase"] for b in buildings} == {1, 2, 3}
     assert len(buildings) > 3
     assert all(b["storeys_shown"] <= 17 for b in buildings)
-    # Пятно очереди — пропорционально её наземной ГНС; этажность не выше предела.
+    # Пятно очереди — пропорционально её наземной ГНС жилых домов; этажность не
+    # выше предела.
     for item in bundle["phases"]:
-        gns = core.project_above_gns(item["tep"])
+        gns = core.residential_above_gns(item["inputs"], item["tep"])
         own = [b for b in buildings if b["phase"] == item["index"]]
         assert sum(b["area_sqm"] * b["storeys"] for b in own) == pytest.approx(gns)
     assert all(b["label"].startswith(f"Очередь {b['phase']}, корпус ") for b in buildings)

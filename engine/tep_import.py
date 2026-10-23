@@ -340,6 +340,7 @@ _GLAVAPU_SOURCE_ROWS: dict[str, tuple[str, str]] = {
     "standalone_nonres_np_sqm": ("ТЭП", "строка 9.2.1"),
     "apartment_area_sqm": ("ТЭП", "строка 10"),
     "green_zhk_ha": ("ТЭП", "строка 57 «Озеленённые территории ЖК»"),
+    "balance_public_ha": ("ТЭП", "строка 14 «Участки общественных, производственных объектов»"),
     "nonresidential_aboveground_sqm": ("ТЭП", "строка 11"),
     "actual_kindergarten_places": ("ТЭП", "строка 18"),
     "actual_kindergarten_spp_sqm": ("ТЭП", "строка 19"),
@@ -470,6 +471,9 @@ def parse_glavapu_xlsx(data: bytes, filename: str = "") -> dict[str, Any]:
         # Двор по норме у калькулятора: 5 м² на его жителя (квартиры × 2,1).
         # Пятно застройки берёт большее из него и своей нормы (`site_massing`).
         "green_zhk_ha": _green_zhk_ha(all_rows),
+        # Баланс территории, строка 14 — участки отдельных нежилых зданий
+        # (офисы, торговля): пятно застройки ставит их на свои участки.
+        "balance_public_ha": _find_named_num(all_rows, "Участки общественных"),
 
         # Optional DevelopAid extension rows used by server project presets.
         # Read ONLY by semantic label. Codes 57–64 exist in standard ГлавАПУ files

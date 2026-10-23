@@ -78,7 +78,9 @@ def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
         "surface_parking_sqm": (f"мест на земле × земля на место (surface_parking_spaces × "
                                 f"surface_parking_sqm_per_space); "
                                 f"{massing.get('surface_parking_basis') or ''}"),
-        "above_gns_sqm": "из ТЭП проекта",
+        "above_gns_sqm": "из ТЭП проекта: наземная ГНС без школы, детского сада и отдельных зданий",
+        "objects_plot_sqm": "; ".join(f"{o['label']}: {o['plot_basis']}"
+                                      for o in massing.get("objects") or []) or "отдельных зданий нет",
         "underground_sqm": "паркинг с рампами и проездами, подземные кладовые и гаражи объектов",
         "markup2_pct": "поле underground_level2_markup_pct; экспертная оценка, согласована владельцем",
         "markup3_pct": "поле underground_level3_markup_pct; экспертная оценка, согласована владельцем",
