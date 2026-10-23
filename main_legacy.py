@@ -95,6 +95,7 @@ import v4_dashboard
 import v4_entry_sheet
 import v4_nonres_sheet
 import nonres_workbook
+import office_workbook
 import hotel_workbook
 import v4_value_cache
 import presentation as _presentation

@@ -73,6 +73,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             "key": obj.key, "prefix": obj.prefix, "title": obj.tep_label or obj.label,
             "measure": obj.measure,
             "volume": n(x, f"{obj.prefix}_spaces") if obj.measure == "spaces" else n(x, f"{obj.prefix}_gba_sqm"),
+            "total_area": n(row, "total_area"),
             "rate_cost": n(x, obj.rate_cost),
             "garage": bool(obj.garage), "under_gns": n(row, "under_gns") if obj.garage else 0.0,
             # Что включает ставка — тот же предикат, что у движка.
@@ -277,8 +278,27 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     if phased:
         spec["missing"].append("Очереди: книга моделирует проект одной очередью, "
                                "сверка идёт со сводом очередей")
-    content = nonres_workbook.build(consolidated, spec)
     stem = _safe_file_stem(project_name or "project", "project")
+    # Офис без объектов по ДДУ — книга офиса на каркасе жилой v4 с двумя путями
+    # (`office_workbook`, образец владельца 22.10.2026). Проект с ДДУ и
+    # нежилой без офиса остаются на прежней книге (решение владельца 23.10.2026).
+    office_keys = {obj.key for obj in STANDALONE_OBJECTS if obj.product == "offices"}
+    if (consolidated.get("office_paths")
+            and not any(item.get("ddu") for item in spec["objects"])
+            and any(item.get("nonres") and item["key"] in office_keys for item in spec["objects"])):
+        content, report = office_workbook.build(consolidated, spec, office_keys)
+        missing = list(report["missing"])
+        if report["verdict"] != office_workbook.PASSED:
+            missing.append("ПРОВЕРКИ книги офиса: расхождения с движком — "
+                           + "; ".join(report["mismatches"][:8]))
+        if report["unresolved"]:
+            missing.append(f"Книга офиса: {report['unresolved']} формул без сохранённого значения — "
+                           + "; ".join(report["unresolved_examples"]))
+        filename = f"DevelopAid_нежилой_офис_{stem}_{date.today().isoformat()}.xlsx"
+        return content, filename, {"missing": missing, "phased": phased, "class_deviations": [],
+                                   "nonres_book": True, "office_book": True,
+                                   "checks": report["verdict"]}
+    content = nonres_workbook.build(consolidated, spec)
     filename = f"DevelopAid_нежилой_{stem}_{date.today().isoformat()}.xlsx"
     return content, filename, {"missing": list(spec["missing"]), "phased": phased,
                                "class_deviations": [], "nonres_book": True}
@@ -311,6 +331,8 @@ def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
 def workbook_label(meta: dict[str, Any]) -> str:
     if meta.get("hotel_book"):
         return "Книга гостиницы"
+    if meta.get("office_book"):
+        return "Книга офисного проекта"
     if meta.get("nonres_book"):
         return "Книга нежилого проекта"
     return "Книга v4"
