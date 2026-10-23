@@ -16,7 +16,11 @@
   повтор того же платежа права не продлевает (`access_grant(payment_id=...)`);
 - права выдаются там, где они лежат, — на ядре (`/internal/access/grant`);
 - оплата включается, только когда заданы ключи И вписаны оферта и политика
-  возврата (`docs/legal/offer.md`, `refund.md`): продавать без договора нельзя.
+  возврата (`docs/legal/offer.md`, `refund.md`): продавать без договора нельзя;
+- пакет «несколько участков вперёд» (решение владельца 23.10.2026): `count`
+  участков по цене участка каждый, чек — одна позиция `quantity=count` по цене
+  за единицу; текущий участок открывается сразу, остальные ложатся в запас
+  (`access_grant(reserve=...)`), а без текущего участка — весь пакет в запас.
 
 Предмет расчёта — право использования программы для ЭВМ (простая
 неисключительная лицензия на срок); реквизиты программы — `product_info()`.
@@ -45,6 +49,8 @@ _YOOKASSA_TIMEOUT = 30.0
 _LEGAL_DIR = Path(__file__).resolve().parent / "docs" / "legal"
 _LEGAL_PLACEHOLDER = "ЗАГОТОВКА:"
 _PAYMENT_EMAIL_RE = re.compile(r"[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s.]{2,24}")
+# Сколько участков можно оплатить вперёд одним платежом (решение владельца 23.10.2026).
+_PAYMENT_MAX_PLOTS = 10
 
 
 # --- реквизиты продукта и юридические тексты --------------------------------
@@ -137,22 +143,44 @@ def _payments_refuse() -> None:
                     "нам в бот — администратор откроет участок."))
 
 
-def payment_offer_item(kind: str, plot: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Что продаётся: цена, срок и назначение платежа — одно для экрана, счёта и чека."""
+def payment_count(value: Any) -> int:
+    """Сколько участков в заказе: 1–`_PAYMENT_MAX_PLOTS`; пусто — один."""
+    try:
+        count = 1 if value is None or value == "" else int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail="Укажите, сколько участков оплатить: число от 1 до 10.")
+    if not 1 <= count <= _PAYMENT_MAX_PLOTS:
+        raise HTTPException(status_code=400,
+                            detail=f"За один раз можно оплатить от 1 до {_PAYMENT_MAX_PLOTS} участков.")
+    return count
+
+
+def payment_offer_item(kind: str, plot: dict[str, Any] | None = None,
+                       count: int = 1) -> dict[str, Any]:
+    """Что продаётся: цена, срок и назначение платежа — одно для экрана, счёта и чека.
+
+    `count` > 1 — пакет «несколько участков вперёд»: цена без скидки, `count` ×
+    цена участка; `unit_price_rub` — цена за единицу для строки чека."""
     terms = access_terms()
     name = product_info().get("short_name") or "DevelopAid"
+    count = payment_count(count) if kind != "subscription" else 1
     if kind == "subscription":
-        price, days = terms["subscription_price_rub"], terms["subscription_days"]
+        unit, days = terms["subscription_price_rub"], terms["subscription_days"]
         what = f"подписка на {days} дней"
+    elif count > 1:
+        unit, days = terms["plot_price_rub"], terms["plot_days"]
+        what = f"доступ к {count} участкам, {days} дней на каждый"
     else:
-        price, days = terms["plot_price_rub"], terms["plot_days"]
+        unit, days = terms["plot_price_rub"], terms["plot_days"]
         what = f"участок {((plot or {}).get('label') or '')[:40]} на {days} дней"
     # Назначение платежа и строка чека — не длиннее 128 знаков (документация ЮKassa).
     description = f"Право использования программы для ЭВМ {name} (неискл. лицензия): {what}"[:128]
     vat = ""
     if terms["vat_pct"] and terms["vat_included"]:
         vat = f"в том числе НДС {terms['vat_pct']} %"
-    return {"kind": "subscription" if kind == "subscription" else "plot", "price_rub": price,
+    return {"kind": "subscription" if kind == "subscription" else "plot",
+            "price_rub": unit * count, "unit_price_rub": unit, "count": count,
             "days": days, "description": description, "vat_note": vat}
 
 
@@ -188,33 +216,38 @@ def _yookassa_call(method: str, path: str, body: dict[str, Any] | None = None,
 
 
 def payment_create(chat: int, kind: str, plot: dict[str, Any] | None, email: str,
-                   return_url: str, test: bool = False) -> dict[str, Any]:
+                   return_url: str, test: bool = False, count: int = 1) -> dict[str, Any]:
     """Создать платёж. Права не выдаёт: их выдаст подтверждённый платёж.
-    `test` — тестовый магазин для демо-доступа: денег нет, договор не нужен."""
+    `test` — тестовый магазин для демо-доступа: денег нет, договор не нужен.
+    `count` > 1 — пакет участков вперёд: без текущего участка весь пакет — в запас."""
     if not test:
         _payments_refuse()
     email = str(email or "").strip()
     if not _PAYMENT_EMAIL_RE.fullmatch(email):
         raise HTTPException(status_code=400,
                             detail="Укажите адрес электронной почты: на него придёт чек об оплате.")
-    item = payment_offer_item(kind, plot)
+    item = payment_offer_item(kind, plot, count)
     metadata = {"chat": str(int(chat)), "kind": item["kind"], "days": str(item["days"]),
-                "price": str(item["price_rub"])}
+                "price": str(item["price_rub"]), "count": str(item["count"])}
     if test:
         metadata["demo"] = "1"
     if item["kind"] == "plot":
-        if not plot or not plot.get("key"):
+        if plot and plot.get("key"):
+            metadata.update({"plot_kind": plot["kind"], "plot_key": plot["key"][:500],
+                             "plot_label": str(plot.get("label") or "")[:200]})
+            if len(plot["key"]) > 500:
+                raise HTTPException(status_code=400,
+                                    detail="В участке слишком много кадастровых номеров для одного платежа.")
+        elif item["count"] == 1:
             raise HTTPException(
                 status_code=400,
                 detail=("Не понятно, за какой участок платить: укажите кадастровый номер на "
-                        "вкладке «Участок» или загрузите ТЭП проекта."))
-        metadata.update({"plot_kind": plot["kind"], "plot_key": plot["key"][:500],
-                         "plot_label": str(plot.get("label") or "")[:200]})
-        if len(plot["key"]) > 500:
-            raise HTTPException(status_code=400,
-                                detail="В участке слишком много кадастровых номеров для одного платежа.")
+                        "вкладке «Участок» или загрузите ТЭП проекта. Можно также оплатить "
+                        "несколько участков вперёд — они лягут в запас и откроются при "
+                        "первом расчёте."))
     terms = access_terms()
     value = f"{item['price_rub']:.2f}"
+    unit_value = f"{item['unit_price_rub']:.2f}"
     body: dict[str, Any] = {
         "amount": {"value": value, "currency": "RUB"},
         "capture": True,
@@ -225,10 +258,12 @@ def payment_create(chat: int, kind: str, plot: dict[str, Any] | None, email: str
     if _env_str("DEVELOPAID_RECEIPTS", "1").strip() not in {"0", "false", "no"}:
         body["receipt"] = {
             "customer": {"email": email},
+            # Пакет — одна позиция: `quantity` участков по цене за единицу
+            # (`items[].amount` у ЮKassa — цена единицы, не строки).
             "items": [{
                 "description": item["description"],
-                "quantity": "1.00",
-                "amount": {"value": value, "currency": "RUB"},
+                "quantity": f"{item['count']}.00",
+                "amount": {"value": unit_value, "currency": "RUB"},
                 "vat_code": _YOOKASSA_VAT_CODES[terms["vat_pct"]],
                 "payment_mode": "full_payment",
                 "payment_subject": _env_str("DEVELOPAID_RECEIPT_SUBJECT",
@@ -240,9 +275,11 @@ def payment_create(chat: int, kind: str, plot: dict[str, Any] | None, email: str
     url = str(((payment.get("confirmation") or {}).get("confirmation_url")) or "")
     if not url:
         raise HTTPException(status_code=502, detail="ЮKassa не вернула страницу оплаты.")
-    _PAYMENTS_LOG.info("Платёж %s создан: chat=%s, %s", payment.get("id"), chat, item["kind"])
+    _PAYMENTS_LOG.info("Платёж %s создан: chat=%s, %s × %s", payment.get("id"), chat,
+                       item["kind"], item["count"])
     return {"payment_id": str(payment.get("id") or ""), "confirmation_url": url,
-            "status": str(payment.get("status") or "")}
+            "status": str(payment.get("status") or ""), "price_rub": item["price_rub"],
+            "count": item["count"]}
 
 
 def _payment_plot(meta: dict[str, Any]) -> dict[str, Any]:
@@ -256,21 +293,28 @@ def _payment_plot(meta: dict[str, Any]) -> dict[str, Any]:
     return plot
 
 
+def _grant_sign_text(payment_id: str, key: str, reserve: int) -> str:
+    """Что подписывается в выдаче: платёж, участок и — у пакета — число участков
+    в запас, иначе подделанный запрос мог бы дописать запас к чужому платежу."""
+    base = f"grant:{payment_id}:{key}"
+    return f"{base}:reserve={int(reserve)}" if int(reserve or 0) > 0 else base
+
+
 def _access_grant_routed(chat: int, *, plot: dict[str, Any] | None, subscription: bool,
                          days: int, payment_id: str, source: str = "payment",
-                         note: str = "") -> dict[str, Any]:
+                         note: str = "", reserve: int = 0) -> dict[str, Any]:
     """Выдать права там, где они лежат: на ядре, а у себя — если мы ядро."""
     remote = _projects_remote_url("/internal/access/grant")
     if not remote:
         return access_grant(chat, plot=plot, subscription=subscription, days=days,
-                            source=source, payment_id=payment_id, note=note)
+                            source=source, payment_id=payment_id, note=note, reserve=reserve)
     key = "subscription" if subscription else str((plot or {}).get("key") or "")
     return _core_post(remote, {
         "chat": int(chat), "subscription": bool(subscription), "days": int(days),
         "kind": (plot or {}).get("kind") or "", "key": key,
         "cadastral": (plot or {}).get("cadastral") or [], "label": (plot or {}).get("label") or "",
-        "payment_id": payment_id, "source": source, "note": note,
-        "sign": _web_login_sign(f"grant:{payment_id}:{key}", int(chat)),
+        "payment_id": payment_id, "source": source, "note": note, "reserve": int(reserve or 0),
+        "sign": _web_login_sign(_grant_sign_text(payment_id, key, reserve), int(chat)),
     }, 30.0)
 
 
@@ -303,12 +347,30 @@ def payment_apply(payment: dict[str, Any]) -> dict[str, Any]:
         return {"granted": False, "status": status,
                 "reason": "тестовый платёж открывает только демо-доступ"}
     subscription = meta.get("kind") == "subscription"
-    plot = None if subscription else _payment_plot(meta)
+    plot = None
+    reserve = 0
+    if not subscription:
+        try:
+            count = payment_count(meta.get("count") or 1)
+        except HTTPException:
+            _PAYMENTS_LOG.error("Платёж %s не выдан: число участков не распознано", payment.get("id"))
+            return {"granted": False, "status": status, "reason": "число участков в платеже не распознано"}
+        # Сумма — ровно `count` участков по цене, записанной в заказе: иначе
+        # платёж за один участок с подправленным `count` открыл бы десять.
+        if abs(paid - price) > 0.005 or price % count:
+            _PAYMENTS_LOG.error("Платёж %s не выдан: сумма не делится на число участков", payment.get("id"))
+            return {"granted": False, "status": status,
+                    "reason": "сумма платежа не сошлась с числом участков"}
+        plot = _payment_plot(meta) if meta.get("plot_key") else None
+        if plot is None and count == 1:
+            _PAYMENTS_LOG.error("Платёж %s не выдан: участок не указан", payment.get("id"))
+            return {"granted": False, "status": status, "reason": "участок платежа не распознан"}
+        reserve = count - (1 if plot else 0)
     result = _access_grant_routed(chat, plot=plot, subscription=subscription, days=days,
                                   payment_id=str(payment.get("id") or ""),
-                                  note=f"ЮKassa, {paid:.2f} ₽")
+                                  note=f"ЮKassa, {paid:.2f} ₽", reserve=reserve)
     return {"granted": True, "status": status, "chat": chat, "until": result.get("until"),
-            "repeated": bool(result.get("repeated"))}
+            "repeated": bool(result.get("repeated")), "reserve": result.get("reserve")}
 
 
 def _payment_fetch(payment_id: str, test: bool = False) -> dict[str, Any]:
@@ -350,6 +412,8 @@ class PaymentCreateRequest(BaseModel):
     inputs: dict[str, Any] = {}
     cadastral: list[str] = []
     email: str = ""
+    # Сколько участков оплатить: 1 — как раньше, больше — пакет вперёд.
+    count: int = 1
 
 
 class PaymentStatusRequest(BaseModel):
@@ -368,6 +432,7 @@ class InternalGrantRequest(BaseModel):
     payment_id: str = ""
     source: str = "payment"
     note: str = ""
+    reserve: int = 0
     sign: str = ""
 
 
@@ -395,21 +460,24 @@ def payments_create(req: PaymentCreateRequest, request: Request) -> dict[str, An
     if req.kind != "subscription":
         own = _project_cadastral_numbers(req.inputs or {})
         plot = access_plot(req.inputs, None if own else (list(req.cadastral or []) or None))
+    count = payment_count(req.count) if req.kind != "subscription" else 1
     usage_track("payment_create", surface="site", chat_id=chat, tariff=req.kind)
     if demo_chat(chat):
         # Демо-доступ проверяющих: тестовый магазин, а без него — пояснение,
         # где откроется форма. Настоящих денег демо не платит никогда.
         if demo_payments_mode() == "preview":
-            item = payment_offer_item(req.kind, plot)
+            item = payment_offer_item(req.kind, plot, count)
             price = f"{int(item['price_rub']):,}".replace(",", "\u00a0")
+            package = (f" за {count} {_access_plots_word(count)}" if count > 1 else "")
             return {"preview": True, "message": (
-                f"Здесь откроется платёжная форма ЮKassa на {price}\u00a0₽"
+                f"Здесь откроется платёжная форма ЮKassa на {price}\u00a0₽{package}"
                 f"{' (' + item['vat_note'] + ')' if item['vat_note'] else ''}: оплата картой "
                 "или через СБП, чек придёт на указанную почту. Это демо-доступ, "
                 "поэтому деньги не списываются.")}
         return payment_create(chat, req.kind, plot, req.email, _payment_return_url(request),
-                              test=True)
-    return payment_create(chat, req.kind, plot, req.email, _payment_return_url(request))
+                              test=True, count=count)
+    return payment_create(chat, req.kind, plot, req.email, _payment_return_url(request),
+                          count=count)
 
 
 @app.post("/payments/status")
@@ -459,20 +527,24 @@ def internal_access_grant(req: InternalGrantRequest) -> dict[str, Any]:
     """Выдача прав на ядре. Подпись — токеном бота, как у остальных внутренних."""
     chat = int(req.chat or 0)
     key = "subscription" if req.subscription else str(req.key or "")
-    expected = _web_login_sign(f"grant:{req.payment_id}:{key}", chat)
+    reserve = max(0, int(req.reserve or 0))
+    expected = _web_login_sign(_grant_sign_text(str(req.payment_id or ""), key, reserve), chat)
     if not hmac.compare_digest(str(req.sign or "").encode("utf-8"), expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
     if not chat:
         raise HTTPException(status_code=400, detail="Нужен chat.")
+    if reserve > _PAYMENT_MAX_PLOTS:
+        raise HTTPException(status_code=400, detail="Слишком большой запас для одной выдачи.")
     plot = None
-    if not req.subscription:
+    if not req.subscription and (key or not reserve):
         plot = (access_plot(cadastral=list(req.cadastral or [])) if req.kind == "cadastral"
                 else {"kind": "project", "key": key, "cadastral": [], "label": str(req.label or "")[:120]})
         if plot.get("key") != key:
             raise HTTPException(status_code=400, detail="Участок не совпал с подписью.")
     return access_grant(chat, plot=plot, subscription=bool(req.subscription),
                         days=int(req.days or 0) or None, source=str(req.source or "payment")[:40],
-                        payment_id=str(req.payment_id or "")[:80], note=str(req.note or "")[:200])
+                        payment_id=str(req.payment_id or "")[:80], note=str(req.note or "")[:200],
+                        reserve=reserve)
 
 
 _PAYMENT_RETURN_PAGE = """<!doctype html><html lang="ru"><head><meta charset="utf-8">
@@ -541,7 +613,8 @@ def legal_fill(text: str) -> tuple[str, list[str]]:
         "product": product_info(),
         "terms": {**{k: str(v) for k, v in terms.items()},
                   "plot_price": _access_rub(terms["plot_price_rub"]),
-                  "subscription_price": _access_rub(terms["subscription_price_rub"])},
+                  "subscription_price": _access_rub(terms["subscription_price_rub"]),
+                  "package_max_plots": str(_PAYMENT_MAX_PLOTS)},
     }
     missing: list[str] = []
 
