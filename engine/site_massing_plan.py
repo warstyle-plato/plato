@@ -63,7 +63,7 @@ SITE_MASSING_PLAN_INSTRUCTIONS = (
     "фронта на расстоянии offset_m от его начала вдоль фронта на length_m, внутрь квартала на "
     "depth_m; inset_m — сдвиг от линии фронта внутрь квартала (0 — на самом фронте, больше — "
     "внутренний ряд). length_m × depth_m должно равняться площади пятна корпуса (±1 %); "
-    "глубина секции — 18 м, башни — сторона квадрата. offset_m + length_m не больше длины "
+    "глубина — depth_m корпуса (жилая секция 18 м, офис 24 м), башни — сторона квадрата. offset_m + length_m не больше длины "
     "фронта; inset_m + depth_m не больше глубины квартала от этого фронта. Между любыми "
     "двумя корпусами не меньше 12 м, у общего угла соседних фронтов отступай от угла не "
     "меньше глубины секции плюс 12 м. Каждый корпус — ровно один раз. В brief есть "
@@ -168,7 +168,9 @@ def _plan_brief(corpora: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> 
                              kinds.get(str(c.get("object") or ""), str(c.get("object_kind") or "здание"))),
                     "phase": c["phase"], "footprint_sqm": round(float(c["area_sqm"]), 1),
                     "storeys": c["storeys_shown"],
-                    "section_length_at_18m": round(float(c["area_sqm"]) / LAYOUT_CORPUS_DEPTH_M, 1)}
+                    "depth_m": float(c.get("depth_m") or LAYOUT_CORPUS_DEPTH_M),
+                    "length_at_depth_m": round(float(c["area_sqm"])
+                                               / float(c.get("depth_m") or LAYOUT_CORPUS_DEPTH_M), 1)}
                    for c in corpora]
     return {"blocks": out_blocks, "corpora": out_corpora,
             "engine_layout": [c["place"] for c in corpora if c.get("place")],
@@ -267,20 +269,20 @@ def site_massing_plan_lookup(x: dict[str, Any], corpora: list[dict[str, Any]],
             # Нити — копии: расчёт продолжает работать со своими корпусами.
             snapshot = [{k: copy.deepcopy(v) for k, v in c.items()
                          if k in ("id", "label", "phase", "object", "object_kind", "area_sqm",
-                                  "storeys_shown", "place")} for c in corpora]
+                                  "storeys_shown", "place", "depth_m")} for c in corpora]
             threading.Thread(target=_plan_job, name=f"massing-plan-{key}", daemon=True,
                              args=(key, site_key, snapshot, copy.deepcopy(blocks),
                                    copy.deepcopy(site))).start()
     return {**base, "status": "pending"}
 
 
-def site_massing_plan_note(plan: dict[str, Any], shrink: float = 1.0) -> dict[str, Any]:
+def site_massing_plan_note(plan: dict[str, Any], grid: bool = False) -> dict[str, Any]:
     """Состояние плана для схемы: происхождение расстановки и фраза для посетителя."""
     status = plan.get("status") or "square"
     gap = _fmt_ru(LAYOUT_GAP_IN_ROW_M)
     engine = ("корпуса расставил движок: по кварталам участка, секциями вдоль сторон квартала, "
               "очереди — подряд вдоль участка.")
-    if shrink > 1.0001:
+    if grid:
         engine = "корпуса расставил движок рядами."
     stale = ("Исходные данные схемы изменились (контур, площади или этажность корпусов, очереди "
              "или отступ), поэтому прежний план Платона устарел. ") if plan.get("stale") else ""

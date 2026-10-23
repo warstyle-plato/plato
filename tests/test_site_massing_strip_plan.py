@@ -96,7 +96,7 @@ def test_on_a_curved_strip_no_corpus_is_shrunk_and_phases_run_along_it():
     layout = scheme["layout"]
     buildings = layout["buildings"]
     assert len(buildings) >= 24
-    assert layout["schema_shrink"] == 1.0
+    assert layout["unplaced_count"] == 0
     assert not any("уменьшены" in n for n in layout["notes"])
     # Площадь каждого пятна — та, что в подписи; внутри участка без отступов,
     # без наложений и не ближе 12 м — общая проверка движка.

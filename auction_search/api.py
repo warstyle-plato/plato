@@ -1475,6 +1475,16 @@ def install(app: FastAPI) -> None:
         return JSONResponse({"detail": problem}, status_code=403,
                             headers={"Cache-Control": "no-store"})
 
+    def _team_request(request: Request) -> bool:
+        """Запрос от команды: ключ кабинета или то, что признаёт движок
+        (`team_access_allowed`: ключ владельца, вход человека из команды)."""
+        if market_cabinet.authorised(request):
+            return True
+        allowed = getattr(core, "team_access_allowed", None) if core is not None else None
+        query = request.query_params
+        return bool(callable(allowed)
+                    and allowed(query.get("session") or "", query.get("key") or ""))
+
     async def _auctions_view_gate(request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
         # Личный ключ «auctions» ограничивает ВЕСЬ сайт, а не только /auctions:
@@ -1498,7 +1508,17 @@ def install(app: FastAPI) -> None:
             return await call_next(request)
         if path != "/auctions" and not path.startswith("/auctions/"):
             return await call_next(request)
-        if path == "/auctions/login" or not _auctions_gate_enabled():
+        if path == "/auctions/login":
+            return await call_next(request)
+        if not _auctions_gate_enabled():
+            # Ворота выключены — чтение открыто всем, запись и пробы — только
+            # команде: ключ кабинета, ключ владельца или вход человека команды.
+            if not _team_request(request):
+                problem = auction_view.anonymous_problem(
+                    request.method, path, request.query_params)
+                if problem:
+                    return JSONResponse({"detail": problem}, status_code=401,
+                                        headers={"Cache-Control": "no-store"})
             return await call_next(request)
 
         full_access = market_cabinet.authorised(request)

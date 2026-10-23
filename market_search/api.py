@@ -650,9 +650,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         """
         cabinet_module.require_cabinet(request)
         target = (url or bnmap.ENTRY_PAGE).strip()
-        if not target.startswith(f"https://{bnmap.HOST}") and not target.startswith(
-            f"https://api.{bnmap.HOST}"
-        ):
+        if not bnmap.own_url(target):
             raise HTTPException(
                 status_code=400,
                 detail=f"Проба открывает только {bnmap.HOST}, а не «{target}»",
