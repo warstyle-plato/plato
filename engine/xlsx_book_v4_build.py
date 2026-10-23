@@ -985,7 +985,9 @@ def _build_project_workbook(
         capex_xml, _landscaping_per_person, _landscaping_norm,
         _landscaping_gns_rate, missing)
     capex_xml = _v4_apply_storage_area_rows(capex_xml, missing)
-    capex_xml = _v4_apply_bridge_limit_before_permit(capex_xml, missing)
+    capex_xml = _v4_apply_bridge_limit_before_permit(
+        capex_xml, missing,
+        social_base_row if social_monthly_by_phase is not None else None)
     capex_xml = _v4_apply_vri_interest_row(capex_xml, missing)
     capex_xml = _v4_apply_turnkey_overheads(capex_xml, missing)
     capex_xml = _v4_apply_nonres_full_estimate(capex_xml, x, missing)
@@ -1806,6 +1808,17 @@ def _build_project_workbook(
         # наружных стен не бывает. Здесь площадь подземного этажа.
         put(f"Y{row}", number=num_row(crow.get("underground_parking"), "gns"),
             label="Подземная площадь")
+        # Площади очереди — без округления до метра: шаблон резал ГНС
+        # ROUND(…,0), движок метры не округляет. На четырёх очередях Нагатино
+        # срезанные полметра давали CAPEX −0,57 и, через проценты, ЧП +1,31
+        # млн против движка. Целыми остаются штуки (N, O, AV), не метры.
+        # Одной строкой за проход: сборка следит, сколько раз читается лист.
+        xml, _done = _v4_set_cells(xml, row, {
+            f"I{row}": dict(formula=f"W{row}*$K$15"),
+            f"J{row}": dict(formula=f"X{row}*$K$15"),
+            f"K{row}": dict(formula=f'Y{row}*IF($K$80="Да",$K$15,1)')})
+        if not _done:
+            missing.append(f"площади очереди {index + 1}")
         put(f"Z{row}", number=num_row(crow.get("apartments"), "saleable"),
             label="прод. квартир")
         put(f"AA{row}", number=num_row(crow.get("ground_commercial"), "saleable"),

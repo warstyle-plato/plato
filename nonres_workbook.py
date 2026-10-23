@@ -2378,9 +2378,13 @@ def _check_sheet(book: Workbook, rows: list[tuple[str, str, str, Any, bool]],
     last = ws.max_row
     ws["I2"] = "Вердикт"
     ws["I2"].font = BOLD
-    ws["I3"] = f'=IF(COUNTIF(G3:G{last},"РАСХОЖДЕНИЕ")=0,"{PASSED}","{FAILED}")'
-    ws["I4"] = "Расхождений"
-    ws["J4"] = f'=COUNTIF(G3:G{last},"РАСХОЖДЕНИЕ")'
+    # Пройдено — когда КАЖДАЯ строка сказала «сходится» или «—». Счёт слова
+    # «РАСХОЖДЕНИЕ» пропускал строку с ошибкой (#VALUE!, цикл): она его не
+    # содержит, и книга с ошибками в итогах выходила «ПРОЙДЕНО».
+    agreed = f'COUNTIF(G3:G{last},"сходится")+COUNTIF(G3:G{last},"—")'
+    ws["I3"] = f'=IF({agreed}={last - 2},"{PASSED}","{FAILED}")'
+    ws["I4"] = "Расхождений и ошибок"
+    ws["J4"] = f'={last - 2}-({agreed})'
     ws["I6"] = "Формулы нет — значения движка (missing)"
     ws["I6"].font = BOLD
     for i, text in enumerate(missing or ["нет"], start=7):
