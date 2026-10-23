@@ -181,10 +181,10 @@ def test_the_report_names_sums_growth_and_the_nearest_deadline():
     legal.save(PROJECT, CARD, [], "Иванова", at="2026-10-01T09:00:00+00:00")
     got = report.build(PROJECT, "week", "2026-10-04")
     found = {item["topic"]: item["text"] for item in got["findings"]}
-    assert "Открытых споров: 1; наши требования — 8,0 млн ₽" in found["Споры"]
-    assert "требования к нам — 500 000 ₽" in found["Споры"]
-    assert "неустойка продолжает расти: ООО «Ромашка-Строй»" in found["Споры"]
-    assert "Ближайший срок — 09.10.2026" in found["Споры"]
+    # «Главное» — перечень со стадией, без сумм и шагов (владелец, 23.10.2026).
+    assert found["Споры"] == ("Открытых споров: 1 — ООО «Ромашка-Строй» — претензионная работа, "
+                              "ближайший срок 09.10.2026.")
+    assert "млн ₽" not in found["Споры"] and "неустойка" not in found["Споры"]
     text = report.render_text(got)
     assert "Спор: ООО «Ромашка-Строй»" in text and "Наши требования: 8,0 млн ₽" in text
     page = report.render_html(got)
@@ -343,3 +343,26 @@ def test_a_confirmed_register_gives_one_finding_not_two():
     topics = [item["topic"] for item in built["findings"]]
     assert topics.count("Споры") == 1, topics
     assert report.render_text(built).count("<b>Споры.</b>") == 1
+
+
+def test_the_finding_lists_every_open_case_with_its_stage():
+    """Несколько споров — каждый со своей стадией; суммы и шаги — в блоке, не в «Главном»."""
+    import datetime
+
+    legal.save(PROJECT, CARD, [], "Иванова", at="2026-10-05T09:00:00+00:00")
+    legal.save(PROJECT, dict(CARD, counterparty="АО «Проект»", contract="Д-2", status="court",
+                             court_case="А40-1/2026", deadline="2026-11-18"),
+               [], "Иванова", at="2026-10-06T09:00:00+00:00")
+    legal.save(PROJECT, dict(CARD, counterparty="ООО «Сосед»", contract="Д-3", status="talks",
+                             deadline=None), [], "Иванова", at="2026-10-07T09:00:00+00:00")
+    got = report.build(PROJECT, "week", "2026-10-18")
+    found = {item["topic"]: item["text"] for item in got["findings"]}
+    assert found["Споры"].startswith("Открытых споров: 3 — ")
+    for piece in ("ООО «Ромашка-Строй» — претензионная работа, ближайший срок 09.10.2026",
+                  "АО «Проект» — суд, ближайший срок 18.11.2026",
+                  "ООО «Сосед» — переговоры о мировом"):
+        assert piece in found["Споры"], piece
+    assert "Получить" not in found["Споры"] and "₽" not in found["Споры"]
+    assert "А40-1/2026" not in found["Споры"]
+    # Подробности остались в блоке «Споры и претензии».
+    assert "Наши требования: 8,0 млн ₽" in report.render_text(got)
