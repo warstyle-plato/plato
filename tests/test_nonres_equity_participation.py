@@ -107,32 +107,25 @@ def test_the_pdf_prints_it_in_the_financing_section(tmp_path) -> None:
 
 
 def test_the_nonresidential_book_counts_it_with_formulas() -> None:
-    """«Собственное участие» книги — формулы раздела «Отчёта» от потока
-    капитала листа «Денежный поток», и «Сверка» сравнивает их с таблицей
-    движка (`equity_participation_report`)."""
+    """«Собственное участие» книги офиса — формулы от потока собственника
+    листа CF, и «ПРОВЕРКИ» сравнивают их с таблицей движка
+    (`equity_participation_report`)."""
     import openpyxl
 
-    import nonres_workbook as nw
-    from xlsx_eval import Evaluator
+    import office_workbook as ow
     x, t = _nonres_inputs()
     content, _, meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
-    assert meta.get("nonres_book") is True
+    assert meta.get("office_book") is True
     book = openpyxl.load_workbook(io.BytesIO(content))
-    evaluator = Evaluator(book)
-    sys.setrecursionlimit(max(sys.getrecursionlimit(), 100000))
-    for name in book.sheetnames:
-        for row in book[name].iter_rows(min_row=nw.FIRST_ROW):
-            for cell in row:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    evaluator.cell(name, cell.coordinate)
-    checks = book[nw.CHECK_SHEET]
-    equity = {checks[f"B{r}"].value: evaluator.cell(nw.CHECK_SHEET, f"G{r}")
-              for r in range(3, checks.max_row + 1)
+    evaluator = ow.evaluate(book)
+    checks = book[ow.CHECK_SHEET]
+    equity = {checks[f"B{r}"].value: evaluator.cell(ow.CHECK_SHEET, f"G{r}")
+              for r in range(5, checks.max_row + 1)
               if checks[f"A{r}"].value == "Собственное участие"}
     assert {"Вложено всего", "Получено всего", "Вложено до ввода", "Пик потребности",
             "NPV собственного капитала"} <= set(equity)
     assert set(equity.values()) <= {"сходится", "—"}
-    report = book[nw.REPORT_SHEET]
+    report = book[ow.REPORT_SHEET]
     labels = [report[f"A{r}"].value for r in range(1, report.max_row + 1)]
     assert "Собственное участие" in labels and "Вложено всего" in labels
 

@@ -32,7 +32,7 @@ import main_legacy as core  # noqa: E402
 
 import excel_book_parity as parity  # noqa: E402
 import golden_snapshot as gs  # noqa: E402
-import nonres_workbook as nw  # noqa: E402
+import office_workbook as ow  # noqa: E402
 from xlsx_eval import Evaluator  # noqa: E402
 
 openpyxl = pytest.importorskip("openpyxl")
@@ -101,23 +101,11 @@ def test_a_book_without_the_depth_markup_is_caught() -> None:
 
 
 def _check_sheet(content: bytes, tamper=None) -> tuple[str, list]:
+    """Вердикт «ПРОВЕРОК» книги офиса: (раздел, показатель) каждой несошедшейся строки."""
     book = openpyxl.load_workbook(io.BytesIO(content))
     if tamper:
         tamper(book)
-    sys.setrecursionlimit(max(sys.getrecursionlimit(), 100000))
-    evaluator = Evaluator(book)
-    # Долг строки читает предыдущую — сверху вниз, чтобы не упереться в
-    # глубину рекурсии вычислителя (как в tests/test_nonres_workbook.py).
-    for name in book.sheetnames:
-        for row in book[name].iter_rows(min_row=nw.FIRST_ROW):
-            for cell in row:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    evaluator.cell(name, cell.coordinate)
-    checks = book[nw.CHECK_SHEET]
-    bad = [(checks[f"B{r}"].value, evaluator.cell(nw.CHECK_SHEET, f"G{r}"))
-           for r in range(3, checks.max_row + 1)
-           if evaluator.cell(nw.CHECK_SHEET, f"G{r}") not in ("сходится", "—")]
-    return evaluator.cell(nw.CHECK_SHEET, "I3"), bad
+    return ow.verdict(ow.evaluate(book))
 
 
 def test_an_office_for_rent_agrees_with_the_engine() -> None:
@@ -128,19 +116,19 @@ def test_an_office_for_rent_agrees_with_the_engine() -> None:
     inputs = gs.SCENARIOS["office_rent"](core, ROOT)["inputs"]
     assert inputs["offices_rent_date"] and inputs["offices_exit_cap_pct"] == 9.5
     verdict, bad = _check_sheet(content)
-    assert bad == [] and verdict == nw.PASSED
+    assert bad == [] and verdict == ow.PASSED
 
 
 def test_a_broken_exit_value_is_caught() -> None:
     content, _ = _built("office_rent")
 
     def tamper(book) -> None:
-        cell = book["Объект 1"]["B54"]
-        assert "$B$53/$B$25" in str(cell.value), cell.value
-        cell.value = str(cell.value).replace("$B$53/$B$25", "$B$53/$B$25*0.9")
+        sheet = book[ow.EXIT_SHEET]
+        row = next(r for r in range(1, sheet.max_row + 1) if sheet[f"A{r}"].value == "Стоимость здания")
+        sheet[f"B{row}"] = str(sheet[f"B{row}"].value) + "*0.9"
 
     verdict, bad = _check_sheet(content, tamper)
-    assert verdict == nw.FAILED and bad, bad
+    assert verdict == ow.FAILED and any(label == "Офис: стоимость здания" for _, label in bad), bad
 
 
 def test_an_error_in_a_check_row_is_not_a_pass() -> None:
@@ -149,13 +137,13 @@ def test_an_error_in_a_check_row_is_not_a_pass() -> None:
     content, _ = _built("office_rent")
 
     def tamper(book) -> None:
-        checks = book[nw.CHECK_SHEET]
-        row = next(r for r in range(3, checks.max_row + 1)
+        checks = book[ow.CHECK_SHEET]
+        row = next(r for r in range(5, checks.max_row + 1)
                    if checks[f"B{r}"].value == "Чистая прибыль")
         checks[f"G{row}"] = "#VALUE!"
 
     verdict, bad = _check_sheet(content, tamper)
-    assert verdict == nw.FAILED and ("Чистая прибыль", "#VALUE!") in bad
+    assert verdict == ow.FAILED and any(label == "Чистая прибыль" for _, label in bad)
 
 
 # --- две причины, по которым Нагатино расходилось на 1,31 млн ЧП --------------

@@ -13,6 +13,23 @@ report_layout и разделы отчёта, отчёт по объекту и 
 """
 # ruff: noqa
 
+def owner_cash_peak(finance: dict[str, Any], equity_cf: list[float]) -> float:
+    """Пик собственных денег — худший накопленный поток собственника ДЕНЬГАМИ.
+
+    Оценка удержанного здания (`nonres_residual_value`) — не деньги: в месяц
+    конца удержания долг гасится своими деньгами, и пик это показывает
+    (владелец, 23.10.2026: «только деньги везде»). Одно правило на плитку
+    отчёта, сравнение путей офиса и раздел «Собственное участие».
+    """
+    rows = finance.get("rows") or []
+    cumulative = worst = 0.0
+    for index, value in enumerate(equity_cf):
+        residual = float((rows[index] if index < len(rows) else {}).get("nonres_residual_value") or 0.0)
+        cumulative += float(value or 0.0) - residual
+        worst = min(worst, cumulative)
+    return -worst
+
+
 def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
                   equity_cf: list[float]) -> dict[str, Any]:
     """Какие блоки отчёта у проекта есть — одно решение для всех поверхностей.
@@ -30,10 +47,7 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
     objects = (finance.get("nonres") or {}).get("objects") or []
     tiles: list[dict[str, Any]] = []
     if objects:
-        cumulative = worst = 0.0
-        for value in equity_cf:
-            cumulative += float(value or 0.0)
-            worst = min(worst, cumulative)
+        worst = -owner_cash_peak(finance, equity_cf)
         totals = [item.get("totals") or {} for item in objects]
         kpis = [item.get("kpi") or {} for item in objects]
         dscr = [k["dscr_min"] for k in kpis if k.get("dscr_min") is not None]
@@ -1755,7 +1769,9 @@ def equity_participation_report(months: list[date], equity_cf: list[float],
                          "value": cash_irr if cash_irr is not None
                          else "не считается — деньги не возвращают вложенное",
                          "unit": "pct" if cash_irr is not None else "text"})
-    npv = _monthly_npv(list(equity_cf), discount_rate)
+    # Тем же правилом, что `summary.npv_equity` (`equity_npv`, ставка / 12):
+    # одно число NPV собственника на всех поверхностях (владелец, 23.10.2026).
+    npv = _equity_npv(list(equity_cf), discount_rate)
     out_rows += [
         money(f"NPV собственного капитала @{rate_label}%" + (" — с оценкой" if hold else ""),
               npv),

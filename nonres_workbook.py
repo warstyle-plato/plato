@@ -1522,6 +1522,7 @@ def _cash_sheet(book: Workbook, objects_refs: list[dict[str, str]], costs: _Cost
                ("to_equity", "Деньги объектов собственнику"), ("equity", "Поток собственного капитала"),
                ("residual", "Оценка удержания (не деньги)"), ("cash", "Поток капитала — деньги"),
                ("cum", "Накопленный — деньги"), ("df", "Дисконт-множитель"),
+               ("df_eq", "Дисконт-множитель капитала (ставка / 12)"),
                ("project_disc", "Поток проекта дисконтированный"),
                ("equity_disc", "Поток капитала дисконтированный"),
                ("contributed", "Вложено собственником"), ("returned", "Получено собственником"),
@@ -1571,7 +1572,9 @@ def _cash_sheet(book: Workbook, objects_refs: list[dict[str, str]], costs: _Cost
         ws[v["cum"]] = (f"={letters['cum']}{r - 1}+{v['cash']}" if i else f"={v['cash']}")
         ws[v["df"]] = f"=1/(1+$B$3)^A{r}"
         ws[v["project_disc"]] = f"={v['project']}*{v['df']}"
-        ws[v["equity_disc"]] = f"={v['equity']}*{v['df']}"
+        # NPV капитала — ставкой / 12 (`equity_npv`, как `summary.npv_equity`).
+        ws[v["df_eq"]] = f"=1/(1+MAX({_p('discount')}/100,-0.999999)/12)^A{r}"
+        ws[v["equity_disc"]] = f"={v['equity']}*{v['df_eq']}"
         ws[v["contributed"]] = f"=MAX(0,-{v['cash']})"
         ws[v["returned"]] = f"=MAX(0,{v['cash']})"
         exits = [f'AND({ref["strategy"]}="{income_label}",A{r}={ref["horizon"]})' for ref in objects_refs]
@@ -1582,7 +1585,7 @@ def _cash_sheet(book: Workbook, objects_refs: list[dict[str, str]], costs: _Cost
         ws[v["out_exit"]] = f"=IF({v['exit']}=1,{v['returned']}-{v['out_vat']},0)"
         ws[v["neg_k"]] = f"=IF({v['cum']}<-0.5,A{r},-1)"
         for key in letters:
-            if key not in ("k", "month", "cal_year", "df", "exit", "neg_k"):
+            if key not in ("k", "month", "cal_year", "df", "df_eq", "exit", "neg_k"):
                 ws[v[key]].number_format = MONEY
     for i in range(1, len(columns) + 1):
         ws.column_dimensions[get_column_letter(i)].width = 17
