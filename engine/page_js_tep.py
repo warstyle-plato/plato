@@ -1500,6 +1500,29 @@ function renderSiteMassingScheme(m){
  box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
   '<p class="site-massing-hint">'+escapeHtml(ax.footer||'')+'</p>'+
   (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':'');
+ siteMassingPlanWatch(layout.plan||{});
+}
+// План расстановки от Платона готовится фоном (`engine/site_massing_plan.py`):
+// страница спрашивает его состояние и, когда план готов (или отклонён),
+// пересчитывает — схему строит движок, страница её только рисует.
+let siteMassingPlanTimer=null,siteMassingPlanKey='',siteMassingPlanTries=0;
+function siteMassingPlanWatch(plan){
+ if(plan.status!=='pending'||!plan.key){if(siteMassingPlanTimer){clearTimeout(siteMassingPlanTimer);siteMassingPlanTimer=null}siteMassingPlanKey='';return}
+ if(siteMassingPlanKey===plan.key&&siteMassingPlanTimer)return;
+ if(siteMassingPlanKey!==plan.key)siteMassingPlanTries=0;
+ siteMassingPlanKey=plan.key;
+ const ask=async()=>{
+  siteMassingPlanTimer=null;
+  if(siteMassingPlanTries++>=60)return;
+  try{
+   const r=await fetch('/site-massing/plan/'+encodeURIComponent(siteMassingPlanKey));
+   const s=r.ok?await r.json():{};
+   if(s.key!==siteMassingPlanKey)return;
+   if(s.status&&s.status!=='pending'){siteMassingPlanKey='';calculate();return}
+  }catch(e){}
+  siteMassingPlanTimer=setTimeout(ask,5000);
+ };
+ siteMassingPlanTimer=setTimeout(ask,5000);
 }
 // Поля допущений: подпись и единица — из FIELD_GROUPS. Поля «пусто — по
 // расчёту» (пятно, уровни, предельная этажность, земля на место) показывают
