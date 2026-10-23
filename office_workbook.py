@@ -1011,7 +1011,7 @@ def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]
     rows.section("Доли и итоги")
     rows.param("cx.capex_total", "Все затраты на создание, итого", f"=SUM({ref('cx.total', ':')})", "млн ₽",
                bold=True)
-    every = "+".join(f"SUM({ref(f'cx.{item['code']}', ':')})" for item in objects) or "0"
+    every = "+".join("SUM(" + ref("cx." + item["code"], ":") + ")" for item in objects) or "0"
     for item in flows:
         o = item["code"]
         rows.param(f"cx.share.{o}", f"Доля «{item['title']}» в общих затратах (его стройка / стройка всех объектов)",
@@ -1639,7 +1639,7 @@ def _report_sheet(book: _Book, spec: dict[str, Any], capex: dict[str, Any], curr
             book.register(f"rep.{path['code']}.{key}", REPORT_SHEET, r, L(2 + j))
         r += 1
 
-    both = lambda key: tuple(f"={ref(f'{p['code']}.{key}')}" for p in PATHS)  # noqa: E731
+    both = lambda key: tuple("=" + ref(p["code"] + "." + key) for p in PATHS)  # noqa: E731
     head(("Показатель", PATHS[0]["label"], PATHS[1]["label"]), (HEAD, SALE_TAB, RENT_TAB))
     out["head_row"] = r - 1
     current_label = next((p["label"] for p in PATHS if p["key"] == current), "в проекте у офисов разные пути")
