@@ -18,12 +18,13 @@ from __future__ import annotations
 
 import json
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
-from market_search.http import RemoteServiceError, request_bytes
+from market_search.http import RemoteServiceError, public_url_problem, request_bytes
 
 PORTAL_URL = "https://krt.mos.ru/projects/"
 API_BASE = "https://api.krt.mos.ru"
+KRT_HOSTS = frozenset({"api.krt.mos.ru", "krt.mos.ru"})
 
 # Кандидаты — то, что обычно лежит под таким доменом. Ни один из них не
 # объявляется рабочим заранее: проба на то и проба.
@@ -67,6 +68,15 @@ def _look(raw: bytes, content_type: str) -> dict[str, Any]:
 
 def probe(url: str = "") -> dict[str, Any]:
     """Спросить кандидатов и показать, кто чем ответил."""
+    if url:
+        # Адрес из запроса — только на самом портале КРТ: проба показывает
+        # ответ, и чужой адрес сделал бы из неё окно во внутреннюю сеть.
+        host = (urlsplit(url).hostname or "") if "://" in url else ""
+        problem = public_url_problem(url)
+        if not problem and host not in KRT_HOSTS:
+            problem = f"проба спрашивает только {', '.join(sorted(KRT_HOSTS))}"
+        if problem:
+            return {"asked": 0, "answers": [], "refused": url, "reason": problem}
     targets = [url] if url else [urljoin(API_BASE, path) for path in CANDIDATES]
     answers: list[dict[str, Any]] = []
     for target in targets:

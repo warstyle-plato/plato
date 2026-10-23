@@ -188,6 +188,13 @@ def test_the_login_step_fills_submits_and_leaves_no_login_in_the_answer(
         encoding="utf-8",
     )
 
+    # Страница местная (file://), а проба пускает только bnMAP по https и
+    # только публичные адреса. Эти проверки здесь сняты: их держит
+    # tests/test_probes_refuse_foreign_addresses.py, а этот тест — про сам вход.
+    import market_search.http as market_http
+
+    monkeypatch.setattr(market_http, "public_url_problem", lambda url: "")
+    monkeypatch.setattr(bnmap, "own_url", lambda url: True)
     got = bnmap.probe_browser(url=page.as_uri(), seconds=20.0)
 
     step = got.get("after_load") or {}
