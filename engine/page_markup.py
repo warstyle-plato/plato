@@ -932,13 +932,18 @@ PAGE += r"""</head>
           <select id="grantKind" onchange="grantKindChanged()" style="width:100%">
             <option value="plot">Доступ к участку</option>
             <option value="subscription">Подписку — все участки</option>
+            <option value="reserve">Запас: несколько участков вперёд</option>
           </select>
         </label>
         <label id="grantCadastralRow">Кадастровые номера участка
           <input id="grantCadastral" placeholder="например, 77:09:0004001:5578, 77:09:0004001:5579" style="width:100%">
           <small class="muted">Если в расчёте несколько участков, впишите все номера через запятую: это один участок-набор, доступ откроется ко всему набору и к любой его части.</small>
         </label>
-        <label>Срок доступа, дней
+        <label id="grantCountRow" style="display:none">Сколько участков положить в запас
+          <input id="grantCount" type="number" min="1" max="10" value="3" style="width:120px">
+          <small class="muted">Участок из запаса откроется сам при первом расчёте нового участка, на 30 дней с этого момента.</small>
+        </label>
+        <label id="grantDaysRow">Срок доступа, дней
           <input id="grantDays" type="number" min="1" value="30" style="width:120px">
         </label>
         <label>Комментарий для журнала (необязательно)
