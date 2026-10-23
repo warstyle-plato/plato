@@ -84,6 +84,11 @@ def surface_parking_sqm_per_space(x: dict[str, Any]) -> tuple[float, str]:
     return SURFACE_PARKING_SQM_DEFAULT, "экспертное умолчание"
 
 
+def _norm_ru(value: float) -> str:
+    """Норматив на жителя по-русски: 5, 6,5."""
+    return f"{value:g}".replace(".", ",")
+
+
 def _yard_floor(x: dict[str, Any], tep: dict[str, Any], site_sqm: float) -> tuple[float, str]:
     """Нижняя граница двора по норме региона → (м², основание)."""
     region = project_region(x)
@@ -92,8 +97,8 @@ def _yard_floor(x: dict[str, Any], tep: dict[str, Any], site_sqm: float) -> tupl
         return 0.0, ""
     if region == "msk":
         ours = MSK_GREEN_ZHK_SQM_PER_PERSON * population
-        basis = (f"норма Москвы (2152-ПП): {MSK_GREEN_ZHK_SQM_PER_PERSON:g} м² на жителя "
-                 f"× {population} чел.".replace(".", ","))
+        basis = (f"норма Москвы (2152-ПП): {_norm_ru(MSK_GREEN_ZHK_SQM_PER_PERSON)} м² на жителя "
+                 f"× {population} жителей")
         city, city_basis = _glavapu_green_zhk(x, tep)
         if city > ours + 0.5:
             return city, (f"{city_basis} — больше нашей нормы ({basis}, {_fmt_ru(ours)} м²): "
@@ -104,21 +109,20 @@ def _yard_floor(x: dict[str, Any], tep: dict[str, Any], site_sqm: float) -> tupl
     if region == "mo":
         per = float(MO_NORMS_DEFAULT["green_quarter_sqm_per_person"])
         return (per * population,
-                f"норма Московской области: {per:g} м² на жителя × {population} чел."
-                .replace(".", ","))
+                f"норма Московской области: {_norm_ru(per)} м² на жителя × {population} жителей")
     # Прочие регионы — большее из федерального СП 42 (25 % участка) и нормы
     # Москвы на жителя: своих норм региона у нас нет (владелец 22.10.2026).
     share = OTHER_REGION_GREEN_SHARE * site_sqm
     per_person = MSK_GREEN_ZHK_SQM_PER_PERSON * population
     if per_person > share + 0.5:
         return (per_person,
-                f"допущение: норма Москвы {MSK_GREEN_ZHK_SQM_PER_PERSON:g} м² на жителя × "
-                f"{population} чел. — норм этого региона у нас нет; это больше, чем требует "
+                f"допущение: норма Москвы {_norm_ru(MSK_GREEN_ZHK_SQM_PER_PERSON)} м² на жителя × "
+                f"{population} жителей — норм этого региона у нас нет; это больше, чем требует "
                 "СП 42.13330.2016, п. 7.4 (25% участка)")
     return (share,
             "СП 42.13330.2016, п. 7.4: озеленение жилого квартала — не меньше 25% участка "
-            f"(это не меньше нормы Москвы {MSK_GREEN_ZHK_SQM_PER_PERSON:g} м² на жителя × "
-            f"{population} чел., которую берём допущением: норм этого региона у нас нет)")
+            f"(это не меньше нормы Москвы {_norm_ru(MSK_GREEN_ZHK_SQM_PER_PERSON)} м² на жителя × "
+            f"{population} жителей, которую берём допущением: норм этого региона у нас нет)")
 
 
 def _glavapu_territory_value(cell: Any) -> float:
