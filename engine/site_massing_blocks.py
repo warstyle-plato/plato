@@ -182,10 +182,12 @@ def _fronts_of(block_id: str, ring: list[list[float]], cut_sides: set[int]) -> l
     return fronts
 
 
-def massing_blocks(inner: list[list[list[float]]], axis: dict[str, float] | None) -> list[dict[str, Any]]:
+def massing_blocks(inner: list[list[list[float]]], axis: dict[str, float] | None,
+                   street: float = LAYOUT_BLOCK_STREET_M) -> list[dict[str, Any]]:
     """Кварталы участка без отступов: каждое кольцо ЕГРН — свой квартал; длинное
     кольцо режется поперёк своей оси на кварталы до 250 м с проездом 20 м.
-    Кварталы пронумерованы вдоль оси участка — по ним идут очереди."""
+    Кварталы пронумерованы вдоль оси участка — по ним идут очереди. С
+    `street=0` — те же разрезы без проездов: подземная часть идёт и под ними."""
     pieces: list[tuple[list[list[float]], set[int]]] = []
     for ring in inner:
         own = massing_strip_axis([ring])
@@ -200,14 +202,14 @@ def massing_blocks(inner: list[list[list[float]]], axis: dict[str, float] | None
             piece = ring
             cuts: list[float] = []
             if j > 0:
-                c = low + j * step + LAYOUT_BLOCK_STREET_M / 2
+                c = low + j * step + street / 2
                 piece = _clip_half(piece, ux, uy, c, True)
                 cuts.append(c)
             if j < count - 1 and len(piece) >= 3:
-                c = low + (j + 1) * step - LAYOUT_BLOCK_STREET_M / 2
+                c = low + (j + 1) * step - street / 2
                 piece = _clip_half(piece, ux, uy, c, False)
                 cuts.append(c)
-            if len(piece) < 3 or abs(_ring_area(piece)) < 400:
+            if len(piece) < 3 or abs(_ring_area(piece)) < (400 if street > 0 else 1):
                 continue
             # Стороны по линии разреза — внутренний проезд, а не граница участка.
             cut_sides = {i for i in range(len(piece))
@@ -351,13 +353,18 @@ def massing_check(buildings: list[dict[str, Any]], inner: list[list[list[float]]
 
 # --- Расстановка движка -----------------------------------------------------
 
+# Следы места корпуса на плане: снимаются, когда корпус места не нашёл.
+_PLACE_KEYS = ("_bbox", "ring_m", "block", "front", "shape", "place")
+
 def _shapes_for(c: dict[str, Any], tower: bool) -> list[tuple[float, float]]:
-    """Варианты пятна корпуса (длина, глубина) той же площади: секция 18 м,
-    затем глубже — до квадрата; башня — сначала квадрат."""
+    """Варианты пятна корпуса (длина, глубина) той же площади: своя глубина
+    корпуса (секция 18 м, офис 24 м), затем глубже — до квадрата; башня —
+    сначала квадрат."""
     area = float(c["area_sqm"])
     side = _math.sqrt(area)
-    depths = [LAYOUT_CORPUS_DEPTH_M]
-    d = LAYOUT_CORPUS_DEPTH_M
+    first = float(c.get("depth_m") or LAYOUT_CORPUS_DEPTH_M)
+    depths = [first]
+    d = first
     while d + 6.0 < side:
         d += 6.0
         depths.append(d)
@@ -404,6 +411,8 @@ def _candidates(blocks: list[dict[str, Any]], length: float, depth: float,
 
 def _try_place(c: dict[str, Any], blocks: list[dict[str, Any]], placed: list[dict[str, Any]],
                interior: bool, gx: float, gy: float, tower: bool) -> bool:
+    for key in _PLACE_KEYS:
+        c.pop(key, None)
     for length, depth in _shapes_for(c, tower):
         for block, f, a, t, shift in _candidates(blocks, length, depth, interior, gx, gy):
             ring = _rect_ring(a, f["u"], f["n"], t, length, depth)
@@ -442,14 +451,19 @@ def massing_place_engine(corpora: list[dict[str, Any]], blocks: list[dict[str, A
     оставшихся кварталах: первая с одного конца, следующие дальше. Корпус
     сначала ищет место на периметре квартала (секции вдоль сторон замыкают
     двор), затем во внутренних рядах. Башня — корпус заметно выше остальных:
-    квадратное пятно, сначала на углу. Площадь корпуса не меняется."""
+    квадратное пятно, сначала на углу. Площадь корпуса не меняется никогда:
+    не встали все — последний проход ставит те, что встают, а у остальных
+    места на плане нет (`ring_m` нет), и схема называет их."""
     if not corpora or not blocks:
         return False
     gx, gy = (_math.cos(axis["angle"]), _math.sin(axis["angle"])) if axis else (1.0, 0.0)
     typical = sorted(c["storeys_shown"] for c in corpora if c["phase"] > 0) or [0]
     median = typical[len(typical) // 2]
     wide = sorted(blocks, key=lambda b: (-b["width_m"], b["order"]))
-    for interior in (False, True):
+    for interior, best_effort in ((False, False), (True, False), (True, True)):
+        for c in corpora:
+            for key in _PLACE_KEYS:
+                c.pop(key, None)
         placed: list[dict[str, Any]] = []
         ok = True
         objects = [c for c in corpora if c["phase"] == 0]
@@ -463,10 +477,16 @@ def massing_place_engine(corpora: list[dict[str, Any]], blocks: list[dict[str, A
                     placed[:] = trial
                     done = True
                     break
-            if not done and not all(_try_place(c, wide, placed, interior, gx, gy, False) for c in own):
-                ok = False
+            if done:
+                continue
+            for c in own:
+                if not _try_place(c, wide, placed, interior, gx, gy, False):
+                    ok = False
+                    if not best_effort:
+                        break
+            if not ok and not best_effort:
                 break
-        if ok:
+        if ok or best_effort:
             # Очереди — подряд: корпус не уходит в квартал раньше того, где
             # встал предыдущий; кварталы отдельных зданий — только если в
             # остальных места нет.
@@ -481,16 +501,148 @@ def massing_place_engine(corpora: list[dict[str, Any]], blocks: list[dict[str, A
                 if not any(tier and _try_place(c, tier, placed, interior, gx, gy, tower)
                            for tier in tiers):
                     ok = False
+                    if best_effort:
+                        continue
                     break
                 cursor = order[c["block"]]
-        if ok:
+        if ok or best_effort:
             for c in corpora:
                 c.pop("_bbox", None)
-            return True
-    for c in corpora:
-        for key in ("_bbox", "ring_m", "block", "front", "shape", "place"):
-            c.pop(key, None)
+            return ok
     return False
+
+
+# --- Подземные уровни на плане ---------------------------------------------
+
+def _ring_centre(ring: list[list[float]]) -> tuple[float, float]:
+    return sum(p[0] for p in ring) / len(ring), sum(p[1] for p in ring) / len(ring)
+
+
+def _clip_to_area(ring: list[list[float]], area: float, around: tuple[float, float]
+                  ) -> list[list[float]]:
+    """Часть кольца заданной площади — полоса поперёк его оси вокруг точки
+    `around` (середины корпусов квартала). Меньшая площадь вокруг той же
+    точки лежит внутри большей: нижний уровень — внутри верхнего."""
+    own = massing_strip_axis([ring])
+    if not own:
+        return ring
+    ux, uy = _math.cos(own["angle"]), _math.sin(own["angle"])
+    proj = [p[0] * ux + p[1] * uy for p in ring]
+    low, high = min(proj), max(proj)
+    mid = min(high, max(low, around[0] * ux + around[1] * uy))
+
+    def piece(w: float) -> list[list[float]]:
+        part = _clip_half(ring, ux, uy, max(low, mid - w), True)
+        return _clip_half(part, ux, uy, min(high, mid + w), False) if len(part) >= 3 else part
+
+    a, b = 0.0, high - low
+    for _ in range(40):
+        w = (a + b) / 2.0
+        part = piece(w)
+        if (abs(_ring_area(part)) if len(part) >= 3 else 0.0) < area:
+            a = w
+        else:
+            b = w
+    part = piece(b)
+    return part if len(part) >= 3 else ring
+
+
+def _clip_from_end(ring: list[list[float]], area: float, away: tuple[float, float]
+                   ) -> list[list[float]]:
+    """Часть кольца заданной площади, отрезанная поперёк его оси с конца,
+    дальнего от точки `away` (там стоит школа или сад со своим участком)."""
+    own = massing_strip_axis([ring])
+    if not own or area <= 0:
+        return []
+    ux, uy = _math.cos(own["angle"]), _math.sin(own["angle"])
+    proj = [p[0] * ux + p[1] * uy for p in ring]
+    low, high = min(proj), max(proj)
+    cx, cy = _ring_centre(ring)
+    keep_above = away[0] * ux + away[1] * uy < cx * ux + cy * uy
+    a, b = low, high
+    for _ in range(40):
+        c = (a + b) / 2.0
+        part = _clip_half(ring, ux, uy, c, keep_above)
+        got = abs(_ring_area(part)) if len(part) >= 3 else 0.0
+        if (got < area) != keep_above:
+            a = c
+        else:
+            b = c
+    part = _clip_half(ring, ux, uy, b if not keep_above else a, keep_above)
+    return part if len(part) >= 3 else []
+
+
+def massing_underground_plan(inner: list[list[list[float]]], axis: dict[str, float] | None,
+                             corpora: list[dict[str, Any]], rows: list[dict[str, Any]],
+                             use_factor: float, plots: dict[str, float] | None = None
+                             ) -> list[dict[str, Any]]:
+    """Подземные уровни контуром на плане: где лежит каждый уровень расчёта.
+
+    Уровень — полезная площадь из `underground_level_rows`; под землёй он
+    занимает её ÷ долю полезной части контура (стены, лестницы, шахты). Идёт
+    по кварталам без проездов между ними: под каждым кварталом с жилыми домами
+    и офисами — его доля уровня, полосой вокруг корпусов квартала; не хватает
+    этих кварталов — дальше под свободными. Под участками школы, детского сада
+    и поликлиники паркинг не строят (их участки передаются городу, как в
+    подземном контуре `site_massing`). Уровни заполняются сверху, поэтому
+    нижний лежит внутри верхнего."""
+    if not inner or not rows:
+        return []
+    slices = massing_blocks(inner, axis, street=0.0)
+    placed = [c for c in corpora if c.get("ring_m")]
+    for s in slices:
+        hosts = [c for c in placed if _inside(_ring_centre(c["ring_m"]), [s["ring"]])]
+        s["social"] = any(c["phase"] == 0 and c.get("object") in SOCIAL_PLOT_KEYS for c in hosts)
+        s["homes"] = any(c["phase"] > 0 or c.get("object") not in SOCIAL_PLOT_KEYS for c in hosts)
+        s["around"] = (sum(_ring_centre(c["ring_m"])[0] for c in hosts) / len(hosts),
+                       sum(_ring_centre(c["ring_m"])[1] for c in hosts) / len(hosts)) if hosts \
+            else _ring_centre(s["ring"])
+    homes = [s for s in slices if s["homes"] and not s["social"]]
+    spare = sorted((s for s in slices if not s["homes"] and not s["social"]),
+                   key=lambda s: s["order"])
+    # Квартал школы или сада: их участки (`plots`) — без паркинга, остаток
+    # квартала с дальнего от них конца — запас.
+    for s in sorted((s for s in slices if s["social"]), key=lambda s: s["order"]):
+        social = [c for c in placed if c["phase"] == 0 and c.get("object") in SOCIAL_PLOT_KEYS
+                  and _inside(_ring_centre(c["ring_m"]), [s["ring"]])]
+        plot = sum((plots or {}).get(str(key), 0.0)
+                   for key in dict.fromkeys(c.get("object") for c in social))
+        # Участок без строки ГлавАПУ и без умолчания — хотя бы два пятна здания.
+        plot = max(plot, 2.0 * sum(float(c["area_sqm"]) for c in social))
+        free = abs(_ring_area(s["ring"])) - plot
+        away = (sum(_ring_centre(c["ring_m"])[0] for c in social) / len(social),
+                sum(_ring_centre(c["ring_m"])[1] for c in social) / len(social))
+        rest = _clip_from_end(s["ring"], free, away) if free > 400 else []
+        if rest:
+            spare.append({**s, "ring": rest})
+    homes_sqm = sum(abs(_ring_area(s["ring"])) for s in homes)
+    factor = use_factor if use_factor > 0 else 1.0
+    out: list[dict[str, Any]] = []
+    for row in sorted(rows, key=lambda r: -int(r.get("level") or 0)):
+        area = float(row.get("area_sqm") or 0.0)
+        need = area / factor
+        rings: list[list[list[float]]] = []
+        if homes_sqm > need + 0.5:
+            # Под каждым кварталом с домами — его доля уровня, вокруг корпусов.
+            share = need / homes_sqm
+            for s in homes:
+                rings.append(_clip_to_area(s["ring"], share * abs(_ring_area(s["ring"])), s["around"]))
+        else:
+            rings = [s["ring"] for s in homes]
+            got = homes_sqm
+            for s in spare:
+                if got >= need - 0.5:
+                    break
+                own = abs(_ring_area(s["ring"]))
+                ring = s["ring"] if got + own <= need + 0.5 else \
+                    _clip_to_area(s["ring"], need - got, s["around"])
+                rings.append(ring)
+                got += abs(_ring_area(ring))
+        rings = [[[round(p[0], 2), round(p[1], 2)] for p in r] for r in rings if len(r) >= 3]
+        got = sum(abs(_ring_area(r)) for r in rings)
+        out.append({"level": int(row.get("level") or 0), "area_sqm": area,
+                    "contour_sqm": round(got, 1), "need_sqm": round(need, 1), "rings": rings})
+    return out
 
 
 def massing_place_plan(corpora: list[dict[str, Any]], blocks: list[dict[str, Any]],
