@@ -24,8 +24,19 @@ import re
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+# Запись в раздел «Торги» — только команде (аудит 23.10.2026): тест проверяет
+# логику маршрута, поэтому ходит с ключом кабинета.
+TEAM_KEY = "team-cabinet-key-for-test"
+
+
+@pytest.fixture(autouse=True)
+def _team_cabinet_key(monkeypatch):
+    monkeypatch.setenv("MARKET_CABINET_KEY", TEAM_KEY)
+
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -82,7 +93,7 @@ def test_both_numbers_stand_next_to_each_other(tmp_path, monkeypatch):
     links = {"a": {"lots": [{"url": "u1", "deadline": "09.10.26 15:00"}]},
              "b": {"lots": [{"url": "u2"}, {"url": "u3"}]}}
     app = _app(tmp_path, monkeypatch, links=links)
-    client = TestClient(app)
+    client = TestClient(app, headers={"X-Market-Key": TEAM_KEY})
     got = client.post("/auctions/krt/tenders", json={"lots": []})
     assert got.status_code == 200, got.text[:200]
     said = got.json()

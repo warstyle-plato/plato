@@ -299,6 +299,11 @@ _engine_part("site_massing")
 # Объёмная схема: корпуса очередей на участке и их аксонометрия —
 # engine/site_massing_layout.py; один ответ для страницы и PDF.
 _engine_part("site_massing_layout")
+# Кварталы и фронты участка, расстановка корпусов и её проверка —
+# engine/site_massing_blocks.py; план расстановки от Платона (фоновый запрос,
+# хранение по отпечатку) — engine/site_massing_plan.py.
+_engine_part("site_massing_blocks")
+_engine_part("site_massing_plan")
 
 
 _engine_part("operating_model")

@@ -283,7 +283,6 @@ async function initializeApp(){
  await refreshCurrentKeyRate(false);
  await calculate();
  await refreshAgentStatus();
- await loadPresetCatalog();
  await loadMoReference();
  await initializeTelegramLaunch();
  // Докуда дошла загрузка — это ответ ловушке ошибок, а не украшение: у

@@ -99,7 +99,6 @@ def _apply(parsed: dict, inputs_extra: dict, *, before: dict | None = None,
         "let phasing=null;let cadastralAnalysis=null;let moResult=null;\n"
         "function makeDefaultPhasing(){return {enabled:false,phase_count:1}}\n"
         "function applyRequiredSocialProgramFromGlavapu(){}\nfunction syncTep(){}\n"
-        "function applyServerPresetProjectConfig(){return ''}\n"
         "function applyTelegramCalcOverrides(){}\nfunction renderInputs(){}\n"
         "function renderTep(){}\nfunction renderPhasing(){}\n"
         "function renderGlavapuPreview(){}\n"

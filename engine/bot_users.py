@@ -1669,8 +1669,19 @@ def web_login_start() -> dict[str, Any]:
     return {
         "code": data["code"],
         "link": f"https://t.me/{username}?start=login_{data['code']}",
+        "display_code": _web_login_display(data["code"]),
         "ttl_seconds": _WEB_LOGIN_TTL_SECONDS,
     }
+
+
+def _web_login_display(code: str) -> str:
+    """Код входа так, как его сверяют глазами: на странице и в боте одинаково.
+
+    Сверка нужна, потому что ссылку входа может прислать чужой человек: он
+    запросил код у себя, и если бот подтвердит вход молча, сессию заберёт он.
+    """
+    code = str(code or "").lower()
+    return "-".join(code[i:i + 4] for i in range(0, len(code), 4)).upper()
 
 
 def _web_login_record(code: str) -> tuple[Path, dict[str, Any]]:
