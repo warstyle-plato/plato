@@ -3514,6 +3514,11 @@ def _anthropic_direct_request(payload: dict[str, Any],
     effort = ((payload.get("reasoning") or {}).get("effort") or "").strip()
     if effort:
         request["output_config"] = {"effort": effort}
+    output_format = plato_provider.format_for_anthropic(payload.get("text"))
+    if output_format:
+        # Без этого строгая схема OpenAI терялась по дороге: Anthropic отвечал
+        # прозой или JSON в обёртке, и разбор ТЭП падал «не удалось разобрать».
+        request.setdefault("output_config", {})["format"] = output_format
 
     client = anthropic.Anthropic(
         api_key=api_key,

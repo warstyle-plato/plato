@@ -1568,11 +1568,16 @@ def _telegram_handle_freeform_tep(chat_id: int, text: str) -> None:
     try:
         parsed = build_freeform_tep(text)
     except (ValueError, RuntimeError) as exc:
+        # Сбой модели — не нехватка данных: заголовок «не хватает» отправлял
+        # человека переписывать верный текст, хотя дело было не в нём.
+        title = ("Не удалось распознать текст."
+                 if isinstance(exc, FreeformTepRecognitionError)
+                 else "Не хватает исходных данных.")
         _telegram_send_message(
             chat_id,
-            "<b>Не хватает исходных данных.</b>\n"
+            f"<b>{title}</b>\n"
             + html.escape(str(exc))
-            + ".\n\nПример: <code>Участок 2,4 га. Квартиры 42 000 м², коммерция 2 500 м².</code>",
+            + f".\n\nПример: <code>{html.escape(FREEFORM_TEP_EXAMPLE)}</code>",
         )
         return
 
