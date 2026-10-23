@@ -95,6 +95,7 @@ import v4_dashboard
 import v4_entry_sheet
 import v4_nonres_sheet
 import nonres_workbook
+import office_workbook
 import hotel_workbook
 import v4_value_cache
 import presentation as _presentation
@@ -298,6 +299,11 @@ _engine_part("site_massing")
 # Объёмная схема: корпуса очередей на участке и их аксонометрия —
 # engine/site_massing_layout.py; один ответ для страницы и PDF.
 _engine_part("site_massing_layout")
+# Кварталы и фронты участка, расстановка корпусов и её проверка —
+# engine/site_massing_blocks.py; план расстановки от Платона (фоновый запрос,
+# хранение по отпечатку) — engine/site_massing_plan.py.
+_engine_part("site_massing_blocks")
+_engine_part("site_massing_plan")
 
 
 _engine_part("operating_model")

@@ -141,25 +141,66 @@ def test_the_replacement_takes_the_finmodel_and_refuses_a_stranger(tmp_path, mon
     assert "cf_1_new" in str(refused.value) and "Расчет стоимости строительства" in str(refused.value)
 
 
-def test_the_waterfall_does_not_read_rss_payments_into_bdds_codes(monkeypatch):
-    """Код 2.2.1 есть и в БДДС, и в смете РСС, и значит разное."""
+def _finmodel_funding(monkeypatch, articles: dict, estimate: dict, paid: dict,
+                      completion_need: float, reserve: float = 0.0) -> dict:
     monkeypatch.setattr(dashboard, "_finance_baseline", lambda _: {
         "known": True, "kind": "finmodel", "source": "finance.xlsx",
-        "approved": 500.0, "completion_need_at_baseline": 300.0, "paid_at_baseline": 200.0,
-        "reserve": 0.0, "reserve_parts": {}, "monthly_need": {}, "tail_after_apr": 0.0,
-        "chapters": ["2"],
-        "articles": {"2.2.1": {"code": "2.2.1", "chapter": "2", "name": "Подготовка",
-                               "rss_limit": 500.0, "paid_at_baseline": 200.0,
-                               "has_programme": True,
-                               "monthly_need": {"2026-11-01": 300.0}}},
+        "approved": 1000.0, "completion_need_at_baseline": completion_need,
+        "paid_at_baseline": 1000.0 - completion_need,
+        "reserve": reserve, "reserve_parts": {}, "monthly_need": {}, "tail_after_apr": 0.0,
+        "chapters": sorted({a["chapter"] for a in articles.values() if a["chapter"]}),
+        "articles": articles,
     })
-    monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {
-        "rows": [], "by_code": {"2": {"estimate": 450.0}}})
-    monkeypatch.setattr(dashboard, "_paid_in_chapters", lambda *_: {"total": 200.0, "borrowed": 0.0})
-    # Оплаты РСС по коду 2.2.1 — другая статья; подставь их, и лимит статьи «кончился».
-    monkeypatch.setattr(dashboard, "_payment_by_code", lambda _: {"2.2.1": 480.0})
+    monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {"rows": [], "by_code": estimate})
+    monkeypatch.setattr(dashboard, "_paid_in_chapters",
+                        lambda rss, est, chapters=("2", "3"): {
+                            "total": sum(paid[c] for c in chapters), "borrowed": 0.0})
+    # Оплаты РСС по кодам в статьи финмодели не кладутся вовсе.
+    monkeypatch.setattr(dashboard, "_payment_by_code",
+                        lambda _: (_ for _ in ()).throw(AssertionError("оплаты РСС по коду не нужны")))
     monkeypatch.setattr(dashboard, "_unspent", lambda *a, **k: None)
     view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
-    result = dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 10, 20), view)
-    assert result["additional_financing"] == pytest.approx(0.0)
-    assert not result["reserve_start"]
+    return dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 10, 20), view)
+
+
+def test_the_remaining_limit_is_the_rss_limit_less_paid_not_the_model_plan(monkeypatch):
+    """«Остаток лимита вот тут же» (владелец, 23.10.2026): по РСС 6,81 − 5,26 = 1,55 млрд,
+    а плашка показывала «ПЛАН» финмодели 4,78."""
+    articles = {
+        "2.2.1": {"code": "2.2.1", "chapter": "2", "name": "Подготовка", "rss_limit": 500.0,
+                  "paid_at_baseline": 200.0, "has_programme": True,
+                  "monthly_need": {"2026-11-01": 300.0}},
+        "2.3.3": {"code": "2.3.3", "chapter": "3", "name": "Реклама", "rss_limit": 100.0,
+                  "paid_at_baseline": 40.0, "has_programme": True,
+                  "monthly_need": {"2026-11-01": 60.0}},
+    }
+    got = _finmodel_funding(monkeypatch, articles, {"2": {"estimate": 450.0}, "3": {"estimate": 80.0}},
+                            {"2": 400.0, "3": 70.0}, completion_need=360.0)
+    # Остаток лимита — по главам сметы: (450 − 400) + (80 − 70).
+    assert got["bank_remaining"] == pytest.approx(60.0)
+    # Остаток потребности — «ПЛАН» финмодели как есть, без вычета оплат РСС.
+    assert got["remaining_need"] == pytest.approx(360.0)
+    assert got["approved_remaining"] == pytest.approx(360.0)
+    # Не хватает: потребность глав сверх их остатка — (300 − 50) + (60 − 10).
+    assert got["additional_financing"] == pytest.approx(300.0)
+    assert got["additional_financing_from"] == "2026-11-01"
+    assert got["deficit_ladder"]["total"] == pytest.approx(300.0)
+    assert [row["code"] for row in got["articles"]] == ["2", "3"]
+    assert "по главам сметы" in got["method"]
+
+
+def test_articles_outside_the_chapters_are_uncovered_and_named(monkeypatch):
+    articles = {
+        "2.2.1": {"code": "2.2.1", "chapter": "2", "name": "Подготовка", "rss_limit": 500.0,
+                  "paid_at_baseline": 200.0, "has_programme": True,
+                  "monthly_need": {"2026-11-01": 100.0}},
+        "2.4.9": {"code": "2.4.9", "chapter": "", "name": "Без карты", "rss_limit": 50.0,
+                  "paid_at_baseline": 0.0, "has_programme": True,
+                  "monthly_need": {"2026-12-01": 50.0}},
+    }
+    got = _finmodel_funding(monkeypatch, articles, {"2": {"estimate": 450.0}},
+                            {"2": 400.0}, completion_need=150.0)
+    rows = {row["code"]: row for row in got["articles"]}
+    assert set(rows) == {"2", "вне глав"}
+    assert rows["вне глав"]["limit"] == 0.0 and rows["вне глав"]["unfunded_take"] == pytest.approx(50.0)
+    assert got["additional_financing"] == pytest.approx(50.0 + 50.0)

@@ -939,8 +939,22 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     current = _rss_ch23(estimate, chapters)
     paid = _paid_in_chapters(rss, estimate, chapters)
     paid_actual = paid["total"]
-    paid_delta = max(0.0, paid_actual - float(baseline["paid_at_baseline"] or 0.0))
-    remaining_need = max(0.0, float(baseline["completion_need_at_baseline"] or 0.0) - paid_delta)
+    finmodel = baseline.get("kind") == "finmodel"
+    if finmodel:
+        # Финмодель и РСС — разные книги: оплаченное по РСС больше «ФАКТА»
+        # финмодели не потому, что заплатили после baseline, а потому, что
+        # считают разное. Остаток потребности — план финмодели с месяца
+        # среза, тот же ряд, что идёт в водопад.
+        cut_month = cut.replace(day=1)
+        remaining_need = sum(
+            max(0.0, float(amount or 0.0))
+            for item in (baseline.get("articles") or {}).values()
+            for month, amount in (item.get("monthly_need") or {}).items()
+            if (monitor._day(month) or cut_month) >= cut_month)
+    else:
+        paid_delta = max(0.0, paid_actual - float(baseline["paid_at_baseline"] or 0.0))
+        remaining_need = max(0.0, float(baseline["completion_need_at_baseline"] or 0.0)
+                             - paid_delta)
 
     articles = baseline.get("articles") or {}
     if not articles:
@@ -950,12 +964,14 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             "source": baseline.get("source"),
         }
 
-    # Статьи финмодели несут коды БДДС, а оплаты РСС — коды сметы: код 2.2.1
-    # есть в обеих системах и значит разное. Оплаченное по статье финмодели —
-    # её «ФАКТ», а не оплаты РСС по совпавшему коду.
-    finmodel = baseline.get("kind") == "finmodel"
+    # Статьи финмодели несут коды БДДС и не ложатся на статьи сметы один в
+    # один, а лимит банка живёт в смете. Поэтому для финмодели водопад идёт
+    # по главам сметы: лимит и оплаченное главы — из РСС, потребность по
+    # месяцам — статьи финмодели этой главы (владелец, 23.10.2026: «остаток
+    # лимита вот тут же» — в РСС «Средства на завершение» 1,55 млрд, а плашка
+    # показывала «ПЛАН» финмодели 4,78).
     waterfall = _article_waterfall(
-        articles,
+        _chapter_articles(articles, estimate, rss, chapters) if finmodel else articles,
         float(baseline.get("reserve") or 0.0),
         cut,
         {} if finmodel else _payment_by_code(rss),
@@ -969,7 +985,13 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     unspent_view = _unspent(project, rss, estimate, rnv, waterfall,
                             None if finmodel else articles, cut, chapters)
     approved = float(baseline.get("approved") or 0.0)
-    book_remaining = max(0.0, approved - paid_actual) if approved > 0 else None
+    # Остаток утверждённого бюджета: у финмодели это её «ПЛАН» (ИТОГО − ФАКТ
+    # по построению); вычитать оплаченное по РСС из бюджета финмодели — снова
+    # смешивать две книги.
+    if finmodel:
+        book_remaining = remaining_need
+    else:
+        book_remaining = max(0.0, approved - paid_actual) if approved > 0 else None
     # Глава 1 есть в РСС, а в финансовой книге её строки нет — она всё равно
     # деньги проекта (владелец, 22.10.2026: «что за бред на плашках. Разве в
     # РСС нет 1 главы?»). Тогда лимит, оплачено и выбрано у банка берут главу
@@ -1015,7 +1037,7 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         # минус оплаченное. С «средствами на завершение» они расходятся, и обе
         # величины считает сервер — экран их только показывает.
         "approved": approved,
-        "approved_remaining": max(0.0, approved - paid_actual),
+        "approved_remaining": remaining_need if finmodel else max(0.0, approved - paid_actual),
         "bank_remaining": waterfall["opening_bank_remaining"],
         "opening_article_deficit": waterfall["opening_article_deficit"],
         "remaining_need": remaining_need,
@@ -1056,11 +1078,49 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "articles": waterfall["articles"],
         "tail_after_apr": max(0.0, float(baseline.get("tail_after_apr") or 0.0)),
         "method": (
+            "по главам сметы: потребность финмодели за месяц → остаток лимита главы РСС → "
+            "резерв → непокрытая потребность; статьи финмодели на статьи сметы не ложатся"
+            if finmodel else
             "постатейный waterfall: потребность месяца → остаток лимита статьи RSS → "
             "резервы 2.8/2.9 → непокрытая потребность; свободные лимиты других статей "
             "автоматически не кросс-финансируют дефицит"
         ),
     }
+
+
+_OUTSIDE_CHAPTERS = "вне глав"
+
+
+def _chapter_articles(articles: dict[str, dict[str, Any]], estimate: dict[str, Any],
+                      rss: Path, chapters: Any) -> dict[str, dict[str, Any]]:
+    """Статьи финмодели, свёрнутые в главы сметы, — вход водопада.
+
+    Лимит главы — «Общая сметная стоимость» строки главы РСС, оплаченное —
+    оплаты РСС по главе, потребность по месяцам — сумма статей финмодели этой
+    главы. Статьи без главы (карта «статьи_БДДС» их не знает) идут отдельной
+    строкой без лимита: их потребность не покрыта ничем, и это видно.
+    """
+    by_code = estimate.get("by_code") or {}
+    out: dict[str, dict[str, Any]] = {}
+    for chapter in chapters:
+        row = by_code.get(str(chapter)) or {}
+        out[str(chapter)] = {
+            "code": str(chapter), "chapter": str(chapter),
+            "name": f"Глава {chapter} сметы — статьи финмодели",
+            "rss_limit": float(row.get("estimate") or 0.0),
+            "paid_at_baseline": float(_paid_in_chapters(rss, estimate, (str(chapter),))["total"]),
+            "has_programme": False, "monthly_need": {},
+        }
+    outside = {"code": _OUTSIDE_CHAPTERS, "chapter": "", "name": "Статьи финмодели вне глав сметы",
+               "rss_limit": 0.0, "paid_at_baseline": 0.0, "has_programme": False, "monthly_need": {}}
+    for item in articles.values():
+        target = out.get(str(item.get("chapter") or "")) or outside
+        for month, amount in (item.get("monthly_need") or {}).items():
+            target["monthly_need"][month] = target["monthly_need"].get(month, 0.0) + float(amount or 0.0)
+        target["has_programme"] = target["has_programme"] or bool(item.get("has_programme"))
+    if any(outside["monthly_need"].values()):
+        out[_OUTSIDE_CHAPTERS] = outside
+    return out
 
 
 def _physical_smr(rss: Path, estimate: dict[str, Any], cut: datetime.date) -> float:

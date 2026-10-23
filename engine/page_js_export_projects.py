@@ -146,10 +146,9 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  rememberDerivedTail(x.tep,true);
  phasing=x.phasing?phasingFromSaved(x.phasing):phasing;rates=[];scenarioSelect.value=x.scenario||'base';
  // v0.12.25: old browser state could silently carry a three-phase project
- // into a newly imported small site. Only an explicit user choice or the
- // Mytishchi preset may restore phasing after this migration.
- const mytishchiPreset=inputs._preset_expert_overrides&&inputs._preset_expert_overrides.preset_id==='mytishchi';
- if(phasing.user_enabled!==true&&!mytishchiPreset)phasing=makeDefaultPhasing(1);
+ // into a newly imported small site. Only an explicit user choice may restore
+ // phasing after this migration.
+ if(phasing.user_enabled!==true)phasing=makeDefaultPhasing(1);
  // v0.7.1 migration: v0.7.0 temporarily misclassified the old 5% management rate as technical supervision.
  // Примета состояния v0.7.0 — нет поля управления проектом: там 5 % стояли
  // под технадзором. Нет версии у ЛЮБОГО проекта, сохранённого без неё, — и
@@ -1100,9 +1099,8 @@ function resetTepControls(){
  if(typeof renderPhaseFinancing==='function')renderPhaseFinancing();
  // Выбранный пресет и имя файла настроек — тоже след прошлого проекта:
  // «Сбросить» с оставшимся «Румянцево» в списке читается как «не сработало».
- ['serverPresetSelect','projectPresetSelect'].forEach(id=>{
-  const el=document.getElementById(id);if(el)el.selectedIndex=0;
- });
+ const presetSelect=document.getElementById('projectPresetSelect');
+ if(presetSelect)presetSelect.selectedIndex=0;
  const settingsFile=document.getElementById('settingsFileInput');
  if(settingsFile)settingsFile.value='';
 }
@@ -1131,6 +1129,9 @@ function resetAll(){
  siteParkingConflictSeen='';
  // Подсказка «галочка ВРИ без платы» относится к прошлому проекту.
  vriFeeAskedWithoutSum=false;vriFeeClearedMln=0;
+ // Ожидание плана расстановки — ожидание прошлого проекта: его ответ
+ // пересчитал бы новый.
+ siteMassingPlanStop();
  // Открытое окно подтверждения «Сформировать ТЭП по новым параметрам» — действие
  // над прошлым проектом: по «Сформировать» оно легло бы в новый.
  closeTepConfirm();

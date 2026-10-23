@@ -425,10 +425,11 @@ function renderStoredCadastral(){
  cadastralStatus.innerHTML='<span class="import-ok">Показана территория, сохранённая в проекте.</span>';
 }
 
-// Готовые примеры — витрина владельца: в них настоящие проекты с ценами и
+// Пресеты проектов — витрина владельца: в них настоящие проекты с ценами и
 // сроками, и посторонним их не показывают (решение владельца, 18.08.2026).
 // Сервер отказывает не своему, страница на отказ убирает блок целиком, а не
-// оставляет пустой список без объяснения.
+// оставляет пустой список без объяснения. Серверных предустановок ТЭП
+// («Мишина», «Мытищи») больше нет (решение владельца, 23.10.2026).
 function presetsQuery(){
  return '?session='+encodeURIComponent(activeSession())+
         '&key='+encodeURIComponent(projectsAdminKey||'');
@@ -437,60 +438,6 @@ function presetsQuery(){
 function hidePresetsBlock(){
  const box=document.getElementById('projectsExamples');
  if(box)box.style.display='none';
-}
-
-async function loadPresetCatalog(){
- try{
-   const response=await fetch('/presets'+presetsQuery());
-   const data=await response.json();
-   if(response.status===403){hidePresetsBlock();return}
-   if(!response.ok)throw new Error(data.detail||'Не удалось получить предустановки');
-   const select=document.getElementById('serverPresetSelect');
-   if(!select)return;
-   select.innerHTML='<option value="">Предустановка ТЭП…</option>'+
-     (data.presets||[]).filter(p=>p.available).map(p=>
-       `<option value="${p.id}" data-download="${p.download_url}" title="${p.description||''}">${p.name}</option>`
-     ).join('');
-   select.onchange=()=>{
-     const opt=select.options[select.selectedIndex];
-     const link=document.getElementById('serverPresetDownload');
-     if(select.value){
-       link.href=(opt.dataset.download||'#')+presetsQuery();
-       link.style.display='inline-flex';
-     }else{
-       link.style.display='none';
-     }
-   };
- }catch(e){
-   console.warn('Preset catalog:',e);
- }
-}
-
-async function loadServerPreset(){
- const select=document.getElementById('serverPresetSelect');
- const id=select&&select.value;
- // Отказ печатался во «Вводных», а список теперь в личном кабинете:
- // сообщение уходило на страницу, которой человек не видит.
- if(!id){alert('Выберите предустановку из списка.');return}
- // Ход разбора и результат печатаются во «Вводных» — окно закрываем и
- // показываем ту вкладку, где всё это появится.
- closeProjects();openTab('inputs');
- const label=select.options[select.selectedIndex].textContent;
- glavapuStatus.textContent='Загружаю предустановку «'+label+'» с сервера…';
- glavapuPreview.style.display='none';
- try{
-   const response=await fetch('/presets/'+encodeURIComponent(id)+presetsQuery());
-   const payload=await response.json();
-   if(!response.ok)throw new Error(payload.detail||'Ошибка загрузки предустановки');
-   glavapuImport=payload;
-   renderGlavapuPreview(payload);
-   // Предустановка — готовый проект, проверять перед применением нечего.
-   // Двухшаговый сценарий заканчивался «загрузил, а в расчёте пусто»:
-   // второй клик пропускали, и вводные оставались прежними.
-   await applyGlavapu();
- }catch(e){
-   glavapuStatus.innerHTML='<span class="import-error">'+String(e.message||e)+'</span>';
- }
 }
 
 async function uploadGlavapu(){
@@ -589,93 +536,6 @@ function renderGlavapuPreview(data){
  glavapuPreview.style.display='block';
 }
 
-
-function applyServerPresetProjectConfig(presetId){
- if(!presetId)return '';
-
- if(presetId==='mytishchi'){
-   // Full project preset: reset phasing so no stale settings survive from another project.
-   // Округ решает Кср и Кд платы за ВРИ в нормативном пересчёте: без него
-   // расчёт берёт среднее по области и плата занижается на четверть.
-   inputs.mo_district='Городской округ Мытищи';
-   inputs.technical_supervision_pct=5;
-   inputs.offices_enabled=true;
-   inputs.offices_gba_sqm=Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.office_gba_sqm)||26700);
-   inputs.offices_saleable_sqm=Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.office_saleable_sqm)||21360);
-   phasing=makeDefaultPhasing(3);
-   phasing.enabled=true;
-   phasing.user_enabled=false;
-   phasing.source='preset_mytishchi';
-   phasing.phase_count=3;
-   phasing.phase_gap_months=12;
-   phasing.cost_inflation_pct=8;
-   phasing.sales_price_inflation_pct=8;
-   phasing.products.apartments=[40,32,28];
-   phasing.products.ground_commercial=[40,32,28];
-   phasing.products.underground_parking=[40,32,28];
-   phasing.products.storage=[40,32,28];
-
-   // Working social program approved for the Mytishchi scenario.
-   // Normative need remains separately stored in _glavapu_import.normalized.
-   inputs.social_mode='Строительство';
-   inputs._social_mode_user_set=true;
-   inputs.kindergarten_places=465;
-   inputs.school_places=675;
-   inputs.clinic_capacity=0;
-
-   inputs._preset_expert_overrides={
-     preset_id:'mytishchi',
-     note:'Экспертная корректировка относительно исходного ТЭП ГлавАПУ',
-     normative_kindergarten_need:Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.required_kindergarten_places)||465),
-     expert_kindergarten_places:465,
-     expert_school_places:675,
-     normative_school_need:Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.required_school_places)||975),
-     office_gba_sqm:inputs.offices_gba_sqm,
-     office_saleable_sqm:inputs.offices_saleable_sqm,
-     mfc_parking_spaces:Number((inputs._glavapu_import&&inputs._glavapu_import.normalized&&inputs._glavapu_import.normalized.mfc_parking_spaces)||434),
-     phasing:'3 очереди 40/32/28',
-     social_objects:[
-       {name:'ДОО №1',type:'kindergarten',capacity:250,phase:1},
-       {name:'СОШ №1',type:'school',capacity:675,phase:2},
-       {name:'ДОО №2',type:'kindergarten',capacity:215,phase:3}
-     ]
-   };
-
-   // Discrete social objects by queue. Dates are bound to each phase start.
-   phasing.social_objects=[
-     {id:'preset_myt_dou_1',name:'ДОО №1',type:'kindergarten',capacity:250,phase:1,start_date:phaseStartDate(1),start_mode:'auto'},
-     {id:'preset_myt_school_1',name:'СОШ №1',type:'school',capacity:675,phase:2,start_date:phaseStartDate(2),start_mode:'auto'},
-     {id:'preset_myt_dou_2',name:'ДОО №2',type:'kindergarten',capacity:215,phase:3,start_date:phaseStartDate(3),start_mode:'auto'}
-   ];
-   normalizeSocialObjectDates();
-
-   // Expert capacity overrides the source quantity, while source area is preserved unless user edits it.
-   syncTep(false);
-
-   return 'Preset Мытищи: 3 очереди 40/32/28; МФК/офисы 26,7/21,36 тыс. м²; подземный паркинг 2 723 м/м; рабочая социалка О1 ДОО 250, О2 СОШ 675, О3 ДОО 215. Нормативная потребность СОШ 975 хранится отдельно.';
- }
-
- if(presetId==='mishina'){
-   // A small project preset is intentionally single-phase.
-   // Clear discrete products so Mytishchi/localStorage values cannot leak into Mishina.
-   inputs.technical_supervision_pct=5;
-   // Состав объектов — реестр: второй офисник, оставленный от прошлого
-   // проекта, иначе протёк бы в пресет так же, как первый.
-   STANDALONE_OBJECTS.filter(o=>!o.sale_gate).forEach(o=>{
-    inputs[o.prefix+'_enabled']=false;
-    if(o.measure==='spaces'){inputs[o.prefix+'_spaces']=0}
-    else{inputs[o.prefix+'_gba_sqm']=0;inputs[o.prefix+'_saleable_sqm']=0}
-   });
-   phasing=makeDefaultPhasing(1);
-   phasing.enabled=false;
-   delete inputs._preset_expert_overrides;
-   autoSocialObjects(false);
-   normalizeSocialObjectDates();
-   return 'Preset Мишина: одноочередный проект.';
- }
-
- return '';
-}
 
 // Машино-места в чат — по видам и из расчёта движка, как итоги и PDF
 // (решение владельца 16.10.2026): подземный паркинг (из них к продаже),

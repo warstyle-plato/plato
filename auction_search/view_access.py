@@ -164,6 +164,42 @@ def scope_problem(method: str, path: str, query: Mapping[str, Any]) -> str:
     return ""
 
 
+# Пробы источников: открывают чужие страницы браузером сервера и тратят время
+# и квоты. Это инструмент команды, а не чтение раздела.
+_PROBE_GET = tuple(re.compile(pattern) for pattern in (
+    r"/auctions/[^/]+/probe(?:/browser)?",
+    r"/auctions/[^/]+/browser",
+    r"/auctions/[^/]+/api",
+    r"/auctions/krt/api-probe(?:/browser)?",
+    r"/auctions/source-page",
+))
+
+
+def anonymous_problem(method: str, path: str, query: Mapping[str, Any]) -> str:
+    """Почему посетитель без ключа не может сделать это, пока ворота выключены.
+
+    Когда ни ключ просмотра, ни личные ключи не заданы, раздел «Торги» открыт
+    для чтения всем — так решил владелец. Но запись (отметка «конкурс
+    объявлен», лоты у площадок, заявки модели), команды пересчёта и пробы
+    источников оставались открыты вместе с чтением: посетитель с улицы мог
+    менять то, что видят все. Без ключа можно ровно читать. Пусто — пускает.
+    """
+    clean = path.rstrip("/") or "/"
+    verb = str(method or "").upper()
+    refusal = "Без ключа кабинета рынка раздел «Торги» открыт только для просмотра"
+    if verb == "OPTIONS":
+        return ""
+    if verb in ("GET", "HEAD"):
+        if any(pattern.fullmatch(clean) for pattern in _PROBE_GET):
+            return refusal + ": пробы источников запускает команда"
+    elif not (verb == "POST" and clean in _READ_ONLY_POST):
+        return refusal
+    flag = command_flag(query)
+    if flag:
+        return refusal + f": обновление данных (параметр «{flag}») запускает команда"
+    return ""
+
+
 LOGIN_PAGE = """<!doctype html><meta charset="utf-8">
 <title>Торги DevelopAid</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">

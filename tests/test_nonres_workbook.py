@@ -5,6 +5,10 @@
 прибыль с переносом убытка, поток проекта и собственника, NPV, IRR, отчёт; лист
 «Сверка» сравнивает каждый итог с авторитетным расчётом движка.
 
+С 23.10.2026 эту книгу получают нежилой проект без офиса и проект с объектом
+по ДДУ; офис без ДДУ получает книгу офиса (`tests/test_office_workbook.py`).
+Поэтому сценарии без ДДУ здесь — у ТЦ, а не у офиса.
+
 Формулы вычисляет `xlsx_eval.Evaluator` — без Excel. Проверка обязана падать
 на подделке: испорченная формула, статья сметы, вводная и налог краснят сверку.
 
@@ -65,17 +69,23 @@ def _project(nonresidential: bool = True, **over):
     return x, t
 
 
+# Сценарии без ДДУ — у ТЦ без офиса: проект с офисом получает книгу офиса.
+RETAIL_ONLY = dict(offices_enabled=False, retail_enabled=True, retail_gba_sqm=40000.0,
+                   retail_saleable_sqm=24000.0, retail_parking_under_spaces=200,
+                   retail_parking_over_spaces=40, retail_rent_th_per_sqm_month=4.5,
+                   retail_occupancy_stable_pct=92.0, retail_leaseup_months=12,
+                   retail_opex_pct=18.0, retail_exit_cap_pct=11.0, retail_rent_date="2025-12-01")
 VARIANTS = {
-    "офис ДКП, продажи до ввода": dict(offices_strategy="direct", offices_direct_sale_offset_months=-6,
-                                       offices_direct_sale_curve="bell"),
-    "офис аренда и продажа, аннуитет": dict(offices_strategy="income"),
-    "аренда и удержание, погашение из NOI": dict(offices_strategy="income", offices_exit_mode="hold",
-                                                 offices_debt_repayment="sweep"),
-    "два объекта: офис ДКП и ТЦ в аренде": dict(offices_strategy="direct", retail_strategy="income",
-                                               **RETAIL),
+    "ТЦ ДКП, продажи до ввода": dict(RETAIL_ONLY, retail_strategy="direct",
+                                     retail_direct_sale_offset_months=-6,
+                                     retail_direct_sale_curve="bell"),
+    "ТЦ аренда и продажа, аннуитет": dict(RETAIL_ONLY, retail_strategy="income"),
+    "аренда и удержание, погашение из NOI": dict(RETAIL_ONLY, retail_strategy="income",
+                                                 retail_exit_mode="hold", retail_debt_repayment="sweep",
+                                                 retail_rent_th_per_sqm_month=7.0),
     "баллон в срок, участок рассрочкой, сценарий": dict(
-        offices_strategy="income", offices_loan_term_years=4, offices_hold_years=8,
-        offices_loan_balloon_pct=10, purchase_price_mln=900, purchase_schedule="30%@0; 70%@8",
+        RETAIL_ONLY, retail_strategy="income", retail_loan_term_years=4, retail_hold_years=8,
+        retail_loan_balloon_pct=10, purchase_price_mln=900, purchase_schedule="30%@0; 70%@8",
         land_buyout_mln=120, scenario_cost_multiplier=1.1, scenario_revenue_multiplier=0.9,
         rate_scenario="high"),
 }
@@ -88,6 +98,7 @@ def _book(name: str) -> tuple[bytes, dict]:
         x, t = _project(**VARIANTS[name])
         content, filename, meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
         assert meta.get("nonres_book") is True and "нежилой" in filename
+        assert not meta.get("office_book")
         _BOOKS[name] = content, meta
     return _BOOKS[name]
 
@@ -166,7 +177,7 @@ def test_a_tampered_formula_is_caught() -> None:
         row = _operating_row(sheet)
         sheet[f"{letter}{row}"] = sheet[f"{letter}{row}"].value + "*1.01"
 
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
+    labels = _tampered_labels("ТЦ аренда и продажа, аннуитет", tamper)
     assert {"Арендная выручка", "NOI за срок удержания", "Выручка проекта"} <= labels
 
 
@@ -181,7 +192,7 @@ def test_a_tampered_cost_article_is_caught() -> None:
         row = next(r for r in range(1, nw.FIRST_ROW) if sheet[f"A{r}"].value == "Резерв")
         sheet[f"D{row}"] = sheet[f"D{row}"].value + "*1.2"
 
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
+    labels = _tampered_labels("ТЦ аренда и продажа, аннуитет", tamper)
     assert {"Резерв", "CAPEX", "Кредит — выборка"} <= labels
 
 
@@ -192,7 +203,7 @@ def test_a_tampered_input_is_caught() -> None:
         cell = sheet[f"C{nw.O_ROW['rent']}"]
         cell.value = cell.value * 1.1
 
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
+    labels = _tampered_labels("ТЦ аренда и продажа, аннуитет", tamper)
     assert {"Арендная выручка", "NOI за срок удержания"} <= labels
 
 
@@ -202,7 +213,7 @@ def test_the_rent_date_moves_the_book_like_the_engine() -> None:
     def tamper(book):
         book[nw.INPUTS_SHEET][f"C{nw.O_ROW['rent_date']}"].value = None
 
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
+    labels = _tampered_labels("ТЦ аренда и продажа, аннуитет", tamper)
     assert {"Арендная выручка", "NOI за срок удержания"} <= labels
 
 
@@ -219,12 +230,12 @@ def test_a_tampered_tax_rule_is_caught() -> None:
 def test_the_model_counts_with_formulas_from_one_input_sheet() -> None:
     """Числа на листах модели — формулы; значения стоят только на «Вводных»
     и в столбцах, подписанных «СЧИТАЕТ ДВИЖОК»."""
-    content, _ = _book("два объекта: офис ДКП и ТЦ в аренде")
+    content, _ = _book("ТЦ ДКП, продажи до ввода")
     book = openpyxl.load_workbook(io.BytesIO(content))
     assert book.sheetnames[:2] == [nw.INPUTS_SHEET, nw.COSTS_SHEET]
     assert book.sheetnames[-5:] == [nw.CREDIT_SHEET, nw.TAX_SHEET, nw.CASH_SHEET,
                                     nw.REPORT_SHEET, nw.CHECK_SHEET]
-    assert {"Объект 1", "Объект 2"} <= set(book.sheetnames)
+    assert "Объект 1" in book.sheetnames
     for name in book.sheetnames:
         if name in (nw.INPUTS_SHEET, nw.CHECK_SHEET):
             continue
@@ -240,10 +251,10 @@ def test_the_model_counts_with_formulas_from_one_input_sheet() -> None:
     assert f"'{nw.COSTS_SHEET}'!" in sheet[f"{nw.COLUMNS['capex'][0]}{nw.FIRST_ROW}"].value
     assert f"'{nw.CREDIT_SHEET}'!" in sheet[f"{nw.COLUMNS['key_rate'][0]}{nw.FIRST_ROW}"].value
     # Блок другой стратегии свёрнут: у прямой продажи — аренда, у аренды — ДКП.
-    titles = {book[n]["A1"].value.split(" — ")[0]: book[n] for n in ("Объект 1", "Объект 2")}
-    office, retail = titles["Офисы"], titles["Коммерция ОСЗ"]
-    assert office.column_dimensions[nw.COLUMNS["rent"][0]].hidden
-    assert not office.column_dimensions[nw.COLUMNS["sale"][0]].hidden
+    direct = sheet
+    retail = openpyxl.load_workbook(io.BytesIO(_book("ТЦ аренда и продажа, аннуитет")[0]))["Объект 1"]
+    assert direct.column_dimensions[nw.COLUMNS["rent"][0]].hidden
+    assert not direct.column_dimensions[nw.COLUMNS["sale"][0]].hidden
     assert retail.column_dimensions[nw.COLUMNS["sale"][0]].hidden
     assert not retail.column_dimensions[nw.COLUMNS["rent"][0]].hidden
     report = book[nw.REPORT_SHEET]
@@ -253,12 +264,11 @@ def test_the_model_counts_with_formulas_from_one_input_sheet() -> None:
 
 
 def test_choices_are_russian_lists_and_dates_are_dates() -> None:
-    content, _ = _book("два объекта: офис ДКП и ТЦ в аренде")
+    content, _ = _book("ТЦ аренда и продажа, аннуитет")
     book = openpyxl.load_workbook(io.BytesIO(content))
     sheet = book[nw.INPUTS_SHEET]
-    assert {sheet[f"C{nw.O_ROW['strategy']}"].value, sheet[f"D{nw.O_ROW['strategy']}"].value} == {
-        nw.STRATEGY["direct"], nw.STRATEGY["income"]}
-    assert sheet[f"D{nw.O_ROW['repayment']}"].value in nw.REPAY.values()
+    assert sheet[f"C{nw.O_ROW['strategy']}"].value == nw.STRATEGY["income"]
+    assert sheet[f"C{nw.O_ROW['repayment']}"].value in nw.REPAY.values()
     assert sheet[f"B{nw.P_ROW['rate_scenario']}"].value in nw.SCENARIO.values()
     lists = {cell for dv in sheet.data_validations.dataValidation for rng in dv.sqref.ranges
              for cell in (rng.coord,)}
@@ -279,12 +289,12 @@ def test_choices_are_russian_lists_and_dates_are_dates() -> None:
 def test_switching_a_choice_in_the_book_moves_the_model() -> None:
     """Список — не подпись: выбор «Удержание с оценкой» в книге убирает
     выручку выхода и ставит оценку, как у движка с тем же выбором."""
-    content, _ = _book("офис аренда и продажа, аннуитет")
+    content, _ = _book("ТЦ аренда и продажа, аннуитет")
 
     def tamper(book):
         book[nw.INPUTS_SHEET][f"C{nw.O_ROW['exit_mode']}"] = nw.EXIT["hold"]
 
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
+    labels = _tampered_labels("ТЦ аренда и продажа, аннуитет", tamper)
     assert {"Выход — продажа", "Удержание — оценка"} <= labels
 
 
@@ -394,7 +404,7 @@ def test_a_longer_project_than_the_tables_is_caught() -> None:
         cell = book[nw.INPUTS_SHEET][f"C{nw.O_ROW['hold_years']}"]
         cell.value = cell.value + 2
 
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
+    labels = _tampered_labels("ТЦ аренда и продажа, аннуитет", tamper)
     assert "Горизонт модели, мес." in labels
 
 

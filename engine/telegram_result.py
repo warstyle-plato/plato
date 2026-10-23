@@ -476,16 +476,6 @@ def _telegram_send_attachments(
             pass
 
 
-def _server_preset_meta(preset_id: str) -> dict[str, Any]:
-    meta = SERVER_TEP_PRESETS.get(preset_id)
-    if not meta:
-        raise HTTPException(status_code=404, detail="Предустановка не найдена")
-    path = PRESET_DIR / meta["filename"]
-    if not path.exists():
-        raise HTTPException(status_code=500, detail=f"Файл предустановки отсутствует на сервере: {meta['filename']}")
-    return {**meta, "id": preset_id, "path": path}
-
-
 def _is_admin_request(session: str = "", key: str = "") -> bool:
     """Владелец сервиса: свой chat_id в списке или ключ администратора."""
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
@@ -511,47 +501,3 @@ def _require_admin(session: str, key: str, what: str) -> None:
     raise HTTPException(status_code=403, detail=f"{what} — только для владельца сервиса.")
 
 
-@app.get("/presets")
-def list_server_presets(session: str = "", key: str = "") -> dict[str, Any]:
-    _require_admin(session, key, "Готовые примеры")
-    items = []
-    for preset_id, meta in SERVER_TEP_PRESETS.items():
-        path = PRESET_DIR / meta["filename"]
-        items.append({
-            "id": preset_id,
-            "name": meta["name"],
-            "filename": meta["filename"],
-            "description": meta["description"],
-            "available": path.exists(),
-            "download_url": f"/presets/{preset_id}/download",
-        })
-    return {"presets": items}
-
-
-@app.get("/presets/{preset_id}")
-def get_server_preset(preset_id: str, session: str = "", key: str = "") -> dict[str, Any]:
-    _require_admin(session, key, "Готовые примеры")
-    meta = _server_preset_meta(preset_id)
-    try:
-        payload = parse_glavapu_xlsx(meta["path"].read_bytes(), meta["filename"])
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Не удалось разобрать серверную предустановку: {exc}") from exc
-    payload["source"]["preset_id"] = preset_id
-    payload["source"]["preset_name"] = meta["name"]
-    payload["source"]["server_preset"] = True
-    payload["warnings"] = [
-        f"Загружена серверная предустановка «{meta['name']}».",
-        *payload.get("warnings", []),
-    ]
-    return payload
-
-
-@app.get("/presets/{preset_id}/download")
-def download_server_preset(preset_id: str, session: str = "", key: str = ""):
-    _require_admin(session, key, "Файл предустановки")
-    meta = _server_preset_meta(preset_id)
-    return FileResponse(
-        path=str(meta["path"]),
-        filename=meta["filename"],
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
