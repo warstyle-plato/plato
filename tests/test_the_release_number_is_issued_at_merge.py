@@ -346,6 +346,36 @@ def test_a_branch_behind_a_bumped_base_gets_its_number_without_a_conflict(
     assert clean.returncode == 0, clean.stdout
 
 
+def test_the_pushed_release_head_orders_no_pr_runs(repo, monkeypatch):
+    """Push номера рождал synchronize, а слияние через две секунды снимало
+    merge-ref: после каждого выпуска на ветке висели три красных прогона без
+    единого job. Голова, которую пушит скрипт, их не заказывает; коммиты
+    самой ветки метку не получают."""
+    body = "\n\n\na = 0\n"
+    repo.commit("0.24.18", body)
+    repo.run("git", "push", "-q", "origin", "main")
+    repo.branch("feat", "0.24.18", "\n\n\na = 1\n")
+
+    guard = _module(GUARD, "guard_for_skip")
+    monkeypatch.setattr(release_merge, "_guard", lambda: guard)
+    monkeypatch.setattr(release_merge, "ROOT", repo.path)
+    monkeypatch.setattr(release_merge, "ENGINE", repo.path / "main_legacy.py")
+    monkeypatch.chdir(repo.path)
+
+    head = release_merge._set_version("feat", "0.24.19", "main")
+
+    def message(rev):
+        return subprocess.run(["git", "log", "-1", "--format=%B", rev], cwd=repo.path,
+                              capture_output=True, text=True, check=True).stdout
+    assert release_merge.SKIP_PR_RUNS in {"[skip ci]", "[ci skip]", "[no ci]",
+                                          "[skip actions]", "[actions skip]"}
+    assert head == subprocess.run(["git", "rev-parse", "origin/feat"], cwd=repo.path,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+    assert message(head).startswith("Выпуск 0.24.19")
+    assert release_merge.SKIP_PR_RUNS in message(head)
+    assert release_merge.SKIP_PR_RUNS not in message(f"{head}~1")
+
+
 def test_a_real_conflict_is_named_and_not_merged(repo, monkeypatch):
     body = "\n\n\na = 0\n"
     repo.commit("0.24.18", body)

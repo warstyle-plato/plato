@@ -71,7 +71,7 @@ def test_the_proletarsky_office_is_one_building_of_fifteen_storeys():
     assert b["area_sqm"] == pytest.approx(m["footprint_sqm"])
     assert b["storeys_shown"] == 15 and b["storeys_origin"] == "estimate"
     assert b["label"] == "Здание, 15 этажей"
-    assert _rect_area(b["rect_m"]) == pytest.approx(b["area_sqm"], rel=0.01)
+    assert abs(core._ring_area(b["ring_m"])) == pytest.approx(b["area_sqm"], rel=0.01)
     # Контура из ЕГРН нет — квадрат той же площади, и это сказано.
     assert layout["site_shape_origin"] == "square"
     assert any("квадратом той же площади" in n for n in layout["notes"])
@@ -154,14 +154,14 @@ def test_the_corpora_stand_inside_the_egrn_contour_without_setbacks():
         for corner in b["ring_merc"]:
             assert core._inside(tuple(corner), [ring]), (b["label"], corner)
         assert abs(core._ring_area(b["ring_merc"])) * k * k == pytest.approx(
-            _rect_area(b["rect_m"]), rel=0.01)
+            abs(core._ring_area(b["ring_m"])), rel=0.01)
+        assert abs(core._ring_area(b["ring_m"])) == pytest.approx(b["area_sqm"], rel=0.01)
     contour = sum(abs(core._ring_area(r)) for r in layout["site_rings"])
     assert contour == pytest.approx(site, rel=0.01)
     inner = layout["underground_rings"]
     for b in layout["buildings"]:
-        x0r, y0r, x1r, y1r = b["rect_m"]
-        for corner in ((x0r, y0r), (x1r, y0r), (x1r, y1r), (x0r, y1r)):
-            assert core._inside(corner, inner), (b["label"], corner)
+        for corner in b["ring_m"]:
+            assert core._inside(tuple(corner), inner), (b["label"], corner)
 
 
 def test_a_scheme_of_dozens_of_corpora_is_not_drawn():
