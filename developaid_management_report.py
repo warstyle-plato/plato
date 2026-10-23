@@ -1086,9 +1086,12 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
     if block.get("state") == "ok":
         quarter = block["quarter"]
         fact = quarter["fact"]
-        pieces = [f"С начала квартала продано {fact['contracts']} "
-                  f"{_plural(fact['contracts'], 'договор', 'договора', 'договоров')} на "
-                  f"{_rub(fact['amount'])}, {_area(fact['area'])}"]
+        # Продают лоты, а договоры заключают (владелец, 23.10.2026: «Проданы
+        # договоры?»).
+        lots = int(round(float(fact.get("units") or 0.0)))
+        pieces = [f"С начала квартала продано {lots} {_plural(lots, 'лот', 'лота', 'лотов')} "
+                  f"({fact['contracts']} {_plural(fact['contracts'], 'договор', 'договора', 'договоров')}) "
+                  f"на {_rub(fact['amount'])}, {_area(fact['area'])}"]
         for name, plan in (("финмодели", quarter.get("fm")), ("банка", quarter.get("bank"))):
             if plan and plan.get("amount"):
                 gap = fact["amount"] - plan["amount"]

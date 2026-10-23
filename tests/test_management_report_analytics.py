@@ -75,6 +75,13 @@ def test_findings_carry_numbers_and_sources():
     assert "Выборка кредита за неделю — 48,0 млн ₽ (за предыдущий такой же период — " \
            "120,0 млн ₽)" in found["Финансирование"]["text"]
     assert "«Арбитраж с подрядчиком»" in found["Открытые вопросы"]["text"]
+    # Продают лоты, договоры заключают (владелец, 23.10.2026: «Проданы договоры?»).
+    fact = built["sales"]["quarter"]["fact"]
+    lots, contracts = int(round(fact["units"])), fact["contracts"]
+    assert (f"продано {lots} {report._plural(lots, 'лот', 'лота', 'лотов')} ({contracts} "
+            f"{report._plural(contracts, 'договор', 'договора', 'договоров')}) на"
+            ) in found["Продажи"]["text"]
+    assert "продано " + str(contracts) + " договор" not in found["Продажи"]["text"]
     # Каждая тема — один раз (владелец, 22.10.2026: «Задвоение» — «Споры» шли
     # дважды), и аббревиатуры не теряют регистр («по РСС», а не «по рсс»).
     topics = [item["topic"] for item in built["findings"]]
