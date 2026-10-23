@@ -1433,9 +1433,14 @@ function renderSiteMassing(){
  rows.push(row('Средняя этажность',Number(m.average_storeys||0)>0?'≈ '+Number(m.average_storeys).toLocaleString('ru-RU',{maximumFractionDigits:1}):'—',
   (objects.length?'Наземная площадь жилых домов ('+sq(m.residential_gns_sqm)+'), делённая на их пятно.':
    'Наземная площадь здания ('+sq(m.above_gns_sqm)+'), делённая на пятно застройки.'),true));
- rows.push(row('Подземный контур',sq(m.underground_contour_sqm),'Участок без отступов. Под машино-места идёт '+
-  num(Math.round(Number(m.underground_use_factor||0)*100))+'% этой площади, остальное — стены, лестницы и шахты.'));
- rows.push(row('Площадь подземной части',sq(m.underground_sqm),'Паркинг с рампами и проездами и подземные кладовые из ТЭП.'));
+ rows.push(row('Подземный контур',sq(m.underground_contour_sqm),
+  (Number(m.social_plot_sqm||0)>0?'Участок без отступов и без участков школы, детского сада и поликлиники: под ними паркинг не строят, они передаются городу. ':'Участок без отступов. ')+
+  'Под машино-места идёт '+num(Math.round(Number(m.underground_use_factor||0)*100))+'% этой площади, остальное — стены, лестницы и шахты. '+
+  'От этой доли зависит только число уровней: пока подземная часть помещается на один уровень, уровней и стоимости она не меняет.'));
+ const garages=Number(m.underground_garages_sqm||0);
+ rows.push(row('Площадь подземной части',sq(m.underground_sqm),garages>0?
+  'Паркинг с рампами и проездами и подземные кладовые из ТЭП ('+sq(Number(m.underground_sqm||0)-garages)+') и подземные гаражи отдельных объектов ('+sq(garages)+').':
+  'Паркинг с рампами и проездами и подземные кладовые из ТЭП.'));
  rows.push(row('Подземных уровней',String(m.underground_levels||0),
   m.underground_levels_origin==='manual'?'Задано вручную.':'Площадь подземной части, делённая на полезную площадь одного уровня, с округлением вверх.',true));
  let levels='';

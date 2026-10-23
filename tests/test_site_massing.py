@@ -411,3 +411,24 @@ def test_glavapu_plots_are_taken_for_the_same_places_and_area():
     assert by["kindergarten"]["plot_origin"] == "default"
     assert by["offices"]["plot_sqm"] == pytest.approx(44010.0)
     assert "строка 14" in by["offices"]["plot_basis"]
+
+
+def test_the_underground_contour_leaves_out_the_school_and_garden_plots():
+    """Владелец 23.10.2026: под участками школы, сада и поликлиники паркинг жилья не
+    строят — подземного контура там нет; число уровней тогда отвечает на долю контура."""
+    x, t = _with_objects()
+    t["underground_parking"] = {"units": 2000, "gns": 75000.0}
+    m = core.site_massing(x, t)
+    social = sum(o["plot_sqm"] for o in m["objects"] if o["key"] in ("school", "kindergarten"))
+    assert m["social_plot_sqm"] == pytest.approx(social)
+    site, setbacks = m["site_sqm"], m["setbacks_sqm"]
+    assert m["underground_contour_sqm"] == pytest.approx((site - social) * (site - setbacks) / site)
+    # Гаражи объектов названы отдельно от подземных продуктов.
+    t["offices"]["under_gns"] = 7387.5
+    m = core.site_massing(x, t)
+    assert m["underground_garages_sqm"] == pytest.approx(7387.5)
+    assert m["underground_sqm"] == pytest.approx(75000.0 + 7387.5)
+    # Доля полезной площади контура двигает уровни, когда площадь к нему подходит.
+    one = core.site_massing({**x, "underground_contour_use_factor": 0.85}, t)["underground_levels"]
+    two = core.site_massing({**x, "underground_contour_use_factor": 0.4}, t)["underground_levels"]
+    assert (one, two) == (1, 2)

@@ -36,6 +36,7 @@ RESIDENTIAL_STOREYS_DEFAULT = 17.0
 ROWS: tuple[tuple[str, str, str], ...] = (
     ("site_sqm", "Площадь участка, м²", INPUT),
     ("objects_plot_sqm", "Участки отдельных зданий, м²", INPUT),
+    ("social_plot_sqm", "Из них участки соцобъектов, м²", INPUT),
     ("yard_sqm", "Двор на участке по норме региона, м²", INPUT),
     ("driveways_pct", "Проезды, тротуары и пожарные проезды, % участка", INPUT),
     ("setback_m", "Отступ от границ участка, м", INPUT),
@@ -59,7 +60,7 @@ ROWS: tuple[tuple[str, str, str], ...] = (
     ("footprint_sqm", "Пятно застройки, м²", FORMULA),
     ("footprint_shortage_sqm", "Не хватает земли, м²", FORMULA),
     ("average_storeys", "Средняя этажность", FORMULA),
-    ("contour_sqm", "Подземный контур (участок без отступов), м²", FORMULA),
+    ("contour_sqm", "Подземный контур (без отступов и участков соцобъектов), м²", FORMULA),
     ("capacity_sqm", "Помещается на одном уровне, м²", FORMULA),
     ("underground_levels", "Подземных уровней", FORMULA),
     ("slab_sqm", "Площадь уровня при раскладке, м²", FORMULA),
@@ -93,7 +94,8 @@ BOOK_KEYS: dict[str, str] = {
     key: ENGINE_FIELDS.get(key, f"massing_{key}") for key, _, kind in ROWS if kind == INPUT}
 # Служебные ключи книги, чьи вводные — метры.
 PERCENT_KEYS = tuple(f"massing_{key}" for key in PERCENT_FIELDS)
-AREA_KEYS = ("massing_site_sqm", "massing_objects_plot_sqm", "massing_yard_sqm",
+AREA_KEYS = ("massing_site_sqm", "massing_objects_plot_sqm", "massing_social_plot_sqm",
+             "massing_yard_sqm",
              "massing_surface_parking_sqm",
              "massing_above_gns_sqm", "massing_underground_sqm")
 
@@ -141,7 +143,9 @@ def formulas(ref: Callable[[str], str]) -> dict[str, str]:
                                    f"MAX(0,{r('footprint_sqm')}-{r('footprint_estimate_sqm')}),0)"),
         "average_storeys": (f"IF({r('footprint_sqm')}>0,{r('above_gns_sqm')}"
                             f"/{r('footprint_sqm')},0)"),
-        "contour_sqm": f"MAX(0,{r('site_sqm')}-{r('setbacks_sqm')})",
+        # Подземный контур — без отступов и участков соцобъектов (отступ — по доле).
+        "contour_sqm": (f"MAX(0,{r('site_sqm')}-{r('social_plot_sqm')})"
+                        f"*({r('site_sqm')}-{r('setbacks_sqm')})/MAX({r('site_sqm')},0.000001)"),
         "capacity_sqm": f"{r('contour_sqm')}*{r('use_factor')}",
         "underground_levels": (f"IF({r('underground_sqm')}<=0,0,IF({r('levels_manual')}>0,"
                                f"INT({r('levels_manual')}),IF({r('capacity_sqm')}>0,"
@@ -183,6 +187,7 @@ def input_values(massing: dict, inputs: dict) -> dict[str, object]:
         "surface_parking_sqm": float(massing.get("surface_parking_sqm") or 0.0),
         "footprint_manual_sqm": max(0.0, num("building_footprint_sqm")),
         "objects_plot_sqm": float(massing.get("objects_plot_sqm") or 0.0),
+        "social_plot_sqm": float(massing.get("social_plot_sqm") or 0.0),
         "above_gns_sqm": float(massing.get("residential_gns_sqm",
                                            massing.get("above_gns_sqm")) or 0.0),
         "underground_sqm": float(massing.get("underground_sqm") or 0.0),
