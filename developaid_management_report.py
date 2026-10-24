@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import datetime
+import sys
 import html
 import json
 import os
@@ -936,7 +937,35 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
     blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
-            "end": bounds["end"].isoformat(), **blocks}
+            "end": bounds["end"].isoformat(), **blocks,
+            # Чем и когда собрана: старая сводка с прошлой сборкой выглядела как
+            # новая, и «это исправлено?» было не проверить по самому документу.
+            "built": {"at": _now_moscow(), "version": _engine_version()}}
+
+
+def _now_moscow() -> str:
+    from zoneinfo import ZoneInfo
+
+    return datetime.datetime.now(ZoneInfo("Europe/Moscow")).isoformat(timespec="minutes")
+
+
+def _engine_version() -> str:
+    """Номер сборки движка (`VERSION`) — объявлен один раз, в движке."""
+    for name in ("developaid_core", "main_legacy"):
+        module = sys.modules.get(name)
+        if module is not None and getattr(module, "VERSION", ""):
+            return str(module.VERSION)
+    return ""
+
+
+def _built_words(report: dict[str, Any]) -> str:
+    """«Сформировано 24.10.2026 в 23:31 (МСК), сборка 0.27.61»."""
+    built = report.get("built") or {}
+    if not built.get("at"):
+        return ""
+    at = datetime.datetime.fromisoformat(built["at"])
+    words = f"Сформировано {at.strftime('%d.%m.%Y')} в {at.strftime('%H:%M')} (МСК)"
+    return words + (f", сборка {built['version']}" if built.get("version") else "") + "."
 
 
 # --------------------------------------------------------------------------
@@ -2865,6 +2894,8 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<div class='item'><b>{esc(note['topic'])}</b> — вопрос закрыт: "
                        f"{esc(note['text'])} <span class='note'>— {_day(note['at'])}, "
                        f"{esc(note['author'])}</span></div>")
+    if _built_words(report):
+        out.append(f"<p class='note built'>{esc(_built_words(report))}</p>")
     return "\n".join(_keep_headings([part for part in out if part]))
 
 
