@@ -37,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Переключиться на preview-ветку
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -52,7 +52,7 @@ jobs:
           git checkout --detach FETCH_HEAD
           echo "Preview ref: $SOURCE_REF"
           git rev-parse --short=7 HEAD
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -103,7 +103,7 @@ jobs:
       sha: ${{ steps.meta.outputs.sha }}
       tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Переключиться на preview-ветку
         env:
           SOURCE_REF: ${{ inputs.source_ref }}
@@ -163,13 +163,13 @@ jobs:
           printf '%s' '${{ steps.iam.outputs.token }}' \
             | docker login --username iam --password-stdin cr.yandex
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       # provenance и sbom выключены не для скорости: с ними buildx публикует
       # OCI-индекс, а Yandex Registry его не принимает. Один тег, одна
       # платформа, обычный манифест Docker.
       - name: Собрать и опубликовать образ
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true

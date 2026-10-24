@@ -27,7 +27,7 @@ jobs:
   version:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Нужны обе стороны сравнения: своя ветка и база.
           fetch-depth: 0
