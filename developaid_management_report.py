@@ -1364,17 +1364,47 @@ def _by_chapter_words(parts: dict[str, Any] | None) -> str:
     return "из них " + ", ".join(f"по {code} главе {_rub(value)}" for code, value in items)
 
 
+def _reserve_inside(limit: dict[str, Any]) -> dict[str, Any] | None:
+    """Резервы 2.8/2.9 сметы при финмодели — они уже внутри остатка лимита.
+
+    У финмодели своя строка резерва пустая, и «Резерв 0 ₽» читался как «резервов
+    нет» (владелец, 24.10.2026: «Резерв разве 0»). Резервы банка лежат в лимите
+    главы 2 и уже вошли в остаток, поэтому их называют, но не прибавляют.
+    """
+    inside = limit.get("reserve_inside") if _model_basis(limit) else None
+    return inside if inside and float(inside.get("total") or 0.0) > 0 else None
+
+
+def _reserve_label(limit: dict[str, Any]) -> str:
+    inside = _reserve_inside(limit)
+    if inside is None:
+        return "Резерв"
+    codes = "/".join(sorted(inside.get("parts") or {}))
+    return (f"Резервы банка {codes} (уже входят в остаток лимита главы "
+            f"{inside.get('chapters') or '2'})")
+
+
+def _reserve_value(limit: dict[str, Any]) -> float:
+    inside = _reserve_inside(limit)
+    return float(inside["total"]) if inside else float(limit.get("reserve") or 0.0)
+
+
 def _reserve_words(limit: dict[str, Any]) -> str:
     """«резервы: Непредвиденные 209,7 млн ₽ и Удорожание 96,4 млн ₽» — по строкам книги."""
-    parts = {code: float(value) for code, value in (limit.get("reserve_parts") or {}).items()
+    inside = _reserve_inside(limit)
+    source = inside or {"parts": limit.get("reserve_parts"), "names": limit.get("reserve_names")}
+    parts = {code: float(value) for code, value in (source.get("parts") or {}).items()
              if value}
     if not parts:
         return f"резерв {_rub(limit.get('reserve'))}" if limit.get("reserve") else ""
-    names = limit.get("reserve_names") or {}
+    names = source.get("names") or {}
     pieces = [f"{names.get(code) or 'статья ' + code} {_rub(value)}"
               for code, value in sorted(parts.items())]
     word = "резерв" if len(pieces) == 1 else "резервы"
-    return f"{word}: " + " и ".join(pieces)
+    words = f"{word}: " + " и ".join(pieces)
+    if inside:
+        words += f" — уже входят в остаток лимита главы {inside.get('chapters') or '2'}"
+    return words
 
 
 def _remaining_words(limit: dict[str, Any], borrowed: float | None = None,
@@ -1464,7 +1494,8 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
         lines.append(f"Лимит банка: {_rub(limit.get('bank_limit'))}; "
                      f"остаток лимитов {_rub(limit.get('bank_remaining'))} — "
                      f"{_remaining_words(limit, (block.get('draws') or {}).get('total'))}; "
-                     f"резерв {_rub(limit.get('reserve'))}.")
+                     + (f"{_reserve_words(limit)}." if _reserve_inside(limit) else
+                        f"резерв {_rub(limit.get('reserve'))}."))
         need = _approved_need(limit)
         credit = _model_basis(limit)
         if need and credit:
@@ -1554,7 +1585,7 @@ def _funding_html(report: dict[str, Any]) -> str:
         out.append(_table(["Лимит банка", "Сумма"], rows + [
             ["Остаток лимита глав 2–3 (лимит минус оплаченное)" if credit
              else "Остаток лимитов статей", _rub(limit.get("bank_remaining"))],
-            ["Резерв", _rub(limit.get("reserve"))],
+            [_reserve_label(limit), _rub(_reserve_value(limit))],
             ["Не хватает по финмодели" if credit else "Не хватает по РСС",
              (f"{_rub(extra)} {_since(limit.get('additional_financing_from'))}"
               if extra > 0 else "хватает до ввода")]]))

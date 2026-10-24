@@ -1030,6 +1030,7 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     rnv = monitor._day(_current_forecast_end(view))
     if rnv is None:
         rnv = monitor._day((view.get("schedule") or {}).get("approved_end"))
+    reserve_inside = _reserve_inside(rss, estimate) if finmodel else None
 
     reserve_start = waterfall["reserve_start"]
     reserve_exhaustion = waterfall["reserve_exhaustion"]
@@ -1111,6 +1112,11 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "reserve": float(baseline.get("reserve") or 0.0),
         "reserve_parts": baseline.get("reserve_parts") or {},
         "reserve_names": baseline.get("reserve_names") or {},
+        # Резервы 2.8/2.9 сметы РСС при финмодели: у финмодели своя строка
+        # резерва (2.2.11), и она пустая, а резервы банка лежат внутри лимита
+        # главы 2 и уже вошли в остаток. Их показывают отдельно — к остатку
+        # второй раз не прибавляют (владелец, 24.10.2026: «Резерв разве 0»).
+        "reserve_inside": reserve_inside,
         "limit_by_chapter": current.get("by_chapter") or {},
         "approved_by_chapter": baseline.get("approved_by_chapter") or {},
         "reserve_start": monitor._iso(reserve_start),
@@ -1156,6 +1162,25 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
 
 
 _FM_BANK_CHAPTERS = tuple(sorted({ch for ch, _, _ in _FM_SECTIONS.values()}))
+
+
+def _reserve_inside(rss: Path, estimate: dict[str, Any]) -> dict[str, Any] | None:
+    """Остаток резервов 2.8/2.9 сметы РСС: лимит строки минус оплаченное по ней."""
+    by_code = estimate.get("by_code") or {}
+    parts: dict[str, float] = {}
+    names: dict[str, str] = {}
+    for code in sorted(_RESERVE_CODES):
+        row = by_code.get(code)
+        if row is None:
+            continue
+        paid = float(_paid_in_chapters(rss, estimate, (code,))["total"])
+        parts[code] = max(0.0, float(row.get("estimate") or 0.0) - paid)
+        names[code] = str(row.get("article") or "").strip()
+    if not parts:
+        return None
+    chapters = sorted({str((by_code.get(code) or {}).get("parent") or "") for code in parts} - {""})
+    return {"total": sum(parts.values()), "parts": parts, "names": names,
+            "chapters": chapters_label(chapters) if chapters else ""}
 
 
 def _section_articles(sections: dict[str, dict[str, Any]], estimate: dict[str, Any],
@@ -1322,11 +1347,16 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
     model_need = float(funding.get("approved_remaining") or 0.0)
     if model_need > 0:
         gap = max(0.0, model_need - fuel)
+        inside = funding.get("reserve_inside") or {}
+        kept = (f"{_fmt_money(bank)} остатка лимита, в нём уже "
+                f"{_fmt_money(inside.get('total'))} резервов 2.8/2.9"
+                if inside.get("total") else
+                f"{_fmt_money(bank)} лимитов статей и "
+                f"{_fmt_money(reserve)} резерва 2.8/2.9")
         money = (
             f"Деньги. По утверждённой модели достроить стоит "
             f"{_fmt_money(model_need)} (модель минус оплаченное). По РСС "
-            f"осталось {_fmt_money(fuel)}: {_fmt_money(bank)} лимитов статей и "
-            f"{_fmt_money(reserve)} резерва 2.8/2.9 — оставшийся лимит и есть "
+            f"осталось {_fmt_money(fuel)}: {kept} — оставшийся лимит и есть "
             f"то, что банк готов дать; сам РСС при этом бюджет всей стройки, а "
             f"не банковская доля. Дефицит {_fmt_money(gap)}.")
         if need > 0:
