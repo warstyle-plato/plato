@@ -731,8 +731,20 @@ def sales(sales_project: str, kind: str, end: Any,
                   "fm": fm_month},
         "quarter": {"key": quarter, "fact": _fact(between(quarter_start)),
                     "fm": fm_quarter, "bank": bank_quarter,
-                    "bank_reason": bank_reason or None},
+                    "bank_reason": bank_reason or None,
+                    "edge": _edge(between(quarter_start - datetime.timedelta(days=EDGE_DAYS),
+                                          quarter_start - datetime.timedelta(days=1)))},
     }
+
+
+def _edge(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Договоры последних дней прошлого квартала — их отдел продаж может
+    посчитать в этом квартале по дате регистрации."""
+    if not rows:
+        return None
+    fact = _fact(rows)
+    return {"contracts": fact["contracts"], "amount": fact["amount"],
+            "days": sorted({str(row["signed"]) for row in rows})}
 
 
 def _by_product(period: list[dict[str, Any]], total: list[dict[str, Any]],
@@ -1310,6 +1322,36 @@ SIGNED_BASIS = "по дате подписания"
 SIGNED_NOTE = ("Продажи считаются по дате подписания договора, как план финмодели. "
                "Отдел продаж в ежедневном отчёте считает по дате регистрации, поэтому "
                "договор, подписанный в конце месяца, у него попадает в следующий месяц.")
+# Сколько дней до начала квартала смотреть на договоры, которые отдел продаж
+# может отнести к кварталу по регистрации. Даты регистрации в выгрузке
+# контрактации нет, поэтому сумма «по регистрации» — верхняя граница, и
+# примечание говорит «если зарегистрированы в квартале» (владелец, 24.10.2026:
+# «надо в отчёте это расхождение примечанием пометить» — с цифрами).
+EDGE_DAYS = 14
+
+
+def _signed_note(quarter: dict[str, Any]) -> str:
+    """Примечание о подписании и регистрации — с цифрами квартала."""
+    edge = quarter.get("edge") or {}
+    if not edge.get("contracts"):
+        return SIGNED_NOTE
+    days = " и ".join(_date(day).strftime("%d.%m") for day in edge["days"])
+    count = int(edge["contracts"])
+    total = float(quarter["fact"]["amount"]) + float(edge["amount"])
+    return (f"{SIGNED_NOTE} В этот квартал не входят {count} "
+            f"{_plural(count, 'договор', 'договора', 'договоров')} на {_rub(edge['amount'])}, "
+            f"подписанные {days}, в последние две недели прошлого квартала. Если их "
+            f"зарегистрировали уже в этом квартале, у отдела продаж квартал — "
+            f"{_rub(total)} вместо {_rub(quarter['fact']['amount'])} в сводке.")
+
+
+def _edge_words(quarter: dict[str, Any]) -> str:
+    """Для подписи плитки: «по регистрации — до 291,5 млн ₽»."""
+    edge = quarter.get("edge") or {}
+    if not edge.get("contracts"):
+        return ""
+    total = float(quarter["fact"]["amount"]) + float(edge["amount"])
+    return f"; по регистрации, как у отдела продаж, — до {_rub(total)}"
 
 
 def _sales_line(label: str, fact: dict[str, Any]) -> str:
@@ -1702,7 +1744,7 @@ def render_text(report: dict[str, Any]) -> str:
                          f"{_area(quarter['bank'].get('area'))}.")
         elif quarter.get("bank_reason"):
             lines.append(esc(quarter["bank_reason"]))
-        lines.append(esc(SIGNED_NOTE))
+        lines.append(esc(_signed_note(quarter)))
         if block.get("stale"):
             lines.append(f"Внимание: договоры загружены {_day(block['uploaded'])}, "
                          "более поздние сделки в сводку не попали.")
@@ -2127,8 +2169,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         if quarter and plan:
             share = quarter["fact"]["amount"] / plan
             add(f"Продажи квартала к плану {name}", _pct(share),
-                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)} {SIGNED_BASIS}; "
-                f"прошло {_pct(pace)} квартала",
+                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)} {SIGNED_BASIS}"
+                f"{_edge_words(quarter)}; прошло {_pct(pace)} квартала",
                 "bad" if share < pace - 0.05 else "good")
         else:
             add(f"Продажи квартала к плану {name}", None,
@@ -2654,7 +2696,7 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(_table(["План", "Сумма", "Площадь"], plans))
         if quarter.get("bank_reason"):
             out.append(f"<p class='note'>{esc(quarter['bank_reason'])}</p>")
-        out.append(f"<p class='note'>{esc(SIGNED_NOTE)}</p>")
+        out.append(f"<p class='note'>{esc(_signed_note(quarter))}</p>")
         if block.get("stale"):
             out.append(f"<p class='note warn'>Договоры загружены {_day(block['uploaded'])}, "
                        "более поздние сделки в сводку не попали.</p>")
