@@ -150,6 +150,12 @@ FINANCE_SHEETS = (FINANCE_BOOK_SHEET, FINANCE_MODEL_SHEET)
 _FM_CODE_COL, _FM_NAME_COL = 3, 4
 _FM_THOUSANDS = 1000.0
 _FM_RESERVE_CODE = "2.2.11"
+# Сколько финмодель берёт у банка: строка выборки проектного финансирования.
+# Остальные расходы модель закрывает продажами после раскрытия эскроу и
+# своими деньгами, и у банка на них лимит не просят (владелец, 24.10.2026:
+# «по финмодели посчитали, сколько надо денег, вычитаем всё, что может дать
+# банк, — это и есть потребность в допфинансировании»).
+_FM_CREDIT_LABEL = "Поступления кредитов (ПФ)"
 # «Остаток к выполнению на 01.04.27» финкниги — для финмодели потребность с
 # этого же месяца.
 _TAIL_FROM = datetime.date(2027, 4, 1)
@@ -217,7 +223,18 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     stack: list[dict[str, Any]] = []
+    credit_plan = None
     for r in range(header_row + 1, ws.max_row + 1):
+        if _norm(ws.cell(r, _FM_NAME_COL).value) == _norm(_FM_CREDIT_LABEL) and credit_plan is None:
+            credit_plan = {
+                "label": _FM_CREDIT_LABEL,
+                "total": actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS,
+                "drawn": actuals._money(ws.cell(r, fact_col).value) * _FM_THOUSANDS,
+                "plan": actuals._money(ws.cell(r, plan_col).value) * _FM_THOUSANDS,
+                "monthly": {month.isoformat(): max(0.0, actuals._money(ws.cell(r, c).value)
+                                                  * _FM_THOUSANDS)
+                            for c, month in month_columns},
+            }
         code = actuals._code(ws.cell(r, _FM_CODE_COL).value)
         if not code or not code.startswith("2."):
             continue
@@ -320,6 +337,7 @@ def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
         "articles": articles,
         "chapters": list(chapters),
         "chapters_reason": "; ".join(reasons),
+        "credit_plan": credit_plan,
     }
 
 
@@ -940,16 +958,21 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     paid = _paid_in_chapters(rss, estimate, chapters)
     paid_actual = paid["total"]
     finmodel = baseline.get("kind") == "finmodel"
+    credit = baseline.get("credit_plan") if finmodel else None
+    if finmodel and not credit:
+        return {
+            "known": False,
+            "reason": f"в листе «cf_1_new» нет строки «{_FM_CREDIT_LABEL}» — сколько "
+                      "финмодель берёт у банка, не прочитать",
+            "source": baseline.get("source"),
+        }
     if finmodel:
-        # Финмодель и РСС — разные книги: оплаченное по РСС больше «ФАКТА»
-        # финмодели не потому, что заплатили после baseline, а потому, что
-        # считают разное. Остаток потребности — план финмодели с месяца
-        # среза, тот же ряд, что идёт в водопад.
+        # Сколько нужно от банка — выборка кредита по финмодели с месяца
+        # среза; расходы, которые модель закрывает продажами и своими
+        # деньгами, у банка не просят. Тот же ряд идёт в водопад.
         cut_month = cut.replace(day=1)
         remaining_need = sum(
-            max(0.0, float(amount or 0.0))
-            for item in (baseline.get("articles") or {}).values()
-            for month, amount in (item.get("monthly_need") or {}).items()
+            float(amount or 0.0) for month, amount in (credit.get("monthly") or {}).items()
             if (monitor._day(month) or cut_month) >= cut_month)
     else:
         paid_delta = max(0.0, paid_actual - float(baseline["paid_at_baseline"] or 0.0))
@@ -964,14 +987,13 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             "source": baseline.get("source"),
         }
 
-    # Статьи финмодели несут коды БДДС и не ложатся на статьи сметы один в
-    # один, а лимит банка живёт в смете. Поэтому для финмодели водопад идёт
-    # по главам сметы: лимит и оплаченное главы — из РСС, потребность по
-    # месяцам — статьи финмодели этой главы (владелец, 23.10.2026: «остаток
-    # лимита вот тут же» — в РСС «Средства на завершение» 1,55 млрд, а плашка
-    # показывала «ПЛАН» финмодели 4,78).
+    # Для финмодели водопад — одна строка, кредит банка: лимит по смете минус
+    # выбранное кредитом (владелец, 24.10.2026: «невыбранный кредит — это же и
+    # есть остаток лимита») против выборки по финмодели по месяцам. Статьи
+    # финмодели на статьи сметы один в один не ложатся, и постатейно здесь
+    # нечего считать.
     waterfall = _article_waterfall(
-        _chapter_articles(articles, estimate, rss, chapters) if finmodel else articles,
+        _credit_article(credit, current["limit"], paid["borrowed"]) if finmodel else articles,
         float(baseline.get("reserve") or 0.0),
         cut,
         {} if finmodel else _payment_by_code(rss),
@@ -1031,13 +1053,19 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         # Выборка кредита по тем же главам, что лимит: «лимит − выбрано» и
         # «лимит − оплачено» читаются от одной базы.
         "paid_borrowed": paid["borrowed"],
-        "remaining_check": _remaining_check(current["limit"], paid_actual, waterfall,
-                                            float(baseline.get("reserve") or 0.0)),
+        "remaining_check": _remaining_check(current["limit"],
+                                            paid["borrowed"] if finmodel else paid_actual,
+                                            waterfall, float(baseline.get("reserve") or 0.0)),
         # Второй остаток потребности по тем же главам 2–3: утверждённый бюджет
         # минус оплаченное. С «средствами на завершение» они расходятся, и обе
         # величины считает сервер — экран их только показывает.
         "approved": approved,
         "approved_remaining": remaining_need if finmodel else max(0.0, approved - paid_actual),
+        # Чем измерена потребность: кредитом по финмодели или бюджетом книги.
+        # Сводка подписывает плашки по этому признаку.
+        "need_basis": "credit" if finmodel else "budget",
+        "credit_plan": ({"total": float(credit["total"]), "drawn": float(credit["drawn"]),
+                         "plan": float(credit["plan"])} if finmodel else None),
         "bank_remaining": waterfall["opening_bank_remaining"],
         "opening_article_deficit": waterfall["opening_article_deficit"],
         "remaining_need": remaining_need,
@@ -1078,8 +1106,8 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "articles": waterfall["articles"],
         "tail_after_apr": max(0.0, float(baseline.get("tail_after_apr") or 0.0)),
         "method": (
-            "по главам сметы: потребность финмодели за месяц → остаток лимита главы РСС → "
-            "резерв → непокрытая потребность; статьи финмодели на статьи сметы не ложатся"
+            "кредит по финмодели: выборка за месяц → остаток лимита банка (лимит минус "
+            "выбранное) → резерв → непокрытая выборка"
             if finmodel else
             "постатейный waterfall: потребность месяца → остаток лимита статьи RSS → "
             "резервы 2.8/2.9 → непокрытая потребность; свободные лимиты других статей "
@@ -1088,39 +1116,21 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     }
 
 
-_OUTSIDE_CHAPTERS = "вне глав"
+def _credit_article(credit: dict[str, Any], bank_limit: float,
+                    borrowed: float) -> dict[str, dict[str, Any]]:
+    """Кредит банка как единственная строка водопада для финмодели.
 
-
-def _chapter_articles(articles: dict[str, dict[str, Any]], estimate: dict[str, Any],
-                      rss: Path, chapters: Any) -> dict[str, dict[str, Any]]:
-    """Статьи финмодели, свёрнутые в главы сметы, — вход водопада.
-
-    Лимит главы — «Общая сметная стоимость» строки главы РСС, оплаченное —
-    оплаты РСС по главе, потребность по месяцам — сумма статей финмодели этой
-    главы. Статьи без главы (карта «статьи_БДДС» их не знает) идут отдельной
-    строкой без лимита: их потребность не покрыта ничем, и это видно.
+    Лимит — лимит банка по смете, «оплачено» — выбранное кредитом по РСС,
+    потребность по месяцам — выборка проектного финансирования по финмодели.
     """
-    by_code = estimate.get("by_code") or {}
-    out: dict[str, dict[str, Any]] = {}
-    for chapter in chapters:
-        row = by_code.get(str(chapter)) or {}
-        out[str(chapter)] = {
-            "code": str(chapter), "chapter": str(chapter),
-            "name": f"Глава {chapter} сметы — статьи финмодели",
-            "rss_limit": float(row.get("estimate") or 0.0),
-            "paid_at_baseline": float(_paid_in_chapters(rss, estimate, (str(chapter),))["total"]),
-            "has_programme": False, "monthly_need": {},
-        }
-    outside = {"code": _OUTSIDE_CHAPTERS, "chapter": "", "name": "Статьи финмодели вне глав сметы",
-               "rss_limit": 0.0, "paid_at_baseline": 0.0, "has_programme": False, "monthly_need": {}}
-    for item in articles.values():
-        target = out.get(str(item.get("chapter") or "")) or outside
-        for month, amount in (item.get("monthly_need") or {}).items():
-            target["monthly_need"][month] = target["monthly_need"].get(month, 0.0) + float(amount or 0.0)
-        target["has_programme"] = target["has_programme"] or bool(item.get("has_programme"))
-    if any(outside["monthly_need"].values()):
-        out[_OUTSIDE_CHAPTERS] = outside
-    return out
+    return {"кредит": {
+        "code": "кредит", "chapter": "",
+        "name": f"Кредит банка по финмодели ({credit.get('label') or _FM_CREDIT_LABEL})",
+        "rss_limit": float(bank_limit or 0.0),
+        "paid_at_baseline": float(borrowed or 0.0),
+        "has_programme": any((credit.get("monthly") or {}).values()),
+        "monthly_need": dict(credit.get("monthly") or {}),
+    }}
 
 
 def _physical_smr(rss: Path, estimate: dict[str, Any], cut: datetime.date) -> float:
