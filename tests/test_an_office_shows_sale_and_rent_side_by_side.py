@@ -292,3 +292,14 @@ def test_the_page_prices_the_office_by_its_class_only_without_housing() -> None:
             browser.close()
     assert errors == []
     assert (before, nonres, back) == (housing_price, class_price, housing_price)
+
+
+def test_no_pf_no_reservation_fee() -> None:
+    """Плата за резервирование лимита ПФ — только у продаж по ДДУ (владелец,
+    24.10.2026: «Исправить: без ПФ платы нет»): у продажи блоками одобренный
+    лимит ПФ не открывается."""
+    direct = _calc(offices_strategy=ns.STRATEGY_DIRECT, pf_limit_approved_mln=5000)["finance"]
+    ddu = _calc(offices_strategy=ns.STRATEGY_DDU, pf_limit_approved_mln=5000)["finance"]
+    assert direct["pf_reservation_fee"] == 0 and direct["pf_limit"] == 0
+    assert ddu["pf_limit"] == 5_000_000_000
+    assert ddu["pf_reservation_fee"] == pytest.approx(5_000_000_000 * core.DEFAULT_INPUTS["reservation_fee_pct"] / 100)
