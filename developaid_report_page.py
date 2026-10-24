@@ -68,9 +68,10 @@ REPORT_PAGE = """<!doctype html>
 @media (max-width:700px){.files>.field{flex:1 1 100%}.files select,.files input{width:100%;box-sizing:border-box}}
 .files{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .photo-day{margin-top:8px;border-top:1px solid #e1e6ec;padding-top:6px}.photo-day summary{cursor:pointer;font-size:13px;padding:4px 0}
-.photo-pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-top:8px}
-.photo-pick label{display:block;border:2px solid #d6dde6;border-radius:8px;padding:4px;cursor:pointer;font-size:11px}
-.photo-pick label.on{border-color:#1f4e8c;background:#eef3fa}.photo-pick img{width:100%;height:110px;object-fit:cover;border-radius:5px;display:block;background:#f2f5f8}
+.photo-pick{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:6px;margin-top:6px}
+.photo-pick label{display:block;border:2px solid #d6dde6;border-radius:8px;padding:3px;cursor:pointer;font-size:11px;line-height:1.25}
+.photo-pick label.on{border-color:#1f4e8c;background:#eef3fa}.photo-pick img{width:100%;height:76px;object-fit:cover;border-radius:5px;display:block;background:#f2f5f8}
+.photo-pick input{margin:3px 4px 0 0;vertical-align:middle}
 .legal-case{border-top:1px solid #e5e7eb;padding:8px 0}.lc-head{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}.lc-sum{margin-left:auto;text-align:right;font-weight:600;font-size:13px}
 .lc-stage{border-radius:999px;padding:1px 8px;font-size:12px;background:#e8eefc;color:#1e3a8a}.lc-stage.closed{background:#e7f6ec;color:#166534}.lc-stage.unknown{background:#fff4d6;color:#7a4b00}
 .lc-meta{font-size:12px}.lc-more{font-size:12px;color:#5b6b7d;margin:4px 0}.lc-more summary{cursor:pointer}.lc-check{font-size:12px;margin:2px 0}
@@ -143,7 +144,7 @@ function drawPhotos(r){const list=r.photos||[];$('photosState').textContent=list
  // снимки дня грузятся, когда день раскрыт, а не все разом.
  const days={};list.forEach(x=>{(days[x.day||'']=days[x.day||'']||[]).push(x)});const order=Object.keys(days).sort().reverse();
  const seen=new Set(Array.from($('photosList').querySelectorAll('details[open]')).map(d=>d.dataset.day));
- $('photosList').innerHTML=order.map((day,i)=>{const items=days[day],chosen=items.filter(x=>x.chosen).length,open=seen.has(day)||i===0||chosen>0;return `<details class="photo-day" data-day="${esc(day)}"${open?' open':''}><summary><b>${day?dt(day):'дата не указана'}</b> · ${items.length} фото${chosen?` · отмечено ${chosen}`:''}</summary><div class="photo-pick">`+items.map(x=>`<label data-id="${esc(x.id)}" class="${x.chosen?'on':''}"><img alt="${esc(x.caption||'фото со стройки')}"><input type="checkbox" class="photoPick" ${x.chosen?'checked':''}> В сводку<div class="muted">${dt(x.day)} · ${esc(x.author||'автор не указан')}</div>${x.caption?`<div>${esc(x.caption)}</div>`:''}</label>`).join('')+'</div></details>'}).join('');
+ $('photosList').innerHTML=order.map((day,i)=>{const items=days[day],chosen=items.filter(x=>x.chosen).length,open=seen.has(day)||i===0||chosen>0,authors=new Set(items.map(x=>x.author||'')),one=authors.size===1?[...authors][0]:null;return `<details class="photo-day" data-day="${esc(day)}"${open?' open':''}><summary><b>${day?dt(day):'дата не указана'}</b> · ${items.length} фото${chosen?` · отмечено ${chosen}`:''}${one?` · ${esc(one)}`:''}</summary><div class="photo-pick">`+items.map(x=>`<label data-id="${esc(x.id)}" class="${x.chosen?'on':''}"><img alt="${esc(x.caption||'фото со стройки')}"><input type="checkbox" class="photoPick" ${x.chosen?'checked':''}>В сводку${one===null?`<div class="muted">${esc(x.author||'автор не указан')}</div>`:''}${x.caption?`<div>${esc(x.caption)}</div>`:''}</label>`).join('')+'</div></details>'}).join('');
  const fill=box=>box.querySelectorAll('label').forEach(label=>{const img=label.querySelector('img');if(img.getAttribute('src'))return;photoSrc(label.dataset.id).then(src=>{if(src)img.src=src})});
  $('photosList').querySelectorAll('details.photo-day').forEach(box=>{if(box.open)fill(box);box.addEventListener('toggle',()=>{if(box.open)fill(box)})});
  $('photosList').querySelectorAll('label').forEach(box=>{const id=box.dataset.id;box.querySelector('.photoPick').onchange=async e=>{if(await loadPhotos({photo_id:id,chosen:e.target.checked})){msg('photosMsg','Выбор сохранён — сводка обновлена.','good');renderReport(true)}}})}

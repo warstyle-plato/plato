@@ -241,6 +241,7 @@ def test_the_photos_fold_by_day(monkeypatch):
     assert not errors, errors
     assert [d[0] for d in days] == ["2026-10-16", "2026-10-13", "2026-10-12"]
     assert [d[1] for d in days] == [True, False, True]
-    assert days[0][2] == "16.10.2026 · 3 фото"
-    assert days[2][2] == "12.10.2026 · 2 фото · отмечено 1"
+    # Автор у всех снимков дня один — он в заголовке дня, а не в каждой карточке.
+    assert days[0][2] == "16.10.2026 · 3 фото · Иван Прораб"
+    assert days[2][2] == "12.10.2026 · 2 фото · отмечено 1 · Иван Прораб"
     assert idle, "снимки свёрнутого дня грузятся заранее"
