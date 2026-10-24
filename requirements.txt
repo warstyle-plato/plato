@@ -1,7 +1,7 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.6
-reportlab>=4.2
+reportlab>=5.0.1
 openpyxl>=3.1
 pypdf>=4.3
 # Штатный калькулятор ГлавАПУ запускается браузером без экрана: копия его
