@@ -23,6 +23,7 @@ import datetime
 import html
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -1152,31 +1153,38 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         pieces = []
         if limit.get("known"):
             need = _approved_need(limit)
-            if need and need["deficit"] is not None:
+            # При финмодели «не хватает на достройку» и «не хватает по
+            # финмодели» — одно число (лестница сходится с водопадом), и
+            # повтор подряд читался как два разных дефицита (владелец,
+            # 25.10.2026, на «Главном»: «Сам додумаешься?»).
+            if need and need["deficit"] is not None and not _model_basis(limit):
                 pieces.append(f"по утверждённому бюджету {_rub(need['approved'])} не хватает "
                               f"на достройку {_rub(need['deficit'])}"
                               if need["deficit"] > 0 else
                               f"утверждённый бюджет {_rub(need['approved'])} покрыт лимитами и резервом")
             extra = float(limit.get("additional_financing") or 0.0)
             source = "по финмодели" if _model_basis(limit) else "по РСС"
+            parts = _chapter_gap_words(limit) if _model_basis(limit) else ""
             pieces.append(f"{source} не хватает {_rub(extra)} "
                           f"{_since(limit.get('additional_financing_from'))}"
+                          + (f" ({parts})" if parts else "")
                           if extra > 0 else
                           ("по финмодели остатка лимита глав 2–3 хватает до конца стройки"
                            if _model_basis(limit) else "по РСС лимитов и резерва хватает до ввода"))
         pieces.append(f"выборка кредита за {period} — {_rub(block['draws']['period'])} "
                       f"(за предыдущий такой же период — {_rub(block.get('draws_previous'))})")
         escrow = block.get("escrow") or {}
-        for queue in (escrow.get("queues") or [])[:2]:
+        queues = escrow.get("queues") or []
+        for queue in queues[:2]:
             if queue.get("plan_coverage_at") is not None:
                 pace_cover = queue.get("keeping_pace_coverage")
                 if pace_cover is not None:
-                    text = (f"при нынешнем темпе эскроу очереди «{queue['queue']}» "
+                    text = (f"при нынешнем темпе {_escrow_of(queue, queues)} "
                             + ("НЕ покрывает" if pace_cover < 1 else "покрывает")
                             + f" кредит ({_times(pace_cover)}), по плану финмодели — "
                             f"{_times(queue['plan_coverage_at'])}")
                 else:
-                    text = (f"эскроу очереди «{queue['queue']}» покроет кредит на "
+                    text = (f"{_escrow_of(queue, queues)} покроет кредит на "
                             f"{_times(queue['plan_coverage_at'])} по плану финмодели")
                 pieces.append(text)
         closed = (block.get("escrow_bank") or {}).get("closed")
@@ -1640,6 +1648,26 @@ def _model_basis(limit: dict[str, Any]) -> bool:
     return (limit.get("need_basis") or "") == "model"
 
 
+def _escrow_of(queue: dict[str, Any], queues: list[dict[str, Any]]) -> str:
+    """«эскроу» при одной очереди, «эскроу 1-й очереди» при нескольких.
+
+    «Эскроу очереди «1 очередь»» читалось масло масляным, а при одной
+    очереди называть её незачем (владелец, 25.10.2026).
+    """
+    if len(queues) <= 1:
+        return "эскроу"
+    name = str(queue.get("queue") or "").strip()
+    number = re.fullmatch(r"(\d+)(?:-?[яй])?\s*очеред\w*", name, re.I)
+    return f"эскроу {number.group(1)}-й очереди" if number else f"эскроу очереди «{name}»"
+
+
+def _chapter_gap_words(limit: dict[str, Any]) -> str:
+    """«на стройку 1,93 млрд ₽, на коммерцию 465,0 млн ₽» — коротко, для «Главного»."""
+    rows = limit.get("need_by_chapter") or {}
+    return ", ".join(f"на {rows[ch].get('label_acc') or rows[ch]['label']} {_rub(rows[ch]['gap'])}"
+                     for ch in sorted(rows) if float(rows[ch].get("gap") or 0) > 0)
+
+
 def _chapter_need_words(limit: dict[str, Any]) -> str:
     """«на стройку 1,93 млрд ₽ (нужно 3,05, лимита 1,12), на коммерцию …»."""
     parts = []
@@ -1731,7 +1759,8 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     if escrow.get("state") != "ok":
         lines.append(escrow.get("reason") or "Эскроу: данных нет.")
     for queue in escrow.get("queues") or []:
-        text = (f"Эскроу, очередь «{queue['queue']}»: на {_months_label(queue['measured_at'])} "
+        named = _escrow_of(queue, escrow.get("queues") or [])
+        text = (f"{named[:1].upper() + named[1:]}: на {_months_label(queue['measured_at'])} "
                 f"накоплено {_rub(queue.get('actual'))}")
         if queue.get("plan") is not None:
             text += f" при плане финмодели {_rub(queue['plan'])}"
