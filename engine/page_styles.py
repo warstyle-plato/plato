@@ -386,6 +386,19 @@ details.cadastral-box>summary::marker{color:#888}
 [data-layout][hidden]{display:none!important}
 .object-report table.object-years td,.object-report table.object-years th{text-align:right;white-space:nowrap}
 .object-report table.object-years td:first-child,.object-report table.object-years th:first-child{text-align:left}
+.strategy-compare-caption{font-weight:600;margin:10px 0 4px}
+.strategy-compare-lead{font-size:13px;line-height:1.5;margin:0 0 10px}
+.strategy-compare-table{border-collapse:collapse;width:100%;min-width:560px;font-size:12px}
+.strategy-compare-table th,.strategy-compare-table td{border-bottom:1px solid var(--line);padding:6px 9px;text-align:right}
+.strategy-compare-table th:first-child,.strategy-compare-table td:first-child{text-align:left}
+.strategy-compare-table thead th{background:var(--soft);font-weight:600;vertical-align:bottom;text-transform:none;letter-spacing:normal;color:var(--ink)}
+.strategy-compare-table .best{background:#eef6f0}
+.strategy-compare-table thead th.best{background:#dcefe2}
+.strategy-tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 6px;margin-top:4px;border:1px solid currentColor;color:var(--muted)}
+.strategy-tag.best-tag{color:#1f6f43}
+.strategy-points-title{font-weight:600;font-size:13px;margin:12px 0 4px}
+.strategy-points{margin:0;padding-left:18px;font-size:12px;line-height:1.5}
+.strategy-compare-stamp{color:var(--muted);font-size:11px;margin-top:10px}
 .object-verdict{font-size:13px;line-height:1.5}
 .object-verdict b{display:block;font-size:15px;margin-bottom:4px}
 table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:1px solid var(--line)}

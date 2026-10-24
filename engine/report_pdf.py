@@ -911,7 +911,8 @@ def _object_pdf_sections(story: list[Any], sections: dict[str, Any], inputs: dic
                          P: Any, table: Any, h2: Any, small: Any, normal: Any,
                          KeepTogether: Any, Spacer: Any, mm: float, *,
                          sensitivity_done: bool,
-                         entry_price: dict[str, Any] | None = None) -> None:
+                         entry_price: dict[str, Any] | None = None,
+                         strategy_compare: dict[str, Any] | None = None) -> None:
     """Разделы объектной вёрстки в поток PDF — блоками движка, без пересчёта."""
     for key, section in sections.items():
         if key in ("finance", "calendar") or (key == "sensitivity" and sensitivity_done):
@@ -919,7 +920,58 @@ def _object_pdf_sections(story: list[Any], sections: dict[str, Any], inputs: dic
         story.append(_PdfSection(_PDF_OBJECT_SHARED.get(key, f"object_{key}")))
         story.append(P(str(section.get("title") or ""), h2))
         _object_pdf_blocks(story, section, inputs, P, table, small, KeepTogether, Spacer, mm,
-                           entry_price)
+                           entry_price, strategy_compare)
+
+
+def _strategy_compare_pdf(story: list[Any], block: dict[str, Any], P: Any, table: Any, small: Any,
+                          KeepTogether: Any, mm: float, *, title: str) -> None:
+    """«Сравнение стратегий» таблицей PDF — тот же блок движка, что на странице
+    и в тизере (`strategy_compare_block`): вывод, стратегии столбцами с
+    отметкой лучшей и выбранной, точки, где стратегии сравняются, и подпись."""
+    from xml.sax.saxutils import escape
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, TableStyle
+
+    regular, bold = _pdf_font_names()
+    head = ParagraphStyle("strategy_head", parent=small, fontName=bold, textColor=colors.HexColor("#222222"))
+    cell = ParagraphStyle("strategy_cell", parent=small, fontSize=8.2, leading=10.5,
+                          textColor=colors.HexColor("#222222"))
+    strong = ParagraphStyle("strategy_strong", parent=cell, fontName=bold)
+    title_style = ParagraphStyle("strategy_title", parent=small, fontName=bold, fontSize=9.5, leading=12,
+                                 textColor=colors.HexColor("#111111"))
+
+    def tag(text: str) -> str:
+        color = "#1f6f43" if text == "лучшая по NPV" else "#727272"
+        return f"<br/><font name='{regular}' color='{color}'>{escape(text)}</font>"
+
+    parts: list[Any] = [Paragraph(escape(title), title_style)]
+    for item in block.get("items") or []:
+        columns = item.get("columns") or []
+        if item.get("caption"):
+            parts.append(Paragraph(escape(str(item["caption"])), head))
+        parts.append(P(str(item.get("lead") or ""), small))
+        rows = [[Paragraph("Показатель", head)] + [
+            Paragraph(escape(str(c.get("label") or "")) + "".join(tag(t) for t in c.get("tags") or []), head)
+            for c in columns]]
+        for row in item.get("rows") or []:
+            rows.append([Paragraph(escape(str(row.get("label") or "")), cell)] + [
+                Paragraph(escape(str(value)), strong if row.get("strong") and i < len(columns)
+                          and columns[i].get("best") else cell)
+                for i, value in enumerate(row.get("cells") or [])])
+        width = 118 / max(1, len(columns))
+        grid = table(rows, [52*mm] + [width*mm] * len(columns), font_size=7.6)
+        best = [i + 1 for i, c in enumerate(columns) if c.get("best")]
+        if best:
+            grid.setStyle(TableStyle([("BACKGROUND", (best[0], 0), (best[0], 0), colors.HexColor("#DCEFE2")),
+                                      ("BACKGROUND", (best[0], 1), (best[0], -1), colors.HexColor("#EEF6F0"))]))
+        parts.append(grid)
+        if item.get("points"):
+            parts.append(Paragraph(escape(str(item.get("points_title") or "")), head))
+            parts += [P("• " + str(point.get("text") or ""), small) for point in item["points"]]
+    if block.get("stamp"):
+        parts.append(P(str(block["stamp"]), small))
+    story.append(KeepTogether(parts))
 
 
 def _entry_price_pdf(story: list[Any], block: dict[str, Any], P: Any, table: Any, small: Any,
@@ -990,7 +1042,8 @@ def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
 
 def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[str, Any],
                        P: Any, table: Any, small: Any, KeepTogether: Any, Spacer: Any,
-                       mm: float, entry_price: dict[str, Any] | None = None) -> None:
+                       mm: float, entry_price: dict[str, Any] | None = None,
+                       strategy_compare: dict[str, Any] | None = None) -> None:
     """Блоки одного раздела объектной вёрстки — таблицами движка."""
     for block in section.get("blocks") or []:
         title = str(block.get("title") or "")
@@ -1016,6 +1069,12 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
                     if goal.get("metric")
                     else f"{title}: {goal.get('reason') or 'показателя долга у проекта нет.'}",
                     small))
+            continue
+        if ref == "strategy_compare":
+            # Блок с точками — из фоновой сборки (`strategy_compare_for_report`).
+            if strategy_compare and strategy_compare.get("items"):
+                _strategy_compare_pdf(story, strategy_compare, P, table, small, KeepTogether, mm,
+                                      title=title)
             continue
         if ref == "site":
             rows = []
@@ -2667,7 +2726,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         _object_pdf_sections(story, _object_sections, inputs, P, table, h2, small, normal,
                              KeepTogether, Spacer, mm, sensitivity_done=bool(
                                  sensitivity and (sensitivity.get("items") or [])),
-                             entry_price=payload.get("entry_price"))
+                             entry_price=payload.get("entry_price"),
+                             strategy_compare=payload.get("strategy_compare")
+                             or (payload.get("result") or {}).get("strategy_compare"))
     story.append(_PdfSection("footer"))
     story.extend([Spacer(1,4*mm),P("Отчёт сформирован автоматически DevelopAid на основании текущих вводных модели. Перед инвестиционным решением требуется проверка исходных данных, юридических предпосылок и условий кредитования.",small)])
 

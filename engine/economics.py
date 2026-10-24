@@ -132,12 +132,18 @@ def calculate(req: CalcRequest) -> dict:
     # Расчёт правит переданные словари (`prepared_calculation`), а второму и
     # третьему пути офиса нужны вводные такими, какими их прислали.
     original = (copy.deepcopy((req.inputs, req.tep, req.rates))
-                if office_path_prefixes(req.inputs) else None)
+                if any(strategy_path_prefixes(req.inputs, product) for product, _ in STRATEGY_PATH_PRODUCTS)
+                else None)
     result = _finalize_result(_calculate_economics(req))
     if migrations and isinstance(result, dict):
         result["input_migrations"] = migrations
     if original is not None and isinstance(result, dict) and result.get("summary"):
-        result["office_paths"] = office_paths(original, result)
+        for product, key in STRATEGY_PATH_PRODUCTS:
+            if strategy_path_prefixes(original[0], product):
+                result[key] = office_paths(original, result, product)
+        # Блок «Сравнение стратегий» без точек безразличия: они — подбор,
+        # его делают фоновые сборки и отдельный запрос страницы.
+        attach_strategy_compare(result)
     return result
 
 
@@ -162,15 +168,29 @@ OFFICE_PATHS: tuple[tuple[str, str], ...] = (
 # сценарий стоил бы трёх расчётов.
 OFFICE_PATHS_ON: contextvars.ContextVar[bool] = contextvars.ContextVar("office_paths_on", default=True)
 
+# Владелец, 24.10.2026: «Сравнение стратегий» везде, где у объекта есть выбор
+# способа продажи, — у офисов и у ТЦ. Продукт объекта → ключ результата.
+# Офисы — прежний `office_paths` (его читает книга офиса), ТЦ — тем же расчётом.
+STRATEGY_PATH_PRODUCTS: tuple[tuple[str, str], ...] = (
+    ("offices", "office_paths"),
+    ("standalone_retail", "retail_paths"),
+)
 
-def office_path_prefixes(inputs: dict[str, Any] | None) -> tuple[str, ...]:
-    """Приставки включённых офисов нежилого проекта; пусто — сравнения нет."""
+
+def strategy_path_prefixes(inputs: dict[str, Any] | None, product: str) -> tuple[str, ...]:
+    """Приставки включённых объектов продукта с выбором стратегии в нежилом
+    проекте; пусто — сравнения нет."""
     if not OFFICE_PATHS_ON.get() or not isinstance(inputs, dict) or not is_nonresidential(inputs):
         return ()
     return tuple(obj.prefix for obj in STANDALONE_OBJECTS
-                 if obj.strategies and obj.product == "offices"
+                 if obj.strategies and obj.product == product
                  and inputs.get(f"{obj.prefix}_enabled")
                  and n(inputs, f"{obj.prefix}_gba_sqm", 0.0) > 0)
+
+
+def office_path_prefixes(inputs: dict[str, Any] | None) -> tuple[str, ...]:
+    """Приставки включённых офисов нежилого проекта; пусто — сравнения нет."""
+    return strategy_path_prefixes(inputs, "offices")
 
 
 def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...],
@@ -229,13 +249,23 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...],
         "exit_value": sum(float(k.get("exit_value") or 0.0) for k in kpis) or None,
         "dscr_min": min(dscr) if dscr else None,
         "loan_peak": total("loan_peak"),
+        # Когда собственные деньги вернутся — тем же потоком, что пик.
+        "payback_month": _iso_month(owner_cash_payback(
+            result.get("finance") or {}, (result.get("cashflow") or {}).get("equity") or [],
+            (result.get("cashflow") or {}).get("months") or [])),
     }
 
 
-def office_paths(original: tuple[dict, dict, list], result: dict[str, Any]) -> dict[str, Any]:
-    """Все способы продажи офиса одним расчётом: основной + недостающие стратегии."""
+def _iso_month(value: Any) -> str | None:
+    return None if value is None else str(value.isoformat() if hasattr(value, "isoformat") else value)[:10]
+
+
+def office_paths(original: tuple[dict, dict, list], result: dict[str, Any],
+                 product: str = "offices") -> dict[str, Any]:
+    """Все способы продажи объекта одним расчётом: основной + недостающие
+    стратегии. `product` — офисы или ТЦ (`STRATEGY_PATH_PRODUCTS`)."""
     inputs, tep, rates = original
-    prefixes = office_path_prefixes(inputs)
+    prefixes = strategy_path_prefixes(inputs, product)
     current = {nonres_strategy.object_strategy(inputs, prefix) for prefix in prefixes}
     current_key = current.pop() if len(current) == 1 else None
     paths = []
@@ -254,7 +284,8 @@ def office_paths(original: tuple[dict, dict, list], result: dict[str, Any]) -> d
         paths.append({"key": key, "label": label, **_office_path_metrics(run, prefixes, key)})
     scored = [p for p in paths if isinstance(p.get("npv"), (int, float))]
     better = max(scored, key=lambda p: p["npv"])["key"] if scored else None
-    return {"current": current_key, "paths": paths, "better": better,
+    return {"current": current_key, "paths": paths, "better": better, "product": product,
+            "prefixes": list(prefixes), "discount_rate_pct": n(inputs, "discount_rate_pct", 20),
             "better_basis": "NPV проекта при ставке дисконтирования"}
 
 
