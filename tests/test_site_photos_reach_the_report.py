@@ -176,6 +176,12 @@ def test_the_page_ticks_a_photo_into_the_report(monkeypatch):
             tab.click("#reportBtn")
             tab.wait_for_function(
                 "document.getElementById('reportBox').textContent.includes('12.10 — 18.10.2026')")
+            # 14.10 — не самый свежий день: свёрнут, его снимки ещё не грузились.
+            tab.wait_for_selector("details[data-day='2026-10-14']", state="attached")
+            closed = tab.evaluate("!document.querySelector(\"details[data-day='2026-10-14']\").open")
+            unloaded = tab.evaluate(
+                "!document.querySelector(\"label[data-id='AQAD1'] img\").getAttribute('src')")
+            tab.click("details[data-day='2026-10-14'] summary")
             tab.wait_for_selector("#photosList label[data-id='AQAD1'] img[src^='blob:']")
             before = tab.locator("#reportBox figure.photo").count()
             state = tab.inner_text("#photosState")
@@ -188,8 +194,53 @@ def test_the_page_ticks_a_photo_into_the_report(monkeypatch):
         finally:
             browser.close()
     assert not errors, errors
+    assert closed and unloaded
     assert state == "За период: 2, отмечено для сводки: 0."
     assert before == 0 and after == 1
     assert "Монолит 5 эт." in caption
     assert loaded == 64
     assert [p["id"] for p in site_photos.photos(PROJECT) if p["chosen"]] == ["AQAD1"]
+
+
+def test_the_photos_fold_by_day(monkeypatch):
+    """«Фото можно архивировать что ль или по дням свёртывать. Иначе их уже
+    огромное количество» (владелец, 25.10.2026). Дни свёрнуты, открыт самый
+    свежий и тот, где есть отмеченное; заголовок дня называет число фото."""
+    from browser import chromium_or_skip, serve
+
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
+
+    import main_legacy as core
+
+    _project()
+    for i, day in enumerate(("2026-10-12", "2026-10-12", "2026-10-13", "2026-10-16", "2026-10-16",
+                             "2026-10-16")):
+        site_photos.store(PROJECT, _jpeg((i * 30, 80, 80)), f"P{i}", day, "Иван Прораб")
+    site_photos.select(PROJECT, "P0", True, "test")
+    monkeypatch.setattr(core, "_require_web_access", lambda *_a, **_k: None)
+    with serve(core.app, PORT + 1) as base, sync_playwright() as pw:
+        browser = pw.chromium.launch(executable_path=str(chrome))
+        try:
+            tab = browser.new_page()
+            errors: list[str] = []
+            tab.on("pageerror", lambda e: errors.append(str(e)))
+            tab.add_init_script("localStorage.setItem('developaid_web_session','проба')")
+            tab.goto(f"{base}/report", wait_until="domcontentloaded")
+            tab.wait_for_selector(f"#project option[value='{PROJECT}']", state="attached")
+            tab.select_option("#project", PROJECT)
+            tab.fill("#cut", "2026-10-18")
+            tab.click("#reportBtn")
+            tab.wait_for_selector("#photosList details.photo-day")
+            days = tab.evaluate("""Array.from(document.querySelectorAll('#photosList details.photo-day'))
+                .map(d=>[d.dataset.day, d.open, d.querySelector('summary').innerText])""")
+            tab.wait_for_selector("label[data-id='P3'] img[src^='blob:']")
+            idle = tab.evaluate("!document.querySelector(\"label[data-id='P2'] img\").getAttribute('src')")
+        finally:
+            browser.close()
+    assert not errors, errors
+    assert [d[0] for d in days] == ["2026-10-16", "2026-10-13", "2026-10-12"]
+    assert [d[1] for d in days] == [True, False, True]
+    assert days[0][2] == "16.10.2026 · 3 фото"
+    assert days[2][2] == "12.10.2026 · 2 фото · отмечено 1"
+    assert idle, "снимки свёрнутого дня грузятся заранее"
