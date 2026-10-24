@@ -1677,6 +1677,15 @@ def _model_basis(limit: dict[str, Any]) -> bool:
     return (limit.get("need_basis") or "") == "model"
 
 
+def _remaining_by_chapter_words(limit: dict[str, Any]) -> str:
+    """«по 2 главе 1,12 млрд ₽, по 3 главе 155,4 млн ₽» — остаток лимита по главам
+    (владелец, 24.10.2026: «остаток лимита лучше расписывать по главам»). Числа —
+    те же, что в разбивке потребности: лимит главы минус оплаченное по ней."""
+    rows = limit.get("need_by_chapter") or {}
+    return ", ".join(f"по {chapter} главе {_rub(rows[chapter]['remaining'])}"
+                     for chapter in sorted(rows))
+
+
 def _escrow_of(queue: dict[str, Any], queues: list[dict[str, Any]]) -> str:
     """«эскроу» при одной очереди, «эскроу 1-й очереди» при нескольких.
 
@@ -1737,7 +1746,10 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     limit = block.get("limit") or {}
     if limit.get("known"):
         lines.append(f"Лимит банка: {_rub(limit.get('bank_limit'))}; "
-                     f"остаток лимитов {_rub(limit.get('bank_remaining'))} — "
+                     f"остаток лимитов {_rub(limit.get('bank_remaining'))}"
+                     + (f" ({_remaining_by_chapter_words(limit)})"
+                        if _model_basis(limit) and _remaining_by_chapter_words(limit) else "")
+                     + " — "
                      f"{_remaining_words(limit, (block.get('draws') or {}).get('total'))}; "
                      + (f"{_reserve_words(limit)}." if _reserve_inside(limit) else
                         f"резерв {_rub(limit.get('reserve'))}."))
@@ -2439,9 +2451,11 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         extra = float(limit.get("additional_financing") or 0.0)
         model = _model_basis(limit)
         scope = limit.get("remaining_scope") or {}
+        by_chapter = _remaining_by_chapter_words(limit) if model else ""
         add("Остаток лимита банка", _rub(limit.get("bank_remaining")),
-            (f"главы {scope.get('chapters')}: лимит {_rub(scope.get('limit'))} без оплаченного "
-             f"{_rub(scope.get('paid'))}; по финмодели "
+            (f"{by_chapter + ' — ' if by_chapter else ''}главы {scope.get('chapters')}: "
+             f"лимит {_rub(scope.get('limit'))} без оплаченного {_rub(scope.get('paid'))}; "
+             "по финмодели "
              if model else f"лимит без оплаченного {_rub(limit.get('paid_actual'))}; по РСС ")
             + (f"не хватает {_rub(extra)} {_since(limit.get('additional_financing_from'))}"
                if extra > 0 else "хватает до ввода"),
