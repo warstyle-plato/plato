@@ -937,6 +937,17 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         pf_cap_set = True
     else:
         pf_cap_set = approved_pf_limit > 0
+    # ПФ есть, только если ему есть что выдавать: затраты проекта под ПФ
+    # (`debt_capex` и `operating` — ровно то, что выбирает ПФ ниже) или продажи
+    # по ДДУ на эскроу. Без них одобренный лимит ПФ не открывается и платы за
+    # его резервирование нет: прежде она бралась и у офиса на продаже блоками
+    # или в аренде, где все затраты идут на кредите объекта (владелец,
+    # 24.10.2026: «Исправить: без ПФ платы нет»).
+    has_pf = any(
+        float(v or 0.0) > 0.0
+        for key in ("debt_capex", "operating", "revenue")
+        for v in (op.get(key) or {}).values()
+    )
 
     # Лестница разбирается один раз на расчёт, а не в каждом месяце: строку
     # человек вводит руками, и разбирать её сотню раз незачем.
@@ -1055,7 +1066,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         line_settled = False
         rve_unpaid = 0.0
         defaulted_at: date | None = None
-        pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
+        pf_reservation_fee = ((pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100
+                              if pf_limit and has_pf else 0.0)
         transferred_bridge_interest = 0.0
 
         weighted_bridge_num = weighted_bridge_key_num = weighted_bridge_den = 0.0
@@ -1524,7 +1536,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         result = run(pf_limit)
     # «Лимит ПФ» — тот, по которому живёт проект: одобренный, если он задан.
     # Комиссии за лимит и резервирование берутся с него же.
-    result["pf_limit"] = approved_pf_limit if pf_cap_set else pf_limit
+    result["pf_limit"] = approved_pf_limit if pf_cap_set and has_pf else pf_limit
     result["pf_limit_cap_source"] = str(x.get("_pf_limit_cap_source") or
                                         ("project" if pf_cap_set else ""))
     # Сколько лимита проект просит на самом деле — считается свободным
