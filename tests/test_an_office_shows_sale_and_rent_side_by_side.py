@@ -303,3 +303,57 @@ def test_no_pf_no_reservation_fee() -> None:
     assert direct["pf_reservation_fee"] == 0 and direct["pf_limit"] == 0
     assert ddu["pf_limit"] == 5_000_000_000
     assert ddu["pf_reservation_fee"] == pytest.approx(5_000_000_000 * core.DEFAULT_INPUTS["reservation_fee_pct"] / 100)
+
+
+def _flat_numbers(value, prefix="", out=None):
+    out = {} if out is None else out
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _flat_numbers(item, f"{prefix}.{key}", out)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _flat_numbers(item, f"{prefix}[{index}]", out)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        out[prefix] = float(value)
+    return out
+
+
+def _economics(result: dict) -> dict:
+    """Деньги проекта: итоги, финансирование, потоки и все способы продажи офиса."""
+    return _flat_numbers({key: result.get(key) for key in ("summary", "finance", "cashflow", "office_paths")})
+
+
+def _shifted(field: list, value):
+    """Значение поля, сдвинутое так, чтобы расчёт, читающий поле, это заметил."""
+    kind = field[3]
+    if kind == "number":
+        return float(value or 0) * 1.3 + 10
+    if kind == "checkbox":
+        return not bool(value)
+    if kind == "date":
+        return "2028-06-01"
+    if kind == "select":
+        options = [o[0] if isinstance(o, (list, tuple)) else o
+                   for o in (field[4] if len(field) > 4 and isinstance(field[4], list) else [])]
+        return next((o for o in options if o != value), value)
+    return value
+
+
+def test_the_housing_only_fields_move_nothing_in_a_nonresidential_project() -> None:
+    """Поля, которых нет на экране нежилого проекта (`RESIDENTIAL_ONLY_INPUTS`),
+    расчёт нежилого проекта и не читает (владелец, 25.10.2026: «если какие-то
+    статьи не входят в нежильё, то они должны … вообще не появляться в блоке
+    вводных»). Сдвигаются все разом, со включёнными ветками — смена ВРИ нужна,
+    соцнагрузка компенсацией: спрятанное поле, которое двигает деньги, было бы
+    потерянной вводной."""
+    fields = {f[0]: f for g in core.FIELD_GROUPS for f in g[1]}
+    x, t = _spec(offices_strategy=ns.STRATEGY_DDU)
+    base = _economics(core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[])))
+    moved = dict(x)
+    for key in core.RESIDENTIAL_ONLY_INPUTS:
+        moved[key] = _shifted(fields[key], x.get(key, core.DEFAULT_INPUTS.get(key)))
+    moved.update(vri_required=True, land_rights_cost_mln=500, social_mode=core.SOCIAL_MODE_BOTH,
+                 social_compensation_mln=500, kindergarten_places=100, school_places=300)
+    got = _economics(core.calculate(core.CalcRequest(inputs=moved, tep=t, rates=[])))
+    changed = [k for k in base if abs(got.get(k, 0.0) - base[k]) > 1e-6 * max(1.0, abs(base[k]))]
+    assert not changed, changed[:10]
