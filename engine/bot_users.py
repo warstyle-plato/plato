@@ -970,9 +970,28 @@ def _site_chat_project(chat_id: int) -> str:
     return _site_chats().get(str(int(chat_id or 0)), "")
 
 
-def _site_chat_bind(chat_id: int, project: str) -> str:
+def _site_chat_titles() -> dict[str, str]:
+    """Названия привязанных чатов — для /status. Привязки старше этого поля
+    названия не имеют, пока из чата не придёт следующий отчёт."""
+    try:
+        raw = json.loads(_site_chats_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    titles = raw.get("titles") if isinstance(raw, dict) else None
+    return {str(k): str(v) for k, v in (titles or {}).items() if str(v or "").strip()}
+
+
+def _site_chats_write(chats: dict[str, str], titles: dict[str, str]) -> None:
+    path = _site_chats_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"chats": chats, "titles": titles}, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+
+
+def _site_chat_bind(chat_id: int, project: str, title: str = "") -> str:
     """Привязать чат к проекту. Пустое имя снимает привязку."""
     chats = _site_chats()
+    titles = _site_chat_titles()
     key = str(int(chat_id or 0))
     name = _site_project_name(project)
     if str(project or "").strip() and not name:
@@ -980,13 +999,59 @@ def _site_chat_bind(chat_id: int, project: str) -> str:
                                  "уберите косые черты и точки подряд.")
     if name:
         chats[key] = name
+        if str(title or "").strip():
+            titles[key] = str(title).strip()
     else:
         chats.pop(key, None)
-    path = _site_chats_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"chats": chats}, ensure_ascii=False, indent=1),
-                    encoding="utf-8")
+        titles.pop(key, None)
+    _site_chats_write(chats, titles)
     return name
+
+
+def _site_chat_title_seen(chat_id: int, title: str) -> None:
+    """Название привязанного чата с его же сообщения — пишется, только если
+    поменялось: каждое сообщение в реестр не ходит."""
+    key = str(int(chat_id or 0))
+    title = str(title or "").strip()
+    chats = _site_chats()
+    if not title or key not in chats:
+        return
+    titles = _site_chat_titles()
+    if titles.get(key) != title:
+        titles[key] = title
+        _site_chats_write(chats, titles)
+
+
+def site_chat_bindings() -> list[dict[str, Any]]:
+    """Привязки чатов по проектам и когда из них последний раз что-то легло.
+
+    Владелец (24.10.2026, на /status, где был виден только чат продаж): «про
+    стройку и монитор ни слова». Счётчик бота живёт в памяти воркера с его
+    запуска; привязки и сами отчёты — на ядре, и ответ берётся отсюда.
+    """
+    import developaid_management_report as management_report
+    import developaid_monitor as monitor
+    from market_search import sales_store
+
+    titles = _site_chat_titles()
+    projects: dict[str, list[str]] = {}
+    for key, project in sorted(_site_chats().items()):
+        projects.setdefault(project, []).append(titles.get(key) or "")
+    out = []
+    for project, chats in sorted(projects.items()):
+        daily = monitor._project_dir(project) / "daily"
+        days = sorted(path.stem for path in daily.glob("*.json")) if daily.is_dir() else []
+        sales_project = ((management_report.sales_link(project) or {}).get("sales_project") or "")
+        sales_last = ""
+        if sales_project:
+            kept = sales_store.load(sales_store.default_dir(), sales_project)
+            messages = ((((kept.get("sources") or {}).get("salesroom") or {}).get("data") or {})
+                        .get("messages") or [])
+            sales_last = max((str(m.get("day") or "") for m in messages), default="")
+        out.append({"project": project, "chats": chats,
+                    "site_last": days[-1] if days else "",
+                    "sales_project": sales_project, "sales_last": sales_last})
+    return out
 
 
 def _krt_subscribers_path() -> Path:
@@ -1249,12 +1314,13 @@ def internal_monitor_daily(req: SiteChatReportRequest) -> dict[str, Any]:
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
     if req.project:
-        return {"bound": _site_chat_bind(int(req.chat_id or 0), req.project)}
+        return {"bound": _site_chat_bind(int(req.chat_id or 0), req.project, req.title)}
     project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
     if not project:
         # «Чат не привязан» — это ответ, а не отказ: человеку надо сказать, чем
         # привязать, иначе отчёт молча падает в никуда и выглядит принятым.
         return {"bound": ""}
+    _site_chat_title_seen(int(req.chat_id or 0), req.title)
     import developaid_monitor_daily as daily
 
     try:
@@ -1293,6 +1359,7 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
     project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
     if not project:
         return {"bound": "", "sales_project": ""}
+    _site_chat_title_seen(int(req.chat_id or 0), req.title)
     import developaid_management_report as management_report
     from market_search import salesroom, sales_store
 
@@ -1311,6 +1378,26 @@ def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
                      f"чат «{req.title or ''}» — бот")
     return {"bound": project, "sales_project": sales_project,
             "messages": len(updated.get("messages") or [])}
+
+
+class SiteChatsRequest(BaseModel):
+    """Кто спрашивает привязки чатов — от бота к ядру (выше маршрута, см. выше)."""
+
+    chat_id: int = 0
+    sign: str = ""
+
+
+@app.post("/internal/monitor/site-chats", include_in_schema=False)
+def internal_monitor_site_chats(req: SiteChatsRequest) -> dict[str, Any]:
+    """Привязки чатов для /status. Бот спрашивает только для команды, ядро
+    проверяет это ещё раз: имена проектов — данные владельца."""
+    expected = _web_login_sign("monitor-chats", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    if int(req.chat_id or 0) not in team_chat_ids():
+        raise HTTPException(status_code=403, detail="Привязки чатов видит только команда.")
+    return {"projects": site_chat_bindings()}
 
 
 @app.post("/internal/monitor/photo", include_in_schema=False)
