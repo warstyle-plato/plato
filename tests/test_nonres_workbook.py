@@ -1,6 +1,6 @@
 """Книга нежилого проекта без офиса — каркас жилой v4, сверка с движком.
 
-С 24.10.2026 нежилой проект без офиса (ТЦ, ФОК, наземный паркинг) получает ту
+С 24.10.2026 нежилой проект без офиса (ТЦ, наземный паркинг, ФОК рядом с ними) получает ту
 же книгу, что проект с офисом (`office_workbook`, `docs/office_workbook.md`),
 только с одним способом продажи: каждый объект продаётся стратегией, выбранной
 у него в проекте (по ДДУ с эскроу и ПФ, блоками после ввода или арендой с
@@ -93,9 +93,9 @@ VARIANTS = {
         RETAIL_ONLY, retail_strategy="ddu", retail_sales_profile="30%@0; 50%@12; 20%@30",
         retail_growth_stage1_pct=5, retail_growth_stage3_pct=7, retail_share_before_rve_pct=70,
         retail_residual_months=9),
-    "ФОК по ДДУ": dict(SPORTS),
+    # ФОК — только рядом с другими объектами: нежилого проекта из одного ФОК
+    # не бывает (владелец, 24.10.2026: «Для ФОК вообще отдельная книга не нужна»).
     "наземный паркинг по ДДУ": dict(PARKING),
-    "ФОК и наземный паркинг по ДДУ": dict(SPORTS, **PARKING),
     "ТЦ блоками и ФОК по ДДУ": dict(RETAIL_ONLY, retail_strategy="direct", **SPORTS),
 }
 DDU_NAMES = [name for name in VARIANTS if "ДДУ" in name]
@@ -209,7 +209,7 @@ def test_the_book_is_the_v4_frame_with_one_way_to_sell() -> None:
                    for r in range(1, inputs.max_row + 1))
 
 
-@pytest.mark.parametrize("name", ["ТЦ ДКП, продажи до ввода", "ФОК по ДДУ"])
+@pytest.mark.parametrize("name", ["ТЦ ДКП, продажи до ввода", "ТЦ блоками и ФОК по ДДУ"])
 def test_the_model_sheets_hold_formulas_not_engine_numbers(name) -> None:
     """Числа на листах модели — формулы; значения — только на «Вводных» и в
     рядах, подписанных «СЧИТАЕТ ДВИЖОК»."""
@@ -325,7 +325,7 @@ def test_a_tampered_pf_rate_is_caught() -> None:
     assert {"Проект: Проценты и комиссии", "Проект: LLCR"} <= labels
 
 
-@pytest.mark.parametrize("name, sheet_name", [("ТЦ по ДДУ", RETAIL), ("ФОК по ДДУ", SPORTS_SHEET),
+@pytest.mark.parametrize("name, sheet_name", [("ТЦ по ДДУ", RETAIL), ("ТЦ блоками и ФОК по ДДУ", SPORTS_SHEET),
                                               ("наземный паркинг по ДДУ", "Наземный паркинг")])
 def test_a_tampered_ddu_price_is_caught(name, sheet_name) -> None:
     """Цена по ДДУ ТЦ, ФОК и наземного паркинга завышена: краснеют выручка,
@@ -413,9 +413,9 @@ def test_the_v4_book_takes_the_vat_out_of_its_flows() -> None:
         assert replacement.format(c=column) in str(sheet[f"{column}{row}"].value), row
 
 
-@pytest.mark.parametrize("name", ["nonres_sports_ddu", "nonres_parking_ddu"])
+@pytest.mark.parametrize("name", ["nonres_retail_sports_ddu", "nonres_parking_ddu"])
 def test_the_parity_script_finds_no_gap_for_sports_and_parking(name, tmp_path) -> None:
-    """ФОК и наземный паркинг по ДДУ — те же сценарии, что гоняет
+    """ФОК по ДДУ рядом с ТЦ и наземный паркинг по ДДУ — те же сценарии, что гоняет
     `scripts/excel_book_parity.py`: значения книги, посчитанные `xlsx_eval`
     при сборке (`v4_value_cache`), скрипт читает без LibreOffice и не находит
     ни одной строки «ПРОВЕРОК», расходящейся с движком."""
