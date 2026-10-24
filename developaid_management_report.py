@@ -1091,7 +1091,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         lots = int(round(float(fact.get("units") or 0.0)))
         pieces = [f"С начала квартала продано {lots} {_plural(lots, 'лот', 'лота', 'лотов')} "
                   f"({fact['contracts']} {_plural(fact['contracts'], 'договор', 'договора', 'договоров')}) "
-                  f"на {_rub(fact['amount'])}, {_area(fact['area'])}"]
+                  f"на {_rub(fact['amount'])}, {_area(fact['area'])} ({SIGNED_BASIS})"]
         for name, plan in (("финмодели", quarter.get("fm")), ("банка", quarter.get("bank"))):
             if plan and plan.get("amount"):
                 gap = fact["amount"] - plan["amount"]
@@ -1298,6 +1298,18 @@ def _pieces(fact: dict[str, Any]) -> str:
         words = _PIECE_WORDS.get(name, (name.lower(),) * 3)
         out.append(f"{count:.0f} {_plural(int(count), *words)}")
     return ", ".join(out)
+
+
+# Договор относится к периоду по дате подписания: так задан план финмодели
+# («Заключенные договоры»). Ежедневный отчёт отдела продаж считает по дате
+# регистрации, и договор, подписанный в конце месяца, у него попадает в
+# следующий (владелец, 24.10.2026: «Странно. Продажники считают не так» —
+# 4 ДДУ на 178,0 млн у сводки против 6 на 291,5 у продажников; решение —
+# считать по подписанию и говорить об этом).
+SIGNED_BASIS = "по дате подписания"
+SIGNED_NOTE = ("Продажи считаются по дате подписания договора, как план финмодели. "
+               "Отдел продаж в ежедневном отчёте считает по дате регистрации, поэтому "
+               "договор, подписанный в конце месяца, у него попадает в следующий месяц.")
 
 
 def _sales_line(label: str, fact: dict[str, Any]) -> str:
@@ -1690,6 +1702,7 @@ def render_text(report: dict[str, Any]) -> str:
                          f"{_area(quarter['bank'].get('area'))}.")
         elif quarter.get("bank_reason"):
             lines.append(esc(quarter["bank_reason"]))
+        lines.append(esc(SIGNED_NOTE))
         if block.get("stale"):
             lines.append(f"Внимание: договоры загружены {_day(block['uploaded'])}, "
                          "более поздние сделки в сводку не попали.")
@@ -2114,7 +2127,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         if quarter and plan:
             share = quarter["fact"]["amount"] / plan
             add(f"Продажи квартала к плану {name}", _pct(share),
-                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)}; прошло {_pct(pace)} квартала",
+                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)} {SIGNED_BASIS}; "
+                f"прошло {_pct(pace)} квартала",
                 "bad" if share < pace - 0.05 else "good")
         else:
             add(f"Продажи квартала к плану {name}", None,
@@ -2640,6 +2654,7 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(_table(["План", "Сумма", "Площадь"], plans))
         if quarter.get("bank_reason"):
             out.append(f"<p class='note'>{esc(quarter['bank_reason'])}</p>")
+        out.append(f"<p class='note'>{esc(SIGNED_NOTE)}</p>")
         if block.get("stale"):
             out.append(f"<p class='note warn'>Договоры загружены {_day(block['uploaded'])}, "
                        "более поздние сделки в сводку не попали.</p>")
