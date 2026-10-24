@@ -47,8 +47,16 @@ _NON_RELEASE_SUFFIXES = (".md", ".sh")
 
 
 def _changed_paths(base_ref: str, head_ref: str = "HEAD") -> list[str]:
+    """Что поменяла голова от точки, где отошла от базы (`base...head`).
+
+    Прямое сравнение с концом базы (`base head`) приписывало ветке всё, что
+    база получила после её отхода: отставшая ветка Dependabot, правившая
+    только .github/, «меняла» main_legacy.py и requirements.txt, получала
+    номер и падала на push выпуска (#865, 24.10.2026). Для базы-предка
+    (сверка с выпуском, сборка main) ответ тот же, что прежде.
+    """
     done = subprocess.run(
-        ["git", "diff", "--name-only", base_ref, head_ref],
+        ["git", "diff", "--name-only", f"{base_ref}...{head_ref}"],
         capture_output=True, check=True, text=True,
     )
     return [line.strip() for line in done.stdout.splitlines() if line.strip()]
