@@ -1134,12 +1134,12 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                               if need["deficit"] > 0 else
                               f"утверждённый бюджет {_rub(need['approved'])} покрыт лимитами и резервом")
             extra = float(limit.get("additional_financing") or 0.0)
-            source = "по финмодели" if _credit_basis(limit) else "по РСС"
+            source = "по финмодели" if _model_basis(limit) else "по РСС"
             pieces.append(f"{source} не хватает {_rub(extra)} "
                           f"{_since(limit.get('additional_financing_from'))}"
                           if extra > 0 else
-                          ("по финмодели остатка лимита хватает до конца выборки"
-                           if _credit_basis(limit) else "по РСС лимитов и резерва хватает до ввода"))
+                          ("по финмодели остатка лимита глав 2–3 хватает до конца стройки"
+                           if _model_basis(limit) else "по РСС лимитов и резерва хватает до ввода"))
         pieces.append(f"выборка кредита за {period} — {_rub(block['draws']['period'])} "
                       f"(за предыдущий такой же период — {_rub(block.get('draws_previous'))})")
         escrow = block.get("escrow") or {}
@@ -1389,8 +1389,10 @@ def _remaining_words(limit: dict[str, Any], borrowed: float | None = None,
     paid = float(limit.get("paid_actual") or 0.0)
     if borrowed is None:
         borrowed = limit.get("paid_borrowed")
-    if _credit_basis(limit):
-        words = f"лимит минус выбранное кредитом {_rub(limit.get('paid_borrowed'))}"
+    if _model_basis(limit):
+        scope = limit.get("remaining_scope") or {}
+        words = (f"главы {scope.get('chapters')}: лимит {_rub(scope.get('limit'))} минус всё "
+                 f"оплаченное {_rub(scope.get('paid'))}")
         borrowed = None
     else:
         words = f"лимит минус всё оплаченное {_rub(paid)}"
@@ -1409,14 +1411,26 @@ def _remaining_words(limit: dict[str, Any], borrowed: float | None = None,
     return words
 
 
-def _credit_basis(limit: dict[str, Any]) -> bool:
-    """Потребность измерена кредитом по финмодели, а не бюджетом книги.
+def _model_basis(limit: dict[str, Any]) -> bool:
+    """Потребность измерена разделами финмодели против глав 2–3 сметы.
 
-    Владелец (24.10.2026): «по финмодели посчитали, сколько надо денег,
-    вычитаем всё, что может дать банк, — это и есть потребность в
-    допфинансировании»; «невыбранный кредит — это же и есть остаток лимита».
+    Владелец (24.10.2026): «сколько надо ещё денег в банке взять, чтобы
+    достроить и продать (2–3 главы)»; «на плашке расписать: потребность в
+    допфинансировании банка такая-то, из неё на 2 главу … а на 3 …»; «тогда
+    по модели».
     """
-    return (limit.get("need_basis") or "") == "credit"
+    return (limit.get("need_basis") or "") == "model"
+
+
+def _chapter_need_words(limit: dict[str, Any]) -> str:
+    """«на стройку 1,93 млрд ₽ (нужно 3,05, лимита 1,12), на коммерцию …»."""
+    parts = []
+    for chapter in sorted(limit.get("need_by_chapter") or {}):
+        row = limit["need_by_chapter"][chapter]
+        parts.append(f"на {row.get('label_acc') or row['label']} {_rub(row['gap'])} "
+                     f"(нужно {_rub(row['need'])}, "
+                     f"лимита {_rub(row['remaining'])})")
+    return ", ".join(parts)
 
 
 def _approved_need(limit: dict[str, Any]) -> dict[str, float] | None:
@@ -1452,13 +1466,14 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
                      f"{_remaining_words(limit, (block.get('draws') or {}).get('total'))}; "
                      f"резерв {_rub(limit.get('reserve'))}.")
         need = _approved_need(limit)
-        credit = _credit_basis(limit)
+        credit = _model_basis(limit)
         if need and credit:
             line = (f"Утверждённый бюджет: {_rub(need['approved'])}; "
-                    f"кредит по финмодели до конца стройки {_rub(need['remaining'])} "
-                    f"при остатке лимита и резерве {_rub(need['fuel'])}")
+                    f"на стройку и коммерцию по финмодели нужно {_rub(need['remaining'])} "
+                    f"при остатке лимита глав 2–3 {_rub(need['fuel'])}")
             if need["deficit"] is not None:
-                line += (f" — не хватает по финмодели {_rub(need['deficit'])}"
+                line += (f" — потребность в допфинансировании банка {_rub(need['deficit'])}: "
+                         f"{_chapter_need_words(limit)}"
                          if need["deficit"] > 0 else " — хватает")
             lines.append(line + ".")
         elif need:
@@ -1479,7 +1494,7 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
             lines.append(f"{source} не хватает: {_rub(extra)}, "
                          f"начиная {_since(limit.get('additional_financing_from'))}.")
         elif credit:
-            lines.append("По финмодели остатка лимита и резерва хватает до конца выборки.")
+            lines.append("По финмодели остатка лимита глав 2–3 хватает до конца стройки.")
         else:
             lines.append("По РСС лимитов и резерва хватает до ввода по прогнозу Монитора.")
     else:
@@ -1535,25 +1550,27 @@ def _funding_html(report: dict[str, Any]) -> str:
             rows.append(["Перерасход по статьям (остаток не уменьшает)", _rub(check["overpaid"])])
         if abs(float(check.get("book_gap") or 0.0)) > tiny:
             rows.append(["Лимиты по статьям против общего лимита", _signed_rub(check["book_gap"])])
-        credit = _credit_basis(limit)
+        credit = _model_basis(limit)
         out.append(_table(["Лимит банка", "Сумма"], rows + [
-            ["Остаток лимита (лимит минус выбранное)" if credit else "Остаток лимитов статей",
-             _rub(limit.get("bank_remaining"))],
+            ["Остаток лимита глав 2–3 (лимит минус оплаченное)" if credit
+             else "Остаток лимитов статей", _rub(limit.get("bank_remaining"))],
             ["Резерв", _rub(limit.get("reserve"))],
             ["Не хватает по финмодели" if credit else "Не хватает по РСС",
              (f"{_rub(extra)} {_since(limit.get('additional_financing_from'))}"
-              if extra > 0 else ("хватает до конца выборки" if credit else "хватает до ввода"))]]))
+              if extra > 0 else "хватает до ввода")]]))
         need = _approved_need(limit)
         if need and credit:
-            plan = limit.get("credit_plan") or {}
-            out.append(_table(["Утверждённый бюджет", "Сумма"], [
-                ["Утверждённый бюджет", _rub(need["approved"])],
-                ["Кредит банка по финмодели всего", _rub(plan.get("total"))],
-                ["Кредит по финмодели до конца стройки", _rub(need["remaining"])],
-                ["Остаток лимита и резерв", _rub(need["fuel"])],
-                ["Не хватает по финмодели",
-                 "—" if need["deficit"] is None
-                 else (_rub(need["deficit"]) if need["deficit"] > 0 else "хватает")]]))
+            rows = [["Утверждённый бюджет", _rub(need["approved"])]]
+            for chapter in sorted(limit.get("need_by_chapter") or {}):
+                row = limit["need_by_chapter"][chapter]
+                acc = row.get("label_acc") or row["label"]
+                rows.append([f"Нужно на {acc} по финмодели", _rub(row["need"])])
+                rows.append([f"Остаток лимита главы {chapter}", _rub(row["remaining"])])
+                rows.append([f"Не хватает на {acc}", _rub(row["gap"])])
+            rows.append(["Потребность в допфинансировании банка",
+                         "—" if need["deficit"] is None
+                         else (_rub(need["deficit"]) if need["deficit"] > 0 else "хватает")])
+            out.append(_table(["Утверждённый бюджет", "Сумма"], rows))
         elif need:
             out.append(_table(["Утверждённый бюджет", "Сумма"], [
                 ["Утверждённый бюджет", _rub(need["approved"])],
@@ -2135,22 +2152,27 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         add("Выбрано у банка", None, "отчёт РСС не загружен")
     if limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
-        credit = _credit_basis(limit)
+        model = _model_basis(limit)
+        scope = limit.get("remaining_scope") or {}
         add("Остаток лимита банка", _rub(limit.get("bank_remaining")),
-            (f"лимит без выбранного {_rub(limit.get('paid_borrowed'))}; по финмодели "
-             if credit else f"лимит без оплаченного {_rub(limit.get('paid_actual'))}; по РСС ")
+            (f"главы {scope.get('chapters')}: лимит {_rub(scope.get('limit'))} без оплаченного "
+             f"{_rub(scope.get('paid'))}; по финмодели "
+             if model else f"лимит без оплаченного {_rub(limit.get('paid_actual'))}; по РСС ")
             + (f"не хватает {_rub(extra)} {_since(limit.get('additional_financing_from'))}"
-               if extra > 0 else ("хватает до конца выборки" if credit else "хватает до ввода")),
+               if extra > 0 else "хватает до ввода"),
             "bad" if extra > 0 else "good")
     else:
         add("Остаток лимита банка", None, "лимит не посчитан")
-    if need and need["deficit"] is not None:
+    if need and need["deficit"] is not None and _model_basis(limit):
+        add("Потребность в допфинансировании банка",
+            _rub(need["deficit"]) if need["deficit"] > 0 else "нет",
+            _chapter_need_words(limit) + (f"; {_since(limit.get('additional_financing_from'))}"
+                                          if need["deficit"] > 0 else ""),
+            "bad" if need["deficit"] > 0 else "good")
+    elif need and need["deficit"] is not None:
         add("Дефицит на достройку", _rub(need["deficit"]) if need["deficit"] > 0 else "нет",
-            (f"кредит по финмодели до конца стройки ({_rub(need['remaining'])}) против "
-             f"остатка лимита и резерва ({_rub(need['fuel'])})"
-             if _credit_basis(limit) else
-             f"утверждённый бюджет минус оплаченное ({_rub(need['remaining'])}) против "
-             f"остатка лимитов и резерва ({_rub(need['fuel'])})"),
+            f"утверждённый бюджет минус оплаченное ({_rub(need['remaining'])}) против "
+            f"остатка лимитов и резерва ({_rub(need['fuel'])})",
             "bad" if need["deficit"] > 0 else "good")
     else:
         add("Дефицит на достройку", None, "утверждённый бюджет не загружен")
