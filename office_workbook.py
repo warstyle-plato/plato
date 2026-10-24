@@ -1687,8 +1687,7 @@ def _tax_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Bloc
     rows.month(f"{c}.margin", "Маржа проекта",
                f"{t('obj_margin')}+{t('common')}" + "".join(f"-{ref(name + '.vat')}" for name in pf))
     rows.month(f"{c}.financing", "Проценты и комиссии — вычет",
-               _sum([f"{b.r('interest')}+{b.r('fees')}" for b in blocks] + [ref(name + ".deduct") for name in pf]
-                    + ([] if ddu else [ref(f"{path['code']}.pf_reserve")])))
+               _sum([f"{b.r('interest')}+{b.r('fees')}" for b in blocks] + [ref(name + ".deduct") for name in pf]))
     rows.month(f"{c}.net", "База месяца", f"{t('margin')}-{t('financing')}")
     rows.month(f"{c}.gate", "До ввода проекта: маржа откладывается", f"IF({k}<{ref('t.rve')},1,0)",
                unit="0/1", fmt=FLAG, total=False)
@@ -1734,13 +1733,6 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     pf = (lambda key: [ref(f"pf.{c}.{key}")]) if ddu else (lambda key: [])  # noqa: E731
     pf_param = lambda key: ref(f"pf.{c}.{key}") if ddu else '""'  # noqa: E731
     rows.section("Проект: деньги по месяцам", path["tab"])
-    if not ddu:
-        # Одобренный лимит ПФ задан — движок берёт плату за его резервирование
-        # при разрешении на стройку и тогда, когда продаж по ДДУ у способа нет
-        # (`simulate_financing`: плата — с одобренного лимита, а не с выдачи).
-        pf = lambda key: [ref(f"{c}.pf_reserve")] if key == "fees" else []  # noqa: E731
-        rows.month(f"{c}.pf_reserve", "Плата за резервирование одобренного лимита ПФ (без продаж по ДДУ)",
-                   f"IF({k}={ref('t.permit')},MAX(0,{ref('in.pf.approved')})*MAX(0,{ref('in.reservation_fee')}),0)")
     rows.month(f"{c}.revenue", "Выручка", _sum([f"{b.z('sale')}+{b.z('rent')}+{b.z('exit')}+{b.z('residual')}"
                                               for b in blocks] + pf("sales")), bold=True)
     rows.month(f"{c}.capex", "Затраты на создание", ref("cx.total"))
@@ -1756,7 +1748,7 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
                f"{p('revenue')}-{p('costs')}-{p('vat')}-{p('capex')}-{p('tax')}", bold=True)
     rows.section("Собственник: деньги по месяцам", path["tab"])
     rows.month(f"{c}.to_equity", "Деньги объектов, ДДУ и ПФ собственнику (без затрат стройки)",
-               _sum([over("to_equity")] + pf("equity")) + ("" if ddu else f"-{ref(f'{c}.pf_reserve')}"))
+               _sum([over("to_equity")] + pf("equity")))
     rows.month(f"{c}.equity", "Поток собственника", f"{p('to_equity')}-{p('capex')}-{p('tax')}", bold=True)
     rows.month(f"{c}.residual", "Оценка удержанного здания (не деньги)", over("residual"))
     rows.month(f"{c}.cash", "Поток собственника — только деньги", f"{p('equity')}-{p('residual')}")
