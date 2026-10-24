@@ -94,7 +94,7 @@ def test_status_carries_what_the_group_gave(bot) -> None:
 def test_the_binding_outcome_reaches_status(bot, monkeypatch) -> None:
     """Исход разбора важнее счёта: по нему и видно, куда легла сводка."""
     monkeypatch.setattr(bot.core, "_site_chat_store",
-                        lambda chat_id, text, taken_at, project="": {"bound": project})
+                        lambda chat_id, text, taken_at, project="", **kw: {"bound": project})
     bot._handle_update(group("/site Кутузов Сити"))
     answer = status_of(bot)
     assert "Кутузов Сити" in answer, answer
