@@ -756,6 +756,15 @@ def decision_tiles_block(block: dict[str, Any] | None, width: float, st: _Styles
     return out
 
 
+def strategy_line_block(line: Any, st: _Styles) -> list[Any]:
+    """Одна строка «Сравнения стратегий»: лучшая стратегия и разница с
+    выбранной. Текст собирает движок (`strategy_compare_block`, поле
+    `teaser`) — тот же блок, что на странице и в полном PDF."""
+    if not line:
+        return []
+    return [Paragraph(f"<b>Сравнение стратегий.</b> {_esc(line)}", st.label), Spacer(1, 2 * mm)]
+
+
 def _esc(value: Any) -> str:
     return (str(value or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
@@ -771,6 +780,7 @@ def _page_one(model: dict[str, Any], map_png: bytes | None, width: float, st: _S
         f"движок DevelopAid {origin.get('engine_version') or '—'} · {origin.get('generated_at') or ''}", st.sub))
     story.append(Spacer(1, 2 * mm))
     story += decision_tiles_block(model.get("decision_tiles"), width, st)
+    story += strategy_line_block(model.get("strategy_line"), st)
     gutter = 5 * mm
     left_w = (width - gutter) * 0.47
     right_w = width - gutter - left_w

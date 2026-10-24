@@ -73,9 +73,10 @@ def direct() -> dict:
 
 def test_the_office_project_carries_three_ways_to_sell(ddu) -> None:
     """Владелец, 24.10.2026: «Новая книга считает и ДДУ» — продажа по ДДУ
-    стоит третьим способом рядом с продажей блоками и арендой."""
+    стоит третьим способом рядом с продажей блоками и арендой. Рядом с арендой —
+    она же с другим выходом (удержание здания): «доходный метод для инвестора»."""
     paths = {p["key"]: p for p in ddu["office_paths"]["paths"]}
-    assert set(paths) == {ns.STRATEGY_DDU, ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME}
+    assert set(paths) == {ns.STRATEGY_DDU, ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME, "income_hold"}
     for path in paths.values():
         assert "error" not in path, path
         assert path["revenue"] > 0 and path["capex"] > 0

@@ -186,6 +186,7 @@ ROUTES = {
     "/report/pdf": lambda s: {"result": {}, "inputs": {}, "cadastral_numbers": [B], "session": s},
     "/agent/chat": lambda s: model_for(B) | {"session": s, "message": "что с LLCR?"},
     "/ia/goal-seek": lambda s: model_for(B) | {"session": s},
+    "/strategy-compare": lambda s: model_for(B) | {"session": s},
     "/api/v2/calculate": lambda s: model_for(B) | {"session": s},
 }
 
