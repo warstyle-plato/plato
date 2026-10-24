@@ -44,15 +44,24 @@ jobs:
           python-version: "3.11"
       - name: Ставим pip-audit
         run: python -m pip install "pip-audit==2.10.1"
-      - name: Проверяем requirements-dev.txt (он включает requirements.txt)
-        env:
-          # Браузер Playwright для аудита не нужен — только сам пакет.
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+      - name: Проверяем точные версии прода и тестов
         run: |
+          # Оба файла — точные версии с контрольными суммами (pip-compile), и
+          # проверяются ровно они, без установки и без нового подбора версий
+          # (--disable-pip): что в файле, то и на проде. Файла два, потому что
+          # networkx в них разный (см. requirements-dev.in).
           # Код выхода pip-audit не решает: он ненулевой на любой находке,
           # включая ту, которую исправить нечем. Решает разбор отчёта.
-          pip-audit -r requirements-dev.txt --format json -o audit.json --progress-spinner off || true
-          python3 scripts/pip_audit_gate.py audit.json
+          status=0
+          for file in requirements.txt requirements-dev.txt; do
+            echo "== ${file}"
+            # Отчёт прошлого файла не должен сойти за отчёт этого.
+            rm -f audit.json
+            pip-audit -r "${file}" --require-hashes --disable-pip \
+              --format json -o audit.json --progress-spinner off || true
+            python3 scripts/pip_audit_gate.py audit.json || status=$?
+          done
+          exit "${status}"
 
   secrets:
     name: Ключи и токены в коде
