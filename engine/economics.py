@@ -694,9 +694,16 @@ def _calculate_economics(req: CalcRequest) -> dict:
             - float(fr.get("nonres_vat_paid", 0.0) or 0.0)
         )
         vat_m = vat_ddu.get(month, 0.0)
-        project_cf.append(revenue_m - capex_m - opex_m - tax - vat_m + nonres_project)
+        # Деньги по ДДУ лежат на эскроу до ввода (214-ФЗ, ст. 15.4): застройщик
+        # получает их раскрытием счёта в РВЭ, а проданное после ввода — в месяц
+        # продажи. Поток проекта идёт по тем же деньгам, что поток капитала, —
+        # как строка книги «Проектный CF до финансирования» (CF_n!54 от
+        # «Раскрытия эскроу»). Прежде выручка шла сюда в месяц договора, и NPV
+        # проекта по ДДУ выходил выше настоящего: на Вавилова, 67 +623 млн ₽
+        # против −1 771 (владелец, 25.10.2026).
         escrow_release = float(fr.get("escrow_release", 0.0) or 0.0)
         cash_revenue_to_equity = 0.0 if month < op["rve"] else revenue_m + escrow_release
+        project_cf.append(cash_revenue_to_equity - capex_m - opex_m - tax - vat_m + nonres_project)
         # Кэш-свип уходит банку с поступлений этой очереди: её долг он не
         # гасит (линия закрыта), поэтому в pf_repay его нет, а из кассы он
         # выбывает. Без этого вычета деньги посчитались бы дважды — здесь как
