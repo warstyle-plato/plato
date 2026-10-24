@@ -151,16 +151,15 @@ def test_the_replacement_takes_the_finmodel_and_refuses_a_stranger(tmp_path, mon
     assert "cf_1_new" in str(refused.value) and "Расчет стоимости строительства" in str(refused.value)
 
 
-def _finmodel_funding(monkeypatch, credit: dict | None, estimate: dict, paid: dict,
-                      reserve: float = 0.0) -> dict:
+def _finmodel_funding(monkeypatch, sections: dict | None, estimate: dict, paid: dict) -> dict:
     articles = {"2.2.1": {"code": "2.2.1", "chapter": "2", "name": "Подготовка", "rss_limit": 500.0,
                           "paid_at_baseline": 200.0, "has_programme": True,
                           "monthly_need": {"2026-11-01": 300.0}}}
     monkeypatch.setattr(dashboard, "_finance_baseline", lambda _: {
         "known": True, "kind": "finmodel", "source": "finance.xlsx",
         "approved": 1000.0, "completion_need_at_baseline": 300.0, "paid_at_baseline": 700.0,
-        "reserve": reserve, "reserve_parts": {}, "monthly_need": {}, "tail_after_apr": 0.0,
-        "chapters": ["2", "3"], "articles": articles, "credit_plan": credit,
+        "reserve": 0.0, "reserve_parts": {}, "monthly_need": {}, "tail_after_apr": 0.0,
+        "chapters": ["1", "2", "3"], "articles": articles, "sections": sections,
     })
     monkeypatch.setattr(dashboard.actuals, "read_estimate", lambda _: {"rows": [], "by_code": estimate})
     monkeypatch.setattr(dashboard, "_paid_in_chapters",
@@ -175,64 +174,92 @@ def _finmodel_funding(monkeypatch, credit: dict | None, estimate: dict, paid: di
     return dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 10, 20), view)
 
 
-CREDIT = {"label": "Поступления кредитов (ПФ)", "total": 1200.0, "drawn": 900.0, "plan": 300.0,
-          "monthly": {"2026-09-01": 80.0, "2026-11-01": 200.0, "2026-12-01": 100.0}}
-# главы сметы: лимит; оплачено (всего, кредитом)
-ESTIMATE = {"2": {"estimate": 450.0}, "3": {"estimate": 80.0}}
-PAID = {"2": (420.0, 360.0), "3": (70.0, 40.0)}
+SECTIONS = {
+    "2": {"code": "2.2", "chapter": "2", "label": "стройка", "label_acc": "стройку",
+          "name": "Стоимость строительства",
+          "total": 900.0, "paid": 500.0, "plan": 400.0,
+          "monthly": {"2026-09-01": 50.0, "2026-11-01": 250.0, "2026-12-01": 100.0}},
+    "3": {"code": "2.3", "chapter": "3", "label": "коммерция", "label_acc": "коммерцию",
+          "name": "Коммерческие расходы",
+          "total": 200.0, "paid": 120.0, "plan": 80.0,
+          "monthly": {"2026-11-01": 30.0, "2027-01-01": 50.0}},
+}
+# главы сметы: лимит (с резервами); оплачено (всего, кредитом); глава 1 — вне вопроса
+ESTIMATE = {"1": {"estimate": 300.0}, "2": {"estimate": 450.0}, "3": {"estimate": 80.0}}
+PAID = {"1": (250.0, 200.0), "2": (400.0, 360.0), "3": (70.0, 40.0)}
 
 
-def test_the_need_is_the_model_credit_and_the_remainder_is_limit_less_drawn(monkeypatch):
-    """«По финмодели посчитали, сколько надо денег, вычитаем всё, что может дать
-    банк»; «невыбранный кредит — это же и есть остаток лимита» (владелец, 24.10.2026)."""
-    got = _finmodel_funding(monkeypatch, CREDIT, ESTIMATE, PAID)
-    # Остаток лимита — лимит по смете минус выбранное кредитом: 530 − 400.
-    assert got["bank_remaining"] == pytest.approx(130.0)
-    # Сколько нужно от банка — выборка по финмодели с месяца среза, не расходы.
-    assert got["remaining_need"] == pytest.approx(300.0)
-    assert got["approved_remaining"] == pytest.approx(300.0)
-    # Не хватает: ноябрь 200 − 130 = 70, декабрь 100 целиком.
-    assert got["additional_financing"] == pytest.approx(170.0)
+def test_the_need_is_the_model_sections_against_chapters_two_and_three(monkeypatch):
+    """«Сколько надо ещё денег в банке взять, чтобы достроить и продать (2–3
+    главы)»; «тогда по модели» (владелец, 24.10.2026)."""
+    got = _finmodel_funding(monkeypatch, SECTIONS, ESTIMATE, PAID)
+    # Остаток лимита — главы 2–3, лимит минус всё оплаченное: (450 − 400) + (80 − 70).
+    assert got["bank_remaining"] == pytest.approx(60.0)
+    assert got["remaining_scope"] == {"chapters": "2–3", "limit": 530.0, "paid": 470.0, "borrowed": 400.0}
+    # Нужно — план разделов с месяца среза (сентябрь уже прошёл): 350 + 80.
+    assert got["remaining_need"] == pytest.approx(430.0)
+    assert got["approved_remaining"] == pytest.approx(430.0)
+    # Не хватает: стройка 350 − 50 = 300, коммерция 80 − 10 = 70; первый месяц — ноябрь.
+    assert got["additional_financing"] == pytest.approx(370.0)
     assert got["additional_financing_from"] == "2026-11-01"
-    assert got["deficit_ladder"]["total"] == pytest.approx(170.0)
-    assert got["need_basis"] == "credit"
-    assert got["credit_plan"] == {"total": 1200.0, "drawn": 900.0, "plan": 300.0}
-    assert [row["code"] for row in got["articles"]] == ["кредит"]
-    # Лимит минус выбранное против остатка водопада — одно и то же число, без «разницы».
+    assert got["deficit_ladder"]["total"] == pytest.approx(370.0)
+    assert got["need_basis"] == "model"
+    assert got["need_by_chapter"] == {
+        "2": {"label": "стройка", "label_acc": "стройку", "need": pytest.approx(350.0),
+              "remaining": pytest.approx(50.0), "gap": pytest.approx(300.0)},
+        "3": {"label": "коммерция", "label_acc": "коммерцию", "need": pytest.approx(80.0),
+              "remaining": pytest.approx(10.0), "gap": pytest.approx(70.0)}}
+    assert [row["code"] for row in got["articles"]] == ["2", "3"]
+    # Лимит глав 2–3 минус оплаченное против остатка водопада — одно число, без «разницы».
     assert got["remaining_check"]["book_gap"] == pytest.approx(0.0)
-    assert "кредит по финмодели" in got["method"]
+    assert "по финмодели" in got["method"]
+    # Плашки «Лимит банка» и «Выбрано у банка» — по всем главам, как прежде.
+    assert got["bank_limit"] == pytest.approx(830.0) and got["paid_borrowed"] == pytest.approx(600.0)
 
 
-def test_without_the_credit_row_the_model_is_a_reason(monkeypatch, tmp_path):
-    got = _finmodel_funding(monkeypatch, None, ESTIMATE, PAID)
-    assert got["known"] is False and "Поступления кредитов (ПФ)" in got["reason"]
+def test_without_the_sections_the_model_is_a_reason(monkeypatch, tmp_path):
+    got = _finmodel_funding(monkeypatch, {"2": SECTIONS["2"]}, ESTIMATE, PAID)
+    assert got["known"] is False and "«2.3»" in got["reason"]
     path = tmp_path / "finance.xlsx"
-    path.write_bytes(_finmodel(credit=False))
-    assert dashboard._read_finance_baseline(path)["credit_plan"] is None
+    path.write_bytes(_finmodel())
+    sections = dashboard._read_finance_baseline(path)["sections"]
+    assert set(sections) == {"2", "3"}
+    assert sections["2"]["plan"] == pytest.approx(350 * K)
+    assert sections["2"]["monthly"] == {"2026-10-01": pytest.approx(100 * K), "2026-11-01": 0.0,
+                                        "2027-04-01": pytest.approx(200 * K)}
+    assert sections["3"]["label_acc"] == "коммерцию" and sections["3"]["plan"] == pytest.approx(50 * K)
 
 
-def test_the_report_speaks_of_credit_and_drawn_for_the_model(monkeypatch):
+def test_the_report_names_the_bank_need_by_chapter_for_the_model(monkeypatch):
     import developaid_management_report as report
     from test_management_report_funding import _project, PROJECT, M
 
     _project()
     monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {"funding": {
-        "known": True, "need_basis": "credit", "bank_limit": 6_810 * M, "paid_actual": 5_263 * M,
-        "paid_borrowed": 4_832 * M, "bank_remaining": 1_978 * M, "reserve": 0.0,
-        "additional_financing": 1_386 * M, "additional_financing_from": "2027-02-01",
-        "approved": 9_599 * M, "approved_remaining": 3_364 * M,
-        "credit_plan": {"total": 8_258 * M, "drawn": 4_894 * M, "plan": 3_364 * M},
-        "deficit_ladder": {"total": 1_386 * M}}}})
+        "known": True, "need_basis": "model", "bank_limit": 6_810 * M, "paid_actual": 5_263 * M,
+        "paid_borrowed": 4_832 * M, "bank_remaining": 1_278 * M, "reserve": 0.0,
+        "remaining_scope": {"chapters": "2–3", "limit": 4_640 * M, "paid": 3_362 * M,
+                            "borrowed": 3_270 * M},
+        "need_by_chapter": {"2": {"label": "стройка", "label_acc": "стройку", "need": 3_052 * M,
+                                  "remaining": 1_123 * M, "gap": 1_928 * M},
+                            "3": {"label": "коммерция", "label_acc": "коммерцию", "need": 621 * M,
+                                  "remaining": 155 * M, "gap": 465 * M}},
+        "additional_financing": 2_393 * M, "additional_financing_from": "2026-11-01",
+        "approved": 9_599 * M, "approved_remaining": 3_672 * M,
+        "deficit_ladder": {"total": 2_393 * M}}}})
     built = report.build(PROJECT, "week", "2026-10-18")
     tiles = {item["label"]: item for item in report.tiles(built)}
-    assert tiles["Остаток лимита банка"]["value"] == "1,98 млрд ₽"
-    assert "без выбранного 4,83 млрд ₽" in tiles["Остаток лимита банка"]["note"]
-    assert "по финмодели не хватает 1,39 млрд ₽" in tiles["Остаток лимита банка"]["note"]
-    assert tiles["Дефицит на достройку"]["value"] == "1,39 млрд ₽"
-    assert "кредит по финмодели до конца стройки (3,36 млрд ₽)" in tiles["Дефицит на достройку"]["note"]
+    assert tiles["Остаток лимита банка"]["value"] == "1,28 млрд ₽"
+    assert "главы 2–3: лимит 4,64 млрд ₽ без оплаченного 3,36 млрд ₽" in tiles["Остаток лимита банка"]["note"]
+    assert "Дефицит на достройку" not in tiles
+    tile = tiles["Потребность в допфинансировании банка"]
+    assert tile["value"] == "2,39 млрд ₽"
+    assert tile["note"] == ("на стройку 1,93 млрд ₽ (нужно 3,05 млрд ₽, лимита 1,12 млрд ₽), "
+                            "на коммерцию 465,0 млн ₽ (нужно 621,0 млн ₽, лимита 155,0 млн ₽); "
+                            "с ноября 2026")
     text = report.render_text(built)
-    assert "кредит по финмодели до конца стройки 3,36 млрд ₽ при остатке лимита и резерве 1,98 млрд ₽ — не хватает по финмодели 1,39 млрд ₽" in text
-    assert "По финмодели не хватает: 1,39 млрд ₽, начиная" in text
-    assert "оплаченное" not in text.split("Выборка кредита")[0].split("Утверждённый бюджет")[1]
+    assert ("на стройку и коммерцию по финмодели нужно 3,67 млрд ₽ при остатке лимита глав 2–3 "
+            "1,28 млрд ₽ — потребность в допфинансировании банка 2,39 млрд ₽: на стройку") in text
+    assert "По финмодели не хватает: 2,39 млрд ₽, начиная" in text
     page = report.render_html(built)
-    assert "Кредит по финмодели до конца стройки" in page and "Не хватает по финмодели" in page
+    assert "Нужно на стройку по финмодели" in page and "Потребность в допфинансировании банка" in page
