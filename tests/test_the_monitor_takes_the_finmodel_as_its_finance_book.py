@@ -263,3 +263,17 @@ def test_the_report_names_the_bank_need_by_chapter_for_the_model(monkeypatch):
     assert "По финмодели не хватает: 2,39 млрд ₽, начиная" in text
     page = report.render_html(built)
     assert "Нужно на стройку по финмодели" in page and "Потребность в допфинансировании банка" in page
+
+
+def test_the_need_tile_equals_the_shortfall_even_with_redistributable_limits(monkeypatch):
+    """«Потребность» 2,27 против «не хватает» 2,39 на соседней плашке (владелец,
+    24.10.2026): переброска лимита между статьями сметы вычиталась из водопада,
+    который уже идёт по главам."""
+    got_plain = _finmodel_funding(monkeypatch, SECTIONS, ESTIMATE, PAID)
+    unspent = {"by_chapter": [{"chapter": "2", "shortage": 300.0, "sources": 120.0}],
+               "sources": [1], "excluded": [], "needy": [], "retention": {"reason": ""}}
+    monkeypatch.setattr(dashboard, "_unspent", lambda *a, **k: unspent)
+    view = {"schedule": {"approved_end": "2027-09-30", "forecast_end": None}}
+    got = dashboard._funding_risk("demo", Path("rss.xlsx"), datetime.date(2026, 10, 20), view)
+    assert got["deficit_ladder"]["total"] == pytest.approx(got["additional_financing"])
+    assert got["deficit_ladder"]["total"] == pytest.approx(got_plain["deficit_ladder"]["total"])
