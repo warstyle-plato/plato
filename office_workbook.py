@@ -1687,7 +1687,7 @@ def _tax_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Bloc
     rows.month(f"{c}.margin", "Маржа проекта",
                f"{t('obj_margin')}+{t('common')}" + "".join(f"-{ref(name + '.vat')}" for name in pf))
     rows.month(f"{c}.financing", "Проценты и комиссии — вычет",
-               _sum([f"{b.r('interest')}+{b.r('fees')}" for b in blocks] + [ref(name + ".deduct") for name in pf])))
+               _sum([f"{b.r('interest')}+{b.r('fees')}" for b in blocks] + [ref(name + ".deduct") for name in pf]))
     rows.month(f"{c}.net", "База месяца", f"{t('margin')}-{t('financing')}")
     rows.month(f"{c}.gate", "До ввода проекта: маржа откладывается", f"IF({k}<{ref('t.rve')},1,0)",
                unit="0/1", fmt=FLAG, total=False)
