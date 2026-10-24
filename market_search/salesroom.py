@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+import datetime
 import html
 import re
 import statistics
@@ -467,3 +468,118 @@ def funnel(read: dict[str, Any] | None, first: str, last: str) -> dict[str, Any]
         named = [day for day in sorted(reported) if key in reported[day]]
         out[key] = reported[named[-1]][key] if named else None
     return out
+
+
+# --- брони: какие ушли в договор, какие сорвались -----------------------------
+# Владелец (24.10.2026): «надо следить, сколько броней не вышло в сделку в
+# итоге». Ежедневный отчёт под «Текущих броней: N» перечисляет брони по одной:
+# «- квартира № 20, башня Гармония, 5 этаж, 90,2 кв.м.». Бронь, пропавшая из
+# списка, либо стала договором, либо снята; договор ищется в контрактации по
+# номеру квартиры и площади. Башня в чате и корпус в контрактации названы
+# по-разному («башня Гармония» и «корп 2»), карты между ними нет — поэтому
+# ключ — номер плюс площадь, а не номер плюс дом.
+_BOOKINGS_HEAD = re.compile(r"текущих\s*брон[а-яё]*", re.I)
+_BOOKINGS_STOP = re.compile(r"наполнение\s*эскроу|зарегистрированн|количество\s*ЦО|встречи\s*:"
+                            r"|брокер\s*тур\w*\s*:|ДДУ\s*на\s*регистрации", re.I)
+_BOOKED = re.compile(r"квартир\w*\s*№?\s*(\d{1,4})", re.I)
+_TOWER = re.compile(r"башн\w*\s+[^\s,.;]+", re.I)
+_UNIT_NUMBER = re.compile(r"кв\.?\s*(\d{1,4})", re.I)
+# Площадь в чате и в договоре округлены по-разному; метр разницы — та же
+# квартира, больше — другая.
+_AREA_SLACK = 1.0
+# Договор, подписанный чуть раньше, чем бронь впервые попала в отчёт, — та же
+# сделка: отчёт пишется вечером, а бронь могла быть оформлена накануне.
+_SIGNED_BEFORE_DAYS = 7
+
+
+def booked_lots(text: str) -> list[dict[str, Any]] | None:
+    """Брони из списка под «Текущих броней». Нет раздела — ``None``: это «не
+    сказано», а не «броней нет»."""
+    head = _BOOKINGS_HEAD.search(text or "")
+    if not head:
+        return None
+    tail = text[head.end():]
+    stop = _BOOKINGS_STOP.search(tail)
+    if stop:
+        tail = tail[:stop.start()]
+    found = list(_BOOKED.finditer(tail))
+    out = []
+    for i, match in enumerate(found):
+        piece = tail[match.start():found[i + 1].start() if i + 1 < len(found) else len(tail)]
+        area = _AREA.search(piece)
+        tower = _TOWER.search(piece)
+        out.append({"apartment": match.group(1),
+                    "area": float(area.group(1).replace(",", ".")) if area else None,
+                    "tower": tower.group(0) if tower else ""})
+    return out
+
+
+def _day(value: str) -> datetime.date:
+    return datetime.date.fromisoformat(str(value)[:10])
+
+
+def _deal_for(lot: dict[str, Any], contracts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Договор на ту же квартиру: номер из «корп 3 кв.168» и площадь."""
+    earliest = _day(lot["first"]) - datetime.timedelta(days=_SIGNED_BEFORE_DAYS)
+    matches = []
+    for row in contracts:
+        number = _UNIT_NUMBER.search(str(row.get("unit") or ""))
+        if not number or number.group(1) != lot["apartment"] or not row.get("signed"):
+            continue
+        if lot["area"] is not None and abs(float(row.get("area") or 0.0) - lot["area"]) > _AREA_SLACK:
+            continue
+        if _day(row["signed"]) < earliest:
+            continue
+        matches.append(row)
+    return min(matches, key=lambda row: row["signed"]) if matches else None
+
+
+def booking_outcomes(read: dict[str, Any] | None, contracts: list[dict[str, Any]],
+                     uploaded: str | None, first: str, last: str) -> dict[str, Any] | None:
+    """Что стало с бронями: в договор, снята без договора или ещё держится.
+
+    Бронь ушла из списка в день первого отчёта, где её уже нет. Договор на эту
+    квартиру — «в договор»; договора нет, а контрактация загружена после ухода
+    брони — «снята без сделки»; контрактация старше — «договора пока не видно»:
+    отсутствие договора в старой выгрузке ещё не значит, что его нет.
+    """
+    lists: dict[str, list[dict[str, Any]]] = {}
+    for message in (read or {}).get("messages") or []:
+        day = str(message.get("day") or "")
+        lots = booked_lots(message.get("text") or "")
+        if day and lots is not None:
+            lists[day] = lots          # в дне — последний отчёт
+    days = sorted(day for day in lists if day <= last)
+    if not days:
+        return None
+    tracks: dict[tuple[str, float | None], dict[str, Any]] = {}
+    for day in days:
+        for lot in lists[day]:
+            key = (lot["apartment"], round(lot["area"], 1) if lot["area"] is not None else None)
+            track = tracks.setdefault(key, {**lot, "first": day})
+            track["last"] = day
+    latest = days[-1]
+    gone_out, held = [], []
+    for track in tracks.values():
+        if track["last"] == latest:
+            held.append({**track, "days": (_day(latest) - _day(track["first"])).days})
+            continue
+        gone = next(day for day in days if day > track["last"])
+        item = {**track, "gone": gone, "days": (_day(gone) - _day(track["first"])).days}
+        deal = _deal_for(track, contracts)
+        if deal:
+            item.update(outcome="deal", signed=deal["signed"])
+        elif uploaded and str(uploaded)[:10] < gone:
+            item["outcome"] = "unknown"
+        else:
+            item["outcome"] = "dropped"
+        gone_out.append(item)
+    period = [item for item in gone_out if first <= item["gone"] <= last]
+
+    def count(items: list[dict[str, Any]], outcome: str) -> int:
+        return sum(1 for item in items if item["outcome"] == outcome)
+
+    return {"since": days[0], "latest": latest,
+            "period": sorted(period, key=lambda item: item["gone"]),
+            "total": {key: count(gone_out, key) for key in ("deal", "dropped", "unknown")},
+            "held": sorted(held, key=lambda item: item["first"])}
