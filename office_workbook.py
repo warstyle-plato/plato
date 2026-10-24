@@ -1737,6 +1737,19 @@ def _tax_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Bloc
                bold=True)
 
 
+def _annual_irr(flows: str) -> str:
+    """Годовой IRR месячного потока. Excel и LibreOffice ищут IRR Ньютоном от
+    догадки, и у потока «сначала деньги покупателей, потом затраты» (паркинг по
+    ДДУ, −65% в год) от догадки 0,01 не сходятся или уходят в ложный корень на
+    бесконечности. Догадки по очереди — 0,01, −0,1, −0,3; ответ больше 100% в
+    месяц — ложный корень, берётся следующая догадка; ни одна не сошлась — пусто."""
+    formula = '""'
+    for guess in ("-0.3", "-0.1", "0.01"):
+        irr = f"IRR({flows},{guess})"
+        formula = f"IFERROR(IF(ABS({irr})<1,(1+{irr})^12-1,1/0),{formula})"
+    return formula
+
+
 def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Block],
                offices: list[_Block], ddu: list[_Block], spec: dict[str, Any], capex: dict[str, Any],
                months: int) -> None:
@@ -1822,7 +1835,7 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     param("id_ebitda", "EBITDA − проценты − прибыль до налога (должно быть 0)",
           f"={p('t_ebitda')}-{p('t_financing')}-{p('t_pbt')}", "млн ₽")
     param("npv", "NPV проекта", f"=SUMPRODUCT({p('project', ':')},{p('df', ':')})", "млн ₽", bold=True)
-    param("irr", "IRR проекта (до кредита)", f'=IFERROR((1+IRR({p("project", ":")},0.01))^12-1,"")',
+    param("irr", "IRR проекта (до кредита)", "=" + _annual_irr(p("project", ":")),
           "в год", PCT, bold=True)
     # IRR и NPV собственника не числа, если ПФ к концу проекта не погашен
     # (решение владельца 2 от 29.09.2026): порог и подпись — движка.
@@ -1837,7 +1850,7 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
           "млн ₽", bold=True)
     # IRR капитала — числом, только если своих денег не меньше порога движка
     # от полных расходов (владелец, 16.10.2026).
-    irr_eq = f'IFERROR((1+IRR({p("equity", ":")},0.01))^12-1,"")'
+    irr_eq = _annual_irr(p("equity", ":"))
     min_share = (spec.get("equity_irr") or {}).get("min_share")
     if min_share is not None:
         full = f"({p('t_capex')}+{p('t_costs')}+{p('t_financing')}+{p('t_tax')}+{p('t_vat')})"
@@ -1881,7 +1894,7 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     param("e_multiple", "Мультипликатор капитала (получено / вложено)",
           f'=IF({p("e_contributed")}>0,{p("e_returned")}/{p("e_contributed")},"")', "×", RATIO)
     param("e_irr_cash", "IRR собственника — только деньги",
-          "=" + unrepaid(f'IF({p("e_residual")}>0,IFERROR((1+IRR({p("cash", ":")},0.01))^12-1,""),"")'),
+          "=" + unrepaid(f'IF({p("e_residual")}>0,{_annual_irr(p("cash", ":"))},"")'),
           "в год", PCT)
     last_neg = f"MAX({p('neg_k', ':')})"
     param("e_payback", "Окупаемость собственных денег",

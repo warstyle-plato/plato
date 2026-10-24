@@ -431,3 +431,43 @@ def test_the_parity_script_finds_no_gap_for_sports_and_parking(name, tmp_path) -
     consolidated = core._run_authoritative_model(copy.deepcopy(spec["inputs"]), copy.deepcopy(spec["tep"]),
                                                  [], {})["consolidated"]
     assert parity.report(name, path, consolidated) == [f"  проверки книги нежилого проекта: {ow.PASSED}"]
+
+
+def test_the_irr_holds_when_it_is_searched_from_a_guess_like_excel(monkeypatch) -> None:
+    """Excel и LibreOffice ищут IRR Ньютоном от догадки, а `xlsx_eval` —
+    делением отрезка. У паркинга по ДДУ поток «сначала деньги покупателей,
+    потом затраты» (−65% в год): от догадки 0,01 Ньютон уходит в ложный корень
+    на бесконечности. Книга пробует догадки по очереди и отбрасывает ответ
+    больше 100% в месяц — IRR сходится с движком и при поиске «как у Excel»."""
+    import xlsx_eval
+
+    def newton(args):
+        flows = xlsx_eval._numbers(args[:1])
+        rate = xlsx_eval._as_number(args[1]) if len(args) > 1 else 0.1
+        for _ in range(50):
+            try:
+                value = sum(f / (1 + rate) ** k for k, f in enumerate(flows))
+                slope = sum(-k * f / (1 + rate) ** (k + 1) for k, f in enumerate(flows))
+            except (OverflowError, ZeroDivisionError):
+                break
+            if slope == 0:
+                break
+            step = value / slope
+            rate -= step
+            if abs(step) < 1e-12:
+                return rate
+        raise xlsx_eval._DivZero()
+
+    spec_name = "наземный паркинг по ДДУ"
+    content, _ = _book(spec_name)
+    monkeypatch.setitem(xlsx_eval.FUNCTIONS, "IRR", newton)
+    verdict, bad, _, _ = _evaluate(content)
+    assert verdict == ow.PASSED and bad == []
+
+    def first_guess_only(book):
+        sheet = book["CF"]
+        cell = sheet[f"B{_row(sheet, 'IRR проекта')}"]
+        flows = cell.value.split("IRR(")[1].split(",")[0]
+        cell.value = f'=IFERROR((1+IRR({flows},0.01))^12-1,"")'
+
+    assert "Проект: IRR проекта" in _tampered(spec_name, first_guess_only)
