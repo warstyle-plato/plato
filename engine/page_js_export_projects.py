@@ -976,7 +976,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence','glavapuScenarioRun',
+ 'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
  'PROJECT_KIND_WHERE','LAND_MAP_VIEWS'];
@@ -987,6 +987,9 @@ function resetProjectState(){
  // 3 200 м²» под строкой паркинга, жалоба на пропорции ТЭП, разговор Платона
  // о прошлом проекте, отчёт чувствительности чужой площадки.
  lastResult=null;
+ // Сравнение стратегий и его подбор — прошлого проекта: номер запроса
+ // растёт, и опоздавший ответ подбора в новый проект не ляжет.
+ strategyCompareKey='';strategyCompareBlock=null;++strategyCompareRound;
  // Открытый проект — тоже данные проекта: после сброса «Сохранить поверх»
  // записало бы пустой расчёт в чужую запись.
  openedProject=null;
