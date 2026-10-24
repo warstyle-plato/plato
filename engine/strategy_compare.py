@@ -37,6 +37,23 @@ _STRATEGY_LEAD = {
     nonres_strategy.STRATEGY_DIRECT: "продажа блоками после ввода",
     nonres_strategy.STRATEGY_INCOME: "аренда с продажей здания",
 }
+_HOLD_WORDS = ("аренда с удержанием здания", "аренды с удержанием здания", "арендой с удержанием здания")
+
+
+def _words(path: dict[str, Any]) -> tuple[str, str, str]:
+    """Падежи стратегии пути: аренда — по её выходу (продажа или удержание)."""
+    if path.get("strategy", path.get("key")) == nonres_strategy.STRATEGY_INCOME \
+            and path.get("exit_mode") == nonres_strategy.EXIT_HOLD:
+        return _HOLD_WORDS
+    return _STRATEGY_WORDS[str(path.get("strategy") or path.get("key"))]
+
+
+def _lead_word(path: dict[str, Any]) -> str:
+    if path.get("strategy", path.get("key")) == nonres_strategy.STRATEGY_INCOME:
+        return _words(path)[0]
+    return _STRATEGY_LEAD[str(path.get("strategy") or path.get("key"))]
+
+
 _OBJECT_WORDS = {"offices": "офисы", "standalone_retail": "ТЦ"}
 _COUNT_GENITIVE = {2: "двух", 3: "трёх", 4: "четырёх"}
 
@@ -84,7 +101,7 @@ def _strategy_lead(data: dict[str, Any]) -> str:
         return "Ни одна стратегия не посчиталась — причины названы в таблице."
     best = scored[0]
     current = next((p for p in scored if p.get("key") == data.get("current")), None)
-    best_word = _STRATEGY_LEAD[best["key"]]
+    best_word = _lead_word(best)
     if data.get("current") is None:
         text = (f"Объекты проекта продаются разными способами. Выгоднее всего {best_word}: "
                 f"у неё наибольший NPV проекта.")
@@ -94,12 +111,12 @@ def _strategy_lead(data: dict[str, Any]) -> str:
         text = f"В проекте выбрана {best_word}, и она выгоднее всего по NPV"
         if len(scored) > 1:
             second = scored[1]
-            text += (f": следующая, {_STRATEGY_WORDS[second['key']][0]}, уступает ей "
+            text += (f": следующая, {_words(second)[0]}, уступает ей "
                      f"{_cmp_mln(float(best['npv']) - float(second['npv']))}.")
         else:
             text += "."
     else:
-        text = (f"В проекте выбрана {_STRATEGY_LEAD[current['key']]}. Выгоднее всего {best_word}: "
+        text = (f"В проекте выбрана {_lead_word(current)}. Выгоднее всего {best_word}: "
                 f"её NPV выше на {_cmp_mln(float(best['npv']) - float(current['npv']))}.")
     if all(float(p["npv"]) < 0 for p in scored):
         count = _COUNT_GENITIVE.get(len(scored))
@@ -127,12 +144,12 @@ def strategy_teaser_line(data: dict[str, Any]) -> str:
         if len(scored) < 2:
             return ""
         second = scored[1]
-        return (f"Выбранная стратегия — {_STRATEGY_WORDS[best['key']][0]} — лучшая из "
+        return (f"Выбранная стратегия — {_words(best)[0]} — лучшая из "
                 f"{_COUNT_GENITIVE.get(len(scored), str(len(scored)))} по NPV; следующая, "
-                f"{_STRATEGY_WORDS[second['key']][0]}, уступает ей "
+                f"{_words(second)[0]}, уступает ей "
                 f"{_cmp_mln(float(best['npv']) - float(second['npv']))}.")
     return (f"Лучшая стратегия — {_lower_first(labels.get(best['key']))}, выгоднее выбранной "
-            f"{_STRATEGY_WORDS[current['key']][1]} на "
+            f"{_words(current)[1]} на "
             f"{_cmp_mln(float(best['npv']) - float(current['npv']))} по NPV.")
 
 
@@ -165,7 +182,44 @@ def _strategy_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
         rows.append(row("llcr", "Покрытие кредита проектного финансирования (LLCR)",
                         lambda p: (_cmp_num(float(p["llcr"]), 2) + "x")
                         if isinstance(p.get("llcr"), (int, float)) else "нет проектного финансирования"))
+    rows += _investor_rows(data, paths, row, rate)
     return rows
+
+
+def _investor_rows(data: dict[str, Any], paths: list[dict[str, Any]], row: Callable[..., dict[str, Any]],
+                   rate: Any) -> list[dict[str, Any]]:
+    """Строки «глазами инвестора»: деньги собственника с кредитом и аренда
+    против цены здания. Владелец, 24.10.2026: «доходный метод для инвестора
+    почему не сравнить?»."""
+    if not any(p.get("strategy") == nonres_strategy.STRATEGY_INCOME for p in paths):
+        return []
+    rent = lambda p: p.get("strategy") == nonres_strategy.STRATEGY_INCOME
+    cap = data.get("exit_cap_pct")
+    cap_text = (f" (для сравнения: ставка капитализации {_cmp_num(float(cap))}%)"
+                if isinstance(cap, (int, float)) and cap > 0 else "")
+    rate_text = (" при ставке " + _cmp_num(float(rate), 1).removesuffix(",0") + "%"
+                 if isinstance(rate, (int, float)) else "")
+    section = {"key": "investor", "label": "Глазами инвестора: собственные деньги с учётом кредита",
+               "cells": [""] * len(paths), "values": [None] * len(paths), "section": True}
+    return [
+        section,
+        row("irr_equity", "IRR собственных денег",
+            lambda p: _cmp_pct(p["irr_equity"]) if isinstance(p.get("irr_equity"), (int, float))
+            else str(p.get("irr_equity_label") or "не считается — поток не меняет знак")),
+        row("npv_equity", "NPV собственных денег" + rate_text,
+            lambda p: _cmp_mln(p["npv_equity"]) if isinstance(p.get("npv_equity"), (int, float))
+            else str(p.get("equity_returns_label") or "не считается")),
+        row("stabilized_noi", "Чистый доход от аренды за год после заполнения (NOI)",
+            lambda p: _cmp_mln(p.get("stabilized_noi")) if rent(p) else "аренды нет"),
+        row("yield_on_cost", "Доходность на затраты: чистый доход от аренды к затратам на создание" + cap_text,
+            lambda p: (_cmp_pct(p["yield_on_cost"]) if isinstance(p.get("yield_on_cost"), (int, float)) else "—")
+            if rent(p) else "аренды нет"),
+        row("exit_value", "Стоимость здания для покупателя-инвестора (чистый доход / ставка капитализации)",
+            lambda p: _cmp_mln(p.get("exit_value")) if rent(p) else "здание продаётся по частям"),
+        row("dscr_min", "Покрытие платежей по кредиту арендой (DSCR, наименьшее)",
+            lambda p: (_cmp_num(float(p["dscr_min"]), 2) + "x") if isinstance(p.get("dscr_min"), (int, float))
+            else ("кредита под аренду нет" if rent(p) else "аренды нет")),
+    ]
 
 
 def strategy_compare_item(data: dict[str, Any], points: dict[str, Any] | None = None,
@@ -349,7 +403,7 @@ def _product_indifference(inputs: dict[str, Any], tep: dict[str, Any], rates: li
     if prefixes and income and sales:
         sale = max(sales, key=lambda p: float(p["npv"]))
         target = float(sale["npv"])
-        other = _STRATEGY_WORDS[sale["key"]]
+        other = _words(sale)
         behind = float(income["npv"]) < target
         for kind, suffix, scale in (("rent", "rent_th_per_sqm_month", 12.0), ("cap", "exit_cap_pct", 1.0)):
             low, high = _INDIFFERENCE_BOUNDS[kind]

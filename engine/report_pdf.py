@@ -951,20 +951,30 @@ def _strategy_compare_pdf(story: list[Any], block: dict[str, Any], P: Any, table
         if item.get("caption"):
             parts.append(Paragraph(escape(str(item["caption"])), head))
         parts.append(P(str(item.get("lead") or ""), small))
+        sections: list[int] = []
         rows = [[Paragraph("Показатель", head)] + [
             Paragraph(escape(str(c.get("label") or "")) + "".join(tag(t) for t in c.get("tags") or []), head)
             for c in columns]]
         for row in item.get("rows") or []:
+            if row.get("section"):
+                sections.append(len(rows))
+                rows.append([Paragraph(escape(str(row.get("label") or "")), head)] + [""] * len(columns))
+                continue
             rows.append([Paragraph(escape(str(row.get("label") or "")), cell)] + [
                 Paragraph(escape(str(value)), strong if row.get("strong") and i < len(columns)
                           and columns[i].get("best") else cell)
                 for i, value in enumerate(row.get("cells") or [])])
-        width = 118 / max(1, len(columns))
-        grid = table(rows, [52*mm] + [width*mm] * len(columns), font_size=7.6)
+        # Ширина полосы страницы — 182 мм (A4 без полей отчёта).
+        label = 52 if len(columns) <= 3 else 44
+        width = (182 - label) / max(1, len(columns))
+        grid = table(rows, [label*mm] + [width*mm] * len(columns), font_size=7.6)
         best = [i + 1 for i, c in enumerate(columns) if c.get("best")]
         if best:
             grid.setStyle(TableStyle([("BACKGROUND", (best[0], 0), (best[0], 0), colors.HexColor("#DCEFE2")),
                                       ("BACKGROUND", (best[0], 1), (best[0], -1), colors.HexColor("#EEF6F0"))]))
+        for at in sections:
+            grid.setStyle(TableStyle([("SPAN", (0, at), (-1, at)),
+                                      ("BACKGROUND", (0, at), (-1, at), colors.HexColor("#F1F1EF"))]))
         parts.append(grid)
         if item.get("points"):
             parts.append(Paragraph(escape(str(item.get("points_title") or "")), head))

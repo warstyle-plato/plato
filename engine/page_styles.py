@@ -394,6 +394,7 @@ details.cadastral-box>summary::marker{color:#888}
 .strategy-compare-table thead th{background:var(--soft);font-weight:600;vertical-align:bottom;text-transform:none;letter-spacing:normal;color:var(--ink)}
 .strategy-compare-table .best{background:#eef6f0}
 .strategy-compare-table thead th.best{background:#dcefe2}
+.strategy-compare-table tr.strategy-section td{text-align:left;font-weight:600;background:var(--soft);padding-top:10px}
 .strategy-tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 6px;margin-top:4px;border:1px solid currentColor;color:var(--muted)}
 .strategy-tag.best-tag{color:#1f6f43}
 .strategy-points-title{font-weight:600;font-size:13px;margin:12px 0 4px}

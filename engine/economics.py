@@ -243,6 +243,10 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...],
         "pf_peak": float(finance.get("peak_pf") or 0.0) if with_pf else None,
         # Подпись «N/A — долг не погашен» вместо NPV капитала (`equity_returns`).
         "equity_returns_label": equity_returns_na_label(summary),
+        # IRR собственника (с кредитом) — числом, только если движок счёл его
+        # показательным; иначе — подпись движка (`equity_irr_label`).
+        "irr_equity": summary.get("irr_equity") if equity_irr_label(summary) is None else None,
+        "irr_equity_label": equity_irr_label(summary),
         "exit_revenue": total("exit_revenue"),
         "stabilized_noi": noi or None,
         "yield_on_cost": noi / noi_cost if noi and noi_cost else None,
@@ -260,32 +264,62 @@ def _iso_month(value: Any) -> str | None:
     return None if value is None else str(value.isoformat() if hasattr(value, "isoformat") else value)[:10]
 
 
+def _path_exit_mode(inputs: dict[str, Any], prefix: str) -> str:
+    value = str(inputs.get(f"{prefix}_exit_mode") or "").strip().lower()
+    return value if value in (nonres_strategy.EXIT_SALE, nonres_strategy.EXIT_HOLD) else nonres_strategy.EXIT_SALE
+
+
+# Подпись аренды по выходу: продажа здания или удержание с оценкой в конце.
+INCOME_EXIT_LABELS = {nonres_strategy.EXIT_SALE: "Аренда и продажа здания",
+                      nonres_strategy.EXIT_HOLD: "Аренда и удержание здания"}
+
+
 def office_paths(original: tuple[dict, dict, list], result: dict[str, Any],
                  product: str = "offices") -> dict[str, Any]:
     """Все способы продажи объекта одним расчётом: основной + недостающие
-    стратегии. `product` — офисы или ТЦ (`STRATEGY_PATH_PRODUCTS`)."""
+    стратегии. `product` — офисы или ТЦ (`STRATEGY_PATH_PRODUCTS`).
+
+    Аренда (`income`) — с выходом проекта; рядом — аренда с другим выходом
+    (`income_hold` / `income_sale`): владелец, 24.10.2026, «доходный метод для
+    инвестора почему не сравнить?» — инвестор может и продать здание, и
+    оставить его себе."""
     inputs, tep, rates = original
     prefixes = strategy_path_prefixes(inputs, product)
     current = {nonres_strategy.object_strategy(inputs, prefix) for prefix in prefixes}
     current_key = current.pop() if len(current) == 1 else None
+    exits = {_path_exit_mode(inputs, prefix) for prefix in prefixes}
+    exit_now = exits.pop() if len(exits) == 1 else None
+    variants = [(key, INCOME_EXIT_LABELS.get(exit_now, label) if key == nonres_strategy.STRATEGY_INCOME else label,
+                 key, None) for key, label in OFFICE_PATHS]
+    if exit_now is not None:
+        other = (nonres_strategy.EXIT_HOLD if exit_now == nonres_strategy.EXIT_SALE
+                 else nonres_strategy.EXIT_SALE)
+        variants.append((f"{nonres_strategy.STRATEGY_INCOME}_{other}", INCOME_EXIT_LABELS[other],
+                         nonres_strategy.STRATEGY_INCOME, other))
     paths = []
-    for key, label in OFFICE_PATHS:
+    for key, label, strategy, exit_mode in variants:
+        tags = {"key": key, "label": label, "strategy": strategy,
+                "exit_mode": (exit_mode or exit_now) if strategy == nonres_strategy.STRATEGY_INCOME else None}
         if key == current_key:
             run = result
         else:
             x, t, r = copy.deepcopy((inputs, tep, rates))
             for prefix in prefixes:
-                x[f"{prefix}_strategy"] = key
+                x[f"{prefix}_strategy"] = strategy
+                if exit_mode:
+                    x[f"{prefix}_exit_mode"] = exit_mode
             try:
                 run = _finalize_result(_calculate_economics(CalcRequest(inputs=x, tep=t, rates=r)))
             except Exception as exc:  # путь не посчитался — сказать почему, а не молчать
-                paths.append({"key": key, "label": label, "error": f"{type(exc).__name__}: {exc}"})
+                paths.append({**tags, "error": f"{type(exc).__name__}: {exc}"})
                 continue
-        paths.append({"key": key, "label": label, **_office_path_metrics(run, prefixes, key)})
+        paths.append({**tags, **_office_path_metrics(run, prefixes, strategy)})
     scored = [p for p in paths if isinstance(p.get("npv"), (int, float))]
     better = max(scored, key=lambda p: p["npv"])["key"] if scored else None
+    caps = {_strategy_field_value(inputs, prefix, "exit_cap_pct") for prefix in prefixes}
     return {"current": current_key, "paths": paths, "better": better, "product": product,
             "prefixes": list(prefixes), "discount_rate_pct": n(inputs, "discount_rate_pct", 20),
+            "exit_cap_pct": caps.pop() if len(caps) == 1 else None,
             "better_basis": "NPV проекта при ставке дисконтирования"}
 
 

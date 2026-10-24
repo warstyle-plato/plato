@@ -36,7 +36,13 @@ from test_an_office_shows_sale_and_rent_side_by_side import _spec  # noqa: E402
 
 ROWS = ("Выручка", "Чистая прибыль", "NPV проекта при ставке 20%", "IRR проекта",
         "Наибольшая сумма собственных денег в проекте", "Когда вложенные собственные деньги вернутся",
-        "Покрытие кредита проектного финансирования (LLCR)")
+        "Покрытие кредита проектного финансирования (LLCR)",
+        "Глазами инвестора: собственные деньги с учётом кредита", "IRR собственных денег",
+        "NPV собственных денег при ставке 20%", "Чистый доход от аренды за год после заполнения (NOI)",
+        "Доходность на затраты: чистый доход от аренды к затратам на создание "
+        "(для сравнения: ставка капитализации 10,5%)",
+        "Стоимость здания для покупателя-инвестора (чистый доход / ставка капитализации)",
+        "Покрытие платежей по кредиту арендой (DSCR, наименьшее)")
 
 
 def _bundle(**over) -> tuple[dict, dict, dict]:
@@ -79,24 +85,26 @@ def test_the_block_reads_the_paths_of_the_engine(office) -> None:
     best = max(paths, key=lambda p: p["npv"])["key"]
     assert best == result["office_paths"]["better"] == item["best"] == ns.STRATEGY_DDU
     marks = {c["key"]: c["tags"] for c in item["columns"]}
-    assert marks == {"ddu": ["лучшая по NPV"], "direct": ["выбрана в проекте"], "income": []}
+    assert marks == {"ddu": ["лучшая по NPV"], "direct": ["выбрана в проекте"], "income": [],
+                     "income_hold": []}
 
 
 def test_the_lead_and_the_teaser_say_the_approved_sample(office) -> None:
     item, block = office["block"]["items"][0], office["block"]
     assert item["lead"] == ("В проекте выбрана продажа блоками после ввода. Выгоднее всего продажа по ДДУ "
-                            "с эскроу: её NPV выше на 521,9 млн ₽. Ни одна из трёх стратегий при нынешних "
+                            "с эскроу: её NPV выше на 521,9 млн ₽. Ни одна из четырёх стратегий при нынешних "
                             "ценах не окупает проект.")
     assert block["teaser"] == ("Лучшая стратегия — продажа по ДДУ (эскроу), выгоднее выбранной продажи "
                                "блоками на 521,9 млн ₽ по NPV.")
     npv = next(r for r in item["rows"] if r["key"] == "npv")
-    assert npv["cells"] == ["−1 251,7 млн ₽", "−1 773,6 млн ₽", "−2 830,3 млн ₽"]
+    assert npv["cells"] == ["−1 251,7 млн ₽", "−1 773,6 млн ₽", "−2 830,3 млн ₽",
+                            "−2 597,5 млн ₽"]
 
 
 def test_the_chosen_best_strategy_names_the_runner_up() -> None:
     bundle, _, _ = _bundle(offices_strategy=ns.STRATEGY_DDU)
     block = core.strategy_compare_block(bundle["consolidated"])
-    assert block["teaser"] == ("Выбранная стратегия — продажа по ДДУ — лучшая из трёх по NPV; следующая, "
+    assert block["teaser"] == ("Выбранная стратегия — продажа по ДДУ — лучшая из четырёх по NPV; следующая, "
                                "продажа блоками, уступает ей 521,9 млн ₽.")
 
 
@@ -116,13 +124,40 @@ def test_the_retail_object_is_compared_too() -> None:
     result = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
     assert "office_paths" not in result
     paths = result["retail_paths"]["paths"]
-    assert {p["key"] for p in paths} == {ns.STRATEGY_DDU, ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME}
+    assert {p["key"] for p in paths} == {ns.STRATEGY_DDU, ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME,
+                                          "income_hold"}
     assert all("error" not in p for p in paths)
     item = result["strategy_compare"]["items"][0]
     assert item["product"] == "standalone_retail" and item["current"] == ns.STRATEGY_INCOME
     # Путь проекта — основной расчёт, без второго счёта.
     income = next(p for p in paths if p["key"] == ns.STRATEGY_INCOME)
     assert income["npv"] == result["summary"]["npv"]
+
+
+def test_the_investor_sees_the_rent_kept_and_sold() -> None:
+    """Владелец, 24.10.2026: «доходный метод для инвестора почему не сравнить?» —
+    рядом с арендой и продажей здания стоит аренда с удержанием, и у всех
+    стратегий есть строки инвестора: деньги собственника с кредитом, чистый
+    доход от аренды, доходность на затраты, стоимость здания, покрытие кредита."""
+    bundle, x, t = _bundle(offices_strategy=ns.STRATEGY_DIRECT)
+    paths = {p["key"]: p for p in bundle["consolidated"]["office_paths"]["paths"]}
+    hold = paths["income_hold"]
+    assert hold["label"] == "Аренда и удержание здания" and hold["exit_mode"] == ns.EXIT_HOLD
+    # Удержание — полный расчёт движка с выходом «удержание», а не пересчёт здесь.
+    assert hold["npv"] == _npv(x, t, ns.STRATEGY_INCOME, offices_exit_mode=ns.EXIT_HOLD)
+    assert hold["npv"] != paths["income"]["npv"]
+    item = bundle["consolidated"]["strategy_compare"]["items"][0]
+    rows = {r["key"]: r["cells"] for r in item["rows"]}
+    assert rows["yield_on_cost"] == ["аренды нет", "аренды нет", "6,4%", "6,4%"]
+    assert rows["irr_equity"] == ["N/A — долг не погашен", "−52,1%", "−32,0%", "−17,2%"]
+    assert rows["exit_value"][:2] == ["здание продаётся по частям"] * 2
+    # Проект на удержании: четвёртый столбец — аренда с продажей здания.
+    held, _, _ = _bundle(offices_strategy=ns.STRATEGY_INCOME, offices_exit_mode=ns.EXIT_HOLD)
+    data = held["consolidated"]["office_paths"]
+    labels = {p["key"]: p["label"] for p in data["paths"]}
+    assert labels["income"] == "Аренда и удержание здания" and labels["income_sale"] == "Аренда и продажа здания"
+    assert data["current"] == ns.STRATEGY_INCOME
+    assert next(p for p in data["paths"] if p["key"] == "income_sale")["npv"] == pytest.approx(paths["income"]["npv"])
 
 
 def test_a_project_without_a_choice_has_no_block() -> None:
@@ -209,7 +244,8 @@ def test_the_office_book_agrees_with_the_block(office) -> None:
             continue
         label, ratio = labels[row["key"]]
         for column, value in zip(item["columns"], row["values"]):
-            if value is None:
+            # Аренда с другим выходом — столбец блока, но не способ книги.
+            if value is None or column["key"] not in sections:
                 continue
             got = in_book[(sections[column["key"]], label)]
             want = ow._engine_number(value, ratio)
@@ -341,7 +377,8 @@ def test_the_page_draws_the_block_of_the_engine(page_state) -> None:
     item = state["engine"]["items"][0]
     assert state["head"] == ["Показатель"] + [
         " ".join([c["label"], *c["tags"]]) for c in item["columns"]]
-    assert state["rows"] == [[r["label"], *r["cells"]] for r in item["rows"]]
+    assert state["rows"] == [[r["label"]] if r.get("section") else [r["label"], *r["cells"]]
+                             for r in item["rows"]]
     assert state["best"] == [item["best"]]
     assert state["lead"] == item["lead"]
     assert "выбрана в проекте" in next(h for h in state["head"] if "Продажа блоками" in h)
