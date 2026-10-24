@@ -2144,6 +2144,27 @@ def _site_chat_store(chat_id: int, text: str, taken_at: str,
     return internal_monitor_daily(SiteChatReportRequest(**payload))
 
 
+def _sales_chat_store(chat: dict[str, Any], message: dict[str, Any], text: str,
+                      taken_at: str) -> dict[str, Any]:
+    """Отчёт отдела продаж — ядру, той же дорогой, что сводка стройки."""
+    chat_id = int((chat or {}).get("id") or 0)
+    sender = message.get("from") or {}
+    author = " ".join(str(sender.get(k) or "").strip()
+                      for k in ("first_name", "last_name")).strip()
+    payload = {
+        "chat_id": chat_id,
+        "sign": _web_login_sign("monitor-sales", chat_id),
+        "title": str((chat or {}).get("title") or ""),
+        "author": author,
+        "text": str(text or ""),
+        "taken_at": str(taken_at or ""),
+    }
+    url = _core_api_url("/internal/monitor/sales-chat")
+    if url:
+        return _core_post(url, payload, 30.0)
+    return internal_monitor_sales_chat(SalesChatRequest(**payload))
+
+
 # Снимок для сводки: самый крупный размер не длиннее этой стороны. В PDF фото
 # идёт на полстраницы (около 9 см) — 1280 точек хватает с запасом, а полный
 # размер занимал бы диск ядра в разы больше.
@@ -2333,8 +2354,8 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
             message,
             "<b>Чат «" + html.escape(str((chat or {}).get("title") or "")) +
             "» привязан к проекту «" + html.escape(bound) + "».</b>\n"
-            "Ежедневную сводку с численностью читаю оттуда сам и в чат "
-            "ничего не пишу.")
+            "Ежедневные отчёты — сводку с численностью и отчёт отдела продаж — "
+            "читаю оттуда сам и в чат ничего не пишу.")
         return
 
     parsed = None
@@ -2344,17 +2365,37 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
         parsed = daily.parse_daily_report(text)
     except Exception:
         parsed = None
-    if not parsed or not parsed.get("contractors"):
-        # Не отчёт — просто считаем. Рабочая переписка нас не касается.
-        _telegram_group_seen(chat)
-        return
-
     stamp = message.get("date")
     try:
         taken_at = datetime.fromtimestamp(
             int(stamp), _TELEGRAM_MOSCOW).date().isoformat()
     except (TypeError, ValueError, OSError):
         taken_at = ""
+    if not parsed or not parsed.get("contractors"):
+        from market_search import salesroom
+
+        if salesroom.is_sales_report(text):
+            # Ежедневный отчёт отдела продаж (владелец, 24.10.2026: «может
+            # туда тоже бота посадить? Для отчётов по звонкам, броням»).
+            try:
+                answer = _sales_chat_store(chat, message, text, taken_at)
+            except Exception as exc:
+                _telegram_group_seen(chat, "отчёт продаж не сохранён: " + str(exc)[:80])
+                return
+            if not answer.get("bound"):
+                _telegram_group_seen(chat, "отчёт продаж прочитан, но чат не привязан — нужен /site")
+            elif not answer.get("sales_project"):
+                _telegram_group_seen(chat, "отчёт продаж прочитан, но проект «"
+                                     + str(answer.get("bound")) + "» не связан с отчётом "
+                                     "о продажах — свяжите на странице сводки")
+            else:
+                _telegram_group_seen(chat, "отчёт продаж" + (" за " + taken_at if taken_at else "")
+                                     + " → «" + str(answer.get("sales_project")) + "»")
+            return
+        # Не отчёт — просто считаем. Рабочая переписка нас не касается.
+        _telegram_group_seen(chat)
+        return
+
     try:
         answer = _site_chat_store(chat_id, text, taken_at)
     except Exception as exc:

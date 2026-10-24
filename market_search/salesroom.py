@@ -43,12 +43,22 @@ _DATE = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})")
 
 # Строки ежедневного отчёта. Числа берутся по подписи, а не по порядку: формат
 # отчёта у менеджеров плавает, а подписи держатся.
+#
+# Формат 2026-10 («Отчёт за 23.10.2026 г.»): «ЦО за день - 1», «Встречи за
+# день - 1», «Брокер тур за день - 1», «ДДУ на регистрации: 0», «Текущих
+# броней: 3». Берётся «за день»: «за месяц» — нарастающий итог, и сложенный по
+# дням он считался бы многократно. ЦО — целевые обращения, та же ступень
+# воронки, что прежние «целевые звонки».
 _COUNTS = {
-    "meetings": r"встреч[а-яё]*\s*в\s*офисе\s*[-–—:]?\s*(\d+)",
-    "calls": r"целевых\s*звонк[а-яё]*\s*[-–—:]?\s*(\d+)",
+    "meetings": r"(?:встреч[а-яё]*\s*в\s*офисе|встреч[а-яё]*\s*за\s*день)\s*[-–—:]?\s*(\d+)",
+    "calls": r"(?:целевых\s*звонк[а-яё]*|ЦО\s*за\s*день)\s*[-–—:]?\s*(\d+)",
+    "broker_tours": r"брокер[\s-]*тур[а-яё]*\s*за\s*день\s*[-–—:]?\s*(\d+)",
     "bookings": r"текущих\s*брон[а-яё]*[^\d]{0,20}(\d+)",
-    "registering": r"сделк[аи]\s*на\s*регистрации\s*[-–—:]?\s*(\d+)",
+    "registering": r"(?:сделк[аи]|ДДУ)\s*на\s*регистрации\s*[-–—:]?\s*(\d+)",
 }
+# События дня складываются; брони и сделки на регистрации — состояние дня.
+_EVENTS = ("calls", "meetings", "broker_tours")
+_STATES = ("bookings", "registering")
 
 # Цена лота в брони: «площадь 34 кв.м., 920 000 руб.за кв.м.» и «694 000 за
 # кв.м. за 3К (37 метров)» — формулировка у каждого своя, число одно.
@@ -288,6 +298,7 @@ def summarise(read: dict[str, Any], bands: list[dict[str, Any]] | None = None) -
         bookings = month.get("bookings")
         row = {"month": month["month"], "days": month["days"],
                "meetings": meetings, "calls": month.get("calls"),
+               "broker_tours": month.get("broker_tours"),
                "bookings": bookings, "registering": month.get("registering")}
         # Бронь и сделку на регистрации отчёт показывает СОСТОЯНИЕМ дня, а не
         # событием: складывать их за месяц нельзя — выйдет «сколько раз бронь
@@ -390,4 +401,69 @@ def _lots_by_band(lots: list[dict[str, Any]], bands: list[dict[str, Any]] | None
                   and band["low"] <= row["area"] < band["high"]]
         out.append({"band": band.get("band"), "lots": float(len(inside)),
                     "price_per_sqm": (round(statistics.median(inside)) if inside else None)})
+    return out
+
+
+# --- отчёты из чата по одному: бот в группе ----------------------------------
+# Владелец (24.10.2026): «может туда тоже бота посадить? Для отчётов по
+# звонкам, броням и т. п.». Выгрузка чата руками остаётся, бот дописывает те же
+# сообщения по одному — источник один, «чат отдела продаж».
+
+# Отчёт продаж узнаётся по подписям строк, а не по слову «отчёт»: так зовут и
+# сводку стройки. Двух подписей хватает, одной мало — «встреча» бывает и в
+# рабочей переписке.
+_REPORT_MIN_LINES = 2
+
+
+def is_sales_report(text: str) -> bool:
+    """Похоже ли сообщение на ежедневный отчёт отдела продаж."""
+    found = sum(1 for pattern in _COUNTS.values() if re.search(pattern, text or "", re.I))
+    return found >= _REPORT_MIN_LINES
+
+
+def append_message(read: dict[str, Any] | None, day: str, author: str,
+                   text: str, chat: str = "") -> dict[str, Any]:
+    """Дописать сообщение к источнику «чат отдела продаж».
+
+    Тот же день с тем же текстом второй раз не пишется: Telegram повторяет
+    доставку, а повтор удвоил бы встречи дня.
+    """
+    got = dict(read or {"messages": [], "chat": chat, "missing": []})
+    messages = list(got.get("messages") or [])
+    entry = {"day": day, "author": author, "text": " ".join(str(text or "").split())}
+    if not any(m.get("day") == entry["day"] and m.get("text") == entry["text"] for m in messages):
+        messages.append(entry)
+    got["messages"] = messages
+    got["chat"] = got.get("chat") or chat
+    return got
+
+
+def funnel(read: dict[str, Any] | None, first: str, last: str) -> dict[str, Any] | None:
+    """Воронка отдела продаж за дни ``first``…``last`` включительно (ГГГГ-ММ-ДД).
+
+    События (обращения, встречи, брокер-туры) складываются по дням — в дне
+    берётся последний отчёт. Брони и ДДУ на регистрации — состояние: берётся
+    последний день периода, где они названы. Дней без отчёта ноль не
+    приписывается: в ответе сказано, за сколько дней отчёты были.
+    """
+    days: dict[str, dict[str, float]] = {}
+    for message in (read or {}).get("messages") or []:
+        day = str(message.get("day") or "")
+        if not (first <= day <= last):
+            continue
+        row = days.setdefault(day, {})
+        for key, pattern in _COUNTS.items():
+            found = re.search(pattern, message.get("text") or "", re.I)
+            if found:
+                row[key] = float(found.group(1))
+    reported = {day: row for day, row in days.items() if row}
+    if not reported:
+        return None
+    out: dict[str, Any] = {"days": len(reported), "first": min(reported), "last": max(reported)}
+    for key in _EVENTS:
+        values = [row[key] for row in reported.values() if key in row]
+        out[key] = sum(values) if values else None
+    for key in _STATES:
+        named = [day for day in sorted(reported) if key in reported[day]]
+        out[key] = reported[named[-1]][key] if named else None
     return out
