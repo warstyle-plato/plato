@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Download pinned public calculator assets
         shell: bash
         run: |
