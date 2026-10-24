@@ -515,3 +515,43 @@ def test_the_branch_guard_compares_with_the_merge_parent_not_a_fresh_main():
     guard = BRANCH_GUARD.read_text(encoding="utf-8")
     assert '--base "HEAD^1"' in guard
     assert 'origin/${{ github.base_ref }}' not in guard
+
+
+def test_a_branch_behind_the_base_is_judged_by_its_own_changes(repo):
+    """Ветка, правившая только .github/, отстала от main, а main с тех пор
+    поменял движок. Её собственная правка номера не требует — без этого
+    скрипт выдавал номер и толкал коммит выпуска в чужую ветку (#865)."""
+    guard = _module(GUARD, "check_version_grows_under_test")
+    repo.run("git", "checkout", "-q", "-B", "ci-only", "main")
+    (repo.path / ".github").mkdir(exist_ok=True)
+    (repo.path / ".github" / "ci.yml").write_text("on: push\n", encoding="utf-8")
+    repo.run("git", "add", ".github/ci.yml")
+    repo.run("git", "commit", "-qm", "только CI")
+    repo.run("git", "push", "-q", "origin", "ci-only")
+    repo.run("git", "checkout", "-q", "main")
+    repo.commit("0.24.19", "x = 2\n")
+    repo.run("git", "push", "-q", "origin", "main")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        repo.run("git", "fetch", "-q", "origin")
+        assert not release_merge._engine_changed(guard, "main", "ci-only")
+        # Своя правка движка в отставшей ветке по-прежнему тратит номер.
+        repo.branch("engine-old", "0.24.18", "x = 3\n")
+        repo.run("git", "reset", "-q", "--hard", "HEAD")
+        repo.run("git", "fetch", "-q", "origin")
+        assert release_merge._engine_changed(guard, "main", "engine-old")
+    finally:
+        os.chdir(here)
+
+
+def test_a_refused_push_names_the_server_answer():
+    remote = ("To github.com:o/r.git\n ! [remote rejected] HEAD -> dependabot/x "
+              "(refusing to allow a GitHub App to create or update workflow "
+              "`.github/workflows/a.yml` without `workflows` permission)\n")
+    text = release_merge._git_refusal(("push", "origin", "HEAD:dependabot/x"), 1, remote)
+    assert "remote rejected" in text and "workflows" in text
+    assert "GITHUB_TOKEN не вправе менять .github/workflows" in text
+    other = release_merge._git_refusal(("fetch", "origin"), 128, "fatal: boom")
+    assert "fatal: boom" in other and "GITHUB_TOKEN" not in other
