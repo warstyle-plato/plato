@@ -361,7 +361,9 @@ function renderObjectReport(r){
 // стратегий, вывод и точки, где стратегии сравняются. Страница только
 // печатает. Точки — подбор полным пересчётом модели, поэтому они приходят
 // отдельным запросом после расчёта (`/strategy-compare`), а не с ним.
-let strategyCompareKey='', strategyCompareBlock=null, strategyCompareRound=0;
+let strategyCompareKey='';
+let strategyCompareBlock=null;
+let strategyCompareRound=0;
 // Строка-раздел таблицы («Глазами инвестора…») — на всю ширину.
 function strategySectionRow(row,span){
  return `<tr class="strategy-section" data-row="${escapeHtml(row.key||'')}"><td colspan="${span}">${escapeHtml(row.label||'')}</td></tr>`;
