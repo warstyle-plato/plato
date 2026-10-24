@@ -357,7 +357,7 @@ def test_the_page_follows_the_project_kind() -> None:
 
 def test_the_book_shares_the_block_by_construction() -> None:
     """Книга двух объектов: доля общих затрат — стройка объекта к стройке
-    всех, «Сверка» ПРОЙДЕНО; поддельная доля 50/50 краснеет."""
+    всех, «ПРОВЕРКИ» ПРОЙДЕНО; поддельная доля 50/50 краснеет."""
     x, t = _two_objects()
     content, _, meta = core.build_project_workbook(x, t, [], {}, project_name="Два")
     assert meta.get("nonres_book") is True and meta["missing"] == []

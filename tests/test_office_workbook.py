@@ -318,7 +318,7 @@ def test_a_longer_project_than_the_engine_is_caught() -> None:
 
 
 def test_other_projects_keep_their_books() -> None:
-    """Нежилой проект без офиса — прежняя книга; смешанный — v4."""
+    """Нежилой проект без офиса — книга с одним способом (без книги офиса); смешанный — v4."""
     x, t = _project(offices_enabled=False, retail_strategy="income", **RETAIL)
     _, _, meta = core.build_project_workbook(x, t, [], {})
     assert meta.get("nonres_book") and not meta.get("office_book")
