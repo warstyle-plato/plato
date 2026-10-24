@@ -148,6 +148,7 @@ def test_the_report_shows_the_funnel(monkeypatch, tmp_path):
     sales_store.save(where, "Кутузов", {"contracting": {"rows": [row]}, "salesroom": read}, "файл")
     block = report.sales("Кутузов", "week", "2026-10-24", where)
     assert block["state"] == "ok"
-    line = report._funnel_line(block["funnel"], "week")
-    assert line == ("Воронка за неделю: целевых обращений 1, встреч 2, брокер-туров 1; "
-                    "сейчас броней 3, ДДУ на регистрации 0 (по отчётам отдела продаж за 1 день).")
+    line = report._funnel_line(block, "week")
+    assert line.startswith("Воронка за неделю: целевые звонки 1 → встречи 2 (200,0%) → ")
+    assert line.endswith("Брокер-туров 1. Сейчас броней 3, ДДУ на регистрации 0. "
+                         "По отчётам отдела продаж за 1 день.")
