@@ -194,18 +194,24 @@ def test_the_nonres_engine_takes_the_returns_away(nonres_unrepaid) -> None:
 
 
 def test_the_nonres_book_says_na_like_the_engine(nonres_unrepaid) -> None:
+    """Эталон — офис по ДДУ: с 24.10.2026 его книга — книга офиса, и способ
+    проекта «Продажа по ДДУ» — первый столбец «ОТЧЕТа»."""
+    import office_workbook as ow
+
     engine, book = nonres_unrepaid
     label = engine["summary"]["equity_returns"]["label"]
-    report = book.workbook["Отчёт"]
-    shown = {report[f"A{row}"].value: book.cell("Отчёт", f"B{row}")
-             for row in range(1, report.max_row + 1)
+    report = book.workbook[ow.REPORT_SHEET]
+    assert report["B4"].value == ow.PATHS[0]["label"] and ow.PATHS[0]["key"] == "ddu"
+    shown = {report[f"A{row}"].value: book.cell(ow.REPORT_SHEET, f"B{row}")
+             for row in range(1, 40)
              if str(report[f"A{row}"].value or "").startswith(("NPV", "IRR"))}
     project_npv = shown.pop("NPV проекта")
     assert isinstance(project_npv, (int, float)), project_npv
-    assert project_npv == pytest.approx(engine["summary"]["npv"], rel=0.05), (
+    assert project_npv * 1e6 == pytest.approx(engine["summary"]["npv"], rel=1e-6), (
         project_npv, engine["summary"]["npv"])
+    assert isinstance(shown.pop("IRR проекта (до кредита)"), float)
     assert shown and all(value == label for value in shown.values()), shown
-    assert book.cell("Сверка", "I3") == "ПРОЙДЕНО"
+    assert ow.verdict(ow.evaluate(book.workbook))[0] == ow.PASSED
 
 
 # --- 6. хвост продаж объекта — от РВЭ, даже когда продажи стартуют позже стройки --

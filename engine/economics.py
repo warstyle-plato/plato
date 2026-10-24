@@ -148,7 +148,10 @@ def calculate(req: CalcRequest) -> dict:
 # движка с другой стратегией офисов; поверхности читают этот блок, а не
 # пересчитывают сами. Путь, совпавший со стратегией проекта, берётся из
 # основного расчёта, а не считается второй раз.
+# Владелец, 24.10.2026: «Новая книга считает и ДДУ» — третий способ, продажа
+# по ДДУ с эскроу и проектным финансированием, стоит рядом с двумя прежними.
 OFFICE_PATHS: tuple[tuple[str, str], ...] = (
+    (nonres_strategy.STRATEGY_DDU, "Продажа по ДДУ (эскроу)"),
     (nonres_strategy.STRATEGY_DIRECT, "Продажа блоками после ввода"),
     (nonres_strategy.STRATEGY_INCOME, "Аренда и продажа здания"),
 )
@@ -170,13 +173,19 @@ def office_path_prefixes(inputs: dict[str, Any] | None) -> tuple[str, ...]:
                  and n(inputs, f"{obj.prefix}_gba_sqm", 0.0) > 0)
 
 
-def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...]) -> dict[str, Any]:
+def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...],
+                         key: str | None = None) -> dict[str, Any]:
     """Итоги пути: числа сводки движка и деньги офисов, без своей арифметики.
 
     Пик собственных денег — худший накопленный поток собственника деньгами,
     без оценки удержанного здания (`owner_cash_peak`), тем же правилом, что
-    плитка «Собственный капитал — пик потребности»."""
+    плитка «Собственный капитал — пик потребности».
+
+    Продажа по ДДУ (`key` — `STRATEGY_DDU`): выручка офиса — его продукты
+    эскроу-продаж (сам офис и его машино-места, `revenue`), покрытие долга —
+    LLCR проектного финансирования; объектов вне ДДУ у офиса тогда нет."""
     summary = result.get("summary") or {}
+    finance = result.get("finance") or {}
     objects = [o for o in ((result.get("finance") or {}).get("nonres") or {}).get("objects") or []
                if o.get("key") in {p for p in prefixes} or o.get("prefix") in prefixes]
     totals = [o.get("totals") or {} for o in objects]
@@ -185,6 +194,13 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...]) -> d
     noi_cost = sum(float(k.get("cost_total") or 0.0) for k in kpis if k.get("stabilized_noi"))
     dscr = [k["dscr_min"] for k in kpis if k.get("dscr_min") is not None]
     total = lambda name: sum(float(t.get(name) or 0.0) for t in totals)
+    ddu_sales = 0.0
+    if key == nonres_strategy.STRATEGY_DDU:
+        revenue = result.get("revenue") or {}
+        office_keys = [obj.key for obj in STANDALONE_OBJECTS if obj.prefix in prefixes]
+        ddu_sales = sum(float(revenue.get(k) or 0.0) + float(revenue.get(object_parking_product_key(k)) or 0.0)
+                        for k in office_keys)
+    with_pf = float(finance.get("pf_draw_total") or 0.0) > 0
     return {
         "revenue": float(summary.get("revenue") or 0.0),
         "capex": float(summary.get("capex") or 0.0),
@@ -199,7 +215,14 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...]) -> d
         "equity_peak": owner_cash_peak(result.get("finance") or {},
                                        (result.get("cashflow") or {}).get("equity") or []),
         "rent_revenue": total("rent_revenue"),
-        "sale_revenue": total("sale_revenue"),
+        "sale_revenue": total("sale_revenue") + ddu_sales,
+        "commercial_costs": float(summary.get("commercial_costs") or 0.0),
+        # LLCR и пик ПФ — у способа, где есть проектное финансирование (объект по
+        # ДДУ); без ПФ покрытия нет, и пусто, а не ноль.
+        "llcr": summary.get("llcr") if with_pf else None,
+        "pf_peak": float(finance.get("peak_pf") or 0.0) if with_pf else None,
+        # Подпись «N/A — долг не погашен» вместо NPV капитала (`equity_returns`).
+        "equity_returns_label": equity_returns_na_label(summary),
         "exit_revenue": total("exit_revenue"),
         "stabilized_noi": noi or None,
         "yield_on_cost": noi / noi_cost if noi and noi_cost else None,
@@ -210,7 +233,7 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...]) -> d
 
 
 def office_paths(original: tuple[dict, dict, list], result: dict[str, Any]) -> dict[str, Any]:
-    """Оба пути офиса одним расчётом: основной + недостающие стратегии."""
+    """Все способы продажи офиса одним расчётом: основной + недостающие стратегии."""
     inputs, tep, rates = original
     prefixes = office_path_prefixes(inputs)
     current = {nonres_strategy.object_strategy(inputs, prefix) for prefix in prefixes}
@@ -228,7 +251,7 @@ def office_paths(original: tuple[dict, dict, list], result: dict[str, Any]) -> d
             except Exception as exc:  # путь не посчитался — сказать почему, а не молчать
                 paths.append({"key": key, "label": label, "error": f"{type(exc).__name__}: {exc}"})
                 continue
-        paths.append({"key": key, "label": label, **_office_path_metrics(run, prefixes)})
+        paths.append({"key": key, "label": label, **_office_path_metrics(run, prefixes, key)})
     scored = [p for p in paths if isinstance(p.get("npv"), (int, float))]
     better = max(scored, key=lambda p: p["npv"])["key"] if scored else None
     return {"current": current_key, "paths": paths, "better": better,
