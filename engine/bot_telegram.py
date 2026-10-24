@@ -2125,7 +2125,7 @@ _TELEGRAM_MOSCOW = timezone(timedelta(hours=3))
 
 
 def _site_chat_store(chat_id: int, text: str, taken_at: str,
-                     project: str = "") -> dict[str, Any]:
+                     project: str = "", title: str = "") -> dict[str, Any]:
     """Отдать отчёт ядру. На ядре — тот же маршрут, но без сети.
 
     Второй реализации хранения не заводим: разойдясь, бот и загрузка положили
@@ -2137,11 +2137,33 @@ def _site_chat_store(chat_id: int, text: str, taken_at: str,
         "text": str(text or ""),
         "project": str(project or ""),
         "taken_at": str(taken_at or ""),
+        "title": str(title or ""),
     }
     url = _core_api_url("/internal/monitor/daily")
     if url:
         return _core_post(url, payload, 30.0)
     return internal_monitor_daily(SiteChatReportRequest(**payload))
+
+
+def _sales_chat_store(chat: dict[str, Any], message: dict[str, Any], text: str,
+                      taken_at: str) -> dict[str, Any]:
+    """Отчёт отдела продаж — ядру, той же дорогой, что сводка стройки."""
+    chat_id = int((chat or {}).get("id") or 0)
+    sender = message.get("from") or {}
+    author = " ".join(str(sender.get(k) or "").strip()
+                      for k in ("first_name", "last_name")).strip()
+    payload = {
+        "chat_id": chat_id,
+        "sign": _web_login_sign("monitor-sales", chat_id),
+        "title": str((chat or {}).get("title") or ""),
+        "author": author,
+        "text": str(text or ""),
+        "taken_at": str(taken_at or ""),
+    }
+    url = _core_api_url("/internal/monitor/sales-chat")
+    if url:
+        return _core_post(url, payload, 30.0)
+    return internal_monitor_sales_chat(SalesChatRequest(**payload))
 
 
 # Снимок для сводки: самый крупный размер не длиннее этой стороны. В PDF фото
@@ -2235,6 +2257,48 @@ def _telegram_group_seen(chat: dict[str, Any], outcome: str = "") -> None:
         row["outcome"] = str(outcome)
 
 
+def _telegram_bindings_line(chat_id: int) -> str:
+    """Привязки чатов из реестра ядра — для команды; остальным пусто.
+
+    Счётчик групп ниже живёт в памяти воркера с его запуска, и чат стройки,
+    молчавший с выкатки, в нём не виден (владелец, 24.10.2026: «про стройку и
+    монитор ни слова»). Привязки и отчёты лежат на ядре — оттуда и ответ.
+    """
+    if int(chat_id or 0) not in team_chat_ids():
+        return ""
+    payload = {"chat_id": int(chat_id), "sign": _web_login_sign("monitor-chats", int(chat_id))}
+    try:
+        url = _core_api_url("/internal/monitor/site-chats")
+        got = (_core_post(url, payload, 15.0) if url
+               else internal_monitor_site_chats(SiteChatsRequest(**payload)))
+    except Exception as exc:
+        return "\nПривязки чатов: не получил с сервера — " + html.escape(str(exc)[:120]) + "."
+    projects = got.get("projects") or []
+    if not projects:
+        return "\nПривязки чатов: ни один чат не привязан — в чате напишите /site и имя проекта."
+    lines = []
+    for row in projects:
+        chats = ", ".join(f"«{html.escape(title)}»" if title else "чат без названия"
+                          for title in row.get("chats") or [])
+        site = (f"сводка с площадки — последняя {_telegram_day(row['site_last'])}"
+                if row.get("site_last") else "сводок с площадки нет")
+        if not row.get("sales_project"):
+            sales = "с отчётом о продажах не связан"
+        elif row.get("sales_last"):
+            sales = f"отчёт продаж — последний {_telegram_day(row['sales_last'])}"
+        else:
+            sales = "отчётов продаж из чата нет"
+        lines.append(f"«{html.escape(str(row.get('project') or ''))}»: {chats}; {site}; {sales}")
+    return "\nПривязки чатов (на сервере):\n• " + "\n• ".join(lines)
+
+
+def _telegram_day(value: str) -> str:
+    try:
+        return datetime.fromisoformat(str(value)[:10]).strftime("%d.%m.%Y")
+    except ValueError:
+        return str(value)
+
+
 def _telegram_group_seen_line() -> str:
     """Строка о группах для /status: что бот оттуда увидел и чем это кончилось.
 
@@ -2322,7 +2386,8 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
                                            "<code>/site Имя объекта</code>.")
             return
         try:
-            answer = _site_chat_store(chat_id, "", "", project=wanted)
+            answer = _site_chat_store(chat_id, "", "", project=wanted,
+                                      title=str((chat or {}).get("title") or ""))
         except Exception as exc:
             _telegram_group_seen(chat, "привязка не удалась: " + str(exc)[:80])
             _telegram_group_reply(message, "Привязка не удалась: " + html.escape(str(exc)))
@@ -2333,8 +2398,8 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
             message,
             "<b>Чат «" + html.escape(str((chat or {}).get("title") or "")) +
             "» привязан к проекту «" + html.escape(bound) + "».</b>\n"
-            "Ежедневную сводку с численностью читаю оттуда сам и в чат "
-            "ничего не пишу.")
+            "Ежедневные отчёты — сводку с численностью и отчёт отдела продаж — "
+            "читаю оттуда сам и в чат ничего не пишу.")
         return
 
     parsed = None
@@ -2344,19 +2409,40 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
         parsed = daily.parse_daily_report(text)
     except Exception:
         parsed = None
-    if not parsed or not parsed.get("contractors"):
-        # Не отчёт — просто считаем. Рабочая переписка нас не касается.
-        _telegram_group_seen(chat)
-        return
-
     stamp = message.get("date")
     try:
         taken_at = datetime.fromtimestamp(
             int(stamp), _TELEGRAM_MOSCOW).date().isoformat()
     except (TypeError, ValueError, OSError):
         taken_at = ""
+    if not parsed or not parsed.get("contractors"):
+        from market_search import salesroom
+
+        if salesroom.is_sales_report(text):
+            # Ежедневный отчёт отдела продаж (владелец, 24.10.2026: «может
+            # туда тоже бота посадить? Для отчётов по звонкам, броням»).
+            try:
+                answer = _sales_chat_store(chat, message, text, taken_at)
+            except Exception as exc:
+                _telegram_group_seen(chat, "отчёт продаж не сохранён: " + str(exc)[:80])
+                return
+            if not answer.get("bound"):
+                _telegram_group_seen(chat, "отчёт продаж прочитан, но чат не привязан — нужен /site")
+            elif not answer.get("sales_project"):
+                _telegram_group_seen(chat, "отчёт продаж прочитан, но проект «"
+                                     + str(answer.get("bound")) + "» не связан с отчётом "
+                                     "о продажах — свяжите на странице сводки")
+            else:
+                _telegram_group_seen(chat, "отчёт продаж" + (" за " + taken_at if taken_at else "")
+                                     + " → «" + str(answer.get("sales_project")) + "»")
+            return
+        # Не отчёт — просто считаем. Рабочая переписка нас не касается.
+        _telegram_group_seen(chat)
+        return
+
     try:
-        answer = _site_chat_store(chat_id, text, taken_at)
+        answer = _site_chat_store(chat_id, text, taken_at,
+                                  title=str((chat or {}).get("title") or ""))
     except Exception as exc:
         _telegram_group_seen(chat, "сводка не сохранена: " + str(exc)[:80])
         return
@@ -2443,6 +2529,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         _telegram_send_message(
             chat_id,
             f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: {VERSION}"
+            + _telegram_bindings_line(chat_id)
             + _telegram_group_seen_line(),
         )
         return

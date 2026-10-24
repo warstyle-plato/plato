@@ -9,11 +9,12 @@ Excel, и только потом чинить книгу.
     python3 scripts/excel_book_parity.py                   # все эталоны и Донской
     python3 scripts/excel_book_parity.py --only donskoy default
     python3 scripts/excel_book_parity.py --out /tmp/books  # где оставить книги
+    python3 scripts/excel_book_parity.py --only nonres_retail_sports_ddu nonres_parking_ddu
 
 Печатает по каждой книге: статус модели, строки ПРОВЕРКИ с FAIL/WARN, ячейки
 с ошибками (#REF!, #DIV/0! …) и строки ОТЧЕТа, расходящиеся с движком больше
-чем на 0,01% (абсолютно — больше 1 тыс. ₽), и строки «Сверки» нежилой книги,
-кроме «сходится» и «—». Разбор последней сверки —
+чем на 0,01% (абсолютно — больше 1 тыс. ₽), и строки «ПРОВЕРОК» книги
+нежилого проекта (`office_workbook`), кроме «сходится» и «—». Разбор последней сверки —
 docs/excel_book_audit_2026-10-23.md.
 """
 
@@ -60,11 +61,47 @@ REPORT_ROWS = (
 )
 
 
+# Нежилой проект без офиса: ФОК по ДДУ рядом с ТЦ и наземный паркинг по ДДУ —
+# книга нежилого проекта (`office_workbook`, один способ — стратегия объектов)
+# против движка.
+# Эталонами движка не являются: только сверка книги.
+NONRES_BOOKS: dict[str, dict[str, Any]] = {
+    # Нежилого проекта из одного ФОК не бывает (владелец, 24.10.2026): ФОК — рядом с ТЦ.
+    "nonres_retail_sports_ddu": dict(retail_enabled=True, retail_gba_sqm=15000.0, retail_saleable_sqm=11000.0,
+                                     retail_strategy="direct", sports_enabled=True, sports_gba_sqm=5000.0,
+                                     sports_saleable_sqm=3500.0, sports_disposition="sale"),
+    "nonres_parking_ddu": dict(above_parking_enabled=True, above_parking_spaces=300),
+}
+
+
+def nonres_scenario(core: Any, over: dict[str, Any]) -> dict:
+    """Нежилой проект без офиса и жилья: объекты из `over`, ТЭП — от их площади."""
+    x = {**copy.deepcopy(core.DEFAULT_INPUTS), "offices_enabled": False, **over,
+         "project_kind": core.PROJECT_KIND_NONRESIDENTIAL}
+    t = copy.deepcopy(core.TEP_DEFAULT)
+    for obj in core.STANDALONE_OBJECTS:
+        gba = float(x.get(f"{obj.prefix}_gba_sqm") or 0)
+        if x.get(f"{obj.prefix}_enabled") and gba > 0:
+            saleable = float(x.get(f"{obj.prefix}_saleable_sqm") or 0)
+            t.setdefault(obj.key, {}).update(gns=gba, total_area=round(gba * 0.94, 2),
+                                             useful=saleable, saleable=saleable)
+    for key in core.MKD_PRODUCTS:
+        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
+            if key in t:
+                t[key][col] = 0
+    # Ставка метрового объекта нежилого проекта — СМР (`object_smr_rate`), как на странице.
+    for key, turnkey in core.OBJECT_SMR_RATE_DEFAULTS.items():
+        if key not in over and float(x.get(key) or 0) == turnkey:
+            x[key] = core.object_smr_rate(turnkey, x)
+    return {"inputs": x, "tep": t, "phasing": {}}
+
+
 def scenarios(core: Any) -> dict[str, dict]:
     out = {name: build(core, ROOT) for name, build in gs.SCENARIOS.items()}
     saved = json.loads(DONSKOY.read_text(encoding="utf-8"))
     out["donskoy"] = {"inputs": {**copy.deepcopy(core.DEFAULT_INPUTS), **saved["inputs"]},
                       "tep": saved["tep"], "phasing": {}}
+    out.update({name: nonres_scenario(core, over) for name, over in NONRES_BOOKS.items()})
     return out
 
 
@@ -129,9 +166,9 @@ def report(name: str, book_path: Path, consolidated: dict) -> list[str]:
               if isinstance(cell.value, str) and cell.value.startswith(ERRORS)]
     if errors:
         lines.append(f"  ошибки в ячейках: {len(errors)}: {errors[:6]}")
-    if "ПРОВЕРКИ" in book.sheetnames and book["ПРОВЕРКИ"]["I4"].value == "Вердикт":  # книга офиса
+    if "ПРОВЕРКИ" in book.sheetnames and book["ПРОВЕРКИ"]["I4"].value == "Вердикт":  # книга нежилого проекта
         checks = book["ПРОВЕРКИ"]
-        lines.append(f"  проверки книги офиса: {checks['I5'].value}")
+        lines.append(f"  проверки книги нежилого проекта: {checks['I5'].value}")
         for row in range(5, checks.max_row + 1):
             verdict = checks.cell(row, 7).value
             if verdict not in ("сходится", "—", None):
@@ -146,15 +183,6 @@ def report(name: str, book_path: Path, consolidated: dict) -> list[str]:
             if verdict in ("FAIL", "WARN"):
                 lines.append(f"  {verdict}: {checks.cell(row, 1).value}: "
                              f"{checks.cell(row, 2).value} против {checks.cell(row, 3).value}")
-    if "Сверка" in book.sheetnames:            # книга нежилого проекта
-        checks = book["Сверка"]
-        lines.append(f"  сверка книги нежилого: {checks['I3'].value}")
-        for row in range(3, checks.max_row + 1):
-            verdict = checks.cell(row, 7).value
-            if verdict not in ("сходится", "—", None):
-                lines.append(f"  Сверка!G{row} {checks.cell(row, 2).value}: книга "
-                             f"{checks.cell(row, 3).value!r}, движок {checks.cell(row, 4).value!r}")
-        return lines
     sheet = book["ОТЧЕТ"]
     rows = {}
     for row in range(1, 120):

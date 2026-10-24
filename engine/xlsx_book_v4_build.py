@@ -271,10 +271,10 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
 
     Решение владельца (13.10.2026): объект по ДДУ — не повод отдавать жилую
     книгу; его продажи, эскроу, БРИДЖ и ПФ книга нежилого проекта считает
-    формулами. Проект с офисом получает книгу офиса (`office_workbook`, три
-    способа продажи, ДДУ — листы «Продажа ДДУ» и «ПФ»), без офиса — прежнюю
-    (`nonres_workbook` — листы «ДДУ N» и «ПФ»). ПФ по очередям книги не
-    моделируют: проект с очередями и ПФ получает книгу v4.
+    формулами. Книгу собирает `office_workbook` на каркасе жилой v4: проект с
+    офисом — три способа продажи офиса, без офиса — стратегия каждого объекта
+    (ДДУ — листы объекта и «ПФ»). ПФ по очередям книга не моделирует: проект с
+    очередями и ПФ получает книгу v4.
     """
     consolidated = (_run_authoritative_model(
         inputs or {}, tep or {}, rates or [], phasing or {}) or {}).get("consolidated") or {}
@@ -291,31 +291,27 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
         spec["missing"].append("Очереди: книга моделирует проект одной очередью, "
                                "сверка идёт со сводом очередей")
     stem = _safe_file_stem(project_name or "project", "project")
-    # Проект с офисом — книга офиса на каркасе жилой v4 с тремя способами
-    # продажи: по ДДУ, блоками и арендой (`office_workbook`; образец владельца
-    # 22.10.2026, решение 24.10.2026 «Новая книга считает и ДДУ»). Объект по ДДУ
-    # рядом с офисом (ТЦ по ДДУ) входит в ПФ каждого способа. Нежилой проект
-    # без офиса остаётся на прежней книге.
+    # Книга на каркасе жилой v4 (`office_workbook`; образец владельца 22.10.2026,
+    # решение 24.10.2026 «Новая книга считает и ДДУ»). Проект с офисом — три
+    # способа продажи офиса рядом: по ДДУ, блоками и арендой; объект по ДДУ
+    # рядом с офисом (ТЦ по ДДУ) входит в ПФ каждого способа. Проект без офиса
+    # (ТЦ, ФОК, наземный паркинг) — один способ: стратегия каждого объекта,
+    # сверка с основным расчётом (поручение владельца 24.10.2026).
     office_keys = {obj.key for obj in STANDALONE_OBJECTS if obj.product == "offices"}
-    if (consolidated.get("office_paths")
-            and any((item.get("nonres") or item.get("ddu")) and item["key"] in office_keys
-                    for item in spec["objects"])):
-        content, report = office_workbook.build(consolidated, spec, office_keys)
-        missing = list(report["missing"])
-        if report["verdict"] != office_workbook.PASSED:
-            missing.append("ПРОВЕРКИ книги офиса: расхождения с движком — "
-                           + "; ".join(report["mismatches"][:8]))
-        if report["unresolved"]:
-            missing.append(f"Книга офиса: {report['unresolved']} формул без сохранённого значения — "
-                           + "; ".join(report["unresolved_examples"]))
-        filename = f"DevelopAid_нежилой_офис_{stem}_{date.today().isoformat()}.xlsx"
-        return content, filename, {"missing": missing, "phased": phased, "class_deviations": [],
-                                   "nonres_book": True, "office_book": True,
-                                   "checks": report["verdict"]}
-    content = nonres_workbook.build(consolidated, spec)
-    filename = f"DevelopAid_нежилой_{stem}_{date.today().isoformat()}.xlsx"
-    return content, filename, {"missing": list(spec["missing"]), "phased": phased,
-                               "class_deviations": [], "nonres_book": True}
+    with_office = bool(consolidated.get("office_paths")) and any(
+        (item.get("nonres") or item.get("ddu")) and item["key"] in office_keys for item in spec["objects"])
+    content, report = office_workbook.build(consolidated, spec, office_keys if with_office else set())
+    missing = list(report["missing"])
+    if report["verdict"] != office_workbook.PASSED:
+        missing.append("ПРОВЕРКИ книги: расхождения с движком — " + "; ".join(report["mismatches"][:8]))
+    if report["unresolved"]:
+        missing.append(f"Книга: {report['unresolved']} формул без сохранённого значения — "
+                       + "; ".join(report["unresolved_examples"]))
+    kind = "нежилой_офис" if with_office else "нежилой"
+    filename = f"DevelopAid_{kind}_{stem}_{date.today().isoformat()}.xlsx"
+    return content, filename, {"missing": missing, "phased": phased, "class_deviations": [],
+                               "nonres_book": True, "office_book": with_office,
+                               "checks": report["verdict"]}
 
 
 def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
@@ -382,9 +378,9 @@ def build_project_workbook(
     if is_hotel(merged):
         return _hotel_project_workbook(inputs, tep, rates, phasing,
                                        str(kwargs.get("project_name") or ""))
-    # Нежилой проект без ДДУ получает свою книгу (`nonres_workbook`): книга v4
-    # построена на ДДУ, эскроу и ПФ, которых у него нет (владелец, 04.10.2026:
-    # отчёт, тизер и книга нежилого проекта — самостоятельные).
+    # Нежилой проект получает свою книгу (`office_workbook`): книга v4 построена
+    # на ДДУ, эскроу и ПФ жилья (владелец, 04.10.2026: отчёт, тизер и книга
+    # нежилого проекта — самостоятельные).
     if is_nonresidential(merged):
         nonres_book = _nonres_project_workbook(inputs, tep, rates, phasing,
                                                str(kwargs.get("project_name") or ""))

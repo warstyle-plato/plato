@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+import datetime
 import html
 import re
 import statistics
@@ -43,12 +44,25 @@ _DATE = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})")
 
 # Строки ежедневного отчёта. Числа берутся по подписи, а не по порядку: формат
 # отчёта у менеджеров плавает, а подписи держатся.
+#
+# Формат 2026-10 («Отчёт за 23.10.2026 г.»): «ЦО за день - 1», «Встречи за
+# день - 1», «Брокер тур за день - 1», «ДДУ на регистрации: 0», «Текущих
+# броней: 3». Берётся «за день»: «за месяц» — нарастающий итог, и сложенный по
+# дням он считался бы многократно. ЦО — целевые обращения, та же ступень
+# воронки, что прежние «целевые звонки».
 _COUNTS = {
-    "meetings": r"встреч[а-яё]*\s*в\s*офисе\s*[-–—:]?\s*(\d+)",
-    "calls": r"целевых\s*звонк[а-яё]*\s*[-–—:]?\s*(\d+)",
+    "meetings": r"(?:встреч[а-яё]*\s*в\s*офисе|встреч[а-яё]*\s*за\s*день)\s*[-–—:]?\s*(\d+)",
+    # Целевой звонок пишут и «целевых звонков», и «целевые звонки», и «ЦО
+    # (целевые обращения) за день» — ступень воронки одна.
+    "calls": r"(?:целев[а-яё]*\s*(?:звонк|обращени)[а-яё]*(?:\s*за\s*день)?|ЦО\s*за\s*день)"
+             r"\s*[-–—:]?\s*(\d+)",
+    "broker_tours": r"брокер[\s-]*тур[а-яё]*\s*за\s*день\s*[-–—:]?\s*(\d+)",
     "bookings": r"текущих\s*брон[а-яё]*[^\d]{0,20}(\d+)",
-    "registering": r"сделк[аи]\s*на\s*регистрации\s*[-–—:]?\s*(\d+)",
+    "registering": r"(?:сделк[аи]|ДДУ)\s*на\s*регистрации\s*[-–—:]?\s*(\d+)",
 }
+# События дня складываются; брони и сделки на регистрации — состояние дня.
+_EVENTS = ("calls", "meetings", "broker_tours")
+_STATES = ("bookings", "registering")
 
 # Цена лота в брони: «площадь 34 кв.м., 920 000 руб.за кв.м.» и «694 000 за
 # кв.м. за 3К (37 метров)» — формулировка у каждого своя, число одно.
@@ -288,6 +302,7 @@ def summarise(read: dict[str, Any], bands: list[dict[str, Any]] | None = None) -
         bookings = month.get("bookings")
         row = {"month": month["month"], "days": month["days"],
                "meetings": meetings, "calls": month.get("calls"),
+               "broker_tours": month.get("broker_tours"),
                "bookings": bookings, "registering": month.get("registering")}
         # Бронь и сделку на регистрации отчёт показывает СОСТОЯНИЕМ дня, а не
         # событием: складывать их за месяц нельзя — выйдет «сколько раз бронь
@@ -391,3 +406,309 @@ def _lots_by_band(lots: list[dict[str, Any]], bands: list[dict[str, Any]] | None
         out.append({"band": band.get("band"), "lots": float(len(inside)),
                     "price_per_sqm": (round(statistics.median(inside)) if inside else None)})
     return out
+
+
+# --- отчёты из чата по одному: бот в группе ----------------------------------
+# Владелец (24.10.2026): «может туда тоже бота посадить? Для отчётов по
+# звонкам, броням и т. п.». Выгрузка чата руками остаётся, бот дописывает те же
+# сообщения по одному — источник один, «чат отдела продаж».
+
+# Отчёт продаж узнаётся по подписям строк, а не по слову «отчёт»: так зовут и
+# сводку стройки. Двух подписей хватает, одной мало — «встреча» бывает и в
+# рабочей переписке.
+_REPORT_MIN_LINES = 2
+
+
+def is_sales_report(text: str) -> bool:
+    """Похоже ли сообщение на ежедневный отчёт отдела продаж."""
+    found = sum(1 for pattern in _COUNTS.values() if re.search(pattern, text or "", re.I))
+    return found >= _REPORT_MIN_LINES
+
+
+def append_message(read: dict[str, Any] | None, day: str, author: str,
+                   text: str, chat: str = "") -> dict[str, Any]:
+    """Дописать сообщение к источнику «чат отдела продаж».
+
+    Тот же день с тем же текстом второй раз не пишется: Telegram повторяет
+    доставку, а повтор удвоил бы встречи дня.
+    """
+    got = dict(read or {"messages": [], "chat": chat, "missing": []})
+    messages = list(got.get("messages") or [])
+    entry = {"day": day, "author": author, "text": " ".join(str(text or "").split())}
+    if not any(m.get("day") == entry["day"] and m.get("text") == entry["text"] for m in messages):
+        messages.append(entry)
+    got["messages"] = messages
+    got["chat"] = got.get("chat") or chat
+    return got
+
+
+def _counted(text: str) -> dict[str, float]:
+    got = {}
+    for key, pattern in _COUNTS.items():
+        found = re.search(pattern, text or "", re.I)
+        if found:
+            got[key] = float(found.group(1))
+    return got
+
+
+def _reports(read: dict[str, Any] | None, first: str, last: str) -> dict[str, str]:
+    """{день: текст} — последний отчёт продаж за день.
+
+    Ежедневный отчёт — сводка отдела, и пишет его дежурный: в живой выгрузке
+    чата (24.10.2026) за 65 дней отчётов шесть разных авторов и ни одного дня
+    с двумя отчётами. Сложить два отчёта одного дня значило бы посчитать
+    отдел дважды; автор сообщения — не менеджер сделки.
+    """
+    out: dict[str, str] = {}
+    for message in (read or {}).get("messages") or []:
+        day = str(message.get("day") or "")
+        text = message.get("text") or ""
+        if (first <= day <= last) and (_counted(text) or booked_lots(text) is not None):
+            out[day] = text
+    return out
+
+
+def funnel(read: dict[str, Any] | None, first: str, last: str) -> dict[str, Any] | None:
+    """Воронка отдела продаж за дни ``first``…``last`` включительно (ГГГГ-ММ-ДД).
+
+    События (обращения, встречи, брокер-туры) складываются по дням — в дне
+    берётся последний отчёт. Брони и ДДУ на регистрации — состояние: берётся
+    последний день периода, где они названы. Дней без отчёта ноль не
+    приписывается: в ответе сказано, за сколько дней отчёты были.
+    """
+    reported = {day: _counted(text) for day, text in _reports(read, first, last).items()}
+    reported = {day: row for day, row in reported.items() if row}
+    if not reported:
+        return None
+    out: dict[str, Any] = {"days": len(reported), "first": min(reported), "last": max(reported)}
+    for key in _EVENTS:
+        values = [row[key] for row in reported.values() if key in row]
+        out[key] = sum(values) if values else None
+    for key in _STATES:
+        named = [day for day in sorted(reported) if key in reported[day]]
+        out[key] = reported[named[-1]][key] if named else None
+    return out
+
+
+# --- брони: какие ушли в договор, какие сорвались -----------------------------
+# Владелец (24.10.2026): «надо следить, сколько броней не вышло в сделку в
+# итоге». Ежедневный отчёт под «Текущих броней: N» перечисляет брони по одной:
+# «- квартира № 20, башня Гармония, 5 этаж, 90,2 кв.м.». Бронь, пропавшая из
+# списка, либо стала договором, либо снята; договор ищется в контрактации по
+# номеру квартиры и площади. Башня в чате и корпус в контрактации названы
+# по-разному («башня Гармония» и «корп 2»), карты между ними нет — поэтому
+# ключ — номер плюс площадь, а не номер плюс дом.
+_BOOKINGS_HEAD = re.compile(r"текущих\s*брон[а-яё]*", re.I)
+_BOOKINGS_STOP = re.compile(r"наполнение\s*эскроу|зарегистрированн|количество\s*ЦО|встречи\s*:"
+                            r"|брокер\s*тур\w*\s*:|ДДУ\s*на\s*регистрации", re.I)
+_BOOKED = re.compile(r"квартир\w*\s*№?\s*(\d{1,4})", re.I)
+_TOWER = re.compile(r"башн\w*\s+[^\s,.;]+", re.I)
+# Менеджер брони — в скобках у самой брони: «АГЕНТСКАЯ (Помазанова Александра)».
+# Порядок слов пишут по-разному («Мария Вольпи» и «Вольпи Мария») — это один
+# человек: ключ — набор слов, имя — как написано впервые.
+_MANAGER = re.compile(r"\(\s*([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){1,2})\s*\)")
+_UNIT_NUMBER = re.compile(r"кв\.?\s*(\d{1,4})", re.I)
+# Площадь в чате и в договоре округлены по-разному; метр разницы — та же
+# квартира, больше — другая.
+_AREA_SLACK = 1.0
+# Договор, подписанный чуть раньше, чем бронь впервые попала в отчёт, — та же
+# сделка: отчёт пишется вечером, а бронь могла быть оформлена накануне.
+_SIGNED_BEFORE_DAYS = 7
+
+
+def booked_lots(text: str) -> list[dict[str, Any]] | None:
+    """Брони из списка под «Текущих броней». Нет раздела — ``None``: это «не
+    сказано», а не «броней нет»."""
+    head = _BOOKINGS_HEAD.search(text or "")
+    if not head:
+        return None
+    tail = text[head.end():]
+    stop = _BOOKINGS_STOP.search(tail)
+    if stop:
+        tail = tail[:stop.start()]
+    found = list(_BOOKED.finditer(tail))
+    out = []
+    for i, match in enumerate(found):
+        piece = tail[match.start():found[i + 1].start() if i + 1 < len(found) else len(tail)]
+        area = _AREA.search(piece)
+        tower = _TOWER.search(piece)
+        manager = _MANAGER.search(piece)
+        out.append({"apartment": match.group(1),
+                    "area": float(area.group(1).replace(",", ".")) if area else None,
+                    "tower": tower.group(0) if tower else "",
+                    "manager": " ".join(manager.group(1).split()) if manager else ""})
+    return out
+
+
+def _lot_key(lot: dict[str, Any]) -> tuple[str, str]:
+    """Бронь узнаётся по квартире и башне, а не по площади: площадь в отчёте
+    уточняют («126 кВ.м» назавтра стала «121.1»), и по площади одна бронь
+    распалась бы на снятую и новую."""
+    return (lot["apartment"], str(lot.get("tower") or "").lower())
+
+
+def _day(value: str) -> datetime.date:
+    return datetime.date.fromisoformat(str(value)[:10])
+
+
+def _deal_for(lot: dict[str, Any], contracts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Договор на ту же квартиру: номер из «корп 3 кв.168» и площадь."""
+    earliest = _day(lot["first"]) - datetime.timedelta(days=_SIGNED_BEFORE_DAYS)
+    matches = []
+    for row in contracts:
+        number = _UNIT_NUMBER.search(str(row.get("unit") or ""))
+        if not number or number.group(1) != lot["apartment"] or not row.get("signed"):
+            continue
+        if lot["area"] is not None and abs(float(row.get("area") or 0.0) - lot["area"]) > _AREA_SLACK:
+            continue
+        if _day(row["signed"]) < earliest:
+            continue
+        matches.append(row)
+    return min(matches, key=lambda row: row["signed"]) if matches else None
+
+
+def booking_outcomes(read: dict[str, Any] | None, contracts: list[dict[str, Any]],
+                     uploaded: str | None, first: str, last: str) -> dict[str, Any] | None:
+    """Что стало с бронями: в договор, снята без договора или ещё держится.
+
+    Бронь ушла из списка в день первого отчёта, где её уже нет. Договор на эту
+    квартиру — «в договор»; договора нет, а контрактация загружена после ухода
+    брони — «снята без сделки»; контрактация старше — «договора пока не видно»:
+    отсутствие договора в старой выгрузке ещё не значит, что его нет.
+    """
+    lists: dict[str, list[dict[str, Any]]] = {}
+    for message in (read or {}).get("messages") or []:
+        day = str(message.get("day") or "")
+        lots = booked_lots(message.get("text") or "")
+        if day and lots is not None:
+            lists[day] = lots          # в дне — последний отчёт
+    days = sorted(day for day in lists if day <= last)
+    if not days:
+        return None
+    tracks: dict[tuple[str, str], dict[str, Any]] = {}
+    for day in days:
+        for lot in lists[day]:
+            track = tracks.setdefault(_lot_key(lot), {**lot, "first": day})
+            # Площадь и менеджер — по последнему отчёту: их уточняют.
+            track.update({k: v for k, v in lot.items() if v not in (None, "")}, last=day)
+    latest = days[-1]
+    gone_out, held = [], []
+    for track in tracks.values():
+        if track["last"] == latest:
+            held.append({**track, "days": (_day(latest) - _day(track["first"])).days})
+            continue
+        gone = next(day for day in days if day > track["last"])
+        item = {**track, "gone": gone, "days": (_day(gone) - _day(track["first"])).days}
+        deal = _deal_for(track, contracts)
+        if deal:
+            item.update(outcome="deal", signed=deal["signed"])
+        elif uploaded and str(uploaded)[:10] < gone:
+            item["outcome"] = "unknown"
+        else:
+            item["outcome"] = "dropped"
+        gone_out.append(item)
+    period = [item for item in gone_out if first <= item["gone"] <= last]
+
+    def count(items: list[dict[str, Any]], outcome: str) -> int:
+        return sum(1 for item in items if item["outcome"] == outcome)
+
+    return {"since": days[0], "latest": latest,
+            "period": sorted(period, key=lambda item: item["gone"]),
+            "total": {key: count(gone_out, key) for key in ("deal", "dropped", "unknown")},
+            "held": sorted(held, key=lambda item: item["first"])}
+
+
+# --- воронка целиком и по менеджерам ------------------------------------------
+# Владелец (24.10.2026): «Почему в воронке нет целевых звонков? Звонок —
+# встреча — бронь»; «и плюс статистика менеджеров». Один расчёт для сводки
+# руководству и для отчёта о продажах кабинета.
+
+
+def _share(part: float | None, whole: float | None) -> float | None:
+    return (float(part) / float(whole)) if part is not None and whole else None
+
+
+def _stages(calls: float | None, meetings: float | None, bookings: int | None,
+            deals: int | None) -> dict[str, Any]:
+    return {"calls": calls, "meetings": meetings, "bookings": bookings, "deals": deals,
+            "meetings_share": _share(meetings, calls),
+            "bookings_share": _share(bookings, meetings),
+            "deals_share": _share(deals, bookings)}
+
+
+def _person(name: str, people: dict[frozenset, dict[str, Any]]) -> dict[str, Any]:
+    return people.setdefault(frozenset(name.lower().split()),
+                             {"author": name, "bookings": 0, "deals": 0})
+
+
+def sales_funnel(read: dict[str, Any] | None, contracts: list[dict[str, Any]],
+                 first: str, last: str) -> dict[str, Any] | None:
+    """Целевые звонки → встречи → новые брони → договоры за период, по отделу и
+    по менеджерам.
+
+    - Звонки и встречи — из ежедневных отчётов чата (сводка отдела, в дне —
+      последний отчёт). По менеджерам отчёт их не делит, и так и сказано.
+    - Новые брони — квартиры, впервые появившиеся в списке «Текущих броней» в
+      этот период. Брони из самого первого отчёта новыми не считаются: когда
+      их взяли, отчёт не говорит.
+    - Договоры отдела — подписанные в период (контрактация, по дате
+      подписания).
+    - Менеджер — имя в скобках у самой брони («(Помазанова Александра)»), а
+      не автор сообщения: отчёт пишет дежурный за весь отдел. Договор
+      засчитан менеджеру, если на эту квартиру была его бронь: в выгрузке
+      договоров менеджера нет, и угадывать его нельзя.
+    """
+    every = _reports(read, "", last)
+    if not every:
+        return None
+    since = min(every)
+    days = [day for day in every if first <= day <= last]
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
+    for day in sorted(every):
+        for lot in booked_lots(every[day]) or []:
+            track = seen.setdefault(_lot_key(lot), {**lot, "first": day})
+            track.update({k: v for k, v in lot.items() if v not in (None, "")})
+    counted = funnel(read, first, last) or {}
+    signed = [row for row in contracts
+              if row.get("signed") and first <= str(row["signed"])[:10] <= last]
+    lists_known = any(booked_lots(every[day]) is not None for day in days)
+    new = [lot for lot in seen.values() if first <= lot["first"] <= last and lot["first"] > since]
+    people: dict[frozenset, dict[str, Any]] = {}
+    unnamed = 0
+    for lot in new:
+        if lot.get("manager"):
+            _person(lot["manager"], people)["bookings"] += 1
+        else:
+            unnamed += 1
+    attributed = 0
+    claimed: set[int] = set()
+    for lot in seen.values():
+        deal = _deal_for(lot, signed)
+        if deal and id(deal) not in claimed:
+            claimed.add(id(deal))
+            attributed += 1
+            if lot.get("manager"):
+                _person(lot["manager"], people)["deals"] += 1
+    from market_search import contracting
+
+    deals = int(contracting._totals(signed)["contracts"]) if signed else 0
+    total = _stages(counted.get("calls"), counted.get("meetings"),
+                    len(new) if lists_known else None, deals)
+    managers = [dict(_stages(None, None, row["bookings"], row["deals"]), author=row["author"])
+                for row in sorted(people.values(), key=lambda r: (-r["deals"], -r["bookings"]))]
+    notes = []
+    if not days:
+        notes.append("за период отчётов отдела продаж в чате нет")
+    if managers:
+        notes.append("целевые звонки и встречи отчёт даёт только по отделу — по менеджерам "
+                     "их нет; брони и договоры — по менеджеру, указанному у брони")
+    if unnamed:
+        notes.append(f"у {unnamed} новых броней менеджер не указан")
+    if first <= since <= last:
+        notes.append("брони из первого отчёта в чате новыми не считаются — когда их взяли, "
+                     "отчёт не говорит")
+    if deals > attributed:
+        notes.append(f"договоров без брони в отчётах чата — {deals - attributed}: "
+                     "менеджера в выгрузке договоров нет, им они не приписаны")
+    return {"since": since, "days": len(days), "total": total, "managers": managers,
+            "notes": notes}

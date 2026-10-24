@@ -20,9 +20,11 @@
 from __future__ import annotations
 
 import datetime
+import sys
 import html
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -36,7 +38,7 @@ import developaid_project_notes as project_notes
 import developaid_site_photos as site_photos
 import developaid_report_charts as charts
 import developaid_report_gantt as report_gantt
-from market_search import contracting, sales_store
+from market_search import contracting, salesroom, sales_store
 
 PERIODS = {"week": "неделю", "month": "месяц"}
 
@@ -731,8 +733,32 @@ def sales(sales_project: str, kind: str, end: Any,
                   "fm": fm_month},
         "quarter": {"key": quarter, "fact": _fact(between(quarter_start)),
                     "fm": fm_quarter, "bank": bank_quarter,
-                    "bank_reason": bank_reason or None},
+                    "bank_reason": bank_reason or None,
+                    "edge": _edge(between(quarter_start - datetime.timedelta(days=EDGE_DAYS),
+                                          quarter_start - datetime.timedelta(days=1)))},
+        # Воронка из ежедневных отчётов отдела продаж (чат: бот или выгрузка).
+        "funnel": salesroom.funnel(part("salesroom"), bounds["start"].isoformat(),
+                                   bounds["end"].isoformat()),
+        # Звонки → встречи → новые брони → договоры, по отделу и менеджерам —
+        # тот же расчёт, что в отчёте о продажах кабинета.
+        "pipeline": salesroom.sales_funnel(part("salesroom"), rows,
+                                           bounds["start"].isoformat(),
+                                           bounds["end"].isoformat()),
+        # Брони из того же отчёта против договоров контрактации.
+        "bookings": salesroom.booking_outcomes(part("salesroom"), rows, uploaded or None,
+                                               bounds["start"].isoformat(),
+                                               bounds["end"].isoformat()),
     }
+
+
+def _edge(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Договоры последних дней прошлого квартала — их отдел продаж может
+    посчитать в этом квартале по дате регистрации."""
+    if not rows:
+        return None
+    fact = _fact(rows)
+    return {"contracts": fact["contracts"], "amount": fact["amount"],
+            "days": sorted({str(row["signed"]) for row in rows})}
 
 
 def _by_product(period: list[dict[str, Any]], total: list[dict[str, Any]],
@@ -917,7 +943,35 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
     blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
-            "end": bounds["end"].isoformat(), **blocks}
+            "end": bounds["end"].isoformat(), **blocks,
+            # Чем и когда собрана: старая сводка с прошлой сборкой выглядела как
+            # новая, и «это исправлено?» было не проверить по самому документу.
+            "built": {"at": _now_moscow(), "version": _engine_version()}}
+
+
+def _now_moscow() -> str:
+    from zoneinfo import ZoneInfo
+
+    return datetime.datetime.now(ZoneInfo("Europe/Moscow")).isoformat(timespec="minutes")
+
+
+def _engine_version() -> str:
+    """Номер сборки движка (`VERSION`) — объявлен один раз, в движке."""
+    for name in ("developaid_core", "main_legacy"):
+        module = sys.modules.get(name)
+        if module is not None and getattr(module, "VERSION", ""):
+            return str(module.VERSION)
+    return ""
+
+
+def _built_words(report: dict[str, Any]) -> str:
+    """«Сформировано 24.10.2026 в 23:31 (МСК), сборка 0.27.61»."""
+    built = report.get("built") or {}
+    if not built.get("at"):
+        return ""
+    at = datetime.datetime.fromisoformat(built["at"])
+    words = f"Сформировано {at.strftime('%d.%m.%Y')} в {at.strftime('%H:%M')} (МСК)"
+    return words + (f", сборка {built['version']}" if built.get("version") else "") + "."
 
 
 # --------------------------------------------------------------------------
@@ -1091,7 +1145,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         lots = int(round(float(fact.get("units") or 0.0)))
         pieces = [f"С начала квартала продано {lots} {_plural(lots, 'лот', 'лота', 'лотов')} "
                   f"({fact['contracts']} {_plural(fact['contracts'], 'договор', 'договора', 'договоров')}) "
-                  f"на {_rub(fact['amount'])}, {_area(fact['area'])}"]
+                  f"на {_rub(fact['amount'])}, {_area(fact['area'])} ({SIGNED_BASIS})"]
         for name, plan in (("финмодели", quarter.get("fm")), ("банка", quarter.get("bank"))):
             if plan and plan.get("amount"):
                 gap = fact["amount"] - plan["amount"]
@@ -1128,31 +1182,38 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         pieces = []
         if limit.get("known"):
             need = _approved_need(limit)
-            if need and need["deficit"] is not None:
+            # При финмодели «не хватает на достройку» и «не хватает по
+            # финмодели» — одно число (лестница сходится с водопадом), и
+            # повтор подряд читался как два разных дефицита (владелец,
+            # 25.10.2026, на «Главном»: «Сам додумаешься?»).
+            if need and need["deficit"] is not None and not _model_basis(limit):
                 pieces.append(f"по утверждённому бюджету {_rub(need['approved'])} не хватает "
                               f"на достройку {_rub(need['deficit'])}"
                               if need["deficit"] > 0 else
                               f"утверждённый бюджет {_rub(need['approved'])} покрыт лимитами и резервом")
             extra = float(limit.get("additional_financing") or 0.0)
             source = "по финмодели" if _model_basis(limit) else "по РСС"
+            parts = _chapter_gap_words(limit) if _model_basis(limit) else ""
             pieces.append(f"{source} не хватает {_rub(extra)} "
                           f"{_since(limit.get('additional_financing_from'))}"
+                          + (f" ({parts})" if parts else "")
                           if extra > 0 else
                           ("по финмодели остатка лимита глав 2–3 хватает до конца стройки"
                            if _model_basis(limit) else "по РСС лимитов и резерва хватает до ввода"))
         pieces.append(f"выборка кредита за {period} — {_rub(block['draws']['period'])} "
                       f"(за предыдущий такой же период — {_rub(block.get('draws_previous'))})")
         escrow = block.get("escrow") or {}
-        for queue in (escrow.get("queues") or [])[:2]:
+        queues = escrow.get("queues") or []
+        for queue in queues[:2]:
             if queue.get("plan_coverage_at") is not None:
                 pace_cover = queue.get("keeping_pace_coverage")
                 if pace_cover is not None:
-                    text = (f"при нынешнем темпе эскроу очереди «{queue['queue']}» "
+                    text = (f"при нынешнем темпе {_escrow_of(queue, queues)} "
                             + ("НЕ покрывает" if pace_cover < 1 else "покрывает")
                             + f" кредит ({_times(pace_cover)}), по плану финмодели — "
                             f"{_times(queue['plan_coverage_at'])}")
                 else:
-                    text = (f"эскроу очереди «{queue['queue']}» покроет кредит на "
+                    text = (f"{_escrow_of(queue, queues)} покроет кредит на "
                             f"{_times(queue['plan_coverage_at'])} по плану финмодели")
                 pieces.append(text)
         closed = (block.get("escrow_bank") or {}).get("closed")
@@ -1298,6 +1359,170 @@ def _pieces(fact: dict[str, Any]) -> str:
         words = _PIECE_WORDS.get(name, (name.lower(),) * 3)
         out.append(f"{count:.0f} {_plural(int(count), *words)}")
     return ", ".join(out)
+
+
+def _stage_words(stages: dict[str, Any]) -> list[str]:
+    """«целевые звонки 7 → встречи 5 (71,4%) → …»: ступень, которой в отчётах
+    нет, так и названа, а не пропущена."""
+    out = []
+    for key, word, share in (("calls", "целевые звонки", None),
+                             ("meetings", "встречи", "meetings_share"),
+                             ("bookings", "новые брони", "bookings_share"),
+                             ("deals", "договоры", "deals_share")):
+        value = stages.get(key)
+        if value is None:
+            out.append(f"{word} — в отчётах не названы")
+            continue
+        conversion = stages.get(share) if share else None
+        out.append(f"{word} {float(value):.0f}" + (f" ({_pct(conversion)})" if conversion is not None else ""))
+    return out
+
+
+def _funnel_line(block: dict[str, Any], kind: str) -> str:
+    """Воронка за период: целевые звонки → встречи → новые брони → договоры с
+    конверсией между ступенями (владелец, 24.10.2026: «Почему в воронке нет
+    целевых звонков? Звонок — встреча — бронь»). Брокер-туры и то, что сейчас
+    в работе, — рядом."""
+    pipe = block.get("pipeline") or {}
+    state = block.get("funnel") or {}
+    if not pipe and not state:
+        return ""
+    text = f"Воронка за {PERIODS[kind]}: "
+    text += " → ".join(_stage_words(pipe.get("total") or {})) if pipe else "отчётов нет"
+    text += ". В скобках — доля от предыдущей ступени; договоры — по дате подписания."
+    if state.get("broker_tours") is not None:
+        text += f" Брокер-туров {state['broker_tours']:.0f}."
+    now = ", ".join(f"{word} {state[key]:.0f}" for key, word in (
+        ("bookings", "броней"), ("registering", "ДДУ на регистрации")) if state.get(key) is not None)
+    if now:
+        text += f" Сейчас {now}."
+    days = int(pipe.get("days") or state.get("days") or 0)
+    return text + f" По отчётам отдела продаж за {days} {_plural(days, 'день', 'дня', 'дней')}."
+
+
+def _funnel_figure(block: dict[str, Any], kind: str) -> str:
+    """Та же воронка картинкой (владелец, 24.10.2026: «нарисуй воронку
+    картинкой») — из тех же чисел, что строка над ней."""
+    total = (block.get("pipeline") or {}).get("total") or {}
+    if not total:
+        return ""
+    return charts.funnel_chart(
+        f"Воронка продаж за {PERIODS[kind]}",
+        [("Целевые звонки", total.get("calls"), None),
+         ("Встречи", total.get("meetings"), total.get("meetings_share")),
+         ("Новые брони", total.get("bookings"), total.get("bookings_share")),
+         ("Договоры", total.get("deals"), total.get("deals_share"))],
+        "доля — от предыдущей ступени; договоры — по дате подписания")
+
+
+def _managers_line(block: dict[str, Any]) -> str:
+    """По менеджерам — тем же расчётом, что воронка отдела («и плюс
+    статистика менеджеров», владелец, 24.10.2026)."""
+    pipe = block.get("pipeline") or {}
+    if not pipe:
+        return ""
+    notes = list(pipe.get("notes") or [])
+    managers = pipe.get("managers") or []
+    text = ""
+    if managers:
+        text = "По менеджерам (по имени у брони): " + "; ".join(
+            f"{row['author']} — новые брони {row['bookings']}, договоры {row['deals']}"
+            for row in managers) + "."
+    if notes:
+        text += (" " if text else "Оговорки: ") + "; ".join(notes) + "."
+    return text.strip()
+
+
+# Договор относится к периоду по дате подписания: так задан план финмодели
+# («Заключенные договоры»). Ежедневный отчёт отдела продаж считает по дате
+# регистрации, и договор, подписанный в конце месяца, у него попадает в
+# следующий (владелец, 24.10.2026: «Странно. Продажники считают не так» —
+# 4 ДДУ на 178,0 млн у сводки против 6 на 291,5 у продажников; решение —
+# считать по подписанию и говорить об этом).
+SIGNED_BASIS = "по дате подписания"
+SIGNED_NOTE = ("Расхождение с отделом продаж — из-за разных дат учёта. Сводка считает "
+               "продажи по дате подписания договора, как план финмодели, а отдел продаж "
+               "в ежедневном отчёте — по дате регистрации. Поэтому договор, подписанный "
+               "в конце месяца, у отдела продаж попадает в следующий месяц.")
+# Сколько дней до начала квартала смотреть на договоры, которые отдел продаж
+# может отнести к кварталу по регистрации. Даты регистрации в выгрузке
+# контрактации нет, поэтому сумма «по регистрации» — верхняя граница, и
+# примечание говорит «если зарегистрированы в квартале» (владелец, 24.10.2026:
+# «надо в отчёте это расхождение примечанием пометить» — с цифрами).
+EDGE_DAYS = 14
+
+
+def _signed_note(quarter: dict[str, Any]) -> str:
+    """Примечание о подписании и регистрации — с цифрами квартала."""
+    edge = quarter.get("edge") or {}
+    if not edge.get("contracts"):
+        return SIGNED_NOTE
+    days = " и ".join(_date(day).strftime("%d.%m") for day in edge["days"])
+    count = int(edge["contracts"])
+    total = float(quarter["fact"]["amount"]) + float(edge["amount"])
+    return (f"{SIGNED_NOTE} В этот квартал не входят {count} "
+            f"{_plural(count, 'договор', 'договора', 'договоров')} на {_rub(edge['amount'])}, "
+            f"подписанные {days}, в последние две недели прошлого квартала. Если их "
+            f"зарегистрировали уже в этом квартале, у отдела продаж квартал — "
+            f"{_rub(total)} вместо {_rub(quarter['fact']['amount'])} в сводке.")
+
+
+def _edge_words(quarter: dict[str, Any]) -> str:
+    """Для подписи плитки: «по регистрации — до 291,5 млн ₽»."""
+    edge = quarter.get("edge") or {}
+    if not edge.get("contracts"):
+        return ""
+    total = float(quarter["fact"]["amount"]) + float(edge["amount"])
+    return f"; по регистрации, как у отдела продаж, — до {_rub(total)}"
+
+
+def _booked_words(item: dict[str, Any]) -> str:
+    # Площадь — как в отчёте, с десятыми: по ней квартира и узнаётся.
+    area = (f", {item['area']:.1f}".replace(".", ",") + " м²"
+            if item.get("area") is not None else "")
+    return f"кв. {item['apartment']}{area}"
+
+
+def _bookings_line(block: dict[str, Any] | None, kind: str) -> str:
+    """«Брони за неделю: из списка ушли 3 — 2 стали договорами, 1 снята без
+    сделки (кв. 20, 90,2 м², держалась 12 дней)…» (владелец, 24.10.2026: «надо
+    следить, сколько броней не вышло в сделку в итоге»)."""
+    if not block:
+        return ""
+    period = block.get("period") or []
+    deals = [item for item in period if item["outcome"] == "deal"]
+    dropped = [item for item in period if item["outcome"] == "dropped"]
+    unknown = [item for item in period if item["outcome"] == "unknown"]
+    if period:
+        parts = []
+        if deals:
+            parts.append(f"{len(deals)} {_plural(len(deals), 'стала договором', 'стали договорами', 'стали договорами')}")
+        if dropped:
+            names = "; ".join(f"{_booked_words(item)}, держалась {item['days']} "
+                              f"{_plural(item['days'], 'день', 'дня', 'дней')}" for item in dropped)
+            parts.append(f"{len(dropped)} {_plural(len(dropped), 'снята', 'сняты', 'снято')} "
+                         f"без сделки ({names})")
+        if unknown:
+            parts.append(f"по {len(unknown)} договора в загруженной контрактации пока нет")
+        text = (f"Брони за {PERIODS[kind]}: из списка ушли {len(period)} — "
+                + ", ".join(parts) + ".")
+    else:
+        text = f"Брони за {PERIODS[kind]}: из списка не ушла ни одна."
+    total = block.get("total") or {}
+    closed = int(total.get("deal") or 0) + int(total.get("dropped") or 0)
+    if closed:
+        share = int(total.get("deal") or 0) / closed
+        text += (f" С {_day(block['since'])} из {closed} закрытых броней договорами стали "
+                 f"{int(total.get('deal') or 0)} ({_pct(share)}), без сделки — "
+                 f"{int(total.get('dropped') or 0)}.")
+    held = block.get("held") or []
+    if held:
+        oldest = held[0]
+        text += (f" Сейчас в списке {len(held)} "
+                 f"{_plural(len(held), 'бронь', 'брони', 'броней')}, самая давняя — "
+                 f"{_booked_words(oldest)}, с {_day(oldest['first'])} "
+                 f"({oldest['days']} {_plural(oldest['days'], 'день', 'дня', 'дней')}).")
+    return text
 
 
 def _sales_line(label: str, fact: dict[str, Any]) -> str:
@@ -1452,6 +1677,26 @@ def _model_basis(limit: dict[str, Any]) -> bool:
     return (limit.get("need_basis") or "") == "model"
 
 
+def _escrow_of(queue: dict[str, Any], queues: list[dict[str, Any]]) -> str:
+    """«эскроу» при одной очереди, «эскроу 1-й очереди» при нескольких.
+
+    «Эскроу очереди «1 очередь»» читалось масло масляным, а при одной
+    очереди называть её незачем (владелец, 25.10.2026).
+    """
+    if len(queues) <= 1:
+        return "эскроу"
+    name = str(queue.get("queue") or "").strip()
+    number = re.fullmatch(r"(\d+)(?:-?[яй])?\s*очеред\w*", name, re.I)
+    return f"эскроу {number.group(1)}-й очереди" if number else f"эскроу очереди «{name}»"
+
+
+def _chapter_gap_words(limit: dict[str, Any]) -> str:
+    """«на стройку 1,93 млрд ₽, на коммерцию 465,0 млн ₽» — коротко, для «Главного»."""
+    rows = limit.get("need_by_chapter") or {}
+    return ", ".join(f"на {rows[ch].get('label_acc') or rows[ch]['label']} {_rub(rows[ch]['gap'])}"
+                     for ch in sorted(rows) if float(rows[ch].get("gap") or 0) > 0)
+
+
 def _chapter_need_words(limit: dict[str, Any]) -> str:
     """«на стройку 1,93 млрд ₽ (нужно 3,05, лимита 1,12), на коммерцию …»."""
     parts = []
@@ -1543,7 +1788,8 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     if escrow.get("state") != "ok":
         lines.append(escrow.get("reason") or "Эскроу: данных нет.")
     for queue in escrow.get("queues") or []:
-        text = (f"Эскроу, очередь «{queue['queue']}»: на {_months_label(queue['measured_at'])} "
+        named = _escrow_of(queue, escrow.get("queues") or [])
+        text = (f"{named[:1].upper() + named[1:]}: на {_months_label(queue['measured_at'])} "
                 f"накоплено {_rub(queue.get('actual'))}")
         if queue.get("plan") is not None:
             text += f" при плане финмодели {_rub(queue['plan'])}"
@@ -1721,6 +1967,13 @@ def render_text(report: dict[str, Any]) -> str:
                          f"{_area(quarter['bank'].get('area'))}.")
         elif quarter.get("bank_reason"):
             lines.append(esc(quarter["bank_reason"]))
+        if block.get("funnel") or block.get("pipeline"):
+            lines.append(esc(_funnel_line(block, report["kind"])))
+        if _managers_line(block):
+            lines.append(esc(_managers_line(block)))
+        if block.get("bookings"):
+            lines.append(esc(_bookings_line(block["bookings"], report["kind"])))
+        lines.append(esc(_signed_note(quarter)))
         if block.get("stale"):
             lines.append(f"Внимание: договоры загружены {_day(block['uploaded'])}, "
                          "более поздние сделки в сводку не попали.")
@@ -2145,7 +2398,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         if quarter and plan:
             share = quarter["fact"]["amount"] / plan
             add(f"Продажи квартала к плану {name}", _pct(share),
-                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)}; прошло {_pct(pace)} квартала",
+                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)} {SIGNED_BASIS}"
+                f"{_edge_words(quarter)}; прошло {_pct(pace)} квартала",
                 "bad" if share < pace - 0.05 else "good")
         else:
             add(f"Продажи квартала к плану {name}", None,
@@ -2671,6 +2925,14 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(_table(["План", "Сумма", "Площадь"], plans))
         if quarter.get("bank_reason"):
             out.append(f"<p class='note'>{esc(quarter['bank_reason'])}</p>")
+        if block.get("funnel") or block.get("pipeline"):
+            out.append(f"<p>{esc(_funnel_line(block, report['kind']))}</p>")
+            out.append(_funnel_figure(block, report["kind"]))
+        if _managers_line(block):
+            out.append(f"<p class='note'>{esc(_managers_line(block))}</p>")
+        if block.get("bookings"):
+            out.append(f"<p>{esc(_bookings_line(block['bookings'], report['kind']))}</p>")
+        out.append(f"<p class='note'>{esc(_signed_note(quarter))}</p>")
         if block.get("stale"):
             out.append(f"<p class='note warn'>Договоры загружены {_day(block['uploaded'])}, "
                        "более поздние сделки в сводку не попали.</p>")
@@ -2726,6 +2988,8 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<div class='item'><b>{esc(note['topic'])}</b> — вопрос закрыт: "
                        f"{esc(note['text'])} <span class='note'>— {_day(note['at'])}, "
                        f"{esc(note['author'])}</span></div>")
+    if _built_words(report):
+        out.append(f"<p class='note built'>{esc(_built_words(report))}</p>")
     return "\n".join(_keep_headings([part for part in out if part]))
 
 
