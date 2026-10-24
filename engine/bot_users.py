@@ -1264,6 +1264,55 @@ def internal_monitor_daily(req: SiteChatReportRequest) -> dict[str, Any]:
     return {"bound": project, "stored": stored}
 
 
+class SalesChatRequest(BaseModel):
+    """Отчёт отдела продаж из группового чата — от бота к ядру.
+
+    Модель — выше маршрута, по той же причине, что у `SiteChatReportRequest`.
+    """
+
+    chat_id: int = 0
+    sign: str = ""
+    title: str = ""
+    author: str = ""
+    text: str = ""
+    taken_at: str = ""
+
+
+@app.post("/internal/monitor/sales-chat", include_in_schema=False)
+def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
+    """Отчёт из чата отдела продаж: бот принял, ядро дописало в источник.
+
+    Чат привязан к проекту Монитора той же командой `/site`; отчёт ложится в
+    проект отчёта о продажах, связанный с ним на странице сводки, — источник
+    «чат отдела продаж», тот же, что даёт выгрузка чата. Подпись — своим кодом.
+    """
+    expected = _web_login_sign("monitor-sales", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
+    if not project:
+        return {"bound": "", "sales_project": ""}
+    import developaid_management_report as management_report
+    from market_search import salesroom, sales_store
+
+    sales_project = ((management_report.sales_link(project) or {}).get("sales_project") or "")
+    if not sales_project:
+        # Проект Монитора не связан с отчётом о продажах — дописывать некуда.
+        # Это ответ, а не отказ: в /status видно, чего не хватает.
+        return {"bound": project, "sales_project": ""}
+    where = sales_store.default_dir()
+    kept = sales_store.load(where, sales_project)
+    current = ((kept.get("sources") or {}).get("salesroom") or {}).get("data")
+    day = str(req.taken_at or "")[:10]
+    updated = salesroom.append_message(current, day, str(req.author or ""), req.text,
+                                       str(req.title or ""))
+    sales_store.save(where, sales_project, {"salesroom": updated},
+                     f"чат «{req.title or ''}» — бот")
+    return {"bound": project, "sales_project": sales_project,
+            "messages": len(updated.get("messages") or [])}
+
+
 @app.post("/internal/monitor/photo", include_in_schema=False)
 def internal_monitor_photo(req: SitePhotoRequest) -> dict[str, Any]:
     """Снимок из чата стройки: бот на Render скачал, ядро сохранило.
