@@ -84,12 +84,20 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             "nonres": obj.key in nonres_plans,
         }
         plan_item = nonres_plans.get(obj.key)
+        # Офис книга считает всеми тремя способами продажи (решение владельца
+        # 24.10.2026, «Новая книга считает и ДДУ»): ему нужны вводные и ДДУ, и
+        # стратегий вне ДДУ, какую бы стратегию ни выбрал проект. Вводные —
+        # те же поля, что движок читает, когда `office_paths` меняет стратегию.
+        office = obj.product == "offices" and bool(obj.strategies) and item["in_tax_pool"]
+        # Продукт мест гаража объекта — его выручка и маржа по ДДУ сверяются
+        # вместе с объектом.
+        item["parking_product_key"] = object_parking_product_key(obj.key)
         # Объект по ДДУ (решение владельца 13.10.2026: книга нежилого проекта
         # считает его живыми формулами, а не берёт выручку движка): продаётся
         # тем же `sales_schedule`, что в `build_operating_model`, — доля до
         # ввода объекта, остаток после, рост цены; профиль продаж и лестница
         # цены — вводные, которые книга получает таблицей.
-        if not plan_item and item["in_tax_pool"] and n(x, obj.rate_price) > 0:
+        if (not plan_item or office) and item["in_tax_pool"] and n(x, obj.rate_price) > 0:
             sales_start = d(x[f"{obj.prefix}_sales_start"])
             weights, factor = None, None
             weights_raw, _notes = schedule_weights(x.get(f"{obj.prefix}_sales_profile"), sales_start)
@@ -101,7 +109,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             if factor_raw is not None:
                 factor = {k_of(m): float(factor_raw(m)) for m in months}
             item.update({
-                "ddu": True, "strategy": nonres_strategy.STRATEGY_DDU,
+                "ddu": not plan_item, "strategy": nonres_strategy.STRATEGY_DDU,
                 "saleable_sqm": n(x, f"{obj.prefix}_saleable_sqm"),
                 "over_units": max(0.0, n(row, "parking_over_units")),
                 "over_area": (n(x, "object_parking_over_area_per_space_sqm", OBJECT_PARKING_OVER_AREA_DEFAULT)
@@ -121,12 +129,14 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
                 "parking_over_mln": n(x, f"{obj.prefix}_parking_over_price_mln_per_space"),
                 "sales_weights": weights, "price_factor": factor,
             })
-        if plan_item:
-            params = plan_item.get("params") or {}
+        if plan_item or office:
+            params = ((plan_item or {}).get("params")
+                      or {suffix: x.get(f"{obj.prefix}_{suffix}")
+                          for suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS})
             num = nonres_strategy._num
             choice = nonres_strategy._choice
             item.update({
-                "strategy": plan_item["strategy"],
+                "strategy": plan_item["strategy"] if plan_item else nonres_strategy.STRATEGY_DDU,
                 "saleable_sqm": n(x, f"{obj.prefix}_saleable_sqm"),
                 "over_units": max(0.0, n(row, "parking_over_units")),
                 "over_area": (n(x, "object_parking_over_area_per_space_sqm", OBJECT_PARKING_OVER_AREA_DEFAULT)
@@ -261,8 +271,10 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
 
     Решение владельца (13.10.2026): объект по ДДУ — не повод отдавать жилую
     книгу; его продажи, эскроу, БРИДЖ и ПФ книга нежилого проекта считает
-    формулами (`nonres_workbook` — листы «ДДУ N» и «ПФ»). ПФ по очередям она
-    не моделирует: проект с очередями и ПФ получает книгу v4.
+    формулами. Проект с офисом получает книгу офиса (`office_workbook`, три
+    способа продажи, ДДУ — листы «Продажа ДДУ» и «ПФ»), без офиса — прежнюю
+    (`nonres_workbook` — листы «ДДУ N» и «ПФ»). ПФ по очередям книги не
+    моделируют: проект с очередями и ПФ получает книгу v4.
     """
     consolidated = (_run_authoritative_model(
         inputs or {}, tep or {}, rates or [], phasing or {}) or {}).get("consolidated") or {}
@@ -279,13 +291,15 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
         spec["missing"].append("Очереди: книга моделирует проект одной очередью, "
                                "сверка идёт со сводом очередей")
     stem = _safe_file_stem(project_name or "project", "project")
-    # Офис без объектов по ДДУ — книга офиса на каркасе жилой v4 с двумя путями
-    # (`office_workbook`, образец владельца 22.10.2026). Проект с ДДУ и
-    # нежилой без офиса остаются на прежней книге (решение владельца 23.10.2026).
+    # Проект с офисом — книга офиса на каркасе жилой v4 с тремя способами
+    # продажи: по ДДУ, блоками и арендой (`office_workbook`; образец владельца
+    # 22.10.2026, решение 24.10.2026 «Новая книга считает и ДДУ»). Объект по ДДУ
+    # рядом с офисом (ТЦ по ДДУ) входит в ПФ каждого способа. Нежилой проект
+    # без офиса остаётся на прежней книге.
     office_keys = {obj.key for obj in STANDALONE_OBJECTS if obj.product == "offices"}
     if (consolidated.get("office_paths")
-            and not any(item.get("ddu") for item in spec["objects"])
-            and any(item.get("nonres") and item["key"] in office_keys for item in spec["objects"])):
+            and any((item.get("nonres") or item.get("ddu")) and item["key"] in office_keys
+                    for item in spec["objects"])):
         content, report = office_workbook.build(consolidated, spec, office_keys)
         missing = list(report["missing"])
         if report["verdict"] != office_workbook.PASSED:

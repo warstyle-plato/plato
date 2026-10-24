@@ -1,4 +1,4 @@
-"""Книга офисного проекта на каркасе жилой v4: два пути рядом, месяцы вправо.
+"""Книга офисного проекта на каркасе жилой v4: три способа продажи рядом, месяцы вправо.
 
 Образец утвердил владелец 22.10.2026 (`docs/samples/office_book/`): «модель
 должна быть такой же по философии и архитектуре, как для жилья». Цепочка та
@@ -6,14 +6,21 @@
 → кредит → налоги → поток проекта и собственника → отчёт → сверка с движком.
 
 Состав: Дашборд, ОТЧЕТ, Вводные, ИНСТРУКЦИЯ, ТЭП, СРОКИ, CAPEX, Ставки,
-Продажа (путь 1), Аренда и Выход (путь 2), листы прочих объектов проекта,
-CF_Продажа и CF_Аренда (НДС, кредит, поток собственника, NPV и IRR), Налоги,
-ПРОВЕРКИ, Источники.
+Продажа ДДУ, Продажа, Аренда и Выход, листы прочих объектов проекта, ПФ,
+CF_ДДУ, CF_Продажа и CF_Аренда (НДС, кредит, поток собственника, NPV и IRR),
+Налоги, ПРОВЕРКИ, Источники.
 
-Оба пути — продажа блоками после ввода и аренда с продажей здания — считаются
-формулами одновременно; каждый повторяет `developaid_nonres_strategy.object_flows`
-с этой стратегией у офисов, как расчёт движка `office_paths`. Прочие объекты
-проекта (ТЦ и т. п.) считаются своей стратегией в обоих путях. CAPEX по
+Три способа продажи офиса считаются формулами одновременно (владелец,
+24.10.2026: «Новая книга считает и ДДУ»):
+- продажа по ДДУ — `sales_schedule` (доля до ввода и остаток после, рост
+  цены), эскроу до РВЭ и `simulate_financing` (собственные деньги и БРИДЖ до
+  разрешения на стройку, ПФ с покрытием эскроу и ступенями специальной ставки,
+  плата за лимит, раскрытие эскроу в РВЭ, погашение продажами), НДС по ДДУ в
+  РВЭ и LLCR — тот же построчный пересказ, что у прежней книги (`nonres_workbook`);
+- продажа блоками после ввода и аренда с продажей здания — `object_flows`.
+Каждый способ — расчёт движка с этой стратегией у офисов (`office_paths`).
+Прочие объекты проекта (ТЦ и т. п.) считаются своей стратегией во всех трёх
+способах; объект по ДДУ входит в ПФ каждого способа. CAPEX по
 статьям — формулами `build_operating_model`, налог на прибыль проекта —
 правилом `_profit_tax_schedule` (маржа до РВЭ откладывается, перенос убытка не
 больше половины базы года), NPV проекта — `monthly_npv` ((1+r)^(k/12)), NPV
@@ -24,8 +31,7 @@ CF_Продажа и CF_Аренда (НДС, кредит, поток собс�
 ложатся рядом с формулами (`v4_value_cache`), а «ПРОВЕРКИ» сравнивают итоги с
 авторитетным расчётом.
 
-Проект с объектом по ДДУ и нежилой проект без офиса получают прежнюю книгу
-(`nonres_workbook`, решение владельца 23.10.2026).
+Нежилой проект без офиса получает прежнюю книгу (`nonres_workbook`).
 """
 
 from __future__ import annotations
@@ -52,7 +58,7 @@ from xlsx_eval import Evaluator
 # --- вид жилой v4 -------------------------------------------------------------
 FONT = "Carlito"
 DARK, HEAD, TILE, LIGHT, INPUT, GREY = "0B1F33", "1F4E78", "17365D", "EAF2F8", "FFF2CC", "666666"
-SALE_TAB, RENT_TAB = "2F6DB5", "C26A0A"
+SALE_TAB, RENT_TAB, DDU_TAB = "2F6DB5", "C26A0A", "2E7D32"
 ENGINE = "FFF3E0"  # значения движка там, где формулы нет («СЧИТАЕТ ДВИЖОК»)
 NUM = "#,##0.0;[Red](#,##0.0);-"
 NUM0 = "#,##0;[Red](#,##0);-"
@@ -72,21 +78,25 @@ EXTRA_MONTHS = 12  # год после горизонта — NOI покупат
 TAX_TAIL = 15  # доплата налога года — в марте следующего
 
 INPUTS_SHEET, TEP_SHEET, TIME_SHEET, CAPEX_SHEET, RATE_SHEET = "Вводные", "ТЭП", "СРОКИ", "CAPEX", "Ставки"
-SALE_SHEET, RENT_SHEET, EXIT_SHEET = "Продажа", "Аренда", "Выход"
+SALE_SHEET, RENT_SHEET, EXIT_SHEET, DDU_SHEET, PF_SHEET = "Продажа", "Аренда", "Выход", "Продажа ДДУ", "ПФ"
 TAX_SHEET, REPORT_SHEET, DASH_SHEET = "Налоги", "ОТЧЕТ", "Дашборд"
 GUIDE_SHEET, CHECK_SHEET, SOURCES_SHEET = "ИНСТРУКЦИЯ", "ПРОВЕРКИ", "Источники"
 PASSED, FAILED = "ПРОЙДЕНО", "РАСХОЖДЕНИЯ"
 AGREE, DIFF = "сходится", "РАСХОЖДЕНИЕ"
 
-# Пути офиса: код движка → подпись, листы и цвет ярлыка. Порядок — как у
-# `economics.OFFICE_PATHS`.
+# Способы продажи офиса: код движка → подпись, листы и цвет ярлыка. Порядок —
+# как у `economics.OFFICE_PATHS`.
 PATHS: tuple[dict[str, str], ...] = (
+    {"key": ns.STRATEGY_DDU, "label": "Продажа по ДДУ", "code": "d",
+     "flows": DDU_SHEET, "cf": "CF_ДДУ", "tab": DDU_TAB},
     {"key": ns.STRATEGY_DIRECT, "label": "Продажа блоками", "code": "s",
      "flows": SALE_SHEET, "cf": "CF_Продажа", "tab": SALE_TAB},
     {"key": ns.STRATEGY_INCOME, "label": "Аренда и продажа здания", "code": "r",
      "flows": RENT_SHEET, "cf": "CF_Аренда", "tab": RENT_TAB},
 )
-STRATEGY = {ns.STRATEGY_INCOME: "Аренда и выход", ns.STRATEGY_DIRECT: "Продажа блоками"}
+STRATEGY = {ns.STRATEGY_INCOME: "Аренда и выход", ns.STRATEGY_DIRECT: "Продажа блоками",
+            ns.STRATEGY_DDU: "Продажа по ДДУ"}
+INTEREST_MODES = ("Капитализация в ПФ", "Оплата капиталом")
 EXIT = {ns.EXIT_SALE: "Продажа здания", ns.EXIT_HOLD: "Удержание с оценкой"}
 REPAY = {ns.REPAY_ANNUITY: "Аннуитет с баллоном", ns.REPAY_SWEEP: "Из NOI по мере поступления",
          ns.REPAY_BULLET: "Одним платежом при выходе"}
@@ -361,6 +371,13 @@ def _sum(parts: list[str]) -> str:
     return "+".join(parts) if parts else "0"
 
 
+def grouped(value: str) -> str:
+    """Целое число текстом с пробелом между тысячами — как подпись движка
+    «не показателен: своих денег 1 012 млн ₽» (`_equity_irr_number`)."""
+    r = f"ROUND({value},0)"
+    return f'IF({r}>=1000,INT({r}/1000)&" "&REPT("0",3-LEN(MOD({r},1000)))&MOD({r},1000),{r})'
+
+
 # --- «Вводные» ---------------------------------------------------------------
 
 # Проект: ключ → (подпись, ед., формат, список значений или None). Значение —
@@ -429,18 +446,24 @@ OBJECT_BLOCKS: tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...] = (
         ("over_units", "Машино-места на первых этажах", "шт.", NUM0),
         ("over_area", "Площадь места на первом этаже", "м²", NUM0),
     )),
-    ("Путь 1. Продажа блоками после ввода", (
+    ("Цена продажи и её рост (общие для продажи по ДДУ и продажи блоками)", (
         ("price", "Цена продажи (у офиса пусто — по классу)", "тыс ₽/м² с НДС", NUM0),
         ("sales_start", "Отсчёт роста цены", "", DATE),
         ("growth_pre", "Рост цены до ввода", "в месяц", PCT2),
         ("growth_post", "Рост цены после ввода", "в месяц", PCT2),
-        ("sale_offset", "Старт продаж от ввода (минус — до ввода)", "мес.", INT),
-        ("sale_months", "Срок продаж", "мес.", INT),
-        ("curve", "Профиль продаж", "", "@"),
         ("parking_under_mln", "Цена подземного места (0 — цена проекта)", "млн ₽", NUM),
         ("parking_over_mln", "Цена места на первом этаже (0 — цена проекта)", "млн ₽", NUM),
     )),
-    ("Путь 2. Аренда и продажа здания", (
+    ("Продажа по ДДУ: деньги покупателей на эскроу до ввода проекта", (
+        ("share_before", "Доля продаж до ввода объекта", "", PCT),
+        ("residual", "Остаточные продажи после ввода объекта", "мес.", INT),
+    )),
+    ("Продажа блоками после ввода по договорам купли-продажи", (
+        ("sale_offset", "Старт продаж от ввода (минус — до ввода)", "мес.", INT),
+        ("sale_months", "Срок продаж", "мес.", INT),
+        ("curve", "Профиль продаж", "", "@"),
+    )),
+    ("Аренда и продажа здания", (
         ("rent", "Ставка аренды с НДС (у офиса пусто — по классу)", "тыс ₽/м² в месяц", NUM3),
         ("rent_date", "Дата ставки аренды (пусто — на дату ввода)", "", DATE),
         ("rent_index", "Индексация аренды", "в год", PCT),
@@ -456,13 +479,13 @@ OBJECT_BLOCKS: tuple[tuple[str, tuple[tuple[str, str, str, str], ...]], ...] = (
         ("exit_cost", "Расходы на сделку при продаже здания", "", PCT),
         ("dep_years", "Срок амортизации для налога", "лет", INT),
     )),
-    ("Кредит объекта", (
+    ("Кредит объекта при продаже блоками и аренде", (
         ("loan_share", "Доля кредита в затратах", "", PCT),
         ("spread", "Надбавка к ключевой ставке", "", PCT2),
         ("fee", "Комиссия за выдачу", "доля выдачи", PCT2),
-        ("repayment", "Погашение после ввода (путь 2)", "", "@"),
-        ("term", "Срок кредита от первой выдачи (путь 2)", "лет", INT),
-        ("balloon", "Остаток долга к сроку — баллон (путь 2)", "доля долга на ввод", PCT),
+        ("repayment", "Погашение после ввода (при аренде)", "", "@"),
+        ("term", "Срок кредита от первой выдачи (при аренде)", "лет", INT),
+        ("balloon", "Остаток долга к сроку — баллон (при аренде)", "доля долга на ввод", PCT),
     )),
 )
 # Поля, которые у офиса задаёт класс: ключ книги → поле шкалы.
@@ -484,8 +507,7 @@ def _object_values(item: dict[str, Any]) -> dict[str, Any]:
         "under_gns": item["under_gns"], "start": item["start"], "months": item["months"],
         "in_tax_pool": YES if item["in_tax_pool"] else NO,
     }
-    if item.get("nonres"):
-        pct = lambda key: float(params[key]) / 100  # noqa: E731
+    if item.get("nonres") or item.get("ddu"):
         values.update({
             "saleable": item["saleable_sqm"], "over_units": item["over_units"],
             "over_area": item["over_area"], "parking_units": item["parking_saleable_units"],
@@ -493,9 +515,16 @@ def _object_values(item: dict[str, Any]) -> dict[str, Any]:
             "price": item["price"], "sales_start": item["sales_start"],
             "growth_pre": float(item["growth_pre_pct"]) / 100,
             "growth_post": float(item["growth_post_pct"]) / 100,
+            "parking_under_mln": item["parking_under_mln"], "parking_over_mln": item["parking_over_mln"],
+        })
+    if "share_before_pct" in item:
+        values.update({"share_before": float(item["share_before_pct"]) / 100,
+                       "residual": int(item["residual_months"])})
+    if params:
+        pct = lambda key: float(params[key]) / 100  # noqa: E731
+        values.update({
             "sale_offset": params["direct_sale_offset_months"],
             "sale_months": params["direct_sale_months"], "curve": CURVE[params["direct_sale_curve"]],
-            "parking_under_mln": item["parking_under_mln"], "parking_over_mln": item["parking_over_mln"],
             "rent": params["rent_th_per_sqm_month"], "rent_date": _date_or_none(params.get("rent_date")),
             "rent_index": pct("rent_index_pct"), "parking_rent": params["parking_rent_th_month"],
             "occ_start": pct("occupancy_start_pct"), "occ_stable": pct("occupancy_stable_pct"),
@@ -552,6 +581,7 @@ class _Inputs:
         self.class_head = ""                # шапка шкалы класса — для MATCH
         self.class_rows: dict[str, str] = {}  # поле шкалы → диапазон ступеней
         self.office_class: dict[str, str] = {}  # код офиса → выбранный класс
+        self.steps: list[tuple[str, str]] = []  # ступени специальной ставки ПФ: (порог, ставка)
 
 
 def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]]) -> _Inputs:
@@ -608,6 +638,45 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
     info.plan = (f"'{INPUTS_SHEET}'!$B${first}:$B${rows.r - 1}",
                  f"'{INPUTS_SHEET}'!$C${first}:$C${rows.r - 1}")
 
+    # Проектное финансирование продажи по ДДУ — те же вводные, что читает
+    # `simulate_financing`.
+    pf = spec.get("pf") or {}
+    rows.section("Продажа по ДДУ: собственные деньги, БРИДЖ и проектное финансирование (ПФ)")
+    for key, label, unit, fmt, value in (
+            ("bridge_spread", "БРИДЖ до разрешения на стройку: надбавка к ключевой ставке", "", PCT2,
+             pf.get("bridge_spread_pp", 0.0) / 100),
+            ("bridge_cap_spread", "БРИДЖ: надбавка к ключевой ставке на проценты к уплате", "", PCT2,
+             pf.get("bridge_cap_spread_pp", 0.0) / 100),
+            ("pf_spread", "ПФ: надбавка к ключевой ставке на часть долга без покрытия эскроу", "", PCT2,
+             pf.get("pf_spread_pp", 0.0) / 100),
+            ("pf_special", "ПФ: льготная ставка на часть долга, покрытую эскроу", "в год", PCT2,
+             pf.get("pf_special_pct", 0.0) / 100),
+            ("own_funds", "Собственные деньги до ПФ (тратятся раньше БРИДЖа)", "млн ₽", NUM,
+             pf.get("own_funds_mln", 0.0)),
+            ("approved", "Одобренный банком лимит ПФ (0 — лимит по выдаче)", "млн ₽", NUM,
+             pf.get("approved_limit_mln", 0.0))):
+        rows.param(f"in.pf.{key}", label, value, unit, fmt, inp=True)
+    rows.param("in.pf.mode", "Проценты БРИДЖа при открытии ПФ", pf.get("interest_mode", INTEREST_MODES[0]),
+               fmt="@", inp=True)
+    modes = DataValidation(type="list", formula1='"' + ",".join(INTEREST_MODES) + '"')
+    ws.add_data_validation(modes)
+    modes.add(f"B{book.reg['in.pf.mode'][1]}")
+    rows.r += 1
+    ws.cell(rows.r, 1, "ПФ: ступени льготной ставки по покрытию долга эскроу (порог 0 — ступени нет)").font = _fnt(
+        b=True)
+    ws.cell(rows.r, 2, "Покрытие от").font = _fnt(b=True)
+    ws.cell(rows.r, 3, "Ставка").font = _fnt(b=True)
+    rows.r += 1
+    for edge, rate in pf.get("pf_special_steps") or []:
+        for c, value, fmt in (("B", float(edge), PCT), ("C", float(rate), PCT2)):
+            cell = ws[f"{c}{rows.r}"]
+            cell.value, cell.number_format = value, fmt
+            cell.fill, cell.font = _fill(INPUT), _fnt(color="0000FF")
+        info.steps.append((f"'{INPUTS_SHEET}'!$B${rows.r}", f"'{INPUTS_SHEET}'!$C${rows.r}"))
+        rows.r += 1
+    if not info.steps:
+        rows.note("Ступеней нет: на покрытую часть действует льготная ставка выше.")
+
     # Шкала класса офиса — стартовые допущения; правятся тоже здесь.
     offices = [item for item in objects if item.get("office")]
     if offices:
@@ -658,7 +727,7 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
         if title.startswith("Объекты"):
             ws.cell(rows.r, 1, "Как продаётся в книге")
             for item in objects:
-                text = ("оба пути: продажа блоками и аренда" if item.get("office") else
+                text = ("все три способа: продажа по ДДУ, продажа блоками и аренда" if item.get("office") else
                         STRATEGY.get(item.get("strategy") or "", "без продажи (только стройка)")
                         + " — меняется на странице проекта")
                 ws[f"{info.columns[item['code']]}{rows.r}"] = text
@@ -729,7 +798,7 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
 
 def _time_sheet(book: _Book, objects: list[dict[str, Any]]) -> None:
     ws = book.sheet(TIME_SHEET, "СРОКИ · КАЛЕНДАРЬ ПРОЕКТА",
-                    "Номер месяца, разрешение на стройку, ввод объектов. Окна продаж и аренды — на листах путей.",
+                    "Номер месяца, разрешение на стройку, ввод объектов. Окна продаж и аренды — на листах способов продажи.",
                     monthly=True, tab=HEAD)
     book.register("date", TIME_SHEET, DATE_ROW)
     book.register("k", TIME_SHEET, K_ROW)
@@ -794,7 +863,7 @@ def _tep_sheet(book: _Book, objects: list[dict[str, Any]], info: _Inputs) -> Non
         ws.cell(r, 1, label)
         ws.cell(r, unit_col, unit).font = _fnt(color=GREY)
         for item in objects:
-            if only_flows and not item.get("nonres"):
+            if only_flows and not (item.get("nonres") or item.get("ddu")):
                 continue
             column = info.columns[item["code"]]
             cell = ws[f"{column}{r}"]
@@ -1020,7 +1089,7 @@ def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]
                  for item in objects if item["in_tax_pool"]])
     rows.param("cx.tax_pool", "Затраты объектов, признаваемые их продажами", f"={pool}", "млн ₽")
     # Горизонт: месяцев в таблицах столько, сколько нужно самому длинному
-    # пути; расчёт, уводящий проект дальше, краснит «ПРОВЕРКИ», а не обрезает поток.
+    # способа продажи; расчёт, уводящий проект дальше, краснит «ПРОВЕРКИ», а не обрезает поток.
     rows.param("cx.plan_last", "Последний платёж за участок, № месяца", f"=MAX({info.plan[0]})", "№", INT)
     return {"labels": labels, "order": order}
 
@@ -1083,7 +1152,7 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
     k = ref("k")
     param, month = _track(rows, block)
     spaces = f'{i("measure")}="{SPACES}"'
-    rows.section(f"{item['title']} · вводные пути")
+    rows.section(f"{item['title']} · вводные способа продажи")
     param("comm", "Ввод объекта, № месяца", f"={ref(f't.{o}.comm')}", "№", INT)
     param("area", "Продаваемая и арендопригодная площадь (места — шт.)", f"={ref(f'tep.{o}.area')}",
           "м² / шт.", NUM0)
@@ -1114,7 +1183,7 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
         param("curve_sum", "Сумма весов профиля продаж",
               f"=IF({curve('bell')},{n_}*({n_}+1)*({n_}+2)/6,IF(OR({curve('front_loaded')},"
               f"{curve('back_loaded')}),{n_}*({n_}+1)/2,{n_}))", "", NUM0)
-        param("horizon", "Последний месяц пути, №",
+        param("horizon", "Последний месяц способа продажи, №",
               f"=MAX({b('comm')},{b('sale_start')}+{b('sale_months')}-1)", "№", INT)
     else:
         param("rent_rate", "Ставка аренды «в расчёт»", f"={_class_pick(info, item, 'rent')}",
@@ -1237,9 +1306,234 @@ def _flows(book: _Book, rows: _Rows, exit_rows: _Rows | None, block: _Block, inf
           f"-{b('opex')}-{b('ptax')}-{b('exit_cost')})")
 
 
+def _ddu_flows(book: _Book, rows: _Rows, block: _Block, info: _Inputs) -> None:
+    """Продажа объекта по ДДУ — `sales_schedule` движка: доля продаж до ввода
+    объекта ровными долями от старта продаж, остаток — ровными долями после
+    ввода; цена растёт до ввода от старта продаж, после — от цены ввода.
+    Профиль продаж и лестница цены, заданные на странице проекта, приходят
+    рядами по месяцам. Деньги покупателей идут на эскроу (лист «ПФ»)."""
+    item, o = block.item, block.code
+    b = block.r
+    i = lambda key: ref(f"in.{o}.{key}")  # noqa: E731
+    k = ref("k")
+    param, month = _track(rows, block)
+    spaces = f'{i("measure")}="{SPACES}"'
+    rows.section(f"{item['title']} · продажа по ДДУ: вводные", DDU_TAB)
+    param("comm", "Ввод объекта, № месяца", f"={ref(f't.{o}.comm')}", "№", INT)
+    param("area", "Продаваемая площадь (места — шт.)", f"={ref(f'tep.{o}.area')}", "м² / шт.", NUM0)
+    param("spaces", "Машино-места в продаже", f"=MAX(0,{i('parking_units')})", "шт.", NUM0)
+    param("rev_mult", "Сценарий: множитель выручки", f"={ref('in.revenue_mult')}", "×", "0.00")
+    under, over = i("parking_under_units"), i("over_units")
+    default = f"{ref('in.parking_price_th')}*0.001"
+    under_price = f"IF({i('parking_under_mln')}>0,{i('parking_under_mln')},{default})"
+    over_price = f"IF({i('parking_over_mln')}>0,{i('parking_over_mln')},{default})"
+    param("price", "Цена продажи «в расчёт» (места — млн ₽ за место)",
+          f"={_class_pick(info, item, 'price')}", "тыс ₽/м² с НДС", NUM)
+    param("parking_price", "Цена машино-места, средняя по гаражу (млн ₽)",
+          f"=IF(MAX(0,{under})+MAX(0,{over})>0,(MAX(0,{under})*{under_price}+MAX(0,{over})*{over_price})"
+          f"/(MAX(0,{under})+MAX(0,{over})),{default})", "млн ₽", NUM3)
+    param("growth_pre", "Рост цены до ввода", f"={i('growth_pre')}", "в месяц", PCT2)
+    param("growth_post", "Рост цены после ввода", f"={i('growth_post')}", "в месяц", PCT2)
+    param("price_start", "Старт продаж, № месяца", f"={_k_of(book, i('sales_start'))}", "№", INT)
+    param("share", "Доля продаж до ввода объекта", f"=MAX(0,MIN(1,{i('share_before')}))", "", PCT)
+    param("residual", "Остаточные продажи после ввода", f"=MAX(0,INT({i('residual')}))", "мес.", INT)
+    param("pre_n", "Месяцев продаж до ввода", f"=MAX(1,{b('comm')}-{b('price_start')})", "мес.", INT)
+    param("selling_share", "Маркетинг и брокеры", f"={ref('in.marketing')}+{ref('in.selling')}", "доля выручки",
+          PCT)
+    param("cost_mult", "Сценарий: множитель затрат", f"={ref('in.cost_mult')}", "×", "0.00")
+    param("cost", "Затраты объекта, признаваемые его продажами (здание и гараж)",
+          f"={ref(f'cx.{o}.building.amt')}+{ref(f'cx.{o}.garage.amt')}", "млн ₽")
+    rows.section(f"{item['title']} · продажа по ДДУ по месяцам", DDU_TAB)
+    s, comm, n_pre = b("price_start"), b("comm"), b("pre_n")
+    weights, factor = item.get("sales_weights"), item.get("price_factor")
+    if weights is not None:
+        month("weight", "Доля продаж месяца — профиль задан на странице проекта", unit="доля", fmt=PCT,
+              values=[float(weights.get(j, 0.0)) for j in range(book.n)])
+    else:
+        month("weight", "Доля продаж месяца",
+              f"IF(AND({k}>={s},{k}<{s}+{n_pre}),{b('share')}/{n_pre},0)"
+              f"+IF(AND({b('residual')}>0,{k}>={comm},{k}<{comm}+{b('residual')}),"
+              f"(1-{b('share')})/{b('residual')},0)", unit="доля", fmt=PCT)
+    if factor is not None:
+        month("ladder", "Множитель цены — лестница задана на странице проекта", unit="×", fmt="0.000",
+              total=False, values=[float(factor.get(j, 1.0)) for j in range(book.n)])
+        growth = f"{b('ladder')}*IF({k}>={comm},(1+{b('growth_post')})^({k}-{comm}),1)"
+    else:
+        growth = (f"IF({k}<{comm},(1+{b('growth_pre')})^({k}-{s}),"
+                  f"(1+{b('growth_pre')})^{n_pre}*(1+{b('growth_post')})^({k}-{comm}))")
+    month("factor", "Индекс цены", growth, unit="×", fmt="0.000", total=False)
+    month("qty", "Продано за месяц", f"{b('area')}*{b('weight')}", unit="м² / шт.", fmt=NUM0)
+    price = f"{b('price')}*IF({spaces},1,0.001)*{b('factor')}"
+    parking = f"{b('spaces')}*{b('weight')}*{b('parking_price')}*{b('factor')}"
+    month("sale", "Выручка площади", f"{b('qty')}*{price}*{b('rev_mult')}")
+    month("parking", "Выручка машино-мест", f"{parking}*{b('rev_mult')}")
+    month("revenue", "Выручка по ДДУ — деньги покупателей на эскроу", f"{b('sale')}+{b('parking')}", bold=True)
+    month("base", "Выручка без сценария — база расходов на продажу", f"{b('qty')}*{price}+{parking}")
+    month("operating", "Маркетинг и брокеры", f"{b('base')}*{b('selling_share')}*{b('cost_mult')}")
+    # Затраты объекта признаются по проданным метрам; места своих затрат не
+    # несут — они в затратах объекта (`_profit_tax_schedule`).
+    month("margin", "Налоговая маржа: выручка − затраты по проданным метрам",
+          f"{b('revenue')}-IF({b('qty_total')}>0,{b('cost')}*{b('qty')}/{b('qty_total')},0)")
+    month("last_k", "Служебная: месяц с продажами", f"IF({b('weight')}>0,{k},-1)", unit="№", fmt=INT, total=False)
+    param("qty_total", "Продано за весь срок", f"=SUM({b('qty', ':')})", "м² / шт.", NUM0)
+    param("horizon", "Последний месяц продаж, №", f"=MAX({b('last_k', ':')})", "№", INT)
+
+
+def _pf(book: _Book, rows: _Rows, path: dict[str, str], ddu: list[_Block], credit: list[_Block],
+        info: _Inputs) -> None:
+    """Проектное финансирование объектов по ДДУ — `simulate_financing` движка
+    по месяцам: до разрешения на стройку затраты платят собственные деньги,
+    затем БРИДЖ; с разрешения ПФ выдаёт все затраты и рефинансирует БРИДЖ;
+    ставка ПФ — смесь надбавки и льготной ставки по покрытию долга эскроу;
+    в РВЭ эскроу раскрывается и гасит ПФ, после — продажи."""
+    c = path["code"]
+    P = lambda key, mod="": ref(f"pf.{c}.{key}", mod)  # noqa: E731
+    param = lambda key, *a, **kw: rows.param(f"pf.{c}.{key}", *a, **kw)  # noqa: E731
+    month = lambda key, *a, **kw: rows.month(f"pf.{c}.{key}", *a, **kw)  # noqa: E731
+    k = ref("k")
+    tab = path["tab"]
+    credit_capex = _sum([f"SUM({ref(f'cx.{b.code}', ':')})" for b in credit])
+    rows.section("Проектное финансирование: условия", tab)
+    param("permit", "Разрешение на стройку — открытие ПФ, № месяца", f"={ref('t.permit')}", "№", INT)
+    param("rve", "Ввод проекта (РВЭ) — раскрытие эскроу, № месяца", f"={ref('t.rve')}", "№", INT)
+    param("own_funds", "Собственные деньги до ПФ", f"=MAX(0,{ref('in.pf.own_funds')})", "млн ₽")
+    param("approved", "Одобренный лимит ПФ", f"=MAX(0,{ref('in.pf.approved')})", "млн ₽")
+    param("limit", "Лимит ПФ: одобренный, иначе выдача с округлением вверх до 10 млн",
+          f"=IF({P('approved')}>0,{P('approved')},ROUNDUP(SUM({P('p_draw', ':')})/10,0)*10)", "млн ₽", bold=True)
+    # Объекты вне ДДУ берут общие затраты в свой кредит, и БРИДЖа нет
+    # (`common_on_object_loans`); иначе лимит БРИДЖа — оплаты до разрешения.
+    before = "+".join(f'SUMIF({ref("k", ":")},"<"&{P("permit")},{ref(f"cx.{key}", ":")})'
+                      for key in ("purchase", "design_p", "design_rd"))
+    param("bridge_limit", "Лимит БРИДЖа: участок и проект до разрешения на стройку",
+          "=0" if credit else f"={before}", "млн ₽")
+    param("bridge_fee", "Плата за резервирование БРИДЖа (в первый месяц)",
+          f"={P('bridge_limit')}*MAX(0,{ref('in.reservation_fee')})", "млн ₽")
+    param("reservation_fee", "Плата за резервирование лимита ПФ (при открытии)",
+          f"={P('limit')}*MAX(0,{ref('in.reservation_fee')})", "млн ₽")
+    shares = _sum([ref(f"cx.share.{b.code}") for b in credit])
+    cap_mode = f'{ref("in.pf.mode")}="{INTEREST_MODES[0]}"'
+    pay_mode = f'{ref("in.pf.mode")}<>"{INTEREST_MODES[0]}"'
+    permit, rve = P("permit"), P("rve")
+    rows.section("Деньги по ДДУ и затраты на ПФ", tab)
+    month("key_rate", "Ключевая ставка", ref("key_rate"), unit="в год", fmt=PCT2, total=False)
+    month("sales", "Выручка по ДДУ", _sum([b.r("revenue") for b in ddu]), bold=True)
+    month("operating", "Маркетинг и брокеры продаж по ДДУ", _sum([b.r("operating") for b in ddu]))
+    # Долговые затраты — `debt_capex` движка: CAPEX без платы за ВРИ за счёт
+    # собственных денег, без объектов вне ДДУ и без их доли общих затрат.
+    month("capex", "Затраты на ПФ: CAPEX без объектов вне ДДУ и их доли общих затрат",
+          f"MAX(0,MAX(0,{ref('cx.total')}-{ref('cx.vri_equity')})"
+          f"-({_sum([ref(f'cx.{b.code}') for b in credit])}))-{ref('cx.common')}*({shares})")
+    month("costs", "Потребность месяца",
+          f"{P('capex')}+{P('operating')}+IF(AND({k}={permit},{pay_mode}),{P('transfer')},0)")
+    month("esc", "Эскроу на конец месяца (до раскрытия)",
+          f"IF({k}<{rve},{P('esc', '@p')}+{P('sales')},IF({k}={rve},{P('esc', '@p')},0))", total=False)
+    month("release", "Раскрытие эскроу", f"IF({k}={rve},{P('esc')},0)")
+    rows.section("Собственные деньги и БРИДЖ до разрешения на стройку", tab)
+    need = f"MAX({P('costs')},0)"
+    month("own_avail", "Собственные деньги — остаток на начало месяца", P("own_left", "@p"),
+          first=P("own_funds"), total=False)
+    month("own_draw", "Собственные деньги", f"IF({k}<{permit},MIN({P('own_avail')},{need}),0)")
+    month("own_left", "Собственные деньги — остаток", f"{P('own_avail')}-{P('own_draw')}", total=False)
+    month("b_draw", "БРИДЖ — выдача", f"IF({k}<{permit},MAX(0,{need}-{P('own_draw')}),0)")
+    month("b_bal", "БРИДЖ — долг", f"IF({k}<{permit},{P('b_bal', '@p')}+{P('b_draw')},0)", total=False)
+    b_rate = f"({P('key_rate')}+{ref('in.pf.bridge_spread')})"
+    b_cap_rate = f"({P('key_rate')}+{ref('in.pf.bridge_cap_spread')})"
+    month("b_int", "БРИДЖ — проценты",
+          f"IF(AND({k}<{permit},{P('b_bal')}>0),{P('b_bal')}*{b_rate}/12,0)")
+    month("b_cap", "БРИДЖ — проценты на проценты к уплате",
+          f"IF(AND({k}<{permit},{P('b_bal')}>0),{P('b_pay', '@p')}*{b_cap_rate}/12,0)")
+    month("b_pay", "БРИДЖ — проценты к уплате",
+          f"IF({k}<{permit},{P('b_pay', '@p')}+{P('b_int')}+{P('b_cap')},0)", total=False)
+    month("b_repay", "БРИДЖ — погашение выдачей ПФ", f"IF({k}={permit},{P('b_bal', '@p')},0)")
+    month("transfer", "Проценты БРИДЖа при открытии ПФ", f"IF({k}={permit},{P('b_pay', '@p')},0)")
+    rows.section("ПФ: выдача, покрытие эскроу, ставка, проценты, погашение", tab)
+    # ПФ выбирает все расходы с разрешения; линия, рассчитавшаяся в РВЭ, закрыта.
+    draw = f"IF(OR({k}<={rve},{P('settled', '@p')}=0),{need},0)+{P('b_repay')}"
+    month("p_draw", "ПФ — выдача",
+          f"IF({k}>={permit},IF({P('approved')}>0,MIN({draw},MAX({P('approved')}-{P('p_bal', '@p')},0)),"
+          f"{draw}),0)", bold=True)
+    month("p_bal_after", "ПФ — долг после выдачи", f"{P('p_bal', '@p')}+{P('p_draw')}", total=False)
+    month("cov", "Покрытие долга эскроу",
+          f"IF({P('p_bal_after')}>0,{P('esc')}/{P('p_bal_after')},0)", unit="×", fmt=RATIO, total=False)
+    ladder = ref("in.pf.pf_special")
+    for edge, rate in info.steps:
+        ladder = f"IF(AND({edge}>0,{P('cov')}+0.000000001>={edge}),{rate},{ladder})"
+    month("special", "Льготная ставка ступени", ladder, unit="в год", fmt=PCT2, total=False)
+    weight = f"MIN({P('cov')},1)"
+    month("p_rate", "Ставка ПФ",
+          f"IF({k}>={permit},({P('key_rate')}+{ref('in.pf.pf_spread')})*(1-{weight})+{P('special')}*{weight},0)",
+          unit="в год", fmt=PCT2, total=False)
+    # Расчёт движка кончается горизонтом проекта: дальше проценты не идут.
+    live = f"AND({k}>={permit},{P('p_bal_after')}>0,{k}<{ref(f'{c}.horizon')})"
+    month("p_pay_open", "ПФ — проценты к уплате на начало месяца",
+          f"{P('p_pay', '@p')}+IF(AND({k}={permit},{cap_mode}),{P('transfer')},0)", total=False)
+    month("p_int", "ПФ — проценты", f"IF({live},{P('p_bal_after')}*{P('p_rate')}/12,0)")
+    month("p_cap", "ПФ — проценты на проценты к уплате", f"IF({live},{P('p_pay_open')}*{P('p_rate')}/12,0)")
+    month("fee", "Плата за невыбранный лимит ПФ",
+          f"IF(AND({live},{k}<{rve},{P('limit')}>0),MAX({P('limit')}-{P('p_bal_after')},0)"
+          f"*MAX(0,{ref('in.limit_fee')})/12,0)")
+    accrued = f"{P('p_pay_open')}+{P('p_int')}+{P('p_cap')}+{P('fee')}"
+    month("pay_out", "Проценты и плата уплачены (с РВЭ)", f"IF(AND({k}>={permit},{k}>={rve}),{accrued},0)")
+    month("p_pay", "ПФ — проценты к уплате на конец месяца",
+          f"IF(AND({k}>={permit},{k}>={rve}),0,{accrued})", total=False)
+    month("avail", "Деньги на погашение: раскрытый эскроу, затем продажи",
+          f"IF({k}={rve},{P('release')},IF({k}>{rve},{P('sales')},0))")
+    month("p_repay", "ПФ — погашение",
+          f"IF(AND({k}>={permit},{P('p_bal_after')}>0),MIN({P('avail')},{P('p_bal_after')}),0)", bold=True)
+    month("p_bal", "ПФ — долг на конец месяца", f"{P('p_bal_after')}-{P('p_repay')}", total=False, bold=True)
+    month("settled", "ПФ закрыт в РВЭ", f"IF({k}={rve},IF(AND({k}>={permit},{P('p_bal')}<=0),1,0),"
+          f"IF({k}>{rve},{P('settled', '@p')},0))", unit="0/1", fmt=FLAG, total=False)
+    rows.section("Что ПФ даёт налогам и потокам", tab)
+    month("interest", "Проценты начислены: БРИДЖ и ПФ",
+          f"{P('b_int')}+{P('b_cap')}+{P('p_int')}+{P('p_cap')}")
+    month("fees", "Комиссии: резервирование и невыбранный лимит",
+          f"{P('fee')}+IF({k}=0,{P('bridge_fee')},0)+IF({k}={permit},{P('reservation_fee')},0)")
+    month("deduct", "Вычет из базы налога: проценты и комиссии", f"{P('interest')}+{P('fees')}")
+    month("vat", "НДС продаж по ДДУ к уплате (в РВЭ)", f"IF({k}={rve},{P('vat_due')},0)")
+    # Поток капитала: деньги продаж — с раскрытия эскроу; выдачи долга
+    # покрывают затраты, погашения уходят банку.
+    month("equity", "Деньги ДДУ и ПФ собственнику (без затрат стройки и налога на прибыль)",
+          f"IF({k}<{rve},0,{P('sales')}+{P('release')})-{P('operating')}-{P('pay_out')}+{P('b_draw')}"
+          f"+{P('p_draw')}-{P('b_repay')}-{P('p_repay')}-IF({k}=0,{P('bridge_fee')},0)"
+          f"-IF({k}={permit},{P('reservation_fee')},0)-{P('vat')}")
+    rows.section("Итоги ПФ", tab)
+    param("pf_draw_total", "Выдача ПФ всего", f"=SUM({P('p_draw', ':')})", "млн ₽", bold=True)
+    param("transferred", "Проценты БРИДЖа, перенесённые в ПФ", f"=SUM({P('transfer', ':')})", "млн ₽")
+    param("financing_cost", "Проценты и комиссии БРИДЖа и ПФ",
+          f"=SUM({P('interest', ':')})+SUM({P('fees', ':')})", "млн ₽")
+    param("peak_bridge", "БРИДЖ — пик долга", f"=MAX({P('b_bal', ':')})", "млн ₽")
+    param("peak_pf", "ПФ — пик долга", f"=MAX({P('p_bal', ':')})", "млн ₽", bold=True)
+    param("peak_escrow", "Эскроу — пик", f"=MAX({P('esc', ':')})", "млн ₽")
+    param("ending_pf", "Долг ПФ на конец проекта",
+          f"=SUMIF({ref('k', ':')},{ref(f'{c}.horizon')}-1,{P('p_bal', ':')})", "млн ₽", bold=True)
+    param("rve_unpaid", "Не погашено раскрытым эскроу в РВЭ",
+          f"=SUMIF({ref('k', ':')},{rve},{P('p_bal', ':')})", "млн ₽")
+    # НДС продаж по ДДУ — как у движка: начислен в РВЭ со всей выручки по ДДУ,
+    # вычет — входящий НДС затрат без участка, выкупа, платы за ВРИ и объектов
+    # вне ДДУ (их НДС зачитывают они сами); к уплате — разница.
+    gross = f"(MAX(0,{ref('in.vat')})/(1+MAX(0,{ref('in.vat')})))"
+    revenue = f"SUM({P('sales', ':')})"
+    vri = "".join(f"-{ref(f'cx.{key}.amt')}" for key in ("land_rights", "vri_interest", "vri_security")
+                  if f"cx.{key}.amt" in book.reg)
+    bearing = (f"{ref('cx.capex_total')}+SUM({P('operating', ':')})-{ref('in.purchase_price')}"
+               f"-{ref('in.land_buyout')}{vri}-({credit_capex})")
+    param("vat_due", "НДС продаж по ДДУ к уплате в РВЭ",
+          f"=IF({ref('in.vat')}>0,MAX({revenue}*{gross}-({bearing})*{gross}*IF({revenue}>0,1,0),0),0)", "млн ₽")
+    # LLCR — покрытие ПФ: выручка по ДДУ, расходы на продажу, налог на прибыль,
+    # НДС по ДДУ, затраты без объектов вне ДДУ и выдача ПФ против выдачи,
+    # процентов и комиссий всего проекта (`llcr` движка).
+    credit_cost = _sum([f"SUM({b.r('interest', ':')})+SUM({b.r('fees', ':')})" for b in credit])
+    param("llcr_num", "LLCR: числитель",
+          f"={revenue}-SUM({P('operating', ':')})-SUM({ref(f'tx.{c}.tax', ':')})-{P('vat_due')}"
+          f"-({ref('cx.capex_total')}-({credit_capex}))+{P('pf_draw_total')}", "млн ₽")
+    param("llcr_den", "LLCR: знаменатель", f"={P('pf_draw_total')}+{P('financing_cost')}+{credit_cost}", "млн ₽")
+    param("llcr", "LLCR проектного финансирования",
+          f"=IF({P('llcr_den')}<>0,{P('llcr_num')}/{P('llcr_den')},0)", "×", RATIO, bold=True)
+
+
 def _finance(book: _Book, rows: _Rows, block: _Block) -> None:
     """НДС и кредит объекта: выдача — доля затрат до ввода, проценты до ввода
-    капитализируются, после ввода — погашение по схеме пути."""
+    капитализируются, после ввода — погашение по схеме способа продажи."""
     item, o = block.item, block.code
     b, z = block.r, block.z
     i = lambda key: ref(f"in.{o}.{key}")  # noqa: E731
@@ -1359,27 +1653,42 @@ def _finance(book: _Book, rows: _Rows, block: _Block) -> None:
           f'=IF(COUNT({b("icr", ":")})>0,MIN({b("icr", ":")}),"")', "×", RATIO)
 
 
-# --- путь: налоги, поток проекта и собственника ---------------------------------
+# --- способ продажи: налоги, поток проекта и собственника ---------------------------------
 
-def _tax_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Block]) -> None:
-    """Налог на прибыль проекта и НДС пути (`_profit_tax_schedule`
+def section_of(path: dict[str, str]) -> str:
+    """Раздел книги и «ПРОВЕРОК» у способа продажи."""
+    return f"Вариант «{path['label']}»"
+
+
+def _tax_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Block],
+              ddu: list[_Block]) -> None:
+    """Налог на прибыль проекта и НДС способа (`_profit_tax_schedule`
     спецзастройщика): до РВЭ откладывается только маржа — она приходит в месяц
     РВЭ, — проценты и комиссии остаются расходом месяца и дают убыток своих
-    лет; убыток прошлых лет гасит не больше доли базы года."""
+    лет; убыток прошлых лет гасит не больше доли базы года. Объекты по ДДУ
+    дают маржу своими продажами, НДС по ДДУ уходит из базы, проценты и
+    комиссии БРИДЖа и ПФ — вычет месяца начисления."""
     c = f"tx.{path['code']}"
     t = lambda key, mod="": ref(f"{c}.{key}", mod)  # noqa: E731
+    pf = [f"pf.{path['code']}"] if ddu else []
     k = ref("k")
-    rows.section(f"Путь «{path['label']}»", path["tab"])
+    rows.section(section_of(path), path["tab"])
+    # Маркетинг и брокеры продаж по ДДУ — в общем пуле (`commercial_costs`).
+    operating = "".join(f"+SUM({ref(name + '.operating', ':')})" for name in pf)
     rows.param(f"{c}.pool", "Общие затраты проекта — признаются в месяц ввода проекта",
-               f"=MAX(0,{ref('cx.capex_total')}-{ref('cx.tax_pool')})", "млн ₽")
+               f"=MAX(0,{ref('cx.capex_total')}{operating}-{ref('cx.tax_pool')})", "млн ₽")
     rows.month(f"{c}.vat_charged", "НДС начислен", _sum([b.r("vat_charged") for b in blocks]))
-    rows.month(f"{c}.vat_paid", "НДС к уплате (минус — возмещение)", _sum([b.r("vat_paid") for b in blocks]))
-    rows.month(f"{c}.obj_margin", "Маржа объектов", _sum([b.r("margin") for b in blocks]))
+    rows.month(f"{c}.vat_paid", "НДС к уплате (минус — возмещение)",
+               _sum([b.r("vat_paid") for b in blocks] + [ref(name + ".vat") for name in pf]))
+    rows.month(f"{c}.obj_margin", "Маржа объектов", _sum([b.r("margin") for b in blocks + ddu]))
     rows.month(f"{c}.common", "Общие затраты проекта (в месяц ввода)",
                f"IF({k}={ref('t.rve')},-{t('pool')},0)")
-    rows.month(f"{c}.margin", "Маржа проекта", f"{t('obj_margin')}+{t('common')}")
+    # НДС продаж по ДДУ к уплате уходит из базы налога на прибыль.
+    rows.month(f"{c}.margin", "Маржа проекта",
+               f"{t('obj_margin')}+{t('common')}" + "".join(f"-{ref(name + '.vat')}" for name in pf))
     rows.month(f"{c}.financing", "Проценты и комиссии — вычет",
-               _sum([f"{b.r('interest')}+{b.r('fees')}" for b in blocks]))
+               _sum([f"{b.r('interest')}+{b.r('fees')}" for b in blocks] + [ref(name + ".deduct") for name in pf]
+                    + ([] if ddu else [ref(f"{path['code']}.pf_reserve")])))
     rows.month(f"{c}.net", "База месяца", f"{t('margin')}-{t('financing')}")
     rows.month(f"{c}.gate", "До ввода проекта: маржа откладывается", f"IF({k}<{ref('t.rve')},1,0)",
                unit="0/1", fmt=FLAG, total=False)
@@ -1409,28 +1718,45 @@ def _tax_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Bloc
 
 
 def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Block],
-               offices: list[_Block], spec: dict[str, Any], capex: dict[str, Any], months: int) -> None:
+               offices: list[_Block], ddu: list[_Block], spec: dict[str, Any], capex: dict[str, Any],
+               months: int) -> None:
     """Поток проекта (NPV, IRR — до финансирования, как у движка) и
-    собственника (NPV по ставке / 12, IRR капитала), раскладка вложений."""
+    собственника (NPV по ставке / 12, IRR капитала), раскладка вложений.
+
+    `blocks` — объекты на своём кредите, `ddu` — объекты по ДДУ этого способа:
+    их выручка идёт в поток проекта в месяц продажи, а собственнику — с
+    раскрытия эскроу, через ПФ (`_pf`)."""
     c = path["code"]
     p = lambda key, mod="": ref(f"{c}.{key}", mod)  # noqa: E731
     k = ref("k")
     tx = lambda key, mod="": ref(f"tx.{c}.{key}", mod)  # noqa: E731
     over = lambda key: _sum([b.z(key) for b in blocks])  # noqa: E731
+    pf = (lambda key: [ref(f"pf.{c}.{key}")]) if ddu else (lambda key: [])  # noqa: E731
+    pf_param = lambda key: ref(f"pf.{c}.{key}") if ddu else '""'  # noqa: E731
     rows.section("Проект: деньги по месяцам", path["tab"])
+    if not ddu:
+        # Одобренный лимит ПФ задан — движок берёт плату за его резервирование
+        # при разрешении на стройку и тогда, когда продаж по ДДУ у способа нет
+        # (`simulate_financing`: плата — с одобренного лимита, а не с выдачи).
+        pf = lambda key: [ref(f"{c}.pf_reserve")] if key == "fees" else []  # noqa: E731
+        rows.month(f"{c}.pf_reserve", "Плата за резервирование одобренного лимита ПФ (без продаж по ДДУ)",
+                   f"IF({k}={ref('t.permit')},MAX(0,{ref('in.pf.approved')})*MAX(0,{ref('in.reservation_fee')}),0)")
     rows.month(f"{c}.revenue", "Выручка", _sum([f"{b.z('sale')}+{b.z('rent')}+{b.z('exit')}+{b.z('residual')}"
-                                              for b in blocks]), bold=True)
+                                              for b in blocks] + pf("sales")), bold=True)
     rows.month(f"{c}.capex", "Затраты на создание", ref("cx.total"))
     rows.month(f"{c}.costs", "Расходы продаж и эксплуатации, налог на имущество, сделка",
-               _sum([f"{b.z('selling')}+{b.z('opex')}+{b.z('ptax')}+{b.z('exit_cost')}" for b in blocks]))
-    rows.month(f"{c}.vat", "НДС к уплате (минус — возмещение)", over("vat_paid"))
-    rows.month(f"{c}.interest", "Проценты начислены", over("interest"))
-    rows.month(f"{c}.fees", "Комиссии банка", over("fees"))
+               _sum([f"{b.z('selling')}+{b.z('opex')}+{b.z('ptax')}+{b.z('exit_cost')}" for b in blocks]
+                    + pf("operating")))
+    rows.month(f"{c}.obj_vat", "НДС объектов на своём кредите (минус — возмещение)", over("vat_paid"))
+    rows.month(f"{c}.vat", "НДС к уплате (минус — возмещение)", _sum([p("obj_vat")] + pf("vat")))
+    rows.month(f"{c}.interest", "Проценты начислены", _sum([over("interest")] + pf("interest")))
+    rows.month(f"{c}.fees", "Комиссии банка", _sum([over("fees")] + pf("fees")))
     rows.month(f"{c}.tax", "Налог на прибыль к уплате", tx("pay"))
     rows.month(f"{c}.project", "Поток проекта до кредита",
                f"{p('revenue')}-{p('costs')}-{p('vat')}-{p('capex')}-{p('tax')}", bold=True)
     rows.section("Собственник: деньги по месяцам", path["tab"])
-    rows.month(f"{c}.to_equity", "Деньги объектов собственнику (без затрат стройки)", over("to_equity"))
+    rows.month(f"{c}.to_equity", "Деньги объектов, ДДУ и ПФ собственнику (без затрат стройки)",
+               _sum([over("to_equity")] + pf("equity")) + ("" if ddu else f"-{ref(f'{c}.pf_reserve')}"))
     rows.month(f"{c}.equity", "Поток собственника", f"{p('to_equity')}-{p('capex')}-{p('tax')}", bold=True)
     rows.month(f"{c}.residual", "Оценка удержанного здания (не деньги)", over("residual"))
     rows.month(f"{c}.cash", "Поток собственника — только деньги", f"{p('equity')}-{p('residual')}")
@@ -1446,22 +1772,30 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     exits = [f"{k}={b.r('horizon')}" for b in income]
     rows.month(f"{c}.exit", "Месяц выхода из удержания", f"IF(OR({','.join(exits)}),1,0)" if exits else "0",
                unit="0/1", fmt=FLAG, total=False)
-    rows.month(f"{c}.in_build", "Вложено до ввода", f"IF({k}<={ref('t.comm_last')},{p('contributed')},0)")
+    rows.month(f"{c}.in_build", "Вложено до ввода", f"IF({k}<={p('comm_last')},{p('contributed')},0)")
     rows.month(f"{c}.in_exit", "Вложено при выходе",
-               f"IF(AND({k}>{ref('t.comm_last')},{p('exit')}=1),{p('contributed')},0)")
+               f"IF(AND({k}>{p('comm_last')},{p('exit')}=1),{p('contributed')},0)")
     rows.month(f"{c}.out_vat", "Возмещение НДС стройки",
-               f"IF({p('cash')}>0,MIN({p('cash')},MAX(0,-{p('vat')})),0)")
+               f"IF({p('cash')}>0,MIN({p('cash')},MAX(0,-{p('obj_vat')})),0)")
     rows.month(f"{c}.out_exit", "Получено при выходе", f"IF({p('exit')}=1,{p('returned')}-{p('out_vat')},0)")
     rows.month(f"{c}.neg_k", "Служебная: накопленный поток меньше нуля", f"IF({p('cum')}<-0.0000005,{k},-1)",
                unit="№", fmt=INT, total=False)
 
-    rows.section("Итоги пути", path["tab"])
+    rows.section("Итоги варианта", path["tab"])
     param = lambda key, *a, **kw: rows.param(f"{c}.{key}", *a, **kw)  # noqa: E731
     total = lambda key: f"SUM({p(key, ':')})"  # noqa: E731
     articles = [ref(f"cx.{key}.amt") for key in capex["order"]]
+    # Граница «до ввода» собственного участия — ввод последнего объекта на
+    # своём кредите (`equity_participation_report`); без них — объектов по ДДУ.
+    comm = [b.r("comm") for b in blocks] or [b.r("comm") for b in ddu] or [ref("t.comm_last")]
+    param("comm_last", "Ввод последнего объекта на своём кредите, № месяца", f"=MAX({','.join(comm)})", "№", INT)
     param("t_revenue", "Выручка", f"={total('revenue')}", "млн ₽", bold=True)
     param("t_capex", "Затраты на создание (CAPEX, с НДС)", f"={total('capex')}", "млн ₽")
     param("t_costs", "Расходы продаж и эксплуатации, налог на имущество, сделка", f"={total('costs')}", "млн ₽")
+    param("t_commercial", "в т.ч. маркетинг и брокеры продаж по ДДУ",
+          "=" + (f"SUM({ref(f'pf.{c}.operating', ':')})" if ddu else "0"), "млн ₽")
+    param("t_nonres_costs", "в т.ч. расходы объектов на своём кредите", f"={p('t_costs')}-{p('t_commercial')}",
+          "млн ₽")
     param("t_ebitda", "EBITDA", f"={p('t_revenue')}-{p('t_capex')}-{p('t_costs')}", "млн ₽")
     param("t_financing", "Проценты и комиссии", f"={total('interest')}+{total('fees')}", "млн ₽")
     param("t_pbt", "Прибыль до налога", f"={p('t_ebitda')}-{p('t_financing')}", "млн ₽")
@@ -1477,7 +1811,17 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     param("npv", "NPV проекта", f"=SUMPRODUCT({p('project', ':')},{p('df', ':')})", "млн ₽", bold=True)
     param("irr", "IRR проекта (до кредита)", f'=IFERROR((1+IRR({p("project", ":")},0.01))^12-1,"")',
           "в год", PCT, bold=True)
-    param("npv_eq", "NPV собственника", f"=SUMPRODUCT({p('equity', ':')},{p('dfe', ':')})", "млн ₽", bold=True)
+    # IRR и NPV собственника не числа, если ПФ к концу проекта не погашен
+    # (решение владельца 2 от 29.09.2026): порог и подпись — движка.
+    na = spec.get("equity_na") or {}
+
+    def unrepaid(formula: str) -> str:
+        if not ddu or not na:
+            return formula
+        return (f'IF({ref(f"pf.{c}.ending_pf")}>{float(na["min_ending_pf_rub"]) / _MLN:g},'
+                f'"{na["label"]}",{formula})')
+    param("npv_eq", "NPV собственника", "=" + unrepaid(f"SUMPRODUCT({p('equity', ':')},{p('dfe', ':')})"),
+          "млн ₽", bold=True)
     # IRR капитала — числом, только если своих денег не меньше порога движка
     # от полных расходов (владелец, 16.10.2026).
     irr_eq = f'IFERROR((1+IRR({p("equity", ":")},0.01))^12-1,"")'
@@ -1486,27 +1830,32 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
         full = f"({p('t_capex')}+{p('t_costs')}+{p('t_financing')}+{p('t_tax')}+{p('t_vat')})"
         own = f'(-SUMIF({p("equity", ":")},"<0"))'
         irr_eq = (f'IF(AND({full}>0,{own}<{float(min_share):g}*{full}),"не показателен: своих денег "'
-                  f'&ROUND({own},0)&" млн ₽ ("&SUBSTITUTE(ROUND({own}/{full}*100,1),".",",")&"% затрат)",{irr_eq})')
-    param("irr_eq", "IRR собственника", f"={irr_eq}", "в год", PCT)
+                  f'&{grouped(own)}&" млн ₽ ("&SUBSTITUTE(ROUND({own}/{full}*100,1),".",",")&"% затрат)",{irr_eq})')
+    param("irr_eq", "IRR собственника", "=" + unrepaid(irr_eq), "в год", PCT)
     param("peak", "Пик собственных денег", f"=-MIN(0,MIN({p('cum', ':')}))", "млн ₽", bold=True)
     loan_peaks = [b.r("peak") for b in blocks]
-    param("loan_peak", "Пик долга объектов (сумма пиков)", f"={_sum(loan_peaks)}", "млн ₽")
+    param("loan_peak", "Пик долга объектов на своём кредите (сумма пиков)", f"={_sum(loan_peaks)}", "млн ₽")
     dscr = [b.r("dscr_min") for b in income]
     param("dscr_min", "DSCR кредита — минимум по годам и объектам",
           f'=IF(COUNT({",".join(dscr)})>0,MIN({",".join(dscr)}),"")' if dscr else '=""', "×", RATIO)
-    horizons = "".join(f",{b.r('horizon')}" for b in blocks)
-    param("horizon", f"Горизонт пути, мес. (месяцев в таблицах: {book.n})",
+    param("llcr", "LLCR проектного финансирования", "=" + pf_param("llcr"), "×", RATIO)
+    param("pf_peak", "Пик долга проектного финансирования", "=" + pf_param("peak_pf"), "млн ₽")
+    param("escrow_peak", "Пик денег на эскроу", "=" + pf_param("peak_escrow"), "млн ₽")
+    horizons = "".join(f",{b.r('horizon')}" for b in blocks + ddu)
+    param("horizon", f"Горизонт варианта, мес. (месяцев в таблицах: {book.n})",
           f"=MAX({ref('t.rve')}+MAX(INT({ref('in.residual_months')})+3,12){horizons},{ref('cx.plan_last')})+1",
           "мес.", INT)
-    param("rows_ok", "Месяцев в таблицах хватает на путь и год покупателя после него",
+    param("rows_ok", "Месяцев в таблицах хватает на вариант и год покупателя после него",
           f'=IF({p("horizon")}+{EXTRA_MONTHS}<={book.n},"хватает","НЕ ХВАТАЕТ")', "", "@")
 
-    rows.section("Офис в этом пути", path["tab"])
+    rows.section("Офис в этом варианте", path["tab"])
     office_sum = lambda key: _sum([f"SUM({b.r(key, ':')})" for b in offices if b.n(key) in b.names])  # noqa: E731
-    param("o_sale", "Выручка продаж", f"={office_sum('sale')}", "млн ₽")
+    ddu_offices = [b for b in ddu if b.item.get("office")]
+    ddu_sum = lambda key: _sum([f"SUM({b.r(key, ':')})" for b in ddu_offices])  # noqa: E731
+    param("o_sale", "Выручка продаж", f"={office_sum('sale')}+{ddu_sum('revenue')}", "млн ₽")
     param("o_rent", "Доход аренды", f"={office_sum('rent')}", "млн ₽")
     param("o_exit", "Продажа здания", f"={office_sum('exit')}", "млн ₽")
-    param("o_selling", "Маркетинг и брокеры", f"={office_sum('selling')}", "млн ₽")
+    param("o_selling", "Маркетинг и брокеры", f"={office_sum('selling')}+{ddu_sum('operating')}", "млн ₽")
     param("o_operating", "Эксплуатация, налог на имущество, расходы на сделку",
           f"={_sum([office_sum('opex'), office_sum('ptax'), office_sum('exit_cost')])}", "млн ₽")
     rent_blocks = [b for b in offices if not b.direct]
@@ -1520,7 +1869,7 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     o_dscr = [b.r("dscr_min") for b in rent_blocks]
     param("o_dscr", "DSCR кредита офиса — минимум",
           f'=IF(COUNT({",".join(o_dscr)})>0,MIN({",".join(o_dscr)}),"")' if o_dscr else '=""', "×", RATIO)
-    param("o_loan_peak", "Пик долга офиса", "=" + _sum([b.r("peak") for b in offices]), "млн ₽")
+    param("o_loan_peak", "Пик долга офиса на своём кредите", "=" + _sum([b.r("peak") for b in offices]), "млн ₽")
 
     rows.section("Собственное участие", path["tab"])
     param("e_in_build", "Вложено до ввода", f"={total('in_build')}", "млн ₽")
@@ -1539,7 +1888,8 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     param("e_multiple", "Мультипликатор капитала (получено / вложено)",
           f'=IF({p("e_contributed")}>0,{p("e_returned")}/{p("e_contributed")},"")', "×", RATIO)
     param("e_irr_cash", "IRR собственника — только деньги",
-          f'=IF({p("e_residual")}>0,IFERROR((1+IRR({p("cash", ":")},0.01))^12-1,""),"")', "в год", PCT)
+          "=" + unrepaid(f'IF({p("e_residual")}>0,IFERROR((1+IRR({p("cash", ":")},0.01))^12-1,""),"")'),
+          "в год", PCT)
     last_neg = f"MAX({p('neg_k', ':')})"
     param("e_payback", "Окупаемость собственных денег",
           f'=IF(AND({last_neg}>=0,{last_neg}+1<={months - 1}),EDATE({ref("in.start")},{last_neg}+1),'
@@ -1547,7 +1897,7 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
 
 
 def _block_totals(rows: _Rows, block: _Block) -> None:
-    """Итоги объекта на пути — те же величины, что `object_flows` отдаёт в
+    """Итоги объекта в способе продажи — те же величины, что `object_flows` отдаёт в
     `totals`, `kpi` и `financing`: по ним «ПРОВЕРКИ» сверяют объект с движком."""
     b = block.r
     param, _ = _track(rows, block)
@@ -1594,13 +1944,16 @@ def _block_totals(rows: _Rows, block: _Block) -> None:
 
 def _report_sheet(book: _Book, spec: dict[str, Any], capex: dict[str, Any], current: str | None,
                   years: list[int]) -> dict[str, Any]:
-    ws = book.sheet(REPORT_SHEET, "DEVELOPAID · ОТЧЁТ · ДВА ПУТИ ОФИСА",
+    ws = book.sheet(REPORT_SHEET, "DEVELOPAID · ОТЧЁТ · ТРИ СПОСОБА ПРОДАТЬ ОФИС",
                     "Все числа — ссылки на листы модели, млн ₽ с НДС.", tab=DARK, width=12)
     ws.column_dimensions["A"].width = 60
     for c in "BCDEFGHIJKLM":
         ws.column_dimensions[c].width = 17
     out: dict[str, Any] = {"years": {}}
     r = 4
+    width = 1 + len(PATHS)
+    fills = (HEAD, *(path["tab"] for path in PATHS))
+    labels = tuple(path["label"] for path in PATHS)
 
     def head(cells: tuple[str, ...], fills: tuple[str, ...] | None = None) -> None:
         nonlocal r
@@ -1614,11 +1967,11 @@ def _report_sheet(book: _Book, spec: dict[str, Any], capex: dict[str, Any], curr
         nonlocal r
         r += 1
         ws.cell(r, 1, text).font = _fnt(b=True, color=DARK)
-        for j in range(1, 4):
+        for j in range(1, width + 1):
             ws.cell(r, j).fill = _fill(LIGHT)
         r += 1
 
-    def line(key: str, label: str, cells: tuple[str, str], fmt: str = NUM, bold: bool = False) -> None:
+    def line(key: str, label: str, cells: tuple[str, ...], fmt: str = NUM, bold: bool = False) -> None:
         nonlocal r
         ws.cell(r, 1, label).font = _fnt(b=bold)
         for j, value in enumerate(cells):
@@ -1630,31 +1983,28 @@ def _report_sheet(book: _Book, spec: dict[str, Any], capex: dict[str, Any], curr
             cell.number_format = fmt
             cell.font = _fnt(b=bold)
             cell.alignment = Alignment(horizontal="right")
-            ws.cell(r, 1 + j).border = Border(bottom=_thin)
-        ws.cell(r, 3).border = Border(bottom=_thin)
-        if bold:
-            for j in range(1, 4):
+        for j in range(1, width + 1):
+            ws.cell(r, j).border = Border(bottom=_thin)
+            if bold:
                 ws.cell(r, j).fill = _fill(LIGHT)
         for j, path in enumerate(PATHS):
             book.register(f"rep.{path['code']}.{key}", REPORT_SHEET, r, L(2 + j))
         r += 1
 
-    both = lambda key: tuple("=" + ref(p["code"] + "." + key) for p in PATHS)  # noqa: E731
-    head(("Показатель", PATHS[0]["label"], PATHS[1]["label"]), (HEAD, SALE_TAB, RENT_TAB))
+    every = lambda key: tuple("=" + ref(p["code"] + "." + key) for p in PATHS)  # noqa: E731
+    head(("Показатель", *labels), fills)
     out["head_row"] = r - 1
-    current_label = next((p["label"] for p in PATHS if p["key"] == current), "в проекте у офисов разные пути")
-    ws.cell(r, 1, "Путь, выбранный в проекте")
+    current_label = next((p["label"] for p in PATHS if p["key"] == current), "у офисов проекта разные способы")
+    ws.cell(r, 1, "Способ, выбранный в проекте")
     ws.cell(r, 2, current_label).font = _fnt(b=True)
     r += 1
-    npv_s, npv_r = ref("s.npv"), ref("r.npv")
     ws.cell(r, 1, "Выгоднее по NPV проекта").font = _fnt(b=True)
     cell = ws.cell(r, 2)
-    book.pending.append((cell, f'IF({npv_s}>={npv_r},"{PATHS[0]["label"]}","{PATHS[1]["label"]}")', None,
-                         REPORT_SHEET))
+    book.pending.append((cell, _better_formula(), None, REPORT_SHEET))
     cell.font = _fnt(b=True)
     book.register("rep.better", REPORT_SHEET, r, "B")
     r += 1
-    section("Экономика пути")
+    section("Экономика")
     for key, label, fmt, bold in (
             ("t_revenue", "Выручка", NUM, False), ("t_capex", "Затраты на создание с участком", NUM, False),
             ("t_costs", "Расходы продаж и эксплуатации, налог на имущество, сделка", NUM, False),
@@ -1663,26 +2013,33 @@ def _report_sheet(book: _Book, spec: dict[str, Any], capex: dict[str, Any], curr
             ("t_vat", "НДС к уплате", NUM, False), ("t_net", "Чистая прибыль", NUM, True),
             ("npv", "NPV проекта", NUM, True), ("irr", "IRR проекта (до кредита)", PCT, False),
             ("npv_eq", "NPV собственника", NUM, False), ("irr_eq", "IRR собственника", PCT, False),
-            ("peak", "Пик собственных денег", NUM, False), ("loan_peak", "Пик долга объектов", NUM, False),
-            ("dscr_min", "DSCR кредита — минимум по годам", RATIO, False)):
-        line(key, label, both(key), fmt, bold)
+            ("peak", "Пик собственных денег", NUM, False),
+            ("loan_peak", "Пик долга объектов на своём кредите", NUM, False),
+            ("dscr_min", "DSCR кредита — минимум по годам", RATIO, False),
+            ("llcr", "LLCR проектного финансирования", RATIO, False),
+            ("pf_peak", "Пик долга проектного финансирования", NUM, False),
+            ("escrow_peak", "Пик денег покупателей на эскроу", NUM, False)):
+        line(key, label, every(key), fmt, bold)
     section("Офис")
+    rent_only = ("o_rent", "o_exit", "o_noi", "o_yoc", "o_cap", "o_exit_value", "o_dscr")
     for key, label, fmt in (
-            ("o_sale", "Выручка продаж блоками", NUM), ("o_rent", "Доход аренды", NUM),
+            ("o_sale", "Выручка продаж (по ДДУ или блоками)", NUM), ("o_rent", "Доход аренды", NUM),
             ("o_exit", "Продажа здания", NUM), ("o_selling", "Маркетинг и брокеры", NUM),
             ("o_operating", "Эксплуатация, налог на имущество, расходы на сделку", NUM),
             ("o_noi", "NOI года после заполнения", NUM), ("o_yoc", "Доходность на затраты", PCT),
             ("o_cap", "Ставка капитализации", PCT), ("o_exit_value", "Стоимость здания при продаже", NUM),
-            ("o_dscr", "DSCR кредита офиса — минимум", RATIO), ("o_loan_peak", "Пик долга офиса", NUM)):
-        sale, rent = both(key)
-        if key in ("o_rent", "o_exit", "o_noi", "o_yoc", "o_cap", "o_exit_value", "o_dscr"):
-            sale = "не применяется"
-        if key in ("o_sale", "o_selling"):
-            rent = "не применяется"
-        line(key, label, (sale, rent), fmt)
+            ("o_dscr", "DSCR кредита офиса — минимум", RATIO),
+            ("o_loan_peak", "Пик долга офиса на своём кредите", NUM)):
+        cells = list(every(key))
+        for j, path in enumerate(PATHS):
+            rent = path["key"] == ns.STRATEGY_INCOME
+            if (key in rent_only and not rent) or (key in ("o_sale", "o_selling") and rent) \
+                    or (key == "o_loan_peak" and path["key"] == ns.STRATEGY_DDU):
+                cells[j] = "не применяется"
+        line(key, label, tuple(cells), fmt)
     section("Как сложены итоги")
-    line("id_total", "Выручка − расходы всего − чистая прибыль (должно быть 0)", both("id_total"))
-    line("id_ebitda", "EBITDA − проценты − прибыль до налога (должно быть 0)", both("id_ebitda"))
+    line("id_total", "Выручка − расходы всего − чистая прибыль (должно быть 0)", every("id_total"))
+    line("id_ebitda", "EBITDA − проценты − прибыль до налога (должно быть 0)", every("id_ebitda"))
     ws.cell(r, 1, "EBITDA = выручка − затраты на создание − расходы объектов; без процентов, налога на прибыль "
                   "и НДС. Расходы всего = статьи сметы + расходы объектов + проценты + налог + НДС.").font = _fnt(
         i=True, color=GREY)
@@ -1698,12 +2055,12 @@ def _report_sheet(book: _Book, spec: dict[str, Any], capex: dict[str, Any], curr
             label = label.replace(": здание", "")
         else:
             formula = f"={ref(f'cx.{key}.amt')}"
-        line(f"art.{key.split('.')[0]}", label, (formula, formula))
-    line("s_costs", "Расходы продаж и эксплуатации, налог на имущество, сделка", both("t_costs"))
-    line("s_financing", "Проценты и комиссии", both("t_financing"))
-    line("s_tax", "Налог на прибыль", both("t_tax"))
-    line("s_vat", "НДС", both("t_vat"))
-    line("s_total", "Расходы всего", both("t_expenses"), NUM, True)
+        line(f"art.{key.split('.')[0]}", label, (formula,) * len(PATHS))
+    line("s_costs", "Расходы продаж и эксплуатации, налог на имущество, сделка", every("t_costs"))
+    line("s_financing", "Проценты и комиссии", every("t_financing"))
+    line("s_tax", "Налог на прибыль", every("t_tax"))
+    line("s_vat", "НДС", every("t_vat"))
+    line("s_total", "Расходы всего", every("t_expenses"), NUM, True)
     section("Собственное участие")
     for key, label in (("e_in_build", "Вложено до ввода"), ("e_contributed", "Вложено всего"),
                        ("e_in_exit", "в т.ч. при выходе — довнесение на погашение долга"),
@@ -1718,12 +2075,12 @@ def _report_sheet(book: _Book, spec: dict[str, Any], capex: dict[str, Any], curr
                        ("e_irr_cash", "IRR собственника — только деньги"),
                        ("e_payback", "Окупаемость собственных денег")):
         fmt = RATIO if key == "e_multiple" else PCT if key == "e_irr_cash" else MONTH if key == "e_payback" else NUM
-        line(f"eq.{key}", label, both(key), fmt)
+        line(f"eq.{key}", label, every(key), fmt)
 
     year_row = ref("year", ":")
     by_year = lambda rng, y: f"SUMIF({year_row},{y},{rng})"  # noqa: E731
     section("По годам: поток собственника")
-    head(("Год", PATHS[0]["label"], PATHS[1]["label"]), (HEAD, SALE_TAB, RENT_TAB))
+    head(("Год", *labels), fills)
     out["owner_years"] = (r - 1, r, r + len(years) - 1)
     for y in years:
         ws.cell(r, 1, y)
@@ -1781,26 +2138,34 @@ def _report_sheet(book: _Book, spec: dict[str, Any], capex: dict[str, Any], curr
     return out
 
 
+def _better_formula() -> str:
+    """Название способа с наибольшим NPV проекта; при равенстве — первый по
+    порядку `PATHS`, как `max` в `office_paths` движка."""
+    npv = [ref(f"{path['code']}.npv") for path in PATHS]
+    formula = f'"{PATHS[-1]["label"]}"'
+    for j in range(len(PATHS) - 2, -1, -1):
+        rest = ",".join(npv[j + 1:])
+        formula = f'IF({npv[j]}>=MAX({rest}),"{PATHS[j]["label"]}",{formula})'
+    return formula
+
+
 # --- «Дашборд», «ИНСТРУКЦИЯ», «Источники» --------------------------------------
 
 def _dashboard_sheet(book: _Book, report: dict[str, Any]) -> None:
     ws = book.sheet(DASH_SHEET, "DEVELOPAID · ИНВЕСТИЦИОННЫЙ ДАШБОРД · ОФИС", "", tab=DARK, width=12)
-    book.pending.append((ws["A2"], f'{ref("in.name")}&" · два пути: продажа блоками и аренда с продажей здания"',
-                         None, DASH_SHEET))
+    book.pending.append((ws["A2"], f'{ref("in.name")}&" · три способа: продажа по ДДУ, продажа блоками, '
+                                   f'аренда с продажей здания"', None, DASH_SHEET))
     for c in "ABCDEFGHIJKL":
         ws.column_dimensions[c].width = 13
-    tiles = (("NPV · продажа блоками, млн ₽", ref("s.npv"), NUM0),
-             ("NPV · аренда, млн ₽", ref("r.npv"), NUM0),
-             ("Выгоднее по NPV", ref("rep.better"), "@"),
-             ("Пик своих денег · продажа", ref("s.peak"), NUM0),
-             ("Пик своих денег · аренда", ref("r.peak"), NUM0),
-             ("Проверки книги", ref("chk.verdict"), "@"),
-             ("IRR проекта · продажа", ref("s.irr"), PCT),
-             ("IRR проекта · аренда", ref("r.irr"), PCT),
-             ("Доходность на затраты", ref("r.o_yoc"), PCT),
-             ("Чистая прибыль · продажа", ref("s.t_net"), NUM0),
-             ("Чистая прибыль · аренда", ref("r.t_net"), NUM0),
-             ("Ставка капитализации", ref("r.o_cap"), PCT))
+    short = {"d": "по ДДУ", "s": "блоками", "r": "аренда"}
+    tiles: list[tuple[str, str, str]] = []
+    for key, label, fmt in (("npv", "NPV проекта, млн ₽", NUM0), ("irr", "IRR проекта", PCT),
+                            ("peak", "Пик своих денег, млн ₽", NUM0), ("t_net", "Чистая прибыль, млн ₽", NUM0)):
+        for path in PATHS:
+            tiles.append((f"{label} · {short.get(path['code'], path['label'])}", ref(f"{path['code']}.{key}"), fmt))
+    tiles += [("Выгоднее по NPV", ref("rep.better"), "@"), ("Проверки книги", ref("chk.verdict"), "@"),
+              ("LLCR · по ДДУ", ref("d.llcr"), RATIO), ("Доходность на затраты · аренда", ref("r.o_yoc"), PCT),
+              ("Ставка капитализации", ref("r.o_cap"), PCT), ("Пик эскроу · по ДДУ, млн ₽", ref("d.escrow_peak"), NUM0)]
     for n, (label, formula, fmt) in enumerate(tiles):
         c0 = 1 + (n % 3) * 4
         r0 = 4 + (n // 3) * 4
@@ -1817,10 +2182,12 @@ def _dashboard_sheet(book: _Book, report: dict[str, Any]) -> None:
     row = 4 + 4 * ((len(tiles) + 2) // 3)
     ws.merge_cells(start_row=row, start_column=1, end_row=row + 1, end_column=12)
     cell = ws.cell(row, 1)
+    npv = [ref(f"{path['code']}.npv") for path in PATHS]
     book.pending.append((cell, (
-        f'IF(AND({ref("s.npv")}<0,{ref("r.npv")}<0),"Проект не окупается ни продажей, ни арендой. ","")'
-        f'&IF({ref("s.npv")}>={ref("r.npv")},"Продажа блоками выгоднее аренды по NPV проекта.",'
-        f'"Аренда с продажей здания выгоднее продажи блоками по NPV проекта.")'
+        f'IF(MAX({",".join(npv)})<0,"Проект не окупается ни одним из трёх способов продажи. ","")'
+        f'&"Выгоднее по NPV проекта: "&{ref("rep.better")}&"."'
+        f'&IF({ref("d.llcr")}="","",IF({ref("d.llcr")}<1," При продаже по ДДУ денег покупателей и продаж не хватает '
+        f'на погашение проектного финансирования (LLCR меньше 1).",""))'
         f'&IF({ref("r.o_yoc")}="","",IF({ref("r.o_yoc")}<{ref("r.o_cap")}," Доходность на затраты ниже ставки '
         f'капитализации: готовое здание стоит дешевле, чем обходится его стройка.",""))'), None, DASH_SHEET))
     cell.font = _fnt(b=True, color=DARK)
@@ -1831,10 +2198,11 @@ def _dashboard_sheet(book: _Book, report: dict[str, Any]) -> None:
         chart = BarChart()
         chart.title = "Поток собственника по годам, млн ₽"
         chart.height, chart.width = 7.5, 22
-        chart.add_data(Reference(rep, min_col=2, max_col=3, min_row=head, max_row=last), titles_from_data=True)
+        chart.add_data(Reference(rep, min_col=2, max_col=1 + len(PATHS), min_row=head, max_row=last),
+                       titles_from_data=True)
         chart.set_categories(Reference(rep, min_col=1, min_row=first, max_row=last))
-        chart.series[0].graphicalProperties.solidFill = SALE_TAB
-        chart.series[1].graphicalProperties.solidFill = RENT_TAB
+        for series, path in zip(chart.series, PATHS):
+            series.graphicalProperties.solidFill = path["tab"]
         chart.x_axis.tickLblPos = "low"
         chart.x_axis.delete = False
         chart.y_axis.delete = False
@@ -1842,21 +2210,29 @@ def _dashboard_sheet(book: _Book, report: dict[str, Any]) -> None:
 
 
 GUIDE = (
-    (DASH_SHEET, "Главные числа обоих путей, какой выгоднее и итог проверок книги."),
-    (REPORT_SHEET, "Два пути рядом: экономика, офис, структура расходов, собственное участие, по годам. Только ссылки."),
+    (DASH_SHEET, "Главные числа трёх способов продажи, какой выгоднее и итог проверок книги."),
+    (REPORT_SHEET, "Три способа рядом: экономика, офис, структура расходов, собственное участие, по годам. "
+                   "Только ссылки."),
     (INPUTS_SHEET, "Единственное место правки — жёлтые клетки синим шрифтом. Класс офиса задаёт шкалу допущений; "
                    "число, вписанное у офиса вручную, сильнее класса."),
     (TEP_SHEET, "Площади, эффективность, машино-места; пятно и подземные уровни для надбавки за глубину."),
     (TIME_SHEET, "Номер месяца, разрешение на стройку, ввод проекта и объектов."),
     (CAPEX_SHEET, "Смета «ставка × база» по статьям и её график по месяцам."),
     (RATE_SHEET, "Ключевая ставка по выбранному сценарию."),
-    (SALE_SHEET, "Путь 1: цена, профиль продаж, выручка, маркетинг, налог на имущество с непроданной части, налоговая маржа."),
-    (RENT_SHEET, "Путь 2: заполняемость, индексация, доход, эксплуатация, NOI, продажа здания, налоговая маржа."),
+    (DDU_SHEET, "Продажа по ДДУ: доля продаж до ввода и после, рост цены, выручка, маркетинг и брокеры, "
+                "налоговая маржа. Деньги покупателей лежат на эскроу до ввода проекта."),
+    (SALE_SHEET, "Продажа блоками после ввода: цена, профиль продаж, выручка, маркетинг, налог на имущество с "
+                 "непроданной части, налоговая маржа."),
+    (RENT_SHEET, "Аренда: заполняемость, индексация, доход, эксплуатация, NOI, продажа здания, налоговая маржа."),
     (EXIT_SHEET, "Стоимость здания по ставке капитализации и доходность на затраты."),
-    ("CF_Продажа, CF_Аренда", "НДС, кредит двумя линиями, комиссии, погашение, поток проекта и собственника, NPV и IRR."),
-    (TAX_SHEET, "Налог на прибыль проекта каждого пути: маржа до ввода откладывается, убыток прошлых лет гасит не "
-                "больше половины базы года; уплата авансами по кварталам."),
-    (CHECK_SHEET, "Каждый итог книги против расчёта движка: оба пути и подробно — путь, выбранный в проекте."),
+    (PF_SHEET, "Проектное финансирование продажи по ДДУ: собственные деньги и БРИДЖ до разрешения на стройку, "
+               "кредит банка с разрешения, ставка по покрытию долга эскроу, раскрытие эскроу при вводе, "
+               "погашение, НДС по ДДУ и LLCR."),
+    ("CF_ДДУ, CF_Продажа, CF_Аренда", "НДС, кредит, поток проекта и собственника, NPV и IRR каждого способа."),
+    (TAX_SHEET, "Налог на прибыль проекта каждого способа: маржа до ввода откладывается, убыток прошлых лет гасит "
+                "не больше половины базы года; уплата авансами по кварталам."),
+    (CHECK_SHEET, "Каждый итог книги против расчёта движка: все три способа и подробно — способ, выбранный "
+                  "в проекте."),
     (SOURCES_SHEET, "Откуда допущения шкалы класса офиса."),
     ("Правка", "Поменяйте жёлтую клетку — пересчитается вся книга. «ПРОВЕРКИ» покраснеют: движок считал по прежним "
                "вводным, и это ожидаемо."),
@@ -1939,6 +2315,28 @@ PATH_CHECKS: tuple[tuple[str, str, str, bool], ...] = (
     ("yield_on_cost", "o_yoc", "Офис: доходность на затраты", True),
     ("exit_value", "o_exit_value", "Офис: стоимость здания", False),
     ("dscr_min", "o_dscr", "Офис: DSCR — минимум", True), ("loan_peak", "o_loan_peak", "Офис: пик долга", False),
+    ("commercial_costs", "t_commercial", "Маркетинг и брокеры продаж по ДДУ", False),
+    ("llcr", "llcr", "LLCR проектного финансирования", True),
+    ("pf_peak", "pf_peak", "Пик долга проектного финансирования", False),
+)
+# Чего у способа нет: у аренды — продажи, у продаж — аренды. Маркетинг офиса
+# при продаже по ДДУ движок считает в расходах проекта (`commercial_costs`).
+PATH_SKIP = {
+    ns.STRATEGY_DIRECT: {"rent_revenue", "exit_revenue", "stabilized_noi", "yield_on_cost", "exit_value",
+                         "dscr_min"},
+    ns.STRATEGY_INCOME: {"sale_revenue", "selling_cost"},
+    ns.STRATEGY_DDU: {"rent_revenue", "exit_revenue", "stabilized_noi", "yield_on_cost", "exit_value",
+                      "dscr_min", "selling_cost"},
+}
+# Итоги ПФ продажи по ДДУ: строка книги → ключ `finance` движка.
+PF_CHECKS: tuple[tuple[str, str, str], ...] = (
+    ("pf_draw_total", "pf_draw_total", "Выдача ПФ всего"), ("peak_bridge", "peak_bridge", "БРИДЖ — пик долга"),
+    ("peak_pf", "peak_pf", "ПФ — пик долга"), ("peak_escrow", "peak_escrow", "Эскроу — пик"),
+    ("limit", "pf_limit", "Лимит ПФ"), ("bridge_fee", "bridge_fee", "Плата за резервирование БРИДЖа"),
+    ("reservation_fee", "pf_reservation_fee", "Плата за резервирование лимита ПФ"),
+    ("transferred", "transferred_bridge_interest", "Проценты БРИДЖа, перенесённые в ПФ"),
+    ("ending_pf", "ending_pf", "Долг ПФ на конец проекта"),
+    ("rve_unpaid", "rve_pf_shortfall", "Не погашено раскрытым эскроу в РВЭ"),
 )
 OBJECT_CHECKS: tuple[tuple[str, str, str, str, bool], ...] = (
     # (где у движка, ключ движка, строка книги, подпись, доля ли)
@@ -1989,24 +2387,25 @@ OBJECT_CHECKS: tuple[tuple[str, str, str, str, bool], ...] = (
 
 
 def _check_rows(result: dict[str, Any], current: str | None, blocks: dict[str, list[_Block]],
-                capex: dict[str, Any], report: dict[str, Any], objects: list[dict[str, Any]]
-                ) -> list[tuple[str, str, str, Any, bool]]:
+                ddu: dict[str, list[_Block]], capex: dict[str, Any], report: dict[str, Any],
+                objects: list[dict[str, Any]]) -> list[tuple[str, str, str, Any, bool]]:
     """(раздел, показатель, ссылка книги, число движка в единицах книги, доля ли)."""
     rows: list[tuple[str, str, str, Any, bool]] = []
     paths = {p.get("key"): p for p in (result.get("office_paths") or {}).get("paths") or []}
     for path in PATHS:
         engine = paths.get(path["key"]) or {}
-        section = f"Путь «{path['label']}»"
+        section = section_of(path)
         if engine.get("error"):
-            rows.append((section, "Путь у движка не посчитан: " + str(engine["error"]), '""', "посчитан", False))
+            rows.append((section, "Движок этот вариант не посчитал: " + str(engine["error"]), '""', "посчитан",
+                         False))
             continue
         for key, book_key, label, ratio in PATH_CHECKS:
+            if key in PATH_SKIP.get(path["key"], ()):
+                continue
             value = engine.get(key)
-            if key in ("rent_revenue", "exit_revenue", "stabilized_noi", "yield_on_cost", "exit_value",
-                       "dscr_min") and path["key"] == ns.STRATEGY_DIRECT:
-                continue
-            if key in ("sale_revenue", "selling_cost") and path["key"] == ns.STRATEGY_INCOME:
-                continue
+            # NPV собственника снят при непогашенном ПФ — движок даёт подпись.
+            if key == "npv_equity" and value is None and engine.get("equity_returns_label"):
+                value = engine["equity_returns_label"]
             rows.append((section, label, ref(f"{path['code']}.{book_key}"), _engine_number(value, ratio), ratio))
         rows.append((section, "Месяцев в таблицах хватает", ref(f"{path['code']}.rows_ok"), "хватает", False))
     code = next((p["code"] for p in PATHS if p["key"] == current), None)
@@ -2024,7 +2423,9 @@ def _check_rows(result: dict[str, Any], current: str | None, blocks: dict[str, l
     for key, book_key, label, value, ratio in (
             ("revenue", "t_revenue", "Выручка проекта", summary.get("revenue"), False),
             ("capex", "t_capex", "CAPEX", summary.get("capex"), False),
-            ("nonres_costs", "t_costs", "Расходы объектов", finance.get("nonres_costs"), False),
+            ("nonres_costs", "t_nonres_costs", "Расходы объектов", finance.get("nonres_costs"), False),
+            ("commercial_costs", "t_commercial", "Маркетинг и брокеры продаж по ДДУ",
+             summary.get("commercial_costs"), False),
             ("ebitda", "t_ebitda", "EBITDA", summary.get("ebitda"), False),
             ("financing_cost", "t_financing", "Проценты и комиссии", summary.get("financing_cost"), False),
             ("profit_before_tax", "t_pbt", "Прибыль до налога", summary.get("profit_before_tax"), False),
@@ -2034,17 +2435,38 @@ def _check_rows(result: dict[str, Any], current: str | None, blocks: dict[str, l
             ("total_expenses", "t_expenses", "Расходы всего", summary.get("total_expenses"), False),
             ("npv", "npv", "NPV проекта", summary.get("npv"), False),
             ("irr_project", "irr", "IRR проекта", summary.get("irr_project"), True),
-            ("npv_equity", "npv_eq", "NPV собственника", summary.get("npv_equity"), False),
+            ("npv_equity", "npv_eq", "NPV собственника", na_label or summary.get("npv_equity"), False),
             ("irr_equity", "irr_eq", "IRR собственного капитала", irr_equity, True),
             ("loan_peak", "loan_peak", "Кредит объектов — пик",
              sum(float((o.get("totals") or {}).get("loan_peak") or 0.0)
                  for o in finance.get("nonres", {}).get("objects") or []), False),
             ("id_total", "id_total", "Выручка − расходы всего − чистая прибыль", 0.0, False),
             ("id_ebitda", "id_ebitda", "EBITDA − проценты − прибыль до налога", 0.0, False),
-            ("debt_metric", "dscr_min", "DSCR кредита объектов — минимум", debt_metric, True)):
+            # Проект с ПФ меряет долг LLCR, без ПФ — DSCR кредита объектов.
+            ("debt_metric", "llcr" if ddu.get(code) else "dscr_min",
+             "LLCR" if ddu.get(code) else "DSCR кредита объектов — минимум", debt_metric, True)):
         rows.append((sec, label, ref(f"{code}.{book_key}"), _engine_number(value, ratio), ratio))
     # Горизонт — месяцы расчёта движка (`finance.rows`).
     rows.append((sec, "Горизонт модели, мес.", ref(f"{code}.horizon"), float(len(finance.get("rows") or [])), True))
+    if ddu.get(code):
+        financing = (result.get("report") or {}).get("financing") or {}
+        for book_key, engine_key, label in PF_CHECKS:
+            value = finance.get(engine_key)
+            if engine_key == "rve_pf_shortfall":
+                value = financing.get(engine_key, value)
+            rows.append(("ПФ", label, ref(f"pf.{code}.{book_key}"), _engine_number(value, False), False))
+        rows.append(("ПФ", "НДС продаж по ДДУ к уплате",  ref(f"pf.{code}.vat_due"),
+                     _engine_number(sum(float(v or 0.0) for v in (finance.get("vat_ddu_schedule") or {}).values()),
+                                    False), False))
+        revenue = result.get("revenue") or {}
+        margins = finance.get("tax_margin_by_product") or {}
+        for block in ddu[code]:
+            keys = (block.item["key"], block.item.get("parking_product_key") or "")
+            title = block.item["title"]
+            rows.append((title, "Выручка по ДДУ", f"SUM({block.r('revenue', ':')})",
+                         _engine_number(sum(float(revenue.get(key) or 0.0) for key in keys), False), False))
+            rows.append((title, "Налоговая маржа продаж по ДДУ", f"SUM({block.r('margin', ':')})",
+                         _engine_number(sum(float(margins.get(key) or 0.0) for key in keys), False), False))
     engine_capex = result.get("capex") or {}
     keys = {item["code"]: item["key"] for item in objects}
     for key in capex["order"]:
@@ -2172,18 +2594,22 @@ def _check_sheet(book: _Book, rows: list[tuple[str, str, str, Any, bool]], missi
 # --- сборка ------------------------------------------------------------------
 
 def _horizon_months(spec: dict[str, Any], objects: list[dict[str, Any]], start: date) -> int:
-    """Месяцев в таблицах: самый длинный путь, хвост уплаты налога и год покупателя."""
+    """Месяцев в таблицах: самый длинный способ, хвост уплаты налога и год покупателя."""
     rve = max(int(spec["ird_min"]), int(spec["ird_months"])) + int(spec["construction_months"])
     ends = [rve + max(int(spec["residual_months"]) + 3, 12)]
     ends += [int(k) for k, _ in spec.get("purchase_plan") or []]
     for item in objects:
-        if not item.get("nonres"):
+        if not (item.get("nonres") or item.get("ddu")):
             continue
-        params = item.get("params") or {}
         comm = _months_between(start, _month(item["start"])) + int(item["months"])
-        ends.append(max(comm, comm + max(-120, int(params.get("direct_sale_offset_months") or 0))
-                        + max(1, int(params.get("direct_sale_months") or 12)) - 1))
-        ends.append(comm + max(1, int(params.get("hold_years") or 5)) * 12 - 1)
+        if item.get("params"):
+            params = item["params"]
+            ends.append(max(comm, comm + max(-120, int(params.get("direct_sale_offset_months") or 0))
+                            + max(1, int(params.get("direct_sale_months") or 12)) - 1))
+            ends.append(comm + max(1, int(params.get("hold_years") or 5)) * 12 - 1)
+        if "share_before_pct" in item:
+            ends.append(comm + max(0, int(item.get("residual_months") or 0)))
+            ends += [int(k) for k, w in (item.get("sales_weights") or {}).items() if w]
     return max(len(spec.get("months") or []), max(ends) + 1 + TAX_TAIL) + EXTRA_MONTHS
 
 
@@ -2222,14 +2648,17 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
 
     `result` — авторитетный расчёт (`consolidated`, с `office_paths`), `spec` —
     вводные, которые движок читал (`nonres_book_spec`), `office_keys` — ключи
-    офисов, у которых два пути. Отдаёт байты книги и отчёт сборки: вердикт
-    «ПРОВЕРОК», расхождения и непосчитанные формулы.
+    офисов, которые книга считает тремя способами. Отдаёт байты книги и отчёт
+    сборки: вердикт «ПРОВЕРОК», расхождения и непосчитанные формулы.
     """
     start = _month(spec["start"])
     objects = []
     for n_, item in enumerate(spec.get("objects") or [], start=1):
-        objects.append({**item, "code": f"o{n_}",
-                        "office": bool(item.get("nonres")) and item["key"] in office_keys})
+        office = bool(item.get("nonres") or item.get("ddu")) and item["key"] in office_keys
+        # Офис книга продаёт всеми способами: в книге он объект с продажей или
+        # арендой (`nonres`) при любой стратегии проекта.
+        objects.append({**item, "code": f"o{n_}", "office": office,
+                        **({"nonres": True, "ddu": False} if office else {})})
     offices = [item for item in objects if item["office"]]
     if not offices:
         raise ValueError("книга офиса без офиса: у проекта нет офиса с продажей или арендой")
@@ -2241,32 +2670,40 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
     capex = _capex_sheet(book, spec, objects, info, months)
     _rate_sheet(book, info)
 
-    sale_ws = book.sheet(SALE_SHEET, "ПУТЬ 1 · ПРОДАЖА БЛОКАМИ",
+    ddu_ws = book.sheet(DDU_SHEET, "СПОСОБ 1 · ПРОДАЖА ПО ДДУ",
+                        "Договоры долевого участия: деньги покупателей лежат на эскроу до ввода проекта. "
+                        "млн ₽ с НДС.", monthly=True, tab=DDU_TAB)
+    sale_ws = book.sheet(SALE_SHEET, "СПОСОБ 2 · ПРОДАЖА БЛОКАМИ",
                          "Договоры купли-продажи после ввода, без ДДУ и эскроу. млн ₽ с НДС.", monthly=True,
                          tab=SALE_TAB)
-    rent_ws = book.sheet(RENT_SHEET, "ПУТЬ 2 · АРЕНДА И ПРОДАЖА ЗДАНИЯ",
+    rent_ws = book.sheet(RENT_SHEET, "СПОСОБ 3 · АРЕНДА И ПРОДАЖА ЗДАНИЯ",
                          "Заполнение, индексация, эксплуатация, налог на имущество, NOI, продажа здания. млн ₽ с НДС.",
                          monthly=True, tab=RENT_TAB)
-    exit_ws = book.sheet(EXIT_SHEET, "ПУТЬ 2 · ПРОДАЖА ЗДАНИЯ",
+    exit_ws = book.sheet(EXIT_SHEET, "СПОСОБ 3 · ПРОДАЖА ЗДАНИЯ",
                          "Стоимость здания = NOI следующих 12 месяцев после срока удержания / ставка капитализации.",
                          tab=RENT_TAB, width=4)
     exit_ws.column_dimensions["A"].width = 64
     exit_ws.column_dimensions["B"].width = 16
     exit_ws.column_dimensions["C"].width = 14
-    sale_rows, rent_rows, exit_rows = _Rows(book, sale_ws, 5), _Rows(book, rent_ws, 5), _Rows(book, exit_ws, 3)
-    office_blocks: dict[str, list[_Block]] = {"s": [], "r": []}
+    flow_rows = {"d": _Rows(book, ddu_ws, 5), "s": _Rows(book, sale_ws, 5), "r": _Rows(book, rent_ws, 5)}
+    exit_rows = _Rows(book, exit_ws, 3)
+    office_blocks: dict[str, list[_Block]] = {path["code"]: [] for path in PATHS}
     for item in offices:
-        for path, rows in zip(PATHS, (sale_rows, rent_rows)):
+        for path in PATHS:
             block = _Block(item, path["key"], f"{item['code']}{path['code']}")
-            _flows(book, rows, exit_rows, block, info)
+            if path["key"] == ns.STRATEGY_DDU:
+                _ddu_flows(book, flow_rows[path["code"]], block, info)
+            else:
+                _flows(book, flow_rows[path["code"]], exit_rows, block, info)
             office_blocks[path["code"]].append(block)
     other_blocks: list[_Block] = []
-    used = {SALE_SHEET, RENT_SHEET, EXIT_SHEET, "CF_Продажа", "CF_Аренда", INPUTS_SHEET, TEP_SHEET,
+    other_ddu: list[_Block] = []
+    used = {DDU_SHEET, SALE_SHEET, RENT_SHEET, EXIT_SHEET, PF_SHEET, INPUTS_SHEET, TEP_SHEET,
             TIME_SHEET, CAPEX_SHEET, RATE_SHEET, TAX_SHEET, REPORT_SHEET, DASH_SHEET, GUIDE_SHEET,
-            CHECK_SHEET, SOURCES_SHEET}
+            CHECK_SHEET, SOURCES_SHEET, *(path["cf"] for path in PATHS)}
     other_sheets = []
     for item in objects:
-        if item["office"] or not item.get("nonres"):
+        if item["office"] or not (item.get("nonres") or item.get("ddu")):
             continue
         name = item["title"][:31]
         while name in used:
@@ -2274,10 +2711,14 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
         used.add(name)
         other_sheets.append(name)
         ws = book.sheet(name, f"{item['title'].upper()} · {STRATEGY[item['strategy']].upper()}",
-                        "Объект проекта считается своей стратегией в обоих путях офиса. млн ₽ с НДС.",
-                        monthly=True, tab=HEAD)
+                        "Объект проекта считается своей стратегией во всех трёх способах продажи офиса. "
+                        "млн ₽ с НДС.", monthly=True, tab=HEAD)
         rows = _Rows(book, ws, 5)
         block = _Block(item, item["strategy"], item["code"])
+        if item.get("ddu"):
+            _ddu_flows(book, rows, block, info)
+            other_ddu.append(block)
+            continue
         _flows(book, rows, rows, block, info)
         _finance(book, rows, block)
         _block_totals(rows, block)
@@ -2290,20 +2731,33 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
     tax_rows.param("tx.limit", "Убыток прошлых лет гасит не больше доли базы года", f"={ref('in.loss_limit')}", "",
                    PCT)
     path_blocks: dict[str, list[_Block]] = {}
+    path_ddu: dict[str, list[_Block]] = {}
+    pf_sheets: list[str] = []
     for path in PATHS:
         c = path["code"]
+        ddu_path = path["key"] == ns.STRATEGY_DDU
+        credit_offices = [] if ddu_path else office_blocks[c]
+        ddu = (office_blocks[c] if ddu_path else []) + other_ddu
+        blocks = credit_offices + other_blocks
+        path_blocks[c], path_ddu[c] = blocks, ddu
+        if ddu_path:
+            pf_ws = book.sheet(PF_SHEET, "ПФ · ПРОЕКТНОЕ ФИНАНСИРОВАНИЕ ПРОДАЖИ ПО ДДУ",
+                               "Собственные деньги и БРИДЖ до разрешения на стройку, кредит банка (ПФ) с разрешения, "
+                               "ставка по покрытию долга эскроу, раскрытие эскроу при вводе проекта, погашение.",
+                               monthly=True, tab=DDU_TAB)
+            pf_sheets.append(PF_SHEET)
         ws = book.sheet(path["cf"], f"{path['cf'].upper()} · НДС, КРЕДИТ, ДЕНЬГИ СОБСТВЕННИКА",
                         "Кредит: выдача — доля затрат до ввода, проценты до ввода капитализируются, после ввода — "
                         "погашение. Поток проекта — до кредита; поток собственника — после кредита и налогов.",
                         monthly=True, tab=path["tab"])
         rows = _Rows(book, ws, 5)
-        for block in office_blocks[c]:
+        if ddu:
+            _pf(book, _Rows(book, pf_ws, 5) if ddu_path else rows, path, ddu, blocks, info)
+        for block in credit_offices:
             _finance(book, rows, block)
-        blocks = office_blocks[c] + other_blocks
-        path_blocks[c] = blocks
-        _tax_path(book, tax_rows, path, blocks)
-        _cash_path(book, rows, path, blocks, office_blocks[c], spec, capex, months)
-        for block in office_blocks[c]:
+        _tax_path(book, tax_rows, path, blocks, ddu)
+        _cash_path(book, rows, path, blocks, credit_offices, ddu, spec, capex, months)
+        for block in credit_offices:
             _block_totals(rows, block)
     years = sorted({(start.year * 12 + start.month - 1 + k) // 12 for k in range(book.n)})
     current = (result.get("office_paths") or {}).get("current")
@@ -2313,14 +2767,14 @@ def build(result: dict[str, Any], spec: dict[str, Any], office_keys: set[str]) -
     _sources_sheet(book)
     missing = list(spec.get("missing") or [])
     if current not in {p["key"] for p in PATHS}:
-        missing.append("Офисы проекта идут разными путями: подробная сверка пути проекта не строится, "
-                       "оба пути сверяются с движком итогами")
-    checks = _check_rows(result, current, path_blocks, capex, report, objects)
+        missing.append("Офисы проекта продаются разными способами: подробная сверка способа проекта не строится, "
+                       "все три способа сверяются с движком итогами")
+    checks = _check_rows(result, current, path_blocks, path_ddu, capex, report, objects)
     _check_sheet(book, checks, missing)
     book.resolve()
     order = [DASH_SHEET, REPORT_SHEET, INPUTS_SHEET, GUIDE_SHEET, TEP_SHEET, TIME_SHEET, CAPEX_SHEET, RATE_SHEET,
-             SALE_SHEET, RENT_SHEET, EXIT_SHEET, *other_sheets, "CF_Продажа", "CF_Аренда", TAX_SHEET,
-             CHECK_SHEET, SOURCES_SHEET]
+             DDU_SHEET, SALE_SHEET, RENT_SHEET, EXIT_SHEET, *other_sheets, *pf_sheets,
+             *(path["cf"] for path in PATHS), TAX_SHEET, CHECK_SHEET, SOURCES_SHEET]
     book.wb._sheets = [book.wb[name] for name in order]
     book.wb.active = 0
     content = book.to_bytes()
