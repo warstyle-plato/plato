@@ -362,6 +362,10 @@ function renderObjectReport(r){
 // печатает. Точки — подбор полным пересчётом модели, поэтому они приходят
 // отдельным запросом после расчёта (`/strategy-compare`), а не с ним.
 let strategyCompareKey='', strategyCompareBlock=null, strategyCompareRound=0;
+// Строка-раздел таблицы («Глазами инвестора…») — на всю ширину.
+function strategySectionRow(row,span){
+ return `<tr class="strategy-section" data-row="${escapeHtml(row.key||'')}"><td colspan="${span}">${escapeHtml(row.label||'')}</td></tr>`;
+}
 function strategyCompareHtml(block){
  return (block.items||[]).map(item=>{
   const cols=item.columns||[];
@@ -369,7 +373,7 @@ function strategyCompareHtml(block){
   return `<div class="strategy-compare" data-product="${escapeHtml(item.product||'')}">${item.caption?`<div class="strategy-compare-caption">${escapeHtml(item.caption)}</div>`:''}<p class="strategy-compare-lead">${escapeHtml(item.lead||'')}</p><div class="scroll"><table class="strategy-compare-table"><thead><tr><th>Показатель</th>${
    cols.map(c=>`<th data-strategy="${escapeHtml(c.key||'')}"${c.best?' class="best"':''}>${escapeHtml(c.label||'')}${
     (c.tags||[]).map(tag=>`<br><span class="strategy-tag${tag==='лучшая по NPV'?' best-tag':''}">${escapeHtml(tag)}</span>`).join('')}</th>`).join('')}</tr></thead><tbody>${
-   (item.rows||[]).map(row=>row.section?`<tr class="strategy-section" data-row="${escapeHtml(row.key||'')}"><td colspan="${cols.length+1}">${escapeHtml(row.label||'')}</td></tr>`:`<tr data-row="${escapeHtml(row.key||'')}"><td>${escapeHtml(row.label||'')}</td>${
+   (item.rows||[]).map(row=>row.section?strategySectionRow(row,cols.length+1):`<tr data-row="${escapeHtml(row.key||'')}"><td>${escapeHtml(row.label||'')}</td>${
     (row.cells||[]).map((cell,i)=>`<td${best(i)?' class="best"':''}>${row.strong&&best(i)?'<b>'+escapeHtml(cell)+'</b>':escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>${
    (item.points||[]).length?`<div class="strategy-points-title">${escapeHtml(item.points_title||'')}</div><ul class="strategy-points">${
     item.points.map(p=>`<li>${escapeHtml(p.text||'')}</li>`).join('')}</ul>`:''}</div>`;
