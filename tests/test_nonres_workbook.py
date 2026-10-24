@@ -5,9 +5,9 @@
 прибыль с переносом убытка, поток проекта и собственника, NPV, IRR, отчёт; лист
 «Сверка» сравнивает каждый итог с авторитетным расчётом движка.
 
-С 23.10.2026 эту книгу получают нежилой проект без офиса и проект с объектом
-по ДДУ; офис без ДДУ получает книгу офиса (`tests/test_office_workbook.py`).
-Поэтому сценарии без ДДУ здесь — у ТЦ, а не у офиса.
+С 24.10.2026 эту книгу получает только нежилой проект без офиса: проект с
+офисом — и по ДДУ тоже — получает книгу офиса (`tests/test_office_workbook.py`).
+Поэтому все сценарии здесь — у ТЦ и других объектов без офиса.
 
 Формулы вычисляет `xlsx_eval.Evaluator` — без Excel. Проверка обязана падать
 на подделке: испорченная формула, статья сметы, вводная и налог краснят сверку.
@@ -312,18 +312,20 @@ def test_a_mixed_project_keeps_the_v4_book() -> None:
 # эскроу, БРИДЖ, ПФ со ступенями ставки и LLCR считают формулы листов «ДДУ N»
 # и «ПФ», а «Сверка» сравнивает их с движком.
 
+# Объект по ДДУ — у проекта без офиса: офис по ДДУ получает книгу офиса
+# (решение владельца 24.10.2026, «Новая книга считает и ДДУ»).
 DDU_VARIANTS = {
-    "офис по ДДУ": dict(offices_strategy="ddu"),
-    "офис по ДДУ и ТЦ в аренде": dict(offices_strategy="ddu", retail_strategy="income", **RETAIL),
-    "ТЦ по ДДУ, офис ДКП": dict(offices_strategy="direct", retail_strategy="ddu", **RETAIL),
-    "офис по ДДУ: проценты капиталом, свои деньги, лимит, сценарий": dict(
-        offices_strategy="ddu", bridge_interest_mode="Оплата капиталом", pre_pf_own_funds_mln=300,
+    "ТЦ по ДДУ": dict(RETAIL_ONLY, retail_strategy="ddu"),
+    "наземный паркинг по ДДУ и ТЦ в аренде": dict(
+        RETAIL_ONLY, retail_strategy="income", above_parking_enabled=True, above_parking_spaces=300),
+    "ТЦ по ДДУ: проценты капиталом, свои деньги, лимит, сценарий": dict(
+        RETAIL_ONLY, retail_strategy="ddu", bridge_interest_mode="Оплата капиталом", pre_pf_own_funds_mln=300,
         pf_limit_approved_mln=9000, scenario_revenue_multiplier=0.95, scenario_cost_multiplier=1.05,
         rate_scenario="high"),
-    "офис по ДДУ: профиль продаж и лестница цены": dict(
-        offices_strategy="ddu", offices_sales_profile="30%@0; 50%@12; 20%@30",
-        offices_growth_stage1_pct=5, offices_growth_stage3_pct=7, offices_share_before_rve_pct=70,
-        offices_residual_months=9),
+    "ТЦ по ДДУ: профиль продаж и лестница цены": dict(
+        RETAIL_ONLY, retail_strategy="ddu", retail_sales_profile="30%@0; 50%@12; 20%@30",
+        retail_growth_stage1_pct=5, retail_growth_stage3_pct=7, retail_share_before_rve_pct=70,
+        retail_residual_months=9),
 }
 
 
@@ -333,6 +335,7 @@ def _ddu_book(name: str) -> tuple[bytes, dict]:
         x, t = _project(**DDU_VARIANTS[name])
         content, filename, meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
         assert meta.get("nonres_book") is True and "нежилой" in filename
+        assert not meta.get("office_book")
         _BOOKS[key] = content, meta
     return _BOOKS[key]
 
@@ -370,7 +373,7 @@ def test_a_tampered_pf_formula_is_caught() -> None:
                 sheet[f"{letter}{row}"] = value + "*1.5"
                 break
 
-    content, _ = _ddu_book("офис по ДДУ")
+    content, _ = _ddu_book("ТЦ по ДДУ")
     verdict, bad, _, _ = _evaluate(content, tamper)
     assert verdict == nw.FAILED
     assert "Проценты и комиссии" in {label for _, label, _, _ in bad}
@@ -382,7 +385,7 @@ def test_a_tampered_ddu_price_is_caught() -> None:
         cell = book[nw.INPUTS_SHEET][f"C{nw.O_ROW['price']}"]
         cell.value = cell.value * 1.1
 
-    content, _ = _ddu_book("офис по ДДУ")
+    content, _ = _ddu_book("ТЦ по ДДУ")
     verdict, bad, _, _ = _evaluate(content, tamper)
     assert verdict == nw.FAILED
     assert {"Выручка проекта", "Эскроу — пик, ₽"} <= {label for _, label, _, _ in bad}
@@ -428,8 +431,8 @@ def test_the_ddu_vat_leaves_the_engine_cash_flows(monkeypatch) -> None:
 
     monkeypatch.setattr(core, "simulate_financing", without_vat)
     blind = core.calculate(core.CalcRequest(inputs=x, tep=t))
-    # Первый вызов — основной расчёт; следом считаются пути офиса
-    # (`office_paths`), у которых ДДУ нет.
+    # Первый вызов — основной расчёт; следом считаются другие способы продажи
+    # офиса (`office_paths`), у которых ДДУ нет.
     assert seen and seen[0] > 1e6
     for flow in ("project", "equity"):
         gap = sum(blind["cashflow"][flow]) - sum(result["cashflow"][flow])

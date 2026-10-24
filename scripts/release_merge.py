@@ -103,9 +103,23 @@ def _api(method: str, path: str, token: str, body: dict | None = None) -> dict:
 
 
 def _git(*args: str, capture: bool = True) -> str:
-    done = subprocess.run(["git", *args], cwd=ROOT, check=True,
+    done = subprocess.run(["git", *args], cwd=ROOT,
                           capture_output=capture, text=True)
+    if done.returncode != 0:
+        # Голый CalledProcessError прятал ответ сервера: «push отклонён» без
+        # строк remote не говорит, что чинить.
+        raise SystemExit(_git_refusal(args, done.returncode, done.stderr or ""))
     return (done.stdout or "").strip()
+
+
+def _git_refusal(args: tuple[str, ...], code: int, stderr: str) -> str:
+    """Отказ git с ответом сервера и, где причина известна, с тем, что делать."""
+    text = f"git {' '.join(args)} отказал (код {code}):\n{stderr.strip() or '(git ничего не сказал)'}"
+    if args and args[0] == "push" and "workflow" in stderr.lower():
+        text += ("\nGITHUB_TOKEN не вправе менять .github/workflows: в ветку уходит "
+                 "слияние базы, где workflow-файлы новее. Влейте base в ветку сами "
+                 "(своим токеном) и повторите прогон.")
+    return text
 
 
 def _write_version(guard, number: str, message: str) -> bool:

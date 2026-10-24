@@ -129,6 +129,15 @@ def report(name: str, book_path: Path, consolidated: dict) -> list[str]:
               if isinstance(cell.value, str) and cell.value.startswith(ERRORS)]
     if errors:
         lines.append(f"  ошибки в ячейках: {len(errors)}: {errors[:6]}")
+    if "ПРОВЕРКИ" in book.sheetnames and book["ПРОВЕРКИ"]["I4"].value == "Вердикт":  # книга офиса
+        checks = book["ПРОВЕРКИ"]
+        lines.append(f"  проверки книги офиса: {checks['I5'].value}")
+        for row in range(5, checks.max_row + 1):
+            verdict = checks.cell(row, 7).value
+            if verdict not in ("сходится", "—", None):
+                lines.append(f"  ПРОВЕРКИ!G{row} {checks.cell(row, 1).value}: {checks.cell(row, 2).value}: "
+                             f"книга {checks.cell(row, 3).value!r}, движок {checks.cell(row, 4).value!r}")
+        return lines
     if "ПРОВЕРКИ" in book.sheetnames:
         checks = book["ПРОВЕРКИ"]
         lines.append(f"  статус модели: {checks['B3'].value}")
