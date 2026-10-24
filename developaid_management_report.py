@@ -737,6 +737,10 @@ def sales(sales_project: str, kind: str, end: Any,
         # Воронка из ежедневных отчётов отдела продаж (чат: бот или выгрузка).
         "funnel": salesroom.funnel(part("salesroom"), bounds["start"].isoformat(),
                                    bounds["end"].isoformat()),
+        # Брони из того же отчёта против договоров контрактации.
+        "bookings": salesroom.booking_outcomes(part("salesroom"), rows, uploaded or None,
+                                               bounds["start"].isoformat(),
+                                               bounds["end"].isoformat()),
     }
 
 
@@ -1375,6 +1379,55 @@ def _edge_words(quarter: dict[str, Any]) -> str:
     return f"; по регистрации, как у отдела продаж, — до {_rub(total)}"
 
 
+def _booked_words(item: dict[str, Any]) -> str:
+    # Площадь — как в отчёте, с десятыми: по ней квартира и узнаётся.
+    area = (f", {item['area']:.1f}".replace(".", ",") + " м²"
+            if item.get("area") is not None else "")
+    return f"кв. {item['apartment']}{area}"
+
+
+def _bookings_line(block: dict[str, Any] | None, kind: str) -> str:
+    """«Брони за неделю: из списка ушли 3 — 2 стали договорами, 1 снята без
+    сделки (кв. 20, 90,2 м², держалась 12 дней)…» (владелец, 24.10.2026: «надо
+    следить, сколько броней не вышло в сделку в итоге»)."""
+    if not block:
+        return ""
+    period = block.get("period") or []
+    deals = [item for item in period if item["outcome"] == "deal"]
+    dropped = [item for item in period if item["outcome"] == "dropped"]
+    unknown = [item for item in period if item["outcome"] == "unknown"]
+    if period:
+        parts = []
+        if deals:
+            parts.append(f"{len(deals)} {_plural(len(deals), 'стала договором', 'стали договорами', 'стали договорами')}")
+        if dropped:
+            names = "; ".join(f"{_booked_words(item)}, держалась {item['days']} "
+                              f"{_plural(item['days'], 'день', 'дня', 'дней')}" for item in dropped)
+            parts.append(f"{len(dropped)} {_plural(len(dropped), 'снята', 'сняты', 'снято')} "
+                         f"без сделки ({names})")
+        if unknown:
+            parts.append(f"по {len(unknown)} договора в загруженной контрактации пока нет")
+        text = (f"Брони за {PERIODS[kind]}: из списка ушли {len(period)} — "
+                + ", ".join(parts) + ".")
+    else:
+        text = f"Брони за {PERIODS[kind]}: из списка не ушла ни одна."
+    total = block.get("total") or {}
+    closed = int(total.get("deal") or 0) + int(total.get("dropped") or 0)
+    if closed:
+        share = int(total.get("deal") or 0) / closed
+        text += (f" С {_day(block['since'])} из {closed} закрытых броней договорами стали "
+                 f"{int(total.get('deal') or 0)} ({_pct(share)}), без сделки — "
+                 f"{int(total.get('dropped') or 0)}.")
+    held = block.get("held") or []
+    if held:
+        oldest = held[0]
+        text += (f" Сейчас в списке {len(held)} "
+                 f"{_plural(len(held), 'бронь', 'брони', 'броней')}, самая давняя — "
+                 f"{_booked_words(oldest)}, с {_day(oldest['first'])} "
+                 f"({oldest['days']} {_plural(oldest['days'], 'день', 'дня', 'дней')}).")
+    return text
+
+
 def _sales_line(label: str, fact: dict[str, Any]) -> str:
     price = (f", квартиры в среднем по {_rub(fact['price_flats'])} за м²"
              if fact.get("price_flats") else "")
@@ -1798,6 +1851,8 @@ def render_text(report: dict[str, Any]) -> str:
             lines.append(esc(quarter["bank_reason"]))
         if block.get("funnel"):
             lines.append(esc(_funnel_line(block["funnel"], report["kind"])))
+        if block.get("bookings"):
+            lines.append(esc(_bookings_line(block["bookings"], report["kind"])))
         lines.append(esc(_signed_note(quarter)))
         if block.get("stale"):
             lines.append(f"Внимание: договоры загружены {_day(block['uploaded'])}, "
@@ -2752,6 +2807,8 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<p class='note'>{esc(quarter['bank_reason'])}</p>")
         if block.get("funnel"):
             out.append(f"<p>{esc(_funnel_line(block['funnel'], report['kind']))}</p>")
+        if block.get("bookings"):
+            out.append(f"<p>{esc(_bookings_line(block['bookings'], report['kind']))}</p>")
         out.append(f"<p class='note'>{esc(_signed_note(quarter))}</p>")
         if block.get("stale"):
             out.append(f"<p class='note warn'>Договоры загружены {_day(block['uploaded'])}, "
