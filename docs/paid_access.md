@@ -73,7 +73,8 @@
 
 Маршруты, которые зовут решение: `/calculate`, `/calculate-phased`,
 `/analysis/sensitivity`, `/report/pdf`, `/report/teaser`, `/report/workbook`,
-`/agent/chat`, `/ia/goal-seek`, `/api/v2/calculate`, `/telegram/result`; в боте —
+`/agent/chat`, `/ia/goal-seek`, `/strategy-compare`, `/api/v2/calculate`,
+`/telegram/result`; в боте —
 Excel-модель (`_send_model_archive`) и Платон (`_run_agent`), через
 `_bot_calc_allowed`. Проверка по читателям — `tests/test_paid_access_rights.py`.
 
