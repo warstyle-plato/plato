@@ -9,7 +9,7 @@ Excel, и только потом чинить книгу.
     python3 scripts/excel_book_parity.py                   # все эталоны и Донской
     python3 scripts/excel_book_parity.py --only donskoy default
     python3 scripts/excel_book_parity.py --out /tmp/books  # где оставить книги
-    python3 scripts/excel_book_parity.py --only nonres_sports_ddu nonres_parking_ddu
+    python3 scripts/excel_book_parity.py --only nonres_retail_sports_ddu nonres_parking_ddu
 
 Печатает по каждой книге: статус модели, строки ПРОВЕРКИ с FAIL/WARN, ячейки
 с ошибками (#REF!, #DIV/0! …) и строки ОТЧЕТа, расходящиеся с движком больше
@@ -61,16 +61,16 @@ REPORT_ROWS = (
 )
 
 
-# Нежилой проект без офиса: ФОК и наземный паркинг по ДДУ — книга нежилого
-# проекта (`office_workbook`, один способ — стратегия объектов) против движка.
+# Нежилой проект без офиса: ФОК по ДДУ рядом с ТЦ и наземный паркинг по ДДУ —
+# книга нежилого проекта (`office_workbook`, один способ — стратегия объектов)
+# против движка.
 # Эталонами движка не являются: только сверка книги.
 NONRES_BOOKS: dict[str, dict[str, Any]] = {
-    "nonres_sports_ddu": dict(sports_enabled=True, sports_gba_sqm=5000.0, sports_saleable_sqm=3500.0,
-                              sports_disposition="sale"),
+    # Нежилого проекта из одного ФОК не бывает (владелец, 24.10.2026): ФОК — рядом с ТЦ.
+    "nonres_retail_sports_ddu": dict(retail_enabled=True, retail_gba_sqm=15000.0, retail_saleable_sqm=11000.0,
+                                     retail_strategy="direct", sports_enabled=True, sports_gba_sqm=5000.0,
+                                     sports_saleable_sqm=3500.0, sports_disposition="sale"),
     "nonres_parking_ddu": dict(above_parking_enabled=True, above_parking_spaces=300),
-    "nonres_sports_parking_ddu": dict(sports_enabled=True, sports_gba_sqm=5000.0, sports_saleable_sqm=3500.0,
-                                      sports_disposition="sale", above_parking_enabled=True,
-                                      above_parking_spaces=300),
 }
 
 
