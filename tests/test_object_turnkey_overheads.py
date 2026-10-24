@@ -309,7 +309,7 @@ def test_the_page_follows_the_project_kind() -> None:
     (`object_smr_rate`) и подпись «основное строительство здания (СМР)»,
     возврат к смешанному — прежние «под ключ»; нежилой проект, сохранённый
     до решения со ставкой «под ключ», при загрузке получает СМР."""
-    from browser import chromium_or_skip, serve
+    from browser import chromium_or_skip, serve, wait_for_result
     from playwright.sync_api import sync_playwright
 
     smr = core.class_base_preset("comfort", "msk", core.PROJECT_KIND_NONRESIDENTIAL)[
@@ -327,7 +327,10 @@ def test_the_page_follows_the_project_kind() -> None:
             errors: list[str] = []
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="load")
-            page.wait_for_function("()=>typeof applyProjectKind==='function'", timeout=60000)
+            # Загрузка страницы ещё идёт и после `load`: дождаться её конца, иначе
+            # её окончание перезапишет вводные, поставленные тестом ниже (на CI
+            # загруженный проект оставался со ставкой «под ключ», 175 вместо 118,5).
+            wait_for_result(page)
             page.evaluate("()=>{inputs.project_class='comfort';inputs.offices_enabled=true}")
             page.evaluate("()=>{try{applyProjectKind('nonresidential')}catch(e){}"
                           "renderInputs()}")
@@ -377,7 +380,7 @@ def test_the_nonresidential_rates_are_entered_in_one_block() -> None:
     (владелец, 07.10.2026). Объект один — «наземная часть», объектов два —
     строка на каждый; в блоке объекта ставки нет; наземной ставки МКД нет;
     подземная подписана гаражом объектов. Смешанный проект — как прежде."""
-    from browser import chromium_or_skip, serve
+    from browser import chromium_or_skip, serve, wait_for_result
     from playwright.sync_api import sync_playwright
 
     probe = """()=>{
