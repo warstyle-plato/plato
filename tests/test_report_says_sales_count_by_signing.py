@@ -69,3 +69,11 @@ def test_without_edge_contracts_the_note_stays_general():
     quarter = {"key": "2026 Q4", "fact": {"amount": 1.0}, "edge": None}
     assert report._signed_note(quarter) == report.SIGNED_NOTE
     assert report._edge_words(quarter) == ""
+
+
+def test_the_note_opens_with_the_reason():
+    """«Расхождение по продажам из-за разных дат учёта» (владелец, 24.10.2026)."""
+    assert report.SIGNED_NOTE.startswith("Расхождение с отделом продаж — из-за разных дат учёта.")
+    built = _full()
+    assert "из-за разных дат учёта" in report.render_text(built)
+    assert "из-за разных дат учёта" in report.render_html(built)
