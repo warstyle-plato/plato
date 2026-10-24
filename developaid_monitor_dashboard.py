@@ -1140,9 +1140,13 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             remaining_need, float(baseline.get("reserve") or 0.0), waterfall_book),
         # Лестница от структурного дефицита к «не хватает на достройку»:
         # считается здесь, экран только показывает.
+        # Для финмодели водопад уже по главам 2–3: переброска свободного лимита
+        # между статьями сметы внутри главы в нём учтена, и вычитать её второй
+        # раз нельзя — иначе плашка потребности расходится с «не хватает»
+        # (владелец, 24.10.2026: 2,27 на одной плашке и 2,39 на соседней).
         "deficit_ladder": _deficit_ladder(
-            waterfall_book, float(baseline.get("reserve") or 0.0), book_remaining,
-            unspent_view),
+            waterfall_book, 0.0 if finmodel else float(baseline.get("reserve") or 0.0),
+            book_remaining, None if finmodel else unspent_view),
         "forecast_to": monitor._iso(rnv),
         "monthly_need": waterfall["monthly_need"],
         "monthly_reserve_draw": waterfall["monthly_reserve_draw"],
