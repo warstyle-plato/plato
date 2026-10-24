@@ -158,7 +158,7 @@ def test_escrow_against_the_credit_plan():
     assert queue["actual"] == pytest.approx(60 * M)
     assert queue["plan"] == pytest.approx(45 * M)
     text = report.render_text(report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК"))
-    assert "Эскроу, очередь «1 очередь»: на сентябрь 2026 накоплено 60,0 млн ₽ при плане " \
+    assert "Эскроу: на сентябрь 2026 накоплено 60,0 млн ₽ при плане " \
            "финмодели 45,0 млн ₽ (больше плана на 15,0 млн ₽)." in text
 
 
@@ -268,7 +268,7 @@ def test_escrow_at_the_current_pace_leads():
     assert tile["value"] == report._times(queue["keeping_pace_coverage"])
     assert "по плану финмодели" in tile["note"]
     found = {item["topic"]: item["text"] for item in built["findings"]}
-    assert "при нынешнем темпе эскроу очереди «1 очередь»" in found["Финансирование"].lower()
+    assert "при нынешнем темпе эскроу покрывает" in found["Финансирование"].lower()
 
 
 def test_the_report_names_no_chapters_sheets_or_codes(monkeypatch):
