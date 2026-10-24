@@ -1363,6 +1363,21 @@ def _funnel_line(block: dict[str, Any], kind: str) -> str:
     return text + f" По отчётам отдела продаж за {days} {_plural(days, 'день', 'дня', 'дней')}."
 
 
+def _funnel_figure(block: dict[str, Any], kind: str) -> str:
+    """Та же воронка картинкой (владелец, 24.10.2026: «нарисуй воронку
+    картинкой») — из тех же чисел, что строка над ней."""
+    total = (block.get("pipeline") or {}).get("total") or {}
+    if not total:
+        return ""
+    return charts.funnel_chart(
+        f"Воронка продаж за {PERIODS[kind]}",
+        [("Целевые звонки", total.get("calls"), None),
+         ("Встречи", total.get("meetings"), total.get("meetings_share")),
+         ("Новые брони", total.get("bookings"), total.get("bookings_share")),
+         ("Договоры", total.get("deals"), total.get("deals_share"))],
+        "доля — от предыдущей ступени; договоры — по дате подписания")
+
+
 def _managers_line(block: dict[str, Any]) -> str:
     """По менеджерам — тем же расчётом, что воронка отдела («и плюс
     статистика менеджеров», владелец, 24.10.2026)."""
@@ -2854,6 +2869,7 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<p class='note'>{esc(quarter['bank_reason'])}</p>")
         if block.get("funnel") or block.get("pipeline"):
             out.append(f"<p>{esc(_funnel_line(block, report['kind']))}</p>")
+            out.append(_funnel_figure(block, report["kind"]))
         if _managers_line(block):
             out.append(f"<p class='note'>{esc(_managers_line(block))}</p>")
         if block.get("bookings"):

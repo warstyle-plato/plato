@@ -141,3 +141,32 @@ def test_the_cabinet_draws_the_funnel_and_the_managers(tmp_path):
     assert "Целевые звонки" in text and "Новые брони" in text
     assert "Отдел продаж" in text and "Мария Вольпи" in text and "Кочеткова Мария" in text
     assert "только по отделу" in text
+
+
+def test_the_funnel_is_drawn_as_a_picture():
+    """«Нарисуй воронку картинкой» (владелец, 24.10.2026): четыре полосы из
+    тех же чисел, что строка; доля — между ступенями; пропавшая ступень —
+    пустая рамка, а не схлопнутая полоса."""
+    import re
+
+    import developaid_report_charts as charts
+
+    got = salesroom.sales_funnel(_chat(), DEALS, "2026-10-20", "2026-10-26")
+    figure = report._funnel_figure({"pipeline": got}, "week")
+    assert "Воронка продаж за неделю" in figure
+    assert re.findall(r'class="value">([^<]+)<', figure) == ["4", "6", "2", "2"]
+    assert re.findall(r'class="share">↓ ([^<]+)<', figure) == ["150,0%", "33,3%", "100,0%"]
+    gap = charts.funnel_chart("Воронка", [("Целевые звонки", None, None), ("Встречи", 3.0, None)])
+    assert "в отчётах нет" in gap and 'stroke-dasharray="4 3"' in gap
+
+
+def test_the_picture_reaches_the_page(tmp_path):
+    sales_store.save(sales_store.default_dir(), "ЖК Картинка", {
+        "contracting": {"project": "ЖК Картинка", "missing": [], "rows": DEALS},
+        "salesroom": _chat()}, "test.xlsx")
+    from test_management_report_analytics import _full
+
+    built = _full()
+    built["sales"] = report.sales("ЖК Картинка", "week", "2026-10-25")
+    page = report.render_html(built)
+    assert 'class="chart funnel"' in page and "Воронка продаж за неделю" in page
