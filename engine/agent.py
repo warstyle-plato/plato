@@ -791,7 +791,11 @@ def report_sensitivity(inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
     if prefixes:
         out: dict[str, Any] = {}
         current = nonres_strategy.object_strategy(inputs, prefixes[0])
+        # Торнадо — у продажи блоками и аренды; продажу по ДДУ (третий способ
+        # `OFFICE_PATHS`) отчёт меряет LLCR, и её торнадо здесь не строится.
         for key, label in OFFICE_PATHS:
+            if key == nonres_strategy.STRATEGY_DDU:
+                continue
             x = copy.deepcopy(inputs)
             for prefix in prefixes:
                 x[f"{prefix}_strategy"] = key

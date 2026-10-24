@@ -2031,8 +2031,13 @@ def _report_sheet(book: Workbook, spec: dict[str, Any], objects: list[dict[str, 
                              + ([ref("commercial_costs")] if pf else [])
                              + [ref("financing_cost"), ref("profit_tax"), ref("vat")])
         own = f'(-SUMIF({cash["equity"]},"<0"))'
+        # Миллионы — с пробелом между тысячами, как подпись движка
+        # (`_equity_irr_number`): «1 012 млн ₽», а не «1012».
+        rounded = f"ROUND({own}/1000000,0)"
+        millions = (f'IF({rounded}>=1000,INT({rounded}/1000)&" "&REPT("0",3-LEN(MOD({rounded},1000)))'
+                    f'&MOD({rounded},1000),{rounded})')
         irr_formula = (f'IF(AND(({full_cost})>0,{own}<{float(min_share):g}*({full_cost})),'
-                       f'"не показателен: своих денег "&ROUND({own}/1000000,0)&" млн ₽ ("'
+                       f'"не показателен: своих денег "&{millions}&" млн ₽ ("'
                        f'&SUBSTITUTE(ROUND({own}/({full_cost})*100,1),".",",")&"% затрат)",'
                        f'{irr_formula})')
     line("irr_equity", "IRR собственного капитала", na_when_unrepaid(irr_formula), "0.00%")
