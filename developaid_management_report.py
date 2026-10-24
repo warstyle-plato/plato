@@ -737,6 +737,11 @@ def sales(sales_project: str, kind: str, end: Any,
         # Воронка из ежедневных отчётов отдела продаж (чат: бот или выгрузка).
         "funnel": salesroom.funnel(part("salesroom"), bounds["start"].isoformat(),
                                    bounds["end"].isoformat()),
+        # Звонки → встречи → новые брони → договоры, по отделу и менеджерам —
+        # тот же расчёт, что в отчёте о продажах кабинета.
+        "pipeline": salesroom.sales_funnel(part("salesroom"), rows,
+                                           bounds["start"].isoformat(),
+                                           bounds["end"].isoformat()),
         # Брони из того же отчёта против договоров контрактации.
         "bookings": salesroom.booking_outcomes(part("salesroom"), rows, uploaded or None,
                                                bounds["start"].isoformat(),
@@ -1319,21 +1324,61 @@ def _pieces(fact: dict[str, Any]) -> str:
     return ", ".join(out)
 
 
-def _funnel_line(funnel: dict[str, Any] | None, kind: str) -> str:
-    """«Воронка за неделю: целевых обращений 7, встреч 5, брокер-туров 3; сейчас
-    броней 3, ДДУ на регистрации 0 (по отчётам отдела продаж за 5 дней)»."""
-    if not funnel:
+def _stage_words(stages: dict[str, Any]) -> list[str]:
+    """«целевые звонки 7 → встречи 5 (71,4%) → …»: ступень, которой в отчётах
+    нет, так и названа, а не пропущена."""
+    out = []
+    for key, word, share in (("calls", "целевые звонки", None),
+                             ("meetings", "встречи", "meetings_share"),
+                             ("bookings", "новые брони", "bookings_share"),
+                             ("deals", "договоры", "deals_share")):
+        value = stages.get(key)
+        if value is None:
+            out.append(f"{word} — в отчётах не названы")
+            continue
+        conversion = stages.get(share) if share else None
+        out.append(f"{word} {float(value):.0f}" + (f" ({_pct(conversion)})" if conversion is not None else ""))
+    return out
+
+
+def _funnel_line(block: dict[str, Any], kind: str) -> str:
+    """Воронка за период: целевые звонки → встречи → новые брони → договоры с
+    конверсией между ступенями (владелец, 24.10.2026: «Почему в воронке нет
+    целевых звонков? Звонок — встреча — бронь»). Брокер-туры и то, что сейчас
+    в работе, — рядом."""
+    pipe = block.get("pipeline") or {}
+    state = block.get("funnel") or {}
+    if not pipe and not state:
         return ""
-    events = [(word, funnel.get(key)) for key, word in (
-        ("calls", "целевых обращений"), ("meetings", "встреч"), ("broker_tours", "брокер-туров"))]
-    states = [(word, funnel.get(key)) for key, word in (
-        ("bookings", "броней"), ("registering", "ДДУ на регистрации"))]
-    said = ", ".join(f"{word} {value:.0f}" for word, value in events if value is not None)
-    now = ", ".join(f"{word} {value:.0f}" for word, value in states if value is not None)
-    days = int(funnel.get("days") or 0)
-    return (f"Воронка за {PERIODS[kind]}: " + (said or "событий в отчётах нет")
-            + (f"; сейчас {now}" if now else "")
-            + f" (по отчётам отдела продаж за {days} {_plural(days, 'день', 'дня', 'дней')}).")
+    text = f"Воронка за {PERIODS[kind]}: "
+    text += " → ".join(_stage_words(pipe.get("total") or {})) if pipe else "отчётов нет"
+    text += ". В скобках — доля от предыдущей ступени; договоры — по дате подписания."
+    if state.get("broker_tours") is not None:
+        text += f" Брокер-туров {state['broker_tours']:.0f}."
+    now = ", ".join(f"{word} {state[key]:.0f}" for key, word in (
+        ("bookings", "броней"), ("registering", "ДДУ на регистрации")) if state.get(key) is not None)
+    if now:
+        text += f" Сейчас {now}."
+    days = int(pipe.get("days") or state.get("days") or 0)
+    return text + f" По отчётам отдела продаж за {days} {_plural(days, 'день', 'дня', 'дней')}."
+
+
+def _managers_line(block: dict[str, Any]) -> str:
+    """По менеджерам — тем же расчётом, что воронка отдела («и плюс
+    статистика менеджеров», владелец, 24.10.2026)."""
+    pipe = block.get("pipeline") or {}
+    if not pipe:
+        return ""
+    notes = list(pipe.get("notes") or [])
+    managers = pipe.get("managers") or []
+    text = ""
+    if managers:
+        text = "По менеджерам (по имени у брони): " + "; ".join(
+            f"{row['author']} — новые брони {row['bookings']}, договоры {row['deals']}"
+            for row in managers) + "."
+    if notes:
+        text += (" " if text else "Оговорки: ") + "; ".join(notes) + "."
+    return text.strip()
 
 
 # Договор относится к периоду по дате подписания: так задан план финмодели
@@ -1849,8 +1894,10 @@ def render_text(report: dict[str, Any]) -> str:
                          f"{_area(quarter['bank'].get('area'))}.")
         elif quarter.get("bank_reason"):
             lines.append(esc(quarter["bank_reason"]))
-        if block.get("funnel"):
-            lines.append(esc(_funnel_line(block["funnel"], report["kind"])))
+        if block.get("funnel") or block.get("pipeline"):
+            lines.append(esc(_funnel_line(block, report["kind"])))
+        if _managers_line(block):
+            lines.append(esc(_managers_line(block)))
         if block.get("bookings"):
             lines.append(esc(_bookings_line(block["bookings"], report["kind"])))
         lines.append(esc(_signed_note(quarter)))
@@ -2805,8 +2852,10 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(_table(["План", "Сумма", "Площадь"], plans))
         if quarter.get("bank_reason"):
             out.append(f"<p class='note'>{esc(quarter['bank_reason'])}</p>")
-        if block.get("funnel"):
-            out.append(f"<p>{esc(_funnel_line(block['funnel'], report['kind']))}</p>")
+        if block.get("funnel") or block.get("pipeline"):
+            out.append(f"<p>{esc(_funnel_line(block, report['kind']))}</p>")
+        if _managers_line(block):
+            out.append(f"<p class='note'>{esc(_managers_line(block))}</p>")
         if block.get("bookings"):
             out.append(f"<p>{esc(_bookings_line(block['bookings'], report['kind']))}</p>")
         out.append(f"<p class='note'>{esc(_signed_note(quarter))}</p>")

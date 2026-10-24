@@ -47,8 +47,8 @@ DEALS = [_deal("корп 2 кв.63", 61.9, "2026-10-08"),
 def test_the_booking_list_is_read_item_by_item():
     lots = salesroom.booked_lots(_report("20, башня Гармония, 5 этаж, 90,2 кв.м.",
                                          "63, башня Сфера, 3 этаж, 61,9 кв.м."))
-    assert lots == [{"apartment": "20", "area": 90.2, "tower": "башня Гармония"},
-                    {"apartment": "63", "area": 61.9, "tower": "башня Сфера"}]
+    assert lots == [{"apartment": "20", "area": 90.2, "tower": "башня Гармония", "manager": ""},
+                    {"apartment": "63", "area": 61.9, "tower": "башня Сфера", "manager": ""}]
     assert salesroom.booked_lots("Встречи за день - 1") is None
     assert salesroom.booked_lots("Текущих броней: 0") == []
 
