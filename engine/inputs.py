@@ -1869,7 +1869,28 @@ CLASS_ONLY_INPUTS = ["landscaping_area_per_person_sqm", "landscaping_th_per_sqm"
 # своя ставка здания; площадь двора — двор от населения, а населения у
 # нежилого проекта нет. Подземная ставка остаётся: по ней строится гараж
 # объекта.
-RESIDENTIAL_ONLY_INPUTS = ["main_above_th_per_sqm", "landscaping_area_sqm"]
+#
+# Владелец, 25.10.2026: «если какие-то статьи не входят в нежильё, то они
+# должны … вообще не появляться в блоке вводных». Список проверен расчётом:
+# правка любого из этих полей нежилой проект не сдвигает (тест
+# `test_the_housing_only_fields_move_nothing_in_a_nonresidential_project`).
+# Продажи квартир, кладовых и коммерции первого этажа — их у проекта нет, у
+# объекта свои цена, рост и доля продаж до ввода. Плата за смену ВРИ у
+# нежилого проекта обнулена (`NONRESIDENTIAL_CLEARED_INPUTS`), с ней — весь
+# её график и источники; регион ВРИ остаётся: по нему выбирается норматив
+# Москвы или области. Соцнагрузка считается от жителей, а их нет.
+RESIDENTIAL_ONLY_INPUTS = [
+    "main_above_th_per_sqm", "landscaping_area_sqm",
+    "apartment_price_th", "commercial_price_th", "storage_price_th",
+    "share_before_rve_pct", "monthly_growth_pre_pct", "inflation_after_rve_pct",
+    "growth_stage1_pct", "growth_stage2_pct", "growth_stage3_pct", "growth_stage4_pct",
+    "seasonal_reduction_pct", "pace_adjustment_pct",
+    "sales_lag_months", "bridge_repay_lag_months", "land_rights_cost_mln",
+    *(field[0] for group in FIELD_GROUPS if group[0] == "Смена ВРИ и земельные права"
+      for field in group[1] if field[0] != "vri_region"),
+    *(field[0] for group in FIELD_GROUPS if group[0] == "Социальная нагрузка"
+      for field in group[1]),
+]
 # Поля, которые принадлежат УЧАСТКУ: их называет город по этой площадке (К1 —
 # от расстояния до рельсового каркаса, К2 — по району), и правятся они в
 # карточке «Участок и плотность», а не во «Вводных» (владелец, 27.09.2026).
