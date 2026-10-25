@@ -52,7 +52,10 @@ _DATE = re.compile(r"(\d{2})\.(\d{2})\.(\d{4})")
 # воронки, что прежние «целевые звонки».
 _COUNTS = {
     "meetings": r"(?:встреч[а-яё]*\s*в\s*офисе|встреч[а-яё]*\s*за\s*день)\s*[-–—:]?\s*(\d+)",
-    "calls": r"(?:целевых\s*звонк[а-яё]*|ЦО\s*за\s*день)\s*[-–—:]?\s*(\d+)",
+    # Целевой звонок пишут и «целевых звонков», и «целевые звонки», и «ЦО
+    # (целевые обращения) за день» — ступень воронки одна.
+    "calls": r"(?:целев[а-яё]*\s*(?:звонк|обращени)[а-яё]*(?:\s*за\s*день)?|ЦО\s*за\s*день)"
+             r"\s*[-–—:]?\s*(\d+)",
     "broker_tours": r"брокер[\s-]*тур[а-яё]*\s*за\s*день\s*[-–—:]?\s*(\d+)",
     "bookings": r"текущих\s*брон[а-яё]*[^\d]{0,20}(\d+)",
     "registering": r"(?:сделк[аи]|ДДУ)\s*на\s*регистрации\s*[-–—:]?\s*(\d+)",
@@ -439,6 +442,32 @@ def append_message(read: dict[str, Any] | None, day: str, author: str,
     return got
 
 
+def _counted(text: str) -> dict[str, float]:
+    got = {}
+    for key, pattern in _COUNTS.items():
+        found = re.search(pattern, text or "", re.I)
+        if found:
+            got[key] = float(found.group(1))
+    return got
+
+
+def _reports(read: dict[str, Any] | None, first: str, last: str) -> dict[str, str]:
+    """{день: текст} — последний отчёт продаж за день.
+
+    Ежедневный отчёт — сводка отдела, и пишет его дежурный: в живой выгрузке
+    чата (24.10.2026) за 65 дней отчётов шесть разных авторов и ни одного дня
+    с двумя отчётами. Сложить два отчёта одного дня значило бы посчитать
+    отдел дважды; автор сообщения — не менеджер сделки.
+    """
+    out: dict[str, str] = {}
+    for message in (read or {}).get("messages") or []:
+        day = str(message.get("day") or "")
+        text = message.get("text") or ""
+        if (first <= day <= last) and (_counted(text) or booked_lots(text) is not None):
+            out[day] = text
+    return out
+
+
 def funnel(read: dict[str, Any] | None, first: str, last: str) -> dict[str, Any] | None:
     """Воронка отдела продаж за дни ``first``…``last`` включительно (ГГГГ-ММ-ДД).
 
@@ -447,17 +476,8 @@ def funnel(read: dict[str, Any] | None, first: str, last: str) -> dict[str, Any]
     последний день периода, где они названы. Дней без отчёта ноль не
     приписывается: в ответе сказано, за сколько дней отчёты были.
     """
-    days: dict[str, dict[str, float]] = {}
-    for message in (read or {}).get("messages") or []:
-        day = str(message.get("day") or "")
-        if not (first <= day <= last):
-            continue
-        row = days.setdefault(day, {})
-        for key, pattern in _COUNTS.items():
-            found = re.search(pattern, message.get("text") or "", re.I)
-            if found:
-                row[key] = float(found.group(1))
-    reported = {day: row for day, row in days.items() if row}
+    reported = {day: _counted(text) for day, text in _reports(read, first, last).items()}
+    reported = {day: row for day, row in reported.items() if row}
     if not reported:
         return None
     out: dict[str, Any] = {"days": len(reported), "first": min(reported), "last": max(reported)}
@@ -483,6 +503,10 @@ _BOOKINGS_STOP = re.compile(r"наполнение\s*эскроу|зарегис
                             r"|брокер\s*тур\w*\s*:|ДДУ\s*на\s*регистрации", re.I)
 _BOOKED = re.compile(r"квартир\w*\s*№?\s*(\d{1,4})", re.I)
 _TOWER = re.compile(r"башн\w*\s+[^\s,.;]+", re.I)
+# Менеджер брони — в скобках у самой брони: «АГЕНТСКАЯ (Помазанова Александра)».
+# Порядок слов пишут по-разному («Мария Вольпи» и «Вольпи Мария») — это один
+# человек: ключ — набор слов, имя — как написано впервые.
+_MANAGER = re.compile(r"\(\s*([А-ЯЁ][а-яё]+(?:\s+[А-ЯЁ][а-яё]+){1,2})\s*\)")
 _UNIT_NUMBER = re.compile(r"кв\.?\s*(\d{1,4})", re.I)
 # Площадь в чате и в договоре округлены по-разному; метр разницы — та же
 # квартира, больше — другая.
@@ -508,10 +532,19 @@ def booked_lots(text: str) -> list[dict[str, Any]] | None:
         piece = tail[match.start():found[i + 1].start() if i + 1 < len(found) else len(tail)]
         area = _AREA.search(piece)
         tower = _TOWER.search(piece)
+        manager = _MANAGER.search(piece)
         out.append({"apartment": match.group(1),
                     "area": float(area.group(1).replace(",", ".")) if area else None,
-                    "tower": tower.group(0) if tower else ""})
+                    "tower": tower.group(0) if tower else "",
+                    "manager": " ".join(manager.group(1).split()) if manager else ""})
     return out
+
+
+def _lot_key(lot: dict[str, Any]) -> tuple[str, str]:
+    """Бронь узнаётся по квартире и башне, а не по площади: площадь в отчёте
+    уточняют («126 кВ.м» назавтра стала «121.1»), и по площади одна бронь
+    распалась бы на снятую и новую."""
+    return (lot["apartment"], str(lot.get("tower") or "").lower())
 
 
 def _day(value: str) -> datetime.date:
@@ -552,12 +585,12 @@ def booking_outcomes(read: dict[str, Any] | None, contracts: list[dict[str, Any]
     days = sorted(day for day in lists if day <= last)
     if not days:
         return None
-    tracks: dict[tuple[str, float | None], dict[str, Any]] = {}
+    tracks: dict[tuple[str, str], dict[str, Any]] = {}
     for day in days:
         for lot in lists[day]:
-            key = (lot["apartment"], round(lot["area"], 1) if lot["area"] is not None else None)
-            track = tracks.setdefault(key, {**lot, "first": day})
-            track["last"] = day
+            track = tracks.setdefault(_lot_key(lot), {**lot, "first": day})
+            # Площадь и менеджер — по последнему отчёту: их уточняют.
+            track.update({k: v for k, v in lot.items() if v not in (None, "")}, last=day)
     latest = days[-1]
     gone_out, held = [], []
     for track in tracks.values():
@@ -583,3 +616,99 @@ def booking_outcomes(read: dict[str, Any] | None, contracts: list[dict[str, Any]
             "period": sorted(period, key=lambda item: item["gone"]),
             "total": {key: count(gone_out, key) for key in ("deal", "dropped", "unknown")},
             "held": sorted(held, key=lambda item: item["first"])}
+
+
+# --- воронка целиком и по менеджерам ------------------------------------------
+# Владелец (24.10.2026): «Почему в воронке нет целевых звонков? Звонок —
+# встреча — бронь»; «и плюс статистика менеджеров». Один расчёт для сводки
+# руководству и для отчёта о продажах кабинета.
+
+
+def _share(part: float | None, whole: float | None) -> float | None:
+    return (float(part) / float(whole)) if part is not None and whole else None
+
+
+def _stages(calls: float | None, meetings: float | None, bookings: int | None,
+            deals: int | None) -> dict[str, Any]:
+    return {"calls": calls, "meetings": meetings, "bookings": bookings, "deals": deals,
+            "meetings_share": _share(meetings, calls),
+            "bookings_share": _share(bookings, meetings),
+            "deals_share": _share(deals, bookings)}
+
+
+def _person(name: str, people: dict[frozenset, dict[str, Any]]) -> dict[str, Any]:
+    return people.setdefault(frozenset(name.lower().split()),
+                             {"author": name, "bookings": 0, "deals": 0})
+
+
+def sales_funnel(read: dict[str, Any] | None, contracts: list[dict[str, Any]],
+                 first: str, last: str) -> dict[str, Any] | None:
+    """Целевые звонки → встречи → новые брони → договоры за период, по отделу и
+    по менеджерам.
+
+    - Звонки и встречи — из ежедневных отчётов чата (сводка отдела, в дне —
+      последний отчёт). По менеджерам отчёт их не делит, и так и сказано.
+    - Новые брони — квартиры, впервые появившиеся в списке «Текущих броней» в
+      этот период. Брони из самого первого отчёта новыми не считаются: когда
+      их взяли, отчёт не говорит.
+    - Договоры отдела — подписанные в период (контрактация, по дате
+      подписания).
+    - Менеджер — имя в скобках у самой брони («(Помазанова Александра)»), а
+      не автор сообщения: отчёт пишет дежурный за весь отдел. Договор
+      засчитан менеджеру, если на эту квартиру была его бронь: в выгрузке
+      договоров менеджера нет, и угадывать его нельзя.
+    """
+    every = _reports(read, "", last)
+    if not every:
+        return None
+    since = min(every)
+    days = [day for day in every if first <= day <= last]
+    seen: dict[tuple[str, str], dict[str, Any]] = {}
+    for day in sorted(every):
+        for lot in booked_lots(every[day]) or []:
+            track = seen.setdefault(_lot_key(lot), {**lot, "first": day})
+            track.update({k: v for k, v in lot.items() if v not in (None, "")})
+    counted = funnel(read, first, last) or {}
+    signed = [row for row in contracts
+              if row.get("signed") and first <= str(row["signed"])[:10] <= last]
+    lists_known = any(booked_lots(every[day]) is not None for day in days)
+    new = [lot for lot in seen.values() if first <= lot["first"] <= last and lot["first"] > since]
+    people: dict[frozenset, dict[str, Any]] = {}
+    unnamed = 0
+    for lot in new:
+        if lot.get("manager"):
+            _person(lot["manager"], people)["bookings"] += 1
+        else:
+            unnamed += 1
+    attributed = 0
+    claimed: set[int] = set()
+    for lot in seen.values():
+        deal = _deal_for(lot, signed)
+        if deal and id(deal) not in claimed:
+            claimed.add(id(deal))
+            attributed += 1
+            if lot.get("manager"):
+                _person(lot["manager"], people)["deals"] += 1
+    from market_search import contracting
+
+    deals = int(contracting._totals(signed)["contracts"]) if signed else 0
+    total = _stages(counted.get("calls"), counted.get("meetings"),
+                    len(new) if lists_known else None, deals)
+    managers = [dict(_stages(None, None, row["bookings"], row["deals"]), author=row["author"])
+                for row in sorted(people.values(), key=lambda r: (-r["deals"], -r["bookings"]))]
+    notes = []
+    if not days:
+        notes.append("за период отчётов отдела продаж в чате нет")
+    if managers:
+        notes.append("целевые звонки и встречи отчёт даёт только по отделу — по менеджерам "
+                     "их нет; брони и договоры — по менеджеру, указанному у брони")
+    if unnamed:
+        notes.append(f"у {unnamed} новых броней менеджер не указан")
+    if first <= since <= last:
+        notes.append("брони из первого отчёта в чате новыми не считаются — когда их взяли, "
+                     "отчёт не говорит")
+    if deals > attributed:
+        notes.append(f"договоров без брони в отчётах чата — {deals - attributed}: "
+                     "менеджера в выгрузке договоров нет, им они не приписаны")
+    return {"since": since, "days": len(days), "total": total, "managers": managers,
+            "notes": notes}

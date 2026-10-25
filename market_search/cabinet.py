@@ -3236,6 +3236,29 @@ function salesRoomBlock(d){
       +`<td class="num">${cell(m.calls_per_day)}</td>`
       +`<td class="num">${cell(m.bookings_at_once)}</td></tr>`).join('')
     +'</table></div></details>';
+  // Воронка и менеджеры за 30 дней отчётов: целевые звонки → встречи → новые
+  // брони → договоры, тем же расчётом, что в сводке руководству
+  // (`salesroom.sales_funnel`). Ступени, которой в отчётах нет, — прочерк, а
+  // не ноль; доля — от предыдущей ступени.
+  const pipe=room.pipeline||null;
+  if(pipe){
+    const share=v=>v===null||v===undefined?'':` <span class="muted">(${num(v*100,1)} %)</span>`;
+    const stageRow=(name,r)=>`<tr><td>${esc(name)}</td>`
+      +`<td class="num">${cell(r.calls)}</td>`
+      +`<td class="num">${cell(r.meetings)}${share(r.meetings_share)}</td>`
+      +`<td class="num">${cell(r.bookings)}${share(r.bookings_share)}</td>`
+      +`<td class="num">${cell(r.deals)}${share(r.deals_share)}</td></tr>`;
+    const people=pipe.managers||[];
+    html+=`<h3 style="margin-top:14px">Воронка и менеджеры с ${esc(pipe.first||'')} по ${esc(pipe.last||'')}</h3>`
+      +'<div class="wrap"><table class="peers">'
+      +'<tr><th></th><th class="num">Целевые звонки</th><th class="num">Встречи</th>'
+      +'<th class="num">Новые брони</th><th class="num">Договоры</th></tr>'
+      +stageRow('Отдел продаж',pipe.total||{})
+      +(people.length>1?people.map(r=>stageRow(r.author,r)).join(''):'')
+      +'</table></div>';
+    (pipe.notes||[]).forEach(note=>{
+      html+=`<div class="muted" style="font-size:12.5px;margin-top:6px">${esc(note)}.</div>`;});
+  }
   // О чём говорят — долей сообщений месяца, а не абсолютным счётом: в месяцах
   // разное число отчётов, и голая частота сравнивала бы длину переписки.
   const topics=room.topics||[];

@@ -383,6 +383,8 @@ def _telegram_send_attachments(
     # мини-приложения, а Excel-модель считалась здесь заново — два источника на
     # одни вводные, и разошедшийся браузер давал разную экономику в отчёте и в
     # детализации. Теперь считаем один раз и отдаём обеим.
+    # Блок сравнения стратегий печатается только из подбора сервера.
+    report_payload = {k: v for k, v in report_payload.items() if k != "strategy_compare"}
     try:
         bundle = _run_authoritative_model(
             report_payload.get("inputs") or {},
@@ -397,6 +399,14 @@ def _telegram_send_attachments(
         )
         report_payload = {**report_payload, "result": server_result,
                           "phases": bundle.get("phases") or []}
+        # «Сравнение стратегий» с точками безразличия — подбор здесь, в фоне
+        # вложений, тем же блоком, что у страницы и сборки PDF с сайта.
+        try:
+            report_payload["strategy_compare"] = strategy_compare_for_report(
+                bundle, report_payload.get("inputs") or {}, report_payload.get("tep") or {},
+                report_payload.get("rates") or [], report_payload.get("phasing") or {})
+        except Exception as exc:
+            _TELEGRAM_RUNTIME["last_error"] = "Сравнение стратегий: " + _error_location(exc)
         if problems:
             # Хостинг закрыт, и молча подменить числа нельзя: человек увидит
             # в PDF не то, что было на экране, и не поймёт почему.
