@@ -25,6 +25,14 @@ import main as wrapper  # noqa: E402
 core = wrapper.core
 
 
+@pytest.fixture(autouse=True)
+def _own_data_dir(monkeypatch, tmp_path):
+    """Итог сверки формул пишется на диск по участку. Без своего каталога
+    тест «методика поменялась» оставлял запись в настоящем `data/`, и
+    следующий прогон видел под ТЭП того же участка чужое расхождение."""
+    monkeypatch.setenv("DEVELOPAID_DATA_DIR", str(tmp_path))
+
+
 def test_the_server_endpoint_returns_a_full_glavapu_import(monkeypatch):
     monkeypatch.setattr(core, "analyze_cadastral_territory", lambda req: {
         "territory": {"area_ha": 0.651, "district": "Савеловский",
