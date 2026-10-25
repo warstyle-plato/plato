@@ -2821,6 +2821,9 @@ class CadastralAnalysisRequest(BaseModel):
 class CadastralTepRequest(BaseModel):
     rows: list[dict[str, Any]]
     cadastral_analysis: dict[str, Any] | None = None
+    # Свод ограничений (`land_restrictions`), с которым окно запускало
+    # калькулятор: площадь ограничений уже ушла в него, оговорки — в ТЭП.
+    site_restrictions: dict[str, Any] | None = None
 
 
 class TelegramResultRequest(BaseModel):

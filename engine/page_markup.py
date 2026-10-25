@@ -142,6 +142,9 @@ PAGE += r"""</head>
         <div id="moStatus" class="import-status" style="display:none"></div>
         <div id="moPreview" class="cadastral-preview" style="display:none">
             <div id="moSummary" class="import-summary"></div>
+            <!-- Ограничения участка из скрининга — над кнопкой, а не сноской под
+                 таблицей: «строить нельзя» читается до «Подставить». -->
+            <div id="moRestrictions" class="site-restrictions" style="display:none"></div>
             <div class="import-actions">
               <button class="btn dark" onclick="applyMo()">Подставить в проект</button>
               <span style="font-size:11px;color:#777">В проект встанут новый ТЭП, места в детсадах и школах и плата за смену разрешённого использования земли.</span>
@@ -152,6 +155,7 @@ PAGE += r"""</head>
         <div id="glavapuStatus" class="import-status">Введите кадастровый номер выше, и ТЭП посчитается сам. Готовые примеры лежат в «Личном кабинете», а свой файл можно загрузить ниже.</div>
         <div id="glavapuPreview" class="import-preview" style="display:none">
           <div id="glavapuSummary" class="import-summary"></div>
+          <div id="glavapuRestrictions" class="site-restrictions" style="display:none"></div>
           <div class="import-actions">
             <button class="btn dark" onclick="applyGlavapu()">Подставить в проект</button>
             <span style="font-size:11px;color:#777">Площади квартир и коммерции в проекте заменятся числами из этого расчёта.</span>

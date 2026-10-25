@@ -40,7 +40,7 @@ def test_the_server_path_prefers_the_real_calculator(monkeypatch):
     """Включённый флаг ведёт расчёт в настоящий калькулятор, а не в формулы."""
     seen = {}
 
-    def fake_rows(numbers, area_ha):
+    def fake_rows(numbers, area_ha, restrict_ha=0.0):
         seen["numbers"] = list(numbers)
         seen["area"] = area_ha
         return [{"code": "60", "name": "Озеленение", "unit": "га", "value": "1"}]
@@ -68,7 +68,7 @@ def test_the_server_path_prefers_the_real_calculator(monkeypatch):
 def test_a_broken_automation_falls_back_to_the_formulas(monkeypatch):
     """Худший исход нового пути — сегодняшнее поведение, а не сломанный бот:
     упавший калькулятор уводит расчёт в формулы, а не в ошибку."""
-    def boom(numbers, area_ha):
+    def boom(numbers, area_ha, restrict_ha=0.0):
         raise TimeoutError("калькулятор не отдал таблицу")
 
     def fake_analysis(request):
@@ -240,7 +240,7 @@ def test_the_browser_is_reused_between_calculations(fake_browser, monkeypatch):
     ассетами платились каждым расчётом заново — отсюда и минута. Браузер живёт
     между расчётами, и второй расчёт начинается с готовой машины."""
     monkeypatch.setattr(core, "_glavapu_drive_page",
-                        lambda page, numbers, area, timings: [{"code": "60"}])
+                        lambda page, numbers, area, timings, restrict_ha=0.0: [{"code": "60"}])
 
     core._glavapu_headless_rows(_NUMBERS, 0.19)
     core._glavapu_headless_rows(_NUMBERS, 0.19)
@@ -254,7 +254,7 @@ def test_a_failed_run_throws_the_browser_away(fake_browser, monkeypatch):
     """Упавший прогон мог оставить страницу в неизвестном состоянии. Считать на
     ней дальше — значит выдать чужой ТЭП под своим именем, поэтому браузер
     рвётся, а следующий расчёт начинает с нуля."""
-    def boom(page, numbers, area, timings):
+    def boom(page, numbers, area, timings, restrict_ha=0.0):
         raise RuntimeError("калькулятор сломался посреди расчёта")
 
     monkeypatch.setattr(core, "_glavapu_drive_page", boom)
@@ -262,7 +262,7 @@ def test_a_failed_run_throws_the_browser_away(fake_browser, monkeypatch):
         core._glavapu_headless_rows(_NUMBERS, 0.19)
 
     monkeypatch.setattr(core, "_glavapu_drive_page",
-                        lambda page, numbers, area, timings: [{"code": "60"}])
+                        lambda page, numbers, area, timings, restrict_ha=0.0: [{"code": "60"}])
     core._glavapu_headless_rows(_NUMBERS, 0.19)
     assert fake_browser["launches"] == 2, "после сбоя браузер поднимается заново"
 
@@ -271,7 +271,7 @@ def test_the_steps_are_timed(fake_browser, monkeypatch):
     """«Считает около минуты» — это диагноз только тогда, когда видно, какой
     шаг её берёт. Без замера ускорять пришлось бы наугад."""
     monkeypatch.setattr(core, "_glavapu_drive_page",
-                        lambda page, numbers, area, timings: timings.update(
+                        lambda page, numbers, area, timings, restrict_ha=0.0: timings.update(
                             {"load": 900, "parcel": 2500, "table": 4000}) or [{"code": "60"}])
     core._glavapu_headless_rows(_NUMBERS, 0.19)
 
@@ -304,7 +304,7 @@ def test_the_ready_territory_is_not_asked_for_twice(monkeypatch):
     monkeypatch.setattr(core, "analyze_cadastral_territory", counted)
     monkeypatch.setattr(core, "_GLAVAPU_HEADLESS_ENABLED", True)
     monkeypatch.setattr(core, "_glavapu_headless_rows",
-                        lambda numbers, area_ha: [{"code": "60", "name": "x",
+                        lambda numbers, area_ha, restrict_ha=0.0: [{"code": "60", "name": "x",
                                                    "unit": "га", "value": "1"}])
     monkeypatch.setattr(core, "import_cadastral_tep",
                         lambda request: {"normalized": {}, "source": {}, "warnings": []})
@@ -425,7 +425,7 @@ def test_the_failure_names_the_culprit(monkeypatch):
     """Причина срыва обязана быть в статусе, а не только в логах контейнера:
     «<div id=react-joyride-portal> intercepts pointer events» — это готовый
     диагноз, за которым не надо идти на сервер."""
-    def boom(numbers, area_ha):
+    def boom(numbers, area_ha, restrict_ha=0.0):
         raise TimeoutError(
             '<div id="react-joyride-portal">…</div> subtree intercepts pointer events\n'
             "  - retrying click action\n  - waiting 500ms")

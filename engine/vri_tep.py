@@ -208,7 +208,8 @@ def vri_tep_quick(region: str, query: str,
                  site_area_ha: float | None = None,
                  district: str | None = None,
                  density_sqm_per_ha: float | None = None,
-                 analysis: dict[str, Any] | None = None) -> dict[str, Any]:
+                 analysis: dict[str, Any] | None = None,
+                 restrict_ha: float = 0.0) -> dict[str, Any]:
     """Кнопка бота «Посчитать ВРИ и ТЭП»: карточка + файл формата ГлавАПУ.
 
     МО считается полностью (РНГП, УПКС, Кд); Москва — по формулам
@@ -406,9 +407,14 @@ def vri_tep_quick(region: str, query: str,
         # таблица по площади территории (`glavapu_recommended_density`).
         # Прежде здесь стояли 35 тыс. м²/га для любой площади: это верно
         # только до 2,5 га, а на Нагатино (17,81 га) калькулятор берёт 23,1.
+        # Площадь ограничений (охранные зоны, красные линии — свод скрининга
+        # `land_restrictions`) калькулятор вычитает из территории до всего
+        # остального: terrArea − restrictArea (код калькулятора, функция k).
+        # Плотность по таблице и СПП — от оставшейся части, как у него.
+        calc_area = max(0.0, area - max(0.0, float(restrict_ha or 0.0)))
         density = (float(density_sqm_per_ha) if density_sqm_per_ha and density_sqm_per_ha > 0
-                   else glavapu_recommended_density(area) * 1000.0)
-        spp = area * density
+                   else glavapu_recommended_density(calc_area) * 1000.0)
+        spp = calc_area * density
         apartments_gns = spp * MKD_SPP_SPLIT["apartments"]
         apartments = apartments_gns * 0.65
         commerce_gns = spp * MKD_SPP_SPLIT["ground_commercial"]

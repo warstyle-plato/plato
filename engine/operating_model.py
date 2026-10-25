@@ -102,6 +102,13 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     # Пятно, этажность и подземные уровни — один расчёт на проект; СМР
     # подземной части читает из него надбавку за глубину (`site_massing`).
     massing = site_massing(x, t)
+    # Запрет и ограничение высоты, найденные скринингом, — оговорка схемы:
+    # 17–25 этажей под приаэродромной зоной без слова читались как
+    # проверенные (прогон «Посадка ↔ нормативы», 25.10.2026).
+    restriction_notes = site_restriction_massing_notes(x)
+    if restriction_notes:
+        massing["warnings"] = restriction_notes + [
+            w for w in massing.get("warnings") or [] if w not in restriction_notes]
     # Объёмная схема проекта без очередей — одно здание; свод очередей
     # раскладывает корпуса по очередям сам (`_consolidate_phase_results`).
     if not x.get("_site_massing_project"):

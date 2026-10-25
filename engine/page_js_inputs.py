@@ -177,6 +177,8 @@ async function applyGlavapu(){
    normalized:glavapuImport.normalized,
    recognized:glavapuImport.recognized,
    warnings:glavapuImport.warnings,
+   // Свод ограничений участка: по нему движок ставит оговорку у посадки.
+   site_restrictions:glavapuImport.site_restrictions||null,
    // Без mappings повторное «Применить» после перезагрузки обнуляло
    // территорию (resetTerritoryData) и применяло пустоту.
    mappings:glavapuImport.mappings,

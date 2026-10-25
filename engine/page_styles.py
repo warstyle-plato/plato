@@ -161,6 +161,8 @@ tfoot th{border-top:2px solid #111;color:#111;background:#fff}
 .import-summary b{display:block;margin-top:4px;font-size:13px}
 .import-actions{display:flex;gap:8px;margin-top:14px;align-items:center;flex-wrap:wrap}
 .import-ok{color:var(--positive);font-weight:650}.import-error{color:var(--negative);font-weight:650}
+.site-restrictions{margin:10px 0}.site-restrictions.critical{border-left-color:var(--negative);background:#fbefee}
+.site-restrictions div{margin-top:4px}
 .cadastral-box{margin-top:16px;padding:16px;background:#f7f7f5;border:1px solid #ddd}
 details.cadastral-box>summary{cursor:pointer;font-size:15px;font-weight:600;margin-bottom:6px}
 details.cadastral-box>summary::marker{color:#888}

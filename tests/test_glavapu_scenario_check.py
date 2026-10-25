@@ -534,7 +534,7 @@ def test_the_engine_browser_thread_runs_the_scenario(calc_page, monkeypatch) -> 
     core = wrapper.core
     server_url, analysis = calc_page.base, calc_page.analysis
 
-    def drive(page, numbers, area_ha, timings):
+    def drive(page, numbers, area_ha, timings, restrict_ha=0.0):
         def route(r):
             url = r.request.url
             if url.startswith(server_url):

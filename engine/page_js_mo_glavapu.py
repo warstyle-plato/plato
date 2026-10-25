@@ -329,7 +329,9 @@ function renderMo(data){
    .concat([['Занято нормативами',landNum(b.used_ha,4)+' га'],['Остаток под жильё, УДС и прочее',landNum(b.remaining_ha,4)+' га']])
  ));
  document.getElementById('moTables').innerHTML='<div class="mo-tables">'+tables.join('')+'</div>';
- document.getElementById('moWarnings').innerHTML=(data.warnings||[]).map(x=>'• '+escapeHtml(x)).join('<br>');
+ const said=showSiteRestrictions('moRestrictions',data.site_restrictions);
+ document.getElementById('moWarnings').innerHTML=(data.warnings||[]).filter(x=>!said.includes(String(x)))
+  .map(x=>'• '+escapeHtml(x)).join('<br>');
  document.getElementById('moPreview').style.display='block';
 }
 
@@ -355,7 +357,8 @@ async function applyMo(options){
   vri:moResult.vri||{},
   social:moResult.social||{},
   balance:moResult.balance||{},
-  warnings:moResult.warnings||[]
+  warnings:moResult.warnings||[],
+  site_restrictions:moResult.site_restrictions||null
  };
  Object.entries(moResult.tep||{}).forEach(([key,values])=>{
   if(tep[key])Object.assign(tep[key],values);
@@ -524,7 +527,8 @@ function renderGlavapuPreview(data){
  // Предупреждение, которое видно всегда, не видно никогда: шесть абзацев
  // справки печатались на каждый импорт, и «продаваемая площадь не прочитана»
  // терялось между ними. Теперь блок появляется, только когда есть что сказать.
- const gw=(data.warnings||[]).filter(x=>String(x||'').trim());
+ const said=showSiteRestrictions('glavapuRestrictions',data.site_restrictions);
+ const gw=(data.warnings||[]).filter(x=>String(x||'').trim()&&!said.includes(String(x)));
  glavapuWarnings.innerHTML=gw.map(x=>'• '+x).join('<br>');
  glavapuWarnings.style.display=gw.length?'block':'none';
  const gn=(data.notes||[]).filter(x=>String(x||'').trim());
