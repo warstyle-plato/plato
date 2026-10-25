@@ -853,6 +853,12 @@ VRI_USE_TYPES_PLACEHOLDER = "__DEVELOPAID_VRI_USE_TYPES__"
 # на «сколько положено асфальта», гараж — на «сколько мест решили построить и
 # продать»; сводить их одним числом нельзя.
 #
+# Человек сильнее и сейчас. Но поле, которого он не заполнил, — не решение
+# «гаража нет»: тогда гараж строится по нормативу, а у офиса нежилого проекта
+# под землёй идёт остаток после мест первых этажей (владелец, 25.10.2026; правило —
+# `object_garage_takes_norm_rest` в norms.py, подробно — docs/office_two_paths.md,
+# «Паркинг»). Гостевых мест норматив не выдумывает: доля гостевых — своё поле.
+#
 # Встроенной коммерции МКД здесь нет намеренно: её машино-места лежат в общем
 # подземном паркинге проекта, у которого своя строка ТЭП и своя выручка.
 # Отдельный гараж у неё был бы вторым счётом тех же мест.
@@ -2386,7 +2392,7 @@ NONRESIDENTIAL_CLEARED_INPUTS: dict[str, str] = {
     "social_clinic_gba_sqm": "площадь поликлиники",
     "social_compensation_mln": "соцкомпенсация",
     "land_rights_cost_mln": "плата за смену ВРИ",
-    "underground_manual_spaces": "подземный паркинг проекта — места",
+    "underground_manual_spaces": "подземный паркинг проекта — места (места офиса задаются в его собственных полях)",
     "underground_manual_gns_sqm": "подземный паркинг проекта — площадь",
 }
 
@@ -2459,48 +2465,6 @@ OBJECT_SMR_RATE_DEFAULTS: dict[str, float] = {
     for obj in STANDALONE_OBJECTS
     if not object_rate_is_turnkey({"project_kind": PROJECT_KIND_NONRESIDENTIAL}, obj)
 }
-
-
-def office_takes_project_parking(inputs: dict[str, Any],
-                                 tep: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-    """Подземный паркинг нежилого проекта — паркинг его офиса.
-
-    Владелец, 22.10.2026: у офиса паркинг — часть продукта (места продаются
-    вместе с ним или сдаются), а не «остаток жилья». Прежде 68 мест и 2 380 м²
-    Пролетарского пр. стояли строкой «осталось от жилья во вводных — в расчёт
-    не входит», и паркинг не строился и не приносил денег.
-
-    Места переходят, только когда адресат один: офис в проекте единственный и
-    своих подземных мест у него не задано (ноль у офиса — «по нормативу», а
-    названные человеком места проекта точнее норматива). Иначе места остаются названным
-    остатком — угадывать, чьи они, расчёт не берётся. Возвращает копии
-    вводных и ТЭП и строку о переносе.
-    """
-    if not is_nonresidential(inputs):
-        return inputs, tep, []
-    offices = [obj for obj in STANDALONE_OBJECTS if obj.product == "offices"
-               and b(inputs, obj.enabled_key) and n(inputs, f"{obj.prefix}_gba_sqm") > 0]
-    if len(offices) != 1:
-        return inputs, tep, []
-    prefix = offices[0].prefix
-    if n(inputs, f"{prefix}_parking_under_spaces") > 0:
-        return inputs, tep, []
-    row = (tep or {}).get("underground_parking") or {}
-    spaces = max(n(inputs, "underground_manual_spaces"), n(row, "units"))
-    if spaces <= 0:
-        return inputs, tep, []
-    x = dict(inputs)
-    t = {key: dict(value) if isinstance(value, dict) else value for key, value in (tep or {}).items()}
-    x[f"{prefix}_parking_under_spaces"] = int(round(spaces))
-    x["underground_manual_spaces"] = 0
-    x["underground_manual_gns_sqm"] = 0
-    if "underground_parking" in t:
-        for col in ("gns", "total_area", "useful", "saleable", "transfer", "units"):
-            t["underground_parking"][col] = 0
-    count = f"{spaces:,.0f}".replace(",", " ")
-    note = (f"Подземный паркинг проекта, {count} машино-мест, отнесён к объекту «{offices[0].tep_label}»: "
-            "места продаются вместе с ним или сдаются в аренду.")
-    return x, t, [note]
 
 
 def nonresidential_leftovers(inputs: dict[str, Any] | None,

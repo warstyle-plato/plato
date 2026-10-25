@@ -98,7 +98,10 @@ def _nonres_inputs(**over) -> tuple[dict, dict]:
     t = copy.deepcopy(core.TEP_DEFAULT)
     x.update(offices_enabled=True, offices_gba_sqm=40000.0, offices_saleable_sqm=24000.0,
              offices_parking_under_spaces=0, offices_parking_over_spaces=0,
-             _parking_by_hand=["offices"],  # без гаража: метры — только здание
+             _parking_by_hand=["offices"],
+             # Без гаража: метры — только здание. В нежилом проекте ноль под
+             # землёй — «по нормативу», «гаража нет» говорит отказ (25.10.2026).
+             underground_parking_disabled=True,
              offices_strategy="income", project_kind=core.PROJECT_KIND_NONRESIDENTIAL)
     x.update(over)
     t.setdefault("offices", {}).update(gns=40000.0, total_area=37600.0,
