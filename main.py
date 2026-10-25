@@ -1981,38 +1981,17 @@ def _deliver_normatives_announcements() -> None:
                                  "stopped_by": "" if sent else "ни один адресат не принял"})
 
 
-_NORMATIVES_RESULT_WORDS = {
-    "changed": "источник изменился",
-    "review_required": "источник требует проверки",
-    "unreachable": "источник не отвечает",
-    # Находки открытых источников: акт отменяют, не трогая наш файл, и
-    # отпечаток об этом молчит по построению.
-    "repealed": "в источниках пишут, что документ утратил силу",
-    "amended": "в источниках пишут о новой редакции",
-}
-
-
 def _normatives_announcement_text(records: list[dict]) -> str:
     """Одно сообщение на всю пачку: проверка идёт по всему реестру разом.
 
     Тринадцать сообщений подряд читаются как поломка бота — ровно так же, как
-    это уже было с новинками каталога.
+    это уже было с новинками каталога. Текст собирает реестр
+    (`normatives_registry.announcement_text`): что изменилось, что задевает
+    в расчёте, что делать и кто решает — по карточке акта, а не по памяти.
     """
-    lines = ["<b>Нормативная база: есть изменения</b>"]
-    for item in records[:20]:
-        name = str(item.get("short_name") or item.get("id") or "")
-        word = _NORMATIVES_RESULT_WORDS.get(str(item.get("result") or ""), "изменение")
-        scope = str(item.get("scope") or "")
-        line = f"• {name}" + (f" ({scope})" if scope else "") + f" — {word}"
-        message = str(item.get("message") or "").strip()
-        if message:
-            line += f": {message}"
-        lines.append(line)
-    if len(records) > 20:
-        lines.append(f"…и ещё {len(records) - 20}")
-    lines.append("")
-    lines.append("Что именно изменилось — на странице «Нормативная база»: /normatives")
-    return "\n".join(lines)
+    import normatives_registry
+
+    return normatives_registry.announcement_text(records)
 
 
 def _krt_take_announcements() -> tuple[list[dict], list[int], dict[str, dict[str, bool]]]:
