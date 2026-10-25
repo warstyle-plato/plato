@@ -586,6 +586,35 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     else:
         footprint, footprint_origin = room, "estimate"
 
+    # Пятно, которое встаёт на участок корпусами схемы (`site_massing_fit_sqm`):
+    # не встаёт — пятно сжимается до него и этажность растёт, но не выше
+    # предела (владелец 25.10.2026). Ручное пятно — число человека, его не трогаем.
+    fit = max(0.0, float(x.get("_massing_fit_sqm") or 0.0))
+    if fit > 0 and footprint_origin != "manual" and footprint > fit + 0.5 and home_gns > 0:
+        wanted = footprint
+        floor_spot = home_gns / limit
+        if floor_spot <= fit + 0.5:
+            footprint, footprint_origin = fit, "fit"
+            notes.append(
+                f"Пятно {_fmt_ru(wanted)} м² на участке не встаёт: с отступом "
+                f"{_fmt_ru(setback_m)} м от границ и разрывом {_fmt_ru(LAYOUT_GAP_IN_ROW_M)} м между "
+                f"корпусами на нём помещается не больше {_fmt_ru(fit)} м². Поэтому пятно взято "
+                f"{_fmt_ru(fit)} м², а этажность выше — "
+                f"{_fmt_ru(_mo_land_capacity.average_storeys(home_gns, fit), 1)}.")
+        else:
+            footprint, footprint_origin = floor_spot, "limit"
+            warnings.append(
+                f"{subject} с наземной площадью {_fmt_ru(home_gns)} м² на участке не помещается. "
+                f"Даже на {_fmt_ru(limit)} этажах "
+                f"{'(предел участка)' if max_storeys > 0 else '(выше расчёт не ставит)'} "
+                f"пятно — {_fmt_ru(floor_spot)} м², а с отступом {_fmt_ru(setback_m)} м от границ "
+                f"и разрывом {_fmt_ru(LAYOUT_GAP_IN_ROW_M)} м между корпусами на участке "
+                f"помещается не больше {_fmt_ru(fit)} м²: не хватает "
+                f"{_fmt_ru(floor_spot - fit)} м². Уменьшите наземную площадь, проверьте "
+                "предельную этажность или задайте пятно застройки вручную.")
+        # Нехватка земли — по балансу участка, как в книге.
+        shortage = max(0.0, footprint - room) if site_sqm > 0 else 0.0
+
     if site_sqm <= 0:
         warnings.append("Площадь участка не задана, поэтому пятно застройки, этажность "
                         "и число подземных уровней не посчитаны. Укажите площадь участка "
@@ -690,6 +719,9 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "footprint_sqm": footprint,
         "footprint_origin": footprint_origin,
         "footprint_shortage_sqm": shortage,
+        # Наибольшее пятно, которое встаёт на участок корпусами схемы (0 — без
+        # ограничения): вводная книги, посчитанная геометрией схемы.
+        "footprint_fit_sqm": fit,
         # Всё, что стоит на участке: пятно жилых домов и пятна отдельных зданий
         # (владелец 23.10.2026) — тот же итог, что сумма корпусов на схеме.
         "built_sqm": footprint + sum(o["footprint_sqm"] for o in objects),

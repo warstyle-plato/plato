@@ -171,8 +171,13 @@ def _main_direction(rings: list[list[list[float]]]) -> float:
 
 
 def _phase_corpora(phases: list[dict[str, Any]], footprint: float, limit: float,
-                   footprint_origin: str) -> list[dict[str, Any]]:
-    """Корпуса очередей: пятно ∝ наземной ГНС, этажность ≤ предела, длина ≤ 100 м."""
+                   footprint_origin: str, one_building: bool = False) -> list[dict[str, Any]]:
+    """Корпуса очередей: пятно ∝ наземной ГНС, этажность ≤ предела, длина ≤ 100 м.
+
+    `one_building` — проект без жилья (`without_housing`): очередь — одно
+    здание, а не жилые секции глубиной 18 м и длиной до 100 м (владелец
+    25.10.2026: «одно здание и три корпуса — где тут?»). Его пятно ищет на
+    участке форму от офисной глубины 24 м до квадрата (`_shapes_for`)."""
     total = sum(max(0.0, float(p.get("above_gns_sqm") or 0.0)) for p in phases)
     if total <= 0 or footprint <= 0:
         return []
@@ -191,10 +196,12 @@ def _phase_corpora(phases: list[dict[str, Any]], footprint: float, limit: float,
             spot, storeys = gns / limit, limit
         else:
             parts = 1
-        longest = LAYOUT_CORPUS_DEPTH_M * LAYOUT_CORPUS_MAX_LENGTH_M
-        parts = max(parts, int(_math.ceil(spot / longest - 1e-9)))
+        if not one_building:
+            longest = LAYOUT_CORPUS_DEPTH_M * LAYOUT_CORPUS_MAX_LENGTH_M
+            parts = max(parts, int(_math.ceil(spot / longest - 1e-9)))
         for j in range(parts):
             out.append({
+                **({"depth_m": LAYOUT_OTHER_DEPTH_M} if one_building else {}),
                 "phase": int(p.get("phase") or 1), "phase_name": str(p.get("name") or ""),
                 "corpus": j + 1, "corpora_in_phase": parts,
                 "area_sqm": spot / parts,
@@ -297,21 +304,117 @@ def _grid_place(corpora: list[dict[str, Any]], rings: list[list[list[float]]]) -
     return True
 
 
-def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
-                        phases: list[dict[str, Any]]) -> dict[str, Any]:
-    """Корпуса на участке → {site, buildings, …}; координаты — метры схемы.
+def _layout_corpora(x: dict[str, Any], massing: dict[str, Any], phases: list[dict[str, Any]],
+                    footprint: float, limit: float) -> list[dict[str, Any]]:
+    """Корпуса схемы: отдельные здания и очереди — с подписями и ключами."""
+    objects = massing.get("objects") or []
+    corpora = _object_corpora(objects) + _phase_corpora(
+        phases, footprint, limit, str(massing.get("footprint_origin") or "estimate"),
+        without_housing(x))
+    for c in corpora:
+        if c["phase"] == 0:
+            continue
+        name = (f"Очередь {c['phase']}" if len(phases) > 1 else
+                "Жилой дом" if objects else "Здание")
+        corpus = f", корпус {c['corpus']}" if c["corpora_in_phase"] > 1 else ""
+        c["label"] = f"{name}{corpus}, {_storeys_word(c['storeys_shown'])}"
+        c["id"] = f"p{c['phase']}-{c['corpus']}"
+    for c in corpora:
+        c.setdefault("id", f"o-{c.get('object')}-{c['corpus']}")
+    return corpora
 
-    `phases` — [{"phase": 1, "name": "…", "above_gns_sqm": …}]; проект без
-    очередей — одна запись. Схема повёрнута так, что самая длинная сторона
-    участка идёт вдоль оси x.
-    """
-    site_sqm = float(massing.get("site_sqm") or 0.0)
+
+def _engine_places_all(corpora: list[dict[str, Any]], site: list[list[list[float]]]) -> bool:
+    """Встают ли все корпуса расстановкой движка: по кварталам, иначе сеткой."""
+    axis = massing_strip_axis(site)
+    if _engine_layout_cached(corpora, site, massing_blocks(site, axis), axis):
+        return True
+    return _grid_place([dict(c) for c in corpora], site)
+
+
+_FIT_CACHE: dict[str, float] = {}
+
+
+def site_massing_fit_sqm(x: dict[str, Any], massing: dict[str, Any],
+                         phases: list[dict[str, Any]]) -> float:
+    """Наибольшее пятно, которое встаёт на участок (с отступами и разрывами)
+    корпусами схемы, → м²; 0 — пятно расчёта встаёт как есть или подбирать
+    нечего (пятно задано руками, участка нет, корпусов больше, чем схема рисует).
+
+    Решение владельца (25.10.2026, AskUserQuestion): пятно, которое на участке
+    не встаёт, расчёт сжимает до того, что встаёт, и поднимает этажность — до
+    предела участка; не встаёт и на пределе — расчёт говорит, сколько не
+    хватает (`site_massing`, `_massing_fit_sqm`). Схема и ТЭП читают одно пятно.
+    Подбор — той же расстановкой движка, что рисует схему (`_engine_places_all`)."""
     footprint = float(massing.get("footprint_sqm") or 0.0)
+    if footprint <= 0 or massing.get("footprint_origin") == "manual":
+        return 0.0
+    site = _layout_site(x, massing)
+    if not site:
+        return 0.0
+    rings = site[0]
     setback = float(massing.get("setback_m") or 0.0)
-    given_limit = float(massing.get("max_storeys_allowed") or 0.0)
-    limit = given_limit if given_limit > 0 else float(LAYOUT_STOREYS_LIMIT_DEFAULT)
-    notes: list[str] = []
+    inner = [r for r in (inset_ring(ring, setback) for ring in rings) if len(r) >= 3]
+    area = inner or rings
+    key = hashlib.sha256(json.dumps(
+        [[[round(p[0], 2), round(p[1], 2)] for p in r] for r in area]
+        + [round(footprint, 1), without_housing(x),
+           [[o.get("key"), round(float(o.get("footprint_sqm") or 0.0), 1), o.get("kind"),
+             o.get("storeys")] for o in massing.get("objects") or []],
+           [round(float(p.get("above_gns_sqm") or 0.0), 1) for p in phases]],
+        separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+    if key in _FIT_CACHE:
+        return _FIT_CACHE[key]
 
+    def fits(spot: float) -> bool:
+        # Предел этажности здесь не режет: ищется само место на участке.
+        corpora = _layout_corpora(x, massing, phases, spot, 1e9)
+        if not corpora or len(corpora) > LAYOUT_MAX_DRAWN_CORPORA:
+            return True
+        return _engine_places_all(corpora, area)
+
+    if fits(footprint):
+        found = 0.0
+    else:
+        low, high = 0.0, footprint
+        for _ in range(14):
+            mid = (low + high) / 2.0
+            if fits(mid):
+                low = mid
+            else:
+                high = mid
+        # Ноль — «встаёт как есть»; на участке совсем ничего не встаёт — 1 м².
+        found = max(1.0, _math.floor(low))
+    if len(_FIT_CACHE) > 256:
+        _FIT_CACHE.clear()
+    _FIT_CACHE[key] = found
+    return found
+
+
+def site_massing_fitted(x: dict[str, Any], tep: dict[str, Any],
+                        phases: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """Пятно, этажность и уровни проекта, где пятно встаёт на участок схемы.
+
+    Один источник для расчёта, книги и схемы: `site_massing`, а если его пятно
+    на участке не встаёт — он же с наибольшим пятном, которое встаёт
+    (`site_massing_fit_sqm`). Очередь берёт расчёт проекта как есть."""
+    massing = site_massing(x, tep)
+    if x.get("_site_massing_project"):
+        return massing
+    phases = phases or [{"phase": 1, "above_gns_sqm": massing["residential_gns_sqm"]}]
+    fit = site_massing_fit_sqm(x, massing, phases)
+    if fit > 0:
+        massing = site_massing({**x, "_massing_fit_sqm": fit}, tep)
+    return massing
+
+
+def _layout_site(x: dict[str, Any], massing: dict[str, Any]
+                 ) -> tuple[list[list[list[float]]], dict[str, float], str, list[str]] | None:
+    """Участок схемы в метрах → (кольца, рамка, происхождение формы, пояснения);
+    участка нет — None. Схема повёрнута так, что самая длинная сторона участка
+    идёт вдоль оси x; полоса — слева направо с лёгким подъёмом."""
+    site_sqm = float(massing.get("site_sqm") or 0.0)
+    notes: list[str] = []
     rings, frame = _site_rings_m(x)
     if rings:
         contour_sqm = sum(abs(_ring_area(r)) for r in rings)
@@ -323,7 +426,6 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
                          "вся территория проекта. Поэтому участок показан квадратом той же площади, "
                          "что в расчёте.")
             rings, frame = [], {}
-    axis = None
     if rings:
         shape_origin = "contour"
         axis = massing_strip_axis(rings)
@@ -342,22 +444,30 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
             notes.append("Контура участка из ЕГРН нет, поэтому участок показан квадратом той же "
                          "площади.")
     else:
+        return None
+    return rings, frame, shape_origin, notes
+
+
+def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
+                        phases: list[dict[str, Any]]) -> dict[str, Any]:
+    """Корпуса на участке → {site, buildings, …}; координаты — метры схемы.
+
+    `phases` — [{"phase": 1, "name": "…", "above_gns_sqm": …}]; проект без
+    очередей — одна запись. Схема повёрнута так, что самая длинная сторона
+    участка идёт вдоль оси x.
+    """
+    footprint = float(massing.get("footprint_sqm") or 0.0)
+    setback = float(massing.get("setback_m") or 0.0)
+    given_limit = float(massing.get("max_storeys_allowed") or 0.0)
+    limit = given_limit if given_limit > 0 else float(LAYOUT_STOREYS_LIMIT_DEFAULT)
+    site = _layout_site(x, massing)
+    if not site:
         return {"buildings": [], "site_rings": [], "notes": [], "storeys_limit": limit}
+    rings, frame, shape_origin, notes = site
 
     inner = [r for r in (inset_ring(ring, setback) for ring in rings) if len(r) >= 3]
     objects = massing.get("objects") or []
-    corpora = _object_corpora(objects) + _phase_corpora(
-        phases, footprint, limit, str(massing.get("footprint_origin") or "estimate"))
-    for c in corpora:
-        if c["phase"] == 0:
-            continue
-        name = (f"Очередь {c['phase']}" if len(phases) > 1 else
-                "Жилой дом" if objects else "Здание")
-        corpus = f", корпус {c['corpus']}" if c["corpora_in_phase"] > 1 else ""
-        c["label"] = f"{name}{corpus}, {_storeys_word(c['storeys_shown'])}"
-        c["id"] = f"p{c['phase']}-{c['corpus']}"
-    for c in corpora:
-        c.setdefault("id", f"o-{c.get('object')}-{c['corpus']}")
+    corpora = _layout_corpora(x, massing, phases, footprint, limit)
     plan: dict[str, Any] = {}
     if corpora and len(corpora) <= LAYOUT_MAX_DRAWN_CORPORA:
         plan = _place_corpora(x, corpora, rings, inner, setback, shape_origin)
@@ -472,12 +582,11 @@ def _unplaced_note(corpora: list[dict[str, Any]], phases_count: int) -> str:
         name = own[0]["label"].split(",")[0] if own[0].get("label") else "Корпус"
         parts.append(f"{name} — {_corpora_word(len(own))}, пятно "
                      f"{_fmt_ru(sum(c['area_sqm'] for c in own))} м²")
-    return (f"На участке в настоящем размере встают {len(corpora) - len(missing)} из "
-            f"{len(corpora)} корпусов. Не поместились: {'; '.join(parts)}. В расчёте они есть: "
-            f"схема показывает, что при разрыве {_fmt_ru(LAYOUT_GAP_IN_ROW_M)} м между корпусами "
-            "и отступе от границ участка они на нём не встают. Уменьшать корпуса на схеме "
-            "нельзя: тогда она показывала бы застройку реже, чем она есть. Пятно и этажность "
-            "можно поменять в полях этой карточки.")
+    return (f"На участке встают {len(corpora) - len(missing)} из {len(corpora)} корпусов. "
+            f"Для остальных места нет ({'; '.join(parts)}): с отступом от границ участка и "
+            f"разрывом {_fmt_ru(LAYOUT_GAP_IN_ROW_M)} м между корпусами они не помещаются, хотя "
+            "их площадь в расчёте есть. Уменьшите наземную площадь, поднимите предельную "
+            "этажность или задайте пятно застройки в полях этой карточки.")
 
 
 _ENGINE_LAYOUT_CACHE: dict[str, list[Any]] = {}
@@ -715,10 +824,10 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
         missing = sum(1 for b in own if not b.get("ring_m"))
         tail = ""
         if missing:
-            tail = ("; на участке в настоящем размере не поместился" if missing == 1 and len(own) == 1
-                    else f"; на участке в настоящем размере не поместился 1 из {len(own)}"
+            tail = ("; на участке не поместился" if missing == 1 and len(own) == 1
+                    else f"; на участке не поместился 1 из {len(own)}"
                     if missing == 1 else
-                    f"; на участке в настоящем размере не поместились {missing} из {len(own)}")
+                    f"; на участке не поместились {missing} из {len(own)}")
         legend.append({"number": number, "phase": first["phase"], "text": text, "area_sqm": area,
                        "corpora": len(own), "unplaced": missing,
                        "line": f"{number} — {text}, пятно {_fmt_ru(area)} м²{tail}",
@@ -726,16 +835,18 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
                        LAYOUT_PHASE_COLORS[(first["phase"] - 1) % len(LAYOUT_PHASE_COLORS)]})
     levels = int(layout.get("underground_levels") or 0)
     placed_under = bool(layout.get("underground_plan"))
+    social = any(b.get("object") in SOCIAL_PLOT_KEYS for b in buildings)
     caption = ("Зелёное — участок без отступов, светлая полоса вдоль границ до пунктира — отступ. "
                + (f"Под участком — {_levels_word(levels)} с площадью каждого; по высоте они "
                   "раздвинуты, чтобы был виден каждый"
                   + (", а по плану каждая плита лежит там, где этот уровень: под корпусами "
-                     "и двором; под участками школы и детского сада паркинга нет" if placed_under
+                     "и двором" + ("; под участками школы и детского сада паркинга нет"
+                                   if social else "") if placed_under
                      else "") + ". " if texts else "")
                + "Корпуса окрашены по очередям, номер на крыше — номер строки в списке под схемой.")
     plan = layout.get("plan") or {}
-    who = ("Расстановку предложил Платон, движок её проверил" if plan.get("origin") == "plato"
-           else "Корпуса расставил движок")
+    who = ("Расстановку корпусов предложил помощник Платон" if plan.get("origin") == "plato"
+           else "Корпуса расставлены")
     footer = (f"{who} для наглядности: это не генплан, а схема того, как корпуса могут встать "
               f"на участке. Высота на схеме — по {_fmt_ru(LAYOUT_STOREY_HEIGHT_M)} м на этаж.")
     return {"caption": caption, "footer": footer,

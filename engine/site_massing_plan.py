@@ -280,39 +280,18 @@ def site_massing_plan_note(plan: dict[str, Any], grid: bool = False) -> dict[str
     """Состояние плана для схемы: происхождение расстановки и фраза для посетителя."""
     status = plan.get("status") or "square"
     gap = _fmt_ru(LAYOUT_GAP_IN_ROW_M)
-    engine = ("корпуса расставил движок: по кварталам участка, секциями вдоль сторон квартала, "
-              "очереди — подряд вдоль участка.")
-    if grid:
-        engine = "корпуса расставил движок рядами."
-    stale = ("Исходные данные схемы изменились (контур, площади или этажность корпусов, очереди "
-             "или отступ), поэтому прежний план Платона устарел. ") if plan.get("stale") else ""
+    # Посетителю — только то, что нарисовано (владелец 25.10.2026): как шла
+    # расстановка, кто её предлагал и почему план не принят, — внутренняя
+    # кухня; причина остаётся в ответе (`reason`, `status`) для команды.
+    note = ""
+    origin = "engine"
     if status == "ready":
-        note = ("Расстановку корпусов предложил Платон, движок её проверил: все корпуса внутри "
-                f"участка без отступов, не ближе {gap} м друг к другу, пятна и этажность — те же, "
-                "что в расчёте.")
+        note = ("Расстановку корпусов предложил помощник Платон: все корпуса стоят внутри "
+                f"участка с отступом от границ, не ближе {gap} м друг к другу, пятна и этажность — "
+                "те же, что в расчёте.")
         if plan.get("summary"):
-            note += f" Замысел Платона: {str(plan['summary']).strip()}"
+            note += f" Замысел: {str(plan['summary']).strip()}"
         origin = "plato"
-    elif status == "pending":
-        note = (stale + "Платон готовит план расстановки корпусов. Пока " + engine
-                + " Когда план будет готов, схема обновится.")
-        origin = "engine"
-    elif status == "rejected":
-        note = ("Платон предложил расстановку, но движок её не принял. " + str(plan.get("reason") or "")
-                + " Поэтому " + engine)
-        origin = "engine"
-    elif status == "failed":
-        note = ("Платон не смог предложить расстановку: " + str(plan.get("reason") or "нет ответа")
-                + ". Поэтому " + engine)
-        origin = "engine"
-    elif status in ("unavailable", "off"):
-        why = ("Платон на этом сервере не подключён" if status == "unavailable"
-               else "План расстановки от Платона на этом сервере выключен")
-        note = stale + why + ", поэтому " + engine
-        origin = "engine"
-    else:
-        note = ""
-        origin = "engine"
     note = note.replace("..", ".")
     out = {k: v for k, v in plan.items() if k in ("status", "key", "stale", "reason", "summary")}
     out.update(status=status, origin=origin, note=note[:1].upper() + note[1:] if note else "")
