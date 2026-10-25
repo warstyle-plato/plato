@@ -606,6 +606,32 @@ function renderCadastralPreview(data){
 }
 
 let landLookup=null;
+// Контур ЕГРН в пути: расчёт, ушедший до его прихода, рисует участок квадратом
+// и говорит, что контур загружается, а не что его нет; пришёл контур — схема
+// пересчитывается сама (замечание «Посадки», 25.10.2026: квадрат «контура из
+// ЕГРН нет» после «Подставить в проект», хотя контур приходит через секунду).
+let landContourPending=0;
+function landHasContour(data){
+ return !!(data&&(data.results||[]).some(r=>r&&r.found!==false&&(r.contour_merc||[]).length));
+}
+// Расчёт ушёл, пока контур был в пути: его ответ — квадрат, и даже если он
+// ещё не вернулся, по приходе контура нужен свежий.
+let calcWentWithoutContour=false;
+function calcRequestInputs(){
+ if(landContourPending>0&&!landHasContour(inputs._land_lookup)){
+  calcWentWithoutContour=true;
+  return {...inputs,_land_contour_pending:true};
+ }
+ return inputs;
+}
+function landContourArrived(data){
+ if(!landHasContour(data))return;
+ const layout=((((lastResult||{}).tep||{}).site_massing||{}).scheme||{}).layout||{};
+ if(calcWentWithoutContour||layout.site_shape_origin==='square'){
+  calcWentWithoutContour=false;
+  calculate();
+ }
+}
 let landScreeningRun=0;
 // Ответ скрининга рисуется и больше нигде не живёт, а развёрнутой карте нужны
 // очертания зон того же участка. Держим последний ответ целиком: собирать его
@@ -624,7 +650,11 @@ async function drawLandPreviewQuiet(query){
  try{
   const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
   if(!cadastralNumbersIn(raw).length)return;
-  const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})});
+  landContourPending++;
+  let response;
+  try{
+   response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})});
+  }finally{landContourPending=Math.max(0,landContourPending-1)}
   // Ограничения не зависят от картинки: карточка — украшение, а скрининг —
   // ответ на вопрос «можно ли тут строить». Раньше он запускался только после
   // удачного контура, и на 22 участках не показывался вовсе (замечание
@@ -636,6 +666,7 @@ async function drawLandPreviewQuiet(query){
   landLookup=data;
   inputs._land_lookup=cloneValue(data);
   renderLandLookup(data);
+  landContourArrived(data);
  }catch(e){/* контур — украшение, не данные */}
 }
 
@@ -1020,9 +1051,13 @@ async function lookupLand(options){
  status.textContent='Запрашиваю данные об участке в госреестре…';
  hideLandPreview();
  try{
-  const response=await fetch('/land/lookup',{
-   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})
-  });
+  landContourPending++;
+  let response;
+  try{
+   response=await fetch('/land/lookup',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})
+   });
+  }finally{landContourPending=Math.max(0,landContourPending-1)}
   const data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Не удалось получить данные об участке из госреестра');
   landLookup=data;
@@ -1030,6 +1065,7 @@ async function lookupLand(options){
   // была лишним шагом, и забытая, она молча теряла сведения при закрытии.
   inputs._land_lookup=cloneValue(data);
   renderLandLookup(data);
+  landContourArrived(data);
   // Скрининг — довесок к карточке, а не ответ на запрос. Его сбой не имеет
   // права утащить весь поиск в ветку ошибки: сведения ЕГРН уже получены, и
   // сказать про них «не удалось» значит соврать про то, что удалось. Свою

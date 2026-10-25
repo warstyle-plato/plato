@@ -282,14 +282,14 @@ async function calculate(){
  const calcTicket=++calcRun;
  try{
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
-   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
+   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs:calcRequestInputs(),tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
    if(calcTicket!==calcRun)return null;
    if(!response.ok){renderCalcLocked(await calcRefusal(response),response.status);return null}
    const bundle=await response.json();
    if(calcTicket!==calcRun)return null;
    phaseBundle=bundle;lastResult=phaseBundle.consolidated;
  }else{
-   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
+   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs:calcRequestInputs(),tep,rates,session:activeSession(),access_key:projectsAdminKey})});
    if(calcTicket!==calcRun)return null;
    if(!response.ok){renderCalcLocked(await calcRefusal(response),response.status);return null}
    const result=await response.json();

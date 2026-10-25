@@ -220,3 +220,76 @@ def test_the_page_draws_what_the_tep_counts(seen):
     card = got["card"].replace("\xa0", " ")
     assert "на участке не встаёт" in card and "этажность выше" in card, card
     assert "Платон" not in card and "движок" not in card
+
+
+# --- Контур ЕГРН приходит после расчёта ---------------------------------------
+# Замечание «Посадки» (25.10.2026, PR #918): после «Подставить в проект» схема
+# рисовалась квадратом с подписью «контура из ЕГРН нет», хотя контур приходил
+# через секунду, и настоящий появлялся только после любого пересчёта.
+
+LATE = """async (ring)=>{
+ const real=window.fetch;
+ let release;
+ const gate=new Promise(r=>{release=r});
+ window.fetch=async (url,opts)=>{
+  if(String(url).includes('/land/lookup')){
+   await gate;
+   const body={query:'77:06:0003002:18',found_count:1,
+    results:[{found:true,kind:'land',cadastral_number:'77:06:0003002:18',contour_merc:[ring]}]};
+   return new Response(JSON.stringify(body),{status:200,headers:{'Content-Type':'application/json'}});
+  }
+  return real(url,opts);
+ };
+ delete inputs._land_lookup; landLookup=null;
+ const contour=drawLandPreviewQuiet('77:06:0003002:18');
+ await settledCalculate();
+ const m=(lastResult.tep||{}).site_massing||{};
+ const before={origin:((m.scheme||{}).layout||{}).site_shape_origin,
+               notes:((m.scheme||{}).layout||{}).notes||[]};
+ release();
+ await contour;
+ return before;
+}"""
+
+SHAPE = """()=>{
+ const m=(lastResult.tep||{}).site_massing||{};
+ return {origin:((m.scheme||{}).layout||{}).site_shape_origin,
+         notes:((m.scheme||{}).layout||{}).notes||[]};
+}"""
+
+
+@pytest.fixture(scope="module")
+def late():
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    path = browser.chromium_or_skip()
+    out: dict = {}
+    with browser.serve(core.app, 18192) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            page = engine.new_page(viewport={"width": 1280, "height": 900})
+            page.goto(base, wait_until="domcontentloaded")
+            browser.wait_for_result(page)
+            page.evaluate(SETUP)
+            browser.wait_for_result(page)
+            out["before"] = page.evaluate(LATE, _merc([(0, 0), (74, 0), (74, 74), (0, 74)]))
+            browser.wait_for_result(page)
+            page.wait_for_function(
+                "()=>((((lastResult||{}).tep||{}).site_massing||{}).scheme||{}).layout"
+                "&&lastResult.tep.site_massing.scheme.layout.site_shape_origin==='contour'",
+                timeout=20000)
+            out["after"] = page.evaluate(SHAPE)
+    return out
+
+
+def test_while_the_contour_loads_the_scheme_says_so(late):
+    got = late["before"]
+    assert got["origin"] == "square", got
+    text = " ".join(got["notes"])
+    assert "ещё загружается" in text and "Контура участка из ЕГРН нет" not in text, text
+
+
+def test_the_scheme_redraws_on_the_contour_by_itself(late):
+    got = late["after"]
+    assert got["origin"] == "contour", got
+    assert not any("квадратом" in n for n in got["notes"]), got

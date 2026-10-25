@@ -440,7 +440,12 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
         shape_origin = "square"
         half = _math.sqrt(site_sqm) / 2.0
         rings = [[[-half, -half], [half, -half], [half, half], [-half, half]]]
-        if not notes:
+        if not notes and x.get("_land_contour_pending"):
+            # Контур ещё в пути: страница пересчитает схему, когда он придёт.
+            notes.append("Контур участка из госреестра ещё загружается, поэтому пока участок "
+                         "показан квадратом той же площади. Когда контур придёт, схема "
+                         "перерисуется сама.")
+        elif not notes:
             notes.append("Контура участка из ЕГРН нет, поэтому участок показан квадратом той же "
                          "площади.")
     else:
