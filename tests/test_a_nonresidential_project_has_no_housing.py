@@ -826,6 +826,17 @@ def dialog():
                 "() => !!document.querySelector('.field[data-field=\"landscaping_area_sqm\"]')")
             got["mainAboveShown"] = page.evaluate(
                 "() => !!document.querySelector('.field[data-field=\"main_above_th_per_sqm\"]')")
+            # Все поля только жилья — и во «Вводных», и во вкладке «ВРИ».
+            # Список — движка, а не страницы: сверка со своей же копией не
+            # заметила бы, что страница её не получила.
+            got["housingShown"] = page.evaluate(
+                "ids => ids.filter(id => "
+                "document.querySelector('.field[data-field=\"' + id + '\"]'))",
+                sorted({*core.RESIDENTIAL_ONLY_INPUTS, *HOUSING_SALES_AND_LAND_FEE}))
+            got["shownGroups"] = page.evaluate(
+                "() => [...document.querySelectorAll('details[data-group]')].map(d => d.dataset.group)")
+            got["vriRegionShown"] = page.evaluate(
+                "() => !!document.querySelector('.field[data-field=\"vri_region\"]')")
             got.update(page.evaluate(PROBE_CANCEL))
             page.wait_for_load_state("networkidle")
             page.close()
@@ -891,6 +902,24 @@ def test_the_housing_only_fields_are_not_shown(dialog) -> None:
     нежилом проекте их нет на экране (решение владельца 06.10.2026)."""
     assert dialog["yardAreaShown"] is False
     assert dialog["mainAboveShown"] is False
+
+
+# Названы и здесь, а не только списком движка: сверка с тем же списком,
+# который рисует страницу, прошла бы и на пустом.
+HOUSING_SALES_AND_LAND_FEE = ("apartment_price_th", "share_before_rve_pct", "growth_stage1_pct",
+                              "sales_lag_months", "land_rights_cost_mln", "vri_relief_mode",
+                              "vri_payment_mode", "social_mode", "school_places")
+
+
+def test_what_the_nonresidential_project_does_not_read_is_not_on_screen(dialog) -> None:
+    """Владелец, 25.10.2026: «если какие-то статьи не входят в нежильё, то они
+    должны … вообще не появляться в блоке вводных». Продаж квартир, платы за
+    смену ВРИ и соцнагрузки у нежилого проекта нет — их полей и складки
+    «Социальная нагрузка» нет на экране. Регион остаётся: по нему выбирается
+    норматив Москвы или области."""
+    assert dialog["housingShown"] == [], dialog["housingShown"]
+    assert "Социальная нагрузка" not in dialog["shownGroups"], dialog["shownGroups"]
+    assert dialog["vriRegionShown"] is True
 
 
 def test_the_window_says_where_the_metres_go(dialog) -> None:
