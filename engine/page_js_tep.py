@@ -588,6 +588,23 @@ function reconcileLegacyParking(){
  if(!Array.isArray(inputs._parking_by_norm))inputs._parking_by_norm=[];
 }
 
+// Человек вписал места на первых этажах объекта, чьё подземное число до сих
+// пор ставил норматив. У офиса под землёй идёт остаток норматива после мест
+// первых этажей (`object_garage_takes_norm_rest`, владелец 25.10.2026), а в
+// поле подземных стоит прежний норматив целиком: оставь его — и он считался бы
+// вписанным руками, места сложились бы дважды. Поле очищается, остаток
+// считает движок.
+function parkingFieldByHand(prefix,id){
+ const item=((projectParking().own)||[]).find(o=>o&&o.prefix===prefix);
+ const fromNorm=!!(item&&item.by_norm&&item.norm_rest);
+ markParkingByHand(prefix);
+ if(!fromNorm||id!==prefix+'_parking_over_spaces')return;
+ const key=prefix+'_parking_under_spaces';
+ inputs[key]=0;
+ const el=document.getElementById('f_'+key);
+ if(el)el.value=0;
+}
+
 function markParkingByHand(prefix){
  const marks=new Set(inputs._parking_by_hand||[]);
  marks.add(prefix);
@@ -668,9 +685,22 @@ function objectParkingFieldNote(prefix){
  // Число уже стоит В ПОЛЕ, повторять его здесь незачем: одно и то же дважды
  // подряд перестают читать. Подпись отвечает на другое — чьё оно и что будет,
  // если поле тронуть.
+ // Происхождение числа подземных мест — фраза движка (`origin_note`): отказ
+ // от подземного паркинга и остаток норматива после первых этажей страница
+ // своими словами не пересказывает.
+ const origin=String(item.under_origin||'');
+ if(origin==='refused')return String(item.origin_note||'')
+  +' Чтобы вернуть гараж, снимите галочку «Отказ от подземного паркинга».';
+ if(origin==='norm_rest')return String(item.origin_note||'')
+  +' Считается по нормативу '+parkingNormOf()+'.'
+  +' Места на первых этажах засчитаны в норматив, под землёй — остаток. '
+  +'Впишите число подземных мест, чтобы задать его самим.';
  if(item.by_norm)return req
-  ?'Оба числа выше поставил норматив '+parkingNormOf()+' — они следуют за ТЭП. '
-   +'Впишите своё, чтобы перебить; ноль руками значит «гаража нет».'
+  ?(item.norm_rest?String(item.origin_note||'')+' Считается по нормативу '+parkingNormOf()+'. '
+    +'Числа следуют за ТЭП. '
+    +'Впишите места на первых этажах — под землёй останется остаток норматива.'
+   :'Оба числа выше поставил норматив '+parkingNormOf()+' — они следуют за ТЭП. '
+    +'Впишите своё, чтобы перебить; ноль руками значит «гаража нет».')
   :'По нормативу '+parkingNormOf()+' мест не требуется.';
  // Замок обязан называть, чем его открыть. Проект, сохранённый до того, как
  // норма начала заполнять поле, приходит без списков — и её же число читается
