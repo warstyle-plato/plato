@@ -310,7 +310,7 @@ def test_the_mini_app_counts_exactly_the_bot_card(monkeypatch) -> None:
             page.goto(f"{root}/?telegram=1#{fragment}", wait_until="domcontentloaded")
             page.wait_for_function(
                 "() => /по карточке тизера готов/.test("
-                "document.getElementById('glavapuStatus')?.textContent||'')", timeout=60_000)
+                "document.getElementById('telegramIntakeNote')?.innerText||'')", timeout=60_000)
             origin = page.evaluate("() => (inputs._field_origin||{})['tep.apartments.gns']")
         chromium.close()
     assert not errors, errors
@@ -363,9 +363,15 @@ def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int,
             page.goto(f"{root}/?telegram=1#{url.split('#', 1)[1]}", wait_until="domcontentloaded")
             page.wait_for_function(
                 "() => /по карточке тизера готов|не посчитан/.test("
-                "(document.getElementById('glavapuStatus')?.textContent||'')"
-                "+(document.body.innerText||''))", timeout=90_000)
-            seen = page.evaluate("() => document.body.innerText")
+                "(document.getElementById('telegramIntakeNote')?.innerText||'')"
+                "+(document.getElementById('telegramDoneBanner')?.innerText||''))", timeout=90_000)
+            stand.wait_for_result(page)
+            assert page.is_visible("#telegramIntakeNote"), "итог расчёта человеку не виден"
+            # Что видит человек: блок итога на открытой вкладке, а не текст
+            # где-то в разметке.
+            seen = page.evaluate(
+                "() => (document.getElementById('telegramIntakeNote')?.innerText||'')"
+                "+(document.getElementById('telegramDoneBanner')?.innerText||'')")
             state = page.evaluate("() => ({region: inputs.vri_region, area: Number(inputs.site_area_ha),"
                                   " fee: Number(inputs.land_rights_cost_mln||0)})")
         chromium.close()

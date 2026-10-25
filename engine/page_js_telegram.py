@@ -255,8 +255,14 @@ async function runTelegramLaunch(){
   telegramProgress('Считаю…');
   await calculate();
   telegramProgress('');
-  const status=document.getElementById('glavapuStatus');
-  if(status)status.innerHTML='<span class="import-ok"><b>Расчёт по карточке тизера готов.</b> Значения тизера стоят во вводных, у каждого подписано, откуда оно взято. Остальное — умолчания модели.</span>'+escapeHtml(parcelNote);
+  // Итог — своим блоком в начале «Вводных», где человек и стоит: строки
+  // состояния участка и ГлавАПУ перерисовывает сам расчёт, и сказанное в них
+  // («норм этого региона у нас нет») пропадало бы раньше, чем его прочтут.
+  const note=document.getElementById('telegramIntakeNote')||document.createElement('div');
+  note.id='telegramIntakeNote';note.className='note';note.style.margin='8px 0';
+  note.innerHTML='<b>Расчёт по карточке тизера готов.</b> Значения тизера стоят во вводных, у каждого подписано, откуда оно взято. Остальное — умолчания модели.'+escapeHtml(parcelNote);
+  const panel=document.getElementById('inputs');
+  if(panel&&!note.parentNode)panel.insertBefore(note,panel.firstChild);
   return;
  }
  if(telegramCad){
