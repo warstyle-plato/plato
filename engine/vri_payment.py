@@ -26,7 +26,7 @@ VRI_DEFAULTS: dict[str, Any] = {
     "land_right": "ownership",            # ownership | lease
     "vri_obligation_date": "",            # пусто — дата РнС
     "vri_payment_mode": "lump",           # lump | installment
-    "vri_installment_years": 3,           # Москва: 1, 3 или 6
+    "vri_installment_years": 0,           # 0 — по сумме платы (Москва, 593-ПП); МО — по диапазонам
     "vri_periodicity_months": 3,          # Москва: квартальные платежи
     "vri_schedule_mode": "auto",          # auto | manual
     "vri_interest_enabled": "",           # пусто — по региону: Москва да, МО нет
@@ -53,6 +53,18 @@ VRI_DEFAULTS: dict[str, Any] = {
 
 # Москва: рассрочка по постановлению даётся на 1, 3 или 6 лет.
 _VRI_MSK_TERMS = (1, 3, 6)
+# 593-ПП, прил. 1 пп. 3.1–3.3 (ред. 835-ПП; сверено по «Кодексу» 25.10.2026):
+# срок рассрочки задан СУММОЙ платы — до 100 млн ₽ один год, от 100 до 500 млн ₽
+# не более трёх лет, свыше 500 млн ₽ не более шести. Решение владельца
+# 25.10.2026: срок по умолчанию — предел по сумме, ввод может его сократить, но
+# не удлинить.
+_VRI_MSK_TERM_BY_AMOUNT = ((100_000_000.0, 1), (500_000_000.0, 3), (float("inf"), 6))
+
+
+def vri_msk_term_limit(amount_rub: float) -> int:
+    """Предельный срок рассрочки платы за ВРИ в Москве по сумме платы, лет."""
+    amount = max(0.0, float(amount_rub or 0.0))
+    return next(years for limit, years in _VRI_MSK_TERM_BY_AMOUNT if amount <= limit)
 
 # Московская область: рассрочка зависит от суммы обязательства. Официальные
 # диапазоны в модель не зашиты — их задаёт пользователь списком
@@ -255,12 +267,19 @@ def _vri_settings(x: dict[str, Any], permit: date, amount: float = 0.0) -> dict[
     region = _vri_region(x.get("vri_region"))
     obligation_date, obligation_basis, obligation_estimated = vri_obligation_date(x, permit)
     interest_default = region == "msk"
-    years = int(n(x, "vri_installment_years", VRI_DEFAULTS["vri_installment_years"]) or 3)
+    asked = int(n(x, "vri_installment_years", VRI_DEFAULTS["vri_installment_years"]) or 0)
+    years = asked or 3
     periodicity = int(n(x, "vri_periodicity_months", VRI_DEFAULTS["vri_periodicity_months"]) or 3)
     mo_range = None
+    term_limit = None
     if region == "msk":
-        if years not in _VRI_MSK_TERMS:
-            years = min(_VRI_MSK_TERMS, key=lambda item: abs(item - years))
+        term_limit = vri_msk_term_limit(amount)
+        if asked <= 0:
+            years = term_limit
+        else:
+            if years not in _VRI_MSK_TERMS:
+                years = min(_VRI_MSK_TERMS, key=lambda item: abs(item - years))
+            years = min(years, term_limit)
         periodicity = 3
     elif region == "mo":
         mo_range = _vri_mo_range(x, amount)
@@ -277,6 +296,10 @@ def _vri_settings(x: dict[str, Any], permit: date, amount: float = 0.0) -> dict[
         "initial_pct": max(0.0, min(100.0, n(x, "vri_initial_pct", 0.0))),
         "payment_mode": str(x.get("vri_payment_mode") or VRI_DEFAULTS["vri_payment_mode"]).strip().lower(),
         "years": max(1, years),
+        # Чем задан срок: введённый больше предела по сумме — урезан, и это
+        # говорится словами в предупреждениях графика.
+        "years_asked": asked,
+        "term_limit": term_limit,
         "periodicity": max(1, periodicity),
         "mo_range": mo_range,
         "schedule_mode": str(x.get("vri_schedule_mode") or VRI_DEFAULTS["vri_schedule_mode"]).strip().lower(),
@@ -400,6 +423,13 @@ def build_vri_schedule(
             "плата отнесена на банковское финансирование. Если платите своими деньгами, "
             "укажите долю собственного капитала."
         )
+
+    if (settings["term_limit"] and settings["years_asked"] > settings["term_limit"]
+            and settings["payment_mode"] == "installment"):
+        warnings.append(
+            "Срок рассрочки сокращён до %d г.: при плате %.0f млн ₽ постановление "
+            "593-ПП (прил. 1, пп. 3.1–3.3) даёт не больше %d г."
+            % (settings["years"], amount / 1_000_000, settings["term_limit"]))
 
     if not settings["required"] or amount <= 0:
         return {

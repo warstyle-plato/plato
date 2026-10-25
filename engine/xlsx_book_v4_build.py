@@ -716,7 +716,8 @@ def _build_project_workbook(
     try:
         # Вводные — те же `x`, что у ячеек: сырые продлили бы горизонт
         # стройкой садика, которого нежилой проект не строит.
-        _horizon = build_operating_model(dict(x), tep or {}, rates or [])["end"]
+        _engine_op = build_operating_model(dict(x), tep or {}, rates or [])
+        _horizon = _engine_op["end"]
         put("B71", number=_v4_excel_serial(_horizon.isoformat()) or 0.0,
             label="engine_horizon_end")
     except Exception:
@@ -1547,7 +1548,13 @@ def _build_project_workbook(
     # Прежнее «3 года» в B75 заставляло человека помнить синтаксис строки и
     # мешало сделать нормальный dropdown. Все формулы графика уже читают B77
     # как число лет, поэтому пишем срок прямо туда.
-    _vri_years = int(float(x.get("vri_installment_years") or 3))
+    # Срок — тот, что движок применил к графику (в Москве — по сумме платы,
+    # 593-ПП), а не сырая вводная: иначе книга растянула бы рассрочку дольше,
+    # чем её даёт постановление.
+    try:
+        _vri_years = int(_engine_op["vri"]["settings"]["years"])
+    except Exception:
+        _vri_years = int(float(x.get("vri_installment_years") or 3))
     put("B77", number=float(_vri_years), label="vri_installment_years")
     xml = _v4_mark_as_entry(xml, "B77", missing)
     put_new("D75", text="vri_payment_mode")
