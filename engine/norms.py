@@ -1644,6 +1644,11 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             "units": under + over,
             "guest_spaces": guests,
             "by_norm": by_norm,
+            # Места пришли из поля подземного паркинга проекта
+            # (`office_takes_project_parking`): в поле объекта стоит ноль, и
+            # подпись обязана сказать, откуда взялось построенное число.
+            "from_project": (not by_norm and enabled
+                             and inputs.get("_office_parking_from_project") == prefix),
             "required_spaces": int(required_by_key.get(tep_key) or 0),
             "sellable": sellable,
             "saleable_units": int(row["parking_saleable_units"]),

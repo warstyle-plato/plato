@@ -2437,6 +2437,22 @@ OBJECT_SMR_RATE_DEFAULTS: dict[str, float] = {
 }
 
 
+def project_parking_named_by_person(inputs: dict[str, Any]) -> bool:
+    """Места подземного паркинга проекта назвал человек, а не норма или метод?
+
+    Импорт участка кладёт в поле мест проекта число сценария ГлавАПУ
+    (`setUndergroundFromMethod`) и рядом — гостевые метода
+    (`_underground_method_guest`) на ТЕ ЖЕ места. Это число калькулятора, а
+    не решение человека: на офисном участке 77:06:0003002:18 его 149 мест
+    уходили в поле офиса, офис читал их «заданными руками» и вместо норматива
+    945-ПП (271) строил 149 при нуле в поле (владелец, 25.10.2026).
+    """
+    if not underground_parking_by_hand(inputs):
+        return False
+    spaces = n(inputs, "underground_manual_spaces")
+    return not (spaces > 0 and underground_method_guest(inputs, spaces) is not None)
+
+
 def office_takes_project_parking(inputs: dict[str, Any],
                                  tep: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
     """Подземный паркинг нежилого проекта — паркинг его офиса.
@@ -2461,11 +2477,19 @@ def office_takes_project_parking(inputs: dict[str, Any],
     prefix = offices[0].prefix
     if n(inputs, f"{prefix}_parking_under_spaces") > 0:
         return inputs, tep, []
+    if not project_parking_named_by_person(inputs):
+        return inputs, tep, []
     row = (tep or {}).get("underground_parking") or {}
     spaces = max(n(inputs, "underground_manual_spaces"), n(row, "units"))
     if spaces <= 0:
         return inputs, tep, []
     x = dict(inputs)
+    # Перенесённые места — человеческие, и офис читает их так же: страница
+    # ведёт список тронутых руками, и без офиса в нём норма молча заменила бы
+    # названные места (`object_parking_by_hand`).
+    if isinstance(x.get("_parking_by_hand"), list) and prefix not in x["_parking_by_hand"]:
+        x["_parking_by_hand"] = [*x["_parking_by_hand"], prefix]
+    x["_office_parking_from_project"] = prefix
     t = {key: dict(value) if isinstance(value, dict) else value for key, value in (tep or {}).items()}
     x[f"{prefix}_parking_under_spaces"] = int(round(spaces))
     x["underground_manual_spaces"] = 0
