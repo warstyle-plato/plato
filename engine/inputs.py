@@ -1133,9 +1133,11 @@ def standalone_object_defaults(obj: StandaloneObject) -> dict[str, Any]:
         if not obj.garage_sellable:
             # Места ТЦ не продаются и не сдаются: они обеспечивают посетителей.
             out.pop(f"{obj.prefix}_parking_rent_th_month", None)
-    # Пусто — класс офиса идёт за классом проекта (`office_class_choice`).
-    if obj.product == "offices":
-        out[f"{obj.prefix}_{nonres_strategy.OFFICE_CLASS_FIELD}"] = ""
+        # Пусто — класс офиса идёт за классом проекта (`office_class_choice`).
+        # Поле стоит среди полей стратегии (`_object_strategy_fields`), и
+        # умолчание — там же.
+        if obj.product == "offices":
+            out[f"{obj.prefix}_{nonres_strategy.OFFICE_CLASS_FIELD}"] = ""
     return out
 
 
