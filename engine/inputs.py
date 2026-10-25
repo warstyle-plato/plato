@@ -1130,12 +1130,12 @@ def standalone_object_defaults(obj: StandaloneObject) -> dict[str, Any]:
     # считается так же, как считался.
     if obj.strategies:
         out.update(nonres_strategy.strategy_defaults(obj.prefix, obj.product))
-    # Пусто — класс офиса идёт за классом проекта (`office_class_choice`).
-    if obj.product == "offices":
-        out[f"{obj.prefix}_{nonres_strategy.OFFICE_CLASS_FIELD}"] = ""
         if not obj.garage_sellable:
             # Места ТЦ не продаются и не сдаются: они обеспечивают посетителей.
             out.pop(f"{obj.prefix}_parking_rent_th_month", None)
+    # Пусто — класс офиса идёт за классом проекта (`office_class_choice`).
+    if obj.product == "offices":
+        out[f"{obj.prefix}_{nonres_strategy.OFFICE_CLASS_FIELD}"] = ""
     return out
 
 
