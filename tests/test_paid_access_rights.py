@@ -187,6 +187,7 @@ ROUTES = {
     "/agent/chat": lambda s: model_for(B) | {"session": s, "message": "что с LLCR?"},
     "/ia/goal-seek": lambda s: model_for(B) | {"session": s},
     "/strategy-compare": lambda s: model_for(B) | {"session": s},
+    "/loan-term-pick": lambda s: model_for(B) | {"session": s, "prefix": "offices"},
     "/api/v2/calculate": lambda s: model_for(B) | {"session": s},
 }
 
