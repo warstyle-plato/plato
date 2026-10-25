@@ -130,6 +130,9 @@ _READER_SOURCE_NEWS = {
 # «214-ФЗ», «ДИПП-ПР-34/20».
 _ACT_NUMBER_RE = re.compile(r"\b\d+[-/][0-9A-Za-zА-Яа-яЁё]+", re.I)
 
+_MONTHS_GENITIVE = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+                    "августа", "сентября", "октября", "ноября", "декабря")
+
 
 def accounted_numbers(entry: dict[str, Any]) -> set[str]:
     """Редакции, которые в реестре УЖЕ учтены, — номерами.
@@ -838,6 +841,179 @@ def watch_state() -> dict[str, Any]:
     }
 
 
+def signal_new_numbers(signal: dict[str, Any], entry: dict[str, Any]) -> set[str]:
+    """Номера поправок в находке, которых в карточке нет.
+
+    Пусто — либо находка называет только учтённые редакции, либо не называет
+    никакой: в обоих случаях сказать «вышла новая редакция» нечем.
+    """
+    found = [m.group(0) for m in _ACT_NUMBER_RE.finditer(str(signal.get("message")
+                                                            or signal.get("quote") or ""))]
+    skip = accounted_numbers(entry) | ({own_number(entry)} - {""})
+    # Номер печатается так, как его написал источник: «ПП», а не «пп».
+    return {number for number in found if number.lower() not in skip}
+
+
+_DATE_RE = (r"(\d{1,2}\.\d{2}\.\d{4}|\d{1,2}\s+(?:%s)\s+\d{4})"
+            % "|".join(_MONTHS_GENITIVE))
+
+
+def quote_names_other_act(quote: str, entry: dict[str, Any]) -> bool:
+    """Номер акта в цитате стоит рядом с ЧУЖОЙ датой — это другой акт.
+
+    «Федеральный закон от 30.04.2021 N 127-ФЗ» — не закон о банкротстве от
+    26.10.2002, а «постановление … от 09.09.2025 № 1160-ПП» — не парки Москвы
+    2008 года. Находку, которая уже лежит в очереди, проверяем тем же, чем
+    поиск: номер без своей даты акт не называет.
+    """
+    own = own_number(entry)
+    dates = act_date_forms(entry)
+    if not own or not dates:
+        return False
+    low = re.sub(r"\s+", " ", str(quote or "").lower())
+    num = re.escape(own)
+    pattern = (r"от\s+%s(?:\s+(?:г\.|года))?\s*(?:№|n)?\s*%s|%s\s+от\s+%s"
+               % (_DATE_RE, num, num, _DATE_RE))
+    for match in re.finditer(pattern, low):
+        found = next(group for group in match.groups() if group)
+        if not any(found == date for date in dates):
+            return True
+    return False
+
+
+def _names_only_with_foreign_date(quote: str, entry: dict[str, Any]) -> bool:
+    """Номер акта в цитате есть, своей даты нет, а чужая есть.
+
+    «N 593-ПП "О внесении изменений в правовые акты … от 18 июля 2012 г."» —
+    у московского 593-ПП дата 10.09.2013, и 2012 год говорит о другом акте.
+    Применяется только к находке без номера новой поправки: там, где
+    поправка названа, чужая дата — её собственная.
+    """
+    dates = act_date_forms(entry)
+    own = own_number(entry)
+    low = re.sub(r"\s+", " ", str(quote or "").lower())
+    if not dates or not own or own not in low or any(d in low for d in dates):
+        return False
+    return bool(re.search(_DATE_RE, low))
+
+
+def _usage_words(entry: dict[str, Any]) -> str:
+    """Какой расчёт задевает акт — из `engine_usage`, а не пересказом."""
+    rows = [row for row in entry.get("engine_usage") or [] if isinstance(row, dict)]
+    used = [row for row in rows
+            if not str(row.get("usage") or "").startswith("в действующем расчёте не участвует")]
+    if not used:
+        return "в расчёте не участвует — числа DevelopAid не меняются"
+    parts = []
+    for row in used[:2]:
+        usage = str(row.get("usage") or "").strip()
+        # «_PARKING_2118_SQM_PER_PERSON — 33 м² …»: имя константы владельцу
+        # ничего не говорит, говорит то, что после тире.
+        head, sep, rest = usage.partition(" — ")
+        if sep and re.fullmatch(r"[\w.\[\]«»() ,/-]+", head) and re.search(r"[A-Za-z_]", head):
+            usage = rest.strip()
+        parts.append(usage if len(usage) <= 140 else usage[:140].rsplit(" ", 1)[0] + "…")
+    return "; ".join(parts)
+
+
+def announcement_text(records: list[dict[str, Any]],
+                      entries: dict[str, dict[str, Any]] | None = None) -> str:
+    """Сообщение сторожа владельцу: по пункту на акт и ответ на четыре вопроса.
+
+    Владелец, 25.10.2026, о прежнем сообщении — «сырое»: ложные тревоги по
+    чужим актам с тем же номером, каждый акт дважды, «пишут о новой
+    редакции» без номера поправки, ни слова о том, что это меняет в расчёте,
+    и сбой источника вперемешку с изменениями. Теперь у каждого пункта есть
+    что изменилось (акт и поправка), какой расчёт задет (`engine_usage`), что
+    делать и кто решает. Нет изменений по существу — одна строка.
+    """
+    if entries is None:
+        entries = {str(row.get("id") or ""): row for row in _load_registry()}
+    # Очередь копит находки нескольких заходов: пункт об акте — ровно один,
+    # последний.
+    latest: dict[str, dict[str, Any]] = {}
+    for item in records:
+        key = str(item.get("id") or item.get("short_name") or "")
+        latest.pop(key, None)
+        latest[key] = item
+    runs = len({str(item.get("checked_at") or "")[:16] for item in records
+                if item.get("checked_at")}) or 1
+
+    news: list[str] = []
+    unnumbered: list[str] = []
+    failed: list[str] = []
+    pages: list[str] = []
+    for key, item in latest.items():
+        entry = entries.get(key) or {}
+        name = str(item.get("short_name") or entry.get("short_name") or key)
+        result = str(item.get("result") or "")
+        message = re.sub(r"\s+", " ", str(item.get("message") or "")).strip()
+        if result == "unreachable":
+            failed.append(f"{name} ({message[:60] or 'не ответил'})")
+            continue
+        if result in ("changed", "review_required"):
+            pages.append(name)
+            continue
+        if result not in ("amended", "repealed"):
+            continue
+        if entry and quote_names_other_act(message, entry):
+            continue
+        fresh = sorted(signal_new_numbers(item, entry)) if entry else []
+        if result == "amended" and not fresh:
+            if entry and _names_only_with_foreign_date(message, entry):
+                continue
+            if not entry or not signal_is_accounted({"quote": message}, entry):
+                unnumbered.append(name)
+            continue
+        if result == "repealed":
+            what = "в источниках пишут, что акт утратил силу"
+            todo = ("сверить по тексту и решить, на что заменить основание "
+                    "расчёта")
+        else:
+            what = "в источниках названа поправка, которой в реестре нет: " + ", ".join(fresh)
+            todo = ("сверить поправку по тексту акта; если она меняет число "
+                    "из расчёта — поменять число")
+        uses = _usage_words(entry) if entry else "акта нет в реестре"
+        if uses.startswith("в расчёте не участвует"):
+            todo = "обновить карточку реестра; расчёт не трогать"
+            who = "сессия нормативов, без владельца"
+        else:
+            who = "сверяет сессия нормативов, число меняет только владелец"
+        quote = message[:200] + ("…" if len(message) > 200 else "")
+        news.append(
+            f"• <b>{html.escape(name)}</b>\n"
+            f"  Что изменилось: {html.escape(what)}. Цитата: «{html.escape(quote)}»\n"
+            f"  Что задевает в расчёте: {html.escape(uses)}\n"
+            f"  Что делать: {html.escape(todo)}\n"
+            f"  Кто решает: {html.escape(who)}")
+
+    tail: list[str] = []
+    if pages:
+        tail.append("Изменилась страница источника, номера поправки нет: "
+                    + ", ".join(pages) + ". Сверить, когда дойдут руки; сама по "
+                    "себе это не новая редакция.")
+    if unnumbered:
+        tail.append("Пишут об изменениях, но не называют поправку: "
+                    + ", ".join(unnumbered) + ". Новая ли это редакция, по "
+                    "находке не понять — сверить по тексту акта.")
+    if failed:
+        tail.append("Источник не ответил (это сбой проверки, а не изменение): "
+                    + ", ".join(failed) + ".")
+    tens, ones = runs % 100, runs % 10
+    times = "раза" if ones in (2, 3, 4) and tens not in (12, 13, 14) else "раз"
+    runs_words = f"Сторож заходил {runs} {times}"
+    if not news:
+        head = f"<b>Нормативная база:</b> {runs_words}, изменений по существу нет."
+        return "\n".join([head] + [html.escape(x) for x in tail])
+    lines = [f"<b>Нормативная база: изменения ({len(news)})</b>", ""]
+    lines += news
+    if tail:
+        lines.append("")
+        lines += [html.escape(x) for x in tail]
+    lines += ["", f"{runs_words}. Цитаты и ссылки — на странице /normatives"]
+    return "\n".join(lines)
+
+
 def _changes_between(before: dict[str, Any], after: dict[str, Any],
                      entries: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Что изменилось с прошлой проверки — построчно и с причиной.
@@ -1002,6 +1178,24 @@ def _self_named_markers(entry: dict[str, Any], markers: tuple[str, ...]) -> tupl
     return tuple(marker for marker in markers if name and marker in name)
 
 
+def act_date_forms(entry: dict[str, Any]) -> tuple[str, ...]:
+    """Дата принятия акта всеми написаниями, которыми её печатают базы.
+
+    Номер без даты акт не опознаёт: «449-ПП» есть у Москвы и у Оренбургской
+    области, «127-ФЗ» — у закона о банкротстве 2002 года и у поправки 2021
+    года о спорте, «1160-ПП» — у парков Москвы и у оплаты труда в области.
+    Все три пришли владельцу 25.10.2026 тревогами о «новой редакции».
+    """
+    raw = str(entry.get("adopted_at") or "").strip()
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if not match:
+        return ()
+    year, month, day = match.groups()
+    words = _MONTHS_GENITIVE[int(month) - 1]
+    return (f"{day}.{month}.{year}", f"{int(day)} {words} {year}",
+            f"{day} {words} {year}")
+
+
 def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
                         ) -> list[dict[str, Any]]:
     """Находки о судьбе акта — только там, где рядом назван САМ акт.
@@ -1035,8 +1229,14 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
     anchor_numbers = [re.sub(r"^(?:№|n|no)\s*", "", a, flags=re.IGNORECASE).strip() for a in anchors]
     anchor_numbers = [a for a in anchor_numbers if a]
 
-    def has_anchor(text: str) -> bool:
-        return bool(anchor_numbers) and any(anchor in text for anchor in anchor_numbers)
+    dates = act_date_forms(entry)
+
+    def has_anchor(text: str, doc_text: str = "") -> bool:
+        # Номер — якорь, только если в том же результате стоит дата САМОГО
+        # акта: номера переиспользуются из года в год и из региона в регион.
+        if not (anchor_numbers and any(anchor in text for anchor in anchor_numbers)):
+            return False
+        return not dates or any(date in (doc_text or text) for date in dates)
 
     # Маркер, стоящий в собственном имени акта, для него не улика.
     self_amend = _self_named_markers(entry, _AMEND_MARKERS)
@@ -1062,7 +1262,7 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
         for sentence in _sentences(f"{title}\n{body}"):
             low = sentence.lower()
             anchored_by = ""
-            if has_anchor(low):
+            if has_anchor(low, whole):
                 anchored_by = "номер"
             elif words and name_recognised(sentence, entry, NAME_SIGNAL_RUN_SHARE):
                 anchored_by = "имя"
@@ -1080,7 +1280,7 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
             title_kind = "amended"
         # Типичная карточка изменяющего акта: действие — в заголовке, номер
         # базового акта — в описании. Оба должны быть в ОДНОМ search result.
-        if hit is None and title_kind and has_anchor(whole):
+        if hit is None and title_kind and has_anchor(whole, whole):
             hit = (title_kind, title, "номер")
         # Цитата — то, что читает владелец. «Изменения вносятся в … 713/30» из
         # описания не говорит, КАКИМ актом: номер изменяющего акта стоит в

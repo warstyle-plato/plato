@@ -551,3 +551,24 @@ def test_market_price_routes_are_registered():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_vri_takes_p_from_the_parcel_quarter():
+    # 1745-ПП п. 4.8: Р в К = (Р × S) × Кдоход / G — показатель кадастрового
+    # квартала участка, а УПКСср в k1 — окружной. Плата пропорциональна их
+    # отношению; пока оба были окружными, квартал на плату не влиял.
+    reference = main._mo_district_upks("Городской округ Мытищи")
+    common = dict(upks_target=reference["upks_land_residential"],
+                  upks_average_oks=reference["upks_oks_mkd"],
+                  apartments_sqm=SAMPLE_APARTMENTS_SQM,
+                  market_price_rub_per_sqm=MYTISHCHI_MARKET_PRICE, kd=0.1)
+    district = main.mo_vri_payment(parcels(), **common)
+    quarter_p = reference["upks_oks_mkd"] * 1.25
+    quarter = main.mo_vri_payment(parcels(), upks_quarter_oks=quarter_p, **common)
+    assert quarter["upks_p"] == pytest.approx(quarter_p, abs=0.01)
+    assert quarter["upks_p_basis"] == "кадастровый квартал участка"
+    assert quarter["payment_rub"] == pytest.approx(district["payment_rub"] * 1.25, rel=1e-9)
+    assert quarter["payment_direct_rub"] == pytest.approx(district["payment_direct_rub"] * 1.25, rel=1e-9)
+    assert district["upks_p_basis"].startswith("округ")
+    assert main.mo_vri_payment(parcels(), upks_quarter_oks=0, **common)["payment_rub"] == pytest.approx(
+        district["payment_rub"], rel=1e-12)
