@@ -284,11 +284,14 @@ def _v4_vat_exempt_ddu(formula: str) -> str | None:
     apartments = int(found.group(1))
     old = found.group(0)
     exempt = "+".join(
-        f"SUMIF('Продажи'!$D$3:$GA$3,\"<\"&$B$8,'Продажи'!$D${row}:$GA${row})"
+        f"SUMPRODUCT(--('Продажи'!$D$3:$GA$3<$B$8),'Продажи'!$D${row}:$GA${row})"
         for row in (apartments + 3, apartments + 6, apartments + 9))
     if formula.count(old) != 2:
         return None
-    return formula.replace(old, f"{old}+{exempt}")
+    # В шаблоне строка квартир ВЫЧИТАЕТСЯ: «вся выручка − SUM(квартиры)».
+    # Освобождённое нежилое уходит вместе с ней — в одних скобках, иначе
+    # минус перед квартирами его бы прибавил.
+    return formula.replace(old, f"({old}+{exempt})")
 
 
 def _v4_apply_vat_base(xml: str, phase: int, missing: list[str]) -> str:

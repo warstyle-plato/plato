@@ -1924,6 +1924,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         "profit_tax_rate": tax_rate,
         "vat": vat,
         "vat_charged": vat_charged,
+        # Выручка нежилого дома по ДДУ (до РВЭ), вышедшая из базы НДС, пп. 23.1.
+        "vat_exempt_ddu": vat_exempt_ddu,
         "vat_input_deductible": vat_input_deductible,
         "vat_schedule": {month.isoformat(): value for month, value in vat_schedule.items()},
         # НДС продаж по ДДУ к уплате по месяцам — без НДС объектов вне ДДУ и
