@@ -33,7 +33,7 @@ PORT = 18167
 
 # Как импорт участка: тип проекта, офис с ТЭП и места сценария ГлавАПУ —
 # всё настоящими функциями страницы, без подмены логики.
-SETUP = """async (byPerson)=>{
+SETUP = """async ()=>{
   const set=(id,value)=>{
     const el=document.getElementById('f_'+id);
     if(el.type==='checkbox')el.checked=value;else el.value=value;
@@ -46,10 +46,24 @@ SETUP = """async (byPerson)=>{
   set('offices_enabled',true);
   set('offices_gba_sqm','27000');
   set('offices_saleable_sqm','20000');
-  if(byPerson){inputs.underground_manual_spaces=149;delete inputs._underground_method_guest;
-    markParkingByHand(PROJECT_PARKING_KEY)}
-  else setUndergroundFromMethod(136,13);
+  // Импорт ставит места сценария последними (`setUndergroundFromMethod`).
+  setUndergroundFromMethod(136,13);
 }"""
+
+# Места проекта, вписанные человеком, на странице нежилого проекта не
+# набираются — правка полей обнуляет пару. Приходят они с сохранённым
+# проектом (Пролетарский): его и загружаем настоящим `loadLocal`.
+SAVED = """(saved)=>{localStorage.setItem('plato_v04',JSON.stringify(saved))}"""
+
+
+def _saved_person_project() -> dict:
+    x = {"project_kind": core.PROJECT_KIND_NONRESIDENTIAL, "offices_enabled": True,
+         "offices_gba_sqm": 27000, "offices_saleable_sqm": 20000,
+         "offices_parking_under_spaces": 0, "offices_parking_over_spaces": 0,
+         "underground_manual_spaces": 149}
+    tep = {"offices": {"gns": 27000, "total_area": 24000, "useful": 20000, "saleable": 20000}}
+    return {"inputs": x, "tep": tep, "scenario": "base"}
+
 
 READ = """()=>{
   renderInputs();
@@ -70,12 +84,16 @@ def seen():
     out: dict[str, dict] = {}
     with browser.serve(core.app, PORT) as base, sync_playwright() as pw:
         with pw.chromium.launch(executable_path=str(path)) as engine:
-            for case, by_person in (("method", False), ("person", True)):
+            for case in ("method", "person"):
                 ctx = engine.new_context(viewport={"width": 1440, "height": 900})
                 page = ctx.new_page()
                 page.goto(base, wait_until="domcontentloaded")
                 browser.wait_for_result(page)
-                page.evaluate(SETUP, by_person)
+                if case == "method":
+                    page.evaluate(SETUP)
+                else:
+                    page.evaluate(SAVED, _saved_person_project())
+                    page.reload(wait_until="domcontentloaded")
                 browser.wait_for_result(page)
                 page.evaluate("()=>settledCalculate()")
                 out[case] = page.evaluate(READ)
