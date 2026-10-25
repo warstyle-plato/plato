@@ -441,6 +441,8 @@ COST_INPUTS: tuple[tuple[str, str, str, str], ...] = (
     ("main_under_th", "Стройка подземной части и гаражей объектов", "тыс ₽/м²", NUM),
     ("utilities_th", "Сети", "тыс ₽/м² базы", NUM),
     ("commissioning_th", "Ввод в эксплуатацию", "тыс ₽/м² базы", NUM),
+    ("landscaping_gns", "Наземная площадь проекта — база благоустройства", "м²", NUM0),
+    ("landscaping_th", "Благоустройство", "тыс ₽/м² наземной площади", NUM),
     ("site_maintenance_th", "Содержание площадки", "тыс ₽/м² базы", NUM),
     ("project_management", "Управление проектом", "доля базы управления", PCT),
     ("technical_supervision", "Технический заказчик", "доля стройки", PCT),
@@ -784,7 +786,8 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
 
     rows.section("Смета: ставки статей проекта")
     for key, label, unit, fmt in COST_INPUTS:
-        value = spec.get(key) if key in ("core_above_gns", "core_under_gns", "main_under_th") else None
+        value = (spec.get(key) if key in ("core_above_gns", "core_under_gns", "main_under_th",
+                                          "landscaping_gns") else None)
         if value is None:
             raw = cost.get(key if key.endswith(("_th", "_mln", "_area")) else f"{key}_pct", 0.0)
             value = float(raw) / 100 if fmt == PCT else raw
@@ -1040,8 +1043,12 @@ def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]
     article("site_maintenance", "Содержание площадки", per_sqm("in.site_maintenance_th"))
     article("commissioning", "Ввод в эксплуатацию", per_sqm("in.commissioning_th"),
             f"{ref('cx.commissioning.amt')}/3*{ref('w.rve3')}")
-    for key in ("landscaping", "social"):
-        article(key, ENGINE_LABELS[key], None)
+    # Благоустройство — ставкой на метр наземной площади проекта (владелец,
+    # 25.10.2026), три месяца до ввода — тем же графиком, что движок.
+    article("landscaping", ENGINE_LABELS["landscaping"],
+            f"{ref('in.landscaping_gns')}*{ref('in.landscaping_th')}*0.001*{mult}",
+            f"{ref('cx.landscaping.amt')}/3*{ref('w.rve3')}")
+    article("social", ENGINE_LABELS["social"], None)
     amt = lambda key: ref(f"cx.{key}.amt")  # noqa: E731
     article("author_supervision", "Авторский надзор",
             f"({amt('design_p')}+{amt('design_rd')})*{ref('in.author_supervision')}")

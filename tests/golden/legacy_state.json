@@ -567,6 +567,7 @@
   "summary.landscaping_area_sqm": 26675.0,
   "summary.landscaping_by_class_th": 2.1584,
   "summary.landscaping_by_rate": false,
+  "summary.landscaping_default_rate_th": 0.0,
   "summary.landscaping_per_gns_th": 2.1584,
   "summary.landscaping_per_saleable_th": 3.5974,
   "summary.llcr": 1.1151,
