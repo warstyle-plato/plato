@@ -50,8 +50,7 @@ def test_the_housing_book_agrees_and_its_known_gaps_are_real() -> None:
     result = bep.check(core, "default", built=_built("default"))
     assert result.checked > 100
     assert result.mismatches == [], [line.text("default") for line in result.mismatches]
-    # Каждая запись KNOWN_GAPS ещё расходится; когда #892 сольют — эта проверка
-    # покраснеет и потребует снять записи.
+    # Каждая запись KNOWN_GAPS ещё расходится: исчезло расхождение — запись снять.
     seen = {key for key in bep.KNOWN_GAPS for line, _ in result.known if line.row.startswith(key)}
     assert seen == set(bep.KNOWN_GAPS), set(bep.KNOWN_GAPS) - seen
 
