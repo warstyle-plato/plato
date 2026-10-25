@@ -869,11 +869,13 @@ PAGE += r"""</head>
 </div>
 
 <!-- Хранилище проектов: список того, что сохранили явно. -->
-<div id="projectsDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
-     z-index:80;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeProjects()">
-  <div style="background:#fff;max-width:900px;width:100%;max-height:80vh;overflow:auto;padding:22px 24px">
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
-      <h2 style="margin:0;font-size:17px">Личный кабинет</h2>
+<!-- Кабинет набран шкалой страницы (стили `.cab`): заголовок, текст, подпись;
+     поля и кнопки наследуют шрифт. Своих размеров в разметке и в строках JS
+     не заводить — иначе он снова расползётся на восемь кеглей. -->
+<div id="projectsDialog" class="cab-backdrop" style="display:none" onclick="if(event.target===this)closeProjects()">
+  <div class="cab">
+    <div class="cab-head">
+      <h2>Личный кабинет</h2>
       <!-- Кнопки хранилища — только там, где оно есть: примеры открываются и
            без него, а «Сохранить», которое всегда откажет, хуже отсутствия.
            Смена ключа без консоли браузера: ключ меняют, когда он засветился,
@@ -886,21 +888,21 @@ PAGE += r"""</head>
         <button class="btn dark" id="projectsSaveOver" style="display:none"
                 onclick="saveOpenedProject()">Сохранить</button>
         <button class="btn" onclick="saveProjectAsNew()">Сохранить как…</button>
-        <span id="projectsOpenedName" class="muted" style="font-size:12px"></span>
+        <span id="projectsOpenedName" class="cab-note"></span>
         <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
       </span>
-      <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
+      <button class="btn cab-close" onclick="closeProjects()">Закрыть</button>
     </div>
     <!-- Готовые примеры стоят рядом с сохранёнными: и то и другое — «открыть
          готовое», и искать их во «Вводных» среди разбора файлов было незачем.
          Ключа они не требуют: это витрина, а не чужие данные. -->
-    <div id="projectsExamples" style="border:1px solid var(--line);padding:14px;margin-bottom:14px">
-      <div class="section-title" style="margin-bottom:8px">Готовые примеры</div>
+    <div id="projectsExamples" class="cab-card">
+      <div class="cab-title">Готовые примеры</div>
       <!-- Серверных предустановок ТЭП здесь больше нет: это были настоящие
            проекты владельца (решение владельца, 23.10.2026). -->
-      <div style="font-size:11px;color:#888;margin:0 0 8px">Пресет открывает проект целиком: ТЭП, плату за ВРИ, МПТ и техприсоединение сразу.</div>
-      <div class="upload-line" style="align-items:center">
-        <select id="projectPresetSelect" style="min-width:240px">
+      <div class="cab-note">Пресет открывает проект целиком: ТЭП, плату за ВРИ, МПТ и техприсоединение сразу.</div>
+      <div class="cab-row">
+        <select id="projectPresetSelect">
           <option value="">Пресет проекта…</option>
         </select>
         <button class="btn dark" onclick="loadServerProjectPreset()">Открыть</button>
@@ -909,57 +911,57 @@ PAGE += r"""</head>
     <!-- Кто вошёл и чем выйти. Прежде выход был только через консоль браузера:
          сессия лежит в localStorage, а кнопки не было (замечание владельца,
          18.08.2026). -->
-    <div id="accountBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px"></div>
+    <div id="accountBox" class="cab-card" style="display:none"></div>
     <!-- Тарифы, мои участки и подписка: условия и права приходят с сервера. -->
-    <div id="tariffsBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px"></div>
+    <div id="tariffsBox" class="cab-card" style="display:none"></div>
     <!-- Администрирование доступа — только администраторам (решает сервер). -->
-    <div id="accessAdminBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px">
-      <div class="section-title" style="margin-bottom:8px">Администрирование доступа</div>
+    <div id="accessAdminBox" class="cab-card" style="display:none">
+      <div class="cab-title">Администрирование доступа</div>
       <!-- Подписи стоят над полями, а не подсказкой внутри: подсказка исчезала
            после ввода, и по заполненной форме нельзя было понять, кому и что
            выдаётся (замечание владельца, 22.10.2026). -->
-      <div class="grant-form" style="display:grid;gap:8px;max-width:640px;margin-bottom:8px">
-        <label>Кому выдать доступ
-          <select id="grantChat" style="width:100%"><option value="">Загружаю пользователей…</option></select>
-          <small class="muted">В списке — все, кто писал боту или входил на сайт. Нет нужного человека — попросите его сначала написать боту DevelopAid.</small>
-        </label>
-        <label>Что выдать
-          <select id="grantKind" onchange="grantKindChanged()" style="width:100%">
+      <div class="grant-form">
+        <label><span>Кому выдать доступ</span><span>
+          <select id="grantChat"><option value="">Загружаю пользователей…</option></select>
+          <small>В списке — все, кто писал боту или входил на сайт. Нет нужного человека — попросите его сначала написать боту DevelopAid.</small>
+        </span></label>
+        <label><span>Что выдать</span><span>
+          <select id="grantKind" onchange="grantKindChanged()">
             <option value="plot">Доступ к участку</option>
             <option value="subscription">Подписку — все участки</option>
             <option value="reserve">Запас: несколько участков вперёд</option>
           </select>
-        </label>
-        <label id="grantCadastralRow">Кадастровые номера участка
-          <input id="grantCadastral" placeholder="например, 77:09:0004001:5578, 77:09:0004001:5579" style="width:100%">
-          <small class="muted">Если в расчёте несколько участков, впишите все номера через запятую: это один участок-набор, доступ откроется ко всему набору и к любой его части.</small>
-        </label>
-        <label id="grantCountRow" style="display:none">Сколько участков положить в запас
-          <input id="grantCount" type="number" min="1" max="10" value="3" style="width:120px">
-          <small class="muted">Участок из запаса откроется сам при первом расчёте нового участка, на 30 дней с этого момента.</small>
-        </label>
-        <label id="grantDaysRow">Срок доступа, дней
-          <input id="grantDays" type="number" min="1" value="30" style="width:120px">
-        </label>
-        <label>Комментарий для журнала (необязательно)
-          <input id="grantNote" placeholder="например, пилот для компании" style="width:100%">
-        </label>
-        <div><button class="btn dark" onclick="accessAdminGrant()">Выдать доступ</button></div>
+        </span></label>
+        <label id="grantCadastralRow"><span>Кадастровые номера участка</span><span>
+          <input id="grantCadastral" placeholder="например, 77:09:0004001:5578, 77:09:0004001:5579">
+          <small>Если в расчёте несколько участков, впишите все номера через запятую: это один участок-набор, доступ откроется ко всему набору и к любой его части.</small>
+        </span></label>
+        <label id="grantCountRow" style="display:none"><span>Сколько участков положить в запас</span><span>
+          <input id="grantCount" class="cab-short" type="number" min="1" max="10" value="3">
+          <small>Участок из запаса откроется сам при первом расчёте нового участка, на 30 дней с этого момента.</small>
+        </span></label>
+        <label id="grantDaysRow"><span>Срок доступа, дней</span><span>
+          <input id="grantDays" class="cab-short" type="number" min="1" value="30">
+        </span></label>
+        <label><span>Комментарий для журнала (необязательно)</span><span>
+          <input id="grantNote" placeholder="например, пилот для компании">
+        </span></label>
+        <div class="grant-submit"><button class="btn dark" onclick="accessAdminGrant()">Выдать доступ</button></div>
       </div>
-      <div id="accessAdminStatus" style="font-size:12px;margin-bottom:8px"></div>
+      <div id="accessAdminStatus" class="cab-status"></div>
       <div id="accessAdminList"></div>
-      <div class="section-title" style="margin:14px 0 6px">Демо-доступ по ссылке</div>
-      <div style="font-size:12px;color:#777;margin-bottom:6px">Ссылку можно отправить кому угодно: клиенту, партнёру, проверяющему ЮKassa. Она открывает кабинет без Telegram на 14 дней. По ней человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. Если отозвать ссылку, вход по ней закроется сразу.</div>
-      <div class="upload-line" style="align-items:center;margin-bottom:6px">
-        <input id="demoInviteNote" placeholder="Для кого, например «ЮKassa» или «ООО Ромашка»" style="min-width:220px">
+      <div class="cab-sub">Демо-доступ по ссылке</div>
+      <div class="cab-muted">Ссылку можно отправить кому угодно: клиенту, партнёру, проверяющему ЮKassa. Она открывает кабинет без Telegram на 14 дней. По ней человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. Если отозвать ссылку, вход по ней закроется сразу.</div>
+      <div class="cab-row">
+        <input id="demoInviteNote" placeholder="Для кого, например «ЮKassa» или «ООО Ромашка»">
         <button class="btn dark" onclick="accessDemoCreate()">Создать демо-ссылку</button>
       </div>
-      <div id="demoInviteStatus" style="font-size:12px;margin-bottom:6px"></div>
+      <div id="demoInviteStatus" class="cab-status"></div>
       <div id="demoInviteList"></div>
     </div>
-    <div id="projectsStored">
-      <div class="section-title" style="margin-bottom:8px">Мои проекты</div>
-      <div style="font-size:11px;color:#777;margin-bottom:10px">
+    <div id="projectsStored" class="cab-card">
+      <div class="cab-title">Мои проекты</div>
+      <div class="cab-note">
         Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
       </div>
       <!-- Ссылка живёт на нашем сервере и требует, чтобы он отвечал. Файл
@@ -971,12 +973,12 @@ PAGE += r"""</head>
            списка, а загрузка здесь: владелец искал кнопку и не нашёл
            (23.08.2026). Подпись при этом ссылалась на кнопку «Файл», которой
            на странице давно нет. -->
-      <div class="upload-line" style="align-items:center;margin-bottom:10px">
+      <div class="cab-row">
         <button class="btn" onclick="downloadCurrentSettings()">Скачать настройки текущего</button>
         <button class="btn" onclick="importSettingsFile()">Загрузить файл настроек</button>
         <input type="file" id="settingsFileInput" accept=".json,application/json" style="display:none"
                onchange="applySettingsFile(this)">
-        <span style="font-size:11px;color:#888">файл .json с вводными и ТЭП — свой или присланный</span>
+        <span class="cab-note">файл .json с вводными и ТЭП — свой или присланный</span>
       </div>
       <div class="scroll"><table>
         <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
