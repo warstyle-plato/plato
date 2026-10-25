@@ -692,10 +692,12 @@ function objectParkingFieldNote(prefix){
  if(origin==='refused')return String(item.origin_note||'')
   +' Чтобы вернуть гараж, снимите галочку «Отказ от подземного паркинга».';
  if(origin==='norm_rest')return String(item.origin_note||'')
+  +' Считается по нормативу '+parkingNormOf()+'.'
   +' Места на первых этажах засчитаны в норматив, под землёй — остаток. '
   +'Впишите число подземных мест, чтобы задать его самим.';
  if(item.by_norm)return req
-  ?(item.norm_rest?String(item.origin_note||'')+' Числа следуют за ТЭП. '
+  ?(item.norm_rest?String(item.origin_note||'')+' Считается по нормативу '+parkingNormOf()+'. '
+    +'Числа следуют за ТЭП. '
     +'Впишите места на первых этажах — под землёй останется остаток норматива.'
    :'Оба числа выше поставил норматив '+parkingNormOf()+' — они следуют за ТЭП. '
     +'Впишите своё, чтобы перебить; ноль руками значит «гаража нет».')

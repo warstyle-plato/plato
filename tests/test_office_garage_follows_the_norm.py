@@ -122,6 +122,16 @@ def test_the_refusal_does_not_touch_a_mixed_project_office() -> None:
     assert item["under_spaces"] == 120
 
 
+def test_a_mixed_project_office_keeps_zero_as_no_garage() -> None:
+    """В жилом проекте отказ — про дом, и «гаража у офиса нет» говорит ноль
+    руками: остаток норматива там не подставляется."""
+    x, t = _spec(project_kind=core.PROJECT_KIND_MIXED, offices_parking_under_spaces=0,
+                 offices_parking_over_spaces=50, _parking_by_hand=["offices"])
+    item = next(i for i in core.apply_object_parking(x, t)["own"] if i["prefix"] == "offices")
+    assert item["under_spaces"] == 0 and item["under_origin"] == "hand"
+    assert not item["norm_rest"]
+
+
 def test_the_project_parking_is_no_longer_moved_to_the_office() -> None:
     assert not hasattr(core, "office_takes_project_parking")
 

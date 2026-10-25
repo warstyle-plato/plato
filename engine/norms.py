@@ -1508,13 +1508,19 @@ def _object_parking_area_saved_line(saved: dict[str, Any]) -> str:
 # Прежде ноль под землёй рядом с вписанными местами первых этажей значил
 # «гаража нет», и в нежилом проекте его занимал перенос паркинга проекта:
 # 271 место на первых этажах + 149 из старого поля проекта = 420.
+#
+# Правило — у нежилого проекта: там гараж офиса и есть подземный паркинг, а
+# сказать «гаража нет» можно галочкой «Отказ от подземного паркинга». В жилом
+# проекте та галочка — про паркинг дома, и ноль в поле офиса, вписанный руками,
+# по-прежнему значит «гаража у офиса нет».
 OBJECT_GARAGE_NORM_REST_PRODUCTS = frozenset({"offices"})
 
 
-def object_garage_takes_norm_rest(tep_key: str) -> bool:
+def object_garage_takes_norm_rest(inputs: dict[str, Any], tep_key: str) -> bool:
     """Подземные места объекта без своего числа — остаток норматива?"""
     obj = _BY_KEY.get(tep_key)
-    return obj is not None and obj.product in OBJECT_GARAGE_NORM_REST_PRODUCTS
+    return (is_nonresidential(inputs) and obj is not None
+            and obj.product in OBJECT_GARAGE_NORM_REST_PRODUCTS)
 
 
 def object_underground_refused(inputs: dict[str, Any]) -> bool:
@@ -1632,7 +1638,7 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             else:
                 under, over = 0, 0
                 origin = "none"
-        elif enabled and under <= 0 and object_garage_takes_norm_rest(tep_key) and required > 0:
+        elif enabled and under <= 0 and object_garage_takes_norm_rest(inputs, tep_key) and required > 0:
             # Гараж офиса без своего числа подземных мест — остаток норматива
             # после мест первых этажей (`object_garage_takes_norm_rest`).
             under = max(0, required - over)
@@ -1703,7 +1709,7 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             "guest_spaces": guests,
             "by_norm": by_norm,
             "under_origin": origin,
-            "norm_rest": object_garage_takes_norm_rest(tep_key),
+            "norm_rest": object_garage_takes_norm_rest(inputs, tep_key),
             "origin_note": object_parking_origin_note(demand, origin, required, under, over),
             "required_spaces": int(required_by_key.get(tep_key) or 0),
             "sellable": sellable,
