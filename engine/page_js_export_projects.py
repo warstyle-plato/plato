@@ -549,6 +549,8 @@ function renderProjectsLogin(reason){
  }
  const scroll=stored.querySelector('.scroll');
  if(scroll)scroll.style.display='none';
+ const find=document.getElementById('projectsFind');
+ if(find)find.style.display='none';
 }
 
 function hideProjectsLogin(){
@@ -557,6 +559,8 @@ function hideProjectsLogin(){
  const stored=document.getElementById('projectsStored');
  const scroll=stored&&stored.querySelector('.scroll');
  if(scroll)scroll.style.display='';
+ const find=document.getElementById('projectsFind');
+ if(find)find.style.display='';
 }
 
 function enterProjectsKey(){
@@ -649,7 +653,47 @@ async function openProjects(){
   }
   alert(String(e.message||e));return;
  }
- const rows=(data.projects||[]).map(p=>{
+ projectsCards=data.projects||[];
+ renderProjectsList();
+}
+
+// Список проектов: поиск по названию и номерам участка, порядок — по дате
+// изменения или по названию. Выбранный порядок помнит браузер; хранилища может
+// не быть (приватное окно), и тогда порядок просто по умолчанию.
+let projectsCards=[];
+const PROJECTS_SORT_KEY='developaid_projects_sort';
+const PROJECTS_SORTS={
+ saved_desc:(a,b)=>String(b.saved_at||'').localeCompare(String(a.saved_at||'')),
+ saved_asc:(a,b)=>String(a.saved_at||'').localeCompare(String(b.saved_at||'')),
+ name:(a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ru',{sensitivity:'base',numeric:true})
+};
+function projectsSort(){
+ const select=document.getElementById('projectsSort');
+ let value=select&&select.value;
+ if(!projectsSortRestored){
+  projectsSortRestored=true;
+  try{const kept=localStorage.getItem(PROJECTS_SORT_KEY);if(kept&&PROJECTS_SORTS[kept])value=kept}catch(e){}
+  if(select&&value)select.value=value;
+ }
+ return PROJECTS_SORTS[value]?value:'saved_desc';
+}
+let projectsSortRestored=false;
+function projectsSortChanged(){
+ const select=document.getElementById('projectsSort');
+ try{if(select)localStorage.setItem(PROJECTS_SORT_KEY,select.value)}catch(e){}
+ renderProjectsList();
+}
+function projectMatches(p,query){
+ if(!query)return true;
+ const hay=[p.name||''].concat(p.cadastral||[]).join(' ').toLowerCase();
+ return query.split(/\s+/).filter(Boolean).every(word=>hay.includes(word));
+}
+function renderProjectsList(){
+ if(typeof projectsBody==='undefined')return;
+ const query=String((document.getElementById('projectsSearch')||{}).value||'').trim().toLowerCase();
+ const order=PROJECTS_SORTS[projectsSort()];
+ const shown=projectsCards.filter(p=>projectMatches(p,query)).slice().sort(order);
+ const rows=shown.map(p=>{
   const s=p.summary||{};
   return `<tr><td><b>${escapeHtml(p.name||'')}</b><br><small>${escapeHtml(String(p.saved_at||'').replace('T',' ').replace('+00:00',' UTC'))}`
    +`${p.cadastral&&p.cadastral.length?' · '+escapeHtml(p.cadastral.join(', ')):''}</small></td>`
@@ -665,10 +709,24 @@ async function openProjects(){
    +`<button class="btn" onclick="downloadSettingsFile('${p.id}')">Файл</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
  }).join('');
- projectsBody.innerHTML=rows||'<tr><td colspan="5">Пока ничего не сохранено.</td></tr>';
+ projectsBody.innerHTML=rows||('<tr><td colspan="5">'+(projectsCards.length
+  ?'По запросу «'+escapeHtml(query)+'» ничего не нашлось. Поиск идёт по названию и кадастровым номерам.'
+  :'Пока ничего не сохранено.')+'</td></tr>');
 }
 
 function closeProjects(){projectsDialog.style.display='none'}
+
+// Вкладки кабинета. Какие видны, решает не страница: вкладку администрирования
+// показывает `renderTariffsBox` по ответу сервера.
+function cabinetTab(name){
+ const tab=document.querySelector('.cab-tab[data-tab="'+name+'"]');
+ if(!tab||tab.style.display==='none')name='projects';
+ document.querySelectorAll('.cab-tab').forEach(b=>{
+  const on=b.dataset.tab===name;
+  b.classList.toggle('active',on);b.setAttribute('aria-selected',on?'true':'false');
+ });
+ document.querySelectorAll('.cab-panel').forEach(p=>{p.hidden=p.dataset.panel!==name});
+}
 
 function changeProjectsKey(){
  const key=prompt('Ключ администратора', projectsAdminKey||'');
@@ -1296,10 +1354,14 @@ async function renderTariffsBox(){
  catch(e){box.innerHTML='<div class="import-error">'+escapeHtml(String(e.message||e))+'</div>';return}
  box.innerHTML=tariffsHtml(data);
  payCountChanged();
- const admin=document.getElementById('accessAdminBox');
- if(admin){admin.style.display=(data.is_admin||projectsAdminKey)?'':'none';if(data.is_admin||projectsAdminKey){renderAccessAdmin();renderDemoInvites()}}
+ const admin=document.getElementById('accessAdminBox'),isAdmin=!!(data.is_admin||projectsAdminKey);
+ const adminTab=document.getElementById('cabTabAdmin');
+ if(adminTab)adminTab.style.display=isAdmin?'':'none';
+ if(!isAdmin&&adminTab&&adminTab.classList.contains('active'))cabinetTab('projects');
+ if(admin){admin.style.display=isAdmin?'':'none';if(isAdmin){renderAccessAdmin();renderDemoInvites()}}
 }
 async function openTariffs(){
+ cabinetTab('tariffs');
  await openProjects();
  await renderTariffsBox();
  const box=document.getElementById('tariffsBox');

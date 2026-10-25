@@ -209,6 +209,7 @@ def test_the_grant_form_names_its_fields_on_the_drawn_page(monkeypatch):
             page.click("#tariffsButton")
             page.wait_for_function(
                 "document.querySelector('#grantChat option[value=\"" + str(CHAT) + "\"]')")
+            page.click("#cabTabAdmin")
             form = page.inner_text(".grant-form")
             assert "Кому выдать доступ" in form and "Кадастровые номера участка" in form
             assert "несколько участков" in form
@@ -232,7 +233,7 @@ def test_the_cabinet_speaks_one_type_scale_on_the_drawn_page(monkeypatch):
     восемь размеров (10,8–17 px) и Arial у полей рядом с системным шрифтом.
     Меряется отрисованный кабинет администратора, где видны все блоки: тарифы
     с включённой оплатой (как на проде), выдача доступа, таблицы людей и
-    оплат, демо-ссылки, мои проекты. Почта для чека и число участков стоят в
+    оплат, демо-ссылки, мои проекты — каждая вкладка по очереди. Почта для чека и число участков стоят в
     одной строке, а селекты без системного вида: Safari иначе рисует их своим
     шрифтом.
     """
@@ -258,8 +259,8 @@ def test_the_cabinet_speaks_one_type_scale_on_the_drawn_page(monkeypatch):
             "document.querySelector('#grantChat option[value=\"" + str(CHAT) + "\"]')"
             "&&document.querySelector('#demoInviteList .demo-link')"
             "&&document.getElementById('payPlotButton')")
-        seen = page.evaluate("""() => {
-          const sizes = {}, families = {};
+        measure = """sizes => {
+          const families = {};
           for (const el of document.querySelectorAll('#projectsDialog *')) {
             if (!el.getClientRects().length) continue;
             const own = ['INPUT','SELECT','BUTTON','TEXTAREA'].includes(el.tagName)
@@ -272,9 +273,22 @@ def test_the_cabinet_speaks_one_type_scale_on_the_drawn_page(monkeypatch):
           const top = id => Math.round(document.getElementById(id).getBoundingClientRect().top);
           const looks = [...document.querySelectorAll('#projectsDialog select')]
             .map(el => getComputedStyle(el).appearance);
-          return {sizes, families, rows: [top('payEmail'), top('payCount')], looks};
-        }""")
+          return {sizes, families, looks,
+                  rows: [top('payEmail'), top('payCount')], seen: top('payEmail') > 0};
+        }"""
+        sizes: dict = {}
+        families: dict = {}
+        for tab in ("#cabTabProjects", "#cabTabTariffs", "#cabTabAdmin"):
+            page.click(tab)
+            one = page.evaluate(measure, sizes)
+            sizes = one["sizes"]
+            for name, where in one["families"].items():
+                families.setdefault(name, []).extend(where)
+            if tab == "#cabTabTariffs":
+                assert one["seen"], "строка оплаты не видна на вкладке тарифов"
+                rows, looks = one["rows"], one["looks"]
         page.close()
+    seen = {"sizes": sizes, "families": families, "rows": rows, "looks": looks}
     assert len(seen["sizes"]) <= 3, {k: v[:5] for k, v in seen["sizes"].items()}
     assert len(seen["families"]) == 1, {k: v[:5] for k, v in seen["families"].items()}
     assert abs(seen["rows"][0] - seen["rows"][1]) <= 4, seen["rows"]
