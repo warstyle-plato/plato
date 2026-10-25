@@ -2601,7 +2601,11 @@ function vriRequiredNote(){
  const fee=Number(inputs.land_rights_cost_mln||0);
  const o=(inputs._field_origin||{})['inputs.land_rights_cost_mln'];
  const from=o&&o.source==='glavapu'?' (из ГлавАПУ)':o&&o.source==='manual'?' (вписана вручную)':'';
- if(fee>0)return `Плата ${num(fee)} млн ₽ задана${from} — смена ВРИ учитывается. Снять признак — значит обнулить плату.`;
+ // Участок уже 2.6 — подпись называет, на каком основании плата взята
+ // (`vri_fee_basis_text`, решение владельца 25.10.2026). Строку отдаёт
+ // сервер вместе со сведениями ЕГРН; страница её не сочиняет.
+ const basis=String((inputs._land_lookup||{}).vri_fee_basis||'');
+ if(fee>0)return `Плата ${num(fee)} млн ₽ задана${from} — смена ВРИ учитывается. Снять признак — значит обнулить плату.`+(basis?' '+basis:'');
  if(vriFeeClearedMln>0)return `Плата ${num(vriFeeClearedMln)} млн ₽ обнулена снятием признака — смена ВРИ не учитывается.`;
  // Льгота без платы ни на что не действует — и молча стоять не должна.
  const relief=inputs.vri_relief_mode==='amount'?Number(inputs.vri_relief_mln||0):0;
