@@ -445,6 +445,59 @@ def test_the_bottom_total_no_longer_repeats_the_expenses() -> None:
         "Затраты стройки — смета объектов и общие": result["summary"]["capex"]}
 
 
+def _unit_mismatches(drawn: list[list[str]], items: list[dict]) -> list[str]:
+    """Напечатанная удельная экономика против `report.unit_economics`: у статьи
+    на своей базе число стоит в столбце этой базы, на продаваемую — всегда,
+    в столбце чужой базы — прочерк."""
+    if [d[0] for d in drawn] != [i["label"] for i in items]:
+        return ["строки не те"]
+    out = []
+    for (label, total, per_total, per_saleable), item in zip(drawn, items):
+        expected_total = item["per_base_th"] if item["base"] == "total_area" else None
+        for cell, value in ((total, item["total"]), (per_total, expected_total),
+                            (per_saleable, item["per_saleable_th"])):
+            if value is None:
+                if cell != "—":
+                    out.append(f"{label}: {cell} вместо прочерка")
+                continue
+            number, tolerance = _number(cell)
+            if abs(number - float(value)) > tolerance:
+                out.append(f"{label}: {cell} вместо {value}")
+    return out
+
+
+def _drawn_table(markup: str, title: str) -> list[list[str]]:
+    card = markup.split(f'<div class="section-title">{title}</div>', 1)[1]
+    return _drawn_expense(card)
+
+
+def test_the_unit_economics_is_a_table_with_a_column_per_base() -> None:
+    result = _run()
+    block = _block(_sections(result)["costs"], "Удельная экономика")
+    assert [c[1] for c in block["columns"]] == [
+        "Показатель", "Всего", "на м² общей площади", "на м² продаваемой площади"]
+    items = result["report"]["unit_economics"]
+    assert {i["base"] for i in items} == {"total_area", "saleable_area"}
+    rows = {r["label"]: r for r in block["years"]}
+    # Выручка делится только на продаваемую: в столбце общей — пусто, не ноль.
+    assert rows["Выручка"]["per_total_area"] is None
+    capex = next(i for i in items if i["key"] == "capex")
+    assert rows["CAPEX"]["per_total_area"] == capex["per_base_th"]
+    assert rows["CAPEX"]["per_saleable_area"] == capex["per_saleable_th"]
+    markup = _render_blocks(result["report"])["costs"]
+    assert _unit_mismatches(_drawn_table(markup, "Удельная экономика"), items) == []
+
+
+def test_the_unit_check_fails_on_a_forgery() -> None:
+    result = _run()
+    items = result["report"]["unit_economics"]
+    drawn = _drawn_table(_render_blocks(result["report"])["costs"], "Удельная экономика")
+    zero = [[*r[:2], "0,0 тыс ₽/м²", r[3]] if r[0] == "Выручка" else r for r in drawn]
+    assert _unit_mismatches(zero, items) != []
+    swapped = [[r[0], r[1], r[3], r[2]] if r[0] == "CAPEX" else r for r in drawn]
+    assert _unit_mismatches(swapped, items) != []
+
+
 def test_the_page_prints_the_expense_structure_first() -> None:
     result = _run()
     markup = _render_blocks(result["report"])["costs"]
@@ -487,8 +540,12 @@ READ = r"""() => {
             .filter(id => seen(document.getElementById(id))),
           costsCards: [...document.querySelectorAll('#rsObj-costs .card > .section-title')].filter(seen)
             .map(t => t.textContent.trim()),
-          expense: [...document.querySelectorAll('#rsObj-costs table.object-years tbody tr')].filter(seen)
-            .map(tr => [...tr.cells].map(c => c.innerText.trim())),
+          costsTables: Object.fromEntries([...document.querySelectorAll('#rsObj-costs .card')].filter(seen)
+            .filter(c => c.querySelector('table.object-years'))
+            .map(c => [c.querySelector('.section-title').textContent.trim(),
+                       {head: [...c.querySelectorAll('thead th')].map(th => th.textContent.trim()),
+                        rows: [...c.querySelectorAll('tbody tr')].filter(seen)
+                          .map(tr => [...tr.cells].map(td => td.innerText.trim()))}])),
           gantt: [...document.querySelectorAll('#reportCalendarGantt .gantt-label.group')]
             .map(x => x.textContent.trim()),
           inputs, tep};
@@ -566,16 +623,15 @@ def test_the_rendered_numbers_are_the_engine_numbers(walk) -> None:
 
 def test_the_object_frame_shows_the_unit_economics(walk) -> None:
     """Удельная экономика — в разделе «Затраты» рамки объекта (владелец,
-    23.10.2026: «почему в результатах нет удельной экономики вообще»): жилой
-    «Итог», где она жила, рамка объекта прячет целиком."""
+    23.10.2026: «почему в результатах нет удельной экономики вообще»), и так
+    же, как у жилья: статья строкой, общая и продаваемая — двумя столбцами
+    (владелец, 25.10.2026)."""
     state, engine = walk["object"], walk["object"]["engine"]
-    rows = dict(r for r in next(s for s in state["sections"] if s["id"] == "rsObj-costs")["rows"]
-                if len(r) == 2)
-    net = next(u for u in engine["report"]["unit_economics"] if u["key"] == "net_profit")
-    drawn = rows["Чистая прибыль — на м² продаваемой площади"]
-    expected = f"{net['per_saleable_th']:,.1f}".replace(",", " ").replace(".", ",").replace("-", "−")
-    assert drawn.replace("\u00a0", " ").replace("-", "−").startswith(expected), (drawn, expected)
-    assert any(label.startswith("Выручка — на м²") for label in rows)
+    table = state["costsTables"]["Удельная экономика"]
+    assert table["head"] == ["Показатель", "Всего", "на м² общей площади", "на м² продаваемой площади"]
+    assert _unit_mismatches(table["rows"], engine["report"]["unit_economics"]) == []
+    revenue = next(r for r in table["rows"] if r[0] == "Выручка")
+    assert revenue[2] == "—"
 
 
 def test_the_rendered_costs_open_with_the_expense_structure(walk) -> None:
@@ -584,7 +640,8 @@ def test_the_rendered_costs_open_with_the_expense_structure(walk) -> None:
     state, engine = walk["object"], walk["object"]["engine"]
     assert state["costsCards"][0] == "Структура расходов"
     assert state["costsCards"][-1] == "Итог стройки"
-    assert _expense_mismatches(state["expense"], _expense_rows(engine)) == []
+    assert _expense_mismatches(state["costsTables"]["Структура расходов"]["rows"],
+                               _expense_rows(engine)) == []
 
 
 def test_a_housing_project_keeps_its_page(walk) -> None:
@@ -636,6 +693,11 @@ def test_the_pdf_follows_the_nine_sections(object_pdf) -> None:
 def test_the_pdf_opens_the_costs_with_the_expense_structure(object_pdf) -> None:
     text = object_pdf[object_pdf.index("\nЗатраты\n"):]
     assert text.index("Структура расходов") < text.index("Смета объекта")
+    # Удельная экономика — таблицей с двумя базами, а не строкой на базу.
+    unit = text[text.index("\nУдельная экономика\n"):]
+    assert " ".join(unit.split()[:12]).startswith(
+        "Удельная экономика Показатель Всего на м² общей площади на м² продаваемой площади")
+    assert "— на м² продаваемой площади" not in object_pdf
     total = text[text.index("\nРасходы всего\n"):].splitlines()[2]
     value, tolerance = _number(total)
     assert abs(value - _run()["summary"]["total_expenses"]) <= tolerance

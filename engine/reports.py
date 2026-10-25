@@ -312,20 +312,33 @@ def _expense_structure_block(report: dict[str, Any], summary: dict[str, Any]) ->
              "widths": list(EXPENSE_STRUCTURE_PDF_WIDTHS)}]
 
 
-def _object_unit_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
-    """Строки удельной экономики для рамки объекта: тыс ₽ на м² своей базы,
-    база — в подписи (`unit_economics.base_label`), а не угадана заголовком."""
-    rows: list[dict[str, Any]] = []
-    for item in report.get("unit_economics") or []:
-        base = str(item.get("base_label") or "")
-        tail = base.split("м²", 1)[1].strip() if "м²" in base else base
-        rows.append(_row(f"{item.get('label')} — на м² {tail}".strip(), item.get("per_base_th"), "th"))
-        # Вторая база — продаваемая, как вторая колонка жилой таблицы: с ней
-        # сравнивают цену продажи. У строк на продаваемую не повторяется.
-        if item.get("base") != UNIT_BASE_SALEABLE:
-            rows.append(_row(f"{item.get('label')} — на м² продаваемой площади",
-                             item.get("per_saleable_th"), "th"))
-    return rows
+def _object_unit_block(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """«Удельная экономика» рамки объекта — таблица движка `report.unit_economics`
+    так же, как у жилья: статья строкой, базы — столбцами («на м² общей»,
+    «на м² продаваемой»; владелец, 25.10.2026: «где два столбца на продаваемую
+    и общую»). Столбец подписан базой из кода (`base`), а не заголовком; у
+    статьи без этой базы (выручка и прибыль — только на продаваемую) клетка —
+    прочерк, а не ноль."""
+    items = report.get("unit_economics") or []
+    if not items:
+        return []
+    bases = [UNIT_BASE_TOTAL, UNIT_BASE_SALEABLE]
+    bases += [b for b in dict.fromkeys(str(i.get("base") or "") for i in items)
+              if b and b not in bases]
+
+    def per(item: dict[str, Any], base: str) -> Any:
+        if item.get("base") == base:
+            return item.get("per_base_th")
+        # Вторая база движка — продаваемая: с ней сравнивают цену продажи.
+        return item.get("per_saleable_th") if base == UNIT_BASE_SALEABLE else None
+
+    rows = [{"label": str(i.get("label") or ""), "total": i.get("total"),
+             **{"per_" + b: per(i, b) for b in bases}} for i in items]
+    columns = [["label", "Показатель", "text"], ["total", "Всего", "rub"],
+               *[["per_" + b, "на м² " + TERMS[b].genitive, "th"] for b in bases]]
+    widths = [60, 34, *[(170 - 94) / len(bases)] * len(bases)]
+    return [{"title": "Удельная экономика", "kind": "unit_economics",
+             "columns": columns, "years": rows, "widths": widths}]
 
 
 def _object_calendar(report: dict[str, Any], objects: list[dict[str, Any]]) -> dict[str, Any]:
@@ -652,8 +665,7 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     # Удельная экономика — та же таблица движка (`report.unit_economics`), что
     # в жилом «Итоге»: рамка объекта прятала «Итог» целиком и теряла её
     # (владелец, 23.10.2026: «почему в результатах нет удельной экономики
-    # вообще»). Каждая строка — на свою базу, и база названа в подписи.
-    unit = _object_unit_rows(report)
+    # вообще»). Статья — строка, базы — столбцы (`_object_unit_block`).
     unit_brief = [_row(f"{item['label']} на м² продаваемой", item.get("per_saleable_th"), "th")
                   for item in report.get("unit_economics") or []
                   if item.get("key") in ("total_expenses", "net_profit")]
@@ -668,7 +680,7 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
         # строку — стройку: «Расходы всего» уже стоит итогом структуры.
         "blocks": [*_expense_structure_block(report, summary),
                    *cost_blocks,
-                   *([{"title": "Удельная экономика", "rows": unit}] if unit else []),
+                   *_object_unit_block(report),
                    {"title": "Общие затраты проекта — участок, ИРД, проект, сети",
                     "rows": common_rows},
                    {"title": "Эксплуатация и налог на имущество", "rows": operating},
