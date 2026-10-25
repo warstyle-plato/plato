@@ -259,23 +259,32 @@ def demo_session_chat(session: str) -> int:
 # Явный перечень, а не догадка по имени.
 _DEMO_PATH_BLOCKS = (("/auctions", "auctions"), ("/krt", "auctions"),
                      ("/cabinet", "market"), ("/market", "market"))
-# POST, которые в этих разделах только читают: выгрузки (решение владельца —
-# это чтение) и вопросы Платону (владелец открыл их демо 25.10.2026).
-_DEMO_READ_POSTS = frozenset({
-    "/auctions/export.xlsx", "/auctions/table", "/auctions/lot-point", "/auctions/ask",
-    "/auctions/krt/tenders",
+# Рынок: POST, которые только читают — выгрузки (решение владельца: это
+# чтение) и вопрос Платону (владелец открыл его демо 25.10.2026).
+_DEMO_MARKET_READ_POSTS = frozenset({
     "/cabinet/report.pdf", "/cabinet/sales.pptx", "/cabinet/ask", "/market/report",
     "/market/price-hint", "/market/price-hint/details", "/market/discovery",
 })
-_DEMO_READ_POST_RE = re.compile(r"/auctions/krt/[^/]+/plato")
-# GET, которые не читают, а запускают пробу источника, выдачу ссылки или
-# тяжёлый пересчёт: это работа команды.
-_DEMO_WRITE_GET_RE = re.compile(
-    r"/auctions/(?:[^/]+/(?:probe|browser|api)(?:/browser)?|krt/api-probe(?:/browser)?"
-    r"|source-page|investmoscow/probe|etp/probe(?:/browser)?)"
-    r"|/market/bnmap/(?:probe|browser)|/krt/nagatino/share")
+# Торги: вопрос Платону. Всё прочее чтение торгов — перечень ключа просмотра
+# (`auction_search.view_access.scope_problem`): то, что разрешено, названо
+# там, а не угадано здесь. Ответ Платона на карточке площадки
+# (`/auctions/krt/{slug}/plato`) сохраняется в общий отчёт — это запись.
+_DEMO_AUCTION_READ_POSTS = frozenset({"/auctions/ask"})
+# GET рынка и участков КРТ, которые не читают, а запускают пробу источника
+# или выдают ссылку: это работа команды.
+_DEMO_WRITE_GET_RE = re.compile(r"/market/bnmap/(?:probe|browser)|/krt/nagatino/share")
 _DEMO_COMMAND_WORDS = ("refresh", "force", "rebuild", "revoke", "ensure_model", "run")
-_DEMO_FALSE_WORDS = ("", "0", "false", "no", "off")
+_DEMO_FALSE_WORDS = ("", "0", "false", "f", "n", "no", "off")
+
+
+def _demo_auction_write(verb: str, clean: str, query: Any) -> bool:
+    if verb == "POST" and clean in _DEMO_AUCTION_READ_POSTS:
+        return False
+    try:
+        from auction_search import view_access  # noqa: PLC0415
+    except Exception:
+        return True  # перечня чтения нет — закрыто, а не открыто
+    return bool(view_access.scope_problem(verb, clean, query or {}))
 
 
 def demo_request_block(method: str, path: str,
@@ -287,10 +296,12 @@ def demo_request_block(method: str, path: str,
     if block is None:
         return None
     verb = str(method or "").upper()
-    if verb in ("GET", "HEAD", "OPTIONS"):
+    if clean == "/auctions" or clean.startswith("/auctions/"):
+        write = _demo_auction_write(verb, clean, query)
+    elif verb in ("GET", "HEAD", "OPTIONS"):
         write = bool(_DEMO_WRITE_GET_RE.fullmatch(clean))
     else:
-        write = not (clean in _DEMO_READ_POSTS or _DEMO_READ_POST_RE.fullmatch(clean))
+        write = clean not in _DEMO_MARKET_READ_POSTS
     for word in _DEMO_COMMAND_WORDS:
         value = (query or {}).get(word) if hasattr(query, "get") else None
         if value is not None and str(value).strip().lower() not in _DEMO_FALSE_WORDS:

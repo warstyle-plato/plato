@@ -232,6 +232,13 @@ def test_a_demo_cannot_mark_a_photo_but_sees_the_feed(monkeypatch):
     ("post", "/auctions/ingest"),
     ("post", "/auctions/lot-notes/request"),
     ("post", "/auctions/krt/ranking/refresh"),
+    # Пишут в общее хранилище: лоты площадки и отчёт Платона на карточке.
+    ("post", "/auctions/krt/tenders"),
+    ("post", "/auctions/krt/demo-slug/plato"),
+    ("post", "/auctions/krt/demo-slug/plato?trace_id=abc"),
+    # Маршрута нет в перечне чтения — значит запись, даже если он новый.
+    ("post", "/auctions/some-new-route"),
+    ("get", "/auctions/krt/demo-slug/investment-score?ensure_model=1"),
     ("get", "/auctions/torgi/probe"),
     ("get", "/auctions/krt/watch?refresh=1"),
     ("post", "/cabinet/contracting"),
