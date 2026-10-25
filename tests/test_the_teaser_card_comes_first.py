@@ -232,11 +232,14 @@ def test_on_the_page_card_then_questions_then_the_button(monkeypatch) -> None:
             questions_on_first_step = page.locator(".ai-question").count()
 
             page.locator(".ai-card").last.get_by_role("button", name="Перейти к вопросам").click()
-            for name in ("В цену сделки — платится на входе", "Расселение не требуется — 0",
-                         "Взять сумму тизера — 2,57 млрд руб.", "Бизнес"):
+            for answered, name in enumerate(("В цену сделки — платится на входе",
+                                             "Расселение не требуется — 0",
+                                             "Взять сумму тизера — 2,57 млрд руб.", "Бизнес"), 1):
                 page.locator(".ai-question").last.get_by_role("button", name=name).click()
-                page.wait_for_function("() => !aiBusy", timeout=10_000)
-                page.wait_for_timeout(100)
+                # Ответ принят, когда карточка ушла на следующий вопрос.
+                page.wait_for_function(
+                    f"() => !aiBusy && aiCard && aiCard.questions.index === {answered}",
+                    timeout=10_000)
             unchanged = page.evaluate("() => JSON.stringify([inputs, tep])") == before
             calcs_during = len(calcs) - calcs_before
             final_text = page.locator(".ai-card").last.inner_text()
