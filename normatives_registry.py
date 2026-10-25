@@ -803,7 +803,7 @@ def signal_new_numbers(signal: dict[str, Any], entry: dict[str, Any]) -> set[str
     found = [m.group(0) for m in _ACT_NUMBER_RE.finditer(str(signal.get("message")
                                                             or signal.get("quote") or ""))]
     skip = accounted_numbers(entry) | ({own_number(entry)} - {""})
-    # Номер печатается так, как его написал источник: «2999-ПП», а не «2999-пп».
+    # Номер печатается так, как его написал источник: «ПП», а не «пп».
     return {number for number in found if number.lower() not in skip}
 
 
