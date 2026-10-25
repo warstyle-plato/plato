@@ -42,7 +42,10 @@ def test_the_server_endpoint_returns_a_full_glavapu_import(monkeypatch):
     assert normalized["apartment_area_sqm"] == pytest.approx(13921.6, rel=0.001)
     mapped = result["mappings"]["inputs"]
     assert mapped["land_rights_cost_mln"] == pytest.approx(1289.919, abs=0.001)
-    assert mapped["social_compensation_mln"] == pytest.approx(580.668, abs=0.01)
+    # Ставки компенсации — последние (калькулятор 25.10.2026 по этому участку:
+    # 192,536 + 316,795 + 100,069 = 609,400); УПКС в заглушке нет, и откат
+    # берёт УПКС квартала прежних ставок — это тот же квартал 77:09:0004014.
+    assert mapped["social_compensation_mln"] == pytest.approx(609.40, abs=0.01)
     assert result["mappings"]["tep"]["apartments"]["saleable"] == \
         pytest.approx(13921.6, rel=0.001)
     assert normalized["parking_permanent"] == pytest.approx(161)

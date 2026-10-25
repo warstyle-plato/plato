@@ -192,6 +192,74 @@ MOSCOW_SOCIAL_UUPSS: dict[str, Any] = {
     },
 }
 
+# Компенсация за соцобъекты — ставки самого калькулятора ГлавАПУ (объект
+# констант его кода: uupss_doo_place, uupss_school_place,
+# uupss_policlinic_place, coeff_social_compensation). Один владелец для обоих
+# наших расчётов: серверного дубля калькулятора (`vri_tep_quick`, бот и откат
+# сайта) и нормы по введённому ТЭП (`tep_derived_norms`). Прежде ставки стояли
+# литералами в обоих, и когда город поднял их в коде калькулятора, формулы
+# сервера разошлись с ним по школе на 7 %, а предупреждение об этом нечем было
+# снять, кроме правки двух мест разом.
+#
+# Ставки версионные: старая выгрузка сверяется со ставками своей даты, а
+# расчёт без даты берёт последние. Новую строку добавлять, старую не трогать.
+GLAVAPU_SOCIAL_COMPENSATION_RATES: list[dict[str, Any]] = [
+    {"effective_from": "2026-08-01",
+     "uupss_th_rub": {"kindergarten": 4799.71, "school": 4578.69, "clinic": 7887.92},
+     "factor": {"kindergarten": 1.2, "school": 1.2, "clinic": 1.0},
+     "source": "код калькулятора genplan.tech/calc, снимок genplan_assets 28.09.2026; "
+               "выгрузки 01.08 и 16.08.2026"},
+    # Замечено ночной проверкой 25.10.2026 (школа −7 % у формул сервера).
+    # Точная дата ввода неизвестна: выгрузки 06.10 и 07.10 ещё несут прежние
+    # ставки, поэтому новая строка действует со следующего дня.
+    {"effective_from": "2026-10-08",
+     "uupss_th_rub": {"kindergarten": 4980.45, "school": 5066.73, "clinic": 8149.59},
+     "factor": {"kindergarten": 1.2, "school": 1.2, "clinic": 1.0},
+     "source": "код калькулятора genplan.tech/calc (index-CtbA_t5J.js), снят 25.10.2026; "
+               "сходится до тысячной с прод-выгрузками 77:07:0008006:3 и 77:09:0004014:13"},
+]
+# УПКС квартала 77:09:0004014, на выгрузке которого сняты прежние ставки «за
+# место» (9,9 / 7,8 / 10,9 млн): им серверный расчёт откатывается, если УПКС
+# квартала не пришёл, — без земли платёж вышел бы почти вдвое ниже.
+GLAVAPU_SOCIAL_FALLBACK_UPKS = 98974.74
+
+
+def glavapu_social_rates(at: str = "") -> dict[str, Any]:
+    """Ставки компенсации калькулятора на дату. Пусто — последние."""
+    rows = sorted(GLAVAPU_SOCIAL_COMPENSATION_RATES, key=lambda row: str(row["effective_from"]))
+    moment = str(at or "").strip()
+    chosen = rows[0] if moment else rows[-1]
+    for row in rows:
+        if moment and str(row["effective_from"]) <= moment:
+            chosen = row
+    return chosen
+
+
+def glavapu_social_land_sqm(kind: str, places: float) -> float:
+    """Норматив земли на место — по мощности объекта, как в коде калькулятора:
+    ДОО 35 м² до 150 мест, дальше 32; школа 19 до 900, 16 до 1 500, дальше 14;
+    поликлиника 30."""
+    if kind == "kindergarten":
+        return 35.0 if places <= 150 else 32.0
+    if kind == "school":
+        return 19.0 if places <= 900 else 16.0 if places <= 1500 else 14.0
+    return 30.0
+
+
+def glavapu_social_compensation_mln(kind: str, places: float, upks: float,
+                                    at: str = "") -> float:
+    """Компенсация за соцобъект формулой калькулятора (функция ap):
+    коэфф × (УУПСС на место × места / 1000 + места × земля на место × УПКС / 1e6),
+    каждое слагаемое и итог — до тысячной, как округляет калькулятор.
+    """
+    if places <= 0:
+        return 0.0
+    rates = glavapu_social_rates(at)
+    building = round(rates["uupss_th_rub"][kind] * places / 1000.0, 3)
+    land = round(places * glavapu_social_land_sqm(kind, places) * upks / 1e6, 3)
+    return round(rates["factor"][kind] * (building + land), 3)
+
+
 # Приложение 6 к 945-ПП: приобъектная парковка, Nв = X / X2 × K1 × K2.
 # Приложение 5 переписано 2118-ПП, приложение 6 — нет, и переписывать его
 # вместе с ним нельзя.
@@ -1161,7 +1229,8 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
                       sqm_per_job: float = 32.0,
                       parking_norm_regime: str = "2118_2026",
                       apartment_count: float = 0.0,
-                      social_population_method: str = SOCIAL_POPULATION_DEFAULT) -> dict[str, Any]:
+                      social_population_method: str = SOCIAL_POPULATION_DEFAULT,
+                      compensation_at: str = "") -> dict[str, Any]:
     """Что следует из введённого руками ТЭП: население, соцпотребность,
     компенсация, машино-места, места приложения труда.
 
@@ -1221,22 +1290,20 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
     guest = math.ceil(permanent / 10.0) if permanent else 0
     onsite = math.ceil(nonresidential_np / 90.0 * k1 * k2) if nonresidential_np and k1 and k2 else 0
 
-    def compensation(places: float, uupss_th: float, land_sqm: float, factor: float) -> float:
+    def compensation(kind: str, places: float) -> float:
         if places <= 0 or upks <= 0:
             return 0.0
-        return factor * (uupss_th * places / 1000.0 + places * land_sqm * upks / 1e6)
+        return glavapu_social_compensation_mln(kind, places, upks, compensation_at)
 
-    # Земля на место — по мощности объекта, как у калькулятора: ДОО 35 м² до
-    # 150 мест, дальше 32; школа 19 до 900, 16 до 1 500, дальше 14. Мощность
+    # Ставки и земля на место — у `glavapu_social_compensation_mln`. Мощность
     # поликлиники в компенсации — взрослая (13,2) + детская (5,8) на тысячу:
     # на Нагатино 101 + 45 = 146 при смешанной 145 (выгрузка 06.10.2026).
     clinic_parts = ((math.ceil(13.2 * social_population / 1000)
                      + math.ceil(5.8 * social_population / 1000))
                     if social_population else 0)
-    comp_dou = compensation(dou, 4799.71, 35.0 if dou <= 150 else 32.0, 1.2)
-    comp_school = compensation(school, 4578.69,
-                               19.0 if school <= 900 else 16.0 if school <= 1500 else 14.0, 1.2)
-    comp_clinic = compensation(clinic_parts, 7887.92, 30.0, 1.0)
+    comp_dou = compensation("kindergarten", dou)
+    comp_school = compensation("school", school)
+    comp_clinic = compensation("clinic", clinic_parts)
     return {
         "population": population,
         "apartment_units": math.ceil(population / 2.1) if population else 0,
