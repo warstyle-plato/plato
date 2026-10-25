@@ -759,9 +759,16 @@ def _calculate_economics(req: CalcRequest) -> dict:
             - float(fr.get("nonres_vat_paid", 0.0) or 0.0)
         )
         vat_m = vat_ddu.get(month, 0.0)
-        project_cf.append(revenue_m - capex_m - opex_m - tax - vat_m + nonres_project)
+        # Деньги по ДДУ лежат на эскроу до ввода (214-ФЗ, ч. 6 ст. 15.5): застройщик
+        # получает их раскрытием счёта в РВЭ, а проданное после ввода — в месяц
+        # продажи. Поток проекта идёт по тем же деньгам, что поток капитала, —
+        # как строка книги «Проектный CF до финансирования» (CF_n!54 от
+        # «Раскрытия эскроу»). Прежде выручка шла сюда в месяц договора, и NPV
+        # проекта по ДДУ выходил выше настоящего: на Вавилова, 67 +623 млн ₽
+        # против −1 771 (владелец, 25.10.2026).
         escrow_release = float(fr.get("escrow_release", 0.0) or 0.0)
         cash_revenue_to_equity = 0.0 if month < op["rve"] else revenue_m + escrow_release
+        project_cf.append(cash_revenue_to_equity - capex_m - opex_m - tax - vat_m + nonres_project)
         # Кэш-свип уходит банку с поступлений этой очереди: её долг он не
         # гасит (линия закрыта), поэтому в pf_repay его нет, а из кассы он
         # выбывает. Без этого вычета деньги посчитались бы дважды — здесь как
@@ -1225,6 +1232,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "landscaping_by_class_th": per_sqm_th(
                 op.get("landscaping_by_class", 0.0), project_gns_sqm),
             "landscaping_by_rate": bool(op.get("landscaping_by_rate")),
+            "landscaping_rate_origin": str(op.get("landscaping_rate_origin") or ""),
+            "landscaping_default_rate_th": float(op.get("landscaping_default_rate_th") or 0.0),
             # Статья считается на своей физической базе — дворе, — а сравнивают
             # её с чужой сметой и со сводом «Статистики», которые меряют метр
             # ГНС. Производная считается ЗДЕСЬ и один раз: посчитанная на

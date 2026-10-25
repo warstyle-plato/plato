@@ -328,7 +328,37 @@ def source_signals(check: dict[str, Any], entry: dict[str, Any] | None = None,
     signals = [item for item in (sources.get("signals") or []) if isinstance(item, dict)]
     if entry is None:
         return signals
-    return [item for item in signals if not signal_is_accounted(item, entry)]
+    return [item for item in signals
+            if not signal_is_accounted(item, entry)
+            and not signal_names_other_act(item, entry)]
+
+
+_ISSUER_RE = re.compile(
+    r"Правительства\s+((?:[А-ЯЁ][а-яё-]+)(?:\s+(?:области|края|республики|"
+    r"автономного\s+округа|автономной\s+области))?)")
+
+
+def signal_names_other_act(signal: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """Находка говорит о ЧУЖОМ акте с тем же номером — её не показываем нигде.
+
+    На карточке 945-ПП Москвы висело «О внесении изменений в отдельные
+    постановления Правительства Магаданской области (№ 402-пп, № 945-пп)» —
+    сохранённая находка поиска от 24.10.2026, сделанная до того, как номер
+    стал якорем только вместе с датой акта. Сохранённое состояние живёт до
+    следующего поиска, поэтому тот же отбор применяется и при показе: чужой
+    орган власти в цитате (Правительство другого региона) или номер акта рядом
+    с чужой датой — это другой акт. Ответ один для карточки, подписи, счётчика
+    сторожа и сообщения: все они читают `source_signals`.
+    """
+    quote = str(signal.get("quote") or "")
+    if quote_names_other_act(quote, entry):
+        return True
+    title = str(entry.get("title") or "")
+    own = _ISSUER_RE.search(title)
+    if not own:
+        return False
+    named = [m.group(1).lower() for m in _ISSUER_RE.finditer(quote)]
+    return bool(named) and own.group(1).lower() not in named
 
 
 def _reader_label(entry: dict[str, Any], check: dict[str, Any]) -> tuple[str, str]:
@@ -1559,7 +1589,10 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     news_html = ""
     all_signals = source_signals(check)
     signals = source_signals(check, entry)
-    accounted = [item for item in all_signals if item not in signals]
+    # «Уже учтено» — только наша учтённая редакция; находка о чужом акте с тем
+    # же номером не учтена, а неверна, и не показывается вовсе.
+    accounted = [item for item in all_signals if item not in signals
+                 and not signal_names_other_act(item, entry)]
     if not signals and accounted:
         # Молча выброшенная находка читается как её отсутствие, поэтому она
         # называется — но тоном «это уже учтено», а не тревогой.
