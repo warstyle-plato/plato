@@ -212,3 +212,50 @@ def test_parcels_of_two_regions_get_no_button_and_a_reason(bot, monkeypatch):
     engine._telegram_handle_dialog_text(CHAT, "стоп")
     assert "разных регионов" in bot[-1]["text"]
     assert not _buttons(bot[-1])
+
+
+def test_new_moscow_with_a_50_number_goes_to_glavapu(bot, monkeypatch):
+    """У Новой Москвы (ТиНАО) номера тоже 50:…, и префикс область не выбирает:
+    регион решает территория ГлавАПУ. Москва — экспресс-расчёт ГлавАПУ по
+    участку, а не нормы области."""
+    new_moscow = "50:21:0120316:1234"
+    _teaser_with(monkeypatch, [new_moscow])
+    asked: list[list[str]] = []
+    monkeypatch.setattr(engine, "analyze_cadastral_territory", lambda req: (
+        asked.append(list(req.cadastral_numbers)), {"territory": {"inside_moscow": True}})[1])
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "tinao.pdf")
+    assert asked, "регион 50:… решён без территории ГлавАПУ"
+    assert "калькулятором ГлавАПУ" in bot[-1]["text"]
+    assert "Московской области" not in bot[-1]["text"]
+    _press("intake_questions")
+    engine._telegram_handle_dialog_text(CHAT, "стоп")
+    url = _buttons(bot[-1])[0]["web_app"]["url"]
+    assert "mode=intake" not in url, "Новая Москва ушла в расчёт по нормам области"
+    assert _session(url)["cad"] == [new_moscow]
+
+
+
+def test_a_50_number_without_glavapu_is_not_guessed(bot, monkeypatch):
+    """50:… без ответа ГлавАПУ — Новая Москва или область, неизвестно. Решение
+    владельца 25.10.2026: не угадывать — карточка говорит причину, кнопки
+    расчёта нет, «Проверить участок ещё раз» спрашивает ГлавАПУ снова."""
+    number = "50:21:0120316:1234"
+    _teaser_with(monkeypatch, [number])
+    answers = [RuntimeError("ГлавАПУ не ответил"), {"territory": {"inside_moscow": True}}]
+
+    def analyze(_req):
+        got = answers.pop(0)
+        if isinstance(got, Exception):
+            raise got
+        return got
+    monkeypatch.setattr(engine, "analyze_cadastral_territory", analyze)
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "tinao.pdf")
+    assert "Новая Москва это или Московская область" in bot[-1]["text"]
+    assert "нормам Московской области" not in bot[-1]["text"]
+    _press("intake_questions")
+    engine._telegram_handle_dialog_text(CHAT, "стоп")
+    button = _buttons(bot[-1])[0]
+    assert button.get("callback_data") == "intake_region" and "web_app" not in button
+    _press("intake_region")
+    url = _buttons(bot[-1])[0]["web_app"]["url"]
+    assert "mode=intake" not in url and _session(url)["cad"] == [number]

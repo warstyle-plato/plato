@@ -1401,7 +1401,7 @@ def _telegram_intake_card_text(card: dict[str, Any], *, first: bool, recognized:
 
 
 def _telegram_intake_region(numbers: list[str]) -> str:
-    """Чьими нормами считать участок тизера: «moscow», «mo», «other», «mixed».
+    """Чьими нормами считать участок тизера: «moscow», «mo», «other», «mixed», «unknown».
 
     Тот же выбор, что у присланного номера (`cadastral_route`): номер другого
     кадастрового округа — сразу «other»; 50:… решает территория ГлавАПУ (у
@@ -1414,9 +1414,16 @@ def _telegram_intake_region(numbers: list[str]) -> str:
         return route
     try:
         analysis = analyze_cadastral_territory(CadastralAnalysisRequest(cadastral_numbers=numbers))
-    except HTTPException:
+    except Exception:  # noqa: BLE001
         analysis = None
-    return cadastral_route(numbers, analysis)
+    route = cadastral_route(numbers, analysis)
+    if analysis is None and route == "mo":
+        # 50:… без ответа ГлавАПУ — это и Новая Москва (ТиНАО), и область.
+        # Угадывать по номеру нельзя: Новая Москва посчиталась бы чужими нормами
+        # молча (решение владельца 25.10.2026). Карточка говорит об этом, а
+        # кнопка спрашивает ГлавАПУ ещё раз.
+        return "unknown"
+    return route
 
 
 def _telegram_intake_calc_markup(chat_id: int, card: dict[str, Any],
@@ -1432,6 +1439,9 @@ def _telegram_intake_calc_markup(chat_id: int, card: dict[str, Any],
     numbers = [str(number) for number in card.get("cadastral_numbers") or []]
     if numbers and region == "mixed":
         return None
+    if numbers and region == "unknown":
+        return {"inline_keyboard": [[{"text": "Проверить участок ещё раз",
+                                      "callback_data": "intake_region"}]]}
     overrides = teaser_card.calc_overrides(card)
     mode = "intake" if not numbers or region in ("mo", "other") else None
     try:
@@ -1579,6 +1589,16 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
         _telegram_send_message(chat_id, "Разбор этого тизера не найден. Пришлите документ заново.")
         return
     if data == "intake_questions":
+        _telegram_intake_ask_next(chat_id, dialog)
+        return
+    if data == "intake_region":
+        queue = _telegram_intake_card(chat_id, dialog)
+        if queue is None:
+            return
+        numbers = [str(n) for n in teaser_card_view(
+            queue, dict(DEFAULT_INPUTS), dict(TEP_DEFAULT)).get("cadastral_numbers") or []]
+        dialog["intake"] = {**dialog["intake"], "region": _telegram_intake_region(numbers)}
+        _telegram_dialog_save(chat_id, dialog)
         _telegram_intake_ask_next(chat_id, dialog)
         return
     if data.startswith("intake_mode:"):
