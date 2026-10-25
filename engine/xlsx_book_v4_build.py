@@ -91,6 +91,9 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         # стратегий вне ДДУ, какую бы стратегию ни выбрал проект. Вводные —
         # те же поля, что движок читает, когда `office_paths` меняет стратегию.
         office = obj.product == "offices" and bool(obj.strategies) and item["in_tax_pool"]
+        # Класс офиса — из вводных (`office_class_choice`), а не угадан по числам.
+        if obj.product == "offices":
+            item["office_class"] = nonres_strategy.office_class_choice(x, obj.prefix)["office_class"]
         # Продукт мест гаража объекта — его выручка и маржа по ДДУ сверяются
         # вместе с объектом.
         item["parking_product_key"] = object_parking_product_key(obj.key)
@@ -378,6 +381,7 @@ def build_project_workbook(
     """
     inputs = dict(inputs or {})
     migrate_growth_post(inputs)
+    apply_office_classes(inputs)
     merged = {**DEFAULT_INPUTS, **inputs}
     # Гостиничный проект — своя книга (`hotel_workbook`): помесячный расчёт
     # формулами, годовой USALI, итоги и сверка с движком. Книга v4 построена

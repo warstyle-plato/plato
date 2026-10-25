@@ -266,10 +266,13 @@ del _preset
 # равно вручную можно править»). Прежде она стояла одним числом 200 на все
 # классы, и офис A строился по цене офиса B. Правка руками сильнее класса —
 # как у любой ставки профиля, и отклонение от базы класса называется вслух.
+# Число себестоимости — ступень шкалы класса офиса (`OFFICE_CLASS_SCALE`),
+# в которую класс проекта ставит офис по умолчанию: шкала одна.
 OFFICE_CLASS_BY_PROJECT_CLASS: dict[str, dict[str, Any]] = {
-    "comfort": {"office_class": "B и ниже", "cost_th_per_sqm": 175},
-    "business": {"office_class": "B+ и A−", "cost_th_per_sqm": 200},
-    "elite": {"office_class": "A и выше", "cost_th_per_sqm": 225},
+    key: {"office_class": label,
+          "cost_th_per_sqm": int(nonres_strategy.OFFICE_CLASS_SCALE[
+              nonres_strategy.OFFICE_CLASS_BY_PROJECT[key]]["cost_th_per_sqm"])}
+    for key, label in (("comfort", "B и ниже"), ("business", "B+ и A−"), ("elite", "A и выше"))
 }
 OFFICE_CLASS_PLACEHOLDER = "__DEVELOPAID_OFFICE_CLASS__"
 for _key, _office in OFFICE_CLASS_BY_PROJECT_CLASS.items():
@@ -379,7 +382,7 @@ def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
     """
     key = str((inputs or {}).get("project_class") or "")
     # База — для региона проекта: в МО цена нежилого без московского пола.
-    preset = class_base_preset(key, class_region(inputs), project_kind(inputs))
+    preset = class_base_preset(key, class_region(inputs), project_kind(inputs), inputs or {})
     if not preset:
         return {"class": key, "label": "Пользовательский", "rows": []}
     rows: list[dict[str, Any]] = []
@@ -1125,6 +1128,9 @@ def standalone_object_defaults(obj: StandaloneObject) -> dict[str, Any]:
     # считается так же, как считался.
     if obj.strategies:
         out.update(nonres_strategy.strategy_defaults(obj.prefix, obj.product))
+    # Пусто — класс офиса идёт за классом проекта (`office_class_choice`).
+    if obj.product == "offices":
+        out[f"{obj.prefix}_{nonres_strategy.OFFICE_CLASS_FIELD}"] = ""
         if not obj.garage_sellable:
             # Места ТЦ не продаются и не сдаются: они обеспечивают посетителей.
             out.pop(f"{obj.prefix}_parking_rent_th_month", None)
@@ -1181,6 +1187,7 @@ _OBJECT_SALES_PROFILE_EDITOR = {"value": "share", "anchor": "sales_start",
 # не рисуется. Смысл полей и их умолчания живут выше; здесь только раскладка.
 _OBJECT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Объект", ("enabled", "purpose")),
+    ("Класс офиса", (nonres_strategy.OFFICE_CLASS_FIELD,)),
     ("Стратегия реализации", ("strategy",)),
     ("Объём", ("gba_sqm", "saleable_sqm", "spaces", "area_per_space_sqm")),
     ("Сроки строительства", ("start", "months")),
@@ -1369,7 +1376,15 @@ def _object_strategy_fields(obj: StandaloneObject) -> list[list[Any]]:
     читаются только при своей стратегии; при ДДУ объект считается как прежде.
     """
     p = obj.prefix
-    out: list[list[Any]] = [
+    out: list[list[Any]] = []
+    if obj.product == "offices":
+        out.append([f"{p}_{nonres_strategy.OFFICE_CLASS_FIELD}", "Класс офиса",
+                     "Класс задаёт себестоимость здания, ставку аренды, заполняемость, срок "
+                     "заполнения, расходы на эксплуатацию и ставку капитализации, а в нежилом "
+                     "проекте ещё и цену продажи. Число, вписанное в поле руками, сильнее класса.",
+                     "select", [["", "Как у класса проекта"]]
+                     + [[cls, cls] for cls in nonres_strategy.OFFICE_CLASSES]])
+    out += [
         [f"{p}_strategy", "Стратегия реализации",
          "По договорам долевого участия (ДДУ) деньги покупателей идут на общий "
          "счёт эскроу проекта. При прямой продаже и доходном методе эскроу нет, "
@@ -1624,12 +1639,14 @@ def object_smr_rate(turnkey_th: float, rates: dict[str, Any]) -> float:
 
 
 def class_base_preset(key: str, region: str = "msk",
-                      kind: str | None = None) -> dict[str, Any] | None:
+                      kind: str | None = None,
+                      inputs: dict[str, Any] | None = None) -> dict[str, Any] | None:
     """База класса для региона и вида проекта; `None` — у класса нет профиля.
 
     В чисто нежилом проекте ставка метрового объекта — СМР здания: база
     класса переводится из «под ключ» тем же `object_smr_rate`, что и
-    умолчание страницы.
+    умолчание страницы. С вводными `inputs` база офиса, класс которого выбран
+    своим, — ступень этого класса (`office_class_rates`).
     """
     preset = PROJECT_CLASS_PRESETS.get(str(key or ""))
     if not preset:
@@ -1643,7 +1660,101 @@ def class_base_preset(key: str, region: str = "msk",
             if field in out:
                 out[field] = object_smr_rate(out[field], out)
         out.update(NONRES_KIND_CLASS_PRICES.get(str(key), {}))
+    if inputs is not None:
+        out.update(office_class_rates(inputs, str(key), kind, out))
     return out
+
+
+def office_class_rates(inputs: dict[str, Any], key: str, kind: str | None,
+                       rates: dict[str, Any]) -> dict[str, float]:
+    """Себестоимость и цена офисов, чей класс выбран своим, — по ступени класса.
+
+    Класс офиса, идущий за классом проекта, ставит те же числа, что профиль
+    класса проекта, и здесь не повторяется. Цена продажи класса — только в
+    нежилом проекте; в нежилом себестоимость — СМР здания (`object_smr_rate`
+    на ставках `rates`), как у профиля.
+    """
+    nonres = kind is not None and is_nonresidential({"project_kind": kind})
+    out: dict[str, float] = {}
+    for obj in STANDALONE_OBJECTS:
+        if obj.product != "offices":
+            continue
+        choice = nonres_strategy.office_class_choice({**inputs, "project_class": key}, obj.prefix)
+        if choice["source"] != nonres_strategy.OFFICE_CLASS_CHOSEN:
+            continue
+        scale = nonres_strategy.OFFICE_CLASS_SCALE[choice["office_class"]]
+        cost = float(scale["cost_th_per_sqm"])
+        out[obj.rate_cost] = (object_smr_rate(cost, rates)
+                              if nonres and obj.rate_cost in OBJECT_SMR_RATE_DEFAULTS else cost)
+        if nonres:
+            out[obj.rate_price] = float(scale["price_th_per_sqm"])
+    return out
+
+
+def apply_office_classes(x: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Класс каждого офиса проекта и его шкала в полях стратегии. Правит `x`.
+
+    Одно правило для страницы (`syncOfficeClasses`), расчёта и книги: поле,
+    вписанное руками, сильнее класса (`office_field_follows`). Возвращает
+    класс и его происхождение по приставке офиса.
+    """
+    if not isinstance(x, dict):
+        return {}
+    return {obj.prefix: nonres_strategy.apply_office_class(x, obj.prefix)
+            for obj in STANDALONE_OBJECTS if obj.product == "offices"}
+
+
+def office_class_rows(inputs: dict[str, Any] | None) -> list[dict[str, str]]:
+    """Класс каждого офиса проекта и откуда он — строки для PDF, тизера и бота.
+
+    Офис в проекте — включённый и с площадью. Текст говорит, выбран ли класс
+    человеком или идёт за классом проекта (`office_class_choice`).
+    """
+    x = inputs or {}
+    offices = [obj for obj in STANDALONE_OBJECTS if obj.product == "offices"
+               and x.get(obj.enabled_key) and n(x, f"{obj.prefix}_gba_sqm", 0.0) > 0]
+    project_label = str((PROJECT_CLASS_PRESETS.get(str(x.get("project_class") or "")) or {})
+                        .get("label") or "")
+    rows = []
+    for obj in offices:
+        choice = nonres_strategy.office_class_choice(x, obj.prefix)
+        if choice["source"] == nonres_strategy.OFFICE_CLASS_CHOSEN:
+            text = f"{choice['office_class']} — выбран у офиса"
+        elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE:
+            text = f"{choice['office_class']} — как у класса проекта «{project_label}»"
+        else:
+            text = f"{choice['office_class']} — по умолчанию: у проекта нет класса"
+        rows.append({"prefix": obj.prefix, "title": obj.group_label,
+                     "label": "Класс офиса" if len(offices) == 1 else f"Класс офиса — {obj.group_label}",
+                     **choice, "text": text})
+    return rows
+
+
+OFFICE_CLASS_PAGE_PLACEHOLDER = "__DEVELOPAID_OFFICE_CLASS_SCALE__"
+
+
+def office_class_page_data() -> dict[str, Any]:
+    """Шкала класса офиса и правило «за классом» — данными для страницы.
+
+    Страница применяет то же правило, что `apply_office_classes`: своих чисел
+    и своего списка полей у неё нет.
+    """
+    ns = nonres_strategy
+    offices = [obj for obj in STANDALONE_OBJECTS if obj.product == "offices"]
+    return {
+        "field": ns.OFFICE_CLASS_FIELD, "classes": list(ns.OFFICE_CLASSES),
+        "by_project": dict(ns.OFFICE_CLASS_BY_PROJECT), "default": ns.DEFAULT_OFFICE_CLASS,
+        "chosen": ns.OFFICE_CLASS_CHOSEN, "origin": ns.OFFICE_CLASS_ORIGIN,
+        "followed": list(ns.OFFICE_CLASS_FOLLOWED),
+        "values": {cls: {**ns.office_class_followed_values(cls),
+                         "price_th_per_sqm": ns.OFFICE_CLASS_SCALE[cls]["price_th_per_sqm"],
+                         "cost_th_per_sqm": ns.OFFICE_CLASS_SCALE[cls]["cost_th_per_sqm"],
+                         "rent_th_per_sqm_year": ns.OFFICE_CLASS_SCALE[cls]["rent_th_per_sqm_year"]}
+                   for cls in ns.OFFICE_CLASSES},
+        "prefixes": [obj.prefix for obj in offices],
+        "rates": {**{obj.rate_cost: {"prefix": obj.prefix, "kind": "cost"} for obj in offices},
+                  **{obj.rate_price: {"prefix": obj.prefix, "kind": "price"} for obj in offices}},
+    }
 
 
 # Что в регионе отличается от московского профиля — страница накладывает это
