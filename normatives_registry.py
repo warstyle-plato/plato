@@ -103,10 +103,12 @@ def _status_label(status: str) -> tuple[str, str]:
     """Наш внутренний контур: очередь сверки редакций. Виден администратору."""
     return {
         "verified": ("Актуальность сверена", "ok"),
+        "current": ("Действующая редакция сверена", "ok"),
         "verified_in_engine_source_pack": ("Подтверждено source pack движка", "ok"),
         "review_required": ("Требует ревизии", "warn"),
         "manual_source_required": ("Нужен первичный источник", "warn"),
         "source_link_missing": ("Нет ссылки на текст документа", "warn"),
+        "not_confirmed": ("Не подтверждено", "warn"),
     }.get(status, (status or "Статус не задан", "muted"))
 
 
@@ -202,6 +204,49 @@ def registry_scopes(rows: list[dict[str, Any]]) -> list[str]:
     return head + tail
 
 
+# Итог сверки акта — один из двух, и у каждого своё доказательство. Ответ на
+# «можно ли этой строке верить» даёт эта функция, и только она: страница, тест
+# и сторож читают её, а не повторяют условие у себя.
+VERDICT_STATUSES = ("verified", "not_confirmed")
+
+
+def verdict_problems(row: dict[str, Any]) -> list[str]:
+    """Чего не хватает строке, чтобы её итог сверки был доказан.
+
+    «verified» с полем `verification` — это редакция, источник с адресом и хотя
+    бы один пункт с дословной цитатой. «not_confirmed» — причина и то, что
+    нужно, чтобы подтвердить. Подтверждение без цитаты и «не подтверждено» без
+    причины выглядят одинаково уверенно, поэтому оба считаются недоказанными.
+    Строки, сверенные до введения поля (`verified` без `verification`), этой
+    функцией не судятся: их доказательство — в source pack и ревизии.
+    """
+    status = str(row.get("status") or "")
+    problems: list[str] = []
+    if status == "not_confirmed":
+        for field in ("unconfirmed_reason", "to_confirm"):
+            if not str(row.get(field) or "").strip():
+                problems.append("нет поля %s" % field)
+        return problems
+    ver = row.get("verification")
+    if status != "verified" or ver is None:
+        return problems
+    if not isinstance(ver, dict):
+        return ["verification — не объект"]
+    if not str(ver.get("checked_at") or "").strip():
+        problems.append("нет даты сверки")
+    if not str(ver.get("edition") or "").strip():
+        problems.append("не названа редакция")
+    if not any(isinstance(src, dict) and str(src.get("url") or "").startswith("http")
+               for src in ver.get("sources") or []):
+        problems.append("нет источника с адресом")
+    quoted = [item for item in ver.get("provisions") or []
+              if isinstance(item, dict) and str(item.get("point") or "").strip()
+              and len(str(item.get("quote") or "").strip()) >= 20]
+    if not quoted:
+        problems.append("нет пункта с дословной цитатой")
+    return problems
+
+
 def coverage(rows: list[dict[str, Any]]) -> dict[str, int]:
     """Чем закрыт контур: акты, сверка и поправки — числом, а не на глаз.
 
@@ -215,6 +260,8 @@ def coverage(rows: list[dict[str, Any]]) -> dict[str, int]:
         "verified": sum(1 for row in rows
                         if str(row.get("status") or "").startswith(("verified", "current"))),
         "review": sum(1 for row in rows if str(row.get("status") or "") == "review_required"),
+        "not_confirmed": sum(1 for row in rows
+                             if str(row.get("status") or "") == "not_confirmed"),
         "chained": sum(1 for row in rows if chain_steps(row)),
         "steps": len(steps),
         "steps_in_library": sum(1 for step in steps if step_in_library(step)),
@@ -1178,6 +1225,50 @@ def _li(values: Any) -> str:
     return "".join(f"<li>{html.escape(str(value))}</li>" for value in (values or []))
 
 
+def _verification_html(entry: dict[str, Any], admin: bool = False) -> str:
+    """Чем сверено: пункт, дословная цитата и адрес, по которому её проверить.
+
+    «Сверено» без цитаты — то же утверждение, что «требует ревизии», только
+    уверенное. Цитата и ссылка показываются всем: кто пришёл за основанием
+    под числом, проверяет нас по ним. Почему акт НЕ подтверждён и что для
+    этого нужно — рабочий контур, его видит администратор.
+    """
+    parts = []
+    ver = entry.get("verification") if isinstance(entry.get("verification"), dict) else {}
+    if ver:
+        items = "".join(
+            "<li><b>%s</b><span>«%s»</span>%s</li>" % (
+                html.escape(str(item.get("point") or "")),
+                html.escape(str(item.get("quote") or "")),
+                ("<small>%s</small>" % html.escape(str(item.get("used_by"))))
+                if item.get("used_by") else "",
+            )
+            for item in ver.get("provisions") or [] if isinstance(item, dict))
+        links = " ".join(
+            '<a href="%s" target="_blank" rel="noopener">%s ↗</a>'
+            % (html.escape(str(src.get("url") or ""), quote=True),
+               html.escape(str(src.get("label") or "источник")))
+            for src in ver.get("sources") or []
+            if isinstance(src, dict) and str(src.get("url") or "").startswith("http"))
+        parts.append(
+            "<details class='history'><summary>Сверено %s: %s</summary>"
+            "<ul>%s</ul><small>%s</small></details>" % (
+                html.escape(_fmt_date(ver.get("checked_at"))),
+                html.escape(str(ver.get("edition") or "")),
+                items, links))
+    gaps = [str(x) for x in ver.get("discrepancies") or [] if str(x).strip()] if ver else []
+    if admin and gaps:
+        parts.append("<div class='news'><h3>Расхождения кода с текстом акта — "
+                     "вопрос владельцу</h3><ul>%s</ul></div>" % _li(gaps))
+    if admin and str(entry.get("status") or "") == "not_confirmed":
+        parts.append(
+            "<div class='probe'><span>Не подтверждено: %s</span>"
+            "<small>Что нужно, чтобы подтвердить: %s</small></div>" % (
+                html.escape(str(entry.get("unconfirmed_reason") or "—")),
+                html.escape(str(entry.get("to_confirm") or "—"))))
+    return "".join(parts)
+
+
 def _card(entry: dict[str, Any], admin: bool = False) -> str:
     check = entry.get("check") if isinstance(entry.get("check"), dict) else {}
     check_result = str(check.get("result") or "")
@@ -1341,6 +1432,7 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     # что влияет», раскрытая — на всё остальное. Порог тот же, что у списков
     # карточки КРТ: длинный список сворачивается, и в заголовке стоит суть, а
     # не одно имя, иначе закрытый список читается как отсутствующий.
+    verification_html = _verification_html(entry, admin=admin)
     affects = [str(x) for x in (entry.get('affects') or []) if str(x).strip()]
     gist = affects[0] if affects else str(entry.get('title') or '')
     return f"""
@@ -1360,6 +1452,7 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
   <div class="amend"><b>Текущая учтённая редакция</b>
     <span>{html.escape(str(entry.get('latest_amendment') or '—'))}</span></div>
   {news_html}
+  {verification_html}
   {history_html}
   {chain_html}
   <div class="twocol">
@@ -1494,10 +1587,11 @@ def _page(request: Request, core: Any) -> str:
     # числе, а «54 поправок» ломается на 1, 2 и 21 — русское склонение здесь
     # обошлось бы своей функцией, а её негде объявить один раз.
     cover_line = (
-        "Актов в реестре %d: подтверждено %d, требует сверки %d. "
+        "Актов в реестре %d: подтверждено %d, не подтверждено (с причиной) %d, "
+        "требует сверки %d. "
         "Актов с объявленной цепочкой поправок %d; поправок в ней %d, "
         "из них в библиотеке (текстом или файлом) %d."
-        % (cover["acts"], cover["verified"], cover["review"],
+        % (cover["acts"], cover["verified"], cover["not_confirmed"], cover["review"],
            cover["chained"], cover["steps"], cover["steps_in_library"])
     )
     cards = "".join(_card(row, admin=admin) for row in rows)
