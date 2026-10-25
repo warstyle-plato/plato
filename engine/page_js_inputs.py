@@ -1555,6 +1555,19 @@ function applyTelegramCalcOverrides(){
   }else if(typeof d==='boolean'){inputs[k]=!!o[k];}
   else{inputs[k]=String(o[k]);}
  });
+ // Карточка тизера (`teaser_card.calc_overrides`): площади тизера идут в ТЭП
+ // поверх ГлавАПУ (решение владельца 25.10.2026), а происхождение — у полей:
+ // значение тизера после расчёта не выглядит ни ручным, ни городским.
+ const tepRows=o._tep&&typeof o._tep==='object'?o._tep:{};
+ Object.keys(tepRows).forEach(row=>{
+  if(!tep[row])return;
+  Object.keys(tepRows[row]||{}).forEach(field=>{
+   const v=Number(tepRows[row][field]);if(Number.isFinite(v))tep[row][field]=v;
+  });
+ });
+ const origins=o._field_origin&&typeof o._field_origin==='object'?o._field_origin:{};
+ Object.keys(origins).forEach(path=>{fieldOrigins()[path]=origins[path]});
+ if(Object.keys(tepRows).length||'offices_enabled' in o||'retail_enabled' in o)syncTep(false);
 }
 
 // Запрос к своему серверу сорвался. Самая частая причина — включённый VPN:

@@ -221,6 +221,22 @@ async function runTelegramLaunch(){
   setupTelegramEditSubmit();
   return;
  }
+ if(telegramMode==='intake'){
+  // Тизер без кадастрового номера: «Всё верно, считать» в чате. Расчёт —
+  // умолчания движка и ровно строки карточки разбора, без остатков прежнего
+  // проекта из WebView (как и экспресс-расчёт по участку).
+  resetAll();
+  applyTelegramCalcOverrides();
+  renderInputs();renderTep();renderPhasing();
+  syncProjectClassSelector();syncProjectKindSelector();
+  openTab('inputs');
+  telegramProgress('Считаю…');
+  await calculate();
+  telegramProgress('');
+  const status=document.getElementById('glavapuStatus');
+  if(status)status.innerHTML='<span class="import-ok"><b>Расчёт по карточке тизера готов.</b> Значения тизера стоят во вводных, у каждого подписано, откуда оно взято. Остальное — умолчания модели.</span>';
+  return;
+ }
  if(telegramCad){
   const field=document.getElementById('cadastralNumbers');
   if(!field)return;

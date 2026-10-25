@@ -74,9 +74,9 @@ async function syncInputsForAgent(){document.querySelectorAll('[id^=f_]').forEac
 // что аналитик переписывает в модель руками, и ошибка переписывания на экране
 // неотличима от расчёта.
 //
-// Ничего не подставляется молча: загрузка ПОКАЗЫВАЕТ таблицу «поле — значение —
-// откуда взято», а применение — отдельная кнопка с галочками. Чего разбор не
-// понял, он спрашивает, а не додумывает.
+// Ничего не подставляется молча: загрузка ПОКАЗЫВАЕТ карточку (найдено, уйдёт
+// в расчёт, не хватает), вопросы о недостающем меняют карточку, а в модель
+// она уходит только кнопкой «Всё верно, считать».
 function aiEsc(value){const box=document.createElement('div');box.textContent=String(value==null?'':value);return box.innerHTML}
 let aiIntake=null;
 // Документ в разговоре: после разбора человек спрашивает дальше, и вопрос
@@ -118,54 +118,93 @@ async function sendAgentDocument(file){
   for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode.apply(null,bytes.subarray(i,i+8192));
   await syncInputsForAgent();
   const r=await fetch('/agent/document',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({filename:file.name,content_b64:btoa(binary),inputs,tep,
+   body:JSON.stringify({filename:file.name,content_b64:btoa(binary),inputs,tep,class_profile:aiClassProfile(),
     session:activeSession(),access_key:projectsAdminKey||''})});
   const data=await r.json().catch(()=>({}));
   thinking.remove();
   if(!r.ok){appendAiMessage('system',(data.detail||('Документ не разобрался: HTTP '+r.status))
    +(aiDocument?'\nВ разговоре остаётся прежний документ «'+aiDocument.filename+'».':''));return}
-  aiIntake=data;aiIntakeApplied=[];aiDocBaseline=aiSnapshot();
-  renderAiIntake(data);rememberAiDocument(data);
+  aiIntake=data;aiIntakeApplied=[];aiCard=data.card||null;
+  renderAiIntakeFirst(data);rememberAiDocument(data);
  }catch(e){thinking.remove();appendAiMessage('system','Документ не разобрался: '+(e.message||e))}
  finally{document.getElementById('aiFile').value='';aiBusy=false;aiSendBtn.disabled=false;aiFileBtn.disabled=false}
 }
-function renderAiIntake(data){
+// Разбор тизера — три шага, одинаковых на сайте и в боте (владелец,
+// 25.10.2026). Первый — только карточка: найдено (со страницей), уйдёт в
+// расчёт (поле и значение с происхождением), не хватает (что возьмётся по
+// умолчанию или по норме). Вопросов здесь нет, модель не меняется. Карточку
+// собирает сервер (`teaser_card.build`), окно её только показывает.
+let aiCard=null;
+// Числа класса жилья в этом проекте (регион, личные настройки, вид проекта):
+// карточка показывает их, а не московскую базу класса.
+function aiClassProfile(){
+ const keys=['apartment_price_th','commercial_price_th','parking_price_th','main_above_th_per_sqm','main_under_th_per_sqm'];
+ const out={};
+ Object.keys(PROJECT_CLASS_PRESETS).forEach(c=>{out[c]={};keys.forEach(k=>{
+  try{const v=classValue(c,k);if(Number.isFinite(Number(v)))out[c][k]=Number(v)}catch(e){}
+ })});
+ return out;
+}
+function renderAiIntakeFirst(data){
  const doc=data.document||{};
- const box=document.createElement('div');box.className='ai-msg system';
- let html='<b>'+aiEsc(doc.filename||'документ')+'</b>';
- if(doc.pages)html+=' <span style="color:#888">· страниц '+aiEsc(doc.pages)+'</span>';
- // Скан — не пустой документ. Выдать «ничего не нашли» за «там ничего нет»
- // значит соврать про источник.
  const note=data.reason||doc.reason||'';
- if(note)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(note)+'</div>';
- const fields=data.fields||[];
- if(fields.length){
-  html+='<div style="margin-top:8px"><table style="width:100%;border-collapse:collapse;font-size:12px">'
-   +'<tr><th></th><th style="text-align:left">Поле</th><th style="text-align:left">Значение</th><th style="text-align:left">Откуда взято</th></tr>';
-  // Подпись поля, а не его ключ: человек читает «Офисы — общая площадь», а
-  // не offices_gba_sqm. Галочку снимает сам разбор там, где число документа —
-  // заявление, а не ответ (льгота МПТ: её считает и модель).
-  fields.forEach((f,i)=>{html+='<tr>'
-   +'<td><input type="checkbox" class="ai-intake-pick" data-key="'+aiEsc(f.key)+'"'+(f.checked===false?'':' checked')+'></td>'
-   +'<td>'+aiEsc(f.label||f.key)+(f.hint?'<div style="color:#8a4b08;font-size:11px">'+aiEsc(f.hint)+'</div>':'')+'</td>'
-   +'<td><b>'+aiEsc(f.value)+'</b> '+aiEsc(f.unit||'')+'</td>'
-   +'<td style="color:#666">'+(doc.recognized?'распознано: ':'')+'«'+aiEsc(f.quote)+'»</td></tr>'});
-  html+='</table><button class="btn dark" style="margin-top:8px" onclick="applyAiIntake()">Применить отмеченное</button></div>';
+ if(!data.card){
+  // Разбор не удался или документ без текста: карточки нет, причина — вслух.
+  const box=document.createElement('div');box.className='ai-msg system';
+  box.innerHTML='<b>'+aiEsc(doc.filename||'документ')+'</b><div style="margin-top:6px;color:#8a4b08">'
+   +aiEsc(note||'Разбор не вернул данных: в документе не нашлось того, что понимает модель.')+'</div>'
+   +(data.dropped||[]).map(line=>'<div style="margin-top:4px;color:#8a4b08;font-size:12px">Не взято: '+aiEsc(line)+'</div>').join('');
+  aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;return;
  }
- // Вопросы — по одному, и не здесь: список вопросов подряд, каждый со своими
- // вариантами, не отвечается — человек не знает, на какой отвечает, а ответить
- // некуда (владелец, 18.10.2026). Здесь только сколько их; первый задаёт
- // `renderAiQuestion` после таблицы.
- const queue=data.queue||null;
- if(queue&&queue.error)html+='<div style="margin-top:8px;color:#8a4b08">Вопросы по документу не заданы: '+aiEsc(queue.error)+'</div>';
- else if(queue&&queue.total)html+='<div style="margin-top:8px">Остальное спрошу по одному — вопросов '+aiEsc(queue.total)+'.</div>';
- (data.notes||[]).forEach(note=>{html+='<div style="margin-top:6px;color:#666;font-size:12px">'+aiEsc(note)+'</div>'});
- // Отброшенное называется вслух: молча пропущенное поле читается как
- // «в документе такого нет».
- (data.dropped||[]).forEach(line=>{html+='<div style="margin-top:4px;color:#8a4b08;font-size:12px">Не взято — '+aiEsc(line)+'</div>'});
- if(!fields.length&&!(data.questions||[]).length&&!note)html+='<div style="margin-top:6px">В документе не нашлось полей, которые понимает модель.</div>';
+ renderAiCard(data.card,{first:true,recognized:!!doc.recognized,trimmed:doc.trimmed?doc:null});
+}
+function aiCardRows(rows,cell){
+ return '<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:4px">'+rows.map(cell).join('')+'</table>';
+}
+function renderAiCard(card,opts){
+ opts=opts||{};
+ const box=document.createElement('div');box.className='ai-msg system ai-card';
+ const q=card.questions||{};
+ let html='<b>'+(opts.first?'Что я прочитал в тизере':'Итог разбора перед расчётом')+'</b> · «'+aiEsc(card.filename||'документ')+'»'
+  +(card.pages?'<span style="color:#888"> · страниц: '+aiEsc(card.pages)+'</span>':'');
+ if(card.recognized)html+='<div style="margin-top:6px;color:#8a4b08">Документ — скан: текст распознан по картинке, поэтому сверьте числа с документом.</div>';
+ if(opts.trimmed)html+='<div style="margin-top:6px;color:#8a4b08">Документ длинный: прочитаны первые '+aiEsc(opts.trimmed.read_chars)+' знаков из '+aiEsc(opts.trimmed.total_chars)+'.</div>';
+ if(card.error)html+='<div style="margin-top:6px;color:#8a4b08">'+aiEsc(card.error)+'</div>';
+ const found=card.found||[];
+ html+='<div class="ai-card-found" style="margin-top:8px"><b>1. Что найдено в тизере</b>';
+ html+=found.length?aiCardRows(found,f=>'<tr><td style="padding:2px 4px 2px 0">'+aiEsc(f.label)+'<div style="color:#888;font-size:11px">«'+aiEsc(f.quote)+'»</div></td>'
+   +'<td style="padding:2px 4px;white-space:nowrap"><b>'+aiEsc(Array.isArray(f.value)?f.value.join(', '):f.value)+'</b> '+aiEsc(f.unit)+'</td>'
+   +'<td class="ai-card-page" style="padding:2px 0;color:#666">'+aiEsc(f.page_text)+'<div style="color:'+(f.used?'#2e6b2e':'#8a4b08')+'">'+aiEsc(f.status)+'</div></td></tr>')
+  :'<div style="margin-top:4px">В тизере не нашлось чисел, которые понимает модель.</div>';
+ html+='</div>';
+ const go=card.to_engine||[];
+ html+='<div class="ai-card-engine" style="margin-top:10px"><b>2. Что уйдёт в расчёт</b>';
+ html+=go.length?aiCardRows(go,r=>'<tr data-path="'+aiEsc(r.path)+'"><td style="padding:2px 4px 2px 0">'+aiEsc(r.label)+'</td><td style="padding:2px 4px"><b>'+aiEsc(r.shown)+'</b>'
+   +'<div style="color:#666;font-size:11px">'+aiEsc(r.origin)+'</div></td></tr>')
+  :'<div style="margin-top:4px">Из тизера в расчёт ничего не идёт.</div>';
+ html+='</div>';
+ const miss=card.missing||[];
+ if(miss.length){
+  html+='<div class="ai-card-missing" style="margin-top:10px"><b>3. Чего нет в тизере — что возьмётся вместо этого</b>';
+  html+=aiCardRows(miss,r=>'<tr data-path="'+aiEsc(r.path)+'"><td style="padding:2px 4px 2px 0">'+aiEsc(r.label)+'</td><td style="padding:2px 4px">'+aiEsc(r.shown)
+   +'<div style="color:#666;font-size:11px">'+aiEsc(r.origin)+'</div></td></tr>');
+  html+='</div>';
+ }
+ (card.notes||[]).forEach(n=>{html+='<div style="margin-top:6px;color:#666;font-size:12px">'+aiEsc(n)+'</div>'});
+ (card.dropped||[]).forEach(line=>{html+='<div style="margin-top:4px;color:#8a4b08;font-size:12px">Не взято: '+aiEsc(line)+'</div>'});
+ const left=Math.max(0,Number(q.total||0)-Number(q.index||0));
+ html+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">';
+ if(card.ready)html+='<button class="btn dark" data-act="calc">Всё верно, считать</button>';
+ else html+='<div style="width:100%">Модель пока не менялась. Дальше — '+aiEsc(left)+' '+(left===1?'вопрос':left<5?'вопроса':'вопросов')+' о том, чего в тизере нет, по одному.</div>'
+  +'<button class="btn dark" data-act="questions">Перейти к вопросам</button>';
+ html+='</div>';
  box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
- if(queue&&queue.card)renderAiQuestion(queue);
+ box.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>{
+  box.querySelectorAll('button[data-act]').forEach(x=>x.disabled=true);
+  if(b.dataset.act==='questions')renderAiQuestion(card);
+  else confirmAiCard(card,box);
+ });
+ return box;
 }
 // Происхождение подставленного из документа: значение нормы или импорта после
 // сохранения не должно выглядеть ручным, а документ — источник, а не человек.
@@ -188,23 +227,6 @@ function aiChangeLine(a){
  if(a.read_as)line+=' — '+a.read_as;
  return line;
 }
-function mergeAiIntakeResult(data,filename,how){
- Object.assign(inputs,data.inputs||{});
- Object.keys(data.tep||{}).forEach(key=>{tep[key]=Object.assign(tep[key]||{},data.tep[key])});
- const lines=[];
- (data.applied||[]).forEach(a=>{
-  if(a.key==='cadastral_numbers'){lines.push(applyAiCadastral(a,filename));return}
-  const path=a.path||(a.key==='apartments_gns_sqm'?'tep.apartments.gns':'inputs.'+a.key);
-  fieldOrigins()[path]=aiDocumentOrigin(filename,how+(a.parts&&a.parts.length>1?' · сумма '+a.parts.length+' обязательств':''));
-  // Имя поля, а не ключ, и рядом — как значение было написано в документе:
-  // молчаливый перевод единиц («1 650 000 000 ₽» → 1650 млн ₽) неотличим от
-  // ошибки переписывания, а неприменённое без причины — от непрочитанного.
-  lines.push(aiChangeLine(a)+(a.as_written?' (в документе: '+a.as_written+')':''));
- });
- (data.refused||[]).forEach(x=>lines.push('не применено — '+(x.label||x.key)+': '+x.reason));
- syncTep(false);renderInputs();renderTep();calculate();
- return lines;
-}
 // Кадастровый номер из документа — в поле участка (вкладка «Проект» →
 // «Участок»), с происхождением «из документа». Прежде применение отвечало
 // «участок применяется отдельным запросом ЕГРН», а запроса не было: номер в
@@ -226,37 +248,40 @@ function appendAiCadastralButton(){
  d.innerHTML='<button class="btn dark" onclick="this.disabled=true;toggleAgent(false);obtainTep()">Получить ТЭП по участку из документа</button>';
  aiMessages.appendChild(d);aiMessages.scrollTop=aiMessages.scrollHeight;
 }
-// Один вопрос — одна карточка: варианты кнопками, своё число полем, ответ
-// применяется к полю модели и только потом приходит следующий вопрос.
+// Шаг второй: вопросы только о недостающем, по одному. Ответ меняет
+// карточку, а не модель: в расчёт она уходит кнопкой «Всё верно, считать».
 let aiQuestion=null;
-function renderAiQuestion(queue){
- aiQuestion=queue;
- const card=queue.card||{};
+function renderAiQuestion(card){
+ aiCard=card;
+ const q=card.questions||{};
+ if(!q.card){renderAiCard(card);return}
+ aiQuestion={id:card.id,index:q.index,total:q.total,card:q.card,filename:card.filename};
+ const ask=q.card;
  const box=document.createElement('div');box.className='ai-msg system ai-question';
- let html='<b>Вопрос '+aiEsc(queue.index+1)+' из '+aiEsc(queue.total)+'</b><div style="margin-top:4px">'+aiEsc(card.question)+'</div>';
+ let html='<b>Вопрос '+aiEsc(q.index+1)+' из '+aiEsc(q.total)+'</b><div style="margin-top:4px">'+aiEsc(ask.question)+'</div>';
  html+='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">';
- (card.options||[]).forEach((o,i)=>{
-  html+='<button class="btn ai-question-option" data-choice="'+i+'" onclick="answerAiQuestion('+i+')" title="'
-   +aiEsc(o.target?(o.value===null||o.value===undefined?'впишите значение ниже':'в модель: '+o.value+' '+(o.unit||'')):o.why||'')+'">'+aiEsc(o.label)+'</button>';
+ (ask.options||[]).forEach((o,i)=>{
+  html+='<button class="btn ai-question-option" data-choice="'+i+'" onclick="answerAiQuestion('+i+')">'+aiEsc(o.label)+'</button>';
  });
  html+='</div>';
- const unit=card.unit||((card.options||[]).find(o=>o.target)||{}).unit||'';
- if(card.key||(card.options||[]).some(o=>o.target&&(o.value===null||o.value===undefined)))
+ const unit=ask.unit||((ask.options||[]).find(o=>o.target)||{}).unit||'';
+ const typed=!ask.kind&&(ask.key||(ask.options||[]).some(o=>o.target&&(o.value===null||o.value===undefined)));
+ if(typed)
   html+='<div style="display:flex;gap:6px;margin-top:8px;align-items:center"><input class="ai-question-value" inputmode="decimal" placeholder="своё значение'
    +(unit?', '+aiEsc(unit):'')+'" style="flex:1;min-width:0;padding:6px 8px;border:1px solid #ccc;border-radius:6px">'
-   +(card.key?'<button class="btn dark" onclick="answerAiQuestion(-1)">Применить</button>':'')+'</div>';
+   +(ask.key?'<button class="btn dark" onclick="answerAiQuestion(-1)">Ответить</button>':'')+'</div>';
  html+='<div style="margin-top:8px;font-size:12px"><a href="#" data-action="skip" onclick="answerAiQuestion(-1,this.dataset.action);return false">Пропустить</a> · '
   +'<a href="#" data-action="stop" onclick="answerAiQuestion(-1,this.dataset.action);return false">Закончить вопросы</a></div>';
  box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
- queue.box=box;
+ aiQuestion.box=box;
 }
 async function answerAiQuestion(choice,action,mode){
  const queue=aiQuestion;if(!queue||!queue.card||aiBusy)return;
  const box=queue.box;const typedEl=box&&box.querySelector('.ai-question-value');
  const typed=action?'':(mode?queue.typed||'':String(typedEl&&typedEl.value||'').trim());
  const option=(queue.card.options||[])[choice];
- if(!action&&option&&option.target&&(option.value===null||option.value===undefined)&&!typed){
-  appendAiMessage('system','У варианта «'+option.label+'» нет числа — впишите значение в поле под вопросом и нажмите вариант ещё раз.');return}
+ if(!action&&!queue.card.kind&&option&&option.target&&(option.value===null||option.value===undefined)&&!typed){
+  appendAiMessage('system','У варианта «'+option.label+'» нет числа. Впишите значение в поле под вопросом и нажмите вариант ещё раз.');return}
  if(!action&&choice<0&&!typed){appendAiMessage('system','Впишите значение или выберите вариант.');return}
  aiBusy=true;
  if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=true;el.style.pointerEvents='none'});
@@ -264,25 +289,25 @@ async function answerAiQuestion(choice,action,mode){
   await syncInputsForAgent();
   const r=await fetch('/agent/document/answer',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({intake_id:queue.id,index:queue.index,action:action||'answer',choice,value:typed,
-    mode:mode||'',inputs,tep,session:activeSession(),access_key:projectsAdminKey||''})});
+    mode:mode||'',inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
   const data=await r.json().catch(()=>({}));
   if(!r.ok){appendAiMessage('system','Ответ не принят: '+(data.detail||('HTTP '+r.status)));
    if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=false;el.style.pointerEvents=''});return}
-  if(data.stale){appendAiMessage('system','На этот вопрос уже ответили — продолжаю с текущего.');
-   if(data.queue&&data.queue.card)renderAiQuestion(data.queue);return}
+  if(data.stale){appendAiMessage('system','На этот вопрос уже ответили. Продолжаю с текущего.');
+   renderAiQuestion(data.card);return}
   if(data.confirm){queue.typed=typed;renderAiConfirm(queue,choice,data.confirm);return}
   const said=action==='skip'?'пропущено':(action==='stop'?'вопросы закончены':(data.answer||typed));
   if(action!=='stop'){
    aiHistory.push({role:'user',content:'Ответ на вопрос по документу «'+queue.card.question+'»: '+said});
    aiHistory=aiHistory.slice(-10);
   }
-  const lines=action?[]:mergeAiIntakeResult(data,queue.filename,'ответ на вопрос');
-  if(!action)(data.applied||[]).forEach(a=>aiIntakeApplied.push(a));
+  const lines=(data.applied||[]).map(a=>'в карточку: '+aiChangeLine(a))
+   .concat((data.refused||[]).map(x=>'в расчёт не пойдёт: '+(x.label||x.key)+': '+x.reason));
   appendAiMessage('system',(action==='skip'?'Пропущено.':action==='stop'?'Вопросы закончены.':'Ответ: '+said)
    +(lines.length?'\n'+lines.join('\n'):''));
-  const next=data.queue||{};
-  if(next.card)renderAiQuestion(next);
-  else{aiQuestion=null;await appendAiIntakeSummary(next)}
+  aiCard=data.card;
+  if(data.card.questions&&data.card.questions.card)renderAiQuestion(data.card);
+  else{aiQuestion=null;renderAiCard(data.card)}
  }catch(e){appendAiMessage('system','Ответ не принят: '+(e.message||e));
   if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=false;el.style.pointerEvents=''})}
  finally{aiBusy=false}
@@ -312,51 +337,6 @@ function aiMetrics(r){
  return [['Чистая прибыль',money(s.net_profit)],['NPV проекта',money(s.npv)],
   ['IRR проекта',irrFmt(s.irr_project)],['LLCR',mult(s.llcr)]];
 }
-// Итог по документу: что изменилось в модели, пересчитана ли она и что
-// получилось, и что делать дальше. Прежде здесь стоял список вопросов с
-// пометкой «→ в модели: имя поля», и человек не знал, легло ли число, какое
-// и что теперь (владелец, 22.10.2026: «а что дальше то?»).
-async function appendAiIntakeSummary(queue){
- const answers=queue.answers||[];
- const box=document.createElement('div');box.className='ai-msg system ai-intake-summary';
- // Одно поле — одна строка: первое «было» и последнее «стало».
- const byField={};const order=[];
- aiIntakeApplied.forEach(a=>{const k=a.path||a.key;if(!byField[k]){byField[k]=Object.assign({},a);order.push(k)}
-  else{const w=byField[k].was;byField[k]=Object.assign({},a,{was:w})}});
- const refused=[];answers.forEach(a=>(a.refused||[]).forEach(x=>refused.push(x)));
- let html='<b>Вопросы по «'+aiEsc(queue.filename||'документу')+'» закончились.</b>';
- if(order.length){
-  html+='<div style="margin-top:6px">Что изменилось в модели:</div><ul style="margin:4px 0 0 18px;padding:0">'
-   +order.map(k=>'<li>'+aiEsc(aiChangeLine(byField[k]))+'</li>').join('')+'</ul>';
- }else html+='<div style="margin-top:6px">В модель из ответов ничего не легло.</div>';
- if(refused.length)html+='<div style="margin-top:6px;color:#8a4b08">Не применено:<br>'
-  +refused.map(x=>aiEsc((x.label||x.key)+' — '+x.reason)).join('<br>')+'</div>';
- // Строки таблицы разбора, которые так и не применены, — на виду, с кнопкой.
- // Кнопка берёт только отмеченные: неотмеченное разбором (льгота МПТ —
- // заявление продавца) ложится лишь по галочке самого человека.
- const pending=aiPendingIntakeFields();
- const ticked=pending.filter(f=>aiIntakePick(f.key)&&aiIntakePick(f.key).checked);
- const unticked=pending.filter(f=>!ticked.includes(f));
- if(ticked.length)html+='<div style="margin-top:6px">Ещё не применено из таблицы разбора: '
-  +aiEsc(ticked.map(aiFieldText).join('; '))+'. Кнопка «Применить к расчёту» запишет это в модель.</div>';
- if(unticked.length)html+='<div style="margin-top:6px;color:#666">Не отмечено в таблице разбора и в модель не идёт: '
-  +aiEsc(unticked.map(f=>aiFieldText(f)+(f.hint?' ('+f.hint+')':'')).join('; '))+'. Чтобы взять, поставьте галочку в таблице выше и нажмите «Применить отмеченное».</div>';
- html+='<div class="ai-intake-recalc" style="margin-top:6px">'+(order.length?'Пересчитываю модель…':'')+'</div>'
-  +'<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">'
-  +(ticked.length?'<button class="btn dark" data-act="apply">Применить к расчёту</button>':'')
-  +'<button class="btn'+(ticked.length?'':' dark')+'" data-act="report">Открыть результат</button>'
-  +'<button class="btn" data-act="inputs">Проверить вводные</button>'
-  +(order.length&&aiDocBaseline?'<button class="btn" data-act="undo">Отменить изменения документа</button>':'')+'</div>';
- box.innerHTML=html;aiMessages.appendChild(box);aiMessages.scrollTop=aiMessages.scrollHeight;
- box.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>{
-  const act=b.dataset.act;
-  if(act==='apply'){b.disabled=true;applyAiIntake()}
-  else if(act==='report'){toggleAgent(false);openTab('report')}
-  else if(act==='inputs'){toggleAgent(false);openTab('inputs')}
-  else if(act==='undo'){b.disabled=true;undoAiDocument()}
- });
- if(order.length)await aiRecalcInto(box.querySelector('.ai-intake-recalc'));
-}
 // Пересчёт после документа и ключевые показатели «до документа → сейчас».
 async function aiRecalcInto(recalc){
  recalc.textContent='Пересчитываю модель…';
@@ -372,12 +352,6 @@ async function aiRecalcInto(recalc){
   +'</table>'+(before?'':'<div style="color:#666;font-size:12px">До документа расчёта не было, сравнить не с чем.</div>');
  aiMessages.scrollTop=aiMessages.scrollHeight;
 }
-function aiIntakePick(key){return document.querySelector('.ai-intake-pick[data-key="'+key+'"]')}
-function aiFieldText(f){return (f.label||f.key)+' — '+String(f.value==null?'':f.value).trim()+' '+String(f.unit||'').trim().replace(/\.$/,'')}
-function aiPendingIntakeFields(){
- const done=new Set((aiIntake&&aiIntake._applied)||[]);
- return ((aiIntake&&aiIntake.fields)||[]).filter(f=>f.key!=='cadastral_numbers'&&!done.has(f.key));
-}
 // Отмена — назад к снимку до документа: вводные, ТЭП и происхождение полей.
 async function undoAiDocument(){
  if(!aiDocBaseline)return;
@@ -387,24 +361,75 @@ async function undoAiDocument(){
  syncTep(false);renderInputs();renderTep();await calculate();
  appendAiMessage('system','Изменения из документа отменены: вводные и ТЭП вернулись к состоянию до документа, модель пересчитана.');
 }
-async function applyAiIntake(){
- if(!aiIntake)return;
- const accept=Array.from(document.querySelectorAll('.ai-intake-pick:checked')).map(el=>el.dataset.key);
- if(!accept.length){appendAiMessage('system','Ничего не отмечено — применять нечего.');return}
+// Шаг третий: «Всё верно, считать». Движок получает ровно строки «уйдёт в
+// расчёт». Карточка собирается заново по текущим вводным: если их поменяли
+// после загрузки тизера, показываем новую и не считаем по старой.
+function aiCardKey(card){return JSON.stringify((card.to_engine||[]).map(r=>[r.path,r.value]))}
+function aiCardValueNow(path){
+ const p=path.split('.');
+ if(p[0]==='inputs')return inputs[p[1]];
+ if(p[0]==='tep')return (tep[p[1]]||{})[p[2]];
+ return undefined;
+}
+async function confirmAiCard(shown,box){
+ if(aiBusy)return;aiBusy=true;
+ const status=document.createElement('div');status.className='ai-intake-recalc';status.style.marginTop='6px';
+ box.appendChild(status);status.textContent='Сверяю карточку с вводными…';
  try{
-  const r=await fetch('/agent/document',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({filename:(aiIntake.document||{}).filename||'',accept,extraction:aiIntake,
-    inputs,tep,session:activeSession(),access_key:projectsAdminKey||''})});
-  const data=await r.json().catch(()=>({}));
-  if(!r.ok){appendAiMessage('system',data.detail||'Не применилось');return}
-  const lines=mergeAiIntakeResult(data,(aiIntake.document||{}).filename,'');
-  aiIntake._applied=((aiIntake._applied)||[]).concat(accept);
-  (data.applied||[]).forEach(a=>aiIntakeApplied.push(a));
-  appendAiMessage('system','Подставлено:\n'+lines.join('\n'));
+  await syncInputsForAgent();
+  const r=await fetch('/agent/document/card',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({intake_id:shown.id,inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
+  const card=await r.json().catch(()=>({}));
+  if(!r.ok){status.textContent='Расчёт не запущен: '+(card.detail||('HTTP '+r.status));return}
+  if(aiCardKey(card)!==aiCardKey(shown)){
+   status.textContent='Вводные поменялись после загрузки тизера, поэтому карточка собрана заново. Проверьте её и нажмите «Всё верно, считать» ещё раз.';
+   aiBusy=false;renderAiCard(card);return;
+  }
+  aiDocBaseline=aiSnapshot();
+  const rows=card.to_engine||[];
+  // Класс — первым: его профиль ставит цены и ставки, а строки карточки
+  // затем пишут ровно свои числа.
+  const cls=rows.find(x=>x.path==='inputs.project_class');
+  // Вписанное руками класс не меняет: карточка это уже сказала, поэтому окно
+  // «заменить вписанное?» здесь отвечается «оставить».
+  if(cls&&cls.value!==inputs.project_class){
+   const ask=window.confirm;window.confirm=()=>false;
+   try{applyProjectClassPreset(cls.value)}finally{window.confirm=ask}
+  }
+  rows.forEach(row=>{
+   const p=row.path.split('.');
+   if(p[0]==='inputs')inputs[p[1]]=row.value;
+   else if(p[0]==='tep'){tep[p[1]]=tep[p[1]]||{};tep[p[1]][p[2]]=row.value}
+   else if(row.path==='land.cadastral_numbers'){applyAiCadastral({label:row.label,value:row.value},card.filename);return}
+   fieldOrigins()[row.path]={source:'document',text:row.origin||aiDocumentOrigin(card.filename).text};
+  });
+  syncTep(false);renderInputs();renderTep();syncProjectClassSelector();
+  // Сверка после записи: если пересчёт страницы сдвинул число карточки,
+  // это видно здесь, а не в расчёте молча.
+  const moved=rows.filter(row=>!row.derived&&(row.path.startsWith('inputs.')||row.path.startsWith('tep.')))
+   .filter(row=>{const now=aiCardValueNow(row.path);
+    return typeof row.value==='number'?Math.abs(Number(now)-row.value)>1e-6:String(now)!==String(row.value)})
+   .map(row=>row.label+': в карточке '+aiNum(row.value)+', в расчёте '+aiNum(aiCardValueNow(row.path)));
+  if(moved.length){
+   const warn=document.createElement('div');warn.style.cssText='margin-top:6px;color:#8a4b08';
+   warn.textContent='Не совпало с карточкой — '+moved.join('; ')+'.';box.appendChild(warn);
+  }
+  aiBusy=false;
+  await aiRecalcInto(status);
+  const after=document.createElement('div');after.style.cssText='display:flex;flex-wrap:wrap;gap:6px;margin-top:8px';
+  after.innerHTML='<button class="btn dark" data-act="report">Открыть результат</button>'
+   +'<button class="btn" data-act="inputs">Проверить вводные</button>'
+   +'<button class="btn" data-act="undo">Отменить изменения документа</button>';
+  box.appendChild(after);
+  after.querySelectorAll('button[data-act]').forEach(b=>b.onclick=()=>{
+   const act=b.dataset.act;
+   if(act==='report'){toggleAgent(false);openTab('report')}
+   else if(act==='inputs'){toggleAgent(false);openTab('inputs')}
+   else if(act==='undo'){b.disabled=true;undoAiDocument()}
+  });
   appendAiCadastralButton();
-  const recalc=document.createElement('div');recalc.className='ai-msg system ai-intake-recalc';
-  aiMessages.appendChild(recalc);await aiRecalcInto(recalc);
- }catch(e){appendAiMessage('system','Не применилось: '+(e.message||e))}
+ }catch(e){status.textContent='Расчёт не запущен: '+(e.message||e)}
+ finally{aiBusy=false}
 }
 async function sendAgentMessage(scenario){
  if(aiBusy)return;const message=String(aiInput.value||'').trim();if(!message)return;

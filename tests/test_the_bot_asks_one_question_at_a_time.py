@@ -1,17 +1,24 @@
-"""Бот спрашивает по документу по одному вопросу, а не десятью сразу.
+"""Бот разбирает тизер тремя шагами, как сайт: карточка, вопросы, кнопка.
 
 «Бот выплюнул 10 вопросов в одном сообщении, а не один за одним» (владелец,
-27.08.2026). В чате разговор, а не анкета: списком из десяти вопросов человек
-не знает, на какой отвечает, и бот не знает тоже — ответ не к чему привязать.
+27.08.2026). Затем (25.10.2026): бот одновременно разбирал и спрашивал, а
+ответы оставались текстом — «Это ваши ответы, а не расчёт» — и в движок из
+тизера не доходило ничего, кроме номера участка.
 
-Механизм для этого у бота уже был: пошаговый диалог с `step` и сохранением
-между сообщениями. Второго не заводим.
+Теперь первый шаг — карточка без вопросов; вопросы — кнопкой, по одному,
+только о недостающем, и ответ меняет карточку; расчёт — кнопкой «Всё верно,
+считать», и мини-приложение получает ровно строки карточки.
+
+Проверки гоняют настоящий обработчик: `_telegram_handle_intake_document`,
+`_telegram_handle_update` (кнопки) и `_telegram_handle_dialog_text`.
 
 Запуск: python3 -m pytest tests/test_the_bot_asks_one_question_at_a_time.py -q
 """
 
 from __future__ import annotations
 
+import base64
+import json
 import sys
 from pathlib import Path
 
@@ -20,103 +27,144 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+import document_intake  # noqa: E402
 import main_legacy as engine  # noqa: E402
-from engine_source import engine_source  # noqa: E402
+
+CHAT = 777
+NUMBER = "77:08:0010008:1049"
+TEXT = ("[стр. 1]\nТизер\n\n[стр. 2]\nофисы – 26 300 м2\n\n"
+        f"[стр. 4]\nКН {NUMBER}")
+EXTRACTION = {
+    "fields": [
+        {"key": "cadastral_numbers", "value": [NUMBER], "unit": "список", "quote": f"КН {NUMBER}"},
+        {"key": "offices_gba_sqm", "value": "26 300", "unit": "м2", "quote": "офисы – 26 300 м2"},
+    ],
+    "questions": [
+        {"key": "", "question": "Платёж 2,55 млрд руб. за SPV — куда отнести?",
+         "options": ["В цену сделки — платится на входе", "В соцнагрузку — идёт своей датой"]},
+        {"key": "resettlement_cost_mln", "question": "Требуется ли расселение?",
+         "options": ["Расселение не требуется — 0", "Требуется"]},
+    ],
+    "notes": [],
+}
+
+
+class Chat(list):
+    """Отправленные сообщения и участки, ушедшие в расчёт."""
+    parcels: list[list[str]]
 
 
 @pytest.fixture()
 def bot(monkeypatch, tmp_path):
-    sent: list[dict] = []
+    sent = Chat()
 
     def fake_send(chat_id, text, reply_markup=None, **_):
         sent.append({"chat_id": chat_id, "text": text, "markup": reply_markup})
         return {"ok": True}
 
     monkeypatch.setattr(engine, "_telegram_send_message", fake_send)
+    monkeypatch.setattr(engine, "_telegram_api", lambda *_a, **_k: {})
     monkeypatch.setattr(engine, "_PLATO_STAGE_DIR", tmp_path)
-    engine._telegram_dialog_clear(777)
+    monkeypatch.setattr(engine, "_telegram_token", lambda: "123:test")
+    monkeypatch.setattr(engine, "_telegram_agent_request", lambda _chat: None)
+    monkeypatch.setattr(engine, "_telegram_allowed_user_ids", lambda: set())
+    monkeypatch.setattr(document_intake, "extract_text",
+                        lambda _data, name: {"text": TEXT, "pages": 4, "filename": name})
+    monkeypatch.setattr(engine, "plato_answer",
+                        lambda *_a: {"answer": json.dumps(EXTRACTION, ensure_ascii=False)})
+    parcels: list[list[str]] = []
+    monkeypatch.setattr(engine, "_telegram_handle_cadastral_numbers",
+                        lambda _chat, numbers, *_a: parcels.append(list(numbers)))
+    engine._telegram_dialog_clear(CHAT)
+    sent.parcels = parcels
     return sent
 
 
-def _questions(count: int) -> list[dict]:
-    return [{"question": f"Вопрос {n}", "options": ["да", "нет"] if n == 1 else []}
-            for n in range(1, count + 1)]
+def _press(data: str) -> None:
+    engine._telegram_handle_update({"callback_query": {
+        "id": "", "data": data, "from": {"id": CHAT},
+        "message": {"chat": {"id": CHAT}}}})
 
 
-def test_ten_questions_go_out_one_by_one(bot):
-    dialog = {"step": "await_intake_answer", "intake": {
-        "filename": "тизер.pdf", "questions": _questions(10), "answers": [], "index": 0}}
-    engine._telegram_dialog_save(777, dialog)
-    engine._telegram_intake_ask_next(777, dialog)
-
-    assert len(bot) == 1, "вопросы уходят по одному"
-    assert "Вопрос 1 из 10" in bot[0]["text"]
-    assert "Вопрос 2" not in bot[0]["text"]
-
-    engine._telegram_handle_dialog_text(777, "да")
-    assert "Вопрос 2 из 10" in bot[-1]["text"]
-    assert len(bot) == 2
+def _buttons(message: dict) -> list[dict]:
+    return [button for row in ((message.get("markup") or {}).get("inline_keyboard") or [])
+            for button in row]
 
 
-def test_the_answer_is_tied_to_its_question(bot):
-    dialog = {"step": "await_intake_answer", "intake": {
-        "filename": "тизер.pdf", "questions": _questions(2), "answers": [], "index": 0}}
-    engine._telegram_dialog_save(777, dialog)
-    engine._telegram_handle_dialog_text(777, "12 000")
-    engine._telegram_handle_dialog_text(777, "аренда")
-
-    said = bot[-1]["text"]
-    assert "Вопрос 1" in said and "12 000" in said
-    assert "Вопрос 2" in said and "аренда" in said
+def _session(url: str) -> dict:
+    fragment = url.split("#", 1)[1]
+    from urllib.parse import parse_qs
+    token = parse_qs(fragment)["telegram_session"][0]
+    encoded = token.split(".", 1)[0]
+    return json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
 
 
-def test_the_answers_survive_a_missing_button(bot):
-    """Ссылка мини-приложения собирается по токену бота; без него кнопки нет.
-    Ронять из-за неё разбор нельзя — человек потерял бы и свои ответы."""
-    dialog = {"step": "await_intake_answer", "intake": {
-        "filename": "т.pdf", "questions": _questions(1), "answers": [], "index": 0}}
-    engine._telegram_dialog_save(777, dialog)
-    engine._telegram_handle_dialog_text(777, "12 000")
-    assert "12 000" in bot[-1]["text"], "итог доходит и без кнопки"
+def test_the_first_message_is_a_card_and_asks_nothing(bot):
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "svetly.pdf")
+    card = bot[-1]
+    assert "Что найдено в тизере" in card["text"]
+    assert "стр. 2" in card["text"] and "стр. 4" in card["text"]
+    assert "Что уйдёт в расчёт" in card["text"] and "26 300" in card["text"]
+    assert "Чего нет в тизере" in card["text"]
+    assert "Вопрос 1" not in card["text"], "первый шаг уже спрашивает"
+    assert "offices_gba_sqm" not in card["text"], "в карточке ключ вместо подписи"
+    assert [b["callback_data"] for b in _buttons(card)] == ["intake_questions"]
+    assert not bot.parcels, "расчёт участка начался без кнопки"
 
 
-def test_a_skip_is_an_answer_and_says_so(bot):
-    dialog = {"step": "await_intake_answer", "intake": {
-        "filename": "т.pdf", "questions": _questions(1), "answers": [], "index": 0}}
-    engine._telegram_dialog_save(777, dialog)
-    engine._telegram_handle_dialog_text(777, "-")
-    assert "пропущено" in bot[-1]["text"], "пропуск назван, а не показан пустотой"
+def test_questions_go_one_by_one_and_change_only_the_card(bot):
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "svetly.pdf")
+    _press("intake_questions")
+    assert "Вопрос 1 из 3" in bot[-1]["text"]
+    assert "Вопрос 2" not in bot[-1]["text"]
+    _press(_buttons(bot[-1])[0]["callback_data"])  # в цену сделки
+    said = "\n".join(m["text"] for m in bot[-2:])
+    assert "в карточку" in said and "Вопрос 2 из 3" in bot[-1]["text"]
+    # Номер варианта сообщением — тоже ответ.
+    engine._telegram_handle_dialog_text(CHAT, "1")
+    assert "Вопрос 3 из 3" in bot[-1]["text"] and "класс" in bot[-1]["text"].lower()
+    assert not bot.parcels
 
 
-def test_stopping_keeps_what_was_already_answered(bot):
-    """Прекратить разговор — законный ответ, а не сбой."""
-    dialog = {"step": "await_intake_answer", "intake": {
-        "filename": "т.pdf", "questions": _questions(5), "answers": [], "index": 0}}
-    engine._telegram_dialog_save(777, dialog)
-    engine._telegram_handle_dialog_text(777, "42")
-    engine._telegram_handle_dialog_text(777, "стоп")
-    said = bot[-1]["text"]
-    assert "42" in said, "отвеченное до остановки не выбрасывается"
-    assert "Вопрос 3" not in said
+def test_the_button_carries_exactly_the_card(bot):
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "svetly.pdf")
+    _press("intake_questions")
+    _press(_buttons(bot[-1])[0]["callback_data"])
+    _press(_buttons(bot[-1])[0]["callback_data"])
+    _press(_buttons(bot[-1])[1]["callback_data"])  # класс «Бизнес»
+    final = bot[-1]
+    assert "Итог разбора перед расчётом" in final["text"]
+    button = _buttons(final)[0]
+    assert button["text"] == "Всё верно, считать"
+    session = _session(button["web_app"]["url"])
+    overrides = session["calc_overrides"]
+    assert session["cad"] == [NUMBER]
+    assert overrides["purchase_price_mln"] == 2550.0
+    assert overrides["resettlement_cost_mln"] == 0.0
+    assert overrides["offices_gba_sqm"] == 26_300 and overrides["offices_enabled"] is True
+    assert overrides["project_class"] == "business"
+    assert overrides["apartment_price_th"] == engine.PROJECT_CLASS_PRESETS["business"]["apartment_price_th"]
+    assert "стр. 2" in overrides["_field_origin"]["inputs.offices_gba_sqm"]["text"]
+    # Чего нет в карточке «уйдёт в расчёт», того нет и в расчёте.
+    assert "social_compensation_mln" not in overrides
+    assert not bot.parcels, "расчёт начался до кнопки"
 
 
-def test_the_dialogue_survives_the_other_worker(bot, tmp_path):
+def test_a_skip_and_a_stop_are_answers_and_say_so(bot):
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "svetly.pdf")
+    _press("intake_questions")
+    engine._telegram_handle_dialog_text(CHAT, "-")
+    assert any("Пропущено" in m["text"] for m in bot[-2:])
+    engine._telegram_handle_dialog_text(CHAT, "стоп")
+    assert "Итог разбора перед расчётом" in bot[-1]["text"]
+    assert _buttons(bot[-1])[0]["text"] == "Всё верно, считать"
+
+
+def test_the_dialogue_survives_the_other_worker(bot):
     """Воркеров два, память у них раздельная: следующее сообщение попадает в
     другой процесс, где разговора не было."""
-    dialog = {"step": "await_intake_answer", "intake": {
-        "filename": "т.pdf", "questions": _questions(3), "answers": [], "index": 0}}
-    engine._telegram_dialog_save(777, dialog)
-    # Второй воркер: своей памяти о разговоре у него нет.
-    engine._TELEGRAM_DIALOGS.pop(777, None)
-    restored = engine._telegram_dialog_get(777)
-    assert restored and restored["step"] == "await_intake_answer"
-    assert len(restored["intake"]["questions"]) == 3
-
-
-def test_the_intake_message_no_longer_lists_the_questions():
-    """Список вопросов из карточки разбора убран — они уходят очередью."""
-    source = engine_source()
-    body = source[source.index("def _telegram_handle_intake_document("):]
-    body = body[:body.index("\ndef _telegram_open_model_button(")]
-    assert "Чего в документе нет — нужен ваш ответ" not in body
-    assert "_telegram_intake_ask_next(" in body
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "svetly.pdf")
+    _press("intake_questions")
+    engine._TELEGRAM_DIALOGS.pop(CHAT, None)
+    engine._telegram_handle_dialog_text(CHAT, "1")
+    assert "Вопрос 2 из 3" in bot[-1]["text"]

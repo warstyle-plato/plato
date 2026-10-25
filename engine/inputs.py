@@ -2754,6 +2754,9 @@ class AgentDocumentRequest(BaseModel):
     content_b64: str = ""
     inputs: dict[str, Any] = {}
     tep: dict[str, dict[str, Any]] = {}
+    # Числа класса жилья в ЭТОМ проекте (`classValue` страницы): карточка
+    # показывает их, а не базу класса. Пусто — база.
+    class_profile: dict[str, Any] = {}
     session: str = ""
     access_key: str = ""
     # Ключи, которые человек подтвердил в таблице разбора. Пусто — только
@@ -2778,6 +2781,21 @@ class AgentDocumentAnswerRequest(BaseModel):
     mode: str = ""
     inputs: dict[str, Any] = {}
     tep: dict[str, dict[str, Any]] = {}
+    # Числа класса жилья в ЭТОМ проекте (`classValue` страницы): карточка
+    # показывает их, а не базу класса. Пусто — база.
+    class_profile: dict[str, Any] = {}
+    session: str = ""
+    access_key: str = ""
+
+
+class AgentDocumentCardRequest(BaseModel):
+    """Карточка разбора по текущим вводным — перед расчётом."""
+    intake_id: str
+    inputs: dict[str, Any] = {}
+    tep: dict[str, dict[str, Any]] = {}
+    # Числа класса жилья в ЭТОМ проекте (`classValue` страницы): карточка
+    # показывает их, а не базу класса. Пусто — база.
+    class_profile: dict[str, Any] = {}
     session: str = ""
     access_key: str = ""
 

@@ -584,11 +584,11 @@ def plato_answer(req: AgentChatRequest, request: Request) -> dict[str, Any]:
 
 @app.post("/agent/document")
 def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any]:
-    """Разобрать документ по участку и показать, что из него можно взять.
+    """Разобрать тизер и показать карточку: найдено, уйдёт в расчёт, не хватает.
 
-    Три хода: что написано (с цитатой), что из этого следует (считает движок),
-    чего в документе нет (спрашивается). Ничего не подставляется молча —
-    применение отдельным вызовом с уже подтверждёнными ключами.
+    Шаг первый из трёх (решение владельца 25.10.2026): ни вопроса, ни записи
+    в модель — только карточка. Вопросы задаются потом, по одному, и меняют
+    карточку; расчёт — кнопкой «Всё верно, считать» ровно по карточке.
     """
     _require_web_access(req.session, req.access_key, "Разбор документа")
     # Применение уже разобранного: модель второй раз не зовём — она бы
@@ -622,18 +622,10 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
                 "reason": document.get("reason") or "в документе нет текста"}
 
     usage_track("document", surface="site", text=str(req.filename or ""))
-    # Та же порция, что уходит в вопрос (`intake_prompt`): ответ сообщает,
-    # сколько документа прочитано. Без неё окно получало HTTP 500 уже ПОСЛЕ
-    # ответа модели — работа была сделана и выброшена.
+    got = document_intake_read(document, request)
     portion = document_intake.intake_text(document)
-    payload = AgentChatRequest(
-        message=document_intake.intake_prompt(document),
-        inputs=dict(req.inputs or DEFAULT_INPUTS),
-        tep={key: dict(value) for key, value in (req.tep or TEP_DEFAULT).items()},
-        scenario="document_intake",
-    )
-    answer = plato_answer(payload, request)
-    got = document_intake.parse_intake(str(answer.get("answer") or ""))
+    inputs = dict(req.inputs or DEFAULT_INPUTS)
+    tep = {key: dict(value) for key, value in (req.tep or TEP_DEFAULT).items()}
     # Сколько документа прочитано — часть ответа: непрочитанный хвост, о
     # котором не сказано, читается как «в документе этого нет».
     return {"document": {**{key: value for key, value in document.items() if key != "text"},
@@ -644,12 +636,26 @@ def agent_document(req: AgentDocumentRequest, request: Request) -> dict[str, Any
             # с ним, и Платон отвечает по документу, а не по пустому месту.
             "context": document_intake.chat_context(document, got),
             **got,
-            "queue": _intake_queue_start(str(req.filename or ""), got.get("questions") or [])}
+            "card": (None if got.get("reason") else
+                     _intake_queue_start(str(req.filename or ""), got, document, inputs, tep,
+                                         class_profile=req.class_profile))}
 
 
-# --- вопросы по документу: по одному, очередь на диске ------------------------
+def document_intake_read(document: dict[str, Any], request: Any) -> dict[str, Any]:
+    """Разбор текста документа моделью — один путь для сайта и бота."""
+    payload = AgentChatRequest(
+        message=document_intake.intake_prompt(document),
+        inputs=dict(DEFAULT_INPUTS),
+        tep={key: dict(value) for key, value in TEP_DEFAULT.items()},
+        scenario="document_intake",
+    )
+    answer = plato_answer(payload, request)
+    return document_intake.parse_intake(str((answer or {}).get("answer") or ""))
+
+
+# --- карточка тизера и вопросы по одному: состояние на диске ------------------
 # Воркеров два, и ответ на первый вопрос может прийти не в тот, что разбирал
-# документ: очередь живёт в каталоге стадий Платона, а не в памяти процесса.
+# документ: состояние живёт в каталоге стадий Платона, а не в памяти процесса.
 _INTAKE_QUEUE_TTL = 3 * 24 * 3600
 
 
@@ -675,80 +681,87 @@ def _intake_queue_save(queue: dict[str, Any]) -> None:
             pass
 
 
-def _intake_queue_view(queue: dict[str, Any]) -> dict[str, Any]:
-    cards = queue.get("cards") or []
-    index = int(queue.get("index") or 0)
-    return {"id": queue["id"], "index": index, "total": len(cards),
-            "filename": queue.get("filename") or "",
-            "card": cards[index] if index < len(cards) else None,
-            "answers": queue.get("answers") or []}
+def _intake_queue_load(intake_id: str) -> dict[str, Any]:
+    try:
+        return json.loads(_intake_queue_path(intake_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(status_code=404, detail=(
+            "Разбор этого документа не найден на сервере: прошло больше трёх дней "
+            "или сервер перезапущен с чистого диска. Приложите документ заново."))
 
 
-def _intake_queue_start(filename: str, questions: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Завести очередь вопросов. Вопросов нет — очереди нет."""
-    if not questions:
-        return None
-    queue = {"id": os.urandom(16).hex(), "filename": filename, "index": 0, "answers": [],
-             "cards": [document_intake.question_card(item) for item in questions]}
+def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
+                     tep: dict[str, dict[str, Any]], *, by_parcel: bool = False,
+                     class_profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Карточка разбора по текущим вводным — один сборщик для сайта и бота."""
+    card = teaser_card.build(queue, inputs, tep, spp_split=MKD_SPP_SPLIT,
+                             presets=teaser_card.class_presets(PROJECT_CLASS_PRESETS, class_profile),
+                             defaults=DEFAULT_INPUTS, by_parcel=by_parcel)
+    card["id"] = queue["id"]
+    return card
+
+
+def _intake_queue_start(filename: str, extraction: dict[str, Any], document: dict[str, Any],
+                        inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
+                        *, by_parcel: bool = False,
+                        class_profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Завести состояние разбора и отдать карточку первого шага."""
+    queue = {"id": os.urandom(16).hex(),
+             **teaser_card.start(extraction, document, filename,
+                                 presets=PROJECT_CLASS_PRESETS,
+                                 current_class=str(inputs.get("project_class") or ""))}
+    card = teaser_card_view(queue, inputs, tep, by_parcel=by_parcel, class_profile=class_profile)
     try:
         _intake_queue_save(queue)
     except OSError as exc:
-        # Без диска вопросы задать можно, а принять ответ в другом воркере —
+        # Без диска карточку показать можно, а принять ответ в другом воркере —
         # нет. Говорим об этом прямо, а не теряем ответ на втором вопросе.
-        return {"error": f"очередь вопросов не записалась на диск: {exc}"}
-    return _intake_queue_view(queue)
+        card["error"] = f"разбор не записался на диск, вопросы не задать: {exc}"
+    return card
+
+
+@app.post("/agent/document/card")
+def agent_document_card(req: AgentDocumentCardRequest) -> dict[str, Any]:
+    """Карточка заново по текущим вводным — перед «Всё верно, считать».
+
+    Вводные могли поменяться после загрузки тизера; движок получает то, что
+    показано, поэтому показываем то, что получит он.
+    """
+    _require_web_access(req.session, req.access_key, "Разбор документа")
+    return teaser_card_view(_intake_queue_load(req.intake_id), req.inputs or {}, req.tep or {},
+                            class_profile=req.class_profile)
 
 
 @app.post("/agent/document/answer")
 def agent_document_answer(req: AgentDocumentAnswerRequest) -> dict[str, Any]:
-    """Ответ на текущий вопрос: применить к полю, записать, отдать следующий."""
+    """Ответ на текущий вопрос: записать в разбор и отдать обновлённую карточку.
+
+    Модель не меняется: ответ правит карточку, а в расчёт карточка уходит
+    только кнопкой «Всё верно, считать».
+    """
     _require_web_access(req.session, req.access_key, "Разбор документа")
-    path = _intake_queue_path(req.intake_id)
-    try:
-        queue = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        raise HTTPException(status_code=404, detail=(
-            "Вопросы по этому документу не найдены на сервере (прошло больше трёх "
-            "дней или сервер перезапущен с чистого диска). Приложите документ заново."))
-    view = _intake_queue_view(queue)
-    if req.index != view["index"]:
+    queue = _intake_queue_load(req.intake_id)
+    inputs, tep = req.inputs or {}, req.tep or {}
+    got = teaser_card.answer(queue, inputs, tep, index=req.index,
+                             action=str(req.action or "answer"), choice=req.choice,
+                             value=req.value, mode=str(req.mode or ""), spp_split=MKD_SPP_SPLIT,
+                             presets=teaser_card.class_presets(PROJECT_CLASS_PRESETS,
+                                                               req.class_profile))
+    card = teaser_card_view(queue, inputs, tep, class_profile=req.class_profile)
+    if got.get("stale"):
         # Двойное нажатие или вторая вкладка: отвечали на вопрос, который уже
         # закрыт. Чужой вопрос этим ответом не закрываем — отдаём текущий.
-        return {"stale": True, "queue": view, "applied": [], "refused": [],
-                "inputs": req.inputs, "tep": req.tep}
-    card = view["card"]
-    if card is None:
-        return {"queue": view, "applied": [], "refused": [], "inputs": req.inputs, "tep": req.tep}
-    action = str(req.action or "answer")
-    if action == "answer":
-        ledger = dict(queue.get("ledger") or {})
-        got = document_intake.answer_card(card, req.inputs or {}, req.tep or {},
-                                          choice=req.choice, typed=req.value,
-                                          ledger=ledger, mode=str(req.mode or ""))
-        if got.get("confirm"):
-            # В поле уже своё число: прибавить или заменить — решает человек,
-            # и вопрос остаётся открытым, пока он не ответит.
-            return {"queue": view, "confirm": got["confirm"], "answer": got["answer"],
-                    "applied": [], "refused": [], "inputs": req.inputs, "tep": req.tep}
-        queue["ledger"] = ledger
-    else:
-        got = {"answer": "", "inputs": req.inputs, "tep": req.tep,
-               "applied": [], "refused": []}
-    answers = list(queue.get("answers") or [])
-    # Итог по документу печатает было → стало каждого поля, а не одни имена:
-    # «→ в модели: Цена сделки» не говорит, какое число туда легло.
-    answers.append({"question": card.get("question"), "answer": got["answer"],
-                    "applied": [row.get("label") or row.get("key") for row in got["applied"]],
-                    "changes": got["applied"],
-                    "refused": got["refused"]})
-    queue["answers"] = answers
-    # «Закончить» закрывает очередь целиком: отвеченное остаётся.
-    queue["index"] = len(queue.get("cards") or []) if action == "stop" else view["index"] + 1
+        return {"stale": True, "card": card, "applied": [], "refused": []}
+    if got.get("confirm"):
+        # В поле уже своё число: прибавить или заменить — решает человек,
+        # и вопрос остаётся открытым, пока он не ответит.
+        return {"confirm": got["confirm"], "answer": got["answer"], "card": card,
+                "applied": [], "refused": []}
     _intake_queue_save(queue)
     usage_track("document_answer", surface="site", text=str(queue.get("filename") or ""))
-    return {"queue": _intake_queue_view(queue), "answer": got["answer"],
-            "applied": got["applied"], "refused": got["refused"],
-            "inputs": got["inputs"], "tep": got["tep"]}
+    record = got["answer"]
+    return {"card": card, "answer": record.get("answer") or "",
+            "applied": record.get("applied") or [], "refused": record.get("refused") or []}
 
 
 @app.get("/agent/result/{trace_id}")
