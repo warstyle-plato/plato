@@ -30,6 +30,29 @@ def owner_cash_peak(finance: dict[str, Any], equity_cf: list[float]) -> float:
     return -worst
 
 
+def cash_payback_month(months: list[Any], cash: list[float]) -> Any:
+    """Месяц, с которого накопленные деньги собственника больше не уходят в
+    минус; None — не возвращаются за горизонт. Одно правило на «Окупаемость
+    собственных средств» и сравнение стратегий."""
+    cumulative, last_negative = 0.0, None
+    for index, value in enumerate(cash):
+        cumulative += float(value or 0.0)
+        if cumulative < -0.5:
+            last_negative = index
+    if last_negative is None or last_negative + 1 >= min(len(months), len(cash)):
+        return None
+    return months[last_negative + 1]
+
+
+def owner_cash_payback(finance: dict[str, Any], equity_cf: list[float], months: list[Any]) -> Any:
+    """Окупаемость собственных денег тем же потоком, что `owner_cash_peak`:
+    деньгами, без оценки удержанного здания."""
+    rows = finance.get("rows") or []
+    cash = [float(value or 0.0) - float((rows[i] if i < len(rows) else {}).get("nonres_residual_value") or 0.0)
+            for i, value in enumerate(equity_cf)]
+    return cash_payback_month(months, cash)
+
+
 def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
                   equity_cf: list[float]) -> dict[str, Any]:
     """Какие блоки отчёта у проекта есть — одно решение для всех поверхностей.
@@ -1695,15 +1718,11 @@ def equity_participation_report(months: list[date], equity_cf: list[float],
     returned = parts["out_vat"] + parts["out_running"] + parts["out_exit"]
     cumulative = worst = 0.0
     worst_month: date | None = None
-    last_negative: int | None = None
-    for index, (month, cash) in enumerate(zip(months, cash_only)):
+    for month, cash in zip(months, cash_only):
         cumulative += cash
         if cumulative < worst:
             worst, worst_month = cumulative, month
-        if cumulative < -0.5:
-            last_negative = index
-    payback = (months[last_negative + 1] if last_negative is not None
-               and last_negative + 1 < len(months) else None)
+    payback = cash_payback_month(months, cash_only)
     capex = float(finance.get("total_capex") or 0.0)
     draw = float(sum(float(r.get("nonres_loan_draw") or 0.0) for r in finance.get("rows") or []))
     hold = residual_total > 0

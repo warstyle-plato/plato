@@ -90,9 +90,15 @@ def entry_price_ceiling(bundle: dict[str, Any], inputs: dict[str, Any], tep: dic
                 "reason": metric.get("reason") or "Показателя долга у проекта нет.", **stamp}
     else:
         req = AgentChatRequest(message="", inputs=inputs, tep=tep, rates=rates, phasing=phasing)
-        data = dict(_tool_goal_seek(req, bundle, variable, metric["key"], threshold,
-                                    "at_least", "maximum_variable", _agent_scope_of(bundle),
-                                    None, None))
+        # Шаги подбора читают показатель долга, а не сравнение стратегий: без
+        # выключения каждый шаг стоил бы трёх расчётов (`OFFICE_PATHS_ON`).
+        token = OFFICE_PATHS_ON.set(False)
+        try:
+            data = dict(_tool_goal_seek(req, bundle, variable, metric["key"], threshold,
+                                        "at_least", "maximum_variable", _agent_scope_of(bundle),
+                                        None, None))
+        finally:
+            OFFICE_PATHS_ON.reset(token)
         data.setdefault("target_metric", metric["key"])
         data.update({"metric_label": metric.get("label"), **stamp})
     data["target"] = threshold
