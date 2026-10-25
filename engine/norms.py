@@ -1960,7 +1960,9 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
 # называло московский документ под областным числом (Мытищи, 04.10.2026).
 PARKING_NORM_OTHER_REGION = "other_region"
 PARKING_NORM_OF: dict[str, str] = {
-    parking_norms.MOSCOW: "приложения 6 к 945-ПП",
+    # Таблица мест на расчётную единицу — приложение 1 (ред. 2579-ПП), формула
+    # с К1 и К2 — приложение 6: число собирают оба, и подпись называет оба.
+    parking_norms.MOSCOW: "приложений 1 и 6 к 945-ПП",
     # Другой регион: норм парковки его у нас нет (решение владельца 19.10.2026).
     PARKING_NORM_OTHER_REGION: "этого региона — его норм у нас нет",
     parking_norms.MOSCOW_OBLAST: ("Московской области (приложение № 10 к 713/30 в ред. "
