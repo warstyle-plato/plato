@@ -3334,8 +3334,12 @@ def _calculate_phased_with_carry(req: PhasedCalcRequest) -> dict[str, Any]:
 @app.post("/calculate-phased")
 def calculate_phased_api(req: PhasedCalcRequest) -> dict[str, Any]:
     # Очерёдность — тот же расчёт экономики, и та же граница входа.
-    require_calc_access(req.session, req.access_key, "Расчёт экономики", inputs=req.inputs)
-    return calculate_phased(req)
+    access = require_calc_access(req.session, req.access_key, "Расчёт экономики",
+                                 inputs=req.inputs, free_consent=req.use_free)
+    bundle = calculate_phased(req)
+    if isinstance(bundle, dict):
+        bundle["access"] = access_summary(access)
+    return bundle
 
 
 @app.post("/analysis/sensitivity")
