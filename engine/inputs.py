@@ -66,18 +66,10 @@ SOCIAL_BUILD_MODES = ("Строительство", SOCIAL_MODE_BOTH)
 SOCIAL_BUILDING_PLACES = "_social_building_places"
 
 MANUAL_TEP_TEMPLATE_VERSION = "DevelopAid_TEP_2"
-SERVER_TEP_PRESETS = {
-    "mishina": {
-        "name": "Мишина",
-        "filename": "Мишина_ТЭП.xlsx",
-        "description": "Актуальный ТЭП Мишина: 13 920 м² квартир, ВРИ 1 267,539 млн ₽, соцкомпенсация 575,379 млн ₽.",
-    },
-    "mytishchi": {
-        "name": "Мытищи",
-        "filename": "Мытищи_ТЭП.xlsx",
-        "description": "Пересобранный preset Мытищи: 200 тыс. м² квартир, МФК/офисы 26,7/21,36 тыс. м², 2 723 подземных м/м, 3 очереди 40/32/28, рабочая социалка ДОО 465 + СОШ 675.",
-    },
-}
+# Серверных предустановок ТЭП («Мишина», «Мытищи») в продукте больше нет:
+# это настоящие проекты владельца с ценами, и /v2 отдавал их расчёт без входа
+# (решение владельца, 23.10.2026: «Пресеты можно везде удалить»). Выгрузки
+# остались только тестовыми данными в `tests/fixtures/glavapu_owner/`.
 
 SCENARIOS = {
     'conservative': {'scenario_revenue_multiplier': 0.90, 'scenario_cost_multiplier': 1.10},
@@ -1877,7 +1869,28 @@ CLASS_ONLY_INPUTS = ["landscaping_area_per_person_sqm", "landscaping_th_per_sqm"
 # своя ставка здания; площадь двора — двор от населения, а населения у
 # нежилого проекта нет. Подземная ставка остаётся: по ней строится гараж
 # объекта.
-RESIDENTIAL_ONLY_INPUTS = ["main_above_th_per_sqm", "landscaping_area_sqm"]
+#
+# Владелец, 25.10.2026: «если какие-то статьи не входят в нежильё, то они
+# должны … вообще не появляться в блоке вводных». Список проверен расчётом:
+# правка любого из этих полей нежилой проект не сдвигает (тест
+# `test_the_housing_only_fields_move_nothing_in_a_nonresidential_project`).
+# Продажи квартир, кладовых и коммерции первого этажа — их у проекта нет, у
+# объекта свои цена, рост и доля продаж до ввода. Плата за смену ВРИ у
+# нежилого проекта обнулена (`NONRESIDENTIAL_CLEARED_INPUTS`), с ней — весь
+# её график и источники; регион ВРИ остаётся: по нему выбирается норматив
+# Москвы или области. Соцнагрузка считается от жителей, а их нет.
+RESIDENTIAL_ONLY_INPUTS = [
+    "main_above_th_per_sqm", "landscaping_area_sqm",
+    "apartment_price_th", "commercial_price_th", "storage_price_th",
+    "share_before_rve_pct", "monthly_growth_pre_pct", "inflation_after_rve_pct",
+    "growth_stage1_pct", "growth_stage2_pct", "growth_stage3_pct", "growth_stage4_pct",
+    "seasonal_reduction_pct", "pace_adjustment_pct",
+    "sales_lag_months", "bridge_repay_lag_months", "land_rights_cost_mln",
+    *(field[0] for group in FIELD_GROUPS if group[0] == "Смена ВРИ и земельные права"
+      for field in group[1] if field[0] != "vri_region"),
+    *(field[0] for group in FIELD_GROUPS if group[0] == "Социальная нагрузка"
+      for field in group[1]),
+]
 # Поля, которые принадлежат УЧАСТКУ: их называет город по этой площадке (К1 —
 # от расстояния до рельсового каркаса, К2 — по району), и правятся они в
 # карточке «Участок и плотность», а не во «Вводных» (владелец, 27.09.2026).

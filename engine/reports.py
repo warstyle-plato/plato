@@ -13,6 +13,46 @@ report_layout и разделы отчёта, отчёт по объекту и 
 """
 # ruff: noqa
 
+def owner_cash_peak(finance: dict[str, Any], equity_cf: list[float]) -> float:
+    """Пик собственных денег — худший накопленный поток собственника ДЕНЬГАМИ.
+
+    Оценка удержанного здания (`nonres_residual_value`) — не деньги: в месяц
+    конца удержания долг гасится своими деньгами, и пик это показывает
+    (владелец, 23.10.2026: «только деньги везде»). Одно правило на плитку
+    отчёта, сравнение путей офиса и раздел «Собственное участие».
+    """
+    rows = finance.get("rows") or []
+    cumulative = worst = 0.0
+    for index, value in enumerate(equity_cf):
+        residual = float((rows[index] if index < len(rows) else {}).get("nonres_residual_value") or 0.0)
+        cumulative += float(value or 0.0) - residual
+        worst = min(worst, cumulative)
+    return -worst
+
+
+def cash_payback_month(months: list[Any], cash: list[float]) -> Any:
+    """Месяц, с которого накопленные деньги собственника больше не уходят в
+    минус; None — не возвращаются за горизонт. Одно правило на «Окупаемость
+    собственных средств» и сравнение стратегий."""
+    cumulative, last_negative = 0.0, None
+    for index, value in enumerate(cash):
+        cumulative += float(value or 0.0)
+        if cumulative < -0.5:
+            last_negative = index
+    if last_negative is None or last_negative + 1 >= min(len(months), len(cash)):
+        return None
+    return months[last_negative + 1]
+
+
+def owner_cash_payback(finance: dict[str, Any], equity_cf: list[float], months: list[Any]) -> Any:
+    """Окупаемость собственных денег тем же потоком, что `owner_cash_peak`:
+    деньгами, без оценки удержанного здания."""
+    rows = finance.get("rows") or []
+    cash = [float(value or 0.0) - float((rows[i] if i < len(rows) else {}).get("nonres_residual_value") or 0.0)
+            for i, value in enumerate(equity_cf)]
+    return cash_payback_month(months, cash)
+
+
 def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
                   equity_cf: list[float]) -> dict[str, Any]:
     """Какие блоки отчёта у проекта есть — одно решение для всех поверхностей.
@@ -30,10 +70,7 @@ def report_layout(inputs: dict[str, Any], finance: dict[str, Any],
     objects = (finance.get("nonres") or {}).get("objects") or []
     tiles: list[dict[str, Any]] = []
     if objects:
-        cumulative = worst = 0.0
-        for value in equity_cf:
-            cumulative += float(value or 0.0)
-            worst = min(worst, cumulative)
+        worst = -owner_cash_peak(finance, equity_cf)
         totals = [item.get("totals") or {} for item in objects]
         kpis = [item.get("kpi") or {} for item in objects]
         dscr = [k["dscr_min"] for k in kpis if k.get("dscr_min") is not None]
@@ -247,6 +284,22 @@ def _object_param_rows(obj: StandaloneObject | None, params: dict[str, Any],
         else:
             rows.append(_row(label, float(value), "num",
                              suffix=str(unit).split(";")[0].split(",")[0]))
+    return rows
+
+
+def _object_unit_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Строки удельной экономики для рамки объекта: тыс ₽ на м² своей базы,
+    база — в подписи (`unit_economics.base_label`), а не угадана заголовком."""
+    rows: list[dict[str, Any]] = []
+    for item in report.get("unit_economics") or []:
+        base = str(item.get("base_label") or "")
+        tail = base.split("м²", 1)[1].strip() if "м²" in base else base
+        rows.append(_row(f"{item.get('label')} — на м² {tail}".strip(), item.get("per_base_th"), "th"))
+        # Вторая база — продаваемая, как вторая колонка жилой таблицы: с ней
+        # сравнивают цену продажи. У строк на продаваемую не повторяется.
+        if item.get("base") != UNIT_BASE_SALEABLE:
+            rows.append(_row(f"{item.get('label')} — на м² продаваемой площади",
+                             item.get("per_saleable_th"), "th"))
     return rows
 
 
@@ -571,11 +624,21 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     operating = [r for r in operating if float(r["value"] or 0.0)]
     operating.append(_row("Итого эксплуатация, налог на имущество и продажа",
                           sum(float(r["value"]) for r in operating), "rub"))
+    # Удельная экономика — та же таблица движка (`report.unit_economics`), что
+    # в жилом «Итоге»: рамка объекта прятала «Итог» целиком и теряла её
+    # (владелец, 23.10.2026: «почему в результатах нет удельной экономики
+    # вообще»). Каждая строка — на свою базу, и база названа в подписи.
+    unit = _object_unit_rows(report)
+    unit_brief = [_row(f"{item['label']} на м² продаваемой", item.get("per_saleable_th"), "th")
+                  for item in report.get("unit_economics") or []
+                  if item.get("key") in ("total_expenses", "net_profit")]
     sections["costs"] = {
         "brief": [_row("Смета объектов", objects_cost, "rub"),
                   _row("Общие затраты", common_total, "rub"),
-                  _row("Расходы всего", summary.get("total_expenses"), "rub")],
+                  _row("Расходы всего", summary.get("total_expenses"), "rub"),
+                  *unit_brief],
         "blocks": [*cost_blocks,
+                   *([{"title": "Удельная экономика", "rows": unit}] if unit else []),
                    {"title": "Общие затраты проекта — участок, ИРД, проект, сети",
                     "rows": common_rows},
                    {"title": "Эксплуатация и налог на имущество", "rows": operating},
@@ -1655,15 +1718,11 @@ def equity_participation_report(months: list[date], equity_cf: list[float],
     returned = parts["out_vat"] + parts["out_running"] + parts["out_exit"]
     cumulative = worst = 0.0
     worst_month: date | None = None
-    last_negative: int | None = None
-    for index, (month, cash) in enumerate(zip(months, cash_only)):
+    for month, cash in zip(months, cash_only):
         cumulative += cash
         if cumulative < worst:
             worst, worst_month = cumulative, month
-        if cumulative < -0.5:
-            last_negative = index
-    payback = (months[last_negative + 1] if last_negative is not None
-               and last_negative + 1 < len(months) else None)
+    payback = cash_payback_month(months, cash_only)
     capex = float(finance.get("total_capex") or 0.0)
     draw = float(sum(float(r.get("nonres_loan_draw") or 0.0) for r in finance.get("rows") or []))
     hold = residual_total > 0
@@ -1729,7 +1788,9 @@ def equity_participation_report(months: list[date], equity_cf: list[float],
                          "value": cash_irr if cash_irr is not None
                          else "не считается — деньги не возвращают вложенное",
                          "unit": "pct" if cash_irr is not None else "text"})
-    npv = _monthly_npv(list(equity_cf), discount_rate)
+    # Тем же правилом, что `summary.npv_equity` (`equity_npv`, ставка / 12):
+    # одно число NPV собственника на всех поверхностях (владелец, 23.10.2026).
+    npv = _equity_npv(list(equity_cf), discount_rate)
     out_rows += [
         money(f"NPV собственного капитала @{rate_label}%" + (" — с оценкой" if hold else ""),
               npv),

@@ -160,18 +160,21 @@ def test_the_nonres_book_writes_the_project_npv_as_a_formula():
         dict(spec["inputs"]), copy.deepcopy(spec["tep"]), [], {})["consolidated"]
     _unpaid(engine["summary"])
     assert isinstance(engine["summary"]["npv"], float)
-    content, _name, _meta = core.build_project_workbook(
+    content, _name, meta = core.build_project_workbook(
         dict(spec["inputs"]), copy.deepcopy(spec["tep"]), [], {}, project_name="нежилой")
+    # Эталон — офис по ДДУ: с 24.10.2026 его книга — книга офиса; NPV и IRR
+    # способа «Продажа по ДДУ» — на листе CF_ДДУ.
+    assert meta.get("office_book"), meta
     openpyxl = pytest.importorskip("openpyxl")
     book = openpyxl.load_workbook(io.BytesIO(content))
-    report = book["Отчёт"]
-    formulas = {str(report[f"A{row}"].value): str(report[f"B{row}"].value)
-                for row in range(1, report.max_row + 1)
-                if str(report[f"A{row}"].value or "").startswith(("NPV", "IRR"))}
-    assert formulas.get("NPV проекта", "").startswith("=SUM("), formulas
+    sheet = book["CF_ДДУ"]
+    formulas = {str(sheet[f"A{row}"].value): str(sheet[f"B{row}"].value)
+                for row in range(1, sheet.max_row + 1)
+                if str(sheet[f"A{row}"].value or "").startswith(("NPV", "IRR"))}
+    assert formulas.get("NPV проекта", "").startswith("=SUMPRODUCT("), formulas
     assert "долг не погашен" not in formulas["NPV проекта"]
     # Капитал — прежним правилом движка.
-    for label in ("IRR собственного капитала", "NPV собственного капитала"):
+    for label in ("IRR собственника", "NPV собственника"):
         assert "долг не погашен" in formulas.get(label, ""), formulas
 
 

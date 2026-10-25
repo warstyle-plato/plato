@@ -277,6 +277,10 @@ function vriReliefSourceNote(){
 }
 // Почему графика ВРИ нет — настоящей причиной. Плата, снятая льготой
 // целиком, — не «изменение не требуется»: так и сказано, с суммами.
+// Нежилой проект платы за смену ВРИ не несёт (владелец, 20.08.2026: город
+// считает её по жилью и встроенным помещениям первого этажа), и поля её
+// графика у него не рисуются (`RESIDENTIAL_ONLY_INPUTS`, 25.10.2026).
+const VRI_NONRESIDENTIAL_NOTE='В нежилом проекте плата за смену вида разрешённого использования не считается: город берёт её с жилья и встроенных помещений первых этажей, а отдельно стоящее нежилое здание в неё не входит. Здесь остаётся только регион: по нему выбираются нормативы Москвы или области.';
 function vriEmptyReason(vri){
  const t=(vri&&vri.totals)||{};
  const gross=Number(t.gross||0), relief=Number(t.relief||0);
@@ -304,6 +308,11 @@ function renderVri(vri){
  // Прежде блок прятался, и смена льготы выглядела как «ничего не пересчиталось».
  const enabled=!!(vri&&(vri.enabled||Number(t.relief||0)>0));
  const list=(vri&&vri.warnings)||[];
+ // Пояснение о дате обязательства и источниках оплаты — про график платы,
+ // а у нежилого проекта графика нет.
+ const nonres=typeof isNonResidential==='function'&&isNonResidential();
+ const obligationNote=document.getElementById('vriObligationNote');
+ if(obligationNote)obligationNote.style.display=nonres?'none':'';
 
  // Карточка в отчёте.
  const card=document.getElementById('vriCard');
@@ -331,7 +340,7 @@ function renderVri(vri){
  const noSchedule=!(vri&&vri.enabled);
  if(empty)empty.style.display=noSchedule?'':'none';
  const emptyNote=document.getElementById('vriTabEmptyNote');
- if(emptyNote&&noSchedule)emptyNote.textContent=vriEmptyReason(vri);
+ if(emptyNote&&noSchedule)emptyNote.textContent=nonres?VRI_NONRESIDENTIAL_NOTE:vriEmptyReason(vri);
  if(!enabled)return;
  document.getElementById('vriTabTotals').innerHTML=vriTotalsRows(t,(lastResult||{}).summary);
  document.getElementById('vriTabSchedule').innerHTML=vriScheduleRows(vri.rows);
@@ -1428,6 +1437,10 @@ function renderSiteMassing(){
  rows.push(row(objects.length?'Пятно жилых домов':'Пятно застройки',
   sq(m.footprint_sqm)+(site>0?', это '+pct(m.footprint_share)+(objects.length?' жилой территории':' участка'):''),
   siteMassingOrigin(m.footprint_origin),true));
+ // Все пятна на участке — тот же итог, что сумма корпусов на схеме (`built_sqm`).
+ if(objects.length)rows.push(row('Всего под зданиями на участке',
+  sq(m.built_sqm)+(site>0?', это '+pct(m.built_share)+' участка':''),
+  'Жилые дома — '+sq(m.footprint_sqm)+'; '+objects.map(o=>o.label.toLowerCase()+' — '+sq(o.footprint_sqm)).join('; ')+'.',true));
  if(Number(m.footprint_shortage_sqm||0)>0.5)rows.push(row('Не хватает земли под пятно',sq(m.footprint_shortage_sqm),
   'Пятно больше места, которое остаётся после двора по норме, проездов и отступов: на столько двор по норме не помещается. Подробности — в красной плашке выше.'));
  rows.push(row('Средняя этажность',Number(m.average_storeys||0)>0?'≈ '+Number(m.average_storeys).toLocaleString('ru-RU',{maximumFractionDigits:1}):'—',
@@ -1500,6 +1513,33 @@ function renderSiteMassingScheme(m){
  box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
   '<p class="site-massing-hint">'+escapeHtml(ax.footer||'')+'</p>'+
   (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':'');
+ siteMassingPlanWatch(layout.plan||{});
+}
+// План расстановки от Платона готовится фоном (`engine/site_massing_plan.py`):
+// страница спрашивает его состояние и, когда план готов (или отклонён),
+// пересчитывает — схему строит движок, страница её только рисует.
+let siteMassingPlanTimer=null,siteMassingPlanKey='',siteMassingPlanTries=0;
+function siteMassingPlanStop(){
+ if(siteMassingPlanTimer)clearTimeout(siteMassingPlanTimer);
+ siteMassingPlanTimer=null;siteMassingPlanKey='';siteMassingPlanTries=0;
+}
+function siteMassingPlanWatch(plan){
+ if(plan.status!=='pending'||!plan.key){siteMassingPlanStop();return}
+ if(siteMassingPlanKey===plan.key&&siteMassingPlanTimer)return;
+ if(siteMassingPlanKey!==plan.key)siteMassingPlanTries=0;
+ siteMassingPlanKey=plan.key;
+ const ask=async()=>{
+  siteMassingPlanTimer=null;
+  if(siteMassingPlanTries++>=60)return;
+  try{
+   const r=await fetch('/site-massing/plan/'+encodeURIComponent(siteMassingPlanKey));
+   const s=r.ok?await r.json():{};
+   if(s.key!==siteMassingPlanKey)return;
+   if(s.status&&s.status!=='pending'){siteMassingPlanKey='';calculate();return}
+  }catch(e){}
+  siteMassingPlanTimer=setTimeout(ask,5000);
+ };
+ siteMassingPlanTimer=setTimeout(ask,5000);
 }
 // Поля допущений: подпись и единица — из FIELD_GROUPS. Поля «пусто — по
 // расчёту» (пятно, уровни, предельная этажность, земля на место) показывают

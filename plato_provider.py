@@ -193,6 +193,32 @@ def messages_for_anthropic(input_items: list[dict[str, Any]]) -> list[dict[str, 
     return messages
 
 
+# Числовые и строковые пределы структурированный вывод Anthropic не принимает:
+# сырая схема с ними получает отказ. Пределы проверяет читатель ответа.
+_ANTHROPIC_SCHEMA_UNSUPPORTED = ("minimum", "maximum", "exclusiveMinimum",
+                                 "exclusiveMaximum", "multipleOf", "minLength", "maxLength")
+
+
+def _schema_for_anthropic(schema: Any) -> Any:
+    if isinstance(schema, dict):
+        return {key: _schema_for_anthropic(value) for key, value in schema.items()
+                if key not in _ANTHROPIC_SCHEMA_UNSUPPORTED}
+    if isinstance(schema, list):
+        return [_schema_for_anthropic(item) for item in schema]
+    return schema
+
+
+def format_for_anthropic(text_options: Any) -> dict[str, Any] | None:
+    """`text.format` запроса OpenAI → `output_config.format` Anthropic.
+
+    None — формат не задан или это не JSON-схема: тогда ответ свободный.
+    """
+    fmt = (text_options or {}).get("format") if isinstance(text_options, dict) else None
+    if not isinstance(fmt, dict) or fmt.get("type") != "json_schema" or not fmt.get("schema"):
+        return None
+    return {"type": "json_schema", "schema": _schema_for_anthropic(fmt["schema"])}
+
+
 def response_to_internal(message: Any, turn_id: str) -> dict[str, Any]:
     """Ответ Anthropic → внутренняя форма, которую читает цикл агента.
 
@@ -239,8 +265,14 @@ def response_to_internal(message: Any, turn_id: str) -> dict[str, Any]:
             _BLOCKS_KEY: blocks,
         })
 
-    return {
+    stop_reason = getattr(message, "stop_reason", "") or ""
+    internal: dict[str, Any] = {
         "id": getattr(message, "id", "") or "",
         "output": output,
-        "stop_reason": getattr(message, "stop_reason", "") or "",
+        "stop_reason": stop_reason,
     }
+    if stop_reason == "max_tokens":
+        # Обрыв по потолку называется так же, как у OpenAI: читатель один.
+        internal["status"] = "incomplete"
+        internal["incomplete_details"] = {"reason": "max_output_tokens"}
+    return internal

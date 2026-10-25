@@ -228,10 +228,8 @@ async function applyGlavapu(){
  fillUndergroundFromTep();
  repairParkingFromGlavapu();
 
- // Server presets may include an expert project configuration in addition to source TEP.
- const presetId=glavapuImport.source&&glavapuImport.source.preset_id;
- if(presetId!=='mytishchi')phasing=makeDefaultPhasing(1);
- const presetNote=applyServerPresetProjectConfig(presetId);
+ // Выгрузка ГлавАПУ — новый участок: очереди прежнего проекта не переносятся.
+ phasing=makeDefaultPhasing(1);
 
  applyTelegramCalcOverrides();
 
@@ -246,7 +244,7 @@ async function applyGlavapu(){
  const manualNote=manualKept.length?' <b>Оставлено вписанное вручную: '+escapeHtml(manualKept.join(', '))+'.</b>':'';
  const sourceNote=' Происхождение подставленных значений — у полей: «ГлавАПУ, '+
   ((glavapuImport.source||{}).export_date?'выгрузка от '+glavapuImport.source.export_date:'выгрузка (дата в файле не указана)')+', лист, строка».';
- glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+manualNote+sourceNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(presetNote?' <b>'+presetNote+'</b>':'')+(glavapuSkipped?' <b>'+escapeHtml(glavapuSkipped)+'</b>':'')+territoryClearedNote()+'</span>';
+ glavapuStatus.innerHTML='<span class="import-ok">Данные ТЭП применены. Денежные единицы приведены к млн ₽. '+socialNote+manualNote+sourceNote+' Подземный паркинг собран из жилого блока и, при наличии, отдельного блока МФК.'+(glavapuSkipped?' <b>'+escapeHtml(glavapuSkipped)+'</b>':'')+territoryClearedNote()+'</span>';
  await calculate();
  await sendTelegramResult();
 }

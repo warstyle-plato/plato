@@ -44,11 +44,11 @@ jobs:
       # Код проверки — с ветки, на которой запущен диспатч (сборка шлёт его
       # на main), а не из ожидаемого коммита: у прогона есть секреты и право
       # писать issue. Ожидаемый коммит — только строка, которую ждём в /health.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 50
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -109,7 +109,7 @@ jobs:
 
       - name: Результат прогона
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: prod-smoke
           path: |
@@ -122,7 +122,7 @@ jobs:
         # Красный шаг проверки — при любом исходе, в том числе без итога.
         # Упавшие зависимости/браузер сюда не ведут: шаг проверки тогда пропущен.
         if: failure() && steps.smoke.outcome == 'failure'
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           script: |
             const fs = require('fs');
@@ -146,3 +146,154 @@ jobs:
             }
             await github.rest.issues.create({...context.repo, title: 'Прод: проверка поверхностей после выката красная',
               labels: [label], body: `Прогон: ${run}\n\n${body}`});
+
+  # Визуал: что человек видит на экране прода (scripts/prod_visual.py) —
+  # «undefined»/«NaN», пустые блоки, прочерк вместо числа, прокрутка вбок на
+  # телефоне, одно число по-разному на странице, в PDF и в тизере, жаргон.
+  # Тот же диспатч, что у проверки поверхностей, — один прогон на выкат; ждёт
+  # её, чтобы не нагружать прод двумя прогонами сразу. Не гейт: красным
+  # задание становится только от явной поломки, остальное — замечания.
+  # Новое после выката уходит комментарием в PR выката (его сессия-автор
+  # подписана на PR); давнее и то, чему автора нет, — одной issue владельцу.
+  visual:
+    name: Визуал прода
+    needs: smoke
+    # И при красной проверке поверхностей: экран смотрится независимо от неё.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      BASE: ${{ github.event.inputs.base || 'https://developaid.ru' }}
+      EXPECT_COMMIT: ${{ github.event.inputs.expect_commit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 50
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install pypdf playwright
+          python -m playwright install --with-deps chromium
+
+      - name: PR выката
+        id: pr
+        run: |
+          # Номер из заголовка merge/squash-коммита выката: «… (#541)».
+          ref="${EXPECT_COMMIT:-HEAD}"
+          git cat-file -e "$ref^{commit}" 2>/dev/null || ref=HEAD
+          pr=$(git log -1 --format=%s "$ref" | grep -oE '#[0-9]+' | tail -1 | tr -d '#' || true)
+          echo "number=$pr" >> "$GITHUB_OUTPUT"
+          echo "label=${pr:+#$pr}${pr:-не определён} ($(git log -1 --format=%h "$ref"))" >> "$GITHUB_OUTPUT"
+
+      # База «что было до выката» — итог прошлого полного прогона.
+      - name: Прошлый прогон
+        uses: actions/cache/restore@v4
+        with:
+          path: visual-baseline.json
+          key: prod-visual-baseline-${{ github.run_id }}
+          restore-keys: prod-visual-baseline-
+
+      - name: Визуальная проверка
+        id: visual
+        env:
+          PROD_SMOKE_ADMIN_KEY: ${{ secrets.DEVELOPAID_ADMIN_KEY }}
+        run: |
+          args=(--base "$BASE" --summary visual-summary.md --json visual-result.json
+                --author-note visual-author.md --out visual-out
+                --last-pr "${{ steps.pr.outputs.label }}" --baseline visual-baseline.json)
+          if [ -n "$EXPECT_COMMIT" ]; then
+            # Проверка поверхностей уже дождалась выката; здесь — только
+            # убедиться, что прод всё ещё отдаёт этот коммит.
+            args+=(--wait-commit "$EXPECT_COMMIT" --wait-timeout 600)
+          fi
+          set +e
+          python3 scripts/prod_visual.py "${args[@]}"
+          code=$?
+          set -e
+          if [ ! -s visual-summary.md ]; then
+            printf '## ❌ Визуал прода: прогон упал без итога\n\n`scripts/prod_visual.py` завершился с кодом %s; причина — в журнале шага «Визуальная проверка».\n' "$code" > visual-summary.md
+            if [ "$code" = 0 ]; then code=1; fi
+          fi
+          cat visual-summary.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -s visual-result.json ] && python3 -c "import json,sys; sys.exit(0 if json.load(open('visual-result.json')).get('complete') else 1)"; then
+            cp visual-result.json visual-baseline.json
+            echo "baseline=1" >> "$GITHUB_OUTPUT"
+          fi
+          exit $code
+
+      - name: Запомнить прогон
+        if: always() && steps.visual.outputs.baseline == '1'
+        uses: actions/cache/save@v4
+        with:
+          path: visual-baseline.json
+          key: prod-visual-baseline-${{ github.run_id }}
+
+      - name: Снимки и замечания
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: prod-visual
+          path: |
+            visual-summary.md
+            visual-result.json
+            visual-author.md
+            visual-out/
+          if-no-files-found: ignore
+
+      - name: Замечания — автору и владельцу
+        if: always() && steps.visual.outcome != 'skipped'
+        uses: actions/github-script@v9
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        with:
+          script: |
+            const fs = require('fs');
+            const read = f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const author = read('visual-author.md');
+            const summary = read('visual-summary.md');
+            const result = (() => { try { return JSON.parse(read('visual-result.json')); } catch (e) { return {}; } })();
+            const pr = Number(process.env.PR_NUMBER || 0);
+            let routed = false;
+            // Новое — автору выката, в его PR.
+            if (author && pr) {
+              try {
+                await github.rest.issues.createComment({...context.repo, issue_number: pr,
+                  body: `${author}\nПрогон и снимки: ${run}`});
+                routed = true;
+              } catch (e) { core.warning(`PR #${pr}: комментарий не записан — ${e.message}`); }
+            }
+            // Давнее и безадресное — одна issue владельцу, текст обновляется, новые не плодятся.
+            const label = 'prod-visual';
+            try { await github.rest.issues.getLabel({...context.repo, name: label}); }
+            catch (e) { await github.rest.issues.createLabel({...context.repo, name: label, color: 'fbca04',
+              description: 'Визуальная проверка прода: замечания без автора'}); }
+            const open = await github.rest.issues.listForRepo({...context.repo, state: 'open', labels: label, per_page: 1});
+            const issue = open.data[0];
+            const any = (result.findings || []).length > 0 || !result.findings;
+            const unrouted = author && !routed
+              ? '\n\n**Автора выката определить не удалось — новое тоже здесь.**\n' : '';
+            const body = `Прогон: ${run}${unrouted}\n\n${summary}`;
+            if (!any) {
+              // Закрывает только полный прогон: пропуск без ключа — не «чисто».
+              if (issue && result.complete) {
+                await github.rest.issues.createComment({...context.repo, issue_number: issue.number,
+                  body: `Замечаний больше нет: ${run}`});
+                await github.rest.issues.update({...context.repo, issue_number: issue.number, state: 'closed',
+                  state_reason: 'completed'});
+              }
+              return;
+            }
+            if (issue) {
+              await github.rest.issues.update({...context.repo, issue_number: issue.number, body});
+              if (author && !routed) await github.rest.issues.createComment({...context.repo,
+                issue_number: issue.number, body: `Новое после выката, автор не определён: ${run}\n\n${author}`});
+            } else {
+              await github.rest.issues.create({...context.repo, title: 'Прод: визуальные замечания на экране',
+                labels: [label], body});
+            }

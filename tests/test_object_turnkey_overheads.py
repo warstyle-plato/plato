@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import main as wrapper  # noqa: E402
-import nonres_workbook as nw  # noqa: E402
+import office_workbook as ow  # noqa: E402
 from xlsx_eval import Evaluator  # noqa: E402
 
 core = wrapper.core
@@ -264,37 +264,39 @@ def _nonres_content() -> bytes:
 
 
 def _nonres_check(book) -> tuple[str, set[str], Evaluator]:
-    sys.setrecursionlimit(max(sys.getrecursionlimit(), 100000))
-    evaluator = Evaluator(book)
-    checks = book[nw.CHECK_SHEET]
-    bad = {checks[f"B{r}"].value for r in range(3, checks.max_row + 1)
-           if evaluator.cell(nw.CHECK_SHEET, f"G{r}") == "РАСХОЖДЕНИЕ"}
-    return evaluator.cell(nw.CHECK_SHEET, "I3"), bad, evaluator
+    """Вердикт книги офиса (нежилой проект с офисом получает её с 23.10.2026)."""
+    evaluator = ow.evaluate(book)
+    verdict, bad = ow.verdict(evaluator)
+    return verdict, {label for _, label in bad}, evaluator
+
+
+def _row(sheet, label: str) -> int:
+    return next(r for r in range(1, sheet.max_row + 1) if str(sheet[f"A{r}"].value or "").startswith(label))
 
 
 def test_the_nonres_book_counts_the_same_bases() -> None:
     """Книга нежилого проекта — полная смета формулами: статьи проекта от
     площади объектов, генподряд и техзаказчик на СМР объекта, резерв без
-    строки платы за ВРИ; «Сверка» ПРОЙДЕНО. Подделка — объект «под ключ»
+    строки платы за ВРИ; «ПРОВЕРКИ» ПРОЙДЕНО. Подделка — объект «под ключ»
     (прежняя методика) — ловится сверкой."""
     content = _nonres_content()
     book = openpyxl.load_workbook(io.BytesIO(content))
-    sheet = book[nw.COSTS_SHEET]
-    rows = {sheet[f"A{r}"].value: r for r in range(1, nw.FIRST_ROW) if sheet[f"A{r}"].value}
+    sheet = book[ow.CAPEX_SHEET]
     verdict, bad, evaluator = _nonres_check(book)
-    assert verdict == nw.PASSED and not bad
+    assert verdict == ow.PASSED and not bad
     for label in ("ИРД", "Сети", "Генподряд", "Технический заказчик"):
-        assert float(evaluator.cell(nw.COSTS_SHEET, f"E{rows[label]}") or 0) > 0, label
-    building = next(r for label, r in rows.items() if str(label).endswith(": здание"))
-    vri_row = next(r for label, r in rows.items() if str(label).startswith("Плата за смену ВРИ"))
-    reserve_base = sheet[f"B{rows['Резерв']}"].value.lstrip("=").split("+")
-    assert f"E{building}" in reserve_base
-    assert f"E{vri_row}" not in reserve_base
+        assert float(evaluator.cell(ow.CAPEX_SHEET, f"B{_row(sheet, label)}") or 0) > 0, label
+    building = _row(sheet, "Офисы: здание")
+    vri_row = _row(sheet, "Плата за смену ВРИ")
+    reserve = sheet[f"B{_row(sheet, 'Резерв')}"].value
+    assert f"$B${building}" in reserve
+    assert f"$B${vri_row}" not in reserve
 
     tampered = openpyxl.load_workbook(io.BytesIO(content))
-    tampered[nw.INPUTS_SHEET][f"C{nw.O_ROW['turnkey']}"] = nw.YES
+    inputs = tampered[ow.INPUTS_SHEET]
+    inputs[f"B{_row(inputs, 'Ставка «под ключ»')}"] = ow.YES
     verdict, bad, _ = _nonres_check(tampered)
-    assert verdict == nw.FAILED and {"Генподряд", "ИРД"} <= bad
+    assert verdict == ow.FAILED and {"Генподряд", "ИРД"} <= bad
 
 
 # --- Страница: умолчание СМР и подпись ставки ---------------------------------
@@ -307,7 +309,7 @@ def test_the_page_follows_the_project_kind() -> None:
     (`object_smr_rate`) и подпись «основное строительство здания (СМР)»,
     возврат к смешанному — прежние «под ключ»; нежилой проект, сохранённый
     до решения со ставкой «под ключ», при загрузке получает СМР."""
-    from browser import chromium_or_skip, serve
+    from browser import chromium_or_skip, serve, wait_for_result
     from playwright.sync_api import sync_playwright
 
     smr = core.class_base_preset("comfort", "msk", core.PROJECT_KIND_NONRESIDENTIAL)[
@@ -325,7 +327,10 @@ def test_the_page_follows_the_project_kind() -> None:
             errors: list[str] = []
             page.on("pageerror", lambda exc: errors.append(str(exc)))
             page.goto(f"http://127.0.0.1:{PORT}/", wait_until="load")
-            page.wait_for_function("()=>typeof applyProjectKind==='function'", timeout=60000)
+            # Загрузка страницы ещё идёт и после `load`: дождаться её конца, иначе
+            # её окончание перезапишет вводные, поставленные тестом ниже (на CI
+            # загруженный проект оставался со ставкой «под ключ», 175 вместо 118,5).
+            wait_for_result(page)
             page.evaluate("()=>{inputs.project_class='comfort';inputs.offices_enabled=true}")
             page.evaluate("()=>{try{applyProjectKind('nonresidential')}catch(e){}"
                           "renderInputs()}")
@@ -352,21 +357,22 @@ def test_the_page_follows_the_project_kind() -> None:
 
 def test_the_book_shares_the_block_by_construction() -> None:
     """Книга двух объектов: доля общих затрат — стройка объекта к стройке
-    всех, «Сверка» ПРОЙДЕНО; поддельная доля 50/50 краснеет."""
+    всех, «ПРОВЕРКИ» ПРОЙДЕНО; поддельная доля 50/50 краснеет."""
     x, t = _two_objects()
     content, _, meta = core.build_project_workbook(x, t, [], {}, project_name="Два")
     assert meta.get("nonres_book") is True and meta["missing"] == []
     book = openpyxl.load_workbook(io.BytesIO(content))
     verdict, bad, _ = _nonres_check(book)
-    assert verdict == nw.PASSED and not bad
-    sheet = book[nw.COSTS_SHEET]
-    head = next(r for r in range(1, nw.FIRST_ROW)
-                if str(sheet[f"A{r}"].value or "").startswith("Доля объекта в общих затратах"))
+    assert verdict == ow.PASSED and not bad
     tampered = openpyxl.load_workbook(io.BytesIO(content))
-    for row in (head + 1, head + 2):
-        tampered[nw.COSTS_SHEET][f"B{row}"] = 0.5
+    sheet = tampered[ow.CAPEX_SHEET]
+    shares = [r for r in range(1, sheet.max_row + 1)
+              if str(sheet[f"A{r}"].value or "").startswith("Доля «")]
+    assert len(shares) == 2
+    for row in shares:
+        sheet[f"B{row}"] = 0.5
     verdict, bad, _ = _nonres_check(tampered)
-    assert verdict == nw.FAILED and bad
+    assert verdict == ow.FAILED and bad
 
 
 def test_the_nonresidential_rates_are_entered_in_one_block() -> None:
@@ -374,7 +380,7 @@ def test_the_nonresidential_rates_are_entered_in_one_block() -> None:
     (владелец, 07.10.2026). Объект один — «наземная часть», объектов два —
     строка на каждый; в блоке объекта ставки нет; наземной ставки МКД нет;
     подземная подписана гаражом объектов. Смешанный проект — как прежде."""
-    from browser import chromium_or_skip, serve
+    from browser import chromium_or_skip, serve, wait_for_result
     from playwright.sync_api import sync_playwright
 
     probe = """()=>{

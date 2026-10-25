@@ -311,6 +311,7 @@ function objectRefHtml(block,section){
  const t=`<div class="section-title">${escapeHtml(block.title||'')}</div>`;
  if(block.ref==='nonres_financing')return `<div class="card" data-nonres-finance-card hidden>${t}<div class="nonres-finance-box"></div></div>`;
  if(block.ref==='equity_participation')return `<div class="card" data-equity-card hidden>${t}<div class="equity-box"></div></div>`;
+ if(block.ref==='strategy_compare')return `<div class="card" data-strategy-compare-card>${t}<div class="strategy-compare-box"></div></div>`;
  if(block.ref==='goal_seek'){
   const g=section.goal_seek||{};
   return `<div class="card no-print" data-object-goal-seek>${t}`+(g.metric
@@ -354,6 +355,61 @@ function renderObjectReport(r){
  // ящики — и в ящики раздела «Финансирование» этой вёрстки.
  renderNonresFinancing(r);
  renderEquityParticipation(r);
+ renderStrategyCompare(r);
+}
+// «Сравнение стратегий» — блок движка (`strategy_compare_block`): таблица
+// стратегий, вывод и точки, где стратегии сравняются. Страница только
+// печатает. Точки — подбор полным пересчётом модели, поэтому они приходят
+// отдельным запросом после расчёта (`/strategy-compare`), а не с ним.
+let strategyCompareKey='';
+let strategyCompareBlock=null;
+let strategyCompareRound=0;
+// Строка-раздел таблицы («Глазами инвестора…») — на всю ширину.
+function strategySectionRow(row,span){
+ return `<tr class="strategy-section" data-row="${escapeHtml(row.key||'')}"><td colspan="${span}">${escapeHtml(row.label||'')}</td></tr>`;
+}
+function strategyCompareHtml(block){
+ return (block.items||[]).map(item=>{
+  const cols=item.columns||[];
+  const best=i=>!!(cols[i]&&cols[i].best);
+  return `<div class="strategy-compare" data-product="${escapeHtml(item.product||'')}">${item.caption?`<div class="strategy-compare-caption">${escapeHtml(item.caption)}</div>`:''}<p class="strategy-compare-lead">${escapeHtml(item.lead||'')}</p><div class="scroll"><table class="strategy-compare-table"><thead><tr><th>Показатель</th>${
+   cols.map(c=>`<th data-strategy="${escapeHtml(c.key||'')}"${c.best?' class="best"':''}>${escapeHtml(c.label||'')}${
+    (c.tags||[]).map(tag=>`<br><span class="strategy-tag${tag==='лучшая по NPV'?' best-tag':''}">${escapeHtml(tag)}</span>`).join('')}</th>`).join('')}</tr></thead><tbody>${
+   (item.rows||[]).map(row=>row.section?strategySectionRow(row,cols.length+1):`<tr data-row="${escapeHtml(row.key||'')}"><td>${escapeHtml(row.label||'')}</td>${
+    (row.cells||[]).map((cell,i)=>`<td${best(i)?' class="best"':''}>${row.strong&&best(i)?'<b>'+escapeHtml(cell)+'</b>':escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>${
+   (item.points||[]).length?`<div class="strategy-points-title">${escapeHtml(item.points_title||'')}</div><ul class="strategy-points">${
+    item.points.map(p=>`<li>${escapeHtml(p.text||'')}</li>`).join('')}</ul>`:''}</div>`;
+ }).join('')+`<div class="strategy-compare-stamp">${escapeHtml(block.stamp||'')}</div>`;
+}
+function paintStrategyCompare(block){
+ document.querySelectorAll('[data-strategy-compare-card]').forEach(card=>{card.hidden=!block});
+ document.querySelectorAll('.strategy-compare-box').forEach(box=>{box.innerHTML=block?strategyCompareHtml(block):''});
+}
+function renderStrategyCompare(r){
+ const block=(r||{}).strategy_compare||null;
+ if(!block){strategyCompareKey='';strategyCompareBlock=null;paintStrategyCompare(null);return}
+ const key=JSON.stringify([inputs,tep,rates,phasing]);
+ // Те же вводные — тот же подбор: перерисовка отчёта его не повторяет и
+ // показывает то, что уже пришло (или ждёт ответа).
+ if(key===strategyCompareKey){paintStrategyCompare(strategyCompareBlock||block);return}
+ strategyCompareKey=key;strategyCompareBlock=null;
+ paintStrategyCompare(block);
+ const round=++strategyCompareRound;
+ fetch('/strategy-compare',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey||''})})
+  .then(response=>response.json().then(data=>({ok:response.ok,data})))
+  .then(({ok,data})=>{
+   if(round!==strategyCompareRound)return;
+   if(ok&&(data.items||[]).length){strategyCompareBlock=data;paintStrategyCompare(data);return}
+   const why=typeof (data||{}).detail==='string'?data.detail:'сервер не ответил';
+   strategyCompareBlock={...block,stamp:'Точки, где стратегии сравняются, не подобраны: '+why};
+   paintStrategyCompare(strategyCompareBlock);
+  })
+  .catch(error=>{
+   if(round!==strategyCompareRound)return;
+   strategyCompareBlock={...block,stamp:'Точки, где стратегии сравняются, не подобраны: '+String(error&&error.message||error)};
+   paintStrategyCompare(strategyCompareBlock);
+  });
 }
 // Разделы меню отчёта: объектная вёрстка — список движка, жилая — прежний.
 function reportTocSections(r){
@@ -691,8 +747,13 @@ async function loginViaTelegram(statusEl){
   // знает, что окно заблокировано (замечание владельца, 18.08.2026).
   const opened=window.open(d.link,'_blank');
   if(statusEl){
+   // Код для сверки: бот покажет тот же и спросит «войти?». Без сверки
+   // человек подтвердил бы и вход, начатый чужим браузером по присланной ссылке.
+   const shown=String(d.display_code||'').replace(/[^0-9A-Za-z-]/g,'');
    statusEl.innerHTML=(opened?'Подтвердите вход в Telegram и вернитесь на эту вкладку. '
                              :'Браузер не дал открыть окно бота — откройте по ссылке. ')+
+    (shown?'<div class="login-code">Код входа: <b>'+shown+'</b>. Бот покажет такой же код — '+
+     'нажимайте «Да», только если коды совпадают.</div>':'')+
     '<a href="'+encodeURI(d.link)+'" target="_blank" rel="noopener">Открыть бота</a>'+
     // На компьютере без Telegram ссылка открывает страницу «поставьте
     // приложение» — тупик. QR переносит тот же код на телефон; если сервер

@@ -15,7 +15,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-import developaid_v2_demo as demo
 import developaid_v2_form as form
 import developaid_v2_result as project_result
 
@@ -288,31 +287,6 @@ def _drop_get_routes(app: FastAPI, paths: set[str]) -> None:
     ]
 
 
-def _promote_exact_get(app: FastAPI, exact_path: str, before_path: str) -> None:
-    """Put an exact route before an earlier dynamic route that would catch it."""
-    exact_index = next(
-        (i for i, route in enumerate(app.router.routes)
-         if getattr(route, "path", None) == exact_path
-         and "GET" in set(getattr(route, "methods", ()) or ())),
-        None,
-    )
-    before_index = next(
-        (i for i, route in enumerate(app.router.routes)
-         if getattr(route, "path", None) == before_path
-         and "GET" in set(getattr(route, "methods", ()) or ())),
-        None,
-    )
-    if exact_index is None or before_index is None or exact_index < before_index:
-        return
-    route = app.router.routes.pop(exact_index)
-    before_index = next(
-        i for i, candidate in enumerate(app.router.routes)
-        if getattr(candidate, "path", None) == before_path
-        and "GET" in set(getattr(candidate, "methods", ()) or ())
-    )
-    app.router.routes.insert(before_index, route)
-
-
 def install(app: FastAPI, core: Any) -> None:
     @app.get("/v2/assets/upgrade.js", include_in_schema=False)
     async def upgrade_script() -> FileResponse:
@@ -364,7 +338,6 @@ def install(app: FastAPI, core: Any) -> None:
             "subtitle": "Умолчания движка · без демонстрационной предустановки",
             "demo": False,
         }]
-        catalog.extend(demo.list_scenarios())
         return JSONResponse(catalog, headers=_NO_STORE)
 
     @app.get("/api/v2/projects/new")
@@ -378,6 +351,3 @@ def install(app: FastAPI, core: Any) -> None:
             raise HTTPException(500, str(locate(exc))[:300]) from exc
         return JSONResponse(result, headers=_NO_STORE)
 
-    # `/api/v2/projects/{slug}` was registered by the stock module first and
-    # would otherwise treat `new` as a demo slug. Exact path wins by order.
-    _promote_exact_get(app, "/api/v2/projects/new", "/api/v2/projects/{slug}")

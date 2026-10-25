@@ -40,7 +40,7 @@ jobs:
   merge:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Нужны обе стороны: база, по которой считается номер, и ветка, в
           # которую он пишется.

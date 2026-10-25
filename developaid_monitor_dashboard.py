@@ -135,204 +135,421 @@ class _Grid:
         return iter(self.rows[min_row - 1:stop])
 
 
+# Финансовый baseline приходит одной из двух книг: финкнигой банка (лист
+# «Расчет стоимости строительства» с колонками утверждённой модели и средств
+# на завершение) или нашей финмоделью (лист «cf_1_new»: колонки «ИТОГО»,
+# «ФАКТ», «ПЛАН» и помесячный план; владелец, 23.10.2026: «бюджет достройки
+# из вкладки cf_1_new», «загрузить финкнигу я не могу — он не распознаёт лист
+# РСС, а его там и нет»). Листы — явным списком; нет ни одного — отказ
+# называет оба.
+FINANCE_BOOK_SHEET = "Расчет стоимости строительства"
+FINANCE_MODEL_SHEET = "cf_1_new"
+FINANCE_SHEETS = (FINANCE_BOOK_SHEET, FINANCE_MODEL_SHEET)
+# Лист финмодели: коды статей в колонке C, названия в D, суммы в тысячах
+# рублей; резерв — строка «2.2.11 Резервы».
+_FM_CODE_COL, _FM_NAME_COL = 3, 4
+_FM_THOUSANDS = 1000.0
+_FM_RESERVE_CODE = "2.2.11"
+# Сколько финмодель берёт у банка: строка выборки проектного финансирования.
+# Остальные расходы модель закрывает продажами после раскрытия эскроу и
+# своими деньгами, и у банка на них лимит не просят (владелец, 24.10.2026:
+# «по финмодели посчитали, сколько надо денег, вычитаем всё, что может дать
+# банк, — это и есть потребность в допфинансировании»).
+_FM_CREDIT_LABEL = "Поступления кредитов (ПФ)"
+# Разделы финмодели, которые банк финансирует по главам сметы (владелец,
+# 24.10.2026: «сколько надо ещё денег в банке взять, чтобы достроить и продать
+# (2–3 главы)»; «тогда по модели»). Явная карта: раздел → глава, подпись.
+# АХР и налоги (2.4) банк не финансирует, земля (2.1) — глава 1, в вопрос
+# владельца не входит.
+# Подпись — именительный и винительный падеж («на стройку», «на коммерцию»).
+_FM_SECTIONS = {"2.2": ("2", "стройка", "стройку"), "2.3": ("3", "коммерция", "коммерцию")}
+# «Остаток к выполнению на 01.04.27» финкниги — для финмодели потребность с
+# этого же месяца.
+_TAIL_FROM = datetime.date(2027, 4, 1)
+
+
+def finance_sheets_reason() -> str:
+    return ("в книге нет ни листа «Расчет стоимости строительства» (финкнига), "
+            "ни листа «cf_1_new» (финмодель)")
+
+
 def _read_finance_baseline(path: Path) -> dict[str, Any]:
     from openpyxl import load_workbook
 
     wb = load_workbook(path, read_only=True, data_only=True)
     try:
-        if "Расчет стоимости строительства" not in wb.sheetnames:
-            return {"known": False, "reason": "нет листа «Расчет стоимости строительства»"}
-        ws = _Grid(wb["Расчет стоимости строительства"])
-        approved_hdr = _find_header(ws, "Утвержденная фин.модель проекта")
-        need_hdr = _find_header(ws, "Средства на завершение строительства") or _find_header(
-            ws, "Средства на завершение согласно бюджету"
-        )
-        paid_hdr = _find_header(ws, "Оплачено по состояни")
-        programme_hdr = _find_header(ws, "производств")
-        tail_hdr = _find_header(ws, "Остаток к выполнению на 01.04.27")
-        rss_limit_hdr = _find_header(ws, "Общая сметная стоимость")
-        if not approved_hdr or not need_hdr:
-            return {"known": False, "reason": "не найдены колонки утвержденной модели/остатка"}
-
-        approved_col = approved_hdr[1]
-        need_col = need_hdr[1]
-        paid_col = paid_hdr[1] if paid_hdr else 8
-        rss_limit_col = rss_limit_hdr[1] if rss_limit_hdr else 4
-        programme_col = programme_hdr[1] if programme_hdr else 10
-        tail_col = tail_hdr[1] if tail_hdr else 20
-
-        total_row = None
-        reserve_rows: list[int] = []
-        source_rows: list[dict[str, Any]] = []
-        stack: list[dict[str, Any]] = []
-        for r, values in enumerate(ws.iter_rows(values_only=True), 1):
-            code = _book_code(values[0] if values else None)
-            article = _norm(values[1] if len(values) > 1 else None)
-            if total_row is None and "всего инвестиционные расходы глава 2, 3" in article:
-                total_row = r
-            if code in _RESERVE_CODES:
-                reserve_rows.append(r)
-            if not code:
-                continue
-            depth = code.count(".") + 1
-            while stack and stack[-1]["depth"] >= depth:
-                stack.pop()
-            row = {
-                "row": r,
-                "code": code,
-                "depth": depth,
-                "parent": stack[-1] if stack else None,
-                "has_children": False,
-            }
-            if stack:
-                stack[-1]["has_children"] = True
-            source_rows.append(row)
-            stack.append(row)
-
-        if total_row is None:
-            return {"known": False, "reason": "не найдена итоговая строка глав 2+3"}
-
-        # Глава 1 РСС тоже деньги стройки (владелец, 21.10.2026: «она тоже
-        # должна учитываться, в мониторе просто упор был на 2–3 главы»). Итог
-        # книги — «глава 2, 3», и глава 1 прибавляется своей строкой «1». Нет
-        # такой строки — главы остаются 2–3 и для РСС тоже: оплаченное по
-        # главе 1 против бюджета без неё дало бы ложный дефицит.
-        #
-        # Строкой главы считаются её верхние строки: «1», а без неё — «1.1»,
-        # «1.2»…, у которых нет старшей строки главы 1 в книге. Нет ни одной —
-        # причина уходит на экран и в сводку, а не подпись «2–3» молча.
-        chapter_one_codes = {meta["code"] for meta in source_rows
-                             if meta["code"] == "1" or meta["code"].startswith("1.")}
-        chapter_one = [meta["row"] for meta in source_rows
-                       if meta["code"] in chapter_one_codes
-                       and not any(meta["code"].startswith(other + ".")
-                                   for other in chapter_one_codes)]
-        total_rows = [total_row] + chapter_one
-        chapters = CHAPTERS if chapter_one else ("2", "3")
-        chapters_reason = "" if chapter_one else (
-            "без главы 1: в финансовой книге (лист «Расчет стоимости строительства») "
-            "нет строки главы 1")
-
-        def total(col: int) -> float:
-            return sum(actuals._money(ws.cell(r, col).value) for r in total_rows)
-
-        approved = total(approved_col)
-        # Утверждённый бюджет по главам — для плиток сводки (владелец,
-        # 22.10.2026: «лучше писать из них по 2 главе и по 3 главе столько-то»).
-        # Глава 1 — её верхние строки, главы 2 и 3 — строки с кодом «2» и «3».
-        approved_by_chapter: dict[str, float] = {}
-        if chapter_one:
-            approved_by_chapter["1"] = sum(actuals._money(ws.cell(r, approved_col).value)
-                                           for r in chapter_one)
-        for meta in source_rows:
-            if meta["code"] in ("2", "3"):
-                approved_by_chapter[meta["code"]] = actuals._money(
-                    ws.cell(meta["row"], approved_col).value)
-        completion_need = total(need_col)
-        paid_at_baseline = total(paid_col)
-        tail_after_apr = total(tail_col)
-
-        reserve = 0.0
-        reserve_parts: dict[str, float] = {}
-        reserve_names: dict[str, str] = {}
-        # Резерв ищется по трём колонкам по убыванию доверия: «на завершение
-        # согласно бюджету», «согласно лимитам», «Общая сметная стоимость
-        # Увеличенная». Первоначальная смета — последней: на Кутузове бюджетная
-        # колонка резервов пуста, и запасной ход на «первоначальную» терял
-        # 2.8 целиком и показывал 209,7 млн вместо 306,1.
-        limits_hdr = _find_header(ws, "Средства на завершение согласно лимитам")
-        increased_hdr = _find_header(ws, "Увеличенная")
-        for r in reserve_rows:
-            code = actuals._code(ws.cell(r, 1).value)
-            amount = 0.0
-            for col in (need_col,
-                        limits_hdr[1] if limits_hdr else None,
-                        increased_hdr[1] if increased_hdr else None,
-                        rss_limit_col):
-                if col is None:
-                    continue
-                amount = actuals._money(ws.cell(r, col).value)
-                if amount > 0:
-                    break
-            reserve += max(0.0, amount)
-            reserve_parts[code] = max(0.0, amount)
-            reserve_names[code] = str(ws.cell(r, 2).value or "").strip()
-
-        month_row = (programme_hdr[0] + 1) if programme_hdr else 9
-        month_columns: list[tuple[int, datetime.date]] = []
-        year = 2026
-        previous_month = 0
-        for c in range(programme_col, min(ws.max_column, programme_col + 18) + 1):
-            month, year, previous_month = _month_value(
-                ws.cell(month_row, c).value, year, previous_month
-            )
-            if month:
-                month_columns.append((c, month))
-
-        monthly_total: dict[str, float] = {}
-        for c, month in month_columns:
-            monthly_total[month.isoformat()] = total(c)
-
-        # Only terminal rows are financing buckets. Parent rows (2.2, 2.2.2,
-        # 2.3...) repeat the same programme and would double-count need.
-        #
-        # Статьи берутся по ОБЕИМ главам итоговой строки и независимо от того,
-        # стоит ли у статьи производственная программа. Прежде сюда попадала
-        # только глава 2 и только статьи с программой — а «Средства на
-        # завершение», утверждённая модель и оплаченное считались по главам
-        # 2–3. «Есть: остаток лимитов + резерв» выходило 1,46 млрд ₽ против
-        # 1,66 у колонки банка, и 200 млн разницы были главой 3 и статьями без
-        # программы, а не чьим-то счётом (владелец, 01.09.2026: «Это точно 2
-        # глава? Или в разделе РСС 2, а в дефиците 2 и 3?»). У статьи без
-        # программы потребность нулевая, а лимит — настоящий: это источник.
-        articles: dict[str, dict[str, Any]] = {}
-        for meta in source_rows:
-            code = meta["code"]
-            chapter = code.split(".")[0]
-            if meta["has_children"] or chapter not in chapters or code in _RESERVE_CODES:
-                continue
-            r = meta["row"]
-            month_need = {
-                month.isoformat(): max(0.0, actuals._money(ws.cell(r, c).value))
-                for c, month in month_columns
-            }
-            limit = actuals._money(ws.cell(r, rss_limit_col).value)
-            paid_here = actuals._money(ws.cell(r, paid_col).value)
-            if not any(month_need.values()) and limit <= 0 and paid_here <= 0:
-                continue
-            item = articles.setdefault(code, {
-                "code": code,
-                "chapter": chapter,
-                "name": str(ws.cell(r, 2).value or "").strip(),
-                "rss_limit": 0.0,
-                "paid_at_baseline": 0.0,
-                "has_programme": False,
-                "monthly_need": {month.isoformat(): 0.0 for _, month in month_columns},
-            })
-            item["rss_limit"] += limit
-            item["paid_at_baseline"] += paid_here
-            item["has_programme"] = item["has_programme"] or any(month_need.values())
-            for month, amount in month_need.items():
-                item["monthly_need"][month] = item["monthly_need"].get(month, 0.0) + amount
-
-        return {
-            "known": True,
-            "source": path.name,
-            "approved": approved,
-            "completion_need_at_baseline": completion_need,
-            "paid_at_baseline": paid_at_baseline,
-            "reserve": reserve,
-            "reserve_parts": reserve_parts,
-            "reserve_names": reserve_names,
-            "approved_by_chapter": approved_by_chapter,
-            "monthly_need": monthly_total,
-            "tail_after_apr": tail_after_apr,
-            "articles": articles,
-            "chapters": list(chapters),
-            "chapters_reason": chapters_reason,
-        }
+        if FINANCE_BOOK_SHEET in wb.sheetnames:
+            return _read_finance_book(wb, path)
+        if FINANCE_MODEL_SHEET in wb.sheetnames:
+            return _read_finance_model(wb, path)
+        return {"known": False, "reason": finance_sheets_reason()}
     finally:
         wb.close()
+
+
+def _read_finance_model(wb: Any, path: Path) -> dict[str, Any]:
+    """Финмодель как финансовый baseline: лист «cf_1_new» + карта «статьи_БДДС».
+
+    Утверждённый бюджет — «ИТОГО», оплачено — «ФАКТ», средства на завершение —
+    «ПЛАН», помесячная потребность — колонки плана. Статьи финмодели несут
+    коды БДДС (2.2.2.3 «Подземная часть»), а лимиты, оплаты и плитки сводки
+    живут по главам сметы РСС, поэтому глава статьи берётся из карты
+    «статьи_БДДС» той же книги: по строкам карты под статьёй (2.2.2.3.x → код
+    РСС → глава). Статья, чьи строки ведут в разные главы (2.3.4 «Расходы на
+    продажу» — 3.2, 3.4 и 2.6), идёт в главу большинства строк, и это
+    названо в причине; статья без строк в карте — тоже.
+    """
+    from collections import Counter
+
+    ws = _Grid(wb[FINANCE_MODEL_SHEET])
+    header = None
+    for r, values in enumerate(ws.iter_rows(values_only=True), 1):
+        labels = {_norm(v): c for c, v in enumerate(values, 1) if _norm(v)}
+        if {"итого", "факт", "план"} <= set(labels):
+            header = (r, labels["итого"], labels["факт"], labels["план"])
+            break
+    if header is None:
+        return {"known": False,
+                "reason": "в листе «cf_1_new» не найдена шапка «ИТОГО | ФАКТ | ПЛАН»"}
+    header_row, total_col, fact_col, plan_col = header
+    kind_row = header_row - 1
+    month_columns: list[tuple[int, datetime.date]] = []
+    for c in range(plan_col + 1, ws.max_column + 1):
+        if _norm(ws.cell(kind_row, c).value) != "план":
+            continue
+        month, _, _ = _month_value(ws.cell(header_row, c).value, 0, 0)
+        if month:
+            month_columns.append((c, month))
+
+    try:
+        crosswalk = actuals.read_article_crosswalk(path)["rows"]
+    except KeyError:
+        return {"known": False,
+                "reason": "в финмодели нет листа «статьи_БДДС» — статьи листа «cf_1_new» "
+                          "нельзя разложить по главам сметы РСС"}
+
+    rows: list[dict[str, Any]] = []
+    stack: list[dict[str, Any]] = []
+    credit_plan = None
+    for r in range(header_row + 1, ws.max_row + 1):
+        if _norm(ws.cell(r, _FM_NAME_COL).value) == _norm(_FM_CREDIT_LABEL) and credit_plan is None:
+            credit_plan = {
+                "label": _FM_CREDIT_LABEL,
+                "total": actuals._money(ws.cell(r, total_col).value) * _FM_THOUSANDS,
+                "drawn": actuals._money(ws.cell(r, fact_col).value) * _FM_THOUSANDS,
+                "plan": actuals._money(ws.cell(r, plan_col).value) * _FM_THOUSANDS,
+                "monthly": {month.isoformat(): max(0.0, actuals._money(ws.cell(r, c).value)
+                                                  * _FM_THOUSANDS)
+                            for c, month in month_columns},
+            }
+        code = actuals._code(ws.cell(r, _FM_CODE_COL).value)
+        if not code or not code.startswith("2."):
+            continue
+        depth = code.count(".") + 1
+        while stack and stack[-1]["depth"] >= depth:
+            stack.pop()
+        row = {"row": r, "code": code, "depth": depth, "has_children": False,
+               "name": str(ws.cell(r, _FM_NAME_COL).value or "").strip()}
+        if stack:
+            stack[-1]["has_children"] = True
+        rows.append(row)
+        stack.append(row)
+    if not rows:
+        return {"known": False,
+                "reason": "в листе «cf_1_new» нет строк расходов с кодами «2.…» в колонке C"}
+
+    def money(r: int, c: int) -> float:
+        return actuals._money(ws.cell(r, c).value) * _FM_THOUSANDS
+
+    def chapter_of(code: str) -> tuple[str, bool]:
+        """Глава статьи по карте и признак «строки карты ведут в разные главы»."""
+        votes = Counter(
+            item["estimate_code"].split(".")[0]
+            for item in crosswalk
+            if item["estimate_code"]
+            and (item["bdds_code"] == code or item["bdds_code"].startswith(code + ".")))
+        if not votes:
+            return "", False
+        best = max(sorted(votes), key=lambda chapter: votes[chapter])
+        return best, len(votes) > 1
+
+    approved = completion_need = paid_at_baseline = 0.0
+    approved_by_chapter: dict[str, float] = {}
+    monthly_total: dict[str, float] = {}
+    articles: dict[str, dict[str, Any]] = {}
+    reserve = 0.0
+    reserve_parts: dict[str, float] = {}
+    reserve_names: dict[str, str] = {}
+    mixed: list[str] = []
+    unmapped: list[str] = []
+    sections: dict[str, dict[str, Any]] = {}
+    for meta in rows:
+        if meta["code"] in _FM_SECTIONS:
+            chapter, label, label_acc = _FM_SECTIONS[meta["code"]]
+            r = meta["row"]
+            sections[chapter] = {
+                "code": meta["code"], "chapter": chapter, "label": label, "label_acc": label_acc,
+                "name": meta["name"],
+                "total": money(r, total_col), "paid": money(r, fact_col), "plan": money(r, plan_col),
+                "monthly": {month.isoformat(): max(0.0, money(r, c)) for c, month in month_columns},
+            }
+        if meta["has_children"]:
+            continue
+        r, code = meta["row"], meta["code"]
+        total, paid, need = money(r, total_col), money(r, fact_col), money(r, plan_col)
+        chapter, is_mixed = chapter_of(code)
+        if is_mixed:
+            mixed.append(code)
+        if not chapter:
+            unmapped.append(code)
+        approved += total
+        completion_need += need
+        paid_at_baseline += paid
+        if chapter:
+            approved_by_chapter[chapter] = approved_by_chapter.get(chapter, 0.0) + total
+        if code == _FM_RESERVE_CODE:
+            reserve += max(0.0, need)
+            reserve_parts[code] = max(0.0, need)
+            reserve_names[code] = meta["name"]
+            continue
+        month_need = {month.isoformat(): max(0.0, money(r, c)) for c, month in month_columns}
+        for month, amount in month_need.items():
+            monthly_total[month] = monthly_total.get(month, 0.0) + amount
+        if not any(month_need.values()) and total <= 0 and paid <= 0:
+            continue
+        articles[code] = {
+            "code": code,
+            "chapter": chapter,
+            "name": meta["name"],
+            # Лимит статьи — её бюджет по финмодели: отдельной сметной колонки
+            # у финмодели нет, и ИТОГО = ФАКТ + ПЛАН по построению.
+            "rss_limit": total,
+            "paid_at_baseline": paid,
+            "has_programme": any(month_need.values()),
+            "monthly_need": month_need,
+        }
+    chapters = tuple(c for c in CHAPTERS if c in approved_by_chapter)
+    reasons = []
+    if mixed:
+        reasons.append("статьи " + ", ".join(mixed)
+                       + " ведут по карте «статьи_БДДС» в разные главы и отнесены "
+                         "к главе большинства строк")
+    if unmapped:
+        reasons.append("статьи " + ", ".join(unmapped)
+                       + " в карте «статьи_БДДС» не найдены и в главы не вошли")
+    return {
+        "known": True,
+        "kind": "finmodel",
+        "source": path.name,
+        "approved": approved,
+        "completion_need_at_baseline": completion_need,
+        "paid_at_baseline": paid_at_baseline,
+        "reserve": reserve,
+        "reserve_parts": reserve_parts,
+        "reserve_names": reserve_names,
+        "approved_by_chapter": approved_by_chapter,
+        "monthly_need": monthly_total,
+        "tail_after_apr": sum(v for m, v in monthly_total.items()
+                              if monitor._day(m) and monitor._day(m) >= _TAIL_FROM),
+        "articles": articles,
+        "chapters": list(chapters),
+        "chapters_reason": "; ".join(reasons),
+        "credit_plan": credit_plan,
+        "sections": sections,
+    }
+
+
+def _read_finance_book(wb: Any, path: Path) -> dict[str, Any]:
+    """Финкнига банка: лист «Расчет стоимости строительства»."""
+    ws = _Grid(wb[FINANCE_BOOK_SHEET])
+    approved_hdr = _find_header(ws, "Утвержденная фин.модель проекта")
+    need_hdr = _find_header(ws, "Средства на завершение строительства") or _find_header(
+        ws, "Средства на завершение согласно бюджету"
+    )
+    paid_hdr = _find_header(ws, "Оплачено по состояни")
+    programme_hdr = _find_header(ws, "производств")
+    tail_hdr = _find_header(ws, "Остаток к выполнению на 01.04.27")
+    rss_limit_hdr = _find_header(ws, "Общая сметная стоимость")
+    if not approved_hdr or not need_hdr:
+        return {"known": False, "reason": "не найдены колонки утвержденной модели/остатка"}
+
+    approved_col = approved_hdr[1]
+    need_col = need_hdr[1]
+    paid_col = paid_hdr[1] if paid_hdr else 8
+    rss_limit_col = rss_limit_hdr[1] if rss_limit_hdr else 4
+    programme_col = programme_hdr[1] if programme_hdr else 10
+    tail_col = tail_hdr[1] if tail_hdr else 20
+
+    total_row = None
+    reserve_rows: list[int] = []
+    source_rows: list[dict[str, Any]] = []
+    stack: list[dict[str, Any]] = []
+    for r, values in enumerate(ws.iter_rows(values_only=True), 1):
+        code = _book_code(values[0] if values else None)
+        article = _norm(values[1] if len(values) > 1 else None)
+        if total_row is None and "всего инвестиционные расходы глава 2, 3" in article:
+            total_row = r
+        if code in _RESERVE_CODES:
+            reserve_rows.append(r)
+        if not code:
+            continue
+        depth = code.count(".") + 1
+        while stack and stack[-1]["depth"] >= depth:
+            stack.pop()
+        row = {
+            "row": r,
+            "code": code,
+            "depth": depth,
+            "parent": stack[-1] if stack else None,
+            "has_children": False,
+        }
+        if stack:
+            stack[-1]["has_children"] = True
+        source_rows.append(row)
+        stack.append(row)
+
+    if total_row is None:
+        return {"known": False, "reason": "не найдена итоговая строка глав 2+3"}
+
+    # Глава 1 РСС тоже деньги стройки (владелец, 21.10.2026: «она тоже
+    # должна учитываться, в мониторе просто упор был на 2–3 главы»). Итог
+    # книги — «глава 2, 3», и глава 1 прибавляется своей строкой «1». Нет
+    # такой строки — главы остаются 2–3 и для РСС тоже: оплаченное по
+    # главе 1 против бюджета без неё дало бы ложный дефицит.
+    #
+    # Строкой главы считаются её верхние строки: «1», а без неё — «1.1»,
+    # «1.2»…, у которых нет старшей строки главы 1 в книге. Нет ни одной —
+    # причина уходит на экран и в сводку, а не подпись «2–3» молча.
+    chapter_one_codes = {meta["code"] for meta in source_rows
+                         if meta["code"] == "1" or meta["code"].startswith("1.")}
+    chapter_one = [meta["row"] for meta in source_rows
+                   if meta["code"] in chapter_one_codes
+                   and not any(meta["code"].startswith(other + ".")
+                               for other in chapter_one_codes)]
+    total_rows = [total_row] + chapter_one
+    chapters = CHAPTERS if chapter_one else ("2", "3")
+    chapters_reason = "" if chapter_one else (
+        "без главы 1: в финансовой книге (лист «Расчет стоимости строительства») "
+        "нет строки главы 1")
+
+    def total(col: int) -> float:
+        return sum(actuals._money(ws.cell(r, col).value) for r in total_rows)
+
+    approved = total(approved_col)
+    # Утверждённый бюджет по главам — для плиток сводки (владелец,
+    # 22.10.2026: «лучше писать из них по 2 главе и по 3 главе столько-то»).
+    # Глава 1 — её верхние строки, главы 2 и 3 — строки с кодом «2» и «3».
+    approved_by_chapter: dict[str, float] = {}
+    if chapter_one:
+        approved_by_chapter["1"] = sum(actuals._money(ws.cell(r, approved_col).value)
+                                       for r in chapter_one)
+    for meta in source_rows:
+        if meta["code"] in ("2", "3"):
+            approved_by_chapter[meta["code"]] = actuals._money(
+                ws.cell(meta["row"], approved_col).value)
+    completion_need = total(need_col)
+    paid_at_baseline = total(paid_col)
+    tail_after_apr = total(tail_col)
+
+    reserve = 0.0
+    reserve_parts: dict[str, float] = {}
+    reserve_names: dict[str, str] = {}
+    # Резерв ищется по трём колонкам по убыванию доверия: «на завершение
+    # согласно бюджету», «согласно лимитам», «Общая сметная стоимость
+    # Увеличенная». Первоначальная смета — последней: на Кутузове бюджетная
+    # колонка резервов пуста, и запасной ход на «первоначальную» терял
+    # 2.8 целиком и показывал 209,7 млн вместо 306,1.
+    limits_hdr = _find_header(ws, "Средства на завершение согласно лимитам")
+    increased_hdr = _find_header(ws, "Увеличенная")
+    for r in reserve_rows:
+        code = actuals._code(ws.cell(r, 1).value)
+        amount = 0.0
+        for col in (need_col,
+                    limits_hdr[1] if limits_hdr else None,
+                    increased_hdr[1] if increased_hdr else None,
+                    rss_limit_col):
+            if col is None:
+                continue
+            amount = actuals._money(ws.cell(r, col).value)
+            if amount > 0:
+                break
+        reserve += max(0.0, amount)
+        reserve_parts[code] = max(0.0, amount)
+        reserve_names[code] = str(ws.cell(r, 2).value or "").strip()
+
+    month_row = (programme_hdr[0] + 1) if programme_hdr else 9
+    month_columns: list[tuple[int, datetime.date]] = []
+    year = 2026
+    previous_month = 0
+    for c in range(programme_col, min(ws.max_column, programme_col + 18) + 1):
+        month, year, previous_month = _month_value(
+            ws.cell(month_row, c).value, year, previous_month
+        )
+        if month:
+            month_columns.append((c, month))
+
+    monthly_total: dict[str, float] = {}
+    for c, month in month_columns:
+        monthly_total[month.isoformat()] = total(c)
+
+    # Only terminal rows are financing buckets. Parent rows (2.2, 2.2.2,
+    # 2.3...) repeat the same programme and would double-count need.
+    #
+    # Статьи берутся по ОБЕИМ главам итоговой строки и независимо от того,
+    # стоит ли у статьи производственная программа. Прежде сюда попадала
+    # только глава 2 и только статьи с программой — а «Средства на
+    # завершение», утверждённая модель и оплаченное считались по главам
+    # 2–3. «Есть: остаток лимитов + резерв» выходило 1,46 млрд ₽ против
+    # 1,66 у колонки банка, и 200 млн разницы были главой 3 и статьями без
+    # программы, а не чьим-то счётом (владелец, 01.09.2026: «Это точно 2
+    # глава? Или в разделе РСС 2, а в дефиците 2 и 3?»). У статьи без
+    # программы потребность нулевая, а лимит — настоящий: это источник.
+    articles: dict[str, dict[str, Any]] = {}
+    for meta in source_rows:
+        code = meta["code"]
+        chapter = code.split(".")[0]
+        if meta["has_children"] or chapter not in chapters or code in _RESERVE_CODES:
+            continue
+        r = meta["row"]
+        month_need = {
+            month.isoformat(): max(0.0, actuals._money(ws.cell(r, c).value))
+            for c, month in month_columns
+        }
+        limit = actuals._money(ws.cell(r, rss_limit_col).value)
+        paid_here = actuals._money(ws.cell(r, paid_col).value)
+        if not any(month_need.values()) and limit <= 0 and paid_here <= 0:
+            continue
+        item = articles.setdefault(code, {
+            "code": code,
+            "chapter": chapter,
+            "name": str(ws.cell(r, 2).value or "").strip(),
+            "rss_limit": 0.0,
+            "paid_at_baseline": 0.0,
+            "has_programme": False,
+            "monthly_need": {month.isoformat(): 0.0 for _, month in month_columns},
+        })
+        item["rss_limit"] += limit
+        item["paid_at_baseline"] += paid_here
+        item["has_programme"] = item["has_programme"] or any(month_need.values())
+        for month, amount in month_need.items():
+            item["monthly_need"][month] = item["monthly_need"].get(month, 0.0) + amount
+
+    return {
+        "known": True,
+        "source": path.name,
+        "approved": approved,
+        "completion_need_at_baseline": completion_need,
+        "paid_at_baseline": paid_at_baseline,
+        "reserve": reserve,
+        "reserve_parts": reserve_parts,
+        "reserve_names": reserve_names,
+        "approved_by_chapter": approved_by_chapter,
+        "monthly_need": monthly_total,
+        "tail_after_apr": tail_after_apr,
+        "articles": articles,
+        "chapters": list(chapters),
+        "chapters_reason": chapters_reason,
+    }
 
 
 # Главы РСС, которые считаются деньгами стройки, — если финансовая книга
@@ -758,8 +975,30 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     current = _rss_ch23(estimate, chapters)
     paid = _paid_in_chapters(rss, estimate, chapters)
     paid_actual = paid["total"]
-    paid_delta = max(0.0, paid_actual - float(baseline["paid_at_baseline"] or 0.0))
-    remaining_need = max(0.0, float(baseline["completion_need_at_baseline"] or 0.0) - paid_delta)
+    finmodel = baseline.get("kind") == "finmodel"
+    sections = baseline.get("sections") if finmodel else None
+    if finmodel and not all(ch in (sections or {}) for ch in _FM_BANK_CHAPTERS):
+        wanted = ", ".join(f"«{code}»" for code in _FM_SECTIONS)
+        return {
+            "known": False,
+            "reason": f"в листе «cf_1_new» нет строк разделов {wanted} — потребность "
+                      "на стройку и коммерцию не прочитать",
+            "source": baseline.get("source"),
+        }
+    if finmodel:
+        # Сколько нужно на стройку и коммерцию — план разделов финмодели с
+        # месяца среза; тот же ряд идёт в водопад против остатка лимита
+        # глав 2–3 сметы.
+        cut_month = cut.replace(day=1)
+        remaining_need = sum(
+            float(amount or 0.0)
+            for ch in _FM_BANK_CHAPTERS
+            for month, amount in (sections[ch].get("monthly") or {}).items()
+            if (monitor._day(month) or cut_month) >= cut_month)
+    else:
+        paid_delta = max(0.0, paid_actual - float(baseline["paid_at_baseline"] or 0.0))
+        remaining_need = max(0.0, float(baseline["completion_need_at_baseline"] or 0.0)
+                             - paid_delta)
 
     articles = baseline.get("articles") or {}
     if not articles:
@@ -769,21 +1008,42 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             "source": baseline.get("source"),
         }
 
+    # Для финмодели водопад — по главам 2–3 сметы: лимит главы минус всё
+    # оплаченное по ней (резервы 2.8/2.9 уже внутри лимита главы 2) против
+    # плана раздела финмодели по месяцам. Статьи финмодели на статьи сметы
+    # один в один не ложатся, и постатейно здесь нечего считать.
     waterfall = _article_waterfall(
-        articles,
-        float(baseline.get("reserve") or 0.0),
+        _section_articles(sections, estimate, rss) if finmodel else articles,
+        0.0 if finmodel else float(baseline.get("reserve") or 0.0),
         cut,
-        _payment_by_code(rss),
+        {} if finmodel else _payment_by_code(rss),
     )
+    # Остаток лимита для финмодели — только главы 2–3 (вопрос владельца про
+    # стройку и продажи); лимит и оплаченное всех глав остаются в плашках
+    # «Лимит банка» и «Выбрано у банка».
+    scope = None
+    if finmodel:
+        scope_paid = _paid_in_chapters(rss, estimate, _FM_BANK_CHAPTERS)
+        scope = {"chapters": chapters_label(_FM_BANK_CHAPTERS),
+                 "limit": _rss_ch23(estimate, _FM_BANK_CHAPTERS)["limit"],
+                 "paid": scope_paid["total"], "borrowed": scope_paid["borrowed"]}
     rnv = monitor._day(_current_forecast_end(view))
     if rnv is None:
         rnv = monitor._day((view.get("schedule") or {}).get("approved_end"))
+    reserve_inside = _reserve_inside(rss, estimate) if finmodel else None
 
     reserve_start = waterfall["reserve_start"]
     reserve_exhaustion = waterfall["reserve_exhaustion"]
-    unspent_view = _unspent(project, rss, estimate, rnv, waterfall, articles, cut, chapters)
+    unspent_view = _unspent(project, rss, estimate, rnv, waterfall,
+                            None if finmodel else articles, cut, chapters)
     approved = float(baseline.get("approved") or 0.0)
-    book_remaining = max(0.0, approved - paid_actual) if approved > 0 else None
+    # Остаток утверждённого бюджета: у финмодели это её «ПЛАН» (ИТОГО − ФАКТ
+    # по построению); вычитать оплаченное по РСС из бюджета финмодели — снова
+    # смешивать две книги.
+    if finmodel:
+        book_remaining = remaining_need
+    else:
+        book_remaining = max(0.0, approved - paid_actual) if approved > 0 else None
     # Глава 1 есть в РСС, а в финансовой книге её строки нет — она всё равно
     # деньги проекта (владелец, 22.10.2026: «что за бред на плашках. Разве в
     # РСС нет 1 главы?»). Тогда лимит, оплачено и выбрано у банка берут главу
@@ -795,7 +1055,9 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
     waterfall_book = waterfall
     one = (estimate.get("by_code") or {}).get("1")
     chapter_one = None
-    if "1" not in chapters and one is not None:
+    # У финмодели остаток и потребность считаются по главам 2–3; главу 1 сюда
+    # не добавлять.
+    if not finmodel and "1" not in chapters and one is not None:
         one_limit = float(one.get("estimate") or 0.0)
         one_paid = _paid_in_chapters(rss, estimate, ("1",))
         chapter_one = {"limit": one_limit, "paid": one_paid["total"],
@@ -823,19 +1085,38 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         # Выборка кредита по тем же главам, что лимит: «лимит − выбрано» и
         # «лимит − оплачено» читаются от одной базы.
         "paid_borrowed": paid["borrowed"],
-        "remaining_check": _remaining_check(current["limit"], paid_actual, waterfall,
-                                            float(baseline.get("reserve") or 0.0)),
+        "remaining_check": (_remaining_check(scope["limit"], scope["paid"], waterfall, 0.0)
+                            if finmodel else
+                            _remaining_check(current["limit"], paid_actual, waterfall,
+                                             float(baseline.get("reserve") or 0.0))),
         # Второй остаток потребности по тем же главам 2–3: утверждённый бюджет
         # минус оплаченное. С «средствами на завершение» они расходятся, и обе
         # величины считает сервер — экран их только показывает.
         "approved": approved,
-        "approved_remaining": max(0.0, approved - paid_actual),
+        "approved_remaining": remaining_need if finmodel else max(0.0, approved - paid_actual),
+        # Чем измерена потребность: разделами финмодели против глав 2–3 сметы
+        # или бюджетом книги по статьям. Сводка подписывает плашки по этому
+        # признаку; разбивка по главам — для плашки «Потребность в
+        # допфинансировании банка».
+        "need_basis": "model" if finmodel else "budget",
+        "remaining_scope": scope if finmodel else None,
+        "need_by_chapter": ({row["chapter"]: {
+            "label": sections[row["chapter"]]["label"],
+            "label_acc": sections[row["chapter"]].get("label_acc") or sections[row["chapter"]]["label"],
+            "need": row["need_total"],
+            "remaining": row["opening_limit"], "gap": row["unfunded_take"]}
+            for row in waterfall["articles"]} if finmodel else None),
         "bank_remaining": waterfall["opening_bank_remaining"],
         "opening_article_deficit": waterfall["opening_article_deficit"],
         "remaining_need": remaining_need,
         "reserve": float(baseline.get("reserve") or 0.0),
         "reserve_parts": baseline.get("reserve_parts") or {},
         "reserve_names": baseline.get("reserve_names") or {},
+        # Резервы 2.8/2.9 сметы РСС при финмодели: у финмодели своя строка
+        # резерва (2.2.11), и она пустая, а резервы банка лежат внутри лимита
+        # главы 2 и уже вошли в остаток. Их показывают отдельно — к остатку
+        # второй раз не прибавляют (владелец, 24.10.2026: «Резерв разве 0»).
+        "reserve_inside": reserve_inside,
         "limit_by_chapter": current.get("by_chapter") or {},
         "approved_by_chapter": baseline.get("approved_by_chapter") or {},
         "reserve_start": monitor._iso(reserve_start),
@@ -859,9 +1140,13 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
             remaining_need, float(baseline.get("reserve") or 0.0), waterfall_book),
         # Лестница от структурного дефицита к «не хватает на достройку»:
         # считается здесь, экран только показывает.
+        # Для финмодели водопад уже по главам 2–3: переброска свободного лимита
+        # между статьями сметы внутри главы в нём учтена, и вычитать её второй
+        # раз нельзя — иначе плашка потребности расходится с «не хватает»
+        # (владелец, 24.10.2026: 2,27 на одной плашке и 2,39 на соседней).
         "deficit_ladder": _deficit_ladder(
-            waterfall_book, float(baseline.get("reserve") or 0.0), book_remaining,
-            unspent_view),
+            waterfall_book, 0.0 if finmodel else float(baseline.get("reserve") or 0.0),
+            book_remaining, None if finmodel else unspent_view),
         "forecast_to": monitor._iso(rnv),
         "monthly_need": waterfall["monthly_need"],
         "monthly_reserve_draw": waterfall["monthly_reserve_draw"],
@@ -870,11 +1155,61 @@ def _funding_risk(project: str, rss: Path, cut: datetime.date, view: dict[str, A
         "articles": waterfall["articles"],
         "tail_after_apr": max(0.0, float(baseline.get("tail_after_apr") or 0.0)),
         "method": (
+            "по финмодели: план раздела за месяц → остаток лимита главы 2–3 сметы "
+            "(лимит минус оплаченное, резервы внутри) → непокрытая потребность"
+            if finmodel else
             "постатейный waterfall: потребность месяца → остаток лимита статьи RSS → "
             "резервы 2.8/2.9 → непокрытая потребность; свободные лимиты других статей "
             "автоматически не кросс-финансируют дефицит"
         ),
     }
+
+
+_FM_BANK_CHAPTERS = tuple(sorted({ch for ch, _, _ in _FM_SECTIONS.values()}))
+
+
+def _reserve_inside(rss: Path, estimate: dict[str, Any]) -> dict[str, Any] | None:
+    """Остаток резервов 2.8/2.9 сметы РСС: лимит строки минус оплаченное по ней."""
+    by_code = estimate.get("by_code") or {}
+    parts: dict[str, float] = {}
+    names: dict[str, str] = {}
+    for code in sorted(_RESERVE_CODES):
+        row = by_code.get(code)
+        if row is None:
+            continue
+        paid = float(_paid_in_chapters(rss, estimate, (code,))["total"])
+        parts[code] = max(0.0, float(row.get("estimate") or 0.0) - paid)
+        names[code] = str(row.get("article") or "").strip()
+    if not parts:
+        return None
+    chapters = sorted({str((by_code.get(code) or {}).get("parent") or "") for code in parts} - {""})
+    return {"total": sum(parts.values()), "parts": parts, "names": names,
+            "chapters": chapters_label(chapters) if chapters else ""}
+
+
+def _section_articles(sections: dict[str, dict[str, Any]], estimate: dict[str, Any],
+                      rss: Path) -> dict[str, dict[str, Any]]:
+    """Разделы финмодели как строки водопада — по главам 2–3 сметы.
+
+    Лимит — «Общая сметная стоимость» строки главы РСС (резервы внутри),
+    «оплачено» — всё оплаченное по главе по РСС, потребность по месяцам — план
+    раздела финмодели.
+    """
+    by_code = estimate.get("by_code") or {}
+    out: dict[str, dict[str, Any]] = {}
+    for chapter in _FM_BANK_CHAPTERS:
+        section = sections[chapter]
+        row = by_code.get(chapter) or {}
+        out[chapter] = {
+            "code": chapter, "chapter": chapter,
+            "name": f"{section['label'].capitalize()} — {section['name']} (финмодель) "
+                    f"против главы {chapter} сметы",
+            "rss_limit": float(row.get("estimate") or 0.0),
+            "paid_at_baseline": float(_paid_in_chapters(rss, estimate, (chapter,))["total"]),
+            "has_programme": any((section.get("monthly") or {}).values()),
+            "monthly_need": dict(section.get("monthly") or {}),
+        }
+    return out
 
 
 def _physical_smr(rss: Path, estimate: dict[str, Any], cut: datetime.date) -> float:
@@ -1016,11 +1351,16 @@ def _summary(view: dict[str, Any], funding: dict[str, Any],
     model_need = float(funding.get("approved_remaining") or 0.0)
     if model_need > 0:
         gap = max(0.0, model_need - fuel)
+        inside = funding.get("reserve_inside") or {}
+        kept = (f"{_fmt_money(bank)} остатка лимита, в нём уже "
+                f"{_fmt_money(inside.get('total'))} резервов 2.8/2.9"
+                if inside.get("total") else
+                f"{_fmt_money(bank)} лимитов статей и "
+                f"{_fmt_money(reserve)} резерва 2.8/2.9")
         money = (
             f"Деньги. По утверждённой модели достроить стоит "
             f"{_fmt_money(model_need)} (модель минус оплаченное). По РСС "
-            f"осталось {_fmt_money(fuel)}: {_fmt_money(bank)} лимитов статей и "
-            f"{_fmt_money(reserve)} резерва 2.8/2.9 — оставшийся лимит и есть "
+            f"осталось {_fmt_money(fuel)}: {kept} — оставшийся лимит и есть "
             f"то, что банк готов дать; сам РСС при этом бюджет всей стройки, а "
             f"не банковская доля. Дефицит {_fmt_money(gap)}.")
         if need > 0:

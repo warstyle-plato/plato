@@ -383,6 +383,8 @@ def _telegram_send_attachments(
     # мини-приложения, а Excel-модель считалась здесь заново — два источника на
     # одни вводные, и разошедшийся браузер давал разную экономику в отчёте и в
     # детализации. Теперь считаем один раз и отдаём обеим.
+    # Блок сравнения стратегий печатается только из подбора сервера.
+    report_payload = {k: v for k, v in report_payload.items() if k != "strategy_compare"}
     try:
         bundle = _run_authoritative_model(
             report_payload.get("inputs") or {},
@@ -397,6 +399,14 @@ def _telegram_send_attachments(
         )
         report_payload = {**report_payload, "result": server_result,
                           "phases": bundle.get("phases") or []}
+        # «Сравнение стратегий» с точками безразличия — подбор здесь, в фоне
+        # вложений, тем же блоком, что у страницы и сборки PDF с сайта.
+        try:
+            report_payload["strategy_compare"] = strategy_compare_for_report(
+                bundle, report_payload.get("inputs") or {}, report_payload.get("tep") or {},
+                report_payload.get("rates") or [], report_payload.get("phasing") or {})
+        except Exception as exc:
+            _TELEGRAM_RUNTIME["last_error"] = "Сравнение стратегий: " + _error_location(exc)
         if problems:
             # Хостинг закрыт, и молча подменить числа нельзя: человек увидит
             # в PDF не то, что было на экране, и не поймёт почему.
@@ -476,16 +486,6 @@ def _telegram_send_attachments(
             pass
 
 
-def _server_preset_meta(preset_id: str) -> dict[str, Any]:
-    meta = SERVER_TEP_PRESETS.get(preset_id)
-    if not meta:
-        raise HTTPException(status_code=404, detail="Предустановка не найдена")
-    path = PRESET_DIR / meta["filename"]
-    if not path.exists():
-        raise HTTPException(status_code=500, detail=f"Файл предустановки отсутствует на сервере: {meta['filename']}")
-    return {**meta, "id": preset_id, "path": path}
-
-
 def _is_admin_request(session: str = "", key: str = "") -> bool:
     """Владелец сервиса: свой chat_id в списке или ключ администратора."""
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
@@ -511,47 +511,3 @@ def _require_admin(session: str, key: str, what: str) -> None:
     raise HTTPException(status_code=403, detail=f"{what} — только для владельца сервиса.")
 
 
-@app.get("/presets")
-def list_server_presets(session: str = "", key: str = "") -> dict[str, Any]:
-    _require_admin(session, key, "Готовые примеры")
-    items = []
-    for preset_id, meta in SERVER_TEP_PRESETS.items():
-        path = PRESET_DIR / meta["filename"]
-        items.append({
-            "id": preset_id,
-            "name": meta["name"],
-            "filename": meta["filename"],
-            "description": meta["description"],
-            "available": path.exists(),
-            "download_url": f"/presets/{preset_id}/download",
-        })
-    return {"presets": items}
-
-
-@app.get("/presets/{preset_id}")
-def get_server_preset(preset_id: str, session: str = "", key: str = "") -> dict[str, Any]:
-    _require_admin(session, key, "Готовые примеры")
-    meta = _server_preset_meta(preset_id)
-    try:
-        payload = parse_glavapu_xlsx(meta["path"].read_bytes(), meta["filename"])
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Не удалось разобрать серверную предустановку: {exc}") from exc
-    payload["source"]["preset_id"] = preset_id
-    payload["source"]["preset_name"] = meta["name"]
-    payload["source"]["server_preset"] = True
-    payload["warnings"] = [
-        f"Загружена серверная предустановка «{meta['name']}».",
-        *payload.get("warnings", []),
-    ]
-    return payload
-
-
-@app.get("/presets/{preset_id}/download")
-def download_server_preset(preset_id: str, session: str = "", key: str = ""):
-    _require_admin(session, key, "Файл предустановки")
-    meta = _server_preset_meta(preset_id)
-    return FileResponse(
-        path=str(meta["path"]),
-        filename=meta["filename"],
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )

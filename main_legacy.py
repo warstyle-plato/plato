@@ -94,7 +94,7 @@ import v4_book_polish
 import v4_dashboard
 import v4_entry_sheet
 import v4_nonres_sheet
-import nonres_workbook
+import office_workbook
 import hotel_workbook
 import v4_value_cache
 import presentation as _presentation
@@ -109,7 +109,7 @@ import project_preset
 # поднимали разом вручную. Стоило один раз поднять только обёртку, и стенд стал
 # неотличим от невыкаченного: бот показывал 0.13.6, а `/health`, страница и
 # заголовок ответа — 0.13.4. Обёртка `main.py` берёт значение отсюда же.
-VERSION = "0.27.24"
+VERSION = "0.27.71"
 # Коммит, из которого собран образ. Версия отвечает на «что выпущено», коммит —
 # на «что сейчас крутится»: одна версия живёт много правок, и по ней не отличить
 # выкаченный образ от собранного часом раньше. Значение запекается сборкой
@@ -298,6 +298,11 @@ _engine_part("site_massing")
 # Объёмная схема: корпуса очередей на участке и их аксонометрия —
 # engine/site_massing_layout.py; один ответ для страницы и PDF.
 _engine_part("site_massing_layout")
+# Кварталы и фронты участка, расстановка корпусов и её проверка —
+# engine/site_massing_blocks.py; план расстановки от Платона (фоновый запрос,
+# хранение по отпечатку) — engine/site_massing_plan.py.
+_engine_part("site_massing_blocks")
+_engine_part("site_massing_plan")
 
 
 _engine_part("operating_model")
@@ -374,6 +379,10 @@ _engine_part("agent_routes")
 # Потолок цены входа — один подбор и одни плитки «Инвестиционного решения»
 # для страницы, тизера и полного PDF.
 _engine_part("entry_price_ceiling")
+
+# «Сравнение стратегий» объекта с выбором способа продажи — одна таблица,
+# вывод, строка тизера и подбор точек безразличия для всех поверхностей.
+_engine_part("strategy_compare")
 
 
 # Маршруты /current-key-rate и /calculate вынесены в engine/calc_routes.py

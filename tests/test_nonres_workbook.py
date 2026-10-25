@@ -1,12 +1,16 @@
-"""Книга нежилого проекта — финансовая модель формулами, сверенная с движком.
+"""Книга нежилого проекта без офиса — каркас жилой v4, сверка с движком.
 
-Владелец (05.10.2026): «Excel в данном случае не модель, а убогий свод». Книга
-считает всё сама от листа «Вводные»: смету, объекты, кредит, НДС и налог на
-прибыль с переносом убытка, поток проекта и собственника, NPV, IRR, отчёт; лист
-«Сверка» сравнивает каждый итог с авторитетным расчётом движка.
+С 24.10.2026 нежилой проект без офиса (ТЦ, наземный паркинг, ФОК рядом с ними) получает ту
+же книгу, что проект с офисом (`office_workbook`, `docs/office_workbook.md`),
+только с одним способом продажи: каждый объект продаётся стратегией, выбранной
+у него в проекте (по ДДУ с эскроу и ПФ, блоками после ввода или арендой с
+продажей здания). Сравнения путей, как у офиса, нет; «ПРОВЕРКИ» сверяют книгу
+с основным расчётом движка. Прежняя книга (`nonres_workbook`, листы «Объект N»,
+«ДДУ N», «Сверка») убрана.
 
-Формулы вычисляет `xlsx_eval.Evaluator` — без Excel. Проверка обязана падать
-на подделке: испорченная формула, статья сметы, вводная и налог краснят сверку.
+Формулы считает `xlsx_eval` (`office_workbook.evaluate`) — без Excel. Проверка
+обязана падать на подделке: формула, статья сметы, вводная, правило налога,
+горизонт, ставка ПФ и цена по ДДУ краснят «ПРОВЕРКИ».
 
 Запуск: python3 -m pytest tests/test_nonres_workbook.py -q
 """
@@ -24,25 +28,15 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main_legacy as core  # noqa: E402
-import nonres_workbook as nw  # noqa: E402
-from xlsx_eval import Evaluator  # noqa: E402
+import office_workbook as ow  # noqa: E402
 
 openpyxl = pytest.importorskip("openpyxl")
-
-# Аренда задана числами: умолчания класса B (22.10.2026) слишком малы, чтобы
-# сценарии удержания платили налог и гасили кредит из NOI — а это и проверяется.
-OFFICE = dict(offices_enabled=True, offices_gba_sqm=40000.0, offices_saleable_sqm=24000.0,
-              offices_parking_under_spaces=200, offices_parking_over_spaces=40,
-              offices_parking_guest_pct=10, offices_rent_th_per_sqm_month=4.5,
-              offices_occupancy_stable_pct=92.0, offices_leaseup_months=12,
-              offices_opex_pct=18.0, offices_exit_cap_pct=11.0)
-RETAIL = dict(retail_enabled=True, retail_gba_sqm=15000.0, retail_saleable_sqm=11000.0)
 
 
 def _project(nonresidential: bool = True, **over):
     x = copy.deepcopy(core.DEFAULT_INPUTS)
     t = copy.deepcopy(core.TEP_DEFAULT)
-    x.update(OFFICE)
+    x.update(offices_enabled=False)
     x.update(over)
     for obj in core.STANDALONE_OBJECTS:
         gba = float(x.get(f"{obj.prefix}_gba_sqm") or 0)
@@ -65,317 +59,311 @@ def _project(nonresidential: bool = True, **over):
     return x, t
 
 
+# Аренда задана числами: умолчания малы, чтобы сценарии удержания платили
+# налог и гасили кредит из NOI — а это и проверяется.
+RETAIL_ONLY = dict(retail_enabled=True, retail_gba_sqm=40000.0,
+                   retail_saleable_sqm=24000.0, retail_parking_under_spaces=200,
+                   retail_parking_over_spaces=40, retail_rent_th_per_sqm_month=4.5,
+                   retail_occupancy_stable_pct=92.0, retail_leaseup_months=12,
+                   retail_opex_pct=18.0, retail_exit_cap_pct=11.0, retail_rent_date="2025-12-01")
+SPORTS = dict(sports_enabled=True, sports_gba_sqm=5000.0, sports_saleable_sqm=3500.0,
+              sports_disposition=core.SPORTS_DISPOSITION_SALE)
+PARKING = dict(above_parking_enabled=True, above_parking_spaces=300)
 VARIANTS = {
-    "офис ДКП, продажи до ввода": dict(offices_strategy="direct", offices_direct_sale_offset_months=-6,
-                                       offices_direct_sale_curve="bell"),
-    "офис аренда и продажа, аннуитет": dict(offices_strategy="income"),
-    "аренда и удержание, погашение из NOI": dict(offices_strategy="income", offices_exit_mode="hold",
-                                                 offices_debt_repayment="sweep"),
-    "два объекта: офис ДКП и ТЦ в аренде": dict(offices_strategy="direct", retail_strategy="income",
-                                               **RETAIL),
+    "ТЦ ДКП, продажи до ввода": dict(RETAIL_ONLY, retail_strategy="direct",
+                                     retail_direct_sale_offset_months=-6,
+                                     retail_direct_sale_curve="bell"),
+    "ТЦ аренда и продажа, аннуитет": dict(RETAIL_ONLY, retail_strategy="income"),
+    "аренда и удержание, погашение из NOI": dict(RETAIL_ONLY, retail_strategy="income",
+                                                 retail_exit_mode="hold", retail_debt_repayment="sweep",
+                                                 retail_rent_th_per_sqm_month=7.0),
     "баллон в срок, участок рассрочкой, сценарий": dict(
-        offices_strategy="income", offices_loan_term_years=4, offices_hold_years=8,
-        offices_loan_balloon_pct=10, purchase_price_mln=900, purchase_schedule="30%@0; 70%@8",
+        RETAIL_ONLY, retail_strategy="income", retail_loan_term_years=4, retail_hold_years=8,
+        retail_loan_balloon_pct=10, purchase_price_mln=900, purchase_schedule="30%@0; 70%@8",
         land_buyout_mln=120, scenario_cost_multiplier=1.1, scenario_revenue_multiplier=0.9,
         rate_scenario="high"),
+    # Объекты по ДДУ: продажи, эскроу, БРИДЖ и ПФ — формулами листа объекта и «ПФ».
+    "ТЦ по ДДУ": dict(RETAIL_ONLY, retail_strategy="ddu"),
+    "наземный паркинг по ДДУ и ТЦ в аренде": dict(RETAIL_ONLY, retail_strategy="income", **PARKING),
+    "ТЦ по ДДУ: проценты капиталом, свои деньги, лимит, сценарий": dict(
+        RETAIL_ONLY, retail_strategy="ddu", bridge_interest_mode="Оплата капиталом", pre_pf_own_funds_mln=300,
+        pf_limit_approved_mln=9000, scenario_revenue_multiplier=0.95, scenario_cost_multiplier=1.05,
+        rate_scenario="high"),
+    "ТЦ по ДДУ: профиль продаж и лестница цены": dict(
+        RETAIL_ONLY, retail_strategy="ddu", retail_sales_profile="30%@0; 50%@12; 20%@30",
+        retail_growth_stage1_pct=5, retail_growth_stage3_pct=7, retail_share_before_rve_pct=70,
+        retail_residual_months=9),
+    # ФОК — только рядом с другими объектами: нежилого проекта из одного ФОК
+    # не бывает (владелец, 24.10.2026: «Для ФОК вообще отдельная книга не нужна»).
+    "наземный паркинг по ДДУ": dict(PARKING),
+    "ТЦ блоками и ФОК по ДДУ": dict(RETAIL_ONLY, retail_strategy="direct", **SPORTS),
 }
-
+DDU_NAMES = [name for name in VARIANTS if "ДДУ" in name]
+RETAIL = "Коммерция ОСЗ"
+SPORTS_SHEET = "ФОК - медцентр"
 _BOOKS: dict[str, tuple[bytes, dict]] = {}
 
 
 def _book(name: str) -> tuple[bytes, dict]:
     if name not in _BOOKS:
         x, t = _project(**VARIANTS[name])
-        content, filename, meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
-        assert meta.get("nonres_book") is True and "нежилой" in filename
+        content, filename, meta = core.build_project_workbook(x, t, [], {}, project_name="ТЦ")
+        assert meta.get("nonres_book") is True and "нежилой_ТЦ" in filename, (filename, meta)
+        assert not meta.get("office_book")
         _BOOKS[name] = content, meta
     return _BOOKS[name]
 
 
-def _evaluate(content: bytes, tamper=None) -> tuple[str, list, Evaluator, object]:
+def _evaluate(content: bytes, tamper=None):
     book = openpyxl.load_workbook(io.BytesIO(content))
     if tamper:
         tamper(book)
-    sys.setrecursionlimit(max(sys.getrecursionlimit(), 100000))
-    evaluator = Evaluator(book)
-    # Долг строки читает предыдущую — сверху вниз, чтобы не упереться в
-    # глубину рекурсии вычислителя.
-    for name in book.sheetnames:
-        for row in book[name].iter_rows(min_row=nw.FIRST_ROW):
-            for cell in row:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    evaluator.cell(name, cell.coordinate)
-    # Каждая формула книги — и вводные-ссылки, и отчёт с ОПУ — понятна
-    # вычислителю: непонятая упала бы здесь, а не пролезла.
-    for name in book.sheetnames:
-        for row in book[name].iter_rows(max_row=nw.FIRST_ROW):
-            for cell in row:
-                if isinstance(cell.value, str) and cell.value.startswith("="):
-                    evaluator.cell(name, cell.coordinate)
-    checks = book[nw.CHECK_SHEET]
-    bad = [(checks[f"A{r}"].value, checks[f"B{r}"].value, evaluator.cell(nw.CHECK_SHEET, f"C{r}"),
-            checks[f"D{r}"].value)
-           for r in range(3, checks.max_row + 1)
-           if evaluator.cell(nw.CHECK_SHEET, f"G{r}") == "РАСХОЖДЕНИЕ"]
-    return evaluator.cell(nw.CHECK_SHEET, "I3"), bad, evaluator, book
+    evaluator = ow.evaluate(book)
+    verdict, bad = ow.verdict(evaluator)
+    return verdict, bad, evaluator, book
+
+
+def _row(sheet, label: str) -> int:
+    """Строка по подписи: точное совпадение, иначе первая, что с неё начинается."""
+    texts = [(r, str(sheet[f"A{r}"].value or "")) for r in range(1, sheet.max_row + 1)]
+    return next((r for r, text in texts if text == label), None) or next(
+        r for r, text in texts if text.startswith(label))
+
+
+def _input(sheet, label: str, title: str = RETAIL):
+    """Клетка «Вводных» у объекта: строка по подписи, столбец по заголовку объекта."""
+    row = _row(sheet, label)
+    head = max(r for r in range(1, row) if sheet[f"A{r}"].value == "Объект")
+    column = next(c for c in range(2, sheet.max_column + 1) if sheet.cell(head, c).value == title)
+    return sheet.cell(row, column)
+
+
+def _tampered(name: str, tamper) -> set[str]:
+    verdict, bad, _, _ = _evaluate(_book(name)[0], tamper)
+    assert verdict == ow.FAILED
+    return {f"{section}: {label}" for section, label in bad}
 
 
 @pytest.mark.parametrize("name", list(VARIANTS))
 def test_the_book_formulas_agree_with_the_engine(name) -> None:
     content, meta = _book(name)
-    assert meta["missing"] == []
-    verdict, bad, evaluator, book = _evaluate(content)
-    assert bad == [] and verdict == nw.PASSED
-    checks = book[nw.CHECK_SHEET]
-    sections = {checks[f"A{r}"].value for r in range(3, checks.max_row + 1)}
-    assert {"Проект", "Смета", "Собственное участие", "По годам"} <= sections
-    # Сверка не пустая: сравниваются настоящие деньги, а не нули.
-    compared = {checks[f"B{r}"].value: checks[f"D{r}"].value for r in range(3, checks.max_row + 1)
-                if checks[f"A{r}"].value == "Проект"}
-    for label in ("Выручка проекта", "CAPEX", "EBITDA", "Налог на прибыль", "НДС", "NPV проекта",
-                  "Расходы всего", "Чистая прибыль", "Кредит объектов — пик"):
-        assert compared[label] not in ("", None, 0)
+    assert meta["missing"] == [] and meta["checks"] == ow.PASSED
+    verdict, bad, _, book = _evaluate(content)
+    assert bad == [] and verdict == ow.PASSED
+    checks = book[ow.CHECK_SHEET]
+    rows = [(checks[f"A{r}"].value, checks[f"B{r}"].value, checks[f"D{r}"].value)
+            for r in range(5, checks.max_row + 1)]
+    sections = {section for section, _, _ in rows}
+    assert {"Проект", "Смета"} <= sections
+    # Один способ — стратегия объектов: сравнения путей офиса нет.
+    assert not any(str(section).startswith("Вариант") for section in sections)
+    engine = {(section, label): value for section, label, value in rows}
+    # Сверяются настоящие деньги, а не нули.
+    for label in ("Выручка проекта", "CAPEX", "EBITDA", "NPV проекта", "Расходы всего", "Чистая прибыль"):
+        assert engine[("Проект", label)] not in ("", None, 0), label
     # Свод «на глаз»: выручка − расходы всего = чистая прибыль, EBITDA −
     # проценты = прибыль до налога; обе разности стоят в сверке нулём.
-    assert compared["Выручка − расходы всего − чистая прибыль"] == 0.0
-    assert compared["EBITDA − проценты − прибыль до налога"] == 0.0
+    assert engine[("Проект", "Выручка − расходы всего − чистая прибыль")] == 0.0
+    assert engine[("Проект", "EBITDA − проценты − прибыль до налога")] == 0.0
+    if name in DDU_NAMES and "профиль" not in name:
+        # ПФ и продажи по ДДУ сверяются подробно, на своём листе «ПФ».
+        assert "ПФ" in sections and ow.PF_SHEET in book.sheetnames
+        for label in ("Выдача ПФ всего", "ПФ — пик долга", "Эскроу — пик"):
+            assert engine[("ПФ", label)] not in ("", None, 0), label
+        assert isinstance(engine[("Проект", "LLCR")], float)
+    elif name not in DDU_NAMES:
+        assert ow.PF_SHEET not in book.sheetnames
+        assert engine[("Проект", "Кредит объектов — пик")] not in ("", None, 0)
+        assert "Собственное участие" in sections and "По годам" in sections
 
 
-def _operating_row(sheet) -> int:
-    """Строка помесячной таблицы за полтора года до её конца — объект в
-    эксплуатации."""
-    last = max(r for r in range(nw.FIRST_ROW, sheet.max_row + 1)
-               if isinstance(sheet[f"A{r}"].value, int)
-               and sheet[f"B{r}"].value and str(sheet[f"B{r}"].value).startswith("=EDATE"))
-    return last - nw.EXTRA_MONTHS - 6
-
-
-def _tampered_labels(name: str, tamper) -> set[str]:
-    content, _ = _book(name)
-    verdict, bad, _, _ = _evaluate(content, tamper)
-    assert verdict == nw.FAILED
-    return {label for _, label, _, _ in bad}
-
-
-def test_a_tampered_formula_is_caught() -> None:
-    """Подделка формулы: аренда одного месяца завышена на процент."""
-    letter = nw.COLUMNS["rent"][0]
-
-    def tamper(book):
-        sheet = book["Объект 1"]
-        row = _operating_row(sheet)
-        sheet[f"{letter}{row}"] = sheet[f"{letter}{row}"].value + "*1.01"
-
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
-    assert {"Арендная выручка", "NOI за срок удержания", "Выручка проекта"} <= labels
-
-
-def test_a_tampered_cost_article_is_caught() -> None:
-    """Подделка статьи сметы: ставка резерва в «Затратах» не та.
-
-    Генподряд у нежилого проекта без ядра — ноль (ставка объекта «под
-    ключ»), и подделка его ставки ничего бы не сдвинула: подделывается резерв.
-    """
-    def tamper(book):
-        sheet = book[nw.COSTS_SHEET]
-        row = next(r for r in range(1, nw.FIRST_ROW) if sheet[f"A{r}"].value == "Резерв")
-        sheet[f"D{row}"] = sheet[f"D{row}"].value + "*1.2"
-
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
-    assert {"Резерв", "CAPEX", "Кредит — выборка"} <= labels
-
-
-def test_a_tampered_input_is_caught() -> None:
-    """Подделка вводной: ставка аренды на «Вводных» не та, что у движка."""
-    def tamper(book):
-        sheet = book[nw.INPUTS_SHEET]
-        cell = sheet[f"C{nw.O_ROW['rent']}"]
-        cell.value = cell.value * 1.1
-
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
-    assert {"Арендная выручка", "NOI за срок удержания"} <= labels
-
-
-def test_the_rent_date_moves_the_book_like_the_engine() -> None:
-    """Ставка аренды дана на свою дату и до ввода индексируется: стёртая в
-    книге дата снимает индексацию до ввода, и аренда расходится с движком."""
-    def tamper(book):
-        book[nw.INPUTS_SHEET][f"C{nw.O_ROW['rent_date']}"].value = None
-
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
-    assert {"Арендная выручка", "NOI за срок удержания"} <= labels
-
-
-def test_a_tampered_tax_rule_is_caught() -> None:
-    """Подделка налога: убыток прошлых лет зачитывается целиком, без
-    половинного ограничения, — налог проекта расходится с движком."""
-    def tamper(book):
-        book[nw.INPUTS_SHEET][f"B{nw.P_ROW['loss_limit']}"] = 1.0
-
-    labels = _tampered_labels("аренда и удержание, погашение из NOI", tamper)
-    assert "Налог на прибыль" in labels
-
-
-def test_the_model_counts_with_formulas_from_one_input_sheet() -> None:
-    """Числа на листах модели — формулы; значения стоят только на «Вводных»
-    и в столбцах, подписанных «СЧИТАЕТ ДВИЖОК»."""
-    content, _ = _book("два объекта: офис ДКП и ТЦ в аренде")
+def test_the_book_is_the_v4_frame_with_one_way_to_sell() -> None:
+    """Состав книги — как у офиса, без листов трёх способов продажи офиса и
+    шкалы класса: объекты — своими листами, поток — один лист «CF»."""
+    content, _ = _book("наземный паркинг по ДДУ и ТЦ в аренде")
     book = openpyxl.load_workbook(io.BytesIO(content))
-    assert book.sheetnames[:2] == [nw.INPUTS_SHEET, nw.COSTS_SHEET]
-    assert book.sheetnames[-5:] == [nw.CREDIT_SHEET, nw.TAX_SHEET, nw.CASH_SHEET,
-                                    nw.REPORT_SHEET, nw.CHECK_SHEET]
-    assert {"Объект 1", "Объект 2"} <= set(book.sheetnames)
-    for name in book.sheetnames:
-        if name in (nw.INPUTS_SHEET, nw.CHECK_SHEET):
-            continue
+    assert book.sheetnames == [ow.DASH_SHEET, ow.REPORT_SHEET, ow.INPUTS_SHEET, ow.GUIDE_SHEET, ow.TEP_SHEET,
+                               ow.TIME_SHEET, ow.CAPEX_SHEET, ow.RATE_SHEET, RETAIL, "Наземный паркинг",
+                               ow.PF_SHEET, "CF", ow.TAX_SHEET, ow.CHECK_SHEET]
+    for name in (ow.TIME_SHEET, ow.CAPEX_SHEET, RETAIL, "Наземный паркинг", ow.PF_SHEET, "CF", ow.TAX_SHEET):
         sheet = book[name]
-        for row in sheet.iter_rows(min_row=nw.FIRST_ROW, min_col=3):
+        # Месяцы вправо с D, шапка и подписи закреплены, печать — по 12 месяцев.
+        assert sheet.freeze_panes == "D5", name
+        assert sheet.print_title_cols.replace("$", "") == "A:C", name
+        assert len(sheet.col_breaks.brk) >= 5, name
+        assert sheet["A1"].font.name == ow.FONT
+    assert book[RETAIL].sheet_properties.tabColor.rgb.endswith(ow.RENT_TAB)
+    assert book["Наземный паркинг"].sheet_properties.tabColor.rgb.endswith(ow.DDU_TAB)
+    report = book[ow.REPORT_SHEET]
+    head = _row(report, "Показатель")
+    assert [report.cell(head, c).value for c in (2, 3)] == [ow.PROJECT_PATH["label"], None]
+    chosen = report.cell(_row(report, "Способ, выбранный в проекте"), 2).value
+    assert "Коммерция ОСЗ — аренда и выход" in chosen and "Наземный паркинг — продажа по ДДУ" in chosen
+    assert not any(str(report[f"A{r}"].value or "").startswith(("Выгоднее", "Офис"))
+                   for r in range(1, report.max_row + 1))
+    cached = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    assert isinstance(cached[ow.REPORT_SHEET][f"B{_row(report, 'NPV проекта')}"].value, float)
+    assert cached[ow.CHECK_SHEET]["I5"].value == ow.PASSED
+    inputs = book[ow.INPUTS_SHEET]
+    assert not any(str(inputs[f"A{r}"].value or "").startswith(("Шкала класса", "Класс офиса"))
+                   for r in range(1, inputs.max_row + 1))
+
+
+@pytest.mark.parametrize("name", ["ТЦ ДКП, продажи до ввода", "ТЦ блоками и ФОК по ДДУ"])
+def test_the_model_sheets_hold_formulas_not_engine_numbers(name) -> None:
+    """Числа на листах модели — формулы; значения — только на «Вводных» и в
+    рядах, подписанных «СЧИТАЕТ ДВИЖОК»."""
+    book = openpyxl.load_workbook(io.BytesIO(_book(name)[0]))
+    formulas = 0
+    for sheet_name in book.sheetnames:
+        if sheet_name in (ow.INPUTS_SHEET, ow.CHECK_SHEET, ow.GUIDE_SHEET):
+            continue
+        sheet = book[sheet_name]
+        for row in sheet.iter_rows(min_row=5, min_col=2):
             for cell in row:
-                if isinstance(cell.value, (int, float)) and cell.fill != nw.ENGINE_FILL:
-                    assert cell.value == 0 or cell.fill.fgColor.rgb == nw.ENGINE_FILL.fgColor.rgb, (
-                        f"{name}!{cell.coordinate} = {cell.value} — число вместо формулы")
-    sheet = book["Объект 1"]
-    for key, (row, _) in nw.INPUTS.items():
-        assert str(sheet[f"B{row}"].value).startswith("="), key
-    assert f"'{nw.COSTS_SHEET}'!" in sheet[f"{nw.COLUMNS['capex'][0]}{nw.FIRST_ROW}"].value
-    assert f"'{nw.CREDIT_SHEET}'!" in sheet[f"{nw.COLUMNS['key_rate'][0]}{nw.FIRST_ROW}"].value
-    # Блок другой стратегии свёрнут: у прямой продажи — аренда, у аренды — ДКП.
-    titles = {book[n]["A1"].value.split(" — ")[0]: book[n] for n in ("Объект 1", "Объект 2")}
-    office, retail = titles["Офисы"], titles["Коммерция ОСЗ"]
-    assert office.column_dimensions[nw.COLUMNS["rent"][0]].hidden
-    assert not office.column_dimensions[nw.COLUMNS["sale"][0]].hidden
-    assert retail.column_dimensions[nw.COLUMNS["sale"][0]].hidden
-    assert not retail.column_dimensions[nw.COLUMNS["rent"][0]].hidden
-    report = book[nw.REPORT_SHEET]
-    for r in range(1, report.max_row + 1):
-        value = report[f"B{r}"].value
-        assert not isinstance(value, (int, float)), f"Отчёт!B{r} = {value}"
+                if isinstance(cell.value, str) and cell.value.startswith("="):
+                    formulas += 1
+                elif isinstance(cell.value, (int, float)) and not isinstance(cell.value, bool):
+                    engine = cell.fill.fgColor.rgb.endswith(ow.ENGINE)
+                    year = sheet_name == ow.REPORT_SHEET and cell.column == 1
+                    assert engine or year or cell.value == 0, f"{sheet_name}!{cell.coordinate} = {cell.value}"
+    assert formulas > 2000
 
 
 def test_choices_are_russian_lists_and_dates_are_dates() -> None:
-    content, _ = _book("два объекта: офис ДКП и ТЦ в аренде")
-    book = openpyxl.load_workbook(io.BytesIO(content))
-    sheet = book[nw.INPUTS_SHEET]
-    assert {sheet[f"C{nw.O_ROW['strategy']}"].value, sheet[f"D{nw.O_ROW['strategy']}"].value} == {
-        nw.STRATEGY["direct"], nw.STRATEGY["income"]}
-    assert sheet[f"D{nw.O_ROW['repayment']}"].value in nw.REPAY.values()
-    assert sheet[f"B{nw.P_ROW['rate_scenario']}"].value in nw.SCENARIO.values()
-    lists = {cell for dv in sheet.data_validations.dataValidation for rng in dv.sqref.ranges
-             for cell in (rng.coord,)}
-    for key in ("strategy", "exit_mode", "repayment", "curve"):
-        assert f"C{nw.O_ROW[key]}" in lists
-    assert f"B{nw.P_ROW['rate_scenario']}" in lists
-    for key in ("start", "sales_start"):
-        assert hasattr(sheet[f"C{nw.O_ROW[key]}"].value, "year")
-    assert hasattr(sheet[f"B{nw.P_ROW['start']}"].value, "year")
-    # Чьё умолчание роста цены до ввода — подписано, а не угадывается.
-    assert "умолчание объекта" in str(sheet[f"C{nw.O_ROW['growth_pre_source']}"].value)
-    codes = {"income", "direct", "sweep", "annuity", "bullet", "hold", "sale", "flat", "bell"}
+    sheet = openpyxl.load_workbook(io.BytesIO(_book("ТЦ аренда и продажа, аннуитет")[0]))[ow.INPUTS_SHEET]
+    lists = {str(rng) for dv in sheet.data_validations.dataValidation for rng in dv.sqref.ranges}
+    for label in ("Профиль продаж", "Выход в конце удержания", "Погашение после ввода"):
+        assert _input(sheet, label).coordinate in lists, label
+    assert f"B{_row(sheet, 'Сценарий ключевой ставки')}" in lists
+    assert hasattr(sheet[f"B{_row(sheet, 'Начало проекта')}"].value, "year")
+    assert hasattr(_input(sheet, "Дата ставки аренды").value, "year")
+    codes = {"income", "direct", "sweep", "annuity", "bullet", "hold", "sale", "flat", "bell", "ddu"}
     for row in sheet.iter_rows():
         for cell in row:
             assert cell.value not in codes, f"{cell.coordinate}: код «{cell.value}» вместо подписи"
 
 
-def test_switching_a_choice_in_the_book_moves_the_model() -> None:
-    """Список — не подпись: выбор «Удержание с оценкой» в книге убирает
-    выручку выхода и ставит оценку, как у движка с тем же выбором."""
-    content, _ = _book("офис аренда и продажа, аннуитет")
-
+def test_a_tampered_formula_is_caught() -> None:
+    """Подделка формулы: доход аренды ТЦ завышен на процент."""
     def tamper(book):
-        book[nw.INPUTS_SHEET][f"C{nw.O_ROW['exit_mode']}"] = nw.EXIT["hold"]
+        sheet = book[RETAIL]
+        row = _row(sheet, "Доход аренды")
+        for col in range(ow.FIRST_COL, sheet.max_column + 1):
+            cell = sheet.cell(row, col)
+            cell.value = cell.value + "*1.01"
 
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
-    assert {"Выход — продажа", "Удержание — оценка"} <= labels
+    labels = _tampered("ТЦ аренда и продажа, аннуитет", tamper)
+    assert {f"{RETAIL}: Доход аренды", f"{RETAIL}: NOI за срок удержания", "Проект: Выручка проекта"} <= labels
+
+
+def test_a_tampered_cost_article_is_caught() -> None:
+    def tamper(book):
+        sheet = book[ow.CAPEX_SHEET]
+        row = _row(sheet, "Резерв")
+        sheet[f"B{row}"] = sheet[f"B{row}"].value + "*1.2"
+
+    labels = _tampered("ТЦ аренда и продажа, аннуитет", tamper)
+    assert {"Смета: Резерв", "Проект: CAPEX", f"{RETAIL}: Кредит — выдача"} <= labels
+
+
+def test_a_tampered_input_and_rent_date_are_caught() -> None:
+    def rent(book):
+        cell = _input(book[ow.INPUTS_SHEET], "Ставка аренды с НДС")
+        cell.value = cell.value * 1.1
+
+    assert {f"{RETAIL}: Доход аренды", f"{RETAIL}: NOI за срок удержания"} <= _tampered(
+        "ТЦ аренда и продажа, аннуитет", rent)
+
+    def rent_date(book):
+        _input(book[ow.INPUTS_SHEET], "Дата ставки аренды").value = None
+
+    assert f"{RETAIL}: Доход аренды" in _tampered("ТЦ аренда и продажа, аннуитет", rent_date)
+
+
+def test_a_tampered_tax_rule_is_caught() -> None:
+    """Убыток прошлых лет зачитывается целиком, без половинного ограничения."""
+    def tamper(book):
+        sheet = book[ow.INPUTS_SHEET]
+        sheet[f"B{_row(sheet, 'Убыток прошлых лет')}"] = 1.0
+
+    assert "Проект: Налог на прибыль" in _tampered("аренда и удержание, погашение из NOI", tamper)
+
+
+def test_switching_the_exit_in_the_book_moves_the_model() -> None:
+    """Список — не подпись: «Удержание с оценкой» убирает выручку выхода и
+    ставит оценку, как у движка с тем же выбором."""
+    def tamper(book):
+        _input(book[ow.INPUTS_SHEET], "Выход в конце удержания").value = ow.EXIT["hold"]
+
+    labels = _tampered("ТЦ аренда и продажа, аннуитет", tamper)
+    assert {f"{RETAIL}: Продажа здания", f"{RETAIL}: Оценка удержания"} <= labels
+
+
+def test_a_longer_project_than_the_engine_is_caught() -> None:
+    """Срок удержания длиннее движка: книга не обрезает поток молча — горизонт в
+    «ПРОВЕРКАХ» красный."""
+    def tamper(book):
+        cell = _input(book[ow.INPUTS_SHEET], "Срок удержания")
+        cell.value = cell.value + 2
+
+    assert "Проект: Горизонт модели, мес." in _tampered("ТЦ аренда и продажа, аннуитет", tamper)
+
+
+def test_a_tampered_pf_rate_is_caught() -> None:
+    """Подделка ставки ПФ на один месяц краснит проценты и LLCR."""
+    def tamper(book):
+        sheet = book[ow.PF_SHEET]
+        row = _row(sheet, "Ставка ПФ")
+        for col in range(ow.FIRST_COL + 20, sheet.max_column + 1):
+            cell = sheet.cell(row, col)
+            if isinstance(cell.value, str) and cell.value.startswith("="):
+                cell.value = cell.value + "*1.5"
+                break
+
+    labels = _tampered("ТЦ по ДДУ", tamper)
+    assert {"Проект: Проценты и комиссии", "Проект: LLCR"} <= labels
+
+
+@pytest.mark.parametrize("name, sheet_name", [("ТЦ по ДДУ", RETAIL), ("ТЦ блоками и ФОК по ДДУ", SPORTS_SHEET),
+                                              ("наземный паркинг по ДДУ", "Наземный паркинг")])
+def test_a_tampered_ddu_price_is_caught(name, sheet_name) -> None:
+    """Цена по ДДУ ТЦ, ФОК и наземного паркинга завышена: краснеют выручка,
+    эскроу и итоги проекта."""
+    def tamper(book):
+        sheet = book[sheet_name]
+        cell = sheet[f"B{_row(sheet, 'Цена продажи «в расчёт»')}"]
+        cell.value = cell.value + "*1.05"
+
+    labels = _tampered(name, tamper)
+    assert {"ПФ: Эскроу — пик", "Проект: Выручка проекта", f"{sheet_name.replace('-', '/')}: Выручка по ДДУ"} \
+        <= labels
+
+
+def test_every_nonres_project_without_an_office_gets_the_v4_book(monkeypatch) -> None:
+    """Нежилой проект без офиса — только книга v4-каркаса: прежней книги нет, а
+    вызов офисной книги без офиса сверяет один способ — стратегию объектов."""
+    assert not (ROOT / "nonres_workbook.py").exists()
+    assert not hasattr(core, "nonres_workbook")
+    seen: list[set] = []
+    original = ow.build
+
+    def spy(result, spec, office_keys):
+        seen.append(set(office_keys))
+        return original(result, spec, office_keys)
+
+    monkeypatch.setattr(core.office_workbook, "build", spy)
+    x, t = _project(**VARIANTS["ТЦ по ДДУ"])
+    _, filename, meta = core.build_project_workbook(x, t, [], {})
+    assert seen == [set()] and meta["nonres_book"] and not meta["office_book"]
+    assert meta["checks"] == ow.PASSED and "нежилой_офис" not in filename
 
 
 def test_a_mixed_project_keeps_the_v4_book() -> None:
-    x, t = _project(nonresidential=False, offices_strategy="income")
+    x, t = _project(nonresidential=False, offices_enabled=True, offices_gba_sqm=40000.0,
+                    offices_saleable_sqm=24000.0, offices_strategy="income")
     _, filename, meta = core.build_project_workbook(x, t, [], {})
     assert not meta.get("nonres_book") and "нежилой" not in filename
-
-
-# --- объект по ДДУ: продажи, эскроу, БРИДЖ и ПФ формулами --------------------
-#
-# Владелец (13.10.2026): «мне нужна рабочая книга с живыми формулами, а не
-# выгрузка в Excel хардов». Нежилой проект с объектом по ДДУ прежде получал
-# жилую книгу v4 целиком; теперь — книгу нежилого проекта, где продажи по ДДУ,
-# эскроу, БРИДЖ, ПФ со ступенями ставки и LLCR считают формулы листов «ДДУ N»
-# и «ПФ», а «Сверка» сравнивает их с движком.
-
-DDU_VARIANTS = {
-    "офис по ДДУ": dict(offices_strategy="ddu"),
-    "офис по ДДУ и ТЦ в аренде": dict(offices_strategy="ddu", retail_strategy="income", **RETAIL),
-    "ТЦ по ДДУ, офис ДКП": dict(offices_strategy="direct", retail_strategy="ddu", **RETAIL),
-    "офис по ДДУ: проценты капиталом, свои деньги, лимит, сценарий": dict(
-        offices_strategy="ddu", bridge_interest_mode="Оплата капиталом", pre_pf_own_funds_mln=300,
-        pf_limit_approved_mln=9000, scenario_revenue_multiplier=0.95, scenario_cost_multiplier=1.05,
-        rate_scenario="high"),
-    "офис по ДДУ: профиль продаж и лестница цены": dict(
-        offices_strategy="ddu", offices_sales_profile="30%@0; 50%@12; 20%@30",
-        offices_growth_stage1_pct=5, offices_growth_stage3_pct=7, offices_share_before_rve_pct=70,
-        offices_residual_months=9),
-}
-
-
-def _ddu_book(name: str) -> tuple[bytes, dict]:
-    key = "ДДУ: " + name
-    if key not in _BOOKS:
-        x, t = _project(**DDU_VARIANTS[name])
-        content, filename, meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
-        assert meta.get("nonres_book") is True and "нежилой" in filename
-        _BOOKS[key] = content, meta
-    return _BOOKS[key]
-
-
-@pytest.mark.parametrize("name", list(DDU_VARIANTS))
-def test_a_ddu_object_is_counted_by_the_book_formulas(name) -> None:
-    content, meta = _ddu_book(name)
-    assert meta["missing"] == []
-    verdict, bad, _, book = _evaluate(content)
-    assert bad == [] and verdict == nw.PASSED
-    assert nw.PF_SHEET in book.sheetnames and "ДДУ 1" in book.sheetnames
-    checks = book[nw.CHECK_SHEET]
-    compared = {checks[f"B{r}"].value: checks[f"D{r}"].value for r in range(3, checks.max_row + 1)
-                if checks[f"A{r}"].value == "ПФ"}
-    # Сверка ПФ сравнивает настоящие деньги, а не нули.
-    for label in ("Выборка ПФ всего, ₽", "ПФ — пик, ₽", "Эскроу — пик, ₽"):
-        assert compared[label] not in ("", None, 0), label
-    # Ни одного числа движка в листах ДДУ и ПФ: всё — формулы.
-    for sheet in ("ДДУ 1", nw.PF_SHEET):
-        values = [cell for row in book[sheet].iter_rows(min_row=2) for cell in row
-                  if isinstance(cell.value, (int, float)) and cell.column > 1]
-        # Числом стоит только номер месяца k (столбец A помесячной таблицы).
-        assert [cell.coordinate for cell in values if cell.column != 1] == [], sheet
-
-
-def test_a_tampered_pf_formula_is_caught() -> None:
-    """Подделка ставки ПФ на один месяц краснит сверку ПФ и итогов."""
-    letter = nw.PF_COLUMNS["p_rate"][0]
-
-    def tamper(book):
-        sheet = book[nw.PF_SHEET]
-        for row in range(nw.FIRST_ROW, sheet.max_row + 1):
-            value = sheet[f"{letter}{row}"].value
-            if isinstance(value, str) and value.startswith("=") and row > nw.FIRST_ROW + 20:
-                sheet[f"{letter}{row}"] = value + "*1.5"
-                break
-
-    content, _ = _ddu_book("офис по ДДУ")
-    verdict, bad, _, _ = _evaluate(content, tamper)
-    assert verdict == nw.FAILED
-    assert "Проценты и комиссии" in {label for _, label, _, _ in bad}
-
-
-def test_a_tampered_ddu_price_is_caught() -> None:
-    """Вводная цены объекта по ДДУ в книге двигает выручку, эскроу и ПФ."""
-    def tamper(book):
-        cell = book[nw.INPUTS_SHEET][f"C{nw.O_ROW['price']}"]
-        cell.value = cell.value * 1.1
-
-    content, _ = _ddu_book("офис по ДДУ")
-    verdict, bad, _, _ = _evaluate(content, tamper)
-    assert verdict == nw.FAILED
-    assert {"Выручка проекта", "Эскроу — пик, ₽"} <= {label for _, label, _, _ in bad}
 
 
 def test_the_evaluator_irr_matches_the_engine() -> None:
@@ -387,17 +375,6 @@ def test_the_evaluator_irr_matches_the_engine() -> None:
     assert xlsx_eval.FUNCTIONS["INT"]([-6.5]) == -7.0
 
 
-def test_a_longer_project_than_the_tables_is_caught() -> None:
-    """Срок удержания длиннее, чем строк в помесячных таблицах: книга не
-    обрезает поток молча — горизонт в сверке красный."""
-    def tamper(book):
-        cell = book[nw.INPUTS_SHEET][f"C{nw.O_ROW['hold_years']}"]
-        cell.value = cell.value + 2
-
-    labels = _tampered_labels("офис аренда и продажа, аннуитет", tamper)
-    assert "Горизонт модели, мес." in labels
-
-
 def test_the_ddu_vat_leaves_the_engine_cash_flows(monkeypatch) -> None:
     """НДС продаж по ДДУ уходит из потоков проекта и капитала (решение владельца 13.10.2026).
 
@@ -405,7 +382,7 @@ def test_the_ddu_vat_leaves_the_engine_cash_flows(monkeypatch) -> None:
     вычитает его в своих потоках, поэтому сверка выше сходится лишь с движком,
     который вычитает его тоже.
     """
-    x, t = _project(offices_strategy="ddu")
+    x, t = _project(**VARIANTS["ТЦ по ДДУ"])
     result = core.calculate(core.CalcRequest(inputs=x, tep=t))
     original = core.simulate_financing
     seen: list[float] = []
@@ -418,8 +395,6 @@ def test_the_ddu_vat_leaves_the_engine_cash_flows(monkeypatch) -> None:
 
     monkeypatch.setattr(core, "simulate_financing", without_vat)
     blind = core.calculate(core.CalcRequest(inputs=x, tep=t))
-    # Первый вызов — основной расчёт; следом считаются пути офиса
-    # (`office_paths`), у которых ДДУ нет.
     assert seen and seen[0] > 1e6
     for flow in ("project", "equity"):
         gap = sum(blind["cashflow"][flow]) - sum(result["cashflow"][flow])
@@ -428,12 +403,71 @@ def test_the_ddu_vat_leaves_the_engine_cash_flows(monkeypatch) -> None:
 
 def test_the_v4_book_takes_the_vat_out_of_its_flows() -> None:
     """Книга v4 вычитает НДС к уплате (строка 21) из потоков, как движок."""
-    import openpyxl
-
-    x, t = _project(nonresidential=False, offices_strategy="ddu")
+    x, t = _project(nonresidential=False, offices_enabled=True, offices_gba_sqm=40000.0,
+                    offices_saleable_sqm=24000.0, offices_strategy="ddu")
     content, _, meta = core.build_project_workbook(x, t, [], {})
     assert not [m for m in meta["missing"] if "CF_" in m and ("49" in m or "54" in m or "63" in m)]
     sheet = openpyxl.load_workbook(io.BytesIO(content))["CF_1"]
     column = core._v4_cf_columns()[0]
     for row, _, replacement in core._V4_VAT_CASH_ROWS:
         assert replacement.format(c=column) in str(sheet[f"{column}{row}"].value), row
+
+
+@pytest.mark.parametrize("name", ["nonres_retail_sports_ddu", "nonres_parking_ddu"])
+def test_the_parity_script_finds_no_gap_for_sports_and_parking(name, tmp_path) -> None:
+    """ФОК по ДДУ рядом с ТЦ и наземный паркинг по ДДУ — те же сценарии, что гоняет
+    `scripts/excel_book_parity.py`: значения книги, посчитанные `xlsx_eval`
+    при сборке (`v4_value_cache`), скрипт читает без LibreOffice и не находит
+    ни одной строки «ПРОВЕРОК», расходящейся с движком."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import excel_book_parity as parity
+
+    spec = parity.nonres_scenario(core, parity.NONRES_BOOKS[name])
+    content, _, meta = core.build_project_workbook(copy.deepcopy(spec["inputs"]), copy.deepcopy(spec["tep"]),
+                                                   [], {}, project_name=name)
+    assert meta["nonres_book"] and not meta["office_book"] and meta["checks"] == ow.PASSED
+    path = tmp_path / f"{name}.xlsx"
+    path.write_bytes(content)
+    consolidated = core._run_authoritative_model(copy.deepcopy(spec["inputs"]), copy.deepcopy(spec["tep"]),
+                                                 [], {})["consolidated"]
+    assert parity.report(name, path, consolidated) == [f"  проверки книги нежилого проекта: {ow.PASSED}"]
+
+
+def test_the_irr_holds_when_it_is_searched_from_a_guess_like_excel(monkeypatch) -> None:
+    """Excel и LibreOffice ищут IRR Ньютоном от догадки, а `xlsx_eval` —
+    делением отрезка. У паркинга по ДДУ поток «сначала деньги покупателей,
+    потом затраты» (−65% в год): от догадки 0,01 Ньютон уходит в ложный корень
+    на бесконечности. Книга пробует догадки по очереди и отбрасывает ответ
+    больше 100% в месяц — IRR сходится с движком и при поиске «как у Excel»."""
+    import xlsx_eval
+
+    def newton(args):
+        flows = xlsx_eval._numbers(args[:1])
+        rate = xlsx_eval._as_number(args[1]) if len(args) > 1 else 0.1
+        for _ in range(50):
+            try:
+                value = sum(f / (1 + rate) ** k for k, f in enumerate(flows))
+                slope = sum(-k * f / (1 + rate) ** (k + 1) for k, f in enumerate(flows))
+            except (OverflowError, ZeroDivisionError):
+                break
+            if slope == 0:
+                break
+            step = value / slope
+            rate -= step
+            if abs(step) < 1e-12:
+                return rate
+        raise xlsx_eval._DivZero()
+
+    spec_name = "наземный паркинг по ДДУ"
+    content, _ = _book(spec_name)
+    monkeypatch.setitem(xlsx_eval.FUNCTIONS, "IRR", newton)
+    verdict, bad, _, _ = _evaluate(content)
+    assert verdict == ow.PASSED and bad == []
+
+    def first_guess_only(book):
+        sheet = book["CF"]
+        cell = sheet[f"B{_row(sheet, 'IRR проекта')}"]
+        flows = cell.value.split("IRR(")[1].split(",")[0]
+        cell.value = f'=IFERROR((1+IRR({flows},0.01))^12-1,"")'
+
+    assert "Проект: IRR проекта" in _tampered(spec_name, first_guess_only)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -650,9 +651,7 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         """
         cabinet_module.require_cabinet(request)
         target = (url or bnmap.ENTRY_PAGE).strip()
-        if not target.startswith(f"https://{bnmap.HOST}") and not target.startswith(
-            f"https://api.{bnmap.HOST}"
-        ):
+        if not bnmap.own_url(target):
             raise HTTPException(
                 status_code=400,
                 detail=f"Проба открывает только {bnmap.HOST}, а не «{target}»",
@@ -957,6 +956,17 @@ def install(app: FastAPI) -> MarketDiscoveryService:
         if room:
             got["salesroom"] = salesroom.summarise(
                 room, (got.get("pool") or {}).get("bands") or [])
+            # Воронка и менеджеры за последние 30 дней отчётов — тем же
+            # расчётом, что в сводке руководству.
+            days = sorted(str(m.get("day") or "") for m in room.get("messages") or []
+                          if m.get("day"))
+            if days:
+                last = datetime.date.fromisoformat(days[-1][:10])
+                first = (last - datetime.timedelta(days=29)).isoformat()
+                pipe = salesroom.sales_funnel(room, contracts.get("rows") or [], first,
+                                              last.isoformat())
+                if pipe:
+                    got["salesroom"]["pipeline"] = dict(pipe, first=first, last=last.isoformat())
         # Условия рынка: наша рассрочка и рассрочка соседей по району. Свод
         # продаж отвечает на «почему не покупают» нашими числами, а витрину
         # двигает не только наш прайс — без второй половины предложение по

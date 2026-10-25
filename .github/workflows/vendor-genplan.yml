@@ -1,10 +1,12 @@
 name: Vendor Genplan calculator assets
 
+# Только вручную. Закреплённые имена файлов калькулятора genplan.tech живут,
+# пока сайт их не пересоберёт: 23.10.2026 они уже отвечали 404. Запуск на push
+# этого файла превращал любую правку workflow (например, обновление actions от
+# Dependabot) в красную сборку из-за чужого сайта. Сами файлы уже лежат в
+# genplan_assets/; обновлять их — осознанно, руками, с новыми именами.
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - ".github/workflows/vendor-genplan.yml"
 
 permissions:
   contents: write
@@ -14,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out source branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Download pinned public calculator assets
         shell: bash
         run: |

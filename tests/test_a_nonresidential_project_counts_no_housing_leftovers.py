@@ -285,18 +285,17 @@ def test_the_book_counts_what_the_engine_counts(phasing) -> None:
     clean_x.update(underground_manual_spaces=0, underground_manual_gns_sqm=0)
     clean = _run(clean_x, clean_t, phasing)["summary"]
     if meta.get("nonres_book"):
-        # Нежилой проект одной очередью — книга нежилого проекта (решение
-        # владельца 13.10.2026: объект по ДДУ считают её формулы): «Сверка»
-        # сходится с движком, а выручка — та, что без остатка жилья.
-        import nonres_workbook as nw
-        checks = book[nw.CHECK_SHEET]
-        for r in range(3, checks.max_row + 1):
-            if isinstance(checks[f"C{r}"].value, str) and checks[f"C{r}"].value.startswith("="):
-                evaluator.cell(nw.CHECK_SHEET, f"C{r}")
-        assert evaluator.cell(nw.CHECK_SHEET, "I3") == nw.PASSED
-        revenue = next(checks[f"D{r}"].value for r in range(3, checks.max_row + 1)
-                       if checks[f"B{r}"].value == "Выручка проекта")
-        assert float(revenue) == pytest.approx(clean["revenue"], rel=1e-6)
+        # Нежилой проект одной очередью — книга на каркасе v4 (`office_workbook`:
+        # с офисом — три способа продажи офиса, без офиса — стратегия объектов;
+        # решения владельца 24.10.2026): «ПРОВЕРКИ» сходятся с движком, а
+        # выручка — та, что без остатка жилья.
+        import office_workbook as ow
+        verdict, bad = ow.verdict(ow.evaluate(book))
+        assert verdict == ow.PASSED, bad
+        checks = book[ow.CHECK_SHEET]
+        revenue = next(checks[f"D{r}"].value for r in range(5, checks.max_row + 1)
+                       if checks[f"A{r}"].value == "Проект" and checks[f"B{r}"].value == "Выручка проекта")
+        assert float(revenue) * 1e6 == pytest.approx(clean["revenue"], rel=1e-6)
         return
     for row in range(76, 85):
         assert book["ПРОВЕРКИ"][f"C{row}"].value is not None, f"цель строки {row}"

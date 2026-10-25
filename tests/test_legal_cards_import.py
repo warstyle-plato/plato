@@ -45,9 +45,11 @@ def _isolated(tmp_path, monkeypatch):
 
 def test_cards_are_added_once_and_marked_unchecked():
     got = legal.import_cards(PROJECT, _file(CARD, OTHER), legal.SEED_AUTHOR)
-    assert got == {"added": [CARD["counterparty"], OTHER["counterparty"]], "skipped": []}
+    assert got == {"added": [CARD["counterparty"], OTHER["counterparty"]], "updated": [],
+                   "skipped": [], "questions": []}
     again = legal.import_cards(PROJECT, _file(CARD, OTHER), legal.SEED_AUTHOR)
-    assert again == {"added": [], "skipped": [CARD["counterparty"], OTHER["counterparty"]]}
+    assert again == {"added": [], "updated": [],
+                     "skipped": [CARD["counterparty"], OTHER["counterparty"]], "questions": []}
     rows = legal.cases(PROJECT)
     assert len(rows) == 2 and all(row["unchecked"] for row in rows)
     text = report.render_text(report.build(PROJECT, "week", "2026-10-25"))
