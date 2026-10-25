@@ -24,9 +24,11 @@ from __future__ import annotations
 
 import copy
 import io
+import json
 import math
 import re
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -293,3 +295,152 @@ def test_the_scheme_redraws_on_the_contour_by_itself(late):
     got = late["after"]
     assert got["origin"] == "contour", got
     assert not any("квадратом" in n for n in got["notes"]), got
+
+
+# --- Форма здания по участку подбирает Платон --------------------------------
+# Владелец (25.10.2026, AskUserQuestion): «если пятиугольный участок, наверняка
+# есть возможность вместить не прямоугольник в одном углу» — форму подбирает
+# Платон, движок проверяет. Пока плана нет, в расчёте пятно прямоугольника.
+
+def _pentagon():
+    """Контур 77:06:0003002:18, снятый со снимка карты владельца (≈ 5 460 м²)."""
+    px = [(465, 1018), (492, 1045), (487, 1060), (531, 1084), (522, 1128), (466, 1185), (392, 1108)]
+    pts = [(x * 100 / 152, -y * 100 / 152) for x, y in px]
+    area = abs(core._ring_area([list(p) for p in pts]))
+    k = math.sqrt(SITE_HA * 10000 / area)
+    return _merc([(x * k, y * k) for x, y in pts], lat=55.69, lng=37.58)
+
+
+@pytest.fixture
+def plato(monkeypatch, tmp_path):
+    monkeypatch.setenv("SITE_MASSING_PLATO", "1")
+    monkeypatch.setattr(core, "_SITE_MASSING_PLAN_DIR", tmp_path)
+    monkeypatch.setattr(core, "_plan_configured", lambda: True)
+    state = {"answer": None, "briefs": []}
+
+    def fake(payload, budget_seconds=None):
+        brief = json.loads(payload["input"][0]["content"].split("\n\n")[0])
+        state["briefs"].append(brief)
+        return {"output_text": json.dumps(state["answer"](brief), ensure_ascii=False)}
+
+    monkeypatch.setattr(core, "_openai_responses_request", fake)
+    return state
+
+
+def _wait_plans():
+    for t in list(threading.enumerate()):
+        if t.name.startswith("massing-plan-"):
+            t.join(30)
+
+
+def _by_the_site(brief):
+    """Честный Платон: здание повторяет участок с отступом, срезанный до площади пятна."""
+    [corpus] = brief["corpora"]
+    inner = [list(p) for p in brief["site_inner_contour_m"][0]]
+    inner = core.inset_ring(inner, 0.5)
+    cx = sum(p[0] for p in inner) / len(inner)
+    cy = sum(p[1] for p in inner) / len(inner)
+    ring = core._clip_to_area(inner, corpus["footprint_sqm"], (cx, cy))
+    return {"summary": "Здание повторяет форму участка.",
+            "placements": [{"corpus": corpus["id"], "front": "", "offset_m": 0, "inset_m": 0,
+                            "length_m": 0, "depth_m": 0, "ring_m": ring}]}
+
+
+def test_without_plato_the_pentagon_gets_the_biggest_rectangle():
+    _, _, _, m = _office(_pentagon())
+    assert m["footprint_origin"] == "fit"
+    assert 3000 < m["footprint_sqm"] < 3790
+    assert "shape_plan" not in m
+    assert not any("подбирает форму" in n for n in m["notes"])
+
+
+def test_plato_fits_the_whole_footprint_by_the_shape_of_the_site(plato):
+    plato["answer"] = _by_the_site
+    _, _, _, first = _office(_pentagon())
+    # План готовится: пока пятно прямоугольника, и посетитель знает, что оно временное.
+    assert first["footprint_origin"] == "fit" and first["shape_plan"]["status"] == "pending"
+    assert any("подбирает форму здания" in n for n in first["notes"])
+    plan = first["scheme"]["layout"]["plan"]
+    assert plan["status"] == "pending" and plan["key"] == first["shape_plan"]["key"]
+    [brief] = plato["briefs"] or [None]
+    assert brief and brief["corpora"][0]["free_shape"] is True
+    assert brief["corpora"][0]["footprint_sqm"] == pytest.approx(3790, abs=1)
+    _wait_plans()
+    _, _, _, m = _office(_pentagon())
+    assert m["footprint_origin"] == "estimate", m["notes"]
+    assert m["footprint_sqm"] == pytest.approx(3790, abs=1)
+    assert m["average_storeys"] == pytest.approx(9.0, abs=0.01)
+    layout = m["scheme"]["layout"]
+    [b] = layout["buildings"]
+    assert b["placement_origin"] == "plato" and len(b["ring_m"]) > 4
+    assert abs(core._ring_area(b["ring_m"])) == pytest.approx(b["area_sqm"], rel=0.01)
+    assert core.massing_check([b], layout["underground_rings"]) is None
+    assert layout["plan"]["status"] == "ready"
+    assert any("предложил помощник Платон" in n for n in layout["notes"])
+
+
+def test_a_shape_outside_the_setback_keeps_the_rectangle(plato):
+    def outside(brief):
+        answer = _by_the_site(brief)
+        ring = answer["placements"][0]["ring_m"]
+        answer["placements"][0]["ring_m"] = [[x * 1.4, y * 1.4] for x, y in ring]
+        return answer
+
+    plato["answer"] = outside
+    _office(_pentagon())
+    _wait_plans()
+    _, _, _, m = _office(_pentagon())
+    assert m["footprint_origin"] == "fit" and "shape_plan" not in m
+    plan = m["scheme"]["layout"]["plan"]
+    assert plan.get("status") != "ready"
+    text = " ".join(m["scheme"]["layout"]["notes"])
+    assert "Платон" not in text
+
+
+def test_a_housing_section_cannot_take_a_free_shape():
+    corpus = {"id": "p1-1", "label": "Жилой дом, 17 этажей", "area_sqm": 1000.0, "phase": 1,
+              "storeys_shown": 17}
+    reason = core.massing_place_plan([corpus], [], [{"corpus": "p1-1", "ring_m": [[0, 0], [40, 0], [40, 25]]}])
+    assert reason and "прямоугольник" in reason
+
+
+PAGE_SHAPE = """()=>{
+ const m=(lastResult.tep||{}).site_massing||{};
+ const layout=(m.scheme||{}).layout||{};
+ const box=document.getElementById('siteMassingScheme');
+ openTab('tep'); renderTep();
+ return {footprint:m.footprint_sqm||0, origin:m.footprint_origin||'',
+         plan:(layout.plan||{}).status||'', points:((layout.buildings||[])[0]||{}).ring_m?
+           layout.buildings[0].ring_m.length:0,
+         roofs:box?box.querySelectorAll('polygon[data-kind="roof"]').length:0,
+         card:(document.getElementById('siteMassingBody')||{}).innerText||''};
+}"""
+
+
+def test_the_page_waits_for_platos_shape_and_redraws(plato):
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    plato["answer"] = _by_the_site
+    path = browser.chromium_or_skip()
+    with browser.serve(core.app, 18193) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            page = engine.new_page(viewport={"width": 1280, "height": 900})
+            page.goto(base, wait_until="domcontentloaded")
+            browser.wait_for_result(page)
+            page.evaluate(SETUP)
+            browser.wait_for_result(page)
+            page.evaluate(CONTOUR, _pentagon())
+            browser.wait_for_result(page)
+            first = page.evaluate(PAGE_SHAPE)
+            page.wait_for_function(
+                "()=>(((lastResult||{}).tep||{}).site_massing||{}).footprint_origin==='estimate'",
+                timeout=30000)
+            browser.wait_for_result(page)
+            later = page.evaluate(PAGE_SHAPE)
+    assert first["origin"] == "fit" and first["plan"] == "pending", first
+    assert "подбирает форму здания" in first["card"].replace("\xa0", " ")
+    assert later["footprint"] == pytest.approx(3790, abs=1) and later["plan"] == "ready", later
+    assert later["roofs"] == 1 and later["points"] > 4
+    card = later["card"].replace("\xa0", " ")
+    assert "не встаёт" not in card and "движок" not in card

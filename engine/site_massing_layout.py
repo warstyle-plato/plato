@@ -201,7 +201,7 @@ def _phase_corpora(phases: list[dict[str, Any]], footprint: float, limit: float,
             parts = max(parts, int(_math.ceil(spot / longest - 1e-9)))
         for j in range(parts):
             out.append({
-                **({"depth_m": LAYOUT_OTHER_DEPTH_M} if one_building else {}),
+                **({"depth_m": LAYOUT_OTHER_DEPTH_M, "free_shape": True} if one_building else {}),
                 "phase": int(p.get("phase") or 1), "phase_name": str(p.get("name") or ""),
                 "corpus": j + 1, "corpora_in_phase": parts,
                 "area_sqm": spot / parts,
@@ -403,9 +403,50 @@ def site_massing_fitted(x: dict[str, Any], tep: dict[str, Any],
         return massing
     phases = phases or [{"phase": 1, "above_gns_sqm": massing["residential_gns_sqm"]}]
     fit = site_massing_fit_sqm(x, massing, phases)
-    if fit > 0:
-        massing = site_massing({**x, "_massing_fit_sqm": fit}, tep)
+    if fit <= 0:
+        return massing
+    # Прямоугольником не встаёт. Отдельное нежилое здание может встать формой
+    # участка: её подбирает Платон (владелец 25.10.2026), движок проверяет.
+    # Готовый проверенный план — пятно расчёта остаётся; план готовится — пока
+    # пятно по прямоугольнику, страница пересчитает, когда план придёт.
+    shape = _shape_plan(x, massing, phases)
+    if shape.get("status") == "ready" and shape.get("fits"):
+        return massing
+    massing = site_massing({**x, "_massing_fit_sqm": fit,
+                            "_massing_fit_pending": shape.get("status") == "pending"}, tep)
+    if shape.get("status") == "pending":
+        massing["shape_plan"] = {"key": shape.get("key"), "status": "pending"}
     return massing
+
+
+def _shape_plan(x: dict[str, Any], massing: dict[str, Any],
+                phases: list[dict[str, Any]]) -> dict[str, Any]:
+    """План Платона для корпусов с пятном расчёта (не сжатым) → {status, key, fits}.
+
+    Только у проекта без жилья (одно здание любой формы) и только по контуру
+    ЕГРН. Ключ — тот же, что спросит схема для этих корпусов (`_place_corpora`)."""
+    if not without_housing(x):
+        return {}
+    site = _layout_site(x, massing)
+    if not site or site[2] != "contour":
+        return {}
+    rings = site[0]
+    setback = float(massing.get("setback_m") or 0.0)
+    inner = [r for r in (inset_ring(ring, setback) for ring in rings) if len(r) >= 3]
+    area = inner or rings
+    given_limit = float(massing.get("max_storeys_allowed") or 0.0)
+    limit = given_limit if given_limit > 0 else float(LAYOUT_STOREYS_LIMIT_DEFAULT)
+    corpora = _layout_corpora(x, massing, phases, float(massing.get("footprint_sqm") or 0.0), limit)
+    if not corpora or len(corpora) > LAYOUT_MAX_DRAWN_CORPORA:
+        return {}
+    axis = massing_strip_axis(area)
+    blocks = massing_blocks(area, axis)
+    _engine_layout_cached(corpora, area, blocks, axis)
+    plan = site_massing_plan_lookup(x, corpora, area, setback, blocks, "contour")
+    if plan.get("status") == "ready":
+        plan["fits"] = (massing_place_plan(corpora, blocks, plan.get("placements"))
+                        or massing_check(corpora, area)) is None
+    return plan
 
 
 def _layout_site(x: dict[str, Any], massing: dict[str, Any]
@@ -475,7 +516,8 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
     corpora = _layout_corpora(x, massing, phases, footprint, limit)
     plan: dict[str, Any] = {}
     if corpora and len(corpora) <= LAYOUT_MAX_DRAWN_CORPORA:
-        plan = _place_corpora(x, corpora, rings, inner, setback, shape_origin)
+        plan = _place_corpora(x, corpora, rings, inner, setback, shape_origin,
+                              massing.get("shape_plan"))
     for c in corpora:
         ring = c.get("ring_m")
         if not ring:
@@ -535,7 +577,8 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
 
 def _place_corpora(x: dict[str, Any], corpora: list[dict[str, Any]],
                    rings: list[list[list[float]]], inner: list[list[list[float]]],
-                   setback: float, shape_origin: str) -> dict[str, Any]:
+                   setback: float, shape_origin: str,
+                   shape_plan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Корпуса на участке в настоящем размере → состояние плана.
 
     Порядок: план Платона, если он есть, свежий и прошёл проверку движка
@@ -544,14 +587,19 @@ def _place_corpora(x: dict[str, Any], corpora: list[dict[str, Any]],
     не встали и сеткой — на схеме те корпуса, что встают по кварталам, у
     остальных места нет, и схема их называет. Корпус не уменьшается никогда:
     уменьшенная схема показывала бы застройку реже, чем она есть (владелец
-    23.10.2026). У каждого корпуса — `placement_origin`: `plato` или `engine`."""
+    23.10.2026). У каждого корпуса — `placement_origin`: `plato` или `engine`.
+
+    `shape_plan` — Платон подбирает форму здания для пятна расчёта, пока оно
+    сжато до прямоугольника (`site_massing_fitted`): второго плана для сжатого
+    пятна не просим, страница ждёт этот."""
     site = inner or rings
     axis = massing_strip_axis(site)
     blocks = massing_blocks(site, axis)
     # Расстановка движка нужна всегда: она запасная и она же — образец,
     # который получает Платон.
     engine_ok = _engine_layout_cached(corpora, site, blocks, axis)
-    plan = site_massing_plan_lookup(x, corpora, site, setback, blocks, shape_origin)
+    plan = dict(shape_plan) if shape_plan else \
+        site_massing_plan_lookup(x, corpora, site, setback, blocks, shape_origin)
     if plan.get("status") == "ready":
         reason = massing_place_plan(corpora, blocks, plan.get("placements")) \
             or massing_check(corpora, site)

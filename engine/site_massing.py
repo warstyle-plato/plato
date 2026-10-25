@@ -600,7 +600,10 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
                 f"{_fmt_ru(setback_m)} м от границ и разрывом {_fmt_ru(LAYOUT_GAP_IN_ROW_M)} м между "
                 f"корпусами на нём помещается не больше {_fmt_ru(fit)} м². Поэтому пятно взято "
                 f"{_fmt_ru(fit)} м², а этажность выше — "
-                f"{_fmt_ru(_mo_land_capacity.average_storeys(home_gns, fit), 1)}.")
+                f"{_fmt_ru(_mo_land_capacity.average_storeys(home_gns, fit), 1)}."
+                + (" Это пятно прямоугольника. Помощник Платон подбирает форму здания по "
+                   "границам участка: если пятно встанет целиком, расчёт и схема обновятся сами."
+                   if x.get("_massing_fit_pending") else ""))
         else:
             footprint, footprint_origin = floor_spot, "limit"
             warnings.append(

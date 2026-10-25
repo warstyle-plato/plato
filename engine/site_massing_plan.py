@@ -28,7 +28,7 @@
 
 # Версия методики плана: меняется кварталы/фронты/схема ответа — прежние
 # планы не подходят.
-LAYOUT_PLAN_VERSION = 1
+LAYOUT_PLAN_VERSION = 2
 # Замок запроса старше этого — запрос считается потерянным (воркер упал).
 LAYOUT_PLAN_LOCK_SECONDS = 600
 # Неудавшийся запрос (сеть, модель молчит) повторяется не раньше, чем через.
@@ -45,10 +45,13 @@ SITE_MASSING_PLAN_SCHEMA = {
         "summary": {"type": "string"},
         "placements": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
-            "required": ["corpus", "front", "offset_m", "inset_m", "length_m", "depth_m"],
+            "required": ["corpus", "front", "offset_m", "inset_m", "length_m", "depth_m", "ring_m"],
             "properties": {"corpus": {"type": "string"}, "front": {"type": "string"},
                            "offset_m": {"type": "number"}, "inset_m": {"type": "number"},
-                           "length_m": {"type": "number"}, "depth_m": {"type": "number"}}}},
+                           "length_m": {"type": "number"}, "depth_m": {"type": "number"},
+                           # Пятно любой формы — только у корпуса с free_shape.
+                           "ring_m": {"type": ["array", "null"], "items": {
+                               "type": "array", "items": {"type": "number"}}}}}},
     },
 }
 
@@ -68,7 +71,14 @@ SITE_MASSING_PLAN_INSTRUCTIONS = (
     "двумя корпусами не меньше 12 м, у общего угла соседних фронтов отступай от угла не "
     "меньше глубины секции плюс 12 м. Каждый корпус — ровно один раз. В brief есть "
     "расстановка движка, которая проходит проверку; улучши её планировочно или оставь, где "
-    "лучше нельзя. summary — одна-две фразы для посетителя-непрофессионала о замысле: где "
+    "лучше нельзя. Для всех корпусов, кроме free_shape, ring_m — null. Корпус с free_shape=true "
+    "— отдельное нежилое здание: его пятно может быть любым многоугольником ring_m (точки "
+    "[x, y] в метрах в тех же координатах, что site_inner_contour_m, без повтора первой точки, "
+    "не больше 24 точек, без самопересечений), целиком внутри site_inner_contour_m (это участок "
+    "с отступом от границ), площадью footprint_sqm ±1 %. Если прямоугольник такой площади на "
+    "участке не встаёт, поверни здание по форме участка: повтори его границы, срежь углы, "
+    "оставь двор-атриум или проезд — но площадь пятна та же. Для такого корпуса front — пустая "
+    "строка, offset_m, inset_m, length_m, depth_m — 0. summary — одна-две фразы для посетителя-непрофессионала о замысле: где "
     "дворы, где башни, как идут очереди. Отвечай только JSON по схеме.")
 
 
@@ -150,7 +160,8 @@ def site_massing_plan_status(key: str) -> dict[str, Any]:
     return {"key": key, "status": status}
 
 
-def _plan_brief(corpora: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> dict[str, Any]:
+def _plan_brief(corpora: list[dict[str, Any]], blocks: list[dict[str, Any]],
+                site: list[list[list[float]]] | None = None) -> dict[str, Any]:
     """Что получает Платон: кварталы с фронтами, корпуса и расстановка движка."""
     kinds = {"school": "школа", "kindergarten": "детский сад"}
     out_blocks = []
@@ -167,12 +178,14 @@ def _plan_brief(corpora: list[dict[str, Any]], blocks: list[dict[str, Any]]) -> 
                     "kind": ("жилая очередь" if c["phase"] > 0 else
                              kinds.get(str(c.get("object") or ""), str(c.get("object_kind") or "здание"))),
                     "phase": c["phase"], "footprint_sqm": round(float(c["area_sqm"]), 1),
-                    "storeys": c["storeys_shown"],
+                    "storeys": c["storeys_shown"], "free_shape": bool(c.get("free_shape")),
                     "depth_m": float(c.get("depth_m") or LAYOUT_CORPUS_DEPTH_M),
                     "length_at_depth_m": round(float(c["area_sqm"])
                                                / float(c.get("depth_m") or LAYOUT_CORPUS_DEPTH_M), 1)}
                    for c in corpora]
     return {"blocks": out_blocks, "corpora": out_corpora,
+            "site_inner_contour_m": [[[round(p[0], 1), round(p[1], 1)] for p in r]
+                                     for r in site or []],
             "engine_layout": [c["place"] for c in corpora if c.get("place")],
             "rules": {"section_depth_m": LAYOUT_CORPUS_DEPTH_M, "min_gap_m": LAYOUT_GAP_IN_ROW_M}}
 
@@ -183,7 +196,7 @@ def _plan_job(key: str, site_key: str, corpora: list[dict[str, Any]],
     started = time.time()
     record: dict[str, Any] = {"key": key, "site_key": site_key, "version": LAYOUT_PLAN_VERSION}
     try:
-        brief = _plan_brief(corpora, blocks)
+        brief = _plan_brief(corpora, blocks, site)
         model = (os.getenv("OPENAI_MASSING_MODEL") or os.getenv("OPENAI_AGENT_MODEL", "gpt-5.6")).strip()
         record["model"] = model
         message = json.dumps(brief, ensure_ascii=False)
@@ -269,7 +282,8 @@ def site_massing_plan_lookup(x: dict[str, Any], corpora: list[dict[str, Any]],
             # Нити — копии: расчёт продолжает работать со своими корпусами.
             snapshot = [{k: copy.deepcopy(v) for k, v in c.items()
                          if k in ("id", "label", "phase", "object", "object_kind", "area_sqm",
-                                  "storeys_shown", "place", "depth_m")} for c in corpora]
+                                  "storeys_shown", "place", "depth_m", "free_shape")}
+                        for c in corpora]
             threading.Thread(target=_plan_job, name=f"massing-plan-{key}", daemon=True,
                              args=(key, site_key, snapshot, copy.deepcopy(blocks),
                                    copy.deepcopy(site))).start()
