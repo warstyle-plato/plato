@@ -1333,10 +1333,13 @@ function payCountChanged(){
   if(button)button.textContent='Оплатить текущий участок';
  }
 }
-async function payForAccess(kind){
- const status=document.getElementById('payStatus');
- const email=String((document.getElementById('payEmail')||{}).value||'').trim();
- const count=kind==='subscription'?1:payCount();
+// `where` — откуда оплата: '' — кабинет, 'calc' — плашка доступа над
+// расчётом (у неё свои поля почты и состояния, и пакета там нет).
+async function payForAccess(kind,where){
+ const prefix=where?where+'Pay':'pay';
+ const status=document.getElementById(prefix+'Status');
+ const email=String((document.getElementById(prefix+'Email')||{}).value||'').trim();
+ const count=kind==='subscription'||where?1:payCount();
  if(status)status.textContent='Готовлю оплату…';
  try{
   const response=await fetch('/payments/create',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1346,6 +1349,9 @@ async function payForAccess(kind){
   if(data.preview){if(status)status.textContent=data.message;return}
   if(status&&data.price_rub)status.textContent='Переходим к оплате '+accessRub(data.price_rub)+(count>1?' за '+count+' '+plotsWord(count):'')+'…';
   try{localStorage.setItem('developaid_pending_payment',data.payment_id)}catch(e){}
+  // Введённое — в браузер до ухода на оплату: вернувшись, человек видит свой
+  // проект, и расчёт запускается сам.
+  try{persistLocalSilently()}catch(e){}
   location.href=data.confirmation_url;
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }
