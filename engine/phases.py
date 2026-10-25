@@ -1829,6 +1829,11 @@ def _consolidate_phase_results(
                 for r in results), project_gns),
             "landscaping_by_rate": any(
                 bool(r["summary"].get("landscaping_by_rate")) for r in results),
+            # Вид проекта и поле ставки у очередей общие — происхождение одно.
+            "landscaping_rate_origin": str(
+                (results[0]["summary"] if results else {}).get("landscaping_rate_origin") or ""),
+            "landscaping_default_rate_th": float(
+                (results[0]["summary"] if results else {}).get("landscaping_default_rate_th") or 0.0),
             # Пустоту свод не выбирает у первой очереди: текстов у неё
             # столько же, сколько очередей, и любой выбранный говорил бы за
             # остальные. Свод называет счёт.
@@ -2290,6 +2295,10 @@ def _calculate_phased_once(req: PhasedCalcRequest) -> dict[str, Any]:
         cost_inflation_factor = _phase_cost_inflation_factor(phasing, offset)
         for cost_key in _PHASE_INFLATABLE_INPUTS:
             p_inputs[cost_key] = n(x_master, cost_key) * cost_inflation_factor
+        # Умолчание ставки благоустройства нежилого проекта в поле не пишется
+        # (иначе оно читалось бы ручным), и дорожает оно этим множителем
+        # (`landscaping_gns_rate`) — так же, как индексирует его книга.
+        p_inputs["_phase_cost_inflation_factor"] = cost_inflation_factor
 
         # Queue launch price inflation is independent of monthly price growth during sales.
         # At 8% annual and offsets 0 / 12 / 24m => x1.000 / x1.080 / x1.1664.
