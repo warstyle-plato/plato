@@ -1,0 +1,118 @@
+name: Книга ↔ движок
+
+# Книга проекта обязана считать то же, что движок. Сверка — формулами самой
+# книги (`xlsx_eval`) на эталонах: жильё, офис по ДДУ и без, ТЦ/ФОК/паркинг,
+# смешанный проект (`scripts/book_engine_parity.py`). На PR — когда правка
+# трогает методику или книгу; ночью — на main, и расхождение становится
+# задачей (issue), а не строкой в логе. Протокол «ок» проверяющего —
+# docs/book_engine_parity.md.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "engine/economics.py"
+      - "engine/financing.py"
+      - "engine/reports.py"
+      - "engine/xlsx_book_v4*.py"
+      - "office_workbook.py"
+      - "xlsx_eval.py"
+      - "scripts/book_engine_parity.py"
+      - "scripts/excel_book_parity.py"
+      - "scripts/golden_snapshot.py"
+      - "tests/golden/**"
+      - "tests/test_book_engine_parity.py"
+      - ".github/workflows/book-engine-parity.yml"
+  schedule:
+    # Каждую ночь, 04:23 по Москве.
+    - cron: "23 1 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: book-engine-parity-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: Сверка эталонов
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      status: ${{ steps.parity.outcome }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+      # Сначала — что проверка вообще умеет краснеть: испорченная формула
+      # книги (резерв v4, выручка книги нежилого проекта) обязана дать
+      # расхождение. Зелёная сверка, которая не ловит подделку, ничего не значит.
+      - name: Подделка ловится
+        run: python scripts/book_engine_parity.py --tamper --only default office_ddu --summary "$GITHUB_STEP_SUMMARY"
+      - name: Сверка книги с движком
+        id: parity
+        run: |
+          set -o pipefail
+          python -W ignore scripts/book_engine_parity.py --summary "$GITHUB_STEP_SUMMARY" 2>&1 | tee parity.log
+      - name: Отчёт сверки
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: book-engine-parity
+          path: parity.log
+          if-no-files-found: ignore
+
+  # Ночной прогон на main: расхождение — открытая задача с перечнем строк;
+  # зелёная ночь закрывает её. Без этого красный ночной прогон видел бы только
+  # тот, кто зашёл в Actions.
+  nightly-issue:
+    name: Задача по ночной сверке
+    needs: [parity]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/github-script@v9
+        env:
+          RESULT: ${{ needs.parity.result }}
+        with:
+          script: |
+            const title = 'Ночная сверка «Книга ↔ движок»: расхождения на main';
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const { data: open } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', per_page: 100 });
+            const existing = open.find(i => i.title === title && !i.pull_request);
+            if (process.env.RESULT === 'success') {
+              if (existing) {
+                await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: existing.number, body: `Ночная сверка снова зелёная: ${run}` });
+                await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: existing.number, state: 'closed', state_reason: 'completed' });
+              }
+              return;
+            }
+            const body = [
+              `Ночная сверка книги Excel с движком на main не прошла (${process.env.RESULT}).`,
+              '',
+              `Прогон и таблица расхождений («проект X, строка Y: книга A, движок B, разница C»): ${run}`,
+              '',
+              'Что делать: docs/book_engine_parity.md. Мелкое и очевидное — чинит проверяющий «Книга ↔ движок»; ',
+              'если неясно, кто прав, книга или движок, — вопрос методики владельцу.',
+            ].join('\n');
+            if (existing) {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number, body });
+            } else {
+              await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body });
+            }
