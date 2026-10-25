@@ -291,6 +291,20 @@ def test_no_pf_no_reservation_fee() -> None:
     assert ddu["pf_reservation_fee"] == pytest.approx(5_000_000_000 * core.DEFAULT_INPUTS["reservation_fee_pct"] / 100)
 
 
+def test_ddu_money_reaches_the_project_at_escrow_release(ddu) -> None:
+    """214-ФЗ: деньги покупателей по ДДУ до ввода лежат на эскроу, и поток
+    проекта получает их раскрытием счёта в РВЭ, а не в месяц договора
+    (владелец, 25.10.2026). До РВЭ в потоке проекта нет ни рубля выручки."""
+    months = ddu["cashflow"]["months"]
+    flow = ddu["cashflow"]["project"]
+    rve = str(ddu["dates"]["rve"])[:7]
+    before = [v for m, v in zip(months, flow) if str(m)[:7] < rve]
+    at_rve = [v for m, v in zip(months, flow) if str(m)[:7] == rve]
+    assert before and max(before) <= 1e-6, max(before)
+    # В РВЭ раскрывается всё, что продано до ввода.
+    assert at_rve and at_rve[0] > 0.5 * ddu["summary"]["revenue"]
+
+
 def _flat_numbers(value, prefix="", out=None):
     out = {} if out is None else out
     if isinstance(value, dict):
