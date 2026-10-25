@@ -12,7 +12,9 @@
 * чувствительность цены входа двигает и цену участка, и выкуп участков и
   зданий: прежде «±68 млн» сдвигали 5 млн цены участка, размах выходил нулём,
   а вывод называл параметр главным («с 1,062 до 1,062 в худшую сторону»);
-* подземный паркинг нежилого проекта — паркинг его офиса, а не «остаток жилья».
+* подземный паркинг нежилого проекта — паркинг его офиса, а не «остаток жилья»
+  (с 25.10.2026 гараж офиса — по нормативу или его полям:
+  `tests/test_office_garage_follows_the_norm.py`).
 
 Запуск: python3 -m pytest tests/test_an_office_shows_sale_and_rent_side_by_side.py -q
 """
@@ -245,23 +247,6 @@ def test_the_report_tornado_of_an_office_is_npv_for_each_path() -> None:
 
 
 # --- паркинг ------------------------------------------------------------------
-
-def test_the_project_parking_becomes_the_office_parking() -> None:
-    result = _calc(offices_strategy=ns.STRATEGY_DIRECT, offices_parking_under_spaces=0,
-                   underground_manual_spaces=68, underground_manual_gns_sqm=2380)
-    s = result["summary"]
-    assert not any("подземный паркинг" in item.lower() for item in s["project_kind_leftovers"])
-    assert len(s["project_kind_moves"]) == 1 and "68 машино-мест" in s["project_kind_moves"][0]
-    rows = core.project_kind_rows(s)
-    assert any(r["label"] == "Паркинг" for r in rows)
-
-
-def test_two_offices_do_not_guess_whose_parking_it_is() -> None:
-    x, t = _spec(offices_parking_under_spaces=0, underground_manual_spaces=68,
-                 offices2_enabled=True, offices2_gba_sqm=5000)
-    _, _, moves = core.office_takes_project_parking(x, t)
-    assert moves == []
-
 
 def test_the_page_prices_the_office_by_its_class_only_without_housing() -> None:
     """На отрисованной странице: нежилой вид ставит цену класса офиса,

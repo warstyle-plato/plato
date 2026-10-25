@@ -746,8 +746,8 @@ def project_kind_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
         " — жилья, соцнагрузки, платы за смену ВРИ и объектов (ТЦ, офисы, паркинг, ФОК) "
         "в расчёте нет" if kind == PROJECT_KIND_HOTEL else
         " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет"), "text")]
-    for move in summary.get("project_kind_moves") or []:
-        rows.append(_row("Паркинг", str(move), "text"))
+    for line in summary.get("project_kind_parking") or []:
+        rows.append(_row("Паркинг", str(line), "text"))
     left = [str(item) for item in (summary.get("project_kind_leftovers") or [])]
     if left:
         rows.append(_row("Осталось от жилья во вводных",
