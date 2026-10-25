@@ -356,7 +356,7 @@ function renderObjectReport(r){
  renderNonresFinancing(r);
  renderEquityParticipation(r);
  renderStrategyCompare(r);
- refreshLoanTermPicks();
+ if(typeof refreshLoanTermPicks==='function')refreshLoanTermPicks();
 }
 // «Сравнение стратегий» — блок движка (`strategy_compare_block`): таблица
 // стратегий, вывод и точки, где стратегии сравняются. Страница только
