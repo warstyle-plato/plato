@@ -32,7 +32,7 @@ import browser  # noqa: E402
 import developaid_nonres_strategy as ns  # noqa: E402
 import main_legacy as core  # noqa: E402
 
-PORT = 18977
+PORT = 18571
 FIELDS = ("rent_th_per_sqm_month", "occupancy_stable_pct", "leaseup_months", "opex_pct", "exit_cap_pct")
 
 
