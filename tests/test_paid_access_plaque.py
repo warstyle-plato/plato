@@ -168,7 +168,7 @@ def test_the_plaque_on_the_drawn_page(monkeypatch):
             state = page.inner_text("#iaStateText")
             page.fill("#calcPayEmail", "buyer@example.com")
             page.click("#calcLocked button:has-text('Оплатить участок')")
-            page.wait_for_function("document.getElementById('calcPayStatus').textContent.length>0")
+            page.wait_for_function("document.getElementById('calcPayStatus').textContent.includes('форма оплаты')")
             status = page.inner_text("#calcPayStatus")
             page.close()
     assert "Этот участок можно посчитать бесплатно" in free and A1 in free
