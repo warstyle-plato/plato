@@ -109,9 +109,9 @@ def runs() -> dict:
             page = phone()
             page.goto(f"{base}/slow", wait_until="commit")
             page.wait_for_selector("#scenarioSelect", state="attached")
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(1500)  # пауза не про расчёт: документ стоит на остановке
             out["early"] = page.evaluate(_STATE_JS)
-            page.wait_for_timeout(int((_HOLD_S - 0.5) * 1000) - 1500)
+            page.wait_for_timeout(int((_HOLD_S - 0.5) * 1000) - 1500)  # пауза не про расчёт: до порога «медленно»
             out["slow"] = page.evaluate(_STATE_JS)
             page.wait_for_function("document.documentElement.classList.contains('ia-ready')",
                                    timeout=60_000)
@@ -122,7 +122,7 @@ def runs() -> dict:
             page = phone()
             page.goto(f"{base}/slow-bare", wait_until="commit")
             page.wait_for_selector("#scenarioSelect", state="attached")
-            page.wait_for_timeout(1500)
+            page.wait_for_timeout(1500)  # пауза не про расчёт: документ стоит на остановке
             out["bare"] = page.evaluate(_STATE_JS)
             page.close()
 
