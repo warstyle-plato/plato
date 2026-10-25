@@ -200,6 +200,8 @@ READ = r"""() => {
     value: inputs.offices_loan_term_years,
     shown: field ? field.querySelector('input').value : null,
     origin: (inputs._field_origin || {})['inputs.offices_loan_term_years'] || null,
+    // Повторный подбор начинается сразу после отрисовки итога — ждать нечего.
+    picking: !!(loanTermPicks.offices || {}).busy,
     note: field ? (field.querySelector('.glavapu-origin') || {}).textContent || '' : '',
     button: field ? seen(field.querySelector('.loan-term-pick-go')) : false,
     lines: field ? [...field.querySelectorAll('.loan-term-pick-lines li')].map(li => li.textContent) : [],
@@ -251,7 +253,6 @@ def page_state() -> dict:
             browser.wait_for_result(page)
             page.evaluate(SET, ["offices_loan_share_pct", 25])
             browser.wait_for_result(page)
-            page.wait_for_timeout(500)
             out["manual"] = page.evaluate(READ)
             out["errors"] = errors
             page.close()
@@ -286,4 +287,5 @@ def test_a_picked_term_follows_its_inputs(page_state) -> None:
 def test_a_typed_term_is_stronger_than_the_pick(page_state) -> None:
     state = page_state["manual"]
     assert state["value"] == 17 and state["origin"]["source"] == "manual"
+    assert not state["picking"]
     assert state["inputs"]["offices_loan_share_pct"] == 25
