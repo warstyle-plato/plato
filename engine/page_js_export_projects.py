@@ -971,6 +971,7 @@ async function deleteProject(id){
 // трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
 // то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
 // LAND_MAP_VIEWS — ответ сервера, есть ли ключ Яндекс Карт для гибрида: не проект.
+// demoBlockNames — названия разделов демо-ссылок с сервера для админки: не проект.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
  'profileState','profileAskedOnResult','calcRequiresLogin','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
@@ -979,7 +980,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
- 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS'];
+ 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS','demoBlockNames'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
