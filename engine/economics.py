@@ -333,6 +333,10 @@ def office_paths(original: tuple[dict, dict, list], result: dict[str, Any],
                  else nonres_strategy.EXIT_SALE)
         variants.append((f"{nonres_strategy.STRATEGY_INCOME}_{other}", INCOME_EXIT_LABELS[other],
                          nonres_strategy.STRATEGY_INCOME, other))
+        # Столбцы — по времени денег (владелец, 25.10.2026): аренда с
+        # удержанием раньше аренды с продажей здания.
+        variants.sort(key=lambda v: v[2] == nonres_strategy.STRATEGY_INCOME
+                      and (v[3] or exit_now) == nonres_strategy.EXIT_SALE)
     paths = []
     for key, label, strategy, exit_mode in variants:
         tags = {"key": key, "label": label, "strategy": strategy,

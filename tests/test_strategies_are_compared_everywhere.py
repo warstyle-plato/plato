@@ -87,6 +87,11 @@ def test_the_block_reads_the_paths_of_the_engine(office) -> None:
     marks = {c["key"]: c["tags"] for c in item["columns"]}
     assert marks == {"ddu": ["лучшая по NPV"], "presale": [], "direct": ["выбрана в проекте"], "income": [],
                      "income_hold": []}
+    # Столбцы — по времени денег (владелец, 25.10.2026): ДДУ, ПДКП во время
+    # стройки, блоки после ввода, аренда с удержанием, аренда с продажей.
+    assert [c["label"] for c in item["columns"]] == [
+        "Продажа по ДДУ (эскроу)", "Продажа по предварительному договору во время стройки (ПДКП)",
+        "Продажа блоками после ввода", "Аренда и удержание здания", "Аренда и продажа здания"]
 
 
 def test_the_lead_and_the_teaser_say_the_approved_sample(office) -> None:
@@ -97,8 +102,8 @@ def test_the_lead_and_the_teaser_say_the_approved_sample(office) -> None:
     assert block["teaser"] == ("Лучшая стратегия — продажа по ДДУ (эскроу), выгоднее выбранной продажи "
                                "блоками после ввода на 521,9 млн ₽ по NPV.")
     npv = next(r for r in item["rows"] if r["key"] == "npv")
-    assert npv["cells"] == ["−1 251,7 млн ₽", "−1 447,8 млн ₽", "−1 773,6 млн ₽", "−2 830,3 млн ₽",
-                            "−2 597,5 млн ₽"]
+    assert npv["cells"] == ["−1 251,7 млн ₽", "−1 447,8 млн ₽", "−1 773,6 млн ₽", "−2 597,5 млн ₽",
+                            "−2 830,3 млн ₽"]
 
 
 def test_the_chosen_best_strategy_names_the_runner_up() -> None:
@@ -149,7 +154,7 @@ def test_the_investor_sees_the_rent_kept_and_sold() -> None:
     item = bundle["consolidated"]["strategy_compare"]["items"][0]
     rows = {r["key"]: r["cells"] for r in item["rows"]}
     assert rows["yield_on_cost"] == ["аренды нет", "аренды нет", "аренды нет", "6,4%", "6,4%"]
-    assert rows["irr_equity"] == ["N/A — долг не погашен", "−90,1%", "−52,1%", "−32,0%", "−17,2%"]
+    assert rows["irr_equity"] == ["N/A — долг не погашен", "−90,1%", "−52,1%", "−17,2%", "−32,0%"]
     assert rows["exit_value"][:3] == ["здание продаётся по частям"] * 3
     # Проект на удержании: четвёртый столбец — аренда с продажей здания.
     held, _, _ = _bundle(offices_strategy=ns.STRATEGY_INCOME, offices_exit_mode=ns.EXIT_HOLD)
