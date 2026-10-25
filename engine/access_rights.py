@@ -220,8 +220,16 @@ def _access_free_used(record: dict[str, Any]) -> list[dict[str, Any]]:
     return [g for g in record.get("grants") or [] if g.get("source") == "free"]
 
 
-def _access_decide(record: dict[str, Any], plot: dict[str, Any], now: float) -> dict[str, Any]:
-    """Решение по записи прав. Ничего не пишет: выдачу делает вызывающий."""
+def _access_decide(record: dict[str, Any], plot: dict[str, Any], now: float, *,
+                   free_consent: bool = True) -> dict[str, Any]:
+    """Решение по записи прав. Ничего не пишет: выдачу делает вызывающий.
+
+    `free_consent` — человек сам попросил потратить бесплатный участок на этот.
+    Страница просит кнопкой «Посчитать бесплатно» (решение владельца
+    25.10.2026): иначе бесплатный уходил молча на первый же номер, даже с
+    опечаткой. Без согласия ответ — `free_offer`: участок можно открыть
+    бесплатно, но пока не открыт. Бот и мини-приложение кнопки не имеют и
+    согласие дают сами, как прежде."""
     terms = access_terms()
     subscription = record.get("subscription") or {}
     if float(subscription.get("until") or 0) > now:
@@ -247,7 +255,16 @@ def _access_decide(record: dict[str, Any], plot: dict[str, Any], now: float) -> 
     expired = [g for g in record.get("grants") or [] if _access_covers(g, plot)]
     used = _access_free_used(record)
     if not expired and len(used) < terms["free_plots"]:
-        return {"allowed": True, "code": "free_granted", "basis": "free", "grant_free": True}
+        left = terms["free_plots"] - len(used)
+        if not free_consent:
+            return {"allowed": False, "code": "free_offer", "free_left": left,
+                    "free_plots": terms["free_plots"],
+                    "detail": (f"Участок {plot['label']} можно посчитать бесплатно: после входа "
+                               f"бесплатных участков осталось {left} из {terms['free_plots']}. "
+                               "Нажмите «Посчитать бесплатно» в разделе «Результат» — и расчёт "
+                               "запустится.")}
+        return {"allowed": True, "code": "free_granted", "basis": "free", "grant_free": True,
+                "free_left": left - 1, "free_plots": terms["free_plots"]}
     # Запас оплаченных вперёд участков: участок без действующего права —
     # новый или с закончившимся сроком — берёт один из запаса. Это единственное
     # место, где решается привязка; выдачу делает `access_use`.
@@ -271,18 +288,24 @@ def _access_decide(record: dict[str, Any], plot: dict[str, Any], now: float) -> 
             "detail": f"{lead} Чтобы посчитать участок {plot['label']}, {offer}"}
 
 
-def access_use(chat: int, plot: dict[str, Any], *, surface: str = "") -> dict[str, Any]:
+def access_use(chat: int, plot: dict[str, Any], *, surface: str = "",
+               free_consent: bool = True, spend: bool = True) -> dict[str, Any]:
     """Можно ли считать участок; первый расчёт нового участка тратит бесплатный.
 
     Выполняется там, где лежат права (на ядре), под замком человека.
+    `spend=False` — только узнать ответ (плашка страницы до расчёта): ни
+    бесплатный, ни запас не тратятся, журнал не пишется.
     """
     chat = int(chat)
     now = time.time()
     with _access_locked(chat):
         record = _access_load(chat)
-        decision = _access_decide(record, plot, now)
+        decision = _access_decide(record, plot, now, free_consent=free_consent)
         free = decision.pop("grant_free", False)
         from_reserve = decision.pop("grant_reserve", False)
+        if not spend:
+            decision["plot"] = plot
+            return decision
         if free or from_reserve:
             terms = access_terms()
             grant = {
@@ -418,7 +441,8 @@ def _access_sign(key: str, chat: int) -> str:
     return _web_login_sign(f"access:{key}", int(chat))
 
 
-def _access_use_remote(url: str, chat: int, plot: dict[str, Any], surface: str) -> dict[str, Any]:
+def _access_use_remote(url: str, chat: int, plot: dict[str, Any], surface: str, *,
+                       free_consent: bool = True, spend: bool = True) -> dict[str, Any]:
     cache_key = (int(chat), str(plot.get("key") or ""))
     cached = _ACCESS_REMOTE_CACHE.get(cache_key)
     if cached and cached[0] > time.time():
@@ -427,13 +451,16 @@ def _access_use_remote(url: str, chat: int, plot: dict[str, Any], surface: str) 
         decision = _core_post(url, {"chat": int(chat), "cadastral": plot.get("cadastral") or [],
                                     "key": plot.get("key") or "", "label": plot.get("label") or "",
                                     "kind": plot.get("kind") or "none", "surface": surface,
+                                    "free_consent": bool(free_consent), "spend": bool(spend),
                                     "sign": _access_sign(str(plot.get("key") or ""), chat)}, 30.0)
     except HTTPException as exc:
         raise HTTPException(
             status_code=503,
             detail=(f"Не удалось проверить доступ к участку на сервере прав: {exc.detail} "
                     "Повторите расчёт через минуту.")) from exc
-    if decision.get("allowed"):
+    # Кэшируется только настоящее «да»: ответ без списания («из запаса
+    # откроется») ещё не привязал участок, и кэш пропустил бы привязку.
+    if decision.get("allowed") and spend:
         _ACCESS_REMOTE_CACHE[cache_key] = (time.time() + _ACCESS_REMOTE_CACHE_SECONDS, dict(decision))
     return decision
 
@@ -497,11 +524,14 @@ def _access_team_key(request: Request | None = None) -> bool:
 
 def calc_access_for_chat(chat: int, what: str, *, inputs: dict[str, Any] | None = None,
                          cadastral: list[str] | None = None, surface: str = "site",
-                         request: Request | None = None) -> dict[str, Any]:
+                         request: Request | None = None, free_consent: bool = True,
+                         preview: bool = False) -> dict[str, Any]:
     """ЕДИНСТВЕННОЕ решение «можно ли считать этот участок» для человека.
 
     Его читают все маршруты расчёта: страница, мини-приложение, бот, Платон,
     PDF, тизер, Excel, подбор цены. Отказ — 402 со словами, что делать.
+    `preview` — тот же ответ без списания и без 402: его рисует плашка доступа
+    на странице до расчёта (`/access/check`). `free_consent` — см. `_access_decide`.
     """
     # Без токена бота механизм честно выключен на всех поверхностях сразу, как
     # и вход (`_require_web_access`): проверять подпись нечем.
@@ -516,8 +546,13 @@ def calc_access_for_chat(chat: int, what: str, *, inputs: dict[str, Any] | None 
     if _access_team_key(request):
         return {"allowed": True, "code": "team", "basis": "market_cabinet_key", "plot": plot}
     remote = _projects_remote_url("/internal/access/use")
-    decision = (_access_use_remote(remote, chat, plot, surface) if remote
-                else access_use(chat, plot, surface=surface))
+    decision = (_access_use_remote(remote, chat, plot, surface, free_consent=free_consent,
+                                   spend=not preview) if remote
+                else access_use(chat, plot, surface=surface, free_consent=free_consent,
+                                spend=not preview))
+    if preview:
+        decision.setdefault("plot", plot)
+        return decision
     if not decision.get("allowed"):
         raise HTTPException(status_code=402,
                             detail=f"{what}: {decision.get('detail') or 'нет доступа к участку.'}")
@@ -528,9 +563,15 @@ def require_calc_access(session: str, key: str, what: str, *,
                         inputs: dict[str, Any] | None = None,
                         cadastral: list[str] | None = None,
                         surface: str = "site",
-                        request: Request | None = None) -> dict[str, Any]:
+                        request: Request | None = None,
+                        free_consent: bool = False,
+                        preview: bool = False) -> dict[str, Any]:
     """Вход + право на участок. Без токена бота механизм честно выключен, как
-    и вход (`_require_web_access`): проверять подпись нечем."""
+    и вход (`_require_web_access`): проверять подпись нечем.
+
+    Сайт тратит бесплатный участок только кнопкой «Посчитать бесплатно»
+    (`free_consent`, его передаёт `/calculate`); остальные маршруты страницы
+    идут после расчёта, когда участок уже открыт."""
     if not _telegram_token():
         return {"allowed": True, "code": "open", "basis": "open"}
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
@@ -542,7 +583,19 @@ def require_calc_access(session: str, key: str, what: str, *,
     if not chat:
         _require_web_access("", "", what)  # отказ «войдите» — теми же словами, что везде
     return calc_access_for_chat(chat, what, inputs=inputs, cadastral=cadastral, surface=surface,
-                                request=request)
+                                request=request, free_consent=free_consent, preview=preview)
+
+
+def access_summary(decision: dict[str, Any] | None) -> dict[str, Any] | None:
+    """На чём открыт расчёт — для строки над отчётом. Только права замка:
+    выключенный замок, администратор и команда строки не получают."""
+    decision = decision or {}
+    if decision.get("code") not in {"free_granted", "plot", "subscription", "reserve_granted"}:
+        return None
+    plot = decision.get("plot") or {}
+    return {"code": decision.get("code"), "basis": decision.get("basis"),
+            "until": decision.get("until"), "free_left": decision.get("free_left"),
+            "plot": {"label": plot.get("label") or ""}}
 
 
 _ACCESS_SESSION_HEADER = "x-developaid-session"
@@ -569,8 +622,11 @@ def catalog_economics_access(session: str = "", key: str = "", *,
     открыт подписке, администраторам и команде. Отказ — исключение со словами."""
     session = session or _access_scope_session(request)
     if cadastral:
+        # Кнопки «Посчитать бесплатно» у каталога нет: бесплатный участок
+        # тратится, как и прежде, первым открытием площадки.
         return require_calc_access(session, key, "Экономика площадки КРТ",
-                                   cadastral=cadastral, surface="krt", request=request)
+                                   cadastral=cadastral, surface="krt", request=request,
+                                   free_consent=True)
     try:
         return require_calc_access(session, key, "Экономика каталога КРТ", surface="krt",
                                    request=request)
@@ -606,6 +662,8 @@ class InternalAccessRequest(BaseModel):
     kind: str = "none"
     surface: str = ""
     sign: str = ""
+    free_consent: bool = True
+    spend: bool = True
 
 
 @app.post("/internal/access/use", include_in_schema=False)
@@ -626,7 +684,8 @@ def internal_access_use(req: InternalAccessRequest) -> dict[str, Any]:
         plot = {"kind": "none", "key": "", "cadastral": [], "label": ""}
     if plot["key"] != str(req.key or ""):
         raise HTTPException(status_code=400, detail="Участок запроса не совпал с подписью.")
-    return access_use(chat, plot, surface=str(req.surface or "")[:40])
+    return access_use(chat, plot, surface=str(req.surface or "")[:40],
+                      free_consent=bool(req.free_consent), spend=bool(req.spend))
 
 
 # --- кабинет и администрирование ----------------------------------------------
@@ -676,9 +735,8 @@ def _access_records() -> list[dict[str, Any]]:
     return rows
 
 
-@app.post("/access/me")
-def access_me(req: AccessRequest) -> dict[str, Any]:
-    """Кабинет: мои участки, подписка, остаток бесплатных — и условия."""
+def _access_offer() -> dict[str, Any]:
+    """Условия и цены — одни для кабинета и плашки доступа на странице."""
     payments = globals().get("payments_available")
     offer = {"terms": access_terms(),
              "payments_available": bool(callable(payments) and payments())}
@@ -687,6 +745,13 @@ def access_me(req: AccessRequest) -> dict[str, Any]:
         offer["subscription_offer"] = payment_offer_item("subscription")
         offer["registration"] = product_registration_line()
         offer["package_max_plots"] = int(globals().get("_PAYMENT_MAX_PLOTS") or 10)
+    return offer
+
+
+@app.post("/access/me")
+def access_me(req: AccessRequest) -> dict[str, Any]:
+    """Кабинет: мои участки, подписка, остаток бесплатных — и условия."""
+    offer = _access_offer()
     chat = _web_identity_chat_id(req.session)
     if not chat:
         return {**offer, "signed_in": False}
@@ -696,6 +761,34 @@ def access_me(req: AccessRequest) -> dict[str, Any]:
     return {**offer, "signed_in": True, "status": status,
             "is_admin": chat in usage_admin_ids(), "demo": bool(demo),
             "demo_payments": demo_payments_mode() if demo else ""}
+
+
+class AccessCheckRequest(BaseModel):
+    session: str = ""
+    access_key: str = ""
+    inputs: dict[str, Any] = {}
+
+
+@app.post("/access/check")
+def access_check(req: AccessCheckRequest) -> dict[str, Any]:
+    """Плашка доступа на странице: чей участок, бесплатный ли, сколько
+    бесплатных осталось, что он стоит. Отвечает то же решение, что пустит или
+    не пустит расчёт (`calc_access_for_chat`), только без списания: смотреть
+    условия не значит тратить бесплатный участок."""
+    offer = _access_offer()
+    chat = _web_identity_chat_id(req.session)
+    demo = bool(chat) and callable(globals().get("demo_chat")) and demo_chat(chat)
+    if demo:
+        offer["demo"] = True
+        offer["demo_payments"] = demo_payments_mode()
+    if not chat and _telegram_token() and not req.access_key:
+        return {**offer, "signed_in": False, "allowed": False, "code": "login"}
+    decision = require_calc_access(req.session, req.access_key, "Расчёт экономики",
+                                   inputs=req.inputs, preview=True)
+    plot = decision.get("plot") or access_plot(req.inputs)
+    return {**offer, "signed_in": bool(chat), **decision,
+            "plot": {"kind": plot.get("kind"), "label": plot.get("label") or "",
+                     "cadastral": plot.get("cadastral") or []}}
 
 
 @app.post("/internal/access/me", include_in_schema=False)

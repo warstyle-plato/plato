@@ -91,21 +91,23 @@ def test_the_block_reads_the_paths_of_the_engine(office) -> None:
 
 def test_the_lead_and_the_teaser_say_the_approved_sample(office) -> None:
     item, block = office["block"]["items"][0], office["block"]
+    # Числа — с благоустройством нежилого проекта ставкой на м² наземной ГНС
+    # (решение владельца 25.10.2026): прежде статья была нулём.
     assert item["lead"] == ("В проекте выбрана продажа блоками после ввода. Выгоднее всего продажа по ДДУ "
-                            "с эскроу: её NPV выше на 26,2 млн ₽. Ни одна из четырёх стратегий при нынешних "
+                            "с эскроу: её NPV выше на 25,8 млн ₽. Ни одна из четырёх стратегий при нынешних "
                             "ценах не окупает проект.")
     assert block["teaser"] == ("Лучшая стратегия — продажа по ДДУ (эскроу), выгоднее выбранной продажи "
-                               "блоками на 26,2 млн ₽ по NPV.")
+                               "блоками на 25,8 млн ₽ по NPV.")
     npv = next(r for r in item["rows"] if r["key"] == "npv")
-    assert npv["cells"] == ["−1 747,4 млн ₽", "−1 773,6 млн ₽", "−2 830,3 млн ₽",
-                            "−2 597,5 млн ₽"]
+    assert npv["cells"] == ["−1 849,6 млн ₽", "−1 875,4 млн ₽", "−2 932,3 млн ₽",
+                            "−2 699,6 млн ₽"]
 
 
 def test_the_chosen_best_strategy_names_the_runner_up() -> None:
     bundle, _, _ = _bundle(offices_strategy=ns.STRATEGY_DDU)
     block = core.strategy_compare_block(bundle["consolidated"])
     assert block["teaser"] == ("Выбранная стратегия — продажа по ДДУ — лучшая из четырёх по NPV; следующая, "
-                               "продажа блоками, уступает ей 26,2 млн ₽.")
+                               "продажа блоками, уступает ей 25,8 млн ₽.")
 
 
 def test_the_payback_is_the_rule_of_the_owner_section() -> None:
@@ -148,8 +150,8 @@ def test_the_investor_sees_the_rent_kept_and_sold() -> None:
     assert hold["npv"] != paths["income"]["npv"]
     item = bundle["consolidated"]["strategy_compare"]["items"][0]
     rows = {r["key"]: r["cells"] for r in item["rows"]}
-    assert rows["yield_on_cost"] == ["аренды нет", "аренды нет", "6,4%", "6,4%"]
-    assert rows["irr_equity"] == ["N/A — долг не погашен", "−52,1%", "−32,0%", "−17,2%"]
+    assert rows["yield_on_cost"] == ["аренды нет", "аренды нет", "6,2%", "6,2%"]
+    assert rows["irr_equity"] == ["N/A — долг не погашен", "−59,8%", "−34,3%", "−18,8%"]
     assert rows["exit_value"][:2] == ["здание продаётся по частям"] * 2
     # Проект на удержании: четвёртый столбец — аренда с продажей здания.
     held, _, _ = _bundle(offices_strategy=ns.STRATEGY_INCOME, offices_exit_mode=ns.EXIT_HOLD)
@@ -199,7 +201,8 @@ def test_the_found_points_really_level_the_strategies(office) -> None:
     # Контрпример: прежнее значение поля стратегии не уравнивает — разрыв во
     # много раз шире допуска, с которым подобранное значение уравнивает. С
     # выручкой по ДДУ от раскрытия эскроу (214-ФЗ, владелец 25.10.2026)
-    # продажа по ДДУ и блоками сблизились: разрыв 26,2 млн ₽ — 15 допусков.
+    # продажа по ДДУ и блоками сблизились: разрыв 25,8 млн ₽ — 14 допусков
+    # (с благоустройством нежилого проекта ставкой на м² ГНС, 25.10.2026).
     assert abs(_npv(x, t, ns.STRATEGY_DIRECT) - ddu) > 10 * tolerance
     assert points["rent"]["text"] == ("Аренда станет так же выгодна, как продажа по ДДУ, если ставка аренды "
                                       "вырастет до 54,6 тыс. ₽ за м² в год (сейчас 30,0 тыс. ₽).")

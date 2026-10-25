@@ -1236,6 +1236,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "landscaping_by_class_th": per_sqm_th(
                 op.get("landscaping_by_class", 0.0), project_gns_sqm),
             "landscaping_by_rate": bool(op.get("landscaping_by_rate")),
+            "landscaping_rate_origin": str(op.get("landscaping_rate_origin") or ""),
+            "landscaping_default_rate_th": float(op.get("landscaping_default_rate_th") or 0.0),
             # Статья считается на своей физической базе — дворе, — а сравнивают
             # её с чужой сметой и со сводом «Статистики», которые меряют метр
             # ГНС. Производная считается ЗДЕСЬ и один раз: посчитанная на

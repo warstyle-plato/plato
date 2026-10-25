@@ -60,3 +60,9 @@ def test_the_page_shows_the_quote_and_hides_the_queue_from_readers() -> None:
     assert re.search(r'<a href="https://example\.org/" target="_blank"', reader)
     assert "текст недоступен" not in reader and "код считает иначе" not in reader
     assert "текст недоступен" in admin and "нужен текст" in admin and "код считает иначе" in admin
+
+
+def test_no_row_waits_for_a_review() -> None:
+    """«Требует ревизии» — не итог: строка либо сверена, либо не подтверждена с причиной."""
+    waiting = [row["id"] for row in _rows() if row.get("status") == "review_required"]
+    assert not waiting, waiting
