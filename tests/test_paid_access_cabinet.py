@@ -225,13 +225,16 @@ def test_the_grant_form_names_its_fields_on_the_drawn_page(monkeypatch):
     assert "подписка" in status and "Иван Петров" in status
 
 
-def test_the_cabinet_speaks_one_type_scale_on_the_drawn_page():
+def test_the_cabinet_speaks_one_type_scale_on_the_drawn_page(monkeypatch):
     """Кабинет набран шкалой страницы: не больше трёх кеглей и одно семейство.
 
     Жалоба владельца: «залито оформлен и разными шрифтами» — внутри окна было
     восемь размеров (10,8–17 px) и Arial у полей рядом с системным шрифтом.
-    Меряется отрисованный кабинет администратора, где видны все блоки: тарифы,
-    выдача доступа, таблицы людей и оплат, демо-ссылки, мои проекты.
+    Меряется отрисованный кабинет администратора, где видны все блоки: тарифы
+    с включённой оплатой (как на проде), выдача доступа, таблицы людей и
+    оплат, демо-ссылки, мои проекты. Почта для чека и число участков стоят в
+    одной строке, а селекты без системного вида: Safari иначе рисует их своим
+    шрифтом.
     """
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
@@ -239,20 +242,22 @@ def test_the_cabinet_speaks_one_type_scale_on_the_drawn_page():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import browser
 
+    monkeypatch.setattr(core, "payments_available", lambda: True)
     core.users_touch(CHAT, surface="telegram", name="Иван Петров")
     client.post("/access/admin/demo/create", json={"key": "kluch", "days": 14, "note": "проверка"})
     admin_session = core._telegram_session(ADMIN, [])
     path = browser.chromium_or_skip()
     with (browser.serve(core.app, 18977) as base, sync_playwright() as pw,
           pw.chromium.launch(executable_path=str(path)) as engine):
-        page = engine.new_page(viewport={"width": 1280, "height": 900})
+        page = engine.new_page(viewport={"width": 1200, "height": 900})
         page.add_init_script(
             f"localStorage.setItem('developaid_web_session', {json.dumps(admin_session)})")
         page.goto(base, wait_until="networkidle")
         page.click("#tariffsButton")
         page.wait_for_function(
             "document.querySelector('#grantChat option[value=\"" + str(CHAT) + "\"]')"
-            "&&document.querySelector('#demoInviteList .demo-link')")
+            "&&document.querySelector('#demoInviteList .demo-link')"
+            "&&document.getElementById('payPlotButton')")
         seen = page.evaluate("""() => {
           const sizes = {}, families = {};
           for (const el of document.querySelectorAll('#projectsDialog *')) {
@@ -264,8 +269,13 @@ def test_the_cabinet_speaks_one_type_scale_on_the_drawn_page():
             (sizes[cs.fontSize] = sizes[cs.fontSize] || []).push(where);
             (families[cs.fontFamily] = families[cs.fontFamily] || []).push(where);
           }
-          return {sizes, families};
+          const top = id => Math.round(document.getElementById(id).getBoundingClientRect().top);
+          const looks = [...document.querySelectorAll('#projectsDialog select')]
+            .map(el => getComputedStyle(el).appearance);
+          return {sizes, families, rows: [top('payEmail'), top('payCount')], looks};
         }""")
         page.close()
     assert len(seen["sizes"]) <= 3, {k: v[:5] for k, v in seen["sizes"].items()}
     assert len(seen["families"]) == 1, {k: v[:5] for k, v in seen["families"].items()}
+    assert abs(seen["rows"][0] - seen["rows"][1]) <= 4, seen["rows"]
+    assert set(seen["looks"]) == {"none"}, seen["looks"]

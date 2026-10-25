@@ -447,7 +447,12 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
 .cab-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:80;align-items:center;justify-content:center;padding:20px}
 .cab{background:var(--soft);max-width:900px;width:100%;max-height:80vh;overflow:auto;padding:18px 20px;font-size:13px;line-height:1.45;color:var(--ink)}
 .cab input,.cab select,.cab button,.cab textarea{font:inherit}
-.cab input,.cab select{padding:7px 9px}
+.cab input,.cab select{padding:7px 9px;border:1px solid #cfcfcf;border-radius:0;background-color:#fff;color:#111}
+/* Safari рисует селект системным (свой шрифт и стрелка) и не слушает
+   `font`, пока у него родной вид: снимаем его и ставим свою стрелку. */
+.cab select{-webkit-appearance:none;appearance:none;padding-right:28px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23555'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 10px center}
 .cab small,.cab th{font-size:11px}
 .cab-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
 .cab-head h2{margin:0;font-size:15px;font-weight:700}
@@ -455,7 +460,7 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
 .cab-card,.cab-login{background:#fff;border:1px solid var(--line);padding:16px 18px;margin-bottom:12px}
 .cab-login{margin:0 0 12px}
 .cab-title{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:750;margin:0 0 10px}
-.cab-sub{font-weight:700;margin:16px 0 6px}
+.cab-sub{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:750;margin:18px 0 8px}
 .cab p{margin:0 0 6px}.cab ul{margin:0 0 10px 18px;padding:0}.cab li{margin:0 0 4px}
 .cab-note{font-size:11px;color:#777;margin:0 0 8px}
 .cab-muted{color:#666;margin:0 0 8px}
@@ -463,8 +468,10 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
 .cab-status:empty{display:none}.cab-status{margin:6px 0}
 .cab-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
 .cab-row>input,.cab-row>select{width:auto;flex:0 1 280px;min-width:180px}
-.cab-row>input.cab-short,.cab .cab-short{width:90px;min-width:0;flex:none}
-.cab-pay{margin-top:10px}
+.cab-row>input.cab-short,.cab .cab-short{width:72px;min-width:0;flex:none}
+.cab-pay{margin-top:10px;flex-wrap:wrap}
+.cab-pay>#payEmail{flex:0 1 240px;min-width:180px}
+.cab-pay>label{white-space:nowrap;color:#555}
 .cab-row>.cab-push{margin:0 0 0 auto}.cab-card>:last-child,.cab-row:last-child{margin-bottom:0}
 .cab-demo{border-left:3px solid #6f93b8;background:#f4f8fc;padding:8px 12px}
 .cab-nowrap{white-space:nowrap}.cab .demo-link{word-break:break-all}
