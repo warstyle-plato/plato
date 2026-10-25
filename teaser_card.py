@@ -88,6 +88,15 @@ EXTRA_LABELS = {
 # «посчитается», а не значение, и сверка с расчётом его не сравнивает.
 DERIVED_PATHS = {"inputs.offices_saleable_sqm", "inputs.retail_saleable_sqm"}
 
+# Что сказать о расчёте участка, когда он не московский.
+PARCEL_REGION_NOTES = {
+    "other": ("Участок не в Москве и не в Московской области. Норм этого региона у нас нет, "
+              "поэтому считаем по нашим умолчаниям: они видны в разделе 3."),
+    "mo": "Участок в Московской области: расчёт пойдёт по нормам области.",
+    "mixed": ("В тизере участки из разных регионов. Посчитать их одним расчётом нельзя: "
+              "пришлите номера одного региона."),
+}
+
 RELIEF_KEY = "vri_relief_mln"
 CLASS_CARD_KIND = "class"
 RELIEF_CARD_KIND = "relief"
@@ -466,12 +475,16 @@ def _model_origin(path: str, value: Any, base_inputs: dict[str, Any],
 
 def build(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[str, Any]], *,
           spp_split: dict[str, float] | None, presets: dict[str, dict[str, Any]],
-          defaults: dict[str, Any], by_parcel: bool = False) -> dict[str, Any]:
+          defaults: dict[str, Any], by_parcel: bool = False,
+          parcel_region: str = "moscow") -> dict[str, Any]:
     """Карточка: найдено / уйдёт в расчёт / не хватает — и текущий вопрос.
 
-    `by_parcel` — расчёт сам получит ТЭП ГлавАПУ по кадастровому номеру
-    (мини-приложение бота). Тогда то, что считает город, до расчёта числа не
-    имеет и так и показывается, а не нулём.
+    `by_parcel` — расчёт сам посчитает участок по кадастровому номеру
+    (мини-приложение бота). Тогда то, что считают нормы, до расчёта числа не
+    имеет и так и показывается, а не нулём. `parcel_region` — чьи это нормы:
+    «moscow» (калькулятор ГлавАПУ), «mo» (нормы Московской области), «other»
+    (норм региона у нас нет — наши умолчания), «mixed» (участки разных
+    регионов — расчёта нет).
     """
     got = replay(state, inputs, tep, spp_split=spp_split, presets=presets)
     origins, pending_inputs, pending_tep = got["origins"], got["inputs"], got["tep"]
@@ -526,12 +539,31 @@ def build(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[str
         value = _value_at(path, pending_inputs, pending_tep, land)
         if key in pending_keys:
             how, text = "ask", "Спрошу ниже."
+        elif (row["origin"] in ("glavapu", "egrn") and by_parcel and has_parcel
+              and parcel_region == "other" and key not in ("site_area_ha", "apartments_gns_sqm")):
+            # Другой регион считается, но не нашими нормами: плата за смену
+            # ВРИ — ноль, остальное — умолчания модели (решение владельца
+            # 19.10.2026, `applyOtherRegion` страницы).
+            if key == "land_rights_cost_mln":
+                how, value = "region", 0.0
+                text = ("Участок не в Москве и не в Московской области: плату за смену "
+                        "разрешённого использования ставим нулём.")
+            else:
+                how, value = "region", defaults.get(key)
+                text = ("Норм этого региона у нас нет, поэтому берём умолчание модели "
+                        "DevelopAid. Поправьте его под свой участок.")
         elif row["origin"] in ("glavapu", "egrn") and by_parcel and has_parcel:
             how = "parcel"
             value = None
-            text = ("Посчитается по кадастровому номеру участка, в Москве — калькулятором "
-                    "ГлавАПУ." if row["origin"] == "glavapu" else
-                    "Возьмётся из ЕГРН по кадастровому номеру участка.")
+            if row["origin"] == "egrn":
+                text = "Возьмётся из ЕГРН по кадастровому номеру участка."
+            elif parcel_region == "other":
+                text = ("Посчитается по плотности застройки. Для другого региона это наше "
+                        "допущение, поправьте его в модели.")
+            elif parcel_region == "mo":
+                text = "Посчитается по кадастровому номеру по нормам Московской области."
+            else:
+                text = "Посчитается по кадастровому номеру участка калькулятором ГлавАПУ."
         elif row["origin"] == "project" and not pending_inputs.get(
                 {"offices_gba_sqm": "offices_enabled", "retail_gba_sqm": "retail_enabled"}[key]):
             how, text = "absent", "В тизере не назван, поэтому такого объекта в расчёте нет."
@@ -575,6 +607,7 @@ def build(state: dict[str, Any], inputs: dict[str, Any], tep: dict[str, dict[str
         "notes": state.get("notes") or [],
         "dropped": state.get("dropped") or [],
         "reason": state.get("reason") or "",
+        "region_note": (PARCEL_REGION_NOTES.get(parcel_region, "") if by_parcel and land else ""),
         "cadastral_numbers": land,
         "questions": {"index": index, "total": len(cards), "card": question,
                       "answers": [{"question": a.get("question"),

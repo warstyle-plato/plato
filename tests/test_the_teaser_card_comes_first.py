@@ -324,3 +324,90 @@ def test_the_mini_app_counts_exactly_the_bot_card(monkeypatch) -> None:
     # Чего в карточке нет — умолчание движка, а не остаток прежнего проекта.
     assert sent["inputs"]["purchase_price_mln"] == core.DEFAULT_INPUTS["purchase_price_mln"]
     assert origin and "стр. 2" in origin["text"], origin
+
+
+EKATERINBURG = "66:41:0000000:1"
+EKB_PARCEL = {
+    "found": True, "cadastral_number": EKATERINBURG, "kind": "land",
+    "kind_label": "Земельный участок", "address": "Свердловская область, г. Екатеринбург",
+    "area_sqm": 12000.0, "area_ha": 1.2, "category": "Земли населённых пунктов",
+    "permitted_use": "Многоэтажная жилая застройка", "cadastral_value_rub": 150_000_000.0,
+    "cadastral_value_mln": 150.0, "region": "Свердловская область", "center": None,
+    "contour_merc": [], "source": "НСПД / ЕГРН",
+}
+
+
+def _mini_app_by_parcel(monkeypatch, numbers: list[str], region: str, port: int, routes) -> dict:
+    """Кнопка бота «Всё верно, считать» с участком не из Москвы: что увидел
+    человек и что ушло в расчёт."""
+    chrome = chromium_or_skip()
+    from playwright.sync_api import sync_playwright
+    import browser as stand
+
+    card = _parse(monkeypatch)["card"]
+    card = {**card, "cadastral_numbers": numbers,
+            "to_engine": [row for row in card["to_engine"] if not row["path"].startswith("land.")]}
+    monkeypatch.setattr(core, "_telegram_token", lambda: "123:test")
+    url = core._telegram_intake_calc_markup(1, card, region)["inline_keyboard"][0][0]["web_app"]["url"]
+    calcs: list[dict] = []
+    with sync_playwright() as pw:
+        chromium = pw.chromium.launch(executable_path=str(chrome))
+        page = chromium.new_page(viewport={"width": 390, "height": 844})
+        errors: list[str] = []
+        page.on("pageerror", lambda exc: errors.append(str(exc)))
+        page.on("request", lambda r: calcs.append(json.loads(r.post_data or "{}"))
+                if r.method == "POST" and r.url.endswith("/calculate") else None)
+        for pattern, handler in routes:
+            page.route(pattern, handler)
+        with stand.serve(wrapper.app, port) as root:
+            page.goto(f"{root}/?telegram=1#{url.split('#', 1)[1]}", wait_until="domcontentloaded")
+            page.wait_for_function(
+                "() => /по карточке тизера готов|не посчитан/.test("
+                "(document.getElementById('glavapuStatus')?.textContent||'')"
+                "+(document.body.innerText||''))", timeout=90_000)
+            seen = page.evaluate("() => document.body.innerText")
+            state = page.evaluate("() => ({region: inputs.vri_region, area: Number(inputs.site_area_ha),"
+                                  " fee: Number(inputs.land_rights_cost_mln||0)})")
+        chromium.close()
+    assert not errors, errors
+    assert "не посчитан" not in seen, seen[:500]
+    sent = calcs[-1]
+    for row in card["to_engine"]:
+        if row["derived"]:
+            continue
+        parts = row["path"].split(".")
+        got = sent["inputs"][parts[1]] if parts[0] == "inputs" else sent["tep"][parts[1]][parts[2]]
+        assert got == row["value"] or abs(float(got) - float(row["value"])) < 1e-6, (row["path"], got)
+    return {"seen": seen, "state": state, "sent": sent}
+
+
+def test_the_mini_app_counts_another_region_with_the_card(monkeypatch) -> None:
+    """Другой регион: госреестр, плата за смену ВРИ — ноль, остальное — наши
+    умолчания, и поверх — строки карточки; человеку сказано, что норм региона
+    у нас нет."""
+    def fulfil(body):
+        return lambda route: route.fulfill(status=200, content_type="application/json",
+                                           body=json.dumps(body, ensure_ascii=False))
+    got = _mini_app_by_parcel(monkeypatch, [EKATERINBURG], "other", PORT + 2, [
+        ("**/land/lookup", fulfil({"query": EKATERINBURG, "results": [EKB_PARCEL],
+                                   "found_count": 1, "warnings": []})),
+        ("**/land/screening", fulfil({})),
+    ])
+    assert got["state"]["region"] == "other" and got["state"]["area"] == 1.2, got["state"]
+    assert got["state"]["fee"] == 0
+    assert "Норм этого региона у нас нет" in got["seen"]
+
+
+def test_the_mini_app_counts_the_moscow_region_with_the_card(monkeypatch) -> None:
+    """Московская область: нормы области, как «Получить ТЭП» на сайте, и
+    поверх — строки карточки. Сведений ЕГРН в песочнице нет — расчёт области
+    идёт по площади участка вместо номера (настоящий `/mo/calculate`)."""
+    def by_area(route):
+        body = json.loads(route.request.post_data or "{}")
+        body.update(query="", site_area_ha=6.6667)
+        route.continue_(post_data=json.dumps(body))
+    got = _mini_app_by_parcel(monkeypatch, ["50:20:0010101:1"], "mo", PORT + 3,
+                              [("**/mo/calculate", by_area)])
+    assert got["state"]["region"] == "mo", got["state"]
+    assert abs(got["state"]["area"] - 6.6667) < 1e-3, got["state"]
+    assert "нормам Московской области" in got["seen"]

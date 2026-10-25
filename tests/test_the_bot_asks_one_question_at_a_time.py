@@ -75,6 +75,10 @@ def bot(monkeypatch, tmp_path):
     parcels: list[list[str]] = []
     monkeypatch.setattr(engine, "_telegram_handle_cadastral_numbers",
                         lambda _chat, numbers, *_a: parcels.append(list(numbers)))
+    # Москва: регион участка бот решает запросом территории (как для номера,
+    # присланного сообщением). В песочнице сети нет — территория московская.
+    monkeypatch.setattr(engine, "analyze_cadastral_territory",
+                        lambda _req: {"territory": {"inside_moscow": True}})
     engine._telegram_dialog_clear(CHAT)
     sent.parcels = parcels
     return sent
@@ -168,3 +172,43 @@ def test_the_dialogue_survives_the_other_worker(bot):
     engine._TELEGRAM_DIALOGS.pop(CHAT, None)
     engine._telegram_handle_dialog_text(CHAT, "1")
     assert "Вопрос 2 из 3" in bot[-1]["text"]
+
+
+OTHER = "66:41:0000000:1"
+
+
+def _teaser_with(monkeypatch, numbers: list[str]) -> None:
+    extraction = json.loads(json.dumps(EXTRACTION))
+    extraction["fields"][0] = {"key": "cadastral_numbers", "value": numbers, "unit": "список",
+                               "quote": f"КН {NUMBER}"}
+    monkeypatch.setattr(engine, "plato_answer",
+                        lambda *_a: {"answer": json.dumps(extraction, ensure_ascii=False)})
+
+
+def test_another_region_is_counted_with_our_defaults_and_the_card(bot, monkeypatch):
+    """Другой регион считается (госреестр и наши умолчания), и строки карточки
+    едут в этот расчёт так же, как в московский; карточка говорит, что норм
+    региона у нас нет."""
+    _teaser_with(monkeypatch, [OTHER])
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "ekb.pdf")
+    first = bot[-1]["text"]
+    assert "Норм этого региона у нас нет" in first
+    assert "ставим нулём" in first and "калькулятором ГлавАПУ" not in first
+    _press("intake_questions")
+    engine._telegram_handle_dialog_text(CHAT, "стоп")
+    button = _buttons(bot[-1])[0]
+    assert button["text"] == "Всё верно, считать"
+    url = button["web_app"]["url"]
+    assert "mode=intake" in url
+    session = _session(url)
+    assert session["cad"] == [OTHER]
+    assert session["calc_overrides"]["offices_gba_sqm"] == 26_300
+
+
+def test_parcels_of_two_regions_get_no_button_and_a_reason(bot, monkeypatch):
+    _teaser_with(monkeypatch, [OTHER, NUMBER])
+    engine._telegram_handle_intake_document(CHAT, b"%PDF", "two.pdf")
+    _press("intake_questions")
+    engine._telegram_handle_dialog_text(CHAT, "стоп")
+    assert "разных регионов" in bot[-1]["text"]
+    assert not _buttons(bot[-1])

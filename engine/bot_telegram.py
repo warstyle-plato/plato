@@ -1337,12 +1337,15 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
             chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(got["reason"]))
             + "\n\n" + in_dialog)
         return
+    region = _telegram_intake_region(_intake_cadastral_numbers(got))
     card = _intake_queue_start(filename, got, document, dict(DEFAULT_INPUTS),
                                {key: dict(value) for key, value in TEP_DEFAULT.items()},
-                               by_parcel=True)
+                               by_parcel=True, parcel_region=region)
     dialog = _telegram_dialog_get(chat_id) or {}
     dialog["step"] = "intake_card"
-    dialog["intake"] = {"id": card["id"], "filename": filename}
+    # Регион участка решается один раз, при разборе: определить его — запрос
+    # территории, и повторять его на каждом вопросе незачем.
+    dialog["intake"] = {"id": card["id"], "filename": filename, "region": region}
     _telegram_dialog_save(chat_id, dialog)
     text = _telegram_intake_card_text(card, first=True,
                                       recognized=bool(document.get("recognized")))
@@ -1350,7 +1353,8 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
         text += "\n\n" + html.escape(card["error"])
     text += "\n\n" + in_dialog
     if card.get("ready"):
-        _telegram_send_message(chat_id, text[:4000], reply_markup=_telegram_intake_calc_markup(chat_id, card))
+        _telegram_send_message(chat_id, text[:4000],
+                               reply_markup=_telegram_intake_calc_markup(chat_id, card, region))
         return
     left = int(card["questions"]["total"]) - int(card["questions"]["index"])
     text += (f"\n\nМодель пока не менялась. Дальше — {left} "
@@ -1387,6 +1391,8 @@ def _telegram_intake_card_text(card: dict[str, Any], *, first: bool, recognized:
         for row in missing:
             lines.append(f"• {html.escape(row['label'])}: {html.escape(row['shown'])}. "
                          f"<i>{html.escape(row['origin'])}</i>")
+    if card.get("region_note"):
+        lines.append("\n<b>" + html.escape(card["region_note"]) + "</b>")
     for note in card.get("notes") or []:
         lines.append(f"\n<i>{html.escape(str(note)[:300])}</i>")
     for line in card.get("dropped") or []:
@@ -1394,20 +1400,42 @@ def _telegram_intake_card_text(card: dict[str, Any], *, first: bool, recognized:
     return "\n".join(lines)
 
 
-def _telegram_intake_calc_markup(chat_id: int, card: dict[str, Any]) -> dict[str, Any] | None:
+def _telegram_intake_region(numbers: list[str]) -> str:
+    """Чьими нормами считать участок тизера: «moscow», «mo», «other», «mixed».
+
+    Тот же выбор, что у присланного номера (`cadastral_route`): номер другого
+    кадастрового округа — сразу «other»; 50:… решает территория ГлавАПУ (у
+    Новой Москвы номера тоже 50:). Без номеров — пусто.
+    """
+    if not numbers:
+        return ""
+    route = cadastral_route(numbers, None)
+    if route in ("other", "mixed"):
+        return route
+    try:
+        analysis = analyze_cadastral_territory(CadastralAnalysisRequest(cadastral_numbers=numbers))
+    except HTTPException:
+        analysis = None
+    return cadastral_route(numbers, analysis)
+
+
+def _telegram_intake_calc_markup(chat_id: int, card: dict[str, Any],
+                                 region: str = "") -> dict[str, Any] | None:
     """Кнопка «Всё верно, считать»: мини-приложение получает ровно карточку.
 
-    Участок другого региона считается своим путём, без ТЭП города: туда
-    карточка не переносится, и кнопка говорит это словами, а не молча.
+    Москва — экспресс-расчёт по участку (ТЭП ГлавАПУ, затем строки карточки).
+    Область и другой регион — режим `intake`: страница считает участок тем же
+    путём, что и на сайте (нормы области; для другого региона — госреестр и
+    наши умолчания), и кладёт строки карточки поверх. Участки разных регионов
+    одним расчётом не считаются — кнопки нет, причина в карточке.
     """
     numbers = [str(number) for number in card.get("cadastral_numbers") or []]
+    if numbers and region == "mixed":
+        return None
     overrides = teaser_card.calc_overrides(card)
-    if numbers and cadastral_route(numbers, None) in ("other", "mixed"):
-        return {"inline_keyboard": [[{"text": "Считать участок без значений тизера",
-                                      "callback_data": "intake_parcel"}]]}
+    mode = "intake" if not numbers or region in ("mo", "other") else None
     try:
-        url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides,
-                                    mode=None if numbers else "intake")
+        url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides, mode=mode)
     except Exception:  # noqa: BLE001
         return None
     return {"inline_keyboard": [[{"text": "Всё верно, считать", "web_app": {"url": url}}]]}
@@ -1472,9 +1500,10 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
     queue = _telegram_intake_card(chat_id, dialog)
     if queue is None:
         return
+    region = str((dialog.get("intake") or {}).get("region") or "")
     card = teaser_card_view(queue, dict(DEFAULT_INPUTS),
                             {key: dict(value) for key, value in TEP_DEFAULT.items()},
-                            by_parcel=True)
+                            by_parcel=True, parcel_region=region)
     ask = card["questions"]["card"]
     if ask is None:
         dialog["step"] = "intake_ready"
@@ -1483,7 +1512,7 @@ def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
         text += ("\n\nРасчёт начнётся только кнопкой ниже и возьмёт ровно то, что в разделе "
                  "«Что уйдёт в расчёт»; остальное — как в разделе 3.")
         _telegram_send_message(chat_id, text[:4000],
-                               reply_markup=_telegram_intake_calc_markup(chat_id, card))
+                               reply_markup=_telegram_intake_calc_markup(chat_id, card, region))
         return
     dialog["step"] = "await_intake_answer"
     _telegram_dialog_save(chat_id, dialog)
@@ -1551,19 +1580,6 @@ def _telegram_intake_callback(chat_id: int, data: str) -> None:
         return
     if data == "intake_questions":
         _telegram_intake_ask_next(chat_id, dialog)
-        return
-    if data == "intake_parcel":
-        queue = _telegram_intake_card(chat_id, dialog)
-        if queue is None:
-            return
-        card = teaser_card_view(queue, dict(DEFAULT_INPUTS), dict(TEP_DEFAULT), by_parcel=True)
-        dialog.pop("intake", None)
-        dialog.pop("step", None)
-        _telegram_dialog_save(chat_id, dialog)
-        _telegram_send_message(
-            chat_id, "Участок не московский: его считают нормативы региона, а значения тизера "
-                     "в этот расчёт не переносятся — впишите их в модели после расчёта.")
-        _telegram_handle_cadastral_numbers(chat_id, list(card.get("cadastral_numbers") or []))
         return
     if data.startswith("intake_mode:"):
         pending = (dialog.get("intake") or {}).get("pending") or {}

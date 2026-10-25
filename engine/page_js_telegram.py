@@ -222,10 +222,32 @@ async function runTelegramLaunch(){
   return;
  }
  if(telegramMode==='intake'){
-  // Тизер без кадастрового номера: «Всё верно, считать» в чате. Расчёт —
-  // умолчания движка и ровно строки карточки разбора, без остатков прежнего
-  // проекта из WebView (как и экспресс-расчёт по участку).
+  // «Всё верно, считать» из карточки тизера в чате. Расчёт — умолчания
+  // движка, участок (если он в тизере) и поверх ровно строки карточки, без
+  // остатков прежнего проекта из WebView (как и экспресс-расчёт по участку).
+  // Москва сюда не идёт — у неё свой запуск по кадастру ниже; здесь область
+  // и другой регион, тем же путём, что на сайте.
   resetAll();
+  let parcelNote='';
+  if(telegramCad){
+   writeCadastralField(telegramCad);
+   const numbers=cadastralNumbersIn(telegramCad);
+   const status=document.getElementById('cadastralStatus');
+   telegramProgress('Считаю участок…');
+   if(numbers.length&&numbers.every(outsideMoscowRegion)){
+    // Другой регион: госреестр и наши умолчания (решение владельца 19.10.2026).
+    const found=await obtainOtherRegionTep('');
+    if(!found){telegramProgress('');finishTelegramSession('Участок не посчитан: '+((status&&status.textContent)||'госреестр не ответил')+' Повторите из чата.');return}
+    await applyOtherRegion();
+    parcelNote=' '+otherRegionNormsText();
+   }else{
+    // Московская область: нормы области, как «Получить ТЭП» на сайте.
+    await calculateMo(telegramCad);
+    if(!moResult){telegramProgress('');finishTelegramSession('Участок не посчитан: '+((status&&status.textContent)||'расчёт по нормам области не ответил')+' Повторите из чата.');return}
+    await applyMo({silent:true});
+    parcelNote=' Участок посчитан по нормам Московской области.';
+   }
+  }
   applyTelegramCalcOverrides();
   renderInputs();renderTep();renderPhasing();
   syncProjectClassSelector();syncProjectKindSelector();
@@ -234,7 +256,7 @@ async function runTelegramLaunch(){
   await calculate();
   telegramProgress('');
   const status=document.getElementById('glavapuStatus');
-  if(status)status.innerHTML='<span class="import-ok"><b>Расчёт по карточке тизера готов.</b> Значения тизера стоят во вводных, у каждого подписано, откуда оно взято. Остальное — умолчания модели.</span>';
+  if(status)status.innerHTML='<span class="import-ok"><b>Расчёт по карточке тизера готов.</b> Значения тизера стоят во вводных, у каждого подписано, откуда оно взято. Остальное — умолчания модели.</span>'+escapeHtml(parcelNote);
   return;
  }
  if(telegramCad){

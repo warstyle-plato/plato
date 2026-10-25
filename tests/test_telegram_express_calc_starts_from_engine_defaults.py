@@ -35,6 +35,11 @@ from engine_source import engine_source  # noqa: E402
 core = wrapper.core
 
 
+# Запуск по кадастру — свой блок; «if(telegramCad){» встречается и внутри
+# режима карточки тизера, поэтому блок ищется по своей первой строке.
+CAD_LAUNCH = "if(telegramCad){\n  const field"
+
+
 def _launch() -> str:
     body = core.PAGE[core.PAGE.index("async function initializeTelegramLaunch()"):]
     return body[:body.index("async function initializeApp()")]
@@ -42,7 +47,7 @@ def _launch() -> str:
 
 def test_the_cadastral_launch_resets_before_fetching_tep():
     launch = _launch()
-    cad = launch[launch.index("if(telegramCad){"):]
+    cad = launch[launch.index(CAD_LAUNCH):]
     reset = cad.index("resetAll()")
     assert reset != -1, "запуск по кадастру не сбрасывает состояние WebView"
     assert reset < cad.index("obtainCadastralTep()"), "сброс должен идти до получения ТЭП"
@@ -69,7 +74,7 @@ def test_the_edit_mode_keeps_the_project_of_its_card():
     launch = _launch()
     edit = launch[launch.index("if(telegramMode==='edit'){"):]
     # Блок правки кончается там, где начинается следующий режим запуска.
-    edit = edit[:min(edit.index(mark) for mark in ("if(telegramCad){", "if(telegramMode==='intake'){")
+    edit = edit[:min(edit.index(mark) for mark in (CAD_LAUNCH, "if(telegramMode==='intake'){")
                      if mark in edit)]
     assert "resetAll()" not in edit
 
@@ -78,8 +83,11 @@ def test_the_teaser_card_launch_starts_from_engine_defaults_too():
     """«Всё верно, считать» из бота без участка: умолчания движка и карточка."""
     launch = _launch()
     intake = launch[launch.index("if(telegramMode==='intake'){"):]
-    intake = intake[:intake.index("if(telegramCad){")]
+    intake = intake[:intake.index(CAD_LAUNCH)]
     assert intake.index("resetAll()") < intake.index("applyTelegramCalcOverrides()")
+    # Участок считается до строк карточки: они ложатся поверх него.
+    assert intake.index("applyOtherRegion()") < intake.index("applyTelegramCalcOverrides()")
+    assert intake.index("applyMo(") < intake.index("applyTelegramCalcOverrides()")
 
 
 def test_the_bot_says_the_rest_are_engine_defaults():

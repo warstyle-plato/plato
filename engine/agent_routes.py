@@ -692,25 +692,28 @@ def _intake_queue_load(intake_id: str) -> dict[str, Any]:
 
 def teaser_card_view(queue: dict[str, Any], inputs: dict[str, Any],
                      tep: dict[str, dict[str, Any]], *, by_parcel: bool = False,
+                     parcel_region: str = "moscow",
                      class_profile: dict[str, Any] | None = None) -> dict[str, Any]:
     """Карточка разбора по текущим вводным — один сборщик для сайта и бота."""
     card = teaser_card.build(queue, inputs, tep, spp_split=MKD_SPP_SPLIT,
                              presets=teaser_card.class_presets(PROJECT_CLASS_PRESETS, class_profile),
-                             defaults=DEFAULT_INPUTS, by_parcel=by_parcel)
+                             defaults=DEFAULT_INPUTS, by_parcel=by_parcel,
+                             parcel_region=parcel_region)
     card["id"] = queue["id"]
     return card
 
 
 def _intake_queue_start(filename: str, extraction: dict[str, Any], document: dict[str, Any],
                         inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
-                        *, by_parcel: bool = False,
+                        *, by_parcel: bool = False, parcel_region: str = "moscow",
                         class_profile: dict[str, Any] | None = None) -> dict[str, Any]:
     """Завести состояние разбора и отдать карточку первого шага."""
     queue = {"id": os.urandom(16).hex(),
              **teaser_card.start(extraction, document, filename,
                                  presets=PROJECT_CLASS_PRESETS,
                                  current_class=str(inputs.get("project_class") or ""))}
-    card = teaser_card_view(queue, inputs, tep, by_parcel=by_parcel, class_profile=class_profile)
+    card = teaser_card_view(queue, inputs, tep, by_parcel=by_parcel, parcel_region=parcel_region,
+                            class_profile=class_profile)
     try:
         _intake_queue_save(queue)
     except OSError as exc:
