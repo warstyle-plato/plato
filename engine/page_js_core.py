@@ -356,6 +356,7 @@ function renderObjectReport(r){
  renderNonresFinancing(r);
  renderEquityParticipation(r);
  renderStrategyCompare(r);
+ refreshLoanTermPicks();
 }
 // «Сравнение стратегий» — блок движка (`strategy_compare_block`): таблица
 // стратегий, вывод и точки, где стратегии сравняются. Страница только
@@ -410,6 +411,96 @@ function renderStrategyCompare(r){
    strategyCompareBlock={...block,stamp:'Точки, где стратегии сравняются, не подобраны: '+String(error&&error.message||error)};
    paintStrategyCompare(strategyCompareBlock);
   });
+}
+// Подбор срока кредита аренды — кнопка «Подобрать» у поля «Срок кредита»
+// объекта с доходным методом. Подбор — десятки полных пересчётов модели
+// (`loan_term_pick` движка), поэтому он идёт отдельным запросом
+// (`/loan-term-pick`), а не с расчётом. Найденный срок встаёт в поле с
+// происхождением «подобран»; ручная правка поля сильнее подбора. Подобранный
+// срок не замораживается: когда меняются вводные, от которых он зависит,
+// подбор повторяется сам (`refreshLoanTermPicks` после каждого расчёта).
+const LOAN_TERM_SUFFIX='_loan_term_years';
+const loanTermPicks={};
+function loanTermPickField(id){return String(id).endsWith(LOAN_TERM_SUFFIX)&&!!STRATEGY_FIELD_READERS[id]}
+// Отпечаток вводных, от которых зависит подбор: всё, кроме самого срока,
+// служебных пометок и баллона, если его поставил подбор «без баллона».
+function loanTermPickHash(prefix){
+ const x={};
+ Object.keys(inputs).sort().forEach(k=>{if(!k.startsWith('_')&&k!==prefix+LOAN_TERM_SUFFIX)x[k]=inputs[k]});
+ const balloon=(inputs._field_origin||{})['inputs.'+prefix+'_loan_balloon_pct'];
+ if(balloon&&balloon.source==='picked')delete x[prefix+'_loan_balloon_pct'];
+ const text=JSON.stringify([x,tep,rates,phasing]);
+ let h=5381;
+ for(let i=0;i<text.length;i++)h=((h*33)^text.charCodeAt(i))>>>0;
+ return h.toString(36)+'.'+text.length.toString(36);
+}
+function loanTermPickHtml(prefix){
+ const st=loanTermPicks[prefix]||{};
+ const d=st.data;
+ const full=d&&d.full&&d.full.years;
+ return `<button type="button" class="loan-term-pick-go" onclick="runLoanTermPick('${escapeHtml(prefix)}','bank',false)"${st.busy?' disabled':''}>${st.busy?'Подбираю срок…':'Подобрать'}</button>`+
+  (st.error?`<div class="hint loan-term-pick-error">${escapeHtml(st.error)}</div>`:'')+
+  (d?`<ul class="loan-term-pick-lines"><li data-kind="bank">${escapeHtml(d.bank.text)}</li><li data-kind="full">${escapeHtml(d.full.text)}</li></ul>`+
+   (full?`<button type="button" class="loan-term-pick-full" onclick="applyLoanTermPick('${escapeHtml(prefix)}','full')">Взять ${full} ${yearsWord(full)} без баллона</button>`:''):'');
+}
+function yearsWord(n){const a=n%10,b=n%100;return a===1&&b!==11?'год':a>=2&&a<=4&&(b<12||b>14)?'года':'лет'}
+function paintLoanTermPick(prefix){
+ document.querySelectorAll(`.loan-term-pick[data-prefix="${prefix}"]`).forEach(box=>{box.innerHTML=loanTermPickHtml(prefix)});
+}
+function loanTermPickNode(id){
+ const prefix=id.slice(0,-LOAN_TERM_SUFFIX.length);
+ const box=document.createElement('div');
+ box.className='loan-term-pick';box.dataset.prefix=prefix;
+ box.innerHTML=loanTermPickHtml(prefix);
+ return box;
+}
+function applyLoanTermPick(prefix,mode){
+ const st=loanTermPicks[prefix]||{};
+ const v=st.data&&st.data[mode];
+ if(!v||!v.years)return false;
+ const key='inputs.'+prefix+LOAN_TERM_SUFFIX;
+ inputs[prefix+LOAN_TERM_SUFFIX]=v.years;
+ if(mode==='full'){
+  inputs[prefix+'_loan_balloon_pct']=0;
+  fieldOrigins()['inputs.'+prefix+'_loan_balloon_pct']={source:'picked',mode,text:'подобран: без баллона аренда гасит весь кредит'};
+ }
+ fieldOrigins()[key]={source:'picked',mode,hash:loanTermPickHash(prefix),
+  text:mode==='full'?`подобран: ${v.years} ${yearsWord(v.years)} — аренда гасит весь кредит без баллона`
+   :`подобран: ${v.years} ${yearsWord(v.years)} — аренда покрывает платежи с запасом, нужным банку`};
+ renderInputs();calculate();
+ return true;
+}
+async function runLoanTermPick(prefix,mode,auto){
+ loanTermPicks[prefix]={busy:true};paintLoanTermPick(prefix);
+ const hash=loanTermPickHash(prefix);
+ try{
+  const response=await fetch('/loan-term-pick',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({inputs,tep,rates,phasing,prefix,session:activeSession(),access_key:projectsAdminKey||''})});
+  const data=await response.json();
+  if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'Срок кредита не подобран: сервер не ответил.');
+  loanTermPicks[prefix]={data};
+  if(applyLoanTermPick(prefix,mode))return;
+  // Срока нет: число в поле остаётся, но пометка говорит, что оно подобрано
+  // при прежних вводных, — иначе старый подбор выглядел бы нынешним.
+  const origin=fieldOrigins()['inputs.'+prefix+LOAN_TERM_SUFFIX];
+  if(auto&&origin&&origin.source==='picked'){
+   Object.assign(origin,{hash,text:'подобран при прежних вводных; при нынешних подходящего срока нет — пояснение под кнопкой «Подобрать»'});
+   renderInputs();
+  }
+ }catch(error){
+  loanTermPicks[prefix]={error:String(error&&error.message||error)};
+ }
+ paintLoanTermPick(prefix);
+}
+// После расчёта: подобранный срок, вводные которого изменились, подбирается
+// заново тем же способом (с баллоном или без). Ручной срок не трогается.
+function refreshLoanTermPicks(){
+ Object.entries(inputs._field_origin||{}).forEach(([path,o])=>{
+  if(!o||o.source!=='picked'||!path.endsWith(LOAN_TERM_SUFFIX))return;
+  const prefix=path.slice('inputs.'.length,-LOAN_TERM_SUFFIX.length);
+  if((loanTermPicks[prefix]||{}).busy||o.hash===loanTermPickHash(prefix))return;
+  runLoanTermPick(prefix,o.mode==='full'?'full':'bank',true);
+ });
 }
 // Разделы меню отчёта: объектная вёрстка — список движка, жилая — прежний.
 function reportTocSections(r){

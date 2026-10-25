@@ -187,7 +187,7 @@ def _npv(x, t, strategy, **over) -> float:
 def test_the_found_points_really_level_the_strategies(office) -> None:
     x, t = office["x"], office["t"]
     points = {p["kind"]: p for p in office["block"]["items"][0]["points"]}
-    assert set(points) == {"rent", "cap", "price"}
+    assert set(points) == {"rent", "cap", "hold", "price"}
     ddu = _npv(x, t, ns.STRATEGY_DDU)
     tolerance = abs(ddu) * 1e-3
     assert _npv(x, t, ns.STRATEGY_INCOME, offices_rent_th_per_sqm_month=points["rent"]["value"] / 12) \
@@ -390,7 +390,7 @@ def test_the_page_points_are_the_engine_search(page_state) -> None:
     bundle = core._run_authoritative_model(x, t, [], {})
     block = core.strategy_compare_for_report(bundle, x, t, [], {})
     assert state["points"] == [p["text"] for p in block["items"][0]["points"]]
-    assert len(state["points"]) == 3 and "подбором полным пересчётом" in state["stamp"]
+    assert len(state["points"]) == 4 and "подбором полным пересчётом" in state["stamp"]
 
 
 def test_the_page_shows_the_table_before_the_search(page_state) -> None:

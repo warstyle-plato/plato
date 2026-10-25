@@ -50,6 +50,23 @@ def strategy_compare_api(req: StrategyCompareRequest) -> dict:
         or {"items": []}
 
 
+class LoanTermPickRequest(StrategyCompareRequest):
+    prefix: str = ""
+
+
+@app.post("/loan-term-pick")
+def loan_term_pick_api(req: LoanTermPickRequest) -> dict:
+    """Кнопка «Подобрать» у поля «Срок кредита» объекта с доходным методом.
+
+    Подбор — десятки полных пересчётов (`loan_term_pick`), поэтому он идёт
+    отдельным запросом, а не внутри `/calculate`. Отказ называет причину."""
+    require_calc_access(req.session, req.access_key, "Подбор срока кредита", inputs=req.inputs)
+    try:
+        return loan_term_pick(req.inputs, req.tep, req.rates or [], req.prefix, req.phasing)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Срок кредита не подобран: {exc}.")
+
+
 class TepCorrectionsNote(BaseModel):
     session: str = ""
     text: str = ""

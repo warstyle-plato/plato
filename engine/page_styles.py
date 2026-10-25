@@ -400,6 +400,11 @@ details.cadastral-box>summary::marker{color:#888}
 .strategy-points-title{font-weight:600;font-size:13px;margin:12px 0 4px}
 .strategy-points{margin:0;padding-left:18px;font-size:12px;line-height:1.5}
 .strategy-compare-stamp{color:var(--muted);font-size:11px;margin-top:10px}
+.loan-term-pick{margin-top:6px}
+.loan-term-pick button{font-size:12px;padding:4px 10px;margin:2px 6px 2px 0}
+.loan-term-pick-lines{margin:6px 0 0;padding-left:18px;font-size:12px;line-height:1.45;color:var(--ink)}
+.loan-term-pick-lines li{margin-bottom:4px}
+.loan-term-pick-error{color:#a33;margin:4px 0 0}
 .object-verdict{font-size:13px;line-height:1.5}
 .object-verdict b{display:block;font-size:15px;margin-bottom:4px}
 table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:1px solid var(--line)}
