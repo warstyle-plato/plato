@@ -611,6 +611,7 @@ PAGE += r"""</head>
     <div id="report" class="panel">
       <!-- Экономика за входом: плашка стоит первой в отчёте, чтобы человек
            видел причину там, где ждал числа (решение владельца, 18.08.2026). -->
+      <div id="calcAccessLine" class="calc-access-line" style="display:none"></div>
       <div id="calcLocked" class="calc-locked" style="display:none"></div>
       <div class="card report-hero">
         <div class="report-title">
