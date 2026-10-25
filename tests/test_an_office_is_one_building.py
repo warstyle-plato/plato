@@ -316,10 +316,13 @@ def plato(monkeypatch, tmp_path):
     monkeypatch.setenv("SITE_MASSING_PLATO", "1")
     monkeypatch.setattr(core, "_SITE_MASSING_PLAN_DIR", tmp_path)
     monkeypatch.setattr(core, "_plan_configured", lambda: True)
-    state = {"answer": None, "briefs": []}
+    # Ворота: тест может придержать ответ Платона, пока не снимет первый замер.
+    state = {"answer": None, "briefs": [], "gate": threading.Event()}
+    state["gate"].set()
 
     def fake(payload, budget_seconds=None):
         brief = json.loads(payload["input"][0]["content"].split("\n\n")[0])
+        state["gate"].wait(60)
         state["briefs"].append(brief)
         return {"output_text": json.dumps(state["answer"](brief), ensure_ascii=False)}
 
@@ -362,10 +365,10 @@ def test_plato_fits_the_whole_footprint_by_the_shape_of_the_site(plato):
     assert any("подбирает форму здания" in n for n in first["notes"])
     plan = first["scheme"]["layout"]["plan"]
     assert plan["status"] == "pending" and plan["key"] == first["shape_plan"]["key"]
-    [brief] = plato["briefs"] or [None]
-    assert brief and brief["corpora"][0]["free_shape"] is True
-    assert brief["corpora"][0]["footprint_sqm"] == pytest.approx(3790, abs=1)
     _wait_plans()
+    [brief] = plato["briefs"]
+    assert brief["corpora"][0]["free_shape"] is True
+    assert brief["corpora"][0]["footprint_sqm"] == pytest.approx(3790, abs=1)
     _, _, _, m = _office(_pentagon())
     assert m["footprint_origin"] == "estimate", m["notes"]
     assert m["footprint_sqm"] == pytest.approx(3790, abs=1)
@@ -422,6 +425,7 @@ def test_the_page_waits_for_platos_shape_and_redraws(plato):
     from playwright.sync_api import sync_playwright
 
     plato["answer"] = _by_the_site
+    plato["gate"].clear()
     path = browser.chromium_or_skip()
     with browser.serve(core.app, 18193) as base, sync_playwright() as pw:
         with pw.chromium.launch(executable_path=str(path)) as engine:
@@ -433,6 +437,7 @@ def test_the_page_waits_for_platos_shape_and_redraws(plato):
             page.evaluate(CONTOUR, _pentagon())
             browser.wait_for_result(page)
             first = page.evaluate(PAGE_SHAPE)
+            plato["gate"].set()
             page.wait_for_function(
                 "()=>(((lastResult||{}).tep||{}).site_massing||{}).footprint_origin==='estimate'",
                 timeout=30000)
