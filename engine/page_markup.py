@@ -949,10 +949,14 @@ PAGE += r"""</head>
       <div id="accessAdminStatus" style="font-size:12px;margin-bottom:8px"></div>
       <div id="accessAdminList"></div>
       <div class="section-title" style="margin:14px 0 6px">Демо-доступ по ссылке</div>
-      <div style="font-size:12px;color:#777;margin-bottom:6px">Ссылку можно отправить кому угодно: клиенту, партнёру, проверяющему ЮKassa. Она открывает кабинет без Telegram на 14 дней. По ней человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. Если отозвать ссылку, вход по ней закроется сразу.</div>
+      <div style="font-size:12px;color:#777;margin-bottom:6px">Ссылку можно отправить кому угодно: клиенту, партнёру, инвестору, проверяющему ЮKassa. Она открывает сервис без входа через Telegram на выбранный срок и только те разделы, которые вы отметили. В расчёте человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. В мониторе, сводке, торгах и рынке он видит настоящие данные ваших проектов, но ничего не может изменить или разослать. Споры и претензии, администрирование и выдача доступа по ссылке закрыты всегда. Если отозвать ссылку, вход по ней закроется сразу.</div>
+      <div id="demoInviteBlocks" class="upload-line" style="align-items:center;flex-wrap:wrap;gap:4px 14px;margin-bottom:6px">
+        <label style="font-weight:600"><input type="checkbox" id="demoBlockAll" onchange="demoBlocksAll(this.checked)"> Полный доступ</label>
+      </div>
       <div class="upload-line" style="align-items:center;margin-bottom:6px">
         <input id="demoInviteNote" placeholder="Для кого, например «ЮKassa» или «ООО Ромашка»" style="min-width:220px">
-        <button class="btn dark" onclick="accessDemoCreate()">Создать демо-ссылку</button>
+        <span style="font-size:12px;color:#777">Создать ссылку на:</span>
+        <span id="demoInviteDays" style="display:inline-flex;gap:6px"></span>
       </div>
       <div id="demoInviteStatus" style="font-size:12px;margin-bottom:6px"></div>
       <div id="demoInviteList"></div>

@@ -507,6 +507,12 @@ def calc_access_for_chat(chat: int, what: str, *, inputs: dict[str, Any] | None 
     # и вход (`_require_web_access`): проверять подпись нечем.
     if not _telegram_token():
         return {"allowed": True, "code": "open", "basis": "open"}
+    if callable(globals().get("demo_chat")) and demo_chat(int(chat)):
+        # Демо-ссылка без раздела «Расчёт» не считает и при выключенном замке
+        # оплаты; с разделом — как новый клиент.
+        problem = demo_section_problem(int(chat), "calc", write=False)
+        if problem:
+            raise HTTPException(status_code=403, detail=f"{what}: {problem}")
     if not paywall_enabled():
         return {"allowed": True, "code": "paywall_off", "basis": "paywall_off"}
     chat = int(chat)
@@ -695,7 +701,8 @@ def access_me(req: AccessRequest) -> dict[str, Any]:
     demo = callable(globals().get("demo_chat")) and demo_chat(chat)
     return {**offer, "signed_in": True, "status": status,
             "is_admin": chat in usage_admin_ids(), "demo": bool(demo),
-            "demo_payments": demo_payments_mode() if demo else ""}
+            "demo_payments": demo_payments_mode() if demo else "",
+            "demo_sections": demo_sections(chat) if demo else []}
 
 
 @app.post("/internal/access/me", include_in_schema=False)
