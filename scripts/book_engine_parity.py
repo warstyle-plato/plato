@@ -437,7 +437,11 @@ def main() -> int:
     results = []
     for name in args.only or list(PROJECTS):
         tamper = TAMPERS[PROJECTS[name][0]] if args.tamper else None
-        result = check(core, name, tamper)
+        try:
+            result = check(core, name, tamper)
+        except Exception as exc:  # noqa: BLE001 — сбой одного эталона не снимает остальные
+            result = Result(name, PROJECTS[name][1], PROJECTS[name][0])
+            result.mismatches.append(Line("сверка не выполнилась", f"{type(exc).__name__}: {exc}", "посчитано"))
         results.append(result)
         state = "расхождений нет" if not result.mismatches else f"РАСХОЖДЕНИЙ: {len(result.mismatches)}"
         print(f"===== {name} — {result.title}: строк {result.checked}, {state} ({result.seconds:.0f} с)",
