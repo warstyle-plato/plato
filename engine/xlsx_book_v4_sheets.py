@@ -111,6 +111,7 @@ _V4_NORMATIVE_STATUS_WORDS = {
     "verified": "Сверено по исходнику",
     "verified_in_engine_source_pack": "Сверено по своду норм, не по акту",
     "review_required": "Требует сверки",
+    "not_confirmed": "Не подтверждено",
     "source_link_missing": "Нет ссылки на исходник",
     "superseded": "Утратил силу",
 }

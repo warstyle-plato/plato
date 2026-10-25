@@ -426,7 +426,9 @@ def test_the_four_new_documents_are_in_the_registry_with_their_redaction() -> No
             assert row["effective_from"] == want["effective_from"], key
         assert row["source_url"] == want["source_url"], f"{key}: источник не тот, что читали"
         assert "18.10.2026" in row["source_label"], f"{key}: не сказано, когда прочитан источник"
-        assert row["current_as_of"] == "2026-10-18", key
+        # Сверка не старше той, при которой карточку завели; новая сверка
+        # (25.10.2026) двигает дату вперёд, а не ломает карточку.
+        assert row["current_as_of"] >= "2026-10-18", key
         latest, *earlier = want["redaction"]
         assert latest in row["latest_amendment"], f"{key}: действующая редакция ({latest}) не названа"
         assert latest in row["watch_terms"], f"{key}: {latest} не в маркерах сторожа"

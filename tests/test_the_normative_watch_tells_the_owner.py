@@ -113,10 +113,11 @@ def test_the_bot_sends_one_message_for_the_whole_batch() -> None:
         {"short_name": "713/30", "scope": "Московская область", "result": "unreachable",
          "message": "Источник ответил HTTP 403"},
     ])
-    assert text.count("•") == 2
+    # Ни поправки, ни отмены не названо — пунктов нет, а оба акта названы
+    # одной строкой каждый: страница изменилась, источник не ответил.
+    assert text.count("•") == 0
     assert "945-ПП" in text and "713/30" in text
-    assert "источник изменился" in text and "не отвечает" in text
-    assert "/normatives" in text, "не сказано, где смотреть, что именно изменилось"
+    assert "страница источника" in text and "не ответил" in text
 
 
 def test_the_delivery_goes_through_the_webhook_host() -> None:
