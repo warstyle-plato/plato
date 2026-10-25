@@ -65,7 +65,8 @@ def test_the_msk_branch_reproduces_the_calculator_export(monkeypatch):
         "coefficients": {"rail": 0.75, "business_outside_ttc": 0.5,
                          "rent": 0.1281, "base_cost_zh_high": 229036.29},
     })
-    result = core.vri_tep_quick("msk", "77:09:0004014:13")
+    # Компенсация — ставками дня выгрузки: город их с тех пор поднял.
+    result = core.vri_tep_quick("msk", "77:09:0004014:13", rates_at="2026-08-16")
     assert "Москва" in result["card"]
     assert "мини-приложении" in result["card"]
     assert "580,7 млн ₽" in result["card"]
@@ -214,7 +215,7 @@ def test_both_branches_attach_the_filled_developaid_template(monkeypatch):
         "territory": {"area_ha": 0.651, "district": "Савеловский"},
         "coefficients": {"rail": 0.75, "business_outside_ttc": 0.5},
     })
-    msk = core.vri_tep_quick("msk", "77:09:0004014:13")
+    msk = core.vri_tep_quick("msk", "77:09:0004014:13", rates_at="2026-08-16")
     parsed = core.parse_manual_tep_xlsx(msk["template_file"], msk["template_filename"])
     assert parsed["inputs"]["social_compensation_mln"] == pytest.approx(580.668, abs=0.01)
     assert parsed["inputs"]["social_mode"] == "Денежная компенсация"
