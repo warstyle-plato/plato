@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import re
+
 import normatives_registry as registry
 
 
@@ -53,6 +55,8 @@ def test_the_page_shows_the_quote_and_hides_the_queue_from_readers() -> None:
                             "discrepancies": ["код считает иначе"]}}
     reader = registry._card(row, admin=False)
     admin = registry._card(row, admin=True)
-    assert "Дословный текст статьи" in reader and "https://example.org/" in reader
+    assert "Дословный текст статьи" in reader
+    # Ссылка проверяется атрибутом целиком: сама строка адреса может стоять где угодно.
+    assert re.search(r'<a href="https://example\.org/" target="_blank"', reader)
     assert "текст недоступен" not in reader and "код считает иначе" not in reader
     assert "текст недоступен" in admin and "нужен текст" in admin and "код считает иначе" in admin
