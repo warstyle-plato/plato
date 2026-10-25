@@ -68,8 +68,18 @@ def test_the_edit_mode_keeps_the_project_of_its_card():
     """Правки человека — не мусор: режим редактирования не сбрасывает."""
     launch = _launch()
     edit = launch[launch.index("if(telegramMode==='edit'){"):]
-    edit = edit[:edit.index("if(telegramCad){")]
+    # Блок правки кончается там, где начинается следующий режим запуска.
+    edit = edit[:min(edit.index(mark) for mark in ("if(telegramCad){", "if(telegramMode==='intake'){")
+                     if mark in edit)]
     assert "resetAll()" not in edit
+
+
+def test_the_teaser_card_launch_starts_from_engine_defaults_too():
+    """«Всё верно, считать» из бота без участка: умолчания движка и карточка."""
+    launch = _launch()
+    intake = launch[launch.index("if(telegramMode==='intake'){"):]
+    intake = intake[:intake.index("if(telegramCad){")]
+    assert intake.index("resetAll()") < intake.index("applyTelegramCalcOverrides()")
 
 
 def test_the_bot_says_the_rest_are_engine_defaults():
