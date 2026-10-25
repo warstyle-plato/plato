@@ -1476,6 +1476,11 @@ def _pf(book: _Book, rows: _Rows, path: dict[str, str], ddu: list[_Block], credi
     month("esc", "Эскроу на конец месяца (до раскрытия)",
           f"IF({k}<{rve},{P('esc', '@p')}+{P('sales')},IF({k}={rve},{P('esc', '@p')},0))", total=False)
     month("release", "Раскрытие эскроу", f"IF({k}={rve},{P('esc')},0)")
+    # 214-ФЗ: до ввода деньги покупателей на эскроу, застройщику они приходят
+    # раскрытием счёта, проданное после ввода — в месяц продажи. Это выручка
+    # потока проекта, как `escrow_release` в `_calculate_economics`.
+    month("cash", "Деньги по ДДУ застройщику: раскрытие эскроу и продажи после ввода",
+          f"IF({k}<{rve},0,{P('sales')})+{P('release')}")
     rows.section("Собственные деньги и БРИДЖ до разрешения на стройку", tab)
     need = f"MAX({P('costs')},0)"
     month("own_avail", "Собственные деньги — остаток на начало месяца", P("own_left", "@p"),
@@ -1766,9 +1771,8 @@ def _tax_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Bloc
 
 def _annual_irr(flows: str) -> str:
     """Годовой IRR месячного потока. Excel и LibreOffice ищут IRR Ньютоном от
-    догадки, и у потока «сначала деньги покупателей, потом затраты» (паркинг по
-    ДДУ, −65% в год) от догадки 0,01 не сходятся или уходят в ложный корень на
-    бесконечности. Догадки по очереди — 0,01, −0,1, −0,3; ответ больше 100% в
+    догадки, и у части потоков (собственник ТЦ по ДДУ) от догадки 0,01 не
+    сходятся или уходят в ложный корень на бесконечности. Догадки по очереди — 0,01, −0,1, −0,3; ответ больше 100% в
     месяц — ложный корень, берётся следующая догадка; ни одна не сошлась — пусто."""
     formula = '""'
     for guess in ("-0.3", "-0.1", "0.01"):
@@ -1784,8 +1788,8 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     собственника (NPV по ставке / 12, IRR капитала), раскладка вложений.
 
     `blocks` — объекты на своём кредите, `ddu` — объекты по ДДУ этого способа:
-    их выручка идёт в поток проекта в месяц продажи, а собственнику — с
-    раскрытия эскроу, через ПФ (`_pf`)."""
+    их выручка идёт в поток проекта и собственнику с раскрытия эскроу
+    (214-ФЗ), а проданное после ввода — в месяц продажи."""
     c = path["code"]
     p = lambda key, mod="": ref(f"{c}.{key}", mod)  # noqa: E731
     k = ref("k")
@@ -1805,8 +1809,11 @@ def _cash_path(book: _Book, rows: _Rows, path: dict[str, str], blocks: list[_Blo
     rows.month(f"{c}.interest", "Проценты начислены", _sum([over("interest")] + pf("interest")))
     rows.month(f"{c}.fees", "Комиссии банка", _sum([over("fees")] + pf("fees")))
     rows.month(f"{c}.tax", "Налог на прибыль к уплате", tx("pay"))
+    rows.month(f"{c}.cash_in", "Выручка деньгами: по ДДУ — с раскрытия эскроу",
+               _sum([f"{b.z('sale')}+{b.z('rent')}+{b.z('exit')}+{b.z('residual')}"
+                     for b in blocks] + pf("cash")))
     rows.month(f"{c}.project", "Поток проекта до кредита",
-               f"{p('revenue')}-{p('costs')}-{p('vat')}-{p('capex')}-{p('tax')}", bold=True)
+               f"{p('cash_in')}-{p('costs')}-{p('vat')}-{p('capex')}-{p('tax')}", bold=True)
     rows.section("Собственник: деньги по месяцам", path["tab"])
     rows.month(f"{c}.to_equity", "Деньги объектов, ДДУ и ПФ собственнику (без затрат стройки)",
                _sum([over("to_equity")] + pf("equity")))
