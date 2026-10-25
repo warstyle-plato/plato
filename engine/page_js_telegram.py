@@ -229,9 +229,10 @@ async function runTelegramLaunch(){
   // и другой регион, тем же путём, что на сайте.
   resetAll();
   let parcelNote='';
-  if(telegramCad){
-   writeCadastralField(telegramCad);
-   const numbers=cadastralNumbersIn(telegramCad);
+  const parcel=telegramCad;
+  if(parcel){
+   writeCadastralField(parcel);
+   const numbers=cadastralNumbersIn(parcel);
    const status=document.getElementById('cadastralStatus');
    telegramProgress('Считаю участок…');
    if(numbers.length&&numbers.every(outsideMoscowRegion)){
@@ -242,7 +243,7 @@ async function runTelegramLaunch(){
     parcelNote=' '+otherRegionNormsText();
    }else{
     // Московская область: нормы области, как «Получить ТЭП» на сайте.
-    await calculateMo(telegramCad);
+    await calculateMo(parcel);
     if(!moResult){telegramProgress('');finishTelegramSession('Участок не посчитан: '+((status&&status.textContent)||'расчёт по нормам области не ответил')+' Повторите из чата.');return}
     await applyMo({silent:true});
     parcelNote=' Участок посчитан по нормам Московской области.';
