@@ -8,7 +8,7 @@
 * Числа стратегий — пути движка (`office_paths` / `retail_paths`): каждая
   стратегия — полный расчёт модели. Блок (`strategy_compare_block`) только
   переводит их в строки; страница, PDF и тизер его печатают.
-* Книга офиса сравнивает те же три способа формулами — её числа совпадают
+* Книга офиса сравнивает те же четыре способа формулами — её числа совпадают
   с блоком.
 * Точки безразличия — подбор полным пересчётом модели вне запроса расчёта
   (`strategy_compare_for_report`, `/strategy-compare`): подставленное
@@ -85,27 +85,27 @@ def test_the_block_reads_the_paths_of_the_engine(office) -> None:
     best = max(paths, key=lambda p: p["npv"])["key"]
     assert best == result["office_paths"]["better"] == item["best"] == ns.STRATEGY_DDU
     marks = {c["key"]: c["tags"] for c in item["columns"]}
-    assert marks == {"ddu": ["лучшая по NPV"], "direct": ["выбрана в проекте"], "income": [],
+    assert marks == {"ddu": ["лучшая по NPV"], "presale": [], "direct": ["выбрана в проекте"], "income": [],
                      "income_hold": []}
 
 
 def test_the_lead_and_the_teaser_say_the_approved_sample(office) -> None:
     item, block = office["block"]["items"][0], office["block"]
     assert item["lead"] == ("В проекте выбрана продажа блоками после ввода. Выгоднее всего продажа по ДДУ "
-                            "с эскроу: её NPV выше на 521,9 млн ₽. Ни одна из четырёх стратегий при нынешних "
+                            "с эскроу: её NPV выше на 521,9 млн ₽. Ни одна из пяти стратегий при нынешних "
                             "ценах не окупает проект.")
     assert block["teaser"] == ("Лучшая стратегия — продажа по ДДУ (эскроу), выгоднее выбранной продажи "
-                               "блоками на 521,9 млн ₽ по NPV.")
+                               "блоками после ввода на 521,9 млн ₽ по NPV.")
     npv = next(r for r in item["rows"] if r["key"] == "npv")
-    assert npv["cells"] == ["−1 251,7 млн ₽", "−1 773,6 млн ₽", "−2 830,3 млн ₽",
+    assert npv["cells"] == ["−1 251,7 млн ₽", "−1 447,8 млн ₽", "−1 773,6 млн ₽", "−2 830,3 млн ₽",
                             "−2 597,5 млн ₽"]
 
 
 def test_the_chosen_best_strategy_names_the_runner_up() -> None:
     bundle, _, _ = _bundle(offices_strategy=ns.STRATEGY_DDU)
     block = core.strategy_compare_block(bundle["consolidated"])
-    assert block["teaser"] == ("Выбранная стратегия — продажа по ДДУ — лучшая из четырёх по NPV; следующая, "
-                               "продажа блоками, уступает ей 521,9 млн ₽.")
+    assert block["teaser"] == ("Выбранная стратегия — продажа по ДДУ — лучшая из пяти по NPV; следующая, "
+                               "продажа по предварительному договору, уступает ей 196,1 млн ₽.")
 
 
 def test_the_payback_is_the_rule_of_the_owner_section() -> None:
@@ -116,7 +116,7 @@ def test_the_payback_is_the_rule_of_the_owner_section() -> None:
     assert direct["payback_month"] == result["report"]["equity_participation"]["payback_month"]
     assert direct["payback_month"]
     row = next(r for r in result["strategy_compare"]["items"][0]["rows"] if r["key"] == "payback_month")
-    assert row["cells"][1] == "с " + core._month_label(direct["payback_month"])
+    assert row["cells"][2] == "с " + core._month_label(direct["payback_month"])
 
 
 def test_the_retail_object_is_compared_too() -> None:
@@ -124,8 +124,8 @@ def test_the_retail_object_is_compared_too() -> None:
     result = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
     assert "office_paths" not in result
     paths = result["retail_paths"]["paths"]
-    assert {p["key"] for p in paths} == {ns.STRATEGY_DDU, ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME,
-                                          "income_hold"}
+    assert {p["key"] for p in paths} == {ns.STRATEGY_DDU, ns.PATH_PRESALE, ns.STRATEGY_DIRECT,
+                                          ns.STRATEGY_INCOME, "income_hold"}
     assert all("error" not in p for p in paths)
     item = result["strategy_compare"]["items"][0]
     assert item["product"] == "standalone_retail" and item["current"] == ns.STRATEGY_INCOME
@@ -148,9 +148,9 @@ def test_the_investor_sees_the_rent_kept_and_sold() -> None:
     assert hold["npv"] != paths["income"]["npv"]
     item = bundle["consolidated"]["strategy_compare"]["items"][0]
     rows = {r["key"]: r["cells"] for r in item["rows"]}
-    assert rows["yield_on_cost"] == ["аренды нет", "аренды нет", "6,4%", "6,4%"]
-    assert rows["irr_equity"] == ["N/A — долг не погашен", "−52,1%", "−32,0%", "−17,2%"]
-    assert rows["exit_value"][:2] == ["здание продаётся по частям"] * 2
+    assert rows["yield_on_cost"] == ["аренды нет", "аренды нет", "аренды нет", "6,4%", "6,4%"]
+    assert rows["irr_equity"] == ["N/A — долг не погашен", "−90,1%", "−52,1%", "−32,0%", "−17,2%"]
+    assert rows["exit_value"][:3] == ["здание продаётся по частям"] * 3
     # Проект на удержании: четвёртый столбец — аренда с продажей здания.
     held, _, _ = _bundle(offices_strategy=ns.STRATEGY_INCOME, offices_exit_mode=ns.EXIT_HOLD)
     data = held["consolidated"]["office_paths"]
@@ -200,8 +200,8 @@ def test_the_found_points_really_level_the_strategies(office) -> None:
     assert abs(_npv(x, t, ns.STRATEGY_DIRECT) - ddu) > 100 * tolerance
     assert points["rent"]["text"] == ("Аренда станет так же выгодна, как продажа по ДДУ, если ставка аренды "
                                       "вырастет до 66,1 тыс. ₽ за м² в год (сейчас 30,0 тыс. ₽).")
-    assert points["price"]["text"] == ("Продажа блоками сравняется с продажей по ДДУ, если блоки продавать "
-                                       "по 343,0 тыс. ₽ за м² (сейчас 273,0 тыс. ₽).")
+    assert points["price"]["text"] == ("Продажа блоками после ввода сравняется с продажей по ДДУ, если блоки "
+                                       "продавать по 343,0 тыс. ₽ за м² (сейчас 273,0 тыс. ₽).")
 
 
 def test_the_calculation_itself_does_not_search(office) -> None:
@@ -251,7 +251,7 @@ def test_the_office_book_agrees_with_the_block(office) -> None:
             want = ow._engine_number(value, ratio)
             assert got == pytest.approx(want, rel=1e-6, abs=1e-6), (column["key"], label)
             compared += 1
-    assert compared == 16
+    assert compared == 21
 
 
 # --- PDF и тизер ----------------------------------------------------------------------

@@ -1186,6 +1186,9 @@ _OBJECT_SECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
                      "sales_profile")),
     ("Прямая продажа", ("direct_sale_offset_months", "direct_sale_months",
                         "direct_sale_curve")),
+    # Окно ПДКП читает «Сравнение стратегий» при любой стратегии объекта.
+    ("Продажа по предварительному договору во время стройки",
+     ("presale_start_months", "presale_end_months")),
     ("Доходный метод", ("rent_th_per_sqm_month", "rent_date", "parking_rent_th_month",
                         "rent_index_pct", "occupancy_start_pct",
                         "occupancy_stable_pct", "leaseup_months", "opex_pct",
@@ -1373,6 +1376,13 @@ def _object_strategy_fields(obj: StandaloneObject) -> list[list[Any]]:
          "ввода, отрицательное число — до ввода, по предварительным договорам "
          "купли-продажи с авансами и без эскроу.", "number"],
         [f"{p}_direct_sale_months", "Срок прямых продаж", "мес.", "number"],
+        [f"{p}_presale_start_months", "Начало продаж по предварительному договору",
+         "мес. после начала стройки объекта. Ноль — продажи начинаются вместе со стройкой. "
+         "Это окно продаж для сравнения стратегий: покупатели платят авансы до ввода, "
+         "без эскроу. Если объект уже продаётся до ввода, сравнение берёт его сроки "
+         "из блока «Прямая продажа».", "number"],
+        [f"{p}_presale_end_months", "Конец продаж по предварительному договору",
+         "мес. до ввода объекта. Ноль — продажи идут до самого ввода.", "number"],
         [f"{p}_direct_sale_curve", "Профиль прямых продаж", "форма графика", "select",
          [["flat", "Равномерно"], ["bell", "Колокол"],
           ["front_loaded", "С упором на начало"], ["back_loaded", "С упором на конец"]]],

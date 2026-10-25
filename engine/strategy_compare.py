@@ -27,35 +27,47 @@ STRATEGY_COMPARE_BASIS = "Лучшая стратегия выбрана по NP
 # Падежи стратегий для фраз: именительный, родительный, творительный.
 _STRATEGY_WORDS: dict[str, tuple[str, str, str]] = {
     nonres_strategy.STRATEGY_DDU: ("продажа по ДДУ", "продажи по ДДУ", "продажей по ДДУ"),
-    nonres_strategy.STRATEGY_DIRECT: ("продажа блоками", "продажи блоками", "продажей блоками"),
+    nonres_strategy.PATH_PRESALE: ("продажа по предварительному договору",
+                                   "продажи по предварительному договору",
+                                   "продажей по предварительному договору"),
+    nonres_strategy.STRATEGY_DIRECT: ("продажа блоками после ввода", "продажи блоками после ввода",
+                                      "продажей блоками после ввода"),
     nonres_strategy.STRATEGY_INCOME: ("аренда с продажей здания", "аренды с продажей здания",
                                       "арендой с продажей здания"),
 }
 # Полное имя стратегии для вывода над таблицей.
 _STRATEGY_LEAD = {
     nonres_strategy.STRATEGY_DDU: "продажа по ДДУ с эскроу",
+    nonres_strategy.PATH_PRESALE: "продажа по предварительному договору во время стройки",
     nonres_strategy.STRATEGY_DIRECT: "продажа блоками после ввода",
     nonres_strategy.STRATEGY_INCOME: "аренда с продажей здания",
 }
 _HOLD_WORDS = ("аренда с удержанием здания", "аренды с удержанием здания", "арендой с удержанием здания")
 
 
+def _path_kind(path: dict[str, Any]) -> str:
+    """Способ пути для фраз: ПДКП — свой способ, хотя считается прямой продажей."""
+    if path.get("key") == nonres_strategy.PATH_PRESALE:
+        return nonres_strategy.PATH_PRESALE
+    return str(path.get("strategy") or path.get("key"))
+
+
 def _words(path: dict[str, Any]) -> tuple[str, str, str]:
     """Падежи стратегии пути: аренда — по её выходу (продажа или удержание)."""
-    if path.get("strategy", path.get("key")) == nonres_strategy.STRATEGY_INCOME \
+    if _path_kind(path) == nonres_strategy.STRATEGY_INCOME \
             and path.get("exit_mode") == nonres_strategy.EXIT_HOLD:
         return _HOLD_WORDS
-    return _STRATEGY_WORDS[str(path.get("strategy") or path.get("key"))]
+    return _STRATEGY_WORDS[_path_kind(path)]
 
 
 def _lead_word(path: dict[str, Any]) -> str:
-    if path.get("strategy", path.get("key")) == nonres_strategy.STRATEGY_INCOME:
+    if _path_kind(path) == nonres_strategy.STRATEGY_INCOME:
         return _words(path)[0]
-    return _STRATEGY_LEAD[str(path.get("strategy") or path.get("key"))]
+    return _STRATEGY_LEAD[_path_kind(path)]
 
 
 _OBJECT_WORDS = {"offices": "офисы", "standalone_retail": "ТЦ"}
-_COUNT_GENITIVE = {2: "двух", 3: "трёх", 4: "четырёх"}
+_COUNT_GENITIVE = {2: "двух", 3: "трёх", 4: "четырёх", 5: "пяти"}
 
 # Границы подбора — во сколько раз поле может отойти от нынешнего значения.
 _INDIFFERENCE_BOUNDS = {"rent": (0.02, 20.0), "cap": (0.1, 5.0), "price": (0.05, 10.0)}
@@ -317,11 +329,12 @@ def _strategy_field_value(inputs: dict[str, Any], prefix: str, suffix: str) -> f
 def _strategy_npv(inputs: dict[str, Any], tep: dict[str, Any], rates: list[Any],
                   prefixes: tuple[str, ...], strategy: str, suffix: str | None = None,
                   factor: float = 1.0) -> float:
-    """NPV проекта при этой стратегии у объектов и поле `suffix`, умноженном
-    на `factor`: полный расчёт движка, без сравнения путей внутри."""
+    """NPV проекта при этом пути у объектов (`apply_path`: стратегия и окно
+    продаж) и поле `suffix`, умноженном на `factor`: полный расчёт движка, без
+    сравнения путей внутри."""
     x, t, r = copy.deepcopy((inputs, tep, rates))
     for prefix in prefixes:
-        x[f"{prefix}_strategy"] = strategy
+        apply_path(x, prefix, strategy)
         if suffix:
             x[f"{prefix}_{suffix}"] = _strategy_field_value(inputs, prefix, suffix) * factor
     token = OFFICE_PATHS_ON.set(False)
@@ -398,7 +411,8 @@ def _product_indifference(inputs: dict[str, Any], tep: dict[str, Any], rates: li
     single = len(prefixes) == 1
     first = prefixes[0] if prefixes else ""
     lines: list[dict[str, Any]] = []
-    sales = _scored(list(paths.values()), (nonres_strategy.STRATEGY_DDU, nonres_strategy.STRATEGY_DIRECT))
+    sales = _scored(list(paths.values()), (nonres_strategy.STRATEGY_DDU, nonres_strategy.PATH_PRESALE,
+                                           nonres_strategy.STRATEGY_DIRECT))
     income = paths.get(nonres_strategy.STRATEGY_INCOME)
     if prefixes and income and sales:
         sale = max(sales, key=lambda p: float(p["npv"]))
@@ -419,8 +433,8 @@ def _product_indifference(inputs: dict[str, Any], tep: dict[str, Any], rates: li
             inputs, tep, rates, prefixes, nonres_strategy.STRATEGY_DIRECT, "price_th_per_sqm", f) - target,
             low, high)
         lines.append(_indifference_line("price", factor, _strategy_field_value(inputs, first, "price_th_per_sqm"),
-                                        single, "Продажа блоками", _STRATEGY_WORDS[nonres_strategy.STRATEGY_DDU],
-                                        False))
+                                        single, "Продажа блоками после ввода",
+                                        _STRATEGY_WORDS[nonres_strategy.STRATEGY_DDU], False))
     return {"product": data.get("product"), "lines": lines}
 
 

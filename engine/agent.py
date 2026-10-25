@@ -790,17 +790,18 @@ def report_sensitivity(inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
     prefixes = office_path_prefixes(inputs)
     if prefixes:
         out: dict[str, Any] = {}
-        current = nonres_strategy.object_strategy(inputs, prefixes[0])
-        # Торнадо — у продажи блоками и аренды; продажу по ДДУ (третий способ
+        current = object_path_key(inputs, prefixes[0])
+        # Торнадо — у продаж без эскроу и аренды; продажу по ДДУ (способ
         # `OFFICE_PATHS`) отчёт меряет LLCR, и её торнадо здесь не строится.
+        # ПДКП — прямая продажа со своим окном продаж (`apply_path`).
         for key, label in OFFICE_PATHS:
             if key == nonres_strategy.STRATEGY_DDU:
                 continue
             x = copy.deepcopy(inputs)
             for prefix in prefixes:
-                x[f"{prefix}_strategy"] = key
+                apply_path(x, prefix, key)
             params = [spec["key"] for spec in _SENSITIVITY_PARAMETERS
-                      if spec.get("object") in prefixes and key in spec["strategies"]
+                      if spec.get("object") in prefixes and path_strategy(key) in spec["strategies"]
                       and not spec["key"].endswith("_loan_spread_pp")]
             params.append("purchase_price_mln")
             try:

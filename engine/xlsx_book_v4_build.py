@@ -84,7 +84,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             "nonres": obj.key in nonres_plans,
         }
         plan_item = nonres_plans.get(obj.key)
-        # Офис книга считает всеми тремя способами продажи (решение владельца
+        # Офис книга считает всеми способами продажи (решение владельца
         # 24.10.2026, «Новая книга считает и ДДУ»): ему нужны вводные и ДДУ, и
         # стратегий вне ДДУ, какую бы стратегию ни выбрал проект. Вводные —
         # те же поля, что движок читает, когда `office_paths` меняет стратегию.
@@ -135,6 +135,8 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
                           for suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS})
             num = nonres_strategy._num
             choice = nonres_strategy._choice
+            # Окно ПДКП — тем же правилом, что путь движка (`presale_window`).
+            presale_start, presale_end = nonres_strategy.presale_bounds(x, obj.prefix, item["months"])
             item.update({
                 "strategy": plan_item["strategy"] if plan_item else nonres_strategy.STRATEGY_DDU,
                 "saleable_sqm": n(x, f"{obj.prefix}_saleable_sqm"),
@@ -168,6 +170,8 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
                     "direct_sale_offset_months": num(params, "direct_sale_offset_months", 0),
                     "direct_sale_months": num(params, "direct_sale_months", 12),
                     "direct_sale_curve": choice(params, "direct_sale_curve", nonres_strategy.SALE_CURVES, "flat"),
+                    "presale_start_months": presale_start,
+                    "presale_end_months": presale_end,
                     "rent_th_per_sqm_month": num(params, "rent_th_per_sqm_month", 0.0),
                     "parking_rent_th_month": num(params, "parking_rent_th_month", 0.0),
                     "rent_index_pct": num(params, "rent_index_pct", 0.0),
@@ -272,7 +276,7 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     Решение владельца (13.10.2026): объект по ДДУ — не повод отдавать жилую
     книгу; его продажи, эскроу, БРИДЖ и ПФ книга нежилого проекта считает
     формулами. Книгу собирает `office_workbook` на каркасе жилой v4: проект с
-    офисом — три способа продажи офиса, без офиса — стратегия каждого объекта
+    офисом — четыре способа продажи офиса, без офиса — стратегия каждого объекта
     (ДДУ — листы объекта и «ПФ»). ПФ по очередям книга не моделирует: проект с
     очередями и ПФ получает книгу v4.
     """
