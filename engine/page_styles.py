@@ -189,6 +189,10 @@ details.cadastral-box>summary::marker{color:#888}
 .calc-locked h3{margin:0 0 8px;font-size:15px}
 .calc-locked p{margin:0 0 10px;font-size:13px;color:#555;max-width:640px}
 .calc-locked .calc-locked-why{font-size:11px;color:#888}
+.calc-locked .calc-access-offer{margin:0 0 12px 18px;padding:0;font-size:13px;color:#333;max-width:640px}
+.calc-locked .calc-access-offer li{margin:0 0 4px}
+.calc-access-line{font-size:12px;color:#555;margin:8px 0 0}
+#report.calc-closed>:not(#calcLocked){display:none!important}
 .login-qr{display:flex;gap:12px;align-items:center;margin-top:12px}
 .login-qr img{width:132px;height:132px;border:1px solid #e5e5e3;background:#fff}
 .login-qr span{font-size:11px;color:#777;max-width:260px}

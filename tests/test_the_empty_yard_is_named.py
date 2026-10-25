@@ -6,7 +6,12 @@
 в структуру расходов не попадает («строка появляется вместе с числом»). Статья
 исчезала с экрана, из PDF и из разговора целиком, и её отсутствие читалось как
 ответ методики «благоустройства здесь не нужно» — при том что ответ другой:
-мерить нечем, а ставка объекта — СМР здания без двора (решение 06.10.2026).
+мерить нечем.
+
+С 25.10.2026 нежилой проект благоустройство считает ставкой на м² наземной
+ГНС (решение владельца «Ставкой на м² наземной площади»), и пустой статьи у
+него больше нет. Пустота осталась у проекта, где двор мерить нечем, а ставки
+нет: жилой тип без квартир (`_empty_yard`).
 
 Рядом подпись под самой ставкой говорила «Расчёта ещё нет» на честно
 посчитанном нуле — то есть винила кнопку за ответ методики. Правило записано
@@ -64,26 +69,51 @@ def _nonresidential() -> tuple[dict, dict]:
     return inputs, tep
 
 
+def _empty_yard() -> tuple[dict, dict]:
+    """Жилой тип без квартир: двор мерить населением нечем, ставки на метр нет."""
+    inputs, tep = _nonresidential()
+    inputs["project_kind"] = core.PROJECT_KIND_MIXED
+    inputs["landscaping_gns_th_per_sqm"] = 0
+    return inputs, tep
+
+
 def _summary(inputs: dict, tep: dict) -> dict:
     return core.calculate(core.CalcRequest(inputs=inputs, tep=tep))["summary"]
 
 
 def test_the_empty_article_is_named() -> None:
-    """Нежилой проект: статья ноль, и это сказано словами с основанием."""
-    inputs, tep = _nonresidential()
+    """Двор мерить нечем, ставки нет: статья ноль, и это сказано с основанием."""
+    inputs, tep = _empty_yard()
     result = core.calculate(core.CalcRequest(inputs=inputs, tep=tep))
     # Предохранитель: метры есть, иначе называть пустоту было бы не о чем.
     assert float(result["summary"]["project_gns_sqm"]) > 0
     assert float(result["capex"].get("landscaping") or 0.0) == 0.0
     gap = str(result["summary"]["landscaping_gap"])
     assert "Благоустройства в расчёте нет" in gap, gap
-    # Чем мерить, больше не спрашивают: двор нежилого проекта отдельно не
-    # считается (владелец, 21.09.2026); ставка объекта — СМР здания без двора,
-    # и причина — жителей нет (06.10.2026). Пустота при этом по-прежнему названа.
-    assert "жителей нет" in gap, gap
+    assert "квартир в проекте нет" in gap, gap
     # Нулевой строки в структуре расходов не бывает — ради этого и фраза.
     assert not [item for item in result["report"]["expense_structure"]
                 if "лагоустр" in str(item.get("label"))]
+
+
+def test_the_nonresidential_article_is_counted() -> None:
+    """Нежилой проект: благоустройство — ставкой на м² наземной ГНС.
+
+    Решение владельца 25.10.2026: прежде статья была молчаливым нулём —
+    двора не было ни в ставке объекта (СМР здания), ни отдельной строкой.
+    """
+    inputs, tep = _nonresidential()
+    inputs["landscaping_gns_th_per_sqm"] = 0
+    result = core.calculate(core.CalcRequest(inputs=inputs, tep=tep))
+    gns = float(result["summary"]["project_gns_sqm"])
+    assert gns > 0
+    expected = gns * core.NONRESIDENTIAL_LANDSCAPING_GNS_TH_PER_SQM * 1000
+    assert float(result["capex"].get("landscaping") or 0.0) == pytest.approx(expected)
+    assert result["summary"]["landscaping_gap"] == ""
+    # В структуре расходов статья — часть «Основного строительства», как у
+    # жилья; строки пустоты нет.
+    assert [item for item in result["report"]["expense_structure"]
+            if item.get("label") == "Основное строительство"]
 
 
 def test_a_paid_yard_is_not_called_empty() -> None:
@@ -160,9 +190,6 @@ def screen() -> dict:
             out["rate"] = page.evaluate(
                 "()=>{const e=document.getElementById('landscapingHouseRateNote');"
                 "return e?e.textContent:''}")
-            out["expenses"] = page.evaluate(
-                "()=>{const e=document.getElementById('expenseStructureTable');"
-                "return e?e.textContent:''}")
             out["errors"] = page.evaluate("()=>document.querySelectorAll('.fatal').length")
             # Структура расходов — отрисовкой страницы (`renderResult`) по
             # результату движка: стенд на странице считает этот офисник без
@@ -170,6 +197,20 @@ def screen() -> dict:
             served = jsonable_encoder(core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[])))
             page.evaluate("r=>{lastResult=r;phaseBundle=null;renderResult();}", served)
             out["structure"] = page.evaluate(
+                "()=>{const e=document.getElementById('expenseStructureTable');"
+                "return e?e.textContent:''}")
+            # Пустой двор — жилой тип без квартир: там статья ноль и названа.
+            empty_inputs, empty_tep = _empty_yard()
+            empty = jsonable_encoder(core.calculate(core.CalcRequest(
+                inputs=empty_inputs, tep=empty_tep, rates=[])))
+            page.evaluate("d=>{Object.assign(inputs,d.inputs);"
+                          "Object.keys(d.tep).forEach(k=>{tep[k]=d.tep[k]});"
+                          "lastResult=d.result;phaseBundle=null;renderResult();renderInputs();}",
+                          {"inputs": empty_inputs, "tep": empty_tep, "result": empty})
+            out["empty_rate"] = page.evaluate(
+                "()=>{const e=document.getElementById('landscapingHouseRateNote');"
+                "return e?e.textContent:''}")
+            out["empty_expenses"] = page.evaluate(
                 "()=>{const e=document.getElementById('expenseStructureTable');"
                 "return e?e.textContent:''}")
             # Строка статьи с нулём — та, что не должна была встать вовсе.
@@ -185,15 +226,18 @@ def test_the_caption_tells_a_computed_zero_from_no_calculation(screen) -> None:
     """«Посчитали ноль» и «ещё не считали» — разные ответы, и оба сказаны."""
     assert screen["errors"] == 0, "страница не доработала"
     assert "Расчёта ещё нет" in screen["before"], screen["before"]
-    assert "Расчёта ещё нет" not in screen["rate"], screen["rate"]
-    assert "жителей нет" in screen["rate"], screen["rate"]
+    assert "Расчёта ещё нет" not in screen["empty_rate"], screen["empty_rate"]
+    assert "квартир в проекте нет" in screen["empty_rate"], screen["empty_rate"]
     # И ставку здесь по-прежнему можно задать — методика её не запрещает.
-    assert "перебьёт" in screen["rate"], screen["rate"]
+    assert "ставка здесь не задана" in screen["empty_rate"], screen["empty_rate"]
+    # Нежилой проект: число — умолчание нежилого проекта, и это сказано.
+    assert "по умолчанию для нежилого проекта" in screen["rate"], screen["rate"]
 
 
 def test_the_expense_table_names_the_empty_article(screen) -> None:
     """Пустота видна там, где человек ищет статью, — в структуре расходов."""
-    assert "Благоустройства в расчёте нет" in screen["expenses"], screen["expenses"][:400]
+    assert "Благоустройства в расчёте нет" in screen["empty_expenses"], \
+        screen["empty_expenses"][:400]
 
 
 # Чисто нежилой проект — полная постатейная смета (решение владельца
@@ -210,25 +254,30 @@ def test_the_expense_table_shows_the_full_estimate(screen) -> None:
     """Живая страница: у офисника строки полной сметы и ни одной нулевой."""
     assert screen["errors"] == 0, "страница не доработала"
     assert "Отдельные объекты" in screen["structure"], screen["structure"][:400]
-    for label in _FULL_ESTIMATE_ROWS:
+    for label in (*_FULL_ESTIMATE_ROWS, "Основное строительство"):
         assert label in screen["structure"], screen["structure"][:400]
     assert screen["zero_rows"] == [], screen["zero_rows"]
+    assert "Благоустройства в расчёте нет" not in screen["structure"]
 
 
 def test_the_report_names_the_empty_article_too() -> None:
     """Отчёт носят в банк: пустота названа и на бумаге, той же фразой."""
     pypdf = pytest.importorskip("pypdf")
-    inputs, tep = _nonresidential()
-    result = core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))
-    content = core._build_developaid_pdf({
-        "project_name": "Нежилой", "result": result,
-        "inputs": inputs, "tep": tep, "rates": [],
-    })
-    path = Path("/tmp") / "empty_yard.pdf"
-    path.write_bytes(content)
-    reader = pypdf.PdfReader(str(path))
-    text = "\n".join(page.extract_text() or "" for page in reader.pages)
-    assert "Благоустройства в расчёте нет" in text
+
+    def pdf_text(inputs: dict, tep: dict, name: str) -> str:
+        result = core.calculate(core.CalcRequest(inputs=inputs, tep=tep, rates=[]))
+        content = core._build_developaid_pdf({
+            "project_name": name, "result": result,
+            "inputs": inputs, "tep": tep, "rates": [],
+        })
+        path = Path("/tmp") / f"empty_yard_{name}.pdf"
+        path.write_bytes(content)
+        reader = pypdf.PdfReader(str(path))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+
+    assert "Благоустройства в расчёте нет" in pdf_text(*_empty_yard(), "empty")
+    text = pdf_text(*_nonresidential(), "office")
+    assert "Благоустройства в расчёте нет" not in text
     # Та же структура на бумаге: полная смета. Нежилой проект печатается
     # рамкой объекта (владелец, 10.10.2026) — подписи её раздела «Затраты».
     # В узкой колонке PDF подпись переносится — сверяется её первая строка.
