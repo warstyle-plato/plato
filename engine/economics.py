@@ -163,7 +163,7 @@ def calculate(req: CalcRequest) -> dict:
 # стратегия — `direct` (`path_strategy`).
 OFFICE_PATHS: tuple[tuple[str, str], ...] = (
     (nonres_strategy.STRATEGY_DDU, "Продажа по ДДУ (эскроу)"),
-    (nonres_strategy.PATH_PRESALE, "Продажа по предварительному договору во время стройки (ПДКП)"),
+    (nonres_strategy.PATH_PRESALE, "Продажа компаниям по предварительному договору во время стройки (ПДКП)"),
     (nonres_strategy.STRATEGY_DIRECT, "Продажа блоками после ввода"),
     (nonres_strategy.STRATEGY_INCOME, "Аренда и продажа здания"),
 )
@@ -1273,6 +1273,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "landscaping_by_class_th": per_sqm_th(
                 op.get("landscaping_by_class", 0.0), project_gns_sqm),
             "landscaping_by_rate": bool(op.get("landscaping_by_rate")),
+            "landscaping_rate_origin": str(op.get("landscaping_rate_origin") or ""),
+            "landscaping_default_rate_th": float(op.get("landscaping_default_rate_th") or 0.0),
             # Статья считается на своей физической базе — дворе, — а сравнивают
             # её с чужой сметой и со сводом «Статистики», которые меряют метр
             # ГНС. Производная считается ЗДЕСЬ и один раз: посчитанная на

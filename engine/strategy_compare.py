@@ -38,7 +38,7 @@ _STRATEGY_WORDS: dict[str, tuple[str, str, str]] = {
 # Полное имя стратегии для вывода над таблицей.
 _STRATEGY_LEAD = {
     nonres_strategy.STRATEGY_DDU: "продажа по ДДУ с эскроу",
-    nonres_strategy.PATH_PRESALE: "продажа по предварительному договору во время стройки",
+    nonres_strategy.PATH_PRESALE: "продажа компаниям по предварительному договору во время стройки",
     nonres_strategy.STRATEGY_DIRECT: "продажа блоками после ввода",
     nonres_strategy.STRATEGY_INCOME: "аренда с продажей здания",
 }
@@ -247,6 +247,10 @@ def strategy_compare_item(data: dict[str, Any], points: dict[str, Any] | None = 
             tags.append("лучшая по NPV")
         if p.get("key") == data.get("current"):
             tags.append("выбрана в проекте")
+        # Гражданам до ввода — только ДДУ (214-ФЗ ст. 1 ч. 2): условие стоит
+        # у столбца везде, где его печатают.
+        if p.get("key") == nonres_strategy.PATH_PRESALE:
+            tags.append(nonres_strategy.PRESALE_BUYERS)
         columns.append({"key": p.get("key"), "label": p.get("label"), "best": p.get("key") == best,
                         "current": p.get("key") == data.get("current"), "tags": tags})
     gap = None

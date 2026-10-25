@@ -82,3 +82,22 @@ def test_the_bot_sends_exactly_this_text() -> None:
 
     records = _records()
     assert wrapper._normatives_announcement_text(records) == registry.announcement_text(records)
+
+
+def test_a_stored_finding_about_another_region_leaves_the_card() -> None:
+    """Скриншот владельца 25.10.2026: на карточке 945-ПП Москвы — «вышла новая
+    редакция» по постановлению Правительства Магаданской области № 945-пп.
+    Находка сохранена поиском до правила «номер — только с датой акта» и
+    живёт до следующего поиска, поэтому чужой акт отсекается и при показе."""
+    rows = {row["id"]: row for row in registry._load_registry()}
+    entry = rows["moscow-945-pp"]
+    alien = {"kind": "amended", "anchored_by": "номер", "url": "https://example.org/magadan",
+             "quote": "О внесении изменений в отдельные постановления Правительства "
+                      "Магаданской области (№ 402-пп, № 945-пп)."}
+    ours = {"kind": "amended", "anchored_by": "номер", "url": "https://example.org/moscow",
+            "quote": "О внесении изменений в постановление Правительства Москвы "
+                     "от 23 декабря 2015 г. № 945-ПП"}
+    check = {"result": "ok", "sources": {"asked": True, "signals": [alien, ours]}}
+    assert registry.source_signals(check, entry) == [ours]
+    card = registry._card({**entry, "check": {**check, "sources": {"asked": True, "signals": [alien]}}})
+    assert "Магаданской" not in card and "вышла новая редакция" not in card
