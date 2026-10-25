@@ -153,10 +153,16 @@ def test_the_smr_default_keeps_the_turnkey_total() -> None:
             "offices_cost_th_per_sqm"]
         assert smr < turnkey
         a = _nonres_amounts(offices_cost_th_per_sqm=smr)
+        # Благоустройство — сверх «под ключ»: ставка объекта — СМР здания без
+        # двора, а двор считается своей ставкой на м² наземной ГНС (владелец,
+        # 25.10.2026). Его доля управления проектом — тоже сверх.
+        assert a["landscaping"] == pytest.approx(
+            40000 * core.NONRESIDENTIAL_LANDSCAPING_GNS_TH_PER_SQM * 1000), cls
+        yard = a["landscaping"] * (1 + core.DEFAULT_INPUTS["project_management_pct"] / 100)
         building = sum(v for k, v in a.items()
                        if k not in ("reserve", "land_rights", "land_rights_gross",
                                     "land_rights_relief", "vri_interest", "vri_security",
-                                    "total"))
+                                    "total")) - yard
         # Округление ставки до 0,1 тыс ₽/м² — не дальше полутора десятых на метр.
         assert building / 40000 / 1000 == pytest.approx(turnkey, abs=0.15), cls
     # У смешанного проекта база класса — прежняя ставка «под ключ».
