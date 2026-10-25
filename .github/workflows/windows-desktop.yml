@@ -1,0 +1,28 @@
+name: Windows desktop
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/windows-desktop]
+    paths: ['desktop/windows/**', '.github/workflows/windows-desktop.yml']
+  pull_request:
+    paths: ['desktop/windows/**', '.github/workflows/windows-desktop.yml']
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Build Windows client
+        shell: powershell
+        run: ./desktop/windows/build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DevelopAid-Windows-x64
+          path: desktop/windows/dist/DevelopAid-Windows-x64.zip
+          if-no-files-found: error
