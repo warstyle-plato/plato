@@ -1113,9 +1113,13 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
                 rows.append([str(year.get(c[0])) if c[2] == "text"
                              else _pdf_object_value({"unit": c[2], "value": year.get(c[0])})
                              for c in columns])
-            width = 170 / max(1, len(columns))
+            # Ширины колонок блок может назвать сам («Структура расходов»:
+            # длинная подпись статьи и два коротких числа); иначе — поровну.
+            widths = [float(w) for w in block.get("widths") or []]
+            if len(widths) != len(columns):
+                widths = [170 / max(1, len(columns))] * len(columns)
             story.append(KeepTogether([P(title, small),
-                                       table(rows, [width*mm] * len(columns), font_size=6.8)]))
+                                       table(rows, [w*mm for w in widths], font_size=6.8)]))
             continue
         rows = [[title or " ", " "]]
         for row in block.get("rows") or []:
