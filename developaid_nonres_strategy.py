@@ -98,6 +98,29 @@ OFFICE_CLASS_DEFAULT_SOURCE = "default"
 # (`office_class_rate`), а не этот список.
 OFFICE_CLASS_FOLLOWED: tuple[str, ...] = (
     "rent_th_per_sqm_month", "occupancy_stable_pct", "leaseup_months", "opex_pct", "exit_cap_pct")
+# В НЕЖИЛОМ проекте класс проекта — это класс офиса B / B+ / A / A+
+# (владелец, 25.10.2026): вводная `nonres_office_class`. Профиль класса
+# проекта (машино-место, подземная ставка) берётся у пары: B — комфорт,
+# B+ — бизнес, A и A+ — элитный (A+ — «как у A», владелец 25.10.2026).
+# Пусто — класс выводится из класса проекта (`OFFICE_CLASS_BY_PROJECT`):
+# нежилой проект, сохранённый до решения, открывается с тем же результатом.
+NONRES_CLASS_FIELD = "nonres_office_class"
+NONRES_CLASS_PROFILE: dict[str, str] = {"B": "comfort", "B+": "business", "A": "elite", "A+": "elite"}
+PROJECT_KIND_NONRESIDENTIAL = "nonresidential"
+
+
+def nonres_project_class(inputs: dict[str, Any] | None) -> str | None:
+    """Класс нежилого проекта (ступень класса офиса); `None` — проект не
+    нежилой или класс не задан ни выбором, ни классом проекта."""
+    x = inputs or {}
+    if str(x.get("project_kind") or "") != PROJECT_KIND_NONRESIDENTIAL:
+        return None
+    raw = str(x.get(NONRES_CLASS_FIELD) or "").strip()
+    if raw in OFFICE_CLASSES:
+        return raw
+    return OFFICE_CLASS_BY_PROJECT.get(str(x.get("project_class") or ""))
+
+
 # Происхождение поля, которое поставил класс офиса (`_field_origin`).
 OFFICE_CLASS_ORIGIN = "office_class"
 
@@ -126,7 +149,7 @@ def office_class_choice(inputs: dict[str, Any] | None, prefix: str) -> dict[str,
     raw = str(x.get(f"{prefix}_{OFFICE_CLASS_FIELD}") or "").strip()
     if raw in OFFICE_CLASSES:
         return {"office_class": raw, "source": OFFICE_CLASS_CHOSEN, "text": "выбран"}
-    by_project = OFFICE_CLASS_BY_PROJECT.get(str(x.get("project_class") or ""))
+    by_project = nonres_project_class(x) or OFFICE_CLASS_BY_PROJECT.get(str(x.get("project_class") or ""))
     if by_project:
         return {"office_class": by_project, "source": OFFICE_CLASS_BY_PROJECT_SOURCE,
                 "text": "по классу проекта"}

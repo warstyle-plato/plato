@@ -167,8 +167,9 @@ def walk() -> dict:
                 out[name] = page.evaluate(STATE)
 
             step("comfort", ("offices_enabled", True), ("offices_strategy", "income"))
+            # В нежилом проекте класс проекта — класс офиса.
             page.evaluate("()=>{const s=document.getElementById('projectClassSelect');"
-                          "s.value='business';s.dispatchEvent(new Event('change'))}")
+                          "s.value='office:B+';s.dispatchEvent(new Event('change'))}")
             browser.wait_for_result(page)
             step("business")
             step("chosen", ("offices_office_class", "A+"))
@@ -197,7 +198,7 @@ def test_the_office_has_a_class_choice_with_a_plus(walk) -> None:
 def test_by_default_the_class_follows_the_project_class(walk) -> None:
     assert walk["comfort"]["shown"] == _step("B")
     assert walk["business"]["shown"] == _step("B+")
-    assert "класс офиса B+" in walk["business"]["note"] and "«Бизнес»" in walk["business"]["note"]
+    assert "класс офиса B+" in walk["business"]["note"] and "класс проекта" in walk["business"]["note"]
     assert walk["business"]["price"] == ns.OFFICE_CLASS_SCALE["B+"]["price_th_per_sqm"]
 
 
@@ -284,3 +285,106 @@ def test_the_pdf_and_the_teaser_name_the_chosen_class() -> None:
     teaser = core.build_teaser_pdf(bundle, x, t, None)
     text = " ".join(" ".join(p.extract_text() or "" for p in PdfReader(io.BytesIO(teaser)).pages).split())
     assert "Класс офиса. A+ — выбран у офиса" in text
+
+
+# --- класс нежилого проекта — класс офиса ----------------------------------------
+
+KIND_STATE = r"""() => {
+  const sel = document.getElementById('projectClassSelect');
+  return {options: [...sel.options].map(o => [o.value, o.textContent]), value: sel.value,
+          project_class: inputs.project_class, nonres: inputs.nonres_office_class || '',
+          parking: inputs.parking_price_th, under: inputs.main_under_th_per_sqm,
+          price: inputs.offices_price_th_per_sqm, cost: inputs.offices_cost_th_per_sqm,
+          rent: inputs.offices_rent_th_per_sqm_month, office: inputs.offices_office_class || '',
+          elite_under: classValue('elite', 'main_under_th_per_sqm'),
+          note: (document.getElementById('officeClassNote_offices') || {}).textContent || '',
+          preview: (document.getElementById('projectClassPreview') || {}).textContent || ''};
+}"""
+
+
+@pytest.fixture(scope="module")
+def kinds() -> dict:
+    pytest.importorskip("playwright.sync_api")
+    from playwright.sync_api import sync_playwright
+
+    path = browser.chromium_or_skip()
+    out: dict = {}
+    with browser.serve(core.app, PORT + 1) as base, sync_playwright() as pw:
+        with pw.chromium.launch(executable_path=str(path)) as engine:
+            page = engine.new_page(viewport={"width": 1440, "height": 900})
+            errors: list[str] = []
+            page.on("pageerror", lambda e: errors.append(str(e)))
+            page.goto(base, wait_until="domcontentloaded")
+            browser.wait_for_result(page)
+            page.evaluate(SET, ["offices_enabled", True])
+            browser.wait_for_result(page)
+            page.evaluate("()=>{const s=document.getElementById('projectClassSelect');"
+                          "s.value='business';s.dispatchEvent(new Event('change'))}")
+            browser.wait_for_result(page)
+            out["housing"] = page.evaluate(KIND_STATE)
+            page.evaluate("()=>{try{applyProjectKind('nonresidential')}catch(e){}"
+                          "try{closeProjectKindDialog()}catch(e){}}")
+            browser.wait_for_result(page)
+            out["nonres"] = page.evaluate(KIND_STATE)
+            page.evaluate("()=>{const s=document.getElementById('projectClassSelect');"
+                          "s.value='office:A+';s.dispatchEvent(new Event('change'))}")
+            browser.wait_for_result(page)
+            page.evaluate("()=>settledCalculate()")
+            out["a_plus"] = page.evaluate(KIND_STATE)
+            out["a_plus_inputs"] = page.evaluate("()=>inputs")
+            page.evaluate("()=>{try{applyProjectKind('mixed')}catch(e){}"
+                          "try{closeProjectKindDialog()}catch(e){}}")
+            browser.wait_for_result(page)
+            out["back_to_housing"] = page.evaluate(KIND_STATE)
+            out["errors"] = errors
+            page.close()
+    return out
+
+
+def test_housing_keeps_comfort_business_elite(kinds) -> None:
+    got = kinds["housing"]
+    assert [v for v, _ in got["options"]] == ["comfort", "business", "elite", "custom"]
+    assert got["value"] == "business"
+    assert "«Бизнес»" in got["note"] and "B+" in got["note"]
+    assert kinds["errors"] == []
+
+
+def test_a_nonresidential_project_chooses_the_office_class(kinds) -> None:
+    got = kinds["nonres"]
+    assert [v for v, _ in got["options"]] == ["office:B", "office:B+", "office:A", "office:A+", "custom"]
+    # Бизнес становится B+ — тот же класс, те же числа.
+    assert got["value"] == "office:B+"
+    assert got["price"] == ns.OFFICE_CLASS_SCALE["B+"]["price_th_per_sqm"]
+
+
+def test_a_plus_takes_the_elite_garage_and_its_own_office_step(kinds) -> None:
+    got = kinds["a_plus"]
+    assert (got["value"], got["project_class"], got["nonres"]) == ("office:A+", "elite", "A+")
+    assert got["parking"] == core.PROJECT_CLASS_PRESETS["elite"]["parking_price_th"]
+    assert got["under"] == got["elite_under"]
+    assert got["price"] == 1000.0
+    assert got["rent"] == _step("A+")["offices_rent_th_per_sqm_month"]
+    # Свой выбор у офиса не ставится: класс офиса — класс проекта.
+    assert got["office"] == "" and "класс проекта" in got["note"]
+    assert "офисы класса A+" in got["preview"]
+    # Движок отвечает тем же классом и той же ценой.
+    x = kinds["a_plus_inputs"]
+    assert core.nonres_strategy.nonres_project_class(x) == "A+"
+    assert core.class_base_preset(x["project_class"], "msk", core.PROJECT_KIND_NONRESIDENTIAL, x)[
+        "offices_price_th_per_sqm"] == 1000.0
+    assert core.project_class_view(x)["label"] == "A+"
+
+
+def test_back_to_housing_shows_the_housing_class(kinds) -> None:
+    got = kinds["back_to_housing"]
+    assert got["value"] == "elite"
+    assert [v for v, _ in got["options"]][0] == "comfort"
+
+
+def test_an_old_nonresidential_project_keeps_its_class() -> None:
+    """Нежилой проект, сохранённый с классом жилья, открывается с тем же классом."""
+    for key, cls in ns.OFFICE_CLASS_BY_PROJECT.items():
+        x = {"project_kind": core.PROJECT_KIND_NONRESIDENTIAL, "project_class": key}
+        assert ns.nonres_project_class(x) == cls
+        assert core.class_base_preset(key, "msk", core.PROJECT_KIND_NONRESIDENTIAL, x)[
+            "offices_price_th_per_sqm"] == core.NONRES_KIND_CLASS_PRICES[key]["offices_price_th_per_sqm"]

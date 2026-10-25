@@ -404,7 +404,9 @@ def project_class_deviations(inputs: dict[str, Any]) -> dict[str, Any]:
                 "base": float(base),
                 "actual": actual,
             })
-    return {"class": key, "label": str(preset.get("label") or key), "rows": rows}
+    # В нежилом проекте класс проекта — класс офиса (`nonres_project_class`).
+    label = nonres_strategy.nonres_project_class(inputs) or str(preset.get("label") or key)
+    return {"class": key, "label": label, "rows": rows}
 
 
 def project_class_view(inputs: dict[str, Any]) -> dict[str, Any]:
@@ -1667,20 +1669,23 @@ def class_base_preset(key: str, region: str = "msk",
 
 def office_class_rates(inputs: dict[str, Any], key: str, kind: str | None,
                        rates: dict[str, Any]) -> dict[str, float]:
-    """Себестоимость и цена офисов, чей класс выбран своим, — по ступени класса.
+    """Себестоимость и цена офисов по ступени их класса.
 
-    Класс офиса, идущий за классом проекта, ставит те же числа, что профиль
-    класса проекта, и здесь не повторяется. Цена продажи класса — только в
-    нежилом проекте; в нежилом себестоимость — СМР здания (`object_smr_rate`
-    на ставках `rates`), как у профиля.
+    В жилом проекте класс офиса, идущий за классом проекта, ставит те же
+    числа, что профиль класса проекта, и здесь не повторяется. В нежилом
+    класс офиса — класс проекта (`nonres_project_class`), и ступень ставит
+    числа всегда: у A+ своя ступень при профиле элитного. Цена продажи
+    класса — только в нежилом проекте; там же себестоимость — СМР здания
+    (`object_smr_rate` на ставках `rates`), как у профиля.
     """
     nonres = kind is not None and is_nonresidential({"project_kind": kind})
     out: dict[str, float] = {}
     for obj in STANDALONE_OBJECTS:
         if obj.product != "offices":
             continue
-        choice = nonres_strategy.office_class_choice({**inputs, "project_class": key}, obj.prefix)
-        if choice["source"] != nonres_strategy.OFFICE_CLASS_CHOSEN:
+        choice = nonres_strategy.office_class_choice(
+            {**inputs, "project_class": key, "project_kind": kind or inputs.get("project_kind")}, obj.prefix)
+        if choice["source"] != nonres_strategy.OFFICE_CLASS_CHOSEN and not nonres:
             continue
         scale = nonres_strategy.OFFICE_CLASS_SCALE[choice["office_class"]]
         cost = float(scale["cost_th_per_sqm"])
@@ -1713,6 +1718,7 @@ def office_class_rows(inputs: dict[str, Any] | None) -> list[dict[str, str]]:
     x = inputs or {}
     offices = [obj for obj in STANDALONE_OBJECTS if obj.product == "offices"
                and x.get(obj.enabled_key) and n(x, f"{obj.prefix}_gba_sqm", 0.0) > 0]
+    nonres_class = nonres_strategy.nonres_project_class(x)
     project_label = str((PROJECT_CLASS_PRESETS.get(str(x.get("project_class") or "")) or {})
                         .get("label") or "")
     rows = []
@@ -1720,6 +1726,8 @@ def office_class_rows(inputs: dict[str, Any] | None) -> list[dict[str, str]]:
         choice = nonres_strategy.office_class_choice(x, obj.prefix)
         if choice["source"] == nonres_strategy.OFFICE_CLASS_CHOSEN:
             text = f"{choice['office_class']} — выбран у офиса"
+        elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE and nonres_class:
+            text = f"{choice['office_class']} — класс проекта"
         elif choice["source"] == nonres_strategy.OFFICE_CLASS_BY_PROJECT_SOURCE:
             text = f"{choice['office_class']} — как у класса проекта «{project_label}»"
         else:
@@ -1746,6 +1754,7 @@ def office_class_page_data() -> dict[str, Any]:
         "by_project": dict(ns.OFFICE_CLASS_BY_PROJECT), "default": ns.DEFAULT_OFFICE_CLASS,
         "chosen": ns.OFFICE_CLASS_CHOSEN, "origin": ns.OFFICE_CLASS_ORIGIN,
         "followed": list(ns.OFFICE_CLASS_FOLLOWED),
+        "nonres_field": ns.NONRES_CLASS_FIELD, "nonres_profile": dict(ns.NONRES_CLASS_PROFILE),
         "values": {cls: {**ns.office_class_followed_values(cls),
                          "price_th_per_sqm": ns.OFFICE_CLASS_SCALE[cls]["price_th_per_sqm"],
                          "cost_th_per_sqm": ns.OFFICE_CLASS_SCALE[cls]["cost_th_per_sqm"],

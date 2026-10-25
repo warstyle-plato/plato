@@ -535,7 +535,9 @@ function undergroundShortfallNote(){
 
 function renderProjectClassPreview(){
  const select=document.getElementById('projectClassSelect');
- const key=select?select.value:(inputs.project_class||'comfort');
+ const raw=select?select.value:(inputs.project_class||'comfort');
+ // Класс офиса нежилого проекта — со своим профилем класса (`NONRES_CLASS_PROFILE`).
+ const key=String(raw).startsWith('office:')?(OFFICE_CLASS.nonres_profile[String(raw).slice(7)]||'custom'):raw;
  const p=PROJECT_CLASS_PRESETS[key];
  const box=document.getElementById('projectClassPreview');
  if(!box)return;
@@ -565,7 +567,8 @@ function renderProjectClassPreview(){
  // Класс, выбранный у офиса своим, сильнее класса проекта — подпись называет его.
  const office=OFFICE_CLASS_BY_PROJECT_CLASS[key];
  const ownOffice=officeClassFor('offices',key);
- const officeLabel=ownOffice.source===OFFICE_CLASS.chosen?`${ownOffice.cls} (выбран у офиса)`:office&&office.office_class;
+ const officeLabel=ownOffice.source===OFFICE_CLASS.chosen?`${ownOffice.cls} (выбран у офиса)`
+  :nonresProjectClass(key)?ownOffice.cls:office&&office.office_class;
  const officeText=office&&(isNonResidential()||inputs.offices_enabled)
   ? ` · офисы класса ${officeLabel}, здание офиса ${classValue(key,'offices_cost_th_per_sqm').toLocaleString('ru-RU')}`
   : '';
@@ -680,10 +683,12 @@ function refreshClassFieldUnit(id){
  for(const grp of allFieldGroups())for(const f of grp[1])if(f[0]===id){span.textContent=classFieldUnitText(id,f[2]);return}
 }
 
-function applyProjectClassPreset(selectedKey){
+function applyProjectClassPreset(selectedKey,nonresClass){
  const select=document.getElementById('projectClassSelect');
  const key=selectedKey||(select?select.value:'comfort');
  const p=PROJECT_CLASS_PRESETS[key];
+ // Класс нежилого проекта — выбранная ступень; выбор класса жилья его снимает.
+ inputs[OFFICE_CLASS.nonres_field]=OFFICE_CLASS.classes.includes(nonresClass)?nonresClass:'';
  if(!p){inputs.project_class='custom';renderProjectClassPreview();return;}
  // Вписанное руками, что класс поменял бы, называется поимённо, и решает
  // человек: заменить значениями класса или оставить своё. Без окна (стенд,
@@ -743,8 +748,7 @@ function applyProjectClassPreset(selectedKey){
  syncTep(false);
  renderInputs();
  renderTep();
- if(document.getElementById('projectClassSelect'))document.getElementById('projectClassSelect').value=key;
- renderProjectClassPreview();
+ syncProjectClassSelector();
  calculate();
 }
 
@@ -1055,8 +1059,11 @@ function applyProjectKind(key){
  inputs.project_kind=kind;
  adoptObjectRateKind();
  if(kind!=='mixed'){clearResidentialInputs();placeNonResidentialDefaults()}
+ // Класс офиса в нежилом — класс проекта: шкала полей офиса идёт за видом.
+ syncOfficeClasses();
  syncTep(false);
  syncProjectKindSelector();
+ syncProjectClassSelector();
  renderInputs();
  renderTep();
  refreshGroupPeeks();
@@ -1067,12 +1074,39 @@ function applyProjectKind(key){
  else closeProjectKindDialog();
 }
 
+// В нежилом проекте на месте класса жилья — класс офиса B / B+ / A / A+
+// (владелец, 25.10.2026); в жилом — комфорт / бизнес / элитный.
+const HOUSING_CLASS_OPTIONS=[['comfort','Комфорт'],['business','Бизнес'],['elite','Элитный'],['custom','Пользовательский']];
+function projectClassOptions(){
+ return projectKind()==='nonresidential'
+  ?OFFICE_CLASS.classes.map(cls=>['office:'+cls,'Офисы '+cls]).concat([['custom','Пользовательский']])
+  :HOUSING_CLASS_OPTIONS;
+}
+function projectClassSelectValue(){
+ const housing=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
+ const nonres=housing==='custom'?null:nonresProjectClass();
+ return nonres?'office:'+nonres:housing;
+}
 function syncProjectClassSelector(){
  const select=document.getElementById('projectClassSelect');
  if(!select)return;
- const key=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
- select.value=key;
+ const options=projectClassOptions();
+ if([...select.options].map(o=>o.value).join('|')!==options.map(o=>o[0]).join('|')){
+  select.innerHTML='';
+  options.forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;select.appendChild(o)});
+ }
+ select.value=projectClassSelectValue();
  renderProjectClassPreview();
+}
+// Выбор в шапке: класс жилья или, в нежилом проекте, класс офиса — с
+// профилем своей пары (`NONRES_CLASS_PROFILE`).
+function applyProjectClassChoice(value){
+ const v=String(value||'');
+ if(v.startsWith('office:')){
+  const cls=v.slice(7);
+  return applyProjectClassPreset(OFFICE_CLASS.nonres_profile[cls]||'custom',cls);
+ }
+ return applyProjectClassPreset(v);
 }
 
 // Значение этого поля ставит выбранный класс. Список — САМ ПРОФИЛЬ, а не
@@ -1168,7 +1202,8 @@ function classValueForKind(c,k,kind,profileOnly){
  const office=!profileOnly&&OFFICE_CLASS.rates[k];
  if(office){
   const choice=officeClassFor(office.prefix,c);
-  if(choice.source===OFFICE_CLASS.chosen){
+  // В нежилом проекте ступень ставит числа всегда (`office_class_rates`).
+  if(choice.source===OFFICE_CLASS.chosen||kind==='nonresidential'){
    const step=OFFICE_CLASS.values[choice.cls];
    if(office.kind==='cost')return objectRateForKind(c,k,step.cost_th_per_sqm,kind);
    if(kind==='nonresidential')return Number(step.price_th_per_sqm);
@@ -1190,10 +1225,18 @@ function classProfileValue(c,k){return classValueForKind(c,k,projectKind(),true)
 // применяет тот же ответ, а не держит свой.
 const OFFICE_CLASS=__DEVELOPAID_OFFICE_CLASS_SCALE__;
 const OFFICE_CLASS_FIELDS=Object.fromEntries(OFFICE_CLASS.prefixes.map(p=>[p+'_'+OFFICE_CLASS.field,p]));
+// Класс нежилого проекта — ступень класса офиса (`nonres_project_class`):
+// выбранная в шапке или выведенная из прежнего класса проекта.
+function nonresProjectClass(c){
+ if(projectKind()!=='nonresidential')return null;
+ const raw=String(inputs[OFFICE_CLASS.nonres_field]||'').trim();
+ if(OFFICE_CLASS.classes.includes(raw))return raw;
+ return OFFICE_CLASS.by_project[c===undefined?inputs.project_class:c]||null;
+}
 function officeClassFor(prefix,c){
  const raw=String(inputs[prefix+'_'+OFFICE_CLASS.field]||'').trim();
  if(OFFICE_CLASS.classes.includes(raw))return {cls:raw,source:OFFICE_CLASS.chosen};
- const by=OFFICE_CLASS.by_project[c===undefined?inputs.project_class:c];
+ const by=nonresProjectClass(c)||OFFICE_CLASS.by_project[c===undefined?inputs.project_class:c];
  return by?{cls:by,source:'project'}:{cls:OFFICE_CLASS.default,source:'default'};
 }
 // Поле, поставленное классом, идёт за ним, пока в нём число этого класса; с
@@ -1268,6 +1311,7 @@ function officeClassNoteText(prefix){
  const choice=officeClassFor(prefix);
  const step=OFFICE_CLASS.values[choice.cls];
  const head=choice.source===OFFICE_CLASS.chosen?`Класс офиса ${choice.cls} выбран вами.`
+  :choice.source==='project'&&nonresProjectClass()?`Сейчас класс офиса ${choice.cls} — это класс проекта, он выбран вверху страницы.`
   :choice.source==='project'?`Сейчас класс офиса ${choice.cls}: он идёт за классом проекта «${(PROJECT_CLASS_PRESETS[inputs.project_class]||{}).label||inputs.project_class}».`
   :`Сейчас класс офиса ${choice.cls}: у проекта нет класса, поэтому взят класс по умолчанию.`;
  const rent=Number(step.rent_th_per_sqm_year).toLocaleString('ru-RU',{maximumFractionDigits:1});
