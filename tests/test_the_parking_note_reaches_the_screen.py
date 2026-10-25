@@ -290,12 +290,14 @@ def test_the_hand_keeps_the_field_and_the_norm_follows_the_tep() -> None:
     grew, by_norm = run(200000.0, _parking_by_hand=[],
                         offices_parking_under_spaces=2778)
     assert by_norm and grew > filled, "поле замерло на вчерашнем числе"
-    # Тронутое руками норма не перебивает — включая ноль. Прежде сказать
-    # «гаража у объекта нет» было нечем вовсе: ноль читался как «не задано».
+    # Тронутое руками число норма не перебивает.
     assert run(200000.0, _parking_by_hand=["offices"],
                offices_parking_under_spaces=40) == (40, False)
+    # Ноль под землёй у офиса — не «гаража нет», а «не задано»: под землю идёт
+    # остаток норматива после мест первых этажей (владелец, 25.10.2026,
+    # `tests/test_office_garage_follows_the_norm.py`).
     assert run(200000.0, _parking_by_hand=["offices"],
-               offices_parking_under_spaces=0) == (0, False)
+               offices_parking_under_spaces=0) == (grew, False)
     # Проект, сохранённый до правки, списка не несёт — его числа человеческие.
     assert run(200000.0, offices_parking_under_spaces=40) == (40, False)
 
