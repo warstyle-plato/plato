@@ -355,6 +355,113 @@ def test_the_page_check_fails_on_a_forgery() -> None:
     assert len(_drawn_mismatches(forged, report)) == 2
 
 
+# --- структура расходов ------------------------------------------------------
+# Владелец (25.10.2026): «почему в результате нет суммы расходов, как по
+# жилью?» — и решение: «Структура расходов» первым блоком раздела «Затраты».
+
+def _expense_rows(result: dict) -> list[dict]:
+    first = _sections(result)["costs"]["blocks"][0]
+    assert first["title"] == "Структура расходов"
+    return first["years"]
+
+
+def _expense_mismatches(drawn: list[list[str]], rows: list[dict]) -> list[str]:
+    """Напечатанные строки таблицы против строк движка — разбором текста."""
+    if [d[0] for d in drawn] != [r["label"] for r in rows]:
+        return ["строки не те"]
+    out = []
+    for (label, money, share), row in zip(drawn, rows):
+        for cell, value in ((money, row["value"]), (share, row["share"])):
+            number, tolerance = _number(cell)
+            if abs(number - float(value)) > tolerance:
+                out.append(f"{label}: {cell} вместо {value}")
+    return out
+
+
+def _drawn_expense(markup: str) -> list[list[str]]:
+    table = re.search(r'<table class="object-years">[\s\S]*?</table>', markup).group(0)
+    body = table.split("<tbody>", 1)[1]
+    return [[html.unescape(re.sub("<[^>]+>", "", c)) for c in re.findall(r"<td>([\s\S]*?)</td>", tr)]
+            for tr in re.findall(r"<tr>([\s\S]*?)</tr>", body)]
+
+
+@pytest.mark.parametrize("kind", ["two", "one"])
+def test_the_costs_open_with_the_expense_structure_of_the_engine(kind: str) -> None:
+    """Строки — те же, что `report.expense_structure` жилого отчёта, не своя
+    сборка; итог — `summary.total_expenses`, и сумма статей с ним сходится."""
+    result = _run(kind)
+    rows = _expense_rows(result)
+    engine = result["report"]["expense_structure"]
+    assert [(r["label"], r["value"], r["share"]) for r in rows[:-1]] == [
+        (e["label"], e["value"], e["share"]) for e in engine]
+    total = rows[-1]
+    assert total["label"] == "Расходы всего"
+    assert total["value"] == result["summary"]["total_expenses"]
+    assert sum(r["value"] for r in rows[:-1]) == pytest.approx(total["value"], abs=1.0)
+    assert sum(r["share"] for r in rows[:-1]) == pytest.approx(1.0)
+
+
+def test_the_costs_of_the_objects_on_their_own_loan_are_in_the_structure() -> None:
+    """Эксплуатация, налог на имущество, продажа и выход объектов, проценты и
+    комиссии их кредита и сделка — статьями таблицы, а не теряются."""
+    result = _run()
+    values = {r["label"]: r["value"] for r in _expense_rows(result)}
+    objects = result["finance"]["nonres"]["objects"]
+    assert objects, "у проекта нет объектов на своём кредите — проверять нечего"
+
+    def total(key: str) -> float:
+        return sum(float(o["totals"].get(key) or 0.0) for o in objects)
+
+    own = total("opex") + total("property_tax") + total("selling_cost") + total("exit_cost")
+    assert own > 0 and values[result["report"]["nonres_costs_label"]] == pytest.approx(own, abs=1.0)
+    # Комиссии за резервирование и неиспользованный лимит — внутри `loan_fee`.
+    loan = total("loan_interest") + total("loan_fee")
+    assert loan > 0 and values["Проценты и комиссии"] == pytest.approx(loan, abs=1.0)
+    assert values["Цена приобретения"] == pytest.approx(1500e6)
+    summary = result["summary"]
+    assert values["Налог на прибыль"] == summary["profit_tax"]
+    assert values["НДС"] == summary["vat"]
+
+
+def test_a_housing_project_has_the_same_structure_of_expenses() -> None:
+    """Тот же блок у жилья: строки движка складываются в «Расходы всего»."""
+    result = core.calculate(core.CalcRequest(inputs=copy.deepcopy(core.DEFAULT_INPUTS),
+                                             tep=copy.deepcopy(core.TEP_DEFAULT), rates=[]))
+    assert "object_report" not in result["report"] or not result["report"]["object_report"]
+    rows = result["report"]["expense_structure"]
+    assert sum(r["value"] for r in rows) == pytest.approx(result["summary"]["total_expenses"], abs=1.0)
+
+
+def test_the_bottom_total_no_longer_repeats_the_expenses() -> None:
+    """«Расходы всего» стоит итогом структуры; внизу остаётся одна стройка."""
+    result = _run()
+    costs = _sections(result)["costs"]
+    titles = [b.get("title") for b in costs["blocks"]]
+    assert titles[0] == "Структура расходов" and titles[-1] == "Итог стройки"
+    assert "Итог" not in titles
+    labels = [r["label"] for b in costs["blocks"] for r in b.get("rows") or []]
+    assert not any(label.startswith("Расходы проекта всего") for label in labels)
+    assert _values(_block(costs, "Итог стройки")) == {
+        "Затраты стройки — смета объектов и общие": result["summary"]["capex"]}
+
+
+def test_the_page_prints_the_expense_structure_first() -> None:
+    result = _run()
+    markup = _render_blocks(result["report"])["costs"]
+    assert re.findall(r'<div class="section-title">([^<]+)</div>', markup)[0] == "Структура расходов"
+    assert _expense_mismatches(_drawn_expense(markup), _expense_rows(result)) == []
+
+
+def test_the_expense_check_fails_on_a_forgery() -> None:
+    result = _run()
+    drawn = _drawn_expense(_render_blocks(result["report"])["costs"])
+    rows = _expense_rows(result)
+    wrong_total = [*drawn[:-1], [drawn[-1][0], "1,00 млрд ₽", drawn[-1][2]]]
+    assert _expense_mismatches(wrong_total, rows) != []
+    assert _expense_mismatches(drawn[:-1], rows) != []
+    assert _expense_mismatches(drawn, rows[:-1] + [{**rows[-1], "share": 0.5}]) != []
+
+
 # --- страница: браузер --------------------------------------------------------
 
 PORT = 18991
@@ -378,6 +485,10 @@ READ = r"""() => {
           equity: seen(document.querySelector('#rsObj-finance .equity-box table')),
           housingShown: ['rsSite', 'rsSummary', 'rsExpenses', 'rsIncome', 'rsFinance']
             .filter(id => seen(document.getElementById(id))),
+          costsCards: [...document.querySelectorAll('#rsObj-costs .card > .section-title')].filter(seen)
+            .map(t => t.textContent.trim()),
+          expense: [...document.querySelectorAll('#rsObj-costs table.object-years tbody tr')].filter(seen)
+            .map(tr => [...tr.cells].map(c => c.innerText.trim())),
           gantt: [...document.querySelectorAll('#reportCalendarGantt .gantt-label.group')]
             .map(x => x.textContent.trim()),
           inputs, tep};
@@ -467,6 +578,15 @@ def test_the_object_frame_shows_the_unit_economics(walk) -> None:
     assert any(label.startswith("Выручка — на м²") for label in rows)
 
 
+def test_the_rendered_costs_open_with_the_expense_structure(walk) -> None:
+    """Отрисованная страница: «Структура расходов» — первая карточка раздела
+    «Затраты», её строки и числа — строки движка, внизу «Расходы всего»."""
+    state, engine = walk["object"], walk["object"]["engine"]
+    assert state["costsCards"][0] == "Структура расходов"
+    assert state["costsCards"][-1] == "Итог стройки"
+    assert _expense_mismatches(state["expense"], _expense_rows(engine)) == []
+
+
 def test_a_housing_project_keeps_its_page(walk) -> None:
     state = walk["housing"]
     assert [s["id"] for s in state["sections"]][:2] == ["rsSite", "rsSummary"]
@@ -511,6 +631,15 @@ def test_the_pdf_follows_the_nine_sections(object_pdf) -> None:
                     "Продажи и продукты", "Класс жилья"):
         assert housing not in object_pdf
     assert "Вознаграждение генподрядчика — доля объекта" in object_pdf
+
+
+def test_the_pdf_opens_the_costs_with_the_expense_structure(object_pdf) -> None:
+    text = object_pdf[object_pdf.index("\nЗатраты\n"):]
+    assert text.index("Структура расходов") < text.index("Смета объекта")
+    total = text[text.index("\nРасходы всего\n"):].splitlines()[2]
+    value, tolerance = _number(total)
+    assert abs(value - _run()["summary"]["total_expenses"]) <= tolerance
+    assert "Расходы проекта всего" not in object_pdf
 
 
 def test_the_pdf_order_check_fails_on_a_forgery(object_pdf) -> None:
