@@ -1594,6 +1594,56 @@ def _object_parking_area_saved_line(saved: dict[str, Any]) -> str:
             f"прежнее умолчание; теперь берётся норматив класса {norm} м²")
 
 
+# Гараж офиса по умолчанию строится по нормативу (решение владельца,
+# 25.10.2026). Это не отменяет решения 06.09.2026 о приобъектной парковке:
+# асфальт у входа по-прежнему справка и не строится. Здесь норматив отвечает
+# на другой вопрос — сколько мест положить в ГАРАЖ офиса, пока человек своего
+# числа не назвал. Человек по-прежнему сильнее: вписанное им число подземных
+# мест (> 0) берётся как есть, а места первых этажей засчитываются в норматив —
+# под землю идёт только остаток («под землёй — норматив минус наземные»).
+# Прежде ноль под землёй рядом с вписанными местами первых этажей значил
+# «гаража нет», и в нежилом проекте его занимал перенос паркинга проекта:
+# 271 место на первых этажах + 149 из старого поля проекта = 420.
+#
+# Правило — у нежилого проекта: там гараж офиса и есть подземный паркинг, а
+# сказать «гаража нет» можно галочкой «Отказ от подземного паркинга». В жилом
+# проекте та галочка — про паркинг дома, и ноль в поле офиса, вписанный руками,
+# по-прежнему значит «гаража у офиса нет».
+OBJECT_GARAGE_NORM_REST_PRODUCTS = frozenset({"offices"})
+
+
+def object_garage_takes_norm_rest(inputs: dict[str, Any], tep_key: str) -> bool:
+    """Подземные места объекта без своего числа — остаток норматива?"""
+    obj = _BY_KEY.get(tep_key)
+    return (is_nonresidential(inputs) and obj is not None
+            and obj.product in OBJECT_GARAGE_NORM_REST_PRODUCTS)
+
+
+def object_underground_refused(inputs: dict[str, Any]) -> bool:
+    """«Отказ от подземного паркинга» в нежилом проекте снимает и гаражи
+    объектов: другого подземного паркинга, кроме их, у такого проекта нет."""
+    return is_nonresidential(inputs) and b(inputs, "underground_parking_disabled")
+
+
+def _parking_norm_region(demand: dict[str, Any]) -> str:
+    return ("Московской области" if demand.get("jurisdiction") == parking_norms.MOSCOW_OBLAST
+            else "Москвы")
+
+
+def object_parking_origin_note(demand: dict[str, Any], origin: str, required: int,
+                               under: int, over: int) -> str:
+    """Откуда число мест объекта — одной фразой для страницы, отчёта и PDF."""
+    if origin == "refused":
+        tail = f" На первых этажах — {over} мест." if over else ""
+        return "Отказ от подземного паркинга: мест под землёй нет." + tail
+    if origin in ("norm", "norm_rest"):
+        return (f"По нормативу {_parking_norm_region(demand)}: {required} мест, "
+                f"из них {over} на первых этажах, под землёй {under}.")
+    if origin == "hand":
+        return f"Задано руками: под землёй {under} мест, на первых этажах {over}."
+    return ""
+
+
 def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     """Разместить СОБСТВЕННЫЙ паркинг объектов по строкам ТЭП.
 
@@ -1671,13 +1721,27 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         over = max(0, int(n(inputs, f"{prefix}_parking_over_spaces"))) if enabled else 0
 
         by_norm = False
+        required = int((required_by_key.get(tep_key) or 0))
         take_norm = enabled and not object_parking_by_hand(inputs, prefix)
+        # Чьё число стоит под землёй — часть самого числа (`under_origin`):
+        # «по нормативу», «норматив минус первые этажи», «задано руками» и
+        # «отказ от подземного паркинга» на экране выглядят одним полем.
+        origin = "hand" if enabled else ""
         if take_norm:
-            required = int((required_by_key.get(tep_key) or 0))
             if required > 0:
                 under, over, by_norm = required, 0, True
+                origin = "norm"
             else:
                 under, over = 0, 0
+                origin = "none"
+        elif enabled and under <= 0 and object_garage_takes_norm_rest(inputs, tep_key) and required > 0:
+            # Гараж офиса без своего числа подземных мест — остаток норматива
+            # после мест первых этажей (`object_garage_takes_norm_rest`).
+            under = max(0, required - over)
+            origin = "norm_rest"
+        if enabled and object_underground_refused(inputs):
+            under = 0
+            origin = "refused"
 
         guests = 0
         if sellable and enabled:
@@ -1740,6 +1804,9 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             "units": under + over,
             "guest_spaces": guests,
             "by_norm": by_norm,
+            "under_origin": origin,
+            "norm_rest": object_garage_takes_norm_rest(inputs, tep_key),
+            "origin_note": object_parking_origin_note(demand, origin, required, under, over),
             "required_spaces": int(required_by_key.get(tep_key) or 0),
             "sellable": sellable,
             "saleable_units": int(row["parking_saleable_units"]),
@@ -1863,7 +1930,11 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
         # Чьё число — часть числа. «Задано руками» у нетронутого поля — это
         # утверждение о человеке, сделанное из нашего же нуля: он ничего не
         # вписывал, просто мест не потребовалось.
-        if item.get("by_norm"):
+        if item.get("under_origin") == "refused":
+            whose = ", отказ от подземного паркинга"
+        elif item.get("under_origin") == "norm_rest":
+            whose = ", под землёй — норматив за вычетом мест на первых этажах"
+        elif item.get("by_norm"):
             whose = ", по нормативу"
         elif item["units"]:
             whose = ", задано руками"
@@ -1918,7 +1989,9 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
 # называло московский документ под областным числом (Мытищи, 04.10.2026).
 PARKING_NORM_OTHER_REGION = "other_region"
 PARKING_NORM_OF: dict[str, str] = {
-    parking_norms.MOSCOW: "приложения 6 к 945-ПП",
+    # Таблица мест на расчётную единицу — приложение 1 (ред. 2579-ПП), формула
+    # с К1 и К2 — приложение 6: число собирают оба, и подпись называет оба.
+    parking_norms.MOSCOW: "приложений 1 и 6 к 945-ПП",
     # Другой регион: норм парковки его у нас нет (решение владельца 19.10.2026).
     PARKING_NORM_OTHER_REGION: "этого региона — его норм у нас нет",
     parking_norms.MOSCOW_OBLAST: ("Московской области (приложение № 10 к 713/30 в ред. "
@@ -1960,8 +2033,10 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
     отвечает на «сколько положено», и на этом её работа кончается.
 
     Собственный паркинг объекта — другое: гараж под ОСЗ ставится на кадастр и
-    продаётся машино-местами. Его число задаёт человек (`OBJECT_PARKING_FIELDS`),
-    и из этой нормы оно НЕ выводится.
+    продаётся машино-местами. Его число задаёт человек (`OBJECT_PARKING_FIELDS`);
+    пока не задал — гараж строится по этой норме, а у офиса под землёй идёт
+    остаток после мест первых этажей (`object_garage_takes_norm_rest`,
+    решение владельца 25.10.2026). Сама приобъектная стоянка не строится.
 
     База московского норматива — НЕЖИЛАЯ НАЗЕМНАЯ ПЛОЩАДЬ (сноска 2 приложения
     1 в редакции 2579-ПП). В нашем ТЭП это `gns` продукта: подземная часть у
