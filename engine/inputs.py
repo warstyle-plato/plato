@@ -2733,6 +2733,9 @@ class CalcRequest(BaseModel):
     # (решение владельца, 18.08.2026 — «счёт виден, вывод за входом»).
     session: str = ""
     access_key: str = ""
+    # Человек нажал «Посчитать бесплатно»: только с этим бесплатный участок
+    # тратится на расчёт с сайта (`require_calc_access`, `free_consent`).
+    use_free: bool = False
     # Факт действующего проекта: дата среза и помесячные ряды до неё. Пусто —
     # проект считается с нуля, как считался всегда. Задано — ряды до среза
     # подменяются фактическими, а плановый хвост перенормируется на остаток
@@ -2747,6 +2750,7 @@ class PhasedCalcRequest(BaseModel):
     phasing: dict[str, Any] = {}
     session: str = ""
     access_key: str = ""
+    use_free: bool = False
 
 
 class SensitivityRequest(BaseModel):

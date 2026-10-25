@@ -760,7 +760,11 @@ def _aggregate_finance(results: list[dict[str, Any]],
         "sales_after_rve", "escrow_release", "limit_fee",
         "interest_payment", "profit_tax", "taxable_margin",
         "financing_tax_deduction", "taxable_profit_cumulative",
-        "revenue", "capex", "operating",
+        # Строка очереди несёт выручку по договорам и расходы месяца ключами
+        # `sales` и `project_costs`. Свод складывал `revenue`/`capex`/`operating`,
+        # которых в строке очереди нет, — и помесячные выручка и расходы свода
+        # стояли нулями (поймала сверка книги с движком на Нагатино).
+        "sales", "project_costs",
         *NONRES_ROW_FLOWS,
     )
     stocks = ("bridge_balance", "pf_balance", "pf_payable", "escrow", *NONRES_ROW_STOCKS)
@@ -3343,8 +3347,12 @@ def _calculate_phased_with_carry(req: PhasedCalcRequest) -> dict[str, Any]:
 @app.post("/calculate-phased")
 def calculate_phased_api(req: PhasedCalcRequest) -> dict[str, Any]:
     # Очерёдность — тот же расчёт экономики, и та же граница входа.
-    require_calc_access(req.session, req.access_key, "Расчёт экономики", inputs=req.inputs)
-    return calculate_phased(req)
+    access = require_calc_access(req.session, req.access_key, "Расчёт экономики",
+                                 inputs=req.inputs, free_consent=req.use_free)
+    bundle = calculate_phased(req)
+    if isinstance(bundle, dict):
+        bundle["access"] = access_summary(access)
+    return bundle
 
 
 @app.post("/analysis/sensitivity")
