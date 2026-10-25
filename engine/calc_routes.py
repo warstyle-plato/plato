@@ -32,6 +32,24 @@ def calculate_api(req: CalcRequest) -> dict:
     return calculate(req)
 
 
+class StrategyCompareRequest(CalcRequest):
+    phasing: dict[str, Any] = {}
+
+
+@app.post("/strategy-compare")
+def strategy_compare_api(req: StrategyCompareRequest) -> dict:
+    """«Сравнение стратегий» с точками, где стратегии сравняются.
+
+    Точки — подбор полным пересчётом модели (`strategy_compare_for_report`, тот
+    же, что у тизера и PDF), поэтому страница просит их отдельным запросом
+    после расчёта, а `/calculate` их не ждёт. Нет выбора стратегии — пустой
+    ответ."""
+    require_calc_access(req.session, req.access_key, "Сравнение стратегий", inputs=req.inputs)
+    bundle = _run_authoritative_model(req.inputs, req.tep, req.rates or [], req.phasing)
+    return strategy_compare_for_report(bundle, req.inputs, req.tep, req.rates or [], req.phasing) \
+        or {"items": []}
+
+
 class TepCorrectionsNote(BaseModel):
     session: str = ""
     text: str = ""

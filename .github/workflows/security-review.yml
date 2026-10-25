@@ -1,0 +1,65 @@
+name: Обзор безопасности изменений
+
+# Claude читает diff каждого PR как рецензент по безопасности: ищет путь от
+# входа к последствию в самих изменениях и пишет находки комментариями в PR.
+# Это дополнение к CodeQL (шаблоны) и аудиту 23.10.2026 (разовый срез):
+# CodeQL не видит ошибок доступа вроде открытого маршрута записи, а аудит
+# не повторяется на каждой правке.
+#
+# Нужен секрет CLAUDE_API_KEY (ключ Anthropic, включённый для Claude Code).
+# Пока его нет, шаг пропускается и сборка остаётся зелёной: отсутствие
+# рецензента — не ошибка в коде. Проверка только комментирует и PR не
+# роняет: находка — повод прочитать, а не автоматический вердикт.
+#
+# Действие читает текст PR как подсказку и не защищено от внедрения
+# инструкций; в репозитории PR открывают владелец, Dependabot и сессии Claude.
+# Если появятся PR от посторонних — включить в настройках «Require approval
+# for all external contributors».
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+
+concurrency:
+  group: security-review-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  review:
+    name: Claude читает diff
+    if: github.event.pull_request.merged == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Есть ли ключ
+        id: key
+        env:
+          HAS_KEY: ${{ secrets.CLAUDE_API_KEY != '' }}
+        run: |
+          echo "present=${HAS_KEY}" >> "$GITHUB_OUTPUT"
+          if [ "${HAS_KEY}" != "true" ]; then
+            echo "::notice title=Обзор безопасности пропущен::Секрет CLAUDE_API_KEY не задан — добавьте его в настройках репозитория, и проверка заработает."
+          fi
+      - uses: actions/checkout@v7
+        if: steps.key.outputs.present == 'true'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+      - uses: anthropics/claude-code-security-review@main
+        if: steps.key.outputs.present == 'true'
+        with:
+          claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
+          comment-pr: true
+          claude-model: claude-sonnet-5-5
+          claudecode-timeout: 20
+          # Данные и слепки — не код: искать в них уязвимости нечего, а токенов
+          # они стоят.
+          exclude-directories: docs,tests/fixtures,reference_data,genplan_assets,presets,data

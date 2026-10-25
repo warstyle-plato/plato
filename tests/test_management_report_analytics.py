@@ -86,7 +86,8 @@ def test_findings_carry_numbers_and_sources():
     # дважды), и аббревиатуры не теряют регистр («по РСС», а не «по рсс»).
     topics = [item["topic"] for item in built["findings"]]
     assert len(topics) == len(set(topics)), topics
-    assert "«1 очередь»" in found["Финансирование"]["text"]
+    assert "при нынешнем темпе эскроу" in found["Финансирование"]["text"]
+    assert "«1 очередь»" not in found["Финансирование"]["text"]
     # Нет данных — вывод говорит об этом, а не молчит.
     empty = report.build("Пусто", "week", "2026-10-18")
     assert {item["tone"] for item in empty["findings"]} == {"missing"}

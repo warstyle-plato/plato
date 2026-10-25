@@ -277,6 +277,10 @@ function vriReliefSourceNote(){
 }
 // Почему графика ВРИ нет — настоящей причиной. Плата, снятая льготой
 // целиком, — не «изменение не требуется»: так и сказано, с суммами.
+// Нежилой проект платы за смену ВРИ не несёт (владелец, 20.08.2026: город
+// считает её по жилью и встроенным помещениям первого этажа), и поля её
+// графика у него не рисуются (`RESIDENTIAL_ONLY_INPUTS`, 25.10.2026).
+const VRI_NONRESIDENTIAL_NOTE='В нежилом проекте плата за смену вида разрешённого использования не считается: город берёт её с жилья и встроенных помещений первых этажей, а отдельно стоящее нежилое здание в неё не входит. Здесь остаётся только регион: по нему выбираются нормативы Москвы или области.';
 function vriEmptyReason(vri){
  const t=(vri&&vri.totals)||{};
  const gross=Number(t.gross||0), relief=Number(t.relief||0);
@@ -304,6 +308,11 @@ function renderVri(vri){
  // Прежде блок прятался, и смена льготы выглядела как «ничего не пересчиталось».
  const enabled=!!(vri&&(vri.enabled||Number(t.relief||0)>0));
  const list=(vri&&vri.warnings)||[];
+ // Пояснение о дате обязательства и источниках оплаты — про график платы,
+ // а у нежилого проекта графика нет.
+ const nonres=typeof isNonResidential==='function'&&isNonResidential();
+ const obligationNote=document.getElementById('vriObligationNote');
+ if(obligationNote)obligationNote.style.display=nonres?'none':'';
 
  // Карточка в отчёте.
  const card=document.getElementById('vriCard');
@@ -331,7 +340,7 @@ function renderVri(vri){
  const noSchedule=!(vri&&vri.enabled);
  if(empty)empty.style.display=noSchedule?'':'none';
  const emptyNote=document.getElementById('vriTabEmptyNote');
- if(emptyNote&&noSchedule)emptyNote.textContent=vriEmptyReason(vri);
+ if(emptyNote&&noSchedule)emptyNote.textContent=nonres?VRI_NONRESIDENTIAL_NOTE:vriEmptyReason(vri);
  if(!enabled)return;
  document.getElementById('vriTabTotals').innerHTML=vriTotalsRows(t,(lastResult||{}).summary);
  document.getElementById('vriTabSchedule').innerHTML=vriScheduleRows(vri.rows);

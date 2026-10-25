@@ -32,6 +32,7 @@ _TEASER_JOBS_LOCK = threading.Lock()
 _TEASER_STAGES = {
     "model": "расчёт модели",
     "ceiling": "подбор максимальной цены входа",
+    "strategies": "сравнение стратегий продажи",
     "screening": "скрининг участков в НСПД",
     "map": "карта участка",
     "pdf": "вёрстка PDF",
@@ -45,6 +46,7 @@ _REPORT_JOBS: dict[str, threading.Event] = {}
 _REPORT_STAGES = {
     "model": "расчёт модели",
     "ceiling": "подбор максимальной цены входа",
+    "strategies": "сравнение стратегий продажи",
     "sensitivity": "анализ чувствительности",
     "pdf": "скрининг участков в НСПД и вёрстка PDF",
 }
@@ -283,6 +285,9 @@ def _report_build(ticket: str, payload: dict[str, Any]) -> None:
     скрининг всех участков и вёрстка. Итог и отказ ложатся на диск."""
     started = time.time()
     stage = "model"
+    # Блок сравнения стратегий печатается только из подбора сервера: присланный
+    # вместе с отчётом не принимается.
+    payload = {k: v for k, v in payload.items() if k != "strategy_compare"}
     try:
         _teaser_stage(ticket, stage, started, "report")
         # Один расчёт на обе поверхности. Правило применили к боту и забыли
@@ -308,6 +313,13 @@ def _report_build(ticket: str, payload: dict[str, Any]) -> None:
                         bundle, payload.get("inputs") or {}, payload.get("tep") or {},
                         payload.get("rates") or [], payload.get("phasing") or {},
                         payload.get("goal_seek")))
+                # «Сравнение стратегий» с точками безразличия — подбор здесь,
+                # в фоне, тем же блоком, что страница и тизер.
+                stage = "strategies"
+                _teaser_stage(ticket, stage, started, "report")
+                payload["strategy_compare"] = strategy_compare_for_report(
+                    bundle, payload.get("inputs") or {}, payload.get("tep") or {},
+                    payload.get("rates") or [], payload.get("phasing") or {})
                 if problems:
                     # В чат тут писать некому — расхождение печатается в самом
                     # отчёте: молча подменить числа нельзя.
@@ -412,6 +424,9 @@ def build_teaser_pdf(bundle: dict[str, Any], inputs: dict[str, Any],
     документа не выполнялся. Сам подбор здесь не идёт: это вёрстка."""
     presentation = project_presentation(bundle, inputs, tep, phasing, site=site)
     presentation["decision_tiles"] = entry_price or entry_price_block(bundle, inputs, None)
+    # «Сравнение стратегий» — одна строка тизера из блока расчёта.
+    presentation["strategy_line"] = (((bundle or {}).get("consolidated") or {})
+                                     .get("strategy_compare") or {}).get("teaser") or ""
     caption = None
     if isinstance(map_png, tuple):
         map_png, caption = map_png
