@@ -152,12 +152,14 @@ def test_the_hold_from_which_rent_beats_the_sale() -> None:
                  discount_rate_pct=5)
     line = _hold_line(x, t)
     years = line["value"]
-    sale = max(_npv(x, t, ns.STRATEGY_DDU), _npv(x, t, ns.STRATEGY_DIRECT))
+    # Сравнивают с лучшей продажей — какая она, решает расчёт, а не тест.
+    ddu, direct = _npv(x, t, ns.STRATEGY_DDU), _npv(x, t, ns.STRATEGY_DIRECT)
+    sale, sale_name = max((ddu, "продажу по ДДУ"), (direct, "продажу блоками"))
     assert years and 1 < years < 30
     assert _npv(x, t, ns.STRATEGY_INCOME, hold_years=years) >= sale
     assert _npv(x, t, ns.STRATEGY_INCOME, hold_years=years - 1) < sale
     assert _npv(x, t, ns.STRATEGY_INCOME, hold_years=30) >= sale
-    assert line["text"].startswith(f"Аренда обгоняет продажу по ДДУ при удержании здания от {years} лет")
+    assert line["text"].startswith(f"Аренда обгоняет {sale_name} при удержании здания от {years} лет")
     assert "(сейчас 5 лет)" in line["text"]
 
 
@@ -165,7 +167,9 @@ def test_rent_that_never_beats_the_sale_says_so() -> None:
     x, t = _spec(offices_strategy=ns.STRATEGY_DIRECT)
     line = _hold_line(x, t)
     assert line["value"] is None and line["years"] == []
-    assert "не обгоняет продажу по ДДУ ни при каком сроке удержания здания от 1 до 30 лет" in line["text"]
+    ddu, direct = _npv(x, t, ns.STRATEGY_DDU), _npv(x, t, ns.STRATEGY_DIRECT)
+    sale_name = max((ddu, "продажу по ДДУ"), (direct, "продажу блоками"))[1]
+    assert f"не обгоняет {sale_name} ни при каком сроке удержания здания от 1 до 30 лет" in line["text"]
     assert "Ближе всего она, если держать здание" in line["text"]
 
 
