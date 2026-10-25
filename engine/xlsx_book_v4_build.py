@@ -14,7 +14,9 @@
 # благоустройство считается методикой двора, соцобъекты — программой и своими
 # графиками, рассрочка ВРИ — с процентами на остаток. Они приходят в книгу
 # значениями движка и называются в `missing`, а не выглядят посчитанными.
-NONRES_BOOK_ENGINE_ARTICLES = ("landscaping", "social", "vri_interest", "vri_security")
+# Благоустройство считается в книге формулой (ставка × наземная ГНС проекта,
+# решение владельца 25.10.2026), а не числом движка.
+NONRES_BOOK_ENGINE_ARTICLES = ("social", "vri_interest", "vri_security")
 
 
 def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
@@ -205,10 +207,15 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         "rate_scenario": scenario_key, "rate_table": rate_table,
         "core_above_gns": float(op.get("core_above_gns") or 0.0),
         "core_under_gns": float(op.get("core_under_gns") or 0.0),
+        # База и ставка благоустройства — те же, что у движка (`landscaping_cost`):
+        # наземная ГНС проекта и ставка `landscaping_gns_rate` (ручная или
+        # умолчание нежилого проекта).
+        "landscaping_gns": project_above_gns(t),
         "parking_price_th": n(x, "parking_price_th"),
         "main_under_th": n(x, "main_under_th_per_sqm"),
         "cost": {
             "ird_th": n(x, "ird_th_per_sqm"), "design_p_th": n(x, "design_p_th_per_sqm"),
+            "landscaping_th": landscaping_gns_rate(x)[0],
             "design_rd_th": n(x, "design_rd_th_per_sqm"),
             "demolition_area": n(x, "demolition_area_sqm"),
             "demolition_th": n(x, "demolition_cost_th_per_sqm"),

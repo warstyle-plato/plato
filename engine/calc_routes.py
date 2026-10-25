@@ -23,13 +23,17 @@ def calculate_api(req: CalcRequest) -> dict:
     # выключен — проверять подпись нечем.
     # Право на участок (21.10.2026): после входа — бесплатный участок, дальше
     # оплата участка или подписка. Решает одна функция для всех поверхностей.
-    require_calc_access(req.session, req.access_key, "Расчёт экономики", inputs=req.inputs)
+    access = require_calc_access(req.session, req.access_key, "Расчёт экономики",
+                                 inputs=req.inputs, free_consent=req.use_free)
     # Учёт шагов с сайта: без него от публикации на пятьсот человек остаётся
     # число заходов, а где люди останавливаются — неизвестно. Пишем на сервере,
     # а не на странице: браузер закрывают на полуслове, и событие теряется.
     usage_track("calc", surface="site",
                 chat_id=_web_identity_chat_id(str(getattr(req, "session", "") or "")))
-    return calculate(req)
+    result = calculate(req)
+    if isinstance(result, dict):
+        result["access"] = access_summary(access)
+    return result
 
 
 class StrategyCompareRequest(CalcRequest):
