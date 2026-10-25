@@ -92,12 +92,12 @@ def test_the_block_reads_the_paths_of_the_engine(office) -> None:
 def test_the_lead_and_the_teaser_say_the_approved_sample(office) -> None:
     item, block = office["block"]["items"][0], office["block"]
     assert item["lead"] == ("В проекте выбрана продажа блоками после ввода. Выгоднее всего продажа по ДДУ "
-                            "с эскроу: её NPV выше на 521,9 млн ₽. Ни одна из четырёх стратегий при нынешних "
+                            "с эскроу: её NPV выше на 26,2 млн ₽. Ни одна из четырёх стратегий при нынешних "
                             "ценах не окупает проект.")
     assert block["teaser"] == ("Лучшая стратегия — продажа по ДДУ (эскроу), выгоднее выбранной продажи "
-                               "блоками на 521,9 млн ₽ по NPV.")
+                               "блоками на 26,2 млн ₽ по NPV.")
     npv = next(r for r in item["rows"] if r["key"] == "npv")
-    assert npv["cells"] == ["−1 251,7 млн ₽", "−1 773,6 млн ₽", "−2 830,3 млн ₽",
+    assert npv["cells"] == ["−1 747,4 млн ₽", "−1 773,6 млн ₽", "−2 830,3 млн ₽",
                             "−2 597,5 млн ₽"]
 
 
@@ -105,7 +105,7 @@ def test_the_chosen_best_strategy_names_the_runner_up() -> None:
     bundle, _, _ = _bundle(offices_strategy=ns.STRATEGY_DDU)
     block = core.strategy_compare_block(bundle["consolidated"])
     assert block["teaser"] == ("Выбранная стратегия — продажа по ДДУ — лучшая из четырёх по NPV; следующая, "
-                               "продажа блоками, уступает ей 521,9 млн ₽.")
+                               "продажа блоками, уступает ей 26,2 млн ₽.")
 
 
 def test_the_payback_is_the_rule_of_the_owner_section() -> None:
@@ -196,12 +196,15 @@ def test_the_found_points_really_level_the_strategies(office) -> None:
         == pytest.approx(ddu, abs=tolerance)
     assert _npv(x, t, ns.STRATEGY_DIRECT, offices_price_th_per_sqm=points["price"]["value"]) \
         == pytest.approx(ddu, abs=tolerance)
-    # Контрпример: прежнее значение поля стратегии не уравнивает.
-    assert abs(_npv(x, t, ns.STRATEGY_DIRECT) - ddu) > 100 * tolerance
+    # Контрпример: прежнее значение поля стратегии не уравнивает — разрыв во
+    # много раз шире допуска, с которым подобранное значение уравнивает. С
+    # выручкой по ДДУ от раскрытия эскроу (214-ФЗ, владелец 25.10.2026)
+    # продажа по ДДУ и блоками сблизились: разрыв 26,2 млн ₽ — 15 допусков.
+    assert abs(_npv(x, t, ns.STRATEGY_DIRECT) - ddu) > 10 * tolerance
     assert points["rent"]["text"] == ("Аренда станет так же выгодна, как продажа по ДДУ, если ставка аренды "
-                                      "вырастет до 66,1 тыс. ₽ за м² в год (сейчас 30,0 тыс. ₽).")
+                                      "вырастет до 54,6 тыс. ₽ за м² в год (сейчас 30,0 тыс. ₽).")
     assert points["price"]["text"] == ("Продажа блоками сравняется с продажей по ДДУ, если блоки продавать "
-                                       "по 343,0 тыс. ₽ за м² (сейчас 273,0 тыс. ₽).")
+                                       "по 276,5 тыс. ₽ за м² (сейчас 273,0 тыс. ₽).")
 
 
 def test_the_calculation_itself_does_not_search(office) -> None:
