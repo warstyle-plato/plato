@@ -1745,7 +1745,7 @@ async function applyMoscowNormativeTep(area,density,keepRows){
    district:String(territory.district||''),
    inside_moscow:true})});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать ТЭП по нормативам Москвы');
+ if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать ТЭП по нормативам Москвы');
  const places=data.places||{};
  const skipped=applyDerivedInputs({kindergarten_places:places.kindergarten,
   school_places:places.school,clinic_capacity:places.clinic});
@@ -1805,7 +1805,7 @@ async function applyNormativeTep(densityOverride,keepRows){
   const response=await fetch('/mo/calculate',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(body)});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать нормативный ТЭП');
+  if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать нормативный ТЭП');
   Object.entries(data.tep||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
   // Обратный счёт от вписанных метров: строка, которую человек вписал, остаётся
   // его. Сервер выводит ГНС и общую из продаваемой своими долями, и ответ молча
@@ -3064,7 +3064,7 @@ async function recalcFromTepByNorms(options){
   const r=await fetch('/tep/derived-by-site',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(bySiteBody())});
   d=await r.json();
-  if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
+  if(!r.ok)throw new Error(serverDetail(d)||'Пересчёт не выполнен');
  }catch(e){say('Пересчёт по нормативам не выполнен: '+escapeHtml(String(e.message||e)),false);return}
 
  const lines=[
@@ -3132,7 +3132,7 @@ async function socialPopulationSwitched(methodBefore){
    {method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(viaBaseline?baselineRecalcBody():bySiteBody())});
   d=await r.json();
-  if(!r.ok)throw new Error(d.detail||('сервер ответил '+r.status));
+  if(!r.ok)throw new Error(serverDetail(d)||('сервер ответил '+r.status));
  }catch(e){
   return sayPopulationSwitch('Места соцобъектов не пересчитаны: '+String(e.message||e)+'.');
  }
@@ -3232,7 +3232,7 @@ async function recalcFromTep(options){
   const r=await fetch('/tep/recalc-from-baseline',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(baselineRecalcBody())});
   d=await r.json();
-  if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
+  if(!r.ok)throw new Error(serverDetail(d)||'Пересчёт не выполнен');
  }catch(e){say('Пересчёт не выполнен: '+escapeHtml(String(e.message||e)),false);return}
  // Метод обязан воспроизводить исходный расчёт на исходных метрах. Не
  // воспроизводит — это расхождение с базой, а не результат.
