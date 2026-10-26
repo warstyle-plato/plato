@@ -1310,14 +1310,18 @@ def _grant_command(chat_id: int, user_id: int, argument: str) -> None:
     except HTTPException as exc:
         _send_message(chat_id, f"Доступ не выдан: {html.escape(str(exc.detail))}")
         return
+    notice = result.get("notice") or {}
+    told = (" Сообщение ему в Telegram отправлено." if notice.get("sent") else
+            f" Сообщение ему в Telegram не отправлено: {html.escape(str(notice.get('reason') or 'причина неизвестна'))}."
+            " Напишите ему сами.") if notice else ""
     if reserve:
         _send_message(chat_id, f"Пользователю {int(parts[0])} положено в запас: {int(parts[2])} "
                                f"{core._access_plots_word(int(parts[2]))}. Теперь в запасе: "
-                               f"{int(result.get('reserve') or 0)}.")
+                               f"{int(result.get('reserve') or 0)}.{told}")
         return
     until = datetime.fromtimestamp(float(result.get("until") or 0), tz=timezone.utc).astimezone(
         timezone(timedelta(hours=3))).strftime("%d.%m.%Y")
-    _send_message(chat_id, f"Доступ выдан пользователю {int(parts[0])} до {until}.")
+    _send_message(chat_id, f"Доступ выдан пользователю {int(parts[0])} до {until}.{told}")
 
 
 def _send_model_archive(chat_id: int) -> None:

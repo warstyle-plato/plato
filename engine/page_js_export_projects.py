@@ -976,6 +976,7 @@ async function deleteProject(id){
 // ответ, и сброс сбил бы счёт.
 // accessUseFree — согласие на бесплатный участок на один запуск расчёта:
 // снимается сразу после него и проекта не хранит.
+// demoBlockNames — названия разделов демо-ссылок с сервера для админки: не проект.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
  'profileState','profileAskedOnResult','calcRequiresLogin','accessUseFree','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
@@ -984,7 +985,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound','landContourPending',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
- 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS'];
+ 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS','demoBlockNames'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
@@ -1255,7 +1256,11 @@ function tariffsHtml(data){
   html+='<p class="cab-demo">'+
    '<b>Это демо-доступ.</b> '+(data.demo_payments==='test'
     ?'Оплата идёт через тестовый магазин ЮKassa — деньги не списываются.'
-    :'Кнопки оплаты показывают, где откроется платёжная форма ЮKassa; деньги не списываются.')+'</p>';
+    :'Кнопки оплаты показывают, где откроется платёжная форма ЮKassa; деньги не списываются.')+
+   ((data.demo_sections||[]).length
+    ?' Ссылка открывает разделы: '+data.demo_sections.map(x=>'<a href="'+escapeHtml(x.path)+'">'+escapeHtml(x.name)+'</a>'+
+      (x.read_only?' (только просмотр)':'')).join(', ')+'.'
+    :'')+'</p>';
  }
  const status=data.status||{};
  const active=(status.plots||[]).filter(p=>p.active);
@@ -1389,29 +1394,64 @@ async function renderAccessAdmin(){
   '<div class="cab-sub">Оплаты</div><div class="scroll"><table><thead><tr><th>Дата</th><th>Кто</th><th>Что</th><th>Платёж</th></tr></thead><tbody>'+
   (payments||'<tr><td colspan="4">Оплат пока не было.</td></tr>')+'</tbody></table></div>';
 }
-// Демо-доступ по ссылке (клиенту, партнёру, ЮKassa): ссылка-приглашение со сроком, отзыв.
+// Демо-доступ по ссылке (клиенту, партнёру, ЮKassa): ссылка-приглашение со
+// сроком 1, 5 или 30 дней и разделами, которые она открывает; отзыв.
+// Названия разделов — с сервера (`DEMO_BLOCKS`), второго списка страница не держит.
+let demoBlockNames={};
+function demoBlockBoxes(){return Array.from(document.querySelectorAll('#demoInviteBlocks .demo-block'))}
+function demoBlocksAll(on){demoBlockBoxes().forEach(box=>{box.checked=!!on})}
+function demoBlocksSync(){
+ const all=document.getElementById('demoBlockAll'),boxes=demoBlockBoxes();
+ if(all)all.checked=boxes.length>0&&boxes.every(box=>box.checked);
+}
+function demoDaysWord(n){const t=n%100,o=n%10;return n+' '+(t>10&&t<20?'дней':o===1?'день':o>=2&&o<=4?'дня':'дней')}
+// Галочки разделов и кнопки срока рисуются по ответу сервера (`DEMO_BLOCKS`,
+// `DEMO_DAYS`): срок, которого сервер не примет, кнопкой не появится.
+function demoBlocksDraw(names,days){
+ const line=document.getElementById('demoInviteBlocks'),buttons=document.getElementById('demoInviteDays');
+ if(names&&line&&!demoBlockBoxes().length){
+  demoBlockNames=names;
+  line.insertAdjacentHTML('beforeend',Object.keys(names).map(b=>'<label><input type="checkbox" class="demo-block" value="'+
+   escapeHtml(b)+'" onchange="demoBlocksSync()"> '+escapeHtml(names[b])+'</label>').join(''));
+ }
+ if(Array.isArray(days)&&buttons&&!buttons.children.length){
+  buttons.innerHTML=days.map(d=>'<button class="btn dark demo-days" onclick="accessDemoCreate('+Number(d)+')">'+demoDaysWord(Number(d))+'</button>').join('');
+ }
+}
+function demoBlocksText(blocks){
+ const list=(blocks||[]).map(b=>demoBlockNames[b]||b),all=Object.keys(demoBlockNames);
+ return all.length&&list.length===all.length?'Полный доступ':list.join(', ');
+}
 async function renderDemoInvites(){
  const box=document.getElementById('demoInviteList');
  if(!box)return;
  let data;
  try{data=await accessAdminCall('/access/admin/demo/list')}
  catch(e){box.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';return}
+ demoBlocksDraw(data.blocks,data.days);
  // Адрес показан один раз и копируется кнопкой: на телефоне длинная ссылка
  // обрезается, и выделять её пальцем неудобно.
  const rows=(data.invites||[]).map(r=>'<tr><td><span class="demo-link">'+escapeHtml(location.origin+r.path)+'</span>'+
-  (r.note?'<br><small>'+escapeHtml(r.note)+'</small>':'')+'</td><td>до '+accessDate(r.expires)+'</td><td>'+
-  (r.active?'действует':'не действует')+', входов: '+Number(r.claims||0)+'</td><td class="cab-nowrap">'+
+  (r.note?'<br><small>'+escapeHtml(r.note)+'</small>':'')+
+  '<br><small class="demo-blocks">Разделы: '+escapeHtml(demoBlocksText(r.blocks))+'</small></td><td>до '+accessDate(r.expires)+'</td><td>'+
+  (r.active?'действует':(r.revoked_at?'отозвана '+accessDate(r.revoked_at):'срок истёк'))+', входов: '+Number(r.claims||0)+
+  (r.last_claim?'<br><small>последний вход '+accessDate(r.last_claim)+'</small>':'')+'</td><td class="cab-nowrap">'+
   (r.active?'<button class="btn" data-link="'+escapeHtml(location.origin+r.path)+'" onclick="accessDemoCopy(this)">Скопировать</button> '+
   '<button class="btn" data-code="'+escapeHtml(r.code)+'" onclick="accessDemoRevoke(this.dataset.code)">Отозвать</button>':'')+
   '</td></tr>').join('');
  box.innerHTML=rows?'<div class="scroll"><table><tbody>'+rows+'</tbody></table></div>':'<div class="cab-muted">Ссылок ещё не выдавали.</div>';
 }
-async function accessDemoCreate(){
+async function accessDemoCreate(days){
  const status=document.getElementById('demoInviteStatus');
  const note=String((document.getElementById('demoInviteNote')||{}).value||'');
+ const blocks=demoBlockBoxes().filter(box=>box.checked).map(box=>box.value);
+ if(!blocks.length){
+  if(status)status.innerHTML='<span class="import-error">Отметьте разделы, которые откроет ссылка, или «Полный доступ».</span>';
+  return;
+ }
  try{
-  const data=await accessAdminCall('/access/admin/demo/create',{days:14,note});
-  if(status)status.textContent='Ссылка создана, действует до '+accessDate(data.expires)+'. Она в списке ниже — нажмите «Скопировать».';
+  const data=await accessAdminCall('/access/admin/demo/create',{days,note,blocks});
+  if(status)status.textContent='Ссылка создана: '+demoBlocksText(data.blocks)+', действует до '+accessDate(data.expires)+'. Она в списке ниже — нажмите «Скопировать».';
   renderDemoInvites();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }
@@ -1461,7 +1501,11 @@ async function accessAdminGrant(){
   if(!chat){if(status)status.textContent='Выберите, кому выдать доступ.';return}
   const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral:kind==='plot'?cadastral:[],days,count,note});
   if(status)status.textContent='Выдано: '+(data.what||'доступ')+' — '+(data.who||('ID '+chat))+
-   (data.until?', до '+accessDate(data.until):', срок каждого участка пойдёт с его первого расчёта')+'.';
+   (data.until?', до '+accessDate(data.until):', срок каждого участка пойдёт с его первого расчёта')+'.'+
+   // Весть человеку в Telegram: дошла — так и сказано, нет — причина, чтобы
+   // выдавший написал ему сам.
+   (data.notice?(data.notice.sent?' Сообщение в Telegram отправлено.':
+    ' Сообщение в Telegram не отправлено: '+(data.notice.reason||'причина неизвестна')+'. Напишите человеку сами.'):'');
   renderAccessAdmin();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }

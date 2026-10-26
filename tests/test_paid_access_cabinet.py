@@ -101,7 +101,7 @@ def test_the_admin_grants_by_hand_and_sees_it():
     overview = client.post("/access/admin/overview", json={"key": "kluch"}).json()
     person = next(p for p in overview["people"] if p["chat"] == CHAT)
     assert person["active_plots"][0]["label"] == A1
-    grant = next(r for r in overview["journal"] if r.get("chat") == CHAT)
+    grant = next(r for r in overview["journal"] if r.get("chat") == CHAT and r.get("event") == "grant")
     assert "администратор 777" in grant["note"] and "пилот" in grant["note"]
     assert me()["status"]["plots"][0]["source"] == "admin"
 
@@ -248,7 +248,8 @@ def test_the_cabinet_speaks_one_type_scale_on_the_drawn_page(monkeypatch):
 
     monkeypatch.setattr(core, "payments_available", lambda: True)
     core.users_touch(CHAT, surface="telegram", name="Иван Петров")
-    client.post("/access/admin/demo/create", json={"key": "kluch", "days": 14, "note": "проверка"})
+    client.post("/access/admin/demo/create", json={"key": "kluch", "days": 5, "note": "проверка",
+                                                 "blocks": ["calc", "cabinet"]})
     admin_session = core._telegram_session(ADMIN, [])
     path = browser.chromium_or_skip()
     with (browser.serve(core.app, 18977) as base, sync_playwright() as pw,
