@@ -105,8 +105,11 @@ def test_platon_does_not_call_2_1_an_oblast_norm() -> None:
 def test_the_oblast_parking_label_does_not_claim_the_cancelled_sp() -> None:
     label = core.PARKING_NORM_OF[core.parking_norms.MOSCOW_OBLAST]
     assert "приложение № 10 к 713/30" in label, label
-    assert "СП 42.13330.2016 отменён" in label, label
-    assert "СП 42.13330.2016, табл. Ж.1" not in label, label
+    # Отменённую редакцию подпись не называет; числа сверены с действующей
+    # (СП 42.13330.2026, табл. И.1 — официальное издание, 26.10.2026).
+    assert "СП 42.13330.2016" not in label, label
+    assert "СП 42.13330.2026, табл. И.1" in label, label
+    assert "кроме ФОК, по нему не сверены" in label, label
     # Москва на месте — предохранитель от правки не того ключа.
     assert core.PARKING_NORM_OF[core.parking_norms.MOSCOW] == "приложений 1 и 6 к 945-ПП"
 
@@ -114,11 +117,38 @@ def test_the_oblast_parking_label_does_not_claim_the_cancelled_sp() -> None:
 def test_the_oblast_rules_source_is_the_appendix_not_the_sp() -> None:
     source = parking_norms.MO_RULES_SOURCE
     assert source.startswith("приложение № 10 к 713/30"), source
-    assert "отменён с 12.07.2026" in source, source
     assert "текст на руках" not in source, source
-    # Текста СП 42.13330.2026 у нас нет — его чисел подпись не обещает.
-    assert "СП 42.13330.2026" not in source, source
+    assert "СП 42.13330.2016" not in source, source
+    # Совпадение с СП 42.13330.2026 не делает таблицу сверенной по области:
+    # областной источник — 713/30, по нему сверена одна строка.
+    assert "СП 42.13330.2026, табл. И.1" in source, source
     assert parking_norms.MO_RULES_CONFIRMED is False
+
+
+def test_every_oblast_row_matches_table_i1_of_sp42_2026() -> None:
+    """Строки MO_RULES — дословно табл. И.1 СП 42.13330.2026 (выдержка в
+    библиотеке). Сдвиг числа в коде или в выдержке ломает подпись «совпадают»."""
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "docs" / "normative" / "rf_sp_42"
+            / "sp42-13330-2026_excerpt.txt").read_text(encoding="utf-8")
+    # Вёрстка таблицы разрывает название строки числом — ищем так, как
+    # строка легла в выдержку.
+    flat = " ".join(text.split())
+    expected = {
+        "office": ("3 Объекты делового управления; объекты банковской и страховой м2 общей площади 50–60", 50, 60),
+        "mall": ("торгово-развлекательные центры м2 общей площади 40–50", 40, 50),
+        "hypermarket": ("гипермаркеты) м2 общей площади 30–35", 30, 35),
+        "public_admin": ("1 Объекты государственного управления м2 общей площади 200–220", 200, 220),
+        "science": ("16 Объекты проведения научных исследований 140–170", 140, 170),
+        "catering": ("23 Объекты общественного питания Посадочные места 4–5", 4, 5),
+        "bank": ("- с операционными залами м2 общей площади 30–35", 30, 35),
+        "market": ("- универсальные и непродовольственные м2 общей площади 30–40", 30, 40),
+    }
+    rows = {rule["function"]: rule for rule in parking_norms.MO_RULES}
+    for function, (needle, lo, hi) in expected.items():
+        assert needle in flat, needle
+        assert (rows[function]["min_denominator"], rows[function]["max_denominator"]) == (lo, hi), function
 
 
 # --- T8: Кд — по округам, таблица 3 к 1745-ПП ---------------------------------
