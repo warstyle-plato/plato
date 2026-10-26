@@ -127,30 +127,98 @@ def inset_ring(ring: list[list[float]], distance: float) -> list[list[float]]:
     return out
 
 
-def _site_rings_m(x: dict[str, Any]) -> tuple[list[list[list[float]]], dict[str, float]]:
-    """Контур участка из ЕГРН (`_land_lookup`) в метрах от его центра → (кольца, рамка).
+# Объекты ЕГРН, контур которых — не земля участка: здание и помещение. Тип —
+# из ответа поиска (`kind`, `_normalize_nspd_feature`), а не по номеру.
+SITE_NOT_LAND_KINDS = ("building", "premise")
+
+
+def _site_lookup_items(x: dict[str, Any]) -> list[dict[str, Any]]:
+    lookup = x.get("_land_lookup") or {}
+    items = lookup.get("results") if isinstance(lookup, dict) else None
+    if not isinstance(items, list):
+        items = [lookup] if isinstance(lookup, dict) else []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _item_rings(item: dict[str, Any]) -> list[list[list[float]]]:
+    return [ring for ring in (item.get("contour_merc") or [])
+            if isinstance(ring, list) and len(ring) >= 3]
+
+
+def _site_rings_m(x: dict[str, Any]
+                  ) -> tuple[list[list[list[float]]], dict[str, float], dict[str, Any]]:
+    """Контур территории из ЕГРН (`_land_lookup`) в метрах от её центра →
+    (кольца, рамка, состав).
+
+    Контур — объединение колец ВСЕХ найденных земельных участков поиска;
+    здания и помещения (`SITE_NOT_LAND_KINDS`) — не земля, их пятно в контур
+    не идёт. Состав — что вошло, что нет и почему: `parcels` (номер и площадь
+    контура, м²), `not_land`, `missing` (не найден или без границ).
 
     Кольца приходят в веб-меркаторе: метр в нём растянут на 1/cos(широты),
     поэтому координаты умножаются на cos(широты центра). Рамка — центр и
     множитель: по ней корпуса возвращаются в меркатор для карты участка.
     """
-    lookup = x.get("_land_lookup") or {}
-    items = lookup.get("results") if isinstance(lookup, dict) else None
-    if not isinstance(items, list):
-        items = [lookup] if isinstance(lookup, dict) else []
-    rings = [ring for item in items
-             if isinstance(item, dict) and item.get("found", True)
-             for ring in (item.get("contour_merc") or [])
-             if isinstance(ring, list) and len(ring) >= 3]
+    items = _site_lookup_items(x)
+    land = [item for item in items if item.get("found", True)
+            and str(item.get("kind") or "land") not in SITE_NOT_LAND_KINDS and _item_rings(item)]
+    parts: dict[str, Any] = {
+        "parcels": [], "missing": [],
+        "not_land": [str(item.get("cadastral_number") or "") for item in items
+                     if item.get("found", True)
+                     and str(item.get("kind") or "land") in SITE_NOT_LAND_KINDS]}
+    parts["missing"] = [str(item.get("cadastral_number") or "") for item in items
+                        if (not item.get("found", True)
+                            or (str(item.get("kind") or "land") not in SITE_NOT_LAND_KINDS
+                                and not _item_rings(item)))
+                        and item.get("cadastral_number")]
+    rings = [ring for item in land for ring in _item_rings(item)]
     if not rings:
-        return [], {}
+        return [], {}, parts
     xs = [p[0] for ring in rings for p in ring]
     ys = [p[1] for ring in rings for p in ring]
     cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
     lat = _math.degrees(2 * _math.atan(_math.exp(cy / 6378137.0)) - _math.pi / 2)
     k = _math.cos(_math.radians(lat))
-    out = [_clean_ring([[(p[0] - cx) * k, (p[1] - cy) * k] for p in ring]) for ring in rings]
-    return [ring for ring in out if len(ring) >= 3], {"cx": cx, "cy": cy, "k": k}
+    out: list[list[list[float]]] = []
+    for item in land:
+        own = [_clean_ring([[(p[0] - cx) * k, (p[1] - cy) * k] for p in ring])
+               for ring in _item_rings(item)]
+        own = [ring for ring in own if len(ring) >= 3]
+        out.extend(own)
+        parts["parcels"].append({"number": str(item.get("cadastral_number") or ""),
+                                 "area_sqm": sum(abs(_ring_area(r)) for r in own)})
+    return out, {"cx": cx, "cy": cy, "k": k}, parts
+
+
+def _site_map_note(parts: dict[str, Any], site_sqm: float, contour_sqm: float) -> str:
+    """Почему корпуса нельзя показать на карте участка — простыми словами:
+    какие участки найдены, их сумма, площадь в расчёте и что не вошло."""
+    parcels = parts.get("parcels") or []
+    shown = "; ".join(f"{p['number'] or 'без номера'} — {_fmt_ru(p['area_sqm'])} м²"
+                      for p in parcels[:6])
+    if len(parcels) > 6:
+        shown += f" и ещё {len(parcels) - 6}"
+    if len(parcels) == 1:
+        text = (f"Корпуса на карте участка не показаны: в госреестре найден один участок "
+                f"({shown}), а площадь участка в расчёте — {_fmt_ru(site_sqm)} м². Похоже, "
+                "найдена не вся территория проекта.")
+    elif parcels:
+        text = (f"Корпуса на карте участка не показаны: найденные в госреестре участки "
+                f"({shown}) вместе дают {_fmt_ru(contour_sqm)} м², а площадь участка в "
+                f"расчёте — {_fmt_ru(site_sqm)} м². Похоже, найдена не вся территория проекта.")
+    else:
+        text = "Корпуса на карте участка не показаны: границ участка из госреестра нет."
+    names = lambda items: ", ".join(items[:5]) + (f" и ещё {len(items) - 5}" if len(items) > 5 else "")
+    if parts.get("missing"):
+        text += f" Не найдены в госреестре или без границ: {names(parts['missing'])}."
+    if parts.get("not_land"):
+        text += (f" Здания и помещения ({names(parts['not_land'])}) — не земля участка, "
+                 "в его границы они не входят.")
+    text += (" Поэтому участок на схеме показан квадратом той же площади, что в расчёте. "
+             "Чтобы увидеть корпуса на карте, укажите кадастровые номера всех участков "
+             "территории.")
+    return text
 
 
 def _rotate(rings: list[list[list[float]]], angle: float) -> list[list[list[float]]]:
@@ -450,23 +518,21 @@ def _shape_plan(x: dict[str, Any], massing: dict[str, Any],
 
 
 def _layout_site(x: dict[str, Any], massing: dict[str, Any]
-                 ) -> tuple[list[list[list[float]]], dict[str, float], str, list[str]] | None:
-    """Участок схемы в метрах → (кольца, рамка, происхождение формы, пояснения);
+                 ) -> tuple[list[list[list[float]]], dict[str, float], str, list[str], str] | None:
+    """Участок схемы в метрах → (кольца, рамка, происхождение формы, пояснения,
+    причина, по которой корпусов нет на карте участка);
     участка нет — None. Схема повёрнута так, что самая длинная сторона участка
     идёт вдоль оси x; полоса — слева направо с лёгким подъёмом."""
     site_sqm = float(massing.get("site_sqm") or 0.0)
     notes: list[str] = []
-    rings, frame = _site_rings_m(x)
-    if rings:
-        contour_sqm = sum(abs(_ring_area(r)) for r in rings)
-        if site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
-            # Контур другой площади — не вся территория проекта (часть участков
-            # или чужой участок): рисовать по нему значит рисовать не то.
-            notes.append(f"Площадь контура из ЕГРН ({_fmt_ru(contour_sqm)} м²) заметно отличается "
-                         f"от площади участка в расчёте ({_fmt_ru(site_sqm)} м²): похоже, это не "
-                         "вся территория проекта. Поэтому участок показан квадратом той же площади, "
-                         "что в расчёте.")
-            rings, frame = [], {}
+    rings, frame, parts = _site_rings_m(x)
+    contour_sqm = sum(abs(_ring_area(r)) for r in rings)
+    map_note = ""
+    if rings and site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
+        # Контур другой площади — не вся территория проекта (часть участков
+        # или чужой участок): рисовать по нему значит рисовать не то.
+        map_note = _site_map_note(parts, site_sqm, contour_sqm)
+        rings, frame = [], {}
     if rings:
         shape_origin = "contour"
         axis = massing_strip_axis(rings)
@@ -481,17 +547,20 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
         shape_origin = "square"
         half = _math.sqrt(site_sqm) / 2.0
         rings = [[[-half, -half], [half, -half], [half, half], [-half, half]]]
-        if not notes and x.get("_land_contour_pending"):
+        if not map_note and x.get("_land_contour_pending"):
             # Контур ещё в пути: страница пересчитает схему, когда он придёт.
             notes.append("Контур участка из госреестра ещё загружается, поэтому пока участок "
                          "показан квадратом той же площади. Когда контур придёт, схема "
                          "перерисуется сама.")
-        elif not notes:
-            notes.append("Контура участка из ЕГРН нет, поэтому участок показан квадратом той же "
-                         "площади.")
+        elif not map_note:
+            map_note = _site_map_note(parts, site_sqm, 0.0)
     else:
         return None
-    return rings, frame, shape_origin, notes
+    # Причина, по которой корпусов нет на карте, — и пояснение схемы, и фраза
+    # на месте кнопки карты (`layout.map_note`): одна строка на обе поверхности.
+    if map_note:
+        notes.append(map_note)
+    return rings, frame, shape_origin, notes, map_note
 
 
 def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
@@ -509,7 +578,7 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
     site = _layout_site(x, massing)
     if not site:
         return {"buildings": [], "site_rings": [], "notes": [], "storeys_limit": limit}
-    rings, frame, shape_origin, notes = site
+    rings, frame, shape_origin, notes, map_note = site
 
     inner = [r for r in (inset_ring(ring, setback) for ring in rings) if len(r) >= 3]
     objects = massing.get("objects") or []
@@ -564,6 +633,9 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
     return {
         "site_rings": [[[round(p[0], 2), round(p[1], 2)] for p in r] for r in rings],
         "site_shape_origin": shape_origin,
+        # Почему корпусов нет на карте участка (схема — квадратом): страница
+        # ставит эту фразу на место кнопки карты.
+        "map_note": map_note,
         "underground_rings": [[[round(p[0], 2), round(p[1], 2)] for p in r] for r in inner],
         "setback_m": setback,
         "storeys_limit": limit,
