@@ -48,7 +48,7 @@ jobs:
         with:
           fetch-depth: 50
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -170,7 +170,7 @@ jobs:
         with:
           fetch-depth: 50
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.11"
 
@@ -192,7 +192,7 @@ jobs:
 
       # База «что было до выката» — итог прошлого полного прогона.
       - name: Прошлый прогон
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: visual-baseline.json
           key: prod-visual-baseline-${{ github.run_id }}
@@ -228,7 +228,7 @@ jobs:
 
       - name: Запомнить прогон
         if: always() && steps.visual.outputs.baseline == '1'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: visual-baseline.json
           key: prod-visual-baseline-${{ github.run_id }}
