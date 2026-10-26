@@ -2302,6 +2302,34 @@ def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
             "missing": []}
 
 
+def escrow_at(block: dict[str, Any], queue: dict[str, Any], month: str) -> dict[str, Any] | None:
+    """Эскроу против кредита на заданный месяц — по плану и при нынешнем темпе.
+
+    ``block`` — очередь из ``escrow_sufficiency`` (накоплено, темп, месяц
+    замера), ``queue`` — та же очередь плана (помесячные ряды эскроу и остатка
+    кредита). Темп тот же, что у ответа «к раскрытию»: второго счёта нет.
+    Месяц не впереди замера — ответа нет: прогнозировать прошлое незачем.
+    """
+    seen = block.get("measured_at") or ""
+    ahead = _months_between(seen, month) if seen and month else None
+    if ahead is None or ahead <= 0:
+        return None
+
+    def plan_on(series: dict[str, Any]) -> float | None:
+        # Ряды нарастающие: на месяц без записи стоит последнее известное значение.
+        known = sorted(m for m in series if m <= month)
+        return float(series[known[-1]]) if known and series[known[-1]] is not None else None
+
+    plan_escrow = plan_on(queue.get("escrow") or {})
+    plan_pf = plan_on(queue.get("pf") or {})
+    keeping = float(block.get("actual") or 0.0) + float(block.get("pace") or 0.0) * ahead
+    return {"month": month, "months_ahead": ahead,
+            "plan_escrow": plan_escrow, "plan_pf": plan_pf,
+            "plan_coverage": (plan_escrow / plan_pf) if plan_escrow is not None and plan_pf else None,
+            "keeping_escrow": keeping,
+            "keeping_coverage": (keeping / plan_pf) if plan_pf else None}
+
+
 def _months_between(start: str, end: str) -> int | None:
     try:
         one = datetime.date(int(start[:4]), int(start[5:7]), 1)
