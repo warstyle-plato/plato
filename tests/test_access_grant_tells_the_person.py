@@ -60,7 +60,7 @@ def test_a_subscription_is_told_without_the_admin_note(sent):
     assert len(sent) == 1 and sent[0][0] == CHAT
     text = sent[0][1]
     assert "Вам открыта подписка DevelopAid до" in text and "любые участки" in text
-    assert "https://developaid.ru" in text
+    assert text.splitlines()[-1] == "Открыть расчёт: https://developaid.ru"
     assert "Сотрудник" not in text and "администратор" not in text
 
 
