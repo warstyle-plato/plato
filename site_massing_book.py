@@ -4,7 +4,8 @@
 двор по норме − проезды − открытые стоянки − отступы, жилые дома — жилая ГНС ÷
 типовая этажность (без неё — 17), но не больше процента застройки (без него —
 30 %) и свободного места и не меньше наземной ГНС ÷ предел этажности (без
-предела — 25); средняя этажность = наземная ГНС ÷
+предела — 25); пятно, которое на участке схемы не встаёт, — по месту на участке
+(`fit_sqm`, вводная из геометрии схемы), не меньше ГНС ÷ предел; средняя этажность = наземная ГНС ÷
 пятно; уровни = вверх(подземная площадь ÷ (контур × коэффициент)); надбавка за
 глубину — средневзвешенная по площадям уровней. Здесь один список строк и одни
 формулы на обе книги — жилую v4 и нежилую: две копии одной методики разошлись
@@ -52,6 +53,7 @@ ROWS: tuple[tuple[str, str, str], ...] = (
     ("max_storeys", "Предельная этажность участка (0 — не задана)", INPUT),
     ("coverage_pct", "Процент застройки участка, % (0 — без ограничения)", INPUT),
     ("typical_storeys", "Типовая этажность жилых домов (0 — нет жилья)", INPUT),
+    ("fit_sqm", "Пятно, которое встаёт на участок по схеме, м² (0 — без ограничения)", INPUT),
     ("setbacks_sqm", "Отступы, м² (полоса по периметру квадрата той же площади)", FORMULA),
     ("residential_site_sqm", "Жилая территория, м²", FORMULA),
     ("footprint_estimate_sqm", "Пятно застройки — оценка по балансу, м²", FORMULA),
@@ -95,7 +97,7 @@ BOOK_KEYS: dict[str, str] = {
 # Служебные ключи книги, чьи вводные — метры.
 PERCENT_KEYS = tuple(f"massing_{key}" for key in PERCENT_FIELDS)
 AREA_KEYS = ("massing_site_sqm", "massing_objects_plot_sqm", "massing_social_plot_sqm",
-             "massing_yard_sqm",
+             "massing_yard_sqm", "massing_fit_sqm",
              "massing_surface_parking_sqm",
              "massing_above_gns_sqm", "massing_underground_sqm")
 
@@ -113,6 +115,14 @@ def formulas(ref: Callable[[str], str]) -> dict[str, str]:
     # Пятно — меньшее из процента застройки и остатка участка, но не меньше
     # наземной ГНС ÷ предел этажности.
     base = f"MIN({r('coverage_sqm')},{r('footprint_estimate_sqm')})"
+    estimate = (f"IF(AND({r('site_sqm')}>0,{r('above_gns_sqm')}>0,"
+                f"OR({base}<=0,{r('above_gns_sqm')}"
+                f"/MAX({base},0.000001)>{cap}+0.000000001)),"
+                f"{r('above_gns_sqm')}/{cap},"
+                f"IF(AND({r('typical_storeys')}>0,{r('above_gns_sqm')}"
+                f"/MAX(MIN({r('typical_storeys')},{cap}),0.000001)<={base}+0.000000001),"
+                f"{r('above_gns_sqm')}/MAX(MIN({r('typical_storeys')},{cap}),0.000001),"
+                f"{base}))")
     return {
         "setbacks_sqm": (f"IF(AND({r('site_sqm')}>0,{r('setback_m')}>0),{r('site_sqm')}"
                          f"-MAX(0,SQRT({r('site_sqm')})-2*{r('setback_m')})^2,0)"),
@@ -128,15 +138,11 @@ def formulas(ref: Callable[[str], str]) -> dict[str, str]:
                                  f"-{r('surface_parking_sqm')}-{home_setbacks}),0)"),
         "coverage_sqm": (f"IF({r('coverage_pct')}>0,{home}*{r('coverage_pct')}/100,"
                          f"{home})"),
+        # Пятно, которое на участке схемы не встаёт, сжимается до того, что
+        # встаёт (этажность растёт), но не ниже наземной ГНС ÷ предел.
         "footprint_sqm": (f"IF({r('footprint_manual_sqm')}>0,{r('footprint_manual_sqm')},"
-                          f"IF(AND({r('site_sqm')}>0,{r('above_gns_sqm')}>0,"
-                          f"OR({base}<=0,{r('above_gns_sqm')}"
-                          f"/MAX({base},0.000001)>{cap}+0.000000001)),"
-                          f"{r('above_gns_sqm')}/{cap},"
-                          f"IF(AND({r('typical_storeys')}>0,{r('above_gns_sqm')}"
-                          f"/MAX(MIN({r('typical_storeys')},{cap}),0.000001)<={base}+0.000000001),"
-                          f"{r('above_gns_sqm')}/MAX(MIN({r('typical_storeys')},{cap}),0.000001),"
-                          f"{base})))"),
+                          f"IF(AND({r('fit_sqm')}>0,{r('above_gns_sqm')}>0,{estimate}>{r('fit_sqm')}+0.5),"
+                          f"MAX({r('above_gns_sqm')}/{cap},{r('fit_sqm')}),{estimate}))"),
         # Пятно (по пределу или заданное руками) больше свободного места —
         # двору по норме не хватает этой площади.
         "footprint_shortage_sqm": (f"IF({r('site_sqm')}>0,"
@@ -199,6 +205,7 @@ def input_values(massing: dict, inputs: dict) -> dict[str, object]:
         "max_storeys": float(massing.get("max_storeys_allowed") or 0.0),
         "coverage_pct": float(massing.get("coverage_pct") or 0.0),
         "typical_storeys": float(massing.get("typical_storeys") or 0.0),
+        "fit_sqm": float(massing.get("footprint_fit_sqm") or 0.0),
     }
 
 

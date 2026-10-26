@@ -163,14 +163,14 @@ def monitor_store_sales(req: MonitorSalesRequest) -> dict[str, Any]:
 
 @app.get("/monitor/snapshots", include_in_schema=False)
 def monitor_snapshots(project: str, session: str = "", key: str = "") -> dict[str, Any]:
-    _require_team_access(session, key, "Монитор проекта")
+    _require_team_access(session, key, "Монитор проекта", write=False)
     return developaid_monitor.snapshots(project)
 
 
 @app.post("/monitor/view", include_in_schema=False)
 def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
     """Срез и тренд по нему. Считает сервер, страница только рисует."""
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     programme = _monitor_programme(req)
     try:
         return {
@@ -187,7 +187,7 @@ def monitor_view(req: MonitorViewRequest) -> dict[str, Any]:
 def monitor_rewritten(project: str, first: str, second: str,
                       session: str = "", key: str = "") -> dict[str, Any]:
     """Что переписали в прошлом между двумя снимками."""
-    _require_team_access(session, key, "Монитор проекта")
+    _require_team_access(session, key, "Монитор проекта", write=False)
     try:
         return developaid_monitor.moved_between_snapshots(project, first, second)
     except FileNotFoundError as exc:
@@ -321,7 +321,7 @@ def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
     соединением не держится, и держал её тут `plato_answer`, обещавший в этой
     же строке обратное.
     """
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     message = str(req.message or "").strip()
     if not message:
         raise HTTPException(422, "Пустой вопрос")
@@ -354,7 +354,7 @@ def monitor_ask(req: MonitorAskRequest, request: Request) -> dict[str, Any]:
 @app.post("/monitor/doubts", include_in_schema=False)
 def monitor_doubts(req: MonitorDoubtsRequest) -> dict[str, Any]:
     """Сомнения Платона: незакрытое, противоречащее фактуре, и сеть без него."""
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     try:
         return developaid_monitor_scenarios.doubts(req.project, req.cut)
     except FileNotFoundError as exc:
@@ -428,7 +428,7 @@ def monitor_crew(project: str, date: str = "", session: str = "",
     договоров не заводим: он стал бы вторым мнением о том, кто за статью
     отвечает.
     """
-    _require_team_access(session, key, "Монитор проекта")
+    _require_team_access(session, key, "Монитор проекта", write=False)
     import developaid_monitor_crew as crew
 
     day = (date or "").strip()
@@ -472,7 +472,7 @@ def monitor_crew(project: str, date: str = "", session: str = "",
 def monitor_daily_summary(project: str, upto: str = "",
                           session: str = "", key: str = "") -> dict[str, Any]:
     """Люди на площадке по дням и последний отчёт словами."""
-    _require_team_access(session, key, "Монитор проекта")
+    _require_team_access(session, key, "Монитор проекта", write=False)
     try:
         out = developaid_monitor_daily.daily_summary(
             project, upto or None, known=_monitor_known_parties(project))
@@ -573,7 +573,9 @@ def monitor_notes(req: MonitorNotesRequest) -> dict[str, Any]:
     Без ``note_id`` и без темы — только список; с темой — новая запись; с
     ``note_id`` — новая версия записи (текст и/или статус).
     """
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    # Без записи и без темы — только список; остальное — запись.
+    _require_team_access(req.session, req.key, "Сводка руководству",
+                         write=bool(req.note_id or req.topic or req.text))
     import developaid_project_notes as project_notes
     author = _monitor_note_author(req.session, req.key)
     try:
@@ -649,7 +651,7 @@ def monitor_legal_import(req: MonitorLegalImportRequest) -> dict[str, Any]:
     номером карточки обновляет её; похожая строка без номера возвращается
     вопросом, а не склеивается (`legal.import_cards`).
     """
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     if not _is_admin_request(req.session, req.key):
         raise HTTPException(403, "Загружать готовые карточки споров может только владелец сервиса.")
     import developaid_legal_cases as legal
@@ -666,7 +668,7 @@ def monitor_legal_import(req: MonitorLegalImportRequest) -> dict[str, Any]:
 @app.post("/monitor/legal", include_in_schema=False)
 def monitor_legal(req: MonitorLegalRequest) -> dict[str, Any]:
     """Споры и претензии проекта: подтверждённые карточки и документы."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     return _legal_listing(req.project, req.session, req.key)
 
 
@@ -677,7 +679,7 @@ def monitor_legal_upload(req: MonitorLegalRequest) -> dict[str, Any]:
     Распознавание сканов и ответ модели — минуты: запрос их не ждёт, страница
     спрашивает `/monitor/legal/job`.
     """
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     author = _monitor_note_author(req.session, req.key)
     if not req.files:
@@ -706,7 +708,7 @@ def monitor_legal_upload(req: MonitorLegalRequest) -> dict[str, Any]:
 @app.post("/monitor/legal/job", include_in_schema=False)
 def monitor_legal_job(req: MonitorLegalRequest) -> dict[str, Any]:
     """Как идёт чтение документов: running / done (черновик карточки) / failed."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     try:
         return legal.job(req.project, req.job_id)
@@ -719,7 +721,7 @@ def monitor_legal_job(req: MonitorLegalRequest) -> dict[str, Any]:
 @app.post("/monitor/legal/case", include_in_schema=False)
 def monitor_legal_case(req: MonitorLegalRequest) -> dict[str, Any]:
     """Подтвердить карточку спора (новую или новую версию). В сводку идёт только она."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     author = _monitor_note_author(req.session, req.key)
     try:
@@ -737,7 +739,7 @@ def monitor_legal_case(req: MonitorLegalRequest) -> dict[str, Any]:
 @app.post("/monitor/legal/split", include_in_schema=False)
 def monitor_legal_split(req: MonitorLegalRequest) -> dict[str, Any]:
     """Разнести перепутанную карточку на две или снять признак («это один спор»)."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     author = _monitor_note_author(req.session, req.key)
     made = None
@@ -758,7 +760,7 @@ def monitor_legal_split(req: MonitorLegalRequest) -> dict[str, Any]:
 def monitor_legal_export(req: MonitorLegalRequest) -> Response:
     """Карточки споров файлом с номерами — для проверки и правки; загрузка
     обратно обновляет карточки по номеру. Только команде."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     from urllib.parse import quote
     body = json.dumps(legal.export_cards(req.project), ensure_ascii=False, indent=1)
@@ -771,7 +773,7 @@ def monitor_legal_export(req: MonitorLegalRequest) -> Response:
 @app.post("/monitor/legal/doc", include_in_schema=False)
 def monitor_legal_doc(req: MonitorLegalRequest) -> Response:
     """Документ спора как его загрузили."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Споры и претензии")
     import developaid_legal_cases as legal
     from urllib.parse import quote
     try:
@@ -794,7 +796,9 @@ def monitor_photos(req: MonitorPhotosRequest) -> dict[str, Any]:
 
     Выбирает человек: в сводку попадает только отмеченное (владелец, 20.10.2026).
     """
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    # Отметка снимка для сводки — запись; без неё — просмотр ленты.
+    _require_team_access(req.session, req.key, "Сводка руководству",
+                         write=bool(req.photo_id and req.chosen is not None))
     import datetime as _dt
 
     import developaid_management_report as management_report
@@ -816,7 +820,7 @@ def monitor_photos(req: MonitorPhotosRequest) -> dict[str, Any]:
 @app.post("/monitor/photo", include_in_schema=False)
 def monitor_photo(req: MonitorPhotosRequest) -> Response:
     """Сам снимок — для ленты на странице сводки."""
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Сводка руководству", write=False)
     import developaid_site_photos as site_photos
     try:
         data = site_photos.read(req.project, req.photo_id)
@@ -835,10 +839,15 @@ def _monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
     import developaid_management_report as management_report
     end = (req.end or "").strip() or _dt.date.today().isoformat()
     try:
-        return management_report.build(req.project, req.kind, end,
-                                       sales_project=req.sales_project)
+        report = management_report.build(req.project, req.kind, end,
+                                         sales_project=req.sales_project)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    # Споры и претензии демо-ссылке закрыты всегда (решение владельца
+    # 25.10.2026): в сводке вместо блока — причина, и в «Главном» строки нет.
+    if demo_session_chat(req.session):
+        report["legal"] = {"state": "closed", "reason": DEMO_DISPUTES_CLOSED}
+    return report
 
 
 class MonitorReportLinkRequest(BaseModel):
@@ -864,7 +873,7 @@ def monitor_report_projects(req: MonitorReportLinkRequest) -> dict[str, Any]:
     У каждого проекта Монитора — его связь с отчётом о продажах (``None`` —
     ещё не выбрана), чтобы имя не приходилось вводить руками дважды.
     """
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Сводка руководству", write=False)
     return _monitor_report_projects()
 
 
@@ -918,7 +927,7 @@ def monitor_merge(req: MonitorMergeRequest) -> dict[str, Any]:
 @app.post("/monitor/report", include_in_schema=False)
 def monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
     """Сводка руководству: числа, текст для бота и разметка документа."""
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Сводка руководству", write=False)
     import developaid_management_report as management_report
     report = _monitor_report(req)
     return {"report": report, "text": management_report.render_text(report),
@@ -932,7 +941,7 @@ def monitor_report_pdf(req: MonitorReportRequest) -> Response:
     Маршрут синхронный, поэтому FastAPI выполняет его в пуле потоков: печать
     не держит цикл событий, а очередь печати общая с отчётом о продажах.
     """
-    _require_team_access(req.session, req.key, "Сводка руководству")
+    _require_team_access(req.session, req.key, "Сводка руководству", write=False)
     from market_search import report_pdf
     report = _monitor_report(req)
     try:
@@ -1103,7 +1112,7 @@ def internal_report_sent(req: ReportMailingInternalRequest) -> dict[str, Any]:
 @app.post("/monitor/gantt", include_in_schema=False)
 def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
     """Гант по последнему снимку графика. Считает сервер, страница рисует."""
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     try:
         return developaid_monitor.gantt(req.project, cut=req.cut, upto=req.upto)
     except FileNotFoundError as exc:
@@ -1115,7 +1124,7 @@ def monitor_gantt(req: MonitorGanttRequest) -> dict[str, Any]:
 @app.post("/monitor/scenario", include_in_schema=False)
 def monitor_scenario(req: MonitorScenarioRequest) -> dict[str, Any]:
     """Посчитать what-if по PM-сети и утверждённому контуру финансирования."""
-    _require_team_access(req.session, req.key, "Монитор проекта")
+    _require_team_access(req.session, req.key, "Монитор проекта", write=False)
     try:
         return developaid_monitor_scenarios.run(
             req.project, req.cut, req.kind, req.wbs, req.days,
