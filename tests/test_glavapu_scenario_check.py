@@ -304,15 +304,24 @@ def test_an_unavailable_calculator_is_named_with_its_place(core, monkeypatch):
     assert answer["error"].startswith("штатный калькулятор:") and answer["where"]
 
 
-def test_a_browser_failure_reaches_the_window_with_its_place(core, monkeypatch):
+def test_a_browser_failure_reaches_the_window_in_plain_words(core, monkeypatch, caplog):
+    """Отказ браузера доходит до окна причиной и номером ошибки, а сырой текст
+    и строка кода — до журнала (26.10.2026 посетитель читал на странице лог
+    Playwright «Locator.click: Timeout… intercepts pointer events»)."""
     def broken(numbers, area_ha, params=None):
         raise RuntimeError("поток браузера остановлен")
     monkeypatch.setattr(core, "_glavapu_headless_run", broken)
+    caplog.set_level("ERROR")
     core.glavapu_scenario_check(_request(core))
     answer = _wait_done(core, _request(core))
-    assert answer["state"] == "error" and "RuntimeError" in answer["error"]
-    # Место — файл и строка, где оборвалось (здесь — подделка браузера).
-    assert "test_glavapu_scenario_check.py:" in answer["where"]
+    assert answer["state"] == "error"
+    assert "RuntimeError" not in answer["error"] and "поток браузера" not in answer["error"]
+    assert "Запустите сверку ещё раз" in answer["error"]
+    ref = answer["error"].rsplit("номер ошибки ", 1)[1].strip()
+    assert ".py:" not in answer["where"] and answer["where"]
+    # Место — файл и строка, где оборвалось, — в журнале под тем же номером.
+    logged = [r.getMessage() for r in caplog.records if ref in r.getMessage()]
+    assert logged and "test_glavapu_scenario_check.py:" in logged[0]
 
 
 def test_no_parcel_is_refused_before_the_browser(core, monkeypatch):

@@ -678,11 +678,123 @@ def verify(page: Any, params: dict[str, Any], log: ScenarioStep) -> dict[str, fl
     return rows
 
 
+class CalculatorNotice(RuntimeError):
+    """Калькулятор сам сообщил об ошибке всплывающим уведомлением.
+
+    Это ответ калькулятора, а не поломка клика: жать «Excel» дальше бессмысленно,
+    и посетителю нужен его текст, а не стек Playwright.
+    """
+
+    def __init__(self, notices: list[str], where: str) -> None:
+        text = "; ".join(f"«{n}»" for n in notices)
+        super().__init__(text)
+        self.notices = list(notices)
+        self.where = where
+        self.public_message = (
+            f"калькулятор ГлавАПУ сообщил об ошибке: {text}. Сверка остановлена, "
+            "потому что книга калькулятора с такой ошибкой не годится для сравнения. "
+            "Проверьте ТЭП сценария и запустите сверку ещё раз; если ошибка повторится, "
+            "калькулятор этот сценарий не принимает")
+
+
+# Всплывающие уведомления калькулятора (notistack поверх MUI Alert). Строгость —
+# по классу: `MuiAlert-*Error` / `notistack-MuiContent-error`. Текст — как видит
+# человек.
+_NOTICES_JS = """() => {
+  const out = [];
+  const seen = new Set();
+  document.querySelectorAll(
+    '.notistack-SnackbarContainer .MuiAlert-root, .notistack-SnackbarContainer .notistack-MuiContent'
+  ).forEach(el => {
+    const box = el.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+    const text = (el.innerText || '').replace(/\\s+/g, ' ').trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    const cls = String(el.className || '');
+    out.push({text, error: /Alert-(standard|filled|outlined|color)Error|MuiContent-error/.test(cls)});
+  });
+  return out;
+}"""
+
+
+def calculator_notices(page: Any) -> list[dict[str, Any]]:
+    """Видимые уведомления калькулятора: текст и признак ошибки."""
+    try:
+        return list(page.evaluate(_NOTICES_JS) or [])
+    except Exception:  # noqa: BLE001 — уведомлений нет или страница не та
+        return []
+
+
+def _clear_notices(page: Any, timeout_ms: int) -> None:
+    """Убирает информационные уведомления с дороги кнопки.
+
+    notistack не прячет уведомление, пока над ним курсор, а Playwright ведёт
+    курсор к кнопке — и уведомление над ней висит вечно. Поэтому курсор
+    уводится в угол, уведомление закрывается своей кнопкой или щелчком, и
+    дальше ждём, пока контейнер опустеет.
+    """
+    try:
+        page.mouse.move(1, 1)
+    except Exception:  # noqa: BLE001
+        pass
+    container = page.locator(".notistack-SnackbarContainer")
+    for selector in (".MuiAlert-action button", "button[aria-label='Close']", ".MuiAlert-root"):
+        items = container.locator(selector)
+        try:
+            count = items.count()
+        except Exception:  # noqa: BLE001
+            count = 0
+        for index in range(count):
+            try:
+                items.nth(index).click(timeout=1500)
+            except Exception:  # noqa: BLE001 — уже ушло само
+                pass
+        if not calculator_notices(page):
+            return
+    try:
+        page.wait_for_function(
+            "() => ![...document.querySelectorAll('.notistack-SnackbarContainer .MuiAlert-root,"
+            " .notistack-SnackbarContainer .notistack-MuiContent')]"
+            ".some(el => el.getBoundingClientRect().height > 0)",
+            timeout=timeout_ms)
+    except Exception:  # noqa: BLE001 — клик ниже скажет сам
+        pass
+
+
+def _stop_on_errors(page: Any, where: str) -> None:
+    errors = [n["text"] for n in calculator_notices(page) if n.get("error")]
+    if errors:
+        raise CalculatorNotice(errors, where)
+
+
 def export_xlsx(page: Any, timeout_ms: int = 30000) -> bytes:
-    """Книга калькулятора кнопкой «Excel» — та же, что скачивает человек."""
-    with page.expect_download(timeout=timeout_ms) as download:
-        page.get_by_role("button", name="Excel", exact=True).first.click(timeout=7000)
-    path = download.value.path()
+    """Книга калькулятора кнопкой «Excel» — та же, что скачивает человек.
+
+    Перед кнопкой читаются уведомления калькулятора: ошибка — причина для
+    посетителя, информационное — убирается с дороги (оно перекрывало кнопку,
+    и клик падал по таймауту, 26.10.2026)."""
+    where = "калькулятор ГлавАПУ: выгрузка книги сценария"
+    _stop_on_errors(page, where)
+    _clear_notices(page, 12000)
+    button = page.get_by_role("button", name="Excel", exact=True).first
+    try:
+        with page.expect_download(timeout=timeout_ms) as download:
+            try:
+                button.click(timeout=7000)
+            except Exception:
+                # Новое уведомление могло всплыть между уборкой и кликом.
+                _stop_on_errors(page, where)
+                _clear_notices(page, 12000)
+                button.click(timeout=7000)
+        path = download.value.path()
+    except CalculatorNotice:
+        raise
+    except Exception:
+        # Книга не пришла — калькулятор мог сказать почему
+        # («Ошибка при создании Excel: …»).
+        _stop_on_errors(page, where)
+        raise
     with open(path, "rb") as handle:
         return handle.read()
 
