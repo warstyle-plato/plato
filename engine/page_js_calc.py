@@ -341,6 +341,9 @@ async function calculate(){
  // `onchange` поля пишет вводную сам, до всякого пересчёта.
  document.querySelectorAll('[id^=f_]').forEach(el=>{if(el.dataset.derived==='1')return;const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});
  if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';
+ // Класс офиса — тем же правилом, что движок (`apply_office_classes`): поле,
+ // которое класс поменял, показывает новое число сразу.
+ syncOfficeClasses().forEach(k=>{const el=document.getElementById('f_'+k);if(el)el.value=inputs[k]});
  if(document.getElementById('rateStartPct')){
    inputs.rate_start_pct=Number(rateStartPct.value||inputs.rate_start_pct||14);
    inputs.rate_normalization_months=Number(rateNormalizationMonths.value||inputs.rate_normalization_months||24);

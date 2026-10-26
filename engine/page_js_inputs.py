@@ -93,7 +93,7 @@ function isFieldManual(path){
 }
 function fieldOriginNote(path){
  const o=(inputs._field_origin||{})[path];
- if(!o||(o.source!=='glavapu'&&o.source!=='hotel_preset'&&o.source!=='migrated'&&o.source!=='document'&&o.source!=='picked'))return '';
+ if(!o||(o.source!=='glavapu'&&o.source!=='hotel_preset'&&o.source!=='migrated'&&o.source!=='document'&&o.source!=='picked'&&o.source!=='office_class'))return '';
  return '<div class="glavapu-origin" style="font-size:11px;color:#666;margin-top:2px">'+escapeHtml(o.text||'ГлавАПУ')+'</div>';
 }
 // Регион проекта — поле «Регион» проекта, и только оно. Ни имя файла
@@ -535,7 +535,9 @@ function undergroundShortfallNote(){
 
 function renderProjectClassPreview(){
  const select=document.getElementById('projectClassSelect');
- const key=select?select.value:(inputs.project_class||'comfort');
+ const raw=select?select.value:(inputs.project_class||'comfort');
+ // Класс офиса нежилого проекта — со своим профилем класса (`NONRES_CLASS_PROFILE`).
+ const key=String(raw).startsWith('office:')?(OFFICE_CLASS.nonres_profile[String(raw).slice(7)]||'custom'):raw;
  const p=PROJECT_CLASS_PRESETS[key];
  const box=document.getElementById('projectClassPreview');
  if(!box)return;
@@ -562,9 +564,13 @@ function renderProjectClassPreview(){
  // 175 / 200 / 225, и подпись называет четвёртое число.
  // Класс проекта — это и класс офисника (владелец, 27.09.2026): подпись
  // называет его и себестоимость здания офиса, которую класс теперь двигает.
+ // Класс, выбранный у офиса своим, сильнее класса проекта — подпись называет его.
  const office=OFFICE_CLASS_BY_PROJECT_CLASS[key];
+ const ownOffice=officeClassFor('offices',key);
+ const officeLabel=ownOffice.source===OFFICE_CLASS.chosen?`${ownOffice.cls} (выбран у офиса)`
+  :nonresProjectClass(key)?ownOffice.cls:office&&office.office_class;
  const officeText=office&&(isNonResidential()||inputs.offices_enabled)
-  ? ` · офисы класса ${office.office_class}, здание офиса ${classValue(key,'offices_cost_th_per_sqm').toLocaleString('ru-RU')}`
+  ? ` · офисы класса ${officeLabel}, здание офиса ${classValue(key,'offices_cost_th_per_sqm').toLocaleString('ru-RU')}`
   : '';
  box.textContent=isNonResidential()
   ? `Офисы/ТЦ ${classValue(key,'offices_price_th_per_sqm').toLocaleString('ru-RU')} · м/м ${classValue(key,'parking_price_th').toLocaleString('ru-RU')} · подземные ${classValue(key,'main_under_th_per_sqm').toLocaleString('ru-RU')}${officeText} тыс. ₽`
@@ -677,10 +683,12 @@ function refreshClassFieldUnit(id){
  for(const grp of allFieldGroups())for(const f of grp[1])if(f[0]===id){span.textContent=classFieldUnitText(id,f[2]);return}
 }
 
-function applyProjectClassPreset(selectedKey){
+function applyProjectClassPreset(selectedKey,nonresClass){
  const select=document.getElementById('projectClassSelect');
  const key=selectedKey||(select?select.value:'comfort');
  const p=PROJECT_CLASS_PRESETS[key];
+ // Класс нежилого проекта — выбранная ступень; выбор класса жилья его снимает.
+ inputs[OFFICE_CLASS.nonres_field]=OFFICE_CLASS.classes.includes(nonresClass)?nonresClass:'';
  if(!p){inputs.project_class='custom';renderProjectClassPreview();return;}
  // Вписанное руками, что класс поменял бы, называется поимённо, и решает
  // человек: заменить значениями класса или оставить своё. Без окна (стенд,
@@ -719,6 +727,8 @@ function applyProjectClassPreset(selectedKey){
  const wasPer=undergroundAreaPerSpace();
  const wasStoragePer=storageAreaPerUnit();
  Object.keys(p).filter(k=>k!=='label'&&!keep.includes(k)).forEach(k=>inputs[k]=classValue(key,k));
+ // Класс офиса, идущий за классом проекта, двигает и шкалу полей офиса.
+ syncOfficeClasses();
  (function(){
   // Норматив не двинулся — двигать нечего, и лишний пересчёт только затёр бы
   // пару там, где класс к ней отношения не имеет.
@@ -738,8 +748,7 @@ function applyProjectClassPreset(selectedKey){
  syncTep(false);
  renderInputs();
  renderTep();
- if(document.getElementById('projectClassSelect'))document.getElementById('projectClassSelect').value=key;
- renderProjectClassPreview();
+ syncProjectClassSelector();
  calculate();
 }
 
@@ -1050,8 +1059,11 @@ function applyProjectKind(key){
  inputs.project_kind=kind;
  adoptObjectRateKind();
  if(kind!=='mixed'){clearResidentialInputs();placeNonResidentialDefaults()}
+ // Класс офиса в нежилом — класс проекта: шкала полей офиса идёт за видом.
+ syncOfficeClasses();
  syncTep(false);
  syncProjectKindSelector();
+ syncProjectClassSelector();
  renderInputs();
  renderTep();
  refreshGroupPeeks();
@@ -1062,12 +1074,39 @@ function applyProjectKind(key){
  else closeProjectKindDialog();
 }
 
+// В нежилом проекте на месте класса жилья — класс офиса B / B+ / A / A+
+// (владелец, 25.10.2026); в жилом — комфорт / бизнес / элитный.
+const HOUSING_CLASS_OPTIONS=[['comfort','Комфорт'],['business','Бизнес'],['elite','Элитный'],['custom','Пользовательский']];
+function projectClassOptions(){
+ return projectKind()==='nonresidential'
+  ?OFFICE_CLASS.classes.map(cls=>['office:'+cls,'Офисы '+cls]).concat([['custom','Пользовательский']])
+  :HOUSING_CLASS_OPTIONS;
+}
+function projectClassSelectValue(){
+ const housing=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
+ const nonres=housing==='custom'?null:nonresProjectClass();
+ return nonres?'office:'+nonres:housing;
+}
 function syncProjectClassSelector(){
  const select=document.getElementById('projectClassSelect');
  if(!select)return;
- const key=inputs.project_class&&PROJECT_CLASS_PRESETS[inputs.project_class]?inputs.project_class:'custom';
- select.value=key;
+ const options=projectClassOptions();
+ if([...select.options].map(o=>o.value).join('|')!==options.map(o=>o[0]).join('|')){
+  select.innerHTML='';
+  options.forEach(([v,t])=>{const o=document.createElement('option');o.value=v;o.textContent=t;select.appendChild(o)});
+ }
+ select.value=projectClassSelectValue();
  renderProjectClassPreview();
+}
+// Выбор в шапке: класс жилья или, в нежилом проекте, класс офиса — с
+// профилем своей пары (`NONRES_CLASS_PROFILE`).
+function applyProjectClassChoice(value){
+ const v=String(value||'');
+ if(v.startsWith('office:')){
+  const cls=v.slice(7);
+  return applyProjectClassPreset(OFFICE_CLASS.nonres_profile[cls]||'custom',cls);
+ }
+ return applyProjectClassPreset(v);
 }
 
 // Значение этого поля ставит выбранный класс. Список — САМ ПРОФИЛЬ, а не
@@ -1156,7 +1195,20 @@ function objectRateForKind(c,k,turnkey,kind){
  return kind==='nonresidential'&&Object.prototype.hasOwnProperty.call(OBJECT_SMR.defaults,k)
   ?objectSmrRate(turnkey,c):Number(turnkey);
 }
-function classValueForKind(c,k,kind){
+function classValueForKind(c,k,kind,profileOnly){
+ // Себестоимость и цена офиса, класс которого выбран своим, — ступень его
+ // класса (`office_class_rates` движка); цена — только в нежилом проекте.
+ // Окно «Настройки классов» показывает профиль класса проекта (`profileOnly`).
+ const office=!profileOnly&&OFFICE_CLASS.rates[k];
+ if(office){
+  const choice=officeClassFor(office.prefix,c);
+  // В нежилом проекте ступень ставит числа всегда (`office_class_rates`).
+  if(choice.source===OFFICE_CLASS.chosen||kind==='nonresidential'){
+   const step=OFFICE_CLASS.values[choice.cls];
+   if(office.kind==='cost')return objectRateForKind(c,k,step.cost_th_per_sqm,kind);
+   if(kind==='nonresidential')return Number(step.price_th_per_sqm);
+  }
+ }
  const own=CLASS_OVERRIDES&&CLASS_OVERRIDES[c]?Number(CLASS_OVERRIDES[c][k]):NaN;
  if(isFinite(own)&&own>0)return objectRateForKind(c,k,own,kind);
  // Цена офиса в нежилом проекте — из аренды класса, не от цены жилья
@@ -1166,6 +1218,107 @@ function classValueForKind(c,k,kind){
  return objectRateForKind(c,k,classBase(c,k),kind);
 }
 function classValue(c,k){return classValueForKind(c,k,projectKind())}
+function classProfileValue(c,k){return classValueForKind(c,k,projectKind(),true)}
+// Класс офиса — свой у каждого офиса (владелец, 25.10.2026): пусто — за
+// классом проекта. Шкала, список полей и правило «поле идёт за классом» —
+// из движка (`office_class_page_data`, `apply_office_classes`): страница
+// применяет тот же ответ, а не держит свой.
+const OFFICE_CLASS=__DEVELOPAID_OFFICE_CLASS_SCALE__;
+const OFFICE_CLASS_FIELDS=Object.fromEntries(OFFICE_CLASS.prefixes.map(p=>[p+'_'+OFFICE_CLASS.field,p]));
+// Класс нежилого проекта — ступень класса офиса (`nonres_project_class`):
+// выбранная в шапке или выведенная из прежнего класса проекта.
+function nonresProjectClass(c){
+ if(projectKind()!=='nonresidential')return null;
+ const raw=String(inputs[OFFICE_CLASS.nonres_field]||'').trim();
+ if(OFFICE_CLASS.classes.includes(raw))return raw;
+ return OFFICE_CLASS.by_project[c===undefined?inputs.project_class:c]||null;
+}
+function officeClassFor(prefix,c){
+ const raw=String(inputs[prefix+'_'+OFFICE_CLASS.field]||'').trim();
+ if(OFFICE_CLASS.classes.includes(raw))return {cls:raw,source:OFFICE_CLASS.chosen};
+ const by=nonresProjectClass(c)||OFFICE_CLASS.by_project[c===undefined?inputs.project_class:c];
+ return by?{cls:by,source:'project'}:{cls:OFFICE_CLASS.default,source:'default'};
+}
+// Поле, поставленное классом, идёт за ним, пока в нём число этого класса; с
+// другим происхождением — своё; без пометки — за классом, пока в нём
+// нетронутое умолчание (`office_field_follows`).
+function officeFieldFollows(prefix,suffix){
+ const o=(inputs._field_origin||{})['inputs.'+prefix+'_'+suffix];
+ const foreign=!!(o&&o.source&&o.source!==OFFICE_CLASS.origin);
+ const raw=inputs[prefix+'_'+suffix];
+ if(raw===undefined||raw===null||raw==='')return !foreign;
+ const v=Number(raw);
+ if(!isFinite(v)||foreign)return false;
+ if(o&&o.source&&OFFICE_CLASS.classes.includes(o.class))return Math.abs(v-Number(OFFICE_CLASS.values[o.class][suffix]))<1e-9;
+ return Math.abs(v-Number(OFFICE_CLASS.values[OFFICE_CLASS.default][suffix]))<1e-9;
+}
+// Возвращает поля, число которых поменялось.
+function syncOfficeClass(prefix){
+ const cls=officeClassFor(prefix).cls;
+ const changed=[];
+ OFFICE_CLASS.followed.forEach(suffix=>{
+  if(!officeFieldFollows(prefix,suffix))return;
+  const k=prefix+'_'+suffix,v=OFFICE_CLASS.values[cls][suffix];
+  if(Number(inputs[k])!==Number(v))changed.push(k);
+  inputs[k]=v;
+  fieldOrigins()['inputs.'+k]={source:OFFICE_CLASS.origin,class:cls,text:'по классу офиса '+cls};
+ });
+ return changed;
+}
+function syncOfficeClasses(){return OFFICE_CLASS.prefixes.flatMap(syncOfficeClass)}
+// Поля офиса, которые класс поменял бы, но в них вписано своё.
+function officeClassManualKeys(prefix){
+ const c=inputs.project_class;
+ const rates=Object.keys(OFFICE_CLASS.rates).filter(k=>OFFICE_CLASS.rates[k].prefix===prefix
+  &&isClassManual(k)&&isFinite(Number(inputs[k]))&&Math.abs(Number(inputs[k])-classValue(c,k))>1e-9);
+ const cls=officeClassFor(prefix).cls;
+ const followed=OFFICE_CLASS.followed.map(s=>prefix+'_'+s).filter(k=>{
+  const o=(inputs._field_origin||{})['inputs.'+k];
+  return !officeFieldFollows(prefix,k.slice(prefix.length+1))&&!(o&&o.source&&o.source!=='manual')
+   &&Math.abs(Number(inputs[k])-Number(OFFICE_CLASS.values[cls][k.slice(prefix.length+1)]))>1e-9;
+ });
+ return rates.concat(followed);
+}
+// Выбор класса у офиса. Вписанное руками, что класс поменял бы, называется
+// поимённо, и решает человек — как при смене класса проекта.
+function setOfficeClass(prefix,value){
+ inputs[prefix+'_'+OFFICE_CLASS.field]=OFFICE_CLASS.classes.includes(value)?value:'';
+ const c=inputs.project_class;
+ const cls=officeClassFor(prefix).cls;
+ const manual=officeClassManualKeys(prefix);
+ if(manual.length){
+  const target=k=>OFFICE_CLASS.rates[k]?classValue(c,k):Number(OFFICE_CLASS.values[cls][k.slice(prefix.length+1)]);
+  const lines=manual.map(k=>`${classFieldLabel(k)}: ${Number(inputs[k]).toLocaleString('ru-RU')} → ${target(k).toLocaleString('ru-RU')}`).join('\n');
+  const ask=typeof window!=='undefined'&&typeof window.confirm==='function'?window.confirm.bind(window):null;
+  const replace=ask?ask(`Класс офиса ${cls} заменит числа, вписанные руками:\n${lines}\n\nОК — заменить значениями класса.\nОтмена — оставить вписанные руками.`):false;
+  // Заменить — поле снова за классом: с пометкой класса и его числом.
+  if(replace)manual.forEach(k=>{
+   if(OFFICE_CLASS.rates[k]){inputs._class_manual=classManualKeys().filter(x=>x!==k);return}
+   inputs[k]=target(k);
+   fieldOrigins()['inputs.'+k]={source:OFFICE_CLASS.origin,class:cls,text:'по классу офиса '+cls};
+  });
+ }
+ // Себестоимость и цена — поля профиля класса: идут за классом, пока не вписаны руками.
+ if(PROJECT_CLASS_PRESETS[c]||officeClassFor(prefix).source===OFFICE_CLASS.chosen)
+  Object.keys(OFFICE_CLASS.rates).forEach(k=>{
+   if(OFFICE_CLASS.rates[k].prefix===prefix&&!isClassManual(k))inputs[k]=classValue(c,k);
+  });
+ syncOfficeClass(prefix);
+ renderInputs();renderProjectClassPreview();refreshGroupPeeks();calculate();
+}
+// Под выбором — какой класс действует и откуда он.
+function officeClassNoteText(prefix){
+ const choice=officeClassFor(prefix);
+ const step=OFFICE_CLASS.values[choice.cls];
+ const head=choice.source===OFFICE_CLASS.chosen?`Класс офиса ${choice.cls} выбран вами.`
+  :choice.source==='project'&&nonresProjectClass()?`Сейчас класс офиса ${choice.cls} — это класс проекта, он выбран вверху страницы.`
+  :choice.source==='project'?`Сейчас класс офиса ${choice.cls}: он идёт за классом проекта «${(PROJECT_CLASS_PRESETS[inputs.project_class]||{}).label||inputs.project_class}».`
+  :`Сейчас класс офиса ${choice.cls}: у проекта нет класса, поэтому взят класс по умолчанию.`;
+ const rent=Number(step.rent_th_per_sqm_year).toLocaleString('ru-RU',{maximumFractionDigits:1});
+ return head+` По классу аренда ${rent} тыс. ₽ за м² в год, заполняемость ${num(step.occupancy_stable_pct)}%, `
+  +`ставка капитализации ${num(step.exit_cap_pct)}%`
+  +(isNonResidential()?`, цена продажи ${num(step.price_th_per_sqm)} тыс. ₽ за м²`:'')+'.';
+}
 // Умолчание ставки объекта для вида проекта: число класса, если поле ставит
 // класс, иначе умолчание реестра — оба переведены для нежилого.
 function objectRateDefault(k,kind){
@@ -1314,9 +1467,9 @@ function renderClassDialog(){
    ?`<a href="#" onclick="toggleClassDetail('${k}');return false" title="Обоснование: источники, диапазон и положение вашего значения" style="color:inherit;text-decoration:none;border-bottom:1px dashed #b6c4d6">${escapeHtml(rowLabel)} <span style="color:#3b6db4">${CLASS_DETAIL_OPEN[k]?'▾':'▸'}</span></a>`
    :escapeHtml(rowLabel))+unitCell;
   html+=`<tr class="class-row" data-key="${k}" data-section="${sec.id}"><td style="padding:5px 8px;border-bottom:1px solid #f0f0f0">${labelCell}</td>`+classes.map(c=>{
-   const own=Math.abs(classValue(c,k)-classBase(c,k))>1e-9;
+   const own=Math.abs(classProfileValue(c,k)-classBase(c,k))>1e-9;
    if(own)owned++;
-   return `<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}"><input type="number" value="${classValue(c,k)}" onchange="setClassBase('${c}','${k}',this.value)" title="${own?'Своё значение; общая база: '+classBase(c,k).toLocaleString('ru-RU'):'Общая база класса — своё значение можно вписать прямо сюда'}" style="width:84px;text-align:right;border:1px solid ${own?'#c98a1b':'#dfe4ea'};border-radius:5px;padding:3px 6px;font-size:12px;${own?'background:#fdf6e6;font-weight:600':''}"></td>`;
+   return `<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;${c===cur?'background:#f6f9fd':''}"><input type="number" value="${classProfileValue(c,k)}" onchange="setClassBase('${c}','${k}',this.value)" title="${own?'Своё значение; общая база: '+classBase(c,k).toLocaleString('ru-RU'):'Общая база класса — своё значение можно вписать прямо сюда'}" style="width:84px;text-align:right;border:1px solid ${own?'#c98a1b':'#dfe4ea'};border-radius:5px;padding:3px 6px;font-size:12px;${own?'background:#fdf6e6;font-weight:600':''}"></td>`;
   }).join('')+`<td style="text-align:right;padding:3px 8px;border-bottom:1px solid #f0f0f0;white-space:nowrap"><input type="number" value="${isFinite(actual)?actual:''}" onchange="setClassRate('${k}',this.value)" style="width:92px;text-align:right;border:1px solid ${dev?'#b42318':'#d5dbe3'};border-radius:5px;padding:3px 6px;font-size:12px;${dev?'color:#b42318;font-weight:700':''}">${dev?' <span style="color:#b42318;font-weight:700">≠</span>':''}</td></tr>`;
   // Свод «Статистики» стоит строкой под той ставкой, к которой относится:
   // связь числа со ставкой видна на месте, а не выводится из соседней таблицы.
@@ -1804,7 +1957,7 @@ function renderInputs(){
       el.disabled=true;
       el.title='Москва: платежи ежеквартально — установлено нормативно';
      }
-     el.onchange=()=>{if(id==='vri_required')return vriRequiredToggled(el);const classRegionBefore=classRegion();const valueBefore=inputs[id];inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='land_rights_cost_mln'){vriFeeClearedMln=0;syncVriRequiredBox()}if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='social_population_method')socialPopulationSwitched(valueBefore);{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else parkingFieldByHand(parkOwner,id);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(id==='vri_relief_mode'||id==='vri_financing_mode'){renderInputs();return calculate()}if(VRI_SHARE_FIELDS.includes(id))refreshVriSharesNote();if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
+     el.onchange=()=>{if(id==='vri_required')return vriRequiredToggled(el);if(OFFICE_CLASS_FIELDS[id])return setOfficeClass(OFFICE_CLASS_FIELDS[id],el.value);const classRegionBefore=classRegion();const valueBefore=inputs[id];inputs[id]=type==='checkbox'?el.checked:(type==='number'&&!Array.isArray(f[4])?Number(el.value):el.value);markFieldManual('inputs.'+id);if(id==='land_rights_cost_mln'){vriFeeClearedMln=0;syncVriRequiredBox()}if(id==='demolition_area_sqm'||id==='land_buyout_mln')refreshClassFieldUnit(id);if(id==='social_mode')inputs._social_mode_user_set=true;if(id==='social_population_method')socialPopulationSwitched(valueBefore);{const parkOwner=OBJECT_PARKING_PREFIXES.find(p=>id===p+'_parking_under_spaces'||id===p+'_parking_over_spaces');if(parkOwner){if(String(el.value).trim()==='')restoreParkingNorm(parkOwner);else parkingFieldByHand(parkOwner,id);}}if(id==='underground_manual_spaces'||id==='underground_manual_gns_sqm'){if(Number(el.value)>0)markParkingByHand(PROJECT_PARKING_KEY);else markParkingByNorm(PROJECT_PARKING_KEY);}if(SOCIAL_SCALED_KEYS.includes(id))stampSocialBasis('введены руками');if(id==='vri_region'){followClassRegion(classRegionBefore);syncTep(false);renderInputs();return calculate()}if(id==='vri_relief_mode'||id==='vri_financing_mode'){renderInputs();return calculate()}if(VRI_SHARE_FIELDS.includes(id))refreshVriSharesNote();if(STRATEGY_FIELD_READERS_SWITCHES.includes(id)){renderInputs();return calculate()}if(markClassManual(id)){syncProjectClassSelector();refreshClassFieldUnit(id)}if(UNDERGROUND_PAIR_INPUTS.includes(id))syncUndergroundPair(id);if(id==='storage_area_per_unit_sqm'){syncStoragePair('units');renderTep()}if(TEP_DERIVED_INPUTS.includes(id)){const modeSwitched=id==='social_area_source';const filled=id==='social_mode'&&applyRequiredSocialProgramFromGlavapu();const derived=syncTep(false);if(modeSwitched||filled||derived)renderInputs()}refreshGroupPeeks();calculate()};
      wrap.appendChild(el);
      // Кнопка «Подобрать» у срока кредита объекта с доходным методом.
      if(typeof loanTermPickField==='function'&&loanTermPickField(id))wrap.appendChild(loanTermPickNode(id));
@@ -1812,6 +1965,7 @@ function renderInputs(){
      // ниже: `innerHTML+=` пересоздал бы уже вставленное поле без обработчиков.
      if(id==='vri_required'){wrap.appendChild(vriNoteNode('vriRequiredNote',vriRequiredNote()));wrap.appendChild(vriFeeGoNode())}
      if(id==='vri_share_equity_pct')wrap.appendChild(vriNoteNode('vriSharesNote',vriSharesNote()));
+     if(OFFICE_CLASS_FIELDS[id])wrap.appendChild(vriNoteNode('officeClassNote_'+OFFICE_CLASS_FIELDS[id],officeClassNoteText(OFFICE_CLASS_FIELDS[id])));
      // Итог переключателя населения — под ним; стенды без блока ТЭП его не несут.
      if(id==='social_population_method'&&typeof socialPopulationNoteText==='string')
       wrap.appendChild(vriNoteNode('socialPopulationNote',socialPopulationNoteText));

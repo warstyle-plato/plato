@@ -138,7 +138,7 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  // список показывает пустую строку, а число при пересчёте становится нулём —
  // так «Периодичность платежей» ВРИ оказалась 0 при расчёте по квартальной.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),x.inputs||{});
- seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
+ seedParkingByHand();adoptObjectRateKind();syncOfficeClasses();restoreKrtClearedVriFee();
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(x.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
@@ -315,7 +315,7 @@ async function applyPreset(){
  }catch(e){alert(String(e.message||e));return}
  // Как и всюду: приходящее накладывается на умолчания, а не заменяет их.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.applied_inputs||{});
- seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
+ seedParkingByHand();adoptObjectRateKind();syncOfficeClasses();restoreKrtClearedVriFee();
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.applied_tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
@@ -781,7 +781,7 @@ function applyProjectSnapshot(data){
  rememberDerivedTail(data.tep,true);
  phasing=phasingFromSaved(data.phasing);
  // Список тронутых полей паркинга — от ЭТОГО снимка, а не от прошлого проекта.
- seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
+ seedParkingByHand();adoptObjectRateKind();syncOfficeClasses();restoreKrtClearedVriFee();
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
  renderInputs();renderTep();renderPhasing();
  // Шапка — класс и вид проекта — читает те же вводные, что и форма: без этого
