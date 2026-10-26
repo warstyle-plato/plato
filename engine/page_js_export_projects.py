@@ -1501,7 +1501,11 @@ async function accessAdminGrant(){
   if(!chat){if(status)status.textContent='Выберите, кому выдать доступ.';return}
   const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral:kind==='plot'?cadastral:[],days,count,note});
   if(status)status.textContent='Выдано: '+(data.what||'доступ')+' — '+(data.who||('ID '+chat))+
-   (data.until?', до '+accessDate(data.until):', срок каждого участка пойдёт с его первого расчёта')+'.';
+   (data.until?', до '+accessDate(data.until):', срок каждого участка пойдёт с его первого расчёта')+'.'+
+   // Весть человеку в Telegram: дошла — так и сказано, нет — причина, чтобы
+   // выдавший написал ему сам.
+   (data.notice?(data.notice.sent?' Сообщение в Telegram отправлено.':
+    ' Сообщение в Telegram не отправлено: '+(data.notice.reason||'причина неизвестна')+'. Напишите человеку сами.'):'');
   renderAccessAdmin();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }
