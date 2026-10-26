@@ -136,6 +136,13 @@ STRATEGY_FIELD_DEFAULTS: dict[str, tuple[Any, Any]] = {
 }
 
 
+# Самый длинный срок кредита и удержания, который перебирают подборы
+# (`loan_term_pick`, точка безразличия по сроку удержания): срок амортизации
+# здания по умолчанию. Кредит дольше срока службы здания банк не даёт, а
+# удержание дольше — оценка того, чего уже нет.
+LONG_TERM_MAX_YEARS = int(STRATEGY_FIELD_DEFAULTS["depreciation_years"][0])
+
+
 def strategy_defaults(prefix: str, family: str) -> dict[str, Any]:
     column = 1 if family == "standalone_retail" else 0
     return {f"{prefix}_{suffix}": pair[column]
