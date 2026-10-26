@@ -99,6 +99,7 @@ from auction_search import view_access as auction_view
 from auction_search import lot_notes as lot_notes_rules
 from auction_search import export_columns
 from auction_search import krt_early_projects
+from auction_search import krt_project_site
 from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
 from auction_search.krt_investment_card import krt_investment_card_page
@@ -3963,32 +3964,13 @@ def install(app: FastAPI) -> None:
         """Контур площадки для её свода: сперва файл карты города, потом перечень.
 
         Тот же порядок, что у точки на карте (`/point`), и те же две дороги:
-        второго пути к контуру в модуле нет. Опознавать геометрией здесь не
+        второго пути к контуру в модуле нет. Владелец дорог —
+        `krt_project_site.find_site`: им же берёт контур галочка «Проект в КРТ». Опознавать геометрией здесь не
         нужно — слаг площадки известен.
         """
         def find() -> dict[str, Any]:
-            lookup = getattr(krt_registry, "map_lookup", None)
-            found = (lookup(slug, name, None) or {}) if callable(lookup) else {}
-            site = found.get("site") or {}
-            rings = [ring for ring in (site.get("rings_merc") or [])
-                     if isinstance(ring, list) and len(ring) >= 3]
-            if rings:
-                return {"slug": slug, "name": str(site.get("name") or name),
-                        "rings_merc": rings, "matched": str(found.get("matched") or "map"),
-                        "source": "официальный файл карты реестра КРТ", "problem": ""}
-            outline = _decision_outline_now(slug)
-            rings = [ring for ring in (outline.get("rings_merc") or [])
-                     if isinstance(ring, list) and len(ring) >= 3]
-            if rings:
-                return {"slug": slug, "name": name, "rings_merc": rings,
-                        "matched": "decision",
-                        "source": "состав территории по проекту решения, "
-                                  "а не официальный полигон",
-                        "problem": str(outline.get("problem") or "")}
-            return {"problem": (str(found.get("problem") or "")
-                                or str(outline.get("problem") or "")
-                                or "контур площадки не собрался: её нет ни в файле "
-                                   "карты города, ни в перечне проекта решения")}
+            return krt_project_site.find_site(krt_registry, slug, name,
+                                              decision_outline=_decision_outline_now)
 
         return find
 
@@ -4354,6 +4336,52 @@ def install(app: FastAPI) -> None:
         data["pending"] = bool(data.get("pending") or started)
         data["retry_after_seconds"] = 20 if data["pending"] else None
         return data
+
+    @app.post("/krt/project-site", include_in_schema=False)
+    async def krt_project_site_route(request: Request) -> dict[str, Any]:
+        """Территория КРТ проекта для галочки «Проект в КРТ» на вкладке ТЭП.
+
+        Тело: `slug` (площадка выбрана человеком) или участки проекта —
+        `cadastral_numbers` и `points_merc` (точки его участков из госреестра);
+        `query` — поиск площадки по имени, когда опознать её не вышло. Ответ —
+        контур, площадь (`krt_contour_area_sqm` движка) и источник, либо
+        причина и площадки на выбор. Файл карты и ЕГРН по перечню — долго:
+        сбор идёт фоном, запрос читает диск. С Render — на ядро, где реестр
+        и НСПД (как `/land/lookup`).
+        """
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — пустое тело — пустой запрос
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        url = (core._core_api_url("/krt/project-site")
+               if core is not None and hasattr(core, "_core_api_url") else "")
+        if url:
+            return await run_in_threadpool(
+                core._core_post, url, body, getattr(core, "_MO_CALC_TIMEOUT_SECONDS", 60))
+        query = str(body.get("query") or "").strip()
+        if query:
+            found = await run_in_threadpool(krt_registry.suggest, query[:120], 8)
+            return {"status": "choices", "problem": "" if found else
+                    "в каталоге КРТ площадок с таким именем или районом нет",
+                    "choices": [{"slug": str(item.get("slug") or ""),
+                                 "name": str(item.get("name") or ""),
+                                 "matched_by": "выбрана по имени в каталоге КРТ"}
+                                for item in found if item.get("slug")]}
+        slug = str(body.get("slug") or "").strip()[:160]
+        numbers = krt_project_site.clean_numbers(body.get("cadastral_numbers"))
+        points = krt_project_site.clean_points(body.get("points_merc"))
+        area = getattr(core, "krt_contour_area_sqm", None) if core is not None else None
+        if not callable(area):
+            return {"status": "failed", "choices": [],
+                    "problem": "движок расчёта не загружен — площадь контура считать нечем"}
+        name = str(body.get("name") or "").strip()[:200]
+        key = krt_project_site.request_key(slug, numbers, points)
+        await run_in_threadpool(lambda: krt_project_site.start(key, lambda: krt_project_site.gather(
+            krt_registry, slug=slug, name=name or slug, numbers=numbers, points_merc=points,
+            decision_outline=_decision_outline_now, area_sqm=area),
+            refresh=bool(body.get("refresh"))))
+        return await run_in_threadpool(krt_project_site.view, key)
 
     @app.get("/auctions/krt/{slug}/point")
     async def auction_krt_point(slug: str) -> dict[str, Any]:

@@ -221,6 +221,9 @@ PAGE += r"""</head>
             <label>Площадь участка <span class="unit">га</span></label>
             <input type="number" step="0.0001" id="siteAreaHa" onchange="setSiteArea(this.value)">
             <span id="siteAreaSource" class="site-source"></span>
+            <label class="site-krt-toggle"><input type="checkbox" id="siteKrtToggle" onchange="setKrtSite(this.checked)"> Проект в КРТ</label>
+            <span class="site-source">Отметьте, если проект входит в территорию комплексного развития (КРТ): площадь участка и схема посадки возьмутся из границ этой территории, а не из участков госреестра.</span>
+            <div id="siteKrtStatus" class="site-krt-status" style="display:none"></div>
           </div>
           <div class="field">
             <label>Плотность застройки <span class="unit" id="siteDensityUnit">м² поэтажной площади / га</span></label>
