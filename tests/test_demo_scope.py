@@ -143,6 +143,17 @@ def test_a_link_with_the_section_reads_it(block):
     assert "не открывает раздел" not in answer.text and "только для просмотра" not in answer.text
 
 
+def test_the_access_plaque_names_the_closed_calc_section():
+    """Плашка до расчёта (`/access/check`, без списания) отвечает решением с
+    причиной, а не отказом: её читает страница, не маршрут расчёта."""
+    session, browser = claim(invite(["cabinet"]))
+    answer = browser.post("/access/check", json={"session": session, "inputs": {}})
+    assert answer.status_code == 200, answer.text
+    data = answer.json()
+    assert data["allowed"] is False and data["code"] == "demo_section"
+    assert "не открывает раздел «Расчёт»" in data["detail"]
+
+
 def test_the_report_reads_real_projects_of_the_owner():
     session, browser = claim(invite(["report"]))
     team = client.post("/monitor/report/projects", json={"key": "kluch"}).json()
@@ -397,7 +408,7 @@ def test_the_admin_issues_a_link_with_chosen_sections_in_a_browser():
     admin = core._telegram_session(OWNER, [])
     path = browser.chromium_or_skip()
     errors: list[str] = []
-    with browser.serve(core.app, 18977) as base, sync_playwright() as pw:
+    with browser.serve(core.app, 18992) as base, sync_playwright() as pw:
         with pw.chromium.launch(executable_path=str(path)) as engine:
             page = engine.new_page(viewport={"width": 390, "height": 844})
             page.on("pageerror", lambda exc: errors.append(str(exc)))

@@ -505,9 +505,9 @@ function renderProjectsLogin(reason){
  if(!box){
   box=document.createElement('div');
   box.id='projectsLoginBox';
-  box.style.cssText='border:1px solid var(--line);padding:16px;margin-bottom:14px';
+  box.className='cab-login';
   const note=document.createElement('div');
-  note.style.cssText='font-size:12px;color:#555;margin-bottom:10px';
+  note.className='cab-muted';
   // Текст статический, innerHTML — только ради ссылки на согласие: вход и
   // есть момент, когда данные начинают собираться.
   note.innerHTML='Проекты хранятся на сервере в России и привязаны к вашему Telegram. '
@@ -519,14 +519,14 @@ function renderProjectsLogin(reason){
   login.className='btn dark';
   login.textContent='Войти через Telegram';
   const status=document.createElement('div');
-  status.style.cssText='font-size:12px;color:#777;margin-top:10px';
+  status.className='cab-status';
   login.onclick=()=>loginViaTelegram(status);
   if(!projectsAcceptsLogin)login.style.display='none';
   box.appendChild(login);
   if(projectsAcceptsKey){
    const keyBtn=document.createElement('button');
    keyBtn.className='btn';
-   keyBtn.style.marginLeft='10px';
+   keyBtn.style.marginLeft='8px';
    keyBtn.textContent='У меня ключ администратора';
    keyBtn.onclick=enterProjectsKey;
    box.appendChild(keyBtn);
@@ -586,15 +586,15 @@ function renderAccountBox(){
  if(web&&profile.role)details.push(escapeHtml(profile.role));
  if(web&&profile.telegram_name)details.push('Telegram: '+escapeHtml(profile.telegram_name));
  box.style.display='';
- box.innerHTML='<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'+
+ box.innerHTML='<div class="cab-row">'+
   '<div><b>'+title+'</b>'+
-  (details.length?'<div style="font-size:11px;color:#777;margin-top:2px">'+details.join(' · ')+'</div>':'')+
+  (details.length?'<div class="cab-note">'+details.join(' · ')+'</div>':'')+
   (web&&profileState&&profileState.known===false
-    ?'<div style="font-size:11px;color:#a05a00;margin-top:2px">'+escapeHtml(profileState.reason||'Знакомство не проверено')+'</div>'
+    ?'<div class="cab-note cab-warn">'+escapeHtml(profileState.reason||'Знакомство не проверено')+'</div>'
     :(web&&profileState&&profileState.known&&!profileState.complete
-      ?'<div style="font-size:11px;color:#a05a00;margin-top:2px">Знакомство не заполнено — проекты не сохранятся.</div>':''))+
+      ?'<div class="cab-note cab-warn">Знакомство не заполнено — проекты не сохранятся.</div>':''))+
   '</div>'+
-  '<span style="margin-left:auto;display:flex;gap:10px">'+
+  '<span class="cab-push cab-row">'+
   (web?'<button class="btn" onclick="openProfile()">Знакомство</button>':'')+
   '<button class="btn" onclick="logoutFromSite()">Выход</button>'+
   '</span></div>';
@@ -971,9 +971,11 @@ async function deleteProject(id){
 // трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
 // то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
 // LAND_MAP_VIEWS — ответ сервера, есть ли ключ Яндекс Карт для гибрида: не проект.
+// accessUseFree — согласие на бесплатный участок на один запуск расчёта:
+// снимается сразу после него и проекта не хранит.
 // demoBlockNames — названия разделов демо-ссылок с сервера для админки: не проект.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
- 'profileState','profileAskedOnResult','calcRequiresLogin','calcRun','calcSettled','webLoginBusy',
+ 'profileState','profileAskedOnResult','calcRequiresLogin','accessUseFree','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
@@ -1232,10 +1234,10 @@ async function loadAccessMe(){
 function tariffsHtml(data){
  const terms=data.terms||{},plotOffer=data.plot_offer||{},subOffer=data.subscription_offer||{};
  const vat=plotOffer.vat_note?' ('+escapeHtml(plotOffer.vat_note)+')':'';
- let html='<div class="section-title" style="margin-bottom:8px">Тарифы и доступ</div>'+
-  '<p style="margin:0 0 8px">После входа '+(terms.free_plots===1?'один участок':(terms.free_plots+' участка'))+
+ let html='<div class="cab-title">Тарифы и доступ</div>'+
+  '<p>После входа '+(terms.free_plots===1?'один участок':(terms.free_plots+' участка'))+
   ' можно посчитать бесплатно. Участок — это один кадастровый номер или набор номеров, который вы считаете вместе.</p>'+
-  '<ul style="margin:0 0 10px 18px;padding:0">'+
+  '<ul>'+
   '<li><b>Один участок — '+accessRub(terms.plot_price_rub)+'</b>'+vat+': доступ на '+terms.plot_days+
   ' дней, пересчитывать можно сколько угодно, PDF-отчёт и Excel-модель входят в цену.</li>'+
   '<li><b>Несколько участков вперёд</b>: каждый по '+accessRub(terms.plot_price_rub)+vat+', до '+Number(data.package_max_plots||10)+' за один раз. '+
@@ -1248,7 +1250,7 @@ function tariffsHtml(data){
  // Демо-доступ проверяющих: тот же кабинет, но оплата без настоящих денег —
  // тестовый магазин ЮKassa или пояснение, где откроется форма.
  if(data.demo){
-  html+='<p style="background:#eef6ff;border:1px solid #b9d6f5;padding:8px 10px;margin:0 0 8px">'+
+  html+='<p class="cab-demo">'+
    '<b>Это демо-доступ.</b> '+(data.demo_payments==='test'
     ?'Оплата идёт через тестовый магазин ЮKassa — деньги не списываются.'
     :'Кнопки оплаты показывают, где откроется платёжная форма ЮKassa; деньги не списываются.')+
@@ -1259,36 +1261,36 @@ function tariffsHtml(data){
  }
  const status=data.status||{};
  const active=(status.plots||[]).filter(p=>p.active);
- html+='<div style="margin:8px 0"><b>Мой доступ</b></div>';
+ html+='<div class="cab-sub">Мой доступ</div>';
  if(status.subscription_active){
-  html+='<p style="margin:0 0 6px">Подписка действует до '+accessDate(status.subscription_until)+'.</p>';
+  html+='<p>Подписка действует до '+accessDate(status.subscription_until)+'.</p>';
  }
- html+='<p style="margin:0 0 6px">Бесплатных участков осталось: '+Number(status.free_left||0)+' из '+Number(status.free_plots||0)+'.</p>';
+ html+='<p>Бесплатных участков осталось: '+Number(status.free_left||0)+' из '+Number(status.free_plots||0)+'.</p>';
  // Запас — участки, оплаченные вперёд и ещё не привязанные: число идёт с
  // сервера (`access_status`), страница его не считает.
- html+='<p id="accessReserve" style="margin:0 0 6px">В запасе участков: '+Number(status.reserve||0)+'.'+
+ html+='<p id="accessReserve">В запасе участков: '+Number(status.reserve||0)+'.'+
   (Number(status.reserve||0)>0?' Участок из запаса откроется сам при первом расчёте нового участка.':'')+'</p>';
  if(active.length){
-  html+='<ul id="accessPlots" style="margin:0 0 8px 18px;padding:0">'+active.map(p=>'<li>'+escapeHtml(p.label||'участок')+
+  html+='<ul id="accessPlots">'+active.map(p=>'<li>'+escapeHtml(p.label||'участок')+
    ' — доступ до '+accessDate(p.until)+(p.source==='free'?' (бесплатный)':(p.source==='reserve'?' (из запаса)':''))+'</li>').join('')+'</ul>';
  }else if(!status.subscription_active){
-  html+='<p class="muted" style="margin:0 0 8px">Открытых участков пока нет.</p>';
+  html+='<p class="cab-muted">Открытых участков пока нет.</p>';
  }
  if(data.payments_available||data.demo){
-  html+='<div class="upload-line" style="align-items:center;margin-top:8px">'+
-   '<input id="payEmail" type="email" placeholder="Почта для чека" style="min-width:220px">'+
-   '<label for="payCount" style="white-space:nowrap">Сколько участков</label>'+
-   '<input id="payCount" type="number" min="1" max="'+Number(data.package_max_plots||10)+'" value="1" style="width:64px" oninput="payCountChanged()" onchange="payCountChanged()">'+
+  html+='<div class="cab-row cab-pay">'+
+   '<input id="payEmail" type="email" placeholder="Почта для чека">'+
+   '<label for="payCount">Сколько участков</label>'+
+   '<input id="payCount" class="cab-short" type="number" min="1" max="'+Number(data.package_max_plots||10)+'" value="1" oninput="payCountChanged()" onchange="payCountChanged()">'+
    '<button class="btn dark" id="payPlotButton" onclick="payForAccess(\'plot\')">Оплатить текущий участок</button>'+
    '<button class="btn" onclick="payForAccess(\'subscription\')">Оформить подписку</button></div>'+
-   '<div id="payTotal" data-unit="'+Number(terms.plot_price_rub||0)+'" data-vat="'+escapeHtml(plotOffer.vat_note||'')+'" style="font-size:12px;margin-top:6px"></div>'+
-   '<div id="payStatus" style="font-size:12px;margin-top:6px"></div>'+
-   '<p style="font-size:11px;color:#777;margin:6px 0 0">Оплачивая, вы принимаете <a href="/offer" target="_blank" rel="noopener">лицензионный договор</a>'+
+   '<div id="payTotal" data-unit="'+Number(terms.plot_price_rub||0)+'" data-vat="'+escapeHtml(plotOffer.vat_note||'')+'" class="cab-status"></div>'+
+   '<div id="payStatus" class="cab-status"></div>'+
+   '<p class="cab-note">Оплачивая, вы принимаете <a href="/offer" target="_blank" rel="noopener">лицензионный договор</a>'+
    ' и <a href="/refund" target="_blank" rel="noopener">условия возврата</a>. Чек придёт на указанную почту.</p>';
  }else{
-  html+='<p class="muted" style="margin:8px 0 0">Оплата на сайте пока не подключена. Чтобы получить доступ к участку, напишите нам в бот — администратор откроет его.</p>';
+  html+='<p class="cab-muted">Оплата на сайте пока не подключена. Чтобы получить доступ к участку, напишите нам в бот — администратор откроет его.</p>';
  }
- if(data.registration)html+='<p style="font-size:11px;color:#777;margin:8px 0 0">'+escapeHtml(data.registration)+'.</p>';
+ if(data.registration)html+='<p class="cab-note">'+escapeHtml(data.registration)+'.</p>';
  return html;
 }
 async function renderTariffsBox(){
@@ -1338,10 +1340,13 @@ function payCountChanged(){
   if(button)button.textContent='Оплатить текущий участок';
  }
 }
-async function payForAccess(kind){
- const status=document.getElementById('payStatus');
- const email=String((document.getElementById('payEmail')||{}).value||'').trim();
- const count=kind==='subscription'?1:payCount();
+// `where` — откуда оплата: '' — кабинет, 'calc' — плашка доступа над
+// расчётом (у неё свои поля почты и состояния, и пакета там нет).
+async function payForAccess(kind,where){
+ const prefix=where?where+'Pay':'pay';
+ const status=document.getElementById(prefix+'Status');
+ const email=String((document.getElementById(prefix+'Email')||{}).value||'').trim();
+ const count=kind==='subscription'||where?1:payCount();
  if(status)status.textContent='Готовлю оплату…';
  try{
   const response=await fetch('/payments/create',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -1351,6 +1356,9 @@ async function payForAccess(kind){
   if(data.preview){if(status)status.textContent=data.message;return}
   if(status&&data.price_rub)status.textContent='Переходим к оплате '+accessRub(data.price_rub)+(count>1?' за '+count+' '+plotsWord(count):'')+'…';
   try{localStorage.setItem('developaid_pending_payment',data.payment_id)}catch(e){}
+  // Введённое — в браузер до ухода на оплату: вернувшись, человек видит свой
+  // проект, и расчёт запускается сам.
+  try{persistLocalSilently()}catch(e){}
   location.href=data.confirmation_url;
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }
@@ -1380,7 +1388,7 @@ async function renderAccessAdmin(){
   escapeHtml(r.label||'')+'</td><td>'+escapeHtml(r.note||'')+'</td></tr>').join('');
  box.innerHTML='<div class="scroll"><table><thead><tr><th>Пользователь</th><th>Бесплатный участок</th><th>Открытые участки</th><th>Подписка</th></tr></thead><tbody>'+
   (people||'<tr><td colspan="4">Пока никого.</td></tr>')+'</tbody></table></div>'+
-  '<div class="section-title" style="margin:12px 0 6px">Оплаты</div><div class="scroll"><table><thead><tr><th>Дата</th><th>Кто</th><th>Что</th><th>Платёж</th></tr></thead><tbody>'+
+  '<div class="cab-sub">Оплаты</div><div class="scroll"><table><thead><tr><th>Дата</th><th>Кто</th><th>Что</th><th>Платёж</th></tr></thead><tbody>'+
   (payments||'<tr><td colspan="4">Оплат пока не было.</td></tr>')+'</tbody></table></div>';
 }
 // Демо-доступ по ссылке (клиенту, партнёру, ЮKassa): ссылка-приглашение со
@@ -1420,15 +1428,15 @@ async function renderDemoInvites(){
  demoBlocksDraw(data.blocks,data.days);
  // Адрес показан один раз и копируется кнопкой: на телефоне длинная ссылка
  // обрезается, и выделять её пальцем неудобно.
- const rows=(data.invites||[]).map(r=>'<tr><td><span class="demo-link" style="word-break:break-all">'+escapeHtml(location.origin+r.path)+'</span>'+
+ const rows=(data.invites||[]).map(r=>'<tr><td><span class="demo-link">'+escapeHtml(location.origin+r.path)+'</span>'+
   (r.note?'<br><small>'+escapeHtml(r.note)+'</small>':'')+
   '<br><small class="demo-blocks">Разделы: '+escapeHtml(demoBlocksText(r.blocks))+'</small></td><td>до '+accessDate(r.expires)+'</td><td>'+
   (r.active?'действует':(r.revoked_at?'отозвана '+accessDate(r.revoked_at):'срок истёк'))+', входов: '+Number(r.claims||0)+
-  (r.last_claim?'<br><small>последний вход '+accessDate(r.last_claim)+'</small>':'')+'</td><td style="white-space:nowrap">'+
+  (r.last_claim?'<br><small>последний вход '+accessDate(r.last_claim)+'</small>':'')+'</td><td class="cab-nowrap">'+
   (r.active?'<button class="btn" data-link="'+escapeHtml(location.origin+r.path)+'" onclick="accessDemoCopy(this)">Скопировать</button> '+
   '<button class="btn" data-code="'+escapeHtml(r.code)+'" onclick="accessDemoRevoke(this.dataset.code)">Отозвать</button>':'')+
   '</td></tr>').join('');
- box.innerHTML=rows?'<div class="scroll"><table><tbody>'+rows+'</tbody></table></div>':'<div class="muted">Ссылок ещё не выдавали.</div>';
+ box.innerHTML=rows?'<div class="scroll"><table><tbody>'+rows+'</tbody></table></div>':'<div class="cab-muted">Ссылок ещё не выдавали.</div>';
 }
 async function accessDemoCreate(days){
  const status=document.getElementById('demoInviteStatus');
