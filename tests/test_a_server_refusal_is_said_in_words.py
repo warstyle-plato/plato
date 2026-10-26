@@ -59,8 +59,14 @@ def test_every_shape_of_refusal_is_words():
 
 
 def test_the_page_reads_refusals_through_one_place():
-    """Сырое `x.detail||…` на странице снова дало бы «[object Object]»."""
+    """Сырое `x.detail||…` на странице снова дало бы «[object Object]».
+
+    Страница — как у посетителя: с кусками, которые вставляют модули
+    `main_registry` (льгота МПТ). Без него проверка зависела бы от того, загрузил
+    ли их другой тест раньше в том же процессе."""
     import re
+
+    import main_registry  # noqa: F401 — дописывает свои куски в PAGE
 
     raw = re.findall(r"(?<![\w.])\w+\.detail\|\|", core.PAGE)
     assert not raw, f"отказ сервера читается мимо serverDetail: {raw[:5]}"
