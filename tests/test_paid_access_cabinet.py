@@ -249,7 +249,8 @@ def test_the_cabinet_speaks_one_type_scale_on_the_drawn_page(monkeypatch):
 
     monkeypatch.setattr(core, "payments_available", lambda: True)
     core.users_touch(CHAT, surface="telegram", name="Иван Петров")
-    client.post("/access/admin/demo/create", json={"key": "kluch", "days": 14, "note": "проверка"})
+    client.post("/access/admin/demo/create", json={"key": "kluch", "days": 5, "note": "проверка",
+                                                 "blocks": ["calc", "cabinet"]})
     admin_session = core._telegram_session(ADMIN, [])
     path = browser.chromium_or_skip()
     with (browser.serve(core.app, 18977) as base, sync_playwright() as pw,

@@ -334,7 +334,9 @@ def test_other_regions_take_the_larger_of_sp42_and_the_moscow_norm():
     x["site_area_ha"] = 4.0                      # 25 % — 10 000 м², норма Москвы — 6 820 м²
     m = core.site_massing(x, t)
     assert m["yard_sqm"] == pytest.approx(0.25 * 40000)
-    assert "СП 42.13330.2016" in m["yard_basis"] and "допущением" in m["yard_basis"]
+    assert "СП 42.13330.2016" in m["yard_basis"] and "допущение" in m["yard_basis"]
+    # Действующая редакция нормы 25 % не содержит — подпись так и говорит.
+    assert "в действующем СП 42.13330.2026 такой нормы нет" in m["yard_basis"]
     x["site_area_ha"] = 0.5                      # 25 % — 1 250 м², норма Москвы — 6 820 м²
     dense = core.site_massing(x, t)
     assert dense["yard_sqm"] == pytest.approx(5.0 * 1364)
