@@ -224,8 +224,9 @@ def test_the_page_takes_its_scopes_from_the_rows(monkeypatch) -> None:
 
     page = registry._page(_request(), core)
 
-    assert "<div><b>1</b><span>Проверочная область</span></div>" in page
-    assert 'data-filter="Проверочная область"' in page
+    # Строка без отметки уровня не теряется: свой раздел, плитка и кнопка.
+    assert "<div><b>1</b><span>Уровень акта не отмечен</span></div>" in page
+    assert 'data-filter="unmarked"' in page
 
 
 def test_the_page_says_how_much_of_the_contour_is_covered(monkeypatch) -> None:
