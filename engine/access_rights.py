@@ -404,7 +404,54 @@ def access_grant(chat: int, *, plot: dict[str, Any] | None = None, subscription:
                              "note": str(note or "")[:200]})
         reserve_total = len(record["reserve"])
     _ACCESS_REMOTE_CACHE.clear()
-    return {"ok": True, "until": until, "reserve": reserve_total}
+    notice = access_grant_notify(chat, subscription=subscription, until=until, label=label,
+                                 added=reserve, reserve_total=reserve_total)
+    return {"ok": True, "until": until, "reserve": reserve_total, "notice": notice}
+
+
+def _access_public_url() -> str:
+    return _env_str("DEVELOPAID_PUBLIC_URL", "").strip().rstrip("/") or "https://developaid.ru"
+
+
+def access_grant_text(*, subscription: bool, until: float | None, label: str,
+                      added: int, reserve_total: int) -> str:
+    """Что человек читает в боте о выданном доступе. Комментарий
+    администратора сюда не попадает: он — пометка для журнала (решение
+    владельца 26.10.2026)."""
+    lines: list[str] = []
+    if subscription and until:
+        lines.append(f"Вам открыта подписка DevelopAid до {_access_date(until)}: можно "
+                     "считать любые участки без ограничений.")
+    elif until and label:
+        lines.append(f"Вам открыт доступ к участку {html.escape(label)} в DevelopAid до "
+                     f"{_access_date(until)}: пересчитывать его можно сколько угодно, "
+                     "PDF-отчёт и Excel-модель входят.")
+    if added:
+        days = access_terms()["plot_days"]
+        lines.append(f"Вам добавлено участков в запас: {added}. Каждый откроется сам при "
+                     f"первом расчёте нового участка — на {days} дней с этого момента. "
+                     f"Всего в запасе: {reserve_total}.")
+    if lines:
+        lines.append(f"Открыть расчёт: {_access_public_url()}")
+    return "\n\n".join(lines)
+
+
+def access_grant_notify(chat: int, **what: Any) -> dict[str, Any]:
+    """Сообщить человеку в Telegram, что ему открыт доступ — при любой выдаче:
+    вручную (кабинет, /grant) и после оплаты. Не дошло — причина в ответе,
+    чтобы выдавший её видел, а не искал в журнале."""
+    if callable(globals().get("demo_chat")) and demo_chat(int(chat)):
+        return {"sent": False, "reason": "демо-пользователь, у него нет Telegram"}
+    text = access_grant_text(**what)
+    if not text:
+        return {"sent": False, "reason": "нечего сообщать"}
+    try:
+        _telegram_send_message(int(chat), text)
+    except Exception as exc:  # noqa: BLE001 — выдача уже сделана, отказ бота — только весть
+        reason = str(exc)[:300]
+        _access_journal({"event": "notify_failed", "chat": int(chat), "reason": reason})
+        return {"sent": False, "reason": reason}
+    return {"sent": True}
 
 
 def access_status(chat: int) -> dict[str, Any]:

@@ -196,7 +196,7 @@ function calcNeedsLogin(){
 }
 
 async function calcRefusal(response){
- try{const data=await response.json();return String(data.detail||'')}catch(e){return ''}
+ try{const data=await response.json();return String(serverDetail(data)||'')}catch(e){return ''}
 }
 
 // Идентификатор проекта без кадастрового номера (ТЭП загружен файлом): по
@@ -253,9 +253,9 @@ function accessPlaqueHtml(d,reason){
   }
   return html;
  }
- if(d.code==='no_plot')return '<h3>Сначала укажите участок</h3><p>'+escapeHtml(d.detail||reason||'')+'</p>';
+ if(d.code==='no_plot')return '<h3>Сначала укажите участок</h3><p>'+escapeHtml(serverDetail(d)||reason||'')+'</p>';
  return '<h3>Экономика этого участка пока закрыта</h3>'+
-  '<p>'+escapeHtml(reason||d.detail||'Нет доступа к расчёту этого участка.')+'</p>'+
+  '<p>'+escapeHtml(reason||serverDetail(d)||'Нет доступа к расчёту этого участка.')+'</p>'+
   '<button class="btn dark" onclick="openTariffs()">Тарифы и оплата</button>';
 }
 async function renderAccessPlaque(box,reason){

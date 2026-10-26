@@ -124,7 +124,7 @@ async function sendAgentDocument(file){
     session:activeSession(),access_key:projectsAdminKey||''})});
   const data=await r.json().catch(()=>({}));
   thinking.remove();
-  if(!r.ok){appendAiMessage('system',(data.detail||('Документ не разобрался: HTTP '+r.status))
+  if(!r.ok){appendAiMessage('system',(serverDetail(data)||('Документ не разобрался: HTTP '+r.status))
    +(aiDocument?'\nВ разговоре остаётся прежний документ «'+aiDocument.filename+'».':''));return}
   aiIntake=data;aiIntakeApplied=[];aiCard=data.card||null;
   renderAiIntakeFirst(data);rememberAiDocument(data);
@@ -293,7 +293,7 @@ async function answerAiQuestion(choice,action,mode){
    body:JSON.stringify({intake_id:queue.id,index:queue.index,action:action||'answer',choice,value:typed,
     mode:mode||'',inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
   const data=await r.json().catch(()=>({}));
-  if(!r.ok){appendAiMessage('system','Ответ не принят: '+(data.detail||('HTTP '+r.status)));
+  if(!r.ok){appendAiMessage('system','Ответ не принят: '+(serverDetail(data)||('HTTP '+r.status)));
    if(box)box.querySelectorAll('button,input,a').forEach(el=>{el.disabled=false;el.style.pointerEvents=''});return}
   if(data.stale){appendAiMessage('system','На этот вопрос уже ответили. Продолжаю с текущего.');
    renderAiQuestion(data.card);return}
@@ -382,7 +382,7 @@ async function confirmAiCard(shown,box){
   const r=await fetch('/agent/document/card',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({intake_id:shown.id,inputs,tep,class_profile:aiClassProfile(),session:activeSession(),access_key:projectsAdminKey||''})});
   const card=await r.json().catch(()=>({}));
-  if(!r.ok){status.textContent='Расчёт не запущен: '+(card.detail||('HTTP '+r.status));return}
+  if(!r.ok){status.textContent='Расчёт не запущен: '+(serverDetail(card)||('HTTP '+r.status));return}
   if(aiCardKey(card)!==aiCardKey(shown)){
    status.textContent='Вводные поменялись после загрузки тизера, поэтому карточка собрана заново. Проверьте её и нажмите «Всё верно, считать» ещё раз.';
    aiBusy=false;renderAiCard(card);return;
@@ -480,11 +480,11 @@ async function sendAgentMessage(scenario){
   if(response&&response.status===401){
    // Мягкий гейт: вопрос требует входа — кнопка прямо в чате, а не совет
    // искать её где-то в другом окне.
-   appendAiMessage('assistant',String(data.detail||'Платон доступен после входа через Telegram.'),'error');
+   appendAiMessage('assistant',String(serverDetail(data)||'Платон доступен после входа через Telegram.'),'error');
    appendAiLoginButton();
    return;
   }
-  if(!response.ok)throw new Error(data.detail||AI_UNAVAILABLE);
+  if(!response.ok)throw new Error(serverDetail(data)||AI_UNAVAILABLE);
   const answer=String(data.answer||'Ответ не получен.');
   appendAiMessage('assistant',answer+(data.cached?'\n\n*Ответ из кэша: тот же вопрос по тем же вводным за последние 10 минут.*':''));
   if(Array.isArray(data.proposals)&&data.proposals.length)appendAiProposals(data.proposals);aiHistory.push({role:'assistant',content:answer});aiHistory=aiHistory.slice(-10);
