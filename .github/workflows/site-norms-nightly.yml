@@ -1,0 +1,67 @@
+name: Посадка и нормативы — ночной прогон
+
+# Тесты PR проверяют код, а не то, что сайт выдаёт на настоящем участке.
+# Здесь двенадцать эталонных участков Москвы и Подмосковья
+# (scripts/site_norms_reference.json) прогоняются через открытые маршруты прода
+# — скрининг, ТЭП калькулятора ГлавАПУ, расчёт по Московской области — и
+# сверяются с 945-ПП и 2151-ПП своими числами, а флаги скрининга — с ТЭП.
+# Только чтение, без входа и без ключей. Разбор кодов — docs/site_norms_check.md.
+
+on:
+  schedule:
+    # 03:47 МСК: калькулятор ГлавАПУ и НСПД ночью отвечают быстрее, а
+    # минута не круглая, чтобы не стоять в общей очереди расписаний.
+    - cron: "47 0 * * *"
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Адрес прода
+        default: https://developaid.ru
+      only:
+        description: Кадастровые номера через запятую (пусто — весь набор)
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-norms
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Эталонные участки
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      BASE: ${{ github.event.inputs.base || 'https://developaid.ru' }}
+      ONLY: ${{ github.event.inputs.only }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Проверка
+        id: check
+        run: |
+          set +e
+          python3 scripts/site_norms_check.py --base "$BASE" --only "$ONLY" \
+            --summary site-norms-summary.md --json site-norms-result.json
+          code=$?
+          if [ ! -s site-norms-summary.md ]; then
+            printf '## ❌ Посадка и нормативы: прогон упал без итога\n\n`scripts/site_norms_check.py` завершился с кодом %s и не записал таблицу. Причина — в журнале шага «Проверка».\n' "$code" > site-norms-summary.md
+          fi
+          cat site-norms-summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit $code
+
+      - name: Итог файлами
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: site-norms
+          path: |
+            site-norms-summary.md
+            site-norms-result.json
+          if-no-files-found: ignore

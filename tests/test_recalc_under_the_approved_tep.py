@@ -175,7 +175,9 @@ def test_the_approved_tep_costs_less_than_the_norm(client):
     # Прежняя строка города давала 130 постоянных и 243 всего.
     assert data["parking_permanent"] == 123
     assert data["parking_total"] == 236
-    assert 480 < data["compensation_mln"] < 500
+    # Ставки компенсации — последние (калькулятор поднял их к 25.10.2026:
+    # было 480–500, стало ≈509).
+    assert 500 < data["compensation_mln"] < 520
     assert data["jobs"] > 1000, "МПТ — основание льготы, и их тут много"
 
 
