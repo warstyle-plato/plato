@@ -114,6 +114,7 @@ def test_the_admin_form_says_whether_the_person_was_told(sent):
             page.click("#tariffsButton")
             page.wait_for_function(
                 "document.querySelector('#grantChat option[value=\"" + str(CHAT) + "\"]')")
+            page.click("#cabTabAdmin")  # выдача доступа — на вкладке «Администрирование»
             page.select_option("#grantKind", "subscription")
             page.select_option("#grantChat", str(CHAT))
             page.click("button:has-text('Выдать доступ')")

@@ -2376,6 +2376,7 @@ function renderSitePanel(){
  if(document.activeElement!==densityEl)densityEl.value=stored>0?stored:'';
  densityEl.placeholder=num(effectiveSiteDensity());
  document.getElementById('siteAreaSource').textContent=siteAreaSourceLabel();
+ {const t=document.getElementById('siteKrtToggle');if(t)t.checked=krtSiteOn()}
  renderKrtSite();
  {
   const warn=document.getElementById('siteAreaWarning');
