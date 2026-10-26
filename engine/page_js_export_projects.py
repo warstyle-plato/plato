@@ -734,6 +734,7 @@ function renderOpenedProjectButton(){
 
 function forgetTerritoryState(){
  cadastralAnalysis=null;landLookup=null;otherRegionPending=null;landScreeningLast=null;LAND_MAP=null;
+ calcWentWithoutContour=false;
  glavapuImport=null;moResult=null;
  // Запрос района и ТТК по участку — тоже про участок: новый проект спрашивает свой.
  sitePositionRun={key:'',state:'',error:'',count:0};
@@ -971,6 +972,8 @@ async function deleteProject(id){
 // трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
 // то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
 // LAND_MAP_VIEWS — ответ сервера, есть ли ключ Яндекс Карт для гибрида: не проект.
+// landContourPending — число запросов контура ЕГРН в пути: его гасит каждый
+// ответ, и сброс сбил бы счёт.
 // accessUseFree — согласие на бесплатный участок на один запуск расчёта:
 // снимается сразу после него и проекта не хранит.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
@@ -978,7 +981,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound',
+ 'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound','landContourPending',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
  'PROJECT_KIND_WHERE','LAND_MAP_VIEWS'];

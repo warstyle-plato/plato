@@ -61,7 +61,7 @@ def _v4_site_massing_rows_xml(xml: str, inputs: dict[str, Any],
     книге двигает уровни и СМР подземной части её формулами.
     """
     import re as _re
-    massing = site_massing(inputs, tep)
+    massing = site_massing_fitted(inputs, tep)
     values = _massing_book.input_values(massing, inputs)
     numbers = [int(number) for number in _re.findall(r'<x:row r="(\d+)"', xml)]
     base_row = (max(numbers) if numbers else 0) + 2
