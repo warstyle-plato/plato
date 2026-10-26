@@ -82,12 +82,17 @@ def test_the_report_shows_the_credit_block_as_the_tz_asks():
                              "Всего к оплате", "Эскроу до раскрытия", "Доступно из раскрытия",
                              "Другие источники", "Дефицит", "Долг после платежа"]
             dates = tab.locator("table.credit-table tr.date td:first-child").all_inner_texts()
-            assert dates[0] == "30.12.2026" and "30.09.2029" in dates[-1]
+            # Первый платёж — раскрытие эскроу 20.09.2027: долг к погашению в его размере
+            # (договор А, п. 6.1.2); до него проценты и плата за лимит в отсрочке.
+            assert dates[0] == "20.09.2027 (раскрытие эскроу: долг к погашению)"
+            assert dates[1] == "30.09.2027 (раскрытие позже)"
             loans = tab.locator("table.credit-table tr.loan td:first-child").all_inner_texts()
-            assert loans[:2] == ["в т. ч. НКЛ 2025", "в т. ч. НКЛ 2026"]
+            # Раскрытие гасит сначала НКЛ 2025 — в первой строке только она.
+            assert loans[0] == "в т. ч. НКЛ 2025"
+            assert set(loans) == {"в т. ч. НКЛ 2025", "в т. ч. НКЛ 2026"}
             labels = tab.locator("table.credit-top td:first-child").all_inner_texts()
             assert labels[:3] == ["Текущий совокупный долг", "Текущий остаток эскроу",
-                                  "Ближайший платёж 30.12.2026: всего обязательств"]
+                                  "Ближайший платёж 20.09.2027: всего обязательств"]
             assert "Непокрытый дефицит" in labels and any(
                 label.startswith("Максимальный дефицит за прогноз") for label in labels)
             debt = tab.locator("table.credit-top tr").nth(1)
@@ -100,6 +105,9 @@ def test_the_report_shows_the_credit_block_as_the_tz_asks():
             status = tab.locator("#block-credit ~ div.credit p.credit-status").first
             assert status.inner_text().startswith("Статус: красный")
             text = tab.locator("div.credit").first.inner_text()
+            assumptions = tab.locator("div.credit-assumptions").first
+            assert assumptions.is_visible()
+            assert "Ставка по НКЛ 2026 посчитана по аналогии с НКЛ 2025" in assumptions.inner_text()
         finally:
             browser.close()
     # Без технических пояснений: условия расчёта и пункты ТЗ — на Мониторе.
@@ -114,6 +122,9 @@ def test_the_monitor_upload_recalculates_and_names_the_change():
     assert first.status_code == 200, first.text
     assert first.json()["status"]["color"] == "red"
     assert "Условия расчёта и их источник" in first.json()["html"]
+    # Проверки по договорам — на Мониторе; без бизнес-плана — «нет данных».
+    assert "Проверки по кредитным договорам" in first.json()["html"]
+    assert "п. 8.2.57" in first.json()["html"]
     moved = fx.raw()["disclosure"]
     moved["items"][0]["date"] = "2027-10-20"
     second = client.post("/monitor/credit/data", json={

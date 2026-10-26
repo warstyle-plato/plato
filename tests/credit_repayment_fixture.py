@@ -45,7 +45,7 @@ def raw() -> dict[str, dict[str, Any]]:
         "disclosure": {"items": [
             {"date": "2027-09-20", "amount": 4000.0, "confirmed": True, "final": False},
             {"date": "2028-06-30", "amount": None, "confirmed": False, "final": True}]},
-        "letters_of_credit": {"balance": 120.0},
+        "letters_of_credit": {"balance": 120.0, "by_loan": {"nkl2025": 80.0, "nkl2026": 40.0}},
         "free_cash": {"items": [{"date": "2026-12-01", "amount": 300.0}]},
         "extra": {"items": [{"date": "2027-09-01", "amount": 500.0, "confirmed": True,
                              "what": "заём акционера"},

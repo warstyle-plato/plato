@@ -6,31 +6,26 @@
 по каждой НКЛ и сводно.
 
 Расчёт здесь один: сводка (`developaid_management_report`) и Монитор
-(`/monitor/credit`) только читают `forecast` и рисуют его.
+(`/monitor/credit`) только читают `analyse` и рисуют `render_html`.
 
-Устройство:
+Устройство (подробно — `docs/credit_repayment.md`):
 
-* условия кредитов — `PRESETS` (параметры ТЗ, п. 2–3). Что ТЗ не задаёт
-  (порядок досрочного погашения, даты уплаты процентов, проценты на
-  отложенные проценты, деление раскрытия между НКЛ), лежит в `TERMS` с
-  происхождением «нет данных…» и заменяется выпиской договора (набор
-  ``terms.<НКЛ>``) с её пунктом;
+* условия кредитов — `PRESETS` по выписке договоров
+  (`docs/projects/kutuzov_credit_terms.md`): у каждого условия пункт договора
+  или пометка «допущение» / «нет данных». Выписка договора заменяет условие
+  набором ``terms.<НКЛ>`` / ``terms.project``;
 * исходные данные — наборы `DATASETS`, у каждого дата актуальности и
-  источник. Нет набора — «нет данных», а не ноль: сумма с неизвестным слагаемым
-  неизвестна;
-* кредит считается по дням: проценты за день на остаток утра, в отсрочку —
-  в отложенные, комиссия — на свободный лимит до конца доступности;
-* график основного долга — доля расчётной базы. База НКЛ 2025 — долг на
-  конец доступности, НКЛ 2026 — выбранный лимит на следующий день. До этой
-  даты база прогнозная (факт + прогнозные выборки), после — фактическая.
-  Досрочное погашение, уже уменьшившее базу, второй раз из графика не
-  вычитается;
+  источник. Нет набора — «нет данных», а не ноль;
+* обе НКЛ считаются в одном дневном цикле (`_simulate`): ставка НКЛ 2026
+  зависит от долга НКЛ 2025, раскрытие эскроу у них общее. Ставка месяца — по
+  среднедневным остаткам и покрытию эскроу (`segment_rate`), в отсрочку —
+  капитализация, дальше — уплата 28-го следующего месяца; раскрытие делает
+  долг срочным в размере раскрытого;
 * эскроу — один на проект: начальный остаток + поступления по действующим
-  ДДУ + новые продажи − возвраты − раскрытие, по датам оплаты. Заблокированный
-  остаток платёж не покрывает;
-* покрытие — по датам подряд: раскрытое, затем свободные деньги, затем
-  подтверждённое дофинансирование. Потраченное второй раз не участвует,
-  остаток переносится вперёд.
+  ДДУ + новые продажи − возвраты − раскрытие, по датам оплаты;
+* покрытие — по датам подряд (`_cover`): раскрытое, свободные деньги,
+  подтверждённое финансирование; потраченное второй раз не участвует;
+* достаточность эскроу (А п. 8.2.60) — `sufficiency`, ковенанты — `covenants`.
 """
 
 from __future__ import annotations
@@ -54,67 +49,111 @@ NO_DATA = "нет данных"
 # Условия кредитов
 # --------------------------------------------------------------------------
 
+DOC = "выписка условий договоров (docs/projects/kutuzov_credit_terms.md)"
+_A = f"{DOC}, договор А № 400F00ZDO-002"
+_B = f"{DOC}, договор Б № 400B01K4DMF"
+_NO_OU = ("нет данных: Общих условий банка (ОУ Сбербанка) в документах нет — "
+          "принято как в договоре А")
+
 PRESETS: dict[str, dict[str, Any]] = {
     "kutuzov_city": {
         "title": "Кутузов Сити",
         "loans": [
             {"id": "nkl2025", "name": "НКЛ от 04.04.2025", "short": "НКЛ 2025",
              "number": "400F00ZDO-002", "limit": 5485.689 * M,
+             # Лимит нарастающий (п. 1.1 ред. ДС-3). До 31.12.2025 — после
+             # выполнения п. 3.3.25; прогноз начинается позже, поэтому это
+             # условие на расчёт не влияет.
+             "limit_steps": [("2025-04-04", 2600.0 * M), ("2026-01-01", 5000.0 * M),
+                             ("2027-01-01", 5485.689 * M)],
              "availability_end": "2027-06-30", "maturity": "2029-03-30",
              "margin_pp": 4.78, "fee_free_limit_pct": 0.70,
              "deferral_limit": "2027-09-30",
-             # База — долг на дату окончания доступности (ТЗ, п. 3).
+             # База — долг на дату окончания доступности (п. 6.1).
              "base": "debt_at_availability_end",
              "schedule": [("2027-09-30", 0.61), ("2027-12-30", 0.07),
                           ("2028-03-30", 0.07), ("2028-06-30", 0.07),
                           ("2028-09-30", 0.08), ("2028-12-30", 0.08),
                           ("2029-03-30", 0.02)],
-             "source": f"{TZ}, п. 2–3"},
+             # п. 4.1.1: I(a), I(v) ниже 100 % покрытия и по ступеням покрытия.
+             "rate_table": {"ia": 2.02, "iv_below": 4.26,
+                            "iv_steps": [(1.10, 4.26), (1.20, 2.56), (1.25, 0.86)],
+                            "iv_top": 0.01},
+             "terms": {
+                 "rate": {"value": "contract", "source": f"{_A}, п. 4.1.1"},
+                 "escrow_in_rate": {
+                     "value": "full",
+                     "source": f"{_A}, п. 4.1.1: F — весь остаток эскроу проекта. Банк вправе "
+                               "применить и к А долю, как в Б (п. 7.1.4), — подтвердить с банком"},
+                 "pay_dates": {"value": "monthly_28", "source": f"{_A}, пп. 4.1.1, 4.2.1"},
+                 "day_basis": {"value": "actual", "source": f"{_A}, п. 5.5"},
+                 "deferred_rate": {"value": "base", "source": f"{_A}, пп. 4.2.2, 4.2.3"},
+                 "prepayment_order": {
+                     "value": "nearest",
+                     "source": f"{_A}, пп. 6.1, 6.2, 5.9: досрочное уменьшает ближайшие платежи; "
+                               "возмещение НДС (п. 8.2.30) — последние"},
+                 "disclosure_repays": {"value": "immediate", "source": f"{_A}, п. 6.1.2"},
+                 "fee": {"value": "free_limit", "source": f"{_A}, п. 4.4"},
+             },
+             "source": f"{_A}; {TZ}, п. 2–3"},
             {"id": "nkl2026", "name": "НКЛ от 26.06.2026", "short": "НКЛ 2026",
              "number": "400B01K4DMF", "limit": 1125.000 * M,
+             "limit_steps": [("2026-06-26", 1125.0 * M)],
              "availability_end": "2027-09-30", "maturity": "2029-09-30",
              "margin_pp": 4.14, "fee_free_limit_pct": 0.70,
              "deferral_limit": "2029-03-30",
-             # База — выбранный лимит на следующий день после доступности.
+             # База — выбранный лимит на следующий день после доступности (п. 5.1).
              "base": "drawn_day_after_availability_end",
              # Последний платёж — остаток (номинально 38 %).
              "schedule": [("2029-03-30", 0.23), ("2029-06-30", 0.39),
                           ("2029-09-30", None)],
-             "source": f"{TZ}, п. 2–3"},
+             "rate_table": {"ia": 0.70, "iv_below": 4.75,
+                            "iv_steps": [(1.10, 4.75), (1.20, 3.39), (1.30, 2.04),
+                                         (1.40, 0.68)],
+                            "iv_top": 0.01},
+             "terms": {
+                 "rate": {"value": "analogy",
+                          "source": f"Допущение: формула п. 3.3.8.2 Общих условий банка не "
+                                    f"получена — порядок как в договоре А, коэффициенты договора "
+                                    f"Б ({_B}, п. 3.1.1 ред. ДС-2)"},
+                 "escrow_in_rate": {
+                     "value": "share",
+                     "source": f"{_B}, п. 3.1.1: доля эскроу пропорционально чистому долгу Б в "
+                               "совокупном чистом долге А и Б"},
+                 "pay_dates": {"value": "monthly_28", "source": f"{_B}, п. 3.1.1 ред. ДС-2"},
+                 "day_basis": {"value": "actual", "source": _NO_OU},
+                 "deferred_rate": {"value": "base", "source": f"{_B}, п. 3.3 ред. ДС-1"},
+                 "prepayment_order": {"value": "nearest", "source": _NO_OU},
+                 "disclosure_repays": {
+                     "value": "immediate",
+                     "source": f"{_B}, п. 5.1.1 (Вариант 1 п. 3.6.6 Общих условий — текста нет)"},
+                 "fee": {"value": "free_limit", "source": f"{_B}, п. 4.1"},
+             },
+             "source": f"{_B}; {TZ}, п. 2–3"},
         ],
+        "terms": {
+            "disclosure_split": {
+                "value": "nkl2025_first",
+                "source": "нет данных: как раскрытое эскроу делится между НКЛ, в договорах не "
+                          "найдено. Принято — сначала НКЛ 2025 (по графикам она гасится первой). "
+                          "Подтвердить с банком (ТЗ, п. 5)"},
+            "planned_disclosure": {
+                "value": "2027-09-30",
+                "source": "допущение: плановой даты раскрытия в договорах нет; регистрация "
+                          "собственности не позднее 27.12.2027 за 90 дней после ввода "
+                          f"({_A}, п. 8.2.27) — ввод около конца сентября 2027"},
+        },
     },
 }
 
-_ASSUMED = "нет данных в предоставленных документах — до выписки договора принято"
-
-# Что ТЗ не задаёт. Каждое правило — с происхождением; выписка договора
-# (набор ``terms.<НКЛ>``) заменяет значение и источник.
-TERMS: dict[str, dict[str, str]] = {
-    "rate": {"value": "base",
-             "source": f"{TZ}, п. 2: базовая ставка. Льготная ставка от покрытия "
-                       "эскроу — нет данных, пока не получена формула из договора"},
-    "day_basis": {"value": "actual",
-                  "source": f"{_ASSUMED}: проценты за каждый день, в году — его "
-                            "фактическое число дней"},
-    "pay_dates": {"value": "quarterly",
-                  "source": f"{_ASSUMED}: проценты и комиссия платятся 30.03, 30.06, "
-                            "30.09, 30.12, в дату окончания отсрочки и в дату погашения"},
-    "deferred_rate": {"value": "loan_rate",
-                      "source": f"{_ASSUMED}: на отложенные проценты — ставка кредита, "
-                                "без начисления процентов на проценты на них"},
-    "prepayment_order": {"value": "from_last",
-                         "source": f"{_ASSUMED}: досрочное погашение уменьшает платежи "
-                                   "графика начиная с последнего"},
-    "disclosure_split": {"value": "pro_rata",
-                         "source": f"{TZ}, п. 5: правило подтвердить с банком — "
-                                   "формулировки двух НКЛ различаются. До ответа банка "
-                                   "раскрытое делится между НКЛ пропорционально платежам "
-                                   "на дату"},
-}
-TERM_VALUES = {"rate": {"base"}, "day_basis": {"actual", "365"},
-               "pay_dates": {"quarterly"}, "deferred_rate": {"loan_rate"},
+TERM_VALUES = {"rate": {"contract", "analogy", "base"}, "escrow_in_rate": {"full", "share"},
+               "pay_dates": {"monthly_28"}, "day_basis": {"actual", "365"},
+               "deferred_rate": {"base"},
                "prepayment_order": {"from_last", "nearest", "pro_rata"},
-               "disclosure_split": {"pro_rata", "nkl2025_first", "nkl2026_first"}}
+               "disclosure_repays": {"immediate", "pool"}, "fee": {"free_limit"},
+               "disclosure_split": {"pro_rata", "nkl2025_first", "nkl2026_first"},
+               "planned_disclosure": None}
+
 
 # --------------------------------------------------------------------------
 # Наборы исходных данных
@@ -138,10 +177,12 @@ DATASETS: dict[str, str] = {
     "key_rate": "Прогноз ключевой ставки",
     "terms.nkl2025": "Условия НКЛ от 04.04.2025 из выписки договора",
     "terms.nkl2026": "Условия НКЛ от 26.06.2026 из выписки договора",
+    "terms.project": "Условия по проекту в целом (раскрытие эскроу между НКЛ, плановая дата)",
+    "business_plan": "Бизнес-план, согласованный с банком: эскроу и продажи по ДДУ",
 }
 UNITS = {"млн ₽": M, "₽": 1.0}
 # Наборы без денежных сумм — единица им не нужна.
-_UNITLESS = {"key_rate", "terms.nkl2025", "terms.nkl2026"}
+_UNITLESS = {"key_rate", "terms.nkl2025", "terms.nkl2026", "terms.project"}
 
 STRESS_DEFAULT = {"inflow_cut_pct": 20.0, "disclosure_delay_months": 3, "key_rate_pp": 2.0}
 
@@ -223,6 +264,18 @@ def _month(value: Any, what: str) -> str:
     return text
 
 
+def _quarter(value: Any, what: str) -> str:
+    """«2026 Q3» — календарный квартал."""
+    text = str(value or "").strip()
+    try:
+        year, part = text.split(" Q")
+        if not 1 <= int(part) <= 4:
+            raise ValueError
+        return f"{int(year)} Q{int(part)}"
+    except ValueError:
+        raise ValueError(f"{what}: квартал «{value}» не разобран, нужен «ГГГГ QN»") from None
+
+
 def _when(item: dict[str, Any], what: str) -> dict[str, Any]:
     """Дата оплаты: точная (``date``) или только месяц (``month``)."""
     if item.get("date"):
@@ -286,6 +339,9 @@ def _expand_sales(items: Any, scale: float) -> list[dict[str, Any]]:
             raise ValueError(f"{label}: первый взнос — доля от 0 до 1")
         contract = str(item.get("contract") or "").strip()
         start = _month_end(month)
+        out.append({"signed_total": amount, "sale_month": month, "date": start.isoformat(),
+                    "month_only": True, "amount": 0.0,
+                    **({"contract": contract} if contract else {})})
         steps = [(start, amount * down)] + [
             (_month_end(_add_months(start.replace(day=1), k).strftime("%Y-%m")),
              amount * (1 - down) / months) for k in range(1, months + 1)]
@@ -344,11 +400,30 @@ def normalize(name: str, payload: dict[str, Any]) -> dict[str, Any]:
                                             f"{what}: проценты на них") * scale}
     elif name in {"escrow", "letters_of_credit"}:
         out = {"balance": _num(data.get("balance"), f"{what}: остаток") * scale}
+        if name == "letters_of_credit":
+            # Покрытие аккредитивов входит в ставку каждой НКЛ своим остатком (п. 4.1.1).
+            out["by_loan"] = {key: _num(value, f"{what}: {key}") * scale
+                              for key, value in (data.get("by_loan") or {}).items()}
+        else:
+            # Остатки на прошлые даты — для проверки наполнения эскроу (п. 8.2.57).
+            out["history"] = _dated([{"date": i.get("date"), "amount": i.get("balance")}
+                                     for i in data.get("history") or []], scale,
+                                    f"{what}: история остатков")
     elif name in {"contracts", "refunds"}:
         out = {"payments": _payments(data.get("payments"), scale, what)}
+        if name == "contracts":
+            # Суммы цен подписанных ДДУ по месяцам — для ковенанта продаж.
+            out["signed"] = [{"month": _month(i.get("month"), f"{what}: подписано"),
+                              "amount": _num(i.get("amount"), f"{what}: подписано") * scale}
+                             for i in data.get("signed") or []]
     elif name == "sales":
         out = {"payments": _payments(data.get("payments"), scale, what)
                + _expand_sales(data.get("sales"), scale)}
+    elif name == "business_plan":
+        out = {"escrow": _dated(data.get("escrow"), scale, f"{what}: эскроу"),
+               "ddu": [{"quarter": _quarter(i.get("quarter"), f"{what}: квартал"),
+                        "amount": _num(i.get("amount"), f"{what}: ДДУ") * scale}
+                       for i in data.get("ddu") or []]}
     elif name == "disclosure":
         items = []
         for i, item in enumerate(data.get("items") or []):
@@ -379,10 +454,12 @@ def normalize(name: str, payload: dict[str, Any]) -> dict[str, Any]:
     else:  # terms
         out = {}
         for key, item in data.items():
-            if key not in TERMS:
+            if key not in TERM_VALUES:
                 raise ValueError(f"{what}: неизвестное условие «{key}».")
             value = str((item or {}).get("value") or "")
-            if value not in TERM_VALUES[key]:
+            if key == "planned_disclosure":
+                value = _iso(value, f"{what}: плановая дата раскрытия")
+            elif value not in TERM_VALUES[key]:
                 raise ValueError(f"{what}: условие «{key}» = «{value}» не поддержано.")
             clause = str((item or {}).get("source") or "").strip()
             if not clause:
@@ -533,193 +610,434 @@ def _schedule(loan: dict[str, Any], base: float) -> list[dict[str, Any]]:
     return out
 
 
-def _quarter_dates(start: datetime.date, end: datetime.date) -> list[datetime.date]:
-    out = []
-    for year in range(start.year, end.year + 1):
-        for month in (3, 6, 9, 12):
-            day = datetime.date(year, month, 30)
-            if start < day <= end:
-                out.append(day)
-    return out
+def _limit_on(loan: dict[str, Any], day: datetime.date) -> float:
+    steps = [amount for start, amount in loan.get("limit_steps") or [] if _day(start) <= day]
+    return steps[-1] if steps else loan["limit"]
 
 
 def _terms(loan: dict[str, Any], datasets: dict[str, Any]) -> dict[str, dict[str, str]]:
-    terms = copy.deepcopy(TERMS)
-    override = (datasets.get(f"terms.{loan['id']}") or {}).get("data") or {}
-    terms.update(override)
+    terms = copy.deepcopy(loan["terms"])
+    terms.update((datasets.get(f"terms.{loan['id']}") or {}).get("data") or {})
     return terms
 
 
-def _run_loan(loan: dict[str, Any], datasets: dict[str, Any], scenario: dict[str, Any],
-              deferral_end: datetime.date) -> dict[str, Any]:
-    """Платежи одной НКЛ по датам. Неизвестное — None с причиной в ``gaps``."""
-    terms = _terms(loan, datasets)
-    facts = datasets.get(f"facts.{loan['id']}")
-    plan = datasets.get(f"plan.{loan['id']}")
-    deferred_set = datasets.get(f"deferred.{loan['id']}")
-    key_rate = (datasets.get("key_rate") or {}).get("data", {}).get("path")
-    out: dict[str, Any] = {"id": loan["id"], "name": loan["name"], "short": loan["short"],
-                           "terms": terms, "gaps": [], "payments": {},
-                           "deferral_end": deferral_end.isoformat()}
-    if not facts:
-        out["gaps"].append(f"{loan['name']}: {NO_DATA} о долге и выдачах — график не рассчитан.")
-        return out
-    if not plan:
-        out["gaps"].append(f"{loan['name']}: {NO_DATA} о прогнозных выборках и досрочных "
-                           "погашениях (набор можно загрузить пустым, если их не будет).")
-        return out
-    start = _day(facts["as_of"])
-    f = facts["data"]
-    principal, drawn = f["debt"], f["drawn"]
-    accrued, fee_acc = f["accrued_interest"], f["accrued_fee"]
-    if start < deferral_end:
-        if not deferred_set:
+def project_terms(preset: dict[str, Any], datasets: dict[str, Any]) -> dict[str, dict[str, str]]:
+    terms = copy.deepcopy(preset["terms"])
+    terms.update((datasets.get("terms.project") or {}).get("data") or {})
+    return terms
+
+
+def _iv(table: dict[str, Any], cover: float) -> float:
+    """I(v) по покрытию: ниже 100 % — своя ставка, дальше ступени «не более»."""
+    if cover < 1.0:
+        return table["iv_below"]
+    for upper, rate in table["iv_steps"]:
+        if cover <= upper + 1e-12:
+            return rate
+    return table["iv_top"]
+
+
+def segment_rate(loan: dict[str, Any], kind: str, escrow_rule: str,
+                 sums: dict[str, float]) -> tuple[float, float | None]:
+    """Ставка расчётного периода по среднедневным остаткам (договор А, п. 4.1.1).
+
+    I = (A·I(a) + F·I(v) + (K−A−F)·I(i)) / K, при A + F > K —
+    I = (A·I(a) + (K−A)·I(v)) / K. Покрытие — эскроу к чистому долгу: у НКЛ
+    2025 — к её долгу без аккредитивов, у НКЛ 2026 (доля) — к совокупному
+    чистому долгу двух НКЛ.
+    """
+    n = sums["days"]
+    k, a, e = sums["K"] / n, sums["A"] / n, sums["E"] / n
+    base = sums["base"] / n
+    if kind == "base" or k <= 0:
+        return base, None
+    table = loan["rate_table"]
+    a = min(a, k)
+    if escrow_rule == "share":
+        net = sums["net"] / n
+        cover = e / net if net > 0 else None
+        f = e * (k - a) / net if net > 0 else 0.0
+    else:
+        cover = e / (k - a) if k > a else None
+        f = e
+    if cover is None:
+        return (a * table["ia"] + (k - a) * base) / k, None
+    if cover < 1.0:
+        return (a * table["ia"] + f * table["iv_below"] + (k - a - f) * base) / k, cover
+    return (a * table["ia"] + (k - a) * _iv(table, cover)) / k, cover
+
+
+def _next_28(day: datetime.date) -> datetime.date:
+    first = (day.replace(day=1) + datetime.timedelta(days=32)).replace(day=1)
+    return first.replace(day=28)
+
+
+class _Loan:
+    """Состояние одной НКЛ в дневном расчёте."""
+
+    def __init__(self, loan, datasets, deferral_end, out):
+        self.loan, self.out = loan, out
+        self.terms = out["terms"]
+        facts = datasets[f"facts.{loan['id']}"]
+        f = facts["data"]
+        self.start = _day(facts["as_of"])
+        self.principal, self.drawn = f["debt"], f["drawn"]
+        self.deferral_end = deferral_end
+        self.availability_end = _day(loan["availability_end"])
+        self.maturity = _day(loan["maturity"])
+        self.base_day = (self.availability_end if loan["base"] == "debt_at_availability_end"
+                         else self.availability_end + datetime.timedelta(days=1))
+        self.reflected_before_base = loan["base"] == "debt_at_availability_end"
+        self.order = self.terms["prepayment_order"]["value"]
+        self.basis = self.terms["day_basis"]["value"]
+        deferred = datasets.get(f"deferred.{loan['id']}")
+        if deferred:
+            self.deferred = deferred["data"]["deferred"]
+            self.iod = deferred["data"]["interest_on_deferred"]
+        elif self.start < deferral_end:
             out["gaps"].append(f"{loan['name']}: {NO_DATA} об отложенных процентах — к дате "
                                "окончания отсрочки сумма не известна.")
-            deferred = iod = None
+            self.deferred = self.iod = None
         else:
-            deferred = deferred_set["data"]["deferred"]
-            iod = deferred_set["data"]["interest_on_deferred"]
-    else:
-        deferred = (deferred_set or {}).get("data", {}).get("deferred", 0.0)
-        iod = (deferred_set or {}).get("data", {}).get("interest_on_deferred", 0.0)
-    if not key_rate:
-        out["gaps"].append(f"{NO_DATA} о прогнозе ключевой ставки — проценты не рассчитаны.")
-    limit = loan["limit"]
-    availability_end = _day(loan["availability_end"])
-    maturity = _day(loan["maturity"])
-    base_day = availability_end if loan["base"] == "debt_at_availability_end" \
-        else availability_end + datetime.timedelta(days=1)
-    reflected_before_base = loan["base"] == "debt_at_availability_end"
-    order = terms["prepayment_order"]["value"]
-    basis = terms["day_basis"]["value"]
-    bump = float(scenario.get("key_rate_pp") or 0.0)
+            self.deferred = self.iod = 0.0
+        self.deferred_fee = 0.0
+        # Начисленное с последней уплаты — до первой даты уплаты процентов.
+        self.pending: list[list[Any]] = []
+        first_due = _next_28(self.start) if self.start.day > 28 else self.start.replace(day=28)
+        if self.start >= deferral_end:
+            self.pending.append([first_due, "interest", f["accrued_interest"]])
+            self.pending.append([first_due, "fee", f["accrued_fee"]])
+        else:
+            self.deferred = None if self.deferred is None else self.deferred + f["accrued_interest"]
+            self.deferred_fee += f["accrued_fee"]
+        self.sums = self._fresh()
+        self.fee_seg = 0.0
+        self.installments = None
+        self.pending_prepay = 0.0
+        self.segments: list[dict[str, Any]] = []
+        self.interest_total: float | None = 0.0
+        self.iod_total = 0.0
+        self.marks: dict[str, dict[str, Any]] = {}
+        self.closed = False
+        self.marks[self.start.isoformat()] = {
+            "principal": self.principal, "drawn": self.drawn, "unpaid": self.unpaid(),
+            "interest_total": 0.0}
 
-    installments: list[dict[str, Any]] | None = None
-    pending = 0.0  # досрочные до базы, которые базу не уменьшили (НКЛ 2026)
-    base_info: dict[str, Any] = {"day": base_day.isoformat()}
-    if start >= base_day:
+    @staticmethod
+    def _fresh():
+        return {"days": 0, "K": 0.0, "A": 0.0, "E": 0.0, "net": 0.0, "base": 0.0, "Kyd": 0.0,
+                "start": None}
+
+    def segment_interest(self) -> tuple[float | None, float | None, float | None]:
+        if not self.sums["days"]:
+            return 0.0, None, None
+        if self.sums.get("unknown"):
+            return None, None, None
+        rate, cover = segment_rate(self.loan, self.terms["rate"]["value"],
+                                   self.terms["escrow_in_rate"]["value"], self.sums)
+        return rate / 100.0 * self.sums["Kyd"], rate, cover
+
+    def close(self, day: datetime.date, due: datetime.date) -> None:
+        """Закрыть расчётный период: проценты — в отложенные или к уплате ``due``."""
+        if not self.sums["days"]:
+            return
+        interest, rate, cover = self.segment_interest()
+        self.segments.append({"start": self.sums["start"].isoformat(), "end": day.isoformat(),
+                              "rate": rate, "cover": cover, "interest": interest,
+                              "fee": self.fee_seg, "capitalized": day <= self.deferral_end})
+        if interest is None:
+            self.interest_total = None
+        elif self.interest_total is not None:
+            self.interest_total += interest
+        if day <= self.deferral_end:
+            self.deferred = None if self.deferred is None or interest is None \
+                else self.deferred + interest
+            self.deferred_fee += self.fee_seg
+        else:
+            self.pending.append([due, "interest", interest])
+            self.pending.append([due, "fee", self.fee_seg])
+        self.sums = self._fresh()
+        self.fee_seg = 0.0
+
+    def unpaid(self) -> float | None:
+        """Начислено и не уплачено на конец дня — с текущим периодом."""
+        seg, _, _ = self.segment_interest()
+        parts = [seg, self.fee_seg, self.deferred, self.iod, self.deferred_fee] + [
+            item[2] for item in self.pending]
+        return _sum(*parts)
+
+
+def _simulate(preset: dict[str, Any], datasets: dict[str, Any], scenario: dict[str, Any],
+              escrow: dict[str, Any], loans_out: list[dict[str, Any]],
+              split_rule: str, mark_days: set[datetime.date]) -> None:
+    """Обе НКЛ по дням: ставка НКЛ 2026 зависит от долга НКЛ 2025, раскрытие — общее."""
+    key_rate = (datasets.get("key_rate") or {}).get("data", {}).get("path")
+    bump = float(scenario.get("key_rate_pp") or 0.0)
+    lcs = (datasets.get("letters_of_credit") or {}).get("data", {}).get("by_loan") or {}
+    states: dict[str, _Loan] = {}
+    for loan, out in zip(preset["loans"], loans_out):
+        if not datasets.get(f"facts.{loan['id']}"):
+            out["gaps"].append(f"{loan['name']}: {NO_DATA} о долге и выдачах — график не "
+                               "рассчитан.")
+            continue
+        if not datasets.get(f"plan.{loan['id']}"):
+            out["gaps"].append(f"{loan['name']}: {NO_DATA} о прогнозных выборках и досрочных "
+                               "погашениях (набор можно загрузить пустым, если их не будет).")
+            continue
+        states[loan["id"]] = _Loan(loan, datasets, _day(out["deferral_end"]), out)
+        if loan["id"] not in lcs:
+            out["gaps"].append(f"{loan['name']}: {NO_DATA} об остатке аккредитивов этой НКЛ — "
+                               "в ставке принят ноль, ставка оценена сверху.")
+    if not states:
+        return
+    if not key_rate:
+        loans_out[0]["gaps"].append(f"{NO_DATA} о прогнозе ключевой ставки — проценты не "
+                                    "рассчитаны.")
+    if not escrow.get("known"):
+        for st in states.values():
+            if st.terms["rate"]["value"] != "base":
+                st.out["gaps"].append(f"{st.loan['name']}: ставка зависит от остатка эскроу, "
+                                      f"а он неизвестен — проценты не рассчитаны.")
+    for st in states.values():
+        _prepare(st, datasets)
+    events = [e for e in escrow.get("events") or []]
+    disclosed = {}
+    for e in events:
+        if e["kind"] == "disclosure" and e["amount"] > 0:
+            disclosed[_day(e["date"])] = disclosed.get(_day(e["date"]), 0.0) + e["amount"]
+    pointer, balance = 0, escrow.get("opening")
+    start = min(st.start for st in states.values())
+    end = max(st.maturity for st in states.values())
+    day = start
+    while day < end:
+        day += datetime.timedelta(days=1)
+        # Эскроу на начало дня: события до этого дня.
+        while escrow.get("known") and pointer < len(events) and _day(events[pointer]["date"]) < day:
+            balance = events[pointer]["balance_after"]
+            pointer += 1
+        key = _rate_on(key_rate, day)
+        live = [st for st in states.values() if st.start < day <= st.maturity and not st.closed]
+        net = sum(max(0.0, st.principal - lcs.get(st.loan["id"], 0.0)) for st in live)
+        for st in live:
+            yd = _year_days(day, st.basis)
+            s = st.sums
+            if s["start"] is None:
+                s["start"] = day
+            s["days"] += 1
+            s["K"] += st.principal
+            s["A"] += min(lcs.get(st.loan["id"], 0.0), st.principal)
+            s["net"] += net
+            s["Kyd"] += st.principal / yd
+            if key is None or (balance is None and st.terms["rate"]["value"] != "base"):
+                s["unknown"] = True
+            else:
+                s["E"] += balance or 0.0
+                s["base"] += key + bump + st.loan["margin_pp"]
+            if day <= st.deferral_end:
+                # Проценты на капитализированные — по базовой ставке.
+                if key is None or st.deferred is None:
+                    st.iod = None
+                elif st.iod is not None:
+                    grow = st.deferred * (key + bump + st.loan["margin_pp"]) / 100.0 / yd
+                    st.iod += grow
+                    st.iod_total += grow
+            if day <= st.availability_end:
+                st.fee_seg += max(0.0, _limit_on(st.loan, day) - st.drawn) \
+                    * st.loan["fee_free_limit_pct"] / 100.0 / yd
+            _operations(st, day)
+            if day == st.base_day and st.installments is None and st.start < st.base_day:
+                _set_base(st, "прогноз")
+            # Конец расчётного периода: месяц, отсрочка, погашение.
+            month_end = (day + datetime.timedelta(days=1)).day == 1
+            if day == st.maturity:
+                st.close(day, day)
+            elif day == st.deferral_end:
+                st.close(day, day)
+            elif month_end:
+                st.close(day, _next_28(day))
+        if day in disclosed:
+            _disclose(live, day, disclosed[day], split_rule)
+        for st in live:
+            _settle(st, day)
+            if day in mark_days:
+                st.marks[day.isoformat()] = {
+                    "principal": st.principal, "drawn": st.drawn, "unpaid": st.unpaid(),
+                    "interest_total": _sum(st.interest_total, st.segment_interest()[0],
+                                           None if st.iod is None else st.iod_total)}
+    for st in states.values():
+        out = st.out
+        out.update(installments=st.installments,
+                   interest_total=_sum(st.interest_total, None if st.iod is None
+                                       else st.iod_total),
+                   segments=st.segments, marks=st.marks, start=st.start.isoformat(),
+                   debt_now=datasets[f"facts.{st.loan['id']}"]["data"]["debt"],
+                   facts_as_of=datasets[f"facts.{st.loan['id']}"]["as_of"],
+                   facts_source=datasets[f"facts.{st.loan['id']}"]["source"])
+
+
+def _prepare(st: _Loan, datasets: dict[str, Any]) -> None:
+    loan, out = st.loan, st.out
+    facts = datasets[f"facts.{loan['id']}"]
+    f = facts["data"]
+    out["base"] = {"day": st.base_day.isoformat()}
+    if st.start >= st.base_day:
         base = f.get("schedule_base")
         if base is None:
             out["gaps"].append(f"{loan['name']}: {NO_DATA} о расчётной базе графика "
-                               f"(факт на {ddmmyyyy(base_day)}) — платежи основного долга "
+                               f"(факт на {ddmmyyyy(st.base_day)}) — платежи основного долга "
                                "не рассчитаны.")
         else:
-            installments = _schedule(loan, base)
-            base_info.update(amount=base, kind="факт", source=facts["source"],
-                             as_of=facts["as_of"])
+            st.installments = _schedule(loan, base)
+            out["base"].update(amount=base, kind="факт", source=facts["source"],
+                               as_of=facts["as_of"])
             for op in f.get("operations") or []:
                 day = _day(op["date"])
-                if op["kind"] == "prepay" and (not reflected_before_base or day > base_day):
-                    _reduce(installments, op["amount"], day, order)
-            installments = [item for item in installments if _day(item["date"]) > start]
-    out["base"] = base_info
-
-    events: dict[datetime.date, list[tuple[str, float]]] = {}
+                if op["kind"] == "prepay" and (not st.reflected_before_base or day > st.base_day):
+                    _reduce(st.installments, op["amount"], day, st.order)
+            st.installments = [i for i in st.installments if _day(i["date"]) > st.start]
+    plan = datasets[f"plan.{loan['id']}"]["data"]
+    st.events = {}
     ignored = 0.0
-    for kind, items in (("draw", plan["data"]["draws"]),
-                        ("prepay", plan["data"]["prepayments"])):
+    for kind, items in (("draw", plan["draws"]), ("prepay", plan["prepayments"])):
         for item in items:
             day = _day(item["date"])
-            if day <= start or (kind == "draw" and day > availability_end):
+            if day <= st.start or (kind == "draw" and day > st.availability_end):
                 ignored += item["amount"]
                 continue
-            events.setdefault(day, []).append((kind, item["amount"]))
+            st.events.setdefault(day, []).append((kind, item["amount"]))
     if ignored:
         out["gaps"].append(f"{loan['name']}: {mln(ignored)} млн ₽ прогнозных операций "
-                           f"не учтены — дата раньше фактов ({ddmmyyyy(start)}) или выборка "
+                           f"не учтены — дата раньше фактов ({ddmmyyyy(st.start)}) или выборка "
                            "после окончания доступности.")
+    st.today: dict[str, float | None] = {}
+    st.from_disclosure = 0.0
 
-    rates_ok = bool(key_rate) and _rate_on(key_rate, start + datetime.timedelta(days=1)) is not None
-    if key_rate and not rates_ok:
-        out["gaps"].append(f"Прогноз ключевой ставки начинается позже {ddmmyyyy(start)} — "
-                           "проценты не рассчитаны.")
-    if not rates_ok:
-        accrued = None
-        if start < deferral_end:
-            deferred = iod = None
-    pay_days = set(_quarter_dates(start, maturity))
-    pay_days.update(d for d in (deferral_end, maturity) if start < d <= maturity)
-    pay_days.update(_day(date) for date, _ in loan["schedule"] if _day(date) > start)
-    deferred_due_now = deferral_end <= start  # отсрочка уже кончилась — долг по ней к первой дате
-    interest_total: float | None = 0.0 if rates_ok else None
-    day = start
-    while day < maturity:
-        day += datetime.timedelta(days=1)
-        # Проценты за день — на остаток утра, до операций дня.
-        if rates_ok:
-            rate = (_rate_on(key_rate, day) + bump + loan["margin_pp"]) / 100.0
-            share = rate / _year_days(day, basis)
-            if day <= deferral_end:
-                if _known(deferred, iod):
-                    iod += deferred * share
-                    deferred += principal * share
-            else:
-                accrued += principal * share
-            interest_total += principal * share
-        if day <= availability_end:
-            fee_acc += max(0.0, limit - drawn) * loan["fee_free_limit_pct"] / 100.0 \
-                / _year_days(day, basis)
-        for kind, amount in events.get(day, []):
-            if kind == "draw":
-                take = min(amount, max(0.0, limit - drawn))
-                if amount - take > 1.0:
-                    out["gaps"].append(f"{loan['name']}: выборка {mln(amount)} млн ₽ на "
-                                       f"{ddmmyyyy(day)} выше свободного лимита — учтено "
-                                       f"{mln(take)} млн ₽.")
-                principal += take
-                drawn += take
-            else:
-                paid = min(amount, principal)
-                principal -= paid
-                if installments is not None:
-                    _reduce(installments, paid, day, order)
-                elif not reflected_before_base:
-                    pending += paid
-        if day == base_day and installments is None and start < base_day:
-            base = principal if loan["base"] == "debt_at_availability_end" else drawn
-            installments = _schedule(loan, base)
-            base_info.update(amount=base, kind="прогноз",
-                             source="долг по фактам плюс прогнозные выборки и погашения",
-                             as_of=facts["as_of"])
-            if pending:
-                _reduce(installments, pending, day, order)
-        if day not in pay_days:
-            continue
-        if installments is not None:
-            due_principal: float | None = principal if day == maturity else min(
-                principal, sum(item["amount"] for item in installments
-                               if _day(item["date"]) == day))
-            principal -= due_principal
-        elif day < base_day:
-            due_principal = 0.0
+
+def _set_base(st: _Loan, kind: str) -> None:
+    base = st.principal if st.loan["base"] == "debt_at_availability_end" else st.drawn
+    st.installments = _schedule(st.loan, base)
+    st.out["base"].update(amount=base, kind=kind,
+                          source="долг по фактам плюс прогнозные выборки и погашения",
+                          as_of=st.out.get("facts_as_of") or st.start.isoformat())
+    if st.pending_prepay:
+        _reduce(st.installments, st.pending_prepay, st.base_day, st.order)
+        st.pending_prepay = 0.0
+
+
+def _prepay(st: _Loan, amount: float, day: datetime.date) -> float:
+    paid = min(amount, st.principal)
+    st.principal -= paid
+    if st.installments is not None:
+        _reduce(st.installments, paid, day, st.order)
+    elif not st.reflected_before_base:
+        st.pending_prepay += paid
+    return paid
+
+
+def _operations(st: _Loan, day: datetime.date) -> None:
+    for kind, amount in st.events.get(day, []):
+        if kind == "draw":
+            room = max(0.0, _limit_on(st.loan, day) - st.drawn)
+            take = min(amount, room)
+            if amount - take > 1.0:
+                st.out["gaps"].append(f"{st.loan['name']}: выборка {mln(amount)} млн ₽ на "
+                                      f"{ddmmyyyy(day)} выше свободного лимита — учтено "
+                                      f"{mln(take)} млн ₽.")
+            st.principal += take
+            st.drawn += take
         else:
-            due_principal = None
-        due_interest = accrued if day > deferral_end else 0.0
-        if day > deferral_end and accrued is not None:
-            accrued = 0.0
-        due_deferred = due_iod = 0.0
-        if day == deferral_end or deferred_due_now:
-            due_deferred, due_iod = deferred, iod
-            deferred = iod = 0.0
-            deferred_due_now = False
-        due_fee = fee_acc
-        fee_acc = 0.0
-        out["payments"][day.isoformat()] = {
-            "principal": due_principal, "interest": due_interest,
-            "deferred": due_deferred, "interest_on_deferred": due_iod, "fee": due_fee,
-            "total": _sum(due_principal, due_interest, due_deferred, due_iod, due_fee),
-            "debt_after": principal if installments is not None or day < base_day else None,
-            "share": next((item["share"] for item in installments or []
-                           if item["date"] == day.isoformat()), None),
-        }
-    out["installments"] = installments
-    out["interest_total"] = interest_total
-    out["start"] = start.isoformat()
-    out["debt_now"] = f["debt"]
-    out["facts_as_of"] = facts["as_of"]
-    out["facts_source"] = facts["source"]
-    return out
+            # Плановое досрочное погашение — платёж этого дня своими деньгами.
+            st.today["prepay"] = st.today.get("prepay", 0.0) + _prepay(st, amount, day)
+
+
+def _interest_debt(st: _Loan) -> float | None:
+    """Проценты и комиссии, уже начисленные и ещё не уплаченные (периоды закрыты)."""
+    return _sum(st.deferred, st.iod, st.deferred_fee, *[item[2] for item in st.pending])
+
+
+def _disclose(live: list[_Loan], day: datetime.date, amount: float, rule: str) -> None:
+    """Раскрытие: долг становится срочным в размере раскрытого (А п. 6.1.2, Б п. 5.1.1)."""
+    keen = [st for st in live if st.terms["disclosure_repays"]["value"] == "immediate"]
+    for st in keen:
+        if st.sums["days"]:
+            st.close(day, day)
+    debts = {}
+    for st in keen:
+        owed = _interest_debt(st)
+        debts[st.loan["id"]] = None if owed is None else owed + st.principal
+    if any(value is None for value in debts.values()):
+        for st in keen:
+            st.today["disclosure_unknown"] = True
+        return
+    shares = _split(amount, debts, rule)
+    for st in keen:
+        left = min(shares[st.loan["id"]], debts[st.loan["id"]])
+        st.from_disclosure = left
+        # Сначала начисленное: отложенные, проценты на них, комиссии, проценты.
+        for name in ("deferred", "iod", "deferred_fee"):
+            take = min(getattr(st, name), left)
+            setattr(st, name, getattr(st, name) - take)
+            st.today[name] = st.today.get(name, 0.0) + take
+            left -= take
+        for item in sorted(st.pending, key=lambda x: x[0]):
+            take = min(item[2], left)
+            item[2] -= take
+            st.today[item[1]] = st.today.get(item[1], 0.0) + take
+            left -= take
+        st.pending = [item for item in st.pending if item[2] > 1e-6]
+        if left > 0:
+            st.today["prepay"] = st.today.get("prepay", 0.0) + _prepay(st, left, day)
+
+
+def _settle(st: _Loan, day: datetime.date) -> None:
+    """Платежи дня: график, проценты 28-го, отложенное — в дату окончания отсрочки."""
+    today, st.today = st.today, {}
+    principal: float | None = today.pop("prepay", 0.0)
+    scheduled = 0.0
+    if st.installments is not None:
+        scheduled = sum(i["amount"] for i in st.installments if _day(i["date"]) == day)
+        if day == st.maturity:
+            scheduled = st.principal
+        scheduled = min(scheduled, st.principal)
+        st.principal -= scheduled
+        principal += scheduled
+    elif day >= st.base_day and any(_day(d) == day for d, _ in st.loan["schedule"]):
+        principal = None
+    deferred = today.get("deferred", 0.0)
+    iod = today.get("iod", 0.0)
+    fee = today.get("deferred_fee", 0.0) + today.get("fee", 0.0)
+    interest = today.get("interest", 0.0)
+    if day == st.deferral_end or (day == st.maturity and st.deferred):
+        deferred = _sum(deferred, st.deferred)
+        iod = _sum(iod, st.iod)
+        fee += st.deferred_fee
+        st.deferred = st.iod = 0.0
+        st.deferred_fee = 0.0
+    keep = []
+    for item in st.pending:
+        if item[0] <= day or day == st.maturity:
+            if item[1] == "interest":
+                interest = _sum(interest, item[2])
+            else:
+                fee = _sum(fee, item[2])
+        else:
+            keep.append(item)
+    st.pending = keep
+    parts = [principal, interest, deferred, iod, fee]
+    # Меньше рубля — не платёж (проценты при покрытии эскроу выше порога — 0,01 %).
+    if all(p is not None and abs(p) < 1.0 for p in parts) and not today.get("disclosure_unknown"):
+        return
+    if day == st.maturity:
+        st.closed = True
+    share = next((i["share"] for i in st.installments or [] if i["date"] == day.isoformat()
+                  and scheduled), None)
+    st.out["payments"][day.isoformat()] = {
+        "principal": principal, "interest": interest, "deferred": deferred,
+        "interest_on_deferred": iod, "fee": fee,
+        "total": None if today.get("disclosure_unknown") else _sum(*parts),
+        "debt_after": st.principal if principal is not None else None,
+        "share": share, "from_disclosure": st.from_disclosure or 0.0}
+    st.from_disclosure = 0.0
 
 
 # --------------------------------------------------------------------------
@@ -915,7 +1233,12 @@ def _cover(loans: list[dict[str, Any]], escrow: dict[str, Any], datasets: dict[s
                 row.update(free_used=f_take, extra_used=e_take, other_used=f_take + e_take,
                            deficit=max(0.0, outside - f_take - e_take))
         if row.get("disclosed_used") is not None:
-            shares = _split(row["disclosed_used"], totals, rule)
+            # Срочное погашение при раскрытии — своей НКЛ; остаток раскрытого — по правилу.
+            own = {lid: min(totals[lid], (p or {}).get("from_disclosure") or 0.0)
+                   for lid, p in per.items()}
+            rest = row["disclosed_used"] - sum(own.values())
+            extra = _split(max(0.0, rest), {lid: totals[lid] - own[lid] for lid in totals}, rule)
+            shares = {lid: own[lid] + extra[lid] for lid in totals}
         else:
             shares = {lid: None for lid in totals}
         for loan in loans:
@@ -936,8 +1259,8 @@ def _cover(loans: list[dict[str, Any]], escrow: dict[str, Any], datasets: dict[s
                  if e["kind"] == "disclosure" and _day(e["date"]) > day and e["amount"] > 0]
         # Платёж основного долга, которому раскрытого не хватило, а раскрытие
         # будет позже, — «раскрытие позже необходимого платежа» (ТЗ, п. 8).
-        row["late_disclosure"] = (bool(later) and bool(row.get("need_outside"))
-                                  and bool(row.get("principal")))
+        row["late_disclosure"] = (bool(later) and (row.get("need_outside") or 0.0) > 1.0
+                                  and (row.get("principal") or 0.0) > 1.0)
         row["next_disclosure"] = later[0]["date"] if later else None
         rows.append(row)
     return rows
@@ -966,29 +1289,190 @@ def forecast(inputs: dict[str, Any], scenario: dict[str, Any] | None = None) -> 
     datasets = inputs.get("datasets") or {}
     escrow = _escrow(datasets, scenario)
     gaps = list(escrow["gaps"])
+    terms = project_terms(preset, datasets)
     loans = []
     for loan in preset["loans"]:
-        # Отсрочка кончается раньше, если все эскроу проекта закрыты (ТЗ, п. 2).
+        # Отсрочка кончается раньше, если все эскроу проекта закрыты (А п. 4.2.2, Б п. 3.3).
         limit = _day(loan["deferral_limit"])
         closed = _day(escrow["closed_on"]) if escrow.get("closed_on") else None
         end = min(limit, closed) if closed else limit
-        run = _run_loan(loan, datasets, scenario, end)
-        run["deferral_reason"] = (
-            f"все эскроу закрываются {ddmmyyyy(closed)} — раньше предельной даты "
-            f"{ddmmyyyy(limit)}" if closed and closed < limit
-            else f"предельная дата отсрочки по договору ({TZ}, п. 2)")
-        run["limit"] = loan["limit"]
-        run["number"] = loan["number"]
-        gaps += [g for g in run["gaps"] if g not in gaps]
-        loans.append(run)
-    rule = loans[0]["terms"]["disclosure_split"]["value"] if loans else "pro_rata"
-    rows = _cover(loans, escrow, datasets, rule)
+        loans.append({
+            "id": loan["id"], "name": loan["name"], "short": loan["short"],
+            "number": loan["number"], "limit": loan["limit"], "terms": _terms(loan, datasets),
+            "gaps": [], "payments": {}, "deferral_end": end.isoformat(), "base": {},
+            "deferral_reason": (
+                f"все эскроу закрываются {ddmmyyyy(closed)} — раньше предельной даты "
+                f"{ddmmyyyy(limit)}" if closed and closed < limit
+                else "предельная дата отсрочки по договору")})
+    planned = _day(terms["planned_disclosure"]["value"])
+    facts_a = datasets.get(f"facts.{preset['loans'][0]['id']}")
+    marks = {SUFFICIENCY_DAY, planned}
+    if facts_a:
+        marks.add(_day(facts_a["as_of"]))
+    _simulate(preset, datasets, scenario, escrow, loans, terms["disclosure_split"]["value"],
+              marks)
+    for loan in loans:
+        gaps += [g for g in loan["gaps"] if g not in gaps]
+    rows = _cover(loans, escrow, datasets, terms["disclosure_split"]["value"])
     out = {"scenario": scenario, "loans": loans, "escrow": escrow, "rows": rows,
-           "gaps": gaps, "split_rule": loans[0]["terms"]["disclosure_split"] if loans else None,
+           "gaps": gaps, "terms": terms, "split_rule": terms["disclosure_split"],
            "months": _months(rows, escrow), "datasets": _dataset_dates(datasets),
            "notes": list(escrow.get("notes") or [])}
+    out["sufficiency"] = sufficiency(out, preset, datasets)
+    out["covenants"] = covenants(out, datasets)
     out["top"] = _top(out, datasets)
     return out
+
+
+SUFFICIENCY_DAY = datetime.date(2027, 6, 30)
+
+
+def sufficiency(result: dict[str, Any], preset: dict[str, Any],
+                datasets: dict[str, Any]) -> list[dict[str, Any]]:
+    """Достаточность эскроу для полного погашения НКЛ 2025 (договор А, п. 8.2.60).
+
+    Нужно = задолженность по договору + невыбранный лимит + неуплаченные
+    проценты + планируемые проценты до плановой даты раскрытия (по ставке с
+    плановым долгом и плановыми остатками эскроу и аккредитивов). Сравнивается
+    с фактическим объёмом эскроу: на дату данных — остаток банка, на 30.06.2027 —
+    прогноз остатка.
+    """
+    loan = preset["loans"][0]
+    run = result["loans"][0]
+    terms = result["terms"]
+    planned = terms["planned_disclosure"]
+    escrow = result["escrow"]
+    out = []
+    days = []
+    if run.get("facts_as_of"):
+        days.append(("fact", _day(run["facts_as_of"])))
+    days.append(("forecast", SUFFICIENCY_DAY))
+    for kind, day in days:
+        mark = (run.get("marks") or {}).get(day.isoformat())
+        at_planned = (run.get("marks") or {}).get(_day(planned["value"]).isoformat())
+        if kind == "fact":
+            have = escrow.get("opening")
+            have_words = "остаток эскроу по данным банка"
+        else:
+            have = _escrow_after(escrow, day) if escrow.get("known") else None
+            have_words = "прогноз остатка эскроу"
+        if mark is None:
+            need = debt = undrawn = unpaid = future = None
+        else:
+            debt = mark["principal"]
+            undrawn = max(0.0, loan["limit"] - mark["drawn"])
+            unpaid = mark["unpaid"]
+            if _day(planned["value"]) <= day:
+                future = 0.0
+            elif at_planned is None:
+                future = None
+            else:
+                future = (None if not _known(at_planned["interest_total"], mark["interest_total"])
+                          else at_planned["interest_total"] - mark["interest_total"])
+            need = _sum(debt, undrawn, unpaid, future)
+        ok = None if not _known(need, have) else have >= need
+        out.append({
+            "kind": kind, "date": day.isoformat(), "escrow": have, "need": need, "ok": ok,
+            "debt": debt, "undrawn": undrawn, "unpaid": unpaid, "planned_interest": future,
+            "planned_disclosure": planned["value"], "planned_source": planned["source"],
+            "formula": (f"{have_words} {mln(have)} против: долг {mln(debt)} + невыбранный "
+                        f"лимит {mln(undrawn)} + неуплаченные проценты {mln(unpaid)} + "
+                        f"планируемые проценты до плановой даты раскрытия "
+                        f"{ddmmyyyy(planned['value'])} {mln(future)} = {mln(need)}"),
+            "clause": f"{_A}, п. 8.2.60"})
+    return out
+
+
+def _test_days(start: datetime.date, end: datetime.date) -> list[datetime.date]:
+    """Даты тестирования наполнения эскроу (А п. 8.2.57): последний рабочий день
+    квартала с 31.12.2025 (праздники не учтены — последний будний день)."""
+    out = []
+    day = datetime.date(2025, 12, 31)
+    while day <= end:
+        last = day
+        while last.weekday() >= 5:
+            last -= datetime.timedelta(days=1)
+        if last >= start:
+            out.append(last)
+        day = _month_end(_add_months(day.replace(day=1), 3).strftime("%Y-%m"))
+    return out
+
+
+def covenants(result: dict[str, Any], datasets: dict[str, Any]) -> list[dict[str, Any]]:
+    """Проверки по договорам: наполнение эскроу (А п. 8.2.57) и продажи по ДДУ
+    (А п. 7.1.8.16, Б SP_15.18) против бизнес-плана, согласованного с банком."""
+    plan = datasets.get("business_plan")
+    escrow = result["escrow"]
+    out: list[dict[str, Any]] = []
+    first_disclosure = next((e["date"] for e in escrow.get("events") or []
+                             if e["kind"] == "disclosure"), None)
+    escrow_check = {"name": "Наполнение эскроу против бизнес-плана",
+                    "clause": f"{_A}, п. 8.2.57",
+                    "rule": "нарушение — отставание остатка эскроу от бизнес-плана на дату "
+                            "тестирования на 25 % и более"}
+    sales_check = {"name": "Продажи по ДДУ за два квартала против бизнес-плана",
+                   "clause": f"{_A}, п. 7.1.8.16; {_B}, SP_15.18",
+                   "rule": "нарушение — сумма цен ДДУ за два календарных квартала подряд ниже "
+                           "бизнес-плана на 30 % и более"}
+    if not plan:
+        for check in (escrow_check, sales_check):
+            out.append(dict(check, state="no_data", items=[],
+                            text=f"{NO_DATA}: бизнес-план, согласованный с банком, не "
+                                 "загружен — проверить не с чем."))
+        return out
+    series = sorted(plan["data"]["escrow"], key=lambda x: x["date"])
+    items = []
+    if escrow.get("known") and series:
+        history = {i["date"]: i["amount"] for i in
+                   (datasets.get("escrow") or {}).get("data", {}).get("history") or []}
+        history[escrow["as_of"]] = escrow["opening"]
+        stop = _day(first_disclosure) if first_disclosure else _day(series[-1]["date"])
+        for day in _test_days(_day(series[0]["date"]), stop):
+            planned = [i["amount"] for i in series if _day(i["date"]) <= day]
+            if not planned:
+                continue
+            if day <= _day(escrow["as_of"]):
+                actual = history.get(day.isoformat())
+                kind = "факт"
+            else:
+                actual = _escrow_after(escrow, day)
+                kind = "прогноз"
+            gap = None if actual is None else 1 - actual / planned[-1] if planned[-1] else None
+            items.append({"date": day.isoformat(), "plan": planned[-1], "actual": actual,
+                          "kind": kind, "gap": gap,
+                          "breach": None if gap is None else gap >= 0.25})
+    escrow_check.update(items=items, state=_state(items))
+    out.append(escrow_check)
+    signed: dict[str, float] = {}
+    contracts = datasets.get("contracts")
+    for item in (contracts or {}).get("data", {}).get("signed") or []:
+        quarter = f"{item['month'][:4]} Q{(int(item['month'][5:7]) - 1) // 3 + 1}"
+        signed[quarter] = signed.get(quarter, 0.0) + item["amount"]
+    covered = contracts["as_of"][:7] if contracts else ""
+    for item in (datasets.get("sales") or {}).get("data", {}).get("payments") or []:
+        if item.get("signed_total") and item["sale_month"] > covered:
+            month = item["sale_month"]
+            quarter = f"{month[:4]} Q{(int(month[5:7]) - 1) // 3 + 1}"
+            signed[quarter] = signed.get(quarter, 0.0) + item["signed_total"]
+    ddu = {i["quarter"]: i["amount"] for i in plan["data"]["ddu"]}
+    quarters = sorted(ddu)
+    items = []
+    for one, two in zip(quarters, quarters[1:]):
+        want = ddu[one] + ddu[two]
+        have = (signed[one] + signed[two]) if one in signed and two in signed else None
+        gap = None if have is None or not want else 1 - have / want
+        items.append({"date": f"{one} – {two}", "plan": want, "actual": have, "gap": gap,
+                      "kind": "договоры и прогноз продаж",
+                      "breach": None if gap is None else gap >= 0.30})
+    sales_check.update(items=items, state=_state(items))
+    out.append(sales_check)
+    return out
+
+
+def _state(items: list[dict[str, Any]]) -> str:
+    if not items or all(i["breach"] is None for i in items):
+        return "no_data"
+    return "breach" if any(i["breach"] for i in items) else "ok"
 
 
 def _months(rows: list[dict[str, Any]], escrow: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1064,7 +1548,8 @@ def _top(result: dict[str, Any], datasets: dict[str, Any]) -> dict[str, Any]:
                         f"{mln(nxt['fee'])}"),
             "inputs": [_given(datasets, n) for n in
                        [f"facts.{l['id']}" for l in loans] + [f"plan.{l['id']}" for l in loans]
-                       + [f"deferred.{l['id']}" for l in loans] + ["key_rate"]]}
+                       + [f"deferred.{l['id']}" for l in loans]
+                       + ["key_rate", "escrow", "letters_of_credit"]]}
         escrow_inputs = [_given(datasets, n) for n in
                          ("escrow", "contracts", "sales", "refunds", "disclosure")]
         top["escrow_at_next"] = {
@@ -1104,6 +1589,14 @@ def _top(result: dict[str, Any], datasets: dict[str, Any]) -> dict[str, Any]:
     top["deficit_total"] = {
         "value": sum(deficits) if known else None,
         "formula": "сумма дефицитов всех дат платежей", "inputs": ["расчёт по датам платежей"]}
+    for item in result.get("sufficiency") or []:
+        top[f"sufficiency_{item['kind']}"] = {
+            "date": item["date"], "value": item["need"], "ok": item["ok"],
+            "escrow": item["escrow"], "formula": item["formula"],
+            "inputs": [_given(datasets, n) for n in ("escrow", f"facts.{loans[0]['id']}",
+                                                     f"plan.{loans[0]['id']}", "key_rate")]
+            + [f"плановая дата раскрытия {ddmmyyyy(item['planned_disclosure'])}: "
+               f"{item['planned_source']}"]}
     interest = [loan.get("interest_total") for loan in loans]
     fees = [sum(p["fee"] for p in loan["payments"].values()) for loan in loans]
     top["interest_cost"] = {
@@ -1295,6 +1788,10 @@ def _top_html(result: dict[str, Any]) -> str:
             ("Нужно из источников вне эскроу", top["outside_at_next"]),
             ("Непокрытый дефицит", top["deficit_at_next"]),
         ]
+    for kind, words in (("fact", "на дату данных"), ("forecast", "на 30.06.2027, прогноз")):
+        item = top.get(f"sufficiency_{kind}")
+        if item:
+            lines.append((f"Хватит ли эскроу на полное погашение НКЛ 2025 ({words})", item))
     first, biggest = top["first_deficit"], top["max_deficit"]
     lines += [
         ("Первая дата дефицита" + (f" — {ddmmyyyy(first['date'])}" if first["date"] else ""),
@@ -1308,6 +1805,11 @@ def _top_html(result: dict[str, Any]) -> str:
         cell = mln(value)
         if label.startswith("Первая дата") and value == 0.0 and not item.get("date"):
             cell = "дефицита нет"
+        if label.startswith("Хватит ли эскроу"):
+            cell = (NO_DATA if item["ok"] is None else
+                    f"хватает: {mln(item['escrow'])} при нужных {mln(value)}" if item["ok"] else
+                    f"не хватает {mln(value - item['escrow'])}: есть {mln(item['escrow'])}, "
+                    f"нужно {mln(value)}")
         rows.append(f"<tr><td>{_esc(label)}</td><td>{cell}</td><td>{_how(item)}</td></tr>")
     return ("<table class='credit-top'><tr><th>Показатель</th><th>млн ₽</th><th></th></tr>"
             + "".join(rows) + "</table>")
@@ -1324,6 +1826,8 @@ def _main_table(result: dict[str, Any]) -> str:
     body = []
     for row in base["rows"]:
         late = " (раскрытие позже)" if row["late_disclosure"] else ""
+        if any((item.get("from_disclosure") or 0) > 1.0 for item in row["loans"].values()):
+            late += " (раскрытие эскроу: долг к погашению)"
         body.append(
             "<tr class='date'>" + "".join(f"<td>{c}</td>" for c in [
                 ddmmyyyy(row["date"]) + late, _cell(row["principal"]),
@@ -1357,8 +1861,9 @@ def _detail_html(result: dict[str, Any]) -> str:
         for lid, item in row["loans"].items():
             share = (f" ({item['share'] * 100:.0f} % графика)".replace(".", ",")
                      if item.get("share") else "")
+            rate = _rate_words(base, lid, row["date"])
             lines.append(
-                f"<li>{_esc(names[lid])}: основной долг {mln(item['principal'])}{share} + "
+                f"<li>{_esc(names[lid])}{rate}: основной долг {mln(item['principal'])}{share} + "
                 f"проценты {mln(item['interest'])} + отложенные проценты "
                 f"{mln(item['deferred'])} + проценты на них "
                 f"{mln(item['interest_on_deferred'])} + комиссия за свободный лимит "
@@ -1375,6 +1880,70 @@ def _detail_html(result: dict[str, Any]) -> str:
                    f"<p class='note'>{cover}</p></div>")
     out.append("</details>")
     return "".join(out)
+
+
+def _rate_words(base: dict[str, Any], lid: str, day: str) -> str:
+    """Ставка последнего расчётного периода, закрытого к этой дате."""
+    loan = next(l for l in base["loans"] if l["id"] == lid)
+    done = [x for x in loan.get("segments") or [] if x["end"] <= day]
+    if not done:
+        return ""
+    seg = done[-1]
+    if seg["rate"] is None:
+        return f" (ставка за период — {NO_DATA})"
+    cover = (f", эскроу покрывает {seg['cover'] * 100:.0f} % долга".replace(".", ",")
+             if seg.get("cover") is not None else "")
+    rate = f"{seg['rate']:.2f}".replace(".", ",")
+    return (f" (ставка за {ddmmyyyy(seg['start'])}–{ddmmyyyy(seg['end'])} — "
+            f"{rate} % годовых{cover})")
+
+
+def _assumptions_html(result: dict[str, Any]) -> str:
+    """Допущения, от которых зависят числа, — словами, без пунктов договоров."""
+    base = result["base"]
+    lines = []
+    loans = {loan["id"]: loan for loan in base["loans"]}
+    if any(l["terms"]["rate"]["value"] == "analogy" for l in loans.values()):
+        lines.append("Ставка по НКЛ 2026 посчитана по аналогии с НКЛ 2025: формулы банка для "
+                     "неё (из Общих условий банка) в документах нет.")
+    rules = {l["terms"]["escrow_in_rate"]["value"] for l in loans.values()}
+    if rules == {"full", "share"}:
+        lines.append("В ставке НКЛ 2025 эскроу учитывается целиком, в ставке НКЛ 2026 — долей "
+                     "по договорам. Так одни и те же деньги снижают обе ставки; банк может "
+                     "учесть и для НКЛ 2025 только долю — это нужно подтвердить с банком. В "
+                     "прогнозе денег эскроу учтены один раз.")
+    split = base["terms"]["disclosure_split"]
+    if split["source"].startswith("нет данных"):
+        lines.append("Как раскрытое эскроу делится между кредитами, в договорах не сказано: "
+                     "принято, что сначала гасится НКЛ 2025. Правило нужно подтвердить с банком.")
+    planned = base["terms"]["planned_disclosure"]
+    if planned["source"].startswith("допущение"):
+        lines.append(f"Плановой даты раскрытия эскроу в договорах нет: для проверки "
+                     f"достаточности эскроу принято {ddmmyyyy(planned['value'])} (ввод около "
+                     "конца сентября 2027).")
+    if not lines:
+        return ""
+    return ("<div class='note warn credit-assumptions'><b>Допущения расчёта.</b> "
+            + " ".join(_esc(line) for line in lines) + "</div>")
+
+
+def _covenants_html(result: dict[str, Any]) -> str:
+    words = {"ok": "выполняется", "breach": "НАРУШЕНИЕ", "no_data": NO_DATA}
+    rows = []
+    for check in result["base"]["covenants"]:
+        detail = check.get("text") or "; ".join(
+            f"{i['date'] if ' ' in i['date'] else ddmmyyyy(i['date'])}: план {mln(i['plan'])}, "
+            f"{i['kind']} {mln(i['actual'])}"
+            + (f", отставание {i['gap'] * 100:.0f} %".replace(".", ",") if i["gap"] is not None
+               else "")
+            for i in check["items"])
+        tone = " class='neg'" if check["state"] == "breach" else ""
+        rows.append(f"<tr><td>{_esc(check['name'])}</td><td>{_esc(check['clause'])}</td>"
+                    f"<td{tone}>{words[check['state']]}</td><td>{_esc(check['rule'])}. "
+                    f"{_esc(detail)}</td></tr>")
+    return ("<h3>Проверки по кредитным договорам</h3><table class='credit-covenants'><tr>"
+            "<th>Проверка</th><th>Договор</th><th>Результат</th><th>Пояснение</th></tr>"
+            + "".join(rows) + "</table>")
 
 
 def _months_html(result: dict[str, Any]) -> str:
@@ -1412,16 +1981,24 @@ def _terms_html(result: dict[str, Any]) -> str:
         for key, item in loan["terms"].items():
             rows.append(f"<tr><td>{_esc(loan['short'])}</td><td>{_esc(_TERM_WORDS[key])}</td>"
                         f"<td>{_esc(item['source'])}</td></tr>")
+    for key, item in result["base"]["terms"].items():
+        value = (f": {ddmmyyyy(item['value'])}" if key == "planned_disclosure" else "")
+        rows.append(f"<tr><td>Проект</td><td>{_esc(_TERM_WORDS[key])}{value}</td>"
+                    f"<td>{_esc(item['source'])}</td></tr>")
     return ("<details class='credit-terms'><summary>Условия расчёта и их источник"
             "</summary><table><tr><th>Кредит</th><th>Условие</th><th>Откуда</th></tr>"
             + "".join(rows) + "</table></details>")
 
 
 _TERM_WORDS = {"rate": "Ставка", "day_basis": "Начисление процентов",
-               "pay_dates": "Даты уплаты процентов и комиссии",
-               "deferred_rate": "Проценты на отложенные проценты",
-               "prepayment_order": "Досрочное погашение", "disclosure_split":
-               "Раскрытое эскроу между кредитами"}
+               "pay_dates": "Даты уплаты процентов и комиссии (28-го следующего месяца)",
+               "deferred_rate": "Отсрочка: капитализация, проценты на капитализированные",
+               "prepayment_order": "Досрочное погашение",
+               "escrow_in_rate": "Эскроу в ставке",
+               "disclosure_repays": "Раскрытие эскроу: долг к погашению в размере раскрытого",
+               "fee": "Плата 0,7 % годовых за свободный лимит",
+               "disclosure_split": "Раскрытое эскроу между кредитами",
+               "planned_disclosure": "Плановая дата раскрытия эскроу"}
 
 
 def _reference_html(preset: str) -> str:
@@ -1479,7 +2056,8 @@ def render_html(result: dict[str, Any], *, monitor: bool = False,
     Монитор дополнительно видит условия расчёта, отклонение от прошлого прогноза
     и стресс; в сводке руководству — без технических пояснений.
     """
-    out = [_status_html(result["status"]), _top_html(result), _main_table(result),
+    out = [_status_html(result["status"]), _assumptions_html(result), _top_html(result),
+           _main_table(result),
            _detail_html(result), _months_html(result), _gaps_html(result)]
     if changes is not None:
         out.insert(1, "<h3>Что изменилось против прошлого прогноза</h3>" + (
@@ -1489,6 +2067,7 @@ def render_html(result: dict[str, Any], *, monitor: bool = False,
     out.append(_stress_html(result))
     out.append(_datasets_html(result))
     if monitor:
+        out.append(_covenants_html(result))
         out.append(_terms_html(result))
     out.append(_reference_html(result.get("preset_id") or "kutuzov_city"))
     return "<div class='credit'>" + "".join(out) + "</div>"
