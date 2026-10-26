@@ -42,12 +42,12 @@ async function exportReportPdf(){
   while(response.status===202){
    let state={};try{state=await response.json()}catch(e){}
    if(!state.ticket)break;
-   show(state.detail||'PDF-отчёт готовится…');
-   if(Date.now()>deadline){alert('PDF-отчёт всё ещё готовится ('+(state.detail||'')+'). Нажмите «Экспорт PDF» позже.');return;}
+   show(serverDetail(state)||'PDF-отчёт готовится…');
+   if(Date.now()>deadline){alert('PDF-отчёт всё ещё готовится ('+(serverDetail(state)||'')+'). Нажмите «Экспорт PDF» позже.');return;}
    await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
    response=await fetch('/report/pdf/'+encodeURIComponent(state.ticket));
   }
-  if(!response.ok||response.status!==200){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}alert(detail);return;}
   const blob=await response.blob();
   downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'',`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`);
  }finally{show('')}
@@ -69,12 +69,12 @@ async function exportTeaserPdf(){
   while(response.status===202){
    let state={};try{state=await response.json()}catch(e){}
    if(!state.ticket)break;
-   show(state.detail||'Тизер готовится…');
-   if(Date.now()>deadline){alert('Тизер всё ещё готовится ('+(state.detail||'')+'). Нажмите «Скачать тизер» позже.');return;}
+   show(serverDetail(state)||'Тизер готовится…');
+   if(Date.now()>deadline){alert('Тизер всё ещё готовится ('+(serverDetail(state)||'')+'). Нажмите «Скачать тизер» позже.');return;}
    await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
    response=await fetch('/report/teaser/'+encodeURIComponent(state.ticket));
   }
-  if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}alert(detail);return;}
   const blob=await response.blob();
   downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'','DevelopAid_Тизер.pdf');
  }finally{show('')}
@@ -114,7 +114,7 @@ async function exportModelArchive(){
   });
   if(!response.ok){
    let detail='Не удалось собрать модель';
-   try{const x=await response.json();detail=x.detail||detail}catch(e){}
+   try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}
    alert(detail);return;
   }
   downloadBlobResponse(
@@ -218,7 +218,7 @@ async function loadServerProjectPreset(){
  try{
   const response=await fetch('/api/project-presets/'+encodeURIComponent(id)+presetsQuery());
   parsed=await response.json();
-  if(!response.ok)throw new Error(parsed.detail||'Пресет не загружен');
+  if(!response.ok)throw new Error(serverDetail(parsed)||'Пресет не загружен');
  }catch(e){alert(String(e.message||e));return}
  await previewPreset(parsed);
 }
@@ -230,7 +230,7 @@ async function previewPreset(parsed){
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({preset:parsed,mode:'preview',inputs,tep})});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Пресет не разобран');
+  if(!response.ok)throw new Error(serverDetail(data)||'Пресет не разобран');
  }catch(e){alert(String(e.message||e));return}
  presetPreview=parsed;
  renderPresetPreview(data);
@@ -311,7 +311,7 @@ async function applyPreset(){
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({preset:presetPreview,mode:'apply',inputs,tep,filled:presetFilledValues()})});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Пресет не применён');
+  if(!response.ok)throw new Error(serverDetail(data)||'Пресет не применён');
  }catch(e){alert(String(e.message||e));return}
  // Как и всюду: приходящее накладывается на умолчания, а не заменяет их.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.applied_inputs||{});
@@ -365,7 +365,7 @@ async function projectsCall(path,body){
  let data={};
  try{data=raw?JSON.parse(raw):{}}catch(e){}
  if(!response.ok){
-  const said=String(data.detail||'').trim()
+  const said=String(serverDetail(data)||'').trim()
    ||raw.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160);
   throw new Error(said?('Хранилище ответило '+response.status+': '+said)
    :('Хранилище ответило кодом '+response.status+' и пустым телом'));
@@ -1227,7 +1227,7 @@ async function loadAccessMe(){
  const response=await fetch('/access/me',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({session:activeSession()})});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Не удалось узнать условия доступа');
+ if(!response.ok)throw new Error(serverDetail(data)||'Не удалось узнать условия доступа');
  return data;
 }
 function tariffsHtml(data){
@@ -1347,7 +1347,7 @@ async function payForAccess(kind,where){
   const response=await fetch('/payments/create',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({session:activeSession(),kind,inputs,email,count})});
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Оплату начать не удалось');
+  if(!response.ok)throw new Error(serverDetail(data)||'Оплату начать не удалось');
   if(data.preview){if(status)status.textContent=data.message;return}
   if(status&&data.price_rub)status.textContent='Переходим к оплате '+accessRub(data.price_rub)+(count>1?' за '+count+' '+plotsWord(count):'')+'…';
   try{localStorage.setItem('developaid_pending_payment',data.payment_id)}catch(e){}
@@ -1363,7 +1363,7 @@ async function accessAdminCall(path,body){
  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(Object.assign({session:activeSession(),key:projectsAdminKey},body||{}))});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Запрос не выполнен');
+ if(!response.ok)throw new Error(serverDetail(data)||'Запрос не выполнен');
  return data;
 }
 async function renderAccessAdmin(){

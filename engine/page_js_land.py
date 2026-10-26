@@ -135,7 +135,7 @@ async function obtainTep(){
    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cadastral_numbers:raw})
   });
   const data=await response.json();
-  if(response.ok&&(data.recognized||[]).length)analysis=data;else failure=data.detail||'территория не сформирована';
+  if(response.ok&&(data.recognized||[]).length)analysis=data;else failure=serverDetail(data)||'территория не сформирована';
  }catch(e){failure=String(e.message||e)+CONNECTION_HINT}
 
  const insideMoscow=!!((analysis||{}).territory||{}).inside_moscow;
@@ -361,7 +361,7 @@ async function glavapuScenarioCheck(force){
    const response=await fetch('/glavapu/scenario',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(i?Object.assign({},body,{poll:true,force:false}):body)});
    answer=await response.json();
-   if(!response.ok)throw new Error(answer.detail||('HTTP '+response.status));
+   if(!response.ok)throw new Error(serverDetail(answer)||('HTTP '+response.status));
    if(run!==glavapuScenarioRun)return;
    status.textContent=glavapuScenarioStatusText(answer);
    if(answer.state!=='queued'&&answer.state!=='running')break;
@@ -438,7 +438,7 @@ async function obtainServerTep(analysis,status,runId){
    request_id:'tep-'+runId,cadastral_analysis:analysis})
  });
  const payload=await response.json();
- if(!response.ok)throw new Error(payload.detail||'Серверный расчёт ТЭП не получился');
+ if(!response.ok)throw new Error(serverDetail(payload)||'Серверный расчёт ТЭП не получился');
  if(runId!==tepRunSequence){tepRunLog(runId,'ответ устаревшего запуска отброшен');return null}
  glavapuImport=payload;
  inputs._cadastral_analysis=cloneValue(analysis);
@@ -485,7 +485,7 @@ async function obtainCadastralTep(preAnalysis){
        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cadastral_numbers:raw})
      });
      analysis=await analysisResponse.json();
-     if(!analysisResponse.ok)throw new Error(analysis.detail||'Не удалось определить территорию');
+     if(!analysisResponse.ok)throw new Error(serverDetail(analysis)||'Не удалось определить территорию');
    }
    if(!(analysis.recognized||[]).length)throw new Error('Калькулятор не распознал кадастровые номера');
    cadastralAnalysis=analysis;
@@ -542,7 +542,7 @@ async function obtainCadastralTep(preAnalysis){
      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows,cadastral_analysis:analysis})
    });
    const payload=await tepResponse.json();
-   if(!tepResponse.ok)throw new Error(payload.detail||'Не удалось перенести ТЭП в DevelopAid');
+   if(!tepResponse.ok)throw new Error(serverDetail(payload)||'Не удалось перенести ТЭП в DevelopAid');
    if(runId!==tepRunSequence){tepRunLog(runId,'ответ устаревшего запуска отброшен');return null}
 
    tepStep='перенос ТЭП в модель';
@@ -1024,7 +1024,7 @@ async function lookupLand(options){
    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})
   });
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Не удалось получить данные об участке из госреестра');
+  if(!response.ok)throw new Error(serverDetail(data)||'Не удалось получить данные об участке из госреестра');
   landLookup=data;
   // Снимок сохраняется в проект сразу: отдельная кнопка «Сохранить участок»
   // была лишним шагом, и забытая, она молча теряла сведения при закрытии.
