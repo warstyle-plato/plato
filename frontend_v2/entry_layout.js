@@ -470,7 +470,8 @@
     }
     sharedMapLoad.then(() => {
       try { localStorage.setItem('plato.basemap', 'hybrid'); } catch (error) { /* выбор просто не запомнится */ }
-      window.openLandMap({ rings, zones, title: 'Участок и окружение' });
+      // Карточка участка открыта без входа: встроенная панорама здесь разрешена.
+      window.openLandMap({ rings, zones, title: 'Участок и окружение', panorama: true });
     }).catch((error) => {
       sharedMapLoad = null;
       if (caption) caption.textContent = `Карта со снимком не открылась: ${error.message}.`;

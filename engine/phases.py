@@ -3175,6 +3175,7 @@ def calculate_phased(req: PhasedCalcRequest) -> dict[str, Any]:
     Очереди решены своим `calculate`.
     """
     migrations = migrate_growth_post(req.inputs)
+    apply_office_classes(req.inputs)
     bundle = _calculate_phased_with_table(req)
     if isinstance(bundle, dict) and migrations:
         bundle["input_migrations"] = migrations

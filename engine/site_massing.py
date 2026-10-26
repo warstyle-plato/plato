@@ -41,8 +41,11 @@ RESIDENTIAL_STOREYS_DEFAULT = _massing_book.RESIDENTIAL_STOREYS_DEFAULT
 # территорий ЖК на жителя (её же требует калькулятор ГлавАПУ, строка 57).
 # Подмосковье — РНГП МО, та же норма, что у калькулятора области
 # (`MO_NORMS_DEFAULT["green_quarter_sqm_per_person"]`). Прочие регионы —
-# СП 42.13330.2016, п. 7.4: озеленённая территория квартала многоквартирной
-# застройки — не менее 25 % его площади.
+# допущение 25 % площади участка: так было в СП 42.13330.2016, п. 7.4
+# («озеленённая территория квартала многоквартирной застройки — не менее
+# 25 %»), а в действующем СП 42.13330.2026 такой нормы нет — регион задаёт
+# минимальный процент озеленения в ПЗЗ (п. 6.2.56). Число оставлено
+# допущением по решению владельца 26.10.2026.
 MSK_GREEN_ZHK_SQM_PER_PERSON = 5.0
 OTHER_REGION_GREEN_SHARE = 0.25
 
@@ -141,19 +144,25 @@ def _yard_floor(x: dict[str, Any], tep: dict[str, Any], site_sqm: float) -> tupl
         per = float(MO_NORMS_DEFAULT["green_quarter_sqm_per_person"])
         return (per * population,
                 f"норма Московской области: {_norm_ru(per)} м² на жителя × {population} жителей")
-    # Прочие регионы — большее из федерального СП 42 (25 % участка) и нормы
-    # Москвы на жителя: своих норм региона у нас нет (владелец 22.10.2026).
+    # Прочие регионы — большее из двух допущений: 25 % участка (прежний
+    # СП 42.13330.2016, п. 7.4; в СП 42.13330.2026 нормы нет, владелец
+    # 26.10.2026) и нормы Москвы на жителя: своих норм региона у нас нет
+    # (владелец 22.10.2026).
     share = OTHER_REGION_GREEN_SHARE * site_sqm
     per_person = MSK_GREEN_ZHK_SQM_PER_PERSON * population
+    sp42_note = ("25% участка требовал прежний СП 42.13330.2016 (п. 7.4); в действующем "
+                 "СП 42.13330.2026 такой нормы нет — процент озеленения задают правила "
+                 "землепользования и застройки региона, сверьте с ними")
     if per_person > share + 0.5:
         return (per_person,
                 f"допущение: норма Москвы {_norm_ru(MSK_GREEN_ZHK_SQM_PER_PERSON)} м² на жителя × "
-                f"{population} жителей — норм этого региона у нас нет; это больше, чем требует "
-                "СП 42.13330.2016, п. 7.4 (25% участка)")
+                f"{population} жителей — норм этого региона у нас нет. Это больше, чем 25% "
+                f"участка: {sp42_note}")
     return (share,
-            "СП 42.13330.2016, п. 7.4: озеленение жилого квартала — не меньше 25% участка "
-            f"(это не меньше нормы Москвы {_norm_ru(MSK_GREEN_ZHK_SQM_PER_PERSON)} м² на жителя × "
-            f"{population} жителей, которую берём допущением: норм этого региона у нас нет)")
+            f"допущение: озеленённый двор — не меньше 25% участка. {sp42_note[0].upper()}"
+            f"{sp42_note[1:]}. Это не меньше нормы Москвы "
+            f"{_norm_ru(MSK_GREEN_ZHK_SQM_PER_PERSON)} м² на жителя × {population} жителей, "
+            "которую берём допущением: норм этого региона у нас нет")
 
 
 def _glavapu_territory_value(cell: Any) -> float:
@@ -586,6 +595,38 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     else:
         footprint, footprint_origin = room, "estimate"
 
+    # Пятно, которое встаёт на участок корпусами схемы (`site_massing_fit_sqm`):
+    # не встаёт — пятно сжимается до него и этажность растёт, но не выше
+    # предела (владелец 25.10.2026). Ручное пятно — число человека, его не трогаем.
+    fit = max(0.0, float(x.get("_massing_fit_sqm") or 0.0))
+    if fit > 0 and footprint_origin != "manual" and footprint > fit + 0.5 and home_gns > 0:
+        wanted = footprint
+        floor_spot = home_gns / limit
+        if floor_spot <= fit + 0.5:
+            footprint, footprint_origin = fit, "fit"
+            notes.append(
+                f"Пятно {_fmt_ru(wanted)} м² на участке не встаёт: с отступом "
+                f"{_fmt_ru(setback_m)} м от границ и разрывом {_fmt_ru(LAYOUT_GAP_IN_ROW_M)} м между "
+                f"корпусами на нём помещается не больше {_fmt_ru(fit)} м². Поэтому пятно взято "
+                f"{_fmt_ru(fit)} м², а этажность выше — "
+                f"{_fmt_ru(_mo_land_capacity.average_storeys(home_gns, fit), 1)}."
+                + (" Это пятно прямоугольника. Помощник Платон подбирает форму здания по "
+                   "границам участка: если пятно встанет целиком, расчёт и схема обновятся сами."
+                   if x.get("_massing_fit_pending") else ""))
+        else:
+            footprint, footprint_origin = floor_spot, "limit"
+            warnings.append(
+                f"{subject} с наземной площадью {_fmt_ru(home_gns)} м² на участке не помещается. "
+                f"Даже на {_fmt_ru(limit)} этажах "
+                f"{'(предел участка)' if max_storeys > 0 else '(выше расчёт не ставит)'} "
+                f"пятно — {_fmt_ru(floor_spot)} м², а с отступом {_fmt_ru(setback_m)} м от границ "
+                f"и разрывом {_fmt_ru(LAYOUT_GAP_IN_ROW_M)} м между корпусами на участке "
+                f"помещается не больше {_fmt_ru(fit)} м²: не хватает "
+                f"{_fmt_ru(floor_spot - fit)} м². Уменьшите наземную площадь, проверьте "
+                "предельную этажность или задайте пятно застройки вручную.")
+        # Нехватка земли — по балансу участка, как в книге.
+        shortage = max(0.0, footprint - room) if site_sqm > 0 else 0.0
+
     if site_sqm <= 0:
         warnings.append("Площадь участка не задана, поэтому пятно застройки, этажность "
                         "и число подземных уровней не посчитаны. Укажите площадь участка "
@@ -690,6 +731,9 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "footprint_sqm": footprint,
         "footprint_origin": footprint_origin,
         "footprint_shortage_sqm": shortage,
+        # Наибольшее пятно, которое встаёт на участок корпусами схемы (0 — без
+        # ограничения): вводная книги, посчитанная геометрией схемы.
+        "footprint_fit_sqm": fit,
         # Всё, что стоит на участке: пятно жилых домов и пятна отдельных зданий
         # (владелец 23.10.2026) — тот же итог, что сумма корпусов на схеме.
         "built_sqm": footprint + sum(o["footprint_sqm"] for o in objects),
