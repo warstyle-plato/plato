@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+from datetime import date
 import io
 import json
 import sys
@@ -310,7 +311,10 @@ def test_a_seed_on_the_server_fills_an_empty_register_once(tmp_path, monkeypatch
     assert legal.ensure_seed(PROJECT) == 0 and len(legal.cases(PROJECT)) == 1
     legal.save(PROJECT, dict(CARD, status="talks"), [], "Иванова", case_id=got[0]["id"])
     assert legal.cases(PROJECT)[0]["unchecked"] is False
-    assert report.LEGAL_UNCHECKED not in report.render_text(report.build(PROJECT, "week", "2026-10-25"))
+    # Неделя — по сегодняшний день: правка записана сейчас, и отчёт за
+    # прошедшую неделю её не видит. Зашитая дата 2026-10-25 сломала тест 26.10.
+    assert report.LEGAL_UNCHECKED not in report.render_text(
+        report.build(PROJECT, "week", date.today().isoformat()))
 
 
 def test_a_register_kept_by_hand_is_not_seeded(tmp_path, monkeypatch):
