@@ -55,8 +55,12 @@ def test_no_room_under_the_site_gives_a_reason_not_thousands_of_levels():
     assert reason in m["warnings"]
     for needle in ("32 138 м²", "не помещается", "на одном подземном уровне здесь около 4 м²",
                    "участки школы, детского сада", "43 000 м²", "отступа",
-                   "больше 7", "«Подземных уровней»"):
+                   "больше 7 уровней мы не оцениваем — это наше допущение",
+                   "вычтены участки школы", "надбавка за глубину в смету не вошла",
+                   "стоимость подземной части в расчёте ниже, чем была бы на 8 717 "
+                   "настоящих уровнях", "«Подземных уровней»"):
         assert needle in reason, (needle, reason)
+    assert "расчёт не предполагает" not in reason, reason
     assert "под участком не помещается" in m["summary"], m["summary"]
 
 
@@ -195,6 +199,10 @@ def test_the_page_draws_no_column_of_levels_and_names_the_reason(seen):
     warning = " ".join(tiny["warnings"]).replace("\xa0", " ")
     assert "2 380 м² под этим участком не помещается" in warning, warning
     assert "отступ" in warning and "«Подземных уровней»" in warning, warning
+    # Владелец 26.10.2026: число согласовано, про деньги и допущение — прямо.
+    assert "вычтена полоса отступа" in warning and "вычтены полоса" not in warning, warning
+    assert "больше 7 уровней мы не оцениваем — это наше допущение" in warning, warning
+    assert "стоимость подземной части в расчёте ниже, чем была бы на" in warning, warning
     text = tiny["text"].replace("\xa0", " ")
     assert "не посчитано" in text, text
     assert "под участком не помещается" in tiny["scheme"], tiny["scheme"]
