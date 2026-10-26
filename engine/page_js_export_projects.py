@@ -42,12 +42,12 @@ async function exportReportPdf(){
   while(response.status===202){
    let state={};try{state=await response.json()}catch(e){}
    if(!state.ticket)break;
-   show(state.detail||'PDF-отчёт готовится…');
-   if(Date.now()>deadline){alert('PDF-отчёт всё ещё готовится ('+(state.detail||'')+'). Нажмите «Экспорт PDF» позже.');return;}
+   show(serverDetail(state)||'PDF-отчёт готовится…');
+   if(Date.now()>deadline){alert('PDF-отчёт всё ещё готовится ('+(serverDetail(state)||'')+'). Нажмите «Экспорт PDF» позже.');return;}
    await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
    response=await fetch('/report/pdf/'+encodeURIComponent(state.ticket));
   }
-  if(!response.ok||response.status!==200){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}alert(detail);return;}
   const blob=await response.blob();
   downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'',`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`);
  }finally{show('')}
@@ -69,12 +69,12 @@ async function exportTeaserPdf(){
   while(response.status===202){
    let state={};try{state=await response.json()}catch(e){}
    if(!state.ticket)break;
-   show(state.detail||'Тизер готовится…');
-   if(Date.now()>deadline){alert('Тизер всё ещё готовится ('+(state.detail||'')+'). Нажмите «Скачать тизер» позже.');return;}
+   show(serverDetail(state)||'Тизер готовится…');
+   if(Date.now()>deadline){alert('Тизер всё ещё готовится ('+(serverDetail(state)||'')+'). Нажмите «Скачать тизер» позже.');return;}
    await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
    response=await fetch('/report/teaser/'+encodeURIComponent(state.ticket));
   }
-  if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}alert(detail);return;}
   const blob=await response.blob();
   downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'','DevelopAid_Тизер.pdf');
  }finally{show('')}
@@ -114,7 +114,7 @@ async function exportModelArchive(){
   });
   if(!response.ok){
    let detail='Не удалось собрать модель';
-   try{const x=await response.json();detail=x.detail||detail}catch(e){}
+   try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}
    alert(detail);return;
   }
   downloadBlobResponse(
@@ -218,7 +218,7 @@ async function loadServerProjectPreset(){
  try{
   const response=await fetch('/api/project-presets/'+encodeURIComponent(id)+presetsQuery());
   parsed=await response.json();
-  if(!response.ok)throw new Error(parsed.detail||'Пресет не загружен');
+  if(!response.ok)throw new Error(serverDetail(parsed)||'Пресет не загружен');
  }catch(e){alert(String(e.message||e));return}
  await previewPreset(parsed);
 }
@@ -230,7 +230,7 @@ async function previewPreset(parsed){
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({preset:parsed,mode:'preview',inputs,tep})});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Пресет не разобран');
+  if(!response.ok)throw new Error(serverDetail(data)||'Пресет не разобран');
  }catch(e){alert(String(e.message||e));return}
  presetPreview=parsed;
  renderPresetPreview(data);
@@ -311,7 +311,7 @@ async function applyPreset(){
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({preset:presetPreview,mode:'apply',inputs,tep,filled:presetFilledValues()})});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Пресет не применён');
+  if(!response.ok)throw new Error(serverDetail(data)||'Пресет не применён');
  }catch(e){alert(String(e.message||e));return}
  // Как и всюду: приходящее накладывается на умолчания, а не заменяет их.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.applied_inputs||{});
@@ -365,7 +365,7 @@ async function projectsCall(path,body){
  let data={};
  try{data=raw?JSON.parse(raw):{}}catch(e){}
  if(!response.ok){
-  const said=String(data.detail||'').trim()
+  const said=String(serverDetail(data)||'').trim()
    ||raw.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160);
   throw new Error(said?('Хранилище ответило '+response.status+': '+said)
    :('Хранилище ответило кодом '+response.status+' и пустым телом'));
@@ -549,6 +549,8 @@ function renderProjectsLogin(reason){
  }
  const scroll=stored.querySelector('.scroll');
  if(scroll)scroll.style.display='none';
+ const find=document.getElementById('projectsFind');
+ if(find)find.style.display='none';
 }
 
 function hideProjectsLogin(){
@@ -557,6 +559,8 @@ function hideProjectsLogin(){
  const stored=document.getElementById('projectsStored');
  const scroll=stored&&stored.querySelector('.scroll');
  if(scroll)scroll.style.display='';
+ const find=document.getElementById('projectsFind');
+ if(find)find.style.display='';
 }
 
 function enterProjectsKey(){
@@ -649,7 +653,47 @@ async function openProjects(){
   }
   alert(String(e.message||e));return;
  }
- const rows=(data.projects||[]).map(p=>{
+ projectsCards=data.projects||[];
+ renderProjectsList();
+}
+
+// Список проектов: поиск по названию и номерам участка, порядок — по дате
+// изменения или по названию. Выбранный порядок помнит браузер; хранилища может
+// не быть (приватное окно), и тогда порядок просто по умолчанию.
+let projectsCards=[];
+const PROJECTS_SORT_KEY='developaid_projects_sort';
+const PROJECTS_SORTS={
+ saved_desc:(a,b)=>String(b.saved_at||'').localeCompare(String(a.saved_at||'')),
+ saved_asc:(a,b)=>String(a.saved_at||'').localeCompare(String(b.saved_at||'')),
+ name:(a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ru',{sensitivity:'base',numeric:true})
+};
+function projectsSort(){
+ const select=document.getElementById('projectsSort');
+ let value=select&&select.value;
+ if(!projectsSortRestored){
+  projectsSortRestored=true;
+  try{const kept=localStorage.getItem(PROJECTS_SORT_KEY);if(kept&&PROJECTS_SORTS[kept])value=kept}catch(e){}
+  if(select&&value)select.value=value;
+ }
+ return PROJECTS_SORTS[value]?value:'saved_desc';
+}
+let projectsSortRestored=false;
+function projectsSortChanged(){
+ const select=document.getElementById('projectsSort');
+ try{if(select)localStorage.setItem(PROJECTS_SORT_KEY,select.value)}catch(e){}
+ renderProjectsList();
+}
+function projectMatches(p,query){
+ if(!query)return true;
+ const hay=[p.name||''].concat(p.cadastral||[]).join(' ').toLowerCase();
+ return query.split(/\s+/).filter(Boolean).every(word=>hay.includes(word));
+}
+function renderProjectsList(){
+ if(typeof projectsBody==='undefined')return;
+ const query=String((document.getElementById('projectsSearch')||{}).value||'').trim().toLowerCase();
+ const order=PROJECTS_SORTS[projectsSort()];
+ const shown=projectsCards.filter(p=>projectMatches(p,query)).slice().sort(order);
+ const rows=shown.map(p=>{
   const s=p.summary||{};
   return `<tr><td><b>${escapeHtml(p.name||'')}</b><br><small>${escapeHtml(String(p.saved_at||'').replace('T',' ').replace('+00:00',' UTC'))}`
    +`${p.cadastral&&p.cadastral.length?' · '+escapeHtml(p.cadastral.join(', ')):''}</small></td>`
@@ -665,10 +709,24 @@ async function openProjects(){
    +`<button class="btn" onclick="downloadSettingsFile('${p.id}')">Файл</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
  }).join('');
- projectsBody.innerHTML=rows||'<tr><td colspan="5">Пока ничего не сохранено.</td></tr>';
+ projectsBody.innerHTML=rows||('<tr><td colspan="5">'+(projectsCards.length
+  ?'По запросу «'+escapeHtml(query)+'» ничего не нашлось. Поиск идёт по названию и кадастровым номерам.'
+  :'Пока ничего не сохранено.')+'</td></tr>');
 }
 
 function closeProjects(){projectsDialog.style.display='none'}
+
+// Вкладки кабинета. Какие видны, решает не страница: вкладку администрирования
+// показывает `renderTariffsBox` по ответу сервера.
+function cabinetTab(name){
+ const tab=document.querySelector('.cab-tab[data-tab="'+name+'"]');
+ if(!tab||tab.style.display==='none')name='projects';
+ document.querySelectorAll('.cab-tab').forEach(b=>{
+  const on=b.dataset.tab===name;
+  b.classList.toggle('active',on);b.setAttribute('aria-selected',on?'true':'false');
+ });
+ document.querySelectorAll('.cab-panel').forEach(p=>{p.hidden=p.dataset.panel!==name});
+}
 
 function changeProjectsKey(){
  const key=prompt('Ключ администратора', projectsAdminKey||'');
@@ -976,10 +1034,13 @@ async function deleteProject(id){
 // ответ, и сброс сбил бы счёт.
 // accessUseFree — согласие на бесплатный участок на один запуск расчёта:
 // снимается сразу после него и проекта не хранит.
+// projectsCards — список сохранённого в хранилище, projectsSortRestored —
+// отметка, что порядок списка уже прочитан из браузера: кабинет, не проект.
 // demoBlockNames — названия разделов демо-ссылок с сервера для админки: не проект.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
  'profileState','profileAskedOnResult','calcRequiresLogin','accessUseFree','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
+ 'projectsCards','projectsSortRestored',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
  'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound','landContourPending',
@@ -1231,7 +1292,7 @@ async function loadAccessMe(){
  const response=await fetch('/access/me',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({session:activeSession()})});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Не удалось узнать условия доступа');
+ if(!response.ok)throw new Error(serverDetail(data)||'Не удалось узнать условия доступа');
  return data;
 }
 function tariffsHtml(data){
@@ -1306,10 +1367,14 @@ async function renderTariffsBox(){
  catch(e){box.innerHTML='<div class="import-error">'+escapeHtml(String(e.message||e))+'</div>';return}
  box.innerHTML=tariffsHtml(data);
  payCountChanged();
- const admin=document.getElementById('accessAdminBox');
- if(admin){admin.style.display=(data.is_admin||projectsAdminKey)?'':'none';if(data.is_admin||projectsAdminKey){renderAccessAdmin();renderDemoInvites()}}
+ const admin=document.getElementById('accessAdminBox'),isAdmin=!!(data.is_admin||projectsAdminKey);
+ const adminTab=document.getElementById('cabTabAdmin');
+ if(adminTab)adminTab.style.display=isAdmin?'':'none';
+ if(!isAdmin&&adminTab&&adminTab.classList.contains('active'))cabinetTab('projects');
+ if(admin){admin.style.display=isAdmin?'':'none';if(isAdmin){renderAccessAdmin();renderDemoInvites()}}
 }
 async function openTariffs(){
+ cabinetTab('tariffs');
  await openProjects();
  await renderTariffsBox();
  const box=document.getElementById('tariffsBox');
@@ -1355,7 +1420,7 @@ async function payForAccess(kind,where){
   const response=await fetch('/payments/create',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({session:activeSession(),kind,inputs,email,count})});
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Оплату начать не удалось');
+  if(!response.ok)throw new Error(serverDetail(data)||'Оплату начать не удалось');
   if(data.preview){if(status)status.textContent=data.message;return}
   if(status&&data.price_rub)status.textContent='Переходим к оплате '+accessRub(data.price_rub)+(count>1?' за '+count+' '+plotsWord(count):'')+'…';
   try{localStorage.setItem('developaid_pending_payment',data.payment_id)}catch(e){}
@@ -1371,7 +1436,7 @@ async function accessAdminCall(path,body){
  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(Object.assign({session:activeSession(),key:projectsAdminKey},body||{}))});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Запрос не выполнен');
+ if(!response.ok)throw new Error(serverDetail(data)||'Запрос не выполнен');
  return data;
 }
 async function renderAccessAdmin(){

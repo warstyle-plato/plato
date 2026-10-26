@@ -478,6 +478,11 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
 .cab-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
 .cab-row>input,.cab-row>select{width:auto;flex:0 1 280px;min-width:180px}
 .cab-row>input.cab-short,.cab .cab-short{width:72px;min-width:0;flex:none}
+.cab-tabs{display:flex;gap:22px;border-bottom:1px solid var(--line);margin:0 0 14px;overflow-x:auto}
+.cab-tab{border:0;background:none;padding:8px 0 9px;font-weight:700;color:#777;white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px;cursor:pointer}
+.cab-tab.active{color:#000;border-color:#000}
+.cab-panel[hidden]{display:none}
+#projectsFind>input{flex:1 1 280px}
 .cab-pay{margin-top:10px;flex-wrap:wrap}
 .cab-pay>#payEmail{flex:0 1 240px;min-width:180px}
 .cab-pay>label{white-space:nowrap;color:#555}

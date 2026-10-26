@@ -263,7 +263,14 @@ def build_due(make, now: datetime.datetime | None = None) -> list[str]:
                 place = _outbox(item["slot"], project)
                 if not people or place.exists():
                     continue
-                got = make(project, item["kind"], item["end"])
+                # Сбой сборки одного проекта не останавливает остальные, а его
+                # причина ложится на диск: страницу может обслужить другой воркер.
+                try:
+                    got = make(project, item["kind"], item["end"])
+                except Exception as exc:  # noqa: BLE001 — причину видит владелец
+                    _problem(item["slot"], project, f"{type(exc).__name__}: {exc}", now)
+                    continue
+                _problem(item["slot"], project, "", now)
                 # Печать занята соседним PDF — попробуем в следующий проход; через
                 # два часа ждать дальше незачем: уйдёт сообщение с причиной.
                 if got.get("retry") and _now(now) < (
@@ -287,6 +294,24 @@ def build_due(make, now: datetime.datetime | None = None) -> list[str]:
                                        for row in people}})
                 built.append(f"{item['slot']}:{project}")
     return built
+
+
+def _problems() -> Path:
+    return _root() / "problems.json"
+
+
+def _problem(slot: str, project: str, error: str,
+             now: datetime.datetime | None = None) -> None:
+    """Почему срок проекта не собрался; пустая причина — собрался."""
+    with _locked():
+        book = _read(_problems(), {})
+        if error:
+            book.setdefault(slot, {})[project] = {"error": error[:500], "error_at": _stamp(now)}
+        elif project in book.get(slot, {}):
+            book[slot].pop(project)
+        else:
+            return
+        _write(_problems(), {key: value for key, value in book.items() if value})
 
 
 def take(now: datetime.datetime | None = None) -> list[dict[str, Any]]:
@@ -339,9 +364,16 @@ def status(project: str, now: datetime.datetime | None = None) -> dict[str, Any]
         for chat, value in entry.get("deliveries", {}).items():
             if (last.get(chat) or {}).get("at_slot", "") <= entry.get("at", ""):
                 last[chat] = dict(value, at_slot=entry.get("at", ""), slot=entry.get("slot"),
+                                  kind=entry.get("kind"), end=entry.get("end"),
                                   label=STATES.get(value.get("state"), value.get("state")),
                                   pdf_error=entry.get("error", ""))
     people = [dict(row, last=last.get(str(row["chat_id"])))
               for row in subscribers(project)]
+    # Срок наступил, а очереди нет: без этой строки страница показала бы
+    # «отправлено» про прошлую сводку, и молчание сошло бы за доставку.
+    problems = _read(_problems(), {})
+    missing = [dict(item, **(problems.get(item["slot"], {}).get(project) or {}))
+               for item in due(now)
+               if people and not _outbox(item["slot"], project).exists()]
     return {"invite": current_invite(project), "subscribers": people,
-            "next": next_slot(now)}
+            "next": next_slot(now), "missing": missing}
