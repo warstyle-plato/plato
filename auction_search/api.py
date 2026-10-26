@@ -4350,11 +4350,7 @@ def install(app: FastAPI) -> None:
         сбор идёт фоном, запрос читает диск. С Render — на ядро, где реестр
         и НСПД (как `/land/lookup`).
         """
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001 — пустое тело — пустой запрос
-            body = {}
-        body = body if isinstance(body, dict) else {}
+        body = await json_object(request)
         url = (core._core_api_url("/krt/project-site")
                if core is not None and hasattr(core, "_core_api_url") else "")
         if url:
@@ -4398,11 +4394,7 @@ def install(app: FastAPI) -> None:
 
         from auction_search import krt_manual_contour
 
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001 — пустое тело — пустой запрос
-            body = {}
-        body = body if isinstance(body, dict) else {}
+        body = await json_object(request)
         url = (core._core_api_url("/krt/manual-contour")
                if core is not None and hasattr(core, "_core_api_url") else "")
         if url:
