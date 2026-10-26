@@ -32,6 +32,7 @@ from typing import Any
 import developaid_actuals as actuals
 import developaid_credit_repayment as credit_repayment
 import developaid_monitor as monitor
+import developaid_funding_schedule as funding_schedule
 import developaid_monitor_manager as manager
 import developaid_monthly_budget as monthly_budget
 import developaid_legal_cases as legal_cases
@@ -943,6 +944,7 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
             ("sales", lambda: sales(sales_project, kind, bounds["end"], sales_dir)),
             ("funding", lambda: funding(project, kind, bounds["end"], sales_project,
                                         sales_dir, dashboard)),
+            ("funding_schedule", lambda: funding_schedule.execution(project, bounds["end"])),
             ("credit", lambda: credit_repayment.for_project(project, sales_project or "",
                                                             sales_dir)),
             ("legal", lambda: dict(legal_cases.for_report(
@@ -1872,8 +1874,116 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
         if words:
             text += f" {words[:1].upper() + words[1:]}."
         lines.append(text)
+    words = _schedule_words(report.get("funding_schedule") or {})
+    if words:
+        lines.append(words)
     lines.append(f"Платежи — из отчёта РСС от {_day(block['rss'])}.")
     return lines
+
+
+def _plus_rub(value: float | None) -> str:
+    """Отклонение со знаком: «+12,0 млн ₽» — оплачено больше плана."""
+    if value is None:
+        return "—"
+    return ("+" if value > 0.5 else "") + _rub(value)
+
+
+def _schedule_month_words(month: dict[str, Any]) -> str:
+    """«сентябрь 2026» или «октябрь 2026 (месяц не закрыт, оплачено на 25.10.2026)»."""
+    label = _months_label(month["month"])
+    if not month.get("closed"):
+        label += f" (месяц не закрыт, оплачено на {_day(month.get('fact_at'))})"
+    return label
+
+
+def _schedule_words(block: dict[str, Any]) -> str:
+    """Строка сообщения: как исполнен график в последнем закрытом и текущем месяце."""
+    if block.get("state") != "ok":
+        return ""
+    parts = []
+    for month in [m for m in block["months"] if not m.get("no_plan")][-2:]:
+        if month.get("plan") is None:
+            continue
+        parts.append(f"{_schedule_month_words(month)} — оплачено {_rub(month['fact'])} "
+                     f"при плане {_rub(month['plan'])} ({_pct(month.get('share'))})")
+    if not parts:
+        return ""
+    return (f"График финансирования от {_day(block['versions'][-1])} исполнен: "
+            + "; ".join(parts) + ".")
+
+
+def _schedule_table(head: list[str], rows: list[list[str]]) -> str:
+    """Таблица раздела: последняя колонка — примечание, переносится и не распирает лист."""
+    return _table(head, rows).replace("<table>", "<table class='schedule'>", 1)
+
+
+def _schedule_notes(line: dict[str, Any]) -> str:
+    """Примечания строки; оговорка о статье 2.6 — коротко, полностью — под таблицами."""
+    notes = [note for note in line.get("notes") or [] if not note.startswith("В статье 2.6")]
+    if line.get("service"):
+        notes.append("в РСС здесь и офис — см. ниже")
+    return html.escape("; ".join(notes))
+
+
+def _schedule_html(block: dict[str, Any]) -> str:
+    """Исполнение графика финансирования: месяцы, статьи месяца, сверка «Выплачено»."""
+    esc = html.escape
+    out = ["<h3>Исполнение графика финансирования</h3>"]
+    if block.get("state") != "ok":
+        out.append(f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>")
+        return "\n".join(out)
+    out.append(f"<p class='note'>План — график финансирования (лист «{funding_schedule.SHEET}»), "
+               "для каждого месяца — версия, которая на него действовала. Оплачено — реестр "
+               f"платежей РСС от {_day(block['rss'])}, по коду статьи. Отклонение со знаком плюс — "
+               "оплачено больше плана.</p>")
+    rows = []
+    for month in block["months"]:
+        note = []
+        if month.get("no_plan"):
+            note.append("плана в графике нет" + (
+                f": график составлен {_day(month['version'])}"
+                if month.get("earlier_than_version") else ""))
+        if month.get("outside"):
+            note.append(f"ещё {_rub(month['outside'])} оплачено по статьям, которых нет в графике")
+        if (month.get("plan") is not None and month.get("lines_plan") is not None
+                and abs(month["plan"] - month["lines_plan"]) >= funding_schedule.PAID_TOLERANCE):
+            note.append(f"сумма статей графика {_rub(month['lines_plan'])} не равна строке "
+                        f"«ИТОГО» {_rub(month['plan'])}")
+        rows.append([esc(_schedule_month_words(month)), _day(month["version"]),
+                     _rub(month.get("plan")), _rub(month["fact"]), _plus_rub(month.get("gap")),
+                     _pct(month.get("share")), esc("; ".join(note))])
+    out.append(_schedule_table(["Месяц", "График от", "План", "Оплачено", "Отклонение",
+                                "Исполнено", "Примечание"], rows))
+    for month in reversed(block["months"]):
+        if not month["lines"]:
+            continue
+        lines = sorted(month["lines"], key=lambda line: -max(abs(line.get("plan") or 0.0),
+                                                              abs(line["fact"])))
+        table = [[esc(f"{line['code']} {line['work']}"), _rub(line.get("plan")),
+                  _rub(line["fact"]), _plus_rub(line.get("gap")), _pct(line.get("share")),
+                  _schedule_notes(line)] for line in lines]
+        out.append(f"<div class='sub'>{esc(_schedule_month_words(month)[:1].upper() + _schedule_month_words(month)[1:])}: по статьям графика</div>")
+        out.append(_schedule_table(["Статья", "План", "Оплачено", "Отклонение", "Исполнено",
+                                    "Примечание"], table))
+    check = block.get("paid_check") or {}
+    if check:
+        out.append(f"<div class='sub'>Колонка «Выплачено» графика от {_day(check['at'])} против "
+                   f"реестра платежей на ту же дату</div>")
+        table = [["Всего", _rub(check.get("graph")), _rub(check["register"]),
+                  _plus_rub(check["gap"]), ""]]
+        table += [[esc(f"{line['code']} {line['work']}"), _rub(line.get("graph")),
+                   _rub(line["register"]), _plus_rub(line["gap"]),
+                   esc("; ".join(line["notes"]))] for line in check["lines"]]
+        out.append(_schedule_table(["Статья", "По графику", "По реестру", "Разница",
+                                    "Примечание"], table))
+        if not check["lines"]:
+            out.append("<p class='note'>По статьям «Выплачено» графика совпадает с реестром.</p>")
+    service = next((note for month in block["months"] for line in month["lines"]
+                    for note in line["notes"] if note.startswith("В статье 2.6")), "")
+    if service:
+        out.append(f"<p class='note'>{esc(service)}.</p>")
+    out.append(f"<p class='note'>Суммы графика: {esc(block.get('unit') or '')}.</p>")
+    return "\n".join(out)
 
 
 def _funding_html(report: dict[str, Any]) -> str:
@@ -2124,7 +2234,8 @@ th:first-child,td:first-child{text-align:left;white-space:normal;min-width:110px
 .photos{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:6px 0}
 figure.photo{margin:0;break-inside:avoid;page-break-inside:avoid}figure.photo img{width:100%;height:230px;object-fit:cover;border-radius:4px;border:1px solid #d6dde6;display:block}
 figure.photo figcaption{font-size:10.5px;margin-top:3px}
-table.legal td{vertical-align:top;text-align:left;white-space:normal}table.legal td:first-child{width:24%}table.legal td:last-child{text-align:right}
+table.legal td{vertical-align:top;text-align:left;white-space:normal}
+table.schedule td:last-child,table.schedule th:last-child{text-align:left;white-space:normal;color:#5b6b7d;font-size:10.5px}table.legal td:first-child{width:24%}table.legal td:last-child{text-align:right}
 table.works td{vertical-align:top}table.works td:nth-child(2),table.works th:nth-child(2){text-align:left;white-space:normal}table.works td:nth-child(3){color:#5b6b7d;font-size:10.5px;white-space:normal}
 table.articles tr.chapter td{background:#f4f7fb;font-weight:600}
 table.articles tr.total td{border-top:2px solid #1f4e8c;font-weight:600}
@@ -3035,6 +3146,7 @@ def render_html(report: dict[str, Any]) -> str:
     out.append(_funding_html(report))
     out.append(_funding_chart(report))
     out.append(_funding_depth_html(report))
+    out.append(_schedule_html(report.get("funding_schedule") or {}))
 
     out.append(_block_heading("credit"))
     block = report.get("credit") or {}
