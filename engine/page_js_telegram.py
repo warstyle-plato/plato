@@ -22,7 +22,7 @@ PAGE += r"""async function loadTelegramSessionData(){
   body:JSON.stringify({session:telegramSession})
  });
  const payload=await response.json();
- if(!response.ok)throw new Error(payload.detail||'Telegram-сессия недействительна');
+ if(!response.ok)throw new Error(serverDetail(payload)||'Telegram-сессия недействительна');
  return payload||{};
 }
 

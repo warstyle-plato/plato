@@ -207,7 +207,9 @@ def _site_massing_block(result: dict[str, Any]) -> list[dict[str, Any]]:
             _row("Доля участка под зданием", f"{share * 100:.0f}%", "text"),
             _row("Средняя этажность", round(float(m.get("average_storeys") or 0.0), 1), "num"),
             _row("Подземная часть", m.get("underground_sqm"), "sqm"),
-            _row("Подземных уровней", m.get("underground_levels"), "count")]
+            (_row("Подземных уровней", "не посчитано: под участком не помещается", "text")
+             if m.get("underground_levels_unfit") else
+             _row("Подземных уровней", m.get("underground_levels"), "count"))]
     rows += [_row("Внимание", str(w), "text") for w in m.get("warnings") or []]
     rows.append(_row("Как посчитано", "оценка по балансу территории, а не проект", "text"))
     blocks = [{"title": "Пятно застройки и этажность", "rows": rows}]
