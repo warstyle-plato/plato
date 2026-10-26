@@ -1510,6 +1510,20 @@ def install(app: FastAPI) -> None:
             return await call_next(request)
         if path == "/auctions/login":
             return await call_next(request)
+        # Демо-ссылка с разделом «Торги и КРТ»: только чтение, решение — одно
+        # на движок (`demo_request_access`). Полный ключ кабинета главнее.
+        if not market_cabinet.authorised(request):
+            demo = market_cabinet.demo_access(request)
+            if demo.get("demo"):
+                if demo.get("allowed"):
+                    return await call_next(request)
+                problem = str(demo.get("problem") or "")
+                if (request.method in ("GET", "HEAD")
+                        and "text/html" in request.headers.get("accept", "")):
+                    return HTMLResponse(auction_view.login_page(problem), status_code=403,
+                                        headers={"Cache-Control": "no-store"})
+                return JSONResponse({"detail": problem}, status_code=403,
+                                    headers={"Cache-Control": "no-store"})
         if not _auctions_gate_enabled():
             # Ворота выключены — чтение открыто всем, запись и пробы — только
             # команде: ключ кабинета, ключ владельца или вход человека команды.
@@ -3574,6 +3588,13 @@ def install(app: FastAPI) -> None:
             return
         if market_cabinet.authorised(request):
             return
+        # Демо-ссылка с разделом «Торги и КРТ» читает участки, как ключ
+        # просмотра; команды обновления — запись, их отказ называет причину.
+        demo = market_cabinet.demo_access(request)
+        if demo.get("demo"):
+            if demo.get("allowed"):
+                return
+            raise HTTPException(status_code=403, detail=str(demo.get("problem") or ""))
         # Отдельный ключ торгов действует только здесь: generic-кабинет его
         # не знает, поэтому /cabinet и финансовая модель им не открываются.
         if auction_view.authorised(request):
