@@ -89,6 +89,7 @@ from developaid_report_page import REPORT_PAGE as _REPORT_PAGE_RAW
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
+import teaser_card
 from request_body import json_object
 import v4_book_polish
 import v4_dashboard

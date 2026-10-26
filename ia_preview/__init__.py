@@ -28,6 +28,12 @@
 - `GET  /ia`, `/ia/`             — тот же слой на стендовом адресе (с лентой);
 - `GET  /ia/assets/overlay.css`  — стили слоя;
 - `GET  /ia/assets/overlay.js`   — сам слой;
+
+Сторож загрузки (`assets/boot_guard.js`) встраивается в `<head>` корня и
+`/ia`: до запуска слоя прежний вид закрыт экраном загрузки, медленная загрузка
+и несработавший слой называются на экране. Без него посреди загрузки по
+мобильной сети человек видел прежний интерфейс без кабинета и принимал его за
+готовую страницу (телефон владельца, 25.10.2026).
 - `GET  /ia/example.json`        — пресет проекта под кнопкой «Открыть пример»;
 - `GET  /ia/suggest?q=…`         — подсказки адресов по мере ввода (DaData);
 - `POST /ia/goal-seek`           — максимальная цена входа при целевом LLCR.
@@ -64,8 +70,44 @@ _TARGET_LLCR = 1.20
 
 _INJECTION = (
     '<link rel="stylesheet" href="/ia/assets/overlay.css">\n'
-    '<script src="/ia/assets/overlay.js" defer></script>\n'
+    '<script src="/ia/assets/overlay.js" defer'
+    ' onerror="window.__iaBootFail&&__iaBootFail(\'Файл нового интерфейса не загрузился.\')">'
+    '</script>\n'
 )
+
+# Стили экрана загрузки — строкой в <head>, а не в overlay.css: экран обязан
+# стоять с первого байта <body>, а overlay.css придёт только в конце.
+_BOOT_STYLE = """<style>
+html.ia-loading body>*:not(.ia-boot-reload){visibility:hidden}
+html.ia-loading::after{content:attr(data-ia-loading);position:fixed;top:0;left:0;right:0;bottom:0;
+ display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;
+ background:#fff;color:#333;font:16px/1.45 -apple-system,system-ui,sans-serif;z-index:2147483646}
+.ia-boot-reload{position:fixed;left:50%;top:calc(50% + 72px);transform:translateX(-50%);z-index:2147483647;
+ visibility:visible;font:15px -apple-system,system-ui,sans-serif;padding:10px 18px;background:#fff;
+ border:2px solid #111;color:#111}
+html:not(.ia-loading) .ia-boot-reload{display:none}
+.ia-boot-fail{margin:12px 0;padding:12px 14px;border:1px solid #b33;background:#fdf0f0;color:#7a1c1c;
+ font-size:15px;line-height:1.45}
+.ia-boot-fail button{margin-left:6px;font:inherit;padding:4px 10px}
+</style>
+"""
+
+
+def _head_injection() -> str:
+    """Сторож загрузки и ранняя докачка слоя — в <head>.
+
+    Слой и его стили подключены в конце полутора мегабайт страницы, и браузер
+    узнаёт о них, только дочитав документ. `preload` начинает их качать сразу,
+    а сторож (`boot_guard.js`) закрывает прежний вид экраном загрузки до
+    запуска слоя и называет причину, если слой не включился.
+    """
+    guard = _ASSETS.joinpath("boot_guard.js").read_text(encoding="utf-8")
+    return "".join((
+        _BOOT_STYLE,
+        f"<script>\n{guard}</script>\n",
+        '<link rel="preload" href="/ia/assets/overlay.js" as="script">\n',
+        '<link rel="preload" href="/ia/assets/overlay.css" as="style">\n',
+    ))
 
 
 # Пример для холодного пользователя — проект целиком, а не один ТЭП: с
@@ -103,7 +145,11 @@ def install(app, core) -> None:
         # preview: снаружи разницы не видно, а смотреть будут на неё.
         raise RuntimeError("В PAGE нет </body> — слой перестройки некуда поставить")
 
-    preview_page = page.replace("</body>", f"{_INJECTION}</body>", 1)
+    if "</head>" not in page:
+        raise RuntimeError("В PAGE нет </head> — сторож загрузки слоя некуда поставить")
+
+    preview_page = (page.replace("</head>", f"{_head_injection()}</head>", 1)
+                    .replace("</body>", f"{_INJECTION}</body>", 1))
 
     # Заголовки корня — те же, что у прежнего index движка: страница живёт в
     # браузере без кеша, иначе «деплой не приехал» и «слой сломан» неотличимы.

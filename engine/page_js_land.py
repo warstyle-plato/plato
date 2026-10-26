@@ -606,6 +606,32 @@ function renderCadastralPreview(data){
 }
 
 let landLookup=null;
+// Контур ЕГРН в пути: расчёт, ушедший до его прихода, рисует участок квадратом
+// и говорит, что контур загружается, а не что его нет; пришёл контур — схема
+// пересчитывается сама (замечание «Посадки», 25.10.2026: квадрат «контура из
+// ЕГРН нет» после «Подставить в проект», хотя контур приходит через секунду).
+let landContourPending=0;
+function landHasContour(data){
+ return !!(data&&(data.results||[]).some(r=>r&&r.found!==false&&(r.contour_merc||[]).length));
+}
+// Расчёт ушёл, пока контур был в пути: его ответ — квадрат, и даже если он
+// ещё не вернулся, по приходе контура нужен свежий.
+let calcWentWithoutContour=false;
+function calcRequestInputs(){
+ if(landContourPending>0&&!landHasContour(inputs._land_lookup)){
+  calcWentWithoutContour=true;
+  return {...inputs,_land_contour_pending:true};
+ }
+ return inputs;
+}
+function landContourArrived(data){
+ if(!landHasContour(data))return;
+ const layout=((((lastResult||{}).tep||{}).site_massing||{}).scheme||{}).layout||{};
+ if(calcWentWithoutContour||layout.site_shape_origin==='square'){
+  calcWentWithoutContour=false;
+  calculate();
+ }
+}
 let landScreeningRun=0;
 // Ответ скрининга рисуется и больше нигде не живёт, а развёрнутой карте нужны
 // очертания зон того же участка. Держим последний ответ целиком: собирать его
@@ -624,7 +650,11 @@ async function drawLandPreviewQuiet(query){
  try{
   const raw=String(query!=null?query:((document.getElementById('cadastralNumbers')||{}).value||'')).trim();
   if(!cadastralNumbersIn(raw).length)return;
-  const response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})});
+  landContourPending++;
+  let response;
+  try{
+   response=await fetch('/land/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})});
+  }finally{landContourPending=Math.max(0,landContourPending-1)}
   // Ограничения не зависят от картинки: карточка — украшение, а скрининг —
   // ответ на вопрос «можно ли тут строить». Раньше он запускался только после
   // удачного контура, и на 22 участках не показывался вовсе (замечание
@@ -636,6 +666,7 @@ async function drawLandPreviewQuiet(query){
   landLookup=data;
   inputs._land_lookup=cloneValue(data);
   renderLandLookup(data);
+  landContourArrived(data);
  }catch(e){/* контур — украшение, не данные */}
 }
 
@@ -1020,9 +1051,13 @@ async function lookupLand(options){
  status.textContent='Запрашиваю данные об участке в госреестре…';
  hideLandPreview();
  try{
-  const response=await fetch('/land/lookup',{
-   method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})
-  });
+  landContourPending++;
+  let response;
+  try{
+   response=await fetch('/land/lookup',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({query:raw,limit:30,session:activeSession()})
+   });
+  }finally{landContourPending=Math.max(0,landContourPending-1)}
   const data=await response.json();
   if(!response.ok)throw new Error(data.detail||'Не удалось получить данные об участке из госреестра');
   landLookup=data;
@@ -1030,6 +1065,7 @@ async function lookupLand(options){
   // была лишним шагом, и забытая, она молча теряла сведения при закрытии.
   inputs._land_lookup=cloneValue(data);
   renderLandLookup(data);
+  landContourArrived(data);
   // Скрининг — довесок к карточке, а не ответ на запрос. Его сбой не имеет
   // права утащить весь поиск в ветку ошибки: сведения ЕГРН уже получены, и
   // сказать про них «не удалось» значит соврать про то, что удалось. Свою
@@ -1154,7 +1190,7 @@ function landMapFromTerritory(){
  const zones=((landScreeningLast&&landScreeningLast.parcels)||[])
   .flatMap(p=>(p&&p.findings)||[]);
  openLandMap({rings:rings,zones:zones,massing:siteMassingMapShapes(),
-  title:`Территория из ${items.length} участков и окружение`});
+  title:`Территория из ${items.length} участков и окружение`,panorama:true});
 }
 
 function landContourSvg(item){
@@ -1213,6 +1249,10 @@ function landContourSvg(item){
 // и увеличением.
 const LAND_MAP_WORLD=2*20037508.342789244;
 const LAND_MAP_ORIGIN=-20037508.342789244;
+// Ссылка «Открыть панораму в Яндекс Картах» — шаблон сервера
+// (`YANDEX_PANORAMA_LINK`), тот же, что у бота: обычная ссылка, не API, ключ
+// ей не нужен.
+const LAND_PANORAMA_LINK=__DEVELOPAID_PANORAMA_LINK__;
 function landMapScale(zoom){return LAND_MAP_WORLD/(256*Math.pow(2,zoom))}
 function landMapLat(y){return (2*Math.atan(Math.exp(y/6378137))-Math.PI/2)*180/Math.PI}
 // Пиксель карты мира — та же формула, что у серверной склейки (_basemap_png):
@@ -1291,7 +1331,15 @@ function landMapLayerBar(){
   +`border-radius:6px;padding:4px 10px;cursor:${enabled?'pointer':'not-allowed'};font-size:12px">${label}</button>`;
  bar.innerHTML=btn('map','Схема',true,'Карта улиц OpenStreetMap')
   +btn('hybrid','Гибрид',!!(hybrid&&hybrid.available),
-       hybrid?(hybrid.available?'Снимок со спутника с улицами — Яндекс Карты':hybrid.reason):'Проверяем, подключён ли снимок…');
+       hybrid?(hybrid.available?'Снимок со спутника с улицами — Яндекс Карты':hybrid.reason):'Проверяем, подключён ли снимок…')
+  // Панорама нажимается всегда: где встроенной нет, она открывает ссылку на
+  // Яндекс Карты и называет причину, а не прячется.
+  +(LAND_MAP.panoramaUrl?btn('panorama','Панорама',true,'Улицы вокруг участка глазами пешехода — Яндекс Карты'):'');
+}
+function landPanoramaUrl(lat,lng){
+ lat=Number(lat);lng=Number(lng);
+ if(!isFinite(lat)||!isFinite(lng)||Math.abs(lat)>90||Math.abs(lng)>180)return '';
+ return LAND_PANORAMA_LINK.split('{lat}').join(lat.toFixed(6)).split('{lng}').join(lng.toFixed(6));
 }
 function landMapYandex(src){
  if(window.ymaps&&window.ymaps.ready)return new Promise(ok=>window.ymaps.ready(()=>ok(window.ymaps)));
@@ -1304,15 +1352,27 @@ function landMapYandex(src){
  });
 }
 function landMapSetLayer(layer){
- if(!LAND_MAP||(layer!=='map'&&layer!=='hybrid'))return;
+ if(!LAND_MAP||(layer!=='map'&&layer!=='hybrid'&&layer!=='panorama'))return;
  const hybrid=LAND_MAP.views&&LAND_MAP.views.hybrid;
  LAND_MAP.layerNote='';
+ if(layer==='panorama'){
+  // Панорама не запоминается выбором вида: открытие карты не должно само
+  // тратить показ из суточного лимита.
+  if(LAND_MAP.layer==='panorama')return;
+  if(LAND_MAP.layer==='hybrid')landMapHybridClose();
+  LAND_MAP.layer='panorama';
+  landMapLayerBar();
+  landMapPanoramaOpen();
+  return;
+ }
+ if(LAND_MAP.layer==='panorama')landMapPanoramaClose();
  if(layer==='hybrid'&&!(hybrid&&hybrid.available)){
   // Не предлагали — не включаем, и не подменяем схемой молча: причина в подписи.
   LAND_MAP.layerNote=(hybrid&&hybrid.reason)||'Снимок со спутника не подключён.';
   layer='map';
  }
  try{localStorage.setItem('plato.basemap',layer)}catch(e){}
+ if(LAND_MAP.layer==='panorama')LAND_MAP.layer='map';
  if(layer===LAND_MAP.layer&&(layer==='map'||LAND_MAP.ymap)){landMapLayerBar();renderLandMap();return}
  if(LAND_MAP.layer==='hybrid')landMapHybridClose();
  LAND_MAP.layer=layer;
@@ -1377,10 +1437,95 @@ function landMapHybridClose(){
  }catch(e){}
  state.ymap=null;
 }
+// Панорама Яндекса — бесплатный тариф (решение владельца 25.10.2026): только
+// в открытой части (`payload.panorama`) и не больше суточного лимита, который
+// считает сервер (`/land/panorama/claim`). Во всех прочих случаях — кнопка-
+// ссылка на Яндекс Карты и причина словами, а не пустое окно.
+function landMapPanoramaRefuse(reason){
+ const stage=document.getElementById('landMapStage');
+ const state=LAND_MAP;
+ if(!stage||!state)return;
+ state.panoramaReason=reason;
+ stage.innerHTML='<div data-panorama="link" style="position:absolute;inset:0;display:flex;flex-direction:column;'
+  +'align-items:center;justify-content:center;gap:14px;padding:24px;text-align:center;background:#f4f4f1">'
+  +'<div id="landMapPanoramaReason" style="max-width:560px;font-size:14px;color:#333;line-height:1.45">'+escapeHtml(reason)+'</div>'
+  +'<a id="landMapPanoramaLink" href="'+escapeHtml(state.panoramaUrl)+'" target="_blank" rel="noopener" '
+  +'style="display:inline-block;background:#3b6db4;color:#fff;border-radius:8px;padding:10px 18px;'
+  +'font-size:14px;text-decoration:none">Открыть панораму в Яндекс Картах</a></div>';
+ landMapNote();
+}
+function landMapPanoramaOpen(){
+ const stage=document.getElementById('landMapStage');
+ const state=LAND_MAP;
+ if(!stage||!state)return;
+ state.panoramaReason='';
+ if(!state.panoramaEmbed){
+  landMapPanoramaRefuse('На этой странице встроенной панорамы нет: она открывается в самих Яндекс Картах, в точке участка.');
+  return;
+ }
+ const view=(state.views&&state.views.panorama)||null;
+ if(!view||!view.available){
+  landMapPanoramaRefuse((view&&view.reason)||'Встроенная панорама сейчас недоступна. Панораму можно открыть в самих Яндекс Картах — кнопка ниже.');
+  return;
+ }
+ stage.innerHTML='<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#555;font-size:13px">Загружаем панораму…</div>';
+ landMapNote();
+ const stale=()=>LAND_MAP!==state||state.layer!=='panorama';
+ fetch('/land/panorama/claim',{method:'POST',credentials:'same-origin',
+   headers:{'Content-Type':'application/json'},body:'{}'})
+  .then(r=>r.ok?r.json():Promise.reject(new Error('сервер ответил '+r.status)))
+  .catch(e=>({granted:false,reason:'Не удалось проверить, остались ли сегодня встроенные панорамы. Панораму можно открыть '
+    +'в самих Яндекс Картах — кнопка ниже ('+String(e.message||e)+').'}))
+  .then(claim=>{
+   if(stale())return null;
+   if(!claim||!claim.granted){
+    // Лимит кончился, пока окно было открыто: следующий раз — сразу ссылка.
+    view.available=false;view.reason=(claim&&claim.reason)||'Встроенные панорамы на сегодня закончились.';
+    landMapPanoramaRefuse(view.reason);
+    return null;
+   }
+   return landMapYandex(view.script).then(ymaps=>{
+    if(stale())return;
+    if(!ymaps.panorama||!ymaps.panorama.isSupported()){
+     landMapPanoramaRefuse('Этот браузер не умеет показывать панорамы Яндекса. Откройте её в самих Яндекс Картах — кнопка ниже.');
+     return;
+    }
+    return ymaps.panorama.locate(state.panoramaPoint).then(found=>{
+     if(stale())return;
+     if(!found||!found.length){
+      landMapPanoramaRefuse('В этом месте у Яндекса нет панорамы улиц: съёмочный автомобиль здесь не проезжал. '
+       +'В Яндекс Картах можно поискать панораму на соседних улицах — кнопка ниже.');
+      return;
+     }
+     stage.innerHTML='<div id="landMapPanorama" style="position:absolute;inset:0"></div>';
+     state.player=new ymaps.panorama.Player('landMapPanorama',found[0],{direction:'auto'});
+     landMapNote();
+    });
+   });
+  })
+  .catch(e=>{
+   if(stale())return;
+   landMapPanoramaRefuse('Встроенная панорама не открылась. Её можно посмотреть в самих Яндекс Картах — кнопка ниже ('+String(e.message||e)+').');
+  });
+}
+function landMapPanoramaClose(){
+ const state=LAND_MAP;
+ if(!state)return;
+ if(state.player){try{state.player.destroy()}catch(e){}}
+ state.player=null;
+ state.panoramaReason='';
+}
 function landMapNote(){
  const note=document.getElementById('landMapNote');
  if(!note||!LAND_MAP)return;
  let text;
+ if(LAND_MAP.layer==='panorama'){
+  text=LAND_MAP.player
+   ?'Панорама улиц — Яндекс Карты. Тяните картинку, чтобы оглядеться; стрелки ведут по улице. В отчёт панорама не попадает.'
+   :(LAND_MAP.panoramaReason?'Ссылка откроет панораму в Яндекс Картах в новой вкладке, эта карта останется открытой.':'');
+  note.textContent=text;
+  return;
+ }
  if(LAND_MAP.layer==='hybrid'){
   // Почему снимка нет в отчёте, говорит сервер (`print_reason`): правило одно.
   const hybrid=(LAND_MAP.views&&LAND_MAP.views.hybrid)||{};
@@ -1434,7 +1579,12 @@ function openLandMap(payload){
  zoom:Math.max(3,Math.min(19,Math.floor(zoom))),
   measure:[],measuring:false,drag:null,moved:0,
   layer:'map',views:null,ymap:null,layerNote:'',
+  // Точка панорамы — середина того, что открыли; ссылка на Яндекс Карты есть
+  // на любой странице, встроенная панорама — только где её разрешили.
+  panoramaPoint:landMapGeo([(minX+maxX)/2,(minY+maxY)/2]),
+  panoramaEmbed:!!(payload&&payload.panorama),player:null,panoramaReason:'',
  };
+ LAND_MAP.panoramaUrl=landPanoramaUrl(LAND_MAP.panoramaPoint[0],LAND_MAP.panoramaPoint[1]);
  renderLandMap();
  landMapLayerBar();
  // Вид выбирается тем, что человек выбрал в прошлый раз, но только когда сервер
@@ -1444,17 +1594,20 @@ function openLandMap(payload){
   if(LAND_MAP!==state)return;
   state.views=views;
   landMapLayerBar();
+  landMapLayerBar();
   if(landMapLayerPref()==='hybrid')landMapSetLayer('hybrid');
  });
 }
 function closeLandMap(){
  landMapHybridClose();
+ landMapPanoramaClose();
  const box=document.getElementById('landMapDialog');
  if(box)box.style.display='none';
  LAND_MAP=null;
 }
 function landMapZoomBy(step){
  if(!LAND_MAP)return;
+ if(LAND_MAP.layer==='panorama')return;
  if(LAND_MAP.layer==='hybrid'){
   if(LAND_MAP.ymap)LAND_MAP.ymap.setZoom(Math.max(3,Math.min(19,LAND_MAP.ymap.getZoom()+step)));
   return;
@@ -1479,7 +1632,7 @@ function landMapPoint(event){
  return landMapUnproject(event.clientX-view.left,event.clientY-view.top,view);
 }
 function landMapClick(event){
- if(!LAND_MAP||LAND_MAP.layer==='hybrid')return;
+ if(!LAND_MAP||LAND_MAP.layer!=='map')return;
  // Щелчок по чужой фигуре — выбор площадки, а не точка линейки.
  const pick=event.target&&event.target.getAttribute&&event.target.getAttribute('data-pick');
  if(pick!==null&&pick!==undefined&&!LAND_MAP.measuring&&typeof LAND_MAP.onPick==='function'){
@@ -1503,7 +1656,7 @@ function landMapClick(event){
 function landMapDown(event){
  // В гибриде карту двигает Яндекс: захват указателя сценой отнял бы у него
  // перетаскивание.
- if(LAND_MAP&&LAND_MAP.layer==='hybrid')return;
+ if(LAND_MAP&&LAND_MAP.layer!=='map')return;
  // Двигать карту можно и с включённой линейкой: иначе, чтобы дотянуться до
  // станции, её пришлось бы выключать, тянуть и включать заново — а меряют
  // как раз то, что в один экран не помещается.
@@ -1513,7 +1666,7 @@ function landMapDown(event){
  try{event.currentTarget.setPointerCapture(event.pointerId)}catch(e){}
 }
 function landMapMove(event){
- if(!LAND_MAP||!LAND_MAP.drag||LAND_MAP.layer==='hybrid')return;
+ if(!LAND_MAP||!LAND_MAP.drag||LAND_MAP.layer!=='map')return;
  const scale=landMapScale(LAND_MAP.zoom);
  const dx=event.clientX-LAND_MAP.drag.x,dy=event.clientY-LAND_MAP.drag.y;
  LAND_MAP.moved+=Math.abs(dx)+Math.abs(dy);
@@ -1524,7 +1677,7 @@ function landMapMove(event){
 }
 function landMapUp(){if(LAND_MAP)LAND_MAP.drag=null}
 function landMapWheel(event){
- if(!LAND_MAP||LAND_MAP.layer==='hybrid')return;
+ if(!LAND_MAP||LAND_MAP.layer!=='map')return;
  event.preventDefault();
  // Колесо увеличивает к курсору, а не к центру: иначе разглядываемое место
  // уезжает из кадра ровно тогда, когда его разглядывают.
@@ -1543,7 +1696,8 @@ function renderLandMap(){
  const view=landMapView();
  if(!stage||!view)return;
  // Гибрид рисует Яндекс в своём контейнере; перерисовка сцены его бы стёрла.
- if(LAND_MAP.layer==='hybrid'){landMapNote();return}
+ // Панораму тоже рисует Яндекс.
+ if(LAND_MAP.layer!=='map'){landMapNote();return}
  const W=view.width,H=view.height,zoom=view.zoom,scale=landMapScale(zoom);
  const left=landMapWorldPx(view.cx,zoom)-W/2,top=landMapWorldPy(view.cy,zoom)-H/2;
  const project=p=>landMapProject(p,view);
@@ -1631,6 +1785,8 @@ function landMapFromContour(cad){
   zones:(screened&&screened.findings)||[],
   massing:siteMassingMapShapes(),
   title:item.cadastral_number?('Участок '+item.cadastral_number+' и окружение'):'Участок и окружение',
+  // Карточка участка открыта без входа — здесь встроенная панорама разрешена.
+  panorama:true,
  });
 }
 
@@ -1640,8 +1796,10 @@ function landCardHtml(item,showContour){
  // в каждой карточке была бы 30 повторов одного и того же — нужен общий рисунок,
  // а не тридцать (замечание владельца, 17.08.2026). Одиночный участок — со своей.
  if(showContour===undefined)showContour=true;
+ const panoramaUrl=item.center?landPanoramaUrl(item.center.lat,item.center.lng):'';
  const mapLink=item.map_url
-  ?`<div class="land-links"><a href="${escapeHtml(item.map_url)}" target="_blank" rel="noopener">Открыть на публичной кадастровой карте</a></div>`
+  ?`<div class="land-links"><a href="${escapeHtml(item.map_url)}" target="_blank" rel="noopener">Открыть на публичной кадастровой карте</a>`
+   +(panoramaUrl?` · <a href="${escapeHtml(panoramaUrl)}" target="_blank" rel="noopener">Открыть панораму в Яндекс Картах</a>`:'')+`</div>`
   :'';
  if(!item.found){
   const rows=[['Регион по коду округа',item.region||'—'],['Кадастровый квартал',item.quarter||'—']];
