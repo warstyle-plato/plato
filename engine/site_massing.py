@@ -34,6 +34,8 @@ import site_massing_book as _massing_book
 # Выше этого здание расчёт не ставит, когда предел участка не задан
 # (владелец 22.10.2026). Один источник с книгой и объёмной схемой.
 STOREYS_LIMIT_DEFAULT = _massing_book.STOREYS_LIMIT_DEFAULT
+# Потолок оценки подземных уровней — тот же, что у формулы книги.
+UNDERGROUND_LEVELS_MAX = _massing_book.UNDERGROUND_LEVELS_MAX
 COVERAGE_PCT_DEFAULT = _massing_book.COVERAGE_PCT_DEFAULT
 RESIDENTIAL_STOREYS_DEFAULT = _massing_book.RESIDENTIAL_STOREYS_DEFAULT
 
@@ -437,6 +439,34 @@ def _level_areas(total: float, capacity: float, levels: int) -> list[float]:
     return areas
 
 
+def underground_unfit_reason(under_sqm: float, capacity: float, site_sqm: float,
+                             social_plot: float, setbacks_sqm: float, use_factor: float) -> str:
+    """Почему подземная часть под участком не помещается — словами, с числами."""
+    taken = []
+    if social_plot > 0:
+        taken.append(f"участки школы, детского сада и поликлиники ({_fmt_ru(social_plot)} м², "
+                     "под ними паркинг не строят)")
+    if setbacks_sqm > 0:
+        taken.append(f"полоса отступа вдоль границ ({_fmt_ru(setbacks_sqm)} м²)")
+    whence = (f"Из участка {_fmt_ru(site_sqm)} м² вычтены " + " и ".join(taken) + ", а под "
+              f"машино-места идёт {_fmt_ru(use_factor * 100)}% оставшейся площади. "
+              if taken else
+              f"Под машино-места идёт {_fmt_ru(use_factor * 100)}% площади участка "
+              f"{_fmt_ru(site_sqm)} м². ")
+    if capacity > 0.5:
+        needed = int(_math.ceil(under_sqm / capacity - 1e-9))
+        head = (f"Подземная часть {_fmt_ru(under_sqm)} м² под этим участком не помещается: "
+                f"на одном подземном уровне здесь около {_fmt_ru(capacity)} м², и понадобилось "
+                f"бы {_fmt_ru(needed)} уровней, а расчёт не предполагает больше "
+                f"{UNDERGROUND_LEVELS_MAX}. ")
+    else:
+        head = (f"Подземная часть {_fmt_ru(under_sqm)} м² под этим участком не помещается: "
+                "места под землёй на участке не остаётся. ")
+    return (head + whence + "Поэтому число подземных уровней не посчитано. Проверьте площадь "
+            "участка, участки школы и детского сада, отступ от границ и площадь подземной "
+            "части или впишите число подземных уровней вручную в поле «Подземных уровней».")
+
+
 def _fmt_ru(value: float, digits: int = 0) -> str:
     text = f"{value:,.{digits}f}".replace(",", " ").replace(".", ",")
     return text
@@ -659,10 +689,17 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         levels, levels_origin = 0, "estimate"
     elif manual_levels > 0:
         levels, levels_origin = manual_levels, "manual"
-    elif capacity > 0:
-        levels, levels_origin = int(_math.ceil(under_sqm / capacity - 1e-9)), "estimate"
     else:
-        levels, levels_origin = 0, "estimate"
+        needed = int(_math.ceil(under_sqm / capacity - 1e-9)) if capacity > 0 else 0
+        # Не помещается в потолок (или места под участком нет) — уровней в
+        # оценке нет, а не тысяча: причина ниже, словами.
+        levels = needed if 0 < needed <= UNDERGROUND_LEVELS_MAX else 0
+        levels_origin = "estimate"
+    unfit_reason = ""
+    if under_sqm > 0 and levels_origin == "estimate" and levels == 0 and site_sqm > 0:
+        unfit_reason = underground_unfit_reason(
+            under_sqm, capacity, site_sqm, social_plot, setbacks_sqm, use_factor)
+        warnings.append(unfit_reason)
     if levels_origin == "manual" and capacity > 0 and under_sqm > capacity * levels + 0.5:
         warnings.append(
             f"Подземная часть {_fmt_ru(under_sqm)} м² не помещается на {levels} "
@@ -749,6 +786,11 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
                                        if isinstance(row, dict)),
         "underground_levels": levels,
         "underground_levels_origin": levels_origin,
+        # Подземная часть под участком в потолок уровней не помещается: уровней
+        # в оценке нет, причина — словами (её же читают схема и отчёт).
+        "underground_levels_unfit": bool(unfit_reason),
+        "underground_levels_reason": unfit_reason,
+        "underground_levels_max": UNDERGROUND_LEVELS_MAX,
         "underground_level_rows": level_rows,
         "underground_rate_by_hand": by_hand,
         "underground_level2_markup_pct": markup2,
@@ -760,7 +802,8 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "summary": site_massing_line({
             "footprint_sqm": footprint, "site_sqm": home_sqm,
             "average_storeys": storeys, "underground_sqm": under_sqm,
-            "underground_levels": levels, "objects": objects}),
+            "underground_levels": levels, "objects": objects,
+            "underground_levels_unfit": bool(unfit_reason)}),
     }
 
 
@@ -774,7 +817,9 @@ def site_massing_line(m: dict[str, Any]) -> str:
     under = float(m.get("underground_sqm") or 0.0)
     words = {1: "одном уровне", 2: "двух уровнях", 3: "трёх уровнях", 4: "четырёх уровнях"}
     tail = (f", подземная часть {_fmt_ru(under)} м² на "
-            f"{words.get(levels, f'{levels} уровнях')}" if levels > 0 and under > 0 else "")
+            f"{words.get(levels, f'{levels} уровнях')}" if levels > 0 and under > 0 else
+            f", подземная часть {_fmt_ru(under)} м² под участком не помещается"
+            if m.get("underground_levels_unfit") and under > 0 else "")
     objects = m.get("objects") or []
     head = ("Жилые дома: пятно застройки около {fp} м² ({share}% жилой территории)"
             if objects else "Здание: пятно застройки около {fp} м² ({share}% участка)")
