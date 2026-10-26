@@ -287,20 +287,58 @@ def _object_param_rows(obj: StandaloneObject | None, params: dict[str, Any],
     return rows
 
 
-def _object_unit_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
-    """Строки удельной экономики для рамки объекта: тыс ₽ на м² своей базы,
-    база — в подписи (`unit_economics.base_label`), а не угадана заголовком."""
-    rows: list[dict[str, Any]] = []
-    for item in report.get("unit_economics") or []:
-        base = str(item.get("base_label") or "")
-        tail = base.split("м²", 1)[1].strip() if "м²" in base else base
-        rows.append(_row(f"{item.get('label')} — на м² {tail}".strip(), item.get("per_base_th"), "th"))
-        # Вторая база — продаваемая, как вторая колонка жилой таблицы: с ней
-        # сравнивают цену продажи. У строк на продаваемую не повторяется.
-        if item.get("base") != UNIT_BASE_SALEABLE:
-            rows.append(_row(f"{item.get('label')} — на м² продаваемой площади",
-                             item.get("per_saleable_th"), "th"))
-    return rows
+# Колонки «Структуры расходов» рамки объекта и ширины их в PDF (мм).
+EXPENSE_STRUCTURE_COLUMNS = (("label", "Статья", "text"), ("value", "Сумма", "rub"),
+                             ("share", "Доля", "pct"))
+EXPENSE_STRUCTURE_PDF_WIDTHS = (110, 36, 24)
+
+
+def _expense_structure_block(report: dict[str, Any], summary: dict[str, Any]) -> list[dict[str, Any]]:
+    """«Структура расходов» рамки объекта — строки движка `report.expense_structure`,
+    те же, что в жилом отчёте: участок, сметы, эксплуатация и налог на
+    имущество объектов, проценты и комиссии их кредита, налог на прибыль, НДС.
+    Итог — `summary.total_expenses`, а не своя сумма: таблица своих статей не
+    собирает (владелец, 25.10.2026: «почему в результате нет суммы расходов,
+    как по жилью»)."""
+    rows = [{"label": str(e.get("label") or ""), "value": e.get("value"), "share": e.get("share")}
+            for e in report.get("expense_structure") or []]
+    if not rows:
+        return []
+    total = summary.get("total_expenses")
+    rows.append({"label": "Расходы всего", "value": total,
+                 "share": 1.0 if float(total or 0.0) else None})
+    return [{"title": "Структура расходов", "kind": "expense_structure",
+             "columns": [list(c) for c in EXPENSE_STRUCTURE_COLUMNS], "years": rows,
+             "widths": list(EXPENSE_STRUCTURE_PDF_WIDTHS)}]
+
+
+def _object_unit_block(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """«Удельная экономика» рамки объекта — таблица движка `report.unit_economics`
+    так же, как у жилья: статья строкой, базы — столбцами («на м² общей»,
+    «на м² продаваемой»; владелец, 25.10.2026: «где два столбца на продаваемую
+    и общую»). Столбец подписан базой из кода (`base`), а не заголовком; у
+    статьи без этой базы (выручка и прибыль — только на продаваемую) клетка —
+    прочерк, а не ноль."""
+    items = report.get("unit_economics") or []
+    if not items:
+        return []
+    bases = [UNIT_BASE_TOTAL, UNIT_BASE_SALEABLE]
+    bases += [b for b in dict.fromkeys(str(i.get("base") or "") for i in items)
+              if b and b not in bases]
+
+    def per(item: dict[str, Any], base: str) -> Any:
+        if item.get("base") == base:
+            return item.get("per_base_th")
+        # Вторая база движка — продаваемая: с ней сравнивают цену продажи.
+        return item.get("per_saleable_th") if base == UNIT_BASE_SALEABLE else None
+
+    rows = [{"label": str(i.get("label") or ""), "total": i.get("total"),
+             **{"per_" + b: per(i, b) for b in bases}} for i in items]
+    columns = [["label", "Показатель", "text"], ["total", "Всего", "rub"],
+               *[["per_" + b, "на м² " + TERMS[b].genitive, "th"] for b in bases]]
+    widths = [60, 34, *[(170 - 94) / len(bases)] * len(bases)]
+    return [{"title": "Удельная экономика", "kind": "unit_economics",
+             "columns": columns, "years": rows, "widths": widths}]
 
 
 def _object_calendar(report: dict[str, Any], objects: list[dict[str, Any]]) -> dict[str, Any]:
@@ -627,8 +665,7 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
     # Удельная экономика — та же таблица движка (`report.unit_economics`), что
     # в жилом «Итоге»: рамка объекта прятала «Итог» целиком и теряла её
     # (владелец, 23.10.2026: «почему в результатах нет удельной экономики
-    # вообще»). Каждая строка — на свою базу, и база названа в подписи.
-    unit = _object_unit_rows(report)
+    # вообще»). Статья — строка, базы — столбцы (`_object_unit_block`).
     unit_brief = [_row(f"{item['label']} на м² продаваемой", item.get("per_saleable_th"), "th")
                   for item in report.get("unit_economics") or []
                   if item.get("key") in ("total_expenses", "net_profit")]
@@ -637,16 +674,19 @@ def object_report(result: dict[str, Any]) -> dict[str, Any]:
                   _row("Общие затраты", common_total, "rub"),
                   _row("Расходы всего", summary.get("total_expenses"), "rub"),
                   *unit_brief],
-        "blocks": [*cost_blocks,
-                   *([{"title": "Удельная экономика", "rows": unit}] if unit else []),
+        # Первым — все расходы проекта статьями движка с итогом «Расходы
+        # всего»; сметы объектов, общие затраты и эксплуатация ниже — их
+        # расшифровка (решение владельца, 25.10.2026). «Итог» держит одну
+        # строку — стройку: «Расходы всего» уже стоит итогом структуры.
+        "blocks": [*_expense_structure_block(report, summary),
+                   *cost_blocks,
+                   *_object_unit_block(report),
                    {"title": "Общие затраты проекта — участок, ИРД, проект, сети",
                     "rows": common_rows},
                    {"title": "Эксплуатация и налог на имущество", "rows": operating},
-                   {"title": "Итог", "rows": [
+                   {"title": "Итог стройки", "rows": [
                        _row("Затраты стройки — смета объектов и общие",
-                            capex.get("total"), "rub"),
-                       _row("Расходы проекта всего (с процентами, НДС и налогами)",
-                            summary.get("total_expenses"), "rub")]}],
+                            capex.get("total"), "rub")]}],
     }
 
     # 6. Финансирование ----------------------------------------------------
@@ -746,8 +786,8 @@ def project_kind_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
         " — жилья, соцнагрузки, платы за смену ВРИ и объектов (ТЦ, офисы, паркинг, ФОК) "
         "в расчёте нет" if kind == PROJECT_KIND_HOTEL else
         " — жилья, соцнагрузки и платы за смену ВРИ в расчёте нет"), "text")]
-    for move in summary.get("project_kind_moves") or []:
-        rows.append(_row("Паркинг", str(move), "text"))
+    for line in summary.get("project_kind_parking") or []:
+        rows.append(_row("Паркинг", str(line), "text"))
     left = [str(item) for item in (summary.get("project_kind_leftovers") or [])]
     if left:
         rows.append(_row("Осталось от жилья во вводных",
@@ -1137,7 +1177,8 @@ def hotel_object_report(result: dict[str, Any]) -> dict[str, Any]:
         "brief": [_row("CAPEX с НДС", capex_total, "rub"),
                   _row("CAPEX на номер с НДС", kpi.get("capex_per_key"), "rub_unit"),
                   _row("Расходы эксплуатации за срок", operating_total, "rub")],
-        "blocks": [{"title": "CAPEX гостиницы", "rows": capex_rows},
+        "blocks": [*_expense_structure_block(report, summary),
+                   {"title": "CAPEX гостиницы", "rows": capex_rows},
                    {"title": "Расходы эксплуатации за срок (USALI)", "rows": usali_rows},
                    {"title": "Расходы и EBITDA по годам",
                     **_hotel_years(annual, HOTEL_YEARS_COSTS, operating=True)}],

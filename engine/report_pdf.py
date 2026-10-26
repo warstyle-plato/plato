@@ -1113,9 +1113,13 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
                 rows.append([str(year.get(c[0])) if c[2] == "text"
                              else _pdf_object_value({"unit": c[2], "value": year.get(c[0])})
                              for c in columns])
-            width = 170 / max(1, len(columns))
+            # Ширины колонок блок может назвать сам («Структура расходов»:
+            # длинная подпись статьи и два коротких числа); иначе — поровну.
+            widths = [float(w) for w in block.get("widths") or []]
+            if len(widths) != len(columns):
+                widths = [170 / max(1, len(columns))] * len(columns)
             story.append(KeepTogether([P(title, small),
-                                       table(rows, [width*mm] * len(columns), font_size=6.8)]))
+                                       table(rows, [w*mm for w in widths], font_size=6.8)]))
             continue
         rows = [[title or " ", " "]]
         for row in block.get("rows") or []:
@@ -1966,7 +1970,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Класс — то же решение, что у карточки «Ключевые параметры»
     # (`project_class_view`): у гостиницы — звёздность, а не класс жилья.
     _class_dev=project_class_view(inputs)
-    premise_rows=[["Параметр","Значение"],[_class_dev["title"],_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной площади МКД",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м²"],["СМР подземной площади МКД",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м²"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
+    # Класс офиса — свой у каждого офиса (`office_class_rows`): выбран или
+    # идёт за классом проекта, и отчёт называет, откуда он.
+    premise_rows=[["Параметр","Значение"],[_class_dev["title"],_class_dev["label"]],*[[row["label"],row["text"]] for row in office_class_rows(inputs)],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной площади МКД",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м²"],["СМР подземной площади МКД",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м²"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
     # Тип проекта называется только там, где он не тот, что у всех: строка
     # «Жилой / смешанный» в каждом отчёте — постоянная приписка, а такие
     # перестают читаться. Оставшееся от жилья идёт своей строкой, потому что

@@ -207,17 +207,103 @@ function newProjectUid(){
  return 'p'+Array.from(bytes,b=>b.toString(16).padStart(2,'0')).join('');
 }
 
+// Плашка доступа (решение владельца 25.10.2026): одна, вверху «Результата»,
+// до расчёта. Говорит, какой это участок, бесплатный ли он и сколько
+// бесплатных осталось, а платный — что он стоит, и оплачивается прямо здесь.
+// Решает сервер (`/access/check` — то же `calc_access_for_chat`, только без
+// списания); страница право не вычисляет, а показывает ответ.
+let accessUseFree=false;
+function accessPlaqueHtml(d,reason){
+ const plot=d.plot||{},terms=d.terms||{},plotOffer=d.plot_offer||{},subOffer=d.subscription_offer||{};
+ const label=plot.label?'<p class="calc-access-plot">Участок: <b>'+escapeHtml(plot.label)+'</b></p>':'';
+ if(d.code==='free_offer'){
+  const left=Number(d.free_left||0),all=Number(d.free_plots||0);
+  return '<h3>Этот участок можно посчитать бесплатно</h3>'+label+
+   '<p>После входа '+(all===1?'один участок':all+' '+plotsWord(all))+' можно посчитать бесплатно. '+
+   'У вас осталось бесплатных участков: '+left+' из '+all+'.</p>'+
+   '<p>Бесплатный участок тратится только этой кнопкой. Проверьте номер участка: другой номер — это уже другой участок. '+
+   'Посчитанный участок можно пересчитывать '+Number(terms.plot_days||30)+' дней сколько угодно.</p>'+
+   '<button class="btn dark" id="calcUseFree" onclick="accessCalcFree()">Посчитать бесплатно</button>';
+ }
+ if(d.code==='paid_needed'||d.code==='expired'){
+  const vat=note=>note?' ('+escapeHtml(note)+')':'';
+  const lead=d.code==='expired'?'Оплаченный доступ к этому участку закончился.':
+   (Number(terms.free_plots||0)>0?'Бесплатный участок у вас уже использован, поэтому этот участок платный.':'Расчёт экономики платный.');
+  let html='<h3>'+(d.code==='expired'?'Доступ к участку закончился':'Этот участок — платный')+'</h3>'+label+
+   '<p>'+lead+' Выберите, как его открыть:</p>'+
+   '<ul class="calc-access-offer">'+
+   '<li><b>Только этот участок — '+accessRub(terms.plot_price_rub)+'</b>'+vat(plotOffer.vat_note)+
+   ': доступ на '+Number(terms.plot_days||30)+' дней, пересчитывать можно сколько угодно, PDF-отчёт и Excel-модель входят в цену.</li>'+
+   '<li><b>Подписка — '+accessRub(terms.subscription_price_rub)+' в месяц</b>'+vat(subOffer.vat_note)+
+   ': любые участки без ограничений.</li></ul>';
+  if(d.payments_available||d.demo){
+   if(d.demo)html+='<p class="calc-locked-why">Это демо-доступ: деньги не списываются.</p>';
+   html+='<div class="upload-line" style="align-items:center">'+
+    '<input id="calcPayEmail" type="email" placeholder="Почта для чека" style="min-width:220px;max-width:320px">'+
+    '<button class="btn dark" onclick="payForAccess(\'plot\',\'calc\')">Оплатить участок — '+accessRub(terms.plot_price_rub)+'</button>'+
+    '<button class="btn" onclick="payForAccess(\'subscription\',\'calc\')">Оформить подписку — '+accessRub(terms.subscription_price_rub)+'</button></div>'+
+    '<div id="calcPayStatus" style="font-size:12px;margin-top:6px"></div>'+
+    '<p>Введённые данные останутся в этом браузере. После оплаты вы вернётесь сюда, и расчёт запустится сам.</p>'+
+    '<p class="calc-locked-why">Оплачивая, вы принимаете <a href="/offer" target="_blank" rel="noopener">лицензионный договор</a>'+
+    ' и <a href="/refund" target="_blank" rel="noopener">условия возврата</a>. Чек придёт на указанную почту. '+
+    'Оплатить сразу несколько участков вперёд можно в разделе <a href="#" onclick="openTariffs();return false">«Тарифы»</a>.</p>';
+  }else{
+   html+='<p>Оплата на сайте пока не подключена. Напишите нам в бот — администратор откроет участок. '+
+    'Введённые данные останутся в этом браузере, и расчёт запустится, как только доступ откроют.</p>';
+  }
+  return html;
+ }
+ if(d.code==='no_plot')return '<h3>Сначала укажите участок</h3><p>'+escapeHtml(d.detail||reason||'')+'</p>';
+ return '<h3>Экономика этого участка пока закрыта</h3>'+
+  '<p>'+escapeHtml(reason||d.detail||'Нет доступа к расчёту этого участка.')+'</p>'+
+  '<button class="btn dark" onclick="openTariffs()">Тарифы и оплата</button>';
+}
+async function renderAccessPlaque(box,reason){
+ box.innerHTML=accessPlaqueHtml({},reason);
+ try{
+  const response=await fetch('/access/check',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({session:activeSession(),access_key:projectsAdminKey,inputs})});
+  const data=await response.json();
+  if(response.ok&&box.style.display!=='none')box.innerHTML=accessPlaqueHtml(data,reason);
+ }catch(e){}
+}
+// «Посчитать бесплатно»: согласие уходит одним расчётом. Тело запроса
+// собирается до первого ожидания, поэтому флаг снимается сразу после вызова.
+async function accessCalcFree(){
+ accessUseFree=true;
+ const run=calculate();
+ accessUseFree=false;
+ return run;
+}
+// Строка «чей это участок» над открытым расчётом: на чём он открыт и до
+// какого числа. Ответ — от того же решения, что пустило расчёт.
+function renderAccessLine(access){
+ const line=document.getElementById('calcAccessLine');
+ if(!line)return;
+ const a=access||{},plot=a.plot||{};
+ let text='';
+ if(a.basis==='subscription')text='Расчёт открыт по подписке до '+accessDate(a.until)+'.';
+ else if(a.basis==='free')text='Участок '+(plot.label||'')+' открыт бесплатно до '+accessDate(a.until)+'.'+
+  (a.free_left!=null?' Бесплатных участков осталось: '+Number(a.free_left)+'.':'');
+ else if(a.code==='plot'||a.basis==='reserve')text='Участок '+(plot.label||'')+' открыт до '+accessDate(a.until)+
+  (a.basis==='reserve'?' (из оплаченного запаса).':'.');
+ line.textContent=text;
+ line.style.display=text?'':'none';
+}
+
 function renderCalcLocked(reason,status){
  lastResult=null;phaseBundle=null;
  const box=document.getElementById('calcLocked');
  if(!box)return;
  box.style.display='';
+ // Отчёт прежнего участка под плашкой — чужой вердикт: прячем всё, кроме неё.
+ const report=document.getElementById('report');
+ if(report)report.classList.add('calc-closed');
+ renderAccessLine(null);
  // 402 — вход есть, а права на этот участок нет: просить войти бессмысленно,
- // человек уже вошёл. Причину и что делать называет сервер.
+ // человек уже вошёл. Что это за участок и как его открыть — плашка доступа.
  if(status===402){
-  box.innerHTML='<h3>Экономика этого участка пока закрыта</h3>'+
-   '<p>'+escapeHtml(reason||'Нет доступа к расчёту этого участка.')+'</p>'+
-   '<button class="btn dark" onclick="openTariffs()">Тарифы и оплата</button>';
+  renderAccessPlaque(box,reason);
   return;
  }
  box.innerHTML='<h3>Экономика проекта — после входа через Telegram</h3>'+
@@ -232,6 +318,8 @@ function renderCalcLocked(reason,status){
 function hideCalcLocked(){
  const box=document.getElementById('calcLocked');
  if(box)box.style.display='none';
+ const report=document.getElementById('report');
+ if(report)report.classList.remove('calc-closed');
 }
 
 // Номер последнего запущенного расчёта и номер последнего ответившего (см.
@@ -253,6 +341,9 @@ async function calculate(){
  // `onchange` поля пишет вводную сам, до всякого пересчёта.
  document.querySelectorAll('[id^=f_]').forEach(el=>{if(el.dataset.derived==='1')return;const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});
  if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';
+ // Класс офиса — тем же правилом, что движок (`apply_office_classes`): поле,
+ // которое класс поменял, показывает новое число сразу.
+ syncOfficeClasses().forEach(k=>{const el=document.getElementById('f_'+k);if(el)el.value=inputs[k]});
  if(document.getElementById('rateStartPct')){
    inputs.rate_start_pct=Number(rateStartPct.value||inputs.rate_start_pct||14);
    inputs.rate_normalization_months=Number(rateNormalizationMonths.value||inputs.rate_normalization_months||24);
@@ -282,19 +373,19 @@ async function calculate(){
  const calcTicket=++calcRun;
  try{
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
-   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey})});
+   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey,use_free:accessUseFree})});
    if(calcTicket!==calcRun)return null;
    if(!response.ok){renderCalcLocked(await calcRefusal(response),response.status);return null}
    const bundle=await response.json();
    if(calcTicket!==calcRun)return null;
-   phaseBundle=bundle;lastResult=phaseBundle.consolidated;
+   phaseBundle=bundle;lastResult=phaseBundle.consolidated;renderAccessLine(bundle.access);
  }else{
-   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey})});
+   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey,use_free:accessUseFree})});
    if(calcTicket!==calcRun)return null;
    if(!response.ok){renderCalcLocked(await calcRefusal(response),response.status);return null}
    const result=await response.json();
    if(calcTicket!==calcRun)return null;
-   lastResult=result;phaseBundle=null;
+   lastResult=result;phaseBundle=null;renderAccessLine(result.access);
    if(lastResult&&lastResult.tep&&Array.isArray(lastResult.tep.rows)){
     // Строку, которую тип проекта не считает, назад НЕ пишем: её нули —
     // участие в расчёте, а не решение человека, и записанные они стёрли бы
@@ -1054,14 +1145,10 @@ function landscapingHouseRateNote(){
                :'Считает методика класса. Расчёта ещё нет.';
   }
   if(own>0)return 'Задано руками, но метров, на которые ставка множится, в расчёте нет.';
-  // У проекта без жилья ноль — не «методика дала ноль», а её ответ, и
-  // причину называет движок (`yard_gap_reason`): у гостиницы двор в ставке
-  // здания, у чисто нежилого жителей нет, а ставка объекта — СМР без двора
-  // (владелец, 21.09 и 06.10.2026). Своего текста у страницы нет.
-  const money=String(s.landscaping_money_basis||'');
-  if(/^нежилой проект: /.test(money)){
-   const why=money.replace(/^нежилой проект: /,'');
-   return why.charAt(0).toUpperCase()+why.slice(1)+'. Вписанная здесь ставка её перебьёт.';
+  // У чисто нежилого проекта ноль бывает только без наземной площади:
+  // благоустройство у него считается ставкой (владелец, 25.10.2026).
+  if(s.landscaping_rate_origin==='nonresidential_default'){
+   return 'Ставка нежилого проекта задана по умолчанию, но наземной площади здания, на которую она умножается, в расчёте нет.';
   }
   return 'Методика класса дала ноль: '+String(s.landscaping_basis)
    +'. Пока ставка здесь не задана, благоустройства в расчёте нет.';
@@ -1069,9 +1156,22 @@ function landscapingHouseRateNote(){
  if(own>0){
   // Число здесь — показатель МЕТОДИКИ, а не применённый: применённый равен
   // введённому по построению, и подпись обещала бы то, что уже стоит в поле.
+  // У нежилого проекта очищенное поле возвращает не методику класса, а
+  // умолчание нежилого проекта — его число называет движок.
+  const fallback=Number(s.landscaping_default_rate_th);
+  if(isFinite(fallback)&&fallback>0){
+   return 'Задано руками. Очистите поле — вернётся ставка нежилого проекта по умолчанию ('
+    +fallback.toLocaleString('ru-RU',{maximumFractionDigits:2})+').';
+  }
   const back=Number(s.landscaping_by_class_th);
   return 'Задано руками. Очистите поле — вернётся методика класса'
    +(isFinite(back)&&back>0?' ('+back.toLocaleString('ru-RU',{maximumFractionDigits:2})+')':'')+'.';
+ }
+ // Умолчание нежилого проекта — не ручное число и не методика класса:
+ // благоустройство считается ставкой на метр наземной площади (владелец,
+ // 25.10.2026). Происхождение называет движок (`landscaping_rate_origin`).
+ if(s.landscaping_rate_origin==='nonresidential_default'){
+  return 'Ставка по умолчанию для нежилого проекта: благоустройство считается на квадратный метр наземной площади здания. Впишите своё число, чтобы её заменить.';
  }
  return 'Считает методика класса (в «Настройках класса»). Своё число её перебьёт.';
 }

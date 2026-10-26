@@ -63,6 +63,8 @@ async function applyAgentProposal(idx){
  Object.keys(p.patch).forEach(k=>{
    if(k==='main_construction_cost_th_per_sqm'){markClassManual('main_above_th_per_sqm');markClassManual('main_under_th_per_sqm')}
    else markClassManual(k);
+   // Класс офиса число Платона тоже не перезаписывает.
+   markFieldManual('inputs.'+(k==='main_construction_cost_th_per_sqm'?'main_above_th_per_sqm':k));
  });
  renderInputs();syncTep(false);syncProjectClassSelector();syncProjectKindSelector();renderPhasing();await calculate();
  appendAiMessage('assistant','Изменение применено к текущим Inputs и модель пересчитана.');

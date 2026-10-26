@@ -189,6 +189,10 @@ details.cadastral-box>summary::marker{color:#888}
 .calc-locked h3{margin:0 0 8px;font-size:15px}
 .calc-locked p{margin:0 0 10px;font-size:13px;color:#555;max-width:640px}
 .calc-locked .calc-locked-why{font-size:11px;color:#888}
+.calc-locked .calc-access-offer{margin:0 0 12px 18px;padding:0;font-size:13px;color:#333;max-width:640px}
+.calc-locked .calc-access-offer li{margin:0 0 4px}
+.calc-access-line{font-size:12px;color:#555;margin:8px 0 0}
+#report.calc-closed>:not(#calcLocked){display:none!important}
 .login-qr{display:flex;gap:12px;align-items:center;margin-top:12px}
 .login-qr img{width:132px;height:132px;border:1px solid #e5e5e3;background:#fff}
 .login-qr span{font-size:11px;color:#777;max-width:260px}
@@ -400,6 +404,11 @@ details.cadastral-box>summary::marker{color:#888}
 .strategy-points-title{font-weight:600;font-size:13px;margin:12px 0 4px}
 .strategy-points{margin:0;padding-left:18px;font-size:12px;line-height:1.5}
 .strategy-compare-stamp{color:var(--muted);font-size:11px;margin-top:10px}
+.loan-term-pick{margin-top:6px}
+.loan-term-pick button{font-size:12px;padding:4px 10px;margin:2px 6px 2px 0}
+.loan-term-pick-lines{margin:6px 0 0;padding-left:18px;font-size:12px;line-height:1.45;color:var(--ink)}
+.loan-term-pick-lines li{margin-bottom:4px}
+.loan-term-pick-error{color:#a33;margin:4px 0 0}
 .object-verdict{font-size:13px;line-height:1.5}
 .object-verdict b{display:block;font-size:15px;margin-bottom:4px}
 table.nonres-strategy tr.section td{font-weight:700;padding-top:12px;border-top:1px solid var(--line)}
@@ -437,6 +446,57 @@ table.nonres-finance-years td:first-child,table.nonres-finance-years th:first-ch
 @media(max-width:700px){.ai-drawer{width:100vw}.ai-open-btn .ai-label{display:none}}
 @media(max-width:700px){.cadastral-entry{grid-template-columns:1fr}.import-summary{grid-template-columns:1fr 1fr}}
 
+/* Личный кабинет (#projectsDialog). Шкала — та же, что у страницы: 15 px —
+   заголовок окна, 13 px — текст, кнопки, поля и таблицы, 11 px — подписи и
+   заголовки разделов (как `.section-title`). Одно семейство: поля и кнопки
+   наследуют шрифт, иначе браузер ставит им свой Arial и 13,3 px. Блоки —
+   белые карточки на мягком фоне, как карточки страницы. Размеры шрифта
+   задаются только здесь: инлайн-кегль в разметке или в строке JS выбивается
+   из шкалы, и проверка на отрисованной странице это ловит. */
+.cab-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:80;align-items:center;justify-content:center;padding:20px}
+.cab{background:var(--soft);max-width:900px;width:100%;max-height:80vh;overflow:auto;padding:18px 20px;font-size:13px;line-height:1.45;color:var(--ink)}
+.cab input,.cab select,.cab button,.cab textarea{font:inherit}
+.cab input,.cab select{padding:7px 9px;border:1px solid #cfcfcf;border-radius:0;background-color:#fff;color:#111}
+/* Safari рисует селект системным (свой шрифт и стрелка) и не слушает
+   `font`, пока у него родной вид: снимаем его и ставим свою стрелку. */
+.cab select{-webkit-appearance:none;appearance:none;padding-right:28px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23555'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 10px center}
+.cab small,.cab th{font-size:11px}
+.cab-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+.cab-head h2{margin:0;font-size:15px;font-weight:700}
+.cab-close,.cab-push{margin-left:auto}
+.cab-card,.cab-login{background:#fff;border:1px solid var(--line);padding:16px 18px;margin-bottom:12px}
+.cab-login{margin:0 0 12px}
+.cab-title{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:750;margin:0 0 10px}
+.cab-sub{font-size:11px;text-transform:uppercase;letter-spacing:.12em;color:#777;font-weight:750;margin:18px 0 8px}
+.cab p{margin:0 0 6px}.cab ul{margin:0 0 10px 18px;padding:0}.cab li{margin:0 0 4px}
+.cab-note{font-size:11px;color:#777;margin:0 0 8px}
+.cab-muted{color:#666;margin:0 0 8px}
+.cab-warn{color:#a05a00}
+.cab-status:empty{display:none}.cab-status{margin:6px 0}
+.cab-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
+.cab-row>input,.cab-row>select{width:auto;flex:0 1 280px;min-width:180px}
+.cab-row>input.cab-short,.cab .cab-short{width:72px;min-width:0;flex:none}
+.cab-pay{margin-top:10px;flex-wrap:wrap}
+.cab-pay>#payEmail{flex:0 1 240px;min-width:180px}
+.cab-pay>label{white-space:nowrap;color:#555}
+.cab-row>.cab-push{margin:0 0 0 auto}.cab-card>:last-child,.cab-row:last-child{margin-bottom:0}
+.cab-demo{border-left:3px solid #6f93b8;background:#f4f8fc;padding:8px 12px}
+.cab-nowrap{white-space:nowrap}.cab .demo-link{word-break:break-all}
+/* Выдача доступа — сетка «подпись слева, поле справа», поле разумной ширины;
+   подсказка — подписью под полем. На телефоне подпись встаёт над полем. */
+.grant-form{display:grid;gap:10px;max-width:660px;margin:0 0 10px}
+.grant-form>label{display:grid;grid-template-columns:200px minmax(0,1fr);gap:4px 16px;align-items:baseline}
+.grant-form>label>span:first-child{color:#555}
+.grant-form>label>span:last-child>input,.grant-form>label>span:last-child>select{width:100%;max-width:420px}
+.grant-form>label>span:last-child>.cab-short{width:90px}
+.grant-form small{display:block;color:#777;margin-top:3px;max-width:420px}
+.grant-submit{padding-left:216px}
+@media(max-width:640px){
+  .cab{padding:14px 12px}.cab-card,.cab-login{padding:12px}
+  .grant-form>label{grid-template-columns:1fr}.grant-submit{padding-left:0}
+}
 /* Анкета. Двадцать три подпункта в двух колонках на телефоне превращаются в
    лапшу: подпись ломается на три строки, баллы жмутся к правому краю. На узком
    экране строка раскладывается вертикально — подпись сверху, баллы под ней во
