@@ -50,8 +50,8 @@ NO_DATA = "нет данных"
 # --------------------------------------------------------------------------
 
 DOC = "выписка условий договоров (docs/projects/kutuzov_credit_terms.md)"
-_A = f"{DOC}, договор А № 400F00ZDO-002"
-_B = f"{DOC}, договор Б № 400B01K4DMF"
+_A = f"{DOC}, договор А (НКЛ от 04.04.2025)"
+_B = f"{DOC}, договор Б (НКЛ от 26.06.2026)"
 _NO_OU = ("нет данных: Общих условий банка (ОУ Сбербанка) в документах нет — "
           "принято как в договоре А")
 
@@ -60,7 +60,7 @@ PRESETS: dict[str, dict[str, Any]] = {
         "title": "Кутузов Сити",
         "loans": [
             {"id": "nkl2025", "name": "НКЛ от 04.04.2025", "short": "НКЛ 2025",
-             "number": "400F00ZDO-002", "limit": 5485.689 * M,
+             "limit": 5485.689 * M,
              # Лимит нарастающий (п. 1.1 ред. ДС-3). До 31.12.2025 — после
              # выполнения п. 3.3.25; прогноз начинается позже, поэтому это
              # условие на расчёт не влияет.
@@ -97,7 +97,7 @@ PRESETS: dict[str, dict[str, Any]] = {
              },
              "source": f"{_A}; {TZ}, п. 2–3"},
             {"id": "nkl2026", "name": "НКЛ от 26.06.2026", "short": "НКЛ 2026",
-             "number": "400B01K4DMF", "limit": 1125.000 * M,
+             "limit": 1125.000 * M,
              "limit_steps": [("2026-06-26", 1125.0 * M)],
              "availability_end": "2027-09-30", "maturity": "2029-09-30",
              "margin_pp": 4.14, "fee_free_limit_pct": 0.70,
@@ -1298,7 +1298,7 @@ def forecast(inputs: dict[str, Any], scenario: dict[str, Any] | None = None) -> 
         end = min(limit, closed) if closed else limit
         loans.append({
             "id": loan["id"], "name": loan["name"], "short": loan["short"],
-            "number": loan["number"], "limit": loan["limit"], "terms": _terms(loan, datasets),
+            "limit": loan["limit"], "terms": _terms(loan, datasets),
             "gaps": [], "payments": {}, "deferral_end": end.isoformat(), "base": {},
             "deferral_reason": (
                 f"все эскроу закрываются {ddmmyyyy(closed)} — раньше предельной даты "
