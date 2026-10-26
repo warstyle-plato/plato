@@ -15,6 +15,8 @@ MONITOR_PAGE_HTML, помощник _js_keys и маршрут GET /.
 # Подстановка разовая, на импорте: страница отдаётся на каждый запрос, а версия
 # за время работы процесса не меняется.
 PAGE = PAGE.replace(VERSION_PLACEHOLDER, VERSION)
+# Ссылка на панораму Яндекса — один шаблон сервера на страницу и бота.
+PAGE = PAGE.replace("__DEVELOPAID_PANORAMA_LINK__", json.dumps(YANDEX_PANORAMA_LINK))
 # Контур подставляется, как версия и подвал: копию негде обновлять, а
 # поверхность без входа в контур не найти (владелец, 29.08.2026 — «кабинет
 # надо объединить и сделать внутренним управленческим контуром»).
@@ -153,6 +155,8 @@ PAGE = PAGE.replace("__DEVELOPAID_TEP_DERIVED_OBJECT_INPUTS__", _js_keys(
 # Перевод «под ключ» → СМР для страницы: коэффициенты по классу (у класса
 # свои ставки подготовки и сетей) и умолчания «под ключ» метровых объектов.
 # Формула одна — `object_smr_conversion`; страница только применяет (c, m).
+PAGE = PAGE.replace(OFFICE_CLASS_PAGE_PLACEHOLDER,
+                    json.dumps(office_class_page_data(), ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_OBJECT_SMR__", json.dumps({
     "defaults": OBJECT_SMR_RATE_DEFAULTS,
     # Цена офиса в нежилом проекте — из аренды класса (`NONRES_KIND_CLASS_PRICES`).

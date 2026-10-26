@@ -341,6 +341,9 @@ async function calculate(){
  // `onchange` поля пишет вводную сам, до всякого пересчёта.
  document.querySelectorAll('[id^=f_]').forEach(el=>{if(el.dataset.derived==='1')return;const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});
  if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';
+ // Класс офиса — тем же правилом, что движок (`apply_office_classes`): поле,
+ // которое класс поменял, показывает новое число сразу.
+ syncOfficeClasses().forEach(k=>{const el=document.getElementById('f_'+k);if(el)el.value=inputs[k]});
  if(document.getElementById('rateStartPct')){
    inputs.rate_start_pct=Number(rateStartPct.value||inputs.rate_start_pct||14);
    inputs.rate_normalization_months=Number(rateNormalizationMonths.value||inputs.rate_normalization_months||24);
@@ -1142,14 +1145,10 @@ function landscapingHouseRateNote(){
                :'Считает методика класса. Расчёта ещё нет.';
   }
   if(own>0)return 'Задано руками, но метров, на которые ставка множится, в расчёте нет.';
-  // У проекта без жилья ноль — не «методика дала ноль», а её ответ, и
-  // причину называет движок (`yard_gap_reason`): у гостиницы двор в ставке
-  // здания, у чисто нежилого жителей нет, а ставка объекта — СМР без двора
-  // (владелец, 21.09 и 06.10.2026). Своего текста у страницы нет.
-  const money=String(s.landscaping_money_basis||'');
-  if(/^нежилой проект: /.test(money)){
-   const why=money.replace(/^нежилой проект: /,'');
-   return why.charAt(0).toUpperCase()+why.slice(1)+'. Вписанная здесь ставка её перебьёт.';
+  // У чисто нежилого проекта ноль бывает только без наземной площади:
+  // благоустройство у него считается ставкой (владелец, 25.10.2026).
+  if(s.landscaping_rate_origin==='nonresidential_default'){
+   return 'Ставка нежилого проекта задана по умолчанию, но наземной площади здания, на которую она умножается, в расчёте нет.';
   }
   return 'Методика класса дала ноль: '+String(s.landscaping_basis)
    +'. Пока ставка здесь не задана, благоустройства в расчёте нет.';
@@ -1157,9 +1156,22 @@ function landscapingHouseRateNote(){
  if(own>0){
   // Число здесь — показатель МЕТОДИКИ, а не применённый: применённый равен
   // введённому по построению, и подпись обещала бы то, что уже стоит в поле.
+  // У нежилого проекта очищенное поле возвращает не методику класса, а
+  // умолчание нежилого проекта — его число называет движок.
+  const fallback=Number(s.landscaping_default_rate_th);
+  if(isFinite(fallback)&&fallback>0){
+   return 'Задано руками. Очистите поле — вернётся ставка нежилого проекта по умолчанию ('
+    +fallback.toLocaleString('ru-RU',{maximumFractionDigits:2})+').';
+  }
   const back=Number(s.landscaping_by_class_th);
   return 'Задано руками. Очистите поле — вернётся методика класса'
    +(isFinite(back)&&back>0?' ('+back.toLocaleString('ru-RU',{maximumFractionDigits:2})+')':'')+'.';
+ }
+ // Умолчание нежилого проекта — не ручное число и не методика класса:
+ // благоустройство считается ставкой на метр наземной площади (владелец,
+ // 25.10.2026). Происхождение называет движок (`landscaping_rate_origin`).
+ if(s.landscaping_rate_origin==='nonresidential_default'){
+  return 'Ставка по умолчанию для нежилого проекта: благоустройство считается на квадратный метр наземной площади здания. Впишите своё число, чтобы её заменить.';
  }
  return 'Считает методика класса (в «Настройках класса»). Своё число её перебьёт.';
 }

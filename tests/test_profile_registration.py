@@ -208,7 +208,7 @@ def test_the_section_is_called_the_personal_account():
     assert "Личный кабинет" in button[:200]
     dialog = page[page.index('id="projectsDialog"'):]
     dialog = dialog[:dialog.index('id="aiOverlay"')]
-    assert "<h2 style=\"margin:0;font-size:17px\">Личный кабинет</h2>" in dialog
+    assert "<h2>Личный кабинет</h2>" in dialog
     assert "Мои проекты" in dialog, "проекты остаются разделом внутри кабинета"
 
 

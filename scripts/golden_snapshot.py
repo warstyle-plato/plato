@@ -171,8 +171,9 @@ def s_office_rent(core: Any, root: Path) -> dict:
         x.update({f"offices_{key}": value
                   for key, value in strategy.office_class_fields("A").items()})
         x["offices_price_th_per_sqm"] = strategy.OFFICE_CLASS_SCALE["A"]["price_th_per_sqm"]
-    # Свои подземные места у офиса не заданы: места проекта переходят ему
-    # (`office_takes_project_parking`), как на Пролетарском.
+    # Свои подземные места у офиса не заданы: гараж строится по нормативу,
+    # а 120 мест в поле проекта — остаток вводных (перенос к офису убран
+    # 25.10.2026, `object_garage_takes_norm_rest`).
     x.update(offices_strategy="income", offices_parking_under_spaces=0,
              underground_manual_spaces=120, site_area_ha=2.0, offices_saleable_sqm=42000.0)
     _object_tep(core, x, spec["tep"])

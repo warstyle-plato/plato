@@ -441,6 +441,8 @@ COST_INPUTS: tuple[tuple[str, str, str, str], ...] = (
     ("main_under_th", "Стройка подземной части и гаражей объектов", "тыс ₽/м²", NUM),
     ("utilities_th", "Сети", "тыс ₽/м² базы", NUM),
     ("commissioning_th", "Ввод в эксплуатацию", "тыс ₽/м² базы", NUM),
+    ("landscaping_gns", "Наземная площадь проекта — база благоустройства", "м²", NUM0),
+    ("landscaping_th", "Благоустройство", "тыс ₽/м² наземной площади", NUM),
     ("site_maintenance_th", "Содержание площадки", "тыс ₽/м² базы", NUM),
     ("project_management", "Управление проектом", "доля базы управления", PCT),
     ("technical_supervision", "Технический заказчик", "доля стройки", PCT),
@@ -574,19 +576,19 @@ def _same(a: Any, b: Any) -> bool:
         return False
 
 
-def office_class_of(values: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Класс офиса, к которому ближе вводные, и поля, заданные вручную.
+def office_class_of(values: dict[str, Any], chosen: str | None = None) -> tuple[str, dict[str, Any]]:
+    """Класс офиса и поля, заданные вручную.
 
-    Класс в проекте пока не хранится (выбор класса появится вместе со
-    страницей): берётся ступень, с которой совпало больше полей, при равенстве
-    — та, чья цена совпала, затем младшая. Поле, отличное от ступени, уходит в
-    «Вручную»: правка руками сильнее класса и видна.
+    Класс — тот, что у офиса в проекте (`chosen`, `office_class_choice`).
+    Без него (спецификация без класса) берётся ступень, с которой совпало
+    больше полей, при равенстве — та, чья цена совпала, затем младшая. Поле,
+    отличное от ступени, уходит в «Вручную»: правка руками сильнее класса и видна.
     """
     def score(cls: str) -> tuple[int, int, int]:
         hits = sum(_same(values.get(key), _class_value(cls, field)) for key, field in CLASS_FIELDS.items())
         price = int(_same(values.get("price"), _class_value(cls, "price_th_per_sqm")))
         return hits, price, -ns.OFFICE_CLASSES.index(cls)
-    best = max(ns.OFFICE_CLASSES, key=score)
+    best = chosen if chosen in ns.OFFICE_CLASSES else max(ns.OFFICE_CLASSES, key=score)
     manual = {key: values.get(key) for key, field in CLASS_FIELDS.items()
               if not _same(values.get(key), _class_value(best, field))}
     return best, manual
@@ -735,7 +737,7 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
     ws.add_data_validation(class_list)
     values = {item["code"]: _object_values(item) for item in objects}
     for item in offices:
-        cls, manual = office_class_of(values[item["code"]])
+        cls, manual = office_class_of(values[item["code"]], item.get("office_class"))
         info.office_class[item["code"]] = cls
         for key in CLASS_FIELDS:
             values[item["code"]][key] = manual.get(key)
@@ -784,7 +786,8 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
 
     rows.section("Смета: ставки статей проекта")
     for key, label, unit, fmt in COST_INPUTS:
-        value = spec.get(key) if key in ("core_above_gns", "core_under_gns", "main_under_th") else None
+        value = (spec.get(key) if key in ("core_above_gns", "core_under_gns", "main_under_th",
+                                          "landscaping_gns") else None)
         if value is None:
             raw = cost.get(key if key.endswith(("_th", "_mln", "_area")) else f"{key}_pct", 0.0)
             value = float(raw) / 100 if fmt == PCT else raw
@@ -1040,8 +1043,12 @@ def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]
     article("site_maintenance", "Содержание площадки", per_sqm("in.site_maintenance_th"))
     article("commissioning", "Ввод в эксплуатацию", per_sqm("in.commissioning_th"),
             f"{ref('cx.commissioning.amt')}/3*{ref('w.rve3')}")
-    for key in ("landscaping", "social"):
-        article(key, ENGINE_LABELS[key], None)
+    # Благоустройство — ставкой на метр наземной площади проекта (владелец,
+    # 25.10.2026), три месяца до ввода — тем же графиком, что движок.
+    article("landscaping", ENGINE_LABELS["landscaping"],
+            f"{ref('in.landscaping_gns')}*{ref('in.landscaping_th')}*0.001*{mult}",
+            f"{ref('cx.landscaping.amt')}/3*{ref('w.rve3')}")
+    article("social", ENGINE_LABELS["social"], None)
     amt = lambda key: ref(f"cx.{key}.amt")  # noqa: E731
     article("author_supervision", "Авторский надзор",
             f"({amt('design_p')}+{amt('design_rd')})*{ref('in.author_supervision')}")

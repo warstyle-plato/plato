@@ -89,6 +89,7 @@ from developaid_report_page import REPORT_PAGE as _REPORT_PAGE_RAW
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
+import teaser_card
 from request_body import json_object
 import v4_book_polish
 import v4_dashboard
@@ -383,6 +384,10 @@ _engine_part("entry_price_ceiling")
 # «Сравнение стратегий» объекта с выбором способа продажи — одна таблица,
 # вывод, строка тизера и подбор точек безразличия для всех поверхностей.
 _engine_part("strategy_compare")
+
+# Подбор срока кредита аренды объекта — отдельным запросом по кнопке
+# «Подобрать» у поля «Срок кредита».
+_engine_part("loan_term_pick")
 
 
 # Маршруты /current-key-rate и /calculate вынесены в engine/calc_routes.py

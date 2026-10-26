@@ -134,7 +134,9 @@ def test_inputs_carry_their_origin(dombai) -> None:
     sheet = openpyxl.load_workbook(io.BytesIO(content))[hw.INPUTS_SHEET]
     origin = {sheet[f"E{row}"].value: sheet[f"H{row}"].value for row in range(4, 4 + 60)
               if sheet[f"E{row}"].value}
-    assert origin["Налог на имущество"].startswith("умолчание: НК РФ")
+    # Ставку задаёт закон субъекта; НК РФ ст. 380 — только её предел.
+    assert origin["Налог на имущество"].startswith("умолчание: общая ставка налога на имущество по закону субъекта")
+    assert "закон № 64" in origin["Налог на имущество"] and "НК РФ, ст. 380" in origin["Налог на имущество"]
 
 
 def test_a_project_saved_with_the_old_names_prints_the_current_ones() -> None:
