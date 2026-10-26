@@ -232,6 +232,7 @@ def test_the_admin_copies_the_demo_link_with_one_button():
                 f"localStorage.setItem('developaid_web_session', {json.dumps(admin)})")
             page.goto(base, wait_until="networkidle")
             page.click("#tariffsButton")
+            page.click("#cabTabAdmin")
             page.fill("#demoInviteNote", "ЮKassa")
             page.wait_for_selector("#demoInviteBlocks .demo-block")
             page.check("#demoBlockAll")
