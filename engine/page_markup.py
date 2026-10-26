@@ -738,8 +738,8 @@ PAGE += r"""</head>
         <div class="report-section-title">Доходы</div>
       <div class="card">
         <div class="section-title">Структура выручки</div>
-        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>Доля</th><th>тыс ₽/м² продаваемой площади</th></tr></thead>
-        <tbody id="revenueTable"></tbody></table>
+        <div class="scroll"><table><thead><tr><th>Продукт</th><th>Выручка</th><th>Доля</th><th>тыс ₽/м² продаваемой площади</th></tr></thead>
+        <tbody id="revenueTable"></tbody></table></div>
       </div>
       <div class="card" id="nonresStrategyCard" hidden>
         <div class="section-title">Нежильё — стратегия реализации</div>
