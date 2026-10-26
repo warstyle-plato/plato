@@ -1539,10 +1539,14 @@ function renderSiteMassingScheme(m){
   return;
  }
  const legend=(ax.legend||[]).map(g=>'<li data-building="'+g.number+'"><i style="background:'+g.color+'"></i>'+escapeHtml(g.line||'')+'</li>').join('');
- const notes=(layout.notes||[]).map(t=>'<p class="site-massing-hint">'+escapeHtml(t)+'</p>').join('');
+ // Причина, по которой корпусов нет на карте участка (`layout.map_note`), стоит
+ // на месте кнопки карты, а не теряется среди пояснений: кнопка не пропадает молча.
+ const mapNote=String(layout.map_note||'');
+ const notes=(layout.notes||[]).filter(t=>t!==mapNote).map(t=>'<p class="site-massing-hint">'+escapeHtml(t)+'</p>').join('');
  box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
   '<p class="site-massing-hint">'+escapeHtml(ax.footer||'')+'</p>'+
-  (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':'');
+  (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':
+   mapNote?'<p class="site-massing-hint" id="siteMassingMapNote">'+escapeHtml(mapNote)+'</p>':'');
  siteMassingPlanWatch(layout.plan||{});
 }
 // План расстановки от Платона готовится фоном (`engine/site_massing_plan.py`):
