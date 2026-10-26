@@ -458,14 +458,16 @@ def access_grant_notify(chat: int, **what: Any) -> dict[str, Any]:
             _access_journal({"event": "notify_queued", "chat": int(chat), "reason": reason})
             return {"sent": False, "queued": True,
                     "reason": "сервер расчётов сам до Telegram не достаёт, его отправит бот "
-                              f"в течение {ACCESS_NOTICE_DELIVERY_MINUTES} минут"}
+                              "в течение минуты"}
         _access_journal({"event": "notify_failed", "chat": int(chat), "reason": reason})
         return {"sent": False, "reason": reason}
     return {"sent": True}
 
 
-# Как часто бот на Render забирает очередь вестей (цикл `_usage_digest_loop`).
-ACCESS_NOTICE_DELIVERY_MINUTES = 15
+# Как часто бот на Render забирает очередь вестей (`_access_notices_loop`).
+# Ядро само до Render не дозванивается (TCP не устанавливается), поэтому не
+# ядро шлёт на Render, а Render приходит за вестями.
+ACCESS_NOTICE_POLL_SECONDS = 20
 
 
 def _access_notice_unreachable(reason: str) -> bool:
@@ -477,12 +479,13 @@ def _access_notice_path() -> Path:
     return _access_dir() / "pending_notices.jsonl"
 
 
-def _access_notice_queue(chat: int, text: str) -> bool:
+def _access_notice_queue(chat: int, text: str, at: float | None = None) -> bool:
     try:
         path = _access_notice_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"chat": int(chat), "text": text, "at": time.time()},
+            handle.write(json.dumps({"chat": int(chat), "text": text,
+                                     "at": time.time() if at is None else at},
                                     ensure_ascii=False) + "\n")
         return True
     except Exception:  # noqa: BLE001 — очередь не записалась: выдавший получит причину
@@ -516,13 +519,20 @@ def access_deliver_notices(records: list[dict[str, Any]]) -> int:
     """Отправить вести из очереди. Отказ Telegram на этом шаге записывается в
     журнал доступа того хоста, который отправлял (Render): ядро его уже не увидит."""
     sent = 0
-    for record in records:
+    for index, record in enumerate(records):
         try:
             _telegram_send_message(int(record["chat"]), str(record["text"]))
             sent += 1
         except Exception as exc:  # noqa: BLE001 — одна весть не держит остальные
+            reason = str(exc)[:300]
+            if _access_notice_unreachable(reason):
+                # Отсюда до Telegram не дойти (круг запустился на самом ядре):
+                # забранное возвращается в очередь целиком, а не теряется.
+                for left in records[index:]:
+                    _access_notice_queue(int(left["chat"]), str(left["text"]), left.get("at"))
+                break
             _access_journal({"event": "notify_failed", "chat": int(record.get("chat") or 0),
-                             "reason": str(exc)[:300], "queued_at": record.get("at")})
+                             "reason": reason, "queued_at": record.get("at")})
     return sent
 
 

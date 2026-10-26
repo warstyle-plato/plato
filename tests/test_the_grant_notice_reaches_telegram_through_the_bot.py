@@ -100,7 +100,7 @@ function renderAccessAdmin(){}
 function accessDate(){return '25.11.2026'}
 function escapeHtml(s){return String(s)}
 async function accessAdminCall(){return {what:'подписка',who:'Ольга (ID CHAT)',until:1795000000,
- notice:{sent:false,queued:true,reason:'сервер расчётов сам до Telegram не достаёт, его отправит бот в течение 15 минут'}}}
+ notice:{sent:false,queued:true,reason:'сервер расчётов сам до Telegram не достаёт, его отправит бот в течение минуты'}}}
 """.replace("CHAT", str(CHAT))
     out, _ = page_blocks.run(prelude, "accessAdminGrant().then(()=>console.log(fields.accessAdminStatus.textContent));")
     assert "его отправит бот" in out and "Напишите человеку сами" not in out
@@ -112,3 +112,18 @@ def test_the_bot_grant_command_says_the_bot_will_send_it(monkeypatch):
     monkeypatch.setattr(_wrapper, "_send_message", lambda chat, text, *a, **k: said.append(text))
     _wrapper._grant_command(ADMIN, ADMIN, f"{CHAT} 30 подписка")
     assert said and "отправит бот" in said[-1] and "Напишите ему сами" not in said[-1]
+
+
+def test_the_bot_comes_for_the_notice_within_the_promised_minute():
+    """Обещание «в течение минуты» держится кругом опроса, а не памятью."""
+    assert 0 < core.ACCESS_NOTICE_POLL_SECONDS <= 60
+    assert callable(_wrapper._access_notices_loop)
+
+
+def test_a_round_on_the_core_itself_does_not_lose_the_notice(monkeypatch):
+    """Круг доставки, запущенный там, где Telegram не виден, весть не теряет."""
+    monkeypatch.setattr(core, "_telegram_send_message", _unreachable)
+    monkeypatch.setattr(core, "_telegram_webhook_enabled", lambda: True)
+    _grant()
+    _wrapper._deliver_access_notices()
+    assert [n["chat"] for n in _notices().json()["notices"]] == [CHAT]

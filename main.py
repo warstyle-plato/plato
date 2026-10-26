@@ -1780,10 +1780,6 @@ def _usage_digest_loop() -> None:
         except Exception:
             pass
         try:
-            _deliver_access_notices()
-        except Exception:
-            pass  # весть уже лежит в очереди ядра или потеряна при заборе — поток живёт
-        try:
             _deliver_krt_announcements()
         except Exception:
             pass  # рассылка — удобство: молчание лучше падения фонового потока
@@ -1924,7 +1920,8 @@ def _deliver_access_notices() -> None:
     Доступ выдаётся на ядре, а до api.telegram.org достаёт только этот хост:
     ядро кладёт весть в очередь, мы забираем её тем же путём, что и знакомства,
     и отправляем. Иначе выдавший читал «Telegram API недоступен» и писал
-    человеку сам.
+    человеку сам. Забрать весть, а потом её потерять, нельзя: забираем только
+    тогда, когда здесь есть чем отправить.
     """
     if not core._telegram_token() or not core._telegram_webhook_enabled():
         return
@@ -1936,6 +1933,15 @@ def _deliver_access_notices() -> None:
     else:
         records = core.access_take_notices()
     core.access_deliver_notices(records)
+
+
+def _access_notices_loop() -> None:
+    while True:
+        try:
+            _deliver_access_notices()
+        except Exception:
+            pass  # ядро не ответило — весть лежит в его очереди до следующего круга
+        time.sleep(core.ACCESS_NOTICE_POLL_SECONDS)
 
 
 def _deliver_normatives_announcements() -> None:
@@ -2898,6 +2904,10 @@ def _start_usage_digest() -> None:
     # слишком редкий, у неё свой.
     threading.Thread(target=_management_report_loop, name="management-report",
                      daemon=True).start()
+    # Весть «вам открыт доступ» ждать четверть часа не должна: человек только
+    # что заплатил или ему только что выдали доступ. Ядро до Telegram не
+    # достаёт, а мы до ядра — да: забираем вести коротким кругом.
+    threading.Thread(target=_access_notices_loop, name="access-notices", daemon=True).start()
 
 
 @app.on_event("startup")
