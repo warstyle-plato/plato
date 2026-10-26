@@ -416,6 +416,7 @@ def test_the_admin_issues_a_link_with_chosen_sections_in_a_browser():
                 f"localStorage.setItem('developaid_web_session', {json.dumps(admin)})")
             page.goto(base, wait_until="networkidle")
             page.click("#tariffsButton")
+            page.click("#cabTabAdmin")  # администрирование — своя вкладка кабинета
             page.wait_for_selector("#demoInviteBlocks .demo-block")
             labels = page.locator("#demoInviteBlocks label").all_inner_texts()
             assert [x.strip() for x in labels] == [

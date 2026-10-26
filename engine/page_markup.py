@@ -738,8 +738,8 @@ PAGE += r"""</head>
         <div class="report-section-title">Доходы</div>
       <div class="card">
         <div class="section-title">Структура выручки</div>
-        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>Доля</th><th>тыс ₽/м² продаваемой площади</th></tr></thead>
-        <tbody id="revenueTable"></tbody></table>
+        <div class="scroll"><table><thead><tr><th>Продукт</th><th>Выручка</th><th>Доля</th><th>тыс ₽/м² продаваемой площади</th></tr></thead>
+        <tbody id="revenueTable"></tbody></table></div>
       </div>
       <div class="card" id="nonresStrategyCard" hidden>
         <div class="section-title">Нежильё — стратегия реализации</div>
@@ -894,101 +894,127 @@ PAGE += r"""</head>
       </span>
       <button class="btn cab-close" onclick="closeProjects()">Закрыть</button>
     </div>
-    <!-- Готовые примеры стоят рядом с сохранёнными: и то и другое — «открыть
-         готовое», и искать их во «Вводных» среди разбора файлов было незачем.
-         Ключа они не требуют: это витрина, а не чужие данные. -->
-    <div id="projectsExamples" class="cab-card">
-      <div class="cab-title">Готовые примеры</div>
-      <!-- Серверных предустановок ТЭП здесь больше нет: это были настоящие
-           проекты владельца (решение владельца, 23.10.2026). -->
-      <div class="cab-note">Пресет открывает проект целиком: ТЭП, плату за ВРИ, МПТ и техприсоединение сразу.</div>
-      <div class="cab-row">
-        <select id="projectPresetSelect">
-          <option value="">Пресет проекта…</option>
-        </select>
-        <button class="btn dark" onclick="loadServerProjectPreset()">Открыть</button>
-      </div>
-    </div>
     <!-- Кто вошёл и чем выйти. Прежде выход был только через консоль браузера:
          сессия лежит в localStorage, а кнопки не было (замечание владельца,
          18.08.2026). -->
     <div id="accountBox" class="cab-card" style="display:none"></div>
-    <!-- Тарифы, мои участки и подписка: условия и права приходят с сервера. -->
-    <div id="tariffsBox" class="cab-card" style="display:none"></div>
-    <!-- Администрирование доступа — только администраторам (решает сервер). -->
-    <div id="accessAdminBox" class="cab-card" style="display:none">
-      <div class="cab-title">Администрирование доступа</div>
-      <!-- Подписи стоят над полями, а не подсказкой внутри: подсказка исчезала
-           после ввода, и по заполненной форме нельзя было понять, кому и что
-           выдаётся (замечание владельца, 22.10.2026). -->
-      <div class="grant-form">
-        <label><span>Кому выдать доступ</span><span>
-          <select id="grantChat"><option value="">Загружаю пользователей…</option></select>
-          <small>В списке — все, кто писал боту или входил на сайт. Нет нужного человека — попросите его сначала написать боту DevelopAid.</small>
-        </span></label>
-        <label><span>Что выдать</span><span>
-          <select id="grantKind" onchange="grantKindChanged()">
-            <option value="plot">Доступ к участку</option>
-            <option value="subscription">Подписку — все участки</option>
-            <option value="reserve">Запас: несколько участков вперёд</option>
-          </select>
-        </span></label>
-        <label id="grantCadastralRow"><span>Кадастровые номера участка</span><span>
-          <input id="grantCadastral" placeholder="например, 77:09:0004001:5578, 77:09:0004001:5579">
-          <small>Если в расчёте несколько участков, впишите все номера через запятую: это один участок-набор, доступ откроется ко всему набору и к любой его части.</small>
-        </span></label>
-        <label id="grantCountRow" style="display:none"><span>Сколько участков положить в запас</span><span>
-          <input id="grantCount" class="cab-short" type="number" min="1" max="10" value="3">
-          <small>Участок из запаса откроется сам при первом расчёте нового участка, на 30 дней с этого момента.</small>
-        </span></label>
-        <label id="grantDaysRow"><span>Срок доступа, дней</span><span>
-          <input id="grantDays" class="cab-short" type="number" min="1" value="30">
-        </span></label>
-        <label><span>Комментарий для журнала (необязательно)</span><span>
-          <input id="grantNote" placeholder="например, пилот для компании">
-        </span></label>
-        <div class="grant-submit"><button class="btn dark" onclick="accessAdminGrant()">Выдать доступ</button></div>
-      </div>
-      <div id="accessAdminStatus" class="cab-status"></div>
-      <div id="accessAdminList"></div>
-      <div class="cab-sub">Демо-доступ по ссылке</div>
-      <div class="cab-muted">Ссылку можно отправить кому угодно: клиенту, партнёру, инвестору, проверяющему ЮKassa. Она открывает сервис без входа через Telegram на выбранный срок и только те разделы, которые вы отметили. В расчёте человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. В мониторе, сводке, торгах и рынке он видит настоящие данные ваших проектов, но ничего не может изменить или разослать. Споры и претензии, администрирование и выдача доступа по ссылке закрыты всегда. Если отозвать ссылку, вход по ней закроется сразу.</div>
-      <div id="demoInviteBlocks" class="cab-row">
-        <label style="font-weight:600"><input type="checkbox" id="demoBlockAll" onchange="demoBlocksAll(this.checked)"> Полный доступ</label>
-      </div>
-      <div class="cab-row">
-        <input id="demoInviteNote" placeholder="Для кого, например «ЮKassa» или «ООО Ромашка»">
-        <span class="cab-muted">Создать ссылку на:</span>
-        <span id="demoInviteDays" style="display:inline-flex;gap:6px"></span>
-      </div>
-      <div id="demoInviteStatus" class="cab-status"></div>
-      <div id="demoInviteList"></div>
+    <!-- Вкладки: проекты, тарифы и администрирование не стоят больше одной
+         длинной колонкой. Вкладку «Администрирование» показывает тот же ответ
+         сервера, что и сам блок (`is_admin` из `/access/me` или ключ). -->
+    <div class="cab-tabs" role="tablist">
+      <button class="cab-tab active" id="cabTabProjects" data-tab="projects" onclick="cabinetTab('projects')">Мои проекты</button>
+      <button class="cab-tab" id="cabTabTariffs" data-tab="tariffs" onclick="cabinetTab('tariffs')">Тарифы и доступ</button>
+      <button class="cab-tab" id="cabTabAdmin" data-tab="admin" style="display:none" onclick="cabinetTab('admin')">Администрирование</button>
     </div>
-    <div id="projectsStored" class="cab-card">
-      <div class="cab-title">Мои проекты</div>
-      <div class="cab-note">
-        Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+    <div class="cab-panel" data-panel="projects">
+      <div id="projectsStored" class="cab-card">
+        <div class="cab-title">Мои проекты</div>
+        <div class="cab-note">
+          Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+        </div>
+        <!-- Ссылка живёт на нашем сервере и требует, чтобы он отвечал. Файл
+             настроек не требует ничего: его пересылают почтой, кладут в папку
+             проекта, открывают через год. Это разные способы передачи, и один
+             другого не заменяет. -->
+        <!-- Скачать и загрузить — две половины одного действия, и стоять они
+             обязаны рядом. Скачивание жило в шапке диалога, за экран выше
+             списка, а загрузка здесь: владелец искал кнопку и не нашёл
+             (23.08.2026). Подпись при этом ссылалась на кнопку «Файл», которой
+             на странице давно нет. -->
+        <div class="cab-row">
+          <button class="btn" onclick="downloadCurrentSettings()">Скачать настройки текущего</button>
+          <button class="btn" onclick="importSettingsFile()">Загрузить файл настроек</button>
+          <input type="file" id="settingsFileInput" accept=".json,application/json" style="display:none"
+                 onchange="applySettingsFile(this)">
+          <span class="cab-note">файл .json с вводными и ТЭП — свой или присланный</span>
+        </div>
+        <!-- Поиск и порядок — над списком: проектов у человека бывает за
+             десяток, а находят их по названию или по номеру участка. Порядок
+             по умолчанию — последние изменённые сверху, как и отдаёт сервер. -->
+        <div id="projectsFind" class="cab-row">
+          <input id="projectsSearch" type="search" placeholder="Найти по названию или кадастровому номеру"
+                 oninput="renderProjectsList()">
+          <select id="projectsSort" onchange="projectsSortChanged()">
+            <option value="saved_desc">Сначала изменённые недавно</option>
+            <option value="saved_asc">Сначала изменённые давно</option>
+            <option value="name">По названию, А–Я</option>
+          </select>
+        </div>
+        <div class="scroll"><table>
+          <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
+          <tbody id="projectsBody"></tbody>
+        </table></div>
       </div>
-      <!-- Ссылка живёт на нашем сервере и требует, чтобы он отвечал. Файл
-           настроек не требует ничего: его пересылают почтой, кладут в папку
-           проекта, открывают через год. Это разные способы передачи, и один
-           другого не заменяет. -->
-      <!-- Скачать и загрузить — две половины одного действия, и стоять они
-           обязаны рядом. Скачивание жило в шапке диалога, за экран выше
-           списка, а загрузка здесь: владелец искал кнопку и не нашёл
-           (23.08.2026). Подпись при этом ссылалась на кнопку «Файл», которой
-           на странице давно нет. -->
-      <div class="cab-row">
-        <button class="btn" onclick="downloadCurrentSettings()">Скачать настройки текущего</button>
-        <button class="btn" onclick="importSettingsFile()">Загрузить файл настроек</button>
-        <input type="file" id="settingsFileInput" accept=".json,application/json" style="display:none"
-               onchange="applySettingsFile(this)">
-        <span class="cab-note">файл .json с вводными и ТЭП — свой или присланный</span>
+      <!-- Готовые примеры стоят рядом с сохранёнными: и то и другое — «открыть
+           готовое», и искать их во «Вводных» среди разбора файлов было незачем.
+           Ключа они не требуют: это витрина, а не чужие данные. -->
+      <div id="projectsExamples" class="cab-card">
+        <div class="cab-title">Готовые примеры</div>
+        <!-- Серверных предустановок ТЭП здесь больше нет: это были настоящие
+             проекты владельца (решение владельца, 23.10.2026). -->
+        <div class="cab-note">Пресет открывает проект целиком: ТЭП, плату за ВРИ, МПТ и техприсоединение сразу.</div>
+        <div class="cab-row">
+          <select id="projectPresetSelect">
+            <option value="">Пресет проекта…</option>
+          </select>
+          <button class="btn dark" onclick="loadServerProjectPreset()">Открыть</button>
+        </div>
       </div>
-      <div class="scroll"><table>
-        <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
-        <tbody id="projectsBody"></tbody>
-      </table></div>
+    </div>
+    <div class="cab-panel" data-panel="tariffs" hidden>
+      <!-- Тарифы, мои участки и подписка: условия и права приходят с сервера. -->
+      <div id="tariffsBox" class="cab-card" style="display:none"></div>
+    </div>
+    <div class="cab-panel" data-panel="admin" hidden>
+      <!-- Администрирование доступа — только администраторам (решает сервер). -->
+      <div id="accessAdminBox" class="cab-card" style="display:none">
+        <div class="cab-title">Администрирование доступа</div>
+        <!-- Подписи стоят над полями, а не подсказкой внутри: подсказка исчезала
+             после ввода, и по заполненной форме нельзя было понять, кому и что
+             выдаётся (замечание владельца, 22.10.2026). -->
+        <div class="grant-form">
+          <label><span>Кому выдать доступ</span><span>
+            <select id="grantChat"><option value="">Загружаю пользователей…</option></select>
+            <small>В списке — все, кто писал боту или входил на сайт. Нет нужного человека — попросите его сначала написать боту DevelopAid.</small>
+          </span></label>
+          <label><span>Что выдать</span><span>
+            <select id="grantKind" onchange="grantKindChanged()">
+              <option value="plot">Доступ к участку</option>
+              <option value="subscription">Подписку — все участки</option>
+              <option value="reserve">Запас: несколько участков вперёд</option>
+            </select>
+          </span></label>
+          <label id="grantCadastralRow"><span>Кадастровые номера участка</span><span>
+            <input id="grantCadastral" placeholder="например, 77:09:0004001:5578, 77:09:0004001:5579">
+            <small>Если в расчёте несколько участков, впишите все номера через запятую: это один участок-набор, доступ откроется ко всему набору и к любой его части.</small>
+          </span></label>
+          <label id="grantCountRow" style="display:none"><span>Сколько участков положить в запас</span><span>
+            <input id="grantCount" class="cab-short" type="number" min="1" max="10" value="3">
+            <small>Участок из запаса откроется сам при первом расчёте нового участка, на 30 дней с этого момента.</small>
+          </span></label>
+          <label id="grantDaysRow"><span>Срок доступа, дней</span><span>
+            <input id="grantDays" class="cab-short" type="number" min="1" value="30">
+          </span></label>
+          <label><span>Комментарий для журнала (необязательно)</span><span>
+            <input id="grantNote" placeholder="например, пилот для компании">
+          </span></label>
+          <div class="grant-submit"><button class="btn dark" onclick="accessAdminGrant()">Выдать доступ</button></div>
+        </div>
+        <div id="accessAdminStatus" class="cab-status"></div>
+        <div id="accessAdminList"></div>
+        <div class="cab-sub">Демо-доступ по ссылке</div>
+        <div class="cab-muted">Ссылку можно отправить кому угодно: клиенту, партнёру, инвестору, проверяющему ЮKassa. Она открывает сервис без входа через Telegram на выбранный срок и только те разделы, которые вы отметили. В расчёте человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. В мониторе, сводке, торгах и рынке он видит настоящие данные ваших проектов, но ничего не может изменить или разослать. Споры и претензии, администрирование и выдача доступа по ссылке закрыты всегда. Если отозвать ссылку, вход по ней закроется сразу.</div>
+        <div id="demoInviteBlocks" class="cab-row">
+          <label style="font-weight:600"><input type="checkbox" id="demoBlockAll" onchange="demoBlocksAll(this.checked)"> Полный доступ</label>
+        </div>
+        <div class="cab-row">
+          <input id="demoInviteNote" placeholder="Для кого, например «ЮKassa» или «ООО Ромашка»">
+          <span class="cab-muted">Создать ссылку на:</span>
+          <span id="demoInviteDays" style="display:inline-flex;gap:6px"></span>
+        </div>
+        <div id="demoInviteStatus" class="cab-status"></div>
+        <div id="demoInviteList"></div>
+      </div>
     </div>
   </div>
 </div>
