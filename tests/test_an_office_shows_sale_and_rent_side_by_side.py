@@ -193,6 +193,26 @@ def test_the_presale_names_who_may_buy() -> None:
         assert "только по ДДУ" in hints[key] and "214-ФЗ" in hints[key], key
 
 
+def test_the_presale_follows_the_office_class() -> None:
+    """Класс офиса (#928, `office_class_choice`) ставит шкалу во вводные до
+    путей сравнения: ПДКП считается из тех же вводных с классом, что и прочие
+    способы. Цену продажи класса дают вводные (`office_class_rates`), поля
+    аренды класса ПДКП не читает."""
+    months = _months()
+    over = dict(offices_price_th_per_sqm=ns.OFFICE_CLASS_SCALE["A"]["price_th_per_sqm"], offices_office_class="A")
+    result = _calc(offices_strategy=ns.STRATEGY_DDU, **over)
+    assert {r["prefix"]: r["office_class"] for r in result["office_classes"]}.get("offices") == "A"
+    presale = next(p for p in result["office_paths"]["paths"] if p["key"] == ns.PATH_PRESALE)
+    window = dict(offices_strategy=ns.STRATEGY_DIRECT, offices_direct_sale_offset_months=-months,
+                  offices_direct_sale_months=months)
+    assert presale["npv"] == pytest.approx(_npv_run(**window, **over), rel=1e-9)
+    # Контрпример: цена класса B даёт ПДКП меньше выручки.
+    cheaper = _calc(offices_strategy=ns.STRATEGY_DDU, offices_office_class="B",
+                    offices_price_th_per_sqm=ns.OFFICE_CLASS_SCALE["B"]["price_th_per_sqm"])
+    assert next(p for p in cheaper["office_paths"]["paths"] if p["key"] == ns.PATH_PRESALE)["revenue"] \
+        < presale["revenue"]
+
+
 def test_both_presale_dates_are_inputs() -> None:
     """Начало и конец продаж по ПДКП правятся во вводных объекта."""
     months = _months()
