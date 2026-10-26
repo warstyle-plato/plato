@@ -221,6 +221,51 @@ async function runTelegramLaunch(){
   setupTelegramEditSubmit();
   return;
  }
+ if(telegramMode==='intake'){
+  // «Всё верно, считать» из карточки тизера в чате. Расчёт — умолчания
+  // движка, участок (если он в тизере) и поверх ровно строки карточки, без
+  // остатков прежнего проекта из WebView (как и экспресс-расчёт по участку).
+  // Москва сюда не идёт — у неё свой запуск по кадастру ниже; здесь область
+  // и другой регион, тем же путём, что на сайте.
+  resetAll();
+  let parcelNote='';
+  const parcel=telegramCad;
+  if(parcel){
+   writeCadastralField(parcel);
+   const numbers=cadastralNumbersIn(parcel);
+   const status=document.getElementById('cadastralStatus');
+   telegramProgress('Считаю участок…');
+   if(numbers.length&&numbers.every(outsideMoscowRegion)){
+    // Другой регион: госреестр и наши умолчания (решение владельца 19.10.2026).
+    const found=await obtainOtherRegionTep('');
+    if(!found){telegramProgress('');finishTelegramSession('Участок не посчитан: '+((status&&status.textContent)||'госреестр не ответил')+' Повторите из чата.');return}
+    await applyOtherRegion();
+    parcelNote=' '+otherRegionNormsText();
+   }else{
+    // Московская область: нормы области, как «Получить ТЭП» на сайте.
+    await calculateMo(parcel);
+    if(!moResult){telegramProgress('');finishTelegramSession('Участок не посчитан: '+((status&&status.textContent)||'расчёт по нормам области не ответил')+' Повторите из чата.');return}
+    await applyMo({silent:true});
+    parcelNote=' Участок посчитан по нормам Московской области.';
+   }
+  }
+  applyTelegramCalcOverrides();
+  renderInputs();renderTep();renderPhasing();
+  syncProjectClassSelector();syncProjectKindSelector();
+  openTab('inputs');
+  telegramProgress('Считаю…');
+  await calculate();
+  telegramProgress('');
+  // Итог — своим блоком в начале «Вводных», где человек и стоит: строки
+  // состояния участка и ГлавАПУ перерисовывает сам расчёт, и сказанное в них
+  // («норм этого региона у нас нет») пропадало бы раньше, чем его прочтут.
+  const note=document.getElementById('telegramIntakeNote')||document.createElement('div');
+  note.id='telegramIntakeNote';note.className='note';note.style.margin='8px 0';
+  note.innerHTML='<b>Расчёт по карточке тизера готов.</b> Значения тизера стоят во вводных, у каждого подписано, откуда оно взято. Остальное — умолчания модели.'+escapeHtml(parcelNote);
+  const panel=document.getElementById('inputs');
+  if(panel&&!note.parentNode)panel.insertBefore(note,panel.firstChild);
+  return;
+ }
  if(telegramCad){
   const field=document.getElementById('cadastralNumbers');
   if(!field)return;

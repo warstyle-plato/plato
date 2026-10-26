@@ -73,6 +73,9 @@ const nodes={cadastralNumbers:{value:'Одинцово, Маковского 28'
 const document={getElementById:(id)=>nodes[id]||null};
 const escapeHtml=(s)=>String(s);
 let landLookup=null;let inputs={};
+// Контур в пути: счётчик и пересчёт по приходу контура (`landContourArrived`).
+let landContourPending=0;let calcWentWithoutContour=false;let lastResult=null;
+function calculate(){}
 function renderLandLookup(){}
 function hideLandPreview(){}
 // Сессия входа едет вместе с запросом — только для учёта, на поиск не влияет.
@@ -85,7 +88,8 @@ def run(fetch_js: str) -> dict:
     if not node:
         pytest.skip("node недоступен")
     script = "\n".join([
-        DOM, page_plain_function("cloneValue"), fetch_js, page_function("lookupLand"),
+        DOM, page_plain_function("cloneValue"), page_plain_function("landHasContour"),
+        page_plain_function("landContourArrived"), fetch_js, page_function("lookupLand"),
         "(async()=>{const out=await lookupLand({quiet:true});"
         "console.log(JSON.stringify({returned:out,status:nodes.cadastralStatus.innerHTML}));})()",
     ])

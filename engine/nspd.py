@@ -2446,6 +2446,102 @@ _HYBRID_NO_KEY_REASON = (
 )
 
 
+# Панорама Яндекса — бесплатный тариф JavaScript API, решение владельца
+# 25.10.2026 с осознанным риском (docs/yandex_maps.md). Условия тарифа:
+# п. 6.1.2 — не больше 100 показов панорам в сутки, п. 4.1.1 — не в проектах,
+# требующих оплаты или ограничивающих доступ. Поэтому встроенная панорама есть
+# только в открытой части (карточка участка до входа), а лимит держим сами:
+# счётчик на диске ядра, общий для обоих воркеров. Исчерпан лимит, нет ключа
+# или панорамы в точке — вместо окна обычная ссылка на Яндекс Карты, она API
+# не трогает и работает без ключа. Ссылка строится одним шаблоном: его же
+# читают страница (`LAND_PANORAMA_LINK`) и бот.
+YANDEX_PANORAMA_LINK = (
+    "https://yandex.ru/maps/?ll={lng},{lat}&z=17&l=stv%2Csta"
+    "&panorama%5Bpoint%5D={lng},{lat}"
+)
+PANORAMA_DAILY_LIMIT = 100
+_PANORAMA_DAY_ZONE = timezone(timedelta(hours=3))
+_PANORAMA_NO_KEY_REASON = (
+    "Встроенная панорама пока не подключена: для неё нужен ключ Яндекс Карт, "
+    "а его ещё не оформили. Посмотреть улицы вокруг участка можно в самих "
+    "Яндекс Картах — кнопка ниже."
+)
+_PANORAMA_SPENT_REASON = (
+    "Встроенные панорамы на сегодня закончились: бесплатно Яндекс разрешает "
+    f"показать не больше {PANORAMA_DAILY_LIMIT} панорам в сутки. Завтра они "
+    "снова появятся, а пока панораму можно открыть в самих Яндекс Картах — "
+    "кнопка ниже."
+)
+
+
+def yandex_panorama_url(lat: Any, lng: Any) -> str:
+    """Ссылка «Открыть панораму в Яндекс Картах» в точке. Нет точки — пусто."""
+    lat_f, lng_f = _land_float(lat), _land_float(lng)
+    if lat_f is None or lng_f is None or not (-90 <= lat_f <= 90 and -180 <= lng_f <= 180):
+        return ""
+    return YANDEX_PANORAMA_LINK.format(lat=f"{lat_f:.6f}", lng=f"{lng_f:.6f}")
+
+
+def _panorama_counter_path() -> Path:
+    return Path(os.getenv("DATA_DIR", "data")) / "maps" / "yandex_panorama_day.json"
+
+
+def _panorama_today() -> str:
+    return datetime.now(_PANORAMA_DAY_ZONE).date().isoformat()
+
+
+def _panorama_counter(claim: bool) -> dict[str, Any]:
+    """Сколько панорам показано сегодня (сутки по Москве); `claim` берёт одну.
+
+    Воркеров два, память раздельная: счёт лежит в файле под блокировкой.
+    Файл не читается — панорам не даём: перерасход лимита грозит ключу, а
+    ссылка работает и так.
+    """
+    import fcntl
+
+    path = _panorama_counter_path()
+    today = _panorama_today()
+    if not claim and not path.exists():
+        return {"day": today, "shown": 0, "limit": PANORAMA_DAILY_LIMIT,
+                "left": PANORAMA_DAILY_LIMIT, "granted": False}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            handle.seek(0)
+            raw = handle.read().strip()
+            stored = json.loads(raw) if raw else {}
+            count = int(stored.get("count") or 0) if stored.get("day") == today else 0
+            granted = claim and count < PANORAMA_DAILY_LIMIT
+            if granted:
+                count += 1
+                handle.seek(0)
+                handle.truncate()
+                handle.write(json.dumps({"day": today, "count": count}))
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    return {"day": today, "shown": count, "limit": PANORAMA_DAILY_LIMIT,
+            "left": max(0, PANORAMA_DAILY_LIMIT - count), "granted": granted}
+
+
+def _panorama_view_local(key: str) -> dict[str, Any]:
+    if not key:
+        return {"available": False, "reason": _PANORAMA_NO_KEY_REASON, "left": None,
+                "limit": PANORAMA_DAILY_LIMIT}
+    try:
+        left = _panorama_counter(claim=False)["left"]
+    except Exception as exc:
+        logging.warning("Счётчик панорам не читается: %s", exc)
+        return {"available": False, "left": None, "limit": PANORAMA_DAILY_LIMIT,
+                "reason": ("Встроенная панорама сейчас недоступна: сервер не смог проверить "
+                           "суточный лимит показов. Панораму можно открыть в самих "
+                           "Яндекс Картах — кнопка ниже.")}
+    return {"available": left > 0, "reason": "" if left > 0 else _PANORAMA_SPENT_REASON,
+            "left": left, "limit": PANORAMA_DAILY_LIMIT}
+
+
 def _basemap_views_local() -> dict[str, Any]:
     key = _env_str(_YANDEX_MAPS_KEY_ENV, "").strip()
     hybrid: dict[str, Any] = {
@@ -2455,10 +2551,13 @@ def _basemap_views_local() -> dict[str, Any]:
         "script": (_YANDEX_MAPS_SCRIPT + urllib.parse.quote(key, safe="")) if key else "",
         "print_reason": _HYBRID_SERVER_REASON,
     }
+    panorama = _panorama_view_local(key)
+    panorama["script"] = hybrid["script"]
     return {
         "default": "map",
         "map": {"available": True, "provider": "OpenStreetMap", "reason": ""},
         "hybrid": hybrid,
+        "panorama": panorama,
     }
 
 
@@ -2491,7 +2590,54 @@ def land_basemap_views() -> dict[str, Any]:
             f"ответил, есть ли ключ Яндекс Карт ({type(exc).__name__}). "
             "Карта улиц работает как обычно."
         )
+        views["panorama"]["reason"] = (
+            "Встроенная панорама сейчас недоступна: сервер расчётов не ответил, "
+            "подключены ли карты Яндекса. Панораму можно открыть в самих Яндекс "
+            f"Картах — кнопка ниже ({type(exc).__name__})."
+        )
         return views
+
+
+@app.post("/land/panorama/claim", include_in_schema=False)
+def land_panorama_claim() -> dict[str, Any]:
+    """Взять один показ панорамы из суточного лимита бесплатного тарифа.
+
+    Страница зовёт это перед тем, как открыть панораму, и открывает её только
+    при `granted`. Отказ — с причиной словами, и страница показывает ссылку на
+    Яндекс Карты вместо окна. Счёт ведёт тот, у кого ключ: ядро, а Render
+    пересылает вопрос ему, — иначе у двух серверов было бы два лимита.
+    """
+    key = _env_str(_YANDEX_MAPS_KEY_ENV, "").strip()
+    if key:
+        try:
+            counted = _panorama_counter(claim=True)
+        except Exception as exc:
+            logging.warning("Счётчик панорам не записался: %s", exc)
+            return {"granted": False, "left": None, "limit": PANORAMA_DAILY_LIMIT,
+                    "reason": ("Встроенная панорама сейчас недоступна: сервер не смог "
+                               "отметить показ в суточном лимите. Панораму можно открыть "
+                               "в самих Яндекс Картах — кнопка ниже.")}
+        return {"granted": counted["granted"], "left": counted["left"],
+                "limit": counted["limit"],
+                "reason": "" if counted["granted"] else _PANORAMA_SPENT_REASON}
+    remote = _core_api_url("/land/panorama/claim")
+    if not remote:
+        return {"granted": False, "left": None, "limit": PANORAMA_DAILY_LIMIT,
+                "reason": _PANORAMA_NO_KEY_REASON}
+    try:
+        with urllib.request.urlopen(
+                urllib.request.Request(remote, data=b"{}", method="POST", headers={
+                    "Accept": "application/json", "Content-Type": "application/json"}),
+                timeout=_NSPD_TIMEOUT_SECONDS) as response:
+            answer = json.loads(response.read(16 * 1024).decode("utf-8"))
+        if isinstance(answer, dict) and isinstance(answer.get("granted"), bool):
+            return answer
+        raise ValueError("ответ без решения")
+    except Exception as exc:
+        return {"granted": False, "left": None, "limit": PANORAMA_DAILY_LIMIT,
+                "reason": ("Встроенная панорама сейчас недоступна: сервер расчётов не "
+                           "ответил, остались ли сегодня показы. Панораму можно открыть "
+                           f"в самих Яндекс Картах — кнопка ниже ({type(exc).__name__}).")}
 
 
 @app.get("/land/basemap", include_in_schema=False)

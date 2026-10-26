@@ -122,7 +122,7 @@ PAGE += r"""</head>
             <div id="landCards" class="land-results"></div>
             <div id="landWarnings" class="note warning"></div>
             <div class="import-actions">
-              <span style="font-size:11px;color:#777">Данные об участке сохранены в проекте. Цифры расчёта от этого не изменились.</span>
+              <span style="font-size:11px;color:#777">Данные об участке сохранены в проекте. Деньги расчёта от них не меняются, а схему посадки по контуру участка расчёт перерисует сам.</span>
             </div>
           </div>
           <div id="cadastralPreview" class="cadastral-preview" style="display:none">
