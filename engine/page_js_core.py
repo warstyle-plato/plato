@@ -311,6 +311,7 @@ function objectRefHtml(block,section){
  const t=`<div class="section-title">${escapeHtml(block.title||'')}</div>`;
  if(block.ref==='nonres_financing')return `<div class="card" data-nonres-finance-card hidden>${t}<div class="nonres-finance-box"></div></div>`;
  if(block.ref==='equity_participation')return `<div class="card" data-equity-card hidden>${t}<div class="equity-box"></div></div>`;
+ if(block.ref==='strategy_compare')return `<div class="card" data-strategy-compare-card>${t}<div class="strategy-compare-box"></div></div>`;
  if(block.ref==='goal_seek'){
   const g=section.goal_seek||{};
   return `<div class="card no-print" data-object-goal-seek>${t}`+(g.metric
@@ -354,6 +355,152 @@ function renderObjectReport(r){
  // ящики — и в ящики раздела «Финансирование» этой вёрстки.
  renderNonresFinancing(r);
  renderEquityParticipation(r);
+ renderStrategyCompare(r);
+ if(typeof refreshLoanTermPicks==='function')refreshLoanTermPicks();
+}
+// «Сравнение стратегий» — блок движка (`strategy_compare_block`): таблица
+// стратегий, вывод и точки, где стратегии сравняются. Страница только
+// печатает. Точки — подбор полным пересчётом модели, поэтому они приходят
+// отдельным запросом после расчёта (`/strategy-compare`), а не с ним.
+let strategyCompareKey='';
+let strategyCompareBlock=null;
+let strategyCompareRound=0;
+// Строка-раздел таблицы («Глазами инвестора…») — на всю ширину.
+function strategySectionRow(row,span){
+ return `<tr class="strategy-section" data-row="${escapeHtml(row.key||'')}"><td colspan="${span}">${escapeHtml(row.label||'')}</td></tr>`;
+}
+function strategyCompareHtml(block){
+ return (block.items||[]).map(item=>{
+  const cols=item.columns||[];
+  const best=i=>!!(cols[i]&&cols[i].best);
+  return `<div class="strategy-compare" data-product="${escapeHtml(item.product||'')}">${item.caption?`<div class="strategy-compare-caption">${escapeHtml(item.caption)}</div>`:''}<p class="strategy-compare-lead">${escapeHtml(item.lead||'')}</p><div class="scroll"><table class="strategy-compare-table"><thead><tr><th>Показатель</th>${
+   cols.map(c=>`<th data-strategy="${escapeHtml(c.key||'')}"${c.best?' class="best"':''}>${escapeHtml(c.label||'')}${
+    (c.tags||[]).map(tag=>`<br><span class="strategy-tag${tag==='лучшая по NPV'?' best-tag':''}">${escapeHtml(tag)}</span>`).join('')}</th>`).join('')}</tr></thead><tbody>${
+   (item.rows||[]).map(row=>row.section?strategySectionRow(row,cols.length+1):`<tr data-row="${escapeHtml(row.key||'')}"><td>${escapeHtml(row.label||'')}</td>${
+    (row.cells||[]).map((cell,i)=>`<td${best(i)?' class="best"':''}>${row.strong&&best(i)?'<b>'+escapeHtml(cell)+'</b>':escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>${
+   (item.points||[]).length?`<div class="strategy-points-title">${escapeHtml(item.points_title||'')}</div><ul class="strategy-points">${
+    item.points.map(p=>`<li>${escapeHtml(p.text||'')}</li>`).join('')}</ul>`:''}</div>`;
+ }).join('')+`<div class="strategy-compare-stamp">${escapeHtml(block.stamp||'')}</div>`;
+}
+function paintStrategyCompare(block){
+ document.querySelectorAll('[data-strategy-compare-card]').forEach(card=>{card.hidden=!block});
+ document.querySelectorAll('.strategy-compare-box').forEach(box=>{box.innerHTML=block?strategyCompareHtml(block):''});
+}
+function renderStrategyCompare(r){
+ const block=(r||{}).strategy_compare||null;
+ if(!block){strategyCompareKey='';strategyCompareBlock=null;paintStrategyCompare(null);return}
+ const key=JSON.stringify([inputs,tep,rates,phasing]);
+ // Те же вводные — тот же подбор: перерисовка отчёта его не повторяет и
+ // показывает то, что уже пришло (или ждёт ответа).
+ if(key===strategyCompareKey){paintStrategyCompare(strategyCompareBlock||block);return}
+ strategyCompareKey=key;strategyCompareBlock=null;
+ paintStrategyCompare(block);
+ const round=++strategyCompareRound;
+ fetch('/strategy-compare',{method:'POST',headers:{'Content-Type':'application/json'},
+  body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey||''})})
+  .then(response=>response.json().then(data=>({ok:response.ok,data})))
+  .then(({ok,data})=>{
+   if(round!==strategyCompareRound)return;
+   if(ok&&(data.items||[]).length){strategyCompareBlock=data;paintStrategyCompare(data);return}
+   const why=typeof (data||{}).detail==='string'?data.detail:'сервер не ответил';
+   strategyCompareBlock={...block,stamp:'Точки, где стратегии сравняются, не подобраны: '+why};
+   paintStrategyCompare(strategyCompareBlock);
+  })
+  .catch(error=>{
+   if(round!==strategyCompareRound)return;
+   strategyCompareBlock={...block,stamp:'Точки, где стратегии сравняются, не подобраны: '+String(error&&error.message||error)};
+   paintStrategyCompare(strategyCompareBlock);
+  });
+}
+// Подбор срока кредита аренды — кнопка «Подобрать» у поля «Срок кредита»
+// объекта с доходным методом. Подбор — десятки полных пересчётов модели
+// (`loan_term_pick` движка), поэтому он идёт отдельным запросом
+// (`/loan-term-pick`), а не с расчётом. Найденный срок встаёт в поле с
+// происхождением «подобран»; ручная правка поля сильнее подбора. Подобранный
+// срок не замораживается: когда меняются вводные, от которых он зависит,
+// подбор повторяется сам (`refreshLoanTermPicks` после каждого расчёта).
+const LOAN_TERM_SUFFIX='_loan_term_years';
+const loanTermPicks={};
+function loanTermPickField(id){return String(id).endsWith(LOAN_TERM_SUFFIX)&&!!STRATEGY_FIELD_READERS[id]}
+// Отпечаток вводных, от которых зависит подбор: всё, кроме самого срока,
+// служебных пометок и баллона, если его поставил подбор «без баллона».
+function loanTermPickHash(prefix){
+ const x={};
+ Object.keys(inputs).sort().forEach(k=>{if(!k.startsWith('_')&&k!==prefix+LOAN_TERM_SUFFIX)x[k]=inputs[k]});
+ const balloon=(inputs._field_origin||{})['inputs.'+prefix+'_loan_balloon_pct'];
+ if(balloon&&balloon.source==='picked')delete x[prefix+'_loan_balloon_pct'];
+ const text=JSON.stringify([x,tep,rates,phasing]);
+ let h=5381;
+ for(let i=0;i<text.length;i++)h=((h*33)^text.charCodeAt(i))>>>0;
+ return h.toString(36)+'.'+text.length.toString(36);
+}
+function loanTermPickHtml(prefix){
+ const st=loanTermPicks[prefix]||{};
+ const d=st.data;
+ const full=d&&d.full&&d.full.years;
+ return `<button type="button" class="loan-term-pick-go" onclick="runLoanTermPick('${escapeHtml(prefix)}','bank',false)"${st.busy?' disabled':''}>${st.busy?'Подбираю срок…':'Подобрать'}</button>`+
+  (st.error?`<div class="hint loan-term-pick-error">${escapeHtml(st.error)}</div>`:'')+
+  (d?`<ul class="loan-term-pick-lines"><li data-kind="bank">${escapeHtml(d.bank.text)}</li><li data-kind="full">${escapeHtml(d.full.text)}</li></ul>`+
+   (full?`<button type="button" class="loan-term-pick-full" onclick="applyLoanTermPick('${escapeHtml(prefix)}','full')">Взять ${full} ${yearsWord(full)} без баллона</button>`:''):'');
+}
+function yearsWord(n){const a=n%10,b=n%100;return a===1&&b!==11?'год':a>=2&&a<=4&&(b<12||b>14)?'года':'лет'}
+function paintLoanTermPick(prefix){
+ document.querySelectorAll(`.loan-term-pick[data-prefix="${prefix}"]`).forEach(box=>{box.innerHTML=loanTermPickHtml(prefix)});
+}
+function loanTermPickNode(id){
+ const prefix=id.slice(0,-LOAN_TERM_SUFFIX.length);
+ const box=document.createElement('div');
+ box.className='loan-term-pick';box.dataset.prefix=prefix;
+ box.innerHTML=loanTermPickHtml(prefix);
+ return box;
+}
+function applyLoanTermPick(prefix,mode){
+ const st=loanTermPicks[prefix]||{};
+ const v=st.data&&st.data[mode];
+ if(!v||!v.years)return false;
+ const key='inputs.'+prefix+LOAN_TERM_SUFFIX;
+ inputs[prefix+LOAN_TERM_SUFFIX]=v.years;
+ if(mode==='full'){
+  inputs[prefix+'_loan_balloon_pct']=0;
+  fieldOrigins()['inputs.'+prefix+'_loan_balloon_pct']={source:'picked',mode,text:'подобран: без баллона аренда гасит весь кредит'};
+ }
+ fieldOrigins()[key]={source:'picked',mode,hash:loanTermPickHash(prefix),
+  text:mode==='full'?`подобран: ${v.years} ${yearsWord(v.years)} — аренда гасит весь кредит без баллона`
+   :`подобран: ${v.years} ${yearsWord(v.years)} — аренда покрывает платежи с запасом, нужным банку`};
+ renderInputs();calculate();
+ return true;
+}
+async function runLoanTermPick(prefix,mode,auto){
+ loanTermPicks[prefix]={busy:true};paintLoanTermPick(prefix);
+ const hash=loanTermPickHash(prefix);
+ try{
+  const response=await fetch('/loan-term-pick',{method:'POST',headers:{'Content-Type':'application/json'},
+   body:JSON.stringify({inputs,tep,rates,phasing,prefix,session:activeSession(),access_key:projectsAdminKey||''})});
+  const data=await response.json();
+  if(!response.ok)throw new Error(typeof data.detail==='string'?data.detail:'Срок кредита не подобран: сервер не ответил.');
+  loanTermPicks[prefix]={data};
+  if(applyLoanTermPick(prefix,mode))return;
+  // Срока нет: число в поле остаётся, но пометка говорит, что оно подобрано
+  // при прежних вводных, — иначе старый подбор выглядел бы нынешним.
+  const origin=fieldOrigins()['inputs.'+prefix+LOAN_TERM_SUFFIX];
+  if(auto&&origin&&origin.source==='picked'){
+   Object.assign(origin,{hash,text:'подобран при прежних вводных; при нынешних подходящего срока нет — пояснение под кнопкой «Подобрать»'});
+   renderInputs();
+  }
+ }catch(error){
+  loanTermPicks[prefix]={error:String(error&&error.message||error)};
+ }
+ paintLoanTermPick(prefix);
+}
+// После расчёта: подобранный срок, вводные которого изменились, подбирается
+// заново тем же способом (с баллоном или без). Ручной срок не трогается.
+function refreshLoanTermPicks(){
+ Object.entries(inputs._field_origin||{}).forEach(([path,o])=>{
+  if(!o||o.source!=='picked'||!path.endsWith(LOAN_TERM_SUFFIX))return;
+  const prefix=path.slice('inputs.'.length,-LOAN_TERM_SUFFIX.length);
+  if((loanTermPicks[prefix]||{}).busy||o.hash===loanTermPickHash(prefix))return;
+  runLoanTermPick(prefix,o.mode==='full'?'full':'bank',true);
+ });
 }
 // Разделы меню отчёта: объектная вёрстка — список движка, жилая — прежний.
 function reportTocSections(r){
@@ -368,7 +515,7 @@ async function runObjectGoalSeek(){
   const response=await fetch('/ia/goal-seek',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({inputs,tep,rates,phasing,variable:'purchase_price_mln'})});
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Подбор не выполнен');
+  if(!response.ok)throw new Error(serverDetail(data)||'Подбор не выполнен');
   if(data.available===false)throw new Error(data.reason||'Показателя долга у проекта нет');
   const v=(data.solution||{}).variable;
   if(out)out.textContent=v!=null?('Максимальная цена входа: '+Number(v).toLocaleString('ru-RU',{maximumFractionDigits:0})+' млн ₽'):(data.reason||'Цель не достигается в границах подбора');
@@ -559,7 +706,7 @@ async function sendFeedback(){
  try{
   const r=await fetch('/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
                                    body:JSON.stringify(payload)});
-  if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||'не отправилось');
+  if(!r.ok)throw new Error(serverDetail(await r.json().catch(()=>({})))||'не отправилось');
   feedbackRemember({done:Date.now(),role:payload.role,region:payload.region});
   status.textContent='Спасибо. Это правда помогает.';
   setTimeout(()=>closeFeedback('sent'),1200);
@@ -676,6 +823,25 @@ let telegramCalcOverrides={};
 const WEB_SESSION_KEY='developaid_web_session';
 function webSession(){try{return localStorage.getItem(WEB_SESSION_KEY)||''}catch(e){return ''}}
 function activeSession(){return telegramSession||webSession()}
+// Причина отказа сервера словами — один разбор для всех запросов страницы.
+// Обычный отказ приходит строкой `detail`, а отказ проверки полей (FastAPI,
+// 422) — списком {loc,msg}: подставленный как есть, он печатался
+// «[object Object]», и человек не видел ни причины, ни поля.
+function serverDetail(data){
+ const detail=data&&data.detail;
+ if(detail==null||detail==='')return '';
+ if(typeof detail==='string')return detail;
+ if(Array.isArray(detail)){
+  const parts=detail.map(item=>{
+   const loc=Array.isArray(item&&item.loc)?item.loc.filter(x=>x!=='body').join('.'):'';
+   const msg=String((item&&item.msg)||(typeof item==='string'?item:JSON.stringify(item)));
+   return (loc?'поле «'+loc+'»: ':'')+msg;
+  });
+  return 'Сервер не принял запрос — '+parts.join('; ')+'.';
+ }
+ if(typeof detail==='object')return String(detail.message||(typeof detail.detail==='string'&&detail.detail)||JSON.stringify(detail));
+ return String(detail);
+}
 let webLoginBusy=false;
 async function loginViaTelegram(statusEl){
  if(webLoginBusy)return;
@@ -684,15 +850,20 @@ async function loginViaTelegram(statusEl){
  try{
   const r=await fetch('/auth/telegram/start',{method:'POST'});
   const d=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');
+  if(!r.ok)throw new Error(serverDetail(d)||'Вход через Telegram недоступен');
   // Окно бота открывается сразу, но после запроса к серверу браузер уже не
   // считает его открытым по клику и часто глушит — Safari почти всегда. Ссылка
   // показывается всегда: без неё человек стоит перед пустым ожиданием и не
   // знает, что окно заблокировано (замечание владельца, 18.08.2026).
   const opened=window.open(d.link,'_blank');
   if(statusEl){
+   // Код для сверки: бот покажет тот же и спросит «войти?». Без сверки
+   // человек подтвердил бы и вход, начатый чужим браузером по присланной ссылке.
+   const shown=String(d.display_code||'').replace(/[^0-9A-Za-z-]/g,'');
    statusEl.innerHTML=(opened?'Подтвердите вход в Telegram и вернитесь на эту вкладку. '
                              :'Браузер не дал открыть окно бота — откройте по ссылке. ')+
+    (shown?'<div class="login-code">Код входа: <b>'+shown+'</b>. Бот покажет такой же код — '+
+     'нажимайте «Да», только если коды совпадают.</div>':'')+
     '<a href="'+encodeURI(d.link)+'" target="_blank" rel="noopener">Открыть бота</a>'+
     // На компьютере без Telegram ссылка открывает страницу «поставьте
     // приложение» — тупик. QR переносит тот же код на телефон; если сервер
@@ -720,7 +891,7 @@ async function loginViaTelegram(statusEl){
     openProfile();
     return;
    }
-   if(!cr.ok)throw new Error(cd.detail||'Код входа не принят');
+   if(!cr.ok)throw new Error(serverDetail(cd)||'Код входа не принят');
   }
   throw new Error('Время ожидания вышло — попробуйте войти ещё раз.');
  }catch(e){say(String(e.message||e))}
@@ -777,7 +948,7 @@ async function saveProfile(){
    body:JSON.stringify({session:activeSession(),name:value('profName'),company:value('profCompany'),
     role:value('profRole'),source:value('profSource'),contact:value('profContact'),consent:true})});
   const d=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(d.detail||'Анкета не сохранена');
+  if(!r.ok)throw new Error(serverDetail(d)||'Анкета не сохранена');
   profileState={complete:true,profile:d.profile||{},sources:profileState.sources};
   closeProfile();
   renderAccountBox();
@@ -800,7 +971,7 @@ async function loadProfile(openIfEmpty){
                                       body:JSON.stringify({session:activeSession()})});
   if(!r.ok){
    let detail='';
-   try{detail=((await r.json())||{}).detail||''}catch(e){}
+   try{detail=serverDetail(await r.json())||''}catch(e){}
    profileState={...profileState,known:false,
                  reason:'Знакомство не проверено: '+(detail||('сервер ответил '+r.status))};
    return profileState;

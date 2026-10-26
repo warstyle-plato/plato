@@ -39,7 +39,7 @@ PAGE += r"""</head>
         <div id="hotelClassNote" style="font-size:10px;color:#777;margin-top:4px;text-align:right">звёздность гостиницы</div>
       </div>
       <div class="scenario" id="projectClassBox">Класс&nbsp;
-        <select id="projectClassSelect" onchange="applyProjectClassPreset(this.value)" style="min-width:135px">
+        <select id="projectClassSelect" onchange="applyProjectClassChoice(this.value)" style="min-width:135px">
           <option value="comfort">Комфорт</option>
           <option value="business">Бизнес</option>
           <option value="elite">Элитный</option>
@@ -122,7 +122,7 @@ PAGE += r"""</head>
             <div id="landCards" class="land-results"></div>
             <div id="landWarnings" class="note warning"></div>
             <div class="import-actions">
-              <span style="font-size:11px;color:#777">Данные об участке сохранены в проекте. Цифры расчёта от этого не изменились.</span>
+              <span style="font-size:11px;color:#777">Данные об участке сохранены в проекте. Деньги расчёта от них не меняются, а схему посадки по контуру участка расчёт перерисует сам.</span>
             </div>
           </div>
           <div id="cadastralPreview" class="cadastral-preview" style="display:none">
@@ -176,7 +176,7 @@ PAGE += r"""</head>
                проекты — это «взять готовое и посмотреть», а здесь разбирают
                принесённый файл. Решение владельца (15.08.2026). -->
           <div id="presetsMovedHint" style="font-size:11px;color:#888;margin:10px 0 8px">
-            Готовые примеры — Мишина, Мытищи, Румянцево — переехали в «Личный кабинет» наверху страницы.
+            Готовые примеры проектов теперь открываются в «Личном кабинете» — кнопка наверху страницы.
           </div>
           <div style="font-size:11px;color:#888;margin:7px 0 8px">Заполненный шаблон ТЭП или файл, скачанный с калькулятора ГлавАПУ:</div>
           <!-- Шаблон скачивается отсюда же, где загружается. Отказ разбора
@@ -336,7 +336,7 @@ PAGE += r"""</head>
           </div>
           <small>Влияет на размер БРИДЖа, потребность в ПФ и стоимость денег</small>
         </div>
-        <div class="note"><b>Дата обязательства по умолчанию — экспертно за месяц до РнС.</b> На этапе инвестиционного анализа точная дата соглашения обычно неизвестна; после появления утверждённых документов и графика её необходимо заменить на фактическую. Платежи до открытия ПФ несёт БРИДЖ или собственный капитал, после — ПФ, и только если ВРИ включена в банковский бюджет. Проценты по рассрочке считаются отдельно от процентов по кредитам.</div>
+        <div class="note" id="vriObligationNote"><b>Дата обязательства по умолчанию — экспертно за месяц до РнС.</b> На этапе инвестиционного анализа точная дата соглашения обычно неизвестна; после появления утверждённых документов и графика её необходимо заменить на фактическую. Платежи до открытия ПФ несёт БРИДЖ или собственный капитал, после — ПФ, и только если ВРИ включена в банковский бюджет. Проценты по рассрочке считаются отдельно от процентов по кредитам.</div>
         <div id="vriInputGroups"></div>
       </div>
       <!-- Льготы по плате за ВРИ, посчитанные по проекту: за создание МПТ
@@ -611,6 +611,7 @@ PAGE += r"""</head>
     <div id="report" class="panel">
       <!-- Экономика за входом: плашка стоит первой в отчёте, чтобы человек
            видел причину там, где ждал числа (решение владельца, 18.08.2026). -->
+      <div id="calcAccessLine" class="calc-access-line" style="display:none"></div>
       <div id="calcLocked" class="calc-locked" style="display:none"></div>
       <div class="card report-hero">
         <div class="report-title">
@@ -737,8 +738,8 @@ PAGE += r"""</head>
         <div class="report-section-title">Доходы</div>
       <div class="card">
         <div class="section-title">Структура выручки</div>
-        <table><thead><tr><th>Продукт</th><th>Выручка</th><th>Доля</th><th>тыс ₽/м² продаваемой площади</th></tr></thead>
-        <tbody id="revenueTable"></tbody></table>
+        <div class="scroll"><table><thead><tr><th>Продукт</th><th>Выручка</th><th>Доля</th><th>тыс ₽/м² продаваемой площади</th></tr></thead>
+        <tbody id="revenueTable"></tbody></table></div>
       </div>
       <div class="card" id="nonresStrategyCard" hidden>
         <div class="section-title">Нежильё — стратегия реализации</div>
@@ -869,11 +870,13 @@ PAGE += r"""</head>
 </div>
 
 <!-- Хранилище проектов: список того, что сохранили явно. -->
-<div id="projectsDialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);
-     z-index:80;align-items:center;justify-content:center;padding:20px" onclick="if(event.target===this)closeProjects()">
-  <div style="background:#fff;max-width:900px;width:100%;max-height:80vh;overflow:auto;padding:22px 24px">
-    <div style="display:flex;align-items:center;gap:14px;margin-bottom:12px">
-      <h2 style="margin:0;font-size:17px">Личный кабинет</h2>
+<!-- Кабинет набран шкалой страницы (стили `.cab`): заголовок, текст, подпись;
+     поля и кнопки наследуют шрифт. Своих размеров в разметке и в строках JS
+     не заводить — иначе он снова расползётся на восемь кеглей. -->
+<div id="projectsDialog" class="cab-backdrop" style="display:none" onclick="if(event.target===this)closeProjects()">
+  <div class="cab">
+    <div class="cab-head">
+      <h2>Личный кабинет</h2>
       <!-- Кнопки хранилища — только там, где оно есть: примеры открываются и
            без него, а «Сохранить», которое всегда откажет, хуже отсутствия.
            Смена ключа без консоли браузера: ключ меняют, когда он засветился,
@@ -886,102 +889,132 @@ PAGE += r"""</head>
         <button class="btn dark" id="projectsSaveOver" style="display:none"
                 onclick="saveOpenedProject()">Сохранить</button>
         <button class="btn" onclick="saveProjectAsNew()">Сохранить как…</button>
-        <span id="projectsOpenedName" class="muted" style="font-size:12px"></span>
+        <span id="projectsOpenedName" class="cab-note"></span>
         <button class="btn" onclick="changeProjectsKey()">Сменить ключ</button>
       </span>
-      <button class="btn" style="margin-left:auto" onclick="closeProjects()">Закрыть</button>
-    </div>
-    <!-- Готовые примеры стоят рядом с сохранёнными: и то и другое — «открыть
-         готовое», и искать их во «Вводных» среди разбора файлов было незачем.
-         Ключа они не требуют: это витрина, а не чужие данные. -->
-    <div id="projectsExamples" style="border:1px solid var(--line);padding:14px;margin-bottom:14px">
-      <div class="section-title" style="margin-bottom:8px">Готовые примеры</div>
-      <div class="upload-line" style="align-items:center">
-        <select id="serverPresetSelect" style="min-width:240px">
-          <option value="">Предустановка ТЭП…</option>
-        </select>
-        <button class="btn dark" onclick="loadServerPreset()">Открыть</button>
-        <a id="serverPresetDownload" class="btn" href="#" style="display:none;text-decoration:none">Скачать Excel</a>
-      </div>
-      <div style="font-size:11px;color:#888;margin:9px 0 8px">или пресет проекта целиком — ТЭП, ВРИ, МПТ и техприсоединение разом</div>
-      <div class="upload-line" style="align-items:center">
-        <select id="projectPresetSelect" style="min-width:240px">
-          <option value="">Пресет проекта…</option>
-        </select>
-        <button class="btn dark" onclick="loadServerProjectPreset()">Открыть</button>
-      </div>
+      <button class="btn cab-close" onclick="closeProjects()">Закрыть</button>
     </div>
     <!-- Кто вошёл и чем выйти. Прежде выход был только через консоль браузера:
          сессия лежит в localStorage, а кнопки не было (замечание владельца,
          18.08.2026). -->
-    <div id="accountBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px"></div>
-    <!-- Тарифы, мои участки и подписка: условия и права приходят с сервера. -->
-    <div id="tariffsBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px"></div>
-    <!-- Администрирование доступа — только администраторам (решает сервер). -->
-    <div id="accessAdminBox" style="display:none;border:1px solid var(--line);padding:12px 14px;margin-bottom:14px">
-      <div class="section-title" style="margin-bottom:8px">Администрирование доступа</div>
-      <!-- Подписи стоят над полями, а не подсказкой внутри: подсказка исчезала
-           после ввода, и по заполненной форме нельзя было понять, кому и что
-           выдаётся (замечание владельца, 22.10.2026). -->
-      <div class="grant-form" style="display:grid;gap:8px;max-width:640px;margin-bottom:8px">
-        <label>Кому выдать доступ
-          <select id="grantChat" style="width:100%"><option value="">Загружаю пользователей…</option></select>
-          <small class="muted">В списке — все, кто писал боту или входил на сайт. Нет нужного человека — попросите его сначала написать боту DevelopAid.</small>
-        </label>
-        <label>Что выдать
-          <select id="grantKind" onchange="grantKindChanged()" style="width:100%">
-            <option value="plot">Доступ к участку</option>
-            <option value="subscription">Подписку — все участки</option>
-          </select>
-        </label>
-        <label id="grantCadastralRow">Кадастровые номера участка
-          <input id="grantCadastral" placeholder="например, 77:09:0004001:5578, 77:09:0004001:5579" style="width:100%">
-          <small class="muted">Если в расчёте несколько участков, впишите все номера через запятую: это один участок-набор, доступ откроется ко всему набору и к любой его части.</small>
-        </label>
-        <label>Срок доступа, дней
-          <input id="grantDays" type="number" min="1" value="30" style="width:120px">
-        </label>
-        <label>Комментарий для журнала (необязательно)
-          <input id="grantNote" placeholder="например, пилот для компании" style="width:100%">
-        </label>
-        <div><button class="btn dark" onclick="accessAdminGrant()">Выдать доступ</button></div>
-      </div>
-      <div id="accessAdminStatus" style="font-size:12px;margin-bottom:8px"></div>
-      <div id="accessAdminList"></div>
-      <div class="section-title" style="margin:14px 0 6px">Демо-доступ по ссылке</div>
-      <div style="font-size:12px;color:#777;margin-bottom:6px">Ссылку можно отправить кому угодно: клиенту, партнёру, проверяющему ЮKassa. Она открывает кабинет без Telegram на 14 дней. По ней человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. Если отозвать ссылку, вход по ней закроется сразу.</div>
-      <div class="upload-line" style="align-items:center;margin-bottom:6px">
-        <input id="demoInviteNote" placeholder="Для кого, например «ЮKassa» или «ООО Ромашка»" style="min-width:220px">
-        <button class="btn dark" onclick="accessDemoCreate()">Создать демо-ссылку</button>
-      </div>
-      <div id="demoInviteStatus" style="font-size:12px;margin-bottom:6px"></div>
-      <div id="demoInviteList"></div>
+    <div id="accountBox" class="cab-card" style="display:none"></div>
+    <!-- Вкладки: проекты, тарифы и администрирование не стоят больше одной
+         длинной колонкой. Вкладку «Администрирование» показывает тот же ответ
+         сервера, что и сам блок (`is_admin` из `/access/me` или ключ). -->
+    <div class="cab-tabs" role="tablist">
+      <button class="cab-tab active" id="cabTabProjects" data-tab="projects" onclick="cabinetTab('projects')">Мои проекты</button>
+      <button class="cab-tab" id="cabTabTariffs" data-tab="tariffs" onclick="cabinetTab('tariffs')">Тарифы и доступ</button>
+      <button class="cab-tab" id="cabTabAdmin" data-tab="admin" style="display:none" onclick="cabinetTab('admin')">Администрирование</button>
     </div>
-    <div id="projectsStored">
-      <div class="section-title" style="margin-bottom:8px">Мои проекты</div>
-      <div style="font-size:11px;color:#777;margin-bottom:10px">
-        Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+    <div class="cab-panel" data-panel="projects">
+      <div id="projectsStored" class="cab-card">
+        <div class="cab-title">Мои проекты</div>
+        <div class="cab-note">
+          Хранится на ядре в России. Сохраняется только то, что вы сохранили сами.
+        </div>
+        <!-- Ссылка живёт на нашем сервере и требует, чтобы он отвечал. Файл
+             настроек не требует ничего: его пересылают почтой, кладут в папку
+             проекта, открывают через год. Это разные способы передачи, и один
+             другого не заменяет. -->
+        <!-- Скачать и загрузить — две половины одного действия, и стоять они
+             обязаны рядом. Скачивание жило в шапке диалога, за экран выше
+             списка, а загрузка здесь: владелец искал кнопку и не нашёл
+             (23.08.2026). Подпись при этом ссылалась на кнопку «Файл», которой
+             на странице давно нет. -->
+        <div class="cab-row">
+          <button class="btn" onclick="downloadCurrentSettings()">Скачать настройки текущего</button>
+          <button class="btn" onclick="importSettingsFile()">Загрузить файл настроек</button>
+          <input type="file" id="settingsFileInput" accept=".json,application/json" style="display:none"
+                 onchange="applySettingsFile(this)">
+          <span class="cab-note">файл .json с вводными и ТЭП — свой или присланный</span>
+        </div>
+        <!-- Поиск и порядок — над списком: проектов у человека бывает за
+             десяток, а находят их по названию или по номеру участка. Порядок
+             по умолчанию — последние изменённые сверху, как и отдаёт сервер. -->
+        <div id="projectsFind" class="cab-row">
+          <input id="projectsSearch" type="search" placeholder="Найти по названию или кадастровому номеру"
+                 oninput="renderProjectsList()">
+          <select id="projectsSort" onchange="projectsSortChanged()">
+            <option value="saved_desc">Сначала изменённые недавно</option>
+            <option value="saved_asc">Сначала изменённые давно</option>
+            <option value="name">По названию, А–Я</option>
+          </select>
+        </div>
+        <div class="scroll"><table>
+          <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
+          <tbody id="projectsBody"></tbody>
+        </table></div>
       </div>
-      <!-- Ссылка живёт на нашем сервере и требует, чтобы он отвечал. Файл
-           настроек не требует ничего: его пересылают почтой, кладут в папку
-           проекта, открывают через год. Это разные способы передачи, и один
-           другого не заменяет. -->
-      <!-- Скачать и загрузить — две половины одного действия, и стоять они
-           обязаны рядом. Скачивание жило в шапке диалога, за экран выше
-           списка, а загрузка здесь: владелец искал кнопку и не нашёл
-           (23.08.2026). Подпись при этом ссылалась на кнопку «Файл», которой
-           на странице давно нет. -->
-      <div class="upload-line" style="align-items:center;margin-bottom:10px">
-        <button class="btn" onclick="downloadCurrentSettings()">Скачать настройки текущего</button>
-        <button class="btn" onclick="importSettingsFile()">Загрузить файл настроек</button>
-        <input type="file" id="settingsFileInput" accept=".json,application/json" style="display:none"
-               onchange="applySettingsFile(this)">
-        <span style="font-size:11px;color:#888">файл .json с вводными и ТЭП — свой или присланный</span>
+      <!-- Готовые примеры стоят рядом с сохранёнными: и то и другое — «открыть
+           готовое», и искать их во «Вводных» среди разбора файлов было незачем.
+           Ключа они не требуют: это витрина, а не чужие данные. -->
+      <div id="projectsExamples" class="cab-card">
+        <div class="cab-title">Готовые примеры</div>
+        <!-- Серверных предустановок ТЭП здесь больше нет: это были настоящие
+             проекты владельца (решение владельца, 23.10.2026). -->
+        <div class="cab-note">Пресет открывает проект целиком: ТЭП, плату за ВРИ, МПТ и техприсоединение сразу.</div>
+        <div class="cab-row">
+          <select id="projectPresetSelect">
+            <option value="">Пресет проекта…</option>
+          </select>
+          <button class="btn dark" onclick="loadServerProjectPreset()">Открыть</button>
+        </div>
       </div>
-      <div class="scroll"><table>
-        <thead><tr><th>Проект</th><th>Выручка</th><th>Чистая прибыль</th><th>LLCR</th><th></th></tr></thead>
-        <tbody id="projectsBody"></tbody>
-      </table></div>
+    </div>
+    <div class="cab-panel" data-panel="tariffs" hidden>
+      <!-- Тарифы, мои участки и подписка: условия и права приходят с сервера. -->
+      <div id="tariffsBox" class="cab-card" style="display:none"></div>
+    </div>
+    <div class="cab-panel" data-panel="admin" hidden>
+      <!-- Администрирование доступа — только администраторам (решает сервер). -->
+      <div id="accessAdminBox" class="cab-card" style="display:none">
+        <div class="cab-title">Администрирование доступа</div>
+        <!-- Подписи стоят над полями, а не подсказкой внутри: подсказка исчезала
+             после ввода, и по заполненной форме нельзя было понять, кому и что
+             выдаётся (замечание владельца, 22.10.2026). -->
+        <div class="grant-form">
+          <label><span>Кому выдать доступ</span><span>
+            <select id="grantChat"><option value="">Загружаю пользователей…</option></select>
+            <small>В списке — все, кто писал боту или входил на сайт. Нет нужного человека — попросите его сначала написать боту DevelopAid.</small>
+          </span></label>
+          <label><span>Что выдать</span><span>
+            <select id="grantKind" onchange="grantKindChanged()">
+              <option value="plot">Доступ к участку</option>
+              <option value="subscription">Подписку — все участки</option>
+              <option value="reserve">Запас: несколько участков вперёд</option>
+            </select>
+          </span></label>
+          <label id="grantCadastralRow"><span>Кадастровые номера участка</span><span>
+            <input id="grantCadastral" placeholder="например, 77:09:0004001:5578, 77:09:0004001:5579">
+            <small>Если в расчёте несколько участков, впишите все номера через запятую: это один участок-набор, доступ откроется ко всему набору и к любой его части.</small>
+          </span></label>
+          <label id="grantCountRow" style="display:none"><span>Сколько участков положить в запас</span><span>
+            <input id="grantCount" class="cab-short" type="number" min="1" max="10" value="3">
+            <small>Участок из запаса откроется сам при первом расчёте нового участка, на 30 дней с этого момента.</small>
+          </span></label>
+          <label id="grantDaysRow"><span>Срок доступа, дней</span><span>
+            <input id="grantDays" class="cab-short" type="number" min="1" value="30">
+          </span></label>
+          <label><span>Комментарий для журнала (необязательно)</span><span>
+            <input id="grantNote" placeholder="например, пилот для компании">
+          </span></label>
+          <div class="grant-submit"><button class="btn dark" onclick="accessAdminGrant()">Выдать доступ</button></div>
+        </div>
+        <div id="accessAdminStatus" class="cab-status"></div>
+        <div id="accessAdminList"></div>
+        <div class="cab-sub">Демо-доступ по ссылке</div>
+        <div class="cab-muted">Ссылку можно отправить кому угодно: клиенту, партнёру, инвестору, проверяющему ЮKassa. Она открывает сервис без входа через Telegram на выбранный срок и только те разделы, которые вы отметили. В расчёте человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. В мониторе, сводке, торгах и рынке он видит настоящие данные ваших проектов, но ничего не может изменить или разослать. Споры и претензии, администрирование и выдача доступа по ссылке закрыты всегда. Если отозвать ссылку, вход по ней закроется сразу.</div>
+        <div id="demoInviteBlocks" class="cab-row">
+          <label style="font-weight:600"><input type="checkbox" id="demoBlockAll" onchange="demoBlocksAll(this.checked)"> Полный доступ</label>
+        </div>
+        <div class="cab-row">
+          <input id="demoInviteNote" placeholder="Для кого, например «ЮKassa» или «ООО Ромашка»">
+          <span class="cab-muted">Создать ссылку на:</span>
+          <span id="demoInviteDays" style="display:inline-flex;gap:6px"></span>
+        </div>
+        <div id="demoInviteStatus" class="cab-status"></div>
+        <div id="demoInviteList"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -1043,7 +1076,7 @@ PAGE += r"""</head>
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><h2 style="margin:0;font-size:17px">Настройки классов</h2><button onclick="closeClassDialog()" style="margin-left:auto;border:1px solid #ddd;background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer">✕</button></div>
     <div id="classDialogBody" style="container-type:inline-size"></div>
     <div id="classDialogNote" style="font-size:12px;margin-top:10px;color:#444"></div>
-    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="applyProjectClassPreset(document.getElementById('projectClassSelect').value);renderClassDialog()" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть базу выбранного класса</button><button onclick="fillClassesFromStats()" title="Подставляет свод модуля «Статистика» во все классы как ваши значения — по каждой статье, где свод есть" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вставить данные из статистики</button><button id="clearClassOwnButton" onclick="clearClassOverrides()" title="Убирает ВАШИ значения всех классов — таблица возвращается к общим базам DevelopAid" style="border:1px solid #c98a1b;background:#fff;color:#8a5a00;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Убрать мои значения</button></div>
+    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="applyProjectClassChoice(document.getElementById('projectClassSelect').value);renderClassDialog()" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вернуть базу выбранного класса</button><button onclick="fillClassesFromStats()" title="Подставляет свод модуля «Статистика» во все классы как ваши значения — по каждой статье, где свод есть" style="border:1px solid #3b6db4;background:#fff;color:#3b6db4;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Вставить данные из статистики</button><button id="clearClassOwnButton" onclick="clearClassOverrides()" title="Убирает ВАШИ значения всех классов — таблица возвращается к общим базам DevelopAid" style="border:1px solid #c98a1b;background:#fff;color:#8a5a00;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:12px">Убрать мои значения</button></div>
     <div id="classSourcesBody" style="margin-top:16px"></div>
   </div>
 </div>

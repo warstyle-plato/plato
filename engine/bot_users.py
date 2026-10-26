@@ -224,6 +224,12 @@ def _project_owner(session: str = "", key: str = "") -> int:
     """
     if session:
         chat_id = int(_telegram_verify_session(session).get("chat_id") or 0)
+        demo = globals().get("demo_chat")
+        if chat_id and callable(demo) and demo(chat_id):
+            # Свои проекты и профиль — раздел «Личный кабинет» демо-ссылки.
+            problem = demo_section_problem(chat_id, "cabinet", write=False)
+            if problem:
+                raise HTTPException(status_code=403, detail=problem)
         if chat_id:
             return chat_id
         raise HTTPException(status_code=403, detail="В сессии нет владельца — войдите заново.")
@@ -970,9 +976,28 @@ def _site_chat_project(chat_id: int) -> str:
     return _site_chats().get(str(int(chat_id or 0)), "")
 
 
-def _site_chat_bind(chat_id: int, project: str) -> str:
+def _site_chat_titles() -> dict[str, str]:
+    """Названия привязанных чатов — для /status. Привязки старше этого поля
+    названия не имеют, пока из чата не придёт следующий отчёт."""
+    try:
+        raw = json.loads(_site_chats_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    titles = raw.get("titles") if isinstance(raw, dict) else None
+    return {str(k): str(v) for k, v in (titles or {}).items() if str(v or "").strip()}
+
+
+def _site_chats_write(chats: dict[str, str], titles: dict[str, str]) -> None:
+    path = _site_chats_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"chats": chats, "titles": titles}, ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+
+
+def _site_chat_bind(chat_id: int, project: str, title: str = "") -> str:
     """Привязать чат к проекту. Пустое имя снимает привязку."""
     chats = _site_chats()
+    titles = _site_chat_titles()
     key = str(int(chat_id or 0))
     name = _site_project_name(project)
     if str(project or "").strip() and not name:
@@ -980,13 +1005,59 @@ def _site_chat_bind(chat_id: int, project: str) -> str:
                                  "уберите косые черты и точки подряд.")
     if name:
         chats[key] = name
+        if str(title or "").strip():
+            titles[key] = str(title).strip()
     else:
         chats.pop(key, None)
-    path = _site_chats_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"chats": chats}, ensure_ascii=False, indent=1),
-                    encoding="utf-8")
+        titles.pop(key, None)
+    _site_chats_write(chats, titles)
     return name
+
+
+def _site_chat_title_seen(chat_id: int, title: str) -> None:
+    """Название привязанного чата с его же сообщения — пишется, только если
+    поменялось: каждое сообщение в реестр не ходит."""
+    key = str(int(chat_id or 0))
+    title = str(title or "").strip()
+    chats = _site_chats()
+    if not title or key not in chats:
+        return
+    titles = _site_chat_titles()
+    if titles.get(key) != title:
+        titles[key] = title
+        _site_chats_write(chats, titles)
+
+
+def site_chat_bindings() -> list[dict[str, Any]]:
+    """Привязки чатов по проектам и когда из них последний раз что-то легло.
+
+    Владелец (24.10.2026, на /status, где был виден только чат продаж): «про
+    стройку и монитор ни слова». Счётчик бота живёт в памяти воркера с его
+    запуска; привязки и сами отчёты — на ядре, и ответ берётся отсюда.
+    """
+    import developaid_management_report as management_report
+    import developaid_monitor as monitor
+    from market_search import sales_store
+
+    titles = _site_chat_titles()
+    projects: dict[str, list[str]] = {}
+    for key, project in sorted(_site_chats().items()):
+        projects.setdefault(project, []).append(titles.get(key) or "")
+    out = []
+    for project, chats in sorted(projects.items()):
+        daily = monitor._project_dir(project) / "daily"
+        days = sorted(path.stem for path in daily.glob("*.json")) if daily.is_dir() else []
+        sales_project = ((management_report.sales_link(project) or {}).get("sales_project") or "")
+        sales_last = ""
+        if sales_project:
+            kept = sales_store.load(sales_store.default_dir(), sales_project)
+            messages = ((((kept.get("sources") or {}).get("salesroom") or {}).get("data") or {})
+                        .get("messages") or [])
+            sales_last = max((str(m.get("day") or "") for m in messages), default="")
+        out.append({"project": project, "chats": chats,
+                    "site_last": days[-1] if days else "",
+                    "sales_project": sales_project, "sales_last": sales_last})
+    return out
 
 
 def _krt_subscribers_path() -> Path:
@@ -1249,12 +1320,13 @@ def internal_monitor_daily(req: SiteChatReportRequest) -> dict[str, Any]:
                                expected.encode("utf-8")):
         raise HTTPException(status_code=403, detail="Подпись не сошлась.")
     if req.project:
-        return {"bound": _site_chat_bind(int(req.chat_id or 0), req.project)}
+        return {"bound": _site_chat_bind(int(req.chat_id or 0), req.project, req.title)}
     project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
     if not project:
         # «Чат не привязан» — это ответ, а не отказ: человеку надо сказать, чем
         # привязать, иначе отчёт молча падает в никуда и выглядит принятым.
         return {"bound": ""}
+    _site_chat_title_seen(int(req.chat_id or 0), req.title)
     import developaid_monitor_daily as daily
 
     try:
@@ -1262,6 +1334,76 @@ def internal_monitor_daily(req: SiteChatReportRequest) -> dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return {"bound": project, "stored": stored}
+
+
+class SalesChatRequest(BaseModel):
+    """Отчёт отдела продаж из группового чата — от бота к ядру.
+
+    Модель — выше маршрута, по той же причине, что у `SiteChatReportRequest`.
+    """
+
+    chat_id: int = 0
+    sign: str = ""
+    title: str = ""
+    author: str = ""
+    text: str = ""
+    taken_at: str = ""
+
+
+@app.post("/internal/monitor/sales-chat", include_in_schema=False)
+def internal_monitor_sales_chat(req: SalesChatRequest) -> dict[str, Any]:
+    """Отчёт из чата отдела продаж: бот принял, ядро дописало в источник.
+
+    Чат привязан к проекту Монитора той же командой `/site`; отчёт ложится в
+    проект отчёта о продажах, связанный с ним на странице сводки, — источник
+    «чат отдела продаж», тот же, что даёт выгрузка чата. Подпись — своим кодом.
+    """
+    expected = _web_login_sign("monitor-sales", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    project = _site_project_name(_site_chat_project(int(req.chat_id or 0)))
+    if not project:
+        return {"bound": "", "sales_project": ""}
+    _site_chat_title_seen(int(req.chat_id or 0), req.title)
+    import developaid_management_report as management_report
+    from market_search import salesroom, sales_store
+
+    sales_project = ((management_report.sales_link(project) or {}).get("sales_project") or "")
+    if not sales_project:
+        # Проект Монитора не связан с отчётом о продажах — дописывать некуда.
+        # Это ответ, а не отказ: в /status видно, чего не хватает.
+        return {"bound": project, "sales_project": ""}
+    where = sales_store.default_dir()
+    kept = sales_store.load(where, sales_project)
+    current = ((kept.get("sources") or {}).get("salesroom") or {}).get("data")
+    day = str(req.taken_at or "")[:10]
+    updated = salesroom.append_message(current, day, str(req.author or ""), req.text,
+                                       str(req.title or ""))
+    sales_store.save(where, sales_project, {"salesroom": updated},
+                     f"чат «{req.title or ''}» — бот")
+    return {"bound": project, "sales_project": sales_project,
+            "messages": len(updated.get("messages") or [])}
+
+
+class SiteChatsRequest(BaseModel):
+    """Кто спрашивает привязки чатов — от бота к ядру (выше маршрута, см. выше)."""
+
+    chat_id: int = 0
+    sign: str = ""
+
+
+@app.post("/internal/monitor/site-chats", include_in_schema=False)
+def internal_monitor_site_chats(req: SiteChatsRequest) -> dict[str, Any]:
+    """Привязки чатов для /status. Бот спрашивает только для команды, ядро
+    проверяет это ещё раз: имена проектов — данные владельца."""
+    expected = _web_login_sign("monitor-chats", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"),
+                               expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    if int(req.chat_id or 0) not in team_chat_ids():
+        raise HTTPException(status_code=403, detail="Привязки чатов видит только команда.")
+    return {"projects": site_chat_bindings()}
 
 
 @app.post("/internal/monitor/photo", include_in_schema=False)
@@ -1669,8 +1811,19 @@ def web_login_start() -> dict[str, Any]:
     return {
         "code": data["code"],
         "link": f"https://t.me/{username}?start=login_{data['code']}",
+        "display_code": _web_login_display(data["code"]),
         "ttl_seconds": _WEB_LOGIN_TTL_SECONDS,
     }
+
+
+def _web_login_display(code: str) -> str:
+    """Код входа так, как его сверяют глазами: на странице и в боте одинаково.
+
+    Сверка нужна, потому что ссылку входа может прислать чужой человек: он
+    запросил код у себя, и если бот подтвердит вход молча, сессию заберёт он.
+    """
+    code = str(code or "").lower()
+    return "-".join(code[i:i + 4] for i in range(0, len(code), 4)).upper()
 
 
 def _web_login_record(code: str) -> tuple[Path, dict[str, Any]]:
@@ -1778,7 +1931,8 @@ def team_access_allowed(session: str, key: str) -> bool:
     """«Команда владельца» — отдельный от «вошёл» уровень: данные проектов
     владельца (монитор, сводка руководству, споры, бюджеты, рассылка) не для
     клиентов. Команда — ключ администратора, ключ кабинета рынка или вход
-    человека из `team_chat_ids()`. Демо-доступ проверяющих — никогда."""
+    человека из `team_chat_ids()`. Демо-ссылка — никогда: её просмотр
+    разделов решает `demo_section_problem` в `_require_team_access`."""
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
     if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
         return True
@@ -1792,12 +1946,29 @@ def team_access_allowed(session: str, key: str) -> bool:
     return chat in team_chat_ids()
 
 
-def _require_team_access(session: str, key: str, what: str) -> None:
-    """Пропуск к данным команды. Без токена бота механизм выключен, как и вход."""
+# Раздел демо-ссылки для каждой проверки команды — явная карта по `what`.
+# Чего в карте нет (споры, рассылка без своего раздела), демо закрыто всегда.
+_TEAM_DEMO_BLOCKS = {"Монитор проекта": "monitor", "Сводка руководству": "report"}
+
+
+def _require_team_access(session: str, key: str, what: str, *, write: bool = True) -> None:
+    """Пропуск к данным команды. Без токена бота механизм выключен, как и вход.
+
+    `write=False` — маршрут только читает: его может открыть демо-ссылка с
+    этим разделом (решает `demo_section_problem`). Умолчание — запись: новый
+    маршрут закрыт демо, пока его явно не назвали чтением."""
     if not _telegram_token():
         return
     if team_access_allowed(session, key):
         return
+    demo = globals().get("demo_session_chat")
+    chat = demo(session) if callable(demo) else 0
+    if chat:
+        problem = demo_section_problem(chat, _TEAM_DEMO_BLOCKS.get(what, ""), write=write,
+                                       what=what)
+        if not problem:
+            return
+        raise HTTPException(status_code=403, detail=problem)
     if _web_identity_chat_id(session):
         raise HTTPException(
             status_code=403,

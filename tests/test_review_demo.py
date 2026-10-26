@@ -12,7 +12,8 @@
 - уведомление тестового магазина (`test: true`) перечитывается его ключами;
 - оплата в демо не берёт денег: тестовый магазин ЮKassa или пояснение, а
   тестовый платёж не открывает доступ настоящему человеку;
-- монитор и сводка команды демо-сессии закрыты всегда;
+- ссылка с расчётом и кабинетом не открывает монитор и сводку (разделы ссылки
+  проверяет `tests/test_demo_scope.py`);
 - кнопка «Скопировать» кладёт адрес ссылки в буфер, адрес на странице один;
 - в браузере ссылка ведёт в кабинет на «Тарифы и доступ».
 
@@ -50,7 +51,9 @@ def env(monkeypatch):
 
 
 def invite() -> str:
-    answer = client.post("/access/admin/demo/create", json={"key": "kluch", "note": "ЮKassa"})
+    answer = client.post("/access/admin/demo/create",
+                         json={"key": "kluch", "note": "ЮKassa", "days": 5,
+                               "blocks": ["calc", "cabinet"]})
     assert answer.status_code == 200, answer.text
     return answer.json()["code"]
 
@@ -194,7 +197,7 @@ def test_a_test_payment_never_opens_a_real_client():
 
 @pytest.mark.parametrize("path", ["/monitor/report", "/monitor/legal", "/monitor/notes",
                                   "/monitor/budget", "/monitor/report/projects", "/monitor/merge"])
-def test_a_demo_session_never_sees_the_team_data(path, monkeypatch):
+def test_a_demo_link_without_the_section_does_not_see_the_team_data(path, monkeypatch):
     session = claim(invite())
     chat = core._web_identity_chat_id(session)
     # Даже ошибочно вписанный в команду демо-номер команды не открывает.
@@ -203,7 +206,9 @@ def test_a_demo_session_never_sees_the_team_data(path, monkeypatch):
         "project": "проверка", "session": session, "sources": [], "target": "проверка",
         "source": "проверка", "taken_at": "2026-10-22", "content_base64": ""})
     assert answer.status_code == 403, answer.text
-    assert "для команды владельца" in answer.json()["detail"]
+    detail = answer.json()["detail"]
+    assert ("не открывает раздел" in detail or "Споры и претензии" in detail
+            or "для команды владельца" in detail), detail
 
 
 # --- на отрисованной странице -----------------------------------------------------
@@ -227,8 +232,11 @@ def test_the_admin_copies_the_demo_link_with_one_button():
                 f"localStorage.setItem('developaid_web_session', {json.dumps(admin)})")
             page.goto(base, wait_until="networkidle")
             page.click("#tariffsButton")
+            page.click("#cabTabAdmin")
             page.fill("#demoInviteNote", "ЮKassa")
-            page.click("button:has-text('Создать демо-ссылку')")
+            page.wait_for_selector("#demoInviteBlocks .demo-block")
+            page.check("#demoBlockAll")
+            page.click("#demoInviteDays button:has-text('5 дней')")
             page.wait_for_selector("#demoInviteList button:has-text('Скопировать')")
             expected = f"{base}/demo/" + client.post(
                 "/access/admin/demo/list", json={"key": "kluch"}).json()["invites"][0]["code"]

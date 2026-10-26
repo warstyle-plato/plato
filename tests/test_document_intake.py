@@ -213,10 +213,13 @@ def test_the_site_window_takes_a_document() -> None:
 
 
 def test_the_site_shows_the_quote_next_to_the_value() -> None:
-    """Значение без источника на экране неотличимо от посчитанного."""
+    """Значение без источника на экране неотличимо от посчитанного: у каждой
+    строки карточки — цитата и страница, у каждой строки «уйдёт в расчёт» —
+    происхождение. Поведение — `tests/test_the_teaser_card_comes_first.py`."""
     import main_legacy as core
-    assert "Откуда взято" in core.PAGE
-    assert "Применить отмеченное" in core.PAGE
+    assert "Что найдено в тизере" in core.PAGE
+    assert "f.page_text" in core.PAGE and "r.origin" in core.PAGE
+    assert "Всё верно, считать" in core.PAGE
 
 
 def test_the_bot_accepts_a_pdf_now() -> None:
@@ -226,15 +229,20 @@ def test_the_bot_accepts_a_pdf_now() -> None:
 
 
 def test_both_surfaces_use_the_same_parser() -> None:
-    """Второй разбор на ту же задачу однажды разошёлся бы с первым."""
+    """Второй разбор на ту же задачу однажды разошёлся бы с первым — и вторая
+    карточка тоже: обе поверхности зовут один разбор и один сборщик карточки."""
     import inspect
     import main_legacy as core
     site = inspect.getsource(core.agent_document)
     bot = inspect.getsource(core._telegram_handle_intake_document)
     for source in (site, bot):
         assert "document_intake.extract_text" in source
-        assert "document_intake.parse_intake" in source
-        assert "document_intake.intake_prompt" in source
+        assert "document_intake_read(" in source
+        assert "_intake_queue_start(" in source
+    reader = inspect.getsource(core.document_intake_read)
+    assert "document_intake.parse_intake" in reader
+    assert "document_intake.intake_prompt" in reader
+    assert "teaser_card.build(" in inspect.getsource(core.teaser_card_view)
 
 
 def test_a_scan_is_named_a_scan_on_both_surfaces() -> None:

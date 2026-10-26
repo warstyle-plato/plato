@@ -143,11 +143,6 @@ _DevelopAid_METHODOLOGY = [
         "rule": "В сводном CF общепроектный расход учитывается один раз. Для аналитики очередей различать кассовое несение расхода и экономическую аллокацию.",
     },
     {
-        "id": "EXPERT_PRESET_OVERRIDE",
-        "topic": "tep",
-        "rule": "Если серверный проектный preset содержит явно помеченную экспертную корректировку, в рабочем сценарии она имеет приоритет над исходным ТЭП, но исходное значение должно сохраняться и показываться как контрольный источник.",
-    },
-    {
         "id": "WEAK_PHASE_LOGIC",
         "topic": "phasing",
         "rule": "Если LLCR отдельной очереди ниже цели, сначала определить дисбаланс между долей выручки/ТЭП и долей ранней нагрузки. Реальные меры проверять в порядке: корректность cash-аллокации и сроков → перенос реально переносимых затрат/соцобъектов → увеличение выручечного ТЭП слабой очереди → изменение сроков → цена входа/себестоимость. Не переносить покупку/ВРИ косметически ради улучшения коэффициента.",
@@ -191,11 +186,6 @@ _DevelopAid_METHODOLOGY = [
         "id": "PURCHASE_OFFER_DECISION",
         "topic": "financing",
         "rule": "На конкретную цену продавца Платон должен дать управленческое решение одним сценарием: экономика при офере → потолок цены при LLCR 1,20 → если офер выше, требуемые изменения цены продаж/себестоимости. Не запускать повторную полную диагностику без необходимости.",
-    },
-    {
-        "id": "MYTISHCHI_MFC",
-        "topic": "tep",
-        "rule": "В preset Мытищи МФК/офисы — отдельный дискретный продукт: 26 700 м² GBA/ГНС и 21 360 м² полезной/продаваемой площади. Его нельзя одновременно учитывать как standalone retail. Парковка МФК 434 м/м добавляется к жилому подземному паркингу 2 289 м/м.",
     },
     {
         # Список ниже короткий, и он обязан сказать, где лежит остальное: без
@@ -801,7 +791,11 @@ def report_sensitivity(inputs: dict[str, Any], tep: dict[str, dict[str, Any]],
     if prefixes:
         out: dict[str, Any] = {}
         current = nonres_strategy.object_strategy(inputs, prefixes[0])
+        # Торнадо — у продажи блоками и аренды; продажу по ДДУ (третий способ
+        # `OFFICE_PATHS`) отчёт меряет LLCR, и её торнадо здесь не строится.
         for key, label in OFFICE_PATHS:
+            if key == nonres_strategy.STRATEGY_DDU:
+                continue
             x = copy.deepcopy(inputs)
             for prefix in prefixes:
                 x[f"{prefix}_strategy"] = key
@@ -852,6 +846,9 @@ def _run_sensitivity(
 
     # Работаем на копиях: вводные пользователя эта функция не трогает.
     base_inputs = copy.deepcopy(inputs or {})
+    # Класс офиса ставится до сдвигов: сдвинутая ставка — уже не число класса,
+    # и пересчёт сценария её не сбрасывает (`office_field_follows`).
+    apply_office_classes(base_inputs)
     base_tep = copy.deepcopy(tep or {})
     base_rates = copy.deepcopy(rates or [])
     base_phasing = copy.deepcopy(phasing or {})
@@ -2177,12 +2174,6 @@ def _tool_find_anomalies(
                 {"total_area_sqm": round(total, 2), "gns_sqm": round(gns, 2)})
 
     if imported:
-        expert_override = req.inputs.get("_preset_expert_overrides") or {}
-        if expert_override:
-            add("info", "EXPERT_PRESET_OVERRIDE",
-                str(expert_override.get("note") or "В проекте применена экспертная корректировка preset."),
-                expert_override)
-
         comm = req.tep.get("ground_commercial", {}) or {}
         model_comm = n(comm, "saleable")
         src_nonres = float(imported.get("np_nonresidential_sqm", 0) or 0)
@@ -3514,6 +3505,11 @@ def _anthropic_direct_request(payload: dict[str, Any],
     effort = ((payload.get("reasoning") or {}).get("effort") or "").strip()
     if effort:
         request["output_config"] = {"effort": effort}
+    output_format = plato_provider.format_for_anthropic(payload.get("text"))
+    if output_format:
+        # Без этого строгая схема OpenAI терялась по дороге: Anthropic отвечал
+        # прозой или JSON в обёртке, и разбор ТЭП падал «не удалось разобрать».
+        request.setdefault("output_config", {})["format"] = output_format
 
     client = anthropic.Anthropic(
         api_key=api_key,
@@ -4332,7 +4328,6 @@ def _agent_initial_snapshot(req: AgentChatRequest, bundle: dict[str, Any]) -> di
                  for key in ("price_mln", "buyout_mln", "total_mln",
                              "buyout_label", "total_label")},
         "project_class": req.inputs.get("project_class"),
-        "preset_expert_overrides": req.inputs.get("_preset_expert_overrides"),
     }
 
 

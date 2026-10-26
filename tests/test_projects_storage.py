@@ -336,11 +336,13 @@ def test_the_page_offers_the_server_presets():
 # --- готовые примеры стоят рядом с сохранёнными ---------------------------------
 
 def test_the_examples_live_in_the_projects_dialog():
-    """Решение владельца (15.08.2026): Мишина и Мытищи искали во «Вводных»
-    среди разбора файлов, хотя открыть готовое — это «Мои проекты»."""
+    """Решение владельца (15.08.2026): готовые примеры искали во «Вводных»
+    среди разбора файлов, хотя открыть готовое — это «Мои проекты».
+    Серверных предустановок ТЭП там больше нет (решение владельца,
+    23.10.2026): остались пресеты проектов."""
     dialog = core.PAGE[core.PAGE.index('id="projectsDialog"'):]
     dialog = dialog[:dialog.index('id="aiOverlay"')]
-    assert 'id="serverPresetSelect"' in dialog
+    assert 'id="serverPresetSelect"' not in dialog
     assert 'id="projectPresetSelect"' in dialog
     assert "Готовые примеры" in dialog
 
@@ -352,7 +354,8 @@ def test_the_inputs_tab_points_to_the_new_place():
     hint = hint[:hint.index("</div>")]
     # Раздел переименован в «Личный кабинет» (решение владельца, 18.08.2026):
     # подсказка обязана называть то место, которое человек увидит на кнопке.
-    assert "Личный кабинет" in hint and "Мишина" in hint
+    assert "Личном кабинете" in hint
+    assert "Мишина" not in hint and "Мытищи" not in hint, "предустановок больше нет"
     button = core.PAGE[core.PAGE.index('id="projectsButton"'):]
     assert "Личный кабинет" in button[:200], "подсказка и кнопка обязаны совпадать"
 
@@ -360,9 +363,6 @@ def test_the_inputs_tab_points_to_the_new_place():
 def test_opening_an_example_closes_the_window_it_came_from():
     """Ход разбора печатается во «Вводных»: оставить окно открытым — писать в
     страницу, которой человек не видит."""
-    for name in ("loadServerPreset", "loadServerProjectPreset"):
-        body = core.PAGE[core.PAGE.index(f"async function {name}("):]
-        body = body[:body.index("\n}\n")]
-        assert "closeProjects()" in body, name
-    opener = core.PAGE[core.PAGE.index("async function loadServerPreset("):]
-    assert "openTab('inputs')" in opener[:opener.index("\n}\n")]
+    body = core.PAGE[core.PAGE.index("async function loadServerProjectPreset("):]
+    body = body[:body.index("\n}\n")]
+    assert "closeProjects()" in body

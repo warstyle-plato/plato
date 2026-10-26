@@ -911,7 +911,8 @@ def _object_pdf_sections(story: list[Any], sections: dict[str, Any], inputs: dic
                          P: Any, table: Any, h2: Any, small: Any, normal: Any,
                          KeepTogether: Any, Spacer: Any, mm: float, *,
                          sensitivity_done: bool,
-                         entry_price: dict[str, Any] | None = None) -> None:
+                         entry_price: dict[str, Any] | None = None,
+                         strategy_compare: dict[str, Any] | None = None) -> None:
     """Разделы объектной вёрстки в поток PDF — блоками движка, без пересчёта."""
     for key, section in sections.items():
         if key in ("finance", "calendar") or (key == "sensitivity" and sensitivity_done):
@@ -919,7 +920,68 @@ def _object_pdf_sections(story: list[Any], sections: dict[str, Any], inputs: dic
         story.append(_PdfSection(_PDF_OBJECT_SHARED.get(key, f"object_{key}")))
         story.append(P(str(section.get("title") or ""), h2))
         _object_pdf_blocks(story, section, inputs, P, table, small, KeepTogether, Spacer, mm,
-                           entry_price)
+                           entry_price, strategy_compare)
+
+
+def _strategy_compare_pdf(story: list[Any], block: dict[str, Any], P: Any, table: Any, small: Any,
+                          KeepTogether: Any, mm: float, *, title: str) -> None:
+    """«Сравнение стратегий» таблицей PDF — тот же блок движка, что на странице
+    и в тизере (`strategy_compare_block`): вывод, стратегии столбцами с
+    отметкой лучшей и выбранной, точки, где стратегии сравняются, и подпись."""
+    from xml.sax.saxutils import escape
+    from reportlab.lib import colors
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.platypus import Paragraph, TableStyle
+
+    regular, bold = _pdf_font_names()
+    head = ParagraphStyle("strategy_head", parent=small, fontName=bold, textColor=colors.HexColor("#222222"))
+    cell = ParagraphStyle("strategy_cell", parent=small, fontSize=8.2, leading=10.5,
+                          textColor=colors.HexColor("#222222"))
+    strong = ParagraphStyle("strategy_strong", parent=cell, fontName=bold)
+    title_style = ParagraphStyle("strategy_title", parent=small, fontName=bold, fontSize=9.5, leading=12,
+                                 textColor=colors.HexColor("#111111"))
+
+    def tag(text: str) -> str:
+        color = "#1f6f43" if text == "лучшая по NPV" else "#727272"
+        return f"<br/><font name='{regular}' color='{color}'>{escape(text)}</font>"
+
+    parts: list[Any] = [Paragraph(escape(title), title_style)]
+    for item in block.get("items") or []:
+        columns = item.get("columns") or []
+        if item.get("caption"):
+            parts.append(Paragraph(escape(str(item["caption"])), head))
+        parts.append(P(str(item.get("lead") or ""), small))
+        sections: list[int] = []
+        rows = [[Paragraph("Показатель", head)] + [
+            Paragraph(escape(str(c.get("label") or "")) + "".join(tag(t) for t in c.get("tags") or []), head)
+            for c in columns]]
+        for row in item.get("rows") or []:
+            if row.get("section"):
+                sections.append(len(rows))
+                rows.append([Paragraph(escape(str(row.get("label") or "")), head)] + [""] * len(columns))
+                continue
+            rows.append([Paragraph(escape(str(row.get("label") or "")), cell)] + [
+                Paragraph(escape(str(value)), strong if row.get("strong") and i < len(columns)
+                          and columns[i].get("best") else cell)
+                for i, value in enumerate(row.get("cells") or [])])
+        # Ширина полосы страницы — 182 мм (A4 без полей отчёта).
+        label = 52 if len(columns) <= 3 else 44
+        width = (182 - label) / max(1, len(columns))
+        grid = table(rows, [label*mm] + [width*mm] * len(columns), font_size=7.6)
+        best = [i + 1 for i, c in enumerate(columns) if c.get("best")]
+        if best:
+            grid.setStyle(TableStyle([("BACKGROUND", (best[0], 0), (best[0], 0), colors.HexColor("#DCEFE2")),
+                                      ("BACKGROUND", (best[0], 1), (best[0], -1), colors.HexColor("#EEF6F0"))]))
+        for at in sections:
+            grid.setStyle(TableStyle([("SPAN", (0, at), (-1, at)),
+                                      ("BACKGROUND", (0, at), (-1, at), colors.HexColor("#F1F1EF"))]))
+        parts.append(grid)
+        if item.get("points"):
+            parts.append(Paragraph(escape(str(item.get("points_title") or "")), head))
+            parts += [P("• " + str(point.get("text") or ""), small) for point in item["points"]]
+    if block.get("stamp"):
+        parts.append(P(str(block["stamp"]), small))
+    story.append(KeepTogether(parts))
 
 
 def _entry_price_pdf(story: list[Any], block: dict[str, Any], P: Any, table: Any, small: Any,
@@ -990,7 +1052,8 @@ def _site_massing_scheme_pdf(scheme: dict[str, Any] | None, P: Any, small: Any,
 
 def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[str, Any],
                        P: Any, table: Any, small: Any, KeepTogether: Any, Spacer: Any,
-                       mm: float, entry_price: dict[str, Any] | None = None) -> None:
+                       mm: float, entry_price: dict[str, Any] | None = None,
+                       strategy_compare: dict[str, Any] | None = None) -> None:
     """Блоки одного раздела объектной вёрстки — таблицами движка."""
     for block in section.get("blocks") or []:
         title = str(block.get("title") or "")
@@ -1016,6 +1079,12 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
                     if goal.get("metric")
                     else f"{title}: {goal.get('reason') or 'показателя долга у проекта нет.'}",
                     small))
+            continue
+        if ref == "strategy_compare":
+            # Блок с точками — из фоновой сборки (`strategy_compare_for_report`).
+            if strategy_compare and strategy_compare.get("items"):
+                _strategy_compare_pdf(story, strategy_compare, P, table, small, KeepTogether, mm,
+                                      title=title)
             continue
         if ref == "site":
             rows = []
@@ -1044,9 +1113,13 @@ def _object_pdf_blocks(story: list[Any], section: dict[str, Any], inputs: dict[s
                 rows.append([str(year.get(c[0])) if c[2] == "text"
                              else _pdf_object_value({"unit": c[2], "value": year.get(c[0])})
                              for c in columns])
-            width = 170 / max(1, len(columns))
+            # Ширины колонок блок может назвать сам («Структура расходов»:
+            # длинная подпись статьи и два коротких числа); иначе — поровну.
+            widths = [float(w) for w in block.get("widths") or []]
+            if len(widths) != len(columns):
+                widths = [170 / max(1, len(columns))] * len(columns)
             story.append(KeepTogether([P(title, small),
-                                       table(rows, [width*mm] * len(columns), font_size=6.8)]))
+                                       table(rows, [w*mm for w in widths], font_size=6.8)]))
             continue
         rows = [[title or " ", " "]]
         for row in block.get("rows") or []:
@@ -1897,7 +1970,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
     # Класс — то же решение, что у карточки «Ключевые параметры»
     # (`project_class_view`): у гостиницы — звёздность, а не класс жилья.
     _class_dev=project_class_view(inputs)
-    premise_rows=[["Параметр","Значение"],[_class_dev["title"],_class_dev["label"]],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной площади МКД",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м²"],["СМР подземной площади МКД",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м²"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
+    # Класс офиса — свой у каждого офиса (`office_class_rows`): выбран или
+    # идёт за классом проекта, и отчёт называет, откуда он.
+    premise_rows=[["Параметр","Значение"],[_class_dev["title"],_class_dev["label"]],*[[row["label"],row["text"]] for row in office_class_rows(inputs)],["Стартовая цена квартир",_pdf_num(inputs.get('apartment_price_th'),0)+" тыс. ₽/м²"],["Стартовая цена коммерции",_pdf_num(inputs.get('commercial_price_th'),0)+" тыс. ₽/м²"],["Цена подземного машино-места",_pdf_num(inputs.get('parking_price_th'),0)+" тыс. ₽/шт."],["СМР наземной площади МКД",_pdf_num(inputs.get('main_above_th_per_sqm'),0)+" тыс. ₽/м²"],["СМР подземной площади МКД",_pdf_num(inputs.get('main_under_th_per_sqm'),0)+" тыс. ₽/м²"],["Наружные инженерные сети, в т.ч. техприсоединение",_pdf_num(inputs.get('utilities_th_per_sqm'),1)+" тыс. ₽/м² "+CORE_TOTAL_AREA.genitive],["Доля продаж до РВЭ",_pdf_num(inputs.get('share_before_rve_pct'),1)+"%"],["Налог на прибыль",_pdf_num(inputs.get('profit_tax_pct'),1)+"%"]]
     # Тип проекта называется только там, где он не тот, что у всех: строка
     # «Жилой / смешанный» в каждом отчёте — постоянная приписка, а такие
     # перестают читаться. Оставшееся от жилья идёт своей строкой, потому что
@@ -2667,7 +2742,9 @@ def _build_developaid_pdf(payload: dict[str, Any]) -> bytes:
         _object_pdf_sections(story, _object_sections, inputs, P, table, h2, small, normal,
                              KeepTogether, Spacer, mm, sensitivity_done=bool(
                                  sensitivity and (sensitivity.get("items") or [])),
-                             entry_price=payload.get("entry_price"))
+                             entry_price=payload.get("entry_price"),
+                             strategy_compare=payload.get("strategy_compare")
+                             or (payload.get("result") or {}).get("strategy_compare"))
     story.append(_PdfSection("footer"))
     story.extend([Spacer(1,4*mm),P("Отчёт сформирован автоматически DevelopAid на основании текущих вводных модели. Перед инвестиционным решением требуется проверка исходных данных, юридических предпосылок и условий кредитования.",small)])
 

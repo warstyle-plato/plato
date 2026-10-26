@@ -346,6 +346,36 @@ def test_a_branch_behind_a_bumped_base_gets_its_number_without_a_conflict(
     assert clean.returncode == 0, clean.stdout
 
 
+def test_the_pushed_release_head_orders_no_pr_runs(repo, monkeypatch):
+    """Push номера рождал synchronize, а слияние через две секунды снимало
+    merge-ref: после каждого выпуска на ветке висели три красных прогона без
+    единого job. Голова, которую пушит скрипт, их не заказывает; коммиты
+    самой ветки метку не получают."""
+    body = "\n\n\na = 0\n"
+    repo.commit("0.24.18", body)
+    repo.run("git", "push", "-q", "origin", "main")
+    repo.branch("feat", "0.24.18", "\n\n\na = 1\n")
+
+    guard = _module(GUARD, "guard_for_skip")
+    monkeypatch.setattr(release_merge, "_guard", lambda: guard)
+    monkeypatch.setattr(release_merge, "ROOT", repo.path)
+    monkeypatch.setattr(release_merge, "ENGINE", repo.path / "main_legacy.py")
+    monkeypatch.chdir(repo.path)
+
+    head = release_merge._set_version("feat", "0.24.19", "main")
+
+    def message(rev):
+        return subprocess.run(["git", "log", "-1", "--format=%B", rev], cwd=repo.path,
+                              capture_output=True, text=True, check=True).stdout
+    assert release_merge.SKIP_PR_RUNS in {"[skip ci]", "[ci skip]", "[no ci]",
+                                          "[skip actions]", "[actions skip]"}
+    assert head == subprocess.run(["git", "rev-parse", "origin/feat"], cwd=repo.path,
+                                  capture_output=True, text=True, check=True).stdout.strip()
+    assert message(head).startswith("Выпуск 0.24.19")
+    assert release_merge.SKIP_PR_RUNS in message(head)
+    assert release_merge.SKIP_PR_RUNS not in message(f"{head}~1")
+
+
 def test_a_real_conflict_is_named_and_not_merged(repo, monkeypatch):
     body = "\n\n\na = 0\n"
     repo.commit("0.24.18", body)
@@ -485,3 +515,43 @@ def test_the_branch_guard_compares_with_the_merge_parent_not_a_fresh_main():
     guard = BRANCH_GUARD.read_text(encoding="utf-8")
     assert '--base "HEAD^1"' in guard
     assert 'origin/${{ github.base_ref }}' not in guard
+
+
+def test_a_branch_behind_the_base_is_judged_by_its_own_changes(repo):
+    """Ветка, правившая только .github/, отстала от main, а main с тех пор
+    поменял движок. Её собственная правка номера не требует — без этого
+    скрипт выдавал номер и толкал коммит выпуска в чужую ветку (#865)."""
+    guard = _module(GUARD, "check_version_grows_under_test")
+    repo.run("git", "checkout", "-q", "-B", "ci-only", "main")
+    (repo.path / ".github").mkdir(exist_ok=True)
+    (repo.path / ".github" / "ci.yml").write_text("on: push\n", encoding="utf-8")
+    repo.run("git", "add", ".github/ci.yml")
+    repo.run("git", "commit", "-qm", "только CI")
+    repo.run("git", "push", "-q", "origin", "ci-only")
+    repo.run("git", "checkout", "-q", "main")
+    repo.commit("0.24.19", "x = 2\n")
+    repo.run("git", "push", "-q", "origin", "main")
+    import os
+    here = os.getcwd()
+    os.chdir(repo.path)
+    try:
+        repo.run("git", "fetch", "-q", "origin")
+        assert not release_merge._engine_changed(guard, "main", "ci-only")
+        # Своя правка движка в отставшей ветке по-прежнему тратит номер.
+        repo.branch("engine-old", "0.24.18", "x = 3\n")
+        repo.run("git", "reset", "-q", "--hard", "HEAD")
+        repo.run("git", "fetch", "-q", "origin")
+        assert release_merge._engine_changed(guard, "main", "engine-old")
+    finally:
+        os.chdir(here)
+
+
+def test_a_refused_push_names_the_server_answer():
+    remote = ("To github.com:o/r.git\n ! [remote rejected] HEAD -> dependabot/x "
+              "(refusing to allow a GitHub App to create or update workflow "
+              "`.github/workflows/a.yml` without `workflows` permission)\n")
+    text = release_merge._git_refusal(("push", "origin", "HEAD:dependabot/x"), 1, remote)
+    assert "remote rejected" in text and "workflows" in text
+    assert "GITHUB_TOKEN не вправе менять .github/workflows" in text
+    other = release_merge._git_refusal(("fetch", "origin"), 128, "fatal: boom")
+    assert "fatal: boom" in other and "GITHUB_TOKEN" not in other

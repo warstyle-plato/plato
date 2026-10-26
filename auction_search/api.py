@@ -1475,6 +1475,16 @@ def install(app: FastAPI) -> None:
         return JSONResponse({"detail": problem}, status_code=403,
                             headers={"Cache-Control": "no-store"})
 
+    def _team_request(request: Request) -> bool:
+        """Запрос от команды: ключ кабинета или то, что признаёт движок
+        (`team_access_allowed`: ключ владельца, вход человека из команды)."""
+        if market_cabinet.authorised(request):
+            return True
+        allowed = getattr(core, "team_access_allowed", None) if core is not None else None
+        query = request.query_params
+        return bool(callable(allowed)
+                    and allowed(query.get("session") or "", query.get("key") or ""))
+
     async def _auctions_view_gate(request: Request, call_next):
         path = request.url.path.rstrip("/") or "/"
         # Личный ключ «auctions» ограничивает ВЕСЬ сайт, а не только /auctions:
@@ -1498,7 +1508,31 @@ def install(app: FastAPI) -> None:
             return await call_next(request)
         if path != "/auctions" and not path.startswith("/auctions/"):
             return await call_next(request)
-        if path == "/auctions/login" or not _auctions_gate_enabled():
+        if path == "/auctions/login":
+            return await call_next(request)
+        # Демо-ссылка с разделом «Торги и КРТ»: только чтение, решение — одно
+        # на движок (`demo_request_access`). Полный ключ кабинета главнее.
+        if not market_cabinet.authorised(request):
+            demo = market_cabinet.demo_access(request)
+            if demo.get("demo"):
+                if demo.get("allowed"):
+                    return await call_next(request)
+                problem = str(demo.get("problem") or "")
+                if (request.method in ("GET", "HEAD")
+                        and "text/html" in request.headers.get("accept", "")):
+                    return HTMLResponse(auction_view.login_page(problem), status_code=403,
+                                        headers={"Cache-Control": "no-store"})
+                return JSONResponse({"detail": problem}, status_code=403,
+                                    headers={"Cache-Control": "no-store"})
+        if not _auctions_gate_enabled():
+            # Ворота выключены — чтение открыто всем, запись и пробы — только
+            # команде: ключ кабинета, ключ владельца или вход человека команды.
+            if not _team_request(request):
+                problem = auction_view.anonymous_problem(
+                    request.method, path, request.query_params)
+                if problem:
+                    return JSONResponse({"detail": problem}, status_code=401,
+                                        headers={"Cache-Control": "no-store"})
             return await call_next(request)
 
         full_access = market_cabinet.authorised(request)
@@ -3533,7 +3567,7 @@ def install(app: FastAPI) -> None:
         сервиса, едет параметром `key`. `MARKET_CABINET_KEY` — кабинет рынка,
         живёт кукой `market_cabinet` и заголовком `X-Market-Key`, в
         `localStorage` его нет вовсе. Человек с настоящим ключом кабинета
-        («ключ наш plato-rynok-2026») получал «только для владельца сервиса», и
+        («ключ наш <значение убрано>») получал «только для владельца сервиса», и
         отказ не называл, какого именно ключа не хватило: на экране два
         рабочих ключа неразличимы. Кабинет закрывает лицензионные данные того
         же класса и открыт той же команде — пускаем и по нему.
@@ -3554,6 +3588,13 @@ def install(app: FastAPI) -> None:
             return
         if market_cabinet.authorised(request):
             return
+        # Демо-ссылка с разделом «Торги и КРТ» читает участки, как ключ
+        # просмотра; команды обновления — запись, их отказ называет причину.
+        demo = market_cabinet.demo_access(request)
+        if demo.get("demo"):
+            if demo.get("allowed"):
+                return
+            raise HTTPException(status_code=403, detail=str(demo.get("problem") or ""))
         # Отдельный ключ торгов действует только здесь: generic-кабинет его
         # не знает, поэтому /cabinet и финансовая модель им не открываются.
         if auction_view.authorised(request):

@@ -126,6 +126,30 @@ from .cards import housing_kind_from_flag
 from .installments import Installments
 
 HOST = "bnmap.pro"
+
+
+def own_url(url: str) -> bool:
+    """Адрес ведёт на сам bnMAP (или его api.), а не только начинается похоже.
+
+    Проба входит на открытую страницу под нашим логином и паролем. Проверка
+    по началу строки пропускала `https://bnmap.pro.чужой.сайт/` и
+    `https://bnmap.pro@чужой.сайт/`: браузер открыл бы чужую страницу и ввёл в
+    её форму наш доступ. Поэтому сверяется разобранное имя хоста целиком.
+    """
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(str(url or "").strip())
+        port = parts.port
+    except ValueError:
+        return False
+    return (
+        parts.scheme == "https"
+        and not parts.username
+        and not parts.password
+        and port in (None, 443)
+        and (parts.hostname or "") in {HOST, f"api.{HOST}"}
+    )
 BASE = "https://bnmap.pro"
 USER_AGENT = "DevelopAid/1.0 (+https://developaid.ru)"
 TIMEOUT_SECONDS = 20
@@ -657,7 +681,11 @@ def probe_browser(url: str = ENTRY_PAGE, seconds: float = 60.0,
         url,
         seconds=seconds,
         save_to=save_to,
-        after_load=lambda page: _sign_in(page, login, password),
+        # Вход — только если страница и после переходов осталась на bnMAP.
+        after_load=lambda page: (
+            _sign_in(page, login, password) if own_url(getattr(page, "url", ""))
+            else {"signed_in": False,
+                  "steps": ["страница ушла с bnMAP — логин и пароль не вводились"]}),
         secrets=(login, password),
     )
     report["host"] = HOST

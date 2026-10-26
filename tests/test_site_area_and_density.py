@@ -299,8 +299,9 @@ def test_the_normative_recalc_carries_the_district():
     assert "district:district" in body.replace(" ", "")
     assert "inputs.mo_district=data.territory.district" in body.replace(" ", ""), \
         "определённый расчётом округ не запоминается в проекте"
-    assert "mo_district='Городской округ Мытищи'" in core.PAGE, \
-        "пресет Мытищ не несёт свой округ"
+    # Серверного пресета Мытищ, который ставил свой округ, больше нет
+    # (аудит 23.10.2026): округ теперь приходит только из расчёта.
+    assert "mo_district='Городской округ Мытищи'" not in core.PAGE
 
 
 def test_the_normative_recalc_sends_the_project_cadastre():

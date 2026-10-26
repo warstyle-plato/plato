@@ -101,7 +101,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     core_total_gns = core_above_gns + core_under_gns
     # Пятно, этажность и подземные уровни — один расчёт на проект; СМР
     # подземной части читает из него надбавку за глубину (`site_massing`).
-    massing = site_massing(x, t)
+    massing = site_massing_fitted(x, t)
     # Объёмная схема проекта без очередей — одно здание; свод очередей
     # раскладывает корпуса по очередям сам (`_consolidate_phase_results`).
     if not x.get("_site_massing_project"):
@@ -995,7 +995,15 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
                                  * float(x.get("landscaping_th_per_sqm") or 0.0) * 1000),
         # Чем посчитаны ДЕНЬГИ: заданная ставка двор не читает вовсе, и
         # основание двора рядом с суммой читается как её причина.
-        "landscaping_by_rate": float(x.get("landscaping_gns_th_per_sqm") or 0.0) > 0,
+        # Ставка бывает вписанной руками и умолчанием нежилого проекта
+        # (`landscaping_gns_rate`), и происхождение едет рядом: умолчание не
+        # должно читаться как ручное число.
+        "landscaping_by_rate": landscaping_gns_rate(x)[0] > 0,
+        "landscaping_rate_origin": landscaping_gns_rate(x)[1],
+        # Ставка, которая вернётся, если очистить поле: умолчание нежилого
+        # проекта или ноль (тогда считает методика класса).
+        "landscaping_default_rate_th": landscaping_gns_rate(
+            {**x, "landscaping_gns_th_per_sqm": 0.0})[0],
         "social_program": social_program,
         "social_construction_breakdown": social_construction_breakdown,
         "social_cash_date": social_cash_date,

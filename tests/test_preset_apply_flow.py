@@ -1,6 +1,6 @@
-"""Предустановка с сервера доезжает до вводных — и переживает перезагрузку.
+"""Выгрузка ГлавАПУ доезжает до вводных — и переживает перезагрузку.
 
-Пользователь загружал предустановку «Мишина», а вводные оставались дефолтными
+Пользователь загружал выгрузку «Мишина», а вводные оставались дефолтными
 (ВРИ 2 864,29 — умолчание движка, покупка 0): применённое состояние
 сохранялось только в телеграм-потоке и кнопкой «Сохранить», любая
 перезагрузка возвращала умолчания. Вторая ловушка: сохранённый проект не нёс
@@ -37,12 +37,14 @@ NODE = shutil.which("node")
 
 
 def preset_payload() -> dict:
-    """Ровно то, что отдаёт /presets/mishina: разбор файла с mappings."""
-    data = (Path(__file__).resolve().parent.parent / "presets" / "Мишина_ТЭП.xlsx").read_bytes()
-    payload = core.parse_glavapu_xlsx(data, "Мишина_ТЭП.xlsx")
-    payload["source"]["preset_id"] = "mishina"
-    payload["source"]["server_preset"] = True
-    return payload
+    """Ровно то, что отдаёт /import/glavapu: разбор выгрузки с mappings.
+
+    Серверных предустановок в продукте больше нет (решение владельца,
+    23.10.2026); настоящая выгрузка осталась тестовыми данными.
+    """
+    data = (Path(__file__).resolve().parent / "fixtures" / "glavapu_owner"
+            / "Мишина_ТЭП.xlsx").read_bytes()
+    return core.parse_glavapu_xlsx(data, "Мишина_ТЭП.xlsx")
 
 
 def apply_harness() -> str:
@@ -71,7 +73,6 @@ def run_flow(scenario_js: str) -> dict:
         "function repairParkingFromGlavapu(){}\n"
         # Пара «места ↔ площадь» перезаполняется расчётом нового участка.
         "function fillUndergroundFromTep(){}\n"
-        "function applyServerPresetProjectConfig(){return ''}\n"
         "function applyTelegramCalcOverrides(){}\n"
         "function renderInputs(){}\nfunction renderTep(){}\nfunction renderPhasing(){}\n"
         "function renderGlavapuPreview(){}\n"
@@ -146,16 +147,9 @@ def test_an_old_project_without_mappings_is_not_wiped():
     assert "заново" in got["status"]
 
 
-def test_the_page_applies_the_preset_in_one_click():
-    """«Загрузить предустановку» применяет её сразу: двухшаговый сценарий
-    заканчивался «загрузил, а в расчёте пусто»."""
-    load = re.search(r"async function loadServerPreset\(\).*?\n\}", core.PAGE, re.S)
-    assert load and "await applyGlavapu()" in load.group(0)
-
-
 def test_every_recalculation_persists_the_state():
     """Состояние сохраняется каждым пересчётом: раньше — только в
-    телеграм-потоке, и применённая предустановка не переживала перезагрузку."""
+    телеграм-потоке, и применённая выгрузка не переживала перезагрузку."""
     calc = re.search(r"async function calculate\(\).*?\n return lastResult;", core.PAGE, re.S)
     assert calc, "calculate не найдена на странице"
     assert "if(telegramMode==='edit')persistLocalSilently()" not in calc.group(0)

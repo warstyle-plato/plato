@@ -50,7 +50,7 @@ from __future__ import annotations
 import datetime
 import io
 import re
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 SHEET_CONTRACTS = "Контрактация"
 SHEET_LEDGER = "1С_Факт"
@@ -697,6 +697,14 @@ def _payment_structure(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 FM_SHEET = "Продажи ФМ_new Банников"
+# Помесячные листы «план/факт» книги cf (владелец, 23.10.2026: «план продаж по
+# банку и ФМ отсюда с вкладок Продажи П-Ф Банк и Продажи П-Ф ФМ»). У каждого
+# листа своя раскладка — явной картой, а не угадыванием по похожему имени:
+# рядом лежат «Продажи П-Ф_old» и «Продажи П-Ф_сдвиг сроков», и это не планы.
+# Первым ищется лист книги cf, прежний лист финмодели остаётся запасным.
+_PF_FM_LAYOUT = {"label_col": 2, "date_row": 3, "kind_row": 4}
+FM_SHEETS = (("Продажи П-Ф_ФМ", _PF_FM_LAYOUT), (FM_SHEET, _PF_FM_LAYOUT))
+BANK_MONTHLY_SHEETS = (("Продажи П-Ф_БАНК", {"label_col": 1, "date_row": 4, "kind_row": 5}),)
 BANK_SHEET = "Модель банка_new"
 # Лист плана банка в книге переименовали: «План банка_new» (21.10.2026, книга
 # «Кутузов Сити»). Имена — явным списком, первым находится новое; лист под
@@ -750,35 +758,39 @@ def _fm_metric(label: str) -> str | None:
     return None
 
 
-def read_fm_plan(data: bytes) -> dict[str, Any]:
-    """Помесячный план и факт нашей финмодели по продуктам.
+def _read_pf_sheet(rows: list[list[Any]], sheet: str, layout: dict[str, int]) -> dict[str, Any]:
+    """Лист «план/факт по месяцам»: продукт → месяц → показатели.
 
-    Возвращает `{"months": [...], "plan": {...}, "fact": {...}}`, где внутри —
-    продукт → месяц → показатели. Чего в листе нет, того нет и здесь: пустая
-    ячейка не становится нулём, иначе «не заполнено» читалось бы как «ноль
-    продаж».
+    Возвращает `{"sheet", "months", "plan", "fact"}`. Чего в листе нет, того
+    нет и здесь: пустая ячейка не становится нулём, иначе «не заполнено»
+    читалось бы как «ноль продаж».
     """
-    rows = _rows(data, FM_SHEET)
-    if len(rows) < _FM_KIND_ROW:
-        raise KeyError(f"лист «{FM_SHEET}» пуст")
-    dates = rows[_FM_DATE_ROW - 1]
-    kinds = rows[_FM_KIND_ROW - 1]
+    date_row, kind_row, label_col = layout["date_row"], layout["kind_row"], layout["label_col"]
+    if len(rows) < kind_row:
+        raise KeyError(f"лист «{sheet}» пуст")
+    dates = rows[date_row - 1]
+    kinds = rows[kind_row - 1]
     columns: list[tuple[int, str, str]] = []
     for index, kind in enumerate(kinds):
         name = _text(kind).lower()
         if name not in ("план", "факт"):
             continue
-        moment = _excel_date(dates[index] if index < len(dates) else None)
+        raw = dates[index] if index < len(dates) else None
+        # Годовые колонки «2025» лист банка держит рядом с месяцами: число
+        # года — не дата (как дата Excel оно читалось бы 1905 годом).
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw < 10000:
+            continue
+        moment = _excel_date(raw)
         if moment is None:
             continue
         columns.append((index, name, moment.strftime("%Y-%m")))
     if not columns:
-        raise KeyError(f"в листе «{FM_SHEET}» не нашлось колонок «план» и «факт»")
+        raise KeyError(f"в листе «{sheet}» не нашлось колонок «план» и «факт»")
 
     out: dict[str, dict[str, dict[str, dict[str, float]]]] = {"план": {}, "факт": {}}
     product = ""
-    for row in rows[_FM_KIND_ROW:]:
-        label = _text(row[2] if len(row) > 2 else "")
+    for row in rows[kind_row:]:
+        label = _text(row[label_col] if len(row) > label_col else "")
         if label in _FM_PRODUCTS:
             product = _FM_PRODUCTS[label]
             continue
@@ -798,8 +810,25 @@ def read_fm_plan(data: bytes) -> dict[str, Any]:
                 value *= 1000.0
             out[kind].setdefault(product, {}).setdefault(month, {})[metric] = value
     months = sorted({month for _, _, month in columns})
-    return {"sheet": FM_SHEET, "months": months,
+    return {"months": months, "sheet": sheet,
             "plan": out["план"], "fact": out["факт"]}
+
+
+def _first_sheet(data: bytes, sheets: Sequence[tuple[str, dict[str, int]]],
+                 what: str) -> tuple[list[list[Any]], str, dict[str, int]]:
+    for name, layout in sheets:
+        try:
+            return _rows(data, name), name, layout
+        except KeyError:
+            continue
+    raise KeyError(f"в книге нет листа {what}: искали "
+                   + ", ".join(f"«{name}»" for name, _ in sheets))
+
+
+def read_fm_plan(data: bytes) -> dict[str, Any]:
+    """Помесячный план и факт нашей финмодели по продуктам."""
+    rows, sheet, layout = _first_sheet(data, FM_SHEETS, "плана финмодели")
+    return _read_pf_sheet(rows, sheet, layout)
 
 
 # Модель банка — квартальная, и приводить её к месяцам мы не станем: разложить
@@ -833,6 +862,79 @@ _BANK_QUARTER = re.compile(r"^(20\d{2})\s*Q([1-4])$", re.I)
 
 
 def read_bank_plan(data: bytes) -> dict[str, Any]:
+    """План банка: помесячный лист книги cf, иначе квартальный лист модели.
+
+    Помесячный план складывается по кварталам — его кварталы настоящие, в
+    отличие от первой колонки квартального листа (`_bank_opening`), и в
+    остальном читатели плана банка видят те же поля.
+    """
+    try:
+        rows, sheet, layout = _first_sheet(data, BANK_MONTHLY_SHEETS, "плана банка")
+    except KeyError:
+        return _read_bank_quarterly(data)
+    return _bank_from_months(_read_pf_sheet(rows, sheet, layout))
+
+
+def _bank_from_months(plan: dict[str, Any]) -> dict[str, Any]:
+    """Квартальные поля плана банка из помесячного листа.
+
+    Валовые продажи — «Заключенные договоры», деньги на эскроу — «Эскроу»,
+    метры — без машино-мест (как у квартального листа), цена — по квартирам:
+    сумма договоров квартала на его метры, а не среднее месячных цен.
+    """
+    products_plan = plan.get("plan") or {}
+    totals = products_plan.get("Итого") or {}
+    gross: dict[str, float] = {}
+    cash: dict[str, float] = {}
+    area: dict[str, float] = {}
+    flats: dict[str, dict[str, float]] = {}
+    products: dict[str, dict[str, dict[str, float]]] = {}
+    volumes: dict[str, dict[str, float]] = {}
+    for name, months in products_plan.items():
+        for month, values in months.items():
+            quarter = quarter_of(month)
+            amount = float(values.get("amount") or 0.0)
+            escrow = float(values.get("escrow") or 0.0)
+            if name == "Итого":
+                gross[quarter] = gross.get(quarter, 0.0) + amount
+                cash[quarter] = cash.get(quarter, 0.0) + escrow
+                continue
+            if not totals:
+                gross[quarter] = gross.get(quarter, 0.0) + amount
+                cash[quarter] = cash.get(quarter, 0.0) + escrow
+            metres = float(values.get("area") or 0.0)
+            if name != "Машиноместо":
+                area[quarter] = area.get(quarter, 0.0) + metres
+            if name == "Квартира":
+                block = flats.setdefault(quarter, {"amount": 0.0, "area": 0.0})
+                block["amount"] += amount
+                block["area"] += metres
+            volume = float(values.get("units") or 0.0) if name == "Машиноместо" else metres
+            item = products.setdefault(name, {"amount": {}, "volume": {}})
+            item["amount"][quarter] = item["amount"].get(quarter, 0.0) + amount
+            item["volume"][quarter] = item["volume"].get(quarter, 0.0) + volume
+            volumes.setdefault(name, item["volume"])
+    for name, item in products.items():
+        item["price"] = {q: item["amount"][q] / v for q, v in item["volume"].items() if v}
+        del item["amount"]
+    price = {q: b["amount"] / b["area"] for q, b in flats.items() if b["area"]}
+    quarters = sorted(set(gross) | set(cash) | set(area))
+    # План эскроу банка — остаток нарастающим: месячные поступления на эскроу
+    # складываются до раскрытия. Строка несёт ту же подпись и те же тысячи,
+    # что квартальный лист, — `bank_escrow_plan` читает её одинаково.
+    running, escrow_line = 0.0, {}
+    for quarter in quarters:
+        running += cash.get(quarter, 0.0)
+        escrow_line[quarter] = running / 1000.0
+    return {"sheet": plan["sheet"], "monthly": True, "quarters": quarters,
+            "lines": [{"label": BANK_ESCROW_LABEL, "values": escrow_line}],
+            "revenue_by_quarter": cash, "revenue_rows": ["Эскроу, тыс. руб (Итого)"],
+            "products": products, "pool": {},
+            "gross_by_quarter": gross, "area_by_quarter": area,
+            "price_by_quarter": price, "by_month": products_plan}
+
+
+def _read_bank_quarterly(data: bytes) -> dict[str, Any]:
     """Квартальный план банка: подписи строк как есть, значения по кварталам."""
     rows, sheet = None, ""
     for name in BANK_SHEETS:
@@ -843,7 +945,8 @@ def read_bank_plan(data: bytes) -> dict[str, Any]:
             continue
     if rows is None:
         raise KeyError("в книге нет листа плана банка: искали "
-                       + ", ".join(f"«{name}»" for name in BANK_SHEETS))
+                       + ", ".join(f"«{name}»" for name in
+                                   [n for n, _ in BANK_MONTHLY_SHEETS] + list(BANK_SHEETS)))
     if not rows:
         raise KeyError(f"лист «{sheet}» пуст")
     header = rows[_BANK_PERIOD_ROW - 1]
@@ -1935,7 +2038,10 @@ def plan_comparison(summary: dict[str, Any]) -> dict[str, Any]:
     # обновления» — владелец, там же). Рядом с квартальным фактом его ставить нельзя; он уходит
     # отдельной записью с обоими числами факта — за квартал и с начала продаж,
     # — чтобы читатель видел, с каким из них он сходится.
-    opening = _bank_opening(fact_quarter, bank_gross, bank_area, bank_cash)
+    # У помесячного плана банка (лист книги cf) кварталы настоящие: остатка
+    # на дату обновления в первой колонке нет.
+    opening = (None if bank.get("monthly")
+               else _bank_opening(fact_quarter, bank_gross, bank_area, bank_cash))
 
     names = sorted(set(fact_quarter) | set(plan_quarter) | set(bank_gross) | set(bank_cash))
     last = max([q for q in fact_quarter], default="")
@@ -2194,6 +2300,34 @@ def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
             "partial_month": partial,
             "empty_queues": (credit or {}).get("empty_queues") or [],
             "missing": []}
+
+
+def escrow_at(block: dict[str, Any], queue: dict[str, Any], month: str) -> dict[str, Any] | None:
+    """Эскроу против кредита на заданный месяц — по плану и при нынешнем темпе.
+
+    ``block`` — очередь из ``escrow_sufficiency`` (накоплено, темп, месяц
+    замера), ``queue`` — та же очередь плана (помесячные ряды эскроу и остатка
+    кредита). Темп тот же, что у ответа «к раскрытию»: второго счёта нет.
+    Месяц не впереди замера — ответа нет: прогнозировать прошлое незачем.
+    """
+    seen = block.get("measured_at") or ""
+    ahead = _months_between(seen, month) if seen and month else None
+    if ahead is None or ahead <= 0:
+        return None
+
+    def plan_on(series: dict[str, Any]) -> float | None:
+        # Ряды нарастающие: на месяц без записи стоит последнее известное значение.
+        known = sorted(m for m in series if m <= month)
+        return float(series[known[-1]]) if known and series[known[-1]] is not None else None
+
+    plan_escrow = plan_on(queue.get("escrow") or {})
+    plan_pf = plan_on(queue.get("pf") or {})
+    keeping = float(block.get("actual") or 0.0) + float(block.get("pace") or 0.0) * ahead
+    return {"month": month, "months_ahead": ahead,
+            "plan_escrow": plan_escrow, "plan_pf": plan_pf,
+            "plan_coverage": (plan_escrow / plan_pf) if plan_escrow is not None and plan_pf else None,
+            "keeping_escrow": keeping,
+            "keeping_coverage": (keeping / plan_pf) if plan_pf else None}
 
 
 def _months_between(start: str, end: str) -> int | None:

@@ -129,15 +129,25 @@ def calculate(req: CalcRequest) -> dict:
     # Проект, сохранённый до «одной вводной роста после РВЭ», переносится
     # до расчёта; страница применяет перенос к своему состоянию.
     migrations = migrate_growth_post(req.inputs)
+    # Класс офиса ставит шкалу полям офиса до расчёта и до путей стратегий.
+    apply_office_classes(req.inputs)
     # Расчёт правит переданные словари (`prepared_calculation`), а второму и
     # третьему пути офиса нужны вводные такими, какими их прислали.
     original = (copy.deepcopy((req.inputs, req.tep, req.rates))
-                if office_path_prefixes(req.inputs) else None)
+                if any(strategy_path_prefixes(req.inputs, product) for product, _ in STRATEGY_PATH_PRODUCTS)
+                else None)
     result = _finalize_result(_calculate_economics(req))
     if migrations and isinstance(result, dict):
         result["input_migrations"] = migrations
+    if isinstance(result, dict):
+        result["office_classes"] = office_class_rows(req.inputs)
     if original is not None and isinstance(result, dict) and result.get("summary"):
-        result["office_paths"] = office_paths(original, result)
+        for product, key in STRATEGY_PATH_PRODUCTS:
+            if strategy_path_prefixes(original[0], product):
+                result[key] = office_paths(original, result, product)
+        # Блок «Сравнение стратегий» без точек безразличия: они — подбор,
+        # его делают фоновые сборки и отдельный запрос страницы.
+        attach_strategy_compare(result)
     return result
 
 
@@ -148,7 +158,10 @@ def calculate(req: CalcRequest) -> dict:
 # движка с другой стратегией офисов; поверхности читают этот блок, а не
 # пересчитывают сами. Путь, совпавший со стратегией проекта, берётся из
 # основного расчёта, а не считается второй раз.
+# Владелец, 24.10.2026: «Новая книга считает и ДДУ» — третий способ, продажа
+# по ДДУ с эскроу и проектным финансированием, стоит рядом с двумя прежними.
 OFFICE_PATHS: tuple[tuple[str, str], ...] = (
+    (nonres_strategy.STRATEGY_DDU, "Продажа по ДДУ (эскроу)"),
     (nonres_strategy.STRATEGY_DIRECT, "Продажа блоками после ввода"),
     (nonres_strategy.STRATEGY_INCOME, "Аренда и продажа здания"),
 )
@@ -159,35 +172,59 @@ OFFICE_PATHS: tuple[tuple[str, str], ...] = (
 # сценарий стоил бы трёх расчётов.
 OFFICE_PATHS_ON: contextvars.ContextVar[bool] = contextvars.ContextVar("office_paths_on", default=True)
 
+# Владелец, 24.10.2026: «Сравнение стратегий» везде, где у объекта есть выбор
+# способа продажи, — у офисов и у ТЦ. Продукт объекта → ключ результата.
+# Офисы — прежний `office_paths` (его читает книга офиса), ТЦ — тем же расчётом.
+STRATEGY_PATH_PRODUCTS: tuple[tuple[str, str], ...] = (
+    ("offices", "office_paths"),
+    ("standalone_retail", "retail_paths"),
+)
 
-def office_path_prefixes(inputs: dict[str, Any] | None) -> tuple[str, ...]:
-    """Приставки включённых офисов нежилого проекта; пусто — сравнения нет."""
+
+def strategy_path_prefixes(inputs: dict[str, Any] | None, product: str) -> tuple[str, ...]:
+    """Приставки включённых объектов продукта с выбором стратегии в нежилом
+    проекте; пусто — сравнения нет."""
     if not OFFICE_PATHS_ON.get() or not isinstance(inputs, dict) or not is_nonresidential(inputs):
         return ()
     return tuple(obj.prefix for obj in STANDALONE_OBJECTS
-                 if obj.strategies and obj.product == "offices"
+                 if obj.strategies and obj.product == product
                  and inputs.get(f"{obj.prefix}_enabled")
                  and n(inputs, f"{obj.prefix}_gba_sqm", 0.0) > 0)
 
 
-def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...]) -> dict[str, Any]:
+def office_path_prefixes(inputs: dict[str, Any] | None) -> tuple[str, ...]:
+    """Приставки включённых офисов нежилого проекта; пусто — сравнения нет."""
+    return strategy_path_prefixes(inputs, "offices")
+
+
+def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...],
+                         key: str | None = None) -> dict[str, Any]:
     """Итоги пути: числа сводки движка и деньги офисов, без своей арифметики.
 
-    Пик собственных денег — худший накопленный поток капитала, тем же
-    правилом, что плитка «Собственный капитал — пик потребности»."""
+    Пик собственных денег — худший накопленный поток собственника деньгами,
+    без оценки удержанного здания (`owner_cash_peak`), тем же правилом, что
+    плитка «Собственный капитал — пик потребности».
+
+    Продажа по ДДУ (`key` — `STRATEGY_DDU`): выручка офиса — его продукты
+    эскроу-продаж (сам офис и его машино-места, `revenue`), покрытие долга —
+    LLCR проектного финансирования; объектов вне ДДУ у офиса тогда нет."""
     summary = result.get("summary") or {}
+    finance = result.get("finance") or {}
     objects = [o for o in ((result.get("finance") or {}).get("nonres") or {}).get("objects") or []
                if o.get("key") in {p for p in prefixes} or o.get("prefix") in prefixes]
     totals = [o.get("totals") or {} for o in objects]
     kpis = [o.get("kpi") or {} for o in objects]
-    cumulative = worst = 0.0
-    for value in ((result.get("cashflow") or {}).get("equity") or []):
-        cumulative += float(value or 0.0)
-        worst = min(worst, cumulative)
     noi = sum(float(k.get("stabilized_noi") or 0.0) for k in kpis)
     noi_cost = sum(float(k.get("cost_total") or 0.0) for k in kpis if k.get("stabilized_noi"))
     dscr = [k["dscr_min"] for k in kpis if k.get("dscr_min") is not None]
     total = lambda name: sum(float(t.get(name) or 0.0) for t in totals)
+    ddu_sales = 0.0
+    if key == nonres_strategy.STRATEGY_DDU:
+        revenue = result.get("revenue") or {}
+        office_keys = [obj.key for obj in STANDALONE_OBJECTS if obj.prefix in prefixes]
+        ddu_sales = sum(float(revenue.get(k) or 0.0) + float(revenue.get(object_parking_product_key(k)) or 0.0)
+                        for k in office_keys)
+    with_pf = float(finance.get("pf_draw_total") or 0.0) > 0
     return {
         "revenue": float(summary.get("revenue") or 0.0),
         "capex": float(summary.get("capex") or 0.0),
@@ -199,41 +236,94 @@ def _office_path_metrics(result: dict[str, Any], prefixes: tuple[str, ...]) -> d
         "npv": summary.get("npv"),
         "irr_project": summary.get("irr_project"),
         "npv_equity": summary.get("npv_equity"),
-        "equity_peak": -worst,
+        "equity_peak": owner_cash_peak(result.get("finance") or {},
+                                       (result.get("cashflow") or {}).get("equity") or []),
         "rent_revenue": total("rent_revenue"),
-        "sale_revenue": total("sale_revenue"),
+        "sale_revenue": total("sale_revenue") + ddu_sales,
+        "commercial_costs": float(summary.get("commercial_costs") or 0.0),
+        # LLCR и пик ПФ — у способа, где есть проектное финансирование (объект по
+        # ДДУ); без ПФ покрытия нет, и пусто, а не ноль.
+        "llcr": summary.get("llcr") if with_pf else None,
+        "pf_peak": float(finance.get("peak_pf") or 0.0) if with_pf else None,
+        # Подпись «N/A — долг не погашен» вместо NPV капитала (`equity_returns`).
+        "equity_returns_label": equity_returns_na_label(summary),
+        # IRR собственника (с кредитом) — числом, только если движок счёл его
+        # показательным; иначе — подпись движка (`equity_irr_label`).
+        "irr_equity": summary.get("irr_equity") if equity_irr_label(summary) is None else None,
+        "irr_equity_label": equity_irr_label(summary),
         "exit_revenue": total("exit_revenue"),
         "stabilized_noi": noi or None,
         "yield_on_cost": noi / noi_cost if noi and noi_cost else None,
         "exit_value": sum(float(k.get("exit_value") or 0.0) for k in kpis) or None,
         "dscr_min": min(dscr) if dscr else None,
         "loan_peak": total("loan_peak"),
+        # Когда собственные деньги вернутся — тем же потоком, что пик.
+        "payback_month": _iso_month(owner_cash_payback(
+            result.get("finance") or {}, (result.get("cashflow") or {}).get("equity") or [],
+            (result.get("cashflow") or {}).get("months") or [])),
     }
 
 
-def office_paths(original: tuple[dict, dict, list], result: dict[str, Any]) -> dict[str, Any]:
-    """Оба пути офиса одним расчётом: основной + недостающие стратегии."""
+def _iso_month(value: Any) -> str | None:
+    return None if value is None else str(value.isoformat() if hasattr(value, "isoformat") else value)[:10]
+
+
+def _path_exit_mode(inputs: dict[str, Any], prefix: str) -> str:
+    value = str(inputs.get(f"{prefix}_exit_mode") or "").strip().lower()
+    return value if value in (nonres_strategy.EXIT_SALE, nonres_strategy.EXIT_HOLD) else nonres_strategy.EXIT_SALE
+
+
+# Подпись аренды по выходу: продажа здания или удержание с оценкой в конце.
+INCOME_EXIT_LABELS = {nonres_strategy.EXIT_SALE: "Аренда и продажа здания",
+                      nonres_strategy.EXIT_HOLD: "Аренда и удержание здания"}
+
+
+def office_paths(original: tuple[dict, dict, list], result: dict[str, Any],
+                 product: str = "offices") -> dict[str, Any]:
+    """Все способы продажи объекта одним расчётом: основной + недостающие
+    стратегии. `product` — офисы или ТЦ (`STRATEGY_PATH_PRODUCTS`).
+
+    Аренда (`income`) — с выходом проекта; рядом — аренда с другим выходом
+    (`income_hold` / `income_sale`): владелец, 24.10.2026, «доходный метод для
+    инвестора почему не сравнить?» — инвестор может и продать здание, и
+    оставить его себе."""
     inputs, tep, rates = original
-    prefixes = office_path_prefixes(inputs)
+    prefixes = strategy_path_prefixes(inputs, product)
     current = {nonres_strategy.object_strategy(inputs, prefix) for prefix in prefixes}
     current_key = current.pop() if len(current) == 1 else None
+    exits = {_path_exit_mode(inputs, prefix) for prefix in prefixes}
+    exit_now = exits.pop() if len(exits) == 1 else None
+    variants = [(key, INCOME_EXIT_LABELS.get(exit_now, label) if key == nonres_strategy.STRATEGY_INCOME else label,
+                 key, None) for key, label in OFFICE_PATHS]
+    if exit_now is not None:
+        other = (nonres_strategy.EXIT_HOLD if exit_now == nonres_strategy.EXIT_SALE
+                 else nonres_strategy.EXIT_SALE)
+        variants.append((f"{nonres_strategy.STRATEGY_INCOME}_{other}", INCOME_EXIT_LABELS[other],
+                         nonres_strategy.STRATEGY_INCOME, other))
     paths = []
-    for key, label in OFFICE_PATHS:
+    for key, label, strategy, exit_mode in variants:
+        tags = {"key": key, "label": label, "strategy": strategy,
+                "exit_mode": (exit_mode or exit_now) if strategy == nonres_strategy.STRATEGY_INCOME else None}
         if key == current_key:
             run = result
         else:
             x, t, r = copy.deepcopy((inputs, tep, rates))
             for prefix in prefixes:
-                x[f"{prefix}_strategy"] = key
+                x[f"{prefix}_strategy"] = strategy
+                if exit_mode:
+                    x[f"{prefix}_exit_mode"] = exit_mode
             try:
                 run = _finalize_result(_calculate_economics(CalcRequest(inputs=x, tep=t, rates=r)))
             except Exception as exc:  # путь не посчитался — сказать почему, а не молчать
-                paths.append({"key": key, "label": label, "error": f"{type(exc).__name__}: {exc}"})
+                paths.append({**tags, "error": f"{type(exc).__name__}: {exc}"})
                 continue
-        paths.append({"key": key, "label": label, **_office_path_metrics(run, prefixes)})
+        paths.append({**tags, **_office_path_metrics(run, prefixes, strategy)})
     scored = [p for p in paths if isinstance(p.get("npv"), (int, float))]
     better = max(scored, key=lambda p: p["npv"])["key"] if scored else None
-    return {"current": current_key, "paths": paths, "better": better,
+    caps = {_strategy_field_value(inputs, prefix, "exit_cap_pct") for prefix in prefixes}
+    return {"current": current_key, "paths": paths, "better": better, "product": product,
+            "prefixes": list(prefixes), "discount_rate_pct": n(inputs, "discount_rate_pct", 20),
+            "exit_cap_pct": caps.pop() if len(caps) == 1 else None,
             "better_basis": "NPV проекта при ставке дисконтирования"}
 
 
@@ -272,10 +362,9 @@ def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -
     # заново из оставшихся мест) и до соцобъектов (их строки идут от мест,
     # которые здесь обнуляются). Остаток называется по присланному — это
     # расхождение вводных с типом, а не часть расчёта.
-    # Паркинг проекта без жилья — паркинг его офиса, если офис один
-    # (`office_takes_project_parking`); перенос — до списка остатка, иначе
-    # места назывались бы «оставшимися от жилья».
-    x, t, kind_moves = office_takes_project_parking(x, t)
+    # Паркинг проекта без жилья к офису больше не переносится (владелец,
+    # 25.10.2026): гараж офиса строится по нормативу или по его же полям
+    # (`apply_object_parking`), а число в поле паркинга проекта — остаток.
     kind_leftovers = nonresidential_leftovers(x, t)
     x, t = residential_excluded(x, t)
     # Состав объектов — тем же порядком: экземпляр вне проекта не считается,
@@ -299,7 +388,6 @@ def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -
     # правка ТЭП была бы правкой того, что уже посчитано.
     object_parking = apply_object_parking(x, t)
     return {"x": x, "t": t, "rates": rates, "kind_leftovers": kind_leftovers,
-            "kind_moves": kind_moves,
             "instance_notes": instance_notes, "object_parking": object_parking}
 
 
@@ -673,9 +761,16 @@ def _calculate_economics(req: CalcRequest) -> dict:
             - float(fr.get("nonres_vat_paid", 0.0) or 0.0)
         )
         vat_m = vat_ddu.get(month, 0.0)
-        project_cf.append(revenue_m - capex_m - opex_m - tax - vat_m + nonres_project)
+        # Деньги по ДДУ лежат на эскроу до ввода (214-ФЗ, ч. 6 ст. 15.5): застройщик
+        # получает их раскрытием счёта в РВЭ, а проданное после ввода — в месяц
+        # продажи. Поток проекта идёт по тем же деньгам, что поток капитала, —
+        # как строка книги «Проектный CF до финансирования» (CF_n!54 от
+        # «Раскрытия эскроу»). Прежде выручка шла сюда в месяц договора, и NPV
+        # проекта по ДДУ выходил выше настоящего: на Вавилова, 67 +623 млн ₽
+        # против −1 771 (владелец, 25.10.2026).
         escrow_release = float(fr.get("escrow_release", 0.0) or 0.0)
         cash_revenue_to_equity = 0.0 if month < op["rve"] else revenue_m + escrow_release
+        project_cf.append(cash_revenue_to_equity - capex_m - opex_m - tax - vat_m + nonres_project)
         # Кэш-свип уходит банку с поступлений этой очереди: её долг он не
         # гасит (линия закрыта), поэтому в pf_repay его нет, а из кассы он
         # выбывает. Без этого вычета деньги посчитались бы дважды — здесь как
@@ -1085,7 +1180,13 @@ def _calculate_economics(req: CalcRequest) -> dict:
             # жилые метры, которые расчёт не считает (`residential_excluded`).
             "project_kind": project_kind(x),
             "project_kind_leftovers": kind_leftovers,
-            "project_kind_moves": prepared["kind_moves"],
+            # Откуда места гаражей объектов проекта без жилья — фраза движка
+            # (`object_parking_origin_note`), отчёт и PDF её только печатают.
+            "project_kind_parking": [
+                f"{item['label']}: {item['origin_note'][:1].lower()}{item['origin_note'][1:]}"
+                for item in (object_parking.get("own") or [])
+                if item.get("enabled") and item.get("origin_note")
+            ] if without_housing(x) else [],
             # Состав объектов, которым считал расчёт, и непринятое из
             # присланного — с причиной, а не молчаливым пропуском.
             "object_instances": list(project_object_instances(x)),
@@ -1139,6 +1240,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "landscaping_by_class_th": per_sqm_th(
                 op.get("landscaping_by_class", 0.0), project_gns_sqm),
             "landscaping_by_rate": bool(op.get("landscaping_by_rate")),
+            "landscaping_rate_origin": str(op.get("landscaping_rate_origin") or ""),
+            "landscaping_default_rate_th": float(op.get("landscaping_default_rate_th") or 0.0),
             # Статья считается на своей физической базе — дворе, — а сравнивают
             # её с чужой сметой и со сводом «Статистики», которые меряют метр
             # ГНС. Производная считается ЗДЕСЬ и один раз: посчитанная на

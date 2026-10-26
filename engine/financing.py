@@ -830,6 +830,12 @@ def hotel_summary(flows: dict[str, Any], book: dict[str, Any]) -> dict[str, Any]
     }
 
 
+# Нежилое в составе многоквартирного дома: по ДДУ освобождено от НДС
+# (пп. 23.1 п. 3 ст. 149 НК). Одно место на движок; книга v4 вычитает те же
+# строки листа «Продажи» (коммерция, паркинг, кладовые).
+VAT_MKD_NONRES_PRODUCTS = ("ground_commercial", "underground_parking", "storage")
+
+
 def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) -> dict:
     project_start = op["project_start"]
     permit = op["permit"]
@@ -937,6 +943,17 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         pf_cap_set = True
     else:
         pf_cap_set = approved_pf_limit > 0
+    # ПФ есть, только если ему есть что выдавать: затраты проекта под ПФ
+    # (`debt_capex` и `operating` — ровно то, что выбирает ПФ ниже) или продажи
+    # по ДДУ на эскроу. Без них одобренный лимит ПФ не открывается и платы за
+    # его резервирование нет: прежде она бралась и у офиса на продаже блоками
+    # или в аренде, где все затраты идут на кредите объекта (владелец,
+    # 24.10.2026: «Исправить: без ПФ платы нет»).
+    has_pf = any(
+        float(v or 0.0) > 0.0
+        for key in ("debt_capex", "operating", "revenue")
+        for v in (op.get(key) or {}).values()
+    )
 
     # Лестница разбирается один раз на расчёт, а не в каждом месяце: строку
     # человек вводит руками, и разбирать её сотню раз незачем.
@@ -1055,7 +1072,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         line_settled = False
         rve_unpaid = 0.0
         defaulted_at: date | None = None
-        pf_reservation_fee = (pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100 if pf_limit else 0.0
+        pf_reservation_fee = ((pf_limit or 0.0) * n(x, "reservation_fee_pct") / 100
+                              if pf_limit and has_pf else 0.0)
         transferred_bridge_interest = 0.0
 
         weighted_bridge_num = weighted_bridge_key_num = weighted_bridge_den = 0.0
@@ -1524,7 +1542,7 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         result = run(pf_limit)
     # «Лимит ПФ» — тот, по которому живёт проект: одобренный, если он задан.
     # Комиссии за лимит и резервирование берутся с него же.
-    result["pf_limit"] = approved_pf_limit if pf_cap_set else pf_limit
+    result["pf_limit"] = approved_pf_limit if pf_cap_set and has_pf else pf_limit
     result["pf_limit_cap_source"] = str(x.get("_pf_limit_cap_source") or
                                         ("project" if pf_cap_set else ""))
     # Сколько лимита проект просит на самом деле — считается свободным
@@ -1727,18 +1745,30 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     if abs(financing_reconciliation) > 0.01:
         financing_deductions[end] += financing_reconciliation
 
-    # НДС. Жильё по ДДУ освобождено (пп. 23.1 п. 3 ст. 149 НК), нежилое —
-    # облагается: ПСН, офисы, паркинг и кладовые. Решение владельца
-    # (15.08.2026), методика снята с книги внешней модели: там ставка 22%,
-    # отдельная статья БДДС и «Начало уплаты НДС» ровно в дату РВЭ.
+    # НДС. По ДДУ освобождены услуги застройщика, если объекты долевого
+    # строительства — «входящие в состав многоквартирных домов жилые и (или)
+    # нежилые помещения, машино-места» (пп. 23.1 п. 3 ст. 149 НК, в ред. закона
+    # от 31.07.2023; для РнС до 2024 года — письмо Минфина 03-07-07/92596 со
+    # ссылкой на ВС).
+    # Значит, квартиры, встроенная коммерция, паркинг и кладовые дома,
+    # проданные до РВЭ по ДДУ, налога не несут; проданное после ввода идёт по
+    # ДКП, и нежилое там облагается с полной цены (пп. 22 освобождает только
+    # жилые помещения). Отдельно стоящие объекты облагаются. Решение владельца
+    # 25.10.2026 после ревизии docs/vat_ddu_review.md; прежде (15.08.2026, по
+    # книге внешней модели) нежилое дома облагалось целиком. Ставка 22% и
+    # «Начало уплаты НДС» в дату РВЭ — как были. Допущение (владелец,
+    # 25.10.2026): освобождено всё нежилое дома, без исключения «объектов
+    # производственного назначения» прежней редакции пп. 23.1 — оно действует
+    # только для РнС до 01.01.2024 (ст. 13 ч. 30 того же закона), и даты РнС и
+    # назначения помещения по договору модель не знает.
     #
     # Затраты в модели заданы с НДС, поэтому входящий налог уже сидит в них.
     # К вычету идёт не весь: при освобождённых операциях доля, приходящаяся на
     # них, остаётся в себестоимости (п. 4 ст. 170 НК). Отсюда частая ошибка
     # «стройка 10 млрд — вернут 1,8»: возвращают только долю нежилого.
     vat_rate = max(0.0, n(x, "vat_pct", 22)) / 100
-    # Облагается всё, кроме квартир: продажа жилых помещений освобождена
-    # (пп. 22-23 п. 3 ст. 149 НК), машино-места и коммерция — нет. Список
+    # В базу идёт всё, кроме квартир (нежилое дома до РВЭ вычитается ниже,
+    # `vat_exempt_ddu`). Список
     # продуктов здесь не перечисляется: паркинг отдельно стоящих объектов
     # завели позже обоих пулов и ни в один не вписали, поэтому 166,0 млн его
     # выручки выпадали из базы — 4,7 млн НДС, ровно на которые книга и отчёт
@@ -1750,13 +1780,21 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
     vat_taxable_products = tuple(
         key for key in revenue_schedules if key != "apartments"
     )
+    # Нежилое ДОМА, проданное по ДДУ (до РВЭ), — освобождено. Ключи — продукты
+    # пула дома (`core_product` в operating_model), не объекты.
+    vat_exempt_ddu = sum(
+        value
+        for key in VAT_MKD_NONRES_PRODUCTS
+        for month, value in (revenue_schedules.get(key) or {}).items()
+        if month < rve
+    )
     vat_schedule: dict[date, float] = {}
     vat_charged = vat_input_deductible = 0.0
     if vat_rate > 0:
         gross_to_tax = vat_rate / (1 + vat_rate)
         taxable_revenue = sum(
             sum(revenue_schedules.get(key, {}).values()) for key in vat_taxable_products
-        )
+        ) - vat_exempt_ddu
         # Начисление — по передаче объекта, а не по признанию выручки: до
         # раскрытия эскроу оплаты застройщику нет, и база возникает актом
         # после ввода (ст. 167 НК). Всё, что продано до РВЭ, начисляется в РВЭ.
@@ -1891,6 +1929,8 @@ def simulate_financing(x: dict, t: dict, rates: list[dict[str, Any]], op: dict) 
         "profit_tax_rate": tax_rate,
         "vat": vat,
         "vat_charged": vat_charged,
+        # Выручка нежилого дома по ДДУ (до РВЭ), вышедшая из базы НДС, пп. 23.1.
+        "vat_exempt_ddu": vat_exempt_ddu,
         "vat_input_deductible": vat_input_deductible,
         "vat_schedule": {month.isoformat(): value for month, value in vat_schedule.items()},
         # НДС продаж по ДДУ к уплате по месяцам — без НДС объектов вне ДДУ и

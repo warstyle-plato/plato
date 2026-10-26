@@ -42,12 +42,12 @@ async function exportReportPdf(){
   while(response.status===202){
    let state={};try{state=await response.json()}catch(e){}
    if(!state.ticket)break;
-   show(state.detail||'PDF-отчёт готовится…');
-   if(Date.now()>deadline){alert('PDF-отчёт всё ещё готовится ('+(state.detail||'')+'). Нажмите «Экспорт PDF» позже.');return;}
+   show(serverDetail(state)||'PDF-отчёт готовится…');
+   if(Date.now()>deadline){alert('PDF-отчёт всё ещё готовится ('+(serverDetail(state)||'')+'). Нажмите «Экспорт PDF» позже.');return;}
    await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
    response=await fetch('/report/pdf/'+encodeURIComponent(state.ticket));
   }
-  if(!response.ok||response.status!==200){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}alert(detail);return;}
   const blob=await response.blob();
   downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'',`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`);
  }finally{show('')}
@@ -69,12 +69,12 @@ async function exportTeaserPdf(){
   while(response.status===202){
    let state={};try{state=await response.json()}catch(e){}
    if(!state.ticket)break;
-   show(state.detail||'Тизер готовится…');
-   if(Date.now()>deadline){alert('Тизер всё ещё готовится ('+(state.detail||'')+'). Нажмите «Скачать тизер» позже.');return;}
+   show(serverDetail(state)||'Тизер готовится…');
+   if(Date.now()>deadline){alert('Тизер всё ещё готовится ('+(serverDetail(state)||'')+'). Нажмите «Скачать тизер» позже.');return;}
    await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
    response=await fetch('/report/teaser/'+encodeURIComponent(state.ticket));
   }
-  if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}alert(detail);return;}
   const blob=await response.blob();
   downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'','DevelopAid_Тизер.pdf');
  }finally{show('')}
@@ -114,7 +114,7 @@ async function exportModelArchive(){
   });
   if(!response.ok){
    let detail='Не удалось собрать модель';
-   try{const x=await response.json();detail=x.detail||detail}catch(e){}
+   try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}
    alert(detail);return;
   }
   downloadBlobResponse(
@@ -138,7 +138,7 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  // список показывает пустую строку, а число при пересчёте становится нулём —
  // так «Периодичность платежей» ВРИ оказалась 0 при расчёте по квартальной.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),x.inputs||{});
- seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
+ seedParkingByHand();adoptObjectRateKind();syncOfficeClasses();restoreKrtClearedVriFee();
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(x.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
@@ -146,10 +146,9 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  rememberDerivedTail(x.tep,true);
  phasing=x.phasing?phasingFromSaved(x.phasing):phasing;rates=[];scenarioSelect.value=x.scenario||'base';
  // v0.12.25: old browser state could silently carry a three-phase project
- // into a newly imported small site. Only an explicit user choice or the
- // Mytishchi preset may restore phasing after this migration.
- const mytishchiPreset=inputs._preset_expert_overrides&&inputs._preset_expert_overrides.preset_id==='mytishchi';
- if(phasing.user_enabled!==true&&!mytishchiPreset)phasing=makeDefaultPhasing(1);
+ // into a newly imported small site. Only an explicit user choice may restore
+ // phasing after this migration.
+ if(phasing.user_enabled!==true)phasing=makeDefaultPhasing(1);
  // v0.7.1 migration: v0.7.0 temporarily misclassified the old 5% management rate as technical supervision.
  // Примета состояния v0.7.0 — нет поля управления проектом: там 5 % стояли
  // под технадзором. Нет версии у ЛЮБОГО проекта, сохранённого без неё, — и
@@ -219,7 +218,7 @@ async function loadServerProjectPreset(){
  try{
   const response=await fetch('/api/project-presets/'+encodeURIComponent(id)+presetsQuery());
   parsed=await response.json();
-  if(!response.ok)throw new Error(parsed.detail||'Пресет не загружен');
+  if(!response.ok)throw new Error(serverDetail(parsed)||'Пресет не загружен');
  }catch(e){alert(String(e.message||e));return}
  await previewPreset(parsed);
 }
@@ -231,7 +230,7 @@ async function previewPreset(parsed){
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({preset:parsed,mode:'preview',inputs,tep})});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Пресет не разобран');
+  if(!response.ok)throw new Error(serverDetail(data)||'Пресет не разобран');
  }catch(e){alert(String(e.message||e));return}
  presetPreview=parsed;
  renderPresetPreview(data);
@@ -312,11 +311,11 @@ async function applyPreset(){
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({preset:presetPreview,mode:'apply',inputs,tep,filled:presetFilledValues()})});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Пресет не применён');
+  if(!response.ok)throw new Error(serverDetail(data)||'Пресет не применён');
  }catch(e){alert(String(e.message||e));return}
  // Как и всюду: приходящее накладывается на умолчания, а не заменяет их.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.applied_inputs||{});
- seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
+ seedParkingByHand();adoptObjectRateKind();syncOfficeClasses();restoreKrtClearedVriFee();
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.applied_tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
@@ -366,7 +365,7 @@ async function projectsCall(path,body){
  let data={};
  try{data=raw?JSON.parse(raw):{}}catch(e){}
  if(!response.ok){
-  const said=String(data.detail||'').trim()
+  const said=String(serverDetail(data)||'').trim()
    ||raw.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160);
   throw new Error(said?('Хранилище ответило '+response.status+': '+said)
    :('Хранилище ответило кодом '+response.status+' и пустым телом'));
@@ -506,9 +505,9 @@ function renderProjectsLogin(reason){
  if(!box){
   box=document.createElement('div');
   box.id='projectsLoginBox';
-  box.style.cssText='border:1px solid var(--line);padding:16px;margin-bottom:14px';
+  box.className='cab-login';
   const note=document.createElement('div');
-  note.style.cssText='font-size:12px;color:#555;margin-bottom:10px';
+  note.className='cab-muted';
   // Текст статический, innerHTML — только ради ссылки на согласие: вход и
   // есть момент, когда данные начинают собираться.
   note.innerHTML='Проекты хранятся на сервере в России и привязаны к вашему Telegram. '
@@ -520,14 +519,14 @@ function renderProjectsLogin(reason){
   login.className='btn dark';
   login.textContent='Войти через Telegram';
   const status=document.createElement('div');
-  status.style.cssText='font-size:12px;color:#777;margin-top:10px';
+  status.className='cab-status';
   login.onclick=()=>loginViaTelegram(status);
   if(!projectsAcceptsLogin)login.style.display='none';
   box.appendChild(login);
   if(projectsAcceptsKey){
    const keyBtn=document.createElement('button');
    keyBtn.className='btn';
-   keyBtn.style.marginLeft='10px';
+   keyBtn.style.marginLeft='8px';
    keyBtn.textContent='У меня ключ администратора';
    keyBtn.onclick=enterProjectsKey;
    box.appendChild(keyBtn);
@@ -550,6 +549,8 @@ function renderProjectsLogin(reason){
  }
  const scroll=stored.querySelector('.scroll');
  if(scroll)scroll.style.display='none';
+ const find=document.getElementById('projectsFind');
+ if(find)find.style.display='none';
 }
 
 function hideProjectsLogin(){
@@ -558,6 +559,8 @@ function hideProjectsLogin(){
  const stored=document.getElementById('projectsStored');
  const scroll=stored&&stored.querySelector('.scroll');
  if(scroll)scroll.style.display='';
+ const find=document.getElementById('projectsFind');
+ if(find)find.style.display='';
 }
 
 function enterProjectsKey(){
@@ -587,15 +590,15 @@ function renderAccountBox(){
  if(web&&profile.role)details.push(escapeHtml(profile.role));
  if(web&&profile.telegram_name)details.push('Telegram: '+escapeHtml(profile.telegram_name));
  box.style.display='';
- box.innerHTML='<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">'+
+ box.innerHTML='<div class="cab-row">'+
   '<div><b>'+title+'</b>'+
-  (details.length?'<div style="font-size:11px;color:#777;margin-top:2px">'+details.join(' · ')+'</div>':'')+
+  (details.length?'<div class="cab-note">'+details.join(' · ')+'</div>':'')+
   (web&&profileState&&profileState.known===false
-    ?'<div style="font-size:11px;color:#a05a00;margin-top:2px">'+escapeHtml(profileState.reason||'Знакомство не проверено')+'</div>'
+    ?'<div class="cab-note cab-warn">'+escapeHtml(profileState.reason||'Знакомство не проверено')+'</div>'
     :(web&&profileState&&profileState.known&&!profileState.complete
-      ?'<div style="font-size:11px;color:#a05a00;margin-top:2px">Знакомство не заполнено — проекты не сохранятся.</div>':''))+
+      ?'<div class="cab-note cab-warn">Знакомство не заполнено — проекты не сохранятся.</div>':''))+
   '</div>'+
-  '<span style="margin-left:auto;display:flex;gap:10px">'+
+  '<span class="cab-push cab-row">'+
   (web?'<button class="btn" onclick="openProfile()">Знакомство</button>':'')+
   '<button class="btn" onclick="logoutFromSite()">Выход</button>'+
   '</span></div>';
@@ -650,7 +653,47 @@ async function openProjects(){
   }
   alert(String(e.message||e));return;
  }
- const rows=(data.projects||[]).map(p=>{
+ projectsCards=data.projects||[];
+ renderProjectsList();
+}
+
+// Список проектов: поиск по названию и номерам участка, порядок — по дате
+// изменения или по названию. Выбранный порядок помнит браузер; хранилища может
+// не быть (приватное окно), и тогда порядок просто по умолчанию.
+let projectsCards=[];
+const PROJECTS_SORT_KEY='developaid_projects_sort';
+const PROJECTS_SORTS={
+ saved_desc:(a,b)=>String(b.saved_at||'').localeCompare(String(a.saved_at||'')),
+ saved_asc:(a,b)=>String(a.saved_at||'').localeCompare(String(b.saved_at||'')),
+ name:(a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ru',{sensitivity:'base',numeric:true})
+};
+function projectsSort(){
+ const select=document.getElementById('projectsSort');
+ let value=select&&select.value;
+ if(!projectsSortRestored){
+  projectsSortRestored=true;
+  try{const kept=localStorage.getItem(PROJECTS_SORT_KEY);if(kept&&PROJECTS_SORTS[kept])value=kept}catch(e){}
+  if(select&&value)select.value=value;
+ }
+ return PROJECTS_SORTS[value]?value:'saved_desc';
+}
+let projectsSortRestored=false;
+function projectsSortChanged(){
+ const select=document.getElementById('projectsSort');
+ try{if(select)localStorage.setItem(PROJECTS_SORT_KEY,select.value)}catch(e){}
+ renderProjectsList();
+}
+function projectMatches(p,query){
+ if(!query)return true;
+ const hay=[p.name||''].concat(p.cadastral||[]).join(' ').toLowerCase();
+ return query.split(/\s+/).filter(Boolean).every(word=>hay.includes(word));
+}
+function renderProjectsList(){
+ if(typeof projectsBody==='undefined')return;
+ const query=String((document.getElementById('projectsSearch')||{}).value||'').trim().toLowerCase();
+ const order=PROJECTS_SORTS[projectsSort()];
+ const shown=projectsCards.filter(p=>projectMatches(p,query)).slice().sort(order);
+ const rows=shown.map(p=>{
   const s=p.summary||{};
   return `<tr><td><b>${escapeHtml(p.name||'')}</b><br><small>${escapeHtml(String(p.saved_at||'').replace('T',' ').replace('+00:00',' UTC'))}`
    +`${p.cadastral&&p.cadastral.length?' · '+escapeHtml(p.cadastral.join(', ')):''}</small></td>`
@@ -666,10 +709,24 @@ async function openProjects(){
    +`<button class="btn" onclick="downloadSettingsFile('${p.id}')">Файл</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
  }).join('');
- projectsBody.innerHTML=rows||'<tr><td colspan="5">Пока ничего не сохранено.</td></tr>';
+ projectsBody.innerHTML=rows||('<tr><td colspan="5">'+(projectsCards.length
+  ?'По запросу «'+escapeHtml(query)+'» ничего не нашлось. Поиск идёт по названию и кадастровым номерам.'
+  :'Пока ничего не сохранено.')+'</td></tr>');
 }
 
 function closeProjects(){projectsDialog.style.display='none'}
+
+// Вкладки кабинета. Какие видны, решает не страница: вкладку администрирования
+// показывает `renderTariffsBox` по ответу сервера.
+function cabinetTab(name){
+ const tab=document.querySelector('.cab-tab[data-tab="'+name+'"]');
+ if(!tab||tab.style.display==='none')name='projects';
+ document.querySelectorAll('.cab-tab').forEach(b=>{
+  const on=b.dataset.tab===name;
+  b.classList.toggle('active',on);b.setAttribute('aria-selected',on?'true':'false');
+ });
+ document.querySelectorAll('.cab-panel').forEach(p=>{p.hidden=p.dataset.panel!==name});
+}
 
 function changeProjectsKey(){
  const key=prompt('Ключ администратора', projectsAdminKey||'');
@@ -735,6 +792,7 @@ function renderOpenedProjectButton(){
 
 function forgetTerritoryState(){
  cadastralAnalysis=null;landLookup=null;otherRegionPending=null;landScreeningLast=null;LAND_MAP=null;
+ calcWentWithoutContour=false;
  glavapuImport=null;moResult=null;
  // Запрос района и ТТК по участку — тоже про участок: новый проект спрашивает свой.
  sitePositionRun={key:'',state:'',error:'',count:0};
@@ -782,7 +840,7 @@ function applyProjectSnapshot(data){
  rememberDerivedTail(data.tep,true);
  phasing=phasingFromSaved(data.phasing);
  // Список тронутых полей паркинга — от ЭТОГО снимка, а не от прошлого проекта.
- seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
+ seedParkingByHand();adoptObjectRateKind();syncOfficeClasses();restoreKrtClearedVriFee();
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
  renderInputs();renderTep();renderPhasing();
  // Шапка — класс и вид проекта — читает те же вводные, что и форма: без этого
@@ -972,15 +1030,23 @@ async function deleteProject(id){
 // трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
 // то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
 // LAND_MAP_VIEWS — ответ сервера, есть ли ключ Яндекс Карт для гибрида: не проект.
+// landContourPending — число запросов контура ЕГРН в пути: его гасит каждый
+// ответ, и сброс сбил бы счёт.
+// accessUseFree — согласие на бесплатный участок на один запуск расчёта:
+// снимается сразу после него и проекта не хранит.
+// projectsCards — список сохранённого в хранилище, projectsSortRestored —
+// отметка, что порядок списка уже прочитан из браузера: кабинет, не проект.
+// demoBlockNames — названия разделов демо-ссылок с сервера для админки: не проект.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
- 'profileState','profileAskedOnResult','calcRequiresLogin','calcRun','calcSettled','webLoginBusy',
+ 'profileState','profileAskedOnResult','calcRequiresLogin','accessUseFree','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
+ 'projectsCards','projectsSortRestored',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence','glavapuScenarioRun',
+ 'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound','landContourPending',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
- 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS'];
+ 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS','demoBlockNames'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
@@ -988,10 +1054,13 @@ function resetProjectState(){
  // 3 200 м²» под строкой паркинга, жалоба на пропорции ТЭП, разговор Платона
  // о прошлом проекте, отчёт чувствительности чужой площадки.
  lastResult=null;
+ // Сравнение стратегий и его подбор — прошлого проекта: номер запроса
+ // растёт, и опоздавший ответ подбора в новый проект не ляжет.
+ strategyCompareKey='';strategyCompareBlock=null;++strategyCompareRound;
  // Открытый проект — тоже данные проекта: после сброса «Сохранить поверх»
  // записало бы пустой расчёт в чужую запись.
  openedProject=null;
- aiHistory=[];aiProposals=[];aiIntake=null;aiDocument=null;aiDocBaseline=null;aiIntakeApplied=[];aiQuestion=null;aiCadastralReady=false;
+ aiHistory=[];aiProposals=[];aiIntake=null;aiCard=null;aiDocument=null;aiDocBaseline=null;aiIntakeApplied=[];aiQuestion=null;aiCadastralReady=false;
  territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';socialPopulationNoteText='';
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
  moLastQuery='';moAutoApartments=null;
@@ -1100,9 +1169,8 @@ function resetTepControls(){
  if(typeof renderPhaseFinancing==='function')renderPhaseFinancing();
  // Выбранный пресет и имя файла настроек — тоже след прошлого проекта:
  // «Сбросить» с оставшимся «Румянцево» в списке читается как «не сработало».
- ['serverPresetSelect','projectPresetSelect'].forEach(id=>{
-  const el=document.getElementById(id);if(el)el.selectedIndex=0;
- });
+ const presetSelect=document.getElementById('projectPresetSelect');
+ if(presetSelect)presetSelect.selectedIndex=0;
  const settingsFile=document.getElementById('settingsFileInput');
  if(settingsFile)settingsFile.value='';
 }
@@ -1131,6 +1199,9 @@ function resetAll(){
  siteParkingConflictSeen='';
  // Подсказка «галочка ВРИ без платы» относится к прошлому проекту.
  vriFeeAskedWithoutSum=false;vriFeeClearedMln=0;
+ // Ожидание плана расстановки — ожидание прошлого проекта: его ответ
+ // пересчитал бы новый.
+ siteMassingPlanStop();
  // Открытое окно подтверждения «Сформировать ТЭП по новым параметрам» — действие
  // над прошлым проектом: по «Сформировать» оно легло бы в новый.
  closeTepConfirm();
@@ -1221,18 +1292,20 @@ async function loadAccessMe(){
  const response=await fetch('/access/me',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({session:activeSession()})});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Не удалось узнать условия доступа');
+ if(!response.ok)throw new Error(serverDetail(data)||'Не удалось узнать условия доступа');
  return data;
 }
 function tariffsHtml(data){
  const terms=data.terms||{},plotOffer=data.plot_offer||{},subOffer=data.subscription_offer||{};
  const vat=plotOffer.vat_note?' ('+escapeHtml(plotOffer.vat_note)+')':'';
- let html='<div class="section-title" style="margin-bottom:8px">Тарифы и доступ</div>'+
-  '<p style="margin:0 0 8px">После входа '+(terms.free_plots===1?'один участок':(terms.free_plots+' участка'))+
+ let html='<div class="cab-title">Тарифы и доступ</div>'+
+  '<p>После входа '+(terms.free_plots===1?'один участок':(terms.free_plots+' участка'))+
   ' можно посчитать бесплатно. Участок — это один кадастровый номер или набор номеров, который вы считаете вместе.</p>'+
-  '<ul style="margin:0 0 10px 18px;padding:0">'+
+  '<ul>'+
   '<li><b>Один участок — '+accessRub(terms.plot_price_rub)+'</b>'+vat+': доступ на '+terms.plot_days+
   ' дней, пересчитывать можно сколько угодно, PDF-отчёт и Excel-модель входят в цену.</li>'+
+  '<li><b>Несколько участков вперёд</b>: каждый по '+accessRub(terms.plot_price_rub)+vat+', до '+Number(data.package_max_plots||10)+' за один раз. '+
+  'Текущий участок откроется сразу, остальные останутся в запасе и откроются при первом расчёте нового участка — '+terms.plot_days+' дней с этого момента.</li>'+
   '<li><b>Подписка — '+accessRub(terms.subscription_price_rub)+' в месяц</b>'+(subOffer.vat_note?' ('+escapeHtml(subOffer.vat_note)+')':'')+
   ': любые участки без ограничений.</li></ul>';
  if(!data.signed_in){
@@ -1241,36 +1314,47 @@ function tariffsHtml(data){
  // Демо-доступ проверяющих: тот же кабинет, но оплата без настоящих денег —
  // тестовый магазин ЮKassa или пояснение, где откроется форма.
  if(data.demo){
-  html+='<p style="background:#eef6ff;border:1px solid #b9d6f5;padding:8px 10px;margin:0 0 8px">'+
+  html+='<p class="cab-demo">'+
    '<b>Это демо-доступ.</b> '+(data.demo_payments==='test'
     ?'Оплата идёт через тестовый магазин ЮKassa — деньги не списываются.'
-    :'Кнопки оплаты показывают, где откроется платёжная форма ЮKassa; деньги не списываются.')+'</p>';
+    :'Кнопки оплаты показывают, где откроется платёжная форма ЮKassa; деньги не списываются.')+
+   ((data.demo_sections||[]).length
+    ?' Ссылка открывает разделы: '+data.demo_sections.map(x=>'<a href="'+escapeHtml(x.path)+'">'+escapeHtml(x.name)+'</a>'+
+      (x.read_only?' (только просмотр)':'')).join(', ')+'.'
+    :'')+'</p>';
  }
  const status=data.status||{};
  const active=(status.plots||[]).filter(p=>p.active);
- html+='<div style="margin:8px 0"><b>Мой доступ</b></div>';
+ html+='<div class="cab-sub">Мой доступ</div>';
  if(status.subscription_active){
-  html+='<p style="margin:0 0 6px">Подписка действует до '+accessDate(status.subscription_until)+'.</p>';
+  html+='<p>Подписка действует до '+accessDate(status.subscription_until)+'.</p>';
  }
- html+='<p style="margin:0 0 6px">Бесплатных участков осталось: '+Number(status.free_left||0)+' из '+Number(status.free_plots||0)+'.</p>';
+ html+='<p>Бесплатных участков осталось: '+Number(status.free_left||0)+' из '+Number(status.free_plots||0)+'.</p>';
+ // Запас — участки, оплаченные вперёд и ещё не привязанные: число идёт с
+ // сервера (`access_status`), страница его не считает.
+ html+='<p id="accessReserve">В запасе участков: '+Number(status.reserve||0)+'.'+
+  (Number(status.reserve||0)>0?' Участок из запаса откроется сам при первом расчёте нового участка.':'')+'</p>';
  if(active.length){
-  html+='<ul id="accessPlots" style="margin:0 0 8px 18px;padding:0">'+active.map(p=>'<li>'+escapeHtml(p.label||'участок')+
-   ' — доступ до '+accessDate(p.until)+(p.source==='free'?' (бесплатный)':'')+'</li>').join('')+'</ul>';
+  html+='<ul id="accessPlots">'+active.map(p=>'<li>'+escapeHtml(p.label||'участок')+
+   ' — доступ до '+accessDate(p.until)+(p.source==='free'?' (бесплатный)':(p.source==='reserve'?' (из запаса)':''))+'</li>').join('')+'</ul>';
  }else if(!status.subscription_active){
-  html+='<p class="muted" style="margin:0 0 8px">Открытых участков пока нет.</p>';
+  html+='<p class="cab-muted">Открытых участков пока нет.</p>';
  }
  if(data.payments_available||data.demo){
-  html+='<div class="upload-line" style="align-items:center;margin-top:8px">'+
-   '<input id="payEmail" type="email" placeholder="Почта для чека" style="min-width:220px">'+
-   '<button class="btn dark" onclick="payForAccess(\'plot\')">Оплатить текущий участок</button>'+
+  html+='<div class="cab-row cab-pay">'+
+   '<input id="payEmail" type="email" placeholder="Почта для чека">'+
+   '<label for="payCount">Сколько участков</label>'+
+   '<input id="payCount" class="cab-short" type="number" min="1" max="'+Number(data.package_max_plots||10)+'" value="1" oninput="payCountChanged()" onchange="payCountChanged()">'+
+   '<button class="btn dark" id="payPlotButton" onclick="payForAccess(\'plot\')">Оплатить текущий участок</button>'+
    '<button class="btn" onclick="payForAccess(\'subscription\')">Оформить подписку</button></div>'+
-   '<div id="payStatus" style="font-size:12px;margin-top:6px"></div>'+
-   '<p style="font-size:11px;color:#777;margin:6px 0 0">Оплачивая, вы принимаете <a href="/offer" target="_blank" rel="noopener">лицензионный договор</a>'+
+   '<div id="payTotal" data-unit="'+Number(terms.plot_price_rub||0)+'" data-vat="'+escapeHtml(plotOffer.vat_note||'')+'" class="cab-status"></div>'+
+   '<div id="payStatus" class="cab-status"></div>'+
+   '<p class="cab-note">Оплачивая, вы принимаете <a href="/offer" target="_blank" rel="noopener">лицензионный договор</a>'+
    ' и <a href="/refund" target="_blank" rel="noopener">условия возврата</a>. Чек придёт на указанную почту.</p>';
  }else{
-  html+='<p class="muted" style="margin:8px 0 0">Оплата на сайте пока не подключена. Чтобы получить доступ к участку, напишите нам в бот — администратор откроет его.</p>';
+  html+='<p class="cab-muted">Оплата на сайте пока не подключена. Чтобы получить доступ к участку, напишите нам в бот — администратор откроет его.</p>';
  }
- if(data.registration)html+='<p style="font-size:11px;color:#777;margin:8px 0 0">'+escapeHtml(data.registration)+'.</p>';
+ if(data.registration)html+='<p class="cab-note">'+escapeHtml(data.registration)+'.</p>';
  return html;
 }
 async function renderTariffsBox(){
@@ -1282,26 +1366,67 @@ async function renderTariffsBox(){
  try{data=await loadAccessMe()}
  catch(e){box.innerHTML='<div class="import-error">'+escapeHtml(String(e.message||e))+'</div>';return}
  box.innerHTML=tariffsHtml(data);
- const admin=document.getElementById('accessAdminBox');
- if(admin){admin.style.display=(data.is_admin||projectsAdminKey)?'':'none';if(data.is_admin||projectsAdminKey){renderAccessAdmin();renderDemoInvites()}}
+ payCountChanged();
+ const admin=document.getElementById('accessAdminBox'),isAdmin=!!(data.is_admin||projectsAdminKey);
+ const adminTab=document.getElementById('cabTabAdmin');
+ if(adminTab)adminTab.style.display=isAdmin?'':'none';
+ if(!isAdmin&&adminTab&&adminTab.classList.contains('active'))cabinetTab('projects');
+ if(admin){admin.style.display=isAdmin?'':'none';if(isAdmin){renderAccessAdmin();renderDemoInvites()}}
 }
 async function openTariffs(){
+ cabinetTab('tariffs');
  await openProjects();
  await renderTariffsBox();
  const box=document.getElementById('tariffsBox');
  if(box&&box.scrollIntoView)box.scrollIntoView({block:'start'});
 }
-async function payForAccess(kind){
- const status=document.getElementById('payStatus');
- const email=String((document.getElementById('payEmail')||{}).value||'').trim();
+function plotsWord(count){
+ count=Math.abs(Number(count)||0);
+ if(count%10===1&&count%100!==11)return 'участок';
+ if(count%10>=2&&count%10<=4&&(count%100<12||count%100>14))return 'участка';
+ return 'участков';
+}
+function payCount(){
+ const field=document.getElementById('payCount');
+ if(!field)return 1;
+ const max=Number(field.max||10)||10;
+ const count=Math.floor(Number(field.value)||1);
+ return Math.min(max,Math.max(1,count));
+}
+// Строка «К оплате»: сумма пакета — число участков, умноженное на цену
+// участка; сам платёж и чек считает сервер (`payment_offer_item`).
+function payCountChanged(){
+ const total=document.getElementById('payTotal'),button=document.getElementById('payPlotButton');
+ if(!total)return;
+ const count=payCount(),unit=Number(total.dataset.unit||0),vat=total.dataset.vat?' ('+total.dataset.vat+')':'';
+ if(count>1){
+  total.textContent='К оплате: '+accessRub(unit*count)+' за '+count+' '+plotsWord(count)+vat+'. Текущий участок откроется сразу, '+
+   (count-1)+' '+plotsWord(count-1)+' останется в запасе; если текущего участка нет, весь пакет ляжет в запас.';
+  if(button)button.textContent='Оплатить '+count+' '+plotsWord(count);
+ }else{
+  total.textContent='К оплате: '+accessRub(unit)+' за один участок'+vat+'.';
+  if(button)button.textContent='Оплатить текущий участок';
+ }
+}
+// `where` — откуда оплата: '' — кабинет, 'calc' — плашка доступа над
+// расчётом (у неё свои поля почты и состояния, и пакета там нет).
+async function payForAccess(kind,where){
+ const prefix=where?where+'Pay':'pay';
+ const status=document.getElementById(prefix+'Status');
+ const email=String((document.getElementById(prefix+'Email')||{}).value||'').trim();
+ const count=kind==='subscription'||where?1:payCount();
  if(status)status.textContent='Готовлю оплату…';
  try{
   const response=await fetch('/payments/create',{method:'POST',headers:{'Content-Type':'application/json'},
-   body:JSON.stringify({session:activeSession(),kind,inputs,email})});
+   body:JSON.stringify({session:activeSession(),kind,inputs,email,count})});
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Оплату начать не удалось');
+  if(!response.ok)throw new Error(serverDetail(data)||'Оплату начать не удалось');
   if(data.preview){if(status)status.textContent=data.message;return}
+  if(status&&data.price_rub)status.textContent='Переходим к оплате '+accessRub(data.price_rub)+(count>1?' за '+count+' '+plotsWord(count):'')+'…';
   try{localStorage.setItem('developaid_pending_payment',data.payment_id)}catch(e){}
+  // Введённое — в браузер до ухода на оплату: вернувшись, человек видит свой
+  // проект, и расчёт запускается сам.
+  try{persistLocalSilently()}catch(e){}
   location.href=data.confirmation_url;
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }
@@ -1311,7 +1436,7 @@ async function accessAdminCall(path,body){
  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(Object.assign({session:activeSession(),key:projectsAdminKey},body||{}))});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Запрос не выполнен');
+ if(!response.ok)throw new Error(serverDetail(data)||'Запрос не выполнен');
  return data;
 }
 async function renderAccessAdmin(){
@@ -1325,37 +1450,73 @@ async function renderAccessAdmin(){
  const people=(data.people||[]).map(p=>'<tr><td>'+escapeHtml(p.name||'—')+'<br><small>ID '+p.chat+
   (p.company?' · '+escapeHtml(p.company):'')+'</small></td><td>'+(p.free_used?'использован':'не использован')+
   '</td><td>'+((p.active_plots||[]).map(g=>escapeHtml(g.label)+' до '+accessDate(g.until)).join('<br>')||'—')+
+  (Number(p.reserve||0)?'<br><small>в запасе: '+Number(p.reserve)+'</small>':'')+
   '</td><td>'+(p.subscription_until&&p.subscription_until*1000>Date.now()?'до '+accessDate(p.subscription_until):'—')+'</td></tr>').join('');
  const payments=(data.payments||[]).map(r=>'<tr><td>'+accessDate(r.at)+'</td><td>ID '+r.chat+'</td><td>'+
   escapeHtml(r.label||'')+'</td><td>'+escapeHtml(r.note||'')+'</td></tr>').join('');
  box.innerHTML='<div class="scroll"><table><thead><tr><th>Пользователь</th><th>Бесплатный участок</th><th>Открытые участки</th><th>Подписка</th></tr></thead><tbody>'+
   (people||'<tr><td colspan="4">Пока никого.</td></tr>')+'</tbody></table></div>'+
-  '<div class="section-title" style="margin:12px 0 6px">Оплаты</div><div class="scroll"><table><thead><tr><th>Дата</th><th>Кто</th><th>Что</th><th>Платёж</th></tr></thead><tbody>'+
+  '<div class="cab-sub">Оплаты</div><div class="scroll"><table><thead><tr><th>Дата</th><th>Кто</th><th>Что</th><th>Платёж</th></tr></thead><tbody>'+
   (payments||'<tr><td colspan="4">Оплат пока не было.</td></tr>')+'</tbody></table></div>';
 }
-// Демо-доступ по ссылке (клиенту, партнёру, ЮKassa): ссылка-приглашение со сроком, отзыв.
+// Демо-доступ по ссылке (клиенту, партнёру, ЮKassa): ссылка-приглашение со
+// сроком 1, 5 или 30 дней и разделами, которые она открывает; отзыв.
+// Названия разделов — с сервера (`DEMO_BLOCKS`), второго списка страница не держит.
+let demoBlockNames={};
+function demoBlockBoxes(){return Array.from(document.querySelectorAll('#demoInviteBlocks .demo-block'))}
+function demoBlocksAll(on){demoBlockBoxes().forEach(box=>{box.checked=!!on})}
+function demoBlocksSync(){
+ const all=document.getElementById('demoBlockAll'),boxes=demoBlockBoxes();
+ if(all)all.checked=boxes.length>0&&boxes.every(box=>box.checked);
+}
+function demoDaysWord(n){const t=n%100,o=n%10;return n+' '+(t>10&&t<20?'дней':o===1?'день':o>=2&&o<=4?'дня':'дней')}
+// Галочки разделов и кнопки срока рисуются по ответу сервера (`DEMO_BLOCKS`,
+// `DEMO_DAYS`): срок, которого сервер не примет, кнопкой не появится.
+function demoBlocksDraw(names,days){
+ const line=document.getElementById('demoInviteBlocks'),buttons=document.getElementById('demoInviteDays');
+ if(names&&line&&!demoBlockBoxes().length){
+  demoBlockNames=names;
+  line.insertAdjacentHTML('beforeend',Object.keys(names).map(b=>'<label><input type="checkbox" class="demo-block" value="'+
+   escapeHtml(b)+'" onchange="demoBlocksSync()"> '+escapeHtml(names[b])+'</label>').join(''));
+ }
+ if(Array.isArray(days)&&buttons&&!buttons.children.length){
+  buttons.innerHTML=days.map(d=>'<button class="btn dark demo-days" onclick="accessDemoCreate('+Number(d)+')">'+demoDaysWord(Number(d))+'</button>').join('');
+ }
+}
+function demoBlocksText(blocks){
+ const list=(blocks||[]).map(b=>demoBlockNames[b]||b),all=Object.keys(demoBlockNames);
+ return all.length&&list.length===all.length?'Полный доступ':list.join(', ');
+}
 async function renderDemoInvites(){
  const box=document.getElementById('demoInviteList');
  if(!box)return;
  let data;
  try{data=await accessAdminCall('/access/admin/demo/list')}
  catch(e){box.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';return}
+ demoBlocksDraw(data.blocks,data.days);
  // Адрес показан один раз и копируется кнопкой: на телефоне длинная ссылка
  // обрезается, и выделять её пальцем неудобно.
- const rows=(data.invites||[]).map(r=>'<tr><td><span class="demo-link" style="word-break:break-all">'+escapeHtml(location.origin+r.path)+'</span>'+
-  (r.note?'<br><small>'+escapeHtml(r.note)+'</small>':'')+'</td><td>до '+accessDate(r.expires)+'</td><td>'+
-  (r.active?'действует':'не действует')+', входов: '+Number(r.claims||0)+'</td><td style="white-space:nowrap">'+
+ const rows=(data.invites||[]).map(r=>'<tr><td><span class="demo-link">'+escapeHtml(location.origin+r.path)+'</span>'+
+  (r.note?'<br><small>'+escapeHtml(r.note)+'</small>':'')+
+  '<br><small class="demo-blocks">Разделы: '+escapeHtml(demoBlocksText(r.blocks))+'</small></td><td>до '+accessDate(r.expires)+'</td><td>'+
+  (r.active?'действует':(r.revoked_at?'отозвана '+accessDate(r.revoked_at):'срок истёк'))+', входов: '+Number(r.claims||0)+
+  (r.last_claim?'<br><small>последний вход '+accessDate(r.last_claim)+'</small>':'')+'</td><td class="cab-nowrap">'+
   (r.active?'<button class="btn" data-link="'+escapeHtml(location.origin+r.path)+'" onclick="accessDemoCopy(this)">Скопировать</button> '+
   '<button class="btn" data-code="'+escapeHtml(r.code)+'" onclick="accessDemoRevoke(this.dataset.code)">Отозвать</button>':'')+
   '</td></tr>').join('');
- box.innerHTML=rows?'<div class="scroll"><table><tbody>'+rows+'</tbody></table></div>':'<div class="muted">Ссылок ещё не выдавали.</div>';
+ box.innerHTML=rows?'<div class="scroll"><table><tbody>'+rows+'</tbody></table></div>':'<div class="cab-muted">Ссылок ещё не выдавали.</div>';
 }
-async function accessDemoCreate(){
+async function accessDemoCreate(days){
  const status=document.getElementById('demoInviteStatus');
  const note=String((document.getElementById('demoInviteNote')||{}).value||'');
+ const blocks=demoBlockBoxes().filter(box=>box.checked).map(box=>box.value);
+ if(!blocks.length){
+  if(status)status.innerHTML='<span class="import-error">Отметьте разделы, которые откроет ссылка, или «Полный доступ».</span>';
+  return;
+ }
  try{
-  const data=await accessAdminCall('/access/admin/demo/create',{days:14,note});
-  if(status)status.textContent='Ссылка создана, действует до '+accessDate(data.expires)+'. Она в списке ниже — нажмите «Скопировать».';
+  const data=await accessAdminCall('/access/admin/demo/create',{days,note,blocks});
+  if(status)status.textContent='Ссылка создана: '+demoBlocksText(data.blocks)+', действует до '+accessDate(data.expires)+'. Она в списке ниже — нажмите «Скопировать».';
   renderDemoInvites();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }
@@ -1386,9 +1547,12 @@ function fillGrantRecipients(people){
  if(keep)select.value=keep;
 }
 function grantKindChanged(){
- const row=document.getElementById('grantCadastralRow');
+ const row=document.getElementById('grantCadastralRow'),countRow=document.getElementById('grantCountRow'),
+  daysRow=document.getElementById('grantDaysRow');
  const kind=(document.getElementById('grantKind')||{}).value;
- if(row)row.style.display=kind==='subscription'?'none':'';
+ if(row)row.style.display=kind==='plot'?'':'none';
+ if(countRow)countRow.style.display=kind==='reserve'?'':'none';
+ if(daysRow)daysRow.style.display=kind==='reserve'?'none':'';
 }
 async function accessAdminGrant(){
  const status=document.getElementById('accessAdminStatus');
@@ -1396,11 +1560,17 @@ async function accessAdminGrant(){
  const kind=(document.getElementById('grantKind')||{}).value||'plot';
  const cadastral=String((document.getElementById('grantCadastral')||{}).value||'').split(/[\s,;]+/).filter(Boolean);
  const days=Number((document.getElementById('grantDays')||{}).value||0);
+ const count=Number((document.getElementById('grantCount')||{}).value||0);
  const note=String((document.getElementById('grantNote')||{}).value||'');
  try{
   if(!chat){if(status)status.textContent='Выберите, кому выдать доступ.';return}
-  const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral:kind==='subscription'?[]:cadastral,days,note});
-  if(status)status.textContent='Выдано: '+(data.what||'доступ')+' — '+(data.who||('ID '+chat))+', до '+accessDate(data.until)+'.';
+  const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral:kind==='plot'?cadastral:[],days,count,note});
+  if(status)status.textContent='Выдано: '+(data.what||'доступ')+' — '+(data.who||('ID '+chat))+
+   (data.until?', до '+accessDate(data.until):', срок каждого участка пойдёт с его первого расчёта')+'.'+
+   // Весть человеку в Telegram: дошла — так и сказано, нет — причина, чтобы
+   // выдавший написал ему сам.
+   (data.notice?(data.notice.sent?' Сообщение в Telegram отправлено.':
+    ' Сообщение в Telegram не отправлено: '+(data.notice.reason||'причина неизвестна')+'. Напишите человеку сами.'):'');
   renderAccessAdmin();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }

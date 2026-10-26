@@ -1076,6 +1076,13 @@
     if (toast) toast.classList.remove('show');
   }
 
+  /* Расчёт закрыт плашкой (вход или доступ к участку): «актуален» и
+     «обновлён» про него — неправда, итога нет. */
+  function calcClosed() {
+    var locked = document.getElementById('calcLocked');
+    return !!locked && locked.style.display !== 'none' && !!locked.innerHTML;
+  }
+
   function renderState() {
     var box = document.getElementById('iaState');
     var text = document.getElementById('iaStateText');
@@ -1089,7 +1096,7 @@
     else if (dirty > 0) {
       text.textContent = 'Есть ' + dirty + ' ' + plural(dirty, ['изменение', 'изменения', 'изменений'])
         + ' вне расчёта — пересчитать';
-    } else text.textContent = 'Расчёт актуален';
+    } else text.textContent = calcClosed() ? 'Расчёт закрыт — условия в разделе «Результат»' : 'Расчёт актуален';
   }
 
   function plural(n, forms) {
@@ -1114,7 +1121,10 @@
         out.then(function () { dirty = 0; }, function () { }).then(function () {
           running -= 1;
           renderState();
-          if (!running) showToast('✓ Расчёт обновлён');
+          if (!running) {
+            if (calcClosed()) hideToast();
+            else showToast('✓ Расчёт обновлён');
+          }
         });
       } else { running -= 1; renderState(); hideToast(); }
       return out;
@@ -1658,7 +1668,20 @@
     else shell.appendChild(box);
   }
 
+  /* Слой запущен — сторож загрузки (boot_guard.js в <head>) снимает экран
+     загрузки. В finally: даже сорвавшийся запуск не имеет права оставить
+     человека перед вечной заставкой — сбой шагов показывает report(). */
   function boot() {
+    try {
+      bootSteps();
+    } finally {
+      var root = document.documentElement;
+      root.classList.add('ia-ready');
+      root.classList.remove('ia-loading');
+    }
+  }
+
+  function bootSteps() {
     step('лента preview', ribbon);
     step('шапка', rebuildHeader);
     step('подтверждение сброса', guardReset);

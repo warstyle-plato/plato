@@ -25,6 +25,18 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+# Запись в раздел «Торги» — только команде (аудит 23.10.2026): тест проверяет
+# логику маршрута, поэтому ходит с ключом кабинета.
+TEAM_KEY = "team-cabinet-key-for-test"
+
+
+@pytest.fixture(autouse=True)
+def _team_cabinet_key(monkeypatch):
+    monkeypatch.setenv("MARKET_CABINET_KEY", TEAM_KEY)
+
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
@@ -60,7 +72,7 @@ def _client(tmp_path):
         ),
     )
     install(app)
-    return TestClient(app)
+    return TestClient(app, headers={"X-Market-Key": TEAM_KEY})
 
 
 def test_the_route_counts_the_window_and_the_addressed(tmp_path):

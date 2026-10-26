@@ -277,6 +277,10 @@ function vriReliefSourceNote(){
 }
 // Почему графика ВРИ нет — настоящей причиной. Плата, снятая льготой
 // целиком, — не «изменение не требуется»: так и сказано, с суммами.
+// Нежилой проект платы за смену ВРИ не несёт (владелец, 20.08.2026: город
+// считает её по жилью и встроенным помещениям первого этажа), и поля её
+// графика у него не рисуются (`RESIDENTIAL_ONLY_INPUTS`, 25.10.2026).
+const VRI_NONRESIDENTIAL_NOTE='В нежилом проекте плата за смену вида разрешённого использования не считается: город берёт её с жилья и встроенных помещений первых этажей, а отдельно стоящее нежилое здание в неё не входит. Здесь остаётся только регион: по нему выбираются нормативы Москвы или области.';
 function vriEmptyReason(vri){
  const t=(vri&&vri.totals)||{};
  const gross=Number(t.gross||0), relief=Number(t.relief||0);
@@ -304,6 +308,11 @@ function renderVri(vri){
  // Прежде блок прятался, и смена льготы выглядела как «ничего не пересчиталось».
  const enabled=!!(vri&&(vri.enabled||Number(t.relief||0)>0));
  const list=(vri&&vri.warnings)||[];
+ // Пояснение о дате обязательства и источниках оплаты — про график платы,
+ // а у нежилого проекта графика нет.
+ const nonres=typeof isNonResidential==='function'&&isNonResidential();
+ const obligationNote=document.getElementById('vriObligationNote');
+ if(obligationNote)obligationNote.style.display=nonres?'none':'';
 
  // Карточка в отчёте.
  const card=document.getElementById('vriCard');
@@ -331,7 +340,7 @@ function renderVri(vri){
  const noSchedule=!(vri&&vri.enabled);
  if(empty)empty.style.display=noSchedule?'':'none';
  const emptyNote=document.getElementById('vriTabEmptyNote');
- if(emptyNote&&noSchedule)emptyNote.textContent=vriEmptyReason(vri);
+ if(emptyNote&&noSchedule)emptyNote.textContent=nonres?VRI_NONRESIDENTIAL_NOTE:vriEmptyReason(vri);
  if(!enabled)return;
  document.getElementById('vriTabTotals').innerHTML=vriTotalsRows(t,(lastResult||{}).summary);
  document.getElementById('vriTabSchedule').innerHTML=vriScheduleRows(vri.rows);
@@ -579,6 +588,23 @@ function reconcileLegacyParking(){
  if(!Array.isArray(inputs._parking_by_norm))inputs._parking_by_norm=[];
 }
 
+// Человек вписал места на первых этажах объекта, чьё подземное число до сих
+// пор ставил норматив. У офиса под землёй идёт остаток норматива после мест
+// первых этажей (`object_garage_takes_norm_rest`, владелец 25.10.2026), а в
+// поле подземных стоит прежний норматив целиком: оставь его — и он считался бы
+// вписанным руками, места сложились бы дважды. Поле очищается, остаток
+// считает движок.
+function parkingFieldByHand(prefix,id){
+ const item=((projectParking().own)||[]).find(o=>o&&o.prefix===prefix);
+ const fromNorm=!!(item&&item.by_norm&&item.norm_rest);
+ markParkingByHand(prefix);
+ if(!fromNorm||id!==prefix+'_parking_over_spaces')return;
+ const key=prefix+'_parking_under_spaces';
+ inputs[key]=0;
+ const el=document.getElementById('f_'+key);
+ if(el)el.value=0;
+}
+
 function markParkingByHand(prefix){
  const marks=new Set(inputs._parking_by_hand||[]);
  marks.add(prefix);
@@ -659,9 +685,22 @@ function objectParkingFieldNote(prefix){
  // Число уже стоит В ПОЛЕ, повторять его здесь незачем: одно и то же дважды
  // подряд перестают читать. Подпись отвечает на другое — чьё оно и что будет,
  // если поле тронуть.
+ // Происхождение числа подземных мест — фраза движка (`origin_note`): отказ
+ // от подземного паркинга и остаток норматива после первых этажей страница
+ // своими словами не пересказывает.
+ const origin=String(item.under_origin||'');
+ if(origin==='refused')return String(item.origin_note||'')
+  +' Чтобы вернуть гараж, снимите галочку «Отказ от подземного паркинга».';
+ if(origin==='norm_rest')return String(item.origin_note||'')
+  +' Считается по нормативу '+parkingNormOf()+'.'
+  +' Места на первых этажах засчитаны в норматив, под землёй — остаток. '
+  +'Впишите число подземных мест, чтобы задать его самим.';
  if(item.by_norm)return req
-  ?'Оба числа выше поставил норматив '+parkingNormOf()+' — они следуют за ТЭП. '
-   +'Впишите своё, чтобы перебить; ноль руками значит «гаража нет».'
+  ?(item.norm_rest?String(item.origin_note||'')+' Считается по нормативу '+parkingNormOf()+'. '
+    +'Числа следуют за ТЭП. '
+    +'Впишите места на первых этажах — под землёй останется остаток норматива.'
+   :'Оба числа выше поставил норматив '+parkingNormOf()+' — они следуют за ТЭП. '
+    +'Впишите своё, чтобы перебить; ноль руками значит «гаража нет».')
   :'По нормативу '+parkingNormOf()+' мест не требуется.';
  // Замок обязан называть, чем его открыть. Проект, сохранённый до того, как
  // норма начала заполнять поле, приходит без списков — и её же число читается
@@ -1428,6 +1467,10 @@ function renderSiteMassing(){
  rows.push(row(objects.length?'Пятно жилых домов':'Пятно застройки',
   sq(m.footprint_sqm)+(site>0?', это '+pct(m.footprint_share)+(objects.length?' жилой территории':' участка'):''),
   siteMassingOrigin(m.footprint_origin),true));
+ // Все пятна на участке — тот же итог, что сумма корпусов на схеме (`built_sqm`).
+ if(objects.length)rows.push(row('Всего под зданиями на участке',
+  sq(m.built_sqm)+(site>0?', это '+pct(m.built_share)+' участка':''),
+  'Жилые дома — '+sq(m.footprint_sqm)+'; '+objects.map(o=>o.label.toLowerCase()+' — '+sq(o.footprint_sqm)).join('; ')+'.',true));
  if(Number(m.footprint_shortage_sqm||0)>0.5)rows.push(row('Не хватает земли под пятно',sq(m.footprint_shortage_sqm),
   'Пятно больше места, которое остаётся после двора по норме, проездов и отступов: на столько двор по норме не помещается. Подробности — в красной плашке выше.'));
  rows.push(row('Средняя этажность',Number(m.average_storeys||0)>0?'≈ '+Number(m.average_storeys).toLocaleString('ru-RU',{maximumFractionDigits:1}):'—',
@@ -1441,7 +1484,9 @@ function renderSiteMassing(){
  rows.push(row('Площадь подземной части',sq(m.underground_sqm),garages>0?
   'Паркинг с рампами и проездами и подземные кладовые из ТЭП ('+sq(Number(m.underground_sqm||0)-garages)+') и подземные гаражи отдельных объектов ('+sq(garages)+').':
   'Паркинг с рампами и проездами и подземные кладовые из ТЭП.'));
- rows.push(row('Подземных уровней',String(m.underground_levels||0),
+ rows.push(m.underground_levels_unfit?row('Подземных уровней','не посчитано',
+  'Подземная часть под участком не помещается даже на '+num(m.underground_levels_max)+' уровнях. Что поправить — в красной плашке выше.',true):
+  row('Подземных уровней',String(m.underground_levels||0),
   m.underground_levels_origin==='manual'?'Задано вручную.':'Площадь подземной части, делённая на полезную площадь одного уровня, с округлением вверх.',true));
  let levels='';
  if((m.underground_level_rows||[]).length){
@@ -1500,6 +1545,33 @@ function renderSiteMassingScheme(m){
  box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
   '<p class="site-massing-hint">'+escapeHtml(ax.footer||'')+'</p>'+
   (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':'');
+ siteMassingPlanWatch(layout.plan||{});
+}
+// План расстановки от Платона готовится фоном (`engine/site_massing_plan.py`):
+// страница спрашивает его состояние и, когда план готов (или отклонён),
+// пересчитывает — схему строит движок, страница её только рисует.
+let siteMassingPlanTimer=null,siteMassingPlanKey='',siteMassingPlanTries=0;
+function siteMassingPlanStop(){
+ if(siteMassingPlanTimer)clearTimeout(siteMassingPlanTimer);
+ siteMassingPlanTimer=null;siteMassingPlanKey='';siteMassingPlanTries=0;
+}
+function siteMassingPlanWatch(plan){
+ if(plan.status!=='pending'||!plan.key){siteMassingPlanStop();return}
+ if(siteMassingPlanKey===plan.key&&siteMassingPlanTimer)return;
+ if(siteMassingPlanKey!==plan.key)siteMassingPlanTries=0;
+ siteMassingPlanKey=plan.key;
+ const ask=async()=>{
+  siteMassingPlanTimer=null;
+  if(siteMassingPlanTries++>=60)return;
+  try{
+   const r=await fetch('/site-massing/plan/'+encodeURIComponent(siteMassingPlanKey));
+   const s=r.ok?await r.json():{};
+   if(s.key!==siteMassingPlanKey)return;
+   if(s.status&&s.status!=='pending'){siteMassingPlanKey='';calculate();return}
+  }catch(e){}
+  siteMassingPlanTimer=setTimeout(ask,5000);
+ };
+ siteMassingPlanTimer=setTimeout(ask,5000);
 }
 // Поля допущений: подпись и единица — из FIELD_GROUPS. Поля «пусто — по
 // расчёту» (пятно, уровни, предельная этажность, земля на место) показывают
@@ -1673,7 +1745,7 @@ async function applyMoscowNormativeTep(area,density,keepRows){
    district:String(territory.district||''),
    inside_moscow:true})});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать ТЭП по нормативам Москвы');
+ if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать ТЭП по нормативам Москвы');
  const places=data.places||{};
  const skipped=applyDerivedInputs({kindergarten_places:places.kindergarten,
   school_places:places.school,clinic_capacity:places.clinic});
@@ -1733,7 +1805,7 @@ async function applyNormativeTep(densityOverride,keepRows){
   const response=await fetch('/mo/calculate',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(body)});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать нормативный ТЭП');
+  if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать нормативный ТЭП');
   Object.entries(data.tep||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
   // Обратный счёт от вписанных метров: строка, которую человек вписал, остаётся
   // его. Сервер выводит ГНС и общую из продаваемой своими долями, и ответ молча
@@ -2561,7 +2633,12 @@ function vriRequiredNote(){
  const fee=Number(inputs.land_rights_cost_mln||0);
  const o=(inputs._field_origin||{})['inputs.land_rights_cost_mln'];
  const from=o&&o.source==='glavapu'?' (из ГлавАПУ)':o&&o.source==='manual'?' (вписана вручную)':'';
- if(fee>0)return `Плата ${num(fee)} млн ₽ задана${from} — смена ВРИ учитывается. Снять признак — значит обнулить плату.`;
+ // Участок уже 2.6 — подпись называет, на каком основании плата взята
+ // (`vri_fee_basis_text`, решение владельца 25.10.2026). Строки по региону
+ // отдаёт сервер вместе со сведениями ЕГРН; страница выбирает регион проекта
+ // и не сочиняет текст.
+ const basis=String(((inputs._land_lookup||{}).vri_fee_basis_by_region||{})[classRegion()]||'');
+ if(fee>0)return `Плата ${num(fee)} млн ₽ задана${from} — смена ВРИ учитывается. Снять признак — значит обнулить плату.`+(basis?' '+basis:'');
  if(vriFeeClearedMln>0)return `Плата ${num(vriFeeClearedMln)} млн ₽ обнулена снятием признака — смена ВРИ не учитывается.`;
  // Льгота без платы ни на что не действует — и молча стоять не должна.
  const relief=inputs.vri_relief_mode==='amount'?Number(inputs.vri_relief_mln||0):0;
@@ -2987,7 +3064,7 @@ async function recalcFromTepByNorms(options){
   const r=await fetch('/tep/derived-by-site',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(bySiteBody())});
   d=await r.json();
-  if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
+  if(!r.ok)throw new Error(serverDetail(d)||'Пересчёт не выполнен');
  }catch(e){say('Пересчёт по нормативам не выполнен: '+escapeHtml(String(e.message||e)),false);return}
 
  const lines=[
@@ -3055,7 +3132,7 @@ async function socialPopulationSwitched(methodBefore){
    {method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(viaBaseline?baselineRecalcBody():bySiteBody())});
   d=await r.json();
-  if(!r.ok)throw new Error(d.detail||('сервер ответил '+r.status));
+  if(!r.ok)throw new Error(serverDetail(d)||('сервер ответил '+r.status));
  }catch(e){
   return sayPopulationSwitch('Места соцобъектов не пересчитаны: '+String(e.message||e)+'.');
  }
@@ -3155,7 +3232,7 @@ async function recalcFromTep(options){
   const r=await fetch('/tep/recalc-from-baseline',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(baselineRecalcBody())});
   d=await r.json();
-  if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
+  if(!r.ok)throw new Error(serverDetail(d)||'Пересчёт не выполнен');
  }catch(e){say('Пересчёт не выполнен: '+escapeHtml(String(e.message||e)),false);return}
  // Метод обязан воспроизводить исходный расчёт на исходных метрах. Не
  // воспроизводит — это расхождение с базой, а не результат.

@@ -978,33 +978,29 @@ def _telegram_handle_dialog_text(chat_id: int, text: str) -> bool:
             return True
         if step == "await_intake_answer":
             intake = dialog.get("intake") or {}
-            questions = list(intake.get("questions") or [])
-            index = int(intake.get("index") or 0)
-            if index >= len(questions):
-                dialog.pop("intake", None)
-                dialog.pop("step", None)
-                _telegram_dialog_save(chat_id, dialog)
-                return False
+            queue = _telegram_intake_card(chat_id, dialog)
+            if queue is None:
+                return True
+            index = int(queue.get("index") or 0)
             said = str(text or "").strip()
             if said.lower() in {"стоп", "хватит", "отмена", "/cancel"}:
                 # Прекратить разговор — законный ответ, а не сбой. Отвеченное
                 # до этого не выбрасывается: человек уже потратил на него время.
-                intake["index"] = len(questions)
-                dialog["intake"] = intake
-                _telegram_dialog_save(chat_id, dialog)
-                _telegram_intake_ask_next(chat_id, dialog)
+                _telegram_intake_answer(chat_id, dialog, index=index, action="stop")
                 return True
-            skipped = said in {"-", "—", "?"} or said.lower() in {"пропустить", "не знаю"}
-            answers = list(intake.get("answers") or [])
-            answers.append({
-                "question": str(questions[index].get("question") or ""),
-                "answer": "" if skipped else said[:300],
-            })
-            intake["answers"] = answers
-            intake["index"] = index + 1
+            if said in {"-", "—", "?"} or said.lower() in {"пропустить", "не знаю"}:
+                _telegram_intake_answer(chat_id, dialog, index=index, action="skip")
+                return True
+            pending = intake.pop("pending_choice", None) or {}
             dialog["intake"] = intake
-            _telegram_dialog_save(chat_id, dialog)
-            _telegram_intake_ask_next(chat_id, dialog)
+            choice = int(pending.get("choice", -1)) if int(pending.get("index", -1)) == index else -1
+            cards = queue.get("cards") or []
+            options = (cards[index].get("options") or []) if index < len(cards) else []
+            if choice < 0 and said.isdigit() and 1 <= int(said) <= len(options):
+                # «2» — номер варианта, если вариантов столько есть.
+                choice, said = int(said) - 1, ""
+            _telegram_intake_answer(chat_id, dialog, index=index, action="answer",
+                                    choice=choice, value=said)
             return True
         if step == "await_value":
             key = str(dialog.get("pending_key") or "")
@@ -1299,15 +1295,13 @@ def _telegram_platon_remember_document(chat_id: int, context: dict[str, Any]) ->
 
 
 def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -> None:
-    """Разбор присланного в чат документа: тизер, справка, решение ГЗК.
+    """Разбор присланного в чат тизера — тремя шагами, как на сайте.
 
-    В чате не таблица с галочками, а разговор: сначала что прочитано и откуда,
-    потом чего не хватает. Числа человек проверяет глазами и открывает модель
-    кнопкой — тем же способом, что и распознанный шаблон ТЭП.
-
-    Применять молча тут тем более нельзя: на экране человек хотя бы видит
-    таблицу, а в чате подставленное значение вообще ничем не отличается от
-    посчитанного.
+    Первый шаг — карточка: что найдено (со страницей), что уйдёт в расчёт и
+    чего не хватает. Вопросов в нём нет. Вопросы — потом, кнопкой, по одному и
+    только о недостающем. Расчёт — кнопкой «Всё верно, считать», и мини-
+    приложение получает ровно строки карточки (`teaser_card.calc_overrides`).
+    Карточку собирает тот же сборщик, что и для сайта (`teaser_card_view`).
     """
     document = document_intake.extract_text(data, filename)
     if not document.get("text"):
@@ -1322,107 +1316,139 @@ def _telegram_handle_intake_document(chat_id: int, data: bytes, filename: str) -
         return
     _telegram_send_message(
         chat_id, f"<b>Читаю «{html.escape(filename)}»…</b>\n"
-                 f"Страниц: {document.get('pages')}. Выпишу, что нашлось, и спрошу об остальном.")
-    portion = document_intake.intake_text(document)
-    payload = AgentChatRequest(
-        message=document_intake.intake_prompt(document),
-        inputs=dict(DEFAULT_INPUTS),
-        tep={key: dict(value) for key, value in TEP_DEFAULT.items()},
-        scenario="document_intake",
-    )
+                 f"Страниц: {document.get('pages')}. Сначала покажу, что нашёл и что "
+                 "уйдёт в расчёт; вопросы — потом.")
     try:
-        answer = plato_answer(payload, _telegram_agent_request(chat_id))
+        got = document_intake_read(document, _telegram_agent_request(chat_id))
     except Exception as exc:  # noqa: BLE001
         _telegram_send_message(
             chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(exc)))
         return
-    got = document_intake.parse_intake(str((answer or {}).get("answer") or ""))
     # Документ остаётся в разговоре: следующий вопрос («а какая там IRR?»)
     # Платон отвечает по нему. Не легло — причина называется, а не теряется.
     remembered = _telegram_platon_remember_document(
         chat_id, document_intake.chat_context(document, got))
-    in_dialog = ("\n\n<i>Документ в разговоре: спрашивайте по нему — Платон ответит "
+    in_dialog = ("<i>Документ в разговоре: спрашивайте по нему — Платон ответит "
                  "по тексту. Новый документ заменит этот.</i>" if not remembered else
-                 "\n\n<i>Документ в разговор не попал (" + html.escape(remembered[:200])
+                 "<i>Документ в разговор не попал (" + html.escape(remembered[:200])
                  + "): следующий вопрос Платон увидит без него.</i>")
     if got.get("reason"):
         _telegram_send_message(
-            chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(got["reason"])) + in_dialog)
+            chat_id, "<b>Разбор не удался.</b>\n" + html.escape(str(got["reason"]))
+            + "\n\n" + in_dialog)
         return
-
-    lines = [f"<b>Разбор «{html.escape(filename)}»</b>"]
-    if got["fields"]:
-        lines.append("\n<b>Что написано в документе</b>")
-        for item in got["fields"]:
-            # Имя поля, а не ключ. Ключ латиницей среди русских строк читается
-            # как недоделка — ровно то, что уже ловилось во вкладке расходов.
-            name = document_intake.INTAKE_LABELS.get(item["key"], item["key"])
-            unit = f" {html.escape(item['unit'])}" if item.get("unit") else ""
-            lines.append(f"• {html.escape(name)}: <b>{html.escape(str(item['value']))}</b>{unit}"
-                         f"\n  <i>«{html.escape(item['quote'][:160])}»</i>")
-    else:
-        lines.append("\nПолей, которые понимает модель, в документе не нашлось.")
-    # Что мы считаем сами. Спрашивать об этом значит просить догадку там, где
-    # есть источник, — и получить два ответа на один вопрос (владелец,
-    # 29.08.2026: «это он должен спрашивать или считать?»).
-    not_asked = got.get("not_asked") or []
-    if not_asked:
-        lines.append("\n<b>Об этом не спрашиваю — посчитаю сам</b>")
-        seen: set[str] = set()
-        for item in not_asked:
-            why = str(item.get("why") or "")
-            if why in seen:
-                continue
-            seen.add(why)
-            lines.append(f"• {html.escape(why)}")
-    for note in got.get("notes") or []:
-        lines.append(f"\n<i>{html.escape(str(note)[:300])}</i>")
-    # Отброшенное называется вслух: молча пропущенное поле читается как
-    # «в документе такого нет».
-    for line in got.get("dropped") or []:
-        lines.append(f"\nНе взято — {html.escape(str(line)[:200])}")
-    lines.append("\nЧисла проверьте глазами: это то, что написано в документе, "
-                 "а не расчёт."
-                 + (" Текст этого документа получен РАСПОЗНАВАНИЕМ скана: "
-                    "цитаты не дословны, а цифра, прочитанная неверно, "
-                    "выглядит как прочитанная верно."
-                    if document.get("recognized") else ""))
-    # Кадастровый номер из документа — это участок, а участок мы считаем.
-    # Своего пути для этого не заводим: номер уходит туда же, куда ушёл бы
-    # присланный сообщением, — иначе на один участок появилось бы два расчёта.
-    numbers = _intake_cadastral_numbers(got)
-    questions = [item for item in (got.get("questions") or []) if item.get("question")]
-    if numbers:
-        lines.append(f"Участок: <b>{html.escape(', '.join(numbers))}</b> — считаю "
-                     + ("после вопросов." if questions else "сейчас."))
-    lines.append(in_dialog.strip())
-    if not questions:
-        if not numbers:
-            lines.append("Открыть модель — кнопкой ниже.")
-        _telegram_send_message(
-            chat_id, "\n".join(lines)[:3900],
-            reply_markup=None if numbers else _telegram_open_model_button(chat_id))
-        if numbers:
-            _telegram_handle_cadastral_numbers(chat_id, numbers)
-        return
-    lines.append(f"\nОстальное спрошу по одному — вопросов {len(questions)}.")
-    _telegram_send_message(chat_id, "\n".join(lines)[:3900])
-    # В чате разговор, а не анкета: десять вопросов одним сообщением
-    # (владелец, 27.08.2026) не читаются и не отвечаются — человек не знает, на
-    # какой из них отвечает, и бот не знает тоже. Очередь живёт в том же
-    # диалоге, что и остальные пошаговые вопросы бота: второго механизма для
-    # этого не заводим.
+    region = _telegram_intake_region(_intake_cadastral_numbers(got))
+    card = _intake_queue_start(filename, got, document, dict(DEFAULT_INPUTS),
+                               {key: dict(value) for key, value in TEP_DEFAULT.items()},
+                               by_parcel=True, parcel_region=region)
     dialog = _telegram_dialog_get(chat_id) or {}
-    dialog["step"] = "await_intake_answer"
-    dialog["intake"] = {
-        "filename": filename,
-        "questions": questions,
-        "answers": [],
-        "index": 0,
-        "cadastral_numbers": numbers,
-    }
+    dialog["step"] = "intake_card"
+    # Регион участка решается один раз, при разборе: определить его — запрос
+    # территории, и повторять его на каждом вопросе незачем.
+    dialog["intake"] = {"id": card["id"], "filename": filename, "region": region}
     _telegram_dialog_save(chat_id, dialog)
-    _telegram_intake_ask_next(chat_id, dialog)
+    text = _telegram_intake_card_text(card, first=True,
+                                      recognized=bool(document.get("recognized")))
+    if card.get("error"):
+        text += "\n\n" + html.escape(card["error"])
+    text += "\n\n" + in_dialog
+    if card.get("ready"):
+        _telegram_send_message(chat_id, text[:4000],
+                               reply_markup=_telegram_intake_calc_markup(chat_id, card, region))
+        return
+    left = int(card["questions"]["total"]) - int(card["questions"]["index"])
+    text += (f"\n\nМодель пока не менялась. Дальше — {left} "
+             + _telegram_plural(left, "вопрос", "вопроса", "вопросов")
+             + " о том, чего в тизере нет, по одному.")
+    _telegram_send_message(chat_id, text[:4000], reply_markup={"inline_keyboard": [[
+        {"text": "Перейти к вопросам", "callback_data": "intake_questions"}]]})
+
+
+def _telegram_intake_card_text(card: dict[str, Any], *, first: bool, recognized: bool = False) -> str:
+    """Карточка разбора словами чата. Строки — из `teaser_card.build`."""
+    lines = [("<b>Что я прочитал в тизере</b>" if first else "<b>Итог разбора перед расчётом</b>")
+             + f" · «{html.escape(str(card.get('filename') or 'документ'))}»"]
+    if recognized or card.get("recognized"):
+        lines.append("<i>Документ — скан: текст распознан по картинке, сверьте числа с документом.</i>")
+    lines.append("\n<b>1. Что найдено в тизере</b>")
+    for row in card.get("found") or []:
+        value = row.get("value")
+        value = ", ".join(str(part) for part in value) if isinstance(value, list) else str(value)
+        lines.append(f"• {html.escape(row['label'])}: <b>{html.escape(value)}</b> "
+                     f"{html.escape(str(row.get('unit') or ''))}, {html.escape(row['page_text'])}. "
+                     f"{html.escape(row['status'])}.")
+    if not card.get("found"):
+        lines.append("В тизере не нашлось чисел, которые понимает модель.")
+    lines.append("\n<b>2. Что уйдёт в расчёт</b>")
+    for row in card.get("to_engine") or []:
+        lines.append(f"• {html.escape(row['label'])}: <b>{html.escape(row['shown'])}</b>\n"
+                     f"  <i>{html.escape(str(row.get('origin') or '')[:180])}</i>")
+    if not card.get("to_engine"):
+        lines.append("Из тизера в расчёт ничего не идёт.")
+    missing = card.get("missing") or []
+    if missing:
+        lines.append("\n<b>3. Чего нет в тизере — что возьмётся вместо этого</b>")
+        for row in missing:
+            lines.append(f"• {html.escape(row['label'])}: {html.escape(row['shown'])}. "
+                         f"<i>{html.escape(row['origin'])}</i>")
+    if card.get("region_note"):
+        lines.append("\n<b>" + html.escape(card["region_note"]) + "</b>")
+    for note in card.get("notes") or []:
+        lines.append(f"\n<i>{html.escape(str(note)[:300])}</i>")
+    for line in card.get("dropped") or []:
+        lines.append(f"\nНе взято: {html.escape(str(line)[:200])}")
+    return "\n".join(lines)
+
+
+def _telegram_intake_region(numbers: list[str]) -> str:
+    """Чьими нормами считать участок тизера: «moscow», «mo», «other», «mixed», «unknown».
+
+    Тот же выбор, что у присланного номера (`cadastral_route`): номер другого
+    кадастрового округа — сразу «other»; 50:… решает территория ГлавАПУ (у
+    Новой Москвы номера тоже 50:). Без номеров — пусто.
+    """
+    if not numbers:
+        return ""
+    route = cadastral_route(numbers, None)
+    if route in ("other", "mixed"):
+        return route
+    try:
+        analysis = analyze_cadastral_territory(CadastralAnalysisRequest(cadastral_numbers=numbers))
+    except Exception:  # noqa: BLE001
+        analysis = None
+    route = cadastral_route(numbers, analysis)
+    if analysis is None and route == "mo":
+        # 50:… без ответа ГлавАПУ — это и Новая Москва (ТиНАО), и область.
+        # Угадывать по номеру нельзя: Новая Москва посчиталась бы чужими нормами
+        # молча (решение владельца 25.10.2026). Карточка говорит об этом, а
+        # кнопка спрашивает ГлавАПУ ещё раз.
+        return "unknown"
+    return route
+
+
+def _telegram_intake_calc_markup(chat_id: int, card: dict[str, Any],
+                                 region: str = "") -> dict[str, Any] | None:
+    """Кнопка «Всё верно, считать»: мини-приложение получает ровно карточку.
+
+    Москва — экспресс-расчёт по участку (ТЭП ГлавАПУ, затем строки карточки).
+    Область и другой регион — режим `intake`: страница считает участок тем же
+    путём, что и на сайте (нормы области; для другого региона — госреестр и
+    наши умолчания), и кладёт строки карточки поверх. Участки разных регионов
+    одним расчётом не считаются — кнопки нет, причина в карточке.
+    """
+    numbers = [str(number) for number in card.get("cadastral_numbers") or []]
+    if numbers and region == "mixed":
+        return None
+    if numbers and region == "unknown":
+        return {"inline_keyboard": [[{"text": "Проверить участок ещё раз",
+                                      "callback_data": "intake_region"}]]}
+    overrides = teaser_card.calc_overrides(card)
+    mode = "intake" if not numbers or region in ("mo", "other") else None
+    try:
+        url = _telegram_web_app_url(chat_id, numbers, calc_overrides=overrides, mode=mode)
+    except Exception:  # noqa: BLE001
+        return None
+    return {"inline_keyboard": [[{"text": "Всё верно, считать", "web_app": {"url": url}}]]}
 
 
 def _intake_cadastral_numbers(extraction: dict[str, Any]) -> list[str]:
@@ -1466,39 +1492,149 @@ def _telegram_open_model_button(chat_id: int) -> dict[str, Any] | None:
     }]]}
 
 
-def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
-    """Следующий вопрос по документу — или итог, если вопросы кончились."""
+def _telegram_intake_card(chat_id: int, dialog: dict[str, Any]) -> dict[str, Any] | None:
     intake = dialog.get("intake") or {}
-    questions = list(intake.get("questions") or [])
-    index = int(intake.get("index") or 0)
-    if index >= len(questions):
-        answers = list(intake.get("answers") or [])
-        lines = [f"<b>Ответы по «{html.escape(str(intake.get('filename') or 'документу'))}»</b>"]
-        for item in answers:
-            said = str(item.get("answer") or "")
-            lines.append(f"• {html.escape(str(item.get('question')))}\n  <b>"
-                         + (html.escape(said) if said else "<i>пропущено</i>") + "</b>")
-        lines.append("\nЭто ваши ответы, а не расчёт: подставьте их в модель и проверьте.")
-        numbers = [str(number) for number in (intake.get("cadastral_numbers") or [])]
-        if numbers:
-            lines.append(f"Теперь считаю участок: <b>{html.escape(', '.join(numbers))}</b>.")
+    try:
+        queue = _intake_queue_load(str(intake.get("id") or ""))
+    except HTTPException as exc:
         dialog.pop("intake", None)
         dialog.pop("step", None)
         _telegram_dialog_save(chat_id, dialog)
-        _telegram_send_message(
-            chat_id, "\n".join(lines)[:3900],
-            reply_markup=None if numbers else _telegram_open_model_button(chat_id))
-        if numbers:
-            _telegram_handle_cadastral_numbers(chat_id, numbers)
+        _telegram_send_message(chat_id, html.escape(str(exc.detail)))
+        return None
+    return queue
+
+
+def _telegram_intake_ask_next(chat_id: int, dialog: dict[str, Any]) -> None:
+    """Следующий вопрос о недостающем — или итоговая карточка с кнопкой расчёта."""
+    queue = _telegram_intake_card(chat_id, dialog)
+    if queue is None:
         return
-    item = questions[index]
-    options = [str(option) for option in (item.get("options") or []) if str(option).strip()]
-    text = (f"<b>Вопрос {index + 1} из {len(questions)}</b>\n"
-            + html.escape(str(item.get("question"))))
-    if options:
-        text += "\n\n" + " / ".join(html.escape(option) for option in options)
-    text += "\n\n<i>Ответьте сообщением. «-» — пропустить вопрос, «стоп» — закончить.</i>"
-    _telegram_send_message(chat_id, text[:3900])
+    region = str((dialog.get("intake") or {}).get("region") or "")
+    card = teaser_card_view(queue, dict(DEFAULT_INPUTS),
+                            {key: dict(value) for key, value in TEP_DEFAULT.items()},
+                            by_parcel=True, parcel_region=region)
+    ask = card["questions"]["card"]
+    if ask is None:
+        dialog["step"] = "intake_ready"
+        _telegram_dialog_save(chat_id, dialog)
+        text = _telegram_intake_card_text(card, first=False)
+        text += ("\n\nРасчёт начнётся только кнопкой ниже и возьмёт ровно то, что в разделе "
+                 "«Что уйдёт в расчёт»; остальное — как в разделе 3.")
+        _telegram_send_message(chat_id, text[:4000],
+                               reply_markup=_telegram_intake_calc_markup(chat_id, card, region))
+        return
+    dialog["step"] = "await_intake_answer"
+    _telegram_dialog_save(chat_id, dialog)
+    index, total = card["questions"]["index"], card["questions"]["total"]
+    text = f"<b>Вопрос {index + 1} из {total}</b>\n" + html.escape(str(ask.get("question")))
+    buttons = [[{"text": str(option.get("label"))[:60],
+                 "callback_data": f"intake_opt:{index}:{number}"}]
+               for number, option in enumerate(ask.get("options") or [])]
+    hint = "Выберите вариант кнопкой"
+    if not ask.get("kind") and ask.get("key"):
+        hint += f" или впишите число сообщением ({html.escape(str(ask.get('unit') or ''))})"
+    text += f"\n\n<i>{hint}. «-» — пропустить вопрос, «стоп» — закончить вопросы.</i>"
+    _telegram_send_message(chat_id, text[:3900],
+                           reply_markup={"inline_keyboard": buttons} if buttons else None)
+
+
+def _telegram_intake_answer(chat_id: int, dialog: dict[str, Any], *, index: int, action: str,
+                            choice: int = -1, value: str = "", mode: str = "") -> None:
+    """Ответ на вопрос по тизеру — в разбор на диске, не в модель."""
+    queue = _telegram_intake_card(chat_id, dialog)
+    if queue is None:
+        return
+    inputs = dict(DEFAULT_INPUTS)
+    tep = {key: dict(item) for key, item in TEP_DEFAULT.items()}
+    got = teaser_card.answer(queue, inputs, tep, index=index, action=action, choice=choice,
+                             value=value, mode=mode, spp_split=MKD_SPP_SPLIT,
+                             presets=PROJECT_CLASS_PRESETS)
+    if got.get("stale"):
+        _telegram_send_message(chat_id, "На этот вопрос уже ответили. Продолжаю с текущего.")
+        _telegram_intake_ask_next(chat_id, dialog)
+        return
+    if got.get("confirm"):
+        c = got["confirm"]
+        dialog["intake"] = {**(dialog.get("intake") or {}),
+                            "pending": {"index": index, "choice": choice, "value": value}}
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_send_message(
+            chat_id,
+            f"В поле «{html.escape(c['label'])}» уже стоит {_telegram_number(c['current'], 2)} "
+            f"{html.escape(c['unit'])}. Ответ добавляет {_telegram_number(c['adding'], 2)} "
+            f"{html.escape(c['unit'])}. Как поступить?",
+            reply_markup={"inline_keyboard": [
+                [{"text": "Прибавить", "callback_data": "intake_mode:add"}],
+                [{"text": "Заменить", "callback_data": "intake_mode:replace"}]]})
+        return
+    _intake_queue_save(queue)
+    record = got["answer"]
+    lines = [("Пропущено." if action == "skip" else "Вопросы закончены." if action == "stop"
+              else "Ответ: " + html.escape(str(record.get("answer") or value)))]
+    for row in record.get("applied") or []:
+        lines.append("в карточку: " + html.escape(str(row.get("label") or row.get("key")))
+                     + " — " + html.escape(str(row.get("shown") or _telegram_number(row.get("now"), 2))))
+    for row in record.get("refused") or []:
+        lines.append("в расчёт не пойдёт: " + html.escape(str(row.get("label") or row.get("key")))
+                     + " — " + html.escape(str(row.get("reason") or "")))
+    _telegram_send_message(chat_id, "\n".join(lines)[:3900])
+    _telegram_intake_ask_next(chat_id, dialog)
+
+
+def _telegram_intake_callback(chat_id: int, data: str) -> None:
+    """Кнопки разбора тизера: к вопросам, вариант ответа, прибавить/заменить."""
+    dialog = _telegram_dialog_get(chat_id) or {}
+    if not (dialog.get("intake") or {}).get("id"):
+        _telegram_send_message(chat_id, "Разбор этого тизера не найден. Пришлите документ заново.")
+        return
+    if data == "intake_questions":
+        _telegram_intake_ask_next(chat_id, dialog)
+        return
+    if data == "intake_region":
+        queue = _telegram_intake_card(chat_id, dialog)
+        if queue is None:
+            return
+        numbers = [str(n) for n in teaser_card_view(
+            queue, dict(DEFAULT_INPUTS), dict(TEP_DEFAULT)).get("cadastral_numbers") or []]
+        dialog["intake"] = {**dialog["intake"], "region": _telegram_intake_region(numbers)}
+        _telegram_dialog_save(chat_id, dialog)
+        _telegram_intake_ask_next(chat_id, dialog)
+        return
+    if data.startswith("intake_mode:"):
+        pending = (dialog.get("intake") or {}).get("pending") or {}
+        if not pending:
+            _telegram_intake_ask_next(chat_id, dialog)
+            return
+        dialog["intake"].pop("pending", None)
+        _telegram_intake_answer(chat_id, dialog, index=int(pending["index"]), action="answer",
+                                choice=int(pending["choice"]), value=str(pending["value"]),
+                                mode=data.removeprefix("intake_mode:"))
+        return
+    if data.startswith("intake_opt:"):
+        try:
+            _, index_text, choice_text = data.split(":")
+            index, choice = int(index_text), int(choice_text)
+        except ValueError:
+            return
+        queue = _telegram_intake_card(chat_id, dialog)
+        if queue is None:
+            return
+        cards = queue.get("cards") or []
+        ask = cards[index] if 0 <= index < len(cards) else {}
+        options = ask.get("options") or []
+        option = options[choice] if 0 <= choice < len(options) else {}
+        if (not ask.get("kind") and option.get("target")
+                and option.get("value") is None):
+            # У варианта нет числа: его впишет человек следующим сообщением.
+            dialog["intake"] = {**dialog["intake"], "pending_choice": {"index": index, "choice": choice}}
+            dialog["step"] = "await_intake_answer"
+            _telegram_dialog_save(chat_id, dialog)
+            _telegram_send_message(
+                chat_id, f"«{html.escape(str(option.get('label')))}» — впишите сумму сообщением "
+                         f"({html.escape(str(option.get('unit') or ''))}).")
+            return
+        _telegram_intake_answer(chat_id, dialog, index=index, action="answer", choice=choice)
 
 
 def _telegram_handle_manual_document(chat_id: int, document: dict[str, Any]) -> None:
@@ -1568,11 +1704,16 @@ def _telegram_handle_freeform_tep(chat_id: int, text: str) -> None:
     try:
         parsed = build_freeform_tep(text)
     except (ValueError, RuntimeError) as exc:
+        # Сбой модели — не нехватка данных: заголовок «не хватает» отправлял
+        # человека переписывать верный текст, хотя дело было не в нём.
+        title = ("Не удалось распознать текст."
+                 if isinstance(exc, FreeformTepRecognitionError)
+                 else "Не хватает исходных данных.")
         _telegram_send_message(
             chat_id,
-            "<b>Не хватает исходных данных.</b>\n"
+            f"<b>{title}</b>\n"
             + html.escape(str(exc))
-            + ".\n\nПример: <code>Участок 2,4 га. Квартиры 42 000 м², коммерция 2 500 м².</code>",
+            + f".\n\nПример: <code>{html.escape(FREEFORM_TEP_EXAMPLE)}</code>",
         )
         return
 
@@ -2102,13 +2243,21 @@ def _telegram_handle_cadastral_numbers(chat_id: int, numbers: list[str], query: 
         },
     }
     _telegram_dialog_save(chat_id, dialog)
+    # Встроенной панорамы в боте нет (бесплатный тариф Яндекса — только сайт
+    # без входа), поэтому — обычная ссылка на Яндекс Карты, тот же шаблон.
+    center = territory.get("center") or {}
+    panorama = yandex_panorama_url(center.get("lat"), center.get("lng"))
+    panorama_line = (
+        f'<a href="{html.escape(panorama)}">Открыть панораму в Яндекс Картах</a>\n'
+        if panorama else "")
     _telegram_send_message(
         chat_id,
         "<b>Территория сформирована</b>\n"
         f"Участков: <b>{int(territory.get('parcel_count') or len(recognized))}</b>\n"
         f"Площадь: <b>{_telegram_number(territory.get('area_ha'), 4)} га</b>\n"
         f"Район: <b>{html.escape(district)}</b>\n"
-        f"Кадастровый квартал: <b>{html.escape(str(territory.get('cadastral_quarter') or '—'))}</b>\n\n"
+        f"Кадастровый квартал: <b>{html.escape(str(territory.get('cadastral_quarter') or '—'))}</b>\n"
+        + panorama_line + "\n"
         "Кадастровый расчёт ТЭП остаётся прежним. Перед расчётом выберите класс — он задаст базовые цены и СМР.",
     )
     # Картинка территории — как на сайте: контуры ЕГРН поверх карты НСПД.
@@ -2120,7 +2269,7 @@ _TELEGRAM_MOSCOW = timezone(timedelta(hours=3))
 
 
 def _site_chat_store(chat_id: int, text: str, taken_at: str,
-                     project: str = "") -> dict[str, Any]:
+                     project: str = "", title: str = "") -> dict[str, Any]:
     """Отдать отчёт ядру. На ядре — тот же маршрут, но без сети.
 
     Второй реализации хранения не заводим: разойдясь, бот и загрузка положили
@@ -2132,11 +2281,33 @@ def _site_chat_store(chat_id: int, text: str, taken_at: str,
         "text": str(text or ""),
         "project": str(project or ""),
         "taken_at": str(taken_at or ""),
+        "title": str(title or ""),
     }
     url = _core_api_url("/internal/monitor/daily")
     if url:
         return _core_post(url, payload, 30.0)
     return internal_monitor_daily(SiteChatReportRequest(**payload))
+
+
+def _sales_chat_store(chat: dict[str, Any], message: dict[str, Any], text: str,
+                      taken_at: str) -> dict[str, Any]:
+    """Отчёт отдела продаж — ядру, той же дорогой, что сводка стройки."""
+    chat_id = int((chat or {}).get("id") or 0)
+    sender = message.get("from") or {}
+    author = " ".join(str(sender.get(k) or "").strip()
+                      for k in ("first_name", "last_name")).strip()
+    payload = {
+        "chat_id": chat_id,
+        "sign": _web_login_sign("monitor-sales", chat_id),
+        "title": str((chat or {}).get("title") or ""),
+        "author": author,
+        "text": str(text or ""),
+        "taken_at": str(taken_at or ""),
+    }
+    url = _core_api_url("/internal/monitor/sales-chat")
+    if url:
+        return _core_post(url, payload, 30.0)
+    return internal_monitor_sales_chat(SalesChatRequest(**payload))
 
 
 # Снимок для сводки: самый крупный размер не длиннее этой стороны. В PDF фото
@@ -2230,6 +2401,48 @@ def _telegram_group_seen(chat: dict[str, Any], outcome: str = "") -> None:
         row["outcome"] = str(outcome)
 
 
+def _telegram_bindings_line(chat_id: int) -> str:
+    """Привязки чатов из реестра ядра — для команды; остальным пусто.
+
+    Счётчик групп ниже живёт в памяти воркера с его запуска, и чат стройки,
+    молчавший с выкатки, в нём не виден (владелец, 24.10.2026: «про стройку и
+    монитор ни слова»). Привязки и отчёты лежат на ядре — оттуда и ответ.
+    """
+    if int(chat_id or 0) not in team_chat_ids():
+        return ""
+    payload = {"chat_id": int(chat_id), "sign": _web_login_sign("monitor-chats", int(chat_id))}
+    try:
+        url = _core_api_url("/internal/monitor/site-chats")
+        got = (_core_post(url, payload, 15.0) if url
+               else internal_monitor_site_chats(SiteChatsRequest(**payload)))
+    except Exception as exc:
+        return "\nПривязки чатов: не получил с сервера — " + html.escape(str(exc)[:120]) + "."
+    projects = got.get("projects") or []
+    if not projects:
+        return "\nПривязки чатов: ни один чат не привязан — в чате напишите /site и имя проекта."
+    lines = []
+    for row in projects:
+        chats = ", ".join(f"«{html.escape(title)}»" if title else "чат без названия"
+                          for title in row.get("chats") or [])
+        site = (f"сводка с площадки — последняя {_telegram_day(row['site_last'])}"
+                if row.get("site_last") else "сводок с площадки нет")
+        if not row.get("sales_project"):
+            sales = "с отчётом о продажах не связан"
+        elif row.get("sales_last"):
+            sales = f"отчёт продаж — последний {_telegram_day(row['sales_last'])}"
+        else:
+            sales = "отчётов продаж из чата нет"
+        lines.append(f"«{html.escape(str(row.get('project') or ''))}»: {chats}; {site}; {sales}")
+    return "\nПривязки чатов (на сервере):\n• " + "\n• ".join(lines)
+
+
+def _telegram_day(value: str) -> str:
+    try:
+        return datetime.fromisoformat(str(value)[:10]).strftime("%d.%m.%Y")
+    except ValueError:
+        return str(value)
+
+
 def _telegram_group_seen_line() -> str:
     """Строка о группах для /status: что бот оттуда увидел и чем это кончилось.
 
@@ -2317,7 +2530,8 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
                                            "<code>/site Имя объекта</code>.")
             return
         try:
-            answer = _site_chat_store(chat_id, "", "", project=wanted)
+            answer = _site_chat_store(chat_id, "", "", project=wanted,
+                                      title=str((chat or {}).get("title") or ""))
         except Exception as exc:
             _telegram_group_seen(chat, "привязка не удалась: " + str(exc)[:80])
             _telegram_group_reply(message, "Привязка не удалась: " + html.escape(str(exc)))
@@ -2328,8 +2542,8 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
             message,
             "<b>Чат «" + html.escape(str((chat or {}).get("title") or "")) +
             "» привязан к проекту «" + html.escape(bound) + "».</b>\n"
-            "Ежедневную сводку с численностью читаю оттуда сам и в чат "
-            "ничего не пишу.")
+            "Ежедневные отчёты — сводку с численностью и отчёт отдела продаж — "
+            "читаю оттуда сам и в чат ничего не пишу.")
         return
 
     parsed = None
@@ -2339,19 +2553,40 @@ def _telegram_group_message(chat: dict[str, Any], message: dict[str, Any]) -> No
         parsed = daily.parse_daily_report(text)
     except Exception:
         parsed = None
-    if not parsed or not parsed.get("contractors"):
-        # Не отчёт — просто считаем. Рабочая переписка нас не касается.
-        _telegram_group_seen(chat)
-        return
-
     stamp = message.get("date")
     try:
         taken_at = datetime.fromtimestamp(
             int(stamp), _TELEGRAM_MOSCOW).date().isoformat()
     except (TypeError, ValueError, OSError):
         taken_at = ""
+    if not parsed or not parsed.get("contractors"):
+        from market_search import salesroom
+
+        if salesroom.is_sales_report(text):
+            # Ежедневный отчёт отдела продаж (владелец, 24.10.2026: «может
+            # туда тоже бота посадить? Для отчётов по звонкам, броням»).
+            try:
+                answer = _sales_chat_store(chat, message, text, taken_at)
+            except Exception as exc:
+                _telegram_group_seen(chat, "отчёт продаж не сохранён: " + str(exc)[:80])
+                return
+            if not answer.get("bound"):
+                _telegram_group_seen(chat, "отчёт продаж прочитан, но чат не привязан — нужен /site")
+            elif not answer.get("sales_project"):
+                _telegram_group_seen(chat, "отчёт продаж прочитан, но проект «"
+                                     + str(answer.get("bound")) + "» не связан с отчётом "
+                                     "о продажах — свяжите на странице сводки")
+            else:
+                _telegram_group_seen(chat, "отчёт продаж" + (" за " + taken_at if taken_at else "")
+                                     + " → «" + str(answer.get("sales_project")) + "»")
+            return
+        # Не отчёт — просто считаем. Рабочая переписка нас не касается.
+        _telegram_group_seen(chat)
+        return
+
     try:
-        answer = _site_chat_store(chat_id, text, taken_at)
+        answer = _site_chat_store(chat_id, text, taken_at,
+                                  title=str((chat or {}).get("title") or ""))
     except Exception as exc:
         _telegram_group_seen(chat, "сводка не сохранена: " + str(exc)[:80])
         return
@@ -2408,20 +2643,11 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         # по ссылке со страницы, код связывается с его chat_id, и страница
         # забирает сессию. Отвечаем по делу и не разворачиваем меню.
         start_payload = text.split(maxsplit=1)[1].strip() if " " in text else ""
+        # Сразу вход не подтверждается: ссылку мог прислать чужой человек,
+        # запросивший код у себя, — тогда молчаливое подтверждение отдало бы
+        # ему сессию этого чата. Бот спрашивает и показывает код для сверки.
         if command == "/start" and start_payload.startswith("login_"):
-            try:
-                _web_login_confirm(start_payload[len("login_"):], chat_id,
-                                   _telegram_sender_name(message))
-                _telegram_send_message(
-                    chat_id,
-                    "<b>Вход на сайт подтверждён.</b> Вернитесь во вкладку браузера — "
-                    "она подхватит вход сама в течение пары секунд.")
-            except HTTPException as exc:
-                _telegram_send_message(
-                    chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc.detail)))
-            except Exception as exc:
-                _telegram_send_message(
-                    chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc)))
+            _telegram_web_login_ask(chat_id, start_payload[len("login_"):])
             return
         # «/start rep_<код>» — приглашение на сводку руководству по проекту:
         # ссылку создаёт владелец на странице сводки. Подписка живёт на ядре.
@@ -2447,6 +2673,7 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
         _telegram_send_message(
             chat_id,
             f"<b>DevelopAid bot:</b> {status}\nTelegram ID: <code>{user_id}</code>\nВерсия: {VERSION}"
+            + _telegram_bindings_line(chat_id)
             + _telegram_group_seen_line(),
         )
         return
@@ -2510,6 +2737,56 @@ def _telegram_handle_message(message: dict[str, Any]) -> None:
     _telegram_handle_cadastral_numbers(chat_id, numbers, text)
 
 
+_WEB_LOGIN_CODE_RE = re.compile(r"[0-9a-f]{6,64}")
+
+
+def _telegram_web_login_ask(chat_id: int, code: str) -> None:
+    """Вопрос «войти на сайт?» с кодом для сверки и двумя кнопками."""
+    code = str(code or "").strip().lower()
+    if not _WEB_LOGIN_CODE_RE.fullmatch(code):
+        _telegram_send_message(
+            chat_id, "<b>Вход не подтверждён.</b>\nВ ссылке нет кода входа — "
+                     "нажмите «Войти» на сайте ещё раз.")
+        return
+    _telegram_send_message(
+        chat_id,
+        "<b>Войти на сайт DevelopAid под вашим Telegram?</b>\n\n"
+        f"Код входа: <b>{html.escape(_web_login_display(code))}</b>\n\n"
+        "Подтверждайте, только если вы сами только что нажали «Войти» на сайте "
+        "и на вашем экране виден этот же код. Если ссылку прислал другой "
+        "человек, нажмите «Нет»: иначе он войдёт на сайт от вашего имени и "
+        "увидит ваши проекты.",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Да, это я — войти", "callback_data": f"login_ok:{code}"}],
+            [{"text": "Нет, я не входил", "callback_data": f"login_no:{code}"}],
+        ]})
+
+
+def _telegram_web_login_answer(chat_id: int, data: str, name: str) -> None:
+    """Ответ на кнопку вопроса о входе: подтверждение — только по «Да»."""
+    verdict, _, code = data.partition(":")
+    if verdict != "login_ok":
+        _telegram_send_message(
+            chat_id, "<b>Вход отклонён.</b> На сайт по этой ссылке никто не войдёт: "
+                     "код сгорит сам через несколько минут.")
+        return
+    if not _WEB_LOGIN_CODE_RE.fullmatch(code):
+        _telegram_send_message(chat_id, "<b>Вход не подтверждён.</b>\nКод входа не похож на код.")
+        return
+    try:
+        _web_login_confirm(code, chat_id, name)
+        _telegram_send_message(
+            chat_id,
+            "<b>Вход на сайт подтверждён.</b> Вернитесь во вкладку браузера — "
+            "она подхватит вход сама в течение пары секунд.")
+    except HTTPException as exc:
+        _telegram_send_message(
+            chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc.detail)))
+    except Exception as exc:
+        _telegram_send_message(
+            chat_id, "<b>Вход не подтверждён.</b>\n" + html.escape(str(exc)))
+
+
 def _telegram_handle_update(update: dict[str, Any]) -> None:
     message = update.get("message")
     if isinstance(message, dict):
@@ -2529,6 +2806,12 @@ def _telegram_handle_update(update: dict[str, Any]) -> None:
             except Exception:
                 pass
         if not chat_id:
+            return
+        # Вход на сайт — только из личного чата: сессия выдаётся на chat_id, а
+        # кнопку в группе может нажать любой её участник.
+        if data.startswith(("login_ok:", "login_no:")):
+            if chat_id > 0 and chat_id == user_id:
+                _telegram_web_login_answer(chat_id, data, _telegram_sender_name(query))
             return
         if not _telegram_user_allowed(user_id):
             _telegram_start_message(chat_id, user_id)
@@ -2561,6 +2844,9 @@ def _telegram_handle_update(update: dict[str, Any]) -> None:
                     "web_app": {"url": _telegram_web_app_url(chat_id, [])},
                 }]]},
             )
+            return
+        if data.startswith("intake_"):
+            _telegram_intake_callback(chat_id, data)
             return
         if data.startswith("flow_"):
             _telegram_dialog_callback(chat_id, user_id, data)

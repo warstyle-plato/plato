@@ -20,9 +20,11 @@
 from __future__ import annotations
 
 import datetime
+import sys
 import html
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -37,7 +39,7 @@ import developaid_project_notes as project_notes
 import developaid_site_photos as site_photos
 import developaid_report_charts as charts
 import developaid_report_gantt as report_gantt
-from market_search import contracting, sales_store
+from market_search import contracting, salesroom, sales_store
 
 PERIODS = {"week": "неделю", "month": "месяц"}
 
@@ -475,7 +477,18 @@ def _credit_parts(sales_project: str, data_dir: Path | None) -> tuple[list, Any]
     return contracts.get("rows") or [], credit
 
 
-def _escrow(sales_project: str, data_dir: Path | None) -> dict[str, Any]:
+def _commissioning(dashboard: dict[str, Any] | None) -> dict[str, str] | None:
+    """Срок ввода для эскроу: прогноз Монитора, без него — утверждённый."""
+    block = (dashboard or {}).get("schedule") or {}
+    if block.get("forecast_finish") and block.get("forecast_known", True):
+        return {"date": str(block["forecast_finish"])[:10], "source": "прогноз Монитора"}
+    if block.get("approved_finish"):
+        return {"date": str(block["approved_finish"])[:10], "source": "утверждённый срок"}
+    return None
+
+
+def _escrow(sales_project: str, data_dir: Path | None,
+            commissioning: dict[str, str] | None = None) -> dict[str, Any]:
     if not str(sales_project or "").strip():
         return _missing("Проект не связан с отчётом о продажах — эскроу и план "
                         "кредита взять неоткуда.")
@@ -483,6 +496,13 @@ def _escrow(sales_project: str, data_dir: Path | None) -> dict[str, Any]:
     got = contracting.escrow_sufficiency({}, rows, credit)
     if got.get("missing"):
         return _missing("Эскроу: " + "; ".join(got["missing"]) + ".")
+    # Владелец, 26.10.2026: «в блоке финансирование не хватает прогноза
+    # достаточности эскроу на момент ввода». Тот же темп и тот же план, что у
+    # ответа «к раскрытию», — на месяц ввода.
+    for block, queue in zip(got.get("queues") or [], (credit or {}).get("queues") or []):
+        at = (contracting.escrow_at(block, queue, commissioning["date"][:7])
+              if commissioning else None)
+        block["at_commissioning"] = dict(at, **commissioning) if at else None
     plan_escrow: dict[str, float] = {}
     plan_pf: dict[str, float] = {}
     for queue in (credit or {}).get("queues") or []:
@@ -591,7 +611,7 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
             str(row.get("estimate_code") or "").rstrip("."), "3.5")),
         "limit": limit,
     }
-    out["escrow"] = _escrow(sales_project, data_dir)
+    out["escrow"] = _escrow(sales_project, data_dir, _commissioning(dashboard))
     out["escrow_bank"] = _bank_escrow(sales_project, data_dir, bounds["end"])
     escrow = out["escrow"]
     if escrow.get("state") == "ok":
@@ -732,8 +752,32 @@ def sales(sales_project: str, kind: str, end: Any,
                   "fm": fm_month},
         "quarter": {"key": quarter, "fact": _fact(between(quarter_start)),
                     "fm": fm_quarter, "bank": bank_quarter,
-                    "bank_reason": bank_reason or None},
+                    "bank_reason": bank_reason or None,
+                    "edge": _edge(between(quarter_start - datetime.timedelta(days=EDGE_DAYS),
+                                          quarter_start - datetime.timedelta(days=1)))},
+        # Воронка из ежедневных отчётов отдела продаж (чат: бот или выгрузка).
+        "funnel": salesroom.funnel(part("salesroom"), bounds["start"].isoformat(),
+                                   bounds["end"].isoformat()),
+        # Звонки → встречи → новые брони → договоры, по отделу и менеджерам —
+        # тот же расчёт, что в отчёте о продажах кабинета.
+        "pipeline": salesroom.sales_funnel(part("salesroom"), rows,
+                                           bounds["start"].isoformat(),
+                                           bounds["end"].isoformat()),
+        # Брони из того же отчёта против договоров контрактации.
+        "bookings": salesroom.booking_outcomes(part("salesroom"), rows, uploaded or None,
+                                               bounds["start"].isoformat(),
+                                               bounds["end"].isoformat()),
     }
+
+
+def _edge(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Договоры последних дней прошлого квартала — их отдел продаж может
+    посчитать в этом квартале по дате регистрации."""
+    if not rows:
+        return None
+    fact = _fact(rows)
+    return {"contracts": fact["contracts"], "amount": fact["amount"],
+            "days": sorted({str(row["signed"]) for row in rows})}
 
 
 def _by_product(period: list[dict[str, Any]], total: list[dict[str, Any]],
@@ -920,7 +964,35 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
     blocks["findings"] = findings({"kind": kind, "end": bounds["end"].isoformat(), **blocks})
     return {"project": project, "kind": kind,
             "start": bounds["start"].isoformat(),
-            "end": bounds["end"].isoformat(), **blocks}
+            "end": bounds["end"].isoformat(), **blocks,
+            # Чем и когда собрана: старая сводка с прошлой сборкой выглядела как
+            # новая, и «это исправлено?» было не проверить по самому документу.
+            "built": {"at": _now_moscow(), "version": _engine_version()}}
+
+
+def _now_moscow() -> str:
+    from zoneinfo import ZoneInfo
+
+    return datetime.datetime.now(ZoneInfo("Europe/Moscow")).isoformat(timespec="minutes")
+
+
+def _engine_version() -> str:
+    """Номер сборки движка (`VERSION`) — объявлен один раз, в движке."""
+    for name in ("developaid_core", "main_legacy"):
+        module = sys.modules.get(name)
+        if module is not None and getattr(module, "VERSION", ""):
+            return str(module.VERSION)
+    return ""
+
+
+def _built_words(report: dict[str, Any]) -> str:
+    """«Сформировано 24.10.2026 в 23:31 (МСК), сборка 0.27.61»."""
+    built = report.get("built") or {}
+    if not built.get("at"):
+        return ""
+    at = datetime.datetime.fromisoformat(built["at"])
+    words = f"Сформировано {at.strftime('%d.%m.%Y')} в {at.strftime('%H:%M')} (МСК)"
+    return words + (f", сборка {built['version']}" if built.get("version") else "") + "."
 
 
 # --------------------------------------------------------------------------
@@ -1094,7 +1166,7 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         lots = int(round(float(fact.get("units") or 0.0)))
         pieces = [f"С начала квартала продано {lots} {_plural(lots, 'лот', 'лота', 'лотов')} "
                   f"({fact['contracts']} {_plural(fact['contracts'], 'договор', 'договора', 'договоров')}) "
-                  f"на {_rub(fact['amount'])}, {_area(fact['area'])}"]
+                  f"на {_rub(fact['amount'])}, {_area(fact['area'])} ({SIGNED_BASIS})"]
         for name, plan in (("финмодели", quarter.get("fm")), ("банка", quarter.get("bank"))):
             if plan and plan.get("amount"):
                 gap = fact["amount"] - plan["amount"]
@@ -1131,30 +1203,48 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         pieces = []
         if limit.get("known"):
             need = _approved_need(limit)
-            if need and need["deficit"] is not None:
+            # При финмодели «не хватает на достройку» и «не хватает по
+            # финмодели» — одно число (лестница сходится с водопадом), и
+            # повтор подряд читался как два разных дефицита (владелец,
+            # 25.10.2026, на «Главном»: «Сам додумаешься?»).
+            if need and need["deficit"] is not None and not _model_basis(limit):
                 pieces.append(f"по утверждённому бюджету {_rub(need['approved'])} не хватает "
                               f"на достройку {_rub(need['deficit'])}"
                               if need["deficit"] > 0 else
                               f"утверждённый бюджет {_rub(need['approved'])} покрыт лимитами и резервом")
             extra = float(limit.get("additional_financing") or 0.0)
-            pieces.append(f"по РСС не хватает {_rub(extra)} "
+            source = "по финмодели" if _model_basis(limit) else "по РСС"
+            parts = _chapter_gap_words(limit) if _model_basis(limit) else ""
+            pieces.append(f"{source} не хватает {_rub(extra)} "
                           f"{_since(limit.get('additional_financing_from'))}"
-                          if extra > 0 else "по РСС лимитов и резерва хватает до ввода")
+                          + (f" ({parts})" if parts else "")
+                          if extra > 0 else
+                          ("по финмодели остатка лимита глав 2–3 хватает до конца стройки"
+                           if _model_basis(limit) else "по РСС лимитов и резерва хватает до ввода"))
         pieces.append(f"выборка кредита за {period} — {_rub(block['draws']['period'])} "
                       f"(за предыдущий такой же период — {_rub(block.get('draws_previous'))})")
         escrow = block.get("escrow") or {}
-        for queue in (escrow.get("queues") or [])[:2]:
+        queues = escrow.get("queues") or []
+        for queue in queues[:2]:
             if queue.get("plan_coverage_at") is not None:
                 pace_cover = queue.get("keeping_pace_coverage")
                 if pace_cover is not None:
-                    text = (f"при нынешнем темпе эскроу очереди «{queue['queue']}» "
+                    text = (f"при нынешнем темпе {_escrow_of(queue, queues)} "
                             + ("НЕ покрывает" if pace_cover < 1 else "покрывает")
                             + f" кредит ({_times(pace_cover)}), по плану финмодели — "
                             f"{_times(queue['plan_coverage_at'])}")
                 else:
-                    text = (f"эскроу очереди «{queue['queue']}» покроет кредит на "
+                    text = (f"{_escrow_of(queue, queues)} покроет кредит на "
                             f"{_times(queue['plan_coverage_at'])} по плану финмодели")
                 pieces.append(text)
+            at = queue.get("at_commissioning") or {}
+            if at.get("keeping_coverage") is not None:
+                pieces.append(
+                    f"к вводу {_day(at['date'])} при нынешнем темпе {_escrow_of(queue, queues)} "
+                    + ("НЕ покроет" if at["keeping_coverage"] < 1 else "покроет")
+                    + f" кредит ({_times(at['keeping_coverage'])})"
+                    + (f", по плану финмодели — {_times(at['plan_coverage'])}"
+                       if at.get("plan_coverage") is not None else ""))
         closed = (block.get("escrow_bank") or {}).get("closed")
         if closed:
             pieces.append(f"эскроу на конец {closed['quarter']} "
@@ -1181,7 +1271,8 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         # поданы иски, суд тогда-то, или идёт претензионная работа»). Суммы,
         # требования и хронология — в блоке «Споры и претензии».
         text = f"Открытых споров: {len(opened)} — " + "; ".join(
-            f"{item['card']['counterparty']} — {_legal_stage(item['card'])}" for item in opened)
+            f"{_legal_name(item['card'], opened)} — {_legal_stage(item['card'])}"
+            for item in opened)
         waiting = sum(1 for item in opened if item.get("unchecked"))
         add("Споры", _sentence(text),
             f"реестр споров; {waiting} из {len(opened)} карточек внесены по документам "
@@ -1217,17 +1308,33 @@ def _pct(value: float | None) -> str:
     return "—" if value is None else f"{value * 100:.1f}".replace(".", ",") + "%"
 
 
-# Стадия спора словами для «Главного»: одно слово на статус, у суда и у
-# претензии — ближайший срок, если он записан.
-LEGAL_STAGES = {"claim": "претензионная работа", "talks": "переговоры о мировом",
-                "court": "суд", "closed": "закрыт"}
-
-
+# Стадия спора словами — из реестра споров (один источник названий стадий,
+# `legal_cases.STATUSES`), с ближайшей датой, если она записана.
 def _legal_stage(card: dict[str, Any]) -> str:
-    stage = LEGAL_STAGES.get(card.get("status") or "", card.get("status") or "")
+    name = legal_cases.STATUSES.get(card.get("status") or "", card.get("status") or "")
+    stage = name[:1].lower() + name[1:]
     if card.get("deadline"):
-        stage += f", ближайший срок {_day(card['deadline'])}"
+        stage += f", ближайшая дата {_day(card['deadline'])}"
     return stage
+
+
+def _legal_name(card: dict[str, Any], items: list[dict[str, Any]]) -> str:
+    """Контрагент; у двух споров с одним контрагентом — ещё номер дела, чтобы различались."""
+    same = sum(1 for item in items
+               if item["card"]["counterparty"].casefold() == card["counterparty"].casefold())
+    if same > 1 and card.get("court_case"):
+        return f"{card['counterparty']} (дело {card['court_case']})"
+    return card["counterparty"]
+
+
+def _legal_sum(totals: dict[str, float]) -> list[str]:
+    """Сумма требования с направлением; есть требования в обе стороны — два числа."""
+    out = []
+    if totals.get("to_them"):
+        out.append(f"наши требования {_rub(totals['to_them'])}")
+    if totals.get("to_us"):
+        out.append(f"требования к нам {_rub(totals['to_us'])}")
+    return out
 
 
 def _sentence(text: str) -> str:
@@ -1287,6 +1394,170 @@ def _pieces(fact: dict[str, Any]) -> str:
         words = _PIECE_WORDS.get(name, (name.lower(),) * 3)
         out.append(f"{count:.0f} {_plural(int(count), *words)}")
     return ", ".join(out)
+
+
+def _stage_words(stages: dict[str, Any]) -> list[str]:
+    """«целевые звонки 7 → встречи 5 (71,4%) → …»: ступень, которой в отчётах
+    нет, так и названа, а не пропущена."""
+    out = []
+    for key, word, share in (("calls", "целевые звонки", None),
+                             ("meetings", "встречи", "meetings_share"),
+                             ("bookings", "новые брони", "bookings_share"),
+                             ("deals", "договоры", "deals_share")):
+        value = stages.get(key)
+        if value is None:
+            out.append(f"{word} — в отчётах не названы")
+            continue
+        conversion = stages.get(share) if share else None
+        out.append(f"{word} {float(value):.0f}" + (f" ({_pct(conversion)})" if conversion is not None else ""))
+    return out
+
+
+def _funnel_line(block: dict[str, Any], kind: str) -> str:
+    """Воронка за период: целевые звонки → встречи → новые брони → договоры с
+    конверсией между ступенями (владелец, 24.10.2026: «Почему в воронке нет
+    целевых звонков? Звонок — встреча — бронь»). Брокер-туры и то, что сейчас
+    в работе, — рядом."""
+    pipe = block.get("pipeline") or {}
+    state = block.get("funnel") or {}
+    if not pipe and not state:
+        return ""
+    text = f"Воронка за {PERIODS[kind]}: "
+    text += " → ".join(_stage_words(pipe.get("total") or {})) if pipe else "отчётов нет"
+    text += ". В скобках — доля от предыдущей ступени; договоры — по дате подписания."
+    if state.get("broker_tours") is not None:
+        text += f" Брокер-туров {state['broker_tours']:.0f}."
+    now = ", ".join(f"{word} {state[key]:.0f}" for key, word in (
+        ("bookings", "броней"), ("registering", "ДДУ на регистрации")) if state.get(key) is not None)
+    if now:
+        text += f" Сейчас {now}."
+    days = int(pipe.get("days") or state.get("days") or 0)
+    return text + f" По отчётам отдела продаж за {days} {_plural(days, 'день', 'дня', 'дней')}."
+
+
+def _funnel_figure(block: dict[str, Any], kind: str) -> str:
+    """Та же воронка картинкой (владелец, 24.10.2026: «нарисуй воронку
+    картинкой») — из тех же чисел, что строка над ней."""
+    total = (block.get("pipeline") or {}).get("total") or {}
+    if not total:
+        return ""
+    return charts.funnel_chart(
+        f"Воронка продаж за {PERIODS[kind]}",
+        [("Целевые звонки", total.get("calls"), None),
+         ("Встречи", total.get("meetings"), total.get("meetings_share")),
+         ("Новые брони", total.get("bookings"), total.get("bookings_share")),
+         ("Договоры", total.get("deals"), total.get("deals_share"))],
+        "доля — от предыдущей ступени; договоры — по дате подписания")
+
+
+def _managers_line(block: dict[str, Any]) -> str:
+    """По менеджерам — тем же расчётом, что воронка отдела («и плюс
+    статистика менеджеров», владелец, 24.10.2026)."""
+    pipe = block.get("pipeline") or {}
+    if not pipe:
+        return ""
+    notes = list(pipe.get("notes") or [])
+    managers = pipe.get("managers") or []
+    text = ""
+    if managers:
+        text = "По менеджерам (по имени у брони): " + "; ".join(
+            f"{row['author']} — новые брони {row['bookings']}, договоры {row['deals']}"
+            for row in managers) + "."
+    if notes:
+        text += (" " if text else "Оговорки: ") + "; ".join(notes) + "."
+    return text.strip()
+
+
+# Договор относится к периоду по дате подписания: так задан план финмодели
+# («Заключенные договоры»). Ежедневный отчёт отдела продаж считает по дате
+# регистрации, и договор, подписанный в конце месяца, у него попадает в
+# следующий (владелец, 24.10.2026: «Странно. Продажники считают не так» —
+# 4 ДДУ на 178,0 млн у сводки против 6 на 291,5 у продажников; решение —
+# считать по подписанию и говорить об этом).
+SIGNED_BASIS = "по дате подписания"
+SIGNED_NOTE = ("Расхождение с отделом продаж — из-за разных дат учёта. Сводка считает "
+               "продажи по дате подписания договора, как план финмодели, а отдел продаж "
+               "в ежедневном отчёте — по дате регистрации. Поэтому договор, подписанный "
+               "в конце месяца, у отдела продаж попадает в следующий месяц.")
+# Сколько дней до начала квартала смотреть на договоры, которые отдел продаж
+# может отнести к кварталу по регистрации. Даты регистрации в выгрузке
+# контрактации нет, поэтому сумма «по регистрации» — верхняя граница, и
+# примечание говорит «если зарегистрированы в квартале» (владелец, 24.10.2026:
+# «надо в отчёте это расхождение примечанием пометить» — с цифрами).
+EDGE_DAYS = 14
+
+
+def _signed_note(quarter: dict[str, Any]) -> str:
+    """Примечание о подписании и регистрации — с цифрами квартала."""
+    edge = quarter.get("edge") or {}
+    if not edge.get("contracts"):
+        return SIGNED_NOTE
+    days = " и ".join(_date(day).strftime("%d.%m") for day in edge["days"])
+    count = int(edge["contracts"])
+    total = float(quarter["fact"]["amount"]) + float(edge["amount"])
+    return (f"{SIGNED_NOTE} В этот квартал не входят {count} "
+            f"{_plural(count, 'договор', 'договора', 'договоров')} на {_rub(edge['amount'])}, "
+            f"подписанные {days}, в последние две недели прошлого квартала. Если их "
+            f"зарегистрировали уже в этом квартале, у отдела продаж квартал — "
+            f"{_rub(total)} вместо {_rub(quarter['fact']['amount'])} в сводке.")
+
+
+def _edge_words(quarter: dict[str, Any]) -> str:
+    """Для подписи плитки: «по регистрации — до 291,5 млн ₽»."""
+    edge = quarter.get("edge") or {}
+    if not edge.get("contracts"):
+        return ""
+    total = float(quarter["fact"]["amount"]) + float(edge["amount"])
+    return f"; по регистрации, как у отдела продаж, — до {_rub(total)}"
+
+
+def _booked_words(item: dict[str, Any]) -> str:
+    # Площадь — как в отчёте, с десятыми: по ней квартира и узнаётся.
+    area = (f", {item['area']:.1f}".replace(".", ",") + " м²"
+            if item.get("area") is not None else "")
+    return f"кв. {item['apartment']}{area}"
+
+
+def _bookings_line(block: dict[str, Any] | None, kind: str) -> str:
+    """«Брони за неделю: из списка ушли 3 — 2 стали договорами, 1 снята без
+    сделки (кв. 20, 90,2 м², держалась 12 дней)…» (владелец, 24.10.2026: «надо
+    следить, сколько броней не вышло в сделку в итоге»)."""
+    if not block:
+        return ""
+    period = block.get("period") or []
+    deals = [item for item in period if item["outcome"] == "deal"]
+    dropped = [item for item in period if item["outcome"] == "dropped"]
+    unknown = [item for item in period if item["outcome"] == "unknown"]
+    if period:
+        parts = []
+        if deals:
+            parts.append(f"{len(deals)} {_plural(len(deals), 'стала договором', 'стали договорами', 'стали договорами')}")
+        if dropped:
+            names = "; ".join(f"{_booked_words(item)}, держалась {item['days']} "
+                              f"{_plural(item['days'], 'день', 'дня', 'дней')}" for item in dropped)
+            parts.append(f"{len(dropped)} {_plural(len(dropped), 'снята', 'сняты', 'снято')} "
+                         f"без сделки ({names})")
+        if unknown:
+            parts.append(f"по {len(unknown)} договора в загруженной контрактации пока нет")
+        text = (f"Брони за {PERIODS[kind]}: из списка ушли {len(period)} — "
+                + ", ".join(parts) + ".")
+    else:
+        text = f"Брони за {PERIODS[kind]}: из списка не ушла ни одна."
+    total = block.get("total") or {}
+    closed = int(total.get("deal") or 0) + int(total.get("dropped") or 0)
+    if closed:
+        share = int(total.get("deal") or 0) / closed
+        text += (f" С {_day(block['since'])} из {closed} закрытых броней договорами стали "
+                 f"{int(total.get('deal') or 0)} ({_pct(share)}), без сделки — "
+                 f"{int(total.get('dropped') or 0)}.")
+    held = block.get("held") or []
+    if held:
+        oldest = held[0]
+        text += (f" Сейчас в списке {len(held)} "
+                 f"{_plural(len(held), 'бронь', 'брони', 'броней')}, самая давняя — "
+                 f"{_booked_words(oldest)}, с {_day(oldest['first'])} "
+                 f"({oldest['days']} {_plural(oldest['days'], 'день', 'дня', 'дней')}).")
+    return text
 
 
 def _sales_line(label: str, fact: dict[str, Any]) -> str:
@@ -1353,17 +1624,47 @@ def _by_chapter_words(parts: dict[str, Any] | None) -> str:
     return "из них " + ", ".join(f"по {code} главе {_rub(value)}" for code, value in items)
 
 
+def _reserve_inside(limit: dict[str, Any]) -> dict[str, Any] | None:
+    """Резервы 2.8/2.9 сметы при финмодели — они уже внутри остатка лимита.
+
+    У финмодели своя строка резерва пустая, и «Резерв 0 ₽» читался как «резервов
+    нет» (владелец, 24.10.2026: «Резерв разве 0»). Резервы банка лежат в лимите
+    главы 2 и уже вошли в остаток, поэтому их называют, но не прибавляют.
+    """
+    inside = limit.get("reserve_inside") if _model_basis(limit) else None
+    return inside if inside and float(inside.get("total") or 0.0) > 0 else None
+
+
+def _reserve_label(limit: dict[str, Any]) -> str:
+    inside = _reserve_inside(limit)
+    if inside is None:
+        return "Резерв"
+    codes = "/".join(sorted(inside.get("parts") or {}))
+    return (f"Резервы банка {codes} (уже входят в остаток лимита главы "
+            f"{inside.get('chapters') or '2'})")
+
+
+def _reserve_value(limit: dict[str, Any]) -> float:
+    inside = _reserve_inside(limit)
+    return float(inside["total"]) if inside else float(limit.get("reserve") or 0.0)
+
+
 def _reserve_words(limit: dict[str, Any]) -> str:
     """«резервы: Непредвиденные 209,7 млн ₽ и Удорожание 96,4 млн ₽» — по строкам книги."""
-    parts = {code: float(value) for code, value in (limit.get("reserve_parts") or {}).items()
+    inside = _reserve_inside(limit)
+    source = inside or {"parts": limit.get("reserve_parts"), "names": limit.get("reserve_names")}
+    parts = {code: float(value) for code, value in (source.get("parts") or {}).items()
              if value}
     if not parts:
         return f"резерв {_rub(limit.get('reserve'))}" if limit.get("reserve") else ""
-    names = limit.get("reserve_names") or {}
+    names = source.get("names") or {}
     pieces = [f"{names.get(code) or 'статья ' + code} {_rub(value)}"
               for code, value in sorted(parts.items())]
     word = "резерв" if len(pieces) == 1 else "резервы"
-    return f"{word}: " + " и ".join(pieces)
+    words = f"{word}: " + " и ".join(pieces)
+    if inside:
+        words += f" — уже входят в остаток лимита главы {inside.get('chapters') or '2'}"
+    return words
 
 
 def _remaining_words(limit: dict[str, Any], borrowed: float | None = None,
@@ -1378,7 +1679,13 @@ def _remaining_words(limit: dict[str, Any], borrowed: float | None = None,
     paid = float(limit.get("paid_actual") or 0.0)
     if borrowed is None:
         borrowed = limit.get("paid_borrowed")
-    words = f"лимит минус всё оплаченное {_rub(paid)}"
+    if _model_basis(limit):
+        scope = limit.get("remaining_scope") or {}
+        words = (f"главы {scope.get('chapters')}: лимит {_rub(scope.get('limit'))} минус всё "
+                 f"оплаченное {_rub(scope.get('paid'))}")
+        borrowed = None
+    else:
+        words = f"лимит минус всё оплаченное {_rub(paid)}"
     if borrowed is not None:
         words += f" (кредитом {_rub(borrowed)}, своими деньгами {_rub(paid - float(borrowed))})"
     if short:
@@ -1392,6 +1699,74 @@ def _remaining_words(limit: dict[str, Any], borrowed: float | None = None,
         words += (f"; лимиты по статьям {'больше' if gap > 0 else 'меньше'} "
                   f"общего лимита на {_rub(abs(gap))}")
     return words
+
+
+def _model_basis(limit: dict[str, Any]) -> bool:
+    """Потребность измерена разделами финмодели против глав 2–3 сметы.
+
+    Владелец (24.10.2026): «сколько надо ещё денег в банке взять, чтобы
+    достроить и продать (2–3 главы)»; «на плашке расписать: потребность в
+    допфинансировании банка такая-то, из неё на 2 главу … а на 3 …»; «тогда
+    по модели».
+    """
+    return (limit.get("need_basis") or "") == "model"
+
+
+def _remaining_by_chapter_words(limit: dict[str, Any]) -> str:
+    """«по 2 главе 1,12 млрд ₽, по 3 главе 155,4 млн ₽» — остаток лимита по главам
+    (владелец, 24.10.2026: «остаток лимита лучше расписывать по главам»). Числа —
+    те же, что в разбивке потребности: лимит главы минус оплаченное по ней."""
+    rows = limit.get("need_by_chapter") or {}
+    return ", ".join(f"по {chapter} главе {_rub(rows[chapter]['remaining'])}"
+                     for chapter in sorted(rows))
+
+
+def _commissioning_words(queue: dict[str, Any]) -> str:
+    """«к вводу 30.09.2027 (прогноз Монитора) при нынешнем темпе на эскроу будет …»."""
+    at = queue.get("at_commissioning")
+    if not at:
+        return ""
+    head = f"к вводу {_day(at['date'])} ({at['source']}) "
+    plan = (f"по плану финмодели — {_rub(at['plan_escrow'])}, {_times(at['plan_coverage'])}"
+            if at.get("plan_coverage") is not None else "")
+    if at.get("keeping_coverage") is None:
+        return head + "кредита по плану финмодели на этот месяц нет — покрытие не посчитать"
+    cover = at["keeping_coverage"]
+    return (head + f"при нынешнем темпе на эскроу будет {_rub(at['keeping_escrow'])} — "
+            + ("НЕ покрывает" if cover < 1 else "покрывает")
+            + f" кредит {_rub(at['plan_pf'])} ({_times(cover)})"
+            + (f"; {plan}" if plan else ""))
+
+
+def _escrow_of(queue: dict[str, Any], queues: list[dict[str, Any]]) -> str:
+    """«эскроу» при одной очереди, «эскроу 1-й очереди» при нескольких.
+
+    «Эскроу очереди «1 очередь»» читалось масло масляным, а при одной
+    очереди называть её незачем (владелец, 25.10.2026).
+    """
+    if len(queues) <= 1:
+        return "эскроу"
+    name = str(queue.get("queue") or "").strip()
+    number = re.fullmatch(r"(\d+)(?:-?[яй])?\s*очеред\w*", name, re.I)
+    return f"эскроу {number.group(1)}-й очереди" if number else f"эскроу очереди «{name}»"
+
+
+def _chapter_gap_words(limit: dict[str, Any]) -> str:
+    """«на стройку 1,93 млрд ₽, на коммерцию 465,0 млн ₽» — коротко, для «Главного»."""
+    rows = limit.get("need_by_chapter") or {}
+    return ", ".join(f"на {rows[ch].get('label_acc') or rows[ch]['label']} {_rub(rows[ch]['gap'])}"
+                     for ch in sorted(rows) if float(rows[ch].get("gap") or 0) > 0)
+
+
+def _chapter_need_words(limit: dict[str, Any]) -> str:
+    """«на стройку 1,93 млрд ₽ (нужно 3,05, лимита 1,12), на коммерцию …»."""
+    parts = []
+    for chapter in sorted(limit.get("need_by_chapter") or {}):
+        row = limit["need_by_chapter"][chapter]
+        parts.append(f"на {row.get('label_acc') or row['label']} {_rub(row['gap'])} "
+                     f"(нужно {_rub(row['need'])}, "
+                     f"лимита {_rub(row['remaining'])})")
+    return ", ".join(parts)
 
 
 def _approved_need(limit: dict[str, Any]) -> dict[str, float] | None:
@@ -1423,11 +1798,25 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     limit = block.get("limit") or {}
     if limit.get("known"):
         lines.append(f"Лимит банка: {_rub(limit.get('bank_limit'))}; "
-                     f"остаток лимитов {_rub(limit.get('bank_remaining'))} — "
+                     f"остаток лимитов {_rub(limit.get('bank_remaining'))}"
+                     + (f" ({_remaining_by_chapter_words(limit)})"
+                        if _model_basis(limit) and _remaining_by_chapter_words(limit) else "")
+                     + " — "
                      f"{_remaining_words(limit, (block.get('draws') or {}).get('total'))}; "
-                     f"резерв {_rub(limit.get('reserve'))}.")
+                     + (f"{_reserve_words(limit)}." if _reserve_inside(limit) else
+                        f"резерв {_rub(limit.get('reserve'))}."))
         need = _approved_need(limit)
-        if need:
+        credit = _model_basis(limit)
+        if need and credit:
+            line = (f"Утверждённый бюджет: {_rub(need['approved'])}; "
+                    f"на стройку и коммерцию по финмодели нужно {_rub(need['remaining'])} "
+                    f"при остатке лимита глав 2–3 {_rub(need['fuel'])}")
+            if need["deficit"] is not None:
+                line += (f" — потребность в допфинансировании банка {_rub(need['deficit'])}: "
+                         f"{_chapter_need_words(limit)}"
+                         if need["deficit"] > 0 else " — хватает")
+            lines.append(line + ".")
+        elif need:
             line = (f"Утверждённый бюджет: "
                     f"{_rub(need['approved'])}; "
                     f"остаток потребности (бюджет минус оплаченное) {_rub(need['remaining'])} "
@@ -1440,9 +1829,12 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
             lines.append("Утверждённый бюджет не загружен (нет финансовой книги): дефицит "
                          "посчитан только по РСС.")
         extra = float(limit.get("additional_financing") or 0.0)
+        source = "По финмодели" if credit else "По РСС"
         if extra > 0:
-            lines.append(f"По РСС не хватает: {_rub(extra)}, "
+            lines.append(f"{source} не хватает: {_rub(extra)}, "
                          f"начиная {_since(limit.get('additional_financing_from'))}.")
+        elif credit:
+            lines.append("По финмодели остатка лимита глав 2–3 хватает до конца стройки.")
         else:
             lines.append("По РСС лимитов и резерва хватает до ввода по прогнозу Монитора.")
     else:
@@ -1460,7 +1852,8 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     if escrow.get("state") != "ok":
         lines.append(escrow.get("reason") or "Эскроу: данных нет.")
     for queue in escrow.get("queues") or []:
-        text = (f"Эскроу, очередь «{queue['queue']}»: на {_months_label(queue['measured_at'])} "
+        named = _escrow_of(queue, escrow.get("queues") or [])
+        text = (f"{named[:1].upper() + named[1:]}: на {_months_label(queue['measured_at'])} "
                 f"накоплено {_rub(queue.get('actual'))}")
         if queue.get("plan") is not None:
             text += f" при плане финмодели {_rub(queue['plan'])}"
@@ -1475,6 +1868,9 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
             if queue.get("keeping_pace_coverage") is not None:
                 text += f", при нынешнем темпе — на {_times(queue['keeping_pace_coverage'])}"
             text += "."
+        words = _commissioning_words(queue)
+        if words:
+            text += f" {words[:1].upper() + words[1:]}."
         lines.append(text)
     lines.append(f"Платежи — из отчёта РСС от {_day(block['rss'])}.")
     return lines
@@ -1498,14 +1894,28 @@ def _funding_html(report: dict[str, Any]) -> str:
             rows.append(["Перерасход по статьям (остаток не уменьшает)", _rub(check["overpaid"])])
         if abs(float(check.get("book_gap") or 0.0)) > tiny:
             rows.append(["Лимиты по статьям против общего лимита", _signed_rub(check["book_gap"])])
+        credit = _model_basis(limit)
         out.append(_table(["Лимит банка", "Сумма"], rows + [
-            ["Остаток лимитов статей", _rub(limit.get("bank_remaining"))],
-            ["Резерв", _rub(limit.get("reserve"))],
-            ["Не хватает по РСС",
+            ["Остаток лимита глав 2–3 (лимит минус оплаченное)" if credit
+             else "Остаток лимитов статей", _rub(limit.get("bank_remaining"))],
+            [_reserve_label(limit), _rub(_reserve_value(limit))],
+            ["Не хватает по финмодели" if credit else "Не хватает по РСС",
              (f"{_rub(extra)} {_since(limit.get('additional_financing_from'))}"
               if extra > 0 else "хватает до ввода")]]))
         need = _approved_need(limit)
-        if need:
+        if need and credit:
+            rows = [["Утверждённый бюджет", _rub(need["approved"])]]
+            for chapter in sorted(limit.get("need_by_chapter") or {}):
+                row = limit["need_by_chapter"][chapter]
+                acc = row.get("label_acc") or row["label"]
+                rows.append([f"Нужно на {acc} по финмодели", _rub(row["need"])])
+                rows.append([f"Остаток лимита главы {chapter}", _rub(row["remaining"])])
+                rows.append([f"Не хватает на {acc}", _rub(row["gap"])])
+            rows.append(["Потребность в допфинансировании банка",
+                         "—" if need["deficit"] is None
+                         else (_rub(need["deficit"]) if need["deficit"] > 0 else "хватает")])
+            out.append(_table(["Утверждённый бюджет", "Сумма"], rows))
+        elif need:
             out.append(_table(["Утверждённый бюджет", "Сумма"], [
                 ["Утверждённый бюджет", _rub(need["approved"])],
                 ["Оплачено с начала проекта", _rub(limit.get("paid_actual"))],
@@ -1552,6 +1962,18 @@ def _funding_html(report: dict[str, Any]) -> str:
             [esc(q["queue"]), _months_label(q.get("measured_at")), _rub(q.get("actual")),
              _rub(q.get("plan")), _times(q.get("plan_coverage_at")),
              _times(q.get("keeping_pace_coverage"))] for q in escrow["queues"]]))
+        ahead = [q for q in escrow["queues"] if q.get("at_commissioning")]
+        if ahead:
+            at = ahead[0]["at_commissioning"]
+            rows = []
+            for q in ahead:
+                c = q["at_commissioning"]
+                rows.append([esc(q["queue"]) + " — при нынешнем темпе", _rub(c["keeping_escrow"]),
+                             _rub(c["plan_pf"]), _times(c["keeping_coverage"])])
+                rows.append([esc(q["queue"]) + " — по плану финмодели", _rub(c["plan_escrow"]),
+                             _rub(c["plan_pf"]), _times(c["plan_coverage"])])
+            out.append(_table([f"Эскроу к вводу {_day(at['date'])} ({esc(at['source'])})",
+                               "На эскроу", "Кредит по плану", "Покрытие"], rows))
     out.append(f"<p class='note'>Платежи — из отчёта РСС от {_day(block['rss'])}.</p>")
     return "\n".join(out)
 
@@ -1624,6 +2046,13 @@ def render_text(report: dict[str, Any]) -> str:
                          f"{_area(quarter['bank'].get('area'))}.")
         elif quarter.get("bank_reason"):
             lines.append(esc(quarter["bank_reason"]))
+        if block.get("funnel") or block.get("pipeline"):
+            lines.append(esc(_funnel_line(block, report["kind"])))
+        if _managers_line(block):
+            lines.append(esc(_managers_line(block)))
+        if block.get("bookings"):
+            lines.append(esc(_bookings_line(block["bookings"], report["kind"])))
+        lines.append(esc(_signed_note(quarter)))
         if block.get("stale"):
             lines.append(f"Внимание: договоры загружены {_day(block['uploaded'])}, "
                          "более поздние сделки в сводку не попали.")
@@ -1695,7 +2124,7 @@ th:first-child,td:first-child{text-align:left;white-space:normal;min-width:110px
 .photos{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin:6px 0}
 figure.photo{margin:0;break-inside:avoid;page-break-inside:avoid}figure.photo img{width:100%;height:230px;object-fit:cover;border-radius:4px;border:1px solid #d6dde6;display:block}
 figure.photo figcaption{font-size:10.5px;margin-top:3px}
-table.legal td{vertical-align:top;text-align:left;white-space:normal}table.legal td:first-child{width:28%;color:#5b6b7d}
+table.legal td{vertical-align:top;text-align:left;white-space:normal}table.legal td:first-child{width:24%}table.legal td:last-child{text-align:right}
 table.works td{vertical-align:top}table.works td:nth-child(2),table.works th:nth-child(2){text-align:left;white-space:normal}table.works td:nth-child(3){color:#5b6b7d;font-size:10.5px;white-space:normal}
 table.articles tr.chapter td{background:#f4f7fb;font-weight:600}
 table.articles tr.total td{border-top:2px solid #1f4e8c;font-weight:600}
@@ -2054,7 +2483,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         if quarter and plan:
             share = quarter["fact"]["amount"] / plan
             add(f"Продажи квартала к плану {name}", _pct(share),
-                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)}; прошло {_pct(pace)} квартала",
+                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)} {SIGNED_BASIS}"
+                f"{_edge_words(quarter)}; прошло {_pct(pace)} квартала",
                 "bad" if share < pace - 0.05 else "good")
         else:
             add(f"Продажи квартала к плану {name}", None,
@@ -2092,13 +2522,26 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         add("Выбрано у банка", None, "отчёт РСС не загружен")
     if limit.get("known"):
         extra = float(limit.get("additional_financing") or 0.0)
+        model = _model_basis(limit)
+        scope = limit.get("remaining_scope") or {}
+        by_chapter = _remaining_by_chapter_words(limit) if model else ""
         add("Остаток лимита банка", _rub(limit.get("bank_remaining")),
-            f"лимит без оплаченного {_rub(limit.get('paid_actual'))}; по РСС "
+            (f"{by_chapter + ' — ' if by_chapter else ''}главы {scope.get('chapters')}: "
+             f"лимит {_rub(scope.get('limit'))} без оплаченного {_rub(scope.get('paid'))}; "
+             "по финмодели "
+             if model else f"лимит без оплаченного {_rub(limit.get('paid_actual'))}; по РСС ")
             + (f"не хватает {_rub(extra)} {_since(limit.get('additional_financing_from'))}"
-               if extra > 0 else "хватает до ввода"), "bad" if extra > 0 else "good")
+               if extra > 0 else "хватает до ввода"),
+            "bad" if extra > 0 else "good")
     else:
         add("Остаток лимита банка", None, "лимит не посчитан")
-    if need and need["deficit"] is not None:
+    if need and need["deficit"] is not None and _model_basis(limit):
+        add("Потребность в допфинансировании банка",
+            _rub(need["deficit"]) if need["deficit"] > 0 else "нет",
+            _chapter_need_words(limit) + (f"; {_since(limit.get('additional_financing_from'))}"
+                                          if need["deficit"] > 0 else ""),
+            "bad" if need["deficit"] > 0 else "good")
+    elif need and need["deficit"] is not None:
         add("Дефицит на достройку", _rub(need["deficit"]) if need["deficit"] > 0 else "нет",
             f"утверждённый бюджет минус оплаченное ({_rub(need['remaining'])}) против "
             f"остатка лимитов и резерва ({_rub(need['fuel'])})",
@@ -2570,6 +3013,14 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(_table(["План", "Сумма", "Площадь"], plans))
         if quarter.get("bank_reason"):
             out.append(f"<p class='note'>{esc(quarter['bank_reason'])}</p>")
+        if block.get("funnel") or block.get("pipeline"):
+            out.append(f"<p>{esc(_funnel_line(block, report['kind']))}</p>")
+            out.append(_funnel_figure(block, report["kind"]))
+        if _managers_line(block):
+            out.append(f"<p class='note'>{esc(_managers_line(block))}</p>")
+        if block.get("bookings"):
+            out.append(f"<p>{esc(_bookings_line(block['bookings'], report['kind']))}</p>")
+        out.append(f"<p class='note'>{esc(_signed_note(quarter))}</p>")
         if block.get("stale"):
             out.append(f"<p class='note warn'>Договоры загружены {_day(block['uploaded'])}, "
                        "более поздние сделки в сводку не попали.</p>")
@@ -2630,6 +3081,8 @@ def render_html(report: dict[str, Any]) -> str:
             out.append(f"<div class='item'><b>{esc(note['topic'])}</b> — вопрос закрыт: "
                        f"{esc(note['text'])} <span class='note'>— {_day(note['at'])}, "
                        f"{esc(note['author'])}</span></div>")
+    if _built_words(report):
+        out.append(f"<p class='note built'>{esc(_built_words(report))}</p>")
     return "\n".join(_keep_headings([part for part in out if part]))
 
 
@@ -2649,7 +3102,7 @@ LEGAL_NONE_OPEN = "Открытых споров нет, за период ни 
 
 
 def _legal_lines(block: dict[str, Any]) -> list[str]:
-    """Споры для сообщения: строка на спор, события за период."""
+    """Споры для сообщения: строка на спор — текущий статус, без истории."""
     esc = html.escape
     if block.get("state") != "ok":
         return [esc(block.get("reason") or "Реестр споров не собран.")] if block else []
@@ -2657,22 +3110,17 @@ def _legal_lines(block: dict[str, Any]) -> list[str]:
         return [LEGAL_EMPTY]
     if not block.get("open") and not block.get("closed"):
         return [LEGAL_NONE_OPEN]
-    names = block.get("statuses") or {}
     out = []
     for item in (block.get("open") or []) + (block.get("closed") or []):
-        card, totals = item["card"], item["totals"]
-        line = (f"• <b>Спор: {esc(card['counterparty'])}</b>"
-                + (f" ({esc(card['contract'])})" if card["contract"] else "")
+        card = item["card"]
+        line = (f"• <b>{esc(card['counterparty'])}</b>"
                 + (f", дело {esc(card['court_case'])}" if card.get("court_case") else "")
-                + f" — {esc(names.get(card['status'], card['status']).lower())}. "
-                + (esc(_sentence(card["subject"])) if card["subject"] else ""))
-        if totals["to_them"]:
-            line += f" Наши требования: {_rub(totals['to_them'])}."
-        if totals["to_us"]:
-            line += f" Требования к нам: {_rub(totals['to_us'])}."
-        if card["next_step"]:
-            line += (f" Дальше: {esc(_sentence(card['next_step']))}"
-                     + (f" Срок — {_day(card['deadline'])}." if card["deadline"] else ""))
+                + f" — {esc(_legal_stage(card))}."
+                + (f" {esc(_sentence(card['subject']))}" if card["subject"] else ""))
+        amounts = _legal_sum(item["totals"])
+        if amounts:
+            text = _sentence("; ".join(amounts))
+            line += " " + text[:1].upper() + text[1:]
         if item.get("unchecked"):
             line += " " + LEGAL_UNCHECKED
         out.append(line)
@@ -2680,7 +3128,9 @@ def _legal_lines(block: dict[str, Any]) -> list[str]:
 
 
 def _legal_html(block: dict[str, Any]) -> str:
-    """Споры и претензии: по блоку на спор — суть, требования, что дальше, события."""
+    """Споры и претензии: строка на спор — контрагент, предмет, стадия, ближайшая
+    дата, сумма. Требования по пунктам, хронология и позиция — в карточке на
+    странице, не в сводке (владелец, 23.10.2026: «надо текущий статус только»)."""
     esc = html.escape
     if block.get("state") != "ok":
         return f"<p class='missing'>{esc(block.get('reason') or 'Реестр споров не собран.')}</p>"
@@ -2689,39 +3139,26 @@ def _legal_html(block: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(LEGAL_EMPTY)}</p>"
     if not items:
         return f"<p>{esc(LEGAL_NONE_OPEN)}</p>"
-    names = block.get("statuses") or {}
-    out = []
+    names = block.get("statuses") or legal_cases.STATUSES
+    rows = []
     for item in items:
-        card, totals = item["card"], item["totals"]
-        rows = []
-        for direction, label in (("to_them", "Наши требования"), ("to_us", "Требования к нам")):
-            claims = [claim for claim in card["claims"] if claim["direction"] == direction]
-            if claims:
-                rows.append([label + (f", всего {_rub(totals[direction])}"
-                                      if len(claims) > 1 else ""),
-                             "<br>".join(f"{esc(claim['label'])} — {_rub(claim['amount'])}"
-                                         + (" <b>(растёт)</b>" if claim["growing"] else "")
-                                         for claim in claims)])
-        if card["next_step"] or card["deadline"]:
-            rows.append(["Что дальше", esc(card["next_step"] or "—")
-                         + (f" — <b>до {_day(card['deadline'])}</b>" if card["deadline"] else "")])
-        if item["fresh"]:
-            rows.append(["За период", "<br>".join(
-                f"{_day(event['date'])} — {esc(event['summary'])}"
-                + (f" ({esc(event['document'])})" if event["document"] else "")
-                for event in item["fresh"])])
-        if card["position"]:
-            rows.append(["Позиция и риск", esc(card["position"])])
-        out.append(
-            f"<div class='item'><b>{esc(card['counterparty'])}</b>"
-            + (f" · {esc(card['contract'])}" if card["contract"] else "")
-            + (f" · дело {esc(card['court_case'])}" if card.get("court_case") else "")
-            + (f" · наша сторона: {esc(card['our_side'])}" if card.get("our_side") else "")
-            + f" · <b>{esc(names.get(card['status'], card['status']))}</b>"
-            + (f"<br>{esc(card['subject'])}" if card["subject"] else "")
-            + (f"<br><i>{esc(LEGAL_UNCHECKED)}</i>" if item.get("unchecked") else "") + "</div>"
-            + "<table class='legal'>" + "".join(_row(row) for row in rows) + "</table>")
-    return "".join(out)
+        card = item["card"]
+        stage = names.get(card["status"], card["status"])
+        if card["status"] == "closed":
+            stage = "Закрыт за период"
+        rows.append([
+            f"<b>{esc(card['counterparty'])}</b>"
+            + (f"<br><span style='color:#5b6b7d'>дело {esc(card['court_case'])}</span>"
+               if card.get("court_case") else "")
+            + (f"<br><i>{esc(LEGAL_UNCHECKED)}</i>" if item.get("unchecked") else ""),
+            esc(card["subject"] or "—"),
+            esc(stage),
+            _day(card["deadline"]) if card["status"] != "closed" else "—",
+            "<br>".join(esc(piece[:1].upper() + piece[1:])
+                        for piece in _legal_sum(item["totals"])) or "—"])
+    return ("<table class='legal'>"
+            + _row(["Контрагент", "Предмет", "Стадия", "Ближайшая дата", "Сумма"], True)
+            + "".join(_row(row) for row in rows) + "</table>")
 
 
 def _keep_headings(parts: list[str]) -> list[str]:

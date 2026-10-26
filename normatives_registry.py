@@ -103,10 +103,12 @@ def _status_label(status: str) -> tuple[str, str]:
     """Наш внутренний контур: очередь сверки редакций. Виден администратору."""
     return {
         "verified": ("Актуальность сверена", "ok"),
+        "current": ("Действующая редакция сверена", "ok"),
         "verified_in_engine_source_pack": ("Подтверждено source pack движка", "ok"),
         "review_required": ("Требует ревизии", "warn"),
         "manual_source_required": ("Нужен первичный источник", "warn"),
         "source_link_missing": ("Нет ссылки на текст документа", "warn"),
+        "not_confirmed": ("Не подтверждено", "warn"),
     }.get(status, (status or "Статус не задан", "muted"))
 
 
@@ -127,6 +129,9 @@ _READER_SOURCE_NEWS = {
 # Номер акта в том виде, в каком его печатают: «1080-ПП», «774-ПП», «713/30»,
 # «214-ФЗ», «ДИПП-ПР-34/20».
 _ACT_NUMBER_RE = re.compile(r"\b\d+[-/][0-9A-Za-zА-Яа-яЁё]+", re.I)
+
+_MONTHS_GENITIVE = ("января", "февраля", "марта", "апреля", "мая", "июня", "июля",
+                    "августа", "сентября", "октября", "ноября", "декабря")
 
 
 def accounted_numbers(entry: dict[str, Any]) -> set[str]:
@@ -187,19 +192,140 @@ def cited_numbers(rows: list[dict[str, Any]]) -> set[str]:
     return {number for number in numbers if number}
 
 
-def registry_scopes(rows: list[dict[str, Any]]) -> list[str]:
-    """Области реестра — из самих строк, а не списком рядом.
+# Порядок страницы (решение владельца 26.10.2026: «разнобой в
+# последовательности и значимости документов»): сверху то, о чём источник
+# сообщил новость, затем разделы по уровню акта, внутри раздела сначала акты,
+# от которых зависят деньги расчёта; заменённые и отменённые — внизу, в
+# свёрнутой истории. Уровень и влияние записаны в строке реестра явно
+# (`level`, `impact`): по имени или тексту их не угадываем.
+PAGE_LEVELS: tuple[tuple[str, str], ...] = (
+    ("federal_law", "Федеральные законы и кодексы"),
+    ("rules", "Своды правил"),
+    ("moscow", "Москва"),
+    ("mo", "Московская область"),
+    ("product", "Правовая рамка сервиса"),
+)
+IMPACT_LABELS = {
+    "money": "Влияет на деньги в расчёте",
+    "reference": "Справочно, в расчёт не входит",
+}
+# Наша очередь сверки — для администратора; читателю «требует внимания» —
+# только новость от источника (`_reader_label`).
+_ATTENTION_STATUSES = ("review_required", "manual_source_required",
+                       "source_link_missing", "not_confirmed")
 
-    Список, перечисленный в разметке, отстаёт от данных: строка с новой
-    областью не получила бы ни плитки, ни кнопки отбора и читалась бы как
-    отсутствующая. Порядок задан для тех областей, что были всегда; всё
-    остальное идёт за ними по алфавиту.
+
+def in_history(entry: dict[str, Any]) -> bool:
+    """Акт заменён или отменён — его место в истории, а не в действующих."""
+    return bool(entry.get("superseded_from") or entry.get("repealed_from"))
+
+
+def needs_attention(entry: dict[str, Any], admin: bool = False) -> bool:
+    """Источник сообщил о новой редакции или отмене; админу — ещё и наша очередь."""
+    if in_history(entry):
+        return False
+    check = entry.get("check") if isinstance(entry.get("check"), dict) else {}
+    if _reader_label(entry, check)[1] in ("warn", "bad"):
+        return True
+    return admin and str(entry.get("status") or "") in _ATTENTION_STATUSES
+
+
+def page_sections(rows: list[dict[str, Any]], admin: bool = False) -> list[dict[str, Any]]:
+    """Разделы страницы по порядку: внимание, уровни, история.
+
+    Строка без отметки уровня не теряется: она идёт отдельным разделом в
+    конце действующих, а тест реестра требует отметку у каждой строки.
     """
-    order = ["Москва", "Московская область", "Общие для РФ"]
-    seen = [str(row.get("scope") or "").strip() or "Прочее" for row in rows]
-    head = [scope for scope in order if scope in seen]
-    tail = sorted({scope for scope in seen if scope not in order})
-    return head + tail
+    def by_impact(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rank = {"money": 0, "reference": 1}
+        return sorted(group, key=lambda row: rank.get(str(row.get("impact") or ""), 2))
+
+    attention = [row for row in rows if needs_attention(row, admin)]
+    taken = {id(row) for row in attention}
+    history = [row for row in rows if in_history(row)]
+    taken |= {id(row) for row in history}
+    current = [row for row in rows if id(row) not in taken]
+    sections: list[dict[str, Any]] = []
+    if attention:
+        sections.append({"key": "attention", "title": "Требует внимания", "rows": attention})
+    known = {key for key, _ in PAGE_LEVELS}
+    for key, title in PAGE_LEVELS:
+        group = [row for row in current if row.get("level") == key]
+        if group:
+            sections.append({"key": key, "title": title, "rows": by_impact(group)})
+    unmarked = [row for row in current if row.get("level") not in known]
+    if unmarked:
+        sections.append({"key": "unmarked", "title": "Уровень акта не отмечен",
+                         "rows": by_impact(unmarked)})
+    if history:
+        sections.append({"key": "history", "title": "История: заменённые и отменённые акты",
+                         "rows": history})
+    return sections
+
+
+def _sections_html(rows: list[dict[str, Any]], admin: bool = False) -> str:
+    parts = []
+    for section in page_sections(rows, admin=admin):
+        cards = "".join(_card(row, admin=admin) for row in section["rows"])
+        title = html.escape(section["title"])
+        count = len(section["rows"])
+        if section["key"] == "history":
+            parts.append(
+                f'<details class="nsection history" data-section="history">'
+                f'<summary class="sechead">{title} <span>{count}</span></summary>'
+                '<p class="seclead">Эти акты больше не действуют. Расчёт на них не опирается, '
+                'они оставлены, чтобы было видно, что их сменило.</p>'
+                f'{cards}</details>')
+            continue
+        lead = ('<p class="seclead">Источник сообщил о новой редакции или отмене. '
+                'Мы проверяем, что изменилось и затрагивает ли это расчёт.</p>'
+                if section["key"] == "attention" else "")
+        parts.append(f'<section class="nsection" data-section="{section["key"]}">'
+                     f'<h2 class="sechead">{title} <span>{count}</span></h2>{lead}{cards}</section>')
+    return "".join(parts)
+
+
+# Итог сверки акта — один из двух, и у каждого своё доказательство. Ответ на
+# «можно ли этой строке верить» даёт эта функция, и только она: страница, тест
+# и сторож читают её, а не повторяют условие у себя.
+VERDICT_STATUSES = ("verified", "not_confirmed")
+
+
+def verdict_problems(row: dict[str, Any]) -> list[str]:
+    """Чего не хватает строке, чтобы её итог сверки был доказан.
+
+    «verified» с полем `verification` — это редакция, источник с адресом и хотя
+    бы один пункт с дословной цитатой. «not_confirmed» — причина и то, что
+    нужно, чтобы подтвердить. Подтверждение без цитаты и «не подтверждено» без
+    причины выглядят одинаково уверенно, поэтому оба считаются недоказанными.
+    Строки, сверенные до введения поля (`verified` без `verification`), этой
+    функцией не судятся: их доказательство — в source pack и ревизии.
+    """
+    status = str(row.get("status") or "")
+    problems: list[str] = []
+    if status == "not_confirmed":
+        for field in ("unconfirmed_reason", "to_confirm"):
+            if not str(row.get(field) or "").strip():
+                problems.append("нет поля %s" % field)
+        return problems
+    ver = row.get("verification")
+    if status != "verified" or ver is None:
+        return problems
+    if not isinstance(ver, dict):
+        return ["verification — не объект"]
+    if not str(ver.get("checked_at") or "").strip():
+        problems.append("нет даты сверки")
+    if not str(ver.get("edition") or "").strip():
+        problems.append("не названа редакция")
+    if not any(isinstance(src, dict) and str(src.get("url") or "").startswith("http")
+               for src in ver.get("sources") or []):
+        problems.append("нет источника с адресом")
+    quoted = [item for item in ver.get("provisions") or []
+              if isinstance(item, dict) and str(item.get("point") or "").strip()
+              and len(str(item.get("quote") or "").strip()) >= 20]
+    if not quoted:
+        problems.append("нет пункта с дословной цитатой")
+    return problems
 
 
 def coverage(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -215,6 +341,8 @@ def coverage(rows: list[dict[str, Any]]) -> dict[str, int]:
         "verified": sum(1 for row in rows
                         if str(row.get("status") or "").startswith(("verified", "current"))),
         "review": sum(1 for row in rows if str(row.get("status") or "") == "review_required"),
+        "not_confirmed": sum(1 for row in rows
+                             if str(row.get("status") or "") == "not_confirmed"),
         "chained": sum(1 for row in rows if chain_steps(row)),
         "steps": len(steps),
         "steps_in_library": sum(1 for step in steps if step_in_library(step)),
@@ -278,7 +406,37 @@ def source_signals(check: dict[str, Any], entry: dict[str, Any] | None = None,
     signals = [item for item in (sources.get("signals") or []) if isinstance(item, dict)]
     if entry is None:
         return signals
-    return [item for item in signals if not signal_is_accounted(item, entry)]
+    return [item for item in signals
+            if not signal_is_accounted(item, entry)
+            and not signal_names_other_act(item, entry)]
+
+
+_ISSUER_RE = re.compile(
+    r"Правительства\s+((?:[А-ЯЁ][а-яё-]+)(?:\s+(?:области|края|республики|"
+    r"автономного\s+округа|автономной\s+области))?)")
+
+
+def signal_names_other_act(signal: dict[str, Any], entry: dict[str, Any]) -> bool:
+    """Находка говорит о ЧУЖОМ акте с тем же номером — её не показываем нигде.
+
+    На карточке 945-ПП Москвы висело «О внесении изменений в отдельные
+    постановления Правительства Магаданской области (№ 402-пп, № 945-пп)» —
+    сохранённая находка поиска от 24.10.2026, сделанная до того, как номер
+    стал якорем только вместе с датой акта. Сохранённое состояние живёт до
+    следующего поиска, поэтому тот же отбор применяется и при показе: чужой
+    орган власти в цитате (Правительство другого региона) или номер акта рядом
+    с чужой датой — это другой акт. Ответ один для карточки, подписи, счётчика
+    сторожа и сообщения: все они читают `source_signals`.
+    """
+    quote = str(signal.get("quote") or "")
+    if quote_names_other_act(quote, entry):
+        return True
+    title = str(entry.get("title") or "")
+    own = _ISSUER_RE.search(title)
+    if not own:
+        return False
+    named = [m.group(1).lower() for m in _ISSUER_RE.finditer(quote)]
+    return bool(named) and own.group(1).lower() not in named
 
 
 def _reader_label(entry: dict[str, Any], check: dict[str, Any]) -> tuple[str, str]:
@@ -791,6 +949,179 @@ def watch_state() -> dict[str, Any]:
     }
 
 
+def signal_new_numbers(signal: dict[str, Any], entry: dict[str, Any]) -> set[str]:
+    """Номера поправок в находке, которых в карточке нет.
+
+    Пусто — либо находка называет только учтённые редакции, либо не называет
+    никакой: в обоих случаях сказать «вышла новая редакция» нечем.
+    """
+    found = [m.group(0) for m in _ACT_NUMBER_RE.finditer(str(signal.get("message")
+                                                            or signal.get("quote") or ""))]
+    skip = accounted_numbers(entry) | ({own_number(entry)} - {""})
+    # Номер печатается так, как его написал источник: «ПП», а не «пп».
+    return {number for number in found if number.lower() not in skip}
+
+
+_DATE_RE = (r"(\d{1,2}\.\d{2}\.\d{4}|\d{1,2}\s+(?:%s)\s+\d{4})"
+            % "|".join(_MONTHS_GENITIVE))
+
+
+def quote_names_other_act(quote: str, entry: dict[str, Any]) -> bool:
+    """Номер акта в цитате стоит рядом с ЧУЖОЙ датой — это другой акт.
+
+    «Федеральный закон от 30.04.2021 N 127-ФЗ» — не закон о банкротстве от
+    26.10.2002, а «постановление … от 09.09.2025 № 1160-ПП» — не парки Москвы
+    2008 года. Находку, которая уже лежит в очереди, проверяем тем же, чем
+    поиск: номер без своей даты акт не называет.
+    """
+    own = own_number(entry)
+    dates = act_date_forms(entry)
+    if not own or not dates:
+        return False
+    low = re.sub(r"\s+", " ", str(quote or "").lower())
+    num = re.escape(own)
+    pattern = (r"от\s+%s(?:\s+(?:г\.|года))?\s*(?:№|n)?\s*%s|%s\s+от\s+%s"
+               % (_DATE_RE, num, num, _DATE_RE))
+    for match in re.finditer(pattern, low):
+        found = next(group for group in match.groups() if group)
+        if not any(found == date for date in dates):
+            return True
+    return False
+
+
+def _names_only_with_foreign_date(quote: str, entry: dict[str, Any]) -> bool:
+    """Номер акта в цитате есть, своей даты нет, а чужая есть.
+
+    «N 593-ПП "О внесении изменений в правовые акты … от 18 июля 2012 г."» —
+    у московского 593-ПП дата 10.09.2013, и 2012 год говорит о другом акте.
+    Применяется только к находке без номера новой поправки: там, где
+    поправка названа, чужая дата — её собственная.
+    """
+    dates = act_date_forms(entry)
+    own = own_number(entry)
+    low = re.sub(r"\s+", " ", str(quote or "").lower())
+    if not dates or not own or own not in low or any(d in low for d in dates):
+        return False
+    return bool(re.search(_DATE_RE, low))
+
+
+def _usage_words(entry: dict[str, Any]) -> str:
+    """Какой расчёт задевает акт — из `engine_usage`, а не пересказом."""
+    rows = [row for row in entry.get("engine_usage") or [] if isinstance(row, dict)]
+    used = [row for row in rows
+            if not str(row.get("usage") or "").startswith("в действующем расчёте не участвует")]
+    if not used:
+        return "в расчёте не участвует — числа DevelopAid не меняются"
+    parts = []
+    for row in used[:2]:
+        usage = str(row.get("usage") or "").strip()
+        # «_PARKING_2118_SQM_PER_PERSON — 33 м² …»: имя константы владельцу
+        # ничего не говорит, говорит то, что после тире.
+        head, sep, rest = usage.partition(" — ")
+        if sep and re.fullmatch(r"[\w.\[\]«»() ,/-]+", head) and re.search(r"[A-Za-z_]", head):
+            usage = rest.strip()
+        parts.append(usage if len(usage) <= 140 else usage[:140].rsplit(" ", 1)[0] + "…")
+    return "; ".join(parts)
+
+
+def announcement_text(records: list[dict[str, Any]],
+                      entries: dict[str, dict[str, Any]] | None = None) -> str:
+    """Сообщение сторожа владельцу: по пункту на акт и ответ на четыре вопроса.
+
+    Владелец, 25.10.2026, о прежнем сообщении — «сырое»: ложные тревоги по
+    чужим актам с тем же номером, каждый акт дважды, «пишут о новой
+    редакции» без номера поправки, ни слова о том, что это меняет в расчёте,
+    и сбой источника вперемешку с изменениями. Теперь у каждого пункта есть
+    что изменилось (акт и поправка), какой расчёт задет (`engine_usage`), что
+    делать и кто решает. Нет изменений по существу — одна строка.
+    """
+    if entries is None:
+        entries = {str(row.get("id") or ""): row for row in _load_registry()}
+    # Очередь копит находки нескольких заходов: пункт об акте — ровно один,
+    # последний.
+    latest: dict[str, dict[str, Any]] = {}
+    for item in records:
+        key = str(item.get("id") or item.get("short_name") or "")
+        latest.pop(key, None)
+        latest[key] = item
+    runs = len({str(item.get("checked_at") or "")[:16] for item in records
+                if item.get("checked_at")}) or 1
+
+    news: list[str] = []
+    unnumbered: list[str] = []
+    failed: list[str] = []
+    pages: list[str] = []
+    for key, item in latest.items():
+        entry = entries.get(key) or {}
+        name = str(item.get("short_name") or entry.get("short_name") or key)
+        result = str(item.get("result") or "")
+        message = re.sub(r"\s+", " ", str(item.get("message") or "")).strip()
+        if result == "unreachable":
+            failed.append(f"{name} ({message[:60] or 'не ответил'})")
+            continue
+        if result in ("changed", "review_required"):
+            pages.append(name)
+            continue
+        if result not in ("amended", "repealed"):
+            continue
+        if entry and quote_names_other_act(message, entry):
+            continue
+        fresh = sorted(signal_new_numbers(item, entry)) if entry else []
+        if result == "amended" and not fresh:
+            if entry and _names_only_with_foreign_date(message, entry):
+                continue
+            if not entry or not signal_is_accounted({"quote": message}, entry):
+                unnumbered.append(name)
+            continue
+        if result == "repealed":
+            what = "в источниках пишут, что акт утратил силу"
+            todo = ("сверить по тексту и решить, на что заменить основание "
+                    "расчёта")
+        else:
+            what = "в источниках названа поправка, которой в реестре нет: " + ", ".join(fresh)
+            todo = ("сверить поправку по тексту акта; если она меняет число "
+                    "из расчёта — поменять число")
+        uses = _usage_words(entry) if entry else "акта нет в реестре"
+        if uses.startswith("в расчёте не участвует"):
+            todo = "обновить карточку реестра; расчёт не трогать"
+            who = "сессия нормативов, без владельца"
+        else:
+            who = "сверяет сессия нормативов, число меняет только владелец"
+        quote = message[:200] + ("…" if len(message) > 200 else "")
+        news.append(
+            f"• <b>{html.escape(name)}</b>\n"
+            f"  Что изменилось: {html.escape(what)}. Цитата: «{html.escape(quote)}»\n"
+            f"  Что задевает в расчёте: {html.escape(uses)}\n"
+            f"  Что делать: {html.escape(todo)}\n"
+            f"  Кто решает: {html.escape(who)}")
+
+    tail: list[str] = []
+    if pages:
+        tail.append("Изменилась страница источника, номера поправки нет: "
+                    + ", ".join(pages) + ". Сверить, когда дойдут руки; сама по "
+                    "себе это не новая редакция.")
+    if unnumbered:
+        tail.append("Пишут об изменениях, но не называют поправку: "
+                    + ", ".join(unnumbered) + ". Новая ли это редакция, по "
+                    "находке не понять — сверить по тексту акта.")
+    if failed:
+        tail.append("Источник не ответил (это сбой проверки, а не изменение): "
+                    + ", ".join(failed) + ".")
+    tens, ones = runs % 100, runs % 10
+    times = "раза" if ones in (2, 3, 4) and tens not in (12, 13, 14) else "раз"
+    runs_words = f"Сторож заходил {runs} {times}"
+    if not news:
+        head = f"<b>Нормативная база:</b> {runs_words}, изменений по существу нет."
+        return "\n".join([head] + [html.escape(x) for x in tail])
+    lines = [f"<b>Нормативная база: изменения ({len(news)})</b>", ""]
+    lines += news
+    if tail:
+        lines.append("")
+        lines += [html.escape(x) for x in tail]
+    lines += ["", f"{runs_words}. Цитаты и ссылки — на странице /normatives"]
+    return "\n".join(lines)
+
+
 def _changes_between(before: dict[str, Any], after: dict[str, Any],
                      entries: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Что изменилось с прошлой проверки — построчно и с причиной.
@@ -955,6 +1286,24 @@ def _self_named_markers(entry: dict[str, Any], markers: tuple[str, ...]) -> tupl
     return tuple(marker for marker in markers if name and marker in name)
 
 
+def act_date_forms(entry: dict[str, Any]) -> tuple[str, ...]:
+    """Дата принятия акта всеми написаниями, которыми её печатают базы.
+
+    Номер без даты акт не опознаёт: «449-ПП» есть у Москвы и у Оренбургской
+    области, «127-ФЗ» — у закона о банкротстве 2002 года и у поправки 2021
+    года о спорте, «1160-ПП» — у парков Москвы и у оплаты труда в области.
+    Все три пришли владельцу 25.10.2026 тревогами о «новой редакции».
+    """
+    raw = str(entry.get("adopted_at") or "").strip()
+    match = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", raw)
+    if not match:
+        return ()
+    year, month, day = match.groups()
+    words = _MONTHS_GENITIVE[int(month) - 1]
+    return (f"{day}.{month}.{year}", f"{int(day)} {words} {year}",
+            f"{day} {words} {year}")
+
+
 def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
                         ) -> list[dict[str, Any]]:
     """Находки о судьбе акта — только там, где рядом назван САМ акт.
@@ -988,8 +1337,14 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
     anchor_numbers = [re.sub(r"^(?:№|n|no)\s*", "", a, flags=re.IGNORECASE).strip() for a in anchors]
     anchor_numbers = [a for a in anchor_numbers if a]
 
-    def has_anchor(text: str) -> bool:
-        return bool(anchor_numbers) and any(anchor in text for anchor in anchor_numbers)
+    dates = act_date_forms(entry)
+
+    def has_anchor(text: str, doc_text: str = "") -> bool:
+        # Номер — якорь, только если в том же результате стоит дата САМОГО
+        # акта: номера переиспользуются из года в год и из региона в регион.
+        if not (anchor_numbers and any(anchor in text for anchor in anchor_numbers)):
+            return False
+        return not dates or any(date in (doc_text or text) for date in dates)
 
     # Маркер, стоящий в собственном имени акта, для него не улика.
     self_amend = _self_named_markers(entry, _AMEND_MARKERS)
@@ -1015,7 +1370,7 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
         for sentence in _sentences(f"{title}\n{body}"):
             low = sentence.lower()
             anchored_by = ""
-            if has_anchor(low):
+            if has_anchor(low, whole):
                 anchored_by = "номер"
             elif words and name_recognised(sentence, entry, NAME_SIGNAL_RUN_SHARE):
                 anchored_by = "имя"
@@ -1033,7 +1388,7 @@ def find_repeal_signals(entry: dict[str, Any], docs: list[dict[str, Any]],
             title_kind = "amended"
         # Типичная карточка изменяющего акта: действие — в заголовке, номер
         # базового акта — в описании. Оба должны быть в ОДНОМ search result.
-        if hit is None and title_kind and has_anchor(whole):
+        if hit is None and title_kind and has_anchor(whole, whole):
             hit = (title_kind, title, "номер")
         # Цитата — то, что читает владелец. «Изменения вносятся в … 713/30» из
         # описания не говорит, КАКИМ актом: номер изменяющего акта стоит в
@@ -1178,6 +1533,50 @@ def _li(values: Any) -> str:
     return "".join(f"<li>{html.escape(str(value))}</li>" for value in (values or []))
 
 
+def _verification_html(entry: dict[str, Any], admin: bool = False) -> str:
+    """Чем сверено: пункт, дословная цитата и адрес, по которому её проверить.
+
+    «Сверено» без цитаты — то же утверждение, что «требует ревизии», только
+    уверенное. Цитата и ссылка показываются всем: кто пришёл за основанием
+    под числом, проверяет нас по ним. Почему акт НЕ подтверждён и что для
+    этого нужно — рабочий контур, его видит администратор.
+    """
+    parts = []
+    ver = entry.get("verification") if isinstance(entry.get("verification"), dict) else {}
+    if ver:
+        items = "".join(
+            "<li><b>%s</b><span>«%s»</span>%s</li>" % (
+                html.escape(str(item.get("point") or "")),
+                html.escape(str(item.get("quote") or "")),
+                ("<small>%s</small>" % html.escape(str(item.get("used_by"))))
+                if item.get("used_by") else "",
+            )
+            for item in ver.get("provisions") or [] if isinstance(item, dict))
+        links = " ".join(
+            '<a href="%s" target="_blank" rel="noopener">%s ↗</a>'
+            % (html.escape(str(src.get("url") or ""), quote=True),
+               html.escape(str(src.get("label") or "источник")))
+            for src in ver.get("sources") or []
+            if isinstance(src, dict) and str(src.get("url") or "").startswith("http"))
+        parts.append(
+            "<details class='history'><summary>Сверено %s: %s</summary>"
+            "<ul>%s</ul><small>%s</small></details>" % (
+                html.escape(_fmt_date(ver.get("checked_at"))),
+                html.escape(str(ver.get("edition") or "")),
+                items, links))
+    gaps = [str(x) for x in ver.get("discrepancies") or [] if str(x).strip()] if ver else []
+    if admin and gaps:
+        parts.append("<div class='news'><h3>Расхождения кода с текстом акта — "
+                     "вопрос владельцу</h3><ul>%s</ul></div>" % _li(gaps))
+    if admin and str(entry.get("status") or "") == "not_confirmed":
+        parts.append(
+            "<div class='probe'><span>Не подтверждено: %s</span>"
+            "<small>Что нужно, чтобы подтвердить: %s</small></div>" % (
+                html.escape(str(entry.get("unconfirmed_reason") or "—")),
+                html.escape(str(entry.get("to_confirm") or "—"))))
+    return "".join(parts)
+
+
 def _card(entry: dict[str, Any], admin: bool = False) -> str:
     check = entry.get("check") if isinstance(entry.get("check"), dict) else {}
     check_result = str(check.get("result") or "")
@@ -1268,7 +1667,10 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     news_html = ""
     all_signals = source_signals(check)
     signals = source_signals(check, entry)
-    accounted = [item for item in all_signals if item not in signals]
+    # «Уже учтено» — только наша учтённая редакция; находка о чужом акте с тем
+    # же номером не учтена, а неверна, и не показывается вовсе.
+    accounted = [item for item in all_signals if item not in signals
+                 and not signal_names_other_act(item, entry)]
     if not signals and accounted:
         # Молча выброшенная находка читается как её отсутствие, поэтому она
         # называется — но тоном «это уже учтено», а не тревогой.
@@ -1341,14 +1743,18 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     # что влияет», раскрытая — на всё остальное. Порог тот же, что у списков
     # карточки КРТ: длинный список сворачивается, и в заголовке стоит суть, а
     # не одно имя, иначе закрытый список читается как отсутствующий.
+    verification_html = _verification_html(entry, admin=admin)
     affects = [str(x) for x in (entry.get('affects') or []) if str(x).strip()]
     gist = affects[0] if affects else str(entry.get('title') or '')
+    impact = str(entry.get("impact") or "")
+    impact_html = (f'<div class="impact {html.escape(impact)}">{html.escape(IMPACT_LABELS[impact])}</div>'
+                   if impact in IMPACT_LABELS else "")
     return f"""
 <details class="ncard" data-scope="{html.escape(str(entry.get('scope') or ''))}">
   <summary class="nhead">
     <div><div class="eyebrow">{html.escape(str(entry.get('scope') or ''))}</div>
     <h2>{html.escape(str(entry.get('short_name') or ''))}</h2>
-    <div class="gist">{html.escape(gist)}</div></div>
+    <div class="gist">{html.escape(gist)}</div>{impact_html}</div>
     <span class="badge {badge}">{html.escape(label)}</span>{admin_badge}
   </summary>
   <p class="full-title">{html.escape(str(entry.get('title') or ''))}</p>
@@ -1360,6 +1766,7 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
   <div class="amend"><b>Текущая учтённая редакция</b>
     <span>{html.escape(str(entry.get('latest_amendment') or '—'))}</span></div>
   {news_html}
+  {verification_html}
   {history_html}
   {chain_html}
   <div class="twocol">
@@ -1481,26 +1888,28 @@ def _legal_footer() -> str:
 def _page(request: Request, core: Any) -> str:
     admin = _is_admin(request, core)
     rows = _merged_registry()
-    scopes = registry_scopes(rows)
-    counts = {scope: sum(1 for row in rows
-                         if (str(row.get("scope") or "").strip() or "Прочее") == scope)
-              for scope in scopes}
+    # Плитки и кнопки отбора — те же разделы, что и на странице, в том же
+    # порядке: иначе сверху «Москва» первой, а ниже первыми федеральные законы.
+    sections = page_sections(rows, admin=admin)
     cover = coverage(rows)
-    tiles = "".join("<div><b>%d</b><span>%s</span></div>" % (counts[scope], html.escape(scope))
-                    for scope in scopes)
-    filters = "".join('<button data-filter="%s">%s</button>' % (html.escape(scope), html.escape(scope))
-                      for scope in scopes)
+    tiles = "".join("<div><b>%d</b><span>%s</span></div>"
+                    % (len(section["rows"]), html.escape(section["title"]))
+                    for section in sections if section["key"] != "attention")
+    filters = "".join('<button data-filter="%s">%s</button>'
+                      % (html.escape(section["key"]), html.escape(section["title"]))
+                      for section in sections if section["key"] != "attention")
     # Существительное стоит ПЕРЕД числом: «поправок в ней 54» верно при любом
     # числе, а «54 поправок» ломается на 1, 2 и 21 — русское склонение здесь
     # обошлось бы своей функцией, а её негде объявить один раз.
     cover_line = (
-        "Актов в реестре %d: подтверждено %d, требует сверки %d. "
+        "Актов в реестре %d: подтверждено %d, не подтверждено (с причиной) %d, "
+        "требует сверки %d. "
         "Актов с объявленной цепочкой поправок %d; поправок в ней %d, "
         "из них в библиотеке (текстом или файлом) %d."
-        % (cover["acts"], cover["verified"], cover["review"],
+        % (cover["acts"], cover["verified"], cover["not_confirmed"], cover["review"],
            cover["chained"], cover["steps"], cover["steps_in_library"])
     )
-    cards = "".join(_card(row, admin=admin) for row in rows)
+    cards = _sections_html(rows, admin=admin)
 
     footer = _legal_footer()
 
@@ -1584,6 +1993,13 @@ background:#17191d;color:#fff;border-radius:12px;padding:12px 14px;margin-bottom
 box-shadow:0 8px 30px rgba(0,0,0,.12)}}.adminbar button{{border:0;border-radius:8px;padding:9px 12px;cursor:pointer}}
 #checkMsg{{font-size:13px;opacity:.8}}.foot{{color:var(--muted);font-size:13px;margin-top:26px}}
 .hidden{{display:none!important}}
+.nsection{{margin:0 0 26px}}.sechead{{font-size:20px;margin:6px 0 12px;cursor:default}}
+.sechead span{{color:var(--muted);font-weight:400;font-size:15px;margin-left:6px}}
+.seclead{{color:var(--muted);font-size:13px;margin:-4px 0 12px}}
+.nsection[data-section="attention"] .sechead{{color:var(--warn)}}
+details.history>summary{{cursor:pointer;color:var(--muted)}}
+.impact{{display:inline-block;margin-top:8px;font-size:12px;font-weight:700;border-radius:999px;padding:3px 9px}}
+.impact.money{{color:var(--ink);background:#eef2ff}}.impact.reference{{color:var(--muted);background:#f3f4f6}}
 @media(max-width:760px){{.summary,.meta,.twocol{{grid-template-columns:1fr}}
 .nhead,.source-row,.top{{display:block}}.badge{{display:inline-block;margin-top:10px}}
 .probe{{text-align:left;margin-top:10px}}h1{{font-size:28px}}.adminbar{{position:static;display:block}}
@@ -1609,7 +2025,10 @@ box-shadow:0 8px 30px rgba(0,0,0,.12)}}.adminbar button{{border:0;border-radius:
 document.querySelectorAll('.filters button').forEach(btn=>btn.addEventListener('click',()=>{{
  document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('active'));
  btn.classList.add('active');const f=btn.dataset.filter;
- document.querySelectorAll('.ncard').forEach(c=>c.classList.toggle('hidden',f!=='all'&&c.dataset.scope!==f));
+ // Отбор по разделу: «Требует внимания» остаётся видным при любом отборе.
+ document.querySelectorAll('.nsection').forEach(s=>s.classList.toggle('hidden',
+  f!=='all'&&s.dataset.section!==f&&s.dataset.section!=='attention'));
+ const h=document.querySelector('details.history');if(h&&f==='history')h.open=true;
 }}));
 async function checkAll(search){{
  const ids=['checkBtn','searchBtn'].map(i=>document.getElementById(i)).filter(Boolean);

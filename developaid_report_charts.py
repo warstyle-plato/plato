@@ -323,3 +323,52 @@ def every(count: int, fit: int = 12) -> int:
     """Через сколько подписывать X, чтобы подписи не налезали."""
     return max(1, -(-count // fit))
 
+
+
+def funnel_chart(title: str, stages: Sequence[tuple[str, float | None, float | None]],
+                 caption: str = "") -> str:
+    """Воронка продаж картинкой: ступень — полоса по центру, длина — число.
+
+    ``stages`` — (название, число, доля от предыдущей ступени). Ступень без
+    числа рисуется пустой рамкой с подписью «в отчётах нет»: пропуск виден, а
+    не схлопнут. Доля стоит между ступенями — там, где читатель переходит с
+    одной на другую. Цвет один: ряд один, его называет заголовок.
+    """
+    known = [float(v) for _, v, _ in stages if v is not None]
+    if not stages or not known:
+        return ""
+    widest = max(known) or 1.0
+    name_w, row_h, gap, top = 150, 30, 22, 8
+    plot = WIDTH - name_w - 16
+    centre = name_w + plot / 2
+    height = top + len(stages) * row_h + (len(stages) - 1) * gap + 10
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {WIDTH} {height}" '
+           f'width="100%" role="img" aria-label="{html.escape(title)}" class="chart funnel">']
+    for i, (name, value, share) in enumerate(stages):
+        y = top + i * (row_h + gap)
+        out.append(f'<text x="{name_w - 10}" y="{y + row_h / 2 + 4:.1f}" font-size="11.5" '
+                   f'fill="#333" text-anchor="end">{html.escape(name)}</text>')
+        if i and share is not None:
+            out.append(f'<text x="{centre:.1f}" y="{y - gap / 2 + 4:.1f}" font-size="10.5" '
+                       f'fill="#555" text-anchor="middle" class="share">↓ '
+                       f'{_num(share * 100, 1)}%</text>')
+        if value is None:
+            w = plot * 0.4
+            out.append(f'<rect x="{centre - w / 2:.1f}" y="{y}" width="{w:.1f}" height="{row_h}" '
+                       f'rx="4" fill="none" stroke="#8c9aaa" stroke-dasharray="4 3"/>')
+            out.append(f'<text x="{centre:.1f}" y="{y + row_h / 2 + 4:.1f}" font-size="10.5" '
+                       f'fill="#555" text-anchor="middle">в отчётах нет</text>')
+            continue
+        w = max(4.0, plot * float(value) / widest)
+        out.append(f'<rect x="{centre - w / 2:.1f}" y="{y}" width="{w:.1f}" height="{row_h}" '
+                   f'rx="4" fill="#1f4e8c"><title>{html.escape(name)}: {_num(value)}</title></rect>')
+        inside = w >= 48
+        out.append(f'<text x="{centre if inside else centre + w / 2 + 6:.1f}" '
+                   f'y="{y + row_h / 2 + 4:.1f}" font-size="11.5" font-weight="600" '
+                   f'fill="{"#fff" if inside else "#333"}" '
+                   f'text-anchor="{"middle" if inside else "start"}" class="value">'
+                   f'{_num(value)}</text>')
+    out.append("</svg>")
+    note = f'<span class="note">{html.escape(caption)}</span>' if caption else ""
+    return (f'<figure class="chart"><figcaption>{html.escape(title)}{note}</figcaption>'
+            f'{"".join(out)}</figure>')

@@ -186,6 +186,8 @@ ROUTES = {
     "/report/pdf": lambda s: {"result": {}, "inputs": {}, "cadastral_numbers": [B], "session": s},
     "/agent/chat": lambda s: model_for(B) | {"session": s, "message": "что с LLCR?"},
     "/ia/goal-seek": lambda s: model_for(B) | {"session": s},
+    "/strategy-compare": lambda s: model_for(B) | {"session": s},
+    "/loan-term-pick": lambda s: model_for(B) | {"session": s, "prefix": "offices"},
     "/api/v2/calculate": lambda s: model_for(B) | {"session": s},
 }
 
@@ -262,9 +264,10 @@ def test_the_core_rejects_a_forged_request():
 # --- страница ---------------------------------------------------------------
 
 def _locked_html(status: int) -> str:
-    prelude = ("const box={style:{},innerHTML:''};"
+    prelude = ("const box={style:{},innerHTML:'',classList:{add(){},remove(){}}};"
                "const document={getElementById:()=>box};"
-               "let lastResult=1,phaseBundle=1;")
+               "let lastResult=1,phaseBundle=1;"
+               "const fetch=()=>Promise.reject(new Error('нет сети'));")
     out, _ = page_blocks.run(prelude, f"renderCalcLocked('Причина от сервера',{status});"
                                      "console.log(box.innerHTML);")
     return out

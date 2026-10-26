@@ -89,12 +89,13 @@ from developaid_report_page import REPORT_PAGE as _REPORT_PAGE_RAW
 # техприсоединению) в продукты и деньги модели живёт отдельным модулем: он о
 # документах, движок — об экономике, и смешивать их незачем.
 import document_intake
+import teaser_card
 from request_body import json_object
 import v4_book_polish
 import v4_dashboard
 import v4_entry_sheet
 import v4_nonres_sheet
-import nonres_workbook
+import office_workbook
 import hotel_workbook
 import v4_value_cache
 import presentation as _presentation
@@ -298,6 +299,11 @@ _engine_part("site_massing")
 # Объёмная схема: корпуса очередей на участке и их аксонометрия —
 # engine/site_massing_layout.py; один ответ для страницы и PDF.
 _engine_part("site_massing_layout")
+# Кварталы и фронты участка, расстановка корпусов и её проверка —
+# engine/site_massing_blocks.py; план расстановки от Платона (фоновый запрос,
+# хранение по отпечатку) — engine/site_massing_plan.py.
+_engine_part("site_massing_blocks")
+_engine_part("site_massing_plan")
 
 
 _engine_part("operating_model")
@@ -374,6 +380,14 @@ _engine_part("agent_routes")
 # Потолок цены входа — один подбор и одни плитки «Инвестиционного решения»
 # для страницы, тизера и полного PDF.
 _engine_part("entry_price_ceiling")
+
+# «Сравнение стратегий» объекта с выбором способа продажи — одна таблица,
+# вывод, строка тизера и подбор точек безразличия для всех поверхностей.
+_engine_part("strategy_compare")
+
+# Подбор срока кредита аренды объекта — отдельным запросом по кнопке
+# «Подобрать» у поля «Срок кредита».
+_engine_part("loan_term_pick")
 
 
 # Маршруты /current-key-rate и /calculate вынесены в engine/calc_routes.py

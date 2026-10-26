@@ -159,10 +159,11 @@ def test_the_yard_says_why_it_has_no_area() -> None:
     area, basis = core.landscaping_area(x, t)
     assert area == 0.0
     assert "благоустраивать нечего" not in basis, "у нежилого проекта двор есть"
-    # Чем мерить, больше не спрашивают: двор нежилого проекта отдельно не
-    # считается (владелец, 21.09.2026); ставка объекта — СМР здания без двора,
-    # и причина — жителей нет (06.10.2026). Молчания при этом нет — основание говорит, ПОЧЕМУ ноль.
-    assert "жителей нет" in basis, basis
+    # Площади двора от населения нет — жителей нет, — а деньги считает ставка
+    # на м² наземной ГНС (владелец, 25.10.2026). Основание говорит и то, и
+    # другое: молчания нет.
+    assert "жителей в проекте нет" in basis, basis
+    assert "ставкой на квадратный метр наземной площади" in basis, basis
 
     # У жилого проекта двор по-прежнему считается населением.
     home_x = copy.deepcopy(core.DEFAULT_INPUTS)
@@ -346,43 +347,80 @@ def test_the_removed_can_be_returned(seen) -> None:
     assert restored["field"] is True
 
 
-def test_the_nonresidential_yard_is_inside_the_object_cost() -> None:
-    """Отдельной статьи двора у нежилого проекта нет — решение владельца.
+def _office_with_tep() -> tuple[dict, dict]:
+    """Нежилой офисник со строкой ТЭП объекта: ГНС проекта не ноль.
 
-    21.09.2026: «у нас себестоимость вообще всего объекта же целиком
-    прописана» и следом «не считать». Двор внутри ставки СМР объекта, и
-    вторая статья была бы двойным счётом. Цена прежней ставки измерена: на
-    офиснике 19 110 м² это 210,7 млн ₽ CAPEX и LLCR 0,5427 против 0,5629.
+    Строку ТЭП объекта заполняет страница, а здесь движок зовут напрямую: без
+    метров в ней ГНС проекта ноль, и ставка на метр умножалась бы на ноль.
     """
     x, t = _objects_only()
     x["project_kind"] = core.PROJECT_KIND_NONRESIDENTIAL
     x["landscaping_gns_th_per_sqm"] = 0.0
-    # Строку ТЭП объекта заполняет страница, а здесь движок зовут напрямую:
-    # без метров в ней ГНС проекта ноль, и пустая статья ничего не значит —
-    # `landscaping_gap` молчит по построению, когда строить нечего.
     gba = float(x["offices_gba_sqm"])
     t["offices"].update(gns=gba, total_area=gba * 0.94,
                         useful=gba * 0.94, saleable=gba * 0.94)
+    return x, t
+
+
+def test_the_nonresidential_yard_is_counted_by_the_default_rate() -> None:
+    """Благоустройство нежилого проекта — ставкой на м² наземной ГНС.
+
+    Решение владельца 25.10.2026 («Ставкой на м² наземной площади») отменяет
+    правило 21.09/06.10.2026 «двор в ставке объекта»: ставка объекта — СМР
+    здания без двора, и статья выходила молчаливым нулём. Умолчание — как у
+    консультанта по Вавилова, 67: 279 млн ₽ на 36 444 м² ГНС, около 7,7 тыс
+    ₽/м². На старом коде сумма была ноль, а основание — «двор отдельно не
+    считается».
+    """
+    x, t = _office_with_tep()
     summary = core.calculate(core.CalcRequest(inputs=copy.deepcopy(x),
                                               tep=copy.deepcopy(t)))["summary"]
     # Предохранитель: строить в проекте есть что.
-    assert summary["project_gns_sqm"] > 0 and summary["capex"] > 0
-    assert summary["landscaping_money_basis"].startswith("нежилой проект"), \
-        summary["landscaping_money_basis"]
+    gns = summary["project_gns_sqm"]
+    assert gns > 0 and summary["capex"] > 0
+    rate = core.NONRESIDENTIAL_LANDSCAPING_GNS_TH_PER_SQM
+    # Умолчание — около ставки консультанта, а не произвольное число.
+    assert abs(rate - 279e6 / 36444 / 1000) < 0.1, rate
+    assert summary["landscaping_per_gns_th"] == pytest.approx(rate)
+    assert summary["landscaping_gap"] == "", "статья посчитана, а названа пустой"
+    # Происхождение видно: умолчание нежилого проекта, а не ручное число.
+    assert summary["landscaping_rate_origin"] == core.LANDSCAPING_RATE_NONRES_DEFAULT
     money = summary["landscaping_money_basis"]
-    assert "жителей нет" in money, money
-    # Ставка объекта нежилого — СМР без двора (06.10.2026): посчитать двор —
-    # своя ставка на метр ГНС, и основание это говорит.
-    assert "задайте ставку благоустройства" in money, money
-    # И ставки двора класса в основании нет: она про жильё, а тут её вообще не
-    # применяют. Без этого проверка зеленеет и на прежнем пути, где деньги
-    # выходили нулём просто потому, что площадь двора ноль, — основание тогда
-    # начиналось с «35 тыс ₽/м² двора», то есть называло чужой множитель.
-    assert "тыс ₽/м² двора" not in money, money
-    assert summary["landscaping_gap"], "нулевая статья промолчала"
-    # Своей ставки у режима больше нет ни в движке, ни на странице.
-    assert not hasattr(core, "NONRESIDENTIAL_LANDSCAPING_TH_PER_SQM")
-    assert "NONRES_LANDSCAPING_RATE" not in core.PAGE
+    assert money.startswith("по умолчанию для нежилого проекта"), money
+    assert "м² ГНС" in money and "тыс ₽/м² двора" not in money, money
+
+
+def test_the_default_rate_is_declared_once() -> None:
+    """Умолчание — одно место (`landscaping_gns_rate`), не литерал в формуле."""
+    x, _ = _office_with_tep()
+    assert core.landscaping_gns_rate(x) == (
+        core.NONRESIDENTIAL_LANDSCAPING_GNS_TH_PER_SQM, core.LANDSCAPING_RATE_NONRES_DEFAULT)
+    x["landscaping_gns_th_per_sqm"] = 3.0
+    assert core.landscaping_gns_rate(x) == (3.0, core.LANDSCAPING_RATE_MANUAL)
+    # Гостиница своё правило сохраняет: умолчания нежилого у неё нет.
+    hotel = dict(x, project_kind=core.PROJECT_KIND_HOTEL, landscaping_gns_th_per_sqm=0)
+    assert core.landscaping_gns_rate(hotel) == (0.0, core.LANDSCAPING_RATE_CLASS)
+    # И жилой проект по-прежнему считает двор методикой класса.
+    assert core.landscaping_gns_rate(core.DEFAULT_INPUTS)[1] == core.LANDSCAPING_RATE_CLASS
+    assert "7.7" not in core.PAGE.split("function landscapingHouseRateNote", 1)[1][:4000]
+
+
+def test_the_default_landscaping_feeds_management_and_reserve() -> None:
+    """Новая сумма проходит через управление проектом и резерв, как у жилья."""
+    x, t = _office_with_tep()
+    x.update(project_management_pct=5.0, reserve_pct=3.0)
+    with_yard = core.calculate(core.CalcRequest(inputs=copy.deepcopy(x),
+                                                tep=copy.deepcopy(t)))["summary"]
+    amount = with_yard["landscaping_per_gns_th"] * with_yard["project_gns_sqm"] * 1000
+    assert amount > 0
+    # Ручной ноль у ставки невозможен (пусто = «по умолчанию»), поэтому
+    # сравнение — с ручной ставкой в два раза больше.
+    y = dict(x, landscaping_gns_th_per_sqm=2 * core.NONRESIDENTIAL_LANDSCAPING_GNS_TH_PER_SQM)
+    doubled = core.calculate(core.CalcRequest(inputs=copy.deepcopy(y),
+                                              tep=copy.deepcopy(t)))["summary"]
+    extra = doubled["capex"] - with_yard["capex"]
+    # Рост CAPEX — сама статья плюс 5% управления, и всё это плюс 3% резерва.
+    assert extra == pytest.approx(amount * 1.05 * 1.03, rel=1e-3), (extra, amount)
 
 
 def test_a_hand_given_rate_still_counts_the_yard() -> None:
@@ -814,18 +852,41 @@ def dialog():
             # Подпись у поля ставки пишется по итогу расчёта, а он идёт своим
             # чередом: снятая раньше, она показывает ещё жилой двор.
             page.wait_for_function(
-                "() => /жителей нет/.test("
-                "  (((lastResult||{}).summary||{}).landscaping_money_basis) || '')",
+                "() => ((lastResult||{}).summary||{}).landscaping_rate_origin"
+                "  === 'nonresidential_default'",
                 timeout=20000)
             # Поле площади двора у нежилого проекта не рисуется (двор от
-            # населения — жилой, решение 06.10.2026): причина стоит под полем
-            # ставки на метр ГНС, где двор и можно посчитать.
+            # населения — жилой): благоустройство считает ставка на метр ГНС,
+            # и подпись с числом стоят у её поля (владелец, 25.10.2026).
             got["rateNote"] = page.evaluate(
                 "() => (document.getElementById('landscapingHouseRateNote')||{}).textContent || ''")
+            # Здание появилось — ставка умножается на его наземную площадь, и
+            # число встаёт в поле показателем, а не вводом.
+            page.evaluate("() => { inputs.offices_enabled = true; inputs.offices_gba_sqm = 20000;"
+                          " syncTep(false); renderInputs(); calculate(); }")
+            page.wait_for_function(
+                "() => Number(((lastResult||{}).summary||{}).landscaping_per_gns_th) > 0",
+                timeout=20000)
+            got["builtRateNote"] = page.evaluate(
+                "() => (document.getElementById('landscapingHouseRateNote')||{}).textContent || ''")
+            got["builtRateValue"] = page.evaluate(
+                "() => { const el = document.getElementById('f_landscaping_gns_th_per_sqm');"
+                " return el ? [el.value, el.dataset.derived || ''] : null; }")
             got["yardAreaShown"] = page.evaluate(
                 "() => !!document.querySelector('.field[data-field=\"landscaping_area_sqm\"]')")
             got["mainAboveShown"] = page.evaluate(
                 "() => !!document.querySelector('.field[data-field=\"main_above_th_per_sqm\"]')")
+            # Все поля только жилья — и во «Вводных», и во вкладке «ВРИ».
+            # Список — движка, а не страницы: сверка со своей же копией не
+            # заметила бы, что страница её не получила.
+            got["housingShown"] = page.evaluate(
+                "ids => ids.filter(id => "
+                "document.querySelector('.field[data-field=\"' + id + '\"]'))",
+                sorted({*core.RESIDENTIAL_ONLY_INPUTS, *HOUSING_SALES_AND_LAND_FEE}))
+            got["shownGroups"] = page.evaluate(
+                "() => [...document.querySelectorAll('details[data-group]')].map(d => d.dataset.group)")
+            got["vriRegionShown"] = page.evaluate(
+                "() => !!document.querySelector('.field[data-field=\"vri_region\"]')")
             got.update(page.evaluate(PROBE_CANCEL))
             page.wait_for_load_state("networkidle")
             page.close()
@@ -861,11 +922,10 @@ def test_the_window_names_what_was_turned_off(dialog) -> None:
 
 
 def test_the_window_keeps_quiet_about_the_yard_rate(dialog) -> None:
-    """Про ставку двора окно не говорит — по просьбе владельца.
-
-    «Это никому неинтересно и никакой роли не играет вообще! У нас
-    себестоимость вообще всего объекта же целиком прописана» (21.09.2026).
-    """
+    """Про ставку двора окно переключения не говорит — по просьбе владельца
+    (21.09.2026). Ставку режим не ставит: умолчание нежилого проекта живёт в
+    движке (`landscaping_gns_rate`, 25.10.2026), а поле остаётся пустым, пока
+    человек не впишет своё число."""
     text = dialog["text"]
     assert "Поставлено" not in text, text
     assert "ставка благоустройства" not in text, text
@@ -875,15 +935,21 @@ def test_the_window_keeps_quiet_about_the_yard_rate(dialog) -> None:
 
 
 def test_the_yard_is_explained_where_the_rate_stands(dialog) -> None:
-    """Подпись у поля ставки говорит, почему статьи нет.
+    """Подпись у поля ставки говорит, откуда число: умолчание нежилого проекта.
 
-    Ноль расходов там, где что-то строится, — это «не посчитано», а не «не
-    нужно»; здесь ответ методики, и он назван: двор внутри себестоимости
-    объекта.
+    Решение владельца 25.10.2026: благоустройство нежилого проекта считается
+    ставкой на м² наземной ГНС, и число по умолчанию не выглядит ручным.
     """
-    note = dialog["rateNote"].replace("\u00a0", " ")
-    assert note, "подпись у поля ставки пуста"
-    assert "жителей нет" in note, note
+    # Здания ещё нет — умножать не на что, и подпись это называет.
+    empty = dialog["rateNote"].replace("\u00a0", " ")
+    assert "по умолчанию" in empty and "наземной площади" in empty, empty
+    note = dialog["builtRateNote"].replace("\u00a0", " ")
+    assert "Ставка по умолчанию для нежилого проекта" in note, note
+    # Число стоит в самом поле — показателем, а не вводом: очищенное поле
+    # вернуло бы умолчание, а ручное его перебьёт.
+    value, derived = dialog["builtRateValue"]
+    assert derived == "1", dialog["builtRateValue"]
+    assert float(value) == pytest.approx(core.NONRESIDENTIAL_LANDSCAPING_GNS_TH_PER_SQM)
 
 
 def test_the_housing_only_fields_are_not_shown(dialog) -> None:
@@ -891,6 +957,24 @@ def test_the_housing_only_fields_are_not_shown(dialog) -> None:
     нежилом проекте их нет на экране (решение владельца 06.10.2026)."""
     assert dialog["yardAreaShown"] is False
     assert dialog["mainAboveShown"] is False
+
+
+# Названы и здесь, а не только списком движка: сверка с тем же списком,
+# который рисует страницу, прошла бы и на пустом.
+HOUSING_SALES_AND_LAND_FEE = ("apartment_price_th", "share_before_rve_pct", "growth_stage1_pct",
+                              "sales_lag_months", "land_rights_cost_mln", "vri_relief_mode",
+                              "vri_payment_mode", "social_mode", "school_places")
+
+
+def test_what_the_nonresidential_project_does_not_read_is_not_on_screen(dialog) -> None:
+    """Владелец, 25.10.2026: «если какие-то статьи не входят в нежильё, то они
+    должны … вообще не появляться в блоке вводных». Продаж квартир, платы за
+    смену ВРИ и соцнагрузки у нежилого проекта нет — их полей и складки
+    «Социальная нагрузка» нет на экране. Регион остаётся: по нему выбирается
+    норматив Москвы или области."""
+    assert dialog["housingShown"] == [], dialog["housingShown"]
+    assert "Социальная нагрузка" not in dialog["shownGroups"], dialog["shownGroups"]
+    assert dialog["vriRegionShown"] is True
 
 
 def test_the_window_says_where_the_metres_go(dialog) -> None:

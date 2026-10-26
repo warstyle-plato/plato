@@ -26,11 +26,15 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # В prod должен уехать только самый свежий main. Раньше старые сборки
-  # выстраивались очередью и позднее могли переписать тег prod устаревшим
-  # коммитом уже после появления новой функции на сайте.
+  # Идущая сборка доезжает до prod, за ней ждёт одна — самая свежая: GitHub
+  # держит в группе один запущенный и один ожидающий прогон, а новый
+  # ожидающий снимает прежний ожидающий. Старый коммит поэтому не перепишет
+  # тег prod позже нового: ожидающий всегда новее идущего и кончится после.
+  # Обрывать идущую (`cancel-in-progress: true`) нельзя: сборка с тестами
+  # идёт около часа, слияния чаще, и за 24–26.10 из 27 сборок 21 была снята
+  # следующей — prod стоял на одном выпуске двое суток.
   group: build-yandex
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -51,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Нужна история до последнего выпуска: сборки main отменяют друг
           # друга, и сверка только с HEAD^ пропускала код отменённого прогона.
@@ -98,8 +102,8 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: pip
@@ -141,7 +145,7 @@ jobs:
       image: ${{ steps.meta.outputs.image }}
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Имя образа
         id: meta
@@ -207,11 +211,11 @@ jobs:
           printf '%s' '${{ steps.iam.outputs.token }}' \
             | docker login --username iam --password-stdin cr.yandex
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
       - name: Сборка и публикация
         id: push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: true

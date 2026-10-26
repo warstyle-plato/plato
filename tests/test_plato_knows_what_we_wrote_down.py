@@ -135,11 +135,13 @@ def test_every_tool_named_in_the_instructions_exists():
 
 
 def _preset_names() -> set[str]:
-    """Пресеты, которые есть в продукте: реестр ТЭП движка и файлы presets/."""
-    names = {str(item["name"]).lower() for item in core.SERVER_TEP_PRESETS.values()}
-    names |= {path.stem.lower() for path in (Path(__file__).resolve().parent.parent
-                                             / "presets").glob("*.json")}
-    return names
+    """Пресеты, которые есть в продукте: файлы presets/.
+
+    Серверных предустановок ТЭП движка больше нет (решение владельца,
+    23.10.2026).
+    """
+    return {path.stem.lower() for path in (Path(__file__).resolve().parent.parent
+                                           / "presets").glob("*.json")}
 
 
 def _named_presets(rules: str) -> list[str]:
@@ -150,19 +152,22 @@ def test_the_methodology_does_not_describe_a_preset_that_is_gone():
     """Правило методики, называющее пресет, обязано называть существующий.
 
     Иначе агент считает мёртвые числа действующими: мёртвое знание опаснее
-    отсутствующего — оно выглядит проверенным. Пресет «Мытищи» существует
-    (`SERVER_TEP_PRESETS`), и правило про него остаётся.
+    отсутствующего — оно выглядит проверенным. Предустановки «Мишина» и
+    «Мытищи» удалены (решение владельца, 23.10.2026), и правила про них
+    ушли вместе с ними.
     """
     presets = _preset_names()
     rules = " ".join(rule["rule"] for rule in core._DevelopAid_METHODOLOGY)
     named = _named_presets(rules)
-    assert named, "предохранитель: методика не называет ни одного пресета"
     for name in named:
         assert any(name.lower() in stem for stem in presets), (
             f"методика описывает preset «{name}», которого нет в продукте")
-    # Сторож краснеет на подделке: пресета «Бирюлёво» в продукте нет.
-    fake = _named_presets("В preset Бирюлёво МФК — отдельный продукт.")
-    assert not any(fake[0].lower() in stem for stem in presets)
+    # Сторож краснеет на подделке: пресетов «Бирюлёво» и удалённого
+    # «Мытищи» в продукте нет.
+    for text in ("В preset Бирюлёво МФК — отдельный продукт.",
+                 "В preset Мытищи МФК/офисы — отдельный дискретный продукт."):
+        fake = _named_presets(text)
+        assert fake and not any(fake[0].lower() in stem for stem in presets), text
 
 
 def test_the_methodology_points_at_the_notes_for_the_rest():
@@ -170,9 +175,9 @@ def test_the_methodology_points_at_the_notes_for_the_rest():
     rules = {rule["id"]: rule["rule"] for rule in core._DevelopAid_METHODOLOGY}
     assert "PROJECT_NOTES" in rules
     assert "search_project_knowledge" in rules["PROJECT_NOTES"]
-    # Указатель добавлен рядом, а не вместо: правило про существующий пресет
-    # «Мытищи» остаётся.
-    assert "MYTISHCHI_MFC" in rules
+    # Правила про удалённые предустановки ушли вместе с ними.
+    assert "MYTISHCHI_MFC" not in rules
+    assert "EXPERT_PRESET_OVERRIDE" not in rules
 
 
 def test_the_normative_notes_are_reachable():

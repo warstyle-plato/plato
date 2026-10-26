@@ -3,15 +3,18 @@
 Владелец, 22.10.2026, о тизере, отчёте и книге офиса на Пролетарском пр.,
 вл. 20: «что это за убожество? а не модель офисника». Решения владельца:
 
-* офис показывает два пути бок о бок — продажу блоками после ввода и аренду
-  с продажей здания, — и видно, какой выгоднее (`calculate()["office_paths"]`);
+* офис показывает способы продажи бок о бок — продажу блоками после ввода и аренду
+  с продажей здания, с 24.10.2026 и продажу по ДДУ, — и видно, какой выгоднее
+  (`calculate()["office_paths"]`);
 * допущения зависят от класса офиса (B, B+, A, A+), цена продажи — цена
   класса в нежилом проекте, ставка аренды — из неё;
 * доходность на затраты — NOI на ВСЕ затраты создания, а не на стройку здания;
 * чувствительность цены входа двигает и цену участка, и выкуп участков и
   зданий: прежде «±68 млн» сдвигали 5 млн цены участка, размах выходил нулём,
   а вывод называл параметр главным («с 1,062 до 1,062 в худшую сторону»);
-* подземный паркинг нежилого проекта — паркинг его офиса, а не «остаток жилья».
+* подземный паркинг нежилого проекта — паркинг его офиса, а не «остаток жилья»
+  (с 25.10.2026 гараж офиса — по нормативу или его полям:
+  `tests/test_office_garage_follows_the_norm.py`).
 
 Запуск: python3 -m pytest tests/test_an_office_shows_sale_and_rent_side_by_side.py -q
 """
@@ -68,11 +71,14 @@ def direct() -> dict:
     return _calc(offices_strategy=ns.STRATEGY_DIRECT)
 
 
-# --- два пути одним расчётом -------------------------------------------------
+# --- три способа одним расчётом ------------------------------------------------
 
-def test_the_office_project_carries_both_paths(ddu) -> None:
+def test_the_office_project_carries_three_ways_to_sell(ddu) -> None:
+    """Владелец, 24.10.2026: «Новая книга считает и ДДУ» — продажа по ДДУ
+    стоит третьим способом рядом с продажей блоками и арендой. Рядом с арендой —
+    она же с другим выходом (удержание здания): «доходный метод для инвестора»."""
     paths = {p["key"]: p for p in ddu["office_paths"]["paths"]}
-    assert set(paths) == {ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME}
+    assert set(paths) == {ns.STRATEGY_DDU, ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME, "income_hold"}
     for path in paths.values():
         assert "error" not in path, path
         assert path["revenue"] > 0 and path["capex"] > 0
@@ -80,8 +86,32 @@ def test_the_office_project_carries_both_paths(ddu) -> None:
     assert paths[ns.STRATEGY_INCOME]["stabilized_noi"] > 0
     assert paths[ns.STRATEGY_INCOME]["exit_value"] > 0
     assert paths[ns.STRATEGY_DIRECT]["stabilized_noi"] is None
+    # Продажа по ДДУ: выручка офиса — его эскроу-продажи, долг — ПФ и LLCR;
+    # у продажи блоками и аренды ПФ нет — пусто, а не ноль.
+    by_ddu = paths[ns.STRATEGY_DDU]
+    assert by_ddu["sale_revenue"] == pytest.approx(by_ddu["revenue"], rel=1e-9)
+    assert by_ddu["llcr"] == ddu["summary"]["llcr"] and by_ddu["pf_peak"] > 0
+    assert by_ddu["commercial_costs"] == ddu["summary"]["commercial_costs"] > 0
+    assert paths[ns.STRATEGY_DIRECT]["llcr"] is None and paths[ns.STRATEGY_INCOME]["pf_peak"] is None
     best = max(paths.values(), key=lambda p: p["npv"])["key"]
     assert ddu["office_paths"]["better"] == best
+
+
+def test_the_ddu_way_of_a_project_on_ddu_is_the_main_calculation(ddu) -> None:
+    """Проект по ДДУ: его способ — основной расчёт, а не второй счёт."""
+    block = ddu["office_paths"]
+    assert block["current"] == ns.STRATEGY_DDU
+    path = next(p for p in block["paths"] if p["key"] == ns.STRATEGY_DDU)
+    s = ddu["summary"]
+    assert (path["npv"], path["net_profit"], path["revenue"]) == (s["npv"], s["net_profit"], s["revenue"])
+
+
+def test_the_ddu_way_equals_a_project_run_on_ddu(direct, ddu) -> None:
+    path = next(p for p in direct["office_paths"]["paths"] if p["key"] == ns.STRATEGY_DDU)
+    assert path["npv"] == pytest.approx(ddu["summary"]["npv"], rel=1e-9)
+    assert path["llcr"] == pytest.approx(ddu["summary"]["llcr"], rel=1e-9)
+    # ПФ Пролетарского к концу проекта не погашен: NPV капитала снят подписью.
+    assert path["npv_equity"] is None and path["equity_returns_label"]
 
 
 def test_the_path_of_the_project_is_the_main_calculation(direct) -> None:
@@ -218,23 +248,6 @@ def test_the_report_tornado_of_an_office_is_npv_for_each_path() -> None:
 
 # --- паркинг ------------------------------------------------------------------
 
-def test_the_project_parking_becomes_the_office_parking() -> None:
-    result = _calc(offices_strategy=ns.STRATEGY_DIRECT, offices_parking_under_spaces=0,
-                   underground_manual_spaces=68, underground_manual_gns_sqm=2380)
-    s = result["summary"]
-    assert not any("подземный паркинг" in item.lower() for item in s["project_kind_leftovers"])
-    assert len(s["project_kind_moves"]) == 1 and "68 машино-мест" in s["project_kind_moves"][0]
-    rows = core.project_kind_rows(s)
-    assert any(r["label"] == "Паркинг" for r in rows)
-
-
-def test_two_offices_do_not_guess_whose_parking_it_is() -> None:
-    x, t = _spec(offices_parking_under_spaces=0, underground_manual_spaces=68,
-                 offices2_enabled=True, offices2_gba_sqm=5000)
-    _, _, moves = core.office_takes_project_parking(x, t)
-    assert moves == []
-
-
 def test_the_page_prices_the_office_by_its_class_only_without_housing() -> None:
     """На отрисованной странице: нежилой вид ставит цену класса офиса,
     возврат к смешанному — прежнее правило от цены жилья."""
@@ -265,3 +278,82 @@ def test_the_page_prices_the_office_by_its_class_only_without_housing() -> None:
             browser.close()
     assert errors == []
     assert (before, nonres, back) == (housing_price, class_price, housing_price)
+
+
+def test_no_pf_no_reservation_fee() -> None:
+    """Плата за резервирование лимита ПФ — только у продаж по ДДУ (владелец,
+    24.10.2026: «Исправить: без ПФ платы нет»): у продажи блоками одобренный
+    лимит ПФ не открывается."""
+    direct = _calc(offices_strategy=ns.STRATEGY_DIRECT, pf_limit_approved_mln=5000)["finance"]
+    ddu = _calc(offices_strategy=ns.STRATEGY_DDU, pf_limit_approved_mln=5000)["finance"]
+    assert direct["pf_reservation_fee"] == 0 and direct["pf_limit"] == 0
+    assert ddu["pf_limit"] == 5_000_000_000
+    assert ddu["pf_reservation_fee"] == pytest.approx(5_000_000_000 * core.DEFAULT_INPUTS["reservation_fee_pct"] / 100)
+
+
+def test_ddu_money_reaches_the_project_at_escrow_release(ddu) -> None:
+    """214-ФЗ: деньги покупателей по ДДУ до ввода лежат на эскроу, и поток
+    проекта получает их раскрытием счёта в РВЭ, а не в месяц договора
+    (владелец, 25.10.2026). До РВЭ в потоке проекта нет ни рубля выручки."""
+    months = ddu["cashflow"]["months"]
+    flow = ddu["cashflow"]["project"]
+    rve = str(ddu["dates"]["rve"])[:7]
+    before = [v for m, v in zip(months, flow) if str(m)[:7] < rve]
+    at_rve = [v for m, v in zip(months, flow) if str(m)[:7] == rve]
+    assert before and max(before) <= 1e-6, max(before)
+    # В РВЭ раскрывается всё, что продано до ввода.
+    assert at_rve and at_rve[0] > 0.5 * ddu["summary"]["revenue"]
+
+
+def _flat_numbers(value, prefix="", out=None):
+    out = {} if out is None else out
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _flat_numbers(item, f"{prefix}.{key}", out)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _flat_numbers(item, f"{prefix}[{index}]", out)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        out[prefix] = float(value)
+    return out
+
+
+def _economics(result: dict) -> dict:
+    """Деньги проекта: итоги, финансирование, потоки и все способы продажи офиса."""
+    return _flat_numbers({key: result.get(key) for key in ("summary", "finance", "cashflow", "office_paths")})
+
+
+def _shifted(field: list, value):
+    """Значение поля, сдвинутое так, чтобы расчёт, читающий поле, это заметил."""
+    kind = field[3]
+    if kind == "number":
+        return float(value or 0) * 1.3 + 10
+    if kind == "checkbox":
+        return not bool(value)
+    if kind == "date":
+        return "2028-06-01"
+    if kind == "select":
+        options = [o[0] if isinstance(o, (list, tuple)) else o
+                   for o in (field[4] if len(field) > 4 and isinstance(field[4], list) else [])]
+        return next((o for o in options if o != value), value)
+    return value
+
+
+def test_the_housing_only_fields_move_nothing_in_a_nonresidential_project() -> None:
+    """Поля, которых нет на экране нежилого проекта (`RESIDENTIAL_ONLY_INPUTS`),
+    расчёт нежилого проекта и не читает (владелец, 25.10.2026: «если какие-то
+    статьи не входят в нежильё, то они должны … вообще не появляться в блоке
+    вводных»). Сдвигаются все разом, со включёнными ветками — смена ВРИ нужна,
+    соцнагрузка компенсацией: спрятанное поле, которое двигает деньги, было бы
+    потерянной вводной."""
+    fields = {f[0]: f for g in core.FIELD_GROUPS for f in g[1]}
+    x, t = _spec(offices_strategy=ns.STRATEGY_DDU)
+    base = _economics(core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[])))
+    moved = dict(x)
+    for key in core.RESIDENTIAL_ONLY_INPUTS:
+        moved[key] = _shifted(fields[key], x.get(key, core.DEFAULT_INPUTS.get(key)))
+    moved.update(vri_required=True, land_rights_cost_mln=500, social_mode=core.SOCIAL_MODE_BOTH,
+                 social_compensation_mln=500, kindergarten_places=100, school_places=300)
+    got = _economics(core.calculate(core.CalcRequest(inputs=moved, tep=t, rates=[])))
+    changed = [k for k in base if abs(got.get(k, 0.0) - base[k]) > 1e-6 * max(1.0, abs(base[k]))]
+    assert not changed, changed[:10]

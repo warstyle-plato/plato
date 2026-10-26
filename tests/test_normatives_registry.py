@@ -104,7 +104,9 @@ def test_registry_does_not_treat_a_mosru_draft_as_current_law():
 
     assert "projects/" not in item["source_url"]
     assert "61-ПП" in item["latest_amendment"]
-    assert item["status"] == "review_required"
+    # Сверено 25.10.2026 по сводному тексту «Кодекса», а не по проекту на mos.ru.
+    assert item["status"] == "verified"
+    assert "glavbukh.ru" in item["verification"]["sources"][0]["url"]
 
 
 def test_registry_tracks_the_latest_known_depr_index_document():
@@ -121,7 +123,9 @@ def test_mpt_card_exposes_the_july_2026_review_gap():
 
     assert "2072-ПП" in item["latest_amendment"]
     assert "1965-ПП" in item["latest_amendment"]
-    assert item["status"] == "review_required"
+    # Разрыв закрыт сверкой 25.10.2026: редакция с 30.07.2026 (2072-ПП).
+    assert item["status"] == "verified"
+    assert "2072-ПП" in item["verification"]["edition"]
 
 
 def test_a_source_link_carries_no_click_id():
@@ -220,8 +224,9 @@ def test_the_page_takes_its_scopes_from_the_rows(monkeypatch) -> None:
 
     page = registry._page(_request(), core)
 
-    assert "<div><b>1</b><span>Проверочная область</span></div>" in page
-    assert 'data-filter="Проверочная область"' in page
+    # Строка без отметки уровня не теряется: свой раздел, плитка и кнопка.
+    assert "<div><b>1</b><span>Уровень акта не отмечен</span></div>" in page
+    assert 'data-filter="unmarked"' in page
 
 
 def test_the_page_says_how_much_of_the_contour_is_covered(monkeypatch) -> None:
@@ -310,6 +315,18 @@ def test_the_sp_42_card_is_marked_superseded() -> None:
     assert "СП 42.13330.2026" in row["watch_terms"] and "СП 42.13330.2026" in row["cited_as"]
 
 
+def test_the_sp_42_2026_card_is_verified_by_the_official_edition() -> None:
+    """СП 42.13330.2026 сверен по официальному изданию (владелец, 26.10.2026):
+    редакция, источник с адресом и дословные пункты — и нормы 25 % в нём нет."""
+    row = _rows()["rf-sp-42-2026"]
+    assert row["status"] == "verified"
+    assert registry.verdict_problems(row) == []
+    points = {item["point"] for item in row["verification"]["provisions"]}
+    assert {"Предисловие, п. 4", "табл. И.1, п. 3", "п. 6.2.56"} <= points
+    assert any("25 %" in item for item in row["verification"]["discrepancies"])
+    assert "rf-sp-42-2026" in _rows()["rf-sp-42"]["superseded_by"]
+
+
 def test_the_593_card_describes_the_current_formula_not_the_2013_one() -> None:
     """Формула 2013 года (П = С × (КС2 − КС1), ставки по плотности) не действует с 01.04.2022."""
     import json
@@ -339,7 +356,7 @@ def test_the_october_revision_is_dated_and_its_chains_agree_with_the_history() -
     rows = _rows()
     for key in OCTOBER_REVISION:
         row = rows[key]
-        assert row["current_as_of"] == "2026-10-16", key
+        assert row["current_as_of"] >= "2026-10-16", key
         if key == "mo-713-30":
             continue  # ряд 713/30 — 29 поправок, история ведётся с 774-ПП
         history = " ".join(row.get("amendment_history") or [])
@@ -426,7 +443,9 @@ def test_the_four_new_documents_are_in_the_registry_with_their_redaction() -> No
             assert row["effective_from"] == want["effective_from"], key
         assert row["source_url"] == want["source_url"], f"{key}: источник не тот, что читали"
         assert "18.10.2026" in row["source_label"], f"{key}: не сказано, когда прочитан источник"
-        assert row["current_as_of"] == "2026-10-18", key
+        # Сверка не старше той, при которой карточку завели; новая сверка
+        # (25.10.2026) двигает дату вперёд, а не ломает карточку.
+        assert row["current_as_of"] >= "2026-10-18", key
         latest, *earlier = want["redaction"]
         assert latest in row["latest_amendment"], f"{key}: действующая редакция ({latest}) не названа"
         assert latest in row["watch_terms"], f"{key}: {latest} не в маркерах сторожа"

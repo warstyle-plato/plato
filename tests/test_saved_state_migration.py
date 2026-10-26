@@ -89,6 +89,7 @@ def restore(saved: dict) -> dict:
         "fillUndergroundFromTep();\n"
         "seedParkingByHand();\n"
         "rememberDerivedTail(null);persistedTep({});\n"
+        "syncOfficeClasses();\n"
         "loadLocal();\n"
         "console.log(JSON.stringify({inputs,tep}));\n"
     )

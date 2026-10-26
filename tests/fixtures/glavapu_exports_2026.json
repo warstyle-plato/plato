@@ -2,8 +2,9 @@
   "_source": "Выгрузки калькулятора ТЭП ГлавАПУ (genplan.tech/calc), собранные по репозиторию 17.10.2026. Нагатино 06.10 (умолчания) живёт отдельно: tests/fixtures/glavapu_nagatino_calc_2026_10_06.json. Числа переписаны из таблиц выгрузок и из эталонов тестов, где эти выгрузки уже записаны; у каждой названо, откуда она. Сверка: docs/glavapu_vs_engine_formulas_2026-10.md, тест tests/test_glavapu_exports_engine_parity.py.",
   "exports": {
     "savyolovsky_2026_08_16": {
+      "date": "2026-08-16",
       "title": "Савёловский, 77:09:0004014:13 (Мишина), 16.08.2026, умолчания калькулятора: 0,651 га, плотность 35, 100/0",
-      "where": "presets/Мишина_ТЭП.xlsx (утренняя выгрузка 16.08: постоянные места 82 ещё прежней строкой S × 0,257 / 33 × К1); эталон после смены методики — tests/test_vri_tep_button.py (161/17/6/4, компенсация по ставкам 01.08.2026)",
+      "where": "tests/fixtures/glavapu_owner/Мишина_ТЭП.xlsx (утренняя выгрузка 16.08: постоянные места 82 ещё прежней строкой S × 0,257 / 33 × К1); эталон после смены методики — tests/test_vri_tep_button.py (161/17/6/4, компенсация по ставкам 01.08.2026)",
       "analysis": {"area_ha": 0.651, "district": "Савеловский", "inside_ttc": false,
                    "k1": 0.75, "k2": 0.5, "rent": 0.1281, "base_cost_mkd": 229036.29,
                    "upks": 98974.74, "density_th_sqm_ha": 35.0, "zone": "1"},
@@ -18,6 +19,7 @@
                      "compensation_clinic_mln": 97.714, "change_vri_mln": 1289.919}
     },
     "mozhaysky_2026_08_16": {
+      "date": "2026-08-16",
       "title": "Можайский, Гродненская, 77:07:0008006:3, 16.08.2026, умолчания: 0,581 га, плотность 35",
       "where": "tests/test_vri_tep_button.py (эталон владельца); площадь квартир в выгрузке не записана — сверяются строки, которые записаны",
       "analysis": {"area_ha": 0.581, "district": "Можайский", "inside_ttc": false,
@@ -30,6 +32,7 @@
                      "change_vri_mln": 851.315}
     },
     "golovinsky_2026_08_16": {
+      "date": "2026-08-16",
       "title": "Головинский, 77:03:0006003:98, 16.08.2026, умолчания: 1,4968 га, плотность 35",
       "where": "tests/test_vri_tep_button.py (третья точка смешанной поликлиники)",
       "analysis": {"area_ha": 1.4968, "district": "Головинский", "inside_ttc": false,
@@ -39,6 +42,7 @@
       "calculator": {"population": 970, "clinic_capacity": 19, "clinic_adult": 13, "clinic_child": 6}
     },
     "khamovniki_2026_08_20": {
+      "date": "2026-08-20",
       "title": "Хамовники, квартал 77:01:0004023, выгрузка 20.08.2026 с ТЭП проекта (внутри ТТК)",
       "where": "tests/test_recalc_under_the_approved_tep.py (BASELINE, K1/K2/UPKS/RENT/BASE_MKD), engine/norms.py MOSCOW_QUARTER_REFERENCE",
       "analysis": {"area_ha": null, "district": "Хамовники", "inside_ttc": true,
@@ -51,6 +55,7 @@
                      "parking_onsite": 12, "change_vri_mln": 10562.660}
     },
     "nagatino_owner_scenario_2026_10": {
+      "date": "2026-10-06",
       "title": "Нагатино-Садовники, 77:05:0004001, книга владельца с нашим сценарием (население 3 897; ДОО 250 и школа 2 500 мест поставлены объектами)",
       "where": "tests/test_glavapu_full_check.py (TEP_ROWS, PARAMS_ROWS, SOCIAL_ROWS); площадь квартир восстановлена как 3 897 × 33 = 128 601 м²",
       "analysis": {"area_ha": 17.811, "district": "Нагатино-Садовники", "inside_ttc": false,
@@ -68,6 +73,7 @@
                      "compensation_clinic_mln": 780.121}
     },
     "donskoy_2026_10_07": {
+      "date": "2026-10-07",
       "title": "Донской, 77:05:0001008:2969, прод 07.10.2026: 55 квартир, площади квартир в снимке нет",
       "where": "tests/test_glavapu_parking_holds_until_the_flats_change.py, tests/test_the_guest_spaces_follow_their_garage.py (второй снимок — 56 квартир)",
       "analysis": {"area_ha": 0.176, "district": "Донской", "inside_ttc": true,
@@ -80,6 +86,7 @@
                      "parking_onsite": 1, "parking_short_stop": 2}
     },
     "vendored_stand_14_62": {
+      "date": "2026-09-28",
       "title": "Стенд: локальная копия калькулятора (genplan_assets, снимок 28.09.2026) на сценарии КРТ_Нагатино 14,62 га, аренда, внутри ТТК по заглушке анализа",
       "where": "tests/fixtures/glavapu_scenario_nagatino_vendored.xlsx — не ответ города: копия отстала по машино-местам (820 = S × 0,257 / 33 × К1) и считает плату за ВРИ без индексации от СПП жилой (7.1) с делителем аренды 1,001",
       "analysis": {"area_ha": 14.62, "district": "Нагатино-Садовники", "inside_ttc": true,

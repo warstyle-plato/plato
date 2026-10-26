@@ -1,0 +1,30 @@
+# Обновления зависимостей. Раз в неделю, одной заявкой на экосистему: двадцать
+# отдельных PR про патч-версии никто не разберёт, а один — разберут.
+# Заявки по уязвимостям (security updates) идут отдельно и сразу, без расписания.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Moscow
+    open-pull-requests-limit: 5
+    groups:
+      pip-minor-patch:
+        update-types: [minor, patch]
+    labels: [dependencies]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Moscow
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: [dependencies]

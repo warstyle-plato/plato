@@ -45,6 +45,14 @@ ATTEMPTS = 3
 # сдвига main GitHub пересчитывает все открытые PR разом, и 27.09 #532 и #538
 # упали на входе с null через минуту ожидания.
 SETTLE_POLLS = 60
+# Push номера в ветку PR рождает pull_request synchronize, а через пару секунд
+# скрипт PR сливает: merge-ref исчезает, и GitHub закрывает уже созданные
+# «Тесты на PR», «Версию ветки» и «Monitor checks» с failure без единого job.
+# Коммит выпуска их не заказывает: содержимое ветки приёмку уже прошло, а
+# сборку main скрипт запускает сам (workflow_dispatch), метка её не касается.
+# В тело squash-коммита на main метка тоже попадёт — push от GITHUB_TOKEN
+# сборку и так не будит, поэтому там она ничего не снимает.
+SKIP_PR_RUNS = "[skip ci]"
 SETTLE_PAUSE = 3
 
 
@@ -95,9 +103,23 @@ def _api(method: str, path: str, token: str, body: dict | None = None) -> dict:
 
 
 def _git(*args: str, capture: bool = True) -> str:
-    done = subprocess.run(["git", *args], cwd=ROOT, check=True,
+    done = subprocess.run(["git", *args], cwd=ROOT,
                           capture_output=capture, text=True)
+    if done.returncode != 0:
+        # Голый CalledProcessError прятал ответ сервера: «push отклонён» без
+        # строк remote не говорит, что чинить.
+        raise SystemExit(_git_refusal(args, done.returncode, done.stderr or ""))
     return (done.stdout or "").strip()
+
+
+def _git_refusal(args: tuple[str, ...], code: int, stderr: str) -> str:
+    """Отказ git с ответом сервера и, где причина известна, с тем, что делать."""
+    text = f"git {' '.join(args)} отказал (код {code}):\n{stderr.strip() or '(git ничего не сказал)'}"
+    if args and args[0] == "push" and "workflow" in stderr.lower():
+        text += ("\nGITHUB_TOKEN не вправе менять .github/workflows: в ветку уходит "
+                 "слияние базы, где workflow-файлы новее. Влейте base в ветку сами "
+                 "(своим токеном) и повторите прогон.")
+    return text
 
 
 def _write_version(guard, number: str, message: str) -> bool:
@@ -145,7 +167,8 @@ def _set_version(head_ref: str, number: str, base_ref: str = "main") -> str:
                          "влейте базу и разрешите конфликт в ветке, затем повторите.")
     if not _write_version(guard, number,
                           f"Выпуск {number}\n\nНомер выдан слиянием: ветка его не "
-                          "занимала, поэтому занять его у соседа было нечем."):
+                          "занимала, поэтому занять его у соседа было нечем.\n\n"
+                          f"{SKIP_PR_RUNS}"):
         # Номер записал прошлый прогон, которому GitHub отказал в слиянии.
         # Остановка здесь оставила бы PR с номером, но без слияния, и каждый
         # повтор падал бы на этой же строке.

@@ -551,6 +551,7 @@ def mo_vri_payment(
     upks_target: float | None,
     upks_average_oks: float | None,
     apartments_sqm: float,
+    upks_quarter_oks: float | None = None,
     market_price_rub_per_sqm: float | None,
     kd: float | None,
     kd_missing_reason: str = "",
@@ -562,6 +563,13 @@ def mo_vri_payment(
     (решение владельца 16.10.2026), и ноль здесь не ответ, а отсутствие ответа.
     `kd_missing_reason` — почему Кд нет, словами того, кто это знает (округ,
     таблица); без неё предупреждение общее.
+
+    `upks_average_oks` — УПКСср в k1 = Кср / УПКСср: окружное значение.
+    `upks_quarter_oks` — Р в К = (Р × S) × Кдоход / G: показатель кадастрового
+    квартала участка (1745-ПП п. 4.8); окружной берётся, только если
+    квартального нет. Пока оба были окружными, их отношение всегда давало 1 и
+    плата не зависела от квартала, а по акту зависит (решение владельца
+    25.10.2026: брать квартал, если он есть).
     """
     rows: list[dict[str, Any]] = []
     total_area = 0.0
@@ -598,10 +606,18 @@ def mo_vri_payment(
         kd = None
     k1 = (market_price / upks_avg) if (market_price and upks_avg) else None
     g = delta * 1.00001
-    k = (apartments * upks_avg * kd / g) if (kd is not None and upks_avg and g) else None
+    upks_quarter = _land_float(upks_quarter_oks)
+    if upks_quarter is not None and upks_quarter <= 0:
+        upks_quarter = None
+    upks_p = upks_quarter or upks_avg
+    upks_p_basis = ("кадастровый квартал участка" if upks_quarter
+                    else ("округ: квартального показателя нет" if upks_avg else ""))
+    k = (apartments * upks_p * kd / g) if (kd is not None and upks_p and g) else None
     payment = delta * k1 * k if (k1 is not None and k is not None) else None
-    # Алгебраически цепочка сворачивается: П = Кср × площадь квартир × Кд.
-    payment_direct = market_price * apartments * kd if (market_price and kd is not None) else None
+    # Алгебраически цепочка сворачивается: П = Кср × площадь квартир × Кд × Р / УПКСср.
+    p_ratio = (upks_p / upks_avg) if (upks_p and upks_avg) else 1.0
+    payment_direct = (market_price * apartments * kd * p_ratio
+                      if (market_price and kd is not None) else None)
 
     if not rows:
         warnings.append(
@@ -609,10 +625,31 @@ def mo_vri_payment(
             "плата показана по прямой формуле Кср × площадь квартир × Кд."
         )
     elif delta <= 0:
-        warnings.append(
-            "Кадастровая стоимость участков не ниже целевой для жилой застройки: "
-            "разница неположительная, плата по методике не определяется."
-        )
+        used_now = payment if payment is not None else payment_direct
+        if used_now is None:
+            warnings.append(
+                "Кадастровая стоимость участков уже не ниже целевой для многоэтажной "
+                "жилой застройки, а данных для платы по формуле нет: плата за смену "
+                "ВРИ не рассчитана."
+            )
+        else:
+            # Число и подпись говорят одно: прежде здесь стояло «плата не
+            # определяется», а в модель уходила плата по формуле — разница
+            # кадастровых стоимостей в ней сокращается (П = Кср × квартиры × Кд).
+            # Плата остаётся — решение владельца 25.10.2026 («ВРИ считается
+            # заново, так как это новое строительство», разбор «Нормативки»:
+            # 1745-ПП п. 4.8; пп. 4.6–4.7 относятся к пути п. 4.1). Подпись
+            # называет сумму и это основание.
+            fmt_mln = lambda rub: f"{rub / 1e6:,.1f}".replace(",", " ").replace(".", ",")
+            warnings.append(
+                "Кадастровая стоимость участков уже не ниже целевой для многоэтажной "
+                f"жилой застройки (разница {fmt_mln(delta)} млн ₽). Плата за смену ВРИ "
+                f"всё равно взята в расчёт — {fmt_mln(used_now)} млн ₽, как за новое "
+                "строительство: в формуле методики эта разница сокращается, и плата "
+                "равна средней цене метра жилья × площадь квартир × коэффициент "
+                "доходности. Прямой нормы для такого случая в постановлении нет — "
+                "сумма взята по решению владельца сервиса."
+            )
     if not target:
         warnings.append("Для округа нет УПКС земель жилой застройки — целевая кадастровая стоимость не рассчитана.")
     if not upks_avg:
@@ -633,6 +670,8 @@ def mo_vri_payment(
         "delta_rub": round(delta, 2),
         "upks_target": round(target, 2) if target else None,
         "upks_average_oks": round(upks_avg, 2) if upks_avg else None,
+        "upks_p": round(upks_p, 2) if upks_p else None,
+        "upks_p_basis": upks_p_basis,
         "market_price_rub_per_sqm": round(market_price, 2) if market_price else None,
         "kd": kd,
         "k1": round(k1, 4) if k1 is not None else None,
@@ -827,6 +866,23 @@ class MoMarketPriceRequest(BaseModel):
     rows: list[dict[str, Any]] = []
     period: str = ""
     document: str = ""
+    session: str = ""
+    key: str = ""
+
+
+def _mo_market_price_writer(session: str, key: str) -> None:
+    """Справочник Кср меняет только владелец сервиса.
+
+    Кср — множитель платы за смену ВРИ (Кср × площадь квартир × Кд) в каждом
+    расчёте по Подмосковью, и запись ложится на диск для всех. Открытая запись
+    давала любому посетителю подменить плату в чужих расчётах и PDF. Закрыто и
+    там, где владелец не настроен: справочник тогда правят файлом на сервере,
+    а не запросом с улицы.
+    """
+    if not _is_admin_request(session, key):
+        raise HTTPException(
+            status_code=403,
+            detail="Справочник средней цены м² (Кср) меняет только владелец сервиса.")
 
 
 @app.get("/mo/market-price")
@@ -856,6 +912,7 @@ def mo_market_price() -> dict[str, Any]:
 @app.post("/mo/market-price")
 def mo_market_price_set(req: MoMarketPriceRequest) -> dict[str, Any]:
     """Ручная загрузка справочника Кср списком строк."""
+    _mo_market_price_writer(req.session, req.key)
     rows: list[dict[str, Any]] = []
     for item in req.rows or []:
         name = _land_text(item.get("municipality"))
@@ -871,8 +928,10 @@ def mo_market_price_set(req: MoMarketPriceRequest) -> dict[str, Any]:
 
 
 @app.post("/mo/market-price/import")
-async def mo_market_price_import(request: Request, period: str = "", document: str = "") -> dict[str, Any]:
+async def mo_market_price_import(request: Request, period: str = "", document: str = "",
+                                 session: str = "", key: str = "") -> dict[str, Any]:
     """Импорт приложения к распоряжению: .xlsx с таблицей «МО — стоимость»."""
+    _mo_market_price_writer(session, key)
     data = await request.body()
     if not data:
         raise HTTPException(status_code=400, detail="Файл не передан")
@@ -1350,6 +1409,7 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
         parcels,
         upks_target=upks["upks_land_residential"],
         upks_average_oks=upks["upks_oks_mkd"],
+        upks_quarter_oks=quarter_upks,
         apartments_sqm=apartments_sqm,
         market_price_rub_per_sqm=market_price,
         kd=kd,

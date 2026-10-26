@@ -14,7 +14,9 @@
 # благоустройство считается методикой двора, соцобъекты — программой и своими
 # графиками, рассрочка ВРИ — с процентами на остаток. Они приходят в книгу
 # значениями движка и называются в `missing`, а не выглядят посчитанными.
-NONRES_BOOK_ENGINE_ARTICLES = ("landscaping", "social", "vri_interest", "vri_security")
+# Благоустройство считается в книге формулой (ставка × наземная ГНС проекта,
+# решение владельца 25.10.2026), а не числом движка.
+NONRES_BOOK_ENGINE_ARTICLES = ("social", "vri_interest", "vri_security")
 
 
 def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
@@ -73,6 +75,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             "key": obj.key, "prefix": obj.prefix, "title": obj.tep_label or obj.label,
             "measure": obj.measure,
             "volume": n(x, f"{obj.prefix}_spaces") if obj.measure == "spaces" else n(x, f"{obj.prefix}_gba_sqm"),
+            "total_area": n(row, "total_area"),
             "rate_cost": n(x, obj.rate_cost),
             "garage": bool(obj.garage), "under_gns": n(row, "under_gns") if obj.garage else 0.0,
             # Что включает ставка — тот же предикат, что у движка.
@@ -83,12 +86,23 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             "nonres": obj.key in nonres_plans,
         }
         plan_item = nonres_plans.get(obj.key)
+        # Офис книга считает всеми тремя способами продажи (решение владельца
+        # 24.10.2026, «Новая книга считает и ДДУ»): ему нужны вводные и ДДУ, и
+        # стратегий вне ДДУ, какую бы стратегию ни выбрал проект. Вводные —
+        # те же поля, что движок читает, когда `office_paths` меняет стратегию.
+        office = obj.product == "offices" and bool(obj.strategies) and item["in_tax_pool"]
+        # Класс офиса — из вводных (`office_class_choice`), а не угадан по числам.
+        if obj.product == "offices":
+            item["office_class"] = nonres_strategy.office_class_choice(x, obj.prefix)["office_class"]
+        # Продукт мест гаража объекта — его выручка и маржа по ДДУ сверяются
+        # вместе с объектом.
+        item["parking_product_key"] = object_parking_product_key(obj.key)
         # Объект по ДДУ (решение владельца 13.10.2026: книга нежилого проекта
         # считает его живыми формулами, а не берёт выручку движка): продаётся
         # тем же `sales_schedule`, что в `build_operating_model`, — доля до
         # ввода объекта, остаток после, рост цены; профиль продаж и лестница
         # цены — вводные, которые книга получает таблицей.
-        if not plan_item and item["in_tax_pool"] and n(x, obj.rate_price) > 0:
+        if (not plan_item or office) and item["in_tax_pool"] and n(x, obj.rate_price) > 0:
             sales_start = d(x[f"{obj.prefix}_sales_start"])
             weights, factor = None, None
             weights_raw, _notes = schedule_weights(x.get(f"{obj.prefix}_sales_profile"), sales_start)
@@ -100,7 +114,7 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
             if factor_raw is not None:
                 factor = {k_of(m): float(factor_raw(m)) for m in months}
             item.update({
-                "ddu": True, "strategy": nonres_strategy.STRATEGY_DDU,
+                "ddu": not plan_item, "strategy": nonres_strategy.STRATEGY_DDU,
                 "saleable_sqm": n(x, f"{obj.prefix}_saleable_sqm"),
                 "over_units": max(0.0, n(row, "parking_over_units")),
                 "over_area": (n(x, "object_parking_over_area_per_space_sqm", OBJECT_PARKING_OVER_AREA_DEFAULT)
@@ -120,12 +134,14 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
                 "parking_over_mln": n(x, f"{obj.prefix}_parking_over_price_mln_per_space"),
                 "sales_weights": weights, "price_factor": factor,
             })
-        if plan_item:
-            params = plan_item.get("params") or {}
+        if plan_item or office:
+            params = ((plan_item or {}).get("params")
+                      or {suffix: x.get(f"{obj.prefix}_{suffix}")
+                          for suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS})
             num = nonres_strategy._num
             choice = nonres_strategy._choice
             item.update({
-                "strategy": plan_item["strategy"],
+                "strategy": plan_item["strategy"] if plan_item else nonres_strategy.STRATEGY_DDU,
                 "saleable_sqm": n(x, f"{obj.prefix}_saleable_sqm"),
                 "over_units": max(0.0, n(row, "parking_over_units")),
                 "over_area": (n(x, "object_parking_over_area_per_space_sqm", OBJECT_PARKING_OVER_AREA_DEFAULT)
@@ -194,10 +210,15 @@ def nonres_book_spec(prepared: dict[str, Any], consolidated: dict[str, Any],
         "rate_scenario": scenario_key, "rate_table": rate_table,
         "core_above_gns": float(op.get("core_above_gns") or 0.0),
         "core_under_gns": float(op.get("core_under_gns") or 0.0),
+        # База и ставка благоустройства — те же, что у движка (`landscaping_cost`):
+        # наземная ГНС проекта и ставка `landscaping_gns_rate` (ручная или
+        # умолчание нежилого проекта).
+        "landscaping_gns": project_above_gns(t),
         "parking_price_th": n(x, "parking_price_th"),
         "main_under_th": n(x, "main_under_th_per_sqm"),
         "cost": {
             "ird_th": n(x, "ird_th_per_sqm"), "design_p_th": n(x, "design_p_th_per_sqm"),
+            "landscaping_th": landscaping_gns_rate(x)[0],
             "design_rd_th": n(x, "design_rd_th_per_sqm"),
             "demolition_area": n(x, "demolition_area_sqm"),
             "demolition_th": n(x, "demolition_cost_th_per_sqm"),
@@ -260,8 +281,10 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
 
     Решение владельца (13.10.2026): объект по ДДУ — не повод отдавать жилую
     книгу; его продажи, эскроу, БРИДЖ и ПФ книга нежилого проекта считает
-    формулами (`nonres_workbook` — листы «ДДУ N» и «ПФ»). ПФ по очередям она
-    не моделирует: проект с очередями и ПФ получает книгу v4.
+    формулами. Книгу собирает `office_workbook` на каркасе жилой v4: проект с
+    офисом — три способа продажи офиса, без офиса — стратегия каждого объекта
+    (ДДУ — листы объекта и «ПФ»). ПФ по очередям книга не моделирует: проект с
+    очередями и ПФ получает книгу v4.
     """
     consolidated = (_run_authoritative_model(
         inputs or {}, tep or {}, rates or [], phasing or {}) or {}).get("consolidated") or {}
@@ -277,11 +300,28 @@ def _nonres_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
     if phased:
         spec["missing"].append("Очереди: книга моделирует проект одной очередью, "
                                "сверка идёт со сводом очередей")
-    content = nonres_workbook.build(consolidated, spec)
     stem = _safe_file_stem(project_name or "project", "project")
-    filename = f"DevelopAid_нежилой_{stem}_{date.today().isoformat()}.xlsx"
-    return content, filename, {"missing": list(spec["missing"]), "phased": phased,
-                               "class_deviations": [], "nonres_book": True}
+    # Книга на каркасе жилой v4 (`office_workbook`; образец владельца 22.10.2026,
+    # решение 24.10.2026 «Новая книга считает и ДДУ»). Проект с офисом — три
+    # способа продажи офиса рядом: по ДДУ, блоками и арендой; объект по ДДУ
+    # рядом с офисом (ТЦ по ДДУ) входит в ПФ каждого способа. Проект без офиса
+    # (ТЦ, ФОК, наземный паркинг) — один способ: стратегия каждого объекта,
+    # сверка с основным расчётом (поручение владельца 24.10.2026).
+    office_keys = {obj.key for obj in STANDALONE_OBJECTS if obj.product == "offices"}
+    with_office = bool(consolidated.get("office_paths")) and any(
+        (item.get("nonres") or item.get("ddu")) and item["key"] in office_keys for item in spec["objects"])
+    content, report = office_workbook.build(consolidated, spec, office_keys if with_office else set())
+    missing = list(report["missing"])
+    if report["verdict"] != office_workbook.PASSED:
+        missing.append("ПРОВЕРКИ книги: расхождения с движком — " + "; ".join(report["mismatches"][:8]))
+    if report["unresolved"]:
+        missing.append(f"Книга: {report['unresolved']} формул без сохранённого значения — "
+                       + "; ".join(report["unresolved_examples"]))
+    kind = "нежилой_офис" if with_office else "нежилой"
+    filename = f"DevelopAid_{kind}_{stem}_{date.today().isoformat()}.xlsx"
+    return content, filename, {"missing": missing, "phased": phased, "class_deviations": [],
+                               "nonres_book": True, "office_book": with_office,
+                               "checks": report["verdict"]}
 
 
 def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
@@ -311,6 +351,8 @@ def _hotel_project_workbook(inputs: dict[str, Any], tep: dict[str, Any],
 def workbook_label(meta: dict[str, Any]) -> str:
     if meta.get("hotel_book"):
         return "Книга гостиницы"
+    if meta.get("office_book"):
+        return "Книга офисного проекта"
     if meta.get("nonres_book"):
         return "Книга нежилого проекта"
     return "Книга v4"
@@ -339,6 +381,7 @@ def build_project_workbook(
     """
     inputs = dict(inputs or {})
     migrate_growth_post(inputs)
+    apply_office_classes(inputs)
     merged = {**DEFAULT_INPUTS, **inputs}
     # Гостиничный проект — своя книга (`hotel_workbook`): помесячный расчёт
     # формулами, годовой USALI, итоги и сверка с движком. Книга v4 построена
@@ -346,9 +389,9 @@ def build_project_workbook(
     if is_hotel(merged):
         return _hotel_project_workbook(inputs, tep, rates, phasing,
                                        str(kwargs.get("project_name") or ""))
-    # Нежилой проект без ДДУ получает свою книгу (`nonres_workbook`): книга v4
-    # построена на ДДУ, эскроу и ПФ, которых у него нет (владелец, 04.10.2026:
-    # отчёт, тизер и книга нежилого проекта — самостоятельные).
+    # Нежилой проект получает свою книгу (`office_workbook`): книга v4 построена
+    # на ДДУ, эскроу и ПФ жилья (владелец, 04.10.2026: отчёт, тизер и книга
+    # нежилого проекта — самостоятельные).
     if is_nonresidential(merged):
         nonres_book = _nonres_project_workbook(inputs, tep, rates, phasing,
                                                str(kwargs.get("project_name") or ""))
@@ -684,7 +727,8 @@ def _build_project_workbook(
     try:
         # Вводные — те же `x`, что у ячеек: сырые продлили бы горизонт
         # стройкой садика, которого нежилой проект не строит.
-        _horizon = build_operating_model(dict(x), tep or {}, rates or [])["end"]
+        _engine_op = build_operating_model(dict(x), tep or {}, rates or [])
+        _horizon = _engine_op["end"]
         put("B71", number=_v4_excel_serial(_horizon.isoformat()) or 0.0,
             label="engine_horizon_end")
     except Exception:
@@ -1515,7 +1559,13 @@ def _build_project_workbook(
     # Прежнее «3 года» в B75 заставляло человека помнить синтаксис строки и
     # мешало сделать нормальный dropdown. Все формулы графика уже читают B77
     # как число лет, поэтому пишем срок прямо туда.
-    _vri_years = int(float(x.get("vri_installment_years") or 3))
+    # Срок — тот, что движок применил к графику (в Москве — по сумме платы,
+    # 593-ПП), а не сырая вводная: иначе книга растянула бы рассрочку дольше,
+    # чем её даёт постановление.
+    try:
+        _vri_years = int(_engine_op["vri"]["settings"]["years"])
+    except Exception:
+        _vri_years = int(float(x.get("vri_installment_years") or 3))
     put("B77", number=float(_vri_years), label="vri_installment_years")
     xml = _v4_mark_as_entry(xml, "B77", missing)
     put_new("D75", text="vri_payment_mode")
@@ -2123,9 +2173,12 @@ def _build_project_workbook(
     # красило пустое место, и блок уезжал на лист ввода без стилей.
     report_xml, tep_xml, styles_xml = _v4_report_number_formats(
         report_xml, tep_xml, consolidator_xml, styles_xml)
-    # Блок пятна застройки — на своё место до стилей вводных и листа ввода.
-    xml = _v4_site_massing_flush(xml, missing)
+    # Зеркало стилей E:H ходит по строкам 1–159 и блок пятна не трогает:
+    # блок встаёт после него, иначе 118 его проходов перечитывали бы строки
+    # блока (сторож объёма чтения, tests/test_the_workbook_is_written_by_rows.py).
     xml = _v4_mirror_secondary_input_styles(xml)
+    # Блок пятна застройки — на своё место до форматов вводных и листа ввода.
+    xml = _v4_site_massing_flush(xml, missing)
     xml, styles_xml = _v4_type_input_formats(xml, styles_xml, _v4_block_input_formats(
         social_base_row, _ladder_refs, _landscaping_norm))
     xml = _v4_mark_engine_only_readonly(xml)

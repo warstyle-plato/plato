@@ -39,6 +39,12 @@ def _housing() -> tuple[dict, dict]:
     return x, copy.deepcopy(SETTINGS["tep"])
 
 
+def _office_block(book) -> dict[str, tuple[str, str]]:
+    """Блок пятна книги офиса: вводные — на «Вводных», расчёт — на «ТЭП»."""
+    return {**{key: ("Вводные", cell) for key, cell in _block(book, "Вводные").items()},
+            **{key: ("ТЭП", cell) for key, cell in _block(book, "ТЭП").items()}}
+
+
 def _block(book, sheet_name: str) -> dict[str, str]:
     sheet = book[sheet_name]
     labels = {label: key for key, label, _ in core._massing_book.ROWS}
@@ -124,24 +130,25 @@ def test_the_nonresidential_book_counts_the_same_levels():
     content, _, meta = core.build_project_workbook(
         x, t, [], None, project_name="Пролетарский",
         finance_hints=core._v4_finance_hints(bundle))
-    assert meta.get("nonres_book"), meta
+    # Офис нежилого проекта — книга офиса (с 24.10.2026 и офис по ДДУ).
+    assert meta.get("nonres_book") and meta.get("office_book"), meta
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    cells = _block(book, "Вводные")
+    cells = _office_block(book)
     assert set(cells) == {key for key, _, _ in core._massing_book.ROWS}, cells
     evaluator = Evaluator(book)
-    got = lambda key: float(evaluator.cell("Вводные", cells[key]) or 0)  # noqa: E731
+    got = lambda key: float(evaluator.cell(*cells[key]) or 0)  # noqa: E731
     assert got("underground_sqm") == pytest.approx(2380.0)
     assert got("footprint_sqm") == pytest.approx(m["footprint_sqm"], rel=1e-9)
     assert got("average_storeys") == pytest.approx(m["average_storeys"], rel=1e-9)
     assert got("underground_levels") == 2
     assert got("depth_factor") == pytest.approx(m["underground_depth_factor"], rel=1e-9)
-    # Гараж офиса в «Затратах» — по ставке с надбавкой, как в движке.
-    costs = book["Затраты"]
+    # Гараж офиса в CAPEX — по ставке с надбавкой, как в движке (млн ₽).
+    costs = book["CAPEX"]
     row = next(r for r in range(1, costs.max_row + 1)
                if "подземный гараж" in str(costs.cell(r, 1).value or ""))
     rate = float(x["main_under_th_per_sqm"])
-    assert float(evaluator.cell("Затраты", f"E{row}")) == pytest.approx(
-        2380.0 * rate * m["underground_depth_factor"] * 1000, rel=1e-9)
+    assert float(evaluator.cell("CAPEX", f"B{row}")) == pytest.approx(
+        2380.0 * rate * m["underground_depth_factor"] / 1000, rel=1e-9)
 
 
 @pytest.mark.parametrize("extra, origin", [({"max_storeys_allowed": 9}, "limit"),
@@ -162,9 +169,9 @@ def test_the_book_takes_the_footprint_like_the_engine(extra, origin):
         x, t, [], None, project_name="Пролетарский",
         finance_hints=core._v4_finance_hints(bundle))
     book = openpyxl.load_workbook(io.BytesIO(content), data_only=False)
-    cells = _block(book, "Вводные")
+    cells = _office_block(book)
     evaluator = Evaluator(book)
-    got = lambda key: float(evaluator.cell("Вводные", cells[key]) or 0)  # noqa: E731
+    got = lambda key: float(evaluator.cell(*cells[key]) or 0)  # noqa: E731
     assert got("footprint_sqm") == pytest.approx(m["footprint_sqm"], rel=1e-9)
     assert got("footprint_shortage_sqm") == pytest.approx(m["footprint_shortage_sqm"], rel=1e-9)
     assert got("average_storeys") == pytest.approx(m["average_storeys"], rel=1e-9)
