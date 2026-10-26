@@ -1031,9 +1031,12 @@ async function deleteProject(id){
 // LAND_MAP_VIEWS — ответ сервера, есть ли ключ Яндекс Карт для гибрида: не проект.
 // accessUseFree — согласие на бесплатный участок на один запуск расчёта:
 // снимается сразу после него и проекта не хранит.
+// projectsCards — список сохранённого в хранилище, projectsSortRestored —
+// отметка, что порядок списка уже прочитан из браузера: кабинет, не проект.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
  'profileState','profileAskedOnResult','calcRequiresLogin','accessUseFree','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
+ 'projectsCards','projectsSortRestored',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
  'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound',
