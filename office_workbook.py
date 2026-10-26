@@ -588,19 +588,19 @@ def _same(a: Any, b: Any) -> bool:
         return False
 
 
-def office_class_of(values: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Класс офиса, к которому ближе вводные, и поля, заданные вручную.
+def office_class_of(values: dict[str, Any], chosen: str | None = None) -> tuple[str, dict[str, Any]]:
+    """Класс офиса и поля, заданные вручную.
 
-    Класс в проекте пока не хранится (выбор класса появится вместе со
-    страницей): берётся ступень, с которой совпало больше полей, при равенстве
-    — та, чья цена совпала, затем младшая. Поле, отличное от ступени, уходит в
-    «Вручную»: правка руками сильнее класса и видна.
+    Класс — тот, что у офиса в проекте (`chosen`, `office_class_choice`).
+    Без него (спецификация без класса) берётся ступень, с которой совпало
+    больше полей, при равенстве — та, чья цена совпала, затем младшая. Поле,
+    отличное от ступени, уходит в «Вручную»: правка руками сильнее класса и видна.
     """
     def score(cls: str) -> tuple[int, int, int]:
         hits = sum(_same(values.get(key), _class_value(cls, field)) for key, field in CLASS_FIELDS.items())
         price = int(_same(values.get("price"), _class_value(cls, "price_th_per_sqm")))
         return hits, price, -ns.OFFICE_CLASSES.index(cls)
-    best = max(ns.OFFICE_CLASSES, key=score)
+    best = chosen if chosen in ns.OFFICE_CLASSES else max(ns.OFFICE_CLASSES, key=score)
     manual = {key: values.get(key) for key, field in CLASS_FIELDS.items()
               if not _same(values.get(key), _class_value(best, field))}
     return best, manual
@@ -749,7 +749,7 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
     ws.add_data_validation(class_list)
     values = {item["code"]: _object_values(item) for item in objects}
     for item in offices:
-        cls, manual = office_class_of(values[item["code"]])
+        cls, manual = office_class_of(values[item["code"]], item.get("office_class"))
         info.office_class[item["code"]] = cls
         for key in CLASS_FIELDS:
             values[item["code"]][key] = manual.get(key)

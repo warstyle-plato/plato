@@ -847,6 +847,9 @@ def _run_sensitivity(
 
     # Работаем на копиях: вводные пользователя эта функция не трогает.
     base_inputs = copy.deepcopy(inputs or {})
+    # Класс офиса ставится до сдвигов: сдвинутая ставка — уже не число класса,
+    # и пересчёт сценария её не сбрасывает (`office_field_follows`).
+    apply_office_classes(base_inputs)
     base_tep = copy.deepcopy(tep or {})
     base_rates = copy.deepcopy(rates or [])
     base_phasing = copy.deepcopy(phasing or {})

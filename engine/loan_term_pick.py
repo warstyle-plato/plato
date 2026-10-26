@@ -158,6 +158,9 @@ def loan_term_pick(inputs: dict[str, Any], tep: dict[str, Any], rates: list[Any]
     """Оба срока кредита аренды объекта `prefix`. Звать только вне запроса
     расчёта: это десятки полных пересчётов."""
     _income_object(prefix)
+    # Прогоны идут мимо `calculate`: класс офиса ставится один раз здесь.
+    inputs = copy.deepcopy(inputs or {})
+    apply_office_classes(inputs)
     repayment = str(inputs.get(f"{prefix}_debt_repayment") or nonres_strategy.REPAY_ANNUITY)
     if repayment != nonres_strategy.REPAY_ANNUITY:
         raise ValueError("срок кредита действует только при погашении равными платежами (аннуитет); "

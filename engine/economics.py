@@ -129,6 +129,8 @@ def calculate(req: CalcRequest) -> dict:
     # Проект, сохранённый до «одной вводной роста после РВЭ», переносится
     # до расчёта; страница применяет перенос к своему состоянию.
     migrations = migrate_growth_post(req.inputs)
+    # Класс офиса ставит шкалу полям офиса до расчёта и до путей стратегий.
+    apply_office_classes(req.inputs)
     # Расчёт правит переданные словари (`prepared_calculation`), а второму и
     # третьему пути офиса нужны вводные такими, какими их прислали.
     original = (copy.deepcopy((req.inputs, req.tep, req.rates))
@@ -137,6 +139,8 @@ def calculate(req: CalcRequest) -> dict:
     result = _finalize_result(_calculate_economics(req))
     if migrations and isinstance(result, dict):
         result["input_migrations"] = migrations
+    if isinstance(result, dict):
+        result["office_classes"] = office_class_rows(req.inputs)
     if original is not None and isinstance(result, dict) and result.get("summary"):
         for product, key in STRATEGY_PATH_PRODUCTS:
             if strategy_path_prefixes(original[0], product):

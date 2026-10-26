@@ -490,7 +490,11 @@ def strategy_indifference(result: dict[str, Any], inputs: dict[str, Any], tep: d
                           rates: list[Any], phasing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Подбор точек безразличия для каждого продукта со сравнением. Звать
     только вне запроса расчёта: это десятки полных пересчётов."""
-    items = [_product_indifference(inputs, tep, rates or [], data) for data in strategy_path_sets(result)]
+    # Подбор множит поле объекта и считает мимо `calculate`: класс офиса
+    # ставится здесь, один раз, тем же правилом, что у основного расчёта.
+    applied = copy.deepcopy(inputs or {})
+    apply_office_classes(applied)
+    items = [_product_indifference(applied, tep, rates or [], data) for data in strategy_path_sets(result)]
     return {"items": items, "engine_version": VERSION,
             "computed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "fingerprint": entry_price_fingerprint(inputs, tep, rates, phasing, "strategy_indifference")}

@@ -171,6 +171,13 @@ V4_INPUTS_NOT_IN_BOOK.update({
     for _obj in STANDALONE_OBJECTS if _obj.strategies
     for _suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS
     if _obj.garage_sellable or _suffix != "parking_rent_th_month"})
+# Класс офиса — не число, а выбор, который ставит числа полей офиса
+# (`apply_office_classes`): книга получает сами числа — цену, себестоимость,
+# аренду, — а выбор класса показывается основанием.
+V4_INPUTS_NOT_IN_BOOK.update({
+    f"{_obj.prefix}_{nonres_strategy.OFFICE_CLASS_FIELD}": (
+        "класс офиса ставит цену, себестоимость и аренду офиса; книга получает числа")
+    for _obj in STANDALONE_OBJECTS if _obj.product == "offices"})
 # Назначение каждого экземпляра ФОКа — та же вводная норматива, что у первого.
 V4_INPUTS_NOT_IN_BOOK.update({
     _obj.purpose_key: V4_INPUTS_NOT_IN_BOOK["sports_purpose"]
