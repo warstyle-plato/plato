@@ -1312,6 +1312,8 @@ def _grant_command(chat_id: int, user_id: int, argument: str) -> None:
         return
     notice = result.get("notice") or {}
     told = (" Сообщение ему в Telegram отправлено." if notice.get("sent") else
+            f" Сообщение ему в Telegram пока не отправлено: {html.escape(str(notice.get('reason') or ''))}."
+            if notice.get("queued") else
             f" Сообщение ему в Telegram не отправлено: {html.escape(str(notice.get('reason') or 'причина неизвестна'))}."
             " Напишите ему сами.") if notice else ""
     if reserve:
@@ -1778,6 +1780,10 @@ def _usage_digest_loop() -> None:
         except Exception:
             pass
         try:
+            _deliver_access_notices()
+        except Exception:
+            pass  # весть уже лежит в очереди ядра или потеряна при заборе — поток живёт
+        try:
             _deliver_krt_announcements()
         except Exception:
             pass  # рассылка — удобство: молчание лучше падения фонового потока
@@ -1910,6 +1916,26 @@ def _deliver_profile_announcements() -> None:
         return
     for record in records:
         core._telegram_send_profile_card(record, admins)
+
+
+def _deliver_access_notices() -> None:
+    """Вести «вам открыт доступ» с ядра — человеку в Telegram.
+
+    Доступ выдаётся на ядре, а до api.telegram.org достаёт только этот хост:
+    ядро кладёт весть в очередь, мы забираем её тем же путём, что и знакомства,
+    и отправляем. Иначе выдавший читал «Telegram API недоступен» и писал
+    человеку сам.
+    """
+    if not core._telegram_token() or not core._telegram_webhook_enabled():
+        return
+    remote = core._projects_remote_url("/internal/access/notices")
+    if remote:
+        payload = {"code": "access-notices", "chat_id": 0,
+                   "sign": core._web_login_sign("access-notices", 0)}
+        records = list(core._core_post(remote, payload, 30.0).get("notices") or [])
+    else:
+        records = core.access_take_notices()
+    core.access_deliver_notices(records)
 
 
 def _deliver_normatives_announcements() -> None:
