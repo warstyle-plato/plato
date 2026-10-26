@@ -952,10 +952,14 @@ PAGE += r"""</head>
       <div id="accessAdminStatus" class="cab-status"></div>
       <div id="accessAdminList"></div>
       <div class="cab-sub">Демо-доступ по ссылке</div>
-      <div class="cab-muted">Ссылку можно отправить кому угодно: клиенту, партнёру, проверяющему ЮKassa. Она открывает кабинет без Telegram на 14 дней. По ней человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. Если отозвать ссылку, вход по ней закроется сразу.</div>
+      <div class="cab-muted">Ссылку можно отправить кому угодно: клиенту, партнёру, инвестору, проверяющему ЮKassa. Она открывает сервис без входа через Telegram на выбранный срок и только те разделы, которые вы отметили. В расчёте человек, как новый клиент, может посчитать один участок, а оплата не списывает деньги. В мониторе, сводке, торгах и рынке он видит настоящие данные ваших проектов, но ничего не может изменить или разослать. Споры и претензии, администрирование и выдача доступа по ссылке закрыты всегда. Если отозвать ссылку, вход по ней закроется сразу.</div>
+      <div id="demoInviteBlocks" class="cab-row">
+        <label style="font-weight:600"><input type="checkbox" id="demoBlockAll" onchange="demoBlocksAll(this.checked)"> Полный доступ</label>
+      </div>
       <div class="cab-row">
         <input id="demoInviteNote" placeholder="Для кого, например «ЮKassa» или «ООО Ромашка»">
-        <button class="btn dark" onclick="accessDemoCreate()">Создать демо-ссылку</button>
+        <span class="cab-muted">Создать ссылку на:</span>
+        <span id="demoInviteDays" style="display:inline-flex;gap:6px"></span>
       </div>
       <div id="demoInviteStatus" class="cab-status"></div>
       <div id="demoInviteList"></div>
