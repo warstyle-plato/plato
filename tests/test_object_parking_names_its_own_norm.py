@@ -82,8 +82,8 @@ def test_the_engine_counts_by_the_region(seen):
 def test_moscow_keeps_appendix_6(seen):
     """Предохранитель: без него проверка ниже зелена и на пустой подписи."""
     got = seen["msk"]
-    assert "приложения 6 к 945-ПП" in got["field"], got["field"]
-    assert "приложения 6 к 945-ПП" in got["tep"], got["tep"]
+    assert "приложений 1 и 6 к 945-ПП" in got["field"], got["field"]
+    assert "приложений 1 и 6 к 945-ПП" in got["tep"], got["tep"]
 
 
 def test_the_region_names_its_own_document(seen):

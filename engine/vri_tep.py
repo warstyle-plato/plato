@@ -209,6 +209,7 @@ def vri_tep_quick(region: str, query: str,
                  district: str | None = None,
                  density_sqm_per_ha: float | None = None,
                  analysis: dict[str, Any] | None = None,
+                 rates_at: str = "",
                  restrict_ha: float = 0.0) -> dict[str, Any]:
     """Кнопка бота «Посчитать ВРИ и ТЭП»: карточка + файл формата ГлавАПУ.
 
@@ -218,6 +219,10 @@ def vri_tep_quick(region: str, query: str,
     соцпотребность по нормативам на тысячу жителей. Машино-места и плату за
     смену ВРИ бот не реверсирует (их формулы живут в браузерном калькуляторе)
     — они нули, а карточка отсылает в мини-приложение.
+
+    `rates_at` — дата ставок компенсации за соцобъекты
+    (`GLAVAPU_SOCIAL_COMPENSATION_RATES`): сверка со старой выгрузкой берёт
+    ставки её дня, расчёт без даты — последние.
     """
     def fmt(value: Any, digits: int = 1) -> str:
         try:
@@ -455,9 +460,8 @@ def vri_tep_quick(region: str, query: str,
         # Норматив в обеих зонах один (19), но число — из того же словаря.
         clinic = math.ceil(population * social_norms["clinic"] / 1000) if population else 0
         per_k = lambda norm, digits: math.ceil(population * norm / 1000 * 10 ** digits) / 10 ** digits
-        # Компенсация за соцобъекты — ставки из выгрузки калькулятора от
-        # 01.08.2026 (188,414/19, 294,540/38 и 97,714/9): город индексирует их
-        # поквартально, выгрузка от 21.07 несла ставки на ~11% ниже.
+        # Ставки компенсации город индексирует поквартально — версии с датами
+        # лежат в `GLAVAPU_SOCIAL_COMPENSATION_RATES`.
         # Компенсация за соцобъекты — формулой калькулятора (функция ap):
         # коэфф × (УУПСС на место × места / 1000 + площадь ЗУ × УПКС квартала).
         # Прежде ставки были зашиты тремя константами, снятыми с одного
@@ -467,25 +471,20 @@ def vri_tep_quick(region: str, query: str,
         # 98 973 ₽/м² и нормативы земли 35 / 19 / 30 м² на место — формула
         # восстановлена по трём независимым точкам.
         upks = _land_float(coeff.get("upks_zh_high")) or 0.0
-        def _social_comp(places: float, uupss_th: float, zu_sqm: float,
-                         factor: float, legacy_rate: float) -> float:
-            if places <= 0:
-                return 0.0
-            if upks <= 0:
-                # УПКС не пришёл: без земли платёж вышел бы почти вдвое ниже.
-                # Прежние ставки сняты при УПКС 98 973 ₽/м² — это хотя бы
-                # порядок, а не половина суммы.
-                return places * legacy_rate
-            return factor * (uupss_th * places / 1000.0 + places * zu_sqm * upks / 1e6)
-        # Земля на место — по мощности объекта, как в коде калькулятора:
-        # ДОО 35 м² до 150 мест, дальше 32; школа 19 до 900, 16 до 1 500,
-        # дальше 14. Мощность поликлиники в компенсации — взрослая + детская
+        def _social_comp(kind: str, places: float) -> float:
+            # УПКС не пришёл: без земли платёж вышел бы почти вдвое ниже.
+            # Откат — УПКС квартала, на котором сняты прежние ставки за место:
+            # это хотя бы порядок, а не половина суммы.
+            return glavapu_social_compensation_mln(
+                kind, places, upks if upks > 0 else GLAVAPU_SOCIAL_FALLBACK_UPKS, rates_at)
+        # Ставки, земля на место по мощности объекта и коэффициент — у
+        # `glavapu_social_compensation_mln` (engine/norms.py): та же функция
+        # считает норму по введённому ТЭП, и две копии ставок больше не
+        # разойдутся. Мощность поликлиники в компенсации — взрослая + детская
         # (Нагатино 06.10.2026: 101 + 45 = 146 при строке 32 = 145).
-        dou_land = 35.0 if dou <= 150 else 32.0
-        school_land = 19.0 if school <= 900 else 16.0 if school <= 1500 else 14.0
-        comp_dou = _social_comp(dou, 4799.71, dou_land, 1.2, 9.916526)
-        comp_school = _social_comp(school, 4578.69, school_land, 1.2, 7.751053)
-        comp_clinic = _social_comp(clinic_adult + clinic_child, 7887.92, 30.0, 1.0, 10.857111)
+        comp_dou = _social_comp("kindergarten", dou)
+        comp_school = _social_comp("school", school)
+        comp_clinic = _social_comp("clinic", clinic_adult + clinic_child)
         # МПТ встроенных помещений — 32 м² НП на место, округление ВНИЗ: так
         # считает код калькулятора (таблица Q: embeddedNonResidential 32,
         # места по ВРИ — lodash `floor`; вверх, `ceil`, — только соцобъекты).
@@ -704,9 +703,9 @@ def vri_tep_quick(region: str, query: str,
                   ("Машино-места" if not mm else ""))
                + " считает калькулятор ГлавАПУ в мини-приложении: "
                "кнопка «Открыть и изменить расчёт».</i>\n")
-            + ("<b>ВНИМАНИЕ:</b> серверные формулы разошлись со штатным "
-               "калькулятором — методика ГлавАПУ могла измениться, сверьте "
-               "расчёт на сайте.\n" if _GLAVAPU_FORMULA_DRIFT["items"] else "")
+            + ("<b>ВНИМАНИЕ:</b> по этому участку серверные формулы разошлись "
+               "со штатным калькулятором — методика ГлавАПУ могла измениться, "
+               "сверьте расчёт на сайте.\n" if _glavapu_drift_for(numbers) else "")
         )
         template_region = "Москва" + (
             f" · {territory.get('district')}" if territory.get("district") else "")

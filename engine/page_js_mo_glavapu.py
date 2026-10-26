@@ -311,6 +311,7 @@ function renderMo(data){
     (landSource.valuation_date?' · оценка на '+landSource.valuation_date:'')],
   ['УПКС ОКС МКД округа',(v.upks_average_oks!=null?landNum(v.upks_average_oks,2)+' ₽/м²':'—')+
     (oksSource.valuation_date?' · оценка на '+oksSource.valuation_date:'')],
+  ['УПКС ОКС МКД для коэффициента К',(v.upks_p!=null?landNum(v.upks_p,2)+' ₽/м²':'—')+(v.upks_p_basis?' · '+v.upks_p_basis:'')],
   ['Кадастровая стоимость сейчас',landNum(v.cadastral_value_current_rub/1e6,1)+' млн ₽'],
   ['Кадастровая стоимость целевая',landNum(v.cadastral_value_target_rub/1e6,1)+' млн ₽'],
   ['Разница ∆КС',landNum(v.delta_rub/1e6,1)+' млн ₽'],

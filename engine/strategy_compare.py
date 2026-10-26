@@ -72,6 +72,15 @@ def _cmp_mln(value: Any) -> str:
     return _cmp_num(float(value) / 1e6) + " млн ₽"
 
 
+def _years_word(count: int, genitive: bool = False) -> str:
+    """«5 лет», «21 год» / после «от», «не короче»: «от 5 лет», «от 21 года»."""
+    if count % 10 == 1 and count % 100 != 11:
+        return "года" if genitive else "год"
+    if not genitive and count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        return "года"
+    return "лет"
+
+
 def _cmp_pct(value: Any) -> str:
     if not isinstance(value, (int, float)):
         return "не считается — поток не меняет знак"
@@ -316,14 +325,16 @@ def _strategy_field_value(inputs: dict[str, Any], prefix: str, suffix: str) -> f
 
 def _strategy_npv(inputs: dict[str, Any], tep: dict[str, Any], rates: list[Any],
                   prefixes: tuple[str, ...], strategy: str, suffix: str | None = None,
-                  factor: float = 1.0) -> float:
+                  factor: float = 1.0, fixed: dict[str, Any] | None = None) -> float:
     """NPV проекта при этой стратегии у объектов и поле `suffix`, умноженном
-    на `factor`: полный расчёт движка, без сравнения путей внутри."""
+    на `factor` (или полях `fixed` — значением как есть): полный расчёт
+    движка, без сравнения путей внутри."""
     x, t, r = copy.deepcopy((inputs, tep, rates))
     for prefix in prefixes:
         x[f"{prefix}_strategy"] = strategy
         if suffix:
             x[f"{prefix}_{suffix}"] = _strategy_field_value(inputs, prefix, suffix) * factor
+        x.update({f"{prefix}_{key}": value for key, value in (fixed or {}).items()})
     token = OFFICE_PATHS_ON.set(False)
     try:
         run = _finalize_result(_calculate_economics(CalcRequest(inputs=x, tep=t, rates=r)))
@@ -391,6 +402,39 @@ def _indifference_line(kind: str, factor: float | None, current: float, single: 
     return {"kind": kind, "value": value, "current": current, "factor": factor, "text": text}
 
 
+def _hold_indifference_line(inputs: dict[str, Any], tep: dict[str, Any], rates: list[Any],
+                            prefixes: tuple[str, ...], sale: dict[str, Any]) -> dict[str, Any]:
+    """С какого срока удержания аренда обгоняет лучшую продажу по NPV проекта.
+
+    Перебор целых лет до `LONG_TERM_MAX_YEARS`: NPV по сроку не обязан
+    расти монотонно (деньги от продажи здания отодвигаются и дисконтируются),
+    поэтому «от N лет» — это срок, начиная с которого аренда выигрывает при
+    КАЖДОМ более долгом удержании, а не первое совпадение."""
+    target = float(sale["npv"])
+    top = nonres_strategy.LONG_TERM_MAX_YEARS
+    npv = {years: _strategy_npv(inputs, tep, rates, prefixes, nonres_strategy.STRATEGY_INCOME,
+                                fixed={"hold_years": years}) for years in range(1, top + 1)}
+    good = [years for years in npv if npv[years] >= target]
+    start = next((years for years in good if all(npv[y] >= target for y in range(years, top + 1))), None)
+    current = int(_strategy_field_value(inputs, prefixes[0], "hold_years"))
+    other = _words(sale)[0].replace("продажа", "продажу", 1)
+    now = f"(сейчас {current} {_years_word(current)})"
+    if start is not None:
+        text = (f"Аренда обгоняет {other} при удержании здания от {start} "
+                f"{_years_word(start, True)} {now}.")
+    elif good:
+        end = next((y for y in range(good[0], top + 1) if npv[y] < target), top + 1) - 1
+        text = (f"Аренда обгоняет {other} только при удержании здания от {good[0]} до {end} "
+                f"{_years_word(end, True)} {now}.")
+    else:
+        closest = max(npv, key=npv.__getitem__)
+        text = (f"Аренда не обгоняет {other} ни при каком сроке удержания здания от 1 до {top} лет "
+                f"{now}. Ближе всего она, если держать здание {closest} {_years_word(closest)}: "
+                f"NPV проекта и тогда меньше на {_cmp_mln(target - npv[closest])}.")
+    return {"kind": "hold", "value": start, "current": current,
+            "years": [years for years in good], "text": text}
+
+
 def _product_indifference(inputs: dict[str, Any], tep: dict[str, Any], rates: list[Any],
                           data: dict[str, Any]) -> dict[str, Any]:
     prefixes = tuple(data.get("prefixes") or ())
@@ -411,6 +455,7 @@ def _product_indifference(inputs: dict[str, Any], tep: dict[str, Any], rates: li
                 inputs, tep, rates, prefixes, nonres_strategy.STRATEGY_INCOME, suffix, f) - target, low, high)
             lines.append(_indifference_line(kind, factor, _strategy_field_value(inputs, first, suffix) * scale,
                                             single, "Аренда", other, behind))
+        lines.append(_hold_indifference_line(inputs, tep, rates, prefixes, sale))
     ddu, direct = paths.get(nonres_strategy.STRATEGY_DDU), paths.get(nonres_strategy.STRATEGY_DIRECT)
     if prefixes and ddu and direct:
         target = float(ddu["npv"])
@@ -428,7 +473,11 @@ def strategy_indifference(result: dict[str, Any], inputs: dict[str, Any], tep: d
                           rates: list[Any], phasing: dict[str, Any] | None = None) -> dict[str, Any]:
     """Подбор точек безразличия для каждого продукта со сравнением. Звать
     только вне запроса расчёта: это десятки полных пересчётов."""
-    items = [_product_indifference(inputs, tep, rates or [], data) for data in strategy_path_sets(result)]
+    # Подбор множит поле объекта и считает мимо `calculate`: класс офиса
+    # ставится здесь, один раз, тем же правилом, что у основного расчёта.
+    applied = copy.deepcopy(inputs or {})
+    apply_office_classes(applied)
+    items = [_product_indifference(applied, tep, rates or [], data) for data in strategy_path_sets(result)]
     return {"items": items, "engine_version": VERSION,
             "computed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "fingerprint": entry_price_fingerprint(inputs, tep, rates, phasing, "strategy_indifference")}

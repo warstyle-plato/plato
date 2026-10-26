@@ -129,6 +129,8 @@ def calculate(req: CalcRequest) -> dict:
     # Проект, сохранённый до «одной вводной роста после РВЭ», переносится
     # до расчёта; страница применяет перенос к своему состоянию.
     migrations = migrate_growth_post(req.inputs)
+    # Класс офиса ставит шкалу полям офиса до расчёта и до путей стратегий.
+    apply_office_classes(req.inputs)
     # Расчёт правит переданные словари (`prepared_calculation`), а второму и
     # третьему пути офиса нужны вводные такими, какими их прислали.
     original = (copy.deepcopy((req.inputs, req.tep, req.rates))
@@ -137,6 +139,8 @@ def calculate(req: CalcRequest) -> dict:
     result = _finalize_result(_calculate_economics(req))
     if migrations and isinstance(result, dict):
         result["input_migrations"] = migrations
+    if isinstance(result, dict):
+        result["office_classes"] = office_class_rows(req.inputs)
     if original is not None and isinstance(result, dict) and result.get("summary"):
         for product, key in STRATEGY_PATH_PRODUCTS:
             if strategy_path_prefixes(original[0], product):
@@ -358,10 +362,9 @@ def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -
     # заново из оставшихся мест) и до соцобъектов (их строки идут от мест,
     # которые здесь обнуляются). Остаток называется по присланному — это
     # расхождение вводных с типом, а не часть расчёта.
-    # Паркинг проекта без жилья — паркинг его офиса, если офис один
-    # (`office_takes_project_parking`); перенос — до списка остатка, иначе
-    # места назывались бы «оставшимися от жилья».
-    x, t, kind_moves = office_takes_project_parking(x, t)
+    # Паркинг проекта без жилья к офису больше не переносится (владелец,
+    # 25.10.2026): гараж офиса строится по нормативу или по его же полям
+    # (`apply_object_parking`), а число в поле паркинга проекта — остаток.
     kind_leftovers = nonresidential_leftovers(x, t)
     x, t = residential_excluded(x, t)
     # Состав объектов — тем же порядком: экземпляр вне проекта не считается,
@@ -385,7 +388,6 @@ def prepared_calculation(x: dict, t: dict, rates: list[dict[str, Any]] | None) -
     # правка ТЭП была бы правкой того, что уже посчитано.
     object_parking = apply_object_parking(x, t)
     return {"x": x, "t": t, "rates": rates, "kind_leftovers": kind_leftovers,
-            "kind_moves": kind_moves,
             "instance_notes": instance_notes, "object_parking": object_parking}
 
 
@@ -1178,7 +1180,13 @@ def _calculate_economics(req: CalcRequest) -> dict:
             # жилые метры, которые расчёт не считает (`residential_excluded`).
             "project_kind": project_kind(x),
             "project_kind_leftovers": kind_leftovers,
-            "project_kind_moves": prepared["kind_moves"],
+            # Откуда места гаражей объектов проекта без жилья — фраза движка
+            # (`object_parking_origin_note`), отчёт и PDF её только печатают.
+            "project_kind_parking": [
+                f"{item['label']}: {item['origin_note'][:1].lower()}{item['origin_note'][1:]}"
+                for item in (object_parking.get("own") or [])
+                if item.get("enabled") and item.get("origin_note")
+            ] if without_housing(x) else [],
             # Состав объектов, которым считал расчёт, и непринятое из
             # присланного — с причиной, а не молчаливым пропуском.
             "object_instances": list(project_object_instances(x)),
@@ -1232,6 +1240,8 @@ def _calculate_economics(req: CalcRequest) -> dict:
             "landscaping_by_class_th": per_sqm_th(
                 op.get("landscaping_by_class", 0.0), project_gns_sqm),
             "landscaping_by_rate": bool(op.get("landscaping_by_rate")),
+            "landscaping_rate_origin": str(op.get("landscaping_rate_origin") or ""),
+            "landscaping_default_rate_th": float(op.get("landscaping_default_rate_th") or 0.0),
             # Статья считается на своей физической базе — дворе, — а сравнивают
             # её с чужой сметой и со сводом «Статистики», которые меряют метр
             # ГНС. Производная считается ЗДЕСЬ и один раз: посчитанная на

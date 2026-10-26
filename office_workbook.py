@@ -47,6 +47,9 @@ from typing import Any
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.chart import BarChart, Reference
+from openpyxl.chart.axis import ChartLines
+from openpyxl.chart.data_source import NumFmt
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, TwoCellAnchor
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter as L
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -438,6 +441,8 @@ COST_INPUTS: tuple[tuple[str, str, str, str], ...] = (
     ("main_under_th", "Стройка подземной части и гаражей объектов", "тыс ₽/м²", NUM),
     ("utilities_th", "Сети", "тыс ₽/м² базы", NUM),
     ("commissioning_th", "Ввод в эксплуатацию", "тыс ₽/м² базы", NUM),
+    ("landscaping_gns", "Наземная площадь проекта — база благоустройства", "м²", NUM0),
+    ("landscaping_th", "Благоустройство", "тыс ₽/м² наземной площади", NUM),
     ("site_maintenance_th", "Содержание площадки", "тыс ₽/м² базы", NUM),
     ("project_management", "Управление проектом", "доля базы управления", PCT),
     ("technical_supervision", "Технический заказчик", "доля стройки", PCT),
@@ -571,19 +576,19 @@ def _same(a: Any, b: Any) -> bool:
         return False
 
 
-def office_class_of(values: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Класс офиса, к которому ближе вводные, и поля, заданные вручную.
+def office_class_of(values: dict[str, Any], chosen: str | None = None) -> tuple[str, dict[str, Any]]:
+    """Класс офиса и поля, заданные вручную.
 
-    Класс в проекте пока не хранится (выбор класса появится вместе со
-    страницей): берётся ступень, с которой совпало больше полей, при равенстве
-    — та, чья цена совпала, затем младшая. Поле, отличное от ступени, уходит в
-    «Вручную»: правка руками сильнее класса и видна.
+    Класс — тот, что у офиса в проекте (`chosen`, `office_class_choice`).
+    Без него (спецификация без класса) берётся ступень, с которой совпало
+    больше полей, при равенстве — та, чья цена совпала, затем младшая. Поле,
+    отличное от ступени, уходит в «Вручную»: правка руками сильнее класса и видна.
     """
     def score(cls: str) -> tuple[int, int, int]:
         hits = sum(_same(values.get(key), _class_value(cls, field)) for key, field in CLASS_FIELDS.items())
         price = int(_same(values.get("price"), _class_value(cls, "price_th_per_sqm")))
         return hits, price, -ns.OFFICE_CLASSES.index(cls)
-    best = max(ns.OFFICE_CLASSES, key=score)
+    best = chosen if chosen in ns.OFFICE_CLASSES else max(ns.OFFICE_CLASSES, key=score)
     manual = {key: values.get(key) for key, field in CLASS_FIELDS.items()
               if not _same(values.get(key), _class_value(best, field))}
     return best, manual
@@ -732,7 +737,7 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
     ws.add_data_validation(class_list)
     values = {item["code"]: _object_values(item) for item in objects}
     for item in offices:
-        cls, manual = office_class_of(values[item["code"]])
+        cls, manual = office_class_of(values[item["code"]], item.get("office_class"))
         info.office_class[item["code"]] = cls
         for key in CLASS_FIELDS:
             values[item["code"]][key] = manual.get(key)
@@ -781,7 +786,8 @@ def _inputs_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any
 
     rows.section("Смета: ставки статей проекта")
     for key, label, unit, fmt in COST_INPUTS:
-        value = spec.get(key) if key in ("core_above_gns", "core_under_gns", "main_under_th") else None
+        value = (spec.get(key) if key in ("core_above_gns", "core_under_gns", "main_under_th",
+                                          "landscaping_gns") else None)
         if value is None:
             raw = cost.get(key if key.endswith(("_th", "_mln", "_area")) else f"{key}_pct", 0.0)
             value = float(raw) / 100 if fmt == PCT else raw
@@ -1037,8 +1043,12 @@ def _capex_sheet(book: _Book, spec: dict[str, Any], objects: list[dict[str, Any]
     article("site_maintenance", "Содержание площадки", per_sqm("in.site_maintenance_th"))
     article("commissioning", "Ввод в эксплуатацию", per_sqm("in.commissioning_th"),
             f"{ref('cx.commissioning.amt')}/3*{ref('w.rve3')}")
-    for key in ("landscaping", "social"):
-        article(key, ENGINE_LABELS[key], None)
+    # Благоустройство — ставкой на метр наземной площади проекта (владелец,
+    # 25.10.2026), три месяца до ввода — тем же графиком, что движок.
+    article("landscaping", ENGINE_LABELS["landscaping"],
+            f"{ref('in.landscaping_gns')}*{ref('in.landscaping_th')}*0.001*{mult}",
+            f"{ref('cx.landscaping.amt')}/3*{ref('w.rve3')}")
+    article("social", ENGINE_LABELS["social"], None)
     amt = lambda key: ref(f"cx.{key}.amt")  # noqa: E731
     article("author_supervision", "Авторский надзор",
             f"({amt('design_p')}+{amt('design_rd')})*{ref('in.author_supervision')}")
@@ -2199,6 +2209,16 @@ def _better_formula() -> str:
 
 # --- «Дашборд», «ИНСТРУКЦИЯ», «Источники» --------------------------------------
 
+LINE_HEIGHT = 15  # пт на строку текста шрифтом 11
+TILE_LABEL_HEIGHT = 2 * LINE_HEIGHT  # подпись плитки — до двух строк
+TILE_COLUMNS = 11  # три плитки по три столбца и два зазора: A:K
+CHART_ROWS = 20  # высота графика в строках, чтобы годы читались
+CHART_AXIS_FORMAT = "#,##0;-#,##0;0"
+# Строка вывода — объединение A:L; жирный текст переносится по словам, поэтому
+# в строку берём с запасом меньше знаков, чем ширина столбцов.
+VERDICT_CHARS_PER_LINE = 110
+
+
 def _dashboard_sheet(book: _Book, report: dict[str, Any], with_pf: bool = False) -> None:
     PATHS = book.paths  # noqa: N806 — способы этой книги
     if book.project_only:
@@ -2239,6 +2259,10 @@ def _dashboard_sheet(book: _Book, report: dict[str, Any], with_pf: bool = False)
         ws.merge_cells(start_row=r0 + 1, start_column=c0, end_row=r0 + 2, end_column=c0 + 2)
         h = ws.cell(r0, c0, label)
         h.font, h.fill = _fnt(b=True, color="FFFFFF"), _fill(TILE)
+        # Объединение не растит строку само: длинная подпись переносится в
+        # строку высотой на две строки текста, иначе Excel её обрежет.
+        h.alignment = Alignment(wrap_text=True, vertical="center")
+        ws.row_dimensions[r0].height = TILE_LABEL_HEIGHT
         v = ws.cell(r0 + 1, c0)
         book.pending.append((v, formula, None, DASH_SHEET))
         v.number_format = fmt
@@ -2251,26 +2275,30 @@ def _dashboard_sheet(book: _Book, report: dict[str, Any], with_pf: bool = False)
     npv = [ref(f"{path['code']}.npv") for path in PATHS]
     if book.project_only:
         llcr = ref("p.llcr")
-        book.pending.append((cell, (
-            f'IF({ref("p.npv")}<0,"Проект не окупается: NPV проекта меньше нуля.","NPV проекта положителен.")'
-            + (f'&IF({llcr}="","",IF({llcr}<1," Денег покупателей и продаж не хватает на погашение '
-               f'проектного финансирования (LLCR меньше 1).",""))' if with_pf else "")), None, DASH_SHEET))
+        text = (f'IF({ref("p.npv")}<0,"Проект не окупается: NPV проекта меньше нуля.","NPV проекта положителен.")'
+                + (f'&IF({llcr}="","",IF({llcr}<1," Денег покупателей и продаж не хватает на погашение '
+                   f'проектного финансирования (LLCR меньше 1).",""))' if with_pf else ""))
     else:
-        book.pending.append((cell, (
-            f'IF(MAX({",".join(npv)})<0,"Проект не окупается ни одним из трёх способов продажи. ","")'
-            f'&"Выгоднее по NPV проекта: "&{ref("rep.better")}&"."'
-            f'&IF({ref("d.llcr")}="","",IF({ref("d.llcr")}<1," При продаже по ДДУ денег покупателей и продаж не хватает '
-            f'на погашение проектного финансирования (LLCR меньше 1).",""))'
-            f'&IF({ref("r.o_yoc")}="","",IF({ref("r.o_yoc")}<{ref("r.o_cap")}," Доходность на затраты ниже ставки '
-            f'капитализации: готовое здание стоит дешевле, чем обходится его стройка.",""))'), None, DASH_SHEET))
+        text = (f'IF(MAX({",".join(npv)})<0,"Проект не окупается ни одним из трёх способов продажи. ","")'
+                f'&"Выгоднее по NPV проекта: "&{ref("rep.better")}&"."'
+                f'&IF({ref("d.llcr")}="","",IF({ref("d.llcr")}<1," При продаже по ДДУ денег покупателей и продаж '
+                f'не хватает на погашение проектного финансирования (LLCR меньше 1).",""))'
+                f'&IF({ref("r.o_yoc")}="","",IF({ref("r.o_yoc")}<{ref("r.o_cap")}," Доходность на затраты ниже '
+                f'ставки капитализации: готовое здание стоит дешевле, чем обходится его стройка.",""))')
+    book.pending.append((cell, text, None, DASH_SHEET))
     cell.font = _fnt(b=True, color=DARK)
     cell.alignment = Alignment(wrap_text=True, vertical="top")
+    # Объединённые строки Excel сам не растит: высота — по самому длинному
+    # выводу (все фразы формулы разом и самое длинное имя способа).
+    longest = sum(map(len, re.findall(r'"([^"]+)"', text))) + max(len(path["label"]) for path in PATHS)
+    lines = -(-longest // VERDICT_CHARS_PER_LINE)
+    for r in (row, row + 1):
+        ws.row_dimensions[r].height = LINE_HEIGHT * max(1, -(-lines // 2))
     rep = book.wb[REPORT_SHEET]
     head, first, last = report["owner_years"]
     if last >= first:
         chart = BarChart()
         chart.title = "Поток собственника по годам, млн ₽"
-        chart.height, chart.width = 7.5, 22
         chart.add_data(Reference(rep, min_col=2, max_col=1 + len(PATHS), min_row=head, max_row=last),
                        titles_from_data=True)
         chart.set_categories(Reference(rep, min_col=1, min_row=first, max_row=last))
@@ -2279,7 +2307,22 @@ def _dashboard_sheet(book: _Book, report: dict[str, Any], with_pf: bool = False)
         chart.x_axis.tickLblPos = "low"
         chart.x_axis.delete = False
         chart.y_axis.delete = False
-        ws.add_chart(chart, f"A{row + 3}")
+        # Легенда под областью построения: без позиции Excel кладёт её поверх
+        # столбиков. Ось — целые миллионы со своим форматом, а не формат ячеек
+        # отчёта с красными скобками.
+        chart.legend.position = "b"
+        chart.legend.overlay = False
+        chart.y_axis.numFmt = NumFmt(formatCode=CHART_AXIS_FORMAT, sourceLinked=False)
+        chart.y_axis.majorGridlines = ChartLines()
+        chart.y_axis.title = "млн ₽"
+        # Привязка к клеткам, а не размер в сантиметрах: график стоит ровно по
+        # ширине сетки плиток (A:K) на любом экране.
+        top = row + 3
+        anchor = TwoCellAnchor()
+        anchor._from = AnchorMarker(col=0, row=top - 1)
+        anchor.to = AnchorMarker(col=TILE_COLUMNS, row=top - 1 + CHART_ROWS)
+        chart.anchor = anchor
+        ws.add_chart(chart)
 
 
 GUIDE = (
