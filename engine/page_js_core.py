@@ -515,7 +515,7 @@ async function runObjectGoalSeek(){
   const response=await fetch('/ia/goal-seek',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({inputs,tep,rates,phasing,variable:'purchase_price_mln'})});
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Подбор не выполнен');
+  if(!response.ok)throw new Error(serverDetail(data)||'Подбор не выполнен');
   if(data.available===false)throw new Error(data.reason||'Показателя долга у проекта нет');
   const v=(data.solution||{}).variable;
   if(out)out.textContent=v!=null?('Максимальная цена входа: '+Number(v).toLocaleString('ru-RU',{maximumFractionDigits:0})+' млн ₽'):(data.reason||'Цель не достигается в границах подбора');
@@ -706,7 +706,7 @@ async function sendFeedback(){
  try{
   const r=await fetch('/feedback',{method:'POST',headers:{'Content-Type':'application/json'},
                                    body:JSON.stringify(payload)});
-  if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||'не отправилось');
+  if(!r.ok)throw new Error(serverDetail(await r.json().catch(()=>({})))||'не отправилось');
   feedbackRemember({done:Date.now(),role:payload.role,region:payload.region});
   status.textContent='Спасибо. Это правда помогает.';
   setTimeout(()=>closeFeedback('sent'),1200);
@@ -823,6 +823,25 @@ let telegramCalcOverrides={};
 const WEB_SESSION_KEY='developaid_web_session';
 function webSession(){try{return localStorage.getItem(WEB_SESSION_KEY)||''}catch(e){return ''}}
 function activeSession(){return telegramSession||webSession()}
+// Причина отказа сервера словами — один разбор для всех запросов страницы.
+// Обычный отказ приходит строкой `detail`, а отказ проверки полей (FastAPI,
+// 422) — списком {loc,msg}: подставленный как есть, он печатался
+// «[object Object]», и человек не видел ни причины, ни поля.
+function serverDetail(data){
+ const detail=data&&data.detail;
+ if(detail==null||detail==='')return '';
+ if(typeof detail==='string')return detail;
+ if(Array.isArray(detail)){
+  const parts=detail.map(item=>{
+   const loc=Array.isArray(item&&item.loc)?item.loc.filter(x=>x!=='body').join('.'):'';
+   const msg=String((item&&item.msg)||(typeof item==='string'?item:JSON.stringify(item)));
+   return (loc?'поле «'+loc+'»: ':'')+msg;
+  });
+  return 'Сервер не принял запрос — '+parts.join('; ')+'.';
+ }
+ if(typeof detail==='object')return String(detail.message||(typeof detail.detail==='string'&&detail.detail)||JSON.stringify(detail));
+ return String(detail);
+}
 let webLoginBusy=false;
 async function loginViaTelegram(statusEl){
  if(webLoginBusy)return;
@@ -831,7 +850,7 @@ async function loginViaTelegram(statusEl){
  try{
   const r=await fetch('/auth/telegram/start',{method:'POST'});
   const d=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(d.detail||'Вход через Telegram недоступен');
+  if(!r.ok)throw new Error(serverDetail(d)||'Вход через Telegram недоступен');
   // Окно бота открывается сразу, но после запроса к серверу браузер уже не
   // считает его открытым по клику и часто глушит — Safari почти всегда. Ссылка
   // показывается всегда: без неё человек стоит перед пустым ожиданием и не
@@ -872,7 +891,7 @@ async function loginViaTelegram(statusEl){
     openProfile();
     return;
    }
-   if(!cr.ok)throw new Error(cd.detail||'Код входа не принят');
+   if(!cr.ok)throw new Error(serverDetail(cd)||'Код входа не принят');
   }
   throw new Error('Время ожидания вышло — попробуйте войти ещё раз.');
  }catch(e){say(String(e.message||e))}
@@ -929,7 +948,7 @@ async function saveProfile(){
    body:JSON.stringify({session:activeSession(),name:value('profName'),company:value('profCompany'),
     role:value('profRole'),source:value('profSource'),contact:value('profContact'),consent:true})});
   const d=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(d.detail||'Анкета не сохранена');
+  if(!r.ok)throw new Error(serverDetail(d)||'Анкета не сохранена');
   profileState={complete:true,profile:d.profile||{},sources:profileState.sources};
   closeProfile();
   renderAccountBox();
@@ -952,7 +971,7 @@ async function loadProfile(openIfEmpty){
                                       body:JSON.stringify({session:activeSession()})});
   if(!r.ok){
    let detail='';
-   try{detail=((await r.json())||{}).detail||''}catch(e){}
+   try{detail=serverDetail(await r.json())||''}catch(e){}
    profileState={...profileState,known:false,
                  reason:'Знакомство не проверено: '+(detail||('сервер ответил '+r.status))};
    return profileState;

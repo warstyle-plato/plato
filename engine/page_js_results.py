@@ -1289,7 +1289,7 @@ async function runSensitivity(){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify(Object.assign({},sensitivityRequestBody(),{session:activeSession(),access_key:projectsAdminKey}))});
   const report=await response.json();
-  if(!response.ok)throw new Error(report.detail||'Не удалось посчитать чувствительность');
+  if(!response.ok)throw new Error(serverDetail(report)||'Не удалось посчитать чувствительность');
   sensitivityReport=report;
   sensitivityPicked=sensitivityRequestBody();
   renderSensitivityReport(report);
