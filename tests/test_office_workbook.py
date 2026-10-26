@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import io
+import re
 import sys
 from pathlib import Path
 
@@ -266,20 +267,31 @@ def test_a_tampered_input_and_rent_date_are_caught() -> None:
 
 def test_the_office_class_drives_the_model() -> None:
     """Класс офиса — список, а не подпись: другая ступень меняет допущения,
-    не заданные вручную, и пути расходятся с движком."""
-    content, _ = _book("аренда и продажа здания, аннуитет")
+    не заданные вручную, и пути расходятся с движком. Класс книги — класс
+    офиса из вводных проекта (`office_class_choice`), а не угадан по числам."""
+    # Ставка капитализации — ступень класса B: она идёт за классом.
+    x, t = _project(offices_strategy="income", offices_exit_cap_pct=11.5)
+    content, _filename, _meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
     sheet = openpyxl.load_workbook(io.BytesIO(content))[ow.INPUTS_SHEET]
-    chosen = sheet[f"B{_row(sheet, 'Класс офиса')}"].value
-    assert chosen in core.nonres_strategy.OFFICE_CLASSES
+    assert sheet[f"B{_row(sheet, 'Класс офиса')}"].value == "B"
     # Числа проекта, отличные от ступени, стоят «вручную»: правка руками видна.
     assert sheet[f"B{_row(sheet, 'Ставка аренды с НДС')}"].value == pytest.approx(4.5)
 
     def other_class(book):
         ws = book[ow.INPUTS_SHEET]
-        ws[f"B{_row(ws, 'Класс офиса')}"] = "A+" if chosen != "A+" else "B"
+        ws[f"B{_row(ws, 'Класс офиса')}"] = "A+"
 
-    labels = _tampered("аренда и продажа здания, аннуитет", other_class)
-    assert f"{RENT}: NPV проекта" in labels
+    verdict, bad, _, _ = _evaluate(content, other_class)
+    assert verdict == ow.FAILED
+    assert f"{RENT}: NPV проекта" in {f"{section}: {label}" for section, label in bad}
+
+
+def test_the_book_takes_the_chosen_office_class() -> None:
+    x, t = _project(offices_strategy="income", offices_office_class="A+")
+    content, _filename, _meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
+    sheet = openpyxl.load_workbook(io.BytesIO(content))[ow.INPUTS_SHEET]
+    assert sheet[f"B{_row(sheet, 'Класс офиса')}"].value == "A+"
+    assert _evaluate(content)[0] == ow.PASSED
 
 
 def test_the_class_of_the_engine_defaults_is_written_without_manual_cells() -> None:
@@ -414,3 +426,50 @@ def test_a_tampered_ddu_vat_deduction_is_caught() -> None:
 
     labels = _tampered("офис по ДДУ", tamper)
     assert {"Проект: НДС", "ПФ: НДС продаж по ДДУ к уплате", f"{DDU}: Чистая прибыль"} <= labels
+
+
+
+LINE = 15  # пт на строку текста шрифтом 11
+
+
+def _width(sheet, first: int, last: int) -> float:
+    return sum(sheet.column_dimensions[openpyxl.utils.get_column_letter(c)].width or 8.43
+               for c in range(first, last + 1))
+
+
+def test_the_dashboard_is_laid_out_readably() -> None:
+    """Дашборд владельца в Excel для Mac (25.10.2026): легенда графика лежала
+    поверх столбиков, ось несла формат ячеек «#,##0.0;[Red](…)» («,0», «(0)»),
+    график был уже сетки плиток, подписи плиток и вывод обрезались."""
+    sheet = openpyxl.load_workbook(io.BytesIO(_book("офис по ДДУ")[0]))[ow.DASH_SHEET]
+    tile_cols = max(r.max_col for r in sheet.merged_cells.ranges if r.min_row > 2 and r.max_col < 12)
+
+    labels = [c for row in sheet.iter_rows(min_row=3) for c in row
+              if c.fill.fgColor.rgb and c.fill.fgColor.rgb.endswith(ow.TILE) and c.value]
+    assert len(labels) >= 6
+    for cell in labels:
+        merged = next(r for r in sheet.merged_cells.ranges if cell.coordinate in r)
+        lines = (sheet.row_dimensions[cell.row].height or LINE) // LINE
+        assert cell.alignment.wrap_text and lines >= 2, cell.coordinate
+        # Жирный шрифт шире цифры, по которой Excel мерит столбец: запас 20 %.
+        assert len(cell.value) <= lines * 0.8 * _width(sheet, merged.min_col, merged.max_col), cell.value
+
+    # Вывод: самый длинный случай — все оговорки формулы разом и самое длинное
+    # имя способа; объединённые строки Excel сам не растит.
+    verdict = next(r for r in sheet.merged_cells.ranges if r.min_col == 1 and r.max_col == 12)
+    cell = sheet.cell(verdict.min_row, 1)
+    assert cell.alignment.wrap_text
+    longest = sum(len(t) for t in re.findall(r'"([^"]+)"', cell.value)) + max(len(p["label"]) for p in ow.PATHS)
+    height = sum(sheet.row_dimensions[r].height or LINE for r in range(verdict.min_row, verdict.max_row + 1))
+    assert height // LINE * 0.7 * _width(sheet, 1, 12) >= longest, (height, longest)
+
+    (chart,) = sheet._charts
+    assert chart.legend.position == "b" and not chart.legend.overlay
+    fmt = chart.y_axis.numFmt
+    assert fmt is not None and not fmt.sourceLinked and "[Red]" not in fmt.formatCode and ".0" not in fmt.formatCode
+    assert chart.y_axis.majorGridlines is not None
+    anchor = chart.anchor
+    assert type(anchor).__name__ == "TwoCellAnchor", type(anchor).__name__
+    assert anchor._from.col == 0 and anchor.to.col >= tile_cols
+    assert anchor._from.row >= verdict.max_row  # под выводом, без наложения
+    assert anchor.to.row - anchor._from.row >= 15

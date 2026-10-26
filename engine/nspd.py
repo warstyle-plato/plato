@@ -3388,6 +3388,12 @@ def land_lookup(req: LandLookupRequest) -> dict[str, Any]:
         "found_count": len([item for item in results if item.get("found")]),
         "warnings": warnings,
         "reason": reason,
+        # Основание платы за смену ВРИ, если участок уже 2.6, — готовыми
+        # строками по региону: регион проекта решает страница (`classRegion`),
+        # по номеру его не узнать — у Новой Москвы номера областные.
+        "vri_fee_basis_by_region": vri_fee_basis_by_region(
+            [str(item.get("permitted_use") or "") for item in results
+             if item.get("found") and item.get("kind") == "land"]),
         "source": {
             "service": "nspd.gov.ru (НСПД, ППК «Роскадастр»)",
             "requested_at": date.today().isoformat(),

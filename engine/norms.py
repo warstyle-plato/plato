@@ -192,6 +192,128 @@ MOSCOW_SOCIAL_UUPSS: dict[str, Any] = {
     },
 }
 
+# Плата за смену ВРИ на участке, чей вид использования уже «многоэтажная
+# жилая застройка» (2.6). Прямой нормы для неизменного кода в актах нет
+# (593-ПП прил. 1 п. 1 в Москве, 1745-ПП п. 4.8 в области — разбор
+# «Нормативки» 25.10.2026); решение владельца 25.10.2026 — «ВРИ всё равно
+# считается заново, так как это новое строительство». Плата остаётся, а
+# подпись называет это основание. Один владелец и текста, и предиката: его
+# отдаёт `/land/lookup`, страница читает готовую строку.
+#
+# Решает код 2.6 или точное имя вида по классификатору (приказ Росреестра
+# П/0412: «Многоэтажная жилая застройка (высотная застройка)»), а не слово
+# «многоэтажн» в любом тексте: у 2.7.1 «Хранение автотранспорта» описание
+# говорит о многоэтажных стоянках, и подпись встала бы зря.
+_VRI_MULTISTOREY_CODE_RE = re.compile(r"(?<![\d.])2\.6(?![\d.])")
+_VRI_MULTISTOREY_NAMES = frozenset({
+    "многоэтажная жилая застройка (высотная застройка)",
+    "многоэтажная жилая застройка",
+})
+# Акт о плате за смену ВРИ по региону проекта. Другой регион — строки нет:
+# назвать чужой акт хуже, чем промолчать.
+_VRI_FEE_ACTS = {
+    "msk": "постановлении Правительства Москвы № 593-ПП",
+    "mo": "постановлении Правительства Московской области № 1745-ПП",
+}
+
+
+def vri_already_multistorey(uses: list[str]) -> bool:
+    """Вид использования участка уже многоэтажная жилая застройка (код 2.6)."""
+    for use in uses or []:
+        text = " ".join(str(use or "").lower().split())
+        if text in _VRI_MULTISTOREY_NAMES or _VRI_MULTISTOREY_CODE_RE.search(text):
+            return True
+    return False
+
+
+def vri_fee_basis_text(uses: list[str], region: str) -> str:
+    """Основание платы за смену ВРИ, если код участка уже 2.6; иначе пусто.
+
+    `region` — `msk` или `mo`: от него зависит, какой акт назван. Другой или
+    неизвестный регион — пусто."""
+    act = _VRI_FEE_ACTS.get(str(region or ""))
+    if not act or not vri_already_multistorey(uses):
+        return ""
+    return ("Участок уже имеет вид разрешённого использования «многоэтажная жилая "
+            "застройка». Плата за смену ВРИ всё равно взята в расчёт — как за новое "
+            "строительство: прямой нормы для участка, вид использования которого не "
+            f"меняется, в {act} нет, сумма взята по решению владельца сервиса.")
+
+
+def vri_fee_basis_by_region(uses: list[str]) -> dict[str, str]:
+    """Основание по каждому региону с актом; пусто, если участок не 2.6."""
+    texts = {region: vri_fee_basis_text(uses, region) for region in _VRI_FEE_ACTS}
+    return {region: text for region, text in texts.items() if text}
+
+
+# Компенсация за соцобъекты — ставки самого калькулятора ГлавАПУ (объект
+# констант его кода: uupss_doo_place, uupss_school_place,
+# uupss_policlinic_place, coeff_social_compensation). Один владелец для обоих
+# наших расчётов: серверного дубля калькулятора (`vri_tep_quick`, бот и откат
+# сайта) и нормы по введённому ТЭП (`tep_derived_norms`). Прежде ставки стояли
+# литералами в обоих, и когда город поднял их в коде калькулятора, формулы
+# сервера разошлись с ним по школе на 7 %, а предупреждение об этом нечем было
+# снять, кроме правки двух мест разом.
+#
+# Ставки версионные: старая выгрузка сверяется со ставками своей даты, а
+# расчёт без даты берёт последние. Новую строку добавлять, старую не трогать.
+GLAVAPU_SOCIAL_COMPENSATION_RATES: list[dict[str, Any]] = [
+    {"effective_from": "2026-08-01",
+     "uupss_th_rub": {"kindergarten": 4799.71, "school": 4578.69, "clinic": 7887.92},
+     "factor": {"kindergarten": 1.2, "school": 1.2, "clinic": 1.0},
+     "source": "код калькулятора genplan.tech/calc, снимок genplan_assets 28.09.2026; "
+               "выгрузки 01.08 и 16.08.2026"},
+    # Замечено ночной проверкой 25.10.2026 (школа −7 % у формул сервера).
+    # Точная дата ввода неизвестна: выгрузки 06.10 и 07.10 ещё несут прежние
+    # ставки, поэтому новая строка действует со следующего дня.
+    {"effective_from": "2026-10-08",
+     "uupss_th_rub": {"kindergarten": 4980.45, "school": 5066.73, "clinic": 8149.59},
+     "factor": {"kindergarten": 1.2, "school": 1.2, "clinic": 1.0},
+     "source": "код калькулятора genplan.tech/calc (index-CtbA_t5J.js), снят 25.10.2026; "
+               "сходится до тысячной с прод-выгрузками 77:07:0008006:3 и 77:09:0004014:13"},
+]
+# УПКС квартала 77:09:0004014, на выгрузке которого сняты прежние ставки «за
+# место» (9,9 / 7,8 / 10,9 млн): им серверный расчёт откатывается, если УПКС
+# квартала не пришёл, — без земли платёж вышел бы почти вдвое ниже.
+GLAVAPU_SOCIAL_FALLBACK_UPKS = 98974.74
+
+
+def glavapu_social_rates(at: str = "") -> dict[str, Any]:
+    """Ставки компенсации калькулятора на дату. Пусто — последние."""
+    rows = sorted(GLAVAPU_SOCIAL_COMPENSATION_RATES, key=lambda row: str(row["effective_from"]))
+    moment = str(at or "").strip()
+    chosen = rows[0] if moment else rows[-1]
+    for row in rows:
+        if moment and str(row["effective_from"]) <= moment:
+            chosen = row
+    return chosen
+
+
+def glavapu_social_land_sqm(kind: str, places: float) -> float:
+    """Норматив земли на место — по мощности объекта, как в коде калькулятора:
+    ДОО 35 м² до 150 мест, дальше 32; школа 19 до 900, 16 до 1 500, дальше 14;
+    поликлиника 30."""
+    if kind == "kindergarten":
+        return 35.0 if places <= 150 else 32.0
+    if kind == "school":
+        return 19.0 if places <= 900 else 16.0 if places <= 1500 else 14.0
+    return 30.0
+
+
+def glavapu_social_compensation_mln(kind: str, places: float, upks: float,
+                                    at: str = "") -> float:
+    """Компенсация за соцобъект формулой калькулятора (функция ap):
+    коэфф × (УУПСС на место × места / 1000 + места × земля на место × УПКС / 1e6),
+    каждое слагаемое и итог — до тысячной, как округляет калькулятор.
+    """
+    if places <= 0:
+        return 0.0
+    rates = glavapu_social_rates(at)
+    building = round(rates["uupss_th_rub"][kind] * places / 1000.0, 3)
+    land = round(places * glavapu_social_land_sqm(kind, places) * upks / 1e6, 3)
+    return round(rates["factor"][kind] * (building + land), 3)
+
+
 # Приложение 6 к 945-ПП: приобъектная парковка, Nв = X / X2 × K1 × K2.
 # Приложение 5 переписано 2118-ПП, приложение 6 — нет, и переписывать его
 # вместе с ним нельзя.
@@ -696,7 +818,7 @@ def storage_area_per_unit(inputs: dict[str, Any]) -> float:
 
     Величина измерена, а не назначена: средняя кладовая в продаже 4,3 м² (ПИК,
     май–июль 2026) и 4,6 (НДВ, 2024), в продаже 2,3–9,8, а СП 4.13130.2013
-    изм. 3 ограничивает одну кладовую десятью метрами. Замер накрывает
+    (п. 5.2.11, изм. 4) ограничивает одну кладовую десятью метрами. Замер накрывает
     масс-сегмент; у бизнеса и элитки своего замера нет, и потому число одно на
     все классы — у кого кладовая крупнее, правит его в профиле своего класса.
     """
@@ -1161,7 +1283,8 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
                       sqm_per_job: float = 32.0,
                       parking_norm_regime: str = "2118_2026",
                       apartment_count: float = 0.0,
-                      social_population_method: str = SOCIAL_POPULATION_DEFAULT) -> dict[str, Any]:
+                      social_population_method: str = SOCIAL_POPULATION_DEFAULT,
+                      compensation_at: str = "") -> dict[str, Any]:
     """Что следует из введённого руками ТЭП: население, соцпотребность,
     компенсация, машино-места, места приложения труда.
 
@@ -1221,22 +1344,20 @@ def tep_derived_norms(*, apartment_area_sqm: float, residential_living_spp_sqm: 
     guest = math.ceil(permanent / 10.0) if permanent else 0
     onsite = math.ceil(nonresidential_np / 90.0 * k1 * k2) if nonresidential_np and k1 and k2 else 0
 
-    def compensation(places: float, uupss_th: float, land_sqm: float, factor: float) -> float:
+    def compensation(kind: str, places: float) -> float:
         if places <= 0 or upks <= 0:
             return 0.0
-        return factor * (uupss_th * places / 1000.0 + places * land_sqm * upks / 1e6)
+        return glavapu_social_compensation_mln(kind, places, upks, compensation_at)
 
-    # Земля на место — по мощности объекта, как у калькулятора: ДОО 35 м² до
-    # 150 мест, дальше 32; школа 19 до 900, 16 до 1 500, дальше 14. Мощность
+    # Ставки и земля на место — у `glavapu_social_compensation_mln`. Мощность
     # поликлиники в компенсации — взрослая (13,2) + детская (5,8) на тысячу:
     # на Нагатино 101 + 45 = 146 при смешанной 145 (выгрузка 06.10.2026).
     clinic_parts = ((math.ceil(13.2 * social_population / 1000)
                      + math.ceil(5.8 * social_population / 1000))
                     if social_population else 0)
-    comp_dou = compensation(dou, 4799.71, 35.0 if dou <= 150 else 32.0, 1.2)
-    comp_school = compensation(school, 4578.69,
-                               19.0 if school <= 900 else 16.0 if school <= 1500 else 14.0, 1.2)
-    comp_clinic = compensation(clinic_parts, 7887.92, 30.0, 1.0)
+    comp_dou = compensation("kindergarten", dou)
+    comp_school = compensation("school", school)
+    comp_clinic = compensation("clinic", clinic_parts)
     return {
         "population": population,
         "apartment_units": math.ceil(population / 2.1) if population else 0,
@@ -1498,6 +1619,56 @@ def _object_parking_area_saved_line(saved: dict[str, Any]) -> str:
             f"прежнее умолчание; теперь берётся норматив класса {norm} м²")
 
 
+# Гараж офиса по умолчанию строится по нормативу (решение владельца,
+# 25.10.2026). Это не отменяет решения 06.09.2026 о приобъектной парковке:
+# асфальт у входа по-прежнему справка и не строится. Здесь норматив отвечает
+# на другой вопрос — сколько мест положить в ГАРАЖ офиса, пока человек своего
+# числа не назвал. Человек по-прежнему сильнее: вписанное им число подземных
+# мест (> 0) берётся как есть, а места первых этажей засчитываются в норматив —
+# под землю идёт только остаток («под землёй — норматив минус наземные»).
+# Прежде ноль под землёй рядом с вписанными местами первых этажей значил
+# «гаража нет», и в нежилом проекте его занимал перенос паркинга проекта:
+# 271 место на первых этажах + 149 из старого поля проекта = 420.
+#
+# Правило — у нежилого проекта: там гараж офиса и есть подземный паркинг, а
+# сказать «гаража нет» можно галочкой «Отказ от подземного паркинга». В жилом
+# проекте та галочка — про паркинг дома, и ноль в поле офиса, вписанный руками,
+# по-прежнему значит «гаража у офиса нет».
+OBJECT_GARAGE_NORM_REST_PRODUCTS = frozenset({"offices"})
+
+
+def object_garage_takes_norm_rest(inputs: dict[str, Any], tep_key: str) -> bool:
+    """Подземные места объекта без своего числа — остаток норматива?"""
+    obj = _BY_KEY.get(tep_key)
+    return (is_nonresidential(inputs) and obj is not None
+            and obj.product in OBJECT_GARAGE_NORM_REST_PRODUCTS)
+
+
+def object_underground_refused(inputs: dict[str, Any]) -> bool:
+    """«Отказ от подземного паркинга» в нежилом проекте снимает и гаражи
+    объектов: другого подземного паркинга, кроме их, у такого проекта нет."""
+    return is_nonresidential(inputs) and b(inputs, "underground_parking_disabled")
+
+
+def _parking_norm_region(demand: dict[str, Any]) -> str:
+    return ("Московской области" if demand.get("jurisdiction") == parking_norms.MOSCOW_OBLAST
+            else "Москвы")
+
+
+def object_parking_origin_note(demand: dict[str, Any], origin: str, required: int,
+                               under: int, over: int) -> str:
+    """Откуда число мест объекта — одной фразой для страницы, отчёта и PDF."""
+    if origin == "refused":
+        tail = f" На первых этажах — {over} мест." if over else ""
+        return "Отказ от подземного паркинга: мест под землёй нет." + tail
+    if origin in ("norm", "norm_rest"):
+        return (f"По нормативу {_parking_norm_region(demand)}: {required} мест, "
+                f"из них {over} на первых этажах, под землёй {under}.")
+    if origin == "hand":
+        return f"Задано руками: под землёй {under} мест, на первых этажах {over}."
+    return ""
+
+
 def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     """Разместить СОБСТВЕННЫЙ паркинг объектов по строкам ТЭП.
 
@@ -1575,13 +1746,27 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
         over = max(0, int(n(inputs, f"{prefix}_parking_over_spaces"))) if enabled else 0
 
         by_norm = False
+        required = int((required_by_key.get(tep_key) or 0))
         take_norm = enabled and not object_parking_by_hand(inputs, prefix)
+        # Чьё число стоит под землёй — часть самого числа (`under_origin`):
+        # «по нормативу», «норматив минус первые этажи», «задано руками» и
+        # «отказ от подземного паркинга» на экране выглядят одним полем.
+        origin = "hand" if enabled else ""
         if take_norm:
-            required = int((required_by_key.get(tep_key) or 0))
             if required > 0:
                 under, over, by_norm = required, 0, True
+                origin = "norm"
             else:
                 under, over = 0, 0
+                origin = "none"
+        elif enabled and under <= 0 and object_garage_takes_norm_rest(inputs, tep_key) and required > 0:
+            # Гараж офиса без своего числа подземных мест — остаток норматива
+            # после мест первых этажей (`object_garage_takes_norm_rest`).
+            under = max(0, required - over)
+            origin = "norm_rest"
+        if enabled and object_underground_refused(inputs):
+            under = 0
+            origin = "refused"
 
         guests = 0
         if sellable and enabled:
@@ -1644,6 +1829,9 @@ def apply_object_parking(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[st
             "units": under + over,
             "guest_spaces": guests,
             "by_norm": by_norm,
+            "under_origin": origin,
+            "norm_rest": object_garage_takes_norm_rest(inputs, tep_key),
+            "origin_note": object_parking_origin_note(demand, origin, required, under, over),
             "required_spaces": int(required_by_key.get(tep_key) or 0),
             "sellable": sellable,
             "saleable_units": int(row["parking_saleable_units"]),
@@ -1767,7 +1955,11 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
         # Чьё число — часть числа. «Задано руками» у нетронутого поля — это
         # утверждение о человеке, сделанное из нашего же нуля: он ничего не
         # вписывал, просто мест не потребовалось.
-        if item.get("by_norm"):
+        if item.get("under_origin") == "refused":
+            whose = ", отказ от подземного паркинга"
+        elif item.get("under_origin") == "norm_rest":
+            whose = ", под землёй — норматив за вычетом мест на первых этажах"
+        elif item.get("by_norm"):
             whose = ", по нормативу"
         elif item["units"]:
             whose = ", задано руками"
@@ -1822,7 +2014,9 @@ def _object_parking_note(demand: dict[str, Any], own: list[dict[str, Any]]) -> s
 # называло московский документ под областным числом (Мытищи, 04.10.2026).
 PARKING_NORM_OTHER_REGION = "other_region"
 PARKING_NORM_OF: dict[str, str] = {
-    parking_norms.MOSCOW: "приложения 6 к 945-ПП",
+    # Таблица мест на расчётную единицу — приложение 1 (ред. 2579-ПП), формула
+    # с К1 и К2 — приложение 6: число собирают оба, и подпись называет оба.
+    parking_norms.MOSCOW: "приложений 1 и 6 к 945-ПП",
     # Другой регион: норм парковки его у нас нет (решение владельца 19.10.2026).
     PARKING_NORM_OTHER_REGION: "этого региона — его норм у нас нет",
     parking_norms.MOSCOW_OBLAST: ("Московской области (приложение № 10 к 713/30 в ред. "
@@ -1864,8 +2058,10 @@ def parking_demand(inputs: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any
     отвечает на «сколько положено», и на этом её работа кончается.
 
     Собственный паркинг объекта — другое: гараж под ОСЗ ставится на кадастр и
-    продаётся машино-местами. Его число задаёт человек (`OBJECT_PARKING_FIELDS`),
-    и из этой нормы оно НЕ выводится.
+    продаётся машино-местами. Его число задаёт человек (`OBJECT_PARKING_FIELDS`);
+    пока не задал — гараж строится по этой норме, а у офиса под землёй идёт
+    остаток после мест первых этажей (`object_garage_takes_norm_rest`,
+    решение владельца 25.10.2026). Сама приобъектная стоянка не строится.
 
     База московского норматива — НЕЖИЛАЯ НАЗЕМНАЯ ПЛОЩАДЬ (сноска 2 приложения
     1 в редакции 2579-ПП). В нашем ТЭП это `gns` продукта: подземная часть у
