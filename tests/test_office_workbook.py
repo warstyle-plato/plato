@@ -267,20 +267,31 @@ def test_a_tampered_input_and_rent_date_are_caught() -> None:
 
 def test_the_office_class_drives_the_model() -> None:
     """Класс офиса — список, а не подпись: другая ступень меняет допущения,
-    не заданные вручную, и пути расходятся с движком."""
-    content, _ = _book("аренда и продажа здания, аннуитет")
+    не заданные вручную, и пути расходятся с движком. Класс книги — класс
+    офиса из вводных проекта (`office_class_choice`), а не угадан по числам."""
+    # Ставка капитализации — ступень класса B: она идёт за классом.
+    x, t = _project(offices_strategy="income", offices_exit_cap_pct=11.5)
+    content, _filename, _meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
     sheet = openpyxl.load_workbook(io.BytesIO(content))[ow.INPUTS_SHEET]
-    chosen = sheet[f"B{_row(sheet, 'Класс офиса')}"].value
-    assert chosen in core.nonres_strategy.OFFICE_CLASSES
+    assert sheet[f"B{_row(sheet, 'Класс офиса')}"].value == "B"
     # Числа проекта, отличные от ступени, стоят «вручную»: правка руками видна.
     assert sheet[f"B{_row(sheet, 'Ставка аренды с НДС')}"].value == pytest.approx(4.5)
 
     def other_class(book):
         ws = book[ow.INPUTS_SHEET]
-        ws[f"B{_row(ws, 'Класс офиса')}"] = "A+" if chosen != "A+" else "B"
+        ws[f"B{_row(ws, 'Класс офиса')}"] = "A+"
 
-    labels = _tampered("аренда и продажа здания, аннуитет", other_class)
-    assert f"{RENT}: NPV проекта" in labels
+    verdict, bad, _, _ = _evaluate(content, other_class)
+    assert verdict == ow.FAILED
+    assert f"{RENT}: NPV проекта" in {f"{section}: {label}" for section, label in bad}
+
+
+def test_the_book_takes_the_chosen_office_class() -> None:
+    x, t = _project(offices_strategy="income", offices_office_class="A+")
+    content, _filename, _meta = core.build_project_workbook(x, t, [], {}, project_name="Офис")
+    sheet = openpyxl.load_workbook(io.BytesIO(content))[ow.INPUTS_SHEET]
+    assert sheet[f"B{_row(sheet, 'Класс офиса')}"].value == "A+"
+    assert _evaluate(content)[0] == ow.PASSED
 
 
 def test_the_class_of_the_engine_defaults_is_written_without_manual_cells() -> None:

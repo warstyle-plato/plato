@@ -166,13 +166,14 @@ def test_a_checked_plan_from_plato_is_drawn_and_named(plato):
     first, second = _ask(x, m, phases)
     # Пока плана нет — расстановка движка и фраза «готовится»; расчёт не ждёт.
     assert first["layout"]["plan"]["status"] == "pending"
-    assert any("готовит план" in n for n in first["layout"]["notes"])
+    # Внутренняя кухня (готовится, не принят) посетителю не видна (владелец 25.10.2026).
+    assert not any("Платон" in n or "движок" in n for n in first["layout"]["notes"])
     plan = second["layout"]["plan"]
     assert plan["status"] == "ready" and plan["origin"] == "plato", plan
     assert all(b["placement_origin"] == "plato" for b in second["layout"]["buildings"])
-    assert any("предложил Платон" in n for n in second["layout"]["notes"])
-    assert "Замысел Платона" in plan["note"]
-    assert second["axonometry"]["footer"].startswith("Расстановку предложил Платон")
+    assert any("предложил помощник Платон" in n for n in second["layout"]["notes"])
+    assert "Замысел:" in plan["note"]
+    assert second["axonometry"]["footer"].startswith("Расстановку корпусов предложил помощник Платон")
     # Один запрос на одни входы: повторный расчёт читает план с диска.
     core.site_massing_scheme(x, m, phases)
     assert len(calls) == 1
@@ -212,8 +213,9 @@ def test_a_forged_plan_is_rejected_with_its_reason(plato, fake, words):
     plan = second["layout"]["plan"]
     assert plan["status"] == "rejected", plan
     assert words in plan["reason"], plan["reason"]
-    # Причина видна посетителю, на схеме — расстановка движка.
-    assert any(words in n and "не принял" in n for n in second["layout"]["notes"])
+    # Причина — в ответе для команды, посетителю о ней не пишем (владелец 25.10.2026).
+    assert not any(words in n or "не принял" in n or "движок" in n
+                   for n in second["layout"]["notes"])
     assert all(b["placement_origin"] == "engine" for b in second["layout"]["buildings"])
     assert core.massing_check(second["layout"]["buildings"], second["layout"]["underground_rings"]) is None
     # Вторая попытка — с причиной отказа.
@@ -233,18 +235,23 @@ def test_a_plan_for_other_inputs_is_not_shown_as_fresh(plato):
     plan = later["layout"]["plan"]
     assert plan["key"] != ready["layout"]["plan"]["key"]
     assert plan["status"] == "pending" and plan["stale"] is True
-    assert any("устарел" in n for n in later["layout"]["notes"])
+    assert not any("устарел" in n for n in later["layout"]["notes"])
     assert all(b["placement_origin"] == "engine" for b in later["layout"]["buildings"])
     _wait_plan_threads()
     failed = core.site_massing_scheme(x2, m2, phases2)["layout"]["plan"]
-    assert failed["status"] == "failed" and "модель молчит" in failed["note"]
+    assert failed["status"] == "failed" and "модель молчит" in failed["reason"]
+    assert failed["note"] == ""
 
 
-def test_without_plato_the_engine_says_so():
+def test_without_plato_the_visitor_reads_no_kitchen():
+    """Платон выключен — схема молчит о нём и о «движке» (владелец 25.10.2026)."""
     x, m, phases = _nagatino()
-    plan = core.site_massing_scheme(x, m, phases)["layout"]["plan"]
+    scheme = core.site_massing_scheme(x, m, phases)
+    plan = scheme["layout"]["plan"]
     assert plan["status"] == "off" and plan["origin"] == "engine"
-    assert "корпуса расставил движок" in plan["note"]
+    assert plan["note"] == ""
+    seen = " ".join(scheme["layout"]["notes"]) + scheme["axonometry"]["footer"]
+    assert "Платон" not in seen and "движок" not in seen
 
 
 def test_the_pdf_draws_the_same_strip_scheme():
@@ -256,7 +263,9 @@ def test_the_pdf_draws_the_same_strip_scheme():
     drawing = items[1]
     polygons = [c for c in drawing.contents if type(c).__name__ == "Polygon"]
     assert len(polygons) == len(scheme["axonometry"]["shapes"])
-    assert any(n in items for n in scheme["layout"]["notes"])
+    # Пояснения схемы — те же строки, что на странице (Платон выключен — их может не быть).
+    assert all(n in items for n in scheme["layout"]["notes"])
+    assert scheme["axonometry"]["footer"] in items
     lines = [g["line"] for g in scheme["axonometry"]["legend"]]
     assert all(line in items for line in lines)
 
@@ -308,4 +317,5 @@ def test_the_page_draws_the_strip_and_numbers_do_not_overlap(drawn, width):
         for b in marks[i + 1:]:
             apart = a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1]
             assert apart, (a, b)
-    assert "корпуса расставил движок" in got["text"]
+    assert "Корпуса расставлены для наглядности" in got["text"]
+    assert "движок" not in got["text"] and "Платон" not in got["text"]

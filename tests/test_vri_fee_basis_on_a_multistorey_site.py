@@ -7,8 +7,11 @@
 строительство». Плата остаётся, подпись на странице называет основание — так
 же, как в Московской области.
 
-Строку основания отдаёт сервер (`vri_fee_basis_text`) в ответе `/land/lookup`;
-страница её показывает под суммой платы. Проверка — на настоящем коде
+Строки основания по региону отдаёт сервер (`vri_fee_basis_by_region`) в ответе
+`/land/lookup`; страница берёт строку региона проекта (`classRegion`) и
+показывает её под суммой платы. Акт назван по региону: 593-ПП в Москве,
+1745-ПП в области. Решает код 2.6 или точное имя вида, а не слово «многоэтажн»
+(рецензия «Нормативки» к #924). Проверка — на настоящем коде
 страницы (node) и настоящем эндпоинте.
 
 Запуск: python3 -m pytest tests/test_vri_fee_basis_on_a_multistorey_site.py -q
@@ -30,15 +33,28 @@ MULTISTOREY = "Многоэтажная жилая застройка (высо�
 IZHS = "Для индивидуального жилищного строительства"
 
 
-def test_the_predicate_reads_the_name_and_the_code():
+PARKING_271 = ("Хранение автотранспорта (2.7.1): размещение отдельно стоящих и "
+               "пристроенных гаражей, в том числе многоэтажных стоянок")
+
+
+def test_the_predicate_reads_the_code_and_the_classifier_name():
     assert core.vri_already_multistorey([MULTISTOREY])
+    assert core.vri_already_multistorey(["Многоэтажная  жилая застройка"])
     assert core.vri_already_multistorey(["2.6"])
     assert core.vri_already_multistorey([IZHS, "код 2.6"])
-    # Контрпримеры: другой код, похожий номер, пусто.
+    # Контрпримеры: слово «многоэтажн» в чужом виде, другой код, похожий номер.
+    assert not core.vri_already_multistorey([PARKING_271])
     assert not core.vri_already_multistorey([IZHS])
     assert not core.vri_already_multistorey(["Среднеэтажная жилая застройка (2.5)"])
     assert not core.vri_already_multistorey(["12.6", "2.6.1"])
     assert not core.vri_already_multistorey([])
+
+
+def test_the_text_names_the_act_of_the_region():
+    assert "593-ПП" in core.vri_fee_basis_text([MULTISTOREY], "msk")
+    assert "1745-ПП" in core.vri_fee_basis_text([MULTISTOREY], "mo")
+    assert core.vri_fee_basis_text([MULTISTOREY], "other") == ""
+    assert core.vri_fee_basis_text([PARKING_271], "msk") == ""
 
 
 def _lookup(monkeypatch, use: str) -> dict:
@@ -50,29 +66,38 @@ def _lookup(monkeypatch, use: str) -> dict:
 
 
 def test_the_lookup_carries_the_basis_only_for_a_multistorey_site(monkeypatch):
-    basis = _lookup(monkeypatch, MULTISTOREY)["vri_fee_basis"]
-    assert "как за новое строительство" in basis and "решению владельца" in basis
-    assert _lookup(monkeypatch, IZHS)["vri_fee_basis"] == ""
+    by_region = _lookup(monkeypatch, MULTISTOREY)["vri_fee_basis_by_region"]
+    assert set(by_region) == {"msk", "mo"}
+    assert "как за новое строительство" in by_region["msk"] and "593-ПП" in by_region["msk"]
+    assert "1745-ПП" in by_region["mo"]
+    assert _lookup(monkeypatch, IZHS)["vri_fee_basis_by_region"] == {}
+    assert _lookup(monkeypatch, PARKING_271)["vri_fee_basis_by_region"] == {}
 
 
-def _note(lookup: dict) -> str:
+def _note(lookup: dict, region: str = "") -> str:
     import page_blocks
 
-    prelude = ("let inputs={land_rights_cost_mln:851.315,"
+    prelude = ("let inputs={land_rights_cost_mln:851.315,vri_region:%s,"
                "_field_origin:{'inputs.land_rights_cost_mln':{source:'glavapu'}},"
-               "_land_lookup:%s};" % json.dumps(lookup, ensure_ascii=False))
+               "_land_lookup:%s};" % (json.dumps(region),
+                                      json.dumps(lookup, ensure_ascii=False)))
     out, _ = page_blocks.run(prelude, "console.log(vriRequiredNote());")
     return out.strip()
 
 
-def test_the_page_names_the_basis_under_the_fee(monkeypatch):
-    note = _note(_lookup(monkeypatch, MULTISTOREY))
+def test_the_page_names_the_basis_and_the_act_of_the_project_region(monkeypatch):
+    lookup = _lookup(monkeypatch, MULTISTOREY)
+    note = _note(lookup, "msk")
     assert "851" in note and "(из ГлавАПУ)" in note
-    assert "как за новое строительство" in note, \
-        "плата на участке 2.6 обязана назвать основание"
+    assert "как за новое строительство" in note and "593-ПП" in note, \
+        "плата на участке 2.6 обязана назвать основание и акт Москвы"
+    mo = _note(lookup, "mo")
+    assert "1745-ПП" in mo and "593-ПП" not in mo
+    assert "новое строительство" not in _note(lookup, "other")
 
 
 def test_the_page_stays_quiet_where_the_use_really_changes(monkeypatch):
-    note = _note(_lookup(monkeypatch, IZHS))
-    assert "851" in note
-    assert "новое строительство" not in note
+    for use in (IZHS, PARKING_271):
+        note = _note(_lookup(monkeypatch, use), "msk")
+        assert "851" in note
+        assert "новое строительство" not in note

@@ -1668,7 +1668,20 @@
     else shell.appendChild(box);
   }
 
+  /* Слой запущен — сторож загрузки (boot_guard.js в <head>) снимает экран
+     загрузки. В finally: даже сорвавшийся запуск не имеет права оставить
+     человека перед вечной заставкой — сбой шагов показывает report(). */
   function boot() {
+    try {
+      bootSteps();
+    } finally {
+      var root = document.documentElement;
+      root.classList.add('ia-ready');
+      root.classList.remove('ia-loading');
+    }
+  }
+
+  function bootSteps() {
     step('лента preview', ribbon);
     step('шапка', rebuildHeader);
     step('подтверждение сброса', guardReset);

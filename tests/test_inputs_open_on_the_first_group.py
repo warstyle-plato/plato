@@ -219,6 +219,12 @@ def render(inputs: dict, tail: str = "console.log(JSON.stringify(groups()));",
         # Регион проекта форма читает у поля периодичности рассрочки ВРИ.
         page_blocks.project_region(),
         page_function("renderInputs"),
+        # Под выбором класса офиса форма пишет, какой класс действует и откуда.
+        page_const("OFFICE_CLASS"),
+        page_const("OFFICE_CLASS_FIELDS"),
+        page_function("nonresProjectClass"),
+        page_function("officeClassFor"),
+        page_function("officeClassNoteText"),
         # Подпись происхождения у поля (ГлавАПУ, выгрузка от …, строка).
         page_function("fieldOriginNote"),
         # Форма пишет подпись под полями паркинга объектов сама: ячейки она же
