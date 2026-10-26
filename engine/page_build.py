@@ -153,6 +153,8 @@ PAGE = PAGE.replace("__DEVELOPAID_TEP_DERIVED_OBJECT_INPUTS__", _js_keys(
 # Перевод «под ключ» → СМР для страницы: коэффициенты по классу (у класса
 # свои ставки подготовки и сетей) и умолчания «под ключ» метровых объектов.
 # Формула одна — `object_smr_conversion`; страница только применяет (c, m).
+PAGE = PAGE.replace(OFFICE_CLASS_PAGE_PLACEHOLDER,
+                    json.dumps(office_class_page_data(), ensure_ascii=False))
 PAGE = PAGE.replace("__DEVELOPAID_OBJECT_SMR__", json.dumps({
     "defaults": OBJECT_SMR_RATE_DEFAULTS,
     # Цена офиса в нежилом проекте — из аренды класса (`NONRES_KIND_CLASS_PRICES`).

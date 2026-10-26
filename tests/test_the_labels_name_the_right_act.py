@@ -108,7 +108,7 @@ def test_the_oblast_parking_label_does_not_claim_the_cancelled_sp() -> None:
     assert "СП 42.13330.2016 отменён" in label, label
     assert "СП 42.13330.2016, табл. Ж.1" not in label, label
     # Москва на месте — предохранитель от правки не того ключа.
-    assert core.PARKING_NORM_OF[core.parking_norms.MOSCOW] == "приложения 6 к 945-ПП"
+    assert core.PARKING_NORM_OF[core.parking_norms.MOSCOW] == "приложений 1 и 6 к 945-ПП"
 
 
 def test_the_oblast_rules_source_is_the_appendix_not_the_sp() -> None:

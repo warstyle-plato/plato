@@ -170,6 +170,13 @@ V4_INPUTS_NOT_IN_BOOK.update({
     for _obj in STANDALONE_OBJECTS if _obj.strategies
     for _suffix in nonres_strategy.STRATEGY_FIELD_DEFAULTS
     if _obj.garage_sellable or _suffix != "parking_rent_th_month"})
+# Класс офиса — не число, а выбор, который ставит числа полей офиса
+# (`apply_office_classes`): книга получает сами числа — цену, себестоимость,
+# аренду, — а выбор класса показывается основанием.
+V4_INPUTS_NOT_IN_BOOK.update({
+    f"{_obj.prefix}_{nonres_strategy.OFFICE_CLASS_FIELD}": (
+        "класс офиса ставит цену, себестоимость и аренду офиса; книга получает числа")
+    for _obj in STANDALONE_OBJECTS if _obj.product == "offices"})
 # Назначение каждого экземпляра ФОКа — та же вводная норматива, что у первого.
 V4_INPUTS_NOT_IN_BOOK.update({
     _obj.purpose_key: V4_INPUTS_NOT_IN_BOOK["sports_purpose"]
@@ -349,14 +356,20 @@ def _v4_landscaping_rows_xml(xml: str, inputs: dict[str, Any],
                  + text_cell(f"D{given_row}", "landscaping_area_sqm")
                  + "</x:row>")
     gns_rate_row = base_row + 4
+    # Ставка — та же, что у движка (`landscaping_gns_rate`): у нежилого проекта
+    # без ручной ставки — умолчание нежилого проекта (владелец, 25.10.2026), и
+    # пометка говорит, что число не вписано руками.
+    gns_rate, gns_rate_origin = landscaping_gns_rate(inputs)
+    gns_rate_note = ("по умолчанию для нежилого проекта: благоустройство считается "
+                     "ставкой на метр наземной площади"
+                     if gns_rate_origin == LANDSCAPING_RATE_NONRES_DEFAULT else
+                     "привычный сметчику показатель; заданный, он сильнее методики "
+                     "двора — так же, как заданная площадь сильнее норматива")
     parts.append(f'<x:row r="{gns_rate_row}">'
                  + text_cell(f"A{gns_rate_row}", "Ставка на метр ГНС, тыс ₽/м² "
                                                  "(0 — считать методикой двора)")
-                 + number_cell(f"B{gns_rate_row}", float(inputs.get(
-                     "landscaping_gns_th_per_sqm") or 0.0))
-                 + text_cell(f"C{gns_rate_row}", "привычный сметчику показатель; заданный, "
-                                                 "он сильнее методики двора — так же, как "
-                                                 "заданная площадь сильнее норматива")
+                 + number_cell(f"B{gns_rate_row}", gns_rate)
+                 + text_cell(f"C{gns_rate_row}", gns_rate_note)
                  + text_cell(f"D{gns_rate_row}", "landscaping_gns_th_per_sqm")
                  + "</x:row>")
     norm_row = base_row + 5
