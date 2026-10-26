@@ -607,9 +607,19 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
                      f"{_fmt_ru(spot)} м², это больше пятна застройки в расчёте ({_fmt_ru(footprint)} м²).")
     if plan.get("note"):
         notes.append(plan["note"])
+    # Уровней больше потолка (задано руками) — на схеме одна плита и причина,
+    # а не колонка из сотен подписей.
+    level_rows = massing.get("underground_level_rows") or []
+    levels_total = int(massing.get("underground_levels") or 0)
+    if len(level_rows) > UNDERGROUND_LEVELS_MAX:
+        notes.append(
+            f"Подземных уровней задано вручную {levels_total}, а схема рисует не больше "
+            f"{UNDERGROUND_LEVELS_MAX}. Поэтому на схеме одна плита — верхний уровень. Проверьте "
+            "число в поле «Подземных уровней»: так глубоко под землю обычно не строят.")
+        level_rows = level_rows[:1]
     under_plan = massing_underground_plan(
         inner or rings, massing_strip_axis(inner or rings), corpora,
-        massing.get("underground_level_rows") or [],
+        level_rows,
         float(massing.get("underground_use_factor") or 0.0),
         {str(o.get("key")): float(o.get("plot_sqm") or 0.0) for o in objects})
     for row in under_plan:
@@ -631,12 +641,15 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
         "storeys_limit": limit,
         "storeys_limit_origin": "manual" if given_limit > 0 else "default",
         "unplaced_count": sum(1 for c in corpora if not c.get("ring_m")) if plan else 0,
-        "underground_levels": int(massing.get("underground_levels") or 0),
+        "underground_levels": levels_total,
+        # Подземная часть под участком не помещается: плит нет, причина — в
+        # предупреждении движка (`underground_levels_reason`).
+        "underground_levels_unfit": bool(massing.get("underground_levels_unfit")),
         # Уровни под землёй — те же, по которым взята ставка: площадь уровня и
-        # полезная площадь одного уровня в контуре.
+        # полезная площадь одного уровня в контуре (не больше потолка схемы).
         "underground_level_rows": [{"level": int(r.get("level") or 0),
                                     "area_sqm": float(r.get("area_sqm") or 0.0)}
-                                   for r in massing.get("underground_level_rows") or []],
+                                   for r in level_rows],
         "underground_level_capacity_sqm": float(massing.get("underground_contour_sqm") or 0.0)
         * float(massing.get("underground_use_factor") or 0.0),
         # Где под участком лежит каждый уровень: контур под корпусами и двором.
@@ -967,7 +980,10 @@ def site_massing_axonometry(layout: dict[str, Any]) -> dict[str, Any]:
                   + (", а по плану каждая плита лежит там, где этот уровень: под корпусами "
                      "и двором" + ("; под участками школы и детского сада паркинга нет"
                                    if social else "") if placed_under
-                     else "") + ". " if texts else "")
+                     else "") + ". " if texts else
+                  "Подземная часть под участком не помещается, поэтому подземных уровней на "
+                  "схеме нет: причина названа выше. " if layout.get("underground_levels_unfit")
+                  else "")
                + "Корпуса окрашены по очередям, номер на крыше — номер строки в списке под схемой.")
     plan = layout.get("plan") or {}
     who = ("Расстановку корпусов предложил помощник Платон" if plan.get("origin") == "plato"

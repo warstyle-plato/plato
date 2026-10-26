@@ -569,7 +569,7 @@ _MPT_FRAGMENT = r'''
     try{
       const r=await fetch('/api/mpt/calculate',{method:'POST',headers:{'Content-Type':'application/json'},credentials:'same-origin',body:JSON.stringify(payload)});
       const data=await r.json();
-      if(!r.ok) throw new Error(data.detail||'Расчёт не выполнен');
+      if(!r.ok) throw new Error(serverDetail(data)||'Расчёт не выполнен');
       q('mpt-benefit').textContent=rub(data.benefit_rub);
       q('mpt-eligible').textContent=num(data.eligible_area_sqm)+' м²';
       q('mpt-kmest').textContent=num(data.kmest,2);
