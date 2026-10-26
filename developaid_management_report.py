@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 import developaid_actuals as actuals
+import developaid_credit_repayment as credit_repayment
 import developaid_monitor as monitor
 import developaid_funding_schedule as funding_schedule
 import developaid_monitor_manager as manager
@@ -944,6 +945,8 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
             ("funding", lambda: funding(project, kind, bounds["end"], sales_project,
                                         sales_dir, dashboard)),
             ("funding_schedule", lambda: funding_schedule.execution(project, bounds["end"])),
+            ("credit", lambda: credit_repayment.for_project(project, sales_project or "",
+                                                            sales_dir)),
             ("legal", lambda: dict(legal_cases.for_report(
                 project, bounds["start"], bounds["end"]), state="ok")),
             ("notes", lambda: dict(project_notes.for_period(
@@ -1290,6 +1293,12 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
                 text += (f", новых или изменённых за {period}: {len(fresh)} — "
                          + ", ".join(f"«{n['topic']}»" for n in fresh[:3]))
             add("Открытые вопросы", text + ".", "общая информация по проекту")
+    block = report.get("credit") or {}
+    if block.get("state") == "ok":
+        color = block["status"]["color"]
+        add("Погашение кредитов", credit_repayment.text_line(block).removeprefix("Кредиты: "),
+            "данные банка по кредитам и эскроу, прогноз поступлений",
+            "bad" if color == "red" else "missing" if color == "unknown" else "")
     return out
 
 
@@ -2162,6 +2171,9 @@ def render_text(report: dict[str, Any]) -> str:
 
     lines += ["", "<b>Финансирование</b>"]
     lines += [esc(line) for line in _funding_text(report)]
+    block = report.get("credit") or {}
+    lines.append(esc(credit_repayment.text_line(block) if block.get("state") == "ok"
+                     else block.get("reason") or "Погашение кредитов: данных нет."))
 
     lines += ["", "<b>Бюджет месяца</b>"]
     block = report.get("budget") or {}
@@ -2247,6 +2259,9 @@ section{break-inside:auto}
 .switch-charts .switch{display:none}
 figure.chart{margin:10px 0 6px;break-inside:avoid;page-break-inside:avoid}figure.chart figcaption{font-size:11.5px;color:#17202a;margin-bottom:3px;font-weight:600}
 svg.chart{display:block;max-width:100%}
+.credit-status{padding:6px 9px;border-radius:4px;background:#f4f7fb;margin:6px 0}.credit-status.bad{background:#fdecea}.credit-status.warn{background:#fff6dd}.credit-status.good{background:#eaf5ec}
+table.credit-table tr.loan td{color:#5b6b7d;font-size:10.5px;border-bottom:1px dotted #e1e6ec}table.credit-table tr.loan td:first-child{padding-left:16px}table.credit-table th{white-space:normal}
+table.credit-top td:last-child{text-align:left;white-space:normal}details.how summary,.credit details>summary{cursor:pointer;color:#1f4e8c}.credit details{margin:6px 0}details.how div{white-space:normal;font-size:10.5px;max-width:520px}
 """
 
 
@@ -2993,6 +3008,7 @@ BLOCKS = (
     ("build", "Стройка"),
     ("sales", "Продажи"),
     ("funding", "Финансирование"),
+    ("credit", "Погашение кредитов"),
     ("budget", "Бюджет месяца"),
     ("legal", "Споры и претензии"),
     ("info", "Общая информация"),
@@ -3131,6 +3147,11 @@ def render_html(report: dict[str, Any]) -> str:
     out.append(_funding_chart(report))
     out.append(_funding_depth_html(report))
     out.append(_schedule_html(report.get("funding_schedule") or {}))
+
+    out.append(_block_heading("credit"))
+    block = report.get("credit") or {}
+    out.append(credit_repayment.render_html(block) if block.get("state") == "ok"
+               else missing(block))
 
     block = report.get("budget") or {}
     if block.get("state") in {"ok", "partial"}:

@@ -31,7 +31,8 @@ core = _wrapper.core
 client = TestClient(core.app, raise_server_exceptions=False)
 OWNER, CLIENT = 777, 5050
 ROUTES = ["/monitor/report", "/monitor/legal", "/monitor/notes", "/monitor/budget",
-          "/monitor/report/projects", "/monitor/merge"]
+          "/monitor/report/projects", "/monitor/merge", "/monitor/credit",
+          "/monitor/credit/data"]
 
 
 @pytest.fixture(autouse=True)
