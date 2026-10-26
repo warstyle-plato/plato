@@ -185,11 +185,24 @@ def _holes(rings: list[list[list[float]]]) -> list[bool]:
             for i, ring in enumerate(rings)]
 
 
-def krt_site_rings_merc(x: dict[str, Any]) -> list[list[list[float]]]:
-    """Внешние кольца контура территории КРТ (`inputs._krt_site`), если галочка
-    «Проект в КРТ» стоит и контур есть; иначе пусто — схема берёт ЕГРН."""
+def krt_site_effective(x: dict[str, Any]) -> dict[str, Any] | None:
+    """Чем меряется территория КРТ при стоящей галочке «Проект в КРТ»:
+    загруженный человеком контур (`_krt_site.manual`) сильнее найденного
+    автоматически, но автоматический остаётся рядом. Галочки нет — None."""
     site = x.get("_krt_site") if isinstance(x, dict) else None
     if not isinstance(site, dict) or site.get("on") is not True:
+        return None
+    manual = site.get("manual")
+    if isinstance(manual, dict) and float(manual.get("area_sqm") or 0) > 0:
+        return {"name": site.get("name"), "slug": site.get("slug"), **manual}
+    return site
+
+
+def krt_site_rings_merc(x: dict[str, Any]) -> list[list[list[float]]]:
+    """Внешние кольца контура территории КРТ, если галочка «Проект в КРТ»
+    стоит и контур есть; иначе пусто — схема берёт ЕГРН."""
+    site = krt_site_effective(x)
+    if not site or site.get("approximate"):
         return []
     rings = [ring for ring in (site.get("rings_merc") or [])
              if isinstance(ring, list) and len(ring) >= 3]
@@ -516,10 +529,18 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
     site_sqm = float(massing.get("site_sqm") or 0.0)
     notes: list[str] = []
     krt_rings = krt_site_rings_merc(x)
+    krt = krt_site_effective(x) or {}
     rings, frame = _merc_rings_m(krt_rings) if krt_rings else _site_rings_m(x)
+    if krt.get("approximate"):
+        # Площадь есть, контура нет (фото схемы без координат): участки ЕГРН —
+        # не эта территория, рисовать по ним значит рисовать не то.
+        rings, frame = [], {}
+        notes.append("Форма участка на схеме приблизительная: площадь территории КРТ взята "
+                     "из текста решения, а таблицы координат, по которой границы ложатся на "
+                     "карту, нет. Участок показан квадратом той же площади.")
     if krt_rings:
-        krt = x.get("_krt_site") or {}
-        notes.append(f"Участок на схеме — контур территории КРТ «{krt.get('name') or krt.get('slug') or 'без имени'}» "
+        title = krt.get("name") or krt.get("slug")
+        notes.append(f"Участок на схеме — контур территории КРТ{f' «{title}»' if title else ''} "
                      f"({krt.get('source') or 'источник не назван'}), а не участки из госреестра: "
                      "в проекте стоит галочка «Проект в КРТ».")
     if rings:

@@ -1043,7 +1043,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'projectsCards','projectsSortRestored',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound','landContourPending',
+ 'landScreeningRun','tepRunSequence','krtSiteRun','krtSiteBusy','glavapuScenarioRun','strategyCompareRound','landContourPending',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
  'PROJECT_KIND_WHERE','LAND_MAP_VIEWS','demoBlockNames'];
@@ -1165,6 +1165,8 @@ function resetTepControls(){
  // рисуется не из inputs, проверяется тестом по самой странице, а не памятью.
  resetMoParams();
  if(typeof renderSitePanel==='function')renderSitePanel();
+ // Загрузка контура КРТ вручную — вписанный каталог и выбранный файл прошлого проекта.
+ ['siteKrtCatalog','siteKrtPhoto'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});
  if(typeof renderPhasing==='function')renderPhasing();
  if(typeof renderPhaseFinancing==='function')renderPhaseFinancing();
  // Выбранный пресет и имя файла настроек — тоже след прошлого проекта:

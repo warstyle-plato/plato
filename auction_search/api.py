@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import hashlib
 import re
 import statistics
 import sys
@@ -4382,6 +4383,58 @@ def install(app: FastAPI) -> None:
             decision_outline=_decision_outline_now, area_sqm=area),
             refresh=bool(body.get("refresh"))))
         return await run_in_threadpool(krt_project_site.view, key)
+
+    @app.post("/krt/manual-contour", include_in_schema=False)
+    async def krt_manual_contour_route(request: Request) -> dict[str, Any]:
+        """Контур КРТ, загруженный человеком, для галочки «Проект в КРТ».
+
+        `catalog_text` — каталог координат МСК-77 из приложения к решению:
+        разбирается сразу, сети нет. `file_b64` + `filename` — фото или скан
+        страницы решения: распознавание долгое, идёт фоном, ответ — `key`,
+        по нему страница переспрашивает (`key` без файла). С Render — на ядро:
+        распознавание стоит там (`pdf_ocr`, tesseract в образе).
+        """
+        import base64
+
+        from auction_search import krt_manual_contour
+
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 — пустое тело — пустой запрос
+            body = {}
+        body = body if isinstance(body, dict) else {}
+        url = (core._core_api_url("/krt/manual-contour")
+               if core is not None and hasattr(core, "_core_api_url") else "")
+        if url:
+            return await run_in_threadpool(
+                core._core_post, url, body, getattr(core, "_MO_CALC_TIMEOUT_SECONDS", 60))
+        points = krt_project_site.clean_points(body.get("points_merc"))
+        text = str(body.get("catalog_text") or "")
+        if text.strip():
+            return await run_in_threadpool(
+                lambda: krt_manual_contour.from_catalog(text[:200_000], points_merc=points))
+        raw = str(body.get("file_b64") or "")
+        key = str(body.get("key") or "")
+        key = key if re.fullmatch(r"manual-[0-9a-f]{24}", key) else ""
+        if raw:
+            try:
+                data = base64.b64decode(raw.split(",", 1)[-1], validate=False)
+            except Exception:  # noqa: BLE001 — битый файл называется
+                return {"status": "failed", "problem": "файл не прочитан — пришлите его ещё раз"}
+            if len(data) > 12 * 1024 * 1024:
+                return {"status": "failed", "problem": "файл больше 12 МБ — снимите одну страницу"}
+            name = str(body.get("filename") or "")[:120]
+            key = "manual-" + hashlib.sha1(data).hexdigest()[:24]
+            await run_in_threadpool(lambda: krt_project_site.start(
+                key, lambda: {"schema_version": krt_project_site.SCHEMA_VERSION,
+                              "collected_at": int(time.time()), "choices": [],
+                              **krt_manual_contour.recognise(data, name, points_merc=points)}))
+        if not key:
+            return {"status": "failed",
+                    "problem": "пришлите каталог координат текстом или фото страницы решения"}
+        answer = await run_in_threadpool(krt_project_site.view, key)
+        answer["key"] = key
+        return answer
 
     @app.get("/auctions/krt/{slug}/point")
     async def auction_krt_point(slug: str) -> dict[str, Any]:

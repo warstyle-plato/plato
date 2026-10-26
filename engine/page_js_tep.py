@@ -1686,14 +1686,38 @@ function krtSiteState(){
  return s&&typeof s==='object'?s:null;
 }
 function krtSiteOn(){const s=krtSiteState();return !!(s&&s.on===true)}
-function krtSiteReady(){
+// Чем меряется территория: загруженный вручную контур (`manual`) сильнее
+// найденного автоматически, найденный при этом остаётся в `_krt_site`. Тот же
+// выбор делает схема посадки (`krt_site_effective` движка).
+function krtSiteManual(){
  const s=krtSiteState();
- return !!(s&&s.on===true&&s.status==='ready'&&Number(s.area_sqm||0)>0);
+ const m=s&&s.manual;
+ return m&&typeof m==='object'&&Number(m.area_sqm||0)>0?m:null;
 }
+function krtSiteAutoReady(){
+ const s=krtSiteState();
+ return !!(s&&s.status==='ready'&&Number(s.area_sqm||0)>0);
+}
+function krtSiteEffective(){
+ if(!krtSiteOn())return null;
+ return krtSiteManual()||(krtSiteAutoReady()?krtSiteState():null);
+}
+function krtSiteReady(){return !!krtSiteEffective()}
 // Площадь поля всё ещё та, что дал контур (её не переписали руками).
 function siteAreaIsKrt(){
- const s=krtSiteState();
- return krtSiteReady()&&Math.abs(Number(inputs.site_area_ha||0)-krtAreaHa(s))<0.00005;
+ const e=krtSiteEffective();
+ return !!e&&Math.abs(Number(inputs.site_area_ha||0)-krtAreaHa(e))<0.00005;
+}
+// Площадь поля — из того, чем сейчас меряется территория, с происхождением.
+function applyKrtEffectiveArea(){
+ const e=krtSiteEffective();
+ if(!e)return false;
+ inputs.site_area_ha=krtAreaHa(e);
+ inputs._site_area_user_set=false;
+ fieldOrigins()['inputs.site_area_ha']=krtSiteManual()
+  ?{source:'krt_manual',text:String(e.source||'контур загружен вручную')}
+  :{source:'krt_contour',text:'по контуру КРТ: '+String(e.source||'')};
+ return true;
 }
 function krtAreaHa(s){return Math.round(Number((s||{}).area_sqm||0))/10000}
 // Точки участков проекта из госреестра — по ним площадка опознаётся внутри
@@ -1730,8 +1754,11 @@ async function setKrtSite(on,slug,name){
  const prev=(before&&before.on&&before.prev)?before.prev:{
   site_area_ha:Number(inputs.site_area_ha||0),user_set:!!inputs._site_area_user_set,
   origin:cloneValue((inputs._field_origin||{})['inputs.site_area_ha']||null)};
+ // Загруженный вручную контур переживает повторный поиск: он сильнее.
+ const manual=(before&&before.manual)||null;
  inputs._krt_site={on:true,status:'pending',prev:prev,slug:slug||'',name:name||'',
-  problem:'',choices:[],rings_merc:[],area_sqm:null,source:''};
+  problem:'',choices:[],rings_merc:[],area_sqm:null,source:'',manual:manual};
+ if(manual)applyKrtEffectiveArea();
  krtSiteBusy=run;
  renderSitePanel();
  const body=slug?{slug:slug,name:name||''}:{cadastral_numbers:projectCadastral(),points_merc:krtSiteProjectPoints()};
@@ -1768,12 +1795,75 @@ function applyKrtSite(data){
   s.rings_merc=data.rings_merc||[];s.area_sqm=Number(data.area_sqm||0);
   s.source=String(data.source||'');s.source_note=String(data.source_note||'');
   s.matched_by=String(data.matched_by||'');
-  inputs.site_area_ha=krtAreaHa(s);
-  inputs._site_area_user_set=false;
-  fieldOrigins()['inputs.site_area_ha']={source:'krt_contour',text:'по контуру КРТ: '+s.source};
+ }
+ const applied=applyKrtEffectiveArea();
+ renderSitePanel();
+ if(applied)calculate();
+}
+// Ручная загрузка контура: каталог координат МСК-77 текстом (сразу) или фото
+// и скан страницы решения (распознавание фоном, страница переспрашивает).
+function krtManualStatus(text){
+ const box=document.getElementById('siteKrtManualStatus');
+ if(box)box.textContent=text||'';
+}
+async function krtManualCall(body){
+ const r=await fetch('/krt/manual-contour',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+ const data=await r.json();
+ if(!r.ok)throw new Error(serverDetail(data)||('сервер ответил ошибкой '+r.status));
+ return data;
+}
+async function uploadKrtCatalog(){
+ const text=String((document.getElementById('siteKrtCatalog')||{}).value||'');
+ if(!text.trim()){krtManualStatus('Вставьте таблицу координат из приложения к решению.');return}
+ krtManualStatus('Строим контур по координатам…');
+ try{applyKrtManual(await krtManualCall({catalog_text:text,points_merc:krtSiteProjectPoints()}))}
+ catch(e){krtManualStatus('Контур не построен: '+(e&&e.message||e))}
+}
+async function uploadKrtPhoto(){
+ const input=document.getElementById('siteKrtPhoto');
+ const file=input&&input.files&&input.files[0];
+ if(!file){krtManualStatus('Выберите фото или скан страницы решения.');return}
+ krtManualStatus('Распознаём страницу — это может занять до минуты…');
+ try{
+  const b64=await new Promise((ok,fail)=>{const rd=new FileReader();rd.onload=()=>ok(String(rd.result||''));rd.onerror=()=>fail(rd.error);rd.readAsDataURL(file)});
+  let data=await krtManualCall({file_b64:b64,filename:file.name,points_merc:krtSiteProjectPoints()});
+  for(let i=0;i<60&&data.status==='pending';i++){
+   await new Promise(ok=>setTimeout(ok,1000*Number(data.retry_after_seconds||3)));
+   data=await krtManualCall({key:data.key});
+  }
+  if(data.status==='pending')data={status:'failed',problem:'распознавание ещё идёт — нажмите «Распознать» ещё раз через минуту'};
+  applyKrtManual(data);
+ }catch(e){krtManualStatus('Фото не распознано: '+(e&&e.message||e))}
+}
+function applyKrtManual(data){
+ const s=krtSiteState();
+ if(!s||!s.on)return;
+ if(String(data.status||'')!=='ready'){
+  krtManualStatus('Контур не загружен: '+String(data.problem||'причина не названа')+'. Площадь участка осталась прежней.');
+  return;
+ }
+ s.manual={rings_merc:data.rings_merc||[],area_sqm:Number(data.area_sqm||0),source:String(data.source||''),
+  source_note:String(data.source_note||''),approximate:!!data.approximate};
+ krtManualStatus('');
+ applyKrtEffectiveArea();
+ renderSitePanel();
+ calculate();
+}
+// Убрать загруженный вручную контур: территория снова меряется найденным
+// автоматически, а если его нет — возвращается прежняя площадь.
+function removeKrtManual(){
+ const s=krtSiteState();
+ if(!s)return;
+ const wasManual=siteAreaIsKrt();
+ s.manual=null;
+ if(!applyKrtEffectiveArea()&&wasManual&&s.prev){
+  inputs.site_area_ha=Number(s.prev.site_area_ha||0);
+  inputs._site_area_user_set=!!s.prev.user_set;
+  if(s.prev.origin)fieldOrigins()['inputs.site_area_ha']=s.prev.origin;
+  else if(inputs._field_origin)delete inputs._field_origin['inputs.site_area_ha'];
  }
  renderSitePanel();
- if(s.status==='ready')calculate();
+ calculate();
 }
 async function searchKrtSite(){
  const field=document.getElementById('siteKrtSearch');
@@ -1799,8 +1889,18 @@ function renderKrtSite(){
  if(!toggle||!box)return;
  const s=krtSiteState();
  toggle.checked=krtSiteOn();
+ const manualBox=document.getElementById('siteKrtManual');
+ if(manualBox)manualBox.style.display=krtSiteOn()?'':'none';
  if(!krtSiteOn()){box.style.display='none';box.innerHTML='';return}
  box.style.display='';
+ const manual=krtSiteManual();
+ if(manual){
+  box.innerHTML=(manual.approximate?'<b>Площадь загружена вручную</b>: ':'<b>Контур загружен вручную</b>: ')+
+   num(Number(manual.area_sqm))+' м² ('+escapeHtml(manual.source)+(manual.source_note?'; '+escapeHtml(manual.source_note):'')+'). '+
+   (krtSiteAutoReady()?'Найденный автоматически контур площадки «'+escapeHtml(s.name||s.slug)+'» ('+num(Number(s.area_sqm))+' м²) сохранён. ':'')+
+   '<button type="button" class="btn" onclick="removeKrtManual()">Убрать загруженный контур</button>';
+  return;
+ }
  // «Ищем» из сохранённого проекта, когда ответа уже никто не ждёт, — не
  // поиск, а прерванный запрос: так и сказать.
  if(s.status==='pending'&&!krtSiteBusy){s.status='failed';s.problem='поиск прервался, не дождавшись ответа — снимите и снова поставьте галочку'}
@@ -1822,6 +1922,8 @@ function renderKrtSite(){
 }
 function siteAreaSourceLabel(){
  if(siteAreaIsKrt()){
+  const m=krtSiteManual();
+  if(m)return String(m.source||'контур загружен вручную');
   const k=krtSiteState();
   return 'по контуру КРТ: '+k.source+' — площадка «'+(k.name||k.slug)+'»';
  }
