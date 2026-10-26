@@ -308,7 +308,9 @@ def test_a_seed_on_the_server_fills_an_empty_register_once(tmp_path, monkeypatch
     assert report.LEGAL_UNCHECKED in report.render_text(built)
     # Второй раз не заносится; правка снимает пометку; удалённое не возвращается.
     assert legal.ensure_seed(PROJECT) == 0 and len(legal.cases(PROJECT)) == 1
-    legal.save(PROJECT, dict(CARD, status="talks"), [], "Иванова", case_id=got[0]["id"])
+    # Время правки — внутри периода отчёта ниже, а не «сейчас»: иначе тест зависит от сегодняшней даты.
+    legal.save(PROJECT, dict(CARD, status="talks"), [], "Иванова", case_id=got[0]["id"],
+               at="2026-10-20T09:00:00+00:00")
     assert legal.cases(PROJECT)[0]["unchecked"] is False
     assert report.LEGAL_UNCHECKED not in report.render_text(report.build(PROJECT, "week", "2026-10-25"))
 
