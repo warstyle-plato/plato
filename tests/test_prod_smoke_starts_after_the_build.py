@@ -60,3 +60,13 @@ def test_the_smoke_reads_the_expected_commit_from_the_dispatch():
     job = _load(SMOKE)["jobs"]["smoke"]
     assert job["env"]["EXPECT_COMMIT"] == "${{ github.event.inputs.expect_commit }}"
     assert "workflow_run" not in SMOKE.read_text(encoding="utf-8").split("\njobs:", 1)[1]
+
+
+def test_a_running_build_is_not_cancelled_by_the_next_merge():
+    """Сборка с тестами идёт дольше, чем промежуток между слияниями: при
+    `cancel-in-progress: true` каждая следующая снимала идущую, и prod не
+    обновлялся сутками. Свежесть держит сама группа: ожидающий прогон один и
+    всегда самый новый."""
+    group = _load(BUILD)["concurrency"]
+    assert group["group"] == "build-yandex"
+    assert group["cancel-in-progress"] is False
