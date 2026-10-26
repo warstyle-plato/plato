@@ -101,7 +101,7 @@ def test_the_admin_grants_by_hand_and_sees_it():
     overview = client.post("/access/admin/overview", json={"key": "kluch"}).json()
     person = next(p for p in overview["people"] if p["chat"] == CHAT)
     assert person["active_plots"][0]["label"] == A1
-    grant = next(r for r in overview["journal"] if r.get("chat") == CHAT)
+    grant = next(r for r in overview["journal"] if r.get("chat") == CHAT and r.get("event") == "grant")
     assert "администратор 777" in grant["note"] and "пилот" in grant["note"]
     assert me()["status"]["plots"][0]["source"] == "admin"
 
