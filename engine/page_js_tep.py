@@ -1484,7 +1484,9 @@ function renderSiteMassing(){
  rows.push(row('Площадь подземной части',sq(m.underground_sqm),garages>0?
   'Паркинг с рампами и проездами и подземные кладовые из ТЭП ('+sq(Number(m.underground_sqm||0)-garages)+') и подземные гаражи отдельных объектов ('+sq(garages)+').':
   'Паркинг с рампами и проездами и подземные кладовые из ТЭП.'));
- rows.push(row('Подземных уровней',String(m.underground_levels||0),
+ rows.push(m.underground_levels_unfit?row('Подземных уровней','не посчитано',
+  'Подземная часть под участком не помещается даже на '+num(m.underground_levels_max)+' уровнях. Что поправить — в красной плашке выше.',true):
+  row('Подземных уровней',String(m.underground_levels||0),
   m.underground_levels_origin==='manual'?'Задано вручную.':'Площадь подземной части, делённая на полезную площадь одного уровня, с округлением вверх.',true));
  let levels='';
  if((m.underground_level_rows||[]).length){
