@@ -554,6 +554,22 @@ def monitor_store_budget(req: MonitorEstimateRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
 
 
+@app.post("/monitor/funding-schedule", include_in_schema=False)
+def monitor_store_funding_schedule(req: MonitorEstimateRequest) -> dict[str, Any]:
+    """График финансирования (ДДС): версия на её дату, все версии хранятся.
+
+    С ним сводка сверяет, что реально оплачено по реестру платежей РСС.
+    """
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_funding_schedule as funding_schedule
+    try:
+        return funding_schedule.store(
+            req.project, base64.b64decode(req.content_base64), req.taken_at,
+            req.filename)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 def _monitor_note_author(session: str, key: str) -> str:
     """Кто пишет запись: имя из анкеты, имя из Telegram, иначе — как вошёл."""
     chat = _web_identity_chat_id(session)
