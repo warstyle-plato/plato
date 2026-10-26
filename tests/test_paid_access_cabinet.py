@@ -135,8 +135,12 @@ def test_the_footer_names_the_registration_and_the_contract():
 
 
 def test_the_locked_economics_leads_to_the_tariffs():
-    prelude = ("const box={style:{},innerHTML:''};"
-               "const document={getElementById:()=>box};let lastResult=1,phaseBundle=1;")
+    # Без ответа сервера (`/access/check` недоступен) плашка всё равно ведёт в
+    # «Тарифы»: сама плашка с ценами проверяется на отрисованной странице
+    # (tests/test_paid_access_plaque.py).
+    prelude = ("const box={style:{},innerHTML:'',classList:{add(){},remove(){}}};"
+               "const document={getElementById:()=>box};let lastResult=1,phaseBundle=1;"
+               "const fetch=()=>Promise.reject(new Error('нет сети'));")
     out, _ = page_blocks.run(prelude, "renderCalcLocked('Причина',402);console.log(box.innerHTML);")
     assert "openTariffs()" in out
 
