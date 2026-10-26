@@ -2243,13 +2243,21 @@ def _telegram_handle_cadastral_numbers(chat_id: int, numbers: list[str], query: 
         },
     }
     _telegram_dialog_save(chat_id, dialog)
+    # Встроенной панорамы в боте нет (бесплатный тариф Яндекса — только сайт
+    # без входа), поэтому — обычная ссылка на Яндекс Карты, тот же шаблон.
+    center = territory.get("center") or {}
+    panorama = yandex_panorama_url(center.get("lat"), center.get("lng"))
+    panorama_line = (
+        f'<a href="{html.escape(panorama)}">Открыть панораму в Яндекс Картах</a>\n'
+        if panorama else "")
     _telegram_send_message(
         chat_id,
         "<b>Территория сформирована</b>\n"
         f"Участков: <b>{int(territory.get('parcel_count') or len(recognized))}</b>\n"
         f"Площадь: <b>{_telegram_number(territory.get('area_ha'), 4)} га</b>\n"
         f"Район: <b>{html.escape(district)}</b>\n"
-        f"Кадастровый квартал: <b>{html.escape(str(territory.get('cadastral_quarter') or '—'))}</b>\n\n"
+        f"Кадастровый квартал: <b>{html.escape(str(territory.get('cadastral_quarter') or '—'))}</b>\n"
+        + panorama_line + "\n"
         "Кадастровый расчёт ТЭП остаётся прежним. Перед расчётом выберите класс — он задаст базовые цены и СМР.",
     )
     # Картинка территории — как на сайте: контуры ЕГРН поверх карты НСПД.
