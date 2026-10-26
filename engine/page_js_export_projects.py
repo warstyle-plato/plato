@@ -138,7 +138,7 @@ function loadLocal(){try{const x=JSON.parse(localStorage.getItem('plato_v04'));i
  // список показывает пустую строку, а число при пересчёте становится нулём —
  // так «Периодичность платежей» ВРИ оказалась 0 при расчёте по квартальной.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),x.inputs||{});
- seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
+ seedParkingByHand();adoptObjectRateKind();syncOfficeClasses();restoreKrtClearedVriFee();
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(x.tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
@@ -315,7 +315,7 @@ async function applyPreset(){
  }catch(e){alert(String(e.message||e));return}
  // Как и всюду: приходящее накладывается на умолчания, а не заменяет их.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.applied_inputs||{});
- seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
+ seedParkingByHand();adoptObjectRateKind();syncOfficeClasses();restoreKrtClearedVriFee();
  tep=cloneValue(TEP_DEFAULT);
  Object.entries(data.applied_tep||{}).forEach(([key,values])=>{
   if(values&&typeof values==='object')tep[key]=Object.assign(tep[key]||{},values);
@@ -734,6 +734,7 @@ function renderOpenedProjectButton(){
 
 function forgetTerritoryState(){
  cadastralAnalysis=null;landLookup=null;otherRegionPending=null;landScreeningLast=null;LAND_MAP=null;
+ calcWentWithoutContour=false;
  glavapuImport=null;moResult=null;
  // Запрос района и ТТК по участку — тоже про участок: новый проект спрашивает свой.
  sitePositionRun={key:'',state:'',error:'',count:0};
@@ -781,7 +782,7 @@ function applyProjectSnapshot(data){
  rememberDerivedTail(data.tep,true);
  phasing=phasingFromSaved(data.phasing);
  // Список тронутых полей паркинга — от ЭТОГО снимка, а не от прошлого проекта.
- seedParkingByHand();adoptObjectRateKind();restoreKrtClearedVriFee();
+ seedParkingByHand();adoptObjectRateKind();syncOfficeClasses();restoreKrtClearedVriFee();
  if(typeof scenarioSelect!=='undefined'&&scenarioSelect)scenarioSelect.value=data.scenario||'base';
  renderInputs();renderTep();renderPhasing();
  // Шапка — класс и вид проекта — читает те же вводные, что и форма: без этого
@@ -971,6 +972,8 @@ async function deleteProject(id){
 // трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
 // то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
 // LAND_MAP_VIEWS — ответ сервера, есть ли ключ Яндекс Карт для гибрида: не проект.
+// landContourPending — число запросов контура ЕГРН в пути: его гасит каждый
+// ответ, и сброс сбил бы счёт.
 // accessUseFree — согласие на бесплатный участок на один запуск расчёта:
 // снимается сразу после него и проекта не хранит.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
@@ -978,7 +981,7 @@ const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds'
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound',
+ 'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound','landContourPending',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
  'PROJECT_KIND_WHERE','LAND_MAP_VIEWS'];
@@ -995,7 +998,7 @@ function resetProjectState(){
  // Открытый проект — тоже данные проекта: после сброса «Сохранить поверх»
  // записало бы пустой расчёт в чужую запись.
  openedProject=null;
- aiHistory=[];aiProposals=[];aiIntake=null;aiDocument=null;aiDocBaseline=null;aiIntakeApplied=[];aiQuestion=null;aiCadastralReady=false;
+ aiHistory=[];aiProposals=[];aiIntake=null;aiCard=null;aiDocument=null;aiDocBaseline=null;aiIntakeApplied=[];aiQuestion=null;aiCadastralReady=false;
  territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';socialPopulationNoteText='';
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
  moLastQuery='';moAutoApartments=null;

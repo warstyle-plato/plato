@@ -341,6 +341,9 @@ async function calculate(){
  // `onchange` поля пишет вводную сам, до всякого пересчёта.
  document.querySelectorAll('[id^=f_]').forEach(el=>{if(el.dataset.derived==='1')return;const id=el.id.slice(2);inputs[id]=el.type==='checkbox'?el.checked:(el.type==='number'?Number(el.value):el.value)});
  if(document.getElementById('rateScenario'))inputs.rate_scenario=rateScenario.value||'base';
+ // Класс офиса — тем же правилом, что движок (`apply_office_classes`): поле,
+ // которое класс поменял, показывает новое число сразу.
+ syncOfficeClasses().forEach(k=>{const el=document.getElementById('f_'+k);if(el)el.value=inputs[k]});
  if(document.getElementById('rateStartPct')){
    inputs.rate_start_pct=Number(rateStartPct.value||inputs.rate_start_pct||14);
    inputs.rate_normalization_months=Number(rateNormalizationMonths.value||inputs.rate_normalization_months||24);
@@ -370,14 +373,14 @@ async function calculate(){
  const calcTicket=++calcRun;
  try{
  if(phasing&&phasing.enabled&&Number(phasing.phase_count||1)>1){
-   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey,use_free:accessUseFree})});
+   const response=await fetch('/calculate-phased',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs:calcRequestInputs(),tep,rates,phasing,session:activeSession(),access_key:projectsAdminKey,use_free:accessUseFree})});
    if(calcTicket!==calcRun)return null;
    if(!response.ok){renderCalcLocked(await calcRefusal(response),response.status);return null}
    const bundle=await response.json();
    if(calcTicket!==calcRun)return null;
    phaseBundle=bundle;lastResult=phaseBundle.consolidated;renderAccessLine(bundle.access);
  }else{
-   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs,tep,rates,session:activeSession(),access_key:projectsAdminKey,use_free:accessUseFree})});
+   const response=await fetch('/calculate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({inputs:calcRequestInputs(),tep,rates,session:activeSession(),access_key:projectsAdminKey,use_free:accessUseFree})});
    if(calcTicket!==calcRun)return null;
    if(!response.ok){renderCalcLocked(await calcRefusal(response),response.status);return null}
    const result=await response.json();
