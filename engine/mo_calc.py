@@ -1306,10 +1306,26 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
             detail="Не определена площадь участка: введите кадастровый номер, адрес или площадь в гектарах.",
         )
 
+    # Ограничения участка из скрининга (`land_restrictions`): охранные зоны и
+    # красные линии отнимают площадь у застройки, запреты и высота — оговорки.
+    # Без этого ООПТ на всём участке в Мытищах давала 453 тыс. м² квартир без
+    # единого слова (прогон «Посадка ↔ нормативы», 25.10.2026). Площадь
+    # вычитается, только когда участок — это участки ЕГРН из запроса: ручная
+    # площадь могла быть задана уже за вычетом.
+    numbers = [str(item.get("cadastral_number") or "") for item in parcels
+               if item.get("cadastral_number")]
+    restrictions = land_restrictions(numbers, "mo") if numbers else None
+    restrict_ha = 0.0
+    if restrictions and area_from_parcels > 0:
+        restrict_ha = min(site_area_ha, float(restrictions.get("restrict_ha") or 0.0))
+    buildable_ha = max(0.0, site_area_ha - restrict_ha)
+    if restrictions:
+        warnings[:0] = [str(text) for text in restrictions.get("warnings") or [] if text]
+
     density = _land_float(req.density_sqm_per_ha)
     if density is None or density <= 0:
         density = _MO_DENSITY_DEFAULT_SQM_PER_HA
-    apartments_sqm = site_area_ha * density
+    apartments_sqm = buildable_ha * density
 
     norms = _mo_norms(req.norms if isinstance(req.norms, dict) else None)
     social = mo_social_program(apartments_sqm, norms)
@@ -1449,6 +1465,10 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
         "territory": {
             "site_area_ha": round(site_area_ha, 4),
             "site_area_sqm": round(site_area_ha * 10000.0, 2),
+            # Площадь, на которой посчитаны квартиры и баланс: участок за
+            # вычетом охранных зон и красных линий с измеренной долей.
+            "restrict_ha": round(restrict_ha, 4),
+            "buildable_area_ha": round(buildable_ha, 4),
             "parcel_count": len(parcels),
             "cadastral_numbers": [str(item.get("cadastral_number") or "") for item in parcels],
             "district": upks["district"] or district,
@@ -1468,6 +1488,7 @@ def mo_calculate(req: MoCalculateRequest) -> dict[str, Any]:
         "tep": tep,
         "inputs": inputs_patch,
         "warnings": warnings,
+        "site_restrictions": restrictions,
         "source": {
             "service": "ЕГРН/НСПД + нормативы РНГП Московской области",
             "calculated_at": date.today().isoformat(),

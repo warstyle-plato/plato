@@ -818,6 +818,11 @@ def land_map_probe(bbox: str = "") -> dict[str, Any]:
     return {"bbox_merc": parts, "probe": results}
 
 
+# Предел объектов в ответе на опрос контура. Ответ ровно такой длины — признак
+# обрезанного списка, а не полного (`_land_screen_findings`).
+_NSPD_CONTOUR_FEATURE_LIMIT = 50
+
+
 def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
                          api_version: str = "v3",
                          bounds: tuple[float, float, float, float] | None = None) -> Any:
@@ -849,7 +854,7 @@ def _nspd_getfeatureinfo(lat: float, lng: float, layer_id: int,
             "TRANSPARENT": "true", "QUERY_LAYERS": layer_id, "LAYERS": layer_id,
             "WIDTH": 1, "HEIGHT": 1, "I": 0, "J": 0,
             "CRS": "EPSG:4326", "BBOX": f"{west},{south},{east},{north}",
-            "FEATURE_COUNT": "50",
+            "FEATURE_COUNT": str(_NSPD_CONTOUR_FEATURE_LIMIT),
         })
         return _nspd_getfeatureinfo_request(params, layer_id, api_version)
 
@@ -1172,28 +1177,48 @@ _nspd_screen_blocked_until = 0.0
 # по типу зоны словами, а не по номеру слоя: тип приходит в ответе, а номера
 # у подслоёв меняются. Неопознанный тип — `info` с честной пометкой, а не
 # молчаливое «ничего страшного»: неизвестное ограничение не равно отсутствию.
-_LAND_SCREEN_CLASSES: tuple[tuple[str, tuple[str, ...], str], ...] = (
+# Четвёртый столбец — что зона делает с посадкой, одним словом для читателей
+# ТЭП (`_land_restrictions_summary`): `ban` — запрет, `area` — режет пятно
+# (площадь уходит в калькулятор ГлавАПУ как площадь ограничений), `height` —
+# ограничивает высоту, `water` — водоохранное, `frame` — территориальная зона
+# ПЗЗ, рамка разрешённого. Класс отвечает «насколько важно», действие — «что
+# именно делать с ТЭП»: приаэродромная и охранная зона сетей одного класса,
+# но первая не отнимает ни метра, а вторая отнимает площадь.
+_LAND_SCREEN_CLASSES: tuple[tuple[str, tuple[str, ...], str, str], ...] = (
     ("killer", ("санитарно-защитн", "сзз"),
-     "жилая застройка в СЗЗ запрещена"),
+     "жилая застройка в СЗЗ запрещена", "ban"),
     ("killer", ("особо охраняем", "оопт", "заповедн", "заказник"),
-     "застройка ООПТ запрещена"),
+     "застройка ООПТ запрещена", "ban"),
     ("killer", ("леснич", "лесопарк", "лесной фонд"),
-     "земли лесного фонда — застройка запрещена"),
+     "земли лесного фонда — застройка запрещена", "ban"),
     ("economic", ("приаэродромн",),
-     "ограничение высоты — влияет на этажность и выручку"),
+     "ограничение высоты — влияет на этажность и выручку", "height"),
     ("economic", ("культурног наследия", "культурного наследия", "окн", "объекта культурн"),
-     "ограничения по высоте и облику"),
+     "ограничения по высоте и облику", "height"),
     ("economic", ("красн", "линии градостроительного регулирования"),
-     "территория общего пользования не застраивается"),
-    ("economic", ("водоохранн", "прибрежн", "береговая", "водного объекта"),
-     "ограничения в водоохранной зоне"),
+     "территория общего пользования не застраивается", "area"),
+    # Береговая линия — граница водного объекта, а не зона: от неё
+    # отсчитывается водоохранная зона, ширину которой задаёт Водный кодекс.
+    # Долю участка под линией не измерить, а слой отдаёт и линии далеко за
+    # участком, поэтому это справка про воду, а не «влияет» (решение владельца
+    # 25.10.2026). Прежде «Береговые линии» шли «ограничением неизвестного
+    # типа»: в списке стояло «береговая», а слой называется во множественном.
+    ("info", ("берегов",),
+     "граница водного объекта: от береговой линии отсчитывается водоохранная "
+     "зона — проверьте, не заходит ли она на участок", "water"),
+    ("economic", ("водоохранн", "прибрежн", "водного объекта"),
+     "ограничения в водоохранной зоне", "water"),
     ("economic", ("охранная зона", "охранн"),
-     "в охранной зоне строить нельзя — режет пятно"),
+     # Режим задаёт положение о зоне своего вида (ЗК РФ, ст. 105–107): у ЛЭП
+     # и газа здания запрещены, у связи и теплосетей — с согласия владельца
+     # сети. Вычитаем площадь по допущению (решение владельца 26.10.2026).
+     "в охранной зоне застройка запрещена или требует согласия владельца сети — "
+     "по допущению режет пятно застройки", "area"),
     # Территориальная зона — не ограничение, а рамка: она задаёт, что здесь
     # вообще разрешено строить. В отчёте она шла «ограничением неизвестного
     # типа» (18.08.2026), хотя это самая нужная справка на участке.
     ("info", ("территориальн",),
-     "территориальная зона по ПЗЗ — сверьте ВРИ с намеченной застройкой"),
+     "территориальная зона по ПЗЗ — сверьте ВРИ с намеченной застройкой", "frame"),
 )
 
 
@@ -1202,10 +1227,10 @@ def _land_screen_classify(finding: dict[str, Any]) -> dict[str, Any]:
     haystack = " ".join([
         _land_text(finding.get("type_zone")), _land_text(finding.get("name")),
     ]).lower()
-    for flag_class, needles, impact in _LAND_SCREEN_CLASSES:
+    for flag_class, needles, impact, effect in _LAND_SCREEN_CLASSES:
         if any(needle in haystack for needle in needles):
-            return {**finding, "flag_class": flag_class, "impact": impact}
-    return {**finding, "flag_class": "info",
+            return {**finding, "flag_class": flag_class, "impact": impact, "effect": effect}
+    return {**finding, "flag_class": "info", "effect": "unknown",
             "impact": "ограничение неизвестного типа — требует проверки вручную"}
 
 
@@ -1306,7 +1331,8 @@ def _inside_by_crossings(crossings: list[float], x: float) -> bool:
 
 def _land_coverage_shares(parcel: Any, zones: list[Any],
                           counted: list[bool] | None = None,
-                          grid: int = _LAND_COVERAGE_GRID) -> dict[str, Any]:
+                          grid: int = _LAND_COVERAGE_GRID,
+                          cutting: list[bool] | None = None) -> dict[str, Any]:
     """Доли участка под каждой зоной и доля, свободная от всех считаемых.
 
     `shares` — по индексу зоны, 0..1; `None` там, где у зоны нет геометрии:
@@ -1315,6 +1341,12 @@ def _land_coverage_shares(parcel: Any, zones: list[Any],
     влияет на посадку); справочные слои вроде территориальных зон накрывают
     участок целиком и свободного места не отнимают. Пустой ответ — считать
     было не из чего.
+
+    `cutting` отмечает зоны, отнимающие площадь у застройки (охранные зоны,
+    красные линии); `cut` — доля участка под их объединением. Это не дополнение
+    к `free`: приаэродромная зона не даёт свободного места, но и площади не
+    отнимает — она ограничивает высоту. Подзоны, наложенные друг на друга,
+    считаются один раз.
     """
     parcel_polygons = _geometry_polygons_mercator(parcel)
     bbox = _polygons_bbox(parcel_polygons)
@@ -1323,6 +1355,8 @@ def _land_coverage_shares(parcel: Any, zones: list[Any],
     zone_polygons = [_geometry_polygons_mercator(zone) for zone in zones]
     counts = list(counted) if counted is not None else [True] * len(zone_polygons)
     counts += [True] * (len(zone_polygons) - len(counts))
+    cuts = list(cutting) if cutting is not None else []
+    cuts += [False] * (len(zone_polygons) - len(cuts))
     min_x, min_y, max_x, max_y = bbox
     if max_x <= min_x or max_y <= min_y:
         return {}
@@ -1331,6 +1365,7 @@ def _land_coverage_shares(parcel: Any, zones: list[Any],
     inside_total = 0
     hits = [0] * len(zone_polygons)
     free = 0
+    cut = 0
     for row in range(grid):
         y = min_y + (row + 0.5) * step_y
         parcel_row = _row_crossings(parcel_polygons, y)
@@ -1343,19 +1378,25 @@ def _land_coverage_shares(parcel: Any, zones: list[Any],
                 continue
             inside_total += 1
             covered = False
+            removed = False
             for index, crossings in enumerate(zone_rows):
                 if crossings and _inside_by_crossings(crossings, x):
                     hits[index] += 1
                     if counts[index]:
                         covered = True
+                    if cuts[index]:
+                        removed = True
             if not covered:
                 free += 1
+            if removed:
+                cut += 1
     if not inside_total:
         return {}
     return {
         "shares": [None if not polygons else hit / inside_total
                    for hit, polygons in zip(hits, zone_polygons)],
         "free": free / inside_total,
+        "cut": cut / inside_total,
         "samples": inside_total,
     }
 
@@ -1417,9 +1458,23 @@ def _land_screen_findings(lat: float, lng: float,
             # не значит.
             answer = (_nspd_getfeatureinfo(lat, lng, layer_id, "v3", bounds) if bounds
                       else _nspd_getfeatureinfo(lat, lng, layer_id, "v3"))
-            return layer_id, _nspd_features(answer)
+            features = _nspd_features(answer)
         except Exception:
             return layer_id, []
+        # Пиксель во весь участок WMS растягивает с допуском, и плотный слой
+        # отвечает полным списком чужих объектов: территориальных зон на
+        # участках Москвы приходило ровно пятьдесят — предел ответа, — и ни
+        # одна не касалась участка, а своя в список не влезала (прогон
+        # «Посадка ↔ нормативы», 25.10.2026: зона ПЗЗ не получена у 11 из 12).
+        # Полный ответ — не «на участке ничего», а «список обрезан»: тогда
+        # слой спрашивается ещё и в центре участка, где своя зона лежит точно.
+        if bounds and len(features) >= _NSPD_CONTOUR_FEATURE_LIMIT:
+            try:
+                features = features + _nspd_features(
+                    _nspd_getfeatureinfo(lat, lng, layer_id, "v3"))
+            except Exception:
+                pass
+        return layer_id, features
 
     # Шесть десятков слоёв по очереди — это полминуты ожидания у человека.
     # Опрашиваем в несколько потоков, как поиск участков; порядок сохраняем
@@ -1480,7 +1535,8 @@ def _land_apply_coverage(findings: list[dict[str, Any]], parcel_geometry: Any) -
     coverage = _land_coverage_shares(
         parcel_geometry,
         [item.get("geometry") for item in findings],
-        counted=[item.get("flag_class") in {"killer", "economic"} for item in findings])
+        counted=[item.get("flag_class") in {"killer", "economic"} for item in findings],
+        cutting=[item.get("effect") == "area" for item in findings])
     if not coverage:
         return
     # Очертания для рисунка снимаются здесь же, пока геометрия под рукой:
@@ -1505,6 +1561,7 @@ def _land_apply_coverage(findings: list[dict[str, Any]], parcel_geometry: Any) -
     for item in findings:
         item.pop("geometry", None)
         item["free_pct"] = round(float(coverage.get("free") or 0.0) * 100.0, 1)
+        item["cut_pct"] = round(float(coverage.get("cut") or 0.0) * 100.0, 1)
 
 
 def _land_group_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1523,9 +1580,13 @@ def _land_group_findings(findings: list[dict[str, Any]]) -> list[dict[str, Any]]
         # три десятка записей «Зона с особыми условиями …» с разными приказами,
         # и блок превратился в стену (18.08.2026). Человеку нужен вид
         # ограничения; приказы и реестровые номера остаются внутри строки.
+        # Подзоны на участке и подзоны из рамки вокруг — разные строки: в одной
+        # группе пятьдесят чужих территориальных зон и своя показывались
+        # номерами чужих (прогон «Посадка ↔ нормативы», 25.10.2026).
         key = (_land_text(finding.get("type_zone")).lower()
                or _land_text(finding.get("category")).lower()
                or _land_text(finding.get("name")).lower())
+        key += "\x00on" if finding.get("on_parcel", True) else "\x00near"
         current = grouped.get(key)
         if current is None:
             entry = dict(finding)
@@ -1596,7 +1657,8 @@ _LAND_SCREEN_ORDER = {"killer": 0, "economic": 1, "info": 2}
 
 def _land_screening_verdict(findings: list[dict[str, Any]],
                             probed: bool = True,
-                            method: str = "") -> dict[str, Any]:
+                            method: str = "",
+                            zone_missing: int | None = None) -> dict[str, Any]:
     """Свод по находкам. Никакого «участок подходит» — только факты и их вес.
 
     Запрещено выдавать разрешительный вывод (решение владельца, архитектура,
@@ -1613,6 +1675,13 @@ def _land_screening_verdict(findings: list[dict[str, Any]],
     а не «чисто». Прежде эти два случая были неотличимы: на запросе, где не
     нашёлся ни один из трёх номеров, экран показывал зелёное «критических
     ограничений не обнаружено» — разрешающий вывод на пустоте (18.08.2026).
+
+    `zone_missing` — у скольких проверенных участков не получена
+    территориальная зона ПЗЗ; не задано — считается по находкам. Без зоны не
+    проверено, разрешено ли здесь жильё (или офисы, торговля) вообще, и «чисто»
+    на таком участке — тот же разрешительный вывод на пустоте: на трёх деловых
+    участках сайт писал «критических ограничений не обнаружено» и сажал жильё
+    (прогон «Посадка ↔ нормативы», 25.10.2026).
     """
     # Рамка запроса шире участка, поэтому в находки попадают и зоны по
     # соседству. Красный вердикт «жилая застройка запрещена» из-за СЗЗ, не
@@ -1623,6 +1692,9 @@ def _land_screening_verdict(findings: list[dict[str, Any]],
     nearby = [f for f in findings if not f.get("on_parcel", True)]
     killers = [f for f in here if f.get("flag_class") == "killer"]
     economic = [f for f in here if f.get("flag_class") == "economic"]
+    if zone_missing is None:
+        zone_missing = 0 if any(f.get("effect") == "frame" for f in here) else 1
+    zone_missing = zone_missing if probed else 0
     if not probed:
         status = "NOT_SCREENED"
         headline = "Скрининг не выполнен: сведений ЕГРН по участку нет"
@@ -1630,6 +1702,10 @@ def _land_screening_verdict(findings: list[dict[str, Any]],
         status, headline = "CRITICAL", "Найдены ограничения, запрещающие жилую застройку"
     elif economic:
         status, headline = "WARNING", "Есть ограничения, влияющие на посадку и экономику"
+    elif zone_missing:
+        status = "NO_CRITICAL_FLAGS"
+        headline = ("Запретов в ЕГРН не найдено, но территориальная зона не получена — "
+                    "что разрешено строить на участке, не проверено")
     else:
         status, headline = "NO_CRITICAL_FLAGS", "Критических ограничений не обнаружено"
     # Свободное пятно — общий ответ по участку, у всех находок он один и тот
@@ -1648,11 +1724,24 @@ def _land_screening_verdict(findings: list[dict[str, Any]],
         "nearby_count": len(nearby),
         "probed": bool(probed),
         "probe_method": method or ("contour" if probed else ""),
-        "disclaimer": (_land_screening_disclaimer(method) if probed else
+        # Отсутствующая зона — не «зона не мешает»: признак отдельный, и
+        # читатели (окно, ТЭП) называют его вслух.
+        "zone_found": not zone_missing,
+        "zone_missing_count": int(zone_missing or 0),
+        "disclaimer": ((_land_screening_zone_note() + " " if zone_missing else "")
+                       + _land_screening_disclaimer(method) if probed else
                        ("Границы участка не получены, поэтому НСПД об ограничениях "
                         "не спрашивали. Проверьте кадастровый номер или запросите "
                         "выписку ЕГРН.")),
     }
+
+
+def _land_screening_zone_note() -> str:
+    """Что не проверено без территориальной зоны — одна фраза на все поверхности."""
+    return ("Территориальная зона по правилам землепользования и застройки (ПЗЗ) "
+            "не получена: НСПД не отдал её для этого участка. Поэтому не проверено, "
+            "разрешено ли в зоне то, что вы собираетесь строить, — жильё, офисы или "
+            "торговлю. Узнайте зону в ПЗЗ или в градостроительном плане участка (ГПЗУ).")
 
 
 def _land_screening_disclaimer(method: str) -> str:
@@ -1818,10 +1907,256 @@ def land_screening(cad: str = "", min_area_sqm: float | None = None,
         # оговоркой всю сводку, иначе она выглядит увереннее своей слабой части.
         "verdict": _land_screening_verdict(
             everything, probed=probed,
+            zone_missing=sum(1 for p in parcels
+                             if (p.get("verdict") or {}).get("probed")
+                             and not (p.get("verdict") or {}).get("zone_found")),
             method=("point" if any(p.get("probe_method") == "point" for p in parcels)
                     else ("contour" if probed else ""))),
         "calculated_at": datetime.now().strftime("%d.%m.%Y %H:%M"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Ограничения участка для ТЭП и посадки.
+#
+# Скрининг находил ООПТ на всём участке, приаэродромную Внуково, охранные зоны
+# сетей на пятой части Коммунарки — и ни одно из этого не доходило до ТЭП:
+# калькулятору ГлавАПУ уходила площадь ограничений 0, посадка ставила 17–25
+# этажей молча (прогон «Посадка ↔ нормативы», 25.10.2026). Свод ниже — один
+# владелец ответа «что скрининг значит для ТЭП»: серверный ТЭП Москвы, окно с
+# калькулятором и расчёт МО читают его, а не находки скрининга по отдельности.
+# Решения владельца 25.10.2026: запрет на участке — красная оговорка, ТЭП
+# считается и подставляется; высота — оговорка без потолка (допустимой высоты
+# в ЕГРН нет); нежилой ВРИ — оговорка.
+
+_VRI_APARTMENTS_RE = re.compile(
+    r"(?<![\d.])2\.[56](?![\d])|многоэтажн|среднеэтажн|многоквартирн|высотн\w* застройк",
+    re.IGNORECASE)
+
+
+def _vri_allows_apartments(permitted_use: Any) -> bool | None:
+    """Разрешает ли ВРИ многоквартирные дома. Пустой ВРИ — не «нет», а «не знаем»."""
+    text = _land_text(permitted_use)
+    if not text:
+        return None
+    return bool(_VRI_APARTMENTS_RE.search(text))
+
+
+def _land_pct(value: Any, digits: int = 1) -> str:
+    number = _land_float(value)
+    if number is None:
+        return "?"
+    text = f"{number:.{digits}f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
+def _land_restriction_name(finding: dict[str, Any]) -> str:
+    return (_land_text(finding.get("name")) or _land_text(finding.get("type_zone"))
+            or _land_text(finding.get("category")) or "ограничение").removeprefix("ПКК. ")
+
+
+def _land_restrictions_summary(screening: dict[str, Any] | None,
+                               region: str = "msk") -> dict[str, Any]:
+    """Что найденное скринингом значит для ТЭП: площадь, запрет, высота, пробелы.
+
+    `restrict_ha` — площадь под зонами, отнимающими место у застройки
+    (`effect == "area"`, доля измерена по контуру); она уходит в калькулятор
+    ГлавАПУ полем «площадь ограничений» и вычитается из участка в расчёте МО.
+    Зона без измеренной доли (линейный слой) площадь не отнимает, но
+    называется: не измерено — не ноль. `warnings` — тексты для посетителя,
+    `ban` — запрет на участке (красная плашка).
+    """
+    if not isinstance(screening, dict) or not screening.get("parcels"):
+        return {"checked": False, "reason": "скрининг участка не выполнен",
+                "restrict_ha": 0.0, "restrict_pct": 0.0, "ban": False,
+                "warnings": ["Ограничения участка не проверены: скрининг НСПД не выполнен. "
+                             "Площадь ограничений в расчёт не передана."]}
+    warnings: list[str] = []
+    bans: list[dict[str, Any]] = []
+    heights: list[dict[str, Any]] = []
+    water: list[dict[str, Any]] = []
+    cutting: list[dict[str, Any]] = []
+    unmeasured: list[dict[str, Any]] = []
+    zone_missing: list[str] = []
+    unchecked: list[tuple[str, str]] = []
+    not_housing: list[tuple[str, str]] = []
+    area_total = 0.0
+    restrict_total = 0.0
+    parcels = [p for p in screening.get("parcels") or [] if isinstance(p, dict)]
+    for parcel in parcels:
+        number = _land_text(parcel.get("cadastral_number"))
+        verdict = parcel.get("verdict") or {}
+        if not parcel.get("found") or not verdict.get("probed"):
+            # Причина — своя у каждого случая: недоступный НСПД — не «участка
+            # нет», мелкий участок — не «нет границ».
+            if parcel.get("probe_failed"):
+                why = _land_text(parcel.get("note")) or "запрос в НСПД не прошёл"
+            elif not parcel.get("found"):
+                why = "сведения ЕГРН по номеру не получены"
+            elif parcel.get("too_small"):
+                why = "участок мельче порога скрининга"
+            else:
+                why = "границы участка не получены"
+            unchecked.append((number, why.rstrip(".")))
+            continue
+        area = _land_float(parcel.get("area_ha")) or 0.0
+        area_total += area
+        findings = [f for f in parcel.get("findings") or []
+                    if isinstance(f, dict) and f.get("on_parcel", True)]
+        cut_pct = max([_land_float(f.get("cut_pct")) or 0.0 for f in findings] or [0.0])
+        restrict_total += area * cut_pct / 100.0
+        for finding in findings:
+            entry = {"cadastral_number": number, "name": _land_restriction_name(finding),
+                     "coverage_pct": finding.get("coverage_pct"),
+                     "reg_number": _land_text(finding.get("reg_number"))}
+            effect = finding.get("effect")
+            if effect == "ban" or finding.get("flag_class") == "killer":
+                bans.append(entry)
+            elif effect == "height":
+                heights.append(entry)
+            elif effect == "water":
+                water.append(entry)
+            elif effect == "area":
+                (cutting if finding.get("coverage_pct") is not None else unmeasured).append(entry)
+        if verdict.get("zone_found") is False:
+            zone_missing.append(number)
+        allows = _vri_allows_apartments(parcel.get("permitted_use"))
+        if allows is False:
+            not_housing.append((number, _land_text(parcel.get("permitted_use"))))
+
+    several = len(parcels) > 1
+    where = lambda e: f" (участок {e['cadastral_number']})" if several else ""
+    share = lambda e: (f"{_land_pct(e['coverage_pct'])} % участка" if e.get("coverage_pct") is not None
+                       else "доля участка не измерена")
+    for entry in bans:
+        whole = (_land_float(entry.get("coverage_pct")) or 0.0) >= 99.0
+        warnings.append(
+            ("Строить нельзя: " if whole else "Часть участка под запретом: ")
+            + f"зона «{entry['name']}» занимает {share(entry)}{where(entry)}"
+            + (f", реестровый № {entry['reg_number']}" if entry.get("reg_number") else "")
+            + ". В такой зоне застройка запрещена. Числа ТЭП показывают ёмкость участка "
+            "без учёта запрета — по ним можно сравнивать варианты, но не рассчитывать "
+            "на разрешение на строительство.")
+    if cutting and restrict_total > 0:
+        names = ", ".join(f"«{e['name']}» — {share(e)}{where(e)}" for e in cutting)
+        warnings.append(
+            f"Охранные зоны и красные линии отнимают у застройки "
+            f"{_land_pct(restrict_total / max(area_total, 1e-9) * 100.0)} % участка "
+            f"({_land_pct(restrict_total, 2)} га): {names}. Красные линии отделяют "
+            "территорию общего пользования. В охранных зонах сетей застройка запрещена "
+            "или требует согласия владельца сети (режим зоны указан в градостроительном "
+            "плане участка), поэтому по допущению "
+            + ("калькулятору ГлавАПУ эта площадь передана как площадь ограничений, и ТЭП "
+               "посчитан на оставшуюся часть." if region == "msk" else
+               "квартиры посчитаны на оставшуюся часть участка."))
+    for entry in unmeasured:
+        warnings.append(
+            f"«{entry['name']}» найдены в рамке запроса вокруг участка{where(entry)}, но "
+            "долю участка под ними измерить не удалось: из площади она не вычтена. Проверьте по "
+            "градостроительному плану участка (ГПЗУ).")
+    massing_notes = [text for text in warnings if text.startswith(("Строить нельзя", "Часть участка"))]
+    for entry in heights:
+        aerodrome = "аэродром" in entry["name"].lower()
+        warnings.append(
+            f"Высота ограничена: участок в зоне «{entry['name']}» ({share(entry)}{where(entry)}). "
+            "Допустимую высоту ЕГРН не называет, поэтому этажность в ТЭП и в схеме "
+            "посадки с этим ограничением не сверена. "
+            + ("Высоту здания здесь согласуют с органами воздушного транспорта (Росавиация)."
+               if aerodrome else
+               "Высоту и облик здания здесь согласуют с органом охраны объектов культурного "
+               "наследия."))
+        massing_notes.append(warnings[-1])
+    if water:
+        names = ", ".join(sorted({e["name"] for e in water}))
+        warnings.append(
+            f"Рядом с участком водный объект ({names}). От береговой линии отсчитывается "
+            "водоохранная зона, в которой строительство идёт с ограничениями; заходит ли она "
+            "на участок, не измерено. Проверьте это по градостроительному плану участка.")
+    if zone_missing:
+        warnings.append(
+            "Территориальная зона по правилам землепользования и застройки (ПЗЗ) не получена"
+            + (f" для участков {', '.join(zone_missing)}" if several else "")
+            + ": разрешено ли на участке жильё, не проверено. Узнайте зону в правилах "
+            "землепользования или в градостроительном плане участка (ГПЗУ).")
+    for number, use in not_housing:
+        warnings.append(
+            f"Вид разрешённого использования участка{f' {number}' if several else ''} — "
+            f"«{use}»: многоквартирные дома по нему не предусмотрены. ТЭП показывает жилую "
+            "застройку по нормам; чтобы её построить, нужна смена вида разрешённого "
+            "использования, а разрешает ли её территориальная зона, "
+            + ("не проверено (зона не получена)." if number in zone_missing
+               else "сверьте с правилами землепользования и застройки."))
+    for number, why in unchecked:
+        warnings.append(
+            f"Ограничения участка{f' {number}' if several else ''} не проверены: {why}. "
+            "Площадь ограничений в расчёт не передана, запреты и ограничения высоты "
+            "не учтены.")
+    return {
+        "checked": bool(area_total > 0),
+        "reason": "" if area_total > 0 else "ни один участок не прошёл скрининг",
+        "area_ha": round(area_total, 4),
+        "restrict_ha": round(restrict_total, 4),
+        "restrict_pct": round(restrict_total / area_total * 100.0, 1) if area_total else 0.0,
+        "ban": bool(bans),
+        "ban_whole": any((_land_float(e.get("coverage_pct")) or 0.0) >= 99.0 for e in bans),
+        "bans": bans, "heights": heights, "water": water,
+        "cutting": cutting, "unmeasured": unmeasured,
+        "zone_missing": zone_missing,
+        "unchecked": [{"cadastral_number": n, "reason": why} for n, why in unchecked],
+        "not_housing": [{"cadastral_number": n, "permitted_use": u} for n, u in not_housing],
+        "warnings": warnings,
+        # Что из сказанного касается схемы посадки: запрет и высота. Схему
+        # считает движок (`site_massing`), и её оговорки — его ответ для
+        # страницы и PDF; свод едет в проект вместе с ТЭП.
+        "massing_notes": massing_notes,
+    }
+
+
+def site_restriction_massing_notes(x: dict[str, Any]) -> list[str]:
+    """Оговорки схемы посадки из свода ограничений, подставленного с ТЭП.
+
+    Свод живёт рядом с источником ТЭП: выгрузка ГлавАПУ (`_glavapu_import`) или
+    расчёт МО (`_mo_calc`). ТЭП без свода (файл, ручной ввод) оговорок не
+    получает — скрининга по нему не было, и это не «ограничений нет».
+    """
+    notes: list[str] = []
+    for key in ("_glavapu_import", "_mo_calc"):
+        source = x.get(key) if isinstance(x, dict) else None
+        restrictions = (source or {}).get("site_restrictions") if isinstance(source, dict) else None
+        if isinstance(restrictions, dict):
+            notes += [str(t) for t in restrictions.get("massing_notes") or [] if t and str(t) not in notes]
+    return notes
+
+
+def land_restrictions(numbers: list[str], region: str = "msk") -> dict[str, Any]:
+    """Свод ограничений по номерам: скрининг (из кэша, если свежий) → свод.
+
+    Срыв скрининга не роняет ТЭП, но и не выдаётся за «ограничений нет»:
+    свод называет причину и что площадь ограничений не передана.
+    """
+    numbers = [n for n in (numbers or []) if n]
+    if not numbers:
+        return _land_restrictions_summary(None, region)
+    try:
+        screening = land_screening(cad=",".join(numbers), limit=0)
+    except Exception as exc:
+        reason = _land_text(getattr(exc, "detail", "") or str(exc)) or type(exc).__name__
+        summary = _land_restrictions_summary(None, region)
+        summary["reason"] = f"скрининг не ответил: {reason}"
+        summary["warnings"] = [
+            f"Ограничения участка не проверены: скрининг НСПД не ответил ({reason[:160]}). "
+            "Площадь ограничений в расчёт не передана, запреты и ограничения высоты не учтены."]
+        return summary
+    return _land_restrictions_summary(screening, region)
+
+
+@app.get("/land/restrictions", include_in_schema=False)
+def land_restrictions_route(cad: str = "", region: str = "msk") -> dict[str, Any]:
+    """Свод ограничений для окна с калькулятором ГлавАПУ: площадь — до расчёта."""
+    numbers = re.findall(r"\d{2}:\d{2}:\d{6,8}:\d+", _land_text(cad))
+    if not numbers:
+        raise HTTPException(status_code=400, detail="cad: кадастровый номер участка.")
+    return land_restrictions(numbers, "mo" if region == "mo" else "msk")
 
 
 def _land_zouit_findings(lat: float, lng: float) -> list[dict[str, Any]]:

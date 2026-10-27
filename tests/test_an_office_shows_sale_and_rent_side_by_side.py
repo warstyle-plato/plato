@@ -73,12 +73,13 @@ def direct() -> dict:
 
 # --- три способа одним расчётом ------------------------------------------------
 
-def test_the_office_project_carries_three_ways_to_sell(ddu) -> None:
+def test_the_office_project_carries_four_ways_to_sell(ddu) -> None:
     """Владелец, 24.10.2026: «Новая книга считает и ДДУ» — продажа по ДДУ
     стоит третьим способом рядом с продажей блоками и арендой. Рядом с арендой —
     она же с другим выходом (удержание здания): «доходный метод для инвестора»."""
     paths = {p["key"]: p for p in ddu["office_paths"]["paths"]}
-    assert set(paths) == {ns.STRATEGY_DDU, ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME, "income_hold"}
+    assert set(paths) == {ns.STRATEGY_DDU, ns.PATH_PRESALE, ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME,
+                          "income_hold"}
     for path in paths.values():
         assert "error" not in path, path
         assert path["revenue"] > 0 and path["capex"] > 0
@@ -128,6 +129,116 @@ def test_a_path_equals_a_project_run_with_that_strategy(ddu, direct) -> None:
     path = next(p for p in ddu["office_paths"]["paths"] if p["key"] == ns.STRATEGY_DIRECT)
     assert path["npv"] == pytest.approx(direct["summary"]["npv"], rel=1e-9)
     assert path["net_profit"] == pytest.approx(direct["summary"]["net_profit"], rel=1e-9)
+
+
+# --- продажа по предварительному договору во время стройки ----------------------
+
+def _months(**over) -> int:
+    x, _ = _spec(**over)
+    return int(x["offices_months"])
+
+
+def _npv_run(**over) -> float:
+    x, t = _spec(**over)
+    token = core.OFFICE_PATHS_ON.set(False)
+    try:
+        return core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))["summary"]["npv"]
+    finally:
+        core.OFFICE_PATHS_ON.reset(token)
+
+
+def test_the_presale_way_sells_from_the_start_of_construction_until_commissioning(ddu) -> None:
+    """Владелец, 25.10.2026: «Где в сравнении стратегий продажа по ПДКП будущей
+    вещи во время стройки? … Их же 4?!» — четвёртый способ рядом с прежними.
+    Умолчание — продажи с начала стройки объекта равномерно до ввода; это
+    прямая продажа движка с отрицательным сдвигом, а не своя арифметика."""
+    paths = {p["key"]: p for p in ddu["office_paths"]["paths"]}
+    presale = paths[ns.PATH_PRESALE]
+    assert presale["label"] == "Продажа компаниям по предварительному договору во время стройки (ПДКП)"
+    assert presale["strategy"] == ns.STRATEGY_DIRECT and "error" not in presale
+    months = _months()
+    assert presale["npv"] == pytest.approx(_npv_run(
+        offices_strategy=ns.STRATEGY_DIRECT, offices_direct_sale_offset_months=-months,
+        offices_direct_sale_months=months), rel=1e-9)
+    # Контрпример: это не продажа после ввода.
+    assert presale["npv"] != pytest.approx(paths[ns.STRATEGY_DIRECT]["npv"], rel=1e-6)
+
+
+def test_the_presale_vat_is_charged_in_the_month_of_each_advance() -> None:
+    """Решение владельца 25.10.2026 «НДС по месяцам авансов» (НК ст. 167 п. 1
+    пп. 2): у ПДКП НДС начислен в месяц поступления аванса, а не одной суммой
+    в РВЭ, как у ДДУ с эскроу."""
+    months = _months()
+    result = _calc(offices_strategy=ns.STRATEGY_DIRECT, offices_direct_sale_offset_months=-months,
+                   offices_direct_sale_months=months)
+    obj = result["finance"]["nonres"]["objects"][0]
+    commissioning = obj["commissioning"][:7]
+    vat_share = core.DEFAULT_INPUTS["vat_pct"] / (100 + core.DEFAULT_INPUTS["vat_pct"])
+    paid = [r for r in obj["rows"] if r["nonres_revenue"]]
+    assert len(paid) == months and all(r["month"][:7] < commissioning for r in paid)
+    for row in obj["rows"]:
+        assert row["nonres_vat_charged"] == pytest.approx(row["nonres_revenue"] * vat_share, rel=1e-9, abs=1e-6)
+    # Контрпример: в месяц ввода разовой суммы нет.
+    assert not next(r for r in obj["rows"] if r["month"][:7] == commissioning)["nonres_vat_charged"]
+
+
+def test_the_presale_names_who_may_buy() -> None:
+    """214-ФЗ ст. 1 ч. 2: до ввода гражданам — только ДДУ. Условие названо в
+    подписи способа, у столбца сравнения и в подсказках обоих полей окна."""
+    result = _calc(offices_strategy=ns.STRATEGY_DDU)
+    presale = next(c for c in result["strategy_compare"]["items"][0]["columns"] if c["key"] == ns.PATH_PRESALE)
+    assert presale["label"].startswith("Продажа компаниям") and ns.PRESALE_BUYERS in presale["tags"]
+    hints = {f[0]: f[2] for _, group in core.FIELD_GROUPS for f in group if isinstance(f, list)}
+    for key in ("offices_presale_start_months", "offices_presale_end_months"):
+        assert "только по ДДУ" in hints[key] and "214-ФЗ" in hints[key], key
+
+
+def test_the_presale_follows_the_office_class() -> None:
+    """Класс офиса (#928, `office_class_choice`) ставит шкалу во вводные до
+    путей сравнения: ПДКП считается из тех же вводных с классом, что и прочие
+    способы. Цену продажи класса дают вводные (`office_class_rates`), поля
+    аренды класса ПДКП не читает."""
+    months = _months()
+    over = dict(offices_price_th_per_sqm=ns.OFFICE_CLASS_SCALE["A"]["price_th_per_sqm"], offices_office_class="A")
+    result = _calc(offices_strategy=ns.STRATEGY_DDU, **over)
+    assert {r["prefix"]: r["office_class"] for r in result["office_classes"]}.get("offices") == "A"
+    presale = next(p for p in result["office_paths"]["paths"] if p["key"] == ns.PATH_PRESALE)
+    window = dict(offices_strategy=ns.STRATEGY_DIRECT, offices_direct_sale_offset_months=-months,
+                  offices_direct_sale_months=months)
+    assert presale["npv"] == pytest.approx(_npv_run(**window, **over), rel=1e-9)
+    # Контрпример: цена класса B даёт ПДКП меньше выручки.
+    cheaper = _calc(offices_strategy=ns.STRATEGY_DDU, offices_office_class="B",
+                    offices_price_th_per_sqm=ns.OFFICE_CLASS_SCALE["B"]["price_th_per_sqm"])
+    assert next(p for p in cheaper["office_paths"]["paths"] if p["key"] == ns.PATH_PRESALE)["revenue"] \
+        < presale["revenue"]
+
+
+def test_both_presale_dates_are_inputs() -> None:
+    """Начало и конец продаж по ПДКП правятся во вводных объекта."""
+    months = _months()
+    result = _calc(offices_strategy=ns.STRATEGY_DDU, offices_presale_start_months=6,
+                   offices_presale_end_months=3)
+    presale = next(p for p in result["office_paths"]["paths"] if p["key"] == ns.PATH_PRESALE)
+    assert presale["npv"] == pytest.approx(_npv_run(
+        offices_strategy=ns.STRATEGY_DIRECT, offices_direct_sale_offset_months=6 - months,
+        offices_direct_sale_months=months - 9), rel=1e-9)
+    fields = {f[0] for _, group in core.FIELD_GROUPS for f in group if isinstance(f, list)}
+    assert {"offices_presale_start_months", "offices_presale_end_months"} <= fields
+
+
+def test_a_project_selling_before_commissioning_is_the_presale_way() -> None:
+    """Прямая продажа со стартом до ввода — это ПДКП: путь проекта — основной
+    расчёт, а продажа «после ввода» стартует с ввода, а не до него."""
+    result = _calc(offices_strategy=ns.STRATEGY_DIRECT, offices_direct_sale_offset_months=-6)
+    block = result["office_paths"]
+    assert block["current"] == ns.PATH_PRESALE
+    paths = {p["key"]: p for p in block["paths"]}
+    assert paths[ns.PATH_PRESALE]["npv"] == result["summary"]["npv"]
+    assert paths[ns.STRATEGY_DIRECT]["npv"] == pytest.approx(_npv_run(
+        offices_strategy=ns.STRATEGY_DIRECT, offices_direct_sale_offset_months=0), rel=1e-9)
+    lead = result["strategy_compare"]["items"][0]["lead"]
+    assert "выбрана продажа компаниям по предварительному договору во время стройки" in lead
+    assert "блоками после ввода" not in lead.split(".")[0]
 
 
 def test_a_housing_project_has_no_office_paths() -> None:
@@ -237,9 +348,10 @@ def test_the_report_tornado_of_an_office_is_npv_for_each_path() -> None:
     out = core.report_sensitivity(x, t, [], {})
     assert out["base"]["metric"] == "npv_mln"
     paths = out["office_paths"]
-    assert set(paths) == {ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME}
+    assert set(paths) == {ns.PATH_PRESALE, ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME}
     rent = {i["parameter"] for i in paths[ns.STRATEGY_INCOME]["items"]}
     sale = {i["parameter"] for i in paths[ns.STRATEGY_DIRECT]["items"]}
+    assert sale == {i["parameter"] for i in paths[ns.PATH_PRESALE]["items"]}
     assert {"offices_rent_th_per_sqm_month", "offices_occupancy_stable_pct",
             "offices_exit_cap_pct", "purchase_price_mln"} <= rent
     assert {"offices_price_th_per_sqm", "purchase_price_mln"} <= sale

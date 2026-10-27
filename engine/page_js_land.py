@@ -425,6 +425,17 @@ function glavapuScenarioSummaryHtml(a){
 }
 function openGlavapuScenario(){document.getElementById('glavapuScenarioDialog').style.display='flex'}
 function closeGlavapuScenario(){document.getElementById('glavapuScenarioDialog').style.display='none'}
+async function fetchSiteRestrictions(numbers){
+ const failed=why=>({checked:false,restrict_ha:0,ban:false,reason:why,
+  warnings:['Ограничения участка не проверены: '+why+'. Площадь ограничений в калькулятор не передана, '+
+   'запреты и ограничения высоты не учтены.']});
+ try{
+  const response=await fetch('/land/restrictions?cad='+encodeURIComponent((numbers||[]).join(',')));
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok)return failed('сервер ответил '+response.status+(data.detail?' ('+String(data.detail).slice(0,160)+')':'')+' на запрос /land/restrictions');
+  return data;
+ }catch(e){return failed('запрос /land/restrictions не прошёл ('+String(e.message||e).slice(0,120)+')')}
+}
 async function obtainServerTep(analysis,status,runId){
  // Формулы калькулятора, посчитанные сервером: равноценная замена
  // браузерной автоматизации, а не суррогат — сходятся до единицы.
@@ -509,10 +520,17 @@ async function obtainCadastralTep(preAnalysis){
      return await obtainServerTep(analysis,status,runId);
    }
 
+   // Площадь ограничений (охранные зоны, красные линии) — до калькулятора:
+   // он вычитает её из территории. Свод считает сервер по скринингу; срыв не
+   // роняет ТЭП, но и не выдаётся за «ограничений нет» — причина уходит в ТЭП.
+   tepStep='ограничения участка';
+   status.textContent='2 из 4 · Проверяю ограничения участка…';
+   const siteRestrictions=await fetchSiteRestrictions(analysis.recognized||analysis.requested||[]);
    tepStep='расчёт в калькуляторе ГлавАПУ';
    status.textContent='2 из 4 · Открываю калькулятор ГлавАПУ…';
    const area=Number((analysis.territory||{}).area_ha||0).toFixed(4);
-   frame.src='/calc/?terrArea='+encodeURIComponent(area)+'&restrictArea=0&plato='+Date.now();
+   const restrictArea=Math.max(0,Number(siteRestrictions.restrict_ha||0)).toFixed(4);
+   frame.src='/calc/?terrArea='+encodeURIComponent(area)+'&restrictArea='+encodeURIComponent(restrictArea)+'&plato='+Date.now();
    const parcelButton=await waitForGenplan(()=>{
      const doc=frame.contentDocument;
      return doc&&genplanButton(doc,'Участок');
@@ -539,7 +557,7 @@ async function obtainCadastralTep(preAnalysis){
      return codes.has('60')&&codes.has('54')&&extracted.length>=60?extracted:null;
    });
    const tepResponse=await fetch('/cadastral/tep-from-calculator',{
-     method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows,cadastral_analysis:analysis})
+     method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows,cadastral_analysis:analysis,site_restrictions:siteRestrictions})
    });
    const payload=await tepResponse.json();
    if(!tepResponse.ok)throw new Error(serverDetail(payload)||'Не удалось перенести ТЭП в DevelopAid');
@@ -821,12 +839,45 @@ function screeningFlagLabel(cls){
  return cls==='killer'?'СТОП':(cls==='economic'?'ВЛИЯЕТ':'справка');
 }
 
+// Ограничения участка для ТЭП — свод сервера (`site_restrictions`), одна
+// функция для окна Москвы и расчёта МО. Запрет — красной строкой первым:
+// владелец решил ТЭП при запрете считать и подставлять (25.10.2026), значит
+// предупреждение обязано быть видно до кнопки «Подставить в проект».
+// Возвращает разметку и тексты, которые блок уже сказал: список предупреждений
+// под таблицей их не повторяет.
+function siteRestrictionsHtml(r){
+ if(!r||typeof r!=='object')return {html:'',said:[]};
+ const said=(r.warnings||[]).map(x=>String(x||'')).filter(x=>x.trim());
+ if(!said.length)return {html:'',said:[]};
+ const banned=said.filter(x=>/^(Строить нельзя|Часть участка под запретом)/.test(x));
+ const rest=said.filter(x=>!banned.includes(x));
+ const head=r.ban_whole?'Строить на участке нельзя — проверьте, прежде чем подставлять числа'
+  :(r.ban?'Часть участка под запретом застройки':'Ограничения участка из ЕГРН');
+ const html='<b'+(r.ban?' class="import-error"':'')+'>'+escapeHtml(head)+'.</b>'+
+  banned.map(x=>'<div class="import-error">• '+escapeHtml(x)+'</div>').join('')+
+  rest.map(x=>'<div>• '+escapeHtml(x)+'</div>').join('');
+ return {html,said};
+}
+function showSiteRestrictions(boxId,r){
+ const box=document.getElementById(boxId);
+ const out=siteRestrictionsHtml(r);
+ if(box){
+  box.innerHTML=out.html;
+  box.className='site-restrictions note '+((r&&r.ban)?'critical':'warning');
+  box.style.display=out.html?'block':'none';
+ }
+ return out.said;
+}
+
 function renderLandScreening(data){
  const box=document.getElementById('landScreening');
  if(!box||!data||!data.parcels)return;
  landScreeningLast=data;
  const v=data.verdict||{};
- const tone=v.status==='CRITICAL'?'critical':(v.status==='WARNING'?'warning':(v.status==='NOT_SCREENED'?'unknown':'clean'));
+ // Без территориальной зоны «чисто» не зелёное: не проверено, разрешено ли
+ // на участке то, что на нём сажают. Отсутствующий признак — не «зона есть».
+ const tone=v.status==='CRITICAL'?'critical':(v.status==='WARNING'?'warning':
+  (v.status==='NOT_SCREENED'||v.zone_found===false?'unknown':'clean'));
  const found=data.parcels.filter(p=>p.found);
  // Один участок — короткая карточка; несколько — разбивка. Считаем по
  // запрошенным, а не по найденным: из двадцати двух номеров сведения ЕГРН
