@@ -224,8 +224,9 @@ def test_the_page_takes_its_scopes_from_the_rows(monkeypatch) -> None:
 
     page = registry._page(_request(), core)
 
-    assert "<div><b>1</b><span>Проверочная область</span></div>" in page
-    assert 'data-filter="Проверочная область"' in page
+    # Строка без отметки уровня не теряется: свой раздел, плитка и кнопка.
+    assert "<div><b>1</b><span>Уровень акта не отмечен</span></div>" in page
+    assert 'data-filter="unmarked"' in page
 
 
 def test_the_page_says_how_much_of_the_contour_is_covered(monkeypatch) -> None:
@@ -312,6 +313,18 @@ def test_the_sp_42_card_is_marked_superseded() -> None:
     assert row["status"] not in ("verified", "review_required", "current")
     assert registry._status_label(row["status"])[0] != row["status"], "статус вне словаря модуля"
     assert "СП 42.13330.2026" in row["watch_terms"] and "СП 42.13330.2026" in row["cited_as"]
+
+
+def test_the_sp_42_2026_card_is_verified_by_the_official_edition() -> None:
+    """СП 42.13330.2026 сверен по официальному изданию (владелец, 26.10.2026):
+    редакция, источник с адресом и дословные пункты — и нормы 25 % в нём нет."""
+    row = _rows()["rf-sp-42-2026"]
+    assert row["status"] == "verified"
+    assert registry.verdict_problems(row) == []
+    points = {item["point"] for item in row["verification"]["provisions"]}
+    assert {"Предисловие, п. 4", "табл. И.1, п. 3", "п. 6.2.56"} <= points
+    assert any("25 %" in item for item in row["verification"]["discrepancies"])
+    assert "rf-sp-42-2026" in _rows()["rf-sp-42"]["superseded_by"]
 
 
 def test_the_593_card_describes_the_current_formula_not_the_2013_one() -> None:

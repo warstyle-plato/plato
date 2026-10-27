@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import hashlib
 import re
 import statistics
 import sys
@@ -99,6 +100,7 @@ from auction_search import view_access as auction_view
 from auction_search import lot_notes as lot_notes_rules
 from auction_search import export_columns
 from auction_search import krt_early_projects
+from auction_search import krt_project_site
 from auction_search import krt_investment_score
 from auction_search.nagatino_ui import nagatino_page
 from auction_search.krt_investment_card import krt_investment_card_page
@@ -1510,6 +1512,20 @@ def install(app: FastAPI) -> None:
             return await call_next(request)
         if path == "/auctions/login":
             return await call_next(request)
+        # Демо-ссылка с разделом «Торги и КРТ»: только чтение, решение — одно
+        # на движок (`demo_request_access`). Полный ключ кабинета главнее.
+        if not market_cabinet.authorised(request):
+            demo = market_cabinet.demo_access(request)
+            if demo.get("demo"):
+                if demo.get("allowed"):
+                    return await call_next(request)
+                problem = str(demo.get("problem") or "")
+                if (request.method in ("GET", "HEAD")
+                        and "text/html" in request.headers.get("accept", "")):
+                    return HTMLResponse(auction_view.login_page(problem), status_code=403,
+                                        headers={"Cache-Control": "no-store"})
+                return JSONResponse({"detail": problem}, status_code=403,
+                                    headers={"Cache-Control": "no-store"})
         if not _auctions_gate_enabled():
             # Ворота выключены — чтение открыто всем, запись и пробы — только
             # команде: ключ кабинета, ключ владельца или вход человека команды.
@@ -3574,6 +3590,13 @@ def install(app: FastAPI) -> None:
             return
         if market_cabinet.authorised(request):
             return
+        # Демо-ссылка с разделом «Торги и КРТ» читает участки, как ключ
+        # просмотра; команды обновления — запись, их отказ называет причину.
+        demo = market_cabinet.demo_access(request)
+        if demo.get("demo"):
+            if demo.get("allowed"):
+                return
+            raise HTTPException(status_code=403, detail=str(demo.get("problem") or ""))
         # Отдельный ключ торгов действует только здесь: generic-кабинет его
         # не знает, поэтому /cabinet и финансовая модель им не открываются.
         if auction_view.authorised(request):
@@ -3942,32 +3965,13 @@ def install(app: FastAPI) -> None:
         """Контур площадки для её свода: сперва файл карты города, потом перечень.
 
         Тот же порядок, что у точки на карте (`/point`), и те же две дороги:
-        второго пути к контуру в модуле нет. Опознавать геометрией здесь не
+        второго пути к контуру в модуле нет. Владелец дорог —
+        `krt_project_site.find_site`: им же берёт контур галочка «Проект в КРТ». Опознавать геометрией здесь не
         нужно — слаг площадки известен.
         """
         def find() -> dict[str, Any]:
-            lookup = getattr(krt_registry, "map_lookup", None)
-            found = (lookup(slug, name, None) or {}) if callable(lookup) else {}
-            site = found.get("site") or {}
-            rings = [ring for ring in (site.get("rings_merc") or [])
-                     if isinstance(ring, list) and len(ring) >= 3]
-            if rings:
-                return {"slug": slug, "name": str(site.get("name") or name),
-                        "rings_merc": rings, "matched": str(found.get("matched") or "map"),
-                        "source": "официальный файл карты реестра КРТ", "problem": ""}
-            outline = _decision_outline_now(slug)
-            rings = [ring for ring in (outline.get("rings_merc") or [])
-                     if isinstance(ring, list) and len(ring) >= 3]
-            if rings:
-                return {"slug": slug, "name": name, "rings_merc": rings,
-                        "matched": "decision",
-                        "source": "состав территории по проекту решения, "
-                                  "а не официальный полигон",
-                        "problem": str(outline.get("problem") or "")}
-            return {"problem": (str(found.get("problem") or "")
-                                or str(outline.get("problem") or "")
-                                or "контур площадки не собрался: её нет ни в файле "
-                                   "карты города, ни в перечне проекта решения")}
+            return krt_project_site.find_site(krt_registry, slug, name,
+                                              decision_outline=_decision_outline_now)
 
         return find
 
@@ -4333,6 +4337,96 @@ def install(app: FastAPI) -> None:
         data["pending"] = bool(data.get("pending") or started)
         data["retry_after_seconds"] = 20 if data["pending"] else None
         return data
+
+    @app.post("/krt/project-site", include_in_schema=False)
+    async def krt_project_site_route(request: Request) -> dict[str, Any]:
+        """Территория КРТ проекта для галочки «Проект в КРТ» на вкладке ТЭП.
+
+        Тело: `slug` (площадка выбрана человеком) или участки проекта —
+        `cadastral_numbers` и `points_merc` (точки его участков из госреестра);
+        `query` — поиск площадки по имени, когда опознать её не вышло. Ответ —
+        контур, площадь (`krt_contour_area_sqm` движка) и источник, либо
+        причина и площадки на выбор. Файл карты и ЕГРН по перечню — долго:
+        сбор идёт фоном, запрос читает диск. С Render — на ядро, где реестр
+        и НСПД (как `/land/lookup`).
+        """
+        body = await json_object(request)
+        url = (core._core_api_url("/krt/project-site")
+               if core is not None and hasattr(core, "_core_api_url") else "")
+        if url:
+            return await run_in_threadpool(
+                core._core_post, url, body, getattr(core, "_MO_CALC_TIMEOUT_SECONDS", 60))
+        query = str(body.get("query") or "").strip()
+        if query:
+            found = await run_in_threadpool(krt_registry.suggest, query[:120], 8)
+            return {"status": "choices", "problem": "" if found else
+                    "в каталоге КРТ площадок с таким именем или районом нет",
+                    "choices": [{"slug": str(item.get("slug") or ""),
+                                 "name": str(item.get("name") or ""),
+                                 "matched_by": "выбрана по имени в каталоге КРТ"}
+                                for item in found if item.get("slug")]}
+        slug = str(body.get("slug") or "").strip()[:160]
+        numbers = krt_project_site.clean_numbers(body.get("cadastral_numbers"))
+        points = krt_project_site.clean_points(body.get("points_merc"))
+        area = getattr(core, "krt_contour_area_sqm", None) if core is not None else None
+        if not callable(area):
+            return {"status": "failed", "choices": [],
+                    "problem": "движок расчёта не загружен — площадь контура считать нечем"}
+        name = str(body.get("name") or "").strip()[:200]
+        key = krt_project_site.request_key(slug, numbers, points)
+        await run_in_threadpool(lambda: krt_project_site.start(key, lambda: krt_project_site.gather(
+            krt_registry, slug=slug, name=name or slug, numbers=numbers, points_merc=points,
+            decision_outline=_decision_outline_now, area_sqm=area),
+            refresh=bool(body.get("refresh"))))
+        return await run_in_threadpool(krt_project_site.view, key)
+
+    @app.post("/krt/manual-contour", include_in_schema=False)
+    async def krt_manual_contour_route(request: Request) -> dict[str, Any]:
+        """Контур КРТ, загруженный человеком, для галочки «Проект в КРТ».
+
+        `catalog_text` — каталог координат МСК-77 из приложения к решению:
+        разбирается сразу, сети нет. `file_b64` + `filename` — фото или скан
+        страницы решения: распознавание долгое, идёт фоном, ответ — `key`,
+        по нему страница переспрашивает (`key` без файла). С Render — на ядро:
+        распознавание стоит там (`pdf_ocr`, tesseract в образе).
+        """
+        import base64
+
+        from auction_search import krt_manual_contour
+
+        body = await json_object(request)
+        url = (core._core_api_url("/krt/manual-contour")
+               if core is not None and hasattr(core, "_core_api_url") else "")
+        if url:
+            return await run_in_threadpool(
+                core._core_post, url, body, getattr(core, "_MO_CALC_TIMEOUT_SECONDS", 60))
+        points = krt_project_site.clean_points(body.get("points_merc"))
+        text = str(body.get("catalog_text") or "")
+        if text.strip():
+            return await run_in_threadpool(
+                lambda: krt_manual_contour.from_catalog(text[:200_000], points_merc=points))
+        raw = str(body.get("file_b64") or "")
+        key = str(body.get("key") or "")
+        key = key if re.fullmatch(r"manual-[0-9a-f]{24}", key) else ""
+        if raw:
+            try:
+                data = base64.b64decode(raw.split(",", 1)[-1], validate=False)
+            except Exception:  # noqa: BLE001 — битый файл называется
+                return {"status": "failed", "problem": "файл не прочитан — пришлите его ещё раз"}
+            if len(data) > 12 * 1024 * 1024:
+                return {"status": "failed", "problem": "файл больше 12 МБ — снимите одну страницу"}
+            name = str(body.get("filename") or "")[:120]
+            key = "manual-" + hashlib.sha1(data).hexdigest()[:24]
+            await run_in_threadpool(lambda: krt_project_site.start(
+                key, lambda: {"schema_version": krt_project_site.SCHEMA_VERSION,
+                              "collected_at": int(time.time()), "choices": [],
+                              **krt_manual_contour.recognise(data, name, points_merc=points)}))
+        if not key:
+            return {"status": "failed",
+                    "problem": "пришлите каталог координат текстом или фото страницы решения"}
+        answer = await run_in_threadpool(krt_project_site.view, key)
+        answer["key"] = key
+        return answer
 
     @app.get("/auctions/krt/{slug}/point")
     async def auction_krt_point(slug: str) -> dict[str, Any]:

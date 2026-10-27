@@ -88,8 +88,9 @@ def run(fetch_js: str) -> dict:
     if not node:
         pytest.skip("node недоступен")
     script = "\n".join([
-        DOM, page_plain_function("cloneValue"), page_plain_function("landHasContour"),
-        page_plain_function("landContourArrived"), fetch_js, page_function("lookupLand"),
+        DOM, page_plain_function("cloneValue"), page_plain_function("serverDetail"),
+        page_plain_function("landHasContour"), page_plain_function("landContourArrived"),
+        fetch_js, page_function("lookupLand"),
         "(async()=>{const out=await lookupLand({quiet:true});"
         "console.log(JSON.stringify({returned:out,status:nodes.cadastralStatus.innerHTML}));})()",
     ])

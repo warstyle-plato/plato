@@ -192,19 +192,97 @@ def cited_numbers(rows: list[dict[str, Any]]) -> set[str]:
     return {number for number in numbers if number}
 
 
-def registry_scopes(rows: list[dict[str, Any]]) -> list[str]:
-    """Области реестра — из самих строк, а не списком рядом.
+# Порядок страницы (решение владельца 26.10.2026: «разнобой в
+# последовательности и значимости документов»): сверху то, о чём источник
+# сообщил новость, затем разделы по уровню акта, внутри раздела сначала акты,
+# от которых зависят деньги расчёта; заменённые и отменённые — внизу, в
+# свёрнутой истории. Уровень и влияние записаны в строке реестра явно
+# (`level`, `impact`): по имени или тексту их не угадываем.
+PAGE_LEVELS: tuple[tuple[str, str], ...] = (
+    ("federal_law", "Федеральные законы и кодексы"),
+    ("rules", "Своды правил"),
+    ("moscow", "Москва"),
+    ("mo", "Московская область"),
+    ("product", "Правовая рамка сервиса"),
+)
+IMPACT_LABELS = {
+    "money": "Влияет на деньги в расчёте",
+    "reference": "Справочно, в расчёт не входит",
+}
+# Наша очередь сверки — для администратора; читателю «требует внимания» —
+# только новость от источника (`_reader_label`).
+_ATTENTION_STATUSES = ("review_required", "manual_source_required",
+                       "source_link_missing", "not_confirmed")
 
-    Список, перечисленный в разметке, отстаёт от данных: строка с новой
-    областью не получила бы ни плитки, ни кнопки отбора и читалась бы как
-    отсутствующая. Порядок задан для тех областей, что были всегда; всё
-    остальное идёт за ними по алфавиту.
+
+def in_history(entry: dict[str, Any]) -> bool:
+    """Акт заменён или отменён — его место в истории, а не в действующих."""
+    return bool(entry.get("superseded_from") or entry.get("repealed_from"))
+
+
+def needs_attention(entry: dict[str, Any], admin: bool = False) -> bool:
+    """Источник сообщил о новой редакции или отмене; админу — ещё и наша очередь."""
+    if in_history(entry):
+        return False
+    check = entry.get("check") if isinstance(entry.get("check"), dict) else {}
+    if _reader_label(entry, check)[1] in ("warn", "bad"):
+        return True
+    return admin and str(entry.get("status") or "") in _ATTENTION_STATUSES
+
+
+def page_sections(rows: list[dict[str, Any]], admin: bool = False) -> list[dict[str, Any]]:
+    """Разделы страницы по порядку: внимание, уровни, история.
+
+    Строка без отметки уровня не теряется: она идёт отдельным разделом в
+    конце действующих, а тест реестра требует отметку у каждой строки.
     """
-    order = ["Москва", "Московская область", "Общие для РФ"]
-    seen = [str(row.get("scope") or "").strip() or "Прочее" for row in rows]
-    head = [scope for scope in order if scope in seen]
-    tail = sorted({scope for scope in seen if scope not in order})
-    return head + tail
+    def by_impact(group: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        rank = {"money": 0, "reference": 1}
+        return sorted(group, key=lambda row: rank.get(str(row.get("impact") or ""), 2))
+
+    attention = [row for row in rows if needs_attention(row, admin)]
+    taken = {id(row) for row in attention}
+    history = [row for row in rows if in_history(row)]
+    taken |= {id(row) for row in history}
+    current = [row for row in rows if id(row) not in taken]
+    sections: list[dict[str, Any]] = []
+    if attention:
+        sections.append({"key": "attention", "title": "Требует внимания", "rows": attention})
+    known = {key for key, _ in PAGE_LEVELS}
+    for key, title in PAGE_LEVELS:
+        group = [row for row in current if row.get("level") == key]
+        if group:
+            sections.append({"key": key, "title": title, "rows": by_impact(group)})
+    unmarked = [row for row in current if row.get("level") not in known]
+    if unmarked:
+        sections.append({"key": "unmarked", "title": "Уровень акта не отмечен",
+                         "rows": by_impact(unmarked)})
+    if history:
+        sections.append({"key": "history", "title": "История: заменённые и отменённые акты",
+                         "rows": history})
+    return sections
+
+
+def _sections_html(rows: list[dict[str, Any]], admin: bool = False) -> str:
+    parts = []
+    for section in page_sections(rows, admin=admin):
+        cards = "".join(_card(row, admin=admin) for row in section["rows"])
+        title = html.escape(section["title"])
+        count = len(section["rows"])
+        if section["key"] == "history":
+            parts.append(
+                f'<details class="nsection history" data-section="history">'
+                f'<summary class="sechead">{title} <span>{count}</span></summary>'
+                '<p class="seclead">Эти акты больше не действуют. Расчёт на них не опирается, '
+                'они оставлены, чтобы было видно, что их сменило.</p>'
+                f'{cards}</details>')
+            continue
+        lead = ('<p class="seclead">Источник сообщил о новой редакции или отмене. '
+                'Мы проверяем, что изменилось и затрагивает ли это расчёт.</p>'
+                if section["key"] == "attention" else "")
+        parts.append(f'<section class="nsection" data-section="{section["key"]}">'
+                     f'<h2 class="sechead">{title} <span>{count}</span></h2>{lead}{cards}</section>')
+    return "".join(parts)
 
 
 # Итог сверки акта — один из двух, и у каждого своё доказательство. Ответ на
@@ -1668,12 +1746,15 @@ def _card(entry: dict[str, Any], admin: bool = False) -> str:
     verification_html = _verification_html(entry, admin=admin)
     affects = [str(x) for x in (entry.get('affects') or []) if str(x).strip()]
     gist = affects[0] if affects else str(entry.get('title') or '')
+    impact = str(entry.get("impact") or "")
+    impact_html = (f'<div class="impact {html.escape(impact)}">{html.escape(IMPACT_LABELS[impact])}</div>'
+                   if impact in IMPACT_LABELS else "")
     return f"""
 <details class="ncard" data-scope="{html.escape(str(entry.get('scope') or ''))}">
   <summary class="nhead">
     <div><div class="eyebrow">{html.escape(str(entry.get('scope') or ''))}</div>
     <h2>{html.escape(str(entry.get('short_name') or ''))}</h2>
-    <div class="gist">{html.escape(gist)}</div></div>
+    <div class="gist">{html.escape(gist)}</div>{impact_html}</div>
     <span class="badge {badge}">{html.escape(label)}</span>{admin_badge}
   </summary>
   <p class="full-title">{html.escape(str(entry.get('title') or ''))}</p>
@@ -1807,15 +1888,16 @@ def _legal_footer() -> str:
 def _page(request: Request, core: Any) -> str:
     admin = _is_admin(request, core)
     rows = _merged_registry()
-    scopes = registry_scopes(rows)
-    counts = {scope: sum(1 for row in rows
-                         if (str(row.get("scope") or "").strip() or "Прочее") == scope)
-              for scope in scopes}
+    # Плитки и кнопки отбора — те же разделы, что и на странице, в том же
+    # порядке: иначе сверху «Москва» первой, а ниже первыми федеральные законы.
+    sections = page_sections(rows, admin=admin)
     cover = coverage(rows)
-    tiles = "".join("<div><b>%d</b><span>%s</span></div>" % (counts[scope], html.escape(scope))
-                    for scope in scopes)
-    filters = "".join('<button data-filter="%s">%s</button>' % (html.escape(scope), html.escape(scope))
-                      for scope in scopes)
+    tiles = "".join("<div><b>%d</b><span>%s</span></div>"
+                    % (len(section["rows"]), html.escape(section["title"]))
+                    for section in sections if section["key"] != "attention")
+    filters = "".join('<button data-filter="%s">%s</button>'
+                      % (html.escape(section["key"]), html.escape(section["title"]))
+                      for section in sections if section["key"] != "attention")
     # Существительное стоит ПЕРЕД числом: «поправок в ней 54» верно при любом
     # числе, а «54 поправок» ломается на 1, 2 и 21 — русское склонение здесь
     # обошлось бы своей функцией, а её негде объявить один раз.
@@ -1827,7 +1909,7 @@ def _page(request: Request, core: Any) -> str:
         % (cover["acts"], cover["verified"], cover["not_confirmed"], cover["review"],
            cover["chained"], cover["steps"], cover["steps_in_library"])
     )
-    cards = "".join(_card(row, admin=admin) for row in rows)
+    cards = _sections_html(rows, admin=admin)
 
     footer = _legal_footer()
 
@@ -1911,6 +1993,13 @@ background:#17191d;color:#fff;border-radius:12px;padding:12px 14px;margin-bottom
 box-shadow:0 8px 30px rgba(0,0,0,.12)}}.adminbar button{{border:0;border-radius:8px;padding:9px 12px;cursor:pointer}}
 #checkMsg{{font-size:13px;opacity:.8}}.foot{{color:var(--muted);font-size:13px;margin-top:26px}}
 .hidden{{display:none!important}}
+.nsection{{margin:0 0 26px}}.sechead{{font-size:20px;margin:6px 0 12px;cursor:default}}
+.sechead span{{color:var(--muted);font-weight:400;font-size:15px;margin-left:6px}}
+.seclead{{color:var(--muted);font-size:13px;margin:-4px 0 12px}}
+.nsection[data-section="attention"] .sechead{{color:var(--warn)}}
+details.history>summary{{cursor:pointer;color:var(--muted)}}
+.impact{{display:inline-block;margin-top:8px;font-size:12px;font-weight:700;border-radius:999px;padding:3px 9px}}
+.impact.money{{color:var(--ink);background:#eef2ff}}.impact.reference{{color:var(--muted);background:#f3f4f6}}
 @media(max-width:760px){{.summary,.meta,.twocol{{grid-template-columns:1fr}}
 .nhead,.source-row,.top{{display:block}}.badge{{display:inline-block;margin-top:10px}}
 .probe{{text-align:left;margin-top:10px}}h1{{font-size:28px}}.adminbar{{position:static;display:block}}
@@ -1936,7 +2025,10 @@ box-shadow:0 8px 30px rgba(0,0,0,.12)}}.adminbar button{{border:0;border-radius:
 document.querySelectorAll('.filters button').forEach(btn=>btn.addEventListener('click',()=>{{
  document.querySelectorAll('.filters button').forEach(x=>x.classList.remove('active'));
  btn.classList.add('active');const f=btn.dataset.filter;
- document.querySelectorAll('.ncard').forEach(c=>c.classList.toggle('hidden',f!=='all'&&c.dataset.scope!==f));
+ // Отбор по разделу: «Требует внимания» остаётся видным при любом отборе.
+ document.querySelectorAll('.nsection').forEach(s=>s.classList.toggle('hidden',
+  f!=='all'&&s.dataset.section!==f&&s.dataset.section!=='attention'));
+ const h=document.querySelector('details.history');if(h&&f==='history')h.open=true;
 }}));
 async function checkAll(search){{
  const ids=['checkBtn','searchBtn'].map(i=>document.getElementById(i)).filter(Boolean);

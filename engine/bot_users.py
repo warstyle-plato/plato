@@ -224,6 +224,12 @@ def _project_owner(session: str = "", key: str = "") -> int:
     """
     if session:
         chat_id = int(_telegram_verify_session(session).get("chat_id") or 0)
+        demo = globals().get("demo_chat")
+        if chat_id and callable(demo) and demo(chat_id):
+            # Свои проекты и профиль — раздел «Личный кабинет» демо-ссылки.
+            problem = demo_section_problem(chat_id, "cabinet", write=False)
+            if problem:
+                raise HTTPException(status_code=403, detail=problem)
         if chat_id:
             return chat_id
         raise HTTPException(status_code=403, detail="В сессии нет владельца — войдите заново.")
@@ -1925,7 +1931,8 @@ def team_access_allowed(session: str, key: str) -> bool:
     """«Команда владельца» — отдельный от «вошёл» уровень: данные проектов
     владельца (монитор, сводка руководству, споры, бюджеты, рассылка) не для
     клиентов. Команда — ключ администратора, ключ кабинета рынка или вход
-    человека из `team_chat_ids()`. Демо-доступ проверяющих — никогда."""
+    человека из `team_chat_ids()`. Демо-ссылка — никогда: её просмотр
+    разделов решает `demo_section_problem` в `_require_team_access`."""
     secret = _env_str("DEVELOPAID_ADMIN_KEY", "").strip()
     if secret and key and hmac.compare_digest(str(key).encode("utf-8"), secret.encode("utf-8")):
         return True
@@ -1939,12 +1946,29 @@ def team_access_allowed(session: str, key: str) -> bool:
     return chat in team_chat_ids()
 
 
-def _require_team_access(session: str, key: str, what: str) -> None:
-    """Пропуск к данным команды. Без токена бота механизм выключен, как и вход."""
+# Раздел демо-ссылки для каждой проверки команды — явная карта по `what`.
+# Чего в карте нет (споры, рассылка без своего раздела), демо закрыто всегда.
+_TEAM_DEMO_BLOCKS = {"Монитор проекта": "monitor", "Сводка руководству": "report"}
+
+
+def _require_team_access(session: str, key: str, what: str, *, write: bool = True) -> None:
+    """Пропуск к данным команды. Без токена бота механизм выключен, как и вход.
+
+    `write=False` — маршрут только читает: его может открыть демо-ссылка с
+    этим разделом (решает `demo_section_problem`). Умолчание — запись: новый
+    маршрут закрыт демо, пока его явно не назвали чтением."""
     if not _telegram_token():
         return
     if team_access_allowed(session, key):
         return
+    demo = globals().get("demo_session_chat")
+    chat = demo(session) if callable(demo) else 0
+    if chat:
+        problem = demo_section_problem(chat, _TEAM_DEMO_BLOCKS.get(what, ""), write=write,
+                                       what=what)
+        if not problem:
+            return
+        raise HTTPException(status_code=403, detail=problem)
     if _web_identity_chat_id(session):
         raise HTTPException(
             status_code=403,

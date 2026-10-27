@@ -321,6 +321,30 @@ def _propagate(
     return tasks
 
 
+def driver(tasks: dict[str, dict[str, Any]], tid: str) -> str | None:
+    """Работа, от которой пришла задержка `tid`: след по сети назад.
+
+    Идёт от `tid` к предшественнику, чья связь и задала прогнозный старт
+    (`_constraint_start` равен старту), пока не дойдёт до работы, которую
+    сдвинул её собственный прогноз, а не сеть. Один проход по уже посчитанной
+    сети: второй прогон `_propagate` для объяснения не нужен. ``None`` — сдвига
+    нет или он не от собственной задержки ни одной работы.
+    """
+    seen: set[str] = set()
+    while tid in tasks and tid not in seen:
+        seen.add(tid)
+        task = tasks[tid]
+        own_start = task["start"] + datetime.timedelta(days=task.get("own_delay_days") or 0)
+        if task["forecast_start"] > own_start:
+            pushing = [edge["id"] for edge in task["predecessors"]
+                       if _constraint_start(edge, tasks[edge["id"]], task) == task["forecast_start"]]
+            if pushing:
+                tid = pushing[0]
+                continue
+        return tid if task.get("own_delay_days") else None
+    return None
+
+
 def _walk_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for node in nodes:

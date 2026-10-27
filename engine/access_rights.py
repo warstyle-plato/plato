@@ -404,7 +404,136 @@ def access_grant(chat: int, *, plot: dict[str, Any] | None = None, subscription:
                              "note": str(note or "")[:200]})
         reserve_total = len(record["reserve"])
     _ACCESS_REMOTE_CACHE.clear()
-    return {"ok": True, "until": until, "reserve": reserve_total}
+    notice = access_grant_notify(chat, subscription=subscription, until=until, label=label,
+                                 added=reserve, reserve_total=reserve_total)
+    return {"ok": True, "until": until, "reserve": reserve_total, "notice": notice}
+
+
+def _access_public_url() -> str:
+    return _env_str("DEVELOPAID_PUBLIC_URL", "").strip().rstrip("/") or "https://developaid.ru"
+
+
+def access_grant_text(*, subscription: bool, until: float | None, label: str,
+                      added: int, reserve_total: int) -> str:
+    """Что человек читает в боте о выданном доступе. Комментарий
+    администратора сюда не попадает: он — пометка для журнала (решение
+    владельца 26.10.2026)."""
+    lines: list[str] = []
+    if subscription and until:
+        lines.append(f"Вам открыта подписка DevelopAid до {_access_date(until)}: можно "
+                     "считать любые участки без ограничений.")
+    elif until and label:
+        lines.append(f"Вам открыт доступ к участку {html.escape(label)} в DevelopAid до "
+                     f"{_access_date(until)}: пересчитывать его можно сколько угодно, "
+                     "PDF-отчёт и Excel-модель входят.")
+    if added:
+        days = access_terms()["plot_days"]
+        lines.append(f"Вам добавлено участков в запас: {added}. Каждый откроется сам при "
+                     f"первом расчёте нового участка — на {days} дней с этого момента. "
+                     f"Всего в запасе: {reserve_total}.")
+    if lines:
+        lines.append(f"Открыть расчёт: {_access_public_url()}")
+    return "\n\n".join(lines)
+
+
+def access_grant_notify(chat: int, **what: Any) -> dict[str, Any]:
+    """Сообщить человеку в Telegram, что ему открыт доступ — при любой выдаче:
+    вручную (кабинет, /grant) и после оплаты. Не дошло — причина в ответе,
+    чтобы выдавший её видел, а не искал в журнале."""
+    if callable(globals().get("demo_chat")) and demo_chat(int(chat)):
+        return {"sent": False, "reason": "демо-пользователь, у него нет Telegram"}
+    text = access_grant_text(**what)
+    if not text:
+        return {"sent": False, "reason": "нечего сообщать"}
+    try:
+        _telegram_send_message(int(chat), text)
+    except Exception as exc:  # noqa: BLE001 — выдача уже сделана, отказ бота — только весть
+        reason = str(exc)[:300]
+        # Ядро (Яндекс) до api.telegram.org не достаёт — достаёт только Render.
+        # Такую весть не теряем и не сваливаем на выдавшего: она ложится в
+        # очередь, и бот на Render отправит её сам. Отказ самого Telegram
+        # (человек не писал боту, заблокировал его) — другое дело: очередь его
+        # не исправит, и причина уходит выдавшему как есть.
+        if _access_notice_unreachable(reason) and _access_notice_queue(int(chat), text):
+            _access_journal({"event": "notify_queued", "chat": int(chat), "reason": reason})
+            return {"sent": False, "queued": True,
+                    "reason": "сервер расчётов сам до Telegram не достаёт, его отправит бот "
+                              "в течение минуты"}
+        _access_journal({"event": "notify_failed", "chat": int(chat), "reason": reason})
+        return {"sent": False, "reason": reason}
+    return {"sent": True}
+
+
+# Как часто бот на Render забирает очередь вестей (`_access_notices_loop`).
+# Ядро само до Render не дозванивается (TCP не устанавливается), поэтому не
+# ядро шлёт на Render, а Render приходит за вестями.
+ACCESS_NOTICE_POLL_SECONDS = 20
+
+
+def _access_notice_unreachable(reason: str) -> bool:
+    """Весть не ушла из-за дороги до Telegram, а не из-за ответа Telegram."""
+    return reason.startswith("Telegram API недоступен") or "TELEGRAM_BOT_TOKEN не задан" in reason
+
+
+def _access_notice_path() -> Path:
+    return _access_dir() / "pending_notices.jsonl"
+
+
+def _access_notice_queue(chat: int, text: str, at: float | None = None) -> bool:
+    try:
+        path = _access_notice_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"chat": int(chat), "text": text,
+                                     "at": time.time() if at is None else at},
+                                    ensure_ascii=False) + "\n")
+        return True
+    except Exception:  # noqa: BLE001 — очередь не записалась: выдавший получит причину
+        return False
+
+
+def access_take_notices() -> list[dict[str, Any]]:
+    """Забирает накопленные вести разом. Забрать может только один читатель:
+    файл переименовывается, второй получает его отсутствие."""
+    path = _access_notice_path()
+    taken = path.with_suffix(".taken")
+    try:
+        path.replace(taken)
+    except Exception:  # noqa: BLE001 — очереди нет
+        return []
+    records: list[dict[str, Any]] = []
+    try:
+        for line in taken.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if int(record.get("chat") or 0) and record.get("text"):
+                records.append(record)
+    finally:
+        taken.unlink(missing_ok=True)
+    return records
+
+
+def access_deliver_notices(records: list[dict[str, Any]]) -> int:
+    """Отправить вести из очереди. Отказ Telegram на этом шаге записывается в
+    журнал доступа того хоста, который отправлял (Render): ядро его уже не увидит."""
+    sent = 0
+    for index, record in enumerate(records):
+        try:
+            _telegram_send_message(int(record["chat"]), str(record["text"]))
+            sent += 1
+        except Exception as exc:  # noqa: BLE001 — одна весть не держит остальные
+            reason = str(exc)[:300]
+            if _access_notice_unreachable(reason):
+                # Отсюда до Telegram не дойти (круг запустился на самом ядре):
+                # забранное возвращается в очередь целиком, а не теряется.
+                for left in records[index:]:
+                    _access_notice_queue(int(left["chat"]), str(left["text"]), left.get("at"))
+                break
+            _access_journal({"event": "notify_failed", "chat": int(record.get("chat") or 0),
+                             "reason": reason, "queued_at": record.get("at")})
+    return sent
 
 
 def access_status(chat: int) -> dict[str, Any]:
@@ -537,6 +666,15 @@ def calc_access_for_chat(chat: int, what: str, *, inputs: dict[str, Any] | None 
     # и вход (`_require_web_access`): проверять подпись нечем.
     if not _telegram_token():
         return {"allowed": True, "code": "open", "basis": "open"}
+    if callable(globals().get("demo_chat")) and demo_chat(int(chat)):
+        # Демо-ссылка без раздела «Расчёт» не считает и при выключенном замке
+        # оплаты; с разделом — как новый клиент.
+        problem = demo_section_problem(int(chat), "calc", write=False)
+        if problem and preview:
+            # Плашка до расчёта получает причину решением, а не исключением.
+            return {"allowed": False, "code": "demo_section", "detail": problem}
+        if problem:
+            raise HTTPException(status_code=403, detail=f"{what}: {problem}")
     if not paywall_enabled():
         return {"allowed": True, "code": "paywall_off", "basis": "paywall_off"}
     chat = int(chat)
@@ -688,6 +826,17 @@ def internal_access_use(req: InternalAccessRequest) -> dict[str, Any]:
                       free_consent=bool(req.free_consent), spend=bool(req.spend))
 
 
+@app.post("/internal/access/notices", include_in_schema=False)
+def internal_access_notices(req: WebLoginConfirmRequest) -> dict[str, Any]:
+    """Вести о выдаче доступа, которые ядро не смогло отправить само. Только
+    для своего хоста: подпись — токеном бота, как у знакомств. Отдаём разом и
+    удаляем: это доставка, а не хранилище."""
+    expected = _web_login_sign("access-notices", int(req.chat_id or 0))
+    if not hmac.compare_digest(str(req.sign or "").encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="Подпись не сошлась.")
+    return {"notices": access_take_notices()}
+
+
 # --- кабинет и администрирование ----------------------------------------------
 #
 # Права лежат на ядре, поэтому кабинет и админка на Render пересылают запрос
@@ -760,7 +909,8 @@ def access_me(req: AccessRequest) -> dict[str, Any]:
     demo = callable(globals().get("demo_chat")) and demo_chat(chat)
     return {**offer, "signed_in": True, "status": status,
             "is_admin": chat in usage_admin_ids(), "demo": bool(demo),
-            "demo_payments": demo_payments_mode() if demo else ""}
+            "demo_payments": demo_payments_mode() if demo else "",
+            "demo_sections": demo_sections(chat) if demo else []}
 
 
 class AccessCheckRequest(BaseModel):

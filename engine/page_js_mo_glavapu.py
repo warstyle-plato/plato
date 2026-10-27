@@ -213,7 +213,7 @@ async function calculateMo(queryText){
    })
   });
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать проект');
+  if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать проект');
   moResult=data;
   moLastQuery=query;
   renderMo(data);
@@ -481,7 +481,7 @@ async function uploadGlavapu(){
      }
    }else if(manual.headers.get('X-DevelopAid-Template')==='yes'){
      const payload=await manual.json().catch(()=>({}));
-     templateError=String(payload.detail||'').trim()||'Шаблон ТЭП DevelopAid заполнен не полностью.';
+     templateError=String(serverDetail(payload)||'').trim()||'Шаблон ТЭП DevelopAid заполнен не полностью.';
    }
  }catch(e){/* не наш шаблон — пробуем формат ГлавАПУ */}
  if(templateError){
@@ -496,7 +496,7 @@ async function uploadGlavapu(){
      body:await file.arrayBuffer()
    });
    const payload=await response.json();
-   if(!response.ok)throw new Error(payload.detail||'Ошибка импорта');
+   if(!response.ok)throw new Error(serverDetail(payload)||'Ошибка импорта');
    // Пустой разбор — не успех. Ни одного числа значит «формат не наш», а не
    // «в файле нули»: сводка из прочерков читается как распознанный файл.
    const found=Object.values(payload.normalized||{}).filter(
@@ -636,7 +636,7 @@ async function sendTelegramResult(){
      body:JSON.stringify({session:telegramSession,summary:payload})
    }).finally(()=>clearTimeout(slow));
    const result=await response.json();
-   if(!response.ok)throw new Error(result.detail||'Telegram не принял результат');
+   if(!response.ok)throw new Error(serverDetail(result)||'Telegram не принял результат');
    telegramResultSent=true;
    const status=document.getElementById('glavapuStatus');
    if(status)status.innerHTML+=' <b>Итоговая карточка и PDF-отчёт отправлены в Telegram.</b>'

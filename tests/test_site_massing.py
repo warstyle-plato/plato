@@ -91,6 +91,43 @@ def test_a_hand_rate_stays_without_markups(how):
     assert m["underground_rate_by_hand"] is True
     assert m["underground_depth_factor"] == 1.0
     assert "вручную" in m["underground_depth_basis"]
+    assert m["underground_depth_markups_apply"] is False
+
+
+def test_a_hand_rate_of_the_first_level_gets_the_markups_below():
+    """Флажок «ставка первого уровня»: ручная ставка — на уровне −1, ниже — надбавки
+    как у ставки класса. Без флажка (и без ключа) — как раньше, без надбавок."""
+    x, t = _office()
+    x["_class_manual"] = ["main_under_th_per_sqm"]
+    rate = float(x["main_under_th_per_sqm"])
+    off = core.site_massing({k: v for k, v in x.items() if k != "underground_rate_is_level1"}, t)
+    assert off["underground_depth_factor"] == 1.0
+    on = core.site_massing({**x, "underground_rate_is_level1": True}, t)
+    by_class = core.site_massing({k: v for k, v in x.items() if k != "_class_manual"}, t)
+    assert on["underground_rate_by_hand"] is True and on["underground_depth_markups_apply"]
+    assert on["underground_depth_factor"] == pytest.approx(by_class["underground_depth_factor"])
+    assert on["underground_depth_factor"] > 1.0
+    assert [r["rate_th"] for r in on["underground_level_rows"]] == pytest.approx(
+        [rate, rate * 1.1])
+    assert "как ставка первого уровня" in on["underground_depth_basis"]
+    # Флажок у ставки класса ничего не меняет: надбавки у неё и так есть.
+    assert core.site_massing({**x, "underground_rate_is_level1": True,
+                              "_class_manual": []}, t)["underground_depth_factor"] == \
+        pytest.approx(by_class["underground_depth_factor"])
+
+
+@pytest.mark.parametrize("flag", ["Да", "true", 1, "1"])
+def test_the_first_level_flag_is_read_from_any_truthy_value(flag):
+    """Флажок из книги, пресета или старого проекта приходит не булевым True —
+    «Да», «true», 1 его тоже включают."""
+    x, t = _office()
+    x["_class_manual"] = ["main_under_th_per_sqm"]
+    m = core.site_massing({**x, "underground_rate_is_level1": flag}, t)
+    assert m["underground_depth_markups_apply"] is True
+    assert m["underground_depth_factor"] > 1.0
+    assert "как ставка первого уровня" in m["underground_depth_basis"]
+    off = core.site_massing({**x, "underground_rate_is_level1": "Нет"}, t)
+    assert off["underground_depth_markups_apply"] is False
 
 
 def test_hand_values_are_kept_and_estimates_follow_the_tep():
@@ -334,7 +371,9 @@ def test_other_regions_take_the_larger_of_sp42_and_the_moscow_norm():
     x["site_area_ha"] = 4.0                      # 25 % — 10 000 м², норма Москвы — 6 820 м²
     m = core.site_massing(x, t)
     assert m["yard_sqm"] == pytest.approx(0.25 * 40000)
-    assert "СП 42.13330.2016" in m["yard_basis"] and "допущением" in m["yard_basis"]
+    assert "СП 42.13330.2016" in m["yard_basis"] and "допущение" in m["yard_basis"]
+    # Действующая редакция нормы 25 % не содержит — подпись так и говорит.
+    assert "в действующем СП 42.13330.2026 такой нормы нет" in m["yard_basis"]
     x["site_area_ha"] = 0.5                      # 25 % — 1 250 м², норма Москвы — 6 820 м²
     dense = core.site_massing(x, t)
     assert dense["yard_sqm"] == pytest.approx(5.0 * 1364)
