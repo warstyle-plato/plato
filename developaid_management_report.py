@@ -2043,6 +2043,8 @@ def _managers_line(block: dict[str, Any]) -> str:
 # 4 ДДУ на 178,0 млн у сводки против 6 на 291,5 у продажников; решение —
 # считать по подписанию и говорить об этом).
 SIGNED_BASIS = "по дате подписания"
+# Знак сноски у суммы продаж на плашках; сама сноска — под плашками.
+SALES_MARK = "*"
 SIGNED_NOTE = ("Расхождение с отделом продаж — из-за разных дат учёта. Сводка считает "
                "продажи по дате подписания договора, как план финмодели, а отдел продаж "
                "в ежедневном отчёте — по дате регистрации. Поэтому договор, подписанный "
@@ -3286,8 +3288,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         if quarter and plan:
             share = quarter["fact"]["amount"] / plan
             add(f"Продажи квартала к плану {name}", _pct(share),
-                f"продано на {_rub(quarter['fact']['amount'])} из {_rub(plan)}, а квартал "
-                f"прошёл на {_pct(pace)}",
+                f"продано на {_rub(quarter['fact']['amount'])}{SALES_MARK} из {_rub(plan)}, а "
+                f"квартал прошёл на {_pct(pace)}",
                 "bad" if share < pace - 0.05 else "good")
         else:
             add(f"Продажи квартала к плану {name}", None,
@@ -3297,7 +3299,7 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     if fact.get("contracts"):
         rest = float(fact["amount"]) - float(fact.get("escrow") or 0.0)
         add("На эскроу по продажам квартала", _rub(fact.get("escrow")),
-            f"из {_rub(fact['amount'])} по договорам квартала"
+            f"из {_rub(fact['amount'])}{SALES_MARK} по договорам квартала"
             + (f", ещё {_rub(rest)} покупатели внесут позже" if rest > 0.5
                else ", оплачено полностью"))
     elif quarter:
@@ -3409,12 +3411,35 @@ def _gantt_html(report: dict[str, Any]) -> str:
     return "".join(out)
 
 
-def _tiles_html(items: list[dict[str, str]]) -> str:
+def tiles_footnote(report: dict[str, Any]) -> str:
+    """Сноска под плашками к сумме продаж (владелец, 27.10.2026: «Возможно нужна
+    сноска с суммы продаж внизу под плашками с пояснением, что расхождение с
+    данными отдела продаж связано с методикой отнесения сделки к периоду»).
+    Пусто, если на плашках суммы продаж нет."""
+    block = report.get("sales") or {}
+    quarter = (block.get("quarter") or {}) if block.get("state") == "ok" else {}
+    if not (quarter.get("fact") or {}).get("contracts"):
+        return ""
+    text = (f"{SALES_MARK} Сумма продаж может расходиться с данными отдела продаж из-за "
+            "методики: сводка относит сделку к периоду по дате заключения договора, а отдел "
+            "продаж — по дате его регистрации.")
+    edge = quarter.get("edge") or {}
+    if edge.get("contracts"):
+        count = int(edge["contracts"])
+        days = " и ".join(_date(day).strftime("%d.%m") for day in edge["days"])
+        text += (f" Сейчас разница может составить {count} "
+                 f"{_plural(count, 'договор', 'договора', 'договоров')} на "
+                 f"{_rub(edge['amount'])}, заключённые {days}.")
+    return text
+
+
+def _tiles_html(items: list[dict[str, str]], footnote: str = "") -> str:
     esc = html.escape
     return ("<div class='tiles'>" + "".join(
         f"<div class='tile {esc(item['tone'])}'><div class='k'>{esc(item['label'])}</div>"
         f"<div class='v'>{esc(item['value'])}</div><div class='n'>{esc(item['note'])}</div></div>"
-        for item in items) + "</div>")
+        for item in items) + "</div>"
+        + (f"<p class='note tiles-note'>{esc(footnote)}</p>" if footnote else ""))
 
 
 def _delta(value: float | None) -> str:
@@ -3740,7 +3765,7 @@ def render_html(report: dict[str, Any]) -> str:
     def missing(block: dict[str, Any]) -> str:
         return f"<p class='missing'>{esc(block.get('reason') or 'Данных нет.')}</p>"
 
-    out.append(_tiles_html(tiles(report)))
+    out.append(_tiles_html(tiles(report), tiles_footnote(report)))
     out.append(_block_heading("main") + "<ul class='findings'>")
     for item in report.get("findings") or []:
         tone = f" {item['tone']}" if item.get("tone") else ""
