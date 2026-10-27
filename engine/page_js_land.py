@@ -1590,11 +1590,14 @@ function landMapNote(){
  if(LAND_MAP.layerNote&&LAND_MAP.layer!=='hybrid')text=LAND_MAP.layerNote+' '+text;
  if((LAND_MAP.massing||[]).length&&LAND_MAP.layer!=='hybrid')
   text='Цветные прямоугольники с номерами — корпуса объёмной схемы из вкладки «ТЭП». Они расставлены рядами для наглядности, это не генплан. '+text;
+ // Границы приблизительные (сняты с картинки решения): пометка движка
+ // (`layout.approximate_note`) стоит на карте при любом слое.
+ if(LAND_MAP.boundaryNote)text=LAND_MAP.boundaryNote+' '+text;
  note.textContent=text;
 }
 
 function openLandMap(payload){
- // payload: {rings, zones, title, note, shapes, onPick, massing}
+ // payload: {rings, zones, title, note, shapes, onPick, massing, boundaryNote}
  // `massing` — корпуса объёмной схемы проекта (`siteMassingMapShapes`): та же
  // раскладка движка, что на схеме во вкладке «ТЭП», в метрах меркатора.
  // `shapes` — чужие контуры со своим цветом и подписью: ими карту КРТ рисует
@@ -1622,6 +1625,7 @@ function openLandMap(payload){
   rings:rings,zones:(payload&&payload.zones)||[],
   shapes:shapes,onPick:(payload&&payload.onPick)||null,
   massing:(payload&&payload.massing)||[],
+  boundaryNote:(payload&&payload.boundaryNote)||'',
   title:(payload&&payload.title)||'Участок и окружение',
   note:(payload&&payload.note)||'',
   cx:(minX+maxX)/2,cy:(minY+maxY)/2,

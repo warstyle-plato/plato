@@ -275,7 +275,10 @@ def cached(key: str) -> dict[str, Any] | None:
 def _fresh(data: dict[str, Any] | None) -> bool:
     if not data:
         return False
-    ttl = RESULT_TTL_SECONDS if data.get("status") == "ready" else FAILURE_TTL_SECONDS
+    # Фото схемы, с которого форма не снялась (Платон недоступен), — ответ
+    # неполный: повторная загрузка спрашивает снова, а не берёт его с диска.
+    whole = data.get("status") == "ready" and not data.get("shape_problem")
+    ttl = RESULT_TTL_SECONDS if whole else FAILURE_TTL_SECONDS
     return time.time() - float(data.get("collected_at") or 0) < ttl
 
 

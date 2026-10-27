@@ -345,10 +345,30 @@ def krt_site_rings_merc(x: dict[str, Any]) -> list[list[list[float]]]:
     их отдаёт источник), если галочка «Проект в КРТ» стоит и контур есть;
     иначе пусто — схема берёт ЕГРН."""
     site = krt_site_effective(x)
-    if not site or site.get("approximate"):
+    if not site or (site.get("approximate") and site.get("origin") != "photo_outline"):
         return []
     return [ring for ring in (site.get("rings_merc") or [])
             if isinstance(ring, list) and len(ring) >= 3]
+
+
+def krt_photo_outline_note(x: dict[str, Any]) -> str:
+    """Пометка «границы приблизительные» у контура, снятого с картинки решения
+    (`origin: photo_outline`, `auction_search/krt_photo_outline`). Один текст на
+    все поверхности: пояснение схемы, карта участка (`layout.approximate_note`)
+    и PDF (пояснения схемы). Не с картинки — пусто."""
+    krt = krt_site_effective(x) or {}
+    if krt.get("origin") != "photo_outline":
+        return ""
+    area = float(krt.get("area_sqm") or 0.0)
+    if krt.get("rings_merc"):
+        where = (f"На карту она поставлена {krt.get('anchored_by') or 'по участкам проекта'}, "
+                 f"погрешность привязки — около {_fmt_ru(float(krt.get('anchor_error_m') or 0))} м.")
+    else:
+        where = "На карту её поставить не вышло."
+    return ("Границы территории КРТ приблизительные: они сняты с картинки решения, а не с "
+            "таблицы координат. Форма — по обводке границы на картинке, размер подогнан под "
+            f"площадь из текста решения ({_fmt_ru(area)} м²). {where} Точные границы даст "
+            "каталог координат из приложения к решению.")
 
 
 def krt_contour_area_sqm(rings_merc: list[list[list[float]]]) -> float:
@@ -662,6 +682,13 @@ def _shape_plan(x: dict[str, Any], massing: dict[str, Any],
     return plan
 
 
+def _krt_area_mismatch_note(contour_sqm: float, site_sqm: float) -> str:
+    return (f"Корпуса на карте участка не показаны: площадь контура территории КРТ "
+            f"({_fmt_ru(contour_sqm)} м²) заметно отличается от площади участка в "
+            f"расчёте ({_fmt_ru(site_sqm)} м²). Поэтому участок на схеме показан "
+            "квадратом той же площади, что в расчёте.")
+
+
 def _layout_site(x: dict[str, Any], massing: dict[str, Any]
                  ) -> tuple[list[list[list[float]]], dict[str, float], str, list[str], str] | None:
     """Участок схемы в метрах → (кольца, рамка, происхождение формы, пояснения,
@@ -674,7 +701,22 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
     krt = krt_site_effective(x) or {}
     map_note = ""
     krt_holes = any(_holes(krt_rings))
-    if krt_rings or krt.get("approximate"):
+    photo = krt.get("origin") == "photo_outline"
+    no_map = False
+    if photo and not krt_rings:
+        # Форма с картинки есть, а на карту не встала: схема — по форме, в
+        # метрах на местности, корпусов на карте нет, причина названа.
+        rings = [_clean_ring([[float(p[0]), float(p[1])] for p in ring])
+                 for ring in krt.get("shape_m") or [] if isinstance(ring, list) and len(ring) >= 3]
+        rings = [ring for ring in rings if len(ring) >= 3]
+        frame, parts, no_map = {}, {}, True
+        contour_sqm = sum(abs(_ring_area(r)) for r in rings)
+        if rings:
+            map_note = ("Корпуса на карте участка не показаны: форму территории КРТ с картинки "
+                        "решения не удалось поставить на карту — "
+                        f"{krt.get('map_problem') or 'причина не названа'}. Схема построена по "
+                        "форме с картинки.")
+    elif krt_rings or krt.get("approximate"):
         # Галочка «Проект в КРТ»: территория — контур КРТ, а не участки ЕГРН.
         # Раскладка дыр не обходит: в неё идут внешние кольца, а площадь
         # меряет тот же счётчик, что поле «Площадь участка» (дыры вычтены).
@@ -685,12 +727,21 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
     else:
         rings, frame, parts = _site_rings_m(x)
         contour_sqm = sum(abs(_ring_area(r)) for r in rings)
-    if krt.get("approximate"):
-        # Площадь есть, контура нет (фото схемы без координат): рисовать по
-        # участкам ЕГРН значит рисовать не то.
+    if photo:
+        # Пометка «приблизительно» — `krt_photo_outline_note`, её ставит
+        # `site_massing_layout`; причина, когда формы нет на карте, — выше.
+        if rings and site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
+            map_note = _krt_area_mismatch_note(contour_sqm, site_sqm)
+            rings, frame = [], {}
+    elif krt.get("approximate"):
+        # Площадь есть, контура нет (фото схемы без координат, форму снять не
+        # вышло): рисовать по участкам ЕГРН значит рисовать не то.
+        why = str(krt.get("shape_problem") or "").strip()
         map_note = ("Форма участка на схеме приблизительная: площадь территории КРТ взята "
                     "из текста решения, а таблицы координат, по которой границы ложатся на "
-                    "карту, нет. Участок показан квадратом той же площади.")
+                    "карту, нет"
+                    + (f", и форму с картинки снять не вышло ({why})" if why else "")
+                    + ". Участок показан квадратом той же площади.")
     elif krt_rings:
         title = krt.get("name") or krt.get("slug")
         notes.append(f"Участок на схеме — контур территории КРТ{f' «{title}»' if title else ''} "
@@ -707,10 +758,7 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
                         f"{_fmt_ru(contour_sqm)} м².")
             rings, frame = [], {}
         elif site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
-            map_note = (f"Корпуса на карте участка не показаны: площадь контура территории КРТ "
-                        f"({_fmt_ru(contour_sqm)} м²) заметно отличается от площади участка в "
-                        f"расчёте ({_fmt_ru(site_sqm)} м²). Поэтому участок на схеме показан "
-                        "квадратом той же площади, что в расчёте.")
+            map_note = _krt_area_mismatch_note(contour_sqm, site_sqm)
             rings, frame = [], {}
     elif rings and site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
         # Контур другой площади — не вся территория проекта (часть участков
@@ -727,6 +775,9 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
         else:
             frame["angle"] = _main_direction(rings)
         rings = _rotate(rings, -frame["angle"])
+        if no_map:
+            # Метры формы не на карте: перевода в меркатор у корпусов нет.
+            frame = {}
     elif site_sqm > 0:
         shape_origin = "square"
         half = _math.sqrt(site_sqm) / 2.0
@@ -765,6 +816,9 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
     if not site:
         return {"buildings": [], "site_rings": [], "notes": [], "storeys_limit": limit}
     rings, frame, shape_origin, notes, map_note = site
+    approximate_note = krt_photo_outline_note(x)
+    if approximate_note:
+        notes.insert(0, approximate_note)
 
     inner = [r for r in (inset_ring(ring, setback) for ring in rings) if len(r) >= 3]
     objects = massing.get("objects") or []
@@ -822,6 +876,9 @@ def site_massing_layout(x: dict[str, Any], massing: dict[str, Any],
         # Почему корпусов нет на карте участка (схема — квадратом): страница
         # ставит эту фразу на место кнопки карты.
         "map_note": map_note,
+        # Границы сняты с картинки решения: пометка на схеме, на карте участка
+        # и в PDF — этот текст (`krt_photo_outline_note`).
+        "approximate_note": approximate_note,
         "underground_rings": [[[round(p[0], 2), round(p[1], 2)] for p in r] for r in inner],
         "setback_m": setback,
         "storeys_limit": limit,
