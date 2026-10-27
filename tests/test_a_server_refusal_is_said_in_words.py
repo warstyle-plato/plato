@@ -93,7 +93,10 @@ def test_the_grant_form_says_the_refusal_on_the_drawn_page():
             page.click("#tariffsButton")
             page.wait_for_function(
                 "document.querySelector('#grantChat option[value=\"" + str(CHAT) + "\"]')")
-            page.click("#cabTabAdmin")  # выдача доступа — на вкладке «Администрирование»
+            # Форма выдачи доступа — на вкладке «Администрирование» кабинета
+            # (её показывает ответ сервера is_admin), а кнопка тарифов
+            # открывает вкладку «Тарифы и доступ».
+            page.click("#cabTabAdmin")
             page.select_option("#grantKind", "subscription")
             page.select_option("#grantChat", str(CHAT))
             page.click("button:has-text('Выдать доступ')")

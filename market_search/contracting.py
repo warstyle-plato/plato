@@ -2302,6 +2302,44 @@ def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
             "missing": []}
 
 
+def keeping_at(block: dict[str, Any], month: str) -> float | None:
+    """Эскроу на месяц, если темп останется нынешним: накоплено на месяц замера
+    плюс темп за каждый месяц до него. Один расчёт для «к вводу», «к раскрытию»
+    и кварталов сводки. Месяц не впереди замера — прогноза нет."""
+    seen = block.get("measured_at") or ""
+    ahead = _months_between(seen, month) if seen and month else None
+    if ahead is None or ahead <= 0:
+        return None
+    return float(block.get("actual") or 0.0) + float(block.get("pace") or 0.0) * ahead
+
+
+def plan_on(series: dict[str, Any], month: str) -> float | None:
+    """Нарастающий ряд плана на месяц: без записи — последнее известное значение,
+    раньше начала ряда — плана нет (не ноль)."""
+    known = sorted(m for m in series if m <= month and series[m] is not None)
+    return float(series[known[-1]]) if known else None
+
+
+def escrow_at(block: dict[str, Any], queue: dict[str, Any], month: str) -> dict[str, Any] | None:
+    """Эскроу против кредита на заданный месяц — по плану и при нынешнем темпе.
+
+    ``block`` — очередь из ``escrow_sufficiency`` (накоплено, темп, месяц
+    замера), ``queue`` — та же очередь плана (помесячные ряды эскроу и остатка
+    кредита). Темп тот же, что у ответа «к раскрытию»: второго счёта нет.
+    Месяц не впереди замера — ответа нет: прогнозировать прошлое незачем.
+    """
+    keeping = keeping_at(block, month)
+    if keeping is None:
+        return None
+    plan_escrow = plan_on(queue.get("escrow") or {}, month)
+    plan_pf = plan_on(queue.get("pf") or {}, month)
+    return {"month": month, "months_ahead": _months_between(block["measured_at"], month),
+            "plan_escrow": plan_escrow, "plan_pf": plan_pf,
+            "plan_coverage": (plan_escrow / plan_pf) if plan_escrow is not None and plan_pf else None,
+            "keeping_escrow": keeping,
+            "keeping_coverage": (keeping / plan_pf) if plan_pf else None}
+
+
 def _months_between(start: str, end: str) -> int | None:
     try:
         one = datetime.date(int(start[:4]), int(start[5:7]), 1)

@@ -414,8 +414,7 @@ def underground_rate_by_hand(x: dict[str, Any]) -> bool:
 
     Ручная — вписанная в поле проекта (`_field_origin`, `_class_manual`) или отличная от базы
     класса (`project_class_deviations`: правка руками или личная перекрышка).
-    Надбавки за глубину к ней не прибавляются: число человека остаётся его
-    числом.
+    Применять ли к ней надбавки за глубину, решает `underground_depth_markups_apply`.
     """
     origin = ((x.get("_field_origin") or {}).get("inputs.main_under_th_per_sqm") or {})
     if isinstance(origin, dict) and origin.get("source") == "manual":
@@ -426,6 +425,20 @@ def underground_rate_by_hand(x: dict[str, Any]) -> bool:
         return True
     return any(row.get("field") == "main_under_th_per_sqm"
                for row in project_class_deviations(x).get("rows") or [])
+
+
+def underground_depth_markups_apply(x: dict[str, Any]) -> bool:
+    """Применять ли надбавки за глубину к ставке подземной части — одно решение.
+
+    Ставка класса — да. Ручная ставка — нет: число человека остаётся его числом
+    на всех уровнях, пока он не отметил флажком `underground_rate_is_level1`, что
+    вписал ставку первого уровня; тогда ниже добавляются те же надбавки, что к
+    ставке класса. Ключа нет — флажок снят (умолчание, а не чьё-то решение);
+    «Да», «true», 1 из книги, пресета или старого проекта — стоит (`b`).
+    Читают движок, книга (`site_massing_book.input_values`) и подпись под
+    таблицей уровней.
+    """
+    return not underground_rate_by_hand(x) or b(x, "underground_rate_is_level1")
 
 
 def _level_areas(total: float, capacity: float, levels: int) -> list[float]:
@@ -723,18 +736,26 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
     areas = _level_areas(under_sqm, capacity, levels)
 
     by_hand = underground_rate_by_hand(x)
-    markups = [0.0 if i == 0 else (markup2 if i == 1 else markup3) for i in range(len(areas))]
-    if by_hand or not areas:
+    apply_markups = underground_depth_markups_apply(x)
+    markups = [0.0 if i == 0 or not apply_markups else (markup2 if i == 1 else markup3)
+               for i in range(len(areas))]
+    if not areas:
         depth_factor = 1.0
     else:
         depth_factor = sum(a * (1 + m / 100.0) for a, m in zip(areas, markups)) / sum(areas)
     rate = n(x, "main_under_th_per_sqm")
-    level_rows = [{"level": -(i + 1), "area_sqm": a, "markup_pct": 0.0 if by_hand else m,
-                   "rate_th": rate * (1.0 if by_hand else 1 + m / 100.0)}
+    level_rows = [{"level": -(i + 1), "area_sqm": a, "markup_pct": m,
+                   "rate_th": rate * (1 + m / 100.0)}
                   for i, (a, m) in enumerate(zip(areas, markups))]
-    if by_hand and len(areas) > 1:
+    steps = (f"второй уровень дороже на {_fmt_ru(markup2, 1).replace(',0', '')}%, "
+             f"третий и ниже — на {_fmt_ru(markup3, 1).replace(',0', '')}%")
+    if not apply_markups and len(areas) > 1:
         depth_basis = ("Ставка подземной части задана вручную, поэтому надбавки за глубину "
                        "не применяются.")
+    elif by_hand and len(areas) > 1:
+        depth_basis = ("Ставка подземной части задана вручную как ставка первого уровня, "
+                       f"поэтому ниже к ней добавлены надбавки за глубину: {steps}. "
+                       "Надбавки — экспертная оценка.")
     elif len(areas) > 1:
         depth_basis = (f"Ставка второго уровня выше на {_fmt_ru(markup2, 1).replace(',0', '')}%, "
                        f"третьего и ниже — на {_fmt_ru(markup3, 1).replace(',0', '')}%. "
@@ -808,6 +829,9 @@ def site_massing(x: dict[str, Any], tep: dict[str, Any]) -> dict[str, Any]:
         "underground_levels_max": UNDERGROUND_LEVELS_MAX,
         "underground_level_rows": level_rows,
         "underground_rate_by_hand": by_hand,
+        # Надбавки за глубину применены (`underground_depth_markups_apply`): книга
+        # и подпись под таблицей уровней читают это решение, а не ставку.
+        "underground_depth_markups_apply": apply_markups,
         "underground_level2_markup_pct": markup2,
         "underground_level3_markup_pct": markup3,
         "underground_depth_factor": depth_factor,
