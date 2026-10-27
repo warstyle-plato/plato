@@ -153,17 +153,33 @@ def _site_rings_m(x: dict[str, Any]
     Контур — объединение колец ВСЕХ найденных земельных участков поиска;
     здания и помещения (`SITE_NOT_LAND_KINDS`) — не земля, их пятно в контур
     не идёт. Состав — что вошло, что нет и почему: `parcels` (номер и площадь
-    контура, м²), `not_land`, `missing` (не найден или без границ).
+    контура, м²), `not_land`, `missing` (не найден или без границ),
+    `repeated` (номер повторён — земля одна), `inside` (участок целиком внутри
+    другого, например часть единого землепользования) и `overlap` (частичное
+    наложение — сумма площадей считает общую часть дважды).
 
     Кольца приходят в веб-меркаторе: метр в нём растянут на 1/cos(широты),
     поэтому координаты умножаются на cos(широты центра). Рамка — центр и
     множитель: по ней корпуса возвращаются в меркатор для карты участка.
     """
     items = _site_lookup_items(x)
-    land = [item for item in items if item.get("found", True)
-            and str(item.get("kind") or "land") not in SITE_NOT_LAND_KINDS and _item_rings(item)]
+    land = []
+    seen: set[str] = set()
+    repeated: list[str] = []
+    for item in items:
+        if not (item.get("found", True) and _item_rings(item)
+                and str(item.get("kind") or "land") not in SITE_NOT_LAND_KINDS):
+            continue
+        # Один участок, переданный дважды, — одна земля: номер сверяется без
+        # ведущих нулей (`_cadastral_key`), как у карты территории в боте.
+        key = _cadastral_key(item.get("cadastral_number")) if item.get("cadastral_number") else ""
+        if key and key in seen:
+            repeated.append(str(item.get("cadastral_number")))
+            continue
+        seen.add(key)
+        land.append(item)
     parts: dict[str, Any] = {
-        "parcels": [], "missing": [],
+        "parcels": [], "missing": [], "repeated": repeated, "inside": [], "overlap": [],
         "not_land": [str(item.get("cadastral_number") or "") for item in items
                      if item.get("found", True)
                      and str(item.get("kind") or "land") in SITE_NOT_LAND_KINDS]}
@@ -180,16 +196,63 @@ def _site_rings_m(x: dict[str, Any]
     cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
     lat = _math.degrees(2 * _math.atan(_math.exp(cy / 6378137.0)) - _math.pi / 2)
     k = _math.cos(_math.radians(lat))
-    out: list[list[list[float]]] = []
+    own_rings = []
     for item in land:
         own = [_clean_ring([[(p[0] - cx) * k, (p[1] - cy) * k] for p in ring])
                for ring in _item_rings(item)]
-        own = [ring for ring in own if len(ring) >= 3]
+        own_rings.append((str(item.get("cadastral_number") or ""),
+                          [ring for ring in own if len(ring) >= 3]))
+    # Наложения. Участок целиком внутри другого (часть единого землепользования
+    # и оно само) — его земля уже в контуре большего: в контур он не идёт.
+    # Частичное наложение геометрией не вычитается (объединения многоугольников
+    # здесь нет) — сумма площадей считает общую часть дважды, и это названо.
+    kept: list[tuple[str, list[list[list[float]]]]] = []
+    area = [sum(abs(_ring_area(r)) for r in own) for _, own in own_rings]
+    for i, (number, own) in enumerate(own_rings):
+        # Внешний — больший участок; у равных (один контур под двумя номерами)
+        # внешним считается тот, что раньше в списке поиска.
+        host = next((own_rings[j][0] for j in range(len(own_rings))
+                     if j != i and own and own_rings[j][1]
+                     and (area[j] > area[i] or (area[j] == area[i] and j < i))
+                     and all(any(_poly_inside(r, outer) for outer in own_rings[j][1])
+                             for r in own)), None)
+        if host is not None:
+            parts["inside"].append((number, host))
+            continue
+        kept.append((number, own))
+    for i, (a, rings_a) in enumerate(kept):
+        for b, rings_b in kept[i + 1:]:
+            if any(_rings_overlap(ra, rb) for ra in rings_a for rb in rings_b):
+                parts["overlap"].append((a, b))
+    out: list[list[list[float]]] = []
+    for number, own in kept:
         out.extend(own)
-        parts["parcels"].append({"number": str(item.get("cadastral_number") or ""),
+        parts["parcels"].append({"number": number,
                                  "area_sqm": sum(abs(_ring_area(r)) for r in own)})
     return out, {"cx": cx, "cy": cy, "k": k}, parts
 
+
+def _rings_overlap(a: list[list[float]], b: list[list[float]]) -> bool:
+    """Два кольца накладываются площадью: стороны пересекаются или одно внутри
+    другого. Касание по общей границе — не наложение (соседние участки)."""
+    def shrink(ring):
+        cx = sum(p[0] for p in ring) / len(ring)
+        cy = sum(p[1] for p in ring) / len(ring)
+        return [[cx + (p[0] - cx) * 0.999, cy + (p[1] - cy) * 0.999] for p in ring]
+    sa, sb = shrink(a), shrink(b)
+    for i in range(len(sa)):
+        for j in range(len(sb)):
+            if _segments_cross(sa[i], sa[(i + 1) % len(sa)], sb[j], sb[(j + 1) % len(sb)]):
+                return True
+    return _inside(tuple(sa[0]), [sb]) or _inside(tuple(sb[0]), [sa])
+
+
+def _site_overlap_note(parts: dict[str, Any]) -> str:
+    """Частичное наложение участков — простыми словами (одна фраза на схему и
+    на причину, по которой корпусов нет на карте)."""
+    pairs = "; ".join(f"{a} и {b}" for a, b in parts.get("overlap", [])[:3])
+    return (f"Границы участков в госреестре накладываются друг на друга ({pairs}): общая "
+            "часть в сумме их площадей посчитана дважды.")
 
 
 def _merc_rings_m(rings: list[list[list[float]]]
@@ -209,6 +272,7 @@ def _merc_rings_m(rings: list[list[list[float]]]
     k = _math.cos(_math.radians(lat))
     out = [_clean_ring([[(p[0] - cx) * k, (p[1] - cy) * k] for p in ring]) for ring in rings]
     return [ring for ring in out if len(ring) >= 3], {"cx": cx, "cy": cy, "k": k}
+
 
 def _site_map_note(parts: dict[str, Any], site_sqm: float, contour_sqm: float) -> str:
     """Почему корпуса нельзя показать на карте участка — простыми словами:
@@ -231,6 +295,8 @@ def _site_map_note(parts: dict[str, Any], site_sqm: float, contour_sqm: float) -
     names = lambda items: ", ".join(items[:5]) + (f" и ещё {len(items) - 5}" if len(items) > 5 else "")
     if parts.get("missing"):
         text += f" Не найдены в госреестре или без границ: {names(parts['missing'])}."
+    if parts.get("overlap"):
+        text += " " + _site_overlap_note(parts)
     if parts.get("not_land"):
         text += (f" Здания и помещения ({names(parts['not_land'])}) — не земля участка, "
                  "в его границы они не входят.")
@@ -678,6 +744,8 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
     # на месте кнопки карты (`layout.map_note`): одна строка на обе поверхности.
     if map_note:
         notes.append(map_note)
+    elif shape_origin == "contour" and parts.get("overlap"):
+        notes.append(_site_overlap_note(parts))
     return rings, frame, shape_origin, notes, map_note
 
 

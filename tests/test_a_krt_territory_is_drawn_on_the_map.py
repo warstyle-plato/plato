@@ -163,3 +163,57 @@ def test_the_page_says_why_instead_of_hiding_the_button(seen):
     assert "Корпуса на карте участка не показаны" in note and "56 400 м²" in note, got
     # Фраза — одна, на месте кнопки, а не повтором среди пояснений.
     assert got["text"].count("Корпуса на карте участка не показаны") == 1, got["text"]
+
+
+# --- Повторы и наложения ------------------------------------------------------
+# Замечание «Посадки ↔ нормативы» к #947: «объединение» было суммой площадей
+# колец — участок 100 × 100, переданный дважды, давал 20 008 м² вместо 10 004,
+# причина называла неверную сумму, наложение рисовалось двойным контуром.
+
+def _layout_for(results, site_sqm):
+    x = copy.deepcopy(core.DEFAULT_INPUTS)
+    x["_land_lookup"] = {"results": results}
+    return core.site_massing_layout(x, {"site_sqm": site_sqm, "footprint_sqm": 0.2 * site_sqm,
+                                        "setback_m": 3.0},
+                                    [{"phase": 1, "above_gns_sqm": site_sqm}])
+
+
+def _land(number, ring):
+    return {"found": True, "kind": "land", "cadastral_number": number, "contour_merc": [ring]}
+
+
+def test_a_parcel_given_twice_is_one_parcel():
+    # Тот же номер — с ведущими нулями и без: один участок.
+    layout = _layout_for([_land("77:01:0001001:20", _rect(0, 0, 100, 100)),
+                          _land("77:01:1001:20", _rect(0, 0, 100, 100))], 10000.0)
+    assert layout["site_shape_origin"] == "contour", layout["map_note"]
+    assert len(layout["site_rings"]) == 1
+
+
+def test_the_reason_names_the_true_sum_without_repeats():
+    layout = _layout_for([_land("77:01:0001001:20", _rect(0, 0, 100, 100)),
+                          _land("77:01:0001001:20", _rect(0, 0, 100, 100))], SITE_SQM)
+    note = layout["map_note"].replace("\xa0", " ")
+    assert "10 000 м²" in note and "20 000" not in note, note
+
+
+def test_a_part_of_a_unified_holding_is_not_counted_twice():
+    # Единое землепользование 200 × 100 и его часть 100 × 100 внутри.
+    layout = _layout_for([_land("77:01:0001001:30", _rect(0, 0, 200, 100)),
+                          _land("77:01:0001001:31", _rect(50, 0, 100, 100))], 20000.0)
+    assert layout["site_shape_origin"] == "contour", layout["map_note"]
+    assert len(layout["site_rings"]) == 1
+    contour = sum(abs(core._ring_area(r)) for r in layout["site_rings"])
+    assert contour == pytest.approx(20000.0, rel=0.01)
+
+
+def test_a_partial_overlap_is_said_in_words():
+    # Два участка 100 × 100 накладываются полосой 50 × 100: земли 15 000 м², сумма 20 000.
+    layout = _layout_for([_land("77:01:0001001:40", _rect(0, 0, 100, 100)),
+                          _land("77:01:0001001:41", _rect(50, 0, 100, 100))], 17000.0)
+    text = " ".join(layout["notes"])
+    assert "накладываются" in text and "77:01:0001001:40 и 77:01:0001001:41" in text, text
+    # Соседи по общей границе — не наложение.
+    layout = _layout_for([_land("77:01:0001001:42", _rect(0, 0, 100, 100)),
+                          _land("77:01:0001001:43", _rect(100, 0, 100, 100))], 20000.0)
+    assert "накладываются" not in " ".join(layout["notes"])
