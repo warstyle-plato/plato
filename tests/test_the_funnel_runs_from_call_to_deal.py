@@ -83,8 +83,7 @@ def test_managers_come_from_the_booking_not_from_the_author():
     assert any("только по отделу" in note for note in got["notes"])
     assert any("договоров без брони в отчётах чата — 1" in note for note in got["notes"])
     line = report._managers_line({"pipeline": got})
-    assert line.startswith("По менеджерам (по имени у брони): Мария Вольпи — новые брони 2, "
-                           "договоры 1.")
+    assert line.startswith("По менеджерам: Мария Вольпи — 2 новые брони и 1 договор.")
 
 
 def test_a_corrected_area_does_not_split_a_booking():
