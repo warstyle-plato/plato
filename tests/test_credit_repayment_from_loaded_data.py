@@ -133,11 +133,17 @@ def test_debt_draws_and_interest_come_from_the_rss_and_the_terms():
     assert data["deferred.nkl2025"]["source"] == "досчитано от первой выдачи по условиям договора"
     assert any("РСС не называет, с какого кредита шла выдача" in note
                for note in base["assumptions"])
-    # Прогнозные выдачи — план ПФ финмодели сверх выбранного (до 6 400 в сумме).
+    # Прогнозные выдачи: сроки — план ПФ финмодели сверх выбранного (до 6 400 в
+    # сумме), недостающее до лимита — в конец доступности (владелец, 27.10.2026:
+    # «будущие выборки до РНВ = лимит»): всего 6 610,689 − 5 300 выбранных.
+    plan = credit.inputs_for(PROJECT, SALES, end="2026-10-20")["datasets"]
     drawn = sum(d["amount"] for name in ("plan.nkl2025", "plan.nkl2026")
-                for d in credit.inputs_for(PROJECT, SALES, end="2026-10-20")["datasets"]
-                [name]["data"]["draws"])
-    assert drawn == pytest.approx(1100 * M)
+                for d in plan[name]["data"]["draws"])
+    assert drawn == pytest.approx((5485.689 + 1125 - 5300) * M)
+    assert plan["plan.nkl2026"]["data"]["draws"][-1] == {
+        "date": "2027-09-30", "amount": pytest.approx(210.689 * M)}
+    assert any("доводят долг до лимита" in note and "НКЛ 2026 — 210,7 млн ₽ на 30.09.2027"
+               in note for note in base["assumptions"])
 
 
 def test_escrow_comes_from_contract_schedules_and_one_forecast_with_the_report():

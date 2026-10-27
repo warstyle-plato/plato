@@ -63,6 +63,13 @@ def test_the_table_reads_the_same_forecast_as_the_credit_section(monkeypatch):
     drawn = built["funding"]["draws"]["total"]
     assert due["drawn"] == pytest.approx(drawn)
     assert due["to_draw"] == pytest.approx((5485.689 + 1125) * M - drawn)
+    # Правило владельца «будущие выборки до РНВ = лимит» — в самом прогнозе:
+    # долг на конец выборки по каждой НКЛ — весь лимит, и таблица, и проценты
+    # считаются от него.
+    assert [loan["debt"] for loan in due["loans"]] == [pytest.approx(5485.689 * M),
+                                                       pytest.approx(1125 * M)]
+    assert due["interest"] == pytest.approx(
+        built["credit"]["base"]["top"]["interest_cost"]["value"])
 
 
 def test_the_page_text_and_main_say_it_simply(monkeypatch):
@@ -75,7 +82,11 @@ def test_the_page_text_and_main_say_it_simply(monkeypatch):
     assert f"Выбрано на сегодня по РСС — {report._rub(due['drawn'])}" in page
     # Погашение в день раскрытия эскроу (утверждённый ввод) подписано.
     assert due["rows"][0]["disclosure"] and "15.09.2027 — раскрытие эскроу" in page
-    assert "Долг на конец выборки — выбрано по РСС плюс выдачи по плану финмодели" in page
+    assert "Долг на конец выборки — весь лимит: период выборки кончается раньше ввода" in page
+    assert page.count("(весь лимит)") == 2
+    interest = (f"Проценты и плата за лимит до полного погашения — "
+                f"{report._rub(due['interest'])}")
+    assert interest in page
     section = page[page.index("id='block-credit'"):]
     section = section[:section.index("<h2", 1)]
     for word in ("выписка банка", "выписки банка", "не загружены", "загрузите"):
@@ -87,6 +98,7 @@ def test_the_page_text_and_main_say_it_simply(monkeypatch):
             f"{report._rub(first['total'])}") in text
     assert (f"(выбрано по РСС {report._rub(due['drawn'])}, до лимита — ещё "
             f"{report._rub(due['to_draw'])})") in text
+    assert interest in text
     found = {item["topic"]: item for item in built["findings"]}
     assert found["Погашение кредитов"]["text"].startswith("первый обязательный платёж")
 

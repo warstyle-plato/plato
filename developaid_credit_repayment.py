@@ -574,7 +574,7 @@ def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = N
                 "data": {"deferred": _sum(mark["deferred"], mark["deferred_fee"])
                          if in_deferral else 0.0,
                          "interest_on_deferred": mark["iod"] if in_deferral else 0.0}}
-        if history["future"] is not None:
+        if history["future"]:
             every = sorted([(_day(d["date"]), d["amount"]) for part in history["split"].values()
                             for d in part] + history["future"])
             split, _ = sources._split(PRESETS[preset]["loans"], every)
@@ -582,7 +582,8 @@ def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = N
                 lid = loan["id"]
                 datasets[f"plan.{lid}"] = {
                     "name": f"plan.{lid}", "as_of": history["as_of"], "unit": "₽",
-                    "source": "план остатка ПФ финмодели (лист «КРЕДИТЫ») сверх выбранного",
+                    "source": "сроки — план остатка ПФ финмодели (лист «КРЕДИТЫ») сверх "
+                              "выбранного; до лимита — к концу периода доступности",
                     "data": {"draws": [d for d in split[lid] if d["date"] > history["as_of"]],
                              "prepayments": []}}
     for name, item in manual.items():

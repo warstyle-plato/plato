@@ -20,7 +20,9 @@
   дальше — тот же прогноз, что «Эскроу по кварталам» и «к вводу» сводки
   (`contracting.keeping_at`): рассрочка подписанных договоров и новые продажи
   по нынешнему темпу, равномерно до ввода. Раскрытие в сумме — ровно это число;
-* прогнозные выдачи — план остатка ПФ финмодели сверх уже выбранного;
+* прогнозные выдачи — до лимита каждой НКЛ к концу её доступности (владелец:
+  «будущие выборки до РНВ = лимит»): сроки — план остатка ПФ финмодели сверх
+  уже выбранного, недостающее до лимита — в последний день доступности;
 * ставка — «Ставка кредита ПФ» финмодели: снижается вслед за покрытием —
   итоговая, берётся как есть; иначе базовая, ключевая = она минус маржа;
 * раскрытие — утверждённый срок ввода (`management_report._commissioning`, тот
@@ -137,6 +139,31 @@ def _plan_draws(loans: list[dict[str, Any]], credit_plan: dict[str, Any] | None,
             out.append((credit._day(f"{month}-15"), plan[month] - running))
             running = plan[month]
     return out
+
+
+def _to_limit(loans: list[dict[str, Any]], past: list[tuple[datetime.date, float]],
+              future: list[tuple[datetime.date, float]], as_of: str
+              ) -> tuple[list[tuple[datetime.date, float]], list[tuple[str, datetime.date, float]]]:
+    """Довести выдачи каждой НКЛ до лимита к концу её периода доступности.
+
+    Владелец, 27.10.2026: «Долг будет равен сумме лимита! Посмотри в НКЛ период
+    доступности. Он раньше РНВ»; «будущие выборки до РНВ = лимит». План
+    финмодели задаёт сроки выдач; чего ему не хватает до лимита, добирается в
+    последний день доступности. Уже прошедший конец доступности не трогается:
+    невыбранное там не выдать.
+    """
+    split, _ = _split(loans, sorted(past + future))
+    out, topped = list(future), []
+    for loan in loans:
+        end = credit._day(loan["availability_end"])
+        if end.isoformat() <= as_of[:10]:
+            continue
+        drawn = sum(d["amount"] for d in split[loan["id"]] if credit._day(d["date"]) <= end)
+        gap = credit._limit_on(loan, end) - drawn
+        if gap > 1.0:
+            out.append((end, gap))
+            topped.append((loan["short"], end, gap))
+    return sorted(out), topped
 
 
 def _model_rates(credit_plan: dict[str, Any] | None) -> tuple[dict[str, float],
@@ -351,8 +378,17 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     drawn_total = sum(amount for _, amount in found["draws"])
     future = _plan_draws(loans, credit_plan, drawn_total, as_of)
     if future is None:
-        missing.append("прогнозные выдачи после РСС: в финмодели нет строки «Проектное "
-                       "финансирование (нараст)»")
+        notes.append("Сроков будущих выдач в финмодели нет (строка «Проектное финансирование "
+                     "(нараст)»): весь невыбранный лимит взят в последний день периода "
+                     "доступности.")
+    future, topped = _to_limit(loans, found["draws"], future or [], as_of)
+    if topped:
+        notes.append("Будущие выдачи до конца периода доступности доводят долг до лимита "
+                     "(решение владельца 27.10.2026: «будущие выборки до РНВ = лимит»): сроки — "
+                     "по плану финмодели, недостающее до лимита — в последний день доступности: "
+                     + "; ".join(f"{short} — {credit.mln(amount, 1)} млн ₽ на "
+                                 f"{credit.ddmmyyyy(day)}" for short, day, amount in topped)
+                     + ".")
     start = (credit._day(found["draws"][0][0].replace(day=1)) - datetime.timedelta(days=1))
     if payments:
         first = credit._day(min(p["date"] for p in payments)).replace(day=1)

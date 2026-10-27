@@ -1089,7 +1089,8 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any]) -> d
                         + ("; ".join(base.get("gaps") or []) or "график не построен."))
     drawn = draws.get("total")
     limit_total = sum(float(loan["limit"] or 0.0) for loan in loans)
-    return {"state": "ok", "loans": loans, "rows": rows,
+    interest = ((base.get("top") or {}).get("interest_cost") or {}).get("value")
+    return {"state": "ok", "loans": loans, "rows": rows, "interest": interest,
             "drawn": drawn, "drawn_at": (funding_block or {}).get("rss") or "",
             "limit_total": limit_total,
             "to_draw": (limit_total - drawn) if drawn is not None else None,
@@ -1121,7 +1122,16 @@ def _credit_due_lines(block: dict[str, Any]) -> list[str]:
         text += (f"; эскроу по прогнозу {_rub(last['escrow'])} — {_covered(last['gap'])}")
     else:
         text += f"; прогноза эскроу нет: {block.get('escrow_reason') or 'нет данных'}"
-    return [text + "."]
+    out = [text + "."]
+    if block.get("interest") is not None:
+        out.append(_interest_words(block))
+    return out
+
+
+def _interest_words(block: dict[str, Any]) -> str:
+    return (f"Проценты и плата за лимит до полного погашения — {_rub(block['interest'])} "
+            "по подробному расчёту того же прогноза (условия договоров, ключевая ставка — "
+            "по допущениям расчёта).")
 
 
 def _credit_due_html(block: dict[str, Any]) -> str:
@@ -1160,13 +1170,18 @@ def _credit_due_html(block: dict[str, Any]) -> str:
                  + (f" (отчёт от {_day(block['drawn_at'])})" if block.get("drawn_at") else "")
                  + f", до лимита — ещё {_rub(block['to_draw'])}.")
     note = ("Обязательные платежи основного долга по договорам НКЛ — доля долга на конец "
-            "периода выборки. Долг на конец выборки — выбрано по РСС плюс выдачи по плану "
-            f"финмодели: {', '.join(debt(loan) for loan in loans)}.{drawn} Проценты сюда не "
-            "входят — они в подробном расчёте ниже. На эскроу — тот же прогноз, что в блоке "
+            "периода выборки. Долг на конец выборки — весь лимит: период выборки кончается "
+            "раньше ввода, и будущие выборки доводят долг до лимита (выбрано по РСС, дальше — "
+            "сроки по плану финмодели, недостающее — в последний день выборки): "
+            f"{', '.join(debt(loan) for loan in loans)}.{drawn} Проценты сюда не входят — "
+            "строкой ниже. На эскроу — тот же прогноз, что в блоке "
             "«Финансирование»: накоплено, рассрочка и новые продажи до ввода, после ввода не "
             "растёт. Эскроу минус платежи — против платежей нарастающим итогом; минус — "
             "столько не хватает к этой дате.")
     out.append(f"<p class='note'>{esc(note)}</p>")
+    if block.get("interest") is not None:
+        out.append(f"<p class='note'><b>{esc(_interest_words(block))}</b> Подробно и "
+                   "допущения — ниже.</p>")
     if block.get("escrow_reason"):
         out.append(f"<p class='missing'>{esc('Прогноза эскроу нет: ' + block['escrow_reason'])}</p>")
     return "\n".join(out)
