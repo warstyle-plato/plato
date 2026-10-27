@@ -8,7 +8,7 @@
 * Числа стратегий — пути движка (`office_paths` / `retail_paths`): каждая
   стратегия — полный расчёт модели. Блок (`strategy_compare_block`) только
   переводит их в строки; страница, PDF и тизер его печатают.
-* Книга офиса сравнивает те же три способа формулами — её числа совпадают
+* Книга офиса сравнивает те же четыре способа формулами — её числа совпадают
   с блоком.
 * Точки безразличия — подбор полным пересчётом модели вне запроса расчёта
   (`strategy_compare_for_report`, `/strategy-compare`): подставленное
@@ -83,31 +83,43 @@ def test_the_block_reads_the_paths_of_the_engine(office) -> None:
     for row in item["rows"]:
         assert row["values"] == [p.get(row["key"]) for p in paths], row["key"]
     best = max(paths, key=lambda p: p["npv"])["key"]
-    assert best == result["office_paths"]["better"] == item["best"] == ns.STRATEGY_DDU
+    assert best == result["office_paths"]["better"] == item["best"] == ns.PATH_PRESALE
     marks = {c["key"]: c["tags"] for c in item["columns"]}
-    assert marks == {"ddu": ["лучшая по NPV"], "direct": ["выбрана в проекте"], "income": [],
+    assert marks == {"ddu": [], "presale": ["лучшая по NPV", ns.PRESALE_BUYERS], "direct": ["выбрана в проекте"],
+                     "income": [],
                      "income_hold": []}
+    # Столбцы — по времени денег (владелец, 25.10.2026): ДДУ, ПДКП во время
+    # стройки, блоки после ввода, аренда с удержанием, аренда с продажей.
+    assert [c["label"] for c in item["columns"]] == [
+        "Продажа по ДДУ (эскроу)",
+        "Продажа компаниям по предварительному договору во время стройки (ПДКП)",
+        "Продажа блоками после ввода", "Аренда и удержание здания", "Аренда и продажа здания"]
 
 
 def test_the_lead_and_the_teaser_say_the_approved_sample(office) -> None:
     item, block = office["block"]["items"][0], office["block"]
-    # Числа — с благоустройством нежилого проекта ставкой на м² наземной ГНС
-    # (решение владельца 25.10.2026): прежде статья была нулём.
-    assert item["lead"] == ("В проекте выбрана продажа блоками после ввода. Выгоднее всего продажа по ДДУ "
-                            "с эскроу: её NPV выше на 25,8 млн ₽. Ни одна из четырёх стратегий при нынешних "
-                            "ценах не окупает проект.")
-    assert block["teaser"] == ("Лучшая стратегия — продажа по ДДУ (эскроу), выгоднее выбранной продажи "
-                               "блоками на 25,8 млн ₽ по NPV.")
+    # С выручкой по ДДУ от раскрытия эскроу (214-ФЗ, #892) лучшая на
+    # Пролетарском — продажа компаниям по предварительному договору во время
+    # стройки. Числа — с благоустройством нежилого проекта ставкой на м²
+    # наземной ГНС (решение владельца 25.10.2026).
+    assert item["lead"] == ("В проекте выбрана продажа блоками после ввода. Выгоднее всего продажа компаниям "
+                            "по предварительному договору во время стройки: её NPV выше на 325,4 млн ₽. Ни "
+                            "одна из пяти стратегий при нынешних ценах не окупает проект.")
+    assert block["teaser"] == ("Лучшая стратегия — продажа компаниям по предварительному договору во время "
+                               "стройки (ПДКП), выгоднее выбранной продажи блоками после ввода на 325,4 млн ₽ "
+                               "по NPV.")
     npv = next(r for r in item["rows"] if r["key"] == "npv")
-    assert npv["cells"] == ["−1 849,6 млн ₽", "−1 875,4 млн ₽", "−2 932,3 млн ₽",
-                            "−2 699,6 млн ₽"]
+    assert npv["cells"] == ["−1 849,6 млн ₽", "−1 550,0 млн ₽", "−1 875,4 млн ₽", "−2 699,6 млн ₽",
+                            "−2 932,3 млн ₽"]
 
 
 def test_the_chosen_best_strategy_names_the_runner_up() -> None:
-    bundle, _, _ = _bundle(offices_strategy=ns.STRATEGY_DDU)
+    # Проект продаёт по предварительному договору с начала стройки (24 мес.) до ввода.
+    bundle, _, _ = _bundle(offices_strategy=ns.STRATEGY_DIRECT, offices_direct_sale_offset_months=-24,
+                           offices_direct_sale_months=24)
     block = core.strategy_compare_block(bundle["consolidated"])
-    assert block["teaser"] == ("Выбранная стратегия — продажа по ДДУ — лучшая из четырёх по NPV; следующая, "
-                               "продажа блоками, уступает ей 25,8 млн ₽.")
+    assert block["teaser"] == ("Выбранная стратегия — продажа по предварительному договору — лучшая из пяти "
+                               "по NPV; следующая, продажа по ДДУ, уступает ей 299,6 млн ₽.")
 
 
 def test_the_payback_is_the_rule_of_the_owner_section() -> None:
@@ -118,7 +130,7 @@ def test_the_payback_is_the_rule_of_the_owner_section() -> None:
     assert direct["payback_month"] == result["report"]["equity_participation"]["payback_month"]
     assert direct["payback_month"]
     row = next(r for r in result["strategy_compare"]["items"][0]["rows"] if r["key"] == "payback_month")
-    assert row["cells"][1] == "с " + core._month_label(direct["payback_month"])
+    assert row["cells"][2] == "с " + core._month_label(direct["payback_month"])
 
 
 def test_the_retail_object_is_compared_too() -> None:
@@ -126,8 +138,8 @@ def test_the_retail_object_is_compared_too() -> None:
     result = core.calculate(core.CalcRequest(inputs=x, tep=t, rates=[]))
     assert "office_paths" not in result
     paths = result["retail_paths"]["paths"]
-    assert {p["key"] for p in paths} == {ns.STRATEGY_DDU, ns.STRATEGY_DIRECT, ns.STRATEGY_INCOME,
-                                          "income_hold"}
+    assert {p["key"] for p in paths} == {ns.STRATEGY_DDU, ns.PATH_PRESALE, ns.STRATEGY_DIRECT,
+                                          ns.STRATEGY_INCOME, "income_hold"}
     assert all("error" not in p for p in paths)
     item = result["strategy_compare"]["items"][0]
     assert item["product"] == "standalone_retail" and item["current"] == ns.STRATEGY_INCOME
@@ -150,9 +162,10 @@ def test_the_investor_sees_the_rent_kept_and_sold() -> None:
     assert hold["npv"] != paths["income"]["npv"]
     item = bundle["consolidated"]["strategy_compare"]["items"][0]
     rows = {r["key"]: r["cells"] for r in item["rows"]}
-    assert rows["yield_on_cost"] == ["аренды нет", "аренды нет", "6,2%", "6,2%"]
-    assert rows["irr_equity"] == ["N/A — долг не погашен", "−59,8%", "−34,3%", "−18,8%"]
-    assert rows["exit_value"][:2] == ["здание продаётся по частям"] * 2
+    assert rows["yield_on_cost"] == ["аренды нет", "аренды нет", "аренды нет", "6,2%", "6,2%"]
+    assert rows["irr_equity"] == ["N/A — долг не погашен", "не считается — поток капитала не меняет знак",
+                                  "−59,8%", "−18,8%", "−34,3%"]
+    assert rows["exit_value"][:3] == ["здание продаётся по частям"] * 3
     # Проект на удержании: четвёртый столбец — аренда с продажей здания.
     held, _, _ = _bundle(offices_strategy=ns.STRATEGY_INCOME, offices_exit_mode=ns.EXIT_HOLD)
     data = held["consolidated"]["office_paths"]
@@ -191,11 +204,14 @@ def test_the_found_points_really_level_the_strategies(office) -> None:
     points = {p["kind"]: p for p in office["block"]["items"][0]["points"]}
     assert set(points) == {"rent", "cap", "hold", "price"}
     ddu = _npv(x, t, ns.STRATEGY_DDU)
+    # Аренду сравнивают с лучшей продажей — здесь по предварительному договору
+    # с начала стройки (24 мес.) до ввода.
+    presale = _npv(x, t, ns.STRATEGY_DIRECT, offices_direct_sale_offset_months=-24, offices_direct_sale_months=24)
     tolerance = abs(ddu) * 1e-3
     assert _npv(x, t, ns.STRATEGY_INCOME, offices_rent_th_per_sqm_month=points["rent"]["value"] / 12) \
-        == pytest.approx(ddu, abs=tolerance)
+        == pytest.approx(presale, abs=tolerance)
     assert _npv(x, t, ns.STRATEGY_INCOME, offices_exit_cap_pct=points["cap"]["value"]) \
-        == pytest.approx(ddu, abs=tolerance)
+        == pytest.approx(presale, abs=tolerance)
     assert _npv(x, t, ns.STRATEGY_DIRECT, offices_price_th_per_sqm=points["price"]["value"]) \
         == pytest.approx(ddu, abs=tolerance)
     # Контрпример: прежнее значение поля стратегии не уравнивает — разрыв во
@@ -204,10 +220,11 @@ def test_the_found_points_really_level_the_strategies(office) -> None:
     # продажа по ДДУ и блоками сблизились: разрыв 25,8 млн ₽ — 14 допусков
     # (с благоустройством нежилого проекта ставкой на м² ГНС, 25.10.2026).
     assert abs(_npv(x, t, ns.STRATEGY_DIRECT) - ddu) > 10 * tolerance
-    assert points["rent"]["text"] == ("Аренда станет так же выгодна, как продажа по ДДУ, если ставка аренды "
-                                      "вырастет до 54,6 тыс. ₽ за м² в год (сейчас 30,0 тыс. ₽).")
-    assert points["price"]["text"] == ("Продажа блоками сравняется с продажей по ДДУ, если блоки продавать "
-                                       "по 276,5 тыс. ₽ за м² (сейчас 273,0 тыс. ₽).")
+    assert points["rent"]["text"] == ("Аренда станет так же выгодна, как продажа по предварительному договору, "
+                                      "если ставка аренды вырастет до 61,6 тыс. ₽ за м² в год "
+                                      "(сейчас 30,0 тыс. ₽).")
+    assert points["price"]["text"] == ("Продажа блоками после ввода сравняется с продажей по ДДУ, если блоки "
+                                       "продавать по 276,5 тыс. ₽ за м² (сейчас 273,0 тыс. ₽).")
 
 
 def test_the_calculation_itself_does_not_search(office) -> None:
@@ -257,7 +274,8 @@ def test_the_office_book_agrees_with_the_block(office) -> None:
             want = ow._engine_number(value, ratio)
             assert got == pytest.approx(want, rel=1e-6, abs=1e-6), (column["key"], label)
             compared += 1
-    assert compared == 16
+    # IRR проекта у ПДКП Пролетарского не считается (движок даёт пусто) — 20, а не 21.
+    assert compared == 20
 
 
 # --- PDF и тизер ----------------------------------------------------------------------

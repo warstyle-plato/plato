@@ -813,6 +813,10 @@ def _fact(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"contracts": int(totals["contracts"]), "units": totals["units"],
             "area": sum(float(row["area"] or 0.0) for row in measured),
             "amount": totals["amount"],
+            # Сколько по этим договорам уже на эскроу: сумма договоров и деньги
+            # на счёте расходятся на рассрочку (владелец, 27.10.2026: «Обе
+            # цифры важны»).
+            "escrow": totals["escrow"],
             "area_unknown": sum(1 for row in measured if not row["area"]),
             "pieces": pieces,
             # Цена — по квартирам: банк и финмодель называют её так же, а
@@ -2058,12 +2062,18 @@ def _signed_note(quarter: dict[str, Any]) -> str:
 
 
 def _edge_words(quarter: dict[str, Any]) -> str:
-    """Для подписи плитки: «по регистрации — до 291,5 млн ₽»."""
+    """Для подписи плитки — полной фразой, без «до» (владелец, 27.10.2026: «Что
+    значит до?»): сколько выйдет по дате регистрации и за счёт каких договоров."""
     edge = quarter.get("edge") or {}
     if not edge.get("contracts"):
         return ""
     total = float(quarter["fact"]["amount"]) + float(edge["amount"])
-    return f"; по регистрации, как у отдела продаж, — до {_rub(total)}"
+    count = int(edge["contracts"])
+    return (f". Отдел продаж считает по дате регистрации: если {count} "
+            f"{_plural(count, 'договор', 'договора', 'договоров')} на {_rub(edge['amount'])}, "
+            f"{_plural(count, 'подписанный', 'подписанные', 'подписанные')} в последние две "
+            f"недели прошлого квартала, {_plural(count, 'зарегистрирован', 'зарегистрированы', 'зарегистрированы')} "
+            f"уже в этом, у него квартал — {_rub(total)}")
 
 
 def _booked_words(item: dict[str, Any]) -> str:
@@ -3279,12 +3289,22 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         if quarter and plan:
             share = quarter["fact"]["amount"] / plan
             add(f"Продажи квартала к плану {name}", _pct(share),
-                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)} {SIGNED_BASIS}"
-                f"{_edge_words(quarter)}; прошло {_pct(pace)} квартала",
+                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)} {SIGNED_BASIS}; прошло "
+                f"{_pct(pace)} квартала{_edge_words(quarter)}",
                 "bad" if share < pace - 0.05 else "good")
         else:
             add(f"Продажи квартала к плану {name}", None,
                 "плана нет" if quarter else "отчёт о продажах не подключён")
+    # Продажи — по сумме договоров; рядом — сколько по ним уже на эскроу.
+    fact = (quarter or {}).get("fact") or {}
+    if fact.get("contracts"):
+        rest = float(fact["amount"]) - float(fact.get("escrow") or 0.0)
+        add("На эскроу по продажам квартала", _rub(fact.get("escrow")),
+            f"из {_rub(fact['amount'])} по договорам квартала ({SIGNED_BASIS}); "
+            + (f"ещё не поступило {_rub(rest)} — рассрочка и оплаты в пути"
+               if rest > 0.5 else "оплачено полностью"))
+    elif quarter:
+        add("На эскроу по продажам квартала", None, "договоров в квартале нет")
 
     # Деньги стройки — пятью плашками подряд (владелец, 21.10.2026: «в
     # плашках сверху должен быть ещё бюджет утверждённый, лимит банка,

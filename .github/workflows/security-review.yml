@@ -53,7 +53,29 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 2
-      - uses: anthropics/claude-code-security-review@main
+      # В action зашита проверка ключа запросом к claude-3-5-haiku-20241022,
+      # которую Anthropic сняла 19.02.2026: каждый прогон давал not_found,
+      # и фильтр ложных срабатываний молча выключался. Берём action на
+      # закреплённом коммите и меняем модель проверки на действующую; если
+      # строка не нашлась — падаем, а не работаем снова без фильтра.
+      - name: Action с действующей моделью проверки ключа
+        if: steps.key.outputs.present == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: anthropics/claude-code-security-review
+          ref: 0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+          path: .security-review-action
+      - name: Заменить снятую модель
+        if: steps.key.outputs.present == 'true'
+        run: |
+          f=.security-review-action/claudecode/claude_api_client.py
+          grep -q 'claude-3-5-haiku-20241022' "$f" || {
+            echo "::error title=Обзор безопасности::В action не нашлась строка снятой модели — проверьте $f перед обновлением коммита."
+            exit 1
+          }
+          sed -i 's/claude-3-5-haiku-20241022/claude-haiku-5-5/g' "$f"
+          ! grep -rn 'claude-3-5-haiku' .security-review-action/claudecode --include=*.py | grep -v /test
+      - uses: ./.security-review-action
         if: steps.key.outputs.present == 'true'
         with:
           claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
@@ -62,4 +84,4 @@ jobs:
           claudecode-timeout: 20
           # Данные и слепки — не код: искать в них уязвимости нечего, а токенов
           # они стоят.
-          exclude-directories: docs,tests/fixtures,reference_data,genplan_assets,presets,data
+          exclude-directories: docs,tests/fixtures,reference_data,genplan_assets,presets,data,.security-review-action

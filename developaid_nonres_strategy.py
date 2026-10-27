@@ -232,6 +232,12 @@ STRATEGY_FIELD_DEFAULTS: dict[str, tuple[Any, Any]] = {
     "direct_sale_offset_months": (0, 0),
     "direct_sale_months": (12, 12),
     "direct_sale_curve": ("flat", "flat"),
+    # Окно продажи по предварительному ДКП во время стройки — четвёртого
+    # способа «Сравнения стратегий» (`presale_window`): месяцев от начала
+    # стройки объекта до первой продажи и от последней продажи до ввода.
+    # Нули — с начала стройки до ввода (владелец, 25.10.2026).
+    "presale_start_months": (0, 0),
+    "presale_end_months": (0, 0),
     # Офис — класс B шкалы (`OFFICE_CLASS_SCALE`, класс офиса комфорта), ТЦ — умолчания PR #531.
     "rent_th_per_sqm_month": (office_class_fields(DEFAULT_OFFICE_CLASS)["rent_th_per_sqm_month"], 3.8),
     # Дата, на которую указана ставка аренды; до ввода ставка растёт на
@@ -275,6 +281,55 @@ def object_strategy(inputs: dict[str, Any] | None, prefix: str) -> str:
     """Стратегия объекта. Отсутствующее или чужое значение — ДДУ, как было."""
     value = str((inputs or {}).get(f"{prefix}_strategy") or "").strip().lower()
     return value if value in STRATEGY_LABELS else STRATEGY_DDU
+
+
+# Продажа по предварительному ДКП будущей вещи во время стройки — способ
+# продажи, а не своя стратегия: это прямая продажа (`STRATEGY_DIRECT`) со
+# стартом до ввода, авансы покупателей без эскроу (владелец, 03.10.2026 и
+# 25.10.2026: «Их же 4?!»). Своей арифметики у неё нет — только окно продаж.
+PATH_PRESALE = "presale"
+# Кому так можно продавать (ревизия «Нормативки», 25.10.2026): деньги граждан
+# на помещения в ещё не введённом здании, в том числе нежилые, привлекаются
+# только по ДДУ или через ЖСК — 214-ФЗ, ст. 1 ч. 2,
+# `docs/normative/rf_214fz_red_20240808.ocr.txt`. ИП для закона — граждане.
+# Одна формулировка для подсказок полей, столбца сравнения и книги.
+PRESALE_BUYERS = "покупатели — только компании"
+PRESALE_BUYERS_NOTE = ("Так можно продавать только компаниям (юридическим лицам): гражданам, в том "
+                       "числе индивидуальным предпринимателям, до ввода продают только по ДДУ с "
+                       "эскроу — этого требует закон о долевом строительстве (214-ФЗ, статья 1, "
+                       "часть 2).")
+
+
+def is_presale(inputs: dict[str, Any] | None, prefix: str) -> bool:
+    """Объект проекта продаётся по предварительному ДКП: прямая продажа со
+    стартом раньше ввода."""
+    x = inputs or {}
+    return (object_strategy(x, prefix) == STRATEGY_DIRECT
+            and int(_num(x, f"{prefix}_direct_sale_offset_months", 0)) < 0)
+
+
+def presale_window(inputs: dict[str, Any] | None, prefix: str, build_months: int) -> tuple[int, int]:
+    """Сдвиг старта от ввода и срок продаж по предварительному ДКП — одно
+    правило для движка (`office_paths`) и книги офиса.
+
+    Объект проекта уже продаётся до ввода — его собственное окно. Иначе окно
+    из полей ПДКП: от начала стройки (`presale_start_months` после него) до
+    ввода (`presale_end_months` до него), равномерно по умолчанию."""
+    x = inputs or {}
+    if is_presale(x, prefix):
+        return (int(_num(x, f"{prefix}_direct_sale_offset_months", 0)),
+                max(1, int(_num(x, f"{prefix}_direct_sale_months", 12))))
+    months = max(1, int(build_months))
+    start = max(0, int(_num(x, f"{prefix}_presale_start_months", 0)))
+    end = max(0, int(_num(x, f"{prefix}_presale_end_months", 0)))
+    return start - months, max(1, months - start - end)
+
+
+def presale_bounds(inputs: dict[str, Any] | None, prefix: str, build_months: int) -> tuple[int, int]:
+    """То же окно ПДКП в мерах книги: месяцев от начала стройки до первой
+    продажи и от последней продажи до ввода (минус — после ввода)."""
+    offset, period = presale_window(inputs, prefix, build_months)
+    return int(build_months) + offset, -(offset + period)
 
 
 # --- даты -------------------------------------------------------------------
