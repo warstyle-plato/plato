@@ -304,7 +304,7 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
                      f"{margin:g} п. п.").replace(".", ",", 1)
             notes.append(f"Ставка: в финмодели «Ставка кредита ПФ» не меняется вслед за "
                          f"покрытием эскроу, поэтому она принята базовой — ключевая плюс "
-                         f"{margin:g} п. п. по {loans[0]['short']}".replace(".", ",")
+                         f"{f'{margin:g}'.replace('.', ',')} п. п. по {loans[0]['short']}"
                          + ". Скидка за покрытие эскроу считается по ступеням договора. "
                          "Если в модели ставка уже со скидкой, проценты здесь занижены.")
         else:
@@ -319,6 +319,17 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
                     f"terms.{loan['id']}", sales_at or end.isoformat(), "финмодель", {
                         "rate": {"value": "model",
                                  "source": "итоговая ставка финмодели («Ставка кредита ПФ»)"}})
+        # Ряд ставки финмодели может начинаться позже первой выдачи по РСС: без
+        # ставки за ранние месяцы отсрочка (проценты с первой выдачи) не
+        # считается, и пустыми выходят проценты первого платежа.
+        draws = found.get("draws") or []
+        first = draws[0][0].strftime("%Y-%m") if draws else ""
+        if first and path[0]["from"][:7] > first:
+            rate = f"{path[0]['rate']:.2f}".replace(".", ",")
+            notes.append(f"Ставка финмодели начинается с {credit.ddmmyyyy(path[0]['from'])}, а "
+                         f"выдачи по РСС — с {credit.ddmmyyyy(draws[0][0])}: за более ранние "
+                         f"месяцы принята первая ставка финмодели ({rate} %).")
+            path.insert(0, {"from": f"{first}-01", "rate": path[0]["rate"]})
         datasets["key_rate"] = _set("key_rate", sales_at or end.isoformat(), words,
                                     {"path": path})
     elif credit_plan:

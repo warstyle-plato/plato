@@ -200,3 +200,39 @@ def test_the_plan_scenario_raises_the_escrow_to_the_plan_only():
     assert [(item["date"], item["amount"]) for item in got["contracts"]] == [
         ("2026-12-31", pytest.approx(40 * M)), ("2027-01-31", pytest.approx(80 * M))]
     assert got["sales"] == []
+
+
+def test_without_interest_the_debt_and_escrow_are_still_told(monkeypatch):
+    """Прод 27.10.2026, «Кутузов Сити»: «Хватит ли эскроу на платежи по НКЛ, не
+    посчитано: не посчитаны проценты». Владелец: «Нет якобы данных» — графики
+    НКЛ и эскроу известны. Без процентов сводка считает долг против эскроу,
+    говорит «без процентов» и называет причину пустых процентов."""
+    import developaid_credit_repayment as credit
+
+    _project()
+    credit.save(PROJECT, [{"name": "key_rate", "as_of": "2026-10-20", "source": "письмо банка",
+                           "data": {"path": [{"from": "2026-01-01", "rate": 21.0}]}}],
+                "проверка")
+    monkeypatch.setattr(report, "_monitor_view", lambda p, e: {"dashboard": {
+        "funding": {"known": False, "reason": "нет"},
+        "schedule": {"approved_finish": "2027-09-30"}}})
+    built = report.build(PROJECT, "week", "2026-10-18")
+    due = built["credit_due"]
+    first = due["rows"][0]
+    assert first["interest"]["pace"] is None
+    reason = due["interest_reason"]["pace"]
+    assert reason.startswith("Не нашлось: ключевой ставки на 01.05.2025"), reason
+    # Долг и эскроу посчитаны: недостаток — по долгу, без процентов.
+    assert first["own"]["pace"] == pytest.approx(
+        max(0.0, first["principal"] - first["escrow"]["pace"]))
+    verdict = report.credit_verdict(due)
+    assert "не посчитано" not in verdict
+    assert verdict.endswith(f" — без процентов: их не посчитали ({reason}).")
+    main = report.credit_main(due)
+    assert main.startswith(f"30.09.2027 гасим основной долг {report._rub(first['principal'])} и "
+                           "проценты (их не посчитали), на эскроу к этой дате скорее всего будет ")
+    assert report.credit_interest_line(due) == \
+        f"Проценты сверх основного долга не посчитаны: {reason}."
+    tiles = {item["label"]: item for item in report.tiles(built)}
+    tile = tiles["Эскроу на платежи по НКЛ"]
+    assert tile["value"] != "нет данных" and "без процентов — их не посчитали" in tile["note"]

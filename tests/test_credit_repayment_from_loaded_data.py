@@ -304,3 +304,42 @@ def test_the_sufficiency_check_counts_interest_to_the_approved_commissioning():
     first = next(i for i in early["sufficiency"] if i["kind"] == "forecast")
     assert first["planned_disclosure"] == "2027-09-15"
     assert item["planned_interest"] > first["planned_interest"] > 0
+
+
+def _rate_from(month: str) -> None:
+    """«Ставка кредита ПФ» в финмодели — только с ``month``, позже первой выдачи."""
+    from market_search import sales_store
+
+    kept = sales_store.load(sales_store.default_dir(), SALES)
+    parts = {name: source["data"] for name, source in kept["sources"].items()}
+    queue = parts["credit"]["queues"][0]
+    queue["rate"] = {m: v for m, v in queue["rate"].items() if m >= month}
+    sales_store.save(sales_store.default_dir(), SALES, parts, "test.xlsx")
+
+
+def test_a_model_rate_that_starts_after_the_first_draw_still_gives_interest():
+    """Прод 27.10.2026 (владелец: «Нет якобы данных»): ставка финмодели — с 2026
+    года, выдачи — с мая 2025. Без ставки за ранние месяцы отсрочка не
+    считалась, и проценты первого платежа 30.09.2027 выходили пустыми — молча.
+    Стало: за месяцы до ряда — первая ставка модели, это сказано в допущениях."""
+    _project()
+    _rate_from("2026-01")
+    got = _run()
+    base = got["base"]
+    assert all(row["interest_and_fees"] is not None for row in base["rows"]), \
+        [row["date"] for row in base["rows"] if row["interest_and_fees"] is None]
+    assert any(note.startswith("Ставка финмодели начинается с 01.01.2026, а выдачи по РСС — "
+                               "с 10.05.2025: за более ранние месяцы принята первая ставка")
+               for note in base["assumptions"]), base["assumptions"]
+
+
+def test_days_without_a_key_rate_are_named_not_silent():
+    """Ручной прогноз ключевой ставки позже первой выдачи: проценты за дни без
+    ставки не считаются — и прогноз называет дату, а не молчит."""
+    _project()
+    credit.save(PROJECT, [{"name": "key_rate", "as_of": "2026-10-20", "source": "письмо банка",
+                           "data": {"path": [{"from": "2026-01-01", "rate": 21.0}]}}],
+                "проверка")
+    base = _run()["base"]
+    assert ("Не нашлось: ключевой ставки на 01.05.2025: прогноз ставки начинается с "
+            "01.01.2026 — проценты за дни без ставки не рассчитаны.") in base["gaps"], base["gaps"]
