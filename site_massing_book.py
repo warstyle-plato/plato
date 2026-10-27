@@ -54,7 +54,7 @@ ROWS: tuple[tuple[str, str, str], ...] = (
     ("levels_manual", "Подземных уровней вручную (0 — по расчёту)", INPUT),
     ("markup2_pct", "Надбавка к ставке за второй подземный уровень, %", INPUT),
     ("markup3_pct", "Надбавка к ставке за третий уровень и ниже, %", INPUT),
-    ("rate_by_hand", "Ставка подземной части задана вручную (Да — без надбавок)", INPUT),
+    ("markups_off", "Надбавки за глубину не применяются (Да — ручная ставка на всю глубину)", INPUT),
     ("max_storeys", "Предельная этажность участка (0 — не задана)", INPUT),
     ("coverage_pct", "Процент застройки участка, % (0 — без ограничения)", INPUT),
     ("typical_storeys", "Типовая этажность жилых домов (0 — нет жилья)", INPUT),
@@ -174,7 +174,7 @@ def formulas(ref: Callable[[str], str]) -> dict[str, str]:
                        f"{r('underground_sqm')}-{r('level1_sqm')}),0)"),
         "level3_sqm": (f"IF({r('underground_levels')}>=3,{r('underground_sqm')}"
                        f"-{r('level1_sqm')}-{r('level2_sqm')},0)"),
-        "depth_factor": (f"IF(OR({r('rate_by_hand')}=\"{YES}\",{r('underground_sqm')}<=0,"
+        "depth_factor": (f"IF(OR({r('markups_off')}=\"{YES}\",{r('underground_sqm')}<=0,"
                          f"{r('underground_levels')}<=0),1,({r('level1_sqm')}"
                          f"+{r('level2_sqm')}*(1+{r('markup2_pct')}/100)"
                          f"+{r('level3_sqm')}*(1+{r('markup3_pct')}/100))"
@@ -208,7 +208,9 @@ def input_values(massing: dict, inputs: dict) -> dict[str, object]:
         "levels_manual": float(int(max(0.0, num("underground_levels")))),
         "markup2_pct": _markup(massing, 2),
         "markup3_pct": _markup(massing, 3),
-        "rate_by_hand": YES if massing.get("underground_rate_by_hand") else NO,
+        # Одно решение движка (`underground_depth_markups_apply`), а не признак ручной
+        # ставки: ручная ставка первого уровня надбавки получает.
+        "markups_off": NO if massing.get("underground_depth_markups_apply", True) else YES,
         "max_storeys": float(massing.get("max_storeys_allowed") or 0.0),
         "coverage_pct": float(massing.get("coverage_pct") or 0.0),
         "typical_storeys": float(massing.get("typical_storeys") or 0.0),
