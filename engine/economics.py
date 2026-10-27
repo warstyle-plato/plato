@@ -160,11 +160,48 @@ def calculate(req: CalcRequest) -> dict:
 # основного расчёта, а не считается второй раз.
 # Владелец, 24.10.2026: «Новая книга считает и ДДУ» — третий способ, продажа
 # по ДДУ с эскроу и проектным финансированием, стоит рядом с двумя прежними.
+# Владелец, 25.10.2026: «Где в сравнении стратегий продажа по ПДКП будущей вещи
+# во время стройки? … Их же 4?!» — четвёртый способ, продажа по предварительному
+# договору с авансами до ввода и без эскроу. Это расчёт прямой продажи со своим
+# окном (`nonres_strategy.presale_window`), поэтому ключ пути — свой, а
+# стратегия — `direct` (`path_strategy`).
 OFFICE_PATHS: tuple[tuple[str, str], ...] = (
     (nonres_strategy.STRATEGY_DDU, "Продажа по ДДУ (эскроу)"),
+    (nonres_strategy.PATH_PRESALE, "Продажа компаниям по предварительному договору во время стройки (ПДКП)"),
     (nonres_strategy.STRATEGY_DIRECT, "Продажа блоками после ввода"),
     (nonres_strategy.STRATEGY_INCOME, "Аренда и продажа здания"),
 )
+
+
+def path_strategy(key: str) -> str:
+    """Стратегия движка, которой считается путь: ПДКП — прямая продажа."""
+    return nonres_strategy.STRATEGY_DIRECT if key == nonres_strategy.PATH_PRESALE else key
+
+
+def object_path_key(inputs: dict[str, Any] | None, prefix: str) -> str:
+    """Путь, которым объект продаётся в проекте: прямая продажа со стартом до
+    ввода — ПДКП, с ввода и позже — продажа блоками после ввода."""
+    if nonres_strategy.is_presale(inputs, prefix):
+        return nonres_strategy.PATH_PRESALE
+    return nonres_strategy.object_strategy(inputs, prefix)
+
+
+def _build_months(inputs: dict[str, Any], prefix: str) -> int:
+    obj = next(o for o in STANDALONE_OBJECTS if o.prefix == prefix)
+    return int(n(inputs, f"{prefix}_months", obj.default_months))
+
+
+def apply_path(x: dict[str, Any], prefix: str, key: str) -> None:
+    """Вводные объекта под путь `key`: стратегия и окно продаж. Продажа блоками
+    после ввода не стартует раньше ввода, ПДКП — окно `presale_window`."""
+    if key == nonres_strategy.PATH_PRESALE:
+        offset, period = nonres_strategy.presale_window(x, prefix, _build_months(x, prefix))
+        x[f"{prefix}_direct_sale_offset_months"] = offset
+        x[f"{prefix}_direct_sale_months"] = period
+    elif key == nonres_strategy.STRATEGY_DIRECT:
+        x[f"{prefix}_direct_sale_offset_months"] = max(0, int(nonres_strategy._num(
+            x, f"{prefix}_direct_sale_offset_months", 0)))
+    x[f"{prefix}_strategy"] = path_strategy(key)
 
 
 # Анализ чувствительности гоняет расчёт десятки раз и сравнения путей в каждом
@@ -289,17 +326,21 @@ def office_paths(original: tuple[dict, dict, list], result: dict[str, Any],
     оставить его себе."""
     inputs, tep, rates = original
     prefixes = strategy_path_prefixes(inputs, product)
-    current = {nonres_strategy.object_strategy(inputs, prefix) for prefix in prefixes}
+    current = {object_path_key(inputs, prefix) for prefix in prefixes}
     current_key = current.pop() if len(current) == 1 else None
     exits = {_path_exit_mode(inputs, prefix) for prefix in prefixes}
     exit_now = exits.pop() if len(exits) == 1 else None
     variants = [(key, INCOME_EXIT_LABELS.get(exit_now, label) if key == nonres_strategy.STRATEGY_INCOME else label,
-                 key, None) for key, label in OFFICE_PATHS]
+                 path_strategy(key), None) for key, label in OFFICE_PATHS]
     if exit_now is not None:
         other = (nonres_strategy.EXIT_HOLD if exit_now == nonres_strategy.EXIT_SALE
                  else nonres_strategy.EXIT_SALE)
         variants.append((f"{nonres_strategy.STRATEGY_INCOME}_{other}", INCOME_EXIT_LABELS[other],
                          nonres_strategy.STRATEGY_INCOME, other))
+        # Столбцы — по времени денег (владелец, 25.10.2026): аренда с
+        # удержанием раньше аренды с продажей здания.
+        variants.sort(key=lambda v: v[2] == nonres_strategy.STRATEGY_INCOME
+                      and (v[3] or exit_now) == nonres_strategy.EXIT_SALE)
     paths = []
     for key, label, strategy, exit_mode in variants:
         tags = {"key": key, "label": label, "strategy": strategy,
@@ -309,7 +350,7 @@ def office_paths(original: tuple[dict, dict, list], result: dict[str, Any],
         else:
             x, t, r = copy.deepcopy((inputs, tep, rates))
             for prefix in prefixes:
-                x[f"{prefix}_strategy"] = strategy
+                apply_path(x, prefix, key if key in dict(OFFICE_PATHS) else strategy)
                 if exit_mode:
                     x[f"{prefix}_exit_mode"] = exit_mode
             try:
