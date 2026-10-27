@@ -457,6 +457,17 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     if payments:
         first = credit._day(min(p["date"] for p in payments)).replace(day=1)
         start = min(start, first - datetime.timedelta(days=1))
+    # Ставки финмодели могут начинаться позже первой выдачи: без ставки на день
+    # проценты всего досчёта — «нет данных». До первого месяца модели берётся
+    # её первая ставка, и это названо.
+    path = ((datasets.get("key_rate") or {}).get("data") or {}).get("path") or []
+    if path and path[0]["from"] > start.isoformat():
+        first_from = path[0]["from"]
+        path.insert(0, {"from": start.isoformat(), "rate": path[0]["rate"]})
+        notes.append(f"Ставка: в финмодели ставки начинаются с {credit.ddmmyyyy(first_from)}, "
+                     f"а первая выдача — раньше; с {credit.ddmmyyyy(start + datetime.timedelta(days=1))} "
+                     "до этой даты взята первая ставка модели. Проценты за этот срок — "
+                     "приблизительные.")
     history: dict[str, Any] = {}
     for loan in loans:
         lid = loan["id"]
