@@ -221,6 +221,18 @@ PAGE += r"""</head>
             <label>Площадь участка <span class="unit">га</span></label>
             <input type="number" step="0.0001" id="siteAreaHa" onchange="setSiteArea(this.value)">
             <span id="siteAreaSource" class="site-source"></span>
+            <label class="site-krt-toggle"><input type="checkbox" id="siteKrtToggle" onchange="setKrtSite(this.checked)"> Проект в КРТ</label>
+            <span class="site-source">Отметьте, если проект входит в территорию комплексного развития (КРТ): площадь участка и схема посадки возьмутся из границ этой территории, а не из участков госреестра.</span>
+            <div id="siteKrtStatus" class="site-krt-status" style="display:none"></div>
+            <details id="siteKrtManual" class="site-krt-manual" style="display:none">
+              <summary>Загрузить контур вручную</summary>
+              <p class="site-source">Если границы территории не нашлись или неверны, загрузите их сами: вставьте таблицу «каталог координат» из приложения к решению о КРТ (номер точки, X и Y в системе МСК-77) или пришлите фото либо скан этой страницы. Загруженный контур важнее найденного автоматически; найденный не пропадает.</p>
+              <textarea id="siteKrtCatalog" rows="5" placeholder="1   8 000,00   10 000,00&#10;2   8 000,00   10 110,00&#10;3   8 070,00   10 110,00"></textarea>
+              <button type="button" class="btn" onclick="uploadKrtCatalog()">Построить контур по координатам</button>
+              <input type="file" id="siteKrtPhoto" accept="image/*,application/pdf">
+              <button type="button" class="btn" onclick="uploadKrtPhoto()">Распознать фото или скан</button>
+              <div id="siteKrtManualStatus" class="site-krt-status"></div>
+            </details>
           </div>
           <div class="field">
             <label>Плотность застройки <span class="unit" id="siteDensityUnit">м² поэтажной площади / га</span></label>
