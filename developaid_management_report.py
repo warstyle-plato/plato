@@ -1133,11 +1133,14 @@ def _own_money(rows: list[dict[str, Any]], key: str, with_extra: bool = True) ->
     for row in rows:
         interest = row["interest"][key] if with_extra else row["interest_base"][key]
         escrow = row["escrow"][key]
-        if interest is None or escrow is None:
+        if escrow is None:
             for later in rows[rows.index(row):]:
                 later["own"][tag] = later["left"][tag] = later["total"][tag] = None
             return
-        total = (row["principal"] if with_extra else row["principal_base"]) + interest
+        # Процентов нет — долг и эскроу всё равно известны: недостаток считается
+        # без процентов, и тексты это говорят (владелец, 27.10.2026: «Нет якобы
+        # данных» при известных графиках НКЛ и эскроу).
+        total = (row["principal"] if with_extra else row["principal_base"]) + (interest or 0.0)
         left = escrow - (paid - own)
         put = max(0.0, total - left)
         row["total"][tag], row["left"][tag], row["own"][tag] = total, left, put
@@ -1216,6 +1219,8 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any],
            for tag in ("pace", "fm", "pace_base", "fm_base")}
     peak = max(rows, key=lambda row: row["own"].get("pace") or 0.0)
     drawn = ((funding_block or {}).get("draws") or {}).get("total") if funding_ok else None
+    interest_reason = {key: _interest_gap(run) for key, run in
+                       (("pace", credit_block), ("fm", plan_block)) if interest[key] is None}
     plan_reason = ""
     if interest["fm"] is None:
         plan_reason = ((plan_block or {}).get("reason")
@@ -1237,7 +1242,26 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any],
             "deferral_end": loans[0]["deferral_limit"], "settle": settle,
             "drawn": drawn, "drawn_at": (funding_block or {}).get("rss") or "",
             "escrow_reason": "" if basis else (escrow.get("reason") or "прогноза эскроу нет"),
-            "plan_reason": plan_reason}
+            "plan_reason": plan_reason, "interest_reason": interest_reason}
+
+
+def _interest_gap(run: dict[str, Any] | None) -> str:
+    """Почему проценты прогноза пустые — из пропусков самого прогноза, с датой."""
+    if not run or run.get("state") != "ok":
+        return (run or {}).get("reason") or "прогноза нет"
+    gaps = [gap for gap in run["base"].get("gaps") or []
+            if "процент" in gap or "ставк" in gap]
+    if gaps:
+        return gaps[0].rstrip(".")
+    day = next((row["date"] for row in run["base"]["rows"]
+                if row.get("interest_and_fees") is None), "")
+    return f"в прогнозе кредитов нет процентов на {_day(day)}" if day else "причина не названа"
+
+
+def _without_interest(block: dict[str, Any]) -> str:
+    """« — без процентов: их не посчитали (причина)», если процентов по темпу нет."""
+    reason = (block.get("interest_reason") or {}).get("pace")
+    return f" — без процентов: их не посчитали ({reason})" if reason else ""
 
 
 def _bn(value: float | None) -> str:
@@ -1250,7 +1274,8 @@ def credit_interest_line(block: dict[str, Any]) -> str:
         return block.get("reason") or "Погашение кредитов не посчитано."
     pace, fm = block["interest_total"]["pace"], block["interest_total"]["fm"]
     if pace is None:
-        return "Проценты сверх основного долга не посчитаны."
+        return ("Проценты сверх основного долга не посчитаны: "
+                f"{(block.get('interest_reason') or {}).get('pace') or 'причина не названа'}.")
     if fm is None:
         return (f"Проценты сверх основного долга: {_rub(pace)} по нынешнему темпу продаж; "
                 f"по плану финмодели не посчитаны — {block['plan_reason']}.")
@@ -1265,15 +1290,14 @@ def credit_verdict(block: dict[str, Any]) -> str:
         return block.get("reason") or "Погашение кредитов не посчитано."
     rows = block["rows"]
     if any(row["own"].get("pace") is None for row in rows):
-        why = (block.get("escrow_reason") and "нет прогноза эскроу: " + block["escrow_reason"]
-               or "не посчитаны проценты")
-        return f"Хватит ли эскроу на платежи по НКЛ, не посчитано: {why}."
+        return ("Хватит ли эскроу на платежи по НКЛ, не посчитано: нет прогноза эскроу — "
+                f"{block.get('escrow_reason') or 'причина не названа'}.")
     short = next((row for row in rows if row["own"]["pace"] > 0.5), None)
     if short is None:
         last = rows[-1]
-        return (f"Эскроу хватает на все платежи по НКЛ с процентами до {_day(last['date'])}: "
-                f"после последнего платежа останется {_rub(last['left']['pace'] - last['total']['pace'])} "
-                "по нынешнему темпу продаж.")
+        return (f"Эскроу хватает на все платежи по НКЛ до {_day(last['date'])}: после "
+                f"последнего платежа останется {_rub(last['left']['pace'] - last['total']['pace'])} "
+                f"по нынешнему темпу продаж{_without_interest(block)}.")
     index = rows.index(short)
     fm = short["own"].get("fm")
     fm_words = ("" if fm is None else
@@ -1281,17 +1305,19 @@ def credit_verdict(block: dict[str, Any]) -> str:
     head = (f"Эскроу хватает до {_day(rows[index - 1]['date'])}, первый недостаток"
             if index else "Первый недостаток")
     return (f"{head} — {_day(short['date'])}: не хватает {_rub(short['own']['pace'])} по "
-            f"нынешнему темпу продаж{fm_words}.")
+            f"нынешнему темпу продаж{fm_words}{_without_interest(block)}.")
 
 
 def _due_sentence(row: dict[str, Any], first: bool) -> str:
     """Одна дата словами владельца: гасим, будет на эскроу, хватает или дефолт."""
     pace_total, interest = row["total"]["pace"], row["interest"]["pace"]
     if pace_total is None:
-        return (f"{_day(row['date'])} гасим основной долг {_rub(row['principal'])}; проценты "
-                "или эскроу к этой дате не посчитаны.")
+        return (f"{_day(row['date'])} гасим основной долг {_rub(row['principal'])}. Сколько к "
+                "этой дате будет на эскроу, не посчитано.")
     text = (f"{_day(row['date'])} гасим {_rub(pace_total)} (долг {_rub(row['principal'])} + "
-            f"проценты {_rub(interest)}). ")
+            f"проценты {_rub(interest)}). " if interest is not None else
+            f"{_day(row['date'])} гасим основной долг {_rub(row['principal'])} и проценты "
+            "(их не посчитали). ")
     fm = row["left"].get("fm")
     fm_words = f"; по плану ФМ было бы {_rub(fm)}" if fm is not None else ""
     if first:
@@ -1316,7 +1342,7 @@ def _due_sentence(row: dict[str, Any], first: bool) -> str:
 def _own_total_sentence(block: dict[str, Any]) -> str:
     own = block["own_total"]
     if own["pace"] is None:
-        return "Сколько своих денег понадобится, не посчитано: нет прогноза эскроу или процентов."
+        return "Сколько своих денег понадобится, не посчитано: нет прогноза эскроу."
     if own["pace"] <= 0.5:
         text = "Своих денег не понадобится: эскроу по нынешнему темпу хватает на все платежи"
         text += (f" (по плану ФМ — {_rub(own['fm'])})" if own["fm"] and own["fm"] > 0.5 else "")
@@ -1327,7 +1353,7 @@ def _own_total_sentence(block: dict[str, Any]) -> str:
     if block["extra"]:
         text += (f"; это с учётом увеличения лимита на {_rub(block['extra'])} "
                  f"({_rub(own['pace_base'])} без него)")
-    return text + "."
+    return text + _without_interest(block) + "."
 
 
 def credit_lines(block: dict[str, Any]) -> list[str]:
@@ -1346,8 +1372,10 @@ def credit_main(block: dict[str, Any]) -> str:
     if row["total"]["pace"] is None:
         return credit_verdict(block)
     put = row["own"]["pace"]
-    text = (f"{_day(row['date'])} гасим {_rub(row['total']['pace'])} (долг "
-            f"{_rub(row['principal'])} + проценты {_rub(row['interest']['pace'])}), на эскроу "
+    owed = (f"{_rub(row['total']['pace'])} (долг {_rub(row['principal'])} + проценты "
+            f"{_rub(row['interest']['pace'])})" if row["interest"]["pace"] is not None
+            else f"основной долг {_rub(row['principal'])} и проценты (их не посчитали)")
+    text = (f"{_day(row['date'])} гасим {owed}, на эскроу "
             f"к этой дате скорее всего будет {_rub(row['left']['pace'])}: "
             + (f"не хватает {_rub(put)} — их нужно внести из своих денег, иначе банк вправе "
                "объявить дефолт." if put > 0.5 else "хватает."))
@@ -3367,14 +3395,16 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         first = next((row for row in due["rows"] if (row["own"].get("pace") or 0.0) > 0.5),
                       None)
         fm = (f"; по плану ФМ — {_rub(own['fm'])}" if own["fm"] is not None else "")
+        with_interest = ("без процентов — их не посчитали"
+                         if (due.get("interest_reason") or {}).get("pace") else "с процентами")
         if own["pace"] is None:
             add("Эскроу на платежи по НКЛ", None, credit_verdict(due))
         elif first:
             add("Эскроу на платежи по НКЛ", f"не хватает {_rub(own['pace'])}",
-                f"своих денег с процентами, первый раз {_day(first['date'])}{fm}", "bad")
+                f"своих денег {with_interest}, первый раз {_day(first['date'])}{fm}", "bad")
         else:
             add("Эскроу на платежи по НКЛ", "хватает",
-                f"до {_day(due['rows'][-1]['date'])}, с процентами{fm}", "good")
+                f"до {_day(due['rows'][-1]['date'])}, {with_interest}{fm}", "good")
     else:
         add("Эскроу на платежи по НКЛ", None, due.get("reason") or "не посчитано")
 
