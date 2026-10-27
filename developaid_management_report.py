@@ -1043,46 +1043,58 @@ def gantt(view: dict[str, Any], dashboard: dict[str, Any]) -> dict[str, Any]:
     return report_gantt.model((view.get("schedule") or {}).get("management") or [])
 
 
-def credit_due(project: str, funding_block: dict[str, Any]) -> dict[str, Any]:
+def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any]) -> dict[str, Any]:
     """Когда и сколько обязаны погасить по НКЛ и сколько к этим датам будет на эскроу.
 
     Владелец, 27.10.2026: «Тут должна быть простая таблица. Сколько и когда
-    обязаны погасить по НКЛ и сколько по прогнозу будет на эскроу». Платежи —
-    `credit_repayment.obligations` (доли договоров от полного лимита), эскроу —
-    тот же прогноз, что в блоке «Финансирование» (`contracting.keeping_at` по
-    его очереди: накоплено, рассрочка и новые продажи до ввода). Второго счёта
-    эскроу нет. Сравнение — с платежами нарастающим итогом: эскроу тратится
-    один раз. Выписки банка не нужны (владелец, 27.10.2026: «Все данные есть в
-    НКЛ… Какие выписки и зачем они нужны?!»): график — из договоров НКЛ,
-    выборка — из РСС, долг к началу погашения — лимит.
+    обязаны погасить по НКЛ и сколько по прогнозу будет на эскроу»; «Все данные
+    есть в НКЛ… Все выборки есть в РСС, будущие к РНВ = лимиту». Платежи
+    основного долга — из базового прогноза раздела кредитов
+    (`credit_repayment.for_project`: условия НКЛ, выдачи по РСС и план выдач
+    финмодели), второго графика нет. Эскроу — тот же прогноз, что в блоке
+    «Финансирование» (`contracting.keeping_at` по его очереди). Сравнение — с
+    платежами нарастающим итогом: эскроу тратится один раз.
     """
-    preset = credit_repayment.preset_for(project)
-    if not preset:
-        return _missing(f"Условия кредитов для проекта «{project}» не заданы, поэтому "
-                        "платежи по НКЛ посчитать не из чего.")
-    plan = credit_repayment.obligations(preset)
-    # Выбрано на сегодня — платежи РСС из кредита (та же «выборка с начала
-    # проекта», что в «Финансировании»); к концу периода доступности выбирается
-    # весь лимит (владелец: «Все выборки есть в РСС, будущие к РНВ = лимиту»).
+    if (credit_block or {}).get("state") != "ok":
+        return _missing((credit_block or {}).get("reason")
+                        or "Погашение кредитов не посчитано.")
+    base = credit_block["base"]
+    loans = [{"id": loan["id"], "short": loan["short"], "limit": loan.get("limit"),
+              "debt": (loan.get("base") or {}).get("amount"),
+              "debt_day": (loan.get("base") or {}).get("day") or "",
+              "debt_kind": (loan.get("base") or {}).get("kind") or ""}
+             for loan in base["loans"]]
+    escrow = (funding_block or {}).get("escrow") or {}
+    queues = (escrow.get("queues") or []) if escrow.get("state") == "ok" else []
+    basis = queues[0] if queues else None
     draws = ((funding_block or {}).get("draws") or {}) if (funding_block or {}).get(
         "state") == "ok" else {}
-    drawn = draws.get("total")
-    limit_total = sum(loan["base"] for loan in plan["loans"])
-    escrow = (funding_block or {}).get("escrow") or {}
-    queues = escrow.get("queues") or [] if escrow.get("state") == "ok" else []
-    basis = queues[0] if queues else None
-    rows = []
-    for row in plan["rows"]:
+    disclosed = {e["date"] for e in (base.get("escrow") or {}).get("events") or []
+                 if e.get("kind") == "disclosure"}
+    rows, running = [], 0.0
+    for row in base["rows"]:
+        principal = row.get("principal")
+        if principal is None or principal <= 0.5:
+            continue
+        running += principal
         forecast = contracting.keeping_at(basis, row["date"][:7]) if basis else None
-        rows.append(dict(row, escrow=forecast,
-                         gap=(forecast - row["cumulative"]) if forecast is not None else None))
-    return {"state": "ok", "preset": preset, "loans": plan["loans"], "rows": rows,
+        rows.append({"date": row["date"], "disclosure": row["date"] in disclosed,
+                     "total": principal, "cumulative": running,
+                     "loans": {lid: item.get("principal") for lid, item in row["loans"].items()
+                               if (item.get("principal") or 0.0) > 0.5},
+                     "escrow": forecast,
+                     "gap": (forecast - running) if forecast is not None else None})
+    if not rows:
+        return _missing("Платежей основного долга в прогнозе нет: "
+                        + ("; ".join(base.get("gaps") or []) or "график не построен."))
+    drawn = draws.get("total")
+    limit_total = sum(float(loan["limit"] or 0.0) for loan in loans)
+    return {"state": "ok", "loans": loans, "rows": rows,
             "drawn": drawn, "drawn_at": (funding_block or {}).get("rss") or "",
             "limit_total": limit_total,
             "to_draw": (limit_total - drawn) if drawn is not None else None,
             "settle": (basis or {}).get("settle") or "",
-            "escrow_reason": "" if basis else (escrow.get("reason")
-                                               or "прогноза эскроу нет")}
+            "escrow_reason": "" if basis else (escrow.get("reason") or "прогноза эскроу нет")}
 
 
 def _covered(gap: float | None) -> str:
@@ -1103,7 +1115,7 @@ def _credit_due_lines(block: dict[str, Any]) -> list[str]:
                  f"{_covered(first['gap'])}")
     text += f". Всего основного долга {_rub(last['cumulative'])} до {_day(last['date'])}"
     if block.get("drawn") is not None:
-        text += (f" (выбрано по РСС {_rub(block['drawn'])}, до конца выборки — ещё "
+        text += (f" (выбрано по РСС {_rub(block['drawn'])}, до лимита — ещё "
                  f"{_rub(block['to_draw'])})")
     if last.get("escrow") is not None:
         text += (f"; эскроу по прогнозу {_rub(last['escrow'])} — {_covered(last['gap'])}")
@@ -1119,7 +1131,7 @@ def _credit_due_html(block: dict[str, Any]) -> str:
     loans = block["loans"]
     rows = []
     for row in block["rows"]:
-        rows.append([_day(row["date"])]
+        rows.append([_day(row["date"]) + (" — раскрытие эскроу" if row.get("disclosure") else "")]
                     + [_rub(row["loans"].get(loan["id"])) if loan["id"] in row["loans"] else "—"
                        for loan in loans]
                     + [_rub(row["total"]), _rub(row["cumulative"]),
@@ -1129,17 +1141,28 @@ def _credit_due_html(block: dict[str, Any]) -> str:
     out = [_table(["Платёж по НКЛ"] + [loan["short"] for loan in loans]
                   + ["Всего в дату", "Нарастающим итогом", "На эскроу по прогнозу",
                      "Эскроу минус платежи"], rows)]
-    bases = ", ".join(f"{loan['short']} — {credit_repayment.mln(loan['base'], 1)} млн ₽ на "
-                      f"{_day(loan['availability_end'])}"
-                      for loan in loans)
+
+    def debt(loan: dict[str, Any]) -> str:
+        if loan.get("debt") is None:
+            return f"{loan['short']} — нет данных"
+        text = f"{loan['short']} — {credit_repayment.mln(loan['debt'], 1)} млн ₽"
+        if loan.get("debt_day"):
+            text += f" на {_day(loan['debt_day'])}"
+        if loan.get("limit") and abs(float(loan["debt"]) - float(loan["limit"])) <= 0.5:
+            text += " (весь лимит)"
+        elif loan.get("limit"):
+            text += f" (лимит {credit_repayment.mln(loan['limit'], 1)} млн ₽)"
+        return text
+
     drawn = ""
     if block.get("drawn") is not None:
         drawn = (f" Выбрано на сегодня по РСС — {_rub(block['drawn'])}"
                  + (f" (отчёт от {_day(block['drawn_at'])})" if block.get("drawn_at") else "")
-                 + f", до конца выборки — ещё {_rub(block['to_draw'])}.")
-    note = ("Обязательные платежи основного долга по договорам НКЛ: доля долга на конец "
-            f"периода выборки. Долг — полный лимит ({bases}): выборка кончается раньше "
-            f"ввода.{drawn} Проценты сюда не входят. На эскроу — тот же прогноз, что в блоке "
+                 + f", до лимита — ещё {_rub(block['to_draw'])}.")
+    note = ("Обязательные платежи основного долга по договорам НКЛ — доля долга на конец "
+            "периода выборки. Долг на конец выборки — выбрано по РСС плюс выдачи по плану "
+            f"финмодели: {', '.join(debt(loan) for loan in loans)}.{drawn} Проценты сюда не "
+            "входят — они в подробном расчёте ниже. На эскроу — тот же прогноз, что в блоке "
             "«Финансирование»: накоплено, рассрочка и новые продажи до ввода, после ввода не "
             "растёт. Эскроу минус платежи — против платежей нарастающим итогом; минус — "
             "столько не хватает к этой дате.")
@@ -1234,7 +1257,12 @@ def build(project: str, kind: str, end: Any, sales_project: str | None = None,
             ("funding", lambda: funding(project, kind, bounds["end"], sales_project,
                                         sales_dir, dashboard)),
             ("funding_schedule", lambda: funding_schedule.execution(project, bounds["end"])),
-            ("credit_due", lambda: credit_due(project, blocks.get("funding") or {})),
+            ("credit", lambda: credit_repayment.for_project(
+                project, sales_project or "", sales_dir, end=bounds["end"],
+                commissioning=_commissioning(dashboard),
+                shift=_forecast_shift(dashboard, _commissioning(dashboard)))),
+            ("credit_due", lambda: credit_due(blocks.get("credit") or {},
+                                              blocks.get("funding") or {})),
             ("legal", lambda: dict(legal_cases.for_report(
                 project, bounds["start"], bounds["end"]), state="ok")),
             ("notes", lambda: dict(project_notes.for_period(
@@ -3677,7 +3705,16 @@ def render_html(report: dict[str, Any]) -> str:
     out.append(_schedule_html(report.get("funding_schedule") or {}))
 
     out.append(_block_heading("credit"))
-    out.append(_credit_due_html(report.get("credit_due") or {}))
+    # Главное — простая таблица (владелец, 27.10.2026); подробный расчёт того же
+    # прогноза (проценты, отсрочка, раскрытие, допущения) — свёрнутым под ней.
+    # Одним куском: заголовок раздела держится вместе с первым куском под ним.
+    parts = [_credit_due_html(report.get("credit_due") or {})]
+    block = report.get("credit") or {}
+    if block.get("state") == "ok":
+        parts.append("<details class='credit-more'><summary>Подробно: проценты, отсрочка, "
+                     "раскрытие эскроу и допущения расчёта</summary>"
+                     + credit_repayment.render_html(block) + "</details>")
+    out.append("\n".join(parts))
 
     block = report.get("budget") or {}
     if block.get("state") in {"ok", "partial"}:

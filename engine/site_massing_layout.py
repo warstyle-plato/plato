@@ -255,6 +255,25 @@ def _site_overlap_note(parts: dict[str, Any]) -> str:
             "часть в сумме их площадей посчитана дважды.")
 
 
+def _merc_rings_m(rings: list[list[list[float]]]
+                  ) -> tuple[list[list[list[float]]], dict[str, float]]:
+    """Кольца контура КРТ (веб-меркатор) → кольца в метрах от их центра и рамка.
+
+    Тот же перевод, что у `_site_rings_m`: метр меркатора растянут на
+    1/cos(широты), координаты умножаются на cos(широты центра).
+    """
+    rings = [ring for ring in rings if isinstance(ring, list) and len(ring) >= 3]
+    if not rings:
+        return [], {}
+    xs = [p[0] for ring in rings for p in ring]
+    ys = [p[1] for ring in rings for p in ring]
+    cx, cy = (min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0
+    lat = _math.degrees(2 * _math.atan(_math.exp(cy / 6378137.0)) - _math.pi / 2)
+    k = _math.cos(_math.radians(lat))
+    out = [_clean_ring([[(p[0] - cx) * k, (p[1] - cy) * k] for p in ring]) for ring in rings]
+    return [ring for ring in out if len(ring) >= 3], {"cx": cx, "cy": cy, "k": k}
+
+
 def _site_map_note(parts: dict[str, Any], site_sqm: float, contour_sqm: float) -> str:
     """Почему корпуса нельзя показать на карте участка — простыми словами:
     какие участки найдены, их сумма, площадь в расчёте и что не вошло."""
@@ -285,6 +304,66 @@ def _site_map_note(parts: dict[str, Any], site_sqm: float, contour_sqm: float) -
              "Чтобы увидеть корпуса на карте, укажите кадастровые номера всех участков "
              "территории.")
     return text
+
+
+def _inside_ring(point: list[float], ring: list[list[float]]) -> bool:
+    """Точка внутри кольца (чётность пересечений луча)."""
+    x, y = float(point[0]), float(point[1])
+    inside = False
+    for i in range(len(ring)):
+        x1, y1 = float(ring[i][0]), float(ring[i][1])
+        x2, y2 = float(ring[i - 1][0]), float(ring[i - 1][1])
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            inside = not inside
+    return inside
+
+
+def _holes(rings: list[list[list[float]]]) -> list[bool]:
+    """Какие кольца — дыры. Файл карты реестра отдаёт кольца полигона плоским
+    списком (`krt_map_data._rings`): внешнее и внутреннее там не размечены.
+    Кольцо внутри нечётного числа других колец — дыра."""
+    return [sum(1 for j, other in enumerate(rings)
+                if j != i and _inside_ring(ring[0], other)) % 2 == 1
+            for i, ring in enumerate(rings)]
+
+
+def krt_site_effective(x: dict[str, Any]) -> dict[str, Any] | None:
+    """Чем меряется территория КРТ при стоящей галочке «Проект в КРТ»:
+    загруженный человеком контур (`_krt_site.manual`) сильнее найденного
+    автоматически, но автоматический остаётся рядом. Галочки нет — None."""
+    site = x.get("_krt_site") if isinstance(x, dict) else None
+    if not isinstance(site, dict) or site.get("on") is not True:
+        return None
+    manual = site.get("manual")
+    if isinstance(manual, dict) and float(manual.get("area_sqm") or 0) > 0:
+        return {"name": site.get("name"), "slug": site.get("slug"), **manual}
+    return site
+
+
+def krt_site_rings_merc(x: dict[str, Any]) -> list[list[list[float]]]:
+    """Кольца контура территории КРТ (внешние и дыры — плоским списком, как
+    их отдаёт источник), если галочка «Проект в КРТ» стоит и контур есть;
+    иначе пусто — схема берёт ЕГРН."""
+    site = krt_site_effective(x)
+    if not site or site.get("approximate"):
+        return []
+    return [ring for ring in (site.get("rings_merc") or [])
+            if isinstance(ring, list) and len(ring) >= 3]
+
+
+def krt_contour_area_sqm(rings_merc: list[list[list[float]]]) -> float:
+    """Площадь контура КРТ на местности, м²: меркатор с поправкой cos широты
+    (`_merc_rings_m`), дыры полигона вычитаются. Единственный счётчик этой
+    площади: её читают поле «Площадь участка» и схема посадки."""
+    rings = [ring for ring in (rings_merc or []) if isinstance(ring, list) and len(ring) >= 3]
+    metres, _frame = _merc_rings_m(rings)
+    if len(metres) != len(rings):
+        # Выродившееся кольцо выпало при переводе: дыры по нему не размечаются.
+        holes = [False] * len(metres)
+    else:
+        holes = _holes(rings)
+    return sum(-abs(_ring_area(r)) if hole else abs(_ring_area(r))
+               for r, hole in zip(metres, holes))
 
 
 def _rotate(rings: list[list[list[float]]], angle: float) -> list[list[list[float]]]:
@@ -591,10 +670,49 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
     идёт вдоль оси x; полоса — слева направо с лёгким подъёмом."""
     site_sqm = float(massing.get("site_sqm") or 0.0)
     notes: list[str] = []
-    rings, frame, parts = _site_rings_m(x)
-    contour_sqm = sum(abs(_ring_area(r)) for r in rings)
+    krt_rings = krt_site_rings_merc(x)
+    krt = krt_site_effective(x) or {}
     map_note = ""
-    if rings and site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
+    krt_holes = any(_holes(krt_rings))
+    if krt_rings or krt.get("approximate"):
+        # Галочка «Проект в КРТ»: территория — контур КРТ, а не участки ЕГРН.
+        # Раскладка дыр не обходит: в неё идут внешние кольца, а площадь
+        # меряет тот же счётчик, что поле «Площадь участка» (дыры вычтены).
+        outer = [ring for ring, hole in zip(krt_rings, _holes(krt_rings)) if not hole]
+        rings, frame = _merc_rings_m(outer)
+        parts: dict[str, Any] = {}
+        contour_sqm = krt_contour_area_sqm(krt_rings)
+    else:
+        rings, frame, parts = _site_rings_m(x)
+        contour_sqm = sum(abs(_ring_area(r)) for r in rings)
+    if krt.get("approximate"):
+        # Площадь есть, контура нет (фото схемы без координат): рисовать по
+        # участкам ЕГРН значит рисовать не то.
+        map_note = ("Форма участка на схеме приблизительная: площадь территории КРТ взята "
+                    "из текста решения, а таблицы координат, по которой границы ложатся на "
+                    "карту, нет. Участок показан квадратом той же площади.")
+    elif krt_rings:
+        title = krt.get("name") or krt.get("slug")
+        notes.append(f"Участок на схеме — контур территории КРТ{f' «{title}»' if title else ''} "
+                     f"({krt.get('source') or 'источник не назван'}), а не участки из госреестра: "
+                     "в проекте стоит галочка «Проект в КРТ».")
+        if krt_holes:
+            # Корпуса по внешнему контуру могли бы встать в дыру — на землю,
+            # исключённую из территории. Раскладка дыр не обходит, поэтому
+            # участок — квадратом, а причина названа.
+            map_note = ("Корпуса на карте участка не показаны: внутри территории КРТ есть "
+                        "исключённые из неё участки, а схема пока не умеет их обходить и могла "
+                        "бы поставить корпуса на чужую землю. Поэтому участок на схеме показан "
+                        f"квадратом площади территории без исключённых участков — "
+                        f"{_fmt_ru(contour_sqm)} м².")
+            rings, frame = [], {}
+        elif site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
+            map_note = (f"Корпуса на карте участка не показаны: площадь контура территории КРТ "
+                        f"({_fmt_ru(contour_sqm)} м²) заметно отличается от площади участка в "
+                        f"расчёте ({_fmt_ru(site_sqm)} м²). Поэтому участок на схеме показан "
+                        "квадратом той же площади, что в расчёте.")
+            rings, frame = [], {}
+    elif rings and site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
         # Контур другой площади — не вся территория проекта (часть участков
         # или чужой участок): рисовать по нему значит рисовать не то.
         map_note = _site_map_note(parts, site_sqm, contour_sqm)
