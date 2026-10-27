@@ -554,10 +554,6 @@ def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = N
         run = forecast({"preset": preset, "datasets": hist,
                         "mark_days": [history["as_of"]]})
         runs = {loan["id"]: loan for loan in run["loans"]}
-        # Дни без ставки в истории дают пустые отложенные проценты — причину
-        # несём в пропуски прогноза, а не теряем вместе с досчётом.
-        missing += [gap[len("Нет "):].rstrip(".") for gap in run["gaps"]
-                    if gap.startswith("Нет ключевой ставки на ")]
         for loan in PRESETS[preset]["loans"]:
             lid = loan["id"]
             mark = (runs[lid].get("marks") or {}).get(history["as_of"])
@@ -844,7 +840,6 @@ def _simulate(preset: dict[str, Any], datasets: dict[str, Any], scenario: dict[s
         if e["kind"] == "disclosure" and e["amount"] > 0:
             disclosed[_day(e["date"])] = disclosed.get(_day(e["date"]), 0.0) + e["amount"]
     pointer, balance = 0, escrow.get("opening")
-    no_key: datetime.date | None = None
     start = min(st.start for st in states.values())
     end = max(st.maturity for st in states.values())
     day = start
@@ -856,8 +851,6 @@ def _simulate(preset: dict[str, Any], datasets: dict[str, Any], scenario: dict[s
             pointer += 1
         key = _rate_on(key_rate, day)
         live = [st for st in states.values() if st.start < day <= st.maturity and not st.closed]
-        if key is None and live and key_rate and no_key is None:
-            no_key = day
         net = sum(max(0.0, st.principal - lcs.get(st.loan["id"], 0.0)) for st in live)
         for st in live:
             yd = _year_days(day, st.basis)
@@ -915,11 +908,6 @@ def _simulate(preset: dict[str, Any], datasets: dict[str, Any], scenario: dict[s
                                              + [i[2] for i in st.pending if i[1] == "interest"]),
                     "accrued_fee": (st.fee_seg if day > st.deferral_end else 0.0) + sum(
                         i[2] or 0.0 for i in st.pending if i[1] == "fee")}
-    if no_key:
-        # Пустые проценты без причины читались как «нет данных» (сводка, 27.10.2026).
-        loans_out[0]["gaps"].append(
-            f"Нет ключевой ставки на {ddmmyyyy(no_key)}: прогноз ставки начинается с "
-            f"{ddmmyyyy(key_rate[0]['from'])} — проценты за дни без ставки не рассчитаны.")
     for st in states.values():
         out = st.out
         out.update(installments=st.installments,
