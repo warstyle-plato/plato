@@ -41,10 +41,16 @@ SOURCE_PHOTO_OUTLINE = ("контур снят с картинки решени�
 # обводки — в пикселях той же картинки, по ней же движок проверяет линию.
 MAX_SIDE_PX = 1600
 # Сторона обводки считается лежащей на линии, если рядом (в этом радиусе)
-# есть пиксель цвета линии; таких точек по периметру должно быть не меньше доли.
-LINE_SEARCH_PX = 6
-LINE_COLOUR_DISTANCE = 70.0
-LINE_SHARE_MIN = 0.6
+# есть пиксель цвета линии; таких точек по периметру должно быть не меньше
+# доли. Цвет линии движок меряет сам — по самым ярким пикселям вдоль обводки,
+# а названный моделью цвет только сверяет (модель называет его на глаз).
+LINE_SEARCH_PX = 4
+LINE_COLOUR_DISTANCE = 45.0
+LINE_MODEL_COLOUR_DISTANCE = 130.0
+LINE_SHARE_MIN = 0.75
+# Та же фигура, сдвинутая в стороны на свой размер, на линии лежать не должна:
+# иначе «линия» — фон снимка (крыши, дороги того же цвета), а не граница.
+LINE_SHIFT_MARGIN = 0.35
 # Привязка: шаг перебора сдвигов, м; доля участков проекта внутри обводки,
 # ниже которой привязка не удалась; допуск «почти лучшего» покрытия.
 ANCHOR_STEP_M = 2.0
@@ -178,25 +184,54 @@ def check_outline(answer: dict[str, Any], pixels: np.ndarray) -> tuple[list[list
         rgb = []
     if len(rgb) < 3:
         return [], "Платон не назвал цвет линии границы — обводку нечем проверить"
-    near = np.sqrt(((pixels.astype(np.float32) - np.array(rgb, dtype=np.float32)) ** 2).sum(axis=2)) \
-        <= LINE_COLOUR_DISTANCE
-    hits = total = 0
-    r = LINE_SEARCH_PX
-    for i in range(n):
-        (x1, y1), (x2, y2) = ring[i], ring[(i + 1) % n]
-        steps = max(1, int(math.hypot(x2 - x1, y2 - y1) / 3))
-        for k in range(steps):
-            x = x1 + (x2 - x1) * k / steps
-            y = y1 + (y2 - y1) * k / steps
-            xi, yi = int(round(x)), int(round(y))
-            window = near[max(0, yi - r):min(height, yi + r + 1), max(0, xi - r):min(width, xi + r + 1)]
-            total += 1
-            hits += bool(window.any())
-    share = hits / total if total else 0.0
+    windows = _edge_windows(ring, width, height)
+    pieces = [pixels[y0:y1, x0:x1].reshape(-1, 3) for x0, y0, x1, y1 in windows]
+    around = np.concatenate(pieces).astype(np.float32)
+    spread = around.max(axis=1) - around.min(axis=1)
+    bright = around[spread >= np.quantile(spread, 0.8)]
+    line = np.median(bright, axis=0)
+    if float(np.linalg.norm(line - np.array(rgb, dtype=np.float32))) > LINE_MODEL_COLOUR_DISTANCE:
+        return [], ("обводка Платона не совпала с линией границы на картинке: вдоль неё нет "
+                    "линии того цвета, что он назвал")
+    near = np.sqrt(((pixels.astype(np.float32) - line) ** 2).sum(axis=2)) <= LINE_COLOUR_DISTANCE
+    share = _line_share(near, windows)
     if share < LINE_SHARE_MIN:
         return [], (f"обводка Платона не совпала с линией границы на картинке: на линии "
                     f"лежит {round(share * 100)}% её периметра")
+    xs = [p[0] for p in ring]
+    ys = [p[1] for p in ring]
+    size = max(max(xs) - min(xs), max(ys) - min(ys))
+    shifted = 0.0
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (-1, -1), (1, -1), (-1, 1)):
+        moved = [[x + dx * size, y + dy * size] for x, y in ring]
+        if all(0 <= x < width and 0 <= y < height for x, y in moved):
+            shifted = max(shifted, _line_share(near, _edge_windows(moved, width, height)))
+    if share - shifted < LINE_SHIFT_MARGIN:
+        return [], ("обводка Платона не выделяется на картинке: линия того же цвета есть и "
+                    "вокруг, по ней границу не отличить от фона")
     return ring, ""
+
+
+def _edge_windows(ring: list[list[float]], width: int, height: int
+                  ) -> list[tuple[int, int, int, int]]:
+    """Окна вокруг точек по периметру обводки (через 3 пикселя)."""
+    out = []
+    r = LINE_SEARCH_PX
+    for i in range(len(ring)):
+        (x1, y1), (x2, y2) = ring[i], ring[(i + 1) % len(ring)]
+        steps = max(1, int(math.hypot(x2 - x1, y2 - y1) / 3))
+        for k in range(steps):
+            xi = int(round(x1 + (x2 - x1) * k / steps))
+            yi = int(round(y1 + (y2 - y1) * k / steps))
+            box = (max(0, xi - r), max(0, yi - r), min(width, xi + r + 1), min(height, yi + r + 1))
+            if box[2] > box[0] and box[3] > box[1]:
+                out.append(box)
+    return out
+
+
+def _line_share(near: np.ndarray, windows: list[tuple[int, int, int, int]]) -> float:
+    hits = sum(bool(near[y0:y1, x0:x1].any()) for x0, y0, x1, y1 in windows)
+    return hits / len(windows) if windows else 0.0
 
 
 # --- форма в метрах -------------------------------------------------------------------

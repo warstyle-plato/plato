@@ -125,7 +125,8 @@ def test_the_engine_rejects_an_outline_that_is_not_on_the_line():
     _jpeg, pixels = outline.prepare_image(PHOTO.read_bytes())
     moved = [[x - 160, y + 300] for x, y in CORNERS_PX]
     ring, problem = outline.check_outline(_model_answer(_scale(), moved), pixels)
-    assert ring == [] and "не совпала с линией границы" in problem
+    assert ring == [] and ("не совпала с линией границы" in problem
+                           or "не выделяется на картинке" in problem), problem
     _r, problem = outline.check_outline(_model_answer(_scale(), found=False), pixels)
     assert "не нашёл на картинке линию границы" in problem
 
