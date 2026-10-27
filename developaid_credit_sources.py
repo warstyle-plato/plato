@@ -137,17 +137,42 @@ def _plan_draws(loans: list[dict[str, Any]], credit_plan: dict[str, Any] | None,
     return out
 
 
-def _key_rate(credit_plan: dict[str, Any] | None, margin: float) -> list[dict[str, Any]] | None:
-    """Ключевая по месяцам = «Ставка кредита ПФ» финмодели − маржа первой линии."""
+def _model_rates(credit_plan: dict[str, Any] | None) -> tuple[dict[str, float],
+                                                                 dict[str, float]]:
+    """«Ставка кредита ПФ» (% годовых) и «Отношение эскроу к кредиту ПФ» по месяцам."""
     rates: dict[str, float] = {}
+    cover: dict[str, float] = {}
     for queue in (credit_plan or {}).get("queues") or []:
         for month, value in (queue.get("rate") or {}).items():
             if value and month not in rates:
                 value = float(value)
                 rates[month] = value * 100 if value < 1 else value
-    if not rates:
-        return None
-    return [{"from": f"{month}-01", "rate": rates[month] - margin} for month in sorted(rates)]
+        for month, value in (queue.get("coverage") or {}).items():
+            if value is not None and month not in cover:
+                cover[month] = float(value)
+    return rates, cover
+
+
+def rate_kind(rates: dict[str, float], cover: dict[str, float]) -> str:
+    """Какая ставка в модели: ``base`` (ключевая + маржа) или ``effective`` (льготная).
+
+    По договору льготная ставка зависит от покрытия долга эскроу. Если ставка
+    модели меняется вместе с покрытием той же модели — растёт покрытие, падает
+    ставка, — это уже итоговая ставка со скидкой. Одно число на весь срок или
+    движение не вслед за покрытием — базовая (ключевая + маржа).
+    """
+    months = sorted(m for m in rates if m in cover)
+    if len({round(rates[m], 4) for m in rates}) <= 1 or len(months) < 3:
+        return "base"
+    xs = [cover[m] for m in months]
+    ys = [rates[m] for m in months]
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    sx = sum((x - mx) ** 2 for x in xs) ** 0.5
+    sy = sum((y - my) ** 2 for y in ys) ** 0.5
+    if not sx or not sy:
+        return "base"
+    corr = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx * sy)
+    return "effective" if corr < -0.5 else "base"
 
 
 def collect(project: str, sales_project: str = "", sales_dir: Path | None = None,
@@ -191,13 +216,33 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
                        "нет финмодели (лист «КРЕДИТЫ»)")
 
     # Ставка — из финмодели; ручной прогноз ключевой, если загружен, важнее.
-    path = _key_rate(credit_plan, loans[0]["margin_pp"])
-    if path:
-        datasets["key_rate"] = _set(
-            "key_rate", sales_at or end.isoformat(),
-            f"финмодель, строка «Ставка кредита ПФ» минус маржа {loans[0]['short']} "
-            f"{loans[0]['margin_pp']:g} п. п. (допущение: ставка модели — базовая)"
-            .replace(".", ",", 1), {"path": path})
+    rates, cover = _model_rates(credit_plan)
+    if rates:
+        kind = rate_kind(rates, cover)
+        margin = loans[0]["margin_pp"]
+        if kind == "base":
+            path = [{"from": f"{m}-01", "rate": rates[m] - margin} for m in sorted(rates)]
+            words = (f"финмодель, «Ставка кредита ПФ» минус маржа {loans[0]['short']} "
+                     f"{margin:g} п. п.").replace(".", ",", 1)
+            notes.append(f"Ставка: в финмодели «Ставка кредита ПФ» не меняется вслед за "
+                         f"покрытием эскроу, поэтому она принята базовой — ключевая плюс "
+                         f"{margin:g} п. п. по {loans[0]['short']}".replace(".", ",")
+                         + ". Скидка за покрытие эскроу считается по ступеням договора. "
+                         "Если в модели ставка уже со скидкой, проценты здесь занижены.")
+        else:
+            path = [{"from": f"{m}-01", "rate": rates[m]} for m in sorted(rates)]
+            words = "финмодель, «Ставка кредита ПФ» — итоговая ставка, взята как есть"
+            notes.append("Ставка: в финмодели «Ставка кредита ПФ» снижается вслед за ростом "
+                         "покрытия эскроу — это уже итоговая ставка со скидкой. Она взята как "
+                         "есть для обоих кредитов, ступени договора повторно не применяются; "
+                         "если банк считает иначе, проценты изменятся.")
+            for loan in loans:
+                datasets[f"terms.{loan['id']}"] = _set(
+                    f"terms.{loan['id']}", sales_at or end.isoformat(), "финмодель", {
+                        "rate": {"value": "model",
+                                 "source": "итоговая ставка финмодели («Ставка кредита ПФ»)"}})
+        datasets["key_rate"] = _set("key_rate", sales_at or end.isoformat(), words,
+                                    {"path": path})
     elif credit_plan:
         missing.append("прогноз ставки: в финмодели (лист «КРЕДИТЫ») нет строки «Ставка "
                        "кредита ПФ»")
@@ -248,7 +293,21 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     for name, words in (("free_cash", "свободные деньги проекта"),
                         ("extra", "подтверждённое дополнительное финансирование")):
         datasets[name] = _set(name, as_of, f"{words} — нет ни в договорах, ни в РСС, ни в "
-                              "финмодели: покрытие показано без них", {"items": []})
+                              "финмодели: расчёт при их отсутствии", {"items": []})
+    notes.append("Расчёт — при отсутствии дофинансирования и свободных денег проекта: их нет "
+                 "ни в договорах, ни в РСС, ни в финмодели. Всё, что не покрыто раскрытием "
+                 "эскроу, показано дефицитом; свободные деньги, если они есть, уменьшат его "
+                 "на свою сумму.")
+    datasets["letters_of_credit"] = _set(
+        "letters_of_credit", as_of, "остатков на аккредитивах по кредитам нет ни в РСС, ни в "
+        "финмодели — приняты равными нулю", {"balance": 0.0, "by_loan": {
+            loan["id"]: 0.0 for loan in loans}})
+    notes.append("Аккредитивы не учтены: остатков на них по кредитам нет ни в РСС, ни в "
+                 "финмодели. По договору деньги на аккредитивах идут по пониженной ставке, "
+                 "поэтому проценты здесь оценены сверху.")
+    notes.append(f"Раскрытие эскроу принято в дату ввода {credit.ddmmyyyy(when)} ({words}). "
+                 "На деле банк раскрывает эскроу после регистрации, это может быть позже — "
+                 "тогда платежи до раскрытия потребуют больше денег вне эскроу.")
     if bank:
         datasets["business_plan"] = _set("business_plan", sales_at or as_of,
                                          f"план банка, лист «{bank.get('sheet') or ''}»",
@@ -258,9 +317,10 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
         return out
     split, split_notes = _split(loans, found["draws"])
     notes += split_notes
-    notes.append("РСС не называет, какой НКЛ платил: выдача отнесена на "
-                 f"{loans[0]['short']} в пределах её лимита на дату, остаток — на "
-                 f"{loans[-1]['short']} (допущение).")
+    notes.append("РСС не называет, с какого кредита шла выдача: принято, что выдачи идут "
+                 f"сначала по {loans[0]['short']} в пределах её лимита на дату, остаток — по "
+                 f"{loans[-1]['short']}. Общий долг от этого не меняется; меняется, какой "
+                 "кредит и когда гасится и какая ставка к нему применяется.")
     drawn_total = sum(amount for _, amount in found["draws"])
     future = _plan_draws(loans, credit_plan, drawn_total, as_of)
     if future is None:

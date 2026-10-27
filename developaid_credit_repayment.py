@@ -149,7 +149,7 @@ PRESETS: dict[str, dict[str, Any]] = {
     },
 }
 
-TERM_VALUES = {"rate": {"contract", "analogy", "base"}, "escrow_in_rate": {"full", "share"},
+TERM_VALUES = {"rate": {"contract", "analogy", "base", "model"}, "escrow_in_rate": {"full", "share"},
                "pay_dates": {"monthly_28"}, "day_basis": {"actual", "365"},
                "deferred_rate": {"base"},
                "prepayment_order": {"from_last", "nearest", "pro_rata"},
@@ -674,6 +674,9 @@ def segment_rate(loan: dict[str, Any], kind: str, escrow_rule: str,
     n = sums["days"]
     k, a, e = sums["K"] / n, sums["A"] / n, sums["E"] / n
     base = sums["base"] / n
+    if kind == "model":
+        # Ставка финмодели уже итоговая (с учётом покрытия эскроу) — берётся как есть.
+        return sums["key"] / n, None
     if kind == "base" or k <= 0:
         return base, None
     table = loan["rate_table"]
@@ -750,7 +753,8 @@ class _Loan:
 
     @staticmethod
     def _fresh():
-        return {"days": 0, "K": 0.0, "A": 0.0, "E": 0.0, "net": 0.0, "base": 0.0, "Kyd": 0.0,
+        return {"days": 0, "K": 0.0, "A": 0.0, "E": 0.0, "net": 0.0, "base": 0.0, "key": 0.0,
+                "Kyd": 0.0,
                 "start": None}
 
     def segment_interest(self) -> tuple[float | None, float | None, float | None]:
@@ -858,6 +862,7 @@ def _simulate(preset: dict[str, Any], datasets: dict[str, Any], scenario: dict[s
             else:
                 s["E"] += balance or 0.0
                 s["base"] += key + bump + st.loan["margin_pp"]
+                s["key"] += key + bump
             if day <= st.deferral_end:
                 # Проценты на капитализированные — по базовой ставке.
                 if key is None or st.deferred is None:
@@ -1935,12 +1940,14 @@ def _rate_words(base: dict[str, Any], lid: str, day: str) -> str:
 def _assumptions_html(result: dict[str, Any]) -> str:
     """Допущения, от которых зависят числа, — словами, без пунктов договоров."""
     base = result["base"]
-    lines = []
+    lines = list(base.get("assumptions") or [])
     loans = {loan["id"]: loan for loan in base["loans"]}
-    if any(l["terms"]["rate"]["value"] == "analogy" for l in loans.values()):
+    if any(l["terms"]["rate"]["value"] == "analogy" for l in loans.values()) and not any(
+            l["terms"]["rate"]["value"] == "model" for l in loans.values()):
         lines.append("Ставка по НКЛ 2026 посчитана по аналогии с НКЛ 2025: формулы банка для "
                      "неё (из Общих условий банка) в документах нет.")
-    rules = {l["terms"]["escrow_in_rate"]["value"] for l in loans.values()}
+    rules = {l["terms"]["escrow_in_rate"]["value"] for l in loans.values()
+             if l["terms"]["rate"]["value"] != "model"}
     if rules == {"full", "share"}:
         lines.append("В ставке НКЛ 2025 эскроу учитывается целиком, в ставке НКЛ 2026 — долей "
                      "по договорам. Так одни и те же деньги снижают обе ставки; банк может "
@@ -2143,7 +2150,8 @@ def for_project(project: str, sales_project: str = "", sales_dir: Path | None = 
     result = analyse(inputs, stress)
     result["base"]["gaps"] = [f"Не нашлось: {m}." for m in inputs["missing"]] + \
         result["base"]["gaps"]
-    result["base"]["notes"] = inputs["notes"] + result["base"]["notes"]
+    for run in (result["base"], result["stress"]):
+        run["assumptions"] = list(inputs["notes"])
     result["preset_id"] = inputs.get("preset") or "kutuzov_city"
     result["state"] = "ok"
     return result

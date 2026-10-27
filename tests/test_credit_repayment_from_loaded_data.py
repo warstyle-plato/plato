@@ -129,7 +129,8 @@ def test_debt_draws_and_interest_come_from_the_rss_and_the_terms():
     # Отложенные проценты за полтора года — досчитаны, а не ноль и не «нет данных».
     data = {d["name"]: d for d in base["datasets"]}
     assert data["deferred.nkl2025"]["source"] == "досчитано от первой выдачи по условиям договора"
-    assert any("РСС не называет, какой НКЛ платил" in note for note in base["notes"])
+    assert any("РСС не называет, с какого кредита шла выдача" in note
+               for note in base["assumptions"])
     # Прогнозные выдачи — план ПФ финмодели сверх выбранного (до 6 400 в сумме).
     drawn = sum(d["amount"] for name in ("plan.nkl2025", "plan.nkl2026")
                 for d in credit.inputs_for(PROJECT, SALES, end="2026-10-20")["datasets"]
@@ -180,3 +181,46 @@ def test_the_report_block_reads_the_loaded_data():
     page = report.render_html(built)
     assert "Данные по кредитам не загружены" not in page
     assert "Текущий совокупный долг" in page
+
+
+def test_the_model_rate_kind_is_decided_by_the_escrow_coverage():
+    months = _months("2026-01", "2026-12")
+    flat = {m: 21.0 for m in months}
+    cover = {m: 0.1 * i for i, m in enumerate(months)}
+    assert sources.rate_kind(flat, cover) == "base"
+    # Ставка падает вслед за покрытием — это уже льготная (итоговая) ставка.
+    falling = {m: 21.0 - 1.5 * i for i, m in enumerate(months)}
+    assert sources.rate_kind(falling, cover) == "effective"
+    # Ставка движется вслед за ключевой, а не за покрытием, — базовая.
+    path = {m: 21.0 + (1 if i % 2 else -1) for i, m in enumerate(months)}
+    assert sources.rate_kind(path, cover) == "base"
+
+
+def test_every_missing_value_is_a_visible_assumption_with_its_effect():
+    _project()
+    got = _run()
+    page = credit.render_html(got)
+    block = page[page.index("credit-assumptions"):]
+    block = block[:block.index("</div>")]
+    assert "принята базовой" in block and "проценты здесь занижены" in block
+    assert "при отсутствии дофинансирования и свободных денег" in block
+    assert "Аккредитивы не учтены" in block and "оценены сверху" in block
+    assert "сначала по НКЛ 2025 в пределах её лимита" in block
+    assert "Раскрытие эскроу принято в дату ввода 15.09.2027" in block
+    # Это допущения, а не пробелы: в «Не нашлось» их нет.
+    assert not any("аккредитив" in g for g in got["base"]["gaps"])
+
+
+def test_an_effective_model_rate_is_used_as_is():
+    _project()
+    kept = sales_store.load(sales_store.default_dir(), SALES)
+    parts = {k: v["data"] for k, v in kept["sources"].items()}
+    queue = parts["credit"]["queues"][0]
+    months = sorted(queue["pf"])
+    queue["coverage"] = {m: 0.05 * i for i, m in enumerate(months)}
+    queue["rate"] = {m: max(0.02, 0.2 - 0.004 * i) for i, m in enumerate(months)}
+    sales_store.save(sales_store.default_dir(), SALES, parts, "test.xlsx")
+    base = _run()["base"]
+    assert {loan["terms"]["rate"]["value"] for loan in base["loans"]} == {"model"}
+    page = credit.render_html({**_run(), "base": base})
+    assert "это уже итоговая ставка со скидкой" in page
