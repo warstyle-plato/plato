@@ -136,14 +136,14 @@ def test_the_monitor_upload_recalculates_and_names_the_change():
     assert any("перенесено с 20.09.2027 на 20.10.2027" in t for t in texts), texts
     shown = {d["name"]: d for d in second.json()["datasets"]}
     assert shown["disclosure"]["as_of"] == "2026-10-05"
-    assert shown["disclosure"]["source"] == "письмо банка"
+    assert shown["disclosure"]["source"] == "поправка вручную: письмо банка"
     bad = client.post("/monitor/credit/data", json={
         "project": PROJECT, "key": "kluch", "datasets": [
             {"name": "escrow", "as_of": "2026-10-05", "source": "банк", "data": {"balance": 1}}]})
     assert bad.status_code == 400 and "единицу" in bad.json()["detail"]
     nothing = client.post("/monitor/credit", json={"project": "Другой", "key": "kluch"})
     assert nothing.json()["state"] == "missing"
-    assert "не загружены" in nothing.json()["reason"]
+    assert "в системе не заведены" in nothing.json()["reason"]
 
 
 def test_the_monitor_card_runs_the_page_code():

@@ -7,7 +7,7 @@
 
 Проверки:
 - строки по кварталам до квартала ввода и раскрытия: прошедший — факт,
-  текущий и будущие — прогноз при нынешнем темпе, отклонения к обоим планам;
+  текущий и будущие — прогноз (рассрочка и продажи до ввода), отклонения к обоим планам;
   нет плана — «нет данных», а не ноль;
 - текст сводки берёт те же числа; прежние таблицы «Эскроу против плана
   банка», «Эскроу, очередь» и «Эскроу к вводу» сведены в эту и в «Покрытие
@@ -33,7 +33,9 @@ from market_search import sales_store  # noqa: E402
 from test_management_report_funding import _isolated, _project, _sales  # noqa: E402,F401
 from test_management_report_model import M, PROJECT  # noqa: E402
 
-SCHEDULE = {"forecast_finish": "2026-12-31"}
+SCHEDULE = {"approved_finish": "2026-12-31"}
+# Прогноз к вводу: накоплено 65 + рассрочка 5 + новые продажи 50/3 в месяц × 2.
+FORECAST = (65 + 5 + 2 * 50 / 3) * M
 
 
 def _built(monkeypatch, bank: bool = True):
@@ -54,15 +56,18 @@ def test_quarters_carry_both_plans_and_fact_or_forecast(monkeypatch):
     assert (closed["fact"], closed["bank"], closed["fm"]) == (
         pytest.approx(60 * M), pytest.approx(70 * M), pytest.approx(45 * M))
     assert (closed["gap_bank"], closed["gap_fm"]) == (pytest.approx(-10 * M), pytest.approx(15 * M))
-    # Текущий — накоплено на сейчас и прогноз на конец квартала; квартал ввода.
+    # Текущий — накоплено на сейчас и прогноз на конец квартала; квартал ввода:
+    # 65 накоплено + 5 рассрочки + 2 × 16,7 новых продаж — к вводу всё.
     assert current["state"] == "current" and current["marks"] == ["ввод 31.12.2026"]
     assert current["fact"] == pytest.approx(65 * M)
-    assert current["forecast"] == pytest.approx(120 * M)
-    assert current["gap_bank"] == pytest.approx(0.0)
+    assert current["forecast"] == pytest.approx(FORECAST)
+    assert current["gap_bank"] == pytest.approx(FORECAST - 120 * M)
     # До раскрытия: плана банка на этот квартал нет — это «нет данных», не ноль.
     assert last["marks"] == ["раскрытие эскроу, январь 2027"]
     assert last["bank"] is None and last["gap_bank"] is None
-    assert last["forecast"] == pytest.approx(180 * M) and last["gap_fm"] == pytest.approx(60 * M)
+    # После ввода прогноз не растёт: новые договоры уже не на эскроу.
+    assert last["forecast"] == pytest.approx(FORECAST)
+    assert last["gap_fm"] == pytest.approx(FORECAST - 120 * M)
 
 
 def test_the_text_and_the_table_tell_the_same_numbers(monkeypatch):
@@ -72,18 +77,18 @@ def test_the_text_and_the_table_tell_the_same_numbers(monkeypatch):
     assert ("Эскроу на конец 2026 Q3: накоплено 60,0 млн ₽; план банка 70,0 млн ₽ "
             "(меньше на 10,0 млн ₽), план финмодели 45,0 млн ₽ (больше на 15,0 млн ₽).") in text
     assert ("В 2026 Q4 (квартал не закрыт) на октябрь 2026 накоплено 65,0 млн ₽; к концу "
-            "квартала при нынешнем темпе будет 120,0 млн ₽ — план банка 120,0 млн ₽ "
-            "(как в плане), план финмодели 90,0 млн ₽ (больше на 30,0 млн ₽).") in text
-    assert ("К концу 2027 Q1 (раскрытие эскроу, январь 2027) при нынешнем темпе будет "
-            "180,0 млн ₽ — план банка — нет данных, план финмодели 120,0 млн ₽ "
-            "(больше на 60,0 млн ₽).") in text
+            "квартала по прогнозу будет 103,3 млн ₽ — план банка 120,0 млн ₽ "
+            "(меньше на 16,7 млн ₽), план финмодели 90,0 млн ₽ (больше на 13,3 млн ₽).") in text
+    assert ("К концу 2027 Q1 (раскрытие эскроу, январь 2027) по прогнозу будет "
+            "103,3 млн ₽ — план банка — нет данных, план финмодели 120,0 млн ₽ "
+            "(меньше на 16,7 млн ₽).") in text
     assert "2026 Q4 — ввод 31.12.2026 (квартал не закрыт, накоплено на октябрь 2026)" in page
     assert "нет данных" in page
     # Прежние таблицы сведены сюда; покрытие кредита осталось.
     for gone in ("Эскроу против плана банка", "Эскроу, очередь", "Эскроу к вводу"):
         assert gone not in page, gone
     assert "Покрытие кредита эскроу" in page
-    assert "к раскрытию (январь 2027)" in page and "к вводу 31.12.2026 (прогноз Монитора)" in page
+    assert "к раскрытию (январь 2027)" in page and "к вводу 31.12.2026 (утверждённый срок)" in page
     found = {item["topic"]: item["text"] for item in built["findings"]}
     assert "эскроу на конец 2026 Q3 ниже плана банка на 10,0 млн ₽" in found["Финансирование"]
 

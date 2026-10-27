@@ -1312,6 +1312,8 @@ def _grant_command(chat_id: int, user_id: int, argument: str) -> None:
         return
     notice = result.get("notice") or {}
     told = (" Сообщение ему в Telegram отправлено." if notice.get("sent") else
+            f" Сообщение ему в Telegram пока не отправлено: {html.escape(str(notice.get('reason') or ''))}."
+            if notice.get("queued") else
             f" Сообщение ему в Telegram не отправлено: {html.escape(str(notice.get('reason') or 'причина неизвестна'))}."
             " Напишите ему сами.") if notice else ""
     if reserve:
@@ -1910,6 +1912,36 @@ def _deliver_profile_announcements() -> None:
         return
     for record in records:
         core._telegram_send_profile_card(record, admins)
+
+
+def _deliver_access_notices() -> None:
+    """Вести «вам открыт доступ» с ядра — человеку в Telegram.
+
+    Доступ выдаётся на ядре, а до api.telegram.org достаёт только этот хост:
+    ядро кладёт весть в очередь, мы забираем её тем же путём, что и знакомства,
+    и отправляем. Иначе выдавший читал «Telegram API недоступен» и писал
+    человеку сам. Забрать весть, а потом её потерять, нельзя: забираем только
+    тогда, когда здесь есть чем отправить.
+    """
+    if not core._telegram_token() or not core._telegram_webhook_enabled():
+        return
+    remote = core._projects_remote_url("/internal/access/notices")
+    if remote:
+        payload = {"code": "access-notices", "chat_id": 0,
+                   "sign": core._web_login_sign("access-notices", 0)}
+        records = list(core._core_post(remote, payload, 30.0).get("notices") or [])
+    else:
+        records = core.access_take_notices()
+    core.access_deliver_notices(records)
+
+
+def _access_notices_loop() -> None:
+    while True:
+        try:
+            _deliver_access_notices()
+        except Exception:
+            pass  # ядро не ответило — весть лежит в его очереди до следующего круга
+        time.sleep(core.ACCESS_NOTICE_POLL_SECONDS)
 
 
 def _deliver_normatives_announcements() -> None:
@@ -2872,6 +2904,10 @@ def _start_usage_digest() -> None:
     # слишком редкий, у неё свой.
     threading.Thread(target=_management_report_loop, name="management-report",
                      daemon=True).start()
+    # Весть «вам открыт доступ» ждать четверть часа не должна: человек только
+    # что заплатил или ему только что выдали доступ. Ядро до Telegram не
+    # достаёт, а мы до ядра — да: забираем вести коротким кругом.
+    threading.Thread(target=_access_notices_loop, name="access-notices", daemon=True).start()
 
 
 @app.on_event("startup")

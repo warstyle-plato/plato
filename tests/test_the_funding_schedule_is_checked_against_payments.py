@@ -188,7 +188,8 @@ def test_the_report_section_and_the_message_line(monkeypatch):
 def test_without_a_schedule_the_reason_is_named():
     monitor.store_estimate(PROJECT, fx.rss(PAYMENTS), "2026-10-25")
     got = fs.execution(PROJECT, END)
-    assert got["state"] == "missing" and "не загружен" in got["reason"]
+    assert got["state"] == "missing" and "нет ни в одной книге" in got["reason"]
+    assert "исполнять сверять" not in got["reason"]
 
 
 def test_a_wrong_sheet_is_refused_with_the_sheets_named():
