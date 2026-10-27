@@ -1518,14 +1518,30 @@ function siteMassingSchemeSvg(ax){
  return '<svg viewBox="'+vb.join(' ')+'" role="img" aria-label="Объёмная схема застройки участка">'+shapes+texts+labels+'</svg>';
 }
 // Корпуса схемы для карты участка: кольца в меркаторе — ответ движка
-// (`ring_merc`), есть только у схемы по контуру из ЕГРН.
+// (`ring_merc`), есть только у схемы по контуру на карте (ЕГРН или КРТ).
 function siteMassingMapShapes(){
  const m=siteMassingResult()||{};const scheme=m.scheme||{};
  const legend={};((scheme.axonometry||{}).legend||[]).forEach(g=>{legend[g.number]=g});
  return ((scheme.layout||{}).buildings||[]).filter(b=>Array.isArray(b.ring_merc)&&b.ring_merc.length)
   .map(b=>({ring:b.ring_merc,number:b.number,title:b.label,colour:(legend[b.number]||{}).color||'#555'}));
 }
+// Проект в КРТ: схема стоит на контуре территории КРТ, и карта показывает его,
+// участки ЕГРН — рядом серым; у контура с картинки решения — пометка движка
+// «границы приблизительные» (`layout.approximate_note`).
+function siteMassingKrtMap(){
+ const e=krtSiteEffective();
+ const rings=((e&&e.rings_merc)||[]).filter(r=>Array.isArray(r)&&r.length>=3);
+ if(!rings.length)return null;
+ const layout=((siteMassingResult()||{}).scheme||{}).layout||{};
+ const parcels=((typeof landLookup==='object'&&landLookup&&landLookup.results)||[])
+  .filter(x=>x&&x.found&&Array.isArray(x.contour_merc)&&x.contour_merc.length)
+  .map((x,i)=>({rings:x.contour_merc,colour:'#777',key:'parcel'+i,title:'Участок '+(x.cadastral_number||'')}));
+ return {rings:rings,shapes:parcels,massing:siteMassingMapShapes(),panorama:true,
+  title:'Территория КРТ и окружение',boundaryNote:String(layout.approximate_note||'')};
+}
 function siteMassingOpenMap(){
+ const krt=siteMassingKrtMap();
+ if(krt){openLandMap(krt);return}
  const many=((typeof landLookup==='object'&&landLookup&&landLookup.results)||[]).filter(x=>x&&x.found).length>1;
  if(many)landMapFromTerritory();else landMapFromContour();
 }
@@ -1823,6 +1839,21 @@ async function uploadKrtCatalog(){
  try{applyKrtManual(await krtManualCall({catalog_text:text,points_merc:krtSiteProjectPoints()}))}
  catch(e){krtManualStatus('Контур не построен: '+(e&&e.message||e))}
 }
+// По чему фото схемы без координат ставится на карту: контур найденной
+// площадки КРТ и участки ЕГРН проекта (лежат внутри границы), их адреса —
+// улица с адреса, подписанная на снимке, сужает привязку.
+function krtSiteAnchors(){
+ const s=krtSiteState()||{};
+ const rings=[];const addresses=[];
+ if(krtSiteAutoReady())(s.rings_merc||[]).forEach(r=>{if(Array.isArray(r)&&r.length>=3)rings.push(r)});
+ if(s.name)addresses.push(String(s.name));
+ (((inputs._land_lookup||{}).results)||[]).forEach(r=>{
+  if(!r||r.found===false||(r.kind&&r.kind!=='land'))return;
+  (r.contour_merc||[]).forEach(ring=>{if(Array.isArray(ring)&&ring.length>=3)rings.push(ring)});
+  if(r.address)addresses.push(String(r.address));
+ });
+ return {anchor_rings_merc:rings.slice(0,40),addresses:addresses.slice(0,20)};
+}
 async function uploadKrtPhoto(){
  const input=document.getElementById('siteKrtPhoto');
  const file=input&&input.files&&input.files[0];
@@ -1830,7 +1861,7 @@ async function uploadKrtPhoto(){
  krtManualStatus('Распознаём страницу — это может занять до минуты…');
  try{
   const b64=await new Promise((ok,fail)=>{const rd=new FileReader();rd.onload=()=>ok(String(rd.result||''));rd.onerror=()=>fail(rd.error);rd.readAsDataURL(file)});
-  let data=await krtManualCall({file_b64:b64,filename:file.name,points_merc:krtSiteProjectPoints()});
+  let data=await krtManualCall(Object.assign({file_b64:b64,filename:file.name,points_merc:krtSiteProjectPoints()},krtSiteAnchors()));
   for(let i=0;i<60&&data.status==='pending';i++){
    await new Promise(ok=>setTimeout(ok,1000*Number(data.retry_after_seconds||3)));
    data=await krtManualCall({key:data.key});
@@ -1848,6 +1879,12 @@ function applyKrtManual(data){
  }
  s.manual={rings_merc:data.rings_merc||[],area_sqm:Number(data.area_sqm||0),source:String(data.source||''),
   source_note:String(data.source_note||''),approximate:!!data.approximate};
+ // Контур с картинки решения: форма, привязка и её погрешность — их читает
+ // схема движка (`krt_photo_outline_note`).
+ if(data.origin==='photo_outline')Object.assign(s.manual,{origin:'photo_outline',shape_m:data.shape_m||[],
+  anchor_error_m:data.anchor_error_m==null?null:Number(data.anchor_error_m),anchored_by:String(data.anchored_by||''),
+  map_problem:String(data.map_problem||'')});
+ if(data.shape_problem)s.manual.shape_problem=String(data.shape_problem);
  krtManualStatus('');
  applyKrtEffectiveArea();
  renderSitePanel();
@@ -1899,7 +1936,8 @@ function renderKrtSite(){
  box.style.display='';
  const manual=krtSiteManual();
  if(manual){
-  box.innerHTML=(manual.approximate?'<b>Площадь загружена вручную</b>: ':'<b>Контур загружен вручную</b>: ')+
+  box.innerHTML=(manual.origin==='photo_outline'?'<b>Контур снят с картинки решения, границы приблизительные</b>: ':
+   manual.approximate?'<b>Площадь загружена вручную</b>: ':'<b>Контур загружен вручную</b>: ')+
    num(Number(manual.area_sqm))+' м² ('+escapeHtml(manual.source)+(manual.source_note?'; '+escapeHtml(manual.source_note):'')+'). '+
    (krtSiteAutoReady()?'Найденный автоматически контур площадки «'+escapeHtml(s.name||s.slug)+'» ('+num(Number(s.area_sqm))+' м²) сохранён. ':'')+
    '<button type="button" class="btn" onclick="removeKrtManual()">Убрать загруженный контур</button>';
