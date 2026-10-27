@@ -265,11 +265,11 @@ def test_escrow_at_the_current_pace_leads():
     built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
     queue = built["funding"]["escrow"]["queues"][0]
     tile = next(item for item in report.tiles(built) if item["label"].startswith("Эскроу"))
-    assert tile["label"] == "Эскроу при нынешнем темпе"
+    assert tile["label"] == "Эскроу по прогнозу"
     assert tile["value"] == report._times(queue["keeping_pace_coverage"])
     assert "по плану финмодели" in tile["note"]
     found = {item["topic"]: item["text"] for item in built["findings"]}
-    assert "при нынешнем темпе эскроу покрывает" in found["Финансирование"].lower()
+    assert "по прогнозу эскроу покрывает" in found["Финансирование"].lower()
 
 
 def test_the_report_names_no_chapters_sheets_or_codes(monkeypatch):
