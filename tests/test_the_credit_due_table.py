@@ -12,7 +12,8 @@
   1 125 млн ₽ на 30.09.2027: 23 %, 39 %, остаток), всего 6 610,689 млн ₽;
 - эскроу к дате платежа — тот же прогноз, что в «Финансировании»;
 - «эскроу минус платежи» — против платежей нарастающим итогом;
-- таблица видна без данных банка; проекту без условий кредитов — причина.
+- выбрано — по РСС, до конца выборки — лимит минус выбранное;
+- выписки банка не нужны; проекту без условий кредитов — причина.
 
 Запуск: python3 -m pytest tests/test_the_credit_due_table.py -q
 """
@@ -66,6 +67,10 @@ def test_the_table_reads_the_same_escrow_forecast(monkeypatch):
     assert first["date"] == "2027-09-30"
     assert first["escrow"] == pytest.approx(contracting.keeping_at(basis, "2027-09"))
     assert first["gap"] == pytest.approx(first["escrow"] - first["cumulative"])
+    # Выбрано — по РСС, та же выборка с начала проекта, что в «Финансировании».
+    drawn = built["funding"]["draws"]["total"]
+    assert due["drawn"] == pytest.approx(drawn)
+    assert due["to_draw"] == pytest.approx(6610.689 * M - drawn)
 
     page = report.render_html(built)
     for head in ("Платёж по НКЛ", "НКЛ 2025", "НКЛ 2026", "Всего в дату",
@@ -76,7 +81,10 @@ def test_the_table_reads_the_same_escrow_forecast(monkeypatch):
     # Без данных банка таблица отвечает сама; «не загружены» рядом не пишется.
     assert "Данные по кредитам не загружены" not in page
 
+    assert f"Выбрано на сегодня по РСС — {report._rub(drawn)}" in page
     text = report.render_text(built)
+    assert (f"(выбрано по РСС {report._rub(drawn)}, до конца выборки — ещё "
+            f"{report._rub(6610.689 * M - drawn)})") in text
     assert ("Погашение НКЛ: первый обязательный платёж 30.09.2027 — 3,35 млрд ₽; к этой "
             "дате на эскроу по прогнозу") in text
     found = {item["topic"]: item for item in built["findings"]}

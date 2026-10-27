@@ -2095,13 +2095,13 @@ def text_line(result: dict[str, Any]) -> str:
 
 
 # Какие условия кредитов у проекта Монитора — явной записью, а не догадкой по
-# имени. Сохранённые данные по кредитам (`save`) несут свои условия и главнее.
+# имени.
 PROJECT_PRESETS = {"Гродненская": "kutuzov_city", "Кутузов Сити": "kutuzov_city"}
 
 
 def preset_for(project: str) -> str:
-    """Условия кредитов проекта: из сохранённых данных, иначе из `PROJECT_PRESETS`."""
-    return load(project).get("preset") or PROJECT_PRESETS.get(str(project or "").strip(), "")
+    """Условия кредитов проекта — явная запись `PROJECT_PRESETS`."""
+    return PROJECT_PRESETS.get(str(project or "").strip(), "")
 
 
 def obligations(preset_id: str) -> dict[str, Any]:

@@ -2,11 +2,8 @@
 
 Проверяется то, что видит человек, — в Chromium по настоящей разметке:
 
-- в сводке раздел «Погашение кредитов» со статусом, верхним блоком и основной
-  таблицей в порядке столбцов ТЗ (п. 7), строка раскрывается до двух НКЛ, число
-  — до формулы («как посчитано» до щелчка скрыто, после — видно);
-- в сводке нет технических пояснений (имён наборов, пунктов ТЗ, условий
-  расчёта) — они на странице Монитора;
+- в сводке раздел «Погашение кредитов» — таблица платежей по договорам НКЛ и
+  эскроу (`credit_due`), без выписок банка и их расчёта (владелец, 27.10.2026);
 - загрузка данных через Монитор (только команде) пересчитывает прогноз, а
   второй прогноз называет отклонение от первого (ТЗ, п. 8);
 - карточка Монитора — настоящий код страницы: зовёт `/monitor/credit` со
@@ -62,11 +59,17 @@ def _launch():
     return chrome, sync_playwright
 
 
-def test_the_report_shows_the_credit_block_as_the_tz_asks():
+def test_the_report_shows_the_contract_schedule_not_the_bank_statements():
+    """Владелец, 27.10.2026: «Все данные есть в НКЛ, когда гасить всю сумму
+    кредита по этапам. Какие выписки и зачем они нужны?! Все выборки есть в РСС,
+    будущие к РНВ = лимиту». Сводка показывает таблицу платежей по договорам НКЛ
+    даже когда в Монитор загружены наборы банка — их расчёт в сводку не идёт."""
     credit.save(PROJECT, _items(), "проверка")
     built = report.build(PROJECT, "week", "2026-10-18")
-    assert built["credit"]["state"] == "ok"
-    assert "Кредиты: статус красный" in report.render_text(built)
+    assert "credit" not in built and built["credit_due"]["state"] == "ok"
+    text = report.render_text(built)
+    assert "Погашение НКЛ: первый обязательный платёж 30.09.2027 — 3,35 млрд ₽" in text
+    assert "Кредиты: статус" not in text
     body = report.render_html(built)
     chrome, sync_playwright = _launch()
     with sync_playwright() as pw:
@@ -77,42 +80,17 @@ def test_the_report_shows_the_credit_block_as_the_tz_asks():
                             f"</style></head><body>{body}</body></html>")
             block = tab.locator("#block-credit")
             assert block.is_visible() and block.inner_text() == "Погашение кредитов"
-            heads = tab.locator("table.credit-table th").all_inner_texts()
-            assert heads == ["Дата", "Основной долг к погашению", "Проценты и комиссии",
-                             "Всего к оплате", "Эскроу до раскрытия", "Доступно из раскрытия",
-                             "Другие источники", "Дефицит", "Долг после платежа"]
-            dates = tab.locator("table.credit-table tr.date td:first-child").all_inner_texts()
-            # Первый платёж — раскрытие эскроу 20.09.2027: долг к погашению в его размере
-            # (договор А, п. 6.1.2); до него проценты и плата за лимит в отсрочке.
-            assert dates[0] == "20.09.2027 (раскрытие эскроу: долг к погашению)"
-            assert dates[1] == "30.09.2027 (раскрытие позже)"
-            loans = tab.locator("table.credit-table tr.loan td:first-child").all_inner_texts()
-            # Раскрытие гасит сначала НКЛ 2025 — в первой строке только она.
-            assert loans[0] == "в т. ч. НКЛ 2025"
-            assert set(loans) == {"в т. ч. НКЛ 2025", "в т. ч. НКЛ 2026"}
-            labels = tab.locator("table.credit-top td:first-child").all_inner_texts()
-            assert labels[:3] == ["Текущий совокупный долг", "Текущий остаток эскроу",
-                                  "Ближайший платёж 20.09.2027: всего обязательств"]
-            assert "Непокрытый дефицит" in labels and any(
-                label.startswith("Максимальный дефицит за прогноз") for label in labels)
-            debt = tab.locator("table.credit-top tr").nth(1)
-            assert debt.locator("td").nth(1).inner_text() == "3 200,000"
-            formula = debt.locator("details.how div").first
-            assert not formula.is_visible()
-            debt.locator("summary").click()
-            assert formula.is_visible()
-            assert "долг НКЛ 2025 3 000,000 + долг НКЛ 2026 200,000" in formula.inner_text()
-            status = tab.locator("#block-credit ~ div.credit p.credit-status").first
-            assert status.inner_text().startswith("Статус: красный")
-            text = tab.locator("div.credit").first.inner_text()
-            assumptions = tab.locator("div.credit-assumptions").first
-            assert assumptions.is_visible()
-            assert "Ставка по НКЛ 2026 посчитана по аналогии с НКЛ 2025" in assumptions.inner_text()
+            section = tab.locator("div.keep:has(#block-credit)")
+            heads = section.locator("table th").all_inner_texts()
+            assert heads[:3] == ["Платёж по НКЛ", "НКЛ 2025", "НКЛ 2026"]
+            dates = section.locator("table tr td:first-child").all_inner_texts()
+            assert dates[0] == "30.09.2027" and dates[-1] == "30.09.2029"
+            shown = section.inner_text()
         finally:
             browser.close()
-    # Без технических пояснений: условия расчёта и пункты ТЗ — на Мониторе.
-    for word in ("nkl2025", "ТЗ владельца", "Условия расчёта", "facts."):
-        assert word not in text, word
+    for word in ("выписк", "данные банка", "не загружены", "Статус: красный", "nkl2025",
+                 "facts."):
+        assert word not in shown, word
 
 
 def test_the_monitor_upload_recalculates_and_names_the_change():
