@@ -200,3 +200,41 @@ def test_the_plan_scenario_raises_the_escrow_to_the_plan_only():
     assert [(item["date"], item["amount"]) for item in got["contracts"]] == [
         ("2026-12-31", pytest.approx(40 * M)), ("2027-01-31", pytest.approx(80 * M))]
     assert got["sales"] == []
+
+
+def test_without_interest_the_debt_and_escrow_are_still_told(monkeypatch):
+    """Прод 27.10.2026, «Кутузов Сити»: «Хватит ли эскроу на платежи по НКЛ, не
+    посчитано: не посчитаны проценты». Владелец: «Нет якобы данных» — графики
+    НКЛ и эскроу известны. Без процентов сводка считает долг против эскроу,
+    говорит «без процентов» и называет причину из пропусков прогноза. (Саму
+    причину на проде — поздний ряд ставки финмодели — чинит модуль кредитов.)"""
+    built = _built(monkeypatch)
+    for row in built["credit"]["base"]["rows"]:
+        row["interest_and_fees"] = None
+    gap = "Нет ключевой ставки на 01.05.2025 — проценты не рассчитаны."
+    built["credit"]["base"]["gaps"] = [gap]
+    due = report.credit_due(built["credit"], built["funding"], None)
+    built["credit_due"] = due
+    first = due["rows"][0]
+    assert first["interest"]["pace"] is None
+    reason = due["interest_reason"]["pace"]
+    assert reason == gap.rstrip(".")
+    # Долг и эскроу посчитаны: недостаток — по долгу, без процентов.
+    assert first["own"]["pace"] == pytest.approx(
+        max(0.0, first["principal"] - first["escrow"]["pace"]))
+    verdict = report.credit_verdict(due)
+    assert "не посчитано" not in verdict
+    assert verdict.endswith(f" — без процентов: их не посчитали ({reason}).")
+    main = report.credit_main(due)
+    assert main.startswith(f"30.09.2027 гасим основной долг {report._rub(first['principal'])} и "
+                           "проценты (их не посчитали), на эскроу к этой дате скорее всего будет ")
+    assert report.credit_interest_line(due) == \
+        f"Проценты сверх основного долга не посчитаны: {reason}."
+    tiles = {item["label"]: item for item in report.tiles(built)}
+    tile = tiles["Эскроу на платежи по НКЛ"]
+    assert tile["value"] != "нет данных" and "без процентов — их не посчитали" in tile["note"]
+    # Причины в пропусках нет — сводка всё равно называет дату пустых процентов.
+    built["credit"]["base"]["gaps"] = []
+    assert report.credit_due(built["credit"], built["funding"], None)["interest_reason"][
+        "pace"] == "в прогнозе кредитов нет процентов на " + report._day(
+            built["credit"]["base"]["rows"][0]["date"])
