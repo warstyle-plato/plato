@@ -58,6 +58,9 @@ _NO_OU = ("нет данных: Общих условий банка (ОУ Сб�
 PRESETS: dict[str, dict[str, Any]] = {
     "kutuzov_city": {
         "title": "Кутузов Сити",
+        # Проект Монитора, к которому относятся эти договоры (псевдонимы —
+        # через `monitor._project_dir`): привязка явная, не по похожему имени.
+        "projects": ["Кутузов Сити"],
         "loans": [
             {"id": "nkl2025", "name": "НКЛ от 04.04.2025", "short": "НКЛ 2025",
              "limit": 5485.689 * M,
@@ -524,44 +527,66 @@ def save(project: str, items: list[dict[str, Any]], author: str,
     return current
 
 
-def contracts_from_sales(sales_dir: Path | None, sales_project: str) -> dict[str, Any] | None:
-    """Поступления по действующим ДДУ — из графиков договоров отчёта о продажах.
+def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = None,
+               end: Any = None, commissioning: dict[str, str] | None = None) -> dict[str, Any]:
+    """Наборы для расчёта: найденное в загруженном + ручные поправки поверх.
 
-    Это тот же источник, что у поступлений на эскроу в блоке «Финансирование»
-    (`contracting.escrow_actual`): второй выгрузки договоров нет. Набор
-    ``contracts``, загруженный руками, важнее.
+    Состояние кредита на дату РСС (долг, отложенные проценты, плата за лимит)
+    досчитывается от первой выдачи по условиям договоров — отдельно его никто
+    не загружает.
     """
-    if not str(sales_project or "").strip():
-        return None
-    from market_search import sales_store
+    import developaid_credit_sources as sources
 
-    kept = sales_store.load(sales_dir or sales_store.default_dir(), sales_project)
-    part = (kept.get("sources") or {}).get("contracting") or {}
-    rows = (part.get("data") or {}).get("rows") or []
-    if not rows or not part.get("at"):
-        return None
-    payments = []
-    for row in rows:
-        for step in row.get("escrow_schedule") or []:
-            if step.get("amount"):
-                payments.append({"date": _month_end(step["month"]).isoformat(),
-                                 "month_only": True, "amount": float(step["amount"]),
-                                 **({"contract": row["contract"]} if row.get("contract") else {})})
-    return {"name": "contracts", "as_of": str(part["at"])[:10],
-            "source": f"графики платежей договоров из отчёта о продажах «{sales_project}»",
-            "unit": "₽", "data": {"payments": payments}}
-
-
-def inputs_for(project: str, sales_project: str = "",
-               sales_dir: Path | None = None) -> dict[str, Any]:
-    """Наборы для расчёта: сохранённые + договоры из отчёта о продажах."""
+    found = sources.collect(project, sales_project, sales_dir, end, commissioning)
     kept = load(project)
-    datasets = dict(kept.get("datasets") or {})
-    if "contracts" not in datasets:
-        derived = contracts_from_sales(sales_dir, sales_project)
-        if derived:
-            datasets["contracts"] = derived
-    return {"preset": kept.get("preset"), "datasets": datasets}
+    manual = kept.get("datasets") or {}
+    preset = found["preset"] or kept.get("preset")
+    datasets = dict(found["datasets"])
+    missing, notes = list(found["missing"]), list(found["notes"])
+    history = found.get("history")
+    if preset and history:
+        hist = dict(history["datasets"])
+        if "key_rate" in manual:
+            hist["key_rate"] = manual["key_rate"]
+        run = forecast({"preset": preset, "datasets": hist,
+                        "mark_days": [history["as_of"]]})
+        runs = {loan["id"]: loan for loan in run["loans"]}
+        for loan in PRESETS[preset]["loans"]:
+            lid = loan["id"]
+            mark = (runs[lid].get("marks") or {}).get(history["as_of"])
+            if mark is None:
+                missing.append(f"{loan['name']}: долг на дату РСС не досчитан — "
+                               + "; ".join(runs[lid]["gaps"][:2]))
+                continue
+            in_deferral = _day(history["as_of"]) <= _day(runs[lid]["deferral_end"])
+            datasets[f"facts.{lid}"] = {
+                "name": f"facts.{lid}", "as_of": history["as_of"], "unit": "₽",
+                "source": hist[f"plan.{lid}"]["source"] + "; проценты досчитаны от первой "
+                          "выдачи по условиям договора",
+                "data": {"debt": mark["principal"], "drawn": mark["drawn"],
+                         "accrued_interest": 0.0 if in_deferral else mark["accrued_interest"],
+                         "accrued_fee": 0.0 if in_deferral else mark["accrued_fee"],
+                         "operations": []}}
+            datasets[f"deferred.{lid}"] = {
+                "name": f"deferred.{lid}", "as_of": history["as_of"], "unit": "₽",
+                "source": "досчитано от первой выдачи по условиям договора",
+                "data": {"deferred": _sum(mark["deferred"], mark["deferred_fee"])
+                         if in_deferral else 0.0,
+                         "interest_on_deferred": mark["iod"] if in_deferral else 0.0}}
+        if history["future"] is not None:
+            every = sorted([(_day(d["date"]), d["amount"]) for part in history["split"].values()
+                            for d in part] + history["future"])
+            split, _ = sources._split(PRESETS[preset]["loans"], every)
+            for loan in PRESETS[preset]["loans"]:
+                lid = loan["id"]
+                datasets[f"plan.{lid}"] = {
+                    "name": f"plan.{lid}", "as_of": history["as_of"], "unit": "₽",
+                    "source": "план остатка ПФ финмодели (лист «КРЕДИТЫ») сверх выбранного",
+                    "data": {"draws": [d for d in split[lid] if d["date"] > history["as_of"]],
+                             "prepayments": []}}
+    for name, item in manual.items():
+        datasets[name] = dict(item, source=f"поправка вручную: {item['source']}")
+    return {"preset": preset, "datasets": datasets, "missing": missing, "notes": notes}
 
 
 # --------------------------------------------------------------------------
@@ -860,10 +885,19 @@ def _simulate(preset: dict[str, Any], datasets: dict[str, Any], scenario: dict[s
         for st in live:
             _settle(st, day)
             if day in mark_days:
+                seg = st.segment_interest()[0]
                 st.marks[day.isoformat()] = {
                     "principal": st.principal, "drawn": st.drawn, "unpaid": st.unpaid(),
-                    "interest_total": _sum(st.interest_total, st.segment_interest()[0],
-                                           None if st.iod is None else st.iod_total)}
+                    "interest_total": _sum(st.interest_total, seg,
+                                           None if st.iod is None else st.iod_total),
+                    # Состояние на конец дня — чтобы продолжить счёт с этой даты.
+                    "deferred": _sum(st.deferred, seg) if day <= st.deferral_end else st.deferred,
+                    "iod": st.iod, "deferred_fee": st.deferred_fee + (
+                        st.fee_seg if day <= st.deferral_end else 0.0),
+                    "accrued_interest": _sum(*([seg] if day > st.deferral_end else [])
+                                             + [i[2] for i in st.pending if i[1] == "interest"]),
+                    "accrued_fee": (st.fee_seg if day > st.deferral_end else 0.0) + sum(
+                        i[2] or 0.0 for i in st.pending if i[1] == "fee")}
     for st in states.values():
         out = st.out
         out.update(installments=st.installments,
@@ -1306,7 +1340,7 @@ def forecast(inputs: dict[str, Any], scenario: dict[str, Any] | None = None) -> 
                 else "предельная дата отсрочки по договору")})
     planned = _day(terms["planned_disclosure"]["value"])
     facts_a = datasets.get(f"facts.{preset['loans'][0]['id']}")
-    marks = {SUFFICIENCY_DAY, planned}
+    marks = {SUFFICIENCY_DAY, planned} | {_day(d) for d in inputs.get("mark_days") or []}
     if facts_a:
         marks.add(_day(facts_a["as_of"]))
     _simulate(preset, datasets, scenario, escrow, loans, terms["disclosure_split"]["value"],
@@ -2095,17 +2129,21 @@ def text_line(result: dict[str, Any]) -> str:
 
 
 def for_project(project: str, sales_project: str = "", sales_dir: Path | None = None,
-                stress: dict[str, Any] | None = None) -> dict[str, Any]:
-    """Прогноз проекта по сохранённым данным; нет данных — причина."""
-    inputs = inputs_for(project, sales_project, sales_dir)
+                stress: dict[str, Any] | None = None, end: Any = None,
+                commissioning: dict[str, str] | None = None) -> dict[str, Any]:
+    """Прогноз проекта по уже загруженным данным; чего нет — названо с местом."""
+    inputs = inputs_for(project, sales_project, sales_dir, end, commissioning)
     # Договоры из отчёта о продажах есть у многих проектов; кредитным проект
     # делает только загрузка данных по кредитам.
     if not inputs.get("preset"):
         return {"state": "missing",
-                "reason": "Данные по кредитам не загружены: долг, выдачи, эскроу и прогноз "
-                          "поступлений вносятся на странице Монитора, раздел «Погашение "
-                          "кредитов»."}
+                "reason": f"Условия кредитов проекта «{project}» в системе не заведены: "
+                          "разобранных кредитных договоров для него нет, поэтому платежи "
+                          "банку не посчитать."}
     result = analyse(inputs, stress)
+    result["base"]["gaps"] = [f"Не нашлось: {m}." for m in inputs["missing"]] + \
+        result["base"]["gaps"]
+    result["base"]["notes"] = inputs["notes"] + result["base"]["notes"]
     result["preset_id"] = inputs.get("preset") or "kutuzov_city"
     result["state"] = "ok"
     return result
