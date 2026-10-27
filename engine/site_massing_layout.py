@@ -275,15 +275,14 @@ def krt_site_effective(x: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def krt_site_rings_merc(x: dict[str, Any]) -> list[list[list[float]]]:
-    """Внешние кольца контура территории КРТ, если галочка «Проект в КРТ»
-    стоит и контур есть; иначе пусто — схема берёт ЕГРН."""
+    """Кольца контура территории КРТ (внешние и дыры — плоским списком, как
+    их отдаёт источник), если галочка «Проект в КРТ» стоит и контур есть;
+    иначе пусто — схема берёт ЕГРН."""
     site = krt_site_effective(x)
     if not site or site.get("approximate"):
         return []
-    rings = [ring for ring in (site.get("rings_merc") or [])
-             if isinstance(ring, list) and len(ring) >= 3]
-    holes = _holes(rings)
-    return [ring for ring, hole in zip(rings, holes) if not hole]
+    return [ring for ring in (site.get("rings_merc") or [])
+            if isinstance(ring, list) and len(ring) >= 3]
 
 
 def krt_contour_area_sqm(rings_merc: list[list[list[float]]]) -> float:
@@ -608,13 +607,18 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
     krt_rings = krt_site_rings_merc(x)
     krt = krt_site_effective(x) or {}
     map_note = ""
+    krt_holes = any(_holes(krt_rings))
     if krt_rings or krt.get("approximate"):
         # Галочка «Проект в КРТ»: территория — контур КРТ, а не участки ЕГРН.
-        rings, frame = _merc_rings_m(krt_rings)
+        # Раскладка дыр не обходит: в неё идут внешние кольца, а площадь
+        # меряет тот же счётчик, что поле «Площадь участка» (дыры вычтены).
+        outer = [ring for ring, hole in zip(krt_rings, _holes(krt_rings)) if not hole]
+        rings, frame = _merc_rings_m(outer)
         parts: dict[str, Any] = {}
+        contour_sqm = krt_contour_area_sqm(krt_rings)
     else:
         rings, frame, parts = _site_rings_m(x)
-    contour_sqm = sum(abs(_ring_area(r)) for r in rings)
+        contour_sqm = sum(abs(_ring_area(r)) for r in rings)
     if krt.get("approximate"):
         # Площадь есть, контура нет (фото схемы без координат): рисовать по
         # участкам ЕГРН значит рисовать не то.
@@ -626,7 +630,17 @@ def _layout_site(x: dict[str, Any], massing: dict[str, Any]
         notes.append(f"Участок на схеме — контур территории КРТ{f' «{title}»' if title else ''} "
                      f"({krt.get('source') or 'источник не назван'}), а не участки из госреестра: "
                      "в проекте стоит галочка «Проект в КРТ».")
-        if site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
+        if krt_holes:
+            # Корпуса по внешнему контуру могли бы встать в дыру — на землю,
+            # исключённую из территории. Раскладка дыр не обходит, поэтому
+            # участок — квадратом, а причина названа.
+            map_note = ("Корпуса на карте участка не показаны: внутри территории КРТ есть "
+                        "исключённые из неё участки, а схема пока не умеет их обходить и могла "
+                        "бы поставить корпуса на чужую землю. Поэтому участок на схеме показан "
+                        f"квадратом площади территории без исключённых участков — "
+                        f"{_fmt_ru(contour_sqm)} м².")
+            rings, frame = [], {}
+        elif site_sqm > 0 and abs(contour_sqm - site_sqm) > 0.25 * site_sqm:
             map_note = (f"Корпуса на карте участка не показаны: площадь контура территории КРТ "
                         f"({_fmt_ru(contour_sqm)} м²) заметно отличается от площади участка в "
                         f"расчёте ({_fmt_ru(site_sqm)} м²). Поэтому участок на схеме показан "

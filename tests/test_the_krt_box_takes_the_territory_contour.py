@@ -312,3 +312,29 @@ def test_without_a_site_the_reason_is_shown_and_the_area_stays(seen):
     assert "Площадку КРТ проекта опознать не удалось" in on["status"], on
     assert "не лежат внутри ни одной площадки" in on["status"], on
     assert "Площадь участка осталась прежней" in on["status"], on
+
+
+@pytest.mark.parametrize("hole_m", [100, 60])
+def test_a_territory_with_a_hole_is_measured_once_and_not_built_in_the_hole(hole_m):
+    """Замечание «Посадки» (27.10.2026): поле мерило территорию без дыр, схема —
+    по внешнему контуру. Дыра 100 × 100 давала ложное «площадь контура заметно
+    отличается», дыра 60 × 60 — корпуса по внешнему контуру, в том числе в
+    дыре, на земле, исключённой из КРТ."""
+    outer = _rect(0, 0, 200, 200)
+    hole = _rect(70, 70, hole_m, hole_m)
+    field_sqm = core.krt_contour_area_sqm([outer, hole])
+    assert field_sqm == pytest.approx(200 * 200 - hole_m * hole_m, rel=0.002)
+    x = copy.deepcopy(core.DEFAULT_INPUTS)
+    x["_land_lookup"] = {"results": []}
+    x["_krt_site"] = {"on": True, "status": "ready", "rings_merc": [outer, hole],
+                      "area_sqm": field_sqm, "name": "Пролетарская",
+                      "source": krt_project_site.SOURCE_MAP}
+    layout = core.site_massing_layout(x, {"site_sqm": field_sqm, "footprint_sqm": 4000.0,
+                                          "setback_m": 3.0},
+                                      [{"phase": 1, "above_gns_sqm": 40000.0}])
+    assert layout["site_shape_origin"] == "square", layout["notes"]
+    note = layout["map_note"].replace("\xa0", " ")
+    assert "исключённые из неё участки" in note, note
+    assert "заметно отличается" not in " ".join(layout["notes"])
+    square = sum(abs(core._ring_area(r)) for r in layout["site_rings"])
+    assert square == pytest.approx(field_sqm, rel=0.01)
