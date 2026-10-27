@@ -554,6 +554,22 @@ def monitor_store_budget(req: MonitorEstimateRequest) -> dict[str, Any]:
         raise HTTPException(400, str(exc))
 
 
+@app.post("/monitor/funding-schedule", include_in_schema=False)
+def monitor_store_funding_schedule(req: MonitorEstimateRequest) -> dict[str, Any]:
+    """График финансирования (ДДС): версия на её дату, все версии хранятся.
+
+    С ним сводка сверяет, что реально оплачено по реестру платежей РСС.
+    """
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_funding_schedule as funding_schedule
+    try:
+        return funding_schedule.store(
+            req.project, base64.b64decode(req.content_base64), req.taken_at,
+            req.filename)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+
 def _monitor_note_author(session: str, key: str) -> str:
     """Кто пишет запись: имя из анкеты, имя из Telegram, иначе — как вошёл."""
     chat = _web_identity_chat_id(session)
@@ -932,6 +948,78 @@ def monitor_report(req: MonitorReportRequest) -> dict[str, Any]:
     report = _monitor_report(req)
     return {"report": report, "text": management_report.render_text(report),
             "html": management_report.render_html(report)}
+
+
+class MonitorCreditRequest(BaseModel):
+    project: str
+    # Наборы данных: списком в теле или JSON-файлом (base64) — {"datasets": [...]}.
+    datasets: list[dict[str, Any]] = []
+    content_base64: str = ""
+    preset: str = "kutuzov_city"
+    stress: dict[str, Any] = {}
+    session: str = ""
+    key: str = ""
+
+
+_CREDIT_STRESS_LIMITS = {"inflow_cut_pct": (0.0, 100.0), "disclosure_delay_months": (0, 36),
+                         "key_rate_pp": (-10.0, 30.0)}
+
+
+def _credit_stress(raw: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for name, (low, high) in _CREDIT_STRESS_LIMITS.items():
+        if raw.get(name) in (None, ""):
+            continue
+        try:
+            value = type(low)(float(raw[name]))
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"Стресс: «{raw[name]}» — не число.")
+        if not low <= value <= high:
+            raise HTTPException(400, f"Стресс: значение {value} вне пределов {low}…{high}.")
+        out[name] = value
+    return out
+
+
+def _credit_answer(req: MonitorCreditRequest) -> dict[str, Any]:
+    """Прогноз погашения кредитов проекта и разметка карточки Монитора."""
+    import developaid_credit_repayment as credit
+    import developaid_management_report as management_report
+    link = management_report.sales_link(req.project) or {}
+    result = credit.for_project(req.project, link.get("sales_project") or "",
+                                stress=_credit_stress(req.stress))
+    if result.get("state") != "ok":
+        return {"state": "missing", "reason": result["reason"]}
+    changes = credit.compare(credit.remember(req.project, result), result)
+    return {"state": "ok", "status": result["status"], "stress_status": result["stress_status"],
+            "text": credit.text_line(result), "changes": changes,
+            "datasets": result["base"]["datasets"],
+            "html": credit.render_html(result, monitor=True, changes=changes)}
+
+
+@app.post("/monitor/credit", include_in_schema=False)
+def monitor_credit(req: MonitorCreditRequest) -> dict[str, Any]:
+    """Погашение кредитов: платежи банку, эскроу к датам, раскрытие, дефицит."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    return _credit_answer(req)
+
+
+@app.post("/monitor/credit/data", include_in_schema=False)
+def monitor_credit_data(req: MonitorCreditRequest) -> dict[str, Any]:
+    """Загрузить или обновить наборы данных по кредитам — каждый с датой и источником."""
+    _require_team_access(req.session, req.key, "Монитор проекта")
+    import developaid_credit_repayment as credit
+    items = list(req.datasets)
+    if req.content_base64:
+        try:
+            parsed = json.loads(base64.b64decode(req.content_base64).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400, "Файл данных по кредитам не читается: нужен JSON в UTF-8.")
+        items += parsed.get("datasets") if isinstance(parsed, dict) else parsed
+    try:
+        credit.save(req.project, items, _monitor_note_author(req.session, req.key), req.preset)
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise HTTPException(400, f"Данные по кредитам не сохранены: {exc}")
+    return _credit_answer(req)
 
 
 @app.post("/monitor/report.pdf", include_in_schema=False)

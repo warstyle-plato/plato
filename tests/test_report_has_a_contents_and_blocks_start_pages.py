@@ -26,7 +26,8 @@ import developaid_management_report as report  # noqa: E402
 import developaid_monitor as monitor  # noqa: E402
 from developaid_report_page import REPORT_PAGE  # noqa: E402
 
-TITLES = ["Главное за период", "Стройка", "Продажи", "Финансирование", "Бюджет месяца",
+TITLES = ["Главное за период", "Стройка", "Продажи", "Финансирование", "Погашение кредитов",
+          "Бюджет месяца",
           "Споры и претензии", "Общая информация"]
 
 
@@ -42,7 +43,8 @@ def test_the_contents_lead_and_name_every_block_in_order():
     assert page.index("<ol class='toc'>") < page.index("<div class='tiles'>")
     assert re.findall(r"<a href='#block-(\w+)'>([^<]+)</a>", toc) == [
         ("main", "Главное за период"), ("build", "Стройка"), ("sales", "Продажи"),
-        ("funding", "Финансирование"), ("budget", "Бюджет месяца"),
+        ("funding", "Финансирование"), ("credit", "Погашение кредитов"),
+        ("budget", "Бюджет месяца"),
         ("legal", "Споры и претензии"), ("info", "Общая информация")]
     headings = re.findall(r"<h2 class='block(?: first)?' id='block-(\w+)'>([^<]+)</h2>", page)
     assert "<h2 class='block first' id='block-main'>" in page
@@ -51,9 +53,9 @@ def test_the_contents_lead_and_name_every_block_in_order():
     # Споры — свой блок, не подраздел «Общей информации».
     assert "<h3>Споры и претензии</h3>" not in page
     assert page.index(">Споры и претензии</h2>") < page.index(">Общая информация</h2>")
-    # Пустая сводка — те же семь блоков: без данных блок называет причину, а не исчезает.
+    # Пустая сводка — те же восемь блоков: без данных блок называет причину, а не исчезает.
     empty = report.render_html(report.build("Пусто", "week", "2026-10-18"))
-    assert len(re.findall(r"<h2 class='block", empty)) == 7
+    assert len(re.findall(r"<h2 class='block", empty)) == 8
 
 
 def test_in_the_document_every_block_starts_a_page_and_the_screen_does_not_break():
