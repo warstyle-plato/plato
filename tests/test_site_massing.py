@@ -116,6 +116,20 @@ def test_a_hand_rate_of_the_first_level_gets_the_markups_below():
         pytest.approx(by_class["underground_depth_factor"])
 
 
+@pytest.mark.parametrize("flag", ["Да", "true", 1, "1"])
+def test_the_first_level_flag_is_read_from_any_truthy_value(flag):
+    """Флажок из книги, пресета или старого проекта приходит не булевым True —
+    «Да», «true», 1 его тоже включают."""
+    x, t = _office()
+    x["_class_manual"] = ["main_under_th_per_sqm"]
+    m = core.site_massing({**x, "underground_rate_is_level1": flag}, t)
+    assert m["underground_depth_markups_apply"] is True
+    assert m["underground_depth_factor"] > 1.0
+    assert "как ставка первого уровня" in m["underground_depth_basis"]
+    off = core.site_massing({**x, "underground_rate_is_level1": "Нет"}, t)
+    assert off["underground_depth_markups_apply"] is False
+
+
 def test_hand_values_are_kept_and_estimates_follow_the_tep():
     x, t = _office(building_footprint_sqm=1200, underground_levels=3)
     m = core.site_massing(x, t)

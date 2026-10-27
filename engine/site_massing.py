@@ -433,11 +433,12 @@ def underground_depth_markups_apply(x: dict[str, Any]) -> bool:
     Ставка класса — да. Ручная ставка — нет: число человека остаётся его числом
     на всех уровнях, пока он не отметил флажком `underground_rate_is_level1`, что
     вписал ставку первого уровня; тогда ниже добавляются те же надбавки, что к
-    ставке класса. Ключа нет — флажок снят (умолчание, а не чьё-то решение).
+    ставке класса. Ключа нет — флажок снят (умолчание, а не чьё-то решение);
+    «Да», «true», 1 из книги, пресета или старого проекта — стоит (`b`).
     Читают движок, книга (`site_massing_book.input_values`) и подпись под
     таблицей уровней.
     """
-    return not underground_rate_by_hand(x) or x.get("underground_rate_is_level1") is True
+    return not underground_rate_by_hand(x) or b(x, "underground_rate_is_level1")
 
 
 def _level_areas(total: float, capacity: float, levels: int) -> list[float]:
