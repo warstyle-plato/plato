@@ -287,3 +287,20 @@ def test_plan_draws_over_the_free_limit_are_fitted_not_zeroed(monkeypatch):
     future = sum(d["amount"] for name in ("plan.nkl2025", "plan.nkl2026")
                  for d in plan[name]["data"]["draws"])
     assert future == pytest.approx((5485.689 + 1125 - 6125) * M)
+
+
+def test_the_sufficiency_check_counts_interest_to_the_approved_commissioning():
+    """П. 8.2.60: проверка банка — на 30.06.2027 (дата договора), а «плановая дата
+    раскрытия», до которой считаются проценты, — утверждённый ввод, не дата условий."""
+    _project()
+    approved = credit.for_project(PROJECT, SALES, end="2026-10-20", commissioning={
+        "date": "2027-12-20", "source": "утверждённый срок"})["base"]
+    item = next(i for i in approved["sufficiency"] if i["kind"] == "forecast")
+    assert item["date"] == "2027-06-30"
+    assert item["planned_disclosure"] == "2027-12-20"
+    assert approved["terms"]["planned_disclosure"]["source"].startswith("срок ввода")
+    # Позже раскрытие — больше процентов до него.
+    early = _run()["base"]
+    first = next(i for i in early["sufficiency"] if i["kind"] == "forecast")
+    assert first["planned_disclosure"] == "2027-09-15"
+    assert item["planned_interest"] > first["planned_interest"] > 0
