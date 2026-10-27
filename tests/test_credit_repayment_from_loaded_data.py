@@ -133,11 +133,17 @@ def test_debt_draws_and_interest_come_from_the_rss_and_the_terms():
     assert data["deferred.nkl2025"]["source"] == "досчитано от первой выдачи по условиям договора"
     assert any("РСС не называет, с какого кредита шла выдача" in note
                for note in base["assumptions"])
-    # Прогнозные выдачи — план ПФ финмодели сверх выбранного (до 6 400 в сумме).
+    # Прогнозные выдачи: сроки — план ПФ финмодели сверх выбранного (до 6 400 в
+    # сумме), недостающее до лимита — в конец доступности (владелец, 27.10.2026:
+    # «будущие выборки до РНВ = лимит»): всего 6 610,689 − 5 300 выбранных.
+    plan = credit.inputs_for(PROJECT, SALES, end="2026-10-20")["datasets"]
     drawn = sum(d["amount"] for name in ("plan.nkl2025", "plan.nkl2026")
-                for d in credit.inputs_for(PROJECT, SALES, end="2026-10-20")["datasets"]
-                [name]["data"]["draws"])
-    assert drawn == pytest.approx(1100 * M)
+                for d in plan[name]["data"]["draws"])
+    assert drawn == pytest.approx((5485.689 + 1125 - 5300) * M)
+    assert plan["plan.nkl2026"]["data"]["draws"][-1] == {
+        "date": "2027-09-30", "amount": pytest.approx(210.689 * M)}
+    assert any("доводят долг до лимита" in note and "НКЛ 2026 — 210,7 млн ₽ на 30.09.2027"
+               in note for note in base["assumptions"])
 
 
 def test_escrow_comes_from_contract_schedules_and_one_forecast_with_the_report():
@@ -254,3 +260,47 @@ def test_the_report_discloses_at_the_approved_date_as_the_escrow_table(monkeypat
     assert [(e["date"], round(e["amount"])) for e in disclosed] == [
         ("2027-09-15", round(at["keeping_escrow"]))]
     assert any("ввод может сдвинуться на 15.12.2028" in note for note in base["assumptions"])
+
+
+def test_plan_draws_over_the_free_limit_are_fitted_not_zeroed(monkeypatch):
+    """Прод 27.10.2026 (владелец: «опять какая-то чушь»): обе линии выбраны до
+    лимитов года, а финмодель планирует выдачи раньше, чем лимит вырастет. Было:
+    «выборка … выше свободного лимита — учтено 0», статус «не определён»,
+    проценты первого платежа, дефицит и «хватит ли эскроу» — «нет данных».
+    Стало: выдача ложится в свободный лимит на свою дату, недостающее до лимита —
+    в конец доступности; всё считается числами."""
+    monkeypatch.setattr(sys.modules[__name__], "DRAWS",
+                        DRAWS + [(datetime.date(2026, 9, 20), 825 * M)])
+    _project()
+    got = _run()
+    base = got["base"]
+    assert not [gap for gap in base["gaps"] if "выше свободного лимита" in gap], base["gaps"]
+    assert got["status"]["color"] != "unknown", got["status"]
+    first = next(row for row in base["rows"] if (row.get("principal") or 0.0) > 0.5)
+    for key in ("interest_and_fees", "total", "deficit"):
+        assert first[key] is not None, key
+    top = base["top"]
+    for key in ("deficit_total", "first_deficit", "max_deficit", "sufficiency_forecast"):
+        assert top[key]["value"] is not None, key
+    # Долг к концу выборки — весь лимит обеих линий.
+    plan = credit.inputs_for(PROJECT, SALES, end="2026-10-20")["datasets"]
+    future = sum(d["amount"] for name in ("plan.nkl2025", "plan.nkl2026")
+                 for d in plan[name]["data"]["draws"])
+    assert future == pytest.approx((5485.689 + 1125 - 6125) * M)
+
+
+def test_the_sufficiency_check_counts_interest_to_the_approved_commissioning():
+    """П. 8.2.60: проверка банка — на 30.06.2027 (дата договора), а «плановая дата
+    раскрытия», до которой считаются проценты, — утверждённый ввод, не дата условий."""
+    _project()
+    approved = credit.for_project(PROJECT, SALES, end="2026-10-20", commissioning={
+        "date": "2027-12-20", "source": "утверждённый срок"})["base"]
+    item = next(i for i in approved["sufficiency"] if i["kind"] == "forecast")
+    assert item["date"] == "2027-06-30"
+    assert item["planned_disclosure"] == "2027-12-20"
+    assert approved["terms"]["planned_disclosure"]["source"].startswith("срок ввода")
+    # Позже раскрытие — больше процентов до него.
+    early = _run()["base"]
+    first = next(i for i in early["sufficiency"] if i["kind"] == "forecast")
+    assert first["planned_disclosure"] == "2027-09-15"
+    assert item["planned_interest"] > first["planned_interest"] > 0

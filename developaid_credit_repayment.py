@@ -529,7 +529,8 @@ def save(project: str, items: list[dict[str, Any]], author: str,
 
 def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = None,
                end: Any = None, commissioning: dict[str, str] | None = None,
-               shift: dict[str, Any] | None = None) -> dict[str, Any]:
+               shift: dict[str, Any] | None = None,
+               escrow_plan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Наборы для расчёта: найденное в загруженном + ручные поправки поверх.
 
     Состояние кредита на дату РСС (долг, отложенные проценты, плата за лимит)
@@ -538,7 +539,8 @@ def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = N
     """
     import developaid_credit_sources as sources
 
-    found = sources.collect(project, sales_project, sales_dir, end, commissioning, shift)
+    found = sources.collect(project, sales_project, sales_dir, end, commissioning, shift,
+                            escrow_plan)
     kept = load(project)
     manual = kept.get("datasets") or {}
     preset = found["preset"] or kept.get("preset")
@@ -574,7 +576,7 @@ def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = N
                 "data": {"deferred": _sum(mark["deferred"], mark["deferred_fee"])
                          if in_deferral else 0.0,
                          "interest_on_deferred": mark["iod"] if in_deferral else 0.0}}
-        if history["future"] is not None:
+        if history["future"]:
             every = sorted([(_day(d["date"]), d["amount"]) for part in history["split"].values()
                             for d in part] + history["future"])
             split, _ = sources._split(PRESETS[preset]["loans"], every)
@@ -582,7 +584,8 @@ def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = N
                 lid = loan["id"]
                 datasets[f"plan.{lid}"] = {
                     "name": f"plan.{lid}", "as_of": history["as_of"], "unit": "₽",
-                    "source": "план остатка ПФ финмодели (лист «КРЕДИТЫ») сверх выбранного",
+                    "source": "сроки — план остатка ПФ финмодели (лист «КРЕДИТЫ») сверх "
+                              "выбранного; до лимита — к концу периода доступности",
                     "data": {"draws": [d for d in split[lid] if d["date"] > history["as_of"]],
                              "prepayments": []}}
     for name, item in manual.items():
@@ -1658,7 +1661,9 @@ def status(base: dict[str, Any], confirmed: dict[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
     if top["deficit_total"]["value"] is None:
         return {"color": "unknown", "reasons": [
-            "Статус не определён: не хватает исходных данных — " + "; ".join(base["gaps"][:3])]}
+            # Слова «статус не определён, не хватает данных» уже даёт заголовок
+            # строки (`COLORS["unknown"]`): здесь — только чего именно нет.
+            "Чего нет: " + "; ".join(base["gaps"][:3])]}
     if top["deficit_total"]["value"] > 0.5:
         reasons.append(f"Прогнозируется дефицит {mln(top['deficit_total']['value'])} млн ₽, "
                        f"первый — {ddmmyyyy(top['first_deficit']['date'])}.")
@@ -1829,10 +1834,15 @@ def _top_html(result: dict[str, Any]) -> str:
             ("Нужно из источников вне эскроу", top["outside_at_next"]),
             ("Непокрытый дефицит", top["deficit_at_next"]),
         ]
-    for kind, words in (("fact", "на дату данных"), ("forecast", "на 30.06.2027, прогноз")):
+    # Это проверка банка по договору А (п. 8.2.60) на конец периода выборки, а
+    # не ответ «к вводу»: дата — из договора, и это сказано, иначе она читается
+    # как ещё один срок ввода (владелец на проде, 27.10.2026).
+    for kind, words in (("fact", "на дату данных"),
+                        ("forecast", "на 30.06.2027 — конец периода выборки, прогноз")):
         item = top.get(f"sufficiency_{kind}")
         if item:
-            lines.append((f"Хватит ли эскроу на полное погашение НКЛ 2025 ({words})", item))
+            lines.append((f"Хватит ли эскроу на полное погашение НКЛ 2025 — проверка банка "
+                          f"по договору ({words})", item))
     first, biggest = top["first_deficit"], top["max_deficit"]
     lines += [
         ("Первая дата дефицита" + (f" — {ddmmyyyy(first['date'])}" if first["date"] else ""),
@@ -2140,13 +2150,16 @@ def text_line(result: dict[str, Any]) -> str:
 def for_project(project: str, sales_project: str = "", sales_dir: Path | None = None,
                 stress: dict[str, Any] | None = None, end: Any = None,
                 commissioning: dict[str, str] | None = None,
-                shift: dict[str, Any] | None = None) -> dict[str, Any]:
+                shift: dict[str, Any] | None = None,
+                escrow_plan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Прогноз проекта по уже загруженным данным; чего нет — названо с местом.
 
     ``commissioning`` — утверждённый срок ввода сводки (к нему раскрытие),
-    ``shift`` — прогноз Монитора, если он позже: только строкой допущений.
+    ``shift`` — прогноз Монитора, если он позже: только строкой допущений,
+    ``escrow_plan`` — эскроу по плану финмодели вместо темпа (`sources.collect`).
     """
-    inputs = inputs_for(project, sales_project, sales_dir, end, commissioning, shift)
+    inputs = inputs_for(project, sales_project, sales_dir, end, commissioning, shift,
+                        escrow_plan)
     # Договоры из отчёта о продажах есть у многих проектов; кредитным проект
     # делает только загрузка данных по кредитам.
     if not inputs.get("preset"):
@@ -2160,5 +2173,11 @@ def for_project(project: str, sales_project: str = "", sales_dir: Path | None = 
     for run in (result["base"], result["stress"]):
         run["assumptions"] = list(inputs["notes"])
     result["preset_id"] = inputs.get("preset") or "kutuzov_city"
+    # Отложенное до даты РСС (проценты и плата за отсрочку с первой выдачи):
+    # сводке — чтобы отделить его от процентов, начисленных в прогнозе.
+    result["opening_deferred"] = {
+        key.split(".", 1)[1]: _sum(item["data"].get("deferred"),
+                                   item["data"].get("interest_on_deferred"))
+        for key, item in (inputs.get("datasets") or {}).items() if key.startswith("deferred.")}
     result["state"] = "ok"
     return result

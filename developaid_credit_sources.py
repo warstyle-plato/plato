@@ -20,7 +20,9 @@
   дальше — тот же прогноз, что «Эскроу по кварталам» и «к вводу» сводки
   (`contracting.keeping_at`): рассрочка подписанных договоров и новые продажи
   по нынешнему темпу, равномерно до ввода. Раскрытие в сумме — ровно это число;
-* прогнозные выдачи — план остатка ПФ финмодели сверх уже выбранного;
+* прогнозные выдачи — до лимита каждой НКЛ к концу её доступности (владелец:
+  «будущие выборки до РНВ = лимит»): сроки — план остатка ПФ финмодели сверх
+  уже выбранного, недостающее до лимита — в последний день доступности;
 * ставка — «Ставка кредита ПФ» финмодели: снижается вслед за покрытием —
   итоговая, берётся как есть; иначе базовая, ключевая = она минус маржа;
 * раскрытие — утверждённый срок ввода (`management_report._commissioning`, тот
@@ -139,6 +141,74 @@ def _plan_draws(loans: list[dict[str, Any]], credit_plan: dict[str, Any] | None,
     return out
 
 
+def _fit(loans: list[dict[str, Any]], drawn: dict[str, float], day: datetime.date,
+         amount: float, overflow: bool) -> list[tuple[dict[str, Any], float]]:
+    """Как выдача ложится на линии по `_split`: первая открытая в пределах лимита
+    на дату, дальше следующая; ``overflow`` — остаток сверх лимитов на первую
+    открытую (так `_split` делает с фактом), иначе остаток не выдаётся."""
+    left, out = amount, []
+    for loan in loans:
+        opened = min(credit._day(d) for d, _ in loan.get("limit_steps") or
+                     [(loan["availability_end"], 0)])
+        if day < opened or day > credit._day(loan["availability_end"]):
+            continue
+        take = min(max(0.0, credit._limit_on(loan, day) - drawn[loan["id"]]), left)
+        if take > 0:
+            out.append((loan, take))
+            left -= take
+        if left <= 1.0:
+            break
+    if overflow and left > 1.0:
+        first = next((loan for loan in loans if day <= credit._day(loan["availability_end"])),
+                     loans[0])
+        out.append((first, left))
+    return out
+
+
+def _to_limit(loans: list[dict[str, Any]], past: list[tuple[datetime.date, float]],
+              future: list[tuple[datetime.date, float]], as_of: str
+              ) -> tuple[list[tuple[datetime.date, float]], list[tuple[str, datetime.date, float]]]:
+    """Довести выдачи каждой НКЛ до лимита к концу её периода доступности.
+
+    Владелец, 27.10.2026: «Долг будет равен сумме лимита! Посмотри в НКЛ период
+    доступности. Он раньше РНВ»; «будущие выборки до РНВ = лимит». План
+    финмодели задаёт сроки выдач; чего ему не хватает до лимита, добирается в
+    последний день доступности. Уже прошедший конец доступности не трогается:
+    невыбранное там не выдать.
+    """
+    # План финмодели может требовать выдачу, когда свободного лимита на дату
+    # нет (обе линии выбраны до лимита этого года). Такую выдачу банк не даст:
+    # она урезается до свободного лимита на свою дату тем же порядком линий,
+    # что у `_split`, а не ложится сверх лимита — иначе расчёт обнуляет её и
+    # пишет «выше свободного лимита» (владелец на проде, 27.10.2026: «опять
+    # какая-то чушь»). Недостающее до лимита добирается ниже, в конец доступности.
+    drawn = {loan["id"]: 0.0 for loan in loans}
+    for day, amount in sorted(past):
+        for loan, part in _fit(loans, drawn, day, amount, overflow=True):
+            drawn[loan["id"]] += part
+    fitted = []
+    for day, amount in sorted(future):
+        parts = _fit(loans, drawn, day, amount, overflow=False)
+        for loan, part in parts:
+            drawn[loan["id"]] += part
+        taken = sum(part for _, part in parts)
+        if taken > 1.0:
+            fitted.append((day, taken))
+    future = fitted
+    split, _ = _split(loans, sorted(past + future))
+    out, topped = list(future), []
+    for loan in loans:
+        end = credit._day(loan["availability_end"])
+        if end.isoformat() <= as_of[:10]:
+            continue
+        drawn = sum(d["amount"] for d in split[loan["id"]] if credit._day(d["date"]) <= end)
+        gap = credit._limit_on(loan, end) - drawn
+        if gap > 1.0:
+            out.append((end, gap))
+            topped.append((loan["short"], end, gap))
+    return sorted(out), topped
+
+
 def _model_rates(credit_plan: dict[str, Any] | None) -> tuple[dict[str, float],
                                                                  dict[str, float]]:
     """«Ставка кредита ПФ» (% годовых) и «Отношение эскроу к кредиту ПФ» по месяцам."""
@@ -179,8 +249,13 @@ def rate_kind(rates: dict[str, float], cover: dict[str, float]) -> str:
 
 def collect(project: str, sales_project: str = "", sales_dir: Path | None = None,
             end: Any = None, commissioning: dict[str, str] | None = None,
-            shift: dict[str, Any] | None = None) -> dict[str, Any]:
+            shift: dict[str, Any] | None = None,
+            escrow_plan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Наборы для расчёта из загруженного: {"preset", "history", "datasets", "missing", "notes"}.
+
+    ``escrow_plan`` — сценарий «по плану финмодели» сводки: {"series": ряд
+    эскроу финмодели по месяцам, "cut": месяц раскрытия, после которого ряд
+    уже гасит кредит} — эскроу после даты РСС растёт до плана, а не по темпу.
 
     ``history`` — наборы от первой выдачи (досчитать долг и проценты до даты РСС),
     ``datasets`` — наборы на дату РСС для прогноза, кроме состояния кредита: его
@@ -259,6 +334,11 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     terms = credit.PRESETS[preset_id]["terms"]
     if commissioning and commissioning.get("date"):
         when, words = commissioning["date"][:10], f"срок ввода — {commissioning['source']}"
+        # Та же дата — «плановая дата раскрытия» проверки достаточности (А п. 8.2.60):
+        # проценты до раскрытия считаются до утверждённого ввода, а не до даты условий.
+        datasets["terms.project"] = _set("terms.project", as_of, words, {
+            "planned_disclosure": {"value": when, "source": f"{words}: раскрытие эскроу "
+                                   "в дату ввода"}})
     else:
         when = terms["planned_disclosure"]["value"]
         words = "утверждённого срока ввода нет — плановая дата раскрытия из условий (допущение)"
@@ -281,7 +361,13 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
         balance = sum(p["amount"] for p in payments if p["date"][:7] <= as_of[:7])
         ahead: dict[str, list[dict[str, Any]]] = {"contracts": [], "sales": []}
         pace = _escrow_pace(rows, credit_plan, when)
-        if pace:
+        if escrow_plan is not None:
+            ahead = _plan_forecast(escrow_plan, balance, as_of, when)
+            pace = None
+            notes.append("Поступления на эскроу до ввода — по плану финмодели (ряд эскроу "
+                         "листа «КРЕДИТЫ» до раскрытия): после даты РСС остаток растёт до "
+                         "плана, а не по нынешнему темпу.")
+        elif pace:
             ahead, extra = _escrow_forecast(pace, as_of, when)
             balance += extra
             out["escrow_at_disclosure"] = contracting.keeping_at(pace, when[:7])
@@ -295,6 +381,8 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
         datasets["escrow"] = _set("escrow", as_of, contracts_source + " — поступило по "
                                   f"{credit.ddmmyyyy(as_of)}", {"balance": balance, "history": []})
         datasets["contracts"] = _set("contracts", as_of, contracts_source + (
+            "; дальше — до плана эскроу финмодели" if escrow_plan is not None and
+            ahead["contracts"] else
             "; дальше — рассрочка по подписанным договорам, равномерно до ввода"
             if ahead["contracts"] else ""),
             {"payments": payments + ahead["contracts"], "signed": signed})
@@ -303,7 +391,10 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
         datasets["refunds"] = _set("refunds", as_of, "расторгнутые договоры в контрактации не "
                                    "показываются — их поступлений в графиках нет",
                                    {"payments": []})
-        if pace:
+        if escrow_plan is not None:
+            datasets["sales"] = _set("sales", as_of, "новые продажи — внутри ряда эскроу "
+                                     "финмодели", {"payments": []})
+        elif pace:
             datasets["sales"] = _set("sales", as_of, "новые продажи по нынешнему темпу "
                                      "подписания, равномерно до ввода (как в «Эскроу по "
                                      "кварталам» сводки)", {"payments": ahead["sales"]})
@@ -351,8 +442,17 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     drawn_total = sum(amount for _, amount in found["draws"])
     future = _plan_draws(loans, credit_plan, drawn_total, as_of)
     if future is None:
-        missing.append("прогнозные выдачи после РСС: в финмодели нет строки «Проектное "
-                       "финансирование (нараст)»")
+        notes.append("Сроков будущих выдач в финмодели нет (строка «Проектное финансирование "
+                     "(нараст)»): весь невыбранный лимит взят в последний день периода "
+                     "доступности.")
+    future, topped = _to_limit(loans, found["draws"], future or [], as_of)
+    if topped:
+        notes.append("Будущие выдачи до конца периода доступности доводят долг до лимита "
+                     "(решение владельца 27.10.2026: «будущие выборки до РНВ = лимит»): сроки — "
+                     "по плану финмодели, недостающее до лимита — в последний день доступности: "
+                     + "; ".join(f"{short} — {credit.mln(amount, 1)} млн ₽ на "
+                                 f"{credit.ddmmyyyy(day)}" for short, day, amount in topped)
+                     + ".")
     start = (credit._day(found["draws"][0][0].replace(day=1)) - datetime.timedelta(days=1))
     if payments:
         first = credit._day(min(p["date"] for p in payments)).replace(day=1)
@@ -429,6 +529,28 @@ def _escrow_forecast(pace: dict[str, Any], as_of: str, when: str
                 out[kind].append({"date": day, "month_only": True, "amount": amount,
                                   "sale_month": month})
     return out, folded
+
+
+def _plan_forecast(plan: dict[str, Any], balance: float, as_of: str, when: str
+                   ) -> dict[str, list[dict[str, Any]]]:
+    """Поступления, доводящие эскроу до плана финмодели на каждый месяц до ввода.
+
+    Ряд финмодели — накопленный остаток; после месяца раскрытия он уже гасит
+    кредит, поэтому берётся на месяц раскрытия (``cut``). Остаток выше плана
+    не уменьшается: поступление не бывает отрицательным.
+    """
+    out: dict[str, list[dict[str, Any]]] = {"contracts": [], "sales": []}
+    series, cut = plan.get("series") or {}, plan.get("cut") or ""
+    settle, month, running = when[:7], as_of[:7], balance
+    while month < settle:
+        month = _next_month(month)
+        target = contracting.plan_on(series, min(month, cut) if cut else month)
+        if target is None or target <= running + 0.5:
+            continue
+        day = when if month == settle else _month_end(month)
+        out["contracts"].append({"date": day, "month_only": True, "amount": target - running})
+        running = target
+    return out
 
 
 def _bank_plan(bank: dict[str, Any]) -> dict[str, Any]:

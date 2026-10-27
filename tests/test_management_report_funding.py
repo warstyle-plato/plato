@@ -257,19 +257,21 @@ def test_the_approved_budget_and_its_deficit_come_from_the_monitor(monkeypatch):
     assert money["Выбрано у банка"] == report._rub(built["funding"]["draws"]["total"])
 
 
-def test_escrow_at_the_current_pace_leads():
-    # «Эскроу НЕ покрывает кредит в текущем темпе, это важнее, что по плану
-    # 0,95» (владелец, 21.10.2026).
+def test_one_escrow_cover_figure_in_the_whole_report():
+    """Владелец, 27.10.2026: плитка и «Главное» давали три разных покрытия
+    (0,48× к раскрытию, 0,51× к вводу, а таблица погашения — «хватает»). Теперь
+    покрытие одно — вывод таблицы погашения НКЛ; без неё (проект без условий
+    кредитов) плитка говорит почему, а не показывает своё отношение."""
     _project()
     _sales()
     built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
-    queue = built["funding"]["escrow"]["queues"][0]
     tile = next(item for item in report.tiles(built) if item["label"].startswith("Эскроу"))
-    assert tile["label"] == "Эскроу по прогнозу"
-    assert tile["value"] == report._times(queue["keeping_pace_coverage"])
-    assert "по плану финмодели" in tile["note"]
+    assert tile["label"] == "Эскроу на платежи по НКЛ"
+    assert tile["value"] == "нет данных" and tile["note"] == built["credit_due"]["reason"]
     found = {item["topic"]: item["text"] for item in built["findings"]}
-    assert "по прогнозу эскроу покрывает" in found["Финансирование"].lower()
+    assert "×" not in found["Финансирование"] and "покрыва" not in found["Финансирование"]
+    page = report.render_html(built)
+    assert "<th>Покрытие кредита эскроу</th>" not in page
 
 
 def test_the_report_names_no_chapters_sheets_or_codes(monkeypatch):
@@ -336,7 +338,8 @@ def test_the_draws_follow_the_chapters_of_the_limit(monkeypatch):
     assert "больше лимита на 348,0 млн ₽" in tiles["Выбрано у банка"]["note"]
     assert tiles["Выбрано у банка"]["tone"] == "bad"
     note = tiles["Остаток лимита банка"]["note"]
-    assert note == "лимит без оплаченного 1,45 млрд ₽; по РСС не хватает 1,06 млрд ₽ с ноября 2026"
+    # Число и одна строка (владелец, 27.10.2026: подписи плиток — «простыни»).
+    assert note == "лимит минус оплаченное; не хватит 1,06 млрд ₽ с ноября 2026"
     text = report.render_text(built)
     assert ("перерасход по статьям 1,20 млрд ₽ остаток не уменьшает; лимиты по статьям "
             "больше общего лимита на 60,0 млн ₽") in text
@@ -405,8 +408,8 @@ def test_the_money_tiles_name_chapters_reserves_and_periods(monkeypatch):
     draws = built["funding"]["draws"]
     assert notes["Выбрано у банка"] == (f"из них за неделю {report._rub(draws['period'])} и "
                                         f"за месяц {report._rub(draws['month'])}")
-    assert notes["Остаток лимита банка"] == ("лимит без оплаченного 5,26 млрд ₽; по РСС не хватает "
-                                             "1,08 млрд ₽ с ноября 2026")
+    assert notes["Остаток лимита банка"] == ("лимит минус оплаченное; не хватит 1,08 млрд ₽ "
+                                             "с ноября 2026")
     # В месячной сводке «за неделю» нет — только за месяц.
     month = report.build(PROJECT, "month", "2026-10-18")
     notes = {item["label"]: item["note"] for item in report.tiles(month)}

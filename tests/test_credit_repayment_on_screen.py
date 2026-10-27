@@ -2,9 +2,11 @@
 
 Проверяется то, что видит человек, — в Chromium по настоящей разметке:
 
-- в сводке раздел «Погашение кредитов» со статусом, верхним блоком и основной
-  таблицей в порядке столбцов ТЗ (п. 7), строка раскрывается до двух НКЛ, число
-  — до формулы («как посчитано» до щелчка скрыто, после — видно);
+- в сводке раздел «Погашение кредитов» сверху — вывод и одна таблица по датам
+  платежей НКЛ с процентами против эскроу (владелец, 27.10.2026) из того же
+  прогноза; подробный расчёт свёрнут за «Как посчитано» и раскрывается: статус,
+  верхний блок и основная таблица в порядке столбцов ТЗ (п. 7), строка
+  раскрывается до двух НКЛ, число — до формулы;
 - в сводке нет технических пояснений (имён наборов, пунктов ТЗ, условий
   расчёта) — они на странице Монитора;
 - загрузка данных через Монитор (только команде) пересчитывает прогноз, а
@@ -65,8 +67,11 @@ def _launch():
 def test_the_report_shows_the_credit_block_as_the_tz_asks():
     credit.save(PROJECT, _items(), "проверка")
     built = report.build(PROJECT, "week", "2026-10-18")
-    assert built["credit"]["state"] == "ok"
-    assert "Кредиты: статус красный" in report.render_text(built)
+    assert built["credit"]["state"] == "ok" and built["credit_due"]["state"] == "ok"
+    # В сообщении — первая дата и итог простой таблицы, а не статус подробного расчёта.
+    told = report.render_text(built)
+    assert "Погашение кредитов: " + report.credit_main(built["credit_due"]) in told
+    assert "Кредиты: статус" not in told
     body = report.render_html(built)
     chrome, sync_playwright = _launch()
     with sync_playwright() as pw:
@@ -77,6 +82,15 @@ def test_the_report_shows_the_credit_block_as_the_tz_asks():
                             f"</style></head><body>{body}</body></html>")
             block = tab.locator("#block-credit")
             assert block.is_visible() and block.inner_text() == "Погашение кредитов"
+            section = tab.locator("div.keep:has(#block-credit)")
+            simple = section.locator("table.credit-due")
+            assert simple.locator("th").all_inner_texts()[:4] == [
+                "Дата", "Основной долг", "Проценты (темп)", "Проценты (план ФМ)"]
+            # Подробный расчёт свёрнут, пока его не открыли.
+            more = section.locator("details.credit-more")
+            assert not more.locator("table.credit-table").is_visible()
+            more.locator("summary").first.click()
+            assert more.locator("table.credit-table").is_visible()
             heads = tab.locator("table.credit-table th").all_inner_texts()
             assert heads == ["Дата", "Основной долг к погашению", "Проценты и комиссии",
                              "Всего к оплате", "Эскроу до раскрытия", "Доступно из раскрытия",
@@ -102,7 +116,7 @@ def test_the_report_shows_the_credit_block_as_the_tz_asks():
             debt.locator("summary").click()
             assert formula.is_visible()
             assert "долг НКЛ 2025 3 000,000 + долг НКЛ 2026 200,000" in formula.inner_text()
-            status = tab.locator("#block-credit ~ div.credit p.credit-status").first
+            status = tab.locator("details.credit-more div.credit p.credit-status").first
             assert status.inner_text().startswith("Статус: красный")
             text = tab.locator("div.credit").first.inner_text()
             assumptions = tab.locator("div.credit-assumptions").first
