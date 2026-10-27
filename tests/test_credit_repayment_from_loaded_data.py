@@ -222,6 +222,8 @@ def test_every_missing_value_is_a_visible_assumption_with_its_effect():
     block = page[page.index("credit-assumptions"):]
     block = block[:block.index("</div>")]
     assert "принята базовой" in block and "проценты здесь занижены" in block
+    # Запятая только в числе маржи — не «п, п,».
+    assert "4,78 п. п. по НКЛ 2025" in block and "п, п," not in block
     assert "при отсутствии дофинансирования и свободных денег" in block
     assert "Аккредитивы не учтены" in block and "оценены сверху" in block
     assert "сначала по НКЛ 2025 в пределах её лимита" in block
@@ -304,3 +306,42 @@ def test_the_sufficiency_check_counts_interest_to_the_approved_commissioning():
     first = next(i for i in early["sufficiency"] if i["kind"] == "forecast")
     assert first["planned_disclosure"] == "2027-09-15"
     assert item["planned_interest"] > first["planned_interest"] > 0
+
+
+def _rates_from(month: str) -> None:
+    kept = sales_store.load(sales_store.default_dir(), SALES)
+    parts = {k: v["data"] for k, v in kept["sources"].items()}
+    queue = parts["credit"]["queues"][0]
+    queue["rate"] = {m: v for m, v in queue["rate"].items() if m >= month}
+    sales_store.save(sales_store.default_dir(), SALES, parts, "test.xlsx")
+
+
+def test_model_rates_starting_after_the_first_draw_still_give_interest():
+    """Прод, 27.10.2026: «Нет якобы данных» — ставки модели начинались позже первой
+    выдачи, проценты всего досчёта уходили в «нет данных» без названной причины."""
+    _project()
+    _rates_from("2025-08")
+    got = _run()
+    base = got["base"]
+    assert all(row["interest_and_fees"] is not None for row in base["rows"])
+    shown = credit.inputs_for(PROJECT, SALES, end="2026-10-20")["datasets"]
+    assert all(shown[f"deferred.{lid}"]["data"]["deferred"] > 0 for lid in ("nkl2025", "nkl2026"))
+    assert any("ставки начинаются с 01.08.2025" in note for note in base["assumptions"])
+    assert got["status"]["color"] != "unknown"
+
+
+def test_a_day_without_a_key_rate_is_named_with_its_date():
+    import credit_repayment_fixture as fx
+
+    run = credit.forecast(fx.inputs({"key_rate": {"path": [{"from": "2027-01-01",
+                                                             "rate": 21.0}]}}))
+    text = " ".join(run["gaps"])
+    assert "о ключевой ставке на" in text and "проценты с этой даты не рассчитаны" in text
+
+
+def test_an_unknown_status_names_what_was_not_found():
+    _project(credit_plan=False)
+    got = _run()
+    if got["status"]["color"] == "unknown":
+        reason = got["status"]["reasons"][0]
+        assert reason != "Чего нет: " and "нет финмодели" in reason

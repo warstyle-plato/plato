@@ -298,13 +298,14 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     if rates:
         kind = rate_kind(rates, cover)
         margin = loans[0]["margin_pp"]
+        # Запятая — только в самом числе: «п. п.» и имена кредитов не трогаются.
+        pp = f"{margin:g}".replace(".", ",") + " п. п."
         if kind == "base":
             path = [{"from": f"{m}-01", "rate": rates[m] - margin} for m in sorted(rates)]
-            words = (f"финмодель, «Ставка кредита ПФ» минус маржа {loans[0]['short']} "
-                     f"{margin:g} п. п.").replace(".", ",", 1)
+            words = f"финмодель, «Ставка кредита ПФ» минус маржа {loans[0]['short']} {pp}"
             notes.append(f"Ставка: в финмодели «Ставка кредита ПФ» не меняется вслед за "
                          f"покрытием эскроу, поэтому она принята базовой — ключевая плюс "
-                         f"{margin:g} п. п. по {loans[0]['short']}".replace(".", ",")
+                         f"{pp} по {loans[0]['short']}"
                          + ". Скидка за покрытие эскроу считается по ступеням договора. "
                          "Если в модели ставка уже со скидкой, проценты здесь занижены.")
         else:
@@ -457,6 +458,17 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
     if payments:
         first = credit._day(min(p["date"] for p in payments)).replace(day=1)
         start = min(start, first - datetime.timedelta(days=1))
+    # Ставки финмодели могут начинаться позже первой выдачи: без ставки на день
+    # проценты всего досчёта — «нет данных». До первого месяца модели берётся
+    # её первая ставка, и это названо.
+    path = ((datasets.get("key_rate") or {}).get("data") or {}).get("path") or []
+    if path and path[0]["from"] > start.isoformat():
+        first_from = path[0]["from"]
+        path.insert(0, {"from": start.isoformat(), "rate": path[0]["rate"]})
+        notes.append(f"Ставка: в финмодели ставки начинаются с {credit.ddmmyyyy(first_from)}, "
+                     f"а первая выдача — раньше; с {credit.ddmmyyyy(start + datetime.timedelta(days=1))} "
+                     "до этой даты взята первая ставка модели. Проценты за этот срок — "
+                     "приблизительные.")
     history: dict[str, Any] = {}
     for loan in loans:
         lid = loan["id"]

@@ -562,6 +562,13 @@ def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = N
                                + "; ".join(runs[lid]["gaps"][:2]))
                 continue
             in_deferral = _day(history["as_of"]) <= _day(runs[lid]["deferral_end"])
+            if None in (mark["deferred"], mark["iod"], mark["accrued_interest"]):
+                # Долг досчитан, проценты — нет: причина из досчёта, иначе пустые
+                # проценты прогноза останутся без объяснения.
+                why = [g.rstrip(".") for g in run["gaps"] + runs[lid]["gaps"]
+                       if "не рассчитаны" in g and "аккредитив" not in g][:1]
+                missing.append(f"{loan['name']}: проценты до даты РСС не досчитаны — "
+                               + (why[0] if why else "причина в досчёте не названа"))
             datasets[f"facts.{lid}"] = {
                 "name": f"facts.{lid}", "as_of": history["as_of"], "unit": "₽",
                 "source": hist[f"plan.{lid}"]["source"] + "; проценты досчитаны от первой "
@@ -752,6 +759,7 @@ class _Loan:
         self.iod_total = 0.0
         self.marks: dict[str, dict[str, Any]] = {}
         self.closed = False
+        self.no_rate_named = False
         self.marks[self.start.isoformat()] = {
             "principal": self.principal, "drawn": self.drawn, "unpaid": self.unpaid(),
             "interest_total": 0.0}
@@ -864,6 +872,13 @@ def _simulate(preset: dict[str, Any], datasets: dict[str, Any], scenario: dict[s
             s["Kyd"] += st.principal / yd
             if key is None or (balance is None and st.terms["rate"]["value"] != "base"):
                 s["unknown"] = True
+                # Причина пустых процентов — с датой, а не молчаливое «нет данных».
+                if key is None and key_rate and not st.no_rate_named:
+                    st.no_rate_named = True
+                    st.out["gaps"].append(
+                        f"{st.loan['name']}: {NO_DATA} о ключевой ставке на {ddmmyyyy(day)} "
+                        "(прогноз ставки начинается позже) — проценты с этой даты не "
+                        "рассчитаны.")
             else:
                 s["E"] += balance or 0.0
                 s["base"] += key + bump + st.loan["margin_pp"]
@@ -2170,6 +2185,10 @@ def for_project(project: str, sales_project: str = "", sales_dir: Path | None = 
     result = analyse(inputs, stress)
     result["base"]["gaps"] = [f"Не нашлось: {m}." for m in inputs["missing"]] + \
         result["base"]["gaps"]
+    # Статус собран до «Не нашлось»: пустое «Чего нет: » — причина из полного списка.
+    if (result.get("status") or {}).get("color") == "unknown":
+        result["status"]["reasons"] = ["Чего нет: " + ("; ".join(result["base"]["gaps"][:3])
+                                                       or "причина в расчёте не названа")]
     for run in (result["base"], result["stress"]):
         run["assumptions"] = list(inputs["notes"])
     result["preset_id"] = inputs.get("preset") or "kutuzov_city"
