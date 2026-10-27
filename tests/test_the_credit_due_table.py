@@ -84,6 +84,9 @@ def test_the_page_text_and_main_say_it_simply(monkeypatch):
     assert due["rows"][0]["disclosure"] and "15.09.2027 — раскрытие эскроу" in page
     assert "Долг на конец выборки — весь лимит: период выборки кончается раньше ввода" in page
     assert page.count("(весь лимит)") == 2
+    # Справкой — сколько финмодель до лимита не добирает (та же фраза, что в допущениях).
+    assert due["topped"] in built["credit"]["base"]["assumptions"]
+    assert "НКЛ 2026 — 210,7 млн ₽ на 30.09.2027" in due["topped"] and due["topped"] in page
     interest = (f"Проценты и плата за лимит до полного погашения — "
                 f"{report._rub(due['interest'])}")
     assert interest in page

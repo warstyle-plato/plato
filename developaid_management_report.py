@@ -1090,7 +1090,12 @@ def credit_due(credit_block: dict[str, Any], funding_block: dict[str, Any]) -> d
     drawn = draws.get("total")
     limit_total = sum(float(loan["limit"] or 0.0) for loan in loans)
     interest = ((base.get("top") or {}).get("interest_cost") or {}).get("value")
+    # Справкой: сколько до лимита финмодель не добирает — та же фраза, что в
+    # допущениях расчёта (`credit_sources._to_limit`), а не второй счёт.
+    topped = next((note for note in base.get("assumptions") or []
+                   if note.startswith("Будущие выдачи до конца периода доступности")), "")
     return {"state": "ok", "loans": loans, "rows": rows, "interest": interest,
+            "topped": topped,
             "drawn": drawn, "drawn_at": (funding_block or {}).get("rss") or "",
             "limit_total": limit_total,
             "to_draw": (limit_total - drawn) if drawn is not None else None,
@@ -1179,6 +1184,8 @@ def _credit_due_html(block: dict[str, Any]) -> str:
             "растёт. Эскроу минус платежи — против платежей нарастающим итогом; минус — "
             "столько не хватает к этой дате.")
     out.append(f"<p class='note'>{esc(note)}</p>")
+    if block.get("topped"):
+        out.append(f"<p class='note'>{esc(block['topped'])}</p>")
     if block.get("interest") is not None:
         out.append(f"<p class='note'><b>{esc(_interest_words(block))}</b> Подробно и "
                    "допущения — ниже.</p>")
