@@ -952,22 +952,31 @@ def _strategy_compare_pdf(story: list[Any], block: dict[str, Any], P: Any, table
             parts.append(Paragraph(escape(str(item["caption"])), head))
         parts.append(P(str(item.get("lead") or ""), small))
         sections: list[int] = []
-        rows = [[Paragraph("Показатель", head)] + [
-            Paragraph(escape(str(c.get("label") or "")) + "".join(tag(t) for t in c.get("tags") or []), head)
+        # Пять столбцов и больше (четыре способа продажи и аренда с удержанием):
+        # шрифт таблицы мельче, иначе длинные слова рвутся посередине.
+        if len(columns) >= 5:
+            head_, cell_, strong_ = (ParagraphStyle(f"{s.name}_narrow", parent=s, fontSize=size, leading=size + 2)
+                                     for s, size in ((head, 6.6), (cell, 7.2), (strong, 7.2)))
+        else:
+            head_, cell_, strong_ = head, cell, strong
+        rows = [[Paragraph("Показатель", head_)] + [
+            Paragraph(escape(str(c.get("label") or "")) + "".join(tag(t) for t in c.get("tags") or []), head_)
             for c in columns]]
         for row in item.get("rows") or []:
             if row.get("section"):
                 sections.append(len(rows))
-                rows.append([Paragraph(escape(str(row.get("label") or "")), head)] + [""] * len(columns))
+                rows.append([Paragraph(escape(str(row.get("label") or "")), head_)] + [""] * len(columns))
                 continue
-            rows.append([Paragraph(escape(str(row.get("label") or "")), cell)] + [
-                Paragraph(escape(str(value)), strong if row.get("strong") and i < len(columns)
-                          and columns[i].get("best") else cell)
+            rows.append([Paragraph(escape(str(row.get("label") or "")), cell_)] + [
+                Paragraph(escape(str(value)), strong_ if row.get("strong") and i < len(columns)
+                          and columns[i].get("best") else cell_)
                 for i, value in enumerate(row.get("cells") or [])])
         # Ширина полосы страницы — 182 мм (A4 без полей отчёта).
-        label = 52 if len(columns) <= 3 else 44
+        label = 52 if len(columns) <= 3 else 44 if len(columns) <= 4 else 34
         width = (182 - label) / max(1, len(columns))
         grid = table(rows, [label*mm] + [width*mm] * len(columns), font_size=7.6)
+        if len(columns) >= 5:
+            grid.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3)]))
         best = [i + 1 for i, c in enumerate(columns) if c.get("best")]
         if best:
             grid.setStyle(TableStyle([("BACKGROUND", (best[0], 0), (best[0], 0), colors.HexColor("#DCEFE2")),

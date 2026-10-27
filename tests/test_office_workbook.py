@@ -124,11 +124,11 @@ def _tampered(name: str, tamper) -> set[str]:
     return {f"{section}: {label}" for section, label in bad}
 
 
-DDU, SALE, RENT = (ow.section_of(p) for p in ow.PATHS)
+DDU, PRESALE, SALE, RENT = (ow.section_of(p) for p in ow.PATHS)
 
 
 @pytest.mark.parametrize("name", list(VARIANTS))
-def test_all_three_ways_agree_with_the_engine(name) -> None:
+def test_all_four_ways_agree_with_the_engine(name) -> None:
     content, meta = _book(name)
     assert meta["missing"] == [] and meta["checks"] == ow.PASSED
     verdict, bad, evaluator, book = _evaluate(content)
@@ -137,12 +137,12 @@ def test_all_three_ways_agree_with_the_engine(name) -> None:
     rows = [(checks[f"A{r}"].value, checks[f"B{r}"].value, checks[f"D{r}"].value)
             for r in range(5, checks.max_row + 1)]
     sections = {section for section, _, _ in rows}
-    assert {DDU, SALE, RENT, "Проект", "Смета"} <= sections
+    assert {DDU, PRESALE, SALE, RENT, "Проект", "Смета"} <= sections
     # Собственное участие движок строит у проекта без ПФ (`equity_participation_report`).
     assert ("Собственное участие" in sections) == (name not in DDU_NAMES)
-    # Сверяются настоящие деньги всех трёх способов, а не нули.
+    # Сверяются настоящие деньги всех четырёх способов, а не нули.
     engine = {(section, label): value for section, label, value in rows}
-    for section in (DDU, SALE, RENT):
+    for section in (DDU, PRESALE, SALE, RENT):
         for label in ("Выручка", "Затраты на создание", "NPV проекта", "Чистая прибыль", "Пик собственных денег"):
             assert engine[(section, label)] not in ("", None, 0), (section, label)
     assert engine[(RENT, "Офис: стоимость здания")] or "удержание" in name
@@ -160,11 +160,12 @@ def test_the_book_has_the_sample_composition_and_the_v4_look() -> None:
     content, _ = _book("аренда и продажа здания, аннуитет")
     book = openpyxl.load_workbook(io.BytesIO(content))
     assert book.sheetnames == [ow.DASH_SHEET, ow.REPORT_SHEET, ow.INPUTS_SHEET, ow.GUIDE_SHEET, ow.TEP_SHEET,
-                               ow.TIME_SHEET, ow.CAPEX_SHEET, ow.RATE_SHEET, ow.DDU_SHEET, ow.SALE_SHEET,
-                               ow.RENT_SHEET, ow.EXIT_SHEET, ow.PF_SHEET, "CF_ДДУ", "CF_Продажа", "CF_Аренда",
+                               ow.TIME_SHEET, ow.CAPEX_SHEET, ow.RATE_SHEET, ow.DDU_SHEET, ow.PRESALE_SHEET,
+                               ow.SALE_SHEET, ow.RENT_SHEET, ow.EXIT_SHEET, ow.PF_SHEET, "CF_ДДУ", "CF_ПДКП",
+                               "CF_Продажа", "CF_Аренда",
                                ow.TAX_SHEET, ow.CHECK_SHEET, ow.SOURCES_SHEET]
-    for name in (ow.TIME_SHEET, ow.CAPEX_SHEET, ow.DDU_SHEET, ow.SALE_SHEET, ow.RENT_SHEET, ow.PF_SHEET,
-                 "CF_ДДУ", "CF_Продажа", "CF_Аренда", ow.TAX_SHEET):
+    for name in (ow.TIME_SHEET, ow.CAPEX_SHEET, ow.DDU_SHEET, ow.PRESALE_SHEET, ow.SALE_SHEET, ow.RENT_SHEET,
+                 ow.PF_SHEET, "CF_ДДУ", "CF_ПДКП", "CF_Продажа", "CF_Аренда", ow.TAX_SHEET):
         sheet = book[name]
         # Месяцы вправо с D, шапка и подписи закреплены, печать — по 12 месяцев.
         assert sheet.freeze_panes == "D5", name
@@ -203,10 +204,10 @@ def test_the_model_sheets_hold_formulas_not_engine_numbers() -> None:
     cached = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
     report = cached[ow.REPORT_SHEET]
     row = _row(report, "NPV проекта")
-    assert all(isinstance(report[f"{c}{row}"].value, float) for c in "BCD")
-    # Три способа рядом — столбцами отчёта, в порядке `PATHS`.
+    assert all(isinstance(report[f"{c}{row}"].value, float) for c in "BCDE")
+    # Четыре способа рядом — столбцами отчёта, в порядке `PATHS`.
     head = _row(report, "Показатель")
-    assert [report.cell(head, 2 + j).value for j in range(3)] == [p["label"] for p in ow.PATHS]
+    assert [report.cell(head, 2 + j).value for j in range(4)] == [p["label"] for p in ow.PATHS]
     assert cached[ow.CHECK_SHEET]["I5"].value == ow.PASSED
 
 
@@ -427,6 +428,53 @@ def test_a_tampered_ddu_vat_deduction_is_caught() -> None:
     labels = _tampered("офис по ДДУ", tamper)
     assert {"Проект: НДС", "ПФ: НДС продаж по ДДУ к уплате", f"{DDU}: Чистая прибыль"} <= labels
 
+
+# --- четвёртый способ: продажа по предварительному договору во время стройки --
+
+def test_the_presale_way_sells_from_the_start_of_construction_until_commissioning() -> None:
+    """Владелец, 25.10.2026: «Их же 4?!» — продажа по ПДКП во время стройки
+    стоит рядом с тремя прежними способами. Умолчание — продажи с начала
+    стройки объекта равномерно до ввода; авансы идут до ввода."""
+    content, _ = _book("офис по ДДУ")
+    _, _, evaluator, book = _evaluate(content)
+    sheet = book[ow.PRESALE_SHEET]
+    times = book[ow.TIME_SHEET]
+    value = lambda ws, label: evaluator.cell(ws.title, f"B{_row(ws, label)}")  # noqa: E731
+    start, comm = value(times, "Офисы: начало стройки"), value(times, "Офисы: ввод")
+    assert value(sheet, "Старт продаж по ПДКП, № месяца") == start
+    assert value(sheet, "Срок продаж по ПДКП") == comm - start
+    # Деньги покупателей приходят только до ввода — авансы, а не выручка после.
+    sale = _row(sheet, "Выручка продаж")
+    paid = {int(evaluator.cell(ow.TIME_SHEET, f"{ow.L(c)}{ow.K_ROW}")): evaluator.cell(sheet.title, f"{ow.L(c)}{sale}")
+            for c in range(ow.FIRST_COL, sheet.max_column + 1)}
+    assert sum(paid.values()) > 0
+    assert all(not amount for k, amount in paid.items() if k < start or k >= comm)
+
+
+def test_a_tampered_presale_window_is_caught_only_in_the_presale_way() -> None:
+    """Продажи по ПДКП начинаются на полгода позже: краснеет только этот способ."""
+    def tamper(book):
+        sheet = book[ow.INPUTS_SHEET]
+        cell = sheet[f"B{_row(sheet, 'Начало продаж: месяцев после начала стройки')}"]
+        cell.value = (cell.value or 0) + 6
+
+    labels = _tampered("офис по ДДУ", tamper)
+    assert f"{PRESALE}: NPV проекта" in labels
+    assert not any(label.startswith((DDU, SALE, RENT)) for label in labels)
+
+
+def test_the_sale_after_commissioning_never_starts_before_it() -> None:
+    """Проект продаёт блоки до ввода (сдвиг −6) — это его ПДКП; способ «после
+    ввода» стартует с ввода. Книга, где «после ввода» начался бы до ввода,
+    расходится с движком."""
+    def tamper(book):
+        sheet = book[ow.SALE_SHEET]
+        cell = sheet[f"B{_row(sheet, 'Старт продаж, № месяца')}"]
+        cell.value = cell.value.replace("MAX(0,", "MAX(-120,")
+
+    labels = _tampered("продажа блоками, продажи до ввода колоколом", tamper)
+    assert f"{SALE}: NPV проекта" in labels
+    assert not any(label.startswith((DDU, PRESALE)) for label in labels)
 
 
 LINE = 15  # пт на строку текста шрифтом 11

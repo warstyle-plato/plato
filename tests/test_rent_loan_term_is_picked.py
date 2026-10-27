@@ -146,6 +146,14 @@ def _hold_line(x: dict, t: dict) -> dict:
     return next(p for p in block["items"][0]["points"] if p["kind"] == "hold")
 
 
+def _best_sale(x: dict, t: dict) -> tuple[float, str]:
+    """Лучшая продажа — из всех способов продажи сравнения, в том числе по
+    предварительному договору во время стройки (#905)."""
+    return max((_npv(x, t, ns.STRATEGY_DDU), "продажу по ДДУ"),
+               (_npv(x, t, ns.PATH_PRESALE), "продажу по предварительному договору"),
+               (_npv(x, t, ns.STRATEGY_DIRECT), "продажу блоками после ввода"))
+
+
 def test_the_hold_from_which_rent_beats_the_sale() -> None:
     # Дешёвые деньги (дисконт 5%) и аренда, которой хватает только на долгий срок.
     x, t = _spec(offices_strategy=ns.STRATEGY_DIRECT, offices_rent_th_per_sqm_month=2.6,
@@ -153,8 +161,7 @@ def test_the_hold_from_which_rent_beats_the_sale() -> None:
     line = _hold_line(x, t)
     years = line["value"]
     # Сравнивают с лучшей продажей — какая она, решает расчёт, а не тест.
-    ddu, direct = _npv(x, t, ns.STRATEGY_DDU), _npv(x, t, ns.STRATEGY_DIRECT)
-    sale, sale_name = max((ddu, "продажу по ДДУ"), (direct, "продажу блоками"))
+    sale, sale_name = _best_sale(x, t)
     assert years and 1 < years < 30
     assert _npv(x, t, ns.STRATEGY_INCOME, hold_years=years) >= sale
     assert _npv(x, t, ns.STRATEGY_INCOME, hold_years=years - 1) < sale
@@ -167,8 +174,7 @@ def test_rent_that_never_beats_the_sale_says_so() -> None:
     x, t = _spec(offices_strategy=ns.STRATEGY_DIRECT)
     line = _hold_line(x, t)
     assert line["value"] is None and line["years"] == []
-    ddu, direct = _npv(x, t, ns.STRATEGY_DDU), _npv(x, t, ns.STRATEGY_DIRECT)
-    sale_name = max((ddu, "продажу по ДДУ"), (direct, "продажу блоками"))[1]
+    sale_name = _best_sale(x, t)[1]
     assert f"не обгоняет {sale_name} ни при каком сроке удержания здания от 1 до 30 лет" in line["text"]
     assert "Ближе всего она, если держать здание" in line["text"]
 
