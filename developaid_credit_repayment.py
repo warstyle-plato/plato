@@ -529,7 +529,8 @@ def save(project: str, items: list[dict[str, Any]], author: str,
 
 def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = None,
                end: Any = None, commissioning: dict[str, str] | None = None,
-               shift: dict[str, Any] | None = None) -> dict[str, Any]:
+               shift: dict[str, Any] | None = None,
+               escrow_plan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Наборы для расчёта: найденное в загруженном + ручные поправки поверх.
 
     Состояние кредита на дату РСС (долг, отложенные проценты, плата за лимит)
@@ -538,7 +539,8 @@ def inputs_for(project: str, sales_project: str = "", sales_dir: Path | None = N
     """
     import developaid_credit_sources as sources
 
-    found = sources.collect(project, sales_project, sales_dir, end, commissioning, shift)
+    found = sources.collect(project, sales_project, sales_dir, end, commissioning, shift,
+                            escrow_plan)
     kept = load(project)
     manual = kept.get("datasets") or {}
     preset = found["preset"] or kept.get("preset")
@@ -2148,13 +2150,16 @@ def text_line(result: dict[str, Any]) -> str:
 def for_project(project: str, sales_project: str = "", sales_dir: Path | None = None,
                 stress: dict[str, Any] | None = None, end: Any = None,
                 commissioning: dict[str, str] | None = None,
-                shift: dict[str, Any] | None = None) -> dict[str, Any]:
+                shift: dict[str, Any] | None = None,
+                escrow_plan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Прогноз проекта по уже загруженным данным; чего нет — названо с местом.
 
     ``commissioning`` — утверждённый срок ввода сводки (к нему раскрытие),
-    ``shift`` — прогноз Монитора, если он позже: только строкой допущений.
+    ``shift`` — прогноз Монитора, если он позже: только строкой допущений,
+    ``escrow_plan`` — эскроу по плану финмодели вместо темпа (`sources.collect`).
     """
-    inputs = inputs_for(project, sales_project, sales_dir, end, commissioning, shift)
+    inputs = inputs_for(project, sales_project, sales_dir, end, commissioning, shift,
+                        escrow_plan)
     # Договоры из отчёта о продажах есть у многих проектов; кредитным проект
     # делает только загрузка данных по кредитам.
     if not inputs.get("preset"):
@@ -2168,5 +2173,11 @@ def for_project(project: str, sales_project: str = "", sales_dir: Path | None = 
     for run in (result["base"], result["stress"]):
         run["assumptions"] = list(inputs["notes"])
     result["preset_id"] = inputs.get("preset") or "kutuzov_city"
+    # Отложенное до даты РСС (проценты и плата за отсрочку с первой выдачи):
+    # сводке — чтобы отделить его от процентов, начисленных в прогнозе.
+    result["opening_deferred"] = {
+        key.split(".", 1)[1]: _sum(item["data"].get("deferred"),
+                                   item["data"].get("interest_on_deferred"))
+        for key, item in (inputs.get("datasets") or {}).items() if key.startswith("deferred.")}
     result["state"] = "ok"
     return result

@@ -124,7 +124,6 @@ def test_the_disclosure_is_told_and_the_dip_is_not_compared(monkeypatch):
     at = built["funding"]["escrow"]["queues"][0]["at_commissioning"]
     assert at["plan_at"] == "2027-01"
     assert (at["plan_escrow"], at["plan_pf"]) == (pytest.approx(105 * M), pytest.approx(100 * M))
-    assert "к вводу 31.03.2027 (утверждённый срок; план — на январь 2027, до раскрытия)" in page
 
 
 def test_a_dip_without_an_explanation_fails(monkeypatch):

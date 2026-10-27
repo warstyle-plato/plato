@@ -249,8 +249,13 @@ def rate_kind(rates: dict[str, float], cover: dict[str, float]) -> str:
 
 def collect(project: str, sales_project: str = "", sales_dir: Path | None = None,
             end: Any = None, commissioning: dict[str, str] | None = None,
-            shift: dict[str, Any] | None = None) -> dict[str, Any]:
+            shift: dict[str, Any] | None = None,
+            escrow_plan: dict[str, Any] | None = None) -> dict[str, Any]:
     """Наборы для расчёта из загруженного: {"preset", "history", "datasets", "missing", "notes"}.
+
+    ``escrow_plan`` — сценарий «по плану финмодели» сводки: {"series": ряд
+    эскроу финмодели по месяцам, "cut": месяц раскрытия, после которого ряд
+    уже гасит кредит} — эскроу после даты РСС растёт до плана, а не по темпу.
 
     ``history`` — наборы от первой выдачи (досчитать долг и проценты до даты РСС),
     ``datasets`` — наборы на дату РСС для прогноза, кроме состояния кредита: его
@@ -351,7 +356,13 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
         balance = sum(p["amount"] for p in payments if p["date"][:7] <= as_of[:7])
         ahead: dict[str, list[dict[str, Any]]] = {"contracts": [], "sales": []}
         pace = _escrow_pace(rows, credit_plan, when)
-        if pace:
+        if escrow_plan is not None:
+            ahead = _plan_forecast(escrow_plan, balance, as_of, when)
+            pace = None
+            notes.append("Поступления на эскроу до ввода — по плану финмодели (ряд эскроу "
+                         "листа «КРЕДИТЫ» до раскрытия): после даты РСС остаток растёт до "
+                         "плана, а не по нынешнему темпу.")
+        elif pace:
             ahead, extra = _escrow_forecast(pace, as_of, when)
             balance += extra
             out["escrow_at_disclosure"] = contracting.keeping_at(pace, when[:7])
@@ -365,6 +376,8 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
         datasets["escrow"] = _set("escrow", as_of, contracts_source + " — поступило по "
                                   f"{credit.ddmmyyyy(as_of)}", {"balance": balance, "history": []})
         datasets["contracts"] = _set("contracts", as_of, contracts_source + (
+            "; дальше — до плана эскроу финмодели" if escrow_plan is not None and
+            ahead["contracts"] else
             "; дальше — рассрочка по подписанным договорам, равномерно до ввода"
             if ahead["contracts"] else ""),
             {"payments": payments + ahead["contracts"], "signed": signed})
@@ -373,7 +386,10 @@ def collect(project: str, sales_project: str = "", sales_dir: Path | None = None
         datasets["refunds"] = _set("refunds", as_of, "расторгнутые договоры в контрактации не "
                                    "показываются — их поступлений в графиках нет",
                                    {"payments": []})
-        if pace:
+        if escrow_plan is not None:
+            datasets["sales"] = _set("sales", as_of, "новые продажи — внутри ряда эскроу "
+                                     "финмодели", {"payments": []})
+        elif pace:
             datasets["sales"] = _set("sales", as_of, "новые продажи по нынешнему темпу "
                                      "подписания, равномерно до ввода (как в «Эскроу по "
                                      "кварталам» сводки)", {"payments": ahead["sales"]})
@@ -508,6 +524,28 @@ def _escrow_forecast(pace: dict[str, Any], as_of: str, when: str
                 out[kind].append({"date": day, "month_only": True, "amount": amount,
                                   "sale_month": month})
     return out, folded
+
+
+def _plan_forecast(plan: dict[str, Any], balance: float, as_of: str, when: str
+                   ) -> dict[str, list[dict[str, Any]]]:
+    """Поступления, доводящие эскроу до плана финмодели на каждый месяц до ввода.
+
+    Ряд финмодели — накопленный остаток; после месяца раскрытия он уже гасит
+    кредит, поэтому берётся на месяц раскрытия (``cut``). Остаток выше плана
+    не уменьшается: поступление не бывает отрицательным.
+    """
+    out: dict[str, list[dict[str, Any]]] = {"contracts": [], "sales": []}
+    series, cut = plan.get("series") or {}, plan.get("cut") or ""
+    settle, month, running = when[:7], as_of[:7], balance
+    while month < settle:
+        month = _next_month(month)
+        target = contracting.plan_on(series, min(month, cut) if cut else month)
+        if target is None or target <= running + 0.5:
+            continue
+        day = when if month == settle else _month_end(month)
+        out["contracts"].append({"date": day, "month_only": True, "amount": target - running})
+        running = target
+    return out
 
 
 def _bank_plan(bank: dict[str, Any]) -> dict[str, Any]:

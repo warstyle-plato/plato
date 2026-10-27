@@ -2,9 +2,9 @@
 
 Проверяется то, что видит человек, — в Chromium по настоящей разметке:
 
-- в сводке раздел «Погашение кредитов» сверху — простая таблица «когда и сколько
-  платить по НКЛ и сколько будет на эскроу» (владелец, 27.10.2026) из того же
-  прогноза; подробный расчёт — свёрнут под ней и раскрывается щелчком: статус,
+- в сводке раздел «Погашение кредитов» сверху — вывод и одна таблица по датам
+  платежей НКЛ с процентами против эскроу (владелец, 27.10.2026) из того же
+  прогноза; подробный расчёт свёрнут за «Как посчитано» и раскрывается: статус,
   верхний блок и основная таблица в порядке столбцов ТЗ (п. 7), строка
   раскрывается до двух НКЛ, число — до формулы;
 - в сводке нет технических пояснений (имён наборов, пунктов ТЗ, условий
@@ -68,9 +68,9 @@ def test_the_report_shows_the_credit_block_as_the_tz_asks():
     credit.save(PROJECT, _items(), "проверка")
     built = report.build(PROJECT, "week", "2026-10-18")
     assert built["credit"]["state"] == "ok" and built["credit_due"]["state"] == "ok"
-    # В сообщении — одна строка простой таблицы, а не статус подробного расчёта.
+    # В сообщении — первая дата и итог простой таблицы, а не статус подробного расчёта.
     told = report.render_text(built)
-    assert "Погашение НКЛ: первый обязательный платёж 20.09.2027" in told
+    assert "Погашение кредитов: " + report.credit_main(built["credit_due"]) in told
     assert "Кредиты: статус" not in told
     body = report.render_html(built)
     chrome, sync_playwright = _launch()
@@ -83,9 +83,9 @@ def test_the_report_shows_the_credit_block_as_the_tz_asks():
             block = tab.locator("#block-credit")
             assert block.is_visible() and block.inner_text() == "Погашение кредитов"
             section = tab.locator("div.keep:has(#block-credit)")
-            simple = section.locator("table").first
-            assert simple.locator("th").all_inner_texts()[:3] == [
-                "Платёж по НКЛ", "НКЛ 2025", "НКЛ 2026"]
+            simple = section.locator("table.credit-due")
+            assert simple.locator("th").all_inner_texts()[:4] == [
+                "Дата", "Основной долг", "Проценты (темп)", "Проценты (план ФМ)"]
             # Подробный расчёт свёрнут, пока его не открыли.
             more = section.locator("details.credit-more")
             assert not more.locator("table.credit-table").is_visible()

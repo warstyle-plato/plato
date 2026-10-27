@@ -56,17 +56,14 @@ def test_the_escrow_at_the_approved_commissioning(monkeypatch):
     assert at["keeping_coverage"] == pytest.approx(1.0333, abs=1e-4)
     assert at["plan_coverage"] == pytest.approx(0.9)
 
+    # Отдельного «покрывает (1,03×)» в сводке больше нет: покрытие одно — вывод
+    # таблицы погашения НКЛ (владелец, 27.10.2026: «три разных покрытия»).
+    # Число «к вводу» — вход этой таблицы и строки «если ввод сдвинется».
     text = report.render_text(built)
-    assert ("к вводу 31.12.2026 (утверждённый срок) по прогнозу на эскроу будет "
-            "103,3 млн ₽ — покрывает кредит 100,0 млн ₽ (1,03×); по плану финмодели — "
-            "90,0 млн ₽, 0,90×.") in text, text
-    found = {item["topic"]: item["text"] for item in built["findings"]}
-    assert ("к вводу 31.12.2026 по прогнозу эскроу покроет кредит (1,03×), "
-            "по плану финмодели — 0,90×") in found["Финансирование"], found["Финансирование"]
-
+    assert "1,03×" not in text and "0,90×" not in text
+    assert "Хватит ли эскроу на платежи по НКЛ с процентами:" in text
     page = report.render_html(built)
-    assert "к вводу 31.12.2026 (утверждённый срок)" in page and "Покрытие кредита эскроу" in page
-    assert "1,03×" in page and "0,90×" in page
+    assert "<th>Покрытие кредита эскроу</th>" not in page
 
 
 def test_without_an_approved_date_there_is_no_answer_at_commissioning(monkeypatch):
@@ -79,13 +76,10 @@ def test_without_an_approved_date_there_is_no_answer_at_commissioning(monkeypatc
             "31.12.2026 (прогноз Монитора).") in text
 
 
-def test_a_short_pace_is_told_as_not_covering():
+def test_a_short_pace_gives_a_short_cover():
     block = {"measured_at": "2026-09", "actual": 60 * M, "pace": 5 * M}
     queue = {"escrow": {"2026-12": 90 * M}, "pf": {"2026-12": 100 * M}}
     at = contracting.escrow_at(block, queue, "2026-12")
     assert at["keeping_coverage"] == pytest.approx(0.75)
-    words = report._commissioning_words({"at_commissioning": dict(
-        at, date="2026-12-31", source="прогноз Монитора")})
-    assert "НЕ покрывает кредит 100,0 млн ₽ (0,75×)" in words
     # Ввод не впереди замера — прогноза нет, а не «покрывает».
     assert contracting.escrow_at(block, queue, "2026-09") is None

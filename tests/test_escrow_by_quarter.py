@@ -10,9 +10,9 @@
   текущий и будущие — прогноз (рассрочка и продажи до ввода), отклонения к обоим планам;
   нет плана — «нет данных», а не ноль;
 - текст сводки берёт те же числа; прежние таблицы «Эскроу против плана
-  банка», «Эскроу, очередь» и «Эскроу к вводу» сведены в эту и в «Покрытие
-  кредита эскроу», покрытие к вводу и к раскрытию на месте;
-- «1 очередь» не пишется; при двух очередях имена есть;
+  банка», «Эскроу, очередь» и «Эскроу к вводу» сведены в эту; покрытие —
+  одно, вывод таблицы погашения НКЛ;
+- «1 очередь» не пишется; при двух очередях план финмодели — их сумма;
 - на телефоне таблица прокручивается в своей рамке, страница не шире экрана.
 
 Запуск: python3 -m pytest tests/test_escrow_by_quarter.py -q
@@ -87,8 +87,10 @@ def test_the_text_and_the_table_tell_the_same_numbers(monkeypatch):
     # Прежние таблицы сведены сюда; покрытие кредита осталось.
     for gone in ("Эскроу против плана банка", "Эскроу, очередь", "Эскроу к вводу"):
         assert gone not in page, gone
-    assert "Покрытие кредита эскроу" in page
-    assert "к раскрытию (январь 2027)" in page and "к вводу 31.12.2026 (утверждённый срок)" in page
+    # Отдельной таблицы покрытия «к раскрытию / к вводу» нет: покрытие одно —
+    # вывод таблицы погашения НКЛ (владелец, 27.10.2026).
+    assert "<th>Покрытие кредита эскроу</th>" not in page
+    assert "Хватит ли эскроу на платежи по НКЛ с процентами:" in page
     found = {item["topic"]: item["text"] for item in built["findings"]}
     assert "эскроу на конец 2026 Q3 ниже плана банка на 10,0 млн ₽" in found["Финансирование"]
 
@@ -101,7 +103,7 @@ def test_one_queue_is_not_named(monkeypatch):
         assert "1 очередь" not in said and "очереди" not in said
 
 
-def test_two_queues_are_named(monkeypatch):
+def test_two_queues_are_summed(monkeypatch):
     _project()
     _sales()
     kept = sales_store.load(sales_store.default_dir(), "ЖК")
@@ -112,8 +114,9 @@ def test_two_queues_are_named(monkeypatch):
     monkeypatch.setattr(report, "_monitor_view", lambda project, end: {"dashboard": {
         "funding": {"known": False, "reason": "нет"}, "schedule": SCHEDULE}})
     built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
-    page = report.render_html(built)
-    assert "Эскроу 1-й очереди: к раскрытию" in page and "Эскроу 2-й очереди: к раскрытию" in page
+    # Таблица по кварталам — по проекту: план финмодели — сумма очередей.
+    rows = {row["quarter"]: row for row in built["funding"]["escrow_track"]["rows"]}
+    assert rows["2026 Q3"]["fm"] == pytest.approx(2 * 45 * M)
 
 
 def test_without_a_bank_plan_the_cells_say_no_data(monkeypatch):
