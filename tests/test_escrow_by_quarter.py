@@ -33,7 +33,7 @@ from market_search import sales_store  # noqa: E402
 from test_management_report_funding import _isolated, _project, _sales  # noqa: E402,F401
 from test_management_report_model import M, PROJECT  # noqa: E402
 
-SCHEDULE = {"forecast_finish": "2026-12-31"}
+SCHEDULE = {"approved_finish": "2026-12-31"}
 
 
 def _built(monkeypatch, bank: bool = True):
@@ -83,7 +83,7 @@ def test_the_text_and_the_table_tell_the_same_numbers(monkeypatch):
     for gone in ("Эскроу против плана банка", "Эскроу, очередь", "Эскроу к вводу"):
         assert gone not in page, gone
     assert "Покрытие кредита эскроу" in page
-    assert "к раскрытию (январь 2027)" in page and "к вводу 31.12.2026 (прогноз Монитора)" in page
+    assert "к раскрытию (январь 2027)" in page and "к вводу 31.12.2026 (утверждённый срок)" in page
     found = {item["topic"]: item["text"] for item in built["findings"]}
     assert "эскроу на конец 2026 Q3 ниже плана банка на 10,0 млн ₽" in found["Финансирование"]
 

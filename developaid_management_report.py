@@ -479,17 +479,34 @@ def _credit_parts(sales_project: str, data_dir: Path | None) -> tuple[list, Any]
 
 
 def _commissioning(dashboard: dict[str, Any] | None) -> dict[str, str] | None:
-    """Срок ввода для эскроу: прогноз Монитора, без него — утверждённый."""
-    block = (dashboard or {}).get("schedule") or {}
-    if block.get("forecast_finish") and block.get("forecast_known", True):
-        return {"date": str(block["forecast_finish"])[:10], "source": "прогноз Монитора"}
-    if block.get("approved_finish"):
-        return {"date": str(block["approved_finish"])[:10], "source": "утверждённый срок"}
-    return None
+    """Срок ввода для эскроу — утверждённый, из того же `schedule`, что блок «Срок».
+
+    Владелец, 27.10.2026: «Откуда в сводке взят ввод этот? Ввод в сентябре
+    2027» — решение «ввод — утверждённый, прогноз отдельно». Прогноз Монитора по
+    темпу работ к эскроу не подставляется: он показан рядом своей строкой
+    (`_forecast_shift`). Нет утверждённого срока — нет и ответа «к вводу».
+    """
+    block = schedule(dashboard or {})
+    if block.get("state") != "ok" or not block.get("approved"):
+        return None
+    return {"date": str(block["approved"])[:10], "source": "утверждённый срок"}
+
+
+def _forecast_shift(dashboard: dict[str, Any] | None,
+                    commissioning: dict[str, str] | None) -> dict[str, Any] | None:
+    """Прогноз Монитора, если он позже утверждённого ввода: дата и работа, которая тянет."""
+    block = schedule(dashboard or {})
+    if block.get("state") != "ok" or not block.get("forecast") or not block.get("known"):
+        return None
+    date = str(block["forecast"])[:10]
+    if commissioning and date <= commissioning["date"]:
+        return None
+    return {"date": date, "source": "прогноз Монитора", "driver": block.get("driver")}
 
 
 def _escrow(sales_project: str, data_dir: Path | None,
-            commissioning: dict[str, str] | None = None) -> dict[str, Any]:
+            commissioning: dict[str, str] | None = None,
+            shift: dict[str, Any] | None = None) -> dict[str, Any]:
     if not str(sales_project or "").strip():
         return _missing("Проект не связан с отчётом о продажах — эскроу и план "
                         "кредита взять неоткуда.")
@@ -504,6 +521,17 @@ def _escrow(sales_project: str, data_dir: Path | None,
         at = (contracting.escrow_at(block, queue, commissioning["date"][:7])
               if commissioning else None)
         block["at_commissioning"] = dict(at, **commissioning) if at else None
+        # Второе число — к дате прогноза, если ввод по темпу работ уедет. План
+        # кредита на ту дату уже гасит кредит из эскроу с утверждённого ввода,
+        # поэтому кредит берётся остатком перед погашением (на раскрытие по
+        # плану): до ввода гасить его нечем.
+        keeping = contracting.keeping_at(block, shift["date"][:7]) if shift else None
+        owed = block.get("plan_pf_at")
+        block["at_forecast"] = ({"date": shift["date"], "source": shift["source"],
+                                 "keeping_escrow": keeping, "credit": owed,
+                                 "credit_at": block.get("disclosure"),
+                                 "keeping_coverage": keeping / owed if owed else None}
+                                if keeping is not None else None)
     plan_escrow: dict[str, float] = {}
     plan_pf: dict[str, float] = {}
     for queue in (credit or {}).get("queues") or []:
@@ -695,7 +723,9 @@ def funding(project: str, kind: str, end: Any, sales_project: str = "",
         "limit": limit,
     }
     commissioning = _commissioning(dashboard)
-    out["escrow"] = _escrow(sales_project, data_dir, commissioning)
+    shift = _forecast_shift(dashboard, commissioning)
+    out["commissioning_shift"] = shift
+    out["escrow"] = _escrow(sales_project, data_dir, commissioning, shift)
     out["escrow_bank"] = _bank_escrow(sales_project, data_dir, bounds["end"])
     out["escrow_track"] = _escrow_track(sales_project, data_dir, bounds["end"], out["escrow"],
                                         out["escrow_bank"], commissioning)
@@ -920,7 +950,31 @@ def schedule(dashboard: dict[str, Any]) -> dict[str, Any]:
             "known": block.get("forecast_known", True),
             "source": block.get("forecast_source") or "",
             "delay_days": block.get("rnv_delay_days"),
-            "stalled": list(block.get("stalled") or [])}
+            "stalled": list(block.get("stalled") or []),
+            "driver": block.get("driver")}
+
+
+def _driver_words(driver: dict[str, Any] | None) -> str:
+    """«срок тянет работа «Фасады» (корпус 2): принято 12 % объёма, по нынешнему
+    темпу закончится 15.12.2028 вместо 31.05.2027»."""
+    if not driver or not driver.get("name"):
+        return ""
+    text = f"срок тянет работа «{driver['name']}»"
+    # Статья сметы рядом: процент принятого считается по ней, и неверная
+    # привязка работы к статье видна сразу, а не после разбора.
+    where = [str(driver["object"])] if driver.get("object") else []
+    codes = [str(code) for code in driver.get("rss_codes") or [] if code]
+    if codes:
+        where.append(f"статья сметы {', '.join(codes)}")
+    if where:
+        text += f" ({'; '.join(where)})"
+    facts = []
+    if driver.get("progress") is not None:
+        facts.append(f"принято {float(driver['progress']) * 100:.0f} % объёма")
+    if driver.get("forecast_finish") and driver.get("plan_finish"):
+        facts.append(f"по нынешнему темпу закончится {_day(driver['forecast_finish'])} "
+                     f"вместо {_day(driver['plan_finish'])} по плану")
+    return text + (": " + ", ".join(facts) if facts else "")
 
 
 def _stalled_words(block: dict[str, Any]) -> str:
@@ -1172,6 +1226,9 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         else:
             text = (f"Прогноз ввода при нынешнем темпе — {_day(block['forecast'])}; "
                     "утверждённого срока ввода в данных Монитора нет, сравнить не с чем.")
+        driver = _driver_words(block.get("driver")) if late else ""
+        if driver:
+            text += " " + driver[:1].upper() + driver[1:] + "."
         if block.get("stalled"):
             text += " " + _stalled_words(block)
         add("Срок", text, "прогноз Монитора по темпу работ",
@@ -1767,6 +1824,51 @@ def _escrow_cover_lines(escrow: dict[str, Any]) -> list[str]:
     return out
 
 
+def _disclosure_order_words(escrow: dict[str, Any]) -> str:
+    """Почему «к раскрытию» стоит раньше ввода: месяц перед погашением по плану.
+
+    Раскрытие считается по плану кредита: с месяца погашения эскроу уходит в
+    погашение, поэтому покрытие «к раскрытию» берётся на месяц раньше — когда
+    на эскроу ещё лежит всё накопленное. При вводе в сентябре и погашении с
+    сентября это август, и без пояснения порядок «раскрытие, потом ввод»
+    читается как ошибка.
+    """
+    for queue in escrow.get("queues") or []:
+        at = queue.get("at_commissioning") or {}
+        if (queue.get("disclosure_known") and queue.get("repay_from") and at.get("date")
+                and queue["disclosure"] < at["date"][:7]):
+            return (f"Погашение кредита из эскроу по плану финмодели начинается "
+                    f"{_since(queue['repay_from'])}, поэтому покрытие «к раскрытию» "
+                    f"взято на {_months_label(queue['disclosure'])} — последний месяц, когда на "
+                    f"эскроу лежит всё накопленное, а не после ввода.")
+    return ""
+
+
+def _shift_lines(block: dict[str, Any]) -> list[str]:
+    """Прогноз Монитора отдельно от утверждённого ввода: дата, работа, второе число."""
+    shift = block.get("commissioning_shift")
+    if not shift:
+        return []
+    text = f"По темпу работ ввод может сдвинуться на {_day(shift['date'])} (прогноз Монитора)"
+    driver = _driver_words(shift.get("driver"))
+    out = [text + (f" — {driver}" if driver else "") + "."]
+    escrow = block.get("escrow") or {}
+    queues = escrow.get("queues") or []
+    for queue in queues:
+        at = queue.get("at_forecast")
+        if not at:
+            continue
+        named = _escrow_of(queue, queues)
+        line = (f"Если ввод сдвинется, к {_day(at['date'])} при нынешнем темпе на {named} "
+                f"будет {_rub(at['keeping_escrow'])}")
+        if at.get("keeping_coverage") is not None:
+            line += (" — " + ("НЕ покрывает" if at["keeping_coverage"] < 1 else "покрывает")
+                     + f" кредит {_rub(at['credit'])} (остаток перед погашением по плану "
+                     f"финмодели, {_months_label(at['credit_at'])}; {_times(at['keeping_coverage'])})")
+        out.append(line + ".")
+    return out
+
+
 def _escrow_track_html(track: dict[str, Any]) -> str:
     """Одна таблица эскроу по кварталам: планы банка и финмодели, факт или прогноз."""
     esc = html.escape
@@ -1823,6 +1925,12 @@ def _escrow_cover_html(escrow: dict[str, Any]) -> str:
                          _rub(at.get("keeping_escrow")), _rub(at.get("plan_escrow")),
                          _rub(at.get("plan_pf")), _times(at.get("keeping_coverage")),
                          _times(at.get("plan_coverage"))])
+        later = queue.get("at_forecast")
+        if later:
+            rows.append([esc(prefix + f"если ввод сдвинется на {_day(later['date'])} "
+                                      f"({later['source']})"),
+                         _rub(later.get("keeping_escrow")), "—", _rub(later.get("credit")),
+                         _times(later.get("keeping_coverage")), "—"])
     if not rows:
         return ""
     return _table(["Покрытие кредита эскроу", "На эскроу при нынешнем темпе",
@@ -2067,6 +2175,10 @@ def _funding_text(report: dict[str, Any]) -> list[str]:
     if escrow.get("state") != "ok":
         lines.append(escrow.get("reason") or "Эскроу: данных нет.")
     lines.extend(_escrow_cover_lines(escrow))
+    lines.extend(_shift_lines(block))
+    order = _disclosure_order_words(escrow)
+    if order:
+        lines.append(order)
     words = _schedule_words(report.get("funding_schedule") or {})
     if words:
         lines.append(words)
@@ -2244,6 +2356,10 @@ def _funding_html(report: dict[str, Any]) -> str:
     if escrow.get("state") != "ok":
         out.append(f"<p class='missing'>{esc(escrow.get('reason') or 'Эскроу: данных нет.')}</p>")
     out.append(_escrow_cover_html(escrow))
+    out.extend(f"<p class='note warn'>{esc(line)}</p>" for line in _shift_lines(block))
+    order = _disclosure_order_words(escrow)
+    if order:
+        out.append(f"<p class='note'>{esc(order)}</p>")
     out.append(f"<p class='note'>Платежи — из отчёта РСС от {_day(block['rss'])}.</p>")
     return "\n".join(out)
 
@@ -3248,6 +3364,9 @@ def render_html(report: dict[str, Any]) -> str:
                    f"{_day(block['forecast'])}"
                    + (f" — на {delay:.0f} дн. позже." if isinstance(delay, (int, float))
                       and delay > 0 else ".") + "</p>")
+        driver = _driver_words(block.get("driver"))
+        if driver and isinstance(delay, (int, float)) and delay > 0:
+            out.append(f"<p class='note warn'>{html.escape(driver[:1].upper() + driver[1:])}.</p>")
         if block.get("stalled"):
             out.append(f"<p class='note warn'>{html.escape(_stalled_words(block))}</p>")
 
