@@ -72,7 +72,7 @@ def test_the_link_is_explicit_and_kept_on_the_server():
     assert report.sales_link(PROJECT)["sales_project"] == SALES
     linked = report.build(PROJECT, "month", "2026-10-31")
     assert linked["sales"]["state"] == "ok"
-    assert "План банка на квартал: 280,0 млн ₽" in report.render_text(linked)
+    assert "План банка на квартал — 280,0 млн ₽" in report.render_text(linked)
 
     report.link_sales(PROJECT, "", "Иванов")
     declined = report.build(PROJECT, "month", "2026-10-31")

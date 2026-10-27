@@ -43,6 +43,14 @@ import developaid_report_gantt as report_gantt
 from market_search import contracting, salesroom, sales_store
 
 PERIODS = {"week": "неделю", "month": "месяц"}
+_PREVIOUS = {"week": "прошлую неделю", "month": "прошлый месяц"}
+
+
+def _sold(amount: float | None) -> str:
+    """«продано на 178,0 млн ₽» или «продаж не было» — вместо «— 0 ₽»."""
+    if amount is None:
+        return "продажи не посчитаны"
+    return f"продано на {_rub(amount)}" if amount > 0.5 else "продаж не было"
 
 _MONTHS = ("январь", "февраль", "март", "апрель", "май", "июнь", "июль",
            "август", "сентябрь", "октябрь", "ноябрь", "декабрь")
@@ -1744,33 +1752,32 @@ def findings(report: dict[str, Any]) -> list[dict[str, str]]:
         # Продают лоты, а договоры заключают (владелец, 23.10.2026: «Проданы
         # договоры?»).
         lots = int(round(float(fact.get("units") or 0.0)))
-        pieces = [f"С начала квартала продано {lots} {_plural(lots, 'лот', 'лота', 'лотов')} "
-                  f"({fact['contracts']} {_plural(fact['contracts'], 'договор', 'договора', 'договоров')}) "
-                  f"на {_rub(fact['amount'])}, {_area(fact['area'])} ({SIGNED_BASIS})"]
-        for name, plan in (("финмодели", quarter.get("fm")), ("банка", quarter.get("bank"))):
-            if plan and plan.get("amount"):
-                gap = fact["amount"] - plan["amount"]
-                piece = (f"план {name} выполнен на {_pct(_share(fact['amount'], plan['amount']))} "
-                         f"({'больше' if gap >= 0 else 'меньше'} на {_rub(abs(gap))}")
-                if plan.get("area"):
-                    piece += f", {_area(abs(fact['area'] - plan['area']))}"
-                pieces.append(piece + ")")
-        text = "; ".join(pieces) + "."
+        # Полными фразами (владелец, 27.10.2026: «Сложный язык, непонятный»).
+        text = (f"С начала квартала продано {lots} {_plural(lots, 'лот', 'лота', 'лотов')} "
+                f"({fact['contracts']} {_plural(fact['contracts'], 'договор', 'договора', 'договоров')}) "
+                f"на {_rub(fact['amount'])}, {_area(fact['area'])} ({SIGNED_BASIS}).")
+        shares = [f"{_pct(_share(fact['amount'], plan['amount']))} плана {name} "
+                  f"({_rub(plan['amount'])})"
+                  for name, plan in (("финмодели", quarter.get("fm")), ("банка", quarter.get("bank")))
+                  if plan and plan.get("amount")]
+        if shares:
+            text += (" Это " + " и ".join(shares) + ", а квартал прошёл на "
+                     f"{_pct(_quarter_elapsed(_date(report['end'])))}.")
         previous = block.get("previous") or {}
-        text += (f" За {period} — {_rub(block['period']['amount'])}, "
-                 f"за предыдущий такой же период — {_rub(previous.get('amount'))}.")
+        text += (f" За {period} {_sold(block['period']['amount'])}. "
+                 f"За {_PREVIOUS[report['kind']]} {_sold(previous.get('amount'))}.")
         pace = [p for p in block.get("pace") or [] if p.get("area")]
         if len(pace) >= 4:
             last, before = pace[-2], pace[-5:-2]
             average = sum(p["area"] for p in before) / len(before)
             if average:
                 change = last["area"] / average - 1
-                text += (f" Темп за {_months_label(last['month'])} — {_area(last['area'])}, "
-                         f"{'выше' if change >= 0 else 'ниже'} среднего трёх месяцев до него "
-                         f"на {abs(change) * 100:.0f}%.")
+                text += (f" В {_in_month(last['month'])} продано {_area(last['area'])} — на "
+                         f"{abs(change) * 100:.0f}% {'больше' if change >= 0 else 'меньше'}, "
+                         "чем в среднем за три месяца до этого.")
         pool = (block.get("pool") or {}).get("total") or {}
         if pool.get("pool_area"):
-            text += (f" Продано {_pct(pool.get('area_share'))} площади, осталось "
+            text += (f" Всего с начала продаж продано {_pct(pool.get('area_share'))} площади, осталось "
                      f"{_area(pool['pool_area'] - pool['sold_area'])}.")
         add("Продажи", text, f"отчёт о продажах от {_day(block.get('uploaded'))}, планы финмодели и банка",
             "bad" if quarter.get("fm") and fact["amount"] < quarter["fm"]["amount"] else "")
@@ -2019,8 +2026,10 @@ def _managers_line(block: dict[str, Any]) -> str:
     managers = pipe.get("managers") or []
     text = ""
     if managers:
-        text = "По менеджерам (по имени у брони): " + "; ".join(
-            f"{row['author']} — новые брони {row['bookings']}, договоры {row['deals']}"
+        text = "По менеджерам: " + ", ".join(
+            f"{row['author']} — {row['bookings']} "
+            f"{_plural(row['bookings'], 'новая бронь', 'новые брони', 'новых броней')} и "
+            f"{row['deals']} {_plural(row['deals'], 'договор', 'договора', 'договоров')}"
             for row in managers) + "."
     if notes:
         text += (" " if text else "Оговорки: ") + "; ".join(notes) + "."
@@ -2054,26 +2063,12 @@ def _signed_note(quarter: dict[str, Any]) -> str:
     days = " и ".join(_date(day).strftime("%d.%m") for day in edge["days"])
     count = int(edge["contracts"])
     total = float(quarter["fact"]["amount"]) + float(edge["amount"])
-    return (f"{SIGNED_NOTE} В этот квартал не входят {count} "
-            f"{_plural(count, 'договор', 'договора', 'договоров')} на {_rub(edge['amount'])}, "
-            f"подписанные {days}, в последние две недели прошлого квартала. Если их "
-            f"зарегистрировали уже в этом квартале, у отдела продаж квартал — "
-            f"{_rub(total)} вместо {_rub(quarter['fact']['amount'])} в сводке.")
-
-
-def _edge_words(quarter: dict[str, Any]) -> str:
-    """Для подписи плитки — полной фразой, без «до» (владелец, 27.10.2026: «Что
-    значит до?»): сколько выйдет по дате регистрации и за счёт каких договоров."""
-    edge = quarter.get("edge") or {}
-    if not edge.get("contracts"):
-        return ""
-    total = float(quarter["fact"]["amount"]) + float(edge["amount"])
-    count = int(edge["contracts"])
-    return (f". Отдел продаж считает по дате регистрации: если {count} "
-            f"{_plural(count, 'договор', 'договора', 'договоров')} на {_rub(edge['amount'])}, "
-            f"{_plural(count, 'подписанный', 'подписанные', 'подписанные')} в последние две "
-            f"недели прошлого квартала, {_plural(count, 'зарегистрирован', 'зарегистрированы', 'зарегистрированы')} "
-            f"уже в этом, у него квартал — {_rub(total)}")
+    return (f"{SIGNED_NOTE} Сейчас это {count} "
+            f"{_plural(count, 'договор', 'договора', 'договоров')} на {_rub(edge['amount'])}: "
+            f"{_plural(count, 'он подписан', 'они подписаны', 'они подписаны')} {days}, в конце "
+            "прошлого квартала, и сводка относит их туда. Если их зарегистрировали уже в этом "
+            f"квартале, у отдела продаж квартал — {_rub(total)}, а в сводке — "
+            f"{_rub(quarter['fact']['amount'])}.")
 
 
 def _booked_words(item: dict[str, Any]) -> str:
@@ -2128,9 +2123,11 @@ def _bookings_line(block: dict[str, Any] | None, kind: str) -> str:
 def _sales_line(label: str, fact: dict[str, Any]) -> str:
     price = (f", квартиры в среднем по {_rub(fact['price_flats'])} за м²"
              if fact.get("price_flats") else "")
+    if not fact["contracts"]:
+        return f"{label} договоров нет."
     word = _plural(fact["contracts"], "договор", "договора", "договоров")
     pieces = _pieces(fact)
-    return (f"{label}: {fact['contracts']} {word} на {_rub(fact['amount'])}: "
+    return (f"{label} — {fact['contracts']} {word} на {_rub(fact['amount'])}, "
             f"квартиры и помещения — {_area(fact['area'])}"
             + (f", {pieces}" if pieces else "") + f"{price}.")
 
@@ -2839,17 +2836,17 @@ def render_text(report: dict[str, Any]) -> str:
         lines.append(_sales_line(f"За {PERIODS[report['kind']]}", block["period"]))
         month = block["month"]
         if month.get("fm"):
-            lines.append(f"План финмодели на месяц: {_rub(month['fm']['amount'])}, "
-                         f"{_area(month['fm']['area'])}; продано с начала месяца "
-                         f"{_rub(month['fact']['amount'])}, {_area(month['fact']['area'])}.")
+            lines.append(f"План финмодели на месяц — {_rub(month['fm']['amount'])} "
+                         f"({_area(month['fm']['area'])}), продано с начала месяца на "
+                         f"{_rub(month['fact']['amount'])} ({_area(month['fact']['area'])}).")
         quarter = block["quarter"]
-        lines.append(_sales_line(f"С начала квартала {quarter['key']}", quarter["fact"]))
+        lines.append(_sales_line(f"С начала квартала ({_quarter_name(quarter['key'])})", quarter["fact"]))
         if quarter.get("fm"):
-            lines.append(f"План финмодели на квартал: {_rub(quarter['fm']['amount'])}, "
-                         f"{_area(quarter['fm']['area'])}.")
+            lines.append(f"План финмодели на квартал — {_rub(quarter['fm']['amount'])} "
+                         f"({_area(quarter['fm']['area'])}).")
         if quarter.get("bank"):
-            lines.append(f"План банка на квартал: {_rub(quarter['bank']['amount'])}, "
-                         f"{_area(quarter['bank'].get('area'))}.")
+            lines.append(f"План банка на квартал — {_rub(quarter['bank']['amount'])} "
+                         f"({_area(quarter['bank'].get('area'))}).")
         elif quarter.get("bank_reason"):
             lines.append(esc(quarter["bank_reason"]))
         if block.get("funnel") or block.get("pipeline"):
@@ -3289,8 +3286,8 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
         if quarter and plan:
             share = quarter["fact"]["amount"] / plan
             add(f"Продажи квартала к плану {name}", _pct(share),
-                f"{_rub(quarter['fact']['amount'])} из {_rub(plan)} {SIGNED_BASIS}; прошло "
-                f"{_pct(pace)} квартала{_edge_words(quarter)}",
+                f"продано на {_rub(quarter['fact']['amount'])} из {_rub(plan)}, а квартал "
+                f"прошёл на {_pct(pace)}",
                 "bad" if share < pace - 0.05 else "good")
         else:
             add(f"Продажи квартала к плану {name}", None,
@@ -3300,9 +3297,9 @@ def tiles(report: dict[str, Any]) -> list[dict[str, str]]:
     if fact.get("contracts"):
         rest = float(fact["amount"]) - float(fact.get("escrow") or 0.0)
         add("На эскроу по продажам квартала", _rub(fact.get("escrow")),
-            f"из {_rub(fact['amount'])} по договорам квартала ({SIGNED_BASIS}); "
-            + (f"ещё не поступило {_rub(rest)} — рассрочка и оплаты в пути"
-               if rest > 0.5 else "оплачено полностью"))
+            f"из {_rub(fact['amount'])} по договорам квартала"
+            + (f", ещё {_rub(rest)} покупатели внесут позже" if rest > 0.5
+               else ", оплачено полностью"))
     elif quarter:
         add("На эскроу по продажам квартала", None, "договоров в квартале нет")
 

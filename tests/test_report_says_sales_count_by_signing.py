@@ -29,7 +29,9 @@ def test_the_sales_figures_name_their_date():
     built["sales"]["quarter"]["fm"] = {"amount": 500e6,
                                        "area": 1.0}
     tiles = {item["label"]: item for item in report.tiles(built)}
-    assert "по дате подписания" in tiles["Продажи квартала к плану финмодели"]["note"]
+    # Плашка — число и одна строка (владелец, 27.10.2026: «Сложный язык,
+    # непонятный»); про дату подписания — в «Главном» и в разделе «Продажи».
+    assert tiles["Продажи квартала к плану финмодели"]["note"].startswith("продано на ")
     assert "по дате регистрации" in report.render_text(built)
     assert "по дате регистрации" in report.render_html(built)
 
@@ -52,28 +54,26 @@ def test_the_note_names_the_contracts_at_the_quarter_edge():
     assert quarter["edge"] == {"contracts": 2, "amount": 113.5 * M,
                                "days": ["2026-09-28", "2026-09-30"]}
     note = report._signed_note(quarter)
-    assert ("В этот квартал не входят 2 договора на 113,5 млн ₽, подписанные 28.09 и "
-            "30.09, в последние две недели прошлого квартала. Если их зарегистрировали уже "
-            "в этом квартале, у отдела продаж квартал — 291,5 млн ₽ вместо 178,0 млн ₽ "
-            "в сводке.") in note
+    assert ("Сейчас это 2 договора на 113,5 млн ₽: они подписаны 28.09 и 30.09, в конце "
+            "прошлого квартала, и сводка относит их туда. Если их зарегистрировали уже в этом "
+            "квартале, у отдела продаж квартал — 291,5 млн ₽, а в сводке — 178,0 млн ₽.") in note
     built = _full()
     built["sales"]["quarter"] = dict(quarter, fm={"amount": 1_680 * M, "area": 1.0})
     tiles = {item["label"]: item for item in report.tiles(built)}
-    # Полной фразой, без «до» (владелец, 27.10.2026: «Что значит до?»).
+    # Плашка — без истории про регистрацию: число и одна строка (владелец,
+    # 27.10.2026: «Сложный язык, непонятный»); пример с цифрами — в разделе.
     note = tiles["Продажи квартала к плану финмодели"]["note"]
-    assert note.endswith(
-        "квартала. Отдел продаж считает по дате регистрации: если 2 договора на "
-        "113,5 млн ₽, подписанные в последние две недели прошлого квартала, "
-        "зарегистрированы уже в этом, у него квартал — 291,5 млн ₽"), note
-    assert " до " not in note
-    assert "291,5 млн ₽ вместо 178,0 млн ₽" in report.render_text(built)
-    assert "291,5 млн ₽ вместо 178,0 млн ₽" in report.render_html(built)
+    assert note.startswith("продано на 178,0 млн ₽ из 1,68 млрд ₽, а квартал прошёл на "), note
+    assert "регистрац" not in note and ";" not in note
+    assert "у отдела продаж квартал — 291,5 млн ₽, а в сводке — 178,0 млн ₽" in \
+        report.render_text(built)
+    assert "у отдела продаж квартал — 291,5 млн ₽, а в сводке — 178,0 млн ₽" in \
+        report.render_html(built)
 
 
 def test_without_edge_contracts_the_note_stays_general():
     quarter = {"key": "2026 Q4", "fact": {"amount": 1.0}, "edge": None}
     assert report._signed_note(quarter) == report.SIGNED_NOTE
-    assert report._edge_words(quarter) == ""
 
 
 def test_the_note_opens_with_the_reason():

@@ -343,7 +343,7 @@ def test_sales_area_is_of_goods_sold_by_the_metre():
     assert fact["area"] == pytest.approx(50.0) and fact["amount"] == pytest.approx(26 * M)
     assert fact["pieces"] == {"Машиноместо": 2.0} and fact["area_unknown"] == 0
     assert report._sales_line("За неделю", fact) == (
-        "За неделю: 3 договора на 26,0 млн ₽: квартиры и помещения — 50 м², 2 машиноместа, "
+        "За неделю — 3 договора на 26,0 млн ₽, квартиры и помещения — 50 м², 2 машиноместа, "
         "квартиры в среднем по 400 000 ₽ за м².")
 
 
