@@ -2094,6 +2094,45 @@ def text_line(result: dict[str, Any]) -> str:
     return "; ".join(parts) + "."
 
 
+# Какие условия кредитов у проекта Монитора — явной записью, а не догадкой по
+# имени. Сохранённые данные по кредитам (`save`) несут свои условия и главнее.
+PROJECT_PRESETS = {"Гродненская": "kutuzov_city", "Кутузов Сити": "kutuzov_city"}
+
+
+def preset_for(project: str) -> str:
+    """Условия кредитов проекта: из сохранённых данных, иначе из `PROJECT_PRESETS`."""
+    return load(project).get("preset") or PROJECT_PRESETS.get(str(project or "").strip(), "")
+
+
+def obligations(preset_id: str) -> dict[str, Any]:
+    """Обязательные платежи основного долга по НКЛ: когда и сколько.
+
+    Владелец, 27.10.2026: «Долг будет равен сумме лимита! Посмотри в НКЛ период
+    доступности. Он раньше РНВ». База графика — лимит на конец периода
+    доступности (НКЛ 2025 — 30.06.2027, НКЛ 2026 — 30.09.2027), доли и даты —
+    из договоров (`PRESETS[...]["loans"][...]["schedule"]`), последний платёж
+    без доли — остаток. Проценты сюда не входят.
+    """
+    preset = PRESETS[preset_id]
+    rows: dict[str, dict[str, float]] = {}
+    loans = []
+    for loan in preset["loans"]:
+        base = _limit_on(loan, _day(loan["availability_end"]))
+        loans.append({"id": loan["id"], "short": loan["short"], "base": base,
+                      "availability_end": loan["availability_end"]})
+        left = base
+        for when, share in loan["schedule"]:
+            amount = left if share is None else base * share
+            left -= amount
+            rows.setdefault(when, {})[loan["id"]] = amount
+    out, running = [], 0.0
+    for when in sorted(rows):
+        total = sum(rows[when].values())
+        running += total
+        out.append({"date": when, "loans": rows[when], "total": total, "cumulative": running})
+    return {"preset": preset_id, "title": preset["title"], "loans": loans, "rows": out}
+
+
 def for_project(project: str, sales_project: str = "", sales_dir: Path | None = None,
                 stress: dict[str, Any] | None = None) -> dict[str, Any]:
     """Прогноз проекта по сохранённым данным; нет данных — причина."""
