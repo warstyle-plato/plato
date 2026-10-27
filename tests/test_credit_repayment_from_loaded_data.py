@@ -260,3 +260,30 @@ def test_the_report_discloses_at_the_approved_date_as_the_escrow_table(monkeypat
     assert [(e["date"], round(e["amount"])) for e in disclosed] == [
         ("2027-09-15", round(at["keeping_escrow"]))]
     assert any("ввод может сдвинуться на 15.12.2028" in note for note in base["assumptions"])
+
+
+def test_plan_draws_over_the_free_limit_are_fitted_not_zeroed(monkeypatch):
+    """Прод 27.10.2026 (владелец: «опять какая-то чушь»): обе линии выбраны до
+    лимитов года, а финмодель планирует выдачи раньше, чем лимит вырастет. Было:
+    «выборка … выше свободного лимита — учтено 0», статус «не определён»,
+    проценты первого платежа, дефицит и «хватит ли эскроу» — «нет данных».
+    Стало: выдача ложится в свободный лимит на свою дату, недостающее до лимита —
+    в конец доступности; всё считается числами."""
+    monkeypatch.setattr(sys.modules[__name__], "DRAWS",
+                        DRAWS + [(datetime.date(2026, 9, 20), 825 * M)])
+    _project()
+    got = _run()
+    base = got["base"]
+    assert not [gap for gap in base["gaps"] if "выше свободного лимита" in gap], base["gaps"]
+    assert got["status"]["color"] != "unknown", got["status"]
+    first = next(row for row in base["rows"] if (row.get("principal") or 0.0) > 0.5)
+    for key in ("interest_and_fees", "total", "deficit"):
+        assert first[key] is not None, key
+    top = base["top"]
+    for key in ("deficit_total", "first_deficit", "max_deficit", "sufficiency_forecast"):
+        assert top[key]["value"] is not None, key
+    # Долг к концу выборки — весь лимит обеих линий.
+    plan = credit.inputs_for(PROJECT, SALES, end="2026-10-20")["datasets"]
+    future = sum(d["amount"] for name in ("plan.nkl2025", "plan.nkl2026")
+                 for d in plan[name]["data"]["draws"])
+    assert future == pytest.approx((5485.689 + 1125 - 6125) * M)

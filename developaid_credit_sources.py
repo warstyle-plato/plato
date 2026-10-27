@@ -141,6 +141,30 @@ def _plan_draws(loans: list[dict[str, Any]], credit_plan: dict[str, Any] | None,
     return out
 
 
+def _fit(loans: list[dict[str, Any]], drawn: dict[str, float], day: datetime.date,
+         amount: float, overflow: bool) -> list[tuple[dict[str, Any], float]]:
+    """Как выдача ложится на линии по `_split`: первая открытая в пределах лимита
+    на дату, дальше следующая; ``overflow`` — остаток сверх лимитов на первую
+    открытую (так `_split` делает с фактом), иначе остаток не выдаётся."""
+    left, out = amount, []
+    for loan in loans:
+        opened = min(credit._day(d) for d, _ in loan.get("limit_steps") or
+                     [(loan["availability_end"], 0)])
+        if day < opened or day > credit._day(loan["availability_end"]):
+            continue
+        take = min(max(0.0, credit._limit_on(loan, day) - drawn[loan["id"]]), left)
+        if take > 0:
+            out.append((loan, take))
+            left -= take
+        if left <= 1.0:
+            break
+    if overflow and left > 1.0:
+        first = next((loan for loan in loans if day <= credit._day(loan["availability_end"])),
+                     loans[0])
+        out.append((first, left))
+    return out
+
+
 def _to_limit(loans: list[dict[str, Any]], past: list[tuple[datetime.date, float]],
               future: list[tuple[datetime.date, float]], as_of: str
               ) -> tuple[list[tuple[datetime.date, float]], list[tuple[str, datetime.date, float]]]:
@@ -152,6 +176,25 @@ def _to_limit(loans: list[dict[str, Any]], past: list[tuple[datetime.date, float
     последний день доступности. Уже прошедший конец доступности не трогается:
     невыбранное там не выдать.
     """
+    # План финмодели может требовать выдачу, когда свободного лимита на дату
+    # нет (обе линии выбраны до лимита этого года). Такую выдачу банк не даст:
+    # она урезается до свободного лимита на свою дату тем же порядком линий,
+    # что у `_split`, а не ложится сверх лимита — иначе расчёт обнуляет её и
+    # пишет «выше свободного лимита» (владелец на проде, 27.10.2026: «опять
+    # какая-то чушь»). Недостающее до лимита добирается ниже, в конец доступности.
+    drawn = {loan["id"]: 0.0 for loan in loans}
+    for day, amount in sorted(past):
+        for loan, part in _fit(loans, drawn, day, amount, overflow=True):
+            drawn[loan["id"]] += part
+    fitted = []
+    for day, amount in sorted(future):
+        parts = _fit(loans, drawn, day, amount, overflow=False)
+        for loan, part in parts:
+            drawn[loan["id"]] += part
+        taken = sum(part for _, part in parts)
+        if taken > 1.0:
+            fitted.append((day, taken))
+    future = fitted
     split, _ = _split(loans, sorted(past + future))
     out, topped = list(future), []
     for loan in loans:

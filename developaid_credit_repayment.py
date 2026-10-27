@@ -1659,7 +1659,9 @@ def status(base: dict[str, Any], confirmed: dict[str, Any]) -> dict[str, Any]:
     reasons: list[str] = []
     if top["deficit_total"]["value"] is None:
         return {"color": "unknown", "reasons": [
-            "Статус не определён: не хватает исходных данных — " + "; ".join(base["gaps"][:3])]}
+            # Слова «статус не определён, не хватает данных» уже даёт заголовок
+            # строки (`COLORS["unknown"]`): здесь — только чего именно нет.
+            "Чего нет: " + "; ".join(base["gaps"][:3])]}
     if top["deficit_total"]["value"] > 0.5:
         reasons.append(f"Прогнозируется дефицит {mln(top['deficit_total']['value'])} млн ₽, "
                        f"первый — {ddmmyyyy(top['first_deficit']['date'])}.")
@@ -1830,10 +1832,15 @@ def _top_html(result: dict[str, Any]) -> str:
             ("Нужно из источников вне эскроу", top["outside_at_next"]),
             ("Непокрытый дефицит", top["deficit_at_next"]),
         ]
-    for kind, words in (("fact", "на дату данных"), ("forecast", "на 30.06.2027, прогноз")):
+    # Это проверка банка по договору А (п. 8.2.60) на конец периода выборки, а
+    # не ответ «к вводу»: дата — из договора, и это сказано, иначе она читается
+    # как ещё один срок ввода (владелец на проде, 27.10.2026).
+    for kind, words in (("fact", "на дату данных"),
+                        ("forecast", "на 30.06.2027 — конец периода выборки, прогноз")):
         item = top.get(f"sufficiency_{kind}")
         if item:
-            lines.append((f"Хватит ли эскроу на полное погашение НКЛ 2025 ({words})", item))
+            lines.append((f"Хватит ли эскроу на полное погашение НКЛ 2025 — проверка банка "
+                          f"по договору ({words})", item))
     first, biggest = top["first_deficit"], top["max_deficit"]
     lines += [
         ("Первая дата дефицита" + (f" — {ddmmyyyy(first['date'])}" if first["date"] else ""),
