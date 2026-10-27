@@ -101,7 +101,7 @@ def build_operating_model(x: dict, t: dict, rates: list[dict[str, Any]] | None =
     core_total_gns = core_above_gns + core_under_gns
     # Пятно, этажность и подземные уровни — один расчёт на проект; СМР
     # подземной части читает из него надбавку за глубину (`site_massing`).
-    massing = site_massing(x, t)
+    massing = site_massing_fitted(x, t)
     # Объёмная схема проекта без очередей — одно здание; свод очередей
     # раскладывает корпуса по очередям сам (`_consolidate_phase_results`).
     if not x.get("_site_massing_project"):

@@ -2177,9 +2177,12 @@ def _build_project_workbook(
     # красило пустое место, и блок уезжал на лист ввода без стилей.
     report_xml, tep_xml, styles_xml = _v4_report_number_formats(
         report_xml, tep_xml, consolidator_xml, styles_xml)
-    # Блок пятна застройки — на своё место до стилей вводных и листа ввода.
-    xml = _v4_site_massing_flush(xml, missing)
+    # Зеркало стилей E:H ходит по строкам 1–159 и блок пятна не трогает:
+    # блок встаёт после него, иначе 118 его проходов перечитывали бы строки
+    # блока (сторож объёма чтения, tests/test_the_workbook_is_written_by_rows.py).
     xml = _v4_mirror_secondary_input_styles(xml)
+    # Блок пятна застройки — на своё место до форматов вводных и листа ввода.
+    xml = _v4_site_massing_flush(xml, missing)
     xml, styles_xml = _v4_type_input_formats(xml, styles_xml, _v4_block_input_formats(
         social_base_row, _ladder_refs, _landscaping_norm))
     xml = _v4_mark_engine_only_readonly(xml)

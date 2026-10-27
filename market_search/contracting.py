@@ -2191,8 +2191,20 @@ def escrow_actual(rows: list[dict[str, Any]]) -> dict[str, float]:
 PACE_MONTHS = 3
 
 
+def owed_by_contracts(rows: list[dict[str, Any]]) -> float:
+    """Остаток к оплате по подписанным договорам: сумма договора минус уже
+    оплаченное на эскроу (большее из «оплачено эскроу всего» и графика
+    поступлений). Расторгнутых договоров в контрактации нет."""
+    owed = 0.0
+    for row in rows or []:
+        scheduled = sum(float(step["amount"] or 0.0) for step in row.get("escrow_schedule") or [])
+        paid = max(float(row.get("escrow_paid") or 0.0), scheduled)
+        owed += max(0.0, float(row.get("amount") or 0.0) - paid)
+    return owed
+
+
 def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
-                       credit: dict[str, Any] | None) -> dict[str, Any]:
+                       credit: dict[str, Any] | None, settle: str = "") -> dict[str, Any]:
     """Хватит ли эскроу к погашению ПФ — по плану и по нынешнему темпу.
 
     Два ответа, и они разные. План отвечает сам за себя: на дату раскрытия у
@@ -2220,6 +2232,19 @@ def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
         actual[month] = running
     pace_window = full[-PACE_MONTHS:]
     pace = (sum(got[m] for m in pace_window) / len(pace_window)) if pace_window else 0.0
+    # Рассрочка (владелец, 27.10.2026): «1,5 млрд на эскроу сейчас при продажах
+    # 2,5. Причина в рассрочке, которая должна быть погашена при вводе». При
+    # известном сроке ввода прогноз — накоплено сейчас плюс остаток по
+    # подписанным договорам и новые продажи по нынешнему темпу подписания,
+    # равномерно до ввода; к вводу всё на эскроу (решение владельца
+    # «Равномерно до ввода»). Без срока ввода — прежнее продолжение темпа.
+    signed: dict[str, float] = {}
+    for row in rows or []:
+        signed[row.get("month") or ""] = signed.get(row.get("month") or "", 0.0) + float(
+            row.get("amount") or 0.0)
+    sales_pace = (sum(signed.get(m, 0.0) for m in pace_window) / len(pace_window)
+                  if pace_window else 0.0)
+    owed = owed_by_contracts(rows)
 
     out = []
     for queue in queues:
@@ -2238,7 +2263,10 @@ def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
         plan_at = plan_escrow.get(at)
         pf_at = plan_pf.get(at)
         ahead = _months_between(last_full, at)
-        keeping = actual.get(last_full, 0.0) + pace * ahead if ahead is not None else None
+        basis = {"measured_at": last_full, "actual": actual.get(last_full, 0.0), "pace": pace,
+                 "data_month": partial, "paid_now": actual.get(partial, 0.0),
+                 "owed": owed, "sales_pace": sales_pace, "settle": settle}
+        keeping = keeping_at(basis, at) if ahead is not None else None
         # Темп, который закладывает сам план на тот же отрезок. Без него «0,36×»
         # выглядит как приговор продажам, а на деле это в первую очередь
         # утверждение о плане: он требует ускорения в несколько раз.
@@ -2260,6 +2288,8 @@ def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
             "plan_coverage_at": (plan_at / pf_at) if plan_at and pf_at else None,
             "pace": pace,
             "pace_months": pace_window,
+            "data_month": partial, "paid_now": actual.get(partial, 0.0),
+            "owed": owed, "sales_pace": sales_pace, "settle": settle,
             "months_ahead": ahead,
             "keeping_pace_escrow": keeping,
             "keeping_pace_coverage": (keeping / pf_at) if keeping and pf_at else None,
@@ -2284,6 +2314,8 @@ def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
                 break
             if month > seen and block["pace"]:
                 keep += block["pace"]
+            if month > seen and settle:
+                keep = keeping_at(block, month) or keep
             line.append({
                 "month": month,
                 "plan": plan_escrow.get(month),
@@ -2300,6 +2332,64 @@ def escrow_sufficiency(summary: dict[str, Any], rows: list[dict[str, Any]],
             "partial_month": partial,
             "empty_queues": (credit or {}).get("empty_queues") or [],
             "missing": []}
+
+
+def keeping_at(block: dict[str, Any], month: str, settle: str = "") -> float | None:
+    """Прогноз эскроу на месяц — один расчёт для «к вводу», «к раскрытию» и
+    кварталов сводки.
+
+    Известен срок ввода (``settle`` или ``block["settle"]``, «ГГГГ-ММ») —
+    накоплено на месяц данных плюс остаток по подписанным договорам
+    (рассрочка) и новые продажи по нынешнему темпу подписания до ввода,
+    равномерно по месяцам: к вводу всё на эскроу, после ввода прироста нет.
+    Срока нет — накоплено на месяц замера плюс нынешний темп поступлений за
+    каждый месяц. Месяц не впереди данных — прогноза нет.
+    """
+    settle = settle or block.get("settle") or ""
+    if settle and block.get("data_month") and block.get("owed") is not None:
+        ahead = _months_between(block["data_month"], month) if month else None
+        if ahead is None or ahead <= 0:
+            return None
+        span = _months_between(block["data_month"], settle)
+        paid = float(block.get("paid_now") or 0.0)
+        owed = float(block.get("owed") or 0.0)
+        if span is None or span <= 0:
+            return paid + owed
+        pool = owed + float(block.get("sales_pace") or 0.0) * span
+        return paid + pool * min(ahead, span) / span
+    seen = block.get("measured_at") or ""
+    ahead = _months_between(seen, month) if seen and month else None
+    if ahead is None or ahead <= 0:
+        return None
+    return float(block.get("actual") or 0.0) + float(block.get("pace") or 0.0) * ahead
+
+
+def plan_on(series: dict[str, Any], month: str) -> float | None:
+    """Нарастающий ряд плана на месяц: без записи — последнее известное значение,
+    раньше начала ряда — плана нет (не ноль)."""
+    known = sorted(m for m in series if m <= month and series[m] is not None)
+    return float(series[known[-1]]) if known else None
+
+
+def escrow_at(block: dict[str, Any], queue: dict[str, Any], month: str,
+              settle: str = "") -> dict[str, Any] | None:
+    """Эскроу против кредита на заданный месяц — по плану и при нынешнем темпе.
+
+    ``block`` — очередь из ``escrow_sufficiency`` (накоплено, темп, месяц
+    замера), ``queue`` — та же очередь плана (помесячные ряды эскроу и остатка
+    кредита). Темп тот же, что у ответа «к раскрытию»: второго счёта нет.
+    Месяц не впереди замера — ответа нет: прогнозировать прошлое незачем.
+    """
+    keeping = keeping_at(block, month, settle)
+    if keeping is None:
+        return None
+    plan_escrow = plan_on(queue.get("escrow") or {}, month)
+    plan_pf = plan_on(queue.get("pf") or {}, month)
+    return {"month": month, "months_ahead": _months_between(block["measured_at"], month),
+            "plan_escrow": plan_escrow, "plan_pf": plan_pf,
+            "plan_coverage": (plan_escrow / plan_pf) if plan_escrow is not None and plan_pf else None,
+            "keeping_escrow": keeping,
+            "keeping_coverage": (keeping / plan_pf) if plan_pf else None}
 
 
 def _months_between(start: str, end: str) -> int | None:

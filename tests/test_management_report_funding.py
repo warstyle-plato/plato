@@ -158,8 +158,9 @@ def test_escrow_against_the_credit_plan():
     assert queue["actual"] == pytest.approx(60 * M)
     assert queue["plan"] == pytest.approx(45 * M)
     text = report.render_text(report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК"))
-    assert "Эскроу: на сентябрь 2026 накоплено 60,0 млн ₽ при плане " \
-           "финмодели 45,0 млн ₽ (больше плана на 15,0 млн ₽)." in text
+    # Плана банка в книге нет — «нет данных», а не ноль (владелец, 26.10.2026).
+    assert ("Эскроу на конец 2026 Q3: накоплено 60,0 млн ₽; план банка — нет данных, "
+            "план финмодели 45,0 млн ₽ (больше на 15,0 млн ₽).") in text, text
 
 
 def test_no_credit_plan_is_named():
@@ -195,9 +196,9 @@ def test_escrow_against_the_bank_plan():
     assert got["current"]["actual"] == pytest.approx(65 * M)
     built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
     text = report.render_text(built)
-    assert ("Эскроу по плану банка: на конец "
-            "2026 Q3 план 70,0 млн ₽, накоплено 60,0 млн ₽ — меньше плана на 10,0 млн ₽.") in text
-    assert "План банка на конец 2026 Q4 — 120,0 млн ₽; на октябрь 2026 накоплено 65,0 млн ₽." in text
+    assert ("Эскроу на конец 2026 Q3: накоплено 60,0 млн ₽; план банка 70,0 млн ₽ "
+            "(меньше на 10,0 млн ₽), план финмодели 45,0 млн ₽ (больше на 15,0 млн ₽).") in text, text
+    assert "В 2026 Q4 (квартал не закрыт) на октябрь 2026 накоплено 65,0 млн ₽" in text
     assert "План банка" in report.render_html(built)
 
 
@@ -264,11 +265,11 @@ def test_escrow_at_the_current_pace_leads():
     built = report.build(PROJECT, "week", "2026-10-18", sales_project="ЖК")
     queue = built["funding"]["escrow"]["queues"][0]
     tile = next(item for item in report.tiles(built) if item["label"].startswith("Эскроу"))
-    assert tile["label"] == "Эскроу при нынешнем темпе"
+    assert tile["label"] == "Эскроу по прогнозу"
     assert tile["value"] == report._times(queue["keeping_pace_coverage"])
     assert "по плану финмодели" in tile["note"]
     found = {item["topic"]: item["text"] for item in built["findings"]}
-    assert "при нынешнем темпе эскроу покрывает" in found["Финансирование"].lower()
+    assert "по прогнозу эскроу покрывает" in found["Финансирование"].lower()
 
 
 def test_the_report_names_no_chapters_sheets_or_codes(monkeypatch):
@@ -290,7 +291,7 @@ def test_the_report_names_no_chapters_sheets_or_codes(monkeypatch):
         assert banned not in text, banned
         assert banned not in page, banned
     assert "Лимит банка: 4,10 млрд ₽" in text and "Утверждённый бюджет: 6,50 млрд ₽" in text
-    assert "Эскроу по плану банка: " in text and "Услуги банка и проценты" in page
+    assert "Эскроу на конец " in text and "Услуги банка и проценты" in page
     notes = {item["label"]: item["note"] for item in report.tiles(built)}
     assert notes["Лимит банка"] == "по смете РСС; резерв 138,0 млн ₽"
     assert notes["Утверждённый бюджет"] == "по финмодели"

@@ -198,7 +198,8 @@ def test_the_switch_is_visible_and_changes_the_picture():
         bar = tab.evaluate("""()=>[...document.querySelectorAll('#landMapLayers button')]
             .map(b=>({text:b.textContent,disabled:b.disabled,visible:b.offsetWidth>0,
                       pressed:b.getAttribute('aria-pressed')}))""")
-        assert [b["text"] for b in bar] == ["Схема", "Гибрид"]
+        # «Панорама» — третья кнопка того же переключателя (test_the_parcel_card_offers_a_yandex_panorama).
+        assert [b["text"] for b in bar] == ["Схема", "Гибрид", "Панорама"]
         assert all(b["visible"] for b in bar), "переключатель не виден"
         assert bar[0]["pressed"] == "true" and not bar[1]["disabled"]
         before = tab.evaluate("()=>document.querySelectorAll('#landMapStage img').length")
@@ -293,7 +294,7 @@ def test_the_market_neighbours_open_the_same_live_map_with_the_switch():
         finally:
             browser.close()
     assert not errors, errors
-    assert seen == {"open": "flex", "buttons": ["Схема", "Гибрид"], "shapes": len(market)}
+    assert seen == {"open": "flex", "buttons": ["Схема", "Гибрид", "Панорама"], "shapes": len(market)}
 
 
 def test_the_new_parcel_page_takes_the_same_map_by_address():

@@ -42,12 +42,12 @@ async function exportReportPdf(){
   while(response.status===202){
    let state={};try{state=await response.json()}catch(e){}
    if(!state.ticket)break;
-   show(state.detail||'PDF-отчёт готовится…');
-   if(Date.now()>deadline){alert('PDF-отчёт всё ещё готовится ('+(state.detail||'')+'). Нажмите «Экспорт PDF» позже.');return;}
+   show(serverDetail(state)||'PDF-отчёт готовится…');
+   if(Date.now()>deadline){alert('PDF-отчёт всё ещё готовится ('+(serverDetail(state)||'')+'). Нажмите «Экспорт PDF» позже.');return;}
    await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
    response=await fetch('/report/pdf/'+encodeURIComponent(state.ticket));
   }
-  if(!response.ok||response.status!==200){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать PDF';try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}alert(detail);return;}
   const blob=await response.blob();
   downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'',`DevelopAid_Отчет_${new Date().toISOString().slice(0,10)}.pdf`);
  }finally{show('')}
@@ -69,12 +69,12 @@ async function exportTeaserPdf(){
   while(response.status===202){
    let state={};try{state=await response.json()}catch(e){}
    if(!state.ticket)break;
-   show(state.detail||'Тизер готовится…');
-   if(Date.now()>deadline){alert('Тизер всё ещё готовится ('+(state.detail||'')+'). Нажмите «Скачать тизер» позже.');return;}
+   show(serverDetail(state)||'Тизер готовится…');
+   if(Date.now()>deadline){alert('Тизер всё ещё готовится ('+(serverDetail(state)||'')+'). Нажмите «Скачать тизер» позже.');return;}
    await new Promise(done=>setTimeout(done,TEASER_POLL_MS));
    response=await fetch('/report/teaser/'+encodeURIComponent(state.ticket));
   }
-  if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=x.detail||detail}catch(e){}alert(detail);return;}
+  if(!response.ok||response.status!==200){let detail='Не удалось сформировать тизер';try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}alert(detail);return;}
   const blob=await response.blob();
   downloadBlobResponse(blob,response.headers.get('Content-Disposition')||'','DevelopAid_Тизер.pdf');
  }finally{show('')}
@@ -114,7 +114,7 @@ async function exportModelArchive(){
   });
   if(!response.ok){
    let detail='Не удалось собрать модель';
-   try{const x=await response.json();detail=x.detail||detail}catch(e){}
+   try{const x=await response.json();detail=serverDetail(x)||detail}catch(e){}
    alert(detail);return;
   }
   downloadBlobResponse(
@@ -218,7 +218,7 @@ async function loadServerProjectPreset(){
  try{
   const response=await fetch('/api/project-presets/'+encodeURIComponent(id)+presetsQuery());
   parsed=await response.json();
-  if(!response.ok)throw new Error(parsed.detail||'Пресет не загружен');
+  if(!response.ok)throw new Error(serverDetail(parsed)||'Пресет не загружен');
  }catch(e){alert(String(e.message||e));return}
  await previewPreset(parsed);
 }
@@ -230,7 +230,7 @@ async function previewPreset(parsed){
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({preset:parsed,mode:'preview',inputs,tep})});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Пресет не разобран');
+  if(!response.ok)throw new Error(serverDetail(data)||'Пресет не разобран');
  }catch(e){alert(String(e.message||e));return}
  presetPreview=parsed;
  renderPresetPreview(data);
@@ -311,7 +311,7 @@ async function applyPreset(){
    method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({preset:presetPreview,mode:'apply',inputs,tep,filled:presetFilledValues()})});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Пресет не применён');
+  if(!response.ok)throw new Error(serverDetail(data)||'Пресет не применён');
  }catch(e){alert(String(e.message||e));return}
  // Как и всюду: приходящее накладывается на умолчания, а не заменяет их.
  inputs=Object.assign(cloneValue(INPUT_DEFAULT),data.applied_inputs||{});
@@ -365,7 +365,7 @@ async function projectsCall(path,body){
  let data={};
  try{data=raw?JSON.parse(raw):{}}catch(e){}
  if(!response.ok){
-  const said=String(data.detail||'').trim()
+  const said=String(serverDetail(data)||'').trim()
    ||raw.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim().slice(0,160);
   throw new Error(said?('Хранилище ответило '+response.status+': '+said)
    :('Хранилище ответило кодом '+response.status+' и пустым телом'));
@@ -549,6 +549,8 @@ function renderProjectsLogin(reason){
  }
  const scroll=stored.querySelector('.scroll');
  if(scroll)scroll.style.display='none';
+ const find=document.getElementById('projectsFind');
+ if(find)find.style.display='none';
 }
 
 function hideProjectsLogin(){
@@ -557,6 +559,8 @@ function hideProjectsLogin(){
  const stored=document.getElementById('projectsStored');
  const scroll=stored&&stored.querySelector('.scroll');
  if(scroll)scroll.style.display='';
+ const find=document.getElementById('projectsFind');
+ if(find)find.style.display='';
 }
 
 function enterProjectsKey(){
@@ -649,7 +653,47 @@ async function openProjects(){
   }
   alert(String(e.message||e));return;
  }
- const rows=(data.projects||[]).map(p=>{
+ projectsCards=data.projects||[];
+ renderProjectsList();
+}
+
+// Список проектов: поиск по названию и номерам участка, порядок — по дате
+// изменения или по названию. Выбранный порядок помнит браузер; хранилища может
+// не быть (приватное окно), и тогда порядок просто по умолчанию.
+let projectsCards=[];
+const PROJECTS_SORT_KEY='developaid_projects_sort';
+const PROJECTS_SORTS={
+ saved_desc:(a,b)=>String(b.saved_at||'').localeCompare(String(a.saved_at||'')),
+ saved_asc:(a,b)=>String(a.saved_at||'').localeCompare(String(b.saved_at||'')),
+ name:(a,b)=>String(a.name||'').localeCompare(String(b.name||''),'ru',{sensitivity:'base',numeric:true})
+};
+function projectsSort(){
+ const select=document.getElementById('projectsSort');
+ let value=select&&select.value;
+ if(!projectsSortRestored){
+  projectsSortRestored=true;
+  try{const kept=localStorage.getItem(PROJECTS_SORT_KEY);if(kept&&PROJECTS_SORTS[kept])value=kept}catch(e){}
+  if(select&&value)select.value=value;
+ }
+ return PROJECTS_SORTS[value]?value:'saved_desc';
+}
+let projectsSortRestored=false;
+function projectsSortChanged(){
+ const select=document.getElementById('projectsSort');
+ try{if(select)localStorage.setItem(PROJECTS_SORT_KEY,select.value)}catch(e){}
+ renderProjectsList();
+}
+function projectMatches(p,query){
+ if(!query)return true;
+ const hay=[p.name||''].concat(p.cadastral||[]).join(' ').toLowerCase();
+ return query.split(/\s+/).filter(Boolean).every(word=>hay.includes(word));
+}
+function renderProjectsList(){
+ if(typeof projectsBody==='undefined')return;
+ const query=String((document.getElementById('projectsSearch')||{}).value||'').trim().toLowerCase();
+ const order=PROJECTS_SORTS[projectsSort()];
+ const shown=projectsCards.filter(p=>projectMatches(p,query)).slice().sort(order);
+ const rows=shown.map(p=>{
   const s=p.summary||{};
   return `<tr><td><b>${escapeHtml(p.name||'')}</b><br><small>${escapeHtml(String(p.saved_at||'').replace('T',' ').replace('+00:00',' UTC'))}`
    +`${p.cadastral&&p.cadastral.length?' · '+escapeHtml(p.cadastral.join(', ')):''}</small></td>`
@@ -665,10 +709,24 @@ async function openProjects(){
    +`<button class="btn" onclick="downloadSettingsFile('${p.id}')">Файл</button> `
    +`<button class="btn" onclick="deleteProject('${p.id}')">Удалить</button></td></tr>`;
  }).join('');
- projectsBody.innerHTML=rows||'<tr><td colspan="5">Пока ничего не сохранено.</td></tr>';
+ projectsBody.innerHTML=rows||('<tr><td colspan="5">'+(projectsCards.length
+  ?'По запросу «'+escapeHtml(query)+'» ничего не нашлось. Поиск идёт по названию и кадастровым номерам.'
+  :'Пока ничего не сохранено.')+'</td></tr>');
 }
 
 function closeProjects(){projectsDialog.style.display='none'}
+
+// Вкладки кабинета. Какие видны, решает не страница: вкладку администрирования
+// показывает `renderTariffsBox` по ответу сервера.
+function cabinetTab(name){
+ const tab=document.querySelector('.cab-tab[data-tab="'+name+'"]');
+ if(!tab||tab.style.display==='none')name='projects';
+ document.querySelectorAll('.cab-tab').forEach(b=>{
+  const on=b.dataset.tab===name;
+  b.classList.toggle('active',on);b.setAttribute('aria-selected',on?'true':'false');
+ });
+ document.querySelectorAll('.cab-panel').forEach(p=>{p.hidden=p.dataset.panel!==name});
+}
 
 function changeProjectsKey(){
  const key=prompt('Ключ администратора', projectsAdminKey||'');
@@ -734,6 +792,7 @@ function renderOpenedProjectButton(){
 
 function forgetTerritoryState(){
  cadastralAnalysis=null;landLookup=null;otherRegionPending=null;landScreeningLast=null;LAND_MAP=null;
+ calcWentWithoutContour=false;
  glavapuImport=null;moResult=null;
  // Запрос района и ТТК по участку — тоже про участок: новый проект спрашивает свой.
  sitePositionRun={key:'',state:'',error:'',count:0};
@@ -971,17 +1030,23 @@ async function deleteProject(id){
 // трижды: после «Сбросить» оставались то поля Подмосковья, то очередность,
 // то посчитанный отчёт прошлого проекта, и человек видел одно — «не работает».
 // LAND_MAP_VIEWS — ответ сервера, есть ли ключ Яндекс Карт для гибрида: не проект.
+// landContourPending — число запросов контура ЕГРН в пути: его гасит каждый
+// ответ, и сброс сбил бы счёт.
 // accessUseFree — согласие на бесплатный участок на один запуск расчёта:
 // снимается сразу после него и проекта не хранит.
+// projectsCards — список сохранённого в хранилище, projectsSortRestored —
+// отметка, что порядок списка уже прочитан из браузера: кабинет, не проект.
+// demoBlockNames — названия разделов демо-ссылок с сервера для админки: не проект.
 const NON_PROJECT_STATE=['feedbackShown','feedbackCalcs','feedbackReportSeconds','feedbackReportTimer',
  'profileState','profileAskedOnResult','calcRequiresLogin','accessUseFree','calcRun','calcSettled','webLoginBusy',
  'projectsAdminKey','projectsStorageReady','projectsAcceptsKey','projectsAcceptsLogin',
+ 'projectsCards','projectsSortRestored',
  'telegramResultSent','telegramCalcOverrides','telegramEditSubmitting','telegramFinishing',
  'aiBusy','moAutoBusy','moRecalcTimer','sensitivityBusy','moDistrictPrices','moKdDocument',
- 'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound',
+ 'landScreeningRun','tepRunSequence','glavapuScenarioRun','strategyCompareRound','landContourPending',
  'CLASS_OVERRIDES','CLASS_OVERRIDES_NOTE','CLASS_OVERRIDES_FROM_SERVER',
  'CLASS_STATS_BY','CLASS_STATS_KEY','CLASS_STATS_ERROR','CLASS_DETAIL_OPEN',
- 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS'];
+ 'PROJECT_KIND_WHERE','LAND_MAP_VIEWS','demoBlockNames'];
 
 function resetProjectState(){
  // Данные проекта, которые живут переменными страницы, а не полями формы.
@@ -995,7 +1060,7 @@ function resetProjectState(){
  // Открытый проект — тоже данные проекта: после сброса «Сохранить поверх»
  // записало бы пустой расчёт в чужую запись.
  openedProject=null;
- aiHistory=[];aiProposals=[];aiIntake=null;aiDocument=null;aiDocBaseline=null;aiIntakeApplied=[];aiQuestion=null;aiCadastralReady=false;
+ aiHistory=[];aiProposals=[];aiIntake=null;aiCard=null;aiDocument=null;aiDocBaseline=null;aiIntakeApplied=[];aiQuestion=null;aiCadastralReady=false;
  territoryCleared=[];tepRatioComplaint='';phaseTepEditWarning='';socialPopulationNoteText='';
  Object.keys(tepRefillNote).forEach(key=>{delete tepRefillNote[key]});
  moLastQuery='';moAutoApartments=null;
@@ -1227,7 +1292,7 @@ async function loadAccessMe(){
  const response=await fetch('/access/me',{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({session:activeSession()})});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Не удалось узнать условия доступа');
+ if(!response.ok)throw new Error(serverDetail(data)||'Не удалось узнать условия доступа');
  return data;
 }
 function tariffsHtml(data){
@@ -1252,7 +1317,11 @@ function tariffsHtml(data){
   html+='<p class="cab-demo">'+
    '<b>Это демо-доступ.</b> '+(data.demo_payments==='test'
     ?'Оплата идёт через тестовый магазин ЮKassa — деньги не списываются.'
-    :'Кнопки оплаты показывают, где откроется платёжная форма ЮKassa; деньги не списываются.')+'</p>';
+    :'Кнопки оплаты показывают, где откроется платёжная форма ЮKassa; деньги не списываются.')+
+   ((data.demo_sections||[]).length
+    ?' Ссылка открывает разделы: '+data.demo_sections.map(x=>'<a href="'+escapeHtml(x.path)+'">'+escapeHtml(x.name)+'</a>'+
+      (x.read_only?' (только просмотр)':'')).join(', ')+'.'
+    :'')+'</p>';
  }
  const status=data.status||{};
  const active=(status.plots||[]).filter(p=>p.active);
@@ -1298,10 +1367,14 @@ async function renderTariffsBox(){
  catch(e){box.innerHTML='<div class="import-error">'+escapeHtml(String(e.message||e))+'</div>';return}
  box.innerHTML=tariffsHtml(data);
  payCountChanged();
- const admin=document.getElementById('accessAdminBox');
- if(admin){admin.style.display=(data.is_admin||projectsAdminKey)?'':'none';if(data.is_admin||projectsAdminKey){renderAccessAdmin();renderDemoInvites()}}
+ const admin=document.getElementById('accessAdminBox'),isAdmin=!!(data.is_admin||projectsAdminKey);
+ const adminTab=document.getElementById('cabTabAdmin');
+ if(adminTab)adminTab.style.display=isAdmin?'':'none';
+ if(!isAdmin&&adminTab&&adminTab.classList.contains('active'))cabinetTab('projects');
+ if(admin){admin.style.display=isAdmin?'':'none';if(isAdmin){renderAccessAdmin();renderDemoInvites()}}
 }
 async function openTariffs(){
+ cabinetTab('tariffs');
  await openProjects();
  await renderTariffsBox();
  const box=document.getElementById('tariffsBox');
@@ -1347,7 +1420,7 @@ async function payForAccess(kind,where){
   const response=await fetch('/payments/create',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify({session:activeSession(),kind,inputs,email,count})});
   const data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Оплату начать не удалось');
+  if(!response.ok)throw new Error(serverDetail(data)||'Оплату начать не удалось');
   if(data.preview){if(status)status.textContent=data.message;return}
   if(status&&data.price_rub)status.textContent='Переходим к оплате '+accessRub(data.price_rub)+(count>1?' за '+count+' '+plotsWord(count):'')+'…';
   try{localStorage.setItem('developaid_pending_payment',data.payment_id)}catch(e){}
@@ -1363,7 +1436,7 @@ async function accessAdminCall(path,body){
  const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify(Object.assign({session:activeSession(),key:projectsAdminKey},body||{}))});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Запрос не выполнен');
+ if(!response.ok)throw new Error(serverDetail(data)||'Запрос не выполнен');
  return data;
 }
 async function renderAccessAdmin(){
@@ -1386,29 +1459,64 @@ async function renderAccessAdmin(){
   '<div class="cab-sub">Оплаты</div><div class="scroll"><table><thead><tr><th>Дата</th><th>Кто</th><th>Что</th><th>Платёж</th></tr></thead><tbody>'+
   (payments||'<tr><td colspan="4">Оплат пока не было.</td></tr>')+'</tbody></table></div>';
 }
-// Демо-доступ по ссылке (клиенту, партнёру, ЮKassa): ссылка-приглашение со сроком, отзыв.
+// Демо-доступ по ссылке (клиенту, партнёру, ЮKassa): ссылка-приглашение со
+// сроком 1, 5 или 30 дней и разделами, которые она открывает; отзыв.
+// Названия разделов — с сервера (`DEMO_BLOCKS`), второго списка страница не держит.
+let demoBlockNames={};
+function demoBlockBoxes(){return Array.from(document.querySelectorAll('#demoInviteBlocks .demo-block'))}
+function demoBlocksAll(on){demoBlockBoxes().forEach(box=>{box.checked=!!on})}
+function demoBlocksSync(){
+ const all=document.getElementById('demoBlockAll'),boxes=demoBlockBoxes();
+ if(all)all.checked=boxes.length>0&&boxes.every(box=>box.checked);
+}
+function demoDaysWord(n){const t=n%100,o=n%10;return n+' '+(t>10&&t<20?'дней':o===1?'день':o>=2&&o<=4?'дня':'дней')}
+// Галочки разделов и кнопки срока рисуются по ответу сервера (`DEMO_BLOCKS`,
+// `DEMO_DAYS`): срок, которого сервер не примет, кнопкой не появится.
+function demoBlocksDraw(names,days){
+ const line=document.getElementById('demoInviteBlocks'),buttons=document.getElementById('demoInviteDays');
+ if(names&&line&&!demoBlockBoxes().length){
+  demoBlockNames=names;
+  line.insertAdjacentHTML('beforeend',Object.keys(names).map(b=>'<label><input type="checkbox" class="demo-block" value="'+
+   escapeHtml(b)+'" onchange="demoBlocksSync()"> '+escapeHtml(names[b])+'</label>').join(''));
+ }
+ if(Array.isArray(days)&&buttons&&!buttons.children.length){
+  buttons.innerHTML=days.map(d=>'<button class="btn dark demo-days" onclick="accessDemoCreate('+Number(d)+')">'+demoDaysWord(Number(d))+'</button>').join('');
+ }
+}
+function demoBlocksText(blocks){
+ const list=(blocks||[]).map(b=>demoBlockNames[b]||b),all=Object.keys(demoBlockNames);
+ return all.length&&list.length===all.length?'Полный доступ':list.join(', ');
+}
 async function renderDemoInvites(){
  const box=document.getElementById('demoInviteList');
  if(!box)return;
  let data;
  try{data=await accessAdminCall('/access/admin/demo/list')}
  catch(e){box.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>';return}
+ demoBlocksDraw(data.blocks,data.days);
  // Адрес показан один раз и копируется кнопкой: на телефоне длинная ссылка
  // обрезается, и выделять её пальцем неудобно.
  const rows=(data.invites||[]).map(r=>'<tr><td><span class="demo-link">'+escapeHtml(location.origin+r.path)+'</span>'+
-  (r.note?'<br><small>'+escapeHtml(r.note)+'</small>':'')+'</td><td>до '+accessDate(r.expires)+'</td><td>'+
-  (r.active?'действует':'не действует')+', входов: '+Number(r.claims||0)+'</td><td class="cab-nowrap">'+
+  (r.note?'<br><small>'+escapeHtml(r.note)+'</small>':'')+
+  '<br><small class="demo-blocks">Разделы: '+escapeHtml(demoBlocksText(r.blocks))+'</small></td><td>до '+accessDate(r.expires)+'</td><td>'+
+  (r.active?'действует':(r.revoked_at?'отозвана '+accessDate(r.revoked_at):'срок истёк'))+', входов: '+Number(r.claims||0)+
+  (r.last_claim?'<br><small>последний вход '+accessDate(r.last_claim)+'</small>':'')+'</td><td class="cab-nowrap">'+
   (r.active?'<button class="btn" data-link="'+escapeHtml(location.origin+r.path)+'" onclick="accessDemoCopy(this)">Скопировать</button> '+
   '<button class="btn" data-code="'+escapeHtml(r.code)+'" onclick="accessDemoRevoke(this.dataset.code)">Отозвать</button>':'')+
   '</td></tr>').join('');
  box.innerHTML=rows?'<div class="scroll"><table><tbody>'+rows+'</tbody></table></div>':'<div class="cab-muted">Ссылок ещё не выдавали.</div>';
 }
-async function accessDemoCreate(){
+async function accessDemoCreate(days){
  const status=document.getElementById('demoInviteStatus');
  const note=String((document.getElementById('demoInviteNote')||{}).value||'');
+ const blocks=demoBlockBoxes().filter(box=>box.checked).map(box=>box.value);
+ if(!blocks.length){
+  if(status)status.innerHTML='<span class="import-error">Отметьте разделы, которые откроет ссылка, или «Полный доступ».</span>';
+  return;
+ }
  try{
-  const data=await accessAdminCall('/access/admin/demo/create',{days:14,note});
-  if(status)status.textContent='Ссылка создана, действует до '+accessDate(data.expires)+'. Она в списке ниже — нажмите «Скопировать».';
+  const data=await accessAdminCall('/access/admin/demo/create',{days,note,blocks});
+  if(status)status.textContent='Ссылка создана: '+demoBlocksText(data.blocks)+', действует до '+accessDate(data.expires)+'. Она в списке ниже — нажмите «Скопировать».';
   renderDemoInvites();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }
@@ -1458,7 +1566,14 @@ async function accessAdminGrant(){
   if(!chat){if(status)status.textContent='Выберите, кому выдать доступ.';return}
   const data=await accessAdminCall('/access/admin/grant',{chat,kind,cadastral:kind==='plot'?cadastral:[],days,count,note});
   if(status)status.textContent='Выдано: '+(data.what||'доступ')+' — '+(data.who||('ID '+chat))+
-   (data.until?', до '+accessDate(data.until):', срок каждого участка пойдёт с его первого расчёта')+'.';
+   (data.until?', до '+accessDate(data.until):', срок каждого участка пойдёт с его первого расчёта')+'.'+
+   // Весть человеку в Telegram: дошла — так и сказано, нет — причина, чтобы
+   // выдавший написал ему сам.
+   // В очереди — не «не отправлено»: ядро само до Telegram не достаёт, и весть
+   // отправит бот; писать человеку самому не нужно.
+   (data.notice?(data.notice.sent?' Сообщение в Telegram отправлено.':
+    data.notice.queued?' Сообщение в Telegram пока не отправлено: '+(data.notice.reason||'')+'.':
+    ' Сообщение в Telegram не отправлено: '+(data.notice.reason||'причина неизвестна')+'. Напишите человеку сами.'):'');
   renderAccessAdmin();
  }catch(e){if(status)status.innerHTML='<span class="import-error">'+escapeHtml(String(e.message||e))+'</span>'}
 }

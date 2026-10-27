@@ -1484,7 +1484,9 @@ function renderSiteMassing(){
  rows.push(row('Площадь подземной части',sq(m.underground_sqm),garages>0?
   'Паркинг с рампами и проездами и подземные кладовые из ТЭП ('+sq(Number(m.underground_sqm||0)-garages)+') и подземные гаражи отдельных объектов ('+sq(garages)+').':
   'Паркинг с рампами и проездами и подземные кладовые из ТЭП.'));
- rows.push(row('Подземных уровней',String(m.underground_levels||0),
+ rows.push(m.underground_levels_unfit?row('Подземных уровней','не посчитано',
+  'Подземная часть под участком не помещается даже на '+num(m.underground_levels_max)+' уровнях. Что поправить — в красной плашке выше.',true):
+  row('Подземных уровней',String(m.underground_levels||0),
   m.underground_levels_origin==='manual'?'Задано вручную.':'Площадь подземной части, делённая на полезную площадь одного уровня, с округлением вверх.',true));
  let levels='';
  if((m.underground_level_rows||[]).length){
@@ -1539,10 +1541,14 @@ function renderSiteMassingScheme(m){
   return;
  }
  const legend=(ax.legend||[]).map(g=>'<li data-building="'+g.number+'"><i style="background:'+g.color+'"></i>'+escapeHtml(g.line||'')+'</li>').join('');
- const notes=(layout.notes||[]).map(t=>'<p class="site-massing-hint">'+escapeHtml(t)+'</p>').join('');
+ // Причина, по которой корпусов нет на карте участка (`layout.map_note`), стоит
+ // на месте кнопки карты, а не теряется среди пояснений: кнопка не пропадает молча.
+ const mapNote=String(layout.map_note||'');
+ const notes=(layout.notes||[]).filter(t=>t!==mapNote).map(t=>'<p class="site-massing-hint">'+escapeHtml(t)+'</p>').join('');
  box.innerHTML='<p class="site-massing-hint">'+escapeHtml(ax.caption||'')+'</p>'+siteMassingSchemeSvg(ax)+'<ul class="site-massing-legend">'+legend+'</ul>'+notes+
   '<p class="site-massing-hint">'+escapeHtml(ax.footer||'')+'</p>'+
-  (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':'');
+  (siteMassingMapShapes().length?'<button type="button" class="btn" id="siteMassingMapButton" onclick="siteMassingOpenMap()">Показать корпуса на карте участка</button>':
+   mapNote?'<p class="site-massing-hint" id="siteMassingMapNote">'+escapeHtml(mapNote)+'</p>':'');
  siteMassingPlanWatch(layout.plan||{});
 }
 // План расстановки от Платона готовится фоном (`engine/site_massing_plan.py`):
@@ -1743,7 +1749,7 @@ async function applyMoscowNormativeTep(area,density,keepRows){
    district:String(territory.district||''),
    inside_moscow:true})});
  const data=await response.json();
- if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать ТЭП по нормативам Москвы');
+ if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать ТЭП по нормативам Москвы');
  const places=data.places||{};
  const skipped=applyDerivedInputs({kindergarten_places:places.kindergarten,
   school_places:places.school,clinic_capacity:places.clinic});
@@ -1803,7 +1809,7 @@ async function applyNormativeTep(densityOverride,keepRows){
   const response=await fetch('/mo/calculate',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(body)});
   data=await response.json();
-  if(!response.ok)throw new Error(data.detail||'Не удалось рассчитать нормативный ТЭП');
+  if(!response.ok)throw new Error(serverDetail(data)||'Не удалось рассчитать нормативный ТЭП');
   Object.entries(data.tep||{}).forEach(([key,values])=>{if(tep[key])Object.assign(tep[key],values)});
   // Обратный счёт от вписанных метров: строка, которую человек вписал, остаётся
   // его. Сервер выводит ГНС и общую из продаваемой своими долями, и ответ молча
@@ -3062,7 +3068,7 @@ async function recalcFromTepByNorms(options){
   const r=await fetch('/tep/derived-by-site',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(bySiteBody())});
   d=await r.json();
-  if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
+  if(!r.ok)throw new Error(serverDetail(d)||'Пересчёт не выполнен');
  }catch(e){say('Пересчёт по нормативам не выполнен: '+escapeHtml(String(e.message||e)),false);return}
 
  const lines=[
@@ -3130,7 +3136,7 @@ async function socialPopulationSwitched(methodBefore){
    {method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify(viaBaseline?baselineRecalcBody():bySiteBody())});
   d=await r.json();
-  if(!r.ok)throw new Error(d.detail||('сервер ответил '+r.status));
+  if(!r.ok)throw new Error(serverDetail(d)||('сервер ответил '+r.status));
  }catch(e){
   return sayPopulationSwitch('Места соцобъектов не пересчитаны: '+String(e.message||e)+'.');
  }
@@ -3230,7 +3236,7 @@ async function recalcFromTep(options){
   const r=await fetch('/tep/recalc-from-baseline',{method:'POST',headers:{'Content-Type':'application/json'},
    body:JSON.stringify(baselineRecalcBody())});
   d=await r.json();
-  if(!r.ok)throw new Error(d.detail||'Пересчёт не выполнен');
+  if(!r.ok)throw new Error(serverDetail(d)||'Пересчёт не выполнен');
  }catch(e){say('Пересчёт не выполнен: '+escapeHtml(String(e.message||e)),false);return}
  // Метод обязан воспроизводить исходный расчёт на исходных метрах. Не
  // воспроизводит — это расхождение с базой, а не результат.

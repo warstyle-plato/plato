@@ -1754,9 +1754,24 @@ def _glavapu_scenario_run(key: str, scenario: dict[str, Any]) -> None:
     except (GlavapuTableNotReady, GlavapuParcelNotAccepted) as exc:
         record.update(state="error", error=exc.public_message,
                       where="калькулятор ГлавАПУ: расчёт участка до ввода сценария")
+    except glavapu_scenario.CalculatorNotice as exc:
+        # Калькулятор сам назвал ошибку — её текст и есть причина.
+        logging.warning("glavapu scenario: калькулятор сообщил: %s", exc)
+        record.update(state="error", error=exc.public_message, where=exc.where)
     except Exception as exc:  # noqa: BLE001 — отказ доходит до окна с местом
-        record.update(state="error", error=_public_error(exc, "glavapu scenario"),
-                      where=_error_location(exc))
+        # Сырой текст Playwright и строка кода — в журнал по метке; на
+        # страницу — что не получилось и что делать (26.10.2026: посетитель
+        # читал «Locator.click: Timeout 7000ms exceeded… intercepts pointer
+        # events», потому что место отдавалось `_error_location`).
+        ref = os.urandom(4).hex()
+        logging.error("glavapu scenario [%s]: %s", ref, _error_location(exc),
+                      exc_info=(type(exc), exc, exc.__traceback__))
+        record.update(
+            state="error",
+            error=("калькулятор ГлавАПУ не довёл расчёт сценария до конца, поэтому "
+                   "сравнивать не с чем. Запустите сверку ещё раз через несколько минут; "
+                   f"если не получится, сообщите нам номер ошибки {ref}"),
+            where="калькулятор ГлавАПУ, сверка сценария")
     record["finished_at"] = datetime.now(timezone.utc).isoformat()
     record["seconds"] = round(time.monotonic() - started, 1)
     record["stored_at"] = time.time()
